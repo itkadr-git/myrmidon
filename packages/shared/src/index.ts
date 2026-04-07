@@ -189,6 +189,7 @@ export type {
   InstanceExperimentalSettings,
   InstanceGeneralSettings,
   InstanceSettings,
+  BackupRetentionDays,
   Agent,
   AgentAccessState,
   AgentChainOfCommandEntry,
@@ -368,6 +369,11 @@ export {
   FEEDBACK_VOTE_VALUES,
   DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION,
 } from "./types/feedback.js";
+
+export {
+  BACKUP_RETENTION_PRESETS,
+  DEFAULT_BACKUP_RETENTION_DAYS,
+} from "./types/instance.js";
 
 export {
   getClosedIsolatedExecutionWorkspaceMessage,

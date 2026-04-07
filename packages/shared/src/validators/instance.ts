@@ -1,6 +1,13 @@
 import { z } from "zod";
 import { DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE } from "../types/feedback.js";
+import { BACKUP_RETENTION_PRESETS, DEFAULT_BACKUP_RETENTION_DAYS } from "../types/instance.js";
 import { feedbackDataSharingPreferenceSchema } from "./feedback.js";
+
+export const backupRetentionDaysSchema = z.number().refine(
+  (v): v is (typeof BACKUP_RETENTION_PRESETS)[number] =>
+    (BACKUP_RETENTION_PRESETS as readonly number[]).includes(v),
+  { message: `Must be one of: ${BACKUP_RETENTION_PRESETS.join(", ")}` },
+);
 
 export const instanceGeneralSettingsSchema = z.object({
   censorUsernameInLogs: z.boolean().default(false),
@@ -8,6 +15,7 @@ export const instanceGeneralSettingsSchema = z.object({
   feedbackDataSharingPreference: feedbackDataSharingPreferenceSchema.default(
     DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
   ),
+  backupRetentionDays: backupRetentionDaysSchema.default(DEFAULT_BACKUP_RETENTION_DAYS),
 }).strict();
 
 export const patchInstanceGeneralSettingsSchema = instanceGeneralSettingsSchema.partial();

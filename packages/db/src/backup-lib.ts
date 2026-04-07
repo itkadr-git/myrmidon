@@ -1,6 +1,8 @@
 import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { createInterface } from "node:readline";
+import { pipeline } from "node:stream/promises";
+import { createGunzip, createGzip } from "node:zlib";
 import postgres from "postgres";
 
 export type RunDatabaseBackupOptions = {
@@ -82,7 +84,8 @@ function pruneOldBackups(backupDir: string, retentionDays: number, filenamePrefi
   let pruned = 0;
 
   for (const name of readdirSync(backupDir)) {
-    if (!name.startsWith(`${filenamePrefix}-`) || !name.endsWith(".sql")) continue;
+    if (!name.startsWith(`${filenamePrefix}-`)) continue;
+    if (!name.endsWith(".sql") && !name.endsWith(".sql.gz")) continue;
     const fullPath = resolve(backupDir, name);
     const stat = statSync(fullPath);
     if (stat.mtimeMs < cutoff) {
@@ -148,7 +151,9 @@ function tableKey(schemaName: string, tableName: string): string {
 }
 
 async function* readRestoreStatements(backupFile: string): AsyncGenerator<string> {
-  const stream = createReadStream(backupFile, { encoding: "utf8" });
+  const raw = createReadStream(backupFile);
+  const stream = backupFile.endsWith(".gz") ? raw.pipe(createGunzip()) : raw;
+  stream.setEncoding("utf8");
   const reader = createInterface({
     input: stream,
     crlfDelay: Infinity,
@@ -180,6 +185,7 @@ async function* readRestoreStatements(backupFile: string): AsyncGenerator<string
   } finally {
     reader.close();
     stream.destroy();
+    raw.destroy();
   }
 }
 
@@ -288,8 +294,9 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
   const nullifiedColumnsByTable = normalizeNullifyColumnMap(opts.nullifyColumns);
   const sql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
   mkdirSync(opts.backupDir, { recursive: true });
-  const backupFile = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}.sql`);
-  const writer = createBufferedTextFileWriter(backupFile);
+  const sqlFile = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}.sql`);
+  const backupFile = `${sqlFile}.gz`;
+  const writer = createBufferedTextFileWriter(sqlFile);
 
   try {
     await sql`SELECT 1`;
@@ -664,6 +671,12 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
 
     await writer.close();
 
+    // Compress the SQL file with gzip
+    const sqlReadStream = createReadStream(sqlFile);
+    const gzWriteStream = createWriteStream(backupFile);
+    await pipeline(sqlReadStream, createGzip(), gzWriteStream);
+    unlinkSync(sqlFile);
+
     const sizeBytes = statSync(backupFile).size;
     const prunedCount = pruneOldBackups(opts.backupDir, retentionDays, filenamePrefix);
 
@@ -674,6 +687,9 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     };
   } catch (error) {
     await writer.abort();
+    if (existsSync(backupFile)) {
+      try { unlinkSync(backupFile); } catch { /* ignore */ }
+    }
     throw error;
   } finally {
     await sql.end();
