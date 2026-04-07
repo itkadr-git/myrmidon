@@ -128,3 +128,85 @@ export function applyOptimisticIssueCommentUpdate(
 
   return nextIssue;
 }
+
+export function applyOptimisticIssueFieldUpdate(
+  issue: Issue | undefined,
+  data: Record<string, unknown>,
+) {
+  if (!issue) return issue;
+
+  const nextIssue: Issue = {
+    ...issue,
+    updatedAt: new Date(),
+  };
+  const hasOwn = (key: string) => Object.prototype.hasOwnProperty.call(data, key);
+  const assign = <K extends keyof Issue>(key: K) => {
+    if (hasOwn(key)) {
+      nextIssue[key] = data[key] as Issue[K];
+    }
+  };
+
+  assign("status");
+  assign("priority");
+  assign("assigneeAgentId");
+  assign("assigneeUserId");
+  assign("projectId");
+  assign("projectWorkspaceId");
+  assign("executionWorkspaceId");
+  assign("executionWorkspacePreference");
+  assign("executionWorkspaceSettings");
+  assign("hiddenAt");
+
+  if (hasOwn("labelIds") && Array.isArray(data.labelIds)) {
+    const nextLabelIds = data.labelIds.filter((value): value is string => typeof value === "string");
+    nextIssue.labelIds = nextLabelIds;
+    if (issue.labels) {
+      nextIssue.labels = issue.labels.filter((label) => nextLabelIds.includes(label.id));
+    }
+  }
+
+  if (hasOwn("blockedByIssueIds") && Array.isArray(data.blockedByIssueIds) && issue.blockedBy) {
+    const nextBlockedByIds = new Set(
+      data.blockedByIssueIds.filter((value): value is string => typeof value === "string"),
+    );
+    nextIssue.blockedBy = issue.blockedBy.filter((relation) => nextBlockedByIds.has(relation.id));
+  }
+
+  if (hasOwn("projectId")) {
+    nextIssue.project = issue.project?.id === nextIssue.projectId ? issue.project : null;
+  }
+
+  if (hasOwn("executionWorkspaceId")) {
+    nextIssue.currentExecutionWorkspace =
+      issue.currentExecutionWorkspace?.id === nextIssue.executionWorkspaceId
+        ? issue.currentExecutionWorkspace
+        : null;
+  }
+
+  return nextIssue;
+}
+
+export function matchesIssueRef(
+  issue: Pick<Issue, "id" | "identifier">,
+  refs: Iterable<string>,
+) {
+  const refSet = refs instanceof Set ? refs : new Set(refs);
+  return refSet.has(issue.id) || (!!issue.identifier && refSet.has(issue.identifier));
+}
+
+export function applyOptimisticIssueFieldUpdateToCollection(
+  issues: Issue[] | undefined,
+  refs: Iterable<string>,
+  data: Record<string, unknown>,
+) {
+  if (!issues) return issues;
+
+  let changed = false;
+  const nextIssues = issues.map((issue) => {
+    if (!matchesIssueRef(issue, refs)) return issue;
+    changed = true;
+    return applyOptimisticIssueFieldUpdate(issue, data) ?? issue;
+  });
+
+  return changed ? nextIssues : issues;
+}

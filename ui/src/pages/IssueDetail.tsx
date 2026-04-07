@@ -28,9 +28,12 @@ import {
 } from "../lib/issueDetailBreadcrumb";
 import { hasBlockingShortcutDialog, resolveInboxQuickArchiveKeyAction } from "../lib/keyboardShortcuts";
 import {
+  applyOptimisticIssueFieldUpdate,
+  applyOptimisticIssueFieldUpdateToCollection,
   applyOptimisticIssueCommentUpdate,
   createOptimisticIssueComment,
   isQueuedIssueComment,
+  matchesIssueRef,
   mergeIssueComments,
   upsertIssueComment,
   type IssueCommentReassignment,
@@ -687,6 +690,42 @@ export function IssueDetail() {
     }
   };
 
+  const invalidateIssueCollections = () => {
+    if (selectedCompanyId) {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(selectedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(selectedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId) });
+    }
+  };
+
+  const applyOptimisticIssueCacheUpdate = useCallback((refs: Iterable<string>, data: Record<string, unknown>) => {
+    queryClient.setQueriesData<Issue>(
+      { queryKey: ["issues", "detail"] },
+      (cached) => (cached && matchesIssueRef(cached, refs) ? applyOptimisticIssueFieldUpdate(cached, data) : cached),
+    );
+
+    if (!selectedCompanyId) return;
+    queryClient.setQueryData<Issue[] | undefined>(
+      queryKeys.issues.list(selectedCompanyId),
+      (cached) => applyOptimisticIssueFieldUpdateToCollection(cached, refs, data),
+    );
+  }, [queryClient, selectedCompanyId]);
+
+  const mergeIssueResponseIntoCaches = useCallback((refs: Iterable<string>, nextIssue: Issue) => {
+    queryClient.setQueriesData<Issue>(
+      { queryKey: ["issues", "detail"] },
+      (cached) => (cached && matchesIssueRef(cached, refs) ? { ...cached, ...nextIssue } : cached),
+    );
+
+    if (!selectedCompanyId) return;
+    queryClient.setQueryData<Issue[] | undefined>(
+      queryKeys.issues.list(selectedCompanyId),
+      (cached) => cached?.map((item) => (matchesIssueRef(item, refs) ? { ...item, ...nextIssue } : item)),
+    );
+  }, [queryClient, selectedCompanyId]);
+
   const markIssueRead = useMutation({
     mutationFn: (id: string) => issuesApi.markRead(id),
     onSuccess: () => {
@@ -701,8 +740,53 @@ export function IssueDetail() {
 
   const updateIssue = useMutation({
     mutationFn: (data: Record<string, unknown>) => issuesApi.update(issueId!, data),
-    onSuccess: () => {
-      invalidateIssue();
+    onMutate: async (data) => {
+      await queryClient.cancelQueries({ queryKey: queryKeys.issues.detail(issueId!) });
+      if (selectedCompanyId) {
+        await queryClient.cancelQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
+      }
+
+      const previousIssue = queryClient.getQueryData<Issue>(queryKeys.issues.detail(issueId!));
+      const issueRefs = new Set<string>([issueId!]);
+      if (previousIssue?.id) issueRefs.add(previousIssue.id);
+      if (previousIssue?.identifier) issueRefs.add(previousIssue.identifier);
+
+      const previousDetailQueries = queryClient
+        .getQueriesData<Issue>({ queryKey: ["issues", "detail"] })
+        .filter(([, cachedIssue]) => cachedIssue && matchesIssueRef(cachedIssue, issueRefs));
+      const previousList = selectedCompanyId
+        ? queryClient.getQueryData<Issue[]>(queryKeys.issues.list(selectedCompanyId))
+        : undefined;
+
+      applyOptimisticIssueCacheUpdate(issueRefs, data);
+
+      return { previousDetailQueries, previousList, selectedCompanyId };
+    },
+    onSuccess: ({ comment: _comment, ...nextIssue }) => {
+      const issueRefs = new Set<string>([issueId!, nextIssue.id]);
+      if (nextIssue.identifier) issueRefs.add(nextIssue.identifier);
+      mergeIssueResponseIntoCaches(issueRefs, nextIssue);
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(issueId!) });
+      invalidateIssueCollections();
+    },
+    onError: (err, _variables, context) => {
+      for (const [queryKey, previousIssue] of context?.previousDetailQueries ?? []) {
+        queryClient.setQueryData(queryKey, previousIssue);
+      }
+      if (context?.selectedCompanyId) {
+        queryClient.setQueryData(queryKeys.issues.list(context.selectedCompanyId), context.previousList);
+      }
+      pushToast({
+        title: "Issue update failed",
+        body: err instanceof Error ? err.message : "Unable to save issue changes",
+        tone: "error",
+      });
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId!) });
+      if (selectedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
+      }
     },
   });
   const handleIssuePropertiesUpdate = useCallback((data: Record<string, unknown>) => {
