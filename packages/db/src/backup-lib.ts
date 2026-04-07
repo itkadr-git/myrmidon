@@ -5,10 +5,16 @@ import { pipeline } from "node:stream/promises";
 import { createGunzip, createGzip } from "node:zlib";
 import postgres from "postgres";
 
+export type BackupRetentionPolicy = {
+  dailyDays: number;
+  weeklyWeeks: number;
+  monthlyMonths: number;
+};
+
 export type RunDatabaseBackupOptions = {
   connectionString: string;
   backupDir: string;
-  retentionDays: number;
+  retention: BackupRetentionPolicy;
   filenamePrefix?: string;
   connectTimeoutSeconds?: number;
   includeMigrationJournal?: boolean;
@@ -77,24 +83,91 @@ function timestamp(date: Date = new Date()): string {
   return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
 }
 
-function pruneOldBackups(backupDir: string, retentionDays: number, filenamePrefix: string): number {
+/**
+ * ISO week key for grouping backups by calendar week (ISO 8601).
+ */
+function isoWeekKey(date: Date): string {
+  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7));
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  const weekNo = Math.ceil(((d.getTime() - yearStart.getTime()) / 86400000 + 1) / 7);
+  return `${d.getUTCFullYear()}-W${String(weekNo).padStart(2, "0")}`;
+}
+
+function monthKey(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+}
+
+/**
+ * Tiered backup pruning:
+ * - Daily tier: keep ALL backups from the last `dailyDays` days
+ * - Weekly tier: keep the NEWEST backup per calendar week for `weeklyWeeks` weeks
+ * - Monthly tier: keep the NEWEST backup per calendar month for `monthlyMonths` months
+ * - Everything else is deleted
+ */
+function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, filenamePrefix: string): number {
   if (!existsSync(backupDir)) return 0;
-  const safeRetention = Math.max(1, Math.trunc(retentionDays));
-  const cutoff = Date.now() - safeRetention * 24 * 60 * 60 * 1000;
-  let pruned = 0;
+
+  const now = Date.now();
+  const dailyCutoff = now - Math.max(1, retention.dailyDays) * 24 * 60 * 60 * 1000;
+  const weeklyCutoff = now - Math.max(1, retention.weeklyWeeks) * 7 * 24 * 60 * 60 * 1000;
+  const monthlyCutoff = now - Math.max(1, retention.monthlyMonths) * 30 * 24 * 60 * 60 * 1000;
+
+  type BackupEntry = { name: string; fullPath: string; mtimeMs: number };
+  const entries: BackupEntry[] = [];
 
   for (const name of readdirSync(backupDir)) {
     if (!name.startsWith(`${filenamePrefix}-`)) continue;
     if (!name.endsWith(".sql") && !name.endsWith(".sql.gz")) continue;
     const fullPath = resolve(backupDir, name);
     const stat = statSync(fullPath);
-    if (stat.mtimeMs < cutoff) {
-      unlinkSync(fullPath);
-      pruned++;
-    }
+    entries.push({ name, fullPath, mtimeMs: stat.mtimeMs });
   }
 
-  return pruned;
+  // Sort newest first so the first entry per week/month bucket is the one we keep
+  entries.sort((a, b) => b.mtimeMs - a.mtimeMs);
+
+  const keepWeekBuckets = new Set<string>();
+  const keepMonthBuckets = new Set<string>();
+  const toDelete: string[] = [];
+
+  for (const entry of entries) {
+    // Daily tier — keep everything within dailyDays
+    if (entry.mtimeMs >= dailyCutoff) continue;
+
+    const date = new Date(entry.mtimeMs);
+    const week = isoWeekKey(date);
+    const month = monthKey(date);
+
+    // Weekly tier — keep newest per calendar week
+    if (entry.mtimeMs >= weeklyCutoff) {
+      if (keepWeekBuckets.has(week)) {
+        toDelete.push(entry.fullPath);
+      } else {
+        keepWeekBuckets.add(week);
+      }
+      continue;
+    }
+
+    // Monthly tier — keep newest per calendar month
+    if (entry.mtimeMs >= monthlyCutoff) {
+      if (keepMonthBuckets.has(month)) {
+        toDelete.push(entry.fullPath);
+      } else {
+        keepMonthBuckets.add(month);
+      }
+      continue;
+    }
+
+    // Beyond all retention tiers — delete
+    toDelete.push(entry.fullPath);
+  }
+
+  for (const filePath of toDelete) {
+    unlinkSync(filePath);
+  }
+
+  return toDelete.length;
 }
 
 function formatBackupSize(sizeBytes: number): string {
@@ -287,7 +360,7 @@ export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes 
 
 export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise<RunDatabaseBackupResult> {
   const filenamePrefix = opts.filenamePrefix ?? "paperclip";
-  const retentionDays = Math.max(1, Math.trunc(opts.retentionDays));
+  const retention = opts.retention;
   const connectTimeout = Math.max(1, Math.trunc(opts.connectTimeoutSeconds ?? 5));
   const includeMigrationJournal = opts.includeMigrationJournal === true;
   const excludedTableNames = normalizeTableNameSet(opts.excludeTables);
@@ -678,7 +751,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     unlinkSync(sqlFile);
 
     const sizeBytes = statSync(backupFile).size;
-    const prunedCount = pruneOldBackups(opts.backupDir, retentionDays, filenamePrefix);
+    const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
 
     return {
       backupFile,

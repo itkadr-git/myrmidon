@@ -125,7 +125,7 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
         const result = await runDatabaseBackup({
           connectionString: sourceConnectionString,
           backupDir,
-          retentionDays: 7,
+          retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
           filenamePrefix: "paperclip-test",
         });
 

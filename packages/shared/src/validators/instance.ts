@@ -1,13 +1,25 @@
 import { z } from "zod";
 import { DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE } from "../types/feedback.js";
-import { BACKUP_RETENTION_PRESETS, DEFAULT_BACKUP_RETENTION_DAYS } from "../types/instance.js";
+import {
+  DAILY_RETENTION_PRESETS,
+  WEEKLY_RETENTION_PRESETS,
+  MONTHLY_RETENTION_PRESETS,
+  DEFAULT_BACKUP_RETENTION,
+} from "../types/instance.js";
 import { feedbackDataSharingPreferenceSchema } from "./feedback.js";
 
-export const backupRetentionDaysSchema = z.number().refine(
-  (v): v is (typeof BACKUP_RETENTION_PRESETS)[number] =>
-    (BACKUP_RETENTION_PRESETS as readonly number[]).includes(v),
-  { message: `Must be one of: ${BACKUP_RETENTION_PRESETS.join(", ")}` },
-);
+function presetSchema<T extends readonly number[]>(presets: T, label: string) {
+  return z.number().refine(
+    (v): v is T[number] => (presets as readonly number[]).includes(v),
+    { message: `${label} must be one of: ${presets.join(", ")}` },
+  );
+}
+
+export const backupRetentionPolicySchema = z.object({
+  dailyDays: presetSchema(DAILY_RETENTION_PRESETS, "dailyDays").default(DEFAULT_BACKUP_RETENTION.dailyDays),
+  weeklyWeeks: presetSchema(WEEKLY_RETENTION_PRESETS, "weeklyWeeks").default(DEFAULT_BACKUP_RETENTION.weeklyWeeks),
+  monthlyMonths: presetSchema(MONTHLY_RETENTION_PRESETS, "monthlyMonths").default(DEFAULT_BACKUP_RETENTION.monthlyMonths),
+});
 
 export const instanceGeneralSettingsSchema = z.object({
   censorUsernameInLogs: z.boolean().default(false),
@@ -15,7 +27,7 @@ export const instanceGeneralSettingsSchema = z.object({
   feedbackDataSharingPreference: feedbackDataSharingPreferenceSchema.default(
     DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
   ),
-  backupRetentionDays: backupRetentionDaysSchema.default(DEFAULT_BACKUP_RETENTION_DAYS),
+  backupRetention: backupRetentionPolicySchema.default(DEFAULT_BACKUP_RETENTION),
 }).strict();
 
 export const patchInstanceGeneralSettingsSchema = instanceGeneralSettingsSchema.partial();

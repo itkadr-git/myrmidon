@@ -11,8 +11,8 @@ export type {
   FeedbackTraceBundleFile,
   FeedbackTraceBundle,
 } from "./feedback.js";
-export type { InstanceExperimentalSettings, InstanceGeneralSettings, InstanceSettings, BackupRetentionDays } from "./instance.js";
-export { BACKUP_RETENTION_PRESETS, DEFAULT_BACKUP_RETENTION_DAYS } from "./instance.js";
+export type { InstanceExperimentalSettings, InstanceGeneralSettings, InstanceSettings, BackupRetentionPolicy } from "./instance.js";
+export { DAILY_RETENTION_PRESETS, WEEKLY_RETENTION_PRESETS, MONTHLY_RETENTION_PRESETS, DEFAULT_BACKUP_RETENTION } from "./instance.js";
 export type {
   CompanySkillSourceType,
   CompanySkillTrustLevel,

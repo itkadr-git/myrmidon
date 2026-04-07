@@ -189,7 +189,7 @@ export type {
   InstanceExperimentalSettings,
   InstanceGeneralSettings,
   InstanceSettings,
-  BackupRetentionDays,
+  BackupRetentionPolicy,
   Agent,
   AgentAccessState,
   AgentChainOfCommandEntry,
@@ -371,8 +371,10 @@ export {
 } from "./types/feedback.js";
 
 export {
-  BACKUP_RETENTION_PRESETS,
-  DEFAULT_BACKUP_RETENTION_DAYS,
+  DAILY_RETENTION_PRESETS,
+  WEEKLY_RETENTION_PRESETS,
+  MONTHLY_RETENTION_PRESETS,
+  DEFAULT_BACKUP_RETENTION,
 } from "./types/instance.js";
 
 export {

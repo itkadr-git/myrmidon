@@ -642,12 +642,12 @@ export async function startServer(): Promise<StartedServer> {
       try {
         // Read retention from Instance Settings (DB) so changes take effect without restart
         const generalSettings = await settingsSvc.getGeneral();
-        const retentionDays = generalSettings.backupRetentionDays;
+        const retention = generalSettings.backupRetention;
 
         const result = await runDatabaseBackup({
           connectionString: activeDatabaseConnectionString,
           backupDir: config.databaseBackupDir,
-          retentionDays,
+          retention,
           filenamePrefix: "paperclip",
         });
         logger.info(
@@ -656,7 +656,7 @@ export async function startServer(): Promise<StartedServer> {
             sizeBytes: result.sizeBytes,
             prunedCount: result.prunedCount,
             backupDir: config.databaseBackupDir,
-            retentionDays,
+            retention,
           },
           `Automatic database backup complete: ${formatDatabaseBackupResult(result)}`,
         );
