@@ -80,10 +80,10 @@ export function IssueColumnPicker({
           type="button"
           variant="ghost"
           size="sm"
-          className="hidden h-8 shrink-0 px-2 text-xs text-muted-foreground hover:text-foreground sm:inline-flex"
+          className="hidden h-8 shrink-0 px-2 text-xs sm:inline-flex"
         >
           <Columns3 className="mr-1 h-3.5 w-3.5" />
-          Show / hide columns
+          Columns
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-[300px] rounded-xl border-border/70 p-1.5 shadow-xl shadow-black/10">

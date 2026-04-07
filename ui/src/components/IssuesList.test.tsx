@@ -297,7 +297,7 @@ describe("IssuesList", () => {
     );
 
     await waitForAssertion(() => {
-      expect(container.textContent).toContain("Show / hide columns");
+      expect(container.textContent).toContain("Columns");
       expect(container.textContent).toContain("PAP-9");
       expect(container.textContent).toContain("Agent One");
       expect(container.textContent).not.toContain("Updated");
