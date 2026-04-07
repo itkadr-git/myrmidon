@@ -45,7 +45,7 @@ export type IssueViewState = {
   projects: string[];
   sortField: "status" | "priority" | "title" | "created" | "updated";
   sortDir: "asc" | "desc";
-  groupBy: "status" | "priority" | "assignee" | "none";
+  groupBy: "status" | "priority" | "assignee" | "workspace" | "parent" | "none";
   viewMode: "list" | "board";
   collapsedGroups: string[];
   collapsedParents: string[];
@@ -155,6 +155,7 @@ interface Agent {
 interface ProjectOption {
   id: string;
   name: string;
+  workspaces?: { id: string; name: string }[];
 }
 
 interface IssuesListProps {
@@ -265,6 +266,24 @@ export function IssuesList({
     return agents.find((a) => a.id === id)?.name ?? null;
   }, [agents]);
 
+  const workspaceNameMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const project of projects ?? []) {
+      for (const ws of project.workspaces ?? []) {
+        map.set(ws.id, ws.name || project.name);
+      }
+    }
+    return map;
+  }, [projects]);
+
+  const issueTitleMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const issue of issues) {
+      map.set(issue.id, issue.identifier ? `${issue.identifier}: ${issue.title}` : issue.title);
+    }
+    return map;
+  }, [issues]);
+
   const filtered = useMemo(() => {
     const sourceIssues = normalizedIssueSearch.length > 0 ? searchedIssues : issues;
     const filteredByControls = applyFilters(sourceIssues, viewState, currentUserId);
@@ -295,6 +314,36 @@ export function IssuesList({
         .filter((p) => groups[p]?.length)
         .map((p) => ({ key: p, label: statusLabel(p), items: groups[p]! }));
     }
+    if (viewState.groupBy === "workspace") {
+      const groups = groupBy(filtered, (i) => i.projectWorkspaceId ?? "__no_workspace");
+      return Object.keys(groups)
+        .sort((a, b) => {
+          // Groups with items first, "no workspace" last
+          if (a === "__no_workspace") return 1;
+          if (b === "__no_workspace") return -1;
+          return (groups[b]?.length ?? 0) - (groups[a]?.length ?? 0);
+        })
+        .map((key) => ({
+          key,
+          label: key === "__no_workspace" ? "No Workspace" : (workspaceNameMap.get(key) ?? key.slice(0, 8)),
+          items: groups[key]!,
+        }));
+    }
+    if (viewState.groupBy === "parent") {
+      const groups = groupBy(filtered, (i) => i.parentId ?? "__no_parent");
+      return Object.keys(groups)
+        .sort((a, b) => {
+          // Groups with items first, "no parent" last
+          if (a === "__no_parent") return 1;
+          if (b === "__no_parent") return -1;
+          return (groups[b]?.length ?? 0) - (groups[a]?.length ?? 0);
+        })
+        .map((key) => ({
+          key,
+          label: key === "__no_parent" ? "No Parent" : (issueTitleMap.get(key) ?? key.slice(0, 8)),
+          items: groups[key]!,
+        }));
+    }
     // assignee
     const groups = groupBy(
       filtered,
@@ -310,7 +359,7 @@ export function IssuesList({
             : (agentName(key) ?? key.slice(0, 8)),
       items: groups[key]!,
     }));
-  }, [filtered, viewState.groupBy, agents, agentName, currentUserId]);
+  }, [filtered, viewState.groupBy, agents, agentName, currentUserId, workspaceNameMap, issueTitleMap]);
 
   const newIssueDefaults = useCallback((groupKey?: string) => {
     const defaults: Record<string, string> = {};
@@ -321,6 +370,9 @@ export function IssuesList({
       else if (viewState.groupBy === "assignee" && groupKey !== "__unassigned") {
         if (groupKey.startsWith("__user:")) defaults.assigneeUserId = groupKey.slice("__user:".length);
         else defaults.assigneeAgentId = groupKey;
+      }
+      else if (viewState.groupBy === "parent" && groupKey !== "__no_parent") {
+        defaults.parentId = groupKey;
       }
     }
     return defaults;
@@ -605,6 +657,8 @@ export function IssuesList({
                     ["status", "Status"],
                     ["priority", "Priority"],
                     ["assignee", "Assignee"],
+                    ["workspace", "Workspace"],
+                    ["parent", "Parent Issue"],
                     ["none", "None"],
                   ] as const).map(([value, label]) => (
                     <button
