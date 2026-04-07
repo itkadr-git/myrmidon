@@ -670,7 +670,7 @@ export async function startServer(): Promise<StartedServer> {
     logger.info(
       {
         intervalMinutes: config.databaseBackupIntervalMinutes,
-        retentionDays: config.databaseBackupRetentionDays,
+        retentionSource: "instance-settings-db",
         backupDir: config.databaseBackupDir,
       },
       "Automatic database backups enabled",

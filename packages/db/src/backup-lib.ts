@@ -763,6 +763,9 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     if (existsSync(backupFile)) {
       try { unlinkSync(backupFile); } catch { /* ignore */ }
     }
+    if (existsSync(sqlFile)) {
+      try { unlinkSync(sqlFile); } catch { /* ignore */ }
+    }
     throw error;
   } finally {
     await sql.end();
