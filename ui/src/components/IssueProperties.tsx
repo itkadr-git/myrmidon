@@ -846,15 +846,13 @@ export function IssueProperties({
                 </Link>
               ))}
             </div>
-          ) : (
-            <span className="text-sm text-muted-foreground">None</span>
-          )}
+          ) : null}
         </PropertyRow>
 
         <PropertyRow label="Sub-issues">
           <div className="flex flex-wrap items-center gap-1.5">
-            {childIssues.length > 0 ? (
-              childIssues.map((child) => (
+            {childIssues.length > 0
+              ? childIssues.map((child) => (
                 <Link
                   key={child.id}
                   to={`/issues/${child.identifier ?? child.id}`}
@@ -863,9 +861,7 @@ export function IssueProperties({
                   {child.identifier ?? child.title}
                 </Link>
               ))
-            ) : (
-              <span className="text-sm text-muted-foreground">None</span>
-            )}
+              : null}
             {onAddSubIssue ? (
               <button
                 type="button"
