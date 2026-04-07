@@ -9,6 +9,8 @@ import {
   readSourceAttachmentBody,
   rebindWorkspaceCwd,
   resolveSourceConfigPath,
+  resolveWorktreeReseedSource,
+  resolveWorktreeReseedTargetPaths,
   resolveGitWorktreeAddArgs,
   resolveWorktreeMakeTargetPath,
   worktreeInitCommand,
@@ -482,27 +484,69 @@ describe("worktree helpers", () => {
     }
   });
 
-  it("requires an explicit source for worktree reseed", async () => {
-    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-reseed-source-"));
-    const repoRoot = path.join(tempRoot, "repo");
-    const originalCwd = process.cwd();
-    const originalPaperclipConfig = process.env.PAPERCLIP_CONFIG;
+  it("requires an explicit reseed source", () => {
+    expect(() => resolveWorktreeReseedSource({})).toThrow(
+      "Pass --from <worktree> or --from-config/--from-instance explicitly so the reseed source is unambiguous.",
+    );
+  });
+
+  it("rejects mixed reseed source selectors", () => {
+    expect(() => resolveWorktreeReseedSource({
+      from: "current",
+      fromInstance: "default",
+    })).toThrow(
+      "Use either --from <worktree> or --from-config/--from-data-dir/--from-instance, not both.",
+    );
+  });
+
+  it("derives worktree reseed target paths from the adjacent env file", () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-reseed-target-"));
+    const worktreeRoot = path.join(tempRoot, "repo");
+    const configPath = path.join(worktreeRoot, ".paperclip", "config.json");
+    const envPath = path.join(worktreeRoot, ".paperclip", ".env");
 
     try {
-      fs.mkdirSync(repoRoot, { recursive: true });
-      delete process.env.PAPERCLIP_CONFIG;
-      process.chdir(repoRoot);
-
-      await expect(worktreeReseedCommand({ seed: false, yes: true })).rejects.toThrow(
-        "Reseed requires an explicit source.",
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+      fs.writeFileSync(configPath, JSON.stringify(buildSourceConfig()), "utf8");
+      fs.writeFileSync(
+        envPath,
+        [
+          "PAPERCLIP_HOME=/tmp/paperclip-worktrees",
+          "PAPERCLIP_INSTANCE_ID=pap-1132-chat",
+        ].join("\n"),
+        "utf8",
       );
+      expect(
+        resolveWorktreeReseedTargetPaths({
+          configPath,
+          rootPath: worktreeRoot,
+        }),
+      ).toMatchObject({
+        cwd: worktreeRoot,
+        homeDir: "/tmp/paperclip-worktrees",
+        instanceId: "pap-1132-chat",
+      });
     } finally {
-      process.chdir(originalCwd);
-      if (originalPaperclipConfig === undefined) {
-        delete process.env.PAPERCLIP_CONFIG;
-      } else {
-        process.env.PAPERCLIP_CONFIG = originalPaperclipConfig;
-      }
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects reseed targets without worktree env metadata", () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-reseed-target-missing-"));
+    const worktreeRoot = path.join(tempRoot, "repo");
+    const configPath = path.join(worktreeRoot, ".paperclip", "config.json");
+
+    try {
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+      fs.writeFileSync(configPath, JSON.stringify(buildSourceConfig()), "utf8");
+      fs.writeFileSync(path.join(worktreeRoot, ".paperclip", ".env"), "", "utf8");
+
+      expect(() =>
+        resolveWorktreeReseedTargetPaths({
+          configPath,
+          rootPath: worktreeRoot,
+        })).toThrow("does not look like a worktree-local Paperclip instance");
+    } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
   });
