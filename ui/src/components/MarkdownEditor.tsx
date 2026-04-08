@@ -379,16 +379,6 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     return mentions.filter((m) => m.name.toLowerCase().includes(q)).slice(0, 8);
   }, [mentionState, mentions, slashCommands]);
 
-  const setEditorRef = useCallback((instance: MDXEditorMethods | null) => {
-    ref.current = instance;
-    if (instance) {
-      const v = valueRef.current;
-      echoIgnoreMarkdownRef.current = v;
-      instance.setMarkdown(v);
-      latestValueRef.current = v;
-    }
-  }, []);
-
   useImperativeHandle(forwardedRef, () => ({
     focus: () => {
       ref.current?.focus(undefined, { defaultSelection: "rootEnd" });
@@ -808,7 +798,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       onPasteCapture={handlePasteCapture}
     >
       <MDXEditor
-        ref={setEditorRef}
+        ref={ref}
         markdown={value}
         placeholder={placeholder}
         onChange={(next) => {
