@@ -410,7 +410,7 @@ function createHistoricalTranscriptMessage(args: {
       : [];
 
   const message: ThreadAssistantMessage = {
-    id: `historical-run:${run.runId}`,
+    id: `run-assistant:${run.runId}`,
     role: "assistant",
     createdAt: toDate(run.startedAt ?? run.createdAt),
     content,
@@ -606,7 +606,7 @@ function createLiveRunMessage(args: {
   const content = parts;
 
   const message: ThreadAssistantMessage = {
-    id: `live-run:${run.id}`,
+    id: `run-assistant:${run.id}`,
     role: "assistant",
     createdAt: toDate(run.startedAt ?? run.createdAt),
     content,
