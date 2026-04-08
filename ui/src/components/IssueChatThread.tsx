@@ -80,6 +80,7 @@ interface IssueChatMessageContext {
   ) => Promise<void>;
   onInterruptQueued?: (runId: string) => Promise<void>;
   interruptingQueuedRunId?: string | null;
+  onImageClick?: (src: string) => void;
 }
 
 const IssueChatCtx = createContext<IssueChatMessageContext>({
@@ -184,6 +185,7 @@ interface IssueChatThreadProps {
   includeSucceededRunsWithoutOutput?: boolean;
   onInterruptQueued?: (runId: string) => Promise<void>;
   interruptingQueuedRunId?: string | null;
+  onImageClick?: (src: string) => void;
 }
 
 const DRAFT_DEBOUNCE_MS = 800;
@@ -246,8 +248,9 @@ function commentDateLabel(date: Date | string | undefined): string {
 }
 
 function IssueChatTextPart({ text, recessed }: { text: string; recessed?: boolean }) {
+  const { onImageClick } = useContext(IssueChatCtx);
   return (
-    <MarkdownBody className="text-sm leading-6" style={recessed ? { opacity: 0.55 } : undefined}>
+    <MarkdownBody className="text-sm leading-6" style={recessed ? { opacity: 0.55 } : undefined} onImageClick={onImageClick}>
       {text}
     </MarkdownBody>
   );
@@ -1604,6 +1607,7 @@ export function IssueChatThread({
   includeSucceededRunsWithoutOutput = false,
   onInterruptQueued,
   interruptingQueuedRunId = null,
+  onImageClick,
 }: IssueChatThreadProps) {
   const location = useLocation();
   const hasScrolledRef = useRef(false);
@@ -1731,6 +1735,7 @@ export function IssueChatThread({
       onVote,
       onInterruptQueued,
       interruptingQueuedRunId,
+      onImageClick,
     }),
     [
       feedbackVoteByTargetId,
@@ -1741,6 +1746,7 @@ export function IssueChatThread({
       onVote,
       onInterruptQueued,
       interruptingQueuedRunId,
+      onImageClick,
     ],
   );
 
