@@ -679,7 +679,10 @@ export function buildIssueChatMessages(args: {
   for (const run of [...linkedRuns].sort((a, b) => toTimestamp(runTimestamp(a)) - toTimestamp(runTimestamp(b)))) {
     const transcript = transcriptsByRunId?.get(run.runId) ?? [];
     const hasRunOutput = transcript.length > 0 || (hasOutputForRun?.(run.runId) ?? false);
-    if (hasRunOutput) {
+    if (hasRunOutput || run.status !== "succeeded") {
+      // Always use the transcript message for non-succeeded runs (even before
+      // transcript data loads) so the message type and fold header are stable
+      // from initial render — avoids a flash when transcripts arrive later.
       orderedMessages.push({
         createdAtMs: toTimestamp(run.startedAt ?? run.createdAt),
         order: 2,
@@ -692,7 +695,7 @@ export function buildIssueChatMessages(args: {
       });
       continue;
     }
-    if (run.status === "succeeded" && !includeSucceededRunsWithoutOutput) continue;
+    if (!includeSucceededRunsWithoutOutput) continue;
     orderedMessages.push({
       createdAtMs: toTimestamp(runTimestamp(run)),
       order: 2,
