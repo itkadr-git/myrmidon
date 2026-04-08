@@ -1332,11 +1332,13 @@ export function IssueDetail() {
       disarm();
       if (action === "navigate_inbox") {
         event.preventDefault();
+        event.stopPropagation();
         navigate(sourceBreadcrumb.href.startsWith("/inbox") ? sourceBreadcrumb.href : "/inbox");
         return;
       }
       if (action === "focus_comment") {
         event.preventDefault();
+        event.stopPropagation();
         setDetailTab("chat");
         setPendingCommentComposerFocusKey((current) => current + 1);
       }

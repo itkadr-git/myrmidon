@@ -20,6 +20,10 @@ export function useKeyboardShortcuts({
     if (!enabled) return;
 
     function handleKeyDown(e: KeyboardEvent) {
+      if (e.defaultPrevented) {
+        return;
+      }
+
       // Don't fire shortcuts when typing in inputs
       if (isKeyboardShortcutTextInputTarget(e.target)) {
         return;
