@@ -26,7 +26,11 @@ import {
   rememberIssueDetailLocationState,
   shouldArmIssueDetailInboxQuickArchive,
 } from "../lib/issueDetailBreadcrumb";
-import { hasBlockingShortcutDialog, resolveInboxQuickArchiveKeyAction } from "../lib/keyboardShortcuts";
+import {
+  hasBlockingShortcutDialog,
+  resolveGoToInboxKeyAction,
+  resolveInboxQuickArchiveKeyAction,
+} from "../lib/keyboardShortcuts";
 import {
   applyOptimisticIssueFieldUpdate,
   applyOptimisticIssueFieldUpdateToCollection,
@@ -1232,6 +1236,8 @@ export function IssueDetail() {
   }, [closePanel, handleIssuePropertiesUpdate, issuePanelKey, openNewSubIssue, openPanel]);
 
   const inboxQuickArchiveArmedRef = useRef(false);
+  const goToInboxShortcutArmedRef = useRef(false);
+  const goToInboxShortcutTimeoutRef = useRef<number | null>(null);
   const canQuickArchiveFromInbox =
     keyboardShortcutsEnabled &&
     !issue?.hiddenAt &&
@@ -1300,6 +1306,83 @@ export function IssueDetail() {
       document.removeEventListener("keydown", handleKeyDown, true);
     };
   }, [archiveFromInbox, canQuickArchiveFromInbox, issue?.id]);
+
+  useEffect(() => {
+    if (!keyboardShortcutsEnabled) {
+      goToInboxShortcutArmedRef.current = false;
+      if (goToInboxShortcutTimeoutRef.current !== null) {
+        window.clearTimeout(goToInboxShortcutTimeoutRef.current);
+        goToInboxShortcutTimeoutRef.current = null;
+      }
+      return;
+    }
+
+    const clearArmTimeout = () => {
+      if (goToInboxShortcutTimeoutRef.current !== null) {
+        window.clearTimeout(goToInboxShortcutTimeoutRef.current);
+        goToInboxShortcutTimeoutRef.current = null;
+      }
+    };
+
+    const disarm = () => {
+      goToInboxShortcutArmedRef.current = false;
+      clearArmTimeout();
+    };
+
+    const arm = () => {
+      goToInboxShortcutArmedRef.current = true;
+      clearArmTimeout();
+      goToInboxShortcutTimeoutRef.current = window.setTimeout(() => {
+        goToInboxShortcutArmedRef.current = false;
+        goToInboxShortcutTimeoutRef.current = null;
+      }, 1200);
+    };
+
+    const handlePointerDown = () => {
+      disarm();
+    };
+
+    const handleFocusIn = (event: FocusEvent) => {
+      if (event.target instanceof HTMLElement && event.target !== document.body) {
+        disarm();
+      }
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const action = resolveGoToInboxKeyAction({
+        armed: goToInboxShortcutArmedRef.current,
+        defaultPrevented: event.defaultPrevented,
+        key: event.key,
+        metaKey: event.metaKey,
+        ctrlKey: event.ctrlKey,
+        altKey: event.altKey,
+        target: event.target,
+        hasOpenDialog: hasBlockingShortcutDialog(document),
+      });
+
+      if (action === "ignore") return;
+      if (action === "arm") {
+        arm();
+        return;
+      }
+
+      disarm();
+      if (action !== "navigate") return;
+
+      event.preventDefault();
+      navigate(sourceBreadcrumb.href.startsWith("/inbox") ? sourceBreadcrumb.href : "/inbox");
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown, true);
+    document.addEventListener("focusin", handleFocusIn, true);
+    document.addEventListener("keydown", handleKeyDown, true);
+    return () => {
+      disarm();
+      document.removeEventListener("pointerdown", handlePointerDown, true);
+      document.removeEventListener("focusin", handleFocusIn, true);
+      document.removeEventListener("keydown", handleKeyDown, true);
+    };
+  }, [keyboardShortcutsEnabled, navigate, sourceBreadcrumb.href]);
 
   const isImageAttachment = (attachment: IssueAttachment) => attachment.contentType.startsWith("image/");
   const attachmentList = attachments ?? [];

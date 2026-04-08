@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   hasBlockingShortcutDialog,
   isKeyboardShortcutTextInputTarget,
+  resolveGoToInboxKeyAction,
   resolveInboxQuickArchiveKeyAction,
 } from "./keyboardShortcuts";
 
@@ -102,6 +103,51 @@ describe("keyboardShortcuts helpers", () => {
       armed: true,
       defaultPrevented: false,
       key: "y",
+      metaKey: false,
+      ctrlKey: false,
+      altKey: false,
+      target: input,
+      hasOpenDialog: false,
+    })).toBe("disarm");
+  });
+
+  it("arms go-to-inbox on a clean g press", () => {
+    const button = document.createElement("button");
+
+    expect(resolveGoToInboxKeyAction({
+      armed: false,
+      defaultPrevented: false,
+      key: "g",
+      metaKey: false,
+      ctrlKey: false,
+      altKey: false,
+      target: button,
+      hasOpenDialog: false,
+    })).toBe("arm");
+  });
+
+  it("navigates to inbox on i after g", () => {
+    const button = document.createElement("button");
+
+    expect(resolveGoToInboxKeyAction({
+      armed: true,
+      defaultPrevented: false,
+      key: "i",
+      metaKey: false,
+      ctrlKey: false,
+      altKey: false,
+      target: button,
+      hasOpenDialog: false,
+    })).toBe("navigate");
+  });
+
+  it("disarms go-to-inbox instead of firing from an editor", () => {
+    const input = document.createElement("textarea");
+
+    expect(resolveGoToInboxKeyAction({
+      armed: true,
+      defaultPrevented: false,
+      key: "i",
       metaKey: false,
       ctrlKey: false,
       altKey: false,
