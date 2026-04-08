@@ -1532,7 +1532,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
           imageUploadHandler={onImageUpload}
           bordered
           className="rounded-xl border-border/70 bg-background/95"
-          contentClassName="min-h-[72px] max-h-[40dvh] overflow-y-auto pr-1 text-sm scrollbar-auto-hide"
+          contentClassName="min-h-[72px] max-h-[28dvh] overflow-y-auto pr-1 text-sm scrollbar-auto-hide"
         />
 
         <div className="flex flex-wrap items-center justify-end gap-3 border-t border-border/60 pt-2">

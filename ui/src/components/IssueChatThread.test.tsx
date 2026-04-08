@@ -282,7 +282,7 @@ describe("IssueChatThread", () => {
     expect(composer?.className).toContain("pb-[calc(env(safe-area-inset-bottom)+0.75rem)]");
 
     const editor = container.querySelector('textarea[aria-label="Issue chat editor"]') as HTMLTextAreaElement | null;
-    expect(editor?.dataset.contentClassName).toContain("max-h-[40dvh]");
+    expect(editor?.dataset.contentClassName).toContain("max-h-[28dvh]");
     expect(editor?.dataset.contentClassName).toContain("overflow-y-auto");
 
     act(() => {
