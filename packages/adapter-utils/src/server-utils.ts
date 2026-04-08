@@ -201,6 +201,22 @@ type PaperclipWakeIssue = {
   priority: string | null;
 };
 
+type PaperclipWakeExecutionPrincipal = {
+  type: "agent" | "user" | null;
+  agentId: string | null;
+  userId: string | null;
+};
+
+type PaperclipWakeExecutionStage = {
+  wakeRole: "reviewer" | "approver" | "executor" | null;
+  stageId: string | null;
+  stageType: string | null;
+  currentParticipant: PaperclipWakeExecutionPrincipal | null;
+  returnAssignee: PaperclipWakeExecutionPrincipal | null;
+  lastDecisionOutcome: string | null;
+  allowedActions: string[];
+};
+
 type PaperclipWakeComment = {
   id: string | null;
   issueId: string | null;
@@ -214,6 +230,7 @@ type PaperclipWakeComment = {
 type PaperclipWakePayload = {
   reason: string | null;
   issue: PaperclipWakeIssue | null;
+  executionStage: PaperclipWakeExecutionStage | null;
   commentIds: string[];
   latestCommentId: string | null;
   comments: PaperclipWakeComment[];
@@ -257,6 +274,50 @@ function normalizePaperclipWakeComment(value: unknown): PaperclipWakeComment | n
   };
 }
 
+function normalizePaperclipWakeExecutionPrincipal(value: unknown): PaperclipWakeExecutionPrincipal | null {
+  const principal = parseObject(value);
+  const typeRaw = asString(principal.type, "").trim().toLowerCase();
+  if (typeRaw !== "agent" && typeRaw !== "user") return null;
+  return {
+    type: typeRaw,
+    agentId: asString(principal.agentId, "").trim() || null,
+    userId: asString(principal.userId, "").trim() || null,
+  };
+}
+
+function normalizePaperclipWakeExecutionStage(value: unknown): PaperclipWakeExecutionStage | null {
+  const stage = parseObject(value);
+  const wakeRoleRaw = asString(stage.wakeRole, "").trim().toLowerCase();
+  const wakeRole =
+    wakeRoleRaw === "reviewer" || wakeRoleRaw === "approver" || wakeRoleRaw === "executor"
+      ? wakeRoleRaw
+      : null;
+  const allowedActions = Array.isArray(stage.allowedActions)
+    ? stage.allowedActions
+        .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+        .map((entry) => entry.trim())
+    : [];
+  const currentParticipant = normalizePaperclipWakeExecutionPrincipal(stage.currentParticipant);
+  const returnAssignee = normalizePaperclipWakeExecutionPrincipal(stage.returnAssignee);
+  const stageId = asString(stage.stageId, "").trim() || null;
+  const stageType = asString(stage.stageType, "").trim() || null;
+  const lastDecisionOutcome = asString(stage.lastDecisionOutcome, "").trim() || null;
+
+  if (!wakeRole && !stageId && !stageType && !currentParticipant && !returnAssignee && !lastDecisionOutcome && allowedActions.length === 0) {
+    return null;
+  }
+
+  return {
+    wakeRole,
+    stageId,
+    stageType,
+    currentParticipant,
+    returnAssignee,
+    lastDecisionOutcome,
+    allowedActions,
+  };
+}
+
 export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayload | null {
   const payload = parseObject(value);
   const comments = Array.isArray(payload.comments)
@@ -270,12 +331,16 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
         .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
         .map((entry) => entry.trim())
     : [];
+  const executionStage = normalizePaperclipWakeExecutionStage(payload.executionStage);
 
-  if (comments.length === 0 && commentIds.length === 0) return null;
+  if (comments.length === 0 && commentIds.length === 0 && !executionStage && !normalizePaperclipWakeIssue(payload.issue)) {
+    return null;
+  }
 
   return {
     reason: asString(payload.reason, "").trim() || null,
     issue: normalizePaperclipWakeIssue(payload.issue),
+    executionStage,
     commentIds,
     latestCommentId: asString(payload.latestCommentId, "").trim() || null,
     comments,
@@ -300,6 +365,12 @@ export function renderPaperclipWakePrompt(
   const normalized = normalizePaperclipWakePayload(value);
   if (!normalized) return "";
   const resumedSession = options.resumedSession === true;
+  const executionStage = normalized.executionStage;
+  const principalLabel = (principal: PaperclipWakeExecutionPrincipal | null) => {
+    if (!principal || !principal.type) return "unknown";
+    if (principal.type === "agent") return principal.agentId ? `agent ${principal.agentId}` : "agent";
+    return principal.userId ? `user ${principal.userId}` : "user";
+  };
 
   const lines = resumedSession
       ? [
@@ -342,7 +413,38 @@ export function renderPaperclipWakePrompt(
     lines.push(`- omitted comments: ${normalized.missingCount}`);
   }
 
-  lines.push("", "New comments in order:");
+  if (executionStage) {
+    lines.push(
+      `- execution wake role: ${executionStage.wakeRole ?? "unknown"}`,
+      `- execution stage: ${executionStage.stageType ?? "unknown"}`,
+      `- execution participant: ${principalLabel(executionStage.currentParticipant)}`,
+      `- execution return assignee: ${principalLabel(executionStage.returnAssignee)}`,
+      `- last decision outcome: ${executionStage.lastDecisionOutcome ?? "none"}`,
+    );
+    if (executionStage.allowedActions.length > 0) {
+      lines.push(`- allowed actions: ${executionStage.allowedActions.join(", ")}`);
+    }
+    lines.push("");
+    if (executionStage.wakeRole === "reviewer" || executionStage.wakeRole === "approver") {
+      lines.push(
+        `You are waking as the active ${executionStage.wakeRole} for this issue.`,
+        "Do not execute the task itself or continue executor work.",
+        "Review the issue and choose one of the allowed actions above.",
+        "If you request changes, the workflow routes back to the stored return assignee.",
+        "",
+      );
+    } else if (executionStage.wakeRole === "executor") {
+      lines.push(
+        "You are waking because changes were requested in the execution workflow.",
+        "Address the requested changes on this issue and resubmit when the work is ready.",
+        "",
+      );
+    }
+  }
+
+  if (normalized.comments.length > 0) {
+    lines.push("New comments in order:");
+  }
 
   for (const [index, comment] of normalized.comments.entries()) {
     const authorLabel = comment.authorId
