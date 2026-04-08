@@ -68,6 +68,7 @@ import {
   RotateCcw,
   UserPlus,
   Search,
+  ListTree,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { PageTabBar } from "../components/PageTabBar";
@@ -84,10 +85,12 @@ import {
   getRecentTouchedIssues,
   isMineInboxTab,
   loadInboxIssueColumns,
+  loadInboxNesting,
   normalizeInboxIssueColumns,
   resolveIssueWorkspaceName,
   resolveInboxSelectionIndex,
   saveInboxIssueColumns,
+  saveInboxNesting,
   InboxApprovalFilter,
   type InboxIssueColumn,
   saveLastInboxTab,
@@ -109,6 +112,11 @@ type InboxCategoryFilter =
 type SectionKey =
   | "work_items"
   | "alerts";
+
+/** A flat navigation entry for keyboard j/k traversal that includes expanded children. */
+type NavEntry =
+  | { type: "top"; index: number; item: InboxWorkItem }
+  | { type: "child"; parentIndex: number; issue: Issue };
 
 function firstNonEmptyLine(value: string | null | undefined): string | null {
   if (!value) return null;
@@ -903,10 +911,20 @@ export function Inbox() {
   ]);
 
   // --- Parent-child nesting for inbox issues ---
+  const [nestingEnabled, setNestingEnabled] = useState(() => loadInboxNesting());
+  const toggleNesting = useCallback(() => {
+    setNestingEnabled((prev) => {
+      const next = !prev;
+      saveInboxNesting(next);
+      return next;
+    });
+  }, []);
   const [collapsedInboxParents, setCollapsedInboxParents] = useState<Set<string>>(new Set());
   const { displayItems: nestedWorkItems, childrenByIssueId } = useMemo(
-    () => buildInboxNesting(filteredWorkItems),
-    [filteredWorkItems],
+    () => nestingEnabled
+      ? buildInboxNesting(filteredWorkItems)
+      : { displayItems: filteredWorkItems, childrenByIssueId: new Map<string, Issue[]>() },
+    [filteredWorkItems, nestingEnabled],
   );
   const toggleInboxParentCollapse = useCallback((parentId: string) => {
     setCollapsedInboxParents((prev) => {
@@ -1429,6 +1447,16 @@ export function Inbox() {
               className="h-8 w-[220px] pl-8 text-xs"
             />
           </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            className={cn("hidden h-8 w-8 shrink-0 sm:inline-flex", nestingEnabled && "bg-accent")}
+            onClick={toggleNesting}
+            title={nestingEnabled ? "Disable parent-child nesting" : "Enable parent-child nesting"}
+          >
+            <ListTree className="h-3.5 w-3.5" />
+          </Button>
           <IssueColumnPicker
             availableColumns={availableIssueColumns}
             visibleColumnSet={visibleIssueColumnSet}

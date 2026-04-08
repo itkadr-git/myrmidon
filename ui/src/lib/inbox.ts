@@ -7,6 +7,7 @@ export const DISMISSED_KEY = "paperclip:inbox:dismissed";
 export const READ_ITEMS_KEY = "paperclip:inbox:read-items";
 export const INBOX_LAST_TAB_KEY = "paperclip:inbox:last-tab";
 export const INBOX_ISSUE_COLUMNS_KEY = "paperclip:inbox:issue-columns";
+export const INBOX_NESTING_KEY = "paperclip:inbox:nesting";
 export type InboxTab = "mine" | "recent" | "unread" | "all";
 export type InboxApprovalFilter = "all" | "actionable" | "resolved";
 export const inboxIssueColumns = ["status", "id", "assignee", "project", "workspace", "parent", "labels", "updated"] as const;
@@ -149,6 +150,23 @@ export function resolveIssueWorkspaceName(
   }
 
   return null;
+}
+
+export function loadInboxNesting(): boolean {
+  try {
+    const raw = localStorage.getItem(INBOX_NESTING_KEY);
+    return raw !== "false";
+  } catch {
+    return true;
+  }
+}
+
+export function saveInboxNesting(enabled: boolean) {
+  try {
+    localStorage.setItem(INBOX_NESTING_KEY, String(enabled));
+  } catch {
+    // Ignore localStorage failures.
+  }
 }
 
 export function loadLastInboxTab(): InboxTab {
