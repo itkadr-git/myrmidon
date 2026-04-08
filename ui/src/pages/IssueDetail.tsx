@@ -27,7 +27,7 @@ import {
 } from "../lib/issueDetailBreadcrumb";
 import {
   hasBlockingShortcutDialog,
-  resolveGoToInboxKeyAction,
+  resolveIssueDetailGoKeyAction,
   resolveInboxQuickArchiveKeyAction,
 } from "../lib/keyboardShortcuts";
 import {
@@ -46,7 +46,7 @@ import { useProjectOrder } from "../hooks/useProjectOrder";
 import { relativeTime, cn, formatTokens, visibleRunCostUsd } from "../lib/utils";
 import { ApprovalCard } from "../components/ApprovalCard";
 import { InlineEditor } from "../components/InlineEditor";
-import { IssueChatThread } from "../components/IssueChatThread";
+import { IssueChatThread, type IssueChatComposerHandle } from "../components/IssueChatThread";
 import { IssueDocumentsSection } from "../components/IssueDocumentsSection";
 import { IssueProperties } from "../components/IssueProperties";
 import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
@@ -322,8 +322,10 @@ export function IssueDetail() {
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [galleryIndex, setGalleryIndex] = useState(0);
   const [optimisticComments, setOptimisticComments] = useState<OptimisticIssueComment[]>([]);
+  const [pendingCommentComposerFocusKey, setPendingCommentComposerFocusKey] = useState(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const lastMarkedReadIssueIdRef = useRef<string | null>(null);
+  const commentComposerRef = useRef<IssueChatComposerHandle | null>(null);
 
   const { data: issue, isLoading, error } = useQuery({
     queryKey: queryKeys.issues.detail(issueId!),
@@ -1310,7 +1312,7 @@ export function IssueDetail() {
     };
 
     const handleKeyDown = (event: KeyboardEvent) => {
-      const action = resolveGoToInboxKeyAction({
+      const action = resolveIssueDetailGoKeyAction({
         armed: goToInboxShortcutArmedRef.current,
         defaultPrevented: event.defaultPrevented,
         key: event.key,
@@ -1328,10 +1330,16 @@ export function IssueDetail() {
       }
 
       disarm();
-      if (action !== "navigate") return;
-
-      event.preventDefault();
-      navigate(sourceBreadcrumb.href.startsWith("/inbox") ? sourceBreadcrumb.href : "/inbox");
+      if (action === "navigate_inbox") {
+        event.preventDefault();
+        navigate(sourceBreadcrumb.href.startsWith("/inbox") ? sourceBreadcrumb.href : "/inbox");
+        return;
+      }
+      if (action === "focus_comment") {
+        event.preventDefault();
+        setDetailTab("chat");
+        setPendingCommentComposerFocusKey((current) => current + 1);
+      }
     };
 
     document.addEventListener("pointerdown", handlePointerDown, true);
@@ -1344,6 +1352,12 @@ export function IssueDetail() {
       document.removeEventListener("keydown", handleKeyDown, true);
     };
   }, [keyboardShortcutsEnabled, navigate, sourceBreadcrumb.href]);
+
+  useEffect(() => {
+    if (pendingCommentComposerFocusKey === 0) return;
+    if (detailTab !== "chat") return;
+    commentComposerRef.current?.focus();
+  }, [detailTab, pendingCommentComposerFocusKey]);
 
   const isImageAttachment = (attachment: IssueAttachment) => attachment.contentType.startsWith("image/");
   const attachmentList = attachments ?? [];
@@ -1933,6 +1947,7 @@ export function IssueDetail() {
 
         <TabsContent value="chat">
           <IssueChatThread
+            composerRef={commentComposerRef}
             comments={commentsWithRunMeta}
             feedbackVotes={feedbackVotes}
             feedbackDataSharingPreference={feedbackDataSharingPreference}

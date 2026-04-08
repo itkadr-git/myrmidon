@@ -11,7 +11,7 @@ export const KEYBOARD_SHORTCUT_TEXT_INPUT_SELECTOR = [
 const MODIFIER_ONLY_KEYS = new Set(["Shift", "Meta", "Control", "Alt"]);
 
 export type InboxQuickArchiveKeyAction = "ignore" | "archive" | "disarm";
-export type GoToInboxKeyAction = "ignore" | "arm" | "navigate" | "disarm";
+export type IssueDetailGoKeyAction = "ignore" | "arm" | "navigate_inbox" | "focus_comment" | "disarm";
 
 export function isKeyboardShortcutTextInputTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
@@ -54,7 +54,7 @@ export function resolveInboxQuickArchiveKeyAction({
   return "ignore";
 }
 
-export function resolveGoToInboxKeyAction({
+export function resolveIssueDetailGoKeyAction({
   armed,
   defaultPrevented,
   key,
@@ -72,7 +72,7 @@ export function resolveGoToInboxKeyAction({
   altKey: boolean;
   target: EventTarget | null;
   hasOpenDialog: boolean;
-}): GoToInboxKeyAction {
+}): IssueDetailGoKeyAction {
   if (defaultPrevented) return armed ? "disarm" : "ignore";
   if (metaKey || ctrlKey || altKey || isModifierOnlyKey(key)) return "ignore";
   if (hasOpenDialog || isKeyboardShortcutTextInputTarget(target)) {
@@ -81,7 +81,8 @@ export function resolveGoToInboxKeyAction({
 
   const normalizedKey = key.toLowerCase();
   if (!armed) return normalizedKey === "g" ? "arm" : "ignore";
-  if (normalizedKey === "i") return "navigate";
+  if (normalizedKey === "i") return "navigate_inbox";
+  if (normalizedKey === "c") return "focus_comment";
   if (normalizedKey === "g") return "arm";
   return "disarm";
 }

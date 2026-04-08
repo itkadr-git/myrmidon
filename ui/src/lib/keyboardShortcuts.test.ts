@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   hasBlockingShortcutDialog,
   isKeyboardShortcutTextInputTarget,
-  resolveGoToInboxKeyAction,
+  resolveIssueDetailGoKeyAction,
   resolveInboxQuickArchiveKeyAction,
 } from "./keyboardShortcuts";
 
@@ -114,7 +114,7 @@ describe("keyboardShortcuts helpers", () => {
   it("arms go-to-inbox on a clean g press", () => {
     const button = document.createElement("button");
 
-    expect(resolveGoToInboxKeyAction({
+    expect(resolveIssueDetailGoKeyAction({
       armed: false,
       defaultPrevented: false,
       key: "g",
@@ -129,7 +129,7 @@ describe("keyboardShortcuts helpers", () => {
   it("navigates to inbox on i after g", () => {
     const button = document.createElement("button");
 
-    expect(resolveGoToInboxKeyAction({
+    expect(resolveIssueDetailGoKeyAction({
       armed: true,
       defaultPrevented: false,
       key: "i",
@@ -138,13 +138,28 @@ describe("keyboardShortcuts helpers", () => {
       altKey: false,
       target: button,
       hasOpenDialog: false,
-    })).toBe("navigate");
+    })).toBe("navigate_inbox");
+  });
+
+  it("focuses the comment composer on c after g", () => {
+    const button = document.createElement("button");
+
+    expect(resolveIssueDetailGoKeyAction({
+      armed: true,
+      defaultPrevented: false,
+      key: "c",
+      metaKey: false,
+      ctrlKey: false,
+      altKey: false,
+      target: button,
+      hasOpenDialog: false,
+    })).toBe("focus_comment");
   });
 
   it("disarms go-to-inbox instead of firing from an editor", () => {
     const input = document.createElement("textarea");
 
-    expect(resolveGoToInboxKeyAction({
+    expect(resolveIssueDetailGoKeyAction({
       armed: true,
       defaultPrevented: false,
       key: "i",

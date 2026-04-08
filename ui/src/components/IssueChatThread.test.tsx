@@ -1,11 +1,15 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import { act, createRef, forwardRef, useImperativeHandle } from "react";
 import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IssueChatThread, resolveAssistantMessageFoldedState } from "./IssueChatThread";
+
+const { markdownEditorFocusMock } = vi.hoisted(() => ({
+  markdownEditorFocusMock: vi.fn(),
+}));
 
 vi.mock("@assistant-ui/react", () => ({
   AssistantRuntimeProvider: ({ children }: { children: ReactNode }) => <div>{children}</div>,
@@ -48,7 +52,7 @@ vi.mock("./MarkdownBody", () => ({
 }));
 
 vi.mock("./MarkdownEditor", () => ({
-  MarkdownEditor: ({
+  MarkdownEditor: forwardRef(({
     value = "",
     onChange,
     placeholder,
@@ -60,16 +64,22 @@ vi.mock("./MarkdownEditor", () => ({
     placeholder?: string;
     className?: string;
     contentClassName?: string;
-  }) => (
-    <textarea
-      aria-label="Issue chat editor"
-      data-class-name={className}
-      data-content-class-name={contentClassName}
-      placeholder={placeholder}
-      value={value}
-      onChange={(event) => onChange?.(event.target.value)}
-    />
-  ),
+  }, ref) => {
+    useImperativeHandle(ref, () => ({
+      focus: markdownEditorFocusMock,
+    }));
+
+    return (
+      <textarea
+        aria-label="Issue chat editor"
+        data-class-name={className}
+        data-content-class-name={contentClassName}
+        placeholder={placeholder}
+        value={value}
+        onChange={(event) => onChange?.(event.target.value)}
+      />
+    );
+  }),
 }));
 
 vi.mock("./InlineEntitySelector", () => ({
@@ -111,6 +121,7 @@ describe("IssueChatThread", () => {
   afterEach(() => {
     container.remove();
     vi.useRealTimers();
+    markdownEditorFocusMock.mockReset();
   });
 
   it("drops the count heading and does not use an internal scrollbox", () => {
@@ -273,6 +284,52 @@ describe("IssueChatThread", () => {
     const editor = container.querySelector('textarea[aria-label="Issue chat editor"]') as HTMLTextAreaElement | null;
     expect(editor?.dataset.contentClassName).toContain("max-h-[40dvh]");
     expect(editor?.dataset.contentClassName).toContain("overflow-y-auto");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("exposes a composer focus handle that forwards to the editor", () => {
+    const root = createRoot(container);
+    const composerRef = createRef<{ focus: () => void }>();
+    const requestAnimationFrameMock = vi
+      .spyOn(window, "requestAnimationFrame")
+      .mockImplementation((callback: FrameRequestCallback) => {
+        callback(0);
+        return 1;
+      });
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            composerRef={composerRef}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const composer = container.querySelector('[data-testid="issue-chat-composer"]') as HTMLDivElement | null;
+    expect(composerRef.current).not.toBeNull();
+    expect(composer).not.toBeNull();
+
+    const scrollIntoViewMock = vi.fn();
+    composer!.scrollIntoView = scrollIntoViewMock;
+
+    act(() => {
+      composerRef.current?.focus();
+    });
+
+    expect(scrollIntoViewMock).toHaveBeenCalledWith({ behavior: "smooth", block: "end" });
+    expect(markdownEditorFocusMock).toHaveBeenCalledTimes(1);
+    requestAnimationFrameMock.mockRestore();
 
     act(() => {
       root.unmount();

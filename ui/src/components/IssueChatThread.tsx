@@ -8,7 +8,18 @@ import {
   useMessage,
 } from "@assistant-ui/react";
 import type { ToolCallMessagePart } from "@assistant-ui/react";
-import { createContext, useContext, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import {
+  createContext,
+  forwardRef,
+  useContext,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type Ref,
+} from "react";
 import { Link, useLocation } from "@/lib/router";
 import type {
   Agent,
@@ -145,6 +156,24 @@ interface CommentReassignment {
   assigneeUserId: string | null;
 }
 
+export interface IssueChatComposerHandle {
+  focus: () => void;
+}
+
+interface IssueChatComposerProps {
+  onImageUpload?: (file: File) => Promise<string>;
+  onAttachImage?: (file: File) => Promise<void>;
+  draftKey?: string;
+  enableReassign?: boolean;
+  reassignOptions?: InlineEntityOption[];
+  currentAssigneeValue?: string;
+  suggestedAssigneeValue?: string;
+  mentions?: MentionOption[];
+  agentMap?: Map<string, Agent>;
+  composerDisabledReason?: string | null;
+  issueStatus?: string;
+}
+
 interface IssueChatThreadProps {
   comments: IssueChatComment[];
   feedbackVotes?: FeedbackVote[];
@@ -186,6 +215,7 @@ interface IssueChatThreadProps {
   onInterruptQueued?: (runId: string) => Promise<void>;
   interruptingQueuedRunId?: string | null;
   onImageClick?: (src: string) => void;
+  composerRef?: Ref<IssueChatComposerHandle>;
 }
 
 const DRAFT_DEBOUNCE_MS = 800;
@@ -1361,7 +1391,7 @@ function IssueChatSystemMessage() {
   return null;
 }
 
-function IssueChatComposer({
+const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerProps>(function IssueChatComposer({
   onImageUpload,
   onAttachImage,
   draftKey,
@@ -1373,19 +1403,7 @@ function IssueChatComposer({
   agentMap,
   composerDisabledReason = null,
   issueStatus,
-}: {
-  onImageUpload?: (file: File) => Promise<string>;
-  onAttachImage?: (file: File) => Promise<void>;
-  draftKey?: string;
-  enableReassign?: boolean;
-  reassignOptions?: InlineEntityOption[];
-  currentAssigneeValue?: string;
-  suggestedAssigneeValue?: string;
-  mentions?: MentionOption[];
-  agentMap?: Map<string, Agent>;
-  composerDisabledReason?: string | null;
-  issueStatus?: string;
-}) {
+}, forwardedRef) {
   const api = useAui();
   const [body, setBody] = useState("");
   const [reopen, setReopen] = useState(issueStatus === "done" || issueStatus === "cancelled");
@@ -1395,6 +1413,7 @@ function IssueChatComposer({
   const [reassignTarget, setReassignTarget] = useState(effectiveSuggestedAssigneeValue);
   const attachInputRef = useRef<HTMLInputElement | null>(null);
   const editorRef = useRef<MarkdownEditorRef>(null);
+  const composerContainerRef = useRef<HTMLDivElement | null>(null);
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -1419,6 +1438,15 @@ function IssueChatComposer({
   useEffect(() => {
     setReassignTarget(effectiveSuggestedAssigneeValue);
   }, [effectiveSuggestedAssigneeValue]);
+
+  useImperativeHandle(forwardedRef, () => ({
+    focus: () => {
+      composerContainerRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+      requestAnimationFrame(() => {
+        editorRef.current?.focus();
+      });
+    },
+  }), []);
 
   async function handleSubmit() {
     const trimmed = body.trim();
@@ -1489,6 +1517,7 @@ function IssueChatComposer({
 
   return (
     <div
+      ref={composerContainerRef}
       data-testid="issue-chat-composer"
       className="sticky bottom-0 z-10 bg-gradient-to-t from-background via-background/95 to-background/70 pt-4 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] backdrop-blur supports-[backdrop-filter]:from-background/92 supports-[backdrop-filter]:via-background/82"
     >
@@ -1584,7 +1613,7 @@ function IssueChatComposer({
       </div>
     </div>
   );
-}
+});
 
 export function IssueChatThread({
   comments,
@@ -1623,6 +1652,7 @@ export function IssueChatThread({
   onInterruptQueued,
   interruptingQueuedRunId = null,
   onImageClick,
+  composerRef,
 }: IssueChatThreadProps) {
   const location = useLocation();
   const hasScrolledRef = useRef(false);
@@ -1815,6 +1845,7 @@ export function IssueChatThread({
 
         {showComposer ? (
           <IssueChatComposer
+            ref={composerRef}
             onImageUpload={imageUploadHandler}
             onAttachImage={onAttachImage}
             draftKey={draftKey}
