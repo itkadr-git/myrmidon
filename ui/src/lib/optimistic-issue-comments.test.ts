@@ -5,10 +5,12 @@ import {
   applyOptimisticIssueFieldUpdateToCollection,
   applyOptimisticIssueCommentUpdate,
   createOptimisticIssueComment,
+  flattenIssueCommentPages,
   isQueuedIssueComment,
   matchesIssueRef,
   mergeIssueComments,
   upsertIssueComment,
+  upsertIssueCommentInPages,
 } from "./optimistic-issue-comments";
 
 describe("optimistic issue comments", () => {
@@ -126,6 +128,91 @@ describe("optimistic issue comments", () => {
 
     expect(next).toHaveLength(1);
     expect(next[0]?.body).toBe("Updated");
+  });
+
+  it("flattens paged comments into one chronological thread", () => {
+    const flattened = flattenIssueCommentPages([
+      [
+        {
+          id: "comment-3",
+          companyId: "company-1",
+          issueId: "issue-1",
+          authorAgentId: null,
+          authorUserId: "board-1",
+          body: "Newest",
+          createdAt: new Date("2026-03-28T14:00:03.000Z"),
+          updatedAt: new Date("2026-03-28T14:00:03.000Z"),
+        },
+      ],
+      [
+        {
+          id: "comment-1",
+          companyId: "company-1",
+          issueId: "issue-1",
+          authorAgentId: null,
+          authorUserId: "board-1",
+          body: "Oldest",
+          createdAt: new Date("2026-03-28T14:00:01.000Z"),
+          updatedAt: new Date("2026-03-28T14:00:01.000Z"),
+        },
+        {
+          id: "comment-2",
+          companyId: "company-1",
+          issueId: "issue-1",
+          authorAgentId: null,
+          authorUserId: "board-1",
+          body: "Middle",
+          createdAt: new Date("2026-03-28T14:00:02.000Z"),
+          updatedAt: new Date("2026-03-28T14:00:02.000Z"),
+        },
+      ],
+    ]);
+
+    expect(flattened.map((comment) => comment.id)).toEqual(["comment-1", "comment-2", "comment-3"]);
+  });
+
+  it("upserts paged comments without dropping older pages", () => {
+    const nextPages = upsertIssueCommentInPages(
+      [
+        [
+          {
+            id: "comment-3",
+            companyId: "company-1",
+            issueId: "issue-1",
+            authorAgentId: null,
+            authorUserId: "board-1",
+            body: "Newest",
+            createdAt: new Date("2026-03-28T14:00:03.000Z"),
+            updatedAt: new Date("2026-03-28T14:00:03.000Z"),
+          },
+        ],
+        [
+          {
+            id: "comment-1",
+            companyId: "company-1",
+            issueId: "issue-1",
+            authorAgentId: null,
+            authorUserId: "board-1",
+            body: "Oldest",
+            createdAt: new Date("2026-03-28T14:00:01.000Z"),
+            updatedAt: new Date("2026-03-28T14:00:01.000Z"),
+          },
+        ],
+      ],
+      {
+        id: "comment-4",
+        companyId: "company-1",
+        issueId: "issue-1",
+        authorAgentId: null,
+        authorUserId: "board-1",
+        body: "Brand new",
+        createdAt: new Date("2026-03-28T14:00:04.000Z"),
+        updatedAt: new Date("2026-03-28T14:00:04.000Z"),
+      },
+    );
+
+    expect(nextPages[0]?.map((comment) => comment.id)).toEqual(["comment-4", "comment-3"]);
+    expect(nextPages[1]?.map((comment) => comment.id)).toEqual(["comment-1"]);
   });
 
   it("applies optimistic reopen and reassignment updates to the issue cache", () => {

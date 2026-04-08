@@ -33,6 +33,10 @@ export function sortIssueComments<T extends { createdAt: Date | string; id: stri
   });
 }
 
+function sortIssueCommentsDesc<T extends { createdAt: Date | string; id: string }>(comments: T[]) {
+  return sortIssueComments(comments).reverse();
+}
+
 export function createOptimisticIssueComment(params: {
   companyId: string;
   issueId: string;
@@ -90,6 +94,12 @@ export function mergeIssueComments(
     }
   }
   return sortIssueComments(merged);
+}
+
+export function flattenIssueCommentPages(
+  pages: ReadonlyArray<ReadonlyArray<IssueComment>> | undefined,
+): IssueComment[] {
+  return sortIssueComments((pages ?? []).flatMap((page) => page));
 }
 
 export function upsertIssueComment(
@@ -209,4 +219,25 @@ export function applyOptimisticIssueFieldUpdateToCollection(
   });
 
   return changed ? nextIssues : issues;
+}
+
+export function upsertIssueCommentInPages(
+  pages: ReadonlyArray<ReadonlyArray<IssueComment>> | undefined,
+  nextComment: IssueComment,
+): IssueComment[][] {
+  if (!pages || pages.length === 0) {
+    return [[nextComment]];
+  }
+
+  const nextPages = pages.map((page) => [...page]);
+  for (let pageIndex = 0; pageIndex < nextPages.length; pageIndex += 1) {
+    const existingIndex = nextPages[pageIndex]!.findIndex((comment) => comment.id === nextComment.id);
+    if (existingIndex === -1) continue;
+    nextPages[pageIndex]![existingIndex] = nextComment;
+    nextPages[pageIndex] = sortIssueCommentsDesc(nextPages[pageIndex]!);
+    return nextPages;
+  }
+
+  nextPages[0] = sortIssueCommentsDesc([...nextPages[0]!, nextComment]);
+  return nextPages;
 }
