@@ -51,6 +51,7 @@ import { IssueChatThread, type IssueChatComposerHandle } from "../components/Iss
 import { IssueDocumentsSection } from "../components/IssueDocumentsSection";
 import { IssueProperties } from "../components/IssueProperties";
 import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
+import { PageSkeleton } from "../components/PageSkeleton";
 import type { MentionOption } from "../components/MarkdownEditor";
 import { ImageGalleryModal } from "../components/ImageGalleryModal";
 import { ScrollToBottom } from "../components/ScrollToBottom";
@@ -63,6 +64,7 @@ import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Skeleton } from "@/components/ui/skeleton";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
@@ -299,9 +301,59 @@ function ActorIdentity({ evt, agentMap }: { evt: ActivityEvent; agentMap: Map<st
   return <Identity name={id || "Unknown"} size="sm" />;
 }
 
+function IssueSectionSkeleton({
+  titleWidth = "w-28",
+  rows = 3,
+}: {
+  titleWidth?: string;
+  rows?: number;
+}) {
+  return (
+    <div className="space-y-3 rounded-lg border border-border p-3">
+      <Skeleton className={cn("h-4", titleWidth)} />
+      <div className="space-y-2">
+        {Array.from({ length: rows }).map((_, index) => (
+          <Skeleton key={index} className="h-12 w-full rounded-md" />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function IssueChatSkeleton() {
+  return (
+    <div className="space-y-3 rounded-lg border border-border p-3">
+      <div className="space-y-2">
+        <div className="flex items-center gap-2">
+          <Skeleton className="h-8 w-8 rounded-full" />
+          <div className="space-y-2">
+            <Skeleton className="h-3 w-24" />
+            <Skeleton className="h-3 w-16" />
+          </div>
+        </div>
+        <Skeleton className="h-20 w-full rounded-xl" />
+      </div>
+      <div className="space-y-2">
+        <div className="flex items-center justify-end gap-2">
+          <div className="space-y-2 text-right">
+            <Skeleton className="ml-auto h-3 w-20" />
+            <Skeleton className="ml-auto h-3 w-14" />
+          </div>
+          <Skeleton className="h-8 w-8 rounded-full" />
+        </div>
+        <Skeleton className="ml-auto h-16 w-[85%] rounded-xl" />
+      </div>
+      <div className="space-y-2 border-t border-border pt-3">
+        <Skeleton className="h-3 w-28" />
+        <Skeleton className="h-24 w-full rounded-xl" />
+      </div>
+    </div>
+  );
+}
+
 export function IssueDetail() {
   const { issueId } = useParams<{ issueId: string }>();
-  const { selectedCompanyId, selectedCompany } = useCompany();
+  const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialog();
   const { openPanel, closePanel, panelVisible, setPanelVisible } = usePanel();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -341,13 +393,13 @@ export function IssueDetail() {
     return getClosedIsolatedExecutionWorkspaceMessage(issue.currentExecutionWorkspace);
   }, [issue?.currentExecutionWorkspace]);
 
-  const { data: comments } = useQuery({
+  const { data: comments, isLoading: commentsLoading } = useQuery({
     queryKey: queryKeys.issues.comments(issueId!),
     queryFn: () => issuesApi.listComments(issueId!),
     enabled: !!issueId,
   });
 
-  const { data: activity } = useQuery({
+  const { data: activity, isLoading: activityLoading } = useQuery({
     queryKey: queryKeys.issues.activity(issueId!),
     queryFn: () => activityApi.forIssue(issueId!),
     enabled: !!issueId,
@@ -359,13 +411,13 @@ export function IssueDetail() {
     enabled: !!issueId,
   });
 
-  const { data: attachments } = useQuery({
+  const { data: attachments, isLoading: attachmentsLoading } = useQuery({
     queryKey: queryKeys.issues.attachments(issueId!),
     queryFn: () => issuesApi.listAttachments(issueId!),
     enabled: !!issueId,
   });
 
-  const { data: liveRuns } = useQuery({
+  const { data: liveRuns, isLoading: liveRunsLoading } = useQuery({
     queryKey: queryKeys.issues.liveRuns(issueId!),
     queryFn: () => heartbeatsApi.liveRunsForIssue(issueId!),
     enabled: !!issueId,
@@ -377,7 +429,7 @@ export function IssueDetail() {
     },
   });
 
-  const { data: activeRun } = useQuery({
+  const { data: activeRun, isLoading: activeRunLoading } = useQuery({
     queryKey: queryKeys.issues.activeRun(issueId!),
     queryFn: () => heartbeatsApi.activeRunForIssue(issueId!),
     enabled: !!issueId,
@@ -422,10 +474,13 @@ export function IssueDetail() {
     return (linkedRuns ?? []).filter((r) => !liveIds.has(r.runId));
   }, [linkedRuns, liveRuns, activeRun]);
 
-  const { data: allIssues } = useQuery({
-    queryKey: queryKeys.issues.list(selectedCompanyId!),
-    queryFn: () => issuesApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
+  const { data: rawChildIssues = [], isLoading: childIssuesLoading } = useQuery({
+    queryKey:
+      issue?.id && resolvedCompanyId
+        ? queryKeys.issues.listByParent(resolvedCompanyId, issue.id)
+        : ["issues", "parent", "pending"],
+    queryFn: () => issuesApi.list(resolvedCompanyId!, { parentId: issue!.id }),
+    enabled: !!resolvedCompanyId && !!issue?.id,
   });
 
   const { data: agents } = useQuery({
@@ -511,12 +566,14 @@ export function IssueDetail() {
     return options;
   }, [agents, orderedProjects]);
 
-  const childIssues = useMemo(() => {
-    if (!allIssues || !issue) return [];
-    return allIssues
-      .filter((i) => i.parentId === issue.id)
-      .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-  }, [allIssues, issue]);
+  const resolvedProject = useMemo(
+    () => (issue?.projectId ? orderedProjects.find((project) => project.id === issue.projectId) ?? issue.project ?? null : null),
+    [issue?.project, issue?.projectId, orderedProjects],
+  );
+  const childIssues = useMemo(
+    () => [...rawChildIssues].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()),
+    [rawChildIssues],
+  );
   const childIssuesPanelKey = useMemo(
     () => childIssues.map((child) => `${child.id}:${String(child.updatedAt)}`).join("|"),
     [childIssues],
@@ -1446,7 +1503,18 @@ export function IssueDetail() {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  if (isLoading) return <p className="text-sm text-muted-foreground">Loading...</p>;
+  const issueChatInitialLoading =
+    (commentsLoading && comments === undefined)
+    || (activityLoading && activity === undefined)
+    || (linkedRunsLoading && linkedRuns === undefined)
+    || (liveRunsLoading && liveRuns === undefined)
+    || (activeRunLoading && activeRun === undefined);
+  const activityInitialLoading =
+    (activityLoading && activity === undefined)
+    || (linkedRunsLoading && linkedRuns === undefined);
+  const attachmentsInitialLoading = attachmentsLoading && attachments === undefined;
+
+  if (isLoading) return <PageSkeleton variant="detail" />;
   if (error) return <p className="text-sm text-destructive">{error.message}</p>;
   if (!issue) return null;
 
@@ -1586,7 +1654,7 @@ export function IssueDetail() {
               className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors rounded px-1 -mx-1 py-0.5 min-w-0"
             >
               <Hexagon className="h-3 w-3 shrink-0" />
-              <span className="truncate">{(projects ?? []).find((p) => p.id === issue.projectId)?.name ?? issue.projectId.slice(0, 8)}</span>
+              <span className="truncate">{resolvedProject?.name ?? issue.project?.name ?? issue.projectId.slice(0, 8)}</span>
             </Link>
           ) : (
             <span className="inline-flex items-center gap-1 text-xs text-muted-foreground opacity-50 px-1 -mx-1 py-0.5">
@@ -1748,7 +1816,7 @@ export function IssueDetail() {
         missingBehavior="placeholder"
       />
 
-      {childIssues.length > 0 && (
+      {(childIssuesLoading || childIssues.length > 0) && (
         <div className="space-y-3">
           <div className="flex items-center justify-between gap-2">
             <h3 className="text-sm font-medium text-muted-foreground">Sub-issues</h3>
@@ -1758,37 +1826,41 @@ export function IssueDetail() {
               <span className="sm:hidden">Sub-issue</span>
             </Button>
           </div>
-          <div className="border border-border rounded-lg divide-y divide-border">
-            {childIssues.map((child) => (
-              <Link
-                key={child.id}
-                to={createIssueDetailPath(child.identifier ?? child.id)}
-                state={resolvedIssueDetailState ?? location.state}
-                onClickCapture={() =>
-                  rememberIssueDetailLocationState(
-                    child.identifier ?? child.id,
-                    resolvedIssueDetailState ?? location.state,
-                    location.search,
-                  )}
-                className="flex items-center justify-between px-3 py-2 text-sm hover:bg-accent/20 transition-colors"
-              >
-                <div className="flex items-center gap-2 min-w-0">
-                  <StatusIcon status={child.status} />
-                  <PriorityIcon priority={child.priority} />
-                  <span className="font-mono text-muted-foreground shrink-0">
-                    {child.identifier ?? child.id.slice(0, 8)}
-                  </span>
-                  <span className="truncate">{child.title}</span>
-                </div>
-                {child.assigneeAgentId && (() => {
-                  const name = agentMap.get(child.assigneeAgentId)?.name;
-                  return name
-                    ? <Identity name={name} size="sm" />
-                    : <span className="text-muted-foreground font-mono">{child.assigneeAgentId.slice(0, 8)}</span>;
-                })()}
-              </Link>
-            ))}
-          </div>
+          {childIssuesLoading ? (
+            <IssueSectionSkeleton titleWidth="w-24" rows={2} />
+          ) : (
+            <div className="border border-border rounded-lg divide-y divide-border">
+              {childIssues.map((child) => (
+                <Link
+                  key={child.id}
+                  to={createIssueDetailPath(child.identifier ?? child.id)}
+                  state={resolvedIssueDetailState ?? location.state}
+                  onClickCapture={() =>
+                    rememberIssueDetailLocationState(
+                      child.identifier ?? child.id,
+                      resolvedIssueDetailState ?? location.state,
+                      location.search,
+                    )}
+                  className="flex items-center justify-between px-3 py-2 text-sm hover:bg-accent/20 transition-colors"
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <StatusIcon status={child.status} />
+                    <PriorityIcon priority={child.priority} />
+                    <span className="font-mono text-muted-foreground shrink-0">
+                      {child.identifier ?? child.id.slice(0, 8)}
+                    </span>
+                    <span className="truncate">{child.title}</span>
+                  </div>
+                  {child.assigneeAgentId && (() => {
+                    const name = agentMap.get(child.assigneeAgentId)?.name;
+                    return name
+                      ? <Identity name={name} size="sm" />
+                      : <span className="text-muted-foreground font-mono">{child.assigneeAgentId.slice(0, 8)}</span>;
+                  })()}
+                </Link>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -1827,7 +1899,9 @@ export function IssueDetail() {
         }
       />
 
-      {hasAttachments ? (
+      {attachmentsInitialLoading ? (
+        <IssueSectionSkeleton titleWidth="w-24" rows={2} />
+      ) : hasAttachments ? (
         <div
         className={cn(
           "space-y-3 rounded-lg transition-colors",
@@ -1966,7 +2040,7 @@ export function IssueDetail() {
 
       <IssueWorkspaceCard
         issue={issue}
-        project={orderedProjects.find((p) => p.id === issue.projectId) ?? null}
+        project={resolvedProject}
         onUpdate={(data) => updateIssue.mutate(data)}
       />
 
@@ -1990,100 +2064,110 @@ export function IssueDetail() {
         </TabsList>
 
         <TabsContent value="chat">
-          <IssueChatThread
-            composerRef={commentComposerRef}
-            comments={commentsWithRunMeta}
-            feedbackVotes={feedbackVotes}
-            feedbackDataSharingPreference={feedbackDataSharingPreference}
-            feedbackTermsUrl={FEEDBACK_TERMS_URL}
-            linkedRuns={timelineRuns}
-            timelineEvents={timelineEvents}
-            liveRuns={liveRuns}
-            activeRun={activeRun}
-            companyId={issue.companyId}
-            projectId={issue.projectId}
-            issueStatus={issue.status}
-            agentMap={agentMap}
-            currentUserId={currentUserId}
-            draftKey={`paperclip:issue-comment-draft:${issue.id}`}
-            enableReassign
-            reassignOptions={commentReassignOptions}
-            currentAssigneeValue={actualAssigneeValue}
-            suggestedAssigneeValue={suggestedAssigneeValue}
-            mentions={mentionOptions}
-            onInterruptQueued={handleInterruptQueued}
-            interruptingQueuedRunId={interruptQueuedComment.isPending ? interruptQueuedComment.variables ?? null : null}
-            composerDisabledReason={commentComposerDisabledReason}
-            onVote={handleCommentVote}
-            onAdd={handleCommentAdd}
-            imageUploadHandler={handleCommentImageUpload}
-            onAttachImage={handleCommentAttachImage}
-            onCancelRun={runningIssueRun
-              ? async () => {
-                  await interruptQueuedComment.mutateAsync(runningIssueRun.id);
-                }
-              : undefined}
-            onImageClick={handleChatImageClick}
-          />
+          {issueChatInitialLoading ? (
+            <IssueChatSkeleton />
+          ) : (
+            <IssueChatThread
+              composerRef={commentComposerRef}
+              comments={commentsWithRunMeta}
+              feedbackVotes={feedbackVotes}
+              feedbackDataSharingPreference={feedbackDataSharingPreference}
+              feedbackTermsUrl={FEEDBACK_TERMS_URL}
+              linkedRuns={timelineRuns}
+              timelineEvents={timelineEvents}
+              liveRuns={liveRuns}
+              activeRun={activeRun}
+              companyId={issue.companyId}
+              projectId={issue.projectId}
+              issueStatus={issue.status}
+              agentMap={agentMap}
+              currentUserId={currentUserId}
+              draftKey={`paperclip:issue-comment-draft:${issue.id}`}
+              enableReassign
+              reassignOptions={commentReassignOptions}
+              currentAssigneeValue={actualAssigneeValue}
+              suggestedAssigneeValue={suggestedAssigneeValue}
+              mentions={mentionOptions}
+              onInterruptQueued={handleInterruptQueued}
+              interruptingQueuedRunId={interruptQueuedComment.isPending ? interruptQueuedComment.variables ?? null : null}
+              composerDisabledReason={commentComposerDisabledReason}
+              onVote={handleCommentVote}
+              onAdd={handleCommentAdd}
+              imageUploadHandler={handleCommentImageUpload}
+              onAttachImage={handleCommentAttachImage}
+              onCancelRun={runningIssueRun
+                ? async () => {
+                    await interruptQueuedComment.mutateAsync(runningIssueRun.id);
+                  }
+                : undefined}
+              onImageClick={handleChatImageClick}
+            />
+          )}
         </TabsContent>
 
         <TabsContent value="activity">
-          {linkedApprovals && linkedApprovals.length > 0 && (
-            <div className="mb-3 space-y-3">
-              {linkedApprovals.map((approval) => (
-                <ApprovalCard
-                  key={approval.id}
-                  approval={approval}
-                  requesterAgent={approval.requestedByAgentId ? agentMap.get(approval.requestedByAgentId) ?? null : null}
-                  onApprove={() => approvalDecision.mutate({ approvalId: approval.id, action: "approve" })}
-                  onReject={() => approvalDecision.mutate({ approvalId: approval.id, action: "reject" })}
-                  detailLink={`/approvals/${approval.id}`}
-                  isPending={pendingApprovalAction?.approvalId === approval.id}
-                  pendingAction={
-                    pendingApprovalAction?.approvalId === approval.id
-                      ? pendingApprovalAction.action
-                      : null
-                  }
-                />
-              ))}
-            </div>
-          )}
-          {linkedRuns && linkedRuns.length > 0 && (
-            <div className="mb-3 px-3 py-2 rounded-lg border border-border">
-              <div className="text-sm font-medium text-muted-foreground mb-1">Cost Summary</div>
-              {!issueCostSummary.hasCost && !issueCostSummary.hasTokens ? (
-                <div className="text-xs text-muted-foreground">No cost data yet.</div>
-              ) : (
-                <div className="flex flex-wrap gap-3 text-xs text-muted-foreground tabular-nums">
-                  {issueCostSummary.hasCost && (
-                    <span className="font-medium text-foreground">
-                      ${issueCostSummary.cost.toFixed(4)}
-                    </span>
-                  )}
-                  {issueCostSummary.hasTokens && (
-                    <span>
-                      Tokens {formatTokens(issueCostSummary.totalTokens)}
-                      {issueCostSummary.cached > 0
-                        ? ` (in ${formatTokens(issueCostSummary.input)}, out ${formatTokens(issueCostSummary.output)}, cached ${formatTokens(issueCostSummary.cached)})`
-                        : ` (in ${formatTokens(issueCostSummary.input)}, out ${formatTokens(issueCostSummary.output)})`}
-                    </span>
+          {activityInitialLoading ? (
+            <IssueSectionSkeleton titleWidth="w-20" rows={4} />
+          ) : (
+            <>
+              {linkedApprovals && linkedApprovals.length > 0 && (
+                <div className="mb-3 space-y-3">
+                  {linkedApprovals.map((approval) => (
+                    <ApprovalCard
+                      key={approval.id}
+                      approval={approval}
+                      requesterAgent={approval.requestedByAgentId ? agentMap.get(approval.requestedByAgentId) ?? null : null}
+                      onApprove={() => approvalDecision.mutate({ approvalId: approval.id, action: "approve" })}
+                      onReject={() => approvalDecision.mutate({ approvalId: approval.id, action: "reject" })}
+                      detailLink={`/approvals/${approval.id}`}
+                      isPending={pendingApprovalAction?.approvalId === approval.id}
+                      pendingAction={
+                        pendingApprovalAction?.approvalId === approval.id
+                          ? pendingApprovalAction.action
+                          : null
+                      }
+                    />
+                  ))}
+                </div>
+              )}
+              {linkedRuns && linkedRuns.length > 0 && (
+                <div className="mb-3 px-3 py-2 rounded-lg border border-border">
+                  <div className="text-sm font-medium text-muted-foreground mb-1">Cost Summary</div>
+                  {!issueCostSummary.hasCost && !issueCostSummary.hasTokens ? (
+                    <div className="text-xs text-muted-foreground">No cost data yet.</div>
+                  ) : (
+                    <div className="flex flex-wrap gap-3 text-xs text-muted-foreground tabular-nums">
+                      {issueCostSummary.hasCost && (
+                        <span className="font-medium text-foreground">
+                          ${issueCostSummary.cost.toFixed(4)}
+                        </span>
+                      )}
+                      {issueCostSummary.hasTokens && (
+                        <span>
+                          Tokens {formatTokens(issueCostSummary.totalTokens)}
+                          {issueCostSummary.cached > 0
+                            ? ` (in ${formatTokens(issueCostSummary.input)}, out ${formatTokens(issueCostSummary.output)}, cached ${formatTokens(issueCostSummary.cached)})`
+                            : ` (in ${formatTokens(issueCostSummary.input)}, out ${formatTokens(issueCostSummary.output)})`}
+                        </span>
+                      )}
+                    </div>
                   )}
                 </div>
               )}
-            </div>
-          )}
-          {!activity || activity.length === 0 ? (
-            <p className="text-xs text-muted-foreground">No activity yet.</p>
-          ) : (
-            <div className="space-y-1.5">
-              {activity.slice(0, 20).map((evt) => (
-                <div key={evt.id} className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                  <ActorIdentity evt={evt} agentMap={agentMap} />
-                  <span>{formatAction(evt.action, evt.details)}</span>
-                  <span className="ml-auto shrink-0">{relativeTime(evt.createdAt)}</span>
+              {!activity || activity.length === 0 ? (
+                <p className="text-xs text-muted-foreground">No activity yet.</p>
+              ) : (
+                <div className="space-y-1.5">
+                  {activity.slice(0, 20).map((evt) => (
+                    <div key={evt.id} className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                      <ActorIdentity evt={evt} agentMap={agentMap} />
+                      <span>{formatAction(evt.action, evt.details)}</span>
+                      <span className="ml-auto shrink-0">{relativeTime(evt.createdAt)}</span>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
+              )}
+            </>
           )}
         </TabsContent>
 
