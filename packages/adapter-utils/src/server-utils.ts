@@ -1069,16 +1069,12 @@ export async function runChildProcess(
         }) as ChildProcessWithEvents;
         const startedAt = new Date().toISOString();
 
-        if (opts.stdin != null && child.stdin) {
-          child.stdin.write(opts.stdin);
-          child.stdin.end();
-        }
-
-        if (typeof child.pid === "number" && child.pid > 0 && opts.onSpawn) {
-          void opts.onSpawn({ pid: child.pid, startedAt }).catch((err) => {
-            onLogError(err, runId, "failed to record child process metadata");
-          });
-        }
+        const spawnPersistPromise =
+          typeof child.pid === "number" && child.pid > 0 && opts.onSpawn
+            ? opts.onSpawn({ pid: child.pid, startedAt }).catch((err) => {
+              onLogError(err, runId, "failed to record child process metadata");
+            })
+            : Promise.resolve();
 
         runningProcesses.set(runId, { child, graceSec: opts.graceSec });
 
@@ -1115,6 +1111,15 @@ export async function runChildProcess(
             .then(() => opts.onLog("stderr", text))
             .catch((err) => onLogError(err, runId, "failed to append stderr log chunk"));
         });
+
+        const stdin = child.stdin;
+        if (opts.stdin != null && stdin) {
+          void spawnPersistPromise.finally(() => {
+            if (child.killed || stdin.destroyed) return;
+            stdin.write(opts.stdin as string);
+            stdin.end();
+          });
+        }
 
         child.on("error", (err: Error) => {
           if (timeout) clearTimeout(timeout);
