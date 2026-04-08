@@ -818,7 +818,7 @@ function IssueChatAssistantMessage() {
   const runHref = runId && runAgentId ? `/agents/${runAgentId}/runs/${runId}` : null;
   const chainOfThoughtLabel = typeof custom.chainOfThoughtLabel === "string" ? custom.chainOfThoughtLabel : null;
   const hasCoT = message.content.some((p) => p.type === "reasoning" || p.type === "tool-call");
-  const isFoldable = !isRunning && hasCoT && !!chainOfThoughtLabel;
+  const isFoldable = !isRunning && !!chainOfThoughtLabel;
   const [folded, setFolded] = useState(isFoldable);
   const [prevFoldKey, setPrevFoldKey] = useState({ messageId: message.id, isFoldable });
 
@@ -900,8 +900,15 @@ function IssueChatAssistantMessage() {
                   }}
                 />
                 {message.content.length === 0 && waitingText ? (
-                  <div className="rounded-sm bg-accent/20 px-3 py-2 text-sm text-muted-foreground">
-                    {waitingText}
+                  <div className="flex items-center gap-2.5 rounded-lg px-1 py-2">
+                    <span className="inline-flex items-center gap-2 text-sm font-medium text-foreground/80">
+                      {agentIcon ? (
+                        <AgentIcon icon={agentIcon} className="h-4 w-4 shrink-0" />
+                      ) : (
+                        <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
+                      )}
+                      <span className="shimmer-text">{waitingText}</span>
+                    </span>
                   </div>
                 ) : null}
                 {notices.length > 0 ? (

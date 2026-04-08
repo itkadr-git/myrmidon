@@ -593,22 +593,17 @@ function normalizeLiveRuns(
 function createLiveRunMessage(args: {
   run: LiveRunForIssue;
   transcript: readonly IssueChatTranscriptEntry[];
-  hasOutput: boolean;
 }) {
-  const { run, transcript, hasOutput } = args;
+  const { run, transcript } = args;
   const { parts, notices, segments } = buildAssistantPartsFromTranscript(transcript);
   const waitingText =
     run.status === "queued"
       ? "Queued..."
-      : hasOutput
+      : parts.length > 0
         ? ""
         : "Working...";
 
-  const content = parts.length > 0
-    ? parts
-    : waitingText
-      ? [{ type: "text", text: waitingText } satisfies TextMessagePart]
-      : [];
+  const content = parts;
 
   const message: ThreadAssistantMessage = {
     id: `live-run:${run.id}`,
@@ -712,7 +707,6 @@ export function buildIssueChatMessages(args: {
       message: createLiveRunMessage({
         run,
         transcript: transcriptsByRunId?.get(run.id) ?? [],
-        hasOutput: hasOutputForRun?.(run.id) ?? false,
       }),
     });
   }
