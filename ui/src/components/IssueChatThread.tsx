@@ -219,6 +219,7 @@ interface IssueChatThreadProps {
 }
 
 const DRAFT_DEBOUNCE_MS = 800;
+const COMPOSER_FOCUS_SCROLL_PADDING_PX = 96;
 
 function toIsoString(value: string | Date | null | undefined): string | null {
   if (!value) return null;
@@ -1443,6 +1444,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
     focus: () => {
       composerContainerRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
       requestAnimationFrame(() => {
+        window.scrollBy({ top: COMPOSER_FOCUS_SCROLL_PADDING_PX, behavior: "smooth" });
         editorRef.current?.focus();
       });
     },

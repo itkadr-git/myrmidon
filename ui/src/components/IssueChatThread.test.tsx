@@ -293,6 +293,7 @@ describe("IssueChatThread", () => {
   it("exposes a composer focus handle that forwards to the editor", () => {
     const root = createRoot(container);
     const composerRef = createRef<{ focus: () => void }>();
+    const scrollByMock = vi.spyOn(window, "scrollBy").mockImplementation(() => {});
     const requestAnimationFrameMock = vi
       .spyOn(window, "requestAnimationFrame")
       .mockImplementation((callback: FrameRequestCallback) => {
@@ -328,7 +329,9 @@ describe("IssueChatThread", () => {
     });
 
     expect(scrollIntoViewMock).toHaveBeenCalledWith({ behavior: "smooth", block: "end" });
+    expect(scrollByMock).toHaveBeenCalledWith({ top: 96, behavior: "smooth" });
     expect(markdownEditorFocusMock).toHaveBeenCalledTimes(1);
+    scrollByMock.mockRestore();
     requestAnimationFrameMock.mockRestore();
 
     act(() => {
