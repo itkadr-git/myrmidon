@@ -16,6 +16,7 @@ import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useGeneralSettings } from "../context/GeneralSettingsContext";
+import { useSidebar } from "../context/SidebarContext";
 import { queryKeys } from "../lib/queryKeys";
 import {
   armIssueDetailInboxQuickArchive,
@@ -87,6 +88,7 @@ import {
   loadInboxIssueColumns,
   loadInboxNesting,
   normalizeInboxIssueColumns,
+  resolveInboxNestingEnabled,
   resolveIssueWorkspaceName,
   resolveInboxSelectionIndex,
   saveInboxIssueColumns,
@@ -579,6 +581,7 @@ function JoinRequestInboxRow({
 export function Inbox() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { isMobile } = useSidebar();
   const navigate = useNavigate();
   const location = useLocation();
   const queryClient = useQueryClient();
@@ -911,9 +914,10 @@ export function Inbox() {
   ]);
 
   // --- Parent-child nesting for inbox issues ---
-  const [nestingEnabled, setNestingEnabled] = useState(() => loadInboxNesting());
+  const [nestingPreferenceEnabled, setNestingPreferenceEnabled] = useState(() => loadInboxNesting());
+  const nestingEnabled = resolveInboxNestingEnabled(nestingPreferenceEnabled, isMobile);
   const toggleNesting = useCallback(() => {
-    setNestingEnabled((prev) => {
+    setNestingPreferenceEnabled((prev) => {
       const next = !prev;
       saveInboxNesting(next);
       return next;

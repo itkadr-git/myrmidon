@@ -169,6 +169,10 @@ export function saveInboxNesting(enabled: boolean) {
   }
 }
 
+export function resolveInboxNestingEnabled(preferenceEnabled: boolean, isMobile: boolean): boolean {
+  return preferenceEnabled && !isMobile;
+}
+
 export function loadLastInboxTab(): InboxTab {
   try {
     const raw = localStorage.getItem(INBOX_LAST_TAB_KEY);
