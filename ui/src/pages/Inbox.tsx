@@ -935,6 +935,25 @@ export function Inbox() {
     });
   }, []);
 
+  // Build flat navigation list including expanded children for keyboard traversal
+  const flatNavItems = useMemo((): NavEntry[] => {
+    const entries: NavEntry[] = [];
+    for (let i = 0; i < nestedWorkItems.length; i++) {
+      const item = nestedWorkItems[i];
+      entries.push({ type: "top", index: i, item });
+      if (item.kind === "issue") {
+        const children = childrenByIssueId.get(item.issue.id);
+        const isExpanded = children?.length && !collapsedInboxParents.has(item.issue.id);
+        if (isExpanded) {
+          for (const child of children) {
+            entries.push({ type: "child", parentIndex: i, issue: child });
+          }
+        }
+      }
+    }
+    return entries;
+  }, [nestedWorkItems, childrenByIssueId, collapsedInboxParents]);
+
   const agentName = (id: string | null) => {
     if (!id) return null;
     return agentById.get(id) ?? null;
@@ -1204,12 +1223,13 @@ export function Inbox() {
 
   // Keep selection valid when the list shape changes, but do not auto-select on initial load.
   useEffect(() => {
-    setSelectedIndex((prev) => resolveInboxSelectionIndex(prev, nestedWorkItems.length));
-  }, [nestedWorkItems.length]);
+    setSelectedIndex((prev) => resolveInboxSelectionIndex(prev, flatNavItems.length));
+  }, [flatNavItems.length]);
 
   // Use refs for keyboard handler to avoid stale closures
   const kbStateRef = useRef({
     workItems: nestedWorkItems,
+    flatNavItems,
     selectedIndex,
     canArchive: canArchiveFromTab,
     archivingIssueIds,
@@ -1219,6 +1239,7 @@ export function Inbox() {
   });
   kbStateRef.current = {
     workItems: nestedWorkItems,
+    flatNavItems,
     selectedIndex,
     canArchive: canArchiveFromTab,
     archivingIssueIds,
@@ -1272,77 +1293,94 @@ export function Inbox() {
       // Keyboard shortcuts are only active on the "mine" tab
       if (!st.canArchive) return;
 
-      const itemCount = st.workItems.length;
-      if (itemCount === 0) return;
+      const navItems = st.flatNavItems;
+      const navCount = navItems.length;
+      if (navCount === 0) return;
+
+      /** Resolve the nav entry at selectedIndex to an issue (for child entries) or work item. */
+      const resolveNavEntry = (idx: number): { issue?: Issue; item?: InboxWorkItem } => {
+        const entry = navItems[idx];
+        if (!entry) return {};
+        if (entry.type === "child") return { issue: entry.issue };
+        return { item: entry.item };
+      };
 
       switch (e.key) {
         case "j": {
           e.preventDefault();
-          setSelectedIndex((prev) => getInboxKeyboardSelectionIndex(prev, itemCount, "next"));
+          setSelectedIndex((prev) => getInboxKeyboardSelectionIndex(prev, navCount, "next"));
           break;
         }
         case "k": {
           e.preventDefault();
-          setSelectedIndex((prev) => getInboxKeyboardSelectionIndex(prev, itemCount, "previous"));
+          setSelectedIndex((prev) => getInboxKeyboardSelectionIndex(prev, navCount, "previous"));
           break;
         }
         case "a":
         case "y": {
-          if (st.selectedIndex < 0 || st.selectedIndex >= itemCount) return;
+          if (st.selectedIndex < 0 || st.selectedIndex >= navCount) return;
           e.preventDefault();
-          const item = st.workItems[st.selectedIndex];
-          if (item.kind === "issue") {
-            if (!st.archivingIssueIds.has(item.issue.id)) {
-              act.archiveIssue(item.issue.id);
-            }
-          } else {
-            const key = getWorkItemKey(item);
-            if (!st.archivingNonIssueIds.has(key)) {
-              act.archiveNonIssue(key);
+          const { issue, item } = resolveNavEntry(st.selectedIndex);
+          if (issue) {
+            if (!st.archivingIssueIds.has(issue.id)) act.archiveIssue(issue.id);
+          } else if (item) {
+            if (item.kind === "issue") {
+              if (!st.archivingIssueIds.has(item.issue.id)) act.archiveIssue(item.issue.id);
+            } else {
+              const key = getWorkItemKey(item);
+              if (!st.archivingNonIssueIds.has(key)) act.archiveNonIssue(key);
             }
           }
           break;
         }
         case "U": {
-          if (st.selectedIndex < 0 || st.selectedIndex >= itemCount) return;
+          if (st.selectedIndex < 0 || st.selectedIndex >= navCount) return;
           e.preventDefault();
-          const item = st.workItems[st.selectedIndex];
-          if (item.kind === "issue") {
-            act.markUnreadIssue(item.issue.id);
-          } else {
-            act.markNonIssueUnread(getWorkItemKey(item));
+          const { issue, item } = resolveNavEntry(st.selectedIndex);
+          if (issue) {
+            act.markUnreadIssue(issue.id);
+          } else if (item) {
+            if (item.kind === "issue") act.markUnreadIssue(item.issue.id);
+            else act.markNonIssueUnread(getWorkItemKey(item));
           }
           break;
         }
         case "r": {
-          if (st.selectedIndex < 0 || st.selectedIndex >= itemCount) return;
+          if (st.selectedIndex < 0 || st.selectedIndex >= navCount) return;
           e.preventDefault();
-          const item = st.workItems[st.selectedIndex];
-          if (item.kind === "issue") {
-            if (item.issue.isUnreadForMe && !st.fadingOutIssues.has(item.issue.id)) {
-              act.markRead(item.issue.id);
-            }
-          } else {
-            const key = getWorkItemKey(item);
-            if (!st.readItems.has(key)) {
-              act.markNonIssueRead(key);
+          const { issue, item } = resolveNavEntry(st.selectedIndex);
+          if (issue) {
+            if (issue.isUnreadForMe && !st.fadingOutIssues.has(issue.id)) act.markRead(issue.id);
+          } else if (item) {
+            if (item.kind === "issue") {
+              if (item.issue.isUnreadForMe && !st.fadingOutIssues.has(item.issue.id)) act.markRead(item.issue.id);
+            } else {
+              const key = getWorkItemKey(item);
+              if (!st.readItems.has(key)) act.markNonIssueRead(key);
             }
           }
           break;
         }
         case "Enter": {
-          if (st.selectedIndex < 0 || st.selectedIndex >= itemCount) return;
+          if (st.selectedIndex < 0 || st.selectedIndex >= navCount) return;
           e.preventDefault();
-          const item = st.workItems[st.selectedIndex];
-          if (item.kind === "issue") {
-            const pathId = item.issue.identifier ?? item.issue.id;
+          const { issue, item } = resolveNavEntry(st.selectedIndex);
+          if (issue) {
+            const pathId = issue.identifier ?? issue.id;
             const detailState = armIssueDetailInboxQuickArchive(issueLinkState);
             rememberIssueDetailLocationState(pathId, detailState);
             act.navigate(createIssueDetailPath(pathId), { state: detailState });
-          } else if (item.kind === "approval") {
-            act.navigate(`/approvals/${item.approval.id}`);
-          } else if (item.kind === "failed_run") {
-            act.navigate(`/agents/${item.run.agentId}/runs/${item.run.id}`);
+          } else if (item) {
+            if (item.kind === "issue") {
+              const pathId = item.issue.identifier ?? item.issue.id;
+              const detailState = armIssueDetailInboxQuickArchive(issueLinkState);
+              rememberIssueDetailLocationState(pathId, detailState);
+              act.navigate(createIssueDetailPath(pathId), { state: detailState });
+            } else if (item.kind === "approval") {
+              act.navigate(`/approvals/${item.approval.id}`);
+            } else if (item.kind === "failed_run") {
+              act.navigate(`/agents/${item.run.agentId}/runs/${item.run.id}`);
+            }
           }
           break;
         }
@@ -1571,13 +1609,34 @@ export function Inbox() {
           {showSeparatorBefore("work_items") && <Separator />}
           <div>
             <div ref={listRef} className="overflow-hidden rounded-xl border border-border bg-card">
-              {nestedWorkItems.flatMap((item, index) => {
+              {(() => {
+                // Pre-compute flat nav index for each top-level item and child issue
+                let flatIdx = 0;
+                const topFlatIndex = new Map<number, number>();
+                const childFlatIndex = new Map<string, number>();
+                for (let ti = 0; ti < nestedWorkItems.length; ti++) {
+                  topFlatIndex.set(ti, flatIdx);
+                  flatIdx++;
+                  const topItem = nestedWorkItems[ti];
+                  if (topItem.kind === "issue") {
+                    const children = childrenByIssueId.get(topItem.issue.id);
+                    const isExp = children?.length && !collapsedInboxParents.has(topItem.issue.id);
+                    if (isExp) {
+                      for (const c of children) {
+                        childFlatIndex.set(c.id, flatIdx);
+                        flatIdx++;
+                      }
+                    }
+                  }
+                }
+                return nestedWorkItems.flatMap((item, index) => {
+                const navIdx = topFlatIndex.get(index) ?? index;
                 const wrapItem = (key: string, isSelected: boolean, child: ReactNode) => (
                   <div
                     key={`sel-${key}`}
                     data-inbox-item
                     className="relative"
-                    onClick={() => setSelectedIndex(index)}
+                    onClick={() => setSelectedIndex(navIdx)}
                   >
                     {child}
                   </div>
@@ -1599,7 +1658,7 @@ export function Inbox() {
                     </div>,
                   );
                 }
-                const isSelected = selectedIndex === index;
+                const isSelected = selectedIndex === navIdx;
 
                 if (item.kind === "approval") {
                   const approvalKey = `approval:${item.approval.id}`;
@@ -1822,14 +1881,22 @@ export function Inbox() {
                 // Render children if expanded
                 if (isExpanded) {
                   for (const child of childIssues) {
-                    const childRow = renderInboxIssue(child, 1, false);
+                    const cNavIdx = childFlatIndex.get(child.id) ?? -1;
+                    const isChildSelected = selectedIndex === cNavIdx;
+                    const childRow = renderInboxIssue(child, 1, isChildSelected);
                     const isChildArchiving = archivingIssueIds.has(child.id);
                     elements.push(
-                      <div key={`sel-issue:${child.id}`} data-inbox-item className="relative" style={{ paddingLeft: 16 }}>
+                      <div
+                        key={`sel-issue:${child.id}`}
+                        data-inbox-item
+                        className="relative"
+                        style={{ paddingLeft: 16 }}
+                        onClick={() => setSelectedIndex(cNavIdx)}
+                      >
                         {canArchiveFromTab ? (
                           <SwipeToArchive
                             key={`issue:${child.id}`}
-                            selected={false}
+                            selected={isChildSelected}
                             disabled={isChildArchiving || archiveIssueMutation.isPending}
                             onArchive={() => archiveIssueMutation.mutate(child.id)}
                           >
@@ -1841,7 +1908,8 @@ export function Inbox() {
                   }
                 }
                 return elements;
-              })}
+              });
+              })()}
             </div>
           </div>
         </>
