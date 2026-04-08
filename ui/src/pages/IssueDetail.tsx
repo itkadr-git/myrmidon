@@ -4,7 +4,7 @@ import { Link, useLocation, useNavigate, useParams } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { issuesApi } from "../api/issues";
 import { approvalsApi } from "../api/approvals";
-import { activityApi } from "../api/activity";
+import { activityApi, type RunForIssue } from "../api/activity";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { agentsApi } from "../api/agents";
@@ -42,6 +42,7 @@ import {
   type IssueCommentReassignment,
   type OptimisticIssueComment,
 } from "../lib/optimistic-issue-comments";
+import { removeLiveRunById, upsertInterruptedRun } from "../lib/optimistic-issue-runs";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { relativeTime, cn, formatTokens, visibleRunCostUsd } from "../lib/utils";
 import { ApprovalCard } from "../components/ApprovalCard";
@@ -988,6 +989,44 @@ export function IssueDetail() {
 
   const interruptQueuedComment = useMutation({
     mutationFn: (runId: string) => heartbeatsApi.cancel(runId),
+    onMutate: async (runId) => {
+      await queryClient.cancelQueries({ queryKey: queryKeys.issues.runs(issueId!) });
+      await queryClient.cancelQueries({ queryKey: queryKeys.issues.liveRuns(issueId!) });
+      await queryClient.cancelQueries({ queryKey: queryKeys.issues.activeRun(issueId!) });
+
+      const previousRuns = queryClient.getQueryData<RunForIssue[]>(queryKeys.issues.runs(issueId!));
+      const previousLiveRuns = queryClient.getQueryData<typeof liveRuns>(queryKeys.issues.liveRuns(issueId!));
+      const previousActiveRun = queryClient.getQueryData<typeof activeRun>(queryKeys.issues.activeRun(issueId!));
+      const liveRunList = previousLiveRuns ?? liveRuns ?? [];
+      const cachedActiveRun = previousActiveRun ?? activeRun;
+      const targetRun =
+        cachedActiveRun?.id === runId
+          ? cachedActiveRun
+          : liveRunList?.find((run) => run.id === runId) ?? runningIssueRun ?? null;
+
+      if (targetRun) {
+        const interruptedAt = new Date().toISOString();
+        queryClient.setQueryData<RunForIssue[] | undefined>(
+          queryKeys.issues.runs(issueId!),
+          (current) => upsertInterruptedRun(current, targetRun, interruptedAt),
+        );
+      }
+
+      queryClient.setQueryData(
+        queryKeys.issues.liveRuns(issueId!),
+        (current: typeof liveRuns) => removeLiveRunById(current, runId),
+      );
+      queryClient.setQueryData(
+        queryKeys.issues.activeRun(issueId!),
+        (current: typeof activeRun) => (current?.id === runId ? null : current),
+      );
+
+      return {
+        previousRuns,
+        previousLiveRuns,
+        previousActiveRun,
+      };
+    },
     onSuccess: () => {
       invalidateIssue();
       pushToast({
@@ -996,7 +1035,10 @@ export function IssueDetail() {
         tone: "success",
       });
     },
-    onError: (err) => {
+    onError: (err, _runId, context) => {
+      queryClient.setQueryData(queryKeys.issues.runs(issueId!), context?.previousRuns);
+      queryClient.setQueryData(queryKeys.issues.liveRuns(issueId!), context?.previousLiveRuns);
+      queryClient.setQueryData(queryKeys.issues.activeRun(issueId!), context?.previousActiveRun);
       pushToast({
         title: "Interrupt failed",
         body: err instanceof Error ? err.message : "Unable to interrupt the active run",
