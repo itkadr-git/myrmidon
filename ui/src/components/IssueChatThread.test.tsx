@@ -52,13 +52,19 @@ vi.mock("./MarkdownEditor", () => ({
     value = "",
     onChange,
     placeholder,
+    className,
+    contentClassName,
   }: {
     value?: string;
     onChange?: (value: string) => void;
     placeholder?: string;
+    className?: string;
+    contentClassName?: string;
   }) => (
     <textarea
       aria-label="Issue chat editor"
+      data-class-name={className}
+      data-content-class-name={contentClassName}
       placeholder={placeholder}
       value={value}
       onChange={(event) => onChange?.(event.target.value)}
@@ -237,6 +243,39 @@ describe("IssueChatThread", () => {
 
     act(() => {
       remount.unmount();
+    });
+  });
+
+  it("keeps the composer pinned with a capped editor height", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const composer = container.querySelector('[data-testid="issue-chat-composer"]') as HTMLDivElement | null;
+    expect(composer).not.toBeNull();
+    expect(composer?.className).toContain("sticky");
+    expect(composer?.className).toContain("bottom-0");
+    expect(composer?.className).toContain("pb-[calc(env(safe-area-inset-bottom)+0.75rem)]");
+
+    const editor = container.querySelector('textarea[aria-label="Issue chat editor"]') as HTMLTextAreaElement | null;
+    expect(editor?.dataset.contentClassName).toContain("max-h-[40dvh]");
+    expect(editor?.dataset.contentClassName).toContain("overflow-y-auto");
+
+    act(() => {
+      root.unmount();
     });
   });
 
