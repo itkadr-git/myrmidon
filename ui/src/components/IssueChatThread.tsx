@@ -10,6 +10,7 @@ import {
 import type { ToolCallMessagePart } from "@assistant-ui/react";
 import {
   createContext,
+  Component,
   forwardRef,
   useContext,
   useEffect,
@@ -18,7 +19,9 @@ import {
   useRef,
   useState,
   type ChangeEvent,
+  type ErrorInfo,
   type Ref,
+  type ReactNode,
 } from "react";
 import { Link, useLocation } from "@/lib/router";
 import type {
@@ -76,7 +79,7 @@ import { cn, formatDateTime, formatShortDate } from "../lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
-import { ArrowRight, Brain, Check, ChevronDown, Copy, Hammer, Loader2, MoreHorizontal, Paperclip, Search, ThumbsDown, ThumbsUp } from "lucide-react";
+import { AlertTriangle, ArrowRight, Brain, Check, ChevronDown, Copy, Hammer, Loader2, MoreHorizontal, Paperclip, Search, ThumbsDown, ThumbsUp } from "lucide-react";
 
 interface IssueChatMessageContext {
   feedbackVoteByTargetId: Map<string, FeedbackVoteValue>;
@@ -216,6 +219,145 @@ interface IssueChatThreadProps {
   interruptingQueuedRunId?: string | null;
   onImageClick?: (src: string) => void;
   composerRef?: Ref<IssueChatComposerHandle>;
+}
+
+type IssueChatErrorBoundaryProps = {
+  resetKey: string;
+  messages: readonly import("@assistant-ui/react").ThreadMessage[];
+  emptyMessage: string;
+  variant: "full" | "embedded";
+  children: ReactNode;
+};
+
+type IssueChatErrorBoundaryState = {
+  hasError: boolean;
+};
+
+class IssueChatErrorBoundary extends Component<IssueChatErrorBoundaryProps, IssueChatErrorBoundaryState> {
+  override state: IssueChatErrorBoundaryState = { hasError: false };
+
+  static getDerivedStateFromError(): IssueChatErrorBoundaryState {
+    return { hasError: true };
+  }
+
+  override componentDidCatch(error: unknown, info: ErrorInfo): void {
+    console.error("Issue chat renderer failed; falling back to safe transcript view", {
+      error,
+      info: info.componentStack,
+    });
+  }
+
+  override componentDidUpdate(prevProps: IssueChatErrorBoundaryProps): void {
+    if (this.state.hasError && prevProps.resetKey !== this.props.resetKey) {
+      this.setState({ hasError: false });
+    }
+  }
+
+  override render() {
+    if (this.state.hasError) {
+      return (
+        <IssueChatFallbackThread
+          messages={this.props.messages}
+          emptyMessage={this.props.emptyMessage}
+          variant={this.props.variant}
+        />
+      );
+    }
+    return this.props.children;
+  }
+}
+
+function fallbackAuthorLabel(message: import("@assistant-ui/react").ThreadMessage) {
+  const custom = message.metadata?.custom as Record<string, unknown> | undefined;
+  if (typeof custom?.["authorName"] === "string") return custom["authorName"];
+  if (typeof custom?.["runAgentName"] === "string") return custom["runAgentName"];
+  if (message.role === "assistant") return "Agent";
+  if (message.role === "user") return "You";
+  return "System";
+}
+
+function fallbackTextParts(message: import("@assistant-ui/react").ThreadMessage) {
+  const contentLines: string[] = [];
+  for (const part of message.content) {
+    if (part.type === "text" || part.type === "reasoning") {
+      if (part.text.trim().length > 0) contentLines.push(part.text);
+      continue;
+    }
+    if (part.type === "tool-call") {
+      const lines = [`Tool: ${part.toolName}`];
+      if (part.argsText?.trim()) lines.push(`Args:\n${part.argsText}`);
+      if (typeof part.result === "string" && part.result.trim()) lines.push(`Result:\n${part.result}`);
+      contentLines.push(lines.join("\n\n"));
+    }
+  }
+
+  const custom = message.metadata?.custom as Record<string, unknown> | undefined;
+  if (contentLines.length === 0 && typeof custom?.["waitingText"] === "string" && custom["waitingText"].trim()) {
+    contentLines.push(custom["waitingText"]);
+  }
+  return contentLines;
+}
+
+function IssueChatFallbackThread({
+  messages,
+  emptyMessage,
+  variant,
+}: {
+  messages: readonly import("@assistant-ui/react").ThreadMessage[];
+  emptyMessage: string;
+  variant: "full" | "embedded";
+}) {
+  return (
+    <div className={cn(variant === "embedded" ? "space-y-3" : "space-y-4")}>
+      <div className="rounded-xl border border-amber-300/60 bg-amber-50/80 px-4 py-3 text-sm text-amber-900 dark:border-amber-500/30 dark:bg-amber-950/20 dark:text-amber-200">
+        <div className="flex items-start gap-2">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <div className="space-y-1">
+            <p className="font-medium">Chat renderer hit an internal state error.</p>
+            <p className="text-xs opacity-80">
+              Showing a safe fallback transcript instead of crashing the issues page.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {messages.length === 0 ? (
+        <div className={cn(
+          "text-center text-sm text-muted-foreground",
+          variant === "embedded"
+            ? "rounded-xl border border-dashed border-border/70 bg-background/60 px-4 py-6"
+            : "rounded-2xl border border-dashed border-border bg-card px-6 py-10",
+        )}>
+          {emptyMessage}
+        </div>
+      ) : (
+        <div className={cn(variant === "embedded" ? "space-y-3" : "space-y-4")}>
+          {messages.map((message) => {
+            const lines = fallbackTextParts(message);
+            return (
+              <div key={message.id} className="rounded-xl border border-border/60 bg-card/70 px-4 py-3">
+                <div className="mb-2 flex items-center gap-2 text-sm">
+                  <span className="font-medium text-foreground">{fallbackAuthorLabel(message)}</span>
+                  {message.createdAt ? (
+                    <span className="text-[11px] text-muted-foreground">
+                      {commentDateLabel(message.createdAt)}
+                    </span>
+                  ) : null}
+                </div>
+                <div className="space-y-2">
+                  {lines.length > 0 ? lines.map((line, index) => (
+                    <MarkdownBody key={`${message.id}:fallback:${index}`}>{line}</MarkdownBody>
+                  )) : (
+                    <p className="text-sm text-muted-foreground">No message content.</p>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
 }
 
 const DRAFT_DEBOUNCE_MS = 800;
@@ -1808,6 +1950,10 @@ export function IssueChatThread({
     ?? (variant === "embedded"
       ? "No run output yet."
       : "This issue conversation is empty. Start with a message below.");
+  const errorBoundaryResetKey = useMemo(
+    () => messages.map((message) => `${message.id}:${message.role}:${message.content.length}:${message.status?.type ?? "none"}`).join("|"),
+    [messages],
+  );
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
@@ -1825,22 +1971,29 @@ export function IssueChatThread({
           </div>
         ) : null}
 
-        <ThreadPrimitive.Root className="">
-          <ThreadPrimitive.Viewport className={variant === "embedded" ? "space-y-3" : "space-y-4"}>
-            <ThreadPrimitive.Empty>
-              <div className={cn(
-                "text-center text-sm text-muted-foreground",
-                variant === "embedded"
-                  ? "rounded-xl border border-dashed border-border/70 bg-background/60 px-4 py-6"
-                  : "rounded-2xl border border-dashed border-border bg-card px-6 py-10",
-              )}>
-                {resolvedEmptyMessage}
-              </div>
-            </ThreadPrimitive.Empty>
-            <ThreadPrimitive.Messages components={components} />
-            <div ref={bottomAnchorRef} />
-          </ThreadPrimitive.Viewport>
-        </ThreadPrimitive.Root>
+        <IssueChatErrorBoundary
+          resetKey={errorBoundaryResetKey}
+          messages={messages}
+          emptyMessage={resolvedEmptyMessage}
+          variant={variant}
+        >
+          <ThreadPrimitive.Root className="">
+            <ThreadPrimitive.Viewport className={variant === "embedded" ? "space-y-3" : "space-y-4"}>
+              <ThreadPrimitive.Empty>
+                <div className={cn(
+                  "text-center text-sm text-muted-foreground",
+                  variant === "embedded"
+                    ? "rounded-xl border border-dashed border-border/70 bg-background/60 px-4 py-6"
+                    : "rounded-2xl border border-dashed border-border bg-card px-6 py-10",
+                )}>
+                  {resolvedEmptyMessage}
+                </div>
+              </ThreadPrimitive.Empty>
+              <ThreadPrimitive.Messages components={components} />
+              <div ref={bottomAnchorRef} />
+            </ThreadPrimitive.Viewport>
+          </ThreadPrimitive.Root>
+        </IssueChatErrorBoundary>
 
         {showComposer ? (
           <IssueChatComposer

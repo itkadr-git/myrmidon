@@ -11,6 +11,10 @@ const { markdownEditorFocusMock } = vi.hoisted(() => ({
   markdownEditorFocusMock: vi.fn(),
 }));
 
+const { threadMessagesMock } = vi.hoisted(() => ({
+  threadMessagesMock: vi.fn(() => <div data-testid="thread-messages" />),
+}));
+
 vi.mock("@assistant-ui/react", () => ({
   AssistantRuntimeProvider: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   ThreadPrimitive: {
@@ -21,7 +25,7 @@ vi.mock("@assistant-ui/react", () => ({
       <div data-testid="thread-viewport" className={className}>{children}</div>
     ),
     Empty: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-    Messages: () => <div data-testid="thread-messages" />,
+    Messages: () => threadMessagesMock(),
   },
   MessagePrimitive: {
     Root: ({ children }: { children: ReactNode }) => <div>{children}</div>,
@@ -116,12 +120,14 @@ describe("IssueChatThread", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     localStorage.clear();
+    threadMessagesMock.mockImplementation(() => <div data-testid="thread-messages" />);
   });
 
   afterEach(() => {
     container.remove();
     vi.useRealTimers();
     markdownEditorFocusMock.mockReset();
+    threadMessagesMock.mockReset();
   });
 
   it("drops the count heading and does not use an internal scrollbox", () => {
@@ -184,6 +190,48 @@ describe("IssueChatThread", () => {
     const viewport = container.querySelector('[data-testid="thread-viewport"]') as HTMLDivElement | null;
     expect(viewport?.className).toContain("space-y-3");
 
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("falls back to a safe transcript warning when assistant-ui throws during message rendering", () => {
+    const root = createRoot(container);
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    threadMessagesMock.mockImplementation(() => {
+      throw new Error("tapClientLookup: Index 8 out of bounds (length: 8)");
+    });
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[{
+              id: "comment-1",
+              companyId: "company-1",
+              issueId: "issue-1",
+              authorAgentId: "agent-1",
+              authorUserId: null,
+              body: "Agent summary",
+              createdAt: new Date("2026-04-06T12:00:00.000Z"),
+              updatedAt: new Date("2026-04-06T12:00:00.000Z"),
+            }]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(container.textContent).toContain("Chat renderer hit an internal state error.");
+    expect(container.textContent).toContain("Agent summary");
+    expect(consoleErrorSpy).toHaveBeenCalled();
+
+    consoleErrorSpy.mockRestore();
     act(() => {
       root.unmount();
     });
