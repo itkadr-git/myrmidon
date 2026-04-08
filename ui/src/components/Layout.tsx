@@ -33,6 +33,7 @@ import {
   normalizeRememberedInstanceSettingsPath,
 } from "../lib/instance-settings";
 import { queryKeys } from "../lib/queryKeys";
+import { scheduleMainContentFocus } from "../lib/main-content-focus";
 import { cn } from "../lib/utils";
 import { NotFoundPage } from "../pages/NotFound";
 import { Button } from "@/components/ui/button";
@@ -267,6 +268,12 @@ export function Layout() {
       // Ignore storage failures in restricted environments.
     }
   }, [location.hash, location.pathname, location.search]);
+
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const mainContent = document.getElementById("main-content");
+    return scheduleMainContentFocus(mainContent);
+  }, [location.pathname]);
 
   return (
     <GeneralSettingsProvider value={{ keyboardShortcutsEnabled }}>
