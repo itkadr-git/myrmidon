@@ -1519,97 +1519,94 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
     <div
       ref={composerContainerRef}
       data-testid="issue-chat-composer"
-      className="sticky bottom-0 z-10 bg-gradient-to-t from-background via-background/95 to-background/70 pt-4 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] backdrop-blur supports-[backdrop-filter]:from-background/92 supports-[backdrop-filter]:via-background/82"
+      className="space-y-3 pt-4 pb-[calc(env(safe-area-inset-bottom)+1.5rem)]"
     >
-      <div className="space-y-3 rounded-2xl border border-border/70 bg-background/95 p-3 shadow-sm">
-        <MarkdownEditor
-          ref={editorRef}
-          value={body}
-          onChange={setBody}
-          placeholder="Reply"
-          mentions={mentions}
-          onSubmit={handleSubmit}
-          imageUploadHandler={onImageUpload}
-          bordered
-          className="rounded-xl border-border/70 bg-background/95"
-          contentClassName="min-h-[72px] max-h-[28dvh] overflow-y-auto pr-1 text-sm scrollbar-auto-hide"
-        />
+      <MarkdownEditor
+        ref={editorRef}
+        value={body}
+        onChange={setBody}
+        placeholder="Reply"
+        mentions={mentions}
+        onSubmit={handleSubmit}
+        imageUploadHandler={onImageUpload}
+        bordered
+        contentClassName="min-h-[72px] max-h-[28dvh] overflow-y-auto pr-1 text-sm scrollbar-auto-hide"
+      />
 
-        <div className="flex flex-wrap items-center justify-end gap-3 border-t border-border/60 pt-2">
-          {(onImageUpload || onAttachImage) ? (
-            <div className="mr-auto flex items-center gap-3">
-              <input
-                ref={attachInputRef}
-                type="file"
-                accept="image/png,image/jpeg,image/webp,image/gif"
-                className="hidden"
-                onChange={handleAttachFile}
-              />
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                onClick={() => attachInputRef.current?.click()}
-                disabled={attaching}
-                title="Attach image"
-              >
-                <Paperclip className="h-4 w-4" />
-              </Button>
-            </div>
-          ) : null}
-
-          <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer select-none">
+      <div className="flex flex-wrap items-center justify-end gap-3">
+        {(onImageUpload || onAttachImage) ? (
+          <div className="mr-auto flex items-center gap-3">
             <input
-              type="checkbox"
-              checked={reopen}
-              onChange={(event) => setReopen(event.target.checked)}
-              className="rounded border-border"
+              ref={attachInputRef}
+              type="file"
+              accept="image/png,image/jpeg,image/webp,image/gif"
+              className="hidden"
+              onChange={handleAttachFile}
             />
-            Re-open
-          </label>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              onClick={() => attachInputRef.current?.click()}
+              disabled={attaching}
+              title="Attach image"
+            >
+              <Paperclip className="h-4 w-4" />
+            </Button>
+          </div>
+        ) : null}
 
-          {enableReassign && reassignOptions.length > 0 ? (
-            <InlineEntitySelector
-              value={reassignTarget}
-              options={reassignOptions}
-              placeholder="Assignee"
-              noneLabel="No assignee"
-              searchPlaceholder="Search assignees..."
-              emptyMessage="No assignees found."
-              onChange={setReassignTarget}
-              className="h-8 text-xs"
-              renderTriggerValue={(option) => {
-                if (!option) return <span className="text-muted-foreground">Assignee</span>;
-                const agentId = option.id.startsWith("agent:") ? option.id.slice("agent:".length) : null;
-                const agent = agentId ? agentMap?.get(agentId) : null;
-                return (
-                  <>
-                    {agent ? (
-                      <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                    ) : null}
-                    <span className="truncate">{option.label}</span>
-                  </>
-                );
-              }}
-              renderOption={(option) => {
-                if (!option.id) return <span className="truncate">{option.label}</span>;
-                const agentId = option.id.startsWith("agent:") ? option.id.slice("agent:".length) : null;
-                const agent = agentId ? agentMap?.get(agentId) : null;
-                return (
-                  <>
-                    {agent ? (
-                      <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                    ) : null}
-                    <span className="truncate">{option.label}</span>
-                  </>
-                );
-              }}
-            />
-          ) : null}
+        <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={reopen}
+            onChange={(event) => setReopen(event.target.checked)}
+            className="rounded border-border"
+          />
+          Re-open
+        </label>
 
-          <Button size="sm" disabled={!canSubmit} onClick={() => void handleSubmit()}>
-            {submitting ? "Posting..." : "Send"}
-          </Button>
-        </div>
+        {enableReassign && reassignOptions.length > 0 ? (
+          <InlineEntitySelector
+            value={reassignTarget}
+            options={reassignOptions}
+            placeholder="Assignee"
+            noneLabel="No assignee"
+            searchPlaceholder="Search assignees..."
+            emptyMessage="No assignees found."
+            onChange={setReassignTarget}
+            className="h-8 text-xs"
+            renderTriggerValue={(option) => {
+              if (!option) return <span className="text-muted-foreground">Assignee</span>;
+              const agentId = option.id.startsWith("agent:") ? option.id.slice("agent:".length) : null;
+              const agent = agentId ? agentMap?.get(agentId) : null;
+              return (
+                <>
+                  {agent ? (
+                    <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  ) : null}
+                  <span className="truncate">{option.label}</span>
+                </>
+              );
+            }}
+            renderOption={(option) => {
+              if (!option.id) return <span className="truncate">{option.label}</span>;
+              const agentId = option.id.startsWith("agent:") ? option.id.slice("agent:".length) : null;
+              const agent = agentId ? agentMap?.get(agentId) : null;
+              return (
+                <>
+                  {agent ? (
+                    <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  ) : null}
+                  <span className="truncate">{option.label}</span>
+                </>
+              );
+            }}
+          />
+        ) : null}
+
+        <Button size="sm" disabled={!canSubmit} onClick={() => void handleSubmit()}>
+          {submitting ? "Posting..." : "Send"}
+        </Button>
       </div>
     </div>
   );

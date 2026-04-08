@@ -257,7 +257,7 @@ describe("IssueChatThread", () => {
     });
   });
 
-  it("keeps the composer pinned with a capped editor height", () => {
+  it("keeps the composer inline with bottom breathing room and a capped editor height", () => {
     const root = createRoot(container);
 
     act(() => {
@@ -277,9 +277,9 @@ describe("IssueChatThread", () => {
 
     const composer = container.querySelector('[data-testid="issue-chat-composer"]') as HTMLDivElement | null;
     expect(composer).not.toBeNull();
-    expect(composer?.className).toContain("sticky");
-    expect(composer?.className).toContain("bottom-0");
-    expect(composer?.className).toContain("pb-[calc(env(safe-area-inset-bottom)+0.75rem)]");
+    expect(composer?.className).not.toContain("sticky");
+    expect(composer?.className).not.toContain("bottom-0");
+    expect(composer?.className).toContain("pb-[calc(env(safe-area-inset-bottom)+1.5rem)]");
 
     const editor = container.querySelector('textarea[aria-label="Issue chat editor"]') as HTMLTextAreaElement | null;
     expect(editor?.dataset.contentClassName).toContain("max-h-[28dvh]");
