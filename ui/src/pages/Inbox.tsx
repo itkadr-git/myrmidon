@@ -62,6 +62,7 @@ import {
 import {
   Inbox as InboxIcon,
   AlertTriangle,
+  ChevronRight,
   XCircle,
   X,
   RotateCcw,
@@ -74,6 +75,7 @@ import type { Approval, HeartbeatRun, Issue, JoinRequest } from "@paperclipai/sh
 import {
   ACTIONABLE_APPROVAL_STATUSES,
   DEFAULT_INBOX_ISSUE_COLUMNS,
+  buildInboxNesting,
   getAvailableInboxIssueColumns,
   getApprovalsForTab,
   getInboxWorkItems,
@@ -900,6 +902,21 @@ export function Inbox() {
     projectWorkspaceById,
   ]);
 
+  // --- Parent-child nesting for inbox issues ---
+  const [collapsedInboxParents, setCollapsedInboxParents] = useState<Set<string>>(new Set());
+  const { displayItems: nestedWorkItems, childrenByIssueId } = useMemo(
+    () => buildInboxNesting(filteredWorkItems),
+    [filteredWorkItems],
+  );
+  const toggleInboxParentCollapse = useCallback((parentId: string) => {
+    setCollapsedInboxParents((prev) => {
+      const next = new Set(prev);
+      if (next.has(parentId)) next.delete(parentId);
+      else next.add(parentId);
+      return next;
+    });
+  }, []);
+
   const agentName = (id: string | null) => {
     if (!id) return null;
     return agentById.get(id) ?? null;
@@ -1169,12 +1186,12 @@ export function Inbox() {
 
   // Keep selection valid when the list shape changes, but do not auto-select on initial load.
   useEffect(() => {
-    setSelectedIndex((prev) => resolveInboxSelectionIndex(prev, filteredWorkItems.length));
-  }, [filteredWorkItems.length]);
+    setSelectedIndex((prev) => resolveInboxSelectionIndex(prev, nestedWorkItems.length));
+  }, [nestedWorkItems.length]);
 
   // Use refs for keyboard handler to avoid stale closures
   const kbStateRef = useRef({
-    workItems: filteredWorkItems,
+    workItems: nestedWorkItems,
     selectedIndex,
     canArchive: canArchiveFromTab,
     archivingIssueIds,
@@ -1183,7 +1200,7 @@ export function Inbox() {
     readItems,
   });
   kbStateRef.current = {
-    workItems: filteredWorkItems,
+    workItems: nestedWorkItems,
     selectedIndex,
     canArchive: canArchiveFromTab,
     archivingIssueIds,
@@ -1339,7 +1356,7 @@ export function Inbox() {
     dashboard.costs.monthUtilizationPercent >= 80 &&
     !dismissed.has("alert:budget");
   const hasAlerts = showAggregateAgentError || showBudgetAlert;
-  const showWorkItemsSection = filteredWorkItems.length > 0;
+  const showWorkItemsSection = nestedWorkItems.length > 0;
   const showAlertsSection = shouldShowInboxSection({
     tab,
     hasItems: hasAlerts,
@@ -1526,7 +1543,7 @@ export function Inbox() {
           {showSeparatorBefore("work_items") && <Separator />}
           <div>
             <div ref={listRef} className="overflow-hidden rounded-xl border border-border bg-card">
-              {filteredWorkItems.flatMap((item, index) => {
+              {nestedWorkItems.flatMap((item, index) => {
                 const wrapItem = (key: string, isSelected: boolean, child: ReactNode) => (
                   <div
                     key={`sel-${key}`}
@@ -1542,7 +1559,7 @@ export function Inbox() {
                   index > 0 &&
                   item.timestamp > 0 &&
                   item.timestamp < todayCutoff &&
-                  filteredWorkItems[index - 1].timestamp >= todayCutoff;
+                  nestedWorkItems[index - 1].timestamp >= todayCutoff;
                 const elements: ReactNode[] = [];
                 if (showTodayDivider) {
                   elements.push(
@@ -1666,72 +1683,135 @@ export function Inbox() {
                 }
 
                 const issue = item.issue;
-                const isUnread = issue.isUnreadForMe && !fadingOutIssues.has(issue.id);
-                const isFading = fadingOutIssues.has(issue.id);
-                const isArchiving = archivingIssueIds.has(issue.id);
-                const issueProject = issue.projectId ? projectById.get(issue.projectId) ?? null : null;
-                const row = (
-                  <IssueRow
-                    key={`issue:${issue.id}`}
-                    issue={issue}
-                    issueLinkState={issueLinkState}
-                    selected={isSelected}
-                    className={
-                      isArchiving
-                        ? "pointer-events-none -translate-x-4 scale-[0.98] opacity-0 transition-all duration-200 ease-out"
-                        : "transition-all duration-200 ease-out"
-                    }
-                    desktopMetaLeading={
-                      <InboxIssueMetaLeading
-                        issue={issue}
-                        isLive={liveIssueIds.has(issue.id)}
-                        showStatus={visibleIssueColumnSet.has("status") && availableIssueColumnSet.has("status")}
-                        showIdentifier={visibleIssueColumnSet.has("id") && availableIssueColumnSet.has("id")}
-                      />
-                    }
-                    mobileMeta={issueActivityText(issue).toLowerCase()}
-                    unreadState={
-                      isUnread ? "visible" : isFading ? "fading" : "hidden"
-                    }
-                    onMarkRead={() => markReadMutation.mutate(issue.id)}
-                    onArchive={
-                      canArchiveFromTab
-                        ? () => archiveIssueMutation.mutate(issue.id)
-                        : undefined
-                    }
-                    archiveDisabled={isArchiving || archiveIssueMutation.isPending}
-                    desktopTrailing={
-                      visibleTrailingIssueColumns.length > 0 ? (
-                        <InboxIssueTrailingColumns
-                          issue={issue}
-                          columns={visibleTrailingIssueColumns}
-                          projectName={issueProject?.name ?? null}
-                          projectColor={issueProject?.color ?? null}
-                          workspaceName={resolveIssueWorkspaceName(issue, {
-                            executionWorkspaceById,
-                            projectWorkspaceById,
-                            defaultProjectWorkspaceIdByProjectId,
-                          })}
-                          assigneeName={agentName(issue.assigneeAgentId)}
-                          currentUserId={currentUserId}
-                          parentIdentifier={issue.parentId ? (issueById.get(issue.parentId)?.identifier ?? null) : null}
-                          parentTitle={issue.parentId ? (issueById.get(issue.parentId)?.title ?? null) : null}
-                        />
-                      ) : undefined
-                    }
-                  />
-                );
+                const childIssues = childrenByIssueId.get(issue.id) ?? [];
+                const hasChildren = childIssues.length > 0;
+                const isExpanded = hasChildren && !collapsedInboxParents.has(issue.id);
 
+                const renderInboxIssue = (iss: Issue, depth: number, sel: boolean) => {
+                  const isUnread = iss.isUnreadForMe && !fadingOutIssues.has(iss.id);
+                  const isFading = fadingOutIssues.has(iss.id);
+                  const isArch = archivingIssueIds.has(iss.id);
+                  const proj = iss.projectId ? projectById.get(iss.projectId) ?? null : null;
+                  return (
+                    <IssueRow
+                      key={`issue:${iss.id}`}
+                      issue={iss}
+                      issueLinkState={issueLinkState}
+                      selected={sel}
+                      className={
+                        isArch
+                          ? "pointer-events-none -translate-x-4 scale-[0.98] opacity-0 transition-all duration-200 ease-out"
+                          : "transition-all duration-200 ease-out"
+                      }
+                      desktopMetaLeading={
+                        <>
+                          {depth === 0 && hasChildren ? (
+                            <button
+                              type="button"
+                              className="hidden shrink-0 items-center sm:inline-flex"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                toggleInboxParentCollapse(issue.id);
+                              }}
+                            >
+                              <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", isExpanded && "rotate-90")} />
+                            </button>
+                          ) : depth === 0 ? null : (
+                            <span className="hidden w-3.5 shrink-0 sm:block" />
+                          )}
+                          <InboxIssueMetaLeading
+                            issue={iss}
+                            isLive={liveIssueIds.has(iss.id)}
+                            showStatus={visibleIssueColumnSet.has("status") && availableIssueColumnSet.has("status")}
+                            showIdentifier={visibleIssueColumnSet.has("id") && availableIssueColumnSet.has("id")}
+                          />
+                        </>
+                      }
+                      titleSuffix={hasChildren && !isExpanded && depth === 0 ? (
+                        <span className="ml-1.5 text-xs text-muted-foreground">
+                          ({childIssues.length} sub-task{childIssues.length !== 1 ? "s" : ""})
+                        </span>
+                      ) : undefined}
+                      mobileMeta={issueActivityText(iss).toLowerCase()}
+                      mobileLeading={
+                        depth === 0 && hasChildren ? (
+                          <button type="button" onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            toggleInboxParentCollapse(issue.id);
+                          }}>
+                            <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", isExpanded && "rotate-90")} />
+                          </button>
+                        ) : undefined
+                      }
+                      unreadState={
+                        isUnread ? "visible" : isFading ? "fading" : "hidden"
+                      }
+                      onMarkRead={() => markReadMutation.mutate(iss.id)}
+                      onArchive={
+                        canArchiveFromTab
+                          ? () => archiveIssueMutation.mutate(iss.id)
+                          : undefined
+                      }
+                      archiveDisabled={isArch || archiveIssueMutation.isPending}
+                      desktopTrailing={
+                        visibleTrailingIssueColumns.length > 0 ? (
+                          <InboxIssueTrailingColumns
+                            issue={iss}
+                            columns={visibleTrailingIssueColumns}
+                            projectName={proj?.name ?? null}
+                            projectColor={proj?.color ?? null}
+                            workspaceName={resolveIssueWorkspaceName(iss, {
+                              executionWorkspaceById,
+                              projectWorkspaceById,
+                              defaultProjectWorkspaceIdByProjectId,
+                            })}
+                            assigneeName={agentName(iss.assigneeAgentId)}
+                            currentUserId={currentUserId}
+                            parentIdentifier={iss.parentId ? (issueById.get(iss.parentId)?.identifier ?? null) : null}
+                            parentTitle={iss.parentId ? (issueById.get(iss.parentId)?.title ?? null) : null}
+                          />
+                        ) : undefined
+                      }
+                    />
+                  );
+                };
+
+                // Render parent issue
+                const parentRow = renderInboxIssue(issue, 0, isSelected);
                 elements.push(wrapItem(`issue:${issue.id}`, isSelected, canArchiveFromTab ? (
                   <SwipeToArchive
                     key={`issue:${issue.id}`}
                     selected={isSelected}
-                    disabled={isArchiving || archiveIssueMutation.isPending}
+                    disabled={archivingIssueIds.has(issue.id) || archiveIssueMutation.isPending}
                     onArchive={() => archiveIssueMutation.mutate(issue.id)}
                   >
-                    {row}
+                    {parentRow}
                   </SwipeToArchive>
-                ) : row));
+                ) : parentRow));
+
+                // Render children if expanded
+                if (isExpanded) {
+                  for (const child of childIssues) {
+                    const childRow = renderInboxIssue(child, 1, false);
+                    const isChildArchiving = archivingIssueIds.has(child.id);
+                    elements.push(
+                      <div key={`sel-issue:${child.id}`} data-inbox-item className="relative" style={{ paddingLeft: 16 }}>
+                        {canArchiveFromTab ? (
+                          <SwipeToArchive
+                            key={`issue:${child.id}`}
+                            selected={false}
+                            disabled={isChildArchiving || archiveIssueMutation.isPending}
+                            onArchive={() => archiveIssueMutation.mutate(child.id)}
+                          >
+                            {childRow}
+                          </SwipeToArchive>
+                        ) : childRow}
+                      </div>,
+                    );
+                  }
+                }
                 return elements;
               })}
             </div>

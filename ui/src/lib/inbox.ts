@@ -314,6 +314,68 @@ export function getInboxWorkItems({
   });
 }
 
+/**
+ * Groups parent-child issues in a flat InboxWorkItem list.
+ *
+ * - Children whose parent is also in the list are removed from the top level
+ *   and stored in `childrenByIssueId`.
+ * - The parent's sort timestamp becomes max(parent, children) so that a group
+ *   with a recently-updated child floats to the top.
+ * - If a parent is absent (e.g. archived), children remain as independent roots.
+ */
+export function buildInboxNesting(items: InboxWorkItem[]): {
+  displayItems: InboxWorkItem[];
+  childrenByIssueId: Map<string, Issue[]>;
+} {
+  const issueItems: (InboxWorkItem & { kind: "issue" })[] = [];
+  const nonIssueItems: InboxWorkItem[] = [];
+  for (const item of items) {
+    if (item.kind === "issue") issueItems.push(item as InboxWorkItem & { kind: "issue" });
+    else nonIssueItems.push(item);
+  }
+
+  const issueIdSet = new Set(issueItems.map((i) => i.issue.id));
+  const childrenByIssueId = new Map<string, Issue[]>();
+  const childIds = new Set<string>();
+
+  for (const item of issueItems) {
+    const { issue } = item;
+    if (issue.parentId && issueIdSet.has(issue.parentId)) {
+      childIds.add(issue.id);
+      const arr = childrenByIssueId.get(issue.parentId) ?? [];
+      arr.push(issue);
+      childrenByIssueId.set(issue.parentId, arr);
+    }
+  }
+
+  // Sort each child list by most recent activity
+  for (const children of childrenByIssueId.values()) {
+    children.sort(sortIssuesByMostRecentActivity);
+  }
+
+  // Build root issue items with group-adjusted timestamps
+  const rootIssueItems: InboxWorkItem[] = issueItems
+    .filter((item) => !childIds.has(item.issue.id))
+    .map((item) => {
+      const children = childrenByIssueId.get(item.issue.id);
+      if (!children?.length) return item;
+      const maxChildTs = Math.max(...children.map(issueLastActivityTimestamp));
+      return { ...item, timestamp: Math.max(item.timestamp, maxChildTs) };
+    });
+
+  // Merge and re-sort
+  const displayItems = [...rootIssueItems, ...nonIssueItems].sort((a, b) => {
+    const diff = b.timestamp - a.timestamp;
+    if (diff !== 0) return diff;
+    if (a.kind === "issue" && b.kind === "issue") {
+      return sortIssuesByMostRecentActivity(a.issue, b.issue);
+    }
+    return 0;
+  });
+
+  return { displayItems, childrenByIssueId };
+}
+
 export function shouldShowInboxSection({
   tab,
   hasItems,
