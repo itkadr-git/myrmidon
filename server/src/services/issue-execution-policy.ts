@@ -145,6 +145,11 @@ function selectStageParticipant(
   return first ? { type: first.type, agentId: first.agentId ?? null, userId: first.userId ?? null } : null;
 }
 
+function stageHasParticipant(stage: IssueExecutionStage, participant: IssueExecutionStagePrincipal | null): boolean {
+  if (!participant) return false;
+  return stage.participants.some((candidate) => principalsEqual(candidate, participant));
+}
+
 function patchForPrincipal(principal: IssueExecutionStagePrincipal | null) {
   if (!principal) {
     return { assigneeAgentId: null, assigneeUserId: null };
@@ -218,6 +223,19 @@ function buildPendingStagePatch(input: {
   });
 }
 
+function clearExecutionStatePatch(input: {
+  patch: Record<string, unknown>;
+  issueStatus: string;
+  requestedStatus?: string;
+  returnAssignee: IssueExecutionStagePrincipal | null;
+}) {
+  input.patch.executionState = null;
+  if (input.requestedStatus === undefined && input.issueStatus === "in_review" && input.returnAssignee) {
+    input.patch.status = "in_progress";
+    Object.assign(input.patch, patchForPrincipal(input.returnAssignee));
+  }
+}
+
 export function applyIssueExecutionPolicyTransition(input: TransitionInput): TransitionResult {
   const patch: Record<string, unknown> = {};
   const existingState = parseIssueExecutionState(input.issue.executionState);
@@ -251,6 +269,16 @@ export function applyIssueExecutionPolicyTransition(input: TransitionInput): Tra
     return { patch };
   }
 
+  if (existingState?.currentStageId && !currentStage) {
+    clearExecutionStatePatch({
+      patch,
+      issueStatus: input.issue.status,
+      requestedStatus,
+      returnAssignee: existingState.returnAssignee,
+    });
+    return { patch };
+  }
+
   if (activeStage) {
     const currentParticipant =
       existingState?.currentParticipant ??
@@ -259,6 +287,35 @@ export function applyIssueExecutionPolicyTransition(input: TransitionInput): Tra
       });
     if (!currentParticipant) {
       throw unprocessable(`No eligible ${activeStage.type} participant is configured for this issue`);
+    }
+
+    if (!stageHasParticipant(activeStage, currentParticipant)) {
+      const participant = selectStageParticipant(activeStage, {
+        preferred: explicitAssignee ?? existingState?.currentParticipant ?? null,
+        exclude: existingState?.returnAssignee ?? null,
+      });
+      if (!participant) {
+        clearExecutionStatePatch({
+          patch,
+          issueStatus: input.issue.status,
+          requestedStatus,
+          returnAssignee: existingState?.returnAssignee ?? null,
+        });
+        return { patch };
+      }
+
+      buildPendingStagePatch({
+        patch,
+        previous: existingState,
+        policy: input.policy,
+        stage: activeStage,
+        participant,
+        returnAssignee: existingState?.returnAssignee ?? currentAssignee ?? actor,
+      });
+      return {
+        patch,
+        workflowControlledAssignment: true,
+      };
     }
 
     if (principalsEqual(currentParticipant, actor)) {
@@ -362,8 +419,7 @@ export function applyIssueExecutionPolicyTransition(input: TransitionInput): Tra
 
   const shouldStartWorkflow =
     requestedStatus === "done" ||
-    requestedStatus === "in_review" ||
-    (input.issue.status === "in_review" && existingState == null);
+    requestedStatus === "in_review";
 
   if (!shouldStartWorkflow) {
     return { patch };
