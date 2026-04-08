@@ -297,6 +297,7 @@
 /* Shimmer text effect for active "Working" state — Cursor-style sweep */
 @keyframes shimmer-text-slide {
   0% { background-position: 100% center; }
+  60% { background-position: 0% center; }
   100% { background-position: 0% center; }
 }
 
@@ -315,7 +316,7 @@
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
-  animation: shimmer-text-slide 1.5s linear infinite;
+  animation: shimmer-text-slide 2.5s linear infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
