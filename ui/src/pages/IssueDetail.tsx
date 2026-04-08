@@ -1301,6 +1301,33 @@ export function IssueDetail() {
     };
   }, [archiveFromInbox, canQuickArchiveFromInbox, issue?.id]);
 
+  const isImageAttachment = (attachment: IssueAttachment) => attachment.contentType.startsWith("image/");
+  const attachmentList = attachments ?? [];
+  const imageAttachments = attachmentList.filter(isImageAttachment);
+  const nonImageAttachments = attachmentList.filter((a) => !isImageAttachment(a));
+
+  const handleChatImageClick = useCallback(
+    (src: string) => {
+      // Try exact contentPath match first
+      let idx = imageAttachments.findIndex((a) => a.contentPath === src);
+      if (idx < 0) {
+        // Try matching by asset ID extracted from /api/assets/{assetId}/content URLs
+        const assetMatch = src.match(/\/api\/assets\/([^/]+)\/content/);
+        if (assetMatch) {
+          idx = imageAttachments.findIndex((a) => a.assetId === assetMatch[1]);
+        }
+      }
+      if (idx >= 0) {
+        setGalleryIndex(idx);
+        setGalleryOpen(true);
+      } else {
+        // Image not in attachment list — open in new tab
+        window.open(src, "_blank");
+      }
+    },
+    [imageAttachments],
+  );
+
   const copyIssueToClipboard = async () => {
     if (!issue) return;
     const decodeEntities = (text: string) => {
@@ -1352,32 +1379,6 @@ export function IssueDetail() {
     }
   };
 
-  const isImageAttachment = (attachment: IssueAttachment) => attachment.contentType.startsWith("image/");
-  const attachmentList = attachments ?? [];
-  const imageAttachments = attachmentList.filter(isImageAttachment);
-  const nonImageAttachments = attachmentList.filter((a) => !isImageAttachment(a));
-
-  const handleChatImageClick = useCallback(
-    (src: string) => {
-      // Try exact contentPath match first
-      let idx = imageAttachments.findIndex((a) => a.contentPath === src);
-      if (idx < 0) {
-        // Try matching by asset ID extracted from /api/assets/{assetId}/content URLs
-        const assetMatch = src.match(/\/api\/assets\/([^/]+)\/content/);
-        if (assetMatch) {
-          idx = imageAttachments.findIndex((a) => a.assetId === assetMatch[1]);
-        }
-      }
-      if (idx >= 0) {
-        setGalleryIndex(idx);
-        setGalleryOpen(true);
-      } else {
-        // Image not in attachment list — open in new tab
-        window.open(src, "_blank");
-      }
-    },
-    [imageAttachments],
-  );
   const hasAttachments = attachmentList.length > 0;
   const attachmentUploadButton = (
     <>
