@@ -820,23 +820,24 @@ function IssueChatAssistantMessage() {
   const hasCoT = message.content.some((p) => p.type === "reasoning" || p.type === "tool-call");
   const isFoldable = !isRunning && hasCoT && !!chainOfThoughtLabel;
   const [folded, setFolded] = useState(isFoldable);
-  const previousMessageIdRef = useRef<string | null>(message.id);
-  const previousIsFoldableRef = useRef(isFoldable);
+  const [prevFoldKey, setPrevFoldKey] = useState({ messageId: message.id, isFoldable });
 
-  useEffect(() => {
+  // Derive fold state synchronously during render (not in useEffect) so the
+  // browser never paints the un-folded intermediate state — prevents the
+  // visible "jump" when loading a page with already-folded work sections.
+  if (message.id !== prevFoldKey.messageId || isFoldable !== prevFoldKey.isFoldable) {
     const nextFolded = resolveAssistantMessageFoldedState({
       messageId: message.id,
       currentFolded: folded,
       isFoldable,
-      previousMessageId: previousMessageIdRef.current,
-      previousIsFoldable: previousIsFoldableRef.current,
+      previousMessageId: prevFoldKey.messageId,
+      previousIsFoldable: prevFoldKey.isFoldable,
     });
-    previousMessageIdRef.current = message.id;
-    previousIsFoldableRef.current = isFoldable;
+    setPrevFoldKey({ messageId: message.id, isFoldable });
     if (nextFolded !== folded) {
       setFolded(nextFolded);
     }
-  }, [folded, isFoldable, message.id]);
+  }
 
   const handleVote = async (
     vote: FeedbackVoteValue,
