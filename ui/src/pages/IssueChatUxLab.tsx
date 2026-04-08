@@ -17,7 +17,7 @@ import {
   issueChatUxTranscriptsByRunId,
 } from "../fixtures/issueChatUxFixtures";
 import { cn } from "../lib/utils";
-import { Bot, Brain, FlaskConical, MessagesSquare, Route, Sparkles, WandSparkles } from "lucide-react";
+import { Bot, Brain, FlaskConical, Loader2, MessagesSquare, Route, Sparkles, WandSparkles } from "lucide-react";
 
 const noop = async () => {};
 
@@ -212,6 +212,43 @@ export function IssueChatUxLab() {
               Fast interval (1s) — stress test
             </div>
             <RotatingReasoningDemo intervalMs={1000} />
+          </div>
+        </div>
+      </LabSection>
+
+      <LabSection
+        id="working-tokens"
+        eyebrow="Status tokens"
+        title="Working / Worked header verb"
+        description='The "Working" token uses the shimmer-text gradient sweep to signal an active run. Once the run completes it becomes the static "Worked" token.'
+        accentClassName="bg-[linear-gradient(180deg,rgba(16,185,129,0.06),transparent_28%),var(--background)]"
+      >
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div className="rounded-xl border border-border/60 bg-accent/10 p-4">
+            <div className="mb-3 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+              Active run — shimmer
+            </div>
+            <div className="flex items-center gap-2.5 rounded-lg px-1 py-2">
+              <span className="inline-flex items-center gap-2 text-sm font-medium text-foreground/80">
+                <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
+                <span className="shimmer-text">Working</span>
+              </span>
+              <span className="text-xs text-muted-foreground/60">for 12s</span>
+            </div>
+          </div>
+          <div className="rounded-xl border border-border/60 bg-accent/10 p-4">
+            <div className="mb-3 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+              Completed run — static
+            </div>
+            <div className="flex items-center gap-2.5 rounded-lg px-1 py-2">
+              <span className="inline-flex items-center gap-2 text-sm font-medium text-foreground/80">
+                <span className="flex h-4 w-4 shrink-0 items-center justify-center">
+                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500/70" />
+                </span>
+                Worked
+              </span>
+              <span className="text-xs text-muted-foreground/60">for 1 min 24s</span>
+            </div>
           </div>
         </div>
       </LabSection>
