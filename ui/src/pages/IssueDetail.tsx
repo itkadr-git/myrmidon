@@ -96,6 +96,10 @@ type IssueDetailComment = (IssueComment | OptimisticIssueComment) & {
 };
 
 const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
+const ACTIVE_ISSUE_RUN_POLL_INTERVAL_MS = 3000;
+const IDLE_ISSUE_RUN_POLL_INTERVAL_MS = 30000;
+const ACTIVE_ISSUE_TIMELINE_POLL_INTERVAL_MS = 5000;
+const IDLE_ISSUE_TIMELINE_POLL_INTERVAL_MS = 30000;
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
@@ -630,39 +634,6 @@ export function IssueDetail() {
   const handleIssuePropertiesUpdate = useCallback((data: Record<string, unknown>) => {
     updateIssue.mutate(data);
   }, [updateIssue.mutate]);
-
-  const approvalDecision = useMutation({
-    mutationFn: async ({ approvalId, action }: { approvalId: string; action: "approve" | "reject" }) => {
-      if (action === "approve") {
-        return approvalsApi.approve(approvalId);
-      }
-      return approvalsApi.reject(approvalId);
-    },
-    onMutate: ({ approvalId, action }) => {
-      setPendingApprovalAction({ approvalId, action });
-    },
-    onSuccess: (_approval, variables) => {
-      invalidateIssue();
-      queryClient.invalidateQueries({ queryKey: queryKeys.approvals.detail(variables.approvalId) });
-      if (resolvedCompanyId) {
-        queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(resolvedCompanyId) });
-      }
-      pushToast({
-        title: variables.action === "approve" ? "Approval approved" : "Approval rejected",
-        tone: "success",
-      });
-    },
-    onError: (err, variables) => {
-      pushToast({
-        title: variables.action === "approve" ? "Approval failed" : "Rejection failed",
-        body: err instanceof Error ? err.message : "Unable to update approval",
-        tone: "error",
-      });
-    },
-    onSettled: () => {
-      setPendingApprovalAction(null);
-    },
-  });
 
   const approvalDecision = useMutation({
     mutationFn: async ({ approvalId, action }: { approvalId: string; action: "approve" | "reject" }) => {

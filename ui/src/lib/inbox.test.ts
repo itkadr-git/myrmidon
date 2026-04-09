@@ -330,6 +330,7 @@ describe("inbox helpers", () => {
       dashboard,
       heartbeatRuns: [],
       mineIssues: [makeIssue("1", false), makeIssue("2", false), makeIssue("3", true)],
+      dismissedAlerts: new Set<string>(),
       dismissedAtByKey: new Map(),
     });
 
