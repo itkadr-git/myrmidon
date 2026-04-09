@@ -307,4 +307,67 @@ describe("IssuesList", () => {
       root.unmount();
     });
   });
+
+  it("hides routine-backed issues by default and reveals them when the routine filter is enabled", async () => {
+    const manualIssue = createIssue({
+      id: "issue-manual",
+      identifier: "PAP-10",
+      title: "Manual issue",
+      originKind: "manual",
+    });
+    const routineIssue = createIssue({
+      id: "issue-routine",
+      identifier: "PAP-11",
+      title: "Routine issue",
+      originKind: "routine_execution",
+    });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[manualIssue, routineIssue]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        enableRoutineVisibilityFilter
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Manual issue");
+      expect(container.textContent).not.toContain("Routine issue");
+    });
+
+    await act(async () => {
+      const filterButton = Array.from(document.body.querySelectorAll("button")).find(
+        (button) => button.textContent?.includes("Filter"),
+      );
+      filterButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    await waitForAssertion(() => {
+      const toggle = Array.from(document.body.querySelectorAll("label")).find(
+        (label) => label.textContent?.includes("Show routine runs"),
+      );
+      expect(toggle).not.toBeUndefined();
+    });
+
+    await act(async () => {
+      const toggle = Array.from(document.body.querySelectorAll("label")).find(
+        (label) => label.textContent?.includes("Show routine runs"),
+      );
+      toggle?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Routine issue");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
 });

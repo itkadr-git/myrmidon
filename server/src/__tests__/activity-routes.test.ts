@@ -62,6 +62,7 @@ describe("activity routes", () => {
     mockActivityService.runsForIssue.mockResolvedValue([
       {
         runId: "run-1",
+        adapterType: "codex_local",
       },
     ]);
 
@@ -72,6 +73,6 @@ describe("activity routes", () => {
     expect(mockIssueService.getByIdentifier).toHaveBeenCalledWith("PAP-475");
     expect(mockIssueService.getById).not.toHaveBeenCalled();
     expect(mockActivityService.runsForIssue).toHaveBeenCalledWith("company-1", "issue-uuid-1");
-    expect(res.body).toEqual([{ runId: "run-1" }]);
+    expect(res.body).toEqual([{ runId: "run-1", adapterType: "codex_local" }]);
   });
 });
