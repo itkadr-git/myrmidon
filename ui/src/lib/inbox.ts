@@ -14,6 +14,7 @@ export const DISMISSED_KEY = "paperclip:inbox:dismissed";
 export const READ_ITEMS_KEY = "paperclip:inbox:read-items";
 export const INBOX_LAST_TAB_KEY = "paperclip:inbox:last-tab";
 export const INBOX_ISSUE_COLUMNS_KEY = "paperclip:inbox:issue-columns";
+export const INBOX_NESTING_KEY = "paperclip:inbox:nesting";
 export type InboxTab = "mine" | "recent" | "unread" | "all";
 export type InboxApprovalFilter = "all" | "actionable" | "resolved";
 export const inboxIssueColumns = ["status", "id", "assignee", "project", "workspace", "parent", "labels", "updated"] as const;
@@ -177,6 +178,27 @@ export function resolveIssueWorkspaceName(
   return null;
 }
 
+export function loadInboxNesting(): boolean {
+  try {
+    const raw = localStorage.getItem(INBOX_NESTING_KEY);
+    return raw !== "false";
+  } catch {
+    return true;
+  }
+}
+
+export function saveInboxNesting(enabled: boolean) {
+  try {
+    localStorage.setItem(INBOX_NESTING_KEY, String(enabled));
+  } catch {
+    // Ignore localStorage failures.
+  }
+}
+
+export function resolveInboxNestingEnabled(preferenceEnabled: boolean, isMobile: boolean): boolean {
+  return preferenceEnabled && !isMobile;
+}
+
 export function loadLastInboxTab(): InboxTab {
   try {
     const raw = localStorage.getItem(INBOX_LAST_TAB_KEY);
@@ -338,6 +360,68 @@ export function getInboxWorkItems({
 
     return a.kind === "approval" ? -1 : 1;
   });
+}
+
+/**
+ * Groups parent-child issues in a flat InboxWorkItem list.
+ *
+ * - Children whose parent is also in the list are removed from the top level
+ *   and stored in `childrenByIssueId`.
+ * - The parent's sort timestamp becomes max(parent, children) so that a group
+ *   with a recently-updated child floats to the top.
+ * - If a parent is absent (e.g. archived), children remain as independent roots.
+ */
+export function buildInboxNesting(items: InboxWorkItem[]): {
+  displayItems: InboxWorkItem[];
+  childrenByIssueId: Map<string, Issue[]>;
+} {
+  const issueItems: (InboxWorkItem & { kind: "issue" })[] = [];
+  const nonIssueItems: InboxWorkItem[] = [];
+  for (const item of items) {
+    if (item.kind === "issue") issueItems.push(item as InboxWorkItem & { kind: "issue" });
+    else nonIssueItems.push(item);
+  }
+
+  const issueIdSet = new Set(issueItems.map((i) => i.issue.id));
+  const childrenByIssueId = new Map<string, Issue[]>();
+  const childIds = new Set<string>();
+
+  for (const item of issueItems) {
+    const { issue } = item;
+    if (issue.parentId && issueIdSet.has(issue.parentId)) {
+      childIds.add(issue.id);
+      const arr = childrenByIssueId.get(issue.parentId) ?? [];
+      arr.push(issue);
+      childrenByIssueId.set(issue.parentId, arr);
+    }
+  }
+
+  // Sort each child list by most recent activity
+  for (const children of childrenByIssueId.values()) {
+    children.sort(sortIssuesByMostRecentActivity);
+  }
+
+  // Build root issue items with group-adjusted timestamps
+  const rootIssueItems: InboxWorkItem[] = issueItems
+    .filter((item) => !childIds.has(item.issue.id))
+    .map((item) => {
+      const children = childrenByIssueId.get(item.issue.id);
+      if (!children?.length) return item;
+      const maxChildTs = Math.max(...children.map(issueLastActivityTimestamp));
+      return { ...item, timestamp: Math.max(item.timestamp, maxChildTs) };
+    });
+
+  // Merge and re-sort
+  const displayItems = [...rootIssueItems, ...nonIssueItems].sort((a, b) => {
+    const diff = b.timestamp - a.timestamp;
+    if (diff !== 0) return diff;
+    if (a.kind === "issue" && b.kind === "issue") {
+      return sortIssuesByMostRecentActivity(a.issue, b.issue);
+    }
+    return 0;
+  });
+
+  return { displayItems, childrenByIssueId };
 }
 
 export function shouldShowInboxSection({

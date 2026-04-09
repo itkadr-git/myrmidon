@@ -26,6 +26,7 @@ import {
   loadLastInboxTab,
   normalizeInboxIssueColumns,
   RECENT_ISSUES_LIMIT,
+  resolveInboxNestingEnabled,
   resolveIssueWorkspaceName,
   resolveInboxSelectionIndex,
   saveInboxIssueColumns,
@@ -550,6 +551,19 @@ describe("inbox helpers", () => {
 
     saveLastInboxTab("all");
     expect(loadLastInboxTab()).toBe("all");
+  });
+
+  it("keeps nesting enabled on desktop when the saved preference is on", () => {
+    expect(resolveInboxNestingEnabled(true, false)).toBe(true);
+  });
+
+  it("forces nesting off on mobile even when the saved preference is on", () => {
+    expect(resolveInboxNestingEnabled(true, true)).toBe(false);
+  });
+
+  it("keeps nesting off when the saved preference is off", () => {
+    expect(resolveInboxNestingEnabled(false, false)).toBe(false);
+    expect(resolveInboxNestingEnabled(false, true)).toBe(false);
   });
 
   it("defaults issue columns to the current inbox layout", () => {

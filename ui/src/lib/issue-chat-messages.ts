@@ -410,7 +410,7 @@ function createHistoricalTranscriptMessage(args: {
       : [];
 
   const message: ThreadAssistantMessage = {
-    id: `historical-run:${run.runId}`,
+    id: `run-assistant:${run.runId}`,
     role: "assistant",
     createdAt: toDate(run.startedAt ?? run.createdAt),
     content,
@@ -593,25 +593,20 @@ function normalizeLiveRuns(
 function createLiveRunMessage(args: {
   run: LiveRunForIssue;
   transcript: readonly IssueChatTranscriptEntry[];
-  hasOutput: boolean;
 }) {
-  const { run, transcript, hasOutput } = args;
+  const { run, transcript } = args;
   const { parts, notices, segments } = buildAssistantPartsFromTranscript(transcript);
   const waitingText =
     run.status === "queued"
       ? "Queued..."
-      : hasOutput
+      : parts.length > 0
         ? ""
         : "Working...";
 
-  const content = parts.length > 0
-    ? parts
-    : waitingText
-      ? [{ type: "text", text: waitingText } satisfies TextMessagePart]
-      : [];
+  const content = parts;
 
   const message: ThreadAssistantMessage = {
-    id: `live-run:${run.id}`,
+    id: `run-assistant:${run.id}`,
     role: "assistant",
     createdAt: toDate(run.startedAt ?? run.createdAt),
     content,
@@ -684,7 +679,10 @@ export function buildIssueChatMessages(args: {
   for (const run of [...linkedRuns].sort((a, b) => toTimestamp(runTimestamp(a)) - toTimestamp(runTimestamp(b)))) {
     const transcript = transcriptsByRunId?.get(run.runId) ?? [];
     const hasRunOutput = transcript.length > 0 || (hasOutputForRun?.(run.runId) ?? false);
-    if (hasRunOutput) {
+    if (hasRunOutput || run.status !== "succeeded") {
+      // Always use the transcript message for non-succeeded runs (even before
+      // transcript data loads) so the message type and fold header are stable
+      // from initial render — avoids a flash when transcripts arrive later.
       orderedMessages.push({
         createdAtMs: toTimestamp(run.startedAt ?? run.createdAt),
         order: 2,
@@ -697,7 +695,7 @@ export function buildIssueChatMessages(args: {
       });
       continue;
     }
-    if (run.status === "succeeded" && !includeSucceededRunsWithoutOutput) continue;
+    if (!includeSucceededRunsWithoutOutput) continue;
     orderedMessages.push({
       createdAtMs: toTimestamp(runTimestamp(run)),
       order: 2,
@@ -712,7 +710,6 @@ export function buildIssueChatMessages(args: {
       message: createLiveRunMessage({
         run,
         transcript: transcriptsByRunId?.get(run.id) ?? [],
-        hasOutput: hasOutputForRun?.(run.id) ?? false,
       }),
     });
   }

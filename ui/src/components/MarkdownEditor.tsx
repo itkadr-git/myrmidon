@@ -364,6 +364,19 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     return map;
   }, [mentions]);
 
+  const setEditorRef = useCallback((instance: MDXEditorMethods | null) => {
+    ref.current = instance;
+    if (!instance) {
+      return;
+    }
+    if (valueRef.current !== latestValueRef.current) {
+      // Re-apply the latest controlled value once MDXEditor exposes its imperative API.
+      echoIgnoreMarkdownRef.current = valueRef.current;
+      instance.setMarkdown(valueRef.current);
+      latestValueRef.current = valueRef.current;
+    }
+  }, []);
+
   const filteredMentions = useMemo<AutocompleteOption[]>(() => {
     if (!mentionState) return [];
     const q = mentionState.query.trim().toLowerCase();
@@ -378,16 +391,6 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     if (!mentions) return [];
     return mentions.filter((m) => m.name.toLowerCase().includes(q)).slice(0, 8);
   }, [mentionState, mentions, slashCommands]);
-
-  const setEditorRef = useCallback((instance: MDXEditorMethods | null) => {
-    ref.current = instance;
-    if (instance) {
-      const v = valueRef.current;
-      echoIgnoreMarkdownRef.current = v;
-      instance.setMarkdown(v);
-      latestValueRef.current = v;
-    }
-  }, []);
 
   useImperativeHandle(forwardedRef, () => ({
     focus: () => {
