@@ -696,7 +696,14 @@ export function shouldResetTaskSessionForWake(
   if (contextSnapshot?.forceFreshSession === true) return true;
 
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
-  if (wakeReason === "issue_assigned") return true;
+  if (
+    wakeReason === "issue_assigned" ||
+    wakeReason === "execution_review_requested" ||
+    wakeReason === "execution_approval_requested" ||
+    wakeReason === "execution_changes_requested"
+  ) {
+    return true;
+  }
   return false;
 }
 
@@ -714,6 +721,9 @@ function describeSessionResetReason(
 
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   if (wakeReason === "issue_assigned") return "wake reason is issue_assigned";
+  if (wakeReason === "execution_review_requested") return "wake reason is execution_review_requested";
+  if (wakeReason === "execution_approval_requested") return "wake reason is execution_approval_requested";
+  if (wakeReason === "execution_changes_requested") return "wake reason is execution_changes_requested";
   return null;
 }
 
@@ -867,9 +877,8 @@ async function buildPaperclipWakePayload(input: {
       }
     | null;
 }) {
+  const executionStage = parseObject(input.contextSnapshot.executionStage);
   const commentIds = extractWakeCommentIds(input.contextSnapshot);
-  if (commentIds.length === 0) return null;
-
   const issueId = readNonEmptyString(input.contextSnapshot.issueId);
   const issueSummary =
     input.issueSummary ??
@@ -886,23 +895,27 @@ async function buildPaperclipWakePayload(input: {
           .where(and(eq(issues.id, issueId), eq(issues.companyId, input.companyId)))
           .then((rows) => rows[0] ?? null)
       : null);
+  if (commentIds.length === 0 && Object.keys(executionStage).length === 0 && !issueSummary) return null;
 
-  const commentRows = await input.db
-    .select({
-      id: issueComments.id,
-      issueId: issueComments.issueId,
-      body: issueComments.body,
-      authorAgentId: issueComments.authorAgentId,
-      authorUserId: issueComments.authorUserId,
-      createdAt: issueComments.createdAt,
-    })
-    .from(issueComments)
-    .where(
-      and(
-        eq(issueComments.companyId, input.companyId),
-        inArray(issueComments.id, commentIds),
-      ),
-    );
+  const commentRows =
+    commentIds.length === 0
+      ? []
+      : await input.db
+          .select({
+            id: issueComments.id,
+            issueId: issueComments.issueId,
+            body: issueComments.body,
+            authorAgentId: issueComments.authorAgentId,
+            authorUserId: issueComments.authorUserId,
+            createdAt: issueComments.createdAt,
+          })
+          .from(issueComments)
+          .where(
+            and(
+              eq(issueComments.companyId, input.companyId),
+              inArray(issueComments.id, commentIds),
+            ),
+          );
 
   const commentsById = new Map(commentRows.map((comment) => [comment.id, comment]));
   const comments: Array<Record<string, unknown>> = [];
@@ -959,6 +972,7 @@ async function buildPaperclipWakePayload(input: {
           priority: issueSummary.priority,
         }
       : null,
+    executionStage: Object.keys(executionStage).length > 0 ? executionStage : null,
     commentIds,
     latestCommentId: commentIds[commentIds.length - 1] ?? null,
     comments,
@@ -2159,7 +2173,7 @@ export function heartbeatService(db: Db) {
     const heartbeat = parseObject(runtimeConfig.heartbeat);
 
     return {
-      enabled: asBoolean(heartbeat.enabled, true),
+      enabled: asBoolean(heartbeat.enabled, false),
       intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
       wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
       maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),

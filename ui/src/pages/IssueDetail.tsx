@@ -58,6 +58,7 @@ import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { formatIssueActivityAction } from "@/lib/activity-format";
 import {
   Activity as ActivityIcon,
   Check,
@@ -94,42 +95,11 @@ type IssueDetailComment = (IssueComment | OptimisticIssueComment) & {
   queueTargetRunId?: string | null;
 };
 
+const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
 const ACTIVE_ISSUE_RUN_POLL_INTERVAL_MS = 3000;
 const IDLE_ISSUE_RUN_POLL_INTERVAL_MS = 30000;
 const ACTIVE_ISSUE_TIMELINE_POLL_INTERVAL_MS = 5000;
 const IDLE_ISSUE_TIMELINE_POLL_INTERVAL_MS = 30000;
-
-const ACTION_LABELS: Record<string, string> = {
-  "issue.created": "created the issue",
-  "issue.updated": "updated the issue",
-  "issue.checked_out": "checked out the issue",
-  "issue.released": "released the issue",
-  "issue.comment_added": "added a comment",
-  "issue.feedback_vote_saved": "saved feedback on an AI output",
-  "issue.attachment_added": "added an attachment",
-  "issue.attachment_removed": "removed an attachment",
-  "issue.document_created": "created a document",
-  "issue.document_updated": "updated a document",
-  "issue.document_deleted": "deleted a document",
-  "issue.deleted": "deleted the issue",
-  "agent.created": "created an agent",
-  "agent.updated": "updated the agent",
-  "agent.paused": "paused the agent",
-  "agent.resumed": "resumed the agent",
-  "agent.terminated": "terminated the agent",
-  "heartbeat.invoked": "invoked a heartbeat",
-  "heartbeat.cancelled": "cancelled a heartbeat",
-  "approval.created": "requested approval",
-  "approval.approved": "approved",
-  "approval.rejected": "rejected",
-};
-
-const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
-
-function humanizeValue(value: unknown): string {
-  if (typeof value !== "string") return String(value ?? "none");
-  return value.replace(/_/g, " ");
-}
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
@@ -178,50 +148,6 @@ function titleizeFilename(input: string) {
     .filter(Boolean)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ");
-}
-
-function formatAction(action: string, details?: Record<string, unknown> | null): string {
-  if (action === "issue.updated" && details) {
-    const previous = (details._previous ?? {}) as Record<string, unknown>;
-    const parts: string[] = [];
-
-    if (details.status !== undefined) {
-      const from = previous.status;
-      parts.push(
-        from
-          ? `changed the status from ${humanizeValue(from)} to ${humanizeValue(details.status)}`
-          : `changed the status to ${humanizeValue(details.status)}`
-      );
-    }
-    if (details.priority !== undefined) {
-      const from = previous.priority;
-      parts.push(
-        from
-          ? `changed the priority from ${humanizeValue(from)} to ${humanizeValue(details.priority)}`
-          : `changed the priority to ${humanizeValue(details.priority)}`
-      );
-    }
-    if (details.assigneeAgentId !== undefined || details.assigneeUserId !== undefined) {
-      parts.push(
-        details.assigneeAgentId || details.assigneeUserId
-          ? "assigned the issue"
-          : "unassigned the issue",
-      );
-    }
-    if (details.title !== undefined) parts.push("updated the title");
-    if (details.description !== undefined) parts.push("updated the description");
-
-    if (parts.length > 0) return parts.join(", ");
-  }
-  if (
-    (action === "issue.document_created" || action === "issue.document_updated" || action === "issue.document_deleted") &&
-    details
-  ) {
-    const key = typeof details.key === "string" ? details.key : "document";
-    const title = typeof details.title === "string" && details.title ? ` (${details.title})` : "";
-    return `${ACTION_LABELS[action] ?? action} ${key}${title}`;
-  }
-  return ACTION_LABELS[action] ?? action.replace(/[._]/g, " ");
 }
 
 function mergeOptimisticFeedbackVote(
@@ -1868,7 +1794,7 @@ export function IssueDetail() {
               {activity.slice(0, 20).map((evt) => (
                 <div key={evt.id} className="flex items-center gap-1.5 text-xs text-muted-foreground">
                   <ActorIdentity evt={evt} agentMap={agentMap} />
-                  <span>{formatAction(evt.action, evt.details)}</span>
+                  <span>{formatIssueActivityAction(evt.action, evt.details, { agentMap, currentUserId })}</span>
                   <span className="ml-auto shrink-0">{relativeTime(evt.createdAt)}</span>
                 </div>
               ))}
@@ -1891,7 +1817,6 @@ export function IssueDetail() {
           </TabsContent>
         )}
       </Tabs>
-
 
       {/* Mobile properties drawer */}
       <Sheet open={mobilePropsOpen} onOpenChange={setMobilePropsOpen}>
