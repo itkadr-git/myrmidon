@@ -15,8 +15,10 @@ export const READ_ITEMS_KEY = "paperclip:inbox:read-items";
 export const INBOX_LAST_TAB_KEY = "paperclip:inbox:last-tab";
 export const INBOX_ISSUE_COLUMNS_KEY = "paperclip:inbox:issue-columns";
 export const INBOX_NESTING_KEY = "paperclip:inbox:nesting";
+export const INBOX_GROUP_BY_KEY = "paperclip:inbox:group-by";
 export type InboxTab = "mine" | "recent" | "unread" | "all";
 export type InboxApprovalFilter = "all" | "actionable" | "resolved";
+export type InboxWorkItemGroupBy = "none" | "type";
 export const inboxIssueColumns = ["status", "id", "assignee", "project", "workspace", "parent", "labels", "updated"] as const;
 export type InboxIssueColumn = (typeof inboxIssueColumns)[number];
 export const DEFAULT_INBOX_ISSUE_COLUMNS: InboxIssueColumn[] = ["status", "id", "updated"];
@@ -49,6 +51,12 @@ export interface InboxBadgeData {
   joinRequests: number;
   mineIssues: number;
   alerts: number;
+}
+
+export interface InboxWorkItemGroup {
+  key: string;
+  label: string | null;
+  items: InboxWorkItem[];
 }
 
 export function loadDismissedInboxAlerts(): Set<string> {
@@ -135,6 +143,35 @@ export function saveInboxIssueColumns(columns: InboxIssueColumn[]) {
   } catch {
     // Ignore localStorage failures.
   }
+}
+
+export function loadInboxWorkItemGroupBy(): InboxWorkItemGroupBy {
+  try {
+    const raw = localStorage.getItem(INBOX_GROUP_BY_KEY);
+    return raw === "type" ? raw : "none";
+  } catch {
+    return "none";
+  }
+}
+
+export function saveInboxWorkItemGroupBy(groupBy: InboxWorkItemGroupBy) {
+  try {
+    localStorage.setItem(INBOX_GROUP_BY_KEY, groupBy);
+  } catch {
+    // Ignore localStorage failures.
+  }
+}
+
+export function shouldIncludeRoutineExecutionIssue(
+  issue: Pick<Issue, "originKind">,
+  showRoutineExecutions: boolean,
+): boolean {
+  return showRoutineExecutions || issue.originKind !== "routine_execution";
+}
+
+export function filterInboxIssues(issues: Issue[], showRoutineExecutions: boolean): Issue[] {
+  if (showRoutineExecutions) return issues;
+  return issues.filter((issue) => shouldIncludeRoutineExecutionIssue(issue, showRoutineExecutions));
 }
 
 export function resolveIssueWorkspaceName(
@@ -360,6 +397,48 @@ export function getInboxWorkItems({
 
     return a.kind === "approval" ? -1 : 1;
   });
+}
+
+const inboxWorkItemKindOrder: InboxWorkItem["kind"][] = [
+  "issue",
+  "approval",
+  "failed_run",
+  "join_request",
+];
+
+const inboxWorkItemKindLabels: Record<InboxWorkItem["kind"], string> = {
+  issue: "Issues",
+  approval: "Approvals",
+  failed_run: "Failed runs",
+  join_request: "Join requests",
+};
+
+export function groupInboxWorkItems(
+  items: InboxWorkItem[],
+  groupBy: InboxWorkItemGroupBy,
+): InboxWorkItemGroup[] {
+  if (groupBy === "none") {
+    return [{ key: "__all", label: null, items }];
+  }
+
+  const groups = new Map<InboxWorkItem["kind"], InboxWorkItem[]>();
+  for (const item of items) {
+    const existing = groups.get(item.kind) ?? [];
+    existing.push(item);
+    groups.set(item.kind, existing);
+  }
+
+  const orderedGroups: InboxWorkItemGroup[] = [];
+  for (const kind of inboxWorkItemKindOrder) {
+    const groupItems = groups.get(kind) ?? [];
+    if (groupItems.length === 0) continue;
+    orderedGroups.push({
+        key: kind,
+        label: inboxWorkItemKindLabels[kind],
+        items: groupItems,
+    });
+  }
+  return orderedGroups;
 }
 
 /**

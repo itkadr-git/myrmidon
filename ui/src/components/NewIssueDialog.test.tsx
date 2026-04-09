@@ -384,6 +384,24 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
+  it("keeps the mobile dialog bounded with an internal flexible scroll region", async () => {
+    const { root } = renderDialog(container);
+    await flush();
+
+    const dialogContent = Array.from(container.querySelectorAll("div")).find((element) =>
+      typeof element.className === "string" && element.className.includes("max-h-[calc(100dvh-2rem)]"),
+    );
+    expect(dialogContent?.className).toContain("h-[calc(100dvh-2rem)]");
+    expect(dialogContent?.className).toContain("overflow-hidden");
+
+    const descriptionInput = container.querySelector('textarea[aria-label="Add description..."]');
+    const descriptionScrollRegion = descriptionInput?.parentElement?.parentElement;
+    expect(descriptionScrollRegion?.className).toContain("flex-1");
+    expect(descriptionScrollRegion?.className).toContain("overflow-y-auto");
+
+    act(() => root.unmount());
+  });
+
   it("warns when a sub-issue stops matching the parent workspace", async () => {
     mockProjectsApi.list.mockResolvedValue([
       {
@@ -429,6 +447,7 @@ describe("NewIssueDialog", () => {
     };
 
     const { root } = renderDialog(container);
+    await flush();
     await flush();
 
     expect(container.textContent).not.toContain("will no longer use the parent issue workspace");
