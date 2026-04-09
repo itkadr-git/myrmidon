@@ -1,6 +1,6 @@
 #!/usr/bin/env -S node --import tsx
 import fs from "node:fs/promises";
-import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { repoRoot } from "./dev-service-profile.ts";
 
@@ -41,6 +41,20 @@ function discoverWorkspacePackagePaths(rootDir: string): Map<string, string> {
   visit(path.join(rootDir, "cli"));
 
   return packagePaths;
+}
+
+function isLinkedGitWorktreeCheckout(rootDir: string) {
+  const gitMetadataPath = path.join(rootDir, ".git");
+  if (!existsSync(gitMetadataPath)) return false;
+
+  const stat = lstatSync(gitMetadataPath);
+  if (!stat.isFile()) return false;
+
+  return readFileSync(gitMetadataPath, "utf8").trimStart().startsWith("gitdir:");
+}
+
+if (!isLinkedGitWorktreeCheckout(repoRoot)) {
+  process.exit(0);
 }
 
 const workspacePackagePaths = discoverWorkspacePackagePaths(repoRoot);
