@@ -36,6 +36,7 @@ import {
   applyOptimisticIssueCommentUpdate,
   createOptimisticIssueComment,
   flattenIssueCommentPages,
+  getNextIssueCommentPageParam,
   isQueuedIssueComment,
   matchesIssueRef,
   mergeIssueComments,
@@ -416,7 +417,7 @@ export function IssueDetail() {
     enabled: !!issueId,
     initialPageParam: null as string | null,
     getNextPageParam: (lastPage) =>
-      lastPage.length === ISSUE_COMMENT_PAGE_SIZE ? lastPage[lastPage.length - 1]?.id : undefined,
+      getNextIssueCommentPageParam(lastPage, ISSUE_COMMENT_PAGE_SIZE),
     placeholderData: keepPreviousData,
   });
   const comments = useMemo(

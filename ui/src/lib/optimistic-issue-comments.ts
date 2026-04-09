@@ -102,6 +102,14 @@ export function flattenIssueCommentPages(
   return sortIssueComments((pages ?? []).flatMap((page) => page));
 }
 
+export function getNextIssueCommentPageParam(
+  lastPage: ReadonlyArray<IssueComment> | undefined,
+  pageSize: number,
+): string | undefined {
+  if (!lastPage || lastPage.length < pageSize) return undefined;
+  return lastPage[lastPage.length - 1]?.id;
+}
+
 export function upsertIssueComment(
   comments: IssueComment[] | undefined,
   nextComment: IssueComment,

@@ -6,6 +6,7 @@ import {
   applyOptimisticIssueCommentUpdate,
   createOptimisticIssueComment,
   flattenIssueCommentPages,
+  getNextIssueCommentPageParam,
   isQueuedIssueComment,
   matchesIssueRef,
   mergeIssueComments,
@@ -169,6 +170,40 @@ describe("optimistic issue comments", () => {
     ]);
 
     expect(flattened.map((comment) => comment.id)).toEqual(["comment-1", "comment-2", "comment-3"]);
+  });
+
+  it("returns no next page param when the last page is missing", () => {
+    expect(getNextIssueCommentPageParam(undefined, 50)).toBeUndefined();
+  });
+
+  it("returns the oldest id when the last page is full", () => {
+    expect(
+      getNextIssueCommentPageParam(
+        [
+          {
+            id: "comment-2",
+            companyId: "company-1",
+            issueId: "issue-1",
+            authorAgentId: null,
+            authorUserId: "board-1",
+            body: "Second",
+            createdAt: new Date("2026-03-28T14:00:02.000Z"),
+            updatedAt: new Date("2026-03-28T14:00:02.000Z"),
+          },
+          {
+            id: "comment-1",
+            companyId: "company-1",
+            issueId: "issue-1",
+            authorAgentId: null,
+            authorUserId: "board-1",
+            body: "First",
+            createdAt: new Date("2026-03-28T14:00:01.000Z"),
+            updatedAt: new Date("2026-03-28T14:00:01.000Z"),
+          },
+        ],
+        2,
+      ),
+    ).toBe("comment-1");
   });
 
   it("upserts paged comments without dropping older pages", () => {
