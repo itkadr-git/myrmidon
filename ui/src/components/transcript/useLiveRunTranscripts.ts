@@ -281,7 +281,16 @@ export function useLiveRunTranscripts({
         socket.onmessage = null;
         socket.onerror = null;
         socket.onclose = null;
-        socket.close(1000, "live_run_transcripts_unmount");
+        if (socket.readyState === WebSocket.CONNECTING) {
+          // Defer the close until the handshake completes so the browser
+          // does not emit a noisy "closed before the connection is established"
+          // warning during rapid run teardown.
+          socket.onopen = () => {
+            socket?.close(1000, "live_run_transcripts_unmount");
+          };
+        } else if (socket.readyState === WebSocket.OPEN) {
+          socket.close(1000, "live_run_transcripts_unmount");
+        }
       }
     };
   }, [activeRunIds, companyId, runById]);

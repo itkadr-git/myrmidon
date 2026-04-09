@@ -488,6 +488,23 @@ describe("heartbeat comment wake batching", () => {
 
       expect(firstRun).not.toBeNull();
       await waitFor(() => gateway.getAgentPayloads().length === 1);
+      const firstPayload = gateway.getAgentPayloads()[0] ?? {};
+      expect(firstPayload.paperclip).toMatchObject({
+        wake: {
+          reason: "issue_assigned",
+          issue: {
+            id: issueId,
+            identifier: `${issuePrefix}-1`,
+            title: "Require a comment",
+            status: "todo",
+            priority: "medium",
+          },
+          commentIds: [],
+        },
+      });
+      expect(String(firstPayload.message ?? "")).toContain("## Paperclip Wake Payload");
+      expect(String(firstPayload.message ?? "")).toContain("Do not switch to another issue until you have handled this wake.");
+      expect(String(firstPayload.message ?? "")).toContain(`${issuePrefix}-1 Require a comment`);
       gateway.releaseFirstWait();
       await waitFor(async () => {
         const runs = await db
