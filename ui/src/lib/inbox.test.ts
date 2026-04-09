@@ -328,8 +328,6 @@ describe("inbox helpers", () => {
       heartbeatRuns: [],
       mineIssues: [makeIssue("1", false), makeIssue("2", false), makeIssue("3", true)],
       dismissed: new Set<string>(),
-      dismissedAlerts: new Set<string>(),
-      dismissedAtByKey: new Map(),
     });
 
     expect(result.mineIssues).toBe(1);
