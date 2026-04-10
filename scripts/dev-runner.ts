@@ -4,7 +4,6 @@ import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } f
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
-import { BIND_MODES, type BindMode } from "@paperclipai/shared";
 import { createCapturedOutputBuffer, parseJsonResponseWithLimit } from "./dev-runner-output.mjs";
 import { shouldTrackDevServerPath } from "./dev-runner-paths.mjs";
 import { createDevServiceIdentity, repoRoot } from "./dev-service-profile.ts";
@@ -14,6 +13,11 @@ import {
   touchLocalServiceRegistryRecord,
   writeLocalServiceRegistryRecord,
 } from "../server/src/services/local-service-supervisor.ts";
+
+// Keep these values local so the dev runner can boot from the server package's
+// tsx context without requiring workspace package resolution first.
+const BIND_MODES = ["loopback", "lan", "tailnet", "custom"] as const;
+type BindMode = (typeof BIND_MODES)[number];
 
 const mode = process.argv[2] === "watch" ? "watch" : "dev";
 const cliArgs = process.argv.slice(3);
