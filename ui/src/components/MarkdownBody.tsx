@@ -1,6 +1,6 @@
 import { isValidElement, useEffect, useId, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import Markdown, { type Components } from "react-markdown";
+import Markdown, { type Components, type Options } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "../lib/utils";
 import { useTheme } from "../context/ThemeContext";
@@ -17,6 +17,7 @@ interface MarkdownBodyProps {
   className?: string;
   style?: React.CSSProperties;
   softBreaks?: boolean;
+  linkIssueReferences?: boolean;
   /** Optional resolver for relative image paths (e.g. within export packages) */
   resolveImageSrc?: (src: string) => string | null;
   /** Called when a user clicks an inline image */
@@ -125,11 +126,23 @@ function MermaidDiagramBlock({ source, darkMode }: { source: string; darkMode: b
   );
 }
 
-export function MarkdownBody({ children, className, style, softBreaks = true, resolveImageSrc, onImageClick }: MarkdownBodyProps) {
+export function MarkdownBody({
+  children,
+  className,
+  style,
+  softBreaks = true,
+  linkIssueReferences = true,
+  resolveImageSrc,
+  onImageClick,
+}: MarkdownBodyProps) {
   const { theme } = useTheme();
-  const remarkPlugins = softBreaks
-    ? [remarkGfm, remarkLinkIssueReferences, remarkSoftBreaks]
-    : [remarkGfm, remarkLinkIssueReferences];
+  const remarkPlugins: NonNullable<Options["remarkPlugins"]> = [remarkGfm];
+  if (linkIssueReferences) {
+    remarkPlugins.push(remarkLinkIssueReferences);
+  }
+  if (softBreaks) {
+    remarkPlugins.push(remarkSoftBreaks);
+  }
   const components: Components = {
     pre: ({ node: _node, children: preChildren, ...preProps }) => {
       const mermaidSource = extractMermaidSource(preChildren);
@@ -139,7 +152,7 @@ export function MarkdownBody({ children, className, style, softBreaks = true, re
       return <pre {...preProps}>{preChildren}</pre>;
     },
     a: ({ href, children: linkChildren }) => {
-      const issueRef = parseIssueReferenceFromHref(href);
+      const issueRef = linkIssueReferences ? parseIssueReferenceFromHref(href) : null;
       if (issueRef) {
         return (
           <MarkdownIssueLink issuePathId={issueRef.issuePathId} href={issueRef.href}>

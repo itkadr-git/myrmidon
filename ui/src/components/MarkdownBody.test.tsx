@@ -155,4 +155,20 @@ describe("MarkdownBody", () => {
     expect(html).toContain("<code>PAP-1271</code>");
     expect(html).toContain("text-green-600");
   });
+
+  it("can opt out of issue reference linkification for offline previews", () => {
+    const html = renderToStaticMarkup(
+      <QueryClientProvider client={new QueryClient()}>
+        <ThemeProvider>
+          <MarkdownBody linkIssueReferences={false}>
+            {"Depends on PAP-1271 and [manual link](PAP-1271)."}
+          </MarkdownBody>
+        </ThemeProvider>
+      </QueryClientProvider>,
+    );
+
+    expect(html).not.toContain('href="/issues/PAP-1271"');
+    expect(html).toContain("Depends on PAP-1271");
+    expect(html).toContain('href="PAP-1271"');
+  });
 });
