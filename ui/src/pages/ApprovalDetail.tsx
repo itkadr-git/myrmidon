@@ -343,7 +343,7 @@ export function ApprovalDetail() {
                   {new Date(comment.createdAt).toLocaleString()}
                 </span>
               </div>
-              <MarkdownBody className="text-sm">{comment.body}</MarkdownBody>
+              <MarkdownBody className="text-sm" softBreaks>{comment.body}</MarkdownBody>
             </div>
           ))}
         </div>
