@@ -27,6 +27,7 @@ import {
   rememberIssueDetailLocationState,
 } from "../lib/issueDetailBreadcrumb";
 import { resolveIssueActiveRun, shouldTrackIssueActiveRun } from "../lib/issueActiveRun";
+import { fetchIssueDetail, getCachedIssueDetail } from "../lib/issueDetailCache";
 import {
   hasBlockingShortcutDialog,
   resolveIssueDetailGoKeyAction,
@@ -392,6 +393,24 @@ export function IssueDetail() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const lastMarkedReadIssueIdRef = useRef<string | null>(null);
   const commentComposerRef = useRef<IssueChatComposerHandle | null>(null);
+  const resolvedIssueDetailState = useMemo(
+    () => readIssueDetailLocationState(issueId, location.state, location.search),
+    [issueId, location.state, location.search],
+  );
+  const issueHeaderSeed = useMemo(
+    () => readIssueDetailHeaderSeed(location.state) ?? readIssueDetailHeaderSeed(resolvedIssueDetailState),
+    [location.state, resolvedIssueDetailState],
+  );
+  const cachedIssue = useMemo(
+    () =>
+      issueId
+        ? getCachedIssueDetail(queryClient, issueId, issueHeaderSeed ? {
+            id: issueHeaderSeed.id,
+            identifier: issueHeaderSeed.identifier,
+          } : null)
+        : undefined,
+    [issueHeaderSeed, issueId, queryClient],
+  );
 
   useEffect(() => {
     setIssueChatInitialTranscriptReady(false);
@@ -399,8 +418,9 @@ export function IssueDetail() {
 
   const { data: issue, isLoading, error } = useQuery({
     queryKey: queryKeys.issues.detail(issueId!),
-    queryFn: () => issuesApi.get(issueId!),
+    queryFn: () => fetchIssueDetail(queryClient, issueId!),
     enabled: !!issueId,
+    initialData: () => cachedIssue,
   });
   const resolvedCompanyId = issue?.companyId ?? selectedCompanyId;
   const commentComposerDisabledReason = useMemo(() => {
@@ -490,14 +510,6 @@ export function IssueDetail() {
         : (liveRuns ?? []).find((run) => run.status === "running") ?? null
     ),
     [activeRun, liveRuns],
-  );
-  const resolvedIssueDetailState = useMemo(
-    () => readIssueDetailLocationState(issueId, location.state, location.search),
-    [issueId, location.state, location.search],
-  );
-  const issueHeaderSeed = useMemo(
-    () => readIssueDetailHeaderSeed(location.state) ?? readIssueDetailHeaderSeed(resolvedIssueDetailState),
-    [location.state, resolvedIssueDetailState],
   );
   const sourceBreadcrumb = useMemo(
     () => readIssueDetailBreadcrumb(issueId, location.state, location.search) ?? { label: "Issues", href: "/issues" },
@@ -1639,6 +1651,7 @@ export function IssueDetail() {
               <Link
                 to={createIssueDetailPath(ancestor.identifier ?? ancestor.id)}
                 state={resolvedIssueDetailState ?? location.state}
+                issuePrefetch={ancestor}
                 onClickCapture={() =>
                   rememberIssueDetailLocationState(
                     ancestor.identifier ?? ancestor.id,
@@ -1883,6 +1896,7 @@ export function IssueDetail() {
                   key={child.id}
                   to={createIssueDetailPath(child.identifier ?? child.id)}
                   state={resolvedIssueDetailState ?? location.state}
+                  issuePrefetch={child}
                   onClickCapture={() =>
                     rememberIssueDetailLocationState(
                       child.identifier ?? child.id,
