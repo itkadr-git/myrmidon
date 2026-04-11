@@ -7,6 +7,7 @@ import type {
   JoinRequest,
 } from "@paperclipai/shared";
 import {
+  applyIssueFilters,
   defaultIssueFilterState,
   type IssueFilterState,
 } from "./issue-filters";
@@ -368,6 +369,35 @@ export function getArchivedInboxSearchIssues({
       }),
     )
     .sort(sortIssuesByMostRecentActivity);
+}
+
+export function getInboxSearchSupplementIssues({
+  query,
+  filteredWorkItems,
+  archivedSearchIssues,
+  remoteIssues,
+  issueFilters,
+  currentUserId,
+  enableRoutineVisibilityFilter = false,
+}: {
+  query: string;
+  filteredWorkItems: InboxWorkItem[];
+  archivedSearchIssues: Issue[];
+  remoteIssues: Issue[];
+  issueFilters: IssueFilterState;
+  currentUserId?: string | null;
+  enableRoutineVisibilityFilter?: boolean;
+}): Issue[] {
+  const normalizedQuery = query.trim();
+  if (!normalizedQuery) return [];
+  const visibleIssueIds = new Set([
+    ...filteredWorkItems
+      .filter((item): item is Extract<InboxWorkItem, { kind: "issue" }> => item.kind === "issue")
+      .map((item) => item.issue.id),
+    ...archivedSearchIssues.map((issue) => issue.id),
+  ]);
+  return applyIssueFilters(remoteIssues, issueFilters, currentUserId, enableRoutineVisibilityFilter)
+    .filter((issue) => !visibleIssueIds.has(issue.id));
 }
 
 export function resolveIssueWorkspaceName(
