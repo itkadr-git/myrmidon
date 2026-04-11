@@ -12,7 +12,6 @@ import { useLocation } from "@/lib/router";
 import { ApiError } from "../api/client";
 import { issuesApi } from "../api/issues";
 import { useAutosaveIndicator } from "../hooks/useAutosaveIndicator";
-import { deriveDocumentRevisionState } from "../lib/document-revisions";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, relativeTime } from "../lib/utils";
 import { MarkdownBody } from "./MarkdownBody";
@@ -70,7 +69,7 @@ function saveFoldedDocumentKeys(issueId: string, keys: string[]) {
 }
 
 function renderBody(body: string, className?: string) {
-  return <MarkdownBody className={className}>{body}</MarkdownBody>;
+  return <MarkdownBody className={className} softBreaks={false}>{body}</MarkdownBody>;
 }
 
 function isPlanKey(key: string) {
@@ -537,10 +536,10 @@ export function IssueDocumentsSection({
   }, []);
 
   const previewRevision = useCallback((doc: IssueDocument, revisionId: string) => {
-    const revisionState = deriveDocumentRevisionState(doc, getDocumentRevisions(doc.key));
-    const selectedRevision = revisionState.revisions.find((revision) => revision.id === revisionId);
+    const revisions = getDocumentRevisions(doc.key);
+    const selectedRevision = revisions.find((revision) => revision.id === revisionId);
     if (!selectedRevision) return;
-    if (selectedRevision.id === revisionState.currentRevision.id) {
+    if (selectedRevision.id === doc.latestRevisionId) {
       returnToLatestRevision(doc.key);
       return;
     }
@@ -788,10 +787,7 @@ export function IssueDocumentsSection({
           const activeDraft = draft?.key === doc.key && !draft.isNew ? draft : null;
           const activeConflict = documentConflict?.key === doc.key ? documentConflict : null;
           const isFolded = foldedDocumentKeys.includes(doc.key);
-          const rawRevisionHistory = getDocumentRevisions(doc.key);
-          const revisionState = deriveDocumentRevisionState(doc, rawRevisionHistory);
-          const revisionHistory = revisionState.revisions;
-          const currentRevision = revisionState.currentRevision;
+          const revisionHistory = getDocumentRevisions(doc.key);
           const selectedRevisionId = selectedRevisionIds[doc.key] ?? null;
           const selectedHistoricalRevision = selectedRevisionId
             ? revisionHistory.find((revision) => revision.id === selectedRevisionId) ?? null
@@ -799,10 +795,10 @@ export function IssueDocumentsSection({
           const isHistoricalPreview = Boolean(selectedHistoricalRevision);
           const displayedTitle = selectedHistoricalRevision
             ? selectedHistoricalRevision.title ?? ""
-            : activeDraft?.title ?? currentRevision.title ?? "";
-          const displayedBody = selectedHistoricalRevision?.body ?? activeDraft?.body ?? currentRevision.body;
-          const displayedRevisionNumber = selectedHistoricalRevision?.revisionNumber ?? currentRevision.revisionNumber;
-          const displayedUpdatedAt = selectedHistoricalRevision?.createdAt ?? currentRevision.createdAt;
+            : activeDraft?.title ?? doc.title ?? "";
+          const displayedBody = selectedHistoricalRevision?.body ?? activeDraft?.body ?? doc.body;
+          const displayedRevisionNumber = selectedHistoricalRevision?.revisionNumber ?? doc.latestRevisionNumber;
+          const displayedUpdatedAt = selectedHistoricalRevision?.createdAt ?? doc.updatedAt;
           const showTitle = !isPlanKey(doc.key) && !!displayedTitle.trim() && !titlesMatchKey(displayedTitle, doc.key);
           const canVoteOnDocument = Boolean(doc.latestRevisionId && doc.updatedByAgentId && !doc.updatedByUserId && onVote);
 
@@ -849,12 +845,12 @@ export function IssueDocumentsSection({
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="start" className="w-72">
                         <DropdownMenuLabel>Revision history</DropdownMenuLabel>
-                        {revisionMenuOpenKey === doc.key && isFetchingDocumentRevisions && rawRevisionHistory.length === 0 ? (
+                        {revisionMenuOpenKey === doc.key && isFetchingDocumentRevisions && revisionHistory.length === 0 ? (
                           <DropdownMenuItem disabled>Loading revisions...</DropdownMenuItem>
                         ) : revisionHistory.length > 0 ? (
-                          <DropdownMenuRadioGroup value={selectedRevisionId ?? currentRevision.id ?? ""}>
+                          <DropdownMenuRadioGroup value={selectedRevisionId ?? doc.latestRevisionId ?? ""}>
                             {revisionHistory.map((revision) => {
-                              const isCurrentRevision = revision.id === currentRevision.id;
+                              const isCurrentRevision = revision.id === doc.latestRevisionId;
                               return (
                                 <DropdownMenuRadioItem
                                   key={revision.id}
