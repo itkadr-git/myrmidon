@@ -55,10 +55,23 @@ pnpm dev:stop
 Tailscale/private-auth dev mode:
 
 ```sh
-pnpm dev --tailscale-auth
+pnpm dev --bind lan
 ```
 
-This runs dev as `authenticated/private` and binds the server to `0.0.0.0` for private-network access.
+This runs dev as `authenticated/private` with a private-network bind preset.
+
+For Tailscale-only reachability on a detected tailnet address:
+
+```sh
+pnpm dev --bind tailnet
+```
+
+Legacy aliases still map to the old broad private-network behavior:
+
+```sh
+pnpm dev --tailscale-auth
+pnpm dev --authenticated-private
+```
 
 Allow additional private hostnames (for example custom Tailscale hostnames):
 
