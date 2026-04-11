@@ -34,7 +34,7 @@ export interface HeartbeatRun {
   errorCode: string | null;
   externalRunId: string | null;
   processPid: number | null;
-  processGroupId: number | null;
+  processGroupId?: number | null;
   processStartedAt: Date | null;
   retryOfRunId: string | null;
   processLossRetryCount: number;
