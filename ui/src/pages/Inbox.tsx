@@ -98,7 +98,7 @@ import {
   getArchivedInboxSearchIssues,
   getInboxWorkItems,
   getInboxKeyboardSelectionIndex,
-  getInboxSearchFallbackIssues,
+  getInboxSearchSupplementIssues,
   getLatestFailedRunsByAgent,
   matchesInboxIssueSearch,
   getRecentTouchedIssues,
@@ -1022,15 +1022,13 @@ export function Inbox() {
       visibleTouchedIssues,
     ],
   );
-  const shouldUseIssueSearchFallback =
+  const shouldUseIssueSearchSupplement =
     !!selectedCompanyId
-    && normalizedSearchQuery.length > 0
-    && filteredWorkItems.length === 0
-    && archivedSearchIssues.length === 0;
+    && normalizedSearchQuery.length > 0;
   const { data: remoteIssueSearchResults = [] } = useQuery({
     queryKey: [
       ...queryKeys.issues.search(selectedCompanyId!, normalizedSearchQuery, undefined, 25),
-      "inbox-fallback",
+      "inbox-supplement",
       issueFilters,
     ],
     queryFn: () =>
@@ -1039,12 +1037,12 @@ export function Inbox() {
         limit: 25,
         includeRoutineExecutions: true,
       }),
-    enabled: shouldUseIssueSearchFallback,
+    enabled: shouldUseIssueSearchSupplement,
     placeholderData: (previousData) => previousData,
   });
-  const issueSearchFallbackResults = useMemo(
+  const issueSearchSupplementResults = useMemo(
     () =>
-      getInboxSearchFallbackIssues({
+      getInboxSearchSupplementIssues({
         query: normalizedSearchQuery,
         filteredWorkItems,
         archivedSearchIssues,
@@ -1064,10 +1062,13 @@ export function Inbox() {
   );
   const effectiveWorkItems = useMemo(
     () =>
-      issueSearchFallbackResults.length > 0
-        ? getInboxWorkItems({ issues: issueSearchFallbackResults, approvals: [] })
+      issueSearchSupplementResults.length > 0
+        ? [
+          ...filteredWorkItems,
+          ...getInboxWorkItems({ issues: issueSearchSupplementResults, approvals: [] }),
+        ]
         : filteredWorkItems,
-    [filteredWorkItems, issueSearchFallbackResults],
+    [filteredWorkItems, issueSearchSupplementResults],
   );
   const archivedSearchIssueIds = useMemo(
     () => new Set(archivedSearchIssues.map((issue) => issue.id)),
