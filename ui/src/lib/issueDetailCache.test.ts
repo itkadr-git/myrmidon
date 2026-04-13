@@ -84,23 +84,14 @@ describe("issueDetailCache", () => {
     expect(queryClient.getQueryData(queryKeys.issues.detail(issue.id))).toEqual(issue);
   });
 
-  it("prefetches with the provided issue snapshot before the network result lands", async () => {
+  it("prefetches with the provided issue snapshot without forcing a fresh fetch", async () => {
     const issue = createIssue();
-    let releaseFetch: (() => void) | null = null;
-    vi.mocked(issuesApi.get).mockImplementation(
-      () =>
-        new Promise<Issue>((resolve) => {
-          releaseFetch = () => resolve(issue);
-        }),
-    );
 
-    const prefetchPromise = prefetchIssueDetail(queryClient, issue.identifier!, { issue });
+    await prefetchIssueDetail(queryClient, issue.identifier!, { issue });
 
     expect(getCachedIssueDetail(queryClient, issue.identifier)).toEqual(issue);
     expect(getCachedIssueDetail(queryClient, issue.id)).toEqual(issue);
-
-    releaseFetch?.();
-    await prefetchPromise;
+    expect(issuesApi.get).not.toHaveBeenCalled();
   });
 
   it("hydrates both cache aliases from a fetched issue detail response", async () => {

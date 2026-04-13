@@ -1651,7 +1651,6 @@ export function IssueDetail() {
               <Link
                 to={createIssueDetailPath(ancestor.identifier ?? ancestor.id)}
                 state={resolvedIssueDetailState ?? location.state}
-                issuePrefetch={ancestor}
                 onClickCapture={() =>
                   rememberIssueDetailLocationState(
                     ancestor.identifier ?? ancestor.id,
