@@ -57,9 +57,7 @@ export const Link = React.forwardRef<HTMLAnchorElement, CompanyLinkProps>(
   function CompanyLink({ to, disableIssueQuicklook = false, issuePrefetch = null, ...props }, ref) {
     const companyPrefix = useActiveCompanyPrefix();
     const resolvedTo = resolveTo(to, companyPrefix);
-    const issuePathId = disableIssueQuicklook
-      ? parseIssuePathIdFromPath(typeof resolvedTo === "string" ? resolvedTo : resolvedTo.pathname)
-      : parseIssuePathIdFromPath(typeof resolvedTo === "string" ? resolvedTo : resolvedTo.pathname);
+    const issuePathId = parseIssuePathIdFromPath(typeof resolvedTo === "string" ? resolvedTo : resolvedTo.pathname);
 
     if (issuePathId) {
       return (

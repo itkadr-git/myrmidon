@@ -5,7 +5,12 @@ import type { Issue } from "@paperclipai/shared";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { timeAgo } from "@/lib/timeAgo";
 import { createIssueDetailPath, withIssueDetailHeaderSeed } from "@/lib/issueDetailBreadcrumb";
-import { fetchIssueDetail, getCachedIssueDetail, prefetchIssueDetail } from "@/lib/issueDetailCache";
+import {
+  fetchIssueDetail,
+  getCachedIssueDetail,
+  ISSUE_DETAIL_STALE_TIME_MS,
+  prefetchIssueDetail,
+} from "@/lib/issueDetailCache";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -99,7 +104,7 @@ export const IssueLinkQuicklook = React.forwardRef<
     queryFn: () => fetchIssueDetail(queryClient, issuePathId),
     enabled: open,
     initialData: () => cachedIssue,
-    staleTime: 60_000,
+    staleTime: ISSUE_DETAIL_STALE_TIME_MS,
   });
 
   const detailPath = createIssueDetailPath(issuePathId);

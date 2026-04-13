@@ -4,7 +4,7 @@ import { issuesApi } from "@/api/issues";
 import { queryKeys } from "@/lib/queryKeys";
 
 const ISSUE_DETAIL_QUERY_PREFIX = ["issues", "detail"] as const;
-const ISSUE_DETAIL_STALE_TIME_MS = 60_000;
+export const ISSUE_DETAIL_STALE_TIME_MS = 60_000;
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
