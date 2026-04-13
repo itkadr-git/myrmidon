@@ -26,6 +26,7 @@ import {
   readIssueDetailHeaderSeed,
   rememberIssueDetailLocationState,
 } from "../lib/issueDetailBreadcrumb";
+import { resolveIssueActiveRun, shouldTrackIssueActiveRun } from "../lib/issueActiveRun";
 import {
   hasBlockingShortcutDialog,
   resolveIssueDetailGoKeyAction,
@@ -471,13 +472,15 @@ export function IssueDetail() {
     placeholderData: keepPreviousData,
   });
 
-  const { data: activeRun, isLoading: activeRunLoading } = useQuery({
+  const shouldPollActiveRun = shouldTrackIssueActiveRun(issue);
+  const { data: rawActiveRun, isLoading: activeRunLoading } = useQuery({
     queryKey: queryKeys.issues.activeRun(issueId!),
     queryFn: () => heartbeatsApi.activeRunForIssue(issueId!),
-    enabled: !!issueId && (!!issue?.executionRunId || issue?.status === "in_progress"),
+    enabled: !!issueId && shouldPollActiveRun,
     refetchInterval: (liveRuns?.length ?? 0) > 0 ? false : 3000,
     placeholderData: keepPreviousData,
   });
+  const activeRun = resolveIssueActiveRun(issue, rawActiveRun);
 
   const hasLiveRuns = (liveRuns ?? []).length > 0 || !!activeRun;
   const runningIssueRun = useMemo(
