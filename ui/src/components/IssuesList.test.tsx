@@ -351,8 +351,8 @@ describe("IssuesList", () => {
     });
   });
 
-  it("reuses the inbox issue column controls and persisted column visibility", async () => {
-    localStorage.setItem("paperclip:inbox:issue-columns", JSON.stringify(["id", "assignee"]));
+  it("uses context-scoped persisted column visibility", async () => {
+    localStorage.setItem("paperclip:test-issues:company-1:issue-columns", JSON.stringify(["id", "assignee"]));
 
     const assignedIssue = createIssue({
       id: "issue-assigned",
@@ -387,8 +387,41 @@ describe("IssuesList", () => {
     });
   });
 
+  it("preserves stored grouping across refresh when initial assignees are applied", async () => {
+    localStorage.setItem(
+      "paperclip:test-issues:company-1",
+      JSON.stringify({ groupBy: "status", sortField: "updated", sortDir: "desc" }),
+    );
+
+    const todoIssue = createIssue({ id: "issue-todo", title: "Alpha", status: "todo", assigneeAgentId: "agent-1" });
+    const doneIssue = createIssue({ id: "issue-done", title: "Beta", status: "done", assigneeAgentId: "agent-1" });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[todoIssue, doneIssue]}
+        agents={[{ id: "agent-1", name: "Agent One" }]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        initialAssignees={["agent-1"]}
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Todo");
+      expect(container.textContent).toContain("Done");
+      expect(container.textContent).toContain("Alpha");
+      expect(container.textContent).toContain("Beta");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("filters the list to a single workspace when a workspace name is clicked", async () => {
-    localStorage.setItem("paperclip:inbox:issue-columns", JSON.stringify(["id", "workspace"]));
+    localStorage.setItem("paperclip:test-issues:company-1:issue-columns", JSON.stringify(["id", "workspace"]));
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
     mockExecutionWorkspacesApi.list.mockResolvedValue([
       {
