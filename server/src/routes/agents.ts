@@ -2479,7 +2479,7 @@ export function agentRoutes(db: Db) {
 
   router.get("/heartbeat-runs/:runId/log", async (req, res) => {
     const runId = req.params.runId as string;
-    const run = await heartbeat.getRun(runId);
+    const run = await heartbeat.getRunLogAccess(runId);
     if (!run) {
       res.status(404).json({ error: "Heartbeat run not found" });
       return;
@@ -2488,7 +2488,7 @@ export function agentRoutes(db: Db) {
 
     const offset = Number(req.query.offset ?? 0);
     const limitBytes = Number(req.query.limitBytes ?? 256000);
-    const result = await heartbeat.readLog(runId, {
+    const result = await heartbeat.readLog(run, {
       offset: Number.isFinite(offset) ? offset : 0,
       limitBytes: Number.isFinite(limitBytes) ? limitBytes : 256000,
     });
