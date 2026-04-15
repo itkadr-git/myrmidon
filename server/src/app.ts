@@ -70,6 +70,7 @@ const VITE_DEV_STATIC_PATHS = new Set([
   "/favicon.ico",
   "/favicon.svg",
   "/site.webmanifest",
+  "/sw.js",
 ]);
 
 export function resolveViteHmrPort(serverPort: number): number {
@@ -79,7 +80,7 @@ export function resolveViteHmrPort(serverPort: number): number {
   return Math.max(1_024, serverPort - 10_000);
 }
 
-function shouldServeViteDevHtml(req: ExpressRequest): boolean {
+export function shouldServeViteDevHtml(req: ExpressRequest): boolean {
   const pathname = req.path;
   if (VITE_DEV_STATIC_PATHS.has(pathname)) return false;
   if (VITE_DEV_ASSET_PREFIXES.some((prefix) => pathname.startsWith(prefix))) return false;
@@ -347,6 +348,7 @@ export async function createApp(
 
   if (opts.uiMode === "vite-dev") {
     const uiRoot = path.resolve(__dirname, "../../ui");
+    const publicUiRoot = path.resolve(uiRoot, "public");
     const hmrPort = resolveViteHmrPort(opts.serverPort);
     const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
@@ -369,6 +371,9 @@ export async function createApp(
     });
     const renderViteHtml = viteHtmlRenderer;
 
+    if (fs.existsSync(publicUiRoot)) {
+      app.use(express.static(publicUiRoot, { index: false }));
+    }
     app.get(/.*/, async (req, res, next) => {
       if (!shouldServeViteDevHtml(req)) {
         next();
