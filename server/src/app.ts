@@ -86,6 +86,16 @@ function shouldServeViteDevHtml(req: ExpressRequest): boolean {
   return req.accepts(["html"]) === "html";
 }
 
+export function shouldEnablePrivateHostnameGuard(opts: {
+  deploymentMode: DeploymentMode;
+  deploymentExposure: DeploymentExposure;
+}): boolean {
+  return (
+    opts.deploymentExposure === "private" &&
+    (opts.deploymentMode === "local_trusted" || opts.deploymentMode === "authenticated")
+  );
+}
+
 export async function createApp(
   db: Db,
   opts: {
@@ -123,8 +133,10 @@ export async function createApp(
     },
   }));
   app.use(httpLogger);
-  const privateHostnameGateEnabled =
-    opts.deploymentMode === "authenticated" && opts.deploymentExposure === "private";
+  const privateHostnameGateEnabled = shouldEnablePrivateHostnameGuard({
+    deploymentMode: opts.deploymentMode,
+    deploymentExposure: opts.deploymentExposure,
+  });
   const privateHostnameAllowSet = resolvePrivateHostnameAllowSet({
     allowedHostnames: opts.allowedHostnames,
     bindHost: opts.bindHost,
