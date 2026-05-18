@@ -159,7 +159,7 @@ function shouldReturnAcceptedConfirmationToCreatorAgent(args: {
 }
 
 function shouldSupersedeRequestConfirmationOnUserComment(interaction: RequestConfirmationInteraction) {
-  return interaction.payload.supersedeOnUserComment === true;
+  return interaction.payload.supersedeOnUserComment !== false;
 }
 
 function isCommentAtOrAfterInteraction(args: {

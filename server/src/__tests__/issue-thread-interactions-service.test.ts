@@ -824,7 +824,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     });
   });
 
-  it("expires request confirmations opted into user-comment supersede after creation", async () => {
+  it("expires request confirmations by default when a user comments after creation", async () => {
     const { companyId, issueId } = await seedConfirmationIssue();
     const commentId = randomUUID();
 
@@ -836,7 +836,6 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       payload: {
         version: 1,
         prompt: "Proceed with the current draft?",
-        supersedeOnUserComment: true,
       },
     }, {
       userId: "local-board",
@@ -866,7 +865,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     });
   });
 
-  it("keeps request confirmations pending unless user-comment supersede is explicitly enabled", async () => {
+  it("keeps request confirmations pending when user-comment supersede is explicitly disabled", async () => {
     const { companyId, issueId } = await seedConfirmationIssue("Comment supersede opt-out");
 
     await interactionsSvc.create({
@@ -877,6 +876,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       payload: {
         version: 1,
         prompt: "Proceed with the current draft?",
+        supersedeOnUserComment: false,
       },
     }, {
       userId: "local-board",
@@ -910,7 +910,6 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       payload: {
         version: 1,
         prompt: "Proceed with the current draft?",
-        supersedeOnUserComment: true,
       },
     }, {
       userId: "local-board",
@@ -966,7 +965,6 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       payload: {
         version: 1,
         prompt: "Proceed with the current draft?",
-        supersedeOnUserComment: true,
       },
     }, {
       userId: "local-board",
