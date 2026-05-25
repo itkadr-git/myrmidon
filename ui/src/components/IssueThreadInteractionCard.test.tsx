@@ -74,7 +74,7 @@ describe("IssueThreadInteractionCard", () => {
     );
 
     const radios = [...host.querySelectorAll('[role="radio"]')];
-    expect(radios).toHaveLength(3);
+    expect(radios).toHaveLength(2);
     expect(radios[0]?.getAttribute("aria-checked")).toBe("false");
 
     act(() => {
@@ -88,7 +88,13 @@ describe("IssueThreadInteractionCard", () => {
     expect(multiGroup?.getAttribute("aria-labelledby")).toBe(
       "interaction-questions-default-post-submit-summary-prompt",
     );
-    expect(host.querySelectorAll('[role="checkbox"]')).toHaveLength(4);
+    expect(host.querySelectorAll('[role="checkbox"]')).toHaveLength(3);
+
+    const otherLink = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent === "Other",
+    );
+    expect(otherLink?.getAttribute("role")).toBeNull();
+    expect(otherLink?.className).toContain("underline");
   });
 
   it("submits written Other answers for pending questions", async () => {

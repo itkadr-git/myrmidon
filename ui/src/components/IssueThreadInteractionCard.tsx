@@ -821,32 +821,40 @@ function AskUserQuestionsCard({
                 />
               </div>
 
-              <div
-                className="mt-3 grid gap-3"
-                role={question.selectionMode === "single" ? "radiogroup" : "group"}
-                aria-labelledby={`${interaction.id}-${question.id}-prompt`}
-              >
-                {question.options.map((option) => (
-                  <QuestionOptionButton
-                    key={option.id}
-                    id={`${interaction.id}-${question.id}-${option.id}`}
-                    label={option.label}
-                    description={option.description}
-                    selected={(draftAnswers[question.id] ?? []).includes(option.id)}
-                    selectionMode={question.selectionMode}
-                    onClick={() =>
-                      toggleOption(question.id, option.id, question.selectionMode)}
-                  />
-                ))}
-                <QuestionOptionButton
+              <div className="mt-3 space-y-3">
+                <div
+                  className="grid gap-3"
+                  role={question.selectionMode === "single" ? "radiogroup" : "group"}
+                  aria-labelledby={`${interaction.id}-${question.id}-prompt`}
+                >
+                  {question.options.map((option) => (
+                    <QuestionOptionButton
+                      key={option.id}
+                      id={`${interaction.id}-${question.id}-${option.id}`}
+                      label={option.label}
+                      description={option.description}
+                      selected={(draftAnswers[question.id] ?? []).includes(option.id)}
+                      selectionMode={question.selectionMode}
+                      onClick={() =>
+                        toggleOption(question.id, option.id, question.selectionMode)}
+                    />
+                  ))}
+                </div>
+                <button
+                  type="button"
                   id={`${interaction.id}-${question.id}-other`}
-                  label="Other"
-                  description="Use a written answer instead of the listed choices."
-                  selected={otherActiveQuestions[question.id] === true}
-                  selectionMode={question.selectionMode}
+                  aria-expanded={otherActiveQuestions[question.id] === true}
+                  className={cn(
+                    "text-sm font-medium underline underline-offset-4 transition-colors outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
+                    otherActiveQuestions[question.id]
+                      ? "text-sky-700 hover:text-sky-800 dark:text-sky-300 dark:hover:text-sky-200"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
                   onClick={() =>
                     toggleOption(question.id, OTHER_ANSWER_ID, question.selectionMode)}
-                />
+                >
+                  Other
+                </button>
                 {otherActiveQuestions[question.id] ? (
                   <Textarea
                     aria-label={`Other answer for ${question.prompt}`}
