@@ -722,6 +722,7 @@ export interface AskUserQuestionsPayload {
 export interface AskUserQuestionsAnswer {
   questionId: string;
   optionIds: string[];
+  otherText?: string | null;
 }
 
 export interface AskUserQuestionsResult {

@@ -453,8 +453,12 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       companyId,
     }, created.id, {
       answers: [
-        { questionId: "scope", optionIds: ["phase-1"] },
-        { questionId: "extras", optionIds: ["docs", "tests", "docs"] },
+        { questionId: "scope", optionIds: [], otherText: "Custom Phase 1" },
+        {
+          questionId: "extras",
+          optionIds: ["docs", "tests", "docs"],
+          otherText: "  Pair with release notes  ",
+        },
       ],
       summaryMarkdown: "Ship Phase 1 with tests and docs.",
     }, {
@@ -465,8 +469,8 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(answered.result).toEqual({
       version: 1,
       answers: [
-        { questionId: "scope", optionIds: ["phase-1"] },
-        { questionId: "extras", optionIds: ["docs", "tests"] },
+        { questionId: "scope", optionIds: [], otherText: "Custom Phase 1" },
+        { questionId: "extras", optionIds: ["docs", "tests"], otherText: "Pair with release notes" },
       ],
       summaryMarkdown: "Ship Phase 1 with tests and docs.",
     });

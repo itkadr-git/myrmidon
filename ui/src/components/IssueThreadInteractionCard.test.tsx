@@ -74,7 +74,7 @@ describe("IssueThreadInteractionCard", () => {
     );
 
     const radios = [...host.querySelectorAll('[role="radio"]')];
-    expect(radios).toHaveLength(2);
+    expect(radios).toHaveLength(3);
     expect(radios[0]?.getAttribute("aria-checked")).toBe("false");
 
     act(() => {
@@ -88,7 +88,65 @@ describe("IssueThreadInteractionCard", () => {
     expect(multiGroup?.getAttribute("aria-labelledby")).toBe(
       "interaction-questions-default-post-submit-summary-prompt",
     );
-    expect(host.querySelectorAll('[role="checkbox"]')).toHaveLength(3);
+    expect(host.querySelectorAll('[role="checkbox"]')).toHaveLength(4);
+  });
+
+  it("submits written Other answers for pending questions", async () => {
+    const onSubmitInteractionAnswers = vi.fn(async () => undefined);
+    const host = renderCard({
+      interaction: pendingAskUserQuestionsInteraction,
+      onSubmitInteractionAnswers,
+    });
+
+    const otherButtons = Array.from(host.querySelectorAll("button")).filter((button) =>
+      button.textContent?.includes("Other"),
+    );
+    expect(otherButtons.length).toBeGreaterThan(0);
+
+    await act(async () => {
+      otherButtons[0]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const textarea = host.querySelector("textarea") as HTMLTextAreaElement | null;
+    expect(textarea).toBeTruthy();
+
+    await act(async () => {
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        "value",
+      )?.set;
+      valueSetter?.call(textarea, "Keep only the root item open");
+      textarea!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    const summaryCheckbox = Array.from(host.querySelectorAll('[role="checkbox"]')).find((button) =>
+      button.textContent?.includes("Inline answer pills"),
+    );
+    await act(async () => {
+      summaryCheckbox?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const submitButton = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Send answers"),
+    );
+    await act(async () => {
+      submitButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onSubmitInteractionAnswers).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "ask_user_questions" }),
+      [
+        {
+          questionId: "collapse-depth",
+          optionIds: [],
+          otherText: "Keep only the root item open",
+        },
+        {
+          questionId: "post-submit-summary",
+          optionIds: ["answers-inline"],
+        },
+      ],
+    );
   });
 
   it("only shows question cancellation when a cancel handler is wired", () => {

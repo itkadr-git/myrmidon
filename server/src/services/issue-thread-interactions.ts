@@ -272,15 +272,20 @@ function normalizeQuestionAnswers(args: {
       throw unprocessable(`Question ${answer.questionId} only allows one answer`);
     }
 
+    const otherText = answer.otherText?.trim() ?? "";
     answerByQuestionId.set(answer.questionId, {
       questionId: answer.questionId,
       optionIds: uniqueOptionIds,
+      ...(otherText ? { otherText } : {}),
     });
   }
 
   for (const question of args.questions) {
     const answer = answerByQuestionId.get(question.id);
-    if (question.required && (!answer || answer.optionIds.length === 0)) {
+    if (
+      question.required
+      && (!answer || (answer.optionIds.length === 0 && !answer.otherText))
+    ) {
       throw unprocessable(`Question ${question.id} requires an answer`);
     }
   }

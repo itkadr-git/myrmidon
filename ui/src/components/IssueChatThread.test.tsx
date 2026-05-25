@@ -1627,6 +1627,70 @@ describe("IssueChatThread", () => {
     });
   });
 
+  it("submits Other text for pending question interactions", async () => {
+    const root = createRoot(container);
+    const onSubmitInteractionAnswers = vi.fn(async () => undefined);
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            interactions={[createQuestionInteraction()]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            onSubmitInteractionAnswers={onSubmitInteractionAnswers}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const otherButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Other"),
+    );
+    expect(otherButton).toBeTruthy();
+
+    await act(async () => {
+      otherButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const textarea = container.querySelector("textarea") as HTMLTextAreaElement | null;
+    expect(textarea).toBeTruthy();
+
+    await act(async () => {
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        "value",
+      )?.set;
+      valueSetter?.call(textarea, "Phase 1 plus docs");
+      textarea!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    const submitButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Submit answers"),
+    );
+
+    await act(async () => {
+      submitButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onSubmitInteractionAnswers).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "interaction-question-1",
+        kind: "ask_user_questions",
+      }),
+      [{ questionId: "scope", optionIds: [], otherText: "Phase 1 plus docs" }],
+    );
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("invokes the cancel callback for pending question interactions", async () => {
     const root = createRoot(container);
     const onCancelInteraction = vi.fn(async () => undefined);
