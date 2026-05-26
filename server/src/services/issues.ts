@@ -241,6 +241,7 @@ export interface IssueFilters {
   includePluginOperations?: boolean;
   includeBlockedBy?: boolean;
   includeBlockedInboxAttention?: boolean;
+  hasPlanDocument?: boolean;
   q?: string;
   limit?: number;
   offset?: number;
@@ -2169,6 +2170,19 @@ function issueRef(row: Pick<IssueRow, "id" | "identifier" | "title" | "status" |
   };
 }
 
+function hasPlanDocumentCondition(companyId: string, hasPlanDocument: boolean): SQL {
+  const existsPlanDocument = sql<boolean>`
+    EXISTS (
+      SELECT 1
+      FROM ${issueDocuments}
+      WHERE ${issueDocuments.companyId} = ${companyId}
+        AND ${issueDocuments.issueId} = ${issues.id}
+        AND ${issueDocuments.key} = 'plan'
+    )
+  `;
+  return hasPlanDocument ? existsPlanDocument : sql<boolean>`NOT ${existsPlanDocument}`;
+}
+
 function isoDate(value: Date | string | null | undefined): string | null {
   if (!value) return null;
   const date = value instanceof Date ? value : new Date(value);
@@ -2881,6 +2895,9 @@ async function blockedInboxIssueConditions(
   if (filters?.originKind) conditions.push(eq(issues.originKind, filters.originKind));
   if (filters?.originKindPrefix) conditions.push(like(issues.originKind, `${filters.originKindPrefix}%`));
   if (filters?.originId) conditions.push(eq(issues.originId, filters.originId));
+  if (filters?.hasPlanDocument !== undefined) {
+    conditions.push(hasPlanDocumentCondition(companyId, filters.hasPlanDocument));
+  }
   if (!shouldIncludePluginOperationIssues(filters)) conditions.push(nonPluginOperationIssueCondition());
   if (filters?.labelId) {
     const labeledIssueIds = await dbOrTx
@@ -3826,6 +3843,9 @@ export function issueService(db: Db) {
       if (filters?.originKind) conditions.push(eq(issues.originKind, filters.originKind));
       if (filters?.originKindPrefix) conditions.push(like(issues.originKind, `${filters.originKindPrefix}%`));
       if (filters?.originId) conditions.push(eq(issues.originId, filters.originId));
+      if (filters?.hasPlanDocument !== undefined) {
+        conditions.push(hasPlanDocumentCondition(companyId, filters.hasPlanDocument));
+      }
       if (!shouldIncludePluginOperationIssues(filters)) {
         conditions.push(nonPluginOperationIssueCondition());
       }
@@ -3989,6 +4009,9 @@ export function issueService(db: Db) {
       if (filters?.originKind) conditions.push(eq(issues.originKind, filters.originKind));
       if (filters?.originKindPrefix) conditions.push(like(issues.originKind, `${filters.originKindPrefix}%`));
       if (filters?.originId) conditions.push(eq(issues.originId, filters.originId));
+      if (filters?.hasPlanDocument !== undefined) {
+        conditions.push(hasPlanDocumentCondition(companyId, filters.hasPlanDocument));
+      }
       if (!shouldIncludePluginOperationIssues(filters)) conditions.push(nonPluginOperationIssueCondition());
       const [row] = await db
         .select({ count: sql<number>`count(*)` })

@@ -1193,6 +1193,13 @@ export function issueRoutes(
     return value === true || value === "true" || value === "1";
   }
 
+  function parseOptionalBooleanQuery(value: unknown) {
+    if (value === undefined) return undefined;
+    if (value === true || value === "true" || value === "1") return true;
+    if (value === false || value === "false" || value === "0") return false;
+    return null;
+  }
+
   function shouldIncludeDocumentAnnotations(req: Request) {
     if (req.query.includeAnnotations === "false" || req.query.includeAnnotations === "0") return false;
     return req.actor.type === "agent" || parseBooleanQuery(req.query.includeAnnotations);
@@ -1993,6 +2000,7 @@ export function issueRoutes(
     const attention = req.query.attention as string | undefined;
     const sortField = req.query.sortField as string | undefined;
     const sortDir = req.query.sortDir as string | undefined;
+    const hasPlanDocument = parseOptionalBooleanQuery(req.query.hasPlanDocument);
 
     if (assigneeUserFilterRaw === "me" && (!assigneeUserId || req.actor.type !== "board")) {
       res.status(403).json({ error: "assigneeUserId=me requires board authentication" });
@@ -2030,6 +2038,10 @@ export function issueRoutes(
       res.status(400).json({ error: "sortDir must be 'asc' or 'desc' when provided" });
       return;
     }
+    if (hasPlanDocument === null) {
+      res.status(400).json({ error: "hasPlanDocument must be true or false when provided" });
+      return;
+    }
     const offset = parsedOffset ?? 0;
 
     const result = await svc.list(companyId, {
@@ -2059,6 +2071,7 @@ export function issueRoutes(
       includeBlockedBy: req.query.includeBlockedBy === "true" || req.query.includeBlockedBy === "1",
       includeBlockedInboxAttention:
         req.query.includeBlockedInboxAttention === "true" || req.query.includeBlockedInboxAttention === "1",
+      hasPlanDocument,
       q: req.query.q as string | undefined,
       limit,
       offset,
@@ -2094,12 +2107,17 @@ export function issueRoutes(
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const attention = req.query.attention as string | undefined;
+    const hasPlanDocument = parseOptionalBooleanQuery(req.query.hasPlanDocument);
     if (attention !== "blocked") {
       res.status(400).json({ error: "issues/count currently requires attention=blocked" });
       return;
     }
     if (req.query.limit !== undefined || req.query.offset !== undefined) {
       res.status(400).json({ error: "issues/count does not accept limit or offset" });
+      return;
+    }
+    if (hasPlanDocument === null) {
+      res.status(400).json({ error: "hasPlanDocument must be true or false when provided" });
       return;
     }
 
@@ -2126,6 +2144,7 @@ export function issueRoutes(
         req.query.includePluginOperations === "true" || req.query.includePluginOperations === "1",
       includeBlockedBy: true,
       includeBlockedInboxAttention: true,
+      hasPlanDocument,
       q: req.query.q as string | undefined,
     });
     res.json({ count });
