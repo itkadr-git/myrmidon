@@ -5,10 +5,10 @@ the Paperclip issue before the agent chooses a final disposition. A local
 workspace path is not enough, because cloud users and reviewers often cannot
 access the agent's disk.
 
-Use the helper from the repo root:
+Use the helper bundled with the Paperclip skill from the repo root:
 
 ```sh
-scripts/paperclip-upload-artifact.sh path/to/output.webm \
+skills/paperclip/scripts/paperclip-upload-artifact.sh path/to/output.webm \
   --title "Walkthrough render" \
   --summary "Rendered walkthrough for review"
 ```
@@ -32,7 +32,7 @@ The command prints issue-safe markdown links for the final task comment.
 When a task produces a user-inspectable file:
 
 1. Generate and verify the file locally.
-2. Upload it with `scripts/paperclip-upload-artifact.sh`.
+2. Upload it with `skills/paperclip/scripts/paperclip-upload-artifact.sh`.
 3. Keep the artifact work product unless the file is incidental; pass
    `--no-work-product` only for supporting files that should not be promoted.
 4. Link the printed attachment URL in the final issue comment.
@@ -47,7 +47,7 @@ only access path.
 Upload an `.mp4` render:
 
 ```sh
-scripts/paperclip-upload-artifact.sh dist/demo.mp4 \
+skills/paperclip/scripts/paperclip-upload-artifact.sh dist/demo.mp4 \
   --title "Demo video render" \
   --summary "MP4 render for board review"
 ```
@@ -55,7 +55,7 @@ scripts/paperclip-upload-artifact.sh dist/demo.mp4 \
 Upload a `.webm` render:
 
 ```sh
-scripts/paperclip-upload-artifact.sh out/walkthrough.webm \
+skills/paperclip/scripts/paperclip-upload-artifact.sh out/walkthrough.webm \
   --title "Walkthrough video" \
   --summary "WebM walkthrough render"
 ```
@@ -64,7 +64,7 @@ The helper detects `.mp4`, `.webm`, and `.mov` content types. If a renderer uses
 an unusual extension, pass the MIME type explicitly:
 
 ```sh
-scripts/paperclip-upload-artifact.sh render.bin \
+skills/paperclip/scripts/paperclip-upload-artifact.sh render.bin \
   --title "Demo video render" \
   --content-type video/mp4
 ```

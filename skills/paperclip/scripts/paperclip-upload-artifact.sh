@@ -5,7 +5,7 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  scripts/paperclip-upload-artifact.sh FILE [options]
+  paperclip-upload-artifact.sh FILE [options]
 
 Uploads a generated file from the current workspace to the current Paperclip
 issue, then creates an attachment-backed artifact work product by default.

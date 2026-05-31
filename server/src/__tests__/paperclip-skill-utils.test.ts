@@ -51,6 +51,10 @@ describe("paperclip skill utils", () => {
     expect(skillBody).toContain("POST");
     expect(skillBody).toContain("/api/companies/$PAPERCLIP_COMPANY_ID/issues/$PAPERCLIP_TASK_ID/attachments");
     expect(skillBody).toContain("/api/issues/$PAPERCLIP_TASK_ID/work-products");
+    await expect(
+      fs.access(path.resolve("skills/paperclip/scripts/paperclip-upload-artifact.sh")),
+    ).resolves.toBeUndefined();
+    await expect(fs.access(path.resolve("scripts/paperclip-upload-artifact.sh"))).rejects.toThrow();
   });
 
   it("marks skills with required: false in SKILL.md frontmatter as optional", async () => {

@@ -218,10 +218,10 @@ When an agent generates a file that a board user or reviewer should inspect,
 attach it to the issue before marking the task complete. Do not rely on a local
 workspace path as the only access path.
 
-Use the helper from the repo root:
+Use the helper bundled with the Paperclip skill from the repo root:
 
 ```sh
-scripts/paperclip-upload-artifact.sh dist/demo.mp4 \
+skills/paperclip/scripts/paperclip-upload-artifact.sh dist/demo.mp4 \
   --title "Demo video render" \
   --summary "MP4 render for board review"
 ```
@@ -229,7 +229,7 @@ scripts/paperclip-upload-artifact.sh dist/demo.mp4 \
 For WebM output:
 
 ```sh
-scripts/paperclip-upload-artifact.sh out/walkthrough.webm \
+skills/paperclip/scripts/paperclip-upload-artifact.sh out/walkthrough.webm \
   --title "Walkthrough video" \
   --summary "WebM walkthrough render"
 ```

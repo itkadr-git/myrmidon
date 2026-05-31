@@ -98,7 +98,7 @@ If `currentParticipant` does not match you, do not try to advance the stage — 
 
 When work produces a user-inspectable file, upload it to the current issue before final disposition. Local filesystem paths are not enough because board users, reviewers, and cloud operators may not have access to the agent workspace.
 
-Use the repo helper when it exists in the active workspace:
+Use the helper bundled with this skill. From an installed `paperclip` skill directory, the helper lives at `scripts/paperclip-upload-artifact.sh`:
 
 ```bash
 scripts/paperclip-upload-artifact.sh path/to/output.webm \
