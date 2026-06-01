@@ -25,8 +25,20 @@ export function isImageAttachment(attachment: Pick<IssueAttachment, "contentType
   return normalizedContentType(attachment).startsWith("image/");
 }
 
-export function isVideoAttachment(attachment: Pick<IssueAttachment, "contentType">) {
-  return isVideoContentType(normalizedContentType(attachment));
+export function isVideoAttachment(
+  attachment: Pick<IssueAttachment, "contentType" | "originalFilename">,
+) {
+  if (isVideoContentType(normalizedContentType(attachment))) return true;
+
+  const filename = (attachment.originalFilename ?? "").toLowerCase();
+  return (
+    filename.endsWith(".mp4") ||
+    filename.endsWith(".m4v") ||
+    filename.endsWith(".webm") ||
+    filename.endsWith(".mov") ||
+    filename.endsWith(".qt") ||
+    filename.endsWith(".quicktime")
+  );
 }
 
 export function isMarkdownAttachment(

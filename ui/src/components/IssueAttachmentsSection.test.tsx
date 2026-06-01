@@ -155,6 +155,33 @@ describe("IssueAttachmentsSection", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  it("treats mp4 filenames as playable videos even with a generic binary content type", async () => {
+    const attachment = makeAttachment({
+      id: "misclassified-mp4",
+      originalFilename: "demo.mp4",
+      contentType: "application/octet-stream",
+      contentPath: "/api/attachments/misclassified-mp4/content",
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueAttachmentsSection
+            attachments={[attachment]}
+            onDelete={vi.fn()}
+            onImageClick={vi.fn()}
+          />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const video = container.querySelector("video");
+    expect(video?.getAttribute("src")).toBe("/api/attachments/misclassified-mp4/content");
+    expect(container.textContent).toContain("application/octet-stream");
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it("keeps generic attachments as compact file rows with open and download actions", async () => {
     const attachment = makeAttachment({
       id: "pdf-attachment",
