@@ -1,12 +1,12 @@
 #!/usr/bin/env -S node --import tsx
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { createCapturedOutputBuffer, parseJsonResponseWithLimit } from "./dev-runner-output.ts";
-import { shouldTrackDevServerPath } from "./dev-runner-paths.mjs";
+import { collectWatchedSnapshot as collectDevServerWatchedSnapshot, diffSnapshots } from "./dev-runner-snapshot.mjs";
 import { createDevServiceIdentity, repoRoot } from "./dev-service-profile.ts";
 import { bootstrapDevRunnerWorktreeEnv } from "../server/src/dev-runner-worktree.ts";
 import {
@@ -261,88 +261,14 @@ function exitForSignal(signal: NodeJS.Signals) {
   process.exit(1);
 }
 
-function toRelativePath(absolutePath: string) {
-  return path.relative(repoRoot, absolutePath).split(path.sep).join("/");
-}
-
-function isMissingPathError(error: unknown) {
-  return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
-}
-
-function readSignature(absolutePath: string) {
-  let stats: ReturnType<typeof statSync>;
-  try {
-    stats = statSync(absolutePath);
-  } catch (error) {
-    if (isMissingPathError(error)) return null;
-    throw error;
-  }
-  return `${Math.trunc(stats.mtimeMs)}:${stats.size}`;
-}
-
-function addFileToSnapshot(snapshot: Map<string, string>, absolutePath: string) {
-  const relativePath = toRelativePath(absolutePath);
-  if (ignoredRelativePaths.has(relativePath)) return;
-  if (!shouldTrackDevServerPath(relativePath)) return;
-  const signature = readSignature(absolutePath);
-  if (signature === null) return;
-  snapshot.set(relativePath, signature);
-}
-
-function walkDirectory(snapshot: Map<string, string>, absoluteDirectory: string) {
-  if (!existsSync(absoluteDirectory)) return;
-
-  let entries: ReturnType<typeof readdirSync>;
-  try {
-    entries = readdirSync(absoluteDirectory, { withFileTypes: true });
-  } catch (error) {
-    if (isMissingPathError(error)) return;
-    throw error;
-  }
-
-  for (const entry of entries) {
-    if (ignoredDirectoryNames.has(entry.name)) continue;
-
-    const absolutePath = path.join(absoluteDirectory, entry.name);
-    if (entry.isDirectory()) {
-      walkDirectory(snapshot, absolutePath);
-      continue;
-    }
-    if (entry.isFile() || entry.isSymbolicLink()) {
-      addFileToSnapshot(snapshot, absolutePath);
-    }
-  }
-}
-
 function collectWatchedSnapshot() {
-  const snapshot = new Map<string, string>();
-
-  for (const absoluteDirectory of watchedDirectories) {
-    walkDirectory(snapshot, absoluteDirectory);
-  }
-  for (const absoluteFile of watchedFiles) {
-    if (!existsSync(absoluteFile)) continue;
-    addFileToSnapshot(snapshot, absoluteFile);
-  }
-
-  return snapshot;
-}
-
-function diffSnapshots(previous: Map<string, string>, next: Map<string, string>) {
-  const changed = new Set<string>();
-
-  for (const [relativePath, signature] of next) {
-    if (previous.get(relativePath) !== signature) {
-      changed.add(relativePath);
-    }
-  }
-  for (const relativePath of previous.keys()) {
-    if (!next.has(relativePath)) {
-      changed.add(relativePath);
-    }
-  }
-
-  return [...changed].sort();
+  return collectDevServerWatchedSnapshot({
+    repoRoot,
+    watchedDirectories,
+    watchedFiles,
+    ignoredDirectoryNames,
+    ignoredRelativePaths,
+  }) as Map<string, string>;
 }
 
 function ensureDevStatusDirectory() {
