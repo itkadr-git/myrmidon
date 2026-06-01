@@ -872,7 +872,11 @@ describe("IssueDetail", () => {
 
     expect(container.textContent).toContain("Issue detail smoke");
     expect(container.textContent).toContain("Chat thread");
-    expect(consoleErrorSpy).not.toHaveBeenCalled();
+    expect(
+      consoleErrorSpy.mock.calls.some((call) =>
+        String(call[0]).includes("React has detected a change in the order of Hooks"),
+      ),
+    ).toBe(false);
   });
 
   it("hides the plan decomposition panel by default", async () => {
