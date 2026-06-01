@@ -207,6 +207,35 @@ describe("IssueAttachmentsSection", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  it("does not promote specific non-video content types by filename alone", async () => {
+    const attachment = makeAttachment({
+      id: "zip-mp4",
+      originalFilename: "bundle.mp4",
+      contentType: "application/zip",
+      contentPath: "/api/attachments/zip-mp4/content",
+      openPath: "/api/attachments/zip-mp4/content",
+      downloadPath: "/api/attachments/zip-mp4/content?download=1",
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueAttachmentsSection
+            attachments={[attachment]}
+            onDelete={vi.fn()}
+            onImageClick={vi.fn()}
+          />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(container.querySelector("video")).toBeNull();
+    expect(container.textContent).toContain("bundle.mp4");
+    expect(container.textContent).toContain("application/zip");
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it("keeps generic attachments as compact file rows with open and download actions", async () => {
     const attachment = makeAttachment({
       id: "pdf-attachment",

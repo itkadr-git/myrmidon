@@ -1,6 +1,12 @@
 import type { IssueAttachment } from "@paperclipai/shared";
 import { isVideoContentType } from "./issue-output";
 
+const GENERIC_ATTACHMENT_CONTENT_TYPES = new Set([
+  "application/octet-stream",
+  "binary/octet-stream",
+  "application/x-binary",
+]);
+
 function normalizedContentType(attachment: Pick<IssueAttachment, "contentType">) {
   return attachment.contentType.toLowerCase().split(";")[0]?.trim() ?? "";
 }
@@ -28,7 +34,9 @@ export function isImageAttachment(attachment: Pick<IssueAttachment, "contentType
 export function isVideoAttachment(
   attachment: Pick<IssueAttachment, "contentType" | "originalFilename">,
 ) {
-  if (isVideoContentType(normalizedContentType(attachment))) return true;
+  const contentType = normalizedContentType(attachment);
+  if (isVideoContentType(contentType)) return true;
+  if (!GENERIC_ATTACHMENT_CONTENT_TYPES.has(contentType)) return false;
 
   const filename = (attachment.originalFilename ?? "").toLowerCase();
   return (
