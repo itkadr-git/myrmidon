@@ -3,7 +3,7 @@ import { ExternalLink, RefreshCw, Share2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useOptionalToastActions } from "../context/ToastContext";
-import { isChromelessDisplayMode } from "../lib/pwa-display-mode";
+import { CHROMELESS_DISPLAY_MODES, isChromelessDisplayMode } from "../lib/pwa-display-mode";
 
 function ControlButton({
   label,
@@ -48,14 +48,14 @@ export function StandaloneBrowserControls({ mobile }: { mobile: boolean }) {
     update();
     if (typeof window.matchMedia !== "function") return;
 
-    const media = window.matchMedia("(display-mode: standalone)");
-    if (typeof media.addEventListener === "function") {
-      media.addEventListener("change", update);
-      return () => media.removeEventListener("change", update);
+    const mediaQueries = CHROMELESS_DISPLAY_MODES.map((mode) => window.matchMedia(`(display-mode: ${mode})`));
+    if (mediaQueries.every((media) => typeof media.addEventListener === "function")) {
+      mediaQueries.forEach((media) => media.addEventListener("change", update));
+      return () => mediaQueries.forEach((media) => media.removeEventListener("change", update));
     }
 
-    media.addListener(update);
-    return () => media.removeListener(update);
+    mediaQueries.forEach((media) => media.addListener(update));
+    return () => mediaQueries.forEach((media) => media.removeListener(update));
   }, [mobile]);
 
   const refresh = useCallback(() => {
