@@ -34,7 +34,9 @@ function ControlButton({
 }
 
 export function StandaloneBrowserControls({ mobile }: { mobile: boolean }) {
-  const [chromeless, setChromeless] = useState(false);
+  const [chromeless, setChromeless] = useState(() =>
+    typeof window !== "undefined" && mobile ? isChromelessDisplayMode() : false,
+  );
   const toastActions = useOptionalToastActions();
 
   useEffect(() => {
