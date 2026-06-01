@@ -50,7 +50,7 @@ function makeAttachment(overrides: Partial<IssueAttachment> = {}): IssueAttachme
     issueCommentId: null,
     assetId: "asset-1",
     provider: "local_disk",
-    objectKey: "attachments/attachment-1",
+    objectKey: "att-1",
     contentType: "text/plain",
     byteSize: 1024,
     sha256: "sha",
