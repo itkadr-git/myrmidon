@@ -10,6 +10,14 @@ describe("isChromelessDisplayMode", () => {
     expect(isChromelessDisplayMode(matchMode("standalone"), false)).toBe(true);
   });
 
+  it("detects fullscreen display mode from media queries", () => {
+    expect(isChromelessDisplayMode(matchMode("fullscreen"), false)).toBe(true);
+  });
+
+  it("detects window-controls-overlay display mode from media queries", () => {
+    expect(isChromelessDisplayMode(matchMode("window-controls-overlay"), false)).toBe(true);
+  });
+
   it("detects iOS home-screen standalone launches", () => {
     expect(isChromelessDisplayMode(matchMode(null), true)).toBe(true);
   });
