@@ -408,14 +408,20 @@ function createCommentMessage(args: {
     followUpRequested: comment.followUpRequested === true,
     presentation: comment.presentation ?? null,
     commentMetadata: comment.metadata ?? null,
+    deletedAt: comment.deletedAt ? toDate(comment.deletedAt).toISOString() : null,
+    deletedByType: comment.deletedByType ?? null,
+    deletedByAgentId: comment.deletedByAgentId ?? null,
+    deletedByUserId: comment.deletedByUserId ?? null,
+    deletedByRunId: comment.deletedByRunId ?? null,
   };
+  const contentText = comment.deletedAt ? "" : comment.body;
 
   if (isSystemNotice) {
     const message: ThreadSystemMessage = {
       id: comment.id,
       role: "system",
       createdAt,
-      content: [{ type: "text", text: comment.body }],
+      content: [{ type: "text", text: contentText }],
       metadata: { custom },
     };
     return message;
@@ -426,7 +432,7 @@ function createCommentMessage(args: {
       id: comment.id,
       role: "assistant",
       createdAt,
-      content: [{ type: "text", text: comment.body }],
+      content: [{ type: "text", text: contentText }],
       status: { type: "complete", reason: "stop" },
       metadata: createAssistantMetadata(custom),
     };
@@ -437,7 +443,7 @@ function createCommentMessage(args: {
     id: comment.id,
     role: "user",
     createdAt,
-    content: [{ type: "text", text: comment.body }],
+    content: [{ type: "text", text: contentText }],
     attachments: [],
     metadata: { custom },
   };

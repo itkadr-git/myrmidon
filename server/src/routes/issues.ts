@@ -5615,27 +5615,88 @@ export function issueRoutes(
       actor.actorType === "agent"
         ? comment.authorAgentId === actor.agentId
         : comment.authorUserId === actor.actorId;
-    if (!actorOwnsComment) {
-      res.status(403).json({ error: "Only the comment author can cancel queued comments" });
-      return;
-    }
+    const deleteMode = req.query.mode === "cancel" ? "cancel" : "delete";
 
     const activeRun = await resolveActiveIssueRun(issue);
-    if (!activeRun) {
-      res.status(409).json({ error: "Queued comment can no longer be canceled" });
+    const isQueuedComment = activeRun ? isQueuedIssueCommentForActiveRun({ comment, activeRun }) : false;
+    if (deleteMode === "cancel" || isQueuedComment) {
+      if (!actorOwnsComment) {
+        res.status(403).json({ error: "Only the comment author can cancel queued comments" });
+        return;
+      }
+
+      if (!activeRun) {
+        res.status(409).json({ error: "Queued comment can no longer be canceled" });
+        return;
+      }
+
+      if (!isQueuedComment) {
+        res.status(409).json({ error: "Only queued comments can be canceled" });
+        return;
+      }
+
+      const removed = await svc.removeComment(commentId);
+      if (!removed) {
+        res.status(404).json({ error: "Comment not found" });
+        return;
+      }
+
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.comment_cancelled",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          commentId: removed.id,
+          bodySnippet: removed.body.slice(0, 120),
+          identifier: issue.identifier,
+          issueTitle: issue.title,
+          source: "queue_cancel",
+          queueTargetRunId: activeRun.id,
+        },
+      });
+
+      res.json(removed);
       return;
     }
 
-    if (!isQueuedIssueCommentForActiveRun({ comment, activeRun })) {
-      res.status(409).json({ error: "Only queued comments can be canceled" });
+    if (!actorOwnsComment) {
+      res.status(403).json({ error: "Only the comment author can delete comments" });
       return;
     }
 
-    const removed = await svc.removeComment(commentId);
-    if (!removed) {
+    if (comment.deletedAt) {
+      res.json(comment);
+      return;
+    }
+
+    const deleted = await svc.tombstoneComment(commentId, {
+      actorType: actor.actorType,
+      agentId: actor.agentId,
+      userId: actor.actorType === "user" ? actor.actorId : null,
+      runId: actor.runId,
+    });
+    if (!deleted) {
       res.status(404).json({ error: "Comment not found" });
       return;
     }
+    await issueReferencesSvc.syncComment(deleted.id);
+    const annotationCleanup = await documentAnnotationsSvc.cleanupForIssueCommentDeletion(issue.id, deleted.id, {
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      userId: actor.actorType === "user" ? actor.actorId : null,
+      runId: actor.runId,
+    });
+    await Promise.all(
+      annotationCleanup.deletedCommentIds.map((annotationCommentId) =>
+        issueReferencesSvc.deleteCommentSource(annotationCommentId)
+      ),
+    );
 
     await logActivity(db, {
       companyId: issue.companyId,
@@ -5643,20 +5704,25 @@ export function issueRoutes(
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
-      action: "issue.comment_cancelled",
+      action: "issue.comment_deleted",
       entityType: "issue",
       entityId: issue.id,
       details: {
-        commentId: removed.id,
-        bodySnippet: removed.body.slice(0, 120),
+        commentId: deleted.id,
         identifier: issue.identifier,
         issueTitle: issue.title,
-        source: "queue_cancel",
-        queueTargetRunId: activeRun.id,
+        source: "author_delete",
+        deletedByType: actor.actorType,
+        deletedByAgentId: actor.actorType === "agent" ? actor.agentId : null,
+        deletedByUserId: actor.actorType === "user" ? actor.actorId : null,
+        deletedByRunId: actor.runId,
+        deletedAt: deleted.deletedAt,
+        deletedAnnotationCommentIds: annotationCleanup.deletedCommentIds,
+        resolvedAnnotationThreadIds: annotationCleanup.resolvedThreadIds,
       },
     });
 
-    res.json(removed);
+    res.json(deleted);
   });
 
   router.get("/issues/:id/feedback-votes", async (req, res) => {

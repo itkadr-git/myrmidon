@@ -133,7 +133,7 @@ import { cn, formatDateTime, formatShortDate } from "../lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
-import { AlertTriangle, ArrowRight, Brain, Check, ChevronDown, ClipboardList, Copy, Hammer, Loader2, MoreHorizontal, Paperclip, PauseCircle, Search, Square, ThumbsDown, ThumbsUp } from "lucide-react";
+import { AlertTriangle, ArrowRight, Brain, Check, ChevronDown, ClipboardList, Copy, Hammer, Loader2, MoreHorizontal, Paperclip, PauseCircle, Search, Square, ThumbsDown, ThumbsUp, Trash2 } from "lucide-react";
 import { IssueBlockedNotice } from "./IssueBlockedNotice";
 import { IssueAssignedBacklogNotice } from "./IssueAssignedBacklogNotice";
 import { IssueRecoveryActionCard, type RecoveryResolveOutcome } from "./IssueRecoveryActionCard";
@@ -156,6 +156,7 @@ interface IssueChatMessageContext {
   stopRunVariant?: "stop" | "pause";
   onInterruptQueued?: (runId: string) => Promise<void>;
   onCancelQueued?: (commentId: string) => void;
+  onDeleteComment?: (commentId: string) => Promise<void> | void;
   onImageClick?: (src: string) => void;
   onAcceptInteraction?: (
     interaction: SuggestTasksInteraction | RequestConfirmationInteraction,
@@ -353,6 +354,7 @@ interface IssueChatThreadProps {
   includeSucceededRunsWithoutOutput?: boolean;
   onInterruptQueued?: (runId: string) => Promise<void>;
   onCancelQueued?: (commentId: string) => void;
+  onDeleteComment?: (commentId: string) => Promise<void> | void;
   interruptingQueuedRunId?: string | null;
   stoppingRunId?: string | null;
   onImageClick?: (src: string) => void;
@@ -1271,6 +1273,7 @@ function IssueChatUserMessage({
   const {
     onInterruptQueued,
     onCancelQueued,
+    onDeleteComment,
     currentUserId,
     userProfileMap,
   } = useContext(IssueChatCtx);
@@ -1284,6 +1287,7 @@ function IssueChatUserMessage({
   const queueReason = typeof custom.queueReason === "string" ? custom.queueReason : null;
   const queueBadgeLabel = queueReason === "hold" ? "\u23f8 Deferred wake" : "Queued";
   const pending = custom.clientStatus === "pending";
+  const deleted = Boolean(custom.deletedAt);
   const queueTargetRunId = typeof custom.queueTargetRunId === "string" ? custom.queueTargetRunId : null;
   const [copied, setCopied] = useState(false);
   const {
@@ -1302,6 +1306,13 @@ function IssueChatUserMessage({
       <AvatarFallback>{initialsForName(resolvedAuthorName)}</AvatarFallback>
     </Avatar>
   );
+  const canDeleteComment = Boolean(onDeleteComment && isCurrentUser && !queued && !pending && !deleted);
+  const handleDeleteComment = () => {
+    if (!canDeleteComment) return;
+    const confirmed = window.confirm("Delete this comment? This will replace it with a deleted-comment marker.");
+    if (!confirmed) return;
+    void onDeleteComment?.(commentId);
+  };
   const messageBody = (
     <div className={cn("flex min-w-0 max-w-[85%] flex-col", isCurrentUser && "items-end")}>
       <div className={cn("mb-1 flex items-center gap-2 px-1", isCurrentUser ? "justify-end" : "justify-start")}>
@@ -1317,6 +1328,8 @@ function IssueChatUserMessage({
           "min-w-0 max-w-full overflow-hidden break-all rounded-2xl px-4 py-2.5",
           queued
             ? "bg-amber-50/80 dark:bg-amber-500/10"
+            : deleted
+              ? "bg-muted/50 text-muted-foreground"
             : "bg-muted",
           pending && "opacity-80",
         )}
@@ -1349,9 +1362,13 @@ function IssueChatUserMessage({
             ) : null}
           </div>
         ) : null}
-        <div className="min-w-0 max-w-full space-y-3">
-          <IssueChatTextParts message={message} />
-        </div>
+        {deleted ? (
+          <div className="text-sm italic text-muted-foreground">Comment deleted</div>
+        ) : (
+          <div className="min-w-0 max-w-full space-y-3">
+            <IssueChatTextParts message={message} />
+          </div>
+        )}
       </div>
 
       {pending ? (
@@ -1378,24 +1395,37 @@ function IssueChatUserMessage({
               {message.createdAt ? formatDateTime(message.createdAt) : ""}
             </TooltipContent>
           </Tooltip>
-          <button
-            type="button"
-            className="inline-flex h-6 w-6 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
-            title="Copy message"
-            aria-label="Copy message"
-            onClick={() => {
-              const text = message.content
-                .filter((p): p is { type: "text"; text: string } => p.type === "text")
-                .map((p) => p.text)
-                .join("\n\n");
-              void navigator.clipboard.writeText(text).then(() => {
-                setCopied(true);
-                setTimeout(() => setCopied(false), 2000);
-              });
-            }}
-          >
-            {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-          </button>
+          {!deleted ? (
+            <button
+              type="button"
+              className="inline-flex h-6 w-6 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
+              title="Copy message"
+              aria-label="Copy message"
+              onClick={() => {
+                const text = message.content
+                  .filter((p): p is { type: "text"; text: string } => p.type === "text")
+                  .map((p) => p.text)
+                  .join("\n\n");
+                void navigator.clipboard.writeText(text).then(() => {
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 2000);
+                });
+              }}
+            >
+              {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+            </button>
+          ) : null}
+          {canDeleteComment ? (
+            <button
+              type="button"
+              className="inline-flex h-6 w-6 items-center justify-center text-muted-foreground transition-colors hover:text-destructive"
+              title="Delete comment"
+              aria-label="Delete comment"
+              onClick={handleDeleteComment}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+          ) : null}
         </div>
       )}
     </div>
@@ -1464,11 +1494,12 @@ function IssueChatAssistantMessage({
   const canStopRun = Boolean(runId) && (isRunActive || runStatus === "queued" || runStatus === "running");
   const chainOfThoughtLabel = typeof custom.chainOfThoughtLabel === "string" ? custom.chainOfThoughtLabel : null;
   const hasCoT = message.content.some((p) => p.type === "reasoning" || p.type === "tool-call");
+  const deleted = Boolean(custom.deletedAt);
   const isFoldable = !isRunning && !!chainOfThoughtLabel;
   const [folded, setFolded] = useState(isFoldable);
   const [prevFoldKey, setPrevFoldKey] = useState({ messageId: message.id, isFoldable });
   const [copied, setCopied] = useState(false);
-  const copyText = getThreadMessageCopyText(message);
+  const copyText = deleted ? "" : getThreadMessageCopyText(message);
 
   // Derive fold state synchronously during render (not in useEffect) so the
   // browser never paints the un-folded intermediate state — prevents the
@@ -1543,7 +1574,11 @@ function IssueChatAssistantMessage({
             </div>
           )}
 
-          {!folded ? (
+          {deleted ? (
+            <div className="rounded-sm bg-muted/40 px-3 py-2 text-sm italic text-muted-foreground">
+              Comment deleted
+            </div>
+          ) : !folded ? (
             <>
               <div className="space-y-3">
                 <IssueChatAssistantParts message={message} hasCoT={hasCoT} />
@@ -2614,6 +2649,16 @@ function issueChatMessageQueuedRunIsInterrupting(
   return Boolean(queueTargetRunId && interruptingQueuedRunId === queueTargetRunId);
 }
 
+function issueChatMessageIsDeleted(message: ThreadMessage): boolean {
+  const custom = issueChatMessageCustom(message);
+  return Boolean(custom.deletedAt);
+}
+
+function issueChatMessageDeletedAt(message: ThreadMessage): string | null {
+  const custom = issueChatMessageCustom(message);
+  return typeof custom.deletedAt === "string" ? custom.deletedAt : null;
+}
+
 // Above ~150 merged rows the direct render path forces React to mount and
 // re-render hundreds of Markdown bodies, feedback controls, and avatars on
 // unrelated parent updates. Above this threshold we switch to a windowed
@@ -3045,6 +3090,33 @@ interface IssueChatMessageRowProps {
   interruptingQueuedRunId?: string | null;
 }
 
+function IssueChatDeletedComment({
+  message,
+  deletedAt,
+}: {
+  message: ThreadMessage;
+  deletedAt: string;
+}) {
+  const custom = issueChatMessageCustom(message);
+  const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
+  const authorName = typeof custom.authorName === "string" ? custom.authorName : "Comment";
+  const deletedDate = new Date(deletedAt);
+  const deletedDateLabel = Number.isNaN(deletedDate.getTime()) ? "" : formatDateTime(deletedDate);
+
+  return (
+    <div id={anchorId} className="flex items-start gap-2.5 py-1.5">
+      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-border bg-muted/40 text-muted-foreground">
+        <Trash2 className="h-3.5 w-3.5" />
+      </div>
+      <div className="min-w-0 rounded-md border border-dashed border-border bg-muted/20 px-3 py-2 text-sm text-muted-foreground">
+        <span className="font-medium text-foreground/80">{authorName}</span>
+        <span> deleted this comment</span>
+        {deletedDateLabel ? <span className="text-xs"> · {deletedDateLabel}</span> : null}
+      </div>
+    </div>
+  );
+}
+
 const IssueChatMessageRow = memo(function IssueChatMessageRow({
   message,
   feedbackVoteByTargetId,
@@ -3053,11 +3125,14 @@ const IssueChatMessageRow = memo(function IssueChatMessageRow({
   interruptingQueuedRunId,
 }: IssueChatMessageRowProps) {
   const kind = issueChatMessageKind(message);
+  const deletedAt = issueChatMessageDeletedAt(message);
   const activeVote = issueChatMessageActiveVote(message, feedbackVoteByTargetId);
   const isRunActive = issueChatMessageRunIsActive(message, activeRunIds);
   const isStoppingRun = issueChatMessageRunIsStopping(message, stoppingRunId);
   const isInterruptingQueuedRun = issueChatMessageQueuedRunIsInterrupting(message, interruptingQueuedRunId);
-  const renderedMessage = message.role === "user"
+  const renderedMessage = deletedAt
+    ? <IssueChatDeletedComment message={message} deletedAt={deletedAt} />
+    : message.role === "user"
     ? (
       <IssueChatUserMessage
         message={message}
@@ -3664,6 +3739,7 @@ export function IssueChatThread({
   includeSucceededRunsWithoutOutput = false,
   onInterruptQueued,
   onCancelQueued,
+  onDeleteComment,
   interruptingQueuedRunId = null,
   stoppingRunId = null,
   onImageClick,
@@ -3937,6 +4013,16 @@ export function IssueChatThread({
     ) return;
     if (messages.length === 0 || lastScrolledHashRef.current === hash) return;
     const targetId = hash.slice(1);
+    if (targetId.startsWith("comment-")) {
+      const targetMessage = messages.find((message) => issueChatMessageAnchorId(message) === targetId);
+      if (targetMessage && issueChatMessageIsDeleted(targetMessage)) {
+        lastScrolledHashRef.current = hash;
+        if (typeof window !== "undefined") {
+          window.history.replaceState(null, "", `${location.pathname}${location.search}`);
+        }
+        return;
+      }
+    }
     let cancelled = false;
     const attemptScroll = (finalAttempt = false) => {
       if (cancelled || lastScrolledHashRef.current === hash) return;
@@ -4129,6 +4215,7 @@ export function IssueChatThread({
   const stableOnStopRun = useStableEvent(onStopRun);
   const stableOnInterruptQueued = useStableEvent(onInterruptQueued);
   const stableOnCancelQueued = useStableEvent(onCancelQueued);
+  const stableOnDeleteComment = useStableEvent(onDeleteComment);
   const stableOnImageClick = useStableEvent(onImageClick);
   const stableOnAcceptInteraction = useStableEvent(onAcceptInteraction);
   const stableOnRejectInteraction = useStableEvent(onRejectInteraction);
@@ -4150,6 +4237,7 @@ export function IssueChatThread({
       stopRunVariant,
       onInterruptQueued: stableOnInterruptQueued,
       onCancelQueued: stableOnCancelQueued,
+      onDeleteComment: stableOnDeleteComment,
       onImageClick: stableOnImageClick,
       onAcceptInteraction: stableOnAcceptInteraction,
       onRejectInteraction: stableOnRejectInteraction,
@@ -4172,6 +4260,7 @@ export function IssueChatThread({
       stopRunVariant,
       stableOnInterruptQueued,
       stableOnCancelQueued,
+      stableOnDeleteComment,
       stableOnImageClick,
       stableOnAcceptInteraction,
       stableOnRejectInteraction,

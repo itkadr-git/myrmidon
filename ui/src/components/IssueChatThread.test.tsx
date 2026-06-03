@@ -1258,6 +1258,118 @@ describe("IssueChatThread", () => {
     });
   });
 
+  it("confirms and invokes delete only for the current user's normal comments", async () => {
+    const root = createRoot(container);
+    const onDeleteComment = vi.fn(async () => {});
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[
+              {
+                id: "comment-owned",
+                companyId: "company-1",
+                issueId: "issue-1",
+                authorAgentId: null,
+                authorUserId: "user-board",
+                body: "Delete me",
+                authorType: "user",
+                presentation: null,
+                metadata: null,
+                createdAt: new Date("2026-04-06T12:00:00.000Z"),
+                updatedAt: new Date("2026-04-06T12:00:00.000Z"),
+              },
+              {
+                id: "comment-other",
+                companyId: "company-1",
+                issueId: "issue-1",
+                authorAgentId: null,
+                authorUserId: "user-other",
+                body: "Do not delete",
+                authorType: "user",
+                presentation: null,
+                metadata: null,
+                createdAt: new Date("2026-04-06T12:01:00.000Z"),
+                updatedAt: new Date("2026-04-06T12:01:00.000Z"),
+              },
+            ]}
+            currentUserId="user-board"
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            onDeleteComment={onDeleteComment}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const deleteButtons = Array.from(container.querySelectorAll("button[aria-label='Delete comment']"));
+    expect(deleteButtons).toHaveLength(1);
+
+    await act(async () => {
+      deleteButtons[0]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(confirmSpy).toHaveBeenCalled();
+    expect(onDeleteComment).toHaveBeenCalledWith("comment-owned");
+
+    confirmSpy.mockRestore();
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders deleted comments as tombstones without the original body", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[{
+              id: "comment-deleted",
+              companyId: "company-1",
+              issueId: "issue-1",
+              authorAgentId: null,
+              authorUserId: "user-board",
+              body: "Sensitive deleted body",
+              authorType: "user",
+              presentation: null,
+              metadata: null,
+              deletedAt: new Date("2026-04-06T12:05:00.000Z"),
+              deletedByType: "user",
+              deletedByUserId: "user-board",
+              createdAt: new Date("2026-04-06T12:00:00.000Z"),
+              updatedAt: new Date("2026-04-06T12:05:00.000Z"),
+            }]}
+            currentUserId="user-board"
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            onDeleteComment={async () => {}}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(container.textContent).toContain("Comment deleted");
+    expect(container.textContent).not.toContain("Sensitive deleted body");
+    expect(container.querySelector("button[aria-label='Delete comment']")).toBeNull();
+    expect(container.querySelector("button[aria-label='Copy message']")).toBeNull();
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("shows explicit follow-up badges and event copy", () => {
     const root = createRoot(container);
 

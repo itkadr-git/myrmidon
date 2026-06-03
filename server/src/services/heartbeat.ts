@@ -523,6 +523,7 @@ async function resolveRunScopedMentionedSkillKeys(input: {
       and(
         eq(issueComments.issueId, input.issueId),
         eq(issueComments.companyId, input.companyId),
+        isNull(issueComments.deletedAt),
       ),
     );
   const mentionedSkillIds = extractMentionedSkillIdsFromSources([
@@ -2013,7 +2014,7 @@ export function mergeCoalescedContextSnapshot(
   return merged;
 }
 
-async function buildPaperclipWakePayload(input: {
+export async function buildPaperclipWakePayload(input: {
   db: Db;
   companyId: string;
   contextSnapshot: Record<string, unknown>;
@@ -2072,6 +2073,11 @@ async function buildPaperclipWakePayload(input: {
             authorUserId: issueComments.authorUserId,
             presentation: issueComments.presentation,
             metadata: issueComments.metadata,
+            deletedAt: issueComments.deletedAt,
+            deletedByType: issueComments.deletedByType,
+            deletedByAgentId: issueComments.deletedByAgentId,
+            deletedByUserId: issueComments.deletedByUserId,
+            deletedByRunId: issueComments.deletedByRunId,
             createdAt: issueComments.createdAt,
           })
           .from(issueComments)
@@ -2100,7 +2106,8 @@ async function buildPaperclipWakePayload(input: {
       break;
     }
 
-    const fullBody = row.body;
+    const deletedAt = row.deletedAt ?? null;
+    const fullBody = deletedAt ? "" : row.body;
     const allowedBodyChars = Math.min(MAX_INLINE_WAKE_COMMENT_BODY_CHARS, remainingBodyChars);
     if (allowedBodyChars <= 0) {
       truncated = true;
@@ -2118,8 +2125,13 @@ async function buildPaperclipWakePayload(input: {
       authorType: row.authorType ?? (row.authorAgentId ? "agent" : row.authorUserId ? "user" : "system"),
       body,
       bodyTruncated,
-      presentation: row.presentation ?? null,
-      metadata: row.metadata ?? null,
+      presentation: deletedAt ? null : row.presentation ?? null,
+      metadata: deletedAt ? null : row.metadata ?? null,
+      deletedAt: deletedAt ? deletedAt.toISOString() : null,
+      deletedByType: deletedAt ? row.deletedByType ?? null : null,
+      deletedByAgentId: deletedAt ? row.deletedByAgentId ?? null : null,
+      deletedByUserId: deletedAt ? row.deletedByUserId ?? null : null,
+      deletedByRunId: deletedAt ? row.deletedByRunId ?? null : null,
       createdAt: row.createdAt.toISOString(),
       author: row.authorAgentId
         ? { type: "agent", id: row.authorAgentId }
@@ -6559,6 +6571,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             eq(issueComments.companyId, run.companyId),
             eq(issueComments.issueId, contextIssueId),
             eq(issueComments.createdByRunId, run.id),
+            isNull(issueComments.deletedAt),
           ),
         )
       : [{ count: 0, latestAt: null }];
@@ -7094,6 +7107,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               authorUserId: issueComments.authorUserId,
               presentation: issueComments.presentation,
               metadata: issueComments.metadata,
+              deletedAt: issueComments.deletedAt,
+              deletedByType: issueComments.deletedByType,
+              deletedByAgentId: issueComments.deletedByAgentId,
+              deletedByUserId: issueComments.deletedByUserId,
+              deletedByRunId: issueComments.deletedByRunId,
             })
             .from(issueComments)
             .where(and(
@@ -7101,7 +7119,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               eq(issueComments.issueId, issueContext.id),
               eq(issueComments.companyId, agent.companyId),
             ))
-            .then((rows) => rows[0] ?? null)
+            .then((rows) => {
+              const row = rows[0] ?? null;
+              return row?.deletedAt
+                ? {
+                    ...row,
+                    body: "",
+                    presentation: null,
+                    metadata: null,
+                  }
+                : row;
+            })
         : null;
     const issueAssigneeOverrides =
       issueContext && issueContext.assigneeAgentId === agent.id

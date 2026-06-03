@@ -258,6 +258,8 @@ export const issuesApi = {
       },
     ),
   cancelComment: (id: string, commentId: string) =>
+    api.delete<IssueComment>(`/issues/${id}/comments/${commentId}?mode=cancel`),
+  deleteComment: (id: string, commentId: string) =>
     api.delete<IssueComment>(`/issues/${id}/comments/${commentId}`),
   listDocuments: (id: string, options?: { includeSystem?: boolean }) =>
     api.get<IssueDocument[]>(
