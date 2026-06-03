@@ -9,6 +9,7 @@ import {
   documentAnnotationThreads,
   documentRevisions,
   documents,
+  issueComments,
   issueDocuments,
   issues,
 } from "@paperclipai/db";
@@ -58,6 +59,7 @@ describeEmbeddedPostgres("documentAnnotationService", () => {
     await db.delete(documentRevisions);
     await db.delete(issueDocuments);
     await db.delete(documents);
+    await db.delete(issueComments);
     await db.delete(issues);
     await db.delete(companies);
   });
@@ -179,5 +181,53 @@ describeEmbeddedPostgres("documentAnnotationService", () => {
 
     const threads = await db.select().from(documentAnnotationThreads);
     expect(threads).toHaveLength(0);
+  });
+
+  it("removes linked annotation comments and resolves empty threads when an issue comment is deleted", async () => {
+    const { companyId, issueId, document } = await createIssueWithDocument();
+    const [issueComment] = await db
+      .insert(issueComments)
+      .values({
+        companyId,
+        issueId,
+        authorType: "user",
+        authorUserId: "board-user",
+        body: "Delete this linked comment",
+      })
+      .returning();
+
+    const thread = await annotations.createThread(
+      issueId,
+      "plan",
+      {
+        baseRevisionId: document.latestRevisionId!,
+        baseRevisionNumber: document.latestRevisionNumber,
+        selector: {
+          quote: { exact: "selected text", prefix: "Alpha ", suffix: " omega" },
+          position: { normalizedStart: 6, normalizedEnd: 19, markdownStart: 6, markdownEnd: 19 },
+        },
+        body: "Linked annotation body",
+        issueCommentId: issueComment.id,
+      },
+      { actorType: "user", actorId: "board-user", userId: "board-user" },
+    );
+
+    const cleanup = await annotations.cleanupForIssueCommentDeletion(
+      issueId,
+      issueComment.id,
+      { actorType: "user", actorId: "board-user", userId: "board-user" },
+    );
+
+    expect(cleanup.deletedCommentIds).toEqual([thread.comments[0]!.id]);
+    expect(cleanup.resolvedThreadIds).toEqual([thread.id]);
+    await expect(
+      db.select().from(documentAnnotationComments).where(eq(documentAnnotationComments.id, thread.comments[0]!.id)),
+    ).resolves.toHaveLength(0);
+    const [updatedThread] = await db
+      .select()
+      .from(documentAnnotationThreads)
+      .where(eq(documentAnnotationThreads.id, thread.id));
+    expect(updatedThread?.status).toBe("resolved");
+    expect(updatedThread?.resolvedByUserId).toBe("board-user");
   });
 });

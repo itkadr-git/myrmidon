@@ -1370,6 +1370,50 @@ describe("IssueChatThread", () => {
     });
   });
 
+  it("clears a deleted comment deep-link hash instead of highlighting it", () => {
+    const root = createRoot(container);
+    const replaceStateSpy = vi.spyOn(window.history, "replaceState").mockImplementation(() => {});
+
+    act(() => {
+      root.render(
+        <MemoryRouter initialEntries={["/issues/PAP-1#comment-comment-deleted"]}>
+          <IssueChatThread
+            comments={[{
+              id: "comment-deleted",
+              companyId: "company-1",
+              issueId: "issue-1",
+              authorAgentId: null,
+              authorUserId: "user-board",
+              body: "Sensitive deleted body",
+              authorType: "user",
+              presentation: null,
+              metadata: null,
+              deletedAt: new Date("2026-04-06T12:05:00.000Z"),
+              deletedByType: "user",
+              deletedByUserId: "user-board",
+              createdAt: new Date("2026-04-06T12:00:00.000Z"),
+              updatedAt: new Date("2026-04-06T12:05:00.000Z"),
+            }]}
+            currentUserId="user-board"
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(replaceStateSpy).toHaveBeenCalledWith(null, "", "/issues/PAP-1");
+
+    replaceStateSpy.mockRestore();
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("shows explicit follow-up badges and event copy", () => {
     const root = createRoot(container);
 
