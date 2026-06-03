@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { act, createRef, forwardRef, useImperativeHandle, useState } from "react";
+import { flushSync } from "react-dom";
 import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
@@ -32,6 +33,14 @@ import type {
   IssueChatLinkedRun,
   IssueChatTranscriptEntry,
 } from "../lib/issue-chat-messages";
+
+function flushAct<T>(callback: () => T): T {
+  let result: T | undefined;
+  flushSync(() => {
+    result = callback();
+  });
+  return result as T;
+}
 
 function hasSmoothScrollBehavior(arg: unknown) {
   return typeof arg === "object"
@@ -1327,7 +1336,7 @@ describe("IssueChatThread", () => {
   it("renders deleted comments as tombstones without the original body", () => {
     const root = createRoot(container);
 
-    act(() => {
+    flushAct(() => {
       root.render(
         <MemoryRouter>
           <IssueChatThread
@@ -1360,12 +1369,12 @@ describe("IssueChatThread", () => {
       );
     });
 
-    expect(container.textContent).toContain("Comment deleted");
+    expect(container.textContent).toContain("You deleted this comment");
     expect(container.textContent).not.toContain("Sensitive deleted body");
     expect(container.querySelector("button[aria-label='Delete comment']")).toBeNull();
     expect(container.querySelector("button[aria-label='Copy message']")).toBeNull();
 
-    act(() => {
+    flushAct(() => {
       root.unmount();
     });
   });
@@ -1374,7 +1383,7 @@ describe("IssueChatThread", () => {
     const root = createRoot(container);
     const replaceStateSpy = vi.spyOn(window.history, "replaceState").mockImplementation(() => {});
 
-    act(() => {
+    flushAct(() => {
       root.render(
         <MemoryRouter initialEntries={["/issues/PAP-1#comment-comment-deleted"]}>
           <IssueChatThread
@@ -1409,7 +1418,7 @@ describe("IssueChatThread", () => {
     expect(replaceStateSpy).toHaveBeenCalledWith(null, "", "/issues/PAP-1");
 
     replaceStateSpy.mockRestore();
-    act(() => {
+    flushAct(() => {
       root.unmount();
     });
   });
