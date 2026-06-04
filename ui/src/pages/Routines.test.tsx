@@ -501,6 +501,45 @@ describe("Routines page", () => {
     });
   });
 
+  it("hides archived routines from the routines list", async () => {
+    routinesListMock.mockResolvedValue([
+      createRoutine({ id: "routine-1", title: "Morning sync", status: "active" }),
+      createRoutine({ id: "routine-2", title: "Archived cleanup", status: "archived" }),
+    ]);
+    issuesListMock.mockResolvedValue([]);
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+      },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Routines />
+        </QueryClientProvider>,
+      );
+      await flush();
+    });
+
+    for (let attempts = 0; attempts < 5 && !container.textContent?.includes("Morning sync"); attempts += 1) {
+      await act(async () => {
+        await flush();
+      });
+    }
+
+    const text = container.textContent ?? "";
+    expect(text).toContain("1 routine");
+    expect(text).toContain("Morning sync");
+    expect(text).not.toContain("Archived cleanup");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("shows an outlined row-level run now button on the routines table", async () => {
     routinesListMock.mockResolvedValue([createRoutine({ id: "routine-1", title: "Morning sync" })]);
     issuesListMock.mockResolvedValue([]);
