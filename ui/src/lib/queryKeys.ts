@@ -17,6 +17,14 @@ export const queryKeys = {
     catalogFile: (catalogRef: string, relativePath: string) =>
       ["company-skills", "catalog", "file", catalogRef, relativePath] as const,
   },
+  teamCatalog: {
+    catalog: (filters: { kind?: string; category?: string; q?: string } = {}) =>
+      ["team-catalog", "catalog", filters.kind ?? "__all-kinds__", filters.category ?? "__all-categories__", filters.q ?? ""] as const,
+    catalogDetail: (catalogRef: string) => ["team-catalog", "catalog", "detail", catalogRef] as const,
+    catalogFile: (catalogRef: string, relativePath: string) =>
+      ["team-catalog", "catalog", "file", catalogRef, relativePath] as const,
+    installed: (companyId: string) => ["team-catalog", "installed", companyId] as const,
+  },
   agents: {
     list: (companyId: string) => ["agents", companyId] as const,
     detail: (id: string) => ["agents", "detail", id] as const,
