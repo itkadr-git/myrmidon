@@ -324,6 +324,32 @@ describe("buildIssueChatMessages", () => {
     });
   });
 
+  it("redacts deleted comment bodies while preserving tombstone metadata", () => {
+    const messages = buildIssueChatMessages({
+      comments: [
+        createComment({
+          body: "Sensitive deleted body",
+          deletedAt: new Date("2026-04-06T12:05:00.000Z"),
+          deletedByType: "user",
+          deletedByUserId: "user-1",
+        }),
+      ],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [],
+      currentUserId: "user-1",
+      userLabelMap: new Map([["user-1", "Dotta"]]),
+    });
+
+    expect(messages[0]?.content).toEqual([{ type: "text", text: "" }]);
+    expect(messages[0]?.metadata.custom).toMatchObject({
+      deletedAt: "2026-04-06T12:05:00.000Z",
+      deletedByType: "user",
+      deletedByUserId: "user-1",
+    });
+    expect(JSON.stringify(messages[0])).not.toContain("Sensitive deleted body");
+  });
+
   it("prefers derived agent attribution when a board-authored comment is proven to come from a run", () => {
     const agentMap = new Map<string, Agent>([["agent-1", createAgent("agent-1", "Claude")]]);
     const messages = buildIssueChatMessages({

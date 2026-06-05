@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { act, createRef, forwardRef, useImperativeHandle, useState } from "react";
+import { flushSync } from "react-dom";
 import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
@@ -32,6 +33,14 @@ import type {
   IssueChatLinkedRun,
   IssueChatTranscriptEntry,
 } from "../lib/issue-chat-messages";
+
+function flushAct<T>(callback: () => T): T {
+  let result: T | undefined;
+  flushSync(() => {
+    result = callback();
+  });
+  return result as T;
+}
 
 function hasSmoothScrollBehavior(arg: unknown) {
   return typeof arg === "object"
@@ -1254,6 +1263,168 @@ describe("IssueChatThread", () => {
     expect(markdownBodyRenderMock).not.toHaveBeenCalled();
 
     act(() => {
+      root.unmount();
+    });
+  });
+
+  it("confirms and invokes delete only for the current user's normal comments", async () => {
+    const root = createRoot(container);
+    const onDeleteComment = vi.fn(async () => {});
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[
+              {
+                id: "comment-owned",
+                companyId: "company-1",
+                issueId: "issue-1",
+                authorAgentId: null,
+                authorUserId: "user-board",
+                body: "Delete me",
+                authorType: "user",
+                presentation: null,
+                metadata: null,
+                createdAt: new Date("2026-04-06T12:00:00.000Z"),
+                updatedAt: new Date("2026-04-06T12:00:00.000Z"),
+              },
+              {
+                id: "comment-other",
+                companyId: "company-1",
+                issueId: "issue-1",
+                authorAgentId: null,
+                authorUserId: "user-other",
+                body: "Do not delete",
+                authorType: "user",
+                presentation: null,
+                metadata: null,
+                createdAt: new Date("2026-04-06T12:01:00.000Z"),
+                updatedAt: new Date("2026-04-06T12:01:00.000Z"),
+              },
+            ]}
+            currentUserId="user-board"
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            onDeleteComment={onDeleteComment}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const deleteButtons = Array.from(container.querySelectorAll("button[aria-label='Delete comment']"));
+    expect(deleteButtons).toHaveLength(1);
+
+    await act(async () => {
+      deleteButtons[0]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(document.body.textContent).toContain("Delete comment?");
+    const confirmButton = Array.from(document.body.querySelectorAll("button"))
+      .find((button) => button.textContent === "Delete comment");
+    expect(confirmButton).toBeTruthy();
+
+    await act(async () => {
+      confirmButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onDeleteComment).toHaveBeenCalledWith("comment-owned");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders deleted comments as tombstones without the original body", () => {
+    const root = createRoot(container);
+
+    flushAct(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[{
+              id: "comment-deleted",
+              companyId: "company-1",
+              issueId: "issue-1",
+              authorAgentId: null,
+              authorUserId: "user-board",
+              body: "Sensitive deleted body",
+              authorType: "user",
+              presentation: null,
+              metadata: null,
+              deletedAt: new Date("2026-04-06T12:05:00.000Z"),
+              deletedByType: "user",
+              deletedByUserId: "user-board",
+              createdAt: new Date("2026-04-06T12:00:00.000Z"),
+              updatedAt: new Date("2026-04-06T12:05:00.000Z"),
+            }]}
+            currentUserId="user-board"
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            onDeleteComment={async () => {}}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(container.textContent).toContain("You deleted this comment");
+    expect(container.textContent).not.toContain("Sensitive deleted body");
+    expect(container.querySelector("button[aria-label='Delete comment']")).toBeNull();
+    expect(container.querySelector("button[aria-label='Copy message']")).toBeNull();
+
+    flushAct(() => {
+      root.unmount();
+    });
+  });
+
+  it("clears a deleted comment deep-link hash instead of highlighting it", () => {
+    const root = createRoot(container);
+    const replaceStateSpy = vi.spyOn(window.history, "replaceState").mockImplementation(() => {});
+
+    flushAct(() => {
+      root.render(
+        <MemoryRouter initialEntries={["/issues/PAP-1#comment-comment-deleted"]}>
+          <IssueChatThread
+            comments={[{
+              id: "comment-deleted",
+              companyId: "company-1",
+              issueId: "issue-1",
+              authorAgentId: null,
+              authorUserId: "user-board",
+              body: "Sensitive deleted body",
+              authorType: "user",
+              presentation: null,
+              metadata: null,
+              deletedAt: new Date("2026-04-06T12:05:00.000Z"),
+              deletedByType: "user",
+              deletedByUserId: "user-board",
+              createdAt: new Date("2026-04-06T12:00:00.000Z"),
+              updatedAt: new Date("2026-04-06T12:05:00.000Z"),
+            }]}
+            currentUserId="user-board"
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(replaceStateSpy).toHaveBeenCalledWith(null, "", "/issues/PAP-1");
+
+    replaceStateSpy.mockRestore();
+    flushAct(() => {
       root.unmount();
     });
   });

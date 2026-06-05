@@ -359,6 +359,7 @@ export function companySearchService(db: Db) {
           FROM issue_comments search_comments
           WHERE search_comments.company_id = ${companyId}
             AND search_comments.issue_id = issues.id
+            AND search_comments.deleted_at IS NULL
             AND (
               lower(search_comments.body) LIKE ${containsPattern} ESCAPE '\\'
               OR ${tokenMatchExpression(sql`search_comments.body`, tokenArray)}
@@ -428,6 +429,7 @@ export function companySearchService(db: Db) {
               FROM issue_comments coverage_comments
               WHERE coverage_comments.company_id = ${companyId}
                 AND coverage_comments.issue_id = issues.id
+                AND coverage_comments.deleted_at IS NULL
                 AND lower(coverage_comments.body) LIKE '%' || search_token.value || '%' ESCAPE '\\'
             )
             OR EXISTS (
@@ -497,6 +499,7 @@ export function companySearchService(db: Db) {
                 FROM issue_comments search_comments
                 WHERE search_comments.company_id = ${companyId}
                   AND search_comments.issue_id = issues.id
+                  AND search_comments.deleted_at IS NULL
                   AND (
                     lower(search_comments.body) LIKE ${containsPattern} ESCAPE '\\'
                     OR ${tokenMatchExpression(sql`search_comments.body`, tokenArray)}
@@ -514,6 +517,7 @@ export function companySearchService(db: Db) {
                 FROM issue_comments search_comments
                 WHERE search_comments.company_id = ${companyId}
                   AND search_comments.issue_id = issues.id
+                  AND search_comments.deleted_at IS NULL
                   AND (
                     lower(search_comments.body) LIKE ${containsPattern} ESCAPE '\\'
                     OR ${tokenMatchExpression(sql`search_comments.body`, tokenArray)}
