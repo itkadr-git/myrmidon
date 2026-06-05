@@ -230,4 +230,44 @@ describeEmbeddedPostgres("documentAnnotationService", () => {
     expect(updatedThread?.status).toBe("resolved");
     expect(updatedThread?.resolvedByUserId).toBe("board-user");
   });
+
+  it("rejects annotation comments linked to already-deleted issue comments", async () => {
+    const { companyId, issueId, document } = await createIssueWithDocument();
+    const [issueComment] = await db
+      .insert(issueComments)
+      .values({
+        companyId,
+        issueId,
+        authorType: "user",
+        authorUserId: "board-user",
+        body: "",
+        deletedAt: new Date("2026-06-05T03:00:00.000Z"),
+        deletedByType: "user",
+        deletedByUserId: "board-user",
+      })
+      .returning();
+
+    await expect(
+      annotations.createThread(
+        issueId,
+        "plan",
+        {
+          baseRevisionId: document.latestRevisionId!,
+          baseRevisionNumber: document.latestRevisionNumber,
+          selector: {
+            quote: { exact: "selected text", prefix: "Alpha ", suffix: " omega" },
+            position: { normalizedStart: 6, normalizedEnd: 19, markdownStart: 6, markdownEnd: 19 },
+          },
+          body: "Do not link this annotation to a deleted comment",
+          issueCommentId: issueComment.id,
+        },
+        { actorType: "user", actorId: "board-user", userId: "board-user" },
+      ),
+    ).rejects.toMatchObject({
+      status: 422,
+      message: "Linked issue comment must belong to this issue",
+    });
+
+    await expect(db.select().from(documentAnnotationComments)).resolves.toHaveLength(0);
+  });
 });

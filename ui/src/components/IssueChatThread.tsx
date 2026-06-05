@@ -1290,6 +1290,7 @@ function IssueChatUserMessage({
   const deleted = Boolean(custom.deletedAt);
   const queueTargetRunId = typeof custom.queueTargetRunId === "string" ? custom.queueTargetRunId : null;
   const [copied, setCopied] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const {
     isCurrentUser,
     authorName: resolvedAuthorName,
@@ -1309,8 +1310,11 @@ function IssueChatUserMessage({
   const canDeleteComment = Boolean(onDeleteComment && isCurrentUser && !queued && !pending && !deleted);
   const handleDeleteComment = () => {
     if (!canDeleteComment) return;
-    const confirmed = window.confirm("Delete this comment? This will replace it with a deleted-comment marker.");
-    if (!confirmed) return;
+    setDeleteDialogOpen(true);
+  };
+  const confirmDeleteComment = () => {
+    if (!canDeleteComment) return;
+    setDeleteDialogOpen(false);
     void onDeleteComment?.(commentId);
   };
   const messageBody = (
@@ -1432,21 +1436,41 @@ function IssueChatUserMessage({
   );
 
   return (
-    <div id={anchorId}>
-      <div className={cn("group flex items-start gap-2.5", isCurrentUser && "justify-end")}>
-        {isCurrentUser ? (
-          <>
-            {messageBody}
-            {authorAvatar}
-          </>
-        ) : (
-          <>
-            {authorAvatar}
-            {messageBody}
-          </>
-        )}
+    <>
+      <div id={anchorId}>
+        <div className={cn("group flex items-start gap-2.5", isCurrentUser && "justify-end")}>
+          {isCurrentUser ? (
+            <>
+              {messageBody}
+              {authorAvatar}
+            </>
+          ) : (
+            <>
+              {authorAvatar}
+              {messageBody}
+            </>
+          )}
+        </div>
       </div>
-    </div>
+      <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete comment?</DialogTitle>
+            <DialogDescription>
+              This will replace the comment with a deleted-comment marker.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={confirmDeleteComment}>
+              Delete comment
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 

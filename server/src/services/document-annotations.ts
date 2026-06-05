@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   documentAnnotationAnchorSnapshots,
@@ -155,7 +155,7 @@ export function documentAnnotationService(db: Db) {
         issueId: issueComments.issueId,
       })
       .from(issueComments)
-      .where(eq(issueComments.id, commentId))
+      .where(and(eq(issueComments.id, commentId), isNull(issueComments.deletedAt)))
       .then((rows: Array<{ id: string; companyId: string; issueId: string }>) => rows[0] ?? null);
     if (!comment || comment.issueId !== issueId) {
       throw unprocessable("Linked issue comment must belong to this issue");

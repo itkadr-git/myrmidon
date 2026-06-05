@@ -2461,20 +2461,6 @@ export function IssueDetail() {
   const cancelQueuedComment = useMutation({
     mutationFn: async ({ commentId }: { commentId: string }) => issuesApi.cancelComment(issueId!, commentId),
     onSuccess: (comment) => {
-      if (comment.deletedAt) {
-        upsertCommentInCache(comment);
-        clearCommentHashIfCurrent(comment.id);
-        invalidateIssueDetail();
-        invalidateIssueThreadLazily();
-        invalidateIssueCollections();
-        invalidateIssueDocumentAnnotationState();
-        pushToast({
-          title: "Comment deleted",
-          body: "The comment was replaced with a deleted marker.",
-          tone: "success",
-        });
-        return;
-      }
       setLocallyQueuedCommentRunIds((current) => {
         if (!current.has(comment.id)) return current;
         const next = new Map(current);

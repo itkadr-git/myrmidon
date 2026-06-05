@@ -1270,7 +1270,6 @@ describe("IssueChatThread", () => {
   it("confirms and invokes delete only for the current user's normal comments", async () => {
     const root = createRoot(container);
     const onDeleteComment = vi.fn(async () => {});
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
 
     act(() => {
       root.render(
@@ -1324,10 +1323,17 @@ describe("IssueChatThread", () => {
       deleteButtons[0]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(confirmSpy).toHaveBeenCalled();
+    expect(document.body.textContent).toContain("Delete comment?");
+    const confirmButton = Array.from(document.body.querySelectorAll("button"))
+      .find((button) => button.textContent === "Delete comment");
+    expect(confirmButton).toBeTruthy();
+
+    await act(async () => {
+      confirmButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
     expect(onDeleteComment).toHaveBeenCalledWith("comment-owned");
 
-    confirmSpy.mockRestore();
     act(() => {
       root.unmount();
     });
