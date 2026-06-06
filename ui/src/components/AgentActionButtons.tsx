@@ -126,6 +126,8 @@ export function AgentActionButtons({
   runLabel = "Run now",
   showStatus = true,
   actionsDisabled = false,
+  workActionsDisabled = false,
+  workActionsDisabledReason,
   navigateToRunOnInvoke = true,
   onActionError,
   children,
@@ -138,6 +140,8 @@ export function AgentActionButtons({
   runLabel?: string;
   showStatus?: boolean;
   actionsDisabled?: boolean;
+  workActionsDisabled?: boolean;
+  workActionsDisabledReason?: string;
   navigateToRunOnInvoke?: boolean;
   /**
    * Optional inline error reporter. When provided it is used instead of a toast
@@ -259,6 +263,8 @@ export function AgentActionButtons({
 
   const isPendingApproval = agent.status === "pending_approval";
   const disabled = actionsDisabled || agentAction.isPending;
+  const assignAndRunDisabled = disabled || isPendingApproval || workActionsDisabled;
+  const pauseResumeDisabled = disabled || isPendingApproval || (isPaused && workActionsDisabled);
 
   return (
     <div className={className ?? "flex items-center gap-1 sm:gap-2 shrink-0"}>
@@ -266,13 +272,15 @@ export function AgentActionButtons({
         variant="outline"
         size={size}
         onClick={() => openNewIssue({ assigneeAgentId: agent.id })}
+        disabled={assignAndRunDisabled}
+        title={workActionsDisabled ? workActionsDisabledReason : undefined}
       >
         <Plus className="h-3.5 w-3.5 sm:mr-1" />
         <span className="hidden sm:inline">{assignLabel}</span>
       </Button>
       <RunButton
         onClick={() => agentAction.mutate("invoke")}
-        disabled={disabled || isPendingApproval}
+        disabled={assignAndRunDisabled}
         label={runLabel}
         size={size}
       />
@@ -280,7 +288,7 @@ export function AgentActionButtons({
         isPaused={isPaused}
         onPause={() => agentAction.mutate("pause")}
         onResume={() => agentAction.mutate("resume")}
-        disabled={disabled || isPendingApproval}
+        disabled={pauseResumeDisabled}
         size={size}
       />
       {showStatus && (

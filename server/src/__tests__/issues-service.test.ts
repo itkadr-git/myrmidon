@@ -168,6 +168,183 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await tempDb?.cleanup();
   });
 
+  async function seedAssignableAgentCompany() {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    return companyId;
+  }
+
+  function agentRow(companyId: string, input: {
+    id: string;
+    name: string;
+    status?: string;
+    reportsTo?: string | null;
+  }) {
+    return {
+      id: input.id,
+      companyId,
+      name: input.name,
+      role: "engineer",
+      status: input.status ?? "active",
+      reportsTo: input.reportsTo ?? null,
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    };
+  }
+
+  it("rejects direct terminated assignees with structured conflict details", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const terminatedAgentId = randomUUID();
+    await db.insert(agents).values(agentRow(companyId, {
+      id: terminatedAgentId,
+      name: "TerminatedCoder",
+      status: "terminated",
+    }));
+
+    await expect(svc.create(companyId, {
+      title: "Do not assign this",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: terminatedAgentId,
+    })).rejects.toMatchObject({
+      status: 409,
+      details: {
+        code: "agent_not_assignable",
+        reason: "assignee_terminated",
+        assigneeAgentId: terminatedAgentId,
+      },
+    });
+  });
+
+  it("rejects invalid ancestor-chain assignees and preserves the existing assignment", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const activeAgentId = randomUUID();
+    const terminatedManagerId = randomUUID();
+    const blockedAgentId = randomUUID();
+    await db.insert(agents).values([
+      agentRow(companyId, { id: activeAgentId, name: "ActiveCoder" }),
+      agentRow(companyId, {
+        id: terminatedManagerId,
+        name: "TerminatedManager",
+        status: "terminated",
+      }),
+      agentRow(companyId, {
+        id: blockedAgentId,
+        name: "BlockedCoder",
+        reportsTo: terminatedManagerId,
+      }),
+    ]);
+    const issue = await svc.create(companyId, {
+      title: "Keep current assignment",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: activeAgentId,
+    });
+
+    await expect(svc.update(issue.id, {
+      assigneeAgentId: blockedAgentId,
+    })).rejects.toMatchObject({
+      status: 409,
+      details: {
+        code: "agent_not_assignable",
+        reason: "ancestor_terminated",
+        assigneeAgentId: blockedAgentId,
+        invalidAncestorAgentId: terminatedManagerId,
+      },
+    });
+
+    const persisted = await db
+      .select({ assigneeAgentId: issues.assigneeAgentId })
+      .from(issues)
+      .where(eq(issues.id, issue.id))
+      .then((rows) => rows[0] ?? null);
+    expect(persisted?.assigneeAgentId).toBe(activeAgentId);
+  });
+
+  it("rejects checkout by a terminated agent before assigning the issue", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const terminatedAgentId = randomUUID();
+    await db.insert(agents).values(agentRow(companyId, {
+      id: terminatedAgentId,
+      name: "TerminatedCheckoutCoder",
+      status: "terminated",
+    }));
+    const issue = await svc.create(companyId, {
+      title: "Checkout must stay unassigned",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: null,
+    });
+
+    await expect(svc.checkout(issue.id, terminatedAgentId, ["todo"], randomUUID()))
+      .rejects.toMatchObject({
+        status: 409,
+        details: {
+          code: "agent_not_assignable",
+          reason: "assignee_terminated",
+          assigneeAgentId: terminatedAgentId,
+        },
+      });
+
+    const persisted = await db
+      .select({ assigneeAgentId: issues.assigneeAgentId, status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issue.id))
+      .then((rows) => rows[0] ?? null);
+    expect(persisted).toMatchObject({
+      assigneeAgentId: null,
+      status: "todo",
+    });
+  });
+
+  it("rejects moving an existing terminated assignment into progress without clearing it", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const assigneeAgentId = randomUUID();
+    await db.insert(agents).values(agentRow(companyId, {
+      id: assigneeAgentId,
+      name: "SoonTerminatedCoder",
+    }));
+    const issue = await svc.create(companyId, {
+      title: "Do not restart after termination",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId,
+    });
+    await db.update(agents).set({ status: "terminated" }).where(eq(agents.id, assigneeAgentId));
+
+    await expect(svc.update(issue.id, {
+      status: "in_progress",
+    })).rejects.toMatchObject({
+      status: 409,
+      details: {
+        code: "agent_not_assignable",
+        reason: "assignee_terminated",
+        assigneeAgentId,
+      },
+    });
+
+    const persisted = await db
+      .select({ assigneeAgentId: issues.assigneeAgentId, status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issue.id))
+      .then((rows) => rows[0] ?? null);
+    expect(persisted).toMatchObject({
+      assigneeAgentId,
+      status: "todo",
+    });
+  });
+
   it("returns issues an agent participated in across the supported signals", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

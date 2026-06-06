@@ -10,6 +10,7 @@ import {
   PlayCircle,
   Plus,
   Users,
+  AlertTriangle,
 } from "lucide-react";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
@@ -114,12 +115,15 @@ function SidebarAgentItem({
   const isActive = activeAgentId === routeRef;
   const isPaused = agent.status === "paused";
   const isBudgetPaused = isPaused && agent.pauseReason === "budget";
+  const hasInvalidOrgChain = agent.orgChainHealth?.status === "invalid_org_chain";
   const pauseResumeLabel = isPaused ? "Resume agent" : "Pause agent";
-  const pauseResumeDisabled = disabled || agent.status === "pending_approval" || isBudgetPaused;
+  const pauseResumeDisabled = disabled || agent.status === "pending_approval" || isBudgetPaused || (isPaused && hasInvalidOrgChain);
   const pauseResumeDisabledLabel = disabled
     ? "Updating..."
     : isBudgetPaused
       ? "Budget paused"
+      : isPaused && hasInvalidOrgChain
+        ? "Invalid org chain"
       : pauseResumeLabel;
 
   return (
@@ -139,6 +143,9 @@ function SidebarAgentItem({
       >
         <AgentIcon icon={agent.icon} className="shrink-0 h-3.5 w-3.5 text-muted-foreground" />
         <span className="flex-1 truncate">{agent.name}</span>
+        {hasInvalidOrgChain ? (
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label="Invalid reporting chain" />
+        ) : null}
         {(agent.pauseReason === "budget" || runCount > 0) && (
           <span className="ml-auto flex items-center gap-1.5 shrink-0">
             {agent.pauseReason === "budget" ? (

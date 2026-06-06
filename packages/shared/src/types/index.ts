@@ -142,6 +142,15 @@ export type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestResult,
 } from "./agent.js";
+export type {
+  AgentEligibilityAgent,
+  AgentEligibilityLifecycleReason,
+  AgentInvalidOrgChainAncestor,
+  AgentOrgChainEntry,
+  AgentOrgChainHealth,
+  AgentOrgChainInvalidReason,
+  AgentWorkEligibility,
+} from "../agent-eligibility.js";
 export type { AssetImage } from "./asset.js";
 export type {
   CreateDocumentAnnotationCommentRequest,

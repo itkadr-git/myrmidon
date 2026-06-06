@@ -72,6 +72,7 @@ import {
   ArrowLeft,
   HelpCircle,
   FolderOpen,
+  AlertTriangle,
 } from "lucide-react";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -122,6 +123,12 @@ const SECRET_ENV_KEY_RE =
   /(api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)/i;
 const COMMAND_ENV_KEY_RE = /(^command$|^cmd$|command[-_]?line|resolved[-_]?command|PAPERCLIP_RESOLVED_COMMAND)/i;
 const JWT_VALUE_RE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)?$/;
+
+function formatOrgChainHealthPath(agent: AgentDetailRecord) {
+  return agent.orgChainHealth?.fullChain
+    .map((entry) => `${entry.name}${entry.status !== "active" && entry.status !== "idle" ? ` (${entry.status})` : ""}`)
+    .join(" -> ") ?? agent.name;
+}
 
 function redactPathText(value: string, censorUsernameInLogs: boolean) {
   return redactHomePathUserSegments(value, { enabled: censorUsernameInLogs });
@@ -913,6 +920,7 @@ export function AgentDetail() {
     return <Navigate to={`/agents/${canonicalAgentRef}/dashboard`} replace />;
   }
   const isPendingApproval = agent.status === "pending_approval";
+  const hasInvalidOrgChain = agent.orgChainHealth?.status === "invalid_org_chain";
   const showConfigActionBar = (activeView === "configuration" || activeView === "instructions") && (configDirty || configSaving);
   const showLeftAgentNotice = agentMembershipState === "left" && !dismissedLeftAgentIds.has(agent.id);
   const agentMembershipPending =
@@ -956,6 +964,27 @@ export function AgentDetail() {
           </button>
         </div>
       ) : null}
+      {hasInvalidOrgChain ? (
+        <div className="flex items-start gap-3 border border-amber-300/35 bg-amber-300/10 px-3 py-2 text-sm text-amber-100">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <div className="min-w-0 space-y-1">
+            <p className="font-medium">Invalid reporting chain</p>
+            <p className="text-amber-100/90">
+              {agent.name} cannot accept tasks or start runs until its reporting chain is repaired.
+            </p>
+            <p className="break-words font-mono text-xs text-amber-100/80">
+              {formatOrgChainHealthPath(agent)}
+            </p>
+            {agent.orgChainHealth?.repairGuidance ? (
+              <p className="text-amber-100/85">{agent.orgChainHealth.repairGuidance}</p>
+            ) : (
+              <p className="text-amber-100/85">
+                Assign this agent to an active manager/root, or explicitly pause or terminate the affected agent/subtree.
+              </p>
+            )}
+          </div>
+        </div>
+      ) : null}
       {/* Header */}
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-3 min-w-0">
@@ -981,6 +1010,8 @@ export function AgentDetail() {
           assignLabel="Assign Task"
           runLabel="Run Heartbeat"
           actionsDisabled={agentAction.isPending}
+          workActionsDisabled={hasInvalidOrgChain}
+          workActionsDisabledReason="Repair this agent's reporting chain before assigning tasks or starting runs"
           onActionError={setActionError}
         >
           {mobileLiveRun && (

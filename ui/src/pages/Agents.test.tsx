@@ -8,6 +8,7 @@ import type { Agent } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ToastProvider } from "../context/ToastContext";
 import { Agents } from "./Agents";
+import type { AgentOrgChainHealth } from "@paperclipai/shared";
 
 const mockAgentsApi = vi.hoisted(() => ({
   list: vi.fn(),
@@ -104,6 +105,34 @@ function makeAgent(overrides: Partial<Agent>): Agent {
     ...overrides,
   };
 }
+
+const invalidOrgChainHealth: AgentOrgChainHealth = {
+  status: "invalid_org_chain",
+  reason: "terminated_ancestor",
+  fullChain: [
+    {
+      id: "agent-1",
+      companyId: "company-1",
+      name: "Alpha",
+      status: "active",
+      reportsTo: "manager-1",
+      depth: 0,
+      relation: "self",
+    },
+    {
+      id: "manager-1",
+      companyId: "company-1",
+      name: "Terminated Manager",
+      status: "terminated",
+      reportsTo: null,
+      depth: 1,
+      relation: "ancestor",
+    },
+  ],
+  firstInvalidAncestor: { id: "manager-1", name: "Terminated Manager", status: "terminated" },
+  invalidAncestors: [{ id: "manager-1", name: "Terminated Manager", status: "terminated" }],
+  repairGuidance: "Alpha reports through terminated ancestor Terminated Manager.",
+};
 
 async function flushReact() {
   await act(async () => {
@@ -223,5 +252,27 @@ describe("Agents", () => {
     expect(titleCell).not.toBeNull();
     expect(titleCell?.textContent).toContain("Alpha");
     expect(container.querySelector(".min-w-\\[7rem\\]")).toBeNull();
+  });
+
+  it("keeps invalid-org-chain agents visible with a warning marker", async () => {
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({ orgChainHealth: invalidOrgChainHealth }),
+    ]);
+
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <Agents />
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("Alpha");
+    expect(container.querySelector('[aria-label="Invalid reporting chain"]')).not.toBeNull();
   });
 });

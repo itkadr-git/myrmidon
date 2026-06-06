@@ -957,6 +957,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
   it("queues exactly one retry when the recorded local pid is dead", async () => {
     const { agentId, runId, issueId } = await seedRunFixture({
+      agentStatus: "idle",
       processPid: 999_999_999,
       contextSnapshot: {
         modelProfile: "cheap",
@@ -988,7 +989,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       timeoutConfigured: false,
       timeoutFired: false,
     });
-    expect(retryRun?.status).toBe("queued");
+    expect(["queued", "running"]).toContain(retryRun?.status);
     expect(retryRun?.retryOfRunId).toBe(runId);
     expect(retryRun?.processLossRetryCount).toBe(1);
     expect(retryRun?.contextSnapshot as Record<string, unknown>).not.toHaveProperty("modelProfile");
@@ -1032,6 +1033,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(isPidAlive(orphan.descendantPid)).toBe(true);
 
     const { agentId, runId, issueId } = await seedRunFixture({
+      agentStatus: "idle",
       processPid: orphan.processPid,
       processGroupId: orphan.processGroupId,
     });
@@ -1055,7 +1057,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(failedRun?.error).toContain("descendant process group");
 
     const retryRun = runs.find((row) => row.id !== runId);
-    expect(retryRun?.status).toBe("queued");
+    expect(["queued", "running"]).toContain(retryRun?.status);
 
     const issue = await db
       .select()

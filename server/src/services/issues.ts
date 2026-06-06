@@ -75,6 +75,7 @@ import { redactSensitiveText } from "../redaction.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
 import { getRunLogStore } from "./run-log-store.js";
 import { getDefaultCompanyGoal } from "./goals.js";
+import { assertAssignableAgent } from "./agent-assignability.js";
 import {
   isVerifiedIssueTreeControlInteractionWake,
   issueTreeControlService,
@@ -3372,29 +3373,6 @@ export function issueService(db: Db) {
     });
   }
 
-  async function assertAssignableAgent(companyId: string, agentId: string) {
-    const assignee = await db
-      .select({
-        id: agents.id,
-        companyId: agents.companyId,
-        status: agents.status,
-      })
-      .from(agents)
-      .where(eq(agents.id, agentId))
-      .then((rows) => rows[0] ?? null);
-
-    if (!assignee) throw notFound("Assignee agent not found");
-    if (assignee.companyId !== companyId) {
-      throw unprocessable("Assignee must belong to same company");
-    }
-    if (assignee.status === "pending_approval") {
-      throw conflict("Cannot assign work to pending approval agents");
-    }
-    if (assignee.status === "terminated") {
-      throw conflict("Cannot assign work to terminated agents");
-    }
-  }
-
   async function isTreeHoldInteractionCheckoutAllowed(
     companyId: string,
     checkoutRunId: string | null,
@@ -4733,7 +4711,7 @@ export function issueService(db: Db) {
         throw unprocessable("Issue can only have one assignee");
       }
       if (data.assigneeAgentId) {
-        await assertAssignableAgent(companyId, data.assigneeAgentId);
+        await assertAssignableAgent(db, companyId, data.assigneeAgentId, { kind: "work" });
       }
       if (data.assigneeUserId) {
         await assertAssignableUser(companyId, data.assigneeUserId);
@@ -5021,8 +4999,11 @@ export function issueService(db: Db) {
           throw unprocessable("Issue is blocked by unresolved blockers", { unresolvedBlockerIssueIds });
         }
       }
-      if (issueData.assigneeAgentId) {
-        await assertAssignableAgent(existing.companyId, issueData.assigneeAgentId);
+      const shouldValidateNextAssignee =
+        Boolean(nextAssigneeAgentId) &&
+        (issueData.assigneeAgentId !== undefined || patch.status === "in_progress");
+      if (shouldValidateNextAssignee) {
+        await assertAssignableAgent(dbOrTx as Db, existing.companyId, nextAssigneeAgentId, { kind: "work" });
       }
       if (issueData.assigneeUserId) {
         await assertAssignableUser(existing.companyId, issueData.assigneeUserId);
@@ -5347,7 +5328,7 @@ export function issueService(db: Db) {
         .where(eq(issues.id, id))
         .then((rows) => rows[0] ?? null);
       if (!issueCompany) throw notFound("Issue not found");
-      await assertAssignableAgent(issueCompany.companyId, agentId);
+      await assertAssignableAgent(db, issueCompany.companyId, agentId, { kind: "work" });
 
       const now = new Date();
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(issueCompany.companyId, id);

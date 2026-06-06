@@ -1,5 +1,20 @@
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
 export {
+  getAgentOrgChainHealth,
+  getAgentWorkEligibility,
+  isAgentAssignableToWork,
+  isAgentInvokable,
+  isAgentStatusAssignableToWork,
+  isAgentStatusInvokable,
+  type AgentEligibilityAgent,
+  type AgentEligibilityLifecycleReason,
+  type AgentInvalidOrgChainAncestor,
+  type AgentOrgChainEntry,
+  type AgentOrgChainHealth,
+  type AgentOrgChainInvalidReason,
+  type AgentWorkEligibility,
+} from "./agent-eligibility.js";
+export {
   asBoolean,
   asString,
   asStringArray,

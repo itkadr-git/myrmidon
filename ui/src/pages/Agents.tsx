@@ -18,7 +18,7 @@ import { relativeTime, cn, agentRouteRef, agentUrl } from "../lib/utils";
 import { PageTabBar } from "../components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
-import { Bot, Plus, List, GitBranch } from "lucide-react";
+import { AlertTriangle, Bot, Plus, List, GitBranch } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent } from "@paperclipai/shared";
 import {
   resourceMembershipState,
@@ -211,6 +211,7 @@ export function Agents() {
       {effectiveView === "list" && filtered.length > 0 && (
         <div className="border border-border">
           {filtered.map((agent) => {
+            const hasInvalidOrgChain = agent.orgChainHealth?.status === "invalid_org_chain";
             return (
               <EntityRow
                 key={agent.id}
@@ -227,7 +228,11 @@ export function Agents() {
                   agent.pausedAt && tab !== "paused" ? "opacity-50" : "",
                   resourceMembershipState(membershipsQuery.data, "agent", agent.id) === "left" ? "text-foreground/55" : "",
                 )}
-                leading={<AgentStatusCapsule status={agent.status} />}
+                leading={hasInvalidOrgChain ? (
+                  <AlertTriangle className="h-3.5 w-3.5 text-amber-500" aria-label="Invalid reporting chain" />
+                ) : (
+                  <AgentStatusCapsule status={agent.status} />
+                )}
                 meta={
                   <div className="hidden xl:flex items-center gap-3">
                     <AgentMetaColumns agent={agent} />
@@ -366,6 +371,7 @@ function OrgTreeNode({
   membershipMutation: ReturnType<typeof useResourceMembershipMutation>;
 }) {
   const agent = agentMap.get(node.id);
+  const hasInvalidOrgChain = Boolean(agent && agent.orgChainHealth?.status === "invalid_org_chain");
   const membershipState = resourceMembershipState(memberships, "agent", node.id);
   const pending = membershipMutation.isPending &&
     membershipMutation.variables?.resourceType === "agent" &&
@@ -381,7 +387,11 @@ function OrgTreeNode({
           membershipState === "left" && "text-foreground/55",
         )}
       >
-        <AgentStatusCapsule status={node.status} />
+        {hasInvalidOrgChain ? (
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label="Invalid reporting chain" />
+        ) : (
+          <AgentStatusCapsule status={node.status} />
+        )}
         <div className="flex-1 min-w-[7rem]">
           <span className="text-sm font-medium">{node.name}</span>
           <span className="text-xs text-muted-foreground ml-2">
