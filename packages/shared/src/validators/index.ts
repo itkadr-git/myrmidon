@@ -333,6 +333,8 @@ export {
   COMPANY_ARTIFACTS_DEFAULT_LIMIT,
   COMPANY_ARTIFACTS_MAX_LIMIT,
   COMPANY_ARTIFACTS_MAX_QUERY_LENGTH,
+  companyArtifactGroupBySchema,
+  companyArtifactGroupSchema,
   companyArtifactMediaKindSchema,
   companyArtifactSchema,
   companyArtifactSourceSchema,

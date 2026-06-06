@@ -217,6 +217,8 @@ export type {
 export type {
   CompanyArtifact,
   CompanyArtifactAgentSummary,
+  CompanyArtifactGroup,
+  CompanyArtifactGroupBy,
   CompanyArtifactIssueSummary,
   CompanyArtifactMediaKind,
   CompanyArtifactProjectSummary,
