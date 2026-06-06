@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
 import type { ComponentProps, ReactNode } from "react";
+import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { IssueThreadInteractionCard } from "./IssueThreadInteractionCard";
@@ -33,6 +33,10 @@ vi.mock("@/lib/router", () => ({
     <a href={to} className={className}>{children}</a>
   ),
 }));
+
+function act(callback: () => void) {
+  flushSync(callback);
+}
 
 function renderCard(
   props: Partial<ComponentProps<typeof IssueThreadInteractionCard>> = {},
@@ -458,6 +462,48 @@ describe("IssueThreadInteractionCard", () => {
     expect(host.querySelectorAll('[role="checkbox"]')).toHaveLength(0);
     // 42 selected, but only the first 8 labels render inline, then a "+N more" chip.
     expect(host.textContent).toContain("+34 more");
+  });
+
+  it("expands the hidden accepted selections when the +N more chip is clicked", () => {
+    const host = renderCard({
+      interaction: acceptedManyRequestCheckboxConfirmationInteraction,
+    });
+
+    const countSelectedChips = () =>
+      Array.from(host.querySelectorAll("*")).filter(
+        (node) => node.children.length === 0 && node.textContent?.trim().startsWith("Selected:"),
+      ).length;
+
+    expect(countSelectedChips()).toBe(8);
+
+    const moreButton = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("+34 more"),
+    );
+    expect(moreButton).toBeTruthy();
+    moreButton?.focus();
+    expect(document.activeElement).toBe(moreButton);
+
+    act(() => {
+      moreButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(host.textContent).not.toContain("+34 more");
+    expect(countSelectedChips()).toBe(42);
+    expect(document.activeElement).toBe(moreButton);
+
+    const showLessButton = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Show less"),
+    );
+    expect(showLessButton).toBeTruthy();
+    expect(showLessButton).toBe(moreButton);
+
+    act(() => {
+      showLessButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(countSelectedChips()).toBe(8);
+    expect(host.textContent).toContain("+34 more");
+    expect(document.activeElement).toBe(moreButton);
   });
 
   it("stays compact and scrollable with around 100 options", () => {
