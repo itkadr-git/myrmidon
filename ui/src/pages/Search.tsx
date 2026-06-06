@@ -346,7 +346,7 @@ export function Search() {
                 }
               }
             }}
-            placeholder="Search issues, comments, documents, artifacts, agents, projects…"
+            placeholder="Search issues, comments, documents, agents, projects…"
             aria-label="Search query"
             className="h-10 pl-9 pr-20 text-sm"
           />
@@ -456,7 +456,7 @@ function SearchTabContent({
         <div>
           <h2 className="text-lg font-semibold">Type to search company memory.</h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            Issues, comments, plan documents, artifacts, agents, projects — same surface, ranked by relevance.
+            Issues, comments, plan documents, agents, projects — same surface, ranked by relevance.
           </p>
         </div>
         {recentSearches.length > 0 ? (

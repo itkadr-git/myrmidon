@@ -124,6 +124,56 @@ export const AGENT_ICON_NAMES = [
 ] as const;
 export type AgentIconName = (typeof AGENT_ICON_NAMES)[number];
 
+/**
+ * Curated Lucide icon set for projects (PAP-68 part 3).
+ *
+ * The first entry, `"folder"`, is the default for any project without an
+ * explicit icon. The remaining entries reuse much of the agent icon set plus a
+ * handful of folder/structure icons that read well at small tile sizes.
+ */
+export const PROJECT_ICON_NAMES = [
+  "folder",
+  "rocket",
+  "code",
+  "terminal",
+  "database",
+  "globe",
+  "package",
+  "boxes",
+  "box",
+  "layers",
+  "briefcase",
+  "compass",
+  "target",
+  "flame",
+  "zap",
+  "star",
+  "bug",
+  "wrench",
+  "hammer",
+  "lightbulb",
+  "sparkles",
+  "shield",
+  "lock",
+  "search",
+  "cog",
+  "brain",
+  "cpu",
+  "git-branch",
+  "file-code",
+  "puzzle",
+  "gem",
+  "atom",
+  "heart",
+  "mail",
+  "message-square",
+  "crown",
+  "radar",
+  "telescope",
+  "hexagon",
+] as const;
+export type ProjectIconName = (typeof PROJECT_ICON_NAMES)[number];
+
 export const ISSUE_STATUSES = [
   "backlog",
   "todo",

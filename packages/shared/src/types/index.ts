@@ -159,7 +159,7 @@ export type {
   DocumentTextRange,
   UpdateDocumentAnnotationThreadRequest,
 } from "./document-annotation.js";
-export type { Project, ProjectCodebase, ProjectCodebaseOrigin, ProjectGoalRef, ProjectManagedByPlugin, ProjectWorkspace } from "./project.js";
+export type { Project, ProjectBudgetSummary, ProjectCodebase, ProjectCodebaseOrigin, ProjectGoalRef, ProjectManagedByPlugin, ProjectWorkspace } from "./project.js";
 export type {
   CompanySearchHighlight,
   CompanySearchArtifactSummary,

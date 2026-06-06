@@ -112,10 +112,9 @@ import {
   AvatarGroup,
   AvatarGroupCount,
 } from "@/components/ui/avatar";
-import { StatusBadge } from "@/components/StatusBadge";
+import { StatusBadge, AgentStatusBadge, AgentStatusCapsule } from "@/components/StatusBadge";
 import { StatusIcon } from "@/components/StatusIcon";
 import { PriorityIcon } from "@/components/PriorityIcon";
-import { agentStatusDot, agentStatusDotDefault } from "@/lib/status-colors";
 import { EntityRow } from "@/components/EntityRow";
 import { EmptyState } from "@/components/EmptyState";
 import { MetricCard } from "@/components/MetricCard";
@@ -551,14 +550,18 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="Agent status dots">
-          <div className="flex items-center gap-4 flex-wrap">
-            {(["running", "active", "paused", "error", "archived"] as const).map((label) => (
+        <SubSection title="Agent status (capsule + chip)">
+          <p className="text-xs text-muted-foreground mb-3 max-w-prose">
+            The agents section uses a brand heartbeat capsule (8×16) plus a brand
+            <code className="mx-1">.task-chip</code>. Four states only: idle (gray),
+            running (blue, pulses), paused (amber), error (red, blinks). Motion
+            honors <code>prefers-reduced-motion</code>.
+          </p>
+          <div className="flex items-center gap-6 flex-wrap">
+            {(["idle", "running", "paused", "error"] as const).map((label) => (
               <div key={label} className="flex items-center gap-2">
-                <span className="relative flex h-2.5 w-2.5">
-                  <span className={`inline-flex h-full w-full rounded-full ${agentStatusDot[label] ?? agentStatusDotDefault}`} />
-                </span>
-                <span className="text-xs text-muted-foreground">{label}</span>
+                <AgentStatusCapsule status={label} />
+                <AgentStatusBadge status={label} />
               </div>
             ))}
           </div>

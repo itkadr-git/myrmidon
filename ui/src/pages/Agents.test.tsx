@@ -126,7 +126,11 @@ describe("Agents", () => {
     });
 
     mockAgentsApi.list.mockResolvedValue([
-      makeAgent({ adapterConfig: { model: "gpt-5.4" } }),
+      makeAgent({
+        adapterConfig: { model: "gpt-5.4" },
+        // Old enough that relativeTime() falls back to an absolute date string.
+        lastHeartbeatAt: new Date("2026-01-15T00:00:00Z"),
+      }),
     ]);
     mockAgentsApi.org.mockResolvedValue([
       {
@@ -180,5 +184,44 @@ describe("Agents", () => {
 
     expect(container.textContent).toContain("codex_local");
     expect(container.textContent).toContain("gpt-5.4");
+
+    // The heartbeat cell must render on a single line so full dates like
+    // "Apr 30, 2026" never wrap (PAP-85 defect #2).
+    const heartbeatCell = container.querySelector(".whitespace-nowrap.w-24");
+    expect(heartbeatCell).not.toBeNull();
+    expect(heartbeatCell?.textContent).not.toContain("\n");
+  });
+
+  it("gives list-view rows a fixed-width title so meta columns align (PAP-86)", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <Agents />
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    // Switch from the default org view to the list view.
+    const listToggle = Array.from(container.querySelectorAll("button")).find(
+      (btn) => btn.querySelector("svg.lucide-list"),
+    );
+    expect(listToggle).toBeDefined();
+    await act(async () => {
+      listToggle!.click();
+    });
+    await flushReact();
+
+    // The title cell carries a constant width (`w-56`), not a content-sized
+    // `min-w-[7rem]`, so the `meta` group starts at the same x on every row and
+    // the model + timestamp columns line up vertically.
+    const titleCell = container.querySelector(".w-56");
+    expect(titleCell).not.toBeNull();
+    expect(titleCell?.textContent).toContain("Alpha");
+    expect(container.querySelector(".min-w-\\[7rem\\]")).toBeNull();
   });
 });

@@ -1008,6 +1008,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             leadAgentId: null,
             targetDate: null,
             color: declaration.color ?? null,
+            icon: null,
             env: null,
             pauseReason: null,
             pausedAt: null,
