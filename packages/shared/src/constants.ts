@@ -179,8 +179,11 @@ export const ISSUE_THREAD_INTERACTION_KINDS = [
   "suggest_tasks",
   "ask_user_questions",
   "request_confirmation",
+  "request_checkbox_confirmation",
 ] as const;
 export type IssueThreadInteractionKind = (typeof ISSUE_THREAD_INTERACTION_KINDS)[number];
+
+export const REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT = 200;
 
 export const ISSUE_THREAD_INTERACTION_STATUSES = [
   "pending",

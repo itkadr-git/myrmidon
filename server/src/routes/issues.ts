@@ -6033,7 +6033,9 @@ export function issueRoutes(
         });
       }
 
-      const acceptedPlanTarget = readAcceptedPlanConfirmationTarget(interaction.payload);
+      const acceptedPlanTarget = interaction.kind === "request_confirmation"
+        ? readAcceptedPlanConfirmationTarget(interaction.payload)
+        : null;
       const acceptedPlanConfirmation =
         interaction.kind === "request_confirmation" &&
         interaction.status === "accepted" &&
@@ -6091,7 +6093,7 @@ export function issueRoutes(
           rejectionReason:
             interaction.kind === "suggest_tasks"
               ? (interaction.result?.rejectionReason ?? null)
-              : interaction.kind === "request_confirmation"
+              : interaction.kind === "request_confirmation" || interaction.kind === "request_checkbox_confirmation"
                 ? (interaction.result?.reason ?? null)
               : null,
         },
