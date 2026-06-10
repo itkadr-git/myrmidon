@@ -5539,6 +5539,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         await tx
           .update(issues)
           .set({
+            checkoutRunId: null,
             executionRunId: retryRun.id,
             executionAgentNameKey: normalizeAgentNameKey(agent.name),
             executionLockedAt: now,
@@ -7475,6 +7476,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return recovery.reconcileStrandedAssignedIssues();
   }
 
+  async function sweepStaleIssueLocks() {
+    return recovery.sweepStaleIssueLocks();
+  }
+
   function issueIdFromRunContext(contextSnapshot: unknown) {
     const context = parseObject(contextSnapshot);
     return readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
@@ -9377,16 +9382,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (!issue) return null;
       if (issue.executionRunId && issue.executionRunId !== run.id) return null;
 
-      if (issue.executionRunId === run.id) {
+      // Clear lock columns that point at the terminating run. checkoutRunId is
+      // cleared here in addition to executionRunId so the issue self-heals even
+      // if its assignee or status changed between checkout and termination —
+      // adoptStaleCheckoutRun's narrow WHERE clause cannot cover those paths.
+      if (issue.executionRunId === run.id || issue.checkoutRunId === run.id) {
         await tx
           .update(issues)
           .set({
+            checkoutRunId: null,
             executionRunId: null,
             executionAgentNameKey: null,
             executionLockedAt: null,
             updatedAt: new Date(),
           })
-          .where(eq(issues.id, issue.id));
+          .where(
+            and(
+              eq(issues.id, issue.id),
+              or(eq(issues.executionRunId, run.id), eq(issues.checkoutRunId, run.id)),
+            ),
+          );
       }
 
       if (
@@ -11096,6 +11111,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     },
 
     reconcileStrandedAssignedIssues,
+
+    sweepStaleIssueLocks,
 
     buildIssueGraphLivenessAutoRecoveryPreview,
 
