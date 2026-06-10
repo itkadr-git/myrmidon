@@ -9255,11 +9255,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           const setupFailureAgent = await getAgent(run.agentId).catch(() => null);
           await setRunStatus(runId, "failed", {
             error: message,
-            errorCode: "adapter_failed",
+            errorCode: "setup_failed",
             finishedAt: new Date(),
             ...(setupFailureAgent ? {
               resultJson: mergeRunStopMetadataForAgent(setupFailureAgent, "failed", {
-                errorCode: "adapter_failed",
+                errorCode: "setup_failed",
                 errorMessage: message,
               }),
             } : {}),
