@@ -188,6 +188,7 @@ import { extractSkillMentionIds, isUuidLike } from "@paperclipai/shared";
 import { environmentService } from "./environments.js";
 import { parseExecutionPolicyBootstrapEnv } from "./execution-policy-bootstrap.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
+import { skillVersionSelectionMap } from "./runtime-skill-selections.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
 import { isUnsafeSessionWorkspaceCwd } from "./session-workspace-cwd.js";
 import {
@@ -555,7 +556,7 @@ export function applyRunScopedMentionedSkillKeys(
 
   const existingPreference = readPaperclipSkillSyncPreference(config);
   return writePaperclipSkillSyncPreference(config, [
-    ...existingPreference.desiredSkills,
+    ...existingPreference.desiredSkillEntries,
     ...normalizedSkillKeys,
   ]);
 }
@@ -8264,7 +8265,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       resolvedConfig,
       runScopedMentionedSkillKeys,
     );
-    const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId);
+    const runtimeSkillPreference = readPaperclipSkillSyncPreference(effectiveResolvedConfig);
+    const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId, {
+      versionSelections: skillVersionSelectionMap(runtimeSkillPreference.desiredSkillEntries),
+    });
     let runtimeConfig = {
       ...effectiveResolvedConfig,
       paperclipRuntimeSkills: runtimeSkillEntries,
