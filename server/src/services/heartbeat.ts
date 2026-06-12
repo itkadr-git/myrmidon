@@ -2107,6 +2107,37 @@ export function formatRuntimeWorkspaceWarningLog(warning: string) {
   };
 }
 
+/**
+ * A run is a "zombie" if it's marked as running in the DB but has no live
+ * execution tracked in memory. This happens when the server restarts and the
+ * execution is lost, or when the DB row outlives the in-memory run state.
+ *
+ * Queued runs are never zombies — they don't have processes yet.
+ */
+export function isZombieRun(
+  run: { status: string; id: string },
+  tracked: { has(id: string): boolean },
+): boolean {
+  return run.status === "running" && !tracked.has(run.id);
+}
+
+/**
+ * Filter a coalesce target — if it's a zombie run, return null so the
+ * wakeup falls through to create a new queued run instead of coalescing
+ * into the dead process (which would refresh updatedAt and make it immortal).
+ *
+ * Queued runs pass through unchanged (they have no process yet).
+ * Null targets pass through unchanged.
+ */
+export function filterZombieCoalesceTarget<
+  T extends { status: string; id: string },
+>(
+  target: T | null,
+  tracked: { has(id: string): boolean },
+): T | null {
+  return target && isZombieRun(target, tracked) ? null : target;
+}
+
 export function describeSessionResetReason(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ) {
@@ -3088,6 +3119,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   });
   const workspaceOperationsSvc = workspaceOperationService(db);
   const activeRunExecutions = new Set<string>();
+  const liveRunExecutions = {
+    has(id: string) {
+      return runningProcesses.has(id) || activeRunExecutions.has(id);
+    },
+  };
   const budgetHooks = {
     cancelWorkForScope: cancelBudgetScopeWork,
   };
@@ -10504,10 +10540,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             shouldQueueFollowupForRunningIssueWake({ contextSnapshot: enrichedContextSnapshot, wakeCommentId }) &&
             activeExecutionRun.status === "running" &&
             isSameExecutionAgent;
+          const availableActiveExecutionRun = filterZombieCoalesceTarget(
+            activeExecutionRun,
+            liveRunExecutions,
+          );
 
-          if (isSameExecutionAgent && !shouldDeferFollowupWake && !shouldQueueFollowupForRunningWake) {
+          if (
+            isSameExecutionAgent
+            && !shouldDeferFollowupWake
+            && !shouldQueueFollowupForRunningWake
+            && availableActiveExecutionRun
+          ) {
             const mergedContextSnapshot = mergeCoalescedContextSnapshot(
-              activeExecutionRun.contextSnapshot,
+              availableActiveExecutionRun.contextSnapshot,
               enrichedContextSnapshot,
             );
             const mergedRun = await tx
@@ -10516,9 +10561,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 contextSnapshot: mergedContextSnapshot,
                 updatedAt: new Date(),
               })
-              .where(eq(heartbeatRuns.id, activeExecutionRun.id))
+              .where(eq(heartbeatRuns.id, availableActiveExecutionRun.id))
               .returning()
-              .then((rows) => rows[0] ?? activeExecutionRun);
+              .then((rows) => rows[0] ?? availableActiveExecutionRun);
 
             await tx.insert(agentWakeupRequests).values({
               companyId: agent.companyId,
@@ -10539,67 +10584,69 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             return { kind: "coalesced" as const, run: mergedRun };
           }
 
-          const deferredPayload = {
-            ...(payload ?? {}),
-            issueId,
-            [DEFERRED_WAKE_CONTEXT_KEY]: enrichedContextSnapshot,
-          };
-
-          const existingDeferred = await tx
-            .select()
-            .from(agentWakeupRequests)
-            .where(
-              and(
-                eq(agentWakeupRequests.companyId, agent.companyId),
-                eq(agentWakeupRequests.agentId, agentId),
-                eq(agentWakeupRequests.status, "deferred_issue_execution"),
-                sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issue.id}`,
-              ),
-            )
-            .orderBy(asc(agentWakeupRequests.requestedAt))
-            .limit(1)
-            .then((rows) => rows[0] ?? null);
-
-          if (existingDeferred) {
-            const existingDeferredPayload = parseObject(existingDeferred.payload);
-            const existingDeferredContext = parseObject(existingDeferredPayload[DEFERRED_WAKE_CONTEXT_KEY]);
-            const mergedDeferredContext = mergeCoalescedContextSnapshot(
-              existingDeferredContext,
-              enrichedContextSnapshot,
-            );
-            const mergedDeferredPayload = {
-              ...existingDeferredPayload,
+          if (availableActiveExecutionRun) {
+            const deferredPayload = {
               ...(payload ?? {}),
               issueId,
-              [DEFERRED_WAKE_CONTEXT_KEY]: mergedDeferredContext,
+              [DEFERRED_WAKE_CONTEXT_KEY]: enrichedContextSnapshot,
             };
 
-            await tx
-              .update(agentWakeupRequests)
-              .set({
-                payload: mergedDeferredPayload,
-                coalescedCount: (existingDeferred.coalescedCount ?? 0) + 1,
-                updatedAt: new Date(),
-              })
-              .where(eq(agentWakeupRequests.id, existingDeferred.id));
+            const existingDeferred = await tx
+              .select()
+              .from(agentWakeupRequests)
+              .where(
+                and(
+                  eq(agentWakeupRequests.companyId, agent.companyId),
+                  eq(agentWakeupRequests.agentId, agentId),
+                  eq(agentWakeupRequests.status, "deferred_issue_execution"),
+                  sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issue.id}`,
+                ),
+              )
+              .orderBy(asc(agentWakeupRequests.requestedAt))
+              .limit(1)
+              .then((rows) => rows[0] ?? null);
+
+            if (existingDeferred) {
+              const existingDeferredPayload = parseObject(existingDeferred.payload);
+              const existingDeferredContext = parseObject(existingDeferredPayload[DEFERRED_WAKE_CONTEXT_KEY]);
+              const mergedDeferredContext = mergeCoalescedContextSnapshot(
+                existingDeferredContext,
+                enrichedContextSnapshot,
+              );
+              const mergedDeferredPayload = {
+                ...existingDeferredPayload,
+                ...(payload ?? {}),
+                issueId,
+                [DEFERRED_WAKE_CONTEXT_KEY]: mergedDeferredContext,
+              };
+
+              await tx
+                .update(agentWakeupRequests)
+                .set({
+                  payload: mergedDeferredPayload,
+                  coalescedCount: (existingDeferred.coalescedCount ?? 0) + 1,
+                  updatedAt: new Date(),
+                })
+                .where(eq(agentWakeupRequests.id, existingDeferred.id));
+
+              return { kind: "deferred" as const };
+            }
+
+            await tx.insert(agentWakeupRequests).values({
+              companyId: agent.companyId,
+              agentId,
+              source,
+              triggerDetail,
+              reason: "issue_execution_deferred",
+              payload: deferredPayload,
+              status: "deferred_issue_execution",
+              requestedByActorType: opts.requestedByActorType ?? null,
+              requestedByActorId: opts.requestedByActorId ?? null,
+              idempotencyKey: opts.idempotencyKey ?? null,
+            });
 
             return { kind: "deferred" as const };
           }
-
-          await tx.insert(agentWakeupRequests).values({
-            companyId: agent.companyId,
-            agentId,
-            source,
-            triggerDetail,
-            reason: "issue_execution_deferred",
-            payload: deferredPayload,
-            status: "deferred_issue_execution",
-            requestedByActorType: opts.requestedByActorType ?? null,
-            requestedByActorId: opts.requestedByActorId ?? null,
-            idempotencyKey: opts.idempotencyKey ?? null,
-          });
-
-          return { kind: "deferred" as const };
         }
 
         const wakeupRequest = await tx
@@ -10693,10 +10740,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       !sameScopeQueuedRun &&
       shouldQueueFollowupForRunningIssueWake({ contextSnapshot: enrichedContextSnapshot, wakeCommentId });
 
-    const coalescedTargetRun =
+    const rawCoalescedTarget =
       sameScopeQueuedRun ??
       sameScopeScheduledRetryRun ??
       (shouldQueueFollowupForRunningWake ? null : sameScopeRunningRun ?? null);
+
+    const coalescedTargetRun = filterZombieCoalesceTarget(
+      rawCoalescedTarget,
+      liveRunExecutions,
+    );
 
     if (coalescedTargetRun) {
       const mergedContextSnapshot = mergeCoalescedContextSnapshot(
