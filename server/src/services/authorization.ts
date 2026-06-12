@@ -78,6 +78,7 @@ export type AuthorizationDecision = {
     | "allow_legacy_agent_creator"
     | "allow_self"
     | "allow_company_agent"
+    | "allow_company_member"
     | "allow_simple_company_member"
     | "allow_manager_chain"
     | "deny_unauthenticated"
@@ -922,12 +923,47 @@ export function authorizationService(db: Db) {
           explanation: "Allowed because the actor is the local implicit board.",
         });
       }
-      if (input.actor.isInstanceAdmin || await isInstanceAdmin(input.actor.userId)) {
+      // cloud_tenant actors are company-scoped by contract and must never be
+      // elevated — not even via stale instance_admin rows left behind by
+      // deployments that ran the pre-hardening cloud_tenant path.
+      if (
+        input.actor.source !== "cloud_tenant" &&
+        (input.actor.isInstanceAdmin || await isInstanceAdmin(input.actor.userId))
+      ) {
         return allow({
           action: input.action,
           reason: "allow_instance_admin",
           explanation: "Allowed because the actor is an instance admin.",
         });
+      }
+      // What instance-admin elevation used to give cloud tenant users is
+      // replaced by company-scoped visibility: an active membership in the
+      // resource company grants the same read surface a same-company agent
+      // gets, and non-viewer members may mutate issues inside their company.
+      // Cross-company access stays denied.
+      if (input.actor.source === "cloud_tenant" && input.actor.userId) {
+        const membership = await getActiveMembership(companyId, "user", input.actor.userId);
+        if (membership) {
+          if (
+            input.action === "agent:read" ||
+            input.action === "company_scope:read" ||
+            input.action === "issue:read" ||
+            input.action === "project:read"
+          ) {
+            return allow({
+              action: input.action,
+              reason: "allow_company_member",
+              explanation: "Allowed by active cloud tenant company membership.",
+            });
+          }
+          if (input.action === "issue:mutate" && membership.membershipRole !== "viewer") {
+            return allow({
+              action: input.action,
+              reason: "allow_company_member",
+              explanation: "Allowed by active cloud tenant company membership.",
+            });
+          }
+        }
       }
       if (!input.actor.userId) {
         return deny({
