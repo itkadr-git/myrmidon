@@ -10419,6 +10419,59 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           activeExecutionRun = null;
         }
 
+        // A queued/scheduled run holding the lock for an agent that is
+        // no longer the issue's assignee is stale by design — the issue
+        // has been re-routed (e.g. blocked → in_review with a different
+        // assignee). Cancel it and release the lock; otherwise the new
+        // assignee's wake gets parked in `deferred_issue_execution`
+        // forever, because the original queued holder will never run
+        // (the issue's status / target now belongs to someone else).
+        //
+        // Race guard: pin the cancel UPDATE to the exact non-running
+        // status we read above. A worker could transition the holder
+        // from `queued` → `running` between the SELECT and this UPDATE;
+        // the status predicate ensures we never clobber a freshly-
+        // claimed running run. If zero rows matched, leave
+        // `activeExecutionRun` populated so the defer path runs
+        // normally against the now-running holder.
+        if (
+          activeExecutionRun &&
+          activeExecutionRun.status !== "running" &&
+          issue.assigneeAgentId &&
+          activeExecutionRun.agentId !== issue.assigneeAgentId
+        ) {
+          const cancelled = await tx
+            .update(heartbeatRuns)
+            .set({
+              status: "cancelled",
+              finishedAt: new Date(),
+              error: "Execution lock released after issue reassigned to a different agent",
+              errorCode: "lock_released_on_reassignment",
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(heartbeatRuns.id, activeExecutionRun.id),
+                eq(heartbeatRuns.status, activeExecutionRun.status),
+              ),
+            )
+            .returning({ id: heartbeatRuns.id });
+          if (cancelled.length > 0) {
+            if (activeExecutionRun.wakeupRequestId) {
+              await tx
+                .update(agentWakeupRequests)
+                .set({
+                  status: "cancelled",
+                  finishedAt: new Date(),
+                  error: "Execution lock released after issue reassigned to a different agent",
+                  updatedAt: new Date(),
+                })
+                .where(eq(agentWakeupRequests.id, activeExecutionRun.wakeupRequestId));
+            }
+            activeExecutionRun = null;
+          }
+        }
+
         if (!activeExecutionRun && issue.executionRunId) {
           await tx
             .update(issues)
