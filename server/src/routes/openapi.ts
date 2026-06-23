@@ -447,6 +447,14 @@ const jsonBody = (schema: z.ZodTypeAny) => ({
 
 const r = responses;
 
+const externalObjectSummariesBodySchema = z.object({
+  issueIds: z.array(z.string().uuid()).max(1000),
+}).strict();
+
+const refreshExternalObjectsBodySchema = z.object({
+  objectIds: z.array(z.string().uuid()).max(50).optional(),
+}).strict();
+
 function paramsSchemaFromPath(routePath: string): z.ZodObject<z.ZodRawShape> | undefined {
   const names = [...routePath.matchAll(/\{([A-Za-z0-9_]+)\}/g)].map((match) => match[1]);
   if (names.length === 0) return undefined;
@@ -3845,6 +3853,57 @@ registry.registerPath({
   summary: "Get a single issue comment",
   request: { params: z.object({ id: z.string(), commentId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/issues/{id}/external-objects",
+  tags: ["issues"],
+  summary: "List external objects mentioned by an issue",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/issues/{id}/external-object-summary",
+  tags: ["issues"],
+  summary: "Get external object status summary for an issue",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/issues/external-object-summaries",
+  tags: ["issues"],
+  summary: "Get external object status summaries for issues",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(externalObjectSummariesBodySchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/external-objects/refresh",
+  tags: ["issues"],
+  summary: "Refresh external objects mentioned by an issue",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(refreshExternalObjectsBodySchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/projects/{id}/external-object-summary",
+  tags: ["projects"],
+  summary: "Get external object status summary for a project",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
 // ─── Org chart images ─────────────────────────────────────────────────────────

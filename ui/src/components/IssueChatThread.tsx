@@ -101,7 +101,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { MarkdownBody } from "./MarkdownBody";
+import { MarkdownBody, type MarkdownExternalReferenceMap } from "./MarkdownBody";
 import { WorkspaceFileMarkdownBody } from "./WorkspaceFileMarkdownBody";
 import { MarkdownEditor, type MentionOption, type MarkdownEditorRef } from "./MarkdownEditor";
 import { Identity } from "./Identity";
@@ -217,6 +217,7 @@ interface IssueChatMessageContext {
   onUploadImage?: (file: File) => Promise<string>;
   issueStatus?: string;
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
+  externalReferences?: MarkdownExternalReferenceMap;
 }
 
 const IssueChatCtx = createContext<IssueChatMessageContext>({
@@ -450,6 +451,7 @@ interface IssueChatThreadProps {
    * comment is in the loaded set before we scroll to it.
    */
   onRefreshLatestComments?: () => Promise<unknown> | void;
+  externalReferences?: MarkdownExternalReferenceMap;
 }
 
 type IssueChatErrorBoundaryProps = {
@@ -457,6 +459,7 @@ type IssueChatErrorBoundaryProps = {
   messages: readonly ThreadMessage[];
   emptyMessage: string;
   variant: "full" | "embedded";
+  externalReferences?: MarkdownExternalReferenceMap;
   children: ReactNode;
 };
 
@@ -491,6 +494,7 @@ class IssueChatErrorBoundary extends Component<IssueChatErrorBoundaryProps, Issu
           messages={this.props.messages}
           emptyMessage={this.props.emptyMessage}
           variant={this.props.variant}
+          externalReferences={this.props.externalReferences}
         />
       );
     }
@@ -555,10 +559,12 @@ function IssueChatFallbackThread({
   messages,
   emptyMessage,
   variant,
+  externalReferences,
 }: {
   messages: readonly ThreadMessage[];
   emptyMessage: string;
   variant: "full" | "embedded";
+  externalReferences?: MarkdownExternalReferenceMap;
 }) {
   return (
     <div className={cn(variant === "embedded" ? "space-y-3" : "space-y-4")}>
@@ -599,7 +605,9 @@ function IssueChatFallbackThread({
                 </div>
                 <div className="space-y-2">
                   {lines.length > 0 ? lines.map((line, index) => (
-                    <MarkdownBody key={`${message.id}:fallback:${index}`}>{line}</MarkdownBody>
+                    <MarkdownBody key={`${message.id}:fallback:${index}`} externalReferences={externalReferences}>
+                      {line}
+                    </MarkdownBody>
                   )) : (
                     <p className="text-sm text-muted-foreground">No message content.</p>
                   )}
@@ -705,7 +713,7 @@ function commentDateLabel(date: Date | string | undefined): string {
 }
 
 const IssueChatTextPart = memo(function IssueChatTextPart({ text, recessed, onAccent }: { text: string; recessed?: boolean; onAccent?: boolean }) {
-  const { onImageClick } = useContext(IssueChatCtx);
+  const { onImageClick, externalReferences } = useContext(IssueChatCtx);
   if (isSuccessfulRunHandoffComment(text)) {
     return <SuccessfulRunHandoffCommentCallout text={text} recessed={recessed} onImageClick={onImageClick} />;
   }
@@ -717,6 +725,7 @@ const IssueChatTextPart = memo(function IssueChatTextPart({ text, recessed, onAc
       style={recessed ? { opacity: 0.55 } : undefined}
       softBreaks
       onImageClick={onImageClick}
+      externalReferences={externalReferences}
     >
       {text}
     </WorkspaceFileMarkdownBody>
@@ -2113,6 +2122,7 @@ function ExpiredRequestConfirmationActivity({
     onRejectInteraction,
     onCancelInteraction,
     onUploadImage,
+    externalReferences,
   } = useContext(IssueChatCtx);
   const [expanded, setExpanded] = useState(false);
   const hasResolvedActor = Boolean(interaction.resolvedByAgentId || interaction.resolvedByUserId);
@@ -2193,6 +2203,7 @@ function ExpiredRequestConfirmationActivity({
             onRejectInteraction={onRejectInteraction}
             onCancelInteraction={onCancelInteraction}
             onUploadImage={onUploadImage}
+            externalReferences={externalReferences}
           />
         </div>
       ) : null}
@@ -2620,6 +2631,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
     onSubmitInteractionAnswers,
     onCancelInteraction,
     onUploadImage,
+    externalReferences,
   } = useContext(IssueChatCtx);
   const custom = message.metadata.custom as Record<string, unknown>;
   const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
@@ -2677,6 +2689,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
             onSubmitInteractionAnswers={onSubmitInteractionAnswers}
             onCancelInteraction={onCancelInteraction}
             onUploadImage={onUploadImage}
+            externalReferences={externalReferences}
           />
         </div>
       </div>
@@ -4094,6 +4107,7 @@ export function IssueChatThread({
   assigneeUserId = null,
   onResumeFromBacklog,
   resumeFromBacklogPending = false,
+  externalReferences,
 }: IssueChatThreadProps) {
   const location = useLocation();
   const lastScrolledHashRef = useRef<string | null>(null);
@@ -4618,6 +4632,7 @@ export function IssueChatThread({
       onUploadImage: stableOnUploadImage,
       issueStatus,
       successfulRunHandoff,
+      externalReferences,
     }),
     [
       feedbackDataSharingPreference,
@@ -4643,6 +4658,7 @@ export function IssueChatThread({
       stableOnUploadImage,
       issueStatus,
       successfulRunHandoff,
+      externalReferences,
     ],
   );
 
@@ -4680,6 +4696,7 @@ export function IssueChatThread({
           messages={messages}
           emptyMessage={resolvedEmptyMessage}
           variant={variant}
+          externalReferences={externalReferences}
         >
           <div data-testid="thread-root">
             <div

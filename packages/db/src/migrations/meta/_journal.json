@@ -743,6 +743,20 @@
       "when": 1781902000000,
       "tag": "0105_instance_scoped_environments",
       "breakpoints": true
+    },
+    {
+      "idx": 106,
+      "version": "7",
+      "when": 1781902100000,
+      "tag": "0106_external_object_references",
+      "breakpoints": true
+    },
+    {
+      "idx": 107,
+      "version": "7",
+      "when": 1782165200000,
+      "tag": "0107_external_object_display_metadata",
+      "breakpoints": true
     }
   ]
 }

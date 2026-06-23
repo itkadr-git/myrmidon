@@ -1797,4 +1797,81 @@ describe("IssueProperties", () => {
 
     act(() => root.unmount());
   });
+
+  it("renders each external object as its own properties row using display metadata", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue(),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+      externalObjects: [
+        {
+          mentionCount: 1,
+          sourceLabels: ["Description"],
+          pill: {
+            providerKey: "github",
+            objectType: "pull_request",
+            displayKey: null,
+            iconKey: "github",
+            statusCategory: "succeeded",
+            statusIconKey: null,
+            statusLabel: "Merged",
+            liveness: "fresh",
+            displayTitle: "acme/web#241: Add rich object presentation metadata",
+            url: "https://github.com/acme/web/pull/241",
+          },
+          group: {
+            object: null,
+            mentions: [],
+            mentionCount: 1,
+            sourceLabels: ["Description"],
+          },
+        },
+        {
+          mentionCount: 1,
+          sourceLabels: ["Comment"],
+          pill: {
+            providerKey: "github",
+            objectType: "issue",
+            displayKey: "Github Issue",
+            iconKey: "github",
+            statusCategory: "open",
+            statusIconKey: "circle-dot",
+            statusLabel: "Open",
+            liveness: "fresh",
+            displayTitle: "acme/web#12: Follow-up",
+            url: "https://github.com/acme/web/issues/12",
+          },
+          group: {
+            object: null,
+            mentions: [],
+            mentionCount: 1,
+            sourceLabels: ["Comment"],
+          },
+        },
+      ],
+    });
+    await flush();
+
+    expect(container.textContent).toContain("Github Pull Request");
+    expect(container.textContent).toContain("Github Issue");
+    expect(container.textContent).toContain("PR 241 - Merged");
+    expect(container.textContent).toContain("Merged");
+    expect(container.textContent).toContain("Open");
+    expect(container.textContent).not.toContain("External objects");
+    const label = Array.from(container.querySelectorAll("span"))
+      .find((span) => span.textContent === "Github Pull Request");
+    expect(label?.querySelector("svg")).toBeTruthy();
+    const pullRequestLink = Array.from(container.querySelectorAll("a"))
+      .find((anchor) => anchor.getAttribute("href") === "https://github.com/acme/web/pull/241");
+    expect(pullRequestLink?.textContent).toContain("PR 241 - Merged");
+    expect(pullRequestLink?.textContent).not.toContain("acme/web#241");
+    expect(pullRequestLink?.textContent).not.toContain("Github Pull Request");
+    expect(pullRequestLink?.querySelectorAll("svg")).toHaveLength(1);
+    expect(pullRequestLink?.className).not.toContain("paperclip-mention-chip");
+    expect(pullRequestLink?.className).not.toContain("rounded-full");
+    expect(pullRequestLink?.className).not.toContain("border");
+
+    act(() => root.unmount());
+  });
 });
