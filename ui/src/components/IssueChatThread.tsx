@@ -428,6 +428,10 @@ interface IssueChatThreadProps {
   onResolveRecoveryAction?: (outcome: RecoveryResolveOutcome) => void;
   onReissueIsolatedRecoveryAction?: (request: RecoveryReissueRequest) => void;
   reissueIsolatedRecoveryActionPending?: boolean;
+  onReconcileForwardRecoveryAction?: () => void;
+  onBreakGlassOverrideRecoveryAction?: (reason: string) => void;
+  canBreakGlassRecoveryAction?: boolean;
+  reconcileRecoveryActionPending?: boolean;
   canFalsePositiveRecoveryAction?: boolean;
   legacyRecoverySourceIssue?: {
     identifier: string | null;
@@ -4166,6 +4170,10 @@ export function IssueChatThread({
   onResolveRecoveryAction,
   onReissueIsolatedRecoveryAction,
   reissueIsolatedRecoveryActionPending = false,
+  onReconcileForwardRecoveryAction,
+  onBreakGlassOverrideRecoveryAction,
+  canBreakGlassRecoveryAction = false,
+  reconcileRecoveryActionPending = false,
   canFalsePositiveRecoveryAction = false,
   legacyRecoverySourceIssue = null,
   companyId,
@@ -4881,6 +4889,10 @@ export function IssueChatThread({
                       onResolve={onResolveRecoveryAction}
                       onReissueIsolated={onReissueIsolatedRecoveryAction}
                       reissuePending={reissueIsolatedRecoveryActionPending}
+                      onReconcileForward={onReconcileForwardRecoveryAction}
+                      onBreakGlassOverride={onBreakGlassOverrideRecoveryAction}
+                      canBreakGlass={canBreakGlassRecoveryAction}
+                      reconcilePending={reconcileRecoveryActionPending}
                       canFalsePositive={canFalsePositiveRecoveryAction}
                     />
                   ) : null}

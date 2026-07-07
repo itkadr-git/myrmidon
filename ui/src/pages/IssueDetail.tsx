@@ -12,6 +12,7 @@ import { accessApi, type CurrentBoardAccess } from "../api/access";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
 import { projectsApi } from "../api/projects";
+import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
 import { usePanel } from "../context/PanelContext";
@@ -182,6 +183,7 @@ import {
   type Agent,
   type FeedbackVote,
   type Issue,
+  type IssueRecoveryAction,
   type IssueAttachment,
   type IssueComment,
   type IssueWorkProduct,
@@ -288,6 +290,60 @@ export function canBoardResolveRecoveryAction(
   );
   if (!membership) return false;
   return membership.membershipRole !== "viewer" && membership.membershipRole !== null;
+}
+
+/**
+ * Best-effort client mirror of the backend `runtime:manage` gate that the break-glass override
+ * reconcile (`POST /execution-workspaces/:id/reconcile-branch` in `override` mode) actually
+ * enforces. The server re-checks `runtime:manage` for every reconcile and is authoritative, so
+ * this is defense-in-depth: it hides the "reconcile anyway" affordance from viewers rather than
+ * showing a button that always 403s. For human board members `runtime:manage` grants on the
+ * same non-viewer, active-membership condition as recovery resolution (see
+ * `server/src/services/authorization.ts`), so the shape matches; per-permission-key overrides
+ * are not surfaced to the client and remain the server's call.
+ */
+export function canBoardManageRuntime(
+  companyId: string | null | undefined,
+  boardAccess: CurrentBoardAccess | undefined,
+) {
+  if (!companyId || !boardAccess) return false;
+  if (boardAccess.source === "local_implicit" || boardAccess.isInstanceAdmin) return true;
+  if (!boardAccess.memberships || boardAccess.memberships.length === 0) {
+    return boardAccess.companyIds.includes(companyId);
+  }
+
+  const membership = boardAccess.memberships.find(
+    (item) => item.companyId === companyId && item.status === "active",
+  );
+  if (!membership) return false;
+  return membership.membershipRole !== "viewer" && membership.membershipRole !== null;
+}
+
+/**
+ * The execution workspace a reconcile action should target. The recovery card is rendered from a
+ * specific `workspace_validation` recovery action whose evidence pins the workspace that diverged;
+ * that workspace — not the page-level `issue.executionWorkspaceId` — is the authoritative target.
+ * The page-level id can drift (e.g. a re-issue rebinds the issue to a new workspace) while the card
+ * still shows the older action, so we prefer the action's evidence and only fall back to the
+ * page-level id when the evidence carries no workspace reference.
+ *
+ * The branch-incoherence failure (the one that renders the reconcile-forward / break-glass actions)
+ * records the workspace under `persistedExecutionWorkspaceId`; the not-reusable failure records it
+ * under `executionWorkspaceId`. We accept either key so both divergence shapes pin correctly.
+ */
+export function readRecoveryReconcileWorkspaceId(
+  action: IssueRecoveryAction | null | undefined,
+): string | null {
+  if (!action || action.kind !== "workspace_validation") return null;
+  const workspaceValidation = asRecord(action.evidence?.workspaceValidation);
+  if (!workspaceValidation) return null;
+  const persisted = workspaceValidation.persistedExecutionWorkspaceId;
+  if (typeof persisted === "string" && persisted.length > 0) return persisted;
+  const executionWorkspaceId = workspaceValidation.executionWorkspaceId;
+  if (typeof executionWorkspaceId === "string" && executionWorkspaceId.length > 0) {
+    return executionWorkspaceId;
+  }
+  return null;
 }
 
 export function shouldScrollIssueDetailToTopOnNavigation(input: {
@@ -837,6 +893,10 @@ type IssueDetailChatTabProps = {
   onResolveRecoveryAction?: (outcome: import("../components/IssueRecoveryActionCard").RecoveryResolveOutcome) => void;
   onReissueIsolatedRecoveryAction?: (request: import("../components/IssueRecoveryActionCard").RecoveryReissueRequest) => void;
   reissueIsolatedRecoveryActionPending?: boolean;
+  onReconcileForwardRecoveryAction?: () => void;
+  onBreakGlassOverrideRecoveryAction?: (reason: string) => void;
+  canBreakGlassRecoveryAction?: boolean;
+  reconcileRecoveryActionPending?: boolean;
   canFalsePositiveRecoveryAction?: boolean;
   legacyRecoverySourceIssue?: {
     identifier: string | null;
@@ -916,6 +976,10 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   onResolveRecoveryAction,
   onReissueIsolatedRecoveryAction,
   reissueIsolatedRecoveryActionPending,
+  onReconcileForwardRecoveryAction,
+  onBreakGlassOverrideRecoveryAction,
+  canBreakGlassRecoveryAction,
+  reconcileRecoveryActionPending,
   canFalsePositiveRecoveryAction,
   legacyRecoverySourceIssue,
   comments,
@@ -1135,6 +1199,10 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         onResolveRecoveryAction={onResolveRecoveryAction}
         onReissueIsolatedRecoveryAction={onReissueIsolatedRecoveryAction}
         reissueIsolatedRecoveryActionPending={reissueIsolatedRecoveryActionPending}
+        onReconcileForwardRecoveryAction={onReconcileForwardRecoveryAction}
+        onBreakGlassOverrideRecoveryAction={onBreakGlassOverrideRecoveryAction}
+        canBreakGlassRecoveryAction={canBreakGlassRecoveryAction}
+        reconcileRecoveryActionPending={reconcileRecoveryActionPending}
         canFalsePositiveRecoveryAction={canFalsePositiveRecoveryAction}
         legacyRecoverySourceIssue={legacyRecoverySourceIssue ?? null}
         companyId={companyId}
@@ -1686,6 +1754,9 @@ export function IssueDetail() {
     && boardAccess?.companyIds?.includes(selectedCompanyId),
   );
   const canResolveBoardRecoveryAction = canBoardResolveRecoveryAction(selectedCompanyId, boardAccess);
+  // The break-glass override reconcile is `runtime:manage`-gated server-side, not gated on the
+  // recovery-resolution permission — so hide its affordance behind the matching client check.
+  const canManageBoardRuntime = canBoardManageRuntime(selectedCompanyId, boardAccess);
   const { data: feedbackVotes } = useQuery({
     queryKey: queryKeys.issues.feedbackVotes(issueId!),
     queryFn: () => issuesApi.listFeedbackVotes(issueId!),
@@ -3629,6 +3700,83 @@ export function IssueDetail() {
     [reissueIsolatedRecoveryAction.mutateAsync],
   );
 
+  // Actions 1 & 2 (workspace_validation): reconcile the recorded workspace branch to the live one
+  // via the S4 (PAP-1586) op. `forward` is the ancestry-proven safe path (server re-verifies);
+  // `override` is the audited, permission-gated break-glass carrying the operator's reason. Both
+  // resolve the matching recovery action server-side, so the task resumes via the existing flow.
+  const reconcileRecoveryAction = useMutation({
+    // The target workspace id is captured at click time (see the handlers below) and threaded
+    // through as an explicit argument, so the in-flight mutation always reconciles the workspace
+    // the operator saw on the card — never a value re-read from a `issue` snapshot that may have
+    // been refetched to a different `executionWorkspaceId` while the request was pending.
+    mutationFn: async (
+      input:
+        | { workspaceId: string; mode: "forward" }
+        | { workspaceId: string; mode: "override"; reason: string },
+    ) => {
+      const { workspaceId, ...body } = input;
+      return executionWorkspacesApi.reconcile(workspaceId, body);
+    },
+    onSuccess: () => {
+      // Refresh the detail card itself (not just the list collections): a successful reconcile
+      // clears the active recovery action, so the card must re-fetch to stop showing stale actions.
+      invalidateIssueDetail();
+      invalidateIssueCollections();
+      pushToast({
+        title: "Workspace branch reconciled",
+        body: "The recorded branch now matches the live branch; the task will resume.",
+        tone: "success",
+      });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Reconcile failed",
+        body: err instanceof Error ? err.message : "Unable to reconcile the workspace branch.",
+        tone: "error",
+      });
+    },
+  });
+  // Bind the workspace id at the moment the operator clicks, from the same render that produced the
+  // visible recovery card, rather than re-reading it inside the async mutation body. The target is
+  // the workspace pinned by the recovery action's evidence — the workspace that actually diverged —
+  // not the page-level `issue.executionWorkspaceId`, which can drift (e.g. a re-issue rebinds the
+  // issue to a new workspace) while the card still shows the older action. Fall back to the
+  // page-level id only when the action carries no workspace reference.
+  const reconcileExecutionWorkspaceId =
+    readRecoveryReconcileWorkspaceId(issue?.activeRecoveryAction) ?? issue?.executionWorkspaceId ?? null;
+  const handleReconcileForwardRecoveryAction = useCallback(() => {
+    if (!reconcileExecutionWorkspaceId) {
+      pushToast({
+        title: "Reconcile failed",
+        body: "This task has no execution workspace to reconcile.",
+        tone: "error",
+      });
+      return;
+    }
+    void reconcileRecoveryAction.mutateAsync({
+      workspaceId: reconcileExecutionWorkspaceId,
+      mode: "forward",
+    });
+  }, [reconcileExecutionWorkspaceId, reconcileRecoveryAction.mutateAsync, pushToast]);
+  const handleBreakGlassOverrideRecoveryAction = useCallback(
+    (reason: string) => {
+      if (!reconcileExecutionWorkspaceId) {
+        pushToast({
+          title: "Reconcile failed",
+          body: "This task has no execution workspace to reconcile.",
+          tone: "error",
+        });
+        return;
+      }
+      void reconcileRecoveryAction.mutateAsync({
+        workspaceId: reconcileExecutionWorkspaceId,
+        mode: "override",
+        reason,
+      });
+    },
+    [reconcileExecutionWorkspaceId, reconcileRecoveryAction.mutateAsync, pushToast],
+  );
+
   const treePreviewAffectedIssues = useMemo(
     () => (treeControlPreview?.issues ?? []).filter((candidate) => !candidate.skipped),
     [treeControlPreview],
@@ -4522,6 +4670,10 @@ export function IssueDetail() {
               onResolveRecoveryAction={handleResolveRecoveryAction}
               onReissueIsolatedRecoveryAction={handleReissueIsolatedRecoveryAction}
               reissueIsolatedRecoveryActionPending={reissueIsolatedRecoveryAction.isPending}
+              onReconcileForwardRecoveryAction={handleReconcileForwardRecoveryAction}
+              onBreakGlassOverrideRecoveryAction={handleBreakGlassOverrideRecoveryAction}
+              canBreakGlassRecoveryAction={canManageBoardRuntime}
+              reconcileRecoveryActionPending={reconcileRecoveryAction.isPending}
               canFalsePositiveRecoveryAction={canResolveBoardRecoveryAction}
               legacyRecoverySourceIssue={legacyRecoverySourceIssue}
               comments={threadComments}
