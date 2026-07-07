@@ -522,10 +522,10 @@ function AttributionAvatar({
             </AvatarFallback>
           </Avatar>
           <div className="min-w-0">
-            <div className="text-[10px] font-medium uppercase leading-none text-background/70">{label}</div>
+            <div className="text-(length:--text-nano) font-medium uppercase leading-none text-background/70">{label}</div>
             <div className="max-w-48 truncate text-xs font-medium leading-4 text-background">{actor.name}</div>
             {via ? (
-              <div className="max-w-48 truncate text-[10px] leading-3 text-background/60">via {via}</div>
+              <div className="max-w-48 truncate text-(length:--text-nano) leading-3 text-background/60">via {via}</div>
             ) : null}
           </div>
         </div>
@@ -634,7 +634,7 @@ function IssueChatSkeleton() {
           </div>
           <Skeleton className="h-8 w-8 rounded-full" />
         </div>
-        <Skeleton className="ml-auto h-16 w-[85%] rounded-xl" />
+        <Skeleton className="ml-auto h-16 w-(--pct-85) rounded-xl" />
       </div>
       <div className="space-y-2 border-t border-border pt-3">
         <Skeleton className="h-3 w-28" />
@@ -666,7 +666,7 @@ function IssueDetailLoadingState({
               ) : null}
               {headerSeed.originKind === "routine_execution" && headerSeed.originId ? (
                 <span
-                  className="inline-flex items-center gap-1 rounded-full border border-violet-500/30 bg-violet-500/10 px-2 py-0.5 text-[10px] font-medium text-violet-600 dark:text-violet-400 shrink-0"
+                  className="inline-flex items-center gap-1 rounded-full border border-violet-500/30 bg-violet-500/10 px-2 py-0.5 text-(length:--text-nano) font-medium text-violet-600 dark:text-violet-400 shrink-0"
                   title={`Routine execution from routine ${headerSeed.originId}`}
                 >
                   <Repeat className="h-3 w-3" />
@@ -702,12 +702,12 @@ function IssueDetailLoadingState({
             <h2 className="text-xl font-bold leading-tight">{headerSeed.title}</h2>
             <div className="space-y-2">
               <Skeleton className="h-4 w-full max-w-xl" />
-              <Skeleton className="h-4 w-[72%]" />
+              <Skeleton className="h-4 w-(--pct-72)" />
             </div>
           </>
         ) : (
           <>
-            <Skeleton className="h-8 w-[min(100%,22rem)]" />
+            <Skeleton className="h-8 w-(--sz-calc-37)" />
             <Skeleton className="h-16 w-full" />
           </>
         )}
@@ -3846,7 +3846,7 @@ export function IssueDetail() {
                     resolvedIssueDetailState ?? location.state,
                     location.search,
                   )}
-                className="hover:text-foreground transition-colors truncate max-w-[200px]"
+                className="hover:text-foreground transition-colors truncate max-w-(--sz-200px)"
                 title={ancestor.title}
               >
                 {ancestor.title}
@@ -3854,7 +3854,7 @@ export function IssueDetail() {
             </span>
           ))}
           <ChevronRight className="h-3 w-3 shrink-0" />
-          <span className="text-foreground/60 truncate max-w-[200px]">{issue.title}</span>
+          <span className="text-foreground/60 truncate max-w-(--sz-200px)">{issue.title}</span>
         </nav>
       )}
 
@@ -3955,10 +3955,10 @@ export function IssueDetail() {
           <span className="text-sm font-mono text-muted-foreground shrink-0">{issue.identifier ?? issue.id.slice(0, 8)}</span>
 
           {hasLiveRuns && (
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-cyan-500/10 border border-cyan-500/30 px-2 py-0.5 text-[10px] font-medium text-cyan-600 dark:text-cyan-400 shrink-0">
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-500/10 border border-blue-500/30 px-2 py-0.5 text-(length:--text-nano) font-medium text-blue-600 dark:text-blue-400 shrink-0">
               <span className="relative flex h-1.5 w-1.5">
-                <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75" />
-                <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-cyan-400" />
+                <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+                <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-blue-500" />
               </span>
               Live
             </span>
@@ -3967,7 +3967,7 @@ export function IssueDetail() {
           {issue.originKind === "routine_execution" && issue.originId && (
             <Link
               to={`/routines/${issue.originId}`}
-              className="inline-flex items-center gap-1 rounded-full bg-violet-500/10 border border-violet-500/30 px-2 py-0.5 text-[10px] font-medium text-violet-600 dark:text-violet-400 shrink-0 hover:bg-violet-500/20 transition-colors"
+              className="inline-flex items-center gap-1 rounded-full bg-violet-500/10 border border-violet-500/30 px-2 py-0.5 text-(length:--text-nano) font-medium text-violet-600 dark:text-violet-400 shrink-0 hover:bg-violet-500/20 transition-colors"
               title={`Routine execution from routine ${issue.originId}`}
             >
               <Repeat className="h-3 w-3" />
@@ -3981,7 +3981,7 @@ export function IssueDetail() {
 
           {issue.originKind === "issue_productivity_review" ? (
             <span
-              className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300 shrink-0"
+              className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-(length:--text-nano) font-medium text-amber-700 dark:text-amber-300 shrink-0"
               title="This task is a productivity review."
             >
               <Eye className="h-3 w-3" />
@@ -3991,7 +3991,7 @@ export function IssueDetail() {
 
           {issue.originKind === "task_watchdog" ? (
             <span
-              className="inline-flex items-center gap-1 rounded-full border border-sky-500/40 bg-sky-500/10 px-2 py-0.5 text-[10px] font-medium text-sky-700 dark:text-sky-300 shrink-0"
+              className="inline-flex items-center gap-1 rounded-full border border-sky-500/40 bg-sky-500/10 px-2 py-0.5 text-(length:--text-nano) font-medium text-sky-700 dark:text-sky-300 shrink-0"
               title="This task is a generated watchdog task. It verifies whether stopped work in the watched task tree is legitimate."
             >
               <ScanEye className="h-3 w-3" />
@@ -4004,7 +4004,7 @@ export function IssueDetail() {
             const WorkModeIcon = workModeMeta.icon;
             return (
               <span
-                className={cn("inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium shrink-0", workModeMeta.classes.badge)}
+                className={cn("inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-(length:--text-nano) font-medium shrink-0", workModeMeta.classes.badge)}
                 title={`This task is in ${workModeMeta.label.toLowerCase()}.`}
               >
                 <WorkModeIcon className="h-3 w-3" aria-hidden />
@@ -4016,7 +4016,7 @@ export function IssueDetail() {
           {hasAssignedBacklogBlocker(issue.blockedBy) ? (
             <span
               data-testid="issue-detail-parked-blocker"
-              className="inline-flex items-center gap-1 rounded-full border border-amber-500/60 bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300 shrink-0"
+              className="inline-flex items-center gap-1 rounded-full border border-amber-500/60 bg-amber-500/15 px-2 py-0.5 text-(length:--text-nano) font-medium text-amber-700 dark:text-amber-300 shrink-0"
               title="Blocked by parked work — at least one assigned blocker is in backlog and will not wake its assignee."
             >
               <Flag className="h-3 w-3" />
@@ -4051,7 +4051,7 @@ export function IssueDetail() {
               {(issue.labels ?? []).slice(0, 4).map((label) => (
                 <span
                   key={label.id}
-                  className="inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium"
+                  className="inline-flex items-center rounded-full border px-2 py-0.5 text-(length:--text-nano) font-medium"
                   style={{
                     borderColor: label.color,
                     color: pickTextColorForPillBg(label.color, 0.12),
@@ -4062,7 +4062,7 @@ export function IssueDetail() {
                 </span>
               ))}
               {(issue.labels ?? []).length > 4 && (
-                <span className="text-[10px] text-muted-foreground">+{(issue.labels ?? []).length - 4}</span>
+                <span className="text-(length:--text-nano) text-muted-foreground">+{(issue.labels ?? []).length - 4}</span>
               )}
             </div>
           )}
@@ -4268,7 +4268,7 @@ export function IssueDetail() {
           value={issue.description ?? ""}
           onSave={(description) => updateIssue.mutateAsync({ description })}
           as="p"
-          className="text-[15px] leading-7 text-foreground"
+          className="text-sm leading-7 text-foreground"
           placeholder="Add a description..."
           multiline
           foldable
@@ -4640,7 +4640,7 @@ export function IssueDetail() {
       </Tabs>
 
       <Dialog open={treeControlOpen} onOpenChange={setTreeControlOpen}>
-        <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-[560px]">
+        <DialogContent className="flex max-h-(--sz-calc-18) flex-col gap-0 overflow-hidden p-0 sm:max-w-(--sz-560px)">
           <DialogHeader className="border-b border-border/60 px-6 pb-4 pr-12 pt-6">
             <DialogTitle>{issueTreeControlLabel(treeControlMode, treeControlScope)}</DialogTitle>
             <DialogDescription>
@@ -4662,7 +4662,7 @@ export function IssueDetail() {
                 value={treeControlReason}
                 onChange={(event) => setTreeControlReason(event.target.value)}
                 placeholder="Explain why this subtree control is being applied..."
-                className="min-h-[88px]"
+                className="min-h-(--sz-88px)"
               />
             </div>
 
@@ -4795,7 +4795,7 @@ export function IssueDetail() {
 
       {/* Mobile properties drawer */}
       <Sheet open={mobilePropsOpen} onOpenChange={setMobilePropsOpen}>
-        <SheetContent side="bottom" className="max-h-[85dvh] pb-[env(safe-area-inset-bottom)]">
+        <SheetContent side="bottom" className="max-h-(--sz-85dvh) pb-(--sz-safe-bottom)">
           <SheetHeader>
             <SheetTitle className="text-sm">Properties</SheetTitle>
           </SheetHeader>
