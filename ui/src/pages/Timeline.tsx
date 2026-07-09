@@ -17,6 +17,7 @@ import { EmptyState } from "@/components/EmptyState";
 import { PageSkeleton } from "@/components/PageSkeleton";
 import { RequestCollapsedSidebar } from "@/components/RequestCollapsedSidebar";
 import { Input } from "@/components/ui/input";
+import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import {
   WorkTimelineChart,
@@ -409,7 +410,7 @@ export function Timeline() {
           </div>
         ) : (
           <div className="space-y-3">
-            <div className="rounded-lg border border-border bg-card">
+            <Card className="block py-0">
               <TimelineLegend />
               <WorkTimelineChart
                 data={data}
@@ -421,7 +422,7 @@ export function Timeline() {
                   setZoom(nextZoom);
                 }}
               />
-            </div>
+            </Card>
             <div className="flex flex-wrap items-center justify-between gap-3">
               <p className="text-xs text-muted-foreground">
                 {data.spans.length} run{data.spans.length === 1 ? "" : "s"} ·{" "}
