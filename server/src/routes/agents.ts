@@ -263,6 +263,7 @@ export function agentRoutes(
     executionTarget: AdapterExecutionTarget | null;
     environmentName: string | null;
     fallbackChecks: AdapterEnvironmentCheck[];
+    sandboxIdentityCheck?: AdapterEnvironmentCheck | null;
     release: (status?: "released" | "failed") => Promise<void>;
   }> {
     const noopRelease = async () => {};
@@ -362,11 +363,26 @@ export function agentRoutes(
     // run id to heartbeat_runs.id, and we don't want to manufacture a fake
     // run row. Cleanup goes through the driver's `releaseRunLease` directly
     // (by lease record), since the batch helper queries by heartbeatRunId.
+    //
+    // Sandbox tests boot a fresh throwaway sandbox (never resume a retained
+    // agent lease) and archive it on release instead of deleting it, so the
+    // operator can inspect the exact sandbox from the provider dashboard while
+    // provider-side expiry reaps it later.
+    const testEnvironment = environment.driver === "sandbox"
+      ? {
+          ...environment,
+          config: {
+            ...(environment.config ?? {}),
+            reuseLease: false,
+            archiveOnRelease: true,
+          },
+        }
+      : environment;
     let leaseRecord: Awaited<ReturnType<typeof environmentRuntime.acquireRunLease>>;
     try {
       leaseRecord = await environmentRuntime.acquireRunLease({
         companyId: input.companyId,
-        environment,
+        environment: testEnvironment,
         issueId: null,
         heartbeatRunId: null,
         persistedExecutionWorkspace: null,
@@ -398,7 +414,7 @@ export function agentRoutes(
       try {
         if (driver) {
           await driver.releaseRunLease({
-            environment,
+            environment: testEnvironment,
             lease: leaseRecord.lease,
             status,
           });
@@ -417,7 +433,7 @@ export function agentRoutes(
     let realizedCwd: string | null = null;
     try {
       const realized = await environmentRuntime.realizeWorkspace({
-        environment,
+        environment: testEnvironment,
         lease: leaseRecord.lease,
         // No host workspace to copy for a Test invocation; sandbox/plugin
         // realize implementations use the lease metadata's remoteCwd to
@@ -458,9 +474,9 @@ export function agentRoutes(
         companyId: input.companyId,
         adapterType: input.adapterType,
         environment: {
-          id: environment.id,
-          driver: environment.driver,
-          config: environment.config ?? null,
+          id: testEnvironment.id,
+          driver: testEnvironment.driver,
+          config: testEnvironment.config ?? null,
         },
         leaseId: leaseRecord.lease.id,
         leaseMetadata: leaseMetadataForTarget,
@@ -505,7 +521,72 @@ export function agentRoutes(
       executionTarget: target,
       environmentName: environment.name,
       fallbackChecks: [],
+      sandboxIdentityCheck: buildSandboxIdentityCheck({
+        environmentName: environment.name,
+        lease: leaseRecord.lease,
+      }),
       release: releaseLease,
+    };
+  }
+
+  function readMetadataString(metadata: Record<string, unknown>, keys: string[]): string | null {
+    for (const key of keys) {
+      const value = metadata[key];
+      if (typeof value === "string" && value.trim().length > 0) return value.trim();
+    }
+    return null;
+  }
+
+  function buildSandboxIdentityCheck(input: {
+    environmentName: string;
+    lease: {
+      id: string;
+      provider?: string | null;
+      providerLeaseId?: string | null;
+      metadata?: Record<string, unknown> | null;
+    };
+  }): AdapterEnvironmentCheck {
+    const metadata = input.lease.metadata ?? {};
+    const provider = input.lease.provider ?? readMetadataString(metadata, ["provider"]);
+    const sandboxId = readMetadataString(metadata, ["sandboxId", "sandboxID", "sandbox_id", "id"]);
+    const sandboxName = readMetadataString(metadata, ["sandboxName", "sandbox_name", "name"]);
+    const snapshotRef = readMetadataString(metadata, [
+      "snapshot",
+      "snapshotId",
+      "snapshotID",
+      "snapshotRef",
+      "snapshot_ref",
+      "templateRef",
+      "template_ref",
+      "templateId",
+      "templateID",
+      "image",
+      "imageId",
+      "imageID",
+      "imageRef",
+      "image_ref",
+    ]);
+    const templateKind = readMetadataString(metadata, [
+      "templateKind",
+      "template_kind",
+      "templateRefKind",
+      "template_ref_kind",
+    ]);
+    const detailParts = [
+      `paperclipLeaseId=${input.lease.id}`,
+      input.lease.providerLeaseId ? `providerLeaseId=${input.lease.providerLeaseId}` : null,
+      provider ? `provider=${provider}` : null,
+      sandboxId ? `sandboxId=${sandboxId}` : null,
+      sandboxName ? `sandboxName=${sandboxName}` : null,
+      snapshotRef ? `${templateKind ? `${templateKind}Ref` : "snapshotOrTemplateRef"}=${snapshotRef}` : null,
+    ].filter((part): part is string => Boolean(part));
+
+    return {
+      code: "sandbox_test_identity",
+      level: "info",
+      message: `Sandbox test identity for "${input.environmentName}".`,
+      detail: detailParts.join("; "),
+      hint: "Use these provider-neutral IDs when comparing model-test output with provider logs or refreshed sandbox snapshots.",
     };
   }
 
@@ -1690,7 +1771,7 @@ export function agentRoutes(
         { adapterType: type },
       );
 
-      const { executionTarget, environmentName, fallbackChecks, release } =
+      const { executionTarget, environmentName, fallbackChecks, sandboxIdentityCheck, release } =
         await resolveAdapterTestExecutionContext({
           companyId,
           adapterType: type,
@@ -1728,7 +1809,10 @@ export function agentRoutes(
         });
 
         if (result.status === "fail") releaseStatus = "failed";
-        res.json(result);
+        res.json({
+          ...result,
+          checks: sandboxIdentityCheck ? [sandboxIdentityCheck, ...result.checks] : result.checks,
+        });
       } catch (err) {
         releaseStatus = "failed";
         throw err;
