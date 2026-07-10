@@ -46,6 +46,8 @@ const TASK_WATCHDOGS_TOGGLE_SELECTOR =
   'button[aria-label="Toggle task watchdogs experimental setting"]';
 const GOALS_SIDEBAR_LINK_TOGGLE_SELECTOR =
   'button[aria-label="Toggle goals sidebar link experimental setting"]';
+const DECISIONS_TOGGLE_SELECTOR =
+  'button[aria-label="Toggle decisions experimental setting"]';
 const SERVER_INFO_TOGGLE_SELECTOR =
   'button[aria-label="Toggle server info debug view experimental setting"]';
 const BUILT_IN_AGENTS_TOGGLE_SELECTOR =
@@ -63,6 +65,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableExperimentalFileViewer: false,
     enableExternalObjects: false,
     enableBuiltInAgents: false,
+    enableDecisions: false,
     enableGoalsSidebarLink: false,
     enableTaskWatchdogs: false,
     enableCloudSync: false,
@@ -241,6 +244,28 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({
       enableTaskWatchdogs: false,
     });
+  });
+
+  it("renders and patches the Decisions experimental toggle", async () => {
+    await renderPage();
+
+    expect(container.textContent).toContain("Decisions");
+    expect(container.textContent).toContain(
+      "Show the Decisions item in the main sidebar",
+    );
+
+    const toggle = container.querySelector<HTMLButtonElement>(DECISIONS_TOGGLE_SELECTOR);
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+
+    await act(async () => {
+      toggle?.click();
+    });
+    await flushReact();
+
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
+      enableDecisions: true,
+    });
+    expect(toggle?.getAttribute("aria-checked")).toBe("true");
   });
 
   it("renders and patches the Goals Sidebar Link experimental toggle", async () => {

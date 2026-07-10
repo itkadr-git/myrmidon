@@ -37,6 +37,7 @@ describe("instance settings service", () => {
       enableTaskWatchdogs: true,
       enableCloudSync: true,
       enableBuiltInAgents: true,
+      enableDecisions: false,
       enableGoalsSidebarLink: true,
       enableServerInfoDebugView: true,
       autoRestartDevServerWhenIdle: true,
@@ -80,6 +81,14 @@ describe("instance settings service", () => {
     expect(normalizeExperimentalSettings({}).enableGoalsSidebarLink).toBe(false);
     expect(
       normalizeExperimentalSettings({ enableStreamlinedLeftNavigation: true }).enableGoalsSidebarLink,
+    ).toBe(false);
+  });
+
+  it("defaults enableDecisions to false for empty and legacy stored settings", () => {
+    expect(normalizeExperimentalSettings(undefined).enableDecisions).toBe(false);
+    expect(normalizeExperimentalSettings({}).enableDecisions).toBe(false);
+    expect(
+      normalizeExperimentalSettings({ enableStreamlinedLeftNavigation: true }).enableDecisions,
     ).toBe(false);
   });
 

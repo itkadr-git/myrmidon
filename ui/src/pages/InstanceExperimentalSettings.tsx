@@ -290,6 +290,7 @@ export function InstanceExperimentalSettings() {
   const enableCloudSync = experimentalQuery.data?.enableCloudSync === true;
   const enableExternalObjects = experimentalQuery.data?.enableExternalObjects === true;
   const enableBuiltInAgents = experimentalQuery.data?.enableBuiltInAgents === true;
+  const enableDecisions = experimentalQuery.data?.enableDecisions === true;
   const enableGoalsSidebarLink = experimentalQuery.data?.enableGoalsSidebarLink === true;
   const enableCases = experimentalQuery.data?.enableCases === true;
   const enableServerInfoDebugView = experimentalQuery.data?.enableServerInfoDebugView === true;
@@ -514,6 +515,24 @@ export function InstanceExperimentalSettings() {
             onCheckedChange={() => toggleMutation.mutate({ enableExternalObjects: !enableExternalObjects })}
             disabled={toggleMutation.isPending}
             aria-label="Toggle external objects experimental setting"
+          />
+        </div>
+      </Card>
+
+      <Card className="block p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1.5">
+            <h2 className="text-sm font-semibold">Decisions</h2>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              Show the Decisions item in the main sidebar — the attention home that surfaces the tasks awaiting your
+              input — while the surface is still being evaluated.
+            </p>
+          </div>
+          <ToggleSwitch
+            checked={enableDecisions}
+            onCheckedChange={() => toggleMutation.mutate({ enableDecisions: !enableDecisions })}
+            disabled={toggleMutation.isPending}
+            aria-label="Toggle decisions experimental setting"
           />
         </div>
       </Card>

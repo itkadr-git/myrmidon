@@ -51,6 +51,7 @@ export const instanceExperimentalSettingsSchema = z.object({
   enableCloudSync: z.boolean().default(false),
   enableExternalObjects: z.boolean().default(false),
   enableBuiltInAgents: z.boolean().default(false),
+  enableDecisions: z.boolean().default(false),
   enableGoalsSidebarLink: z.boolean().default(false),
   enableServerInfoDebugView: z.boolean().default(false),
   autoRestartDevServerWhenIdle: z.boolean().default(false),

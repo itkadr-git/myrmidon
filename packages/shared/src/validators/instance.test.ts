@@ -60,6 +60,22 @@ describe("instance experimental settings validators", () => {
     });
   });
 
+  it("defaults the decisions sidebar link off", () => {
+    const settings = instanceExperimentalSettingsSchema.parse({});
+
+    expect(settings.enableDecisions).toBe(false);
+  });
+
+  it("accepts decisions patches", () => {
+    expect(
+      patchInstanceExperimentalSettingsSchema.parse({
+        enableDecisions: true,
+      }),
+    ).toEqual({
+      enableDecisions: true,
+    });
+  });
+
   it("accepts server info debug view patches", () => {
     expect(
       patchInstanceExperimentalSettingsSchema.parse({

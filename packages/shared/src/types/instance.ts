@@ -57,6 +57,7 @@ export interface InstanceExperimentalSettings {
   enableCloudSync: boolean;
   enableExternalObjects: boolean;
   enableBuiltInAgents: boolean;
+  enableDecisions: boolean;
   enableGoalsSidebarLink: boolean;
   enableServerInfoDebugView: boolean;
   autoRestartDevServerWhenIdle: boolean;
