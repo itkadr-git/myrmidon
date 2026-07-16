@@ -198,6 +198,7 @@ import {
   decideSuccessfulRunHandoff,
   findExistingFinishSuccessfulRunHandoffWake,
   findExistingRunLivenessContinuationWake,
+  isSuccessfulRunHandoffValidPathSkip,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
   readContinuationAttempt,
 } from "./recovery/index.js";
@@ -208,6 +209,7 @@ import {
 } from "./recovery/model-profile-hint.js";
 import { recoveryService } from "./recovery/service.js";
 import { productivityReviewService } from "./productivity-review.js";
+import { resolveRequiredSuccessfulRunHandoffOnValidPath } from "./successful-run-handoff-state.js";
 import { taskWatchdogService } from "./task-watchdogs.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
 import {
@@ -8088,6 +8090,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       budgetBlocked: Boolean(budgetBlock),
       idempotentWakeExists: Boolean(existingWake),
     });
+
+    if (isSuccessfulRunHandoffValidPathSkip(decision) && issue) {
+      await resolveRequiredSuccessfulRunHandoffOnValidPath(db, {
+        companyId: issue.companyId,
+        issueId: issue.id,
+        issueIdentifier: issue.identifier,
+        agentId: run.agentId,
+        runId: run.id,
+        skipReason: decision.reason,
+      });
+    }
 
     if (decision.kind !== "enqueue" || !issue) return;
 
