@@ -2,6 +2,7 @@ import { execFile as execFileCallback } from "node:child_process";
 import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -230,7 +231,11 @@ describe("codex home auth merge on sandbox asset extract", () => {
     }
   });
 
-  it("keeps same-account sandbox auth when freshness is equal, missing, or unparseable", async () => {
+  it("keeps host auth when the sandbox copy is not strictly newer (equal, missing, or unparseable freshness)", async () => {
+    // The extract path stages the sandbox copy as `source` and the host copy as
+    // `destination`. The decision predicate only adopts the source when it is
+    // strictly fresher, so a tie, a missing last_refresh on either side, or an
+    // unparseable stamp all fall through to the host destination.
     const cases = [
       {
         name: "equal last_refresh",
@@ -302,7 +307,7 @@ describe("codex home auth merge on sandbox asset extract", () => {
         sandboxAuth: entry.sandboxAuth,
         hostAuth: entry.hostAuth,
       });
-      expect(result.finalAuth, entry.name).toBe(entry.sandboxAuth);
+      expect(result.finalAuth, entry.name).toBe(entry.hostAuth);
       expect(result.finalMode, entry.name).toBe(0o600);
     }
   });
@@ -346,5 +351,199 @@ describe("codex home auth merge on sandbox asset extract", () => {
       expect(result.combinedOutput, entry.name).not.toContain("SENTINEL");
       expect(result.commandText, entry.name).not.toContain("SENTINEL");
     }
+  });
+});
+
+// The extract shell script consumes the decision predicate as a child process
+// and only branches on its exit code (10 = use the source auth.json, 20 = keep
+// the destination auth.json). The predicate is direction-agnostic: the caller
+// decides which file is `source` and which is `destination` by argument order
+// (first = source, second = destination), so there is no `--direction` flag.
+// This suite drives the `.cjs` directly the same way, asserting the exit code
+// per row. Both the inbound restore (extract.sh: source = the sandbox copy,
+// destination = the host copy) and the future outbound copy-back guard reduce to
+// the same single question — adopt the source only when it is strictly newer,
+// same-identity, subscription-kind.
+describe("codex-auth-merge-decision predicate (source/destination)", () => {
+  const cleanupDirs: string[] = [];
+
+  afterEach(async () => {
+    while (cleanupDirs.length > 0) {
+      const dir = cleanupDirs.pop();
+      if (!dir) continue;
+      await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
+  const decisionScriptPath = fileURLToPath(
+    new URL("./codex-auth-merge-decision.cjs", import.meta.url),
+  );
+
+  const KEEP_DESTINATION = 20;
+  const USE_SOURCE = 10;
+
+  function subscriptionAuth(input: {
+    accountId: string;
+    lastRefresh?: string;
+    marker?: string;
+  }): string {
+    const suffix = input.marker ?? input.accountId;
+    return JSON.stringify({
+      tokens: {
+        id_token: `id-token-${suffix}`,
+        access_token: `access-token-${suffix}`,
+        refresh_token: `refresh-token-${suffix}`,
+        account_id: input.accountId,
+      },
+      ...(input.lastRefresh ? { last_refresh: input.lastRefresh } : {}),
+    });
+  }
+
+  function apiKeyAuth(marker: string): string {
+    return JSON.stringify({ OPENAI_API_KEY: `sk-${marker}` });
+  }
+
+  async function runDecision(input: {
+    sourceAuth: string;
+    destinationAuth: string;
+  }): Promise<{ code: number; output: string }> {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-auth-decision-"));
+    cleanupDirs.push(dir);
+    const sourcePath = path.join(dir, "source-auth.json");
+    const destinationPath = path.join(dir, "destination-auth.json");
+    await writeFile(sourcePath, input.sourceAuth, { mode: 0o600 });
+    await writeFile(destinationPath, input.destinationAuth, { mode: 0o600 });
+
+    // Arg order is the whole contract: first = source, second = destination.
+    const args = [decisionScriptPath, sourcePath, destinationPath];
+
+    try {
+      const result = await execFile("node", args);
+      return { code: 0, output: `${result.stdout}\n${result.stderr}` };
+    } catch (error) {
+      const failure = error as { code?: unknown; stdout?: string; stderr?: string };
+      const output = `${failure.stdout ?? ""}\n${failure.stderr ?? ""}`;
+      if (typeof failure.code === "number") return { code: failure.code, output };
+      throw error;
+    }
+  }
+
+  const NEWER = "2026-07-09T02:00:00Z";
+  const OLDER = "2026-07-09T01:00:00Z";
+
+  const cases: { name: string; sourceAuth: string; destinationAuth: string; expected: number }[] = [
+    {
+      name: "source strictly newer, same identity → use source",
+      sourceAuth: subscriptionAuth({ accountId: "acct", lastRefresh: NEWER }),
+      destinationAuth: subscriptionAuth({ accountId: "acct", lastRefresh: OLDER }),
+      expected: USE_SOURCE,
+    },
+    {
+      name: "equal last_refresh (tie) → keep destination",
+      sourceAuth: subscriptionAuth({ accountId: "acct", lastRefresh: NEWER, marker: "src" }),
+      destinationAuth: subscriptionAuth({ accountId: "acct", lastRefresh: NEWER, marker: "dst" }),
+      expected: KEEP_DESTINATION,
+    },
+    {
+      name: "source older → keep destination",
+      sourceAuth: subscriptionAuth({ accountId: "acct", lastRefresh: OLDER }),
+      destinationAuth: subscriptionAuth({ accountId: "acct", lastRefresh: NEWER }),
+      expected: KEEP_DESTINATION,
+    },
+    {
+      name: "identity mismatch even when source newer → keep destination",
+      sourceAuth: subscriptionAuth({ accountId: "acct-source", lastRefresh: NEWER }),
+      destinationAuth: subscriptionAuth({ accountId: "acct-destination", lastRefresh: OLDER }),
+      expected: KEEP_DESTINATION,
+    },
+    {
+      name: "source last_refresh missing → keep destination",
+      sourceAuth: subscriptionAuth({ accountId: "acct" }),
+      destinationAuth: subscriptionAuth({ accountId: "acct", lastRefresh: OLDER }),
+      expected: KEEP_DESTINATION,
+    },
+    {
+      name: "destination last_refresh missing → keep destination",
+      sourceAuth: subscriptionAuth({ accountId: "acct", lastRefresh: NEWER }),
+      destinationAuth: subscriptionAuth({ accountId: "acct" }),
+      expected: KEEP_DESTINATION,
+    },
+    {
+      name: "both last_refresh missing → keep destination",
+      sourceAuth: subscriptionAuth({ accountId: "acct" }),
+      destinationAuth: subscriptionAuth({ accountId: "acct" }),
+      expected: KEEP_DESTINATION,
+    },
+    {
+      name: "source last_refresh unparseable → keep destination",
+      sourceAuth: subscriptionAuth({ accountId: "acct", lastRefresh: "not-a-date" }),
+      destinationAuth: subscriptionAuth({ accountId: "acct", lastRefresh: OLDER }),
+      expected: KEEP_DESTINATION,
+    },
+    {
+      name: "destination last_refresh unparseable → keep destination",
+      sourceAuth: subscriptionAuth({ accountId: "acct", lastRefresh: NEWER }),
+      destinationAuth: subscriptionAuth({ accountId: "acct", lastRefresh: "not-a-date" }),
+      expected: KEEP_DESTINATION,
+    },
+    {
+      name: "source apikey → keep destination",
+      sourceAuth: apiKeyAuth("source"),
+      destinationAuth: subscriptionAuth({ accountId: "acct", lastRefresh: OLDER }),
+      expected: KEEP_DESTINATION,
+    },
+    {
+      name: "destination apikey → keep destination",
+      sourceAuth: subscriptionAuth({ accountId: "acct", lastRefresh: NEWER }),
+      destinationAuth: apiKeyAuth("destination"),
+      expected: KEEP_DESTINATION,
+    },
+    {
+      name: "both apikey → keep destination",
+      sourceAuth: apiKeyAuth("source"),
+      destinationAuth: apiKeyAuth("destination"),
+      expected: KEEP_DESTINATION,
+    },
+    {
+      name: "kind mismatch (source subscription, destination apikey) → keep destination",
+      sourceAuth: subscriptionAuth({ accountId: "acct", lastRefresh: NEWER }),
+      destinationAuth: apiKeyAuth("destination"),
+      expected: KEEP_DESTINATION,
+    },
+    {
+      name: "source unusable JSON → keep destination",
+      sourceAuth: "{not valid json",
+      destinationAuth: subscriptionAuth({ accountId: "acct", lastRefresh: OLDER }),
+      expected: KEEP_DESTINATION,
+    },
+    {
+      name: "destination unusable JSON → keep destination",
+      sourceAuth: subscriptionAuth({ accountId: "acct", lastRefresh: NEWER }),
+      destinationAuth: "{not valid json",
+      expected: KEEP_DESTINATION,
+    },
+  ];
+
+  for (const entry of cases) {
+    it(entry.name, async () => {
+      const result = await runDecision({
+        sourceAuth: entry.sourceAuth,
+        destinationAuth: entry.destinationAuth,
+      });
+      expect(result.code).toBe(entry.expected);
+    });
+  }
+
+  it("never emits source token bytes", async () => {
+    const result = await runDecision({
+      sourceAuth: subscriptionAuth({
+        accountId: "acct",
+        lastRefresh: NEWER,
+        marker: "SECRET-SENTINEL",
+      }),
+      destinationAuth: subscriptionAuth({ accountId: "acct", lastRefresh: OLDER }),
+    });
+    expect(result.code).toBe(USE_SOURCE);
+    expect(result.output).not.toContain("SENTINEL");
   });
 });
