@@ -88,6 +88,11 @@ import {
   resolveCodexInactivityTimeout,
 } from "./output-inactivity-monitor.js";
 import {
+  CODEX_PROCESS_ACTIVITY_POLL_INTERVAL_MS,
+  createCodexProcessActivityMonitor,
+  type CodexProcessActivityMonitorHandle,
+} from "./process-activity-monitor.js";
+import {
   createCodexAcpExecutor,
   formatCodexAcpFallbackMessage,
   resolveCodexExecutionEngineForRun,
@@ -1051,6 +1056,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       let killTarget: { pid: number | null; processGroupId: number | null } | null = null;
       let sigkillTimer: ReturnType<typeof setTimeout> | null = null;
       let monitorLogPromise: Promise<unknown> | null = null;
+      const processActivityMonitor: { current: CodexProcessActivityMonitorHandle | null } = { current: null };
+      const resolvedMonitorTimeoutMs = monitorResolution.mode === "disabled" ? null : monitorResolution.timeoutMs;
 
       const monitor =
         monitorResolution.mode === "disabled"
@@ -1068,7 +1075,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                   `[paperclip] adapter.invoke ${message}; ` +
                   `timeoutMs=${monitorResolution.timeoutMs} elapsedSinceLastEventMs=${monitorElapsedMs} ` +
                   `outputChunkCount=${state.outputChunkCount} outputBytes=${state.outputBytes} ` +
-                  `parsedEvents=${state.parsedEventCount} (timeout=${timeoutSecLabel}s elapsed=${elapsedSec}s); ` +
+                  `parsedEvents=${state.parsedEventCount} processActivityCount=${state.processActivityCount} ` +
+                  `(timeout=${timeoutSecLabel}s elapsed=${elapsedSec}s); ` +
                   `terminating codex child via SIGTERM (5s grace, then SIGKILL).\n`;
                 // Issue the log without awaiting on the kill hot path, but capture
                 // the promise so the surrounding try/finally can await flush before
@@ -1094,6 +1102,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
       const wrappedOnSpawn = async (meta: { pid: number; processGroupId: number | null; startedAt: string }) => {
         killTarget = { pid: meta.pid ?? null, processGroupId: meta.processGroupId };
+        if (monitor && resolvedMonitorTimeoutMs !== null && !executionTargetIsRemote) {
+          processActivityMonitor.current = createCodexProcessActivityMonitor({
+            pid: meta.pid,
+            processGroupId: meta.processGroupId,
+            intervalMs: Math.min(
+              CODEX_PROCESS_ACTIVITY_POLL_INTERVAL_MS,
+              Math.max(1_000, Math.floor(resolvedMonitorTimeoutMs / 4)),
+            ),
+            onActivity: () => monitor.noteProcessActivity(),
+          });
+        }
         if (onSpawn) {
           await onSpawn(meta);
         }
@@ -1139,6 +1158,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             : { fired: false as const },
         };
       } finally {
+        processActivityMonitor.current?.stop();
         monitor?.stop();
         if (sigkillTimer) {
           clearTimeout(sigkillTimer);
