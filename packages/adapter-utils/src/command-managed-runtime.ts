@@ -50,6 +50,7 @@ export interface CommandManagedRuntimeRunner {
     env?: Record<string, string>;
     stdin?: string;
     timeoutMs?: number;
+    noProfile?: boolean;
     onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
     onSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
   }): Promise<RunProcessResult>;
@@ -205,6 +206,7 @@ export function createCommandManagedRuntimeClient(input: {
     opts: {
       stdin?: string;
       timeoutMs?: number;
+      noProfile?: boolean;
       onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
     } = {},
   ) => {
@@ -214,6 +216,7 @@ export function createCommandManagedRuntimeClient(input: {
       cwd: input.commandCwd,
       stdin: opts.stdin,
       timeoutMs: opts.timeoutMs ?? input.timeoutMs,
+      noProfile: opts.noProfile === true,
       onLog: opts.onLog,
     });
     requireSuccessfulResult(result, script);
@@ -222,7 +225,7 @@ export function createCommandManagedRuntimeClient(input: {
 
   const client: SandboxManagedRuntimeClient = {
     makeDir: async (remotePath) => {
-      await runShell(`mkdir -p ${shellQuote(remotePath)}`);
+      await runShell(`mkdir -p ${shellQuote(remotePath)}`, { noProfile: true });
     },
     writeFile: async (remotePath, bytes, options) => {
       const buffer = toBuffer(bytes);
@@ -249,7 +252,7 @@ export function createCommandManagedRuntimeClient(input: {
               `mkdir -p ${shellQuote(remoteDir)} && ` +
               `base64 -d > ${shellQuote(remoteTempPath)} && ` +
               `mv -f ${shellQuote(remoteTempPath)} ${shellQuote(remotePath)}`,
-            { stdin: body },
+            { stdin: body, noProfile: true },
           );
           await options?.onProgress?.(total, total);
           return;
@@ -263,14 +266,15 @@ export function createCommandManagedRuntimeClient(input: {
         await runShell(
           `mkdir -p ${shellQuote(remoteDir)} && ` +
             `rm -f ${shellQuote(remoteTempPath)} && : > ${shellQuote(remoteTempPath)}`,
+          { noProfile: true },
         );
         for (let offset = 0; offset < total; offset += REMOTE_WRITE_FALLBACK_DECODED_CHUNK_SIZE) {
           const end = Math.min(total, offset + REMOTE_WRITE_FALLBACK_DECODED_CHUNK_SIZE);
           const chunk = buffer.subarray(offset, end).toString("base64");
-          await runShell(`base64 -d >> ${shellQuote(remoteTempPath)}`, { stdin: chunk });
+          await runShell(`base64 -d >> ${shellQuote(remoteTempPath)}`, { stdin: chunk, noProfile: true });
           await options?.onProgress?.(end, total);
         }
-        await runShell(`mv -f ${shellQuote(remoteTempPath)} ${shellQuote(remotePath)}`);
+        await runShell(`mv -f ${shellQuote(remoteTempPath)} ${shellQuote(remotePath)}`, { noProfile: true });
         await options?.onProgress?.(total, total);
       } finally {
         await bestEffortRemoveRemotePath(client, remoteTempPath);
@@ -280,7 +284,7 @@ export function createCommandManagedRuntimeClient(input: {
       // Chunked reads intentionally query the remote size first, even without
       // a progress sink, so each sandbox RPC stays bounded and truncation is
       // detected without materializing the whole file as one stdout string.
-      const sizeResult = await runShell(`wc -c < ${shellQuote(remotePath)}`);
+      const sizeResult = await runShell(`wc -c < ${shellQuote(remotePath)}`, { noProfile: true });
       const totalBytes = Number.parseInt(sizeResult.stdout.trim(), 10);
       if (!Number.isFinite(totalBytes) || totalBytes < 0) {
         throw new Error(`Could not determine remote file size for ${remotePath}`);
@@ -299,6 +303,7 @@ export function createCommandManagedRuntimeClient(input: {
       for (let chunkIndex = 0; decodedSoFar < totalBytes; chunkIndex++) {
         const result = await runShell(
           `dd if=${shellQuote(remotePath)} bs=${REMOTE_READ_CHUNK_BYTES} skip=${chunkIndex} count=1 2>/dev/null | base64`,
+          { noProfile: true },
         );
         const chunk = Buffer.from(result.stdout.replace(/\s+/g, ""), "base64");
         if (chunk.byteLength === 0) break;
@@ -321,6 +326,7 @@ export function createCommandManagedRuntimeClient(input: {
           `basename "$entry"; ` +
           `done; ` +
         `fi`,
+        { noProfile: true },
       );
       return result.stdout
         .split(/\r?\n/)
@@ -334,6 +340,7 @@ export function createCommandManagedRuntimeClient(input: {
         args: shellCommandArgs(`rm -rf ${shellQuote(remotePath)}`),
         cwd: input.commandCwd,
         timeoutMs: input.timeoutMs,
+        noProfile: true,
       });
       requireSuccessfulResult(result, `remove ${remotePath}`);
     },
@@ -343,6 +350,7 @@ export function createCommandManagedRuntimeClient(input: {
         args: shellCommandArgs(command),
         cwd: input.commandCwd,
         timeoutMs: options.timeoutMs,
+        noProfile: options.noProfile === true,
       });
       requireSuccessfulResult(result, command);
     },
@@ -382,7 +390,7 @@ export function createCommandManagedRuntimeClient(input: {
               await client.writeFile(remoteTarPath, bufferToArrayBuffer(tarBytes));
               await client.run(
                 buildSyncInExtractDirectoryCommand({ remoteTarPath, targetDir: mapping.targetPath }),
-                { timeoutMs: input.timeoutMs },
+                { timeoutMs: input.timeoutMs, noProfile: true },
               );
               bytesTransferred += tarBytes.byteLength;
             } else {
@@ -395,11 +403,11 @@ export function createCommandManagedRuntimeClient(input: {
               if (mapping.mode != null) {
                 await client.run(
                   buildSyncInChmodCommand({ mode: mapping.mode, targetPath: targetPathForWrite }),
-                  { timeoutMs: input.timeoutMs },
+                  { timeoutMs: input.timeoutMs, noProfile: true },
                 );
                 await client.run(
                   buildSyncInRenameCommand({ sourcePath: targetPathForWrite, targetPath: mapping.targetPath }),
-                  { timeoutMs: input.timeoutMs },
+                  { timeoutMs: input.timeoutMs, noProfile: true },
                 );
               }
               bytesTransferred += fileBytes.byteLength;

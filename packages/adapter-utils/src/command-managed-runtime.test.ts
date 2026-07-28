@@ -17,7 +17,7 @@ const execFile = promisify(execFileCallback);
 
 interface SpawnRunnerHandle {
   runner: CommandManagedRuntimeRunner;
-  calls: Array<{ command: string; args?: string[]; cwd?: string; stdin?: string }>;
+  calls: Array<{ command: string; args?: string[]; cwd?: string; stdin?: string; noProfile?: boolean }>;
 }
 
 // A runner that actually executes the shell scripts (piping stdin through a real
@@ -27,12 +27,18 @@ function makeSpawnRunner(options: {
   supportsSingleStreamStdinProgress?: boolean;
   maxStdoutBytes?: number;
 } = {}): SpawnRunnerHandle {
-  const calls: Array<{ command: string; args?: string[]; cwd?: string; stdin?: string }> = [];
+  const calls: Array<{ command: string; args?: string[]; cwd?: string; stdin?: string; noProfile?: boolean }> = [];
   const runner: CommandManagedRuntimeRunner = {
     supportsSingleStreamStdinProgress: options.supportsSingleStreamStdinProgress,
     execute: async (input) =>
       await new Promise<RunProcessResult>((resolve) => {
-        calls.push({ command: input.command, args: input.args, cwd: input.cwd, stdin: input.stdin });
+        calls.push({
+          command: input.command,
+          args: input.args,
+          cwd: input.cwd,
+          stdin: input.stdin,
+          noProfile: input.noProfile,
+        });
         const startedAt = new Date().toISOString();
         const command =
           input.command === "sh" ? "/bin/sh" : input.command === "bash" ? "/bin/bash" : input.command;
@@ -147,6 +153,7 @@ describe("command managed runtime", () => {
       env?: Record<string, string>;
       stdin?: string;
       timeoutMs?: number;
+      noProfile?: boolean;
     }> = [];
     const runner = {
       execute: async (input: {
@@ -156,6 +163,7 @@ describe("command managed runtime", () => {
         env?: Record<string, string>;
         stdin?: string;
         timeoutMs?: number;
+        noProfile?: boolean;
       }): Promise<RunProcessResult> => {
         calls.push({ ...input });
         const startedAt = new Date().toISOString();
@@ -228,6 +236,7 @@ describe("command managed runtime", () => {
     // The single-stream upload pipes the tarball through exactly one stdin-backed
     // process (the speed fix); nothing else streams stdin.
     expect(calls.filter((call) => call.stdin != null).length).toBe(1);
+    expect(calls.some((call) => call.noProfile === true)).toBe(true);
 
     await mkdir(path.join(remoteWorkspaceDir, ".paperclip-runtime"), { recursive: true });
     await writeFile(path.join(remoteWorkspaceDir, "README.md"), "remote workspace\n", "utf8");
@@ -242,6 +251,7 @@ describe("command managed runtime", () => {
     // Restore streams the download through `base64`/onLog (no stdin), so the only
     // stdin-backed call remains the single upload from prepare.
     expect(calls.filter((call) => call.stdin != null).length).toBe(1);
+    expect(calls.some((call) => call.noProfile === true)).toBe(true);
   });
 
   it("stages runtime assets without replacing or restoring an in-place workspace", async () => {
@@ -296,6 +306,38 @@ describe("command managed runtime", () => {
     await expect(readFile(path.join(localWorkspaceDir, "README.md"), "utf8")).resolves.toBe(
       "local workspace\n",
     );
+  });
+
+  it("keeps adapter detection on the profile-backed shell path", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-command-runtime-detect-"));
+    cleanupDirs.push(rootDir);
+
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    await mkdir(localWorkspaceDir, { recursive: true });
+    await mkdir(remoteWorkspaceDir, { recursive: true });
+
+    const { runner, calls } = makeSpawnRunner();
+    await prepareCommandManagedRuntime({
+      runner,
+      spec: {
+        remoteCwd: remoteWorkspaceDir,
+        timeoutMs: 30_000,
+      },
+      adapterKey: "claude",
+      workspaceLocalDir: localWorkspaceDir,
+      installCommand: "echo install",
+      detectCommand: "sh",
+    });
+
+    // The detection probe must be the first shell invocation and stay on the
+    // default profile-sourcing path (noProfile !== true) so a CLI provided by
+    // the login profile is discoverable before we decide whether to install.
+    expect(calls[0]?.noProfile).not.toBe(true);
+    expect(calls[0]?.args?.join(" ")).toContain("command -v 'sh'");
+    // Detection succeeds here, so the install command must be skipped entirely;
+    // the remaining calls are workspace staging, never the install command.
+    expect(calls.some((call) => call.args?.join(" ").includes("echo install"))).toBe(false);
   });
 
   it("runs setup commands from a stable root cwd when staging into a nested remote workspace dir", async () => {
@@ -546,6 +588,15 @@ describe("command managed runtime", () => {
     expect(untarIdx).toBeGreaterThan(uploadIdx);
     expect(cmd1Idx).toBeGreaterThan(untarIdx);
     expect(cmd2Idx).toBeGreaterThan(cmd1Idx);
+
+    // Fast path: the fixed internal transport helpers (tar upload + untar) ride
+    // the no-profile shell — they are trusted, fixed commands that never need a
+    // login-shell profile. The opaque post-upload commands stay profile-backed
+    // (noProfile !== true) so any env a caller-supplied command relies on is present.
+    expect(calls[uploadIdx]?.noProfile).toBe(true);
+    expect(calls[untarIdx]?.noProfile).toBe(true);
+    expect(calls[cmd1Idx]?.noProfile).not.toBe(true);
+    expect(calls[cmd2Idx]?.noProfile).not.toBe(true);
   });
 
   it("fallback syncIn stages mode-constrained files before chmod and rename", async () => {
@@ -579,6 +630,11 @@ describe("command managed runtime", () => {
     expect(scripts[3]).toContain(targetFile);
     expect(scripts[4]).toContain("rm -rf");
     expect(scripts[4]).toContain(targetFile + ".paperclip-syncin.");
+
+    // Fast path: the staged-write helpers (chmod + rename) are fixed internal
+    // commands, so they ride the no-profile shell alongside the upload/staging.
+    expect(calls[2]?.noProfile).toBe(true); // chmod
+    expect(calls[3]?.noProfile).toBe(true); // mv (rename into place)
   });
 
   it("fallback syncIn cleans up a staged file when chmod fails before rename", async () => {
