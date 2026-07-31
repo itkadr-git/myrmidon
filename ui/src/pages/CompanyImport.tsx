@@ -709,17 +709,39 @@ function runningImportJobFromError(err: unknown): CompanyImportJobAccepted | nul
   };
 }
 
-/** Poll a job to a terminal state; resolves with the import result or throws the job's error. */
+/**
+ * Terminal outcome of watching an import job.
+ *
+ * - `completed` carries the full import result and drives the activation path.
+ * - `completed-expired` is a *server-confirmed* success whose full result we
+ *   can no longer read: the server reported the job `succeeded` but retained
+ *   only its compact summary — a cloud tenant job, or a board job whose full
+ *   in-memory result aged out. The company id lets the page still navigate to
+ *   the imported company. This is never a failure: the server confirmed the
+ *   import succeeded before we stopped being able to read the full result.
+ */
+type CompanyImportWatchOutcome =
+  | { status: "completed"; result: CompanyPortabilityImportResult }
+  | { status: "completed-expired"; companyId: string | null };
+
+/** Poll a job to a terminal state; resolves with the outcome or throws the job's error. */
 async function watchImportJob(
   jobId: string,
   storageKey: string,
-): Promise<CompanyPortabilityImportResult> {
+): Promise<CompanyImportWatchOutcome> {
   for (;;) {
     let job: Awaited<ReturnType<typeof companiesApi.getImportJob>>["job"] | null = null;
     try {
       job = (await companiesApi.getImportJob(jobId)).job;
     } catch (err) {
       if (err instanceof ApiError && err.status === 404) {
+        // The server has no record of this job. The retention sweep only drops
+        // jobs that have already *settled* (a running job is never removed), so
+        // a 404 while we are still watching means the in-memory record was lost
+        // to a restart mid-import — the import never reached a confirmed
+        // `succeeded` state and may not have finished. Report that honestly
+        // rather than masking a possibly-incomplete import as a success; the
+        // refreshed company list lets the user confirm what actually landed.
         clearStoredImportJob(storageKey);
         throw new Error(
           "The server no longer reports this import job — it may have restarted while the import ran.",
@@ -748,9 +770,15 @@ async function watchImportJob(
     if (job?.status === "succeeded") {
       clearStoredImportJob(storageKey);
       if (!job.importResult) {
-        throw new Error("The import finished, but its result is no longer available.");
+        // The server confirmed success but retained only the compact summary
+        // (a cloud tenant job, or a board job whose full result aged out of
+        // memory). Still a success — navigate by the summary's company id.
+        return {
+          status: "completed-expired",
+          companyId: job.result?.companyId ?? null,
+        };
       }
-      return job.importResult;
+      return { status: "completed", result: job.importResult };
     }
     if (job?.status === "failed") {
       clearStoredImportJob(storageKey);
@@ -813,11 +841,16 @@ export function CompanyImport() {
 
   // Post-import success / activation state
   const [pauseAutomations, setPauseAutomations] = useState(true);
-  const [importOutcome, setImportOutcome] = useState<{
-    result: CompanyPortabilityImportResult;
-    dashboardPath: string;
-    pausedAutomations: boolean;
-  } | null>(null);
+  const [importOutcome, setImportOutcome] = useState<
+    | {
+        kind: "full";
+        result: CompanyPortabilityImportResult;
+        dashboardPath: string;
+        pausedAutomations: boolean;
+      }
+    | { kind: "expired" }
+    | null
+  >(null);
   const [activationChecked, setActivationChecked] = useState<Set<string>>(new Set());
   const [activatedKeys, setActivatedKeys] = useState<Set<string>>(new Set());
   const [activationFailures, setActivationFailures] = useState<Record<string, string>>({});
@@ -1042,9 +1075,36 @@ export function CompanyImport() {
       });
       return watchImportJob(accepted.job.id, storageKey);
     },
-    onSuccess: async (result, { previewForImport, pauseAutomations: submittedPauseAutomations }) => {
+    onSuccess: async (outcome, { previewForImport, pauseAutomations: submittedPauseAutomations }) => {
       setResumedWatchJobId(null);
+      // The company list powers the switcher; refresh it on every success path
+      // so the imported company appears immediately without a manual reload.
       await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+
+      if (outcome.status === "completed-expired") {
+        // The import finished and wrote all its data, but the job's result
+        // expired (or was never retained) before we could read it. This is a
+        // success, not a failure: surface it gently and let the refreshed
+        // switcher carry the user into the new company.
+        if (outcome.companyId) {
+          try {
+            const importedCompany = await companiesApi.get(outcome.companyId);
+            setSelectedCompanyId(importedCompany.id);
+          } catch {
+            // The company id may be unreadable (permissions, race); the
+            // refreshed company list still surfaces the import.
+          }
+        }
+        setImportOutcome({ kind: "expired" });
+        pushToast({
+          tone: "success",
+          title: "Import completed",
+          body: "Open the company to view it.",
+        });
+        return;
+      }
+
+      const result = outcome.result;
       const importedCompany = await companiesApi.get(result.company.id);
       const refreshedSession = currentUserId
         ? null
@@ -1063,6 +1123,7 @@ export function CompanyImport() {
       setActivatedKeys(new Set());
       setActivationFailures({});
       setImportOutcome({
+        kind: "full",
         result,
         dashboardPath: `/${importedCompany.issuePrefix}/dashboard`,
         pausedAutomations: submittedPauseAutomations,
@@ -1301,7 +1362,7 @@ export function CompanyImport() {
   }
 
   async function handleActivateSelected() {
-    if (!importOutcome || isActivating) return;
+    if (!importOutcome || importOutcome.kind !== "full" || isActivating) return;
     setIsActivating(true);
     const nextActivated = new Set(activatedKeys);
     const nextFailures: Record<string, string> = {};
@@ -1373,6 +1434,24 @@ export function CompanyImport() {
       })()
     : null;
   const selectedAction = selectedFile ? (actionMap.get(selectedFile) ?? null) : null;
+
+  if (importOutcome && importOutcome.kind === "expired") {
+    // Soft success: the import finished and wrote all its data, but the job's
+    // in-memory result expired before we could read it. Never a failure — the
+    // company list has been refreshed, so the imported company is available
+    // from the switcher.
+    return (
+      <div className="px-5 py-5 space-y-4">
+        <div>
+          <h2 className="text-base font-semibold">Import completed</h2>
+          <p className="text-xs text-muted-foreground mt-1">
+            The import finished and your company is ready. Its detailed summary is no
+            longer available, but the company has been added — open it to view it.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   if (importOutcome) {
     const { result, dashboardPath } = importOutcome;
