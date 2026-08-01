@@ -542,6 +542,8 @@ export type {
 export type {
   CompactIssue,
   Issue,
+  IssueChangeReceiptEntry,
+  IssueChanges,
   IssueWorkMode,
   IssueAssigneeAdapterOverrides,
   IssueBlockerDiagnosticFlag,
