@@ -18,6 +18,7 @@ import {
   issueInboxArchives,
   issueDocuments,
   issuePlanDecompositions,
+  issueReadStates,
   issueRelations,
   issueThreadInteractions,
   issues,
@@ -308,6 +309,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await db.delete(issueRelations);
     await db.delete(issueDocuments);
     await db.delete(issueInboxArchives);
+    await db.delete(issueReadStates);
     await db.delete(activityLog);
     await db.delete(issues);
     await db.delete(documents);
@@ -335,6 +337,70 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     });
     return companyId;
   }
+
+  it("does not treat passive issue activity as touching it, but includes real user mutations", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const issueId = randomUUID();
+    const userId = "board-user";
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Issue viewed without participation",
+      status: "todo",
+      priority: "medium",
+    });
+    await svc.markRead(companyId, issueId, userId);
+    await db.insert(activityLog).values([
+      {
+        companyId,
+        actorType: "user",
+        actorId: userId,
+        action: "issue.read_marked",
+        entityType: "issue",
+        entityId: issueId,
+      },
+      {
+        companyId,
+        actorType: "user",
+        actorId: userId,
+        action: "issue.file_resource_content_read",
+        entityType: "issue",
+        entityId: issueId,
+      },
+      {
+        companyId,
+        actorType: "user",
+        actorId: userId,
+        action: "issue.file_resource_download_denied",
+        entityType: "issue",
+        entityId: issueId,
+      },
+      {
+        companyId,
+        actorType: "user",
+        actorId: userId,
+        action: "issue.tree_control_previewed",
+        entityType: "issue",
+        entityId: issueId,
+      },
+    ]);
+
+    await expect(svc.list(companyId, { touchedByUserId: userId })).resolves.toEqual([]);
+
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "user",
+      actorId: userId,
+      action: "issue.comment_cancelled",
+      entityType: "issue",
+      entityId: issueId,
+    });
+
+    await expect(svc.list(companyId, { touchedByUserId: userId })).resolves.toEqual([
+      expect.objectContaining({ id: issueId }),
+    ]);
+  });
 
   function agentRow(companyId: string, input: {
     id: string;
