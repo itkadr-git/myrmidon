@@ -136,6 +136,10 @@ import {
   type RuntimeServiceRef,
   sanitizeRuntimeServiceBaseEnv,
 } from "./workspace-runtime.js";
+import {
+  readManagedWorktreeInstanceOwnership,
+  WORKTREE_INSTANCE_ROOT_METADATA_KEY,
+} from "./workspace-instance-cleanup.js";
 import { issueService } from "./issues.js";
 import { projectService } from "./projects.js";
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
@@ -1201,6 +1205,8 @@ export function applyPersistedExecutionWorkspaceConfig(input: {
     const nextStrategy = parseObject(nextConfig.workspaceStrategy);
     if (input.workspaceConfig.provisionCommand === null) delete nextStrategy.provisionCommand;
     else nextStrategy.provisionCommand = input.workspaceConfig.provisionCommand;
+    if (input.workspaceConfig.runtimeProvisionCommand === null) delete nextStrategy.runtimeProvisionCommand;
+    else nextStrategy.runtimeProvisionCommand = input.workspaceConfig.runtimeProvisionCommand;
     if (input.workspaceConfig.teardownCommand === null) delete nextStrategy.teardownCommand;
     else nextStrategy.teardownCommand = input.workspaceConfig.teardownCommand;
     nextConfig.workspaceStrategy = nextStrategy;
@@ -1276,6 +1282,8 @@ function buildExecutionWorkspaceConfigSnapshot(
 
   if ("workspaceStrategy" in config) {
     snapshot.provisionCommand = typeof strategy.provisionCommand === "string" ? strategy.provisionCommand : null;
+    snapshot.runtimeProvisionCommand =
+      typeof strategy.runtimeProvisionCommand === "string" ? strategy.runtimeProvisionCommand : null;
     snapshot.teardownCommand = typeof strategy.teardownCommand === "string" ? strategy.teardownCommand : null;
   }
 
@@ -1317,10 +1325,14 @@ export function stripHostWorkspaceProvisionForLowTrustSandbox(input: {
   if (input.selectedEnvironmentDriver !== "sandbox") return input.config;
 
   const workspaceStrategy = parseObject(input.config.workspaceStrategy);
-  if (typeof workspaceStrategy.provisionCommand !== "string") return input.config;
+  if (
+    typeof workspaceStrategy.provisionCommand !== "string"
+    && typeof workspaceStrategy.runtimeProvisionCommand !== "string"
+  ) return input.config;
 
   const nextWorkspaceStrategy = { ...workspaceStrategy };
   delete nextWorkspaceStrategy.provisionCommand;
+  delete nextWorkspaceStrategy.runtimeProvisionCommand;
 
   return {
     ...input.config,
@@ -4607,6 +4619,7 @@ function buildWorkspaceConfigCategoryValues(input: {
     },
     lifecycleCommands: {
       provisionCommand: snapshot.provisionCommand ?? null,
+      runtimeProvisionCommand: snapshot.runtimeProvisionCommand ?? null,
       teardownCommand: snapshot.teardownCommand ?? null,
       cleanupCommand: snapshot.cleanupCommand ?? null,
     },
@@ -13647,6 +13660,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                     ?? reusableExistingExecutionWorkspace.config?.provisionCommand
                     ?? projectExecutionWorkspacePolicy?.workspaceStrategy?.provisionCommand
                     ?? null,
+                  runtimeProvisionCommand:
+                    configSnapshot?.runtimeProvisionCommand
+                    ?? reusableExistingExecutionWorkspace.config?.runtimeProvisionCommand
+                    ?? projectExecutionWorkspacePolicy?.workspaceStrategy?.runtimeProvisionCommand
+                    ?? null,
                 },
               },
               issue: issueRef,
@@ -13684,7 +13702,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const resolvedProjectId = executionWorkspace.projectId ?? issueRef?.projectId ?? executionProjectId ?? null;
     const resolvedProjectWorkspaceId = issueRef?.projectWorkspaceId ?? resolvedWorkspace.workspaceId ?? null;
     let persistedExecutionWorkspace: ExecutionWorkspace | null = null;
-    const nextExecutionWorkspaceMetadata = mergeExecutionWorkspaceMetadataForPersistence({
+    const baseExecutionWorkspaceMetadata = mergeExecutionWorkspaceMetadataForPersistence({
       existingMetadata: resolvedWorkspaceReusePolicy.shouldRestoreExistingWorkspace
         ? reusableExistingExecutionWorkspace?.metadata ?? null
         : null,
@@ -13699,6 +13717,38 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       baseRef: executionWorkspace.repoRef,
       baseRefSha: executionWorkspace.baseRefSha ?? null,
     });
+    let persistedWorktreeInstanceRoot =
+      resolvedWorkspaceReusePolicy.shouldRestoreExistingWorkspace
+      && typeof reusableExistingExecutionWorkspace?.metadata?.[WORKTREE_INSTANCE_ROOT_METADATA_KEY] === "string"
+        ? reusableExistingExecutionWorkspace.metadata[WORKTREE_INSTANCE_ROOT_METADATA_KEY]
+        : null;
+    if (
+      !persistedWorktreeInstanceRoot
+      && executionWorkspace.strategy === "git_worktree"
+      && executionWorkspace.worktreePath
+    ) {
+      try {
+        persistedWorktreeInstanceRoot = (
+          await readManagedWorktreeInstanceOwnership(executionWorkspace.worktreePath)
+        )?.instanceRoot ?? null;
+      } catch (error) {
+        logger.warn(
+          {
+            runId: run.id,
+            issueId,
+            executionWorkspaceCwd: executionWorkspace.cwd,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          "Could not record managed worktree instance ownership",
+        );
+      }
+    }
+    const nextExecutionWorkspaceMetadata = {
+      ...baseExecutionWorkspaceMetadata,
+      ...(persistedWorktreeInstanceRoot
+        ? { [WORKTREE_INSTANCE_ROOT_METADATA_KEY]: persistedWorktreeInstanceRoot }
+        : {}),
+    };
     const pendingForwardBranchReconcile = executionWorkspace.pendingForwardBranchReconcile ?? null;
     const branchNameForInitialPersistence =
       pendingForwardBranchReconcile?.recordedBranchName ?? executionWorkspace.branchName;
@@ -13761,10 +13811,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               projectId: resolvedProjectId,
               projectWorkspaceId: resolvedProjectWorkspaceId,
               sourceIssueId: issueRef?.id ?? null,
-              metadata: {
-                createdByRuntime: true,
-                source: executionWorkspace.source,
-              },
+              metadata: nextExecutionWorkspaceMetadata,
             },
             projectWorkspace: {
               cwd: resolvedWorkspace.cwd,
@@ -14407,6 +14454,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         config: hostExecutionWorkspaceConfig,
         adapterEnv,
         onLog,
+        recorder: workspaceOperationRecorder,
       });
       if (runtimeServices.length > 0) {
         context.paperclipRuntimeServices = runtimeServices;
