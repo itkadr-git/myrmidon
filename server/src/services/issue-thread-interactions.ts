@@ -76,6 +76,7 @@ type InteractionActor = {
   runId?: string | null;
   userId?: string | null;
   systemId?: string | null;
+  reviewVerdictAuthorized?: boolean;
   resolutionDetails?: Record<string, unknown>;
 };
 
@@ -248,18 +249,6 @@ export function resolveInteractionPolicy(args: {
 function assertAgentResolutionAllowed(current: IssueThreadInteractionRow, actor: InteractionActor) {
   if (!actor.agentId) return;
   if (!actor.runId) throw forbidden("Agent run id required to resolve an issue-thread interaction");
-  if (current.effectiveResolverPolicy !== "board_or_agents") {
-    throw forbidden("This issue-thread interaction is board-only");
-  }
-  if (current.addresseeAgentId && current.addresseeAgentId !== actor.agentId) {
-    throw forbidden("Only the addressed agent or a board user may resolve this issue-thread interaction");
-  }
-  if (current.createdByAgentId === actor.agentId) {
-    throw forbidden("Agents cannot resolve interactions they created");
-  }
-  if (current.sourceRunId && current.sourceRunId === actor.runId) {
-    throw forbidden("Agents cannot resolve interactions created by the same run");
-  }
   if (
     current.kind === "request_confirmation"
     && current.payload
@@ -268,6 +257,26 @@ function assertAgentResolutionAllowed(current: IssueThreadInteractionRow, actor:
     && current.payload.toolAction !== undefined
   ) {
     throw forbidden("Tool-action confirmations are always board-only");
+  }
+  if (actor.reviewVerdictAuthorized && isRequestConfirmationLikeKind(current.kind)) {
+    assertAgentInteractionActorAllowed(current, actor);
+    return;
+  }
+  if (current.effectiveResolverPolicy !== "board_or_agents") {
+    throw forbidden("This issue-thread interaction is board-only");
+  }
+  assertAgentInteractionActorAllowed(current, actor);
+}
+
+function assertAgentInteractionActorAllowed(current: IssueThreadInteractionRow, actor: InteractionActor) {
+  if (current.addresseeAgentId && current.addresseeAgentId !== actor.agentId) {
+    throw forbidden("Only the addressed agent or a board user may resolve this issue-thread interaction");
+  }
+  if (current.createdByAgentId === actor.agentId) {
+    throw forbidden("Agents cannot resolve interactions they created");
+  }
+  if (current.sourceRunId && current.sourceRunId === actor.runId) {
+    throw forbidden("Agents cannot resolve interactions created by the same run");
   }
 }
 
