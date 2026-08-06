@@ -10042,6 +10042,12 @@ export function issueRoutes(
       throw unprocessable("payload.toolAction is server-owned metadata and cannot be supplied when creating an interaction");
     }
 
+    // Plan-document confirmation targets are validated authoritatively inside
+    // issueThreadInteractionService.create, which re-reads the plan document's
+    // latest revision and rejects a stale/missing target under the same insert
+    // transaction (see assertRequestConfirmationTargetIsCurrent). We deliberately
+    // do not pre-check the revision here: a separate route-level read would be
+    // non-atomic with the insert and only duplicate the service gate.
     const interaction = await issueThreadInteractionService(db).create(issue, {
       ...req.body,
       sourceRunId: req.actor.type === "agent" ? agentSourceRunId : req.body.sourceRunId ?? null,

@@ -1043,6 +1043,47 @@ describe.sequential("issue thread interaction routes", () => {
     expect(mockInteractionService.create).not.toHaveBeenCalled();
   });
 
+  it("forwards plan-document confirmations to the interaction service for revision validation", async () => {
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions")
+      .send({
+        kind: "request_confirmation",
+        payload: {
+          version: 1,
+          prompt: "Approve the plan?",
+          target: {
+            type: "issue_document",
+            issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            documentId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            key: "plan",
+            revisionId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+            revisionNumber: 1,
+          },
+        },
+      });
+
+    // The route delegates plan-target validation to the service, which rejects a
+    // stale/missing revision atomically inside its insert transaction
+    // (assertRequestConfirmationTargetIsCurrent). The route must pass the target
+    // through unchanged rather than pre-checking it non-atomically.
+    expect(res.status).toBe(201);
+    expect(mockInteractionService.create).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }),
+      expect.objectContaining({
+        kind: "request_confirmation",
+        payload: expect.objectContaining({
+          target: expect.objectContaining({
+            key: "plan",
+            revisionId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+          }),
+        }),
+      }),
+      expect.anything(),
+    );
+  });
+
   it("accepts request checkbox confirmations with selected option ids and wakes the assignee", async () => {
     mockInteractionService.acceptInteraction.mockResolvedValueOnce({
       interaction: {
