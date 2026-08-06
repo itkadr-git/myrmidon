@@ -445,6 +445,13 @@ When an issue needs browser/manual QA or a preview server, inspect its current e
 For commands, response fields, and MCP tools, read:
 `skills/paperclip/references/issue-workspaces.md`
 
+## Proposing Credentials Safely
+
+**When you receive a credential, propose it as a Paperclip secret immediately with `POST /api/agents/me/secret-proposals`. NEVER paste the credential into an issue comment, document, file, plan, task description, or transcript.** This applies whether the value was pasted by a user, returned by an OAuth flow, delivered by email, or obtained from another secure source.
+
+Before proposing a credential you MUST read the "Agent secret proposals" section in:
+`skills/paperclip/references/api-reference.md`
+
 ## Reading Granted Secrets
 
 When authenticated with the current run's agent JWT, list the secrets available to that run before fetching a value:
@@ -594,6 +601,7 @@ If `plan` already exists, fetch the current document first and send its latest `
 | Execution workspace + runtime         | `GET /api/execution-workspaces/:id` • `POST …/runtime-services/:action`                                                         |
 | Set agent instructions path           | `PATCH /api/agents/:agentId/instructions-path`                                                                                  |
 | List agents                           | `GET /api/companies/:companyId/agents`                                                                                          |
+| Secret proposals                      | `POST\|GET /api/agents/me/secret-proposals` • `DELETE /api/agents/me/secret-proposals/:id`                                  |
 | Dashboard                             | `GET /api/companies/:companyId/dashboard`                                                                                       |
 
 Full endpoint table (company imports/exports, OpenClaw invites, company skills, routines, etc.) lives in `references/api-reference.md`.
