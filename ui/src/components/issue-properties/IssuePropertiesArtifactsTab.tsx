@@ -15,7 +15,7 @@ function formatBytes(n: number): string {
 }
 
 /**
- * Artifacts tab of the redesigned properties pane (flag: enableTaskChatRedesign).
+ * Artifacts tab of the properties pane.
  *
  * A read-only gallery of the task's attachments / work products. Uploads,
  * previews, and deletes stay on the existing attachment surfaces for the

@@ -92,7 +92,7 @@ import {
 } from "../components/IssueChatThread";
 import { TaskChatThread } from "../components/TaskChatThread";
 import type { TaskChatIssueBrief } from "../components/task-chat/TaskChatDescriptionBubble";
-import { useTaskChatRedesignEnabled } from "../hooks/useTaskChatRedesignEnabled";
+import { useClassicTaskInterfaceEnabled } from "../hooks/useClassicTaskInterfaceEnabled";
 import { workModeMetaFor } from "../lib/work-mode-meta";
 import { IssueContinuationHandoff } from "../components/IssueContinuationHandoff";
 import { IssueAttachmentsSection } from "../components/IssueAttachmentsSection";
@@ -125,6 +125,7 @@ import { IssueProperties } from "../components/IssueProperties";
 import { PauseAffectsSummaryView } from "../components/interrupt-handoff/InterruptHandoffViews";
 import { computePauseAffectsSummary } from "../lib/interrupt-handoff";
 import { useIssueExternalObjects } from "../hooks/useIssueExternalObjects";
+import { useIssuePlanDocument } from "../hooks/useIssuePlanDocument";
 import { IssueRunLedger } from "../components/IssueRunLedger";
 import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
 import type { MentionOption } from "../components/MarkdownEditor";
@@ -201,6 +202,7 @@ import {
   getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
+  ONBOARDING_FIRST_TASK_ORIGIN_KIND,
   type AskUserQuestionsAnswer,
   type AskUserQuestionsInteraction,
   type ActivityEvent,
@@ -690,7 +692,8 @@ function IssueDetailLoadingState({
   headerSeed: ReturnType<typeof readIssueDetailHeaderSeed>;
 }) {
   const identifier = headerSeed?.identifier ?? headerSeed?.id.slice(0, 8) ?? null;
-  const { enabled: taskChatShellEnabled } = useTaskChatRedesignEnabled();
+  const { enabled: classicTaskInterfaceEnabled } = useClassicTaskInterfaceEnabled();
+  const taskChatShellEnabled = !classicTaskInterfaceEnabled;
 
   return (
     <div
@@ -915,14 +918,14 @@ type IssueDetailChatTabProps = {
   /** Optional node rendered inline directly above the reply composer (e.g. the monitor strip). */
   composerAccessory?: ReactNode;
   /**
-   * Issue header (title row, badges, plugin toolbars) that the redesigned
+   * Issue header (title row, badges, plugin toolbars) that the chat-style
    * thread renders inside its scroll viewport so it scrolls away with the
-   * messages (flag: enableTaskChatRedesign). Ignored by the legacy thread.
+   * messages. Ignored by the classic thread (flag: enableClassicTaskInterface).
    */
   threadHeader?: ReactNode;
   /**
    * The task description rendered as the requester's first chat bubble in the
-   * redesigned thread (PAP-375). Ignored by the legacy thread.
+   * chat-style thread (PAP-375). Ignored by the classic thread.
    */
   issueBrief?: TaskChatIssueBrief;
   footer?: ReactNode;
@@ -1056,11 +1059,12 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   externalReferences,
   linkCaseReferences,
 }: IssueDetailChatTabProps) {
-  // Seam for the Task Chat Redesign (flag: enableTaskChatRedesign). Flag OFF
-  // renders IssueChatThread verbatim — the flag-off branch is provably today's
-  // UI. Both components share one prop type, so no cast is needed.
-  const { enabled: taskChatRedesignEnabled } = useTaskChatRedesignEnabled();
-  const ThreadComponent = taskChatRedesignEnabled ? TaskChatThread : IssueChatThread;
+  // Seam for the Classic Task Interface (flag: enableClassicTaskInterface).
+  // Flag ON renders the legacy IssueChatThread verbatim; flag OFF (the
+  // default) renders the chat-style TaskChatThread. Both components share one
+  // prop type, so no cast is needed.
+  const { enabled: classicTaskInterfaceEnabled } = useClassicTaskInterfaceEnabled();
+  const ThreadComponent = classicTaskInterfaceEnabled ? IssueChatThread : TaskChatThread;
   const { data: activity } = useQuery({
     queryKey: queryKeys.issues.activity(issueId),
     queryFn: () => activityApi.forIssue(issueId),
@@ -1215,10 +1219,10 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   ) : null;
 
   return (
-    <div className={taskChatRedesignEnabled ? "flex min-h-0 flex-1 flex-col" : "space-y-3"}>
-      {/* Redesign: the button rides inside the thread's scroll viewport with the
-          header so nothing sits above the thread in the page flow. */}
-      {taskChatRedesignEnabled ? null : loadOlderButton}
+    <div className={classicTaskInterfaceEnabled ? "space-y-3" : "flex min-h-0 flex-1 flex-col"}>
+      {/* Chat-style: the button rides inside the thread's scroll viewport with
+          the header so nothing sits above the thread in the page flow. */}
+      {classicTaskInterfaceEnabled ? loadOlderButton : null}
       {commentsInitialLoading && commentsWithRunMeta.length === 0 && interactions.length === 0 ? (
         <IssueChatSkeleton />
       ) : (
@@ -1226,7 +1230,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         composerRef={composerRef}
         composerAccessory={composerAccessory}
         threadHeader={
-          taskChatRedesignEnabled && (threadHeader || loadOlderButton) ? (
+          !classicTaskInterfaceEnabled && (threadHeader || loadOlderButton) ? (
             <>
               {threadHeader}
               {loadOlderButton}
@@ -1604,15 +1608,16 @@ function IssueDetailActivityTab({
 export function IssueDetail() {
   const { issueId } = useParams<{ issueId: string }>();
   const { selectedCompanyId } = useCompany();
-  // Task Chat Redesign (flag: enableTaskChatRedesign): with the flag ON the
-  // thread owns the center column — the legacy title/description block,
-  // sub-tasks table, plan decompositions and Documents section are gated off
-  // (plan lives in the properties-pane Plan tab). Flag OFF renders the legacy
-  // page byte-identically.
-  const { enabled: taskChatShellEnabled } = useTaskChatRedesignEnabled();
-  // Flag ON the page wrapper spans the full center pane so the thread's scroll
-  // viewport (and its scrollbar) reaches the properties-pane border; every
-  // non-thread section re-centers itself at the 60rem shell cap instead.
+  // Classic Task Interface (flag: enableClassicTaskInterface): with the flag
+  // OFF (the default) the chat-style thread owns the center column — the
+  // legacy title/description block, sub-tasks table, plan decompositions and
+  // Documents section are gated off (plan lives in the properties-pane Plan
+  // tab). Flag ON restores the legacy page.
+  const { enabled: classicTaskInterfaceEnabled } = useClassicTaskInterfaceEnabled();
+  const taskChatShellEnabled = !classicTaskInterfaceEnabled;
+  // Chat-style: the page wrapper spans the full center pane so the thread's
+  // scroll viewport (and its scrollbar) reaches the properties-pane border;
+  // every non-thread section re-centers itself at the 60rem shell cap instead.
   const shellSectionClass = taskChatShellEnabled
     ? "mx-auto w-full max-w-(--tc-shell-max-w)"
     : undefined;
@@ -1996,6 +2001,27 @@ export function IssueDetail() {
     () => childIssues,
     [issuePanelKey],
   );
+  // Onboarding first task only: hide the Properties sidebar until a plan exists,
+  // then reveal it already on the Plan tab. We gate the panel *mount* (withhold
+  // the panel content) rather than flipping the global `panelVisible` preference
+  // — that preference persists to localStorage and would leak "hidden" into every
+  // other task. Every non-first task has originKind !== onboarding_first_task, so
+  // `suppressPanelForFirstTask` stays false and behavior is unchanged. The user
+  // can still opt in early via the "Show properties" header button, which sets a
+  // per-issue override (keyed on the issue id so it resets across navigations).
+  const isOnboardingFirstTask =
+    taskChatShellEnabled &&
+    issue?.originKind === ONBOARDING_FIRST_TASK_ORIGIN_KIND;
+  const { data: firstTaskPlanDoc } = useIssuePlanDocument(
+    isOnboardingFirstTask ? issue?.id : null,
+  );
+  const [firstTaskPanelOverrideIssueId, setFirstTaskPanelOverrideIssueId] = useState<
+    string | null
+  >(null);
+  const firstTaskPanelOverride =
+    firstTaskPanelOverrideIssueId !== null && firstTaskPanelOverrideIssueId === issue?.id;
+  const suppressPanelForFirstTask =
+    isOnboardingFirstTask && !firstTaskPlanDoc && !firstTaskPanelOverride;
   const showRichSubIssuesSection = shouldRenderRichSubIssuesSection(childIssuesLoading, childIssues.length);
   const siblingNavigation = useMemo(
     () => issue && !childIssuesLoading && !siblingIssuesLoading && !siblingIssuesError
@@ -3273,7 +3299,7 @@ export function IssueDetail() {
   }, [issue?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (!panelIssue) {
+    if (!panelIssue || suppressPanelForFirstTask) {
       closePanel();
       return;
     }
@@ -3301,6 +3327,7 @@ export function IssueDetail() {
     openPanel,
     panelChildIssues,
     panelIssue,
+    suppressPanelForFirstTask,
     resolvedHasActiveRun,
     checkIssueMonitorNow.isPending,
     checkIssueMonitorNow.mutate,
@@ -4393,9 +4420,16 @@ export function IssueDetail() {
               size="icon-xs"
               className={cn(
                 "shrink-0 transition-opacity duration-200",
-                panelVisible ? "opacity-0 pointer-events-none w-0 overflow-hidden" : "opacity-100",
+                panelVisible && !suppressPanelForFirstTask
+                  ? "opacity-0 pointer-events-none w-0 overflow-hidden"
+                  : "opacity-100",
               )}
-              onClick={() => setPanelVisible(true)}
+              onClick={() => {
+                if (suppressPanelForFirstTask && issue?.id) {
+                  setFirstTaskPanelOverrideIssueId(issue.id);
+                }
+                setPanelVisible(true);
+              }}
               title="Show properties"
             >
               <SlidersHorizontal className="h-4 w-4" />
@@ -4929,7 +4963,11 @@ export function IssueDetail() {
             <IssueDetailChatTab
               threadHeader={taskChatThreadHeader}
               issueBrief={
-                taskChatShellEnabled
+                // Suppress the seeded-description bubble for the onboarding first
+                // task: its description is agent instructions, not something the
+                // user typed. The user lands on a seeded agent greeting instead.
+                taskChatShellEnabled &&
+                issue.originKind !== ONBOARDING_FIRST_TASK_ORIGIN_KIND
                   ? {
                       description: issue.description ?? "",
                       author: issue.createdByAgentId ? "agent" : "human",

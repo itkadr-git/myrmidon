@@ -565,6 +565,21 @@ function buildSupersededByNewerRequestResult(replacementInteractionId: string) {
   } as const;
 }
 
+// An agent that posts a fresh ask_user_questions while its own earlier ones on
+// the same issue are still pending has replaced them — the newer card carries
+// the real ask, so the stale siblings auto-expire (PAP-437). Mirrors the
+// `superseded_by_comment` shape (ask_user_questions results key expiry off
+// `expirationReason`, not `outcome`) so the UI can hide them cleanly.
+function buildSupersededByNewerInteractionResult(replacementInteractionId: string) {
+  return {
+    version: 1,
+    answers: [],
+    expirationReason: "superseded_by_newer_interaction",
+    supersededByInteractionId: replacementInteractionId,
+    summaryMarkdown: null,
+  } as const;
+}
+
 function buildAdministrativeOutcomeResult(
   row: IssueThreadInteractionRow,
   outcome: "withdrawn" | "issue_closed" | "addressee_deleted",
@@ -1888,16 +1903,27 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
             })
             .returning();
 
-          if (data.kind !== "request_confirmation" || !actor.agentId) {
+          // An agent replacing its own still-pending card supersedes the older
+          // one so the thread never accumulates stale sibling cards. This covers
+          // request_confirmation drafts and ask_user_questions (PAP-437: probe
+          // question cards that agents never withdrew). Each kind keeps its own
+          // result shape. Scoped strictly to the same agent + issue + kind, so
+          // other agents' or other kinds' pending cards are untouched.
+          const canSupersedeSiblingCards =
+            data.kind === "request_confirmation" || data.kind === "ask_user_questions";
+          if (!actor.agentId || !canSupersedeSiblingCards) {
             return { row, supersededRows: [] };
           }
 
           const now = new Date();
+          const supersededResult = data.kind === "ask_user_questions"
+            ? buildSupersededByNewerInteractionResult(row.id)
+            : buildSupersededByNewerRequestResult(row.id);
           const supersededRows = await tx
             .update(issueThreadInteractions)
             .set({
               status: "expired",
-              result: buildSupersededByNewerRequestResult(row.id),
+              result: supersededResult,
               resolvedByAgentId: actor.agentId,
               resolvedByUserId: actor.userId ?? null,
               resolvedAt: now,
