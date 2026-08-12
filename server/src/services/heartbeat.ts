@@ -13395,7 +13395,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         sessionId: session.legacySessionId,
         lastRunId: run.id,
         lastRunStatus: run.status,
-        lastError: result.errorMessage ?? null,
+        lastError: run.error ?? null,
         totalInputTokens: sql`${agentRuntimeState.totalInputTokens} + ${inputTokens}`,
         totalOutputTokens: sql`${agentRuntimeState.totalOutputTokens} + ${outputTokens}`,
         totalCachedInputTokens: sql`${agentRuntimeState.totalCachedInputTokens} + ${cachedInputTokens}`,
@@ -16037,7 +16037,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               ),
               sessionDisplayId: nextSessionState.displayId,
               lastRunId: finalizedRun.id,
-              lastError: outcome === "succeeded" ? null : (adapterResult.errorMessage ?? "run_failed"),
+              lastError: runErrorMessage,
             });
           }
         }
@@ -16045,7 +16045,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       await finalizeAgentStatus(
         agent.id,
         outcome,
-        outcome === "succeeded" ? null : (adapterResult.errorMessage ?? null),
+        runErrorMessage,
         {
           keepIdleOnFailure:
             outcome === "failed" &&
