@@ -995,6 +995,11 @@ export async function startServer(): Promise<StartedServer> {
           logger.error({ err }, "merged pull-request confirmation sweep failed");
         }));
     };
+    // Emit a periodic signal when the reaper inspects candidates but archives
+    // none, so an inert reaper that skips every candidate is never fully silent.
+    // The throttle keeps the 30s cadence from flooding the log.
+    let lastTerminalWorkspaceSkipLogAt = 0;
+    const terminalWorkspaceSkipLogIntervalMs = 10 * 60 * 1000;
     const scheduleTerminalWorkspaceSweep = () => {
       if (heartbeatSchedulerStopped) return;
       trackHeartbeatSchedulerWork(terminalWorkspaces
@@ -1002,6 +1007,17 @@ export async function startServer(): Promise<StartedServer> {
         .then((result) => {
           if (result.archived > 0 || result.cleanupFailed > 0) {
             logger.info(result, "terminal issue workspace reaper changed workspace state");
+            return;
+          }
+          const skipped =
+            result.skippedActiveRun
+            + result.skippedNonTerminalTree
+            + result.skippedUndelivered
+            + result.skippedRace;
+          const nowMs = Date.now();
+          if (skipped > 0 && nowMs - lastTerminalWorkspaceSkipLogAt >= terminalWorkspaceSkipLogIntervalMs) {
+            lastTerminalWorkspaceSkipLogAt = nowMs;
+            logger.info(result, "terminal issue workspace reaper skipped all candidates");
           }
         })
         .catch((err) => {
