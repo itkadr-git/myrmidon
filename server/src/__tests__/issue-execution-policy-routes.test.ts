@@ -394,6 +394,63 @@ describe("issue execution policy routes", () => {
     );
   });
 
+  it("binds a user-designated confirmation to the review transition activity", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "todo",
+      assigneeAgentId: null,
+      assigneeUserId: "local-board",
+      createdByUserId: "local-board",
+      identifier: "PAP-1004",
+      title: "Pending confirmation",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueThreadInteractionService.listForIssue.mockResolvedValue([{
+      id: "11111111-1111-4111-8111-111111111111",
+      kind: "request_confirmation",
+      status: "pending",
+      createdByAgentId: null,
+      createdByUserId: "local-board",
+      sourceRunId: null,
+      payload: { version: 1, prompt: "Approve this review?" },
+    }]);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      changes: { status: { from: "todo", to: "in_review" } },
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp())
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({
+        status: "in_review",
+        reviewInteractionId: "11111111-1111-4111-8111-111111111111",
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      expect.not.objectContaining({ reviewInteractionId: expect.anything() }),
+      expect.anything(),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.updated",
+        actorType: "user",
+        actorId: "local-board",
+        details: expect.objectContaining({
+          reviewInteractionId: "11111111-1111-4111-8111-111111111111",
+        }),
+      }),
+      expect.any(Array),
+    );
+  });
+
   it("keeps a review transition and its confirmation binding in one rollback boundary", async () => {
     const issue = {
       id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",

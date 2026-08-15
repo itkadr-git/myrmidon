@@ -3411,7 +3411,7 @@ export function issueRoutes(
     );
   }
 
-  async function assertAgentInReviewReviewPath(input: {
+  async function assertInReviewReviewPath(input: {
     existing: {
       id: string;
       companyId: string;
@@ -3421,7 +3421,8 @@ export function issueRoutes(
       monitorNextCheckAt?: Date | null;
     };
     updateFields: Record<string, unknown>;
-    actorType: string;
+    actorType: "agent" | "user";
+    actorId: string;
     actorAgentId?: string | null;
     actorRunId?: string | null;
     reviewInteractionId?: string;
@@ -3429,7 +3430,8 @@ export function issueRoutes(
     const nextStatus = typeof input.updateFields.status === "string"
       ? input.updateFields.status
       : input.existing.status;
-    if (input.actorType !== "agent" || input.existing.status === "in_review" || nextStatus !== "in_review") return null;
+    if (input.existing.status === "in_review" || nextStatus !== "in_review") return null;
+    if (input.actorType !== "agent" && !input.reviewInteractionId) return null;
 
     const interactions = await issueThreadInteractionService(db).listForIssue(input.existing.id);
     const pendingInteractions = interactions.filter((interaction) => interaction.status === "pending");
@@ -3437,8 +3439,12 @@ export function issueRoutes(
       const designatedReviewConfirmation = pendingInteractions.find((interaction) =>
         interaction.id === input.reviewInteractionId
         && (interaction.kind === "request_confirmation" || interaction.kind === "request_checkbox_confirmation")
-        && interaction.createdByAgentId === input.actorAgentId
-        && interaction.sourceRunId === input.actorRunId
+        && (
+          input.actorType === "agent"
+            ? interaction.createdByAgentId === input.actorAgentId
+              && interaction.sourceRunId === input.actorRunId
+            : interaction.createdByUserId === input.actorId
+        )
         && !(
           interaction.kind === "request_confirmation"
           && interaction.payload
@@ -3448,13 +3454,18 @@ export function issueRoutes(
         )
       );
       if (!designatedReviewConfirmation) {
-        throw unprocessable("reviewInteractionId must identify a pending non-tool confirmation created by this agent run", {
+        const creatorDescription = input.actorType === "agent"
+          ? "this agent run"
+          : "this user";
+        throw unprocessable(`reviewInteractionId must identify a pending non-tool confirmation created by ${creatorDescription}`, {
           code: "invalid_review_interaction",
           reviewInteractionId: input.reviewInteractionId,
         });
       }
       return designatedReviewConfirmation.id;
     }
+
+    if (input.actorType !== "agent") return null;
 
     const nextAssigneeUserId = input.updateFields.assigneeUserId === undefined
       ? input.existing.assigneeUserId
@@ -4154,7 +4165,6 @@ export function issueRoutes(
     }
     if (await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)) return false;
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return false;
-    const isReviewConfirmationVerdict = await isPendingReviewConfirmationVerdict(issue, interaction);
     const payload = interaction.payload && typeof interaction.payload === "object"
       ? interaction.payload as { toolAction?: unknown }
       : null;
@@ -4162,9 +4172,10 @@ export function issueRoutes(
       res.status(403).json({ error: "Tool-action confirmations are always board-only" });
       return false;
     }
+    await assertPendingReviewInteractionVerdictAllowed(req, issue, interaction);
+    const isReviewConfirmationVerdict = await isPendingReviewConfirmationVerdict(issue, interaction);
     if (isReviewConfirmationVerdict) {
       if (!assertAgentInteractionActorAllowed(res, interaction, actorAgentId, runId)) return false;
-      await assertPendingReviewInteractionVerdictAllowed(req, issue, interaction);
       return "review_verdict" as const;
     }
     if (interaction.effectiveResolverPolicy !== "board_or_agents") {
@@ -4238,11 +4249,15 @@ export function issueRoutes(
       createdByAgentId?: string | null;
       createdByUserId?: string | null;
     },
-    interaction: { status: string },
+    interaction: { kind: string; status: string },
   ) {
     if (
       issue.status !== "in_review"
       || interaction.status !== "pending"
+      || (
+        interaction.kind !== "request_confirmation"
+        && interaction.kind !== "request_checkbox_confirmation"
+      )
       || issue.reviewPolicy == null
       || issue.reviewPolicy === "anyone"
     ) return;
@@ -6415,10 +6430,11 @@ export function issueRoutes(
         ? "owner_completed"
         : outcome;
     const updateFields = sourceIssueStatus ? { status: sourceIssueStatus } : {};
-    await assertAgentInReviewReviewPath({
+    await assertInReviewReviewPath({
       existing,
       updateFields,
-      actorType: req.actor.type,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
       actorAgentId: actor.agentId,
       actorRunId: actor.runId,
     });
@@ -9097,10 +9113,11 @@ export function issueRoutes(
       }
     }
 
-    const reviewInteractionId = await assertAgentInReviewReviewPath({
+    const reviewInteractionId = await assertInReviewReviewPath({
       existing,
       updateFields,
-      actorType: req.actor.type,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
       actorAgentId: actor.agentId,
       actorRunId: actor.runId,
       reviewInteractionId: requestedReviewInteractionId,
