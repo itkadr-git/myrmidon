@@ -369,6 +369,7 @@ describe("issue execution policy routes", () => {
     expect(mockIssueService.update).toHaveBeenCalledWith(
       "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       expect.objectContaining({ status: "in_review" }),
+      expect.anything(),
     );
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
@@ -376,7 +377,9 @@ describe("issue execution policy routes", () => {
         action: "issue.updated",
         details: expect.not.objectContaining({ reviewInteractionId: expect.anything() }),
       }),
+      expect.any(Array),
     );
+    expect(mockLogActivity.mock.calls[0]?.[0]).toBe(mockIssueService.update.mock.calls[0]?.[2]);
   });
 
   it("binds an explicitly designated same-run confirmation to the review transition", async () => {
@@ -637,6 +640,7 @@ describe("issue execution policy routes", () => {
           }),
         }),
       }),
+      expect.anything(),
     );
   });
 
@@ -690,6 +694,7 @@ describe("issue execution policy routes", () => {
         status: "in_review",
         monitorNextCheckAt: new Date("2026-12-01T12:00:00.000Z"),
       }),
+      expect.anything(),
     );
   });
 
@@ -718,6 +723,18 @@ describe("issue execution policy routes", () => {
       .send({ status: "in_review" });
 
     expect(res.status).toBe(200);
+    expect(mockDb.transaction).toHaveBeenCalled();
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.updated",
+        actorType: "user",
+        actorId: "local-board",
+        details: expect.objectContaining({ status: "in_review" }),
+      }),
+      expect.any(Array),
+    );
+    expect(mockLogActivity.mock.calls[0]?.[0]).toBe(mockIssueService.update.mock.calls[0]?.[2]);
     expect(mockIssueThreadInteractionService.listForIssue).not.toHaveBeenCalled();
     expect(mockIssueApprovalService.listApprovalsForIssue).not.toHaveBeenCalled();
   });

@@ -260,6 +260,7 @@ Invariants:
 - `in_progress` requires assignee
 - an `in_review -> done | cancelled` verdict is authorized against the current review policy while the issue row is locked; a policy change in the same request or a concurrent request cannot relax that verdict gate
 - while a restrictive review policy is stored, changing it requires an actor who is allowed by that row-locked policy
+- the transition into `in_review` and its requester activity record commit atomically, including transitions without an explicit review-interaction binding
 - terminal states: `done | cancelled`
 
 ## 7.7 `issue_comments`

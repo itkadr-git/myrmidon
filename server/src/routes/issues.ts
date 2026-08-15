@@ -9130,6 +9130,10 @@ export function issueRoutes(
       actorRunId: actor.runId,
       reviewInteractionId: requestedReviewInteractionId,
     });
+    const enteringReviewRequested =
+      existing.status !== "in_review" && updateFields.status === "in_review";
+    const persistReviewActivityTransactionally =
+      enteringReviewRequested || Boolean(reviewInteractionId);
 
     const nextAssigneeAgentId =
       updateFields.assigneeAgentId === undefined ? existing.assigneeAgentId : (updateFields.assigneeAgentId as string | null);
@@ -9232,11 +9236,11 @@ export function issueRoutes(
       }
       return true;
     };
-    const persistBoundReviewActivity = async (
+    const persistReviewTransitionActivity = async (
       tx: Parameters<typeof svc.update>[2],
       updated: NonNullable<Awaited<ReturnType<typeof svc.update>>>,
     ) => {
-      if (!reviewInteractionId) return;
+      if (!persistReviewActivityTransactionally) return;
       const changes = updated.changes ?? {};
       const previous = Object.fromEntries(
         Object.entries(changes).map(([key, change]) => [key, change.from]),
@@ -9257,7 +9261,7 @@ export function issueRoutes(
           identifier: updated.identifier,
           authorizationReason: issueMutationAuthorizationReason,
           changes,
-          reviewInteractionId,
+          ...(reviewInteractionId ? { reviewInteractionId } : {}),
           ...(commentBody ? { source: "comment" } : {}),
           ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
           ...(interruptedRunId ? { interruptedRunId } : {}),
@@ -9306,7 +9310,7 @@ export function issueRoutes(
     const shouldUseTransactionalIssueUpdate =
       Boolean(decision)
       || shouldRelayStop
-      || Boolean(reviewInteractionId)
+      || persistReviewActivityTransactionally
       || reviewPolicySensitiveMutationRequested;
     try {
       if (shouldUseTransactionalIssueUpdate) {
@@ -9337,7 +9341,7 @@ export function issueRoutes(
             stopRelayResult.value = await svc.addStopRelayCommentIfNeeded(updated, tx);
           }
 
-          await persistBoundReviewActivity(tx, updated);
+          await persistReviewTransitionActivity(tx, updated);
 
           return updated;
         });
@@ -9524,7 +9528,7 @@ export function issueRoutes(
         activeRecoveryAction: null,
       };
     }
-    if (!reviewInteractionId) await logActivity(db, {
+    if (!persistReviewActivityTransactionally) await logActivity(db, {
       companyId: issue.companyId,
       actorType: actor.actorType,
       actorId: actor.actorId,
