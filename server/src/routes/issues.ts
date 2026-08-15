@@ -4155,6 +4155,7 @@ export function issueRoutes(
       assertBoard(req);
       if (isReviewConfirmationVerdict) {
         await assertPendingReviewInteractionVerdictAllowed(req, issue, interaction);
+        return "review_verdict" as const;
       }
       return "standard" as const;
     }
@@ -10682,7 +10683,7 @@ export function issueRoutes(
         agentId: actor.agentId,
         runId: actor.runId,
         userId: actor.actorType === "user" ? actor.actorId : null,
-        ...(actor.actorType === "agent" && resolutionAuthorization === "review_verdict"
+        ...(resolutionAuthorization === "review_verdict"
           ? { reviewVerdictAuthorized: true }
           : {}),
       });
@@ -10838,7 +10839,7 @@ export function issueRoutes(
         agentId: actor.agentId,
         runId: actor.runId,
         userId: actor.actorType === "user" ? actor.actorId : null,
-        ...(actor.actorType === "agent" && resolutionAuthorization === "review_verdict"
+        ...(resolutionAuthorization === "review_verdict"
           ? { reviewVerdictAuthorized: true }
           : {}),
       });
