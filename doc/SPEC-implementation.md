@@ -258,8 +258,8 @@ Invariants:
 - single assignee only
 - task must trace to company goal chain via `goal_id`, `parent_id`, or project-goal linkage
 - `in_progress` requires assignee
-- an `in_review -> done | cancelled` verdict is authorized against the review policy stored before the update; a policy change in the same request cannot relax that verdict gate
-- while a restrictive review policy is stored, changing it requires an actor who is allowed by that current policy
+- an `in_review -> done | cancelled` verdict is authorized against the current review policy while the issue row is locked; a policy change in the same request or a concurrent request cannot relax that verdict gate
+- while a restrictive review policy is stored, changing it requires an actor who is allowed by that row-locked policy
 - terminal states: `done | cancelled`
 
 ## 7.7 `issue_comments`

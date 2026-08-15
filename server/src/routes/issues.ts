@@ -4150,9 +4150,12 @@ export function issueRoutes(
       payload?: unknown;
     },
   ) {
+    const isReviewConfirmationVerdict = await isPendingReviewConfirmationVerdict(issue, interaction);
     if (req.actor.type !== "agent") {
       assertBoard(req);
-      await assertPendingReviewInteractionVerdictAllowed(req, issue, interaction);
+      if (isReviewConfirmationVerdict) {
+        await assertPendingReviewInteractionVerdictAllowed(req, issue, interaction);
+      }
       return "standard" as const;
     }
     const actorAgentId = req.actor.agentId;
@@ -4172,10 +4175,9 @@ export function issueRoutes(
       res.status(403).json({ error: "Tool-action confirmations are always board-only" });
       return false;
     }
-    await assertPendingReviewInteractionVerdictAllowed(req, issue, interaction);
-    const isReviewConfirmationVerdict = await isPendingReviewConfirmationVerdict(issue, interaction);
     if (isReviewConfirmationVerdict) {
       if (!assertAgentInteractionActorAllowed(res, interaction, actorAgentId, runId)) return false;
+      await assertPendingReviewInteractionVerdictAllowed(req, issue, interaction);
       return "review_verdict" as const;
     }
     if (interaction.effectiveResolverPolicy !== "board_or_agents") {
@@ -8786,6 +8788,10 @@ export function issueRoutes(
     const reviewVerdictRequested =
       existing.status === "in_review"
       && (updateFields.status === "done" || updateFields.status === "cancelled");
+    const reviewPolicySensitiveMutationRequested =
+      req.body.reviewPolicy !== undefined
+      || updateFields.status === "done"
+      || updateFields.status === "cancelled";
     if (
       (reviewVerdictRequested || reviewPolicyChangeRequested)
       && existing.reviewPolicy != null
@@ -9202,6 +9208,30 @@ export function issueRoutes(
         ? svc.update(id, issueUpdateData, db, postCommitActivityPublications)
         : svc.update(id, issueUpdateData);
     };
+    const assertLockedReviewPolicyAllowsMutation = async (
+      tx: Parameters<typeof svc.update>[2],
+    ) => {
+      const lockedExisting = await svc.getByIdForUpdate(id, tx);
+      if (!lockedExisting) return false;
+      const lockedPolicyChangeRequested =
+        req.body.reviewPolicy !== undefined
+        && req.body.reviewPolicy !== lockedExisting.reviewPolicy;
+      const lockedReviewVerdictRequested =
+        lockedExisting.status === "in_review"
+        && (updateFields.status === "done" || updateFields.status === "cancelled");
+      if (
+        (lockedReviewVerdictRequested || lockedPolicyChangeRequested)
+        && lockedExisting.reviewPolicy != null
+        && lockedExisting.reviewPolicy !== "anyone"
+      ) {
+        await assertIssueReviewVerdictActorAllowed(tx as unknown as Db, {
+          issue: lockedExisting,
+          actor: { type: actor.actorType, id: actor.actorId },
+          reviewPolicy: lockedExisting.reviewPolicy,
+        });
+      }
+      return true;
+    };
     const persistBoundReviewActivity = async (
       tx: Parameters<typeof svc.update>[2],
       updated: NonNullable<Awaited<ReturnType<typeof svc.update>>>,
@@ -9272,25 +9302,36 @@ export function issueRoutes(
       generation: reopenedGeneration,
       finalIssueStatus: () => issue?.status,
     });
+    const decision = transition.decision && decisionId ? transition.decision : null;
+    const shouldUseTransactionalIssueUpdate =
+      Boolean(decision)
+      || shouldRelayStop
+      || Boolean(reviewInteractionId)
+      || reviewPolicySensitiveMutationRequested;
     try {
-      if (transition.decision && decisionId) {
-        const decision = transition.decision;
+      if (shouldUseTransactionalIssueUpdate) {
         issue = await db.transaction(async (tx) => {
+          if (
+            reviewPolicySensitiveMutationRequested
+            && !(await assertLockedReviewPolicyAllowsMutation(tx))
+          ) return null;
           const updated = await updateIssue(tx);
           if (!updated) return null;
 
-          await tx.insert(issueExecutionDecisions).values({
-            id: decisionId,
-            companyId: updated.companyId,
-            issueId: updated.id,
-            stageId: decision.stageId,
-            stageType: decision.stageType,
-            actorAgentId: actor.agentId ?? null,
-            actorUserId: actor.actorType === "user" ? actor.actorId : null,
-            outcome: decision.outcome,
-            body: decision.body,
-            createdByRunId: actor.runId ?? null,
-          });
+          if (decision && decisionId) {
+            await tx.insert(issueExecutionDecisions).values({
+              id: decisionId,
+              companyId: updated.companyId,
+              issueId: updated.id,
+              stageId: decision.stageId,
+              stageType: decision.stageType,
+              actorAgentId: actor.agentId ?? null,
+              actorUserId: actor.actorType === "user" ? actor.actorId : null,
+              outcome: decision.outcome,
+              body: decision.body,
+              createdByRunId: actor.runId ?? null,
+            });
+          }
 
           if (shouldRelayStop) {
             stopRelayResult.value = await svc.addStopRelayCommentIfNeeded(updated, tx);
@@ -9298,21 +9339,6 @@ export function issueRoutes(
 
           await persistBoundReviewActivity(tx, updated);
 
-          return updated;
-        });
-      } else if (shouldRelayStop) {
-        issue = await db.transaction(async (tx) => {
-          const updated = await updateIssue(tx);
-          if (!updated) return null;
-          stopRelayResult.value = await svc.addStopRelayCommentIfNeeded(updated, tx);
-          await persistBoundReviewActivity(tx, updated);
-          return updated;
-        });
-      } else if (reviewInteractionId) {
-        issue = await db.transaction(async (tx) => {
-          const updated = await updateIssue(tx);
-          if (!updated) return null;
-          await persistBoundReviewActivity(tx, updated);
           return updated;
         });
       } else {
