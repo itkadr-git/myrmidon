@@ -106,7 +106,7 @@ export async function assertIssueReviewVerdictActorAllowed(
         code: "review_policy_denied",
         policy,
         allowedActor: "authenticated_user_with_issue_write_access",
-        remediation: "Have an authenticated user with issue write access submit the verdict, or change reviewPolicy to `anyone`.",
+        remediation: "Have an authenticated user with issue write access submit the verdict.",
       },
     );
   }
@@ -119,7 +119,7 @@ export async function assertIssueReviewVerdictActorAllowed(
         code: "review_policy_denied",
         policy,
         allowedActor: "writer_other_than_review_requester",
-        remediation: "Change reviewPolicy to `anyone`, or move the issue out of and back into `in_review` to record a requester before another writer submits the verdict.",
+        remediation: "Move the issue out of and back into `in_review` to record a requester before another writer submits the verdict.",
       },
     );
   }
@@ -131,7 +131,7 @@ export async function assertIssueReviewVerdictActorAllowed(
       code: "review_policy_denied",
       policy,
       allowedActor: "writer_other_than_review_requester",
-      remediation: "Have another writer with issue write access submit the verdict, or change reviewPolicy to `anyone`.",
+      remediation: "Have another writer with issue write access submit the verdict.",
     },
   );
 }

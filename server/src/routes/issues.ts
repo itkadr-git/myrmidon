@@ -8780,19 +8780,21 @@ export function issueRoutes(
       onBehalfOfUserId: _requestedOnBehalfOfUserId,
       ...updateFields
     } = req.body;
-    const effectiveReviewPolicy = req.body.reviewPolicy === undefined
-      ? existing.reviewPolicy
-      : req.body.reviewPolicy;
-    if (
+    const reviewPolicyChangeRequested =
+      req.body.reviewPolicy !== undefined
+      && req.body.reviewPolicy !== existing.reviewPolicy;
+    const reviewVerdictRequested =
       existing.status === "in_review"
-      && (updateFields.status === "done" || updateFields.status === "cancelled")
-      && effectiveReviewPolicy != null
-      && effectiveReviewPolicy !== "anyone"
+      && (updateFields.status === "done" || updateFields.status === "cancelled");
+    if (
+      (reviewVerdictRequested || reviewPolicyChangeRequested)
+      && existing.reviewPolicy != null
+      && existing.reviewPolicy !== "anyone"
     ) {
       await assertIssueReviewVerdictActorAllowed(db, {
         issue: existing,
         actor: { type: actor.actorType, id: actor.actorId },
-        reviewPolicy: effectiveReviewPolicy,
+        reviewPolicy: existing.reviewPolicy,
       });
     }
     const shouldCancelActiveRunForCancelledStatus =
