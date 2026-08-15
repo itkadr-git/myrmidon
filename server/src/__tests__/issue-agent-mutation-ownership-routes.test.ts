@@ -20,6 +20,7 @@ const mockIssueService = vi.hoisted(() => ({
   getAttachmentById: vi.fn(),
   getByIdentifier: vi.fn(),
   getById: vi.fn(),
+  getByIdForUpdate: vi.fn(),
   getComment: vi.fn(),
   getDependencyReadiness: vi.fn(),
   getRelationSummaries: vi.fn(),
@@ -433,6 +434,7 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueService.getAttachmentById.mockReset();
     mockIssueService.getByIdentifier.mockReset();
     mockIssueService.getById.mockReset();
+    mockIssueService.getByIdForUpdate.mockReset();
     mockIssueService.getComment.mockReset();
     mockIssueService.getDependencyReadiness.mockReset();
     mockIssueService.getDependencyReadiness.mockResolvedValue({
@@ -558,6 +560,7 @@ describe("agent issue mutation checkout ownership", () => {
     mockAgentService.resolveByReference.mockResolvedValue({ ambiguous: false, agent: null });
     mockCompanyService.getById.mockResolvedValue({ id: companyId, issuePrefix: "PAP" });
     mockIssueService.getById.mockResolvedValue(makeIssue());
+    mockIssueService.getByIdForUpdate.mockImplementation(async () => mockIssueService.getById());
     mockIssueService.getByIdentifier.mockResolvedValue(null);
     mockIssueService.getComment.mockResolvedValue({
       id: "comment-1",
@@ -976,6 +979,7 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).toHaveBeenCalledWith(
       issueId,
       expect.objectContaining({ status: "done" }),
+      expect.anything(),
     );
   });
 
