@@ -24,6 +24,13 @@ const manifest: PaperclipPluginManifestV1 = {
       description:
         "Provisions Daytona sandboxes with configurable image or snapshot selection, startup timeouts, and lease reuse.",
       supportsReusableLeases: true,
+      // Daytona keeps a persistent session and tails its callback log form, so it
+      // emits incremental session output while the command runs. Declare the
+      // opt-in capability so the host selects the session-output streaming path.
+      // A generic one-shot provider that omits this key keeps the poll path.
+      sandboxCapabilities: {
+        incrementalSessionOutput: true,
+      },
       supportsInteractiveSetup: true,
       interactiveSetupConnectionTypes: ["ssh"],
       supportsTemplateCapture: true,
@@ -124,12 +131,6 @@ const manifest: PaperclipPluginManifestV1 = {
             type: "boolean",
             description:
               "Whether to stop and later resume the sandbox across runs instead of deleting it on release.",
-            default: false,
-          },
-          useLogStream: {
-            type: "boolean",
-            description:
-              "When true, a session command streams stdout and stderr from the Daytona callback log form and reads the exit code one time after the stream ends. When false, the command polls the exit code and reads the logs one time. Defaults to false.",
             default: false,
           },
         },
