@@ -10,6 +10,7 @@ import { APP_TABS } from "./app-tabs";
 
 const getConnectionMock = vi.hoisted(() => vi.fn());
 const getConnectionInstallsMock = vi.hoisted(() => vi.fn());
+const listApplicationsMock = vi.hoisted(() => vi.fn());
 const listGalleryMock = vi.hoisted(() => vi.fn());
 const listConnectionsMock = vi.hoisted(() => vi.fn());
 const listCatalogMock = vi.hoisted(() => vi.fn());
@@ -40,6 +41,7 @@ vi.mock("@/api/tools", () => ({
   toolsApi: {
     getConnection: (connectionId: string) => getConnectionMock(connectionId),
     getConnectionInstalls: (connectionId: string) => getConnectionInstallsMock(connectionId),
+    listApplications: (companyId: string) => listApplicationsMock(companyId),
     listGallery: (companyId: string) => listGalleryMock(companyId),
     listConnections: (companyId: string) => listConnectionsMock(companyId),
     listCatalog: (connectionId: string) => listCatalogMock(connectionId),
@@ -74,6 +76,27 @@ vi.mock("@/api/tools", () => ({
       startPersonalAuthorizationMock(companyId, connectionId, input),
     reconnectConnection: vi.fn(),
   },
+}));
+
+vi.mock("./AppLogo", () => ({
+  AppLogo: ({
+    name,
+    brandKey,
+    logoUrl,
+    allowRemoteFallback,
+  }: {
+    name: string;
+    brandKey?: string | null;
+    logoUrl?: string | null;
+    allowRemoteFallback?: boolean;
+  }) => (
+    <span
+      data-app-logo={name}
+      data-brand-key={brandKey ?? ""}
+      data-logo-url={logoUrl ?? ""}
+      data-allow-remote-fallback={allowRemoteFallback ? "true" : "false"}
+    />
+  ),
 }));
 
 vi.mock("@/api/access", () => ({
@@ -267,6 +290,9 @@ describe("AppDetail", () => {
     mockSearchParams.value = new URLSearchParams();
     getConnectionMock.mockResolvedValue(connection());
     getConnectionInstallsMock.mockResolvedValue({ connectionId: "conn-1", installs: [] });
+    listApplicationsMock.mockResolvedValue({
+      applications: [{ id: "app-1", applicationKey: "github", name: "GitHub", status: "active" }],
+    });
     listConnectionsMock.mockResolvedValue({ connections: [] });
     listConnectionGrantsMock.mockResolvedValue({
       connection: { id: "conn-1", uid: "conn-1" },
@@ -406,6 +432,32 @@ describe("AppDetail", () => {
     await flushReact();
 
     expect(updateConnectionMock).toHaveBeenCalledWith("conn-1", { enabled: false });
+  });
+
+  it("allows the gallery logo fallback after application identity lookup fails", async () => {
+    listApplicationsMock.mockRejectedValueOnce(new Error("Application lookup unavailable"));
+
+    await renderAppDetail();
+
+    expect(container.querySelector("[data-app-logo]")?.getAttribute("data-allow-remote-fallback")).toBe("true");
+  });
+
+  it("keeps a customized connection logo after application identity lookup fails", async () => {
+    getConnectionMock.mockResolvedValue(connection({
+      name: "Dotta's source control",
+      config: {
+        url: "https://github.example/mcp",
+        sourceTemplateKey: "github",
+      },
+    }));
+    listApplicationsMock.mockRejectedValueOnce(new Error("Application lookup unavailable"));
+
+    await renderAppDetail();
+
+    const logo = container.querySelector("[data-app-logo]");
+    expect(logo?.getAttribute("data-brand-key")).toBe("github");
+    expect(logo?.getAttribute("data-logo-url")).toBe("https://example.com/github.png");
+    expect(logo?.getAttribute("data-allow-remote-fallback")).toBe("true");
   });
 
   it("keeps the unverified-server marker on URL-only connection details", async () => {
