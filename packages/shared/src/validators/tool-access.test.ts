@@ -72,6 +72,17 @@ describe("tool access validators", () => {
     }).success).toBe(false);
   });
 
+  it("accepts only UUID connection request links during app setup", () => {
+    expect(connectToolAppSchema.safeParse({
+      galleryKey: "posthog",
+      interactionId: "11111111-1111-4111-8111-111111111111",
+    }).success).toBe(true);
+    expect(connectToolAppSchema.safeParse({
+      galleryKey: "posthog",
+      interactionId: "not-an-interaction",
+    }).success).toBe(false);
+  });
+
   // PAP-17087: the guided generic flow and paste-config both reach the connect
   // endpoint, so unsafe header names/values are rejected once at this boundary.
   it("accepts generic advanced-authentication input for a pasted URL", () => {
@@ -91,6 +102,11 @@ describe("tool access validators", () => {
       oauthClient: { clientId: "client-abc", clientSecret: "shhh" },
     });
     expect(manualClient.success).toBe(true);
+
+    expect(connectToolAppSchema.safeParse({
+      galleryKey: "asana",
+      oauthClient: { clientId: "customer-client", clientSecret: "customer-secret" },
+    }).success).toBe(true);
   });
 
   it("rejects header credentials Paperclip refuses to send", () => {
@@ -123,7 +139,7 @@ describe("tool access validators", () => {
     }
   });
 
-  it("keeps generic advanced authentication off the curated gallery path", () => {
+  it("keeps generic auth-mode selection off curated apps while allowing owned OAuth clients", () => {
     expect(connectToolAppSchema.safeParse({
       galleryKey: "posthog",
       authMode: "bearer",
@@ -131,7 +147,7 @@ describe("tool access validators", () => {
     expect(connectToolAppSchema.safeParse({
       galleryKey: "posthog",
       oauthClient: { clientId: "client-abc" },
-    }).success).toBe(false);
+    }).success).toBe(true);
   });
 
   it("accepts secret references for connection credentials", () => {

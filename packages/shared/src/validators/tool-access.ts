@@ -364,6 +364,8 @@ export const connectToolAppSchema = z.object({
   credentialValues: z.record(z.string().trim().min(1).max(200), z.string().min(1)).optional(),
   configValues: z.record(z.string().trim().min(1).max(200), z.unknown()).optional(),
   applicationId: z.string().guid().optional(),
+  /** Pending connection request this setup should resolve after authorization. */
+  interactionId: z.string().uuid().optional(),
   authMode: genericMcpAuthModeSchema.optional(),
   oauthClient: genericMcpOAuthClientSchema.optional(),
   /**
@@ -381,13 +383,6 @@ export const connectToolAppSchema = z.object({
       code: z.ZodIssueCode.custom,
       path: ["authMode"],
       message: "Authentication mode selection applies to a pasted URL, not a gallery app",
-    });
-  }
-  if (value.oauthClient && value.galleryKey) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["oauthClient"],
-      message: "Preregistered OAuth client credentials apply to a pasted URL, not a gallery app",
     });
   }
 }).refine(
@@ -414,6 +409,24 @@ export const finishToolAppSchema = z.object({
 });
 
 export type FinishToolApp = z.infer<typeof finishToolAppSchema>;
+
+/**
+ * Legacy promotion boundary retained for connection-intent flows. Interactive
+ * app setup chooses identity before OAuth and writes the token directly to that
+ * credential scope.
+ */
+export const finalizeOAuthAccessSchema = z.object({
+  grantKind: connectionGrantKindSchema,
+}).strict();
+
+export type FinalizeOAuthAccess = z.infer<typeof finalizeOAuthAccessSchema>;
+
+export const startToolOAuthSchema = z.object({
+  asCurrentUser: z.boolean().optional(),
+  interactionId: z.string().uuid().optional(),
+}).strict().default({});
+
+export type StartToolOAuth = z.infer<typeof startToolOAuthSchema>;
 
 export const upsertToolCatalogEntrySchema = z.object({
   applicationId: z.string().guid(),
