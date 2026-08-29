@@ -4,7 +4,7 @@ import { listenOnFetchAllowedPort } from "./fetch-allowed-port";
 
 // prosumer MCP flow — QA harness for the prosumer Connect-an-app flow on top of the
 // tool-access foundation. Covers the M-series happy path (gallery + key paste
-// → choose actions → who-can-use → success), the expired-key reconnect path,
+// → choose access → install → success), the expired-key reconnect path,
 // the Needs-attention surface, and a regression check that /apps/advanced
 // still mounts.
 //
@@ -32,8 +32,7 @@ async function newCompany(request: APIRequestContext, label: string): Promise<Se
 // ---- Mock MCP HTTP fixture --------------------------------------------------
 // Minimal MCP JSON-RPC server. /catalog refresh hits this with method
 // `tools/list`; the gateway calls it with `tools/call`. We expose one
-// read-only and one write tool so the wizard can show the Ask-first toggle
-// for write actions.
+// read-only and one write tool so setup can apply risk-based ask-first defaults.
 
 type MockMcpServer = { url: string; close: () => Promise<void>; captures: Array<{ method: string; params: unknown }> };
 
@@ -145,7 +144,7 @@ test.describe.serial("prosumer MCP flow prosumer MCP flow", () => {
     await mock?.close();
   });
 
-  test("Connect wizard happy path: link mode → access → install → success", async ({ page, request }) => {
+  test("Connect wizard happy path: link mode → success", async ({ page, request }) => {
     const seed = await newCompany(request, "connect");
 
     await gotoConnect(page, seed.prefix);
@@ -159,7 +158,7 @@ test.describe.serial("prosumer MCP flow prosumer MCP flow", () => {
     await linkInput.fill(mock.url);
     await page.getByRole("button", { name: "Continue" }).click();
 
-    // LinkKey step shows the guided MCP connection heading. Mock doesn't
+    // LinkKey step keeps the BYO connection heading. Mock doesn't
     // require a key — leave the default "No" answer.
     await expect(page.getByRole("heading", { name: "Connect your own MCP server" })).toBeVisible({ timeout: 15_000 });
     await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-02-key-step.png`, fullPage: true });
@@ -167,19 +166,10 @@ test.describe.serial("prosumer MCP flow prosumer MCP flow", () => {
     // Submit (button label is "Check link").
     await page.getByRole("button", { name: /Check link/i }).click();
 
-    // Who-can-use step — defaults to All agents.
-    await expect(page.getByRole("heading", { name: /Who can use/i })).toBeVisible({ timeout: 30_000 });
-    await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-03-who-step.png`, fullPage: true });
-
-    await page.getByRole("button", { name: /Continue to install/i }).click();
-    await expect(page.getByRole("heading", { name: /Install .* tools\?/i })).toBeVisible({ timeout: 15_000 });
-    await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-04-install-step.png`, fullPage: true });
-
-    // Finish.
-    await page.getByRole("button", { name: /Finish setup/i }).click();
-
-    // Success step.
-    await expect(page.getByText(/ready|all set|done/i).first()).toBeVisible({ timeout: 20_000 });
+    // Link-mode setup uses the safe organization/any-agent defaults, enables
+    // discovered actions, and applies risk-based ask-first defaults in one
+    // commit. Classification remains covered by the server suite.
+    await expect(page.getByRole("heading", { name: /is ready\.$/i })).toBeVisible({ timeout: 30_000 });
     await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-05-success.png`, fullPage: true });
 
     // Verify the mock saw a tools/list call from the catalog refresh.
