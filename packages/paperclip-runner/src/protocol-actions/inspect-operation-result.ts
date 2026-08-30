@@ -94,8 +94,7 @@ export const inspectOperationResultAction = {
             "type": "boolean"
           },
           "operationId": {
-            "type": "string",
-            "minLength": 1
+            "const": "inspect_operation_result"
           },
           "operationResultId": {
             "type": "string",
