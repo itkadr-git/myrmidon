@@ -381,15 +381,20 @@ export const runnerTasks: readonly RunnerTaskFixture[] = [
         "Complete this task in a single run.",
         `The exact marker also appears unescaped in the task title: PAPERCLIP_E2E_OK_${nonce}`,
         `Your final visible task-thread response must be exactly this marker: PAPERCLIP_E2E_OK_${nonce}`,
-        `In a native runner, first emit that exact marker as the complete user-facing final response, then use paperclip_finish with the same marker as its summary and an objective-satisfied claim for the supplied contract revision.`,
-        `In a legacy runner, post a task comment containing exactly that marker and mark the task Done through the public API.`,
+        `In a native runner, first call paperclip_finish with that marker as its summary and an objective-satisfied claim for the supplied contract revision. After it succeeds, emit that exact marker once as the complete user-facing final response and do not call another tool.`,
+        `In a legacy runner, make exactly one public-API write containing the marker: PATCH /api/issues/$PAPERCLIP_TASK_ID with {"status":"done","comment":"PAPERCLIP_E2E_OK_${nonce}"}. Do not POST to /comments, and do not include the marker in any other write.`,
         "The visible task-thread response is asserted; hidden reasoning or provider terminal output alone does not count.",
         "Use underscore characters exactly as shown and do not insert backslashes.",
         "Do not create files, ask questions, start additional tasks, or include any credentials.",
       ].join("\n"),
     buildMatchers(nonce, execution) {
       return [
-        { kind: "message_contains", expected: `PAPERCLIP_E2E_OK_${nonce}` },
+        { kind: "message_exact", expected: `PAPERCLIP_E2E_OK_${nonce}` },
+        {
+          kind: "message_occurrences",
+          expected: `PAPERCLIP_E2E_OK_${nonce}`,
+          count: 1,
+        },
         {
           kind: "issue_status",
           expected: execution.task.expectedTerminalState.issue,
@@ -449,8 +454,13 @@ export const runnerTasks: readonly RunnerTaskFixture[] = [
     buildMatchers(nonce, execution) {
       return [
         {
-          kind: "message_contains",
+          kind: "message_exact",
           expected: `PAPERCLIP_E2E_PLAN_DONE_${nonce}`,
+        },
+        {
+          kind: "message_occurrences",
+          expected: `PAPERCLIP_E2E_PLAN_DONE_${nonce}`,
+          count: 1,
         },
         {
           kind: "issue_status",
@@ -485,17 +495,22 @@ export const runnerTasks: readonly RunnerTaskFixture[] = [
     buildPrompt: (nonce) =>
       [
         "Answer this question directly in Ask mode: what is seven plus five?",
-        `Your final visible task-thread answer must contain this complete marker, including its final suffix: E2E_ASK_12_${nonce}.`,
+        `Your final visible task-thread answer must be exactly this complete marker, including its final suffix: E2E_ASK_12_${nonce}.`,
         "Do not create or modify files, do not create a plan or additional work, and do not expose credentials.",
         "After posting the direct answer, mark this task Done.",
-        `In a native runner, emit the answer and finish with E2E_ASK_12_${nonce} as the summary.`,
-        `In a legacy runner, post a task comment containing E2E_ASK_12_${nonce} and mark the task Done through the public API.`,
+        `In a native runner, first call paperclip_finish with E2E_ASK_12_${nonce} as the summary. After it succeeds, emit exactly E2E_ASK_12_${nonce} as the complete final response and do not call another tool.`,
+        `In a legacy runner, post exactly E2E_ASK_12_${nonce} as the task comment body and mark the task Done through the public API.`,
       ].join("\n"),
     buildMatchers(nonce, execution) {
       return [
         {
-          kind: "message_contains",
+          kind: "message_exact",
           expected: `E2E_ASK_12_${nonce}`,
+        },
+        {
+          kind: "message_occurrences",
+          expected: `E2E_ASK_12_${nonce}`,
+          count: 1,
         },
         {
           kind: "issue_status",
@@ -520,7 +535,8 @@ function terminalMatchers(
   execution: MatrixExecution,
 ): readonly ReturnType<RunnerTaskFixture["buildMatchers"]>[number][] {
   return [
-    { kind: "message_contains", expected: nonceMarker },
+    { kind: "message_exact", expected: nonceMarker },
+    { kind: "message_occurrences", expected: nonceMarker, count: 1 },
     {
       kind: "issue_status",
       expected: execution.task.expectedTerminalState.issue,
@@ -536,6 +552,71 @@ function breadthMarker(phase: "H" | "Q_C" | "P_READY" | "P_OK", nonce: string) {
   // fragments observed across ranked models while retaining the attempt nonce.
   return `PC_${phase}_${nonce}`;
 }
+
+const structuredQuestionResumeTask = {
+  id: "structured-question-resume",
+  label: "Structured question, answer, resume",
+  groups: [],
+  workMode: "standard",
+  flow: "question_resume_completion",
+  expectedRunCount: 2,
+  attemptTimeoutMs: { local: 12 * 60_000, daytona: 12 * 60_000 },
+  expectedTerminalState: { issue: "done", run: "succeeded" },
+  buildTitle: (nonce) => `Runner E2E structured question ${nonce}`,
+  buildVisibleMarker: (nonce) => `PAPERCLIP_E2E_QUESTION_DONE_${nonce}`,
+  buildQuestionAnswer: (nonce) => ({
+    optionLabel: "Cobalt",
+    expectedMarker: `PAPERCLIP_E2E_QUESTION_DONE_${nonce}`,
+  }),
+  buildPrompt: (nonce) =>
+    [
+      "Ask the user one structured question before completing this task.",
+      "The question must be required, single-select, and offer Cobalt and Amber. Do not publish a final answer or mark the task Done while it is pending.",
+      `In a native runner, call request_human_input exactly once with idempotencyKey \`question-${nonce}\`, interactionKind \`questions\`, title \`Verification word\`, prompt \`Choose the verification word\`, continuationPolicy \`wake_assignee\`, and payload {version:1,questions:[{id:\`verification-word\`,prompt:\`Choose the verification word.\`,selectionMode:\`single\`,required:true,options:[{id:\`cobalt\`,label:\`Cobalt\`},{id:\`amber\`,label:\`Amber\`}]}]}.`,
+      "In a legacy runner, POST /api/issues/$PAPERCLIP_TASK_ID/interactions with {kind:`ask_user_questions`,continuationPolicy:`wake_assignee`,payload:{version:1,questions:[{id:`verification-word`,prompt:`Choose the verification word.`,selectionMode:`single`,required:true,options:[{id:`cobalt`,label:`Cobalt`},{id:`amber`,label:`Amber`}]}]}} using Authorization and X-Paperclip-Run-Id, then move the issue to `in_review`.",
+      `After the answer arrives, if it is Cobalt, publish exactly PAPERCLIP_E2E_QUESTION_DONE_${nonce} once as the complete visible response and mark the task Done.`,
+      `In a native runner, first call paperclip_finish with PAPERCLIP_E2E_QUESTION_DONE_${nonce} as its summary, then emit that exact final response and do not call another tool.`,
+      `In a legacy runner, post exactly PAPERCLIP_E2E_QUESTION_DONE_${nonce} as the task comment body and mark the task Done through the public API.`,
+      "Do not create files, plans, child tasks, or unrelated work, and do not expose credentials.",
+    ].join("\n"),
+  buildMatchers(nonce, execution) {
+    return [
+      {
+        kind: "message_exact",
+        expected: `PAPERCLIP_E2E_QUESTION_DONE_${nonce}`,
+      },
+      {
+        kind: "message_occurrences",
+        expected: `PAPERCLIP_E2E_QUESTION_DONE_${nonce}`,
+        count: 1,
+      },
+      {
+        kind: "issue_status",
+        expected: execution.task.expectedTerminalState.issue,
+      },
+      {
+        kind: "run_status",
+        expected: execution.task.expectedTerminalState.run,
+      },
+      {
+        kind: "runtime_mode",
+        expected: execution.profile.expectedRuntimeMode,
+      },
+      { kind: "environment", expected: execution.environment.id },
+    ];
+  },
+} satisfies RunnerTaskFixture;
+
+export const localIntegrityTasks: readonly RunnerTaskFixture[] = [
+  structuredQuestionResumeTask,
+  {
+    ...structuredQuestionResumeTask,
+    id: "structured-question-restart-resume",
+    label: "Structured question, server restart, answer, resume",
+    restartServerBeforeQuestionAnswer: true,
+    buildTitle: (nonce) => `Runner E2E restart question ${nonce}`,
+  },
+] as const;
 
 export const openRouterBreadthTasks: readonly RunnerTaskFixture[] = [
   {
@@ -577,7 +658,7 @@ export const openRouterBreadthTasks: readonly RunnerTaskFixture[] = [
     buildPrompt: (nonce) =>
       [
         "Ask the user one structured question before completing this task.",
-        "Call request_human_input exactly once with interactionKind `questions`, title `Verification word`, prompt `Choose the verification word`, continuationPolicy `wake_assignee`, and payload {version:1,questions:[{id:`verification-word`,prompt:`Choose the verification word.`,selectionMode:`single`,required:true,options:[{id:`cobalt`,label:`Cobalt`},{id:`amber`,label:`Amber`}]}]}.",
+        `Call request_human_input exactly once with idempotencyKey \`question-${nonce}\`, interactionKind \`questions\`, title \`Verification word\`, prompt \`Choose the verification word\`, continuationPolicy \`wake_assignee\`, and payload {version:1,questions:[{id:\`verification-word\`,prompt:\`Choose the verification word.\`,selectionMode:\`single\`,required:true,options:[{id:\`cobalt\`,label:\`Cobalt\`},{id:\`amber\`,label:\`Amber\`}]}]}.`,
         "Do not call paperclip_finish while the question is pending.",
         `After the answer arrives, if it is Cobalt, return ${breadthMarker("Q_C", nonce)} visibly and call paperclip_finish with that marker as the summary.`,
         "Do not create files, plans, or additional work.",
@@ -631,6 +712,17 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     expectedMatrixSize: 42,
   },
   {
+    id: "local-session-integrity",
+    label: "Local Session Integrity",
+    description:
+      "Structured interaction and continuation qualification for every supported local profile.",
+    groups: ["core"],
+    profiles: runnerProfiles,
+    environments: [localEnvironment],
+    tasks: localIntegrityTasks,
+    expectedMatrixSize: 14,
+  },
+  {
     id: "openrouter-model-breadth",
     label: "OpenRouter Model Breadth",
     description:
@@ -664,6 +756,8 @@ export function suiteDefinitionHash(suite: RunnerSuiteFixture) {
           id: task.id,
           flow: task.flow,
           expectedRunCount: task.expectedRunCount,
+          restartServerBeforeQuestionAnswer:
+            task.restartServerBeforeQuestionAnswer ?? false,
         })),
         metadata: suite.definitionMetadata ?? null,
       }),
@@ -744,7 +838,11 @@ function assertNoRawSecretValues(value: unknown, label: string) {
 
 export function validateRunnerCatalog(): MatrixExecution[] {
   const allProfiles = [...runnerProfiles, ...openRouterBreadthProfiles];
-  const allTasks = [...runnerTasks, ...openRouterBreadthTasks];
+  const allTasks = [
+    ...runnerTasks,
+    ...localIntegrityTasks,
+    ...openRouterBreadthTasks,
+  ];
   for (const [label, values] of [
     ["suite", runnerSuites],
     ["profile", allProfiles],
@@ -843,8 +941,8 @@ export function validateRunnerCatalog(): MatrixExecution[] {
       );
     }
   }
-  if (matrix.length !== 57)
-    throw new Error(`Expected 57 runner executions; received ${matrix.length}`);
+  if (matrix.length !== 71)
+    throw new Error(`Expected 71 runner executions; received ${matrix.length}`);
   return matrix;
 }
 
