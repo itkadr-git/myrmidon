@@ -375,6 +375,21 @@ export type CapabilityLiveTurnEvent =
       seq: number;
       at: string;
       turnId: string | null;
+      kind: "usage";
+      /** Current provider-reported usage for the active turn. */
+      usage: {
+        providerRequests: number;
+        inputTokens: number;
+        outputTokens: number;
+        cachedInputTokens: number;
+        reasoningTokens: number;
+        costNanodollars: number;
+      };
+    }
+  | {
+      seq: number;
+      at: string;
+      turnId: string | null;
       kind: "terminal";
       status: CapabilityLiveTurnResult["status"];
       assistantText: string;
@@ -389,6 +404,17 @@ export type CapabilityLiveTurnEvent =
 
 export type CapabilityLiveTurnListener = (event: CapabilityLiveTurnEvent) => void;
 
+type CapabilityLiveUsageMeasurement = Extract<
+  CapabilityLiveTurnEvent,
+  { kind: "usage" }
+>["usage"];
+
+interface CapabilityLiveTurnUsageObservations {
+  reported: { usage: CapabilityLiveUsageMeasurement; exactDelta: boolean } | null;
+  raw: CapabilityLiveUsageMeasurement | null;
+  terminal: CapabilityLiveUsageMeasurement | null;
+}
+
 /** Distributive `Omit`, so each event variant keeps its own discriminated shape. */
 type CapabilityLiveTurnEventInput = CapabilityLiveTurnEvent extends infer Variant
   ? Variant extends CapabilityLiveTurnEvent
@@ -398,6 +424,8 @@ type CapabilityLiveTurnEventInput = CapabilityLiveTurnEvent extends infer Varian
 
 /** Bound on interim events per turn; terminal and error always get through. */
 export const CAPABILITY_LIVE_TURN_EVENT_LIMIT = 4_000;
+/** Separate bound so provider usage cannot be starved by delta/activity traffic. */
+const CAPABILITY_LIVE_USAGE_EVENT_LIMIT = 512;
 
 export interface CapabilityInteractionResolution {
   interactionId: string;
@@ -1102,14 +1130,8 @@ export class CapabilityLiveSession {
   readonly #listeners = new Set<CapabilityLiveTurnListener>();
   #eventSeq = 0;
   #turnEventCount = 0;
-  readonly #rawUsageByTurn = new Map<string, {
-    providerRequests: number;
-    inputTokens: number;
-    outputTokens: number;
-    cachedInputTokens: number;
-    reasoningTokens: number;
-    costNanodollars: number;
-  }>();
+  #turnUsageEventCount = 0;
+  readonly #usageObservationsByTurn = new Map<string, CapabilityLiveTurnUsageObservations>();
   #latestCumulativeUsage: Record<string, unknown> = {};
   #idleTimer: ReturnType<typeof setTimeout> | null = null;
   readonly #loadedOperationIds = new Set<string>();
@@ -1228,8 +1250,10 @@ export class CapabilityLiveSession {
   }
 
   #emit(event: CapabilityLiveTurnEventInput): void {
-    const bounded = event.kind === "delta" || event.kind === "activity";
-    if (bounded) {
+    if (event.kind === "usage") {
+      if (this.#turnUsageEventCount >= CAPABILITY_LIVE_USAGE_EVENT_LIMIT) return;
+      this.#turnUsageEventCount += 1;
+    } else if (event.kind === "delta" || event.kind === "activity") {
       if (this.#turnEventCount >= CAPABILITY_LIVE_TURN_EVENT_LIMIT) return;
       this.#turnEventCount += 1;
     }
@@ -1417,6 +1441,7 @@ export class CapabilityLiveSession {
     this.#status = "running";
     this.#clearIdleTimer();
     this.#turnEventCount = 0;
+    this.#turnUsageEventCount = 0;
     // Start the baseline before admitting provider work, but do not make turn
     // interruption wait for a potentially large workspace walk. The provider
     // turn id is bound first; the terminal path waits for this baseline before
@@ -1534,16 +1559,27 @@ export class CapabilityLiveSession {
 
   async #captureTurnUsage(turnId: string, allowEmpty = false): Promise<void> {
     if (this.#transport === null) throw new Error("capability_live_usage_transport_missing");
-    // Codex can emit rawResponse/completed immediately after turn/completed.
-    // Give the notification pump a short bounded window before falling back to
-    // cumulative thread usage, otherwise a fast second turn can be mislabeled
-    // as missing accounting even though its receipt is already in flight.
-    const usageDeadline = Date.now() + 500;
-    while (!this.#rawUsageByTurn.has(turnId) && Date.now() < usageDeadline) {
-      await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+    const initial = this.#usageObservationsByTurn.get(turnId);
+    // An explicit whole-turn delta is already complete. Other providers can
+    // publish one or more rawResponse receipts after turn/completed, so retain
+    // the full bounded grace period instead of committing the first partial
+    // observation that happens to arrive.
+    if (initial?.reported?.exactDelta !== true) {
+      const usageDeadline = Date.now() + 500;
+      while (Date.now() < usageDeadline) {
+        await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+      }
     }
-    const captured = this.#rawUsageByTurn.get(turnId);
-    const read = captured === undefined ? await this.#transport.request("thread/read", {
+    const captured = this.#usageObservationsByTurn.get(turnId);
+    const reportedTokens = (captured?.reported?.usage.inputTokens ?? 0)
+      + (captured?.reported?.usage.outputTokens ?? 0);
+    const needsRead = captured === undefined || (
+      captured.reported?.exactDelta !== true
+      && captured.raw === null
+      && captured.terminal === null
+      && reportedTokens === 0
+    );
+    const read = needsRead ? await this.#transport.request("thread/read", {
       threadId: this.#providerThreadId,
       includeTurns: true,
     }) : {};
@@ -1552,7 +1588,13 @@ export class CapabilityLiveSession {
     const cumulativeNotification = Object.keys(this.#latestCumulativeUsage).length > 0
       ? this.#latestCumulativeUsage
       : undefined;
-    const total = record(captured ?? cumulativeNotification ?? usage.total ?? usage.totalTokenUsage ?? usage.total_token_usage);
+    const readTotal = usage.total ?? usage.totalTokenUsage ?? usage.total_token_usage;
+    // If the current turn produced no usable observation, thread/read is the
+    // freshest authority. A prior turn's cached notification is only a final
+    // compatibility fallback.
+    const total = record(needsRead
+      ? readTotal ?? cumulativeNotification
+      : cumulativeNotification ?? readTotal);
     const integer = (...names: string[]): number => {
       for (const name of names) {
         const value = total[name];
@@ -1561,39 +1603,60 @@ export class CapabilityLiveSession {
       return 0;
     };
     const cumulative = {
+      providerRequests: 1,
       inputTokens: integer("inputTokens", "input_tokens"),
       outputTokens: integer("outputTokens", "output_tokens"),
       cachedInputTokens: integer("cachedInputTokens", "cached_input_tokens"),
       reasoningTokens: integer("reasoningOutputTokens", "reasoningTokens", "reasoning_output_tokens"),
+      costNanodollars: 0,
     };
-    if (cumulative.inputTokens + cumulative.outputTokens === 0 && captured === undefined && !allowEmpty) {
+    const prior = reconcileCapabilityLiveUsage(this.snapshot());
+    const cumulativeFallback: CapabilityLiveUsageMeasurement = {
+      providerRequests: 1,
+      inputTokens: Math.max(0, cumulative.inputTokens - prior.inputTokens),
+      outputTokens: Math.max(0, cumulative.outputTokens - prior.outputTokens),
+      cachedInputTokens: Math.max(0, cumulative.cachedInputTokens - prior.cachedInputTokens),
+      reasoningTokens: Math.max(0, cumulative.reasoningTokens - prior.reasoningTokens),
+      costNanodollars: 0,
+    };
+    const reported = captured?.reported?.usage;
+    const usableReported = reported !== undefined
+      && reported.inputTokens + reported.outputTokens > 0
+      ? reported
+      : undefined;
+    const selected = captured?.reported?.exactDelta === true
+      ? reported
+      : captured?.raw ?? captured?.terminal ?? usableReported ?? cumulativeFallback;
+    const selectedWithReportedCost = selected === undefined
+      ? undefined
+      : {
+          ...selected,
+          costNanodollars: Math.max(selected.costNanodollars, reported?.costNanodollars ?? 0),
+        };
+    if (
+      (selectedWithReportedCost?.inputTokens ?? 0) + (selectedWithReportedCost?.outputTokens ?? 0) === 0
+      && !allowEmpty
+    ) {
       throw new Error(`capability_live_usage_missing:${JSON.stringify({
         captured: captured !== undefined,
+        needsRead,
         readKeys: Object.keys(read).sort(),
         threadKeys: Object.keys(thread).sort(),
         usageKeys: Object.keys(usage).sort(),
         totalKeys: Object.keys(total).sort(),
       })}`);
     }
-    const prior = reconcileCapabilityLiveUsage(this.snapshot());
-    const delta = captured === undefined
-      ? {
-          inputTokens: Math.max(0, cumulative.inputTokens - prior.inputTokens),
-          outputTokens: Math.max(0, cumulative.outputTokens - prior.outputTokens),
-          cachedInputTokens: Math.max(0, cumulative.cachedInputTokens - prior.cachedInputTokens),
-          reasoningTokens: Math.max(0, cumulative.reasoningTokens - prior.reasoningTokens),
-        }
-      : cumulative;
+    const finalUsage = selectedWithReportedCost ?? cumulativeFallback;
     await this.recordUsage({
       receiptId: `${turnId}:usage`,
       turnId,
       providerCalls: 1,
-      providerRequests: captured?.providerRequests ?? 1,
-      inputTokens: delta.inputTokens,
-      outputTokens: delta.outputTokens,
-      cachedInputTokens: delta.cachedInputTokens,
-      reasoningTokens: delta.reasoningTokens,
-      costNanodollars: captured?.costNanodollars ?? 0,
+      providerRequests: Math.max(1, finalUsage.providerRequests),
+      inputTokens: finalUsage.inputTokens,
+      outputTokens: finalUsage.outputTokens,
+      cachedInputTokens: finalUsage.cachedInputTokens,
+      reasoningTokens: finalUsage.reasoningTokens,
+      costNanodollars: finalUsage.costNanodollars,
     });
   }
 
@@ -1696,6 +1759,68 @@ export class CapabilityLiveSession {
     await this.#transport.request("turn/interrupt", {
       threadId: this.#providerThreadId,
       turnId,
+    });
+    await this.#persist();
+    return this.snapshot();
+  }
+
+  async increaseManagedSessionBudget(
+    maxSessionListCostUsd: number,
+  ): Promise<CapabilityLiveSessionSnapshot> {
+    if (
+      (this.#config.provider !== "claude_managed" &&
+        this.#config.provider !== "aws_agentcore") ||
+      this.#transport === null
+    ) {
+      throw new Error(
+        "remote session budget updates require a connected remote provider session",
+      );
+    }
+    if (!Number.isFinite(maxSessionListCostUsd) || maxSessionListCostUsd <= 0) {
+      throw new Error("managed session spend ceiling must be positive");
+    }
+    await this.#transport.request("session/budget/increase", {
+      maxSessionListCostUsd,
+    });
+    if (this.#config.managedProfile) {
+      this.#config.managedProfile.maxSessionListCostUsd = maxSessionListCostUsd;
+    }
+    if (this.#config.agentCoreProfile) {
+      this.#config.agentCoreProfile.maxEstimatedSessionCostUsd =
+        maxSessionListCostUsd;
+    }
+    this.#status = this.#activeTurnId === null ? "warm_idle" : "running";
+    this.#appendEvidence("session", this.#activeTurnId, {
+      action: "budget_increased",
+      maxSessionListCostUsd,
+    });
+    await this.#persist();
+    return this.snapshot();
+  }
+
+  async deleteManagedRemoteSession(): Promise<CapabilityLiveSessionSnapshot> {
+    if (
+      (this.#config.provider !== "claude_managed" &&
+        this.#config.provider !== "aws_agentcore") ||
+      this.#transport === null
+    ) {
+      throw new Error(
+        "remote session deletion requires a connected remote provider session",
+      );
+    }
+    if (this.#activeTurnId !== null) {
+      throw new Error(
+        "interrupt the active turn before deleting the remote session",
+      );
+    }
+    await this.#transport.request("session/destroy", {});
+    this.#providerSessionId = null;
+    this.#authority.active = false;
+    this.#status = "closed";
+    this.#appendEvidence("cleanup", null, {
+      reason: "remote session explicitly deleted",
+      remoteDeleted: true,
+      resumable: false,
     });
     await this.#persist();
     return this.snapshot();
@@ -2193,27 +2318,86 @@ export class CapabilityLiveSession {
         tokenUsage.total ?? tokenUsage.totalTokenUsage ?? tokenUsage.total_token_usage ?? tokenUsage,
       );
       const runDelta = record(tokenUsage.runDelta ?? params.runDelta);
-      if (turnId.length > 0 && Object.keys(runDelta).length > 0) {
-        const integer = (...names: string[]): number => {
+      if (turnId.length > 0) {
+        const runDeltaAvailable =
+          (params.runDeltaAvailable === true ||
+            tokenUsage.runDeltaAvailable === true) &&
+          Object.keys(runDelta).length > 0;
+        const committed = reconcileCapabilityLiveUsage(this.snapshot());
+        const integer = (source: Record<string, unknown>, ...names: string[]): number => {
           for (const name of names) {
-            const value = runDelta[name];
+            const value = source[name];
             if (Number.isSafeInteger(value) && Number(value) >= 0) return Number(value);
           }
           return 0;
         };
-        const providerCostUsd = typeof runDelta.providerCostUsd === "number"
-          && Number.isFinite(runDelta.providerCostUsd)
-          && runDelta.providerCostUsd >= 0
-          ? runDelta.providerCostUsd
-          : 0;
-        this.#rawUsageByTurn.set(turnId, {
-          providerRequests: integer("requests", "providerRequests"),
-          inputTokens: integer("inputTokens", "input_tokens"),
-          outputTokens: integer("outputTokens", "output_tokens"),
-          cachedInputTokens: integer("cacheReadTokens", "cachedInputTokens", "cache_read_input_tokens"),
-          reasoningTokens: integer("reasoningTokens", "reasoning_tokens"),
-          costNanodollars: Math.round(providerCostUsd * 1_000_000_000),
+        const costNanodollars = (source: Record<string, unknown>): number => {
+          const providerCostUsd = source.providerCostUsd;
+          return typeof providerCostUsd === "number"
+            && Number.isFinite(providerCostUsd)
+            && providerCostUsd >= 0
+            ? Math.round(providerCostUsd * 1_000_000_000)
+            : 0;
+        };
+        const measurement = (source: Record<string, unknown>): CapabilityLiveUsageMeasurement => ({
+          providerRequests: integer(source, "requests", "providerRequests"),
+          inputTokens: integer(source, "inputTokens", "input_tokens"),
+          outputTokens: integer(source, "outputTokens", "output_tokens"),
+          cachedInputTokens: integer(
+            source,
+            "cacheReadTokens",
+            "cachedInputTokens",
+            "cached_input_tokens",
+            "cache_read_input_tokens",
+          ),
+          reasoningTokens: integer(
+            source,
+            "reasoningOutputTokens",
+            "reasoningTokens",
+            "reasoning_tokens",
+            "reasoning_output_tokens",
+          ),
+          costNanodollars: costNanodollars(source),
         });
+        const cumulativeMeasurement = measurement(this.#latestCumulativeUsage);
+        const cumulativeDelta: CapabilityLiveUsageMeasurement = {
+          providerRequests: Math.max(0, cumulativeMeasurement.providerRequests - committed.providerRequests),
+          inputTokens: Math.max(0, cumulativeMeasurement.inputTokens - committed.inputTokens),
+          outputTokens: Math.max(0, cumulativeMeasurement.outputTokens - committed.outputTokens),
+          cachedInputTokens: Math.max(0, cumulativeMeasurement.cachedInputTokens - committed.cachedInputTokens),
+          reasoningTokens: Math.max(0, cumulativeMeasurement.reasoningTokens - committed.reasoningTokens),
+          costNanodollars: Math.max(0, cumulativeMeasurement.costNanodollars - committed.costNanodollars),
+        };
+        const explicitDelta = measurement(runDelta);
+        const usage: CapabilityLiveUsageMeasurement = {
+          providerRequests: Math.max(
+            1,
+            runDeltaAvailable ? explicitDelta.providerRequests : 0,
+            cumulativeDelta.providerRequests,
+          ),
+          inputTokens: runDeltaAvailable ? explicitDelta.inputTokens : cumulativeDelta.inputTokens,
+          outputTokens: runDeltaAvailable ? explicitDelta.outputTokens : cumulativeDelta.outputTokens,
+          cachedInputTokens: runDeltaAvailable
+            ? explicitDelta.cachedInputTokens
+            : cumulativeDelta.cachedInputTokens,
+          reasoningTokens: runDeltaAvailable
+            ? explicitDelta.reasoningTokens
+            : cumulativeDelta.reasoningTokens,
+          costNanodollars: Math.max(
+            runDeltaAvailable ? explicitDelta.costNanodollars : 0,
+            cumulativeDelta.costNanodollars,
+          ),
+        };
+        const observations = this.#usageObservationsByTurn.get(turnId) ?? {
+          reported: null,
+          raw: null,
+          terminal: null,
+        };
+        this.#usageObservationsByTurn.set(turnId, {
+          ...observations,
+          reported: { usage, exactDelta: runDeltaAvailable },
+        });
+        this.#emit({ turnId, kind: "usage", usage });
       }
     }
     this.#appendEvidence("provider_event", turnId || null, {
@@ -2227,27 +2411,37 @@ export class CapabilityLiveSession {
       // the unambiguous owner of that usage receipt.
       const usageTurnId = turnId || this.#activeTurnId || this.#terminalTurns.at(-1)?.turnId || "";
       if (usageTurnId.length > 0 && Object.keys(rawUsage).length > 0) {
-        const previous = this.#rawUsageByTurn.get(usageTurnId);
+        const observations = this.#usageObservationsByTurn.get(usageTurnId) ?? {
+          reported: null,
+          raw: null,
+          terminal: null,
+        };
         const value = (name: string): number => Number.isSafeInteger(rawUsage[name]) && Number(rawUsage[name]) >= 0 ? Number(rawUsage[name]) : 0;
         if (notification.method === "rawResponse/completed") {
-          const base = previous ?? { providerRequests: 0, inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, reasoningTokens: 0, costNanodollars: 0 };
-          this.#rawUsageByTurn.set(usageTurnId, {
-            providerRequests: base.providerRequests + 1,
-            inputTokens: base.inputTokens + value("inputTokens"),
-            outputTokens: base.outputTokens + value("outputTokens"),
-            cachedInputTokens: base.cachedInputTokens + value("cachedInputTokens"),
-            reasoningTokens: base.reasoningTokens + value("reasoningOutputTokens"),
-            costNanodollars: base.costNanodollars,
+          const base = observations.raw ?? { providerRequests: 0, inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, reasoningTokens: 0, costNanodollars: 0 };
+          this.#usageObservationsByTurn.set(usageTurnId, {
+            ...observations,
+            raw: {
+              providerRequests: base.providerRequests + 1,
+              inputTokens: base.inputTokens + value("inputTokens"),
+              outputTokens: base.outputTokens + value("outputTokens"),
+              cachedInputTokens: base.cachedInputTokens + value("cachedInputTokens"),
+              reasoningTokens: base.reasoningTokens + value("reasoningOutputTokens"),
+              costNanodollars: base.costNanodollars,
+            },
           });
-        } else if (previous === undefined) {
+        } else {
           // Some provider versions publish only a terminal per-turn receipt.
-          this.#rawUsageByTurn.set(usageTurnId, {
-            providerRequests: 1,
-            inputTokens: value("inputTokens"),
-            outputTokens: value("outputTokens"),
-            cachedInputTokens: value("cachedInputTokens"),
-            reasoningTokens: value("reasoningOutputTokens"),
-            costNanodollars: 0,
+          this.#usageObservationsByTurn.set(usageTurnId, {
+            ...observations,
+            terminal: {
+              providerRequests: 1,
+              inputTokens: value("inputTokens"),
+              outputTokens: value("outputTokens"),
+              cachedInputTokens: value("cachedInputTokens"),
+              reasoningTokens: value("reasoningOutputTokens"),
+              costNanodollars: 0,
+            },
           });
         }
       }

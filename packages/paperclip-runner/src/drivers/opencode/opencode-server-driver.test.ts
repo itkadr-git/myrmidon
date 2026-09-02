@@ -1,7 +1,7 @@
 import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
 
 import {
   NATIVE_RUNTIME_ASSET_SCHEMA,
@@ -71,6 +71,10 @@ afterEach(async () => {
   }));
 });
 
+afterAll(async () => {
+  await chmod(fixture, 0o644);
+});
+
 describe("OpenCodeServerDriver", () => {
   it("advertises within-turn plans as unsupported", async () => {
     const driver = new OpenCodeServerDriver({
@@ -124,9 +128,13 @@ describe("OpenCodeServerDriver", () => {
       providerPhase: "final_answer",
       text: "done [guide](guide.md)",
     });
-    expect(events.filter(
+    const usageEvents = events.filter(
       (event) => event.eventType === "item.completed" && event.payload.kind === "usage",
-    )).toHaveLength(1);
+    );
+    expect(usageEvents).toHaveLength(1);
+    expect(usageEvents[0]?.payload).toMatchObject({
+      usageMessageId: expect.any(String),
+    });
     expect(events.find((event) => event.eventType === "workspace.change.updated")?.payload)
       .toMatchObject({ schema: "paperclip.workspace.diff.v1", source: "harness_reported", totals: { files: 1 } });
     expect(events.find((event) => event.eventType === "workspace.diff.recorded")?.payload)
