@@ -5,10 +5,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-use paperclip_runner_core::durable::{Command, CommandExecutor, DurableRunnerConfig};
+use paperclip_runner_core::durable::{
+    AcpxLaunchProfile, Command, CommandExecutor, DurableRunnerConfig, OpenCodeLaunchProfile,
+    QualifiedLaunchArtifact,
+};
 use paperclip_runner_core::native_provider_backend::NativeProviderCommandExecutor;
 use paperclip_runner_core::provider_bridge::authorized_tool_catalog_digest;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 const CODEX_ACPX_DIGEST: &str =
     "sha256:94049b3e3c3aee87de62703786e4fa81d031d7bd979f99bdf516d84f28791a79";
@@ -41,6 +45,8 @@ fn config(state_dir: &Path) -> DurableRunnerConfig {
         item_id: "item-1".to_owned(),
         runner_version: "0.0.0".to_owned(),
         runner_digest: "sha256:test".to_owned(),
+        acpx_launch_profile: None,
+        opencode_launch_profile: None,
         max_outbox_bytes: 1024 * 1024,
         p0_reserve_bytes: 64 * 1024,
         max_frame_bytes: 1024 * 1024,
@@ -48,6 +54,66 @@ fn config(state_dir: &Path) -> DurableRunnerConfig {
         reconnect_grace: None,
         max_runtime: Duration::from_secs(60),
     }
+}
+
+fn acpx_config(state_dir: &Path, mode: &str) -> DurableRunnerConfig {
+    let mut config = config(state_dir);
+    let command = PathBuf::from(env!("CARGO_BIN_EXE_fake-acpx-sidecar"));
+    config.acpx_launch_profile = Some(AcpxLaunchProfile {
+        authority_digest: format!("sha256:{}", "d".repeat(64)),
+        command: command.clone(),
+        args: vec![
+            "--mode".to_owned(),
+            mode.to_owned(),
+            "--profile-digest".to_owned(),
+            CODEX_ACPX_DIGEST.to_owned(),
+        ],
+        artifacts: vec![QualifiedLaunchArtifact {
+            sha256: format!("sha256:{:x}", Sha256::digest(fs::read(&command).unwrap())),
+            path: command,
+        }],
+    });
+    config
+}
+
+fn qualified_artifact(path: PathBuf) -> QualifiedLaunchArtifact {
+    QualifiedLaunchArtifact {
+        sha256: format!("sha256:{:x}", Sha256::digest(fs::read(&path).unwrap())),
+        path,
+    }
+}
+
+fn opencode_config(state_dir: &Path) -> DurableRunnerConfig {
+    let command = state_dir.join("qualified-opencode-proxy-command");
+    let proxy_script = state_dir.join("qualified-opencode-proxy-script");
+    let executable = state_dir.join("qualified-opencode-executable");
+    fs::write(
+        &command,
+        "#!/bin/sh\nproxy=\"$1\"\nshift\nexec /bin/sh \"$proxy\" \"$@\"\n",
+    )
+    .unwrap();
+    fs::write(
+        &proxy_script,
+        format!(
+            "#!/bin/sh\nexec '{}' --state-file '{}' --call-log '{}'\n",
+            env!("CARGO_BIN_EXE_fake-codex-app-server"),
+            state_dir.join("fake-opencode-state.json").display(),
+            state_dir.join("fake-opencode-calls.log").display(),
+        ),
+    )
+    .unwrap();
+    fs::write(&executable, "qualified OpenCode test executable\n").unwrap();
+    #[cfg(unix)]
+    for path in [&command, &proxy_script, &executable] {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o500)).unwrap();
+    }
+    let mut config = config(state_dir);
+    config.opencode_launch_profile = Some(OpenCodeLaunchProfile {
+        command: qualified_artifact(command),
+        proxy_script: qualified_artifact(proxy_script),
+        executable: qualified_artifact(executable),
+    });
+    config
 }
 
 fn command(sequence: u64, command_type: &str, payload: Value) -> Command {
@@ -111,7 +177,7 @@ fn prepare_payload_with_mode(directory: &Path, agent: &str, mode: &str) -> Value
 #[test]
 fn preserves_acpx_semantic_disposition_in_the_run_terminal() {
     let directory = temporary_directory("acpx-blocked");
-    let config = config(&directory);
+    let config = acpx_config(&directory, "turns-reserved-block-terminal");
     let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
 
     executor
@@ -158,13 +224,8 @@ fn opencode_prepare_payload(directory: &Path) -> Value {
             "provider": "opencode",
             "driver": "opencode_server",
             "providerVersion": "1.18.17",
-            "command": env!("CARGO_BIN_EXE_fake-codex-app-server"),
-            "args": [
-                "--state-file",
-                directory.join("fake-opencode-state.json"),
-                "--call-log",
-                directory.join("fake-opencode-calls.log"),
-            ],
+            "command": directory.join("qualified-opencode-proxy-command"),
+            "args": [directory.join("qualified-opencode-proxy-script")],
             "cwd": directory,
             "model": "openrouter/model",
             "approvalPolicy": "never",
@@ -173,10 +234,80 @@ fn opencode_prepare_payload(directory: &Path) -> Value {
     })
 }
 
+fn managed_prepare_payload(kind: &str) -> Value {
+    let operations = Vec::new();
+    let provider = match kind {
+        "claude_managed" => json!({
+            "kind": "claude_managed",
+            "model": "claude-sonnet-5",
+            "profileId": "profile-1",
+            "anthropicAgentId": "agent-1",
+            "agentVersion": "1",
+            "environmentId": "environment-1",
+            "betaVersion": "managed-agents-2026-04-01",
+            "maxSessionListCostUsd": 1.0,
+            "instructions": "Complete the supplied task.",
+            "runtimeContext": null,
+        }),
+        "aws_agentcore" => json!({
+            "kind": "aws_agentcore",
+            "model": "global.anthropic.claude-sonnet-4-6",
+            "profileId": "profile-1",
+            "region": "us-east-1",
+            "accountId": "123456789012",
+            "harnessArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:harness/test",
+            "harnessVersion": "1",
+            "endpointArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:endpoint/test",
+            "endpointQualifier": "1",
+            "agentRuntimeArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/test",
+            "memoryArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:memory/test",
+            "memoryId": "memory-1",
+            "invocationRoleArn": "arn:aws:iam::123456789012:role/runner",
+            "contextBucket": "context-bucket",
+            "contextPrefix": "companies/company/profiles/profile",
+            "contextKmsKeyArn": "arn:aws:kms:us-east-1:123456789012:key/test",
+            "qualificationRevision": "aws-agentcore-harness-v1",
+            "eventExpiryDays": 90,
+            "maxEstimatedSessionCostUsd": 1.0,
+            "maxIterations": 8,
+            "maxOutputTokens": 4096,
+            "timeoutSeconds": 300,
+            "instructions": "Complete the supplied task.",
+            "runtimeContext": null,
+        }),
+        _ => panic!("unsupported fixture"),
+    };
+    json!({
+        "authorizedTools": {
+            "schema": "paperclip.runner.authorized-tools.v1",
+            "schemaVersion": 1,
+            "catalogDigest": authorized_tool_catalog_digest(&operations).unwrap(),
+            "operations": operations,
+        },
+        "provider": provider,
+    })
+}
+
+#[test]
+fn preserves_managed_provider_descriptors_through_the_native_selector() {
+    for kind in ["claude_managed", "aws_agentcore"] {
+        let directory = temporary_directory(kind);
+        let config = config(&directory);
+        let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+        let prepared = executor
+            .execute(&command(1, "run.prepare", managed_prepare_payload(kind)))
+            .unwrap();
+        assert_eq!(prepared.result["provider"], kind);
+        assert!(directory.join("managed-provider-state.json").exists());
+        executor.shutdown().unwrap();
+        fs::remove_dir_all(directory).unwrap();
+    }
+}
+
 #[test]
 fn executes_a_qualified_acpx_profile_through_the_native_selector() {
     let directory = temporary_directory("acpx");
-    let config = config(&directory);
+    let config = acpx_config(&directory, "turns-reserved-result-terminal");
     let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
 
     let prepared = executor
@@ -223,7 +354,7 @@ fn executes_a_qualified_acpx_profile_through_the_native_selector() {
 #[test]
 fn executes_opencode_through_the_local_facade_without_codex_event_labels() {
     let directory = temporary_directory("opencode");
-    let config = config(&directory);
+    let config = opencode_config(&directory);
     let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
 
     let prepared = executor
@@ -285,6 +416,76 @@ fn executes_opencode_through_the_local_facade_without_codex_event_labels() {
         .execute(&command(4, "session.close", json!({})))
         .unwrap();
     executor.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn rejects_a_mutable_opencode_command_outside_the_runner_launch_profile() {
+    let directory = temporary_directory("opencode-command-override");
+    let config = opencode_config(&directory);
+    let mut payload = opencode_prepare_payload(&directory);
+    payload["provider"]["command"] = json!(env!("CARGO_BIN_EXE_fake-codex-app-server"));
+    let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+
+    let error = executor
+        .execute(&command(1, "run.prepare", payload))
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("does not match the runner-owned qualified profile"));
+
+    executor.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn rejects_opencode_launch_profile_drift_across_fresh_recovery() {
+    let directory = temporary_directory("opencode-profile-recovery");
+    let config = opencode_config(&directory);
+    let mut first = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    first
+        .execute(&command(
+            1,
+            "run.prepare",
+            opencode_prepare_payload(&directory),
+        ))
+        .unwrap();
+    first.shutdown().unwrap();
+    drop(first);
+
+    let mut changed = config.clone();
+    changed
+        .opencode_launch_profile
+        .as_mut()
+        .unwrap()
+        .executable
+        .sha256 = format!("sha256:{}", "a".repeat(64));
+    let mut recovered = NativeProviderCommandExecutor::with_runner_config(&directory, &changed);
+    let state_path = directory.join("codex-provider-state.json");
+    let state_before_recovery = fs::read(&state_path).unwrap();
+    let error = recovered
+        .execute(&command(
+            2,
+            "run.prepare",
+            opencode_prepare_payload(&directory),
+        ))
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("launch profile changed across durable recovery"));
+    let second_error = recovered
+        .execute(&command(
+            3,
+            "run.prepare",
+            opencode_prepare_payload(&directory),
+        ))
+        .unwrap_err();
+    assert!(second_error
+        .to_string()
+        .contains("launch profile changed across durable recovery"));
+    assert_eq!(fs::read(&state_path).unwrap(), state_before_recovery);
+
+    recovered.shutdown().unwrap();
     fs::remove_dir_all(directory).unwrap();
 }
 
