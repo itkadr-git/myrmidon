@@ -105,7 +105,11 @@ import {
   refreshAdapterModels,
   requireServerAdapter,
 } from "../adapters/index.js";
-import { redactEventPayload } from "../redaction.js";
+import {
+  REDACTED_EVENT_VALUE,
+  redactAgentAdapterConfig,
+  redactEventPayload,
+} from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
 import {
   HarnessRuntimeRequestResolutionError,
@@ -1483,8 +1487,12 @@ export function agentRoutes(
       buildAgentAccessState(agent),
     ]);
 
+    const baseAgent = redactAgentRowForResponse(
+      options?.restricted ? redactForRestrictedAgentView(agent) : agent,
+    );
+
     return {
-      ...(options?.restricted ? redactForRestrictedAgentView(agent) : agent),
+      ...baseAgent,
       chainOfCommand,
       access: accessState,
     };
@@ -2773,6 +2781,21 @@ export function agentRoutes(
     };
   }
 
+  // Single presenter for every response that emits a raw agent row. Restricted
+  // views blank the config wholesale for authorization reasons; this runs for
+  // config-reading (board) callers too, so plaintext `adapterConfig.env` values
+  // never leave the API regardless of actor scope.
+  function redactAgentRowForResponse<T extends { adapterConfig?: unknown } | null | undefined>(
+    agent: T,
+  ): T {
+    if (!agent || typeof agent !== "object") return agent;
+    if (!agent.adapterConfig || typeof agent.adapterConfig !== "object") return agent;
+    return {
+      ...agent,
+      adapterConfig: redactAgentAdapterConfig(agent.adapterConfig as Record<string, unknown>),
+    };
+  }
+
   function redactAgentConfiguration(agent: Awaited<ReturnType<typeof svc.getById>>) {
     if (!agent) return null;
     return {
@@ -2784,11 +2807,33 @@ export function agentRoutes(
       status: agent.status,
       reportsTo: agent.reportsTo,
       adapterType: agent.adapterType,
-      adapterConfig: redactEventPayload(agent.adapterConfig),
+      adapterConfig: redactAgentAdapterConfig(agent.adapterConfig),
       runtimeConfig: redactEventPayload(agent.runtimeConfig),
       permissions: agent.permissions,
       updatedAt: agent.updatedAt,
     };
+  }
+
+  function restoreRedactedAgentEnv(
+    requestedConfig: Record<string, unknown>,
+    existingConfig: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const requestedEnv = asRecord(requestedConfig.env);
+    const existingEnv = asRecord(existingConfig.env);
+    if (!requestedEnv || !existingEnv) return requestedConfig;
+
+    const restoredEnv = { ...requestedEnv };
+    for (const [key, value] of Object.entries(requestedEnv)) {
+      const binding = asRecord(value);
+      if (
+        binding?.type === "plain"
+        && binding.value === REDACTED_EVENT_VALUE
+        && Object.prototype.hasOwnProperty.call(existingEnv, key)
+      ) {
+        restoredEnv[key] = existingEnv[key];
+      }
+    }
+    return { ...requestedConfig, env: restoredEnv };
   }
 
   function redactRevisionSnapshot(snapshot: unknown): Record<string, unknown> {
@@ -2796,7 +2841,7 @@ export function agentRoutes(
     const record = snapshot as Record<string, unknown>;
     return {
       ...record,
-      adapterConfig: redactEventPayload(
+      adapterConfig: redactAgentAdapterConfig(
         typeof record.adapterConfig === "object" && record.adapterConfig !== null
           ? (record.adapterConfig as Record<string, unknown>)
           : {},
@@ -3466,7 +3511,7 @@ export function agentRoutes(
     const result = await filterAgentsForActor(req, await svc.list(companyId));
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
     if (canReadConfigs) {
-      res.json(result);
+      res.json(result.map((agent) => redactAgentRowForResponse(agent)));
       return;
     }
     res.json(result.map((agent) => redactForRestrictedAgentView(agent)));
@@ -3806,7 +3851,7 @@ export function agentRoutes(
       details: { revisionId },
     });
 
-    res.json(updated);
+    res.json(redactAgentRowForResponse(updated));
   });
 
   router.get("/agents/:id/runtime-state", async (req, res) => {
@@ -4210,7 +4255,7 @@ export function agentRoutes(
       );
     }
 
-    res.status(201).json(agent);
+    res.status(201).json(redactAgentRowForResponse(agent));
   });
 
   router.patch("/agents/:id/permissions", validate(updateAgentPermissionsSchema), async (req, res) => {
@@ -4575,9 +4620,11 @@ export function agentRoutes(
       ) {
         await assertCanManageInstructionsPath(req, existing);
       }
-      let rawEffectiveAdapterConfig = requestedAdapterConfig ?? existingAdapterConfig;
+      let rawEffectiveAdapterConfig = requestedAdapterConfig
+        ? restoreRedactedAgentEnv(requestedAdapterConfig, existingAdapterConfig)
+        : existingAdapterConfig;
       if (requestedAdapterConfig && !changingAdapterType && !replaceAdapterConfig) {
-        rawEffectiveAdapterConfig = { ...existingAdapterConfig, ...requestedAdapterConfig };
+        rawEffectiveAdapterConfig = { ...existingAdapterConfig, ...rawEffectiveAdapterConfig };
       }
       if (changingAdapterType) {
         // Preserve adapter-agnostic keys (env, cwd, etc.) from the existing config
@@ -4688,7 +4735,7 @@ export function agentRoutes(
       details: summarizeAgentUpdateDetails(patchData),
     });
 
-    res.json(agent);
+    res.json(redactAgentRowForResponse(agent));
   });
 
   router.post("/agents/:id/pause", async (req, res) => {
@@ -4714,7 +4761,7 @@ export function agentRoutes(
       entityId: agent.id,
     });
 
-    res.json(agent);
+    res.json(redactAgentRowForResponse(agent));
   });
 
   router.post("/agents/:id/resume", async (req, res) => {
@@ -4749,7 +4796,7 @@ export function agentRoutes(
       entityId: agent.id,
     });
 
-    res.json(agent);
+    res.json(redactAgentRowForResponse(agent));
   });
 
   router.post("/agents/:id/clear-error", async (req, res) => {
@@ -4781,7 +4828,7 @@ export function agentRoutes(
       entityId: agent.id,
     });
 
-    res.json(agent);
+    res.json(redactAgentRowForResponse(agent));
   });
 
   router.post("/agents/:id/approve", async (req, res) => {
@@ -4835,7 +4882,7 @@ export function agentRoutes(
       details: { source: "agent_detail", approvalId: openApproval?.id ?? null },
     });
 
-    res.json(agent);
+    res.json(redactAgentRowForResponse(agent));
   });
 
   router.post("/agents/:id/terminate", async (req, res) => {
@@ -4905,7 +4952,7 @@ export function agentRoutes(
       },
     });
 
-    res.json(agent);
+    res.json(redactAgentRowForResponse(agent));
   });
 
   router.delete("/agents/:id", async (req, res) => {
