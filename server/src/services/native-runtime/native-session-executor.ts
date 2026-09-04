@@ -3865,7 +3865,10 @@ async function executePaperclipNativeSessionWithinScope(
       input.useRunnerd && input.backend === undefined
         ? await createRunnerdBackend({
             ...input,
-            execution: runnerExecution,
+            // Durable scope and prior-run verification use the controller's
+            // canonical workspace identity. createRunnerdBackend separately
+            // projects remoteCwd into the provider execution boundary.
+            execution: input.execution,
             runnerInstanceId: effectiveRunnerInstanceId,
             durableEnvironmentLeaseId: durableRunnerBinding?.environmentLeaseId,
             trace,
@@ -4441,15 +4444,15 @@ const REMOTE_PROVIDER_PACK_PROFILE_DIGESTS = {
   claude:
     "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
   codex:
-    "sha256:94049b3e3c3aee87de62703786e4fa81d031d7bd979f99bdf516d84f28791a79",
+    "sha256:7a923b3829884d3cabcc9659d22cace3f86813e7bfffc90974b10140a45bc400",
 } as const;
 const REMOTE_PROVIDER_PACK_ARTIFACT_PATHS = {
   nodeCommand: "node_modules/node/bin/node",
   productionLock: "pnpm-lock.yaml",
   opencodeCommand: "node_modules/.bin/opencode",
   opencodeExecutable: "node_modules/opencode-ai/bin/opencode.exe",
-  opencodeProxy: "dist/cli/opencode-app-server-proxy.js",
-  acpxSidecar: "dist/cli/acpx-runtime-sidecar.js",
+  opencodeProxy: "dist/cli/opencode-app-server-proxy.cjs",
+  acpxSidecar: "dist/cli/acpx-runtime-sidecar.cjs",
 } as const;
 
 type RemoteProviderPackManifest = {
@@ -5320,6 +5323,14 @@ async function createRunnerdBackendWithinSessionClaim(
   const remoteBinary = remoteRuntimeRoot
     ? posix.join(remoteRuntimeRoot, "bin", "paperclip-runnerd")
     : null;
+  // The transport hashes runnerBinary on the controller before an external
+  // launcher starts runnerd. Keep that artifact identity in the controller's
+  // filesystem; the remote launcher separately owns the sandbox command path.
+  // When an explicit remote artifact is configured, prepareRemoteRunner stages
+  // these exact bytes at remoteBinary before launch.
+  const controllerRunnerBinary = remoteTarget
+    ? input.runnerRemoteBinaryPath?.trim() || resolvePaperclipRunnerBinary()
+    : resolvePaperclipRunnerBinary();
   const explicitRemoteCodex = input.runnerRemoteCodexPath?.trim() || null;
   const remoteCodexNpmSpec = input.runnerRemoteCodexNpmSpec?.trim() || null;
   if (explicitRemoteCodex && remoteCodexNpmSpec) {
@@ -6549,6 +6560,9 @@ async function createRunnerdBackendWithinSessionClaim(
   const backend = createNativeSessionBackend(runnerExecution, {
     runnerInstanceId: input.runnerInstanceId,
     environment: effectiveRunnerEnvironment,
+    workingDirectoryAuthority: remoteTarget
+      ? "remote_runner"
+      : "local_filesystem",
     onSpawn: input.onSpawn,
     dynamicTools,
     dynamicToolHandler: (call) => authorityEpoch.execute(call),
@@ -6672,7 +6686,7 @@ async function createRunnerdBackendWithinSessionClaim(
                   stateDirectory: remoteStateDirectory,
                 })
             : undefined,
-        runnerBinary: remoteBinary ?? resolvePaperclipRunnerBinary(),
+        runnerBinary: controllerRunnerBinary,
         codexCommand: remoteCodexBinary ?? undefined,
         sourceCodexHome: remoteTarget
           ? resolveSourceCodexHome(input.runnerEnvironment ?? process.env)

@@ -6,12 +6,15 @@ import type {
 } from "../contracts/native-session-backend.js";
 import type { CodexAppServerTransport } from "../drivers/codex/app-server-transport.js";
 import { CodexAppServerDriver } from "../drivers/codex/codex-app-server-driver.js";
+import type { CodexWorkingDirectoryAuthority } from "../drivers/codex/codex-boundaries.js";
 import { HarnessDriverBackend } from "./harness-driver-backend.js";
 import { nativeSystemInstructions, nativeTaskConstraints } from "./runtime-context.js";
 
 export interface CodexNativeSessionBackendOptions {
   /** Effective provider environment, including the assigned workspace boundary. */
   environment?: NodeJS.ProcessEnv;
+  /** Filesystem that authoritatively admits the workspace path. */
+  workingDirectoryAuthority?: CodexWorkingDirectoryAuthority;
   runnerInstanceId?: string;
   onSpawn?: (meta: {
     pid: number;
@@ -90,8 +93,20 @@ function createTransportBackedNativeSessionBackend(
   input: NativeExecutionInput,
   options: CodexNativeSessionBackendOptions,
 ): NativeSessionBackend {
+  if (
+    options.workingDirectoryAuthority === "remote_runner" &&
+    !options.transportFactory
+  ) {
+    throw new Error(
+      "Remote runner workspace authority requires a runnerd transport",
+    );
+  }
   const driverIdentity = transportDriverIdentity(input);
   const isCodex = input.provider.kind === "codex";
+  const supportsCollaborativePlanning =
+    isCodex ||
+    input.provider.kind === "opencode" ||
+    input.provider.kind === "acpx";
   if (
     input.provider.kind === "codex"
     && input.provider.approvalPolicy !== undefined
@@ -113,14 +128,18 @@ function createTransportBackedNativeSessionBackend(
     baseInstructions: nativeSystemInstructions(input),
     includeSkillInstructions: isCodex && "runtimeContext" in input,
     requestedCollaborationMode:
-      isCodex && "executionMode" in input ? input.executionMode : "default",
+      supportsCollaborativePlanning && "executionMode" in input
+        ? input.executionMode
+        : "default",
     taskEnvelope: createCodexTaskEnvelope({
       objective: input.completionContract.contract.objective,
       contractRevision: input.completionContract.contract.revision,
       criteria: input.completionContract.contract.criteria,
       constraints: [
         "Work only inside the supplied working directory.",
-        ...(isCodex && "executionMode" in input && input.executionMode === "plan"
+        ...(supportsCollaborativePlanning &&
+          "executionMode" in input &&
+          input.executionMode === "plan"
           ? [
               "Use native plan collaboration mode and do not modify workspace files.",
               "Treat the supplied Paperclip planning context as the canonical pinned base revision.",
@@ -139,11 +158,14 @@ function createTransportBackedNativeSessionBackend(
     dynamicTools: options.dynamicTools,
     dynamicToolHandler: options.dynamicToolHandler,
     environment: options.environment,
+    workingDirectoryAuthority: options.workingDirectoryAuthority,
     driverIdentity,
     capabilities: isCodex
       ? {}
       : { steering: false, goals: false, threadLineage: false },
-    collaborationModes: isCodex ? ["default", "plan"] : ["default"],
+    collaborationModes: supportsCollaborativePlanning
+      ? ["default", "plan"]
+      : ["default"],
     requireProviderSessionIdentity: options.transportFactory !== undefined,
   }));
 }

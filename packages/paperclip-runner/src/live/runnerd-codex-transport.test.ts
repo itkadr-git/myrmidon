@@ -11,6 +11,7 @@ import {
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { expect, it } from "vitest";
 
@@ -33,6 +34,7 @@ import {
 import { releaseMaterializedNativeRuntimeSkills } from "../drivers/runtime-context-materializer.js";
 
 import {
+  authorizedToolSetForProvider,
   createCapabilityRunnerdCodexTransport,
   createCapabilityRunnerdProviderEnvironment,
   defaultCapabilityRunnerdBinary,
@@ -45,6 +47,7 @@ import {
   rehydrateRunnerdUsageNotification,
   rehydrateRunnerdWorkspaceChangeNotification,
   runnerdLaunchProfileInternals,
+  runnerdRecoveryInternals,
   resolveRunnerdAcpxPermissionMode,
   resolveRunnerdSessionIdentity,
   resolveSourceCodexHome,
@@ -53,6 +56,100 @@ import {
   unwrapRunnerdProviderNotifications,
   withCodexCollaborationRuntimeInstructions,
 } from "./runnerd-codex-transport.js";
+
+it("replays the durable run attachment outcome and latest provider identity", () => {
+  expect(
+    runnerdRecoveryInternals.recoveredRunAttachment({
+      commands: [
+        { commandId: "prepare", type: "run.prepare", status: "completed" },
+        { commandId: "attach", type: "run.attach", status: "failed" },
+      ],
+      committedEvents: [{ eventType: "session.started" }],
+    }),
+  ).toEqual({
+    commandId: "attach",
+    status: "failed",
+    providerIdentityEventIndex: -1,
+  });
+
+  expect(
+    runnerdRecoveryInternals.recoveredRunAttachment({
+      commands: [
+        { commandId: "attach", type: "run.attach", status: "completed" },
+      ],
+      committedEvents: [
+        { eventType: "runner.reconciled" },
+        { eventType: "session.started" },
+        { eventType: "runner.diagnostic" },
+        { eventType: "session.resumed" },
+      ],
+    }),
+  ).toEqual({
+    commandId: "attach",
+    status: "completed",
+    providerIdentityEventIndex: 3,
+  });
+});
+
+it("identifies an active provider turn that must stop before suspension", () => {
+  expect(
+    runnerdRecoveryInternals.providerDrainStateFromSnapshot({
+      activeProviderTurnId: "provider-turn-1",
+      pendingEvents: [{ eventType: "item.started" }],
+      queuedEvents: [{ eventType: "item.completed" }],
+    }),
+  ).toEqual({
+    pendingEventCount: 2,
+    activeProviderTurnId: "provider-turn-1",
+    providerSettled: false,
+  });
+
+  expect(
+    runnerdRecoveryInternals.providerDrainStateFromSnapshot({
+      activeTurnId: "acpx-turn-1",
+      pendingEvents: [],
+    }),
+  ).toEqual({
+    pendingEventCount: 0,
+    activeProviderTurnId: "acpx-turn-1",
+    providerSettled: false,
+  });
+
+  expect(
+    runnerdRecoveryInternals.providerDrainStateFromSnapshot({
+      activeProviderTurnId: null,
+      ambiguousTurnStartPending: false,
+      pendingEvents: [],
+      queuedEvents: [],
+    }),
+  ).toEqual({
+    pendingEventCount: 0,
+    activeProviderTurnId: null,
+    providerSettled: true,
+  });
+});
+
+it("keeps ACPX terminal tools under the reserved runner-owned catalog", () => {
+  const tools = [
+    {
+      name: "get_task_context",
+      description: "Read the task context.",
+      inputSchema: { type: "object" },
+    },
+    ...codexSemanticToolSpecs(),
+  ];
+
+  expect(authorizedToolSetForProvider("acpx", tools)).toMatchObject({
+    operations: [{ operationId: "get_task_context" }],
+  });
+  expect(authorizedToolSetForProvider("codex", tools)).toMatchObject({
+    operations: [
+      { operationId: "get_task_context" },
+      { operationId: "paperclip_block" },
+      { operationId: "paperclip_finish" },
+    ],
+  });
+});
 
 it("defaults runnerd ACPX permissions to approve reads", () => {
   expect(resolveRunnerdAcpxPermissionMode(undefined)).toBe("approve-reads");
@@ -85,7 +182,7 @@ it("rejects caller-selected local ACPX artifacts even when they are self-hashed"
   }
 });
 
-it.each(["acpx-runtime-sidecar.js", "opencode-app-server-proxy.js"] as const)(
+it.each(["acpx-runtime-sidecar.cjs", "opencode-app-server-proxy.cjs"] as const)(
   "resolves the %s local provider artifact from verified build-owned output",
   async (artifact) => {
     const directory = await mkdtemp(
@@ -116,6 +213,31 @@ it.each(["acpx-runtime-sidecar.js", "opencode-app-server-proxy.js"] as const)(
     }
   },
 );
+
+it("derives the ACPX package authority only from the verified dist/cli layout", () => {
+  const runnerPackageRoot = fileURLToPath(new URL("../..", import.meta.url));
+  expect(
+    runnerdLaunchProfileInternals.acpxProviderPackageAuthority(
+      resolve(runnerPackageRoot, "dist/cli/acpx-runtime-sidecar.cjs"),
+    ),
+  ).toEqual({
+    root: resolve(runnerPackageRoot, "../.."),
+    manifest: resolve(runnerPackageRoot, "package.json"),
+  });
+  expect(
+    runnerdLaunchProfileInternals.acpxProviderPackageAuthority(
+      "/provider-pack/dist/cli/acpx-runtime-sidecar.cjs",
+    ),
+  ).toEqual({
+    root: "/provider-pack",
+    manifest: "/provider-pack/package.json",
+  });
+  expect(() =>
+    runnerdLaunchProfileInternals.acpxProviderPackageAuthority(
+      "/unverified/acpx-runtime-sidecar.cjs",
+    ),
+  ).toThrow("ACPX sidecar must use the provider package dist/cli layout");
+});
 
 it("requires a provider-pack authority for remote ACPX artifact hashes", () => {
   expect(() =>
@@ -409,6 +531,9 @@ it.each([
         environment: {
           PATH: "/bin",
           ...credentialEnvironment,
+          PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT: "/attacker/package-root",
+          PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST:
+            "/attacker/package-root/package.json",
           PAPERCLIP_API_KEY: "must-not-reach-provider",
           DATABASE_URL: "must-not-reach-provider",
         },
@@ -424,6 +549,8 @@ it.each([
       codexHome: "/isolated/codex-home",
       runtimeContextPath: "/isolated/runtime-context.json",
       hasRuntimeContext: true,
+      acpxSidecarPath:
+        "/verified/provider-pack/dist/cli/acpx-runtime-sidecar.cjs",
     });
 
     expect(environment).toMatchObject({
@@ -432,6 +559,9 @@ it.each([
       PAPERCLIP_RUN_ID: "run-1",
       PAPERCLIP_NORMALIZED_SESSION_ID: "session-1",
       PAPERCLIP_NATIVE_RUNTIME_CONTEXT_PATH: "/isolated/runtime-context.json",
+      PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT: "/verified/provider-pack",
+      PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST:
+        "/verified/provider-pack/package.json",
     });
     for (const key of allowed)
       expect(environment[key]).toBe(credentialEnvironment[key]);
@@ -1955,6 +2085,53 @@ it("rejects the notification stream promptly when runnerd exits after accepting 
         ),
       ]),
     ).rejects.toThrow("native_runner_process_exited");
+  } finally {
+    await bundle.transport.close();
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+}, 30_000);
+
+it("persists an active provider as settled before bounded suspension", async () => {
+  const stateDirectory = await mkdtemp(
+    join(tmpdir(), "runnerd-active-suspension-"),
+  );
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(),
+    codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory, "--linger-after-turn-start"),
+    stateDirectory,
+  });
+  bundle.transport.setServerRequestHandler(async () => ({
+    success: true,
+    contentItems: [],
+  }));
+  try {
+    await bundle.transport.request("initialize", {});
+    await bundle.transport.request("thread/start", {
+      cwd: tmpdir(),
+      dynamicTools: [],
+    });
+    await bundle.transport.request("turn/start", {
+      input: [{ type: "text", text: "Wait for another instruction." }],
+    });
+    const notifications = bundle.transport
+      .notifications()
+      [Symbol.asyncIterator]();
+    await expect(notifications.next()).resolves.toMatchObject({
+      value: { method: "turn/started" },
+    });
+    await bundle.transport.close();
+
+    const providerState = JSON.parse(
+      await readFile(
+        join(stateDirectory, "runner", "codex-provider-state.json"),
+        "utf8",
+      ),
+    ) as Record<string, unknown>;
+    expect(providerState).toMatchObject({
+      lifecycle: "prepared",
+      activeProviderTurnId: null,
+    });
   } finally {
     await bundle.transport.close();
     await rm(stateDirectory, { recursive: true, force: true });
