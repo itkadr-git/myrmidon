@@ -11,6 +11,40 @@ const buildRemoteProviderPackNeeds =
   /needs:\s*\[\s*authorize,\s*target_lock,\s*catalog,\s*daytona_image,\s*build_runner_artifacts,?\s*\]/u;
 
 describe("public repository paid workflow security", () => {
+  it("keeps pnpm bootstrap registry telemetry out of trusted workflow setup", async () => {
+    for (const workflowName of [
+      "runner-full-stack-e2e.yml",
+      "pr-trusted.yml",
+    ]) {
+      const workflow = await readFile(
+        path.join(repositoryRoot, ".github/workflows", workflowName),
+        "utf8",
+      );
+      const pnpmSetupSteps = workflow
+        .split(/\n(?= {6}- )/u)
+        .filter((step) => step.includes("uses: pnpm/action-setup@"));
+
+      expect(pnpmSetupSteps, workflowName).toHaveLength(7);
+      for (const step of pnpmSetupSteps) {
+        expect(step, workflowName).toContain('NPM_CONFIG_AUDIT: "false"');
+        expect(step, workflowName).toContain('NPM_CONFIG_FUND: "false"');
+        expect(step, workflowName).toContain(
+          'NPM_CONFIG_UPDATE_NOTIFIER: "false"',
+        );
+      }
+      for (const variable of [
+        "NPM_CONFIG_AUDIT",
+        "NPM_CONFIG_FUND",
+        "NPM_CONFIG_UPDATE_NOTIFIER",
+      ]) {
+        expect(
+          workflow.match(new RegExp(`${variable}:`, "gu")),
+          workflowName,
+        ).toHaveLength(pnpmSetupSteps.length);
+      }
+    }
+  });
+
   it("gates every provider-secret job with stable actor IDs", async () => {
     const workflows = await Promise.all(
       ["runner-full-stack-e2e.yml", "runner-live-evals.yml", "e2e.yml"].map(
