@@ -898,6 +898,7 @@ class AuthorityConnection {
   secureChannel: SecureChannel | null = null;
   lease: ConnectionLeaseRecord | null = null;
   connectionId: string | null = null;
+  terminalLifecycleCommandId: string | null = null;
   readonly wire: PrpWireConnection;
   #closed = false;
   #onClose: () => void;
@@ -1537,6 +1538,11 @@ export class DurablePrpControlPlane {
     this.#store.state.lastLeaseExpiresAt = lease.expiresAt;
 
     const pending = this.#nextPendingCommand();
+    const [pendingCommand] = pending;
+    connection.terminalLifecycleCommandId =
+      pendingCommand && this.#isTerminalLifecycleCommand(pendingCommand)
+        ? pendingCommand.commandId
+        : null;
     for (const command of pending) {
       this.#store.state.commandDeliveryCounts[command.commandId] =
         (this.#store.state.commandDeliveryCounts[command.commandId] ?? 0) + 1;
@@ -1623,8 +1629,12 @@ export class DurablePrpControlPlane {
   }
 
   #sendNextCommand(connection: AuthorityConnection): void {
+    if (connection.terminalLifecycleCommandId !== null) return;
     const [command] = this.#nextPendingCommand();
     if (command === undefined) return;
+    if (this.#isTerminalLifecycleCommand(command)) {
+      connection.terminalLifecycleCommandId = command.commandId;
+    }
     this.#store.state.commandDeliveryCounts[command.commandId] =
       (this.#store.state.commandDeliveryCounts[command.commandId] ?? 0) + 1;
     this.#store.save();
@@ -1655,6 +1665,9 @@ export class DurablePrpControlPlane {
       connection.close();
       return;
     }
+    if (this.#isTerminalLifecycleCommand(command)) {
+      connection.terminalLifecycleCommandId = command.commandId;
+    }
     const status = result.status;
     // `indeterminate` is terminal too: a runner that crashed between journaling
     // a command and confirming its effect reports it on recovery and will not
@@ -1678,24 +1691,31 @@ export class DurablePrpControlPlane {
       this.#store.state.duplicateCommandResults += 1;
       this.#store.save();
       this.#ackTerminalCommandResult(connection, command);
-      this.#sendNextCommand(connection);
+      if (!this.#isTerminalLifecycleCommand(command)) {
+        this.#sendNextCommand(connection);
+      }
       return;
     }
     command.status = status;
     command.result = structuredClone(result);
     this.#store.save();
     this.#ackTerminalCommandResult(connection, command);
-    this.#sendNextCommand(connection);
+    if (!this.#isTerminalLifecycleCommand(command)) {
+      this.#sendNextCommand(connection);
+    }
+  }
+
+  #isTerminalLifecycleCommand(command: DurableRecoveryCoreCommand): boolean {
+    return (
+      command.type === "runner.suspend" || command.type === "runner.shutdown"
+    );
   }
 
   #ackTerminalCommandResult(
     connection: AuthorityConnection,
     command: DurableRecoveryCoreCommand,
   ): void {
-    if (
-      command.type !== "runner.suspend" &&
-      command.type !== "runner.shutdown"
-    ) {
+    if (!this.#isTerminalLifecycleCommand(command)) {
       return;
     }
     connection.sendJson(

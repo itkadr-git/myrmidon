@@ -318,10 +318,46 @@ describe("runner E2E catalog", () => {
     expect(task!.buildPrompt("nonce")).toContain(
       'summary:"PAPERCLIP_E2E_PLAN_DONE_nonce"',
     );
+    expect(task!.buildPrompt("nonce")).toContain("first call get_task_context");
+    expect(task!.buildPrompt("nonce")).toContain(
+      "identifies the exact revised Plan revision used as the confirmation target as accepted",
+    );
+    expect(task!.buildPrompt("nonce")).toContain(
+      "After that verification succeeds, your immediate next action must be the paperclip_finish tool call",
+    );
+    expect(task!.buildPrompt("nonce")).not.toContain(
+      "trust that inline acceptance",
+    );
+    expect(task!.buildPrompt("nonce")).toContain(
+      "those two tool calls form one indivisible response sequence",
+    );
+    expect(task!.buildPrompt("nonce")).toContain(
+      "Do not emit assistant text, end the heartbeat, or stop after write_document alone",
+    );
     expect(task!.buildPrompt("nonce")).toContain(
       "one atomic issue PATCH with status `done` and that exact comment",
     );
-    expect(task!.buildRevisionRequest?.("nonce")).toContain("baseRevisionId");
+    const revisionRequest = task!.buildRevisionRequest?.("nonce");
+    expect(revisionRequest).toContain("baseRevisionId");
+    expect(revisionRequest).toContain(
+      "request_human_input must be your immediate next action",
+    );
+  });
+
+  it("requires one atomic legacy Ask completion write", () => {
+    const task = runnerTasks.find(
+      (candidate) => candidate.id === "ask-question",
+    );
+    expect(task).toBeDefined();
+    const prompt = task!.buildPrompt("nonce");
+    expect(prompt).toContain(
+      "make exactly one public-API write containing the marker",
+    );
+    expect(prompt).toContain(
+      'PATCH /api/issues/$PAPERCLIP_TASK_ID with {"status":"done","comment":"E2E_ASK_12_nonce"}',
+    );
+    expect(prompt).toContain("Do not POST to /comments");
+    expect(prompt).toContain("do not PATCH the status separately");
   });
 
   it("accepts only complete immutable Daytona digests", () => {
@@ -416,6 +452,20 @@ describe("runner E2E selectors", () => {
     expect(jobs.filter((job) => job.needsDaytona)).toHaveLength(21);
     expect(jobs.filter((job) => !job.needsDaytona)).toHaveLength(45);
     expect(new Set(jobs.map((job) => job.executionId)).size).toBe(66);
+    expect(
+      jobs.find(
+        (job) =>
+          job.executionId ===
+          "core-compatibility.runner-acpx-claude.local.plan-revise-accept",
+      )?.timeoutMinutes,
+    ).toBe(48);
+    expect(
+      jobs.find(
+        (job) =>
+          job.executionId ===
+          "local-session-integrity.runner-acpx-codex.local.structured-question-restart-resume",
+      )?.timeoutMinutes,
+    ).toBe(32);
     expect(
       jobs.every((job) =>
         runnerMatrix.some(

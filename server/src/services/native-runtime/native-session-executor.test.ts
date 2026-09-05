@@ -17,9 +17,10 @@ import {
   nativeRunFinalizations,
   type Db,
 } from "@paperclipai/db";
-import type {
-  NativeExecutionInputV1,
-  PrpEvent,
+import {
+  acpxRuntimeSessionDirectoryName,
+  type NativeExecutionInputV1,
+  type PrpEvent,
 } from "@paperclipai/paperclip-runner";
 import { createHash } from "node:crypto";
 import {
@@ -65,6 +66,17 @@ type RunnerTransportOptions = {
     providerSessionId?: string | null;
     activeTurnId?: string | null;
   };
+  archiveExternalRunnerState?: (input: {
+    archiveKey: string;
+    priorIdentity: {
+      runnerInstanceId: string;
+      environmentLeaseId: string;
+      runId: string;
+      normalizedSessionId: string;
+      turnId: string;
+      itemId: string;
+    };
+  }) => Promise<Record<string, unknown>>;
 };
 
 const durableControlPlaneState = (identity: Record<string, unknown>) => ({
@@ -170,8 +182,10 @@ import {
   nativeUsageCostUsd,
   normalizeNativeUsage,
   readRemoteProviderPackManifest,
+  providerSessionIdentityFromDurableProviderState,
   providerSessionIdentityTransitionIsAllowed,
   providerPlanMarkdown,
+  remoteCheckpointIncompleteFailure,
   resolveRemoteRunnerTransportMode,
   renewNativeSessionExecutionLease,
   runtimeInputLifecycleMetric,
@@ -482,8 +496,29 @@ describe("native harness persistence profiles", () => {
     expect(
       codex.directories.find((directory) => directory.name === "codex-home"),
     ).toMatchObject({
-      excludeTopLevelEntries: ["tmp", ".tmp", "auth.json", "config.toml"],
+      excludeEntries: ["tmp", ".tmp", "auth.json", "config.toml"],
     });
+  });
+
+  it("excludes only nested Codex launch state from ACPX recovery", () => {
+    const acpx = profile({ kind: "acpx", agent: "codex" }, "acpx_runtime");
+    const sessionDirectory = acpxRuntimeSessionDirectoryName("session");
+    expect(
+      acpx.directories.find((directory) => directory.name === "acpx"),
+    ).toMatchObject({
+      excludeEntries: [
+        `acpx/${sessionDirectory}/codex-home/tmp`,
+        `acpx/${sessionDirectory}/codex-home/.tmp`,
+        `acpx/${sessionDirectory}/codex-home/auth.json`,
+        `acpx/${sessionDirectory}/codex-home/config.toml`,
+      ],
+    });
+    expect(
+      profile(
+        { kind: "acpx", agent: "claude" },
+        "acpx_runtime",
+      ).directories.find((directory) => directory.name === "acpx"),
+    ).toMatchObject({ excludeEntries: [] });
   });
 });
 
@@ -723,9 +758,10 @@ describe("verified native harness backups", () => {
     const previousStateDirectory = process.env.PAPERCLIP_RUNNER_STATE_DIR;
     process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
     try {
+      const sessionScopeId = "native-session-scope-v2";
       const sessionRoot = join(
         stateBase,
-        createHash("sha256").update("native-session").digest("hex"),
+        createHash("sha256").update(sessionScopeId).digest("hex"),
       );
       const current = join(sessionRoot, "failover-backups", "current");
       await mkdir(join(current, "runner"), { recursive: true });
@@ -753,6 +789,8 @@ describe("verified native harness backups", () => {
       await writeFile(manifestPath, JSON.stringify(manifest));
       const stamp = createNativeHarnessBackupStamp({
         manifestPath,
+        sessionScopeId,
+        authorizedProviderLeaseId: "sandbox-1",
         normalizedSessionId: "native-session",
         runnerInstanceId: "runner-1",
         completedAt: manifest.completedAt,
@@ -760,6 +798,17 @@ describe("verified native harness backups", () => {
 
       expect(verifyNativeHarnessBackupStamp(stamp, "sandbox-1")).toBe(true);
       expect(verifyNativeHarnessBackupStamp(stamp, "sandbox-2")).toBe(false);
+      const reboundStamp = createNativeHarnessBackupStamp({
+        manifestPath,
+        sessionScopeId,
+        authorizedProviderLeaseId: "sandbox-2",
+        normalizedSessionId: "native-session",
+        runnerInstanceId: "runner-1",
+        completedAt: manifest.completedAt,
+      });
+      expect(verifyNativeHarnessBackupStamp(reboundStamp, "sandbox-2")).toBe(
+        true,
+      );
       await writeFile(join(current, "runner", "runner-state.json"), "corrupt");
       expect(verifyNativeHarnessBackupStamp(stamp, "sandbox-1")).toBe(false);
     } finally {
@@ -771,6 +820,270 @@ describe("verified native harness backups", () => {
       await rm(stateBase, { recursive: true, force: true });
     }
   });
+
+  it("rejects a digest-valid legacy stamp for remote lease authorization", async () => {
+    const stateBase = await mkdtemp(
+      join(tmpdir(), "paperclip-legacy-harness-stamp-"),
+    );
+    const previousStateDirectory = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
+    try {
+      const legacyRoot = join(
+        stateBase,
+        createHash("sha256").update("native-session").digest("hex"),
+        "failover-backups",
+        "current",
+      );
+      await mkdir(join(legacyRoot, "runner"), { recursive: true });
+      await mkdir(join(legacyRoot, "codex-home", "sessions"), {
+        recursive: true,
+      });
+      await writeFile(
+        join(legacyRoot, "runner", "runner-state.json"),
+        "runner-state",
+      );
+      await writeFile(
+        join(legacyRoot, "codex-home", "sessions", "thread.jsonl"),
+        "thread-state",
+      );
+      const manifest = buildNativeHarnessBackupManifest({
+        backupRoot: legacyRoot,
+        execution: backupExecution,
+        runnerInstanceId: "runner-1",
+        providerSessionIdentity: {
+          providerSessionId: "thread-1",
+          providerBackendSessionId: "session-1",
+          providerSessionIdentity: null,
+        },
+        sourceProviderLeaseId: "sandbox-1",
+      });
+      const manifestBytes = JSON.stringify(manifest);
+      await writeFile(join(legacyRoot, "manifest.json"), manifestBytes);
+
+      expect(
+        verifyNativeHarnessBackupStamp(
+          {
+            schema: "paperclip.native-harness-backup-stamp.v1",
+            normalizedSessionId: "native-session",
+            runnerInstanceId: "runner-1",
+            manifestSha256: `sha256:${createHash("sha256").update(manifestBytes).digest("hex")}`,
+            completedAt: manifest.completedAt,
+          },
+          "sandbox-1",
+        ),
+      ).toBe(false);
+    } finally {
+      if (previousStateDirectory === undefined) {
+        delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      } else {
+        process.env.PAPERCLIP_RUNNER_STATE_DIR = previousStateDirectory;
+      }
+      await rm(stateBase, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("split durable provider checkpoint identity", () => {
+  const execution = (provider: Record<string, unknown>, driverKind: string) =>
+    ({
+      provider,
+      binding: {
+        companyId: "company",
+        runId: "run",
+        issueId: "issue",
+        agentId: "agent",
+        executionWorkspaceId: "workspace",
+      },
+      workspace: { cwd: "/workspace" },
+      session: {
+        normalizedSessionId: "native-session",
+        driverKind,
+        protocolVersion: 1,
+        lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
+      },
+    }) as unknown as NativeExecutionInputV1;
+
+  it("reads ACPX identity from its provider-owned state after suspension", () => {
+    const profileDigest = `sha256:${"a".repeat(64)}`;
+    const identity = {
+      kind: "acpx",
+      normalizedSessionId: "native-session",
+      acpxRecordId: "record-1",
+      backendSessionId: "backend-1",
+      agentSessionId: "agent-session-1",
+      profileDigest,
+      workspaceDigest: `sha256:${"b".repeat(64)}`,
+      requestedModel: "claude-sonnet-5",
+      effectiveModel: "claude-sonnet-5",
+      permissionMode: "approve-all",
+      providerLifetimeFenceCandidates: [53001, 53002, 53003],
+    };
+    expect(
+      providerSessionIdentityFromDurableProviderState({
+        execution: execution(
+          {
+            kind: "acpx",
+            agent: "claude",
+            model: "claude-sonnet-5",
+            permissionMode: "approve-all",
+          },
+          "acpx_runtime",
+        ),
+        providerState: {
+          schema: "paperclip.runner.acpx-provider-state.v3",
+          lifecycle: "suspended",
+          activeTurnId: null,
+          providerExitUnconfirmed: false,
+          descriptor: {
+            kind: "acpx",
+            provider: "acpx",
+            driver: "acpx_runtime",
+            agent: "claude",
+            model: "claude-sonnet-5",
+            commandDigest: profileDigest,
+            normalizedSessionId: "native-session",
+          },
+          identity,
+        },
+      }),
+    ).toEqual({
+      providerSessionId: "record-1",
+      providerBackendSessionId: "backend-1",
+      providerSessionIdentity: identity,
+    });
+  });
+
+  it.each([
+    ["codex", "codex_app_server"],
+    ["opencode", "opencode_server"],
+  ] as const)(
+    "reads %s identity from the split Codex-provider state",
+    (provider, driverKind) => {
+      expect(
+        providerSessionIdentityFromDurableProviderState({
+          execution: execution({ kind: provider }, driverKind),
+          providerState: {
+            schema: "paperclip.runner.codex-provider-state.v1",
+            lifecycle: "prepared",
+            config: { provider, driver: driverKind },
+            threadId: "driver-session-1",
+            providerSessionId: "provider-session-1",
+            activeProviderTurnId: null,
+            ambiguousTurnStartPending: false,
+          },
+        }),
+      ).toEqual({
+        providerSessionId: "driver-session-1",
+        providerBackendSessionId: "provider-session-1",
+        providerSessionIdentity: null,
+      });
+    },
+  );
+
+  it("rejects active or scope-conflicting provider state", () => {
+    const profileDigest = `sha256:${"a".repeat(64)}`;
+    const acpxExecution = execution(
+      {
+        kind: "acpx",
+        agent: "claude",
+        model: "claude-sonnet-5",
+        permissionMode: "approve-all",
+      },
+      "acpx_runtime",
+    );
+    for (const providerState of [
+      {
+        schema: "paperclip.runner.acpx-provider-state.v3",
+        lifecycle: "turn_active",
+        activeTurnId: "turn-1",
+        providerExitUnconfirmed: false,
+        descriptor: {
+          kind: "acpx",
+          provider: "acpx",
+          driver: "acpx_runtime",
+          agent: "claude",
+          model: "claude-sonnet-5",
+          commandDigest: profileDigest,
+          normalizedSessionId: "native-session",
+        },
+        identity: {
+          kind: "acpx",
+          normalizedSessionId: "native-session",
+          acpxRecordId: "record-1",
+          backendSessionId: "backend-1",
+          agentSessionId: "agent-session-1",
+          profileDigest,
+          workspaceDigest: `sha256:${"b".repeat(64)}`,
+          requestedModel: "claude-sonnet-5",
+          effectiveModel: "claude-sonnet-5",
+          permissionMode: "approve-all",
+          providerLifetimeFenceCandidates: [53001, 53002, 53003],
+        },
+      },
+      {
+        schema: "paperclip.runner.acpx-provider-state.v3",
+        lifecycle: "suspended",
+        activeTurnId: null,
+        providerExitUnconfirmed: false,
+        descriptor: {
+          kind: "acpx",
+          provider: "acpx",
+          driver: "acpx_runtime",
+          agent: "claude",
+          model: "claude-sonnet-5",
+          commandDigest: profileDigest,
+          normalizedSessionId: "other-session",
+        },
+        identity: {
+          kind: "acpx",
+          normalizedSessionId: "other-session",
+          acpxRecordId: "record-1",
+          backendSessionId: "backend-1",
+          agentSessionId: "agent-session-1",
+          profileDigest,
+          workspaceDigest: `sha256:${"b".repeat(64)}`,
+          requestedModel: "claude-sonnet-5",
+          effectiveModel: "claude-sonnet-5",
+          permissionMode: "approve-all",
+          providerLifetimeFenceCandidates: [53001, 53002, 53003],
+        },
+      },
+    ]) {
+      expect(
+        providerSessionIdentityFromDurableProviderState({
+          execution: acpxExecution,
+          providerState,
+        }),
+      ).toEqual({
+        providerSessionId: null,
+        providerBackendSessionId: null,
+        providerSessionIdentity: null,
+      });
+    }
+  });
+
+  it.each(["claude_managed", "aws_agentcore"] as const)(
+    "reads %s identity from managed provider state",
+    (provider) => {
+      expect(
+        providerSessionIdentityFromDurableProviderState({
+          execution: execution({ kind: provider }, `${provider}_driver`),
+          providerState: {
+            schema: "paperclip.runner.managed-provider-state.v1",
+            lifecycle: "suspended",
+            normalizedSessionId: "native-session",
+            descriptor: { kind: provider, config: {} },
+            providerSessionId: "managed-session-1",
+            activeTurnId: null,
+          },
+        }),
+      ).toEqual({
+        providerSessionId: "managed-session-1",
+        providerBackendSessionId: "managed-session-1",
+        providerSessionIdentity: null,
+      });
+    },
+  );
 });
 
 describe("remote provider checkpoint snapshots", () => {
@@ -813,7 +1126,7 @@ describe("remote provider checkpoint snapshots", () => {
       sourcePath: "/remote/session/filesystem/codex-home",
       targetPath: "/tmp/paperclip-checkpoint-test-codex-home",
       mode: 0o700,
-      excludeTopLevelEntries: ["tmp", ".tmp", "auth.json", "config.toml"],
+      excludeEntries: ["tmp", ".tmp", "auth.json", "config.toml"],
     });
 
     expect(execute).toHaveBeenNthCalledWith(
@@ -848,7 +1161,40 @@ describe("remote provider checkpoint snapshots", () => {
     );
   });
 
-  it("rejects non-top-level checkpoint exclusions", async () => {
+  it("omits nested ACPX-Codex scratch aliases without widening the exclusion", async () => {
+    const execute = vi.fn().mockResolvedValue({
+      exitCode: 0,
+      timedOut: false,
+      stdout: "",
+      stderr: "",
+    });
+    const syncOut = vi.fn(async () => undefined);
+    const sessionDirectory = acpxRuntimeSessionDirectoryName("session");
+    const excluded = [
+      `acpx/${sessionDirectory}/codex-home/tmp`,
+      `acpx/${sessionDirectory}/codex-home/.tmp`,
+      `acpx/${sessionDirectory}/codex-home/auth.json`,
+      `acpx/${sessionDirectory}/codex-home/config.toml`,
+    ];
+
+    await syncRemoteRunnerDirectoryOut({
+      runner: { execute, syncOut } as never,
+      sourcePath: "/remote/session/filesystem/acpx",
+      targetPath: "/tmp/paperclip-checkpoint-test-acpx",
+      mode: 0o700,
+      excludeEntries: excluded,
+    });
+
+    const snapshotCommand = String(execute.mock.calls[1]?.[0]?.args?.[1]);
+    for (const entry of excluded) {
+      expect(snapshotCommand).toContain(`'--exclude=./${entry}'`);
+    }
+    expect(snapshotCommand).not.toContain("--exclude=./acpx-state");
+    expect(snapshotCommand).not.toContain("--exclude=./codex-home");
+    expect(syncOut).toHaveBeenCalledOnce();
+  });
+
+  it("rejects unsafe relative checkpoint exclusions", async () => {
     const execute = vi.fn().mockResolvedValue({
       exitCode: 0,
       timedOut: false,
@@ -861,7 +1207,7 @@ describe("remote provider checkpoint snapshots", () => {
         sourcePath: "/remote/codex-home",
         targetPath: "/tmp/paperclip-checkpoint-invalid-codex-home",
         mode: 0o700,
-        excludeTopLevelEntries: ["../outside"],
+        excludeEntries: ["../outside"],
       }),
     ).rejects.toThrow("runner_remote_checkpoint_exclusion_invalid");
   });
@@ -962,7 +1308,7 @@ describe("remote provider checkpoint restores", () => {
         sourcePath,
         targetPath: "/remote/codex-home",
         mode: 0o700,
-        excludeTopLevelEntries: ["tmp", ".tmp", "auth.json", "config.toml"],
+        excludeEntries: ["tmp", ".tmp", "auth.json", "config.toml"],
       });
 
       expect(syncIn).toHaveBeenCalledOnce();
@@ -1065,6 +1411,25 @@ describe("remote runner transport authorization", () => {
         runnerIngressAuthorized: true,
       }),
     ).toBe("listen_ws");
+  });
+});
+
+describe("required remote checkpoint completion", () => {
+  it.each(["unavailable", "not_suspended"] as const)(
+    "fails a settled runner when its checkpoint is %s",
+    (incompleteReason) => {
+      expect(
+        remoteCheckpointIncompleteFailure("settled", incompleteReason),
+      ).toMatchObject({
+        message: `runner_remote_checkpoint_incomplete: exact suspended harness state unavailable (${incompleteReason})`,
+      });
+    },
+  );
+
+  it("preserves the original startup error for a runner that never settled", () => {
+    expect(
+      remoteCheckpointIncompleteFailure("unsettled", "unavailable"),
+    ).toBeNull();
   });
 });
 
@@ -3344,6 +3709,7 @@ describe("runnerd provider runtime wiring", () => {
           input: expect.objectContaining({
             workspace: expect.objectContaining({ cwd: remoteCwd }),
           }),
+          requireSessionCloseBeforeReturn: true,
         }),
       );
       const backendOptions = state.createBackend.mock.calls[0]![1];
@@ -3366,6 +3732,91 @@ describe("runnerd provider runtime wiring", () => {
       }
       await rm(stateBase, { recursive: true, force: true });
     }
+  });
+
+  it("makes remote authority archival idempotent and returns the archived state", async () => {
+    const remoteExecute = vi.fn();
+    const remoteTarget = {
+      kind: "remote" as const,
+      transport: "sandbox" as const,
+      providerKey: "daytona",
+      leaseId: "lease-authority-archive",
+      remoteCwd: "/home/daytona/paperclip-workspace",
+      runner: { execute: remoteExecute },
+    } as never;
+    const normalizedSessionId = execution.session.normalizedSessionId;
+    if (!normalizedSessionId) {
+      throw new Error("fixture requires a normalized native session id");
+    }
+    const archiveIdentity = {
+      runnerInstanceId: "runner-authority-archive",
+      environmentLeaseId: "lease-authority-archive",
+      runId: execution.binding.runId,
+      normalizedSessionId,
+      turnId: "turn-authority-archive",
+      itemId: "item-authority-archive",
+    };
+    const archivedState = {
+      schema: "paperclip.runner.durable.state.v1",
+      ...archiveIdentity,
+      lifecycle: "suspended",
+    };
+    state.createBackend.mockClear();
+    state.createTransport.mockClear();
+    await createRunnerdBackend({
+      db: leaseDb(execution),
+      execution,
+      runnerInstanceId: archiveIdentity.runnerInstanceId,
+      runnerExecutionTarget: remoteTarget,
+    });
+    state.createBackend.mock.calls[0]![1].codexTransportFactory!();
+    const archiveExternalRunnerState =
+      state.createTransport.mock.calls[0]![0].archiveExternalRunnerState;
+    expect(archiveExternalRunnerState).toBeTypeOf("function");
+    remoteExecute.mockClear();
+    remoteExecute.mockResolvedValue({
+      exitCode: 0,
+      timedOut: false,
+      stdout: Buffer.from(JSON.stringify(archivedState)).toString("base64"),
+      stderr: "",
+    });
+
+    await expect(
+      archiveExternalRunnerState!({
+        archiveKey: "a".repeat(24),
+        priorIdentity: archiveIdentity,
+      }),
+    ).resolves.toEqual(archivedState);
+    await expect(
+      archiveExternalRunnerState!({
+        archiveKey: "a".repeat(24),
+        priorIdentity: archiveIdentity,
+      }),
+    ).resolves.toEqual(archivedState);
+    expect(remoteExecute).toHaveBeenCalledTimes(2);
+    expect(remoteExecute.mock.calls[0]![0]).toEqual(
+      expect.objectContaining({
+        command: "sh",
+        args: expect.arrayContaining([
+          expect.stringContaining(
+            'test ! -e "$1" && test ! -L "$1" && test -f "$3" && test ! -L "$3"',
+          ),
+        ]),
+      }),
+    );
+
+    remoteExecute.mockResolvedValueOnce({
+      exitCode: 1,
+      timedOut: false,
+      stdout: "",
+      stderr: "source and archive both exist",
+    });
+    await expect(
+      archiveExternalRunnerState!({
+        archiveKey: "a".repeat(24),
+        priorIdentity: archiveIdentity,
+      }),
+    ).rejects.toThrow("runner_remote_authority_archive_failed");
   });
 
   it("uses the native execution workspace as the local provider containment root", async () => {
@@ -3672,6 +4123,220 @@ describe("runnerd provider runtime wiring", () => {
     }
   });
 
+  it.each([
+    {
+      directLifecycle: null,
+      backupLifecycle: "suspended",
+      corrupt: false,
+      accepted: true,
+    },
+    {
+      directLifecycle: "empty",
+      backupLifecycle: "suspended",
+      corrupt: false,
+      accepted: true,
+    },
+    {
+      directLifecycle: "ready",
+      backupLifecycle: "suspended",
+      corrupt: false,
+      accepted: false,
+    },
+    {
+      directLifecycle: "malformed",
+      backupLifecycle: "suspended",
+      corrupt: false,
+      accepted: false,
+    },
+    {
+      directLifecycle: "nonempty",
+      backupLifecycle: "suspended",
+      corrupt: false,
+      accepted: false,
+    },
+    {
+      directLifecycle: null,
+      backupLifecycle: "ready",
+      corrupt: false,
+      accepted: false,
+    },
+    {
+      directLifecycle: null,
+      backupLifecycle: "suspended",
+      corrupt: true,
+      accepted: false,
+    },
+  ] as const)(
+    "uses remote prior-run backup when acceptance=$accepted direct=$directLifecycle backup=$backupLifecycle corrupt=$corrupt",
+    async ({ directLifecycle, backupLifecycle, corrupt, accepted }) => {
+      const stateBase = await mkdtemp(
+        join(tmpdir(), "paperclip-remote-prior-run-state-"),
+      );
+      const previousStateDirectory = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
+      const priorExecution = {
+        ...execution,
+        binding: {
+          ...execution.binding,
+          companyId: "company-remote-prior-scope",
+          runId: "run-remote-prior-scope",
+          agentId: "agent-remote-prior-scope",
+          executionWorkspaceId: "workspace-remote-prior-scope",
+        },
+        session: {
+          ...execution.session,
+          normalizedSessionId: "session-remote-prior-scope",
+        },
+      } as NativeExecutionInputV1;
+      const currentExecution = {
+        ...priorExecution,
+        binding: {
+          ...priorExecution.binding,
+          runId: "run-current-remote-scope",
+        },
+      } as NativeExecutionInputV1;
+      const priorRunDb = {
+        select: () => ({
+          from: () => ({
+            where: () => ({
+              limit: () =>
+                Promise.resolve([
+                  {
+                    status: "succeeded",
+                    runnerProfileJson: {
+                      nativeExecutionInput: priorExecution,
+                    },
+                  },
+                ]),
+            }),
+          }),
+        }),
+      } as unknown as Db;
+      const remoteTarget = {
+        kind: "remote" as const,
+        transport: "sandbox" as const,
+        providerKey: "daytona",
+        leaseId: "environment-lease-remote-prior-scope",
+        remoteCwd: "/home/daytona/paperclip-workspace",
+        runner: {
+          execute: vi.fn(),
+        },
+      } as never;
+      const identity = {
+        runId: priorExecution.binding.runId,
+        normalizedSessionId: priorExecution.session.normalizedSessionId,
+        runnerInstanceId: "runner-remote-prior-scope",
+        environmentLeaseId: "lease-remote-prior-scope",
+      };
+      try {
+        state.createBackend.mockClear();
+        state.createTransport.mockClear();
+        await createRunnerdBackend({
+          db: leaseDb(priorExecution),
+          execution: priorExecution,
+          runnerInstanceId: identity.runnerInstanceId,
+          runnerExecutionTarget: remoteTarget,
+        });
+        state.createBackend.mock.calls[0]![1].codexTransportFactory!();
+        const scopedRoot =
+          state.createTransport.mock.calls[0]![0].stateDirectory!;
+        await mkdir(join(scopedRoot, "control-plane"), { recursive: true });
+        await writeFile(
+          join(scopedRoot, "control-plane", "control-plane-state.json"),
+          JSON.stringify(durableControlPlaneState(identity)),
+        );
+        if (directLifecycle === "empty") {
+          // Remote transports before the externally-owned-state fix left an
+          // empty local placeholder beside the controller state. It is not an
+          // authority record and must not mask a verified remote backup.
+          await mkdir(join(scopedRoot, "runner"), { recursive: true });
+        } else if (directLifecycle === "nonempty") {
+          await mkdir(join(scopedRoot, "runner"), { recursive: true });
+          await writeFile(
+            join(scopedRoot, "runner", "unexpected-state.json"),
+            "{}",
+          );
+        } else if (directLifecycle !== null) {
+          await mkdir(join(scopedRoot, "runner"), { recursive: true });
+          await writeFile(
+            join(scopedRoot, "runner", "runner-state.json"),
+            JSON.stringify(
+              directLifecycle === "malformed"
+                ? {
+                    ...durableRunnerState(identity, "suspended"),
+                    runId: "conflicting-direct-run",
+                  }
+                : durableRunnerState(identity, directLifecycle),
+            ),
+          );
+        }
+        const backupRoot = join(scopedRoot, "failover-backups", "current");
+        await mkdir(join(backupRoot, "runner"), { recursive: true });
+        await mkdir(join(backupRoot, "codex-home"), { recursive: true });
+        await writeFile(
+          join(backupRoot, "runner", "runner-state.json"),
+          JSON.stringify(durableRunnerState(identity, backupLifecycle)),
+        );
+        const manifest = buildNativeHarnessBackupManifest({
+          backupRoot,
+          execution: priorExecution,
+          runnerInstanceId: identity.runnerInstanceId,
+          providerSessionIdentity: {
+            providerSessionId: "provider-remote-prior-scope",
+            providerBackendSessionId: null,
+            providerSessionIdentity: null,
+          },
+          sourceProviderLeaseId: "sandbox-remote-prior-scope",
+        });
+        await writeFile(
+          join(backupRoot, "manifest.json"),
+          JSON.stringify(manifest),
+        );
+        if (corrupt) {
+          await writeFile(
+            join(backupRoot, "runner", "runner-state.json"),
+            JSON.stringify({
+              ...durableRunnerState(identity, backupLifecycle),
+              x: 1,
+            }),
+          );
+        }
+        state.createBackend.mockClear();
+        state.createTransport.mockClear();
+
+        const continuation = createRunnerdBackend({
+          db: priorRunDb,
+          execution: currentExecution,
+          runnerInstanceId: "runner-current-remote-scope",
+          runnerExecutionTarget: remoteTarget,
+        });
+        if (!accepted) {
+          await expect(continuation).rejects.toThrow(
+            "runner_state_identity_mismatch",
+          );
+          expect(state.createBackend).not.toHaveBeenCalled();
+          return;
+        }
+        await expect(continuation).resolves.toBeDefined();
+        state.createBackend.mock.calls[0]![1].codexTransportFactory!();
+        expect(state.createTransport.mock.calls[0]![0].prpIdentity).toEqual(
+          expect.objectContaining({
+            runId: currentExecution.binding.runId,
+            runnerInstanceId: identity.runnerInstanceId,
+            environmentLeaseId: identity.environmentLeaseId,
+          }),
+        );
+      } finally {
+        if (previousStateDirectory === undefined) {
+          delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+        } else {
+          process.env.PAPERCLIP_RUNNER_STATE_DIR = previousStateDirectory;
+        }
+        await rm(stateBase, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("quarantines legacy prior-run state only after the database proves a terminal owner in the same full scope", async () => {
     const stateBase = await mkdtemp(
       join(tmpdir(), "paperclip-legacy-terminal-unsuspended-state-"),
@@ -3936,6 +4601,33 @@ describe("runnerd provider runtime wiring", () => {
         join(scopedRoot, "runner", "runner-state.json"),
         JSON.stringify(durableRunnerState(identity, "ready")),
       );
+      await mkdir(join(scopedRoot, "codex-home", "sessions"), {
+        recursive: true,
+      });
+      await mkdir(join(scopedRoot, "codex-home", "tmp"), { recursive: true });
+      await mkdir(join(scopedRoot, "codex-home", ".tmp"), {
+        recursive: true,
+      });
+      await writeFile(
+        join(scopedRoot, "codex-home", "auth.json"),
+        '{"OPENAI_API_KEY":"fixture-secret"}',
+      );
+      await writeFile(
+        join(scopedRoot, "codex-home", "config.toml"),
+        'bearer_token = "fixture-secret"',
+      );
+      await writeFile(
+        join(scopedRoot, "codex-home", "tmp", "transient"),
+        "transient",
+      );
+      await writeFile(
+        join(scopedRoot, "codex-home", ".tmp", "transient"),
+        "transient",
+      );
+      await writeFile(
+        join(scopedRoot, "codex-home", "sessions", "rollout.jsonl"),
+        "durable session history",
+      );
       state.createBackend.mockClear();
       state.createTransport.mockClear();
 
@@ -3950,6 +4642,26 @@ describe("runnerd provider runtime wiring", () => {
       const quarantineEntries = await readdir(join(stateBase, "quarantine"));
       expect(quarantineEntries).toHaveLength(1);
       expect(quarantineEntries[0]).toContain(".identity_indeterminate.");
+      const quarantinedRoot = join(
+        stateBase,
+        "quarantine",
+        quarantineEntries[0]!,
+      );
+      for (const entry of ["tmp", ".tmp", "auth.json", "config.toml"]) {
+        await expect(
+          access(join(quarantinedRoot, "codex-home", entry)),
+        ).rejects.toThrow();
+      }
+      await expect(
+        access(
+          join(quarantinedRoot, "codex-home", "sessions", "rollout.jsonl"),
+        ),
+      ).resolves.toBeUndefined();
+      await expect(
+        access(
+          join(quarantinedRoot, "control-plane", "control-plane-state.json"),
+        ),
+      ).resolves.toBeUndefined();
       expect(state.createBackend).not.toHaveBeenCalled();
       expect(state.createTransport).not.toHaveBeenCalled();
     } finally {

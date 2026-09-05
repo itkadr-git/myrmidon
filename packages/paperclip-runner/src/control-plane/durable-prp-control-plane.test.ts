@@ -1043,6 +1043,15 @@ describe.sequential("DurablePrpControlPlane", () => {
         controlPlane,
         controlPlane.issueBootstrapTicket(),
       );
+      const nextAuthorityCommand = controlPlane.queueCommand(
+        "runner.drain",
+        {},
+        "command-after-suspend-1",
+        true,
+      );
+      expect(
+        controlPlane.store.state.commandDeliveryCounts[command.commandId],
+      ).toBe(1);
       const terminalResult = {
         protocol: "paperclip.runner",
         version: 1,
@@ -1068,7 +1077,13 @@ describe.sequential("DurablePrpControlPlane", () => {
       });
       expect(controlPlane.store.state.commands).toMatchObject([
         { commandId: "command-suspend-1", status: "completed" },
+        { commandId: "command-after-suspend-1", status: "pending" },
       ]);
+      expect(
+        controlPlane.store.state.commandDeliveryCounts[
+          nextAuthorityCommand.commandId
+        ],
+      ).toBeUndefined();
 
       sendSecure(client!, terminalResult);
       await expect(receiveSecure(client!)).resolves.toMatchObject({
@@ -1076,7 +1091,22 @@ describe.sequential("DurablePrpControlPlane", () => {
         payload: { commandId: "command-suspend-1" },
       });
       expect(controlPlane.store.state.duplicateCommandResults).toBe(1);
+      expect(
+        controlPlane.store.state.commandDeliveryCounts[
+          nextAuthorityCommand.commandId
+        ],
+      ).toBeUndefined();
+      const leaseToken = client!.leaseToken!;
       client?.socket.destroy();
+      const successor = await authenticate(controlPlane, leaseToken);
+      expect(successor?.welcome.payload).toMatchObject({
+        pendingCommands: [
+          expect.objectContaining({
+            commandId: nextAuthorityCommand.commandId,
+          }),
+        ],
+      });
+      successor?.socket.destroy();
     } finally {
       await controlPlane.stop();
       rmSync(root, { recursive: true, force: true });

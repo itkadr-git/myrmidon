@@ -131,6 +131,328 @@ it("identifies an active provider turn that must stop before suspension", () => 
   });
 });
 
+it("infers a remote provider turn until its own terminal event is durable", () => {
+  expect(
+    runnerdRecoveryInternals.providerTurnIsActiveFromCommittedEvents([
+      { eventType: "turn.started" },
+      { eventType: "run.result.proposed" },
+      { eventType: "run.terminal" },
+    ]),
+  ).toBe(true);
+  expect(
+    runnerdRecoveryInternals.providerTurnIsActiveFromCommittedEvents([
+      { eventType: "turn.started" },
+      { eventType: "run.terminal" },
+      { eventType: "turn.interrupted" },
+    ]),
+  ).toBe(false);
+});
+
+it("accepts only the observed provider start correlated by the command result", () => {
+  const requestedTurnId = "turn_lab_0123456789abcdef0123456789abcdef";
+  expect(
+    runnerdRecoveryInternals.turnStartResponseReady({
+      responseEpoch: 2,
+      observedEpoch: 2,
+      expectedProviderTurnId: requestedTurnId,
+      boundTurnId: requestedTurnId,
+    }),
+  ).toBe(true);
+  expect(
+    runnerdRecoveryInternals.turnStartResponseReady({
+      responseEpoch: 2,
+      observedEpoch: 2,
+      expectedProviderTurnId: requestedTurnId,
+      boundTurnId: "provider-turn-different",
+    }),
+  ).toBe(false);
+  const providerAssignedTurnId = "provider-turn-assigned-for-this-command";
+  expect(
+    runnerdRecoveryInternals.turnStartResponseReady({
+      responseEpoch: 2,
+      observedEpoch: 2,
+      expectedProviderTurnId: providerAssignedTurnId,
+      boundTurnId: providerAssignedTurnId,
+    }),
+  ).toBe(true);
+  expect(
+    runnerdRecoveryInternals.turnStartResponseReady({
+      responseEpoch: 2,
+      observedEpoch: 1,
+      expectedProviderTurnId: requestedTurnId,
+      boundTurnId: requestedTurnId,
+    }),
+  ).toBe(false);
+});
+
+it("defers turn starts until their command result and rejects stale identities", () => {
+  expect(
+    runnerdRecoveryInternals.turnStartNotificationDisposition({
+      responsePending: true,
+      expectedProviderTurnId: null,
+      observedProviderTurnId: "provider-turn-early",
+    }),
+  ).toBe("defer");
+  expect(
+    runnerdRecoveryInternals.turnStartNotificationDisposition({
+      responsePending: true,
+      expectedProviderTurnId: "provider-turn-current",
+      observedProviderTurnId: "provider-turn-stale",
+    }),
+  ).toBe("reject");
+  expect(
+    runnerdRecoveryInternals.turnStartNotificationDisposition({
+      responsePending: true,
+      expectedProviderTurnId: "provider-turn-current",
+      observedProviderTurnId: "",
+    }),
+  ).toBe("reject");
+  expect(
+    runnerdRecoveryInternals.turnStartNotificationDisposition({
+      responsePending: true,
+      expectedProviderTurnId: "provider-turn-current",
+      observedProviderTurnId: "provider-turn-current",
+    }),
+  ).toBe("accept");
+});
+
+it("requires ACPX command results to preserve the requested turn identity", () => {
+  expect(
+    runnerdRecoveryInternals.turnStartCommandResultValid({
+      requestedTurnId: "turn-requested",
+      providerTurnId: "turn-requested",
+      requireRequestedIdentity: true,
+    }),
+  ).toBe(true);
+  expect(
+    runnerdRecoveryInternals.turnStartCommandResultValid({
+      requestedTurnId: "turn-requested",
+      providerTurnId: "turn-different",
+      requireRequestedIdentity: true,
+    }),
+  ).toBe(false);
+  expect(
+    runnerdRecoveryInternals.turnStartCommandResultValid({
+      requestedTurnId: "turn-requested",
+      providerTurnId: "provider-assigned-turn",
+      requireRequestedIdentity: false,
+    }),
+  ).toBe(true);
+});
+
+it.each(["before", "after"] as const)(
+  "retries external authority rotation after crashing %s the remote archive",
+  async (crashPoint) => {
+    const root = await mkdtemp(join(tmpdir(), "runner-external-rotation-"));
+    const priorIdentity = {
+      runnerInstanceId: "runner-external-rotation",
+      environmentLeaseId: "lease-external-rotation",
+      runId: "run-external-prior",
+      normalizedSessionId: "session-external-rotation",
+      turnId: "turn-external-prior",
+      itemId: "item-external-prior",
+    };
+    const desiredIdentity = {
+      ...priorIdentity,
+      runId: "run-external-next",
+      turnId: "turn-external-next",
+      itemId: "item-external-next",
+    };
+    const controlPlaneState = {
+      schema: "paperclip.runner.durable.control-plane-state.v1",
+      identity: priorIdentity,
+    };
+    let activeRunnerState: Record<string, unknown> | null = {
+      schema: "paperclip.runner.durable.state.v1",
+      ...priorIdentity,
+      lifecycle: "suspended",
+    };
+    let archivedRunnerState: Record<string, unknown> | null = null;
+    let readCount = 0;
+    let archiveCount = 0;
+    const readRunnerState = async () => {
+      readCount += 1;
+      if (activeRunnerState === null) throw new Error("runner state moved");
+      return activeRunnerState;
+    };
+    const archiveRunnerState = async () => {
+      archiveCount += 1;
+      if (archiveCount === 1) {
+        if (crashPoint === "after") {
+          archivedRunnerState = activeRunnerState;
+          activeRunnerState = null;
+        }
+        throw new Error(`crashed ${crashPoint} remote archive`);
+      }
+      if (activeRunnerState !== null) {
+        archivedRunnerState = activeRunnerState;
+        activeRunnerState = null;
+      }
+      if (archivedRunnerState === null) {
+        throw new Error("archived runner state unavailable");
+      }
+      return archivedRunnerState;
+    };
+    try {
+      await mkdir(join(root, "control-plane"), { recursive: true });
+      await writeFile(
+        join(root, "control-plane", "control-plane-state.json"),
+        JSON.stringify(controlPlaneState),
+      );
+      await expect(
+        runnerdRecoveryInternals.rotateExternalAuthorityEpoch(
+          root,
+          controlPlaneState,
+          desiredIdentity,
+          readRunnerState,
+          archiveRunnerState,
+        ),
+      ).rejects.toThrow(`crashed ${crashPoint} remote archive`);
+      await expect(stat(join(root, "control-plane"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+
+      await expect(
+        runnerdRecoveryInternals.rotateExternalAuthorityEpoch(
+          root,
+          controlPlaneState,
+          desiredIdentity,
+          readRunnerState,
+          archiveRunnerState,
+        ),
+      ).resolves.toEqual(controlPlaneState);
+      expect(readCount).toBe(1);
+      expect(archiveCount).toBe(2);
+      expect(activeRunnerState).toBeNull();
+      expect(archivedRunnerState).toEqual(
+        expect.objectContaining(priorIdentity),
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
+
+it("quiesces the control route before checkpoint and containment regardless of process completion", async () => {
+  const settledSteps: string[] = [];
+  await runnerdRecoveryInternals.releaseRunnerProcessOwnership({
+    runnerSettled: true,
+    checkpoint: async (settlement) => {
+      expect(settlement).toBe("settled");
+      settledSteps.push("checkpoint");
+    },
+    forceKill: () => {
+      settledSteps.push("kill");
+    },
+    release: async () => {
+      settledSteps.push("release");
+    },
+  });
+  expect(settledSteps).toEqual(["release", "checkpoint", "kill"]);
+
+  const unsettledSteps: string[] = [];
+  await runnerdRecoveryInternals.releaseRunnerProcessOwnership({
+    runnerSettled: false,
+    checkpoint: async (settlement) => {
+      expect(settlement).toBe("unsettled");
+      unsettledSteps.push("checkpoint");
+    },
+    forceKill: () => {
+      unsettledSteps.push("kill");
+    },
+    release: async () => {
+      unsettledSteps.push("release");
+    },
+  });
+  expect(unsettledSteps).toEqual(["release", "checkpoint", "kill"]);
+
+  const failedCheckpointSteps: string[] = [];
+  await expect(
+    runnerdRecoveryInternals.releaseRunnerProcessOwnership({
+      runnerSettled: true,
+      checkpoint: async () => {
+        failedCheckpointSteps.push("checkpoint");
+        throw new Error("runner_remote_checkpoint_incomplete");
+      },
+      forceKill: () => {
+        failedCheckpointSteps.push("kill");
+      },
+      release: async () => {
+        failedCheckpointSteps.push("release");
+      },
+    }),
+  ).rejects.toThrow("runner_remote_checkpoint_incomplete");
+  expect(failedCheckpointSteps).toEqual(["release", "checkpoint", "kill"]);
+});
+
+it("waits for the exact durable suspension command behind prior close work", async () => {
+  const commands = [
+    {
+      commandId: "command_close_drain",
+      type: "runner.drain",
+      status: "pending",
+    },
+  ];
+  let lifecycle = "ready";
+  let pumpCount = 0;
+
+  await expect(
+    runnerdRecoveryInternals.awaitRunnerSuspensionBarrier({
+      commands: () => commands,
+      queueSuspend: (commandId) => {
+        commands.push({
+          commandId,
+          type: "runner.suspend",
+          status: "pending",
+        });
+      },
+      readRunnerState: async () => ({ lifecycle }),
+      runnerHasExited: async () => true,
+      pump: () => {
+        pumpCount += 1;
+        if (pumpCount === 1) commands[0]!.status = "completed";
+        if (pumpCount === 2) {
+          commands[1]!.status = "completed";
+          lifecycle = "suspended";
+        }
+      },
+      deadline: Date.now() + 1_000,
+      pollIntervalMs: 0,
+    }),
+  ).resolves.toBe(true);
+  expect(commands.map((command) => command.type)).toEqual([
+    "runner.drain",
+    "runner.suspend",
+  ]);
+  expect(pumpCount).toBeGreaterThanOrEqual(2);
+});
+
+it("does not accept process exit without durable suspension", async () => {
+  const commands: Array<{
+    commandId: string;
+    type: string;
+    status: string;
+  }> = [];
+
+  await expect(
+    runnerdRecoveryInternals.awaitRunnerSuspensionBarrier({
+      commands: () => commands,
+      queueSuspend: (commandId) => {
+        commands.push({
+          commandId,
+          type: "runner.suspend",
+          status: "pending",
+        });
+      },
+      readRunnerState: async () => ({ lifecycle: "ready" }),
+      runnerHasExited: async () => true,
+      pump: () => undefined,
+      deadline: Date.now() + 5,
+      pollIntervalMs: 0,
+    }),
+  ).resolves.toBe(false);
+});
+
 it("keeps ACPX terminal tools under the reserved runner-owned catalog", () => {
   const tools = [
     {
@@ -1131,6 +1453,29 @@ it("binds an immediately failed durable turn before exposing its terminal", asyn
       message: { role: "user", text: "Fail this test turn." },
     });
     expect(accepted.turnId).toBe("provider-turn-1");
+    const durableState = JSON.parse(
+      await readFile(
+        join(stateDirectory, "control-plane", "control-plane-state.json"),
+        "utf8",
+      ),
+    ) as {
+      commands: Array<{
+        type: string;
+        payload: Record<string, unknown>;
+      }>;
+    };
+    const durableTurnStart = durableState.commands.find(
+      (command) => command.type === "turn.start",
+    );
+    expect(durableTurnStart).toMatchObject({
+      payload: {
+        turnId: expect.stringMatching(/^turn_lab_[a-f0-9]{32}$/),
+      },
+    });
+    expect(JSON.parse(String(durableTurnStart?.payload.text))).toMatchObject({
+      message: "Fail this test turn.",
+      task: { objective: "Exercise an immediate provider failure." },
+    });
     const events = [];
     for await (const event of session.events()) {
       events.push(event);
@@ -1751,6 +2096,115 @@ it.each([
   },
 );
 
+it("probes an exact-authority resume and confirms its live provider identity", async () => {
+  const stateDirectory = await mkdtemp(
+    join(tmpdir(), "runnerd-exact-authority-resume-"),
+  );
+  const identity = {
+    runnerInstanceId: "runner-exact-resume",
+    environmentLeaseId: "lease-exact-resume",
+    runId: "run-exact-resume",
+    normalizedSessionId: "session-exact-resume",
+    turnId: "turn-exact-resume",
+    itemId: "item-exact-resume",
+  };
+  const options = {
+    runnerBinary: defaultCapabilityRunnerdBinary(),
+    codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory, "--durable-turn-ids"),
+    stateDirectory,
+    lifecyclePolicy: { mode: "per_turn" as const, idleTimeoutMs: null },
+    prpIdentity: identity,
+  };
+  const first = createCapabilityRunnerdCodexTransport(options);
+  first.transport.setServerRequestHandler(async () => ({
+    success: true,
+    contentItems: [],
+  }));
+  let providerThread: { id: string; sessionId: string } | null = null;
+  try {
+    const opened = await first.transport.request("thread/start", {
+      cwd: tmpdir(),
+      dynamicTools: [],
+    });
+    const thread = opened.thread as Record<string, unknown>;
+    providerThread = {
+      id: String(thread.id),
+      sessionId: String(thread.sessionId),
+    };
+  } finally {
+    await first.transport.close();
+  }
+  if (providerThread === null) {
+    throw new Error("exact-authority fixture did not return a provider thread");
+  }
+
+  const statePath = join(
+    stateDirectory,
+    "control-plane",
+    "control-plane-state.json",
+  );
+  const beforeResume = JSON.parse(await readFile(statePath, "utf8")) as {
+    commands: Array<{ type: string }>;
+    committedEvents: Array<{ eventType: string }>;
+  };
+  expect(
+    beforeResume.commands.some((command) => command.type === "run.attach"),
+  ).toBe(false);
+  const priorResumeEvents = beforeResume.committedEvents.filter(
+    (event) => event.eventType === "session.resumed",
+  ).length;
+  const priorSnapshots = beforeResume.commands.filter(
+    (command) => command.type === "session.snapshot",
+  ).length;
+
+  const resumed = createCapabilityRunnerdCodexTransport({
+    ...options,
+    resumeProviderSession: {
+      driverSessionId: providerThread.id,
+      providerSessionId: providerThread.sessionId,
+    },
+  });
+  resumed.transport.setServerRequestHandler(async () => ({
+    success: true,
+    contentItems: [],
+  }));
+  try {
+    const read = await resumed.transport.request("thread/read", {});
+    expect(read.thread).toMatchObject(providerThread);
+    const afterResume = JSON.parse(await readFile(statePath, "utf8")) as {
+      commands: Array<{ commandId: string; type: string; status: string }>;
+      committedEvents: Array<{ eventType: string }>;
+    };
+    expect(afterResume.commands).toContainEqual(
+      expect.objectContaining({
+        commandId: expect.stringMatching(/^command_resume_probe_/),
+        type: "runner.drain",
+        status: "completed",
+      }),
+    );
+    expect(afterResume.commands).toContainEqual(
+      expect.objectContaining({
+        type: "session.snapshot",
+        status: "completed",
+      }),
+    );
+    expect(
+      afterResume.commands.filter(
+        (command) => command.type === "session.snapshot",
+      ),
+    ).toHaveLength(priorSnapshots + 2);
+    expect(
+      afterResume.committedEvents.filter(
+        (event) => event.eventType === "session.resumed",
+      ),
+    ).toHaveLength(priorResumeEvents + 1);
+  } finally {
+    await resumed.transport.close();
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+}, 30_000);
+
 it("cold-restores a suspended provider session under its durable run binding", async () => {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-cold-attach-"));
   const tracePath = join(stateDirectory, "provider-trace.ndjson");
@@ -1940,12 +2394,113 @@ it("cold-restores a suspended provider session under its durable run binding", a
   );
   await mismatched.transport.close();
 
+  const externalIdentity = {
+    ...secondIdentity,
+    runId: "run-cold-external",
+    turnId: "turn-cold-external",
+    itemId: "item-cold-external",
+  };
+  const rejectedExternalRotationSteps: string[] = [];
+  let externalArchiveDirectory: string | null = null;
+  const rejectedExternalRotation = createCapabilityRunnerdCodexTransport({
+    ...options,
+    runnerStateDirectory: externallyOwnedRunnerStateDirectory,
+    readRunnerState,
+    prepareExternalRunnerState: async () => {
+      rejectedExternalRotationSteps.push("prepared");
+    },
+    archiveExternalRunnerState: async ({ archiveKey }) => {
+      await expect(
+        stat(join(stateDirectory, "control-plane")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+      expect(
+        await stat(
+          join(
+            stateDirectory,
+            "authority-epochs",
+            `epoch-${archiveKey}`,
+            "control-plane",
+          ),
+        ),
+      ).toBeDefined();
+      externalArchiveDirectory = join(
+        stateDirectory,
+        "external-authority-epochs",
+        archiveKey,
+      );
+      await mkdir(externalArchiveDirectory, { recursive: true });
+      await rename(
+        join(externallyOwnedRunnerStateDirectory, "runner-state.json"),
+        join(externalArchiveDirectory, "runner-state.json"),
+      );
+      rejectedExternalRotationSteps.push("remote-archived");
+      throw new Error("controller crashed after external archive");
+    },
+    resumeDynamicTools: dynamicTools,
+    prpIdentity: externalIdentity,
+  });
+  await expect(
+    rejectedExternalRotation.transport.request("thread/read", {}),
+  ).rejects.toThrow("controller crashed after external archive");
+  await rejectedExternalRotation.transport.close();
+  expect(rejectedExternalRotationSteps).toEqual([
+    "prepared",
+    "remote-archived",
+  ]);
+  await expect(stat(join(stateDirectory, "control-plane"))).rejects.toThrow();
+  await expect(
+    stat(join(externallyOwnedRunnerStateDirectory, "runner-state.json")),
+  ).rejects.toThrow();
+
+  const externalRotationSteps: string[] = [];
+  const externallyRotated = createCapabilityRunnerdCodexTransport({
+    ...options,
+    runnerStateDirectory: externallyOwnedRunnerStateDirectory,
+    readRunnerState,
+    prepareExternalRunnerState: async () => {
+      throw new Error("retry must not prepare a new external runner");
+    },
+    archiveExternalRunnerState: async ({ archiveKey }) => {
+      expect(externalArchiveDirectory).toBe(
+        join(stateDirectory, "external-authority-epochs", archiveKey),
+      );
+      externalRotationSteps.push("archived");
+      return JSON.parse(
+        await readFile(
+          join(externalArchiveDirectory!, "runner-state.json"),
+          "utf8",
+        ),
+      ) as Record<string, unknown>;
+    },
+    resumeDynamicTools: dynamicTools,
+    resumeCompletionContract: {
+      revision: "contract-external",
+      criterionIds: ["criterion-external"],
+    },
+    prpIdentity: externalIdentity,
+  });
+  externallyRotated.transport.setServerRequestHandler(async () => ({
+    success: true,
+    contentItems: [],
+  }));
+  try {
+    const read = await externallyRotated.transport.request("thread/read", {});
+    expect(read.thread).toMatchObject({
+      id: firstProviderThread.id,
+      sessionId: firstProviderThread.sessionId,
+      cwd: tmpdir(),
+    });
+    expect(externalRotationSteps).toEqual(["archived"]);
+  } finally {
+    await externallyRotated.transport.close();
+  }
+
   const restored = createCapabilityRunnerdCodexTransport({
     ...options,
     runnerStateDirectory: externallyOwnedRunnerStateDirectory,
     readRunnerState,
     resumeDynamicTools: dynamicTools,
-    prpIdentity: secondIdentity,
+    prpIdentity: externalIdentity,
   });
   restored.transport.setServerRequestHandler(async () => ({
     success: true,
@@ -2141,7 +2696,7 @@ async function verifyLiveRunnerAdoption(mismatchedCheckpoint: boolean) {
       "restored adopted provider identity from the exact durable checkpoint after PRP event compaction; awaiting live confirmation",
     );
     expect(adopted.evidence().diagnostics).toContain(
-      "confirmed adopted provider identity against authenticated session.snapshot",
+      "confirmed adopted provider identity against authenticated recovery session.snapshot",
     );
   } finally {
     await adopted?.transport.close().catch(() => undefined);
