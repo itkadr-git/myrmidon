@@ -5231,6 +5231,113 @@ describeEmbeddedPostgres("tool access service", () => {
     }
   });
 
+  it("replaces an archived dedicated GitHub identity with an explicitly selected personal identity", async () => {
+    const company = await createCompany(db);
+    const userId = `github-personal-revival-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, [], "owner");
+    const agent = await createAgent(db, company.id);
+    const connector = fakeGitHubConnector(company.id, `agent:${agent.id}`);
+    const originalClaim = connector.claim;
+    connector.claim = vi.fn(async (input) => ({
+      ...await originalClaim(input),
+      subject: input.subject,
+    }));
+    const service = createTestToolAccessService(db, { paperclipCloudConnector: connector });
+    const actor = { actorType: "user" as const, actorId: userId };
+    const githubDefinition = getConnectableAppDefinition("github")!;
+    const previousOwnershipAvailability = githubDefinition.ownershipAvailability;
+    githubDefinition.ownershipAvailability = { ...previousOwnershipAvailability, platform_shared: true };
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      const href = String(url);
+      if (href === "https://api.github.com/user") {
+        return mcpHttpResponse({ id: 42, login: "octocat" });
+      }
+      if (href.includes("https://api.github.com/user/installations?")) {
+        return mcpHttpResponse({ installations: [{
+          id: 101,
+          repository_selection: "selected",
+          html_url: "https://github.com/settings/installations/101",
+          account: { login: "paperclipai" },
+        }] });
+      }
+      if (href.includes("https://api.github.com/user/installations/101/repositories?")) {
+        return mcpHttpResponse({ total_count: 1, repositories: [] });
+      }
+      if (href === GITHUB_CONNECTOR_PROFILES["github.code"].serverUrl) {
+        return mcpHttpResponse({
+          jsonrpc: "2.0",
+          id: "paperclip-catalog-refresh",
+          result: { tools: [{ name: "get_pull_request", annotations: { readOnlyHint: true } }] },
+        });
+      }
+      throw new Error(`unexpected fetch ${href}`);
+    });
+
+    try {
+      const dedicated = await service.connectGalleryApp(company.id, {
+        galleryKey: "github",
+        connectionMethodKey: "managed",
+        grantKind: "agent",
+        subjectAgentId: agent.id,
+        name: "GitHub",
+      }, actor);
+      const dedicatedStart = await service.startOAuth(company.id, dedicated.connectionId, {
+        redirectUri: "https://paperclip.example/api/tools/oauth/cloud-connector/callback",
+        actor,
+        subjectAgentId: agent.id,
+      });
+      await service.completePaperclipCloudConnectorCallback({
+        state: new URL(dedicatedStart.authorizationUrl).searchParams.get("state")!,
+        claimId: "github-dedicated-before-removal",
+        actor,
+      });
+      await service.archiveConnection(dedicated.connectionId, company.id, actor);
+
+      const personal = await service.connectGalleryApp(company.id, {
+        galleryKey: "github",
+        connectionMethodKey: "managed",
+        grantKind: "user",
+        name: "GitHub",
+      }, actor);
+      expect(personal.connectionId).toBe(dedicated.connectionId);
+      expect(personal.connection).toMatchObject({
+        status: "draft",
+        credentialPolicy: "per_user",
+      });
+
+      const personalStart = await service.startOAuth(company.id, personal.connectionId, {
+        redirectUri: "https://paperclip.example/api/tools/oauth/cloud-connector/callback",
+        actor,
+      });
+      const completed = await service.completePaperclipCloudConnectorCallback({
+        state: new URL(personalStart.authorizationUrl).searchParams.get("state")!,
+        claimId: "github-personal-after-removal",
+        actor,
+      });
+      expect(completed.connection).toMatchObject({
+        status: "active",
+        credentialPolicy: "per_user",
+      });
+
+      const grants = await service.listConnectionGrants(personal.connectionId, company.id);
+      expect(grants.grants).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          kind: "agent",
+          subjectAgentId: agent.id,
+          status: "revoked",
+        }),
+        expect.objectContaining({
+          kind: "user",
+          subjectUserId: userId,
+          status: "active",
+        }),
+      ]));
+      expect(grants.grants.some((grant) => grant.kind === "organization")).toBe(false);
+    } finally {
+      githubDefinition.ownershipAvailability = previousOwnershipAvailability;
+    }
+  });
+
   it("routes a managed Drive callback into the personal vault, filtered catalog, and provider-specific activity", async () => {
     const company = await createCompany(db);
     const userId = `drive-member-${randomUUID()}`;
@@ -9057,7 +9164,7 @@ describeEmbeddedPostgres("tool access service", () => {
     }, { actorType: "user", actorId: "board" })).rejects.toMatchObject({ status: 404 });
   });
 
-  it("reuses and revives a removed gallery app without requiring its applicationId", async () => {
+  it("reuses a removed gallery app while applying the omitted organization identity default", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
     const actor = { actorType: "user" as const, actorId: "local-board" };
@@ -9078,9 +9185,215 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(second.connectionId).toBe(first.connectionId);
     expect(second.application.status).toBe("draft");
     expect(second.connection.status).toBe("draft");
-    expect(second.connection.credentialPolicy).toBe("per_user");
+    expect(second.connection.credentialPolicy).toBe("shared");
+    const grants = await service.listConnectionGrants(second.connectionId, company.id);
+    expect(grants.grants).toEqual([
+      expect.objectContaining({ kind: "organization", status: "active", isDefault: true }),
+    ]);
     await expect(db.select().from(toolApplications)).resolves.toHaveLength(1);
     await expect(db.select().from(toolConnections)).resolves.toHaveLength(1);
+  });
+
+  it("restores grants and credential policy when an identity-changing revival fails", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const actor = {
+      actorType: "user" as const,
+      actorId: "local-board",
+      actorSource: "local_implicit" as const,
+    };
+    const fetchMock = mockToolsList([
+      { name: "get_file_contents", annotations: { readOnlyHint: true } },
+    ]);
+
+    const first = await service.connectGalleryApp(company.id, {
+      galleryKey: "github",
+      connectionMethodKey: "mcp-key",
+      grantKind: "organization",
+      name: "GitHub rollback",
+      credentialValues: { "credentials.authorization": "old-organization-token" },
+    }, actor);
+    await service.archiveConnection(first.connectionId, company.id, actor);
+    const beforeConnection = await service.getConnection(first.connectionId, company.id);
+    const beforeGrants = await service.listConnectionGrants(first.connectionId, company.id);
+    fetchMock.mockRejectedValue(new Error("provider unavailable"));
+
+    await expect(service.connectGalleryApp(company.id, {
+      galleryKey: "github",
+      connectionMethodKey: "mcp-key",
+      grantKind: "user",
+      name: "GitHub rollback",
+      credentialValues: { "credentials.authorization": "new-personal-token" },
+    }, actor)).rejects.toMatchObject({ status: 502 });
+
+    await expect(service.getConnection(first.connectionId, company.id)).resolves.toMatchObject({
+      status: beforeConnection.status,
+      credentialPolicy: beforeConnection.credentialPolicy,
+      credentialSecretRefs: beforeConnection.credentialSecretRefs,
+    });
+    const afterGrants = await service.listConnectionGrants(first.connectionId, company.id);
+    expect(afterGrants.grants).toEqual(beforeGrants.grants);
+  });
+
+  it("preserves a concurrent grant change when an identity-changing revival fails", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const actor = {
+      actorType: "user" as const,
+      actorId: "local-board",
+      actorSource: "local_implicit" as const,
+    };
+    const fetchMock = mockToolsList([
+      { name: "get_file_contents", annotations: { readOnlyHint: true } },
+    ]);
+
+    const first = await service.connectGalleryApp(company.id, {
+      galleryKey: "github",
+      connectionMethodKey: "mcp-key",
+      grantKind: "organization",
+      name: "GitHub concurrent rollback",
+      credentialValues: { "credentials.authorization": "old-organization-token" },
+    }, actor);
+    await service.archiveConnection(first.connectionId, company.id, actor);
+    fetchMock.mockImplementation(async () => {
+      const [personalGrant] = await db.select().from(connectionGrants).where(and(
+        eq(connectionGrants.connectionId, first.connectionId),
+        eq(connectionGrants.kind, "user"),
+      )).limit(1);
+      expect(personalGrant).toBeTruthy();
+      const concurrentUpdateAt = new Date(Date.now() + 2_000);
+      await db.update(connectionGrants).set({
+        status: "revoked",
+        credentialSecretRefs: [],
+        revokedAt: concurrentUpdateAt,
+        updatedAt: concurrentUpdateAt,
+      }).where(eq(connectionGrants.id, personalGrant!.id));
+      throw new Error("provider unavailable");
+    });
+
+    await expect(service.connectGalleryApp(company.id, {
+      galleryKey: "github",
+      connectionMethodKey: "mcp-key",
+      grantKind: "user",
+      name: "GitHub concurrent rollback",
+      credentialValues: { "credentials.authorization": "new-personal-token" },
+    }, actor)).rejects.toMatchObject({ status: 502 });
+
+    await expect(service.getConnection(first.connectionId, company.id)).resolves.toMatchObject({
+      status: "archived",
+      credentialPolicy: "shared",
+    });
+    const afterGrants = await service.listConnectionGrants(first.connectionId, company.id);
+    expect(afterGrants.grants).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "organization", status: "revoked" }),
+      expect.objectContaining({ kind: "user", status: "revoked", credentialSecretRefs: [] }),
+    ]));
+  });
+
+  it("preserves a concurrent connection update when an identity-changing revival fails", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const actor = {
+      actorType: "user" as const,
+      actorId: "local-board",
+      actorSource: "local_implicit" as const,
+    };
+    const fetchMock = mockToolsList([
+      { name: "get_file_contents", annotations: { readOnlyHint: true } },
+    ]);
+
+    const first = await service.connectGalleryApp(company.id, {
+      galleryKey: "github",
+      connectionMethodKey: "mcp-key",
+      grantKind: "organization",
+      name: "GitHub concurrent connection rollback",
+      credentialValues: { "credentials.authorization": "old-organization-token" },
+    }, actor);
+    await service.archiveConnection(first.connectionId, company.id, actor);
+    fetchMock.mockImplementation(async () => {
+      const concurrentUpdateAt = new Date(Date.now() + 2_000);
+      const [connection] = await db.select().from(toolConnections).where(eq(
+        toolConnections.id,
+        first.connectionId,
+      ));
+      await db.update(toolConnections).set({
+        status: "active",
+        enabled: true,
+        config: { ...connection.config, concurrentOAuthCompletion: true },
+        transportConfig: { ...connection.transportConfig, concurrentOAuthCompletion: true },
+        updatedAt: concurrentUpdateAt,
+      }).where(eq(toolConnections.id, first.connectionId));
+      throw new Error("provider unavailable");
+    });
+
+    await expect(service.connectGalleryApp(company.id, {
+      galleryKey: "github",
+      connectionMethodKey: "mcp-key",
+      grantKind: "user",
+      name: "GitHub concurrent connection rollback",
+      credentialValues: { "credentials.authorization": "new-personal-token" },
+    }, actor)).rejects.toMatchObject({ status: 502 });
+
+    await expect(service.getConnection(first.connectionId, company.id)).resolves.toMatchObject({
+      status: "active",
+      enabled: true,
+      credentialPolicy: "per_user",
+      config: expect.objectContaining({ concurrentOAuthCompletion: true }),
+    });
+    const afterGrants = await service.listConnectionGrants(first.connectionId, company.id);
+    const personalGrant = afterGrants.grants.find((grant) => grant.kind === "user");
+    expect(personalGrant).toMatchObject({ status: "active" });
+    expect(personalGrant?.credentialSecretRefs).toHaveLength(1);
+    const [preservedSecret] = await db.select().from(companySecrets).where(eq(
+      companySecrets.id,
+      personalGrant!.credentialSecretRefs[0]!.secretId,
+    ));
+    expect(preservedSecret.deletedAt).toBeNull();
+  });
+
+  it("fails closed when an identity-changing revival cannot roll back", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const actor = {
+      actorType: "user" as const,
+      actorId: "local-board",
+      actorSource: "local_implicit" as const,
+    };
+    const fetchMock = mockToolsList([
+      { name: "get_file_contents", annotations: { readOnlyHint: true } },
+    ]);
+
+    const first = await service.connectGalleryApp(company.id, {
+      galleryKey: "github",
+      connectionMethodKey: "mcp-key",
+      grantKind: "organization",
+      name: "GitHub rollback failure",
+      credentialValues: { "credentials.authorization": "old-organization-token" },
+    }, actor);
+    await service.archiveConnection(first.connectionId, company.id, actor);
+    fetchMock.mockRejectedValue(new Error("provider unavailable"));
+    const runTransaction = db.transaction.bind(db);
+    vi.spyOn(db, "transaction")
+      .mockImplementationOnce(runTransaction)
+      .mockRejectedValueOnce(new Error("rollback unavailable"));
+
+    await expect(service.connectGalleryApp(company.id, {
+      galleryKey: "github",
+      connectionMethodKey: "mcp-key",
+      grantKind: "user",
+      name: "GitHub rollback failure",
+      credentialValues: { "credentials.authorization": "new-personal-token" },
+    }, actor)).rejects.toMatchObject({
+      status: 500,
+      details: { code: "connection_identity_rollback_failed" },
+    });
+
+    await expect(service.getConnection(first.connectionId, company.id)).resolves.toMatchObject({
+      status: "draft",
+      enabled: false,
+      healthStatus: "error",
+      lastError: "connection_identity_rollback_failed",
+    });
   });
 
   it("automatically gives same-named connections distinct names", async () => {
