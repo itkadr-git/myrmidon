@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { Building2, Loader2, UserRound } from "lucide-react";
+import { Building2, Loader2, TriangleAlert, UserRound } from "lucide-react";
 import type {
   ConnectionAudienceMember,
   ConnectionGrant,
@@ -30,8 +30,9 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { cn } from "@/lib/utils";
-import { brandChipBadge } from "@/lib/status-colors";
+import { Link } from "@/lib/router";
+import { brandBanner, brandChipBadge } from "@/lib/status-colors";
+import { agentUrl, cn } from "@/lib/utils";
 import {
   audienceUserIds,
   grantAccountLabel,
@@ -98,7 +99,7 @@ export function IdentitiesSection({
   credentialPolicy: ToolConnectionCredentialPolicy;
   ownerUserId: string | null;
   connectedUser: { label: string; image: string | null } | null;
-  dedicatedAgent: { id: string; name: string } | null;
+  dedicatedAgent: { id: string; name: string; urlKey?: string | null } | null;
   grantsQuery: ConnectionGrantsResponse | undefined;
   loading: boolean;
   error: boolean;
@@ -178,7 +179,14 @@ export function IdentitiesSection({
         <IdentityRow
           title={github ? `@${github.login}` : "Dedicated GitHub account"}
           status={agentGrant?.status ?? null}
-          detail={dedicatedAgent ? `Used only by ${dedicatedAgent.name}` : "Dedicated to one agent"}
+          detail={dedicatedAgent ? (
+            <Link
+              to={agentUrl(dedicatedAgent)}
+              className="transition-colors hover:text-foreground hover:underline"
+            >
+              Used only by {dedicatedAgent.name}
+            </Link>
+          ) : "Dedicated to one agent"}
           actions={!agentGrant && dedicatedAgent && capabilities?.canConfigure ? (
             <Button size="sm" disabled={connectPending} onClick={() => onConnectAgent(dedicatedAgent.id)}>
               {connectPending ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
@@ -187,9 +195,6 @@ export function IdentitiesSection({
           ) : null}
         />
         {github ? <GitHubConnectionSummary grant={agentGrant} onRefreshAccess={onRefreshAccess} refreshPending={refreshAccessPending} /> : null}
-        <InlineBanner tone="warning" compact>
-          Shell Git and gh use this account for the run and are not constrained by per-tool Ask-first controls.
-        </InlineBanner>
       </section>
     );
   }
@@ -288,27 +293,45 @@ function GitHubConnectionSummary({
 }) {
   const github = grant.providerTenant?.github;
   if (!github) return null;
+  const repositoryWarning = github.repositorySelection === "all"
+    ? "All current and future repositories"
+    : github.repositorySelection === "mixed"
+      ? "Mixed access; scope varies by installation"
+      : null;
+  const repositorySummary = github.repositorySelection === "none"
+    ? "No repositories selected"
+    : `${github.repositoryCount} selected repositories`;
   return (
-    <div className="space-y-4 rounded-lg border border-border p-4">
-      <div className="grid gap-3 text-sm text-muted-foreground sm:grid-cols-2">
-        <p><span className="font-medium text-foreground">Installation</span><br />{github.installationOwnerLogins.join(", ") || "GitHub"}</p>
-        <p><span className="font-medium text-foreground">Repositories</span><br />{github.repositoryCount} · {github.repositorySelection === "all" ? "All repositories" : "Selected repositories"}</p>
-        <p><span className="font-medium text-foreground">Token continuity</span><br />{grant.providerTenant?.oauth?.accessTokenExpiresAt ? "Automatically refreshed" : "Long-lived"}</p>
-        <p><span className="font-medium text-foreground">Webhook health</span><br />{github.webhookHealth === "healthy" ? "Healthy" : github.webhookHealth === "unhealthy" ? "Needs attention" : "Pending first event"}</p>
-        <p><span className="font-medium text-foreground">Last event</span><br />{github.lastWebhookAt ? new Date(github.lastWebhookAt).toLocaleString() : "No event received yet"}</p>
-        <p><span className="font-medium text-foreground">Last access refresh</span><br />{github.lastAccessRefreshAt ? new Date(github.lastAccessRefreshAt).toLocaleString() : "Not refreshed yet"}</p>
-      </div>
-      {github.repositorySelection === "all" ? (
-        <InlineBanner tone="warning" compact>
-          This installation can access every current and future repository in its GitHub account. Selected repositories is the safer default.
-        </InlineBanner>
-      ) : null}
-      <div className="flex flex-wrap gap-2">
+    <div className="divide-y divide-border border-y border-border">
+      <div className="flex flex-wrap items-center justify-between gap-3 py-3">
+        <div className="min-w-0">
+          <div className="text-sm font-medium text-foreground">Repositories</div>
+          {repositoryWarning ? (
+            <div
+              role="note"
+              className={cn(
+                "mt-1 inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs",
+                brandBanner.warning,
+              )}
+            >
+              <TriangleAlert className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              {repositoryWarning}
+            </div>
+          ) : (
+            <div className="text-xs text-muted-foreground">{repositorySummary}</div>
+          )}
+        </div>
         {github.managementUrl ? (
           <Button asChild size="sm" variant="outline">
             <a href={github.managementUrl} target="_blank" rel="noreferrer">Manage repositories on GitHub</a>
           </Button>
         ) : null}
+      </div>
+      <div className="flex flex-wrap items-center justify-between gap-3 py-3">
+        <div className="min-w-0">
+          <div className="text-sm font-medium text-foreground">Refresh access</div>
+          <div className="text-xs text-muted-foreground">Sync repository access from GitHub.</div>
+        </div>
         {onRefreshAccess ? (
           <Button size="sm" variant="outline" disabled={refreshPending} onClick={onRefreshAccess}>
             {refreshPending ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
@@ -398,7 +421,7 @@ function IdentityRow({
   id?: string;
   title: string;
   status: ConnectionGrant["status"] | null;
-  detail: string | null;
+  detail: ReactNode;
   actions: ReactNode;
 }) {
   return (
