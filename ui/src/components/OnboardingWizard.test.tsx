@@ -98,6 +98,10 @@ const mockAgentsApi = vi.hoisted(() => ({
     prompt: { url: "https://auth.openai.com/codex/device", code: "Q2RJ-E1YIF" },
   })),
   cancelAdapterAuthLogin: vi.fn(async () => ({})),
+  // No default implementation: the top-level `beforeEach` sets the "no active
+  // session" 404 rejection, matching the real route.
+  getActiveAdapterAuthLoginSession: vi.fn(),
+  getActiveClaudeSetupTokenLoginSession: vi.fn(),
 }));
 // The adapter registry mock below always returns this function, so a test
 // can shape the built adapter config (e.g. a configured ANTHROPIC_API_KEY)
@@ -324,6 +328,16 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     // with that status as "no stored value" rather than a hard failure.
     mockAgentsApi.getClaudeOAuthTokenStatus.mockReset();
     mockAgentsApi.getClaudeOAuthTokenStatus.mockRejectedValue(
+      new ApiError("Not found", 404, null),
+    );
+    // Default: no active login session for the caller. A resume test
+    // overrides this with a resolved session body.
+    mockAgentsApi.getActiveAdapterAuthLoginSession.mockReset();
+    mockAgentsApi.getActiveAdapterAuthLoginSession.mockRejectedValue(
+      new ApiError("Not found", 404, null),
+    );
+    mockAgentsApi.getActiveClaudeSetupTokenLoginSession.mockReset();
+    mockAgentsApi.getActiveClaudeSetupTokenLoginSession.mockRejectedValue(
       new ApiError("Not found", 404, null),
     );
     // Reset to each mock's original default. `mockResolvedValue` /
@@ -2418,6 +2432,42 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await act(async () => root.unmount());
     });
 
+    it("shows the failure instead of starting a codex_local login when the active-session read fails", async () => {
+      // A transient active-session lookup failure is not proof that no
+      // session exists — only a successful lookup that resolves to null is.
+      // The step must not start a second login the server would reject
+      // against the per-owner cap; it shows the failure instead.
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "unknown" });
+      mockAgentsApi.getActiveAdapterAuthLoginSession.mockReset();
+      mockAgentsApi.getActiveAdapterAuthLoginSession.mockRejectedValue(
+        new ApiError("Service unavailable", 503, null),
+      );
+      const { root } = await openStep4({ adapterType: "codex_local" });
+
+      await pickSource(/OpenAI/);
+
+      expect(mockAgentsApi.startAdapterAuthLogin).not.toHaveBeenCalled();
+      expect(document.body.textContent).toContain("Service unavailable");
+
+      await act(async () => root.unmount());
+    });
+
+    it("shows the failure instead of starting a claude_local login when the active-session read fails", async () => {
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      mockAgentsApi.getActiveClaudeSetupTokenLoginSession.mockReset();
+      mockAgentsApi.getActiveClaudeSetupTokenLoginSession.mockRejectedValue(
+        new ApiError("Service unavailable", 503, null),
+      );
+      const { root } = await openStep4({ adapterType: "claude_local" });
+
+      await pickSource(/Claude/);
+
+      expect(mockAgentsApi.startClaudeSetupTokenLogin).not.toHaveBeenCalled();
+      expect(document.body.textContent).toContain("Service unavailable");
+
+      await act(async () => root.unmount());
+    });
+
     it("hires on Connect, with no sign-in, when the signal reports a ready credential", async () => {
       mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "present" });
       const { root } = await openStep4({ adapterType: "claude_local" });
@@ -2492,6 +2542,39 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       const { root } = await openStep4({ adapterType: "claude_local" });
       expect(document.body.textContent).not.toContain("Sign in to Anthropic");
       expect(mockAgentsApi.getAdapterAuthSignal).not.toHaveBeenCalled();
+      await act(async () => root.unmount());
+    });
+
+    it("restores the started-login state after a reload, resuming the active session with no press", async () => {
+      // A reload loses `connectPhase` — the draft deliberately does not carry
+      // it, because a login is a live server session with a deadline, not
+      // wizard state to replay blindly. The step must instead re-derive it
+      // from the caller's active session, so a customer who reloads mid-login
+      // sees their sign-in still running rather than the tile row again.
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      mockAgentsApi.getActiveClaudeSetupTokenLoginSession.mockResolvedValue({
+        sessionId: "claude-session-1",
+        environmentId: "env-sandbox-1",
+        status: "waiting_for_user",
+        expiresAt: null,
+        failure: null,
+        panelMode: "submitted_browser_code",
+        prompt: { authorizationUrl: "https://claude.ai/oauth/authorize?code=true" },
+      });
+      const { root } = await openStep4({ adapterType: "claude_local" });
+      // A reload's resume now runs one layer deeper than a fresh press: the
+      // step's own active-session read has to land before it opens the
+      // sequence, and only then does the mounted panel run its own resume
+      // read. Each is a further round trip `flushReact` has to catch up to.
+      for (let i = 0; i < 10; i += 1) await flushReact();
+
+      // No press: the resumed session is discovered on load and the card
+      // shows the login already running.
+      expect(mockAgentsApi.startClaudeSetupTokenLogin).not.toHaveBeenCalled();
+      expect(document.body.textContent).toContain(
+        "Sign in to Claude then come back and enter authorization code",
+      );
+
       await act(async () => root.unmount());
     });
   });
