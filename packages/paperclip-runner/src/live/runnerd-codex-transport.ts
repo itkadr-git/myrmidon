@@ -937,6 +937,8 @@ export interface CapabilityRunnerdCodexTransportOptions {
   opencodeProxySha256?: string;
   opencodeRuntimeDirectory?: string;
   environment?: NodeJS.ProcessEnv;
+  /** Provider system instructions supplied by a native execution caller. */
+  baseInstructions?: string;
   closeGraceMs?: number;
   onDiagnostic?: (message: string) => void;
   onEvidence?: (evidence: Readonly<CapabilityRunnerdProcessEvidence>) => void;
@@ -1549,7 +1551,10 @@ function resolveBuildOwnedCliArtifact(
   );
 }
 
-function acpxProviderPackageAuthority(sidecarScript: string): {
+function acpxProviderPackageAuthority(
+  sidecarScript: string,
+  ownerPackageRoot = packageRoot,
+): {
   root: string;
   manifest: string;
 } {
@@ -1564,12 +1569,25 @@ function acpxProviderPackageAuthority(sidecarScript: string): {
     );
   }
   const sidecarPackageRoot = resolve(cliDirectory, "../..");
-  // A local source build consumes pnpm's workspace-owned node_modules tree.
-  // A deployed provider pack owns a closed node_modules tree at its own root.
-  return sidecarPackageRoot === packageRoot
+  // A local source build lives at <workspace>/packages/paperclip-runner and
+  // resolves dependencies from <workspace>/node_modules. `pnpm deploy` makes
+  // the package itself the deployment root and owns <deploy>/node_modules/.pnpm.
+  // The older npm-installed portable shape nests the scoped package at
+  // <deploy>/node_modules/@paperclipai/paperclip-runner. The verifier always
+  // receives the directory that owns node_modules, regardless of which
+  // portable shape launched the already-authenticated sidecar.
+  const sourceDependencyRoot = resolve(ownerPackageRoot, "../..");
+  const localDependencyRoot = existsSync(
+      resolve(ownerPackageRoot, "node_modules", ".pnpm"),
+    )
+    ? ownerPackageRoot
+    : basename(sourceDependencyRoot) === "node_modules"
+      ? resolve(sourceDependencyRoot, "..")
+      : sourceDependencyRoot;
+  return sidecarPackageRoot === ownerPackageRoot
     ? {
-        root: resolve(packageRoot, "../.."),
-        manifest: resolve(packageRoot, "package.json"),
+        root: localDependencyRoot,
+        manifest: resolve(ownerPackageRoot, "package.json"),
       }
     : {
         root: sidecarPackageRoot,
