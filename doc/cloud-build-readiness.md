@@ -123,6 +123,36 @@ registry checks can be rerun without deploying or changing mutable npm channels.
 When reverting this workflow, restore the master push trigger in
 `docker-cloud.yml` in the same change so master images continue to build.
 
+## Reserved AWS verification capacity
+
+`AWS_POST_MERGE_CI_ENABLED=true` routes cloud source verification, artifact
+waiting, readiness signals, and exact-master migrator preparation to the
+`paperclip-post-merge` runner group. The separate Fleet label is
+`runs-on/fleet=paperclip-post-merge-x64/env=public-ci`. Its 36 reserved slots use
+the same four-vCPU, 16-GiB machines as approved PR jobs. PR capacity is reduced
+to 64; image capacity stays at eight. The total ceiling remains 108 runners.
+This keeps PR bursts from consuming every post-merge verification slot.
+
+Every selector checks the canonical repository name and ID, master ref, and a
+push or manual event. Reusable verification also requires `inputs.ref` to equal
+that event's `github.sha`. The migrator route requires `cloud-migrator` and
+`inputs.source_ref == github.sha`. Branch/tag refs, PR events, arbitrary preview
+sources, and missing or disabled switches use GitHub-hosted runners. If another
+merge lands before a migrator dispatch resolves master, the older source uses
+GitHub-hosted runners too. npm publication always remains GitHub-hosted to keep
+its trusted-publisher identity.
+
+Before enabling the switch, deploy the separate Fleet and restrict its GitHub
+runner group to repository ID `1170821064` and these workflows at
+`refs/heads/master`: `cloud-readiness.yml`, `cloud-artifacts.yml`,
+`release-verify.yml`, `runner-chaos-evals.yml`, and `release.yml`. Do not authorize
+PR-controlled workflow versions. PR placement retains its independent pinned
+workflow and six-account author/actor allowlist.
+
+Disable the switch and rerun the whole workflow to restore GitHub-hosted
+placement. Assigned jobs keep their original runners. Readiness requirements,
+source checks, and npm integrity checks are unchanged.
+
 ## AWS cloud build routing
 
 `AWS_CLOUD_BUILDS_ENABLED=true` routes the Docker cloud job to the
