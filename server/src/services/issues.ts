@@ -1,3 +1,4 @@
+import { createdFromIssueCondition } from "./issue-creation-origin.js";
 import { executionProjectionsForRuns } from "./execution-projection.js";
 import type { ExecutionProjection } from "@paperclipai/shared";
 import { Buffer } from "node:buffer";
@@ -1748,6 +1749,7 @@ export interface IssueFilters {
   executionWorkspaceId?: string;
   parentId?: string;
   descendantOf?: string;
+  createdFromIssueId?: string;
   labelId?: string;
   originKind?: string;
   originKindPrefix?: string;
@@ -1763,7 +1765,8 @@ export interface IssueFilters {
   q?: string;
   limit?: number;
   offset?: number;
-  sortField?: "updated";
+  sortField?: "updated" | "id";
+  afterId?: string;
   sortDir?: "asc" | "desc";
   /** ISO 8601 timestamp — only return issues with updatedAt strictly after this value. */
   updatedSince?: string;
@@ -3112,6 +3115,7 @@ function issueListOrderBy(
     sortDir?: IssueFilters["sortDir"];
   },
 ) {
+  if (sortField === "id") return [sortDir === "desc" ? desc(issues.id) : asc(issues.id)];
   const canonicalLastActivityAt = issueCanonicalLastActivityAtExpr(companyId);
   if (sortField === "updated") {
     const activityOrder =
@@ -6240,6 +6244,9 @@ async function blockedInboxIssueConditions(
   const contextUserId =
     unreadForUserId ?? touchedByUserId ?? inboxArchivedByUserId;
 
+  if (filters?.createdFromIssueId) {
+    conditions.push(createdFromIssueCondition(companyId, filters.createdFromIssueId));
+  }
   if (filters?.descendantOf) {
     conditions.push(sql<boolean>`
       ${issues.id} IN (
@@ -7873,6 +7880,15 @@ export function issueService(db: Db) {
     addStopRelayCommentIfNeeded,
 
     list: async (companyId: string, filters?: IssueFilters) => {
+      if (filters?.sortField === "id" && filters.attention) {
+        throw unprocessable("ID ordering is not supported for blocked attention lists");
+      }
+      if (filters?.afterId !== undefined && (
+        !isUuidLike(filters.afterId) || filters.sortField !== "id" ||
+        filters.sortDir !== "asc" || (filters.offset ?? 0) !== 0
+      )) {
+        throw unprocessable("afterId requires a UUID, ascending ID order and no offset");
+      }
       if (filters?.attention === "blocked") {
         return listBlockedInboxIssues(db, companyId, {
           ...filters,
@@ -7885,6 +7901,7 @@ export function issueService(db: Db) {
         eq(issues.companyId, companyId),
         visibleIssueCondition(),
       ];
+      if (filters?.afterId) conditions.push(gt(issues.id, filters.afterId));
       const assigneeAgentFilter = parseIssueAssigneeAgentFilter(
         filters?.assigneeAgentId,
       );
@@ -7928,6 +7945,9 @@ export function issueService(db: Db) {
             AND ${issueComments.body} ILIKE ${containsPattern} ESCAPE '\\'
         )
       `;
+      if (filters?.createdFromIssueId) {
+        conditions.push(createdFromIssueCondition(companyId, filters.createdFromIssueId));
+      }
       if (filters?.descendantOf) {
         conditions.push(sql<boolean>`
           ${issues.id} IN (
@@ -10154,6 +10174,7 @@ export function issueService(db: Db) {
 
         const values = {
           ...issueData,
+          originRunId: issueData.originRunId ?? actorRunId ?? null,
           responsibleUserId,
           requestDepth: clampIssueRequestDepth(issueData.requestDepth),
           originKind: issueData.originKind ?? "manual",
