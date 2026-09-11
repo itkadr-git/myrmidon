@@ -1,4 +1,5 @@
 import { getExecutionBlocker } from "./execution-blocker.js";
+import { CONVERSATION_CONTINUATION_POLICY, runUsedConversationAdapter, hasConversationContinuationPolicy, isConversationAdapter } from "./conversation-continuation.js";
 import { recordExecutionWait } from "./execution-wait.js";
 import {
   legacyExecutionNeedsReconciliation,
@@ -9420,7 +9421,18 @@ export function heartbeatService(
   // issue's activity entry.
   async function applyWakeQueuePostCommitEffects(effects: WakeQueuePostCommitEffect[]) {
     for (const effect of effects) {
-      if (effect.kind === "run_queued") {
+      if (effect.kind === "conversation_retry_requested") {
+        const [source] = await db.select().from(heartbeatRuns).where(and(
+          eq(heartbeatRuns.companyId, effect.companyId), eq(heartbeatRuns.id, effect.runId),
+        ));
+        const agent = source ? await getAgent(source.agentId) : null;
+        if (source && agent && agent.companyId === source.companyId) {
+          await scheduleBoundedRetryForRun(source, agent, effect.reviewParticipant ? {
+            retryReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
+            wakeReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON,
+          } : undefined);
+        }
+      } else if (effect.kind === "run_queued") {
         publishLiveEvent({
           companyId: effect.run.companyId,
           type: "heartbeat.run.queued",
@@ -14472,7 +14484,7 @@ export function heartbeatService(
         restartSuspendedRunIds.push(run.id);
         continue;
       }
-      const message = `Interrupted by graceful server shutdown (${signal}); recovery requires verified provider continuity`;
+      const message = `Interrupted by graceful server shutdown (${signal})`;
       const running = runningProcesses.get(run.id);
       try {
         if (run.runtimeMode === "native") {
@@ -14510,6 +14522,7 @@ export function heartbeatService(
           errorCode: "server_shutdown_interrupted",
           signal,
           resultJson: mergeRunStopMetadataForAgent(agent, "interrupted", {
+            conversationContinuationEligible: await runUsedConversationAdapter(db, run),
             resultJson: persistedCancellationResult,
             errorCode: "server_shutdown_interrupted",
             errorMessage: message,
@@ -14732,6 +14745,7 @@ export function heartbeatService(
         : baseSchedule;
 
     const requiresIssueGate =
+      hasConversationContinuationPolicy(run.resultJson) ||
       retryReason === MAX_TURN_CONTINUATION_RETRY_REASON ||
       retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON;
     if (requiresIssueGate) {
@@ -15179,6 +15193,8 @@ export function heartbeatService(
             status: "scheduled_retry",
             wakeupRequestId: wakeupRequest.id,
             contextSnapshot: retryContextSnapshot,
+            ...(hasConversationContinuationPolicy(run.resultJson)
+              ? { resultJson: { conversationContinuation: CONVERSATION_CONTINUATION_POLICY } } : {}),
             responsibleUserId,
             sessionIdBefore: sessionBefore,
             retryOfRunId: run.id,
@@ -15302,6 +15318,7 @@ export function heartbeatService(
             .update(issues)
             .set({
               executionRunId: scheduledRun.id,
+              checkoutRunId: sql`case when ${issues.checkoutRunId} = ${run.id} then null else ${issues.checkoutRunId} end`,
               executionAgentNameKey: normalizeAgentNameKey(agent.name),
               executionLockedAt: now,
               ...(detachWorkspaceFromIssue
@@ -17213,6 +17230,7 @@ export function heartbeatService(
     outcome: "succeeded" | "interrupted" | "failed" | "cancelled" | "timed_out",
     options?: {
       resultJson?: Record<string, unknown> | null;
+      conversationContinuationEligible?: boolean;
       errorCode?: string | null;
       errorMessage?: string | null;
     },
@@ -17224,10 +17242,17 @@ export function heartbeatService(
       errorCode: options?.errorCode ?? null,
       errorMessage: options?.errorMessage ?? null,
     });
-    return mergeHeartbeatRunStopMetadata(
+    const result = mergeHeartbeatRunStopMetadata(
       options?.resultJson ?? null,
       stopMetadata,
     );
+    const cancellationAcknowledged =
+      parseObject(result?.executionCancellation).state === "acknowledged";
+    return options?.conversationContinuationEligible !== false && outcome !== "succeeded" &&
+      (outcome !== "cancelled" || cancellationAcknowledged) &&
+      isConversationAdapter(agent.adapterType)
+      ? { ...result, conversationContinuation: CONVERSATION_CONTINUATION_POLICY }
+      : result;
   }
 
   function countValue(value: unknown) {
@@ -18246,6 +18271,7 @@ export function heartbeatService(
           (!!run.processPid || !!run.processGroupId)) ||
           monitorDispatchLostWithoutFutureWake);
       const baseMessage = buildProcessLossMessage(run);
+      const conversationContinuationEligible = await runUsedConversationAdapter(db, run);
 
       const failureWrite = await setRunStatusFromLive(
         run.id,
@@ -18260,6 +18286,7 @@ export function heartbeatService(
               { adapterType, adapterConfig },
               "failed",
               {
+                conversationContinuationEligible,
                 resultJson: parseObject(run.resultJson),
                 errorCode: "process_lost",
                 errorMessage: shouldRetry
