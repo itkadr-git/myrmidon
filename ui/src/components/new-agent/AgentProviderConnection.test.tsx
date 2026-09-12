@@ -52,6 +52,8 @@ async function mount(
   cachedClaudeLogin = false,
   managedAccount?: Parameters<typeof AgentProviderConnection>[0]["managedAccount"],
   localEnvironment = false,
+  deploymentMode: "local_trusted" | "authenticated" = "local_trusted",
+  localAiLoginSupported = true,
 ) {
   const key =
     adapterType === "claude_local" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY";
@@ -104,7 +106,7 @@ async function mount(
     client.setQueryData(["claude-oauth-token-status", "c1"], { secretId: "cached-claude", latestVersion: 1 });
     mocks.auth.mockResolvedValue({ status: "absent" });
   }
-  client.setQueryData(["health"], { deploymentMode: "local_trusted" });
+  client.setQueryData(["health"], { deploymentMode, localAiLoginSupported });
   client.setQueryDefaults(["health"], { staleTime: Infinity });
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -146,6 +148,34 @@ function openProvider() {
   );
 }
 describe("AgentProviderConnection reuse", () => {
+  it.each(["claude_local", "codex_local"] as const)("does not offer a server-host command when health disables local login: %s", async adapterType => {
+    const onComplete = vi.fn();
+    const intent = { provider: adapterType === "claude_local" ? "anthropic" as const : "openai" as const, method: "subscription" as const, name: "Hosted account", ownership: "personal" as const, agentIds: [], allAgents: false };
+    await mount(adapterType, false, false, false, false, false, { intent, onComplete }, true, "authenticated", false);
+    openProvider();
+    expect(host.textContent).toContain("This environment does not support browser sign-in");
+    expect(host.textContent).not.toContain("Run this in a terminal");
+    expect(managedApi.startLocalLogin).not.toHaveBeenCalled();
+    click("Connect");
+    expect(managedApi.connectLocal).not.toHaveBeenCalled();
+    expect(onComplete).not.toHaveBeenCalled();
+  });
+  it.each(["claude_local", "codex_local"] as const)("prepares and completes an isolated subscription on an authenticated self-hosted instance: %s", async adapterType => {
+    const onComplete = vi.fn();
+    const command = adapterType === "claude_local" ? "CLAUDE_CONFIG_DIR='/isolated/claude' claude auth login" : "CODEX_HOME='/isolated/codex' codex login --device-auth";
+    managedApi.startLocalLogin.mockResolvedValue({ sessionId: "local-attempt", command, expiresAt: "2099-01-01T00:00:00Z" });
+    const intent = { provider: adapterType === "claude_local" ? "anthropic" as const : "openai" as const, method: "subscription" as const, name: "Self-hosted account", ownership: "personal" as const, agentIds: [], allAgents: false };
+    await mount(adapterType, false, false, false, false, false, { intent, onComplete }, true, "authenticated");
+    openProvider();
+    await vi.waitFor(() => expect(host.textContent).toContain(command));
+    expect(host.textContent).toContain("Your existing terminal login stays separate");
+    expect(host.textContent).not.toContain("Connect uses your local");
+    expect(managedApi.startLocalLogin).toHaveBeenCalledWith("c1", intent);
+    expect(managedApi.checkLocalLogin).toHaveBeenCalledWith("c1", { ...intent, localSessionId: "local-attempt" });
+    click("Connect");
+    await vi.waitFor(() => expect(onComplete).toHaveBeenCalled());
+    expect(managedApi.connectLocal).toHaveBeenCalledWith("c1", { ...intent, localSessionId: "local-attempt" });
+  });
   it.each(["claude_local", "codex_local"] as const)("connects a local subscription without a sandbox and supports retry: %s", async (adapterType) => {
     const onComplete = vi.fn();
     const intent = { provider: adapterType === "claude_local" ? "anthropic" as const : "openai" as const, method: "subscription" as const, name: "My account", ownership: "personal" as const, agentIds: [], allAgents: false };
