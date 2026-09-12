@@ -2943,10 +2943,10 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                         await onSteerQueuedComment(commentId, revision);
                       }}
                       onInterrupt={
-                        onInterruptQueued && queuedMessageQueue.targetRunId
+                        onInterruptQueued && queuedMessageQueue.queueId
                           ? async () => {
                               await onInterruptQueued(
-                                queuedMessageQueue.targetRunId!,
+                                queuedMessageQueue.targetRunId,
                               );
                             }
                           : undefined
