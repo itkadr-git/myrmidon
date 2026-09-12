@@ -1607,6 +1607,16 @@ retry budget. Existing pause, approval, budget, ownership, and dependency gates
 remain in effect. See `doc/execution-semantics.md` for admission and stop-proof
 requirements.
 
+### Managed AI authentication
+
+AI credentials can be adopted into the existing Connections system. A typed
+`runtimeConfig.aiConnection` selects the responsible user’s personal default, an
+explicit shared grant. The existing human-audience and agent-access permissions
+apply; AI credentials have no separate agent-delegation exception. Selection preserves
+harness/model routing and fails closed without ambient credential fallback.
+Legacy agents retain their authentication until validated adoption. See
+[AI Connections](connections/AI-CONNECTIONS.md) for company isolation, compatible
+methods, lifecycle, runtime enforcement, and migration details.
 ### Experimental task-bound email
 
 AgentMail channel connections extend the experimental conversation/task pipeline
