@@ -218,6 +218,44 @@ pnpm --filter @paperclipai/server exec tsx ../scripts/myrmidon/plugin-compat/che
 Новая версия плагина на установке: поменять версию в `plugins.json` и обновить снимок
 манифеста (JSON того, что экспортирует `dist/manifest.js` пакета).
 
+## Образ
+
+Workflow [`myrmidon-image.yml`](../../.github/workflows/myrmidon-image.yml), job `image`.
+Вендорский `docker.yml` не правим: он строит `ghcr.io/${{ github.repository }}` для двух
+архитектур по тегам `v*` вендора, с его схемой тегов и каналами npm. Свой файл проще и не
+конфликтует при переносе.
+
+- **Когда:** `push` в `main`, git-тег вида `<версия вендора>-myr.<N>` (первый —
+  `2026.916.1-myr.1`), вручную. На `pull_request` не запускается вовсе, плюс проверка
+  `github.repository == 'itkadr-git/myrmidon'`: PR из чужих форков образ не собирают.
+- **Что:** `Dockerfile` вендора, стадия `production`, только `linux/amd64`. Кеш BuildKit — в
+  реестре (`ghcr.io/itkadr-git/myrmidon:buildcache`).
+- **Версия и коммит** для `/api/health`: `PAPERCLIP_BUILD_VERSION` и
+  `PAPERCLIP_BUILD_COMMIT`. На теге выпуска версия — сам тег (сверяется с тегом вендора в
+  основе коммита). На `main` — `git describe` от тега вендора, сервер показывает его как
+  `2026.916.1+<N>.git.<sha>`.
+- **Порядок:** образ сначала публикуется только по digest, затем smoke: `docker run` с
+  `local_trusted` (он отдаёт версию без входа), `/api/health` должен ответить `status: ok` и
+  ровно ожидаемыми версией и коммитом. Только после этого digest получает теги. Упал smoke —
+  тегов нет.
+- **Теги:** `sha-<короткий коммит>` на каждый запуск, `main` — плавающий на `main`, тег
+  выпуска — на теге.
+- **Метки OCI:** `org.opencontainers.image.title=Myrmidon`, `source` — адрес репозитория,
+  `licenses=MIT`, `version` — версия, которую покажет `/api/health`, `revision` — коммит,
+  `io.github.itkadr-git.myrmidon.base.paperclip-version` — версия вендора в основе. Скрипты
+  выката берут ожидаемые версию и коммит из этих меток.
+- **Сводка job** — digest, версия, коммит, теги.
+- **Версии CLI агентов** в стадии `production` закреплены аргументами сборки
+  (`CLAUDE_CODE_VERSION`, `CODEX_VERSION`, `OPENCODE_VERSION`, `GEMINI_CLI_VERSION`,
+  `KIMI_CODE_VERSION`; у вендора — `@latest`). Обновлять — правкой значений по умолчанию в
+  `Dockerfile`.
+- Медиа-инструментов (ffmpeg, yt-dlp и т. п.) в образе нет; тест
+  `scripts/myrmidon/image/image.test.mjs` следит за этим, за закреплёнными версиями CLI и за
+  тем, что workflow не срабатывает на PR.
+
+Сопровождающему: после первой публикации проверить видимость пакета
+`ghcr.io/itkadr-git/myrmidon` (Package settings) — новый пакет может оказаться закрытым.
+
 ## Почему не вендорский `pr.yml`
 
 `pr.yml` вендора вызывает `paperclipai/paperclip/.github/workflows/pr-trusted.yml@master`, то
