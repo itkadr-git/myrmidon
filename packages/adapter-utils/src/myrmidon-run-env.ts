@@ -104,6 +104,9 @@ export const MYRMIDON_RUN_ENV_VENDOR_RUNTIME_KEYS: readonly string[] = [
   "PAPERCLIP_RUNTIME_API_URL",
   "PAPERCLIP_LISTEN_HOST",
   "PAPERCLIP_LISTEN_PORT",
+  // List of server API URLs (not a secret); the gh launcher (P6) tries them
+  // when the public address is unreachable from the run.
+  "PAPERCLIP_RUNTIME_API_CANDIDATES_JSON",
 ];
 
 export interface MyrmidonInheritedEnvOptions {

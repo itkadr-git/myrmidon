@@ -37,6 +37,7 @@ const SERVER_ENV: NodeJS.ProcessEnv = {
   https_proxy: "http://proxy.example.com:3128",
   NODE_EXTRA_CA_CERTS: "/etc/ssl/example-ca.pem",
   PAPERCLIP_RUNTIME_API_URL: "http://127.0.0.1:3100",
+  PAPERCLIP_RUNTIME_API_CANDIDATES_JSON: '["http://127.0.0.1:3100/api"]',
   CLAUDE_CONFIG_DIR: "/home/agent-a/.claude",
   PAPERCLIPAI_CMD: "node /opt/example/paperclipai.js",
   SOME_UNRELATED_SERVER_VAR: "value",
@@ -74,6 +75,7 @@ describe("myrmidon(S2) run environment", () => {
       https_proxy: "http://proxy.example.com:3128",
       NODE_EXTRA_CA_CERTS: "/etc/ssl/example-ca.pem",
       PAPERCLIP_RUNTIME_API_URL: "http://127.0.0.1:3100",
+      PAPERCLIP_RUNTIME_API_CANDIDATES_JSON: '["http://127.0.0.1:3100/api"]',
       CLAUDE_CONFIG_DIR: "/home/agent-a/.claude",
     });
   });
@@ -121,6 +123,7 @@ describe("myrmidon(S2) run environment", () => {
     expect(env).not.toHaveProperty("PAPERCLIP_AGENT_JWT_SECRET");
     expect(env).not.toHaveProperty("PAPERCLIPAI_CMD");
     expect(env.PAPERCLIP_RUNTIME_API_URL).toBe("http://127.0.0.1:3100");
+    expect(env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON).toBe('["http://127.0.0.1:3100/api"]');
   });
 
   it("honours inheritProcessEnv only when it is literally true", () => {

@@ -90,6 +90,7 @@ describe("myrmidon(S2) adapter runs do not inherit server secrets", () => {
       MYRMIDON_RUN_ENV_ALLOW: undefined,
       ANTHROPIC_API_KEY: undefined,
       XAI_API_KEY: undefined,
+      PAPERCLIP_RUNTIME_API_CANDIDATES_JSON: JSON.stringify(["http://127.0.0.1:3100/api"]),
     };
     for (const [key, value] of Object.entries(overrides)) {
       saved[key] = process.env[key];
@@ -185,6 +186,23 @@ describe("myrmidon(S2) adapter runs do not inherit server secrets", () => {
       delete process.env.XAI_API_KEY;
     }
   });
+
+  for (const testCase of CASES) {
+    it(`${testCase.label}: keeps the server API candidate list, drops PAPERCLIP_*_SECRET`, async () => {
+      for (const inheritProcessEnv of [false, true]) {
+        const agentRun = (await runAdapter(testCase, { inheritProcessEnv })).at(-1)!;
+        expect(agentRun.names).toContain("PAPERCLIP_RUNTIME_API_CANDIDATES_JSON");
+        for (const secret of [
+          "PAPERCLIP_AGENT_JWT_SECRET",
+          "PAPERCLIP_DECISION_SIGNING_SECRET",
+          "PAPERCLIP_TOOL_ACTION_SIGNING_SECRET",
+          "PAPERCLIP_SECRETS_MASTER_KEY",
+        ]) {
+          expect(agentRun.names).not.toContain(secret);
+        }
+      }
+    });
+  }
 
   it("MYRMIDON_RUN_ENV_ALLOW adds a server variable to an adapter run", async () => {
     process.env.MYRMIDON_RUN_ENV_ALLOW = "BETTER_AUTH_SECRET";
