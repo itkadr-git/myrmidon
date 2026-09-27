@@ -456,7 +456,8 @@ jobs:
 
   checks:
     # Cheap checks that run on every tier: node:test suites of our scripts,
-    # dependency licenses, gitleaks and the internal-address scan.
+    # gitleaks, the internal-address scan, dependency licenses and plugin
+    # compatibility. Every step runs even if an earlier one failed.
     name: checks
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -569,6 +570,22 @@ jobs:
       - name: Licenses of production dependencies
         if: ${{ !cancelled() }}
         run: node scripts/myrmidon/check-licenses.mjs
+
+      - name: Plugin compatibility — build plugin SDK and shared from the repository
+        id: sdk
+        if: ${{ !cancelled() }}
+        run: pnpm --filter @paperclipai/plugin-sdk ensure-build-deps
+
+      - name: Plugin compatibility — manifest snapshots (offline)
+        if: ${{ !cancelled() && steps.sdk.outcome == 'success' }}
+        run: pnpm --filter @paperclipai/server exec tsx ../scripts/myrmidon/plugin-compat/check.ts --fixtures-only
+
+      - name: Plugin compatibility — installed plugins against the host
+        if: ${{ !cancelled() && steps.sdk.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          node scripts/myrmidon/plugin-compat/install.mjs --work "$RUNNER_TEMP/plugin-compat"
+          pnpm --filter @paperclipai/server exec tsx ../scripts/myrmidon/plugin-compat/check.ts --work "$RUNNER_TEMP/plugin-compat"
 
   ci-result:
     # Single stable name for the ruleset. Lanes the plan did not need are

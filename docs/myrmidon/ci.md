@@ -76,7 +76,7 @@ Job `report main status` после полного прогона на `main`:
 | `tests (server 1/5)` … `(server 5/5)`, `tests (serialized 1/5)` … `(5/5)`, `tests (workspaces-a 1/2)`, `(2/2)`, `tests (workspaces-b)` | full | Весь `pnpm test:run`, разбиение как у вендора |
 | `tests (other packages)` | full | Пакеты, которые `pnpm test:run` не запускает (ниже) |
 | `tests (runner)` | full | `pnpm --filter @paperclipai/paperclip-runner check:all`, как отдельная проверка раннера у вендора |
-| `checks` | все | Шаги: `node --test` по `scripts/myrmidon/**/*.test.mjs`; секреты (gitleaks); внутренние адреса (частные сети и запрещённые шаблоны); лицензии зависимостей. Каждый шаг выполняется, даже если предыдущий упал: в журнале видно все сбои сразу |
+| `checks` | все | Шаги: `node --test` по `scripts/myrmidon/**/*.test.mjs`; секреты (gitleaks); внутренние адреса (частные сети и запрещённые шаблоны); лицензии зависимостей; совместимость плагинов. Каждый шаг выполняется, даже если предыдущий упал: в журнале видно все сбои сразу |
 | **`CI result`** | все | Сводная: зелёная, если `plan` прошёл и каждая проверка прошла или не требовалась уровнем |
 | `report main status` | только `main` | issue `main-red` (выше) |
 
@@ -178,6 +178,45 @@ gitleaks **8.30.1**, архив проверяется по sha256 (в workflow)
 
 Сопровождающему: завести секрет `MYRMIDON_FORBIDDEN_PATTERNS` (Settings → Secrets and
 variables → Actions) — наши домены, имена хостов, подсети, имена ботов.
+
+## Совместимость плагинов
+
+Плагины, которые стоят на наших установках, — в
+[`scripts/myrmidon/plugin-compat/plugins.json`](../../scripts/myrmidon/plugin-compat/plugins.json)
+с точными версиями. hindsight (`@vectorize-io/hindsight-paperclip`) — обязательный: его сбой
+красит CI. Остальные (`@pingstray/paperclip-lang-ru`, `paperclip-claude-auth`,
+`paperclip-plugin-telegram`) — «предупреждение, не блок»: сбой виден как warning в сводке.
+
+Как проверяется (шаги `Plugin compatibility — …` job `checks`):
+
+1. **Снимки манифестов** (`plugin-compat/fixtures/*.manifest.json`, без сети) проходят через
+   проверки хоста из репозитория: схема манифеста (`pluginManifestV1Schema`), версия API
+   плагинов, согласованность возможностей (`pluginCapabilityValidator`), минимальная версия
+   хоста. Это те же проверки, что делает `plugin-loader` при установке.
+2. **Установка как на сервере:** `install.mjs` ставит каждый плагин в свой чистый каталог
+   (`npm install --ignore-scripts`), затем заменяет все копии `@paperclipai/plugin-sdk` и
+   `@paperclipai/shared` пакетами, собранными из репозитория (`pnpm pack` — ровно то, что было
+   бы опубликовано). Так плагин работает с нашим SDK, а не с версией из npm.
+3. **Проверка установленного пакета** (`check.ts`): модуль манифеста загружается, проходит
+   те же проверки, файл воркера на месте. Затем воркер запускается через
+   `createPluginWorkerHandle` сервера — настоящий процесс и RPC хоста: `initialize` и
+   `health`. `health` со статусом `error` — сбой; `degraded` (плагину не хватает настроек,
+   например токена бота) — норма.
+
+Полный старт сервера со встроенным postgres и установкой через API не делаем: это ещё
+несколько минут на каждый PR, а шаги выше уже проходят тот же код хоста (валидаторы и
+менеджер воркеров).
+
+Локально:
+
+```sh
+pnpm --filter @paperclipai/plugin-sdk ensure-build-deps
+node scripts/myrmidon/plugin-compat/install.mjs --work /tmp/plugin-compat
+pnpm --filter @paperclipai/server exec tsx ../scripts/myrmidon/plugin-compat/check.ts --work /tmp/plugin-compat
+```
+
+Новая версия плагина на установке: поменять версию в `plugins.json` и обновить снимок
+манифеста (JSON того, что экспортирует `dist/manifest.js` пакета).
 
 ## Почему не вендорский `pr.yml`
 
