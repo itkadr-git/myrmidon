@@ -5,14 +5,14 @@ name: Myrmidon CI
 #   docs - only Myrmidon docs/scripts changed: script checks only;
 #   fast - pull requests: typecheck (no Rust), build (no Rust release binary)
 #          and only the tests that the change touches directly;
-#   full - push to main, manual runs, PRs labelled `full-ci`, and PRs touching
+#   full - push to main, manual runs, PRs labelled `full-ci` (from the next
+#          push on), and PRs touching
 #          shared foundations (lockfile, db, shared, runner, CI...): every lane.
 # A red full run on main opens (or updates) an issue labelled `main-red`.
 # Everything runs on GitHub-hosted runners without secrets. See docs/myrmidon/ci.md.
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, labeled]
   push:
     branches: [main]
   workflow_dispatch:
@@ -21,9 +21,9 @@ permissions:
   contents: read
 
 concurrency:
-  # Label events other than `full-ci` get their own group, so they never
-  # cancel a real run; superseded runs are cancelled on PRs and on main.
-  group: myrmidon-ci-${{ github.event.pull_request.number || github.ref }}-${{ github.event.action == 'labeled' && github.event.label.name != 'full-ci' && github.event.label.name || 'run' }}
+  # Superseded runs are cancelled on PRs and on main alike; a cancelled run
+  # reports no `CI result`, so it can never look green.
+  group: myrmidon-ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -34,7 +34,6 @@ env:
 jobs:
   plan:
     name: plan
-    if: ${{ github.event.action != 'labeled' || github.event.label.name == 'full-ci' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -457,7 +456,6 @@ jobs:
 
   script-tests:
     name: script tests
-    if: ${{ github.event.action != 'labeled' || github.event.label.name == 'full-ci' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -487,7 +485,7 @@ jobs:
     # Single stable name for the ruleset. Lanes the plan did not need are
     # skipped; any failure, or a skip without a successful plan, fails it.
     name: CI result
-    if: ${{ !cancelled() && (github.event.action != 'labeled' || github.event.label.name == 'full-ci') }}
+    if: ${{ !cancelled() }}
     needs: [plan, typecheck, build, tests-affected, tests, tests-other, tests-runner, script-tests]
     runs-on: ubuntu-latest
     timeout-minutes: 5
