@@ -11,6 +11,7 @@
 # RESTORE_COMMAND with DUMP_FILE set while the server service is stopped.
 # Maintenance stays on until the old image passes the health check.
 set -euo pipefail
+# shellcheck source=lib.sh source-path=SCRIPTDIR
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
 config="" target="" restore_dump="" yes_restore=0 expect_version="" expect_commit=""

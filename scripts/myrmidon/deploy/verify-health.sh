@@ -10,6 +10,7 @@
 # but not the version; pass a board API key file with --token-file to check
 # the version too. Exit 0 on match, 1 otherwise.
 set -euo pipefail
+# shellcheck source=lib.sh source-path=SCRIPTDIR
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
 url="" expect_version="" expect_commit="" timeout=300 token_file="" interval=5

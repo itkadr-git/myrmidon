@@ -13,6 +13,7 @@
 # On a failed health check the script stops with maintenance still on and
 # prints the rollback command. --dry-run changes nothing and prints the plan.
 set -euo pipefail
+# shellcheck source=lib.sh source-path=SCRIPTDIR
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
 config="" digest="" expect_version="" expect_commit="" force=0
