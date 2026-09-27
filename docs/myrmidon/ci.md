@@ -12,9 +12,9 @@ Workflow [`myrmidon-ci.yml`](../../.github/workflows/myrmidon-ci.yml) — на �
 
 | Уровень | Когда | Что запускается |
 |---|---|---|
-| **docs** | PR меняет только `docs/myrmidon/**`, `scripts/myrmidon/**` (кроме `scripts/myrmidon/ci/**`), `CLAUDE.md`, `NOTICE`, `.github/README.md`, `.gitleaks.toml` | `script tests` |
-| **fast** | Остальные PR | `typecheck` (без Rust раннера), `build` (без релизной сборки Rust), `tests (affected)`, `script tests` |
-| **full** | `push` в `main`; ручной запуск; PR с меткой `full-ci`; PR, который трогает основу (список ниже); PR, где отбор дал больше 60 файлов тестов на один большой пакет | Всё: `typecheck` и `build` полностью, 13 частей `tests (…)` (= `pnpm test:run`), `tests (other packages)`, `tests (runner)`, `script tests` |
+| **docs** | PR меняет только `docs/myrmidon/**`, `scripts/myrmidon/**` (кроме `scripts/myrmidon/ci/**`), `CLAUDE.md`, `NOTICE`, `.github/README.md`, `.gitleaks.toml` | `checks` |
+| **fast** | Остальные PR | `typecheck` (без Rust раннера), `build` (без релизной сборки Rust), `tests (affected)`, `checks` |
+| **full** | `push` в `main`; ручной запуск; PR с меткой `full-ci`; PR, который трогает основу (список ниже); PR, где отбор дал больше 60 файлов тестов на один большой пакет | Всё: `typecheck` и `build` полностью, 13 частей `tests (…)` (= `pnpm test:run`), `tests (other packages)`, `tests (runner)`, `checks` |
 
 **Обязателен для слияния быстрый уровень** (сводная проверка `CI result` на PR). Полный
 уровень гарантируется на `main` после слияния; его сбой сразу виден (ниже).
@@ -76,7 +76,7 @@ Job `report main status` после полного прогона на `main`:
 | `tests (server 1/5)` … `(server 5/5)`, `tests (serialized 1/5)` … `(5/5)`, `tests (workspaces-a 1/2)`, `(2/2)`, `tests (workspaces-b)` | full | Весь `pnpm test:run`, разбиение как у вендора |
 | `tests (other packages)` | full | Пакеты, которые `pnpm test:run` не запускает (ниже) |
 | `tests (runner)` | full | `pnpm --filter @paperclipai/paperclip-runner check:all`, как отдельная проверка раннера у вендора |
-| `script tests` | все | `node --test` по `scripts/myrmidon/**/*.test.mjs` |
+| `checks` | все | Шаги: `node --test` по `scripts/myrmidon/**/*.test.mjs`; секреты (gitleaks); внутренние адреса (частные сети и запрещённые шаблоны); лицензии зависимостей. Каждый шаг выполняется, даже если предыдущий упал: в журнале видно все сбои сразу |
 | **`CI result`** | все | Сводная: зелёная, если `plan` прошёл и каждая проверка прошла или не требовалась уровнем |
 | `report main status` | только `main` | issue `main-red` (выше) |
 
@@ -122,6 +122,62 @@ Job `report main status` после полного прогона на `main`:
 - Хранилище pnpm: пишет только job `typecheck`, остальные читают. Ключ — хеш `pnpm-lock.yaml`.
 - Зависимости Rust (`Swatinem/rust-cache`): сохраняются только на `push` в `main`, PR их
   только читают.
+
+## Лицензии зависимостей
+
+`node scripts/myrmidon/check-licenses.mjs` запускает `pnpm licenses list --prod --json` и
+сверяет каждый пакет с политикой [`scripts/myrmidon/license-policy.json`](../../scripts/myrmidon/license-policy.json):
+
+- разрешены MIT, ISC, BSD-2-Clause, BSD-3-Clause, Apache-2.0, 0BSD, CC0-1.0, Unlicense,
+  BlueOak-1.0.0, Python-2.0, OFL-1.1 (без учёта регистра). Выражение `A OR B` проходит, если
+  разрешена хотя бы одна сторона; `A AND B` — если разрешены обе;
+- запрещены GPL-\*, AGPL-\*, SSPL-\* и `Unknown` (лицензия не указана);
+- всё остальное (MPL-2.0, LGPL, «SEE LICENSE IN …») тоже не проходит без исключения;
+- исключение задаётся парой «имя пакета + лицензия ровно как её пишет pnpm» и обязательно с
+  причиной. Если у пакета сменится лицензия, исключение перестанет действовать.
+
+Локально: `node scripts/myrmidon/check-licenses.mjs` (после `pnpm install`). Новую зависимость с
+неразрешённой лицензией — заменить или добавить исключение с причиной в том же PR.
+
+Исключения на 27.09.2026 (18 пакетов): MIT-0 (`@csstools/*`), BSD-2 без SPDX-метки
+(`url-template`), MIT без поля `license` (`khroma`, бинарники `opencode-linux-*`), MPL-2.0
+(`lightningcss*`), LGPL-3.0 (`@img/sharp-libvips-*`, динамическая библиотека) и
+проприетарные SDK адаптеров вендора (`@anthropic-ai/claude-agent-sdk*`, `@cursor/sdk*`).
+Последние помечены для решения сопровождающего.
+
+## Поиск секретов
+
+gitleaks **8.30.1**, архив проверяется по sha256 (в workflow). Сканируются только новые коммиты:
+на PR — `base..head`, на `push` в `main` — `before..after`. Настройки —
+[`.gitleaks.toml`](../../.gitleaks.toml): правила по умолчанию плюс список файлов вендора с
+заведомо ложными срабатываниями (тестовые токены, литералы заголовков PEM, примеры в
+документах). Наши файлы туда не добавляем: вместо этого убираем значение.
+
+Полный скан истории 27.09.2026 (4050 коммитов): 57 срабатываний, все в коммитах вендора,
+все — тестовые или примерные значения (34 generic-api-key, 15 private-key, 6 jwt,
+1 discord-api-token, 1 curl-auth-header). С `.gitleaks.toml` — 0.
+
+Локально: `gitleaks git --config .gitleaks.toml --log-opts="origin/main..HEAD" .`
+
+## Внутренние адреса
+
+`node scripts/myrmidon/scan-diff.mjs` смотрит только добавленные строки диффа
+(`git diff base...head`) и не печатает найденные значения: только файл, строку и правило.
+
+- **Частные адреса** (всегда): IPv4 из частных сетей `10/8`, `172.16/12`, `192.168/16` и `100.64/10`
+  (CGNAT). Для примеров — `192.0.2.0/24`, `198.51.100.0/24`, `localhost`,
+  `127.0.0.1` (CONVENTIONS, раздел 9). Исключения по путям —
+  [`scripts/myrmidon/scan-diff-allowlist.json`](../../scripts/myrmidon/scan-diff-allowlist.json)
+  с причиной. На ветках `sync/*` (перенос вендора) тестовые файлы пропускаются: в тестах
+  вендора бывают примерные адреса.
+- **Запрещённые шаблоны** — из секрета репозитория `MYRMIDON_FORBIDDEN_PATTERNS`: по одному
+  регулярному выражению на строку, `#` — комментарий, без учёта регистра. Сам список в
+  открытом репозитории не лежит, и в журнал CI не попадает ни шаблон, ни совпадение — только
+  номер строки шаблона. Если секрет не задан (или PR из чужого форка, где секретов нет), шаг
+  проходит с предупреждением.
+
+Сопровождающему: завести секрет `MYRMIDON_FORBIDDEN_PATTERNS` (Settings → Secrets and
+variables → Actions) — наши домены, имена хостов, подсети, имена ботов.
 
 ## Почему не вендорский `pr.yml`
 
