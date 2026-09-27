@@ -522,6 +522,9 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "range: $base..$head"
 
+      - name: Shellcheck deploy scripts
+        run: shellcheck --version && shellcheck -x scripts/myrmidon/deploy/*.sh
+
       - name: Script tests (node:test under scripts/myrmidon)
         run: |
           set -euo pipefail
