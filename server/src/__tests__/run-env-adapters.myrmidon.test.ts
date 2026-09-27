@@ -88,6 +88,8 @@ describe("myrmidon(S2) adapter runs do not inherit server secrets", () => {
       PAPERCLIP_IN_WORKTREE: undefined,
       CODEX_HOME: undefined,
       MYRMIDON_RUN_ENV_ALLOW: undefined,
+      ANTHROPIC_API_KEY: undefined,
+      XAI_API_KEY: undefined,
     };
     for (const [key, value] of Object.entries(overrides)) {
       saved[key] = process.env[key];
@@ -165,6 +167,24 @@ describe("myrmidon(S2) adapter runs do not inherit server secrets", () => {
       expect(agentRun.names).toContain("BETTER_AUTH_SECRET");
     });
   }
+
+  it("provider credentials of the adapter's own provider are inherited, others are not", async () => {
+    process.env.ANTHROPIC_API_KEY = "fake-server-anthropic-key";
+    process.env.XAI_API_KEY = "fake-server-xai-key";
+    try {
+      const claudeRun = (await runAdapter(CASES[2]!)).at(-1)!;
+      expect(claudeRun.names).toContain("ANTHROPIC_API_KEY");
+      expect(claudeRun.names).not.toContain("XAI_API_KEY");
+      expect(claudeRun.names).not.toContain("DATABASE_URL");
+      const hermesRun = (await runAdapter(CASES[0]!)).at(-1)!;
+      expect(hermesRun.names).toContain("ANTHROPIC_API_KEY");
+      expect(hermesRun.names).not.toContain("XAI_API_KEY");
+      expect(hermesRun.names).not.toContain("BETTER_AUTH_SECRET");
+    } finally {
+      delete process.env.ANTHROPIC_API_KEY;
+      delete process.env.XAI_API_KEY;
+    }
+  });
 
   it("MYRMIDON_RUN_ENV_ALLOW adds a server variable to an adapter run", async () => {
     process.env.MYRMIDON_RUN_ENV_ALLOW = "BETTER_AUTH_SECRET";

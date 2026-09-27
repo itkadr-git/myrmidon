@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  MYRMIDON_RUN_ENV_PROVIDER_ALLOW,
   buildMyrmidonRunEnv,
   filterMyrmidonInheritedEnv,
   parseRunEnvAllowList,
@@ -148,5 +149,38 @@ describe("myrmidon(S2) run environment", () => {
     const line = String(debug.mock.calls[0]![0]);
     expect(line).toContain("BETTER_AUTH_SECRET, DATABASE_URL");
     expect(line).not.toContain("fake-");
+  });
+
+  it("each adapter inherits its own provider credentials, never board secrets", () => {
+    const env: NodeJS.ProcessEnv = {
+      ...SERVER_ENV,
+      XAI_API_KEY: "fake-xai-key",
+      GEMINI_API_KEY: "fake-gemini-key",
+    };
+    const grok = filterMyrmidonInheritedEnv(env, { extraAllow: [], adapterType: "grok_local" });
+    expect(grok.XAI_API_KEY).toBe("fake-xai-key");
+    expect(grok).not.toHaveProperty("GEMINI_API_KEY");
+    expect(grok).not.toHaveProperty("ANTHROPIC_API_KEY");
+
+    const claude = filterMyrmidonInheritedEnv(env, { extraAllow: [], adapterType: "claude_local" });
+    expect(claude.ANTHROPIC_API_KEY).toBe(SERVER_SECRETS.ANTHROPIC_API_KEY);
+    expect(claude).not.toHaveProperty("XAI_API_KEY");
+
+    for (const [adapterType, names] of Object.entries(MYRMIDON_RUN_ENV_PROVIDER_ALLOW)) {
+      const inherited = filterMyrmidonInheritedEnv(env, { extraAllow: [], adapterType });
+      for (const boardSecret of [
+        "DATABASE_URL",
+        "BETTER_AUTH_SECRET",
+        "PAPERCLIP_AGENT_JWT_SECRET",
+        "PAPERCLIP_DECISION_SIGNING_SECRET",
+        "PAPERCLIP_TOOL_ACTION_SIGNING_SECRET",
+        "PAPERCLIP_WORKSPACE_HANDOFF_SECRET",
+        "PAPERCLIP_SECRETS_MASTER_KEY",
+        "AWS_SECRET_ACCESS_KEY",
+      ]) {
+        expect(names).not.toContain(boardSecret);
+        expect(inherited, `${adapterType} ${boardSecret}`).not.toHaveProperty(boardSecret);
+      }
+    }
   });
 });
