@@ -2,7 +2,6 @@
   "$comment": "License policy for production dependencies (pnpm licenses list --prod). Checked by scripts/myrmidon/check-licenses.mjs. An exception matches a package name together with the exact license string pnpm reports; every exception needs a reason.",
   "allowed": [
     "MIT",
-    "ISC",
     "BSD-2-Clause",
     "BSD-3-Clause",
     "Apache-2.0",

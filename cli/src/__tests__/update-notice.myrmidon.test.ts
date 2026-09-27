@@ -45,3 +45,10 @@ describe("myrmidon update notice defaults", () => {
     expect(isUpdateNoticeEnabled(path.join(root, "missing.json"))).toBe(false);
   });
 });
+
+// PROOF, DO NOT MERGE: deliberately failing test to show CI turns red.
+describe("ci proof", () => {
+  it("fails on purpose", () => {
+    expect(1).toBe(2);
+  });
+});
