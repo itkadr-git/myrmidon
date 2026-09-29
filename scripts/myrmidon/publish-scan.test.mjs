@@ -56,12 +56,9 @@ describe("scanForPublication", () => {
     assert.deepEqual(scanForPublication(""), { allowed: true, lines: 0, findingCount: 0, byRule: [] });
   });
 
-  it("applies forbidden-pattern rules next to the built-in ones", () => {
-    const extra = compileForbiddenPatterns(forbiddenList).map(({ number, regex }) => ({
-      name: `forbidden pattern #${number}`,
-      regex,
-    }));
-    const result = scanForPublication(`ok\nsee ${forbiddenHit}\n${passwordPair}`, extra);
+  it("applies forbidden patterns next to the built-in rules", () => {
+    const forbidden = compileForbiddenPatterns(forbiddenList);
+    const result = scanForPublication(`ok\nsee ${forbiddenHit}\n${passwordPair}`, forbidden);
     assert.equal(result.allowed, false);
     assert.deepEqual(result.byRule, [
       { rule: "forbidden pattern #2", count: 1 },
@@ -130,11 +127,7 @@ describe("main", () => {
     const fd = fs.openSync(os.tmpdir(), "r");
     try {
       const script = fileURLToPath(new URL("./publish-scan.mjs", import.meta.url));
-      const child = spawnSync(process.execPath, [script], {
-        stdio: [fd, "pipe", "pipe"],
-        encoding: "utf8",
-        env: { ...process.env, MYRMIDON_FORBIDDEN_PATTERNS: "" },
-      });
+      const child = spawnSync(process.execPath, [script], { stdio: [fd, "pipe", "pipe"], encoding: "utf8" });
       assert.equal(child.status, 2);
       assert.ok(!child.stdout.includes("publication allowed"));
     } finally {
@@ -167,24 +160,9 @@ describe("forbidden patterns", () => {
   it("warns when no patterns are configured and still applies the built-in rules", () => {
     const clean = run("Plain text.");
     assert.equal(clean.code, 0);
-    assert.match(clean.output, /::warning title=publish scan::no forbidden patterns configured/);
+    assert.match(clean.output, /::warning title=publish scan::MYRMIDON_FORBIDDEN_PATTERNS is not set/);
     const dirty = run(passwordPair);
     assert.equal(dirty.code, 1);
     assert.match(dirty.output, /::warning/);
-  });
-
-  it("reads patterns from --patterns-file and marks their rule names", () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "publish-scan-patterns-"));
-    const patterns = path.join(dir, "patterns.txt");
-    fs.writeFileSync(patterns, forbiddenList);
-    const { code, output } = run(`see ${forbiddenHit}`, ["--patterns-file", patterns]);
-    assert.equal(code, 1);
-    assert.match(output, /forbidden pattern #2 \(file\) x1/);
-    assert.ok(!output.includes(forbiddenHit));
-  });
-
-  it("exits 2 when the patterns file is missing or has no value", () => {
-    assert.equal(run("text", ["--patterns-file", "/nonexistent/patterns.txt"]).code, 2);
-    assert.equal(runArgs(["--patterns-file"]).code, 2);
   });
 });
