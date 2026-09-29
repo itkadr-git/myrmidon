@@ -9,9 +9,11 @@
 // "missing, expired, or unknown invocation scope".
 //
 // Rule. A worker->host call with NO invocation id at all is attributed to the
-// company of the in-flight plugin API route calls, and only when every such call
-// belongs to the same company. If in-flight route calls span more than one company
-// the attribution is ambiguous and the call stays denied. A call with an unknown or
+// company of the in-flight plugin API route calls, and only when ALL in-flight
+// invocations of ANY kind (route calls, events, actions, data reads, tool calls,
+// environment calls) belong to that one company. The host cannot tell which handler
+// an un-echoed call came from, so an in-flight invocation of another company makes
+// the attribution ambiguous and the call stays denied. A call with an unknown or
 // forged id is not affected: it is still denied by the caller.
 //
 // Why this grants nothing new. The worker received the invocation id of each
@@ -19,6 +21,10 @@
 // un-echoed call to the same company yields the same scope. The scope is always
 // the host-issued one, never a value from the worker, and a call that references
 // another company still fails the company match in the host client.
+//
+// Cost. An `onEvent` invocation registered through `notify` lives up to its TTL
+// (15 minutes), so an event of another company keeps the attribution denied for
+// that long even if the handler has already finished.
 
 export interface ApiRouteScopeCandidate {
   scope: { companyId: string };
@@ -28,17 +34,19 @@ export interface ApiRouteScopeCandidate {
 
 /**
  * Pick the in-flight plugin API route invocation an un-echoed worker call is
- * attributed to, or `null` when there is none or the route calls disagree on the
- * company.
+ * attributed to. Returns `null` when there is no in-flight route invocation, or when
+ * any in-flight invocation (of any kind) belongs to another company than the
+ * route invocations, so the caller keeps denying the call.
  */
 export function resolveUnechoedApiRouteInvocation<T extends ApiRouteScopeCandidate>(
   activeInvocations: Iterable<T>,
 ): T | null {
   let match: T | null = null;
+  let companyId: string | null = null;
   for (const entry of activeInvocations) {
-    if (!entry.apiRoute) continue;
-    if (match && match.scope.companyId !== entry.scope.companyId) return null;
-    match ??= entry;
+    if (companyId !== null && entry.scope.companyId !== companyId) return null;
+    companyId = entry.scope.companyId;
+    if (entry.apiRoute) match ??= entry;
   }
   return match;
 }

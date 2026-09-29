@@ -2691,7 +2691,8 @@ export function createPluginWorkerHandle(
       }
       // myrmidon(PLS1): a worker whose bundle carries an SDK that predates
       // invocation-id echo never sends an id. Attribute its call to the company of
-      // the in-flight plugin API route calls when they all agree; never broader.
+      // the in-flight plugin API route calls only when every in-flight invocation
+      // of any kind belongs to that company; never broader.
       const apiRouteInvocation = resolveUnechoedApiRouteInvocation(activeInvocations.values());
       if (apiRouteInvocation) {
         return {
