@@ -108,8 +108,8 @@ describe("myrmidon(W2a) readBotProfileSettings", () => {
 
 describe("myrmidon(MEMORY-ISOLATION) MYRMIDON_BOT_HINDSIGHT_ALLOWED_BANKS parsing", () => {
   it("splits on commas, trims, drops empties and duplicates, keeps order", () => {
-    expect(parseBotHindsightAllowedBanks(" fleet-bbq , adm ,fleet-bbq,, shared ")).toEqual(["fleet-bbq", "adm", "shared"]);
-    expect(parseBotHindsightAllowedBanks("adm")).toEqual(["adm"]);
+    expect(parseBotHindsightAllowedBanks(" bank-a , bank-c ,bank-a,, shared ")).toEqual(["bank-a", "bank-c", "shared"]);
+    expect(parseBotHindsightAllowedBanks("bank-c")).toEqual(["bank-c"]);
   });
 
   it("is null (no check) when unset, blank or commas only", () => {
@@ -345,25 +345,25 @@ describe("myrmidon(W2a) buildHermesProfileInput — hindsight", () => {
 
   it("myrmidon(MEMORY-ISOLATION) rejects a bank outside the allowlist, naming the bank and the setting", () => {
     const build = () =>
-      buildHermesProfileInput(source({ adapterConfig: { hindsight: { bankId: "fleet-typo" } } }), settings({
-        hindsightAllowedBanks: ["adm", "fleet-bbq"],
+      buildHermesProfileInput(source({ adapterConfig: { hindsight: { bankId: "bank-typo" } } }), settings({
+        hindsightAllowedBanks: ["bank-c", "bank-a"],
       }));
     expect(build).toThrow(BotProfileInputError);
     expect(build).toThrow(BOT_HINDSIGHT_ALLOWED_BANKS_ENV);
-    expect(build).toThrow("fleet-typo");
+    expect(build).toThrow("bank-typo");
   });
 
   it("myrmidon(MEMORY-ISOLATION) accepts a bank on the allowlist, from the card or from the fallback", () => {
     const fromCard = buildHermesProfileInput(
-      source({ adapterConfig: { hindsight: { bankId: "fleet-bbq" } } }),
-      settings({ hindsightAllowedBanks: ["adm", "fleet-bbq"] }),
+      source({ adapterConfig: { hindsight: { bankId: "bank-a" } } }),
+      settings({ hindsightAllowedBanks: ["bank-c", "bank-a"] }),
     );
-    expect(fromCard.input.hindsight.bankId).toBe("fleet-bbq");
+    expect(fromCard.input.hindsight.bankId).toBe("bank-a");
     const fromFallback = buildHermesProfileInput(source(), settings({
-      hindsightBank: "adm",
-      hindsightAllowedBanks: ["adm", "fleet-bbq"],
+      hindsightBank: "bank-c",
+      hindsightAllowedBanks: ["bank-c", "bank-a"],
     }));
-    expect(fromFallback.input.hindsight.bankId).toBe("adm");
+    expect(fromFallback.input.hindsight.bankId).toBe("bank-c");
   });
 
   it("myrmidon(MEMORY-ISOLATION) no allowlist set means no check (the previous behavior)", () => {

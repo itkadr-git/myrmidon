@@ -200,7 +200,7 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
   });
 
   describe("myrmidon(MEMORY-ISOLATION) hindsight bank allowlist and observation scopes", () => {
-    const CARD_HINDSIGHT = { model: "some-model", provider: "custom", hindsight: { bankId: "fleet-bbq", observationScopes: [["channel:board"], ["channel:telegram"]] } };
+    const CARD_HINDSIGHT = { model: "some-model", provider: "custom", hindsight: { bankId: "bank-a", observationScopes: [["channel:board"], ["channel:telegram"]] } };
 
     it("writes the card's observationScopes into hermes/hindsight/config.json", async () => {
       const board = fakeBoard();
@@ -208,18 +208,18 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
       const profile = await createBotProfileCompile(board.ports, { env: INSTANCE_ENV })("agent-a", "agent-a");
       const json = JSON.parse(fileContent(profile, "hermes/hindsight/config.json")) as Record<string, unknown>;
       expect(json.observation_scopes).toEqual([["channel:board"], ["channel:telegram"]]);
-      expect(json.bank_id).toBe("fleet-bbq");
+      expect(json.bank_id).toBe("bank-a");
     });
 
     it("fails the compile, creating no secret, when the card's bank is outside the allowlist", async () => {
       const board = fakeBoard();
       board.agent.current = agentRecord({ adapterConfig: CARD_HINDSIGHT });
       const compile = createBotProfileCompile(board.ports, {
-        env: { ...INSTANCE_ENV, [BOT_HINDSIGHT_ALLOWED_BANKS_ENV]: "adm,fleet-work" },
+        env: { ...INSTANCE_ENV, [BOT_HINDSIGHT_ALLOWED_BANKS_ENV]: "bank-c,bank-b" },
       });
       await expect(compile("agent-a", "agent-a")).rejects.toThrow(BotProfileInputError);
       await expect(compile("agent-a", "agent-a")).rejects.toThrow(BOT_HINDSIGHT_ALLOWED_BANKS_ENV);
-      await expect(compile("agent-a", "agent-a")).rejects.toThrow("fleet-bbq");
+      await expect(compile("agent-a", "agent-a")).rejects.toThrow("bank-a");
       expect(board.calls).not.toContain("ensureApiServerKey");
       expect(board.calls).not.toContain("ensureAgentApiKey");
     });
@@ -228,9 +228,9 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
       const board = fakeBoard();
       board.agent.current = agentRecord({ adapterConfig: CARD_HINDSIGHT });
       const profile = await createBotProfileCompile(board.ports, {
-        env: { ...INSTANCE_ENV, [BOT_HINDSIGHT_ALLOWED_BANKS_ENV]: "adm,fleet-bbq" },
+        env: { ...INSTANCE_ENV, [BOT_HINDSIGHT_ALLOWED_BANKS_ENV]: "bank-c,bank-a" },
       })("agent-a", "agent-a");
-      expect(JSON.parse(fileContent(profile, "hermes/hindsight/config.json")).bank_id).toBe("fleet-bbq");
+      expect(JSON.parse(fileContent(profile, "hermes/hindsight/config.json")).bank_id).toBe("bank-a");
 
       const plain = fakeBoard();
       const plainProfile = await createBotProfileCompile(plain.ports, { env: INSTANCE_ENV })("agent-a", "agent-a");
@@ -241,7 +241,7 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
       const board = fakeBoard();
       board.agent.current = agentRecord({ adapterConfig: CARD_HINDSIGHT });
       const profile = await createBotProfileCompile(board.ports, { env: INSTANCE_ENV })("agent-a", "agent-a");
-      expect(JSON.parse(fileContent(profile, "hermes/hindsight/config.json")).bank_id).toBe("fleet-bbq");
+      expect(JSON.parse(fileContent(profile, "hermes/hindsight/config.json")).bank_id).toBe("bank-a");
     });
   });
 
