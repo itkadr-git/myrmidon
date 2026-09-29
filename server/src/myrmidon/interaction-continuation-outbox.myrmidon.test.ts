@@ -701,6 +701,43 @@ describeEmbeddedPostgres("interaction continuation outbox", () => {
     expect((await readIntent(seeded))?.status).toBe("queued");
   });
 
+  // The card-creation wake (`interaction-pending:{id}`) goes to the card's
+  // addressee, who can be the assignee itself. It carries the interaction id
+  // but no resolution status, and it is long finished by the time the card is
+  // accepted: it must not settle the continuation intent, or the continuation
+  // of a lost direct wake would be dropped without a retry.
+  it("does not settle the intent on a finished card-creation wake of the same agent and interaction", async () => {
+    const seeded = await seed();
+    await recordIntent(seeded);
+    await db.insert(agentWakeupRequests).values({
+      companyId: seeded.company.id,
+      agentId: seeded.agent.id,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "interaction_pending",
+      status: "completed",
+      idempotencyKey: `interaction-pending:${seeded.interaction.id}`,
+      payload: {
+        issueId: seeded.issue.id,
+        interactionId: seeded.interaction.id,
+        interactionKind: "request_confirmation",
+        mutation: "interaction",
+      },
+      runId: "88888888-9999-4aaa-bbbb-cccccccccccc",
+      finishedAt: new Date(),
+    });
+    const heartbeat = { wakeup: vi.fn(async () => null) };
+    const outbox = interactionContinuationOutboxService(db, heartbeat);
+
+    await outbox.tryDeliver(seeded.interaction.id, "accepted");
+    // The wake is dispatched (not swallowed by the old row) and, because the
+    // stub admitted nothing, the intent stays due for the sweep.
+    expect(heartbeat.wakeup).toHaveBeenCalledTimes(1);
+    const intent = await readIntent(seeded);
+    expect(intent?.status).toBe("queued");
+    expect(intent?.claimedAt).toBeNull();
+  });
+
   // A second intent for the same seeded card is impossible (the idempotency
   // key is unique), so the test above that needs a fresh intent deletes the
   // first row and re-records it through this helper.

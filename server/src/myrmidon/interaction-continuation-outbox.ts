@@ -279,9 +279,13 @@ async function findDurableWake(
   input: {
     companyId: string;
     idempotencyKey: string;
-    /** Fallback match: same agent, same interaction, delivery statuses. */
+    /**
+     * Fallback match: same agent, same interaction, same resolution status,
+     * delivery statuses.
+     */
     agentId?: string;
     interactionId?: string;
+    interactionStatus?: string;
     /** Excluded from the fallback match (the outbox intent row itself). */
     intentId?: string;
   },
@@ -315,7 +319,16 @@ async function findDurableWake(
   // (an explicit refusal) is never a delivery and never matches. The
   // outbox's own intent rows are excluded: they are the work item, not the
   // delivered wake.
-  if (!input.agentId || !input.interactionId) return null;
+  //
+  // The match is pinned to the resolution status of the intent: every direct
+  // continuation wake carries `payload.interactionStatus` (and a merge into a
+  // deferred row keeps it), while the vendor's card-creation wake
+  // (`interaction-pending:{id}`, sent to an addressee agent who may well be
+  // the assignee) carries no status. Without the pin, that old, long
+  // finished pending wake would settle the intent and drop the continuation.
+  if (!input.agentId || !input.interactionId || !input.interactionStatus) {
+    return null;
+  }
   return db
     .select({
       id: agentWakeupRequests.id,
@@ -329,7 +342,8 @@ async function findDurableWake(
         eq(agentWakeupRequests.agentId, input.agentId),
         inArray(agentWakeupRequests.status, [...DURABLE_WAKE_STATUSES]),
         sql`${agentWakeupRequests.payload}->>'interactionId' = ${input.interactionId}`,
-        ne(agentWakeupRequests.id, input.intentId ?? undefined),
+        sql`${agentWakeupRequests.payload}->>'interactionStatus' = ${input.interactionStatus}`,
+        input.intentId ? ne(agentWakeupRequests.id, input.intentId) : undefined,
         or(
           isNull(agentWakeupRequests.requestedByActorId),
           ne(agentWakeupRequests.requestedByActorId, OUTBOX_ACTOR_ID),
@@ -525,13 +539,21 @@ export function interactionContinuationOutboxService(
     // the canonical wake was enqueued (the canonical key is uq-protected), or
     // the direct path's wake was already folded into one of the assignee's
     // delivery rows for this interaction (O1-DIRECT-SETTLED).
-    const durable = await findDurableWake(db, {
+    const durableMatch = {
       companyId: claimed.companyId,
       idempotencyKey: wakeIdempotencyKey,
       agentId: assigneeAgentId,
       interactionId,
+      // The resolution status the intent was written for (the canonical key
+      // carries the same one); the live card status is the fallback.
+      interactionStatus:
+        typeof payload.interactionStatus === "string" &&
+        payload.interactionStatus.length > 0
+          ? payload.interactionStatus
+          : resolved.interactionStatus,
       intentId: claimed.id,
-    });
+    };
+    const durable = await findDurableWake(db, durableMatch);
     if (durable) {
       await markIntentTerminal(db, {
         intentId: claimed.id,
@@ -573,13 +595,7 @@ export function interactionContinuationOutboxService(
         requestedByActorId: claimed.requestedByActorId,
         contextSnapshot: { ...contract.contextSnapshot },
       })) as { id?: string } | null;
-      const settled = await findDurableWake(db, {
-        companyId: claimed.companyId,
-        idempotencyKey: wakeIdempotencyKey,
-        agentId: assigneeAgentId,
-        interactionId,
-        intentId: claimed.id,
-      });
+      const settled = await findDurableWake(db, durableMatch);
       if (settled) {
         await markIntentTerminal(db, {
           intentId: claimed.id,
@@ -609,13 +625,7 @@ export function interactionContinuationOutboxService(
     } catch (error) {
       if (isUniqueViolation(error)) {
         // A racing worker inserted the canonical wake first.
-        const raced = await findDurableWake(db, {
-          companyId: claimed.companyId,
-          idempotencyKey: wakeIdempotencyKey,
-          agentId: assigneeAgentId,
-          interactionId,
-          intentId: claimed.id,
-        });
+        const raced = await findDurableWake(db, durableMatch);
         if (raced) {
           await markIntentTerminal(db, {
             intentId: claimed.id,
