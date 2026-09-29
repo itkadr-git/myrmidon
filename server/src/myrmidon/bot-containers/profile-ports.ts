@@ -41,7 +41,7 @@ import {
 } from "../../services/index.js";
 import { skillVersionSelectionMap } from "../../services/runtime-skill-selections.js";
 import { BOT_AGENT_API_KEY_NAME, ensureBotAgentKey } from "./agent-key.js";
-import { createBotBoardGatewayDeps } from "./board-gateway-ports.js";
+import { createBotBoardGatewayDeps, releaseStrayBotGateways } from "./board-gateway-ports.js";
 import {
   BOT_BOARD_GATEWAY_SERVER_NAME,
   botBoardGatewayUrl,
@@ -451,7 +451,7 @@ export function createDbBotCardSyncPorts(db: Db, profilePorts: BotProfilePorts =
 }
 
 /**
- * The two fields of `BotContainerRuntimeDeps` W2a fills, bound to the database:
+ * The fields of `BotContainerRuntimeDeps` W2a fills, bound to the database:
  *
  *   startBotContainerReconciliation(listAgents, { driver, maintenance, network, activity, ...botProfileWiring(db, { activity }) })
  *
@@ -467,6 +467,7 @@ export function botProfileWiring(
 ): {
   compile: (agentId: string, botKey: string) => Promise<CompiledProfile>;
   syncCard: (agentId: string, botKey: string) => Promise<BotCardSyncResult>;
+  releaseStrayGateways: (keepAgentIds: ReadonlySet<string>) => Promise<{ released: number; warnings: string[] }>;
 } {
   const ports = createDbBotProfilePorts(db);
   const { activity, ...compileOptions } = opts;
@@ -474,5 +475,6 @@ export function botProfileWiring(
   return {
     compile: createBotProfileCompile(ports, { ...compileOptions, ...(onWarnings ? { onWarnings } : {}) }),
     syncCard: createBotCardSync(createDbBotCardSyncPorts(db, ports)),
+    releaseStrayGateways: (keepAgentIds) => releaseStrayBotGateways(db, keepAgentIds),
   };
 }

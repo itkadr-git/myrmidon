@@ -27,6 +27,17 @@
 //     gateway an operator made by hand for the same agent is never disabled here.
 //   - With no assignment (nothing assigned, the setting off) every gateway of the
 //     bot is released and nothing is delivered.
+//   - The same for an agent the board itself refuses to authenticate (terminated,
+//     pending approval, see BOT_GATEWAY_WITHHELD_AGENT_STATUSES): no gateway is
+//     issued to it and the ones it has are released. An agent that is deleted,
+//     terminated, switched to another adapter or has its container turned off is no
+//     longer reconciled at all, so the sweep releases the gateways of every agent it
+//     does not reconcile (`releaseStrayBotGateways`).
+//   - A gateway this module disabled carries `releasedBy` in its metadata, and only
+//     such a gateway is turned on again when its assignment comes back. A gateway an
+//     operator disabled (no marker) stays off, nothing is delivered and a warning says
+//     so: that is the operator's off switch for ONE bot (a token revoked by hand is
+//     not: the next call issues a new one, exactly as it does for an expired token).
 
 /** The name the bot's board tool gateway server carries in its profile: the same name hermes_local uses. */
 export const BOT_BOARD_GATEWAY_SERVER_NAME = "paperclip-assigned";
@@ -39,6 +50,17 @@ export const BOT_GATEWAY_SOURCE = "myrmidon_bot_containers";
 
 /** The name the bot's gateway token carries in the token table, so an operator can see what it is for. */
 export const BOT_GATEWAY_TOKEN_NAME = "myrmidon-bot-container";
+
+/** The metadata key set on a gateway this module disabled itself; its value is `BOT_GATEWAY_SOURCE`. */
+export const BOT_GATEWAY_RELEASED_BY_KEY = "releasedBy";
+
+/**
+ * Agent statuses in which the board refuses the agent's own API key (middleware/auth.ts),
+ * so a gateway token is not issued to it either. `paused` is not here on purpose: the
+ * board still accepts a paused agent's key, and a pause is short-lived (releasing on
+ * every pause would restart the bot twice, on the pause and on the resume).
+ */
+export const BOT_GATEWAY_WITHHELD_AGENT_STATUSES: readonly string[] = ["terminated", "pending_approval"];
 
 export const BOT_GATEWAY_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const BOT_GATEWAY_TOKEN_RENEW_BEFORE_MS = 10 * 24 * 60 * 60 * 1000;
@@ -80,13 +102,22 @@ export interface BotGatewayTokenRecord {
   expiresAt: Date | null;
 }
 
+/** What `createGateway` found or made for an assignment. */
+export type BotGatewayCreation =
+  | { kind: "gateway"; gateway: BotGatewayRecord }
+  /** The gateway of this assignment exists and is not active, and this module did not disable it. */
+  | { kind: "held_by_operator"; publicId: string };
+
 export interface BotBoardGatewayDeps {
+  /** The agent's status on the board; null when there is no such agent. */
+  readAgentStatus(): Promise<string | null>;
   /** What the agent is assigned now; `assignment` is null when there is nothing to deliver. */
   resolveAssignment(): Promise<{ assignment: BotToolAssignment | null; warnings: string[] }>;
   /** Active gateways THIS module made for the agent. */
   listGateways(): Promise<BotGatewayRecord[]>;
-  /** A gateway of this assignment for the agent; idempotent for one digest. */
-  createGateway(input: { digest: string; profileId: string }): Promise<BotGatewayRecord>;
+  /** A gateway of this assignment for the agent; idempotent for one digest. A gateway this module disabled earlier is turned on again. */
+  createGateway(input: { digest: string; profileId: string }): Promise<BotGatewayCreation>;
+  /** Disables the gateway and marks it as disabled by this module (`BOT_GATEWAY_RELEASED_BY_KEY`). */
   disableGateway(gatewayId: string): Promise<void>;
   /** The secret's current value, or null when the secret does not exist. */
   readSecret(): Promise<{ secretId: string; value: string } | null>;
@@ -117,21 +148,37 @@ async function quietly(warnings: string[], what: string, fn: () => Promise<void>
   }
 }
 
+/** The operations releasing a gateway needs. */
+export type BotGatewayReleaseDeps = Pick<BotBoardGatewayDeps, "listActiveTokens" | "revokeToken" | "disableGateway">;
+
 /**
  * Revokes the gateway's tokens, then disables it. A failed step is reported and
  * retried on the next call: the gateway is listed while it is active, so it goes
- * last, and nothing is left with a live token behind a disabled gateway.
+ * last, and nothing is left with a live token behind a disabled gateway. Returns
+ * true when the gateway is disabled.
  */
-async function releaseGateway(deps: BotBoardGatewayDeps, gateway: BotGatewayRecord, warnings: string[]): Promise<void> {
+export async function releaseBotGateway(
+  deps: BotGatewayReleaseDeps,
+  gateway: BotGatewayRecord,
+  warnings: string[],
+): Promise<boolean> {
   try {
     for (const token of await deps.listActiveTokens(gateway.id)) await deps.revokeToken(token.id);
   } catch (err) {
     warnings.push(
       `board gateway: revoking the tokens of gateway ${gateway.publicId} failed (${err instanceof Error ? err.message : String(err)})`,
     );
-    return;
+    return false;
   }
-  await quietly(warnings, `disabling gateway ${gateway.publicId}`, () => deps.disableGateway(gateway.id));
+  try {
+    await deps.disableGateway(gateway.id);
+    return true;
+  } catch (err) {
+    warnings.push(
+      `board gateway: disabling gateway ${gateway.publicId} failed (${err instanceof Error ? err.message : String(err)})`,
+    );
+    return false;
+  }
 }
 
 async function ensureToken(deps: BotBoardGatewayDeps, gatewayId: string, now: Date, warnings: string[]): Promise<string> {
@@ -163,15 +210,33 @@ async function ensureToken(deps: BotBoardGatewayDeps, gatewayId: string, now: Da
   return created.token;
 }
 
+/**
+ * True when a gateway made here belongs to an agent the sweep does not reconcile:
+ * the agent is gone (its gateway lost the agent id), or it is terminated, switched to
+ * another adapter or has its container turned off.
+ */
+export function isStrayBotGateway(ownerAgentId: string | null, reconciledAgentIds: ReadonlySet<string>): boolean {
+  return ownerAgentId === null || !reconciledAgentIds.has(ownerAgentId);
+}
+
 export async function ensureBotBoardGateway(deps: BotBoardGatewayDeps): Promise<EnsuredBotBoardGateway> {
   const now = (deps.now ?? (() => new Date()))();
   const warnings: string[] = [];
-  const resolved = await deps.resolveAssignment();
+  const status = await deps.readAgentStatus();
+  const withheld = status === null || BOT_GATEWAY_WITHHELD_AGENT_STATUSES.includes(status);
+  if (withheld) {
+    warnings.push(
+      `board gateway: the agent is ${status ?? "missing"}, so no gateway is issued to it and the ones it has are released`,
+    );
+  }
+  const resolved: { assignment: BotToolAssignment | null; warnings: string[] } = withheld
+    ? { assignment: null, warnings: [] }
+    : await deps.resolveAssignment();
   warnings.push(...resolved.warnings);
   const active = await deps.listGateways();
 
   if (!resolved.assignment) {
-    for (const gateway of active) await releaseGateway(deps, gateway, warnings);
+    for (const gateway of active) await releaseBotGateway(deps, gateway, warnings);
     return { gateway: null, warnings };
   }
 
@@ -179,11 +244,18 @@ export async function ensureBotBoardGateway(deps: BotBoardGatewayDeps): Promise<
   let current = active.find((gateway) => gateway.digest === digest) ?? null;
   // Anything else is an older assignment: released BEFORE the new gateway is made.
   for (const gateway of active) {
-    if (gateway !== current) await releaseGateway(deps, gateway, warnings);
+    if (gateway !== current) await releaseBotGateway(deps, gateway, warnings);
   }
   if (!current) {
     const profileId = await resolved.assignment.ensureProfile();
-    current = await deps.createGateway({ digest, profileId });
+    const created = await deps.createGateway({ digest, profileId });
+    if (created.kind === "held_by_operator") {
+      warnings.push(
+        `board gateway: gateway ${created.publicId} of the bot was disabled by an operator; it is not turned on again and nothing is delivered`,
+      );
+      return { gateway: null, warnings };
+    }
+    current = created.gateway;
   }
 
   const token = await ensureToken(deps, current.id, now, warnings);

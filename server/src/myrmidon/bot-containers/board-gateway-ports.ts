@@ -2,7 +2,7 @@
 //
 // myrmidon(W2a): the database-bound operations behind board-gateway.ts, kept thin:
 // every rule (when a gateway is made, when its token rotates, what is released)
-// lives in board-gateway.ts, tested against fakes. What is left here is the glue
+// lives in board-gateway.ts over injected operations. What is left here is the glue
 // to the board's tool access and tool gateway services.
 //
 // The agent's assignment is resolved the way a hermes_local run resolves it
@@ -17,17 +17,22 @@
 
 import { createHash } from "node:crypto";
 
-import { toolMcpGateways, toolMcpGatewayTokens, toolProfiles, type Db } from "@paperclipai/db";
-import { and, eq, isNull } from "drizzle-orm";
+import { agents, toolMcpGateways, toolMcpGatewayTokens, toolProfiles, type Db } from "@paperclipai/db";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { filterResolvedGitHubConnectionsForRun } from "../../services/git-credentials.js";
 import { toolAccessService } from "../../services/tool-access.js";
 import { createToolGatewayService } from "../../services/tool-gateway.js";
 import { isRunSelectableConnection, isRunUnavailableConnection } from "../tool-gateway-run-selection.js";
 import {
+  BOT_GATEWAY_RELEASED_BY_KEY,
   BOT_GATEWAY_SOURCE,
   BOT_GATEWAY_TOKEN_NAME,
+  isStrayBotGateway,
+  releaseBotGateway,
   type BotBoardGatewayDeps,
+  type BotGatewayCreation,
   type BotGatewayRecord,
+  type BotGatewayReleaseDeps,
   type BotToolAssignment,
 } from "./board-gateway.js";
 
@@ -165,6 +170,91 @@ export async function resolveBotToolAssignment(
   return { assignment: { digest: assignmentDigest, ensureProfile }, warnings };
 }
 
+type GatewayRow = typeof toolMcpGateways.$inferSelect;
+
+function toRecord(row: GatewayRow): BotGatewayRecord {
+  const digest = asRecord(row.metadata).assignmentDigest;
+  return { id: row.id, publicId: row.gatewayPublicId, digest: typeof digest === "string" ? digest : "" };
+}
+
+/**
+ * The operations that release a gateway (revoke its bot tokens, disable it and mark it
+ * as disabled here) in one company. The vendor's gateway update replaces `metadata`
+ * wholesale, so the existing metadata is read and merged, never overwritten.
+ */
+function releaseOperations(db: Db, companyId: string): BotGatewayReleaseDeps {
+  const gateways = createToolGatewayService(db);
+  return {
+    async listActiveTokens(gatewayId) {
+      const rows = await db
+        .select({
+          id: toolMcpGatewayTokens.id,
+          createdAt: toolMcpGatewayTokens.createdAt,
+          expiresAt: toolMcpGatewayTokens.expiresAt,
+        })
+        .from(toolMcpGatewayTokens)
+        .where(
+          and(
+            eq(toolMcpGatewayTokens.companyId, companyId),
+            eq(toolMcpGatewayTokens.gatewayId, gatewayId),
+            eq(toolMcpGatewayTokens.name, BOT_GATEWAY_TOKEN_NAME),
+            isNull(toolMcpGatewayTokens.revokedAt),
+          ),
+        );
+      return rows.map((row) => ({ id: row.id, createdAt: row.createdAt, expiresAt: row.expiresAt }));
+    },
+
+    async revokeToken(tokenId) {
+      await gateways.revokeNamedGatewayToken({ companyId, tokenId });
+    },
+
+    async disableGateway(gatewayId) {
+      const [row] = await db
+        .select({ metadata: toolMcpGateways.metadata })
+        .from(toolMcpGateways)
+        .where(and(eq(toolMcpGateways.companyId, companyId), eq(toolMcpGateways.id, gatewayId)))
+        .limit(1);
+      if (!row) throw new Error(`gateway ${gatewayId} not found`);
+      await gateways.updateNamedGateway({
+        companyId,
+        gatewayId,
+        body: { status: "disabled", metadata: { ...asRecord(row.metadata), [BOT_GATEWAY_RELEASED_BY_KEY]: BOT_GATEWAY_SOURCE } },
+      });
+    },
+  };
+}
+
+/**
+ * Releases the gateways made here whose owner the sweep does not reconcile: an agent
+ * that is deleted (its gateway lost the agent id but keeps it in the metadata),
+ * terminated, switched to another adapter or with its container turned off. Runs on
+ * every sweep, so a failed step is retried a minute later. A gateway that is already
+ * disabled is not listed, so an operator's own state is never touched.
+ */
+export async function releaseStrayBotGateways(
+  db: Db,
+  reconciledAgentIds: ReadonlySet<string>,
+): Promise<{ released: number; warnings: string[] }> {
+  const rows = await db
+    .select()
+    .from(toolMcpGateways)
+    .where(
+      and(
+        eq(toolMcpGateways.status, "active"),
+        isNull(toolMcpGateways.archivedAt),
+        sql`${toolMcpGateways.metadata} ->> 'source' = ${BOT_GATEWAY_SOURCE}`,
+      ),
+    );
+  const warnings: string[] = [];
+  let released = 0;
+  for (const row of rows) {
+    // The owner is the agent id column: it is what the database keeps and what goes null on a delete.
+    if (!isStrayBotGateway(row.agentId, reconciledAgentIds)) continue;
+    if (await releaseBotGateway(releaseOperations(db, row.companyId), toRecord(row), warnings)) released += 1;
+  }
+  return { released, warnings };
+}
+
 /**
  * The gateway operations for one bot. `readSecret`/`storeSecret` are the bot's
  * gateway-token secret (profile-ports.ts owns the secrets service).
@@ -175,13 +265,18 @@ export function createBotBoardGatewayDeps(
   secret: Pick<BotBoardGatewayDeps, "readSecret" | "storeSecret">,
 ): BotBoardGatewayDeps {
   const gateways = createToolGatewayService(db);
-
-  function toRecord(row: typeof toolMcpGateways.$inferSelect): BotGatewayRecord {
-    const digest = asRecord(row.metadata).assignmentDigest;
-    return { id: row.id, publicId: row.gatewayPublicId, digest: typeof digest === "string" ? digest : "" };
-  }
+  const release = releaseOperations(db, agent.companyId);
 
   return {
+    async readAgentStatus() {
+      const [row] = await db
+        .select({ status: agents.status })
+        .from(agents)
+        .where(and(eq(agents.companyId, agent.companyId), eq(agents.id, agent.id)))
+        .limit(1);
+      return row?.status ?? null;
+    },
+
     resolveAssignment: () => resolveBotToolAssignment(db, agent),
 
     async listGateways() {
@@ -210,16 +305,27 @@ export function createBotBoardGatewayDeps(
           .limit(1);
         return row ?? null;
       };
-      const adopt = async (row: typeof toolMcpGateways.$inferSelect): Promise<BotGatewayRecord> => {
+      const adopt = async (row: GatewayRow): Promise<BotGatewayCreation> => {
         // The slug is derived from the bot and the digest, so a hit is ours unless something else took the name.
         if (row.agentId !== agent.id || asRecord(row.metadata).source !== BOT_GATEWAY_SOURCE || row.archivedAt) {
           throw new Error(`gateway slug ${slug} is taken by a gateway that is not this bot's`);
         }
-        // An assignment that came back after another one: its gateway (and profile) are still there, disabled.
-        if (row.status !== "active") {
-          await gateways.updateNamedGateway({ companyId: agent.companyId, gatewayId: row.id, body: { status: "active" } });
+        const gateway: BotGatewayRecord = { id: row.id, publicId: row.gatewayPublicId, digest };
+        if (row.status === "active") return { kind: "gateway", gateway };
+        const metadata = asRecord(row.metadata);
+        // An assignment that came back after another one: this module disabled its gateway, so it is turned on again.
+        // Any other state is an operator's decision (or a draft): nothing is turned on and nothing is delivered.
+        if (row.status !== "disabled" || metadata[BOT_GATEWAY_RELEASED_BY_KEY] !== BOT_GATEWAY_SOURCE) {
+          return { kind: "held_by_operator", publicId: row.gatewayPublicId };
         }
-        return { id: row.id, publicId: row.gatewayPublicId, digest };
+        const restored = { ...metadata };
+        delete restored[BOT_GATEWAY_RELEASED_BY_KEY];
+        await gateways.updateNamedGateway({
+          companyId: agent.companyId,
+          gatewayId: row.id,
+          body: { status: "active", metadata: restored },
+        });
+        return { kind: "gateway", gateway };
       };
 
       const existing = await findBySlug();
@@ -238,7 +344,7 @@ export function createBotBoardGatewayDeps(
             metadata: { source: BOT_GATEWAY_SOURCE, agentId: agent.id, assignmentDigest: digest },
           },
         });
-        return { id: created.id, publicId: created.gatewayPublicId, digest };
+        return { kind: "gateway", gateway: { id: created.id, publicId: created.gatewayPublicId, digest } };
       } catch (err) {
         const raced = await findBySlug();
         if (!raced) throw err;
@@ -246,9 +352,7 @@ export function createBotBoardGatewayDeps(
       }
     },
 
-    async disableGateway(gatewayId) {
-      await gateways.updateNamedGateway({ companyId: agent.companyId, gatewayId, body: { status: "disabled" } });
-    },
+    disableGateway: release.disableGateway,
 
     readSecret: secret.readSecret,
     storeSecret: secret.storeSecret,
@@ -273,24 +377,7 @@ export function createBotBoardGatewayDeps(
       return row ? { id: row.id, createdAt: row.createdAt, expiresAt: row.expiresAt } : null;
     },
 
-    async listActiveTokens(gatewayId) {
-      const rows = await db
-        .select({
-          id: toolMcpGatewayTokens.id,
-          createdAt: toolMcpGatewayTokens.createdAt,
-          expiresAt: toolMcpGatewayTokens.expiresAt,
-        })
-        .from(toolMcpGatewayTokens)
-        .where(
-          and(
-            eq(toolMcpGatewayTokens.companyId, agent.companyId),
-            eq(toolMcpGatewayTokens.gatewayId, gatewayId),
-            eq(toolMcpGatewayTokens.name, BOT_GATEWAY_TOKEN_NAME),
-            isNull(toolMcpGatewayTokens.revokedAt),
-          ),
-        );
-      return rows.map((row) => ({ id: row.id, createdAt: row.createdAt, expiresAt: row.expiresAt }));
-    },
+    listActiveTokens: release.listActiveTokens,
 
     async createToken(gatewayId, expiresAt) {
       const created = await gateways.createNamedGatewayToken({
@@ -308,8 +395,6 @@ export function createBotBoardGatewayDeps(
       return { id: created.id, token: created.token };
     },
 
-    async revokeToken(tokenId) {
-      await gateways.revokeNamedGatewayToken({ companyId: agent.companyId, tokenId });
-    },
+    revokeToken: release.revokeToken,
   };
 }

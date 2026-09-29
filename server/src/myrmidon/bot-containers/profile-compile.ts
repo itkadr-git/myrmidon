@@ -249,7 +249,8 @@ export function createBotProfileCompile(
         llmApiKey,
         apiServerKey: apiServerKey.value,
         paperclipApiKey: paperclipApiKey.value,
-        // Declared servers first: a same-named server from the gateway port loses to the operator's declaration.
+        // The gateway server's name cannot be declared (profile-input.ts rejects it), so it is never displaced;
+        // for any other name shared by two sources the declared server comes first and wins.
         mcpServers: [...staticMcpServers, ...gatewayMcpServers],
         instanceDefaults,
       },
