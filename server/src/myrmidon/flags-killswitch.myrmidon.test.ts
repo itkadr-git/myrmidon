@@ -15,7 +15,8 @@
  * behavior. The guard test at the bottom fails when docs/myrmidon/FLAGS.md
  * loses a row, gains an undocumented row, or drops the L1-L5 level column.
  */
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -213,5 +214,77 @@ describe("docs/myrmidon/FLAGS.md guard", () => {
       expect(cells[3], `row ${cells[0]} must describe the OFF side`).toBeTruthy();
       expect(cells[4], `row ${cells[0]} must describe the unset default`).toBeTruthy();
     }
+  });
+});
+
+describe("myrmidon env coverage guard (code vs docs)", () => {
+  // Every MYRMIDON_* environment name that server/src/myrmidon actually reads
+  // must be documented somewhere: docs/myrmidon/FLAGS.md (a kill switch with an
+  // L1-L5 semantics row, checked by the guard above), docs/myrmidon/SETTINGS.md
+  // (an ordinary setting), or the explicit list below (run-admission limits
+  // documented in docs/myrmidon/ROADMAP.md, item C0 — numeric limits, not kill
+  // switches). A brand-new flag nobody classified makes this test red: add it to
+  // FLAGS.md if it is a kill switch, to SETTINGS.md if it is a setting.
+  const DOCUMENTED_IN_ROADMAP_C0 = new Set([
+    "MYRMIDON_MAX_CONCURRENT_RUNS",
+    "MYRMIDON_MAX_RUN_STARTS_PER_MINUTE",
+    "MYRMIDON_MIN_FREE_MEMORY_MB",
+    "MYRMIDON_RUN_MEMORY_ESTIMATE_MB",
+  ]);
+
+  function listNonTestTsFiles(dir: string): string[] {
+    const out: string[] = [];
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) out.push(...listNonTestTsFiles(full));
+      else if (entry.isFile() && entry.name.endsWith(".ts") && !entry.name.includes(".test.")) {
+        out.push(full);
+      }
+    }
+    return out;
+  }
+
+  it("every MYRMIDON_* env name read by myrmidon code is documented (FLAGS.md / SETTINGS.md / ROADMAP C0)", () => {
+    const myrmidonDir = fileURLToPath(new URL("./", import.meta.url));
+    const seen = new Set<string>();
+    for (const file of listNonTestTsFiles(myrmidonDir)) {
+      for (const match of readFileSync(file, "utf8").matchAll(/MYRMIDON_[A-Z0-9_]+/g)) {
+        const name = match[0];
+        // Trailing-underscore hits are comment prefixes (MYRMIDON_BOT_*,
+        // MYRMIDON_MAINTENANCE_*); MYRMIDON_MCP_TOKEN_<server> variables are
+        // generated per bot profile from MYRMIDON_BOT_MCP_SERVERS, not settings.
+        if (name.endsWith("_")) continue;
+        if (name.startsWith("MYRMIDON_MCP_TOKEN_")) continue;
+        seen.add(name);
+      }
+    }
+
+    const settingsMd = readFileSync(
+      fileURLToPath(new URL("../../../docs/myrmidon/SETTINGS.md", import.meta.url)),
+      "utf8",
+    );
+    const settingsNames = new Set<string>();
+    for (const match of settingsMd.matchAll(/`MYRMIDON_[A-Z0-9_]+`/g)) {
+      settingsNames.add(match[0].slice(1, -1));
+    }
+
+    const flagsMd = readFileSync(FLAGS_MD_PATH, "utf8");
+    const flagNames = new Set<string>();
+    for (const match of flagsMd.matchAll(/^\| `MYRMIDON_[A-Z0-9_]+`/gm)) {
+      flagNames.add(match[0].slice(2, -1));
+    }
+
+    const undocumented = [...seen]
+      .filter(
+        (name) =>
+          !flagNames.has(name) &&
+          !settingsNames.has(name) &&
+          !DOCUMENTED_IN_ROADMAP_C0.has(name),
+      )
+      .sort();
+    expect(
+      undocumented,
+      "new MYRMIDON_* env name(s) read by myrmidon code: classify each in docs/myrmidon/FLAGS.md (kill switch) or docs/myrmidon/SETTINGS.md (setting)",
+    ).toEqual([]);
   });
 });
