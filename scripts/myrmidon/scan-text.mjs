@@ -40,8 +40,12 @@ const RULES = [
   rule("secret-like assignment", "(password|passwd|secret|token|api[_-]?key)\\s*[:=]"),
   rule("private key header", "BEGIN [A-Z ]*PRIVATE KEY"),
   rule("github token", "github_pat_[A-Za-z0-9_]+|ghp_[A-Za-z0-9]+"),
-  rule("other token prefix", "(?:^|[^A-Za-z0-9])pcp_[A-Za-z0-9_-]+|sk-[A-Za-z0-9_-]{8,}"),
-  rule("secret file path", "(^|[\\s\"'])/etc/[^\\s\"']*secret|(^|[\\s\"'])~\\/\\.ssh\\/"),
+  // The word boundary covers both prefixes: without it "sk-" would match inside
+  // ordinary words such as "task-assignment" or "disk-pressure".
+  rule("other token prefix", "(?:^|[^A-Za-z0-9])(?:pcp_[A-Za-z0-9_-]+|sk-[A-Za-z0-9_-]{8,})"),
+  // Paths in markdown are usually wrapped in backticks or brackets, so those
+  // count as a left boundary along with whitespace and quotes.
+  rule("secret file path", "(^|[\\s\"'`(\\[<])/etc/[^\\s\"']*secret|(^|[\\s\"'`(\\[<])~\\/\\.ssh\\/"),
 ];
 
 const RULE_BY_NAME = new Map(RULES.map((r) => [r.name, r]));
@@ -90,22 +94,23 @@ export function summarizeFindings(findings) {
   return [...byRule.entries()].map(([rule, count]) => ({ rule, count }));
 }
 
+// A read failure must never look like an empty, clean text: errors are not
+// caught here, main() turns them into exit code 2 (fail closed).
 function readInput(argv) {
   const args = { file: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === "--file") args.file = argv[++i];
-    else throw new Error(`Unknown argument: ${a}`);
+    if (a === "--file") {
+      const value = argv[++i];
+      if (!value) throw new Error("--file requires a path");
+      args.file = value;
+    } else throw new Error(`Unknown argument: ${a}`);
   }
-  if (args.file) {
+  if (args.file !== null) {
     if (!fs.existsSync(args.file)) throw new Error(`File not found: ${args.file}`);
     return fs.readFileSync(args.file, "utf8");
   }
-  try {
-    return fs.readFileSync(0, "utf8");
-  } catch {
-    return "";
-  }
+  return fs.readFileSync(0, "utf8");
 }
 
 /**

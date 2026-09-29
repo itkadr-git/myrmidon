@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
 import { main, scanLine, scanText, summarizeFindings } from "./scan-text.mjs";
 
 // Tokens and addresses are assembled at runtime and built from neutral
@@ -60,6 +62,31 @@ describe("scanText", () => {
     assert.deepEqual(scanText("ghp_ABCDEFGHIJKLMNOP").map((f) => f.rule), ["github token"]);
     assert.deepEqual(scanText("pcp_ABCDEFGHIJKLMNOP").map((f) => f.rule), ["other token prefix"]);
     assert.deepEqual(scanText("sk-ABCDEFGHIJKLMNOP").map((f) => f.rule), ["other token prefix"]);
+  });
+
+  it("does not take ordinary words containing sk- for a token", () => {
+    for (const text of ["Adds task-assignment view", "disk-pressure eviction", "risk-assessment table", "ask-something-long"]) {
+      assert.deepEqual(scanText(text), [], text);
+    }
+  });
+
+  it("still finds sk- and pcp_ tokens after a non-word character", () => {
+    for (const text of ["key sk-ABCDEFGHIJKLMNOP", "(sk-ABCDEFGHIJKLMNOP)", "`pcp_ABCDEFGHIJKLMNOP`", "sk-ABCDEFGHIJKLMNOP"]) {
+      assert.deepEqual(scanText(text).map((f) => f.rule), ["other token prefix"], text);
+    }
+  });
+
+  it("finds secret file paths wrapped in markdown backticks, brackets and parentheses", () => {
+    for (const text of [
+      "see `~/.ssh/id_rsa`",
+      "`/etc/app/secrets.env`",
+      "(/etc/app/secret.env)",
+      "[/etc/app/secret.env]",
+      "<~/.ssh/config>",
+      "[key](~/.ssh/id_rsa)",
+    ]) {
+      assert.deepEqual(scanText(text).map((f) => f.rule), ["secret file path"], text);
+    }
   });
 
   it("finds private key headers and secret file paths", () => {
@@ -150,5 +177,25 @@ describe("main", () => {
     const lines = [];
     const log = { log: (m) => lines.push(m), error: (m) => lines.push(m) };
     assert.equal(main(["--nope"], {}, log), 2);
+  });
+
+  it("exits 2 when --file has no value", () => {
+    const lines = [];
+    const log = { log: (m) => lines.push(m), error: (m) => lines.push(m) };
+    assert.equal(main(["--file"], {}, log), 2);
+    assert.equal(main(["--file", ""], {}, log), 2);
+  });
+
+  it("exits 2 and prints no verdict when stdin cannot be read", () => {
+    // A directory as stdin makes the read fail; it must not look like empty clean text.
+    const fd = fs.openSync(os.tmpdir(), "r");
+    try {
+      const script = fileURLToPath(new URL("./scan-text.mjs", import.meta.url));
+      const child = spawnSync(process.execPath, [script], { stdio: [fd, "pipe", "pipe"], encoding: "utf8" });
+      assert.equal(child.status, 2);
+      assert.ok(!child.stdout.includes("Scanned"));
+    } finally {
+      fs.closeSync(fd);
+    }
   });
 });

@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
+import { compileForbiddenPatterns } from "./scan-diff.mjs";
 import { main, scanForPublication } from "./publish-scan.mjs";
 
 // Tokens, addresses and the secret value are assembled at runtime from
@@ -11,15 +14,27 @@ import { main, scanForPublication } from "./publish-scan.mjs";
 const ip = (...octets) => octets.join(".");
 const passwordPair = ["password", "hunter2"].join(": ");
 
-function run(text, argv = []) {
+function run(text, argv = [], env = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "publish-scan-"));
   const file = path.join(dir, "body.md");
   fs.writeFileSync(file, text);
   const lines = [];
   const log = { log: (m) => lines.push(m), error: (m) => lines.push(m) };
-  const code = main([...argv, "--file", file], {}, log);
+  const code = main([...argv, "--file", file], env, log);
   return { code, output: lines.join("\n") };
 }
+
+function runArgs(argv, env = {}) {
+  const lines = [];
+  const log = { log: (m) => lines.push(m), error: (m) => lines.push(m) };
+  const code = main(argv, env, log);
+  return { code, output: lines.join("\n") };
+}
+
+// Forbidden patterns come from a private list, so the test uses neutral
+// placeholders: the pattern line and the text it matches are made up here.
+const forbiddenList = ["# comment line", "zzhost-\\d+"].join("\n");
+const forbiddenHit = ["zzhost", "42"].join("-");
 
 describe("scanForPublication", () => {
   it("allows clean text", () => {
@@ -39,6 +54,19 @@ describe("scanForPublication", () => {
 
   it("handles empty text", () => {
     assert.deepEqual(scanForPublication(""), { allowed: true, lines: 0, findingCount: 0, byRule: [] });
+  });
+
+  it("applies forbidden-pattern rules next to the built-in ones", () => {
+    const extra = compileForbiddenPatterns(forbiddenList).map(({ number, regex }) => ({
+      name: `forbidden pattern #${number}`,
+      regex,
+    }));
+    const result = scanForPublication(`ok\nsee ${forbiddenHit}\n${passwordPair}`, extra);
+    assert.equal(result.allowed, false);
+    assert.deepEqual(result.byRule, [
+      { rule: "forbidden pattern #2", count: 1 },
+      { rule: "secret-like assignment", count: 1 },
+    ]);
   });
 });
 
@@ -84,5 +112,79 @@ describe("main", () => {
     const lines = [];
     const log = { log: (m) => lines.push(m), error: (m) => lines.push(m) };
     assert.equal(main(["--nope"], {}, log), 2);
+  });
+
+  it("exits 2 when --file has no value", () => {
+    assert.equal(runArgs(["--file"]).code, 2);
+    assert.equal(runArgs(["--file", ""]).code, 2);
+  });
+
+  it("exits 2 when the input cannot be read", () => {
+    const { code, output } = runArgs(["--file", os.tmpdir()]);
+    assert.equal(code, 2);
+    assert.ok(!output.includes("publication allowed"));
+  });
+
+  it("exits 2 and never allows publication when stdin cannot be read", () => {
+    // A directory as stdin makes the read fail; it must not look like empty clean text.
+    const fd = fs.openSync(os.tmpdir(), "r");
+    try {
+      const script = fileURLToPath(new URL("./publish-scan.mjs", import.meta.url));
+      const child = spawnSync(process.execPath, [script], {
+        stdio: [fd, "pipe", "pipe"],
+        encoding: "utf8",
+        env: { ...process.env, MYRMIDON_FORBIDDEN_PATTERNS: "" },
+      });
+      assert.equal(child.status, 2);
+      assert.ok(!child.stdout.includes("publication allowed"));
+    } finally {
+      fs.closeSync(fd);
+    }
+  });
+});
+
+describe("forbidden patterns", () => {
+  it("refuses text matching a pattern from MYRMIDON_FORBIDDEN_PATTERNS and prints neither pattern nor match", () => {
+    const { code, output } = run(`intro\nrolled out on ${forbiddenHit} today`, [], {
+      MYRMIDON_FORBIDDEN_PATTERNS: forbiddenList,
+    });
+    assert.equal(code, 1);
+    assert.match(output, /1 finding\(s\): forbidden pattern #2 x1/);
+    assert.match(output, /publication refused/);
+    assert.ok(!output.includes("zzhost"));
+    assert.ok(!output.includes(forbiddenHit));
+    assert.ok(!output.includes("warning"));
+  });
+
+  it("allows clean text when patterns are configured", () => {
+    const { code, output } = run("Plain text without anything internal.", [], {
+      MYRMIDON_FORBIDDEN_PATTERNS: forbiddenList,
+    });
+    assert.equal(code, 0);
+    assert.ok(!output.includes("::warning"));
+  });
+
+  it("warns when no patterns are configured and still applies the built-in rules", () => {
+    const clean = run("Plain text.");
+    assert.equal(clean.code, 0);
+    assert.match(clean.output, /::warning title=publish scan::no forbidden patterns configured/);
+    const dirty = run(passwordPair);
+    assert.equal(dirty.code, 1);
+    assert.match(dirty.output, /::warning/);
+  });
+
+  it("reads patterns from --patterns-file and marks their rule names", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "publish-scan-patterns-"));
+    const patterns = path.join(dir, "patterns.txt");
+    fs.writeFileSync(patterns, forbiddenList);
+    const { code, output } = run(`see ${forbiddenHit}`, ["--patterns-file", patterns]);
+    assert.equal(code, 1);
+    assert.match(output, /forbidden pattern #2 \(file\) x1/);
+    assert.ok(!output.includes(forbiddenHit));
+  });
+
+  it("exits 2 when the patterns file is missing or has no value", () => {
+    assert.equal(run("text", ["--patterns-file", "/nonexistent/patterns.txt"]).code, 2);
+    assert.equal(runArgs(["--patterns-file"]).code, 2);
   });
 });
