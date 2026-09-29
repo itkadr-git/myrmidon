@@ -9,13 +9,22 @@
 //   node scripts/myrmidon/scan-text.mjs [--file <path>]
 //
 // Input is the file given with --file, or stdin when no --file is passed.
-// Exit code: 0 clean, 1 findings, 2 usage/read error.
+// Exit code: 0 clean, 1 findings, 2 usage/read error (an unreadable input is
+// an error, never a clean scan).
+//
+// Deployment-specific patterns (our own hosts, domains, addresses) come from
+// MYRMIDON_FORBIDDEN_PATTERNS, the same list scan-diff.mjs uses: one regular
+// expression per line, "#" comments allowed. Without it only the built-in
+// rules run and a warning is printed.
+//
 // Findings are reported by rule name and line number only: the matched text
-// is never printed, so a leaked secret is not echoed back into logs.
+// (and the forbidden pattern itself) is never printed, so a leaked secret is
+// not echoed back into logs.
 
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { compileForbiddenPatterns } from "./scan-diff.mjs";
 
 const IPV4 = /(?<![\d.])(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?![\d.]*\d)/g;
 
@@ -37,11 +46,19 @@ function rule(name, source, flags = "i") {
 // (secret-like key/value, private key headers, RFC 1918 and CGNAT ranges,
 // plus common token prefixes and secret file paths).
 const RULES = [
-  rule("secret-like assignment", "(password|passwd|secret|token|api[_-]?key)\\s*[:=]"),
+  rule("secret-like assignment", "(password|passwd|secret|token|api[_-]?key)[\"']?\\s*[:=]"),
   rule("private key header", "BEGIN [A-Z ]*PRIVATE KEY"),
-  rule("github token", "github_pat_[A-Za-z0-9_]+|ghp_[A-Za-z0-9]+"),
-  rule("other token prefix", "(?:^|[^A-Za-z0-9])pcp_[A-Za-z0-9_-]+|sk-[A-Za-z0-9_-]{8,}"),
-  rule("secret file path", "(^|[\\s\"'])/etc/[^\\s\"']*secret|(^|[\\s\"'])~\\/\\.ssh\\/"),
+  rule(
+    "github token",
+    "github_pat_[A-Za-z0-9_]+|ghp_[A-Za-z0-9]+|(?:^|[^A-Za-z0-9])gh[ousr]_[A-Za-z0-9]{20,}",
+  ),
+  rule("other token prefix", "(?:^|[^A-Za-z0-9])(?:pcp_[A-Za-z0-9_-]+|sk-[A-Za-z0-9_-]{8,})"),
+  rule("telegram bot token", "(?<![A-Za-z0-9_])\\d{8,10}:[A-Za-z0-9_-]{35}(?![A-Za-z0-9_-])"),
+  rule("credentials in URL", "://[^\\s/:@]+:[^\\s/@]+@"),
+  rule(
+    "secret file path",
+    "(^|[\\s\"'`(])/etc/[^\\s\"']*secret|(^|[\\s\"'`(])~\\/\\.ssh\\/",
+  ),
 ];
 
 const RULE_BY_NAME = new Map(RULES.map((r) => [r.name, r]));
@@ -52,13 +69,17 @@ export function builtinRules() {
 }
 
 /**
- * Scans one line of text with the given rules.
- * Returns findings { line, rule }: no matched text is kept.
+ * Scans one line of text with the given rules and forbidden patterns
+ * ({ number, regex } as compiled by scan-diff.mjs).
+ * Returns findings { line, rule }: no matched text and no pattern is kept.
  */
-export function scanLine(text, lineNumber, rules = RULES) {
+export function scanLine(text, lineNumber, rules = RULES, forbidden = []) {
   const findings = [];
   for (const { name, regex } of rules) {
     if (regex.test(text)) findings.push({ line: lineNumber, rule: name });
+  }
+  for (const { number, regex } of forbidden) {
+    if (regex.test(text)) findings.push({ line: lineNumber, rule: `forbidden pattern #${number}` });
   }
   for (const match of text.matchAll(IPV4)) {
     const octets = match.slice(1, 5).map(Number);
@@ -73,11 +94,11 @@ export function scanLine(text, lineNumber, rules = RULES) {
  * Scans a whole text. Returns findings { line, rule } sorted by line, then
  * rule name; the matched text is intentionally not part of a finding.
  */
-export function scanText(text, rules = RULES) {
+export function scanText(text, rules = RULES, forbidden = []) {
   const findings = [];
   const lines = String(text ?? "").split(/\r?\n/);
   for (const [index, line] of lines.entries()) {
-    findings.push(...scanLine(line, index + 1, rules));
+    findings.push(...scanLine(line, index + 1, rules, forbidden));
   }
   return findings;
 }
@@ -90,21 +111,29 @@ export function summarizeFindings(findings) {
   return [...byRule.entries()].map(([rule, count]) => ({ rule, count }));
 }
 
-function readInput(argv) {
+const readStdinSync = () => fs.readFileSync(0, "utf8");
+
+/**
+ * Reads the text to scan. Any failure to read is an error (exit code 2):
+ * a text that was not read must never count as a clean scan.
+ */
+function readInput(argv, readStdin = readStdinSync) {
   const args = { file: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === "--file") args.file = argv[++i];
-    else throw new Error(`Unknown argument: ${a}`);
+    if (a === "--file") {
+      args.file = argv[++i];
+      if (!args.file) throw new Error("--file requires a path");
+    } else throw new Error(`Unknown argument: ${a}`);
   }
   if (args.file) {
     if (!fs.existsSync(args.file)) throw new Error(`File not found: ${args.file}`);
     return fs.readFileSync(args.file, "utf8");
   }
   try {
-    return fs.readFileSync(0, "utf8");
-  } catch {
-    return "";
+    return readStdin();
+  } catch (error) {
+    throw new Error(`Cannot read stdin: ${error?.code ?? error?.message ?? error}`);
   }
 }
 
@@ -112,16 +141,20 @@ function readInput(argv) {
  * CLI entry point. Reads the text, scans it, prints findings without the
  * matched text and returns the exit code (0 clean, 1 findings, 2 error).
  */
-export function main(argv = process.argv.slice(2), env = process.env, log = console) {
+export function main(argv = process.argv.slice(2), env = process.env, log = console, readStdin = readStdinSync) {
   let text;
   try {
-    text = readInput(argv);
+    text = readInput(argv, readStdin);
   } catch (error) {
     log.error(String(error.message ?? error));
     return 2;
   }
+  const forbidden = compileForbiddenPatterns(env.MYRMIDON_FORBIDDEN_PATTERNS);
+  if (forbidden.length === 0) {
+    log.log("::warning title=internal addresses::MYRMIDON_FORBIDDEN_PATTERNS is not set; forbidden-pattern check skipped");
+  }
   const lines = text.length === 0 ? 0 : text.split(/\r?\n/).length;
-  const findings = scanText(text);
+  const findings = scanText(text, RULES, forbidden);
   log.log(`Scanned ${lines} line(s): ${findings.length} finding(s).`);
   for (const f of findings) {
     log.log(`::error line=${f.line}::${f.rule}`);

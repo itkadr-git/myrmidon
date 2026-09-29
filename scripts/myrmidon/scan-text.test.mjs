@@ -11,13 +11,13 @@ import { main, scanLine, scanText, summarizeFindings } from "./scan-text.mjs";
 const ip = (...octets) => octets.join(".");
 const passwordPair = ["password", "hunter2"].join(": ");
 
-function run(text, argv = []) {
+function run(text, argv = [], env = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "scan-text-"));
   const file = path.join(dir, "input.txt");
   fs.writeFileSync(file, text);
   const lines = [];
   const log = { log: (m) => lines.push(m), error: (m) => lines.push(m) };
-  const code = main([...argv, "--file", file], {}, log);
+  const code = main([...argv, "--file", file], env, log);
   return { code, output: lines.join("\n") };
 }
 
@@ -60,6 +60,49 @@ describe("scanText", () => {
     assert.deepEqual(scanText("ghp_ABCDEFGHIJKLMNOP").map((f) => f.rule), ["github token"]);
     assert.deepEqual(scanText("pcp_ABCDEFGHIJKLMNOP").map((f) => f.rule), ["other token prefix"]);
     assert.deepEqual(scanText("sk-ABCDEFGHIJKLMNOP").map((f) => f.rule), ["other token prefix"]);
+  });
+
+  it("finds every GitHub token prefix", () => {
+    for (const prefix of ["ghp", "gho", "ghs", "ghu", "ghr"]) {
+      const token = [prefix, "A".repeat(24)].join("_");
+      assert.deepEqual(scanText(`value ${token}`).map((f) => f.rule), ["github token"], prefix);
+    }
+    assert.deepEqual(scanText(`laughs_${"a".repeat(24)}`), []);
+  });
+
+  it("does not mistake ordinary hyphenated words for a token prefix", () => {
+    for (const word of ["risk-assessment", "disk-pressure", "task-scheduler", "ask-user-questions", "task-connector-read-routes"]) {
+      assert.deepEqual(scanText(`see ${word} for details`), [], word);
+    }
+    assert.deepEqual(scanText("sk-XXXXXXXX").map((f) => f.rule), ["other token prefix"]);
+    assert.deepEqual(scanText("key=sk-XXXXXXXX").map((f) => f.rule), ["other token prefix"]);
+    assert.deepEqual(scanText("pcp_XXXXXXXX").map((f) => f.rule), ["other token prefix"]);
+    assert.deepEqual(scanText("wrapcp_XXXXXXXX"), []);
+  });
+
+  it("finds quoted JSON keys", () => {
+    assert.deepEqual(scanText(`{"${["pass", "word"].join("")}": "x"}`).map((f) => f.rule), ["secret-like assignment"]);
+    assert.deepEqual(scanText(`"${["api", "key"].join("_")}": "x"`).map((f) => f.rule), ["secret-like assignment"]);
+    assert.deepEqual(scanText(`'${["to", "ken"].join("")}' = x`).map((f) => f.rule), ["secret-like assignment"]);
+  });
+
+  it("finds secret paths in Markdown code spans and links", () => {
+    assert.deepEqual(scanText("file `/etc/myrmidon/secrets.env`").map((f) => f.rule), ["secret file path"]);
+    assert.deepEqual(scanText("key `~/.ssh/id_ed25519`").map((f) => f.rule), ["secret file path"]);
+    assert.deepEqual(scanText("(~/.ssh/config)").map((f) => f.rule), ["secret file path"]);
+  });
+
+  it("finds credentials in a URL", () => {
+    const url = `postgres://${["app", "pw"].join(":")}@db.example.com/main`;
+    assert.deepEqual(scanText(url).map((f) => f.rule), ["credentials in URL"]);
+    assert.deepEqual(scanText("https://example.com:8080/path and ssh://git@example.com/repo"), []);
+  });
+
+  it("finds a Telegram bot token", () => {
+    const token = ["123456789", "A".repeat(35)].join(":");
+    assert.deepEqual(scanText(`bot ${token}`).map((f) => f.rule), ["telegram bot token"]);
+    assert.deepEqual(scanText(`bot ${token.slice(0, -1)}-`).map((f) => f.rule), ["telegram bot token"]);
+    assert.deepEqual(scanText("time 12:30:45 and 2026:09:29"), []);
   });
 
   it("finds private key headers and secret file paths", () => {
@@ -112,6 +155,31 @@ describe("summarizeFindings", () => {
   });
 });
 
+describe("forbidden patterns", () => {
+  const host = ["corp", "example", "lan"].join("-");
+  const env = { MYRMIDON_FORBIDDEN_PATTERNS: `# ours\n${host}` };
+
+  it("warns and passes when the list is not set", () => {
+    const { code, output } = run(`HOST=${host}`, [], {});
+    assert.equal(code, 0);
+    assert.match(output, /::warning .*MYRMIDON_FORBIDDEN_PATTERNS is not set/);
+  });
+
+  it("fails on a match without printing the pattern or the text", () => {
+    const { code, output } = run(`ok\nHOST=${host}`, [], env);
+    assert.equal(code, 1);
+    assert.match(output, /::error line=2::forbidden pattern #2/);
+    assert.ok(!output.includes(host));
+    assert.ok(!/::warning/.test(output));
+  });
+
+  it("still applies the built-in rules when the list is set", () => {
+    const { code, output } = run(`connect to ${ip(10, 10, 10, 4)}`, [], env);
+    assert.equal(code, 1);
+    assert.match(output, /private address in 10\/8/);
+  });
+});
+
 describe("main", () => {
   it("exits 0 on clean text", () => {
     const { code, output } = run("Plain text with example.com only.");
@@ -144,6 +212,30 @@ describe("main", () => {
     const lines = [];
     const log = { log: (m) => lines.push(m), error: (m) => lines.push(m) };
     assert.equal(main(["--file", "/nonexistent/missing.txt"], {}, log), 2);
+  });
+
+  it("exits 2 when stdin cannot be read instead of reporting a clean scan", () => {
+    const lines = [];
+    const log = { log: (m) => lines.push(m), error: (m) => lines.push(m) };
+    const failing = () => {
+      throw Object.assign(new Error("resource temporarily unavailable"), { code: "EAGAIN" });
+    };
+    assert.equal(main([], {}, log, failing), 2);
+    assert.match(lines.join("\n"), /Cannot read stdin: EAGAIN/);
+    assert.ok(!lines.some((m) => /Scanned/.test(m)));
+  });
+
+  it("reads stdin when no file is given", () => {
+    const lines = [];
+    const log = { log: (m) => lines.push(m), error: (m) => lines.push(m) };
+    assert.equal(main([], {}, log, () => "plain text"), 0);
+    assert.equal(main([], {}, log, () => `x ${ip(10, 0, 0, 1)}`), 1);
+  });
+
+  it("exits 2 when --file has no path", () => {
+    const lines = [];
+    const log = { log: (m) => lines.push(m), error: (m) => lines.push(m) };
+    assert.equal(main(["--file"], {}, log, () => "plain text"), 2);
   });
 
   it("exits 2 on an unknown argument", () => {
