@@ -1,0 +1,16 @@
+{
+  "name": "@myrmidon/sign-native-host",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local Windows signing helper: Chrome/Edge native messaging host for the Myrmidon browser extension. PIN/key never leave the machine and never pass through our servers or the model.",
+  "main": "src/host.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --experimental-strip-types --experimental-loader ./test/ts-loader.mjs \"test/*.test.ts\""
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.6.0"
+  }
+}
