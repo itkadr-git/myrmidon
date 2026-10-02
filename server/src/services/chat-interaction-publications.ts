@@ -20,6 +20,13 @@ import type {
 import { readConfigFile } from "../config-file.js";
 // myrmidon(B1): product name in the user-facing text below; see product.ts.
 import { PRODUCT_NAME } from "../myrmidon/product.js";
+// myrmidon(1.4-U2): owner-facing Telegram DM delivery for cards of tasks
+// with no chat thread of their own (see owner-dm-cards.ts).
+import {
+  findOwnerTelegramDmConversation,
+  ownerDmEligibleInteraction,
+  telegramOwnerDmEndpoints,
+} from "../myrmidon/owner-dm-cards.js";
 import { projectSafeChatPublication } from "./chat-publication-projection.js";
 import { safeChatTaskUrl } from "./chat-task-url.js";
 import {
@@ -291,7 +298,9 @@ export async function enqueueIssueInteractionChatPublications(
         inArray(chatEndpoints.status, ["active", "verifying"]),
       ),
     );
-  if (bindings.length === 0) return [];
+  if (bindings.length === 0 && !ownerDmEligibleInteraction(interaction)) {
+    return [];
+  }
 
   const taskUrl = publicChatInteractionTaskUrl(interaction.issueId);
   const question =
@@ -299,207 +308,338 @@ export async function enqueueIssueInteractionChatPublications(
       ? nativeChatQuestion(interaction)
       : null;
   const inserted: Array<typeof chatPublications.$inferSelect> = [];
+  // myrmidon(1.4-U2): besides the task's own thread bindings, the same card
+  // goes to the owner's standing Telegram DM (the X8b conversation) so a
+  // question on a threadless task still reaches the person who must answer
+  // it. Only pending question/confirmation cards from an agent, and only
+  // bridge-enabled Telegram endpoints; the DM must already be bridged (a
+  // conversation for that board user exists), we never open one for a card.
+  const ownerDmTargets = ownerDmEligibleInteraction(interaction)
+    ? await ownerTelegramDmTargets(db, interaction)
+    : [];
   for (const { conversation, endpoint } of bindings) {
     if (endpoint.assignedAgentId !== interaction.createdByAgentId) continue;
-    const formDraft =
-      interaction.kind === "ask_user_questions" &&
-      (endpoint.provider === "slack" ||
-        endpoint.provider === "discord" ||
-        endpoint.provider === "microsoft-teams") &&
-      endpoint.capabilities.actions === true &&
-      endpoint.capabilities.modals === true
-        ? createChatQuestionFormDraft(
-            interaction,
-            endpoint.provider === "discord"
-              ? { nativeProvider: "discord" }
-              : {},
-          )
-        : null;
-    const supportsCallbacks =
-      endpoint.provider !== "imessage-photon" &&
-      formDraft === null &&
-      question !== null &&
-      endpoint.capabilities.actions === true;
-    const questionActionTokens = supportsCallbacks
-      ? question.options.map((option) => ({
-          actionId: createChatQuestionOptionActionToken(),
-          option,
-        }))
-      : [];
-    const confirmation =
-      endpoint.provider === "telegram" && endpoint.capabilities.actions === true
-        ? nativeTelegramConfirmation(interaction)
-        : null;
-    const confirmationActionTokens = confirmation
-      ? (["accept", "reject"] as const).map((decision) => ({
-          actionId: createChatConfirmationActionToken(),
-          decision,
-        }))
-      : [];
-    if (
-      endpoint.provider === "telegram" &&
-      [...questionActionTokens, ...confirmationActionTokens].some(
-        ({ actionId }) =>
-          telegramCallbackDataByteLength(actionId) >
-          TELEGRAM_CALLBACK_DATA_LIMIT_BYTES,
-      )
-    ) {
-      throw new Error("Generated Telegram question action exceeds 64 bytes");
-    }
-    const actions: SafeExternalChatCardAction[] = formDraft
-      ? [
-          {
-            type: "callback" as const,
-            actionId: formDraft.openActionId,
-            label: "Respond",
-            style: "primary" as const,
-          },
-        ]
-      : supportsCallbacks
-        ? questionActionTokens.map(({ actionId, option }) => ({
-            type: "callback" as const,
-            actionId,
-            label: option.label,
-          }))
-        : confirmation
-          ? confirmationActionTokens.map(({ actionId, decision }) => ({
-              type: "callback" as const,
-              actionId,
-              label:
-                decision === "accept"
-                  ? (confirmation.payload.acceptLabel ?? "Accept")
-                  : (confirmation.payload.rejectLabel ?? "Reject"),
-              style:
-                decision === "accept"
-                  ? ("primary" as const)
-                  : ("danger" as const),
-            }))
-          : taskUrl
-            ? [
-                {
-                  type: "link" as const,
-                  label: `Open in ${PRODUCT_NAME}`,
-                  url: taskUrl,
-                },
-              ]
-            : [];
-    const text =
-      interaction.kind === "ask_user_questions"
-        ? textForQuestionInteraction(interaction, taskUrl)
-        : genericInteractionText(taskUrl);
-    const payload = projectSafeChatPublication({
-      classification: "external",
-      source: "issue_interaction",
-      text,
-      progressState: "waiting_for_input",
-      interaction: {
-        id: interaction.id,
-        card: {
-          kind:
-            interaction.kind === "ask_user_questions"
-              ? "question"
-              : interaction.kind === "request_confirmation"
-                ? "confirmation"
-                : "status",
-          title:
-            interaction.kind === "ask_user_questions"
-              ? (question?.prompt ??
-                interaction.payload.title ??
-                interaction.title ??
-                "Input needed")
-              : interaction.kind === "request_confirmation"
-                ? interaction.payload.prompt
-                : `Response needed in ${PRODUCT_NAME}`,
-          body:
-            interaction.kind === "ask_user_questions"
-              ? (question?.helpText ?? undefined)
-              : interaction.kind === "request_confirmation"
-                ? (interaction.payload.detailsMarkdown ?? undefined)
-                : `Open the task in ${PRODUCT_NAME} to review and respond.`,
-          actions,
-        },
-      },
+    const rows = await stageInteractionCardForTarget(db, {
+      interaction,
+      conversation,
+      endpoint,
+      taskUrl,
+      question,
     });
-    const rows = await db
-      .insert(chatPublications)
-      .values({
-        companyId: interaction.companyId,
-        endpointId: endpoint.id,
-        conversationId: conversation.id,
-        issueId: interaction.issueId,
-        idempotencyKey: `interaction:${interaction.id}:${endpoint.id}`,
-        payload,
-        state: "pending",
-      })
-      .onConflictDoNothing()
-      .returning();
-    const publication = rows[0];
-    if (publication && endpoint.provider === "imessage-photon" && nativePhotonInteraction(interaction)) {
-      const reference = randomBytes(9).toString("base64url");
-      await db.insert(chatActions).values({ companyId: interaction.companyId, endpointId: endpoint.id, conversationId: conversation.id,
-        kind: "photon_interaction", providerActionId: `photon:${reference}`,
-        payload: { version: 1, reference, interactionId: interaction.id, publicationId: publication.id, sessionGeneration: conversation.sessionGeneration,
-          expiresAt: new Date(publication.createdAt.getTime() + CHAT_QUESTION_ACTION_TOKEN_TTL_MS).toISOString() }, status: "issued" });
-    } else if (publication && formDraft) {
-      await db.insert(chatActions).values(
-        chatQuestionFormActionRecords(formDraft, {
-          companyId: interaction.companyId,
-          endpointId: endpoint.id,
-          conversationId: conversation.id,
-          publicationId: publication.id,
-        }),
-      );
-    } else if (publication && question && questionActionTokens.length > 0) {
-      const expiresAt = new Date(
-        publication.createdAt.getTime() + CHAT_QUESTION_ACTION_TOKEN_TTL_MS,
-      ).toISOString();
-      await db.insert(chatActions).values(
-        questionActionTokens.map(({ actionId, option }) => ({
-          companyId: interaction.companyId,
-          endpointId: endpoint.id,
-          conversationId: conversation.id,
-          kind: "question_answer",
-          providerActionId: actionId,
-          payload: {
-            version: 1,
-            publicationId: publication.id,
-            interactionId: interaction.id,
-            questionId: question.id,
-            optionId: option.id,
-            expiresAt,
-          },
-          status: "issued",
-        })),
-      );
-    } else if (
-      publication &&
-      confirmation &&
-      confirmationActionTokens.length > 0
-    ) {
-      const expiresAt = new Date(
-        publication.createdAt.getTime() + CHAT_QUESTION_ACTION_TOKEN_TTL_MS,
-      ).toISOString();
-      await db.insert(chatActions).values(
-        confirmationActionTokens.map(({ actionId, decision }) => ({
-          companyId: interaction.companyId,
-          endpointId: endpoint.id,
-          conversationId: conversation.id,
-          kind: "confirmation_response",
-          providerActionId: actionId,
-          payload: {
-            version: 1,
-            publicationId: publication.id,
-            interactionId: interaction.id,
-            decision,
-            expiresAt,
-          },
-          status: "issued",
-        })),
-      );
+    inserted.push(...rows);
+  }
+  // myrmidon(1.4-U2): the owner-DM copies run through the same per-target
+  // staging as the thread bindings above (idempotency key, action tokens,
+  // action rows), so a card answered in either place settles both.
+  for (const target of ownerDmTargets) {
+    if (target.endpoint.assignedAgentId !== interaction.createdByAgentId) {
+      continue;
     }
+    const rows = await stageInteractionCardForTarget(db, {
+      interaction,
+      conversation: target.conversation,
+      endpoint: target.endpoint,
+      taskUrl,
+      question,
+    });
     inserted.push(...rows);
   }
   return inserted;
+}
+
+// myrmidon(1.4-U2): the per-target staging body shared by thread bindings
+// and owner-DM targets: one publication row per (endpoint, conversation)
+// with its provider action tokens. Extracted verbatim from the loop above.
+async function stageInteractionCardForTarget(
+  db: ChatPublicationDb,
+  input: {
+    interaction: IssueThreadInteraction;
+    conversation: typeof chatConversations.$inferSelect;
+    endpoint: typeof chatEndpoints.$inferSelect;
+    taskUrl: string | null;
+    question: AskUserQuestionsQuestion | null;
+  },
+): Promise<Array<typeof chatPublications.$inferSelect>> {
+  const { interaction, conversation, endpoint, taskUrl, question } = input;
+  const formDraft =
+    interaction.kind === "ask_user_questions" &&
+    (endpoint.provider === "slack" ||
+      endpoint.provider === "discord" ||
+      endpoint.provider === "microsoft-teams") &&
+    endpoint.capabilities.actions === true &&
+    endpoint.capabilities.modals === true
+      ? createChatQuestionFormDraft(
+          interaction,
+          endpoint.provider === "discord"
+            ? { nativeProvider: "discord" }
+            : {},
+        )
+      : null;
+  const supportsCallbacks =
+    endpoint.provider !== "imessage-photon" &&
+    formDraft === null &&
+    question !== null &&
+    endpoint.capabilities.actions === true;
+  const questionActionTokens = supportsCallbacks
+    ? question.options.map((option) => ({
+        actionId: createChatQuestionOptionActionToken(),
+        option,
+      }))
+    : [];
+  const confirmation =
+    endpoint.provider === "telegram" && endpoint.capabilities.actions === true
+      ? nativeTelegramConfirmation(interaction)
+      : null;
+  const confirmationActionTokens = confirmation
+    ? (["accept", "reject"] as const).map((decision) => ({
+        actionId: createChatConfirmationActionToken(),
+        decision,
+      }))
+    : [];
+  if (
+    endpoint.provider === "telegram" &&
+    [...questionActionTokens, ...confirmationActionTokens].some(
+      ({ actionId }) =>
+        telegramCallbackDataByteLength(actionId) >
+        TELEGRAM_CALLBACK_DATA_LIMIT_BYTES,
+    )
+  ) {
+    throw new Error("Generated Telegram question action exceeds 64 bytes");
+  }
+  const actions: SafeExternalChatCardAction[] = formDraft
+    ? [
+        {
+          type: "callback" as const,
+          actionId: formDraft.openActionId,
+          label: "Respond",
+          style: "primary" as const,
+        },
+      ]
+    : supportsCallbacks
+      ? questionActionTokens.map(({ actionId, option }) => ({
+          type: "callback" as const,
+          actionId,
+          label: option.label,
+        }))
+      : confirmation
+        ? confirmationActionTokens.map(({ actionId, decision }) => ({
+            type: "callback" as const,
+            actionId,
+            label:
+              decision === "accept"
+                ? (confirmation.payload.acceptLabel ?? "Accept")
+                : (confirmation.payload.rejectLabel ?? "Reject"),
+            style:
+              decision === "accept"
+                ? ("primary" as const)
+                : ("danger" as const),
+          }))
+        : taskUrl
+          ? [
+              {
+                type: "link" as const,
+                label: `Open in ${PRODUCT_NAME}`,
+                url: taskUrl,
+              },
+            ]
+          : [];
+  const text =
+    interaction.kind === "ask_user_questions"
+      ? textForQuestionInteraction(interaction, taskUrl)
+      : genericInteractionText(taskUrl);
+  const payload = projectSafeChatPublication({
+    classification: "external",
+    source: "issue_interaction",
+    text,
+    progressState: "waiting_for_input",
+    interaction: {
+      id: interaction.id,
+      card: {
+        kind:
+          interaction.kind === "ask_user_questions"
+            ? "question"
+            : interaction.kind === "request_confirmation"
+              ? "confirmation"
+              : "status",
+        title:
+          interaction.kind === "ask_user_questions"
+            ? (question?.prompt ??
+              interaction.payload.title ??
+              interaction.title ??
+              "Input needed")
+            : interaction.kind === "request_confirmation"
+              ? interaction.payload.prompt
+              : `Response needed in ${PRODUCT_NAME}`,
+        body:
+          interaction.kind === "ask_user_questions"
+            ? (question?.helpText ?? undefined)
+            : interaction.kind === "request_confirmation"
+              ? (interaction.payload.detailsMarkdown ?? undefined)
+              : `Open the task in ${PRODUCT_NAME} to review and respond.`,
+        actions,
+      },
+    },
+  });
+  const rows = await db
+    .insert(chatPublications)
+    .values({
+      companyId: interaction.companyId,
+      endpointId: endpoint.id,
+      conversationId: conversation.id,
+      issueId: interaction.issueId,
+      idempotencyKey: `interaction:${interaction.id}:${endpoint.id}`,
+      payload,
+      state: "pending",
+    })
+    .onConflictDoNothing()
+    .returning();
+  const publication = rows[0];
+  if (publication && endpoint.provider === "imessage-photon" && nativePhotonInteraction(interaction)) {
+    const reference = randomBytes(9).toString("base64url");
+    await db.insert(chatActions).values({ companyId: interaction.companyId, endpointId: endpoint.id, conversationId: conversation.id,
+      kind: "photon_interaction", providerActionId: `photon:${reference}`,
+      payload: { version: 1, reference, interactionId: interaction.id, publicationId: publication.id, sessionGeneration: conversation.sessionGeneration,
+        expiresAt: new Date(publication.createdAt.getTime() + CHAT_QUESTION_ACTION_TOKEN_TTL_MS).toISOString() }, status: "issued" });
+  } else if (publication && formDraft) {
+    await db.insert(chatActions).values(
+      chatQuestionFormActionRecords(formDraft, {
+        companyId: interaction.companyId,
+        endpointId: endpoint.id,
+        conversationId: conversation.id,
+        publicationId: publication.id,
+      }),
+    );
+  } else if (publication && question && questionActionTokens.length > 0) {
+    const expiresAt = new Date(
+      publication.createdAt.getTime() + CHAT_QUESTION_ACTION_TOKEN_TTL_MS,
+    ).toISOString();
+    await db.insert(chatActions).values(
+      questionActionTokens.map(({ actionId, option }) => ({
+        companyId: interaction.companyId,
+        endpointId: endpoint.id,
+        conversationId: conversation.id,
+        kind: "question_answer",
+        providerActionId: actionId,
+        payload: {
+          version: 1,
+          publicationId: publication.id,
+          interactionId: interaction.id,
+          questionId: question.id,
+          optionId: option.id,
+          expiresAt,
+        },
+        status: "issued",
+      })),
+    );
+  } else if (
+    publication &&
+    confirmation &&
+    confirmationActionTokens.length > 0
+  ) {
+    const expiresAt = new Date(
+      publication.createdAt.getTime() + CHAT_QUESTION_ACTION_TOKEN_TTL_MS,
+    ).toISOString();
+    await db.insert(chatActions).values(
+      confirmationActionTokens.map(({ actionId, decision }) => ({
+        companyId: interaction.companyId,
+        endpointId: endpoint.id,
+        conversationId: conversation.id,
+        kind: "confirmation_response",
+        providerActionId: actionId,
+        payload: {
+          version: 1,
+          publicationId: publication.id,
+          interactionId: interaction.id,
+          decision,
+          expiresAt,
+        },
+        status: "issued",
+      })),
+    );
+  }
+  return rows;
+}
+
+// myrmidon(1.4-U2): owner-DM delivery targets for an interaction: every
+// bridge-enabled Telegram endpoint of the company that has a standing DM
+// conversation for a board user the card may reach. The board users come from
+// the interaction itself: its addressed user, else the task's responsible
+// user, else the task creator. All of them are still subject to the same
+// resolver-audience checks at answer time, so widening delivery does not
+// widen who may answer.
+async function ownerTelegramDmTargets(
+  db: ChatPublicationDb,
+  interaction: IssueThreadInteraction,
+): Promise<
+  Array<{
+    conversation: typeof chatConversations.$inferSelect;
+    endpoint: typeof chatEndpoints.$inferSelect;
+  }>
+> {
+  const candidates = interaction.addresseeUserId
+    ? [interaction.addresseeUserId]
+    : await interactionOwnerBoardUserIds(db, interaction);
+  if (candidates.length === 0) return [];
+  const endpoints = await telegramOwnerDmEndpoints(db, {
+    companyId: interaction.companyId,
+  });
+  const targets: Array<{
+    conversation: typeof chatConversations.$inferSelect;
+    endpoint: typeof chatEndpoints.$inferSelect;
+  }> = [];
+  for (const endpoint of endpoints) {
+    if (endpoint.assignedAgentId !== interaction.createdByAgentId) continue;
+    for (const boardUserId of candidates) {
+      const found = await findOwnerTelegramDmConversation(db, {
+        companyId: interaction.companyId,
+        endpointId: endpoint.endpointId,
+        boardUserId,
+      });
+      if (!found) continue;
+      const [conversation] = await db
+        .select()
+        .from(chatConversations)
+        .where(eq(chatConversations.id, found.conversationId))
+        .then((rows) => (rows.length === 1 ? rows : []));
+      const [endpointRow] = await db
+        .select()
+        .from(chatEndpoints)
+        .where(eq(chatEndpoints.id, endpoint.endpointId))
+        .then((rows) => (rows.length === 1 ? rows : []));
+      if (!conversation || !endpointRow) continue;
+      targets.push({ conversation, endpoint: endpointRow });
+    }
+  }
+  return targets;
+}
+
+// myrmidon(1.4-U2): board users that plausibly owe this interaction an
+// answer when it names no addressee: the task's responsible user, else its
+// creator. Pure lookup, no policy decision.
+async function interactionOwnerBoardUserIds(
+  db: ChatPublicationDb,
+  interaction: IssueThreadInteraction,
+): Promise<string[]> {
+  const [issue] = await db
+    .select({
+      id: issues.id,
+      responsibleUserId: issues.responsibleUserId,
+      createdByUserId: issues.createdByUserId,
+    })
+    .from(issues)
+    .where(
+      and(
+        eq(issues.companyId, interaction.companyId),
+        eq(issues.id, interaction.issueId),
+      ),
+    )
+    .then((rows) => (rows.length === 1 ? rows : []));
+  if (!issue) return [];
+  const ids = [
+    issue.responsibleUserId,
+    issue.createdByUserId,
+  ].filter((value): value is string => typeof value === "string");
+  return [...new Set(ids)];
 }
 
 /**
