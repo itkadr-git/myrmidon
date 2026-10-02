@@ -213,6 +213,7 @@ const STATUS: BotContainerStatus = {
   gatewayConcurrency: { board: 3, applied: 3, diverged: false, checkedAt: "2026-01-01T00:00:00.000Z" },
   gatewayConcurrencyNote: null,
   gatewayConcurrencyWarning: null,
+  profileUpdatePendingSince: null,
 };
 
 async function act(callback: () => void | Promise<void>) {

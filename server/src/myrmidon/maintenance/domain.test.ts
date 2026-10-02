@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   blockingWindows,
   decideTick,
+  DEFAULT_STUCK_GRACE_MS,
   departmentMembers,
+  isStuckOpenWindow,
   newWindow,
   parseMaintenanceDocument,
   reportsToChain,
@@ -103,6 +105,56 @@ describe("maintenance tick decisions", () => {
   it("interrupts at the deadline with onTimeout=interrupt_and_retry", () => {
     const w = { ...entering, onTimeout: "interrupt_and_retry" as const };
     expect(decideTick(w, ["run-1", "run-2"], later)).toEqual({ kind: "interrupt", runIds: ["run-1", "run-2"] });
+  });
+
+  // myrmidon(L6-PROFILE-UPDATE-STARVATION): the drain completes once every run
+  // in scope was interrupted by this window and has left "running".
+  describe("interrupt_and_retry drain completion", () => {
+    const w = { ...entering, onTimeout: "interrupt_and_retry" as const };
+
+    it("still interrupts runs it did not interrupt yet, past the deadline", () => {
+      const interrupted = { ...w, interruptedRunIds: ["run-1"] };
+      // run-2 started (or became visible) after the window's own interrupt pass.
+      expect(decideTick(interrupted, ["run-1", "run-2"], later)).toEqual({ kind: "interrupt", runIds: ["run-2"] });
+    });
+
+    it("reports the drain complete when only its own interrupted runs are left", () => {
+      const interrupted = { ...w, interruptedRunIds: ["run-1", "run-2"] };
+      // Both runs are still "running" (teardown pending) — nothing left to interrupt.
+      expect(decideTick(interrupted, ["run-1", "run-2"], later)).toEqual({ kind: "drained_after_interrupts" });
+    });
+
+    it("a partial teardown (one run left running, already interrupted) still waits", () => {
+      const interrupted = { ...w, interruptedRunIds: ["run-1", "run-2"] };
+      expect(decideTick(interrupted, ["run-2"], later)).toEqual({ kind: "drained_after_interrupts" });
+      expect(decideTick(interrupted, ["run-2"], now)).toEqual({ kind: "none" }); // before the deadline
+    });
+
+    it("before the deadline the window keeps draining without new decisions", () => {
+      const interrupted = { ...w, interruptedRunIds: ["run-1"] };
+      expect(decideTick(interrupted, ["run-1"], now)).toEqual({ kind: "none" });
+    });
+  });
+
+  describe("stuck open window backstop", () => {
+    it("an open window past deadline + grace is stuck", () => {
+      const past = new Date(now.getTime() + 60_000 + DEFAULT_STUCK_GRACE_MS + 1_000);
+      expect(isStuckOpenWindow(entering, past)).toBe(true);
+      expect(isStuckOpenWindow({ ...entering, state: "on" }, past)).toBe(true);
+    });
+
+    it("within the grace the window is not stuck; leaving is the tick's own path", () => {
+      expect(isStuckOpenWindow(entering, now)).toBe(false);
+      expect(isStuckOpenWindow(entering, new Date(now.getTime() + 60_000 + DEFAULT_STUCK_GRACE_MS))).toBe(true);
+      // A leaving window is finished by the tick's finishLeaving, not retired here.
+      expect(isStuckOpenWindow({ ...entering, state: "leaving" }, new Date(now.getTime() + 999_999))).toBe(false);
+    });
+
+    it("the grace is configurable", () => {
+      const at = new Date(now.getTime() + 60_000 + 5_000);
+      expect(isStuckOpenWindow(entering, at, 1_000)).toBe(true);
+      expect(isStuckOpenWindow(entering, at, 60_000)).toBe(false);
+    });
   });
 
   it("finishes leaving windows and leaves on windows alone", () => {
