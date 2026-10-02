@@ -24,14 +24,56 @@ echo "docker $*" >> "$SANDBOX/calls.log"
 case "$1" in
   pull) exit "\${FAKE_PULL_EXIT:-0}" ;;
   image)
-    case "$*" in
-      *org.opencontainers.image.version*) cat "$SANDBOX/label-version" ;;
-      *org.opencontainers.image.revision*) cat "$SANDBOX/label-revision" ;;
+    case "$2" in
+      inspect)
+        case "$*" in
+          *org.opencontainers.image.version*)
+            # image_label: the label comes from the sandbox file, as before.
+            cat "$SANDBOX/label-version"; exit 0 ;;
+          *org.opencontainers.image.revision*)
+            cat "$SANDBOX/label-revision"; exit 0 ;;
+        esac
+        # ROLLBACK-LOCAL: a plain inspect asks whether the image is on the
+        # daemon: yes when its reference is listed in $SANDBOX/local-images
+        # (one per line). The reference is the first argument that is not a
+        # flag or a --format value.
+        ref=""
+        for a in "\${@:3}"; do
+          case "$a" in --*) continue ;; esac
+          case "$a" in \{*|*\}*) continue ;; esac
+          ref="$a"; break
+        done
+        if [ -n "$ref" ] && [ -f "$SANDBOX/local-images" ] && grep -qxF "$ref" "$SANDBOX/local-images"; then
+          exit 0
+        fi
+        echo "Error: No such image: \${ref:-<none>}" >&2; exit 1 ;;
+      ls)
+        case "$*" in
+          *--format*{{.Tag}}*) cat "$SANDBOX/local-tags" 2>/dev/null ;;
+          *--format*{{.ID}}*) cat "$SANDBOX/local-ids" 2>/dev/null ;;
+        esac ;;
     esac ;;
   buildx)
-    if [ -e "$SANDBOX/registry-missing" ]; then echo "ERROR: $4: not found" >&2; exit 1; fi
-    cat "$SANDBOX/imagetools.json" ;;
-  compose) exit 0 ;;
+    # RELEASE-GATE: the same registry answers the component repositories. A
+    # digest-format inspect gets the component digest file; the board and every
+    # CI check get the image JSON (with labels).
+    case "$4" in
+      *myrmidon-dockergate*|*myrmidon-fleetd*)
+        if [ -e "$SANDBOX/components-missing" ]; then echo "ERROR: $4: not found" >&2; exit 1; fi
+        for a in "$@"; do case "$a" in *Manifest.Digest*) cat "$SANDBOX/component-digests.json" | jq -r --arg r "$4" '.[\$r]'; exit 0 ;; esac; done
+        cat "$SANDBOX/component-image.json" ;;
+      *)
+        if [ -e "$SANDBOX/registry-missing" ]; then echo "ERROR: $4: not found" >&2; exit 1; fi
+        cat "$SANDBOX/imagetools.json" ;;
+    esac ;;
+  compose)
+    case "$*" in
+      *--services)
+        # HOST-TARGETING: the declared services of the sandbox's compose
+        # project (the fail-closed pre-check reads them).
+        printf 'server\\ndockergate\\nfleetd\\n' ;;
+      *) exit 0 ;;
+    esac ;;
 esac
 `;
 
@@ -54,6 +96,10 @@ echo "curl $*" >> "$SANDBOX/calls.log"
 cat "$SANDBOX/health.json"
 `;
 
+// The real boot-unit template, read from the deploy directory, so the tests
+// verify what ships (myrmidon BOOT-PATH).
+const UNIT_TEMPLATE = fs.readFileSync(path.join(HERE, "paperclip.service.template"), "utf8");
+
 const VENDOR = "ghcr.io/paperclipai/paperclip:2026.916.1";
 
 function sandbox({
@@ -72,12 +118,25 @@ function sandbox({
   onMain = true,
   tags = "",
   noGit = false,
+  // ROLLBACK-LOCAL: image references present on the local docker daemon, and
+  // what `docker image ls <repo>` lists for the error message.
+  localImages = [],
+  localTags = "",
+  localIds = "",
+
+  // BOOT-PATH: the boot unit in the sandbox. A function (gets the template
+  // renderer) written into systemd/paperclip.service; null = no unit.
+  // Default: the canonical unit for this sandbox's compose dir.
+  bootUnit = sbCanonical,
 } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "myrmidon-deploy-"));
   const bin = path.join(dir, "bin");
   const composeDir = path.join(dir, "compose");
   fs.mkdirSync(bin);
   fs.mkdirSync(composeDir);
+  // BOOT-PATH: the canonical unit names COMPOSE_DIR/<COMPOSE_FILES> in -f
+  // arguments; the files themselves must exist (a real compose dir does).
+  fs.writeFileSync(path.join(composeDir, "docker-compose.yml"), "services: {}\n");
   fs.writeFileSync(path.join(bin, "docker"), FAKE_DOCKER, { mode: 0o755 });
   fs.writeFileSync(path.join(bin, "curl"), FAKE_CURL, { mode: 0o755 });
   if (!noGit) fs.writeFileSync(path.join(bin, "git"), FAKE_GIT, { mode: 0o755 });
@@ -95,6 +154,23 @@ function sandbox({
     JSON.stringify({ architecture: "amd64", os: "linux", config: { Env: ["A=1"], Labels: labels } }),
   );
   if (registryMissing) fs.writeFileSync(path.join(dir, "registry-missing"), "");
+  // RELEASE-GATE: component registry answers for the same commit.
+  fs.writeFileSync(
+    path.join(dir, "component-digests.json"),
+    JSON.stringify({
+      "ghcr.io/itkadr-git/myrmidon-dockergate:sha-0123456": `sha256:${"c".repeat(64)}`,
+      "ghcr.io/itkadr-git/myrmidon-fleetd:sha-0123456": `sha256:${"d".repeat(64)}`,
+    }),
+  );
+  fs.writeFileSync(
+    path.join(dir, "component-image.json"),
+    JSON.stringify({
+      architecture: "amd64",
+      os: "linux",
+      config: { Env: ["A=1"], Labels: { "org.opencontainers.image.revision": COMMIT, "org.opencontainers.image.source": SOURCE, "org.opencontainers.image.version": VERSION } },
+      manifest: { digest: `sha256:${"c".repeat(64)}` },
+    }),
+  );
   fs.writeFileSync(path.join(dir, "git-origin"), `${origin}\n`);
   fs.writeFileSync(path.join(dir, "git-ancestor-exit"), onMain ? "0" : "1");
   fs.writeFileSync(path.join(dir, "git-tags"), tags);
@@ -102,6 +178,9 @@ function sandbox({
   if (fetchFails) fs.writeFileSync(path.join(dir, "git-fetch-fails"), "");
   fs.writeFileSync(path.join(dir, "label-version"), `${labelVersion}\n`);
   fs.writeFileSync(path.join(dir, "label-revision"), `${labelRevision}\n`);
+  if (localImages.length > 0) fs.writeFileSync(path.join(dir, "local-images"), localImages.join("\n") + "\n");
+  if (localTags) fs.writeFileSync(path.join(dir, "local-tags"), localTags);
+  if (localIds) fs.writeFileSync(path.join(dir, "local-ids"), localIds);
   fs.writeFileSync(
     path.join(dir, "health.json"),
     JSON.stringify(health ?? { status: "ok", version: VERSION, commit: COMMIT }),
@@ -111,6 +190,14 @@ function sandbox({
     fs.writeFileSync(override, `services:\n  server:\n    image: ${currentImage}\n`);
   } else if (current) {
     fs.writeFileSync(override, `services:\n  server:\n    image: ghcr.io/itkadr-git/myrmidon@${current}\n`);
+  }
+  // Boot-unit sandbox (BOOT-PATH): the deploy now verifies the systemd unit,
+  // so every standard sandbox gets one, in a sandbox directory, from the
+  // real template with the sandbox paths filled in.
+  const unitDir = path.join(dir, "systemd");
+  fs.mkdirSync(unitDir, { recursive: true });
+  if (bootUnit !== null) {
+    fs.writeFileSync(path.join(unitDir, "paperclip.service"), bootUnit(sbPaths(composeDir)));
   }
   const config = path.join(dir, "deploy.env");
   fs.writeFileSync(
@@ -128,11 +215,28 @@ function sandbox({
       `MAINTENANCE_ENTER_COMMAND='echo enter >> ${path.join(dir, "maintenance.log")}'`,
       `MAINTENANCE_EXIT_COMMAND='echo exit >> ${path.join(dir, "maintenance.log")}'`,
       "RUNNING_RUNS_COMMAND='echo 0'",
+      `SYSTEMD_UNIT_DIR=${unitDir}`,
+      // RELEASE-GATE: the release components answer their health probes here
+      // (the fake curl serves every URL with the health file).
+      "MYR_DOCKERGATE_HEALTH_URL=http://127.0.0.1:3100/dockergate/health",
+      "MYR_FLEETD_HEALTH_URL=http://127.0.0.1:3100/fleetd/health",
       "",
     ].join("\n"),
   );
-  return { dir, bin, config, override, noGit };
+  return { dir, bin, config, override, unitDir, noGit };
 }
+
+// The canonical unit rendered for a sandbox compose dir: exactly what
+// render_boot_unit() produces (the template with the -f arguments expanded).
+function sbPaths(composeDir) {
+  return (template) => template
+    .replaceAll("__COMPOSE_DIR__", composeDir)
+    .replaceAll("__COMPOSE_FILE_ARGS__", `-f ${composeDir}/docker-compose.yml -f ${composeDir}/docker-compose.myrmidon-image.yml`)
+    .replaceAll("__COMPOSE_SERVICE__", "server");
+}
+
+// bootUnit= values for sandbox().
+const sbCanonical = (render) => render(UNIT_TEMPLATE);
 
 // A PATH with the tools the scripts need but without git.
 function pathWithoutGit(sb) {
@@ -558,6 +662,250 @@ describe("deploy.sh: only CI images from the registry", () => {
   });
 });
 
+// myrmidon(DRAIN-INTERRUPT): a planned deploy must not wait for long runs. In
+// `api` mode deploy.sh enters the window with `onTimeout: interrupt_and_retry`
+// and drains for the short grace (MAINTENANCE_DRAIN_GRACE_SEC, 300 s default);
+// after the grace the window interrupts the runs that are still going and they
+// are retried when the window closes. `MAINTENANCE_ON_TIMEOUT=wait` keeps the
+// old "hold admission and wait out the long timeout" behaviour.
+describe("deploy.sh: drain-interrupt enter body", () => {
+  function apiConfig(sb, extra = []) {
+    fs.appendFileSync(
+      sb.config,
+      [
+        "MAINTENANCE_MODE=api",
+        "MAINTENANCE_API_URL=http://127.0.0.1:3100/api/myrmidon/maintenance",
+        ...extra,
+        "",
+      ].join("\n"),
+    );
+  }
+
+  function enterBody(sb) {
+    const line = calls(sb).split("\n").find((l) => l.includes('"action":"enter"'));
+    assert.ok(line, `no enter POST in calls:\n${calls(sb)}`);
+    const match = line.match(/--data (\{.*\}) http/);
+    assert.ok(match, `no JSON body in call: ${line}`);
+    return JSON.parse(match[1]);
+  }
+
+  it("enters with interrupt_and_retry and the default 300 s grace", () => {
+    const sb = sandbox();
+    apiConfig(sb);
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.equal(code, 0, out);
+    assert.deepEqual(enterBody(sb), {
+      action: "enter",
+      scope: { type: "instance" },
+      reason: `deploy ghcr.io/itkadr-git/myrmidon@${NEW.slice(0, 19)}`,
+      drainTimeoutSec: 300,
+      onTimeout: "interrupt_and_retry",
+    });
+    // The window is left again after the switch.
+    assert.match(calls(sb), /--data \{"action":"exit"/);
+  });
+
+  it("takes the grace from MAINTENANCE_DRAIN_GRACE_SEC", () => {
+    const sb = sandbox();
+    apiConfig(sb, ["MAINTENANCE_DRAIN_GRACE_SEC=42"]);
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.equal(code, 0, out);
+    assert.equal(enterBody(sb).drainTimeoutSec, 42);
+    assert.equal(enterBody(sb).onTimeout, "interrupt_and_retry");
+  });
+
+  it("keeps the old wait behaviour on MAINTENANCE_ON_TIMEOUT=wait", () => {
+    const sb = sandbox();
+    apiConfig(sb, ["MAINTENANCE_ON_TIMEOUT=wait", "MAINTENANCE_DRAIN_GRACE_SEC=42"]);
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.equal(code, 0, out);
+    // wait mode ignores the grace and waits out the long drain timeout.
+    assert.equal(enterBody(sb).onTimeout, "wait");
+    assert.equal(enterBody(sb).drainTimeoutSec, 1800);
+  });
+
+  it("uses MAINTENANCE_DRAIN_TIMEOUT_SEC in wait mode", () => {
+    const sb = sandbox();
+    apiConfig(sb, ["MAINTENANCE_ON_TIMEOUT=wait", "MAINTENANCE_DRAIN_TIMEOUT_SEC=900"]);
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.equal(code, 0, out);
+    assert.equal(enterBody(sb).drainTimeoutSec, 900);
+  });
+
+  it("refuses an unknown MAINTENANCE_ON_TIMEOUT before touching anything", () => {
+    const sb = sandbox();
+    apiConfig(sb, ["MAINTENANCE_ON_TIMEOUT=interrupt"]);
+    const before = read(sb.override);
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.notEqual(code, 0);
+    assert.match(out, /MAINTENANCE_ON_TIMEOUT must be wait or interrupt_and_retry/);
+    assert.equal(read(sb.override), before);
+    assert.doesNotMatch(calls(sb), /docker (pull|compose)/);
+  });
+
+  it("dry run shows the onTimeout and the grace in the plan", () => {
+    const sb = sandbox();
+    apiConfig(sb);
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--dry-run"]);
+    assert.equal(code, 0, out);
+    assert.match(out, /onTimeout=interrupt_and_retry/);
+    assert.match(out, /grace 300s/);
+  });
+});
+
+describe("lib.sh: async maintenance exit and post-deploy fleet check", () => {
+  // Runs the real lib.sh functions against a fake `curl` that answers the
+  // maintenance status from a file the test controls. No registry, board or
+  // server is touched.
+  function libSandbox() {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "myrmidon-lib-"));
+    const bin = path.join(dir, "bin");
+    fs.mkdirSync(bin);
+    // curl answers the maintenance URL from maintenance.json. With a
+    // `flip-on-read` file present, the answer switches to retired after the
+    // first read, so a test can exercise "wait, then retire".
+    const fakeCurl = `#!/usr/bin/env bash
+echo "curl $*" >> "$SANDBOX/calls.log"
+case "$*" in *"-X POST"*) if [ -e "$SANDBOX/post-fails" ]; then echo 'curl: (22) The requested URL returned error' >&2; exit 22; fi ;; esac
+url="$*"
+case "$url" in
+  *maintenance*)
+    cat "$SANDBOX/maintenance.json" 2>/dev/null || echo '{"active":false,"instance":null,"windows":[]}'
+    if [ -e "$SANDBOX/flip-on-read" ]; then rm -f "$SANDBOX/flip-on-read"; echo '{"active":false,"instance":null,"windows":[]}' > "$SANDBOX/maintenance.json"; fi ;;
+  *issues*) cat "$SANDBOX/issues.json" 2>/dev/null || echo '[]' ;;
+  *) echo '{"status":"ok"}' ;;
+esac
+`;
+    fs.writeFileSync(path.join(bin, "curl"), fakeCurl, { mode: 0o755 });
+    const config = path.join(dir, "lib-test.env");
+    fs.writeFileSync(
+      config,
+      [
+        `COMPOSE_DIR=${dir}`,
+        "COMPOSE_SERVICE=server",
+        "HEALTH_URL=http://127.0.0.1:3100/api/health",
+        "POLL_INTERVAL_SEC=0",
+        "MAINTENANCE_MODE=api",
+        "MAINTENANCE_API_URL=http://127.0.0.1:3100/api/myrmidon/maintenance",
+        "MAINTENANCE_EXIT_WAIT_SEC=2",
+        "",
+      ].join("\n"),
+    );
+    return { dir, bin, config };
+  }
+
+  // Sources lib.sh the way deploy.sh does and calls one function.
+  function callLib(sb, functionCall) {
+    const libScript = path.join(sb.dir, "call-lib.sh");
+    fs.writeFileSync(libScript, `source "$MYR_SCRIPT_DIR/lib.sh"; load_config "$LIB_CONFIG"; ${functionCall}\n`, { mode: 0o755 });
+    const result = spawnSync(bashPath(), [libScript], {
+      env: {
+        ...process.env,
+        PATH: `${sb.bin}:${process.env.PATH}`,
+        SANDBOX: sb.dir,
+        LIB_CONFIG: sb.config,
+        MYR_SCRIPT_DIR: HERE,
+      },
+      encoding: "utf8",
+    });
+    return { code: result.status, out: `${result.stdout}${result.stderr}` };
+  }
+
+  it("wait_for_maintenance_off returns 0 at once when the instance window is retired", () => {
+    const sb = libSandbox();
+    fs.writeFileSync(path.join(sb.dir, "maintenance.json"), JSON.stringify({ active: false, instance: null, windows: [] }));
+    const { code, out } = callLib(sb, "wait_for_maintenance_off");
+    assert.equal(code, 0, out);
+  });
+
+  it("wait_for_maintenance_off waits while the window is `leaving`, then succeeds", () => {
+    const sb = libSandbox();
+    fs.writeFileSync(path.join(sb.dir, "maintenance.json"), JSON.stringify({ active: true, instance: { state: "leaving" }, windows: [] }));
+    // The first read answers `leaving`, then the answer switches to retired.
+    fs.writeFileSync(path.join(sb.dir, "flip-on-read"), "");
+    const { code, out } = callLib(sb, "wait_for_maintenance_off");
+    assert.equal(code, 0, out);
+    assert.match(read(path.join(sb.dir, "calls.log")), /maintenance/);
+  });
+
+  it("wait_for_maintenance_off fails after MAINTENANCE_EXIT_WAIT_SEC when the window never retires", () => {
+    const sb = libSandbox();
+    // No `flip-on-read`: every read keeps reporting the `leaving` window.
+    fs.writeFileSync(path.join(sb.dir, "maintenance.json"), JSON.stringify({ active: true, instance: { state: "leaving" }, windows: [] }));
+    const { code, out } = callLib(sb, "wait_for_maintenance_off");
+    assert.notEqual(code, 0);
+    assert.match(out, /still 'leaving' after 2s/);
+  });
+
+  it("maintenance_exit posts the exit and returns 0 once the window retires", () => {
+    const sb = libSandbox();
+    fs.writeFileSync(path.join(sb.dir, "maintenance.json"), JSON.stringify({ active: true, instance: { state: "leaving" }, windows: [] }));
+    fs.writeFileSync(path.join(sb.dir, "flip-on-read"), "");
+    const { code, out } = callLib(sb, "maintenance_exit");
+    assert.equal(code, 0, out);
+    assert.match(read(path.join(sb.dir, "calls.log")), /-X POST/);
+  });
+
+  it("maintenance_exit fails when the exit POST fails (abort semantics unchanged)", () => {
+    const sb = libSandbox();
+    fs.writeFileSync(path.join(sb.dir, "maintenance.json"), JSON.stringify({ active: true, instance: { state: "on" }, windows: [] }));
+    fs.writeFileSync(path.join(sb.dir, "post-fails"), "");
+    const { code } = callLib(sb, "maintenance_exit");
+    assert.notEqual(code, 0);
+    // The wait never runs after a failed POST: the only call is the POST.
+    assert.equal(read(path.join(sb.dir, "calls.log")).trim().split("\n").length, 1);
+  });
+
+  it("post_deploy_fleet_check passes when no issue is blocked and the window retired", () => {
+    const sb = libSandbox();
+    fs.writeFileSync(path.join(sb.dir, "maintenance.json"), JSON.stringify({ active: false, instance: null, windows: [] }));
+    fs.writeFileSync(path.join(sb.dir, "issues.json"), JSON.stringify([]));
+    fs.appendFileSync(sb.config, "BOARD_API_URL=http://127.0.0.1:3100/api\nBOARD_COMPANY_ID=c1\n");
+    const { code, out } = callLib(sb, 'post_deploy_fleet_check "2026-10-01T00:00:00Z"');
+    assert.equal(code, 0, out);
+    assert.match(out, /no blocked issues in the deploy window, maintenance retired/);
+  });
+
+  it("post_deploy_fleet_check reports degraded when an issue became blocked in the window", () => {
+    const sb = libSandbox();
+    fs.writeFileSync(path.join(sb.dir, "maintenance.json"), JSON.stringify({ active: false, instance: null, windows: [] }));
+    fs.writeFileSync(path.join(sb.dir, "issues.json"), JSON.stringify([{ id: "i1", status: "blocked" }]));
+    fs.appendFileSync(sb.config, "BOARD_API_URL=http://127.0.0.1:3100/api\nBOARD_COMPANY_ID=c1\n");
+    const { code, out } = callLib(sb, 'post_deploy_fleet_check "2026-10-01T00:00:00Z"');
+    assert.equal(code, 1);
+    assert.match(out, /degraded: 1 blocked issue/);
+  });
+
+  it("post_deploy_fleet_check reports degraded when the board answers an unexpected shape", () => {
+    const sb = libSandbox();
+    fs.writeFileSync(path.join(sb.dir, "maintenance.json"), JSON.stringify({ active: false, instance: null, windows: [] }));
+    // A body that is neither an array nor {issues: []}: the check cannot count
+    // it, so it reports degraded instead of passing.
+    fs.writeFileSync(path.join(sb.dir, "issues.json"), JSON.stringify({ error: "boom" }));
+    fs.appendFileSync(sb.config, "BOARD_API_URL=http://127.0.0.1:3100/api\nBOARD_COMPANY_ID=c1\n");
+    const { code, out } = callLib(sb, 'post_deploy_fleet_check "2026-10-01T00:00:00Z"');
+    assert.equal(code, 1, out);
+    assert.match(out, /degraded: board issue list unreadable/);
+  });
+
+  it("post_deploy_fleet_check reports degraded when the window did not retire", () => {
+    const sb = libSandbox();
+    fs.writeFileSync(path.join(sb.dir, "maintenance.json"), JSON.stringify({ active: true, instance: { state: "leaving" }, windows: [] }));
+    fs.writeFileSync(path.join(sb.dir, "issues.json"), JSON.stringify([]));
+    fs.appendFileSync(sb.config, "BOARD_API_URL=http://127.0.0.1:3100/api\nBOARD_COMPANY_ID=c1\n");
+    const { code, out } = callLib(sb, 'post_deploy_fleet_check "2026-10-01T00:00:00Z"');
+    assert.equal(code, 1);
+    assert.match(out, /degraded: maintenance window did not retire after exit/);
+  });
+
+  it("post_deploy_fleet_check is skipped without BOARD_API_URL/BOARD_COMPANY_ID", () => {
+    const sb = libSandbox();
+    const { code, out } = callLib(sb, 'post_deploy_fleet_check "2026-10-01T00:00:00Z"');
+    assert.equal(code, 0, out);
+    assert.match(out, /skipping the fleet check/);
+  });
+});
+
 describe("rollback.sh", () => {
   it("returns to the previous digest without restoring the database", () => {
     const sb = sandbox();
@@ -648,6 +996,299 @@ describe("rollback.sh", () => {
     assert.equal(code, 0, out);
     assert.equal(read(path.join(sb.dir, "restore.log")).trim(), dump);
     assert.match(calls(sb), /compose .* stop server/);
+  });
+});
+
+// myrmidon(ROLLBACK-LOCAL): rollback to an image that is already on the deploy
+// host, without pulling — pre-1.1.0 builds are not in the registry.
+describe("rollback.sh --local (ROLLBACK-LOCAL)", () => {
+  const LOCAL_TAG = "myrmidon-local:hotfix";
+
+  it("rolls back to a local tag without pulling and without the registry check", () => {
+    const sb = sandbox({ current: NEW, localImages: [LOCAL_TAG] });
+    const { code, out } = run(sb, "rollback.sh", ["--local", LOCAL_TAG]);
+    assert.equal(code, 0, out);
+    assert.match(out, /local rollback: using myrmidon-local:hotfix as found on the docker daemon \(no pull\)/);
+    assert.match(read(sb.override), new RegExp(`image: ${LOCAL_TAG.replace(/[:]/g, "\\$&")}\\n`));
+    // No pull and no registry read: only the local daemon was asked.
+    assert.doesNotMatch(calls(sb), /docker pull/);
+    assert.doesNotMatch(calls(sb), /buildx imagetools inspect/);
+    // The image was verified on the daemon before anything changed.
+    assert.match(calls(sb), new RegExp(`docker image inspect ${LOCAL_TAG.replace(/[:]/g, "\\$&")}`));
+    // The rest of the rollback ran as usual.
+    assert.match(calls(sb), /compose .* up -d --no-deps server/);
+    assert.equal(maintenance(sb), "enter\nexit\n");
+    assert.match(out, /rolled back to myrmidon-local:hotfix/);
+  });
+
+  it("refuses a local tag that is not on the daemon, listing the tags that are", () => {
+    const sb = sandbox({ current: NEW, localImages: ["myrmidon-local:other"], localTags: "other\nolder\n" });
+    const before = read(sb.override);
+    const { code, out } = run(sb, "rollback.sh", ["--local", LOCAL_TAG]);
+    assert.notEqual(code, 0);
+    assert.match(out, /image is not on the local docker daemon: myrmidon-local:hotfix/);
+    assert.match(out, /Available local tags of myrmidon-local: other,older/);
+    assert.match(out, /docker image ls myrmidon-local/);
+    // Nothing changed: no pull, no maintenance, no compose.
+    assert.equal(read(sb.override), before);
+    assert.equal(maintenance(sb), "");
+    assert.doesNotMatch(calls(sb), /docker (pull|compose)/);
+  });
+
+  it("rolls back to a local digest-pinned reference without pulling", () => {
+    const ref = `${CI_IMAGE}@${OLD}`;
+    const sb = sandbox({ current: NEW, localImages: [ref] });
+    const { code, out } = run(sb, "rollback.sh", ["--local", ref]);
+    assert.equal(code, 0, out);
+    assert.match(read(sb.override), new RegExp(`image: ${CI_IMAGE.replace(/[.]/g, "\\.")}@${OLD}\n`));
+    assert.doesNotMatch(calls(sb), /docker pull/);
+    assert.doesNotMatch(calls(sb), /buildx imagetools inspect/);
+    assert.match(calls(sb), new RegExp(`docker image inspect ${CI_IMAGE.replace(/[.]/g, "\\.")}@${OLD}`));
+  });
+
+  it("rolls back to a bare local digest (no repository) without pulling", () => {
+    // A bare digest is pinned to the CI repository, as in the normal path.
+    const sb = sandbox({ current: NEW, localImages: [`${CI_IMAGE}@${OLD}`] });
+    const { code, out } = run(sb, "rollback.sh", ["--local", OLD]);
+    assert.equal(code, 0, out);
+    assert.match(read(sb.override), new RegExp(`image: ${CI_IMAGE.replace(/[.]/g, "\\.")}@${OLD}\n`));
+    assert.doesNotMatch(calls(sb), /docker pull/);
+  });
+
+  it("refuses a local digest that is not on the daemon, listing the digests that are", () => {
+    const sb = sandbox({ current: NEW, localImages: [`${CI_IMAGE}@${NEW}`], localIds: `${NEW}\n` });
+    const { code, out } = run(sb, "rollback.sh", ["--local", OLD]);
+    assert.notEqual(code, 0);
+    assert.match(out, new RegExp(`image is not on the local docker daemon: ${CI_IMAGE.replace(/[.]/g, "\\.")}@${OLD}`));
+    assert.match(out, /Available local digests of ghcr\.io\/itkadr-git\/myrmidon/);
+    assert.match(out, new RegExp(`digests of .*:\\n${NEW}`));
+    assert.doesNotMatch(calls(sb), /docker (pull|compose)/);
+    assert.equal(maintenance(sb), "");
+  });
+
+  it("bare --local takes the reference from --to-image and does not pull", () => {
+    const sb = sandbox({ current: NEW, localImages: [VENDOR] });
+    const { code, out } = run(sb, "rollback.sh", ["--to-image", VENDOR, "--local"]);
+    assert.equal(code, 0, out);
+    assert.match(read(sb.override), new RegExp(`image: ${VENDOR.replace(/[.]/g, "\\.")}\\n`));
+    assert.doesNotMatch(calls(sb), /docker pull/);
+    assert.doesNotMatch(calls(sb), /buildx imagetools inspect/);
+  });
+
+  it("MYRMIDON_ROLLBACK_LOCAL from the settings file works like --local", () => {
+    const sb = sandbox({ current: NEW, localImages: [LOCAL_TAG] });
+    fs.appendFileSync(sb.config, `MYRMIDON_ROLLBACK_LOCAL='${LOCAL_TAG}'\n`);
+    const { code, out } = run(sb, "rollback.sh", []);
+    assert.equal(code, 0, out);
+    assert.match(read(sb.override), new RegExp(`image: ${LOCAL_TAG.replace(/[:]/g, "\\$&")}\\n`));
+    assert.doesNotMatch(calls(sb), /docker pull/);
+  });
+
+  it("an explicit --local wins over MYRMIDON_ROLLBACK_LOCAL", () => {
+    const sb = sandbox({ current: NEW, localImages: [LOCAL_TAG, "myrmidon-local:arg"] });
+    fs.appendFileSync(sb.config, `MYRMIDON_ROLLBACK_LOCAL='${LOCAL_TAG}'\n`);
+    const { code, out } = run(sb, "rollback.sh", ["--local", "myrmidon-local:arg"]);
+    assert.equal(code, 0, out);
+    assert.match(read(sb.override), /image: myrmidon-local:arg\n/);
+  });
+
+  it("--local=<ref> works like --local <ref>", () => {
+    const sb = sandbox({ current: NEW, localImages: [LOCAL_TAG] });
+    const { code, out } = run(sb, "rollback.sh", [`--local=${LOCAL_TAG}`]);
+    assert.equal(code, 0, out);
+    assert.match(read(sb.override), new RegExp(`image: ${LOCAL_TAG.replace(/[:]/g, "\\$&")}\\n`));
+    assert.match(out, /local rollback: using myrmidon-local:hotfix/);
+    assert.doesNotMatch(calls(sb), /docker pull/);
+    assert.doesNotMatch(calls(sb), /buildx imagetools inspect/);
+  });
+
+  it("--local= with an empty value acts as bare --local", () => {
+    const sb = sandbox({ current: NEW, localImages: [VENDOR] });
+    const { code, out } = run(sb, "rollback.sh", ["--to-image", VENDOR, "--local="]);
+    assert.equal(code, 0, out);
+    assert.match(read(sb.override), new RegExp(`image: ${VENDOR.replace(/[.]/g, "\\.")}\\n`));
+    assert.doesNotMatch(calls(sb), /docker pull/);
+  });
+
+  it("bare --local without --to/--to-image and without the setting is an error", () => {
+    const sb = sandbox({ current: NEW });
+    const { code, out } = run(sb, "rollback.sh", ["--local"]);
+    assert.notEqual(code, 0);
+    assert.match(out, /--local without a value needs --to sha256:\.\.\. or --to-image <ref>/);
+    assert.equal(maintenance(sb), "");
+  });
+
+  it("a --local value together with --to is an error", () => {
+    const sb = sandbox({ current: NEW });
+    const { code, out } = run(sb, "rollback.sh", ["--local", LOCAL_TAG, "--to", OLD]);
+    assert.notEqual(code, 0);
+    assert.match(out, /give the local reference with --local, not together with --to\/--to-image/);
+  });
+
+  it("an unset MYRMIDON_ROLLBACK_LOCAL keeps the normal pull path", () => {
+    const sb = sandbox({ current: NEW });
+    const { code, out } = run(sb, "rollback.sh", ["--to", OLD]);
+    assert.equal(code, 0, out);
+    assert.match(calls(sb), new RegExp(`docker pull --quiet ghcr\\.io/itkadr-git/myrmidon@${OLD}`));
+  });
+
+  it("dry run prints the local plan and pulls nothing", () => {
+    const sb = sandbox({ current: NEW, localImages: [LOCAL_TAG] });
+    const { code, out } = run(sb, "rollback.sh", ["--local", LOCAL_TAG, "--dry-run"]);
+    assert.equal(code, 0, out);
+    assert.match(out, /use myrmidon-local:hotfix from the local docker daemon \(no pull; verified with docker image inspect\)/);
+    assert.doesNotMatch(out, /docker pull/);
+    assert.match(calls(sb), /docker image inspect myrmidon-local:hotfix/);
+    assert.doesNotMatch(calls(sb), /docker (pull|compose)/);
+    assert.equal(maintenance(sb), "");
+  });
+
+  it("local mode does not read the registry even when it is unreachable", () => {
+    const sb = sandbox({ current: NEW, localImages: [LOCAL_TAG], registryMissing: true });
+    const { code, out } = run(sb, "rollback.sh", ["--local", LOCAL_TAG]);
+    assert.equal(code, 0, out);
+    assert.doesNotMatch(out, /WARNING/);
+    assert.match(read(sb.override), new RegExp(`image: ${LOCAL_TAG.replace(/[:]/g, "\\$&")}\\n`));
+  });
+});
+
+describe("deploy.sh: one boot path (BOOT-PATH)", () => {
+  function assertNothingChanged(sb, before) {
+    assert.equal(read(sb.override), before);
+    assert.doesNotMatch(calls(sb), /docker (pull|compose)/);
+    assert.equal(maintenance(sb), "");
+    assert.ok(!fs.existsSync(path.join(sb.dir, "dumps")));
+    assert.ok(!fs.existsSync(path.join(sb.dir, "state")));
+  }
+
+  it("refuses when the boot unit does not exist", () => {
+    const sb = sandbox({ bootUnit: null });
+    const before = read(sb.override);
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.notEqual(code, 0, out);
+    assert.match(out, /boot unit not verified, nothing was changed: the boot unit .* does not exist/);
+    assertNothingChanged(sb, before);
+  });
+
+  it("refuses a unit that starts the vendor compose file (the 01.10 incident)", () => {
+    const sb = sandbox();
+    // The sandbox compose dir is known only after sandbox(); patch the unit
+    // file directly: replace the first -f argument with a vendor compose file.
+    const unitFile = path.join(sb.unitDir, "paperclip.service");
+    fs.writeFileSync(unitFile, read(unitFile).replace(/-f [^ ]+\/docker-compose\.yml/, "-f /srv/myrmidon/docker-compose.vendor.yml"));
+    const before = read(sb.override);
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.notEqual(code, 0, out);
+    assert.match(out, /boot unit .* does not match the canonical unit/);
+    assert.match(out, /COMPOSE_FILES/);
+    assertNothingChanged(sb, before);
+  });
+
+  it("refuses a unit that reads a different compose dir", () => {
+    const sb = sandbox();
+    const unitFile = path.join(sb.unitDir, "paperclip.service");
+    fs.writeFileSync(unitFile, read(unitFile).replaceAll(path.dirname(sb.override), "/opt/other"));
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.notEqual(code, 0, out);
+    assert.match(out, /boot unit .* does not match/);
+  });
+
+  it("refuses a unit without the override file (a new digest would not take effect at boot)", () => {
+    const sb = sandbox();
+    const unitFile = path.join(sb.unitDir, "paperclip.service");
+    fs.writeFileSync(unitFile, read(unitFile).replace(` -f ${sb.override}`, ""));
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.notEqual(code, 0, out);
+    assert.match(out, /boot unit .* does not match/);
+  });
+
+  it("refuses even with --force: the gate cannot be skipped", () => {
+    const sb = sandbox({ bootUnit: null });
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--force"]);
+    assert.notEqual(code, 0, out);
+    assert.match(out, /boot unit not verified/);
+  });
+
+  it("the refusal also happens in a dry run (read-only check)", () => {
+    const sb = sandbox({ bootUnit: null });
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--dry-run"]);
+    assert.notEqual(code, 0, out);
+    assert.match(out, /boot unit not verified/);
+  });
+
+  it("a dry run with the canonical unit prints the boot-unit step and installs nothing", () => {
+    const sb = sandbox();
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--dry-run"]);
+    assert.equal(code, 0, out);
+    assert.match(out, /boot unit ok: .*paperclip\.service/);
+    assert.match(out, /boot unit check passed/);
+  });
+
+  it("SYSTEMD_UNIT_INSTALL=1 installs the canonical unit and deploys", () => {
+    const sb = sandbox({ bootUnit: null });
+    fs.appendFileSync(sb.config, "SYSTEMD_UNIT_INSTALL=1\n");
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.equal(code, 0, out);
+    assert.match(out, /boot unit installed/);
+    const installed = read(path.join(sb.unitDir, "paperclip.service"));
+    assert.match(installed, /After=docker\.service/);
+    assert.match(installed, new RegExp(`-f ${sb.override}`));
+    assert.match(installed, /up -d --no-deps server/);
+    // BOOT-PATH review hardening: the rendered ExecStart must tokenize as a
+    // valid compose command. Every -f argument is a real existing .yml path;
+    // no token may be a directory or carry a stray "-f" inside the path.
+    for (const line of installed.split("\n")) {
+      if (!line.startsWith("ExecStart=") && !line.startsWith("ExecStop=")) continue;
+      const tokens = line.replace(/^ExecStop=-/, "").replace(/^Exec(Start|Stop)=/, "").split(/\s+/).filter(Boolean);
+      const composeIdx = tokens.indexOf("compose");
+      assert.ok(composeIdx > 0, `tokenizes with a compose subcommand: ${line}`);
+      for (let i = composeIdx + 1; i < tokens.length - 1; i++) {
+        if (tokens[i] !== "-f") continue;
+        const file = tokens[i + 1];
+        assert.ok(file.endsWith(".yml"), `-f argument is a .yml path, got '${file}' in: ${line}`);
+        assert.ok(fs.existsSync(file), `-f argument exists on disk: ${file}`);
+        // The value after -f must be a path, never a flag (e.g. "-f -f x.yml").
+        assert.ok(!file.startsWith("-"), `-f argument must be a path, not a flag: ${file}`);
+        // A stray "-f" glued into the rendered path (e.g. "a.yml-f", "dir/-f/x.yml")
+        // is checked only on the part the template renders. The sandbox prefix
+        // comes from mkdtemp with a random suffix (it may legitimately contain
+        // "-f", e.g. ".../myrmidon-deploy-fAbc12/"), so it is stripped first.
+        const composeDir = path.join(sb.dir, "compose");
+        const rel = path.relative(composeDir, file);
+        assert.ok(!rel.startsWith("..") && !path.isAbsolute(rel), `-f argument lives in the compose dir: ${file}`);
+        assert.ok(
+          !/(^|\/)-f|\.ya?ml-f/.test(rel),
+          `-f argument must not itself contain a stray '-f': ${file}`,
+        );
+        assert.ok(fs.statSync(file).isFile(), `-f argument is a file, not a directory: ${file}`);
+      }
+    }
+  });
+
+  it("SYSTEMD_UNIT_INSTALL=1 never overwrites a foreign unit", () => {
+    const sb = sandbox();
+    const unitFile = path.join(sb.unitDir, "paperclip.service");
+    fs.writeFileSync(unitFile, read(unitFile).replace("up -d --no-deps server", "up -d   # vendor-legacy"));
+    fs.appendFileSync(sb.config, "SYSTEMD_UNIT_INSTALL=1\n");
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.notEqual(code, 0, out);
+    // A foreign unit is always a refusal; with SYSTEMD_UNIT_INSTALL=1 the
+    // reason can be either "does not match" (install path runs only when the
+    // unit file is missing) — both refuse and leave the unit untouched.
+    assert.match(out, /boot unit .* (does not match the canonical unit|cannot be verified)/);
+    // the foreign unit is still there, unchanged
+    assert.match(read(unitFile), /vendor-legacy/);
+  });
+
+  it("a deployed unit keeps working after the digest changes (no unit edit)", () => {
+    const sb = sandbox();
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.equal(code, 0, out);
+    // The unit references the override file, not the digest: a second deploy
+    // to another digest passes the same gate with the same unit.
+    const again = run(sb, "deploy.sh", ["--digest", OLD]);
+    assert.equal(again.code, 0, again.out);
+    assert.match(again.out, /boot unit ok/);
   });
 });
 

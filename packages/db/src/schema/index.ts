@@ -6,6 +6,8 @@ export { authUsers, authSessions, authAccounts, authVerifications } from "./auth
 export { instanceSettings } from "./instance_settings.js";
 export { instanceUserRoles } from "./instance_user_roles.js";
 export { userSidebarPreferences } from "./user_sidebar_preferences.js";
+// myrmidon(UI2-I18N): per-user UI language preference (2.0 UI tree).
+export { userUiLanguage } from "./user_ui_language.js";
 export { agents } from "./agents.js";
 export { builtInManagedResources } from "./built_in_managed_resources.js";
 export { agentMemberships } from "./agent_memberships.js";
@@ -20,6 +22,7 @@ export { joinRequests } from "./join_requests.js";
 export { budgetPolicies } from "./budget_policies.js";
 export { budgetIncidents } from "./budget_incidents.js";
 export { agentConfigRevisions } from "./agent_config_revisions.js";
+export { agentInstructionsRevisions, type AgentInstructionsRevisionFile } from "./agent_instructions_revisions.js";
 export { agentApiKeys } from "./agent_api_keys.js";
 export { agentRuntimeState } from "./agent_runtime_state.js";
 export { agentTaskSessions, agentSessionGoalActions } from "./agent_task_sessions.js";
@@ -209,3 +212,7 @@ export { aiConnectionDefaults } from "./ai_connection_defaults.js";
 export { aiProviderDefaults } from "./ai_provider_defaults.js";
 export * from "./email.js";
 export { announcementDismissals, announcementPublications } from "./announcement_dismissals.js";
+export { litellmCostEvents, litellmModels, type LitellmModelRates } from "./litellm_costs.js";
+// myrmidon(EGRESS-B): destination allowlists and per-project mode of the bot egress proxy.
+export { myrmidonEgressPolicies } from "./myrmidon_egress_policies.js";
+export { myrmidonFleetServers } from "./myrmidon_fleet_servers.js"; // myrmidon(SC1): fleet-server registry for the browser console
