@@ -63,6 +63,8 @@ import { canonicalizeStoredResolverPolicy } from "./issue-thread-interaction-res
 import { decisionQueueService } from "./decision-queues.js";
 // myrmidon(AUTO-RESUME): escalates the agent error card after the board gave up resuming
 import { readAutoResumeAttentionState } from "../myrmidon/auto-resume.js";
+// myrmidon(TRACING-HEALTH): the "LLM tracing" red state raises one operator card
+import { readTracingHealthAttentionSignal } from "../myrmidon/tracing-health/attention-bridge.js";
 import {
   decisionRetentionService,
   DEFAULT_DECISION_SHELF_DAYS,
@@ -1887,6 +1889,50 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         deduped.set(item.dedupKey, current ? betterDuplicate(current, item) : item);
       }
 
+      // myrmidon(TRACING-HEALTH): the "LLM tracing" red state raises ONE card
+      // on the operator desk, deduped by state — the ticket's rule is "signal
+      // to the operator role, never the owner", and the attention desk is the
+      // operator surface (same delivery as the AUTO-RESUME escalation). The
+      // signal comes from the process-level bridge the tracing sweep records.
+      const tracingSignal = readTracingHealthAttentionSignal(companyId);
+      if (tracingSignal) {
+        add(createItem({
+          companyId,
+          sourceKind: "agent_error_alert",
+          subject: {
+            kind: "agent",
+            id: `tracing-health-${companyId}`,
+            companyId,
+            title: "LLM tracing",
+            identifier: null,
+            status: "red",
+            href: `/${prefix}/settings`,
+            metadata: {
+              tracingHealth: true,
+              summary: tracingSignal.summary,
+            },
+          },
+          whyNow: tracingSignal.whyNow,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Inspect the tracing pipeline." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this alert." },
+          ),
+          inlineResolvable: true,
+          entryRule: "the LLM tracing health check reports red",
+          exitRule: "the check reports ok (or is disabled) or the row is dismissed.",
+          dedupKey: tracingSignal.dedupKey,
+          severity: tracingSignal.severity,
+          activityAt: tracingSignal.activityAt,
+          createdAt: tracingSignal.activityAt,
+          updatedAt: tracingSignal.activityAt,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: tracingSignal.summary.slice(0, DETAIL_EXCERPT_LENGTH),
+            images: [],
+          },
+        }));
+      }
       const collectedItems = [...deduped.values()].sort(compareAttentionItems);
       await decisionQueueService(db).materializeSeededQueues(companyId, collectedItems);
       const enrichedItems = await enrichAttentionItems(db, companyId, collectedItems, now);

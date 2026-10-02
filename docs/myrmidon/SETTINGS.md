@@ -388,3 +388,28 @@ change after the give-up (an operator action) re-arms the counter.
 | `MYRMIDON_AUTO_RESUME_MAX_ATTEMPTS` | AUTO-RESUME | `3` | Failed resumes in one streak before the board gives up and raises the operator card; the agent is then left in `error` until an operator acts | Non-numeric, `0`, negative — the default |
 | `MYRMIDON_AUTO_RESUME_INTERVAL_SEC` | AUTO-RESUME | `60` | How often (sec) the sweep looks for due agents; the sweep runs on the scheduler tick and this gate keeps it per-minute | Values below 10 — 10. Non-numeric, `0`, negative — the default |
 | `MYRMIDON_AUTO_RESUME_WINDOW_MS` | AUTO-RESUME | `3600000` (1 h) | A streak whose last failure is older than this is treated as a new episode (the attempt counter restarts) | Non-numeric, `0`, negative — the default |
+
+## 1.5 — "LLM tracing" health check (TRACING-HEALTH)
+
+A board status card "LLM tracing" and the endpoint behind it
+(`GET /api/myrmidon/companies/:companyId/tracing/health`): OK when the Langfuse
+v4 ClickHouse `events_core` table received events in the last 15 minutes while
+the LLM gateway served traffic, and the gateway's callback logging failure
+count is ~0. Otherwise red, plus one operator attention card (never the task
+owner): the 02.10 incident ran ~12k legacy-callback "Bad request" per hour and
+nobody noticed — in v4 the old `traces`/`observations` tables are empty by
+design, so nothing short of reading `events_core` can see the gap. A periodic
+sweep keeps the card and the operator signal fresh even when nobody opens the
+page; on a quiet instance (no gateway traffic) the check is `ok` with an
+"idle" summary, not red.
+
+| Variable | Function | Default | What it does | How to disable / special |
+|---|---|---|---|---|
+| `MYRMIDON_TRACING_CLICKHOUSE_URL` | TRACING-HEALTH | unset (off) | Base URL of the Langfuse v4 ClickHouse HTTP interface the board probes for `events_core` rows; read on every evaluation | Set together with the other three core values; without all four the check is off: the endpoint answers `enabled: false` and the sweep does not start |
+| `MYRMIDON_TRACING_CLICKHOUSE_KEY_SECRET` | TRACING-HEALTH | unset (off) | Name of the company secret holding the ClickHouse auth value (bearer); read only for the duration of a probe, never logged | — |
+| `MYRMIDON_TRACING_LITELLM_METRICS_URL` | TRACING-HEALTH | unset (off) | The LLM gateway's Prometheus `/metrics` URL (the callback failure counter `litellm_callback_logging_failures_metric` lives there) | — |
+| `MYRMIDON_TRACING_LITELLM_KEY_SECRET` | TRACING-HEALTH | unset (off) | Name of the company secret holding the gateway key for `/metrics`; read only for the duration of a probe | — |
+| `MYRMIDON_TRACING_LANGFUSE_PROJECT_ID` | TRACING-HEALTH | unset (all projects) | Langfuse project id that scopes the `events_core` count | Unset — events of every project in the instance count |
+| `MYRMIDON_TRACING_WINDOW_MS` | TRACING-HEALTH | `900000` (15 min) | The delivery-ratio window: events in `events_core` and gateway traffic are counted over this span | From 60000 to 21600000. Non-numeric, `0`, out of bounds — the default |
+| `MYRMIDON_TRACING_MAX_CALLBACK_FAILURES` | TRACING-HEALTH | `5` | Callback logging failure lines tolerated in the window ("error rate ~0") | `0` — any failure goes red. Non-numeric, negative — the default |
+| `MYRMIDON_TRACING_INTERVAL_SEC` | TRACING-HEALTH | `300` | Period (sec) of the background evaluation sweep that keeps the card and the operator attention signal fresh | From 60 to 86400. Non-numeric, out of bounds — the default |
