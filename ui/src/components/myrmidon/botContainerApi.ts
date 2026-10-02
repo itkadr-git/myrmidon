@@ -37,6 +37,10 @@ export interface BotContainerStatus {
   gatewayConcurrencyNote: string | null;
   /** The gateway limits runs below the board's limit (unmanaged gateway, recently 429). */
   gatewayConcurrencyWarning: string | null;
+  /** myrmidon(L6-PROFILE-UPDATE-STARVATION): when a card change is waiting for
+   *  the agent's busy runs to drain (open maintenance window), the ISO time the
+   *  window opened; null when nothing is pending. */
+  profileUpdatePendingSince: string | null;
 }
 
 export type BotContainerApplyOutcome =

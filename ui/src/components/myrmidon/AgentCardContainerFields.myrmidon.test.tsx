@@ -48,6 +48,7 @@ const STATUS: BotContainerStatus = {
   gatewayConcurrency: { board: 3, applied: 3, diverged: false, checkedAt: "2026-01-01T00:00:00.000Z" },
   gatewayConcurrencyNote: null,
   gatewayConcurrencyWarning: null,
+  profileUpdatePendingSince: null,
 };
 
 let container: HTMLDivElement;
@@ -341,6 +342,19 @@ describe("myrmidon(W2b) container card section", () => {
     const { onRefresh } = renderView();
     click(byId("refresh"));
     expect(onRefresh).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("myrmidon(L6-PROFILE-UPDATE-STARVATION) pending profile update note", () => {
+  it("shows the note while a change waits for the agent's runs to drain", () => {
+    renderView({ status: { ...STATUS, profileUpdatePendingSince: "2026-10-02T15:04:05.000Z" } });
+    expect(text("profile-pending")).toContain("Profile update pending since");
+    expect(text("profile-pending")).toContain("2026");
+  });
+
+  it("shows nothing when no update is pending", () => {
+    renderView();
+    expect(byId("profile-pending")).toBeNull();
   });
 });
 

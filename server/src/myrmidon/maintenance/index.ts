@@ -36,6 +36,12 @@ export function maintenanceHeartbeatPort(heartbeat: ReturnType<typeof heartbeatS
       await heartbeat.promoteDueScheduledRetries();
       await heartbeat.resumeQueuedRuns();
     },
+    // myrmidon(L6-PROFILE-UPDATE-STARVATION): the maintenance tick promotes
+    // due scheduled retries once its owned interrupts have torn down, so the
+    // drain completes instead of the window sitting in `entering`.
+    async promoteDueScheduledRetries() {
+      await heartbeat.promoteDueScheduledRetries();
+    },
     async interruptRunForMaintenance(runId, windowId) {
       const stopped = await heartbeat.cancelRun(runId, "Interrupted by maintenance mode; retried after maintenance ends", {
         errorCode: MAINTENANCE_INTERRUPT_ERROR_CODE,

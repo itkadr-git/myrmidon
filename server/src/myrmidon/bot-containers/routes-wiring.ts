@@ -16,6 +16,8 @@ import { agents, heartbeatRuns, type Db } from "@paperclipai/db";
 import { forbidden } from "../../errors.js";
 import { accessService } from "../../services/index.js";
 import { authorizationDeniedDetails } from "../../services/authorization.js";
+import { heartbeatService } from "../../services/index.js";
+import { maintenanceHeartbeatPort, maintenanceService } from "../maintenance/index.js";
 import { applyBotContainerNow, type BotContainerAgent, type BotContainerRuntimeDeps } from "./index.js";
 import { GATEWAY_RATE_LIMITED_ERROR_CODE } from "./concurrency-sync.js";
 import { botContainerRoutes } from "./routes.js";
@@ -60,6 +62,8 @@ export function botContainerAgentReader(db: Db): (agentId: string) => Promise<Bo
 export function myrmidonBotContainerRoutes(db: Db) {
   // Built on first use: app.ts is constructed in tests that stub parts of services/.
   let access: ReturnType<typeof accessService> | null = null;
+  // Built on first use for the same reason (maintenance pulls in heartbeatService).
+  let maintenance: ReturnType<typeof maintenanceService> | null = null;
   return botContainerRoutes({
     getAgent: async (id) => {
       // A malformed id is "no such agent", not a database error.
@@ -100,6 +104,18 @@ export function myrmidonBotContainerRoutes(db: Db) {
         .limit(1)
         .then((rows) => rows[0] ?? null);
       return row ? row.createdAt.toISOString() : null;
+    },
+    /**
+     * myrmidon(L6-PROFILE-UPDATE-STARVATION): the agent's open agent-scoped
+     * maintenance window's startedAt, or null — the card's "profile update
+     * pending since" note. Reads the same maintenanceService the runtime's
+     * port adapts; read-only, so no cache invalidation is needed.
+     */
+    profileUpdatePendingSince: async (agentId) => {
+      maintenance ??= maintenanceService(db, { heartbeat: maintenanceHeartbeatPort(heartbeatService(db)) });
+      const status = await maintenance.status({ type: "agent", id: agentId });
+      const open = status.windows.find((w) => w.state === "entering" || w.state === "on" || w.state === "leaving");
+      return open ? open.startedAt : null;
     },
     assertCanUpdateAgent: async (req, agent) => {
       access ??= accessService(db);

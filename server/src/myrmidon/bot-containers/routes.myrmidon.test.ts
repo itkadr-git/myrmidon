@@ -170,6 +170,7 @@ describe("myrmidon(W2b) bot container routes: status", () => {
       },
       gatewayConcurrencyNote: APPLIED_LIMIT_PENDING_NOTE,
       gatewayConcurrencyWarning: null,
+      profileUpdatePendingSince: null,
     });
     // No profile hashes leave the server.
     expect(JSON.stringify(res.body)).not.toContain("restartHash");
@@ -219,6 +220,56 @@ describe("myrmidon(W2b) bot container routes: status", () => {
     expect(res.body.container).toBeNull();
     expect(res.body.containerError).toBe("The container runtime did not answer.");
     expect(JSON.stringify(res.body)).not.toContain("docker.sock");
+  });
+});
+
+describe("myrmidon(L6-PROFILE-UPDATE-STARVATION) status: the pending profile update note", () => {
+  it("reports the open window's startedAt when a profile update is pending", async () => {
+    const profileUpdatePendingSince = vi.fn(async () => "2026-10-02T15:04:05.000Z");
+    const res = await request(
+      app(member, { getRuntime: () => runtime(fakeDriver()), profileUpdatePendingSince }),
+    )
+      .get(statusUrl)
+      .expect(200);
+    expect(res.body.profileUpdatePendingSince).toBe("2026-10-02T15:04:05.000Z");
+    expect(profileUpdatePendingSince).toHaveBeenCalledWith(AGENT_ID);
+  });
+
+  it("null when no window is open (nothing pending)", async () => {
+    const profileUpdatePendingSince = vi.fn(async () => null);
+    const res = await request(
+      app(member, { getRuntime: () => runtime(fakeDriver()), profileUpdatePendingSince }),
+    )
+      .get(statusUrl)
+      .expect(200);
+    expect(res.body.profileUpdatePendingSince).toBeNull();
+  });
+
+  it("a failed window lookup does not fail the status", async () => {
+    const profileUpdatePendingSince = vi.fn(async () => {
+      throw new Error("db unavailable");
+    });
+    const res = await request(
+      app(member, { getRuntime: () => runtime(fakeDriver()), profileUpdatePendingSince }),
+    )
+      .get(statusUrl)
+      .expect(200);
+    expect(res.body.profileUpdatePendingSince).toBeNull();
+    expect(JSON.stringify(res.body)).not.toContain("db unavailable");
+  });
+
+  it("is not asked for an agent that is not a gateway or a card that is off", async () => {
+    const profileUpdatePendingSince = vi.fn(async () => "2026-10-02T15:04:05.000Z");
+    const agent = card(ENABLED_CARD, { adapterType: "hermes_local" });
+    await request(app(member, { agent, getRuntime: () => runtime(fakeDriver()), profileUpdatePendingSince }))
+      .get(statusUrl)
+      .expect(200);
+    expect(profileUpdatePendingSince).not.toHaveBeenCalled();
+    const off = card({ ...ENABLED_CARD, enabled: false });
+    await request(app(member, { agent: off, getRuntime: () => runtime(fakeDriver()), profileUpdatePendingSince }))
+      .get(statusUrl)
+      .expect(200);
+    expect(profileUpdatePendingSince).not.toHaveBeenCalled();
   });
 });
 

@@ -166,20 +166,70 @@ export type TickDecision =
   | { kind: "mark_on" }
   | { kind: "mark_timed_out" }
   | { kind: "interrupt"; runIds: string[] }
-  | { kind: "finish_leaving" };
+  | { kind: "finish_leaving" }
+  // myrmidon(L6-PROFILE-UPDATE-STARVATION): a window that already interrupted
+  // everything it owns has runs that finished (left "running"); the service
+  // promotes the due scheduled retries and the window can go `on`.
+  | { kind: "drained_after_interrupts" }
+  // myrmidon(L6-PROFILE-UPDATE-STARVATION): backstop — a window still open past
+  // drainDeadline + grace is retired with an error record, so windows never
+  // pile up (the 02.10 incident: 38 windows stuck in `leaving`/`entering`).
+  | { kind: "retire_stuck" };
+
+/**
+ * Grace past the drain deadline before the backstop retires an open window.
+ * Configurable (MYRMIDON_MAINTENANCE_STUCK_GRACE_SEC); the default covers
+ * drain timeout + 1 min, per the L6 acceptance criteria.
+ */
+export const DEFAULT_STUCK_GRACE_MS = 60_000;
 
 /**
  * What the tick does with one window, given the runs still running in its scope.
  * `leaving` windows are finished by the service after it wakes the queue.
+ *
+ * myrmidon(L6-PROFILE-UPDATE-STARVATION): with `interrupt_and_retry`, the
+ * interrupted runs leave `running` only after the vendor's teardown; once they
+ * have (and every owned interrupt was issued), the tick reports
+ * `drained_after_interrupts` — the service promotes the due scheduled retries
+ * and moves the window to `on`, so the drain completes instead of the window
+ * sitting in `entering` with `interruptedRunIds` set while the reconciler's
+ * drain poll never sees zero.
  */
 export function decideTick(window: MaintenanceWindow, runningRunIds: string[], now: Date): TickDecision {
   if (window.state === "leaving") return { kind: "finish_leaving" };
   if (window.state !== "entering") return { kind: "none" };
   if (runningRunIds.length === 0) return { kind: "mark_on" };
-  const pastDeadline = now.getTime() >= Date.parse(window.drainDeadlineAt);
-  if (!pastDeadline) return { kind: "none" };
-  if (window.onTimeout === "interrupt_and_retry") return { kind: "interrupt", runIds: runningRunIds };
+  const nowMs = now.getTime();
+  const deadlineMs = Date.parse(window.drainDeadlineAt);
+  if (nowMs < deadlineMs) return { kind: "none" };
+  if (window.onTimeout === "interrupt_and_retry") {
+    const unowned = runningRunIds.filter((id) => !window.interruptedRunIds.includes(id));
+    if (unowned.length > 0) return { kind: "interrupt", runIds: unowned };
+    // Every run in scope was interrupted by this window and has left
+    // "running": the drain is complete for this window's part.
+    return { kind: "drained_after_interrupts" };
+  }
   return window.drainTimedOut ? { kind: "none" } : { kind: "mark_timed_out" };
+}
+
+/**
+ * myrmidon(L6-PROFILE-UPDATE-STARVATION): backstop check for an open
+ * (entering/on) window: has it been open past drain deadline + grace without
+ * completing? A stuck window is retired with an error record so later card
+ * changes for the same scope are not blocked (a same-scope `enter` while a
+ * window is still `leaving` gets 409).
+ */
+export function isStuckOpenWindow(
+  window: MaintenanceWindow,
+  now: Date,
+  stuckGraceMs: number = DEFAULT_STUCK_GRACE_MS,
+): boolean {
+  // `leaving` windows are finished by the tick's own leaving path
+  // (finishLeaving retires unconditionally); the backstop targets windows
+  // that still hold admission (entering/on).
+  if (window.state === "leaving") return false;
+  const cutoff = Date.parse(window.drainDeadlineAt) + stuckGraceMs;
+  return now.getTime() >= cutoff;
 }
 
 export function newWindow(input: {

@@ -298,6 +298,13 @@ export function AgentCardContainerFieldsView({
               {blocked}
             </p>
           )}
+          {/* myrmidon(L6-PROFILE-UPDATE-STARVATION): pending card change waiting
+              for the agent's busy runs to drain inside its maintenance window. */}
+          {status?.profileUpdatePendingSince && (
+            <p className="text-xs text-muted-foreground" data-testid="myrmidon-bot-container-profile-pending">
+              {`Profile update pending since ${new Date(status.profileUpdatePendingSince).toLocaleString()}`}
+            </p>
+          )}
           {feedback && (
             <p
               role="status"

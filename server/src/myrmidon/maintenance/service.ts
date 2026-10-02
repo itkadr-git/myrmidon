@@ -9,6 +9,8 @@ import { logger } from "../../middleware/logger.js";
 import { logActivity } from "../../services/activity-log.js";
 import {
   decideTick,
+  DEFAULT_STUCK_GRACE_MS,
+  isStuckOpenWindow,
   newWindow,
   retireWindow,
   sameScope,
@@ -28,6 +30,11 @@ import { mutateMaintenanceDocument, readMaintenanceDocument } from "./store.js";
 export interface MaintenanceHeartbeatPort {
   /** Start whatever is queued and admissible (vendor resumeQueuedRuns). */
   resumeQueuedRuns(): Promise<void>;
+  /** myrmidon(L6-PROFILE-UPDATE-STARVATION): promote due scheduled retries
+   *  (the vendor path resumeQueuedRuns uses). Called by the maintenance tick
+   *  after a window's owned interrupts have torn down, so retries interrupted
+   *  for maintenance are queued and start after the window exits. */
+  promoteDueScheduledRetries?(...args: unknown[]): Promise<unknown>;
   /** Interrupt one running run for maintenance and schedule its retry. */
   interruptRunForMaintenance?(runId: string, windowId: string): Promise<{ retryScheduled: boolean }>;
 }
@@ -289,6 +296,15 @@ export function maintenanceService(
       await finishLeaving(window);
       return;
     }
+    // myrmidon(L6-PROFILE-UPDATE-STARVATION): backstop. A window still open
+    // (entering/on) past drain deadline + grace is retired with an error
+    // record, so windows never pile up and later same-scope enters are not
+    // blocked. On/entering alike: `on` windows the operator never closed are
+    // a leak of the same shape (admission stays gated).
+    if (isStuckOpenWindow(window, now(), readMaintenanceSettings().stuckGraceMs)) {
+      await retireStuckWindow(window);
+      return;
+    }
     const running = await runIdsInScope(window, ["running"]);
     const decision = decideTick(window, running, now());
     if (decision.kind === "mark_on") {
@@ -308,6 +324,35 @@ export function maintenanceService(
       if (changed) await audit(window, "drain_timed_out", SYSTEM_ACTOR, { runningRuns: running.length });
     } else if (decision.kind === "interrupt") {
       await interruptUntilSettled(window, decision.runIds);
+    } else if (decision.kind === "drained_after_interrupts") {
+      // myrmidon(L6-PROFILE-UPDATE-STARVATION): every run in scope was
+      // interrupted by this window and has left "running" (the vendor's run
+      // teardown completed). Promote the due scheduled retries — the same
+      // vendor path resumeQueuedRuns uses — so the retries are queued and
+      // ready to start when the window exits. Without this, the retries stay
+      // "scheduled_retry" (no caller of promoteDueScheduledRetries on this
+      // path), the reconciler's drain poll never sees zero, it throws, exits
+      // the window, and the next sweep re-enters: repeated windows, the
+      // profile update never applies.
+      const promote = deps.heartbeat.promoteDueScheduledRetries;
+      if (promote) {
+        try {
+          await promote();
+        } catch (err) {
+          logger.error({ err, windowId: window.id }, "failed to promote scheduled retries after maintenance drain");
+        }
+      }
+      const at = now().toISOString();
+      const { changed } = await write((doc) => {
+        const current = doc.windows.find((w) => w.id === window.id);
+        if (!current || current.state !== "entering") return { next: null, result: null };
+        return { next: updateWindow(doc, window.id, { state: "on", onAt: at }), result: null };
+      });
+      if (changed) {
+        await audit({ ...window, state: "on" }, "drained_after_interrupts", SYSTEM_ACTOR, {
+          interruptedRuns: window.interruptedRunIds.length,
+        });
+      }
     }
   }
 
@@ -328,6 +373,23 @@ export function maintenanceService(
       const stillRunning = await runIdsInScope(window, ["running"]);
       pending = stillRunning.filter((id) => !recorded.has(id));
     }
+  }
+
+  // myrmidon(L6-PROFILE-UPDATE-STARVATION): retire a window the backstop
+  // caught stuck open past drain deadline + grace. Records an error to the
+  // activity log (constant message, no exception payload) and removes the
+  // window, so the scope is not blocked.
+  async function retireStuckWindow(window: MaintenanceWindow) {
+    const at = now();
+    await write((doc) => ({
+      next: doc.windows.some((w) => w.id === window.id) ? retireWindow(doc, window.id, at) : null,
+      result: null,
+    }));
+    await audit(window, "stuck_window_retired", SYSTEM_ACTOR, {
+      state: window.state,
+      drainDeadlineAt: window.drainDeadlineAt,
+    });
+    logger.error({ windowId: window.id, scope: window.scope, state: window.state }, "retired a maintenance window stuck open past the drain deadline grace");
   }
 
   /** Interrupt each run once; returns the ids recorded on the window. */
