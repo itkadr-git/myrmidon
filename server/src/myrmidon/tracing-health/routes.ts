@@ -35,6 +35,7 @@ import {
 import {
   callbackErrorRate,
   countEvents,
+  countRejections,
   gatewayRequestCount,
   readTracingHealthSettings,
   type TracingHealthSettings,
@@ -59,6 +60,14 @@ export function tracingHealthRoutes(db: Db, deps: TracingHealthRoutesDeps) {
   const settings = () => readTracingHealthSettings(deps.env ?? process.env);
   let cached: TracingHealthReport | null = null;
 
+  const emptyEvidence = (): TracingHealthEvidence => ({
+    eventsInWindow: null,
+    gatewayRequestsInWindow: null,
+    callbackErrorRate: null,
+    deliveryRatio: null,
+    legacyRejections: null,
+  });
+
   const disabledReport = (now: Date, windowMs: number): TracingHealthReport => ({
     enabled: false,
     state: "unknown",
@@ -67,7 +76,7 @@ export function tracingHealthRoutes(db: Db, deps: TracingHealthRoutesDeps) {
       from: new Date(now.getTime() - windowMs).toISOString(),
       to: now.toISOString(),
     },
-    evidence: { eventsInWindow: null, gatewayRequestsInWindow: null, callbackErrorRate: null },
+    evidence: emptyEvidence(),
     reason: "tracing health check is not configured",
   });
 
@@ -79,6 +88,7 @@ export function tracingHealthRoutes(db: Db, deps: TracingHealthRoutesDeps) {
     let eventsInWindow: number | null = null;
     let gatewayRequestsInWindow: number | null = null;
     let callbackErrorRateValue: number | null = null;
+    let legacyRejections: number | null = null;
 
     // Gateway traffic: count /spend/logs/v2 rows over the window for the
     // first company whose secret resolves — the gateway is instance-wide.
@@ -99,12 +109,25 @@ export function tracingHealthRoutes(db: Db, deps: TracingHealthRoutesDeps) {
 
     if (current.clickhouseUrl) {
       eventsInWindow = await countEvents(window, current, deps.fetchFn);
+      // The 02.10 incident signature: ingestion rejecting legacy-format
+      // events. Any count above zero in the window is degraded.
+      legacyRejections = await countRejections(window, current, deps.fetchFn);
     }
+
+    // Delivery ratio: OTEL events delivered per gateway request over the
+    // window. null without data on either side or without traffic — never
+    // blocks the state machine.
+    const deliveryRatio =
+      eventsInWindow !== null && gatewayRequestsInWindow !== null && gatewayRequestsInWindow > 0
+        ? eventsInWindow / gatewayRequestsInWindow
+        : null;
 
     const evidence: TracingHealthEvidence = {
       eventsInWindow,
       gatewayRequestsInWindow,
       callbackErrorRate: callbackErrorRateValue,
+      deliveryRatio,
+      legacyRejections,
     };
     // The callback error rate needs the traffic count first.
     if (gatewayRequestsInWindow !== null && gatewayRequestsInWindow > 0 && current.clickhouseUrl) {
@@ -150,7 +173,7 @@ export function tracingHealthRoutes(db: Db, deps: TracingHealthRoutesDeps) {
           state: "unknown" as TracingHealthState,
           checkedAt: now.toISOString(),
           window: { from: from.toISOString(), to: to.toISOString() },
-          evidence: { eventsInWindow: null, gatewayRequestsInWindow: null, callbackErrorRate: null },
+          evidence: emptyEvidence(),
           reason: "tracing health check failed",
         });
         return;

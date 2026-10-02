@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   CALLBACK_ERROR_RATE_THRESHOLD,
   computeTracingHealthState,
+  DELIVERY_RATIO_THRESHOLD,
   REASONS,
   type TracingHealthEvidence,
 } from "./domain.js";
@@ -16,6 +17,8 @@ describe("myrmidon(TRACING-HEALTH) state machine", () => {
     eventsInWindow: 120,
     gatewayRequestsInWindow: 130,
     callbackErrorRate: 0,
+    deliveryRatio: 120 / 130,
+    legacyRejections: 0,
     ...overrides,
   });
 
@@ -39,6 +42,23 @@ describe("myrmidon(TRACING-HEALTH) state machine", () => {
   it("degraded: traffic but zero events — the 02.10 incident class", () => {
     const result = computeTracingHealthState(ev({ eventsInWindow: 0 }));
     expect(result).toEqual({ state: "degraded", reason: REASONS.degradedNoEvents });
+  });
+
+  it("degraded: delivery ratio below the threshold (half the traces lost is an incident)", () => {
+    const result = computeTracingHealthState(ev({ eventsInWindow: 20, deliveryRatio: 0.4 }));
+    expect(result).toEqual({ state: "degraded", reason: REASONS.degradedDeliveryRatio });
+    // exactly at the threshold is not below it
+    expect(computeTracingHealthState(ev({ deliveryRatio: DELIVERY_RATIO_THRESHOLD })).state).toBe("ok");
+  });
+
+  it("degraded: any legacy rejection in the window (the 02.10 signature)", () => {
+    const result = computeTracingHealthState(ev({ legacyRejections: 1 }));
+    expect(result).toEqual({ state: "degraded", reason: REASONS.degradedLegacyRejections });
+  });
+
+  it("null evidence fields never block the computation (total, deterministic)", () => {
+    expect(computeTracingHealthState(ev({ deliveryRatio: null, legacyRejections: null })).state).toBe("ok");
+    expect(computeTracingHealthState(ev({ deliveryRatio: null, legacyRejections: null, eventsInWindow: 0 })).state).toBe("degraded");
   });
 
   it("degraded: callback error rate at or above the threshold", () => {
@@ -77,9 +97,19 @@ describe("myrmidon(TRACING-HEALTH) state machine", () => {
     for (const eventsInWindow of [null, 0, 10] as const) {
       for (const gatewayRequestsInWindow of [null, 0, 10] as const) {
         for (const callbackErrorRate of [null, 0, 0.5] as const) {
-          const result = computeTracingHealthState({ eventsInWindow, gatewayRequestsInWindow, callbackErrorRate });
-          expect(["ok", "idle", "degraded", "unknown"]).toContain(result.state);
-          expect(typeof result.reason).toBe("string");
+          for (const deliveryRatio of [null, 0.4, 1] as const) {
+            for (const legacyRejections of [null, 0, 2] as const) {
+              const result = computeTracingHealthState({
+                eventsInWindow,
+                gatewayRequestsInWindow,
+                callbackErrorRate,
+                deliveryRatio,
+                legacyRejections,
+              });
+              expect(["ok", "idle", "degraded", "unknown"]).toContain(result.state);
+              expect(typeof result.reason).toBe("string");
+            }
+          }
         }
       }
     }
@@ -111,8 +141,10 @@ describe("myrmidon(TRACING-HEALTH) state machine", () => {
     ]);
     expect(Object.keys(report.evidence).sort()).toEqual([
       "callbackErrorRate",
+      "deliveryRatio",
       "eventsInWindow",
       "gatewayRequestsInWindow",
+      "legacyRejections",
     ]);
     expect(Object.keys(report.window).sort()).toEqual(["from", "to"]);
   });

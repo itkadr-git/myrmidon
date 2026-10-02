@@ -21,7 +21,7 @@
 
 export type TracingHealthState = "ok" | "idle" | "degraded" | "unknown";
 
-/** Probe evidence; `null` means "the probe failed". */
+/** Probe evidence; `null` means "the probe failed or the source is absent". */
 export interface TracingHealthEvidence {
   /** Events in ClickHouse `events_core` over the window; null = probe failed. */
   eventsInWindow: number | null;
@@ -29,6 +29,18 @@ export interface TracingHealthEvidence {
   gatewayRequestsInWindow: number | null;
   /** LiteLLM callback error rate [0..1]; null = probe failed or no counter. */
   callbackErrorRate: number | null;
+  /**
+   * OTEL events delivered into `events_core` per gateway request over the
+   * window (eventsInWindow / gatewayRequestsInWindow); null = no data
+   * (either side missing or no traffic). Part D reads it for the dedup key.
+   */
+  deliveryRatio: number | null;
+  /**
+   * Count of "Rejected ... legacy" ingestion rejections over the window —
+   * the 02.10 incident signature; null = counter unavailable. Any value
+   * above zero means degraded.
+   */
+  legacyRejections: number | null;
 }
 
 export interface TracingHealthWindow {
@@ -48,11 +60,26 @@ export interface TracingHealthReport {
 /** Callback error rate at or above this is "degraded" (~0 requirement). */
 export const CALLBACK_ERROR_RATE_THRESHOLD = 0.02;
 
+/**
+ * Delivery ratio below this (OTEL events in `events_core` per gateway
+ * request over the window) is "degraded", not "unknown" — the operator's
+ * 02.10 finding: half the traces lost is an incident, not a broken check.
+ */
+export const DELIVERY_RATIO_THRESHOLD = 0.5;
+
+/**
+ * More than this many "API errors occurred" gateway log lines in the window
+ * is "degraded" (mapped onto the callback error rate: lines/requests).
+ */
+export const GATEWAY_API_ERROR_LINES_THRESHOLD = 20;
+
 export const REASONS = {
   ok: "tracing events are flowing while the gateway serves traffic",
   idle: "the gateway served no traffic in the window",
   degradedNoEvents: "the gateway served traffic but no tracing events landed in the window",
+  degradedDeliveryRatio: "the tracing delivery ratio over the window is below the threshold",
   degradedCallbackErrors: "the tracing callback error rate is at or above the threshold",
+  degradedLegacyRejections: "ingestion rejected legacy-format events in the window",
   unknownEvents: "the ClickHouse events probe failed",
   unknownGateway: "the gateway traffic probe failed",
   unknownBoth: "the ClickHouse events and gateway traffic probes failed",
@@ -60,13 +87,15 @@ export const REASONS = {
 
 /**
  * The pure state machine: evidence -> state + reason. Total: any combination
- * of nulls yields a defined state.
+ * of nulls yields a defined state; evidence fields left null (no source)
+ * never block the computation.
  *
  * Precedence: probe failures (unknown) outrank everything — a broken check
  * must never read as healthy. Among failures, both > either. With live
- * probes: traffic decides idle vs ok/degraded; with traffic, events decide
- * ok vs degraded; with events, the callback error rate decides ok vs
- * degraded.
+ * probes: traffic decides idle vs ok/degraded; with traffic, no events at
+ * all is degraded; with events, the delivery ratio decides, then legacy
+ * rejections (any > 0 — the 02.10 incident signature), then the callback
+ * error rate.
  */
 export function computeTracingHealthState(
   evidence: TracingHealthEvidence,
@@ -89,6 +118,12 @@ export function computeTracingHealthState(
   }
   if (events <= 0) {
     return { state: "degraded", reason: REASONS.degradedNoEvents };
+  }
+  if (evidence.deliveryRatio !== null && evidence.deliveryRatio < DELIVERY_RATIO_THRESHOLD) {
+    return { state: "degraded", reason: REASONS.degradedDeliveryRatio };
+  }
+  if (evidence.legacyRejections !== null && evidence.legacyRejections > 0) {
+    return { state: "degraded", reason: REASONS.degradedLegacyRejections };
   }
   if (evidence.callbackErrorRate !== null && evidence.callbackErrorRate >= threshold) {
     return { state: "degraded", reason: REASONS.degradedCallbackErrors };

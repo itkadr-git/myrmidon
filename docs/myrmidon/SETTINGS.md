@@ -412,3 +412,12 @@ All off by default.
 | `MYRMIDON_TRACING_WINDOW_SEC` | TRACING-HEALTH | `900` (15 min) | Length of the health check window: events in ClickHouse and gateway requests are counted over the last N seconds | From 60 to 3600; non-integer or out of bounds — the default. A window with no gateway traffic is the state `idle` (OK with a reason), not an alarm: the check must not cry wolf on quiet periods |
 | `MYRMIDON_TRACING_HEALTH_TTL_SEC` | TRACING-HEALTH | `60` | Cache TTL of the report: the probes run at most once per TTL; inside it the previous report is served (checkedAt shows when it was actually measured) | From 5 to 3600; non-integer or out of bounds — the default. Any probe failure is the state `unknown` with a reason in the JSON contract, never a 500 |
 
+Health semantics (the operator's 02.10 findings, baked into the domain):
+`idle` without gateway traffic; `degraded` when events are missing while traffic
+flowed, when the delivery ratio (OTEL events in `events_core` per gateway
+request) is below 0.5, when any "Rejected … legacy" ingestion rejection landed
+in the window (the incident signature), or when the callback error rate is at
+or above 0.02; `unknown` on probe failure. The evidence fields `deliveryRatio`
+and `legacyRejections` are additive parts of the JSON contract for the part D
+dedup key; fields without a source stay null and never block the computation.
+

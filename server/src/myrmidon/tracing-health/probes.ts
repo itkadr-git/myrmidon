@@ -182,7 +182,14 @@ export async function callbackErrorRate(
   return Math.min(1, rejections / Math.max(1, gatewayRequests));
 }
 
-/** Count of Langfuse ingestion rejections in the window; null on failure. */
+/**
+ * Count of "Rejected ... legacy" ingestion rejections in the window — the
+ * 02.10 incident signature: ingestion silently dropping legacy-format OTEL
+ * events while the gateway kept serving traffic. Read from the Langfuse
+ * ClickHouse the same way as the events count. null on probe failure (no
+ * source) — a null never blocks the state machine; any value above zero
+ * makes the state degraded.
+ */
 export async function countRejections(
   window: { from: Date; to: Date },
   settings: Pick<TracingHealthSettings, "clickhouseUrl" | "clickhouseUser" | "clickhousePassword" | "clickhouseDatabase">,
@@ -190,7 +197,16 @@ export async function countRejections(
 ): Promise<number | null> {
   if (!settings.clickhouseUrl) return null;
   const query = `SELECT count() FROM ${settings.clickhouseDatabase}.langfuse_ingestion_rejections WHERE timestamp >= toDateTime64(${Math.floor(window.from.getTime() / 1000)}, 3) AND timestamp < toDateTime64(${Math.floor(window.to.getTime() / 1000)}, 3)`;
-  const url = new URL(settings.clickhouseUrl);
+  return clickhouseCount(query, settings, fetchFn);
+}
+
+/** Shared ClickHouse count() runner; null on any transport or shape failure. */
+async function clickhouseCount(
+  query: string,
+  settings: Pick<TracingHealthSettings, "clickhouseUrl" | "clickhouseUser" | "clickhousePassword" | "clickhouseDatabase">,
+  fetchFn: typeof fetch,
+): Promise<number | null> {
+  const url = new URL(settings.clickhouseUrl as string);
   url.pathname = (url.pathname.replace(/\/+$/, "") || "") + "/";
   const params = new URLSearchParams();
   params.set("query", query);

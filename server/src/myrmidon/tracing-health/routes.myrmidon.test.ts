@@ -90,7 +90,7 @@ describe("myrmidon(TRACING-HEALTH) GET /api/myrmidon/tracing/health", () => {
       state: "ok",
       checkedAt: "2026-10-02T10:00:00.000Z",
       window: { from: "2026-10-02T09:45:00.000Z", to: "2026-10-02T10:00:00.000Z" },
-      evidence: { eventsInWindow: 5, gatewayRequestsInWindow: 1, callbackErrorRate: 0 },
+      evidence: { eventsInWindow: 5, gatewayRequestsInWindow: 1, callbackErrorRate: 0, deliveryRatio: 5, legacyRejections: 0 },
       reason: "tracing events are flowing while the gateway serves traffic",
     });
   });
@@ -98,20 +98,48 @@ describe("myrmidon(TRACING-HEALTH) GET /api/myrmidon/tracing/health", () => {
   it("idle: no gateway traffic is OK with a reason, not broken", async () => {
     const routeDeps = deps({ client: vi.fn(() => gatewayClient([])) });
     const res = await request(app(member, routeDeps)).get("/api/myrmidon/tracing/health").expect(200);
-    expect(res.body).toMatchObject({ state: "idle", evidence: { eventsInWindow: 5, gatewayRequestsInWindow: 0 } });
+    expect(res.body).toMatchObject({
+      state: "idle",
+      evidence: { eventsInWindow: 5, gatewayRequestsInWindow: 0, deliveryRatio: null },
+    });
     expect(res.body.reason).toContain("no traffic");
   });
 
   it("degraded: traffic but zero events (the 02.10 incident class)", async () => {
     const routeDeps = deps({ fetchFn: vi.fn(okCh({ events: 0, rejections: 0 })) });
     const res = await request(app(member, routeDeps)).get("/api/myrmidon/tracing/health").expect(200);
-    expect(res.body).toMatchObject({ state: "degraded", evidence: { eventsInWindow: 0, gatewayRequestsInWindow: 1 } });
+    expect(res.body).toMatchObject({
+      state: "degraded",
+      evidence: { eventsInWindow: 0, gatewayRequestsInWindow: 1, deliveryRatio: 0 },
+    });
+  });
+
+  it("degraded: delivery ratio below 50% with traffic (half the traces lost)", async () => {
+    // 40 requests, 5 events -> deliveryRatio 0.125 < 0.5
+    const routeDeps = deps({ client: vi.fn(() => gatewayClient(Array.from({ length: 40 }, spendEntry))) });
+    const res = await request(app(member, routeDeps)).get("/api/myrmidon/tracing/health").expect(200);
+    expect(res.body).toMatchObject({
+      state: "degraded",
+      evidence: { eventsInWindow: 5, gatewayRequestsInWindow: 40, deliveryRatio: 0.125 },
+    });
+    expect(res.body.reason).toContain("delivery ratio");
+  });
+
+  it("degraded: any legacy rejection in the window (the 02.10 signature)", async () => {
+    const routeDeps = deps({ fetchFn: vi.fn(okCh({ events: 5, rejections: 2 })) });
+    const res = await request(app(member, routeDeps)).get("/api/myrmidon/tracing/health").expect(200);
+    expect(res.body).toMatchObject({
+      state: "degraded",
+      evidence: { eventsInWindow: 5, gatewayRequestsInWindow: 1, legacyRejections: 2 },
+    });
+    expect(res.body.reason).toContain("legacy");
   });
 
   it("degraded: the callback error rate at or above the threshold", async () => {
-    const routeDeps = deps({ fetchFn: vi.fn(okCh({ events: 5, rejections: 1 })) });
+    // 1 request, 5 rejections: callbackErrorRate capped at 1, legacy rejections 5
+    const routeDeps = deps({ fetchFn: vi.fn(okCh({ events: 5, rejections: 5 })) });
     const res = await request(app(member, routeDeps)).get("/api/myrmidon/tracing/health").expect(200);
-    expect(res.body).toMatchObject({ state: "degraded", evidence: { callbackErrorRate: 1 } });
+    expect(res.body).toMatchObject({ state: "degraded", evidence: { callbackErrorRate: 1, legacyRejections: 5 } });
   });
 
   it("unknown with a reason when a probe fails — never a 500", async () => {
@@ -137,7 +165,7 @@ describe("myrmidon(TRACING-HEALTH) GET /api/myrmidon/tracing/health", () => {
       enabled: false,
       state: "unknown",
       reason: "tracing health check is not configured",
-      evidence: { eventsInWindow: null, gatewayRequestsInWindow: null, callbackErrorRate: null },
+      evidence: { eventsInWindow: null, gatewayRequestsInWindow: null, callbackErrorRate: null, deliveryRatio: null, legacyRejections: null },
     });
     expect(res.body.window).toEqual({ from: "2026-10-02T09:45:00.000Z", to: "2026-10-02T10:00:00.000Z" });
   });
