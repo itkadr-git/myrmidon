@@ -320,6 +320,29 @@ The bot's tool is `ocr.pdf` (input: `name`, `base64`, optional `origin`, `source
 (`name`, `sizeBytes`, `pages`, `origin`, `sourceId`, `backend`, `chars`, `truncated`) — the text and bytes
 never enter the journal.
 
+## 1.6 — EVALS-A (reference tasks and the LLM judge)
+
+Settings of the module `server/src/myrmidon/evals/` (the 1.6 evals path: a seeded corpus of neutral
+reference tasks for the pilot role, an LLM judge behind the company's LLM gateway, scores stored in
+`myrmidon_eval_runs`, a threshold+repeat regression verdict). Reads are company-scoped; run mutations
+need a board actor. While the contour below is not configured, reads still work and mutations answer
+`503` with the names of the missing settings instead of guessing.
+
+| Variable | Function | Default | What it does | How to disable / special |
+|---|---|---|---|---|
+| `MYRMIDON_EVALS_BASE_URL` | EVALS-A | unset (judge disabled) | Address of the company's LLM gateway contour (OpenAI-compatible, e.g. LiteLLM). Together with `MYRMIDON_EVALS_KEY_SECRET` it opens the judge path; without either the evals mutations answer `503` with the reason | Empty/unset — the judge is disabled (reads still work). The address may end with `/v1` (then it is not duplicated) |
+| `MYRMIDON_EVALS_KEY_SECRET` | EVALS-A | unset | **Name** of the company secret holding the gateway key (not the value). The value is read per company on every run; it never appears in the setting, logs or journal | Empty/unset — the judge is disabled |
+| `MYRMIDON_EVALS_MODEL` | EVALS-A | `qwen-plus-free` | The judge model behind the gateway. The 1.6 wave rule applies: a free DashScope model by default; paid models stay a deploy-repo concern | Any value the gateway serves |
+| `MYRMIDON_EVALS_TIMEOUT_SEC` | EVALS-A | `120` | Timeout of one judge chat-completions call (from 5 to 600; below 5 is raised to 5) | Non-numeric, `0`, negative — the default is taken |
+| `MYRMIDON_EVALS_LANGFUSE` | EVALS-A | unset | Master flag for the Langfuse score export: `true` enables exporting run scores to Langfuse when the contour below is configured. Scoring is written locally (eval_runs) regardless of this flag | Empty/unset/anything but `true` — no Langfuse export, local scoring only |
+| `MYRMIDON_EVALS_LANGFUSE_BASE_URL` | EVALS-A | unset | Langfuse ingestion base URL (the `/api/public/ingestion` suffix is appended). Used only when `MYRMIDON_EVALS_LANGFUSE=true` | Empty — the export is a no-op |
+| `MYRMIDON_EVALS_LANGFUSE_KEY` | EVALS-A | unset | Langfuse public ingestion key. Used only when `MYRMIDON_EVALS_LANGFUSE=true` | Empty — the export is a no-op |
+| `MYRMIDON_EVALS_LANGFUSE_TIMEOUT_SEC` | EVALS-A | `30` | Timeout of the Langfuse ingestion request (from 1 to 600) | Non-numeric, `0`, negative — the default is taken |
+
+The board API is `GET/POST /api/myrmidon/companies/:companyId/evals/{tasks,seed,runs,runs/:runId,runs/:runId/confirm,verdict}`.
+The judge never executes code: for `code`-kind reference tasks the CI pass rate arrives as a request
+parameter and is folded into the aggregate as a separate score line.
+
 ## EXTCASE-B — browser bridge to the client's extension
 
 Settings of the server module `server/src/myrmidon/browser-bridge/` (the first third-party case: browser
@@ -462,15 +485,16 @@ dedup key; fields without a source stay null and never block the computation.
 
 ## TASK-PR-SYNC — a task settles once its pull requests merge
 
-A task whose `work_product` of type `pull_request` merged used to stay busy until
-someone noticed. The scheduler tick now runs a pass that refreshes each PR's
-state through the existing GitHub resolver and closes the task (`done`, one
-comment with the PR refs / merge sha / time, an activity row) when every PR has
-reached a terminal state and at least one merged and no post-deploy gate is still
-open. When none of them merged, the task goes back to its assignee (`in_progress`
-plus a comment) unless a newer comment already answered the closure. The sweep
-reads the same work-products surface the board uses; it adds no token or
-credential.
+A task whose `work_product` of type `pull_request` merged used to stay busy
+until someone noticed. The scheduler tick now runs a pass that refreshes each
+PR's state through the existing GitHub resolver and closes the task (`done`,
+one comment with the PR refs / merge sha / time, an activity row) when every
+PR has reached a terminal state and at least one merged and no post-deploy
+gate is still open. When none of them merged, the task goes back to its
+assignee (`in_progress` plus a comment) unless a newer comment already
+answered the closure. The sweep reads the same work-products surface the
+board uses; it adds no token or credential. Operator guide:
+[guides/task-pr-sync.md](guides/task-pr-sync.md).
 
 | Variable | Function | Default | What it does | How to disable / special |
 |---|---|---|---|---|
@@ -528,3 +552,22 @@ existing toolActionRequests + approval-card conveyor, allowed passes. Regulation
 No environment variables, no new secrets. Remove: the autonomy tree, the export line in
 `packages/shared/src/index.ts`, the two marker lines in `app.ts`/`instance-settings.ts`
 and this section.
+## 1.6 — CTO-CHAT B (the board chat planner: owner text -> proposed epic)
+
+The planner behind the CTO chat (the 1.6 CTO-CHAT epic, part B): the owner's free text
+(`POST /api/myrmidon/cto-chat/plan`, body `{ "text": "..." }`, or the same call
+from the Telegram DM bridge) becomes a proposed epic with child tasks and
+per-task acceptance criteria. The proposal is a plan only: it validates against
+the shared zod contract before any card, and nothing is created until the
+owner accepts the `suggest_tasks` card on the standing Agent Chat conversation
+task. Off unless both the address and the key secret are set: with either
+missing the route answers a stable 503 `planner_disabled` with the names of the
+missing settings (names only, never values), and not a single request goes out.
+
+| Variable | Function | Default | What it does | How to disable / special |
+|---|---|---|---|---|
+| `MYRMIDON_CTO_CHAT_BASE_URL` | 1.6-CTO-CHAT-B | unset (planner closed) | Address of the OpenAI-compatible LLM gateway (e.g. LiteLLM) the planner calls for one completion. Together with `MYRMIDON_CTO_CHAT_KEY_SECRET` it opens the path; without either the route answers 503 `planner_disabled` naming the missing settings | Empty/unset — the path is closed |
+| `MYRMIDON_CTO_CHAT_KEY_SECRET` | 1.6-CTO-CHAT-B | unset | **Name** of the company secret holding the gateway API key (not the value). The value is read on every call for the calling company; it never appears in the setting, logs, errors or the journal | Empty/unset — the path is closed. The secret is created by the company's operator in the "Secrets" section |
+| `MYRMIDON_CTO_CHAT_MODEL` | 1.6-CTO-CHAT-B | `dashscope-qwen-flash` | The model name sent to the gateway for the planning completion | Empty/unset — the default; an unknown name fails at the gateway and the route answers 400 `backend_failed` |
+| `MYRMIDON_CTO_CHAT_TIMEOUT_SEC` | 1.6-CTO-CHAT-B | `90` | Timeout of the planning request (raised to at least 5, capped at 600) | Non-numeric, `0`, negative or above the cap — the default (90) |
+| `MYRMIDON_CTO_CHAT_MAX_TASKS` | 1.6-CTO-CHAT-B | `8` | Ceiling on child tasks in one proposal (a proposal can never be unbounded work); the hard absolute cap is 20 | Non-numeric, `0`, negative or above 20 — the default (8) |

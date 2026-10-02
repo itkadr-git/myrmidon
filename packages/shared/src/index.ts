@@ -2786,3 +2786,5 @@ export * from "./myrmidon-agent-tool-permissions.js";
 export * from "./myrmidon-litellm-sync.js";
 // myrmidon(1.6-AUTONOMY): role × action-class matrix, verdict resolver and per-role regulations.
 export * from "./myrmidon-autonomy.js";
+// myrmidon(1.6-CTO-CHAT-B): the owner-message-to-epic proposal contract of the CTO chat.
+export * from "./myrmidon-cto-chat.js";
