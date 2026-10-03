@@ -25,6 +25,9 @@ export const ATTENTION_SOURCE_KINDS = [
   // + in_review) is over its resolved WIP limit, or a lead holds a
   // implementation task (lead limit = 0).
   "wip_limit",
+  // myrmidon(STALE-BLOCK): the watchdog lifted a dead block off a task; the
+  // lead and operator must see the routing change the machine made.
+  "stale_block",
 ] as const;
 
 export type AttentionSourceKind = (typeof ATTENTION_SOURCE_KINDS)[number];

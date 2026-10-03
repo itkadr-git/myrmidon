@@ -49,6 +49,8 @@ import { preserveAccessHubHostsGeneralKey } from "../myrmidon/access-hub/host-re
 import { preserveAutonomyGeneralKey } from "../myrmidon/autonomy/store.js";
 // myrmidon(1.6.1-WIP-LIMIT-A): keep the stored WIP limits across vendor writes of `general`
 import { preserveWipLimitGeneralKey } from "../myrmidon/wip-limit/settings.js";
+// myrmidon(1.6-TG-PROACTIVITY-E, 1.6.1-TG-NOTIFY-B): keep the telegram-notify state across vendor writes of `general`
+import { preserveTelegramNotifyGeneralKey } from "../myrmidon/telegram-notify/proactivity-policy.js";
 import { getManagedInstanceConfig, type ManagedInstanceConfig } from "./managed-config.js";
 import { getOperatorSettingDefaults } from "./setting-defaults.js";
 
@@ -582,6 +584,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
             ...preserveCloudConnectorGeneralKey(current.general), // myrmidon(CLOUD-CONNECTOR)
             ...preserveAutonomyGeneralKey(current.general), // myrmidon(1.6-AUTONOMY)
             ...preserveWipLimitGeneralKey(current.general), // myrmidon(1.6.1-WIP-LIMIT-A)
+            ...preserveTelegramNotifyGeneralKey(current.general), // myrmidon(1.6-TG-PROACTIVITY-E)
           },
           updatedAt: now,
         })

@@ -76,6 +76,13 @@ import {
   WIP_LIMIT_SETTINGS_KEY,
   normalizeWipLimitSettings,
 } from "@paperclipai/shared";
+// myrmidon(STALE-BLOCK): the lifted-block operator signal registry.
+import {
+  readStaleBlockSignals,
+  staleBlockSignalDedupKey,
+  staleBlockSignalSeverity,
+  staleBlockSignalWhyNow,
+} from "../myrmidon/stale-block/attention.js";
 
 /**
  * myrmidon(TRACING-HEALTH): a stable UUID for the synthetic "LLM tracing"
@@ -109,6 +116,8 @@ const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   "stack_update",
   // myrmidon(1.6.1-WIP-LIMIT-A): the per-agent work-in-progress over-limit signal.
   "wip_limit",
+  // myrmidon(STALE-BLOCK): one card per block the watchdog lifted.
+  "stale_block",
 ];
 
 const SEVERITY_RANK: Record<AttentionSeverity, number> = {
@@ -133,7 +142,8 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   stack_update: 11,
   // myrmidon(1.6.1-WIP-LIMIT-A): a workload-oversignal sits below every
   // blocking kind but above nothing else — it is advice, not a stop.
-  wip_limit: 12,
+  wip_limit: 13,
+  stale_block: 12,
 };
 
 const PENDING_INTERACTION_STATUSES = ["pending"] as const;
@@ -1967,6 +1977,50 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           detail: {
             kind: "generic",
             summaryExcerpt: card.summaryExcerpt,
+            images: [],
+          },
+        }));
+      }
+
+      // myrmidon(STALE-BLOCK): one card per block the stale-block watchdog
+      // lifted. The sweep records the signal into a process-level registry
+      // (myrmidon/stale-block/attention.ts) — the feed computes the items on
+      // the fly, no notification store. Dedup is stable per task and lift;
+      // the card disappears when the TTL expires or the operator dismisses.
+      for (const signal of readStaleBlockSignals(companyId)) {
+        add(createItem({
+          companyId,
+          sourceKind: "stale_block",
+          subject: {
+            kind: "issue",
+            id: signal.issueId,
+            companyId,
+            title: signal.title ?? "Task",
+            identifier: signal.identifier,
+            status: "in_progress",
+            href: signal.identifier ? `/${prefix}/issues/${signal.identifier}` : null,
+            metadata: {
+              liftedAt: signal.liftedAt,
+              reasonTexts: signal.reasonTexts,
+            },
+          },
+          whyNow: staleBlockSignalWhyNow(signal),
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the task and check the unblock." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this notice." },
+          ),
+          inlineResolvable: true,
+          entryRule: "the stale-block watchdog lifted the task's dead block",
+          exitRule: "The TTL expires or the row is dismissed.",
+          dedupKey: staleBlockSignalDedupKey(signal),
+          severity: staleBlockSignalSeverity(),
+          activityAt: signal.liftedAt,
+          createdAt: signal.liftedAt,
+          updatedAt: signal.liftedAt,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: excerpt(signal.reasonTexts.join("; ")),
             images: [],
           },
         }));
