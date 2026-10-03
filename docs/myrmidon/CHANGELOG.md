@@ -87,6 +87,33 @@ version file to edit. Base Paperclip version is in the image label
   server half of the feature and merge separately. Operator guide:
   [guides/agent-board-admin.md](guides/agent-board-admin.md).
 
+### Learning switch and spend limits (FORAGING-LIMITS-UI)
+
+- The learning switch, the pass interval, the same-host read pause, the
+  per-pass budget, the **daily** and **monthly** company ceilings, the per-agent
+  and per-role limits, the hard/soft (ask the owner) enforcement mode and the
+  cost-per-task auto-off threshold are instance settings now: the "Learning
+  (foraging)" section of Instance → General
+  (`GET`/`PATCH /api/myrmidon/foraging-settings`), key `general.foraging`.
+- No restart: the sweep re-resolves the settings row before every pass, a
+  changed value applies with the next pass. The 1.6 env variables
+  (`MYRMIDON_FORAGING_*`) stay forced per-key overrides of the matching field,
+  the built-in default is the floor; the panel shows the origin of each value.
+  `MYRMIDON_FORAGING_KEY_SECRET` stays env-only: it names a company secret, not
+  a limit.
+- When a limit stops a pass (sources after the stop stay untouched), a
+  `foraging_limit` card lands in the attention feed (it clears when a pass
+  runs without a stop; the auto-off card stays until learning is re-enabled).
+  Soft mode marks the signal as a question to the owner: raise the limit or
+  switch learning off.
+- The learning spend is tracked on its own: a `foraging_spend_events` table
+  (cents, role, agent, source URL) and one `training_charge` finance event per
+  pass — Costs shows learning as its own "Training" line, by agent and source
+  (`GET /api/myrmidon/companies/:companyId/foraging/spend`).
+- Cost auto-off: when the mean cost per task (BASELINE) rises above the
+  threshold from the settings, learning switches itself off and signals the
+  attention feed.
+
 ## 1.6.0
 
 ### CTO chat planner (CTO-CHAT B)

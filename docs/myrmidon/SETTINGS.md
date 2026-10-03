@@ -706,6 +706,46 @@ outside: an operator turns it on together with `MYRMIDON_FORAGING_KEY_SECRET` wh
 sources need a token. Findings are recorded `unverified` until the skill lifecycle accepts
 them as candidates; `POST …/foraging/sweep` (board only) runs one pass by hand.
 
+## 1.6.1 — FORAGING-LIMITS-UI (learning switch and spend limits in the interface)
+
+The switch, the pass tuning and the spend limits of the learning sweep are instance
+settings now, not just environment variables: the "Learning (foraging)" section of
+Instance → General (`GET`/`PATCH /api/myrmidon/foraging-settings`) writes the
+`general.foraging` key of the instance settings row, and the sweep re-resolves that row
+on **every** pass — a value changed in the interface is in force with the next pass, no
+restart, the same rule RUNTIME-LIMITS uses. The environment variables above do not go
+away: an explicitly set variable stays a forced per-key override (the panel shows which
+side is in force for each field), and the built-in default is the floor when neither the
+row nor the env holds a value. `MYRMIDON_FORAGING_KEY_SECRET` stays env-only: it is a
+name of a company secret, not a limit.
+
+The section holds: the enable switch; the pass interval; the same-host pause; the
+per-pass budget (cents); the daily and the monthly company ceiling (cents); the daily
+role and agent ceilings (cents); the hard/soft enforcement mode; and the cost-per-task
+auto-off threshold (cents, mean task cost by BASELINE — above the threshold the sweep
+switches itself off). Empty cents field — no limit of that kind.
+
+| Field of `general.foraging` | Env override | Default | What it does |
+|---|---|---|---|
+| `enabled` | `MYRMIDON_FORAGING_ENABLED` | `false` | Master switch of the sweep, live: off stops the pass within one interval, on arms it without a restart |
+| `intervalSec` | `MYRMIDON_FORAGING_INTERVAL_SEC` | `3600` | Period of the pass in seconds (60–86400) |
+| `minHostIntervalSec` | `MYRMIDON_FORAGING_MIN_HOST_INTERVAL_SEC` | `60` | Pause between two reads of one host in seconds (≥ 5) |
+| `passBudgetCents` | `MYRMIDON_FORAGING_BUDGET_CENTS` | `null` (no pass ceiling) | Ceiling of one pass's cost estimate, in cents; `null` — no per-pass limit |
+| `dailyBudgetCents` | — | `null` | Company ceiling per UTC day; a pass that would cross it stops, the remainder waits for the next UTC day |
+| `monthlyBudgetCents` | — | `null` | Company ceiling per UTC month, the same stop semantics |
+| `roleBudgetCents` | — | `null` | Daily ceiling for one role (its sources' spend summed) |
+| `agentBudgetCents` | — | `null` | Daily ceiling for one agent |
+| `enforcement` | — | `"hard"` | `hard` — the stopped pass only raises a notice in the attention feed; `soft` — the notice asks the owner to raise the limit or switch learning off. The stop itself never depends on the mode |
+| `autoOffCostPerTaskCents` | — | `null` | Above this mean cost per task (BASELINE) learning switches itself off and signals; `null` — the check is off |
+
+When a limit stops a pass, or the cost threshold switches learning off, a card lands in
+the attention feed ("Learning limit", `foraging_limit` source). Every source read is
+recorded in the `foraging_spend_events` ledger (cents, role, agent, source URL), and one
+`training_charge` finance event per pass makes the learning spend its own "Training" line
+in the Costs screen, by kind. `GET /api/myrmidon/companies/:companyId/foraging/spend`
+answers the breakdown (by role and source, last 90 days) for that screen and for
+checking the ceilings before a pass.
+
 
 ## 1.6 — PARALLEL-HELPERS (delegated helper agents)
 

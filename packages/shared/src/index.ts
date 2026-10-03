@@ -2799,6 +2799,10 @@ export * from "./myrmidon-litellm-sync.js";
 // myrmidon(1.6-SWARM): per-role task queues with leased claims — the shared
 // contract of the core queue, the supervisor view and the pilot settings.
 export * from "./myrmidon-swarm-claim.js";
+// myrmidon(1.6.1-FORAGING-LIMITS-UI): the enable switch, pass tuning and spend
+// limits of the foraging sweep — shared by the server, the settings page and
+// the settings validator.
+export * from "./myrmidon-foraging.js";
 
 // myrmidon(1.6-AUTONOMY): role × action-class matrix, verdict resolver and per-role regulations.
 export * from "./myrmidon-autonomy.js";

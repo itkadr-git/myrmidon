@@ -64,6 +64,8 @@ const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
   stack_update: { label: "Stack update" },
   // myrmidon(STALE-BLOCK): label for the lifted-stale-block source.
   stale_block: { label: "Stale block lifted" },
+  // myrmidon(1.6.1-FORAGING-LIMITS-UI): label for the learning-spend source.
+  foraging_limit: { label: "Learning limit" },
 };
 
 export function sourceMeta(kind: AttentionSourceKind): SourceMeta {
@@ -131,6 +133,7 @@ export function attentionKind(item: AttentionItem): AttentionKind {
     case "blocker_attention":
     case "recovery_action":
     case "budget_alert":
+    case "foraging_limit":
       return "blocking";
     case "approval":
     case "issue_thread_interaction":
