@@ -655,8 +655,8 @@ import { createAutoResumeSweeper } from "../myrmidon/auto-resume.js";
 import { buildSwarmClaimSweeper } from "../myrmidon/swarm-claim/index.js";
 // myrmidon(1.6-SWARM): the checkout/release claim hooks of the run lifecycle
 import {
-  recordSwarmClaimOnCheckout as recordSwarmClaimOnCheckoutImpl,
-  releaseSwarmClaimsForRun as releaseSwarmClaimsForRunImpl,
+  recordSwarmClaimOnCheckoutImpl,
+  releaseSwarmClaimsForRunImpl,
 } from "../myrmidon/swarm-claim/hooks.js";
 import { scheduleQueuedResweep, sharedRunAdmission } from "../myrmidon/run-admission.js";
 // myrmidon(S2-hostcred): a run never inherits the host's GitHub credentials

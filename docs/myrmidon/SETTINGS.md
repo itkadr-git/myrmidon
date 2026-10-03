@@ -573,6 +573,21 @@ database hit per wake.
 | `MYRMIDON_SWARM_CLAIM_SWEEP_INTERVAL_SEC` | 1.6-SWARM | `30` | How often (sec) the expired-claim sweep runs on the scheduler tick: it releases expired leases, releases claims whose task left the queue, and wakes the next agent of the released task's role | From 5 to 3600; below 5 — 5. Non-numeric, `0`, negative or fractional — the default |
 
 
+## 1.6 — BASELINE: frozen metric snapshots
+
+The server part of BASELINE computes, for an arbitrary window and per project
+and per agent role, the cycle time, the time in review, the return rate, the
+blocked time with its top causes, the runs per task and the LLM cost per task
+from the board's own history
+(`GET /api/myrmidon/companies/:companyId/baseline/metrics?from&to`). The
+periodic job below freezes the last 14 days into `baseline_metric_snapshots`,
+so a pilot after the autonomy changes can be compared against the number the
+board produced before them.
+
+| Variable | Function | Default | What it does | How to disable / special |
+|---|---|---|---|---|
+| `MYRMIDON_BASELINE_INTERVAL_SEC` | 1.6-BASELINE | unset (off) | Period (sec) of the snapshot job: every tick recomputes the last 14 days per company and appends one frozen row to `baseline_metric_snapshots` | Unset or empty — no timer, no query. Set to an integer from 60 to 604800; an unreadable or out-of-range value keeps the job on with the daily default (86400) |
+
 ## 1.6 — SKILL-LIFECYCLE: company skill lifecycle
 
 Settings of `server/src/myrmidon/skill-lifecycle/`. A company skill is

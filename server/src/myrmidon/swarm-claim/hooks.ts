@@ -30,7 +30,7 @@ interface HookDeps {
 function resolved(deps: HookDeps) {
   return async () =>
     resolveSwarmClaimSettings({
-      stored: ((await deps.settings.getGeneral()) as unknown as Record<string, unknown>).swarmClaim,
+      stored: ((await deps.settings.getGeneral()) as unknown as Record<string, unknown> | undefined)?.swarmClaim,
       env: process.env,
     });
 }
