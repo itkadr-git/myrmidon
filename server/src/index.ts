@@ -140,6 +140,7 @@ import { interactionContinuationOutboxService } from "./myrmidon/interaction-con
 import { createWorkspaceHygieneScheduler } from "./myrmidon/workspace-hygiene/index.js"; // myrmidon(WORKSPACE-HYGIENE)
 import { createRunStallSweepFromHeartbeat } from "./myrmidon/run-stall/index.js"; // myrmidon(RUN-STALL)
 import { createTaskPrSyncScheduler } from "./myrmidon/task-pr-sync/index.js"; // myrmidon(TASK-PR-SYNC)
+import { buildWipLimitSweeper } from "./myrmidon/wip-limit/index.js"; // myrmidon(1.6.1-WIP-LIMIT-A)
 import { createStaleBlockScheduler } from "./myrmidon/stale-block/index.js"; // myrmidon(STALE-BLOCK)
 import {
   createPendingInteractionWakeSweep,
@@ -1331,6 +1332,22 @@ async function startServerWithDatabaseTeardown(
   // PR refs / merge sha / time) once every PR is merged — or returns it to the
   // assignee when a PR was closed without merging.
   const scheduleTaskPrSyncSweep = createTaskPrSyncScheduler({ db: db as any, track: trackHeartbeatSchedulerWork });
+  // myrmidon(1.6.1-WIP-LIMIT-A): the periodic WIP check — one pass per interval
+  // per company behind its own settings gate (no limit set = no pass); the
+  // attention feed needs no sweep, it recomputes on every list.
+  const scheduleWipLimitSweep = (() => {
+    const sweeper = buildWipLimitSweeper(db as any);
+    return () => {
+      if (heartbeatSchedulerStopped) return;
+      trackHeartbeatSchedulerWork(sweeper.sweep().then((result) => {
+        if (result.signaled > 0 || result.failed > 0) {
+          logger.info(result, "WIP limit sweep completed");
+        }
+      }).catch((err) => {
+        logger.error({ err }, "WIP limit sweep failed");
+      }));
+    };
+  })();
   // myrmidon(STALE-BLOCK): the periodic watchdog that lifts dead blocked
   // reasons (a done/cancelled blocker, a passed due date, a cleared gate) off
   // blocked tasks through the ordinary issue update path. Opt-in via
@@ -1804,6 +1821,7 @@ async function startServerWithDatabaseTeardown(
         scheduleEnvironmentLeaseCleanupSweep();
         schedulePendingInteractionWakeSweep(); // myrmidon(P12)
         scheduleTaskPrSyncSweep(); // myrmidon(TASK-PR-SYNC)
+        scheduleWipLimitSweep(); // myrmidon(1.6.1-WIP-LIMIT-A)
         scheduleStaleBlockSweep(); // myrmidon(STALE-BLOCK)
         scheduleAutoResumeSweep(); // myrmidon(AUTO-RESUME)
 
