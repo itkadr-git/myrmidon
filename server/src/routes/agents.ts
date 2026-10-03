@@ -4971,6 +4971,9 @@ export function agentRoutes(
         // Board actors: same company + the users:manage_permissions company
         // right (the local implicit operator context passes by definition).
         // Same shape as the assertCompanyPermission precedent in routes/access.ts.
+        // Existence-oracle guard: gate on company access first so a cross-tenant
+        // request fails as 404, not 403 (canonical hasCompanyAccess pattern).
+        if (!hasCompanyAccess(req, existing.companyId)) throw notFound("Agent not found");
         assertCompanyAccess(req, existing.companyId);
         const isLocalImplicitActor =
           req.actor.source === "local_implicit" || req.actor.isInstanceAdmin === true;
