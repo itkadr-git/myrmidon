@@ -11,7 +11,7 @@
 //    identifier that matches `agents.role` (latin letters, digits, hyphen,
 //    1-60 chars); it is immutable after creation.
 //  - create/patch/delete zod schemas: the request bodies of the settings API.
-//  - MYRMIDON_CASTE_SEED: the 12 built-in castes every company starts from
+//  - BUILTIN_CASTE_SEED: the 12 built-in castes every company starts from
 //    (keys = AGENT_ROLES, labels = AGENT_ROLE_LABELS, swarmEligible = true,
 //    maxActiveTasks = null = the global swarm limit).
 //
@@ -105,7 +105,7 @@ export interface CasteView {
  * (null = the global swarm limit). Idempotent: seeding inserts only the keys
  * the company is still missing.
  */
-export const MYRMIDON_CASTE_SEED: ReadonlyArray<{
+export const BUILTIN_CASTE_SEED: ReadonlyArray<{
   key: AgentRole;
   nameEn: string;
   nameRu: string;

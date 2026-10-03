@@ -15,7 +15,7 @@
 // the same 12 rows.
 
 import { and, asc, eq, inArray } from "drizzle-orm";
-import { MYRMIDON_CASTE_SEED } from "@paperclipai/shared";
+import { BUILTIN_CASTE_SEED } from "@paperclipai/shared";
 import { agentCastes, type Db } from "@paperclipai/db";
 import { conflict, notFound } from "../../errors.js";
 
@@ -121,12 +121,12 @@ export function createCasteStore(deps: CasteStoreDeps) {
           eq(agentCastes.companyId, companyId),
           inArray(
             agentCastes.key,
-            MYRMIDON_CASTE_SEED.map((seed) => seed.key),
+            BUILTIN_CASTE_SEED.map((seed) => seed.key),
           ),
         ),
       );
     const have = new Set(existingKeys.map((row) => row.key));
-    const missing = MYRMIDON_CASTE_SEED.filter((seed) => !have.has(seed.key));
+    const missing = BUILTIN_CASTE_SEED.filter((seed) => !have.has(seed.key));
     if (missing.length > 0) {
       await deps.db
         .insert(agentCastes)
