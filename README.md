@@ -81,7 +81,10 @@ what exists as of 1.5:
   ([cto-chat-planner](docs/myrmidon/guides/cto-chat-planner.md)); the
   Commander chat of the 2.0 shell gives the same planning flow a screen —
   free-text entry with the proposed epic rendered read-only
-  ([commander-chat](docs/myrmidon/guides/commander-chat.md)).
+  ([commander-chat](docs/myrmidon/guides/commander-chat.md)); the
+  bridged chat addresses any company agent with `@<alias>`, with the
+  reply prefixed in the same thread
+  ([telegram-alias-addressing](docs/myrmidon/guides/telegram-alias-addressing.md)).
 - **Company regulations in the wiki.** The rules agents follow are wiki pages
   with an audience of roles: an edit appends a draft revision and never
   changes what the fleet reads, the board approves or rolls back, and the
