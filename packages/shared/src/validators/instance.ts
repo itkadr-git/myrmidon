@@ -119,6 +119,7 @@ export const instanceGeneralSettingsSchema = z.object({
   // absent means "no domain is allowed" (deny by default).
   browserBridge: browserBridgeSettingsSchema.optional(),
   // myrmidon(1.6-SWARM): per-role task queues with leased claims — the pilot flag,
+  // myrmidon(1.6-SWARM): per-role queues with leased claims — the pilot flag,
   // the lease TTL, the per-agent ceiling and the sweep interval, changed from
   // /api/myrmidon/swarm-claim; absent means "use the environment variable, then
   // the default (the pilot is off)".
