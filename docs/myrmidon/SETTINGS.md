@@ -714,7 +714,7 @@ errors area is read directly from the JSON column).
 | `telegramNotify.errors.topicId` | 1.6-TG-NOTIFY-C | `null` | Topic thread id inside a forum chat. When set, notifications pick the conversation of that topic thread instead of the chat-level one | `null` — the chat-level conversation |
 | `telegramNotify.errors.minSeverity` | 1.6-TG-NOTIFY-C | `"error"` | Severity threshold: `error` admits high/critical cards only, `warning` also admits medium ones. Cards below the threshold are skipped, not queued | Anything other than `error`/`warning` — the default (`error`) |
 | `telegramNotify.errors.maxPerHour` | 1.6-TG-NOTIFY-C | `10` | Per-hour rate limit per company. Cards above the limit are dropped — never queued, never retried | Integer 1..120; anything else — the default (10) |
-| `MYRMIDON_TG_NOTIFY_ERRORS_INTERVAL_SEC` | 1.6-TG-NOTIFY-C | `60` | Period of the periodic pass, in seconds. A pass whose previous run is still going is skipped, not queued. The timer itself always runs; every tick checks the per-company master switch first | 15..3600; non-integer or out of bounds — `60` |
+| `MYRMIDON_TG_NOTIFY_INTERVAL_SEC` | 1.6-TG-NOTIFY-C | `300` | Period of the periodic pass, in seconds. A pass whose previous run is still going is skipped, not queued. The timer itself always runs; every tick checks the per-company master switch first | 60..86400; non-integer or out of bounds — `300` |
 
 Delivery is idempotent per card: the publication key is
 `tg-notify-errors:<companyId>:<card dedupKey>`, so the same error card never
