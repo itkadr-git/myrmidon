@@ -8,7 +8,93 @@ version file to edit. Base Paperclip version is in the image label
 `io.github.itkadr-git.myrmidon.base.paperclip-version`. Details of the release procedure:
 [ci.md](ci.md) and [deploy.md](deploy.md).
 
+## 1.6.0
+
+### CTO chat planner (CTO-CHAT B)
+
+- The board chat planner: one owner message in free text
+  (`POST /api/myrmidon/cto-chat/plan`, or the same planning step entered from
+  the owner's Telegram DM bridge) becomes a proposed epic with child tasks and
+  per-task acceptance criteria. The proposal is shown as the board's existing
+  `suggest_tasks` approval card on the standing conversation task, and
+  accepting the card is what creates the issues — nothing exists before
+  acceptance, no assignee is inferred, and a rejected or expired card creates
+  nothing. The planner is off unless `MYRMIDON_CTO_CHAT_BASE_URL` and
+  `MYRMIDON_CTO_CHAT_KEY_SECRET` are set; the gateway key is a company secret
+  read per call and never logged. The default model is the free
+  `dashscope-qwen-flash`; one proposal is capped at 8 child tasks (hard
+  ceiling 20) and one planning call is never retried. Operator guide:
+  [guides/cto-chat-planner.md](guides/cto-chat-planner.md). The portal chat
+  screen (part A) is below.
+
+### CTO chat (CTO-CHAT)
+
+- The Commander chat screen of the 2.0 shell (route `commander-chat`, reached
+  from the rail, the phone bottom bar and the `Ctrl K` "Tell the Commander"
+  palette with the typed draft carried over): the owner writes one free-text
+  request, the screen calls the board chat planner
+  (`POST /api/myrmidon/companies/:companyId/cto-chat/plan`) and renders the
+  proposed epic read-only — the epic, every child task, acceptance criteria
+  line by line. The pending `suggest_tasks` approval card from the standing
+  Agent Chat issue renders through the existing card component; accepting
+  the card creates the issues, rejecting creates nothing. The same flow is
+  reachable from the owner's Telegram DM. Operator guide:
+  [guides/commander-chat.md](guides/commander-chat.md).
+
+### Reference-task evals (EVALS-A part A)
+
+- The evals path: a seeded corpus of neutral reference tasks for the pilot
+  role `engineer`, an LLM judge behind the company's LLM gateway (a free
+  DashScope model by default, one chat-completions call per task, strict JSON
+  parsing — an unparseable response scores zero with a `parseError` flag, not
+  invented points), per-task rubric scoring with the CI pass rate folded in
+  for `code` tasks, and a promote/confirm/regress verdict where a drop beyond
+  the threshold is only actionable after a confirmation run repeats it. The
+  judge never executes code. Scores live in `myrmidon_eval_runs`; the optional
+  Langfuse export is off by default and never blocks local scoring. Reads are
+  company-scoped, run mutations need a board actor, and an unconfigured
+  contour answers `503` with the names of the missing settings. The verdict
+  seam for the skill lifecycle (`candidate → verified → deprecated`, with
+  rollback) is exposed as `POST …/evals/verdict`; the merged lifecycle module
+  does not wire it to the board yet. Guide: [guides/reference-task-evals.md](guides/reference-task-evals.md).
+
+### Stack update screen (STACK-UPDATES part C)
+
+- The «Stack» screen in the panel (Company → Stack, route `/stack`): every
+  component of the stack registry with our version/commit/digest (or an honest
+  `unknown` with the reason), where it runs, the latest upstream release, the
+  release lag, the notable security/breaking lines of the release notes as a
+  collapsible excerpt and the patch-closed verdict per carried delta; lagging
+  components sort first, with a name filter. *Refresh data* and *Check
+  releases* run the instance-admin `POST /api/myrmidon/stack/refresh` /
+  `POST /api/myrmidon/stack/check` from the screen — a failure, including the
+  503 of a broken probe, is shown in place without losing the table. The
+  *Schedule update* button on a lagging row opens a dialog with a default plan
+  (versions, our patches, notable lines, canary then production, rollback) and
+  creates an unassigned backlog draft task through the existing issue-creation
+  route — nothing is deployed from the screen. The release check itself
+  (part B: the schedule, the excerpt rules and the patch-closed verdict) and
+  the registry API are documented in the same guide. Guide:
+  [guides/stack-registry.md](guides/stack-registry.md).
+
 ## 1.5.0
+
+### Tracing health (TRACING-HEALTH)
+
+- The "LLM tracing" status card in Company settings and the operator attention
+  signal: the board reads the health report of the LiteLLM → Langfuse v4
+  tracing pipeline (`GET /api/myrmidon/tracing/health`, part C) and surfaces
+  it two ways. The card (below the Server console section) shows the dot and
+  state (`ok` / `ok (idle)` / `red` / `unknown` / `not enabled`), the reason
+  line, one null-aware line per evidence probe and the window span, refreshing
+  once a minute. A periodic sweep (`MYRMIDON_TRACING_SIGNAL_INTERVAL_SEC`,
+  default 300 s, off with the check itself) evaluates the same report for
+  every company and raises ONE attention card on the operator desk —
+  `degraded` is high, `unknown` is medium, `ok`/`idle` raise nothing; the
+  signal goes to the operator role, never the task owner. Dedup is by state:
+  recovery clears the card without dismissal bookkeeping, and the journal gets
+  one activity row per state transition only. Guide:
+  [guides/tracing-health.md](guides/tracing-health.md).
 
 ### Client connectors (the browser bridge)
 
@@ -34,6 +120,23 @@ version file to edit. Base Paperclip version is in the image label
   journal with filters (device, method, outcome, signatures only) and the
   document hash per signature. Guide:
   [guides/connector-panel.md](guides/connector-panel.md).
+- The browser action primitives in the shipped extension (EXTCASE-D):
+  `browser.fill` types a value into one field (input, textarea, select or a
+  contenteditable node) and dispatches `input`/`change` so the page sees the
+  change; `browser.download` fetches the file in the page's own session —
+  the content script runs in the page's origin, so the request carries the
+  browser's cookies — and returns its name, type, size and base64 bytes under
+  a 25 MiB ceiling (`BROWSER_DOWNLOAD_MAX_BYTES`; a larger file is refused
+  with `downloadTooLarge` before it crosses the bridge). An action the board
+  marks `confirmation: "human"` runs only after a person on the client PC
+  presses Confirm in the extension's confirm page: a refusal, the 180-second
+  budget expiring — the gateway then sends the `browser.cancel` notification
+  and the extension drops the pending step — or a build without the
+  confirmation port is an `internalError` refusal (the step never reaches the
+  confirmation flow), never a silent execution. The extension declares the `fill` and `download` capabilities and
+  never `sign`. Site-specific selectors and recorded scenarios are built on
+  top of these primitives and live outside the fork. Guide:
+  [guides/bridge-extension.md](guides/bridge-extension.md).
 - The signing host contract: a generic, client-free native-messaging contract
   for local signing helpers (`extension/src/native-host-contract.ts`) — a
   closed `actionType` enum (`sign` / `sign_and_submit` / `sign_attachment`), a
@@ -76,7 +179,60 @@ version file to edit. Base Paperclip version is in the image label
   1.x shell; turning the flag off restores it. The rail badge and status chips
   read the existing dashboard and sidebar-badges aggregates until the
   STATUS-STRIP endpoint exists. i18n keys `ui2.*` ship in en/ru (translated)
-  and the other locales (English values until the translation pass).
+  and the other locales (English values until the translation pass). Operator
+  guide: [guides/ui2-shell.md](guides/ui2-shell.md).
+- The six re-skinned screens behind the same flag (Decisions, Costs, Agent
+  overview, Runs and queue, System, Language) now render real data through
+  the existing APIs — no new server endpoints. Each screen ships the full
+  state set (skeleton, error with/without cache, empty, denied): a `403`
+  answer renders the lock alone, never partial data. Decisions decide with
+  option, inputs and an idempotency key; there is no client-side undo timer
+  (the server-side hold is a later wave). Screen-by-screen details:
+  [guides/ui2-shell.md](guides/ui2-shell.md).
+
+### Task PR sync
+
+- A task delivered by a pull request settles itself once its PRs merge
+  (#315): a periodic sweep (`server/src/myrmidon/task-pr-sync/`, ships
+  enabled) reads the task's own `pull_request` work products, refreshes each
+  PR's state through the existing GitHub resolver, and closes the task with
+  one neutral comment (PR refs, merge sha, time) when every PR is terminal
+  with at least one merged and no post-deploy gate (a pending card, a pending
+  approval or a future-scheduled monitor) is still open. Closed-without-merge
+  PRs send the task back to its assignee; superseded PR rows are ignored. And
+  the wake guard half (#339, post-1.5.0): an event-free wake to such a
+  settle-pending task is skipped (reason `wake_skipped_pr_settle_pending`)
+  instead of dispatching a run that would only race the settle. Operator
+  guide: [guides/task-pr-sync.md](guides/task-pr-sync.md).
+
+### Container GitHub access (CONTAINER-GITHUB-WRITE)
+
+- An agent in a bot container can push to GitHub through the board's managed
+  credentials (#363): when a run's GitHub identity is board-managed (the
+  default, see `MYRMIDON_HOST_GITHUB_CREDENTIALS` in
+  [SETTINGS.md](SETTINGS.md)), the heartbeat mints a run-bound
+  `github_credentials` capability, and the `hermes_gateway` adapter now
+  carries it to the container — the pair rides the `/v1/runs` request body
+  (`github_broker`), is bound to that run alone (contextvars, never the
+  process env shared by the gateway's concurrent runs) and reaches every
+  terminal and `execute_code` subprocess of the run as
+  `PAPERCLIP_GITHUB_BROKER_URL`/`PAPERCLIP_GITHUB_BROKER_TOKEN`. Inside the
+  container, the dev image's `git` credential helper (URL-scoped to
+  `github.com` over https, `ssh://git@github.com/…` remotes rewritten to
+  https) and its `gh` wrapper resolve the credential on each invocation
+  through the board's `POST /runtime-tools/github/credentials` broker and
+  exec the real `git`/`gh`; the wrappers walk up to 6 broker address
+  candidates (`PAPERCLIP_GITHUB_BROKER_URL` → `PAPERCLIP_API_URL` →
+  `PAPERCLIP_RUNTIME_API_URL` → `PAPERCLIP_RUNTIME_API_CANDIDATES_JSON`
+  items) and never print the token. A run without a capability — or a card
+  whose GitHub identity is not board-managed — gets both names stripped and
+  the wrappers fail open, exactly as before this change. A static
+  `GH_TOKEN`/`GITHUB_TOKEN` inherited from the image profile no longer
+  shadows the credential: while a capability is bound, those names are
+  blanked in the run's subprocesses. This closes the gap that motivated
+  `MYRMIDON_BOT_CONTAINER_GITHUB_ENV_ALLOWLIST` (see SETTINGS.md): the
+  allowlist remains a fallback for dev bots on machines where the board's
+  broker address is genuinely unreachable.
 
 ## 1.4.0
 
@@ -101,6 +257,18 @@ dockergate and fleetd images together (see [deploy.md](deploy.md#deploy-the-boar
   secret store. Only the secret id stays in the connector's own state, so no bot ever
   holds a cloud token and the token value never travels through the panel API (#252).
 
+### Owner questions and instructions
+
+- U2: question and confirmation cards (`ask_user_questions`, `request_confirmation`)
+  reach the owner's Telegram DM when the company runs the Telegram DM bridge
+  (`MYRMIDON_TELEGRAM_DM_CONVERSATIONS`) — the card is also answered from Telegram,
+  including a callback that arrives for a task the authoring agent no longer owns.
+  A task with its own live chat binding keeps its card in that conversation only.
+  Guide: [guides/owner-telegram-cards.md](guides/owner-telegram-cards.md) (#277, #284, #287).
+- H2: every change to an agent's instructions bundle (file put, file delete, patch)
+  is snapshotted into the append-only `agent_instructions_revisions` history, and any
+  earlier revision can be restored through the API — the restore itself becomes a new
+  revision. Guide: [guides/agent-instructions-revisions.md](guides/agent-instructions-revisions.md) (#273, #299).
 ### Deploy and reliability
 
 - Automatic rollback by health for the board and the bot fleet (R5-C). A failed
