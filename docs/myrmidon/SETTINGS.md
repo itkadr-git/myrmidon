@@ -89,7 +89,6 @@ A track writes only into its own section. A row is added in the same PR as the s
 | `MYRMIDON_CHAT_CROSS_CHANNEL_LOOKBACK_HOURS` | X8d | `168` (a week) | How old adjacent-conversation messages are still quoted | Non-numeric or negative — the default |
 | `MYRMIDON_CHAT_RECONCILE_INTERVAL_MS` | D1 | unset | Minimum interval between run-milestone sweep runs (`enqueueChatRunMilestones`); replaces the standard coalescing-trigger interval (100 ms) rather than adding to it. The publication sweep (delivering messages to the provider) is untouched — it keeps its usual pace | Unset, `0`, negative or non-numeric — today's pace (the fix of the D1 queries themselves is always on, this is not a defect switch). Set (e.g. `15000`) if after D1 the milestone sweep is still noticeable in load when chats are idle |
 | `MYRMIDON_TELEGRAM_VOICE_STT` | 1.6.1 VOICE-STT B | off | Transcribe an inbound Telegram voice/audio message at intake: the bytes are prefetched (bounded, 20 MB, 45 s), recognized through the shared STT core (part A1) and the transcript is written into the task comment next to the kept attachment — the bot reads it as user input on the same wakeup. Speaker segments render as «Говорящий N [mm:ss]: …». An STT failure is a skip: the comment keeps the vendor body, the redacted `stt_skipped` code lands in the comment metadata, and the delivery is unaffected | Any value other than `1`/`true`/`yes`/`on` — the vendor path byte for byte: no byte prefetch, zero calls to the transcription core. Read per delivery, no restart. Until the STT core is wired (part A1 merged and connected), an enabled setting records `stt_unconfigured` skips |
-| — | X9a/X9b (X9d row) | — (no variable) | `@<alias>` addressing in a bridged Telegram chat: a message from a linked board user whose leading `@`-token (or any `@`-token in the text) matches an alias, name or title of a **same-company** agent routes into that agent's own standing Agent Chat conversation (same `conversation_user_id`), the reply returns into the same Telegram thread prefixed `[<display name>]`, the first turn quotes the chat's recent messages (X8d settings), and the leading token is dropped from the turn body. Aliases live in the agent card (`telegramAliases` array in `agents.metadata`/`adapter_config`). Commands `/agents`, `/to <alias>`, `/who` (part B contract) manage the default addressee from the chat. No new variable: riding the X8b bridge, the addressing is on exactly when the bridge is; see the guide `guides/telegram-alias-addressing.md` | Off with the bridge: unset `MYRMIDON_TELEGRAM_DM_CONVERSATIONS` — the vendor path is byte for byte, no resolution, no prefix, no commands. An unresolvable token goes to the endpoint's assigned agent; an unlinked sender is refused before resolution; in group topics only bot-addressed messages resolve. X9a/X9b in DIVERGENCE.md, PRs #407/#424 |
 
 ## Track 5 — operations
 
@@ -707,6 +706,25 @@ outside: an operator turns it on together with `MYRMIDON_FORAGING_KEY_SECRET` wh
 sources need a token. Findings are recorded `unverified` until the skill lifecycle accepts
 them as candidates; `POST …/foraging/sweep` (board only) runs one pass by hand.
 
+
+## 1.6.1 — TG-NOTIFY jobs (daily digest and escalations, part B)
+
+Settings of `server/src/myrmidon/telegram-notify/jobs.ts` — the periodic digest and
+escalation jobs of the Telegram notify track (part B; the routes and the
+`telegramNotify` settings area belong to part A). Both jobs read the owner
+settings through part A's JSON contract every pass, so they are
+runtime-changeable, and both are OFF by default: with the defaults the owner
+receives in Telegram only replies to his own messages and U2 decision cards.
+Delivery goes through the existing chat publication path (`chat_publications`,
+the vendor outbox), never a second client. No new table: the escalation state
+and the last digest day live under our own key of `instance_settings.general`.
+
+The jobs are wired maintenance-style: `server/src/index.ts` has one marked call,
+`startTelegramNotifyJobs(db)`; everything else lives in the module.
+
+| Variable | Function | Default | What it does | How to disable / special |
+|---|---|---|---|---|
+| `MYRMIDON_TELEGRAM_NOTIFY_TICK_SEC` | 1.6.1-TG-NOTIFY-B | `300` | Period of the shared job interval: how often the jobs check whether the digest time has arrived or an escalation threshold has passed. The jobs still send only when the owner settings enable them | From 30 to 3600; non-integer or out of bounds — the default (300). A pass whose previous run is still going is skipped, not queued |
 
 ## 1.6 — PARALLEL-HELPERS (delegated helper agents)
 
