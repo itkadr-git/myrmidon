@@ -7,8 +7,6 @@ import type { RunLimits } from "../myrmidon-runtime-limits.js";
 import type { ParallelHelpersSettings } from "../myrmidon-parallel-helpers.js";
 // myrmidon(EXTCASE-B): the browser-bridge allowlist stored in instance settings
 import type { BrowserBridgeSettings } from "../myrmidon-browser-bridge.js";
-// myrmidon(OPE-3789): TG-NOTIFY settings document (part A routes / part D topic inbound).
-import type { TelegramNotifySettings } from "../myrmidon-telegram-notify.js";
 import type { SwarmClaimSettings } from "../myrmidon-swarm-claim.js";
 // myrmidon(TG-NOTIFY-D): TG-NOTIFY settings document (part A routes / part D topic inbound).
 import type { TelegramNotifySettings } from "../myrmidon-telegram-notify.js";
@@ -82,12 +80,6 @@ export interface InstanceGeneralSettings {
    * (packages/shared/src/validators/instance.ts).
    */
   browserBridge?: BrowserBridgeSettings;
-  /**
-   * myrmidon(OPE-3789): TG-NOTIFY settings changed from part A's
-   * `GET/PATCH /api/myrmidon/telegram-notify` routes. Absent means every
-   * surface is off; kept in sync with the validator of the same field.
-   */
-  telegramNotify?: TelegramNotifySettings;
   /**
    * myrmidon(1.6-SWARM): per-role queues with leased claims, changed from
    * `GET`/`PATCH /api/myrmidon/swarm-claim`. Absent means "use the environment

@@ -17,9 +17,6 @@ import { runLimitsSchema } from "../myrmidon-runtime-limits.js";
 import { parallelHelpersSettingsSchema, patchParallelHelpersSettingsSchema } from "../myrmidon-parallel-helpers.js";
 // myrmidon(EXTCASE-B): the browser-bridge allowlist stored in the same general settings row
 import { browserBridgeSettingsSchema } from "../myrmidon-browser-bridge.js";
-// myrmidon(OPE-3789): the TG-NOTIFY settings document stored in the same
-// general settings row (routes from part A, consumers in part D).
-import { telegramNotifySettingsSchema } from "../myrmidon-telegram-notify.js";
 import { swarmClaimSettingsSchema } from "../myrmidon-swarm-claim.js";
 // myrmidon(TG-NOTIFY-D): the TG-NOTIFY settings document stored in the same
 // general settings row (routes from part A, consumers in part D).
@@ -68,10 +65,6 @@ export const instanceGeneralSettingsSchema = z.object({
   // myrmidon(EXTCASE-B): browser-bridge allowlist changed from the bridge panel;
   // absent means "no domain is allowed" (deny by default).
   browserBridge: browserBridgeSettingsSchema.optional(),
-  // myrmidon(OPE-3789): TG-NOTIFY settings (digest/errors/inbound/escalations/
-  // proactivity) changed from part A's routes; absent means every surface is
-  // off (the 1.6.1 release criterion).
-  telegramNotify: telegramNotifySettingsSchema.optional(),
   // myrmidon(1.6-SWARM): per-role queues with leased claims — the pilot flag,
   // the lease TTL, the per-agent ceiling and the sweep interval, changed from
   // /api/myrmidon/swarm-claim; absent means "use the environment variable, then
