@@ -49,6 +49,9 @@ version file to edit. Base Paperclip version is in the image label
 
 
 
+### SWARM-IDLE-WAKE: Free agents wake when their role queue is not empty
+
+- Third pass of the swarm supervisor (`sweep.ts`, after the release and free passes): on each tick, for each pair of "role + ready queue + free agents", wakes the missing number of agents, in batches ≤5 (`MYRMIDON_SWARM_IDLE_WAKE_BATCH`, default 5, clamp 1–25), each wake bound to the top task of the queue (P0 first — `orderSwarmQueueCandidates`). Pure modules: `idle-wake.ts` (policy: no live lease, under task ceiling, not paused/error, no live run, idempotency key) and `idle-queue.ts` (DB reads: role-queue pairs, live claim counts, coverage check). Assigned tasks go to the role of their executor; tasks without an executor are offered to every role with agents. The active task limit is respected, castes remain a gate on the claim side (`caste_excluded`, CUSTOM-CASTES B) — the point of control; the caste ceiling is respected. Supervisor metric: new total `freeAgentsWithQueue` — "free agents when queue is not empty" — which the pass should keep at 0 (unassigned tasks are now visible to roles with agents). Wakes go only through the existing `enqueueWakeup` (pause, maintenance, limits, budget — all gates preserved); the capture happens on checkout of the awakened run. The "one TTL + sweep interval" criterion is covered by a test (interval ≤ TTL/3). Docs: `MYRMIDON_SWARM_IDLE_WAKE_BATCH` in SETTINGS.md/SETTINGS.ru.md; skill `skills/paperclip/SKILL.md` supplemented with self-capture fallback (`POST /api/myrmidon/companies/{companyId}/swarm-claim/claim`).
 
 ### Custom castes, consumers (CUSTOM-CASTES B)
 
@@ -84,7 +87,6 @@ version file to edit. Base Paperclip version is in the image label
   `MYRMIDON_STALE_BLOCK_SIGNAL_TTL_MS` (default 24 h).
 
 
-
 ### Gateway-priced hermes runs (HERMES-USAGE-COST)
 
 - hermes_gateway runs no longer land in the cost ledger as unpriced $0
@@ -100,7 +102,6 @@ version file to edit. Base Paperclip version is in the image label
   for one-off month backfills. The UI-2.0 forecast chip shows
   "spent" only when no monthly budget is configured, ending the
   "$0 of $0" placeholder.
-
 
 
 ### Board administrators from agents (ADMIN-AGENT part C)

@@ -759,7 +759,10 @@ The jobs are wired maintenance-style: `server/src/index.ts` has one marked call,
 
 
 
+<<<<<<< HEAD
 
+=======
+>>>>>>> origin/main
 ## 1.6.1 — TG-NOTIFY-SETTINGS part F: the board UI for the Telegram notification settings
 
 The board-facing half of the Telegram notification settings: the "Telegram

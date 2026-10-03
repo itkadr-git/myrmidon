@@ -678,6 +678,7 @@ export function SwarmSupervisor({ embedded = false }: SwarmSupervisorProps = {})
             <span className="flex items-center gap-1.5">
               <RotateCw className="h-4 w-4" />
               {data.leaseTtlSec === null ? "—" : t("swarm.leaseTtl", { seconds: `${formatNumber(data.leaseTtlSec)} s` })}
+<<<<<<< HEAD
               {/* myrmidon(1.6.1 SWARM-SETTINGS-UI): where the value came from */}
               <span
                 className="text-muted-foreground/80"
@@ -685,6 +686,8 @@ export function SwarmSupervisor({ embedded = false }: SwarmSupervisorProps = {})
               >
                 ({swarmSourceLabel(data.settingSources?.leaseTtlSec)})
               </span>
+=======
+>>>>>>> origin/main
             </span>
             <span className="flex items-center gap-1.5">
               <ShieldCheck className="h-4 w-4" />
