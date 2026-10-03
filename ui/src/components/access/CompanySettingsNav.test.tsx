@@ -136,6 +136,7 @@ describe("CompanySettingsNav", () => {
           { value: "browsers", label: "Browsers" }, // myrmidon(BROWSER-CONSOLE)
           { value: "clouds", label: "Clouds" }, // myrmidon(CLOUD-CONNECTOR)
           { value: "autonomy", label: "Autonomy" }, // myrmidon(1.6 AUTONOMY-MATRIX B)
+          { value: "wip-limit", label: "WIP limit" }, // myrmidon(1.6.1 WIP-LIMIT B)
         ],
       }),
     );
@@ -181,6 +182,7 @@ describe("CompanySettingsNav", () => {
       "browsers", // myrmidon(BROWSER-CONSOLE)
       "clouds", // myrmidon(CLOUD-CONNECTOR)
       "autonomy", // myrmidon(1.6 AUTONOMY-MATRIX B)
+      "wip-limit", // myrmidon(1.6.1 WIP-LIMIT B)
     ]);
 
     await act(async () => {
