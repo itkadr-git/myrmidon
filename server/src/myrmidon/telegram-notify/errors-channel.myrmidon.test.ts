@@ -91,7 +91,7 @@ function card(input: {
     companyId: input.companyId,
     sourceKind: input.sourceKind,
     subject: {
-      kind: "agent",
+      kind: "agent" as const,
       id: input.subjectId,
       companyId: input.companyId,
       title: input.title,
