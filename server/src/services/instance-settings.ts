@@ -33,6 +33,8 @@ import {
   stripOperatorGeneralEchoes,
 } from "@paperclipai/shared";
 import { eq } from "drizzle-orm";
+// myrmidon(TG-NOTIFY-D): preserve hook imported by the vendor settings service.
+import { preserveTelegramNotifyGeneralKey } from "../myrmidon/telegram-notify/settings.js";
 // myrmidon(R3): keep maintenance mode state across vendor writes of `general`
 import { preserveMaintenanceGeneralKey, preserveBrowserConsoleGeneralKey } from "../myrmidon/maintenance/store.js";
 // myrmidon(R5-A): keep deploy job state across vendor writes of `general`
@@ -232,6 +234,8 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       ...(parsed.data.parallelHelpers ? { parallelHelpers: parsed.data.parallelHelpers } : {}),
       // myrmidon(EXTCASE-B): the stored browser-bridge allowlist survives every general write
       ...(parsed.data.browserBridge ? { browserBridge: parsed.data.browserBridge } : {}),
+      // myrmidon(TG-NOTIFY-D): the stored TG-NOTIFY settings survive every general write
+      ...(parsed.data.telegramNotify ? { telegramNotify: parsed.data.telegramNotify } : {}),
     };
   }
   return {
@@ -577,6 +581,8 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
             ...preserveAccessHubHostsGeneralKey(current.general), // myrmidon(SEC1)
             ...preserveCloudConnectorGeneralKey(current.general), // myrmidon(CLOUD-CONNECTOR)
             ...preserveAutonomyGeneralKey(current.general), // myrmidon(1.6-AUTONOMY)
+            // myrmidon(TG-NOTIFY-D): keep the TG-NOTIFY settings across vendor writes of `general`
+            ...preserveTelegramNotifyGeneralKey(current.general), // myrmidon(TG-NOTIFY-D)
           },
           updatedAt: now,
         })
