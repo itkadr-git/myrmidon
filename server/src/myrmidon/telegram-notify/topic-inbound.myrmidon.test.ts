@@ -1,4 +1,5 @@
 // myrmidon(TG-NOTIFY-D): unit coverage for the topic-inbound gate and task
+// myrmidon(OPE-3789): unit coverage for the topic-inbound gate and task
 // title/body helpers (part D of the 1.6.1 TG-NOTIFY settings contract).
 import { describe, expect, it } from "vitest";
 import {
@@ -12,6 +13,8 @@ import {
   readTelegramNotifyInbound,
   DEFAULT_TELEGRAM_NOTIFY_INBOUND,
 } from "./topic-inbound-settings.js";
+  readTelegramNotifyDocument,
+} from "./settings.js";
 
 describe("isTelegramTopicThread", () => {
   it("recognizes forum topic thread ids", () => {
@@ -101,6 +104,9 @@ describe("readTelegramNotifyInbound", () => {
   it("reads the telegramNotify key from the instance settings experimental seam", async () => {
     const rows: Array<{ experimental: Record<string, unknown> | null }> = [
       { experimental: { telegramNotify: { inbound: { enabled: true } } } },
+  it("reads the telegramNotify key from instance settings general", async () => {
+    const rows: Array<{ general: Record<string, unknown> | null }> = [
+      { general: { telegramNotify: { inbound: { enabled: true } } } },
     ];
     const db = {
       select: () => ({
@@ -119,6 +125,10 @@ describe("readTelegramNotifyInbound", () => {
   });
   it("falls back to the default when no row exists", async () => {
     const rows: Array<{ experimental: Record<string, unknown> | null }> = [];
+    expect(await readTelegramNotifyDocument(db as never)).toEqual({
+      inbound: { enabled: true },
+    });
+    const rows: Array<{ general: Record<string, unknown> | null }> = [];
     const db = {
       select: () => ({
         from: () => ({

@@ -1,10 +1,12 @@
 // myrmidon(TG-NOTIFY-D): topic-inbound gate for the Telegram group-topics
+// myrmidon(OPE-3789): topic-inbound gate for the Telegram group-topics
 // bridge (part D).
 //
 // Pure decision helpers, separated from chat-channels.ts so they can be
 // unit-tested without the vendor service harness. The vendor integration
 // points (admission + task creation) carry their own
 // `// myrmidon(TG-NOTIFY-D): …` markers in chat-channels.ts.
+// `// myrmidon(OPE-3789): …` markers in chat-channels.ts.
 
 import type { TelegramNotifyInboundSettings } from "./settings.js";
 

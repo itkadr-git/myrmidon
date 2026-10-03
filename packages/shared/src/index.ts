@@ -2845,3 +2845,5 @@ export * from "./myrmidon-review-routing.js";
 // rework task, blocks the review on it, and a new PR head releases the review.
 // Settings contract, verdict-marker parser and activity actions.
 export * from "./myrmidon-review-rework.js";
+// myrmidon(OPE-3789): TG-NOTIFY settings contract shared by the routes (part A)
+// and the topic-inbound consumers (part D).

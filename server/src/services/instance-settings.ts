@@ -33,6 +33,8 @@ import {
   stripOperatorGeneralEchoes,
 } from "@paperclipai/shared";
 import { eq } from "drizzle-orm";
+// myrmidon(OPE-3789): preserve hook imported by the vendor settings service.
+import { preserveTelegramNotifyGeneralKey } from "../myrmidon/telegram-notify/settings.js";
 // myrmidon(R3): keep maintenance mode state across vendor writes of `general`
 import { preserveMaintenanceGeneralKey, preserveBrowserConsoleGeneralKey } from "../myrmidon/maintenance/store.js";
 // myrmidon(R5-A): keep deploy job state across vendor writes of `general`
@@ -288,6 +290,8 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       ...(parsed.data.telegramDmProgress ? { telegramDmProgress: parsed.data.telegramDmProgress } : {}),
       // myrmidon(MEMORY-UI): the stored agent memory settings survive every general write
       ...(parsed.data.agentMemory ? { agentMemory: parsed.data.agentMemory } : {}),
+      // myrmidon(OPE-3789): the stored TG-NOTIFY settings survive every general write
+      ...(parsed.data.telegramNotify ? { telegramNotify: parsed.data.telegramNotify } : {}),
     };
   }
   return {
@@ -642,6 +646,8 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
             // The preserve line above restores the stored value: a patch that carries the key wins.
             ...(patch.telegramDmProgress !== undefined ? { telegramDmProgress: nextGeneral.telegramDmProgress } : {}),
             ...preserveGitHubSharedIdentityGeneralKey(current.general), // myrmidon(GITHUB-SHARED-IDENTITY)
+            // myrmidon(OPE-3789): keep the TG-NOTIFY settings across vendor writes of `general`
+            ...preserveTelegramNotifyGeneralKey(current.general), // myrmidon(OPE-3789)
           },
           updatedAt: now,
         })
