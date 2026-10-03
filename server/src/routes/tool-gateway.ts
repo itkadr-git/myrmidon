@@ -334,8 +334,14 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
   const access = accessService(db);
 
   async function assertBoardPermission(req: import("express").Request, companyId: string, permissionKey: PermissionKey) {
-    assertBoard(req);
     assertCompanyAccess(req, companyId);
+    if (req.actor.type === "agent") {
+      if (!req.actor.agentId) throw forbidden("Agent authentication required");
+      const allowed = await access.hasPermission(companyId, "agent", req.actor.agentId, permissionKey);
+      if (!allowed) throw forbidden(`Missing permission: ${permissionKey}`);
+      return;
+    }
+    assertBoard(req);
     if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
     if (req.actor.userId && await access.canUser(companyId, req.actor.userId, permissionKey)) return;
     throw forbidden(`Missing permission: ${permissionKey}`);
@@ -387,7 +393,6 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
 
   router.patch("/tool-gateway/gateways/:gatewayId", async (req, res) => {
     try {
-      assertBoard(req);
       const companyId = typeof req.body?.companyId === "string" ? req.body.companyId : null;
       if (!companyId) {
         res.status(400).json({ error: "companyId is required" });
@@ -408,7 +413,6 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
 
   router.post("/tool-gateway/gateways/:gatewayId/tokens", async (req, res) => {
     try {
-      assertBoard(req);
       const companyId = typeof req.body?.companyId === "string" ? req.body.companyId : null;
       if (!companyId) {
         res.status(400).json({ error: "companyId is required" });
@@ -434,7 +438,6 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
 
   router.post("/tool-gateway/gateway-tokens/:tokenId/revoke", async (req, res) => {
     try {
-      assertBoard(req);
       const companyId = typeof req.body?.companyId === "string" ? req.body.companyId : null;
       if (!companyId) {
         res.status(400).json({ error: "companyId is required" });
@@ -646,7 +649,6 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
 
   router.get("/tool-gateway/runtime-slots", async (req, res) => {
     try {
-      assertBoard(req);
       const companyId = typeof req.query.companyId === "string" ? req.query.companyId : null;
       if (!companyId) {
         res.status(400).json({ error: "companyId is required" });
@@ -715,7 +717,6 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
 
   router.get("/tool-gateway/audit", async (req, res) => {
     try {
-      assertBoard(req);
       const companyId = typeof req.query.companyId === "string" ? req.query.companyId : null;
       if (!companyId) {
         res.status(400).json({ error: "companyId is required" });
