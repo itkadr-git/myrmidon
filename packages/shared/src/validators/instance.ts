@@ -17,6 +17,9 @@ import { runLimitsSchema } from "../myrmidon-runtime-limits.js";
 import { parallelHelpersSettingsSchema, patchParallelHelpersSettingsSchema } from "../myrmidon-parallel-helpers.js";
 // myrmidon(EXTCASE-B): the browser-bridge allowlist stored in the same general settings row
 import { browserBridgeSettingsSchema } from "../myrmidon-browser-bridge.js";
+// myrmidon(OPE-3789): the TG-NOTIFY settings document stored in the same
+// general settings row (routes from part A, consumers in part D).
+import { telegramNotifySettingsSchema } from "../myrmidon-telegram-notify.js";
 
 // myrmidon(PARALLEL-HELPERS): re-exported for the barrel so the settings page and the
 // /api/myrmidon/parallel-helpers route validate with the exact schema stored here.
@@ -61,6 +64,10 @@ export const instanceGeneralSettingsSchema = z.object({
   // myrmidon(EXTCASE-B): browser-bridge allowlist changed from the bridge panel;
   // absent means "no domain is allowed" (deny by default).
   browserBridge: browserBridgeSettingsSchema.optional(),
+  // myrmidon(OPE-3789): TG-NOTIFY settings (digest/errors/inbound/escalations/
+  // proactivity) changed from part A's routes; absent means every surface is
+  // off (the 1.6.1 release criterion).
+  telegramNotify: telegramNotifySettingsSchema.optional(),
 }).strict();
 
 export const patchInstanceGeneralSettingsSchema = z
