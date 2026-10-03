@@ -18,6 +18,8 @@ import { parallelHelpersSettingsSchema, patchParallelHelpersSettingsSchema } fro
 // myrmidon(EXTCASE-B): the browser-bridge allowlist stored in the same general settings row
 import { browserBridgeSettingsSchema } from "../myrmidon-browser-bridge.js";
 import { swarmClaimSettingsSchema } from "../myrmidon-swarm-claim.js";
+// myrmidon(1.6.1-FORAGING-LIMITS-UI)
+import { foragingSettingsSchema } from "../myrmidon-foraging.js";
 
 // myrmidon(PARALLEL-HELPERS): re-exported for the barrel so the settings page and the
 // /api/myrmidon/parallel-helpers route validate with the exact schema stored here.
@@ -67,6 +69,10 @@ export const instanceGeneralSettingsSchema = z.object({
   // /api/myrmidon/swarm-claim; absent means "use the environment variable, then
   // the default (the pilot is off)".
   swarmClaim: swarmClaimSettingsSchema.optional(),
+  // myrmidon(1.6.1-FORAGING-LIMITS-UI): the foraging switch and spend limits,
+  // changed from /api/myrmidon/foraging-settings; absent means "use the
+  // environment variable, then the default (the sweep is off)".
+  foraging: foragingSettingsSchema.optional(),
 }).strict();
 
 export const patchInstanceGeneralSettingsSchema = z

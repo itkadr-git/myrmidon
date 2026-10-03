@@ -234,6 +234,9 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       ...(parsed.data.parallelHelpers ? { parallelHelpers: parsed.data.parallelHelpers } : {}),
       // myrmidon(EXTCASE-B): the stored browser-bridge allowlist survives every general write
       ...(parsed.data.browserBridge ? { browserBridge: parsed.data.browserBridge } : {}),
+      // myrmidon(1.6.1-FORAGING-LIMITS-UI): the stored foraging settings survive
+      // every general write (edited on their own settings page).
+      ...(parsed.data.foraging ? { foraging: parsed.data.foraging } : {}),
     };
   }
   return {

@@ -2052,6 +2052,13 @@
       "when": 1790974688874,
       "tag": "0295_pretty_gravity",
       "breakpoints": true
+    },
+    {
+      "idx": 296,
+      "version": "7",
+      "when": 1790974689874,
+      "tag": "0296_foraging_spend",
+      "breakpoints": true
     }
   ]
 }
