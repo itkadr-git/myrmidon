@@ -190,6 +190,8 @@ export {
   companySkillTestRunTemplates,
   companySkillTestRuns,
 } from "./company_skills.js";
+// myrmidon(1.6-SKILL-LIFE): additive skill lifecycle tables.
+export { companySkillLifecycle, companySkillLifecycleEvents } from "./company_skill_lifecycle.js";
 export { plugins } from "./plugins.js";
 export { pluginConfig } from "./plugin_config.js";
 export { pluginCompanySettings } from "./plugin_company_settings.js";
@@ -218,3 +220,5 @@ export { baselineMetricSnapshots } from "./baseline_metric_snapshots.js";
 // myrmidon(EGRESS-B): destination allowlists and per-project mode of the bot egress proxy.
 export { myrmidonEgressPolicies } from "./myrmidon_egress_policies.js";
 export { myrmidonFleetServers } from "./myrmidon_fleet_servers.js"; // myrmidon(SC1): fleet-server registry for the browser console
+// myrmidon(1.6-EVALS): reference tasks and judge runs for the evals module.
+export { evalReferenceTasks, evalRuns } from "./myrmidon_evals.js";
