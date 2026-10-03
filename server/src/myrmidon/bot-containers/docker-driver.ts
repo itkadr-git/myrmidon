@@ -158,6 +158,7 @@ export interface DockerCreateContainerBody {
 export function buildCreateContainerRequestBody(
   spec: BotContainerSpec,
   config: Pick<DockerDriverConfig, "volumeRoot" | "network" | "allowlist" | "mountSources">,
+  sharedPackageCachePath?: string,
 ): DockerCreateContainerBody {
   validateBotKey(spec.botKey);
   if (!isImageAllowed(spec.image, config.allowlist)) {
@@ -188,6 +189,7 @@ export function buildCreateContainerRequestBody(
       Binds: buildBinds(config.volumeRoot, spec.botKey, {
         mounts: spec.extraMounts,
         allowedSources: config.mountSources,
+        sharedPackageCachePath,
       }),
       Privileged: false,
     },
@@ -232,6 +234,7 @@ export function buildHelperContainerRequestBody(params: {
   role: HelperRole;
   script: string;
   volumeRoot: string;
+  sharedPackageCachePath?: string;
 }): DockerHelperContainerBody {
   validateBotKey(params.botKey);
   const asRoot = params.role === "prepare-volumes";
@@ -251,7 +254,9 @@ export function buildHelperContainerRequestBody(params: {
       ReadonlyRootfs: true,
       RestartPolicy: { Name: "no" },
       NetworkMode: "none",
-      Binds: buildBinds(params.volumeRoot, params.botKey),
+      Binds: buildBinds(params.volumeRoot, params.botKey, {
+        sharedPackageCachePath: params.sharedPackageCachePath,
+      }),
       Privileged: false,
     },
   };
@@ -729,6 +734,9 @@ export function dockerBotContainerDriver(
   const startHealthTimeoutMs = options.startHealthTimeoutMs ?? DEFAULT_START_HEALTH_TIMEOUT_MS;
   const healthPollIntervalMs = options.healthPollIntervalMs ?? DEFAULT_HEALTH_POLL_INTERVAL_MS;
   const newNonce = options.nonce ?? (() => randomBytes(8).toString("hex"));
+  
+  // Shared package cache path - can be updated dynamically
+  let sharedPackageCachePath: string | undefined = undefined;
 
   const request = (opts: Parameters<typeof dockerRequest>[1]) => dockerRequest(socketPath, opts);
 
@@ -828,6 +836,7 @@ export function dockerBotContainerDriver(
       role: params.role,
       script: params.script,
       volumeRoot: config.volumeRoot,
+      sharedPackageCachePath: config.sharedPackageCachePath,
     });
     await createNamed(name, body);
     try {
@@ -905,7 +914,7 @@ export function dockerBotContainerDriver(
   }
 
   async function templateDrift(spec: BotContainerSpec): Promise<TemplateDriftReport> {
-    const body = buildCreateContainerRequestBody(spec, config);
+    const body = buildCreateContainerRequestBody(spec, config, sharedPackageCachePath);
     const existing = await inspectByName(containerNameFor(spec.botKey));
     if (!existing) return { drifted: false, fields: [] };
     const fields = templateDriftFields(existing, body);
@@ -913,7 +922,7 @@ export function dockerBotContainerDriver(
   }
 
   async function create(spec: BotContainerSpec): Promise<void> {
-    const body = buildCreateContainerRequestBody(spec, config);
+    const body = buildCreateContainerRequestBody(spec, config, sharedPackageCachePath);
     await requireBotImage(spec.image);
     await removeByName(replacementContainerNameFor(spec.botKey)); // stale, from an interrupted recreate
     await prepareVolumes(spec.botKey, spec.image);
@@ -921,7 +930,7 @@ export function dockerBotContainerDriver(
   }
 
   async function recreate(spec: BotContainerSpec): Promise<void> {
-    const body = buildCreateContainerRequestBody(spec, config);
+    const body = buildCreateContainerRequestBody(spec, config, sharedPackageCachePath);
     const name = containerNameFor(spec.botKey);
     const replacement = replacementContainerNameFor(spec.botKey);
     // Everything that can fail for a reason of its own (missing image, rejected
@@ -996,5 +1005,9 @@ export function dockerBotContainerDriver(
     await stopByName(containerNameFor(botKey));
   }
 
-  return { status, list, templateDrift, create, recreate, writeProfile, start, restart, stop };
+  function updateSharedPackageCachePath(path: string | undefined): void {
+    sharedPackageCachePath = path;
+  }
+
+  return { status, list, updateSharedPackageCachePath, templateDrift, create, recreate, writeProfile, start, restart, stop };
 }

@@ -104,6 +104,7 @@ import { myrmidonParallelHelpersRoutes } from "./myrmidon/parallel-helpers/index
 import { myrmidonReplayBlockedRoutes } from "./myrmidon/replay-blocked/index.js"; // myrmidon(N1)
 import { aboutRoutes } from "./myrmidon/about/routes.js"; // myrmidon(ABOUT)
 import { myrmidonBotContainerRoutes } from "./myrmidon/bot-containers/routes-wiring.js"; // myrmidon(W2b)
+import { botDiskApi } from "./myrmidon/bot-containers/bot-disk-api.js"; // myrmidon(1.6.1-BOT-DISK-B)
 import { myrmidonBrowserConsoleRoutes } from "./myrmidon/browser-console/wiring.js"; // myrmidon(BROWSER-CONSOLE)
 import { myrmidonLitellmCostsRoutes } from "./myrmidon/litellm-costs/routes.js"; // myrmidon(M2-A)
 import { myrmidonLitellmKeysRoutes } from "./myrmidon/litellm-keys/routes.js"; // myrmidon(M2-B)
@@ -851,6 +852,7 @@ export async function createApp(
   api.use(myrmidonReplayBlockedRoutes(db)); // myrmidon(N1)
   api.use(aboutRoutes()); // myrmidon(ABOUT)
   api.use(myrmidonBotContainerRoutes(db)); // myrmidon(W2b)
+  api.use(botDiskApi(db)); // myrmidon(1.6.1-BOT-DISK-B)
   api.use(myrmidonBrowserConsoleRoutes(db)); // myrmidon(BROWSER-CONSOLE)
   api.use(myrmidonLitellmCostsRoutes(db)); // myrmidon(M2-A): gateway-collected costs and model catalog
   api.use(myrmidonLitellmKeysRoutes(db)); // myrmidon(M2-B): per-agent gateway keys and fallback topology

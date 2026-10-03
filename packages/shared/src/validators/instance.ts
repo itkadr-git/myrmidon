@@ -67,6 +67,18 @@ export const instanceGeneralSettingsSchema = z.object({
   // /api/myrmidon/swarm-claim; absent means "use the environment variable, then
   // the default (the pilot is off)".
   swarmClaim: swarmClaimSettingsSchema.optional(),
+  // myrmidon(1.6.1-BOT-DISK-B): shared package cache for development bots,
+  // changed from the instance settings page; absent means "use the environment
+  // variable, then the default (no shared cache)".
+  botDisk: z.object({
+    sharedPackageCachePath: z.string().optional(),
+  }).optional(),
+  // myrmidon(1.6.1-BOT-DISK-D): shared folder for development bots (cross-bot collaboration),
+  // part of the common contract with shared settings
+  shared: z.object({
+    enabled: z.boolean().optional(),
+    path: z.string().optional(),
+  }).optional(),
 }).strict();
 
 export const patchInstanceGeneralSettingsSchema = z

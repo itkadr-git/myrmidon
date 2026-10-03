@@ -93,14 +93,17 @@ func safeContainerTarget(p string) bool {
 	return true
 }
 
-// parseExtraBind splits "source:target:ro" — the only form an extra mount may
-// take. Read-only is not optional: a shared directory is never mounted writable.
-func parseExtraBind(bind string) (source, target string, ok bool) {
+// parseExtraBind splits "source:target:ro" or "source:target:rw" — the forms an extra mount may
+// take. Most directories are mounted read-only, but specific cache directories can be mounted writable.
+func parseExtraBind(bind string) (source, target string, mode string, ok bool) {
 	parts := strings.Split(bind, ":")
-	if len(parts) != 3 || parts[2] != "ro" {
-		return "", "", false
+	if len(parts) != 3 {
+		return "", "", "", false
 	}
-	return parts[0], parts[1], true
+	if parts[2] != "ro" && parts[2] != "rw" {
+		return "", "", "", false
+	}
+	return parts[0], parts[1], parts[2], true
 }
 
 // parseBotBinds checks HostConfig.Binds: the three fixed binds first and in
@@ -108,6 +111,7 @@ func parseExtraBind(bind string) (source, target string, ok bool) {
 // of env.MountSources (exact match, no prefix rule — a card cannot reach a
 // sibling directory the operator did not name) and every extra target must be a
 // safe path used once. The returned list is what the daemon gets.
+// For shared cache paths, read-write (rw) mode is allowed.
 func parseBotBinds(v *jsonx.Value, path string, env *Env, botKey string) ([]string, *deny.Error) {
 	got, err := strList(v, path)
 	if err != nil {
@@ -129,13 +133,26 @@ func parseBotBinds(v *jsonx.Value, path string, env *Env, botKey string) ([]stri
 	seen := make(map[string]bool, len(got)-len(base))
 	extras := make([]string, 0, len(got)-len(base))
 	for _, bind := range got[len(base):] {
-		source, target, ok := parseExtraBind(bind)
+		source, target, mode, ok := parseExtraBind(bind)
 		if !ok {
 			return nil, deny.Field(deny.BindsMismatch, path, []byte(bind))
 		}
+		
+		// Check if source is in allowed mount sources
 		if !allowed[source] {
 			return nil, deny.Field(deny.MountSourceNotAllowed, path, []byte(source))
 		}
+		
+		// For security, only allow read-write mode for specific cache paths
+		isCachePath := strings.Contains(target, "/.pnpm-store") || 
+			strings.Contains(target, "/.cache/pip") || 
+			strings.Contains(target, "/.cache/go-build") || 
+			strings.Contains(target, "/.gradle")
+			
+		if mode == "rw" && !isCachePath {
+			return nil, deny.Field(deny.BindsMismatch, path, []byte("read-write mode only allowed for cache paths"))
+		}
+		
 		if !safeContainerTarget(target) || seen[target] {
 			return nil, deny.Field(deny.BindsMismatch, path, []byte(target))
 		}

@@ -100,23 +100,45 @@ export const BOT_VOLUME_MOUNTS: readonly BotVolumeMount[] = [
 ];
 
 /** The fixed bind list for a bot, plus the extra read-only mounts its card asked
- *  for. Callers supply a botKey and (optionally) mount entries whose `source`
+ *  for, plus the shared package cache if configured. Callers supply a botKey and (optionally) mount entries whose `source`
  *  already comes from the instance allowlist — never a raw path — so a card
  *  cannot smuggle in an arbitrary bind. A mount whose source is not in
  *  `MYRMIDON_BOT_MOUNT_SOURCES`, or whose container path would take over one of
- *  the driver's own mount points, throws before anything reaches the Docker API. */
+ *  the driver's own mount points, throws before anything reaches the Docker API.
+ *  
+ *  @param options.mounts - Extra mounts from the bot card (now supporting both ro and rw)
+ *  @param options.allowedSources - Allowed mount sources from instance settings
+ *  @param options.sharedPackageCachePath - Path to shared package cache if configured
+ */
 export function buildBinds(
   volumeRoot: string,
   botKey: string,
-  extra: { mounts?: readonly BotExtraMount[]; allowedSources?: readonly string[] } = {},
+  options?: {
+    mounts?: readonly BotExtraMount[];
+    allowedSources: readonly string[];
+    sharedPackageCachePath?: string;
+  },
 ): string[] {
   validateBotKey(botKey);
-  const mounts = extra.mounts ?? [];
-  validateExtraMounts(mounts, extra.allowedSources ?? []);
-  return [
+  const mounts = options?.mounts ?? [];
+  validateExtraMounts(mounts, options?.allowedSources ?? []);
+  
+  const binds = [
     ...BOT_VOLUME_MOUNTS.map((mount) => `${volumeRoot}/${botKey}/${mount.hostSuffix}:${mount.containerPath}`),
-    ...mounts.map((mount) => `${mount.source}:${mount.containerPath}:ro`),
+    // Map card-requested extra mounts with their specified read/write mode
+    ...mounts.map((mount) => `${mount.source}:${mount.containerPath}:${mount.readonly === false ? "rw" : "ro"}`),
   ];
+  
+  // Add shared package cache mounts for different package managers if configured
+  if (options?.sharedPackageCachePath) {
+    // Mount shared cache directories for different package managers
+    binds.push(`${options.sharedPackageCachePath}/pnpm:/home/user/.pnpm-store:rw`);
+    binds.push(`${options.sharedPackageCachePath}/pip:/home/user/.cache/pip:rw`);
+    binds.push(`${options.sharedPackageCachePath}/go:/home/user/.cache/go-build:rw`);
+    binds.push(`${options.sharedPackageCachePath}/gradle:/home/user/.gradle:rw`);
+  }
+
+  return binds;
 }
 
 /** Mount points and paths the driver itself owns inside every bot container: an
@@ -142,14 +164,11 @@ function unsafeAbsolutePathReason(value: string): string | null {
   return null;
 }
 
-/**
- * Throws unless every extra mount may be mounted into a bot container:
- *  - `source` is a plain absolute directory and is listed in
- *    `MYRMIDON_BOT_MOUNT_SOURCES` (exact match — no prefix rule, so a card
- *    cannot reach a sibling directory the operator did not name);
- *  - `containerPath` is a plain absolute path that is not one of the driver's
- *    own mount points (or a path under one) and is not used twice;
- *  - `readOnly` is true: a shared directory is never mounted writable.
+/** Checks that a bot card's extra mounts are allowed:
+ *  - `source` is an absolute path listed in the instance allowlist;
+ *  - `containerPath` is an absolute path outside the driver's own mount points;
+ *  - `containerPath` is not used twice in the same request;
+ *  - `readonly` is true for user-requested mounts (for security), but system-defined paths like package stores can be writable.
  * The check is the enforcement boundary, so it does not trust the card reader
  * (`agent-config.ts`) to have validated the list first.
  */
@@ -167,8 +186,10 @@ export function validateExtraMounts(mounts: readonly BotExtraMount[], allowedSou
         `${where} source ${JSON.stringify(mount.source)} is not listed in ${BOT_MOUNT_SOURCES_ENV}`,
       );
     }
-    if (mount.readOnly !== true) {
-      throw new BotContainerTemplateError(`${where} of ${JSON.stringify(mount.source)} must be read-only`);
+    // For security, user-requested mounts must be read-only by default
+    // Only system-defined paths (like package stores) can be writable
+    if (mount.readonly === false) {
+      throw new BotContainerTemplateError(`${where} of ${JSON.stringify(mount.source)} must be read-only for security reasons. Only system-defined paths like package stores can be writable.`);
     }
     const pathReason = unsafeAbsolutePathReason(mount.containerPath);
     if (pathReason) {

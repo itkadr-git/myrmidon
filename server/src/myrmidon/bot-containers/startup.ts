@@ -38,6 +38,7 @@ import {
 import { botProfileWiring } from "./profile-ports.js";
 import type { BotContainerActivitySink, BotMaintenancePort } from "./reconciler.js";
 import { botContainerAgentReader, getBotContainerRuntime, setBotContainerRuntime } from "./routes-wiring.js";
+import { readBotDiskSettings } from "./bot-disk-store.js";
 
 export const BOT_RECONCILE_INTERVAL_ENV = "MYRMIDON_BOT_RECONCILE_INTERVAL_SEC";
 const MIN_RECONCILE_INTERVAL_SEC = 5;
@@ -91,6 +92,8 @@ export interface BotContainersStartupPorts {
   currentRuntime(): BotContainerRuntimeDeps | null;
   startReconciliation: typeof startBotContainerReconciliation;
   log: BotContainersLog;
+  /** Function to update bot disk settings for the driver */
+  updateBotDiskSettings?: (db: Db) => Promise<void>;
 }
 
 const defaultPorts: BotContainersStartupPorts = {
@@ -131,6 +134,21 @@ export function startBotContainers(
   ports.registerRuntime(runtime);
   ports.log.info({ intervalMs, network: runtime.network }, "bot container reconciliation started");
 
+  // Set up function to update bot disk settings
+  const updateBotDiskSettings = async () => {
+    try {
+      const settings = await readBotDiskSettings(db);
+      if (runtime.driver) {
+        runtime.driver.updateSharedPackageCachePath(settings.sharedPackageCachePath);
+      }
+    } catch (err) {
+      ports.log.error({ err }, "Failed to update shared package cache path from settings");
+    }
+  };
+
+  // Store the update function in ports
+  ports.updateBotDiskSettings = updateBotDiskSettings;
+
   let stopped = false;
   const stop = () => {
     if (stopped) return;
@@ -165,6 +183,16 @@ function build(
       readAgent: ports.readAgent(db),
       network: driverConfig.network,
     };
+    
+    // Initialize the shared package cache path from settings
+    readBotDiskSettings(db).then(settings => {
+      if (settings.sharedPackageCachePath) {
+        runtime.driver.updateSharedPackageCachePath(settings.sharedPackageCachePath);
+      }
+    }).catch(err => {
+      ports.log.error({ err }, "Failed to initialize shared package cache path from settings");
+    });
+    
     const stopSweep = ports.startReconciliation(ports.listAgents(db), runtime, { intervalMs, env });
     return { runtime, stopSweep };
   } catch (err) {
