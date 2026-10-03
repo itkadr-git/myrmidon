@@ -28,6 +28,8 @@ import type { BudgetEnforcementSettings } from "../myrmidon-budget-enforcement.j
 import type { PluginEntitlementKey } from "../myrmidon-plugin-entitlement.js";
 // myrmidon(DM-PROGRESS): live progress steps of the bridged Telegram DM status message.
 import type { TelegramDmProgressSettings } from "../myrmidon-telegram-dm-progress.js";
+// myrmidon(1.6.1-BOT-DISK-D): shared mount settings stored in instance settings
+import type { SharedMountSettings } from "../myrmidon-shared-mount.js";
 
 export const DAILY_RETENTION_PRESETS = [3, 7, 14] as const;
 export const WEEKLY_RETENTION_PRESETS = [1, 2, 4] as const;
@@ -69,7 +71,7 @@ export interface InstanceGeneralSettings {
   feedbackDataSharingPreference: FeedbackDataSharingPreference;
   backupRetention: BackupRetentionPolicy;
   /**
-   * Execution policy. Absent/`"any"` = unrestricted; `"kubernetes"` forces the
+   * Execution policy. Absent/"any" = unrestricted; "kubernetes" forces the
    * Kubernetes sandbox provider and denies local/ssh execution.
    */
   executionMode?: InstanceExecutionMode;
@@ -227,6 +229,12 @@ export interface InstanceGeneralSettings {
    * environment". Kept in sync with the validator of the same field.
    */
   agentMemory?: AgentMemorySettings;
+  /**
+   * myrmidon(1.6.1-BOT-DISK-D): shared mount settings for bots, changed from
+   * the instance settings page. Controls whether bots can access a shared directory
+   * and what permissions they have. Absent means "shared mount is disabled".
+   */
+  sharedMount?: SharedMountSettings;
 }
 
 export interface InstanceExperimentalSettings {

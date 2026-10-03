@@ -371,6 +371,9 @@ export function buildBinds(
     scope?: BotScopeMount;
     /** The bind layout the image's runtime contract declares (legacy = three binds, single = one /bot bind). */
     volumeLayout?: BotVolumeLayout;
+    /** myrmidon(1.6.1-BOT-DISK-D): the host shared directory, bind-mounted
+     *  read-write at `/shared` for bots with shared mount access. */
+    sharedMountPath?: string;
   } = {},
 ): string[] {
   validateBotKey(botKey);
@@ -519,6 +522,15 @@ function validateDriverMount(mount: BotExtraMount, allowedSources: readonly stri
   return `${mount.source}:${mount.containerPath}:ro`;
 }
 
+/** myrmidon(1.6.1-BOT-DISK-D): add the shared mount bind (host path → /shared,
+ *  read-write) when a shared mount path is provided for this bot. */
+export function withSharedMount(binds: string[], sharedMountPath?: string): string[] {
+  if (!sharedMountPath) {
+    return binds;
+  }
+  return [...binds, `${sharedMountPath}:/shared:rw`];
+}
+
 /** Mount points and paths the driver itself owns inside every bot container: an
  *  extra mount may neither take one of them over nor shadow a path under them
  *  (the profile lands in the three volumes, and `/tmp` is the image's tmpfs).
@@ -534,6 +546,8 @@ const RESERVED_CONTAINER_PATHS: readonly string[] = [
   "/data",
   "/tmp",
   DEVBUILD_SSH_CONTAINER_PATH,
+ *  (the profile lands in the three volumes, and `/tmp` is the image's tmpfs). */
+  "/shared",
 ];
 
 /** Why `value` is not usable as an absolute host directory or container mount

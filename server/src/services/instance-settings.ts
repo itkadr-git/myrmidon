@@ -302,6 +302,8 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // this line the vendor write path silently drops the key and the settings
       // could only ever come from the environment.
       ...(parsed.data.teamLiveness ? { teamLiveness: parsed.data.teamLiveness } : {}),
+      // myrmidon(1.6.1-BOT-DISK-D): the stored shared mount settings survive every general write
+      ...(parsed.data.sharedMount ? { sharedMount: parsed.data.sharedMount } : {}),
     };
   }
   return {
