@@ -21,6 +21,8 @@ version file to edit. Base Paperclip version is in the image label
   merged the UI is covered by tests against the mocked JSON contract.
 ## 1.6.1
 
+
+
 ### Custom castes, consumers (CUSTOM-CASTES B)
 
 - The server-side consumers of the company caste directory (part A ships the
@@ -53,6 +55,22 @@ version file to edit. Base Paperclip version is in the image label
   card for the lead and the operator, computed on the fly from a
   process-level signal registry (no new store); cards fade after
   `MYRMIDON_STALE_BLOCK_SIGNAL_TTL_MS` (default 24 h).
+### Agents tree (AGENTS-TREE)
+
+- Agents in the left menu and on the Agents page render as a hierarchy by
+  `reportsTo` instead of one flat pile (81 agents were hard to read). The
+  sidebar's **Agents** section gains a **Tree** sort mode (default): manager →
+  reports nesting with collapsible nodes, the first level expanded by default,
+  an agent count plus a running/error indicator on every collapsed node, and a
+  **No manager** group for agents whose `reportsTo` does not resolve (dangling
+  ids, `reports_to` cycles — cycle-safe, no agent is ever dropped). The roster
+  page's default view is the same tree (toggle buttons: Tree / List / Org
+  chart) with per-level indentation and a name search that auto-expands the
+  branch of every match. Collapse state persists per user per company
+  (`localStorage`, same scheme as the agent order). Tree rendering also covers
+  the UI 2.0 shell (the roster page is shared between the shells). RU and EN
+  copy lives in the `agentsTree` namespace of all 40 vendor locales.
+
 ### Gateway-priced hermes runs (HERMES-USAGE-COST)
 
 - hermes_gateway runs no longer land in the cost ledger as unpriced $0
