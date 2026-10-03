@@ -2778,7 +2778,13 @@ export * from "./myrmidon-workspace-hygiene.js";
 export * from "./myrmidon-runtime-limits.js";
 // myrmidon(EXTCASE-B): browser-bridge wire contract shared by the gateway, the extension and the panel.
 export * from "./myrmidon-browser-bridge.js";
+// myrmidon(UI2-I18N): per-user board UI language preference contract (2.0 UI tree).
+export * from "./myrmidon-ui2-i18n.js";
 // myrmidon(S6): per-agent tool and connection permissions.
 export * from "./myrmidon-agent-tool-permissions.js";
 // myrmidon(M2-B): per-agent gateway key names and fallback-chain cycle checks.
 export * from "./myrmidon-litellm-sync.js";
+// myrmidon(1.6-AUTONOMY): role × action-class matrix, verdict resolver and per-role regulations.
+export * from "./myrmidon-autonomy.js";
+// myrmidon(1.6-CTO-CHAT-B): the owner-message-to-epic proposal contract of the CTO chat.
+export * from "./myrmidon-cto-chat.js";

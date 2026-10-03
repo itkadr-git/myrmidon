@@ -82,11 +82,14 @@ import { GatewaysList } from "./pages/apps/gateways/GatewaysList";
 import { GatewayDetail } from "./pages/apps/gateways/GatewayDetail";
 import { CompanySkills } from "./pages/CompanySkills";
 import { SkillStudio } from "./pages/SkillStudio";
+// myrmidon(1.6-SKILL-LIFE): the company skill lifecycle screen.
+import { SkillLifecycle } from "./pages/SkillLifecycle";
 import { Secrets } from "./pages/Secrets";
 import { AccessHubPage } from "./components/myrmidon/access-hub/AccessHubPage";
 import { BrowsersSettingsPage } from "./components/myrmidon/browsers/BrowsersSettingsPage"; // myrmidon(BROWSER-CONSOLE)
 import { CloudsSettingsPage } from "./components/myrmidon/clouds/CloudsSettingsPage"; // myrmidon(CLOUD-CONNECTOR)
 import { StackScreen } from "./components/myrmidon/stack/StackScreen"; // myrmidon(SUC)
+import { AutonomyMatrixScreen } from "./components/myrmidon/autonomy/AutonomyMatrixContainer"; // myrmidon(1.6 AUTONOMY-MATRIX B)
 import { CompanyImport } from "./pages/CompanyImport";
 import { DesignGuide } from "./pages/DesignGuide";
 import { InstanceExperimentalSettings } from "./pages/InstanceExperimentalSettings";
@@ -115,6 +118,9 @@ import {
 import { filterHiddenInstanceSettingsPath, normalizeRememberedInstanceSettingsPath } from "./lib/instance-settings";
 import { useCloudInstance } from "./hooks/useCloudInstance";
 import { useStreamlinedUiEnabled } from "./hooks/useStreamlinedUiEnabled";
+import { useMyrmidonUi2Enabled } from "./ui2/useMyrmidonUi2Enabled"; // myrmidon(UI2-SHELL)
+import { Ui2Root } from "./ui2/Ui2Root"; // myrmidon(UI2-SHELL)
+import { ui2PlaceholderRoutes } from "./ui2/routes"; // myrmidon(UI2-SHELL)
 import { cloudStackCreateUrl } from "./lib/cloudLinks";
 import { navigateTopLevel } from "@/lib/browserNavigation";
 
@@ -139,6 +145,15 @@ const ProductionCompanyActivity = lazy(() =>
 );
 const ProductionCosts = lazy(() =>
   import("./pages/Costs.production").then((module) => ({ default: module.Costs })),
+);
+const ProductionQuality = lazy(() =>
+  import("./pages/Quality.production").then((module) => ({ default: module.Quality })), // myrmidon(1.6-BASELINE): quality page
+);
+const ProductionSwarmSupervisor = lazy(() =>
+  import("./pages/SwarmSupervisor.production").then((module) => ({ default: module.SwarmSupervisor })), // myrmidon(1.6-SWARM-CLAIM-B): supervisor page
+);
+const ProductionForaging = lazy(() =>
+  import("./pages/Foraging").then((module) => ({ default: module.Foraging })), // myrmidon(1.6-FORAGE): foraging page
 );
 const ProductionOrgChart = lazy(() =>
   import("./pages/OrgChart.production").then((module) => ({ default: module.OrgChart })),
@@ -199,6 +214,7 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
         <Route path="company/settings/access-hub" element={<AccessHubPage />} />
       </Route>
       <Route path="company/settings/browsers" element={<BrowsersSettingsPage />} /> {/* myrmidon(BROWSER-CONSOLE) */}
+      <Route path="company/settings/autonomy" element={<AutonomyMatrixScreen />} /> {/* myrmidon(1.6 AUTONOMY-MATRIX B) */}
       <Route path="company/settings/clouds" element={<CloudsSettingsPage />} /> {/* myrmidon(CLOUD-CONNECTOR) */}
       <Route path="company/settings/tools" element={<LegacyToolsSettingsRedirect />} />
       <Route path="company/settings/tools/:tab" element={<LegacyToolsSettingsRedirect />} />
@@ -273,6 +289,7 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
       <Route path="skills/studio/new" element={<SkillStudio />} />
       <Route path="skills/studio/:skillId" element={<SkillStudio />} />
       <Route path="skills/:skillId/studio" element={<LegacySkillStudioRedirect />} />
+      <Route path="skills/lifecycle" element={<SkillLifecycle />} /> {/* myrmidon(1.6-SKILL-LIFE) */}
       <Route
         path="skills/*"
         element={streamlinedUiEnabled ? <CompanySkills /> : <ProductionSurface><ProductionCompanySkills /></ProductionSurface>}
@@ -415,6 +432,9 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
       ) : (
         <>
           <Route path="costs" element={<ProductionSurface><ProductionCosts /></ProductionSurface>} />
+          <Route path="quality" element={<ProductionSurface><ProductionQuality /></ProductionSurface>} /> {/* myrmidon(1.6-BASELINE) */}
+          <Route path="swarm-claim" element={<ProductionSurface><ProductionSwarmSupervisor /></ProductionSurface>} /> {/* myrmidon(1.6-SWARM-CLAIM-B) */}
+          <Route path="foraging" element={<ProductionSurface><ProductionForaging /></ProductionSurface>} /> {/* myrmidon(1.6-FORAGE) */}
           <Route path="audit" element={<Navigate to="/activity?mode=agents" replace />} />
         </>
       )}
@@ -755,6 +775,19 @@ function NoCompaniesStartPage() {
 
 export function App() {
   const { enabled: streamlinedUiEnabled, loaded: streamlinedUiLoaded } = useStreamlinedUiEnabled();
+  const { enabled: myrmidonUi2Enabled } = useMyrmidonUi2Enabled(); // myrmidon(UI2-SHELL)
+  // myrmidon(UI2-SHELL): mount the ui2 shell behind the instance flag
+  // enableMyrmidonUi2 (plus the personal ?ui=1|2 override). While loading or
+  // off the vendor shell renders unchanged (no flash); when on, the ui2 frame
+  // replaces the vendor Layout for the whole company route tree — the routes
+  // and pages themselves stay shared with 1.5 (OPE-3550).
+  const boardShell = myrmidonUi2Enabled ? (
+    <Ui2Root /> /* myrmidon(UI2-SHELL) */
+  ) : streamlinedUiEnabled ? (
+    <Layout />
+  ) : (
+    <ProductionLayout />
+  );
 
   return (
     <>
@@ -818,6 +851,7 @@ export function App() {
           <Route path="skills/studio/new" element={<UnprefixedBoardRedirect />} />
           <Route path="skills/studio/:skillId" element={<UnprefixedBoardRedirect />} />
           <Route path="skills/:skillId/studio" element={<LegacySkillStudioRedirect />} />
+          <Route path="skills/lifecycle" element={<UnprefixedBoardRedirect />} />
           <Route path="skills/*" element={<UnprefixedBoardRedirect />} />
           <Route path="settings" element={<LegacySettingsRedirect />} />
           <Route path="settings/*" element={<LegacySettingsRedirect />} />
@@ -844,7 +878,12 @@ export function App() {
           <Route path="execution-workspaces/:workspaceId/runtime-logs" element={<UnprefixedExecutionWorkspaceRedirect />} />
           <Route path="execution-workspaces/:workspaceId/issues" element={<UnprefixedExecutionWorkspaceRedirect />} />
           <Route path="execution-workspaces/:workspaceId/routines" element={<UnprefixedExecutionWorkspaceRedirect />} />
-          <Route path=":companyPrefix" element={streamlinedUiEnabled ? <Layout /> : <ProductionLayout />}>
+          <Route path=":companyPrefix" element={boardShell}>
+            {/* myrmidon(UI2-SHELL): the ui2 route table takes precedence for
+                its six flagged screens under the ui2 shell; the vendor routes
+                below keep serving everything else. UI-0c replaces the
+                placeholder components per entry in ui2/routes.tsx. */}
+            {myrmidonUi2Enabled ? ui2PlaceholderRoutes() : null}
             {boardRoutes(streamlinedUiEnabled)}
           </Route>
           <Route path="*" element={<NotFoundPage scope="global" />} />
