@@ -248,6 +248,7 @@ export function createStaleBlockSweep(deps: StaleBlockSweepDeps) {
           id: issues.id,
           companyId: issues.companyId,
           identifier: issues.identifier,
+          title: issues.title,
           status: issues.status,
           unblockDescriptor: issues.unblockDescriptor,
         })
