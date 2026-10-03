@@ -288,6 +288,12 @@ async function sourceIssueId(
       const doc = await readStackDocument(db);
       return { exists: doc.components.some((component) => component.name === sourceId), issueId: null };
     }
+    // myrmidon(BOT-DISK E): the host disk alert is process-level state; the
+    // source id is the fixed "host-disk" subject, so existence is always true
+    // while the board runs (the row is dismissable, never stale-checked).
+    case "host_disk_alert": {
+      return { exists: true, issueId: null };
+    }
     // myrmidon(STALE-BLOCK): a lifted-block signal lives in the process-level
     // registry; the source id is the task the sweep unblocked.
     case "stale_block": {

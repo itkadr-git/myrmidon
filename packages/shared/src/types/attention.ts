@@ -24,6 +24,8 @@ export const ATTENTION_SOURCE_KINDS = [
   // myrmidon(STALE-BLOCK): the watchdog lifted a dead block off a task; the
   // lead and operator must see the routing change the machine made.
   "stale_block",
+  // myrmidon(BOT-DISK E): the host disk fill level crossed the saved threshold.
+  "host_disk_alert",
 ] as const;
 
 export type AttentionSourceKind = (typeof ATTENTION_SOURCE_KINDS)[number];
@@ -180,6 +182,18 @@ export type AttentionItemDetail =
       observedPercent: number;
       amountObserved: number;
       amountLimit: number;
+      images: AttentionDetailImage[];
+    }
+  | {
+      kind: "host_disk";
+      usedPercent: number;
+      thresholdPercent: number;
+      usedGb: number;
+      totalGb: number;
+      freeGb: number;
+      growthBytesPerHour: number | null;
+      mountPoint: string | null;
+      consumers: Array<{ path: string; sizeGb: number }>;
       images: AttentionDetailImage[];
     }
   | {

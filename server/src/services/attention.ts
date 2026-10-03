@@ -50,6 +50,7 @@ import type {
 import { badRequest } from "../errors.js";
 import { listAttentionExhaustedRuns } from "./attention-exhausted-runs.js";
 import { budgetService } from "./budgets.js";
+import { hostDiskRuntime } from "../myrmidon/host-disk/index.js"; // myrmidon(BOT-DISK E)
 import {
   BLOCKER_ATTENTION_MAX_DEPTH,
   BLOCKER_ATTENTION_MAX_NODES,
@@ -108,6 +109,7 @@ const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   "stack_update",
   // myrmidon(STALE-BLOCK): one card per block the watchdog lifted.
   "stale_block",
+  "host_disk_alert",
 ];
 
 const SEVERITY_RANK: Record<AttentionSeverity, number> = {
@@ -131,6 +133,7 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   join_request: 10,
   stack_update: 11,
   stale_block: 12,
+  host_disk_alert: 0,
 };
 
 const PENDING_INTERACTION_STATUSES = ["pending"] as const;
@@ -1836,6 +1839,59 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             observedPercent,
             amountObserved: incident.amountObserved,
             amountLimit: incident.amountLimit,
+            images: [],
+          },
+        }));
+      }
+
+      // myrmidon(BOT-DISK E): the host disk crossed the usage threshold in
+      // this process's sweep. One item for the whole instance; the numbers
+      // (fill level, free space, growth per hour, biggest consumers) travel
+      // in the detail, and the dedup key stays constant while the threshold
+      // stays crossed, so a fresh measurement refreshes the row.
+      const hostDisk = hostDiskRuntime(db).sweep.lastResult();
+      if (hostDisk?.overThreshold) {
+        const dedupKey = `host_disk:${hostDisk.measuredPath ?? "unknown"}`;
+        add(createItem({
+          companyId,
+          sourceKind: "host_disk_alert",
+          subject: {
+            kind: "agent",
+            id: "host-disk",
+            companyId,
+            title: "Host disk",
+            identifier: null,
+            status: "alert",
+            href: `/${prefix}/instance`,
+            metadata: { measuredPath: hostDisk.measuredPath },
+          },
+          whyNow: `Host disk is ${hostDisk.usedPercent}% full (threshold ${hostDisk.thresholdPercent}%).`,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the host disk panel and free space." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this alert until usage drops and crosses again." },
+          ),
+          inlineResolvable: false,
+          entryRule: "the host disk fill level crossed the saved threshold",
+          exitRule: "usage drops below the threshold or the row is dismissed",
+          dedupKey,
+          severity: (hostDisk.usedPercent ?? 0) >= 95 ? "critical" : "high",
+          activityAt: toIso(hostDisk.at),
+          createdAt: toIso(hostDisk.at),
+          updatedAt: toIso(hostDisk.at),
+          relatedIssue: null,
+          detail: {
+            kind: "host_disk",
+            usedPercent: hostDisk.usedPercent ?? 0,
+            thresholdPercent: hostDisk.thresholdPercent ?? 0,
+            usedGb: Math.round((hostDisk.usedBytes ?? 0) / (1024 * 1024 * 1024)),
+            totalGb: Math.round((hostDisk.totalBytes ?? 0) / (1024 * 1024 * 1024)),
+            freeGb: Math.round((hostDisk.freeBytes ?? 0) / (1024 * 1024 * 1024)),
+            growthBytesPerHour: hostDisk.growthBytesPerHour,
+            mountPoint: hostDisk.measuredPath,
+            consumers: hostDisk.consumers.map((c) => ({
+              path: c.path,
+              sizeGb: Math.round(c.sizeBytes / (1024 * 1024 * 1024)),
+            })),
             images: [],
           },
         }));
