@@ -103,6 +103,8 @@ import {
   stringifyFrontmatter,
 } from "@paperclipai/shared";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
+// myrmidon(B1c): product name in user-facing skill texts; see product.ts.
+import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import { agentService } from "./agents.js";

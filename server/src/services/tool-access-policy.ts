@@ -42,6 +42,8 @@ import type {
   ToolRiskLevel,
 } from "@paperclipai/shared";
 import { toolPolicyConditionsSchema } from "@paperclipai/shared";
+// myrmidon(B1c): product name in user-facing policy texts; see product.ts.
+import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
 import { badRequest, conflict, notFound, unprocessable } from "../errors.js";
 import {
   effectiveToolProfileBindings,
