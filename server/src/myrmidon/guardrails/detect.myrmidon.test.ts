@@ -44,12 +44,20 @@ describe("myrmidon(1.6-GRD): secret detectors", () => {
   });
 
   it("detects a slack bot token", () => {
-    const report = scanGuardrailText("xoxb-0123456789-0123456789-0123456789");
+    // built from parts so no real-shape token literal sits in the source
+    const token = ["xoxb", "0123456789", "0123456789", "0123456789"].join("-");
+    const report = scanGuardrailText(token);
     expect(report.counts.slack_bot_token).toBe(1);
   });
 
   it("detects a bearer jwt with three segments", () => {
-    const text = "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhZ2VudC1hIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
+    // built from parts so no real-shape JWT literal sits in the source
+    const jwt = [
+      "eyJhbGciOiJIUzI1NiJ9",
+      "eyJzdWIiOiJhZ2VudC1hIn0",
+      "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
+    ].join(".");
+    const text = `Authorization: Bearer ${jwt}`;
     const report = scanGuardrailText(text);
     expect(report.counts.bearer_jwt).toBe(1);
     // the jwt must not also count as phones or a card
