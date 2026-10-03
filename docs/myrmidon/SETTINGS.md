@@ -707,6 +707,13 @@ sources need a token. Findings are recorded `unverified` until the skill lifecyc
 them as candidates; `POST …/foraging/sweep` (board only) runs one pass by hand.
 
 
+## 1.6.1 — model providers (MODEL-PROVIDERS A)
+
+No `MYRMIDON_*` settings: the module reads the provider registry from the database
+(`model_providers`) and the provider credential from the company secret store by the name
+stored on the row. Default base URLs per provider type are constants in
+`packages/shared/src/myrmidon-model-providers.ts`, not settings.
+
 ## 1.6.1 — TG-NOTIFY jobs (daily digest and escalations, part B)
 
 Settings of `server/src/myrmidon/telegram-notify/jobs.ts` — the periodic digest and
