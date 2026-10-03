@@ -167,24 +167,6 @@ export async function claimNextTaskForAgent(
     ? { ...settings, maxActiveTasks: caste.maxActiveTasks }
     : settings;
 
-  // myrmidon(1.6.1 CUSTOM-CASTES B): the caste gate. An agent whose caste is
-  // marked `swarmEligible=false` in the company directory never participates
-  // in the claim — supervision roles (a lead watching the queue, an on-call
-  // reviewer) stay out of the pool the swarm draws from. A caste that is not
-  // in the directory is eligible: the directory is additive and a missing
-  // entry must not strand an agent that could claim before it existed.
-  const caste = ports.castes
-    ? (await ports.castes(input.companyId)).find((entry) => entry.key === agent.role)
-    : undefined;
-  if (caste && !caste.swarmEligible) {
-    return { claim: null, reason: SWARM_CLAIM_REASON_CASTE_EXCLUDED };
-  }
-  // A caste-set ceiling overrides the global swarm ceiling for this agent
-  // only; `null` keeps the global setting exactly as it was.
-  const effectiveSettings: SwarmClaimSettings = caste?.maxActiveTasks != null
-    ? { ...settings, maxActiveTasks: caste.maxActiveTasks }
-    : settings;
-
   const [candidates, agentClaims, companyClaims] = await Promise.all([
     listRoleQueue(ports.db, input.companyId, agent.role),
     listAgentLiveClaims(ports.db, input.companyId, input.agentId),
