@@ -22,7 +22,6 @@ export {
   FORAGING_BUDGET_CENTS_ENV,
   FORAGING_INTERVAL_SEC_ENV,
   FORAGING_KEY_SECRET_ENV,
-  FORAGING_BASE_URL_ENV,
   diffSnapshots,
   normalizeSnapshot,
   estimateCostCents,

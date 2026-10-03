@@ -34,8 +34,6 @@ export const MAX_DIFF_LINES = 50;
 
 /** The environment variable naming the per-pass cost ceiling, in cents. */
 export const FORAGING_BUDGET_CENTS_ENV = "MYRMIDON_FORAGING_BUDGET_CENTS";
-/** The environment variable naming the API base the board calls, if any. */
-export const FORAGING_BASE_URL_ENV = "MYRMIDON_FORAGING_BASE_URL";
 /** The environment variable naming the sweep interval, in seconds. */
 export const FORAGING_INTERVAL_SEC_ENV = "MYRMIDON_FORAGING_INTERVAL_SEC";
 /** The environment variable naming the company secret with the read token. */

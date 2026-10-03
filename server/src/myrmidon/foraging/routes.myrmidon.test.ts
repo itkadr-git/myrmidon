@@ -1,32 +1,14 @@
 // myrmidon(1.6-FORAGE): the FORAGING routes — access rules, the sweep switch and
 // the audit rows. The store, the service and the db are fakes: this pins the
 // surface, not the vendor.
+import express from "express";
+import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
-import type { Response } from "express";
+import { errorHandler } from "../../middleware/index.js";
 import { foragingRoutes } from "./routes.js";
 import type { ForagingService } from "./service.js";
 import type { ForagingFindingRow, ForagingSourceRow, ForagingStore } from "./store.js";
-
-function req(actor: Record<string, unknown>, params: Record<string, string>, body: unknown = {}, query: Record<string, string> = {}) {
-  return { actor, params, body, query } as unknown as Parameters<ReturnType<typeof foragingRoutes>["handle"]>[0];
-}
-
-/** A minimal res double that records the status and body of the answer. */
-function res() {
-  const out: { status: number; body: unknown } = { status: 200, body: null };
-  const double = {
-    status(code: number) {
-      out.status = code;
-      return double;
-    },
-    json(payload: unknown) {
-      out.body = payload;
-      return double;
-    },
-  };
-  return { double: double as unknown as Response, out };
-}
 
 const source: ForagingSourceRow = {
   id: "source-1",
@@ -86,119 +68,71 @@ const service: ForagingService = {
 const boardActor = { type: "board", userId: "user-1", source: "session" };
 const agentActor = { type: "agent", agentId: "agent-a", companyId: "company-a", source: "agent_key" };
 
-/** Calls the route handler for `method path` by walking the router's stack. */
-async function callRoute(
-  router: ReturnType<typeof foragingRoutes>,
-  method: string,
-  path: string,
-  request: unknown,
-  response: Response,
-) {
-  const stack = (router as unknown as { stack: Array<Record<string, any>> }).stack;
-  for (const layer of stack) {
-    if (layer.route && layer.route.path === path && layer.route.methods[method.toLowerCase()]) {
-      for (const handler of layer.route.stack) {
-        let advanced = false;
-        await handler.handle(request, response, () => {
-          advanced = true;
-        });
-        if (!advanced) return;
-      }
-      return;
-    }
-  }
-  throw new Error(`no route ${method} ${path}`);
-}
+const base = "/api/myrmidon/companies/company-a/foraging";
 
-function makeRouter(store = fakeStore(), overrides: Partial<{ enabled: boolean; db: Db }> = {}) {
+/** Mounts the router on an app the way the server does, with the actor the auth layer would set. */
+function appFor(actor: unknown, store = fakeStore(), overrides: Partial<{ enabled: boolean; db: Db }> = {}) {
   const db = (overrides.db ?? {}) as Db;
-  return {
-    router: foragingRoutes({
+  const app = express();
+  app.use(express.json());
+  app.use((req, _res, next) => {
+    (req as unknown as { actor: unknown }).actor = actor;
+    next();
+  });
+  app.use(
+    "/api",
+    foragingRoutes({
       db,
       store,
       service,
       env: { MYRMIDON_FORAGING_ENABLED: overrides.enabled === false ? "0" : "1" } as NodeJS.ProcessEnv,
     }),
-    store,
-  };
+  );
+  app.use(errorHandler);
+  return app;
 }
 
 describe("myrmidon(1.6-FORAGE) routes", () => {
   it("lists sources with the snapshot line count for a company member", async () => {
-    const { router } = makeRouter();
-    const { double, out } = res();
-    await callRoute(router, "get", "/myrmidon/companies/:companyId/foraging/sources", req(boardActor, { companyId: "company-a" }), double);
-    expect(out.status).toBe(200);
-    expect(out.body).toMatchObject({ enabled: true, sources: [{ id: "source-1", snapshotLines: 2 }] });
+    const res = await request(appFor(boardActor)).get(`${base}/sources`).expect(200);
+    expect(res.body).toMatchObject({ enabled: true, sources: [{ id: "source-1", snapshotLines: 2 }] });
   });
 
   it("refuses an agent of another company", async () => {
-    const { router } = makeRouter();
-    const { double } = res();
-    await expect(
-      callRoute(
-        router,
-        "get",
-        "/myrmidon/companies/:companyId/foraging/sources",
-        req({ ...agentActor, companyId: "company-b" }, { companyId: "company-a" }),
-        double,
-      ),
-    ).rejects.toThrow(/another company/i);
+    const res = await request(appFor({ ...agentActor, companyId: "company-b" })).get(`${base}/sources`).expect(403);
+    expect(JSON.stringify(res.body)).toMatch(/another company/i);
   });
 
   it("refuses a source write from an agent", async () => {
-    const { router } = makeRouter();
-    const { double } = res();
-    await expect(
-      callRoute(
-        router,
-        "put",
-        "/myrmidon/companies/:companyId/foraging/sources",
-        req(agentActor, { companyId: "company-a" }, { role: "engineer", url: "https://example.com/a", kind: "url" }),
-        double,
-      ),
-    ).rejects.toThrow(/Board access required/i);
+    const res = await request(appFor(agentActor))
+      .put(`${base}/sources`)
+      .send({ role: "engineer", url: "https://example.com/a", kind: "url" })
+      .expect(403);
+    expect(JSON.stringify(res.body)).toMatch(/Board access required/i);
   });
 
   it("answers 404 on removing a source that is not there", async () => {
     const store = fakeStore();
     store.deleteSource = vi.fn(async () => false);
-    const { router } = makeRouter(store);
-    const { double, out } = res();
-    await callRoute(
-      router,
-      "delete",
-      "/myrmidon/companies/:companyId/foraging/sources/:sourceId",
-      req(boardActor, { companyId: "company-a", sourceId: "missing" }),
-      double,
-    );
-    expect(out.status).toBe(404);
+    await request(appFor(boardActor, store)).delete(`${base}/sources/missing`).expect(404);
   });
 
   it("returns the findings and the budget", async () => {
-    const { router } = makeRouter();
-    const findings = res();
-    await callRoute(router, "get", "/myrmidon/companies/:companyId/foraging/findings", req(boardActor, { companyId: "company-a" }), findings.double);
-    expect(findings.out.body).toMatchObject({ findings: [{ id: "finding-1", skillKey: "foraged-engineer" }] });
+    const app = appFor(boardActor);
+    const findings = await request(app).get(`${base}/findings`).expect(200);
+    expect(findings.body).toMatchObject({ findings: [{ id: "finding-1", skillKey: "foraged-engineer" }] });
 
-    const budget = res();
-    await callRoute(router, "get", "/myrmidon/companies/:companyId/foraging/budget", req(boardActor, { companyId: "company-a" }), budget.double);
-    expect(budget.out.body).toMatchObject({ enabled: true, spentCents: 4, budget: { maxCostCents: 50 } });
+    const budget = await request(app).get(`${base}/budget`).expect(200);
+    expect(budget.body).toMatchObject({ enabled: true, spentCents: 4, budget: { maxCostCents: 50 } });
   });
 
   it("runs a pass for a board actor and answers the counters", async () => {
-    const { router } = makeRouter();
-    const { double, out } = res();
-    await callRoute(router, "post", "/myrmidon/companies/:companyId/foraging/sweep", req(boardActor, { companyId: "company-a" }), double);
-    expect(out.status).toBe(200);
-    expect(out.body).toMatchObject({ sourcesRead: 1, findings: 1, stoppedByBudget: false });
+    const res = await request(appFor(boardActor)).post(`${base}/sweep`).expect(200);
+    expect(res.body).toMatchObject({ sourcesRead: 1, findings: 1, stoppedByBudget: false });
   });
 
   it("answers 503 on a manual pass while the sweep is switched off", async () => {
-    const { router } = makeRouter(fakeStore(), { enabled: false });
-    const { double, out } = res();
-    await callRoute(router, "post", "/myrmidon/companies/:companyId/foraging/sweep", req(boardActor, { companyId: "company-a" }), double);
-    expect(out.status).toBe(503);
-    expect(out.body).toMatchObject({ enabled: false });
+    const res = await request(appFor(boardActor, fakeStore(), { enabled: false })).post(`${base}/sweep`).expect(503);
+    expect(res.body).toMatchObject({ enabled: false });
   });
 });
