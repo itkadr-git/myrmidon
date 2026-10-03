@@ -139,6 +139,7 @@ describe("CompanySettingsNav", () => {
           { value: "wip-limit", label: "WIP limit" }, // myrmidon(1.6.1 WIP-LIMIT B)
 
           { value: "castes", label: "Castes & models" }, // myrmidon(1.6.1 MODEL-PROVIDERS C)
+          { value: "voice-stt", label: "Speech" }, // myrmidon(1.6.1 VOICE-STT C)
         ],
       }),
     );
@@ -187,6 +188,7 @@ describe("CompanySettingsNav", () => {
       "wip-limit", // myrmidon(1.6.1 WIP-LIMIT B)
 
       "castes", // myrmidon(1.6.1 MODEL-PROVIDERS C)
+      "voice-stt", // myrmidon(1.6.1 VOICE-STT C)
     ]);
 
     await act(async () => {
