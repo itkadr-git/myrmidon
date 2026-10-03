@@ -79,10 +79,7 @@ Myrmidon, — колония: координация метками в обще�
   ([cto-chat-planner](docs/myrmidon/guides/cto-chat-planner.ru.md)); чат
   с Полководцем в оболочке 2.0 даёт тому же потоку планирования экран —
   ввод свободным текстом, предложенный эпик только на чтение
-  ([commander-chat](docs/myrmidon/guides/commander-chat.ru.md)); мостовой
-  чат адресует любого агента компании через `@<алиас>`, ответ с префиксом
-  приходит в тот же тред
-  ([telegram-alias-addressing](docs/myrmidon/guides/telegram-alias-addressing.ru.md)).
+  ([commander-chat](docs/myrmidon/guides/commander-chat.ru.md)).
 - **Регламенты компании в вики.** Правила, по которым работают агенты, —
   страницы вики с аудиторией из ролей: правка добавляет ревизию-черновик и
   не меняет то, что читает флот, board одобряет или откатывает, а
