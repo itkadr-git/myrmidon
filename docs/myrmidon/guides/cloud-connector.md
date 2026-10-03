@@ -167,9 +167,10 @@ Removing a root removes its grants but keeps the journal.
 Settings → Clouds (`company/settings/clouds`), owner-only. It shows the
 connected accounts (with a **Connect** action per provider), the roots with
 their kind (`in the connected account` / `shared with us (read only)`), the
-folder tree of a root, the grants (agent / caste / everyone, `ro`/`rw`), and
-the journal. The screen talks only to the owner API above; the token value is
-never shown.
+grants (agent / caste / everyone, `ro`/`rw`), and the journal. The screen does
+not browse a folder tree: the owner-side tree route exists, but the screen
+does not call it — agents list folders with the `cloud_list` tool. The screen
+talks only to the owner API above; the token value is never shown.
 
 ## Limitations
 
@@ -215,7 +216,8 @@ POST   /api/mcp/cloud-tools                                — agent MCP (JSON-R
 ## Operator notes
 
 - The divergence registry rows are CLOUD-CONNECTOR, CLOUD-CONNECTOR-B,
-  CLOUD-CONNECTOR-C and CLOUD-CONNECTOR-MCP in
+  CLOUD-CONNECTOR-C, CLOUD-CONNECTOR-MCP, CLOUD-CONNECTOR-IDENTITY and
+  CLOUD-CONNECTOR-UI in
   [../DIVERGENCE.md](../DIVERGENCE.md); the module is
   `server/src/myrmidon/cloud-connector/`, mounted in `server/src/app.ts`; the
   screen is `ui/src/components/myrmidon/clouds/`.

@@ -170,8 +170,10 @@ OAuth живёт в хранилище секретов инстанса как 
 Настройки → Clouds (`company/settings/clouds`), только для владельца. Экран
 показывает подключённые аккаунты (с действием **Connect** на каждого
 провайдера), корни с их видом (`in the connected account`,
-`shared with us (read only)`), дерево папок корня, доступы (агент / каста /
-все, `ro`/`rw`) и журнал. Экран ходит только в владельческий API выше;
+`shared with us (read only)`), доступы (агент / каста / все, `ro`/`rw`) и
+журнал. Дерева папок на экране нет: владельческий маршрут дерева существует,
+но экран его не вызывает — агенты перечисляют папки инструментом
+`cloud_list`. Экран ходит только в владельческий API выше;
 значение токена не показывается никогда.
 
 ## Ограничения
@@ -218,7 +220,8 @@ POST   /api/mcp/cloud-tools                                — MCP агента 
 ## Заметки оператора
 
 - Строки реестра отличий — CLOUD-CONNECTOR, CLOUD-CONNECTOR-B,
-  CLOUD-CONNECTOR-C и CLOUD-CONNECTOR-MCP в
+  CLOUD-CONNECTOR-C, CLOUD-CONNECTOR-MCP, CLOUD-CONNECTOR-IDENTITY и
+  CLOUD-CONNECTOR-UI в
   [../DIVERGENCE.md](../DIVERGENCE.md); модуль —
   `server/src/myrmidon/cloud-connector/`, подключён в `server/src/app.ts`;
   экран — `ui/src/components/myrmidon/clouds/`.
