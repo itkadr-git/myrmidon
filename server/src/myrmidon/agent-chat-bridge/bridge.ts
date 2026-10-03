@@ -41,7 +41,7 @@ import {
 import { telegramDmConversationsEnabled } from "./settings.js";
 // myrmidon(X9b): @<alias> addressing — alias resolution plus the reply prefix
 // and the first-contact context quote for an addressed agent's turn.
-import { resolveTelegramAddressee, type TelegramAddressee } from "./addressing.js";
+import { resolveBridgeAddressee, type TelegramAddressee } from "./addressing.js";
 import { buildMentionedChatContext } from "./cross-channel.js";
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -639,7 +639,7 @@ export async function afterTelegramDmMessage(input: {
 
 /**
  * myrmidon(X9b): resolves the @<alias> addressee of an inbound bridged
- * Telegram message. Only same-company agents match (resolveTelegramAddressee
+ * Telegram message. Only same-company agents match (resolveBridgeAddressee
  * scopes the lookup to `companyId`); a message with no resolvable @-token
  * returns null and the turn keeps the vendor/X8b assigned-agent path, byte
  * for byte.
@@ -652,7 +652,7 @@ export async function resolveBridgedAddressee(
     text: string;
   },
 ): Promise<TelegramAddressee | null> {
-  return resolveTelegramAddressee(db, input);
+  return resolveBridgeAddressee(db, input);
 }
 
 /**

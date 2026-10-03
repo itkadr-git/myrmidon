@@ -49,7 +49,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "../../__tests__/helpers/embedded-postgres.js";
 import {
-  resolveTelegramAddressee,
+  resolveBridgeAddressee,
   stripLeadingMentionToken,
   extractMentionTokens,
 } from "./addressing.js";
@@ -518,21 +518,21 @@ describeEmbeddedPostgres("@<alias> addressing in the bridged Telegram chat (X9b)
   it("resolves an @<alias> to the same-company agent by alias, then name, then title", async () => {
     const fixture = await seedCompany();
     // alias from adapter_config
-    const byAlias = await resolveTelegramAddressee(db, {
+    const byAlias = await resolveBridgeAddressee(db, {
       companyId: fixture.companyId,
       text: "@gip check the schedule",
       endpointAgentId: fixture.assignedAgentId,
     });
     expect(byAlias).toMatchObject({ agentId: fixture.gipAgentId, displayName: "ГИП" });
     // name fallback (no aliases on Maya)
-    const byName = await resolveTelegramAddressee(db, {
+    const byName = await resolveBridgeAddressee(db, {
       companyId: fixture.companyId,
       text: "hey @maya question",
       endpointAgentId: fixture.assignedAgentId,
     });
     expect(byName).toMatchObject({ agentId: fixture.assignedAgentId, displayName: "Maya" });
     // nothing matches -> null, keeps the assigned-agent path
-    const none = await resolveTelegramAddressee(db, {
+    const none = await resolveBridgeAddressee(db, {
       companyId: fixture.companyId,
       text: "@stranger hello",
       endpointAgentId: fixture.assignedAgentId,
@@ -550,13 +550,13 @@ describeEmbeddedPostgres("@<alias> addressing in the bridged Telegram chat (X9b)
       .update(agents)
       .set({ name: "Other Supervisor", adapterConfig: { telegramAliases: ["other"] } })
       .where(eq(agents.id, fixtureB.gipAgentId));
-    const other = await resolveTelegramAddressee(db, {
+    const other = await resolveBridgeAddressee(db, {
       companyId: fixtureB.companyId,
       text: "@gip hello",
       endpointAgentId: fixtureB.assignedAgentId,
     });
     expect(other).toBeNull();
-    const own = await resolveTelegramAddressee(db, {
+    const own = await resolveBridgeAddressee(db, {
       companyId: fixtureA.companyId,
       text: "@gip hello",
       endpointAgentId: fixtureA.assignedAgentId,
