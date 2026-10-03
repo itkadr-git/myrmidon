@@ -46,6 +46,7 @@ import {
 // the same instance-settings experimental seam part E reads (part-A routes
 // are not merged yet; tests mock the area per the epic convention).
 // myrmidon(OPE-3789): the settings writer under test (part D gate).
+// myrmidon(TG-NOTIFY-D): the settings writer under test (part D gate).
 import { mutateTelegramNotifySettings } from "../myrmidon/telegram-notify/settings.js";
 import { isTelegramTopicThread } from "../myrmidon/telegram-notify/topic-inbound.js";
 

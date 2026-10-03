@@ -27,6 +27,7 @@ import type { PluginEntitlementKey } from "../myrmidon-plugin-entitlement.js";
 // myrmidon(DM-PROGRESS): live progress steps of the bridged Telegram DM status message.
 import type { TelegramDmProgressSettings } from "../myrmidon-telegram-dm-progress.js";
 // myrmidon(OPE-3789): TG-NOTIFY settings document (part A routes / part D topic inbound).
+// myrmidon(TG-NOTIFY-D): TG-NOTIFY settings document (part A routes / part D topic inbound).
 import type { TelegramNotifySettings } from "../myrmidon-telegram-notify.js";
 
 export const DAILY_RETENTION_PRESETS = [3, 7, 14] as const;
@@ -219,6 +220,7 @@ export interface InstanceGeneralSettings {
    */
   agentMemory?: AgentMemorySettings;
    * myrmidon(OPE-3789): TG-NOTIFY settings changed from part A's
+   * myrmidon(TG-NOTIFY-D): TG-NOTIFY settings changed from part A's
    * `GET/PATCH /api/myrmidon/telegram-notify` routes. Absent means every
    * surface is off; kept in sync with the validator of the same field.
   telegramNotify?: TelegramNotifySettings;

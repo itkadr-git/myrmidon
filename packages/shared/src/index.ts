@@ -2846,4 +2846,5 @@ export * from "./myrmidon-review-routing.js";
 // Settings contract, verdict-marker parser and activity actions.
 export * from "./myrmidon-review-rework.js";
 // myrmidon(OPE-3789): TG-NOTIFY settings contract shared by the routes (part A)
+// myrmidon(TG-NOTIFY-D): TG-NOTIFY settings contract shared by the routes (part A)
 // and the topic-inbound consumers (part D).

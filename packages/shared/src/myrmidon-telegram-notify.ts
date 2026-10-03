@@ -2,6 +2,7 @@
 // changeable company-level document that says what the board sends to the
 // owner in Telegram: the daily digest, error notifications, inbound rules,
 // escalation routing and head-bot proactivity.
+// myrmidon(TG-NOTIFY-D): TG-NOTIFY settings contract (1.6.1, part A/D shared).
 //
 // This module is the shared half of the TG-NOTIFY-SETTINGS core (part A):
 // the server stores and serves the document, the board UI edits it, and both

@@ -412,7 +412,7 @@ import {
 // myrmidon(OPE-3789): inbound topic settings + gate for Telegram forum
 // vendor's addressed requirement when the owner enabled topic inbound.
 } from "../myrmidon/telegram-notify/settings.js";
-// myrmidon(OPE-3789): pure gate/title/body helpers for topic inbound.
+// myrmidon(TG-NOTIFY-D): pure gate/title/body helpers for topic inbound.
 import {
   topicInboundAdmitted,
   topicTaskBody,

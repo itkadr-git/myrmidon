@@ -45,6 +45,7 @@ import { pluginEntitlementKeysSchema } from "../myrmidon-plugin-entitlement.js";
 // message, stored in the same general settings row.
 import { telegramDmProgressSettingsSchema } from "../myrmidon-telegram-dm-progress.js";
 // myrmidon(OPE-3789): the TG-NOTIFY settings document stored in the same
+// myrmidon(TG-NOTIFY-D): the TG-NOTIFY settings document stored in the same
 // general settings row (routes from part A, consumers in part D).
 import { telegramNotifySettingsSchema } from "../myrmidon-telegram-notify.js";
 
@@ -168,6 +169,7 @@ export const instanceGeneralSettingsSchema = z.object({
   // /api/myrmidon/agent-memory; absent means "use the environment".
   agentMemory: agentMemorySettingsSchema.optional(),
   // myrmidon(OPE-3789): TG-NOTIFY settings (digest/errors/inbound/escalations/
+  // myrmidon(TG-NOTIFY-D): TG-NOTIFY settings (digest/errors/inbound/escalations/
   // proactivity) changed from part A's routes; absent means every surface is
   // off (the 1.6.1 release criterion).
   telegramNotify: telegramNotifySettingsSchema.optional(),
