@@ -25798,13 +25798,13 @@ export function heartbeatService(
     agent: Pick<typeof agents.$inferSelect, "id" | "role">,
     issueId: string,
   ) {
-    await recordSwarmClaimOnCheckoutImpl(db, instanceSettings, { run, agent, issueId });
+    await recordSwarmClaimOnCheckoutImpl({ db, settings: instanceSettings }, { run, agent, issueId });
   }
 
   async function releaseSwarmClaimsForRun(
     run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId">,
   ) {
-    await releaseSwarmClaimsForRunImpl(db, instanceSettings, run, enqueueWakeup);
+    await releaseSwarmClaimsForRunImpl({ db, settings: instanceSettings }, run, enqueueWakeup);
   }
 
   async function releaseIssueExecutionAndPromote(
