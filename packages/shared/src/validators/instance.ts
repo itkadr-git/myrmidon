@@ -20,6 +20,7 @@ import { browserBridgeSettingsSchema } from "../myrmidon-browser-bridge.js";
 // myrmidon(OPE-3789): the TG-NOTIFY settings document stored in the same
 // general settings row (routes from part A, consumers in part D).
 import { telegramNotifySettingsSchema } from "../myrmidon-telegram-notify.js";
+import { swarmClaimSettingsSchema } from "../myrmidon-swarm-claim.js";
 
 // myrmidon(PARALLEL-HELPERS): re-exported for the barrel so the settings page and the
 // /api/myrmidon/parallel-helpers route validate with the exact schema stored here.
@@ -68,6 +69,11 @@ export const instanceGeneralSettingsSchema = z.object({
   // proactivity) changed from part A's routes; absent means every surface is
   // off (the 1.6.1 release criterion).
   telegramNotify: telegramNotifySettingsSchema.optional(),
+  // myrmidon(1.6-SWARM): per-role queues with leased claims — the pilot flag,
+  // the lease TTL, the per-agent ceiling and the sweep interval, changed from
+  // /api/myrmidon/swarm-claim; absent means "use the environment variable, then
+  // the default (the pilot is off)".
+  swarmClaim: swarmClaimSettingsSchema.optional(),
 }).strict();
 
 export const patchInstanceGeneralSettingsSchema = z

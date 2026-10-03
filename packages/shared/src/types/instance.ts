@@ -9,6 +9,7 @@ import type { ParallelHelpersSettings } from "../myrmidon-parallel-helpers.js";
 import type { BrowserBridgeSettings } from "../myrmidon-browser-bridge.js";
 // myrmidon(OPE-3789): TG-NOTIFY settings document (part A routes / part D topic inbound).
 import type { TelegramNotifySettings } from "../myrmidon-telegram-notify.js";
+import type { SwarmClaimSettings } from "../myrmidon-swarm-claim.js";
 
 export const DAILY_RETENTION_PRESETS = [3, 7, 14] as const;
 export const WEEKLY_RETENTION_PRESETS = [1, 2, 4] as const;
@@ -85,6 +86,13 @@ export interface InstanceGeneralSettings {
    * surface is off; kept in sync with the validator of the same field.
    */
   telegramNotify?: TelegramNotifySettings;
+  /**
+   * myrmidon(1.6-SWARM): per-role queues with leased claims, changed from
+   * `GET`/`PATCH /api/myrmidon/swarm-claim`. Absent means "use the environment
+   * variable, then the default (the pilot is off)". Kept in sync with the
+   * validator of the same field (packages/shared/src/validators/instance.ts).
+   */
+  swarmClaim?: SwarmClaimSettings;
 }
 
 export interface InstanceExperimentalSettings {

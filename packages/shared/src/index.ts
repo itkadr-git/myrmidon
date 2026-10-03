@@ -2788,8 +2788,14 @@ export * from "./myrmidon-browser-bridge.js";
 export * from "./myrmidon-ui2-i18n.js";
 // myrmidon(S6): per-agent tool and connection permissions.
 export * from "./myrmidon-agent-tool-permissions.js";
+// myrmidon(ADMIN-AGENT): the board administrator flag on an agent.
+export * from "./myrmidon-agent-board-admin.js";
 // myrmidon(M2-B): per-agent gateway key names and fallback-chain cycle checks.
 export * from "./myrmidon-litellm-sync.js";
+// myrmidon(1.6-SWARM): per-role task queues with leased claims — the shared
+// contract of the core queue, the supervisor view and the pilot settings.
+export * from "./myrmidon-swarm-claim.js";
+
 // myrmidon(1.6-AUTONOMY): role × action-class matrix, verdict resolver and per-role regulations.
 export * from "./myrmidon-autonomy.js";
 // myrmidon(1.6-CTO-CHAT-B): the owner-message-to-epic proposal contract of the CTO chat.
