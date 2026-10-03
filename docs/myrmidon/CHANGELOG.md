@@ -458,6 +458,7 @@ dockergate and fleetd images together (see [deploy.md](deploy.md#deploy-the-boar
   is snapshotted into the append-only `agent_instructions_revisions` history, and any
   earlier revision can be restored through the API — the restore itself becomes a new
   revision. Guide: [guides/agent-instructions-revisions.md](guides/agent-instructions-revisions.md) (#273, #299).
+
 ### Deploy and reliability
 
 - Automatic rollback by health for the board and the bot fleet (R5-C). A failed
