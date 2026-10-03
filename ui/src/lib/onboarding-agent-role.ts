@@ -1,4 +1,4 @@
-import { AGENT_ROLE_LABELS, type AgentRole } from "@paperclipai/shared";
+import { AGENT_ROLE_LABELS } from "@paperclipai/shared";
 // myrmidon(CUSTOM-CASTES): the label lookup accepts a caste-directory
 // override; the built-in AGENT_ROLE_LABELS stay the fallback when the
 // directory is empty or unavailable.
@@ -46,7 +46,7 @@ const WIZARD_SUPPLIED_NAMES: ReadonlySet<string> = new Set([
  */
 export function nextAgentNameForRole(params: {
   currentName: string;
-  nextRole: AgentRole;
+  nextRole: string;
   labels?: Record<string, string>;
 }): string {
   const labels = { ...AGENT_ROLE_LABELS, ...params.labels } as Record<string, string>;
