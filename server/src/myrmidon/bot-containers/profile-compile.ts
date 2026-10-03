@@ -43,6 +43,7 @@ import {
 } from "./profile-input.js";
 import type { BotContainerActivitySink } from "./reconciler.js";
 import type { CompiledProfile } from "./types.js";
+import type { RegulationDelivery } from "../wiki-cortex/delivery.js"; // myrmidon(1.6-WIKI)
 
 export const HERMES_GATEWAY_ADAPTER_TYPE = "hermes_gateway";
 
@@ -53,6 +54,8 @@ export interface BotProfileAgentRecord {
   adapterType: string;
   adapterConfig: Record<string, unknown>;
   runtimeConfig: Record<string, unknown>;
+  /** myrmidon(1.6-WIKI): the agent's role key (`agents.role`), the audience of the wiki regulations. */
+  role?: string;
 }
 
 export interface BotProfileWarningSink {
@@ -136,6 +139,13 @@ export interface BotProfilePorts {
    * reconcile without a restart.
    */
   parallelHelpers?(): Promise<ParallelHelpersSettings | undefined>;
+  /** myrmidon(1.6-WIKI): the approved regulations of the agent's role, as workspace files.
+   *  Optional: without it a profile carries no regulations. `takenPaths` are the bundle's own
+   *  paths, so a regulation file never overwrites one the agent ships. */
+  loadRegulations?(
+    agent: BotProfileAgentRecord,
+    context: { takenPaths: readonly string[] },
+  ): Promise<RegulationDelivery>;
 }
 
 export interface BotProfileCompileOptions {
@@ -247,6 +257,14 @@ export function createBotProfileCompile(
         ports.parallelHelpers ? ports.parallelHelpers() : Promise.resolve(undefined),
       ]);
 
+    // myrmidon(1.6-WIKI): the approved regulations of the agent's role ride the profile's
+    // workspace files, so a bot picks up a newly approved text on its next run. The
+    // resolver reads the wiki on every compile, and the renderer is deterministic, so
+    // an unchanged wiki keeps the hash (and the container) unchanged.
+    const regulations = ports.loadRegulations
+      ? await ports.loadRegulations(agent, { takenPaths: instructions.files.map((file) => file.path) })
+      : { files: [], warnings: [] };
+
     // The gateway URL is already built from MYRMIDON_BOT_BOARD_URL (the board as the container reaches it).
     // MYRMIDON_HERMES_RUNTIME_MCP_URL_BASE is the host-side base (usually loopback), so it must not
     // rewrite this URL: inside a container that would point the bot at its own loopback.
@@ -283,7 +301,8 @@ export function createBotProfileCompile(
         // on a match. The instructions reach the model through the run request instead
         // (the adapter's `instructions` field, not scanned); see instructions-source.ts.
         instructions: "",
-        workspaceFiles: instructions.files,
+        // myrmidon(1.6-WIKI): the approved regulations of the agent's role, beside the bundle's files.
+        workspaceFiles: [...instructions.files, ...regulations.files],
         llmApiKey,
         apiServerKey: apiServerKey.value,
         paperclipApiKey: paperclipApiKey.value,
@@ -307,6 +326,7 @@ export function createBotProfileCompile(
       ...(paperclipApiKey.warnings ?? []),
       ...skills.warnings,
       ...instructions.warnings,
+      ...regulations.warnings,
       ...built.warnings,
       ...result.warnings,
     ]);

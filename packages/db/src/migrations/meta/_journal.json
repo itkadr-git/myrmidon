@@ -2012,6 +2012,13 @@
       "breakpoints": true
     },
     {
+      "idx": 290,
+      "version": "7",
+      "when": 1790953048608,
+      "tag": "0290_nice_champions",
+      "breakpoints": true
+    },
+    {
       "idx": 291,
       "version": "7",
       "when": 1790946850791,
@@ -2023,6 +2030,13 @@
       "version": "7",
       "when": 1790974687873,
       "tag": "0292_polite_payback",
+      "breakpoints": true
+    },
+    {
+      "idx": 293,
+      "version": "7",
+      "when": 1790946608989,
+      "tag": "0293_wandering_dagger",
       "breakpoints": true
     }
   ]
