@@ -41,6 +41,19 @@ version file to edit. Base Paperclip version is in the image label
   `scripts/myrmidon/deploy/deploy-from-job.test.mjs` (a deliberately broken
   image against the fake driver).
 
+### Budget enforcement modes (1.7 BUDGET-CONFIG B)
+
+- What a crossed spend budget limit does is now a mode, not a fixed stop:
+  `signal_only` (the default — the incident and the owner signal appear, but
+  the scope is not paused and runs start), `soft` (pause plus the "raise the
+  budget or keep paused" card; raising resumes the scope), `hard` (new runs
+  of the over-limit scope are refused with the budget reason). One mode for
+  the whole instance, changed live from Instance → General or
+  `PATCH /api/myrmidon/budget-enforcement` — no restart; every change is
+  audited, and the value's source (saved / environment / default) is shown.
+  The environment override is `MYRMIDON_BUDGET_ENFORCEMENT_MODE`. Guide:
+  [guides/budget-enforcement.md](guides/budget-enforcement.md).
+
 ### Maintenance: asynchronous exit and the post-deploy fleet check (EXIT-ASYNC + POST-DEPLOY-CHECK)
 
 - Leaving maintenance mode is asynchronous (#268): the `exit` call returns as
