@@ -107,6 +107,7 @@ describe("readTelegramNotifyInbound", () => {
   it("reads the telegramNotify key from instance settings general", async () => {
     const rows: Array<{ general: Record<string, unknown> | null }> = [
       { general: { telegramNotify: { inbound: { enabled: true } } } },
+      { general: { myrmidonTelegramNotifySettings: { c1: { inbound: { enabled: true } } } } },
     ];
     const db = {
       select: () => ({
@@ -121,6 +122,9 @@ describe("readTelegramNotifyInbound", () => {
     expect(await readTelegramNotifyInbound(db as never)).toEqual({
       enabled: true,
       requireMention: true,
+    });
+    expect(await readTelegramNotifyInboundDocument(db as never, "c1")).toEqual({
+      inbound: { enabled: true },
     });
   });
   it("falls back to the default when no row exists", async () => {

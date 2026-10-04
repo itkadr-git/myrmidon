@@ -415,6 +415,28 @@ describeEmbeddedPostgres(
           },
         })
         .where(eq(instanceSettings.singletonKey, "default"));
+      const base = { ...((row?.general ?? {}) as Record<string, unknown>) };
+      if (area === null) delete base[TELEGRAM_NOTIFY_SETTINGS_GENERAL_KEY];
+      else base[TELEGRAM_NOTIFY_SETTINGS_GENERAL_KEY] = area;
+      if (!row) {
+        await db
+          .insert(instanceSettings)
+          .values({ singletonKey: "default", general: base, experimental: {} });
+        return;
+      }
+      await db.update(instanceSettings).set({ general: base }).where(eq(instanceSettings.id, row.id));
+    }
+    async function enableTopicInbound(
+      companyId: string,
+      patch: { enabled: boolean; requireMention: boolean },
+    ) {
+      // The persisted shape: the sections at the top level next to the changelog.
+      const doc = {
+        ...emptyTelegramNotifyDocument().settings,
+        inbound: { enabled: patch.enabled, requireMention: patch.requireMention },
+        changelog: [],
+      };
+      await writeOwnerSettings({ [companyId]: doc });
     }
 
     async function clearTopicInbound() {
