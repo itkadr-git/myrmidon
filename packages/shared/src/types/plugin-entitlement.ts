@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { PaperclipPluginManifestV1 } from './plugin.js';
 
 // Plugin entitlement-related types
 export const pluginEntitlementSchema = z.object({
@@ -15,7 +16,7 @@ export const pluginEntitlementSchema = z.object({
 export type PluginEntitlement = z.infer<typeof pluginEntitlementSchema>;
 
 // Extended plugin manifest interface with entitlement requirement
-export interface PluginManifestWithEntitlement extends PluginManifest {
+export interface PluginManifestWithEntitlement extends PaperclipPluginManifestV1 {
   requiresEntitlement?: boolean; // Flag indicating if this plugin requires an entitlement key
 }
 
