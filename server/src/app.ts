@@ -112,6 +112,8 @@ import { myrmidonBaselineRoutes } from "./myrmidon/baseline/routes.js"; // myrmi
 import { myrmidonBotEgressRoutes } from "./myrmidon/bot-containers/egress-wiring.js"; // myrmidon(EGRESS-B)
 import { myrmidonBotCanaryRoutes } from "./myrmidon/bot-containers/canary-index.js"; // myrmidon(R5-B)
 import { myrmidonWorkspaceHygieneRoutes } from "./myrmidon/workspace-hygiene/index.js"; // myrmidon(WORKSPACE-HYGIENE)
+// myrmidon(BOT-DISK E): host disk usage threshold and signal
+import { myrmidonHostDiskRoutes } from "./myrmidon/host-disk/index.js"; // myrmidon(BOT-DISK E)
 import { myrmidonMetricsApp } from "./myrmidon/monitoring/metrics/index.js"; // myrmidon(1.7-METRICS)
 import { swarmClaimApp } from "./myrmidon/swarm-claim/index.js"; // myrmidon(1.6-SWARM)
 // myrmidon(EMERGENCY-STOP): immediate stop of the runs a draining pause left running
@@ -136,6 +138,7 @@ import {
 } from "./myrmidon/browser-bridge/index.js"; // myrmidon(EXTCASE-B)
 // myrmidon(EXT-CASE-OCR): the OCR path (PDF -> text in the bot's workspace)
 import { myrmidonOcrRoutes } from "./myrmidon/ocr/index.js";
+import { myrmidonSttRoutes } from "./myrmidon/stt/index.js"; // myrmidon(1.6.1 VOICE-STT A1)
 import { myrmidonEvalsRoutes } from "./myrmidon/evals/index.js"; // myrmidon(1.6-EVALS)
 // myrmidon(TRACING-HEALTH): LLM tracing health check (GET /api/myrmidon/tracing/health)
 import { myrmidonTracingHealthRoutes } from "./myrmidon/tracing-health/index.js"; // myrmidon(TRACING-HEALTH)
@@ -863,6 +866,7 @@ export async function createApp(
   api.use(myrmidonBotEgressRoutes(db)); // myrmidon(EGRESS-B)
   api.use(myrmidonBotCanaryRoutes(db)); // myrmidon(R5-B)
   api.use(myrmidonWorkspaceHygieneRoutes(db)); // myrmidon(WORKSPACE-HYGIENE)
+  api.use(myrmidonHostDiskRoutes(db)); // myrmidon(BOT-DISK E)
   api.use(swarmClaimApp({
     db,
     settings: instanceSettingsService(db),
@@ -881,6 +885,7 @@ export async function createApp(
   api.use(accessHubRoutes(db)); // myrmidon(SEC1): access-hub routes
   api.use(myrmidonBrowserBridgeRoutes(db)); // myrmidon(EXTCASE-B): bridge panel (codes, devices, allowlist)
   api.use(myrmidonOcrRoutes(db)); // myrmidon(EXT-CASE-OCR): company OCR MCP endpoint (ocr.pdf)
+  api.use(myrmidonSttRoutes(db)); // myrmidon(1.6.1 VOICE-STT A1)
   api.use(myrmidonEvalsRoutes(db)); // myrmidon(1.6-EVALS): reference-task evals (judge runs, scores, verdict)
   api.use(myrmidonTracingHealthRoutes(db)); // myrmidon(TRACING-HEALTH): LLM tracing health check
   api.use(myrmidonCtoChatRoutes(db)); // myrmidon(1.6-CTO-CHAT-B): board chat planner (owner text -> proposed epic)

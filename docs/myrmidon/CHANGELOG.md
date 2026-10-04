@@ -10,6 +10,46 @@ version file to edit. Base Paperclip version is in the image label
 
 ## Unreleased
 
+### Maintenance: asynchronous exit and the post-deploy fleet check (EXIT-ASYNC + POST-DEPLOY-CHECK)
+
+- Leaving maintenance mode is asynchronous (#268): the `exit` call returns as
+  soon as the window is marked `leaving`, and the leave tail (resuming the
+  queued wake backlog, the exit hook, retiring the window) runs on the
+  maintenance tick (`MYRMIDON_MAINTENANCE_TICK_SEC`, default 5 s). `leaving`
+  already reopens admission, so the fleet keeps working while the tail runs.
+- The deploy waits on the state, not on the HTTP call: after the exit POST,
+  `deploy.sh` polls the maintenance state until the instance window is `off`,
+  bounded by `MAINTENANCE_EXIT_WAIT_SEC` (default 120 s). A timeout is logged
+  loudly and does not fail an already switched and healthy deploy; a failed
+  exit request still aborts it.
+- The deploy ends with a read-only post-deploy fleet check (step 9,
+  `post_deploy_fleet_check`): with `BOARD_API_URL` and `BOARD_COMPANY_ID` set
+  it asks the board for issues that are `blocked` with an update since the
+  deploy started and re-reads the maintenance state. A hit, an unreadable
+  board or a window that did not retire prints `degraded: ...` and the run
+  ends with `DEPLOY DEGRADED` — the verdict does not fail a switched and
+  healthy deploy. Without the two settings the check is skipped.
+
+### WIP limit (WIP-LIMIT parts A + B)
+
+- The per-agent work-in-progress limit: a company-wide default and
+  per-agent overrides edited on the "WIP limit" screen in Company Settings
+  (sidebar item after Autonomy); each agent's live
+  `in progress + in review` load shows in the screen's table, as a
+  `wip/limit` badge on every agent row of the agents page (red over the
+  limit, bare count when the limit is off, no badge without a status
+  entry), and in the attention feed (source kind `wip_limit`, one card per
+  over-limit agent). A periodic sweep on the heartbeat scheduler (300 s)
+  writes one system-notice comment per over-limit agent per UTC day
+  (dedup key `wip-limit:<agentId>:<utc-day>`) on the agent's most recent
+  in-progress task. The settings live in
+  `instance_settings.general.wipLimit` — no environment variables; an
+  absent limit means count-only (status and badge still work, nothing
+  signals). A lead (an agent with direct reports) has an implementation
+  limit of 0 — any task it holds in flight is over the limit by
+  definition. See [wip-limit](guides/wip-limit.md).
+
+
 ### Telegram notification settings UI (TG-NOTIFY-SETTINGS part F)
 
 - The "Telegram notifications" panel on the System screen of the 2.0 UI: all
@@ -21,7 +61,37 @@ version file to edit. Base Paperclip version is in the image label
   merged the UI is covered by tests against the mocked JSON contract.
 ## 1.6.1
 
+### Role queues as instance settings (SWARM-SETTINGS-UI)
 
+- The pilot of the per-role task queues is set in the interface, without a
+  restart: the "Role queues (SWARM-CLAIM)" section of Instance → General
+  (`GET`/`PATCH /api/myrmidon/swarm-claim`, board reads, instance-admin
+  writes) holds the master switch, the pilot role set (the pilot on the dev
+  team: comma-separated roles, e.g. `engineer`), the pilot company set, the
+  lease TTL, the per-agent task ceiling, the sweep interval and the P0
+  preemption. The server re-resolves the row on every claim, checkout, sweep
+  tick and supervisor read: turning a role on takes effect within a minute,
+  and turning the pilot off releases the live leases at once — the PATCH does
+  it synchronously (the response reports the count) and the sweep repeats it
+  on its next pass with the release reason `pilot_disabled`. The `MYRMIDON_SWARM_*`
+  environment variables are now documented forced overrides: a set variable
+  beats the stored value for its key only, and every key of the GET answer
+  carries its source (`settings`, `env` or `default`) — both the settings
+  screen and the Swarm supervisor screen render where each value came from.
+  Every change appends a journal entry (who, what, when — newest first, kept
+  under `general.swarmClaimJournal`) plus the `instance.swarm_claim.updated`
+  activity row. The P0 preemption became a setting: off demotes the priority
+  rank to a tie-break, the queue is strictly oldest-first. Under the hood the
+  stored settings never survived the vendor general-settings write cycle (the
+  key was dropped on every write, so the pilot could in practice only be
+  enabled from the environment) — fixed together with the journal key.
+  See [SETTINGS.md](SETTINGS.md).
+
+
+
+### SWARM-IDLE-WAKE: Free agents wake when their role queue is not empty
+
+- Third pass of the swarm supervisor (`sweep.ts`, after the release and free passes): on each tick, for each pair of "role + ready queue + free agents", wakes the missing number of agents, in batches ≤5 (`MYRMIDON_SWARM_IDLE_WAKE_BATCH`, default 5, clamp 1–25), each wake bound to the top task of the queue (P0 first — `orderSwarmQueueCandidates`). Pure modules: `idle-wake.ts` (policy: no live lease, under task ceiling, not paused/error, no live run, idempotency key) and `idle-queue.ts` (DB reads: role-queue pairs, live claim counts, coverage check). Assigned tasks go to the role of their executor; tasks without an executor are offered to every role with agents. The active task limit is respected, castes remain a gate on the claim side (`caste_excluded`, CUSTOM-CASTES B) — the point of control; the caste ceiling is respected. Supervisor metric: new total `freeAgentsWithQueue` — "free agents when queue is not empty" — which the pass should keep at 0 (unassigned tasks are now visible to roles with agents). Wakes go only through the existing `enqueueWakeup` (pause, maintenance, limits, budget — all gates preserved); the capture happens on checkout of the awakened run. The "one TTL + sweep interval" criterion is covered by a test (interval ≤ TTL/3). Docs: `MYRMIDON_SWARM_IDLE_WAKE_BATCH` in SETTINGS.md/SETTINGS.ru.md; skill `skills/paperclip/SKILL.md` supplemented with self-capture fallback (`POST /api/myrmidon/companies/{companyId}/swarm-claim/claim`).
 
 ### Custom castes, consumers (CUSTOM-CASTES B)
 
@@ -38,7 +108,8 @@ version file to edit. Base Paperclip version is in the image label
   are unchanged — the caste key is the role string, the CEO checks stay
   byte-identical, and custom roles keep working through explicit grants.
   Regression tests pin all of the above, including "moving an agent to a
-  caste changes no autonomy verdict".
+  caste changes no autonomy verdict". The behavior contract is documented
+  in [SETTINGS.md](SETTINGS.md) (section "CUSTOM-CASTES B").
 
 ### Stale-block watchdog (STALE-BLOCK part B)
 
@@ -50,7 +121,8 @@ version file to edit. Base Paperclip version is in the image label
   gate/event. Dead blocked-by edges are removed through the ordinary issue
   update path, the task returns to `in_progress`, and one system comment
   names the cause. A task with a live reason is untouched. Opt-in via
-  `MYRMIDON_STALE_BLOCK_ENABLED` (default 0).
+  `MYRMIDON_STALE_BLOCK_ENABLED` (default 0). Guide:
+  [guides/stale-block.md](guides/stale-block.md).
 - One new attention source kind `stale_block`: a lifted block raises one
   card for the lead and the operator, computed on the fly from a
   process-level signal registry (no new store); cards fade after
@@ -73,6 +145,7 @@ version file to edit. Base Paperclip version is in the image label
   "spent" only when no monthly budget is configured, ending the
   "$0 of $0" placeholder.
 
+
 ### Board administrators from agents (ADMIN-AGENT part C)
 
 - The UI half of making an agent a board administrator. The agent card's
@@ -86,9 +159,27 @@ version file to edit. Base Paperclip version is in the image label
   board); a 403 from the API becomes a plain-language note under the toggle.
   The Company Settings **Members** page names every agent administrator: one
   table row per non-terminated flagged agent, with a **Board administrator**
-  badge and a link to the agent's Permissions tab. The grant semantics (the
-  permission keys, the grant snapshot, the self-toggle prohibition) are the
-  server half of the feature and merge separately. Operator guide:
+  badge and a link to the agent's Permissions tab. Operator guide:
+  [guides/agent-board-admin.md](guides/agent-board-admin.md).
+
+### Board administrator grant semantics (ADMIN-AGENT part A)
+
+- The server half of the board-administrator switch. `PATCH
+  /agents/:id/permissions` accepts an optional `boardAdmin` boolean: enabling
+  grants the fixed operator set — the 17 keys of
+  `BOARD_ADMIN_PERMISSION_KEYS` (`agents:create` … `joins:approve`), an
+  explicit list that never silently widens when the global permission
+  registry grows — and snapshots the set keys the agent already held into
+  `permissions.boardAdminSavedGrantKeys`; disabling revokes only the keys the
+  switch added, so personal grants (a separately issued `tasks:assign`)
+  survive, and re-enabling keeps the original snapshot. `GET /agents/:id`
+  resolves `access.boardAdmin` for the CEO, the stored flag, or a
+  pre-existing full set (read-time migration — nothing is rewritten until
+  the first toggle). Flipping the switch needs the company
+  `users:manage_permissions` right (board actors) or the same grant (agent
+  actors; an agent cannot grant board admin to itself — 403), and every flip
+  logs `agent.permissions_updated` with the `boardAdmin` value and the acting
+  principal. Same guide:
   [guides/agent-board-admin.md](guides/agent-board-admin.md).
 
 ## 1.6.0
@@ -159,6 +250,19 @@ version file to edit. Base Paperclip version is in the image label
   (part B: the schedule, the excerpt rules and the patch-closed verdict) and
   the registry API are documented in the same guide. Guide:
   [guides/stack-registry.md](guides/stack-registry.md).
+
+### alibaba-image connector (1.6 deployment)
+
+- Free image generation and editing for agents through the company's DashScope
+  key: the `alibaba-image` connector container from the private deployment
+  repository (tools `generate_image` and `edit_image`, registry-checked
+  qwen-image/wan/z-image models, async submit-then-poll, results into the
+  calling agent's workspace with a JSON sidecar, audit of argument
+  sizes only). Operator guide — bringing the container up in the deploy window
+  (port 8083, read-only key mount, shared workspace root), registering it as
+  an external MCP server and granting it to the work designer, the bbq SMM and
+  the designer agents, plus the per-family live smoke:
+  [guides/alibaba-image-connector.md](guides/alibaba-image-connector.md).
 
 ### Stack update cycle documentation (STACK-UPDATES part D)
 

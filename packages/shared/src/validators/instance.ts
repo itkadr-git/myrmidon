@@ -10,6 +10,7 @@ import { feedbackDataSharingPreferenceSchema } from "./feedback.js";
 import { shapeWithoutDefaults } from "./partial.js";
 // myrmidon(WORKSPACE-HYGIENE): workspace disk quotas that can be changed while the server runs
 import { workspaceHygieneLimitsSchema } from "../myrmidon-workspace-hygiene.js";
+import { hostDiskSettingsSchema } from "../myrmidon-host-disk.js";
 // myrmidon(C0): run admission limits that can be changed while the server runs
 import { runLimitsSchema } from "../myrmidon-runtime-limits.js";
 // myrmidon(PARALLEL-HELPERS): company ceiling/default for parallel helper
@@ -57,6 +58,10 @@ export const instanceGeneralSettingsSchema = z.object({
   // page and /api/myrmidon/runtime-limits; absent means "use the environment
   // variable, then the default" (see packages/shared/src/myrmidon-runtime-limits.ts).
   runLimits: runLimitsSchema.optional(),
+  // myrmidon(BOT-DISK E): the host disk usage threshold, changed from
+  // /api/myrmidon/host-disk; absent means "use the environment variable, then
+  // the default (85)".
+  hostDisk: hostDiskSettingsSchema.optional(),
   // myrmidon(PARALLEL-HELPERS): company ceiling and default for the "Parallel
   // helpers" block on an agent card, changed from the instance settings page
   // and /api/myrmidon/parallel-helpers; absent means the module defaults apply
@@ -82,6 +87,12 @@ export const instanceGeneralSettingsSchema = z.object({
     enabled: z.boolean().optional(),
     path: z.string().optional(),
   }).optional(),
+  // myrmidon(1.6.1 SWARM-SETTINGS-UI): the change journal of the swarm-claim
+  // pilot settings (who changed what, and when), kept by the settings service
+  // under `general.swarmClaimJournal` and read by GET /api/myrmidon/swarm-claim.
+  // Stored passthrough, never validated here beyond being a list-shaped value
+  // the service re-reads defensively.
+  swarmClaimJournal: z.array(z.unknown()).optional(),
   // myrmidon(1.6.1-WIP-LIMIT-A): per-agent WIP limits — the company default and
   // per-agent overrides, changed from /api/myrmidon/companies/:id/wip-limit/settings;
   // absent means the feature counts but never signals (all limits null).
