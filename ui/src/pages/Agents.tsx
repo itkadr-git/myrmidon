@@ -1,5 +1,4 @@
 import { useAgentChatEnabled } from "../hooks/useAgentChatEnabled";
-import { useTranslation } from "@/i18n";
 import { useState, useEffect, useMemo, lazy, Suspense } from "react";
 import { Link, useNavigate, useLocation } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
@@ -216,7 +215,6 @@ function filterOrgTree(nodes: OrgNode[], tab: FilterTab, builtInAgentIds: Set<st
 export type AgentsView = "tree" | "list" | "org";
 
 export function Agents({ initialView = "tree" }: { initialView?: AgentsView } = {}) {
-  const { t } = useTranslation();
   const agentChat = useAgentChatEnabled();
   const { selectedCompanyId } = useCompany();
   const { openNewAgent } = useDialogActions();

@@ -4,7 +4,7 @@
 // per-level indentation, a per-subtree agent count + running/error indicator
 // on collapsed parents, and a name search that auto-expands the branch of
 // every match. The flat list remains a toggle; this view is the default
-// (issue OPE-3915: 81 agents read as a tree, top level ≤ 10 nodes).
+// (81 agents read as a tree, top level ≤ 10 nodes).
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { ChevronRight, Search, Users } from "lucide-react";
 import { useTranslation } from "@/i18n";
