@@ -3165,8 +3165,7 @@ function buildExecutionWorkspaceCleanupEnv(input: {
   const env: NodeJS.ProcessEnv = sanitizeRuntimeServiceBaseEnv(process.env);
   writeProductEnv(env, "WORKSPACE_CWD", input.workspace.cwd ?? ""); // myrmidon(REBRAND-C)
   writeProductEnv(env, "WORKSPACE_PATH", input.workspace.cwd ?? ""); // myrmidon(REBRAND-C)
-  readProductEnvFrom(env, "WORKSPACE_WORKTREE_PATH") =
-    input.workspace.providerRef ?? input.workspace.cwd ?? "";
+  writeProductEnv(env, "WORKSPACE_WORKTREE_PATH", input.workspace.providerRef ?? input.workspace.cwd ?? ""); // myrmidon(REBRAND-C)
   writeProductEnv(env, "WORKSPACE_BRANCH", input.workspace.branchName ?? ""); // myrmidon(REBRAND-C)
   writeProductEnv(env, "WORKSPACE_BASE_CWD", input.projectWorkspaceCwd ?? ""); // myrmidon(REBRAND-C)
   writeProductEnv(env, "WORKSPACE_REPO_ROOT", input.projectWorkspaceCwd ?? ""); // myrmidon(REBRAND-C)
@@ -6147,7 +6146,10 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
     uiDevMiddlewareHasTransport
     && isPaperclipDevRuntimeService({ serviceName, command })
   ) {
-    readProductEnvFrom(env, "UI_DEV_MIDDLEWARE") ??= "true";
+    // myrmidon(REBRAND-C): default-on via both spellings.
+    if (readProductEnvFrom(env, "UI_DEV_MIDDLEWARE") === undefined) {
+      writeProductEnv(env, "UI_DEV_MIDDLEWARE", "true");
+    }
   }
   if (port) {
     const portEnvKey = asString(portConfig.envKey, "PORT");
