@@ -45,7 +45,7 @@ import { createHash } from "node:crypto";
 
 import type { ParallelHelpersCard, ResolvedParallelHelpers } from "@paperclipai/shared";
 import type { CompiledProfile, CompiledProfileFile } from "./types.js";
-import { writeYamlDocument, type YamlMapping } from "./deterministic-yaml.js";
+import { writeYamlDocument, type YamlMapping, type YamlNode } from "./deterministic-yaml.js";
 
 // ---------------------------------------------------------------------------
 // Input
@@ -167,6 +167,41 @@ export interface HermesProfileHindsightSettings {
 }
 
 /**
+ * myrmidon(BOT-LSP): the bot's `lsp` block in config.yaml (Hermes
+ * `hermes_cli/config_defaults.py` "lsp"). Each field is written only when set;
+ * an unset field keeps Hermes' own default. Which values a bot gets is decided
+ * outside the compiler (profile-input.ts, by role and card — see
+ * packages/shared/src/myrmidon-bot-lsp.ts).
+ */
+export interface HermesProfileLspSettings {
+  /**
+   * Whether to enable language server protocol support for code assistance.
+   * Default: true
+   */
+  enabled?: boolean;
+  /**
+   * Timeout in seconds after which idle language servers are shut down.
+   * Default: 600 (10 minutes), recommended: 120 for development to save memory
+   */
+  idleTimeout?: number;
+  /**
+   * `lsp.exclude_roots`: workspace roots (glob patterns) where no language
+   * server starts, e.g. a monorepo whose typecheck runs on the build server.
+   */
+  excludeRoots?: string[];
+  /**
+   * `lsp.wait_mode`: "document" (wait for the edited file's diagnostics) or
+   * "full" (also workspace-wide diagnostics). Hermes default: "document".
+   */
+  waitMode?: string;
+  /**
+   * `lsp.servers`: per-server overrides keyed by Hermes' registry id (e.g.
+   * `typescript`): `disabled`, `command`, `env`, `initialization_options`.
+   */
+  servers?: Record<string, YamlNode>;
+}
+
+/**
  * Instance-wide LLM gateway settings (e.g. an internal OpenAI-compatible
  * gateway endpoint) — not carried by the agent card, merged in once per
  * instance by the caller (G3), the same way
@@ -257,6 +292,8 @@ export interface HermesProfileInstanceDefaults {
   modelContextLengths?: Record<string, number>;
   /** myrmidon(BOT-RUNTIME-TUNING-B): instance-wide auxiliary model defaults. */
   auxiliary?: HermesProfileAuxiliaryDefaults;
+  /** myrmidon(BOT-LSP): instance-wide LSP settings to control language server behavior. */
+  lsp?: HermesProfileLspSettings;
 }
 
 export interface HermesProfileInput {
@@ -311,6 +348,8 @@ export interface HermesProfileInput {
   paperclipApiUrl: string;
   /** Becomes PAPERCLIP_API_KEY in .env — this bot's board API key. */
   paperclipApiKey: string;
+  /** myrmidon(BOT-LSP): per-agent LSP settings to override instance defaults. */
+  lsp?: HermesProfileLspSettings;
 }
 
 // ---------------------------------------------------------------------------
@@ -663,6 +702,47 @@ function buildModelContextLength(
   return undefined;
 }
 
+type MutableYamlMapping = { [key: string]: YamlNode };
+
+function isYamlMapping(node: YamlNode): node is YamlMapping {
+  return typeof node === "object" && node !== null && !Array.isArray(node);
+}
+
+/** Deep merge of two YAML mappings: `over` wins; nested mappings merge, lists and scalars are replaced. */
+function mergeYamlMappings(base: YamlMapping, over: YamlMapping): YamlMapping {
+  const merged: MutableYamlMapping = { ...base };
+  for (const [key, value] of Object.entries(over)) {
+    if (value === undefined) continue;
+    const current = merged[key];
+    merged[key] = isYamlMapping(current) && isYamlMapping(value) ? mergeYamlMappings(current, value) : value;
+  }
+  return merged;
+}
+
+/** One level of LSP settings -> Hermes' `lsp` keys (only the fields that are set). */
+function lspSettingsToYaml(settings: HermesProfileLspSettings | undefined): YamlMapping {
+  if (!settings) return {};
+  const out: MutableYamlMapping = {};
+  if (settings.enabled !== undefined) out.enabled = settings.enabled;
+  if (settings.idleTimeout !== undefined) out.idle_timeout = settings.idleTimeout;
+  if (settings.excludeRoots && settings.excludeRoots.length > 0) out.exclude_roots = [...settings.excludeRoots];
+  if (settings.waitMode) out.wait_mode = settings.waitMode;
+  if (settings.servers && Object.keys(settings.servers).length > 0) out.servers = { ...settings.servers };
+  return out;
+}
+
+/**
+ * myrmidon(BOT-LSP): the `lsp` block from the instance default and the
+ * per-agent value. The agent wins field by field; `servers` merges per server
+ * id and per option (an agent option overrides the instance one, the rest
+ * stay). `exclude_roots` is a list, so the agent's list replaces the
+ * instance's. Undefined when neither level sets anything.
+ */
+function buildLspConfig(input: HermesProfileInput): YamlMapping | undefined {
+  const merged = mergeYamlMappings(lspSettingsToYaml(input.instanceDefaults.lsp), lspSettingsToYaml(input.lsp));
+  return Object.keys(merged).length > 0 ? merged : undefined;
+}
+
 function buildConfigYaml(input: HermesProfileInput, warnings: string[]): string {
   const { adapterConfig } = input;
   warnUnplacedVoiceModels(adapterConfig.models, warnings);
@@ -672,6 +752,9 @@ function buildConfigYaml(input: HermesProfileInput, warnings: string[]): string 
   // only ever pushed a single time per compile.
   const llmBaseUrl = nonEmpty(input.llm.baseUrl);
   const llmApiKeyEnv = resolveLlmApiKeyEnv(input.llm, warnings);
+
+  // Build LSP configuration
+  const lspConfig = buildLspConfig(input);
 
   const root: YamlMapping = {
     agent: {
@@ -690,6 +773,8 @@ function buildConfigYaml(input: HermesProfileInput, warnings: string[]): string 
       adapterConfig.models?.compressionSummary ?? input.instanceDefaults.auxiliary?.compressionModel,
     ),
     compression: buildCompression(input.instanceDefaults.compression, warnings),
+    // myrmidon(BOT-LSP): language server protocol settings
+    lsp: lspConfig,
     // myrmidon(PARALLEL-HELPERS): delegate_task's own limits and child model.
     delegation: buildDelegation(input.parallelHelpers),
     fallback_model: buildFallbackModelSequence(

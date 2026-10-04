@@ -155,6 +155,8 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   // myrmidon(1.6.1-WIP-LIMIT-A): a workload-oversignal sits below every
   // blocking kind but above nothing else — it is advice, not a stop.
   wip_limit: 14,
+  // myrmidon(BOT-DISK-A): bot disk lifecycle events.
+  bot_disk_lifecycle: 15,
 };
 
 const PENDING_INTERACTION_STATUSES = ["pending"] as const;

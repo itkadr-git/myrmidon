@@ -102,6 +102,7 @@ import { myrmidonDeployJobsRoutes } from "./myrmidon/deploy-jobs/index.js"; // m
 import { myrmidonRuntimeLimitsRoutes } from "./myrmidon/runtime-limits/index.js"; // myrmidon(C0)
 import { myrmidonBudgetEnforcementRoutes } from "./myrmidon/budget-enforcement/index.js"; // myrmidon(1.7-BUDGET-CONFIG-B)
 import { myrmidonParallelHelpersRoutes } from "./myrmidon/parallel-helpers/index.js"; // myrmidon(PARALLEL-HELPERS)
+import { myrmidonBotLspRoutes } from "./myrmidon/bot-lsp/index.js"; // myrmidon(BOT-LSP-DEFAULTS)
 import { myrmidonReplayBlockedRoutes } from "./myrmidon/replay-blocked/index.js"; // myrmidon(N1)
 import { aboutRoutes } from "./myrmidon/about/routes.js"; // myrmidon(ABOUT)
 import { myrmidonBotContainerRoutes } from "./myrmidon/bot-containers/routes-wiring.js"; // myrmidon(W2b)
@@ -114,6 +115,7 @@ import { myrmidonBotCanaryRoutes } from "./myrmidon/bot-containers/canary-index.
 import { myrmidonWorkspaceHygieneRoutes } from "./myrmidon/workspace-hygiene/index.js"; // myrmidon(WORKSPACE-HYGIENE)
 // myrmidon(BOT-DISK E): host disk usage threshold and signal
 import { myrmidonHostDiskRoutes } from "./myrmidon/host-disk/index.js"; // myrmidon(BOT-DISK E)
+import { myrmidonBotDiskLifecycleRoutes } from "./myrmidon/bot-containers/bot-disk-routes.js"; // myrmidon(BOT-DISK-A)
 import { myrmidonMetricsApp } from "./myrmidon/monitoring/metrics/index.js"; // myrmidon(1.7-METRICS)
 import { swarmClaimApp } from "./myrmidon/swarm-claim/index.js"; // myrmidon(1.6-SWARM)
 // myrmidon(EMERGENCY-STOP): immediate stop of the runs a draining pause left running
@@ -856,6 +858,7 @@ export async function createApp(
   api.use(myrmidonRuntimeLimitsRoutes(db)); // myrmidon(C0)
   api.use(myrmidonBudgetEnforcementRoutes(db)); // myrmidon(1.7-BUDGET-CONFIG-B)
   api.use(myrmidonParallelHelpersRoutes(db)); // myrmidon(PARALLEL-HELPERS)
+  api.use(myrmidonBotLspRoutes(db)); // myrmidon(BOT-LSP-DEFAULTS)
   api.use(myrmidonReplayBlockedRoutes(db)); // myrmidon(N1)
   api.use(aboutRoutes()); // myrmidon(ABOUT)
   api.use(myrmidonBotContainerRoutes(db)); // myrmidon(W2b)
@@ -867,6 +870,7 @@ export async function createApp(
   api.use(myrmidonBotCanaryRoutes(db)); // myrmidon(R5-B)
   api.use(myrmidonWorkspaceHygieneRoutes(db)); // myrmidon(WORKSPACE-HYGIENE)
   api.use(myrmidonHostDiskRoutes(db)); // myrmidon(BOT-DISK E)
+  api.use(myrmidonBotDiskLifecycleRoutes(db)); // myrmidon(BOT-DISK-A)
   api.use(swarmClaimApp({
     db,
     settings: instanceSettingsService(db),
