@@ -93,7 +93,7 @@ describe("botKeyForAgent / botContainerSpec", () => {
   it("builds a spec that carries the driver's network through unchanged", () => {
     const spec = botContainerSpec(
       "agent-a",
-      { image: "myrmidon-hermes:1.1.0", memoryMb: 1536, cpus: 1, pidsLimit: 256, extraMounts: [] },
+      { image: "myrmidon-hermes:1.1.0", memoryMb: 1536, cpus: 1, pidsLimit: 256, extraMounts: [], hasSharedMountAccess: false },
       "myrmidon-bots",
     );
     expect(spec).toEqual({
@@ -104,6 +104,7 @@ describe("botKeyForAgent / botContainerSpec", () => {
       pidsLimit: 256,
       network: "myrmidon-bots",
       extraMounts: [],
+      hasSharedMountAccess: false,
     });
   });
 
@@ -116,6 +117,7 @@ describe("botKeyForAgent / botContainerSpec", () => {
         cpus: 1,
         pidsLimit: 256,
         extraMounts: [{ source: "/srv/shared/sources", containerPath: "/srv/shared/sources", readOnly: true }],
+        hasSharedMountAccess: false,
       },
       "myrmidon-bots",
     );

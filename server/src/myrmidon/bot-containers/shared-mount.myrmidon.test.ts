@@ -11,7 +11,7 @@ import {
   ensureSharedDirectory,
   migrateHardlinkCopies,
   prepareBotSharedMount,
-} from "./shared-mount";
+} from "./shared-mount.js";
 
 describe("shared-mount", () => {
   let tempDir: string;
