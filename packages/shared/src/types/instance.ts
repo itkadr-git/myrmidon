@@ -2,7 +2,7 @@ import type { FeedbackDataSharingPreference } from "./feedback.js";
 // myrmidon(WORKSPACE-HYGIENE): the workspace quotas stored in instance settings
 import type { WorkspaceHygieneLimits } from "../myrmidon-workspace-hygiene.js";
 // myrmidon(C0): the run admission limits stored in instance settings
-import type { RunLimits } from "../myrmidon-runtime-limits.js";
+import type { StoredRunLimits } from "../myrmidon-runtime-limits.js";
 import type { HostDiskSettings } from "../myrmidon-host-disk.js";
 // myrmidon(PARALLEL-HELPERS): the helper ceiling/default stored in instance settings
 import type { ParallelHelpersSettings } from "../myrmidon-parallel-helpers.js";
@@ -12,6 +12,7 @@ import type { BrowserBridgeSettings } from "../myrmidon-browser-bridge.js";
 import type { SwarmClaimSettings } from "../myrmidon-swarm-claim.js";
 // myrmidon(1.6.1-WIP-LIMIT-A): per-agent WIP limits of the same general settings row.
 import type { WipLimitSettings } from "../myrmidon-wip-limit.js";
+import type { BudgetEnforcementSettings } from "../myrmidon-budget-enforcement.js";
 
 export const DAILY_RETENTION_PRESETS = [3, 7, 14] as const;
 export const WEEKLY_RETENTION_PRESETS = [1, 2, 4] as const;
@@ -69,9 +70,10 @@ export interface InstanceGeneralSettings {
    * myrmidon(C0): run admission limits changed from the instance settings page
    * and `GET`/`PATCH /api/myrmidon/runtime-limits`. Absent means "use the
    * environment variable, then the default"; kept in sync with the validator of
-   * the same field (packages/shared/src/validators/instance.ts).
+   * the same field (packages/shared/src/validators/instance.ts). A row saved
+   * before 1.6.2 lacks `minFreeHostMemoryMb` (myrmidon 1.6.2 RUN-ADMISSION).
    */
-  runLimits?: RunLimits;
+  runLimits?: StoredRunLimits;
   /**
    * myrmidon(PARALLEL-HELPERS): company ceiling/default for parallel helper
    * subagents, changed from the instance settings page and
@@ -120,6 +122,14 @@ export interface InstanceGeneralSettings {
    * same field (packages/shared/src/validators/instance.ts).
    */
   wipLimit?: WipLimitSettings;
+  /**
+   * myrmidon(1.7-BUDGET-CONFIG-B): what a crossed budget limit does —
+   * signal only (default), pause with an owner card (soft), or refuse new
+   * runs (hard); changed from `GET`/`PATCH /api/myrmidon/budget-enforcement`.
+   * Kept in sync with the validator of the same field
+   * (packages/shared/src/validators/instance.ts).
+   */
+  budgetEnforcement?: BudgetEnforcementSettings;
 }
 
 export interface InstanceExperimentalSettings {
