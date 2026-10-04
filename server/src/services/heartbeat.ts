@@ -659,6 +659,13 @@ import {
   releaseSwarmClaimsForRunImpl,
 } from "../myrmidon/swarm-claim/hooks.js";
 import { scheduleQueuedResweep, sharedRunAdmission } from "../myrmidon/run-admission.js";
+// myrmidon(S2-hostcred): a run never inherits the host's GitHub credentials
+// myrmidon(B1c-restore): main (#206) already gates host-credential inheritance;
+// the import below is the same module main uses, restored after a rebase drop.
+import {
+  filterHostGitHubCredentialEnv,
+  resolveRunHostGitHubCredentials,
+} from "../myrmidon/host-github-credentials.js";
 // myrmidon(L3): pause drains instead of cancelling; resume wakes stranded work
 import {
   isSkippableStartupRecoveryConflict,
@@ -21230,11 +21237,15 @@ export function heartbeatService(
         ["local", "ssh"].includes(
           selectedEnvironmentForConfig?.driver ?? "local",
         );
+      // myrmidon(S2-hostcred): the run takes the managed side of the GitHub
+      // credential choice — host-credential inheritance is off unless the
+      // emergency switch is set. See ../myrmidon/host-github-credentials.ts.
+      const runHostGitHubCredentials = resolveRunHostGitHubCredentials(useHostGitHub);
       const aiBinding = agent.runtimeConfig?.aiConnection ? aiConnectionBindingSchema.parse(agent.runtimeConfig.aiConnection) : undefined;
       const { resolvedConfig, secretKeys, secretManifest } =
         await resolveExecutionRunAdapterConfig({
           managedAiCredentials: Boolean(aiBinding),
-          managedGitHubCredentials: !useHostGitHub,
+          managedGitHubCredentials: !runHostGitHubCredentials,
           companyId: agent.companyId,
           agentId: agent.id,
           adapterType: agent.adapterType,
@@ -22342,17 +22353,23 @@ export function heartbeatService(
             (entry): entry is [string, string] => typeof entry[1] === "string",
           ),
         ),
-        hostCredentials: useHostGitHub,
+        hostCredentials: runHostGitHubCredentials,
         // Networking is a controller-owned trust decision, independent of
         // whether GitHub is configured or a credential can be acquired.
         networkAccess:
           trustPreset.kind === "standard" &&
           process.env.PAPERCLIP_RUNNER_NETWORK_ACCESS !== "disabled",
       });
-      runtimeConfig = { ...runtimeConfig, env: gitExecutionEnv };
+      // myrmidon(S2-hostcred): belt to the decision above — even a host-mode
+      // probe or an upstream binding leaves no host credential name in the run
+      // environment. The emergency host mode keeps the vendor env untouched.
+      const runGitHubEnv = runHostGitHubCredentials
+        ? gitExecutionEnv
+        : filterHostGitHubCredentialEnv(gitExecutionEnv);
+      runtimeConfig = { ...runtimeConfig, env: runGitHubEnv };
       for (const key of MANAGED_GITHUB_TOKEN_KEYS) secretKeys.add(key);
-      context.githubAuthenticationMode = useHostGitHub ? "host" : "managed";
-      if (!useHostGitHub) {
+      context.githubAuthenticationMode = runHostGitHubCredentials ? "host" : "managed";
+      if (!runHostGitHubCredentials) {
         const githubBrokerToken = createRuntimeToolsToken({
           agentId: agent.id,
           companyId: agent.companyId,

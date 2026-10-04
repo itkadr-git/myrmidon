@@ -50,6 +50,8 @@ import {
   profileIdsInBindingOrder,
 } from "./tool-profile-binding-precedence.js";
 import { recordToolRuntimeAuditWriteFailure } from "./tool-runtime-metrics.js";
+// myrmidon(B1c): shared product-name constant for operator-visible texts
+import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
 
 type ToolAccessContext = {
   companyId: string;
