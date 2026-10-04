@@ -1133,7 +1133,14 @@ export function createToolGatewayService(
   }
 
   // In-memory cache for policy data with TTL
-  const policyCache = new Map<string, { data: any; timestamp: number }>();
+  const policyCache = new Map<string, {
+    data: {
+      profiles: Array<typeof toolProfiles.$inferSelect>;
+      profileBindings: Array<typeof toolProfileBindings.$inferSelect>;
+      policies: Array<typeof toolPolicies.$inferSelect>;
+    };
+    timestamp: number;
+  }>();
   const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
   /**
@@ -1142,21 +1149,21 @@ export function createToolGatewayService(
   async function getCachedPolicyData(cacheKey: string, companyId: string, agentId: string | null) {
     const now = Date.now();
     const cached = policyCache.get(cacheKey);
-    
+
     if (cached && (now - cached.timestamp) < CACHE_TTL_MS) {
       return cached.data;
     }
-    
-    // Fetch all required policy data
+
+    // Fetch policy data for this company only (single pass per request)
     const [profiles, profileBindings, policies] = await Promise.all([
-      db.select().from(toolProfiles),
-      db.select().from(toolProfileBindings),
-      db.select().from(toolPolicies),
+      db.select().from(toolProfiles).where(eq(toolProfiles.companyId, companyId)),
+      db.select().from(toolProfileBindings).where(eq(toolProfileBindings.companyId, companyId)),
+      db.select().from(toolPolicies).where(eq(toolPolicies.companyId, companyId)),
     ]);
-    
+
     const data = { profiles, profileBindings, policies };
     policyCache.set(cacheKey, { data, timestamp: now });
-    
+
     return data;
   }
 
@@ -1164,10 +1171,14 @@ export function createToolGatewayService(
    * Makes a tool access decision using cached policy data
    */
   async function decideToolAccessWithCache(
-    input: ToolAccessPolicyInput,
-    cachedData: { profiles: any[], profileBindings: any[], policies: any[] },
+    input: ToolAccessDecisionInput,
+    cachedData: {
+      profiles: Array<typeof toolProfiles.$inferSelect>;
+      profileBindings: Array<typeof toolProfileBindings.$inferSelect>;
+      policies: Array<typeof toolPolicies.$inferSelect>;
+    },
   ): Promise<ToolAccessDecision> {
-    return policyService.decideWithCachedData(input, cachedData.profiles, cachedData.profileBindings, cachedData.policies);
+    return policyService.decideWithCachedData(input, cachedData.policies, cachedData.profileBindings, cachedData.profiles);
   }
   const secrets = secretService(db);
   // Authentication produces a new session object for every operation. Keep
