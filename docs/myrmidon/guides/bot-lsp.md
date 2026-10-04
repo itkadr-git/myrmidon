@@ -1,133 +1,61 @@
-# BOT-LSP Configuration Guide
+# Bot language servers (BOT-LSP)
 
-This guide explains how to configure Language Server Protocol (LSP) settings for bots in the Myrmidon system.
+> Russian version: [bot-lsp.ru.md](bot-lsp.ru.md)
 
-## Overview
+Hermes starts a language server for every git worktree a bot edits in, to report diagnostics
+after an edit. On a TypeScript monorepo each one is a tsserver of about 1 GB, and
+typescript-language-server starts a second ("syntax") tsserver next to it; both stay for
+`idle_timeout` (600 s by default) after the last use. Most bots never write code, and the ones
+that do get the monorepo typecheck from the build server anyway, so Myrmidon decides the
+language-server mode per bot.
 
-The BOT-LSP feature allows controlling language server behavior in bot containers to optimize resource usage. This is particularly important for reducing memory consumption from tsserver processes that can accumulate on the host.
+## The policy
 
-## Configuration Structure
+| Bot | Mode by default |
+|---|---|
+| Role (caste) writes code: `engineer`, `qa`, `devops`, `reviewer`, `release` | `limited` |
+| Any other role, or no role | `off` |
 
-LSP settings can be configured at two levels:
+- `off` — `lsp.enabled: false`: no language server, no LSP event loop.
+- `limited` — one tsserver per worktree (`tsserver.useSyntaxServer: "never"`), no automatic
+  typings download (`disableAutomaticTypingAcquisition`), heap cap `maxTsServerMemory` 1024 MB,
+  `idle_timeout` 120 s.
+- `full` — Hermes' own defaults (nothing written).
 
-1. **Instance defaults** - Applied globally to all bots on the instance
-2. **Per-agent overrides** - Specific settings for individual agents that override instance defaults
+## Where to change it
 
-### Available Settings
+- **Instance policy** — Instance settings → General → "Bot language servers"
+  (`GET`/`PATCH /api/myrmidon/bot-lsp`): the coding roles (custom castes too), the mode for
+  coding and other roles, the idle timeout, the memory cap and excluded workspace roots. The
+  panel also shows how many bots run in each mode.
+- **One agent** — the agent card's "Language servers" section pins a mode
+  (`adapterConfig.lsp.mode`); "By role" removes the pin.
 
-#### `enabled` (boolean)
-- Controls whether LSP support is enabled for the bot
-- Default: `true`
+Neither needs a server restart. The profile compiler re-reads the policy on every reconcile
+tick; a changed `lsp` block is a `config.yaml` change, which the reconciler applies while the
+bot is paused (the same path a model change takes). The field reference is in
+[SETTINGS.md](../SETTINGS.md#162--bot-lsp-defaults-bot-language-servers-by-role).
 
-#### `idleTimeout` (number)
-- Timeout in seconds after which idle language servers are shut down
-- Default: `600` (10 minutes)
-- Recommended for development: `120` to save memory
+## What reaches Hermes
 
-#### `excludeRoots` (string[])
-- Glob patterns to exclude from language server analysis
-- Useful for excluding monorepos that are checked separately
-- Examples: `['**/myrmidon/**', '/workspace/*/repo']`
+The compiler writes Hermes' `lsp` block (`hermes_cli/config_defaults.py`). The limited mode's
+tsserver preferences go through `lsp.servers.typescript.initialization_options`, which Hermes
+passes unchanged as the LSP `initializationOptions` of typescript-language-server (registry id
+`typescript`):
 
-#### `waitMode` (string)
-- Wait mode for language server responses ('sync' or 'async')
-- Default: 'sync'
-
-#### `servers` (Record<string, any>)
-- Per-server configuration overrides
-- Allows fine-tuning individual language servers
-
-## Usage Examples
-
-### Instance-Level Configuration (Development)
-
-To configure all development bots with shorter timeouts and exclude monorepo paths:
-
-```typescript
-{
-  instanceDefaults: {
-    lsp: {
-      enabled: true,
-      idleTimeout: 120,  // 2 minutes instead of 10
-      excludeRoots: ['**/myrmidon/**', '/workspace/*/repo'],
-      waitMode: 'sync'
-    }
-  }
-}
+```yaml
+lsp:
+  enabled: true
+  idle_timeout: 120
+  servers:
+    typescript:
+      initialization_options:
+        disableAutomaticTypingAcquisition: true
+        maxTsServerMemory: 1024
+        tsserver:
+          useSyntaxServer: "never"
 ```
 
-### Agent-Level Override
-
-To override settings for a specific agent:
-
-```typescript
-{
-  lsp: {
-    enabled: false,      // Disable LSP for this agent
-    idleTimeout: 60      // 1 minute timeout
-  }
-}
-```
-
-### Combining Instance and Agent Settings
-
-When both instance defaults and agent-specific settings are provided, agent settings take precedence:
-
-```typescript
-// Instance defaults
-{
-  instanceDefaults: {
-    lsp: {
-      enabled: true,
-      idleTimeout: 120,
-      excludeRoots: ['**/myrmidon/**']
-    }
-  },
-  // Agent override
-  lsp: {
-    enabled: false,           // Overrides instance value
-    excludeRoots: ['**/test/**']  // Overrides instance value
-    // idleTimeout remains 120 from instance default
-  }
-}
-```
-
-### Server-Specific Configuration
-
-Fine-tune individual language servers:
-
-```typescript
-{
-  lsp: {
-    servers: {
-      tsserver: {
-        memoryLimit: 1024,
-        maxOldSpaceSize: 1024
-      },
-      eslint: {
-        configFile: '.eslintrc.js'
-      }
-    }
-  }
-}
-```
-
-## Memory Optimization
-
-The primary goal of BOT-LSP configuration is to reduce memory consumption:
-
-- Set `idleTimeout` to lower values (e.g., 120 seconds) for development environments
-- Use `excludeRoots` to exclude monorepositories that are checked separately via `devbuild`
-- Consider disabling LSP entirely for bots working on large monorepos
-
-## Integration with devbuild
-
-For monorepository projects, LSP configuration complements the `devbuild` system:
-
-- Exclude monorepo paths using `excludeRoots`
-- Let `devbuild` handle type checking and validation during builds
-- Use shorter `idleTimeout` values to reduce memory footprint during development
-
-## Divergence Notes
-
-This configuration system diverges from the original Hermes configuration by providing bot-specific LSP controls that integrate with the Myrmidon container orchestration system. The original Hermes LSP settings are typically configured in `hermes_cli/config_defaults.py`, while this system provides container-level controls through the bot profile compilation process.
+The compiler input (`HermesProfileLspSettings`: `enabled`, `idleTimeout`, `excludeRoots`,
+`waitMode`, `servers`) also accepts an instance default (`instanceDefaults.lsp`) merged under
+the per-agent value; the role policy fills the per-agent value.

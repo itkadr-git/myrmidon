@@ -1033,3 +1033,35 @@ source is shown on the screen).
 | Variable | Function | Default | What it does | How to disable / special |
 |---|---|---|---|---|
 | `MYRMIDON_BUDGET_ENFORCEMENT_MODE` | 1.7-BUDGET-CONFIG-B | unset (`signal_only`) | The enforcement mode while nothing is stored in `instance_settings.general.budgetEnforcement`: `signal_only` — the incident is created and the owner is signalled, but the scope is not paused and runs start; `soft` — pause plus the owner card (raising the budget resumes); `hard` — new runs of the over-limit scope are refused with the budget reason | Any other value (or unset) — the default `signal_only`; once a value is saved from the settings page, the environment stops mattering. The signals themselves additionally honor `MYRMIDON_BUDGET_SIGNAL_MODE=off`. Full guide: [guides/budget-enforcement.md](guides/budget-enforcement.md) |
+
+## 1.6.2 — BOT-LSP-DEFAULTS: bot language servers by role
+
+Settings of `server/src/myrmidon/bot-lsp/` and the profile compiler's `lsp` block
+(`packages/shared/src/myrmidon-bot-lsp.ts`). No environment variables: the policy is stored
+in `instance_settings.general.botLsp` and changed from Instance settings → General → "Bot
+language servers" or `GET`/`PATCH /api/myrmidon/bot-lsp` (board members read, instance admins
+write; a `null` field in the PATCH body resets it to the default). An agent card can pin its
+own mode in `adapterConfig.lsp.mode`; an absent pin follows the role.
+
+The profile compiler re-reads the policy on every reconcile tick. A changed `lsp` block is a
+`config.yaml` change, so the reconciler applies it with the bot's admission paused (the path a
+model change takes); the server is not restarted.
+
+| Field | Default | What it does | Bounds / special |
+|---|---|---|---|
+| `codingRoles` | `engineer, qa, devops, reviewer, release` | Caste keys (`agents.role`) whose bots write code. Custom castes count; matching is case-insensitive | Latin letters, digits, hyphens; up to 200 keys. A bot with no role is non-coding |
+| `codingMode` | `limited` | Mode of a coding bot | `off` / `limited` / `full` |
+| `nonCodingMode` | `off` | Mode of every other bot | `off` / `limited` / `full` |
+| `idleTimeoutSeconds` | `120` | `lsp.idle_timeout` of the limited mode: an idle language server is stopped after this long | 30–86400 (Hermes raises anything below 30 to 30) |
+| `tsserverMemoryMb` | `1024` | `maxTsServerMemory` of the limited mode (tsserver `--max-old-space-size`) | 256–16384 |
+| `excludeRoots` | empty | `lsp.exclude_roots` for bots whose servers run (limited or full): workspaces where no language server starts | Globs, up to 50 |
+
+Modes, as written into the bot's `config.yaml`:
+
+- `off` — `lsp.enabled: false`: no language server and no LSP event loop.
+- `limited` — `lsp.enabled: true`, `lsp.idle_timeout`, and
+  `lsp.servers.typescript.initialization_options` = `{ disableAutomaticTypingAcquisition: true,
+  maxTsServerMemory, tsserver: { useSyntaxServer: "never" } }` — one tsserver per worktree
+  instead of two, no typings download.
+- `full` — nothing written (Hermes' own defaults), except `exclude_roots` when set.
+

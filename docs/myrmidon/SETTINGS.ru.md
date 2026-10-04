@@ -723,3 +723,36 @@ PATCH принимает только `enabled`, `backend`, `model`, `language`,
 `audio_too_long` / `audio_too_large` (лимиты сработали до исходящего запроса),
 `stt_timeout` (таймаут вызова бэкенда), `stt_upstream_error` (прочий отказ
 бэкенда).
+
+## 1.6.2 — BOT-LSP-DEFAULTS: языковые серверы ботов по ролям
+
+Настройки `server/src/myrmidon/bot-lsp/` и блока `lsp` компилятора профиля
+(`packages/shared/src/myrmidon-bot-lsp.ts`). Переменных окружения нет: политика хранится в
+`instance_settings.general.botLsp` и меняется в Настройках инстанса → General → «Bot language
+servers» или через `GET`/`PATCH /api/myrmidon/bot-lsp` (читают участники доски, пишут
+администраторы инстанса; поле `null` в теле PATCH возвращает значение по умолчанию). Карточка
+агента может закрепить свой режим в `adapterConfig.lsp.mode`; без закрепления режим берётся по
+роли.
+
+Компилятор профиля перечитывает политику на каждом тике сверки. Изменённый блок `lsp` — это
+изменение `config.yaml`, поэтому сверка применяет его на паузе приёма задач бота (тем же путём,
+что смену модели); сервер не перезапускается.
+
+| Поле | По умолчанию | Что делает | Границы / особое |
+|---|---|---|---|
+| `codingRoles` | `engineer, qa, devops, reviewer, release` | Ключи каст (`agents.role`), чьи боты пишут код. Свои касты тоже считаются; сравнение без учёта регистра | Латиница, цифры, дефисы; до 200 ключей. Бот без роли — не кодящий |
+| `codingMode` | `limited` | Режим кодящего бота | `off` / `limited` / `full` |
+| `nonCodingMode` | `off` | Режим всех остальных ботов | `off` / `limited` / `full` |
+| `idleTimeoutSeconds` | `120` | `lsp.idle_timeout` ограниченного режима: простаивающий языковой сервер останавливается через столько секунд | 30–86400 (Hermes поднимает всё меньше 30 до 30) |
+| `tsserverMemoryMb` | `1024` | `maxTsServerMemory` ограниченного режима (`--max-old-space-size` для tsserver) | 256–16384 |
+| `excludeRoots` | пусто | `lsp.exclude_roots` для ботов, у которых серверы работают (limited или full): рабочие каталоги, где языковой сервер не запускается | Глобы, до 50 |
+
+Режимы — как они пишутся в `config.yaml` бота:
+
+- `off` — `lsp.enabled: false`: ни языкового сервера, ни цикла событий LSP.
+- `limited` — `lsp.enabled: true`, `lsp.idle_timeout` и
+  `lsp.servers.typescript.initialization_options` = `{ disableAutomaticTypingAcquisition: true,
+  maxTsServerMemory, tsserver: { useSyntaxServer: "never" } }` — один tsserver на worktree вместо
+  двух, без загрузки typings.
+- `full` — ничего не пишется (собственные значения Hermes), кроме `exclude_roots`, если задан.
+
