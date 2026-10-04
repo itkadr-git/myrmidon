@@ -29,7 +29,7 @@ describe("createReconcileInterval", () => {
     interval.notify();
 
     // Fast-forward time to allow the trigger to execute
-    await vi.runAllTimersAsync();
+    await vi.advanceTimersByTimeAsync(10);
 
     // Reconciliation should have been called
     expect(reconcileFn).toHaveBeenCalledTimes(1);
@@ -77,7 +77,7 @@ describe("createReconcileInterval", () => {
 
     // Notify - this should reset the fallback timer
     interval.notify();
-    await vi.runAllTimersAsync();
+    await vi.advanceTimersByTimeAsync(10);
 
     // Should have called reconciliation due to notification
     expect(reconcileFn).toHaveBeenCalledTimes(1);
@@ -132,7 +132,7 @@ describe("createReconcileInterval", () => {
 
     // Trigger reconciliation which will fail
     interval.notify();
-    await vi.runAllTimersAsync();
+    await vi.advanceTimersByTimeAsync(10);
 
     // Error handler should have been called
     expect(onError).toHaveBeenCalledWith(error);
@@ -151,8 +151,7 @@ describe("createReconcileInterval", () => {
     });
 
     // Initially should show 0 active tasks (no ongoing work)
-    const count = interval.getActiveTasksCount();
-    expect(count).toBeGreaterThanOrEqual(0); // Could be 0 or 1 depending on implementation
+    expect(interval.getActiveTasksCount()).toBe(0);
     
     interval.stop();
   });
