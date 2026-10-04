@@ -286,7 +286,7 @@ export async function idlePickupForAgent(
                 inArray(heartbeatRuns.status, [...LIVE_HEARTBEAT_RUN_STATUSES]),
                 and(
                   eq(heartbeatRuns.status, "succeeded"),
-                  sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) >= ${recentSuccessCutoff}`,
+                  sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) >= ${recentSuccessCutoff.toISOString()}::timestamptz`,
                 ),
               )
             : inArray(heartbeatRuns.status, [...LIVE_HEARTBEAT_RUN_STATUSES]),
