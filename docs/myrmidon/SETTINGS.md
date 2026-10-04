@@ -1221,3 +1221,15 @@ is configured or usable.
 | Field | Default | What it does | Bounds / special |
 |---|---|---|---|
 | `promptBudget.optimizerAgentId` | absent | Agent that receives the deep-analysis task filed by the "Deep analysis" button | A uuid of another agent of the same company; absent, blank or not a uuid answers the deep POST with 422. An additive field of the `promptBudget` area owned by the thresholds part (`instance_settings.general.promptBudget`); no environment variable |
+
+## 1.6.2 — VENDOR-SHARE-METRIC: share of files inherited from the vendor
+
+`scripts/myrmidon/vendor-share.mjs` measures the share of tracked files inherited
+from the vendor base commit and is part of the release ritual. It is a script, not
+a server behaviour, so the single knob below is a forced override of the
+similarity threshold; the report names the source it used (`flag`, `env` or
+`default`).
+
+| Variable | Function | Default | What it does | How to disable / special |
+|---|---|---|---|---|
+| `MYRMIDON_VENDOR_SHARE_THRESHOLD` | VENDOR-SHARE-METRIC | unset (0.5) | Forces the line-similarity threshold of the vendor-share script: a file is inherited when the share of matching lines against the vendor base commit is at or above it. The `--threshold` flag wins over this variable, which wins over the built-in 0.5; the printed report shows `thresholdSource` | A value outside 0..1 fails the run with a clear message instead of silently falling back. Unset — the built-in 0.5 and a `default` source in the report |
