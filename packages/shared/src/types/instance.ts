@@ -11,6 +11,9 @@ import type { BrowserBridgeSettings } from "../myrmidon-browser-bridge.js";
 import type { SwarmClaimSettings } from "../myrmidon-swarm-claim.js";
 // myrmidon(1.6.1-WIP-LIMIT-A): per-agent WIP limits of the same general settings row.
 import type { WipLimitSettings } from "../myrmidon-wip-limit.js";
+// myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys live in
+// the same general settings row.
+import type { PluginEntitlementKey } from "../myrmidon-plugin-entitlement.js";
 
 export const DAILY_RETENTION_PRESETS = [3, 7, 14] as const;
 export const WEEKLY_RETENTION_PRESETS = [1, 2, 4] as const;
@@ -110,6 +113,13 @@ export interface InstanceGeneralSettings {
    * same field (packages/shared/src/validators/instance.ts).
    */
   wipLimit?: WipLimitSettings;
+  /**
+   * myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys, managed
+   * from the instance settings page. Absent means "no keys registered". Kept
+   * in sync with the validator of the same field
+   * (packages/shared/src/validators/instance.ts).
+   */
+  pluginEntitlementKeys?: PluginEntitlementKey[];
 }
 
 export interface InstanceExperimentalSettings {

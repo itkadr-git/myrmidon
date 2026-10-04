@@ -53,6 +53,8 @@ import { preserveTelegramNotifyGeneralKey } from "../myrmidon/telegram-notify/pr
 import { preserveWipLimitGeneralKey } from "../myrmidon/wip-limit/settings.js";
 // myrmidon(1.6.1 VOICE-STT A1): keep the per-company STT runtime settings across vendor writes of `general`
 import { preserveSttGeneralKey } from "../myrmidon/stt/store.js";
+// myrmidon(PLUGIN-ENTITLEMENT C): keep the plugin entitlement keys across vendor writes of `general`
+import { preservePluginEntitlementKeysGeneralKey } from "../myrmidon/plugin-entitlement/store.js";
 import { getManagedInstanceConfig, type ManagedInstanceConfig } from "./managed-config.js";
 import { getOperatorSettingDefaults } from "./setting-defaults.js";
 
@@ -252,6 +254,9 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       ...(parsed.data.browserBridge ? { browserBridge: parsed.data.browserBridge } : {}),
       // myrmidon(1.6.1-WIP-LIMIT-A): the stored WIP limits survive every general write
       ...(parsed.data.wipLimit ? { wipLimit: parsed.data.wipLimit } : {}),
+      // myrmidon(PLUGIN-ENTITLEMENT C): the stored plugin entitlement keys
+      // survive every general write (edited on their own settings block).
+      ...(parsed.data.pluginEntitlementKeys ? { pluginEntitlementKeys: parsed.data.pluginEntitlementKeys } : {}),
     };
   }
   return {
@@ -600,6 +605,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
             ...preserveTelegramNotifyGeneralKey(current.general), // myrmidon(1.6-TG-PROACTIVITY-E)
             ...preserveWipLimitGeneralKey(current.general), // myrmidon(1.6.1-WIP-LIMIT-A)
             ...preserveSttGeneralKey(current.general), // myrmidon(1.6.1 VOICE-STT A1)
+            ...preservePluginEntitlementKeysGeneralKey(current.general), // myrmidon(PLUGIN-ENTITLEMENT C)
           },
           updatedAt: now,
         })

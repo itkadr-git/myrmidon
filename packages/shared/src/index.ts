@@ -2813,3 +2813,6 @@ export * from "./myrmidon-telegram-notify.js";
 // myrmidon(1.6.1-WIP-LIMIT-A): the shared contract of the per-agent WIP limit —
 // the settings shape, the limit resolver and the status feed rows.
 export * from "./myrmidon-wip-limit.js";
+
+// myrmidon(PLUGIN-ENTITLEMENT C): plugin entitlement keys contract.
+export * from "./myrmidon-plugin-entitlement.js";
