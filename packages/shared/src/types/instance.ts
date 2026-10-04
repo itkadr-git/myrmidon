@@ -18,6 +18,8 @@ import type { BudgetEnforcementSettings } from "../myrmidon-budget-enforcement.j
 // myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys live in
 // the same general settings row.
 import type { PluginEntitlementKey } from "../myrmidon-plugin-entitlement.js";
+// myrmidon(DM-PROGRESS): live progress steps of the bridged Telegram DM status message.
+import type { TelegramDmProgressSettings } from "../myrmidon-telegram-dm-progress.js";
 
 export const DAILY_RETENTION_PRESETS = [3, 7, 14] as const;
 export const WEEKLY_RETENTION_PRESETS = [1, 2, 4] as const;
@@ -149,6 +151,13 @@ export interface InstanceGeneralSettings {
    * (packages/shared/src/validators/instance.ts).
    */
   pluginEntitlementKeys?: PluginEntitlementKey[];
+  /**
+   * myrmidon(DM-PROGRESS): live progress steps in the bridged Telegram DM
+   * status message — on/off and the minimum spacing between edits; changed
+   * from `GET`/`PATCH /api/myrmidon/telegram-dm-progress`. Kept in sync with
+   * the validator of the same field (packages/shared/src/validators/instance.ts).
+   */
+  telegramDmProgress?: TelegramDmProgressSettings;
 }
 
 export interface InstanceExperimentalSettings {

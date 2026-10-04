@@ -2824,3 +2824,7 @@ export * from "./myrmidon-budget-enforcement.js";
 
 // myrmidon(PLUGIN-ENTITLEMENT C): plugin entitlement keys contract.
 export * from "./myrmidon-plugin-entitlement.js";
+
+// myrmidon(DM-PROGRESS): live progress steps in the bridged Telegram DM
+// status message — storage key, precedence and resolver.
+export * from "./myrmidon-telegram-dm-progress.js";

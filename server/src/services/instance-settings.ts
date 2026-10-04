@@ -58,6 +58,8 @@ import { preserveSttGeneralKey } from "../myrmidon/stt/store.js";
 import { preserveBudgetEnforcementGeneralKey } from "../myrmidon/budget-enforcement/settings.js";
 // myrmidon(PLUGIN-ENTITLEMENT C): keep the plugin entitlement keys across vendor writes of `general`
 import { preservePluginEntitlementKeysGeneralKey } from "../myrmidon/plugin-entitlement/store.js";
+// myrmidon(DM-PROGRESS): keep the Telegram DM progress settings across vendor writes of `general`
+import { preserveTelegramDmProgressGeneralKey } from "../myrmidon/telegram-dm-progress/settings.js";
 import { getManagedInstanceConfig, type ManagedInstanceConfig } from "./managed-config.js";
 import { getOperatorSettingDefaults } from "./setting-defaults.js";
 
@@ -268,6 +270,9 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // myrmidon(PLUGIN-ENTITLEMENT C): the stored plugin entitlement keys
       // survive every general write (edited on their own settings block).
       ...(parsed.data.pluginEntitlementKeys ? { pluginEntitlementKeys: parsed.data.pluginEntitlementKeys } : {}),
+      // myrmidon(DM-PROGRESS): the stored Telegram DM progress settings survive
+      // every general write (edited on their own settings block).
+      ...(parsed.data.telegramDmProgress ? { telegramDmProgress: parsed.data.telegramDmProgress } : {}),
     };
   }
   return {
@@ -618,6 +623,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
             ...preserveSttGeneralKey(current.general), // myrmidon(1.6.1 VOICE-STT A1)
             ...preserveBudgetEnforcementGeneralKey(current.general), // myrmidon(1.7-BUDGET-CONFIG-B)
             ...preservePluginEntitlementKeysGeneralKey(current.general), // myrmidon(PLUGIN-ENTITLEMENT C)
+            ...preserveTelegramDmProgressGeneralKey(current.general), // myrmidon(DM-PROGRESS)
           },
           updatedAt: now,
         })

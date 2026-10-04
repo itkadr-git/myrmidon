@@ -33,6 +33,9 @@ import { budgetEnforcementSettingsSchema } from "../myrmidon-budget-enforcement.
 // myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys stored
 // in the same general settings row.
 import { pluginEntitlementKeysSchema } from "../myrmidon-plugin-entitlement.js";
+// myrmidon(DM-PROGRESS): live progress steps of the bridged Telegram DM status
+// message, stored in the same general settings row.
+import { telegramDmProgressSettingsSchema } from "../myrmidon-telegram-dm-progress.js";
 
 // myrmidon(PARALLEL-HELPERS): re-exported for the barrel so the settings page and the
 // /api/myrmidon/parallel-helpers route validate with the exact schema stored here.
@@ -118,6 +121,10 @@ export const instanceGeneralSettingsSchema = z.object({
   // from the instance settings page and PATCH /api/myrmidon/plugin-entitlement/keys;
   // absent means "no keys are registered" (no plugin is unlocked).
   pluginEntitlementKeys: pluginEntitlementKeysSchema.optional(),
+  // myrmidon(DM-PROGRESS): live progress steps in the bridged Telegram DM status
+  // message (on/off and the minimum spacing between edits), changed from
+  // /api/myrmidon/telegram-dm-progress; absent means the defaults.
+  telegramDmProgress: telegramDmProgressSettingsSchema.optional(),
 }).strict();
 
 export const patchInstanceGeneralSettingsSchema = z

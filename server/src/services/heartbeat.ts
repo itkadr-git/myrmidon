@@ -604,6 +604,8 @@ import {
   sweepExpiredHeartbeatRunRuntimeStatuses,
   touchHeartbeatRunRuntimeStatus,
 } from "./heartbeat-run-runtime-status.js";
+// myrmidon(DM-PROGRESS): run-log tool lines feed the live Telegram DM status steps
+import { recordDmProgressLogChunk } from "../myrmidon/telegram-dm-progress/runtime-steps.js";
 import {
   findMissingHotRestartSnapshotRunIds,
   readHotRestartIntent,
@@ -22591,6 +22593,9 @@ export function heartbeatService(
           const sanitizedChunk = compactRunLogChunk(
             redactCurrentUserText(chunk, currentUserRedactionOptions),
           );
+          // myrmidon(DM-PROGRESS): Hermes tool lines feed the step history of
+          // the live Telegram DM status (legacy adapters write no step events).
+          recordDmProgressLogChunk(run.id, stream, sanitizedChunk);
           if (stream === "stdout")
             stdoutExcerpt = appendExcerpt(stdoutExcerpt, sanitizedChunk);
           if (stream === "stderr")

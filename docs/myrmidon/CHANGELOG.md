@@ -10,6 +10,31 @@ version file to edit. Base Paperclip version is in the image label
 
 ## Unreleased
 
+### Live progress steps in the Telegram DM status message (DM-PROGRESS)
+
+- The owner reported that a bot in a bridged Telegram DM only says "queued",
+  "working" and then the result, with nothing in between. While a run is
+  active the one status message now shows what the bot is doing — "читаю
+  презентацию deck.pptx", "правлю слайды 4, 9", "проверяю результат" — plus the
+  last few finished steps and the elapsed time, and is edited in place until
+  the answer replaces it.
+- Steps come from the run's native step events and, for adapters that write
+  none (the Hermes gateway and local adapters), from a small in-memory step
+  history fed by the runtime status and the run-log tool lines. A tool call
+  reaches the chat only as a short phrase with at most a file basename or
+  slide numbers; commands, paths and arguments never do.
+- Edits are throttled: a milestone change posts at once, a change of the step
+  kind (reading, editing, checking) after about 5 seconds, anything else only
+  once the configured interval has passed (default 45 s).
+- On/off and the interval live in Instance settings → General ("Telegram DM:
+  live progress", `GET`/`PATCH /api/myrmidon/telegram-dm-progress`) and apply at
+  the next status update without a restart. Environment overrides:
+  `MYRMIDON_TELEGRAM_DM_PROGRESS`, `MYRMIDON_TELEGRAM_DM_PROGRESS_INTERVAL_SEC`;
+  the default of "on" follows `MYRMIDON_TELEGRAM_DM_STATUS`. Turning it on also
+  turns the status message on for bridged DMs.
+- The queued and working texts of the status message are now in Russian, like
+  the step labels. Guide: [telegram-dm-status.md](guides/telegram-dm-status.md).
+
 ### Release publish waits for the tag's own image runs (RELEASE-PUBLISH-WAIT)
 
 - Pushing the `myr-v1.6.1` tag failed to publish the Release on the first
