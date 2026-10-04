@@ -22,17 +22,25 @@ vi.mock("@/i18n", () => ({ useTranslation: () => mockT }));
 
 const listEventsMock = vi.hoisted(() => vi.fn());
 
-vi.mock("./guardrailsApi", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./guardrailsApi")>()),
-  listEvents: listEventsMock,
-  guardrailsEventsQueryKey: (companyId: string, filters: unknown) => [
-    "myrmidon",
-    "guardrails",
-    "events",
-    companyId,
-    filters,
-  ],
-}));
+vi.mock("./guardrailsApi", async (importOriginal) => {
+  const original = await importOriginal<typeof import("./guardrailsApi")>();
+  return {
+    ...original,
+    guardrailsApi: {
+      ...original.guardrailsApi,
+      // The journal calls guardrailsApi.listEvents; mock the namespace
+      // member, not a bare export.
+      listEvents: listEventsMock,
+    },
+    guardrailsEventsQueryKey: (companyId: string, filters: unknown) => [
+      "myrmidon",
+      "guardrails",
+      "events",
+      companyId,
+      filters,
+    ],
+  };
+});
 
 let container: HTMLDivElement;
 let root: Root | null;
@@ -76,11 +84,21 @@ function render(filters: Parameters<typeof GuardrailsJournal>[0]["filters"], onF
   });
 }
 
+// React-query resolves queries over microtasks; flush a few turns inside
+// act() until the query settles (same pattern as the wip-limit tests).
+async function settle(): Promise<void> {
+  for (let i = 0; i < 5; i += 1) {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+}
+
 describe("myrmidon(1.7-GRD-MODES) GuardrailsJournal", () => {
   it("lists the journaled events with their columns", async () => {
     listEventsMock.mockResolvedValue({ events: [EVENT], count: 1, limit: 50 });
     render({});
-    await act(async () => {});
+    await settle();
     const table = container.querySelector('[data-testid="guardrails-journal-table"]');
     expect(table).not.toBeNull();
     expect(table!.textContent).toContain("secret");
@@ -93,14 +111,14 @@ describe("myrmidon(1.7-GRD-MODES) GuardrailsJournal", () => {
   it("shows the empty state when no events match", async () => {
     listEventsMock.mockResolvedValue({ events: [], count: 0, limit: 50 });
     render({});
-    await act(async () => {});
+    await settle();
     expect(container.querySelector('[data-testid="guardrails-journal-empty"]')).not.toBeNull();
   });
 
   it("shows the error state when the query fails", async () => {
     listEventsMock.mockRejectedValue(new Error("journal down"));
     render({});
-    await act(async () => {});
+    await settle();
     expect(container.querySelector('[data-testid="guardrails-journal-error"]')).not.toBeNull();
   });
 

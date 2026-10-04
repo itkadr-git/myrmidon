@@ -110,7 +110,9 @@ describeEmbeddedPostgres("myrmidon(1.6-GRD): run-output embedding integration", 
       env: ENV_ON,
       now: FIXED_NOW,
     });
-    expect(result).toMatchObject({ recorded: 2, total: 2, totalSecrets: 1, totalPii: 1 });
+    // myrmidon(1.7-GRD-MODES): the hook now returns the enforcement
+    // decision; with no mode settings the flag-only default keeps the text.
+    expect(result).toMatchObject({ mode: "flag", rule: "secret", hits: 2, text });
     const events = await db.select().from(guardrailEvents);
     expect(events).toHaveLength(2);
     expect(events.every((row) => row.companyId === companyId)).toBe(true);
@@ -141,7 +143,7 @@ describeEmbeddedPostgres("myrmidon(1.6-GRD): run-output embedding integration", 
       env: {},
       now: FIXED_NOW,
     });
-    expect(result).toBeNull();
+    expect(result).toMatchObject({ mode: "flag", hits: 0 });
     expect(await db.select().from(guardrailEvents)).toHaveLength(0);
     expect(await db.select().from(activityLog)).toHaveLength(0);
   });
@@ -157,7 +159,7 @@ describeEmbeddedPostgres("myrmidon(1.6-GRD): run-output embedding integration", 
       env: ENV_ON,
       now: FIXED_NOW,
     });
-    expect(result).toMatchObject({ recorded: 0, total: 0 });
+    expect(result).toMatchObject({ mode: "flag", hits: 0 });
     expect(await db.select().from(guardrailEvents)).toHaveLength(0);
   });
 
@@ -172,7 +174,7 @@ describeEmbeddedPostgres("myrmidon(1.6-GRD): run-output embedding integration", 
       env: ENV_ON,
       now: FIXED_NOW,
     });
-    expect(result).toBeNull();
+    expect(result).toMatchObject({ mode: "flag", hits: 0, text: null });
     expect(await db.select().from(guardrailEvents)).toHaveLength(0);
   });
 });

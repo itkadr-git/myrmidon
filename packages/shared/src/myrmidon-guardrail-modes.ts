@@ -73,18 +73,31 @@ export const GUARDRAIL_MODES_SETTINGS_KEY = "guardrailModes";
  * The schema is `.strict()` so an unknown key fails loudly instead of
  * half-applying.
  */
+/** A partial map of rules to modes — override only what is set. */
+const ruleModesSchema = z.partialRecord(z.enum(GUARDRAIL_RULES), z.enum(GUARDRAIL_MODES));
+
+/**
+ * The stored settings object: per-rule mode overrides at the company, caste
+ * (role) and agent levels. Absent everywhere means flag-only everywhere.
+ * The schema is `.strict()` so an unknown key fails loudly instead of
+ * half-applying.
+ */
 export const guardrailModesSettingsSchema = z
   .object({
     /** Company-wide overrides per rule. */
-    company: z.record(z.enum(GUARDRAIL_RULES), z.enum(GUARDRAIL_MODES)).default({}),
+    company: ruleModesSchema.default({}),
     /** Caste (agent role) overrides: role -> rule -> mode. */
-    castes: z.record(z.string().min(1), z.record(z.enum(GUARDRAIL_RULES), z.enum(GUARDRAIL_MODES))).default({}),
+    castes: z.record(z.string().min(1), ruleModesSchema.default({})).default({}),
     /** Agent overrides: agentId -> rule -> mode. */
-    agents: z.record(z.string().uuid(), z.record(z.enum(GUARDRAIL_RULES), z.enum(GUARDRAIL_MODES))).default({}),
+    agents: z.record(z.string().uuid(), ruleModesSchema.default({})).default({}),
   })
   .strict();
 
-export type GuardrailModesSettings = z.infer<typeof guardrailModesSettingsSchema>;
+export type GuardrailModesSettings = {
+  company: Partial<Record<GuardrailRule, GuardrailMode>>;
+  castes: Record<string, Partial<Record<GuardrailRule, GuardrailMode>>>;
+  agents: Record<string, Partial<Record<GuardrailRule, GuardrailMode>>>;
+};
 
 export const EMPTY_GUARDRAIL_MODES_SETTINGS: GuardrailModesSettings = {
   company: {},

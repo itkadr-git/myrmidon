@@ -22,7 +22,7 @@ function readable(error: unknown): string {
 }
 
 /** One agent row's resolve query — a component so the hook rules hold. */
-function useResolvedModes(companyId: string, agents: GuardrailsAgentRow[]) {
+function useResolvedModes(companyId: string, agents: GuardrailsAgentRow[], agentsKey: string) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [resolved, setResolved] = useState<Record<string, ResolvedGuardrailMode[]>>({});
   useEffect(() => {
@@ -47,7 +47,10 @@ function useResolvedModes(companyId: string, agents: GuardrailsAgentRow[]) {
     return () => {
       cancelled = true;
     };
-  }, [companyId, agents]);
+    // `agents` from react-query select is a fresh array each render; key the
+    // effect on the stable id-list string so this does not loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [companyId, agentsKey]);
   return resolved;
 }
 
@@ -87,7 +90,7 @@ export function GuardrailsScreen() {
   // The effective-mode column: resolved by the server per agent, so the
   // screen shows the true precedence chain (agent > caste > company >
   // default, plus env force) with its source, not a client-side guess.
-  const resolvedByAgent = useResolvedModes(companyId, agents);
+  const resolvedByAgent = useResolvedModes(companyId, agents, agentsKey);
 
   const save = useMutation({
     mutationFn: (settings: GuardrailModesSettings) =>

@@ -71,8 +71,10 @@ function renderView(overrides: Partial<Parameters<typeof GuardrailsScreenView>[0
 }
 
 function saveButton(): HTMLButtonElement {
+  // The button label swaps to "saving" while a save is pending, so match
+  // either label instead of the idle one only.
   return [...container.querySelectorAll("button")].find(
-    (button) => button.textContent === "guardrails.save",
+    (button) => button.textContent === "guardrails.save" || button.textContent === "guardrails.saving",
   ) as HTMLButtonElement;
 }
 

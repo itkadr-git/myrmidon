@@ -119,7 +119,13 @@ describe("myrmidon(1.7-GRD-MODES) GuardrailsScreen container", () => {
     guardrailsApiMock.listEvents.mockResolvedValue({ events: [], count: 0, limit: 50 });
     agentsApiMock.list.mockResolvedValue([]);
     render();
-    await act(async () => {});
+    // The rejection settles over microtasks: flush a few turns like the
+    // wip-limit tests do before asserting the error state.
+    for (let i = 0; i < 5; i += 1) {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    }
     const error = container.querySelector('[data-testid="myrmidon-guardrails-error"]');
     expect(error?.textContent).toContain("settings down");
   });

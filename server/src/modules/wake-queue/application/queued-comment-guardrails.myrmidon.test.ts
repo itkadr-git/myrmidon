@@ -244,8 +244,6 @@ describe("myrmidon(1.6-GRD-B) editQueuedComment guardrails integration", () => {
     );
   });
 });
-<<<<<<< Updated upstream
-=======
 
 // myrmidon(1.7-GRD-MODES): the injection rule's per-agent mode decides what a
 // FLAGGED untrusted comment does to the run's payload copy. The stored
@@ -350,4 +348,3 @@ describe("myrmidon(1.7-GRD-MODES) editQueuedComment injection modes", () => {
     expect(guard.injection).toMatchObject({ flagged: false, mode: "block" });
   });
 });
->>>>>>> Stashed changes

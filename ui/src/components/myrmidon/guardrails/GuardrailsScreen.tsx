@@ -68,9 +68,9 @@ export function GuardrailsScreenView({
   error: string | null;
 }) {
   const { t } = useTranslation();
-  const [companyDraft, setCompanyDraft] = useState<Partial<Record<GuardrailRule, string | null>> | null>(null);
+  const [companyDraft, setCompanyDraft] = useState<Partial<Record<GuardrailRule, string | undefined>> | null>(null);
   const [casteDraft, setCasteDraft] = useState<string | null>(null);
-  const [agentDraft, setAgentDraft] = useState<Record<string, Partial<Record<GuardrailRule, string | null>>> | null>(null);
+  const [agentDraft, setAgentDraft] = useState<Record<string, Partial<Record<GuardrailRule, string | undefined>>> | null>(null);
   const [casteNameDraft, setCasteNameDraft] = useState<string>("");
   const [saveError, setSaveError] = useState<string | null>(null);
 
