@@ -7,12 +7,25 @@ const fsMocks = vi.hoisted(() => ({
   readdir: vi.fn(),
   stat: vi.fn(),
   rm: vi.fn(),
+  // myrmidon(1.6.2-BOT-DISK-C): clone hygiene looks for a report and a .git marker; none here.
+  lstat: vi.fn(async () => {
+    throw new Error("ENOENT");
+  }),
+  readFile: vi.fn(async () => {
+    throw new Error("ENOENT");
+  }),
+  realpath: vi.fn(async () => {
+    throw new Error("ENOENT");
+  }),
 }));
 vi.mock("fs/promises", () => ({
   default: fsMocks,
   readdir: fsMocks.readdir,
   stat: fsMocks.stat,
   rm: fsMocks.rm,
+  lstat: fsMocks.lstat,
+  readFile: fsMocks.readFile,
+  realpath: fsMocks.realpath,
 }));
 
 describe("Draft Lifecycle Tests", () => {

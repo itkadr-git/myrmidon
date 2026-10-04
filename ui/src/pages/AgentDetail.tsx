@@ -100,6 +100,7 @@ import { RunTranscriptView, type TranscriptMode } from "../components/transcript
 import { AgentToolsTab } from "./AgentToolsTab";
 import { AgentChannelsPanel } from "../components/chat/AgentChannelsPanel";
 import { AgentMemoryTab } from "../components/myrmidon/agent-memory/AgentMemoryTab"; // myrmidon(MEMORY-UI)
+import { PromptBudgetAdvicePanel } from "../components/myrmidon/prompt-budget-advice/PromptBudgetAdvicePanel"; // myrmidon(1.6.3 PROMPT-BUDGET C)
 import { useChatConnectorsEnabled } from "@/hooks/useChatConnectorsEnabled";
 import {
   appendCapped,
@@ -1755,6 +1756,9 @@ export function AgentOverview({
   return (
     <div className="space-y-6">
       <LatestRunCard runs={runs} agentId={agentRouteId} issuesById={issuesById} />
+
+      {/* myrmidon(1.6.3 PROMPT-BUDGET C): optimization advice and the deep-analysis button */}
+      <PromptBudgetAdvicePanel companyId={agent.companyId} agentId={agent.id} />
 
       <div className="grid gap-4 md:grid-cols-2">
         <section className="rounded-lg border border-border p-4" aria-labelledby="agent-identity-heading">

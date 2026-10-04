@@ -10,6 +10,29 @@ version file to edit. Base Paperclip version is in the image label
 
 ## Unreleased
 
+### One deploy for every component (ONE-DEPLOY)
+
+- A release deploy now updates every component in one maintenance window:
+  `deploy.sh --release myr-vX.Y.Z` reads the release's component digests (board,
+  dockergate, fleetd, bot images) from the new machine-readable release asset
+  `release-components.json` (the release publish step uploads it; the digest table of the
+  release body is the fallback for older releases). On 04.10 the board moved to 1.6.2 while
+  dockergate stayed on 1.3.0 and the shared package cache did not work until dockergate was
+  updated by hand.
+- Components that already run their release image are not restarted; a release with
+  missing digests, or a component that cannot roll out, is refused before the window.
+- The window is all-or-nothing: a failing component rolls the changed components, the
+  dockergate config and the board back together (`MYRMIDON_COMPONENT_AUTO_ROLLBACK=0` keeps
+  the manual contract).
+- dockergate: `dockergate check-config` runs with the new image before the service is
+  recreated; after the recreate the startup self-check version is verified; the release bot
+  images (including the dev variant) are added to `images[]`.
+- Bot cards that track the release image (a previous release image of the same repository)
+  switch in batches of at most 5, only while the agent is paused or idle; pinned cards are
+  left alone; progress and failures are reported. Includes BOT-IMAGE-ROLLOUT (PR #454).
+- `component_host_service_exists` no longer reports a service as missing when `grep -q`
+  closes the pipe early (SIGPIPE under `pipefail`).
+
 ### Automatic reviewer for tasks in review (REVIEW-ROUTING)
 
 - A task that moves to `in_review` with no reviewer no longer waits for a manual
@@ -108,6 +131,42 @@ version file to edit. Base Paperclip version is in the image label
 - dockergate: new `packageCacheRoot` key (default empty: no cache bind). **Operator step:** set
   it to the same directory and send `SIGHUP`, and create the four subdirectories owned by
   uid/gid 10001 — see [bot-disk-cache.md](bot-disk-cache.md).
+
+### Bot workspace duplication: shared git objects, hard-linked node_modules, clone hygiene (1.6.2, BOT-DISK C)
+
+- Shared git objects. `general.botDisk.gitMirrorRepos` lists GitHub `owner/repo` names; the board
+  keeps one bare mirror of each under `<sharedPackageCachePath>/git/<owner>/<repo>.git`
+  (refreshed by `git fetch --prune` every `gitMirrorRefreshMs`, default 15 minutes, under a lock;
+  gc never prunes), and bots mount it **read-only** at `/cache/git`. The dev image's `git`
+  wrapper adds `--reference-if-able` to `git clone https://github.com/<owner>/<repo>` when the
+  mirror exists, so a clone stores only objects the mirror lacks; every other git invocation is
+  unchanged and `git-credential-paperclip` keeps working. Off by default (empty list). dockergate
+  accepts `<packageCacheRoot>/git` only as a read-only bind to `/cache/git`.
+- Hard-linked node_modules. A hard link cannot cross a mount, and `/workspace`, `/cache/pnpm`
+  and the image's previous store `/data/hermes/.pnpm-store` are three different mounts, so pnpm
+  silently **copied** every package into every clone. The store now defaults to
+  `/workspace/.pnpm-store` (image and profile), on the clones' mount; `general.botDisk.pnpmStore:
+  "shared"` keeps it on `/cache/pnpm` and sets `package-import-method=clone-or-copy` for
+  reflink-capable filesystems. The dev image's build runs `pnpm-hardlink-check.sh` and fails on a
+  copy; CI runs the same proof, including the cross-mount copy.
+- Clone hygiene in the BOT-DISK A lifecycle. A git clone is no longer reaped by its directory's
+  mtime. The board server has no mount of the bot volumes, so the BOT-DISK A sweep found no root
+  and reclaimed nothing in production; it now logs one warning, does nothing, and raises a
+  "Lifecycle not effective" Attention card when no bot reports either. The deletion runs inside
+  each bot container (`bot-clone-hygiene`, policy `MYRMIDON_CLONE_IDLE_TTL_SEC` written into the
+  profile): a clean, fully pushed, idle clone is removed, a clone with unpushed work (dirty tree,
+  operation in progress, stash, commits on no remote) never is, and the board reads the report to
+  raise an Attention card (source `bot_disk_lifecycle`) for it. The workspace pnpm store is
+  never swept.
+- Scope: the shared package cache and the git mirror now apply only to bots whose role is in
+  `general.botDisk.sharedCacheRoles` (default `engineer`, `reviewer`, `devops`, `release`, `qa`;
+  editable without a restart). Other bots (e.g. marketing) get no cache mounts or variables, so
+  enabling the cache no longer recreates them.
+- **Operator steps:** see [bot-disk-cache.md](bot-disk-cache.md#enabling-git-mirrors-operator-steps)
+  — create `<cache>/git` owned by the board's user (mode 0755), then
+  `PATCH /api/myrmidon/bot-disk` with `{"gitMirrorRepos": ["owner/repo"]}`. The bot image must be
+  rebuilt (the wrapper, the reporter and the store default are in the image); older images keep
+  working without them.
 
 ### A board unblock lifts a settled replay hold; a parked wake is not "covering" (HOLD-READY)
 
