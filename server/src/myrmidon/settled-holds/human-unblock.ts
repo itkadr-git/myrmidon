@@ -81,10 +81,22 @@ export function isHumanUnblock(input: UnblockActor & { before: IssueSide; after:
 export async function issueHasSettledReplayHold(db: Db, companyId: string, issueId: string): Promise<boolean> {
   try {
     const rows = await db
-      .select({ id: issueRecoveryActions.id })
+      .select({
+        sourceIssueId: issueRecoveryActions.sourceIssueId,
+        evidence: issueRecoveryActions.evidence,
+      })
       .from(issueRecoveryActions)
       .where(settledReplayHoldWhere(companyId, issueId));
-    return Array.isArray(rows) && rows.length > 0;
+    // The SQL already filters; re-reading the two fields keeps the answer
+    // exact even when a caller hands in a stand-in database.
+    return (
+      Array.isArray(rows) &&
+      rows.some(
+        (row) =>
+          row?.sourceIssueId === issueId &&
+          (row.evidence?.automaticRecovery as { replay?: unknown } | undefined)?.replay === "blocked",
+      )
+    );
   } catch (err) {
     logger.warn({ err, issueId }, "settled replay hold check failed; the board unblock leaves the hold");
     return false;
