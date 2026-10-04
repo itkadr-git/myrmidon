@@ -443,6 +443,9 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // myrmidon(1.6.3 PLUGIN-ENTITLEMENT A): the stored verification public key
       // survives every general write (edited on its own settings block).
       ...(parsed.data.pluginEntitlementPublicKey ? { pluginEntitlementPublicKey: parsed.data.pluginEntitlementPublicKey } : {}),
+      // myrmidon(1.7-REBRAND-F): the stored vendor-name gate setting survives
+      // every general write (it is edited on its own block of the instance page).
+      ...(parsed.data.vendorNameCheck ? { vendorNameCheck: parsed.data.vendorNameCheck } : {}),
     };
   }
   return {

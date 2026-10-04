@@ -31,6 +31,7 @@ describe("classifyChanges", () => {
       "scripts/run-vitest-stable.mjs",
       "packages/paperclip-runner/src/index.ts",
       "scripts/myrmidon/ci/select.mjs",
+      "scripts/myrmidon/vendor-name/vendor-name-policy.json",
     ]) {
       assert.equal(classifyChanges([file]).tier, "full", file);
     }

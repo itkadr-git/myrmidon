@@ -220,6 +220,19 @@ jobs:
           pnpm --filter @myrmidon/paperclip-runner build:typescript
           pnpm -r --filter '!@myrmidon/paperclip-runner' build
 
+      - name: Vendor name in the build — built UI bundle and fresh response snapshots
+        # REBRAND F: the vendor's name stays only in the LICENSE, the third-party
+        # notices and the About attribution line. Ratchet: the visible count may
+        # not grow above scripts/myrmidon/vendor-name/vendor-name-policy.json.
+        # The snapshots are captured afresh here, so the gate reads the bundle and
+        # the server answers of THIS commit, not a stale checked-in copy.
+        run: |
+          set -euo pipefail
+          snapshots="$RUNNER_TEMP/vendor-name-snapshots"
+          pnpm --filter @paperclipai/server exec tsx ../scripts/myrmidon/vendor-name/capture-snapshots.ts --out "$snapshots"
+          node scripts/myrmidon/vendor-name/check-vendor-name.mjs --target snapshots --snapshots "$snapshots"
+          node scripts/myrmidon/vendor-name/check-vendor-name.mjs --target bundle
+
   tests-affected:
     name: tests (affected)
     needs: plan
@@ -548,6 +561,14 @@ jobs:
       - name: Licenses of production dependencies
         if: ${{ !cancelled() }}
         run: node scripts/myrmidon/check-licenses.mjs
+
+      - name: Vendor name — recorded response snapshots (ratchet)
+        # REBRAND F: the same gate as in the build lane, on the snapshot set
+        # committed in the repository (scripts/myrmidon/vendor-name/snapshots).
+        # Runs in every tier, so a change that only touches our own policy or
+        # snapshots is still checked.
+        if: ${{ !cancelled() }}
+        run: node scripts/myrmidon/vendor-name/check-vendor-name.mjs --target snapshots
 
       - name: Plugin compatibility — build plugin SDK and shared from the repository
         id: sdk

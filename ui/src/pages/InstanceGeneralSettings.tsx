@@ -45,6 +45,7 @@ import { AboutSettingsPanel } from "@/components/myrmidon/AboutSettingsPanel"; /
 import { DeployJobsPanel } from "@/components/myrmidon/DeployJobsPanel"; // myrmidon(R5-A)
 import { InstanceSecretSettingsPanel } from "@/components/myrmidon/InstanceSecretSettingsPanel"; // myrmidon(SETTINGS-UI E2.1)
 import { PluginEntitlementSettings } from "@/components/myrmidon/PluginEntitlementSettingsPanel"; // myrmidon(PLUGIN-ENTITLEMENT C)
+import { VendorNameCheckSettingsPanel } from "@/components/myrmidon/VendorNameCheckSettingsPanel"; // myrmidon(1.7-REBRAND-F)
 import { PRODUCT_NAME, UPSTREAM_ATTRIBUTION } from "@/lib/myrmidon-product"; // myrmidon(B1a)
 import { useTranslation } from "@/i18n";
 import { Trans } from "react-i18next"; // myrmidon(UI-RU)
@@ -187,6 +188,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       <DeployJobsPanel /> {/* myrmidon(R5-A) */}
       <PluginEntitlementSettings /> {/* myrmidon(PLUGIN-ENTITLEMENT C) */}
       <InstanceSecretSettingsPanel /> {/* myrmidon(SETTINGS-UI E2.1) */}
+      <VendorNameCheckSettingsPanel /> {/* myrmidon(1.7-REBRAND-F) */}
 
       {showDeploymentStatus && (
       <section>
