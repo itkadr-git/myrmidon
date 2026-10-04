@@ -1,4 +1,4 @@
-// server/src/myrmidon/swarm-claim/idle-unassigned-route.myrmidon.test.ts
+// server/src/myrmidon/swarm-claim/idle-unassigned-assign.myrmidon.test.ts
 //
 // myrmidon(1.6.2 SWARM-UNASSIGNED-ROUTE): idle engineers take unassigned ready
 // work. The shape of the field failure (04.10): many idle engineers, ready
