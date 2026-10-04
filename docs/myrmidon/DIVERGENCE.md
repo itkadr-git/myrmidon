@@ -504,3 +504,26 @@
 | ID | Что изменено | Файлы | Зачем | Тесты | Когда снимать | Ссылка |
 |---|---|---|---|---|---|---|
 | 1.6-GRD-CORPUS | Эталонный корпус нейтральных кейсов для проверки детекторов GUARDRAILS (секреты/ПДн/injection/benign): 82 кейса (≥20 на категорию, benign — 22) в четырёх JSON-файлах с формой `{id, category, subtype, text, expect: {detector}}`; loader с runtime-валидацией схемы (уникальность id, категории из списка, непустой text, согласованность expect с категорией), `CorpusValidationError`, мемоизация. Все значения синтетические: документированные тестовые/примерные формы ключей провайдеров (AWS/GitHub/Slack/OpenAI/Google/Stripe), публичные тестовые номера карт (Luhn-валидные), синтетические ИНН/СНИЛС с корректными контрольными суммами, домены example.com, телефоны +1-555-01xx, адреса 192.0.2.0/24; значения подобраны так, что gitleaks 8.28 их не находит (проверено на реальном бинарнике) | Новые файлы: `server/src/myrmidon/guardrails/corpus/{corpus-secret,corpus-pii,corpus-injection,corpus-benign}.json`, `server/src/myrmidon/guardrails/corpus/index.ts`. Вендор не тронут: правок файлов вендора нет | 1.6.1 GUARDRAILS часть C: детекторы частей A (секреты/ПДн) и B (injection) после мержа гоняют свои тесты по этому корпусу; корпус самопроверяется (схема, счётчики, Luhn/ИНН/СНИЛС программно, нейтральность текстов) и не зависит от кода детекторов | `server/src/myrmidon/guardrails/corpus/corpus.myrmidon.test.ts` (11 тестов: схема и уникальность id, пороги категорий, RU+EN injection, Luhn/ИНН/СНИЛС контрольные суммы независимой реализацией, нейтральные e-mail/телефоны/IP, отсутствие внутренних маркеров, отказ loader на битых данных) | Никогда, наш корпус. Если вендор заведёт свой корпус для ограждений — сверить покрытие и заменить файлы данных, оставив loader под нашим API | (этот PR) |
+
+## Plugin Entitlement System
+
+**What:** Added a new system for managing plugin entitlements through cryptographic keys.
+
+**Where:** 
+- Database: New table `plugin_entitlements` in migration `0296_steady_plugin_entitlements.sql`
+- Backend: New service `server/src/services/plugin-entitlements.ts`
+- Backend: Updated `server/src/services/plugin-registry.ts` to check entitlements
+- Backend: New API routes `server/src/routes/plugin-entitlements.ts`
+- Frontend: None (API only)
+- Types: New types in `packages/shared/src/types/plugin-entitlement.ts`
+- Schema: New schema in `packages/db/src/schema/plugin-entitlements.ts`
+
+**Why:** To implement a system where plugins can require entitlement keys to be enabled, allowing for commercial plugin distribution.
+
+**Test:** The system can be tested by:
+1. Creating an entitlement key with `generateEntitlementKey()`
+2. Adding it via the API endpoint `POST /api/plugin-entitlements`
+3. Checking if a plugin is entitled with `GET /api/plugin-entitlements/:pluginId`
+4. Verifying that plugins with `requiresEntitlement: true` are only active when a valid entitlement exists
+
+**When to remove:** Never - this is a permanent feature addition.

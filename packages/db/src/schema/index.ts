@@ -202,6 +202,7 @@ export { pluginDatabaseNamespaces, pluginMigrations } from "./plugin_database.js
 export { pluginJobs, pluginJobRuns } from "./plugin_jobs.js";
 export { pluginWebhookDeliveries } from "./plugin_webhooks.js";
 export { pluginLogs } from "./plugin_logs.js";
+export { pluginEntitlements } from "./plugin-entitlements.js";
 export { runIdentityContexts } from "./run_identity_contexts.js";
 export { connectionIntentDeliveries } from "./connection_intent_deliveries.js";
 

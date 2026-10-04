@@ -28,6 +28,7 @@ import type {
   PluginWebhookDeliveryStatus,
 } from "@paperclipai/shared";
 import { conflict, notFound } from "../errors.js";
+import { isEntitled } from "./plugin-entitlements.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -137,6 +138,15 @@ export function pluginRegistryService(db: Db) {
      * assigns the next install order.
      */
     install: async (input: InstallPlugin, manifest: PaperclipPluginManifestV1) => {
+      // Check if the plugin requires entitlement and verify it
+      const requiresEntitlement = manifest.configSchema?.properties?.requiresEntitlement?.default || false;
+      if (requiresEntitlement) {
+        const entitled = await isEntitled(manifest.id);
+        if (!entitled) {
+          throw conflict(`Plugin requires entitlement but none is valid: ${manifest.id}`);
+        }
+      }
+
       const existing = await getByKey(manifest.id);
       if (existing) {
         if (existing.status !== "uninstalled") {
