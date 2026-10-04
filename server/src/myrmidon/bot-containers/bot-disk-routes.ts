@@ -1,56 +1,37 @@
-import { Router, type Request, type Response } from "express";
-import { z } from 'zod';
-import { BotDiskSettingsSchema, DEFAULT_BOT_DISK_SETTINGS, DEFAULT_BOT_DISK_LIFECYCLE_SETTINGS } from './lifecycle-settings.js';
+// GET/PATCH /api/myrmidon/bot-disk (myrmidon BOT-DISK-A).
+//
+// GET reports the effective bot draft-directory lifecycle settings and where
+// each value came from (the stored settings, the environment, or the built-in
+// default); any authenticated board member may read it. PATCH writes
+// `instance_settings.general.botDisk` and records the change in the activity
+// log; it is instance-admin only, the same rule the runtime limits and the
+// rest of the instance settings follow. The sweep re-reads the row on every
+// maintenance tick, so no restart is needed.
 
-// Simple in-memory storage for settings (in production, this would be stored in DB)
-let currentBotDiskSettings = { ...DEFAULT_BOT_DISK_SETTINGS };
+import { Router } from "express";
+import type { Db } from "@paperclipai/db";
+import { patchBotDiskSettingsSchema, type BotDiskSettingsPatch } from "@paperclipai/shared";
+import { validate } from "../../middleware/validate.js";
+import { assertBoardOrgAccess, assertInstanceAdmin, getActorInfo } from "../../routes/authz.js";
+import { botDiskService, type BotDiskService } from "./bot-disk-service.js";
 
-export default function myrmidonBotDiskRoutes() {
+export function botDiskRoutes(_db: Db, service: BotDiskService) {
   const router = Router();
 
-  // GET endpoint to retrieve current bot disk settings
-  router.get('/', (req: Request, res: Response) => {
-    res.json(currentBotDiskSettings);
+  router.get("/myrmidon/bot-disk", async (req, res) => {
+    assertBoardOrgAccess(req);
+    res.json(await service.read());
   });
 
-  // PATCH endpoint to update bot disk settings
-  router.patch('/', (req: Request, res: Response) => {
-    try {
-      // Validate the incoming settings
-      const validatedData = BotDiskSettingsSchema.parse(req.body);
-
-      // Merge with existing settings
-      currentBotDiskSettings = {
-        ...currentBotDiskSettings,
-        ...validatedData,
-      };
-
-      // Return the full settings object after update
-      res.json(currentBotDiskSettings);
-    } catch (error) {
-      if (error instanceof z.ZodError) {
-        res.status(400).json({
-          error: 'Invalid settings provided',
-          details: error.flatten(),
-        });
-      } else {
-        res.status(500).json({
-          error: 'Internal server error',
-        });
-      }
-    }
+  router.patch("/myrmidon/bot-disk", validate(patchBotDiskSettingsSchema), async (req, res) => {
+    assertInstanceAdmin(req);
+    res.json(await service.update(req.body as BotDiskSettingsPatch, getActorInfo(req)));
   });
 
   return router;
 }
 
-export function myrmidonBotDiskLifecycleRoutes(_db: unknown) {
-  // myrmidon(BOT-DISK-A): mounted by app.ts under /api — routes below are
-  // relative to it (GET/PATCH /api/myrmidon/bot-disk).
-  const router = Router();
-
-  // Mount the bot disk lifecycle routes
-  router.use('/myrmidon/bot-disk', myrmidonBotDiskRoutes());
-
-  return router;
+/** Router for app.ts, mounted under /api: GET/PATCH /api/myrmidon/bot-disk. */
+export function myrmidonBotDiskLifecycleRoutes(db: Db) {
+  return botDiskRoutes(db, botDiskService(db));
 }

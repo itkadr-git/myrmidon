@@ -4,6 +4,8 @@ import type { WorkspaceHygieneLimits } from "../myrmidon-workspace-hygiene.js";
 // myrmidon(C0): the run admission limits stored in instance settings
 import type { StoredRunLimits } from "../myrmidon-runtime-limits.js";
 import type { HostDiskSettings } from "../myrmidon-host-disk.js";
+// myrmidon(BOT-DISK-A): the bot draft-directory lifecycle stored in instance settings
+import type { StoredBotDiskSettings } from "../myrmidon-bot-disk.js";
 // myrmidon(PARALLEL-HELPERS): the helper ceiling/default stored in instance settings
 import type { ParallelHelpersSettings } from "../myrmidon-parallel-helpers.js";
 // myrmidon(EXTCASE-B): the browser-bridge allowlist stored in instance settings
@@ -64,6 +66,13 @@ export interface InstanceGeneralSettings {
    * same field (packages/shared/src/validators/instance.ts).
    */
   hostDisk?: HostDiskSettings;
+  /**
+   * myrmidon(BOT-DISK-A): the bot draft-directory lifecycle, changed from
+   * `GET`/`PATCH /api/myrmidon/bot-disk`. Absent means "use the environment
+   * variable, then the default"; kept in sync with the validator of the same
+   * field (packages/shared/src/validators/instance.ts).
+   */
+  botDisk?: StoredBotDiskSettings;
   /**
    * myrmidon(C0): run admission limits changed from the instance settings page
    * and `GET`/`PATCH /api/myrmidon/runtime-limits`. Absent means "use the

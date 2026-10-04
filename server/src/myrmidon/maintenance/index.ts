@@ -15,7 +15,7 @@ import { maintenanceRoutes } from "./routes.js";
 import { maintenanceService, type MaintenanceHeartbeatPort } from "./service.js";
 import { readZabbixSettings, zabbixMaintenanceHooks } from "./zabbix.js";
 import { readMaintenanceSettings } from "./settings.js";
-import { sweepAllBotVolumes, getDefaultLifecycleConfig } from "../bot-containers/draft-lifecycle.js"; // myrmidon(BOT-DISK-A)
+import { runBotDiskSweep } from "../bot-containers/bot-disk-service.js"; // myrmidon(BOT-DISK-A)
 
 export {
   isAgentUnderMaintenance,
@@ -89,15 +89,15 @@ export async function startMaintenanceMode(db: Db): Promise<() => void> {
   }
   const timer = setInterval(() => {
     void service.tick().catch((err) => logger.error({ err }, "maintenance tick failed"));
-    // myrmidon(BOT-DISK-A): bot disk lifecycle sweep.
-    void sweepAllBotVolumes(getDefaultLifecycleConfig()).catch((err) =>
+    // myrmidon(BOT-DISK-A): bot disk lifecycle sweep; re-reads general.botDisk every tick.
+    void runBotDiskSweep(db).catch((err) =>
       logger.error({ err }, "bot disk lifecycle sweep failed"),
     );
   }, readMaintenanceSettings().tickMs);
   timer.unref?.();
   void service.tick().catch((err) => logger.error({ err }, "maintenance tick failed"));
   // myrmidon(BOT-DISK-A): initial bot disk lifecycle sweep.
-  void sweepAllBotVolumes(getDefaultLifecycleConfig()).catch((err) =>
+  void runBotDiskSweep(db).catch((err) =>
     logger.error({ err }, "bot disk lifecycle sweep failed"),
   );
   return () => clearInterval(timer);
