@@ -21,6 +21,7 @@ import {
   recordAgentInstructionsRevision,
   type AgentInstructionsRevisionRecord,
 } from "./service.js";
+import { dbAutonomyGate } from "../../myrmidon/autonomy/gate.js";
 
 export const INSTRUCTIONS_REVISION_ROLLBACK_ACTION = "agent.instructions_revision_rollback";
 
@@ -119,6 +120,30 @@ export function agentInstructionsRevisionsRoutes(db: Db): Router {
   router.post("/agents/:id/instructions-revisions/:revisionId/rollback", async (req, res) => {
     const agent = await loadAgentForInstructionsWrite(req, res, db, req.params.id as string);
     if (!agent) return;
+
+    // myrmidon(1.6.2-AUTONOMY-MATRIX): enforce change_instructions verdict.
+    // approval_required denies with 403 autonomy_approval_required until the
+    // holding-action follow-up (the board caller bypasses the gate entirely).
+    const gate = dbAutonomyGate(db);
+    const changeInstructionsVerdict = await gate.decide(req, "change_instructions");
+    if (changeInstructionsVerdict.verdict === "forbidden") {
+      res.status(403).json({
+        error: "This action is forbidden for this role by the autonomy matrix",
+        code: "autonomy_forbidden",
+        actionClass: "change_instructions",
+        role: changeInstructionsVerdict.role,
+      });
+      return;
+    }
+    if (changeInstructionsVerdict.verdict === "approval_required") {
+      res.status(403).json({
+        error: "This action requires approval under the autonomy matrix",
+        code: "autonomy_approval_required",
+        actionClass: "change_instructions",
+        role: changeInstructionsVerdict.role,
+      });
+      return;
+    }
 
     const revision = await getAgentInstructionsRevision(db, agent, req.params.revisionId as string);
     if (!revision) {

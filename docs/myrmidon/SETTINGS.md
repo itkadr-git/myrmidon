@@ -112,6 +112,7 @@ A track writes only into its own section. A row is added in the same PR as the s
 | `MYRMIDON_ACCESS_HUB_ENABLED` | SEC1 | `false` | Включает раздел «Доступы»: API `/api/myrmidon/access-hub/*` (типизация секретов, генерация ssh-ключей, реестр хостов, журнал, выдача/отзыв доступов). Выключен — чтения отвечают `enabled: false`, мутации 409, хранилище не трогается | `1`/`true`/`yes`/`on` — включить. Значение выката задаётся отдельно, в закрытом `myrmidon-deploy` |
 | `MYRMIDON_ACCESS_HUB_SSH_TIMEOUT_MS` | SEC1 | `30000` | Потолок времени одной ssh-операции access-hub (deploy/revoke/dryRun: чтение и запись authorized_keys) на один хост, включая connect и drain команды; по истечении процесс ssh завершается, операция отвечает `not_deployed` с человеческой причиной (значений ключа в ней нет) | Нечисловое, меньше 1000 или больше 300000 — умолчание |
 | `MYRMIDON_ACCESS_HUB_SSH_ADMIN_KEY_SECRET` | SEC1 | не задана | Имя существующего секрета компании (админский root-ключ), значением которого доска ходит по ssh на хосты реестра при раскладке/отзыве ключей. Не задана — ssh-операции отвечают `not_deployed` с причиной «admin ssh key secret is not configured», остальной access-hub работает | Имя секрета; значением должен быть приватный ключ в PEM (PKCS#8). Значение секрета не логируется и не возвращается |
+| `MYRMIDON_BASELINE_COMPARE_ENABLED` | BASELINE | `1` (on) | Enables the baseline comparison API endpoint (`GET /api/myrmidon/companies/:companyId/baseline/compare`) | `0`/`false`/`off`/`no` — disables the endpoint, it will return 503 |
 | `MYRMIDON_DEPLOY_ENABLED` | R5-A | `0` (off) | Allows board deploys from the UI: without it write routes answer 503, reads work | `1` — enable. The default is off |
 | `MYRMIDON_DEPLOY_HEALTH_URL` | R5-A | unset | Address of the board's own `/api/health` as the board container sees it: the job uses it to verify the version/commit after the switch | Unset — the final health check is impossible, the job will not close as successful |
 | `MYRMIDON_DEPLOY_REPORTS_DIR` | R5-A | unset | Directory of host-runner reports (the deploy `$STATE_DIR`), mounted into the board container read-only | Unset — the board does not see runner reports, the job does not move past `maintenance_on` |
@@ -682,6 +683,17 @@ until an operator edits; a conservative preset is a follow-up). Enforcement seam
 action point — forbidden refuses with a clear error, approval_required maps to the
 existing toolActionRequests + approval-card conveyor, allowed passes. Regulations UI
 (Part B) edits the matrix through this API.
+
+Enforced routes (1.6.2, `change_instructions` action class — see
+`docs/myrmidon/guides/autonomy-matrix-instructions.md`): `PATCH /agents/:id/instructions-path`,
+`PATCH /agents/:id/instructions-bundle`, `DELETE /agents/:id/instructions-bundle/file`,
+`POST /agents/:id/instructions-revisions/:revisionId/rollback`. Verdicts at these seams:
+`forbidden` -> 403 `autonomy_forbidden`; `approval_required` -> 403
+`autonomy_approval_required` (deny until the holding-action conveyor for
+invocation-less routes lands); board/admin callers are not subject to the matrix;
+denied requests never rewrite instructions or create revisions. The matrix is read
+from `instance_settings.general.myrmidonAutonomy` on every request, so a matrix edit
+in the UI takes effect without a restart (no env override, no new settings keys).
 
 No environment variables, no new secrets. Remove: the autonomy tree, the export line in
 `packages/shared/src/index.ts`, the two marker lines in `app.ts`/`instance-settings.ts`
