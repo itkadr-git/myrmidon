@@ -158,14 +158,14 @@ export function normalizeSetting<T>(raw: unknown, def: BehaviorSettingDef<T>): T
 export function resolveSetting<T>(options: {
   key: string;
   stored?: unknown;
-  env?: Record<string, string | undefined>;
+  env: Record<string, string | undefined>;
 }): { value: T; source: SettingSource } {
   const def = behaviorSettingRegistry.get(options.key) as BehaviorSettingDef<T> | undefined;
   if (!def) {
     throw new Error(`Unknown setting key: ${options.key}`);
   }
 
-  const env = options.env ?? process.env;
+  const env = options.env;
   
   // Try stored value first
   if (options.stored !== undefined) {
@@ -198,9 +198,9 @@ export interface ResolvedBehaviorSettings {
  */
 export function resolveBehaviorSettings(options: {
   stored?: Record<string, unknown>;
-  env?: Record<string, string | undefined>;
+  env: Record<string, string | undefined>;
 }): ResolvedBehaviorSettings {
-  const env = options.env ?? process.env;
+  const env = options.env;
   const stored = options.stored ?? {};
   
   const settings: Record<string, unknown> = {};
