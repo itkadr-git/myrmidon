@@ -11504,9 +11504,8 @@ export function issueRoutes(
         "Issue not found",
       );
       if (!issue) return;
+      await dbAutonomyGate(db).assertAllowed(req, "delete");
       const target = await resolveInboxArchiveTarget(req, issue);
-    await dbAutonomyGate(db).assertAllowed(req, "delete");
-      const removed = await svc.unarchiveInbox(
         issue.companyId,
         issue.id,
         target.userId,
@@ -18839,8 +18838,8 @@ export function issueRoutes(
     }
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue)))
-    await dbAutonomyGate(db).assertAllowed(req, "delete");
       return;
+    await dbAutonomyGate(db).assertAllowed(req, "delete");
 
     try {
       await storage.deleteObject(attachment.companyId, attachment.objectKey);
