@@ -83,12 +83,14 @@ export interface EvalRunRecord {
 
 /** How the subject's answers are produced. Tests inject a fake; production reads them from the request. */
 export interface EvalsServiceDeps {
-  judge: JudgePort;
-  /** Optional Langfuse-backed score exporter; absent = local-only. */
-  exporter?: EvalsScoreExporter;
-  /** The model id the judge runs on, recorded on the run. */
-  model: string;
-  now(): Date;
+judge: JudgePort;
+/** Optional Langfuse-backed score exporter; absent = local-only. */
+exporter?: EvalsScoreExporter;
+/** The model id the judge runs on, recorded on the run. */
+model: string;
+/** The model id of the agent being evaluated, used to determine sameFamily flag */
+subjectModel: string;
+now(): Date;
 }
 
 export class EvalsServiceError extends Error {
@@ -184,6 +186,7 @@ export function createEvalsService(db: Db, deps: EvalsServiceDeps) {
         answer,
         rubric: task.rubric,
         kind: task.kind,
+        agentModel: deps.subjectModel,
       });
       const criteriaPoints = task.rubric.criteria.reduce((a, c) => a + c.points, 0);
       judgeResults.push({ ...result, criteriaPoints });
@@ -199,9 +202,9 @@ export function createEvalsService(db: Db, deps: EvalsServiceDeps) {
             ...base,
             __ci: Math.round((input.ciPassRate / 100) * t.rubric.criteria.reduce((a, c) => a + c.points, 0) * 100) / 100,
           };
-          return { slug: t.slug, weight: t.weight, kind: t.kind, criteriaPoints: result.criteriaPoints + 0, awarded: extra };
+          return { slug: t.slug, weight: t.weight, kind: t.kind, criteriaPoints: result.criteriaPoints + 0, awarded: extra, sameFamily: result.sameFamily };
         }
-        return { slug: t.slug, weight: t.weight, kind: t.kind, criteriaPoints: result.criteriaPoints, awarded: result.awarded };
+        return { slug: t.slug, weight: t.weight, kind: t.kind, criteriaPoints: result.criteriaPoints, awarded: result.awarded, sameFamily: result.sameFamily };
       }),
     );
     // maxScore for code tasks must account for the __ci extra criterion.

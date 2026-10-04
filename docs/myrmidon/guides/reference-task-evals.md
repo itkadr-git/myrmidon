@@ -23,6 +23,14 @@ never appears in a setting, log or journal. All settings
 contour is not configured, reads still work and mutations answer `503` with
 the names of the missing settings.
 
+## New Feature: Same-Family Judge Detection (1.6.2 EVALS-JUDGE-FAMILY)
+
+Starting with version 1.6.2, the evaluation system includes a feature to detect when the judge model is from the same family as the agent model being evaluated. This helps identify potential bias in evaluations where the judge is essentially evaluating "its own kind".
+
+When a judge evaluates an agent that uses the same model family (for example, a qwen-plus-free judge evaluating a qwen-plus agent), a `sameFamily` flag is set to `true` in the evaluation results. This flag is visible in the UI and can be used for analysis.
+
+Additionally, administrators can now configure a priority order for judge models through the settings. This allows specifying which models should be used as judges in order of preference.
+
 ## The API
 
 The board API under `/api/myrmidon/companies/:companyId/evals`:

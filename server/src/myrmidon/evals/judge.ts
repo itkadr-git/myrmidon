@@ -16,6 +16,51 @@
 
 import type { EvalRubric, EvalTaskKind } from "./domain.js";
 
+/** Models that belong to the Qwen family (DashScope models) */
+const QWEN_FAMILY_MODELS = [
+  "qwen-plus-free",
+  "qwen-plus",
+  "qwen-max",
+  "qwen-max-free",
+  "qwen-turbo",
+  "qwen-turbo-free",
+  "dashscope/*"
+];
+
+/**
+ * Check if two models belong to the same family
+ * @param judgeModel - The model used by the judge
+ * @param agentModel - The model used by the agent being evaluated
+ * @returns true if both models are from the same family, false otherwise
+ */
+function isSameModelFamily(judgeModel: string, agentModel?: string): boolean {
+  if (!agentModel) {
+    return false;
+  }
+  
+  // Normalize model names by removing potential prefixes like "dashscope/"
+  const normalizedJudgeModel = judgeModel.replace(/^dashscope\//, "");
+  const normalizedAgentModel = agentModel.replace(/^dashscope\//, "");
+  
+  // Check if both models are in the Qwen family
+  const judgeInQwenFamily = QWEN_FAMILY_MODELS.some(familyModel => 
+    normalizedJudgeModel === familyModel || normalizedJudgeModel.startsWith(`${familyModel}/`) ||
+    familyModel === "dashscope/*" && normalizedJudgeModel.includes("qwen")
+  );
+  const agentInQwenFamily = QWEN_FAMILY_MODELS.some(familyModel => 
+    normalizedAgentModel === familyModel || normalizedAgentModel.startsWith(`${familyModel}/`) ||
+    familyModel === "dashscope/*" && normalizedAgentModel.includes("qwen")
+  );
+  
+  // If both are in Qwen family, return true
+  if (judgeInQwenFamily && agentInQwenFamily) {
+    return true;
+  }
+  
+  // Otherwise, compare the normalized model names directly
+  return normalizedJudgeModel === normalizedAgentModel;
+}
+
 /** Env vars the evals contour reads; mirrors the OCR settings shape. */
 export const EVALS_BASE_URL_ENV = "MYRMIDON_EVALS_BASE_URL";
 export const EVALS_KEY_SECRET_ENV = "MYRMIDON_EVALS_KEY_SECRET";
@@ -86,6 +131,8 @@ export interface JudgeTaskResult {
   parseError: boolean;
   /** The raw model text, kept for audit in `eval_runs.scores`. */
   raw: string | null;
+  /** True when the judge and the agent being evaluated are from the same model family */
+  sameFamily: boolean;
 }
 
 export interface JudgePort {
@@ -96,6 +143,8 @@ export interface JudgePort {
     answer: string;
     rubric: EvalRubric;
     kind: EvalTaskKind;
+    /** The model used by the agent being evaluated (to determine sameFamily) */
+    agentModel?: string;
   }): Promise<JudgeTaskResult>;
 }
 
@@ -191,7 +240,11 @@ export function createJudge(deps: JudgeDeps): JudgePort {
     answer: string;
     rubric: EvalRubric;
     kind: EvalTaskKind;
+    agentModel?: string;
   }): Promise<JudgeTaskResult> => {
+    const judgeModel = deps.model;
+    const isSameFamily = isSameModelFamily(judgeModel, input.agentModel);
+
     let response: Response;
     try {
       response = await deps.fetch(url, {
@@ -227,10 +280,10 @@ export function createJudge(deps: JudgeDeps): JudgePort {
     };
     const content = body.choices?.[0]?.message?.content;
     if (typeof content !== "string") {
-      return { taskSlug: input.taskSlug, awarded: {}, parseError: true, raw: null };
+      return { taskSlug: input.taskSlug, awarded: {}, parseError: true, raw: null, sameFamily: isSameFamily };
     }
     const { awarded, parseError } = parseJudgeResponse(content, input.rubric);
-    return { taskSlug: input.taskSlug, awarded, parseError, raw: content };
+    return { taskSlug: input.taskSlug, awarded, parseError, raw: content, sameFamily: isSameFamily };
   };
   return { judgeTask };
 }
