@@ -1844,8 +1844,154 @@ export function toolAccessPolicyService(db: Db) {
     return updated;
   }
 
+  // Enhanced version of decide that accepts pre-loaded data to avoid repeated DB queries
+  async function decideWithCachedData(
+    input: ToolAccessDecisionInput,
+    policies: typeof toolPolicies.$inferSelect[],
+    bindings: typeof toolProfileBindings.$inferSelect[],
+    profiles: typeof toolProfiles.$inferSelect[]
+  ): Promise<ToolAccessDecision> {
+    const loaded = await loadContext(input);
+    if (!loaded.ok) return loaded.decision;
+    const { ctx, redaction } = loaded;
+    const profileState = await effectiveProfilesWithCachedData(ctx, bindings, profiles);
+    const effectiveProfileIds = profileState.profiles.map((profile) => profile.id);
+    
+    const matchingPolicies = policies
+      .map((policy) => ({ policy, conditionEvaluation: evaluatePolicyConditions(policyConditions(policy), ctx) }))
+      .filter(({ policy, conditionEvaluation }) => selectorMatches(policy.selectors, ctx) && conditionEvaluation.matched);
+
+    const explicitBlock = matchingPolicies.find(({ policy }) => policy.policyType === "block");
+    for (const { policy, conditionEvaluation } of matchingPolicies) {
+      const policyExplanation = {
+        policyId: policy.id,
+        policyType: policy.policyType,
+        selectorMatched: true,
+        conditionsMatched: conditionEvaluation.matchedGroups,
+      };
+      if (unsupportedRuntimePolicyType(policy.policyType)) {
+        return decision(
+          "deny",
+          "deny_policy_block",
+          "Tool access denied because a matching policy uses unsupported runtime semantics.",
+          effectiveProfileIds,
+          [policy.id],
+          { redactionPlan: redaction.redactionPlan, policyExplanation },
+        );
+      }
+      if (policy.policyType === "block") {
+        return decision("deny", "deny_policy_block", policy.description ?? "Tool access is blocked by policy.", effectiveProfileIds, [policy.id], { redactionPlan: redaction.redactionPlan, policyExplanation });
+      }
+      if (policy.policyType === "rate_limit") {
+        if (!rateLimitRule(policy)) {
+          return decision(
+            "deny",
+            "deny_policy_block",
+            "Tool access denied because a matching rate-limit policy has invalid runtime config.",
+            effectiveProfileIds,
+            [policy.id],
+            { redactionPlan: redaction.redactionPlan, policyExplanation },
+          );
+        }
+        const state = await enforceRateLimit(policy, ctx, input.consumeRateLimit === true);
+        if (state?.limited) {
+          return decision("rate_limited", "rate_limited", "Tool access rate limit exceeded.", effectiveProfileIds, [policy.id], { rateLimitState: state, redactionPlan: redaction.redactionPlan, policyExplanation });
+        }
+        continue;
+      }
+      if (policy.policyType === "trust_rule") {
+        const rule = trustRuleConfig(policy);
+        if (!rule || !trustRuleIsActive(policy)) continue;
+        if (!argumentFiltersMatch(rule.argumentFilters, ctx)) continue;
+        // Remembered permissions cannot override an explicit block. Preserve
+        // priority semantics for ordinary allow/require-approval policies.
+        if (explicitBlock) return decision("deny", "deny_policy_block", explicitBlock.policy.description ?? "Tool access is blocked by policy.", effectiveProfileIds, [explicitBlock.policy.id], { redactionPlan: redaction.redactionPlan });
+
+        if (trustRuleNeedsReview(policy, ctx)) {
+          return decision(
+            "require_approval",
+            "requires_review_changed_tool",
+            "Tool definition changed or was quarantined after this trust rule was created; review is required.",
+            effectiveProfileIds,
+            [policy.id],
+            { redactionPlan: redaction.redactionPlan, policyExplanation },
+          );
+        }
+        if (input.consumeRateLimit === true) {
+          await recordTrustRuleHit(policy, ctx, redaction);
+        }
+        return decision("allow", "allow_trust_rule", policy.description ?? "Tool access allowed by trust rule.", effectiveProfileIds, [policy.id], { redactionPlan: redaction.redactionPlan, policyExplanation });
+      }
+      if (policy.policyType === "require_approval") {
+        return decision("require_approval", "requires_approval_policy", policy.description ?? "Tool access requires approval.", effectiveProfileIds, [policy.id], { redactionPlan: redaction.redactionPlan, policyExplanation });
+      }
+      if (policy.policyType === "allow") {
+        return decision("allow", "allow_policy", "Tool access allowed by policy.", effectiveProfileIds, [policy.id], { redactionPlan: redaction.redactionPlan, policyExplanation });
+      }
+    }
+    if (await explicitGrant(ctx)) {
+      return decision("allow", "allow_explicit_grant", "Tool access allowed by explicit grant.", effectiveProfileIds, [], { redactionPlan: redaction.redactionPlan });
+    }
+
+    const entriesByProfile = new Map<string, Array<typeof toolProfileEntries.$inferSelect>>();
+    for (const entry of profileState.entries) {
+      const list = entriesByProfile.get(entry.profileId) ?? [];
+      list.push(entry);
+      entriesByProfile.set(entry.profileId, list);
+    }
+    for (const profile of profileState.profiles) {
+      const entries = entriesByProfile.get(profile.id) ?? [];
+      const matchingEntries = entries.filter((entry) => profileEntryMatches(entry, ctx));
+      if (matchingEntries.some((entry) => entry.effect === "exclude")) continue;
+      if (profile.defaultAction === "allow" || matchingEntries.some((entry) => entry.effect === "include")) {
+        return decision("allow", "allow_profile", "Tool access allowed by effective profile.", effectiveProfileIds, [], { redactionPlan: redaction.redactionPlan });
+      }
+    }
+
+    return decision("deny", "deny_default", "No effective tool profile, grant, or allow policy permits this call.", effectiveProfileIds, [], { redactionPlan: redaction.redactionPlan });
+  }
+
+  async function effectiveProfilesWithCachedData(
+    ctx: ToolAccessContext,
+    bindings: typeof toolProfileBindings.$inferSelect[],
+    profiles: typeof toolProfiles.$inferSelect[]
+  ) {
+    const matchingBindings = bindings.filter((binding) => targetMatches(binding, ctx));
+    if (matchingBindings.length === 0) return { profiles: [], entries: [] as Array<typeof toolProfileEntries.$inferSelect> };
+    const candidateProfileIds = profileIdsInBindingOrder(matchingBindings);
+    const candidateProfiles = profiles.filter(profile => candidateProfileIds.includes(profile.id));
+    
+    const [gateway] = ctx.gatewayId
+      ? await db
+          .select({ defaultProfileMode: toolMcpGateways.defaultProfileMode })
+          .from(toolMcpGateways)
+          .where(and(
+            eq(toolMcpGateways.companyId, ctx.companyId),
+            eq(toolMcpGateways.id, ctx.gatewayId),
+          ))
+          .limit(1)
+      : [];
+    const activeBindings = effectiveToolProfileBindings(
+      matchingBindings,
+      candidateProfiles,
+      ctx.connectionId,
+      { includeAdditiveAppProfiles: gateway?.defaultProfileMode !== "gateway_only" },
+    );
+    const profileIds = profileIdsInBindingOrder(activeBindings);
+    const profilesById = new Map(candidateProfiles.map((profile) => [profile.id, profile]));
+    const activeProfiles = profileIds
+      .map((profileId) => profilesById.get(profileId) ?? null)
+      .filter((profile): profile is typeof toolProfiles.$inferSelect => Boolean(profile && profile.status === "active"));
+    const activeProfileIds = activeProfiles.map((profile) => profile.id);
+    const entries = activeProfileIds.length > 0
+      ? await db.select().from(toolProfileEntries).where(and(eq(toolProfileEntries.companyId, ctx.companyId), inArray(toolProfileEntries.profileId, activeProfileIds)))
+      : [];
+    return { profiles: activeProfiles, entries };
+  }
+
   return {
     decide,
+    decideWithCachedData,
     writeAudit,
     recordInvocation,
     summarizeAndRedact,
