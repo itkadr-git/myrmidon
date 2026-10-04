@@ -42,6 +42,8 @@ import {
   type BotProfileSettings,
 } from "./profile-input.js";
 import type { BotContainerActivitySink } from "./reconciler.js";
+import { cardFleetHost } from "./fleetd-hosts.js"; // myrmidon(1.6.1-BOT-DISK-B)
+import { packageCacheEnv } from "./template.js"; // myrmidon(1.6.1-BOT-DISK-B)
 import type { CompiledProfile } from "./types.js";
 import type { RegulationDelivery } from "../wiki-cortex/delivery.js"; // myrmidon(1.6-WIKI)
 
@@ -139,6 +141,14 @@ export interface BotProfilePorts {
    * reconcile without a restart.
    */
   parallelHelpers?(): Promise<ParallelHelpersSettings | undefined>;
+  /**
+   * myrmidon(1.6.1-BOT-DISK-B): the shared package cache path from the instance
+   * settings (`general.botDisk`), undefined when none is set. Read per tick,
+   * the same reader the local driver uses for its binds, so the cache mounts
+   * and the variables pointing the tools at them change together. Optional:
+   * without it no bot gets the variables.
+   */
+  sharedPackageCachePath?(): Promise<string | undefined>;
   /** myrmidon(1.6-WIKI): the approved regulations of the agent's role, as workspace files.
    *  Optional: without it a profile carries no regulations. `takenPaths` are the bundle's own
    *  paths, so a regulation file never overwrites one the agent ships. */
@@ -257,6 +267,20 @@ export function createBotProfileCompile(
         ports.parallelHelpers ? ports.parallelHelpers() : Promise.resolve(undefined),
       ]);
 
+    // myrmidon(1.6.1-BOT-DISK-B): with a shared package cache, a bot on the
+    // default host (the local driver mounts the cache there) gets the variables
+    // that point pnpm, Go and Gradle at the mounts. A bot on a fleetd host has
+    // no cache mounts (fleetd-driver.ts), so its tools keep their own defaults.
+    // Instance values win over the card's, like the egress variables below.
+    const sharedPackageCachePath = ports.sharedPackageCachePath ? await ports.sharedPackageCachePath() : undefined;
+    const cacheEnv: Record<string, HermesProfileEnvEntry> =
+      sharedPackageCachePath && cardFleetHost(agent.adapterConfig) === null
+        ? Object.fromEntries(Object.entries(packageCacheEnv()).map(([name, value]) => [name, { value, secret: false }]))
+        : {};
+    const cacheWarnings = Object.keys(cacheEnv)
+      .filter((name) => cardEnv.env[name] !== undefined)
+      .map((name) => `.env: "${name}" is set by the shared package cache setting; the card's value was dropped`);
+
     // myrmidon(1.6-WIKI): the approved regulations of the agent's role ride the profile's
     // workspace files, so a bot picks up a newly approved text on its next run. The
     // resolver reads the wiki on every compile, and the renderer is deterministic, so
@@ -295,7 +319,7 @@ export function createBotProfileCompile(
         botKey,
         adapterConfig: agent.adapterConfig,
         runtimeConfig: agent.runtimeConfig,
-        env: { ...cardEnv.env, ...egressEnv },
+        env: { ...cardEnv.env, ...egressEnv, ...cacheEnv },
         skills: skills.skills,
         // No workspace/AGENTS.md: the gateway injection-scans it and drops the whole file
         // on a match. The instructions reach the model through the run request instead
@@ -323,6 +347,7 @@ export function createBotProfileCompile(
       ...gatewayWarnings,
       ...cardEnv.warnings,
       ...egressWarnings,
+      ...cacheWarnings,
       ...(paperclipApiKey.warnings ?? []),
       ...skills.warnings,
       ...instructions.warnings,

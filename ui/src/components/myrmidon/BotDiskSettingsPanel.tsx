@@ -1,108 +1,82 @@
-import React, { useState, useEffect } from "react";
-import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
-import { Label } from "@/components/ui/label";
-import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
+// Shared package cache of development bots (1.6.1-BOT-DISK-B): one host
+// directory whose pnpm, Go and Gradle caches every bot on the default host
+// mounts read-write. Saving applies on the next reconcile pass — bots are
+// recreated with the new mounts — without restarting the server. Changing it
+// is for instance admins; the server refuses anyone else.
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Package } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { botDiskApi, botDiskQueryKey } from "./botDiskApi";
 
-interface DraftState {
-  sharedPackageStore: string;
-  sharedEnabled: boolean;
-}
-
-export const BotDiskSettingsPanel: React.FC = () => {
-  const [draft, setDraft] = useState<DraftState>({ sharedPackageStore: "", sharedEnabled: false });
+export function BotDiskSettingsPanel() {
   const queryClient = useQueryClient();
+  const { data: view } = useQuery({ queryKey: botDiskQueryKey, queryFn: botDiskApi.get });
+  const [draft, setDraft] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const query = useQuery({
-    queryKey: botDiskQueryKey,
-    queryFn: () => botDiskApi.get(),
-    retry: false,
-  });
-
-  // react-query v5 has no query onSuccess: seed the draft when the data arrives.
+  // Seed the draft once the stored value arrives (react-query v5 has no onSuccess).
   useEffect(() => {
-    if (!query.data) return;
-    setDraft({
-      sharedPackageStore: query.data.settings["shared.packageStore"] || "",
-      sharedEnabled: query.data.settings["shared.enabled"] || false,
-    });
-  }, [query.data]);
+    if (view && draft === null) setDraft(view.sharedPackageCachePath ?? "");
+  }, [view, draft]);
 
   const save = useMutation({
-    mutationFn: (settings: { "shared.packageStore"?: string, "shared.enabled"?: boolean }) => botDiskApi.update(settings),
-    onMutate: () => setError(null),
-    onError: (err) => setError(err instanceof Error ? err.message : "Saving the bot disk settings failed."),
-    onSuccess: async () => {
+    mutationFn: (path: string) => botDiskApi.update({ sharedPackageCachePath: path === "" ? null : path }),
+    onSuccess: (saved) => {
       setError(null);
-      await queryClient.invalidateQueries({ queryKey: botDiskQueryKey });
+      setDraft(saved.sharedPackageCachePath ?? "");
+      queryClient.invalidateQueries({ queryKey: botDiskQueryKey });
     },
+    onError: (err) => setError(err instanceof Error ? err.message : "Could not save the cache path. Try again."),
   });
 
-  const handleSave = () => {
-    const settings = {
-      "shared.packageStore": draft.sharedPackageStore.trim() === "" 
-        ? undefined 
-        : draft.sharedPackageStore.trim(),
-      "shared.enabled": draft.sharedPackageStore.trim() !== ""
-    };
-    
-    save.mutate(settings);
+  const submit = () => {
+    const path = (draft ?? "").trim();
+    if (path !== "" && (!path.startsWith("/") || path.endsWith("/") || path.split("/").includes(".."))) {
+      setError("Enter an absolute directory without a trailing slash or \"..\", or leave it empty");
+      return;
+    }
+    save.mutate(path);
   };
 
-  const isLoading = query.isLoading;
-  const isSaving = save.isPending;
-
-  if (isLoading) {
-    return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Bot Disk Settings</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div>Loading...</div>
-        </CardContent>
-      </Card>
-    );
-  }
+  const unchanged = view !== undefined && (draft ?? "").trim() === (view.sharedPackageCachePath ?? "");
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Bot Disk Settings</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        {error ? (
-          <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-            {error}
-          </div>
-        ) : null}
-        
-        <div className="space-y-2">
-          <Label htmlFor="sharedPackageStore">Shared Package Cache Path</Label>
+    <section className="space-y-4 rounded-lg border p-4" data-testid="bot-disk-panel">
+      <div className="flex items-center gap-2">
+        <Package className="size-4 text-muted-foreground" />
+        <h3 className="text-sm font-medium">Shared package cache for bots</h3>
+      </div>
+      <div className="space-y-2">
+        <Label htmlFor="bot-disk-cache-path">Host directory</Label>
+        <div className="flex items-center gap-2">
           <Input
-            id="sharedPackageStore"
-            value={draft.sharedPackageStore}
-            onChange={(e) => setDraft(prev => ({ ...prev, sharedPackageStore: e.target.value }))}
-            placeholder="/mnt/shared/package-cache"
-            disabled={isSaving}
+            id="bot-disk-cache-path"
+            placeholder="Empty: every bot keeps its own cache"
+            value={draft ?? ""}
+            onChange={(event) => {
+              setDraft(event.target.value);
+              setError(null);
+            }}
+            data-testid="bot-disk-cache-path-input"
           />
-          <p className="text-sm text-muted-foreground">
-            Path to the shared cache for pnpm, pip, go, and gradle. All bots will mount this path to share package downloads.
-          </p>
+          <Button size="sm" onClick={submit} disabled={save.isPending || draft === null || unchanged}>
+            {save.isPending ? "Saving…" : "Save"}
+          </Button>
         </div>
-        
-        <Button 
-          onClick={handleSave} 
-          disabled={isSaving || save.isSuccess}
-        >
-          {isSaving ? "Saving..." : "Save Settings"}
-        </Button>
-      </CardContent>
-    </Card>
+        <p className="text-xs text-muted-foreground">
+          Bots on this server mount its pnpm, go-mod, go-build and gradle
+          subdirectories and share the downloads. The same path must be set as
+          packageCacheRoot in the dockergate configuration, and the
+          subdirectories must exist and belong to the bot user. Applies on the
+          next reconcile pass: bots are recreated with the new mounts. Bots on
+          a fleet host are not affected.
+        </p>
+        {error && <p className="text-xs text-red-600">{error}</p>}
+        {save.isSuccess && !error && <p className="text-xs text-green-600">Saved</p>}
+      </div>
+    </section>
   );
-};
-
-export default BotDiskSettingsPanel;
+}

@@ -37,7 +37,7 @@ import { eq } from "drizzle-orm";
 import { preserveMaintenanceGeneralKey, preserveBrowserConsoleGeneralKey } from "../myrmidon/maintenance/store.js";
 // myrmidon(R5-A): keep deploy job state across vendor writes of `general`
 import { preserveDeployJobsGeneralKey } from "../myrmidon/deploy-jobs/store.js";
-// myrmidon(SUA): keep the stack registry cache across every vendor general write
+// myrmidon(SUA): the stack registry cache survives every vendor general write
 import { preserveStackGeneralKey } from "../myrmidon/stack-registry/store.js";
 // myrmidon(R5-B): keep bot image canary state across vendor writes of `general`
 import { preserveBotCanaryGeneralKey } from "../myrmidon/bot-containers/canary-store.js";

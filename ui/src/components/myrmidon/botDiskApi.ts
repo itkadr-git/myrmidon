@@ -1,39 +1,18 @@
+// Shared package cache of development bots (myrmidon 1.6.1-BOT-DISK-B):
+// GET/PATCH /api/myrmidon/bot-disk.
+//
+// GET reports the stored cache path (null: no shared cache). PATCH saves it to
+// the instance settings (instance admins only); it applies on the next
+// reconcile pass, without restarting the server.
+import { api } from "@/api/client";
+
 export interface BotDiskView {
-  settings: {
-    "shared.packageStore": string | undefined;
-    "shared.enabled": boolean;
-    sharedPackageCachePath: string | undefined;
-  };
+  sharedPackageCachePath: string | null;
 }
 
 export const botDiskQueryKey = ["myrmidon", "bot-disk"] as const;
 
 export const botDiskApi = {
-  async get(): Promise<BotDiskView> {
-    const response = await fetch("/api/myrmidon/bot-disk");
-    if (!response.ok) {
-      throw new Error(`Failed to fetch bot disk settings: ${response.status} ${response.statusText}`);
-    }
-    const data = await response.json();
-    return { 
-      settings: {
-        "shared.packageStore": data["shared.packageStore"],
-        "shared.enabled": data["shared.enabled"],
-        sharedPackageCachePath: data.sharedPackageCachePath,
-      }
-    };
-  },
-
-  async update(settings: { "shared.packageStore"?: string, "shared.enabled"?: boolean, sharedPackageCachePath?: string }): Promise<void> {
-    const response = await fetch("/api/myrmidon/bot-disk", {
-      method: "PATCH",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(settings),
-    });
-    if (!response.ok) {
-      throw new Error(`Failed to update bot disk settings: ${response.status} ${response.statusText}`);
-    }
-  },
+  get: () => api.get<BotDiskView>("/myrmidon/bot-disk"),
+  update: (patch: BotDiskView) => api.patch<BotDiskView>("/myrmidon/bot-disk", patch),
 };

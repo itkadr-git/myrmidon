@@ -46,6 +46,9 @@ type Env struct {
 	// its three volumes (configuration key "mountSources"). An empty list allows
 	// no extra mount at all.
 	MountSources []string
+	// PackageCacheRoot is the host directory of the shared package cache
+	// (configuration key "packageCacheRoot"). Empty allows no cache mount.
+	PackageCacheRoot string
 	// Ceilings of the bot the request is for.
 	MaxMemoryMB int64
 	MaxCPUs     float64
@@ -93,9 +96,10 @@ func safeContainerTarget(p string) bool {
 	return true
 }
 
-// parseExtraBind splits "source:target:ro" or "source:target:rw" — the forms an extra mount may
-// take. Most directories are mounted read-only, but specific cache directories can be mounted writable.
-func parseExtraBind(bind string) (source, target string, mode string, ok bool) {
+// parseExtraBind splits "source:target:ro" or "source:target:rw", the two
+// forms an extra mount may take. Only a shared package cache mount may be "rw"
+// (see PackageCacheMounts); every other extra mount must be "ro".
+func parseExtraBind(bind string) (source, target, mode string, ok bool) {
 	parts := strings.Split(bind, ":")
 	if len(parts) != 3 {
 		return "", "", "", false
@@ -106,21 +110,36 @@ func parseExtraBind(bind string) (source, target string, mode string, ok bool) {
 	return parts[0], parts[1], parts[2], true
 }
 
-// packageCacheTargets are the container paths of the shared package cache
-// (server template.ts buildBinds) — the only extra mounts that may be rw.
-var packageCacheTargets = map[string]bool{
-	"/home/user/.pnpm-store":     true,
-	"/home/user/.cache/pip":      true,
-	"/home/user/.cache/go-build": true,
-	"/home/user/.gradle":         true,
+// PackageCacheMounts is the layout of the shared package cache: the
+// subdirectory of env.PackageCacheRoot -> its mount point in the bot. It
+// mirrors PACKAGE_CACHE_MOUNTS in server/src/myrmidon/bot-containers/template.ts.
+// These are the only extra mounts that may be read-write, and only as exactly
+// these pairs: a writable bind cannot name another source or another target.
+var PackageCacheMounts = map[string]string{
+	"pnpm":     "/cache/pnpm",
+	"go-mod":   "/cache/go-mod",
+	"go-build": "/cache/go-build",
+	"gradle":   "/cache/gradle",
+}
+
+// isPackageCacheBind reports whether source:target is one of the cache pairs
+// under root. An empty root allows none.
+func isPackageCacheBind(root, source, target string) bool {
+	if root == "" || !strings.HasPrefix(source, root+"/") {
+		return false
+	}
+	want, ok := PackageCacheMounts[strings.TrimPrefix(source, root+"/")]
+	return ok && want == target
 }
 
 // parseBotBinds checks HostConfig.Binds: the three fixed binds first and in
 // order, then the bot's extra read-only mounts. Every extra source must be one
 // of env.MountSources (exact match, no prefix rule — a card cannot reach a
 // sibling directory the operator did not name) and every extra target must be a
-// safe path used once. The returned list is what the daemon gets.
-// Only the shared package cache targets (packageCacheTargets) may be rw.
+// safe path used once. The one exception is the shared package cache: a "rw"
+// bind is accepted only as one of the fixed pairs under env.PackageCacheRoot
+// (isPackageCacheBind), and needs no mountSources entry. The returned list is
+// what the daemon gets.
 func parseBotBinds(v *jsonx.Value, path string, env *Env, botKey string) ([]string, *deny.Error) {
 	got, err := strList(v, path)
 	if err != nil {
@@ -146,13 +165,12 @@ func parseBotBinds(v *jsonx.Value, path string, env *Env, botKey string) ([]stri
 		if !ok {
 			return nil, deny.Field(deny.BindsMismatch, path, []byte(bind))
 		}
-		if !allowed[source] {
+		if mode == "rw" {
+			if !isPackageCacheBind(env.PackageCacheRoot, source, target) {
+				return nil, deny.Field(deny.MountSourceNotAllowed, path, []byte(source))
+			}
+		} else if !allowed[source] {
 			return nil, deny.Field(deny.MountSourceNotAllowed, path, []byte(source))
-		}
-		// Read-write only on the shared package cache targets the server writes
-		// itself (template.ts buildBinds); every other extra mount stays read-only.
-		if mode == "rw" && !packageCacheTargets[target] {
-			return nil, deny.Field(deny.BindsMismatch, path, []byte(bind))
 		}
 		if !safeContainerTarget(target) || seen[target] {
 			return nil, deny.Field(deny.BindsMismatch, path, []byte(target))

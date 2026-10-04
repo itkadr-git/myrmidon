@@ -17,7 +17,8 @@ import type { CompiledProfile } from "./types.js";
  *  (`MYRMIDON_BOT_MOUNT_SOURCES`, template.ts). Read-only only: a shared
  *  directory is never mounted writable, and the driver refuses a mount whose
  *  source the operator did not list. (The shared package cache of
- *  1.6.1-BOT-DISK-B is not a card mount: the driver adds it itself.) */
+ *  1.6.1-BOT-DISK-B is not a card mount: the local driver adds it itself from
+ *  the instance settings; a fleetd host does not get it, see fleetd-driver.ts.) */
 export interface BotExtraMount {
   /** Absolute host directory, listed in MYRMIDON_BOT_MOUNT_SOURCES. */
   source: string;
@@ -112,12 +113,6 @@ export interface BotContainerDriver {
   status(botKey: string): Promise<BotContainerStatus>;
   /** All bots the driver currently manages (used for orphan/inventory sweeps). */
   list(): Promise<BotContainerStatus[]>;
-  /**
-   * myrmidon(1.6.1-BOT-DISK-B): set the shared package cache path used by every
-   * later create/recreate/templateDrift. Optional: only the local Docker driver
-   * implements it.
-   */
-  updateSharedPackageCachePath?(path: string | undefined): void;
   /**
    * Side-effect-free check: does the existing container's live template (image,
    * resource limits, network, bind list) no longer match `spec`? `drifted` is

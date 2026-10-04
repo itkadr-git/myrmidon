@@ -38,7 +38,7 @@ import {
 import { botProfileWiring } from "./profile-ports.js";
 import type { BotContainerActivitySink, BotMaintenancePort } from "./reconciler.js";
 import { botContainerAgentReader, getBotContainerRuntime, setBotContainerRuntime } from "./routes-wiring.js";
-import { readBotDiskSettings } from "./bot-disk-store.js";
+import { readBotDiskSettings } from "./bot-disk-store.js"; // myrmidon(1.6.1-BOT-DISK-B)
 
 export const BOT_RECONCILE_INTERVAL_ENV = "MYRMIDON_BOT_RECONCILE_INTERVAL_SEC";
 const MIN_RECONCILE_INTERVAL_SEC = 5;
@@ -76,7 +76,9 @@ export function createBotContainerLogSink(log: BotContainersLog = logger): BotCo
 /** What `startBotContainers` builds its runtime from; tests replace these. */
 export interface BotContainersStartupPorts {
   readDriverConfig(env: NodeJS.ProcessEnv): DockerDriverConfig;
-  createDriver(config: DockerDriverConfig): BotContainerDriver;
+  /** `db` feeds the instance settings the driver reads per pass (the shared
+   *  package cache path, 1.6.1-BOT-DISK-B). */
+  createDriver(config: DockerDriverConfig, db: Db): BotContainerDriver;
   profileWiring(
     db: Db,
     opts: { activity: BotContainerActivitySink; env: NodeJS.ProcessEnv },
@@ -96,7 +98,10 @@ export interface BotContainersStartupPorts {
 
 const defaultPorts: BotContainersStartupPorts = {
   readDriverConfig: (env) => readDockerDriverConfig(env),
-  createDriver: (config) => dockerBotContainerDriver(config),
+  createDriver: (config, db) =>
+    dockerBotContainerDriver(config, {
+      readSharedPackageCachePath: async () => (await readBotDiskSettings(db)).sharedPackageCachePath,
+    }),
   profileWiring: (db, opts) => botProfileWiring(db, opts),
   maintenancePort: (db) => realBotMaintenancePort(db),
   listAgents: (db) => listBotContainerAgents(db),
@@ -157,7 +162,7 @@ function build(
     const activity = ports.activitySink();
     const { compile, syncCard, releaseStrayGateways } = ports.profileWiring(db, { activity, env });
     const runtime: BotContainerRuntimeDeps = {
-      driver: ports.createDriver(driverConfig),
+      driver: ports.createDriver(driverConfig, db),
       compile,
       syncCard,
       ...(releaseStrayGateways ? { releaseStrayGateways } : {}),
@@ -166,13 +171,6 @@ function build(
       readAgent: ports.readAgent(db),
       network: driverConfig.network,
     };
-    // myrmidon(1.6.1-BOT-DISK-B): the shared package cache path from instance settings
-    const driver = runtime.driver;
-    if (driver.updateSharedPackageCachePath) {
-      readBotDiskSettings(db)
-        .then((settings) => driver.updateSharedPackageCachePath?.(settings.sharedPackageCachePath))
-        .catch((err) => ports.log.error({ err }, "reading the shared package cache path failed"));
-    }
     const stopSweep = ports.startReconciliation(ports.listAgents(db), runtime, { intervalMs, env });
     return { runtime, stopSweep };
   } catch (err) {

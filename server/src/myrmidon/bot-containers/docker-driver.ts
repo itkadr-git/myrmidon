@@ -125,6 +125,14 @@ export interface DockerDriverOptions {
   healthPollIntervalMs?: number;
   /** Staging-directory nonce generator (hex). */
   nonce?: () => string;
+  /**
+   * myrmidon(1.6.1-BOT-DISK-B): the shared package cache path from the
+   * instance settings (`general.botDisk`), or undefined when none is set. Read
+   * on every create, recreate and drift check, so a settings change reaches the
+   * next reconcile pass without a restart and a fresh process never compares a
+   * container against a path it has not loaded yet. Absent: no shared cache.
+   */
+  readSharedPackageCachePath?: () => Promise<string | undefined>;
 }
 
 export interface DockerCreateContainerBody {
@@ -153,7 +161,8 @@ export interface DockerCreateContainerBody {
  * `Env` (secrets travel only in the profile's hermes/.env). Throws on an
  * image outside the allowlist, a network other than the one configured for
  * this driver, or an extra mount whose source is not in
- * MYRMIDON_BOT_MOUNT_SOURCES (template.ts buildBinds).
+ * MYRMIDON_BOT_MOUNT_SOURCES (template.ts buildBinds). `sharedPackageCachePath`
+ * (instance settings, 1.6.1-BOT-DISK-B) adds the fixed package cache binds.
  */
 export function buildCreateContainerRequestBody(
   spec: BotContainerSpec,
@@ -731,8 +740,7 @@ export function dockerBotContainerDriver(
   const startHealthTimeoutMs = options.startHealthTimeoutMs ?? DEFAULT_START_HEALTH_TIMEOUT_MS;
   const healthPollIntervalMs = options.healthPollIntervalMs ?? DEFAULT_HEALTH_POLL_INTERVAL_MS;
   const newNonce = options.nonce ?? (() => randomBytes(8).toString("hex"));
-  // myrmidon(1.6.1-BOT-DISK-B): shared package cache path, set from instance settings
-  let sharedPackageCachePath: string | undefined = undefined;
+  const readSharedPackageCachePath = options.readSharedPackageCachePath ?? (async () => undefined);
 
   const request = (opts: Parameters<typeof dockerRequest>[1]) => dockerRequest(socketPath, opts);
 
@@ -909,7 +917,7 @@ export function dockerBotContainerDriver(
   }
 
   async function templateDrift(spec: BotContainerSpec): Promise<TemplateDriftReport> {
-    const body = buildCreateContainerRequestBody(spec, config, sharedPackageCachePath);
+    const body = buildCreateContainerRequestBody(spec, config, await readSharedPackageCachePath());
     const existing = await inspectByName(containerNameFor(spec.botKey));
     if (!existing) return { drifted: false, fields: [] };
     const fields = templateDriftFields(existing, body);
@@ -917,7 +925,7 @@ export function dockerBotContainerDriver(
   }
 
   async function create(spec: BotContainerSpec): Promise<void> {
-    const body = buildCreateContainerRequestBody(spec, config, sharedPackageCachePath);
+    const body = buildCreateContainerRequestBody(spec, config, await readSharedPackageCachePath());
     await requireBotImage(spec.image);
     await removeByName(replacementContainerNameFor(spec.botKey)); // stale, from an interrupted recreate
     await prepareVolumes(spec.botKey, spec.image);
@@ -925,7 +933,7 @@ export function dockerBotContainerDriver(
   }
 
   async function recreate(spec: BotContainerSpec): Promise<void> {
-    const body = buildCreateContainerRequestBody(spec, config, sharedPackageCachePath);
+    const body = buildCreateContainerRequestBody(spec, config, await readSharedPackageCachePath());
     const name = containerNameFor(spec.botKey);
     const replacement = replacementContainerNameFor(spec.botKey);
     // Everything that can fail for a reason of its own (missing image, rejected
@@ -1000,9 +1008,5 @@ export function dockerBotContainerDriver(
     await stopByName(containerNameFor(botKey));
   }
 
-  function updateSharedPackageCachePath(path: string | undefined): void {
-    sharedPackageCachePath = path;
-  }
-
-  return { status, list, updateSharedPackageCachePath, templateDrift, create, recreate, writeProfile, start, restart, stop };
+  return { status, list, templateDrift, create, recreate, writeProfile, start, restart, stop };
 }

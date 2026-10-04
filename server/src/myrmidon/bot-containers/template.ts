@@ -106,8 +106,10 @@ export const BOT_VOLUME_MOUNTS: readonly BotVolumeMount[] = [
  *  cannot smuggle in an arbitrary bind. A mount whose source is not in
  *  `MYRMIDON_BOT_MOUNT_SOURCES`, or whose container path would take over one of
  *  the driver's own mount points, throws before anything reaches the Docker API.
- *  The package cache binds are the only writable extra binds; their container
- *  paths are fixed here and mirrored by dockergate (`packageCacheTargets`). */
+ *  The package cache binds are the only writable extra binds; their host
+ *  subdirectories and container paths are fixed here (PACKAGE_CACHE_MOUNTS)
+ *  and mirrored by dockergate, which accepts them only under its own
+ *  `packageCacheRoot` (tools/dockergate/internal/policy/create.go). */
 export function buildBinds(
   volumeRoot: string,
   botKey: string,
@@ -130,20 +132,59 @@ export function buildBinds(
     if (reason) {
       throw new BotContainerTemplateError(`shared package cache path ${JSON.stringify(cache)} ${reason}`);
     }
-    for (const [subdir, containerPath] of PACKAGE_CACHE_MOUNTS) {
-      binds.push(`${cache}/${subdir}:${containerPath}:rw`);
+    for (const [index, mount] of mounts.entries()) {
+      if (mount.containerPath === PACKAGE_CACHE_CONTAINER_ROOT || mount.containerPath.startsWith(`${PACKAGE_CACHE_CONTAINER_ROOT}/`)) {
+        throw new BotContainerTemplateError(
+          `extra mount #${index + 1} path ${JSON.stringify(mount.containerPath)} is reserved for the shared package cache`,
+        );
+      }
+    }
+    for (const mount of PACKAGE_CACHE_MOUNTS) {
+      binds.push(`${cache}/${mount.hostSubdir}:${mount.containerPath}:rw`);
     }
   }
   return binds;
 }
 
-/** Shared package cache layout: host subdirectory -> container path. */
-export const PACKAGE_CACHE_MOUNTS: readonly (readonly [string, string])[] = [
-  ["pnpm", "/home/user/.pnpm-store"],
-  ["pip", "/home/user/.cache/pip"],
-  ["go", "/home/user/.cache/go-build"],
-  ["gradle", "/home/user/.gradle"],
+/** Where the shared package cache appears inside a bot container. Outside the
+ *  three volumes and /tmp, so dockergate's reserved-target rule holds. */
+export const PACKAGE_CACHE_CONTAINER_ROOT = "/cache";
+
+export interface PackageCacheMount {
+  /** Subdirectory of the configured cache path on the host. */
+  hostSubdir: string;
+  /** Absolute mount point inside the container. */
+  containerPath: string;
+  /** The variable that points the tool at the mount (written to hermes/.env). */
+  envName: string;
+}
+
+/**
+ * Shared package cache layout (1.6.1-BOT-DISK-B). The tools only use a mount
+ * because the profile points them at it: the image's own defaults live under
+ * $HOME (/data/hermes, the per-bot volume), so profile-compile.ts writes
+ * {@link packageCacheEnv} into hermes/.env, which the gateway loads with
+ * override. pip is absent on purpose: the image sets PIP_NO_CACHE_DIR, which
+ * disables pip's cache whatever its value, and a dotenv file cannot unset it.
+ * Mirrored by dockergate (`PackageCacheMounts` in tools/dockergate/internal/policy/create.go).
+ */
+export const PACKAGE_CACHE_MOUNTS: readonly PackageCacheMount[] = [
+  { hostSubdir: "pnpm", containerPath: "/cache/pnpm", envName: "npm_config_store_dir" },
+  { hostSubdir: "go-mod", containerPath: "/cache/go-mod", envName: "GOMODCACHE" },
+  { hostSubdir: "go-build", containerPath: "/cache/go-build", envName: "GOCACHE" },
+  { hostSubdir: "gradle", containerPath: "/cache/gradle", envName: "GRADLE_USER_HOME" },
 ];
+
+/** Why `path` cannot be the shared package cache path, or null when it can: the
+ *  same plain-absolute-directory rule every bind source follows. */
+export function sharedPackageCachePathProblem(path: string): string | null {
+  return unsafeAbsolutePathReason(path);
+}
+
+/** The environment that points each tool at its shared cache mount. */
+export function packageCacheEnv(): Record<string, string> {
+  return Object.fromEntries(PACKAGE_CACHE_MOUNTS.map((mount) => [mount.envName, mount.containerPath]));
+}
 
 /** Mount points and paths the driver itself owns inside every bot container: an
  *  extra mount may neither take one of them over nor shadow a path under them
