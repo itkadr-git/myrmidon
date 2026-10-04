@@ -23,6 +23,7 @@ import type {
   IssueDocumentSummary,
   IssueRelationIssueSummary,
   IssueAssigneeAdapterOverrides,
+  IssueUnblockDescriptor,
   IssueAttachment,
   IssueThreadInteraction,
   ConnectionIntentInteraction,
@@ -1480,6 +1481,10 @@ export interface PluginIssuesClient {
       blockedByIssueIds?: string[];
       labelIds?: string[];
       executionWorkspaceSettings?: Record<string, unknown> | null;
+      // myrmidon(1.6.1 OPE-3983): additive — lets a plugin entering `blocked`
+      // carry the part A reason contract (owner + action + reasonRef) so the
+      // stale-block sweep can judge the block instead of skipping it.
+      unblockDescriptor?: IssueUnblockDescriptor | null;
     },
     companyId: string,
     actor?: PluginIssueMutationActor,

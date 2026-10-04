@@ -27609,10 +27609,27 @@ export function heartbeatService(
                 .update(issues)
                 .set({
                   status: "blocked",
+                  // myrmidon(1.6.1 OPE-3983): entering blocked carries the part A
+                  // reason contract. This wait dies only when a board operator
+                  // fixes the workspace settings, and no wiring answers that
+                  // event key, so the stale-block sweep keeps the block (the
+                  // documented still-set default) instead of skipping the row
+                  // as an unknown reason.
+                  unblockDescriptor: {
+                    owner: "board",
+                    action: WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION,
+                    reasonRef: {
+                      kind: "event",
+                      eventKey: "workspace.settings_runnable",
+                    },
+                  },
                   checkoutRunId: null,
                   executionRunId: null,
                   executionAgentNameKey: null,
                   executionLockedAt: null,
+                  // The direct write must stamp the blocked transition like the
+                  // issue service does, so the board attention card sees it.
+                  blockedTransitionAt: now,
                   updatedAt: now,
                 })
                 .where(eq(issues.id, issue.id));

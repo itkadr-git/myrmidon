@@ -3856,7 +3856,22 @@ export async function startWikiQuerySession(ctx: PluginContext, input: QuerySess
       status: "blocked",
       warning,
     });
-    await ctx.issues.update(operation.issue.id, { status: "blocked" }, input.companyId);
+    // myrmidon(1.6.1 OPE-3983): entering blocked carries the part A reason
+    // contract. The event key names the gate this wait depends on; until the
+    // instance wires a liveness reader for it the stale-block sweep keeps the
+    // block (the documented still-set default), and a board owner gets the card.
+    await ctx.issues.update(
+      operation.issue.id,
+      {
+        status: "blocked",
+        unblockDescriptor: {
+          owner: "board",
+          action: "Configure a Wiki Maintainer agent for this company, then move this task out of blocked.",
+          reasonRef: { kind: "event", eventKey: "llm_wiki.maintainer_agent_available" },
+        },
+      },
+      input.companyId,
+    );
     await ctx.issues.createComment(operation.issue.id, warning, input.companyId);
     throw new Error(warning);
   }
@@ -3872,7 +3887,20 @@ export async function startWikiQuerySession(ctx: PluginContext, input: QuerySess
       status: "blocked",
       warning,
     });
-    await ctx.issues.update(operation.issue.id, { status: "blocked" }, input.companyId);
+    await ctx.issues.update(
+      operation.issue.id,
+      {
+        status: "blocked",
+        // myrmidon(1.6.1 OPE-3983): same reasonRef contract as the missing-
+        // maintainer path: the wait is on the maintainer agent being invokable.
+        unblockDescriptor: {
+          owner: "board",
+          action: "Restore the Wiki Maintainer agent to an invokable status, then move this task out of blocked.",
+          reasonRef: { kind: "event", eventKey: "llm_wiki.maintainer_agent_available" },
+        },
+      },
+      input.companyId,
+    );
     await ctx.issues.createComment(operation.issue.id, warning, input.companyId);
     throw new Error(warning);
   }
