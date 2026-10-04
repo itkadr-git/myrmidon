@@ -657,6 +657,17 @@ database; less CPU is fine. Disk for the image (several GB), the database copy a
   checks;
 - the rollback on the staging host has passed and the server is healthy after it.
 
+**Cutting the version collects the change fragments.** Before the `myr-vX.Y.Z` tag
+is pushed, one PR (branch `release/X.Y.Z`) runs
+`node scripts/myrmidon/release/collect-fragments.mjs --version X.Y.Z`: the per-PR
+fragments of `docs/myrmidon/changes/` are folded into the shared registry
+documents (changelog sections under a new `## X.Y.Z`, an empty
+`## Unreleased` / `## Без выпуска` left on top; divergence/settings rows into
+their named sections) and the fragment files are deleted. The publish workflow
+reads the `## X.Y.Z` section of the merged changelog, so the tag goes on the
+merge commit of this PR or later. Format of a fragment:
+[changes/README.md](changes/README.md).
+
 **The GitHub Release is created by CI, not by hand.** Pushing a `myr-vX.Y.Z` tag
 triggers the **Myrmidon release publish** workflow
 ([myrmidon-release.yml](https://github.com/itkadr-git/myrmidon/blob/main/.github/workflows/myrmidon-release.yml)):
