@@ -10,6 +10,29 @@ version file to edit. Base Paperclip version is in the image label
 
 ## Unreleased
 
+### Heavy builds blocked inside the dev bot image (1.6.1 BUILD-OFFLOAD, part A)
+
+- The development variant of the bot image (`runtime-dev`,
+  `ghcr.io/itkadr-git/myrmidon-hermes-dev`) no longer relies on convention to keep
+  heavy repository operations off the bot container: `pnpm`, `tsc`, `vitest`,
+  `gradle` and `go` shims in `/opt/paperclip/bin` (first on `PATH`, ahead of the
+  real binaries) refuse every non-trivial invocation with exit 1 and a stderr
+  message naming the exact `devbuild …` replacement, unless an executable
+  `/usr/local/bin/devbuild` exists in the container. That gateway file is never
+  baked into the image — the part-B driver mounts it into the per-invocation
+  build container — so the barrier is always closed in the ordinary bot
+  container. See
+  [docker/bot-runtime/README.md](../../docker/bot-runtime/README.md), section
+  "Heavy builds are blocked at the image level".
+- Light probes keep working locally: `pnpm --version`, `pnpm config …`,
+  `pnpm store status`/`path`, and bare `--version`/`--help` of the other wrapped
+  tools. `git`, `node`, `cargo`, `gh` and `docker` are deliberately not wrapped —
+  the light, editing half of the cycle still runs in the container. To run a
+  build: `devbuild pnpm install`, `devbuild pnpm exec tsc --noEmit`,
+  `devbuild pnpm vitest run`, `devbuild go build ./...` — the workspace is
+  mounted into a build container on the build VPS and the same command runs
+  there.
+
 ### Release publish waits for the tag's own image runs (RELEASE-PUBLISH-WAIT)
 
 - Pushing the `myr-v1.6.1` tag failed to publish the Release on the first
@@ -30,6 +53,31 @@ version file to edit. Base Paperclip version is in the image label
   `inputs.tag || github.ref_name` (checkout `ref`, `TAG` env and the
   concurrency group), so `gh workflow run myrmidon-release.yml -f tag=…`
   from `main` publishes the given tag without `--ref`.
+
+### Chats are never held; an owner message always wakes (CHAT-HOLD)
+
+- Incident: a host OOM cancelled the run of a perpetual Telegram DM chat;
+  execution recovery closed it as "do not replay" and set the chat issue
+  `blocked`, and every later owner message was parked as
+  `deferred_issue_execution` behind that hold. The owner saw only "Your
+  follow-up is queued" for hours.
+- A chat is a conversation, not a work ticket. An issue that backs a chat (a
+  bridged chat thread, or a board Agent Chat conversation) is never put into
+  `blocked` by automatic recovery and gets no replay hold: its stopped turn
+  is settled as `chat_continuation`, the issue returns to the idle
+  `in_review` state, and the next message is a fresh turn. Ordinary work
+  issues keep the existing recovery unchanged.
+- A new message a person writes in a chat is an explicit human action: the
+  wake admission passes any settled hold of the chat, lifts it with the
+  successor run (the same clear path as the board unblock), moves a chat the
+  recovery had blocked back to `todo`, and records it in the activity log
+  (`issue.execution_recovery_settled`, `continuation: chat_owner_message`).
+  A "retry the failed run" wake is not a message and stays withheld.
+- No silent queue: when a message in a bridged Telegram DM cannot start (the
+  previous turn is winding down, recovery, a pending decision, a paused
+  agent, an exhausted budget, the host memory gate), the chat is told why in
+  plain Russian, with a time estimate where one is known (the memory gate
+  re-checks every 15 seconds). Guide: [telegram-dm-status.md](guides/telegram-dm-status.md).
 
 ### Shared package cache for development bots (1.6.2, BOT-DISK B)
 
