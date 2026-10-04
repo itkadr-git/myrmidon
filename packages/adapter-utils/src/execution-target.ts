@@ -3103,6 +3103,14 @@ function getProcessSessionRemoteStreamSource(): string {
 import { promises as fs, constants as fsConstants } from "node:fs";
 import path from "node:path";
 
+// myrmidon(REBRAND-C): MYRMIDON_* name with the PAPERCLIP_* alias, inline
+// because this generated wrapper is zero-dependency.
+const readProductEnv = (name) => {
+  const canonical = process.env["MYRMIDON_" + name];
+  if (canonical !== undefined && canonical !== "") return canonical;
+  return process.env["PAPERCLIP_" + name];
+};
+
 const sessionDir = readProductEnv("PROCESS_SESSION_DIR");
 if (!sessionDir) throw new Error("Missing process session bridge env.");
 
@@ -3146,8 +3154,8 @@ ${PROCESS_SESSION_READ_COMMAND}
 // session dir and the command payload. Scrub both keys before they reach the
 // spawned child, so the child never inherits a path to its own control files.
 const childEnv = { ...process.env, ...(config.env || {}) };
-delete readProductEnvFrom(childEnv, "PROCESS_SESSION_DIR");
-delete readProductEnvFrom(childEnv, "PROCESS_SESSION_COMMAND_B64");
+delete childEnv["MYRMIDON_PROCESS_SESSION_DIR"]; delete childEnv["PAPERCLIP_PROCESS_SESSION_DIR"]; // myrmidon(REBRAND-C)
+delete childEnv["MYRMIDON_PROCESS_SESSION_COMMAND_B64"]; delete childEnv["PAPERCLIP_PROCESS_SESSION_COMMAND_B64"]; // myrmidon(REBRAND-C)
 
 // I1: exactly one child process per emitted wrapper. Do not add a second
 // tracked child handle.
@@ -3185,6 +3193,14 @@ function getProcessSessionRemoteEventFileSource(): string {
   return `import { spawn } from "node:child_process";
 import { promises as fs, constants as fsConstants } from "node:fs";
 import path from "node:path";
+
+// myrmidon(REBRAND-C): MYRMIDON_* name with the PAPERCLIP_* alias, inline
+// because this generated wrapper is zero-dependency.
+const readProductEnv = (name) => {
+  const canonical = process.env["MYRMIDON_" + name];
+  if (canonical !== undefined && canonical !== "") return canonical;
+  return process.env["PAPERCLIP_" + name];
+};
 
 const sessionDir = readProductEnv("PROCESS_SESSION_DIR");
 if (!sessionDir) throw new Error("Missing process session bridge env.");
@@ -3237,8 +3253,8 @@ ${PROCESS_SESSION_READ_COMMAND}
 // session dir and the command payload. Scrub both keys before they reach the
 // spawned child, so the child never inherits a path to its own control files.
 const childEnv = { ...process.env, ...(config.env || {}) };
-delete readProductEnvFrom(childEnv, "PROCESS_SESSION_DIR");
-delete readProductEnvFrom(childEnv, "PROCESS_SESSION_COMMAND_B64");
+delete childEnv["MYRMIDON_PROCESS_SESSION_DIR"]; delete childEnv["PAPERCLIP_PROCESS_SESSION_DIR"]; // myrmidon(REBRAND-C)
+delete childEnv["MYRMIDON_PROCESS_SESSION_COMMAND_B64"]; delete childEnv["PAPERCLIP_PROCESS_SESSION_COMMAND_B64"]; // myrmidon(REBRAND-C)
 
 // I1: exactly one child process per emitted wrapper. Do not add a second
 // tracked child handle.
