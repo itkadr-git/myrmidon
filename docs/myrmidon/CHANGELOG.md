@@ -55,6 +55,7 @@ version file to edit. Base Paperclip version is in the image label
 - Docs: [deploy.md](deploy.md) and [deploy.md](deploy.ru.md) (a new
   section), [SETTINGS.md](SETTINGS.md)/[SETTINGS.md](SETTINGS.ru.md) rows.
 
+
 ### Custom castes, consumers (CUSTOM-CASTES B)
 
 - The server-side consumers of the company caste directory (part A ships the
