@@ -24,6 +24,13 @@ import { z } from "zod";
  *
  * The values apply live: the sweep re-reads them on every maintenance tick, so
  * a PATCH needs no restart.
+ *
+ * myrmidon(1.6.1-BOT-DISK-B): the same key also holds
+ * `sharedPackageCachePath`, the host directory of the shared package cache of
+ * development bots. It has no environment variable: absent means "no shared
+ * cache". The local bot driver and the profile compiler re-read it on every
+ * reconcile pass. It is not listed in `sources` (stored or absent, nothing
+ * else).
  */
 
 /** Environment variables — first-start defaults only. */
@@ -47,6 +54,36 @@ export const BOT_DISK_DEFAULT_ENABLED = true;
 /** Action of a settings change, written for every company like every instance settings write. */
 export const BOT_DISK_UPDATED_ACTION = "instance.bot_disk.updated";
 
+/**
+ * Why `value` cannot be the shared package cache path, or null when it can: a
+ * plain absolute directory — no relative form, no "." or ".." segment, no
+ * empty segment, no trailing slash, no backslash or control character, not the
+ * filesystem root. The bot driver applies the same rule to every bind source.
+ */
+export function botDiskCachePathProblem(value: string): string | null {
+  if (!value.startsWith("/")) return "is not an absolute path";
+  if (value.length === 1) return "is the filesystem root";
+  for (let i = 0; i < value.length; i += 1) {
+    const code = value.charCodeAt(i);
+    if (code < 0x20 || code === 0x7f) return "contains a control character";
+  }
+  if (value.includes("\\")) return "contains a backslash";
+  if (value.includes("//")) return "has an empty path segment";
+  if (value.endsWith("/")) return "has a trailing slash";
+  for (const segment of value.split("/")) {
+    if (segment === "." || segment === "..") return `has a "${segment}" path segment`;
+  }
+  return null;
+}
+
+const cachePathSchema = z
+  .string()
+  .max(4096)
+  .superRefine((value, ctx) => {
+    const problem = botDiskCachePathProblem(value);
+    if (problem) ctx.addIssue({ code: "custom", message: `sharedPackageCachePath ${problem}` });
+  });
+
 const idleTtlMsSchema = z
   .number()
   .int()
@@ -58,6 +95,8 @@ export const botDiskSettingsSchema = z
   .object({
     enabled: z.boolean(),
     idleTtlMs: idleTtlMsSchema,
+    // myrmidon(1.6.1-BOT-DISK-B): absent = no shared package cache.
+    sharedPackageCachePath: cachePathSchema.optional(),
   })
   .strict();
 
@@ -65,6 +104,7 @@ const storedBotDiskObjectSchema = z
   .object({
     enabled: z.boolean().optional().catch(undefined),
     idleTtlMs: idleTtlMsSchema.optional().catch(undefined),
+    sharedPackageCachePath: cachePathSchema.optional().catch(undefined),
   })
   .passthrough();
 
@@ -79,6 +119,8 @@ export const patchBotDiskSettingsSchema = z
   .object({
     enabled: z.boolean().optional(),
     idleTtlMs: idleTtlMsSchema.optional(),
+    // myrmidon(1.6.1-BOT-DISK-B): a path sets the cache, null or "" turns it off.
+    sharedPackageCachePath: z.union([cachePathSchema, z.literal(""), z.null()]).optional(),
   })
   .strict();
 
@@ -113,6 +155,9 @@ export function normalizeStoredBotDiskSettings(raw: unknown): Partial<BotDiskSet
   const out: Partial<BotDiskSettings> = {};
   if (typeof parsed.data.enabled === "boolean") out.enabled = parsed.data.enabled;
   if (typeof parsed.data.idleTtlMs === "number") out.idleTtlMs = parsed.data.idleTtlMs;
+  if (typeof parsed.data.sharedPackageCachePath === "string") {
+    out.sharedPackageCachePath = parsed.data.sharedPackageCachePath;
+  }
   return out;
 }
 
@@ -141,7 +186,11 @@ export function resolveBotDiskSettings(options: {
         : [BOT_DISK_DEFAULT_IDLE_TTL_MS, "default"];
 
   return {
-    settings: { enabled: enabled[0], idleTtlMs: idleTtlMs[0] },
+    settings: {
+      enabled: enabled[0],
+      idleTtlMs: idleTtlMs[0],
+      ...(stored.sharedPackageCachePath ? { sharedPackageCachePath: stored.sharedPackageCachePath } : {}),
+    },
     sources: { enabled: enabled[1], idleTtlMs: idleTtlMs[1] },
   };
 }
@@ -151,8 +200,16 @@ export function mergeBotDiskSettings(
   base: BotDiskSettings,
   patch: BotDiskSettingsPatch,
 ): BotDiskSettings {
+  const sharedPackageCachePath =
+    patch.sharedPackageCachePath === undefined ? base.sharedPackageCachePath : patch.sharedPackageCachePath || undefined;
   return {
     enabled: patch.enabled === undefined ? base.enabled : patch.enabled,
     idleTtlMs: patch.idleTtlMs === undefined ? base.idleTtlMs : patch.idleTtlMs,
+    ...(sharedPackageCachePath ? { sharedPackageCachePath } : {}),
   };
+}
+
+/** The shared package cache path in force, from the stored `general.botDisk` (undefined: none). */
+export function resolveSharedPackageCachePath(stored: unknown): string | undefined {
+  return normalizeStoredBotDiskSettings(stored).sharedPackageCachePath;
 }

@@ -877,8 +877,16 @@ const support = await getEmbeddedPostgresTestSupport();
       await settleUnrecoverableExecutions(db);
       const [after] = await db.select().from(issues).where(eq(issues.id, task.id));
       const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, actions[0]!.id));
-      expect(after.status).toBe(scenario.superseded ? status : "blocked");
-      expect(action).toMatchObject({ status: "resolved", outcome: scenario.superseded ? "cancelled" : "blocked" });
+      // myrmidon(CHAT-HOLD): a chat's stopped turn is never put into `blocked`;
+      // only an ordinary task keeps the vendor's recovery.
+      expect(after.status).toBe(scenario.superseded ? status : scenario.ordinary ? "blocked" : "in_review");
+      expect(action).toMatchObject({
+        status: "resolved",
+        outcome: scenario.superseded || !scenario.ordinary ? "cancelled" : "blocked",
+      });
+      if (!scenario.ordinary && !scenario.superseded) {
+        expect(action.evidence.automaticRecovery).toMatchObject({ replay: "chat_continuation" });
+      }
       expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0].status).toBe("cancelled");
       if (!scenario.ordinary) expect(after.conversationSessionGeneration).toBe(scenario.generation);
     });

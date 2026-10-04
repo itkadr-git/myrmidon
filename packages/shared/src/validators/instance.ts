@@ -30,6 +30,9 @@ import { wipLimitSettingsSchema } from "../myrmidon-wip-limit.js";
 // myrmidon(1.7-BUDGET-CONFIG-B): the budget enforcement mode stored in the
 // same general settings row.
 import { budgetEnforcementSettingsSchema } from "../myrmidon-budget-enforcement.js";
+// myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys stored
+// in the same general settings row.
+import { pluginEntitlementKeysSchema } from "../myrmidon-plugin-entitlement.js";
 
 // myrmidon(PARALLEL-HELPERS): re-exported for the barrel so the settings page and the
 // /api/myrmidon/parallel-helpers route validate with the exact schema stored here.
@@ -111,6 +114,10 @@ export const instanceGeneralSettingsSchema = z.object({
   // or refuse new runs with the budget reason (hard); changed from
   // /api/myrmidon/budget-enforcement; absent means the default (signal only).
   budgetEnforcement: budgetEnforcementSettingsSchema.optional(),
+  // myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys, managed
+  // from the instance settings page and PATCH /api/myrmidon/plugin-entitlement/keys;
+  // absent means "no keys are registered" (no plugin is unlocked).
+  pluginEntitlementKeys: pluginEntitlementKeysSchema.optional(),
 }).strict();
 
 export const patchInstanceGeneralSettingsSchema = z
