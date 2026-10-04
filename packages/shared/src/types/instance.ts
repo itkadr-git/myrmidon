@@ -127,6 +127,7 @@ export interface InstanceGeneralSettings {
    * and what permissions they have. Absent means "shared mount is disabled".
    */
   sharedMount?: SharedMountSettings;
+  /**
    * myrmidon(1.6.1 SWARM-SETTINGS-UI): the change journal of the swarm-claim
    * pilot settings — who changed what, and when, newest first. Written by the
    * swarm-claim settings service on every PATCH, read by
