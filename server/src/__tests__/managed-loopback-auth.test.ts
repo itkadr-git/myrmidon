@@ -55,6 +55,15 @@ describeEmbeddedPostgres("managed runtime loopback auth cookies", () => {
     vi.stubEnv("PAPERCLIP_PUBLIC_URL", "");
 
     const db = createDb(tempDb!.connectionString);
+    // myrmidon(1.7 USERS-ADMIN-UI A): self-registration is off by default now;
+    // this suite signs a user up through the vendor endpoint, so it flips the
+    // instance switch on first (the same write the settings route makes).
+    const { instanceSettings } = await import("@paperclipai/db");
+    const { eq } = await import("drizzle-orm");
+    await db
+      .update(instanceSettings)
+      .set({ general: { authSelfSignUp: { enabled: true } } })
+      .where(eq(instanceSettings.singletonKey, "default"));
     const config = {
       deploymentMode: "authenticated",
       deploymentExposure: "private",

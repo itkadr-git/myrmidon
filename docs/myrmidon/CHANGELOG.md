@@ -306,6 +306,28 @@ version file to edit. Base Paperclip version is in the image label
   ready-task prefilters of idle pickup and the swarm queues skip a task that is
   really held (the same predicate the admission reads), so a held task is not
   reported as ready. No settings change.
+### Users under the administrator's control (USERS-ADMIN-UI part A, server)
+- An instance administrator can create board users directly (1.7 USERS-ADMIN-UI A):
+  `POST /api/myrmidon/users-admin-a/users` with a login and either a
+  password or a one-time password-set link, and a role
+  (`instance_admin` or `member`). A user created without an email gets the
+  synthetic address `<login>@myr.local` and signs in with the login through
+  the new `POST /api/auth/sign-in/username`.
+- Blocking (`PATCH /users/:id {blocked}`) closes every live session of the
+  user immediately and refuses new sign-ins on every Better Auth path
+  (`403 USER_BLOCKED`); unblocking restores access.
+- A password reset (`PATCH /users/:id {resetPassword}`) revokes outstanding
+  tokens and returns a fresh one-time link; the user picks the new password
+  through it (the token is sha256-hashed at rest and dies on first use).
+- Self-registration is off by default: `POST /api/auth/sign-up/email`
+  answers `403 SELF_SIGN_UP_DISABLED` until the instance enables it
+  (`GET/PATCH /api/myrmidon/users-admin-a/self-sign-up`,
+  `MYRMIDON_AUTH_SELF_SIGN_UP` as the forced env override). The gate reads
+  the setting live, so flipping it needs no restart.
+- Every mutation is audit-logged (`instance.user.created/blocked/unblocked/
+  password_reset/password_set`) with who, whom, the role granted and the
+  block reason. New table `user_password_set_tokens` (migration 0298); the
+  block list lives in `instance_settings.general.myrmidonAuthBlockedUsers`.
 
 ### Gateway spend attributed through per-bot secret references (1.6.2 hotfix, M2-A)
 
