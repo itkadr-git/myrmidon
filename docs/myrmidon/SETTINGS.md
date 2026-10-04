@@ -175,6 +175,20 @@ sweep inspects, what unblocking does, and the attention-feed card.
 | `MYRMIDON_HOST_DISK_CONSUMER_PATHS` | BOT-DISK E | the data root | Comma-separated directories ranked as «biggest consumers» in the signal: each is walked with a bounded depth/entry/time cap, biggest first | Unset — the data root itself is the one consumer listed |
 
 
+## 1.6.1 — BOT-DISK B: shared package cache for bot containers
+
+Not an environment variable: an instance setting, `instance_settings.general.botDisk.sharedPackageCachePath`,
+changed on Instance → General («Shared package cache for bots») or through
+`GET`/`PATCH /api/myrmidon/bot-disk` (GET is any board member, PATCH is
+instance-admin only). It applies without a restart: the local driver and the
+profile compiler re-read it on every reconcile pass, and every bot on the
+default host is recreated with the new binds on the next pass. Full guide:
+[bot-disk-cache.md](bot-disk-cache.md).
+
+| Setting | Function | Default | What it does | How to disable / special |
+|---|---|---|---|---|
+| `general.botDisk.sharedPackageCachePath` | 1.6.1-BOT-DISK-B | unset (no shared cache) | Absolute host directory whose `pnpm`, `go-mod`, `go-build` and `gradle` subdirectories every bot on the default host mounts read-write at `/cache/…`; the profile compiler points `npm_config_store_dir`, `GOMODCACHE`, `GOCACHE` and `GRADLE_USER_HOME` at the mounts (pip is not covered: the image's `PIP_NO_CACHE_DIR` cannot be unset). Bots on a fleetd host are not affected (logged once) | `null` or empty — off. **Operator step:** dockergate must allow the same directory as `packageCacheRoot` ([dockergate.md](dockergate.md)), otherwise every cache bind is refused with `mount_source_not_allowed`; the four subdirectories must exist and belong to uid/gid 10001 |
+
 ## P12 — the deferred addressee-wake sweeper
 
 | Variable | Function | Default | What it does | How to disable / special |

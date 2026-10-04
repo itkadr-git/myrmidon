@@ -18,6 +18,7 @@ import {
   BOT_DISK_UPDATED_ACTION,
   mergeBotDiskSettings,
   resolveBotDiskSettings,
+  resolveSharedPackageCachePath,
   type BotDiskSettings,
   type BotDiskSettingsPatch,
   type ResolvedBotDiskSettings,
@@ -99,7 +100,11 @@ export function botDiskService(
         const general = await deps.settings.getGeneral();
         const before = resolveBotDiskSettings({ stored: general.botDisk, env });
         const next = mergeBotDiskSettings(before.settings, patch);
-        const changedKeys = BOT_DISK_SETTING_KEYS.filter((key) => before.settings[key] !== next[key]);
+        const changedKeys: string[] = BOT_DISK_SETTING_KEYS.filter((key) => before.settings[key] !== next[key]);
+        // myrmidon(1.6.1-BOT-DISK-B): the shared package cache path rides the same key.
+        if (before.settings.sharedPackageCachePath !== next.sharedPackageCachePath) {
+          changedKeys.push("sharedPackageCachePath");
+        }
 
         await deps.settings.updateGeneral({ botDisk: next });
 
@@ -123,7 +128,7 @@ export function botDiskService(
 
         logger.info(
           { settings: next, changedKeys, actorType: actor.actorType },
-          "bot disk lifecycle settings updated without a restart",
+          "bot disk settings updated without a restart",
         );
         return resolveBotDiskSettings({ stored: next, env });
       }),
@@ -147,6 +152,17 @@ export async function resolveBotDiskLifecycleConfig(
     idleTtlMs: resolved.settings.idleTtlMs,
     defaultIdleTtlMs: defaults.settings.idleTtlMs,
   };
+}
+
+/**
+ * myrmidon(1.6.1-BOT-DISK-B): the shared package cache path stored right now
+ * (undefined: no shared cache). The local bot driver (binds) and the profile
+ * compiler (the variables pointing the tools at them) call it on every
+ * reconcile pass, so a PATCH applies on the next pass without a restart.
+ */
+export async function readSharedPackageCachePath(db: Db): Promise<string | undefined> {
+  const settings = instanceSettingsService(db) as unknown as { getGeneral(): Promise<{ botDisk?: unknown }> };
+  return resolveSharedPackageCachePath((await settings.getGeneral()).botDisk);
 }
 
 /**

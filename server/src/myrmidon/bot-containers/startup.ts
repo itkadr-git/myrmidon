@@ -38,6 +38,7 @@ import {
 import { botProfileWiring } from "./profile-ports.js";
 import type { BotContainerActivitySink, BotMaintenancePort } from "./reconciler.js";
 import { botContainerAgentReader, getBotContainerRuntime, setBotContainerRuntime } from "./routes-wiring.js";
+import { readSharedPackageCachePath } from "./bot-disk-service.js"; // myrmidon(1.6.1-BOT-DISK-B)
 
 export const BOT_RECONCILE_INTERVAL_ENV = "MYRMIDON_BOT_RECONCILE_INTERVAL_SEC";
 const MIN_RECONCILE_INTERVAL_SEC = 5;
@@ -75,7 +76,9 @@ export function createBotContainerLogSink(log: BotContainersLog = logger): BotCo
 /** What `startBotContainers` builds its runtime from; tests replace these. */
 export interface BotContainersStartupPorts {
   readDriverConfig(env: NodeJS.ProcessEnv): DockerDriverConfig;
-  createDriver(config: DockerDriverConfig): BotContainerDriver;
+  /** `db` feeds the instance settings the driver reads per pass (the shared
+   *  package cache path, 1.6.1-BOT-DISK-B). */
+  createDriver(config: DockerDriverConfig, db: Db): BotContainerDriver;
   profileWiring(
     db: Db,
     opts: { activity: BotContainerActivitySink; env: NodeJS.ProcessEnv },
@@ -95,7 +98,10 @@ export interface BotContainersStartupPorts {
 
 const defaultPorts: BotContainersStartupPorts = {
   readDriverConfig: (env) => readDockerDriverConfig(env),
-  createDriver: (config) => dockerBotContainerDriver(config),
+  createDriver: (config, db) =>
+    dockerBotContainerDriver(config, {
+      readSharedPackageCachePath: () => readSharedPackageCachePath(db),
+    }),
   profileWiring: (db, opts) => botProfileWiring(db, opts),
   maintenancePort: (db) => realBotMaintenancePort(db),
   listAgents: (db) => listBotContainerAgents(db),
@@ -156,7 +162,7 @@ function build(
     const activity = ports.activitySink();
     const { compile, syncCard, releaseStrayGateways } = ports.profileWiring(db, { activity, env });
     const runtime: BotContainerRuntimeDeps = {
-      driver: ports.createDriver(driverConfig),
+      driver: ports.createDriver(driverConfig, db),
       compile,
       syncCard,
       ...(releaseStrayGateways ? { releaseStrayGateways } : {}),
