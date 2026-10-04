@@ -1019,6 +1019,31 @@ describe("mapFinalResultForTest", () => {
     });
     expect(result.errorFamily).toBeUndefined();
   });
+
+  // myrmidon(1.6.4-HERMES-LONG-RESPONSE): a long answer must survive in the
+  // standard `result` field so the issue comment (and the Telegram splitter)
+  // receive the whole text; only `summary` stays bounded for run lists.
+  it("keeps the full answer in resultJson.result and bounds only the summary", () => {
+    const longAnswer = "A".repeat(9_000);
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-long",
+        status: "completed",
+        payload: { status: "completed", output: longAnswer },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+    });
+
+    expect(result.summary).toHaveLength(2_000);
+    expect(result.resultJson?.result).toBe(longAnswer);
+    expect(result.resultJson?.result).toHaveLength(9_000);
+    expect(result.resultJson?.output).toBe(longAnswer);
+    expect((result.summary as string).length).toBeLessThan(
+      (result.resultJson?.result as string).length,
+    );
+  });
 });
 
 // myrmidon(G4): defaults, cancellation, approvals, per-run model, instructions
