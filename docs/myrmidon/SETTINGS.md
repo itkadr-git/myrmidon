@@ -1014,3 +1014,7 @@ The stable `transcribeAudio` error codes: `stt_disabled` (the path is off),
 `audio_too_long` / `audio_too_large` (a limit answered before any outbound
 request), `stt_timeout` (the backend call timed out), `stt_upstream_error`
 (any other backend failure).
+
+The container-bot side of the track — the media-mcp tools `audio_split` /
+`stt_transcribe` and their `MEDIA_STT_*` service settings — is documented in
+[media-tools.md](media-tools.md) («Speech-to-text»).
