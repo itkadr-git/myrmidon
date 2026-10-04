@@ -11,6 +11,8 @@ import { shapeWithoutDefaults } from "./partial.js";
 // myrmidon(WORKSPACE-HYGIENE): workspace disk quotas that can be changed while the server runs
 import { workspaceHygieneLimitsSchema } from "../myrmidon-workspace-hygiene.js";
 import { hostDiskSettingsSchema } from "../myrmidon-host-disk.js";
+// myrmidon(BOT-DISK-A): bot draft-directory lifecycle settings, lenient stored shape
+import { storedBotDiskSettingsSchema } from "../myrmidon-bot-disk.js";
 // myrmidon(C0): run admission limits that can be changed while the server runs
 import { storedRunLimitsSchema } from "../myrmidon-runtime-limits.js";
 // myrmidon(PARALLEL-HELPERS): company ceiling/default for parallel helper
@@ -71,6 +73,11 @@ export const instanceGeneralSettingsSchema = z.object({
   // /api/myrmidon/host-disk; absent means "use the environment variable, then
   // the default (85)".
   hostDisk: hostDiskSettingsSchema.optional(),
+  // myrmidon(BOT-DISK-A): the bot draft-directory lifecycle (enabled, idle TTL),
+  // changed from /api/myrmidon/bot-disk; absent means "use the environment
+  // variable, then the default". Lenient: a row without the key, with unknown
+  // keys or with an invalid value still parses (see myrmidon-bot-disk.ts).
+  botDisk: storedBotDiskSettingsSchema,
   // myrmidon(PARALLEL-HELPERS): company ceiling and default for the "Parallel
   // helpers" block on an agent card, changed from the instance settings page
   // and /api/myrmidon/parallel-helpers; absent means the module defaults apply
