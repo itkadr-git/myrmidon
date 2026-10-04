@@ -13,6 +13,7 @@ import type { BotLspSettings } from "../myrmidon-bot-lsp.js";
 import type { BrowserBridgeSettings } from "../myrmidon-browser-bridge.js";
 import type { SwarmClaimSettings } from "../myrmidon-swarm-claim.js";
 // myrmidon(1.6.1-WIP-LIMIT-A): per-agent WIP limits of the same general settings row.
+import type { AgentMemorySettings } from "../myrmidon-agent-memory.js";
 import type { WipLimitSettings } from "../myrmidon-wip-limit.js";
 // myrmidon(REVIEW-ROUTING): automatic reviewer routing settings of the same row.
 import type { ReviewRoutingSettings } from "../myrmidon-review-routing.js";
@@ -166,6 +167,12 @@ export interface InstanceGeneralSettings {
    * the validator of the same field (packages/shared/src/validators/instance.ts).
    */
   telegramDmProgress?: TelegramDmProgressSettings;
+  /**
+   * myrmidon(MEMORY-UI): agent memory service address, optional key secret name
+   * and switch, changed from the instance settings page. Absent means "use the
+   * environment". Kept in sync with the validator of the same field.
+   */
+  agentMemory?: AgentMemorySettings;
 }
 
 export interface InstanceExperimentalSettings {

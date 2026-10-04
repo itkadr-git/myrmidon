@@ -2821,6 +2821,8 @@ export * from "./myrmidon-wip-limit.js";
 // myrmidon(1.7-BUDGET-CONFIG-B): the shared contract of budget enforcement —
 // the global mode (signal_only / soft / hard), its storage key and resolver.
 export * from "./myrmidon-budget-enforcement.js";
+// myrmidon(MEMORY-UI): the agent memory instance setting (address, optional key secret, switch).
+export * from "./myrmidon-agent-memory.js";
 
 // myrmidon(PLUGIN-ENTITLEMENT C): plugin entitlement keys contract.
 export * from "./myrmidon-plugin-entitlement.js";

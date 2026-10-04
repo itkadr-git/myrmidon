@@ -9,6 +9,8 @@ import { agents, type Db } from "@paperclipai/db";
 import { assertBoard, hasCompanyAccess } from "../../routes/authz.js";
 import { agentMemoryRoutes } from "./routes.js";
 import { defaultAgentMemoryDeps } from "./service.js";
+import { agentMemorySettingsRoutes, agentMemorySettingsService } from "./settings-routes.js";
+import { instanceSettingsService } from "../../services/index.js";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -28,4 +30,16 @@ export function myrmidonAgentMemoryRoutes(db: Db, env: NodeJS.ProcessEnv = proce
     hasCompanyAccess: (req, companyId) => hasCompanyAccess(req, companyId),
     assertBoard: (req) => assertBoard(req),
   });
+}
+
+/** GET/PATCH /api/myrmidon/agent-memory: the instance setting behind the Memory tab. */
+export function myrmidonAgentMemorySettingsRoutes(db: Db, env: NodeJS.ProcessEnv = process.env) {
+  const settings = instanceSettingsService(db);
+  return agentMemorySettingsRoutes(
+    agentMemorySettingsService({
+      getGeneral: () => settings.getGeneral(),
+      updateGeneral: (patch) => settings.updateGeneral(patch),
+      env,
+    }),
+  );
 }

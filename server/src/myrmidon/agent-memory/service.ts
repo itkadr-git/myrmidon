@@ -18,8 +18,9 @@ import { eq, and } from "drizzle-orm";
 import { agents, pluginConfig, plugins, type Db } from "@paperclipai/db";
 import { logActivity } from "../../services/activity-log.js";
 import { logger } from "../../middleware/logger.js";
-import { secretService } from "../../services/index.js";
+import { instanceSettingsService, secretService } from "../../services/index.js";
 import { createMemoryHindsightClient, type MemoryHindsightClient } from "./hindsight-client.js";
+import { normalizeAgentMemorySettings } from "@paperclipai/shared";
 import { readMemoryUiSettings, type MemoryUiSettings } from "./settings.js";
 
 const HINDSIGHT_PLUGIN_KEY = "paperclip-plugin-hindsight";
@@ -36,6 +37,8 @@ export interface MemoryBankResolution {
 export interface MemoryServiceDeps {
   db: Db;
   env?: NodeJS.ProcessEnv;
+  /** The stored general.agentMemory value, read on every request; absent = none. */
+  readStoredSettings?(): Promise<unknown>;
   /** Company secret reader; the real wiring uses secretService. */
   readSecretValue(companyId: string, secretName: string): Promise<string | null>;
   /** Client factory, overridable in tests. */
@@ -115,11 +118,20 @@ function memoryErrorToStatus(err: unknown): number {
 
 export function agentMemoryService(deps: MemoryServiceDeps) {
   const env = deps.env ?? process.env;
-  const settings = () => readMemoryUiSettings(env);
+  /** Re-read on every call, so a settings change needs no restart. A read failure falls back to the environment. */
+  const settings = async (): Promise<MemoryUiSettings> => {
+    let stored: unknown;
+    try {
+      stored = deps.readStoredSettings ? await deps.readStoredSettings() : undefined;
+    } catch {
+      stored = undefined;
+    }
+    return readMemoryUiSettings(env, normalizeAgentMemorySettings(stored));
+  };
 
   /** Client for a company, or null while the section is off. */
   async function clientFor(companyId: string): Promise<MemoryHindsightClient | null> {
-    const current = settings();
+    const current = await settings();
     if (!current.enabled || !current.baseUrl) return null;
     let apiKey: string | undefined;
     if (current.keySecret) {
@@ -130,7 +142,7 @@ export function agentMemoryService(deps: MemoryServiceDeps) {
   }
 
   async function status(agentId: string, companyId: string): Promise<MemoryCardStatus> {
-    const current = settings();
+    const current = await settings();
     const bank = await resolveAgentMemoryBank(deps.db, { agentId, companyId });
     if (!current.enabled) {
       return { enabled: false, bank, reason: "not_enabled" };
@@ -279,9 +291,11 @@ function readableError(err: unknown): string {
 /** The real wiring: company secret store, global fetch. */
 export function defaultAgentMemoryDeps(db: Db, env: NodeJS.ProcessEnv = process.env): MemoryServiceDeps {
   const secrets = secretService(db);
+  const instanceSettings = instanceSettingsService(db);
   return {
     db,
     env,
+    readStoredSettings: async () => (await instanceSettings.getGeneral()).agentMemory,
     async readSecretValue(companyId, secretName) {
       const row = await secrets.getByName(companyId, secretName);
       if (!row) return null;

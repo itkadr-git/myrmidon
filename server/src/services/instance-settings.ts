@@ -276,6 +276,8 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // myrmidon(DM-PROGRESS): the stored Telegram DM progress settings survive
       // every general write (edited on their own settings block).
       ...(parsed.data.telegramDmProgress ? { telegramDmProgress: parsed.data.telegramDmProgress } : {}),
+      // myrmidon(MEMORY-UI): the stored agent memory settings survive every general write
+      ...(parsed.data.agentMemory ? { agentMemory: parsed.data.agentMemory } : {}),
     };
   }
   return {
