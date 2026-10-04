@@ -2,6 +2,39 @@
 
 > Russian version: [stale-block.ru.md](stale-block.ru.md)
 
+## Blocking a task: the reason reference is required
+
+A PATCH that moves a task into `blocked` must say what the task is blocked
+ON: either a non-empty `blockedByIssueIds` list or a `reasonRef` inside the
+task's unblock descriptor. A transition without any reason is rejected with
+HTTP 422 ("Entering blocked requires a reason reference"). The rule went live
+at the rollout moment `STALE_BLOCK_ROLLOUT_AT` (2026-10-03T12:00:00Z, in
+`server/src/services/routable-blocked.ts`): tasks blocked earlier are not
+re-validated, and the `reasonRef` field itself stays optional on the type for
+backward compatibility — only the transition into `blocked` is guarded.
+
+The reference lives in the existing `unblock_descriptor` JSON column as
+`IssueUnblockDescriptor.reasonRef`:
+
+| `kind` | Required payload | The reason is a … |
+|---|---|---|
+| `issue` | `issueId` | task whose closure unblocks this one |
+| `event` | `eventKey` | gate/event that must stay set |
+| `date` | `dueAt` (ISO 8601) | date after which the block is stale |
+
+The kind must carry its identifying payload (an `issue` without `issueId` is
+rejected by validation), so the liveness sweep described below can actually
+resolve the reference. The guard exists so that a blocked reason is
+machine-checkable: the watchdog (part B) reads `reasonRef` to tell a live
+reason from a dead one — without a reference there is nothing to check.
+
+The same rule is enforced twice, on the same contract: the shared validator
+(`requireReasonRefForBlockedTransition` on `updateIssueSchema`) and the route
+guard in `server/src/routes/issues.ts` next to the existing entering-blocked
+check. Callers that extend the update schema must derive from
+`updateIssueShapeSchema` (or use `.safeExtend()` on the route schema): the
+refined schema no longer supports plain `.extend()`/`.partial()`.
+
 A blocked task holds its assignee to a reason: a blocker task, a date, or a
 gate/event. Two of those reasons can die silently: a cancelled blocker never
 fires the blockers-resolved path, and a due date or a cleared gate has no
