@@ -45,7 +45,7 @@ import { createHash } from "node:crypto";
 
 import type { ParallelHelpersCard, ResolvedParallelHelpers } from "@paperclipai/shared";
 import type { CompiledProfile, CompiledProfileFile } from "./types.js";
-import { writeYamlDocument, type YamlMapping } from "./deterministic-yaml.js";
+import { writeYamlDocument, type YamlMapping, type YamlNode } from "./deterministic-yaml.js";
 
 // ---------------------------------------------------------------------------
 // Input
@@ -180,6 +180,47 @@ export interface HermesProfileHindsightSettings {
  * reuse whatever `model.base_url`/`model.api_key` resolve to, so fixing
  * `model` covers them too.
  */
+export interface HermesProfileLspSettings {
+  /**
+   * Whether to enable language server protocol support for code assistance.
+   * Default: true
+   */
+  enabled?: boolean;
+  /**
+   * Timeout in seconds after which idle language servers are shut down.
+   * Default: 600 (10 minutes), recommended: 120 for development to save memory
+   */
+  idleTimeout?: number;
+  /**
+   * Glob patterns to exclude from language server analysis (e.g., for monorepos that are checked separately).
+   * Example: ['**/myrmidon/**', '/workspace/*/repo']
+   */
+  excludeRoots?: string[];
+  /**
+   * Wait mode for language server responses ('sync' or 'async').
+   * Default: 'sync'
+   */
+  waitMode?: string;
+  /**
+   * Per-server configuration overrides.
+   */
+  servers?: Record<string, YamlNode>;
+}
+
+/**
+ * Instance-wide LLM gateway settings (e.g. an internal OpenAI-compatible
+ * gateway endpoint) — not carried by the agent card, merged in once per
+ * instance by the caller (G3), the same way
+ * {@link HermesProfileHindsightSettings.apiUrl} is.
+ * Applied to `model.base_url`/`model.api_key` and to every `fallback_model`
+ * entry's `base_url`/`key_env`: Hermes resolves each of those independently
+ * (`hermes_cli/runtime_provider_backends.py` for `model`,
+ * `hermes_cli/fallback_config.py` for `fallback_model` entries — neither
+ * inherits `base_url`/the key from the other). Auxiliary models (vision,
+ * compression) are not configured with their own endpoint at all and simply
+ * reuse whatever `model.base_url`/`model.api_key` resolve to, so fixing
+ * `model` covers them too.
+ */
 export interface HermesProfileLlmSettings {
   /**
    * OpenAI-compatible base URL for a "custom"-family provider (or any
@@ -257,6 +298,8 @@ export interface HermesProfileInstanceDefaults {
   modelContextLengths?: Record<string, number>;
   /** myrmidon(BOT-RUNTIME-TUNING-B): instance-wide auxiliary model defaults. */
   auxiliary?: HermesProfileAuxiliaryDefaults;
+  /** myrmidon(BOT-LSP): instance-wide LSP settings to control language server behavior. */
+  lsp?: HermesProfileLspSettings;
 }
 
 export interface HermesProfileInput {
@@ -311,6 +354,8 @@ export interface HermesProfileInput {
   paperclipApiUrl: string;
   /** Becomes PAPERCLIP_API_KEY in .env — this bot's board API key. */
   paperclipApiKey: string;
+  /** myrmidon(BOT-LSP): per-agent LSP settings to override instance defaults. */
+  lsp?: HermesProfileLspSettings;
 }
 
 // ---------------------------------------------------------------------------
@@ -663,6 +708,58 @@ function buildModelContextLength(
   return undefined;
 }
 
+/**
+ * myrmidon(BOT-LSP): build LSP configuration from instance defaults and per-agent overrides.
+ * Merges settings with agent-specific settings taking precedence over instance defaults.
+ */
+function buildLspConfig(
+  input: HermesProfileInput,
+): YamlMapping | undefined {
+  // Start with instance defaults, if any
+  const instanceLsp = input.instanceDefaults.lsp;
+  // Agent-specific settings override instance defaults
+  const agentLsp = input.lsp;
+
+  if (!instanceLsp && !agentLsp) {
+    return undefined;
+  }
+
+  // Merge settings with agent taking precedence
+  const finalLsp: YamlMapping = {};
+  
+  // Use instance settings as base if available
+  if (instanceLsp) {
+    if (instanceLsp.enabled !== undefined) finalLsp.enabled = instanceLsp.enabled;
+    if (instanceLsp.idleTimeout !== undefined) finalLsp.idle_timeout = instanceLsp.idleTimeout;
+    if (instanceLsp.excludeRoots && instanceLsp.excludeRoots.length > 0) finalLsp.exclude_roots = instanceLsp.excludeRoots;
+    if (instanceLsp.waitMode) finalLsp.wait_mode = instanceLsp.waitMode;
+    if (instanceLsp.servers) finalLsp.servers = instanceLsp.servers;
+  }
+
+  // Override with agent-specific settings if provided
+  if (agentLsp) {
+    if (agentLsp.enabled !== undefined) finalLsp.enabled = agentLsp.enabled;
+    if (agentLsp.idleTimeout !== undefined) finalLsp.idle_timeout = agentLsp.idleTimeout;
+    if (agentLsp.excludeRoots && agentLsp.excludeRoots.length > 0) finalLsp.exclude_roots = agentLsp.excludeRoots;
+    if (agentLsp.waitMode) finalLsp.wait_mode = agentLsp.waitMode;
+    if (agentLsp.servers) {
+      // If we have both instance and agent servers, merge them with agent taking precedence
+      if (finalLsp.servers && typeof finalLsp.servers === 'object') {
+        finalLsp.servers = { ...finalLsp.servers as Record<string, unknown>, ...agentLsp.servers };
+      } else {
+        finalLsp.servers = agentLsp.servers;
+      }
+    }
+  }
+
+  // Only return if we have at least one setting
+  if (Object.keys(finalLsp).length === 0) {
+    return undefined;
+  }
+
+  return finalLsp;
+}
+
 function buildConfigYaml(input: HermesProfileInput, warnings: string[]): string {
   const { adapterConfig } = input;
   warnUnplacedVoiceModels(adapterConfig.models, warnings);
@@ -672,6 +769,9 @@ function buildConfigYaml(input: HermesProfileInput, warnings: string[]): string 
   // only ever pushed a single time per compile.
   const llmBaseUrl = nonEmpty(input.llm.baseUrl);
   const llmApiKeyEnv = resolveLlmApiKeyEnv(input.llm, warnings);
+
+  // Build LSP configuration
+  const lspConfig = buildLspConfig(input);
 
   const root: YamlMapping = {
     agent: {
@@ -690,6 +790,8 @@ function buildConfigYaml(input: HermesProfileInput, warnings: string[]): string 
       adapterConfig.models?.compressionSummary ?? input.instanceDefaults.auxiliary?.compressionModel,
     ),
     compression: buildCompression(input.instanceDefaults.compression, warnings),
+    // myrmidon(BOT-LSP): language server protocol settings
+    lsp: lspConfig,
     // myrmidon(PARALLEL-HELPERS): delegate_task's own limits and child model.
     delegation: buildDelegation(input.parallelHelpers),
     fallback_model: buildFallbackModelSequence(
