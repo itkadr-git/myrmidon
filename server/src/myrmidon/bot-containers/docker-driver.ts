@@ -47,7 +47,7 @@ import path from "node:path";
 import type { BotContainerDriver, BotContainerSpec, BotContainerStatus, TemplateDriftField, TemplateDriftReport } from "./driver.js";
 import type { CompiledProfile } from "./types.js";
 import { prepareBotSharedMount } from "./shared-mount.js";
-import type { SharedMountSettings } from "./shared-mount.js";
+import type { SharedMountSettings } from "@paperclipai/shared";
 import {
   assertBotRuntimeContract,
   BOT_LABEL_KEYS,

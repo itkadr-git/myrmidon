@@ -33,7 +33,7 @@ import {
   readBotContainerAgentConfig,
 } from "./agent-config.js";
 import type { BotContainerAgentConfig } from "./agent-config.js";
-import type { SharedMountSettings } from "./shared-mount.js";
+import type { SharedMountSettings } from "@paperclipai/shared";
 import { botKeyLock, type BotKeyLock } from "./bot-key-lock.js";
 import type { BotContainerDriver } from "./driver.js";
 import {
