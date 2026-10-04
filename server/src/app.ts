@@ -205,7 +205,11 @@ import { toolAccessService } from "./services/tool-access.js";
 import { chatChannelService } from "./services/chat-channels.js";
 import { deliverNativeQuestionResponse } from "./services/native-runtime/native-question-bridge.js";
 import { enqueueChatRunMilestones } from "./services/chat-run-publications.js";
-import { getChatReconcileFallbackIntervalMs, createReconcileInterval } from "./myrmidon/chat-reconciliation/reconcile-interval.js";
+import {
+  chatReconcileMinimumSpacingMs,
+  getChatReconcileFallbackIntervalMs,
+  createReconcileInterval,
+} from "./myrmidon/chat-reconciliation/reconcile-interval.js";
 import {
   createCoalescedAsyncTrigger,
   isChatPublicationCommitSignal,
@@ -237,7 +241,6 @@ import { createChatWebhookDiagnostics } from "./services/chat-webhook-diagnostic
 
 type UiMode = "none" | "static" | "vite-dev";
 const FEEDBACK_EXPORT_FLUSH_INTERVAL_MS = 5_000;
-const CHAT_PUBLICATION_FLUSH_INTERVAL_MS = 1_000;
 const VITE_DEV_ASSET_PREFIXES = [
   "/@fs/",
   "/@id/",
@@ -1317,8 +1320,7 @@ export async function createApp(
   const unsubscribeChatPublicationSignals = subscribeAllCompanyLiveEvents(
     (event) => {
       if (isChatPublicationCommitSignal(event))
-        // Use the new interval system to trigger reconciliation
-        chatReconcileInterval.notify();
+        chatReconciliation.notifyPublications();
     },
   );
   // Remove the old 1-second polling interval; reconciliation now happens based on events

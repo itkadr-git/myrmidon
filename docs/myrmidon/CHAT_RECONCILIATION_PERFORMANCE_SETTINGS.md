@@ -18,13 +18,8 @@ Example:
 MYRMIDON_CHAT_RECONCILE_FALLBACK_INTERVAL_MS=60000  # 60 seconds
 ```
 
-## Performance Improvements
+## Behavior
 
-The chat reconciliation system has been optimized with the following improvements:
-
-1. **Event-Driven Architecture**: Instead of polling every second, the system now reacts to events such as new publications, actions, or milestones.
-2. **Fallback Timer**: A configurable timer ensures reconciliation still occurs during idle periods.
-3. **Partial Indexes**: New partial indexes on `chat_publications` and `chat_actions` tables optimize queries for pending/retry states.
-4. **Cursor-Based Processing**: Milestone projections now use cursor-based pagination for improved efficiency.
-
-These changes significantly reduce database load when the system is idle, bringing query frequency from ~18,000 per minute to <10 per minute during idle periods, while reducing total database time by ≥ 10x.
+1. Publication and milestone commit signals wake their lanes directly (event-driven).
+2. The full reconciliation pass (provider runtimes, deliveries, webhook recovery, Slack syncs) runs only on the fallback timer instead of once per second; its first pass still runs at startup.
+3. Migration 0296 adds partial indexes on `chat_publications` (pending/retry/streaming work) and `chat_actions` (received/processing work) and a `heartbeat_runs (company_id, status, updated_at)` index. The migration builds them without CONCURRENTLY (migrations run in a transaction); on a large live table create them by hand with CONCURRENTLY first, the migration is then a no-op.
