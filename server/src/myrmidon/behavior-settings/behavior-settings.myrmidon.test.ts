@@ -176,14 +176,14 @@ describe("myrmidon(1.7) behavior settings: a change reaches the live system", ()
     const res = await request(h.withActor(admin)).patch(INSTANCE_URL).send({ debug_mode: true }).expect(200);
 
     expect(h.updated).toHaveLength(1);
-    expect(h.updated[0].behaviorSettings.debug_mode).toBe(true);
+    expect((h.updated[0].behaviorSettings as Record<string, unknown>).debug_mode).toBe(true);
 
     // Should have audit entries for all companies
     expect(h.audits).toHaveLength(2);
     for (const entry of h.audits) {
       expect(entry).toMatchObject({ action: BEHAVIOR_SETTINGS_INSTANCE_ACTION, entityType: "instance_settings" });
     }
-    expect(h.audits.map((entry) => entry.companyId)).toEqual([COMPANY_ID, "company-b"]);
+    expect(h.audits.map((entry) => (entry as { companyId?: string }).companyId)).toEqual([COMPANY_ID, "company-b"]);
 
     // Audit and row first, then the settings in force: the live system must
     // never run ahead of what the log says it is.

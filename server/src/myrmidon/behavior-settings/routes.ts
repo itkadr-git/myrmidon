@@ -33,14 +33,16 @@ export function behaviorSettingsRoutes(_db: Db, service: BehaviorSettingsService
 
   // Read the company-level behavior settings
   router.get("/myrmidon/behavior-settings/:companyId", async (req, res) => {
-    assertCompanyAccess(req, req.params.companyId);
-    res.json(await service.readCompany(req.params.companyId));
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await service.readCompany(companyId));
   });
 
   // Update the company-level behavior settings
   router.patch("/myrmidon/behavior-settings/:companyId", validate(createBehaviorSettingsPatchSchema()), async (req, res) => {
-    assertCompanyAccess(req, req.params.companyId);
-    res.json(await service.updateCompany(req.params.companyId, req.body as BehaviorSettingsPatch, getActorInfo(req)));
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await service.updateCompany(companyId, req.body as BehaviorSettingsPatch, getActorInfo(req)));
   });
 
   return router;
