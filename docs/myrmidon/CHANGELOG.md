@@ -41,6 +41,19 @@ version file to edit. Base Paperclip version is in the image label
   `scripts/myrmidon/deploy/deploy-from-job.test.mjs` (a deliberately broken
   image against the fake driver).
 
+### Budget enforcement modes (1.7 BUDGET-CONFIG B)
+
+- What a crossed spend budget limit does is now a mode, not a fixed stop:
+  `signal_only` (the default — the incident and the owner signal appear, but
+  the scope is not paused and runs start), `soft` (pause plus the "raise the
+  budget or keep paused" card; raising resumes the scope), `hard` (new runs
+  of the over-limit scope are refused with the budget reason). One mode for
+  the whole instance, changed live from Instance → General or
+  `PATCH /api/myrmidon/budget-enforcement` — no restart; every change is
+  audited, and the value's source (saved / environment / default) is shown.
+  The environment override is `MYRMIDON_BUDGET_ENFORCEMENT_MODE`. Guide:
+  [guides/budget-enforcement.md](guides/budget-enforcement.md).
+
 ### Maintenance: asynchronous exit and the post-deploy fleet check (EXIT-ASYNC + POST-DEPLOY-CHECK)
 
 - Leaving maintenance mode is asynchronous (#268): the `exit` call returns as
@@ -109,6 +122,37 @@ version file to edit. Base Paperclip version is in the image label
   company access, PATCH is board only; every save is journaled as
   `myrmidon.stt.settings_saved`). See [SETTINGS.md](SETTINGS.md), the VOICE-STT
   section.
+## 1.6.2
+
+### Run admission by host free memory and a start ramp (RUN-ADMISSION)
+
+- The run admission gets a host free-memory floor, `minFreeHostMemoryMb`
+  (`MYRMIDON_MIN_FREE_HOST_MEMORY_MB`, default 15360 MB): a new run, whatever
+  woke it (on demand, assignment, idle pickup, swarm idle wake, automation),
+  starts only while the host's `MemAvailable`, minus the per-run budget of runs
+  started in the last 30 s, stays at or above the floor. Otherwise it stays
+  `queued` and the 15 s queue pass retries it. The existing
+  `minFreeMemoryMb` measures the server cgroup and cannot see the bot
+  containers, which is how 23 concurrent runs exhausted the host while the
+  server looked healthy.
+- Host memory is read from `/proc/meminfo` (the host's file inside a Docker
+  container without lxcfs); a container-scoped meminfo (lxcfs) is detected and
+  refused, and `MYRMIDON_HOST_MEMINFO_PATH` points at a mounted host file.
+- The start ramp `maxStartsPerMinute` now defaults to 5 (was off). An instance
+  that already saved its run limits keeps its saved value; change it on the
+  settings page.
+- The swarm idle-wake pass wakes nobody while the floor is closed and logs the
+  reason (at most once per 5 minutes).
+- When the floor holds runs back for more than 10 minutes, the attention desk
+  shows "Runs held: host memory" with the current free memory and the floor.
+- Both values are edited without a restart on Instance → General "Run limits",
+  Settings → "Runs & queue" and `PATCH /api/myrmidon/runtime-limits`. A stored
+  row from an older version (without the new key) keeps working; the floor
+  comes from the environment or the default until the next save.
+- `0`/`off` switches the floor or the ramp off from the environment; a
+  malformed value keeps the default. See [SETTINGS.md](SETTINGS.md) and
+  [guides/run-limits.md](guides/run-limits.md).
+
 ## 1.6.1
 
 ### Role queues as instance settings (SWARM-SETTINGS-UI)
