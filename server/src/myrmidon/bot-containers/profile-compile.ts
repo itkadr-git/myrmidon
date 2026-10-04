@@ -148,7 +148,7 @@ export interface BotProfilePorts {
    * and the variables pointing the tools at them change together. Optional:
    * without it no bot gets the variables.
    */
-  sharedPackageCachePath?(): Promise<string | undefined>;
+  sharedPackageCachePath?(role?: string): Promise<string | undefined>;
   /**
    * myrmidon(1.6.2-BOT-DISK-C): where the pnpm store of a bot with the shared
    * cache lives (`general.botDisk.pnpmStore`, default "workspace": on the same
@@ -290,7 +290,7 @@ export function createBotProfileCompile(
     // that point pnpm, Go and Gradle at the mounts. A bot on a fleetd host has
     // no cache mounts (fleetd-driver.ts), so its tools keep their own defaults.
     // Instance values win over the card's, like the egress variables below.
-    const sharedPackageCachePath = ports.sharedPackageCachePath ? await ports.sharedPackageCachePath() : undefined;
+    const sharedPackageCachePath = ports.sharedPackageCachePath ? await ports.sharedPackageCachePath(agent.role) : undefined;
     // myrmidon(1.6.2-BOT-DISK-C): the pnpm store mode decides whether the store
     // shares the clones' mount (hard links) or the cache mount (reflink/copy).
     const pnpmStore = sharedPackageCachePath && ports.pnpmStore ? await ports.pnpmStore() : "workspace";

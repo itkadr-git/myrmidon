@@ -12,9 +12,11 @@
 // Every request's read-write-audit sequence runs through one queue, so two
 // overlapping PATCHes cannot commit in one order and audit in the other.
 
-import type { Db } from "@paperclipai/db";
+import { agents, type Db } from "@paperclipai/db";
+import { eq } from "drizzle-orm";
 import {
   BOT_DISK_LAYOUT_KEYS,
+  botRoleGetsSharedCache,
   BOT_DISK_SETTING_KEYS,
   BOT_DISK_UPDATED_ACTION,
   mergeBotDiskSettings,
@@ -179,6 +181,30 @@ export async function readSharedPackageCachePath(db: Db): Promise<string | undef
 export async function readBotDiskLayout(db: Db): Promise<BotDiskLayout> {
   const settings = instanceSettingsService(db) as unknown as { getGeneral(): Promise<{ botDisk?: unknown }> };
   return resolveBotDiskLayout((await settings.getGeneral()).botDisk);
+}
+
+/**
+ * myrmidon(1.6.2-BOT-DISK-C): the cache path for a bot of `role`, or undefined
+ * when the bot is outside the configured roles (`sharedCacheRoles`): such a bot
+ * gets no cache mounts and variables, so it is not recreated when the cache is
+ * enabled. Read per call, so a role change applies without a restart.
+ */
+export async function readSharedPackageCachePathForRole(db: Db, role: string | null | undefined): Promise<string | undefined> {
+  const layout = await readBotDiskLayout(db);
+  if (!layout.sharedPackageCachePath) return undefined;
+  return botRoleGetsSharedCache(layout.sharedCacheRoles, role) ? layout.sharedPackageCachePath : undefined;
+}
+
+/** Same for the driver, which knows the bot key (= agent id) and not the role. */
+export async function readBotCacheLayoutForBot(
+  db: Db,
+  botKey: string,
+): Promise<{ path?: string; gitMirror: boolean }> {
+  const layout = await readBotDiskLayout(db);
+  if (!layout.sharedPackageCachePath) return { gitMirror: false };
+  const rows = await db.select({ role: agents.role }).from(agents).where(eq(agents.id, botKey)).limit(1);
+  if (!botRoleGetsSharedCache(layout.sharedCacheRoles, rows[0]?.role)) return { gitMirror: false };
+  return { path: layout.sharedPackageCachePath, gitMirror: layout.gitMirrorRepos.length > 0 };
 }
 
 /**

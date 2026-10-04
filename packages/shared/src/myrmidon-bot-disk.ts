@@ -110,6 +110,23 @@ export const BOT_DISK_DEFAULT_GIT_MIRROR_REFRESH_MS = 15 * 60 * 1000;
 export const BOT_DISK_MAX_GIT_MIRROR_REPOS = 50;
 
 /**
+ * myrmidon(1.6.2-BOT-DISK-C): the agent roles (`agents.role`) whose bots get the
+ * shared package cache and the git mirror mounts. Every other bot (marketing,
+ * support, ...) gets no cache mount, so enabling the cache does not recreate it.
+ */
+export const BOT_DISK_DEFAULT_SHARED_CACHE_ROLES: readonly string[] = ["engineer", "reviewer", "devops", "release", "qa"];
+export const BOT_DISK_MAX_SHARED_CACHE_ROLES = 50;
+
+const sharedCacheRolesSchema = z
+  .array(z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/, "role keys are lower-case letters, digits, '_' and '-'"))
+  .max(BOT_DISK_MAX_SHARED_CACHE_ROLES);
+
+/** Whether a bot of `role` is in the shared-cache scope (`roles` from {@link BotDiskLayout}). */
+export function botRoleGetsSharedCache(roles: readonly string[], role: string | null | undefined): boolean {
+  return typeof role === "string" && roles.includes(role.trim().toLowerCase());
+}
+
+/**
  * Why `value` cannot be a mirrored repository name, or null when it can: a
  * GitHub `owner/repo` pair — the owner is 1–39 letters, digits or inner
  * hyphens, the repository 1–100 letters, digits, ".", "_" or "-", not "." or
@@ -160,6 +177,7 @@ export const botDiskSettingsSchema = z
     gitMirrorRepos: gitMirrorReposSchema.optional(),
     gitMirrorRefreshMs: gitMirrorRefreshMsSchema.optional(),
     pnpmStore: pnpmStoreSchema.optional(),
+    sharedCacheRoles: sharedCacheRolesSchema.optional(),
   })
   .strict();
 
@@ -171,6 +189,7 @@ const storedBotDiskObjectSchema = z
     gitMirrorRepos: gitMirrorReposSchema.optional().catch(undefined),
     gitMirrorRefreshMs: gitMirrorRefreshMsSchema.optional().catch(undefined),
     pnpmStore: pnpmStoreSchema.optional().catch(undefined),
+    sharedCacheRoles: sharedCacheRolesSchema.optional().catch(undefined),
   })
   .passthrough();
 
@@ -191,6 +210,8 @@ export const patchBotDiskSettingsSchema = z
     gitMirrorRepos: z.union([gitMirrorReposSchema, z.null()]).optional(),
     gitMirrorRefreshMs: z.union([gitMirrorRefreshMsSchema, z.null()]).optional(),
     pnpmStore: z.union([pnpmStoreSchema, z.null()]).optional(),
+    // null returns the default role list; [] is allowed and means no bot.
+    sharedCacheRoles: z.union([sharedCacheRolesSchema, z.null()]).optional(),
   })
   .strict();
 
@@ -233,6 +254,7 @@ export function normalizeStoredBotDiskSettings(raw: unknown): Partial<BotDiskSet
   }
   if (typeof parsed.data.gitMirrorRefreshMs === "number") out.gitMirrorRefreshMs = parsed.data.gitMirrorRefreshMs;
   if (typeof parsed.data.pnpmStore === "string") out.pnpmStore = parsed.data.pnpmStore;
+  if (Array.isArray(parsed.data.sharedCacheRoles)) out.sharedCacheRoles = parsed.data.sharedCacheRoles;
   return out;
 }
 
@@ -277,6 +299,7 @@ function optionalLayoutKeys(values: Partial<BotDiskSettings>): Partial<BotDiskSe
     ...(values.gitMirrorRepos && values.gitMirrorRepos.length > 0 ? { gitMirrorRepos: values.gitMirrorRepos } : {}),
     ...(values.gitMirrorRefreshMs !== undefined ? { gitMirrorRefreshMs: values.gitMirrorRefreshMs } : {}),
     ...(values.pnpmStore !== undefined ? { pnpmStore: values.pnpmStore } : {}),
+    ...(values.sharedCacheRoles !== undefined ? { sharedCacheRoles: values.sharedCacheRoles } : {}),
   };
 }
 
@@ -301,12 +324,13 @@ export function mergeBotDiskSettings(
       gitMirrorRepos: pick(patch.gitMirrorRepos, base.gitMirrorRepos),
       gitMirrorRefreshMs: pick(patch.gitMirrorRefreshMs, base.gitMirrorRefreshMs),
       pnpmStore: pick(patch.pnpmStore, base.pnpmStore),
+      sharedCacheRoles: pick(patch.sharedCacheRoles, base.sharedCacheRoles),
     }),
   };
 }
 
 /** The 1.6.2-BOT-DISK-C keys a settings change compares besides the env-backed ones. */
-export const BOT_DISK_LAYOUT_KEYS = ["sharedPackageCachePath", "gitMirrorRepos", "gitMirrorRefreshMs", "pnpmStore"] as const;
+export const BOT_DISK_LAYOUT_KEYS = ["sharedPackageCachePath", "gitMirrorRepos", "gitMirrorRefreshMs", "pnpmStore", "sharedCacheRoles"] as const;
 
 /**
  * myrmidon(1.6.2-BOT-DISK-C): the shared-cache layout in force, with the
@@ -319,6 +343,8 @@ export interface BotDiskLayout {
   gitMirrorRepos: string[];
   gitMirrorRefreshMs: number;
   pnpmStore: BotDiskPnpmStoreMode;
+  /** Roles whose bots get the cache and mirror mounts (lower case); default {@link BOT_DISK_DEFAULT_SHARED_CACHE_ROLES}. */
+  sharedCacheRoles: string[];
 }
 
 export function resolveBotDiskLayout(stored: unknown): BotDiskLayout {
@@ -331,6 +357,7 @@ export function resolveBotDiskLayout(stored: unknown): BotDiskLayout {
     gitMirrorRepos: repos,
     gitMirrorRefreshMs: values.gitMirrorRefreshMs ?? BOT_DISK_DEFAULT_GIT_MIRROR_REFRESH_MS,
     pnpmStore: values.pnpmStore ?? BOT_DISK_DEFAULT_PNPM_STORE,
+    sharedCacheRoles: [...new Set((values.sharedCacheRoles ?? BOT_DISK_DEFAULT_SHARED_CACHE_ROLES).map((r) => r.toLowerCase()))],
   };
 }
 

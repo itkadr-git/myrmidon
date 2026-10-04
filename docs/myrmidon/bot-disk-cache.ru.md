@@ -203,6 +203,7 @@ bots»); PATCH с одним ключом сохраняет остальные,
 | `gitMirrorRepos` | `[]` | Имена `owner/repo` для зеркал; пусто — ни зеркал, ни монтирования `/cache/git`. Нужен `sharedPackageCachePath` |
 | `gitMirrorRefreshMs` | `900000` (15 мин) | Как часто обновляется каждое зеркало, от 1 мин до 24 ч |
 | `pnpmStore` | `workspace` | `workspace` или `shared` (выше) |
+| `sharedCacheRoles` | `engineer`, `reviewer`, `devops`, `release`, `qa` | Роли, чьи боты получают монтирования кэша и зеркал; остальные не получают и не пересоздаются при включении кэша |
 | `idleTtlMs`, `enabled` | 6 ч, вкл. | Жизненный цикл черновиков BOT-DISK A, которому следует гигиена клонов |
 
 ## Включение зеркал git (шаги оператора)

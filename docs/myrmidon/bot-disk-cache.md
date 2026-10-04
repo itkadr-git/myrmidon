@@ -201,6 +201,7 @@ its default:
 | `gitMirrorRepos` | `[]` | `owner/repo` names to mirror; empty: no mirrors and no `/cache/git` mount. Needs `sharedPackageCachePath` |
 | `gitMirrorRefreshMs` | `900000` (15 min) | How often each mirror is fetched, 1 min to 24 h |
 | `pnpmStore` | `workspace` | `workspace` or `shared` (above) |
+| `sharedCacheRoles` | `engineer`, `reviewer`, `devops`, `release`, `qa` | Roles whose bots get the cache and mirror mounts; other bots get none and are not recreated when the cache is enabled |
 | `idleTtlMs`, `enabled` | 6 h, on | The draft lifecycle of BOT-DISK A, which the clone hygiene follows |
 
 ## Enabling git mirrors (operator steps)

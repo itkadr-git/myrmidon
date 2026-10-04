@@ -66,6 +66,10 @@ version file to edit. Base Paperclip version is in the image label
   clone with unpushed work (dirty tree, operation in progress, stash, commits on no remote) —
   an Attention card (source `bot_disk_lifecycle`) names it instead. The workspace pnpm store is
   never swept.
+- Scope: the shared package cache and the git mirror now apply only to bots whose role is in
+  `general.botDisk.sharedCacheRoles` (default `engineer`, `reviewer`, `devops`, `release`, `qa`;
+  editable without a restart). Other bots (e.g. marketing) get no cache mounts or variables, so
+  enabling the cache no longer recreates them.
 - **Operator steps:** see [bot-disk-cache.md](bot-disk-cache.md#enabling-git-mirrors-operator-steps)
   — create `<cache>/git` owned by the board's user (mode 0755), then
   `PATCH /api/myrmidon/bot-disk` with `{"gitMirrorRepos": ["owner/repo"]}`. The bot image must be

@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   botDiskCachePathProblem,
+  botRoleGetsSharedCache,
   gitMirrorRepoProblem,
   mergeBotDiskSettings,
   normalizeStoredBotDiskSettings,
@@ -189,6 +190,7 @@ describe("myrmidon(1.6.2-BOT-DISK-C) git mirror and pnpm store settings", () => 
       gitMirrorRepos: [],
       gitMirrorRefreshMs: 15 * 60 * 1000,
       pnpmStore: "workspace",
+      sharedCacheRoles: ["engineer", "reviewer", "devops", "release", "qa"],
     });
     const layout = resolveBotDiskLayout({
       sharedPackageCachePath: cache,
@@ -229,5 +231,22 @@ describe("myrmidon(1.6.2-BOT-DISK-C) git mirror and pnpm store settings", () => 
     expect(patchBotDiskSettingsSchema.safeParse({ gitMirrorRepos: ["a/b.git"] }).success).toBe(false);
     expect(patchBotDiskSettingsSchema.safeParse({ gitMirrorRefreshMs: 1000 }).success).toBe(false);
     expect(patchBotDiskSettingsSchema.safeParse({ pnpmStore: "x" }).success).toBe(false);
+  });
+});
+
+describe("myrmidon(1.6.2-BOT-DISK-C) the roles that get the cache", () => {
+  it("defaults to the coding roles, case-insensitively, and excludes everything else", () => {
+    const { sharedCacheRoles } = resolveBotDiskLayout({ sharedPackageCachePath: cache });
+    for (const role of ["engineer", "Reviewer", "devops", "release", "qa"]) expect(botRoleGetsSharedCache(sharedCacheRoles, role), role).toBe(true);
+    for (const role of ["marketing", "general", "", undefined, null]) expect(botRoleGetsSharedCache(sharedCacheRoles, role)).toBe(false);
+  });
+
+  it("is editable: a stored list replaces the default, [] means no bot, null restores the default", () => {
+    const base = { enabled: true, idleTtlMs: 3_600_000, sharedPackageCachePath: cache };
+    const set = mergeBotDiskSettings(base, { sharedCacheRoles: ["marketing"] });
+    expect(resolveBotDiskLayout(set).sharedCacheRoles).toEqual(["marketing"]);
+    expect(resolveBotDiskLayout(mergeBotDiskSettings(base, { sharedCacheRoles: [] })).sharedCacheRoles).toEqual([]);
+    expect(resolveBotDiskLayout(mergeBotDiskSettings(set, { sharedCacheRoles: null })).sharedCacheRoles).toContain("engineer");
+    expect(patchBotDiskSettingsSchema.safeParse({ sharedCacheRoles: ["Bad Role"] }).success).toBe(false);
   });
 });

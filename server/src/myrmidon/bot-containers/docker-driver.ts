@@ -132,14 +132,14 @@ export interface DockerDriverOptions {
    * next reconcile pass without a restart and a fresh process never compares a
    * container against a path it has not loaded yet. Absent: no shared cache.
    */
-  readSharedPackageCachePath?: () => Promise<string | undefined>;
+  readSharedPackageCachePath?: (botKey: string) => Promise<string | undefined>;
   /**
    * myrmidon(1.6.2-BOT-DISK-C): whether the instance keeps git mirrors
    * (`general.botDisk.gitMirrorRepos` not empty), read with the cache path on
    * every create, recreate and drift check. True adds the read-only
    * `<cache>/git:/cache/git` bind. Absent: never.
    */
-  readGitMirrorEnabled?: () => Promise<boolean>;
+  readGitMirrorEnabled?: (botKey: string) => Promise<boolean>;
 }
 
 export interface DockerCreateContainerBody {
@@ -753,7 +753,12 @@ export function dockerBotContainerDriver(
   const readGitMirrorEnabled = options.readGitMirrorEnabled ?? (async () => false);
   // myrmidon(1.6.2-BOT-DISK-C): the create body with the cache binds in force right now.
   const createBody = async (spec: BotContainerSpec) =>
-    buildCreateContainerRequestBody(spec, config, await readSharedPackageCachePath(), await readGitMirrorEnabled());
+    buildCreateContainerRequestBody(
+      spec,
+      config,
+      await readSharedPackageCachePath(spec.botKey),
+      await readGitMirrorEnabled(spec.botKey),
+    );
 
   const request = (opts: Parameters<typeof dockerRequest>[1]) => dockerRequest(socketPath, opts);
 
