@@ -541,7 +541,12 @@ export async function resolveManagedGitHubCredential(
   if (!selection.grant) return { configured: true, identitySource: selection.identitySource, error: selection.error };
   // myrmidon(GITHUB-SHARED-IDENTITY): a policy denial is final; no alternate grant is tried
   let sharedDenied = false;
-  const acquire = async (selection: Awaited<ReturnType<typeof resolveManagedGitHubIdentitySelection>>) => {
+  // myrmidon(GITHUB-SHARED-IDENTITY): explicit result type — the shared branches return spread objects
+  type Acquired = {
+    configured: boolean; identitySource?: "personal" | "dedicated" | "shared";
+    credential?: GitCredential; error?: string; repository?: string;
+  };
+  const acquire = async (selection: Awaited<ReturnType<typeof resolveManagedGitHubIdentitySelection>>): Promise<Acquired> => {
     let grant = selection.grant!;
     // myrmidon(GITHUB-SHARED-IDENTITY): gate the shared grant per agent and
     // repository BEFORE the token is refreshed or read.
@@ -553,7 +558,7 @@ export async function resolveManagedGitHubCredential(
     if (sharedIssuance && !sharedIssuance.ok) {
       sharedDenied = true;
       return {
-        configured: true, identitySource: selection.identitySource, error: sharedIssuance.error, credential: undefined,
+        configured: true, identitySource: selection.identitySource, error: sharedIssuance.error,
         ...(sharedIssuance.repository ? { repository: sharedIssuance.repository } : {}),
       };
     }
