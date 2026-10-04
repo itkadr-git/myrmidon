@@ -14,6 +14,8 @@ import type { BrowserBridgeSettings } from "../myrmidon-browser-bridge.js";
 import type { SwarmClaimSettings } from "../myrmidon-swarm-claim.js";
 // myrmidon(1.6.1-WIP-LIMIT-A): per-agent WIP limits of the same general settings row.
 import type { WipLimitSettings } from "../myrmidon-wip-limit.js";
+// myrmidon(REVIEW-ROUTING): automatic reviewer routing settings of the same row.
+import type { ReviewRoutingSettings } from "../myrmidon-review-routing.js";
 import type { BudgetEnforcementSettings } from "../myrmidon-budget-enforcement.js";
 // myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys live in
 // the same general settings row.
@@ -136,6 +138,12 @@ export interface InstanceGeneralSettings {
    * same field (packages/shared/src/validators/instance.ts).
    */
   wipLimit?: WipLimitSettings;
+  /**
+   * myrmidon(REVIEW-ROUTING): automatic reviewer routing, changed from
+   * `GET`/`PUT /api/myrmidon/companies/:companyId/review-routing/settings`.
+   * Absent means the defaults.
+   */
+  reviewRouting?: ReviewRoutingSettings;
   /**
    * myrmidon(1.7-BUDGET-CONFIG-B): what a crossed budget limit does —
    * signal only (default), pause with an owner card (soft), or refuse new
