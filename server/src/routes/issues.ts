@@ -11506,6 +11506,7 @@ export function issueRoutes(
       if (!issue) return;
       await dbAutonomyGate(db).assertAllowed(req, "delete");
       const target = await resolveInboxArchiveTarget(req, issue);
+      const removed = await svc.unarchiveInbox(
         issue.companyId,
         issue.id,
         target.userId,
