@@ -71,6 +71,36 @@ export function isHumanUnblock(input: UnblockActor & { before: IssueSide; after:
   return leftBlocked || reassigned;
 }
 
+/**
+ * Whether the issue carries a settled "do not replay" hold at all. The PATCH
+ * route switches to a transactional update only when there is one to clear,
+ * so every other board PATCH keeps the vendor's update path unchanged. A read
+ * failure answers false (no clear, logged): the board update itself must not
+ * fail because of this check, and idle pickup reports the issue as held.
+ */
+export async function issueHasSettledReplayHold(db: Db, companyId: string, issueId: string): Promise<boolean> {
+  try {
+    const rows = await db
+      .select({ id: issueRecoveryActions.id })
+      .from(issueRecoveryActions)
+      .where(settledReplayHoldWhere(companyId, issueId));
+    return Array.isArray(rows) && rows.length > 0;
+  } catch (err) {
+    logger.warn({ err, issueId }, "settled replay hold check failed; the board unblock leaves the hold");
+    return false;
+  }
+}
+
+function settledReplayHoldWhere(companyId: string, issueId: string) {
+  return and(
+    eq(issueRecoveryActions.companyId, companyId),
+    eq(issueRecoveryActions.sourceIssueId, issueId),
+    inArray(issueRecoveryActions.status, ["resolved", "cancelled"]),
+    executionBlockerPredicate(),
+    sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`,
+  );
+}
+
 export interface HumanUnblockResult {
   /** Settled recovery actions whose "blocked" replay disposition was cleared. */
   clearedActionIds: string[];
@@ -98,15 +128,7 @@ export async function clearReplayHoldsOnHumanUnblock(input: {
   const settled = await tx
     .select()
     .from(issueRecoveryActions)
-    .where(
-      and(
-        eq(issueRecoveryActions.companyId, companyId),
-        eq(issueRecoveryActions.sourceIssueId, issueId),
-        inArray(issueRecoveryActions.status, ["resolved", "cancelled"]),
-        executionBlockerPredicate(),
-        sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`,
-      ),
-    )
+    .where(settledReplayHoldWhere(companyId, issueId))
     .for("update");
   const clearedActionIds: string[] = [];
   for (const action of settled) {

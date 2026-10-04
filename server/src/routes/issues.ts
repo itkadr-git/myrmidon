@@ -9,6 +9,7 @@ import { clearSettledReplayBlock } from "../myrmidon/settled-holds/clear.js";
 import {
   clearReplayHoldsOnHumanUnblock,
   isHumanUnblock,
+  issueHasSettledReplayHold,
   mayBeHumanUnblock,
   replanParkedWakesAfterUnblock,
   type HumanUnblockResult,
@@ -13601,16 +13602,19 @@ export function issueRoutes(
         updateFields.status === "done";
       const shouldCollectTerminalIssueActions =
         updateFields.status === "done" || updateFields.status === "cancelled";
-      // myrmidon(HOLD-READY): a possible board unblock runs the update in a
-      // transaction, so the settled hold is cleared atomically with it.
-      const humanUnblockPossible = mayBeHumanUnblock({
-        requestActorType: req.actor.type,
-        runId: actor.runId,
-        existingStatus: existing.status,
-        assigneeChangeRequested:
-          normalizedAssigneeAgentId !== undefined ||
-          req.body.assigneeUserId !== undefined,
-      });
+      // myrmidon(HOLD-READY): a possible board unblock of an issue that has
+      // a settled replay hold runs the update in a transaction, so the hold
+      // is cleared atomically with it.
+      const humanUnblockPossible =
+        mayBeHumanUnblock({
+          requestActorType: req.actor.type,
+          runId: actor.runId,
+          existingStatus: existing.status,
+          assigneeChangeRequested:
+            normalizedAssigneeAgentId !== undefined ||
+            req.body.assigneeUserId !== undefined,
+        }) &&
+        (await issueHasSettledReplayHold(db, existing.companyId, existing.id));
       let humanUnblock: HumanUnblockResult | null = null;
       const updateIssue = (tx?: Parameters<typeof svc.update>[2]) => {
         if (tx) {
