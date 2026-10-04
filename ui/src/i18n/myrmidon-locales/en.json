@@ -746,5 +746,26 @@
     "tabWorkspaces": "Workspaces",
     "tabConfiguration": "Configuration",
     "tabBudget": "Budget"
+  },
+  "pluginEntitlement": {
+    "title": "Plugin Entitlement Keys",
+    "description": "Manage plugin entitlement keys that control which plugins are enabled on this instance",
+    "pluginIdLabel": "Plugin ID",
+    "pluginIdPlaceholder": "com.example.plugin",
+    "keyLabel": "Entitlement key",
+    "keyPlaceholder": "Enter plugin entitlement key",
+    "expiresAtLabel": "Expires",
+    "noKeysMessage": "No plugin entitlement keys registered yet",
+    "statusActive": "Active",
+    "statusExpired": "Expired",
+    "neverExpires": "Never expires",
+    "expiresOn": "Expires on {{date}}",
+    "addKeyButton": "Add key",
+    "removeKeyButton": "Remove key",
+    "removeKeyTitle": "Remove plugin key",
+    "removeKeyDescription": "Remove this key? The plugin will stop being entitled if no other valid key remains.",
+    "cancel": "Cancel",
+    "loading": "Loading plugin entitlement settings...",
+    "saveFailed": "Could not save the key. Try again."
   }
 }
