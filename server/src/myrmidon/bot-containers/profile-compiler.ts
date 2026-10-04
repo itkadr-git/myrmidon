@@ -702,42 +702,45 @@ function buildModelContextLength(
   return undefined;
 }
 
-/**
- * myrmidon(BOT-LSP): build LSP configuration from instance defaults and per-agent overrides.
- * Merges settings with agent-specific settings taking precedence over instance defaults.
- */
-function buildLspConfig(input: HermesProfileInput): YamlMapping | undefined {
-  const base = input.instanceDefaults.lsp;
-  const agent = input.lsp;
-  if (!base && !agent) return undefined;
-
-  const nonEmptyRoots = (roots: readonly string[] | undefined) =>
-    roots && roots.length > 0 ? roots : undefined;
-
-  // Servers merge per server: an agent entry overrides the instance entry's
-  // fields one level deep, keeping instance fields it does not set.
-  let servers: Record<string, YamlNode> | undefined;
-  if (base?.servers || agent?.servers) {
-    servers = { ...base?.servers };
-    for (const [name, override] of Object.entries(agent?.servers ?? {})) {
-      const inherited = servers[name];
-      servers[name] =
-        isYamlMapping(inherited) && isYamlMapping(override) ? { ...inherited, ...override } : override;
-    }
-  }
-
-  const lsp: YamlMapping = {
-    enabled: agent?.enabled ?? base?.enabled,
-    idle_timeout: agent?.idleTimeout ?? base?.idleTimeout,
-    exclude_roots: nonEmptyRoots(agent?.excludeRoots) ?? nonEmptyRoots(base?.excludeRoots),
-    wait_mode: agent?.waitMode || base?.waitMode || undefined,
-    servers,
-  };
-  return Object.values(lsp).some((value) => value !== undefined) ? lsp : undefined;
-}
+type MutableYamlMapping = { [key: string]: YamlNode };
 
 function isYamlMapping(node: YamlNode): node is YamlMapping {
   return typeof node === "object" && node !== null && !Array.isArray(node);
+}
+
+/** Deep merge of two YAML mappings: `over` wins; nested mappings merge, lists and scalars are replaced. */
+function mergeYamlMappings(base: YamlMapping, over: YamlMapping): YamlMapping {
+  const merged: MutableYamlMapping = { ...base };
+  for (const [key, value] of Object.entries(over)) {
+    if (value === undefined) continue;
+    const current = merged[key];
+    merged[key] = isYamlMapping(current) && isYamlMapping(value) ? mergeYamlMappings(current, value) : value;
+  }
+  return merged;
+}
+
+/** One level of LSP settings -> Hermes' `lsp` keys (only the fields that are set). */
+function lspSettingsToYaml(settings: HermesProfileLspSettings | undefined): YamlMapping {
+  if (!settings) return {};
+  const out: MutableYamlMapping = {};
+  if (settings.enabled !== undefined) out.enabled = settings.enabled;
+  if (settings.idleTimeout !== undefined) out.idle_timeout = settings.idleTimeout;
+  if (settings.excludeRoots && settings.excludeRoots.length > 0) out.exclude_roots = [...settings.excludeRoots];
+  if (settings.waitMode) out.wait_mode = settings.waitMode;
+  if (settings.servers && Object.keys(settings.servers).length > 0) out.servers = { ...settings.servers };
+  return out;
+}
+
+/**
+ * myrmidon(BOT-LSP): the `lsp` block from the instance default and the
+ * per-agent value. The agent wins field by field; `servers` merges per server
+ * id and per option (an agent option overrides the instance one, the rest
+ * stay). `exclude_roots` is a list, so the agent's list replaces the
+ * instance's. Undefined when neither level sets anything.
+ */
+function buildLspConfig(input: HermesProfileInput): YamlMapping | undefined {
+  const merged = mergeYamlMappings(lspSettingsToYaml(input.instanceDefaults.lsp), lspSettingsToYaml(input.lsp));
+  return Object.keys(merged).length > 0 ? merged : undefined;
 }
 
 function buildConfigYaml(input: HermesProfileInput, warnings: string[]): string {
