@@ -918,6 +918,19 @@ describe("testEnvironment", () => {
 });
 
 describe("mapFinalResultForTest", () => {
+  it("keeps the whole answer in the summary instead of cutting it at 2000 characters", () => {
+    const output = `${"Абзац ответа. ".repeat(700)}КОНЕЦ`;
+    expect(output.length).toBeGreaterThan(9000);
+    const result = mapFinalResultForTest({
+      terminal: { runId: "run-1", status: "completed", payload: { status: "completed" }, output },
+      outputChunks: [],
+      sessionKey: "session-key",
+      strategy: "issue",
+    });
+    expect(result.summary).toBe(output);
+    expect(result.summary?.endsWith("КОНЕЦ")).toBe(true);
+  });
+
   it("maps failed statuses into adapter errors", () => {
     const result = mapFinalResultForTest({
       terminal: {
