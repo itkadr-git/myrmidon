@@ -1222,3 +1222,11 @@ is configured or usable.
 | Field | Default | What it does | Bounds / special |
 |---|---|---|---|
 | `promptBudget.optimizerAgentId` | absent | Agent that receives the deep-analysis task filed by the "Deep analysis" button | A uuid of another agent of the same company; absent, blank or not a uuid answers the deep POST with 422. An additive field of the `promptBudget` area owned by the thresholds part (`instance_settings.general.promptBudget`); no environment variable |
+
+## 1.6.4 — AUTONOMY-DELETE: matrix enforcement tests and route mapping
+
+Unit tests for the `delete` action-class enforcement on agent-accessible DELETE routes
+(`server/src/routes/issues.autonomy.myrmidon.test.ts` — gate level, no DB: forbidden role gets
+403 `autonomy_forbidden` and the handler never runs; allowed and board calls pass), plus the
+route-to-guard mapping in `docs/myrmidon/guides/delete-route-mapping.md`. See the guide
+`docs/myrmidon/guides/autonomy-delete-enforcement.md` (+ `.ru.md`) for operator docs.
