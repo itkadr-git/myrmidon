@@ -6,14 +6,16 @@
 
 ## Затронутые конечные точки
 
-Следующие конечные точки DELETE теперь проверяют матрицу автономии для класса действия `delete`:
+Следующие конечные точки DELETE теперь проверяют матрицу автономии для класса действия `delete` (полное соответствие маршрутов и классов — в `delete-route-mapping.md`):
 
 | Конечная точка | Описание |
 |----------------|----------|
 | `DELETE /api/issues/:id` | Удалить задачу |
 | `DELETE /api/issues/:id/comments/:commentId` | Удалить комментарий из задачи |
 | `DELETE /api/attachments/:attachmentId` | Удалить вложение |
-| `DELETE /api/issues/:id/inbox-archive` | Разархивировать элемент входящих |
+| `DELETE /api/issues/:id/watchdog` | Удалить таймер-сторож задачи |
+| `DELETE /api/work-products/:id` | Удалить рабочий продукт |
+| `DELETE /api/issues/:id/approvals/:approvalId` | Удалить согласование из задачи |
 
 ## Конфигурация
 

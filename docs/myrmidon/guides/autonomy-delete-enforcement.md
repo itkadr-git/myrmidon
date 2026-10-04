@@ -6,14 +6,16 @@ Starting with version 1.6.2, the autonomy matrix enforces the `delete` action cl
 
 ## Affected Endpoints
 
-The following DELETE endpoints now check the autonomy matrix for the `delete` action class:
+The following DELETE endpoints now check the autonomy matrix for the `delete` action class (the full route-to-class mapping is in `delete-route-mapping.md`):
 
 | Endpoint | Description |
 |----------|-------------|
 | `DELETE /api/issues/:id` | Delete an issue |
 | `DELETE /api/issues/:id/comments/:commentId` | Delete a comment from an issue |
 | `DELETE /api/attachments/:attachmentId` | Delete an attachment |
-| `DELETE /api/issues/:id/inbox-archive` | Unarchive an inbox item |
+| `DELETE /api/issues/:id/watchdog` | Remove a watchdog timer from an issue |
+| `DELETE /api/work-products/:id` | Remove a work product |
+| `DELETE /api/issues/:id/approvals/:approvalId` | Remove an approval from an issue |
 
 ## Configuration
 
