@@ -121,6 +121,20 @@ one service, one image line, one source of the image. The override the rollout w
 contains only the image line, so a service defined in your own compose file keeps its
 volumes, sockets and networks; the override only pins which image it runs.
 
+### Upgrading from 1.5.0 to 1.6.0
+
+What changes for operators:
+
+- **The alibaba-image connector container is deployment-side.** Free image
+  generation and editing for agents ship in 1.6 as a connector container from
+  the private deployment repository (`connectors/alibaba-image/`), not as part
+  of the board image: it runs on port `8083` with its own compose fragment,
+  mounts the DashScope key read-only and the shared agent workspace root, and
+  is registered as an external MCP server with grants to the work designer,
+  the bbq SMM and the designer agents. The bring-up and connect runbook —
+  mounts, health check, per-family live smoke:
+  [guides/alibaba-image-connector.md](guides/alibaba-image-connector.md).
+
 ### Upgrading from 1.4.0 to 1.5.0
 
 The 1.5.0 additions are additive on the host side: no new migrations to run by
@@ -462,6 +476,9 @@ which command to run.
 The board can start its own deploy: the instance settings ("Board update") verify a digest,
 open a maintenance window, hand the switch to a host executor and follow it to health. The
 rules are the script's rules, not a second policy:
+The automatic rollback on a failed health check is the operator guide
+[guides/deploy-auto-rollback.md](guides/deploy-auto-rollback.md).
+
 
 - the same CI-image check (reference, registry, labels, commit on main or a myr-v* tag) runs
   BEFORE the maintenance window opens — a refused image changes nothing, not even run
@@ -592,11 +609,16 @@ database; less CPU is fine. Disk for the image (several GB), the database copy a
 **The GitHub Release is created by CI, not by hand.** Pushing a `myr-vX.Y.Z` tag
 triggers the **Myrmidon release publish** workflow
 ([myrmidon-release.yml](https://github.com/itkadr-git/myrmidon/blob/main/.github/workflows/myrmidon-release.yml)):
-it waits for the tag's `Myrmidon CI` run and the image workflows to succeed,
-then creates the Release (Latest) with the `## X.Y.Z` section of
+it waits for the tag's own `Myrmidon CI` run and the tag's image workflow runs
+to succeed — the gate matches runs by the tag, not by the commit (the release
+commit is usually already on `main`, whose runs build the `main`/`sha-` image
+tags, not the version tag; that mix-up is what failed the 1.6.1 publish), so
+the publish waits up to ~40 minutes while the tag's images build — then
+creates the Release (Latest) with the `## X.Y.Z` section of
 [CHANGELOG.md](CHANGELOG.md) and the component image digests, and marks the
 previous release "(superseded)". A failed CI run produces no Release. To
 re-run it (for example after fixing a failed gate, or to refresh the body):
 Actions → Myrmidon release publish → Run workflow → the tag name in the `tag`
-input; the publish is idempotent — an existing Release is updated, not
-duplicated.
+input — the input wins over the branch you dispatch from, so running from
+`main` publishes the typed tag; the publish is idempotent — an existing
+Release is updated, not duplicated.
