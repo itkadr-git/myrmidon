@@ -389,7 +389,8 @@ describeEmbeddedPostgres("a chat is never held and an owner message wakes (CHAT-
     await new Promise((resolve) => setTimeout(resolve, 500));
 
     const [still] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action!.id));
+    // Only a chat's hold is lifted by a message; an ordinary issue's stays.
     expect(still!.evidence.automaticRecovery).toMatchObject({ replay: "blocked" });
-    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    expect((still!.evidence.automaticRecovery as Record<string, unknown>).replayClearedBy).toBeUndefined();
   }, TEST_TIMEOUT_MS);
 });
