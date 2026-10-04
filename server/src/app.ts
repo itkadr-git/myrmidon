@@ -197,7 +197,7 @@ import { toolAccessService } from "./services/tool-access.js";
 import { chatChannelService } from "./services/chat-channels.js";
 import { deliverNativeQuestionResponse } from "./services/native-runtime/native-question-bridge.js";
 import { enqueueChatRunMilestones } from "./services/chat-run-publications.js";
-import { chatReconcileMinimumSpacingMs } from "./myrmidon/chat-reconciliation/reconcile-interval.js";
+import { getChatReconcileFallbackIntervalMs, createReconcileInterval } from "./myrmidon/chat-reconciliation/reconcile-interval.js";
 import {
   createCoalescedAsyncTrigger,
   isChatPublicationCommitSignal,
@@ -416,6 +416,9 @@ export function createChatReconciliationCoordinator(input: {
       // Projecting the final batch can notify dispatch after an earlier drain
       // would have returned. Join dispatch only after its producer has drained.
       await publicationReconciliation.drain();
+    },
+    getActiveTasksCount() {
+      return inFlight.size;
     },
   };
 }
@@ -1284,19 +1287,28 @@ export async function createApp(
     // docs/myrmidon/SETTINGS.md.
     milestoneMinimumSpacingMs: chatReconcileMinimumSpacingMs(),
   });
+  
+  // Create reconcile interval with fallback timer for event-driven reconciliation
+  const chatReconcileInterval = createReconcileInterval({
+    reconcile: async () => {
+      // Run all reconciliation tasks when triggered
+      await chatReconciliation.reconcile();
+    },
+    onError: (err) => {
+      logger.error({ err }, "Failed chat reconciliation");
+    },
+    fallbackIntervalMs: getChatReconcileFallbackIntervalMs(),
+  });
+  
   const unsubscribeChatPublicationSignals = subscribeAllCompanyLiveEvents(
     (event) => {
       if (isChatPublicationCommitSignal(event))
-        chatReconciliation.notifyPublications();
+        // Use the new interval system to trigger reconciliation
+        chatReconcileInterval.notify();
     },
   );
-  let chatPublicationTimer: ReturnType<typeof setInterval> | null = setInterval(
-    () => {
-      chatReconciliation.reconcile();
-    },
-    CHAT_PUBLICATION_FLUSH_INTERVAL_MS,
-  );
-  chatPublicationTimer.unref?.();
+  // Remove the old 1-second polling interval; reconciliation now happens based on events
+  // with a fallback timer that triggers only when idle
   chatReconciliation.reconcile();
   // Abandoned chunked-import spool sweep: hourly (plus once at startup),
   // deleting spool dirs whose transfer saw no activity for 24h and cancelling
@@ -1419,10 +1431,8 @@ export async function createApp(
       disableFeedbackExportFlushes();
       unsubscribeChatPublicationSignals();
       chatReconciliation.stop();
-      if (chatPublicationTimer) {
-        clearInterval(chatPublicationTimer);
-        chatPublicationTimer = null;
-      }
+      // Stop the new reconcile interval system
+      await chatReconcileInterval.stop();
       await chatReconciliation.drain();
       if (importTransferSweepTimer) {
         clearInterval(importTransferSweepTimer);

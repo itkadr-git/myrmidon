@@ -138,6 +138,11 @@ export const heartbeatRuns = pgTable(
       table.status,
       table.lastOutputAt,
     ),
+    companyStatusUpdatedAtIdx: index("heartbeat_runs_company_status_updated_idx").on(
+      table.companyId,
+      table.status,
+      table.updatedAt,
+    ),
     companyStatusProcessStartedIdx: index("heartbeat_runs_company_status_process_started_idx").on(
       table.companyId,
       table.status,
