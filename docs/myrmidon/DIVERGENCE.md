@@ -476,3 +476,34 @@
 | ID | Что изменено | Файлы | Зачем | Тесты | Когда снимать | Ссылка |
 |---|---|---|---|---|---|---|
 | 1.7-METRICS | Эндпоинт `GET /metrics` на origin корня (вне `/api`, по образцу монтирования swarm-claim) отдаёт метрики доски в формате Prometheus text exposition 0.0.4, Content-Type `text/plain; version=0.0.4; charset=utf-8`. Семейства считаются on-the-fly из существующих таблиц и реестров — БЕЗ нового хранилища и миграций: прогоны (активные running/claimed, в очереди queued/retrying/scheduled_retry, failed за всё время и за окно — `heartbeat_runs`), очереди задач по ролям (issues × статус × роль assignee через join `agents.role`), аренды SWARM (живые — не released и не истёкшие, и всего строк — `issue_claims`), ошибки (failed runs за окно + живые сигналы attention-реестров tracing-health, stale-block и swarm-claim), расход (сумма `litellm_cost_events.cost_cents` за окно), задержки API (p50/p95 по `finishedAt − startedAt` прогона за окно latency, НЕ перехватчик запросов). Доступ — один bearer-токен: имя ключа в настройках (`MYRMIDON_METRICS_TOKEN_SECRET` — company secret по имени, первый резолвящийся; иначе env `MYRMIDON_METRICS_TOKEN`); без токена или с неверным — 401, эндпоинт никогда не «открывается». Значение токена не логируется и не возвращается. Окна — `MYRMIDON_METRICS_ERROR_WINDOW_SEC` (умолчание 3600) и `MYRMIDON_METRICS_LATENCY_WINDOW_SEC` (умолчание 21600), per-scrape override `?window=`/`?latency_window=`. Отказ одного семейства не роняет скрейп — `myrmidon_scrape_errors` | Наши файлы `server/src/myrmidon/monitoring/metrics/{metrics,routes,swarm-signals,index}.ts` + тесты `*.myrmidon.test.ts`; в вендоре только две строки с маркером `myrmidon(1.7-METRICS)` в `server/src/app.ts` (один импорт, один `app.use` на origin корне); свои строки в `docs/myrmidon/SETTINGS.md` и этот раздел | Эпик 1.7 MONITORING (часть A): доска скрейпится существующим стеком (VictoriaMetrics на vm-core), оператору нужны прогоны/очереди/аренды/ошибки/расход/задержки без ручного снятия дампов | `exposition.myrmidon.test.ts` (все семейства, по одному HELP/TYPE, квантили, экранирование лейблов, формат значений, процентиля), `routes.myrmidon.test.ts` (401 без токена/неверного/non-bearer, 200 с правильным, content-type 0.0.4, приоритет company secret над env, тайминг-безопасное сравнение, фолбэк при ошибке секрета), `collector.db.myrmidon.test.ts` (embedded-PG: счётчики прогонов, окно failed, p50/p95, роли×статусы, claim live/total, окно расхода, сигналы реестров, отказ семейства = scrape_errors без крэша), `guard.myrmidon.test.ts` (красный без модуля: импорт и монтирование за маркером 1.7-METRICS в app.ts, строки в SETTINGS/DIVERGENCE) | Никогда, наше поведение. Снять: удалить каталог `server/src/myrmidon/monitoring/metrics/`, две строки с маркером `myrmidon(1.7-METRICS)` в app.ts и разделы в SETTINGS/DIVERGENCE | (этот PR) |
+
+### 1.6.2 - AUTONOMY-MATRIX — матрица в шлюзе инструментов: классы `merge`, `external_message`, `deploy` для вызовов MCP-инструментов (OPE-4139)
+- Added autonomy matrix integration to tool gateway
+- New file: `server/src/services/autonomy-tool-mapping.ts` - tool to action class mapping
+- Modified: `server/src/services/tool-gateway.ts` - added autonomy check before tool access policy
+- New action classes: `merge`, `deploy`, `external_message`, `spend_above_threshold`, `delete`, `pause_wake_agents`, `change_instructions`, `other`
+- Tool classification system with configurable mapping
+- Enforcement of autonomy matrix verdicts: `allowed`, `approval_required`, `forbidden`
+- Integration with existing tool action request system for approval-required actions
+- Tests: `server/src/services/tool-gateway.myrmidon.test.ts`
+- Documentation: `docs/myrmidon/guides/autonomy-matrix-tool-gateway.md` and Russian version
+- Settings documented in `docs/myrmidon/SETTINGS.md`
+
+// myrmidon(OPE-4139): Documented divergence for autonomy matrix integration in tool gateway
+
+## 1.6.2 - VENDOR-SHARE-METRIC — скрипт подсчёта доли файлов, унаследованных от вендора (OPE-4151)
+
+- Added vendor share analysis script to measure the percentage of files derived from the vendor base commit
+- New file: `scripts/myrmidon/vendor-share.py` - the main analysis script
+- New file: `scripts/myrmidon/vendor-share.myrmidon.test.py` - tests for the script
+- New file: `scripts/myrmidon/vendor-base.txt` - contains the base vendor commit hash
+- New documentation: `docs/myrmidon/guides/vendor-share-analysis.md` and Russian version
+- The script identifies vendor-derived files by comparing content similarity against the base commit
+- Files are considered vendor-derived if similarity ratio exceeds a threshold (default 50%)
+- Excludes certain file patterns (lock files, build artifacts, etc.) from analysis
+- Provides breakdown by top-level directories and packages
+- Performance optimized to handle large repositories efficiently
+- Tests validate core logic including similarity calculation and file exclusion patterns
+- Settings documented in `docs/myrmidon/SETTINGS.md`
+
+// myrmidon(OPE-4151): Documented divergence for vendor share metric script
