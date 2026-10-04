@@ -845,3 +845,75 @@ describe("myrmidon(W2a) buildHermesProfileInput — through the G2 compiler", ()
     expect(rotatedKey.restartHash).not.toBe(base.restartHash);
   });
 });
+
+// myrmidon(BOT-LSP-DEFAULTS): the role policy and the card's pin reach the
+// compiled config.yaml as Hermes' own `lsp` block.
+describe("myrmidon(BOT-LSP-DEFAULTS) buildHermesProfileInput — language servers", () => {
+  function configYaml(overrides: Partial<BotProfileSource>): string {
+    const { input } = buildHermesProfileInput(source(overrides), settings());
+    return fileContent(compileHermesProfile(input), "hermes/config.yaml");
+  }
+
+  it("gives a coding role the limited mode", () => {
+    const { input } = buildHermesProfileInput(source({ role: "engineer" }), settings());
+    expect(input.lsp).toEqual({
+      enabled: true,
+      idleTimeout: 120,
+      servers: {
+        typescript: {
+          initialization_options: {
+            disableAutomaticTypingAcquisition: true,
+            maxTsServerMemory: 1024,
+            tsserver: { useSyntaxServer: "never" },
+          },
+        },
+      },
+    });
+    const yaml = configYaml({ role: "engineer" });
+    expect(yaml).toContain("lsp:");
+    expect(yaml).toContain("idle_timeout: 120");
+    expect(yaml).toContain("maxTsServerMemory: 1024");
+    expect(yaml).toContain('useSyntaxServer: "never"');
+    expect(yaml).toContain("disableAutomaticTypingAcquisition: true");
+  });
+
+  it("turns language servers off for a role that does not write code, and for no role", () => {
+    expect(buildHermesProfileInput(source({ role: "general" }), settings()).input.lsp).toEqual({ enabled: false });
+    expect(buildHermesProfileInput(source(), settings()).input.lsp).toEqual({ enabled: false });
+    const yaml = configYaml({ role: "cmo" });
+    expect(yaml).toContain("lsp:\n  enabled: false");
+    expect(yaml).not.toContain("maxTsServerMemory");
+  });
+
+  it("lets the card pin a mode over the role", () => {
+    expect(
+      buildHermesProfileInput(source({ role: "engineer", adapterConfig: { lsp: { mode: "off" } } }), settings()).input.lsp,
+    ).toEqual({ enabled: false });
+    expect(
+      buildHermesProfileInput(source({ role: "general", adapterConfig: { lsp: { mode: "limited" } } }), settings()).input
+        .lsp?.enabled,
+    ).toBe(true);
+    // Full = the runtime's defaults: no lsp block at all.
+    const yaml = configYaml({ role: "engineer", adapterConfig: { lsp: { mode: "full" } } });
+    expect(yaml).not.toContain("lsp:");
+  });
+
+  it("follows the instance policy", () => {
+    const { input } = buildHermesProfileInput(
+      source({
+        role: "dev-lead",
+        botLspSettings: { codingRoles: ["dev-lead"], idleTimeoutSeconds: 300, tsserverMemoryMb: 2048, excludeRoots: ["/srv/big"] },
+      }),
+      settings(),
+    );
+    expect(input.lsp).toMatchObject({ enabled: true, idleTimeout: 300, excludeRoots: ["/srv/big"] });
+    expect(input.lsp?.servers).toMatchObject({ typescript: { initialization_options: { maxTsServerMemory: 2048 } } });
+  });
+
+  it("is deterministic: the same role and settings give the same hashes", () => {
+    const one = compileHermesProfile(buildHermesProfileInput(source({ role: "engineer" }), settings()).input);
+    const two = compileHermesProfile(buildHermesProfileInput(source({ role: "engineer" }), settings()).input);
+    expect(one.restartHash).toBe(two.restartHash);
+    expect(one.filesHash).toBe(two.filesHash);
+  });
+});

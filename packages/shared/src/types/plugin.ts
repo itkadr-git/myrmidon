@@ -719,6 +719,13 @@ export interface PaperclipPluginManifestV1 {
   launchers?: PluginLauncherDeclaration[];
   /** UI bundle declarations. Requires `entrypoints.ui` when populated. */
   ui?: PluginUiDeclaration;
+  /**
+   * myrmidon(PLUGIN-ENTITLEMENT C): when true, the plugin is not activated and
+   * stays hidden from menus and settings until a valid entitlement key is
+   * accepted for it in the instance settings. Kept in sync with the validator
+   * of the same field (packages/shared/src/validators/plugin.ts).
+   */
+  requiresEntitlement?: boolean;
 }
 
 // ---------------------------------------------------------------------------

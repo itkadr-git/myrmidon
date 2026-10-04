@@ -956,6 +956,149 @@ describe("myrmidon(G2) compileHermesProfile — instance defaults", () => {
     expect(yaml).toContain("compression:\n  enabled: true\n  target_ratio: 0.2\n  threshold: 0.5");
   });
 
+  // myrmidon(BOT-LSP): test LSP settings
+  describe("myrmidon(BOT-LSP) lsp settings", () => {
+    it("writes lsp settings from instance defaults", () => {
+      const yaml = fileByPath(
+        compileHermesProfile(
+          baseInput({
+            instanceDefaults: {
+              lsp: {
+                enabled: true,
+                idleTimeout: 120,
+                excludeRoots: ["**/myrmidon/**", "/workspace/*/repo"],
+                waitMode: "sync",
+              },
+            },
+          }),
+        ).files,
+        "hermes/config.yaml",
+      ).content;
+      expect(yaml).toContain("lsp:");
+      expect(yaml).toContain("enabled: true");
+      expect(yaml).toContain("idle_timeout: 120");
+      expect(yaml).toContain("- \"**/myrmidon/**\"");
+      expect(yaml).toContain("- \"/workspace/*/repo\"");
+      expect(yaml).toContain("wait_mode: \"sync\"");
+    });
+
+    it("writes lsp settings from agent-specific overrides", () => {
+      const yaml = fileByPath(
+        compileHermesProfile(
+          baseInput({
+            lsp: {
+              enabled: false,
+              idleTimeout: 60,
+            },
+          }),
+        ).files,
+        "hermes/config.yaml",
+      ).content;
+      expect(yaml).toContain("lsp:");
+      expect(yaml).toContain("enabled: false");
+      expect(yaml).toContain("idle_timeout: 60");
+    });
+
+    it("agent-specific lsp settings override instance defaults", () => {
+      const yaml = fileByPath(
+        compileHermesProfile(
+          baseInput({
+            instanceDefaults: {
+              lsp: {
+                enabled: true,
+                idleTimeout: 120,
+              },
+            },
+            lsp: {
+              enabled: false, // This should override the instance default
+              excludeRoots: ["**/test/**"], // This should be added to the config
+            },
+          }),
+        ).files,
+        "hermes/config.yaml",
+      ).content;
+      expect(yaml).toContain("lsp:");
+      expect(yaml).toContain("enabled: false"); // From agent override
+      expect(yaml).toContain("idle_timeout: 120"); // From instance default (not overridden)
+      expect(yaml).toContain("- \"**/test/**"); // From agent override
+      expect(yaml).not.toContain("- \"**/myrmidon/**"); // From instance default (not included)
+    });
+
+    it("writes lsp servers configuration", () => {
+      const yaml = fileByPath(
+        compileHermesProfile(
+          baseInput({
+            lsp: {
+              servers: {
+                tsserver: {
+                  memoryLimit: 1024,
+                },
+                eslint: {
+                  configFile: ".eslintrc.js",
+                },
+              },
+            },
+          }),
+        ).files,
+        "hermes/config.yaml",
+      ).content;
+      expect(yaml).toContain("lsp:");
+      expect(yaml).toContain("servers:");
+      expect(yaml).toContain("tsserver:");
+      expect(yaml).toContain("eslint:");
+      expect(yaml).toContain("memoryLimit: 1024");
+      expect(yaml).toContain("configFile: \".eslintrc.js\"");
+    });
+
+    it("merges instance and agent server configurations with agent taking precedence", () => {
+      const yaml = fileByPath(
+        compileHermesProfile(
+          baseInput({
+            instanceDefaults: {
+              lsp: {
+                servers: {
+                  tsserver: {
+                    memoryLimit: 2048,
+                    maxOldSpaceSize: 2048,
+                  },
+                },
+              },
+            },
+            lsp: {
+              servers: {
+                tsserver: {
+                  memoryLimit: 1024, // This should override instance value
+                  configFile: ".tsconfig.json", // This should be added
+                  // maxOldSpaceSize should come from instance
+                },
+                eslint: {
+                  configFile: ".eslintrc.js", // This should be added
+                },
+              },
+            },
+          }),
+        ).files,
+        "hermes/config.yaml",
+      ).content;
+      expect(yaml).toContain("lsp:");
+      expect(yaml).toContain("servers:");
+      expect(yaml).toContain("tsserver:");
+      expect(yaml).toContain("memoryLimit: 1024"); // From agent override
+      expect(yaml).toContain("maxOldSpaceSize: 2048"); // From instance default
+      expect(yaml).toContain("configFile: \".tsconfig.json\""); // From agent
+      expect(yaml).toContain("eslint:"); // From agent
+      expect(yaml).toContain("configFile: \".eslintrc.js\""); // From agent
+    });
+
+    it("does not write lsp section when no lsp settings are provided", () => {
+      const yaml = fileByPath(
+        compileHermesProfile(baseInput()).files,
+        "hermes/config.yaml",
+      ).content;
+      expect(yaml).not.toContain("lsp:");
+    });
+  });
+
   // myrmidon(BOT-RUNTIME-TUNING-B): the absolute compression token cap.
   describe("myrmidon(BOT-RUNTIME-TUNING-B) compression.threshold_tokens", () => {
     it("writes threshold_tokens when the instance default sets it", () => {
