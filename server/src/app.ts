@@ -115,6 +115,7 @@ import { myrmidonBotCanaryRoutes } from "./myrmidon/bot-containers/canary-index.
 import { myrmidonWorkspaceHygieneRoutes } from "./myrmidon/workspace-hygiene/index.js"; // myrmidon(WORKSPACE-HYGIENE)
 // myrmidon(BOT-DISK E): host disk usage threshold and signal
 import { myrmidonHostDiskRoutes } from "./myrmidon/host-disk/index.js"; // myrmidon(BOT-DISK E)
+import { myrmidonBotDiskLifecycleRoutes } from "./myrmidon/bot-containers/bot-disk-routes.js"; // myrmidon(BOT-DISK-A)
 import { myrmidonMetricsApp } from "./myrmidon/monitoring/metrics/index.js"; // myrmidon(1.7-METRICS)
 import { swarmClaimApp } from "./myrmidon/swarm-claim/index.js"; // myrmidon(1.6-SWARM)
 // myrmidon(EMERGENCY-STOP): immediate stop of the runs a draining pause left running
@@ -869,6 +870,7 @@ export async function createApp(
   api.use(myrmidonBotCanaryRoutes(db)); // myrmidon(R5-B)
   api.use(myrmidonWorkspaceHygieneRoutes(db)); // myrmidon(WORKSPACE-HYGIENE)
   api.use(myrmidonHostDiskRoutes(db)); // myrmidon(BOT-DISK E)
+  api.use(myrmidonBotDiskLifecycleRoutes(db)); // myrmidon(BOT-DISK-A)
   api.use(swarmClaimApp({
     db,
     settings: instanceSettingsService(db),
