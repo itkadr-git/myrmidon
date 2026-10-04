@@ -2828,3 +2828,6 @@ export * from "./myrmidon-plugin-entitlement.js";
 // myrmidon(DM-PROGRESS): live progress steps in the bridged Telegram DM
 // status message — storage key, precedence and resolver.
 export * from "./myrmidon-telegram-dm-progress.js";
+
+// myrmidon(1.6.1 MODEL-PROVIDERS): provider secret names, defaults and API schemas.
+export * from "./myrmidon-model-providers.js";
