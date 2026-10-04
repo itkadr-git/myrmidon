@@ -45,7 +45,7 @@ export default function myrmidonBotDiskRoutes() {
 }
 
 export function myrmidonBotDiskLifecycleRoutes(_db: unknown) {
-  // myrmidon(OPE-4021): mounted by app.ts under /api — routes below are
+  // myrmidon(BOT-DISK-A): mounted by app.ts under /api — routes below are
   // relative to it (GET/PATCH /api/myrmidon/bot-disk).
   const router = Router();
 

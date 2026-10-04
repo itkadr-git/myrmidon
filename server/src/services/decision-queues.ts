@@ -323,7 +323,7 @@ async function sourceIssueId(
         .then((rows) => rows[0] ?? null);
       return { exists: Boolean(row), issueId: null, agentId: row?.id ?? null };
     }
-    // myrmidon(OPE-4021): the bot disk lifecycle signal subject is an agent
+    // myrmidon(BOT-DISK-A): the bot disk lifecycle signal subject is an agent
     // bot of the company; existence is the live agent row.
     case "bot_disk_lifecycle": {
       const row = await db.select({ id: agents.id })
