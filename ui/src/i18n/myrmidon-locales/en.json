@@ -326,7 +326,8 @@
     "castes": "Castes & models",
     "wipLimit": "WIP limit",
     "reviewRouting": "Review routing",
-    "corpus": "Knowledge corpus"
+    "corpus": "Knowledge corpus",
+    "budgets": "Budgets"
   },
   "corpus": {
     "title": "Knowledge corpus",
@@ -1062,5 +1063,79 @@
     "save": "Save",
     "reset": "Use defaults",
     "note": "Stored in the instance settings; there is no environment variable behind either value."
+  },
+  "budgetLimits": {
+    "title": "Budgets",
+    "breadcrumb": "Budgets",
+    "intro": "Spend limits per hierarchy level: nest (the company and its projects), caste, foraging, task. Each row carries an amount and a period; over the limit a hard mode refuses the work and a soft mode stops it with a card to the owner.",
+    "loading": "Loading the spend limits...",
+    "noCompany": "Select a company to edit its budgets.",
+    "signalOnlyLabel": "Signal only",
+    "signalOnlyHint": "Limits signal, they never stop work. While this mode is on, crossing a limit blocks nothing.",
+    "source": {
+      "default": "Default value — nothing saved yet",
+      "stored": "Saved in the settings",
+      "env": "Forced by the server environment — the switch is locked"
+    },
+    "treeTitle": "Limit levels",
+    "colScope": "Level",
+    "colSpent": "Spent",
+    "colAmount": "Amount",
+    "colPeriod": "Period",
+    "colMode": "Mode",
+    "colActions": "Actions",
+    "level": {
+      "nest": "Nest",
+      "caste": "Caste",
+      "foraging": "Foraging",
+      "issue": "Task"
+    },
+    "refCompany": "Whole company",
+    "refForaging": "Foraging pass",
+    "period": {
+      "calendar_month_utc": "Calendar month (UTC)",
+      "lifetime": "Lifetime"
+    },
+    "mode": {
+      "hard": "Hard: refuse",
+      "soft": "Soft: pause and ask"
+    },
+    "save": "Save",
+    "create": "Create",
+    "remove": "Remove",
+    "inactive": "Switched off",
+    "noLimit": "No limit",
+    "overLimit": "Over the limit",
+    "percentUsed": "{{percent}}% used",
+    "amountPlaceholder": "0.00",
+    "amountRequired": "Enter an amount.",
+    "amountInvalid": "Enter a number, for example 25 or 25.50.",
+    "amountRange": "Enter an amount from 0 to 10,000,000.",
+    "refErrorLength": "The value must be 1 to 128 characters long.",
+    "refErrorNest": "Enter a project identifier, or leave the whole company row.",
+    "refErrorCaste": "A caste value holds lowercase letters, digits and hyphens.",
+    "refErrorForaging": "The foraging level has a single value and it is already in the tree.",
+    "refErrorIssue": "A task value must be an issue identifier (UUID).",
+    "addTo": "Add a limit: {{level}}",
+    "addProjectLabel": "Project",
+    "addProjectPlaceholder": "Select a project",
+    "addRefLabel": "Level value",
+    "addCastePlaceholder": "caste key, for example engineer",
+    "addIssuePlaceholder": "task identifier (UUID)",
+    "addSubmit": "Add",
+    "journalTitle": "Change journal",
+    "journalEmpty": "No changes yet",
+    "colWhen": "When",
+    "colActor": "Who",
+    "colAction": "Action",
+    "colWhat": "Change",
+    "action": {
+      "create": "Created",
+      "update": "Updated",
+      "delete": "Deleted"
+    },
+    "journalCreated": "Limit created: {{amount}}",
+    "journalDeleted": "Limit deleted: {{amount}}",
+    "journalUpdated": "Was {{before}}, became {{after}}"
   }
 }

@@ -94,6 +94,7 @@ import { WipLimitScreen } from "./components/myrmidon/wip-limit/WipLimitScreenCo
 import { OwnerDeliveryScreen } from "./components/myrmidon/owner-delivery/OwnerDeliveryScreenContainer"; // myrmidon(1.6.5-OWNER-DM-FILTER)
 import { ReviewRoutingScreen } from "./components/myrmidon/review-routing/ReviewRoutingScreenContainer"; // myrmidon(REVIEW-ROUTING)
 import { CorpusScreen } from "./components/myrmidon/corpus/CorpusScreenContainer"; // myrmidon(1.6.6 CORPUS E)
+import { BudgetLimitsScreen } from "./components/myrmidon/budget-limits/BudgetLimitsScreenContainer"; // myrmidon(1.7 BUDGET-CONFIG D)
 
 import { ModelProvidersScreen } from "./components/myrmidon/model-providers/ModelProvidersContainer"; // myrmidon(1.6.1 MODEL-PROVIDERS C)
 import { CastesScreen } from "./components/myrmidon/castes/CastesContainer"; // myrmidon(1.6.1 CUSTOM-CASTES C)
@@ -226,6 +227,7 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
       <Route path="company/settings/owner-delivery" element={<OwnerDeliveryScreen />} /> {/* myrmidon(1.6.5-OWNER-DM-FILTER) */}
       <Route path="company/settings/review-routing" element={<ReviewRoutingScreen />} /> {/* myrmidon(REVIEW-ROUTING) */}
       <Route path="company/settings/corpus" element={<CorpusScreen />} /> {/* myrmidon(1.6.6 CORPUS E): the knowledge corpus settings screen route */}
+      <Route path="company/settings/budgets" element={<BudgetLimitsScreen />} /> {/* myrmidon(1.7 BUDGET-CONFIG D): per-level spend limits screen */}
 
       <Route path="company/settings/castes" element={<ModelProvidersScreen />} /> {/* myrmidon(1.6.1 MODEL-PROVIDERS C): the ui2 "Castes and models" section route */}
       <Route path="company/settings/caste-directory" element={<CastesScreen />} /> {/* myrmidon(1.6.1 CUSTOM-CASTES C): the caste directory settings screen route */}

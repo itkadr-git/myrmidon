@@ -28,6 +28,8 @@ const items = [
   { value: "wip-limit", label: "WIP limit", href: "/company/settings/wip-limit" },
   // myrmidon(REVIEW-ROUTING): automatic reviewer routing settings
   { value: "review-routing", label: "Review routing", href: "/company/settings/review-routing" },
+  // myrmidon(1.7 BUDGET-CONFIG D): per-level spend limits screen
+  { value: "budgets", label: "Budgets", href: "/company/settings/budgets" },
   // myrmidon(1.6.1 MODEL-PROVIDERS C): the ui2 "Castes and models" section
   { value: "castes", label: "Castes & models", href: "/company/settings/castes" },
   // myrmidon(1.6.1 CUSTOM-CASTES C): the company caste directory
@@ -151,6 +153,11 @@ export function getCompanySettingsTab(pathname: string): CompanySettingsTab {
     return "review-routing";
   }
 
+  // myrmidon(1.7 BUDGET-CONFIG D): the Budgets settings section
+  if (pathname.includes("/company/settings/budgets")) {
+    return "budgets";
+  }
+
   // myrmidon(1.6.1 MODEL-PROVIDERS C): the Castes and models settings section
   if (pathname.includes("/company/settings/castes")) {
     return "castes";
@@ -189,6 +196,7 @@ const SETTINGS_TAB_LABEL_KEYS: Partial<Record<string, string>> = {
   "review-routing": "settingsNav.reviewRouting",
   // myrmidon(1.6.6 CORPUS E): the knowledge corpus settings tab
   corpus: "settingsNav.corpus",
+  budgets: "settingsNav.budgets",
 };
 
 export function CompanySettingsNav() {

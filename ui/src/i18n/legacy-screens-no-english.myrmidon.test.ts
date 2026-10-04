@@ -23,6 +23,8 @@ const SCREENS = [
   "pages/SwarmSupervisor.production.tsx",
   "pages/SkillLifecycle.tsx",
   "components/myrmidon/skill-lifecycle/SkillLifecyclePanel.tsx",
+  "components/myrmidon/budget-limits/BudgetLimitsScreen.tsx",
+  "components/myrmidon/budget-limits/BudgetLimitsScreenContainer.tsx",
   "components/access/CompanySettingsNav.tsx",
 ];
 
