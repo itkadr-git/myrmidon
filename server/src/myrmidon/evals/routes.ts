@@ -122,7 +122,7 @@ export function myrmidonEvalsRoutes(db: Db, deps: Partial<EvalsRoutesDeps> = {})
           fetch: deps.fetch ?? fetch,
           apiKey: key,
           baseUrl: current.baseUrl!,
-          // myrmidon(OPE-4150 EVALS-JUDGE-FAMILY): the judge model is the head
+          // myrmidon(1.6.3 EVALS-JUDGE-FAMILY): the judge model is the head
           // of the priority list; the list is re-read on every call, so a
           // change takes effect on the next run without a restart.
           model: current.judgeModels[0] ?? current.model,

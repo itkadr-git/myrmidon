@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// myrmidon(OPE-4150 EVALS-JUDGE-FAMILY): the same-family judge badge on an
+// myrmidon(1.6.3 EVALS-JUDGE-FAMILY): the same-family judge badge on an
 // eval result — view tier, no network. Checked: the badge renders with its
 // label and tooltip hint when sameFamily is true; a false flag renders
 // nothing at all.
@@ -29,7 +29,7 @@ function badge(): HTMLElement | null {
   return container.querySelector<HTMLElement>("[data-testid=same-family-badge]");
 }
 
-describe("myrmidon(OPE-4150 EVALS-JUDGE-FAMILY) SameFamilyBadge", () => {
+describe("myrmidon(1.6.3 EVALS-JUDGE-FAMILY) SameFamilyBadge", () => {
   it("renders the badge with label and tooltip when sameFamily is true", () => {
     act(() => root.render(<SameFamilyBadge sameFamily={true} />));
     expect(badge()).not.toBeNull();

@@ -408,3 +408,103 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
     );
   });
 });
+
+describe("myrmidon(1.6.2 RUN-ADMISSION) the idle pass respects the host memory floor", () => {
+  function gate(state: "open" | "closed" | "unknown" | "off") {
+    return () => ({
+      state,
+      thresholdMb: state === "off" ? null : 15360,
+      availableMb: state === "closed" ? 7168 : state === "open" ? 30000 : null,
+      settlingRuns: 0,
+      reason: state === "closed" ? "host MemAvailable 7168 MB is below the 15360 MB floor" : null,
+      heldSince: null,
+    });
+  }
+
+  function idleRole() {
+    mockListIdleRolePairs.mockReset();
+    mockListIdleRolePairs.mockResolvedValue([
+      {
+        role: "engineer",
+        companyId: "company-a",
+        queue: [candidate()],
+        agents: [{ id: "agent-a", status: "idle", activeClaims: 0, hasLiveRun: false }],
+      },
+    ]);
+    mockLiveClaimCountsByAgent.mockResolvedValue(new Map());
+  }
+
+  it("wakes nobody while the floor is closed and records why", async () => {
+    idleRole();
+    const wakes: unknown[] = [];
+    const sweeper = createSwarmClaimSweeper({
+      ...fakeSweepPorts({
+        enqueueWakeup: async () => {
+          wakes.push(1);
+          return { id: "wake-1" };
+        },
+      }),
+      intervalMs: 0,
+      hostMemoryGate: gate("closed"),
+    });
+    sweeper.resetForTest();
+    const result = await sweeper.sweep(NOW);
+    expect(result.idleWoken).toBe(0);
+    expect(result.idleSkippedReason).toContain("below the 15360 MB floor");
+    expect(wakes).toHaveLength(0);
+    // The queues are not even read: the pass stops before the pair query.
+    expect(mockListIdleRolePairs).not.toHaveBeenCalled();
+  });
+
+  it("wakes as before when the floor is open, off or unreadable", async () => {
+    for (const state of ["open", "off", "unknown"] as const) {
+      idleRole();
+      const wakes: unknown[] = [];
+      const sweeper = createSwarmClaimSweeper({
+        ...fakeSweepPorts({
+          enqueueWakeup: async () => {
+            wakes.push(1);
+            return { id: "wake-1" };
+          },
+        }),
+        intervalMs: 0,
+        hostMemoryGate: gate(state),
+      });
+      sweeper.resetForTest();
+      const result = await sweeper.sweep(NOW);
+      expect(result.idleSkippedReason).toBeNull();
+      expect(result.idleWoken).toBe(1);
+      expect(wakes).toHaveLength(1);
+    }
+  });
+
+  it("uses the process-wide run admission when no gate is injected", async () => {
+    const admission = await import("../run-admission.js");
+    admission.resetSharedRunAdmissionForTests();
+    try {
+      admission.applyRunAdmissionLimits({
+        maxConcurrentRuns: null,
+        maxStartsPerMinute: null,
+        minFreeMemoryMb: null,
+        runMemoryEstimateMb: 300,
+        // No host has this much free memory: the shared floor is closed.
+        minFreeHostMemoryMb: 1024 * 1024 * 1024,
+      });
+      const gateState = admission.currentHostMemoryGate().state;
+      idleRole();
+      const sweeper = createSwarmClaimSweeper({ ...fakeSweepPorts({}), intervalMs: 0 });
+      sweeper.resetForTest();
+      const result = await sweeper.sweep(NOW);
+      if (gateState === "closed") {
+        expect(result.idleWoken).toBe(0);
+        expect(result.idleSkippedReason).not.toBeNull();
+      } else {
+        // A machine whose /proc/meminfo is unreadable leaves the floor inactive.
+        expect(gateState).toBe("unknown");
+        expect(result.idleSkippedReason).toBeNull();
+      }
+    } finally {
+      admission.resetSharedRunAdmissionForTests();
+    }
+  });
+});

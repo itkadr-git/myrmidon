@@ -1,4 +1,4 @@
-// myrmidon(OPE-4150 EVALS-JUDGE-FAMILY): same-family judge badge.
+// myrmidon(1.6.3 EVALS-JUDGE-FAMILY): same-family judge badge.
 //
 // Shown next to a reference-task eval result when the judge model and the
 // evaluated agent model come from the same model family (both DashScope/Qwen,

@@ -67,7 +67,7 @@ export const EVALS_KEY_SECRET_ENV = "MYRMIDON_EVALS_KEY_SECRET";
 export const EVALS_MODEL_ENV = "MYRMIDON_EVALS_MODEL";
 export const EVALS_TIMEOUT_SEC_ENV = "MYRMIDON_EVALS_TIMEOUT_SEC";
 export const EVALS_LANGFUSE_FLAG_ENV = "MYRMIDON_EVALS_LANGFUSE";
-// myrmidon(OPE-4150 EVALS-JUDGE-FAMILY): ordered judge fallback list.
+// myrmidon(1.6.3 EVALS-JUDGE-FAMILY): ordered judge fallback list.
 export const EVALS_JUDGE_PRIORITY_MODELS_ENV = "MYRMIDON_EVALS_JUDGE_PRIORITY_MODELS";
 
 /**
@@ -78,7 +78,7 @@ export const EVALS_JUDGE_PRIORITY_MODELS_ENV = "MYRMIDON_EVALS_JUDGE_PRIORITY_MO
 export const DEFAULT_EVALS_MODEL = "qwen-plus-free";
 
 /**
- * myrmidon(OPE-4150 EVALS-JUDGE-FAMILY): default judge priority list — the
+ * myrmidon(1.6.3 EVALS-JUDGE-FAMILY): default judge priority list — the
  * head model first, then sensible free DashScope fallbacks. Read on every
  * run, so a change takes effect on the next evaluation without a restart.
  */
@@ -89,7 +89,7 @@ export const DEFAULT_EVALS_JUDGE_PRIORITY_MODELS = [
 ];
 
 /**
- * myrmidon(OPE-4150 EVALS-JUDGE-FAMILY): parse the comma-separated
+ * myrmidon(1.6.3 EVALS-JUDGE-FAMILY): parse the comma-separated
  * MYRMIDON_EVALS_JUDGE_PRIORITY_MODELS value. Invalid input (empty after
  * trimming, no entries) falls back to the default list. Pure.
  */
@@ -111,7 +111,7 @@ export interface EvalsSettings {
   timeoutMs: number;
   /** Langfuse score export flag; scoring is written locally regardless. */
   langfuseExport: boolean;
-  /** myrmidon(OPE-4150 EVALS-JUDGE-FAMILY): ordered judge model fallback list. */
+  /** myrmidon(1.6.3 EVALS-JUDGE-FAMILY): ordered judge model fallback list. */
   judgeModels: string[];
 }
 
