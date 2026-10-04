@@ -2054,10 +2054,17 @@
       "breakpoints": true
     },
     {
-      "idx": 296,
+      "idx": 297,
       "version": "7",
       "when": 1791000000000,
-      "tag": "0297_steady_plugin_entitlements",
+      "tag": "0297_model_providers_store",
+      "breakpoints": true
+    },
+    {
+      "idx": 298,
+      "version": "7",
+      "when": 1791000001000,
+      "tag": "0298_steady_plugin_entitlements",
       "breakpoints": true
     }
   ]

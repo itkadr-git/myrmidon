@@ -1,22 +1,23 @@
-import { pgTable, text, timestamp } from 'drizzle-orm/pg-core';
-import { plugins } from './plugins';
-import { sql } from 'drizzle-orm';
+import { index, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { plugins } from "./plugins.js";
 
-export const pluginEntitlements = pgTable('plugin_entitlements', {
-  id: text('id').primaryKey().default(sql`(gen_random_uuid())`),
-  pluginId: text('plugin_id')
-    .notNull()
-    .references(() => plugins.id, { onDelete: 'cascade' }),
-  entitlementKey: text('entitlement_key').notNull(), // Hashed storage of the entitlement key
-  publicKey: text('public_key').notNull(), // Public key for signature verification
-  instanceId: text('instance_id').notNull(), // Instance this entitlement is valid for
-  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
-  createdAt: timestamp('created_at', { withTimezone: true })
-    .notNull()
-    .default(sql`now()`),
-  updatedAt: timestamp('updated_at', { withTimezone: true })
-    .notNull()
-    .default(sql`now()`),
-});
-
-// Indexes will be created via raw SQL in the migration since Drizzle doesn't support all index types
+export const pluginEntitlements = pgTable(
+  "plugin_entitlements",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    pluginId: uuid("plugin_id")
+      .notNull()
+      .references(() => plugins.id, { onDelete: "cascade" }),
+    entitlementKey: text("entitlement_key").notNull(),
+    publicKey: text("public_key").notNull(),
+    instanceId: text("instance_id").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    pluginIdx: index("idx_plugin_entitlements_plugin_id").on(table.pluginId),
+    instanceIdx: index("idx_plugin_entitlements_instance_id").on(table.instanceId),
+    expiresIdx: index("idx_plugin_entitlements_expires_at").on(table.expiresAt),
+  }),
+);

@@ -81,6 +81,17 @@ func TestParseAcceptsMountSources(t *testing.T) {
 	}
 }
 
+func TestParseAcceptsPackageCacheRoot(t *testing.T) {
+	s := replace(t, goodJSON, `"network"`, `"packageCacheRoot": "/srv/package-cache", "network"`)
+	if got := mustParse(t, s).PackageCacheRoot; got != "/srv/package-cache" {
+		t.Fatalf("packageCacheRoot: %q", got)
+	}
+	// Absent means "no cache mount is allowed".
+	if got := mustParse(t, goodJSON).PackageCacheRoot; got != "" {
+		t.Fatalf("a config without packageCacheRoot must allow no cache mount, got %q", got)
+	}
+}
+
 func TestParseUIDMode(t *testing.T) {
 	s := replace(t, goodJSON, `"argv": ["node", "server.js"]`, `"argv": ["node"], "mode": "uid"`)
 	s = replace(t, s, "/srv/myrmidon-bots", "/tmp/ci-bots")
@@ -198,6 +209,24 @@ func TestParseRefuses(t *testing.T) {
 			return replace(t, goodJSON, `"network"`, `"mountSources": ["/srv/shared", "/srv/shared"], "network"`)
 		}},
 		{"mount source is not a string", func(t *testing.T) string { return replace(t, goodJSON, `"network"`, `"mountSources": [42], "network"`) }},
+		{"relative packageCacheRoot", func(t *testing.T) string {
+			return replace(t, goodJSON, `"network"`, `"packageCacheRoot": "srv/cache", "network"`)
+		}},
+		{"packageCacheRoot with ..", func(t *testing.T) string {
+			return replace(t, goodJSON, `"network"`, `"packageCacheRoot": "/srv/../etc", "network"`)
+		}},
+		{"packageCacheRoot with a trailing slash", func(t *testing.T) string {
+			return replace(t, goodJSON, `"network"`, `"packageCacheRoot": "/srv/cache/", "network"`)
+		}},
+		{"packageCacheRoot is the root", func(t *testing.T) string {
+			return replace(t, goodJSON, `"network"`, `"packageCacheRoot": "/", "network"`)
+		}},
+		{"packageCacheRoot inside volumeRoot", func(t *testing.T) string {
+			return replace(t, goodJSON, `"network"`, `"packageCacheRoot": "/srv/myrmidon-bots/cache", "network"`)
+		}},
+		{"packageCacheRoot is volumeRoot", func(t *testing.T) string {
+			return replace(t, goodJSON, `"network"`, `"packageCacheRoot": "/srv/myrmidon-bots", "network"`)
+		}},
 		{"network with a slash", func(t *testing.T) string { return replace(t, goodJSON, `bots-net`, `bots/net`) }},
 		{"empty network", func(t *testing.T) string { return replace(t, goodJSON, `"bots-net"`, `""`) }},
 		{"empty images", func(t *testing.T) string {
