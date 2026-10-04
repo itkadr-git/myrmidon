@@ -10,6 +10,30 @@ version file to edit. Base Paperclip version is in the image label
 
 ## Unreleased
 
+### A board unblock lifts a settled replay hold; a parked wake is not "covering" (HOLD-READY)
+
+- A task with a closed recovery action whose `evidence.automaticRecovery.replay`
+  reads `"blocked"` stayed stuck for good: the wake admission parked every
+  automatic wake of it (`deferred_issue_execution`, `executionWait`
+  `process_identity_missing`), idle pickup and the swarm sweep then counted that
+  parked wake as "already covering" the task and skipped it, and a manual
+  `POST /api/agents/:id/wakeup` without `issueId` answered 409 "no ready task".
+  Moving the task from `blocked` back to `todo` on the board did not help: the
+  status-change and comment wakes of that PATCH are not explicit wakes and were
+  parked as well. Agents sat idle with a full `todo` queue.
+- Now a board person (not an agent's run) who moves a task out of `blocked`
+  (to `todo`/`in_progress`) or reassigns a workable task clears its settled
+  replay holds in the same transaction, the same operator resolve as
+  `recovery-actions/resolve` (activity `issue.execution_recovery_replay_cleared`).
+  After commit one wake of the assignee (`execution_hold_cleared`) re-plans the
+  wakes parked on the hold through the ordinary admission. Active/escalated
+  recovery actions are not touched.
+- A deferred wake parked on an execution hold no longer counts as covering the
+  task in idle pickup, the manual-wake task binding or the swarm sweep, and the
+  ready-task prefilters of idle pickup and the swarm queues skip a task that is
+  really held (the same predicate the admission reads), so a held task is not
+  reported as ready. No settings change.
+
 ### Gateway spend attributed through per-bot secret references (1.6.2 hotfix, M2-A)
 
 - The gateway cost sweep wrote no rows: every collected spend row was counted as
