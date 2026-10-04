@@ -22,8 +22,11 @@ import {
 } from "./domain.js";
 
 export const FORAGING_ENABLED_ENV = "MYRMIDON_FORAGING_ENABLED";
-export { FORAGING_BUDGET_CENTS_ENV, FORAGING_INTERVAL_SEC_ENV, FORAGING_KEY_SECRET_ENV };
+export const FORAGING_BUDGET_CENTS_ENV = "MYRMIDON_FORAGING_BUDGET_CENTS";
+export const FORAGING_INTERVAL_SEC_ENV = "MYRMIDON_FORAGING_INTERVAL_SEC";
+export const FORAGING_KEY_SECRET_ENV = "MYRMIDON_FORAGING_KEY_SECRET";
 export const FORAGING_MIN_HOST_INTERVAL_SEC_ENV = "MYRMIDON_FORAGING_MIN_HOST_INTERVAL_SEC";
+export const FORAGING_IDLE_GATE_ENABLED_ENV = "MYRMIDON_FORAGING_IDLE_GATE_ENABLED";
 
 const MIN_INTERVAL_SEC = 60;
 const MAX_INTERVAL_SEC = 86_400;
@@ -40,6 +43,8 @@ export interface ForagingSettings {
   keySecret: string | null;
   /** The smallest pause between two reads of the same host, in milliseconds. */
   minHostIntervalMs: number;
+  /** Whether foraging should only occur when there's no work in the role's queue and an idle agent is available */
+  idleGateEnabled: boolean;
 }
 
 function readInt(raw: string | undefined, fallback: number, min: number, max: number): number {
@@ -78,11 +83,13 @@ export function readForagingSettings(env: NodeJS.ProcessEnv = process.env): Fora
     MAX_INTERVAL_SEC,
   );
   const keySecret = env[FORAGING_KEY_SECRET_ENV]?.trim() || null;
+  const idleGateEnabled = env[FORAGING_IDLE_GATE_ENABLED_ENV] !== "0"; // enabled by default unless explicitly set to "0"
   return {
     enabled,
     intervalMs: intervalSec * 1000,
     budget: { maxCostCents, enabled: budgetEnabled },
     keySecret,
     minHostIntervalMs: minHostIntervalSec * 1000,
+    idleGateEnabled,
   };
 }

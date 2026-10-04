@@ -143,7 +143,8 @@ describe("myrmidon(1.6-FORAGE) sweep pass", () => {
       store,
       reader: fakeReader({ "https://example.com/a": "one\ntwo\n" }),
       candidatePort: EMPTY_PORT,
-      settings: { budget: { maxCostCents: 0, enabled: false } },
+      settings: { budget: { maxCostCents: 0, enabled: false }, idleGateEnabled: false },
+      db: {} as any,
     });
     const result = await service.runPass("company-a");
     expect(result.sourcesRead).toBe(1);
@@ -159,7 +160,8 @@ describe("myrmidon(1.6-FORAGE) sweep pass", () => {
       store,
       reader: fakeReader({ "https://example.com/feed": "one\ntwo\nthree\n" }),
       candidatePort: EMPTY_PORT,
-      settings: { budget: { maxCostCents: 0, enabled: false } },
+      settings: { budget: { maxCostCents: 0, enabled: false }, idleGateEnabled: false },
+      db: {} as any,
     });
     const result = await service.runPass("company-a");
     expect(result.findings).toBe(1);
@@ -177,7 +179,8 @@ describe("myrmidon(1.6-FORAGE) sweep pass", () => {
       store,
       reader: fakeReader({ "https://example.com/feed": "one\ntwo" }),
       candidatePort: EMPTY_PORT,
-      settings: { budget: { maxCostCents: 0, enabled: false } },
+      settings: { budget: { maxCostCents: 0, enabled: false }, idleGateEnabled: false },
+      db: {} as any,
     });
     const result = await service.runPass("company-a");
     expect(result.findings).toBe(0);
@@ -196,7 +199,8 @@ describe("myrmidon(1.6-FORAGE) sweep pass", () => {
       store,
       reader: fakeReader({ "https://example.com/feed": "one\ntwo" }),
       candidatePort: port,
-      settings: { budget: { maxCostCents: 0, enabled: false } },
+      settings: { budget: { maxCostCents: 0, enabled: false }, idleGateEnabled: false },
+      db: {} as any,
     });
     const result = await service.runPass("company-a");
     expect(createFindingCandidate).toHaveBeenCalledTimes(1);
@@ -221,7 +225,8 @@ describe("myrmidon(1.6-FORAGE) sweep pass", () => {
       store,
       reader: fakeReader({ "https://example.com/feed": "one\ntwo" }),
       candidatePort: port,
-      settings: { budget: { maxCostCents: 0, enabled: false } },
+      settings: { budget: { maxCostCents: 0, enabled: false }, idleGateEnabled: false },
+      db: {} as any,
     });
     await service.runPass("company-a");
     expect(store.findings[0].status).toBe("rejected");
@@ -239,7 +244,8 @@ describe("myrmidon(1.6-FORAGE) sweep pass", () => {
       store,
       reader: { read },
       candidatePort: EMPTY_PORT,
-      settings: { budget: { maxCostCents: 1, enabled: true } },
+      settings: { budget: { maxCostCents: 1, enabled: true }, idleGateEnabled: false },
+      db: {} as any,
     });
     const result = await service.runPass("company-a");
     expect(result.stoppedByBudget).toBe(true);
@@ -262,7 +268,8 @@ describe("myrmidon(1.6-FORAGE) sweep pass", () => {
         },
       },
       candidatePort: EMPTY_PORT,
-      settings: { budget: { maxCostCents: 0, enabled: false } },
+      settings: { budget: { maxCostCents: 0, enabled: false }, idleGateEnabled: false },
+      db: {} as any,
     });
     const result = await service.runPass("company-a");
     expect(result.errors).toBe(1);
@@ -278,7 +285,8 @@ describe("myrmidon(1.6-FORAGE) sweep pass", () => {
       store,
       reader: fakeReader({ "https://example.com/off": "x" }),
       candidatePort: EMPTY_PORT,
-      settings: { budget: { maxCostCents: 0, enabled: false } },
+      settings: { budget: { maxCostCents: 0, enabled: false }, idleGateEnabled: false },
+      db: {} as any,
     });
     const result = await service.runPass("company-a");
     expect(result.sourcesRead).toBe(0);
@@ -290,10 +298,180 @@ describe("myrmidon(1.6-FORAGE) sweep pass", () => {
       store,
       reader: fakeReader({}),
       candidatePort: EMPTY_PORT,
-      settings: { budget: { maxCostCents: 50, enabled: true } },
+      settings: { budget: { maxCostCents: 50, enabled: true }, idleGateEnabled: false },
+      db: {} as any,
     });
     const state = await service.budgetState("company-a");
     expect(state.maxCostCents).toBe(50);
     expect(state.spentCents).toBeLessThanOrEqual(50);
+  });
+
+  it("should run foraging pass when idle gate is disabled", async () => {
+    const store = createMemoryStore([{ id: "s1", role: "engineer", url: "https://example.com/a" }]);
+    const service = createForagingService({
+      store,
+      reader: fakeReader({ "https://example.com/a": "one\ntwo\n" }),
+      candidatePort: EMPTY_PORT,
+      settings: { budget: { maxCostCents: 0, enabled: false }, idleGateEnabled: false },
+      db: {
+        select: () => ({
+          from: () => ({
+            leftJoin: () => ({
+              where: () => ({
+                limit: () => Promise.resolve([]), // No queue items
+              }),
+            }),
+          }),
+        }),
+      } as any,
+    });
+    const result = await service.runPass("company-a");
+    expect(result.sourcesRead).toBe(1); // Should run normally when idle gate is disabled
+    expect(result.skippedReason).toBeUndefined();
+  });
+
+  it("should skip foraging when queue is not empty and idle gate is enabled", async () => {
+    const store = createMemoryStore([{ id: "s1", role: "engineer", url: "https://example.com/a" }]);
+    const service = createForagingService({
+      store,
+      reader: fakeReader({ "https://example.com/a": "one\ntwo\n" }),
+      candidatePort: EMPTY_PORT,
+      settings: { budget: { maxCostCents: 0, enabled: false }, idleGateEnabled: true },
+      db: {
+        select: (selection: any) => {
+          // Check if we're selecting from agents table (for idle agents)
+          if (selection && Object.keys(selection).includes('id') && typeof selection.id !== 'undefined') {
+            return {
+              from: (table: any) => {
+                if (table && table._.brand === 'agents') {
+                  return {
+                    where: () => ({
+                      limit: (limit: number) => Promise.resolve([]), // No idle agents
+                    }),
+                  };
+                } else {
+                  return {
+                    leftJoin: () => ({
+                      where: () => ({
+                        limit: (limit: number) => Promise.resolve([{ issueId: "issue-1" }]), // Queue has items
+                      }),
+                    }),
+                  };
+                }
+              },
+            };
+          } else {
+            return {
+              from: () => ({
+                leftJoin: () => ({
+                  where: () => ({
+                    limit: (limit: number) => Promise.resolve([{ issueId: "issue-1" }]), // Queue has items
+                  }),
+                }),
+              }),
+            };
+          }
+        },
+      } as any,
+    });
+    const result = await service.runPass("company-a");
+    expect(result.skippedReason).toBe("queue_not_empty");
+  });
+
+  it("should skip foraging when no idle agent is available and idle gate is enabled", async () => {
+    const store = createMemoryStore([{ id: "s1", role: "engineer", url: "https://example.com/a" }]);
+    const service = createForagingService({
+      store,
+      reader: fakeReader({ "https://example.com/a": "one\ntwo\n" }),
+      candidatePort: EMPTY_PORT,
+      settings: { budget: { maxCostCents: 0, enabled: false }, idleGateEnabled: true },
+      db: {
+        select: (selection: any) => {
+          // Check if we're selecting from agents table (for idle agents)
+          if (selection && Object.keys(selection).includes('id') && typeof selection.id !== 'undefined') {
+            return {
+              from: (table: any) => {
+                if (table && table._.brand === 'agents') {
+                  return {
+                    where: () => ({
+                      limit: (limit: number) => Promise.resolve([]), // No idle agents
+                    }),
+                  };
+                } else {
+                  return {
+                    leftJoin: () => ({
+                      where: () => ({
+                        limit: (limit: number) => Promise.resolve([]), // No queue items
+                      }),
+                    }),
+                  };
+                }
+              },
+            };
+          } else {
+            return {
+              from: () => ({
+                leftJoin: () => ({
+                  where: () => ({
+                    limit: (limit: number) => Promise.resolve([]), // No queue items
+                  }),
+                }),
+              }),
+            };
+          }
+        },
+      } as any,
+    });
+    const result = await service.runPass("company-a");
+    expect(result.skippedReason).toBe("no_idle_agent");
+  });
+
+  it("should run foraging when queue is empty and idle agent is available", async () => {
+    const store = createMemoryStore([{ id: "s1", role: "engineer", url: "https://example.com/a" }]);
+    const service = createForagingService({
+      store,
+      reader: fakeReader({ "https://example.com/a": "one\ntwo\n" }),
+      candidatePort: EMPTY_PORT,
+      settings: { budget: { maxCostCents: 0, enabled: false }, idleGateEnabled: true },
+      db: {
+        select: (selection: any) => {
+          // Check if we're selecting from agents table (for idle agents)
+          if (selection && Object.keys(selection).includes('id') && typeof selection.id !== 'undefined') {
+            return {
+              from: (table: any) => {
+                if (table && table._.brand === 'agents') {
+                  return {
+                    where: () => ({
+                      limit: (limit: number) => Promise.resolve([{ id: "agent-1" }]), // Idle agent exists
+                    }),
+                  };
+                } else {
+                  return {
+                    leftJoin: () => ({
+                      where: () => ({
+                        limit: (limit: number) => Promise.resolve([]), // No queue items
+                      }),
+                    }),
+                  };
+                }
+              },
+            };
+          } else {
+            return {
+              from: () => ({
+                leftJoin: () => ({
+                  where: () => ({
+                    limit: (limit: number) => Promise.resolve([]), // No queue items
+                  }),
+                }),
+              }),
+            };
+          }
+        },
+      } as any,
+    });
+    const result = await service.runPass("company-a");
+    expect(result.skippedReason).toBeUndefined(); // Should not be skipped
+    expect(result.sourcesRead).toBe(1); // Should have processed sources
   });
 });

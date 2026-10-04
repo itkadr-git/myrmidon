@@ -19,6 +19,8 @@
 // and the pass continues with the next source. Nothing here throws at the pass
 // level, so a broken source never stops the sweep.
 
+import { and, eq, inArray, isNull, or } from "drizzle-orm";
+import { agents, issues, type Db } from "@paperclipai/db";
 import { logger } from "../../middleware/logger.js";
 import {
   buildSourceResult,
@@ -51,7 +53,9 @@ export interface ForagingServiceDeps {
   candidatePort: ForagingCandidatePort;
   settings: {
     budget: { maxCostCents: number; enabled: boolean };
+    idleGateEnabled: boolean;
   };
+  db: Db;
   now?: () => Date;
   log?: Pick<typeof logger, "info" | "warn" | "error">;
 }
@@ -97,6 +101,99 @@ export function createForagingService(deps: ForagingServiceDeps): ForagingServic
     },
 
     async runPass(companyId) {
+      // Check if idle gate is enabled
+      if (deps.settings.idleGateEnabled) {
+        // Get all enabled sources to check their roles
+        let sources: ForagingSourceRef[];
+        try {
+          sources = await store.enabledSources(companyId);
+        } catch (err) {
+          log.error({ err, companyId }, "foraging: could not list sources");
+          return emptyResult();
+        }
+
+        // Group sources by role to check each role separately
+        const sourcesByRole = new Map<string, ForagingSourceRef[]>();
+        for (const source of sources) {
+          if (!sourcesByRole.has(source.role)) {
+            sourcesByRole.set(source.role, []);
+          }
+          sourcesByRole.get(source.role)!.push(source);
+        }
+
+        // Check each role to see if it has work in queue or no idle agents
+        for (const [role, roleSources] of sourcesByRole.entries()) {
+          // Check if the role has any tasks in queue
+          const roleQueue = await deps.db
+            .select({ issueId: issues.id })
+            .from(issues)
+            .leftJoin(agents, eq(agents.id, issues.assigneeAgentId))
+            .where(
+              and(
+                eq(issues.companyId, companyId),
+                isNull(issues.assigneeUserId),
+                isNull(issues.hiddenAt),
+                isNull(issues.conversationAgentId),
+                inArray(issues.status, ["todo", "in_progress"]),
+                or(isNull(issues.assigneeAgentId), eq(agents.role, role))
+              )
+            )
+            .limit(1);
+
+          // Check if there are any idle agents for this role
+          const idleAgents = await deps.db
+            .select({ id: agents.id })
+            .from(agents)
+            .where(
+              and(
+                eq(agents.companyId, companyId),
+                eq(agents.role, role),
+                eq(agents.status, "idle")
+              )
+            )
+            .limit(1);
+
+          // If there are tasks in queue but no idle agents, skip foraging for this role
+          if (roleQueue.length > 0 && idleAgents.length === 0) {
+            log.info({ 
+              companyId, 
+              role,
+              reason: "queue_not_empty_and_no_idle_agent" 
+            }, "foraging: skipping foraging due to work in queue and no idle agents");
+
+            const result = emptyResult();
+            result.skippedReason = "queue_not_empty";
+            return result;
+          }
+
+          // If there are tasks in queue, skip foraging for this role
+          if (roleQueue.length > 0) {
+            log.info({ 
+              companyId, 
+              role,
+              reason: "queue_not_empty" 
+            }, "foraging: skipping foraging due to work in queue");
+
+            const result = emptyResult();
+            result.skippedReason = "queue_not_empty";
+            return result;
+          }
+
+          // If there are no idle agents for this role, skip foraging
+          if (idleAgents.length === 0) {
+            log.info({ 
+              companyId, 
+              role,
+              reason: "no_idle_agent" 
+            }, "foraging: skipping foraging due to no idle agents");
+
+            const result = emptyResult();
+            result.skippedReason = "no_idle_agent";
+            return result;
+          }
+        }
+      }
+
       const result = emptyResult();
       const startedAt = now();
       let sources: ForagingSourceRef[];
@@ -213,6 +310,7 @@ export function createForagingService(deps: ForagingServiceDeps): ForagingServic
           spentCents: result.spentCents,
           stoppedByBudget: result.stoppedByBudget,
           errors: result.errors,
+          skippedReason: result.skippedReason,
         },
         "foraging pass done",
       );

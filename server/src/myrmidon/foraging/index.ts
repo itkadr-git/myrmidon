@@ -71,7 +71,8 @@ export function foragingWiring(db: Db, env: NodeJS.ProcessEnv = process.env): Fo
       },
     }),
     candidatePort: foragingCandidatePort(),
-    settings: { budget: settings.budget },
+    settings: { budget: settings.budget, idleGateEnabled: settings.idleGateEnabled },
+    db,
     log: logger,
   });
   return { store, service, env };
