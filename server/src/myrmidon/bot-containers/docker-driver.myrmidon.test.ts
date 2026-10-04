@@ -449,6 +449,44 @@ describe("buildHelperContainerRequestBody", () => {
   });
 });
 
+describe("buildApplyScript", () => {
+  const script = buildApplyScript(NONCE);
+  const lines = script.split("\n");
+  const indexOf = (needle: string) => lines.findIndex((line) => line.includes(needle));
+
+  // myrmidon(4329-hermes-config-backup-secrets): the vendor gateway copies
+  // config.yaml into hermes/backups/config on every successful load and offers
+  // no setting that disables it, so the apply script must wipe that directory —
+  // both to clean the 260 existing leak copies on the first profile rebuild
+  // (migration) and to keep wiping whatever the gateway re-creates afterwards.
+  it("deletes hermes/backups (step 4.5), tolerant of rm failure", () => {
+    const backups = indexOf("4.5");
+    const rmBackups = indexOf('rm -rf -- "$backups"');
+    expect(backups).toBeGreaterThan(-1);
+    expect(rmBackups).toBeGreaterThan(-1);
+    expect(rmBackups).toBeGreaterThan(backups);
+    // The cleanup targets only the hermes mount's backups dir, never another volume.
+    expect(lines[rmBackups]).toContain("|| true"); // best effort: rm failure must not fail the apply
+    const assignment = lines.find((line) => line.startsWith("backups="));
+    expect(assignment).toBeDefined();
+    expect(assignment).toBe('backups="data/hermes/backups"');
+  });
+
+  it("runs the backups cleanup after the staged files are moved and before the marker is finalized", () => {
+    const stagedMoves = indexOf("# 3. every other staged file");
+    const removals = indexOf("# 4. files the previous apply");
+    const marker = indexOf("# 5. the applied-state marker");
+    const rmBackups = indexOf('rm -rf -- "$backups"');
+    expect(stagedMoves).toBeGreaterThan(-1);
+    expect(removals).toBeGreaterThan(stagedMoves);
+    expect(rmBackups).toBeGreaterThan(removals);
+    expect(marker).toBeGreaterThan(rmBackups);
+    // The marker move itself stays strictly last (after the cleanup).
+    const markerMove = indexOf("mv -f -T -- \"$applyDir/applied.json\"");
+    expect(markerMove).toBeGreaterThan(rmBackups);
+  });
+});
+
 describe("buildProfileArchives", () => {
   const archives = buildProfileArchives(testProfile({ skills: [] }), { nonce: NONCE, removals: ["workspace/OLD.md"] });
 
@@ -1179,6 +1217,29 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
     expect(daemon.requests.some((r) => r.path.includes("/exec"))).toBe(false);
     const status = await driver.status("agent-a");
     expect([status.state, status.restartHash]).toEqual(["stopped", "restart-2"]);
+  });
+
+  // myrmidon(4329-hermes-config-backup-secrets): the vendor gateway writes
+  // point-in-time copies of config.yaml (possibly with the resolved key) into
+  // hermes/backups/config. The apply script must wipe them on every profile
+  // rebuild — the first one after this change lands is the migration that
+  // removes the 260 existing copies — while leaving the bot's own state alone.
+  it("wipes hermes/backups on apply, and the bot's own files beside it alone", async () => {
+    await driver.create(spec());
+    await driver.writeProfile("agent-a", testProfile());
+    const backupsConfig = path.join(volumes.hermes, "backups", "config");
+    fs.mkdirSync(backupsConfig, { recursive: true });
+    fs.writeFileSync(path.join(backupsConfig, "config.yaml.good.20261004-120000"), "model:\n  api_key: leak\n");
+    fs.writeFileSync(path.join(backupsConfig, "config.yaml.pre-setup.20261004-110000"), "model:\n  api_key: leak\n");
+    fs.mkdirSync(path.join(volumes.hermes, "sessions"));
+    fs.writeFileSync(path.join(volumes.hermes, "sessions/s1.json"), "{}"); // the bot's own state
+
+    await driver.writeProfile("agent-a", testProfile({ restartHash: "restart-2" }));
+    expect(fs.existsSync(path.join(volumes.hermes, "backups"))).toBe(false);
+    expect(read(path.join(volumes.hermes, "config.yaml"))).toContain("example-model"); // new config in place
+    expect(read(path.join(volumes.hermes, "sessions/s1.json"))).toBe("{}");
+    expect((await driver.status("agent-a")).restartHash).toBe("restart-2"); // apply reported applied
+    expect(leftovers()).toEqual([]);
   });
 
   it("revokes a skill and a dropped file, and leaves the bot's own files alone", async () => {
