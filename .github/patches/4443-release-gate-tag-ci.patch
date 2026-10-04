@@ -1,0 +1,33 @@
+diff --git a/.github/workflows/myrmidon-ci.yml b/.github/workflows/myrmidon-ci.yml
+index 360d4c0da..8b5fb7dba 100644
+--- a/.github/workflows/myrmidon-ci.yml
++++ b/.github/workflows/myrmidon-ci.yml
+@@ -15,6 +15,14 @@ on:
+   pull_request:
+   push:
+     branches: [main]
++    # RELEASE-GATE (1.6.4): a release tag gets its own full-tier run on the
++    # tag itself, in its own concurrency group that is never cancelled by a
++    # main-branch push. Without it the publish gate depended on the commit's
++    # MAIN run, which the concurrency rule cancels the moment the next PR
++    # lands — the 1.6.3 publish fell over with "conclusion: cancelled" and
++    # needed a manual re-run (+30 min).
++    tags:
++      - "myr-v*.*.*"
+   workflow_dispatch:
+ 
+ permissions:
+@@ -22,9 +30,11 @@ permissions:
+ 
+ concurrency:
+   # Superseded runs are cancelled on PRs and on main alike; a cancelled run
+-  # reports no `CI result`, so it can never look green.
++  # reports no `CI result`, so it can never look green. Tag runs are the
++  # exception: they are the release evidence the publish gate waits for, so
++  # they get their own per-tag group and are never cancelled.
+   group: myrmidon-ci-${{ github.event.pull_request.number || github.ref }}
+-  cancel-in-progress: true
++  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+ 
+ env:
+   NPM_CONFIG_AUDIT: "false"

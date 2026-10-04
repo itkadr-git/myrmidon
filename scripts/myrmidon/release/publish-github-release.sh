@@ -17,10 +17,13 @@
 #      "Myrmidon image" (board) run for THIS tag (image/component runs are
 #      matched by head_branch == the tag — the same commit's main-branch
 #      runs build different image tags and must not satisfy the gate,
-#      RELEASE-PUBLISH-WAIT). "Myrmidon CI" is commit-level validation and
-#      myrmidon-ci.yml has no tag trigger, so its gate also accepts a green
-#      main-branch run of the SAME commit; a failed run (tag or main) exits 1
-#      BEFORE anything is published. Dockergate and
+#      RELEASE-PUBLISH-WAIT). Since 1.6.4 (RELEASE-GATE) myrmidon-ci.yml
+#      runs on the tag itself (own per-tag concurrency group, never
+#      cancelled): the CI gate prefers the tag's own completed run and
+#      falls back to a green same-commit main run only while no completed
+#      tag run exists — a cancelled main run (the 1.6.3 incident) no
+#      longer blocks the publish once the tag's own run is green. A
+#      failed run (tag or main) exits 1 BEFORE anything is published. Dockergate and
 #      fleetd are paths-filtered workflows, so their tag run may
 #      legitimately be absent — but their digests must exist in the registry
 #      (step 3) or the publish is refused (fail-closed, the RELEASE-GATE
@@ -115,16 +118,34 @@ runs_of() {
     --jq "[.workflow_runs[]? | select(.path == \"$workflow_file\" and $branches)]" 2>/dev/null || true
 }
 
+# RELEASE-GATE (1.6.4): which branches count as evidence for one workflow.
+# Since 1.6.4 myrmidon-ci.yml triggers on the release tag itself (own
+# per-tag concurrency group, never cancelled), so the CI gate prefers the
+# tag's own run: once a completed tag run exists, only tag runs count and
+# the main-branch run of the same commit (which a main concurrency rule
+# may have cancelled — the 1.6.3 publish died on exactly that) is ignored.
+# The main run remains the fallback until the tag's run completes, so a
+# tag pushed before this change, or one whose CI run is still building,
+# still gates on the green same-commit main run.
+# Image/component workflows stay tag-scoped only (RELEASE-PUBLISH-WAIT).
+ci_gate_branches_expr() {
+  local workflow_file="$1"
+  if [[ "$workflow_file" != ".github/workflows/myrmidon-ci.yml" ]]; then
+    branch_match_expr "$tag"
+    return
+  fi
+  local tag_runs
+  tag_runs="$(runs_of "$workflow_file" "$(branch_match_expr "$tag")")"
+  if jq -e '[.[] | select(.status == "completed")] | length > 0' <<<"$tag_runs" >/dev/null 2>&1; then
+    branch_match_expr "$tag"
+  else
+    branch_match_expr "$tag" main
+  fi
+}
+
 run_verdict() {
   local workflow_file="$1" branches verdict
-  branches="$(branch_match_expr "$tag" main)"
-  # RELEASE-PUBLISH-WAIT follow-up: CI is commit-level validation — the
-  # release commit reaches main before the tag is pushed, and myrmidon-ci.yml
-  # has no tag trigger, so the tag's own CI run never exists. A green CI run
-  # of the same commit on main is the evidence the gate wants (same sha).
-  if [[ "$workflow_file" != ".github/workflows/myrmidon-ci.yml" ]]; then
-    branches="$(branch_match_expr "$tag")"
-  fi
+  branches="$(ci_gate_branches_expr "$workflow_file")"
   verdict="$(runs_of "$workflow_file" "$branches" \
     | jq "[.[] | select(.status == \"completed\")]
           | if length == 0 then \"missing\"
@@ -138,10 +159,7 @@ run_verdict() {
 # Status of the newest run (any state) of one workflow for THIS tag.
 run_status() {
   local workflow_file="$1" branches status
-  branches="$(branch_match_expr "$tag" main)"
-  if [[ "$workflow_file" != ".github/workflows/myrmidon-ci.yml" ]]; then
-    branches="$(branch_match_expr "$tag")"
-  fi
+  branches="$(ci_gate_branches_expr "$workflow_file")"
   status="$(runs_of "$workflow_file" "$branches" \
     | jq ".[0].status // \"missing\"" 2>/dev/null)" \
     || status="missing"
@@ -158,11 +176,28 @@ POLL_MAX="${MYRMIDON_RELEASE_POLL_MAX:-120}"
 #          refuses the publish.
 #   soft — no completed run is acceptable (paths-filtered); a failed one is
 #          not (it means this release's component build broke).
+# RELEASE-GATE (1.6.4): for Myrmidon CI a "cancelled" verdict from the
+# main-branch run of the same commit is not final while the tag's own run
+# (per-tag concurrency group, never cancelled since 1.6.4) exists or may
+# still appear — the gate waits for it instead of refusing the publish
+# (the 1.6.3 incident died on exactly this).
 wait_for() {
   local workflow_file="$1" need="$2" label="$3" verdict status polled=0
   while ((1)); do
     verdict="$(run_verdict "$workflow_file")"
     if [[ "$verdict" != "missing" ]]; then
+      if [[ "$verdict" == "cancelled" && "$workflow_file" == ".github/workflows/myrmidon-ci.yml" ]]; then
+        # A cancelled run is never a green verdict; but when the tag's own
+        # run exists (any state) or has not appeared yet, keep waiting for
+        # it instead of failing on the superseded main run.
+        status="$(run_status "$workflow_file")"
+        if [[ "$status" != "missing" ]]; then
+          ((polled >= POLL_MAX)) && die "timed out waiting for $label runs on $sha after $polled polls (last conclusion: cancelled)"
+          sleep "$POLL_SECONDS"
+          polled=$((polled+1))
+          continue
+        fi
+      fi
       break
     fi
     status="$(run_status "$workflow_file")"

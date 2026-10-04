@@ -325,7 +325,7 @@ describe("publish-github-release.sh: the CI gate", () => {
     const sb = sandbox({ runs: before });
     fs.writeFileSync(path.join(sb.dir, "runs-after.json"),
       JSON.stringify({ total_count: after.length, workflow_runs: after }));
-    const { code, out } = runScript(sb, "myr-v1.6.0", { extraEnv: { GH_RUNS_SWITCH_AFTER: "2" } });
+    const { code, out } = runScript(sb, "myr-v1.6.0", { extraEnv: { GH_RUNS_SWITCH_AFTER: "3" } });
     assert.equal(code, 0, out);
     // the wait actually happened: the gate polled before the switch
     assert.match(out, /gate: Myrmidon image \(board\) success/);
@@ -348,14 +348,14 @@ describe("publish-github-release.sh: the CI gate", () => {
     assert.equal(mutations(sb), "");
   });
 
-  it("CI gate accepts the same-commit main run (myrmidon-ci.yml has no tag trigger), but the image gate still refuses only-main runs", () => {
-    // Only main-branch runs exist. myrmidon-ci.yml triggers on pull_request /
-    // push to main / workflow_dispatch — NOT on tags, so a release tag never
-    // has a CI run of its own; CI is commit-level validation and a green
-    // main run of the SAME commit is the evidence the gate wants
-    // (RELEASE-PUBLISH-WAIT follow-up). The image workflows DO run on tags,
-    // so their gates stay tag-scoped: a green main image run must NOT
-    // satisfy the board-image gate.
+  it("CI gate accepts the same-commit main run while the tag's own CI run has not completed (pre-1.6.4 tags), but the image gate still refuses only-main runs", () => {
+    // Only main-branch runs exist. Tags pushed before 1.6.4 have no CI run
+    // of their own (myrmidon-ci.yml gained its tag trigger in 1.6.4), and
+    // right after the tag push the tag's own run is still queued — in both
+    // cases CI is commit-level validation and a green main run of the SAME
+    // commit is the fallback evidence the gate wants. The image workflows
+    // have always run on tags, so their gates stay tag-scoped: a green main
+    // image run must NOT satisfy the board-image gate.
     const sb = sandbox({ runs: [
       run(COMMIT, ".github/workflows/myrmidon-ci.yml", "success", "completed", "main"),
       run(COMMIT, ".github/workflows/myrmidon-image.yml", "success", "completed", "main"),
@@ -371,6 +371,64 @@ describe("publish-github-release.sh: the CI gate", () => {
   it("CI gate refuses when the same-commit CI run failed on main (fail-closed stays)", () => {
     const sb = sandbox({ runs: [
       run(COMMIT, ".github/workflows/myrmidon-ci.yml", "failure", "completed", "main"),
+      run(COMMIT, ".github/workflows/myrmidon-image.yml", "success"),
+    ] });
+    const { code, out } = runScript(sb, "myr-v1.6.0");
+    assert.notEqual(code, 0, out);
+    assert.match(out, /Myrmidon CI did not succeed/);
+    assert.match(out, /NOT publishing/);
+    assert.equal(mutations(sb), "");
+  });
+
+  // ---- RELEASE-GATE (1.6.4): the tag's own CI run outranks the main run ----
+
+  it("publishes on the tag's own green CI run even when the same commit's main CI run was cancelled (the 1.6.3 incident)", () => {
+    // 05.10: tag myr-v1.6.3 on a commit whose main CI run was cancelled by
+    // the concurrency rule when the next PR landed; the publish died with
+    // "conclusion: cancelled". Since 1.6.4 the tag gets its own CI run
+    // (per-tag concurrency group, never cancelled); the gate must take the
+    // completed tag run as the verdict and ignore the cancelled main run.
+    const sb = sandbox({ runs: [
+      run(COMMIT, ".github/workflows/myrmidon-ci.yml", "cancelled", "completed", "main"),
+      run(COMMIT, ".github/workflows/myrmidon-ci.yml", "success"),
+      run(COMMIT, ".github/workflows/myrmidon-image.yml", "success"),
+    ] });
+    const { code, out } = runScript(sb, "myr-v1.6.0");
+    assert.equal(code, 0, out);
+    assert.match(out, /gate: Myrmidon CI success for/);
+    assert.match(mutations(sb), /create tag=myr-v1\.6\.0/);
+  });
+
+  it("waits for the tag's own in-progress CI run instead of falling for the cancelled main run", () => {
+    // Same incident, caught mid-flight: the tag's CI run is still building
+    // and the cancelled main run already sits in the API. The gate must
+    // keep waiting (the cancelled main run is no verdict), then publish
+    // once the tag's own run completes green.
+    const before = [
+      run(COMMIT, ".github/workflows/myrmidon-ci.yml", "cancelled", "completed", "main"),
+      run(COMMIT, ".github/workflows/myrmidon-ci.yml", null, "in_progress"),
+      run(COMMIT, ".github/workflows/myrmidon-image.yml", "success"),
+    ];
+    const after = [
+      run(COMMIT, ".github/workflows/myrmidon-ci.yml", "cancelled", "completed", "main"),
+      run(COMMIT, ".github/workflows/myrmidon-ci.yml", "success"),
+      run(COMMIT, ".github/workflows/myrmidon-image.yml", "success"),
+    ];
+    const sb = sandbox({ runs: before });
+    fs.writeFileSync(path.join(sb.dir, "runs-after.json"),
+      JSON.stringify({ total_count: after.length, workflow_runs: after }));
+    const { code, out } = runScript(sb, "myr-v1.6.0", { extraEnv: { GH_RUNS_SWITCH_AFTER: "7" } });
+    assert.equal(code, 0, out);
+    assert.match(out, /gate: Myrmidon CI success for/);
+    assert.match(mutations(sb), /create tag=myr-v1\.6\.0/);
+  });
+
+  it("a failed tag CI run refuses the publish even when the main run of the same commit is green", () => {
+    // Fail-closed in the other direction: the completed tag run is the
+    // evidence, so its failure must not be masked by the green main run.
+    const sb = sandbox({ runs: [
+      run(COMMIT, ".github/workflows/myrmidon-ci.yml", "success", "completed", "main"),
+      run(COMMIT, ".github/workflows/myrmidon-ci.yml", "failure"),
       run(COMMIT, ".github/workflows/myrmidon-image.yml", "success"),
     ] });
     const { code, out } = runScript(sb, "myr-v1.6.0");
@@ -496,8 +554,28 @@ describe("release-body.mjs: body construction", () => {
   });
 });
 
-describe("release-body.mjs: digest resolution (injected fetch)", () => {
+// RELEASE-GATE (1.6.4): the release tag gets its own CI run that no main
+// push can cancel. Guard the workflow text: the tag trigger, the per-tag
+// concurrency group and the never-cancel rule are exactly what the publish
+// gate's tag-run preference relies on — a regression here silently sends
+// releases back to the 1.6.3 failure mode.
+describe("myrmidon-ci.yml: the release tag gets its own uncancellable CI run", () => {
+  const HERE = path.dirname(fileURLToPath(import.meta.url));
+  const WORKFLOW = path.join(HERE, "..", "..", "..", ".github", "workflows", "myrmidon-ci.yml");
+  const workflow = fs.readFileSync(WORKFLOW, "utf8");
 
+  it("triggers on myr-v* tags", () => {
+    assert.match(workflow, /tags:\s*\n\s+- "myr-v\*\.\*\.\*"/);
+  });
+
+  it("never cancels an in-progress run of a tag (own group per ref, cancel only outside tags)", () => {
+    assert.match(workflow, /group: myrmidon-ci-\$\{\{ github\.event\.pull_request\.number \|\| github\.ref \}\}/);
+    assert.match(workflow, /cancel-in-progress: \$\{\{ github\.ref_type != 'tag' \}\}/);
+    assert.doesNotMatch(workflow, /cancel-in-progress: true\s*$/m);
+  });
+});
+
+describe("release-body.mjs: digest resolution (injected fetch)", () => {
   const registryFetch = (digests) => async (url, init) => {
     if (url.startsWith("https://ghcr.io/token")) {
       return { ok: true, json: async () => ({ token: "anonymous" }) };
