@@ -48,7 +48,7 @@ describe("readBotContainerAgentConfig", () => {
     const result = readBotContainerAgentConfig("hermes_gateway", { container: VALID_CONTAINER_CONFIG });
     expect(result).toEqual({
       ok: true,
-      config: { image: "myrmidon-hermes:1.1.0", memoryMb: 1536, cpus: 1, pidsLimit: 256, extraMounts: [] },
+      config: { image: "myrmidon-hermes:1.1.0", memoryMb: 1536, cpus: 1, pidsLimit: 256, extraMounts: [], hasSharedMountAccess: false },
     });
   });
 
@@ -140,6 +140,7 @@ describe("readBotContainerAgentConfig: container.extraMounts", () => {
         cpus: 1,
         pidsLimit: 256,
         extraMounts: [{ source: "/srv/shared/sources", containerPath: "/srv/shared/sources", readOnly: true }],
+        hasSharedMountAccess: false,
       },
     });
   });
@@ -250,5 +251,24 @@ describe("classifyBotImageTracking (1.6.4-BOT-CONTAINER-CARD)", () => {
       category: "not_applicable",
       reason: "container.memoryMb must be a positive number",
     });
+describe("readBotContainerAgentConfig: shared mount access", () => {
+  function config() {
+    return { container: { ...VALID_CONTAINER_CONFIG } };
+  }
+  it("denies shared mount access by default (no instance settings)", () => {
+    const result = readBotContainerAgentConfig("hermes_gateway", config());
+    expect(result.ok && result.config.hasSharedMountAccess).toBe(false);
+  it("denies access when the instance settings disable the shared mount", () => {
+    const result = readBotContainerAgentConfig("hermes_gateway", config(), { enabled: false });
+    expect(result.ok && result.config.hasSharedMountAccess).toBe(false);
+  it("grants access to every bot when the allowlist is empty", () => {
+    const result = readBotContainerAgentConfig("hermes_gateway", config(), { enabled: true, allowedBots: [] });
+    expect(result.ok && result.config.hasSharedMountAccess).toBe(true);
+  it("grants access only to allowlisted bots (per-bot control)", () => {
+    const settings = { enabled: true, allowedBots: ["bot-a"] };
+    const allowed = readBotContainerAgentConfig("hermes_gateway", config(), settings, "bot-a");
+    expect(allowed.ok && allowed.config.hasSharedMountAccess).toBe(true);
+    const denied = readBotContainerAgentConfig("hermes_gateway", config(), settings, "bot-b");
+    expect(denied.ok && denied.config.hasSharedMountAccess).toBe(false);
   });
 });
