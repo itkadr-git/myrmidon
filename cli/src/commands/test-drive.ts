@@ -171,7 +171,7 @@ export async function prepareTestDriveEnvironment(
   const preservedCredential = sourceEnvName ? process.env[sourceEnvName] : undefined;
 
   for (const key of Object.keys(process.env)) {
-    if (key.startsWith("PAPERCLIP_")) {
+    if (key.startsWith("PAPERCLIP_") || key.startsWith("MYRMIDON_")) { // myrmidon(REBRAND-C)
       delete process.env[key];
     }
   }

@@ -160,7 +160,8 @@ const REDACTED_LOG_VALUE = "***REDACTED***";
 // Paperclip per run (identity, wake, workspace, API access). Adapter/user
 // config env must never override them.
 export function isPaperclipRuntimeEnvKey(key: string): boolean {
-  return key.startsWith("PAPERCLIP_");
+  // myrmidon(REBRAND-C): MYRMIDON_* joins the reserved runtime namespace.
+  return key.startsWith("PAPERCLIP_") || key.startsWith("MYRMIDON_");
 }
 
 // PAPERCLIP_API_KEY is never accepted from adapter/user config env: the
@@ -3399,7 +3400,7 @@ export function sanitizeInheritedPaperclipEnv(
   const env: NodeJS.ProcessEnv = { ...baseEnv };
   delete env.PAPERCLIPAI_CMD;
   for (const key of Object.keys(env)) {
-    if (!key.startsWith("PAPERCLIP_")) continue;
+    if (!(key.startsWith("PAPERCLIP_") || key.startsWith("MYRMIDON_"))) continue; // myrmidon(REBRAND-C)
     if (key === "PAPERCLIP_RUNTIME_API_URL") continue;
     if (key === "PAPERCLIP_LISTEN_HOST") continue;
     if (key === "PAPERCLIP_LISTEN_PORT") continue;

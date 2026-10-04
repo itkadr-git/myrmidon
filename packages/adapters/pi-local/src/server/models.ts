@@ -74,7 +74,7 @@ function resolvePiCommand(input: unknown): string {
 }
 
 const discoveryCache = new Map<string, { expiresAt: number; models: AdapterModel[] }>();
-const VOLATILE_ENV_KEY_PREFIXES = ["PAPERCLIP_", "npm_", "NPM_"] as const;
+const VOLATILE_ENV_KEY_PREFIXES = ["PAPERCLIP_", "MYRMIDON_", "npm_", "NPM_"] as const; // myrmidon(REBRAND-C)
 const VOLATILE_ENV_KEY_EXACT = new Set(["PWD", "OLDPWD", "SHLVL", "_", "TERM_SESSION_ID"]);
 
 function isVolatileEnvKey(key: string): boolean {
