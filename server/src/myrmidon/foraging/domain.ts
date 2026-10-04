@@ -201,6 +201,7 @@ export interface ForagingSweepResult {
   spentCents: number;
   stoppedByBudget: boolean;
   errors: number;
+  skippedReason?: "queue_not_empty" | "no_idle_agent";
 }
 
 export interface ForagingSweepSourceResult {
