@@ -139,6 +139,8 @@ import { toolAccessPolicyService } from "./tool-access-policy.js";
 // myrmidon(S6): the per-agent tool/connection permission and its gate.
 import { agentToolPermissionAllows } from "@paperclipai/shared";
 import { loadAgentToolPermissions } from "../myrmidon/agent-tool-permissions.js";
+import { dbAutonomyGate } from "../myrmidon/autonomy/gate.js";
+import { getToolAutonomyClass } from "./autonomy-tool-mapping.js";
 import { commitToolActionReview } from "./tool-action-review.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import {
@@ -10517,6 +10519,88 @@ export function createToolGatewayService(
           idempotencyKey: input.idempotencyKey,
           consumeRateLimit: true,
         });
+
+        // myrmidon(1.6-AUTONOMY): autonomy matrix integration - check before tool access policy
+        const actionClass = getToolAutonomyClass(tool.name);
+        if (actionClass && session.agentId) {
+          const autonomyGate = dbAutonomyGate(db);
+          const autonomyDecision = await autonomyGate.decide(
+            { actor: { type: "agent", agentId: session.agentId } } as any,
+            actionClass
+          );
+
+          if (autonomyDecision.verdict === "forbidden") {
+            throw new ToolGatewayHttpError(
+              403,
+              `This action (${actionClass}) is forbidden for this role by the autonomy matrix`,
+              "autonomy_forbidden",
+              {
+                tool: tool.name,
+                autonomyActionClass: actionClass,
+                autonomyRole: autonomyDecision.role,
+              }
+            );
+          } else if (autonomyDecision.verdict === "approval_required") {
+            // Record the invocation and create an action request for approval
+            const recorded = await policyService.recordInvocation(
+              decisionInput,
+              {
+                decision: "require_approval",
+                allowed: false,
+                reasonCode: "autonomy_approval_required",
+                explanation: `Action ${actionClass} requires approval by the autonomy matrix`,
+                effectiveProfileIds: [],
+                matchedPolicyIds: [],
+              }
+            );
+            invocationId = recorded.invocation.id;
+
+            await requestApprovalForRecordedToolCall({
+              invocation: recorded.invocation,
+              actionRequest: recorded.actionRequest!,
+              session,
+              tool,
+              parameters: effectiveParameters,
+              argumentsSummary: argumentValidation.summary,
+              policyDecision: {
+                decision: "require_approval",
+                allowed: false,
+                reasonCode: "autonomy_approval_required",
+                explanation: `Action ${actionClass} requires approval by the autonomy matrix`,
+                effectiveProfileIds: [],
+                matchedPolicyIds: [],
+              },
+            });
+
+            await writeAudit({
+              session,
+              companyId: session.companyId,
+              agentId: session.agentId,
+              runId: session.runId,
+              issueId: session.issueId,
+              action: "tool_gateway.call_approval_required",
+              details: {
+                invocationId: recorded.invocation.id,
+                decision: "require_approval",
+                reasonCode: "autonomy_approval_required",
+                tool: tool.name,
+                autonomyActionClass: actionClass,
+                autonomyRole: autonomyDecision.role,
+                ...toolAuditMetadata(tool),
+                argumentsSummary: effectiveArgumentsSummary,
+              },
+            });
+
+            return {
+              invocationId: recorded.invocation.id,
+              status: "awaiting_approval" as const,
+              tool: virtualToolName ?? tool.name,
+              targetTool: virtualToolName ? tool.name : undefined,
+              result: null,
+            };
+          }
+        }
+
         const accessDecision = await decideToolAccess(decisionInput);
         // myrmidon(P9): a paused remote tool fails fast here: after replay and
         // policy (a denied call keeps its 403) and before the invocation is
