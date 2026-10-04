@@ -74,6 +74,18 @@ export type AdapterExecutionErrorFamily =
   | "refresh_token_expired"
   | "refresh_token_invalidated";
 
+// myrmidon(1.6.3 PROMPT-BUDGET A): per-section prompt-size estimate (tokens)
+// produced by an adapter that assembles the prompt itself. Optional: adapters
+// without visibility into the prompt (non-gateway remote adapters, local CLI
+// adapters that don't measure) omit the field entirely — readers must treat a
+// missing `promptBreakdown` as "not measured", never as zero.
+export interface AdapterPromptBreakdown {
+  /** Estimated tokens per named prompt section. */
+  parts: Record<string, number>;
+  /** Estimated tokens for the full prompt as actually sent. */
+  total: number;
+}
+
 export interface AdapterExecutionResult {
   /** Positive evidence for retrying bootstrap; absent evidence never authorizes replay. */
   executionRecovery?: { kind: "bootstrap"; providerWorkStarted: false } | {
@@ -91,6 +103,11 @@ export interface AdapterExecutionResult {
   retryNotBefore?: string | null;
   errorMeta?: Record<string, unknown>;
   usage?: UsageSummary;
+  // myrmidon(1.6.3 PROMPT-BUDGET A): estimated prompt size by section, when
+  // the adapter assembles the prompt itself and measured it. Absent when the
+  // adapter cannot see or did not measure the prompt (all non-gateway
+  // adapters today); the server copies it into usageJson.promptBreakdown.
+  promptBreakdown?: AdapterPromptBreakdown;
   /**
    * How `usage` totals are scoped. "per_run" means the tokens cover only this
    * execution; "session_cumulative" means they are running totals for the

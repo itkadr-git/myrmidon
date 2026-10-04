@@ -5,6 +5,7 @@ export type {
   AdapterBillingType,
   AdapterRuntimeServiceReport,
   AdapterExecutionResult,
+  AdapterPromptBreakdown,
   AdapterInvocationMeta,
   AdapterRuntimeEvent,
   AdapterRuntimeMcpServer,
@@ -69,6 +70,10 @@ export {
   redactCommandText,
   redactDiagnosticText,
 } from "./command-redaction.js";
+// myrmidon(1.6.3 PROMPT-BUDGET A): prompt-size accounting helpers for the
+// gateway adapter (heartbeat usageJson.promptBreakdown).
+export { estimateTokens, measureSections } from "./prompt-meter.js";
+export type { PromptBreakdown } from "./prompt-meter.js";
 export { buildSandboxNpmInstallCommand } from "./sandbox-install-command.js";
 export {
   buildAdapterEnvConfig,
