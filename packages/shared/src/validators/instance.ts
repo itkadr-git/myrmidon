@@ -12,7 +12,7 @@ import { shapeWithoutDefaults } from "./partial.js";
 import { workspaceHygieneLimitsSchema } from "../myrmidon-workspace-hygiene.js";
 import { hostDiskSettingsSchema } from "../myrmidon-host-disk.js";
 // myrmidon(C0): run admission limits that can be changed while the server runs
-import { runLimitsSchema } from "../myrmidon-runtime-limits.js";
+import { storedRunLimitsSchema } from "../myrmidon-runtime-limits.js";
 // myrmidon(PARALLEL-HELPERS): company ceiling/default for parallel helper
 // subagents, changed from the instance settings page and /api/myrmidon/parallel-helpers.
 import { parallelHelpersSettingsSchema, patchParallelHelpersSettingsSchema } from "../myrmidon-parallel-helpers.js";
@@ -22,6 +22,9 @@ import { swarmClaimSettingsSchema } from "../myrmidon-swarm-claim.js";
 // myrmidon(1.6.1-WIP-LIMIT-A): the per-agent WIP limit settings stored in the
 // same general settings row.
 import { wipLimitSettingsSchema } from "../myrmidon-wip-limit.js";
+// myrmidon(1.7-BUDGET-CONFIG-B): the budget enforcement mode stored in the
+// same general settings row.
+import { budgetEnforcementSettingsSchema } from "../myrmidon-budget-enforcement.js";
 
 // myrmidon(PARALLEL-HELPERS): re-exported for the barrel so the settings page and the
 // /api/myrmidon/parallel-helpers route validate with the exact schema stored here.
@@ -57,7 +60,10 @@ export const instanceGeneralSettingsSchema = z.object({
   // myrmidon(C0): run admission limits changed from the instance settings
   // page and /api/myrmidon/runtime-limits; absent means "use the environment
   // variable, then the default" (see packages/shared/src/myrmidon-runtime-limits.ts).
-  runLimits: runLimitsSchema.optional(),
+  // myrmidon(1.6.2 RUN-ADMISSION): the stored shape, so a row saved before
+  // `minFreeHostMemoryMb` existed still parses (a strict miss here would fail
+  // the whole general block and the next write would drop every setting).
+  runLimits: storedRunLimitsSchema.optional(),
   // myrmidon(BOT-DISK E): the host disk usage threshold, changed from
   // /api/myrmidon/host-disk; absent means "use the environment variable, then
   // the default (85)".
@@ -85,6 +91,11 @@ export const instanceGeneralSettingsSchema = z.object({
   // per-agent overrides, changed from /api/myrmidon/companies/:id/wip-limit/settings;
   // absent means the feature counts but never signals (all limits null).
   wipLimit: wipLimitSettingsSchema.optional(),
+  // myrmidon(1.7-BUDGET-CONFIG-B): what a crossed budget limit does while the
+  // incident is open — signal only (default), pause with an owner card (soft),
+  // or refuse new runs with the budget reason (hard); changed from
+  // /api/myrmidon/budget-enforcement; absent means the default (signal only).
+  budgetEnforcement: budgetEnforcementSettingsSchema.optional(),
 }).strict();
 
 export const patchInstanceGeneralSettingsSchema = z
