@@ -11,6 +11,7 @@ import type { BrowserBridgeSettings } from "../myrmidon-browser-bridge.js";
 import type { SwarmClaimSettings } from "../myrmidon-swarm-claim.js";
 // myrmidon(1.6.1-WIP-LIMIT-A): per-agent WIP limits of the same general settings row.
 import type { WipLimitSettings } from "../myrmidon-wip-limit.js";
+import type { BudgetEnforcementSettings } from "../myrmidon-budget-enforcement.js";
 
 export const DAILY_RETENTION_PRESETS = [3, 7, 14] as const;
 export const WEEKLY_RETENTION_PRESETS = [1, 2, 4] as const;
@@ -110,6 +111,14 @@ export interface InstanceGeneralSettings {
    * same field (packages/shared/src/validators/instance.ts).
    */
   wipLimit?: WipLimitSettings;
+  /**
+   * myrmidon(1.7-BUDGET-CONFIG-B): what a crossed budget limit does —
+   * signal only (default), pause with an owner card (soft), or refuse new
+   * runs (hard); changed from `GET`/`PATCH /api/myrmidon/budget-enforcement`.
+   * Kept in sync with the validator of the same field
+   * (packages/shared/src/validators/instance.ts).
+   */
+  budgetEnforcement?: BudgetEnforcementSettings;
 }
 
 export interface InstanceExperimentalSettings {
