@@ -383,6 +383,16 @@ import {
   telegramAttachmentOmissionNotice,
 } from "../myrmidon/chat-attachment-omission.js";
 import { TELEGRAM_DM_COMMANDS } from "../myrmidon/agent-chat-bridge/commands/index.js";
+// myrmidon(CHAT-HOLD): no silent queue in a bridged Telegram chat.
+import {
+  chatNoticeLanguage,
+  chatWaitNoticeApplies,
+  chatWaitNoticeText,
+  classifyAgentNotInvokable,
+  classifyChatWait,
+  type ChatWaitReason,
+} from "../myrmidon/chat-holds/wait-notice.js";
+import { currentHostMemoryGate } from "../myrmidon/run-admission.js";
 import {
   telegramDmConversationsConfigured,
   telegramDmConversationsEnabled,
@@ -14187,6 +14197,13 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             return 0;
           if (prior && !(await inboundQueueNoticeStillVisible(tx, prior)))
             return 0;
+          // myrmidon(CHAT-HOLD): a bridged Telegram chat reads why its
+          // message waits, in plain words, instead of a bare "queued".
+          const noticeText = await chatWaitAwareNoticeText(tx, {
+            endpointId: action.endpointId,
+            ownerId,
+            state: context.state,
+          });
           const rows = await tx
             .insert(chatPublications)
             .values({
@@ -14204,7 +14221,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               payload: projectSafeChatPublication({
                 classification: "external",
                 source: "safe_milestone",
-                text: inboundWakePublicationText(context.state),
+                text: noticeText,
                 progressState: context.state === "queued" ? "queued" : "failed",
               }),
             })
@@ -14222,6 +14239,48 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       }
     }
     return inserted;
+  }
+
+  // myrmidon(CHAT-HOLD): the inbound-wake notice text. A bridged Telegram
+  // chat gets the closed reason projection of chat-holds/wait-notice.ts read
+  // from the owning wake receipt; every other provider, and any receipt with
+  // no nameable reason, keeps the vendor's text byte for byte.
+  async function chatWaitAwareNoticeText(
+    tx: DbOrTransaction,
+    input: {
+      endpointId: string;
+      ownerId: string;
+      state: "queued" | "not_started" | "removed";
+    },
+  ): Promise<string> {
+    const fallback = inboundWakePublicationText(input.state);
+    const state = input.state;
+    if (state === "removed") return fallback;
+    const [endpoint] = await tx
+      .select({ provider: chatEndpoints.provider })
+      .from(chatEndpoints)
+      .where(eq(chatEndpoints.id, input.endpointId))
+      .limit(1);
+    if (!chatWaitNoticeApplies(endpoint?.provider)) return fallback;
+    const [owner] = await tx
+      .select({
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+        payload: agentWakeupRequests.payload,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, input.ownerId))
+      .limit(1);
+    const reason = owner
+      ? classifyChatWait({
+          status: owner.status,
+          reason: owner.reason,
+          payload: owner.payload ?? null,
+        })
+      : null;
+    return reason
+      ? chatWaitNoticeText(reason, chatNoticeLanguage(endpoint?.provider), state)
+      : fallback;
   }
 
   async function authorizeInboundWakePublication(
@@ -14417,6 +14476,77 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       );
   }
 
+  // myrmidon(CHAT-HOLD): one plain-words status reply per inbound message and
+  // reason, staged as a task-control reply to the sender in a bridged
+  // Telegram chat. Idempotent on (message, reason), so a retried admission
+  // never repeats it. See chat-holds/wait-notice.ts.
+  async function stageChatWaitNotice(
+    action: typeof chatActions.$inferSelect,
+    reason: ChatWaitReason,
+  ): Promise<void> {
+    const issueId = action.payload.issueId;
+    if (
+      !action.conversationId ||
+      !action.principalId ||
+      typeof issueId !== "string"
+    )
+      return;
+    const conversationId = action.conversationId;
+    const principalId = action.principalId;
+    await db.transaction(async (tx) => {
+      const [endpoint] = await tx
+        .select({ provider: chatEndpoints.provider })
+        .from(chatEndpoints)
+        .where(
+          and(
+            eq(chatEndpoints.id, action.endpointId),
+            eq(chatEndpoints.companyId, action.companyId),
+          ),
+        )
+        .limit(1);
+      if (!chatWaitNoticeApplies(endpoint?.provider)) return;
+      await stageAuthorizedTaskControlPublication(tx, {
+        companyId: action.companyId,
+        endpointId: action.endpointId,
+        conversationId,
+        issueId,
+        idempotencyKey: `control:wait:${reason}:${action.id}`,
+        payload: projectSafeChatPublication({
+          classification: "external",
+          source: "task_control",
+          text: chatWaitNoticeText(reason, chatNoticeLanguage(endpoint?.provider)),
+        }),
+        principalId,
+      });
+    });
+  }
+
+  async function stageChatHostMemoryNotice(
+    action: typeof chatActions.$inferSelect,
+    runId: string,
+  ): Promise<void> {
+    try {
+      if (currentHostMemoryGate().state !== "closed") return;
+      const [run] = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, action.companyId),
+            eq(heartbeatRuns.id, runId),
+          ),
+        )
+        .limit(1);
+      if (run?.status !== "queued") return;
+      await stageChatWaitNotice(action, "host_memory");
+    } catch (error) {
+      logger.warn(
+        { error: redactError(error) },
+        "chat host-memory notice was not staged",
+      );
+    }
+  }
+
   async function processInboundWakeup(deliveryId: string): Promise<boolean> {
     const now = new Date();
     const candidate = await db
@@ -14572,6 +14702,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       });
       const durable = await receipt();
       if (!durable) throw new Error("chat_inbound_wakeup_receipt_missing");
+      // myrmidon(CHAT-HOLD): the message became a run that the host memory
+      // floor holds back: tell the chat why it waits.
+      if (durable.runId) {
+        await stageChatHostMemoryNotice(claimed, durable.runId);
+      }
       await settle(receiptDeclined(durable) ? "failed" : "processed", {
         code: receiptDeclined(durable)
           ? `inbound_wakeup_${durable.status}`
@@ -14602,6 +14737,18 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       }
       const denied =
         conflictingReceipt || isExternalActionAuthorizationChange(error);
+      // myrmidon(CHAT-HOLD): an agent that cannot take a turn right now (paused,
+      // turned off) answers the admission with a conflict, and the message is
+      // retried until it can. Say so in the chat once instead of staying silent.
+      const notInvokable = denied ? null : classifyAgentNotInvokable(error);
+      if (notInvokable) {
+        await stageChatWaitNotice(claimed, notInvokable).catch((noticeError) => {
+          logger.warn(
+            { deliveryId, error: redactError(noticeError) },
+            "chat wait notice was not staged",
+          );
+        });
+      }
       await settle(denied ? "failed" : "issued", {
         code: conflictingReceipt
           ? "inbound_wakeup_receipt_conflict"

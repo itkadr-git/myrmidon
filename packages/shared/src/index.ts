@@ -2821,3 +2821,8 @@ export * from "./myrmidon-wip-limit.js";
 // myrmidon(1.7-BUDGET-CONFIG-B): the shared contract of budget enforcement —
 // the global mode (signal_only / soft / hard), its storage key and resolver.
 export * from "./myrmidon-budget-enforcement.js";
+
+// myrmidon(PLUGIN-ENTITLEMENT C): plugin entitlement keys contract.
+export * from "./myrmidon-plugin-entitlement.js";
+// myrmidon(1.6.1 MODEL-PROVIDERS): provider secret names, defaults and API schemas.
+export * from "./myrmidon-model-providers.js";
