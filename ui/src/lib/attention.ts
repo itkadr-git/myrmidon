@@ -62,9 +62,13 @@ const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
   agent_error_alert: { label: "Agent error" },
   // myrmidon(SUB): label for the stack-update source added with the stack registry release check.
   stack_update: { label: "Stack update" },
+  // myrmidon(BOT-RUNTIME-TUNING D): label for the model fallback signal source.
+  model_fallback_alert: { label: "Model fallback" },
   // myrmidon(STALE-BLOCK): label for the lifted-stale-block source.
   stale_block: { label: "Stale block lifted" },
   host_disk_alert: { label: "Host disk" },
+  // myrmidon(1.6.1-WIP-LIMIT-A): label for the WIP-limit source added with the per-agent WIP limit.
+  wip_limit: { label: "WIP limit" },
 };
 
 export function sourceMeta(kind: AttentionSourceKind): SourceMeta {
