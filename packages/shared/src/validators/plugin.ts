@@ -69,7 +69,7 @@ export const jsonSchemaSchema = z.record(z.string(), z.unknown()).refine(
  *
  * Valid tokens per field: *, N, N-M, N/S, * /S, N-M/S, and comma-separated lists.
  */
-const CRON_FIELD_PATTERN = /^(\*(?:\/[0-9]+)?|[0-9]+(?:-[0-9]+)?(?:\/[0-9]+)?)(?:,(\*(?:\/[0-9]+)?|[0-9]+(?:-[0-9]+)?(?:\/[0-9]+)?))*$/;
+const CRON_FIELD_PATTERN = /^(\\*(?:\\/[0-9]+)?|[0-9]+(?:-[0-9]+)?(?:\\/[0-9]+)?)(?:,(\\*(?:\\/[0-9]+)?|[0-9]+(?:-[0-9]+)?(?:\\/[0-9]+)?))*$/;
 
 function isValidCronExpression(expression: string): boolean {
   const trimmed = expression.trim();
@@ -316,10 +316,10 @@ export type PluginManagedRoutineDeclarationInput = z.infer<typeof pluginManagedR
 
 const pluginLocalFolderRelativePathSchema = z.string().min(1).max(500).refine(
   (value) =>
-    !value.startsWith("/") &&
-    !value.includes("..") &&
-    !value.includes("\\") &&
-    !value.split("/").some((segment) => segment === "" || segment === "."),
+    !value.startsWith("/")
+    && !value.includes("..")
+    && !value.includes("\\")
+    && !value.split("/").some((segment) => segment === "" || segment === "."),
   { message: "local folder paths must be relative paths without traversal, empty segments, or backslashes" },
 );
 
@@ -446,21 +446,17 @@ export const pluginUiSlotDeclarationSchema = z.object({
       path: ["routePath"],
     });
   }
-  if (value.routePath && PLUGIN_RESERVED_COMPANY_ROUTE_SEGMENTS.includes(value.routePath as (typeof PLUGIN_RESERVED_COMPANY_ROUTE_SEGMENTS)[number])) {
+  if (value.routePath && PLUGIN_RESERVED_COMPANY_ROUTE_SEGMENTS.includes(value.routePath)) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: `routePath "${value.routePath}" is reserved by the host`,
+      message: `routePath "${value.routePath}" is reserved for core routes`,
       path: ["routePath"],
     });
   }
-  if (
-    value.type === "companySettingsPage"
-    && value.routePath
-    && PLUGIN_RESERVED_COMPANY_SETTINGS_ROUTE_SEGMENTS.includes(value.routePath as (typeof PLUGIN_RESERVED_COMPANY_SETTINGS_ROUTE_SEGMENTS)[number])
-  ) {
+  if (value.routePath && PLUGIN_RESERVED_COMPANY_SETTINGS_ROUTE_SEGMENTS.includes(value.routePath)) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: `company settings routePath "${value.routePath}" is reserved by the host`,
+      message: `routePath "${value.routePath}" is reserved for core settings routes`,
       path: ["routePath"],
     });
   }
@@ -469,55 +465,39 @@ export const pluginUiSlotDeclarationSchema = z.object({
 export type PluginUiSlotDeclarationInput = z.infer<typeof pluginUiSlotDeclarationSchema>;
 
 const entityScopedLauncherPlacementZones = [
-  "detailTab",
-  "taskDetailView",
-  "contextMenuItem",
-  "commentAnnotation",
-  "commentContextMenuItem",
   "projectSidebarItem",
+  "issueSidebarItem",
+  "taskSidebarItem",
+  "workspaceSidebarItem",
+  "routineSidebarItem",
+  "boardSidebarItem",
+  "companySidebarItem",
 ] as const;
 
-const launcherBoundsByEnvironment: Record<
-  (typeof PLUGIN_LAUNCHER_RENDER_ENVIRONMENTS)[number],
-  readonly (typeof PLUGIN_LAUNCHER_BOUNDS)[number][]
-> = {
-  hostInline: ["inline", "compact", "default"],
-  hostOverlay: ["compact", "default", "wide", "full"],
-  hostRoute: ["default", "wide", "full"],
-  external: [],
-  iframe: ["compact", "default", "wide", "full"],
+const launcherBoundsByEnvironment: Record<string, readonly string[]> = {
+  hostInline: [],
+  hostOverlay: ["wide", "narrow", "expanded"],
+  hostRoute: [],
+  hostModal: ["compact", "wide", "expanded"],
+  hostDrawer: ["wide", "narrow"],
+  hostPopover: ["compact"],
+  iframe: ["compact", "wide", "expanded"],
 };
 
 /**
- * Validates the action payload for a declarative plugin launcher.
+ * Validates a {@link PluginLauncherActionDeclaration} — describes the action
+ * triggered by a plugin launcher surface.
  */
 export const pluginLauncherActionDeclarationSchema = z.object({
   type: z.enum(PLUGIN_LAUNCHER_ACTIONS),
   target: z.string().min(1),
   params: z.record(z.string(), z.unknown()).optional(),
-}).superRefine((value, ctx) => {
-  if (value.type === "performAction" && value.target.includes("/")) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "performAction launchers must target an action key, not a route or URL",
-      path: ["target"],
-    });
-  }
-
-  if (value.type === "navigate" && /^https?:\/\//.test(value.target)) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "navigate launchers must target a host route, not an absolute URL",
-      path: ["target"],
-    });
-  }
 });
 
-export type PluginLauncherActionDeclarationInput =
-  z.infer<typeof pluginLauncherActionDeclarationSchema>;
+export type PluginLauncherActionDeclarationInput = z.infer<typeof pluginLauncherActionDeclarationSchema>;
 
 /**
- * Validates optional render hints for a plugin launcher destination.
+ * Validates render metadata for the destination opened by a launcher.
  */
 export const pluginLauncherRenderDeclarationSchema = z.object({
   environment: z.enum(PLUGIN_LAUNCHER_RENDER_ENVIRONMENTS),
@@ -649,12 +629,12 @@ export const pluginApiRouteDeclarationSchema = z.object({
     message: "path must start with / and contain only path-safe literal or :param segments",
   }).refine(
     (value) =>
-      !value.includes("..") &&
-      !value.includes("//") &&
-      value !== "/api" &&
-      !value.startsWith("/api/") &&
-      value !== "/plugins" &&
-      !value.startsWith("/plugins/"),
+      !value.includes("..")
+      && !value.includes("//")
+      && value !== "/api"
+      && !value.startsWith("/api/")
+      && value !== "/plugins"
+      && !value.startsWith("/plugins/"),
     { message: "path must stay inside the plugin api namespace" },
   ),
   auth: z.enum(PLUGIN_API_ROUTE_AUTH_MODES),
@@ -803,6 +783,11 @@ export const pluginManifestV1Schema = z.object({
     slots: z.array(pluginUiSlotDeclarationSchema).min(1).optional(),
     launchers: z.array(pluginLauncherDeclarationSchema).optional(),
   }).optional(),
+  /**
+   * myrmidon(PLUGIN-ENTITLEMENT C): Flag indicating this plugin requires
+   * an entitlement key to be enabled.
+   */
+  requiresEntitlement: z.boolean().optional(),
 }).superRefine((manifest, ctx) => {
   // ── Entrypoint ↔ UI slot consistency ──────────────────────────────────
   // Plugins that declare UI slots must also declare a UI entrypoint so the

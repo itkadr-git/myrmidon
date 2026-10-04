@@ -23,6 +23,7 @@ import { HostDiskSettingsPanel } from "@/components/myrmidon/HostDiskSettingsPan
 import { ParallelHelpersSettingsPanel } from "@/components/myrmidon/ParallelHelpersSettingsPanel"; // myrmidon(PARALLEL-HELPERS)
 import { AboutSettingsPanel } from "@/components/myrmidon/AboutSettingsPanel"; // myrmidon(ABOUT)
 import { DeployJobsPanel } from "@/components/myrmidon/DeployJobsPanel"; // myrmidon(R5-A)
+import { PluginEntitlementSettings } from "@/components/myrmidon/PluginEntitlementSettingsPanel"; // myrmidon(PLUGIN-ENTITLEMENT C)
 import { PRODUCT_NAME, UPSTREAM_ATTRIBUTION } from "@/lib/myrmidon-product"; // myrmidon(B1a)
 import { useTranslation } from "@/i18n"; // myrmidon(UI-RU)
 
@@ -136,6 +137,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       <HostDiskSettingsPanel /> {/* myrmidon(BOT-DISK E) */}
       <ParallelHelpersSettingsPanel /> {/* myrmidon(PARALLEL-HELPERS) */}
       <DeployJobsPanel /> {/* myrmidon(R5-A) */}
+      <PluginEntitlementSettings /> {/* myrmidon(PLUGIN-ENTITLEMENT C) */}
 
       {showDeploymentStatus && (
       <section>

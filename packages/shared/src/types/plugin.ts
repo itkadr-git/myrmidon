@@ -239,8 +239,7 @@ export interface PluginEnvironmentDriverDeclaration {
   templateIdentityPaths?: string[];
   /** Provider supports best-effort deletion/cleanup of captured templates. */
   supportsTemplateDelete?: boolean;
-  /**
-   * Provider can host an interactive login on a real pseudo-terminal. Only a
+  /** Provider can host an interactive login on a real pseudo-terminal. Only a
    * provider with this flag exposes the login pseudo-terminal methods. The login
    * server and the login UI both gate on this flag, so a provider without it
    * never starts a login.
@@ -663,7 +662,7 @@ export interface PaperclipPluginManifestV1 {
   displayName: string;
   /** Short description (max 500 chars). */
   description: string;
-  /** Author name (max 200 chars). May include email in angle brackets, e.g. `"Jane Doe <jane@example.com>"`. */
+  /** Author name (max 200 chars). May include email in angle brackets, e.g. `"Jane Doe <jane@example.com>`. */
   author: string;
   /** One or more categories classifying this plugin. */
   categories: PluginCategory[];
@@ -719,6 +718,11 @@ export interface PaperclipPluginManifestV1 {
   launchers?: PluginLauncherDeclaration[];
   /** UI bundle declarations. Requires `entrypoints.ui` when populated. */
   ui?: PluginUiDeclaration;
+  /**
+   * myrmidon(PLUGIN-ENTITLEMENT C): Flag indicating this plugin requires
+   * an entitlement key to be enabled.
+   */
+  requiresEntitlement?: boolean;
 }
 
 // ---------------------------------------------------------------------------

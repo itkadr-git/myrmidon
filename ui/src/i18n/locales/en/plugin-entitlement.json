@@ -1,0 +1,25 @@
+{
+  "pluginEntitlement": {
+    "title": "Plugin Entitlement Keys",
+    "subtitle": "Manage plugin license keys and activation status",
+    "enterKeyLabel": "Enter Plugin License Key",
+    "keyPlaceholder": "Enter your plugin license key...",
+    "addKey": "Add Key",
+    "pluginName": "Plugin",
+    "status": "Status",
+    "issuedDate": "Issued",
+    "expiresDate": "Expires",
+    "actions": "Actions",
+    "remove": "Remove",
+    "statusValid": "Valid",
+    "statusExpired": "Expired",
+    "statusInvalid": "Invalid",
+    "noKeys": "No plugin keys added yet",
+    "invalidKey": "Invalid license key",
+    "keyAdded": "License key added successfully",
+    "keyRemoved": "License key removed",
+    "pluginEnabled": "Plugin enabled",
+    "pluginDisabledNeedKey": "Plugin disabled - license key required",
+    "pluginDisabledKeyExpired": "Plugin disabled - license key expired"
+  }
+}
