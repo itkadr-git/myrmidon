@@ -13,6 +13,13 @@ import { and, eq, inArray, or } from "drizzle-orm";
 import { isGitHubDotCom } from "./github-fetch.js";
 import { secretService } from "./secrets.js";
 import { toolAccessService } from "./tool-access.js";
+// myrmidon(GITHUB-SHARED-IDENTITY): access rules of the shared (instance-wide) GitHub authorization
+import {
+  authorizeSharedGitHubIssuance,
+  journalSharedGitHubIssuance,
+  sharedGitHubConnectionsForOperation,
+} from "../myrmidon/github-shared-identity/policy.js";
+import { normalizeGitHubRepository } from "../myrmidon/github-shared-identity/settings.js";
 
 /**
  * Server-side git credentials for managed project checkouts and execution-workspace base
@@ -50,9 +57,15 @@ export type GitCredential = {
   /** The company-secret name the token came from; null for a server-environment token. */
   secretName: string | null;
   githubIdentity?: { userId: string; login: string };
-  identitySource?: "personal" | "dedicated";
+  // myrmidon(GITHUB-SHARED-IDENTITY): "shared" — the shared (organization) grant of a shared GitHub connection
+  identitySource?: "personal" | "dedicated" | "shared";
   connectionId?: string;
   grantId?: string;
+  // myrmidon(GITHUB-SHARED-IDENTITY): the commit author/committer when it is not
+  // the authenticating GitHub account (the agent itself under a shared grant)
+  commitIdentity?: { name: string; email: string };
+  // myrmidon(GITHUB-SHARED-IDENTITY): the repository a shared grant was issued for
+  repository?: string;
 };
 
 /** A prepared, credential-bearing git invocation: config args plus the env that carries the token. */
@@ -113,8 +126,15 @@ export function scrubGitCredentialText(text: string): string {
 }
 
 export function buildGitAuthInvocation(credential: GitCredential): GitAuthInvocation {
-  const identity = credential.githubIdentity;
-  const noreplyEmail = identity ? `${identity.userId}+${identity.login}@users.noreply.github.com` : null;
+  // myrmidon(GITHUB-SHARED-IDENTITY): an explicit commit identity (the agent)
+  // wins over the authenticating account's noreply identity.
+  const author = credential.commitIdentity
+    ?? (credential.githubIdentity
+      ? {
+          name: credential.githubIdentity.login,
+          email: `${credential.githubIdentity.userId}+${credential.githubIdentity.login}@users.noreply.github.com`,
+        }
+      : null);
   const configEntries = [
     ["credential.helper", ""],
     ["credential.https://github.com.helper", GIT_CREDENTIAL_HELPER],
@@ -123,9 +143,9 @@ export function buildGitAuthInvocation(credential: GitCredential): GitAuthInvoca
     ["url.https://github.com/.insteadOf", "ssh://git@github.com/"],
     ["url.https://github.com/.insteadOf", "git@www.github.com:"],
     ["url.https://github.com/.insteadOf", "ssh://git@www.github.com/"],
-    ...(identity ? [
-      ["user.name", identity.login],
-      ["user.email", noreplyEmail!],
+    ...(author ? [
+      ["user.name", author.name],
+      ["user.email", author.email],
     ] : []),
   ];
   return {
@@ -144,11 +164,11 @@ export function buildGitAuthInvocation(credential: GitCredential): GitAuthInvoca
       GH_TOKEN: credential.token,
       GITHUB_TOKEN: credential.token,
       GIT_TERMINAL_PROMPT: "0",
-      ...(identity ? {
-        GIT_AUTHOR_NAME: identity.login,
-        GIT_AUTHOR_EMAIL: noreplyEmail!,
-        GIT_COMMITTER_NAME: identity.login,
-        GIT_COMMITTER_EMAIL: noreplyEmail!,
+      ...(author ? {
+        GIT_AUTHOR_NAME: author.name,
+        GIT_AUTHOR_EMAIL: author.email,
+        GIT_COMMITTER_NAME: author.name,
+        GIT_COMMITTER_EMAIL: author.email,
       } : {}),
       GIT_CONFIG_COUNT: String(configEntries.length),
       ...Object.fromEntries(configEntries.flatMap(([key, value], index) => [
@@ -273,6 +293,8 @@ export function createGitRemoteAuthProvider(
         const { resolveGitHubOperationCredentials } = await import("./github-operation-credentials.js");
         const result = await resolveGitHubOperationCredentials(db, {
           companyId, runId: context.heartbeatRunId, agentId: context.agentId,
+          // myrmidon(GITHUB-SHARED-IDENTITY): the shared grant is issued per repository
+          repository: normalizeGitHubRepository(remoteUrl),
         });
         if (result.status === "absent") {
           const credential = await resolveCredential();
@@ -293,6 +315,19 @@ export function createGitRemoteAuthProvider(
   };
 }
 
+/**
+ * myrmidon(GITHUB-SHARED-IDENTITY): the shared GitHub authorization — a managed
+ * (OAuth, `github.code` connector) GitHub connection with the `shared`
+ * credential policy. Other shared-policy GitHub connections (a pasted MCP key)
+ * keep their vendor behavior.
+ */
+function isManagedSharedGitHubConnection(connection: typeof toolConnections.$inferSelect): boolean {
+  if (connection.credentialPolicy !== "shared") return false;
+  const config = connection.config && typeof connection.config === "object" ? connection.config as Record<string, unknown> : {};
+  const oauth = config.oauth && typeof config.oauth === "object" ? config.oauth as Record<string, unknown> : {};
+  return oauth.connectorProfile === "github.code";
+}
+
 export async function resolveManagedGitHubIdentitySelection(
   db: Db,
   companyId: string,
@@ -301,10 +336,14 @@ export async function resolveManagedGitHubIdentitySelection(
     agentId?: string | null;
     allowStandingDelegation?: boolean;
     excludeGrantId?: string;
+    // myrmidon(GITHUB-SHARED-IDENTITY): consider shared grants (only the
+    // run-scoped broker does), chosen by the operation's target repository
+    allowShared?: boolean;
+    repository?: string | null;
   },
 ): Promise<{
   configured: boolean;
-  identitySource?: "personal" | "dedicated";
+  identitySource?: "personal" | "dedicated" | "shared";
   grant?: typeof connectionGrants.$inferSelect;
   error?: string;
 }> {
@@ -325,12 +364,19 @@ export async function resolveManagedGitHubIdentitySelection(
     eq(toolConnectionInstalls.companyId, companyId),
     inArray(toolConnectionInstalls.connectionId, connectionIds),
   ));
+  // myrmidon(GITHUB-SHARED-IDENTITY): a shared GitHub connection exists for an
+  // operation only when the broker asks and the connection's rule allows this
+  // agent AND matches the target repository; otherwise it neither resolves nor
+  // counts as "configured". Identities of different products never mix.
+  const sharedConnectionIds = context.allowShared === true
+    ? await sharedGitHubConnectionsForOperation(db, companyId, context.agentId, context.repository)
+    : new Set<string>();
   const eligibleConnectionIds = new Set(githubConnections.filter((connection) => installs.some((install) =>
     install.connectionId === connection.id && (
       (install.targetType === "company" && install.targetId === companyId)
       || (install.targetType === "agent" && install.targetId === context.agentId)
     )
-  )).map((connection) => connection.id));
+  ) && (!isManagedSharedGitHubConnection(connection) || sharedConnectionIds.has(connection.id))).map((connection) => connection.id));
   // A GitHub connection installed only for another agent is not configured for
   // this run. Treating the company-wide connection as configured here would
   // make unrelated agents fail before their adapter starts and would also
@@ -339,7 +385,8 @@ export async function resolveManagedGitHubIdentitySelection(
   const grants = await db.select().from(connectionGrants).where(and(
     eq(connectionGrants.companyId, companyId),
     inArray(connectionGrants.connectionId, [...eligibleConnectionIds]),
-    or(eq(connectionGrants.kind, "agent"), eq(connectionGrants.kind, "user")),
+    // myrmidon(GITHUB-SHARED-IDENTITY): the organization grant of a shared connection too
+    or(eq(connectionGrants.kind, "agent"), eq(connectionGrants.kind, "user"), eq(connectionGrants.kind, "organization")),
   ));
   const dedicated = context.agentId
     ? grants.filter((grant) => grant.kind === "agent" && grant.subjectAgentId === context.agentId)
@@ -360,8 +407,17 @@ export async function resolveManagedGitHubIdentitySelection(
         return grants.filter((grant) => grant.kind === "user" && delegatedIds.has(grant.id));
       })
     : [];
-  const candidates = dedicated.length > 0 ? dedicated : personal.length > 0 ? personal : delegated;
-  const identitySource = dedicated.length > 0 ? "dedicated" as const : "personal" as const;
+  // myrmidon(GITHUB-SHARED-IDENTITY): the shared grant is the last resort —
+  // a dedicated grant (and the run's personal or delegated grant) wins.
+  const shared = grants.filter((grant) => grant.kind === "organization" && sharedConnectionIds.has(grant.connectionId)
+    && githubConnections.some((connection) => connection.id === grant.connectionId && isManagedSharedGitHubConnection(connection)));
+  const candidates = dedicated.length > 0 ? dedicated
+    : personal.length > 0 ? personal
+    : delegated.length > 0 ? delegated
+    : shared;
+  const identitySource = dedicated.length > 0 ? "dedicated" as const
+    : personal.length > 0 || delegated.length > 0 || shared.length === 0 ? "personal" as const
+    : "shared" as const;
   // Reconnecting can create another connection/grant for the same GitHub
   // account. Ambiguity is about provider identities, not the number of rows.
   // Only trust GitHub's stable account ID; equal logins or missing metadata
@@ -374,7 +430,10 @@ export async function resolveManagedGitHubIdentitySelection(
       configured: true, identitySource,
       error: candidates.length === 0
         ? "No managed GitHub identity is available for this run"
-        : "More than one managed GitHub identity matches this run",
+        // myrmidon(GITHUB-SHARED-IDENTITY): overlapping shared rules name the repository
+        : identitySource === "shared"
+          ? `More than one shared GitHub identity matches repository ${normalizeGitHubRepository(context.repository) ?? "(none)"}; narrow the allowed repositories`
+          : "More than one managed GitHub identity matches this run",
     };
   }
   const credentialIds = candidates.flatMap((grant) => grant.credentialSecretRefs
@@ -471,13 +530,33 @@ export async function resolveManagedGitHubCredential(
     responsibleUserId?: string | null;
     agentId?: string | null;
     allowStandingDelegation?: boolean;
+    // myrmidon(GITHUB-SHARED-IDENTITY): see resolveManagedGitHubIdentitySelection; the
+    // repository (owner/repo or a github.com remote) the shared grant would serve
+    allowShared?: boolean;
+    repository?: string | null;
   },
-): Promise<{ configured: boolean; identitySource?: "personal" | "dedicated"; credential?: GitCredential; error?: string }> {
+): Promise<{ configured: boolean; identitySource?: "personal" | "dedicated" | "shared"; credential?: GitCredential; error?: string; repository?: string }> {
   const selection = await resolveManagedGitHubIdentitySelection(db, companyId, context);
   if (!selection.configured) return { configured: false };
   if (!selection.grant) return { configured: true, identitySource: selection.identitySource, error: selection.error };
+  // myrmidon(GITHUB-SHARED-IDENTITY): a policy denial is final; no alternate grant is tried
+  let sharedDenied = false;
   const acquire = async (selection: Awaited<ReturnType<typeof resolveManagedGitHubIdentitySelection>>) => {
     let grant = selection.grant!;
+    // myrmidon(GITHUB-SHARED-IDENTITY): gate the shared grant per agent and
+    // repository BEFORE the token is refreshed or read.
+    const sharedIssuance = grant.kind === "organization"
+      ? await authorizeSharedGitHubIssuance(db, {
+          companyId, agentId: context.agentId, runId: context.heartbeatRunId, repository: context.repository, grant,
+        })
+      : null;
+    if (sharedIssuance && !sharedIssuance.ok) {
+      sharedDenied = true;
+      return {
+        configured: true, identitySource: selection.identitySource, error: sharedIssuance.error,
+        ...(sharedIssuance.repository ? { repository: sharedIssuance.repository } : {}),
+      };
+    }
     if (grant.kind === "user" && grant.subjectUserId) {
       const [membership] = await db.select({ id: companyMemberships.id, role: companyMemberships.membershipRole }).from(companyMemberships).where(and(
         eq(companyMemberships.companyId, companyId),
@@ -514,6 +593,8 @@ export async function resolveManagedGitHubCredential(
     const accessContext = {
       consumerType: "system" as const,
       consumerId: "workspace-git-credential",
+      // myrmidon(GITHUB-SHARED-IDENTITY): the secret access event of a shared issuance names the repository
+      ...(sharedIssuance?.ok ? { configPath: `github_shared:${sharedIssuance.repository}` } : {}),
       actorType: "system" as const,
       actorId: context.agentId ?? undefined,
       issueId: context.issueId ?? null,
@@ -544,24 +625,38 @@ export async function resolveManagedGitHubCredential(
     } else {
       token = await secrets.resolveSecretValue(companyId, accessRef.secretId, accessRef.versionSelector ?? "latest", { accessContext });
     }
+    // myrmidon(GITHUB-SHARED-IDENTITY): journal every shared issuance (agent, run, repository)
+    if (sharedIssuance?.ok && context.agentId) {
+      await journalSharedGitHubIssuance(db, {
+        companyId, agentId: context.agentId, runId: context.heartbeatRunId, repository: sharedIssuance.repository, grant,
+      });
+    }
     return {
       configured: true, identitySource: selection.identitySource,
+      ...(sharedIssuance?.ok ? { repository: sharedIssuance.repository } : {}),
       credential: {
         token,
         source: "managed_connection" as const,
         secretName: null,
         githubIdentity: { userId: github.userId, login: github.login },
-        identitySource: grant.kind === "agent" ? "dedicated" as const : "personal" as const,
+        // myrmidon(GITHUB-SHARED-IDENTITY): organization grant -> "shared", the agent stays the author
+        identitySource: grant.kind === "agent" ? "dedicated" as const
+          : grant.kind === "organization" ? "shared" as const
+          : "personal" as const,
         connectionId: grant.connectionId,
         grantId: grant.id,
+        ...(sharedIssuance?.ok
+          ? { commitIdentity: sharedIssuance.commitIdentity, repository: sharedIssuance.repository }
+          : {}),
       },
     };
   };
-  let failure: { configured: boolean; identitySource?: "personal" | "dedicated"; error?: string };
+  let failure: { configured: boolean; identitySource?: "personal" | "dedicated" | "shared"; error?: string; repository?: string };
   try {
     const result = await acquire(selection);
     if (result.credential) return result;
     failure = result;
+    if (sharedDenied) return failure; // myrmidon(GITHUB-SHARED-IDENTITY)
   } catch {
     failure = { configured: true, identitySource: selection.identitySource, error: "GitHub credentials are temporarily unavailable" };
   }

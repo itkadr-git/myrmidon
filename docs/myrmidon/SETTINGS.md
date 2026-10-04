@@ -1069,3 +1069,35 @@ Modes, as written into the bot's `config.yaml`:
   instead of two, no typings download.
 - `full` — nothing written (Hermes' own defaults), except `exclude_roots` when set.
 
+
+## 1.6.3 — GITHUB-SHARED-IDENTITY: shared GitHub authorization ("authorize once")
+
+No environment variables: everything is runtime-changeable per company.
+
+- **The connection** is a managed GitHub connection (Apps → GitHub) with the
+  identity "Shared company GitHub account": credential policy `shared`, one
+  `organization` grant from one OAuth pass, installed for the company or for
+  chosen agents. The managed GitHub method now lists the `organization` grant
+  kind; a fresh GitHub connection still defaults to "My GitHub account".
+- **The access rules** live in `instance_settings.general.myrmidonGithubSharedIdentity[companyId]`
+  and are edited on Company settings → "Shared GitHub authorization" or with
+  `GET`/`PUT /api/myrmidon/companies/:companyId/github-shared-identity` (GET:
+  board with company access; PUT: board with `tools:manage_connections`):
+
+| Field | Default | What it does |
+|---|---|---|
+| `enabled` | `false` | Master switch. Off: no shared grant serves anybody, and shared GitHub connections do not count as configured for any agent (the pre-change behavior). |
+| `connections[].connectionId` | — | A shared managed GitHub connection of this company (validated on save). One rule per connection. |
+| `connections[].roles` | `[]` | Agent roles that may use the connection. |
+| `connections[].agentIds` | `[]` | Agents that may use it regardless of role. Both lists empty: nobody. |
+| `connections[].allowedRepos` | `[]` | `owner/repo` or `owner/<pattern with *>` the connection serves; the owner is literal. Empty: none. The broker picks the connection by the target repository of each operation; a repository matched by two connections of different GitHub accounts is an error. |
+| `commitEmailDomain` | `null` (`agents.myrmidon.invalid`) | Domain of the agent's commit email `<agent-slug>@<domain>`. Author and committer stay the agent; only the authentication is shared. |
+
+Precedence: dedicated (per-agent) grant > the run's personal grant > shared
+grant. The broker reads the rules on every request (no restart); every
+issuance is audited (`myrmidon.github_shared.issued`, secret access event with
+config path `github_shared:<owner/repo>`), refusals as
+`myrmidon.github_shared.denied`. In bot containers patch 09 keeps stripping
+raw tokens; `git-credential-paperclip` (now with `useHttpPath = true`) and the
+`gh` wrapper send the target repository to the broker. Full guide:
+[guides/github-shared-identity.md](guides/github-shared-identity.md).

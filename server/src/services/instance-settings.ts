@@ -56,6 +56,8 @@ import { preserveSttGeneralKey } from "../myrmidon/stt/store.js";
 // myrmidon(1.7-BUDGET-CONFIG-B): keep the stored budget enforcement mode
 // across vendor writes of `general`
 import { preserveBudgetEnforcementGeneralKey } from "../myrmidon/budget-enforcement/settings.js";
+// myrmidon(GITHUB-SHARED-IDENTITY): keep the per-company shared GitHub access rules across vendor writes of `general`
+import { preserveGitHubSharedIdentityGeneralKey } from "../myrmidon/github-shared-identity/store.js";
 import { getManagedInstanceConfig, type ManagedInstanceConfig } from "./managed-config.js";
 import { getOperatorSettingDefaults } from "./setting-defaults.js";
 
@@ -612,6 +614,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
             ...preserveWipLimitGeneralKey(current.general), // myrmidon(1.6.1-WIP-LIMIT-A)
             ...preserveSttGeneralKey(current.general), // myrmidon(1.6.1 VOICE-STT A1)
             ...preserveBudgetEnforcementGeneralKey(current.general), // myrmidon(1.7-BUDGET-CONFIG-B)
+            ...preserveGitHubSharedIdentityGeneralKey(current.general), // myrmidon(GITHUB-SHARED-IDENTITY)
           },
           updatedAt: now,
         })

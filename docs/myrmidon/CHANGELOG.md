@@ -10,6 +10,31 @@ version file to edit. Base Paperclip version is in the image label
 
 ## Unreleased
 
+### Authorize GitHub once for the whole server (GITHUB-SHARED-IDENTITY)
+
+- Development agents could push only with an OAuth GitHub identity connected
+  per person or per agent; a team token stored as a company secret was ignored
+  by the run-scoped broker, and bot containers strip raw tokens from the
+  terminal, so agents without their own authorization could not push at all.
+- A managed GitHub connection can now carry a **shared** identity: one OAuth
+  pass ("Shared company GitHub account"), one `organization` grant, installed
+  for the company. Company settings → "Shared GitHub authorization"
+  (`GET`/`PUT /api/myrmidon/companies/:companyId/github-shared-identity`) says,
+  per shared connection, which agents (roles and/or agents) may use it and for
+  which repositories (`owner/repo` patterns). Applied without a restart.
+- The broker picks the identity by the target repository of each operation:
+  products under different GitHub accounts never mix; a repository matched by
+  no rule stays absent, by two rules is an error. A dedicated per-agent grant
+  (and the run's personal grant) still wins.
+- The commit author and committer stay the agent (`<agent>@<domain>`); only
+  the authentication is shared. Each issuance is audited
+  (`myrmidon.github_shared.issued`, secret access event
+  `github_shared:<owner/repo>`); the token is never logged or persisted.
+- Bot image: patch 09 keeps stripping raw tokens; `git-credential-paperclip`
+  (with `useHttpPath = true`) and the `gh` wrapper now send the target
+  repository to the broker.
+  [guides/github-shared-identity.md](guides/github-shared-identity.md).
+
 ### A board unblock lifts a settled replay hold; a parked wake is not "covering" (HOLD-READY)
 
 - A task with a closed recovery action whose `evidence.automaticRecovery.replay`
