@@ -624,6 +624,8 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
             ...preserveBudgetEnforcementGeneralKey(current.general), // myrmidon(1.7-BUDGET-CONFIG-B)
             ...preservePluginEntitlementKeysGeneralKey(current.general), // myrmidon(PLUGIN-ENTITLEMENT C)
             ...preserveTelegramDmProgressGeneralKey(current.general), // myrmidon(DM-PROGRESS)
+            // The preserve line above restores the stored value: a patch that carries the key wins.
+            ...(patch.telegramDmProgress !== undefined ? { telegramDmProgress: nextGeneral.telegramDmProgress } : {}),
           },
           updatedAt: now,
         })
