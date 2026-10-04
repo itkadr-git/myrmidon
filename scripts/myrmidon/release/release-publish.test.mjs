@@ -211,7 +211,11 @@ function runScript(sb, tag, { extraEnv = {} } = {}) {
     },
     encoding: "utf8",
   });
-  return { code: result.status, out: `${result.stdout}${result.stderr}` };
+  // A spawn that never ran (bash missing, ENOBUFS, a kill) leaves stdout and
+  // stderr undefined; without this the assertions saw "undefinedundefined"
+  // instead of the real reason. Surface the spawn error itself.
+  if (result.error) throw new Error(`publish-github-release.sh did not run: ${result.error.message}`);
+  return { code: result.status, out: `${result.stdout ?? ""}${result.stderr ?? ""}` };
 }
 
 const read = (file) => (fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "");
