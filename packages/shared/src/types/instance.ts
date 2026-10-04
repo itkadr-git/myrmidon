@@ -28,6 +28,7 @@ import type { BudgetEnforcementSettings } from "../myrmidon-budget-enforcement.j
 import type { PluginEntitlementKey } from "../myrmidon-plugin-entitlement.js";
 // myrmidon(DM-PROGRESS): live progress steps of the bridged Telegram DM status message.
 import type { TelegramDmProgressSettings } from "../myrmidon-telegram-dm-progress.js";
+import type { ForagingIdleGateSettings } from "../myrmidon-foraging-idle-gate.js";
 
 export const DAILY_RETENTION_PRESETS = [3, 7, 14] as const;
 export const WEEKLY_RETENTION_PRESETS = [1, 2, 4] as const;
@@ -227,6 +228,8 @@ export interface InstanceGeneralSettings {
    * environment". Kept in sync with the validator of the same field.
    */
   agentMemory?: AgentMemorySettings;
+  // myrmidon(1.6.3-FORAGING-IDLE-GATE): the stored idle-gate toggle.
+  foragingIdleGate?: ForagingIdleGateSettings;
 }
 
 export interface InstanceExperimentalSettings {

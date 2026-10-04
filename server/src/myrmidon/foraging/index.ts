@@ -9,7 +9,7 @@
 // so no other file of this feature changes.
 
 import type { Db } from "@paperclipai/db";
-import { secretService } from "../../services/index.js";
+import { instanceSettingsService, secretService } from "../../services/index.js";
 import { logger } from "../../middleware/logger.js";
 import { nullForagingCandidatePort, type ForagingCandidatePort } from "./domain.js";
 import { createForagingReader } from "./reader.js";
@@ -17,6 +17,13 @@ import { readForagingSettings } from "./settings.js";
 import { createForagingService, type ForagingService } from "./service.js";
 import { createDbForagingStore, type ForagingStore } from "./store.js";
 import { foragingRoutes } from "./routes.js";
+import {
+  foragingIdleGateService,
+  readForagingIdleGate,
+  FORAGING_IDLE_GATE_ENABLED_ENV,
+  FORAGING_IDLE_GATE_SETTINGS_KEY,
+} from "./idle-gate-settings.js";
+import { foragingIdleGateRoutes } from "./idle-gate-routes.js";
 
 export {
   FORAGING_BUDGET_CENTS_ENV,
@@ -31,6 +38,14 @@ export {
 } from "./domain.js";
 export type { ForagingCandidatePort, ForagingSweepResult, ForagingSourceRef } from "./domain.js";
 export { readForagingSettings, FORAGING_ENABLED_ENV } from "./settings.js";
+export {
+  FORAGING_IDLE_GATE_ENABLED_ENV,
+  FORAGING_IDLE_GATE_SETTINGS_KEY,
+  foragingIdleGateService,
+  preserveForagingIdleGateGeneralKey,
+  readForagingIdleGate,
+} from "./idle-gate-settings.js";
+export { foragingIdleGateRoutes } from "./idle-gate-routes.js";
 export { createForagingService } from "./service.js";
 export { createDbForagingStore } from "./store.js";
 export { createForagingReader } from "./reader.js";
@@ -71,8 +86,14 @@ export function foragingWiring(db: Db, env: NodeJS.ProcessEnv = process.env): Fo
       },
     }),
     candidatePort: foragingCandidatePort(),
-    settings: { budget: settings.budget, idleGateEnabled: settings.idleGateEnabled },
+    settings: { budget: settings.budget },
     db,
+    // myrmidon(1.6.3-FORAGING-IDLE-GATE): the toggle is re-read on every
+    // pass from instance_settings.general (env is the forced override).
+    idleGate: {
+      getGeneral: () => instanceSettingsService(db).getGeneral(),
+      env,
+    },
     log: logger,
   });
   return { store, service, env };
@@ -81,10 +102,19 @@ export function foragingWiring(db: Db, env: NodeJS.ProcessEnv = process.env): Fo
 /** Router for app.ts. */
 export function myrmidonForagingRoutes(db: Db, env: NodeJS.ProcessEnv = process.env) {
   const wiring = foragingWiring(db, env);
-  return foragingRoutes({
+  const router = foragingRoutes({
     db,
     store: wiring.store,
     service: wiring.service,
     env: wiring.env,
   });
+  return router;
+}
+
+/**
+ * Router for app.ts: GET/PATCH /api/myrmidon/foraging/idle-gate —
+ * the settings-page toggle of the idle gate (myrmidon 1.6.3).
+ */
+export function myrmidonForagingIdleGateRoutes(db: Db) {
+  return foragingIdleGateRoutes(db, foragingIdleGateService(db));
 }

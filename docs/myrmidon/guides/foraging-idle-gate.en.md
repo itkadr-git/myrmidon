@@ -1,56 +1,79 @@
-# FORAGING-IDLE-GATE Feature Guide
+# Foraging idle gate (myrmidon 1.6.3 FORAGING-IDLE-GATE)
 
-## Overview
+## What it does
 
-The FORAGING-IDLE-GATE feature ensures that foraging (knowledge collection from approved sources) only occurs when there are no queued tasks for a role and there is a free agent available. This implements the product rule that training (foraging) should only happen during idle time, with working tasks taking priority.
+Product rule: **learning only when idle**. Before a foraging pass reads a
+role's sources, the pass checks that the source's role is idle:
 
-## Purpose
+- the role's queue is empty — no open `todo`/`in_progress` task of the
+  company is waiting **without an assignee** (the swarm-claim queue
+  semantics: a task already assigned to an agent of the role is being
+  worked on, it is not "waiting in the queue");
+- at least one agent of the role is free — no `todo`/`in_progress` task is
+  assigned to that agent.
 
-The purpose of this feature is to prevent foraging activities from competing with regular work tasks for agent resources. Foraging will only proceed when:
+A busy role is **skipped for that pass**: its sources are not read, and the
+pass result and the journal carry the reason:
 
-1. There are no tasks in the role's queue (tasks with status "todo" or "in_progress" assigned to the role)
-2. There is at least one idle agent available for the role
+| reason            | meaning                                                |
+| ----------------- | ------------------------------------------------------ |
+| `queue_not_empty` | the role has unassigned open tasks waiting             |
+| `no_idle_agent`   | every agent of the role holds a todo/in_progress task  |
 
-## Configuration
+The gate is **per role inside one pass**: a busy engineer role never stops
+the sweep from reading the smm role's sources in the same pass. The pass
+never aborts because of the gate.
 
-The feature is controlled by the following environment variable:
+## The toggle
 
-- `MYRMIDON_FORAGING_IDLE_GATE_ENABLED`: Enables or disables the idle gate functionality
-  - Default: `1` (enabled)
-  - Set to `0` to disable the idle gate and allow foraging regardless of queue/agent status
+The gate is on by default. It is a settings-page value —
+`instance_settings.general.foragingIdleGate` — changed through:
 
-Other related configuration options:
+```
+GET   /api/myrmidon/foraging/idle-gate     (board read; reports {enabled, source})
+PATCH /api/myrmidon/foraging/idle-gate     (instance admin; body {enabled: boolean})
+```
+
+The pass **re-reads the toggle on every pass**, so a settings-page change
+reaches the next pass without a server restart. `GET` reports the effective
+value and where it came from:
+
+- `settings` — the stored value (`general.foragingIdleGate`);
+- `env` — the forced override `MYRMIDON_FORAGING_IDLE_GATE_ENABLED` (for an
+  instance that never saved the setting; `1/true/on/yes` = on,
+  `0/false/off/no` = off, anything else reads as unset);
+- `default` — nothing stored, nothing in the env: on.
+
+Precedence: the stored settings value when present; otherwise the env; the
+default last. An unreadable stored value counts as absent, and a settings
+read failure fails open (the gate stays on) — a transient DB error cannot
+wedge the foraging into skipping passes nobody asked to skip.
+
+Other related configuration options (unchanged by this feature):
+
 - `MYRMIDON_FORAGING_ENABLED`: Controls whether foraging is enabled overall
 - `MYRMIDON_FORAGING_BUDGET_CENTS`: Sets the per-pass cost ceiling
 - `MYRMIDON_FORAGING_INTERVAL_SEC`: Sets the sweep interval in seconds
 
-## Behavior
+## Result information
 
-When the idle gate is enabled:
+The foraging sweep result includes a `skippedReason` field when a role was
+skipped due to the idle gate:
 
-1. Before starting a foraging pass, the system checks each role that has enabled foraging sources
-2. For each role, it verifies:
-   - That there are no tasks in the role's queue
-   - That there is at least one idle agent available for the role
-3. If either condition is not met, the foraging pass is skipped for that role with a reason:
-   - `queue_not_empty`: When there are tasks in the role's queue
-   - `no_idle_agent`: When no idle agents are available for the role
-4. If both conditions are met, foraging proceeds normally
+- `queue_not_empty`: that role has queued unassigned tasks
+- `no_idle_agent`: that role has no free agent
+- Absent: every enabled source's role was idle (or the gate is off)
 
-When the idle gate is disabled, foraging runs according to the schedule regardless of queue or agent status.
+## Where the code lives
 
-## Result Information
-
-The foraging sweep result includes a `skippedReason` field when the pass is skipped due to the idle gate:
-
-- `queue_not_empty`: Foraging skipped because there were tasks in the role queue
-- `no_idle_agent`: Foraging skipped because no idle agents were available for the role
-- Absent: Foraging ran normally
-
-## Testing
-
-Unit tests cover the following scenarios:
-1. Foraging runs normally when idle gate is disabled
-2. Foraging is skipped when queue is not empty and idle gate is enabled
-3. Foraging is skipped when no idle agent is available and idle gate is enabled
-4. Foraging runs when queue is empty and idle agent is available
+- `packages/shared/src/myrmidon-foraging-idle-gate.ts` — the resolver
+  contract (key, precedence, sources), shared with the server;
+- `server/src/myrmidon/foraging/idle-gate-settings.ts` — the settings
+  service (read/update/audit) and the per-pass read;
+- `server/src/myrmidon/foraging/idle-gate-routes.ts` — GET/PATCH routes;
+- `server/src/myrmidon/foraging/service.ts` — the gate in `runPass`
+  (`createDbForagingIdleCheck`: the queue + idle-agent SQL);
+- tests: `service.myrmidon.test.ts` (the three acceptance rules, the
+  per-role filtering, the re-read without recreating the service),
+  `idle-gate-settings.myrmidon.test.ts` (the settings service),
+  `packages/shared/src/myrmidon-foraging-idle-gate.test.ts` (the resolver).

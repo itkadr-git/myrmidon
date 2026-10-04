@@ -201,6 +201,12 @@ export interface ForagingSweepResult {
   spentCents: number;
   stoppedByBudget: boolean;
   errors: number;
+  /**
+   * myrmidon(1.6.3-FORAGING-IDLE-GATE): why a role's sources were skipped —
+   * `queue_not_empty` (the role has unassigned open tasks waiting) or
+   * `no_idle_agent` (no agent of the role is free). Absent when every
+   * enabled source's role was idle or the gate is off.
+   */
   skippedReason?: "queue_not_empty" | "no_idle_agent";
 }
 
