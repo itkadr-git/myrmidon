@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { compareWithBaseline } from './service.js';
-import { BaselineMetricsResponse, BaselineGroupMetrics } from './service.js';
+import type { BaselineMetricsResponse } from './service.js';
+import type { BaselineGroupMetrics } from './metrics.js';
 
 // Mock data for testing
 const mockGroupMetrics: BaselineGroupMetrics = {

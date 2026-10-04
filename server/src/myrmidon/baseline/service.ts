@@ -23,7 +23,7 @@ import {
   loadRuns,
   loadTransitions,
 } from "./queries.js";
-import { baselineMetricSnapshots } from "@paperclipai/db/schema";
+import { baselineMetricSnapshots } from "@paperclipai/db";
 
 export interface BaselineMetricsResponse {
   window: { from: string; to: string };
