@@ -48,6 +48,7 @@ import { createDurableChatWakeupRequest } from "../../services/durable-chat-wake
 import { settleUnrecoverableExecutions } from "../../services/execution-recovery-resolution.js";
 import { heartbeatService } from "../../services/heartbeat.js";
 import { queueIssueAssignmentWakeup } from "../../services/issue-assignment-wakeup.js";
+import { instanceSettingsService } from "../../services/instance-settings.js";
 import { LEGACY_RECOVERY_CAUSE } from "../../services/legacy-execution-recovery.js";
 import { isChatOwnerMessageWake } from "./chat-backed.js";
 import {
@@ -134,6 +135,8 @@ describeEmbeddedPostgres("a chat is never held and an owner message wakes (CHAT-
     tempDb = await startEmbeddedPostgresTestDatabase("myrmidon-chat-hold-");
     db = createDb(tempDb.connectionString);
     heartbeat = heartbeatService(db, { runtimeEnv: { ...process.env, PAPERCLIP_IN_WORKTREE: "false" } });
+    // A chat conversation only takes wakes while Agent Chat is on.
+    await instanceSettingsService(db).updateExperimental({ enableAgentChat: true });
   }, 60_000);
 
   afterEach(async () => {
