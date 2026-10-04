@@ -34,12 +34,18 @@
 // `GET /containers/{id}/archive`, which works in every container state. No marker
 // means "nothing verified applied", never "unchanged".
 //
-// Secrets and the image. The create body carries no `Env`: anything there is
-// shown by `docker inspect`. API_SERVER_KEY and every other secret reach the
-// gateway only as the profile's hermes/.env, so the image has to read them from
-// there. Whether it does is part of the runtime contract an image declares
-// (template.ts BOT_RUNTIME_CONTRACT_LABEL); create/recreate refuse an image
-// that does not declare it, before anything is created.
+// Secrets and the image. The create body carries no secret in `Env`: anything
+// there is shown by `docker inspect`. API_SERVER_KEY and every other secret
+// reach the gateway only as the profile's hermes/.env, so the image has to read
+// them from there. Whether it does is part of the runtime contract an image
+// declares (template.ts BOT_RUNTIME_CONTRACT_LABEL); create/recreate refuse an
+// image that does not declare it, before anything is created.
+//
+// BUILD-OFFLOAD C: the single exception is the DEVBUILD_HOST/USER/BASE env of
+// the dev-variant image (myrmidon-hermes-dev) when MYRMIDON_DEVBUILD_HOST is
+// set: those are internal hostnames and paths, not secrets, so the container
+// env is acceptable; the ssh key of the build server is a secret and travels
+// only as the read-only file mount /opt/devbuild-ssh, never as env.
 
 import { CLONE_HYGIENE_REPORT_PATH } from "./clone-hygiene.js"; // myrmidon(1.6.2-BOT-DISK-C)
 import { randomBytes } from "node:crypto";
@@ -57,15 +63,20 @@ import {
   buildBinds,
   buildLabels,
   containerNameFor,
+  devbuildContainerEnv,
+  devbuildKeyMount,
   helperContainerNameFor,
+  isDevBuildImage,
   isImageAllowed,
   isUnderManagedDir,
   mountRootSegment,
+  parseDevbuildSettings,
   parseImageAllowlist,
   parseMountSourceAllowlist,
   replacementContainerNameFor,
   resolveProfileFileTarget,
   validateBotKey,
+  type DevbuildSettings,
 } from "./template.js";
 import { buildUstarArchive, parseUstarArchive, type UstarEntry } from "./ustar.js";
 
@@ -103,6 +114,10 @@ export interface DockerDriverConfig {
   /** Host directories a card may mount into a bot container, read-only
    *  (MYRMIDON_BOT_MOUNT_SOURCES). Empty means "nothing extra may be mounted". */
   mountSources: readonly string[];
+  /** BUILD-OFFLOAD C: parsed MYRMIDON_DEVBUILD_* settings. host: null — the
+   *  devbuild wiring is off; no DEVBUILD_* env and no key mount is added to any
+   *  container. Only a dev-variant image (isDevBuildImage) ever gets them. */
+  devbuild: DevbuildSettings;
 }
 
 export function readDockerDriverConfig(env: NodeJS.ProcessEnv = process.env): DockerDriverConfig {
@@ -116,6 +131,7 @@ export function readDockerDriverConfig(env: NodeJS.ProcessEnv = process.env): Do
     network: env[BOT_NETWORK_ENV]?.trim() || DEFAULT_BOT_NETWORK,
     allowlist: parseImageAllowlist(env[BOT_IMAGE_ALLOWLIST_ENV]),
     mountSources: parseMountSourceAllowlist(env[BOT_MOUNT_SOURCES_ENV]),
+    devbuild: parseDevbuildSettings(env),
   };
 }
 
@@ -146,6 +162,7 @@ export interface DockerDriverOptions {
 export interface DockerCreateContainerBody {
   Image: string;
   Labels: Record<string, string>;
+  Env: string[];
   HostConfig: {
     Memory: number;
     NanoCpus: number;
@@ -165,16 +182,18 @@ export interface DockerCreateContainerBody {
 /**
  * Pure builder for the `POST /containers/create` body — the actual "fixed
  * template" enforcement. Never adds anything a caller passed beyond `spec`'s
- * fields: no arbitrary binds, no host network, no privileged mode, and no
- * `Env` (secrets travel only in the profile's hermes/.env). Throws on an
- * image outside the allowlist, a network other than the one configured for
- * this driver, or an extra mount whose source is not in
+ * fields: no arbitrary binds, no host network, no privileged mode, and the
+ * only `Env` entries are the driver's own DEVBUILD_* values for a dev-variant
+ * image with the devbuild wiring on (internal hostnames and paths, not
+ * secrets; every secret still travels only in the profile's hermes/.env).
+ * Throws on an image outside the allowlist, a network other than the one
+ * configured for this driver, or an extra mount whose source is not in
  * MYRMIDON_BOT_MOUNT_SOURCES (template.ts buildBinds). `sharedPackageCachePath`
  * (instance settings, 1.6.1-BOT-DISK-B) adds the fixed package cache binds.
  */
 export function buildCreateContainerRequestBody(
   spec: BotContainerSpec,
-  config: Pick<DockerDriverConfig, "volumeRoot" | "network" | "allowlist" | "mountSources">,
+  config: Pick<DockerDriverConfig, "volumeRoot" | "network" | "allowlist" | "mountSources" | "devbuild">,
   sharedPackageCachePath?: string,
   gitMirror = false,
 ): DockerCreateContainerBody {
@@ -190,9 +209,21 @@ export function buildCreateContainerRequestBody(
   if (spec.memoryMb <= 0 || spec.cpus <= 0 || spec.pidsLimit <= 0) {
     throw new BotContainerTemplateError("memoryMb, cpus and pidsLimit must all be positive");
   }
+  // BUILD-OFFLOAD C: the devbuild env and the read-only key mount go only to a
+  // dev-variant image, and only when MYRMIDON_DEVBUILD_HOST is set. The key
+  // mount rides the ordinary extra-mount path (its source must be listed in
+  // MYRMIDON_BOT_MOUNT_SOURCES and its container path is reserved, so a card
+  // can neither invent the source nor take the path over); it is appended
+  // after the card's own mounts, and a card cannot ask for it itself.
+  const devbuild: DevbuildSettings = isDevBuildImage(spec.image)
+    ? config.devbuild
+    : { host: null, user: "", base: "" };
+  const env = devbuildContainerEnv(devbuild);
+  const keyMount = devbuildKeyMount(devbuild, config.mountSources);
   return {
     Image: spec.image,
     Labels: buildLabels(spec),
+    Env: env ? Object.entries(env).map(([name, value]) => `${name}=${value}`) : [],
     HostConfig: {
       Memory: Math.round(spec.memoryMb * 1024 * 1024),
       NanoCpus: Math.round(spec.cpus * 1_000_000_000),
@@ -209,6 +240,7 @@ export function buildCreateContainerRequestBody(
         allowedSources: config.mountSources,
         sharedPackageCachePath,
         gitMirror,
+        driverMount: keyMount,
       }),
       Privileged: false,
     },

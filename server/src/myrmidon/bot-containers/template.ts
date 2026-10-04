@@ -67,6 +67,96 @@ export function parseMountSourceAllowlist(raw: string | undefined): string[] {
     .filter((entry) => entry.length > 0);
 }
 
+// ---------------------------------------------------------------------------
+// BUILD-OFFLOAD C: the dev-variant build server (devbuild)
+// ---------------------------------------------------------------------------
+
+/** Board env: hostname of the build server a dev-variant bot runs its builds
+ *  on. Unset/blank — the devbuild wiring is off and nothing is added to any
+ *  container (the operator keeps the address itself off the board's hosts, part
+ *  D of BUILD-OFFLOAD sets it on the board host). */
+export const DEVBUILD_HOST_ENV = "MYRMIDON_DEVBUILD_HOST";
+/** Board env: ssh user on the build server. Default `devbuild`. */
+export const DEVBUILD_USER_ENV = "MYRMIDON_DEVBUILD_USER";
+export const DEFAULT_DEVBUILD_USER = "devbuild";
+/** Board env: base directory of build workspaces on the build server.
+ *  Default `/srv/devbuild`. */
+export const DEVBUILD_BASE_ENV = "MYRMIDON_DEVBUILD_BASE";
+export const DEFAULT_DEVBUILD_BASE = "/srv/devbuild";
+
+/** Parsed MYRMIDON_DEVBUILD_* settings. `host: null` means "the devbuild
+ *  wiring is off": no DEVBUILD_* env, no key mount, for any bot. Whitespace-only
+ *  values count as unset (the same trim rule the other comma lists use). */
+export interface DevbuildSettings {
+  host: string | null;
+  /** Default DEFAULT_DEVBUILD_USER when the setting is unset. */
+  user: string;
+  /** Default DEFAULT_DEVBUILD_BASE when the setting is unset. */
+  base: string;
+}
+
+/** Directory-name suffix the operator's MYRMIDON_BOT_MOUNT_SOURCES entry for
+ *  the devbuild ssh key must end with (`…/devbuild-ssh`). Only the suffix is
+ *  fixed here: the parent directory is the operator's choice, and the address
+ *  of the build server itself never enters the code. */
+export const DEVBUILD_KEY_MOUNT_SOURCE_SUFFIX = "devbuild-ssh";
+
+export function parseDevbuildSettings(env: NodeJS.ProcessEnv): DevbuildSettings {
+  const host = env[DEVBUILD_HOST_ENV]?.trim() || null;
+  const user = env[DEVBUILD_USER_ENV]?.trim() || DEFAULT_DEVBUILD_USER;
+  const base = env[DEVBUILD_BASE_ENV]?.trim() || DEFAULT_DEVBUILD_BASE;
+  return { host, user, base };
+}
+
+/** True for the development variant of the bot runtime image
+ *  (`ghcr.io/itkadr-git/myrmidon-hermes-dev`). The image carries the
+ *  `io.github.itkadr-git.myrmidon.variant="dev"` label, but the driver never
+ *  inspects image labels at create time (it only checks the runtime-contract
+ *  label), so the variant is recognized by the image reference itself: the
+ *  repository name must end in `myrmidon-hermes-dev`, with any registry prefix
+ *  and any tag/digest. This is deliberately conservative — a similarly named
+ *  image in another namespace gets the devbuild wiring only if its repo path
+ *  ends with the exact segment, and an operator who allows such an image in
+ *  MYRMIDON_BOT_IMAGE_ALLOWLIST has named it explicitly. */
+export function isDevBuildImage(image: string): boolean {
+  // Strip a tag or digest ("name:tag", "name@sha256:…"), keeping any registry
+  // and namespace prefixes; then compare the last path segment.
+  const name = image.split("@")[0]!.replace(/:[^:/@]+$/, "");
+  const segments = name.split("/");
+  return segments[segments.length - 1] === "myrmidon-hermes-dev";
+}
+
+/** The container env entries a dev-variant bot gets when the devbuild wiring is
+ *  on (DEVBUILD_HOST set). The values are internal hostnames and paths, not
+ *  secrets: they may sit in the container env (which `docker inspect` shows),
+ *  unlike the ssh key, which travels only as the read-only file mount at
+ *  DEVBUILD_SSH_CONTAINER_PATH. Null when the wiring is off — the caller adds
+ *  nothing. The card's profile .env is a separate file (hermes/.env) and is not
+ *  touched by this. */
+export function devbuildContainerEnv(settings: DevbuildSettings): Record<string, string> | null {
+  if (settings.host === null) return null;
+  return {
+    DEVBUILD_HOST: settings.host,
+    DEVBUILD_USER: settings.user,
+    DEVBUILD_BASE: settings.base,
+  };
+}
+
+/** The read-only key mount a dev-variant bot gets when the devbuild wiring is
+ *  on, or null. The source must come from MYRMIDON_BOT_MOUNT_SOURCES — the
+ *  operator names the key directory there like any other extra mount source —
+ *  so a card can never invent a host path. The container path
+ *  (/opt/devbuild-ssh) is reserved in RESERVED_CONTAINER_PATHS, so a card's own
+ *  extraMounts can never take it over. */
+export function devbuildKeyMount(settings: DevbuildSettings, mountSources: readonly string[]): BotExtraMount | null {
+  if (settings.host === null) return null;
+  const source = mountSources.find(
+    (candidate) => unsafeAbsolutePathReason(candidate) === null && candidate.endsWith(DEVBUILD_KEY_MOUNT_SOURCE_SUFFIX),
+  );
+  if (!source) return null;
+  return { source, containerPath: DEVBUILD_SSH_CONTAINER_PATH, readOnly: true };
+}
+
 function escapeRegExpLiteral(chunk: string): string {
   return chunk.replace(/[.+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -109,7 +199,12 @@ export const BOT_VOLUME_MOUNTS: readonly BotVolumeMount[] = [
  *  The package cache binds are the only writable extra binds; their host
  *  subdirectories and container paths are fixed here (PACKAGE_CACHE_MOUNTS)
  *  and mirrored by dockergate, which accepts them only under its own
- *  `packageCacheRoot` (tools/dockergate/internal/policy/create.go). */
+ *  `packageCacheRoot` (tools/dockergate/internal/policy/create.go).
+ *  The driver's own devbuild key mount (BUILD-OFFLOAD C) rides `driverMount`:
+ *  its container path is exactly the reserved DEVBUILD_SSH_CONTAINER_PATH (so it
+ *  cannot go through validateExtraMounts, which rejects reserved paths for card
+ *  mounts on purpose), but its source is held to the same
+ *  MYRMIDON_BOT_MOUNT_SOURCES check as any card mount. */
 export function buildBinds(
   volumeRoot: string,
   botKey: string,
@@ -120,14 +215,20 @@ export function buildBinds(
     /** myrmidon(1.6.2-BOT-DISK-C): also bind `<cache>/git` read-only at
      *  `/cache/git` (the board's git mirrors). Ignored without a cache path. */
     gitMirror?: boolean;
+    /** myrmidon(1.6.1-BUILD-OFFLOAD C): a mount the DRIVER itself introduces
+     *  (the devbuild ssh key), not the bot card. Validated against the same
+     *  source allowlist and reserved-path rules, appended after extra mounts. */
+    driverMount?: BotExtraMount | null;
   } = {},
 ): string[] {
   validateBotKey(botKey);
   const mounts = extra.mounts ?? [];
   validateExtraMounts(mounts, extra.allowedSources ?? []);
+  const driverBind = extra.driverMount ? [validateDriverMount(extra.driverMount, extra.allowedSources ?? [])] : [];
   const binds = [
     ...BOT_VOLUME_MOUNTS.map((mount) => `${volumeRoot}/${botKey}/${mount.hostSuffix}:${mount.containerPath}`),
     ...mounts.map((mount) => `${mount.source}:${mount.containerPath}:ro`),
+    ...driverBind,
   ];
   const cache = extra.sharedPackageCachePath;
   if (cache) {
@@ -223,10 +324,40 @@ export function packageCacheEnv(pnpmStore: "workspace" | "shared" = "workspace")
   return env;
 }
 
+/** The one extra bind the driver itself may add (the devbuild ssh key mount).
+ *  Checked like a card mount for its source, but its container path is fixed to
+ *  DEVBUILD_SSH_CONTAINER_PATH — the path a card's mount is refused at, so only
+ *  the driver can ever occupy it. */
+function validateDriverMount(mount: BotExtraMount, allowedSources: readonly string[]): string {
+  if (mount.readOnly !== true) {
+    throw new BotContainerTemplateError(`driver mount of ${JSON.stringify(mount.source)} must be read-only`);
+  }
+  if (mount.containerPath !== DEVBUILD_SSH_CONTAINER_PATH) {
+    throw new BotContainerTemplateError(
+      `driver mount of ${JSON.stringify(mount.source)} must use ${DEVBUILD_SSH_CONTAINER_PATH}`,
+    );
+  }
+  const allowed = new Set(allowedSources.filter((source) => unsafeAbsolutePathReason(source) === null));
+  if (!allowed.has(mount.source)) {
+    throw new BotContainerTemplateError(
+      `driver mount source ${JSON.stringify(mount.source)} is not listed in ${BOT_MOUNT_SOURCES_ENV}`,
+    );
+  }
+  return `${mount.source}:${mount.containerPath}:ro`;
+}
+
 /** Mount points and paths the driver itself owns inside every bot container: an
  *  extra mount may neither take one of them over nor shadow a path under them
- *  (the profile lands in the three volumes, and `/tmp` is the image's tmpfs). */
-const RESERVED_CONTAINER_PATHS: readonly string[] = [...BOT_VOLUME_MOUNTS.map((mount) => mount.containerPath), "/tmp"];
+ *  (the profile lands in the three volumes, and `/tmp` is the image's tmpfs).
+ *  DEVBUILD_SSH_CONTAINER_PATH is the driver's own devbuild key mount (BUILD-
+ *  OFFLOAD C: the read-only ssh key of the build server a dev-variant bot uses);
+ *  reserving it here means a card's `extraMounts` can never take it over. */
+export const DEVBUILD_SSH_CONTAINER_PATH = "/opt/devbuild-ssh";
+const RESERVED_CONTAINER_PATHS: readonly string[] = [
+  ...BOT_VOLUME_MOUNTS.map((mount) => mount.containerPath),
+  "/tmp",
+  DEVBUILD_SSH_CONTAINER_PATH,
+];
 
 /** Why `value` is not usable as an absolute host directory or container mount
  *  point, or null when it is. Deliberately strict: no relative form, no "..",
