@@ -80,6 +80,8 @@ A track writes only into its own section. A row is added in the same PR as the s
 | Variable | Function | Default | What it does | How to disable / special |
 |---|---|---|---|---|
 | `MYRMIDON_TELEGRAM_DM_STATUS` | U1 | off | For a bridged Telegram DM (`MYRMIDON_TELEGRAM_DM_CONVERSATIONS`, X8b): the run gets one editable status message instead of milestone silence. `queued` and `working` coalesce into one durable status row (`run:<id>:dmstatus:<endpoint>`) — the delivery lane posts it once and edits the same provider message in place as the phase changes; the run's final answer replaces that message (the vendor's existing replace lane). Failure, admin-attention and completion milestones still publish as before, and the `/stop` terminal milestone stays suppressed (X8h) | Any value other than `1`/`true`/`yes`/`on` — the vendor path unchanged: routine milestones stay suppressed in the bridged DM (X8h). Read on every sweep, no restart. Groups and topics are unaffected |
+| `MYRMIDON_TELEGRAM_DM_PROGRESS` | DM-PROGRESS | follows `MYRMIDON_TELEGRAM_DM_STATUS` | Forces the live progress steps in the bridged Telegram DM status message on or off, over the value saved in Instance settings → General | `1`/`true`/`yes`/`on` or `0`/`false`/`no`/`off`; anything else — the saved value. Read on every status update, no restart |
+| `MYRMIDON_TELEGRAM_DM_PROGRESS_INTERVAL_SEC` | DM-PROGRESS | `45` | Forces the minimum spacing between two progress edits of the status message, seconds (15–300, clamped) | A non-integer value — the saved value. Read on every status update, no restart |
 | `MYRMIDON_TELEGRAM_SPLIT_MAX_PARTS` | U1 | `0` (off) | How many parts a long structured Telegram answer may be split into inline, by paragraph/line/word boundaries, instead of the vendor's single `telegram_markdown_attachment` file. `0` keeps the vendor behavior byte for byte. Applies to answers the vendor already sends inline (plain prose) only for the structured case: plain-prose splitting continues to work without this setting | Unset, `0`, non-numeric or not a non-negative integer — the vendor's single attachment. Read at delivery time, no restart. Parts are capped: a document needing more parts stays an attachment |
 | `MYRMIDON_TELEGRAM_FILE_LIMIT_BYTES` | P8 | unset — 25 MB (as with the vendor) | Ceiling on the size of a single file the Telegram adapter downloads, in bytes. For your own Bot API — up to `2147483648` (2 GB) | Unset, `0`, negative or non-numeric — the vendor's 25 MB. The effective limit is the lesser of this value and `PAPERCLIP_ATTACHMENT_MAX_BYTES`; the cloud Bot API itself does not serve files over 20 MB. Read at adapter creation — a restart is needed after a change |
 | `MYRMIDON_TELEGRAM_DM_CONVERSATIONS` | X8a/X8b/X8c/X8e | empty (off) | Comma-separated Telegram endpoint ids, or `*` — all. For enabled endpoints: the bot's DM becomes a permanent Agent Chat conversation (key `telegram:<user id>`), not a new `chat_channel` task per session (bridge X8b; also requires `enableAgentChat` enabled; read on every message, no restart); in this DM, OpenClaw-style commands work: `/help /new /model /think /stop /status /close /task` (X8c); Telegram shows the DM its own main command list (menu X8e: `setMyCommands`, scope `all_private_chats`; set when the bot connects or reconnects). Groups and topics are unaffected — they keep the previous vendor menu. The contract is X8a | Empty (unset, only whitespace or only commas) — the vendor path unchanged: no bridge, no commands, no Bot API calls beyond the vendor's (the private-chat menu is neither set nor removed). Set but the endpoint is not in the list — its DM follows the vendor path, and on the next bot connection its private-chat menu is removed (`deleteMyCommands`, scope `all_private_chats`); when an endpoint is removed the private-chat menu is always removed while the variable is non-empty. To give the bot back the vendor private-chat menu, reconnect the bot before clearing the variable, leaving someone else's id in it — a cleared variable does not itself remove the menu in Telegram. Parts X8b (#104), X8c (#103) and X8e (#101) merged together with this row |
@@ -502,8 +504,8 @@ the key itself is a company secret, not an environment variable.
 
 | Variable | Function | Default | What it does | How to disable / special |
 |---|---|---|---|---|
-| `MYRMIDON_HINDSIGHT_API_URL` | MEMORY-UI | unset (off) | Base address of the shared memory (hindsight) service as the board server sees it; the tab's list, export, delete and clear calls go there | Unset, empty or not an `http(s)://` URL — the section is off: status answers `enabled: false`, data routes answer 503. Read per request, no restart needed. The address is not logged |
-| `MYRMIDON_HINDSIGHT_KEY_SECRET` | MEMORY-UI | unset (off) | Name of the company secret holding the memory service API key (self-hosted deployments with no auth may name a missing secret — the calls then go without a token) | Unset or empty — off, same as above. The key value is read only for the duration of a call, never written to the log or an API response |
+| `MYRMIDON_HINDSIGHT_API_URL` | MEMORY-UI | unset (falls back to `MYRMIDON_BOT_HINDSIGHT_API_URL`) | Base address of the shared memory (hindsight) service as the board server sees it; the tab's list, export, delete and clear calls go there. Address precedence: the instance setting `general.agentMemory.apiUrl` (Instance settings → General → Agent memory), then this variable, then `MYRMIDON_BOT_HINDSIGHT_API_URL` (the same service as the bots see it) | No address at all, or not an `http(s)://` URL — the section is off: status answers `enabled: false`, data routes answer 503. The setting `general.agentMemory.enabled = false` switches the section off even with an address. The setting is re-read on every request, no restart needed. The address is not logged |
+| `MYRMIDON_HINDSIGHT_KEY_SECRET` | MEMORY-UI | unset (no key) | Name of the company secret holding the memory service API key; optional. The key is sent only when a secret name is set (setting `general.agentMemory.keySecretName`, then this variable); a service without authentication needs none. A named secret that does not exist means calls without a token | Unset or empty — no key is sent (the section stays on if an address is known). The key value is read only for the duration of a call, never written to the log or an API response |
 
 ## 1.4 — agent instructions revisions (H2)
 
@@ -1020,6 +1022,37 @@ with an in-module interval of 300 s; a pass whose previous run is still going is
 signal per agent per UTC day: a system-notice comment on the agent's most recent in_progress
 task, deduplicated by the `wip-limit:<agentId>:<utc-day>` metadata key. The attention feed
 (source kind `wip_limit`) needs no sweep — it recomputes on every list.
+
+## REVIEW-ROUTING: automatic reviewer for tasks in review
+
+Settings of `server/src/myrmidon/review-routing/`. The feature has no environment variables:
+the values are a policy choice stored in `instance_settings.general.reviewRouting` and changed
+on the Company Settings → Review routing screen or via
+`GET`/`PUT /api/myrmidon/companies/:companyId/review-routing/settings` (any company member
+reads, instance admins write; the values are instance-wide). The sweep reads them on every
+pass, so a change applies within about a minute, with no restart. Absent or unreadable
+settings mean the defaults below.
+
+| Field | Default | What it does | How to disable / special |
+|---|---|---|---|
+| `enabled` | `true` | Master switch of the routing sweep: a task in `in_review` with no reviewer gets one, a review without a verdict is signalled and reassigned | `false` — the board does nothing and its attention cards disappear (vendor behavior: the task waits for a manual assignment) |
+| `reviewerRoles` | `["reviewer"]` | Caste keys (`agents.role`) whose invokable agents may be picked as reviewers | An empty list — nobody is eligible, so every reviewer-less task is signalled as `no_reviewer` |
+| `maxLoadPerReviewer` | `5` | A reviewer already holding this many tasks in flight (`in_progress` + `in_review`, as assignee) is not picked. From 1 to 100 | — |
+| `reassignAfterHours` | `24` | Hours a review this routing started may stay without a verdict before it is signalled (`review_overdue` attention card, one system comment) and moved to another reviewer that has not had the task. From 0 to 2160 | `0` — never signal or reassign |
+
+How it works. A pass every 60 s (an in-module interval; passes are skipped during maintenance
+mode) looks at the 200 oldest-updated visible `in_review` tasks per company, 20 moves per pass.
+A task needs a reviewer when it has no review stage participant and no execution workflow in
+flight (a policy with no stages is kept and extended; a non-idle execution state or a monitor
+leaves the task alone). The picked reviewer is the least-loaded eligible agent (ties by id),
+never the task's author (`createdByAgentId`) or its assignee, and becomes the assignee while
+the review is pending; the previous assignee is the return assignee. Approving closes the task
+as done, requesting changes sends it back. The routing writes one system comment and one
+activity entry (`issue.review_routing.assigned` / `issue.review_routing.reassigned`) per move
+and wakes the reviewer. With no eligible reviewer the task is signalled on the attention desk
+(source kind `review_routing`, `no_reviewer`) instead of staying silent. The overdue clock and
+the reassignment apply only to reviews this routing started (they are found by their activity
+entries); a review set up by a person is never reassigned automatically.
 
 ## 1.7 — METRICS: the board's own /metrics endpoint (Prometheus text)
 
