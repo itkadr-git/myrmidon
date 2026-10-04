@@ -47,6 +47,8 @@ version file to edit. Base Paperclip version is in the image label
   enabled from the environment) — fixed together with the journal key.
   See [SETTINGS.md](SETTINGS.md).
 
+
+
 ### Custom castes, consumers (CUSTOM-CASTES B)
 
 - The server-side consumers of the company caste directory (part A ships the
@@ -79,6 +81,8 @@ version file to edit. Base Paperclip version is in the image label
   card for the lead and the operator, computed on the fly from a
   process-level signal registry (no new store); cards fade after
   `MYRMIDON_STALE_BLOCK_SIGNAL_TTL_MS` (default 24 h).
+
+
 ### Gateway-priced hermes runs (HERMES-USAGE-COST)
 
 - hermes_gateway runs no longer land in the cost ledger as unpriced $0
