@@ -23,6 +23,20 @@ invocation-less route seams until the holding-action conveyor lands. A caller
 that is not an agent (the board, an instance admin) is not subject to the matrix,
 and a denied request never runs the route work.
 
+## How this is tested
+
+- `registry.myrmidon.test.ts`, next to the registry, reads every seam out of the
+  source: remove the gate call from a connected route and the suite goes red.
+- `gate-deny.myrmidon.test.ts`, next to the gate, pins the deny half of the gate
+  itself — `forbidden` becomes 403 `autonomy_forbidden`, `allowed` passes, and a
+  caller that is not an agent is not subject to the matrix.
+- `server/src/routes/agents-autonomy-e2e.myrmidon.test.ts` is the route-level end
+  to end: the real express route, the real gate and a real matrix document (only
+  the DB-backed factory is swapped for an in-memory store). An agent caller whose
+  instructions demand a forbidden `change_instructions` gets 403
+  `autonomy_forbidden`, and the instructions bundle is not rewritten — the route
+  does not run its work after a refused verdict.
+
 ## Defined, but not enforced on this tree yet
 
 These classes exist in the matrix contract but no route seam consults them here,

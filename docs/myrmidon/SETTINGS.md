@@ -727,9 +727,19 @@ mirrored in `docs/myrmidon/guides/autonomy-matrix.md` (EN) and `.ru.md` (RU).
 
 No environment variables, no new secrets, nothing to toggle: the registry is a
 static map plus its guard test, so a matrix edit needs no restart and no re-read.
-Remove: `registry.ts`, `registry.myrmidon.test.ts`, `end-to-end.myrmidon.test.ts`,
-the two guide files and this section (the enforcement seams themselves belong to
-their own entries above).
+
+Three tests hold the behaviour: `registry.myrmidon.test.ts` reads each seam out of
+the source (remove the gate call from a connected route and it goes red),
+`gate-deny.myrmidon.test.ts` pins the deny half of the gate itself, and
+`server/src/routes/agents-autonomy-e2e.myrmidon.test.ts` drives the real express
+route with the real gate and a real matrix document (only the DB-backed factory
+is swapped for an in-memory store): an agent caller whose instructions demand a
+forbidden `change_instructions` gets 403 `autonomy_forbidden` and the instructions
+bundle is not rewritten.
+
+Remove: `registry.ts`, `registry.myrmidon.test.ts`, `gate-deny.myrmidon.test.ts`,
+`server/src/routes/agents-autonomy-e2e.myrmidon.test.ts`, the two guide files and
+this section (the enforcement seams themselves belong to their own entries above).
 
 ## 1.6 — CTO-CHAT B (the board chat planner: owner text -> proposed epic)
 
