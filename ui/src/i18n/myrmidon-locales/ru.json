@@ -845,7 +845,7 @@
     "pluginIdLabel": "ID плагина",
     "pluginIdPlaceholder": "имя-пакета-плагина",
     "keyLabel": "Ключ доступа",
-    "keyPlaceholder": "Введите ключ доступа к плагину",
+    "keyPlaceholder": "PEK1.<payload>.<подпись>",
     "expiresAtLabel": "Срок действия",
     "noKeysMessage": "Ключи доступа к плагинам ещё не зарегистрированы",
     "statusActive": "Активен",
@@ -858,7 +858,14 @@
     "removeKeyDescription": "Удалить этот ключ? Плагин перестанет быть разблокированным, если не останется другого действующего ключа.",
     "cancel": "Отмена",
     "loading": "Загрузка настроек ключей плагинов...",
-    "saveFailed": "Не удалось сохранить ключ. Попробуйте снова."
+    "saveFailed": "Не удалось сохранить ключ. Попробуйте снова.",
+    "publicKeyLabel": "Открытый ключ проверки",
+    "publicKeyPlaceholder": "-----BEGIN PUBLIC KEY----- (ed25519, PEM); пусто — очистить",
+    "publicKeySourceSettings": "Источник: настройки экземпляра",
+    "publicKeySourceEnv": "Источник: принудительно задан MYRMIDON_PLUGIN_ENTITLEMENT_PUBLIC_KEY",
+    "publicKeySourceNone": "Открытый ключ проверки не задан — ни один ключ доступа не будет принят",
+    "publicKeySaveButton": "Сохранить открытый ключ",
+    "publicKeySaveFailed": "Не удалось сохранить открытый ключ. Попробуйте снова."
   },
   "telegramDmProgress": {
     "title": "Telegram-личка: ход работы",
