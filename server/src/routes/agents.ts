@@ -58,6 +58,7 @@ import {
   toAccountHandle,
   type AgentAdapterType,
 } from "@paperclipai/shared";
+import { dbAutonomyGate } from "../myrmidon/autonomy/gate.js";
 import {
   isForbiddenConfigEnvKey,
   normalizePaperclipRunnerAdapterConfig,
@@ -5167,6 +5168,9 @@ export function agentRoutes(
 
     await assertCanManageInstructionsPath(req, existing);
     assertExternalInstructionsAdmin(req, existing);
+    
+    // myrmidon(1.6.2-AUTONOMY-MATRIX): enforce change_instructions verdict
+    await dbAutonomyGate(db).assertAllowed(req, "change_instructions");
 
     const existingAdapterConfig = asRecord(existing.adapterConfig) ?? {};
     const explicitKey = asNonEmptyString(req.body.adapterConfigKey);
@@ -5254,6 +5258,9 @@ export function agentRoutes(
     await assertCanManageInstructionsPath(req, existing);
     assertExternalInstructionsAdmin(req, existing);
     if (req.body.mode === "external") assertInstanceAdmin(req);
+    
+    // myrmidon(1.6.2-AUTONOMY-MATRIX): enforce change_instructions verdict
+    await dbAutonomyGate(db).assertAllowed(req, "change_instructions");
 
     const actor = getActorInfo(req);
     const { bundle, adapterConfig } = await instructions.updateBundle(existing, req.body);
@@ -5378,6 +5385,9 @@ export function agentRoutes(
     if (!existing) return;
     await assertCanManageInstructionsPath(req, existing);
     assertExternalInstructionsAdmin(req, existing);
+    
+    // myrmidon(1.6.2-AUTONOMY-MATRIX): enforce change_instructions verdict
+    await dbAutonomyGate(db).assertAllowed(req, "change_instructions");
 
     const relativePath = typeof req.query.path === "string" ? req.query.path : "";
     if (!relativePath.trim()) {

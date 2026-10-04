@@ -21,6 +21,7 @@ import {
   recordAgentInstructionsRevision,
   type AgentInstructionsRevisionRecord,
 } from "./service.js";
+import { dbAutonomyGate } from "../../myrmidon/autonomy/gate.js";
 
 export const INSTRUCTIONS_REVISION_ROLLBACK_ACTION = "agent.instructions_revision_rollback";
 
@@ -119,6 +120,9 @@ export function agentInstructionsRevisionsRoutes(db: Db): Router {
   router.post("/agents/:id/instructions-revisions/:revisionId/rollback", async (req, res) => {
     const agent = await loadAgentForInstructionsWrite(req, res, db, req.params.id as string);
     if (!agent) return;
+
+    // myrmidon(1.6.2-AUTONOMY-MATRIX): enforce change_instructions verdict
+    await dbAutonomyGate(db).assertAllowed(req, "change_instructions");
 
     const revision = await getAgentInstructionsRevision(db, agent, req.params.revisionId as string);
     if (!revision) {
