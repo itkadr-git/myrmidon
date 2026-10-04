@@ -157,6 +157,12 @@ export interface InstanceGeneralSettings {
    */
   swarmClaim?: SwarmClaimSettings;
   /**
+   * myrmidon(1.6.1-BOT-DISK-D): shared mount settings for bots, changed from
+   * the instance settings page. Controls whether bots can access a shared directory
+   * and what permissions they have. Absent means "shared mount is disabled".
+   */
+  sharedMount?: SharedMountSettings;
+  /**
    * myrmidon(1.6.1 SWARM-SETTINGS-UI): the change journal of the swarm-claim
    * pilot settings — who changed what, and when, newest first. Written by the
    * swarm-claim settings service on every PATCH, read by
