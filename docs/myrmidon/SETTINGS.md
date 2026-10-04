@@ -686,6 +686,17 @@ action point — forbidden refuses with a clear error, approval_required maps to
 existing toolActionRequests + approval-card conveyor, allowed passes. Regulations UI
 (Part B) edits the matrix through this API.
 
+Enforced routes (1.6.2, `change_instructions` action class — see
+`docs/myrmidon/guides/autonomy-matrix-instructions.md`): `PATCH /agents/:id/instructions-path`,
+`PATCH /agents/:id/instructions-bundle`, `DELETE /agents/:id/instructions-bundle/file`,
+`POST /agents/:id/instructions-revisions/:revisionId/rollback`. Verdicts at these seams:
+`forbidden` -> 403 `autonomy_forbidden`; `approval_required` -> 403
+`autonomy_approval_required` (deny until the holding-action conveyor for
+invocation-less routes lands); board/admin callers are not subject to the matrix;
+denied requests never rewrite instructions or create revisions. The matrix is read
+from `instance_settings.general.myrmidonAutonomy` on every request, so a matrix edit
+in the UI takes effect without a restart (no env override, no new settings keys).
+
 No environment variables, no new secrets. Remove: the autonomy tree, the export line in
 `packages/shared/src/index.ts`, the two marker lines in `app.ts`/`instance-settings.ts`
 and this section.

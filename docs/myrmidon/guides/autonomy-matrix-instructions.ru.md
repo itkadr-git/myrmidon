@@ -9,7 +9,7 @@
 - Изменение пути инструкций агента (`PATCH /agents/:id/instructions-path`)
 - Обновление пакета инструкций агента (`PATCH /agents/:id/instructions-bundle`)
 - Удаление файлов из пакета инструкций агента (`DELETE /agents/:id/instructions-bundle/file`)
-- Откат ревизий инструкций агента (`POST /agents/:id/config-revisions/:revisionId/rollback`)
+- Откат ревизий инструкций агента (`POST /agents/:id/instructions-revisions/:revisionId/rollback`)
 
 ## Классы действий
 
@@ -20,7 +20,7 @@
 Каждой паре (роль, класс действия) в матрице присваивается одно из трех возможных решений:
 
 - **`allowed`**: Агент может изменять инструкции без вмешательства человека
-- **`approval_required`**: Действие приостанавливается до одобрения человеком (функция в разработке)
+- **`approval_required`**: Действие отклоняется с 403 и кодом ошибки `autonomy_approval_required`, пока не появится конвейер держания действий (карточки одобрения для маршрутов без вызова инструмента); позже отказ будет заменён на держание действия
 - **`forbidden`**: Агенту запрещено изменять инструкции (возвращается 403)
 
 ## Точки контроля
@@ -30,9 +30,14 @@
 1. `PATCH /api/agents/:id/instructions-path`
 2. `PATCH /api/agents/:id/instructions-bundle`
 3. `DELETE /api/agents/:id/instructions-bundle/file`
-4. `POST /api/agents/:id/config-revisions/:revisionId/rollback`
+4. `POST /api/agents/:id/instructions-revisions/:revisionId/rollback`
 
-Для каждого из этих маршрутов, если роль запрашивающего агента имеет решение `forbidden` для класса действий `change_instructions`, система возвращает ответ 403 Forbidden с кодом ошибки `autonomy_forbidden`.
+Для каждого из этих маршрутов гейт (`dbAutonomyGate(db).decide(req, "change_instructions")`)
+выполняется до любой записи: `forbidden` возвращает 403 с кодом ошибки `autonomy_forbidden`;
+`approval_required` возвращает 403 с кодом ошибки `autonomy_approval_required`. Отклонённый
+запрос никогда не перезаписывает инструкции, пакеты или ревизии. Матрица хранится в
+`instance_settings.general.myrmidonAutonomy` и читается при каждом запросе — правка матрицы
+в интерфейсе применяется сразу, без перезапуска сервера.
 
 ## Конфигурация
 
