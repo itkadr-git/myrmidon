@@ -688,6 +688,15 @@ import {
   type BudgetHardStopSignalInput as BudgetSignalInput,
   type BudgetSignalPorts,
 } from "../myrmidon/budget-signal.js";
+// myrmidon(1.7-BUDGET-CONFIG-B): enforcement mode wiring — the mode reader the
+// budget service asks for, and the signal-only notice delivery (see
+// budget-enforcement/).
+import { readBudgetEnforcement } from "../myrmidon/budget-enforcement/settings.js";
+import {
+  deliverBudgetSignalOnly,
+  type BudgetSignalOnlyInput,
+  type BudgetSignalOnlyPorts,
+} from "../myrmidon/budget-enforcement/signal.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
@@ -9207,6 +9216,14 @@ export function heartbeatService(
     now: () => new Date(),
     log: logger,
   };
+  // myrmidon(1.7-BUDGET-CONFIG-B): comment-writing port for the signal-only
+  // notice — the same boundary, its own delivery path (see
+  // budget-enforcement/signal.ts).
+  const budgetSignalOnlyPorts: BudgetSignalOnlyPorts = {
+    addComment: (issueId, body, actor, options) =>
+      issuesSvc.addComment(issueId, body, actor, options),
+    log: logger,
+  };
   const treeControlSvc = issueTreeControlService(db);
   const executionWorkspacesSvc = executionWorkspaceService(db);
   const environmentsSvc = environmentService(db);
@@ -9234,6 +9251,19 @@ export function heartbeatService(
       budgetSignalEnabled(runtimeEnv)
         ? (input: BudgetSignalInput) =>
             deliverBudgetHardStopSignal(db, budgetSignalPorts, input).then(() => undefined)
+        : undefined,
+    // myrmidon(1.7-BUDGET-CONFIG-B): the enforcement mode, read from the
+    // instance settings at evaluation time (no restart); the environment
+    // stays a forced override for an instance that never saved the setting.
+    resolveEnforcementMode: async () =>
+      (await readBudgetEnforcement({ getGeneral: () => instanceSettings.getGeneral() })).mode,
+    // myrmidon(1.7-BUDGET-CONFIG-B): the notice delivered when a limit
+    // crosses in signal-only mode — nothing stopped, the owner still learns.
+    // Honors MYRMIDON_BUDGET_SIGNAL_MODE=off the same way the M3 signal does.
+    signalBudgetLimitCrossed:
+      budgetSignalEnabled(runtimeEnv)
+        ? (input: BudgetSignalOnlyInput) =>
+            deliverBudgetSignalOnly(db, budgetSignalOnlyPorts, input).then(() => undefined)
         : undefined,
   };
   const budgets = budgetService(db, budgetHooks);
