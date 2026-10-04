@@ -48,30 +48,30 @@ function harness(options: HarnessOptions = {}) {
   const calls: string[] = [];
   const updated: Array<{ behaviorSettings: unknown }> = [];
   const audits: Array<Record<string, unknown>> = [];
-  const current = { stored: options.stored as unknown };
+  const current = { stored: options.stored as Record<string, unknown> | undefined };
+  const currentCompany = { stored: options.stored as Record<string, unknown> | undefined };
 
   const deps: Partial<BehaviorSettingsServiceDeps> = {
     instanceSettings: {
-      getGeneral: async () => {
+      readInstance: async () => {
         if (options.settingsError) throw options.settingsError;
-        return { behaviorSettings: current.stored };
+        return current.stored ? { ...current.stored } : undefined;
       },
-      updateGeneral: async (patch: { behaviorSettings: unknown }) => {
-        current.stored = patch.behaviorSettings;
-        updated.push(patch);
+      writeInstance: async (change) => {
+        const { next } = change(current.stored ? { ...current.stored } : undefined);
+        current.stored = next;
+        updated.push({ behaviorSettings: next });
         calls.push("write");
-        return {};
+        return next;
       },
-    },
-    companySettings: {
-      get: async (_companyId: string) => {
-        return { behaviorSettings: current.stored };
-      },
-      update: async (_companyId: string, patch: { behaviorSettings: unknown }) => {
-        current.stored = patch.behaviorSettings;
-        updated.push(patch);
+      readCompany: async (_companyId: string) =>
+        currentCompany.stored ? { ...currentCompany.stored } : undefined,
+      writeCompany: async (_companyId: string, change) => {
+        const { next } = change(currentCompany.stored ? { ...currentCompany.stored } : undefined);
+        currentCompany.stored = next;
+        updated.push({ behaviorSettings: next });
         calls.push("write");
-        return {};
+        return next;
       },
     },
     listCompanyIds: async () => options.companyIds ?? [COMPANY_ID],
@@ -188,7 +188,7 @@ describe("myrmidon(1.7) behavior settings: a change reaches the live system", ()
     // Audit and row first, then the settings in force: the live system must
     // never run ahead of what the log says it is.
     expect(h.calls).toContain("write");
-    expect(h.calls).toContain("apply:true");
+    expect(h.calls).toContain(`apply:${JSON.stringify({ debug_mode: true })}`);
     expect(h.calls).toContain("resweep");
   });
 
@@ -219,7 +219,7 @@ describe("myrmidon(1.7) behavior settings: a change reaches the live system", ()
 
   it("keeps the environment values in force when the settings write fails", async () => {
     const h = harness();
-    vi.spyOn(h.deps.instanceSettings!, "updateGeneral").mockRejectedValue(new Error("database is down"));
+    vi.spyOn(h.deps.instanceSettings!, "writeInstance").mockRejectedValue(new Error("database is down"));
     await request(h.withActor(admin)).patch(INSTANCE_URL).send({ debug_mode: true }).expect(500);
     expect(h.calls).toEqual([]);
   });

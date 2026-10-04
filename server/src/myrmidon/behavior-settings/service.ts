@@ -3,30 +3,35 @@
 //
 // Contract: `instance_settings.general.behaviorSettings` is the source of truth
 // for instance-scoped settings once an operator saves them; the environment
-// stays the default for an instance that never did (see 
+// stays the default for an instance that never did (see
 // packages/shared/src/myrmidon-behavior-settings.ts for the precedence and the
-// value rules). A change writes the row, records it in the activity log for 
-// every company, then applies it to the process-wide settings.
+// value rules). Company-scoped settings live under the
+// `behaviorSettingsByCompany` key of the same row, keyed by companyId, the
+// same shape telegram-notify uses for per-company state. A change writes the
+// row, records it in the activity log, then applies it to the process-wide
+// settings.
 //
 // Two overlapping requests can commit their rows in one order and reach the
 // in-memory apply in the other; the audit log would then disagree with the
 // settings actually in force. Every request's read-write-audit-apply sequence
 // runs through one queue (see `withBehaviorSettingsTransition`), exactly as the
-// task-drain transition does.
+// runtime-limits transition does.
 
 import type { Db } from "@paperclipai/db";
 import {
-  behaviorSettingRegistry,
   resolveBehaviorSettings,
   mergeBehaviorSettings,
   type BehaviorSettingsPatch,
   type ResolvedBehaviorSettings,
-  SettingSource,
-  SettingScope,
 } from "@paperclipai/shared";
 import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService, logActivity } from "../../services/index.js";
-import { companySettingsService } from "../../services/company-settings-service.js";
+import {
+  readInstanceBehaviorSettings,
+  readCompanyBehaviorSettings,
+  mutateInstanceBehaviorSettings,
+  mutateCompanyBehaviorSettings,
+} from "./store.js";
 
 export type BehaviorSettingsView = ResolvedBehaviorSettings;
 
@@ -51,12 +56,15 @@ export type BehaviorSettingsAuditEntry = BehaviorSettingsActor & {
 /** Everything the service needs, so tests can run it without a database. */
 export interface BehaviorSettingsServiceDeps {
   instanceSettings: {
-    getGeneral(): Promise<{ behaviorSettings?: unknown }>;
-    updateGeneral(patch: { behaviorSettings: Record<string, unknown> }): Promise<unknown>;
-  };
-  companySettings: {
-    get(companyId: string): Promise<{ behaviorSettings?: unknown }>;
-    update(companyId: string, patch: { behaviorSettings: Record<string, unknown> }): Promise<unknown>;
+    readInstance(): Promise<Record<string, unknown> | undefined>;
+    writeInstance(
+      change: (current: Record<string, unknown> | undefined) => { next: Record<string, unknown> },
+    ): Promise<Record<string, unknown>>;
+    readCompany(companyId: string): Promise<Record<string, unknown> | undefined>;
+    writeCompany(
+      companyId: string,
+      change: (current: Record<string, unknown> | undefined) => { next: Record<string, unknown> },
+    ): Promise<Record<string, unknown>>;
   };
   listCompanyIds(): Promise<string[]>;
   logActivity(entry: BehaviorSettingsAuditEntry): Promise<unknown>;
@@ -101,8 +109,20 @@ export function behaviorSettingsService(
   overrides: Partial<BehaviorSettingsServiceDeps> = {},
 ): BehaviorSettingsService {
   const deps: BehaviorSettingsServiceDeps = {
-    instanceSettings: instanceSettingsService(db),
-    companySettings: companySettingsService(db),
+    instanceSettings: {
+      readInstance: () => readInstanceBehaviorSettings(db),
+      writeInstance: (change) =>
+        mutateInstanceBehaviorSettings(db, (current) => {
+          const { next } = change(current);
+          return { next, result: next };
+        }),
+      readCompany: (companyId) => readCompanyBehaviorSettings(db, companyId),
+      writeCompany: (companyId, change) =>
+        mutateCompanyBehaviorSettings(db, companyId, (current) => {
+          const { next } = change(current);
+          return { next, result: next };
+        }),
+    },
     listCompanyIds: () => instanceSettingsService(db).listCompanyIds(),
     logActivity: (entry) => logActivity(db, entry),
     apply: () => undefined,
@@ -113,33 +133,25 @@ export function behaviorSettingsService(
 
   return {
     read: async (): Promise<BehaviorSettingsView> => {
-      const general = await deps.instanceSettings.getGeneral();
-      return resolveBehaviorSettings({ stored: general.behaviorSettings, env });
+      const stored = await deps.instanceSettings.readInstance();
+      return resolveBehaviorSettings({ stored, env });
     },
 
     readCompany: async (companyId: string): Promise<BehaviorSettingsView> => {
-      const companyData = await deps.companySettings.get(companyId);
-      return resolveBehaviorSettings({ stored: companyData.behaviorSettings, env });
+      const stored = await deps.instanceSettings.readCompany(companyId);
+      return resolveBehaviorSettings({ stored, env });
     },
 
     updateInstance: async (patch, actor) =>
       withBehaviorSettingsTransition(async () => {
-        const general = await deps.instanceSettings.getGeneral();
-        const before = resolveBehaviorSettings({ stored: general.behaviorSettings, env });
-        
-        // Get current settings and merge with patch
-        const currentSettings = general.behaviorSettings ? {...general.behaviorSettings} : {};
-        const next = mergeBehaviorSettings(currentSettings, patch) as Record<string, unknown>;
-        
-        // Determine which keys changed
-        const changedKeys: string[] = [];
-        for (const [key, value] of Object.entries(patch)) {
-          if (before.settings[key] !== value) {
-            changedKeys.push(key);
-          }
-        }
+        const before = await deps.instanceSettings.readInstance();
+        const previous = resolveBehaviorSettings({ stored: before, env });
 
-        await deps.instanceSettings.updateGeneral({ behaviorSettings: next });
+        const next = await deps.instanceSettings.writeInstance((current) => ({
+          next: mergeBehaviorSettings(current ?? {}, patch),
+        }));
+
+        const changedKeys = changedSettingKeys(previous.settings, next, patch);
 
         const companyIds = await deps.listCompanyIds();
         await Promise.all(
@@ -154,7 +166,7 @@ export function behaviorSettingsService(
               action: BEHAVIOR_SETTINGS_INSTANCE_ACTION,
               entityType: "instance_settings",
               entityId: "default",
-              details: { previous: before.settings, next, changedKeys },
+              details: { previous: previous.settings, next, changedKeys },
             }),
           ),
         );
@@ -172,22 +184,14 @@ export function behaviorSettingsService(
 
     updateCompany: async (companyId, patch, actor) =>
       withBehaviorSettingsTransition(async () => {
-        const companyData = await deps.companySettings.get(companyId);
-        const before = resolveBehaviorSettings({ stored: companyData.behaviorSettings, env });
-        
-        // Get current settings and merge with patch
-        const currentSettings = companyData.behaviorSettings ? {...companyData.behaviorSettings} : {};
-        const next = mergeBehaviorSettings(currentSettings, patch) as Record<string, unknown>;
-        
-        // Determine which keys changed
-        const changedKeys: string[] = [];
-        for (const [key, value] of Object.entries(patch)) {
-          if (before.settings[key] !== value) {
-            changedKeys.push(key);
-          }
-        }
+        const before = await deps.instanceSettings.readCompany(companyId);
+        const previous = resolveBehaviorSettings({ stored: before, env });
 
-        await deps.companySettings.update(companyId, { behaviorSettings: next });
+        const next = await deps.instanceSettings.writeCompany(companyId, (current) => ({
+          next: mergeBehaviorSettings(current ?? {}, patch),
+        }));
+
+        const changedKeys = changedSettingKeys(previous.settings, next, patch);
 
         await deps.logActivity({
           companyId,
@@ -199,7 +203,7 @@ export function behaviorSettingsService(
           action: BEHAVIOR_SETTINGS_COMPANY_ACTION,
           entityType: "company_settings",
           entityId: companyId,
-          details: { previous: before.settings, next, changedKeys },
+          details: { previous: previous.settings, next, changedKeys },
         });
 
         // Only after the row and the audit records are committed: the settings in
@@ -214,3 +218,21 @@ export function behaviorSettingsService(
       }),
   };
 }
+
+function changedSettingKeys(
+  previous: Record<string, unknown>,
+  next: Record<string, unknown>,
+  patch: BehaviorSettingsPatch,
+): string[] {
+  const changedKeys: string[] = [];
+  for (const key of Object.keys(patch)) {
+    if (previous[key] !== next[key]) {
+      changedKeys.push(key);
+    }
+  }
+  return changedKeys;
+}
+
+// Re-export so route/app wiring can preserve our keys across vendor general
+// writes without importing the store module separately.
+export { preserveBehaviorSettingsGeneralKeys } from "./store.js";

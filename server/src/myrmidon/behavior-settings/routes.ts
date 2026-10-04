@@ -1,12 +1,13 @@
 // GET/PATCH /api/myrmidon/behavior-settings (myrmidon 1.7, SETTINGS-TO-UI A).
 //
-// GET reports the effective behavior settings and where each value came from (the stored
-// settings, the environment, or the built-in default); any authenticated board
-// member may read instance settings. Company settings require company access.
-// PATCH writes `instance_settings.general.behaviorSettings` or company settings,
-// applies the new settings to the running system and asks for any necessary
-// sweeps; it is instance-admin only for instance settings, and company admin
-// for company settings, following the same rules as other settings.
+// GET reports the effective behavior settings and where each value came from
+// (the stored settings, the environment, or the built-in default); any
+// authenticated board member may read the instance settings. Company settings
+// (GET/PATCH .../:companyId) require company access. PATCH writes
+// `instance_settings.general.behaviorSettings` (instance) or the
+// company-keyed area (company), applies the new settings to the running system
+// and asks for any necessary sweeps; the instance-level write is
+// instance-admin only, the same rule runtime-limits follows.
 
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
@@ -18,25 +19,25 @@ import type { BehaviorSettingsService } from "./service.js";
 export function behaviorSettingsRoutes(_db: Db, service: BehaviorSettingsService) {
   const router = Router();
 
-  // Get instance-level behavior settings
+  // Read the instance-level behavior settings
   router.get("/myrmidon/behavior-settings", async (req, res) => {
     assertBoardOrgAccess(req);
     res.json(await service.read());
   });
 
-  // Update instance-level behavior settings
+  // Update the instance-level behavior settings
   router.patch("/myrmidon/behavior-settings", validate(createBehaviorSettingsPatchSchema()), async (req, res) => {
     assertInstanceAdmin(req);
     res.json(await service.updateInstance(req.body as BehaviorSettingsPatch, getActorInfo(req)));
   });
 
-  // Get company-level behavior settings
+  // Read the company-level behavior settings
   router.get("/myrmidon/behavior-settings/:companyId", async (req, res) => {
     assertCompanyAccess(req, req.params.companyId);
     res.json(await service.readCompany(req.params.companyId));
   });
 
-  // Update company-level behavior settings
+  // Update the company-level behavior settings
   router.patch("/myrmidon/behavior-settings/:companyId", validate(createBehaviorSettingsPatchSchema()), async (req, res) => {
     assertCompanyAccess(req, req.params.companyId);
     res.json(await service.updateCompany(req.params.companyId, req.body as BehaviorSettingsPatch, getActorInfo(req)));
