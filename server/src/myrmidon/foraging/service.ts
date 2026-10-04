@@ -15,11 +15,22 @@
 //      is a normal outcome: the sources after the stop are untouched and the
 //      next pass starts with them.
 //
+// myrmidon(1.6.3-FORAGING-IDLE-GATE): learning only when idle. Before a
+// source is read, the pass checks that the source's ROLE is idle: the role's
+// queue (tasks with no assignee, the swarm-claim queue semantics) is empty
+// AND at least one agent of the role has no `todo`/`in_progress` task. A busy
+// role is skipped with the reason `queue_not_empty` or `no_idle_agent` (per
+// role, in the result and the journal); the pass CONTINUES with the other
+// roles' sources — the gate filters sources per role inside one pass, it
+// never aborts the sweep. The toggle is re-read on every pass (see
+// idle-gate-settings.ts), so a settings-page change reaches the next pass
+// without a restart.
+//
 // Failures are per source: one unreachable host writes `last_error` on its row
 // and the pass continues with the next source. Nothing here throws at the pass
 // level, so a broken source never stops the sweep.
 
-import { and, eq, inArray, isNull, or } from "drizzle-orm";
+import { and, eq, inArray, isNull, notExists, or, sql } from "drizzle-orm";
 import { agents, issues, type Db } from "@paperclipai/db";
 import { logger } from "../../middleware/logger.js";
 import {
@@ -34,6 +45,7 @@ import {
   type ForagingSourceRef,
 } from "./domain.js";
 import type { ForagingStore } from "./store.js";
+import { readForagingIdleGate, type ForagingIdleGateServiceDeps } from "./idle-gate-settings.js";
 
 export interface ForagingReaderResult {
   /** The raw text of the source; the pass normalizes it. */
@@ -47,15 +59,28 @@ export interface ForagingReader {
   read(source: ForagingSourceRef, signal: AbortSignal): Promise<ForagingReaderResult>;
 }
 
+/** The per-role idle check the pass runs for the gate (injected in tests). */
+export interface ForagingIdleCheck {
+  /**
+   * `queue_not_empty` — the role's queue (unassigned open tasks) is not
+   * empty; `no_idle_agent` — no agent of the role is free of todo/in_progress
+   * work; null — the role is idle, the pass may read its sources.
+   */
+  roleIdleReason(companyId: string, role: string): Promise<"queue_not_empty" | "no_idle_agent" | null>;
+}
+
 export interface ForagingServiceDeps {
   store: ForagingStore;
   reader: ForagingReader;
   candidatePort: ForagingCandidatePort;
   settings: {
     budget: { maxCostCents: number; enabled: boolean };
-    idleGateEnabled: boolean;
   };
   db: Db;
+  /** The idle-gate toggle, read on EVERY pass; absent = the default (on). */
+  idleGate?: Pick<ForagingIdleGateServiceDeps, "getGeneral" | "env">;
+  /** The per-role idle check; defaults to the swarm-queue/agent SQL check. */
+  idleCheck?: ForagingIdleCheck;
   now?: () => Date;
   log?: Pick<typeof logger, "info" | "warn" | "error">;
 }
@@ -72,11 +97,82 @@ function currentUtcMonthStart(now: Date): Date {
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0, 0));
 }
 
+/**
+ * The real idle check against the database (the swarm-claim queue semantics).
+ *
+ * A role's queue is its open `todo`/`in_progress` tasks with NO assignee —
+ * the same membership the swarm-claim queue reads (assigned-to-role OR
+ * unassigned would double-count work already being executed by an agent of
+ * the role; the ticket's queue is "tasks without an assignee"). An idle
+ * agent of the role is one with no `todo`/`in_progress` task assigned.
+ */
+export function createDbForagingIdleCheck(db: Db): ForagingIdleCheck {
+  return {
+    async roleIdleReason(companyId, role) {
+      // 1. The role's queue: open tasks of the company waiting for the role
+      //    with no assignee yet. Anything here means work is waiting.
+      const queue = await db
+        .select({ issueId: issues.id })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            isNull(issues.assigneeUserId),
+            isNull(issues.hiddenAt),
+            isNull(issues.conversationAgentId),
+            inArray(issues.status, ["todo", "in_progress"]),
+            isNull(issues.assigneeAgentId),
+            sql`not exists (
+              select 1
+              from issues child
+              where child.company_id = ${issues.companyId}
+                and child.parent_id = ${issues.id}
+                and child.status not in ('done', 'cancelled')
+            )`,
+          ),
+        )
+        .limit(1)
+        .catch(() => [] as Array<{ issueId: string }>);
+      if (queue.length > 0) return "queue_not_empty";
+
+      // 2. An idle agent of the role: exists unless some agent of the role
+      //    holds a todo/in_progress task — a NOT EXISTS anti-join answers
+      //    "is at least one agent of the role free".
+      const idle = await db
+        .select({ id: agents.id })
+        .from(agents)
+        .where(
+          and(
+            eq(agents.companyId, companyId),
+            eq(agents.role, role),
+            notExists(
+              db
+                .select({ one: sql`1` })
+                .from(issues)
+                .where(
+                  and(
+                    eq(issues.companyId, companyId),
+                    eq(issues.assigneeAgentId, agents.id),
+                    inArray(issues.status, ["todo", "in_progress"]),
+                  ),
+                ),
+            ),
+          ),
+        )
+        .limit(1)
+        .catch(() => [] as Array<{ id: string }>);
+      if (idle.length === 0) return "no_idle_agent";
+      return null;
+    },
+  };
+}
+
 export function createForagingService(deps: ForagingServiceDeps): ForagingService {
   const store = deps.store;
   const now = deps.now ?? (() => new Date());
   const log = deps.log ?? logger;
   const budget = deps.settings.budget;
+  const idleCheck = deps.idleCheck ?? createDbForagingIdleCheck(deps.db);
 
   const emptyResult = (): ForagingSweepResult => ({
     sourcesRead: 0,
@@ -101,100 +197,18 @@ export function createForagingService(deps: ForagingServiceDeps): ForagingServic
     },
 
     async runPass(companyId) {
-      // Check if idle gate is enabled
-      if (deps.settings.idleGateEnabled) {
-        // Get all enabled sources to check their roles
-        let sources: ForagingSourceRef[];
+      const result = emptyResult();
+      // The gate toggle is read on EVERY pass: a settings-page change reaches
+      // the next pass without a restart (env stays the forced override).
+      let gateEnabled = true;
+      if (deps.idleGate) {
         try {
-          sources = await store.enabledSources(companyId);
-        } catch (err) {
-          log.error({ err, companyId }, "foraging: could not list sources");
-          return emptyResult();
-        }
-
-        // Group sources by role to check each role separately
-        const sourcesByRole = new Map<string, ForagingSourceRef[]>();
-        for (const source of sources) {
-          if (!sourcesByRole.has(source.role)) {
-            sourcesByRole.set(source.role, []);
-          }
-          sourcesByRole.get(source.role)!.push(source);
-        }
-
-        // Check each role to see if it has work in queue or no idle agents
-        for (const [role, roleSources] of sourcesByRole.entries()) {
-          // Check if the role has any tasks in queue
-          const roleQueue = await deps.db
-            .select({ issueId: issues.id })
-            .from(issues)
-            .leftJoin(agents, eq(agents.id, issues.assigneeAgentId))
-            .where(
-              and(
-                eq(issues.companyId, companyId),
-                isNull(issues.assigneeUserId),
-                isNull(issues.hiddenAt),
-                isNull(issues.conversationAgentId),
-                inArray(issues.status, ["todo", "in_progress"]),
-                or(isNull(issues.assigneeAgentId), eq(agents.role, role))
-              )
-            )
-            .limit(1);
-
-          // Check if there are any idle agents for this role
-          const idleAgents = await deps.db
-            .select({ id: agents.id })
-            .from(agents)
-            .where(
-              and(
-                eq(agents.companyId, companyId),
-                eq(agents.role, role),
-                eq(agents.status, "idle")
-              )
-            )
-            .limit(1);
-
-          // If there are tasks in queue but no idle agents, skip foraging for this role
-          if (roleQueue.length > 0 && idleAgents.length === 0) {
-            log.info({ 
-              companyId, 
-              role,
-              reason: "queue_not_empty_and_no_idle_agent" 
-            }, "foraging: skipping foraging due to work in queue and no idle agents");
-
-            const result = emptyResult();
-            result.skippedReason = "queue_not_empty";
-            return result;
-          }
-
-          // If there are tasks in queue, skip foraging for this role
-          if (roleQueue.length > 0) {
-            log.info({ 
-              companyId, 
-              role,
-              reason: "queue_not_empty" 
-            }, "foraging: skipping foraging due to work in queue");
-
-            const result = emptyResult();
-            result.skippedReason = "queue_not_empty";
-            return result;
-          }
-
-          // If there are no idle agents for this role, skip foraging
-          if (idleAgents.length === 0) {
-            log.info({ 
-              companyId, 
-              role,
-              reason: "no_idle_agent" 
-            }, "foraging: skipping foraging due to no idle agents");
-
-            const result = emptyResult();
-            result.skippedReason = "no_idle_agent";
-            return result;
-          }
+          gateEnabled = (await readForagingIdleGate(deps.idleGate)).enabled;
+        } catch {
+          gateEnabled = true;
         }
       }
 
-      const result = emptyResult();
       const startedAt = now();
       let sources: ForagingSourceRef[];
       try {
@@ -203,7 +217,9 @@ export function createForagingService(deps: ForagingServiceDeps): ForagingServic
         log.error({ err, companyId }, "foraging: could not list sources");
         return result;
       }
+
       const state: ForagingBudgetState = { spentCents: 0 };
+      const checkedRoles = new Map<string, "queue_not_empty" | "no_idle_agent" | null>();
 
       for (const source of sources) {
         // The byte size is unknown before the read; budget the read by the
@@ -213,6 +229,29 @@ export function createForagingService(deps: ForagingServiceDeps): ForagingServic
           result.stoppedByBudget = true;
           log.info({ companyId, sourceId: source.id }, "foraging: pass stopped by the budget");
           break;
+        }
+
+        // myrmidon(1.6.3-FORAGING-IDLE-GATE): per-role idle check inside the
+        // pass. A busy role is skipped (the reason goes to the result and the
+        // journal); the pass CONTINUES with the other roles' sources.
+        if (gateEnabled) {
+          if (!checkedRoles.has(source.role)) {
+            try {
+              checkedRoles.set(source.role, await idleCheck.roleIdleReason(companyId, source.role));
+            } catch (err) {
+              log.warn({ err, companyId, role: source.role }, "foraging: idle check failed, reading anyway");
+              checkedRoles.set(source.role, null);
+            }
+          }
+          const reason = checkedRoles.get(source.role);
+          if (reason !== null && reason !== undefined) {
+            result.skippedReason = reason;
+            log.info(
+              { companyId, role: source.role, sourceId: source.id, reason },
+              "foraging: role is busy, skipping its sources this pass",
+            );
+            continue;
+          }
         }
 
         const controller = new AbortController();

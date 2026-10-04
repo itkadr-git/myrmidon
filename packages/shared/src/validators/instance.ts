@@ -56,6 +56,7 @@ import {
 // percent of the model window, fallback window, optimizer agent) stored in the
 // same general settings row.
 import { promptBudgetSettingsSchema } from "../myrmidon-prompt-budget.js";
+import { foragingIdleGateSettingsSchema } from "../myrmidon-foraging-idle-gate.js";
 
 // myrmidon(PARALLEL-HELPERS): re-exported for the barrel so the settings page and the
 // /api/myrmidon/parallel-helpers route validate with the exact schema stored here.
@@ -190,6 +191,11 @@ export const instanceGeneralSettingsSchema = z.object({
   // /api/myrmidon/companies/:id/prompt-budget/settings; absent means the
   // defaults (warn 70, crit 90, enabled, 200k fallback window).
   promptBudget: promptBudgetSettingsSchema.optional(),
+  // myrmidon(1.6.3-FORAGING-IDLE-GATE): whether foraging runs only when the
+  // role is idle (empty queue + a free agent), changed from
+  // /api/myrmidon/foraging/idle-gate; absent means the environment variable,
+  // then the default (on).
+  foragingIdleGate: foragingIdleGateSettingsSchema.optional(),
 }).strict();
 
 export const patchInstanceGeneralSettingsSchema = z
