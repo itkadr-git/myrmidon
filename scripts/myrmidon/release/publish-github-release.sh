@@ -14,10 +14,13 @@
 # Fail-closed and idempotent:
 #   1. Resolve the tag's commit (annotated tags dereferenced).
 #   2. GATE: require a successful "Myrmidon CI" run and a successful
-#      "Myrmidon image" (board) run for THIS tag (runs are matched by
-#      head_branch == the tag — the same commit's main-branch runs build
-#      different image tags and must not satisfy the gate); a
-#      failed run exits 1 BEFORE anything is published. Dockergate and
+#      "Myrmidon image" (board) run for THIS tag (image/component runs are
+#      matched by head_branch == the tag — the same commit's main-branch
+#      runs build different image tags and must not satisfy the gate,
+#      RELEASE-PUBLISH-WAIT). "Myrmidon CI" is commit-level validation and
+#      myrmidon-ci.yml has no tag trigger, so its gate also accepts a green
+#      main-branch run of the SAME commit; a failed run (tag or main) exits 1
+#      BEFORE anything is published. Dockergate and
 #      fleetd are paths-filtered workflows, so their tag run may
 #      legitimately be absent — but their digests must exist in the registry
 #      (step 3) or the publish is refused (fail-closed, the RELEASE-GATE
@@ -93,25 +96,52 @@ log "tag $tag -> commit $sha"
 # release publishes. Matching them made the publish skip the wait (1.6.1:
 # the main image run was green, the tag image run was still building, and
 # the digest probe then failed with "component image digests missing").
+# branch_match_expr <branches...>: a jq expression true when the run's
+# head_branch is one of the given values (the tag itself and, where allowed,
+# the main branch of the same commit).
+branch_match_expr() {
+  local list
+  list="$(printf '"%s",' "$@" | sed 's/,$//')"
+  printf '((.head_branch) as $b | [%s] | index($b) != null)' "$list"
+}
+
+# Runs of one workflow for THIS tag (and, optionally, of the same commit from
+# other branches such as main — the caller decides which branches count).
+runs_of() {
+  local workflow_file="$1" branches="$2"
+  gh api --paginate "repos/$repo/actions/runs?head_sha=$sha&per_page=100" \
+    --jq "[.workflow_runs[]? | select(.path == \"$workflow_file\" and $branches)]" 2>/dev/null || true
+}
+
 run_verdict() {
-  local workflow_file="$1" verdict
-  verdict="$(gh api --paginate "repos/$repo/actions/runs?head_sha=$sha&per_page=100" \
-    --jq "[.workflow_runs[]? | select(.path == \"$workflow_file\" and .head_branch == \"$tag\")]
-          | map(select(.status == \"completed\"))
+  local workflow_file="$1" branches verdict
+  branches="$(branch_match_expr "$tag" main)"
+  # RELEASE-PUBLISH-WAIT follow-up: CI is commit-level validation — the
+  # release commit reaches main before the tag is pushed, and myrmidon-ci.yml
+  # has no tag trigger, so the tag's own CI run never exists. A green CI run
+  # of the same commit on main is the evidence the gate wants (same sha).
+  if [[ "$workflow_file" != ".github/workflows/myrmidon-ci.yml" ]]; then
+    branches="$(branch_match_expr "$tag")"
+  fi
+  verdict="$(runs_of "$workflow_file" "$branches" \
+    | jq "[.[] | select(.status == \"completed\")]
           | if length == 0 then \"missing\"
              else (map(.conclusion) | unique)
                   | if length == 1 then .[0] else \"mixed\" end end" 2>/dev/null)" \
     || verdict="missing"
-  # gh --jq prints a JSON string: strip the quotes to get the bare value.
+  # jq output is a JSON string: strip the quotes to get the bare value.
   printf '%s\n' "${verdict//\"/}"
 }
 
 # Status of the newest run (any state) of one workflow for THIS tag.
 run_status() {
-  local workflow_file="$1" status
-  status="$(gh api --paginate "repos/$repo/actions/runs?head_sha=$sha&per_page=100" \
-    --jq "[.workflow_runs[]? | select(.path == \"$workflow_file\" and .head_branch == \"$tag\")][0].status // \"missing\"" \
-    2>/dev/null)" \
+  local workflow_file="$1" branches status
+  branches="$(branch_match_expr "$tag" main)"
+  if [[ "$workflow_file" != ".github/workflows/myrmidon-ci.yml" ]]; then
+    branches="$(branch_match_expr "$tag")"
+  fi
+  status="$(runs_of "$workflow_file" "$branches" \
+    | jq ".[0].status // \"missing\"" 2>/dev/null)" \
     || status="missing"
   printf '%s\n' "${status//\"/}"
 }

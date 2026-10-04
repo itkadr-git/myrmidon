@@ -344,18 +344,35 @@ describe("publish-github-release.sh: the CI gate", () => {
     assert.equal(mutations(sb), "");
   });
 
-  it("still refuses when NO run of a required workflow exists for the tag (only main runs of the same commit)", () => {
-    // Only main-branch runs exist (the tag push started the publish but no
-    // image workflow of its own yet — e.g. an old-format push). The gate must
-    // not treat the green main runs as the tag's image run.
+  it("CI gate accepts the same-commit main run (myrmidon-ci.yml has no tag trigger), but the image gate still refuses only-main runs", () => {
+    // Only main-branch runs exist. myrmidon-ci.yml triggers on pull_request /
+    // push to main / workflow_dispatch — NOT on tags, so a release tag never
+    // has a CI run of its own; CI is commit-level validation and a green
+    // main run of the SAME commit is the evidence the gate wants
+    // (RELEASE-PUBLISH-WAIT follow-up). The image workflows DO run on tags,
+    // so their gates stay tag-scoped: a green main image run must NOT
+    // satisfy the board-image gate.
     const sb = sandbox({ runs: [
       run(COMMIT, ".github/workflows/myrmidon-ci.yml", "success", "completed", "main"),
       run(COMMIT, ".github/workflows/myrmidon-image.yml", "success", "completed", "main"),
     ] });
     const { code, out } = runScript(sb, "myr-v1.6.0");
-    // The CI wait_for is "must": no run of CI for the tag -> timed out refusal
+    // the CI gate passed on the main run, the image gate timed out waiting
     assert.notEqual(code, 0, out);
-    assert.match(out, /no run of Myrmidon CI found|timed out waiting for Myrmidon CI/);
+    assert.match(out, /gate: Myrmidon CI success for/);
+    assert.match(out, /no run of Myrmidon image \(board\) found|timed out waiting for Myrmidon image \(board\)/);
+    assert.equal(mutations(sb), "");
+  });
+
+  it("CI gate refuses when the same-commit CI run failed on main (fail-closed stays)", () => {
+    const sb = sandbox({ runs: [
+      run(COMMIT, ".github/workflows/myrmidon-ci.yml", "failure", "completed", "main"),
+      run(COMMIT, ".github/workflows/myrmidon-image.yml", "success"),
+    ] });
+    const { code, out } = runScript(sb, "myr-v1.6.0");
+    assert.notEqual(code, 0, out);
+    assert.match(out, /Myrmidon CI did not succeed/);
+    assert.match(out, /NOT publishing/);
     assert.equal(mutations(sb), "");
   });
 });
