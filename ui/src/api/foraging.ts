@@ -52,6 +52,39 @@ export interface ForagingSourceInput {
   enabled?: boolean;
 }
 
+// myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): the idle gate and the pass
+// history. Contract: packages/shared/src/myrmidon-foraging-idle-gate.ts (the
+// toggle) and myrmidon-foraging-pass-journal.ts (the history); server side is
+// server/src/myrmidon/foraging/idle-gate-routes.ts and pass-routes.ts.
+
+/** Where the effective value of the idle gate came from. */
+export type ForagingIdleGateSource = "settings" | "env" | "default";
+
+export interface ForagingIdleGateView {
+  enabled: boolean;
+  source: ForagingIdleGateSource;
+}
+
+/** Why a pass left a role's sources alone. */
+export type ForagingSkipReason = "queue_not_empty" | "no_idle_agent";
+
+export interface ForagingPassSkip {
+  role: string;
+  reason: ForagingSkipReason;
+}
+
+export interface ForagingPass {
+  at: string;
+  companyId: string;
+  sourcesRead: number;
+  findings: number;
+  candidates: number;
+  errors: number;
+  stoppedByBudget: boolean;
+  skippedReason: ForagingSkipReason | null;
+  skipped: ForagingPassSkip[];
+}
+
 const base = (companyId: string) =>
   `/myrmidon/companies/${encodeURIComponent(companyId)}/foraging`;
 
@@ -68,11 +101,21 @@ export const foragingApi = {
     ),
   budget: (companyId: string) => api.get<ForagingBudgetView>(`${base(companyId)}/budget`),
   sweep: (companyId: string) => api.post<Record<string, unknown>>(`${base(companyId)}/sweep`, {}),
+  /** The idle gate in force and where it came from (instance-wide setting). */
+  idleGate: () => api.get<ForagingIdleGateView>("/myrmidon/foraging/idle-gate"),
+  /** Switches the idle gate; instance-admin only, so a 403 is a normal answer. */
+  setIdleGate: (enabled: boolean) =>
+    api.patch<ForagingIdleGateView>("/myrmidon/foraging/idle-gate", { enabled }),
+  /** The pass history of a company, newest first. */
+  passes: (companyId: string, limit = 20) =>
+    api.get<{ passes: ForagingPass[] }>(`${base(companyId)}/passes?limit=${limit}`),
 };
 
 export const foragingSourcesKey = (companyId: string) => ["foraging", "sources", companyId] as const;
 export const foragingFindingsKey = (companyId: string) => ["foraging", "findings", companyId] as const;
 export const foragingBudgetKey = (companyId: string) => ["foraging", "budget", companyId] as const;
+export const foragingIdleGateKey = () => ["foraging", "idle-gate"] as const;
+export const foragingPassesKey = (companyId: string) => ["foraging", "passes", companyId] as const;
 
 /** A short label for a finding's state, used by the table. */
 export function findingStatusLabel(status: ForagingFindingStatus): string {

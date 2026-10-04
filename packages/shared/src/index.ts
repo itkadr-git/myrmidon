@@ -2834,6 +2834,12 @@ export * from "./myrmidon-prompt-budget.js"; // myrmidon(1.6.3 PROMPT-BUDGET B)
 export * from "./myrmidon-budget-enforcement.js";
 // myrmidon(MEMORY-UI): the agent memory instance setting (address, optional key secret, switch).
 export * from "./myrmidon-agent-memory.js";
+// myrmidon(1.6.3-FORAGING-IDLE-GATE): the shared contract of the foraging
+// idle gate — the toggle, its storage key and the resolver with sources.
+export * from "./myrmidon-foraging-idle-gate.js";
+// myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): the shared contract of the
+// foraging pass journal (what each pass read, and which roles it skipped why).
+export * from "./myrmidon-foraging-pass-journal.js";
 
 // myrmidon(PLUGIN-ENTITLEMENT C): plugin entitlement keys contract.
 export * from "./myrmidon-plugin-entitlement.js";
