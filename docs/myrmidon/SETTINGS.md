@@ -696,6 +696,13 @@ denied requests never rewrite instructions or create revisions. The matrix is re
 from `instance_settings.general.myrmidonAutonomy` on every request, so a matrix edit
 in the UI takes effect without a restart (no env override, no new settings keys).
 
+1.6.2 enforcement: `POST /agents/:id/pause`, `POST /agents/:id/resume`, and
+`POST /agents/:id/wakeup` call `dbAutonomyGate(db).assertAllowed(req, "pause_wake_agents")`
+when the caller is an agent acting on another agent (self-actions are not gated).
+The verdict `approval_required` is denied with 403 `autonomy_approval_required`
+until the held-action half ships (a separate task). Board and admin callers are
+not subject to the matrix.
+
 No environment variables, no new secrets. Remove: the autonomy tree, the export line in
 `packages/shared/src/index.ts`, the two marker lines in `app.ts`/`instance-settings.ts`
 and this section.
