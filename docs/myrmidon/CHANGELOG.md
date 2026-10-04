@@ -98,6 +98,7 @@ version file to edit. Base Paperclip version is in the image label
   containers on the next pass. Settings documentation:
   [SETTINGS.md](SETTINGS.md) § Bot containers.
 
+
 ### Board administrators from agents (ADMIN-AGENT part C)
 
 - The UI half of making an agent a board administrator. The agent card's
