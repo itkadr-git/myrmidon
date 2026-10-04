@@ -706,6 +706,9 @@ outside: an operator turns it on together with `MYRMIDON_FORAGING_KEY_SECRET` wh
 sources need a token. Findings are recorded `unverified` until the skill lifecycle accepts
 them as candidates; `POST …/foraging/sweep` (board only) runs one pass by hand.
 
+The flow end to end — the registry, how a pass works, the screen and the API — is
+the operator guide [guides/foraging.md](guides/foraging.md).
+
 
 ## 1.6.1 — BOT-RUNTIME-TUNING D: model fallback attention signal
 
@@ -862,6 +865,27 @@ explicit grants, and the cloud-connector caste grants are untouched.
 | Variable | Function | Default | What it does | How to disable / special |
 |---|---|---|---|---|
 | — | 1.6.1-CUSTOM-CASTES-B | — | This part adds no tunables of its own; the directory rows (`swarmEligible`, `maxActiveTasks`) come from part A's store, the swarm globals stay under `MYRMIDON_SWARM_*` | Until part A's directory is wired the consumers are no-ops; nothing to disable |
+
+## 1.6.1 — WIP-LIMIT: per-agent work-in-progress limit
+
+Settings of `server/src/myrmidon/wip-limit/` (the 1.6.1 track, part A). The feature has no
+environment variables: the limits are a policy choice stored in
+`instance_settings.general.wipLimit` and changed from
+`GET`/`PUT /api/myrmidon/companies/:companyId/wip-limit/settings` (any company member reads,
+instance admins write). Absent settings mean "count only" — the status endpoint
+(`GET …/wip-limit/status`) keeps answering, but no attention item and no comment is ever
+raised.
+
+The limit resolution is `perAgent[agentId]` over `defaultLimit`; an explicit `null` in either
+place means count-only. The lead rule is not a setting: an agent someone reports to is a lead,
+and a lead holding a task in `in_progress` or `in_review` is over the limit by definition (the
+implementation limit of a lead is 0 — a lead supervises and accepts, it does not deliver).
+
+The periodic check runs on the heartbeat scheduler (the same path the swarm-claim sweep uses)
+with an in-module interval of 300 s; a pass whose previous run is still going is skipped. One
+signal per agent per UTC day: a system-notice comment on the agent's most recent in_progress
+task, deduplicated by the `wip-limit:<agentId>:<utc-day>` metadata key. The attention feed
+(source kind `wip_limit`) needs no sweep — it recomputes on every list.
 
 ## 1.7 — METRICS: the board's own /metrics endpoint (Prometheus text)
 
