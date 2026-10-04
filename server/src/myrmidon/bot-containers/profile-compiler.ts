@@ -185,8 +185,8 @@ export interface HermesProfileLspSettings {
    */
   idleTimeout?: number;
   /**
-   * Glob patterns to exclude from language server analysis (e.g., for monorepos that are checked separately).
-   * Example: ['**/myrmidon/**', '/workspace/*/repo']
+   * `lsp.exclude_roots`: workspace roots (glob patterns) where no language
+   * server starts, e.g. a monorepo whose typecheck runs on the build server.
    */
   excludeRoots?: string[];
   /**
