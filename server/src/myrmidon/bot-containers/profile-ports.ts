@@ -28,7 +28,7 @@ import path from "node:path";
 import { agentApiKeys, companies, companyMemberships, type Db } from "@paperclipai/db";
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
 // myrmidon(PARALLEL-HELPERS): the settings type the parallel-helpers port returns.
-import type { ParallelHelpersSettings } from "@paperclipai/shared";
+import type { BotLspSettings, ParallelHelpersSettings } from "@paperclipai/shared";
 import {
   readPaperclipSkillSyncPreference,
   resolveLegacyPaperclipDesiredSkillNames,
@@ -498,6 +498,15 @@ export function createDbBotProfilePorts(db: Db): BotProfilePorts {
     async parallelHelpers(): Promise<ParallelHelpersSettings | undefined> {
       const general = await instanceSettings.getGeneral();
       return general.parallelHelpers;
+    },
+
+    // myrmidon(BOT-LSP-DEFAULTS): the instance language-server policy. Read
+    // from the settings row on every tick: a change applies on the next
+    // reconcile (a config.yaml change, so under the per-bot pause), no restart
+    // of the server.
+    async botLsp(): Promise<BotLspSettings | undefined> {
+      const general = await instanceSettings.getGeneral();
+      return general.botLsp;
     },
 
     // myrmidon(1.6-WIKI): the approved regulations of the agent's role, as workspace files

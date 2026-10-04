@@ -22,6 +22,7 @@ import { RuntimeLimitsSettingsPanel } from "@/components/myrmidon/RuntimeLimitsS
 import { BudgetEnforcementSettingsPanel } from "@/components/myrmidon/BudgetEnforcementSettingsPanel"; // myrmidon(1.7-BUDGET-CONFIG-B)
 import { HostDiskSettingsPanel } from "@/components/myrmidon/HostDiskSettingsPanel"; // myrmidon(BOT-DISK E)
 import { ParallelHelpersSettingsPanel } from "@/components/myrmidon/ParallelHelpersSettingsPanel"; // myrmidon(PARALLEL-HELPERS)
+import { BotLspSettingsPanel } from "@/components/myrmidon/BotLspSettingsPanel"; // myrmidon(BOT-LSP-DEFAULTS)
 import { SwarmClaimSettingsPanel } from "@/components/myrmidon/SwarmClaimSettingsPanel"; // myrmidon(1.6.1 SWARM-SETTINGS-UI)
 import { AboutSettingsPanel } from "@/components/myrmidon/AboutSettingsPanel"; // myrmidon(ABOUT)
 import { DeployJobsPanel } from "@/components/myrmidon/DeployJobsPanel"; // myrmidon(R5-A)
@@ -138,6 +139,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       <BudgetEnforcementSettingsPanel /> {/* myrmidon(1.7-BUDGET-CONFIG-B) */}
       <HostDiskSettingsPanel /> {/* myrmidon(BOT-DISK E) */}
       <ParallelHelpersSettingsPanel /> {/* myrmidon(PARALLEL-HELPERS) */}
+      <BotLspSettingsPanel /> {/* myrmidon(BOT-LSP-DEFAULTS) */}
       <SwarmClaimSettingsPanel /> {/* myrmidon(1.6.1 SWARM-SETTINGS-UI) */}
       <DeployJobsPanel /> {/* myrmidon(R5-A) */}
 

@@ -153,6 +153,28 @@ version file to edit. Base Paperclip version is in the image label
   malformed value keeps the default. See [SETTINGS.md](SETTINGS.md) and
   [guides/run-limits.md](guides/run-limits.md).
 
+
+## 1.6.2
+
+### Bot language servers by role (BOT-LSP-DEFAULTS)
+
+- Bots whose role writes code (by default the castes `engineer`, `qa`,
+  `devops`, `reviewer`, `release`) run language servers in a **limited** mode:
+  one TypeScript server per worktree (`tsserver.useSyntaxServer: "never"`),
+  no automatic typings download, a 1024 MB heap cap (`maxTsServerMemory`) and
+  a 120 s idle timeout instead of 600 s. Every other bot runs **none**
+  (`lsp.enabled: false`). Monorepo typecheck still goes through the build
+  server.
+- The policy is an instance setting (Instance settings → General → "Bot
+  language servers", `GET`/`PATCH /api/myrmidon/bot-lsp`): which roles write
+  code, the mode of coding and other roles (`off` / `limited` / `full`), the
+  idle timeout, the memory cap and excluded workspace roots. An agent card can
+  pin its own mode ("Language servers" section).
+- Changes apply without a server restart: the profile compiler re-reads the
+  policy on every reconcile tick, and a changed `lsp` block is applied while
+  the bot is paused, like a model change. On the first deploy every container
+  bot gets the new block once (one restart per bot, under its pause).
+
 ## 1.6.1
 
 ### Role queues as instance settings (SWARM-SETTINGS-UI)

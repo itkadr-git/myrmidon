@@ -18,6 +18,8 @@ import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS } from "@paperclipai/shared";
 // myrmidon(PARALLEL-HELPERS): card + company ceiling -> the values the compiler writes
 // into config.yaml's `delegation` section (and the toolset switch).
 import { PARALLEL_HELPERS_DEFAULT_MODEL_ENV, readParallelHelpersCard, resolveParallelHelpers, type ParallelHelpersSettings } from "@paperclipai/shared";
+// myrmidon(BOT-LSP-DEFAULTS): the language-server mode per role/card.
+import { botLspHermesBlock, resolveBotLsp, type BotLspSettings } from "@paperclipai/shared";
 import { BOT_BOARD_GATEWAY_SERVER_NAME } from "./board-gateway.js";
 import type {
   HermesProfileAdapterConfig,
@@ -25,6 +27,7 @@ import type {
   HermesProfileHindsightSettings,
   HermesProfileInput,
   HermesProfileInstanceDefaults,
+  HermesProfileLspSettings,
   HermesProfileMcpServer,
   HermesProfileSkillFile,
   HermesProfileWorkspaceFile,
@@ -498,6 +501,17 @@ export interface BotProfileSource {
    * knowledge; `resolveParallelHelpers` also normalizes the model fallback.
    */
   parallelHelpersSettings?: ParallelHelpersSettings;
+  /**
+   * myrmidon(BOT-LSP-DEFAULTS): the agent's role (caste key, `agents.role`).
+   * Decides, with the card's own pin and the instance policy, which
+   * language-server mode the bot runs with. Absent = a non-coding bot.
+   */
+  role?: string;
+  /**
+   * myrmidon(BOT-LSP-DEFAULTS): the instance language-server policy
+   * (`general.botLsp`), as the ports read it. Absent = module defaults.
+   */
+  botLspSettings?: BotLspSettings;
 }
 
 export interface BuiltBotProfileInput {
@@ -742,6 +756,27 @@ function buildMcpServers(
 // ---------------------------------------------------------------------------
 
 /**
+ * myrmidon(BOT-LSP-DEFAULTS): the role policy and the card's pin -> the
+ * compiler's per-agent `lsp` settings. Undefined = write no `lsp` block (full
+ * mode with no exclusions, i.e. Hermes' own defaults).
+ */
+function buildBotLsp(
+  role: string | undefined,
+  card: Record<string, unknown>,
+  settings: BotLspSettings | undefined,
+): HermesProfileLspSettings | undefined {
+  const resolved = resolveBotLsp(role, card, settings);
+  const block = botLspHermesBlock(resolved.mode, settings);
+  if (!block) return undefined;
+  return {
+    enabled: block.enabled,
+    ...(block.idleTimeout !== undefined ? { idleTimeout: block.idleTimeout } : {}),
+    ...(block.excludeRoots ? { excludeRoots: block.excludeRoots } : {}),
+    ...(block.servers ? { servers: block.servers } : {}),
+  };
+}
+
+/**
  * Card + resolved data + instance settings -> the input of `compileHermesProfile`.
  * Deterministic: the same source and settings give the same input, which is what
  * keeps the compiled hashes stable between reconcile ticks (the reconciler calls
@@ -827,6 +862,10 @@ export function buildHermesProfileInput(source: BotProfileSource, settings: BotP
       readSettingFromRecord(env, PARALLEL_HELPERS_DEFAULT_MODEL_ENV) ?? "",
     ),
     instanceDefaults: settingsInstanceDefaults,
+    // myrmidon(BOT-LSP-DEFAULTS): role policy + card pin -> the bot's `lsp` block.
+    // Resolved here (not in the compiler) for the same reason as the helpers:
+    // the pure compiler keeps no settings knowledge.
+    lsp: buildBotLsp(source.role, card, source.botLspSettings),
     apiServerKey: source.apiServerKey,
     // settings.boardUrl is non-null here: assertBotProfileSettings threw otherwise.
     paperclipApiUrl: settings.boardUrl as string,

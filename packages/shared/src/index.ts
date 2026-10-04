@@ -2786,6 +2786,9 @@ export * from "./myrmidon-parallel-helpers.js";
 // myrmidon(PARALLEL-HELPERS): the settings-side validator for the same module, exported next
 // to the contract so `instanceGeneralSettingsSchema`'s dependency is reachable from the barrel.
 export { parallelHelpersSettingsSchema, patchParallelHelpersSettingsSchema } from "./validators/instance.js";
+// myrmidon(BOT-LSP-DEFAULTS): language-server mode per role/card, shared by the profile
+// compiler, the agent card and the settings page.
+export * from "./myrmidon-bot-lsp.js";
 // myrmidon(EXTCASE-B): browser-bridge wire contract shared by the gateway, the extension and the panel.
 export * from "./myrmidon-browser-bridge.js";
 // myrmidon(UI2-I18N): per-user board UI language preference contract (2.0 UI tree).

@@ -88,6 +88,8 @@ import { AgentCardContainerFields } from "./myrmidon/AgentCardContainerFields";
 // myrmidon(PARALLEL-HELPERS): parallel helper subagents on the agent card
 import { AgentCardParallelHelpersFields } from "./myrmidon/AgentCardParallelHelpersFields";
 import { parallelHelpersApi, parallelHelpersQueryKey } from "./myrmidon/parallelHelpersApi";
+import { AgentCardLspFields } from "./myrmidon/AgentCardLspFields"; // myrmidon(BOT-LSP-DEFAULTS)
+import { botLspApi, botLspQueryKey } from "./myrmidon/botLspApi"; // myrmidon(BOT-LSP-DEFAULTS)
 import { AgentCardEgressFields } from "./myrmidon/AgentCardEgressFields"; // myrmidon(EGRESS-B)
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
 import { ReportsToPicker } from "./ReportsToPicker";
@@ -625,6 +627,15 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const { data: parallelHelpersSettings } = useQuery({
     queryKey: parallelHelpersQueryKey,
     queryFn: () => parallelHelpersApi.get(),
+    enabled: !isCreate && adapterType === "hermes_gateway",
+    retry: false,
+  });
+  // myrmidon(BOT-LSP-DEFAULTS): the instance language-server policy, to show
+  // which mode the agent's role gives it. A viewer without access sees the
+  // module defaults (the server resolves the same way).
+  const { data: botLspSettings } = useQuery({
+    queryKey: botLspQueryKey,
+    queryFn: () => botLspApi.get(),
     enabled: !isCreate && adapterType === "hermes_gateway",
     retry: false,
   });
@@ -1807,6 +1818,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   creatable
                 />
               )}
+            />
+          )}
+          {/* myrmidon(BOT-LSP-DEFAULTS): the agent's language-server mode; empty
+              follows the role policy from the instance settings. */}
+          {!isCreate && adapterType === "hermes_gateway" && (
+            <AgentCardLspFields
+              value={eff("adapterConfig", "lsp", config.lsp)}
+              onChange={(next) => mark("adapterConfig", "lsp", next)}
+              role={String(eff("identity", "role", props.agent.role)) || null}
+              settings={botLspSettings?.settings ?? null}
             />
           )}
           {isLocal && (<>
