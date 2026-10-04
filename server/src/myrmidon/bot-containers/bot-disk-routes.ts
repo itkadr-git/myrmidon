@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import { z } from 'zod';
-import { BotDiskSettingsSchema, DEFAULT_BOT_DISK_SETTINGS, DEFAULT_BOT_DISK_LIFECYCLE_SETTINGS } from '../myrmidon/bot-containers/lifecycle-settings.js';
+import { BotDiskSettingsSchema, DEFAULT_BOT_DISK_SETTINGS, DEFAULT_BOT_DISK_LIFECYCLE_SETTINGS } from './lifecycle-settings.js';
 
 // Simple in-memory storage for settings (in production, this would be stored in DB)
 let currentBotDiskSettings = { ...DEFAULT_BOT_DISK_SETTINGS };
