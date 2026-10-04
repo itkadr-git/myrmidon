@@ -19,7 +19,9 @@ board; the board gets the dockergate socket (`MYRMIDON_BOT_DOCKER_SOCKET`, see
 
 Extra read-only bot mounts (shared directories) are described in
 [bot-extra-mounts.md](bot-extra-mounts.md); on the dockergate side the
-`mountSources` key allows them.
+`mountSources` key allows them. The shared package cache
+([bot-disk-cache.md](bot-disk-cache.md)) is the one writable exception; the
+`packageCacheRoot` key allows it.
 
 ## How it is enforced
 
@@ -43,7 +45,9 @@ Extra read-only bot mounts (shared directories) are described in
 4. **Bot consistency.** The `botKey` comes from the container name; the label, volumes,
    network and helper script must match it. Extra volumes beyond the three bot volumes are
    allowed only as read-only binds whose source is named in full in `mountSources` and
-   whose mount point is free; a helper gets no extra volume. Memory, CPU and
+   whose mount point is free, plus the shared package cache: read-write binds accepted
+   only as the fixed pairs `<packageCacheRoot>/{pnpm,go-mod,go-build,gradle}` →
+   `/cache/{pnpm,go-mod,go-build,gradle}`; a helper gets no extra volume. Memory, CPU and
    process-count limits may not exceed what `bots[]` records.
 5. **State.** Before a call, dockergate inspects the container itself and checks the
    preconditions (the bot label, status, the presence of `.next`).
@@ -100,14 +104,15 @@ A JSON file. An unknown key at any level, or a missing required key, prevents st
 | `caller` | required. `container` (the board container name), `containerLabels`, `uid`, `gid`, `argv`, `maxStartDelayTicks`, `mode` (`container-main-process` by default, `uid` for CI only) |
 | `volumeRoot` | the host directory of bot volumes; a bot's volumes are `<root>/<botKey>/{hermes,workspace,scratch}` |
 | `mountSources` | host directories a bot may mount in addition, read-only only (an empty or missing list allows none). Every extra bind in a create body must start with one of these paths in full, carry the `ro` suffix and use a mount point outside `/data/hermes`, `/workspace`, `/scratch`, `/tmp`; otherwise `mount_source_not_allowed` or `binds_mismatch`. The list is also applied on `SIGHUP` |
+| `packageCacheRoot` | the host directory of the shared package cache, the same path as the board's instance setting (see [bot-disk-cache.md](bot-disk-cache.md)). Under it, and only there, a bot may mount the fixed subdirectories `pnpm`, `go-mod`, `go-build`, `gradle` read-write at `/cache/pnpm`, `/cache/go-mod`, `/cache/go-build`, `/cache/gradle`; any other writable bind is `mount_source_not_allowed`. An absolute directory without `..`, `//` or a trailing `/`, outside `volumeRoot`. Empty or missing (the default) allows no cache bind. Applied on `SIGHUP` |
 | `network` | the single bot network |
 | `images` | a non-empty list of images, by digest only (`name@sha256:...`); a tag is not allowed |
 | `bots[]` | a bot record: `botKey`, `maxMemoryMb`, `maxCpus`, `maxPids` |
 | `limits` | limits and timeouts: header and body sizes, read and upstream timeouts, connection and in-flight call counts, the global rate, the per-process refusal rate, per-bot window rates (`createPerWindow`, `startPerWindow`, `restartPerWindow`, `stopPerWindow`, `putArchivePerWindow`, `rateWindowSec`). A missing key takes the default |
 | `statsFile` | absolute path of the counters file |
 
-`SIGHUP` re-reads the file; only `bots`, `images`, `network`, `volumeRoot` and
-`mountSources` are applied. An
+`SIGHUP` re-reads the file; only `bots`, `images`, `network`, `volumeRoot`,
+`mountSources` and `packageCacheRoot` are applied. An
 invalid file, or one that changes anything else, is rejected and the running configuration
 stays.
 
@@ -152,6 +157,8 @@ signals: `denyPeer` or `resolveDecoys` growing, denials beyond the expected ones
    process-count caps.
 3. If a bot needs extra read-only volumes, add their sources to `mountSources` (also a
    structural edit); a source that is not named there never reaches the daemon.
+   If the instance uses the shared package cache, set `packageCacheRoot` to the same
+   directory as the board's setting (also a structural edit).
 4. Check: `dockergate check-config --config <file>`.
 5. Send `SIGHUP` to the dockergate process.
 

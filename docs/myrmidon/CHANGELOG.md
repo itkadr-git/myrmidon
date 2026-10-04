@@ -10,6 +10,39 @@ version file to edit. Base Paperclip version is in the image label
 
 ## Unreleased
 
+### Release publish waits for the tag's own image runs (RELEASE-PUBLISH-WAIT)
+
+- Pushing the `myr-v1.6.1` tag failed to publish the Release on the first
+  try: the publish gate matched workflow runs by the tag commit's
+  `head_sha` only, so it saw the already-green `main`-branch run of the
+  same commit (which builds the `main`/`sha-` image tags) instead of
+  waiting for the tag's own board image run, and then the digest probe
+  failed with "component image digests missing … board". The gate now
+  also filters runs by `head_branch == the tag`, so the publish waits for
+  every required image workflow of the same tag (up to ~40 minutes) and
+  a failed tag run still refuses the publish with the workflow's name.
+  Follow-up (same day): the CI gate accepts a green main-branch run of the
+  same commit — `myrmidon-ci.yml` has no tag trigger, so a tag never has a
+  CI run of its own and the strictly tag-scoped gate would have refused
+  every publish after ~20 minutes of polling.
+- A manual re-run from the `main` branch no longer overrides the typed
+  tag: `myrmidon-release.yml` resolves the tag as
+  `inputs.tag || github.ref_name` (checkout `ref`, `TAG` env and the
+  concurrency group), so `gh workflow run myrmidon-release.yml -f tag=…`
+  from `main` publishes the given tag without `--ref`.
+
+### Shared package cache for development bots (1.6.2, BOT-DISK B)
+
+- An instance setting, `general.botDisk.sharedPackageCachePath` (Instance → General or
+  `PATCH /api/myrmidon/bot-disk`, instance admins only), gives every bot on the board's host
+  read-write mounts `/cache/{pnpm,go-mod,go-build,gradle}` from one host directory, and the
+  profile points `npm_config_store_dir`, `GOMODCACHE`, `GOCACHE` and `GRADLE_USER_HOME` at
+  them, so downloads are kept once instead of once per bot. Applies on the next reconcile pass
+  without a restart; off by default. Bots on a fleetd host are not affected.
+- dockergate: new `packageCacheRoot` key (default empty: no cache bind). **Operator step:** set
+  it to the same directory and send `SIGHUP`, and create the four subdirectories owned by
+  uid/gid 10001 — see [bot-disk-cache.md](bot-disk-cache.md).
+
 ### A board unblock lifts a settled replay hold; a parked wake is not "covering" (HOLD-READY)
 
 - A task with a closed recovery action whose `evidence.automaticRecovery.replay`
