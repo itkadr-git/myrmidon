@@ -10,6 +10,37 @@ version file to edit. Base Paperclip version is in the image label
 
 ## Unreleased
 
+### Gateway spend attributed through per-bot secret references (1.6.2 hotfix, M2-A)
+
+- The gateway cost sweep wrote no rows: every collected spend row was counted as
+  unattributed. Bot cards carry their gateway key as a `secret_ref` binding
+  (`adapterConfig.env.<MYRMIDON_BOT_LLM_API_KEY_ENV>` = `{ type: "secret_ref", secretId, version }`,
+  one company secret per bot), and the key lookup only understood an inline value or the one
+  shared secret. The lookup now resolves the card's secret reference by id and version, the
+  same reference the bot's container is compiled from, so the key hash matches the gateway
+  ledger and rows are attributed to the agent and its run. Inline values still work; the
+  shared secret (`MYRMIDON_BOT_LLM_API_KEY_SECRET`) is read once per pass and only for cards
+  without their own binding; a reference to a secret that cannot be read skips that card
+  instead of falling back to the shared key. The model fallback signal, which reuses the
+  lookup, is fixed by the same change. No settings change.
+
+### Automatic rollback by health: operator guide (AUTO-UPDATE-SETTINGS A)
+
+- Docs only: the existing R5-C behavior (a failed post-deploy health check rolls
+  the board back to the remembered previous image, `auto_rolled_back` /
+  `failed_rollback`) gets its operator guide,
+  [guides/deploy-auto-rollback.md](guides/deploy-auto-rollback.md)
+  ([RU](guides/deploy-auto-rollback.ru.md)): when the rollback fires, the job
+  and report phases, where the failure reason is recorded (job steps, activity
+  log, the executor log), what the owner sees when a rollback fails (the
+  maintenance banner, the Board update panel, the Telegram digest), and the
+  settings of both halves of the switch. The `MYRMIDON_DEPLOY_AUTO_ROLLBACK`
+  row of [SETTINGS.md](SETTINGS.md) links the guide. No code change; the
+  acceptance test of the behavior is the R5-C block of
+  `server/src/myrmidon/deploy-jobs/service.myrmidon.test.ts` and
+  `scripts/myrmidon/deploy/deploy-from-job.test.mjs` (a deliberately broken
+  image against the fake driver).
+
 ### Maintenance: asynchronous exit and the post-deploy fleet check (EXIT-ASYNC + POST-DEPLOY-CHECK)
 
 - Leaving maintenance mode is asynchronous (#268): the `exit` call returns as
@@ -30,6 +61,26 @@ version file to edit. Base Paperclip version is in the image label
   ends with `DEPLOY DEGRADED` — the verdict does not fail a switched and
   healthy deploy. Without the two settings the check is skipped.
 
+### WIP limit (WIP-LIMIT parts A + B)
+
+- The per-agent work-in-progress limit: a company-wide default and
+  per-agent overrides edited on the "WIP limit" screen in Company Settings
+  (sidebar item after Autonomy); each agent's live
+  `in progress + in review` load shows in the screen's table, as a
+  `wip/limit` badge on every agent row of the agents page (red over the
+  limit, bare count when the limit is off, no badge without a status
+  entry), and in the attention feed (source kind `wip_limit`, one card per
+  over-limit agent). A periodic sweep on the heartbeat scheduler (300 s)
+  writes one system-notice comment per over-limit agent per UTC day
+  (dedup key `wip-limit:<agentId>:<utc-day>`) on the agent's most recent
+  in-progress task. The settings live in
+  `instance_settings.general.wipLimit` — no environment variables; an
+  absent limit means count-only (status and badge still work, nothing
+  signals). A lead (an agent with direct reports) has an implementation
+  limit of 0 — any task it holds in flight is over the limit by
+  definition. See [wip-limit](guides/wip-limit.md).
+
+
 ### Telegram notification settings UI (TG-NOTIFY-SETTINGS part F)
 
 - The "Telegram notifications" panel on the System screen of the 2.0 UI: all
@@ -39,6 +90,56 @@ version file to edit. Base Paperclip version is in the image label
   document the settings core serves. Saving sends one PATCH with only the
   changed fields. Depends on the settings core (part A); while that is not
   merged the UI is covered by tests against the mocked JSON contract.
+
+### Voice STT, server core (VOICE-STT part A)
+
+- The server-side speech-to-text core (#418): `server/src/myrmidon/stt/` with
+  the `dashscope` (multipart `POST /v1/audio/transcriptions` on the shared
+  LiteLLM gateway) and `deepgram` backends, a pure-TypeScript long-recording
+  split (OGG page / MPEG frame boundaries, no ffmpeg) with timecode-offset
+  merge and record-scale speaker renumbering, and the
+  `transcribeAudio({companyId, bytes, mimeType, durationSec?})` contract with
+  the stable error codes `stt_disabled`, `stt_unconfigured`, `audio_too_long`,
+  `audio_too_large`, `stt_timeout`, `stt_upstream_error`. Off by default:
+  without `MYRMIDON_STT_ENABLED` the path makes no outbound request. Backend
+  keys are company secrets referenced by name only (read per call, never
+  cached, never logged). Per-company runtime overrides live under
+  `instance_settings.general.myrmidonSttCompanies[companyId]` and are managed
+  through `GET`/`PATCH /api/myrmidon/companies/:companyId/voice-stt` (GET is
+  company access, PATCH is board only; every save is journaled as
+  `myrmidon.stt.settings_saved`). See [SETTINGS.md](SETTINGS.md), the VOICE-STT
+  section.
+## 1.6.2
+
+### Run admission by host free memory and a start ramp (RUN-ADMISSION)
+
+- The run admission gets a host free-memory floor, `minFreeHostMemoryMb`
+  (`MYRMIDON_MIN_FREE_HOST_MEMORY_MB`, default 15360 MB): a new run, whatever
+  woke it (on demand, assignment, idle pickup, swarm idle wake, automation),
+  starts only while the host's `MemAvailable`, minus the per-run budget of runs
+  started in the last 30 s, stays at or above the floor. Otherwise it stays
+  `queued` and the 15 s queue pass retries it. The existing
+  `minFreeMemoryMb` measures the server cgroup and cannot see the bot
+  containers, which is how 23 concurrent runs exhausted the host while the
+  server looked healthy.
+- Host memory is read from `/proc/meminfo` (the host's file inside a Docker
+  container without lxcfs); a container-scoped meminfo (lxcfs) is detected and
+  refused, and `MYRMIDON_HOST_MEMINFO_PATH` points at a mounted host file.
+- The start ramp `maxStartsPerMinute` now defaults to 5 (was off). An instance
+  that already saved its run limits keeps its saved value; change it on the
+  settings page.
+- The swarm idle-wake pass wakes nobody while the floor is closed and logs the
+  reason (at most once per 5 minutes).
+- When the floor holds runs back for more than 10 minutes, the attention desk
+  shows "Runs held: host memory" with the current free memory and the floor.
+- Both values are edited without a restart on Instance → General "Run limits",
+  Settings → "Runs & queue" and `PATCH /api/myrmidon/runtime-limits`. A stored
+  row from an older version (without the new key) keeps working; the floor
+  comes from the environment or the default until the next save.
+- `0`/`off` switches the floor or the ramp off from the environment; a
+  malformed value keeps the default. See [SETTINGS.md](SETTINGS.md) and
+  [guides/run-limits.md](guides/run-limits.md).
+
 ## 1.6.1
 
 ### Role queues as instance settings (SWARM-SETTINGS-UI)
@@ -72,6 +173,26 @@ version file to edit. Base Paperclip version is in the image label
 ### SWARM-IDLE-WAKE: Free agents wake when their role queue is not empty
 
 - Third pass of the swarm supervisor (`sweep.ts`, after the release and free passes): on each tick, for each pair of "role + ready queue + free agents", wakes the missing number of agents, in batches ≤5 (`MYRMIDON_SWARM_IDLE_WAKE_BATCH`, default 5, clamp 1–25), each wake bound to the top task of the queue (P0 first — `orderSwarmQueueCandidates`). Pure modules: `idle-wake.ts` (policy: no live lease, under task ceiling, not paused/error, no live run, idempotency key) and `idle-queue.ts` (DB reads: role-queue pairs, live claim counts, coverage check). Assigned tasks go to the role of their executor; tasks without an executor are offered to every role with agents. The active task limit is respected, castes remain a gate on the claim side (`caste_excluded`, CUSTOM-CASTES B) — the point of control; the caste ceiling is respected. Supervisor metric: new total `freeAgentsWithQueue` — "free agents when queue is not empty" — which the pass should keep at 0 (unassigned tasks are now visible to roles with agents). Wakes go only through the existing `enqueueWakeup` (pause, maintenance, limits, budget — all gates preserved); the capture happens on checkout of the awakened run. The "one TTL + sweep interval" criterion is covered by a test (interval ≤ TTL/3). Docs: `MYRMIDON_SWARM_IDLE_WAKE_BATCH` in SETTINGS.md/SETTINGS.ru.md; skill `skills/paperclip/SKILL.md` supplemented with self-capture fallback (`POST /api/myrmidon/companies/{companyId}/swarm-claim/claim`).
+### Grant-based actor permission checks (ADMIN-AGENT part B)
+
+- Board-only actor-type checks on the company environments and
+  tool-connections routes now follow the company permission grant: an agent
+  actor passes when the company grants it the matching permission key —
+  `environments:manage` for the environments routes (including reading the
+  shared instance environment catalog), `tools:admin` for stdio command
+  templates and tool gateway management, `tools:manage_connections` (or
+  `tools:use` on the connection test routes) for connection testing,
+  `tools:manage_runtime` for runtime slot control, and `tools:view_audit` for
+  the raw gateway audit read. Board actors keep the exact previous semantics
+  (instance admins and the local implicit board pass; signed-in members pass
+  with the grant; viewers stay read-only), and an agent without a grant gets
+  the same 403 as before the change, so enabling nothing changes nothing.
+  Tool mutation activity-log rows now record the real acting principal — an
+  agent-actor mutation writes `actorType: "agent"` with the agent and run ids
+  instead of the old hardcoded board-user placeholder. Operator guide:
+  [guides/actor-grant-routes.md](guides/actor-grant-routes.md).
+
+
 
 ### Custom castes, consumers (CUSTOM-CASTES B)
 
@@ -230,6 +351,19 @@ version file to edit. Base Paperclip version is in the image label
   (part B: the schedule, the excerpt rules and the patch-closed verdict) and
   the registry API are documented in the same guide. Guide:
   [guides/stack-registry.md](guides/stack-registry.md).
+
+### alibaba-image connector (1.6 deployment)
+
+- Free image generation and editing for agents through the company's DashScope
+  key: the `alibaba-image` connector container from the private deployment
+  repository (tools `generate_image` and `edit_image`, registry-checked
+  qwen-image/wan/z-image models, async submit-then-poll, results into the
+  calling agent's workspace with a JSON sidecar, audit of argument
+  sizes only). Operator guide — bringing the container up in the deploy window
+  (port 8083, read-only key mount, shared workspace root), registering it as
+  an external MCP server and granting it to the work designer, the bbq SMM and
+  the designer agents, plus the per-family live smoke:
+  [guides/alibaba-image-connector.md](guides/alibaba-image-connector.md).
 
 ### Stack update cycle documentation (STACK-UPDATES part D)
 
