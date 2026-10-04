@@ -130,7 +130,7 @@ export async function getLatestBaselineSnapshot(
   }
 
   // The payload contains the full BaselineMetricsResponse from when the snapshot was taken
-  return snapshots[0].payload as BaselineMetricsResponse;
+  return snapshots[0].payload as unknown as BaselineMetricsResponse;
 }
 
 /**
