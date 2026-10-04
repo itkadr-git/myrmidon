@@ -139,6 +139,9 @@
 | `MYRMIDON_BOT_IMAGE_ROLLOUT_FLEET_HOSTS` | BOT-IMAGE-ROLLOUT | не задан | Хосты флота, где работают боты (через запятую, каждый `remote:<user>@<host>`, как `MYR_<КОМПОНЕНТ>_HOST`): образы тянутся туда же и записывается `bots[]` fleetd | Не задан — всё бот-стороннее происходит на локальном хосте |
 | `MYRMIDON_BOT_IMAGE_ROLLOUT_FLEET_CONFIG` | BOT-IMAGE-ROLLOUT | `/etc/myrmidon-fleetd/config.json` | config.json fleetd на хосте флота (роллаут записывает туда те же `bots[]`) | Любой читаемый путь на хостах флота |
 | `MYRMIDON_BOT_IMAGE_ROLLOUT_LOG` | BOT-IMAGE-ROLLOUT | `STATE_DIR/bot-image-rollout.log` | Журнал роллаута: строка вида `UTC agent-id старый-образ -> новый-образ (исход)` | Любой записываемый путь |
+| `MYRMIDON_BOT_IMAGE_ROLLOUT_BATCH_SIZE` | ONE-DEPLOY | `5` | Сколько карточек ботов переключается за пачку; жёсткий потолок 5 (больше — урезается). Бот переключается только пока его агент на паузе или простаивает | 1–5 |
+| `MYRMIDON_COMPONENT_AUTO_ROLLBACK` | ONE-DEPLOY | `1` | Сбой компонента в окне выката откатывает изменённые компоненты, конфиг dockergate и доску вместе | `0` — ручной контракт: ничего не откатывается, обслуживание остаётся |
+| `MYRMIDON_RELEASE_MANIFEST_FILE` | ONE-DEPLOY | не задано | Офлайн-копия манифеста релиза `release-components.json` вместо релиза на GitHub (`release-manifest.sh --from-file`) | Читаемый файл |
 | `MYRMIDON_DEPLOY_HEALTH_POLL_SEC` | R5-A | `5` | Зарезервировано: интервал опроса здоровья в фазе сверки | От 1 до 300 |
 | `MYRMIDON_DEPLOY_HEALTH_TIMEOUT_SEC` | R5-A | `300` | Зарезервировано: бюджет фазы сверки здоровья | От 10 до 3600 |
 | `MYRMIDON_DEPLOY_REGISTRY_INSPECT_URL` | R5-A | не задан | Read-only inspect-эндпоинт реестра для проверки digest, отвечает на `?ref=<ссылка>` JSON-ом как `imagetools inspect`; для случаев, когда контейнер доски не видит ghcr.io | Не задан — доска читает ghcr.io напрямую |

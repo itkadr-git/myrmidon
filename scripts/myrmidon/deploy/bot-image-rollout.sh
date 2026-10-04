@@ -52,25 +52,55 @@
 # BOARD_COMPANY_ID are required: the bot cards are the board's data. Missing
 # configuration refuses before anything changes.
 #
+# ONE-DEPLOY additions:
+#   --phase config   steps 1-4 only (resolve, pull, images[], bots[]): deploy.sh
+#                    runs it inside the maintenance window, together with the
+#                    dockergate swap, so a failure rolls back with the rest.
+#   --phase cards    steps 5-6 only (the bot cards, the superseded images):
+#                    deploy.sh runs it after the window closes.
+#   --phase all      (default) everything, for a standalone run.
+#   --no-reload      edit the dockergate config but do not SIGHUP (dockergate is
+#                    recreated right after and reads the file at start).
+#   --dockergate-image <ref>  the dockergate image check-config runs with when no
+#                    check command is configured.
+#   --digest name=sha256:<64 hex>  (repeatable) a digest the release manifest
+#                    already named; without it the digests resolve from the
+#                    registry by tag or sha.
+# Cards: a card TRACKS the release when its image is a digest-pinned image of one
+# of our bot repositories (hermes, hermes-dev, hermes-node) that is not the
+# release's image of that repository; it moves to the release image of the SAME
+# repository. Any other card image (another repository, a tag, none) is PINNED
+# and left alone. Cards switch in batches of at most 5, and a bot is switched
+# only while its agent is paused or idle; every batch and every failure is
+# reported (log lines, the journal and $STATE_DIR/bot-image-rollout-summary.json).
+#
 # Exit codes: 0 = rolled out (or dry run); 1 = failure (see the log lines).
 set -euo pipefail
 # shellcheck source=lib.sh source-path=SCRIPTDIR
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
 config="" resolution="" res_ref=""
-DRY_RUN=0 canary=""
+DRY_RUN=0 canary="" phase="all" no_reload=0 dockergate_image=""
+declare -A GIVEN_DIGESTS=()
 while (($#)); do
   case "$1" in
+    --phase) phase="$2"; shift 2 ;;
+    --no-reload) no_reload=1; shift ;;
+    --dockergate-image) dockergate_image="$2"; shift 2 ;;
+    --digest)
+      [[ "$2" =~ ^(hermes|hermes-dev|hermes-node)=sha256:[0-9a-f]{64}$ ]] || die "--digest takes name=sha256:<64 hex> for hermes, hermes-dev or hermes-node (got '$2')"
+      GIVEN_DIGESTS["${2%%=*}"]="${2#*=}"; shift 2 ;;
     --config) config="$2"; shift 2 ;;
     --resolution) resolution="$2"; shift 2 ;;
     --ref) res_ref="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     --canary) canary="$2"; shift 2 ;;
-    -h|--help) sed -n '2,52p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,72p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
 [[ -n "$config" ]] || die "--config is required"
+[[ "$phase" == "all" || "$phase" == "config" || "$phase" == "cards" ]] || die "--phase must be all, config or cards"
 [[ "$resolution" == "tag" || "$resolution" == "sha" ]] \
   || die "--resolution must be tag or sha (what deploy.sh resolved the release by)"
 [[ -n "$res_ref" ]] || die "--ref is required (the release tag, or the commit short sha)"
@@ -85,6 +115,11 @@ MYR_BOT_DOCKERGATE_CHECK="${MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_CHECK_CONFIG_C
 MYR_BOT_DOCKERGATE_SIGNAL="${MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_SIGNAL_COMMAND:-}"
 MYR_BOT_FLEET_HOSTS="${MYRMIDON_BOT_IMAGE_ROLLOUT_FLEET_HOSTS:-}"
 MYR_BOT_ROLLOUT_LOG="${MYRMIDON_BOT_IMAGE_ROLLOUT_LOG:-$STATE_DIR/bot-image-rollout.log}"
+MYR_BOT_SUMMARY="${MYRMIDON_BOT_IMAGE_ROLLOUT_SUMMARY:-$STATE_DIR/bot-image-rollout-summary.json}"
+# Hard cap 5: never more than five containers are recreated at once.
+MYR_BOT_BATCH="${MYRMIDON_BOT_IMAGE_ROLLOUT_BATCH_SIZE:-5}"
+[[ "$MYR_BOT_BATCH" =~ ^[1-9][0-9]*$ ]] || die "MYRMIDON_BOT_IMAGE_ROLLOUT_BATCH_SIZE must be a positive integer (got '$MYR_BOT_BATCH')"
+((MYR_BOT_BATCH <= 5)) || { log "MYRMIDON_BOT_IMAGE_ROLLOUT_BATCH_SIZE=$MYR_BOT_BATCH is above the cap; using 5"; MYR_BOT_BATCH=5; }
 
 [[ -n "$BOARD_API_URL" ]] || die "BOARD_API_URL is required for the bot image rollout (the bot cards are the board's data)"
 [[ -n "$BOARD_COMPANY_ID" ]] || die "BOARD_COMPANY_ID is required for the bot image rollout"
@@ -172,7 +207,13 @@ fleet_ssh_opts=(-o BatchMode=yes -o ConnectTimeout=10)
 
 # --- 1. resolve the release's bot images -------------------------------------
 bot_digests=""
-if [[ "$resolution" == "tag" ]]; then
+for name in hermes hermes-dev hermes-node; do
+  [[ -n "${GIVEN_DIGESTS[$name]:-}" ]] && bot_digests+="$name=${GIVEN_DIGESTS[$name]}"$'\n'
+done
+bot_digests="${bot_digests%$'\n'}"
+if [[ -n "$bot_digests" ]]; then
+  : # the release manifest named the digests
+elif [[ "$resolution" == "tag" ]]; then
   bot_digests="$("$MYR_SCRIPT_DIR/../dockergate/check-release-support.sh" --from-tag "$res_ref" --components "$MYR_BOT_COMPONENTS" 2>/dev/null)" || bot_digests=""
 else
   bot_digests="$("$MYR_SCRIPT_DIR/../dockergate/check-release-support.sh" --from-sha "$res_ref" --components "$MYR_BOT_COMPONENTS" 2>/dev/null)" || bot_digests=""
@@ -207,7 +248,9 @@ is_release_ref() {
 # --- 2. pull the images everywhere the bots run ------------------------------
 mapfile -t FLEET_HOSTS_LIST < <(fleet_hosts)
 for name in $(tr ',' ' ' <<<"$MYR_BOT_COMPONENTS"); do
-  ref="${BOT_IMAGE_BY_NAME[$name]}"
+  ref="${BOT_IMAGE_BY_NAME[$name]:-}"
+  [[ -n "$ref" ]] || { bot_log "the release has no $name image; cards on that variant stay as they are"; continue; }
+  [[ "$phase" == "cards" ]] && continue
   if [[ "$DRY_RUN" == "1" ]]; then
     bot_log "dry run: docker pull $ref"
     for host in "${FLEET_HOSTS_LIST[@]}"; do
@@ -266,21 +309,24 @@ dockergate_enroll_bots() {
 # command; e.g. "docker run --rm -v file:/c.json <image> check-config --config /c.json").
 dockergate_check_config() {
   local cfg_file="$1"
-  [[ -n "$MYR_BOT_DOCKERGATE_CHECK" ]] || {
-    bot_log "WARNING: no check-config command (MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_CHECK_CONFIG_COMMAND); the edited config is not verified"
-    return 0
-  }
   if [[ "$DRY_RUN" == "1" ]]; then
-    bot_log "dry run: $MYR_BOT_DOCKERGATE_CHECK"
+    bot_log "dry run: dockergate check-config of $cfg_file"
     return 0
   fi
-  # shellcheck disable=SC2086
-  if ! MYR_BOT_CFG_FILE="$cfg_file" bash -c "$MYR_BOT_DOCKERGATE_CHECK" >/dev/null 2>&1; then
-    die "dockergate check-config refused the edited config ($cfg_file); the last edit was not applied further"
-  fi
+  local rc=0
+  dockergate_check_config_file "$cfg_file" "$dockergate_image" || rc=$?
+  case "$rc" in
+    0) ;;
+    3) bot_log "WARNING: no check-config command (MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_CHECK_CONFIG_COMMAND) and no dockergate image; the edited config is not verified" ;;
+    *) die "dockergate check-config refused the edited config ($cfg_file); the last edit was not applied further" ;;
+  esac
 }
 
 dockergate_reload() {
+  if ((no_reload)); then
+    bot_log "dockergate is recreated next; no SIGHUP"
+    return 0
+  fi
   [[ -n "$MYR_BOT_DOCKERGATE_SIGNAL" ]] || {
     bot_log "WARNING: no SIGHUP command (MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_SIGNAL_COMMAND); the config file changed but dockergate keeps the old one until reloaded"
     return 0
@@ -316,16 +362,18 @@ if [[ "$DRY_RUN" == "1" ]]; then
   exit 0
 fi
 
+bots="$(list_bots)" \
+  || die "cannot read the agents list from $BOARD_API_URL (company $BOARD_COMPANY_ID): the bot cards are the board's data"
+
+if [[ "$phase" != "cards" ]]; then
 # --- 3. images[] + check-config + SIGHUP (old bot images stay) -----------------
-mapfile -t NEW_REFS < <(for name in $(tr ',' ' ' <<<"$MYR_BOT_COMPONENTS"); do printf '%s\n' "${BOT_IMAGE_BY_NAME[$name]}"; done)
+mapfile -t NEW_REFS < <(for name in $(tr ',' ' ' <<<"$MYR_BOT_COMPONENTS"); do [[ -n "${BOT_IMAGE_BY_NAME[$name]:-}" ]] && printf '%s\n' "${BOT_IMAGE_BY_NAME[$name]}"; done)
 dockergate_add_images "$MYR_BOT_DOCKERGATE_CONFIG" "${NEW_REFS[@]}"
 dockergate_check_config "$MYR_BOT_DOCKERGATE_CONFIG"
 dockergate_reload
 bot_log "release bot images allowed in $MYR_BOT_DOCKERGATE_CONFIG (old bot images stay until the fleet moved)"
 
 # --- 4. bots[] enrollment ------------------------------------------------------
-bots="$(list_bots)" \
-  || die "cannot read the agents list from $BOARD_API_URL (company $BOARD_COMPANY_ID): the bot cards are the board's data"
 bot_count=0
 if [[ -n "$bots" ]]; then
   bot_count="$(grep -c . <<<"$bots" || true)"
@@ -355,24 +403,50 @@ if [[ -n "$bots" ]]; then
 else
   bot_log "no eligible bots on the board (company $BOARD_COMPANY_ID): nothing to enroll, nothing to switch"
 fi
+fi # phase != cards
 
-# --- 5. switch the cards, one bot at a time (canary first) --------------------
-# Variant mapping: a bot on a dev image gets the release's dev image, a node
-# image gets node, anything else gets the default hermes image.
+if [[ "$phase" == "config" ]]; then
+  bot_log "config phase complete: bot images allowed and bots enrolled in $MYR_BOT_DOCKERGATE_CONFIG"
+  exit 0
+fi
+
+# --- 5. switch the tracking cards, in batches of at most 5 -------------------
+# A card TRACKS the release when it names a digest-pinned image of one of our
+# bot repositories that is not the release's image of that repository; it moves
+# to the release image of the SAME repository. Every other card (another
+# repository, a tag, no image) is PINNED: left alone and reported.
 release_image_for() {
   case "$1" in
-    *myrmidon-hermes-dev@*) printf '%s\n' "${BOT_IMAGE_BY_NAME[hermes-dev]}" ;;
-    *myrmidon-hermes-node@*) printf '%s\n' "${BOT_IMAGE_BY_NAME[hermes-node]}" ;;
-    *) printf '%s\n' "${BOT_IMAGE_BY_NAME[hermes]}" ;;
+    *myrmidon-hermes-dev@sha256:*) printf '%s\n' "${BOT_IMAGE_BY_NAME[hermes-dev]:-}" ;;
+    *myrmidon-hermes-node@sha256:*) printf '%s\n' "${BOT_IMAGE_BY_NAME[hermes-node]:-}" ;;
+    *myrmidon-hermes@sha256:*) printf '%s\n' "${BOT_IMAGE_BY_NAME[hermes]:-}" ;;
+    *) printf '\n' ;;
   esac
+}
+
+# The agent's status (idle, paused, running, ...), empty when unknown.
+card_status() {
+  local id="$1" body
+  body="$(board_get "/companies/$BOARD_COMPANY_ID/agents")" || return 1
+  jq -r --arg id "$id" 'first(.[]? | select(.id == $id) | .status // "")' <<<"$body" 2>/dev/null
 }
 
 # Returns 0 switched, 2 deferred (retry), 1 failed.
 switch_one_bot() {
-  local id="$1" current target body out kind
+  local id="$1" current target body out kind status
   current="$(card_image "$id" || true)"
   [[ -n "$current" ]] || current="(none)"
   target="$(release_image_for "$current")"
+  # Only while the agent is paused or idle: no run is ever interrupted by the
+  # rollout (an unknown status is treated as busy: fail-closed).
+  status="$(card_status "$id" || true)"
+  case "$status" in
+    idle | paused) ;;
+    *)
+      bot_log "bot $id deferred (agent status '${status:-unknown}': switched only while paused or idle)"
+      return 2
+      ;;
+  esac
   if is_release_ref "$current"; then
     # The card already names the release image (a previous rollout switched
     # it or the apply stayed deferred): only re-apply, never re-PATCH.
@@ -381,41 +455,22 @@ switch_one_bot() {
       journal "agent $id apply failed (card already on $target; the sweep retries)"
       return 1
     }
-    kind="$(jq -r '.outcome.kind // ""' <<<"$out" 2>/dev/null || true)"
-    case "$kind" in
-      created | applied_files | applied_restart | unchanged)
-        bot_log "bot $id: $current -> $target ($kind, card was already switched)"
-        journal "agent $id $current -> $target ($kind, card was already switched)"
-        record_history "bot-image" "$id $target"
-        return 0
-        ;;
-      deferred)
-        local reason
-        reason="$(jq -r '.outcome.reason // "reason unknown"' <<<"$out" 2>/dev/null || true)"
-        bot_log "bot $id deferred ($reason; card already on the release image)"
-        return 2
-        ;;
-      *)
-        bot_log "bot $id: unexpected apply outcome '$kind'"
-        journal "agent $id apply outcome '$kind'"
-        return 1
-        ;;
-    esac
+  else
+    # PATCH the card: only adapterConfig.container.image is sent; the route
+    # merges the patch into the stored adapterConfig, every other field stays.
+    body="$(jq -cn --arg img "$target" '{adapterConfig: {container: {image: $img}}}')"
+    if ! board_patch_json "/agents/$id" "$body" >/dev/null; then
+      bot_log "PATCH of bot $id's card failed; the card is untouched"
+      return 1
+    fi
+    # Apply now: the board's own reconciler drains this agent alone and
+    # recreates the container with the new image.
+    out="$(board_post_json "/myrmidon/agents/$id/bot-container/apply" '{}')" || {
+      bot_log "apply of bot $id failed after the card switch; the card points at the release image, the periodic sweep applies it"
+      journal "agent $id card switched to $target (apply failed; the sweep retries)"
+      return 1
+    }
   fi
-  # PATCH the card: only adapterConfig.container.image is sent; the route
-  # merges the patch into the stored adapterConfig, every other field stays.
-  body="$(jq -cn --arg img "$target" '{adapterConfig: {container: {image: $img}}}')"
-  if ! board_patch_json "/agents/$id" "$body" >/dev/null; then
-    bot_log "PATCH of bot $id's card failed; the card is untouched"
-    return 1
-  fi
-  # Apply now: the board's own reconciler drains this agent alone and
-  # recreates the container with the new image.
-  out="$(board_post_json "/myrmidon/agents/$id/bot-container/apply" '{}')" || {
-    bot_log "apply of bot $id failed after the card switch; the card points at the release image, the periodic sweep applies it"
-    journal "agent $id card switched to $target (apply failed; the sweep retries)"
-    return 1
-  }
   kind="$(jq -r '.outcome.kind // ""' <<<"$out" 2>/dev/null || true)"
   case "$kind" in
     created | applied_files | applied_restart | unchanged)
@@ -438,41 +493,78 @@ switch_one_bot() {
   esac
 }
 
-mapfile -t ORDERED_BOTS < <(
-  if [[ -n "$canary" ]]; then
-    grep "^$canary|" <<<"$bots" || true
+# Classify the cards: tracking (to switch) and pinned (left alone).
+TRACKING_BOTS=()
+pinned=0
+while IFS= read -r id_line; do
+  [[ -n "$id_line" ]] || continue
+  id="${id_line%%|*}"
+  current="$(card_image "$id" || true)"
+  target="$(release_image_for "$current")"
+  if [[ -z "$target" ]]; then
+    bot_log "bot $id is pinned (image '${current:-<none>}' is not a previous release image of a bot repository this release ships): left alone"
+    journal "agent $id pinned (${current:-none}): left alone"
+    pinned=$((pinned + 1))
+  else
+    TRACKING_BOTS+=("$id")
   fi
-  grep -v "^$canary|" <<<"$bots" || true
-)
+done <<<"$bots"
+if [[ -n "$canary" ]]; then
+  # the canary leads the first batch
+  mapfile -t TRACKING_BOTS < <(
+    for id in "${TRACKING_BOTS[@]}"; do [[ "$id" == "$canary" ]] && echo "$id"; done
+    for id in "${TRACKING_BOTS[@]}"; do [[ "$id" != "$canary" ]] && echo "$id"; done
+  )
+fi
 
+total=${#TRACKING_BOTS[@]}
+batches=$(((total + MYR_BOT_BATCH - 1) / MYR_BOT_BATCH))
+bot_log "cards: $total tracking the release, $pinned pinned (left alone); $batches batch(es) of at most $MYR_BOT_BATCH"
 failed=0
 switched=0
 stayed_deferred=0
-for id_line in "${ORDERED_BOTS[@]}"; do
-  [[ -n "$id_line" ]] || continue
-  id="${id_line%%|*}"
+batch_no=0
+for ((start = 0; start < total; start += MYR_BOT_BATCH)); do
+  batch_no=$((batch_no + 1))
+  batch=("${TRACKING_BOTS[@]:start:MYR_BOT_BATCH}")
+  bot_log "batch $batch_no/$batches: ${#batch[@]} bot(s)"
+  pending=("${batch[@]}")
   deadline=$((SECONDS + MYR_BOT_TIMEOUT_SEC))
-  while :; do
-    rc=0
-    switch_one_bot "$id" || rc=$?
-    if ((rc == 0)); then
-      switched=$((switched + 1))
+  b_switched=0 b_failed=0
+  while ((${#pending[@]} > 0)); do
+    retry=()
+    for id in "${pending[@]}"; do
+      rc=0
+      switch_one_bot "$id" || rc=$?
+      case "$rc" in
+        0) b_switched=$((b_switched + 1)) ;;
+        2) retry+=("$id") ;;
+        *) b_failed=$((b_failed + 1)); bot_log "FAILED: bot $id did not switch" ;;
+      esac
+    done
+    pending=("${retry[@]}")
+    ((${#pending[@]} > 0)) || break
+    if ((SECONDS >= deadline)); then
+      for id in "${pending[@]}"; do
+        bot_log "bot $id stayed busy/deferred for ${MYR_BOT_TIMEOUT_SEC}s; its card keeps the OLD image and the periodic sweep applies it later"
+        journal "agent $id still deferred after ${MYR_BOT_TIMEOUT_SEC}s (card unchanged)"
+      done
+      stayed_deferred=$((stayed_deferred + ${#pending[@]}))
       break
     fi
-    if ((rc == 2)); then
-      if ((SECONDS < deadline)); then
-        sleep "$POLL_INTERVAL_SEC"
-        continue
-      fi
-      bot_log "bot $id stayed deferred for ${MYR_BOT_TIMEOUT_SEC}s; its card keeps the OLD image and the periodic sweep applies it later"
-      journal "agent $id still deferred after ${MYR_BOT_TIMEOUT_SEC}s (card unchanged)"
-      stayed_deferred=$((stayed_deferred + 1))
-      break
-    fi
-    failed=$((failed + 1))
-    break
+    sleep "$POLL_INTERVAL_SEC"
   done
+  switched=$((switched + b_switched))
+  failed=$((failed + b_failed))
+  bot_log "batch $batch_no/$batches done: $b_switched switched, $b_failed failed, ${#pending[@]} deferred (progress $switched/$total)"
+  journal "batch $batch_no/$batches: $b_switched switched, $b_failed failed, ${#pending[@]} deferred"
 done
+
+mkdir -p "$(dirname "$MYR_BOT_SUMMARY")" 2>/dev/null || true
+jq -cn --arg release "$resolution $res_ref" --argjson tracking "$total" --argjson switched "$switched" \
+  --argjson deferred "$stayed_deferred" --argjson failed "$failed" --argjson pinned "$pinned" --argjson batches "$batches" \
+  '{release: $release, tracking: $tracking, switched: $switched, deferred: $deferred, failed: $failed, pinned: $pinned, batches: $batches}' \
+  >"$MYR_BOT_SUMMARY" 2>/dev/null || true
 
 if ((failed > 0)); then
   bot_log "DEGRADED: $failed bot(s) failed to switch to the release image; see the log above and $MYR_BOT_ROLLOUT_LOG"

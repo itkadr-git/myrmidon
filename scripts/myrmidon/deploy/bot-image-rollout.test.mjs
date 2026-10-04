@@ -234,6 +234,7 @@ function sandbox({
       agents.map((a) => ({
         id: a.id,
         adapterType: "hermes_gateway",
+        status: a.status ?? "idle",
         adapterConfig: {
           container: {
             enabled: true,
@@ -536,7 +537,7 @@ describe("deploy.sh: the bot image rollout rides along", () => {
     const { code, out } = run(sb, "deploy.sh", ["--digest", `sha256:${"9".repeat(64)}`]);
     assert.equal(code, 0, out);
     // deploy.sh called the rollout with the release resolution.
-    assert.match(out, /9\.5\/10 roll out the release's bot images \(tag 1\.6\.1\)/);
+    assert.match(out, /9\/10 bot cards \(tag 1\.6\.1, phase cards\)/);
     assert.match(calls(sb), /docker pull --quiet ghcr\.io\/itkadr-git\/myrmidon-hermes@/);
     // The bots ended on the release images and the smoke saw them running.
     assert.match(out, /bot image rollout complete/);
@@ -549,15 +550,16 @@ describe("deploy.sh: the bot image rollout rides along", () => {
     const { code, out } = run(sb, "deploy.sh", ["--digest", `sha256:${"9".repeat(64)}`]);
     assert.equal(code, 0, out);
     assert.match(out, /WARNING: MYRMIDON_BOT_IMAGE_ROLLOUT=0/);
-    assert.doesNotMatch(out, /9\.5\/10 roll out/);
+    assert.doesNotMatch(out, /9\/10 bot cards/);
   });
 
-  it("a failing bot rollout marks the deploy DEGRADED with the rollback commands", () => {
+  it("a release whose bot images are missing is refused before anything changes", () => {
     const sb = sandbox({ botImagesMissing: true });
     const { code, out } = run(sb, "deploy.sh", ["--digest", `sha256:${"9".repeat(64)}`]);
     assert.notEqual(code, 0);
-    assert.match(out, /DEGRADED: the bot image rollout failed/);
-    assert.match(out, /bot-image-rollout\.sh --config/);
+    assert.match(out, /bot image digests missing/);
+    assert.doesNotMatch(calls(sb), /docker pull/);
+    assert.ok(!fs.existsSync(path.join(sb.dir, "dumps")));
   });
 
   it("--dry-run prints the bot rollout step and changes nothing", () => {
@@ -565,7 +567,87 @@ describe("deploy.sh: the bot image rollout rides along", () => {
     const before = read(sb.dgConfig);
     const { code, out } = run(sb, "deploy.sh", ["--digest", `sha256:${"9".repeat(64)}`, "--dry-run"]);
     assert.equal(code, 0, out);
-    assert.match(out, /9\.5 roll out the release's BOT images/);
+    assert.match(out, /bot images: add the release's hermes\/hermes-dev\/hermes-node digests/);
     assert.equal(read(sb.dgConfig), before);
+  });
+});
+
+describe("bot-image-rollout.sh: tracking vs pinned cards, batches, paused or idle (ONE-DEPLOY)", () => {
+  const ARGS = ["--resolution", "tag", "--ref", VERSION];
+  const uuid = (n) => `${String(n).padStart(8, "0")}-0000-4000-8000-000000000000`;
+  const cardImage = (sb, id) =>
+    JSON.parse(read(path.join(sb.dir, "agents.json"))).find((a) => a.id === id).adapterConfig.container.image;
+  const summary = (sb) => JSON.parse(read(path.join(sb.stateDir, "bot-image-rollout-summary.json")));
+
+  it("a card on another repository or a tag is pinned and left alone; previous release images track", () => {
+    const pinnedOther = "ghcr.io/example/custom-bot@sha256:" + "7".repeat(64);
+    const pinnedTag = `${BOT}:custom`;
+    const sb = sandbox({
+      agents: [
+        { id: uuid(1), image: `${BOT_DEV}@${OLD_DEV}` },
+        { id: uuid(2), image: pinnedOther },
+        { id: uuid(3), image: pinnedTag },
+      ],
+    });
+    const { code, out } = run(sb, "bot-image-rollout.sh", ARGS);
+    assert.equal(code, 0, out);
+    assert.equal(cardImage(sb, uuid(1)), `${BOT_DEV}@${HERMES_DEV}`);
+    assert.equal(cardImage(sb, uuid(2)), pinnedOther);
+    assert.equal(cardImage(sb, uuid(3)), pinnedTag);
+    assert.doesNotMatch(calls(sb), new RegExp(`-X PATCH.*agents/${uuid(2)}`));
+    assert.match(out, /is pinned/);
+    assert.deepEqual(
+      [summary(sb).tracking, summary(sb).pinned, summary(sb).switched],
+      [1, 2, 1],
+    );
+  });
+
+  it("switches the cards in batches of at most 5", () => {
+    const agents = Array.from({ length: 7 }, (_, i) => ({ id: uuid(i + 1), image: `${BOT}@${OLD_DEV}` }));
+    const sb = sandbox({ agents });
+    const { code, out } = run(sb, "bot-image-rollout.sh", ARGS);
+    assert.equal(code, 0, out);
+    assert.match(out, /batch 1\/2: 5 bot\(s\)/);
+    assert.match(out, /batch 2\/2: 2 bot\(s\)/);
+    assert.match(out, /batch 1\/2 done: 5 switched, 0 failed, 0 deferred \(progress 5\/7\)/);
+    assert.match(out, /batch 2\/2 done: 2 switched/);
+    assert.deepEqual([summary(sb).batches, summary(sb).switched, summary(sb).failed], [2, 7, 0]);
+    // a batch size above the cap is clamped to 5
+    const sb2 = sandbox({ agents });
+    fs.appendFileSync(sb2.config, "MYRMIDON_BOT_IMAGE_ROLLOUT_BATCH_SIZE=50\n");
+    const second = run(sb2, "bot-image-rollout.sh", ARGS);
+    assert.equal(second.code, 0, second.out);
+    assert.equal(summary(sb2).batches, 2);
+  });
+
+  it("only a paused or idle agent is switched: a running one is never touched and keeps its old image", () => {
+    const sb = sandbox({
+      agents: [
+        { id: uuid(1), image: `${BOT}@${OLD_DEV}`, status: "running" },
+        { id: uuid(2), image: `${BOT}@${OLD_DEV}`, status: "paused" },
+        { id: uuid(3), image: `${BOT}@${OLD_DEV}`, status: "idle" },
+      ],
+    });
+    const { code, out } = run(sb, "bot-image-rollout.sh", ARGS);
+    // a busy agent is deferred, not failed: the rollout still succeeds
+    assert.equal(code, 0, out);
+    assert.match(out, /bot 00000001-0000-4000-8000-000000000000 deferred \(agent status 'running'/);
+    assert.equal(cardImage(sb, uuid(1)), `${BOT}@${OLD_DEV}`);
+    assert.equal(cardImage(sb, uuid(2)), `${BOT}@${HERMES}`);
+    assert.equal(cardImage(sb, uuid(3)), `${BOT}@${HERMES}`);
+    // the busy agent got neither a PATCH nor an apply
+    assert.doesNotMatch(calls(sb), new RegExp(`agents/${uuid(1)}`));
+    assert.deepEqual([summary(sb).switched, summary(sb).deferred], [2, 1]);
+    // its old image stays allowed until it moves
+    assert.ok(dockergateConfig(sb).images.includes(`${BOT}@${OLD_DEV}`));
+  });
+
+  it("the config phase edits dockergate's images[] and does not touch a card", () => {
+    const sb = sandbox();
+    const { code, out } = run(sb, "bot-image-rollout.sh", [...ARGS, "--phase", "config", "--no-reload"]);
+    assert.equal(code, 0, out);
+    assert.ok(dockergateConfig(sb).images.includes(`${BOT_DEV}@${HERMES_DEV}`));
+    assert.doesNotMatch(calls(sb), /-X PATCH|bot-container\/apply/);
+    assert.equal(sighups(sb), "", "no SIGHUP with --no-reload");
   });
 });

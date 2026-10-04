@@ -10,6 +10,29 @@ version file to edit. Base Paperclip version is in the image label
 
 ## Unreleased
 
+### One deploy for every component (ONE-DEPLOY)
+
+- A release deploy now updates every component in one maintenance window:
+  `deploy.sh --release myr-vX.Y.Z` reads the release's component digests (board,
+  dockergate, fleetd, bot images) from the new machine-readable release asset
+  `release-components.json` (the release publish step uploads it; the digest table of the
+  release body is the fallback for older releases). On 04.10 the board moved to 1.6.2 while
+  dockergate stayed on 1.3.0 and the shared package cache did not work until dockergate was
+  updated by hand.
+- Components that already run their release image are not restarted; a release with
+  missing digests, or a component that cannot roll out, is refused before the window.
+- The window is all-or-nothing: a failing component rolls the changed components, the
+  dockergate config and the board back together (`MYRMIDON_COMPONENT_AUTO_ROLLBACK=0` keeps
+  the manual contract).
+- dockergate: `dockergate check-config` runs with the new image before the service is
+  recreated; after the recreate the startup self-check version is verified; the release bot
+  images (including the dev variant) are added to `images[]`.
+- Bot cards that track the release image (a previous release image of the same repository)
+  switch in batches of at most 5, only while the agent is paused or idle; pinned cards are
+  left alone; progress and failures are reported. Includes BOT-IMAGE-ROLLOUT (PR #454).
+- `component_host_service_exists` no longer reports a service as missing when `grep -q`
+  closes the pipe early (SIGPIPE under `pipefail`).
+
 ### Release publish waits for the tag's own image runs (RELEASE-PUBLISH-WAIT)
 
 - Pushing the `myr-v1.6.1` tag failed to publish the Release on the first
