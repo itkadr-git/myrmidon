@@ -1142,3 +1142,25 @@ is accepted. An invalid input answers 400 with a clear message.
 | Variable | Function | Default | What it does | How to disable / special |
 |---|---|---|---|---|
 | `pluginEntitlementKeys` | 1.6.2-PLUGIN-ENTITLEMENT C | absent | The accepted plugin entitlement keys in the instance general settings; absent means "no keys registered" — every entitlement-gated plugin stays inactive | Remove the keys in the UI or via DELETE …/keys/:pluginId; a malformed stored row fails closed to "no keys" |
+
+## 1.6.3 — PROMPT-BUDGET C: prompt-budget advice and deep analysis
+
+What the last run's prompt was made of — which part dominates it and what to do about it — is shown
+on the agent card (Overview). The advice is computed on request from the recorded breakdown; a
+"Deep analysis" button files a task for a cheap-model optimizer agent, which drafts instruction
+edits as a comment on that task. Nothing is scheduled and nothing is changed automatically.
+
+The static thresholds are code constants of
+`server/src/myrmidon/prompt-budget-advice/advice.ts`, not settings: a part is worth a recommendation
+from 30% of the prompt (`PROMPT_BUDGET_ADVICE_SHARE_PCT`), is critical from 50%
+(`PROMPT_BUDGET_ADVICE_CRIT_SHARE_PCT`), and no advice is produced below 2000 prompt tokens
+(`PROMPT_BUDGET_ADVICE_MIN_TOTAL_TOKENS`).
+
+API: `GET /api/myrmidon/companies/:companyId/prompt-budget/agents/:agentId/advice` (company
+member) returns the breakdown and the recommendations; `POST .../advice/deep` (board) answers 201
+with the id and identifier of the filed task, or 422 with a clear message when no optimizer agent
+is configured or usable.
+
+| Field | Default | What it does | Bounds / special |
+|---|---|---|---|
+| `promptBudget.optimizerAgentId` | absent | Agent that receives the deep-analysis task filed by the "Deep analysis" button | A uuid of another agent of the same company; absent, blank or not a uuid answers the deep POST with 422. An additive field of the `promptBudget` area owned by the thresholds part (`instance_settings.general.promptBudget`); no environment variable |
