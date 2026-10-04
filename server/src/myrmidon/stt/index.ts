@@ -119,8 +119,6 @@ function settingsView(settings: SttSettings) {
     language: settings.language,
     diarization: settings.diarization,
     maxDurationSec: settings.maxDurationSec,
-    keySecret: settings.keySecret,
-    deepgramKeySecret: settings.deepgramKeySecret,
     problem: problem ? { code: problem.code, message: problem.message } : null,
   };
 }
