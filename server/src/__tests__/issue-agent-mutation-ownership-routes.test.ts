@@ -156,10 +156,20 @@ const mockExternalObjectService = vi.hoisted(() => ({
   syncDocumentSafely: vi.fn(async () => undefined),
   syncIssueSafely: vi.fn(async () => undefined),
 }));
+// myrmidon(1.6.2-AUTONOMY-MATRIX): the delete-class gate is mocked; its default
+// verdict is "allowed" so the pre-existing ownership tests are unaffected.
+const mockAutonomyGate = vi.hoisted(() => ({
+  decide: vi.fn(),
+  assertAllowed: vi.fn(),
+}));
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 const mockObserveCrossIssueInfluence = vi.hoisted(() => vi.fn(async () => null));
 
 function registerRouteMocks() {
+  vi.doMock("../myrmidon/autonomy/gate.js", () => ({
+    dbAutonomyGate: () => mockAutonomyGate,
+  }));
+
   vi.doMock("@paperclipai/shared/telemetry", () => ({
     trackAgentTaskCompleted: vi.fn(),
     trackErrorHandlerCrash: vi.fn(),
@@ -452,6 +462,7 @@ describe("agent issue mutation checkout ownership", () => {
     vi.doUnmock("../services/work-products.js");
     vi.doUnmock("../routes/issues.js");
     vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../myrmidon/autonomy/gate.js");
     vi.doUnmock("../middleware/index.js");
     registerRouteMocks();
     vi.clearAllMocks();
@@ -589,6 +600,9 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueApprovalService.listApprovalsForIssue.mockResolvedValue([]);
     mockIssueThreadInteractionService.listForIssue.mockReset();
     mockIssueThreadInteractionService.listForIssue.mockResolvedValue([]);
+    mockAutonomyGate.decide.mockReset();
+    mockAutonomyGate.assertAllowed.mockReset();
+    mockAutonomyGate.assertAllowed.mockResolvedValue({ verdict: "allowed", role: "engineer", actionClass: "delete" });
     mockIssueService.remove.mockReset();
     mockIssueService.removeAttachment.mockReset();
     mockIssueService.update.mockReset();
@@ -3009,6 +3023,41 @@ describe("agent issue mutation checkout ownership", () => {
       expect(res.status, JSON.stringify(res.body)).toBe(403);
       expect(res.body.error).toBe("Task-watchdog run context is not backed by an active persisted watchdog.");
       expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("autonomy delete class on issue delete", () => {
+    it("denies an agent delete with 403 autonomy_forbidden when the matrix forbids the delete class", async () => {
+      mockIssueService.getById.mockResolvedValue(makeIssue());
+      mockIssueService.listAttachments.mockResolvedValue([]);
+      // vi.resetModules() in beforeEach gives the route a fresh errors module;
+      // build the error from that same registry so the error handler maps it.
+      const { forbidden } = await import("../errors.js");
+      mockAutonomyGate.assertAllowed.mockRejectedValue(
+        forbidden("This action is forbidden for this role by the autonomy matrix", {
+          code: "autonomy_forbidden",
+          actionClass: "delete",
+          role: "engineer",
+        }),
+      );
+
+      const res = await request(await createApp(ownerActor())).delete(`/api/issues/${issueId}`);
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.details.code).toBe("autonomy_forbidden");
+      expect(mockAutonomyGate.assertAllowed).toHaveBeenCalledWith(expect.anything(), "delete");
+      expect(mockIssueService.remove).not.toHaveBeenCalled();
+    });
+
+    it("lets the delete through when the matrix allows the delete class", async () => {
+      mockIssueService.getById.mockResolvedValue(makeIssue());
+      mockIssueService.listAttachments.mockResolvedValue([]);
+
+      const res = await request(await createApp(ownerActor())).delete(`/api/issues/${issueId}`);
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockAutonomyGate.assertAllowed).toHaveBeenCalledWith(expect.anything(), "delete");
+      expect(mockIssueService.remove).toHaveBeenCalledWith(issueId);
     });
   });
 });
