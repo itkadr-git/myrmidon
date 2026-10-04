@@ -3030,8 +3030,11 @@ describe("agent issue mutation checkout ownership", () => {
     it("denies an agent delete with 403 autonomy_forbidden when the matrix forbids the delete class", async () => {
       mockIssueService.getById.mockResolvedValue(makeIssue());
       mockIssueService.listAttachments.mockResolvedValue([]);
+      // vi.resetModules() in beforeEach gives the route a fresh errors module;
+      // build the error from that same registry so the error handler maps it.
+      const { forbidden } = await import("../errors.js");
       mockAutonomyGate.assertAllowed.mockRejectedValue(
-        new HttpError(403, "This action is forbidden for this role by the autonomy matrix", {
+        forbidden("This action is forbidden for this role by the autonomy matrix", {
           code: "autonomy_forbidden",
           actionClass: "delete",
           role: "engineer",
