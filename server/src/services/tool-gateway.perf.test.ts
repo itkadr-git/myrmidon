@@ -145,4 +145,5 @@ describe("Performance: tool-gateway policy snapshot", () => {
     emitToolPolicyChanged();
     expect(policyCache.size).toBe(1);
   });
+
 });
