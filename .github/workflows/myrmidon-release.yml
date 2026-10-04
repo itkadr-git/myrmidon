@@ -40,7 +40,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # the release tag (push) or the tag input (workflow_dispatch).
-          # OPE-4271: the input wins over ref_name — a workflow_dispatch from
+          # RELEASE-PUBLISH-WAIT: the input wins over ref_name — a workflow_dispatch from
           # a branch sets ref_name to that branch (e.g. "main"), which used
           # to override the typed tag and fail the publish with
           # "tag must look like myr-vX.Y.Z (got: main)".

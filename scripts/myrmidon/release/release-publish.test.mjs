@@ -76,7 +76,7 @@ case "$sub" in
       *"/git/ref/tags/"*) body="$(cat "$SANDBOX/ref-tag.json")" ;;
       *"/git/tags/"*)     body="$(cat "$SANDBOX/tag-object.json")" ;;
       *"actions/runs?head_sha="*)
-        # OPE-4271: scripted progression — when $SANDBOX/runs-after.json
+        # RELEASE-PUBLISH-WAIT: scripted progression — when $SANDBOX/runs-after.json
         # exists, the first GH_RUNS_SWITCH_AFTER reads answer "before" (the
         # state runs.json holds), the rest answer "after". Lets a test watch
         # the publish WAIT while the tag's image run is still building, then
@@ -204,7 +204,7 @@ function runScript(sb, tag, { extraEnv = {} } = {}) {
       MYRMIDON_RELEASE_REGISTRY_STATE: path.join(sb.dir, "registry-state.json"),
       MYRMIDON_RELEASE_POLL_SECONDS: "0",
       MYRMIDON_RELEASE_POLL_MAX: "4",
-      // OPE-4271: the fake gh's runs-state switch (absent fixtures never read
+      // RELEASE-PUBLISH-WAIT: the fake gh's runs-state switch (absent fixtures never read
       // it; 0 = the first runs read already answers "after")
       GH_RUNS_SWITCH_AFTER: "0",
       ...extraEnv,
@@ -298,7 +298,7 @@ describe("publish-github-release.sh: the CI gate", () => {
     assert.equal(mutations(sb), "");
   });
 
-  // ---- OPE-4271: the gate must wait for the TAG's runs, not the commit's ----
+  // ---- RELEASE-PUBLISH-WAIT: the gate must wait for the TAG's runs, not the commit's ----
 
   it("waits for the board image run of the tag while it is still building, then publishes (the 1.6.1 incident)", () => {
     // The exact shape of 2026-10-04 04:40: the release commit was on main
@@ -400,7 +400,7 @@ describe("publish-github-release.sh: the release body and mutations", () => {
   });
 });
 
-// OPE-4271: the workflow must prefer the typed tag input over ref_name. A
+// RELEASE-PUBLISH-WAIT: the workflow must prefer the typed tag input over ref_name. A
 // workflow_dispatch from a branch sets github.ref_name to that branch
 // (e.g. "main"); with "ref_name || inputs.tag" the typed tag was overridden
 // and the publish died with "tag must look like myr-vX.Y.Z (got: main)".

@@ -10,7 +10,7 @@ version file to edit. Base Paperclip version is in the image label
 
 ## Unreleased
 
-### Release publish waits for the tag's own image runs (OPE-4271, RELEASE-PUBLISH-WAIT)
+### Release publish waits for the tag's own image runs (RELEASE-PUBLISH-WAIT)
 
 - Pushing the `myr-v1.6.1` tag failed to publish the Release on the first
   try: the publish gate matched workflow runs by the tag commit's

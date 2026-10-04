@@ -16,7 +16,7 @@
 #   2. GATE: require a successful "Myrmidon CI" run and a successful
 #      "Myrmidon image" (board) run for THIS tag (runs are matched by
 #      head_branch == the tag — the same commit's main-branch runs build
-#      different image tags and must not satisfy the gate, OPE-4271); a
+#      different image tags and must not satisfy the gate); a
 #      failed run exits 1 BEFORE anything is published. Dockergate and
 #      fleetd are paths-filtered workflows, so their tag run may
 #      legitimately be absent — but their digests must exist in the registry
@@ -86,7 +86,7 @@ log "tag $tag -> commit $sha"
 # when no completed run exists, else the unique conclusion, else "mixed"
 # (at least two different conclusions — a failed attempt exists, fail closed).
 #
-# OPE-4271: runs are selected by head_branch == the tag, not just by head_sha.
+# RELEASE-PUBLISH-WAIT: runs are selected by head_branch == the tag, not just by head_sha.
 # The release commit normally lands on main BEFORE the tag is pushed, so the
 # API also answers with the main-branch runs of the same commit; those build
 # the `main`/`sha-<short>` image tags, not the `myr-vX.Y.Z` version tag this
