@@ -59,6 +59,7 @@ import {
   pipelines,
   projectWorkspaces,
 } from "@paperclipai/db";
+import { dbAutonomyGate } from "../myrmidon/autonomy/gate.js";
 import {
   addIssueCommentSchema,
   acceptIssueThreadInteractionSchema,
@@ -11489,6 +11490,7 @@ export function issueRoutes(
       );
       if (!issue) return;
       const target = await resolveInboxArchiveTarget(req, issue);
+    await dbAutonomyGate(db).assertAllowed(req, "delete");
       const removed = await svc.unarchiveInbox(
         issue.companyId,
         issue.id,
@@ -15014,6 +15016,7 @@ export function issueRoutes(
     if (!existing) return;
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
     const attachments = await svc.listAttachments(id);
+    await dbAutonomyGate(db).assertAllowed(req, "delete");
 
     const issue = await svc.remove(id);
     if (!issue) {
@@ -16935,6 +16938,7 @@ export function issueRoutes(
     if (!issue) return;
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
 
+    await dbAutonomyGate(db).assertAllowed(req, "delete");
     const comment = await svc.getComment(commentId);
     if (!comment || comment.issueId !== id) {
       res.status(404).json({ error: "Comment not found" });
@@ -18744,6 +18748,7 @@ export function issueRoutes(
     }
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue)))
+    await dbAutonomyGate(db).assertAllowed(req, "delete");
       return;
 
     try {
