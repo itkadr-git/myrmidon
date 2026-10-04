@@ -1,6 +1,6 @@
 /**
  * Guard for myrmidon(1.6.3-CTO-CHAT-B): the Telegram DM commands `/accept`
- * and `/reject` on the plan card. Acceptance criteria of OPE-4146:
+ * and `/reject` on the plan card. Acceptance criteria:
  *
  *  - `/accept` creates the epic and the tasks, the reply carries the link;
  *  - `/reject` closes the card without creating any task;
