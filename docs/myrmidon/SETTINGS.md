@@ -1069,3 +1069,21 @@ Modes, as written into the bot's `config.yaml`:
   instead of two, no typings download.
 - `full` — nothing written (Hermes' own defaults), except `exclude_roots` when set.
 
+## 1.6.2 — PLUGIN-ENTITLEMENT C: plugin entitlement keys (instance settings UI)
+
+Instance-level plugin entitlement keys. A plugin whose manifest sets
+`requiresEntitlement: true` is not activated (no worker, no UI slots, hidden
+from menus and settings) until the instance admin accepts a valid key for its
+exact plugin id. Managed from the "Plugin keys" block of the instance
+settings page; the API is `GET/POST/DELETE /api/myrmidon/plugin-entitlement/keys`
+(instance admin). Keys live in `instance_settings.general.pluginEntitlementKeys`
+(`[{ pluginId, key, expiresAt, acceptedAt }]`); accepting or removing a key
+applies without a restart — the loader gate re-reads the row on every
+activation pass. No env override: which plugins are unlocked is a licensing
+choice, not a deployment knob. Key verification (cryptographic) arrives with
+the ML1/ML2 API; until then a syntactically valid key for a known plugin id
+is accepted. An invalid input answers 400 with a clear message.
+
+| Variable | Function | Default | What it does | How to disable / special |
+|---|---|---|---|---|
+| `pluginEntitlementKeys` | 1.6.2-PLUGIN-ENTITLEMENT C | absent | The accepted plugin entitlement keys in the instance general settings; absent means "no keys registered" — every entitlement-gated plugin stays inactive | Remove the keys in the UI or via DELETE …/keys/:pluginId; a malformed stored row fails closed to "no keys" |
