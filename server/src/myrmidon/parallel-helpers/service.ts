@@ -36,8 +36,8 @@ export interface ParallelHelpersView {
   settings: ParallelHelpersSettings;
   /** Defaults the module applies when a field is unset (shown, not stored). */
   effective: {
-    ceiling: number;
-    defaultPerAgent: number;
+    ceiling: number | null;
+    defaultPerAgent: number | null;
   };
   capacity: HelperCapacityHint;
 }
