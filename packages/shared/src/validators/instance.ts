@@ -12,7 +12,7 @@ import { shapeWithoutDefaults } from "./partial.js";
 import { workspaceHygieneLimitsSchema } from "../myrmidon-workspace-hygiene.js";
 import { hostDiskSettingsSchema } from "../myrmidon-host-disk.js";
 // myrmidon(C0): run admission limits that can be changed while the server runs
-import { runLimitsSchema } from "../myrmidon-runtime-limits.js";
+import { storedRunLimitsSchema } from "../myrmidon-runtime-limits.js";
 // myrmidon(PARALLEL-HELPERS): company ceiling/default for parallel helper
 // subagents, changed from the instance settings page and /api/myrmidon/parallel-helpers.
 import { parallelHelpersSettingsSchema, patchParallelHelpersSettingsSchema } from "../myrmidon-parallel-helpers.js";
@@ -57,7 +57,10 @@ export const instanceGeneralSettingsSchema = z.object({
   // myrmidon(C0): run admission limits changed from the instance settings
   // page and /api/myrmidon/runtime-limits; absent means "use the environment
   // variable, then the default" (see packages/shared/src/myrmidon-runtime-limits.ts).
-  runLimits: runLimitsSchema.optional(),
+  // myrmidon(1.6.2 RUN-ADMISSION): the stored shape, so a row saved before
+  // `minFreeHostMemoryMb` existed still parses (a strict miss here would fail
+  // the whole general block and the next write would drop every setting).
+  runLimits: storedRunLimitsSchema.optional(),
   // myrmidon(BOT-DISK E): the host disk usage threshold, changed from
   // /api/myrmidon/host-disk; absent means "use the environment variable, then
   // the default (85)".

@@ -38,6 +38,19 @@ if (!process.env.PAPERCLIP_MANAGED_RUNTIME_HTTPS) {
   process.env.PAPERCLIP_MANAGED_RUNTIME_HTTPS = "off";
 }
 
+// myrmidon(1.6.2 RUN-ADMISSION): the run admission defaults to a host
+// free-memory floor (15 GB) and a start ramp (5 starts a minute). Both depend
+// on the machine and the clock, not on the code under test: a CI runner with
+// less free memory would hold every run in the queue, and a suite starting
+// more than five runs a minute would wait for the ramp. Suites that exercise
+// these limits construct their own admission with explicit limits.
+if (process.env.MYRMIDON_MIN_FREE_HOST_MEMORY_MB === undefined) {
+  process.env.MYRMIDON_MIN_FREE_HOST_MEMORY_MB = "off";
+}
+if (process.env.MYRMIDON_MAX_RUN_STARTS_PER_MINUTE === undefined) {
+  process.env.MYRMIDON_MAX_RUN_STARTS_PER_MINUTE = "off";
+}
+
 if (!SupertestTest.prototype.__paperclipLoopbackPatched) {
   SupertestTest.prototype.serverAddress = function serverAddress(app, path) {
     const addr = app.address();

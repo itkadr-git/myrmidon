@@ -70,6 +70,7 @@ import { buildStackAttentionCards } from "../myrmidon/stack-registry/attention.j
 import { readStackDocument } from "../myrmidon/stack-registry/store.js";
 // myrmidon(TRACING-HEALTH): the "LLM tracing" red state raises one operator card (part D)
 import { readTracingHealthAttentionSignal } from "../myrmidon/tracing-health/attention.js";
+import { hostMemoryHoldSignal } from "../myrmidon/run-admission.js"; // myrmidon(1.6.2 RUN-ADMISSION)
 // myrmidon(BOT-RUNTIME-TUNING D): the model fallback share raises one card per agent
 import { readModelFallbackSignals } from "../myrmidon/litellm-fallback-signal/attention.js";
 
@@ -2113,6 +2114,54 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           detail: {
             kind: "generic",
             summaryExcerpt: excerpt(tracingSignal.whyNow),
+            images: [],
+          },
+        }));
+      }
+
+      // myrmidon(1.6.2 RUN-ADMISSION): the run admission's host memory floor
+      // has held new runs back for over 10 minutes. One card for the whole
+      // instance, deduped while the hold lasts; it disappears on the first
+      // admitted run (the admission ends the hold) — nothing is persisted.
+      const hostMemoryHold = hostMemoryHoldSignal();
+      if (hostMemoryHold) {
+        const heldAt = hostMemoryHold.heldSince.toISOString();
+        const heldMinutes = Math.floor(hostMemoryHold.heldMs / 60_000);
+        add(createItem({
+          companyId,
+          sourceKind: "agent_error_alert",
+          subject: {
+            kind: "agent",
+            id: "run-admission-host-memory",
+            companyId,
+            title: "Runs held: host memory",
+            identifier: null,
+            status: "alert",
+            href: `/${prefix}/instance`,
+            metadata: {
+              runAdmissionHostMemory: true,
+              availableMb: hostMemoryHold.availableMb,
+              thresholdMb: hostMemoryHold.thresholdMb,
+              heldSince: heldAt,
+            },
+          },
+          whyNow: `New agent runs have waited ${heldMinutes} min: host free memory ${hostMemoryHold.availableMb ?? "?"} MB is below the ${hostMemoryHold.thresholdMb ?? "?"} MB run admission floor. Free memory on the host (idle bot containers) or lower the floor in Run limits.`,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the run limits and the host memory." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this alert for this hold." },
+          ),
+          inlineResolvable: true,
+          entryRule: "the run admission host memory floor held new runs back for more than 10 minutes",
+          exitRule: "a run is admitted again (host memory recovered or the floor was lowered) or the row is dismissed",
+          dedupKey: `run_admission_host_memory:${heldAt}`,
+          severity: "high",
+          activityAt: heldAt,
+          createdAt: heldAt,
+          updatedAt: heldAt,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: excerpt(hostMemoryHold.reason ?? "host free memory is below the run admission floor"),
             images: [],
           },
         }));
