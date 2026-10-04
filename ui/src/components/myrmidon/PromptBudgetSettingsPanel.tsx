@@ -8,7 +8,7 @@ import { Gauge } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { useCompany } from "@/context/CompanyContext";
+import { useOptionalCompany } from "@/context/CompanyContext";
 import {
   promptBudgetApi,
   promptBudgetSettingsQueryKey,
@@ -21,8 +21,10 @@ import {
 } from "./prompt-budget/promptBudgetConfig";
 
 export function PromptBudgetSettingsPanel() {
-  const { selectedCompanyId } = useCompany();
-  const companyId = selectedCompanyId ?? "";
+  // Non-throwing: the page's vendor test suite renders without a
+  // CompanyProvider; outside a company context the panel has nothing to edit.
+  const company = useOptionalCompany();
+  const companyId = company?.selectedCompanyId ?? "";
   const queryClient = useQueryClient();
   const { data: stored } = useQuery({
     queryKey: promptBudgetSettingsQueryKey(companyId),
