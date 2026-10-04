@@ -52,7 +52,7 @@ import { badRequest } from "../errors.js";
 import { listAttentionExhaustedRuns } from "./attention-exhausted-runs.js";
 import { budgetService } from "./budgets.js";
 import { hostDiskRuntime } from "../myrmidon/host-disk/index.js"; // myrmidon(BOT-DISK E)
-import { cloneHygieneSignals } from "../myrmidon/bot-containers/clone-hygiene.js"; // myrmidon(1.6.2-BOT-DISK-C)
+import { cloneHygieneSignals, lifecycleNotEffective } from "../myrmidon/bot-containers/clone-hygiene.js"; // myrmidon(1.6.2-BOT-DISK-C)
 import {
   BLOCKER_ATTENTION_MAX_DEPTH,
   BLOCKER_ATTENTION_MAX_NODES,
@@ -1947,6 +1947,46 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       // lifecycle TTL. The sweep keeps such a clone instead of removing it; this
       // card is how an operator learns about it. One card per clone; it goes
       // away when the work is pushed, the clone is touched again, or removed.
+      // The board cannot see the bot volume root and no bot delivers a clone
+      // report: the lifecycle reclaims nothing anywhere.
+      if (lifecycleNotEffective() === true) {
+        const at = new Date().toISOString();
+        add(createItem({
+          companyId,
+          sourceKind: "bot_disk_lifecycle",
+          subject: {
+            kind: "agent",
+            id: "bot-disk-lifecycle",
+            companyId,
+            title: "Bot disk lifecycle",
+            identifier: null,
+            status: "alert",
+            href: `/${prefix}/instance`,
+            metadata: {},
+          },
+          whyNow:
+            "Lifecycle not effective: the board cannot see the bot volume root and no bot container has reported its clones, so idle clones are not being reclaimed.",
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Check that bots run the development image (it reaps clones inside the container) and are running." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this signal." },
+          ),
+          inlineResolvable: false,
+          entryRule: "the bot volume root is not visible to the board and no clone report arrived in 24 hours",
+          exitRule: "a bot delivers a clone report or the board sees the volume root",
+          dedupKey: "bot_disk_lifecycle:not_effective",
+          severity: "medium",
+          activityAt: at,
+          createdAt: at,
+          updatedAt: at,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: "Idle bot clones are not being reclaimed.",
+            images: [],
+          },
+        }));
+      }
+
       const cloneSignals = cloneHygieneSignals();
       if (cloneSignals.length > 0) {
         const botIds = [...new Set(cloneSignals.map((signal) => signal.botKey))];

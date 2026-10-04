@@ -157,6 +157,15 @@ export interface BotProfilePorts {
    */
   pnpmStore?(): Promise<"workspace" | "shared">;
   /**
+   * myrmidon(1.6.2-BOT-DISK-C): the clone-lifecycle policy for a bot of `role`, in
+   * seconds, written as `MYRMIDON_CLONE_IDLE_TTL_SEC` for the in-container reporter
+   * that reaps clean, pushed, idle clones (0: lifecycle off). The board has no
+   * mount of the bot volumes, so the policy travels in the profile. `undefined`:
+   * the bot is outside `general.botDisk.sharedCacheRoles` and gets no variable.
+   * Read per tick. Optional: absent = none.
+   */
+  cloneIdleTtlSec?(role?: string): Promise<number | undefined>;
+  /**
    * myrmidon(BOT-LSP-DEFAULTS): the instance language-server policy
    * (`general.botLsp`): which roles write code and the mode of coding and
    * non-coding bots. Optional: without it the module defaults apply (coding
@@ -298,6 +307,9 @@ export function createBotProfileCompile(
       sharedPackageCachePath && cardFleetHost(agent.adapterConfig) === null
         ? Object.fromEntries(Object.entries(packageCacheEnv(pnpmStore)).map(([name, value]) => [name, { value, secret: false }]))
         : {};
+    const cloneTtlSec =
+      ports.cloneIdleTtlSec && cardFleetHost(agent.adapterConfig) === null ? await ports.cloneIdleTtlSec(agent.role) : undefined;
+    if (cloneTtlSec !== undefined) cacheEnv.MYRMIDON_CLONE_IDLE_TTL_SEC = { value: String(cloneTtlSec), secret: false };
     const cacheWarnings = Object.keys(cacheEnv)
       .filter((name) => cardEnv.env[name] !== undefined)
       .map((name) => `.env: "${name}" is set by the shared package cache setting; the card's value was dropped`);

@@ -30,15 +30,36 @@ not entering node_modules, .pnpm-store or .git):
   mergedIntoDefault  HEAD is an ancestor of origin's default branch (null: unknown)
   error            non-null when inspection failed; the board then keeps the clone
 
+  idleSeconds      seconds since anything in the clone changed (null: unknown)
+
+Reaping (myrmidon 1.6.2 BOT-DISK-C). The board server has no mount of the bot
+volumes, so the draft-directory lifecycle runs HERE, where the files are. The
+board sets the policy through `MYRMIDON_CLONE_IDLE_TTL_SEC` in
+`$HERMES_HOME/.env` (re-read on every pass; 0 or absent: report only, delete
+nothing). A repository is removed when, in the same pass that inspected it, it
+is clean, fully pushed (no commit on no remote, no stash, no operation in
+progress), not the base of a linked worktree, not borrowed by another clone, and
+nothing in it changed for longer than the TTL (node_modules is not walked; a
+hard-linked file is judged by its mtime, since another link bumps its ctime). A
+top-level directory of /workspace that holds no repository and was not touched
+for longer than the TTL is removed too, unless it carries a `.heartbeat` marker
+or its name starts with a dot (the pnpm store is one). Nothing with unpushed
+work is ever removed: the board raises an attention signal from the report.
+Paths are removed only when they are real directories (no symbolic link) whose
+real path stays inside the root.
+
 Usage: bot-clone-hygiene [--once] [--interval SECONDS]
 Environment (tests): MYRMIDON_HYGIENE_ROOTS (colon separated, default
 /workspace:/scratch), MYRMIDON_HYGIENE_REPORT (default
-$HERMES_HOME/.myrmidon/clone-hygiene.json).
+$HERMES_HOME/.myrmidon/clone-hygiene.json), MYRMIDON_CLONE_IDLE_TTL_SEC (the
+policy; overrides the .env file).
 """
 
 import datetime
 import json
 import os
+import shutil
+import stat as statmod
 import subprocess
 import sys
 import time
@@ -49,6 +70,85 @@ SKIP_DIRS = {"node_modules", ".pnpm-store", ".git"}
 GIT_TIMEOUT_S = 120
 DEFAULT_INTERVAL_S = 15 * 60
 MAX_REPOS = 2000
+MAX_WALK_ENTRIES = 3000000
+
+
+def read_ttl_seconds():
+    """The idle TTL policy in seconds; 0 means report only."""
+    raw = os.environ.get("MYRMIDON_CLONE_IDLE_TTL_SEC")
+    if raw is None:
+        path = os.path.join(os.environ.get("HERMES_HOME", "/data/hermes"), ".env")
+        try:
+            with open(path, encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    if line.startswith("MYRMIDON_CLONE_IDLE_TTL_SEC="):
+                        raw = line.split("=", 1)[1].strip().strip("\"'")
+        except OSError:
+            pass
+    try:
+        return max(0, int(float(raw))) if raw else 0
+    except ValueError:
+        return 0
+
+
+def newest_change(root, limit=MAX_WALK_ENTRIES):
+    """Newest mtime/ctime (epoch seconds) in the tree, or None when too large to walk.
+
+    Symbolic links are not followed and node_modules is not entered. A hard-linked
+    regular file counts by its mtime only (another link to it changes its ctime).
+    """
+    newest = 0.0
+    visited = 0
+    stack = [root]
+    while stack:
+        current = stack.pop()
+        try:
+            st = os.lstat(current)
+        except OSError:
+            continue
+        visited += 1
+        if visited > limit:
+            return None
+        if statmod.S_ISREG(st.st_mode) and st.st_nlink > 1:
+            newest = max(newest, st.st_mtime)
+        else:
+            newest = max(newest, st.st_mtime, st.st_ctime)
+        if statmod.S_ISDIR(st.st_mode) and os.path.basename(current) != "node_modules":
+            try:
+                for name in os.listdir(current):
+                    stack.append(os.path.join(current, name))
+            except OSError:
+                return None
+    return newest
+
+
+def inside_root(roots, path):
+    """True when `path` is a real directory (no symlink on the way) inside one of `roots`."""
+    try:
+        if os.path.islink(path) or not os.path.isdir(path):
+            return False
+        real = os.path.realpath(path)
+        if real != os.path.abspath(path):
+            return False
+        for root in roots:
+            real_root = os.path.realpath(root)
+            if real.startswith(real_root + os.sep):
+                return True
+    except OSError:
+        pass
+    return False
+
+
+def removable(entry):
+    return (
+        entry["error"] is None
+        and not entry["dirty"]
+        and not entry["inProgress"]
+        and entry["stashCount"] == 0
+        and entry["unpushedCommits"] == 0
+        and entry["linkedWorktrees"] == 0
+        and entry["referencedBy"] == 0
+    )
 
 
 def git(repo, *args):
@@ -199,7 +299,45 @@ def build_report(roots):
             pass
 
     entries = [inspect(repo, objects_dir_by_repo, alternates_by_repo) for repo in repos]
+    now = time.time()
+    ttl = read_ttl_seconds()
+    removed = []
+    kept = []
+    for entry in entries:
+        newest = newest_change(entry["path"])
+        entry["idleSeconds"] = None if newest is None else max(0, int(now - newest))
+        if ttl > 0 and removable(entry) and entry["idleSeconds"] is not None and entry["idleSeconds"] > ttl and inside_root(roots, entry["path"]):
+            try:
+                shutil.rmtree(entry["path"])
+                removed.append(entry["path"])
+                continue
+            except OSError as exc:
+                entry["error"] = ("removal failed: %s" % exc)[:500]
+        kept.append(entry)
+    entries = kept
+    for root in roots:
+        if os.path.basename(root.rstrip("/")) != "workspace" or ttl <= 0:
+            continue
+        try:
+            names = sorted(os.listdir(root))
+        except OSError:
+            continue
+        for name in names:
+            path = os.path.join(root, name)
+            if name.startswith(".") or not inside_root([root], path) or find_repos(path):
+                continue
+            if os.path.lexists(os.path.join(path, ".heartbeat")):
+                continue
+            newest = newest_change(path)
+            if newest is not None and now - newest > ttl:
+                try:
+                    shutil.rmtree(path)
+                    removed.append(path)
+                except OSError:
+                    pass
     return {
+        "ttlSeconds": ttl,
+        "removed": removed[:200],
         "version": 1,
         "inspectedAt": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
         "repos": entries,

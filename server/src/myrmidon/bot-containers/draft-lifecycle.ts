@@ -1,6 +1,6 @@
 import { readdir, stat, rm } from 'fs/promises';
 import { join } from 'path';
-import { beginBotCloneHygiene, judgeGitClones, type CloneHygieneContext } from './clone-hygiene.js'; // myrmidon(1.6.2-BOT-DISK-C)
+import { findRepos, noteVolumeRoot } from './clone-hygiene.js'; // myrmidon(1.6.2-BOT-DISK-C)
 
 // Default idle TTL is 6 hours in milliseconds
 const DEFAULT_IDLE_TTL_MS = 6 * 60 * 60 * 1000;
@@ -77,6 +77,19 @@ export async function sweepBotVolume(
     return;
   }
 
+  // myrmidon(1.6.2-BOT-DISK-C): the board server has no mount of the bot volumes
+  // in production (host mounts were removed from it in 1.3.0), so the root is
+  // normally absent here: one warning, then a no-op. Clones are reaped inside
+  // the bot containers (clone-hygiene.ts); this sweep is for a host where the
+  // board does see the volumes, and it leaves git repositories to the reporter.
+  try {
+    await stat(botVolumeRoot);
+    noteVolumeRoot(true, () => undefined);
+  } catch {
+    noteVolumeRoot(false, (message) => console.warn(message));
+    return;
+  }
+
   try {
     const bots = await readdir(botVolumeRoot);
     
@@ -89,13 +102,9 @@ export async function sweepBotVolume(
           continue;
         }
 
-        // myrmidon(1.6.2-BOT-DISK-C): git clones are judged by the bot's own
-        // hygiene report (clone-hygiene.ts), never by the directory mtime.
-        const hygiene = await beginBotCloneHygiene(botPath, botKey);
-
         // Only scratch/ and workspace/ clones are cleanup candidates;
         // the hermes/ volume (memory + instructions) is never touched.
-        for (const sub of ['scratch', 'workspace'] as const) {
+        for (const sub of ['scratch', 'workspace']) {
           const subPath = join(botPath, sub);
           try {
             const subStats = await stat(subPath);
@@ -111,10 +120,9 @@ export async function sweepBotVolume(
             // is what every clone's node_modules hard-links into; it is not a draft.
             if (entry === PNPM_STORE_ENTRY) continue;
             const entryPath = join(subPath, entry);
-            await reapIfStale(entryPath, config, { ...hygiene, sub, entry });
+            await reapIfStale(entryPath, config);
           }
         }
-        hygiene.finish();
       } catch (error) {
         console.error(`Error processing bot volume ${botPath}:`, error);
       }
@@ -124,11 +132,7 @@ export async function sweepBotVolume(
   }
 }
 
-async function reapIfStale(
-  dirPath: string,
-  config: BotDiskLifecycleConfig,
-  hygiene?: CloneHygieneContext & { sub: 'scratch' | 'workspace'; entry: string },
-): Promise<void> {
+async function reapIfStale(dirPath: string, config: BotDiskLifecycleConfig): Promise<void> {
   if (!isCleanupCandidate(dirPath)) {
     return;
   }
@@ -137,11 +141,10 @@ async function reapIfStale(
     return;
   }
   // myrmidon(1.6.2-BOT-DISK-C): an entry that is, or holds, a git repository is
-  // never reaped by its directory mtime (editing a tracked file or committing
-  // does not touch it, so a busy clone looks idle): each repository is removed
-  // only when the bot's report shows it clean and fully pushed and nothing in
-  // it changed for longer than the idle TTL; unpushed work raises a signal.
-  if (hygiene && (await judgeGitClones(dirPath, config, hygiene))) {
+  // never reaped by its directory mtime (a commit or a tracked-file edit does not
+  // touch it, so a busy clone looks idle): the bot's own reporter decides, knowing
+  // whether the work is pushed (clone-hygiene.ts).
+  if ((await findRepos(dirPath)).length > 0) {
     return;
   }
   const lastModified = await getLastModifiedTime(dirPath);

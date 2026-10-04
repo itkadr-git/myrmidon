@@ -167,20 +167,30 @@ repository (up to three levels down) is now judged per repository:
 - **Kept silently** otherwise: recently active, no report yet, or a failed
   inspection.
 
-The board does not run git on a bot's directory itself: git executes programs a
-repository's config names, which on the host would hand a bot code execution
-outside its container, and the container paths (alternates under `/cache/git`,
-linked worktrees under `/workspace`) do not resolve there anyway. The dev image's
-`bot-clone-hygiene` (started by the entrypoint, every 15 minutes, `nice`d, read-only)
-inspects the clones inside the container as the bot user and writes
-`hermes/.myrmidon/clone-hygiene.json`; the board reads that file. A report can at
-worst make the board remove a clean-looking directory of that same bot, so before
-removing anything it checks that the path is a real directory inside the bot's own
-volume reached through no symbolic link, and walks the tree to require that no
-file or directory changed since the report was written or within the idle TTL
-(node_modules is not entered, and a hard-linked file is judged by its mtime, since
-another link to it changes its ctime). A bot on an image without the reporter
-simply never has a clone removed.
+**Where it runs.** The board server has no mount of the bot volumes (host mounts
+were removed from it in 1.3.0), so it can neither inspect nor delete a clone: the
+board-side sweep of BOT-DISK A finds no volume root, logs one warning and does
+nothing, and zero bytes were ever reclaimed that way. The deletion therefore
+happens inside each bot container, where the files are. The dev image's
+`bot-clone-hygiene` (started by the entrypoint, every 15 minutes, `nice`d, as the
+bot user) applies the policy itself: the profile compiler writes
+`MYRMIDON_CLONE_IDLE_TTL_SEC` (the lifecycle's idle TTL, `0` when the lifecycle
+is off) into the bot's `.env`, re-read on every pass, so a settings change applies
+without a restart. In the same pass that inspects a repository it removes it only
+if it is clean, fully pushed, not a worktree base or alternate, and nothing in it
+changed for longer than the TTL (node_modules is not entered, and a hard-linked
+file is judged by its mtime, since another link to it changes its ctime). It also
+removes a top-level directory of `/workspace` that holds no repository and has
+been idle past the TTL, unless it carries a `.heartbeat` marker or its name starts
+with a dot (the pnpm store). A removal path must be a real directory inside the
+root, reached through no symbolic link. The policy is written only for bots of the
+`sharedCacheRoles` roles; a bot on an image without the reporter never has a clone
+removed. The board only reads the report (the driver fetches
+`/data/hermes/.myrmidon/clone-hygiene.json` from the running container; git is
+never run by the board on a bot's directory, since repository config can name
+programs to execute) and raises the attention cards. If the board can neither see
+the volume root nor receive any report for 24 hours, it raises one card, "Lifecycle
+not effective".
 
 One case is kept rather than removed: a branch merged by **squash** whose remote
 branch was then deleted and pruned has commits on no remote-tracking ref, so it is

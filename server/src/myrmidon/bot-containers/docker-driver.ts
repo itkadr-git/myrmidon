@@ -41,6 +41,7 @@
 // (template.ts BOT_RUNTIME_CONTRACT_LABEL); create/recreate refuse an image
 // that does not declare it, before anything is created.
 
+import { CLONE_HYGIENE_REPORT_PATH } from "./clone-hygiene.js"; // myrmidon(1.6.2-BOT-DISK-C)
 import { randomBytes } from "node:crypto";
 import http from "node:http";
 import type { BotContainerDriver, BotContainerSpec, BotContainerStatus, TemplateDriftField, TemplateDriftReport } from "./driver.js";
@@ -903,6 +904,21 @@ export function dockerBotContainerDriver(
     }
   }
 
+  async function readCloneReport(botKey: string): Promise<string | null> {
+    const name = containerNameFor(botKey);
+    try {
+      const res = await request({
+        method: "GET",
+        path: `/containers/${nameSegment(name)}/archive?path=${encodeURIComponent(`/data/hermes/${CLONE_HYGIENE_REPORT_PATH}`)}`,
+      });
+      if (res.status >= 400) return null;
+      const file = parseUstarArchive(res.body).find((entry) => entry.type === "file");
+      return file ? file.content.toString("utf8") : null;
+    } catch {
+      return null;
+    }
+  }
+
   async function status(botKey: string): Promise<BotContainerStatus> {
     const name = containerNameFor(botKey);
     const info = await inspectByName(name);
@@ -1026,5 +1042,5 @@ export function dockerBotContainerDriver(
     await stopByName(containerNameFor(botKey));
   }
 
-  return { status, list, templateDrift, create, recreate, writeProfile, start, restart, stop };
+  return { status, list, templateDrift, create, recreate, writeProfile, start, restart, stop, readCloneReport };
 }

@@ -61,10 +61,13 @@ version file to edit. Base Paperclip version is in the image label
   reflink-capable filesystems. The dev image's build runs `pnpm-hardlink-check.sh` and fails on a
   copy; CI runs the same proof, including the cross-mount copy.
 - Clone hygiene in the BOT-DISK A lifecycle. A git clone is no longer reaped by its directory's
-  mtime. The image reports, from inside the container, which clones are clean and fully pushed;
-  the board removes such a clone once nothing in it changed for the idle TTL, and never removes a
-  clone with unpushed work (dirty tree, operation in progress, stash, commits on no remote) —
-  an Attention card (source `bot_disk_lifecycle`) names it instead. The workspace pnpm store is
+  mtime. The board server has no mount of the bot volumes, so the BOT-DISK A sweep found no root
+  and reclaimed nothing in production; it now logs one warning, does nothing, and raises a
+  "Lifecycle not effective" Attention card when no bot reports either. The deletion runs inside
+  each bot container (`bot-clone-hygiene`, policy `MYRMIDON_CLONE_IDLE_TTL_SEC` written into the
+  profile): a clean, fully pushed, idle clone is removed, a clone with unpushed work (dirty tree,
+  operation in progress, stash, commits on no remote) never is, and the board reads the report to
+  raise an Attention card (source `bot_disk_lifecycle`) for it. The workspace pnpm store is
   never swept.
 - Scope: the shared package cache and the git mirror now apply only to bots whose role is in
   `general.botDisk.sharedCacheRoles` (default `engineer`, `reviewer`, `devops`, `release`, `qa`;

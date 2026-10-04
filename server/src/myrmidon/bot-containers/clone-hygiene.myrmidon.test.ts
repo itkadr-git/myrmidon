@@ -3,26 +3,26 @@
 // directory tree. Everything here is placeholder data: fake keys and paths.
 
 import { existsSync } from "node:fs";
-import { link, mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
-  beginBotCloneHygiene,
-  CLONE_HYGIENE_REPORT_PATH,
   cloneHygieneSignals,
   containerPathProblem,
   decideCloneFate,
-  judgeGitClones,
+  dropCloneSignalsExcept,
+  findRepos,
+  ingestCloneReport,
+  lifecycleNotEffective,
+  noteCloneReportSeen,
+  noteVolumeRoot,
   parseCloneReport,
   resetCloneHygieneStateForTests,
-  treeQuietSince,
   type CloneReportEntry,
 } from "./clone-hygiene.js";
-import { sweepBotVolume } from "./draft-lifecycle.js";
-
-const HOUR = 60 * 60 * 1000;
+import { sweepAllBotVolumes, sweepBotVolume } from "./draft-lifecycle.js";
 
 function entry(overrides: Partial<CloneReportEntry> = {}): CloneReportEntry {
   return {
@@ -36,6 +36,7 @@ function entry(overrides: Partial<CloneReportEntry> = {}): CloneReportEntry {
     referencedBy: 0,
     branch: "feature",
     mergedIntoDefault: true,
+    idleSeconds: 7200,
     error: null,
     ...overrides,
   };
@@ -103,133 +104,100 @@ describe("decideCloneFate", () => {
   });
 });
 
-describe("on a real tree", () => {
+describe("ingestCloneReport (the board only reads the in-container report)", () => {
+  const now = Date.parse("2026-10-01T12:00:00Z");
+  const reportOf = (repos: CloneReportEntry[]) =>
+    JSON.stringify({ version: 1, inspectedAt: "2026-10-01T11:50:00.000Z", repos });
+  beforeEach(() => resetCloneHygieneStateForTests());
+
+  it("signals unpushed work idle past the TTL, and nothing for clean, busy or unreported clones", () => {
+    const ttl = 3_600_000;
+    expect(
+      ingestCloneReport(
+        "bot-a",
+        reportOf([
+          entry({ path: "/workspace/clean" }),
+          entry({ path: "/workspace/unpushed", unpushedCommits: 2 }),
+          entry({ path: "/workspace/busy", dirty: true, idleSeconds: 60 }),
+          entry({ path: "/workspace/unknown", dirty: true, idleSeconds: null }),
+        ]),
+        ttl,
+        now,
+      ),
+    ).toBe(true);
+    expect(cloneHygieneSignals().map((s) => [s.botKey, s.path])).toEqual([["bot-a", "/workspace/unpushed"]]);
+  });
+
+  it("drops a signal once the work is pushed, and the signals of a bot that has no report any more", () => {
+    ingestCloneReport("bot-a", reportOf([entry({ unpushedCommits: 1 })]), 1000, now);
+    ingestCloneReport("bot-b", reportOf([entry({ dirty: true })]), 1000, now);
+    expect(cloneHygieneSignals()).toHaveLength(2);
+    ingestCloneReport("bot-a", reportOf([entry()]), 1000, now);
+    expect(cloneHygieneSignals().map((s) => s.botKey)).toEqual(["bot-b"]);
+    dropCloneSignalsExcept(new Set(["bot-a"]));
+    expect(cloneHygieneSignals()).toEqual([]);
+  });
+
+  it("refuses a report it cannot use and leaves the signals alone", () => {
+    ingestCloneReport("bot-a", reportOf([entry({ unpushedCommits: 1 })]), 1000, now);
+    expect(ingestCloneReport("bot-a", "garbage", 1000, now)).toBe(false);
+    expect(cloneHygieneSignals()).toHaveLength(1);
+  });
+});
+
+describe("the board without a mount of the bot volumes", () => {
+  beforeEach(() => resetCloneHygieneStateForTests());
+  afterEach(() => {
+    delete process.env.MYRMIDON_BOT_VOLUME_ROOT;
+    vi.restoreAllMocks();
+  });
+
+  it("does not crash, warns once, and reports 'lifecycle not effective' until a bot delivers a report", async () => {
+    process.env.MYRMIDON_BOT_VOLUME_ROOT = path.join(tmpdir(), "no-such-bot-volume-root-" + Date.now());
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const config = { enabled: true, idleTtlMs: 1000, defaultIdleTtlMs: 1000 };
+
+    expect(lifecycleNotEffective()).toBeNull();
+    await expect(sweepAllBotVolumes(config)).resolves.toBeUndefined();
+    await expect(sweepAllBotVolumes(config)).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(error).not.toHaveBeenCalled();
+    expect(lifecycleNotEffective()).toBe(true);
+
+    noteCloneReportSeen();
+    expect(lifecycleNotEffective()).toBe(false);
+  });
+
+  it("is effective when the board does see the root", () => {
+    noteVolumeRoot(true, () => undefined);
+    expect(lifecycleNotEffective()).toBe(false);
+  });
+});
+
+describe("the board-side sweep on a host that does see the volumes", () => {
   let root: string;
   beforeEach(async () => {
     root = await mkdtemp(path.join(tmpdir(), "clone-hygiene-test-"));
     resetCloneHygieneStateForTests();
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
   });
   afterEach(async () => {
+    vi.restoreAllMocks();
     await rm(root, { recursive: true, force: true });
   });
 
-  /** A bot volume with one clone `workspace/<name>` (a .git directory and a file). */
-  async function makeClone(name: string, sub = "workspace") {
-    const dir = path.join(root, "bot-a", sub, name);
-    await mkdir(path.join(dir, ".git"), { recursive: true });
-    await writeFile(path.join(dir, ".git", "HEAD"), "ref: refs/heads/main\n");
-    await writeFile(path.join(dir, "file.txt"), "x\n");
-    return dir;
-  }
-
-  async function writeReport(entries: CloneReportEntry[], inspectedAtMs: number) {
-    const file = path.join(root, "bot-a", "hermes", CLONE_HYGIENE_REPORT_PATH);
-    await mkdir(path.dirname(file), { recursive: true });
-    await writeFile(file, JSON.stringify({ version: 1, inspectedAt: new Date(inspectedAtMs).toISOString(), repos: entries }));
-  }
-
-  const botPath = () => path.join(root, "bot-a");
-  /** Two hours from now, so everything made in the test is older than the report and the TTL. */
-  const later = () => Date.now() + 2 * HOUR;
-
-  async function judge(name: string, nowMs: number, sub: "workspace" | "scratch" = "workspace") {
-    const ctx = await beginBotCloneHygiene(botPath(), "bot-a", nowMs);
-    const handled = await judgeGitClones(path.join(botPath(), sub, name), { idleTtlMs: 1000 }, { ...ctx, sub });
-    ctx.finish();
-    return handled;
-  }
-
-  it("removes a clean pushed clone that nothing touched since the report and for longer than the TTL", async () => {
-    const dir = await makeClone("proj");
-    const nowMs = later();
-    await writeReport([entry()], nowMs - HOUR);
-    expect(await judge("proj", nowMs)).toBe(true);
-    expect(existsSync(dir)).toBe(false);
-  });
-
-  it("keeps a clone changed after the report, and a clone without one", async () => {
-    const dir = await makeClone("proj");
-    const nowMs = later();
-    // The report is older than the files: their ctime is after it.
-    await writeReport([entry()], Date.now() - HOUR);
-    expect(await judge("proj", nowMs)).toBe(true);
-    expect(existsSync(dir)).toBe(true);
-    expect(cloneHygieneSignals()).toEqual([]);
-
-    resetCloneHygieneStateForTests();
-    await rm(path.join(botPath(), "hermes"), { recursive: true });
-    expect(await judge("proj", nowMs)).toBe(true);
-    expect(existsSync(dir)).toBe(true);
-  });
-
-  it("keeps unpushed work and raises one signal, which goes when the clone does", async () => {
-    const dir = await makeClone("proj");
-    const nowMs = later();
-    await writeReport([entry({ unpushedCommits: 2 })], nowMs - HOUR);
-    await judge("proj", nowMs);
-    expect(existsSync(dir)).toBe(true);
-    expect(cloneHygieneSignals()).toMatchObject([
-      { botKey: "bot-a", path: "/workspace/proj", branch: "feature", reason: expect.stringContaining("2 commits on no remote") },
-    ]);
-
-    await rm(dir, { recursive: true });
-    const ctx = await beginBotCloneHygiene(botPath(), "bot-a", nowMs);
-    ctx.finish();
-    expect(cloneHygieneSignals()).toEqual([]);
-  });
-
-  it("finds a repository one level down and judges each separately", async () => {
-    const a = await makeClone("owner/a");
-    const b = await makeClone("owner/b");
-    const nowMs = later();
-    await writeReport(
-      [entry({ path: "/workspace/owner/a" }), entry({ path: "/workspace/owner/b", dirty: true })],
-      nowMs - HOUR,
-    );
-    expect(await judge("owner", nowMs)).toBe(true);
-    expect(existsSync(a)).toBe(false);
-    expect(existsSync(b)).toBe(true);
-    expect(cloneHygieneSignals().map((s) => s.path)).toEqual(["/workspace/owner/b"]);
-  });
-
-  it("returns false for a directory with no repository, so the plain idle rule applies", async () => {
-    await mkdir(path.join(botPath(), "workspace", "plain"), { recursive: true });
-    expect(await judge("plain", later())).toBe(false);
-  });
-
-  it("trusts the mtime, not the ctime, of a hard-linked file (another link bumps its ctime)", async () => {
-    const dir = await makeClone("proj");
-    const store = path.join(root, "store-file");
-    const linked = path.join(dir, "linked.js");
-    const single = path.join(dir, "single.js");
-    await writeFile(store, "payload\n");
-    await writeFile(single, "payload\n");
-    await link(store, linked);
-    const old = new Date(Date.now() - 3 * HOUR);
-    await utimes(linked, old, old); // mtime old, ctime now (utimes itself changes it)
-    await utimes(single, old, old);
-    const cutoff = Date.now() - HOUR;
-    expect(await treeQuietSince(linked, cutoff)).toBe(true);
-    expect(await treeQuietSince(single, cutoff)).toBe(false);
-    expect(await treeQuietSince(dir, Date.now() + HOUR)).toBe(true);
-  });
-
-  it("makes the sweep leave an idle git clone to the report and still reaps a plain directory", async () => {
-    const clean = await makeClone("clean");
-    const unknown = await makeClone("unknown");
-    const plain = path.join(botPath(), "workspace", "plain");
+  it("finds repositories up to three levels down and leaves them to the in-container reaper", async () => {
+    const clone = path.join(root, "bot-a", "workspace", "owner", "repo");
+    await mkdir(path.join(clone, ".git"), { recursive: true });
+    const plain = path.join(root, "bot-a", "workspace", "plain");
     await mkdir(plain, { recursive: true });
-    await writeFile(path.join(plain, "note.txt"), "x\n");
-    const old = new Date(Date.now() - 48 * HOUR);
-    for (const dir of [clean, unknown, plain]) await utimes(dir, old, old);
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    await writeReport([entry({ path: "/workspace/clean" })], Date.now());
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(await findRepos(path.join(root, "bot-a", "workspace", "owner"))).toEqual([clone]);
 
+    await new Promise((resolve) => setTimeout(resolve, 20));
     await sweepBotVolume(root, { enabled: true, idleTtlMs: 0, defaultIdleTtlMs: 0 });
-
-    expect(existsSync(plain)).toBe(false); // plain rule: the mtime is far past the TTL
-    expect(existsSync(unknown)).toBe(true); // an old mtime alone never reaps a clone
-    expect(existsSync(clean)).toBe(false); // clean, pushed, quiet since the report
+    expect(existsSync(clone)).toBe(true); // never reaped by mtime
+    expect(existsSync(plain)).toBe(false); // the plain idle rule still applies
   });
 });

@@ -32,6 +32,8 @@ import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService, logActivity } from "../../services/index.js";
 import { sweepAllBotVolumes } from "./draft-lifecycle.js";
 import { refreshGitMirrors } from "./git-mirror.js"; // myrmidon(1.6.2-BOT-DISK-C)
+import { dropCloneSignalsExcept, ingestCloneReport, noteCloneReportSeen } from "./clone-hygiene.js";
+import { getBotContainerRuntime } from "./routes-wiring.js";
 
 export type BotDiskView = ResolvedBotDiskSettings;
 
@@ -195,6 +197,20 @@ export async function readSharedPackageCachePathForRole(db: Db, role: string | n
   return botRoleGetsSharedCache(layout.sharedCacheRoles, role) ? layout.sharedPackageCachePath : undefined;
 }
 
+/**
+ * myrmidon(1.6.2-BOT-DISK-C): the idle TTL in seconds the in-container clone reaper
+ * is told (0 when the lifecycle is off), or undefined for a bot outside the
+ * configured roles. Read per profile compile, so a change applies without a restart.
+ */
+export async function readCloneIdleTtlSecForRole(db: Db, role: string | null | undefined): Promise<number | undefined> {
+  const settings = instanceSettingsService(db) as unknown as { getGeneral(): Promise<{ botDisk?: unknown }> };
+  const general = await settings.getGeneral();
+  const layout = resolveBotDiskLayout(general.botDisk);
+  if (!botRoleGetsSharedCache(layout.sharedCacheRoles, role)) return undefined;
+  const config = await resolveBotDiskLifecycleConfig({ getGeneral: async () => general });
+  return config.enabled ? Math.max(1, Math.round(config.idleTtlMs / 1000)) : 0;
+}
+
 /** Same for the driver, which knows the bot key (= agent id) and not the role. */
 export async function readBotCacheLayoutForBot(
   db: Db,
@@ -223,5 +239,29 @@ export async function runBotDiskSweep(db: Db): Promise<void> {
   const general = await settings.getGeneral();
   const layout = resolveBotDiskLayout(general.botDisk);
   void refreshGitMirrors(layout).catch((err) => logger.warn({ err }, "git mirror refresh failed"));
-  await sweepAllBotVolumes(await resolveBotDiskLifecycleConfig({ getGeneral: async () => general }));
+  const lifecycle = await resolveBotDiskLifecycleConfig({ getGeneral: async () => general });
+  await sweepAllBotVolumes(lifecycle);
+  await collectCloneReports(lifecycle.idleTtlMs).catch((err) => logger.warn({ err }, "clone hygiene report collection failed"));
+}
+
+/**
+ * myrmidon(1.6.2-BOT-DISK-C): read each running bot's clone-hygiene report from
+ * its container (the board has no mount of the volumes) and turn unpushed work
+ * idle past the TTL into attention signals. A bot without a report is skipped.
+ */
+export async function collectCloneReports(idleTtlMs: number): Promise<void> {
+  const driver = getBotContainerRuntime()?.driver;
+  if (!driver?.readCloneReport) return;
+  const bots = await driver.list();
+  const live = new Set<string>();
+  for (const bot of bots) {
+    if (bot.state !== "running") continue;
+    const raw = await driver.readCloneReport(bot.botKey);
+    if (raw === null) continue;
+    if (ingestCloneReport(bot.botKey, raw, idleTtlMs)) {
+      live.add(bot.botKey);
+      noteCloneReportSeen();
+    }
+  }
+  dropCloneSignalsExcept(live);
 }

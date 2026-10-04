@@ -183,7 +183,7 @@ describe("git wrapper: end to end with a local mirror", { skip: !hasGit }, () =>
 });
 
 describe("bot-clone-hygiene", { skip: !hasGit || !hasPython }, () => {
-  function report(roots) {
+  function report(roots, extraEnv = {}) {
     const out = path.join(tmp, `report-${Math.random().toString(36).slice(2)}.json`);
     const r = spawnSync("python3", [HYGIENE, "--once"], {
       env: {
@@ -192,6 +192,7 @@ describe("bot-clone-hygiene", { skip: !hasGit || !hasPython }, () => {
         GIT_CONFIG_NOSYSTEM: "1",
         MYRMIDON_HYGIENE_ROOTS: roots.join(":"),
         MYRMIDON_HYGIENE_REPORT: out,
+        ...extraEnv,
       },
       encoding: "utf8",
     });
@@ -199,7 +200,9 @@ describe("bot-clone-hygiene", { skip: !hasGit || !hasPython }, () => {
     const parsed = JSON.parse(fs.readFileSync(out, "utf8"));
     assert.equal(parsed.version, 1);
     assert.ok(!Number.isNaN(Date.parse(parsed.inspectedAt)));
-    return new Map(parsed.repos.map((repo) => [repo.path, repo]));
+    const map = new Map(parsed.repos.map((repo) => [repo.path, repo]));
+    map.removed = parsed.removed;
+    return map;
   }
 
   it("tells merged, pushed, dirty, unpushed, stashed, borrowed and worktree-base clones apart", () => {
@@ -316,5 +319,64 @@ describe("bot-clone-hygiene", { skip: !hasGit || !hasPython }, () => {
     const r = report([path.join(base, "volume")]);
     assert.equal(r.get(repo).inProgress, true);
     assert.equal(r.get(repo).dirty, true);
+  });
+
+  it("removes only clean, pushed, idle clones and plain idle directories, in the container, when a TTL is set", async () => {
+    const base = path.join(tmp, "reap");
+    const remote = path.join(base, "remote.git");
+    const volume = path.join(base, "workspace");
+    fs.mkdirSync(volume, { recursive: true });
+    git(base, "init", "-q", "--bare", "-b", "main", remote);
+    const seed = path.join(base, "seed");
+    fs.mkdirSync(seed);
+    git(seed, "init", "-q", "-b", "main");
+    fs.writeFileSync(path.join(seed, "a.txt"), "a\n");
+    git(seed, "add", ".");
+    git(seed, "commit", "-q", "-m", "one");
+    git(seed, "remote", "add", "origin", remote);
+    git(seed, "push", "-q", "origin", "main");
+    const clone = (name) => {
+      const dir = path.join(volume, name);
+      git(base, "clone", "-q", remote, dir);
+      return dir;
+    };
+    const clean = clone("clean");
+    const dirty = clone("dirty");
+    fs.writeFileSync(path.join(dirty, "a.txt"), "changed\n");
+    const unpushed = clone("unpushed");
+    fs.writeFileSync(path.join(unpushed, "b.txt"), "b\n");
+    git(unpushed, "add", ".");
+    git(unpushed, "commit", "-q", "-m", "local only");
+    const stashed = clone("stashed");
+    fs.writeFileSync(path.join(stashed, "a.txt"), "s\n");
+    git(stashed, "stash", "push", "-q");
+    fs.mkdirSync(path.join(volume, "plain"));
+    fs.writeFileSync(path.join(volume, "plain", "note"), "x\n");
+    fs.mkdirSync(path.join(volume, "alive"));
+    fs.writeFileSync(path.join(volume, "alive", ".heartbeat"), "");
+    fs.mkdirSync(path.join(volume, ".pnpm-store"));
+    const outside = path.join(base, "outside");
+    fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(outside, "keep"), "k\n");
+    fs.symlinkSync(outside, path.join(volume, "link"));
+
+    // No TTL: report only, nothing removed.
+    report([volume]);
+    assert.ok(fs.existsSync(clean));
+
+    await new Promise((resolve) => setTimeout(resolve, 2200));
+    // A TTL that has not passed yet for a fresh touch: the dirty clone's file is touched now.
+    const r = report([volume], { MYRMIDON_CLONE_IDLE_TTL_SEC: "1" });
+    assert.ok(!fs.existsSync(clean), "clean, pushed, idle clone is removed");
+    assert.ok(fs.existsSync(dirty), "dirty clone is kept");
+    assert.ok(fs.existsSync(unpushed), "clone with an unpushed commit is kept");
+    assert.ok(fs.existsSync(stashed), "clone with a stash is kept");
+    assert.ok(!fs.existsSync(path.join(volume, "plain")), "plain idle directory is removed");
+    assert.ok(fs.existsSync(path.join(volume, "alive")), "a directory with a heartbeat marker is kept");
+    assert.ok(fs.existsSync(path.join(volume, ".pnpm-store")), "a dot entry (the pnpm store) is kept");
+    assert.ok(fs.existsSync(path.join(outside, "keep")), "a symbolic link is never followed");
+    assert.ok(r.removed.includes(clean));
+    assert.ok(r.has(unpushed) && r.get(unpushed).idleSeconds >= 1);
+    assert.equal(r.has(clean), false);
   });
 });
