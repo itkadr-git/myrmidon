@@ -13,6 +13,8 @@ export const bridgeTextEn = {
   "menu.stop": "Stop the current reply",
   "menu.status": "Show model, session and current reply",
   "menu.plan": "Turn a message into an epic plan (company owner only)",
+  "menu.accept": "Accept a suggested plan card (company owner only)",
+  "menu.reject": "Reject a suggested plan card (company owner only)",
 
   // /help
   "help.intro": "You are talking to {agent} here. Tasks from this chat are created as needed.",

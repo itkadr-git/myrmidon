@@ -43,6 +43,7 @@ import { applyChatAdapterOverride } from "./overrides.js";
 import { handlePlanCommand } from "./plan.js";
 import { buildChatStatusReply } from "./status.js";
 import { stopBridgedChatRuns } from "./stop.js";
+import { issueThreadInteractionService } from "../../../services/issue-thread-interactions.js";
 
 export interface BridgedCommandInput {
   db: Db;
@@ -91,23 +92,25 @@ export function telegramDmCommandsForLocale(locale: BridgeLocale): readonly Brid
     { command: "stop", description: t(locale, "menu.stop") },
     { command: "status", description: t(locale, "menu.status") },
     { command: "plan", description: t(locale, "menu.plan") },
+    { command: "accept", description: t(locale, "menu.accept") },
+    { command: "reject", description: t(locale, "menu.reject") },
   ];
 }
 
 /**
- * The X8 contract's canonical command list, in the catalog's base language.
- * Tests and the copy-version hash compare against this list; the actual
- * registration applies the menu for the locale that holds when it runs
- * (same once-per-version rule as the bridge-enabled state — see DIVERGENCE
- * B1: a state that can flip back and forth is not baked into the version).
+ * The bridged DM's command menu for the instance (the X8a canonical export).
+ * Registration of this list is the X8e surface; the menu follows the
+ * instance-level locale (the env force, else the English default).
  */
 export const TELEGRAM_DM_COMMANDS: readonly BridgedCommandSpec[] =
   telegramDmCommandsForLocale("en");
 
 /**
- * myrmidon(X8c): `/start`, `/commands` and `/reset` are not part of the X8
- * contract's `TELEGRAM_DM_COMMANDS` (X8a canon), but OpenClaw's own DM
- * commands support them as compatibility aliases, so this bridge does too.
+ * Command registration uses the catalog's `TELEGRAM_DM_COMMANDS` (X8a canon), but OpenClaw's own DM
+ * surface may register command menus per locale. The myrmidon patch
+ * (X8a/X8e) keeps this file's export stable while letting the chat-channels
+ * service register a localized menu when the instance locale differs from
+ * English.
  */
 const COMMAND_ALIASES: Readonly<Record<string, string>> = {
   start: "help",
@@ -189,6 +192,10 @@ export async function runBridgedDirectMessageCommand(
       // `./plan.ts`, which delegates to the cto-chat telegram entry — no
       // parallel secret-resolution path here.
       return handlePlanCommand(input, parsed.args);
+    case "accept":
+      return handleAcceptCommand(input, context, parsed.args);
+    case "reject":
+      return handleRejectCommand(input, context, parsed.args);
     case "close":
       return { kind: "reply", command: "close", text: t(locale, "close.reply") };
     case "task":
@@ -404,4 +411,157 @@ async function handleStatusCommand(
     locale,
   });
   return { kind: "reply", command: "status", text };
+}
+
+/**
+ * Обработка команды /accept <id> для принятия плана задач
+ */
+async function handleAcceptCommand(
+  input: BridgedCommandInput,
+  context: BridgedCommandContext,
+  args: string,
+): Promise<BridgedCommandResult> {
+  const interactionId = args.trim();
+  if (!interactionId) {
+    return {
+      kind: "reply",
+      command: "accept",
+      text: "Использование: /accept <id> — ID карточки для принятия",
+    };
+  }
+
+  try {
+    const service = issueThreadInteractionService(input.db);
+    
+    // Проверяем, что карточка существует и принадлежит этой компании/задаче
+    const interaction = await service.getForIssue(
+      {
+        id: input.conversationIssueId,
+        companyId: input.companyId,
+      },
+      interactionId,
+    );
+    if (!interaction) {
+      return {
+        kind: "reply",
+        command: "accept",
+        text: `Карточка с ID ${interactionId} не найдена`,
+      };
+    }
+    
+    // Проверяем, что карточка типа suggest_tasks и статус pending
+    if (interaction.kind !== "suggest_tasks" || interaction.status !== "pending") {
+      return {
+        kind: "reply",
+        command: "accept",
+        text: "Эта карточка не может быть принята или уже обработана",
+      };
+    }
+    
+    // Принимаем все задачи в карточке
+    const allClientKeys = interaction.payload.tasks.map((task: { clientKey: string }) => task.clientKey);
+    
+    const result = await service.acceptInteraction(
+      {
+        id: input.conversationIssueId,
+        companyId: input.companyId,
+        projectId: null,
+        goalId: null,
+      },
+      interactionId,
+      { selectedClientKeys: allClientKeys },
+      { userId: input.boardUserId, agentId: null },
+    );
+    
+    // Подсчитываем количество созданных задач
+    const createdTasksCount = result.createdIssues.length;
+    
+    // Формируем ответ с ссылкой на эпик и количеством задач
+    const epicLink = `${input.publicBaseUrl}/issues/${input.conversationIssueId}`;
+    
+    return {
+      kind: "reply",
+      command: "accept",
+      text: `✅ Карточка принята!\n\nСоздан эпик: ${epicLink}\nКоличество задач: ${createdTasksCount}`,
+    };
+  } catch (error) {
+    console.error("Ошибка при принятии карточки:", error);
+    return {
+      kind: "reply",
+      command: "accept",
+      text: `Ошибка при принятии карточки: ${(error as Error).message}`,
+    };
+  }
+}
+
+/**
+ * Обработка команды /reject <id> для отклонения плана задач
+ */
+async function handleRejectCommand(
+  input: BridgedCommandInput,
+  context: BridgedCommandContext,
+  args: string,
+): Promise<BridgedCommandResult> {
+  const interactionId = args.trim();
+  if (!interactionId) {
+    return {
+      kind: "reply",
+      command: "reject",
+      text: "Использование: /reject <id> — ID карточки для отклонения",
+    };
+  }
+
+  try {
+    const service = issueThreadInteractionService(input.db);
+    
+    // Проверяем, что карточка существует и принадлежит этой компании/задаче
+    const interaction = await service.getForIssue(
+      {
+        id: input.conversationIssueId,
+        companyId: input.companyId,
+      },
+      interactionId,
+    );
+    if (!interaction) {
+      return {
+        kind: "reply",
+        command: "reject",
+        text: `Карточка с ID ${interactionId} не найдена`,
+      };
+    }
+    
+    if (interaction.status !== "pending") {
+      return {
+        kind: "reply",
+        command: "reject",
+        text: "Эта карточка уже обработана",
+      };
+    }
+    
+    // Отклоняем карточку, обновляя её статус на cancelled
+    const result = await service.cancel(
+      {
+        id: input.conversationIssueId,
+        companyId: input.companyId,
+        projectId: null,
+        goalId: null,
+      },
+      interactionId,
+      { reason: "rejected_by_owner_via_telegram" },
+      { userId: input.boardUserId, agentId: null },
+    );
+    
+    return {
+      kind: "reply",
+      command: "reject",
+      text: `❌ Карточка отклонена.`,
+    };
+  } catch (error) {
+    console.error("Ошибка при отклонении карточки:", error);
+    return {
+      kind: "reply",
+      command: "reject",
+      text: `Ошибка при отклонении карточки: ${(error as Error).message}`,
+    };
+  }
 }
