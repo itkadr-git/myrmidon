@@ -78,6 +78,31 @@ version file to edit. Base Paperclip version is in the image label
   concurrency group), so `gh workflow run myrmidon-release.yml -f tag=…`
   from `main` publishes the given tag without `--ref`.
 
+### Chats are never held; an owner message always wakes (CHAT-HOLD)
+
+- Incident: a host OOM cancelled the run of a perpetual Telegram DM chat;
+  execution recovery closed it as "do not replay" and set the chat issue
+  `blocked`, and every later owner message was parked as
+  `deferred_issue_execution` behind that hold. The owner saw only "Your
+  follow-up is queued" for hours.
+- A chat is a conversation, not a work ticket. An issue that backs a chat (a
+  bridged chat thread, or a board Agent Chat conversation) is never put into
+  `blocked` by automatic recovery and gets no replay hold: its stopped turn
+  is settled as `chat_continuation`, the issue returns to the idle
+  `in_review` state, and the next message is a fresh turn. Ordinary work
+  issues keep the existing recovery unchanged.
+- A new message a person writes in a chat is an explicit human action: the
+  wake admission passes any settled hold of the chat, lifts it with the
+  successor run (the same clear path as the board unblock), moves a chat the
+  recovery had blocked back to `todo`, and records it in the activity log
+  (`issue.execution_recovery_settled`, `continuation: chat_owner_message`).
+  A "retry the failed run" wake is not a message and stays withheld.
+- No silent queue: when a message in a bridged Telegram DM cannot start (the
+  previous turn is winding down, recovery, a pending decision, a paused
+  agent, an exhausted budget, the host memory gate), the chat is told why in
+  plain Russian, with a time estimate where one is known (the memory gate
+  re-checks every 15 seconds). Guide: [telegram-dm-status.md](guides/telegram-dm-status.md).
+
 ### Shared package cache for development bots (1.6.2, BOT-DISK B)
 
 - An instance setting, `general.botDisk.sharedPackageCachePath` (Instance → General or
@@ -89,6 +114,42 @@ version file to edit. Base Paperclip version is in the image label
 - dockergate: new `packageCacheRoot` key (default empty: no cache bind). **Operator step:** set
   it to the same directory and send `SIGHUP`, and create the four subdirectories owned by
   uid/gid 10001 — see [bot-disk-cache.md](bot-disk-cache.md).
+
+### Bot workspace duplication: shared git objects, hard-linked node_modules, clone hygiene (1.6.2, BOT-DISK C)
+
+- Shared git objects. `general.botDisk.gitMirrorRepos` lists GitHub `owner/repo` names; the board
+  keeps one bare mirror of each under `<sharedPackageCachePath>/git/<owner>/<repo>.git`
+  (refreshed by `git fetch --prune` every `gitMirrorRefreshMs`, default 15 minutes, under a lock;
+  gc never prunes), and bots mount it **read-only** at `/cache/git`. The dev image's `git`
+  wrapper adds `--reference-if-able` to `git clone https://github.com/<owner>/<repo>` when the
+  mirror exists, so a clone stores only objects the mirror lacks; every other git invocation is
+  unchanged and `git-credential-paperclip` keeps working. Off by default (empty list). dockergate
+  accepts `<packageCacheRoot>/git` only as a read-only bind to `/cache/git`.
+- Hard-linked node_modules. A hard link cannot cross a mount, and `/workspace`, `/cache/pnpm`
+  and the image's previous store `/data/hermes/.pnpm-store` are three different mounts, so pnpm
+  silently **copied** every package into every clone. The store now defaults to
+  `/workspace/.pnpm-store` (image and profile), on the clones' mount; `general.botDisk.pnpmStore:
+  "shared"` keeps it on `/cache/pnpm` and sets `package-import-method=clone-or-copy` for
+  reflink-capable filesystems. The dev image's build runs `pnpm-hardlink-check.sh` and fails on a
+  copy; CI runs the same proof, including the cross-mount copy.
+- Clone hygiene in the BOT-DISK A lifecycle. A git clone is no longer reaped by its directory's
+  mtime. The board server has no mount of the bot volumes, so the BOT-DISK A sweep found no root
+  and reclaimed nothing in production; it now logs one warning, does nothing, and raises a
+  "Lifecycle not effective" Attention card when no bot reports either. The deletion runs inside
+  each bot container (`bot-clone-hygiene`, policy `MYRMIDON_CLONE_IDLE_TTL_SEC` written into the
+  profile): a clean, fully pushed, idle clone is removed, a clone with unpushed work (dirty tree,
+  operation in progress, stash, commits on no remote) never is, and the board reads the report to
+  raise an Attention card (source `bot_disk_lifecycle`) for it. The workspace pnpm store is
+  never swept.
+- Scope: the shared package cache and the git mirror now apply only to bots whose role is in
+  `general.botDisk.sharedCacheRoles` (default `engineer`, `reviewer`, `devops`, `release`, `qa`;
+  editable without a restart). Other bots (e.g. marketing) get no cache mounts or variables, so
+  enabling the cache no longer recreates them.
+- **Operator steps:** see [bot-disk-cache.md](bot-disk-cache.md#enabling-git-mirrors-operator-steps)
+  — create `<cache>/git` owned by the board's user (mode 0755), then
+  `PATCH /api/myrmidon/bot-disk` with `{"gitMirrorRepos": ["owner/repo"]}`. The bot image must be
+  rebuilt (the wrapper, the reporter and the store default are in the image); older images keep
+  working without them.
 
 ### A board unblock lifts a settled replay hold; a parked wake is not "covering" (HOLD-READY)
 
