@@ -265,15 +265,126 @@ describe("Issues DELETE autonomy enforcement", () => {
     });
 
     // Create an inbox archive item
-    const inboxItem = await app.createInboxItem({
-      recipientId: agent.id,
-      title: "Test Inbox Item",
-      content: "Test content"
-    });
+    const issue = await app.createIssue({ agentId: agent.id });
 
     // Should NOT be able to delete the inbox archive
     const response = await app.request(
-      `/api/issues/${inboxItem.id}/inbox-archive`,
+      `/api/issues/${issue.id}/inbox-archive`,
+      {
+        method: "DELETE",
+        headers: {
+          "Authorization": `Bearer ${agent.apiKey}`,
+          "Content-Type": "application/json"
+        }
+      }
+    );
+
+    expect(response.status).toBe(403);
+    const body = await response.json();
+    expect(body.error).toContain("autonomy");
+    expect(body.code).toBe("autonomy_forbidden");
+  });
+
+  test("should reject DELETE watchdog operations when delete action is forbidden", async () => {
+    // Update autonomy matrix to forbid delete
+    await dbAutonomyGate(db).setMatrix({
+      version: 1,
+      rules: [{
+        role: agent.role,
+        actionClass: "delete",
+        verdict: "forbidden"
+      }],
+      defaults: {
+        delete: "allowed"
+      }
+    });
+
+    // Create an issue with watchdog
+    const issue = await app.createIssue({ agentId: agent.id });
+
+    // Should NOT be able to delete the watchdog
+    const response = await app.request(
+      `/api/issues/${issue.id}/watchdog`,
+      {
+        method: "DELETE",
+        headers: {
+          "Authorization": `Bearer ${agent.apiKey}`,
+          "Content-Type": "application/json"
+        }
+      }
+    );
+
+    expect(response.status).toBe(403);
+    const body = await response.json();
+    expect(body.error).toContain("autonomy");
+    expect(body.code).toBe("autonomy_forbidden");
+  });
+
+  test("should reject DELETE work-products operations when delete action is forbidden", async () => {
+    // Update autonomy matrix to forbid delete
+    await dbAutonomyGate(db).setMatrix({
+      version: 1,
+      rules: [{
+        role: agent.role,
+        actionClass: "delete",
+        verdict: "forbidden"
+      }],
+      defaults: {
+        delete: "allowed"
+      }
+    });
+
+    // Create an issue and work product
+    const issue = await app.createIssue({ agentId: agent.id });
+    const workProduct = await app.createWorkProduct({
+      issueId: issue.id,
+      title: "Test Work Product",
+      resourceRef: { kind: "test", id: "test" }
+    });
+
+    // Should NOT be able to delete the work product
+    const response = await app.request(
+      `/api/work-products/${workProduct.id}`,
+      {
+        method: "DELETE",
+        headers: {
+          "Authorization": `Bearer ${agent.apiKey}`,
+          "Content-Type": "application/json"
+        }
+      }
+    );
+
+    expect(response.status).toBe(403);
+    const body = await response.json();
+    expect(body.error).toContain("autonomy");
+    expect(body.code).toBe("autonomy_forbidden");
+  });
+
+  test("should reject DELETE approval operations when delete action is forbidden", async () => {
+    // Update autonomy matrix to forbid delete
+    await dbAutonomyGate(db).setMatrix({
+      version: 1,
+      rules: [{
+        role: agent.role,
+        actionClass: "delete",
+        verdict: "forbidden"
+      }],
+      defaults: {
+        delete: "allowed"
+      }
+    });
+
+    // Create an issue and approval
+    const issue = await app.createIssue({ agentId: agent.id });
+    const approval = await app.createIssueApproval({
+      issueId: issue.id,
+      title: "Test Approval",
+      status: "pending"
+    });
+
+    // Should NOT be able to delete the approval
+    const response = await app.request(
+      `/api/issues/${issue.id}/approvals/${approval.id}`,
       {
         method: "DELETE",
         headers: {

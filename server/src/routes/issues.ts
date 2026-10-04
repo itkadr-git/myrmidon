@@ -9090,6 +9090,7 @@ export function issueRoutes(
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    await dbAutonomyGate(db).assertAllowed(req, "delete");
     if (await rejectTaskWatchdogConfigMutation(req, res)) return;
     if (
       await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)
@@ -11261,6 +11262,7 @@ export function issueRoutes(
       return;
     }
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    await dbAutonomyGate(db).assertAllowed(req, "delete");
     if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue)))
       return;
     const removed = await workProductsSvc.remove(id);
@@ -11588,6 +11590,7 @@ export function issueRoutes(
     );
     if (!issue) return;
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    await dbAutonomyGate(db).assertAllowed(req, "delete");
     if (!(await assertApprovalMutationAllowedByRunContext(req, res, issue)))
       return;
     if (!(await assertCanManageIssueApprovalLinks(req, res, issue.companyId)))
