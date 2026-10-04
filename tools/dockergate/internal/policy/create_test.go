@@ -436,11 +436,78 @@ func TestBotPackageCacheMounts(t *testing.T) {
 	})
 }
 
+// TestBotEnvMutations covers the Env list of the bot form (BUILD-OFFLOAD C).
+// The recorded body has `Env:[]` (the devbuild wiring is off in the fixtures);
+// mutations fill the list with the driver's DEVBUILD_* entries and check what
+// the gate does with each.
+func TestBotEnvMutations(t *testing.T) {
+	m := fixture.Load(t)
+
+	// envWith returns the recorded body with Env set to the given entries.
+	envWith := func(t *testing.T, entries ...string) []byte {
+		t.Helper()
+		_, body := m.FindBody(t, "bot-plain", "")
+		return replace(t, body, `"Env":[]`, `"Env":[`+quoteEach(entries)+`]`)
+	}
+
+	t.Run("the driver's DEVBUILD_* entries are accepted and kept canonical", func(t *testing.T) {
+		body := envWith(t, "DEVBUILD_HOST=b", "DEVBUILD_USER=devbuild", "DEVBUILD_BASE=/srv/devbuild")
+		c, err := policy.ParseCreate(body, createRoute(t, "myrmidon-bot-"+m.BotKey), env(m))
+		if err != nil {
+			t.Fatalf("denied: %s (field %q, detail %q)", err.Code, err.Field, err.Detail)
+		}
+		if string(c.Body) != string(body) {
+			t.Fatal("the canonical body differs from the request")
+		}
+	})
+
+	t.Run("an unknown env name is denied", func(t *testing.T) {
+		body := envWith(t, "A=B")
+		c, err := policy.ParseCreate(body, createRoute(t, "myrmidon-bot-"+m.BotKey), env(m))
+		wantDeny(t, c, err, deny.JSONValue)
+	})
+
+	t.Run("entries out of the fixed order are denied", func(t *testing.T) {
+		body := envWith(t, "DEVBUILD_USER=devbuild", "DEVBUILD_HOST=b")
+		c, err := policy.ParseCreate(body, createRoute(t, "myrmidon-bot-"+m.BotKey), env(m))
+		wantDeny(t, c, err, deny.JSONValue)
+	})
+
+	t.Run("an entry without a value is denied", func(t *testing.T) {
+		body := envWith(t, "DEVBUILD_HOST=")
+		c, err := policy.ParseCreate(body, createRoute(t, "myrmidon-bot-"+m.BotKey), env(m))
+		wantDeny(t, c, err, deny.JSONValue)
+	})
+
+	t.Run("a truncated prefix of the names is denied", func(t *testing.T) {
+		body := envWith(t, "DEVBUILD_HOST=b", "DEVBUILD_USER=u")
+		c, err := policy.ParseCreate(body, createRoute(t, "myrmidon-bot-"+m.BotKey), env(m))
+		wantDeny(t, c, err, deny.JSONValue)
+	})
+
+	t.Run("more entries than the driver ever writes is denied", func(t *testing.T) {
+		body := envWith(t, "DEVBUILD_HOST=b", "DEVBUILD_USER=u", "DEVBUILD_BASE=/srv/devbuild", "DEVBUILD_HOST=b")
+		c, err := policy.ParseCreate(body, createRoute(t, "myrmidon-bot-"+m.BotKey), env(m))
+		wantDeny(t, c, err, deny.JSONValue)
+	})
+}
+
+// quoteEach renders the entries as a JSON string list, so the mutation helper
+// can build any Env array it needs.
+func quoteEach(entries []string) string {
+	parts := make([]string, 0, len(entries))
+	for _, e := range entries {
+		parts = append(parts, `"`+e+`"`)
+	}
+	return strings.Join(parts, ",")
+}
+
 // RT1_5: the body is read strictly, and unknown fields are refused, whatever
-// they are.
+// they are. Env is a known key of the bot form (BUILD-OFFLOAD C); its own
+// red-team cases are in TestBotEnvMutations.
 func TestRedTeam_RT1_5_UnknownKeys(t *testing.T) {
 	top := []string{
-		`"Env":["A=B"]`, `"Cmd":["sh"]`, `"Entrypoint":["sh"]`, `"User":"0"`, `"Volumes":{"/x":{}}`,
+		`"Cmd":["sh"]`, `"Entrypoint":["sh"]`, `"User":"0"`, `"Volumes":{"/x":{}}`,
 		`"ExposedPorts":{"80/tcp":{}}`, `"WorkingDir":"/"`, `"Hostname":"h"`, `"Domainname":"d"`,
 		`"MacAddress":"aa:bb:cc:dd:ee:ff"`, `"StopSignal":"SIGKILL"`, `"Healthcheck":{}`,
 		`"NetworkingConfig":{}`, `"AttachStdin":true`, `"Tty":true`, `"OpenStdin":true`, `"OnBuild":[]`,

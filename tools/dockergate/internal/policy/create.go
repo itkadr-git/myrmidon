@@ -370,8 +370,14 @@ func wantSingle(v *jsonx.Value, path, key, value string) *deny.Error {
 
 // --- bot form ---------------------------------------------------------------
 
+// parseBot checks a create body of the bot form. Env is the driver's own
+// DEVBUILD_* wiring (BUILD-OFFLOAD C): internal hostnames and paths, not
+// secrets — the key of the build server never appears there (it travels as the
+// read-only /opt/devbuild-ssh mount). An Env entry must be a well-formed
+// NAME=VALUE line whose name is one of DEVBUILD_HOST, DEVBUILD_USER or
+// DEVBUILD_BASE, in that fixed order; anything else is json_value.
 func parseBot(root *jsonx.Value, r *route.Route, env *Env) (*Create, *deny.Error) {
-	top, err := object(root, "", "Image", "Labels", "HostConfig")
+	top, err := object(root, "", "Image", "Labels", "Env", "HostConfig")
 	if err != nil {
 		return nil, err
 	}
@@ -391,6 +397,11 @@ func parseBot(root *jsonx.Value, r *route.Route, env *Env) (*Create, *deny.Error
 		return nil, err
 	}
 	if err := wantStr(labels["myrmidon.image"], "Labels.myrmidon.image", image, deny.JSONValue); err != nil {
+		return nil, err
+	}
+
+	envList, err := parseBotEnv(top["Env"], "Env")
+	if err != nil {
 		return nil, err
 	}
 
@@ -436,11 +447,51 @@ func parseBot(root *jsonx.Value, r *route.Route, env *Env) (*Create, *deny.Error
 	w := &writer{}
 	w.raw(`{"Image":`).str(image)
 	w.raw(`,"Labels":{"myrmidon.bot":`).str(r.BotKey).raw(`,"myrmidon.image":`).str(image).raw(`}`)
-	w.raw(`,"HostConfig":{"Memory":`).int(memory).raw(`,"NanoCpus":`).int(nano).raw(`,"PidsLimit":`).int(pids)
+	w.raw(`,"Env":[`)
+	for i, e := range envList {
+		if i > 0 {
+			w.raw(",")
+		}
+		w.str(e)
+	}
+	w.raw(`],"HostConfig":{"Memory":`).int(memory).raw(`,"NanoCpus":`).int(nano).raw(`,"PidsLimit":`).int(pids)
 	w.raw(`,"CapDrop":["ALL"],"SecurityOpt":["no-new-privileges"],"ReadonlyRootfs":true`)
 	w.raw(`,"Tmpfs":{"/tmp":""},"Init":true,"RestartPolicy":{"Name":"on-failure"}`)
 	w.raw(`,"NetworkMode":`).str(env.Network).raw(`,"Binds":`).strs(binds).raw(`,"Privileged":false}}`)
 	return &Create{Form: FormBot, BotKey: r.BotKey, Image: image, Body: w.b}, nil
+}
+
+// botEnvNames are the only env names a bot container's create body may carry,
+// in the fixed order the driver's builder writes them (docker-driver.ts,
+// devbuildContainerEnv). DEVBUILD_HOST/USER/BASE are internal hostnames and
+// paths of the build server, not secrets.
+var botEnvNames = []string{"DEVBUILD_HOST", "DEVBUILD_USER", "DEVBUILD_BASE"}
+
+// parseBotEnv checks the Env list of a bot body: either empty (the devbuild
+// wiring is off or the image is not the dev variant) or exactly the driver's
+// three DEVBUILD_* entries in order — the driver's builder (docker-driver.ts,
+// devbuildContainerEnv) writes all of them or none, so a prefix or a suffix is
+// a body the driver never produced. Each entry is a single NAME=VALUE line
+// without a NUL or a newline, and the rebuilt body reproduces the list byte
+// for byte.
+func parseBotEnv(v *jsonx.Value, path string) ([]string, *deny.Error) {
+	got, err := strList(v, path)
+	if err != nil {
+		return nil, err
+	}
+	if len(got) != 0 && len(got) != len(botEnvNames) {
+		return nil, deny.FieldOnly(deny.JSONValue, path)
+	}
+	for i, e := range got {
+		name := botEnvNames[i]
+		if !strings.HasPrefix(e, name+"=") || len(e) == len(name)+1 {
+			return nil, deny.FieldOnly(deny.JSONValue, path)
+		}
+		if strings.ContainsAny(e, "\x00\n\r") {
+			return nil, deny.FieldOnly(deny.JSONValue, path)
+		}
+	}
+	return got, nil
 }
 
 // ceiling reads a resource limit: 0 < value <= max. A limit above the
