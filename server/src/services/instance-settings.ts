@@ -53,6 +53,8 @@ import { preserveTelegramNotifyGeneralKey } from "../myrmidon/telegram-notify/pr
 import { preserveWipLimitGeneralKey } from "../myrmidon/wip-limit/settings.js";
 // myrmidon(1.6.1 VOICE-STT A1): keep the per-company STT runtime settings across vendor writes of `general`
 import { preserveSttGeneralKey } from "../myrmidon/stt/store.js";
+// myrmidon(1.7-GRD-MODES): keep the stored guardrail modes across vendor writes of `general`
+import { preserveGuardrailModesGeneralKey } from "../myrmidon/guardrails/modes-settings.js";
 // myrmidon(1.7-BUDGET-CONFIG-B): keep the stored budget enforcement mode
 // across vendor writes of `general`
 import { preserveBudgetEnforcementGeneralKey } from "../myrmidon/budget-enforcement/settings.js";
@@ -274,6 +276,8 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       ...(parsed.data.browserBridge ? { browserBridge: parsed.data.browserBridge } : {}),
       // myrmidon(1.6.1-WIP-LIMIT-A): the stored WIP limits survive every general write
       ...(parsed.data.wipLimit ? { wipLimit: parsed.data.wipLimit } : {}),
+      // myrmidon(1.7-GRD-MODES): the stored guardrail modes survive every general write
+      ...(parsed.data.guardrailModes ? { guardrailModes: parsed.data.guardrailModes } : {}),
       // myrmidon(1.7-BUDGET-CONFIG-B): the stored budget enforcement mode
       // survives every general write (it is edited on its own settings page).
       ...(parsed.data.budgetEnforcement ? { budgetEnforcement: parsed.data.budgetEnforcement } : {}),
@@ -636,6 +640,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
             ...preserveTelegramNotifyGeneralKey(current.general), // myrmidon(1.6-TG-PROACTIVITY-E)
             ...preserveWipLimitGeneralKey(current.general), // myrmidon(1.6.1-WIP-LIMIT-A)
             ...preserveSttGeneralKey(current.general), // myrmidon(1.6.1 VOICE-STT A1)
+            ...preserveGuardrailModesGeneralKey(current.general), // myrmidon(1.7-GRD-MODES)
             ...preserveBudgetEnforcementGeneralKey(current.general), // myrmidon(1.7-BUDGET-CONFIG-B)
             ...preservePluginEntitlementKeysGeneralKey(current.general), // myrmidon(PLUGIN-ENTITLEMENT C)
             ...preserveTelegramDmProgressGeneralKey(current.general), // myrmidon(DM-PROGRESS)

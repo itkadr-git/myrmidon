@@ -24895,14 +24895,17 @@ export function heartbeatService(
               presentationDecision.commentAction === "create" &&
               resolved.text
             ) {
-              // myrmidon(1.6-GRD): flag-only output scan of the final run text
-              // before it becomes the visible issue comment; never blocks,
-              // never masks here — the event journal records the hits.
-              await guardrailsOnRunOutput({
+              // myrmidon(1.6-GRD): output scan of the final run text before it
+              // becomes the visible issue comment. myrmidon(1.7-GRD-MODES):
+              // the resolved per-agent mode decides what a hit does — flag
+              // journals only, mask replaces the spans with [masked], block
+              // withholds the answer and posts the refusal text instead.
+              const guardrailDecision = await guardrailsOnRunOutput({
                 db,
                 companyId: livenessRun.companyId,
                 runId: livenessRun.id,
                 issueId,
+                agentId: agent.id,
                 text: resolved.text,
               }).catch(() => null);
               // The presentation resolver exposes only the final assistant
@@ -24918,7 +24921,10 @@ export function heartbeatService(
                 });
               const comment = await issuesSvc.addComment(
                 issueId,
-                resolved.text,
+                // myrmidon(1.7-GRD-MODES): the guardrail decision's text —
+                // unchanged for flag, span-masked for mask, the refusal for
+                // block. Null decision (layer off / error) keeps the text.
+                guardrailDecision?.text ?? resolved.text,
                 { agentId: agent.id, runId: livenessRun.id },
                 { authorizationReason: presentationAuthorizationReason },
               );

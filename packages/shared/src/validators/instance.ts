@@ -29,6 +29,8 @@ import { swarmClaimSettingsSchema } from "../myrmidon-swarm-claim.js";
 // myrmidon(1.6.1-WIP-LIMIT-A): the per-agent WIP limit settings stored in the
 // same general settings row.
 import { wipLimitSettingsSchema } from "../myrmidon-wip-limit.js";
+// myrmidon(1.7-GRD-MODES): guardrail mode overrides under instance general settings
+import { guardrailModesSettingsSchema } from "../myrmidon-guardrail-modes.js";
 // myrmidon(REVIEW-ROUTING): the automatic reviewer routing settings stored in the same row.
 import { reviewRoutingSettingsSchema } from "../myrmidon-review-routing.js";
 // myrmidon(REVIEW-REWORK): the review-return loop settings stored in the same row.
@@ -129,6 +131,10 @@ export const instanceGeneralSettingsSchema = z.object({
   // per-agent overrides, changed from /api/myrmidon/companies/:id/wip-limit/settings;
   // absent means the feature counts but never signals (all limits null).
   wipLimit: wipLimitSettingsSchema.optional(),
+  // myrmidon(1.7-GRD-MODES): guardrail enforcement-mode overrides per company,
+  // caste and agent, changed from /api/myrmidon/companies/:id/guardrails/settings;
+  // absent means every rule is flag-only (the 1.6.1 behavior).
+  guardrailModes: guardrailModesSettingsSchema.optional(),
   // myrmidon(REVIEW-ROUTING): automatic reviewer routing, changed from
   // /api/myrmidon/companies/:id/review-routing/settings; absent means the defaults.
   reviewRouting: reviewRoutingSettingsSchema.optional(),
