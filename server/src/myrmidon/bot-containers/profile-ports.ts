@@ -70,7 +70,7 @@ import type { CompiledProfile } from "./types.js";
 import { loadRegulationWorkspaceFiles } from "../wiki-cortex/delivery.js";
 import { createWikiRegulationService } from "../wiki-cortex/service.js";
 import { createDbRegulationStore } from "../wiki-cortex/store.js";
-import { readSharedPackageCachePath } from "./bot-disk-service.js"; // myrmidon(1.6.1-BOT-DISK-B)
+import { readBotDiskLayout, readSharedPackageCachePath } from "./bot-disk-service.js"; // myrmidon(1.6.1-BOT-DISK-B, 1.6.2-BOT-DISK-C)
 
 export { BOT_AGENT_API_KEY_NAME };
 
@@ -505,6 +505,11 @@ export function createDbBotProfilePorts(db: Db): BotProfilePorts {
     // from the same row the local driver reads for its binds.
     async sharedPackageCachePath(): Promise<string | undefined> {
       return readSharedPackageCachePath(db);
+    },
+
+    // myrmidon(1.6.2-BOT-DISK-C): the pnpm store mode, read per tick from the same row.
+    async pnpmStore(): Promise<"workspace" | "shared"> {
+      return (await readBotDiskLayout(db)).pnpmStore;
     },
 
     // myrmidon(BOT-LSP-DEFAULTS): the instance language-server policy. Read

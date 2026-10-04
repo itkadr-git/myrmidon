@@ -43,6 +43,35 @@ version file to edit. Base Paperclip version is in the image label
   it to the same directory and send `SIGHUP`, and create the four subdirectories owned by
   uid/gid 10001 — see [bot-disk-cache.md](bot-disk-cache.md).
 
+### Bot workspace duplication: shared git objects, hard-linked node_modules, clone hygiene (1.6.2, BOT-DISK C)
+
+- Shared git objects. `general.botDisk.gitMirrorRepos` lists GitHub `owner/repo` names; the board
+  keeps one bare mirror of each under `<sharedPackageCachePath>/git/<owner>/<repo>.git`
+  (refreshed by `git fetch --prune` every `gitMirrorRefreshMs`, default 15 minutes, under a lock;
+  gc never prunes), and bots mount it **read-only** at `/cache/git`. The dev image's `git`
+  wrapper adds `--reference-if-able` to `git clone https://github.com/<owner>/<repo>` when the
+  mirror exists, so a clone stores only objects the mirror lacks; every other git invocation is
+  unchanged and `git-credential-paperclip` keeps working. Off by default (empty list). dockergate
+  accepts `<packageCacheRoot>/git` only as a read-only bind to `/cache/git`.
+- Hard-linked node_modules. A hard link cannot cross a mount, and `/workspace`, `/cache/pnpm`
+  and the image's previous store `/data/hermes/.pnpm-store` are three different mounts, so pnpm
+  silently **copied** every package into every clone. The store now defaults to
+  `/workspace/.pnpm-store` (image and profile), on the clones' mount; `general.botDisk.pnpmStore:
+  "shared"` keeps it on `/cache/pnpm` and sets `package-import-method=clone-or-copy` for
+  reflink-capable filesystems. The dev image's build runs `pnpm-hardlink-check.sh` and fails on a
+  copy; CI runs the same proof, including the cross-mount copy.
+- Clone hygiene in the BOT-DISK A lifecycle. A git clone is no longer reaped by its directory's
+  mtime. The image reports, from inside the container, which clones are clean and fully pushed;
+  the board removes such a clone once nothing in it changed for the idle TTL, and never removes a
+  clone with unpushed work (dirty tree, operation in progress, stash, commits on no remote) —
+  an Attention card (source `bot_disk_lifecycle`) names it instead. The workspace pnpm store is
+  never swept.
+- **Operator steps:** see [bot-disk-cache.md](bot-disk-cache.md#enabling-git-mirrors-operator-steps)
+  — create `<cache>/git` owned by the board's user (mode 0755), then
+  `PATCH /api/myrmidon/bot-disk` with `{"gitMirrorRepos": ["owner/repo"]}`. The bot image must be
+  rebuilt (the wrapper, the reporter and the store default are in the image); older images keep
+  working without them.
+
 ### A board unblock lifts a settled replay hold; a parked wake is not "covering" (HOLD-READY)
 
 - A task with a closed recovery action whose `evidence.automaticRecovery.replay`

@@ -1,0 +1,242 @@
+#!/usr/bin/env python3
+"""bot-clone-hygiene: report which git clones in /workspace and /scratch hold unpushed work.
+
+myrmidon(1.6.2 BOT-DISK-C). The board's draft-directory lifecycle removes an
+idle clone only when the clone holds nothing that exists nowhere else. It must
+not run git itself on a bot's directory (git executes programs named by the
+repository's own config), so the clones are inspected here, inside the bot's
+container, as the bot user, and the verdict inputs are written to
+
+    $HERMES_HOME/.myrmidon/clone-hygiene.json
+
+which the board reads (server/src/myrmidon/bot-containers/clone-hygiene.ts
+defines the schema this file writes). The script only reads: it never changes,
+fetches into or removes a repository.
+
+For each repository (a directory with a `.git` entry, searched up to three
+levels below each top-level entry of the roots, not following symbolic links,
+not entering node_modules, .pnpm-store or .git):
+
+  dirty            modified, staged or untracked file (ignored files do not count)
+  inProgress       merge, rebase, cherry-pick, revert or bisect in progress
+  stashCount       stash entries
+  unpushedCommits  commits reachable from HEAD or a local branch and from no
+                   remote-tracking ref -- a branch merged into origin/main, or
+                   pushed, has none
+  hasRemote        the repository has a configured remote
+  linkedWorktrees  linked worktrees whose base this repository is
+  referencedBy     other repositories here that borrow its objects (alternates)
+  branch           current branch, null when detached
+  mergedIntoDefault  HEAD is an ancestor of origin's default branch (null: unknown)
+  error            non-null when inspection failed; the board then keeps the clone
+
+Usage: bot-clone-hygiene [--once] [--interval SECONDS]
+Environment (tests): MYRMIDON_HYGIENE_ROOTS (colon separated, default
+/workspace:/scratch), MYRMIDON_HYGIENE_REPORT (default
+$HERMES_HOME/.myrmidon/clone-hygiene.json).
+"""
+
+import datetime
+import json
+import os
+import subprocess
+import sys
+import time
+
+DEFAULT_ROOTS = "/workspace:/scratch"
+MAX_DEPTH = 3
+SKIP_DIRS = {"node_modules", ".pnpm-store", ".git"}
+GIT_TIMEOUT_S = 120
+DEFAULT_INTERVAL_S = 15 * 60
+MAX_REPOS = 2000
+
+
+def git(repo, *args):
+    """Run git in `repo`; returns (returncode, stdout). Never prompts, never takes optional locks."""
+    env = dict(os.environ)
+    env["GIT_OPTIONAL_LOCKS"] = "0"
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    cmd = ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", repo, *args]
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, timeout=GIT_TIMEOUT_S, text=True, errors="replace")
+    return proc.returncode, proc.stdout
+
+
+def must(repo, *args):
+    code, out = git(repo, *args)
+    if code != 0:
+        raise RuntimeError("git %s failed with status %d" % (args[0], code))
+    return out
+
+
+def find_repos(directory, depth=0):
+    if os.path.lexists(os.path.join(directory, ".git")):
+        return [directory]
+    if depth >= MAX_DEPTH:
+        return []
+    found = []
+    try:
+        names = sorted(os.listdir(directory))
+    except OSError:
+        return []
+    for name in names:
+        if name in SKIP_DIRS:
+            continue
+        child = os.path.join(directory, name)
+        if os.path.islink(child) or not os.path.isdir(child):
+            continue
+        found.extend(find_repos(child, depth + 1))
+    return found
+
+
+def objects_dir(repo):
+    common = must(repo, "rev-parse", "--path-format=absolute", "--git-common-dir").strip()
+    return os.path.realpath(os.path.join(common, "objects")), common
+
+
+def alternates_of(common):
+    path = os.path.join(common, "objects", "info", "alternates")
+    result = []
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    result.append(os.path.realpath(line if os.path.isabs(line) else os.path.join(common, "objects", line)))
+    except OSError:
+        pass
+    return result
+
+
+def inspect(repo, objects_dir_by_repo, alternates_by_repo):
+    entry = {
+        "path": repo,
+        "dirty": False,
+        "inProgress": False,
+        "stashCount": 0,
+        "unpushedCommits": 0,
+        "hasRemote": False,
+        "linkedWorktrees": 0,
+        "referencedBy": 0,
+        "branch": None,
+        "mergedIntoDefault": None,
+        "error": None,
+    }
+    try:
+        # status output of any kind means a modified, staged or untracked file.
+        entry["dirty"] = bool(must(repo, "status", "--porcelain=v1", "--untracked-files=normal").strip())
+
+        git_dir = must(repo, "rev-parse", "--path-format=absolute", "--git-dir").strip()
+        common = must(repo, "rev-parse", "--path-format=absolute", "--git-common-dir").strip()
+        for marker in ("MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "BISECT_LOG", "rebase-merge", "rebase-apply"):
+            if os.path.lexists(os.path.join(git_dir, marker)):
+                entry["inProgress"] = True
+
+        code, out = git(repo, "rev-parse", "-q", "--verify", "refs/stash")
+        if code == 0 and out.strip():
+            entry["stashCount"] = len(must(repo, "stash", "list").splitlines())
+
+        entry["hasRemote"] = bool(must(repo, "remote").strip())
+
+        code, out = git(repo, "rev-list", "--count", "HEAD", "--branches", "--not", "--remotes")
+        if code != 0:
+            # An empty repository has no HEAD: count local branches only.
+            out = must(repo, "rev-list", "--count", "--branches", "--not", "--remotes")
+        entry["unpushedCommits"] = int(out.strip() or "0")
+
+        worktrees = os.path.join(common, "worktrees")
+        if os.path.isdir(worktrees):
+            entry["linkedWorktrees"] = len([n for n in os.listdir(worktrees) if os.path.isdir(os.path.join(worktrees, n))])
+
+        mine = os.path.realpath(os.path.join(common, "objects"))
+        entry["referencedBy"] = sum(
+            1 for other, alts in alternates_by_repo.items() if other != repo and mine in alts and objects_dir_by_repo.get(other) != mine
+        )
+
+        code, out = git(repo, "symbolic-ref", "--short", "-q", "HEAD")
+        entry["branch"] = out.strip() or None if code == 0 else None
+
+        default = None
+        code, out = git(repo, "symbolic-ref", "-q", "refs/remotes/origin/HEAD")
+        if code == 0 and out.strip():
+            default = out.strip()
+        else:
+            for candidate in ("refs/remotes/origin/main", "refs/remotes/origin/master"):
+                if git(repo, "rev-parse", "-q", "--verify", candidate)[0] == 0:
+                    default = candidate
+                    break
+        if default:
+            code, _ = git(repo, "merge-base", "--is-ancestor", "HEAD", default)
+            entry["mergedIntoDefault"] = True if code == 0 else False if code == 1 else None
+    except Exception as exc:  # noqa: BLE001 - any failure makes the clone "keep"
+        entry["error"] = str(exc)[:500]
+    return entry
+
+
+def build_report(roots):
+    repos = []
+    for root in roots:
+        try:
+            names = sorted(os.listdir(root))
+        except OSError:
+            continue
+        for name in names:
+            if name in SKIP_DIRS:
+                continue
+            child = os.path.join(root, name)
+            if os.path.islink(child) or not os.path.isdir(child):
+                continue
+            repos.extend(find_repos(child))
+    repos = repos[:MAX_REPOS]
+
+    objects_dir_by_repo = {}
+    alternates_by_repo = {}
+    for repo in repos:
+        try:
+            objects, common = objects_dir(repo)
+            objects_dir_by_repo[repo] = objects
+            alternates_by_repo[repo] = alternates_of(common)
+        except Exception:  # noqa: BLE001 - inspect() reports the failure itself
+            pass
+
+    entries = [inspect(repo, objects_dir_by_repo, alternates_by_repo) for repo in repos]
+    return {
+        "version": 1,
+        "inspectedAt": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
+        "repos": entries,
+    }
+
+
+def write_report(report, destination):
+    os.makedirs(os.path.dirname(destination), exist_ok=True)
+    tmp = "%s.tmp-%d" % (destination, os.getpid())
+    with open(tmp, "w", encoding="utf-8") as handle:
+        json.dump(report, handle)
+        handle.write("\n")
+    os.replace(tmp, destination)
+
+
+def main(argv):
+    once = "--once" in argv
+    interval = DEFAULT_INTERVAL_S
+    if "--interval" in argv:
+        interval = max(30, int(argv[argv.index("--interval") + 1]))
+    roots = [r for r in os.environ.get("MYRMIDON_HYGIENE_ROOTS", DEFAULT_ROOTS).split(":") if r]
+    destination = os.environ.get("MYRMIDON_HYGIENE_REPORT") or os.path.join(os.environ.get("HERMES_HOME", "/data/hermes"), ".myrmidon", "clone-hygiene.json")
+    try:
+        os.nice(10)
+    except OSError:
+        pass
+    while True:
+        try:
+            write_report(build_report(roots), destination)
+        except Exception as exc:  # noqa: BLE001 - a failed pass is retried, never fatal
+            sys.stderr.write("[bot-clone-hygiene] pass failed: %s\n" % exc)
+            if once:
+                return 1
+        if once:
+            return 0
+        time.sleep(interval)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

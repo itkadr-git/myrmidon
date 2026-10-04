@@ -6,15 +6,17 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   botDiskCachePathProblem,
+  gitMirrorRepoProblem,
   mergeBotDiskSettings,
   normalizeStoredBotDiskSettings,
   patchBotDiskSettingsSchema,
+  resolveBotDiskLayout,
   resolveBotDiskSettings,
   resolveSharedPackageCachePath,
 } from "@paperclipai/shared";
 import { FLEETD_PACKAGE_CACHE_NOTICE, fleetdBotContainerDriver } from "./fleetd-driver.js";
 import type { BotContainerSpec } from "./driver.js";
-import { buildBinds, packageCacheEnv, PACKAGE_CACHE_MOUNTS } from "./template.js";
+import { buildBinds, GIT_MIRROR_MOUNT, packageCacheEnv, PACKAGE_CACHE_MOUNTS } from "./template.js";
 
 const volumeRoot = "/srv/bots";
 const botKey = "agent-a";
@@ -63,14 +65,40 @@ describe("myrmidon(1.6.1-BOT-DISK-B) buildBinds with the shared package cache", 
     expect(botDiskCachePathProblem(cache)).toBeNull();
   });
 
-  it("points every tool at its mount, and leaves pip out", () => {
+  it("points every tool at its mount, the pnpm store on the workspace mount, and leaves pip out", () => {
+    // myrmidon(1.6.2-BOT-DISK-C): /cache/pnpm and /workspace are two binds, and hard links
+    // cannot cross a mount, so the default pnpm store sits beside the clones.
     expect(packageCacheEnv()).toEqual({
-      npm_config_store_dir: "/cache/pnpm",
+      npm_config_store_dir: "/workspace/.pnpm-store",
       GOMODCACHE: "/cache/go-mod",
       GOCACHE: "/cache/go-build",
       GRADLE_USER_HOME: "/cache/gradle",
     });
     expect(PACKAGE_CACHE_MOUNTS.map((mount) => mount.hostSubdir)).not.toContain("pip");
+  });
+
+  it("keeps the store on /cache/pnpm in shared mode and tells pnpm to clone, then copy", () => {
+    expect(packageCacheEnv("shared")).toEqual({
+      npm_config_store_dir: "/cache/pnpm",
+      npm_config_package_import_method: "clone-or-copy",
+      GOMODCACHE: "/cache/go-mod",
+      GOCACHE: "/cache/go-build",
+      GRADLE_USER_HOME: "/cache/gradle",
+    });
+  });
+
+  it("binds the git mirror directory read-only, and only with a cache", () => {
+    const binds = buildBinds(volumeRoot, botKey, { sharedPackageCachePath: cache, gitMirror: true });
+    expect(binds.slice(3)).toEqual([
+      `${cache}/pnpm:/cache/pnpm:rw`,
+      `${cache}/go-mod:/cache/go-mod:rw`,
+      `${cache}/go-build:/cache/go-build:rw`,
+      `${cache}/gradle:/cache/gradle:rw`,
+      `${cache}/git:/cache/git:ro`,
+    ]);
+    expect(buildBinds(volumeRoot, botKey, { gitMirror: true })).toHaveLength(3);
+    expect(buildBinds(volumeRoot, botKey, { sharedPackageCachePath: cache })).toHaveLength(7);
+    expect(GIT_MIRROR_MOUNT.containerPath).toBe("/cache/git");
   });
 });
 
@@ -144,5 +172,62 @@ describe("myrmidon(1.6.1-BOT-DISK-B) fleetd driver and the shared package cache"
     const { driver, warn } = driverWith(undefined);
     await driver.create(spec);
     expect(warn).not.toHaveBeenCalled();
+  });
+});
+
+describe("myrmidon(1.6.2-BOT-DISK-C) git mirror and pnpm store settings", () => {
+  it("accepts owner/repo names only", () => {
+    for (const ok of ["owner/repo", "Some-Org/my.repo_1", "a/b"]) expect(gitMirrorRepoProblem(ok)).toBeNull();
+    for (const bad of ["repo", "a/b/c", "-a/b", "a-/b", "a/..", "a/.", "a/b.git", "a b/c", "a/b c", "/b", "a/", "../x/y"]) {
+      expect(gitMirrorRepoProblem(bad), bad).not.toBeNull();
+    }
+  });
+
+  it("fills the defaults, lower-cases and de-duplicates the repositories, and needs a cache path", () => {
+    expect(resolveBotDiskLayout({ sharedPackageCachePath: cache })).toEqual({
+      sharedPackageCachePath: cache,
+      gitMirrorRepos: [],
+      gitMirrorRefreshMs: 15 * 60 * 1000,
+      pnpmStore: "workspace",
+    });
+    const layout = resolveBotDiskLayout({
+      sharedPackageCachePath: cache,
+      gitMirrorRepos: ["Owner/Repo", "owner/repo", "o2/r2"],
+      gitMirrorRefreshMs: 120_000,
+      pnpmStore: "shared",
+    });
+    expect(layout.gitMirrorRepos).toEqual(["owner/repo", "o2/r2"]);
+    expect(layout.gitMirrorRefreshMs).toBe(120_000);
+    expect(layout.pnpmStore).toBe("shared");
+    // No cache path: the mirrors have nowhere to live.
+    expect(resolveBotDiskLayout({ gitMirrorRepos: ["owner/repo"] }).gitMirrorRepos).toEqual([]);
+    expect(resolveBotDiskLayout(undefined).pnpmStore).toBe("workspace");
+  });
+
+  it("drops an invalid stored value and keeps the rest", () => {
+    const values = normalizeStoredBotDiskSettings({
+      enabled: false,
+      gitMirrorRepos: ["bad name"],
+      gitMirrorRefreshMs: 5,
+      pnpmStore: "elsewhere",
+    });
+    expect(values).toEqual({ enabled: false });
+  });
+
+  it("patches the three keys and clears each on null, keeping the lifecycle keys", () => {
+    const base = { enabled: true, idleTtlMs: 3_600_000, sharedPackageCachePath: cache };
+    const set = mergeBotDiskSettings(base, { gitMirrorRepos: ["owner/repo"], gitMirrorRefreshMs: 300_000, pnpmStore: "shared" });
+    expect(set).toEqual({ ...base, gitMirrorRepos: ["owner/repo"], gitMirrorRefreshMs: 300_000, pnpmStore: "shared" });
+    expect(mergeBotDiskSettings(set, { enabled: false })).toEqual({ ...set, enabled: false });
+    expect(mergeBotDiskSettings(set, { gitMirrorRepos: null, gitMirrorRefreshMs: null, pnpmStore: null })).toEqual(base);
+    expect(mergeBotDiskSettings(set, { gitMirrorRepos: [] }).gitMirrorRepos).toBeUndefined();
+  });
+
+  it("validates a PATCH of the three keys", () => {
+    expect(patchBotDiskSettingsSchema.safeParse({ gitMirrorRepos: ["owner/repo"], gitMirrorRefreshMs: 60_000, pnpmStore: "workspace" }).success).toBe(true);
+    expect(patchBotDiskSettingsSchema.safeParse({ gitMirrorRepos: null, gitMirrorRefreshMs: null, pnpmStore: null }).success).toBe(true);
+    expect(patchBotDiskSettingsSchema.safeParse({ gitMirrorRepos: ["a/b.git"] }).success).toBe(false);
+    expect(patchBotDiskSettingsSchema.safeParse({ gitMirrorRefreshMs: 1000 }).success).toBe(false);
+    expect(patchBotDiskSettingsSchema.safeParse({ pnpmStore: "x" }).success).toBe(false);
   });
 });

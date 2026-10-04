@@ -52,6 +52,7 @@ import { badRequest } from "../errors.js";
 import { listAttentionExhaustedRuns } from "./attention-exhausted-runs.js";
 import { budgetService } from "./budgets.js";
 import { hostDiskRuntime } from "../myrmidon/host-disk/index.js"; // myrmidon(BOT-DISK E)
+import { cloneHygieneSignals } from "../myrmidon/bot-containers/clone-hygiene.js"; // myrmidon(1.6.2-BOT-DISK-C)
 import {
   BLOCKER_ATTENTION_MAX_DEPTH,
   BLOCKER_ATTENTION_MAX_NODES,
@@ -1939,6 +1940,59 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             images: [],
           },
         }));
+      }
+
+      // myrmidon(1.6.2-BOT-DISK-C): a bot clone with unpushed work (dirty tree,
+      // stash, operation in progress, commits on no remote) idle longer than the
+      // lifecycle TTL. The sweep keeps such a clone instead of removing it; this
+      // card is how an operator learns about it. One card per clone; it goes
+      // away when the work is pushed, the clone is touched again, or removed.
+      const cloneSignals = cloneHygieneSignals();
+      if (cloneSignals.length > 0) {
+        const botIds = [...new Set(cloneSignals.map((signal) => signal.botKey))];
+        const botAgents = await db
+          .select({ id: agents.id, name: agents.name, status: agents.status })
+          .from(agents)
+          .where(and(eq(agents.companyId, companyId), inArray(agents.id, botIds)));
+        const byId = new Map(botAgents.map((agent) => [agent.id, agent]));
+        for (const signal of cloneSignals) {
+          const agent = byId.get(signal.botKey);
+          if (!agent) continue;
+          const at = new Date(signal.observedAtMs).toISOString();
+          add(createItem({
+            companyId,
+            sourceKind: "bot_disk_lifecycle",
+            subject: {
+              kind: "agent",
+              id: agent.id,
+              companyId,
+              title: agent.name,
+              identifier: null,
+              status: agent.status,
+              href: `/${prefix}/agents/${agent.id}`,
+              metadata: { clonePath: signal.path, branch: signal.branch },
+            },
+            whyNow: `Clone ${signal.path} has been idle past the lifecycle TTL with ${signal.reason}; it is kept, not removed.`,
+            decisionVerbs: decisionVerbs(
+              { id: "inspect", label: "Inspect", description: "Push or discard the work in the bot's clone." },
+              { id: "dismiss", label: "Dismiss", description: "Dismiss this signal." },
+            ),
+            inlineResolvable: false,
+            entryRule: "a bot clone holds unpushed work and is idle longer than general.botDisk.idleTtlMs",
+            exitRule: "the work is pushed or discarded, the clone changes again, or it is removed",
+            dedupKey: `bot_disk_clone:${agent.id}:${signal.path}`,
+            severity: "medium",
+            activityAt: at,
+            createdAt: at,
+            updatedAt: at,
+            relatedIssue: null,
+            detail: {
+              kind: "generic",
+              summaryExcerpt: `${signal.path}${signal.branch ? ` (${signal.branch})` : ""}: ${signal.reason}`,
+              images: [],
+            },
+          }));
+        }
       }
 
       const erroredAgents = await db

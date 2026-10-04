@@ -14,11 +14,14 @@
 
 import type { Db } from "@paperclipai/db";
 import {
+  BOT_DISK_LAYOUT_KEYS,
   BOT_DISK_SETTING_KEYS,
   BOT_DISK_UPDATED_ACTION,
   mergeBotDiskSettings,
   resolveBotDiskSettings,
+  resolveBotDiskLayout,
   resolveSharedPackageCachePath,
+  type BotDiskLayout,
   type BotDiskSettings,
   type BotDiskSettingsPatch,
   type ResolvedBotDiskSettings,
@@ -26,6 +29,7 @@ import {
 import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService, logActivity } from "../../services/index.js";
 import { sweepAllBotVolumes } from "./draft-lifecycle.js";
+import { refreshGitMirrors } from "./git-mirror.js"; // myrmidon(1.6.2-BOT-DISK-C)
 
 export type BotDiskView = ResolvedBotDiskSettings;
 
@@ -101,9 +105,10 @@ export function botDiskService(
         const before = resolveBotDiskSettings({ stored: general.botDisk, env });
         const next = mergeBotDiskSettings(before.settings, patch);
         const changedKeys: string[] = BOT_DISK_SETTING_KEYS.filter((key) => before.settings[key] !== next[key]);
-        // myrmidon(1.6.1-BOT-DISK-B): the shared package cache path rides the same key.
-        if (before.settings.sharedPackageCachePath !== next.sharedPackageCachePath) {
-          changedKeys.push("sharedPackageCachePath");
+        // myrmidon(1.6.1-BOT-DISK-B, 1.6.2-BOT-DISK-C): the shared-cache layout
+        // keys (cache path, git mirrors, pnpm store) ride the same key.
+        for (const key of BOT_DISK_LAYOUT_KEYS) {
+          if (JSON.stringify(before.settings[key]) !== JSON.stringify(next[key])) changedKeys.push(key);
         }
 
         await deps.settings.updateGeneral({ botDisk: next });
@@ -166,13 +171,31 @@ export async function readSharedPackageCachePath(db: Db): Promise<string | undef
 }
 
 /**
+ * myrmidon(1.6.2-BOT-DISK-C): the shared-cache layout stored right now (git
+ * mirrors, pnpm store mode, with defaults). The local driver (the read-only
+ * `/cache/git` bind), the profile compiler (the pnpm store variables) and the
+ * mirror refresher read it on every pass, so a PATCH needs no restart.
+ */
+export async function readBotDiskLayout(db: Db): Promise<BotDiskLayout> {
+  const settings = instanceSettingsService(db) as unknown as { getGeneral(): Promise<{ botDisk?: unknown }> };
+  return resolveBotDiskLayout((await settings.getGeneral()).botDisk);
+}
+
+/**
  * One sweep with the settings stored right now — what the maintenance tick
  * calls. Async throughout, so a failed settings read rejects (the caller logs
  * it) instead of throwing inside the timer.
+ *
+ * myrmidon(1.6.2-BOT-DISK-C): the same tick refreshes the git mirrors (each at
+ * most once per `gitMirrorRefreshMs`, one refresh at a time) and the sweep
+ * judges git clones by the bots' own hygiene reports (draft-lifecycle.ts).
  */
 export async function runBotDiskSweep(db: Db): Promise<void> {
   const settings = instanceSettingsService(db) as unknown as {
     getGeneral(): Promise<{ botDisk?: unknown }>;
   };
-  await sweepAllBotVolumes(await resolveBotDiskLifecycleConfig(settings));
+  const general = await settings.getGeneral();
+  const layout = resolveBotDiskLayout(general.botDisk);
+  void refreshGitMirrors(layout).catch((err) => logger.warn({ err }, "git mirror refresh failed"));
+  await sweepAllBotVolumes(await resolveBotDiskLifecycleConfig({ getGeneral: async () => general }));
 }

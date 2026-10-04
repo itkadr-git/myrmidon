@@ -150,6 +150,13 @@ export interface BotProfilePorts {
    */
   sharedPackageCachePath?(): Promise<string | undefined>;
   /**
+   * myrmidon(1.6.2-BOT-DISK-C): where the pnpm store of a bot with the shared
+   * cache lives (`general.botDisk.pnpmStore`, default "workspace": on the same
+   * mount as the clones, so pnpm hard-links instead of copying; see
+   * template.ts packageCacheEnv). Read per tick. Optional: absent = "workspace".
+   */
+  pnpmStore?(): Promise<"workspace" | "shared">;
+  /**
    * myrmidon(BOT-LSP-DEFAULTS): the instance language-server policy
    * (`general.botLsp`): which roles write code and the mode of coding and
    * non-coding bots. Optional: without it the module defaults apply (coding
@@ -284,9 +291,12 @@ export function createBotProfileCompile(
     // no cache mounts (fleetd-driver.ts), so its tools keep their own defaults.
     // Instance values win over the card's, like the egress variables below.
     const sharedPackageCachePath = ports.sharedPackageCachePath ? await ports.sharedPackageCachePath() : undefined;
+    // myrmidon(1.6.2-BOT-DISK-C): the pnpm store mode decides whether the store
+    // shares the clones' mount (hard links) or the cache mount (reflink/copy).
+    const pnpmStore = sharedPackageCachePath && ports.pnpmStore ? await ports.pnpmStore() : "workspace";
     const cacheEnv: Record<string, HermesProfileEnvEntry> =
       sharedPackageCachePath && cardFleetHost(agent.adapterConfig) === null
-        ? Object.fromEntries(Object.entries(packageCacheEnv()).map(([name, value]) => [name, { value, secret: false }]))
+        ? Object.fromEntries(Object.entries(packageCacheEnv(pnpmStore)).map(([name, value]) => [name, { value, secret: false }]))
         : {};
     const cacheWarnings = Object.keys(cacheEnv)
       .filter((name) => cardEnv.env[name] !== undefined)

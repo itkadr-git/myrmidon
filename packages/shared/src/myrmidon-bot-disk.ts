@@ -31,6 +31,21 @@ import { z } from "zod";
  * cache". The local bot driver and the profile compiler re-read it on every
  * reconcile pass. It is not listed in `sources` (stored or absent, nothing
  * else).
+ *
+ * myrmidon(1.6.2-BOT-DISK-C): three more keys, stored or absent like the cache
+ * path (no environment variable; absent means the built-in default, see
+ * {@link resolveBotDiskLayout}):
+ *
+ * - `gitMirrorRepos` — `owner/repo` names the board keeps a bare mirror of
+ *   under `<sharedPackageCachePath>/git`; bots mount that directory read-only
+ *   at `/cache/git` and clone with `--reference-if-able`, so the objects live
+ *   once on the host. Empty or absent: no mirrors and no `/cache/git` mount;
+ * - `gitMirrorRefreshMs` — how often the board fetches each mirror;
+ * - `pnpmStore` — where pnpm keeps its content-addressed store: `workspace`
+ *   (the default, `/workspace/.pnpm-store`, the same mount as the clones, so
+ *   pnpm hardlinks on any filesystem) or `shared` (`/cache/pnpm`, a different
+ *   mount: pnpm can only clone (reflink) across it, on a filesystem that
+ *   supports that, and copies otherwise).
  */
 
 /** Environment variables — first-start defaults only. */
@@ -84,6 +99,50 @@ const cachePathSchema = z
     if (problem) ctx.addIssue({ code: "custom", message: `sharedPackageCachePath ${problem}` });
   });
 
+/** myrmidon(1.6.2-BOT-DISK-C): where the pnpm store lives (see the module comment). */
+export const BOT_DISK_PNPM_STORE_MODES = ["workspace", "shared"] as const;
+export type BotDiskPnpmStoreMode = (typeof BOT_DISK_PNPM_STORE_MODES)[number];
+export const BOT_DISK_DEFAULT_PNPM_STORE: BotDiskPnpmStoreMode = "workspace";
+
+export const BOT_DISK_MIN_GIT_MIRROR_REFRESH_MS = 60 * 1000;
+export const BOT_DISK_MAX_GIT_MIRROR_REFRESH_MS = 24 * 60 * 60 * 1000;
+export const BOT_DISK_DEFAULT_GIT_MIRROR_REFRESH_MS = 15 * 60 * 1000;
+export const BOT_DISK_MAX_GIT_MIRROR_REPOS = 50;
+
+/**
+ * Why `value` cannot be a mirrored repository name, or null when it can: a
+ * GitHub `owner/repo` pair — the owner is 1–39 letters, digits or inner
+ * hyphens, the repository 1–100 letters, digits, ".", "_" or "-", not "." or
+ * "..", and without a ".git" suffix (the mirror directory adds it).
+ */
+export function gitMirrorRepoProblem(value: string): string | null {
+  const parts = value.split("/");
+  if (parts.length !== 2) return "is not an owner/repo pair";
+  const [owner, repo] = parts as [string, string];
+  if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/.test(owner)) return "has an invalid owner";
+  if (!/^[A-Za-z0-9._-]{1,100}$/.test(repo) || repo === "." || repo === "..") return "has an invalid repository name";
+  if (repo.toLowerCase().endsWith(".git")) return "ends with .git";
+  return null;
+}
+
+const gitMirrorRepoSchema = z
+  .string()
+  .max(140)
+  .superRefine((value, ctx) => {
+    const problem = gitMirrorRepoProblem(value);
+    if (problem) ctx.addIssue({ code: "custom", message: `gitMirrorRepos entry ${JSON.stringify(value)} ${problem}` });
+  });
+
+const gitMirrorReposSchema = z.array(gitMirrorRepoSchema).max(BOT_DISK_MAX_GIT_MIRROR_REPOS);
+
+const gitMirrorRefreshMsSchema = z
+  .number()
+  .int()
+  .min(BOT_DISK_MIN_GIT_MIRROR_REFRESH_MS)
+  .max(BOT_DISK_MAX_GIT_MIRROR_REFRESH_MS);
+
+const pnpmStoreSchema = z.enum(BOT_DISK_PNPM_STORE_MODES);
+
 const idleTtlMsSchema = z
   .number()
   .int()
@@ -97,6 +156,10 @@ export const botDiskSettingsSchema = z
     idleTtlMs: idleTtlMsSchema,
     // myrmidon(1.6.1-BOT-DISK-B): absent = no shared package cache.
     sharedPackageCachePath: cachePathSchema.optional(),
+    // myrmidon(1.6.2-BOT-DISK-C): absent = the defaults of resolveBotDiskLayout.
+    gitMirrorRepos: gitMirrorReposSchema.optional(),
+    gitMirrorRefreshMs: gitMirrorRefreshMsSchema.optional(),
+    pnpmStore: pnpmStoreSchema.optional(),
   })
   .strict();
 
@@ -105,6 +168,9 @@ const storedBotDiskObjectSchema = z
     enabled: z.boolean().optional().catch(undefined),
     idleTtlMs: idleTtlMsSchema.optional().catch(undefined),
     sharedPackageCachePath: cachePathSchema.optional().catch(undefined),
+    gitMirrorRepos: gitMirrorReposSchema.optional().catch(undefined),
+    gitMirrorRefreshMs: gitMirrorRefreshMsSchema.optional().catch(undefined),
+    pnpmStore: pnpmStoreSchema.optional().catch(undefined),
   })
   .passthrough();
 
@@ -121,6 +187,10 @@ export const patchBotDiskSettingsSchema = z
     idleTtlMs: idleTtlMsSchema.optional(),
     // myrmidon(1.6.1-BOT-DISK-B): a path sets the cache, null or "" turns it off.
     sharedPackageCachePath: z.union([cachePathSchema, z.literal(""), z.null()]).optional(),
+    // myrmidon(1.6.2-BOT-DISK-C): null (or, for the list, []) returns the key to its default.
+    gitMirrorRepos: z.union([gitMirrorReposSchema, z.null()]).optional(),
+    gitMirrorRefreshMs: z.union([gitMirrorRefreshMsSchema, z.null()]).optional(),
+    pnpmStore: z.union([pnpmStoreSchema, z.null()]).optional(),
   })
   .strict();
 
@@ -158,6 +228,11 @@ export function normalizeStoredBotDiskSettings(raw: unknown): Partial<BotDiskSet
   if (typeof parsed.data.sharedPackageCachePath === "string") {
     out.sharedPackageCachePath = parsed.data.sharedPackageCachePath;
   }
+  if (Array.isArray(parsed.data.gitMirrorRepos) && parsed.data.gitMirrorRepos.length > 0) {
+    out.gitMirrorRepos = parsed.data.gitMirrorRepos;
+  }
+  if (typeof parsed.data.gitMirrorRefreshMs === "number") out.gitMirrorRefreshMs = parsed.data.gitMirrorRefreshMs;
+  if (typeof parsed.data.pnpmStore === "string") out.pnpmStore = parsed.data.pnpmStore;
   return out;
 }
 
@@ -190,9 +265,25 @@ export function resolveBotDiskSettings(options: {
       enabled: enabled[0],
       idleTtlMs: idleTtlMs[0],
       ...(stored.sharedPackageCachePath ? { sharedPackageCachePath: stored.sharedPackageCachePath } : {}),
+      ...optionalLayoutKeys(stored),
     },
     sources: { enabled: enabled[1], idleTtlMs: idleTtlMs[1] },
   };
+}
+
+/** The 1.6.2-BOT-DISK-C keys that are set, in canonical form (an empty list is absent). */
+function optionalLayoutKeys(values: Partial<BotDiskSettings>): Partial<BotDiskSettings> {
+  return {
+    ...(values.gitMirrorRepos && values.gitMirrorRepos.length > 0 ? { gitMirrorRepos: values.gitMirrorRepos } : {}),
+    ...(values.gitMirrorRefreshMs !== undefined ? { gitMirrorRefreshMs: values.gitMirrorRefreshMs } : {}),
+    ...(values.pnpmStore !== undefined ? { pnpmStore: values.pnpmStore } : {}),
+  };
+}
+
+/** `patch[key]` when given (null clears it), otherwise `base[key]`. */
+function pick<T>(patchValue: T | null | undefined, baseValue: T | undefined): T | undefined {
+  if (patchValue === undefined) return baseValue;
+  return patchValue === null ? undefined : patchValue;
 }
 
 /** A patch over the effective values, the shape that gets stored. */
@@ -206,6 +297,40 @@ export function mergeBotDiskSettings(
     enabled: patch.enabled === undefined ? base.enabled : patch.enabled,
     idleTtlMs: patch.idleTtlMs === undefined ? base.idleTtlMs : patch.idleTtlMs,
     ...(sharedPackageCachePath ? { sharedPackageCachePath } : {}),
+    ...optionalLayoutKeys({
+      gitMirrorRepos: pick(patch.gitMirrorRepos, base.gitMirrorRepos),
+      gitMirrorRefreshMs: pick(patch.gitMirrorRefreshMs, base.gitMirrorRefreshMs),
+      pnpmStore: pick(patch.pnpmStore, base.pnpmStore),
+    }),
+  };
+}
+
+/** The 1.6.2-BOT-DISK-C keys a settings change compares besides the env-backed ones. */
+export const BOT_DISK_LAYOUT_KEYS = ["sharedPackageCachePath", "gitMirrorRepos", "gitMirrorRefreshMs", "pnpmStore"] as const;
+
+/**
+ * myrmidon(1.6.2-BOT-DISK-C): the shared-cache layout in force, with the
+ * defaults filled in. `gitMirrorRepos` is lower-cased and de-duplicated (GitHub
+ * names are case-insensitive, and the mirror directory is the lower-case name),
+ * and is empty without a shared package cache path: the mirrors live under it.
+ */
+export interface BotDiskLayout {
+  sharedPackageCachePath?: string;
+  gitMirrorRepos: string[];
+  gitMirrorRefreshMs: number;
+  pnpmStore: BotDiskPnpmStoreMode;
+}
+
+export function resolveBotDiskLayout(stored: unknown): BotDiskLayout {
+  const values = normalizeStoredBotDiskSettings(stored);
+  const repos = values.sharedPackageCachePath
+    ? [...new Set((values.gitMirrorRepos ?? []).map((repo) => repo.toLowerCase()))]
+    : [];
+  return {
+    ...(values.sharedPackageCachePath ? { sharedPackageCachePath: values.sharedPackageCachePath } : {}),
+    gitMirrorRepos: repos,
+    gitMirrorRefreshMs: values.gitMirrorRefreshMs ?? BOT_DISK_DEFAULT_GIT_MIRROR_REFRESH_MS,
+    pnpmStore: values.pnpmStore ?? BOT_DISK_DEFAULT_PNPM_STORE,
   };
 }
 
