@@ -66,12 +66,14 @@ case "$1" in
         if [ -e "$SANDBOX/registry-missing" ]; then echo "ERROR: $4: not found" >&2; exit 1; fi
         cat "$SANDBOX/imagetools.json" ;;
     esac ;;
+  run) echo "1.4.0+0123456789ab" ;;
   compose)
     case "$*" in
       *--services)
         # HOST-TARGETING: the declared services of the sandbox's compose
         # project (the fail-closed pre-check reads them).
         printf 'server\\ndockergate\\nfleetd\\n' ;;
+      *logs*) echo '{"event":"self-check ok","version":"1.4.0+0123456789ab"}' ;;
       *) exit 0 ;;
     esac ;;
 esac
@@ -220,6 +222,8 @@ function sandbox({
       // (the fake curl serves every URL with the health file).
       "MYR_DOCKERGATE_HEALTH_URL=http://127.0.0.1:3100/dockergate/health",
       "MYR_FLEETD_HEALTH_URL=http://127.0.0.1:3100/fleetd/health",
+      // The bot image rollout has its own tests (bot-image-rollout.test.mjs).
+      "MYRMIDON_BOT_IMAGE_ROLLOUT=0",
       "",
     ].join("\n"),
   );
@@ -471,7 +475,7 @@ describe("deploy.sh: only CI images from the registry", () => {
       ["a short digest", "sha256:abc", /64 lowercase hex/],
       ["a short digest in a full reference", `${CI_IMAGE}@sha256:abc`, /64 lowercase hex/],
       ["a digest of another algorithm", `${CI_IMAGE}@sha512:${"b".repeat(64)}`, /64 lowercase hex/],
-      ["an empty value", "", /no image given/],
+      ["an empty value", "", /give --digest or --release|no image given/],
     ];
     for (const [name, arg, pattern] of cases) {
       it(`refuses ${name} before any docker or git call`, () => {
@@ -485,7 +489,7 @@ describe("deploy.sh: only CI images from the registry", () => {
       const sb = sandbox();
       const { code, out } = run(sb, "deploy.sh", []);
       assert.notEqual(code, 0);
-      assert.match(out, /no image given/);
+      assert.match(out, /give --digest or --release|no image given/);
       assert.equal(calls(sb), "");
     });
 

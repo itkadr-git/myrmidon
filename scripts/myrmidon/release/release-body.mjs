@@ -21,6 +21,20 @@ export const COMPONENTS = [
   { label: "bot", repository: "myrmidon-hermes" },
 ];
 
+// Bot image variants: published by the same bot image workflow, but a release
+// may legitimately lack one (a variant that did not change is not rebuilt), so
+// they are listed when present and never refuse the publish.
+export const OPTIONAL_COMPONENTS = [
+  { label: "hermes-dev", repository: "myrmidon-hermes-dev" },
+  { label: "hermes-node", repository: "myrmidon-hermes-node" },
+];
+
+/** The machine-readable manifest asset of a release (read by deploy/release-manifest.sh). */
+export const MANIFEST_NAME = "release-components.json";
+
+/** The manifest key of a table label: the `bot` row is the default bot image. */
+const MANIFEST_KEY = { bot: "hermes" };
+
 /** The X.Y.Z a release supersedes: patch>0 -> X.Y.(Z-1), else X.(Y-1).0, else null. */
 export function previousMinorPatch(version) {
   const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
@@ -58,8 +72,9 @@ const MANIFEST_ACCEPT =
  * the answer without the network — the offline simulation the tests use.
  */
 export async function componentDigest(repository, version, { fetchImpl = fetch, registryState = null } = {}) {
-  if (registryState && Object.prototype.hasOwnProperty.call(registryState, repository)) {
-    return registryState[repository] ?? null;
+  if (registryState) {
+    // An offline simulation is authoritative: a repository it does not name is absent.
+    return Object.prototype.hasOwnProperty.call(registryState, repository) ? (registryState[repository] ?? null) : null;
   }
   const scope = `repository:itkadr-git/${repository}:pull`;
   const tokenUrl = `https://ghcr.io/token?scope=${encodeURIComponent(scope)}`;
@@ -82,12 +97,37 @@ export async function componentDigest(repository, version, { fetchImpl = fetch, 
 export async function componentDigests(version, { fetchImpl = fetch, registryState = null } = {}) {
   const rows = [];
   const missing = [];
+  const digests = {};
   for (const { label, repository } of COMPONENTS) {
     const digest = await componentDigest(repository, version, { fetchImpl, registryState });
-    if (digest) rows.push(`| ${label} | \`ghcr.io/itkadr-git/${repository}@${digest}\` |`);
-    else missing.push(label);
+    if (digest) {
+      rows.push(`| ${label} | \`ghcr.io/itkadr-git/${repository}@${digest}\` |`);
+      digests[label] = { repository: `ghcr.io/itkadr-git/${repository}`, digest };
+    } else missing.push(label);
   }
-  return { rows, missing };
+  for (const { label, repository } of OPTIONAL_COMPONENTS) {
+    const digest = await componentDigest(repository, version, { fetchImpl, registryState });
+    if (digest) {
+      rows.push(`| ${label} | \`ghcr.io/itkadr-git/${repository}@${digest}\` |`);
+      digests[label] = { repository: `ghcr.io/itkadr-git/${repository}`, digest };
+    }
+  }
+  return { rows, missing, digests };
+}
+
+/**
+ * The release manifest: one JSON object naming every component image of the
+ * release by digest. deploy.sh reads it (release-manifest.sh) so one deploy
+ * updates the board, dockergate, fleetd and the bot images from the same
+ * source of truth. Keys: board, dockergate, fleetd, hermes (the default bot
+ * image) and, when the release has them, hermes-dev and hermes-node.
+ */
+export function buildManifest({ version, digests }) {
+  const components = {};
+  for (const [label, value] of Object.entries(digests)) {
+    components[MANIFEST_KEY[label] ?? label] = value;
+  }
+  return { schema: 1, version, tag: `myr-v${version}`, components };
 }
 
 /** The complete release body: deploy line, notes, digest table, cross-check. */
@@ -97,7 +137,7 @@ export function buildBody({ version, previous, section, digestRows }) {
     : "";
   const replaces = previous ?? "<previous>";
   return [
-    `Myrmidon ${version} replaces ${replaces}. Deploy the board and the release component images (dockergate, fleetd) from this tag together; see [docs/myrmidon/deploy.md](docs/myrmidon/deploy.md)${anchor}.`,
+    `Myrmidon ${version} replaces ${replaces}. Deploy the board, the release component images (dockergate, fleetd) and the bot images from this tag together (one deploy: \`deploy.sh --release <tag>\`); see [docs/myrmidon/deploy.md](docs/myrmidon/deploy.md)${anchor}.`,
     "",
     section,
     "",
@@ -118,7 +158,7 @@ export function readChangelog(root = process.cwd()) {
 }
 
 function parseArgs(argv) {
-  const args = { version: null, registryStatePath: null };
+  const args = { version: null, registryStatePath: null, manifestOut: null };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     if (a === "--previous") {
@@ -131,6 +171,9 @@ function parseArgs(argv) {
     if (a === "--registry-state") {
       args.registryStatePath = argv[i + 1];
       i += 1;
+    } else if (a === "--manifest-out") {
+      args.manifestOut = argv[i + 1];
+      i += 1;
     } else if (!args.version) {
       args.version = a;
     }
@@ -139,7 +182,7 @@ function parseArgs(argv) {
 }
 
 async function main() {
-  const { version, registryStatePath } = parseArgs(process.argv.slice(2));
+  const { version, registryStatePath, manifestOut } = parseArgs(process.argv.slice(2));
   if (!version || !/^\d+\.\d+\.\d+$/.test(version)) {
     console.error("usage: release-body.mjs [--registry-state <file>] <X.Y.Z>");
     process.exit(2);
@@ -155,12 +198,15 @@ async function main() {
   const registryState = registryStatePath
     ? JSON.parse(fs.readFileSync(registryStatePath, "utf8"))
     : null;
-  const { rows, missing } = await componentDigests(version, { registryState });
+  const { rows, missing, digests } = await componentDigests(version, { registryState });
   if (missing.length > 0) {
     console.error(
       `component image digests missing from the registry for release ${version}: ${missing.join(", ")} — NOT publishing (RELEASE-GATE: the board and the components deploy from the same tag)`,
     );
     process.exit(1);
+  }
+  if (manifestOut) {
+    fs.writeFileSync(manifestOut, `${JSON.stringify(buildManifest({ version, digests }), null, 2)}\n`);
   }
   process.stdout.write(buildBody({ version, previous, section, digestRows: rows }));
 }
