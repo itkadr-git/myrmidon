@@ -12,13 +12,18 @@
 // Every request's read-write-audit sequence runs through one queue, so two
 // overlapping PATCHes cannot commit in one order and audit in the other.
 
-import type { Db } from "@paperclipai/db";
+import { agents, type Db } from "@paperclipai/db";
+import { eq } from "drizzle-orm";
 import {
+  BOT_DISK_LAYOUT_KEYS,
+  botRoleGetsSharedCache,
   BOT_DISK_SETTING_KEYS,
   BOT_DISK_UPDATED_ACTION,
   mergeBotDiskSettings,
   resolveBotDiskSettings,
+  resolveBotDiskLayout,
   resolveSharedPackageCachePath,
+  type BotDiskLayout,
   type BotDiskSettings,
   type BotDiskSettingsPatch,
   type ResolvedBotDiskSettings,
@@ -26,6 +31,9 @@ import {
 import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService, logActivity } from "../../services/index.js";
 import { sweepAllBotVolumes } from "./draft-lifecycle.js";
+import { refreshGitMirrors } from "./git-mirror.js"; // myrmidon(1.6.2-BOT-DISK-C)
+import { dropCloneSignalsExcept, ingestCloneReport, noteCloneReportSeen } from "./clone-hygiene.js";
+import { getBotContainerRuntime } from "./routes-wiring.js";
 
 export type BotDiskView = ResolvedBotDiskSettings;
 
@@ -101,9 +109,10 @@ export function botDiskService(
         const before = resolveBotDiskSettings({ stored: general.botDisk, env });
         const next = mergeBotDiskSettings(before.settings, patch);
         const changedKeys: string[] = BOT_DISK_SETTING_KEYS.filter((key) => before.settings[key] !== next[key]);
-        // myrmidon(1.6.1-BOT-DISK-B): the shared package cache path rides the same key.
-        if (before.settings.sharedPackageCachePath !== next.sharedPackageCachePath) {
-          changedKeys.push("sharedPackageCachePath");
+        // myrmidon(1.6.1-BOT-DISK-B, 1.6.2-BOT-DISK-C): the shared-cache layout
+        // keys (cache path, git mirrors, pnpm store) ride the same key.
+        for (const key of BOT_DISK_LAYOUT_KEYS) {
+          if (JSON.stringify(before.settings[key]) !== JSON.stringify(next[key])) changedKeys.push(key);
         }
 
         await deps.settings.updateGeneral({ botDisk: next });
@@ -166,13 +175,93 @@ export async function readSharedPackageCachePath(db: Db): Promise<string | undef
 }
 
 /**
+ * myrmidon(1.6.2-BOT-DISK-C): the shared-cache layout stored right now (git
+ * mirrors, pnpm store mode, with defaults). The local driver (the read-only
+ * `/cache/git` bind), the profile compiler (the pnpm store variables) and the
+ * mirror refresher read it on every pass, so a PATCH needs no restart.
+ */
+export async function readBotDiskLayout(db: Db): Promise<BotDiskLayout> {
+  const settings = instanceSettingsService(db) as unknown as { getGeneral(): Promise<{ botDisk?: unknown }> };
+  return resolveBotDiskLayout((await settings.getGeneral()).botDisk);
+}
+
+/**
+ * myrmidon(1.6.2-BOT-DISK-C): the cache path for a bot of `role`, or undefined
+ * when the bot is outside the configured roles (`sharedCacheRoles`): such a bot
+ * gets no cache mounts and variables, so it is not recreated when the cache is
+ * enabled. Read per call, so a role change applies without a restart.
+ */
+export async function readSharedPackageCachePathForRole(db: Db, role: string | null | undefined): Promise<string | undefined> {
+  const layout = await readBotDiskLayout(db);
+  if (!layout.sharedPackageCachePath) return undefined;
+  return botRoleGetsSharedCache(layout.sharedCacheRoles, role) ? layout.sharedPackageCachePath : undefined;
+}
+
+/**
+ * myrmidon(1.6.2-BOT-DISK-C): the idle TTL in seconds the in-container clone reaper
+ * is told (0 when the lifecycle is off), or undefined for a bot outside the
+ * configured roles. Read per profile compile, so a change applies without a restart.
+ */
+export async function readCloneIdleTtlSecForRole(db: Db, role: string | null | undefined): Promise<number | undefined> {
+  const settings = instanceSettingsService(db) as unknown as { getGeneral(): Promise<{ botDisk?: unknown }> };
+  const general = await settings.getGeneral();
+  const layout = resolveBotDiskLayout(general.botDisk);
+  if (!botRoleGetsSharedCache(layout.sharedCacheRoles, role)) return undefined;
+  const config = await resolveBotDiskLifecycleConfig({ getGeneral: async () => general });
+  return config.enabled ? Math.max(1, Math.round(config.idleTtlMs / 1000)) : 0;
+}
+
+/** Same for the driver, which knows the bot key (= agent id) and not the role. */
+export async function readBotCacheLayoutForBot(
+  db: Db,
+  botKey: string,
+): Promise<{ path?: string; gitMirror: boolean }> {
+  const layout = await readBotDiskLayout(db);
+  if (!layout.sharedPackageCachePath) return { gitMirror: false };
+  const rows = await db.select({ role: agents.role }).from(agents).where(eq(agents.id, botKey)).limit(1);
+  if (!botRoleGetsSharedCache(layout.sharedCacheRoles, rows[0]?.role)) return { gitMirror: false };
+  return { path: layout.sharedPackageCachePath, gitMirror: layout.gitMirrorRepos.length > 0 };
+}
+
+/**
  * One sweep with the settings stored right now — what the maintenance tick
  * calls. Async throughout, so a failed settings read rejects (the caller logs
  * it) instead of throwing inside the timer.
+ *
+ * myrmidon(1.6.2-BOT-DISK-C): the same tick refreshes the git mirrors (each at
+ * most once per `gitMirrorRefreshMs`, one refresh at a time) and the sweep
+ * judges git clones by the bots' own hygiene reports (draft-lifecycle.ts).
  */
 export async function runBotDiskSweep(db: Db): Promise<void> {
   const settings = instanceSettingsService(db) as unknown as {
     getGeneral(): Promise<{ botDisk?: unknown }>;
   };
-  await sweepAllBotVolumes(await resolveBotDiskLifecycleConfig(settings));
+  const general = await settings.getGeneral();
+  const layout = resolveBotDiskLayout(general.botDisk);
+  void refreshGitMirrors(layout).catch((err) => logger.warn({ err }, "git mirror refresh failed"));
+  const lifecycle = await resolveBotDiskLifecycleConfig({ getGeneral: async () => general });
+  await sweepAllBotVolumes(lifecycle);
+  await collectCloneReports(lifecycle.idleTtlMs).catch((err) => logger.warn({ err }, "clone hygiene report collection failed"));
+}
+
+/**
+ * myrmidon(1.6.2-BOT-DISK-C): read each running bot's clone-hygiene report from
+ * its container (the board has no mount of the volumes) and turn unpushed work
+ * idle past the TTL into attention signals. A bot without a report is skipped.
+ */
+export async function collectCloneReports(idleTtlMs: number): Promise<void> {
+  const driver = getBotContainerRuntime()?.driver;
+  if (!driver?.readCloneReport) return;
+  const bots = await driver.list();
+  const live = new Set<string>();
+  for (const bot of bots) {
+    if (bot.state !== "running") continue;
+    const raw = await driver.readCloneReport(bot.botKey);
+    if (raw === null) continue;
+    if (ingestCloneReport(bot.botKey, raw, idleTtlMs)) {
+      live.add(bot.botKey);
+      noteCloneReportSeen();
+    }
+  }
+  dropCloneSignalsExcept(live);
 }

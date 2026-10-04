@@ -195,10 +195,12 @@ mismatch fails the build, the same rule the Node.js variant states above.
 **Where things write.** The root filesystem is read-only at run time and the bot's writable
 directories are exactly its three volumes, so:
 
-- the pnpm store defaults to `/data/hermes/.pnpm-store` (the durable `hermes` volume) via
-  `npm_config_store_dir`. To share one store across the team, an operator can instead mount
-  a host directory under `/data` (the bot-extra-mounts feature) and point the store there —
-  a shared *writable* store is not part of this change;
+- the pnpm store defaults to `/workspace/.pnpm-store` via `npm_config_store_dir` — the same
+  mount as the clones, because pnpm hard-links `node_modules` into its store and a hard link
+  cannot cross a mount (a store on `/data` or `/cache` made pnpm copy every package into every
+  clone; 1.6.2 BOT-DISK-C). `pnpm-hardlink-check.sh` proves it at build time. The instance's
+  shared package cache can host the store instead (`pnpmStore: "shared"`, reflink or copy), see
+  [docs/myrmidon/bot-disk-cache.md](../../docs/myrmidon/bot-disk-cache.md);
 - `RUSTUP_HOME`/`CARGO_HOME` stay sealed under `/opt` and `cargo` writes its target dir into
   the checked-out workspace;
 - Go's build cache defaults under `$HOME` (`/data/hermes`), the durable volume.
@@ -234,6 +236,24 @@ Connection settings come only from the bot profile env (`DEVBUILD_HOST`, `DEVBUI
 to the `devbuild` skill and exits 1. The ssh key is read from `/opt/devbuild-ssh/id_ed25519`,
 mounted by the runtime template (part C); key authorization and the remote resource limits are
 the fleet operator's part (D). The image adds `rsync` to the apt set for the transport.
+
+### Shared git objects and the clone report (1.6.2 BOT-DISK-C)
+
+- `/opt/paperclip/bin/git` (`git-reference/git`, a Node script like the other wrappers) shadows
+  `/usr/bin/git`. For `git clone https://github.com/<owner>/<repo>` it adds
+  `--reference-if-able /cache/git/<owner>/<repo>.git` when that directory exists (the board's
+  read-only mirror, mounted only when the instance lists mirrored repositories); everything else
+  runs the real git unchanged, so `git-credential-paperclip` keeps working. Clones that choose
+  their own storage (`--reference`, `--dissociate`, `--shared`, `--local`, `--mirror`, `--depth`,
+  `--filter`) are left alone.
+- `/opt/paperclip/bin/bot-clone-hygiene` (`git-reference/bot-clone-hygiene`, Python standard
+  library) is started by the entrypoint (every `MYRMIDON_CLONE_HYGIENE_INTERVAL_SEC`, default
+  900) and writes `$HERMES_HOME/.myrmidon/clone-hygiene.json`: per repository under `/workspace`
+  and `/scratch`, whether it is dirty, mid-operation, stashed, holds commits on no remote, or is
+  the base of a linked worktree or an alternate. It only reads. The board's draft-directory
+  lifecycle removes an idle clone only when this report says it is clean and fully pushed.
+- Tests: `scripts/myrmidon/bot-runtime/git-reference.test.mjs` and `pnpm-hardlink.test.mjs`.
+
 ### Heavy builds are blocked at the image level (1.6.1 BUILD-OFFLOAD)
 
 The dev variant deliberately does **not** let a bot run the repository's heavy build

@@ -690,6 +690,20 @@ RUN chmod 0755 /opt/paperclip/bin/git-credential-paperclip /opt/paperclip/bin/gh
   && /opt/node24/bin/node --check /opt/paperclip/bin/gh \
   && git config --system --list >/dev/null
 
+# myrmidon(1.6.2 BOT-DISK-C): shared git objects. /opt/paperclip/bin/git shadows
+# /usr/bin/git and adds `--reference-if-able /cache/git/<owner>/<repo>.git` to a
+# `git clone` of a GitHub repository the board mirrors (the read-only /cache/git
+# mount, absent unless the instance setting lists mirrored repositories); every
+# other git invocation runs the real git unchanged, credential helper included.
+# bot-clone-hygiene reports which clones hold unpushed work (the entrypoint
+# runs it in the background); the board's draft-directory lifecycle reads that
+# report before it removes an idle clone. Node/Python scripts under /opt only.
+COPY --chown=root:root git-reference/git git-reference/bot-clone-hygiene /opt/paperclip/bin/
+RUN chmod 0755 /opt/paperclip/bin/git /opt/paperclip/bin/bot-clone-hygiene \
+  && /opt/node24/bin/node --check /opt/paperclip/bin/git \
+  && python3 -m py_compile /opt/paperclip/bin/bot-clone-hygiene \
+  && rm -rf /opt/paperclip/bin/__pycache__
+
 # myrmidon(1.6.1 BUILD-OFFLOAD A): the build-offload wrappers. Heavy
 # repository operations (pnpm install, monorepo tsc, vitest, gradle,
 # go build/test) must run on the build VPS through the `devbuild` CLI
@@ -723,9 +737,10 @@ RUN chmod 0755 /opt/paperclip/bin/pnpm /opt/paperclip/bin/tsc /opt/paperclip/bin
 # The root filesystem is read-only at run time and the bot's writable
 # directories are exactly its three volumes, so every path pnpm or the
 # toolchains write to must live under one of them:
-#   - the pnpm store defaults to /data/hermes/.pnpm-store (the durable volume);
-#     an operator may point it at a shared host directory mounted into /data
-#     (see docker/bot-runtime/README.md, "Variant for the development team");
+#   - the pnpm store defaults to /workspace/.pnpm-store: the SAME mount as the
+#     clones, because pnpm hard-links node_modules into its store and link(2)
+#     cannot cross a mount (EXDEV) — a store on /data or /cache would make pnpm
+#     copy every package into every clone (1.6.2 BOT-DISK-C; see README.md);
 #   - Rust's RUSTUP_HOME/CARGO_HOME stay sealed under /opt and cargo writes its
 #     target dir into the checked-out workspace, never into the image;
 #   - Go's build cache defaults under $HOME (/data/hermes) — the durable volume.
@@ -751,7 +766,7 @@ RUN chmod 0755 /opt/paperclip/bin/devbuild
 # build wrappers (pnpm/tsc/vitest/gradle/go) shadow the real binaries in
 # /opt/pnpm/bin, /opt/node24/bin and /opt/go/bin — see the COPY block above.
 ENV PATH=/opt/paperclip/bin:/opt/node24/bin:/opt/pnpm/bin:/opt/go/bin:/opt/cargo/bin:/opt/docker-cli/bin:/opt/hermes-src/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-    npm_config_store_dir=/data/hermes/.pnpm-store \
+    npm_config_store_dir=/workspace/.pnpm-store \
     GOTOOLCHAIN=local \
     GOFLAGS=-mod=mod
 
@@ -832,3 +847,23 @@ RUN set -eu; \
       *) echo "gradle refusal must name the devbuild replacement" >&2; exit 1 ;; \
     esac; \
     echo "build-offload barrier verified: heavy tools refuse, light probes pass"
+
+# myrmidon(1.6.2 BOT-DISK-C): the image's pnpm really hard-links into a store on
+# the clones' mount (same script the repository's bot-runtime test runs), and
+# the git wrapper is the git on PATH. A copy here would mean every clone's
+# node_modules duplicates the store, which is the problem this stage exists to
+# prevent; the real pnpm binary is called directly, the devbuild gate only
+# fronts the bare name.
+COPY --chown=root:root --chmod=0755 pnpm-hardlink-check.sh /opt/paperclip/pnpm-hardlink-check.sh
+RUN set -eu; \
+    out="$(PNPM=/opt/pnpm/bin/pnpm /opt/paperclip/pnpm-hardlink-check.sh)"; \
+    echo "pnpm hardlink check: $out"; \
+    case "$out" in \
+      *"samefile=yes"*) ;; \
+      *) echo "pnpm must hard-link into a store beside the project, got: $out" >&2; exit 1 ;; \
+    esac; \
+    case "$out" in \
+      "nlink=1 "*) echo "pnpm copied instead of hard-linking: $out" >&2; exit 1 ;; \
+    esac; \
+    [ "$(command -v git)" = "/opt/paperclip/bin/git" ] || { echo "git on PATH must be the reference wrapper" >&2; exit 1; }; \
+    git --version
