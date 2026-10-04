@@ -5,20 +5,19 @@
 Product rule: **learning only when idle**. Before a foraging pass reads a
 role's sources, the pass checks that the source's role is idle:
 
-- the role's queue is empty — no open `todo`/`in_progress` task of the
-  company is waiting **without an assignee** (the swarm-claim queue
-  semantics: a task already assigned to an agent of the role is being
-  worked on, it is not "waiting in the queue");
-- at least one agent of the role is free — no `todo`/`in_progress` task is
-  assigned to that agent.
+- the role's queue is empty — the same ready queue the swarm-claim idle
+  wake reads (`todo` tasks of the role or unassigned, not blocked, not a
+  container with open children, not mid-decomposition, not held);
+- at least one agent of the role is free — not paused or in error, with no
+  live heartbeat run and no live claim.
 
 A busy role is **skipped for that pass**: its sources are not read, and the
 pass result and the journal carry the reason:
 
 | reason            | meaning                                                |
 | ----------------- | ------------------------------------------------------ |
-| `queue_not_empty` | the role has unassigned open tasks waiting             |
-| `no_idle_agent`   | every agent of the role holds a todo/in_progress task  |
+| `queue_not_empty` | the role has ready tasks waiting in its queue          |
+| `no_idle_agent`   | no agent of the role is free (paused, error, running or holding a claim) |
 
 The gate is **per role inside one pass**: a busy engineer role never stops
 the sweep from reading the smm role's sources in the same pass. The pass

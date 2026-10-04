@@ -30,8 +30,10 @@
 // and the pass continues with the next source. Nothing here throws at the pass
 // level, so a broken source never stops the sweep.
 
-import { and, eq, inArray, isNull, notExists, or, sql } from "drizzle-orm";
-import { agents, issues, type Db } from "@paperclipai/db";
+import { and, eq, inArray } from "drizzle-orm";
+import { heartbeatRuns, type Db } from "@paperclipai/db";
+import { liveClaimCountsByAgent } from "../swarm-claim/idle-queue.js";
+import { listAgentsOfRole, listRoleQueue } from "../swarm-claim/queue.js";
 import { logger } from "../../middleware/logger.js";
 import {
   buildSourceResult,
@@ -97,72 +99,46 @@ function currentUtcMonthStart(now: Date): Date {
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0, 0));
 }
 
+const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
+
 /**
- * The real idle check against the database (the swarm-claim queue semantics).
+ * The real idle check against the database, built on the swarm-claim reads so
+ * "queue" and "free agent" mean exactly what they mean for the idle wake:
  *
- * A role's queue is its open `todo`/`in_progress` tasks with NO assignee —
- * the same membership the swarm-claim queue reads (assigned-to-role OR
- * unassigned would double-count work already being executed by an agent of
- * the role; the ticket's queue is "tasks without an assignee"). An idle
- * agent of the role is one with no `todo`/`in_progress` task assigned.
+ *  - the role's queue is `listRoleQueue` (todo tasks of the role or unassigned,
+ *    with the readiness filters: not blocked, not a container, not mid
+ *    decomposition, not held);
+ *  - a free agent of the role is not paused or in error, has no live
+ *    heartbeat run and no live claim (`liveClaimCountsByAgent`).
  */
 export function createDbForagingIdleCheck(db: Db): ForagingIdleCheck {
   return {
     async roleIdleReason(companyId, role) {
-      // 1. The role's queue: open tasks of the company waiting for the role
-      //    with no assignee yet. Anything here means work is waiting.
-      const queue = await db
-        .select({ issueId: issues.id })
-        .from(issues)
-        .where(
-          and(
-            eq(issues.companyId, companyId),
-            isNull(issues.assigneeUserId),
-            isNull(issues.hiddenAt),
-            isNull(issues.conversationAgentId),
-            inArray(issues.status, ["todo", "in_progress"]),
-            isNull(issues.assigneeAgentId),
-            sql`not exists (
-              select 1
-              from issues child
-              where child.company_id = ${issues.companyId}
-                and child.parent_id = ${issues.id}
-                and child.status not in ('done', 'cancelled')
-            )`,
-          ),
-        )
-        .limit(1)
-        .catch(() => [] as Array<{ issueId: string }>);
+      const queue = await listRoleQueue(db, companyId, role);
       if (queue.length > 0) return "queue_not_empty";
 
-      // 2. An idle agent of the role: exists unless some agent of the role
-      //    holds a todo/in_progress task — a NOT EXISTS anti-join answers
-      //    "is at least one agent of the role free".
-      const idle = await db
-        .select({ id: agents.id })
-        .from(agents)
-        .where(
-          and(
-            eq(agents.companyId, companyId),
-            eq(agents.role, role),
-            notExists(
-              db
-                .select({ one: sql`1` })
-                .from(issues)
-                .where(
-                  and(
-                    eq(issues.companyId, companyId),
-                    eq(issues.assigneeAgentId, agents.id),
-                    inArray(issues.status, ["todo", "in_progress"]),
-                  ),
-                ),
+      const [roleAgents, claims, liveRunRows] = await Promise.all([
+        listAgentsOfRole(db, companyId, role),
+        liveClaimCountsByAgent(db, companyId),
+        db
+          .select({ agentId: heartbeatRuns.agentId })
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, companyId),
+              inArray(heartbeatRuns.status, [...LIVE_HEARTBEAT_RUN_STATUSES]),
             ),
           ),
-        )
-        .limit(1)
-        .catch(() => [] as Array<{ id: string }>);
-      if (idle.length === 0) return "no_idle_agent";
-      return null;
+      ]);
+      const liveRuns = new Set(liveRunRows.map((row: { agentId: string }) => row.agentId));
+      const free = roleAgents.some(
+        (agent) =>
+          agent.status !== "paused" &&
+          agent.status !== "error" &&
+          !liveRuns.has(agent.id) &&
+          (claims.get(agent.id) ?? 0) === 0,
+      );
+      return free ? null : "no_idle_agent";
     },
   };
 }
