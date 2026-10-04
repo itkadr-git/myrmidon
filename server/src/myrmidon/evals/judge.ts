@@ -67,6 +67,8 @@ export const EVALS_KEY_SECRET_ENV = "MYRMIDON_EVALS_KEY_SECRET";
 export const EVALS_MODEL_ENV = "MYRMIDON_EVALS_MODEL";
 export const EVALS_TIMEOUT_SEC_ENV = "MYRMIDON_EVALS_TIMEOUT_SEC";
 export const EVALS_LANGFUSE_FLAG_ENV = "MYRMIDON_EVALS_LANGFUSE";
+// myrmidon(OPE-4150 EVALS-JUDGE-FAMILY): ordered judge fallback list.
+export const EVALS_JUDGE_PRIORITY_MODELS_ENV = "MYRMIDON_EVALS_JUDGE_PRIORITY_MODELS";
 
 /**
  * Default model: a free DashScope model behind the gateway. The instance can
@@ -74,6 +76,30 @@ export const EVALS_LANGFUSE_FLAG_ENV = "MYRMIDON_EVALS_LANGFUSE";
  * concern, per the wave rule.
  */
 export const DEFAULT_EVALS_MODEL = "qwen-plus-free";
+
+/**
+ * myrmidon(OPE-4150 EVALS-JUDGE-FAMILY): default judge priority list — the
+ * head model first, then sensible free DashScope fallbacks. Read on every
+ * run, so a change takes effect on the next evaluation without a restart.
+ */
+export const DEFAULT_EVALS_JUDGE_PRIORITY_MODELS = [
+  DEFAULT_EVALS_MODEL,
+  "qwen-plus",
+  "qwen-max",
+];
+
+/**
+ * myrmidon(OPE-4150 EVALS-JUDGE-FAMILY): parse the comma-separated
+ * MYRMIDON_EVALS_JUDGE_PRIORITY_MODELS value. Invalid input (empty after
+ * trimming, no entries) falls back to the default list. Pure.
+ */
+export function parseJudgePriorityModels(raw: string | undefined): string[] {
+  const models = (raw ?? "")
+    .split(",")
+    .map((m) => m.trim())
+    .filter((m) => m.length > 0);
+  return models.length > 0 ? models : DEFAULT_EVALS_JUDGE_PRIORITY_MODELS;
+}
 
 export interface EvalsSettings {
   /** Off unless a base URL and a key secret name are both configured. */
@@ -85,6 +111,8 @@ export interface EvalsSettings {
   timeoutMs: number;
   /** Langfuse score export flag; scoring is written locally regardless. */
   langfuseExport: boolean;
+  /** myrmidon(OPE-4150 EVALS-JUDGE-FAMILY): ordered judge model fallback list. */
+  judgeModels: string[];
 }
 
 export function readEvalsSettings(env: NodeJS.ProcessEnv = process.env): EvalsSettings {
@@ -93,6 +121,7 @@ export function readEvalsSettings(env: NodeJS.ProcessEnv = process.env): EvalsSe
   const timeoutRaw = Number(env[EVALS_TIMEOUT_SEC_ENV]?.trim() ?? "");
   const timeoutSec =
     Number.isInteger(timeoutRaw) && timeoutRaw >= 5 && timeoutRaw <= 600 ? timeoutRaw : 120;
+  const judgeModels = parseJudgePriorityModels(env[EVALS_JUDGE_PRIORITY_MODELS_ENV]);
   return {
     enabled: Boolean(baseUrl && keySecret),
     baseUrl,
@@ -100,6 +129,7 @@ export function readEvalsSettings(env: NodeJS.ProcessEnv = process.env): EvalsSe
     model: env[EVALS_MODEL_ENV]?.trim() || DEFAULT_EVALS_MODEL,
     timeoutMs: timeoutSec * 1000,
     langfuseExport: (env[EVALS_LANGFUSE_FLAG_ENV]?.trim() || "").toLowerCase() === "true",
+    judgeModels,
   };
 }
 

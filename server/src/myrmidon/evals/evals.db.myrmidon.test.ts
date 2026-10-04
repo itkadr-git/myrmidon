@@ -77,7 +77,7 @@ describeEmbeddedPostgres("myrmidon(1.6-EVALS) reference-task runs in the databas
   it("a full run stores per-task scores and the aggregate", async () => {
     const company = await makeCompany();
     await seedReferenceTasks(db, company.id, EVALS_PILOT_ROLE, ENGINEER_REFERENCE_TASKS);
-    const service = createEvalsService(db, { judge: markerJudge(GOOD_MARKER), model: "test-judge", now: () => new Date() });
+    const service = createEvalsService(db, { judge: markerJudge(GOOD_MARKER), model: "test-judge", subjectModel: "test-subject", now: () => new Date() });
     const tasks = await service.loadTasks(company.id, EVALS_PILOT_ROLE);
     const outcome = await service.runEval({
       companyId: company.id,
@@ -102,7 +102,7 @@ describeEmbeddedPostgres("myrmidon(1.6-EVALS) reference-task runs in the databas
   it("a deliberately worsened subject is caught by the threshold and confirmed by the repeat run", async () => {
     const company = await makeCompany();
     await seedReferenceTasks(db, company.id, EVALS_PILOT_ROLE, ENGINEER_REFERENCE_TASKS);
-    const service = createEvalsService(db, { judge: markerJudge(GOOD_MARKER), model: "test-judge", now: () => new Date() });
+    const service = createEvalsService(db, { judge: markerJudge(GOOD_MARKER), model: "test-judge", subjectModel: "test-subject", now: () => new Date() });
     const tasks = await service.loadTasks(company.id, EVALS_PILOT_ROLE);
 
     // Baseline: the good subject.
@@ -150,6 +150,7 @@ describeEmbeddedPostgres("myrmidon(1.6-EVALS) reference-task runs in the databas
     const service = createEvalsService(db, {
       judge: createHeuristicJudge(() => (good ? 99 : 0)),
       model: "test-judge",
+      subjectModel: "test-subject",
       now: () => new Date(),
     });
     const tasks = await service.loadTasks(company.id, EVALS_PILOT_ROLE);
@@ -189,7 +190,7 @@ describeEmbeddedPostgres("myrmidon(1.6-EVALS) reference-task runs in the databas
   it("the lifecycle seam promotes a clean candidate and refuses a confirmed regression", async () => {
     const company = await makeCompany();
     await seedReferenceTasks(db, company.id, EVALS_PILOT_ROLE, ENGINEER_REFERENCE_TASKS);
-    const service = createEvalsService(db, { judge: markerJudge(GOOD_MARKER), model: "test-judge", now: () => new Date() });
+    const service = createEvalsService(db, { judge: markerJudge(GOOD_MARKER), model: "test-judge", subjectModel: "test-subject", now: () => new Date() });
     const tasks = await service.loadTasks(company.id, EVALS_PILOT_ROLE);
 
     const baseline = await service.runEval({

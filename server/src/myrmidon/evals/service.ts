@@ -83,14 +83,14 @@ export interface EvalRunRecord {
 
 /** How the subject's answers are produced. Tests inject a fake; production reads them from the request. */
 export interface EvalsServiceDeps {
-judge: JudgePort;
-/** Optional Langfuse-backed score exporter; absent = local-only. */
-exporter?: EvalsScoreExporter;
-/** The model id the judge runs on, recorded on the run. */
-model: string;
-/** The model id of the agent being evaluated, used to determine sameFamily flag */
-subjectModel: string;
-now(): Date;
+  judge: JudgePort;
+  /** Optional Langfuse-backed score exporter; absent = local-only. */
+  exporter?: EvalsScoreExporter;
+  /** The model id the judge runs on, recorded on the run. */
+  model: string;
+  /** The model id of the agent being evaluated, used to determine sameFamily flag */
+  subjectModel: string;
+  now(): Date;
 }
 
 export class EvalsServiceError extends Error {

@@ -91,7 +91,7 @@ export function myrmidonEvalsRoutes(db: Db, deps: Partial<EvalsRoutesDeps> = {})
     if (problem) {
       // Still return a service bound to a heuristic judge? No — mutations
       // must refuse instead of silently scoring with a fake. Reads only.
-      return { service: createEvalsService(db, { judge: createJudge({ fetch: fetch, apiKey: "", baseUrl: "http://127.0.0.1:9", model: DEFAULT_EVALS_MODEL, timeoutMs: 1 }), model: current.model, now }), problem };
+      return { service: createEvalsService(db, { judge: createJudge({ fetch: fetch, apiKey: "", baseUrl: "http://127.0.0.1:9", model: DEFAULT_EVALS_MODEL, timeoutMs: 1 }), model: current.model, subjectModel: current.model, now }), problem };
     }
     const readCompanyKey =
       deps.readCompanyKey ??
@@ -104,7 +104,7 @@ export function myrmidonEvalsRoutes(db: Db, deps: Partial<EvalsRoutesDeps> = {})
         const key = current.keySecret ? await readCompanyKey(companyId, current.keySecret) : null;
     if (!key) {
       return {
-        service: createEvalsService(db, { judge: createJudge({ fetch: fetch, apiKey: "", baseUrl: "http://127.0.0.1:9", model: DEFAULT_EVALS_MODEL, timeoutMs: 1 }), model: current.model, now }),
+        service: createEvalsService(db, { judge: createJudge({ fetch: fetch, apiKey: "", baseUrl: "http://127.0.0.1:9", model: DEFAULT_EVALS_MODEL, timeoutMs: 1 }), model: current.model, subjectModel: current.model, now }),
         problem: `the evals API key secret "${current.keySecret ?? "—"}" is not available`,
       };
     }
@@ -122,11 +122,15 @@ export function myrmidonEvalsRoutes(db: Db, deps: Partial<EvalsRoutesDeps> = {})
           fetch: deps.fetch ?? fetch,
           apiKey: key,
           baseUrl: current.baseUrl!,
-          model: current.model,
+          // myrmidon(OPE-4150 EVALS-JUDGE-FAMILY): the judge model is the head
+          // of the priority list; the list is re-read on every call, so a
+          // change takes effect on the next run without a restart.
+          model: current.judgeModels[0] ?? current.model,
           timeoutMs: current.timeoutMs,
         }),
         exporter,
-        model: current.model,
+        model: current.judgeModels[0] ?? current.model,
+        subjectModel: current.model,
         now,
       }),
       problem: null,
