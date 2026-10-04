@@ -149,4 +149,12 @@ export interface BotContainerDriver {
    *  already written to disk. Resolves once healthy again; throws otherwise. */
   restart(botKey: string): Promise<void>;
   stop(botKey: string): Promise<void>;
+  /**
+   * myrmidon(1.6.2-BOT-DISK-C): the text of the bot's clone-hygiene report
+   * (`$HERMES_HOME/.myrmidon/clone-hygiene.json`, written inside the container),
+   * or null when there is none or it cannot be read. The board has no mount of the
+   * bot volumes, so this is how it learns which clones hold unpushed work.
+   * Optional: a driver that cannot read it (fleetd) leaves it out.
+   */
+  readCloneReport?(botKey: string): Promise<string | null>;
 }

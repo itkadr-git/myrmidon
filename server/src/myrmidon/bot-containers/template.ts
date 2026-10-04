@@ -117,6 +117,9 @@ export function buildBinds(
     mounts?: readonly BotExtraMount[];
     allowedSources?: readonly string[];
     sharedPackageCachePath?: string;
+    /** myrmidon(1.6.2-BOT-DISK-C): also bind `<cache>/git` read-only at
+     *  `/cache/git` (the board's git mirrors). Ignored without a cache path. */
+    gitMirror?: boolean;
   } = {},
 ): string[] {
   validateBotKey(botKey);
@@ -142,9 +145,29 @@ export function buildBinds(
     for (const mount of PACKAGE_CACHE_MOUNTS) {
       binds.push(`${cache}/${mount.hostSubdir}:${mount.containerPath}:rw`);
     }
+    if (extra.gitMirror) {
+      binds.push(`${cache}/${GIT_MIRROR_MOUNT.hostSubdir}:${GIT_MIRROR_MOUNT.containerPath}:ro`);
+    }
   }
   return binds;
 }
+
+/**
+ * myrmidon(1.6.2-BOT-DISK-C): the board's bare git mirrors, one per
+ * `owner/repo`, at `<cache>/git/<owner>/<repo>.git` on the host. Bots mount the
+ * directory READ-ONLY: only the board writes it (git-mirror.ts), so no bot can
+ * rewrite or delete an object another bot's clone borrows through its
+ * alternates file — git does not re-hash objects it reads from an alternate,
+ * so a writable mirror would let one bot change what another checks out. The
+ * image's git wrapper (docker/bot-runtime/git-reference) adds
+ * `--reference-if-able /cache/git/<owner>/<repo>.git` to a `git clone` of a
+ * mirrored GitHub repository. Mirrored by dockergate
+ * (`PackageCacheReadOnlyMounts` in tools/dockergate/internal/policy/create.go).
+ */
+export const GIT_MIRROR_MOUNT = { hostSubdir: "git", containerPath: "/cache/git" } as const;
+
+/** myrmidon(1.6.2-BOT-DISK-C): the pnpm store on the workspace mount (see packageCacheEnv). */
+export const WORKSPACE_PNPM_STORE_DIR = "/workspace/.pnpm-store";
 
 /** Where the shared package cache appears inside a bot container. Outside the
  *  three volumes and /tmp, so dockergate's reserved-target rule holds. */
@@ -175,9 +198,29 @@ export const PACKAGE_CACHE_MOUNTS: readonly PackageCacheMount[] = [
   { hostSubdir: "gradle", containerPath: "/cache/gradle", envName: "GRADLE_USER_HOME" },
 ];
 
-/** The environment that points each tool at its shared cache mount. */
-export function packageCacheEnv(): Record<string, string> {
-  return Object.fromEntries(PACKAGE_CACHE_MOUNTS.map((mount) => [mount.envName, mount.containerPath]));
+/**
+ * The environment that points each tool at its shared cache mount.
+ *
+ * myrmidon(1.6.2-BOT-DISK-C): pnpm is the exception. pnpm links a project's
+ * node_modules to its store with hard links, and link(2) refuses to cross a
+ * mount point (EXDEV) even when both binds come from the same host
+ * filesystem — `/cache/pnpm` and `/workspace` are two binds, so with the store
+ * on `/cache/pnpm` every install COPIES each package into the clone. With
+ * `pnpmStore: "workspace"` (the default) the store is
+ * {@link WORKSPACE_PNPM_STORE_DIR}, on the same mount as the clones: every
+ * clone of the bot hard-links one copy. With `"shared"` the store stays on
+ * `/cache/pnpm` and pnpm is told to import by clone (reflink, which Linux
+ * allows across mounts of one filesystem since 5.18) and to copy where the
+ * filesystem cannot (ext4): only worth it on XFS with reflink or btrfs.
+ */
+export function packageCacheEnv(pnpmStore: "workspace" | "shared" = "workspace"): Record<string, string> {
+  const env = Object.fromEntries(PACKAGE_CACHE_MOUNTS.map((mount) => [mount.envName, mount.containerPath]));
+  if (pnpmStore === "workspace") {
+    env.npm_config_store_dir = WORKSPACE_PNPM_STORE_DIR;
+  } else {
+    env.npm_config_package_import_method = "clone-or-copy";
+  }
+  return env;
 }
 
 /** Mount points and paths the driver itself owns inside every bot container: an
