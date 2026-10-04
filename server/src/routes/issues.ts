@@ -11504,7 +11504,6 @@ export function issueRoutes(
         "Issue not found",
       );
       if (!issue) return;
-      await dbAutonomyGate(db).assertAllowed(req, "delete");
       const target = await resolveInboxArchiveTarget(req, issue);
       const removed = await svc.unarchiveInbox(
         issue.companyId,
