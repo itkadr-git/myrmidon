@@ -1,11 +1,10 @@
 ---
 name: devbuild
 description: >
-  Run heavy builds, typechecks and tests for the current repository workspace
-  on the shared build VPS instead of inside the CPU- and memory-limited bot
-  container. Use when a command needs more than ~1 CPU core or ~3 GB RAM,
-  times out locally, or needs a warm shared toolchain cache (pnpm, Go,
-  Gradle). The local container stays for editing, git and pushing.
+  Run heavy builds, typechecks and tests on the shared build VPS instead of
+  inside the CPU- and memory-limited bot container, with warm shared caches
+  for pnpm, Go and Gradle. Use when a command needs more than ~1 CPU core
+  or ~3 GB RAM, times out locally, or would reuse the team's caches.
 ---
 
 # devbuild: builds and tests on the build VPS
