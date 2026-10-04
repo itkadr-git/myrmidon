@@ -2054,6 +2054,13 @@
       "breakpoints": true
     },
     {
+      "idx": 296,
+      "version": "7",
+      "when": 1790990000000,
+      "tag": "0296_partial_indexes_for_chat_reconciliation",
+      "breakpoints": true
+    },
+    {
       "idx": 297,
       "version": "7",
       "when": 1791000000000,

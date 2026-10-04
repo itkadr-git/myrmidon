@@ -1,4 +1,4 @@
--- myrmidon(OPE-4130): partial indexes for chat reconciliation performance
+-- partial indexes for chat reconciliation performance
 -- Add partial indexes to optimize queries for pending/retry states in chat publications and actions
 
 -- Partial index for chat_publications to optimize queries looking for pending or retry states
