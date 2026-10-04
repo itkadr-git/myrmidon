@@ -43,6 +43,7 @@ import { applyChatAdapterOverride } from "./overrides.js";
 import { handlePlanCommand } from "./plan.js";
 import { buildChatStatusReply } from "./status.js";
 import { stopBridgedChatRuns } from "./stop.js";
+import { issueThreadInteractionService } from "../../../services/issue-thread-interactions.js";
 
 export interface BridgedCommandInput {
   db: Db;
@@ -103,6 +104,16 @@ export function telegramDmCommandsForLocale(locale: BridgeLocale): readonly Brid
  */
 export const TELEGRAM_DM_COMMANDS: readonly BridgedCommandSpec[] =
   telegramDmCommandsForLocale("en");
+export const TELEGRAM_DM_COMMANDS: readonly BridgedCommandSpec[] = [
+  { command: "help", description: "Показать команды" },
+  { command: "new", description: "Начать новую сессию (необязательно: /new <модель>)" },
+  { command: "model", description: "Показать или сменить модель для этого чата" },
+  { command: "think", description: "Показать или задать глубину рассуждений" },
+  { command: "stop", description: "Остановить текущий ответ" },
+  { command: "status", description: "Показать модель, сессию и текущий ответ" },
+  { command: "accept", description: "Принять план задач (использование: /accept <id>)" },
+  { command: "reject", description: "Отклонить план задач (использование: /reject <id>)" },
+];
 
 /**
  * myrmidon(X8c): `/start`, `/commands` and `/reset` are not part of the X8
@@ -189,6 +200,11 @@ export async function runBridgedDirectMessageCommand(
       // `./plan.ts`, which delegates to the cto-chat telegram entry — no
       // parallel secret-resolution path here.
       return handlePlanCommand(input, parsed.args);
+      return handleStatusCommand(input, context);
+    case "accept":
+      return handleAcceptCommand(input, context, parsed.args);
+    case "reject":
+      return handleRejectCommand(input, context, parsed.args);
     case "close":
       return { kind: "reply", command: "close", text: t(locale, "close.reply") };
     case "task":
@@ -404,4 +420,157 @@ async function handleStatusCommand(
     locale,
   });
   return { kind: "reply", command: "status", text };
+}
+
+/**
+ * Обработка команды /accept <id> для принятия плана задач
+ */
+async function handleAcceptCommand(
+  input: BridgedCommandInput,
+  context: BridgedCommandContext,
+  args: string,
+): Promise<BridgedCommandResult> {
+  const interactionId = args.trim();
+  if (!interactionId) {
+    return {
+      kind: "reply",
+      command: "accept",
+      text: "Использование: /accept <id> — ID карточки для принятия",
+    };
+  }
+
+  try {
+    const service = issueThreadInteractionService(input.db);
+    
+    // Проверяем, что карточка существует и принадлежит этой компании/задаче
+    const interaction = await service.getForIssue(
+      {
+        id: input.conversationIssueId,
+        companyId: input.companyId,
+      },
+      interactionId,
+    );
+    if (!interaction) {
+      return {
+        kind: "reply",
+        command: "accept",
+        text: `Карточка с ID ${interactionId} не найдена`,
+      };
+    }
+    
+    // Проверяем, что карточка типа suggest_tasks и статус pending
+    if (interaction.kind !== "suggest_tasks" || interaction.status !== "pending") {
+      return {
+        kind: "reply",
+        command: "accept",
+        text: "Эта карточка не может быть принята или уже обработана",
+      };
+    }
+    
+    // Принимаем все задачи в карточке
+    const allClientKeys = interaction.payload.tasks.map((task: { clientKey: string }) => task.clientKey);
+    
+    const result = await service.acceptInteraction(
+      {
+        id: input.conversationIssueId,
+        companyId: input.companyId,
+        projectId: null,
+        goalId: null,
+      },
+      interactionId,
+      { selectedClientKeys: allClientKeys },
+      { userId: input.boardUserId, agentId: null },
+    );
+    
+    // Подсчитываем количество созданных задач
+    const createdTasksCount = result.createdIssues.length;
+    
+    // Формируем ответ с ссылкой на эпик и количеством задач
+    const epicLink = `${input.publicBaseUrl}/issues/${input.conversationIssueId}`;
+    
+    return {
+      kind: "reply",
+      command: "accept",
+      text: `✅ Карточка принята!\n\nСоздан эпик: ${epicLink}\nКоличество задач: ${createdTasksCount}`,
+    };
+  } catch (error) {
+    console.error("Ошибка при принятии карточки:", error);
+    return {
+      kind: "reply",
+      command: "accept",
+      text: `Ошибка при принятии карточки: ${(error as Error).message}`,
+    };
+  }
+}
+
+/**
+ * Обработка команды /reject <id> для отклонения плана задач
+ */
+async function handleRejectCommand(
+  input: BridgedCommandInput,
+  context: BridgedCommandContext,
+  args: string,
+): Promise<BridgedCommandResult> {
+  const interactionId = args.trim();
+  if (!interactionId) {
+    return {
+      kind: "reply",
+      command: "reject",
+      text: "Использование: /reject <id> — ID карточки для отклонения",
+    };
+  }
+
+  try {
+    const service = issueThreadInteractionService(input.db);
+    
+    // Проверяем, что карточка существует и принадлежит этой компании/задаче
+    const interaction = await service.getForIssue(
+      {
+        id: input.conversationIssueId,
+        companyId: input.companyId,
+      },
+      interactionId,
+    );
+    if (!interaction) {
+      return {
+        kind: "reply",
+        command: "reject",
+        text: `Карточка с ID ${interactionId} не найдена`,
+      };
+    }
+    
+    if (interaction.status !== "pending") {
+      return {
+        kind: "reply",
+        command: "reject",
+        text: "Эта карточка уже обработана",
+      };
+    }
+    
+    // Отклоняем карточку, обновляя её статус на cancelled
+    const result = await service.cancel(
+      {
+        id: input.conversationIssueId,
+        companyId: input.companyId,
+        projectId: null,
+        goalId: null,
+      },
+      interactionId,
+      { reason: "rejected_by_owner_via_telegram" },
+      { userId: input.boardUserId, agentId: null },
+    );
+    
+    return {
+      kind: "reply",
+      command: "reject",
+      text: `❌ Карточка отклонена.`,
+    };
+  } catch (error) {
+    console.error("Ошибка при отклонении карточки:", error);
+    return {
+      kind: "reply",
+      command: "reject",
+      text: `Ошибка при отклонении карточки: ${(error as Error).message}`,
+    };
+  }
 }

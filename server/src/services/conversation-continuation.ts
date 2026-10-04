@@ -126,15 +126,54 @@ export async function getConversationOwnershipBlocker(db: Db, companyId: string,
       processStartedAt: heartbeatRuns.processStartedAt,
     },
     activeLease,
+  // Оптимизированный запрос: выбираем только необходимые поля, исключая тяжелые JSON колонки
+    id: heartbeatRuns.id,
+    agentId: heartbeatRuns.agentId,
+    processPid: heartbeatRuns.processPid,
+    processGroupId: heartbeatRuns.processGroupId,
+    processStartedAt: heartbeatRuns.processStartedAt,
+    createdAt: heartbeatRuns.createdAt,
+    status: heartbeatRuns.status,
+    runtimeMode: heartbeatRuns.runtimeMode,
+    activeLease: activeLease,
   }).from(heartbeatRuns)
     .where(and(
-      eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.runtimeMode, "legacy"),
+      eq(heartbeatRuns.companyId, companyId), 
+      eq(heartbeatRuns.runtimeMode, "legacy"),
       conversationRunPredicate(),
       sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${issueId}`,
       inArray(heartbeatRuns.status, ["failed", "timed_out", "interrupted", "cancelled"]),
-      or(isNotNull(heartbeatRuns.processPid), isNotNull(heartbeatRuns.processGroupId), activeLease),
+      or(
+        isNotNull(heartbeatRuns.processPid), 
+        isNotNull(heartbeatRuns.processGroupId), 
+        activeLease
+      ),
     )).orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id));
-  for (const { run, activeLease: leaseHeld } of candidates) {
+    
+  for (const record of candidates) {
+    const leaseHeld = record.activeLease;
+    let pidAlive = record.processPid !== null && processMayBeAlive(record.processPid);
+    if (pidAlive && record.processStartedAt) {
+      // A recycled PID cannot keep an old task blocked. An unreadable identity
+      // stays conservative; the original process may still own execution.
+      const observed = await readProcessStartedAt(record.processPid!).catch(() => null);
+      if (observed && new Date(observed).getTime() !== record.processStartedAt.getTime()) pidAlive = false;
+    }
+    const groupAlive = record.processGroupId !== null && processMayBeAlive(-record.processGroupId);
+    if (pidAlive || groupAlive || leaseHeld) {
+      return {
+        runId: record.id,
+        agentId: record.agentId,
+        cause: "execution_owner_active",
+        nextAction: pidAlive || groupAlive
+          ? "The previous provider process is still running. Stop it before continuing this task."
+          : "The previous execution has not released its environment lease. Wait for cleanup before continuing this task.",
+      };
+    }
+  }
+  return null;
+}
+
     let pidAlive = run.processPid !== null && processMayBeAlive(run.processPid);
     if (pidAlive && run.processStartedAt) {
       // A recycled PID cannot keep an old task blocked. An unreadable identity
