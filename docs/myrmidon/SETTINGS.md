@@ -985,6 +985,10 @@ configured token the endpoint answers 401 for everyone — it never falls open.
 | `MYRMIDON_METRICS_TOKEN` | 1.7-METRICS | unset | The scraper bearer token read from the environment, used when no secret name is configured | Unset together with the secret name — 401 for every request |
 | `MYRMIDON_METRICS_ERROR_WINDOW_SEC` | 1.7-METRICS | `3600` | Window (seconds) of the error families (failed runs, gateway spend). A request may override it per scrape with `?window=<sec>` | From 60 to 86400; below 60 — 60, above 86400 — 86400, non-numeric — the default |
 | `MYRMIDON_METRICS_LATENCY_WINDOW_SEC` | 1.7-METRICS | `21600` | Window (seconds) of the latency family: p50/p95 of finished run durations (finishedAt − startedAt). A request may override it with `?latency_window=<sec>` | From 300 to 86400; below 300 — 300, above 86400 — 86400, non-numeric — the default |
+<!-- myrmidon(BOT-DISK-A): bot disk lifecycle — settings row -->
+| `MYRMIDON_BOT_DISK_IDLE_TTL_MS` | BOT-DISK-A | `21600000` (6 h) | First-start default of the idle time after which an abandoned bot draft directory (bot `scratch` volume and clones in `workspace`; the `hermes` memory volume is never touched) is reaped by the maintenance-tick sweep. Once an instance admin saves `idleTtlMs` through `PATCH /api/myrmidon/bot-disk` (stored in `instance_settings.general.botDisk`, audited as `instance.bot_disk.updated`), the stored value wins; the sweep re-reads it every tick, no restart needed. `GET /api/myrmidon/bot-disk` (any board member) reports the effective values and their sources | From 5 min to 30 days; outside the window — the default (6 h) |
+| `MYRMIDON_BOT_DISK_LIFECYCLE_ENABLED` | BOT-DISK-A | unset (on) | First-start default of whether the sweep reaps at all; `1`/`true`/`yes`/`on` or `0`/`false`/`no`/`off`. A stored `enabled` in `general.botDisk` (`PATCH /api/myrmidon/bot-disk`, instance admin) wins | Any other value is ignored (on) |
+
 ## 1.6.1 — VOICE-STT (server-side speech-to-text core, part A)
 
 Settings of `server/src/myrmidon/stt/` (the 1.6.1 voice track). The path is off by default:
@@ -1047,3 +1051,35 @@ source is shown on the screen).
 | Variable | Function | Default | What it does | How to disable / special |
 |---|---|---|---|---|
 | `MYRMIDON_BUDGET_ENFORCEMENT_MODE` | 1.7-BUDGET-CONFIG-B | unset (`signal_only`) | The enforcement mode while nothing is stored in `instance_settings.general.budgetEnforcement`: `signal_only` — the incident is created and the owner is signalled, but the scope is not paused and runs start; `soft` — pause plus the owner card (raising the budget resumes); `hard` — new runs of the over-limit scope are refused with the budget reason | Any other value (or unset) — the default `signal_only`; once a value is saved from the settings page, the environment stops mattering. The signals themselves additionally honor `MYRMIDON_BUDGET_SIGNAL_MODE=off`. Full guide: [guides/budget-enforcement.md](guides/budget-enforcement.md) |
+
+## 1.6.2 — BOT-LSP-DEFAULTS: bot language servers by role
+
+Settings of `server/src/myrmidon/bot-lsp/` and the profile compiler's `lsp` block
+(`packages/shared/src/myrmidon-bot-lsp.ts`). No environment variables: the policy is stored
+in `instance_settings.general.botLsp` and changed from Instance settings → General → "Bot
+language servers" or `GET`/`PATCH /api/myrmidon/bot-lsp` (board members read, instance admins
+write; a `null` field in the PATCH body resets it to the default). An agent card can pin its
+own mode in `adapterConfig.lsp.mode`; an absent pin follows the role.
+
+The profile compiler re-reads the policy on every reconcile tick. A changed `lsp` block is a
+`config.yaml` change, so the reconciler applies it with the bot's admission paused (the path a
+model change takes); the server is not restarted.
+
+| Field | Default | What it does | Bounds / special |
+|---|---|---|---|
+| `codingRoles` | `engineer, qa, devops, reviewer, release` | Caste keys (`agents.role`) whose bots write code. Custom castes count; matching is case-insensitive | Latin letters, digits, hyphens; up to 200 keys. A bot with no role is non-coding |
+| `codingMode` | `limited` | Mode of a coding bot | `off` / `limited` / `full` |
+| `nonCodingMode` | `off` | Mode of every other bot | `off` / `limited` / `full` |
+| `idleTimeoutSeconds` | `120` | `lsp.idle_timeout` of the limited mode: an idle language server is stopped after this long | 30–86400 (Hermes raises anything below 30 to 30) |
+| `tsserverMemoryMb` | `1024` | `maxTsServerMemory` of the limited mode (tsserver `--max-old-space-size`) | 256–16384 |
+| `excludeRoots` | empty | `lsp.exclude_roots` for bots whose servers run (limited or full): workspaces where no language server starts | Globs, up to 50 |
+
+Modes, as written into the bot's `config.yaml`:
+
+- `off` — `lsp.enabled: false`: no language server and no LSP event loop.
+- `limited` — `lsp.enabled: true`, `lsp.idle_timeout`, and
+  `lsp.servers.typescript.initialization_options` = `{ disableAutomaticTypingAcquisition: true,
+  maxTsServerMemory, tsserver: { useSyntaxServer: "never" } }` — one tsserver per worktree
+  instead of two, no typings download.
+- `full` — nothing written (Hermes' own defaults), except `exclude_roots` when set.
+

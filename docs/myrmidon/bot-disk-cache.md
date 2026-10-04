@@ -32,12 +32,15 @@ is refused.
 
 ## Setting it
 
-The path is an instance setting, `instance_settings.general.botDisk`:
+The path is the `sharedPackageCachePath` field of the bot disk instance setting,
+`instance_settings.general.botDisk` (the same key and API as the draft-directory
+lifecycle of BOT-DISK A; a PATCH that names only one field keeps the others):
 
 - Instance → General, panel "Shared package cache for bots", or
 - `GET /api/myrmidon/bot-disk` (any board member) and
   `PATCH /api/myrmidon/bot-disk` with `{"sharedPackageCachePath": "/abs/path"}`
-  (instance admins only); `null` or an empty string turns the cache off.
+  (instance admins only, recorded in the activity log); `null` or an empty
+  string turns the cache off.
 
 The path must be a plain absolute directory (no `..`, no empty segment, no
 trailing slash). No restart is needed: the local driver and the profile

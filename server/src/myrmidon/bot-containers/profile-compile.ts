@@ -15,7 +15,7 @@
 //   - warnings are reported when they change, not on every tick.
 
 import { isBotBoardGatewayEnabled } from "./board-gateway.js";
-import type { ParallelHelpersSettings } from "@paperclipai/shared";
+import type { BotLspSettings, ParallelHelpersSettings } from "@paperclipai/shared";
 import {
   assertBotEgressSettings,
   BOT_EGRESS_MODE_ENV,
@@ -149,6 +149,15 @@ export interface BotProfilePorts {
    * without it no bot gets the variables.
    */
   sharedPackageCachePath?(): Promise<string | undefined>;
+  /**
+   * myrmidon(BOT-LSP-DEFAULTS): the instance language-server policy
+   * (`general.botLsp`): which roles write code and the mode of coding and
+   * non-coding bots. Optional: without it the module defaults apply (coding
+   * roles limited, every other role off). Re-read per tick like
+   * `parallelHelpers`, so a policy change reaches the bots on the next
+   * reconcile without a restart.
+   */
+  botLsp?(): Promise<BotLspSettings | undefined>;
   /** myrmidon(1.6-WIKI): the approved regulations of the agent's role, as workspace files.
    *  Optional: without it a profile carries no regulations. `takenPaths` are the bundle's own
    *  paths, so a regulation file never overwrites one the agent ships. */
@@ -250,7 +259,7 @@ export function createBotProfileCompile(
     // ports below create the bot's keys, so a broken instance setting leaves nothing behind.
     const staticMcpServers = await resolveStaticMcpServers(ports, agent.companyId, settings);
 
-    const [cardEnv, skills, instructions, apiServerKey, paperclipApiKey, gatewayResult, instanceDefaults, parallelHelpersSettings] =
+    const [cardEnv, skills, instructions, apiServerKey, paperclipApiKey, gatewayResult, instanceDefaults, parallelHelpersSettings, botLspSettings] =
       await Promise.all([
         ports.resolveCardEnv(agent),
         ports.loadSkills(agent),
@@ -265,6 +274,8 @@ export function createBotProfileCompile(
         // myrmidon(PARALLEL-HELPERS): re-read per tick, like the other per-tick
         // settings, so a ceiling change applies on the next reconcile.
         ports.parallelHelpers ? ports.parallelHelpers() : Promise.resolve(undefined),
+        // myrmidon(BOT-LSP-DEFAULTS): re-read per tick, same reason.
+        ports.botLsp ? ports.botLsp() : Promise.resolve(undefined),
       ]);
 
     // myrmidon(1.6.1-BOT-DISK-B): with a shared package cache, a bot on the
@@ -337,6 +348,10 @@ export function createBotProfileCompile(
         // myrmidon(PARALLEL-HELPERS): the company ceiling/default; the input
         // builder resolves them against the card.
         parallelHelpersSettings,
+        // myrmidon(BOT-LSP-DEFAULTS): the role decides the language-server mode
+        // unless the card pins one; the input builder resolves them.
+        ...(agent.role ? { role: agent.role } : {}),
+        botLspSettings,
       },
       settings,
     );

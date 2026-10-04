@@ -38,7 +38,7 @@ import {
 import { botProfileWiring } from "./profile-ports.js";
 import type { BotContainerActivitySink, BotMaintenancePort } from "./reconciler.js";
 import { botContainerAgentReader, getBotContainerRuntime, setBotContainerRuntime } from "./routes-wiring.js";
-import { readBotDiskSettings } from "./bot-disk-store.js"; // myrmidon(1.6.1-BOT-DISK-B)
+import { readSharedPackageCachePath } from "./bot-disk-service.js"; // myrmidon(1.6.1-BOT-DISK-B)
 
 export const BOT_RECONCILE_INTERVAL_ENV = "MYRMIDON_BOT_RECONCILE_INTERVAL_SEC";
 const MIN_RECONCILE_INTERVAL_SEC = 5;
@@ -100,7 +100,7 @@ const defaultPorts: BotContainersStartupPorts = {
   readDriverConfig: (env) => readDockerDriverConfig(env),
   createDriver: (config, db) =>
     dockerBotContainerDriver(config, {
-      readSharedPackageCachePath: async () => (await readBotDiskSettings(db)).sharedPackageCachePath,
+      readSharedPackageCachePath: () => readSharedPackageCachePath(db),
     }),
   profileWiring: (db, opts) => botProfileWiring(db, opts),
   maintenancePort: (db) => realBotMaintenancePort(db),

@@ -19,14 +19,14 @@ export function BotDiskSettingsPanel() {
 
   // Seed the draft once the stored value arrives (react-query v5 has no onSuccess).
   useEffect(() => {
-    if (view && draft === null) setDraft(view.sharedPackageCachePath ?? "");
+    if (view && draft === null) setDraft(view.settings.sharedPackageCachePath ?? "");
   }, [view, draft]);
 
   const save = useMutation({
-    mutationFn: (path: string) => botDiskApi.update({ sharedPackageCachePath: path === "" ? null : path }),
+    mutationFn: (path: string) => botDiskApi.setSharedPackageCachePath(path === "" ? null : path),
     onSuccess: (saved) => {
       setError(null);
-      setDraft(saved.sharedPackageCachePath ?? "");
+      setDraft(saved.settings.sharedPackageCachePath ?? "");
       queryClient.invalidateQueries({ queryKey: botDiskQueryKey });
     },
     onError: (err) => setError(err instanceof Error ? err.message : "Could not save the cache path. Try again."),
@@ -41,7 +41,7 @@ export function BotDiskSettingsPanel() {
     save.mutate(path);
   };
 
-  const unchanged = view !== undefined && (draft ?? "").trim() === (view.sharedPackageCachePath ?? "");
+  const unchanged = view !== undefined && (draft ?? "").trim() === (view.settings.sharedPackageCachePath ?? "");
 
   return (
     <section className="space-y-4 rounded-lg border p-4" data-testid="bot-disk-panel">

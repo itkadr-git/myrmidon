@@ -167,10 +167,11 @@ export interface HermesProfileHindsightSettings {
 }
 
 /**
- * myrmidon(BOT-LSP): Hermes `lsp:` block — language-server behaviour for the
- * bot's code tools. Set instance-wide via
- * {@link HermesProfileInstanceDefaults.lsp} and per agent via
- * {@link HermesProfileInput.lsp}; the agent's fields win.
+ * myrmidon(BOT-LSP): the bot's `lsp` block in config.yaml (Hermes
+ * `hermes_cli/config_defaults.py` "lsp"). Each field is written only when set;
+ * an unset field keeps Hermes' own default. Which values a bot gets is decided
+ * outside the compiler (profile-input.ts, by role and card — see
+ * packages/shared/src/myrmidon-bot-lsp.ts).
  */
 export interface HermesProfileLspSettings {
   /**
@@ -184,17 +185,18 @@ export interface HermesProfileLspSettings {
    */
   idleTimeout?: number;
   /**
-   * Glob patterns to exclude from language server analysis (e.g., for monorepos that are checked separately).
-   * Example: a glob matching every `myrmidon` directory, or `/workspace/<x>/repo`.
+   * `lsp.exclude_roots`: workspace roots (glob patterns) where no language
+   * server starts, e.g. a monorepo whose typecheck runs on the build server.
    */
   excludeRoots?: string[];
   /**
-   * Wait mode for language server responses ('sync' or 'async').
-   * Default: 'sync'
+   * `lsp.wait_mode`: "document" (wait for the edited file's diagnostics) or
+   * "full" (also workspace-wide diagnostics). Hermes default: "document".
    */
   waitMode?: string;
   /**
-   * Per-server configuration overrides.
+   * `lsp.servers`: per-server overrides keyed by Hermes' registry id (e.g.
+   * `typescript`): `disabled`, `command`, `env`, `initialization_options`.
    */
   servers?: Record<string, YamlNode>;
 }

@@ -4,16 +4,17 @@
 
 import { describe, expect, it, vi } from "vitest";
 
-import { parseBotDiskSettings, preserveBotDiskGeneralKey } from "./bot-disk-store.js";
-import { patchBotDiskSettingsSchema } from "./bot-disk-api.js";
+import {
+  botDiskCachePathProblem,
+  mergeBotDiskSettings,
+  normalizeStoredBotDiskSettings,
+  patchBotDiskSettingsSchema,
+  resolveBotDiskSettings,
+  resolveSharedPackageCachePath,
+} from "@paperclipai/shared";
 import { FLEETD_PACKAGE_CACHE_NOTICE, fleetdBotContainerDriver } from "./fleetd-driver.js";
 import type { BotContainerSpec } from "./driver.js";
-import {
-  buildBinds,
-  packageCacheEnv,
-  PACKAGE_CACHE_MOUNTS,
-  sharedPackageCachePathProblem,
-} from "./template.js";
+import { buildBinds, packageCacheEnv, PACKAGE_CACHE_MOUNTS } from "./template.js";
 
 const volumeRoot = "/srv/bots";
 const botKey = "agent-a";
@@ -57,9 +58,9 @@ describe("myrmidon(1.6.1-BOT-DISK-B) buildBinds with the shared package cache", 
   it("rejects a cache path that is not a plain absolute directory", () => {
     for (const bad of ["relative/cache", "/srv/../etc", "/", "/srv/cache/"]) {
       expect(() => buildBinds(volumeRoot, botKey, { sharedPackageCachePath: bad })).toThrow(/shared package cache path/);
-      expect(sharedPackageCachePathProblem(bad)).not.toBeNull();
+      expect(botDiskCachePathProblem(bad)).not.toBeNull();
     }
-    expect(sharedPackageCachePathProblem(cache)).toBeNull();
+    expect(botDiskCachePathProblem(cache)).toBeNull();
   });
 
   it("points every tool at its mount, and leaves pip out", () => {
@@ -73,29 +74,39 @@ describe("myrmidon(1.6.1-BOT-DISK-B) buildBinds with the shared package cache", 
   });
 });
 
-describe("myrmidon(1.6.1-BOT-DISK-B) stored bot disk settings", () => {
-  it("parses the cache path and ignores a blank one", () => {
-    expect(parseBotDiskSettings({ botDisk: { sharedPackageCachePath: "/mnt/c" } })).toEqual({
-      sharedPackageCachePath: "/mnt/c",
+describe("myrmidon(1.6.1-BOT-DISK-B) the cache path in general.botDisk", () => {
+  it("reads a valid stored path and drops an invalid one without touching the lifecycle keys", () => {
+    expect(resolveSharedPackageCachePath({ enabled: false, sharedPackageCachePath: cache })).toBe(cache);
+    expect(resolveSharedPackageCachePath({ sharedPackageCachePath: "relative" })).toBeUndefined();
+    expect(resolveSharedPackageCachePath({ sharedPackageCachePath: 7 })).toBeUndefined();
+    expect(resolveSharedPackageCachePath(undefined)).toBeUndefined();
+    expect(normalizeStoredBotDiskSettings({ enabled: false, sharedPackageCachePath: "/srv/../etc" })).toEqual({
+      enabled: false,
     });
-    expect(parseBotDiskSettings({ botDisk: { sharedPackageCachePath: "  " } })).toEqual({});
-    expect(parseBotDiskSettings({ botDisk: { sharedPackageCachePath: 7 } })).toEqual({});
-    expect(parseBotDiskSettings(null)).toEqual({});
   });
 
-  it("carries only the botDisk key over a vendor write", () => {
-    expect(preserveBotDiskGeneralKey({ botDisk: { sharedPackageCachePath: "/mnt/c" }, other: 1 })).toEqual({
-      botDisk: { sharedPackageCachePath: "/mnt/c" },
-    });
-    expect(preserveBotDiskGeneralKey({ other: 1 })).toEqual({});
-    expect(preserveBotDiskGeneralKey(undefined)).toEqual({});
+  it("reports the path in the settings, not in the sources", () => {
+    const resolved = resolveBotDiskSettings({ stored: { sharedPackageCachePath: cache } });
+    expect(resolved.settings.sharedPackageCachePath).toBe(cache);
+    expect(Object.keys(resolved.sources).sort()).toEqual(["enabled", "idleTtlMs"]);
+    expect("sharedPackageCachePath" in resolveBotDiskSettings({}).settings).toBe(false);
   });
 
-  it("accepts a path or null in a PATCH and nothing else", () => {
+  it("keeps the path across a lifecycle patch and clears it on null or an empty string", () => {
+    const base = { enabled: true, idleTtlMs: 3_600_000, sharedPackageCachePath: cache };
+    expect(mergeBotDiskSettings(base, { enabled: false })).toEqual({ ...base, enabled: false });
+    expect(mergeBotDiskSettings(base, { sharedPackageCachePath: null })).toEqual({ enabled: true, idleTtlMs: 3_600_000 });
+    expect(mergeBotDiskSettings(base, { sharedPackageCachePath: "" })).toEqual({ enabled: true, idleTtlMs: 3_600_000 });
+    expect(mergeBotDiskSettings({ enabled: true, idleTtlMs: 3_600_000 }, { sharedPackageCachePath: cache })).toEqual(base);
+  });
+
+  it("accepts a plain absolute path, null or an empty string in a PATCH", () => {
     expect(patchBotDiskSettingsSchema.safeParse({ sharedPackageCachePath: cache }).success).toBe(true);
     expect(patchBotDiskSettingsSchema.safeParse({ sharedPackageCachePath: null }).success).toBe(true);
-    expect(patchBotDiskSettingsSchema.safeParse({}).success).toBe(false);
-    expect(patchBotDiskSettingsSchema.safeParse({ sharedPackageCachePath: cache, extra: true }).success).toBe(false);
+    expect(patchBotDiskSettingsSchema.safeParse({ sharedPackageCachePath: "" }).success).toBe(true);
+    for (const bad of ["relative", "/srv/../etc", "/", "/srv/cache/", "/srv//cache"]) {
+      expect(patchBotDiskSettingsSchema.safeParse({ sharedPackageCachePath: bad }).success).toBe(false);
+    }
   });
 });
 

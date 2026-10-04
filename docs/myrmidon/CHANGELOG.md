@@ -22,6 +22,30 @@ version file to edit. Base Paperclip version is in the image label
   it to the same directory and send `SIGHUP`, and create the four subdirectories owned by
   uid/gid 10001 — see [bot-disk-cache.md](bot-disk-cache.md).
 
+### A board unblock lifts a settled replay hold; a parked wake is not "covering" (HOLD-READY)
+
+- A task with a closed recovery action whose `evidence.automaticRecovery.replay`
+  reads `"blocked"` stayed stuck for good: the wake admission parked every
+  automatic wake of it (`deferred_issue_execution`, `executionWait`
+  `process_identity_missing`), idle pickup and the swarm sweep then counted that
+  parked wake as "already covering" the task and skipped it, and a manual
+  `POST /api/agents/:id/wakeup` without `issueId` answered 409 "no ready task".
+  Moving the task from `blocked` back to `todo` on the board did not help: the
+  status-change and comment wakes of that PATCH are not explicit wakes and were
+  parked as well. Agents sat idle with a full `todo` queue.
+- Now a board person (not an agent's run) who moves a task out of `blocked`
+  (to `todo`/`in_progress`) or reassigns a workable task clears its settled
+  replay holds in the same transaction, the same operator resolve as
+  `recovery-actions/resolve` (activity `issue.execution_recovery_replay_cleared`).
+  After commit one wake of the assignee (`execution_hold_cleared`) re-plans the
+  wakes parked on the hold through the ordinary admission. Active/escalated
+  recovery actions are not touched.
+- A deferred wake parked on an execution hold no longer counts as covering the
+  task in idle pickup, the manual-wake task binding or the swarm sweep, and the
+  ready-task prefilters of idle pickup and the swarm queues skip a task that is
+  really held (the same predicate the admission reads), so a held task is not
+  reported as ready. No settings change.
+
 ### Gateway spend attributed through per-bot secret references (1.6.2 hotfix, M2-A)
 
 - The gateway cost sweep wrote no rows: every collected spend row was counted as
@@ -35,6 +59,40 @@ version file to edit. Base Paperclip version is in the image label
   without their own binding; a reference to a secret that cannot be read skips that card
   instead of falling back to the shared key. The model fallback signal, which reuses the
   lookup, is fixed by the same change. No settings change.
+### Plugin bridge: invocation-scope attribution from any in-flight invocation (PLS1 -> PLS2)
+
+- The plugin bridge attributes an un-echoed worker call (a worker whose bundle
+  carries a plugin SDK that predates invocation-id echo) to the company of ANY
+  in-flight host-issued invocation — a plugin API route, `onEvent`,
+  `performAction`, `getData`, `executeTool` or an environment call — instead
+  of only an in-flight API route call. Bridge entry points register their
+  invocation scope without the apiRoute marker, so nested calls issued from
+  those handlers (the LLM Wiki plugin's `localFolders.*` calls) were answered
+  with "missing, expired, or unknown invocation scope"; this change closes the
+  same gap on `bridge/data`, `bridge/action` and plugin tool calls, fixing the
+  empty page list, pages that would not open and the failing
+  `wiki_write_page`-style tools of plugins built with the old SDK.
+- The safety guard is unchanged: attribution applies only while every
+  in-flight invocation of any kind belongs to one company; an in-flight call
+  of another company keeps the call denied (`INVOCATION_SCOPE_DENIED`), and a
+  call carrying an unknown or forged invocation id is still rejected.
+- The scope is always the host-issued one (the company the entering call
+  resolved and authorized); a value from the worker is never taken. No rights
+  are widened: the worker received the invocation ids of those calls and
+  could echo any of them.
+- The resolver moved from `server/src/myrmidon/plugin-api-route-scope.ts`
+  (deleted) to `server/src/myrmidon/plugin-invocation-scope.ts`; the vendored
+  worker manager marks the new branch `myrmidon(PLS2)` and the divergence
+  registry entry in [DIVERGENCE.md](DIVERGENCE.md) was rewritten for the
+  all-entry-points semantics. The removal condition stands: once the plugin
+  is rebuilt from `packages/plugins/plugin-llm-wiki` with the current SDK
+  (the worker echoes the invocation id itself), the PLS1/PLS2 branch, the
+  `apiRoute` field and the resolver files go away.
+- Guard test: `server/src/myrmidon/plugin-invocation-scope-bridge.myrmidon.test.ts`
+  with the fixture
+  `server/src/__tests__/fixtures/plugin-worker-invocation-scope-bridge.cjs`
+  covers the three bridge entry points (red without the fix, green with it)
+  and the cross-company denial.
 
 ### Automatic rollback by health: operator guide (AUTO-UPDATE-SETTINGS A)
 
@@ -164,6 +222,28 @@ version file to edit. Base Paperclip version is in the image label
 - `0`/`off` switches the floor or the ramp off from the environment; a
   malformed value keeps the default. See [SETTINGS.md](SETTINGS.md) and
   [guides/run-limits.md](guides/run-limits.md).
+
+
+## 1.6.2
+
+### Bot language servers by role (BOT-LSP-DEFAULTS)
+
+- Bots whose role writes code (by default the castes `engineer`, `qa`,
+  `devops`, `reviewer`, `release`) run language servers in a **limited** mode:
+  one TypeScript server per worktree (`tsserver.useSyntaxServer: "never"`),
+  no automatic typings download, a 1024 MB heap cap (`maxTsServerMemory`) and
+  a 120 s idle timeout instead of 600 s. Every other bot runs **none**
+  (`lsp.enabled: false`). Monorepo typecheck still goes through the build
+  server.
+- The policy is an instance setting (Instance settings → General → "Bot
+  language servers", `GET`/`PATCH /api/myrmidon/bot-lsp`): which roles write
+  code, the mode of coding and other roles (`off` / `limited` / `full`), the
+  idle timeout, the memory cap and excluded workspace roots. An agent card can
+  pin its own mode ("Language servers" section).
+- Changes apply without a server restart: the profile compiler re-reads the
+  policy on every reconcile tick, and a changed `lsp` block is applied while
+  the bot is paused, like a model change. On the first deploy every container
+  bot gets the new block once (one restart per bot, under its pause).
 
 ## 1.6.1
 

@@ -175,12 +175,6 @@ export const PACKAGE_CACHE_MOUNTS: readonly PackageCacheMount[] = [
   { hostSubdir: "gradle", containerPath: "/cache/gradle", envName: "GRADLE_USER_HOME" },
 ];
 
-/** Why `path` cannot be the shared package cache path, or null when it can: the
- *  same plain-absolute-directory rule every bind source follows. */
-export function sharedPackageCachePathProblem(path: string): string | null {
-  return unsafeAbsolutePathReason(path);
-}
-
 /** The environment that points each tool at its shared cache mount. */
 export function packageCacheEnv(): Record<string, string> {
   return Object.fromEntries(PACKAGE_CACHE_MOUNTS.map((mount) => [mount.envName, mount.containerPath]));
