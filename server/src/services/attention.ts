@@ -12,6 +12,7 @@ import {
   decisionTriage,
   decisions,
   heartbeatRuns,
+  instanceSettings,
   inboxDismissals,
   invites,
   issueApprovals,
@@ -50,6 +51,7 @@ import type {
 import { badRequest } from "../errors.js";
 import { listAttentionExhaustedRuns } from "./attention-exhausted-runs.js";
 import { budgetService } from "./budgets.js";
+import { hostDiskRuntime } from "../myrmidon/host-disk/index.js"; // myrmidon(BOT-DISK E)
 import {
   BLOCKER_ATTENTION_MAX_DEPTH,
   BLOCKER_ATTENTION_MAX_NODES,
@@ -68,6 +70,10 @@ import { buildStackAttentionCards } from "../myrmidon/stack-registry/attention.j
 import { readStackDocument } from "../myrmidon/stack-registry/store.js";
 // myrmidon(TRACING-HEALTH): the "LLM tracing" red state raises one operator card (part D)
 import { readTracingHealthAttentionSignal } from "../myrmidon/tracing-health/attention.js";
+import { hostMemoryHoldSignal } from "../myrmidon/run-admission.js"; // myrmidon(1.6.2 RUN-ADMISSION)
+// myrmidon(BOT-RUNTIME-TUNING D): the model fallback share raises one card per agent
+import { readModelFallbackSignals } from "../myrmidon/litellm-fallback-signal/attention.js";
+
 // myrmidon(STALE-BLOCK): the lifted-block operator signal registry.
 import {
   readStaleBlockSignals,
@@ -75,6 +81,15 @@ import {
   staleBlockSignalSeverity,
   staleBlockSignalWhyNow,
 } from "../myrmidon/stale-block/attention.js";
+// myrmidon(1.6.1-WIP-LIMIT-A): the WIP limit cards and the settings read.
+import { buildWipLimitAttentionCards } from "../myrmidon/wip-limit/attention.js";
+import { buildWipLimitStatus } from "../myrmidon/wip-limit/status.js";
+import {
+  WIP_LIMIT_SETTINGS_KEY,
+  normalizeWipLimitSettings,
+} from "@paperclipai/shared";
+// myrmidon(1.7-BUDGET-CONFIG-B): the enforcement mode shown on the budget card.
+import { resolveBudgetEnforcement } from "@paperclipai/shared";
 
 /**
  * myrmidon(TRACING-HEALTH): a stable UUID for the synthetic "LLM tracing"
@@ -106,8 +121,12 @@ const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   "budget_alert",
   "agent_error_alert",
   "stack_update",
+  "model_fallback_alert",
   // myrmidon(STALE-BLOCK): one card per block the watchdog lifted.
   "stale_block",
+  "host_disk_alert",
+  // myrmidon(1.6.1-WIP-LIMIT-A): the per-agent work-in-progress over-limit signal.
+  "wip_limit",
 ];
 
 const SEVERITY_RANK: Record<AttentionSeverity, number> = {
@@ -131,6 +150,13 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   join_request: 10,
   stack_update: 11,
   stale_block: 12,
+  host_disk_alert: 0,
+  model_fallback_alert: 13,
+  // myrmidon(1.6.1-WIP-LIMIT-A): a workload-oversignal sits below every
+  // blocking kind but above nothing else — it is advice, not a stop.
+  wip_limit: 14,
+  // myrmidon(BOT-DISK-A): bot disk lifecycle events.
+  bot_disk_lifecycle: 15,
 };
 
 const PENDING_INTERACTION_STATUSES = ["pending"] as const;
@@ -1787,6 +1813,23 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         }));
       }
 
+      // myrmidon(1.7-BUDGET-CONFIG-B): the enforcement mode rides the budget
+      // card — in signal-only mode the incident exists but nothing stopped,
+      // and the card must say that instead of implying a pause the operator
+      // will not find. The feed recomputes on every list, so a mode change
+      // reaches the next feed read without a restart.
+      const budgetEnforcementMode = (
+        // myrmidon(1.7-BUDGET-CONFIG-B): read the mode the same direct way the
+        // WIP settings row above is read (one settings select, no service
+        // cache), with the shared resolver doing precedence.
+        await db
+          .select({ general: instanceSettings.general })
+          .from(instanceSettings)
+          .limit(1)
+          .then((rows) => rows[0]?.general?.budgetEnforcement ?? undefined)
+          .catch(() => undefined)
+          .then((stored) => resolveBudgetEnforcement({ stored }).mode)
+      );
       const budgetOverview = await budgetService(db).overview(companyId);
       for (const incident of budgetOverview.activeIncidents) {
         const observedPercent = budgetObservedPercent(incident.amountObserved, incident.amountLimit);
@@ -1813,10 +1856,14 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
               observedPercent,
               approvalId: incident.approvalId,
               approvalStatus: incident.approvalStatus,
+              // myrmidon(1.7-BUDGET-CONFIG-B): what the crossed limit did.
+              enforcementMode: budgetEnforcementMode,
             },
           },
           whyNow: incident.thresholdType === "hard"
-            ? "Budget hard stop was reached."
+            ? budgetEnforcementMode === "signal_only"
+              ? "Budget hard stop was reached. Work continues: enforcement is in signal-only mode."
+              : "Budget hard stop was reached."
             : "Budget crossed the 85% warning threshold.",
           decisionVerbs: decisionVerbs(
             { id: "raise_budget_and_resume", label: "Raise budget", description: "Raise the budget and resume paused work." },
@@ -1826,7 +1873,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           entryRule: "open budget incident is hard, or soft with observed spend >= 85% of limit.",
           exitRule: "Budget incident is resolved or dismissed.",
           dedupKey,
-          severity: incident.thresholdType === "hard" ? "high" : "medium",
+          severity: incident.thresholdType === "hard" ? (budgetEnforcementMode === "signal_only" ? "medium" : "high") : "medium",
           activityAt: toIso(incident.updatedAt),
           createdAt: toIso(incident.createdAt),
           updatedAt: toIso(incident.updatedAt),
@@ -1836,6 +1883,59 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             observedPercent,
             amountObserved: incident.amountObserved,
             amountLimit: incident.amountLimit,
+            images: [],
+          },
+        }));
+      }
+
+      // myrmidon(BOT-DISK E): the host disk crossed the usage threshold in
+      // this process's sweep. One item for the whole instance; the numbers
+      // (fill level, free space, growth per hour, biggest consumers) travel
+      // in the detail, and the dedup key stays constant while the threshold
+      // stays crossed, so a fresh measurement refreshes the row.
+      const hostDisk = hostDiskRuntime(db).sweep.lastResult();
+      if (hostDisk?.overThreshold) {
+        const dedupKey = `host_disk:${hostDisk.measuredPath ?? "unknown"}`;
+        add(createItem({
+          companyId,
+          sourceKind: "host_disk_alert",
+          subject: {
+            kind: "agent",
+            id: "host-disk",
+            companyId,
+            title: "Host disk",
+            identifier: null,
+            status: "alert",
+            href: `/${prefix}/instance`,
+            metadata: { measuredPath: hostDisk.measuredPath },
+          },
+          whyNow: `Host disk is ${hostDisk.usedPercent}% full (threshold ${hostDisk.thresholdPercent}%).`,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the host disk panel and free space." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this alert until usage drops and crosses again." },
+          ),
+          inlineResolvable: false,
+          entryRule: "the host disk fill level crossed the saved threshold",
+          exitRule: "usage drops below the threshold or the row is dismissed",
+          dedupKey,
+          severity: (hostDisk.usedPercent ?? 0) >= 95 ? "critical" : "high",
+          activityAt: toIso(hostDisk.at),
+          createdAt: toIso(hostDisk.at),
+          updatedAt: toIso(hostDisk.at),
+          relatedIssue: null,
+          detail: {
+            kind: "host_disk",
+            usedPercent: hostDisk.usedPercent ?? 0,
+            thresholdPercent: hostDisk.thresholdPercent ?? 0,
+            usedGb: Math.round((hostDisk.usedBytes ?? 0) / (1024 * 1024 * 1024)),
+            totalGb: Math.round((hostDisk.totalBytes ?? 0) / (1024 * 1024 * 1024)),
+            freeGb: Math.round((hostDisk.freeBytes ?? 0) / (1024 * 1024 * 1024)),
+            growthBytesPerHour: hostDisk.growthBytesPerHour,
+            mountPoint: hostDisk.measuredPath,
+            consumers: hostDisk.consumers.map((c) => ({
+              path: c.path,
+              sizeGb: Math.round(c.sizeBytes / (1024 * 1024 * 1024)),
+            })),
             images: [],
           },
         }));
@@ -2039,6 +2139,158 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           detail: {
             kind: "generic",
             summaryExcerpt: excerpt(tracingSignal.whyNow),
+            images: [],
+          },
+        }));
+      }
+
+      // myrmidon(1.6.2 RUN-ADMISSION): the run admission's host memory floor
+      // has held new runs back for over 10 minutes. One card for the whole
+      // instance, deduped while the hold lasts; it disappears on the first
+      // admitted run (the admission ends the hold) — nothing is persisted.
+      const hostMemoryHold = hostMemoryHoldSignal();
+      if (hostMemoryHold) {
+        const heldAt = hostMemoryHold.heldSince.toISOString();
+        const heldMinutes = Math.floor(hostMemoryHold.heldMs / 60_000);
+        add(createItem({
+          companyId,
+          sourceKind: "agent_error_alert",
+          subject: {
+            kind: "agent",
+            id: "run-admission-host-memory",
+            companyId,
+            title: "Runs held: host memory",
+            identifier: null,
+            status: "alert",
+            href: `/${prefix}/instance`,
+            metadata: {
+              runAdmissionHostMemory: true,
+              availableMb: hostMemoryHold.availableMb,
+              thresholdMb: hostMemoryHold.thresholdMb,
+              heldSince: heldAt,
+            },
+          },
+          whyNow: `New agent runs have waited ${heldMinutes} min: host free memory ${hostMemoryHold.availableMb ?? "?"} MB is below the ${hostMemoryHold.thresholdMb ?? "?"} MB run admission floor. Free memory on the host (idle bot containers) or lower the floor in Run limits.`,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the run limits and the host memory." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this alert for this hold." },
+          ),
+          inlineResolvable: true,
+          entryRule: "the run admission host memory floor held new runs back for more than 10 minutes",
+          exitRule: "a run is admitted again (host memory recovered or the floor was lowered) or the row is dismissed",
+          dedupKey: `run_admission_host_memory:${heldAt}`,
+          severity: "high",
+          activityAt: heldAt,
+          createdAt: heldAt,
+          updatedAt: heldAt,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: excerpt(hostMemoryHold.reason ?? "host free memory is below the run admission floor"),
+            images: [],
+          },
+        }));
+      }
+
+      // myrmidon(1.6.1-WIP-LIMIT-A): an agent whose in-flight task count
+      // (in_progress + in_review) is over its resolved WIP limit raises one
+      // card; a lead holding implementation work raises the same card with
+      // the lead wording (the implementation limit of a lead is 0). The feed
+      // recomputes on every list, so the card lives exactly as long as the
+      // over-limit state does — nothing is persisted for it. A missing limit
+      // means "count only", so the block emits nothing.
+      const wipSettingsRow = await db
+        .select({ general: instanceSettings.general })
+        .from(instanceSettings)
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      const wipSettings = normalizeWipLimitSettings(wipSettingsRow?.general?.[WIP_LIMIT_SETTINGS_KEY]);
+      const wipStatuses = await buildWipLimitStatus(db, companyId, wipSettings);
+      const wipAgentNameById = new Map(
+        await db
+          .select({ id: agents.id, name: agents.name })
+          .from(agents)
+          .where(eq(agents.companyId, companyId))
+          .then((rows) => rows.map((row) => [row.id, row.name] as const)),
+      );
+      for (const card of buildWipLimitAttentionCards(wipStatuses, wipAgentNameById)) {
+        add(createItem({
+          companyId,
+          sourceKind: "wip_limit",
+          subject: {
+            kind: "agent",
+            id: card.agentId,
+            companyId,
+            title: card.title,
+            identifier: null,
+            status: null,
+            href: `/${prefix}/agents/${card.agentId}`,
+            metadata: card.metadata,
+          },
+          whyNow: card.whyNow,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the agent's tasks and rebalance the workload." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this signal until the limit is met again." },
+          ),
+          inlineResolvable: false,
+          entryRule: "the agent's in-flight task count is over its WIP limit, or a lead holds implementation work.",
+          exitRule: "the count is back within the limit (or the lead holds no implementation task), or the row is dismissed.",
+          dedupKey: card.dedupKey,
+          severity: card.severity,
+          activityAt: toIso(new Date(now)),
+          createdAt: toIso(new Date(now)),
+          updatedAt: toIso(new Date(now)),
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: card.summaryExcerpt,
+            images: [],
+          },
+        }));
+      }
+      // myrmidon(BOT-RUNTIME-TUNING D): the periodic fallback sweep records
+      // one signal per agent whose gateway calls were served by a model
+      // outside its card above the configured share; the feed just turns the
+      // recorded signals into cards (subject = the agent, one dedupKey per
+      // agent, severity medium). The signal clears when the share drops
+      // below half the threshold — no dismissal bookkeeping, the same
+      // registry pattern tracing-health uses.
+      for (const fallback of readModelFallbackSignals(companyId)) {
+        add(createItem({
+          companyId,
+          sourceKind: "model_fallback_alert",
+          subject: {
+            kind: "agent",
+            id: fallback.agentId,
+            companyId,
+            title: fallback.title,
+            identifier: null,
+            status: null,
+            href: `/${prefix}/agents/${fallback.agentId}`,
+            metadata: {
+              sharePct: fallback.sharePct,
+              fallbacks: fallback.fallbacks,
+              total: fallback.total,
+              servedModels: fallback.servedModels,
+            },
+          },
+          whyNow: fallback.whyNow,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the agent card and the gateway routing." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this fallback alert." },
+          ),
+          inlineResolvable: true,
+          entryRule: "the agent's fallback share over the window is at or above the threshold with enough calls.",
+          exitRule: "the share drops below half the threshold, the window empties below min calls, or the row is dismissed.",
+          dedupKey: fallback.dedupKey,
+          severity: fallback.severity,
+          activityAt: fallback.activityAt,
+          createdAt: fallback.activityAt,
+          updatedAt: fallback.activityAt,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: excerpt(fallback.summaryExcerpt),
             images: [],
           },
         }));

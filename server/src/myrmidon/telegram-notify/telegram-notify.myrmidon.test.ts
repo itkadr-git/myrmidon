@@ -1,4 +1,4 @@
-// myrmidon(OPE-3789): the telegram-notify core test — store company scoping,
+// myrmidon(TG-NOTIFY-A): the telegram-notify core test — store company scoping,
 // service merge and changelog rules, route authorization and HTTP shapes.
 // Neutral English only (agent-a, example.com).
 
@@ -9,7 +9,7 @@ import { emptyTelegramNotifyDocument } from "@paperclipai/shared";
 import { errorHandler } from "../../middleware/index.js";
 import { telegramNotifyRoutes } from "./routes.js";
 import { applyTelegramNotifyPatch, telegramNotifyService } from "./service.js";
-import { memoryTelegramNotifyStore } from "./store.js";
+import { memoryTelegramNotifyStore } from "./settings-store.js";
 
 const COMPANY_ID = "22222222-2222-4222-8222-222222222222";
 const OTHER_COMPANY_ID = "33333333-3333-4333-8333-333333333333";
@@ -44,7 +44,7 @@ function appWith(actor: unknown, store = memoryTelegramNotifyStore()) {
   return app;
 }
 
-describe("myrmidon(OPE-3789): the settings service merge and changelog", () => {
+describe("myrmidon(TG-NOTIFY-A): the settings service merge and changelog", () => {
   it("applies a partial patch and keeps untouched fields", () => {
     const next = applyTelegramNotifyPatch(emptyTelegramNotifyDocument(), {
       digest: { enabled: true, chatId: "chat-1" },
@@ -96,7 +96,7 @@ describe("myrmidon(OPE-3789): the settings service merge and changelog", () => {
   });
 });
 
-describe("myrmidon(OPE-3789): the store is company-scoped", () => {
+describe("myrmidon(TG-NOTIFY-A): the store is company-scoped", () => {
   it("keeps two companies' documents apart", async () => {
     const service = telegramNotifyService({ store: memoryTelegramNotifyStore() });
     await service.update(COMPANY_ID, "user-a", { digest: { enabled: true, chatId: "chat-1" } });
@@ -108,7 +108,7 @@ describe("myrmidon(OPE-3789): the store is company-scoped", () => {
   });
 });
 
-describe("myrmidon(OPE-3789): the routes", () => {
+describe("myrmidon(TG-NOTIFY-A): the routes", () => {
   it("GET answers the full contract with all fields present and everything off", async () => {
     const res = await request(appWith(member)).get(URL).expect(200);
     expect(res.body).toEqual({

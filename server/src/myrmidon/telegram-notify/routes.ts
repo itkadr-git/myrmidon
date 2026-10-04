@@ -1,4 +1,4 @@
-// myrmidon(OPE-3789): telegram-notify settings routes (part A).
+// myrmidon(TG-NOTIFY-A): telegram-notify settings routes (part A).
 //
 //   GET   /api/myrmidon/telegram-notify  -> { settings, changelog }
 //   PATCH /api/myrmidon/telegram-notify  -> { settings, changelog }
@@ -21,7 +21,7 @@ import { unprocessable } from "../../errors.js";
 import { validate } from "../../middleware/validate.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "../../routes/authz.js";
 import { telegramNotifyService } from "./service.js";
-import { dbTelegramNotifyStore, type TelegramNotifyStore } from "./store.js";
+import { dbTelegramNotifyStore, type TelegramNotifyStore } from "./settings-store.js";
 
 /** The actor the changelog records: a user id or an agent id. */
 function actorFromRequest(req: Request): string {

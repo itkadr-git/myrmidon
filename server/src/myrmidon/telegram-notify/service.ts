@@ -1,4 +1,4 @@
-// myrmidon(OPE-3789): telegram-notify settings service (part A) — apply a
+// myrmidon(TG-NOTIFY-A): telegram-notify settings service (part A) — apply a
 // partial PATCH, record every changed field in the changelog.
 //
 // The service owns the merge rule and takes its storage seam by injection
@@ -23,7 +23,7 @@ import {
   type TelegramNotifySettings,
   type TelegramNotifySettingsPatch,
 } from "@paperclipai/shared";
-import type { TelegramNotifyStore } from "./store.js";
+import type { TelegramNotifyStore } from "./settings-store.js";
 
 /** A typed refusal the route layer turns into an HTTP status. */
 export type TelegramNotifyFailure =
