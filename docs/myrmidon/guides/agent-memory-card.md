@@ -10,17 +10,16 @@ agent card navigation.
 
 ## When the tab is usable
 
-Two instance settings switch the section on; both must be set:
-
-- `MYRMIDON_HINDSIGHT_API_URL` — the base address of the shared memory
-  (hindsight) service as the board server sees it.
-- `MYRMIDON_HINDSIGHT_KEY_SECRET` — the name of the company secret holding the
-  memory service API key.
+The section is on when the memory service address is known. It comes from
+Instance settings → General → Agent memory, else `MYRMIDON_HINDSIGHT_API_URL`,
+else `MYRMIDON_BOT_HINDSIGHT_API_URL` (the same service as the bots use). The
+API key is optional: name the company secret holding it (the same panel, or
+`MYRMIDON_HINDSIGHT_KEY_SECRET`) only if the service requires one.
 
 See [SETTINGS.md](../SETTINGS.md) for the exact semantics. The settings are
 read per request: changing them takes effect without a restart.
 
-While either setting is missing, the tab shows the status line "Agent memory
+While no address is known, the tab shows the status line "Agent memory
 is not enabled on this instance." and its data routes answer 503. The settings
 are instance-wide; the memory bank itself is resolved per agent.
 

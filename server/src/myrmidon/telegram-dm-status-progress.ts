@@ -2,6 +2,9 @@ import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { heartbeatRunEvents } from "@paperclipai/db";
 import { redactSensitiveText } from "../redaction.js";
+// myrmidon(DM-PROGRESS): legacy adapters (hermes_gateway, hermes_local) write
+// no native step events; their steps come from the in-memory runtime history.
+import type { DmProgressRuntimeStep } from "./telegram-dm-progress/runtime-steps.js";
 
 // myrmidon(OPE-3650): live progress text for the editable Telegram DM status
 // row (MYRMIDON_TELEGRAM_DM_STATUS). The owner asked to see WHAT the bot is
@@ -70,7 +73,7 @@ function stepLabelForEventType(eventType: string, message: string | null): strin
   }
 }
 
-type DmStatusStep = {
+export type DmStatusStep = {
   eventType: string;
   message: string | null;
   createdAt: Date;
@@ -94,30 +97,47 @@ export function formatDmStatusElapsed(startedAt: Date | null, now: Date): string
 /**
  * Compose the live-progress status text for the bridged Telegram DM status
  * row: the agent's current step in plain words, the elapsed time, and the
- * last few completed steps as a short list. Falls back to the vendor's safe
- * milestone wording when the run has no step events yet.
+ * last few completed steps as a short list. Falls back to "работаю" with the
+ * elapsed time when the run has no steps yet.
+ *
+ * myrmidon(DM-PROGRESS): steps come from the native run-log events when the
+ * run has any; otherwise from the runtime step history of legacy adapters
+ * (`runtimeSteps`, already owner-language labels). `showSteps: false` keeps
+ * the message to the milestone and the elapsed time. The queued and working
+ * fallback texts are in the owner's language like the step labels.
  */
 export function composeDmStatusText(input: {
   agentName: string;
   milestone: "queued" | "working";
   startedAt: Date | null;
   steps: DmStatusStep[];
+  runtimeSteps?: readonly Pick<DmProgressRuntimeStep, "label">[];
+  showSteps?: boolean;
   now: Date;
 }): string {
-  if (input.milestone === "queued") return `${input.agentName} is queued.`;
+  if (input.milestone === "queued") return `${input.agentName}: в очереди`;
 
-  const labels = input.steps
-    .map((step) => {
-      const message = step.message ? normalizeStepText(step.message, MAX_CURRENT_STEP_CHARS) : null;
-      return stepLabelForEventType(step.eventType, message);
-    })
-    .filter((label): label is string => label !== null);
+  const showSteps = input.showSteps ?? true;
+  const nativeLabels = showSteps
+    ? input.steps
+        .map((step) => {
+          const message = step.message ? normalizeStepText(step.message, MAX_CURRENT_STEP_CHARS) : null;
+          return stepLabelForEventType(step.eventType, message);
+        })
+        .filter((label): label is string => label !== null)
+    : [];
+  const labels =
+    nativeLabels.length > 0 || !showSteps
+      ? nativeLabels
+      : (input.runtimeSteps ?? [])
+          .map((step) => normalizeStepText(step.label, MAX_CURRENT_STEP_CHARS))
+          .filter((label): label is string => label !== null);
 
+  const elapsed = formatDmStatusElapsed(input.startedAt, input.now);
   if (labels.length === 0) {
-    const elapsed = formatDmStatusElapsed(input.startedAt, input.now);
     return elapsed
-      ? `${input.agentName} is working… (${elapsed})`
-      : `${input.agentName} is working…`;
+      ? `${input.agentName}: работаю · ${elapsed}`
+      : `${input.agentName}: работаю`;
   }
 
   const current = labels[labels.length - 1]!;
@@ -125,7 +145,6 @@ export function composeDmStatusText(input: {
     .slice(Math.max(0, labels.length - 1 - MAX_COMPLETED_STEPS), labels.length - 1)
     .map((label) => normalizeStepText(label, MAX_COMPLETED_STEP_CHARS))
     .filter((label): label is string => label !== null);
-  const elapsed = formatDmStatusElapsed(input.startedAt, input.now);
 
   const lines = [`${input.agentName}: ${current}${elapsed ? ` · ${elapsed}` : ""}`];
   if (completed.length > 0) {

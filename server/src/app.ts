@@ -101,6 +101,7 @@ import { myrmidonMaintenanceRoutes } from "./myrmidon/maintenance/index.js"; // 
 import { myrmidonDeployJobsRoutes } from "./myrmidon/deploy-jobs/index.js"; // myrmidon(R5-A)
 import { myrmidonRuntimeLimitsRoutes } from "./myrmidon/runtime-limits/index.js"; // myrmidon(C0)
 import { myrmidonBudgetEnforcementRoutes } from "./myrmidon/budget-enforcement/index.js"; // myrmidon(1.7-BUDGET-CONFIG-B)
+import { myrmidonTelegramDmProgressRoutes } from "./myrmidon/telegram-dm-progress/index.js"; // myrmidon(DM-PROGRESS)
 import { myrmidonParallelHelpersRoutes } from "./myrmidon/parallel-helpers/index.js"; // myrmidon(PARALLEL-HELPERS)
 import { myrmidonBotLspRoutes } from "./myrmidon/bot-lsp/index.js"; // myrmidon(BOT-LSP-DEFAULTS)
 import { myrmidonReplayBlockedRoutes } from "./myrmidon/replay-blocked/index.js"; // myrmidon(N1)
@@ -124,6 +125,7 @@ import { swarmClaimApp } from "./myrmidon/swarm-claim/index.js"; // myrmidon(1.6
 import { myrmidonEmergencyStopRoutes } from "./myrmidon/emergency-stop.js";
 import { myrmidonStackRegistryRoutes } from "./myrmidon/stack-registry/index.js"; // myrmidon(SUA)
 import { myrmidonWipLimitRoutes } from "./myrmidon/wip-limit/index.js"; // myrmidon(1.6.1-WIP-LIMIT-A)
+import { reviewRoutingRoutes } from "./myrmidon/review-routing/routes.js"; // myrmidon(REVIEW-ROUTING)
 // myrmidon(PLUGIN-ENTITLEMENT C): instance-level plugin entitlement keys
 import { pluginEntitlementRoutes } from "./myrmidon/plugin-entitlement/index.js";
 import { agentInstructionsRevisionsRoutes } from "./myrmidon/agent-instructions-revisions/index.js"; // myrmidon(H2)
@@ -136,7 +138,7 @@ import { sweepTelegramNotifyProactivity } from "./myrmidon/telegram-notify/sweep
 import { accessHubRoutes } from "./myrmidon/access-hub/routes.js"; // myrmidon(SEC1)
 import { ui2LanguageRoutes } from "./myrmidon/ui2-language/routes.js"; // myrmidon(UI2-I18N)
 import { myrmidonForagingRoutes } from "./myrmidon/foraging/index.js"; // myrmidon(1.6-FORAGE)
-import { myrmidonAgentMemoryRoutes } from "./myrmidon/agent-memory/index.js"; // myrmidon(MEMORY-UI)
+import { myrmidonAgentMemoryRoutes, myrmidonAgentMemorySettingsRoutes } from "./myrmidon/agent-memory/index.js"; // myrmidon(MEMORY-UI)
 // myrmidon(1.6-SKILL-LIFE): company skill lifecycle (candidate/verified/deprecated, rollback)
 import { myrmidonSkillLifecycleRoutes } from "./myrmidon/skill-lifecycle/index.js";
 import {
@@ -862,6 +864,7 @@ export async function createApp(
   api.use(myrmidonDeployJobsRoutes(db)); // myrmidon(R5-A)
   api.use(myrmidonRuntimeLimitsRoutes(db)); // myrmidon(C0)
   api.use(myrmidonBudgetEnforcementRoutes(db)); // myrmidon(1.7-BUDGET-CONFIG-B)
+  api.use(myrmidonTelegramDmProgressRoutes(db)); // myrmidon(DM-PROGRESS): live progress steps of the Telegram DM status
   api.use(myrmidonParallelHelpersRoutes(db)); // myrmidon(PARALLEL-HELPERS)
   api.use(myrmidonBotLspRoutes(db)); // myrmidon(BOT-LSP-DEFAULTS)
   api.use(myrmidonReplayBlockedRoutes(db)); // myrmidon(N1)
@@ -885,9 +888,11 @@ export async function createApp(
   })); // myrmidon(1.6-SWARM): per-role queues with leased claims
   api.use(myrmidonEmergencyStopRoutes(db)); // myrmidon(EMERGENCY-STOP)
   api.use(myrmidonAgentMemoryRoutes(db)); // myrmidon(MEMORY-UI): agent card Memory tab
+  api.use(myrmidonAgentMemorySettingsRoutes(db)); // myrmidon(MEMORY-UI): Memory tab settings (instance admin)
   api.use(myrmidonSkillLifecycleRoutes(db)); // myrmidon(1.6-SKILL-LIFE): skill lifecycle API
   api.use(myrmidonStackRegistryRoutes(db)); // myrmidon(SUA)
   api.use(myrmidonWipLimitRoutes(db)); // myrmidon(1.6.1-WIP-LIMIT-A): per-agent WIP limit settings and status
+  api.use(reviewRoutingRoutes(db)); // myrmidon(REVIEW-ROUTING): automatic reviewer routing settings
   api.use(pluginEntitlementRoutes(db)); // myrmidon(PLUGIN-ENTITLEMENT C): accept/remove plugin keys (instance admin)
   api.use(agentInstructionsRevisionsRoutes(db)); // myrmidon(H2)
   api.use(myrmidonFleetConsoleRoutes(db)); // myrmidon(SC1)

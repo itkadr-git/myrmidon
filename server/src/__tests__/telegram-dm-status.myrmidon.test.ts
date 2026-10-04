@@ -54,6 +54,17 @@ import {
   telegramMarkdownRequiresAttachment,
 } from "../services/chat-publication-stream.js";
 import { projectSafeChatPublicationText } from "../services/chat-publication-projection.js";
+// myrmidon(DM-PROGRESS): live steps of legacy runs and the instance settings.
+import { setHeartbeatRunRuntimeStatus } from "../services/heartbeat-run-runtime-status.js";
+import { invalidateTelegramDmProgressSettingsCache } from "../myrmidon/telegram-dm-progress/settings.js";
+import {
+  clearAllDmProgressRuntimeSteps,
+  recordDmProgressLogChunk,
+} from "../myrmidon/telegram-dm-progress/runtime-steps.js";
+import {
+  TELEGRAM_DM_PROGRESS_ENV,
+  TELEGRAM_DM_PROGRESS_INTERVAL_ENV,
+} from "@paperclipai/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -310,6 +321,13 @@ describeEmbeddedPostgres("Telegram DM run status (U1)", () => {
     await instanceSettingsService(db).updateExperimental({
       enableAgentChat: true,
     });
+    // myrmidon(DM-PROGRESS): every case starts from the default progress
+    // settings (nothing stored, no override) and an empty step history.
+    delete process.env[TELEGRAM_DM_PROGRESS_ENV];
+    delete process.env[TELEGRAM_DM_PROGRESS_INTERVAL_ENV];
+    await instanceSettingsService(db).updateGeneral({ telegramDmProgress: {} });
+    invalidateTelegramDmProgressSettingsCache();
+    clearAllDmProgressRuntimeSteps();
   });
 
   afterEach(async () => {
@@ -659,7 +677,7 @@ describeEmbeddedPostgres("Telegram DM run status (U1)", () => {
     expect(rows[0]!.idempotencyKey).toBe(
       `run:${runId}:dmstatus:${fixture.endpointId}`,
     );
-    expect(rows[0]!.payload.text).toContain("working");
+    expect(rows[0]!.payload.text).toContain("работаю");
   });
 
   it("updates the same row from queued to working instead of stacking", async () => {
@@ -670,7 +688,7 @@ describeEmbeddedPostgres("Telegram DM run status (U1)", () => {
     const queuedRows = await dmStatusRows(fixture);
     expect(queuedRows).toHaveLength(1);
     expect(queuedRows[0]!.payload.progressState).toBe("queued");
-    expect(queuedRows[0]!.payload.text).toContain("queued");
+    expect(queuedRows[0]!.payload.text).toContain("в очереди");
 
     await db
       .update(heartbeatRuns)
@@ -681,7 +699,7 @@ describeEmbeddedPostgres("Telegram DM run status (U1)", () => {
     const rows = await dmStatusRows(fixture);
     expect(rows).toHaveLength(1);
     expect(rows[0]!.payload.progressState).toBe("working");
-    expect(rows[0]!.payload.text).toContain("working");
+    expect(rows[0]!.payload.text).toContain("работаю");
   });
 
   it("still suppresses the /stop terminal milestone with the setting on", async () => {
@@ -796,7 +814,7 @@ describeEmbeddedPostgres("Telegram DM run status (U1)", () => {
     // One provider message for the whole status lane, not a stack.
     expect(providerRuntime.posts).toHaveLength(1);
     expect(providerRuntime.posts[0]!.message).toMatchObject({
-      markdown: expect.stringContaining("queued"),
+      markdown: expect.stringContaining("в очереди"),
     });
     const postedThreadId = providerRuntime.posts[0]!.threadId;
     const postedMessageId = providerRuntime.postedIds[0]!;
@@ -818,7 +836,7 @@ describeEmbeddedPostgres("Telegram DM run status (U1)", () => {
     expect(providerRuntime.edits[0]!.messageId).toBe(postedMessageId);
     expect(
       String((providerRuntime.edits[0]!.message as { markdown?: unknown }).markdown),
-    ).toContain("working");
+    ).toContain("работаю");
   });
 
   // myrmidon(OPE-3650): the 02.10 production defect — one owner DM message
@@ -897,6 +915,17 @@ describeEmbeddedPostgres("Telegram DM run status (U1)", () => {
       .update(heartbeatRuns)
       .set({ updatedAt: new Date() })
       .where(eq(heartbeatRuns.id, runId));
+    // myrmidon(DM-PROGRESS): a step change edits the message only after the
+    // throttle floor; age the status row past it instead of sleeping.
+    await db
+      .update(chatPublications)
+      .set({ updatedAt: new Date(Date.now() - 120_000) })
+      .where(
+        and(
+          eq(chatPublications.companyId, fixture.companyId),
+          like(chatPublications.idempotencyKey, "run:%:dmstatus:%"),
+        ),
+      );
     await enqueueChatRunMilestones(db);
     await service.processPendingPublications(1_000);
     expect(providerRuntime.posts).toHaveLength(1);
@@ -960,6 +989,100 @@ describeEmbeddedPostgres("Telegram DM run status (U1)", () => {
         (providerRuntime.edits[2]!.message as { markdown?: unknown }).markdown,
       ),
     ).toContain("Готово");
+  });
+
+  // myrmidon(DM-PROGRESS): legacy adapters (hermes_gateway, hermes_local)
+  // write no native step events; their live progress reaches the status
+  // message from the runtime status and the run-log tool lines, in the
+  // owner's language, and the edits are throttled.
+  const ageDmStatusRow = (runId: string, ageMs: number) =>
+    db
+      .update(chatPublications)
+      .set({ updatedAt: new Date(Date.now() - ageMs) })
+      .where(like(chatPublications.idempotencyKey, `run:${runId}:dmstatus:%`));
+
+  it("shows the live steps of a legacy run and throttles the edits (DM-PROGRESS)", async () => {
+    process.env[TELEGRAM_DM_STATUS_ENV] = "true";
+    const fixture = await seedBridgedConversation();
+    const runId = await insertRun(fixture, {
+      status: "running",
+      startedAt: new Date(),
+    });
+
+    // The gateway reports the bare tool name through the runtime status and
+    // the preview through its compact run-log line.
+    setHeartbeatRunRuntimeStatus({
+      companyId: fixture.companyId,
+      issueId: fixture.issueId,
+      agentId: fixture.agentId,
+      runId,
+      phase: "adapter_startup",
+      message: "Using read_file",
+      currentToolName: "read_file",
+    });
+    recordDmProgressLogChunk(runId, "stdout", "  [tool] read_file /work/drafts/deck.pptx\n");
+    await enqueueChatRunMilestones(db);
+    let rows = await dmStatusRows(fixture);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.payload.text).toContain("читаю презентацию deck.pptx");
+    expect(rows[0]!.payload.text).not.toContain("/work/drafts");
+
+    // A new step kind right after the previous edit waits for the floor.
+    recordDmProgressLogChunk(runId, "stdout", "  [tool] patch slides 4, 9\n");
+    await enqueueChatRunMilestones(db);
+    rows = await dmStatusRows(fixture);
+    expect(rows[0]!.payload.text).not.toContain("правлю");
+
+    await ageDmStatusRow(runId, 10_000);
+    await enqueueChatRunMilestones(db);
+    rows = await dmStatusRows(fixture);
+    expect(rows[0]!.payload.text).toContain("правлю слайды 4, 9");
+    expect(rows[0]!.payload.text).toContain("Сделано:");
+    expect(rows[0]!.payload.text).toContain("• читаю презентацию deck.pptx");
+
+    // The same kind with a new target waits for the full interval (45 s).
+    recordDmProgressLogChunk(runId, "stdout", "  [tool] patch slide 12\n");
+    await ageDmStatusRow(runId, 10_000);
+    await enqueueChatRunMilestones(db);
+    rows = await dmStatusRows(fixture);
+    expect(rows[0]!.payload.text).not.toContain("слайд 12");
+
+    await ageDmStatusRow(runId, 60_000);
+    await enqueueChatRunMilestones(db);
+    rows = await dmStatusRows(fixture);
+    expect(rows[0]!.payload.text).toContain("правлю слайд 12");
+  });
+
+  it("turns the status message on from the instance settings, and off for steps (DM-PROGRESS)", async () => {
+    // No environment switch: the stored setting alone enables the status.
+    await instanceSettingsService(db).updateGeneral({
+      telegramDmProgress: { enabled: true },
+    });
+    invalidateTelegramDmProgressSettingsCache();
+    const fixture = await seedBridgedConversation();
+    const runId = await insertRun(fixture, {
+      status: "running",
+      startedAt: new Date(),
+    });
+    recordDmProgressLogChunk(runId, "stdout", "  [tool] terminal pnpm vitest run\n");
+    await enqueueChatRunMilestones(db);
+    let rows = await dmStatusRows(fixture);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.payload.text).toContain("проверяю результат");
+
+    // Steps switched off while the environment keeps the status on: the
+    // message shows only the milestone and the elapsed time.
+    process.env[TELEGRAM_DM_STATUS_ENV] = "true";
+    await instanceSettingsService(db).updateGeneral({
+      telegramDmProgress: { enabled: false },
+    });
+    invalidateTelegramDmProgressSettingsCache();
+    await ageDmStatusRow(runId, 120_000);
+    await enqueueChatRunMilestones(db);
+    rows = await dmStatusRows(fixture);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.payload.text).toContain("работаю");
+    expect(rows[0]!.payload.text).not.toContain("проверяю");
   });
 
   it("splits a long structured answer inline when MYRMIDON_TELEGRAM_SPLIT_MAX_PARTS admits it (U1 delivery)", async () => {

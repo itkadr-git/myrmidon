@@ -305,6 +305,8 @@ async function sourceIssueId(
     }
     // myrmidon(STALE-BLOCK): a lifted-block signal lives in the process-level
     // registry; the source id is the task the sweep unblocked.
+    // myrmidon(REVIEW-ROUTING): the review routing signal is also about one task.
+    case "review_routing":
     case "stale_block": {
       const row = await db
         .select({ id: issues.id })
