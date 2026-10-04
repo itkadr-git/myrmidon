@@ -36,6 +36,16 @@ const SINGLETON_KEY = "default";
 
 type Runner = Pick<Db, "select" | "insert" | "update">;
 
+/**
+ * The persisted shape of one company's document: the sections sit at the top
+ * level next to the changelog — the shape `parseTelegramNotifyDocument` reads.
+ * (The parsed document nests the sections under `settings`; writing that
+ * nested form back would read as the defaults.)
+ */
+export function serializeTelegramNotifyDocument(doc: TelegramNotifyDocument): Record<string, unknown> {
+  return { version: 1, ...doc.settings, changelog: doc.changelog };
+}
+
 function companyDocuments(raw: unknown): Record<string, TelegramNotifyDocument> {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return {};
   const out: Record<string, TelegramNotifyDocument> = {};
@@ -84,10 +94,13 @@ export async function mutateTelegramNotifySettingsDocument<T>(
     const { next, result } = change(current);
     if (!next) return { doc: current, result, changed: false };
     documents[companyId] = next;
+    const stored = Object.fromEntries(
+      Object.entries(documents).map(([id, doc]) => [id, serializeTelegramNotifyDocument(doc)]),
+    );
     await tx
       .update(instanceSettings)
       .set({
-        general: sql`jsonb_set(coalesce(${instanceSettings.general}, '{}'::jsonb), ${`{${TELEGRAM_NOTIFY_GENERAL_KEY}}`}::text[], ${JSON.stringify(documents)}::jsonb, true)`,
+        general: sql`jsonb_set(coalesce(${instanceSettings.general}, '{}'::jsonb), ${`{${TELEGRAM_NOTIFY_GENERAL_KEY}}`}::text[], ${JSON.stringify(stored)}::jsonb, true)`,
       })
       .where(eq(instanceSettings.id, row.id));
     return { doc: next, result, changed: true };

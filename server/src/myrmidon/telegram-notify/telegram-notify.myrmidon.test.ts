@@ -5,11 +5,11 @@
 import express from "express";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
-import { emptyTelegramNotifyDocument } from "@paperclipai/shared";
+import { emptyTelegramNotifyDocument, parseTelegramNotifyDocument } from "@paperclipai/shared";
 import { errorHandler } from "../../middleware/index.js";
 import { telegramNotifyRoutes } from "./routes.js";
 import { applyTelegramNotifyPatch, telegramNotifyService } from "./service.js";
-import { memoryTelegramNotifyStore } from "./settings-store.js";
+import { memoryTelegramNotifyStore, serializeTelegramNotifyDocument } from "./settings-store.js";
 
 const COMPANY_ID = "22222222-2222-4222-8222-222222222222";
 const OTHER_COMPANY_ID = "33333333-3333-4333-8333-333333333333";
@@ -196,5 +196,15 @@ describe("myrmidon(TG-NOTIFY-A): the routes", () => {
     await request(app).patch(URL).send({}).expect(400);
     const read = await request(app).get(URL).expect(200);
     expect(read.body.changelog).toEqual([]);
+  });
+});
+
+describe("myrmidon(TG-NOTIFY-A): the persisted shape round-trips", () => {
+  it("parse(serialize(doc)) keeps the settings and the changelog", () => {
+    const doc = emptyTelegramNotifyDocument();
+    doc.settings.digest.enabled = true;
+    doc.settings.inbound.requireMention = false;
+    doc.changelog = [{ at: "2026-10-03T00:00:00.000Z", actor: "u1", field: "digest.enabled", from: false, to: true }];
+    expect(parseTelegramNotifyDocument(serializeTelegramNotifyDocument(doc))).toEqual(doc);
   });
 });
