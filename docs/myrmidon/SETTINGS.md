@@ -126,6 +126,18 @@ A track writes only into its own section. A row is added in the same PR as the s
 | `MYRMIDON_DEPLOY_SMOKE_AGENT` | RELEASE-GATE | unset | UUID of one specific agent for the smoke instead of polling all bots of the company | Unset — all `hermes_gateway` agents of the company are polled |
 | `MYRMIDON_DEPLOY_SMOKE_TIMEOUT_SEC` | RELEASE-GATE | `300` | How long the smoke waits for a bot container to re-apply (the incident asked for 5 minutes) | From 10 to 1800 |
 | `MYRMIDON_DEPLOY_SMOKE_INTERVAL_SEC` | RELEASE-GATE | `10` | Poll interval of the container statuses in the smoke | From 1 to 60 |
+| `MYRMIDON_BOT_IMAGE_ROLLOUT` | BOT-IMAGE-ROLLOUT | `1` (on) | The bot runtime images (hermes, hermes-dev, hermes-node) of the same release roll out with the board (deploy.sh step 9.5, `bot-image-rollout.sh`): digests resolved from the same release, pulled, added to dockergate's `images` (config re-read by SIGHUP), the fleet enrolled in `bots[]`, the bot cards switched one at a time (canary first, a running run is never interrupted — a deferred bot retries), the superseded images removed after the fleet moved, every switch journalled | `0` — the manual path (the deploy warns: that is the 03.10 split by choice) |
+| `MYRMIDON_BOT_IMAGE_ROLLOUT_CANARY` | BOT-IMAGE-ROLLOUT | unset | Agent id switched first, before the rest of the fleet (canary) | Unset — plain order |
+| `MYRMIDON_BOT_IMAGE_ROLLOUT_BOT_TIMEOUT_SEC` | BOT-IMAGE-ROLLOUT | `900` | How long one deferred bot is retried (it keeps its old image; the periodic sweep applies the release image later) | From 10 to 86400 |
+| `MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_CONFIG` | BOT-IMAGE-ROLLOUT | unset | Path of the dockergate `config.json` this rollout edits (`images[]`, `bots[]`): structural jq edits, verified by `dockergate check-config` when the command below is set | Unset — the rollout refuses (fail-closed): the images and enrollment are its job |
+| `MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_CHECK_CONFIG_COMMAND` | BOT-IMAGE-ROLLOUT | unset | Command run after each config edit with `MYR_BOT_CFG_FILE` naming the edited file, e.g. `docker exec dockergate /dockergate check-config --config "$MYR_BOT_CFG_FILE"` | Unset — a warning: the edits are not verified by the real binary |
+| `MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_SIGNAL_COMMAND` | BOT-IMAGE-ROLLOUT | unset | How dockergate is told to re-read its config (SIGHUP), e.g. `docker exec dockergate kill -HUP 1` | Unset — a warning: the file changed but dockergate keeps the old config until reloaded |
+| `MYRMIDON_BOT_IMAGE_ROLLOUT_FLEET_HOSTS` | BOT-IMAGE-ROLLOUT | unset | Fleet hosts the bots run on (comma-separated, `remote:<user>@<host>` each, the `MYR_<COMPONENT>_HOST` shape): the images are pulled there and the fleetd `bots[]` is enrolled | Unset — everything bot-side happens on the local host |
+| `MYRMIDON_BOT_IMAGE_ROLLOUT_FLEET_CONFIG` | BOT-IMAGE-ROLLOUT | `/etc/myrmidon-fleetd/config.json` | fleetd config.json on a fleet host (the rollout enrolls the same `bots[]` there) | Any readable path on the fleet hosts |
+| `MYRMIDON_BOT_IMAGE_ROLLOUT_LOG` | BOT-IMAGE-ROLLOUT | `STATE_DIR/bot-image-rollout.log` | The rollout journal: `UTC agent-id old-image -> new-image (outcome)` per line | Any writable path |
+| `MYRMIDON_BOT_IMAGE_ROLLOUT_BATCH_SIZE` | ONE-DEPLOY | `5` | Bot cards switched per batch; hard cap 5 (a larger value is clamped). A bot is switched only while its agent is paused or idle | 1 to 5 |
+| `MYRMIDON_COMPONENT_AUTO_ROLLBACK` | ONE-DEPLOY | `1` | A component failure inside the deploy window rolls the changed components, the dockergate config and the board back together | `0` — manual contract: nothing rolls back, maintenance stays on |
+| `MYRMIDON_RELEASE_MANIFEST_FILE` | ONE-DEPLOY | unset | An offline copy of the release manifest `release-components.json` used instead of the GitHub release (`release-manifest.sh --from-file`) | A readable file |
 | `MYRMIDON_DEPLOY_HEALTH_POLL_SEC` | R5-A | `5` | Reserved: health poll interval in the verification phase | From 1 to 300 |
 | `MYRMIDON_DEPLOY_HEALTH_TIMEOUT_SEC` | R5-A | `300` | Reserved: budget of the health verification phase | From 10 to 3600 |
 | `MYRMIDON_DEPLOY_REGISTRY_INSPECT_URL` | R5-A | unset | Read-only inspect endpoint of the registry for digest verification, answers `?ref=<reference>` with JSON like `imagetools inspect`; for cases when the board container cannot see ghcr.io | Unset — the board reads ghcr.io directly |
@@ -158,6 +170,34 @@ A track writes only into its own section. A row is added in the same PR as the s
 |---|---|---|---|---|
 | `MYRMIDON_WORKSPACE_PNPM_STORE_DIR` | WORKSPACE-HYGIENE | unset — `<repository root>/.paperclip/pnpm-store` | Absolute path of the shared pnpm store into which `provision-worktree.sh` installs packages and from which they are imported into the workspace `node_modules` with hard links (`--config.package-import-method=hardlink`): one store for all workspaces of one repository instead of a full copy of packages per branch. The repository root is taken from `PAPERCLIP_WORKSPACE_REPO_ROOT` (then `PAPERCLIP_WORKSPACE_BASE_CWD`) — the default path lies on the same volume as the workspaces, so hardlink import works | A relative path in this variable is resolved from the same anchor. Store and workspace on different filesystems — installation falls back to vendor behavior (pnpm's own default store) with a warning to stderr |
 | `MYRMIDON_WORKSPACE_PNPM_STORE` | WORKSPACE-HYGIENE | `1` (enabled) | Master switch of the shared store: `0`/`false`/`no`/`off` — `provision-worktree.sh` runs `pnpm install` with vendor argv without store flags | Disabling returns the previous disk usage (a full copy of `node_modules` per workspace) |
+## BOT-DISK E — host disk usage signal
+
+| Variable | Function | Default | What it does | How to disable / special |
+|---|---|---|---|---|
+| `MYRMIDON_HOST_DISK_USAGE_THRESHOLD_PERCENT` | BOT-DISK E | `85` | The fill level of the host disk that raises the attention signal. The sweep measures the disk of the server data root (`MYRMIDON_HOST_DISK_DATA_ROOT`) on every scheduler tick, keeps a sample ring for the growth rate per hour, and when usage crosses this level the attention queue gets one row with the numbers and the biggest consumers. The value is the default at FIRST start only; the effective threshold lives in the instance settings (`instance_settings.general.hostDisk`) and changes live on the Instance → General page («Host disk») or through `GET`/`PATCH /api/myrmidon/host-disk` — the sweep re-reads it on every measurement, no restart | A non-integer or a value outside 1–99 — the default (85). A stored row that does not validate is ignored as a whole |
+| `MYRMIDON_HOST_DISK_DATA_ROOT` | BOT-DISK E | `/data` | Directory whose filesystem usage is measured: `statfs` of this path reports the disk the board's database, workspaces and container volumes live on | Must exist and be readable by the server process; unreadable — the sweep logs one error per tick and no signal is raised |
+| `MYRMIDON_HOST_DISK_CONSUMER_PATHS` | BOT-DISK E | the data root | Comma-separated directories ranked as «biggest consumers» in the signal: each is walked with a bounded depth/entry/time cap, biggest first | Unset — the data root itself is the one consumer listed |
+
+
+## 1.6.1 — BOT-DISK B: shared package cache for bot containers
+
+Not an environment variable: an instance setting, `instance_settings.general.botDisk.sharedPackageCachePath`,
+changed on Instance → General («Shared package cache for bots») or through
+`GET`/`PATCH /api/myrmidon/bot-disk` (GET is any board member, PATCH is
+instance-admin only). It applies without a restart: the local driver and the
+profile compiler re-read it on every reconcile pass, and every bot on the
+default host is recreated with the new binds on the next pass. Full guide:
+[bot-disk-cache.md](bot-disk-cache.md).
+
+| Setting | Function | Default | What it does | How to disable / special |
+|---|---|---|---|---|
+| `general.botDisk.sharedPackageCachePath` | 1.6.1-BOT-DISK-B | unset (no shared cache) | Absolute host directory whose `pnpm`, `go-mod`, `go-build` and `gradle` subdirectories every bot on the default host mounts read-write at `/cache/…`; the profile compiler points `npm_config_store_dir`, `GOMODCACHE`, `GOCACHE` and `GRADLE_USER_HOME` at the mounts (pip is not covered: the image's `PIP_NO_CACHE_DIR` cannot be unset). Bots on a fleetd host are not affected (logged once) | `null` or empty — off. **Operator step:** dockergate must allow the same directory as `packageCacheRoot` ([dockergate.md](dockergate.md)), otherwise every cache bind is refused with `mount_source_not_allowed`; the four subdirectories must exist and belong to uid/gid 10001 |
+| `general.botDisk.gitMirrorRepos` | 1.6.2-BOT-DISK-C | `[]` (no mirrors) | `owner/repo` names of GitHub repositories the board keeps a bare mirror of under `<sharedPackageCachePath>/git/<owner>/<repo>.git`, refreshed by `git fetch --prune`; bots mount `<cache>/git` read-only at `/cache/git` and the image's git wrapper clones with `--reference-if-able`, so clones borrow objects instead of duplicating them. Needs `sharedPackageCachePath`. Applies on the next reconcile pass / maintenance tick, no restart | `null` or `[]` — off (the bind goes away). **Operator step:** create `<cache>/git` owned by the board's user, mode 0755 (dockergate already accepts it read-only under `packageCacheRoot`); a private repository needs a `GITHUB_TOKEN` on the server. Do not delete a mirror while a clone borrows it. See [bot-disk-cache.md](bot-disk-cache.md) |
+| `general.botDisk.gitMirrorRefreshMs` | 1.6.2-BOT-DISK-C | `900000` (15 min) | How often each git mirror is fetched (60 000 ms to 86 400 000 ms; one refresh at a time, a failed fetch waits a full interval) | `null` — the default |
+| `general.botDisk.pnpmStore` | 1.6.2-BOT-DISK-C | `workspace` | Where bots with the shared cache keep the pnpm store: `workspace` — `/workspace/.pnpm-store`, the same mount as the clones, so pnpm hard-links `node_modules` (a store on another mount makes pnpm copy); `shared` — `/cache/pnpm`, one copy per host, imported by `clone-or-copy` (reflink on XFS with reflink or btrfs, a copy on ext4) | `null` — the default. The image itself defaults to the workspace store, with or without the cache |
+| `general.botDisk.sharedCacheRoles` | 1.6.2-BOT-DISK-C | `engineer`, `reviewer`, `devops`, `release`, `qa` | Agent roles (`agents.role`) whose bots get the shared package cache and git mirror mounts and variables. Every other bot (marketing, support, …) gets none, so enabling the cache does not recreate it or show profile drift. Applies without a restart: a change recreates exactly the bots whose membership changes | `null` — the default list; `[]` — no bot gets the cache |
+| `MYRMIDON_CLONE_IDLE_TTL_SEC` | 1.6.2-BOT-DISK-C | written by the board (the lifecycle's `idleTtlMs` in seconds) | A bot-side variable, not an operator input: the profile compiler writes it into the `.env` of bots of the `sharedCacheRoles` roles, and the in-container `bot-clone-hygiene` reads it to decide when a clean, fully pushed, idle clone is removed (`0`: lifecycle off, report only). Set the policy through `general.botDisk.idleTtlMs` / `enabled`, not here (a card value of this name is dropped) | `general.botDisk.enabled: false` writes `0`. Optional bot-side `MYRMIDON_CLONE_HYGIENE_INTERVAL_SEC` (default 900) sets the reporter's pass interval |
+
 ## P12 — the deferred addressee-wake sweeper
 
 | Variable | Function | Default | What it does | How to disable / special |
@@ -1114,3 +1154,25 @@ is accepted. An invalid input answers 400 with a clear message.
 | Variable | Function | Default | What it does | How to disable / special |
 |---|---|---|---|---|
 | `pluginEntitlementKeys` | 1.6.2-PLUGIN-ENTITLEMENT C | absent | The accepted plugin entitlement keys in the instance general settings; absent means "no keys registered" — every entitlement-gated plugin stays inactive | Remove the keys in the UI or via DELETE …/keys/:pluginId; a malformed stored row fails closed to "no keys" |
+
+## 1.6.3 — PROMPT-BUDGET C: prompt-budget advice and deep analysis
+
+What the last run's prompt was made of — which part dominates it and what to do about it — is shown
+on the agent card (Overview). The advice is computed on request from the recorded breakdown; a
+"Deep analysis" button files a task for a cheap-model optimizer agent, which drafts instruction
+edits as a comment on that task. Nothing is scheduled and nothing is changed automatically.
+
+The static thresholds are code constants of
+`server/src/myrmidon/prompt-budget-advice/advice.ts`, not settings: a part is worth a recommendation
+from 30% of the prompt (`PROMPT_BUDGET_ADVICE_SHARE_PCT`), is critical from 50%
+(`PROMPT_BUDGET_ADVICE_CRIT_SHARE_PCT`), and no advice is produced below 2000 prompt tokens
+(`PROMPT_BUDGET_ADVICE_MIN_TOTAL_TOKENS`).
+
+API: `GET /api/myrmidon/companies/:companyId/prompt-budget/agents/:agentId/advice` (company
+member) returns the breakdown and the recommendations; `POST .../advice/deep` (board) answers 201
+with the id and identifier of the filed task, or 422 with a clear message when no optimizer agent
+is configured or usable.
+
+| Field | Default | What it does | Bounds / special |
+|---|---|---|---|
+| `promptBudget.optimizerAgentId` | absent | Agent that receives the deep-analysis task filed by the "Deep analysis" button | A uuid of another agent of the same company; absent, blank or not a uuid answers the deep POST with 422. An additive field of the `promptBudget` area owned by the thresholds part (`instance_settings.general.promptBudget`); no environment variable |

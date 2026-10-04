@@ -121,6 +121,57 @@ one service, one image line, one source of the image. The override the rollout w
 contains only the image line, so a service defined in your own compose file keeps its
 volumes, sockets and networks; the override only pins which image it runs.
 
+### One deploy for every component (ONE-DEPLOY)
+
+A release publishes several images: the board, dockergate, fleetd and the bot images. On
+04.10 only the board moved to 1.6.2 while dockergate stayed on 1.3.0, and the shared package
+cache did not work until an operator updated dockergate by hand. Now one command updates
+everything:
+
+```bash
+scripts/myrmidon/deploy/deploy.sh --config deploy.env --release myr-v1.6.2
+```
+
+- **Source of truth.** The release publish step uploads the machine-readable manifest
+  `release-components.json` (every component by repository and digest) as a release asset;
+  `release-manifest.sh` reads it (for a release published before the manifest it reads the
+  digest table of the release body). `MYRMIDON_RELEASE_MANIFEST_FILE` points at an offline
+  copy. `--digest` alone (the deploy started from the board interface) finds the same
+  release by the board image's version label.
+- **One maintenance window.** The board, dockergate, fleetd where deployed
+  (`MYR_<COMPONENT>_HOST`) and the bot image list in dockergate `images[]` change inside
+  the same window. A component that already runs its release image is **not restarted**; the
+  dry run lists every component as `old -> new` or `unchanged`. When nothing changed no
+  window opens.
+- **Config before restart.** dockergate's config (`MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_CONFIG`)
+  gets the release bot images and the fleet's `bots[]` by a structural edit, and is checked
+  with `dockergate check-config` run with the **new** dockergate image before the service is
+  recreated; a refusal stops the deploy. When dockergate itself is unchanged it is told to
+  re-read the file (SIGHUP).
+- **Verified.** The board by `/api/health` (version, commit); dockergate by its startup
+  self-check line, whose version must equal the version of the new binary; fleetd by its
+  health probe.
+- **All-or-nothing.** If any component fails inside the window, everything this deploy
+  changed rolls back together: the changed components (to the image each ran before), the
+  dockergate config and the board; then maintenance is lifted. A failure in the rollback is
+  reported as `ROLLBACK INCOMPLETE` and maintenance stays on.
+  `MYRMIDON_COMPONENT_AUTO_ROLLBACK=0` restores the old manual contract. A release whose
+  component or bot digests are missing, and a component that cannot roll out (registry, CI
+  labels, compose service), is refused **before** the window.
+- **Bot cards.** After the window, bot cards that track the release image switch: a card
+  whose image is a digest-pinned image of one of our bot repositories (hermes, hermes-dev,
+  hermes-node) that is not the release's image of that repository tracks and moves to the
+  release image of the **same** repository; any other image (another repository, a tag, none)
+  is pinned and left alone. Cards switch in **batches of at most 5**
+  (`MYRMIDON_BOT_IMAGE_ROLLOUT_BATCH_SIZE`, capped at 5), and a bot only while its agent is
+  **paused or idle**; a busy bot is retried within `MYRMIDON_BOT_IMAGE_ROLLOUT_BOT_TIMEOUT_SEC`
+  and otherwise keeps its old image (the periodic sweep applies it later), so no run is
+  interrupted. Every batch and failure is logged and journalled
+  (`$STATE_DIR/bot-image-rollout.log`), with a summary in
+  `$STATE_DIR/bot-image-rollout-summary.json`. The superseded bot images leave `images[]`
+  only after every bot moved. Bot-card failures end the deploy as DEGRADED. There is no board
+  setting for a default bot image to update.
+
 ### Upgrading from 1.5.0 to 1.6.0
 
 What changes for operators:
