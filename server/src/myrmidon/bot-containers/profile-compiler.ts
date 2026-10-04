@@ -167,18 +167,10 @@ export interface HermesProfileHindsightSettings {
 }
 
 /**
- * Instance-wide LLM gateway settings (e.g. an internal OpenAI-compatible
- * gateway endpoint) — not carried by the agent card, merged in once per
- * instance by the caller (G3), the same way
- * {@link HermesProfileHindsightSettings.apiUrl} is.
- * Applied to `model.base_url`/`model.api_key` and to every `fallback_model`
- * entry's `base_url`/`key_env`: Hermes resolves each of those independently
- * (`hermes_cli/runtime_provider_backends.py` for `model`,
- * `hermes_cli/fallback_config.py` for `fallback_model` entries — neither
- * inherits `base_url`/the key from the other). Auxiliary models (vision,
- * compression) are not configured with their own endpoint at all and simply
- * reuse whatever `model.base_url`/`model.api_key` resolve to, so fixing
- * `model` covers them too.
+ * myrmidon(BOT-LSP): Hermes `lsp:` block — language-server behaviour for the
+ * bot's code tools. Set instance-wide via
+ * {@link HermesProfileInstanceDefaults.lsp} and per agent via
+ * {@link HermesProfileInput.lsp}; the agent's fields win.
  */
 export interface HermesProfileLspSettings {
   /**
@@ -193,7 +185,7 @@ export interface HermesProfileLspSettings {
   idleTimeout?: number;
   /**
    * Glob patterns to exclude from language server analysis (e.g., for monorepos that are checked separately).
-   * Example: ['**/myrmidon/**', '/workspace/*/repo']
+   * Example: a glob matching every `myrmidon` directory, or `/workspace/<x>/repo`.
    */
   excludeRoots?: string[];
   /**
@@ -712,52 +704,38 @@ function buildModelContextLength(
  * myrmidon(BOT-LSP): build LSP configuration from instance defaults and per-agent overrides.
  * Merges settings with agent-specific settings taking precedence over instance defaults.
  */
-function buildLspConfig(
-  input: HermesProfileInput,
-): YamlMapping | undefined {
-  // Start with instance defaults, if any
-  const instanceLsp = input.instanceDefaults.lsp;
-  // Agent-specific settings override instance defaults
-  const agentLsp = input.lsp;
+function buildLspConfig(input: HermesProfileInput): YamlMapping | undefined {
+  const base = input.instanceDefaults.lsp;
+  const agent = input.lsp;
+  if (!base && !agent) return undefined;
 
-  if (!instanceLsp && !agentLsp) {
-    return undefined;
-  }
+  const nonEmptyRoots = (roots: readonly string[] | undefined) =>
+    roots && roots.length > 0 ? roots : undefined;
 
-  // Merge settings with agent taking precedence
-  const finalLsp: YamlMapping = {};
-  
-  // Use instance settings as base if available
-  if (instanceLsp) {
-    if (instanceLsp.enabled !== undefined) finalLsp.enabled = instanceLsp.enabled;
-    if (instanceLsp.idleTimeout !== undefined) finalLsp.idle_timeout = instanceLsp.idleTimeout;
-    if (instanceLsp.excludeRoots && instanceLsp.excludeRoots.length > 0) finalLsp.exclude_roots = instanceLsp.excludeRoots;
-    if (instanceLsp.waitMode) finalLsp.wait_mode = instanceLsp.waitMode;
-    if (instanceLsp.servers) finalLsp.servers = instanceLsp.servers;
-  }
-
-  // Override with agent-specific settings if provided
-  if (agentLsp) {
-    if (agentLsp.enabled !== undefined) finalLsp.enabled = agentLsp.enabled;
-    if (agentLsp.idleTimeout !== undefined) finalLsp.idle_timeout = agentLsp.idleTimeout;
-    if (agentLsp.excludeRoots && agentLsp.excludeRoots.length > 0) finalLsp.exclude_roots = agentLsp.excludeRoots;
-    if (agentLsp.waitMode) finalLsp.wait_mode = agentLsp.waitMode;
-    if (agentLsp.servers) {
-      // If we have both instance and agent servers, merge them with agent taking precedence
-      if (finalLsp.servers && typeof finalLsp.servers === 'object') {
-        finalLsp.servers = { ...finalLsp.servers as Record<string, unknown>, ...agentLsp.servers };
-      } else {
-        finalLsp.servers = agentLsp.servers;
-      }
+  // Servers merge per server: an agent entry overrides the instance entry's
+  // fields one level deep, keeping instance fields it does not set.
+  let servers: Record<string, YamlNode> | undefined;
+  if (base?.servers || agent?.servers) {
+    servers = { ...base?.servers };
+    for (const [name, override] of Object.entries(agent?.servers ?? {})) {
+      const inherited = servers[name];
+      servers[name] =
+        isYamlMapping(inherited) && isYamlMapping(override) ? { ...inherited, ...override } : override;
     }
   }
 
-  // Only return if we have at least one setting
-  if (Object.keys(finalLsp).length === 0) {
-    return undefined;
-  }
+  const lsp: YamlMapping = {
+    enabled: agent?.enabled ?? base?.enabled,
+    idle_timeout: agent?.idleTimeout ?? base?.idleTimeout,
+    exclude_roots: nonEmptyRoots(agent?.excludeRoots) ?? nonEmptyRoots(base?.excludeRoots),
+    wait_mode: agent?.waitMode || base?.waitMode || undefined,
+    servers,
+  };
+  return Object.values(lsp).some((value) => value !== undefined) ? lsp : undefined;
+}
 
-  return finalLsp;
+function isYamlMapping(node: YamlNode): node is YamlMapping {
+  return typeof node === "object" && node !== null && !Array.isArray(node);
 }
 
 function buildConfigYaml(input: HermesProfileInput, warnings: string[]): string {
