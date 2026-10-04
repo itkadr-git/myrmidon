@@ -41,8 +41,6 @@ function record(overrides: Partial<VoiceSttSettings> = {}): VoiceSttSettings {
     language: "auto",
     diarization: false,
     maxDurationSec: 600,
-    keySecret: "agent-a/stt-key",
-    deepgramKeySecret: null,
     ...overrides,
   };
 }
@@ -110,12 +108,6 @@ describe("myrmidon(1.6.1 VOICE-STT C) container", () => {
   it("loads the record over the GET endpoint and renders its fields", async () => {
     await renderScreen();
     expect(apiMock.view).toHaveBeenCalledWith(COMPANY_ID);
-    // The secret NAME renders (it is a setting, not a value); the unset
-    // Deepgram name shows the unset indicator.
-    expect(inputByTestId("myrmidon-voice-stt-key-secret").value).toBe("agent-a/stt-key");
-    expect(
-      container.querySelector('[data-testid="myrmidon-voice-stt-deepgram-secret-state"]')?.textContent,
-    ).toBeTruthy();
     expect(inputByTestId("myrmidon-voice-stt-model").value).toBe("");
   });
 
@@ -145,17 +137,17 @@ describe("myrmidon(1.6.1 VOICE-STT C) container", () => {
     });
   });
 
-  it("an unchanged form sends nothing (save disabled), a changed secret name PATCHes it", async () => {
+  it("an unchanged form sends nothing (save disabled), a changed model PATCHes it", async () => {
     await renderScreen();
     const save = container.querySelector<HTMLButtonElement>('[data-testid="myrmidon-voice-stt-save"]');
     expect(save?.disabled).toBe(true);
 
-    await typeInto(inputByTestId("myrmidon-voice-stt-deepgram-secret"), "agent-a/deepgram");
-    apiMock.update.mockResolvedValue(record({ deepgramKeySecret: "agent-a/deepgram" }));
+    await typeInto(inputByTestId("myrmidon-voice-stt-model"), "agent-a/model");
+    apiMock.update.mockResolvedValue(record({ model: "agent-a/model" }));
     await click('[data-testid="myrmidon-voice-stt-save"]');
     await settle();
     expect(apiMock.update).toHaveBeenCalledWith(COMPANY_ID, {
-      deepgramKeySecret: "agent-a/deepgram",
+      model: "agent-a/model",
     });
   });
 
@@ -175,12 +167,11 @@ describe("myrmidon(1.6.1 VOICE-STT C) container", () => {
     ).toContain("maxDurationSec must be >= 1");
   });
 
-  it("the secret names render but nothing value-shaped ever appears in the DOM", async () => {
+  it("nothing value-shaped ever appears in the DOM", async () => {
     await renderScreen();
     // The record itself is value-free by contract; assert no api-key-shaped
     // literal leaks into the rendered tree from any layer.
     expect(container.innerHTML).not.toContain("sk-");
     expect(container.innerHTML).not.toMatch(/Bearer\s+[A-Za-z0-9._-]{10,}/);
-    expect(inputByTestId("myrmidon-voice-stt-key-secret").value).toBe("agent-a/stt-key");
   });
 });

@@ -19,8 +19,6 @@ function record(overrides: Partial<VoiceSttSettings> = {}): VoiceSttSettings {
     language: "auto",
     diarization: false,
     maxDurationSec: 600,
-    keySecret: "agent-a/stt-key",
-    deepgramKeySecret: null,
     ...overrides,
   };
 }
@@ -88,18 +86,11 @@ async function flushReact() {
 }
 
 describe("myrmidon(1.6.1 VOICE-STT C) view tier", () => {
-  it("renders all fields from the record; secret names show the set/unset indicator", async () => {
+  it("renders all fields from the record", async () => {
     render();
     await flushReact();
     expect(inputByTestId("myrmidon-voice-stt-model").value).toBe("");
     expect(inputByTestId("myrmidon-voice-stt-max-duration").value).toBe("600");
-    expect(inputByTestId("myrmidon-voice-stt-key-secret").value).toBe("agent-a/stt-key");
-    expect(
-      container.querySelector('[data-testid="myrmidon-voice-stt-key-secret-state"]')?.textContent,
-    ).toBeTruthy();
-    expect(
-      container.querySelector('[data-testid="myrmidon-voice-stt-deepgram-secret-state"]')?.textContent,
-    ).toBeTruthy();
   });
 
   it("edits toggle enable, backend, language and diarization and call onChange", async () => {
@@ -136,26 +127,12 @@ describe("myrmidon(1.6.1 VOICE-STT C) view tier", () => {
     expect(onSave).toHaveBeenCalledWith({ model: "paraformer-x", maxDurationSec: 1800 });
   });
 
-  it("clearing the model sends null; a cleared secret name sends null", async () => {
+  it("clearing the model sends null", async () => {
     render(record({ model: "paraformer-x" }));
     await flushReact();
     await typeInto(inputByTestId("myrmidon-voice-stt-model"), "");
-    await typeInto(inputByTestId("myrmidon-voice-stt-key-secret"), "");
     await click('[data-testid="myrmidon-voice-stt-save"]');
-    expect(onSave).toHaveBeenCalledWith({ model: null, keySecret: null });
-  });
-
-  it("the set/unset state text reflects the loaded record, not the local edit", async () => {
-    render();
-    await flushReact();
-    const stateBefore = container.querySelector(
-      '[data-testid="myrmidon-voice-stt-deepgram-secret-state"]',
-    )?.textContent;
-    await typeInto(inputByTestId("myrmidon-voice-stt-deepgram-secret"), "agent-a/deepgram");
-    // The saved indicator stays "unset" until the server record changes.
-    expect(
-      container.querySelector('[data-testid="myrmidon-voice-stt-deepgram-secret-state"]')?.textContent,
-    ).toBe(stateBefore);
+    expect(onSave).toHaveBeenCalledWith({ model: null });
   });
 
   it("a fresh record after save resets the local form", async () => {
@@ -200,13 +177,10 @@ describe("myrmidon(1.6.1 VOICE-STT C) view tier", () => {
   });
 
   it("the DOM stays value-free: no key-shaped literal ever renders", async () => {
-    render(record({ keySecret: "agent-a/stt-key", deepgramKeySecret: "agent-a/dg" }));
+    render(record({ model: "paraformer-x" }));
     await flushReact();
     expect(container.innerHTML).not.toContain("sk-");
     expect(container.innerHTML).not.toMatch(/Bearer\s+[A-Za-z0-9._-]{10,}/);
-    // The names themselves are settings and DO travel into the inputs.
-    expect(inputByTestId("myrmidon-voice-stt-key-secret").value).toBe("agent-a/stt-key");
-    expect(inputByTestId("myrmidon-voice-stt-deepgram-secret").value).toBe("agent-a/dg");
   });
 });
 

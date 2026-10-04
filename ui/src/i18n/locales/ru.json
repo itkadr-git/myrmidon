@@ -494,12 +494,6 @@
     "diarization": "Разделение говорящих (diarization)",
     "maxDuration": "Лимит длительности, секунд",
     "maxDurationHint": "Более длинные записи отклоняются с audio_too_long.",
-    "keySecret": "Имя секрета ключа шлюза",
-    "deepgramKeySecret": "Имя секрета ключа Deepgram",
-    "keySecretPlaceholder": "имя секрета",
-    "secretSet": "Секрет задан",
-    "secretUnset": "Нет секрета",
-    "secretHint": "Хранится только имя секрета; значение живёт в хранилище секретов компании и не доходит до этого экрана.",
     "save": "Сохранить настройки",
     "saving": "Сохранение..."
   }

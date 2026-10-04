@@ -15,8 +15,8 @@ export const VOICE_STT_LANGUAGES = ["auto", "ru"] as const;
 export type VoiceSttLanguage = (typeof VOICE_STT_LANGUAGES)[number];
 
 /** Settings record — the GET response and the PATCH write body (Part A
- * contract, fixed): every field is a plain setting; the key fields carry the
- * secret NAME only, never the value. */
+ * contract, fixed): every field is a plain setting. Secret names are
+ * write-only on the server and never part of the GET view. */
 export interface VoiceSttSettings {
   enabled: boolean;
   backend: VoiceSttBackend;
@@ -24,12 +24,10 @@ export interface VoiceSttSettings {
   language: VoiceSttLanguage;
   diarization: boolean;
   maxDurationSec: number;
-  keySecret: string | null;
-  deepgramKeySecret: string | null;
 }
 
-/** PATCH input — the mutable screen fields. The secret-name fields are
- * omitted when unchanged (send only what the user edited). */
+/** PATCH input — the mutable screen fields. Only changed fields are
+ * sent. */
 export type VoiceSttUpdateInput = Partial<
   Pick<
     VoiceSttSettings,
@@ -39,8 +37,6 @@ export type VoiceSttUpdateInput = Partial<
     | "language"
     | "diarization"
     | "maxDurationSec"
-    | "keySecret"
-    | "deepgramKeySecret"
   >
 >;
 

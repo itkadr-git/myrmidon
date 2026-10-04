@@ -494,12 +494,6 @@
     "diarization": "Speaker separation (diarization)",
     "maxDuration": "Max duration, seconds",
     "maxDurationHint": "Longer recordings are rejected with audio_too_long.",
-    "keySecret": "Gateway key secret name",
-    "deepgramKeySecret": "Deepgram key secret name",
-    "keySecretPlaceholder": "secret name",
-    "secretSet": "Secret set",
-    "secretUnset": "No secret",
-    "secretHint": "Only the secret name is stored; the value lives in the company secret store and never reaches this screen.",
     "save": "Save settings",
     "saving": "Saving..."
   }

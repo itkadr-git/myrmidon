@@ -3,13 +3,11 @@
 // in VoiceSttContainer.tsx so tests can drive both tiers separately.
 //
 // Fields (Part A contract): enabled toggle, backend (dashscope|deepgram),
-// model name, language (auto|ru), diarization flag, max duration limit, and
-// the two secret NAMES (gateway key / Deepgram key) — board-managed company
-// secrets whose values live only on the server. The screen renders the names
-// and an unset indicator; it never sees a secret value, so nothing value-like
-// can reach the DOM (guarded by tests).
+// model name, language (auto|ru), diarization flag, max duration limit.
+// Secret names are write-only on the server and are not part of this screen;
+// it never sees a secret value (guarded by tests).
 import { useEffect, useState } from "react";
-import { AudioLines, KeyRound } from "lucide-react";
+import { AudioLines } from "lucide-react";
 import { useTranslation } from "@/i18n";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -29,8 +27,6 @@ export interface VoiceSttFormState {
   language: VoiceSttSettings["language"];
   diarization: boolean;
   maxDurationSec: string;
-  keySecret: string;
-  deepgramKeySecret: string;
 }
 
 export function formFromSettings(settings: VoiceSttSettings): VoiceSttFormState {
@@ -41,8 +37,6 @@ export function formFromSettings(settings: VoiceSttSettings): VoiceSttFormState 
     language: settings.language,
     diarization: settings.diarization,
     maxDurationSec: String(settings.maxDurationSec),
-    keySecret: settings.keySecret ?? "",
-    deepgramKeySecret: settings.deepgramKeySecret ?? "",
   };
 }
 
@@ -61,12 +55,6 @@ export function diffFromSettings(
   const duration = Number.parseInt(form.maxDurationSec, 10);
   if (Number.isFinite(duration) && duration !== settings.maxDurationSec) {
     input.maxDurationSec = duration;
-  }
-  if (form.keySecret.trim() !== (settings.keySecret ?? "")) {
-    input.keySecret = form.keySecret.trim() || null;
-  }
-  if (form.deepgramKeySecret.trim() !== (settings.deepgramKeySecret ?? "")) {
-    input.deepgramKeySecret = form.deepgramKeySecret.trim() || null;
   }
   return input;
 }
@@ -202,47 +190,6 @@ export function VoiceSttScreenView({
           data-testid="myrmidon-voice-stt-max-duration"
         />
         <p className="text-xs text-muted-foreground">{t("voiceStt.maxDurationHint")}</p>
-      </section>
-
-      {/* 4. Secret names — values never travel to this screen */}
-      <section className="grid gap-3 md:grid-cols-2" data-testid="myrmidon-voice-stt-secrets">
-        <div className="space-y-1">
-          <Label htmlFor="voice-stt-key-secret">
-            <span className="inline-flex items-center gap-1">
-              <KeyRound className="h-3 w-3" aria-hidden="true" />
-              {t("voiceStt.keySecret")}
-            </span>
-          </Label>
-          <Input
-            id="voice-stt-key-secret"
-            value={form.keySecret}
-            placeholder={t("voiceStt.keySecretPlaceholder")}
-            onChange={(e) => set({ keySecret: e.target.value })}
-            data-testid="myrmidon-voice-stt-key-secret"
-          />
-          <p className="text-xs text-muted-foreground" data-testid="myrmidon-voice-stt-key-secret-state">
-            {settings.keySecret ? t("voiceStt.secretSet") : t("voiceStt.secretUnset")}
-          </p>
-        </div>
-        <div className="space-y-1">
-          <Label htmlFor="voice-stt-deepgram-secret">
-            <span className="inline-flex items-center gap-1">
-              <KeyRound className="h-3 w-3" aria-hidden="true" />
-              {t("voiceStt.deepgramKeySecret")}
-            </span>
-          </Label>
-          <Input
-            id="voice-stt-deepgram-secret"
-            value={form.deepgramKeySecret}
-            placeholder={t("voiceStt.keySecretPlaceholder")}
-            onChange={(e) => set({ deepgramKeySecret: e.target.value })}
-            data-testid="myrmidon-voice-stt-deepgram-secret"
-          />
-          <p className="text-xs text-muted-foreground" data-testid="myrmidon-voice-stt-deepgram-secret-state">
-            {settings.deepgramKeySecret ? t("voiceStt.secretSet") : t("voiceStt.secretUnset")}
-          </p>
-        </div>
-        <p className="text-xs text-muted-foreground md:col-span-2">{t("voiceStt.secretHint")}</p>
       </section>
 
       <div className="flex items-center gap-2">
