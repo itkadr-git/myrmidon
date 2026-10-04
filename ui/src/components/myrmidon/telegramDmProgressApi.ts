@@ -3,11 +3,7 @@
 //
 // PATCH saves to the instance settings; the next status sweep uses it, without
 // restarting the server.
-import type {
-  ResolvedTelegramDmProgress,
-  TelegramDmProgressPatch,
-  TelegramDmProgressSource,
-} from "@paperclipai/shared";
+import type { ResolvedTelegramDmProgress, TelegramDmProgressPatch } from "@paperclipai/shared";
 import { api } from "@/api/client";
 
 export type TelegramDmProgressView = ResolvedTelegramDmProgress;
@@ -19,14 +15,3 @@ export const telegramDmProgressApi = {
   update: (patch: TelegramDmProgressPatch) =>
     api.patch<TelegramDmProgressView>("/myrmidon/telegram-dm-progress", patch),
 };
-
-export function describeTelegramDmProgressSource(source: TelegramDmProgressSource): string {
-  switch (source) {
-    case "settings":
-      return "Saved here";
-    case "env":
-      return "Forced by the server environment";
-    default:
-      return "Default";
-  }
-}

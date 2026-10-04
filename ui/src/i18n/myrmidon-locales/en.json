@@ -767,5 +767,21 @@
     "cancel": "Cancel",
     "loading": "Loading plugin entitlement settings...",
     "saveFailed": "Could not save the key. Try again."
+  },
+  "telegramDmProgress": {
+    "title": "Telegram DM: live progress",
+    "description": "While a bot works on a message in a bridged Telegram DM, one status message shows what it is doing now (reading a file, editing slides, checking the result) and is edited in place until the answer replaces it. Saving takes effect at the next status update — no server restart.",
+    "enabledLabel": "Show live progress steps",
+    "enabledAria": "Show live progress in Telegram DM",
+    "intervalLabel": "Minimum seconds between edits",
+    "intervalBounds": "{{min}}–{{max}} s",
+    "sourceSettings": "Saved here",
+    "sourceEnv": "Forced by the server environment",
+    "sourceDefault": "Default",
+    "save": "Save live progress",
+    "saving": "Saving...",
+    "loading": "Loading the live progress settings...",
+    "loadFailed": "Failed to load the live progress settings.",
+    "saveFailed": "Saving the live progress settings failed."
   }
 }

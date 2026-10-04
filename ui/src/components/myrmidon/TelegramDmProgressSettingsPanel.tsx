@@ -8,16 +8,25 @@ import {
   TELEGRAM_DM_PROGRESS_MAX_INTERVAL_SEC,
   TELEGRAM_DM_PROGRESS_MIN_INTERVAL_SEC,
   type TelegramDmProgressPatch,
+  type TelegramDmProgressSource,
 } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
+import { useTranslation } from "@/i18n";
 import { Input } from "@/components/ui/input";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import {
-  describeTelegramDmProgressSource,
   telegramDmProgressApi,
   telegramDmProgressQueryKey,
   type TelegramDmProgressView,
 } from "./telegramDmProgressApi";
+
+// myrmidon(DM-PROGRESS): visible strings run through the fork i18n catalog
+// (ui/src/i18n/myrmidon-locales, `telegramDmProgress.*`).
+const SOURCE_KEYS: Record<TelegramDmProgressSource, string> = {
+  settings: "telegramDmProgress.sourceSettings",
+  env: "telegramDmProgress.sourceEnv",
+  default: "telegramDmProgress.sourceDefault",
+};
 
 export function TelegramDmProgressSettingsPanelView({
   view,
@@ -30,6 +39,7 @@ export function TelegramDmProgressSettingsPanelView({
   pending: boolean;
   error: string | null;
 }) {
+  const { t } = useTranslation();
   const [enabledDraft, setEnabledDraft] = useState<boolean | null>(null);
   const [intervalDraft, setIntervalDraft] = useState<string | null>(null);
 
@@ -56,13 +66,9 @@ export function TelegramDmProgressSettingsPanelView({
       <div className="space-y-1">
         <div className="flex items-center gap-2">
           <MessageSquareMore className="h-4 w-4 text-muted-foreground" />
-          <h2 className="text-sm font-semibold">Telegram DM: live progress</h2>
+          <h2 className="text-sm font-semibold">{t("telegramDmProgress.title")}</h2>
         </div>
-        <p className="max-w-2xl text-sm text-muted-foreground">
-          While a bot works on a message in a bridged Telegram DM, one status message shows what it is doing now
-          (reading a file, editing slides, checking the result) and is edited in place until the answer replaces it.
-          Saving takes effect at the next status update — no server restart.
-        </p>
+        <p className="max-w-2xl text-sm text-muted-foreground">{t("telegramDmProgress.description")}</p>
       </div>
 
       {error ? (
@@ -77,18 +83,18 @@ export function TelegramDmProgressSettingsPanelView({
             <ToggleSwitch
               checked={enabled}
               onCheckedChange={setEnabledDraft}
-              aria-label="Show live progress in Telegram DM"
+              aria-label={t("telegramDmProgress.enabledAria")}
               data-testid="telegram-dm-progress-enabled"
               disabled={view.enabledSource === "env"}
             />
-            <span className="text-sm">Show live progress steps</span>
+            <span className="text-sm">{t("telegramDmProgress.enabledLabel")}</span>
             <span className="text-xs text-muted-foreground" data-testid="telegram-dm-progress-enabled-source">
-              {describeTelegramDmProgressSource(view.enabledSource)}
+              {t(SOURCE_KEYS[view.enabledSource])}
             </span>
           </div>
           <div className="flex items-center gap-3">
             <label className="text-sm" htmlFor="telegram-dm-progress-interval">
-              Minimum seconds between edits
+              {t("telegramDmProgress.intervalLabel")}
             </label>
             <Input
               id="telegram-dm-progress-interval"
@@ -101,22 +107,27 @@ export function TelegramDmProgressSettingsPanelView({
               onChange={(event) => setIntervalDraft(event.target.value)}
             />
             <span className="text-xs text-muted-foreground" data-testid="telegram-dm-progress-interval-source">
-              {describeTelegramDmProgressSource(view.intervalSource)} ({TELEGRAM_DM_PROGRESS_MIN_INTERVAL_SEC}–
-              {TELEGRAM_DM_PROGRESS_MAX_INTERVAL_SEC})
+              {t(SOURCE_KEYS[view.intervalSource])} (
+              {t("telegramDmProgress.intervalBounds", {
+                min: TELEGRAM_DM_PROGRESS_MIN_INTERVAL_SEC,
+                max: TELEGRAM_DM_PROGRESS_MAX_INTERVAL_SEC,
+              })}
+              )
             </span>
           </div>
           <Button type="button" size="sm" disabled={pending || !dirty || !intervalValid} onClick={save}>
-            {pending ? "Saving..." : "Save live progress"}
+            {pending ? t("telegramDmProgress.saving") : t("telegramDmProgress.save")}
           </Button>
         </div>
       ) : (
-        <p className="text-sm text-muted-foreground">Loading the live progress settings...</p>
+        <p className="text-sm text-muted-foreground">{t("telegramDmProgress.loading")}</p>
       )}
     </section>
   );
 }
 
 export function TelegramDmProgressSettingsPanel() {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
   const query = useQuery({
@@ -127,7 +138,7 @@ export function TelegramDmProgressSettingsPanel() {
   const save = useMutation({
     mutationFn: telegramDmProgressApi.update,
     onMutate: () => setError(null),
-    onError: (err) => setError(err instanceof Error ? err.message : "Saving the live progress settings failed."),
+    onError: (err) => setError(err instanceof Error ? err.message : t("telegramDmProgress.saveFailed")),
     onSuccess: async () => {
       setError(null);
       await queryClient.invalidateQueries({ queryKey: telegramDmProgressQueryKey });
@@ -137,7 +148,7 @@ export function TelegramDmProgressSettingsPanel() {
   if (query.error) {
     return (
       <div className="text-sm text-destructive">
-        {query.error instanceof Error ? query.error.message : "Failed to load the live progress settings."}
+        {query.error instanceof Error ? query.error.message : t("telegramDmProgress.loadFailed")}
       </div>
     );
   }

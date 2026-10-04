@@ -8,6 +8,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TelegramDmProgressView } from "./telegramDmProgressApi";
 import { TelegramDmProgressSettingsPanelView } from "./TelegramDmProgressSettingsPanel";
+import { i18n } from "@/i18n";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -85,6 +86,20 @@ describe("TelegramDmProgressSettingsPanelView", () => {
     expect(saveButton().disabled).toBe(true);
     type(interval(), "30");
     expect(saveButton().disabled).toBe(false);
+  });
+
+  it("speaks the owner's language from the fork catalog", async () => {
+    await i18n.changeLanguage("ru");
+    try {
+      render({ enabled: true, enabledSource: "env", intervalSec: 45, intervalSource: "default" });
+      expect(container.textContent).toContain("Telegram-личка: ход работы");
+      expect(container.querySelector("[data-testid='telegram-dm-progress-enabled-source']")?.textContent).toBe(
+        "Задано окружением сервера",
+      );
+      expect(container.textContent).toContain("15–300 с");
+    } finally {
+      await i18n.changeLanguage("en");
+    }
   });
 
   it("shows the load placeholder without a view", () => {
