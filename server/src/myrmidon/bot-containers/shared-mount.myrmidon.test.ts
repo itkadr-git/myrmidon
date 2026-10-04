@@ -3,7 +3,6 @@ import os from "os";
 import path from "path";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
-  SharedMountSettings,
   DEFAULT_SHARED_MOUNT_SETTINGS,
   getEffectiveSharedMountSettings,
   isBotAllowedSharedAccess,
@@ -12,6 +11,7 @@ import {
   migrateHardlinkCopies,
   prepareBotSharedMount,
 } from "./shared-mount.js";
+import type { SharedMountSettings } from "@paperclipai/shared";
 
 describe("shared-mount", () => {
   let tempDir: string;
