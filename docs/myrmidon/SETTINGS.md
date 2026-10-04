@@ -699,6 +699,29 @@ in the UI takes effect without a restart (no env override, no new settings keys)
 No environment variables, no new secrets. Remove: the autonomy tree, the export line in
 `packages/shared/src/index.ts`, the two marker lines in `app.ts`/`instance-settings.ts`
 and this section.
+
+## 1.6.2 — AUTONOMY-MATRIX: the matrix in the tool gateway (tool -> action class mapping)
+
+The gateway enforcement half of the autonomy matrix (`server/src/myrmidon/autonomy/tool-mapping{,-store}.ts`,
+integration in `server/src/services/tool-gateway.ts`). Before an agent's tool call is
+executed, the tool is mapped onto an action class and the matrix verdict is resolved:
+`forbidden` → 403 `autonomy_forbidden`; `approval_required` → the existing
+`tool_action_requests` holding conveyor; `allowed` (and every non-agent caller) → the
+ordinary policy path. A tool with no action class is not governed. Full guide:
+[guides/autonomy-matrix-tool-gateway.md](guides/autonomy-matrix-tool-gateway.md),
+[guides/autonomy-matrix-tool-gateway.ru.md](guides/autonomy-matrix-tool-gateway.ru.md).
+
+The mapping is configurable per instance without a restart: it lives under
+`instance_settings.general.myrmidonAutonomyToolMapping` and changes take effect on the
+next gateway call (the resolver reads the row per call). The env variable below is only
+the forced override for an instance that never saved the setting; precedence:
+stored settings → env → built-in defaults (the three classes of the design with their
+default tool-name lists: merge / deploy / external_message — see the guide).
+
+| Variable | Function | Default | What it does | How to disable / special |
+|---|---|---|---|---|
+| `MYRMIDON_TOOL_AUTONOMY_MAPPING_JSON` | 1.6-AUTONOMY-GW | unset (built-in defaults) | A JSON array of `{ "tool": "<name>", "actionClass": "<class>" }` entries used when nothing is stored in `instance_settings.general.myrmidonAutonomyToolMapping`. Full gateway tool names win over bare upstream tool names; `_` and `-` compare equal | Any non-array / unparsable value is ignored (the built-in defaults apply). Once a mapping is saved from the settings key, the environment stops mattering |
+
 ## 1.6 — CTO-CHAT B (the board chat planner: owner text -> proposed epic)
 
 The planner behind the CTO chat (the 1.6 CTO-CHAT epic, part B): the owner's free text

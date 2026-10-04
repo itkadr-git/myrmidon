@@ -46,7 +46,10 @@ import { preserveCloudConnectorGeneralKey } from "../myrmidon/cloud-connector/st
 // myrmidon(SEC1): keep the access-hub host registry across vendor writes of `general`
 import { preserveAccessHubHostsGeneralKey } from "../myrmidon/access-hub/host-registry.js";
 // myrmidon(1.6-AUTONOMY): keep the autonomy matrix and regulations across vendor writes of `general`
-import { preserveAutonomyGeneralKey } from "../myrmidon/autonomy/store.js";
+import {
+  preserveAutonomyGeneralKey,
+  preserveAutonomyToolMappingGeneralKey,
+} from "../myrmidon/autonomy/store.js";
 // myrmidon(1.6-TG-PROACTIVITY-E, 1.6.1-TG-NOTIFY-B): keep the telegram-notify state across vendor writes of `general`
 import { preserveTelegramNotifyGeneralKey } from "../myrmidon/telegram-notify/proactivity-policy.js";
 // myrmidon(1.6.1-WIP-LIMIT-A): keep the stored WIP limits across vendor writes of `general`
@@ -633,6 +636,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
             ...preserveAccessHubHostsGeneralKey(current.general), // myrmidon(SEC1)
             ...preserveCloudConnectorGeneralKey(current.general), // myrmidon(CLOUD-CONNECTOR)
             ...preserveAutonomyGeneralKey(current.general), // myrmidon(1.6-AUTONOMY)
+            ...preserveAutonomyToolMappingGeneralKey(current.general), // myrmidon(1.6-AUTONOMY-GW)
             ...preserveTelegramNotifyGeneralKey(current.general), // myrmidon(1.6-TG-PROACTIVITY-E)
             ...preserveWipLimitGeneralKey(current.general), // myrmidon(1.6.1-WIP-LIMIT-A)
             ...preserveSttGeneralKey(current.general), // myrmidon(1.6.1 VOICE-STT A1)

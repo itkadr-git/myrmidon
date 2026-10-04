@@ -139,8 +139,12 @@ import { toolAccessPolicyService } from "./tool-access-policy.js";
 // myrmidon(S6): the per-agent tool/connection permission and its gate.
 import { agentToolPermissionAllows } from "@paperclipai/shared";
 import { loadAgentToolPermissions } from "../myrmidon/agent-tool-permissions.js";
-import { dbAutonomyGate } from "../myrmidon/autonomy/gate.js";
-import { getToolAutonomyClass } from "./autonomy-tool-mapping.js";
+// myrmidon(1.6-AUTONOMY-GW): the tool -> action-class mapping and the
+// agent-role matrix resolver consulted before a tool call is executed.
+// myrmidon(1.6-AUTONOMY-GW): the settings-backed mapping (instance settings
+// -> env -> defaults, resolved per call so a change applies without restart).
+import { resolveToolAutonomyMapping } from "../myrmidon/autonomy/tool-mapping-store.js";
+import { dbAutonomyVerdictForAgent } from "../myrmidon/autonomy/gate.js";
 import { commitToolActionReview } from "./tool-action-review.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import {
@@ -10520,13 +10524,17 @@ export function createToolGatewayService(
           consumeRateLimit: true,
         });
 
-        // myrmidon(1.6-AUTONOMY): autonomy matrix integration - check before tool access policy
-        const actionClass = getToolAutonomyClass(tool.name);
+        // myrmidon(1.6-AUTONOMY-GW): the autonomy matrix verdict for agent
+        // callers, resolved before the tool access policy. A tool with no
+        // action class is not governed (today's behaviour); a non-agent
+        // caller (board / admin / test call) is not subject to the matrix.
+        const toolMapping = await resolveToolAutonomyMapping(db, tool.name);
+        const actionClass = toolMapping.actionClass;
         if (actionClass && session.agentId) {
-          const autonomyGate = dbAutonomyGate(db);
-          const autonomyDecision = await autonomyGate.decide(
-            { actor: { type: "agent", agentId: session.agentId } } as any,
-            actionClass
+          const autonomyDecision = await dbAutonomyVerdictForAgent(
+            db,
+            session.agentId,
+            actionClass,
           );
 
           if (autonomyDecision.verdict === "forbidden") {
