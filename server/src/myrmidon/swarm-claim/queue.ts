@@ -18,6 +18,7 @@
 import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { agents, issues, type Db } from "@paperclipai/db";
 import { SWARM_CLAIM_QUEUE_ISSUE_STATUSES, type SwarmQueueCandidate } from "@paperclipai/shared";
+import { issueHasNoExecutionHold } from "../settled-holds/ready-predicate.js";
 
 /** One row of a role queue as the SQL reads it, before the claim join. */
 export interface RoleQueueRow {
@@ -83,6 +84,8 @@ export function roleQueueRows(db: Db, companyId: string, role: string) {
             and decomp.source_issue_id = ${issues.id}
             and decomp.status = 'in_flight'
         )`,
+        // myrmidon(HOLD-READY): not held by an execution hold (see idle-pickup.ts).
+        issueHasNoExecutionHold(db),
       ),
     )
     .orderBy(asc(issues.createdAt))
@@ -183,6 +186,8 @@ export async function listUnassignedQueue(
             and child.parent_id = ${issues.id}
             and child.status not in ('done', 'cancelled')
         )`,
+        // myrmidon(HOLD-READY): not held by an execution hold (see idle-pickup.ts).
+        issueHasNoExecutionHold(db),
       ),
     )
     .orderBy(asc(issues.createdAt))

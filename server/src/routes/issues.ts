@@ -4,6 +4,16 @@ import { getExecutionBlocker } from "../services/execution-blocker.js";
 // myrmidon(L2): clears a closed "do not replay" hold on plain resolve;
 // see docs/myrmidon/DIVERGENCE.md "L2".
 import { clearSettledReplayBlock } from "../myrmidon/settled-holds/clear.js";
+// myrmidon(HOLD-READY): a board unblock (out of blocked, or a reassignment)
+// clears the issue's settled replay hold and re-plans its parked wakes.
+import {
+  clearReplayHoldsOnHumanUnblock,
+  isHumanUnblock,
+  issueHasSettledReplayHold,
+  mayBeHumanUnblock,
+  replanParkedWakesAfterUnblock,
+  type HumanUnblockResult,
+} from "../myrmidon/settled-holds/human-unblock.js";
 import { extractIssueReferenceIdentifiers, requiresExecutionReconciliation } from "@paperclipai/shared";
 import {
   validateExecutionReconciliation,
@@ -13592,9 +13602,27 @@ export function issueRoutes(
         updateFields.status === "done";
       const shouldCollectTerminalIssueActions =
         updateFields.status === "done" || updateFields.status === "cancelled";
+      // myrmidon(HOLD-READY): a possible board unblock of an issue that has
+      // a settled replay hold runs the update in a transaction, so the hold
+      // is cleared atomically with it.
+      const humanUnblockPossible =
+        mayBeHumanUnblock({
+          requestActorType: req.actor.type,
+          runId: actor.runId,
+          existingStatus: existing.status,
+          assigneeChangeRequested:
+            normalizedAssigneeAgentId !== undefined ||
+            req.body.assigneeUserId !== undefined,
+        }) &&
+        (await issueHasSettledReplayHold(db, existing.companyId, existing.id));
+      let humanUnblock: HumanUnblockResult | null = null;
       const updateIssue = (tx?: Parameters<typeof svc.update>[2]) => {
         if (tx) {
-          if (shouldCollectCompletionPublication) {
+          // myrmidon(HOLD-READY): a board unblock only runs in a transaction
+          // to clear the hold atomically. Hand the update's own publications
+          // and post-commit actions to this route, which flushes them after
+          // commit — the same effects the non-transactional update has.
+          if (shouldCollectCompletionPublication || humanUnblockPossible) {
             return svc.update(
               id,
               issueUpdateData,
@@ -13731,7 +13759,8 @@ export function issueRoutes(
         Boolean(decision) ||
         shouldRelayStop ||
         persistReviewActivityTransactionally ||
-        reviewPolicySensitiveMutationRequested;
+        reviewPolicySensitiveMutationRequested ||
+        humanUnblockPossible;
       try {
         if (shouldUseTransactionalIssueUpdate) {
           issue = await db.transaction(async (tx) => {
@@ -13742,6 +13771,27 @@ export function issueRoutes(
               return null;
             const updated = await updateIssue(tx);
             if (!updated) return null;
+            // myrmidon(HOLD-READY): an explicit human unblock is an operator
+            // resolve of the settled "do not replay" hold.
+            if (
+              humanUnblockPossible &&
+              updated.assigneeAgentId &&
+              isHumanUnblock({
+                requestActorType: req.actor.type,
+                runId: actor.runId,
+                before: existing,
+                after: updated,
+              })
+            ) {
+              humanUnblock = await clearReplayHoldsOnHumanUnblock({
+                tx: tx as unknown as Db,
+                companyId: updated.companyId,
+                issueId: updated.id,
+                assigneeAgentId: updated.assigneeAgentId,
+                actor: { actorType: actor.actorType, actorId: actor.actorId },
+                postCommitActivityPublications,
+              });
+            }
             if (commentAttachmentIds?.length) {
               // Reassignment, comment creation and upload binding commit together.
               // An invalid or already-bound receipt rolls back the issue update.
@@ -13829,6 +13879,17 @@ export function issueRoutes(
       for (const publication of postCommitActivityPublications)
         publishActivity(publication);
       await flushIssuePostCommitActions(postCommitIssueActions);
+
+      // myrmidon(HOLD-READY): re-plan the wakes parked on the cleared hold.
+      const committedUnblock = humanUnblock as HumanUnblockResult | null;
+      if (committedUnblock?.replanAgentId) {
+        void replanParkedWakesAfterUnblock(heartbeat.wakeup, {
+          issueId: issue.id,
+          agentId: committedUnblock.replanAgentId,
+          actorId: actor.actorId,
+          clearedActionIds: committedUnblock.clearedActionIds,
+        });
+      }
 
       if (enteringBlocked) {
         const blockedIssue = issue;

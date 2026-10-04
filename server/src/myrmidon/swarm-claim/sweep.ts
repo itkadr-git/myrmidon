@@ -38,6 +38,7 @@
 
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { companies, agentWakeupRequests, issues, issueClaims, type Db } from "@paperclipai/db";
+import { wakeNotParkedOnExecutionHold } from "../settled-holds/ready-predicate.js";
 import {
   SWARM_CLAIM_QUEUE_ISSUE_STATUSES,
   SWARM_CLAIM_RELEASE_REASON_ISSUE_CLOSED,
@@ -472,6 +473,9 @@ export async function issueHasLiveClaimOrWake(
         eq(agentWakeupRequests.companyId, companyId),
         inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution", "claimed"]),
         sql`${agentWakeupRequests.payload} ->> 'issueId' = ${target.issueId}`,
+        // myrmidon(HOLD-READY): a wake parked on an execution hold waits for a
+        // person, it is not in flight; it must not keep the task covered.
+        wakeNotParkedOnExecutionHold(),
       ),
     )
     .limit(1);
