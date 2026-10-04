@@ -13479,6 +13479,16 @@ export function issueRoutes(
             );
           }
           interruptedRunId = cancelled.id;
+
+          // Cancel any deferred executions for the old assignee related to this issue
+          if (svc.cancelDeferredExecutionsForAgentOnReassignment) {
+            await svc.cancelDeferredExecutionsForAgentOnReassignment(
+              existing.assigneeAgentId,
+              existing.id,
+              existing.companyId,
+              db
+            );
+          }
         }
       }
 
