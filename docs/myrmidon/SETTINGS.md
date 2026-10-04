@@ -1016,3 +1016,18 @@ request), `stt_timeout` (the backend call timed out), `stt_upstream_error`
 The container-bot side of the track — the media-mcp tools `audio_split` /
 `stt_transcribe` and their `MEDIA_STT_*` service settings — is documented in
 [media-tools.md](media-tools.md) («Speech-to-text»).
+
+## 1.7 — BUDGET-CONFIG B: enforcement mode of spend limits
+
+What a crossed spend budget limit does while its incident is open: only
+signal (the default), pause the scope with an owner card, or refuse new runs.
+The mode is a live instance setting — change it on Instance → General or via
+`GET`/`PATCH /api/myrmidon/budget-enforcement` (GET is board, PATCH is
+instance-admin) with no restart; the next budget evaluation applies it. The
+environment variable is the forced override for an instance that never saved
+the setting (precedence: stored settings → env → default; the effective
+source is shown on the screen).
+
+| Variable | Function | Default | What it does | How to disable / special |
+|---|---|---|---|---|
+| `MYRMIDON_BUDGET_ENFORCEMENT_MODE` | 1.7-BUDGET-CONFIG-B | unset (`signal_only`) | The enforcement mode while nothing is stored in `instance_settings.general.budgetEnforcement`: `signal_only` — the incident is created and the owner is signalled, but the scope is not paused and runs start; `soft` — pause plus the owner card (raising the budget resumes); `hard` — new runs of the over-limit scope are refused with the budget reason | Any other value (or unset) — the default `signal_only`; once a value is saved from the settings page, the environment stops mattering. The signals themselves additionally honor `MYRMIDON_BUDGET_SIGNAL_MODE=off`. Full guide: [guides/budget-enforcement.md](guides/budget-enforcement.md) |

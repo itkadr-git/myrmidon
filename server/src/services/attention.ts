@@ -87,6 +87,8 @@ import {
   WIP_LIMIT_SETTINGS_KEY,
   normalizeWipLimitSettings,
 } from "@paperclipai/shared";
+// myrmidon(1.7-BUDGET-CONFIG-B): the enforcement mode shown on the budget card.
+import { resolveBudgetEnforcement } from "@paperclipai/shared";
 
 /**
  * myrmidon(TRACING-HEALTH): a stable UUID for the synthetic "LLM tracing"
@@ -1808,6 +1810,23 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         }));
       }
 
+      // myrmidon(1.7-BUDGET-CONFIG-B): the enforcement mode rides the budget
+      // card — in signal-only mode the incident exists but nothing stopped,
+      // and the card must say that instead of implying a pause the operator
+      // will not find. The feed recomputes on every list, so a mode change
+      // reaches the next feed read without a restart.
+      const budgetEnforcementMode = (
+        // myrmidon(1.7-BUDGET-CONFIG-B): read the mode the same direct way the
+        // WIP settings row above is read (one settings select, no service
+        // cache), with the shared resolver doing precedence.
+        await db
+          .select({ general: instanceSettings.general })
+          .from(instanceSettings)
+          .limit(1)
+          .then((rows) => rows[0]?.general?.budgetEnforcement ?? undefined)
+          .catch(() => undefined)
+          .then((stored) => resolveBudgetEnforcement({ stored }).mode)
+      );
       const budgetOverview = await budgetService(db).overview(companyId);
       for (const incident of budgetOverview.activeIncidents) {
         const observedPercent = budgetObservedPercent(incident.amountObserved, incident.amountLimit);
@@ -1834,10 +1853,14 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
               observedPercent,
               approvalId: incident.approvalId,
               approvalStatus: incident.approvalStatus,
+              // myrmidon(1.7-BUDGET-CONFIG-B): what the crossed limit did.
+              enforcementMode: budgetEnforcementMode,
             },
           },
           whyNow: incident.thresholdType === "hard"
-            ? "Budget hard stop was reached."
+            ? budgetEnforcementMode === "signal_only"
+              ? "Budget hard stop was reached. Work continues: enforcement is in signal-only mode."
+              : "Budget hard stop was reached."
             : "Budget crossed the 85% warning threshold.",
           decisionVerbs: decisionVerbs(
             { id: "raise_budget_and_resume", label: "Raise budget", description: "Raise the budget and resume paused work." },
@@ -1847,7 +1870,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           entryRule: "open budget incident is hard, or soft with observed spend >= 85% of limit.",
           exitRule: "Budget incident is resolved or dismissed.",
           dedupKey,
-          severity: incident.thresholdType === "hard" ? "high" : "medium",
+          severity: incident.thresholdType === "hard" ? (budgetEnforcementMode === "signal_only" ? "medium" : "high") : "medium",
           activityAt: toIso(incident.updatedAt),
           createdAt: toIso(incident.createdAt),
           updatedAt: toIso(incident.updatedAt),
