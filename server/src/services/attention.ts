@@ -12,6 +12,7 @@ import {
   decisionTriage,
   decisions,
   heartbeatRuns,
+  instanceSettings,
   inboxDismissals,
   invites,
   issueApprovals,
@@ -68,6 +69,9 @@ import { buildStackAttentionCards } from "../myrmidon/stack-registry/attention.j
 import { readStackDocument } from "../myrmidon/stack-registry/store.js";
 // myrmidon(TRACING-HEALTH): the "LLM tracing" red state raises one operator card (part D)
 import { readTracingHealthAttentionSignal } from "../myrmidon/tracing-health/attention.js";
+// myrmidon(BOT-RUNTIME-TUNING D): the model fallback share raises one card per agent
+import { readModelFallbackSignals } from "../myrmidon/litellm-fallback-signal/attention.js";
+
 // myrmidon(STALE-BLOCK): the lifted-block operator signal registry.
 import {
   readStaleBlockSignals,
@@ -75,6 +79,13 @@ import {
   staleBlockSignalSeverity,
   staleBlockSignalWhyNow,
 } from "../myrmidon/stale-block/attention.js";
+// myrmidon(1.6.1-WIP-LIMIT-A): the WIP limit cards and the settings read.
+import { buildWipLimitAttentionCards } from "../myrmidon/wip-limit/attention.js";
+import { buildWipLimitStatus } from "../myrmidon/wip-limit/status.js";
+import {
+  WIP_LIMIT_SETTINGS_KEY,
+  normalizeWipLimitSettings,
+} from "@paperclipai/shared";
 
 /**
  * myrmidon(TRACING-HEALTH): a stable UUID for the synthetic "LLM tracing"
@@ -106,8 +117,11 @@ const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   "budget_alert",
   "agent_error_alert",
   "stack_update",
+  "model_fallback_alert",
   // myrmidon(STALE-BLOCK): one card per block the watchdog lifted.
   "stale_block",
+  // myrmidon(1.6.1-WIP-LIMIT-A): the per-agent work-in-progress over-limit signal.
+  "wip_limit",
 ];
 
 const SEVERITY_RANK: Record<AttentionSeverity, number> = {
@@ -131,6 +145,10 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   join_request: 10,
   stack_update: 11,
   stale_block: 12,
+  model_fallback_alert: 13,
+  // myrmidon(1.6.1-WIP-LIMIT-A): a workload-oversignal sits below every
+  // blocking kind but above nothing else — it is advice, not a stop.
+  wip_limit: 14,
 };
 
 const PENDING_INTERACTION_STATUSES = ["pending"] as const;
@@ -2039,6 +2057,110 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           detail: {
             kind: "generic",
             summaryExcerpt: excerpt(tracingSignal.whyNow),
+            images: [],
+          },
+        }));
+      }
+
+      // myrmidon(1.6.1-WIP-LIMIT-A): an agent whose in-flight task count
+      // (in_progress + in_review) is over its resolved WIP limit raises one
+      // card; a lead holding implementation work raises the same card with
+      // the lead wording (the implementation limit of a lead is 0). The feed
+      // recomputes on every list, so the card lives exactly as long as the
+      // over-limit state does — nothing is persisted for it. A missing limit
+      // means "count only", so the block emits nothing.
+      const wipSettingsRow = await db
+        .select({ general: instanceSettings.general })
+        .from(instanceSettings)
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      const wipSettings = normalizeWipLimitSettings(wipSettingsRow?.general?.[WIP_LIMIT_SETTINGS_KEY]);
+      const wipStatuses = await buildWipLimitStatus(db, companyId, wipSettings);
+      const wipAgentNameById = new Map(
+        await db
+          .select({ id: agents.id, name: agents.name })
+          .from(agents)
+          .where(eq(agents.companyId, companyId))
+          .then((rows) => rows.map((row) => [row.id, row.name] as const)),
+      );
+      for (const card of buildWipLimitAttentionCards(wipStatuses, wipAgentNameById)) {
+        add(createItem({
+          companyId,
+          sourceKind: "wip_limit",
+          subject: {
+            kind: "agent",
+            id: card.agentId,
+            companyId,
+            title: card.title,
+            identifier: null,
+            status: null,
+            href: `/${prefix}/agents/${card.agentId}`,
+            metadata: card.metadata,
+          },
+          whyNow: card.whyNow,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the agent's tasks and rebalance the workload." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this signal until the limit is met again." },
+          ),
+          inlineResolvable: false,
+          entryRule: "the agent's in-flight task count is over its WIP limit, or a lead holds implementation work.",
+          exitRule: "the count is back within the limit (or the lead holds no implementation task), or the row is dismissed.",
+          dedupKey: card.dedupKey,
+          severity: card.severity,
+          activityAt: toIso(new Date(now)),
+          createdAt: toIso(new Date(now)),
+          updatedAt: toIso(new Date(now)),
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: card.summaryExcerpt,
+            images: [],
+          },
+        }));
+      }
+      // myrmidon(BOT-RUNTIME-TUNING D): the periodic fallback sweep records
+      // one signal per agent whose gateway calls were served by a model
+      // outside its card above the configured share; the feed just turns the
+      // recorded signals into cards (subject = the agent, one dedupKey per
+      // agent, severity medium). The signal clears when the share drops
+      // below half the threshold — no dismissal bookkeeping, the same
+      // registry pattern tracing-health uses.
+      for (const fallback of readModelFallbackSignals(companyId)) {
+        add(createItem({
+          companyId,
+          sourceKind: "model_fallback_alert",
+          subject: {
+            kind: "agent",
+            id: fallback.agentId,
+            companyId,
+            title: fallback.title,
+            identifier: null,
+            status: null,
+            href: `/${prefix}/agents/${fallback.agentId}`,
+            metadata: {
+              sharePct: fallback.sharePct,
+              fallbacks: fallback.fallbacks,
+              total: fallback.total,
+              servedModels: fallback.servedModels,
+            },
+          },
+          whyNow: fallback.whyNow,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the agent card and the gateway routing." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this fallback alert." },
+          ),
+          inlineResolvable: true,
+          entryRule: "the agent's fallback share over the window is at or above the threshold with enough calls.",
+          exitRule: "the share drops below half the threshold, the window empties below min calls, or the row is dismissed.",
+          dedupKey: fallback.dedupKey,
+          severity: fallback.severity,
+          activityAt: fallback.activityAt,
+          createdAt: fallback.activityAt,
+          updatedAt: fallback.activityAt,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: excerpt(fallback.summaryExcerpt),
             images: [],
           },
         }));
