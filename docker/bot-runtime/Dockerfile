@@ -699,6 +699,16 @@ RUN chmod 0755 /opt/paperclip/bin/git-credential-paperclip /opt/paperclip/bin/gh
 # gh wrapper (which resolves run-scoped credentials before exec'ing the real
 # gh) is found first; git needs no PATH entry — it reaches the credential
 # helper through /etc/gitconfig's absolute path.
+# myrmidon 1.6.1 BUILD-OFFLOAD B: the `devbuild` entry point (rsync + ssh to
+# the shared build VPS with the shared /srv/devcache caches). Root-owned,
+# outside the writable volumes, so a bot cannot rewrite its own transport;
+# the key it reads is mounted separately by the runtime template (part C).
+# rsync is part of the transport contract and lives in /usr/bin.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends rsync \
+  && rm -rf /var/lib/apt/lists/*
+COPY --chown=root:root devbuild/devbuild /usr/local/bin/devbuild
+RUN chmod 0755 /usr/local/bin/devbuild
 ENV PATH=/opt/paperclip/bin:/opt/node24/bin:/opt/pnpm/bin:/opt/go/bin:/opt/cargo/bin:/opt/docker-cli/bin:/opt/hermes-src/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     npm_config_store_dir=/data/hermes/.pnpm-store \
     GOTOOLCHAIN=local \
@@ -710,6 +720,8 @@ USER 10001:10001
 # answers, and no PATH element is under a writable root the dockergate image
 # policy rejects. Running it here (not in a builder stage) is what makes the
 # check meaningful — it sees exactly what a bot container would.
+# The devbuild entry point answers --help as uid 10001 (it must: bots invoke
+# it; the image build fails if its mode or interpreter ever break).
 RUN set -eu; \
     node --version; \
     pnpm --version; \
@@ -721,6 +733,7 @@ RUN set -eu; \
     zstd --version; \
     git --version; \
     docker --version; \
+    devbuild --help >/dev/null; \
     for el in $(echo "$PATH" | tr ':' ' '); do \
       case "$el" in \
         /data|/data/*|/workspace|/workspace/*|/scratch|/scratch/*|/tmp|/tmp/*) \

@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+# devbuild: run a build/test command for the current repository workspace on
+# the shared build VPS, instead of inside this CPU- and memory-limited bot
+# container.
+#
+# What it does:
+#   1. rsync /workspace/ (including .git, excluding node_modules and other
+#      generated heaviness) to $DEVBUILD_BASE/<bot>/<repo>/ on the VPS;
+#   2. ssh there, export the shared cache environment
+#      (/srv/devcache: pnpm store, Go modules/build, Gradle) and run the
+#      command at the repo root;
+#   3. return the command's output and exit code unchanged.
+#
+# Connection parameters come ONLY from the environment (never baked into
+# images or tests, so the address stays out of source control):
+#   DEVBUILD_HOST  - VPS host name or address
+#   DEVBUILD_USER  - ssh user on the VPS
+#   DEVBUILD_BASE  - base directory on the VPS (e.g. /srv/devbuild)
+#
+# The ssh key is expected at /opt/devbuild-ssh/id_ed25519 (mounted by the
+# runtime template, see part C of BUILD-OFFLOAD). If the env vars are unset,
+# print a pointer to the devbuild skill and exit 1.
+#
+# Resource limits for the remote command are NOT imposed here — they are the
+# fleet operator's business (part D). This script is only transport plus the
+# cache environment.
+set -euo pipefail
+
+readonly DEVBUILD_SSH_KEY_PATH="/opt/devbuild-ssh/id_ed25519"
+readonly DEVBUILD_CACHES="/srv/devcache"
+
+usage() {
+  cat <<'USAGE'
+devbuild - run a build/test command on the shared build VPS
+
+Usage:
+  devbuild <command>
+  devbuild 'pnpm install && pnpm -r typecheck'
+  devbuild --help
+
+Syncs /workspace to the VPS first (rsync, .git included, node_modules
+excluded), then runs <command> inside the synced repo with the shared
+package caches (/srv/devcache) exported. The command's stdout/stderr and
+exit code are passed through.
+
+Required environment:
+  DEVBUILD_HOST   VPS host or address (e.g. from the fleet operator)
+  DEVBUILD_USER   ssh user on the VPS
+  DEVBUILD_BASE   base directory on the VPS (e.g. /srv/devbuild)
+
+Optional environment:
+  DEVBUILD_SSH_KEY    overrides the key path (default: /opt/devbuild-ssh/id_ed25519)
+  DEVBUILD_WORKSPACE  local workspace to sync (default: /workspace)
+
+See the devbuild skill (skills/devbuild/SKILL.md) for examples, caches and
+typical failures.
+USAGE
+}
+
+if [ "${1-}" = "--help" ] || [ "${1-}" = "-h" ]; then
+  usage
+  exit 0
+fi
+
+if [ "$#" -lt 1 ] || [ -z "${1-}" ]; then
+  usage >&2
+  echo "devbuild: no command given - pass it as a single quoted argument" >&2
+  exit 1
+fi
+command_to_run="$1"
+
+if [ -z "${DEVBUILD_HOST:-}" ] || [ -z "${DEVBUILD_USER:-}" ] || [ -z "${DEVBUILD_BASE:-}" ]; then
+  echo "devbuild: build/test runs happen on the build VPS, not in this container." >&2
+  echo "devbuild: DEVBUILD_HOST / DEVBUILD_USER / DEVBUILD_BASE are not set - see the" >&2
+  echo "devbuild: devbuild skill (skills/devbuild/SKILL.md) for the connection env." >&2
+  exit 1
+fi
+
+SSH_KEY="${DEVBUILD_SSH_KEY:-$DEVBUILD_SSH_KEY_PATH}"
+WORKSPACE_SRC="${DEVBUILD_WORKSPACE:-/workspace}"
+
+if [ ! -d "$WORKSPACE_SRC" ]; then
+  echo "devbuild: workspace directory $WORKSPACE_SRC does not exist" >&2
+  exit 1
+fi
+if [ ! -r "$SSH_KEY" ]; then
+  echo "devbuild: ssh key $SSH_KEY is missing or not readable - see the devbuild skill" >&2
+  exit 1
+fi
+
+# ssh refuses group/world-readable private keys; tighten if the mount allows.
+chmod 0600 "$SSH_KEY" 2>/dev/null || true
+
+command -v rsync >/dev/null 2>&1 || {
+  echo "devbuild: rsync is not installed in this image" >&2
+  exit 1
+}
+
+# Per-bot, per-repo destination: <base>/<bot>/<repo>/
+bot_name="${DEVBUILD_BOT_NAME:-$(id -un)}"
+repo_name="$(basename "$WORKSPACE_SRC")"
+[ -n "$repo_name" ] || repo_name="workspace"
+dest_root="${DEVBUILD_BASE%/}/$bot_name/$repo_name"
+
+SSH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new
+  -o UserKnownHostsFile="${DEVBUILD_KNOWN_HOSTS:-$HOME/.ssh/known_hosts}"
+  -o ConnectTimeout=15 -i "$SSH_KEY")
+
+# Prepare the destination and the shared cache directories (created on the
+# first run, reused by every bot afterwards). Paths are expanded locally on
+# purpose: $DEVBUILD_BASE is trusted operator env, single-quoted on the remote
+# side, and every value is validated to contain no quotes/spaces below.
+ssh "${SSH_OPTS[@]}" "$DEVBUILD_USER@$DEVBUILD_HOST" \
+  "mkdir -p '$dest_root' '$DEVBUILD_CACHES/pnpm' '$DEVBUILD_CACHES/go-mod' '$DEVBUILD_CACHES/go-build' '$DEVBUILD_CACHES/gradle'"
+
+
+# Sync the workspace. --delete keeps the VPS copy an exact mirror; .git is
+# included (commits are made from the container), node_modules and other
+# regenerable heaviness excluded to keep transfers small.
+rsync -a --delete --info=stats1 \
+  --exclude 'node_modules/' \
+  --exclude '.pnpm-store/' \
+  --exclude 'dist/' \
+  --exclude '.cache/' \
+  --exclude 'target/' \
+  --exclude '.tmp/' \
+  -e "ssh ${SSH_OPTS[*]}" \
+  "$WORKSPACE_SRC/" "$DEVBUILD_USER@$DEVBUILD_HOST:$dest_root/"
+
+# Run the command remotely, with the shared caches exported and the cwd at
+# the repo root. ssh propagates the remote command's exit status as its own.
+ssh "${SSH_OPTS[@]}" "$DEVBUILD_USER@$DEVBUILD_HOST" \
+  "cd '$dest_root' && export npm_config_store_dir='$DEVBUILD_CACHES/pnpm' GOMODCACHE='$DEVBUILD_CACHES/go-mod' GOCACHE='$DEVBUILD_CACHES/go-build' GRADLE_USER_HOME='$DEVBUILD_CACHES/gradle' && $command_to_run"

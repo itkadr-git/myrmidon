@@ -212,11 +212,28 @@ Node.js variant documents above: the dockergate image check
 `BASH_ENV` variable name — the dev variant introduces neither.
 
 Checks: the last build step runs `node`, `pnpm`, `go`, `cargo`, `rustc`, `gh`, `jq`, `zstd`,
-`git` and `docker` as uid `10001` in the finished stage and asserts no `PATH` element is under
-a writable root. On pull requests the workflow repeats the toolchain run on the finished image
-with `--read-only`, `--user 10001:10001` and `tmpfs` in place of the volumes, checks the
-contract label and the image user before that, and fails if `dockerd` is present — the image
+`git`, `docker` and `devbuild --help` as uid `10001` in the finished stage and asserts no `PATH`
+element is under a writable root. On pull requests the workflow repeats the toolchain run on the
+finished image with `--read-only`, `--user 10001:10001` and `tmpfs` in place of the volumes, checks
+the contract label and the image user before that, and fails if `dockerd` is present — the image
 carries the client only.
+
+### `devbuild`: builds and tests on the build VPS (1.6.1 BUILD-OFFLOAD B)
+
+The dev variant carries `/usr/local/bin/devbuild` (root-owned, from
+`docker/bot-runtime/devbuild/devbuild`): it rsyncs the `/workspace` repo copy (`.git` included,
+`node_modules`/`dist`/`target`/caches excluded) to `$DEVBUILD_BASE/<bot>/<repo>/` on the shared
+build VPS over ssh, then runs the given command there with the shared caches exported
+(`npm_config_store_dir=/srv/devcache/pnpm`, `GOMODCACHE`, `GOCACHE`, `GRADLE_USER_HOME` — created
+on first run, shared by all bots) and passes the exit code through. Heavy jobs
+(`pnpm -r typecheck`, full test suites, `cargo test`) run there instead of inside the 1 CPU / 3 GB
+bot container; editing, git and pushing stay local.
+
+Connection settings come only from the bot profile env (`DEVBUILD_HOST`, `DEVBUILD_USER`,
+`DEVBUILD_BASE` — never baked into the image or tests). Without them the script prints a pointer
+to the `devbuild` skill and exits 1. The ssh key is read from `/opt/devbuild-ssh/id_ed25519`,
+mounted by the runtime template (part C); key authorization and the remote resource limits are
+the fleet operator's part (D). The image adds `rsync` to the apt set for the transport.
 
 ## Sealed image: lazy installs and the write-safe root
 
