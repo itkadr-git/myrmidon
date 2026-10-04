@@ -1,5 +1,7 @@
 # Autonomy matrix in the tool gateway
 
+> Russian version: [autonomy-matrix-tool-gateway.ru.md](autonomy-matrix-tool-gateway.ru.md)
+
 ## Overview
 
 The autonomy matrix (role × action class → `allowed` / `approval_required` / `forbidden`) is now enforced at the action point: before the tool gateway executes an agent's tool call, the tool is mapped onto an action class and the matrix verdict for the agent's role is resolved. A `forbidden` verdict refuses the call; `approval_required` parks the call in the existing `tool_action_requests` approval conveyor; `allowed` proceeds to the ordinary tool access policy.
@@ -21,7 +23,7 @@ Built-in defaults classify exactly the three classes named in the design, with t
 - **deploy**: `deploy`, `create_deployment`, `create_release`, `publish`, `promote`, `rollback_release`, `kubernetes_apply`, `helm_upgrade`, `terraform_apply`
 - **external_message**: `send_message`, `send_chat_message`, `post_message`, `create_message`, `reply_to_message`, `send_email`, `create_email`, `create_issue_comment`, `create_pull_request_comment`, `create_pull_request_review_comment`, `post_tweet`, `create_post`, `publish_message`
 
-The mapping is configurable per instance (see SETTINGS): stored settings win, then the `MYRMIDON_TOOL_AUTONOMY_MAPPING_JSON` env variable (forced override for an instance that never saved the setting), then the built-in defaults. The settings screen shows the effective source.
+The mapping is configurable per instance (see SETTINGS): stored settings win, then the `MYRMIDON_TOOL_AUTONOMY_MAPPING_JSON` env variable (forced override for an instance that never saved the setting), then the built-in defaults. The settings store is the raw `instance_settings.general.myrmidonAutonomyToolMapping` key — the matrix settings screen does not edit this mapping yet; it is written from the API (or the env override).
 
 ## Enforcement point
 
@@ -35,7 +37,7 @@ Verdict handling:
 
 ## Audit
 
-Held calls write `tool_gateway.call_approval_required` with the autonomy action class, role, and mapping source; refusals surface `autonomy_forbidden` with the action class and role in the error details.
+Held calls write `tool_gateway.call_approval_required` with the autonomy action class and the role in the details; refusals surface `autonomy_forbidden` with the action class and role in the error details.
 
 ## Testing
 

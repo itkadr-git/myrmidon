@@ -716,7 +716,9 @@ The mapping is configurable per instance without a restart: it lives under
 next gateway call (the resolver reads the row per call). The env variable below is only
 the forced override for an instance that never saved the setting; precedence:
 stored settings → env → built-in defaults (the three classes of the design with their
-default tool-name lists: merge / deploy / external_message — see the guide).
+default tool-name lists: merge / deploy / external_message — see the guide). The matrix
+settings screen does not edit this mapping yet; it is written from the API or the env
+override.
 
 | Variable | Function | Default | What it does | How to disable / special |
 |---|---|---|---|---|

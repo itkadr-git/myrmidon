@@ -1,5 +1,7 @@
 # Матрица автономии в шлюзе инструментов
 
+> English version: [autonomy-matrix-tool-gateway.md](autonomy-matrix-tool-gateway.md)
+
 ## Обзор
 
 Матрица автономии (роль × класс действия → `allowed` / `approval_required` / `forbidden`) теперь исполняется в точке действия: перед выполнением вызова инструмента агентом шлюз сопоставляет инструмент с классом действия и разрешает вердикт матрицы для роли агента. Вердикт `forbidden` отклоняет вызов; `approval_required` уводит вызов в существующий конвейер держания `tool_action_requests`; `allowed` идёт дальше по обычной политике доступа к инструментам.
@@ -21,7 +23,7 @@
 - **deploy**: `deploy`, `create_deployment`, `create_release`, `publish`, `promote`, `rollback_release`, `kubernetes_apply`, `helm_upgrade`, `terraform_apply`
 - **external_message**: `send_message`, `send_chat_message`, `post_message`, `create_message`, `reply_to_message`, `send_email`, `create_email`, `create_issue_comment`, `create_pull_request_comment`, `create_pull_request_review_comment`, `post_tweet`, `create_post`, `publish_message`
 
-Сопоставление настраивается на инстансе (см. SETTINGS): сначала сохранённые настройки, затем переменная окружения `MYRMIDON_TOOL_AUTONOMY_MAPPING_JSON` (принудительное переопределение для инстанса, где настройка никогда не сохранялась), затем встроенные умолчания. Экран настроек показывает действующий источник.
+Сопоставление настраивается на инстансе (см. SETTINGS): сначала сохранённые настройки, затем переменная окружения `MYRMIDON_TOOL_AUTONOMY_MAPPING_JSON` (принудительное переопределение для инстанса, где настройка никогда не сохранялась), затем встроенные умолчания. Хранилище настройки — сырой ключ `instance_settings.general.myrmidonAutonomyToolMapping`; экран настроек матрицы это сопоставление пока не редактирует — оно пишется через API (или переопределение из env).
 
 ## Точка контроля
 
@@ -35,7 +37,7 @@
 
 ## Аудит
 
-Удержанные вызовы пишут `tool_gateway.call_approval_required` с классом действия, ролью и источником сопоставления; отказы отдают `autonomy_forbidden` с классом действия и ролью в деталях ошибки.
+Удержанные вызовы пишут `tool_gateway.call_approval_required` с классом действия и ролью в деталях; отказы отдают `autonomy_forbidden` с классом действия и ролью в деталях ошибки.
 
 ## Тестирование
 
