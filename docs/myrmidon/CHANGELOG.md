@@ -23,6 +23,40 @@ version file to edit. Base Paperclip version is in the image label
   without their own binding; a reference to a secret that cannot be read skips that card
   instead of falling back to the shared key. The model fallback signal, which reuses the
   lookup, is fixed by the same change. No settings change.
+### Plugin bridge: invocation-scope attribution from any in-flight invocation (PLS1 -> PLS2)
+
+- The plugin bridge attributes an un-echoed worker call (a worker whose bundle
+  carries a plugin SDK that predates invocation-id echo) to the company of ANY
+  in-flight host-issued invocation — a plugin API route, `onEvent`,
+  `performAction`, `getData`, `executeTool` or an environment call — instead
+  of only an in-flight API route call. Bridge entry points register their
+  invocation scope without the apiRoute marker, so nested calls issued from
+  those handlers (the LLM Wiki plugin's `localFolders.*` calls) were answered
+  with "missing, expired, or unknown invocation scope"; this change closes the
+  same gap on `bridge/data`, `bridge/action` and plugin tool calls, fixing the
+  empty page list, pages that would not open and the failing
+  `wiki_write_page`-style tools of plugins built with the old SDK.
+- The safety guard is unchanged: attribution applies only while every
+  in-flight invocation of any kind belongs to one company; an in-flight call
+  of another company keeps the call denied (`INVOCATION_SCOPE_DENIED`), and a
+  call carrying an unknown or forged invocation id is still rejected.
+- The scope is always the host-issued one (the company the entering call
+  resolved and authorized); a value from the worker is never taken. No rights
+  are widened: the worker received the invocation ids of those calls and
+  could echo any of them.
+- The resolver moved from `server/src/myrmidon/plugin-api-route-scope.ts`
+  (deleted) to `server/src/myrmidon/plugin-invocation-scope.ts`; the vendored
+  worker manager marks the new branch `myrmidon(PLS2)` and the divergence
+  registry entry in [DIVERGENCE.md](DIVERGENCE.md) was rewritten for the
+  all-entry-points semantics. The removal condition stands: once the plugin
+  is rebuilt from `packages/plugins/plugin-llm-wiki` with the current SDK
+  (the worker echoes the invocation id itself), the PLS1/PLS2 branch, the
+  `apiRoute` field and the resolver files go away.
+- Guard test: `server/src/myrmidon/plugin-invocation-scope-bridge.myrmidon.test.ts`
+  with the fixture
+  `server/src/__tests__/fixtures/plugin-worker-invocation-scope-bridge.cjs`
+  covers the three bridge entry points (red without the fix, green with it)
+  and the cross-company denial.
 
 ### Automatic rollback by health: operator guide (AUTO-UPDATE-SETTINGS A)
 
