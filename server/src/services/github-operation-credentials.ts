@@ -20,7 +20,9 @@ import { isLowTrustQuarantined } from "./source-trust.js";
 
 export type GitHubCredentialSummary = {
   status: "available" | "absent" | "unavailable";
-  source?: "personal" | "dedicated";
+  // myrmidon(GITHUB-SHARED-IDENTITY): "shared" — the shared GitHub authorization, issued per `repository`
+  source?: "personal" | "dedicated" | "shared";
+  repository?: string;
   login?: string;
   reason?: string;
   connectionId?: string;
@@ -110,6 +112,8 @@ export async function resolveGitHubOperationCredentials(
     companyId: string;
     agentId: string;
     runId: string;
+    // myrmidon(GITHUB-SHARED-IDENTITY): `owner/repo` (or a github.com remote) the operation targets
+    repository?: string | null;
   },
 ) {
   const { run, context } = await captureRunIdentity(db, input);
@@ -154,12 +158,17 @@ export async function resolveGitHubOperationCredentials(
           typeof run.contextSnapshot?.issueId === "string"
             ? run.contextSnapshot.issueId
             : null,
+        // myrmidon(GITHUB-SHARED-IDENTITY): the broker may serve the shared grant, per repository
+        allowShared: true,
+        repository: input.repository ?? null,
       },
     );
     if (resolved.credential) {
       summary = {
         status: "available",
         source: resolved.credential.identitySource,
+        // myrmidon(GITHUB-SHARED-IDENTITY): the repository a shared grant was issued for
+        ...(resolved.repository ? { repository: resolved.repository } : {}),
         login: resolved.credential.githubIdentity?.login,
         connectionId: resolved.credential.connectionId,
         grantId: resolved.credential.grantId,
@@ -170,6 +179,7 @@ export async function resolveGitHubOperationCredentials(
       summary = {
         status: resolved.configured ? "unavailable" : "absent",
         source: resolved.identitySource ?? "personal",
+        ...(resolved.repository ? { repository: resolved.repository } : {}),
         reason: resolved.error ?? "No GitHub identity connected",
       };
     }
