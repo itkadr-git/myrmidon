@@ -22,6 +22,7 @@ import {
 import type { CommandManagedRuntimeRunner } from "./command-managed-runtime.js";
 import { preferredShellForSandbox, shellCommandArgs } from "./sandbox-shell.js";
 import type { RunProcessResult } from "./server-utils.js";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const DEFAULT_BRIDGE_TOKEN_BYTES = 24;
 const DEFAULT_BRIDGE_POLL_INTERVAL_MS = 100;
@@ -2204,23 +2205,23 @@ import path from "node:path";
 import http2 from "node:http2";
 import { Duplex } from "node:stream";
 
-const bridgeMode = process.env.PAPERCLIP_API_BRIDGE_MODE || "${SANDBOX_CALLBACK_BRIDGE_FILE_MODE}";
-const queueDir = process.env.PAPERCLIP_BRIDGE_QUEUE_DIR;
-const bridgeToken = process.env.PAPERCLIP_BRIDGE_TOKEN;
-const host = process.env.PAPERCLIP_BRIDGE_HOST || "127.0.0.1";
-const port = Number(process.env.PAPERCLIP_BRIDGE_PORT || "0");
+const bridgeMode = readProductEnv("API_BRIDGE_MODE") || "${SANDBOX_CALLBACK_BRIDGE_FILE_MODE}";
+const queueDir = readProductEnv("BRIDGE_QUEUE_DIR");
+const bridgeToken = readProductEnv("BRIDGE_TOKEN");
+const host = readProductEnv("BRIDGE_HOST") || "127.0.0.1";
+const port = Number(readProductEnv("BRIDGE_PORT") || "0");
 // The host assigns the loopback port and passes it through the launch
 // environment. The gateway binds exactly this port; it never selects a
 // different one. The host also passes one random per-open nonce here. The
 // gateway echoes it in the READY frame so the host correlates READY with this
 // channel open. The nonce is a liveness signal, not authentication.
-const bridgeNonce = process.env.PAPERCLIP_BRIDGE_NONCE || "";
-const pollIntervalMs = Number(process.env.PAPERCLIP_BRIDGE_POLL_INTERVAL_MS || "100");
+const bridgeNonce = readProductEnv("BRIDGE_NONCE") || "";
+const pollIntervalMs = Number(readProductEnv("BRIDGE_POLL_INTERVAL_MS") || "100");
 const responseTimeoutMs = Number(
-  process.env.PAPERCLIP_BRIDGE_RESPONSE_TIMEOUT_MS || "${DEFAULT_BRIDGE_RESPONSE_TIMEOUT_MS}",
+  readProductEnv("BRIDGE_RESPONSE_TIMEOUT_MS") || "${DEFAULT_BRIDGE_RESPONSE_TIMEOUT_MS}",
 );
-const maxQueueDepth = Number(process.env.PAPERCLIP_BRIDGE_MAX_QUEUE_DEPTH || "${DEFAULT_BRIDGE_MAX_QUEUE_DEPTH}");
-const maxBodyBytes = Number(process.env.PAPERCLIP_BRIDGE_MAX_BODY_BYTES || "${DEFAULT_BRIDGE_MAX_BODY_BYTES}");
+const maxQueueDepth = Number(readProductEnv("BRIDGE_MAX_QUEUE_DEPTH") || "${DEFAULT_BRIDGE_MAX_QUEUE_DEPTH}");
+const maxBodyBytes = Number(readProductEnv("BRIDGE_MAX_BODY_BYTES") || "${DEFAULT_BRIDGE_MAX_BODY_BYTES}");
 // The header allowlist. Both the file gateway and the http2 gateway strip an
 // inbound request to these headers before they forward it. One copy serves both
 // modes. The route allowlist stays on the host: both modes forward a request to

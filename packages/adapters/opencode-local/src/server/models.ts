@@ -7,6 +7,7 @@ import {
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 import { isValidOpenCodeModelId } from "../index.js";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const MODELS_CACHE_TTL_MS = 60_000;
 const MODELS_DISCOVERY_TIMEOUT_MS = 20_000;
@@ -22,9 +23,9 @@ function sleep(ms: number): Promise<void> {
 
 function resolveOpenCodeCommand(input: unknown): string {
   const envOverride =
-    typeof process.env.PAPERCLIP_OPENCODE_COMMAND === "string" &&
-    process.env.PAPERCLIP_OPENCODE_COMMAND.trim().length > 0
-      ? process.env.PAPERCLIP_OPENCODE_COMMAND.trim()
+    typeof readProductEnv("OPENCODE_COMMAND") === "string" &&
+    readProductEnv("OPENCODE_COMMAND").trim().length > 0
+      ? readProductEnv("OPENCODE_COMMAND").trim()
       : "opencode";
   return asString(input, envOverride);
 }

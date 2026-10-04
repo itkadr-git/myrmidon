@@ -101,6 +101,7 @@ import {
   type PersistedExposureRowSnapshot,
 } from "./runtime-exposure/port-reservation.js";
 import { resolveTailscaleDnsName } from "./runtime-exposure/tailscale-hostname.js";
+import { readProductEnv, readProductEnvFrom, writeProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export function resolveShell(): string {
   const fallback = process.platform === "win32" ? "sh" : "/bin/sh";
@@ -326,7 +327,7 @@ async function isLoopbackPortAvailable(port: number): Promise<boolean> {
 }
 
 function resolveTailscaleBrokerSocketPath(): string {
-  return process.env.PAPERCLIP_TAILSCALE_BROKER_SOCKET?.trim() || DEFAULT_TAILSCALE_BROKER_SOCKET;
+  return readProductEnv("TAILSCALE_BROKER_SOCKET")?.trim() || DEFAULT_TAILSCALE_BROKER_SOCKET;
 }
 
 function defaultWorkspaceRuntimeExposureDeps(): WorkspaceRuntimeExposureDeps {
@@ -384,7 +385,7 @@ export function setWorkspaceRuntimeExposureDepsForTests(deps: WorkspaceRuntimeEx
 export type ManagedRuntimeHttpsMode = "auto" | "off" | "force";
 
 export function resolveManagedRuntimeHttpsMode(): ManagedRuntimeHttpsMode {
-  const raw = process.env.PAPERCLIP_MANAGED_RUNTIME_HTTPS?.trim().toLowerCase();
+  const raw = readProductEnv("MANAGED_RUNTIME_HTTPS")?.trim().toLowerCase();
   if (raw === "off" || raw === "false" || raw === "0") return "off";
   if (raw === "force") return "force";
   return "auto";
@@ -2882,25 +2883,25 @@ function buildWorkspaceCommandEnv(input: {
   created: boolean;
 }) {
   const env: NodeJS.ProcessEnv = { ...process.env };
-  env.PAPERCLIP_WORKSPACE_CWD = input.worktreePath;
-  env.PAPERCLIP_WORKSPACE_PATH = input.worktreePath;
-  env.PAPERCLIP_WORKSPACE_WORKTREE_PATH = input.worktreePath;
-  env.PAPERCLIP_WORKSPACE_BRANCH = input.branchName;
-  env.PAPERCLIP_WORKSPACE_BASE_CWD = input.base.baseCwd;
-  env.PAPERCLIP_WORKSPACE_REPO_ROOT = input.repoRoot;
-  env.PAPERCLIP_WORKSPACE_SOURCE = input.base.source;
-  env.PAPERCLIP_WORKSPACE_REPO_REF = input.base.repoRef ?? "";
-  env.PAPERCLIP_WORKSPACE_REPO_URL = input.base.repoUrl ?? "";
-  env.PAPERCLIP_WORKSPACE_CREATED = input.created ? "true" : "false";
-  env.PAPERCLIP_PROJECT_ID = input.base.projectId ?? "";
-  env.PAPERCLIP_PROJECT_WORKSPACE_ID = input.base.workspaceId ?? "";
-  env.PAPERCLIP_AGENT_ID = input.agent.id ?? "";
-  env.PAPERCLIP_AGENT_NAME = input.agent.name;
-  env.PAPERCLIP_COMPANY_ID = input.agent.companyId;
-  env.PAPERCLIP_ISSUE_ID = input.issue?.id ?? "";
-  env.PAPERCLIP_ISSUE_IDENTIFIER = input.issue?.identifier ?? "";
-  env.PAPERCLIP_ISSUE_TITLE = input.issue?.title ?? "";
-  env.PAPERCLIP_ISSUE_WORK_MODE = input.issue?.workMode ?? "";
+  writeProductEnv(env, "WORKSPACE_CWD", input.worktreePath); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "WORKSPACE_PATH", input.worktreePath); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "WORKSPACE_WORKTREE_PATH", input.worktreePath); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "WORKSPACE_BRANCH", input.branchName); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "WORKSPACE_BASE_CWD", input.base.baseCwd); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "WORKSPACE_REPO_ROOT", input.repoRoot); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "WORKSPACE_SOURCE", input.base.source); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "WORKSPACE_REPO_REF", input.base.repoRef ?? ""); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "WORKSPACE_REPO_URL", input.base.repoUrl ?? ""); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "WORKSPACE_CREATED", input.created ? "true" : "false"); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "PROJECT_ID", input.base.projectId ?? ""); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "PROJECT_WORKSPACE_ID", input.base.workspaceId ?? ""); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "AGENT_ID", input.agent.id ?? ""); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "AGENT_NAME", input.agent.name); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "COMPANY_ID", input.agent.companyId); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "ISSUE_ID", input.issue?.id ?? ""); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "ISSUE_IDENTIFIER", input.issue?.identifier ?? ""); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "ISSUE_TITLE", input.issue?.title ?? ""); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "ISSUE_WORK_MODE", input.issue?.workMode ?? ""); // myrmidon(REBRAND-C)
   return env;
 }
 
@@ -3162,18 +3163,18 @@ function buildExecutionWorkspaceCleanupEnv(input: {
   projectWorkspaceCwd?: string | null;
 }) {
   const env: NodeJS.ProcessEnv = sanitizeRuntimeServiceBaseEnv(process.env);
-  env.PAPERCLIP_WORKSPACE_CWD = input.workspace.cwd ?? "";
-  env.PAPERCLIP_WORKSPACE_PATH = input.workspace.cwd ?? "";
-  env.PAPERCLIP_WORKSPACE_WORKTREE_PATH =
+  writeProductEnv(env, "WORKSPACE_CWD", input.workspace.cwd ?? ""); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "WORKSPACE_PATH", input.workspace.cwd ?? ""); // myrmidon(REBRAND-C)
+  readProductEnvFrom(env, "WORKSPACE_WORKTREE_PATH") =
     input.workspace.providerRef ?? input.workspace.cwd ?? "";
-  env.PAPERCLIP_WORKSPACE_BRANCH = input.workspace.branchName ?? "";
-  env.PAPERCLIP_WORKSPACE_BASE_CWD = input.projectWorkspaceCwd ?? "";
-  env.PAPERCLIP_WORKSPACE_REPO_ROOT = input.projectWorkspaceCwd ?? "";
-  env.PAPERCLIP_WORKSPACE_REPO_URL = input.workspace.repoUrl ?? "";
-  env.PAPERCLIP_WORKSPACE_REPO_REF = input.workspace.baseRef ?? "";
-  env.PAPERCLIP_PROJECT_ID = input.workspace.projectId ?? "";
-  env.PAPERCLIP_PROJECT_WORKSPACE_ID = input.workspace.projectWorkspaceId ?? "";
-  env.PAPERCLIP_ISSUE_ID = input.workspace.sourceIssueId ?? "";
+  writeProductEnv(env, "WORKSPACE_BRANCH", input.workspace.branchName ?? ""); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "WORKSPACE_BASE_CWD", input.projectWorkspaceCwd ?? ""); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "WORKSPACE_REPO_ROOT", input.projectWorkspaceCwd ?? ""); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "WORKSPACE_REPO_URL", input.workspace.repoUrl ?? ""); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "WORKSPACE_REPO_REF", input.workspace.baseRef ?? ""); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "PROJECT_ID", input.workspace.projectId ?? ""); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "PROJECT_WORKSPACE_ID", input.workspace.projectWorkspaceId ?? ""); // myrmidon(REBRAND-C)
+  writeProductEnv(env, "ISSUE_ID", input.workspace.sourceIssueId ?? ""); // myrmidon(REBRAND-C)
   return env;
 }
 
@@ -6146,7 +6147,7 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
     uiDevMiddlewareHasTransport
     && isPaperclipDevRuntimeService({ serviceName, command })
   ) {
-    env.PAPERCLIP_UI_DEV_MIDDLEWARE ??= "true";
+    readProductEnvFrom(env, "UI_DEV_MIDDLEWARE") ??= "true";
   }
   if (port) {
     const portEnvKey = asString(portConfig.envKey, "PORT");
@@ -6176,15 +6177,15 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
     // can be arbitrarily old (PAP-17256): the `--bind loopback` argv
     // added above, these env vars for a runner that reads them, and HOST for one
     // old enough to ignore both and infer its bind mode from HOST alone.
-    env.PAPERCLIP_BIND = RUNTIME_EXPOSURE_BIND_MODE;
-    env.PAPERCLIP_BIND_HOST = RUNTIME_EXPOSURE_BIND_HOST;
+    writeProductEnv(env, "BIND", RUNTIME_EXPOSURE_BIND_MODE); // myrmidon(REBRAND-C)
+    writeProductEnv(env, "BIND_HOST", RUNTIME_EXPOSURE_BIND_HOST); // myrmidon(REBRAND-C)
     env.HOST = RUNTIME_EXPOSURE_BIND_HOST;
-    env.PAPERCLIP_VITE_HMR_PROTOCOL = "wss";
-    env.PAPERCLIP_MANAGED_RUNTIME_EXPOSURE = "tailscale_https";
-    env.PAPERCLIP_ALLOWED_HOSTNAMES = exposureHostname!;
-    env.PAPERCLIP_AUTH_BASE_URL_MODE = "explicit";
-    env.PAPERCLIP_AUTH_PUBLIC_BASE_URL = `https://${exposureHostname}:${port}`;
-    env.PAPERCLIP_PUBLIC_URL = `https://${exposureHostname}:${port}`;
+    writeProductEnv(env, "VITE_HMR_PROTOCOL", "wss"); // myrmidon(REBRAND-C)
+    writeProductEnv(env, "MANAGED_RUNTIME_EXPOSURE", "tailscale_https"); // myrmidon(REBRAND-C)
+    writeProductEnv(env, "ALLOWED_HOSTNAMES", exposureHostname!); // myrmidon(REBRAND-C)
+    writeProductEnv(env, "AUTH_BASE_URL_MODE", "explicit"); // myrmidon(REBRAND-C)
+    writeProductEnv(env, "AUTH_PUBLIC_BASE_URL", `https://${exposureHostname}:${port}`); // myrmidon(REBRAND-C)
+    writeProductEnv(env, "PUBLIC_URL", `https://${exposureHostname}:${port}`); // myrmidon(REBRAND-C)
   }
 
   const expose = parseObject(input.service.expose);

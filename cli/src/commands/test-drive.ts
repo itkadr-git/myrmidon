@@ -17,6 +17,7 @@ import { readConfig } from "../config/store.js";
 import type { PaperclipConfig } from "../config/schema.js";
 import { runCommand, type StartedServer } from "./run.js";
 import { isLinkedGitWorktree } from "./git-workspace.js";
+import { readProductEnv, writeProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export const TEST_DRIVE_HARNESSES = ["claude", "codex", "opencode"] as const;
 export type TestDriveHarness = (typeof TEST_DRIVE_HARNESSES)[number];
@@ -183,16 +184,16 @@ export async function prepareTestDriveEnvironment(
 
   const dataDir = resolveTestDriveDataDir(options.dataDir);
   const linkedWorktree = isLinkedGitWorktree(cwd);
-  process.env.PAPERCLIP_HOME = dataDir;
-  process.env.PAPERCLIP_INSTANCE_ID = "default";
-  process.env.PAPERCLIP_CONFIG = resolveDefaultConfigPath("default");
-  process.env.PAPERCLIP_CONTEXT = resolveDefaultContextPath();
-  process.env.PAPERCLIP_IN_WORKTREE = linkedWorktree ? "true" : "false";
-  process.env.PAPERCLIP_OPEN_ON_LISTEN = "false";
-  process.env.PAPERCLIP_DISABLE_CWD_ENV_FILE = "true";
-  process.env.PAPERCLIP_DEPLOYMENT_MODE = "local_trusted";
-  process.env.PAPERCLIP_DEPLOYMENT_EXPOSURE = "private";
-  process.env.PAPERCLIP_BIND = "loopback";
+  writeProductEnv(process.env, "HOME", dataDir); // myrmidon(REBRAND-C)
+  writeProductEnv(process.env, "INSTANCE_ID", "default"); // myrmidon(REBRAND-C)
+  writeProductEnv(process.env, "CONFIG", resolveDefaultConfigPath("default")); // myrmidon(REBRAND-C)
+  writeProductEnv(process.env, "CONTEXT", resolveDefaultContextPath()); // myrmidon(REBRAND-C)
+  writeProductEnv(process.env, "IN_WORKTREE", linkedWorktree ? "true" : "false"); // myrmidon(REBRAND-C)
+  writeProductEnv(process.env, "OPEN_ON_LISTEN", "false"); // myrmidon(REBRAND-C)
+  writeProductEnv(process.env, "DISABLE_CWD_ENV_FILE", "true"); // myrmidon(REBRAND-C)
+  writeProductEnv(process.env, "DEPLOYMENT_MODE", "local_trusted"); // myrmidon(REBRAND-C)
+  writeProductEnv(process.env, "DEPLOYMENT_EXPOSURE", "private"); // myrmidon(REBRAND-C)
+  writeProductEnv(process.env, "BIND", "loopback"); // myrmidon(REBRAND-C)
   process.env.HOST = "127.0.0.1";
   process.env.PORT = String(await resolveTestDriveServerPort());
 
@@ -410,9 +411,9 @@ export async function testDriveCommand(
   // Commander has already copied the value into options. Remove it from the
   // JavaScript argv view before logging, telemetry, diagnostics, or startup.
   redactTestDriveArgv(options.apiKey);
-  const dataDir = path.resolve(process.env.PAPERCLIP_HOME ?? resolveTestDriveDataDir(options.dataDir));
-  const linkedWorktree = process.env.PAPERCLIP_IN_WORKTREE === "true";
-  const instanceId = process.env.PAPERCLIP_INSTANCE_ID ?? "default";
+  const dataDir = path.resolve(readProductEnv("HOME") ?? resolveTestDriveDataDir(options.dataDir));
+  const linkedWorktree = readProductEnv("IN_WORKTREE") === "true";
+  const instanceId = readProductEnv("INSTANCE_ID") ?? "default";
   // Resolve environment-backed credentials against the CLI environment as it
   // exists before server startup. In-process server initialization must not
   // change which credential the post-listen bootstrap observes.

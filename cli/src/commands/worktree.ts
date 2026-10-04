@@ -105,6 +105,7 @@ import {
   type PlannedIssueInsert,
 } from "./worktree-merge-history-lib.js";
 import { detectGitWorkspaceInfo } from "./git-workspace.js";
+import { readProductEnv, readProductEnvFrom } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 type WorktreeInitOptions = {
   name?: string;
@@ -270,7 +271,7 @@ function nonEmpty(value: string | null | undefined): string | null {
 }
 
 function isCurrentSourceConfigPath(sourceConfigPath: string): boolean {
-  const currentConfigPath = process.env.PAPERCLIP_CONFIG;
+  const currentConfigPath = readProductEnv("CONFIG");
   if (!currentConfigPath || currentConfigPath.trim().length === 0) {
     return false;
   }
@@ -308,11 +309,11 @@ function resolveWorktreeMakeName(name: string): string {
 }
 
 function resolveWorktreeHome(explicit?: string): string {
-  return explicit ?? process.env.PAPERCLIP_WORKTREES_DIR ?? DEFAULT_WORKTREE_HOME;
+  return explicit ?? readProductEnv("WORKTREES_DIR") ?? DEFAULT_WORKTREE_HOME;
 }
 
 function resolveWorktreeStartPoint(explicit?: string): string | undefined {
-  return explicit ?? nonEmpty(process.env.PAPERCLIP_WORKTREE_START_POINT) ?? undefined;
+  return explicit ?? nonEmpty(readProductEnv("WORKTREE_START_POINT")) ?? undefined;
 }
 
 type ConfiguredStorage = {
@@ -921,8 +922,8 @@ export function resolveWorktreeReseedTargetPaths(input: {
   rootPath: string;
 }): WorktreeLocalPaths {
   const envEntries = readPaperclipEnvEntries(resolvePaperclipEnvFile(input.configPath));
-  const homeDir = nonEmpty(envEntries.PAPERCLIP_HOME);
-  const instanceId = nonEmpty(envEntries.PAPERCLIP_INSTANCE_ID);
+  const homeDir = nonEmpty(readProductEnvFrom(envEntries, "HOME"));
+  const instanceId = nonEmpty(readProductEnvFrom(envEntries, "INSTANCE_ID"));
 
   if (!homeDir || !instanceId) {
     throw new Error(
@@ -1066,7 +1067,7 @@ export function copySeededSecretsKey(input: {
   const allowProcessEnvFallback = isCurrentSourceConfigPath(input.sourceConfigPath);
   const sourceInlineMasterKey =
     nonEmpty(input.sourceEnvEntries.PAPERCLIP_SECRETS_MASTER_KEY) ??
-    (allowProcessEnvFallback ? nonEmpty(process.env.PAPERCLIP_SECRETS_MASTER_KEY) : null);
+    (allowProcessEnvFallback ? nonEmpty(readProductEnv("SECRETS_MASTER_KEY")) : null);
   if (sourceInlineMasterKey) {
     writeFileSync(input.targetKeyFilePath, sourceInlineMasterKey, {
       encoding: "utf8",
@@ -1082,7 +1083,7 @@ export function copySeededSecretsKey(input: {
 
   const sourceKeyFileOverride =
     nonEmpty(input.sourceEnvEntries.PAPERCLIP_SECRETS_MASTER_KEY_FILE) ??
-    (allowProcessEnvFallback ? nonEmpty(process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE) : null);
+    (allowProcessEnvFallback ? nonEmpty(readProductEnv("SECRETS_MASTER_KEY_FILE")) : null);
   const sourceConfiguredKeyPath = sourceKeyFileOverride ?? input.sourceConfig.secrets.localEncrypted.keyFilePath;
   const sourceKeyFilePath = resolveRuntimeLikePath(sourceConfiguredKeyPath, input.sourceConfigPath);
 
@@ -1841,7 +1842,7 @@ type LegacyWorktreeSeedPendingMarker = {
 
 function resolveSeedInstanceId(configPath: string): string {
   const envEntries = readPaperclipEnvEntries(resolvePaperclipEnvFile(configPath));
-  return nonEmpty(envEntries.PAPERCLIP_INSTANCE_ID)
+  return nonEmpty(readProductEnvFrom(envEntries, "INSTANCE_ID"))
     ?? sanitizeWorktreeInstanceId(path.basename(path.dirname(path.resolve(configPath))));
 }
 
@@ -2240,7 +2241,7 @@ export async function ensureWorktreeSeeded(
       })
     : null;
   const registeredBaseWorkspaceCwd = opts.registeredBaseWorkspaceCwd
-    ?? nonEmpty(process.env.PAPERCLIP_WORKSPACE_BASE_CWD)
+    ?? nonEmpty(readProductEnv("WORKSPACE_BASE_CWD"))
     ?? null;
   if (!initialManifest && !legacyPending && !hasExplicitSource && !registeredBaseWorkspaceCwd) {
     if (existsSync(markers.lock)) {
@@ -2250,11 +2251,11 @@ export async function ensureWorktreeSeeded(
     return { seeded: false, reason: "legacy_unmarked" };
   }
   const registeredProjectWorkspaceId = opts.registeredProjectWorkspaceId
-    ?? nonEmpty(process.env.PAPERCLIP_PROJECT_WORKSPACE_ID)
+    ?? nonEmpty(readProductEnv("PROJECT_WORKSPACE_ID"))
     ?? null;
   const expectedCompanyId = opts.expectedCompanyId
-    ?? nonEmpty(process.env.PAPERCLIP_SEED_EXPECTED_COMPANY_ID)
-    ?? nonEmpty(process.env.PAPERCLIP_COMPANY_ID)
+    ?? nonEmpty(readProductEnv("SEED_EXPECTED_COMPANY_ID"))
+    ?? nonEmpty(readProductEnv("COMPANY_ID"))
     ?? undefined;
   if (!explicitSourceConfigPath && registeredBaseWorkspaceCwd && (!registeredProjectWorkspaceId || !expectedCompanyId)) {
     throw new Error(
@@ -2489,11 +2490,11 @@ async function runWorktreeInit(opts: WorktreeInitOptions): Promise<void> {
   });
   const sourceEnvEntries = readPaperclipEnvEntries(resolvePaperclipEnvFile(sourceConfigPath));
   const existingAgentJwtSecret =
-    nonEmpty(sourceEnvEntries.PAPERCLIP_AGENT_JWT_SECRET) ??
-    nonEmpty(process.env.PAPERCLIP_AGENT_JWT_SECRET);
+    nonEmpty(readProductEnvFrom(sourceEnvEntries, "AGENT_JWT_SECRET")) ??
+    nonEmpty(readProductEnv("AGENT_JWT_SECRET"));
   const existingToolActionSigningSecret =
-    nonEmpty(sourceEnvEntries.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET) ??
-    nonEmpty(process.env.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET);
+    nonEmpty(readProductEnvFrom(sourceEnvEntries, "TOOL_ACTION_SIGNING_SECRET")) ??
+    nonEmpty(readProductEnv("TOOL_ACTION_SIGNING_SECRET"));
   mergePaperclipEnvEntries(
     {
       ...buildWorktreeEnvEntries(paths, branding),
@@ -3000,9 +3001,9 @@ export async function worktreeEnvCommand(opts: WorktreeEnvOptions): Promise<void
   const envEntries = readPaperclipEnvEntries(envPath);
   const out = {
     PAPERCLIP_CONFIG: configPath,
-    ...(envEntries.PAPERCLIP_HOME ? { PAPERCLIP_HOME: envEntries.PAPERCLIP_HOME } : {}),
-    ...(envEntries.PAPERCLIP_INSTANCE_ID ? { PAPERCLIP_INSTANCE_ID: envEntries.PAPERCLIP_INSTANCE_ID } : {}),
-    ...(envEntries.PAPERCLIP_CONTEXT ? { PAPERCLIP_CONTEXT: envEntries.PAPERCLIP_CONTEXT } : {}),
+    ...(readProductEnvFrom(envEntries, "HOME") ? { PAPERCLIP_HOME: readProductEnvFrom(envEntries, "HOME") } : {}),
+    ...(readProductEnvFrom(envEntries, "INSTANCE_ID") ? { PAPERCLIP_INSTANCE_ID: readProductEnvFrom(envEntries, "INSTANCE_ID") } : {}),
+    ...(readProductEnvFrom(envEntries, "CONTEXT") ? { PAPERCLIP_CONTEXT: readProductEnvFrom(envEntries, "CONTEXT") } : {}),
     ...envEntries,
   };
 
@@ -4317,7 +4318,7 @@ async function runWorktreeReseed(opts: WorktreeReseedOptions): Promise<void> {
       instanceId: targetPaths.instanceId,
       seedMode,
       preserveLiveWork: opts.preserveLiveWork,
-      expectedCompanyId: nonEmpty(process.env.PAPERCLIP_SEED_EXPECTED_COMPANY_ID) ?? undefined,
+      expectedCompanyId: nonEmpty(readProductEnv("SEED_EXPECTED_COMPANY_ID")) ?? undefined,
       seedDatabase: seedWorktreeDatabase,
     });
     spinner.stop(`Reseeded ${targetEndpoint.label} (${seedMode}).`);
@@ -4383,7 +4384,7 @@ export async function worktreeRepairCommand(opts: WorktreeRepairOptions): Promis
   const targetConfig = existsSync(target.configPath) ? readConfig(target.configPath) : null;
   const targetEnvEntries = readPaperclipEnvEntries(resolvePaperclipEnvFile(target.configPath));
   const targetHasWorktreeEnv = Boolean(
-    nonEmpty(targetEnvEntries.PAPERCLIP_HOME) && nonEmpty(targetEnvEntries.PAPERCLIP_INSTANCE_ID),
+    nonEmpty(readProductEnvFrom(targetEnvEntries, "HOME")) && nonEmpty(readProductEnvFrom(targetEnvEntries, "INSTANCE_ID")),
   );
 
   if (targetConfig && targetHasWorktreeEnv && opts.noSeed) {

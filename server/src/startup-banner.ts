@@ -3,6 +3,7 @@ import { resolvePaperclipConfigPath, resolvePaperclipEnvPath } from "./paths.js"
 import type { BindMode, DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 
 import { parse as parseEnvFileContents } from "dotenv";
+import { readProductEnv, readProductEnvFrom } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 type UiMode = "none" | "static" | "vite-dev";
 
@@ -72,7 +73,7 @@ function resolveAgentJwtSecretStatus(
   status: "pass" | "warn";
   message: string;
 } {
-  const envValue = process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim();
+  const envValue = readProductEnv("AGENT_JWT_SECRET")?.trim();
   if (envValue) {
     return {
       status: "pass",
@@ -82,7 +83,7 @@ function resolveAgentJwtSecretStatus(
 
   if (existsSync(envFilePath)) {
     const parsed = parseEnvFileContents(readFileSync(envFilePath, "utf-8"));
-    const fileValue = typeof parsed.PAPERCLIP_AGENT_JWT_SECRET === "string" ? parsed.PAPERCLIP_AGENT_JWT_SECRET.trim() : "";
+    const fileValue = typeof readProductEnvFrom(parsed, "AGENT_JWT_SECRET") === "string" ? readProductEnvFrom(parsed, "AGENT_JWT_SECRET").trim() : "";
     if (fileValue) {
       return {
         status: "warn",

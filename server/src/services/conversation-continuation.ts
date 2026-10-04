@@ -173,25 +173,3 @@ export async function getConversationOwnershipBlocker(db: Db, companyId: string,
   }
   return null;
 }
-
-    let pidAlive = run.processPid !== null && processMayBeAlive(run.processPid);
-    if (pidAlive && run.processStartedAt) {
-      // A recycled PID cannot keep an old task blocked. An unreadable identity
-      // stays conservative; the original process may still own execution.
-      const observed = await readProcessStartedAt(run.processPid!).catch(() => null);
-      if (observed && new Date(observed).getTime() !== run.processStartedAt.getTime()) pidAlive = false;
-    }
-    const groupAlive = run.processGroupId !== null && processMayBeAlive(-run.processGroupId);
-    if (pidAlive || groupAlive || leaseHeld) {
-      return {
-        runId: run.id,
-        agentId: run.agentId,
-        cause: "execution_owner_active",
-        nextAction: pidAlive || groupAlive
-          ? "The previous provider process is still running. Stop it before continuing this task."
-          : "The previous execution has not released its environment lease. Wait for cleanup before continuing this task.",
-      };
-    }
-  }
-  return null;
-}

@@ -16,6 +16,7 @@ import {
   type PaperclipSemanticToolDefinition,
 } from "../../vendor/paperclip-runner/index.js";
 import { runnerPrpCoordinator } from "./runner-prp-coordinator.js";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const moduleDirectory = dirname(fileURLToPath(import.meta.url));
 const RUNNER_VERSION = "paperclip-runner-v1";
@@ -169,7 +170,7 @@ function executableName(): string {
 }
 
 export function resolvePaperclipRunnerBinary(
-  configuredPath = process.env.PAPERCLIP_RUNNER_BINARY,
+  configuredPath = readProductEnv("RUNNER_BINARY"),
 ): string {
   const candidates = [
     configuredPath,

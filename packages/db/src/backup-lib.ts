@@ -6,6 +6,7 @@ import { open as openFile } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
 import { createGunzip, createGzip } from "node:zlib";
 import postgres from "postgres";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export type BackupRetentionPolicy = {
   dailyDays: number;
@@ -466,7 +467,7 @@ async function runPgDumpBackup(opts: {
   backupFile: string;
   connectTimeout: number;
 }): Promise<void> {
-  const pgDumpBin = process.env.PAPERCLIP_PG_DUMP_PATH || "pg_dump";
+  const pgDumpBin = readProductEnv("PG_DUMP_PATH") || "pg_dump";
   const child = spawn(
     pgDumpBin,
     [
@@ -497,7 +498,7 @@ async function runPgDumpBackup(opts: {
 }
 
 async function restoreWithPsql(opts: RunDatabaseRestoreOptions, connectTimeout: number): Promise<void> {
-  const psqlBin = process.env.PAPERCLIP_PSQL_PATH || "psql";
+  const psqlBin = readProductEnv("PSQL_PATH") || "psql";
   const child = spawn(
     psqlBin,
     [
