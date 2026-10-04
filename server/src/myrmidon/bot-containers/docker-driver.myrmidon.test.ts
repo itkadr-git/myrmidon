@@ -481,8 +481,10 @@ describe("buildApplyScript", () => {
     expect(removals).toBeGreaterThan(stagedMoves);
     expect(rmBackups).toBeGreaterThan(removals);
     expect(marker).toBeGreaterThan(rmBackups);
-    // The marker move itself stays strictly last (after the cleanup).
-    const markerMove = indexOf("mv -f -T -- \"$applyDir/applied.json\"");
+    // The marker move itself stays strictly last (after the cleanup). The
+    // generated line interpolates applyDir/hermesRoot at build time, so match
+    // on the stable tail of that line, not the shell variable spellings.
+    const markerMove = indexOf("/applied.json");
     expect(markerMove).toBeGreaterThan(rmBackups);
   });
 });
