@@ -71,7 +71,7 @@ function brokerCandidateUrls(env) {
 }
 
 // myrmidon(GITHUB-SHARED-IDENTITY): the repository this gh invocation targets,
-// as `owner/repo`, forwarded to the broker (the shared GitHub authorization is issued
+// as `owner/repo`, forwarded to the broker (a GitHub App token is minted
 // per repository, for allowed ones only; an OAuth identity ignores it).
 // Sources, first match wins: -R/--repo, GH_REPO, then the origin remote of
 // the current directory. Only github.com references are accepted.

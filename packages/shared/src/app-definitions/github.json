@@ -35,8 +35,7 @@
       "connectorProfile": "github.code",
       "grantKinds": [
         "user",
-        "agent",
-        "organization"
+        "agent"
       ],
       "warnings": [
         "Shell Git and gh receive this identity for the run and are not constrained by per-tool Ask-first controls."

@@ -1,35 +1,34 @@
 // server/src/myrmidon/github-shared-identity/settings.ts
 //
-// myrmidon(GITHUB-SHARED-IDENTITY): access rules of the shared GitHub
-// authorizations — "authorize once for the whole server", one identity per
-// product.
+// myrmidon(GITHUB-SHARED-IDENTITY): "authorize once for the whole server"
+// through self-hosted GitHub Apps — one identity per product, no vendor cloud
+// connector and no vendor GitHub App.
 //
-// A shared authorization lives in the vendor tool-connections model: a
-// managed GitHub connection with the `shared` credential policy and ONE
-// `organization` grant, created by one OAuth pass (the GitHub App is installed
-// on the chosen repositories during that pass) and installed with a company
-// target. A company may hold several — for example one GitHub account for the
-// repositories of one product and a separate bot account for another. This
-// document says, per shared connection, who may use it and for which
-// repositories:
+// The operator registers OUR OWN GitHub App under each account or
+// organization (for example one for product A's owner account, one for
+// product B's bot account) and installs it on that product's repositories.
+// This document, per company, lists those Apps:
 //
-//   - `enabled` — master switch; off means no shared grant serves anybody and
-//     shared connections do not count as "configured" for any agent;
-//   - `connections[]` — one rule per shared connection: `roles` / `agentIds`
-//     (agents that may use it; both empty means nobody) and `allowedRepos`
-//     (`owner/repo` patterns; empty means none);
+//   - `enabled` — master switch; off means no App serves anybody;
+//   - `apps[]` — one entry per App installation: the App id, the company
+//     secret holding its private key (PEM), the installation id (optional:
+//     discovered per repository when empty), the agents that may use it
+//     (`roles` / `agentIds`; both empty means nobody) and the repositories it
+//     serves (`allowedRepos`, `owner/repo` patterns; empty means none);
 //   - `commitEmailDomain` — the domain of the agent's commit email
 //     (`<agent>@<domain>`): the commit identity stays the agent's, only the
 //     authentication is shared.
 //
-// The broker picks the identity by the target repository of each operation:
-// the one shared connection whose rule allows the agent and matches the
-// repository. A repository matched by none gets no shared identity (absent);
-// a repository matched by two connections of different GitHub accounts is an
-// error, never a silent pick — identities of different products never mix.
-// The broker re-reads the document on every request: a change applies to the
-// next git/gh operation without a restart. A dedicated (per-agent) grant, or
-// the run's own personal grant, always wins over a shared grant.
+// The board mints short-lived installation tokens itself (server-side JWT
+// signed with the App key, `POST /app/installations/{id}/access_tokens`),
+// narrowed to the ONE target repository and to contents + pull requests
+// read/write and metadata read — never secrets, administration or
+// workflows. The broker picks the App by the target repository of each
+// operation; a repository matched by two Apps is an error, never a silent
+// pick, so identities of different products never mix. The document is
+// re-read on every request: a change applies to the next git/gh operation
+// without a restart. A dedicated (per-agent) OAuth grant, or the run's own
+// personal grant, wins over an App.
 
 import { z } from "zod";
 
@@ -76,47 +75,55 @@ const agentScopeFields = {
   agentIds: z.array(z.string().uuid()).max(MAX_SCOPE_ENTRIES).default([]),
 };
 
-/** The rule of one shared GitHub connection. */
-export const githubSharedConnectionRuleSchema = z
+/** One self-hosted GitHub App installation and who may use it for what. */
+export const githubAppEntrySchema = z
   .object({
-    connectionId: z.string().uuid(),
+    /** Stable id of the entry (the UI generates it). */
+    id: z.string().uuid(),
+    name: z.string().trim().min(1).max(100),
+    /** The GitHub App id (numeric). */
+    appId: z.string().trim().regex(/^[0-9]{1,20}$/, "The GitHub App id is a number"),
+    /** Company secret (company scope) holding the App's private key, PEM. */
+    privateKeySecretId: z.string().uuid(),
+    /** Installation id; null — discovered per repository (GET /repos/{owner}/{repo}/installation). */
+    installationId: z.string().trim().regex(/^[0-9]{1,20}$/).nullable().default(null),
     ...agentScopeFields,
     allowedRepos: z.array(repoPatternSchema).max(MAX_ALLOWED_REPOS).default([]),
   })
   .strict();
 
-export const MAX_SHARED_CONNECTIONS = 20;
+export const MAX_GITHUB_APPS = 20;
 
 /** The document a board PUT replaces. */
 export const githubSharedIdentitySettingsInputSchema = z
   .object({
     enabled: z.boolean(),
-    connections: z.array(githubSharedConnectionRuleSchema).max(MAX_SHARED_CONNECTIONS).default([]),
+    apps: z.array(githubAppEntrySchema).max(MAX_GITHUB_APPS).default([]),
     commitEmailDomain: z.string().trim().toLowerCase().regex(EMAIL_DOMAIN, "Not a domain name").nullable().default(null),
   })
   .strict()
   .superRefine((value, ctx) => {
     const seen = new Set<string>();
-    value.connections.forEach((rule, index) => {
-      if (seen.has(rule.connectionId)) {
-        ctx.addIssue({ code: "custom", path: ["connections", index, "connectionId"], message: "One rule per connection" });
+    value.apps.forEach((app, index) => {
+      if (seen.has(app.id)) {
+        ctx.addIssue({ code: "custom", path: ["apps", index, "id"], message: "Duplicate entry id" });
       }
-      seen.add(rule.connectionId);
+      seen.add(app.id);
     });
   });
 
 export type GitHubSharedIdentitySettingsInput = z.input<typeof githubSharedIdentitySettingsInputSchema>;
-export type GitHubSharedConnectionRule = z.output<typeof githubSharedConnectionRuleSchema>;
+export type GitHubAppEntry = z.output<typeof githubAppEntrySchema>;
 
 export interface GitHubSharedIdentitySettings {
   version: 1;
   enabled: boolean;
-  connections: GitHubSharedConnectionRule[];
+  apps: GitHubAppEntry[];
   commitEmailDomain: string | null;
 }
 
 export function defaultGitHubSharedIdentitySettings(): GitHubSharedIdentitySettings {
-  return { version: 1, enabled: false, connections: [], commitEmailDomain: null };
+  return { version: 1, enabled: false, apps: [], commitEmailDomain: null };
 }
 
 function dedupe(values: string[], caseInsensitive = false): string[] {
@@ -138,11 +145,11 @@ export function toStoredGitHubSharedIdentitySettings(
   return {
     version: 1,
     enabled: input.enabled,
-    connections: input.connections.map((rule) => ({
-      connectionId: rule.connectionId,
-      roles: dedupe(rule.roles),
-      agentIds: dedupe(rule.agentIds),
-      allowedRepos: dedupe(rule.allowedRepos, true),
+    apps: input.apps.map((app) => ({
+      ...app,
+      roles: dedupe(app.roles),
+      agentIds: dedupe(app.agentIds),
+      allowedRepos: dedupe(app.allowedRepos, true),
     })),
     commitEmailDomain: input.commitEmailDomain,
   };
@@ -212,31 +219,29 @@ export function isRepositoryAllowed(patterns: readonly string[], repository: str
   });
 }
 
-/** Whether a connection rule lets this agent use that shared connection. */
-export function sharedRuleAllowsAgent(
-  rule: Pick<GitHubSharedConnectionRule, "roles" | "agentIds">,
+/** Whether an App entry lets this agent use it. */
+export function appEntryAllowsAgent(
+  entry: Pick<GitHubAppEntry, "roles" | "agentIds">,
   agent: { id: string; role: string | null | undefined },
 ): boolean {
-  if (rule.agentIds.includes(agent.id)) return true;
+  if (entry.agentIds.includes(agent.id)) return true;
   const role = typeof agent.role === "string" ? agent.role : "";
-  return Boolean(role) && rule.roles.includes(role);
+  return Boolean(role) && entry.roles.includes(role);
 }
 
 /**
- * The shared connections that may serve this agent for this repository
- * (normalized `owner/repo`): enabled rules that allow the agent and whose
- * patterns match the repository. Usually zero or one; two or more is an
- * overlap the resolver reports as an error.
+ * The App entries that may serve this agent for this repository (normalized
+ * `owner/repo`): the entries that allow the agent and whose patterns match.
+ * Zero — no App identity; one — that App; two or more — an overlap the
+ * broker reports as an error.
  */
-export function sharedConnectionIdsFor(
+export function githubAppsFor(
   settings: GitHubSharedIdentitySettings,
   agent: { id: string; role: string | null | undefined },
   repository: string | null,
-): string[] {
+): GitHubAppEntry[] {
   if (!settings.enabled || !repository) return [];
-  return settings.connections
-    .filter((rule) => sharedRuleAllowsAgent(rule, agent) && isRepositoryAllowed(rule.allowedRepos, repository))
-    .map((rule) => rule.connectionId);
+  return settings.apps.filter((entry) => appEntryAllowsAgent(entry, agent) && isRepositoryAllowed(entry.allowedRepos, repository));
 }
 
 /**

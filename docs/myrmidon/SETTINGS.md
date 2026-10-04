@@ -1088,34 +1088,34 @@ is accepted. An invalid input answers 400 with a clear message.
 |---|---|---|---|---|
 | `pluginEntitlementKeys` | 1.6.2-PLUGIN-ENTITLEMENT C | absent | The accepted plugin entitlement keys in the instance general settings; absent means "no keys registered" — every entitlement-gated plugin stays inactive | Remove the keys in the UI or via DELETE …/keys/:pluginId; a malformed stored row fails closed to "no keys" |
 
-## 1.6.3 — GITHUB-SHARED-IDENTITY: shared GitHub authorization ("authorize once")
+## 1.6.3 — GITHUB-SHARED-IDENTITY: self-hosted GitHub Apps ("authorize once")
 
-No environment variables: everything is runtime-changeable per company.
+| Variable | Function | Default | What it does | How to disable / special |
+|---|---|---|---|---|
+| `MYRMIDON_GITHUB_VENDOR_CONNECTOR` | GITHUB-SHARED-IDENTITY | unset (**off**) | Instance-wide switch of the vendor's cloud GitHub connector (OAuth through the vendor's GitHub App). Off: new managed GitHub connections and their OAuth start are refused (`github_vendor_connector_disabled`), existing vendor-connector GitHub connections are ignored by the credential resolver | `1`/`true`/`yes`/`on` — on (vendor behavior). Anything else — off. Read on every call |
 
-- **The connection** is a managed GitHub connection (Apps → GitHub) with the
-  identity "Shared company GitHub account": credential policy `shared`, one
-  `organization` grant from one OAuth pass, installed for the company or for
-  chosen agents. The managed GitHub method now lists the `organization` grant
-  kind; a fresh GitHub connection still defaults to "My GitHub account".
-- **The access rules** live in `instance_settings.general.myrmidonGithubSharedIdentity[companyId]`
-  and are edited on Company settings → "Shared GitHub authorization" or with
-  `GET`/`PUT /api/myrmidon/companies/:companyId/github-shared-identity` (GET:
-  board with company access; PUT: board with `tools:manage_connections`):
+Everything else is runtime-changeable per company. Company settings →
+"Shared GitHub authorization" (`GET`/`PUT /api/myrmidon/companies/:companyId/github-shared-identity`;
+GET: board with company access, PUT: board with `tools:manage_connections`)
+edits `instance_settings.general.myrmidonGithubSharedIdentity[companyId]`:
 
 | Field | Default | What it does |
 |---|---|---|
-| `enabled` | `false` | Master switch. Off: no shared grant serves anybody, and shared GitHub connections do not count as configured for any agent (the pre-change behavior). |
-| `connections[].connectionId` | — | A shared managed GitHub connection of this company (validated on save). One rule per connection. |
-| `connections[].roles` | `[]` | Agent roles that may use the connection. |
-| `connections[].agentIds` | `[]` | Agents that may use it regardless of role. Both lists empty: nobody. |
-| `connections[].allowedRepos` | `[]` | `owner/repo` or `owner/<pattern with *>` the connection serves; the owner is literal. Empty: none. The broker picks the connection by the target repository of each operation; a repository matched by two connections of different GitHub accounts is an error. |
-| `commitEmailDomain` | `null` (`agents.myrmidon.invalid`) | Domain of the agent's commit email `<agent-slug>@<domain>`. Author and committer stay the agent; only the authentication is shared. |
+| `enabled` | `false` | Master switch. Off: no App serves anybody (the pre-change behavior). |
+| `apps[].appId` | — | The id of our own GitHub App (registered with Contents and Pull requests read/write, Metadata read). |
+| `apps[].privateKeySecretId` | — | Company secret (company scope, active) holding the App's private key PEM. Validated on save. |
+| `apps[].installationId` | `null` | Installation id; `null` — discovered per repository (`GET /repos/{owner}/{repo}/installation`). |
+| `apps[].roles` / `apps[].agentIds` | `[]` | Agents that may use the App (by role or id). Both empty: nobody. |
+| `apps[].allowedRepos` | `[]` | `owner/repo` or `owner/<pattern with *>` the App serves; the owner is literal. The broker picks the App by the target repository of each operation; a repository matched by two Apps is an error. |
+| `commitEmailDomain` | `null` (`agents.myrmidon.invalid`) | Domain of the agent's commit email `<agent-slug>@<domain>`. Author and committer stay the agent. |
 
-Precedence: dedicated (per-agent) grant > the run's personal grant > shared
-grant. The broker reads the rules on every request (no restart); every
-issuance is audited (`myrmidon.github_shared.issued`, secret access event with
-config path `github_shared:<owner/repo>`), refusals as
-`myrmidon.github_shared.denied`. In bot containers patch 09 keeps stripping
-raw tokens; `git-credential-paperclip` (now with `useHttpPath = true`) and the
+The board mints installation tokens itself (RS256 JWT, `POST
+/app/installations/{id}/access_tokens`), narrowed to the one target
+repository and `contents: write, pull_requests: write, metadata: read`;
+cached in memory until five minutes before expiry. Precedence: dedicated
+(per-agent) grant > the run's personal grant > App. Audit:
+`myrmidon.github_app.issued`/`denied`, secret access event with config path
+`github_app:<owner/repo>`. In bot containers patch 09 keeps stripping raw
+tokens; `git-credential-paperclip` (now with `useHttpPath = true`) and the
 `gh` wrapper send the target repository to the broker. Full guide:
 [guides/github-shared-identity.md](guides/github-shared-identity.md).

@@ -327,10 +327,6 @@ function defaultGrantKindFor(method: ConnectionMethodDef | null, preferPersonal 
   if (preferPersonal && method?.auth !== "none" && (!method?.grantKinds || method.grantKinds.includes("user"))) return "user";
   if (method?.grantKinds?.length === 1) return method.grantKinds[0]!;
   if (method?.grantKinds && !method.grantKinds.includes("organization")) return method.grantKinds[0]!;
-  // myrmidon(GITHUB-SHARED-IDENTITY): managed GitHub also offers the shared
-  // (organization) grant, but a fresh connection keeps defaulting to the
-  // person's own account; the shared account is an explicit operator choice.
-  if (method?.connectorProfile === "github.code" && method.grantKinds?.includes("user")) return "user";
   return "organization";
 }
 

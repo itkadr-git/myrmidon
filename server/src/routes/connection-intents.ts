@@ -53,7 +53,7 @@ export function runtimeConnectionIntentRoutes(db: Db) {
     if (!claims) throw unauthorized("Invalid GitHub runtime capability");
     res.setHeader("Cache-Control", "no-store");
     // myrmidon(GITHUB-SHARED-IDENTITY): the optional `repository` (owner/repo) the
-    // git/gh operation targets; the shared GitHub authorization is issued per repository.
+    // git/gh operation targets; a GitHub App token is minted per repository.
     const repository = typeof req.body?.repository === "string" && req.body.repository.length <= 300
       ? req.body.repository : null;
     res.json(await resolveGitHubOperationCredentials(db, {

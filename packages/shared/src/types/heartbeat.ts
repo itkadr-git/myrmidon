@@ -174,8 +174,8 @@ export interface HeartbeatRun {
     github: {
       status: "available" | "absent" | "unavailable";
       login?: string;
-      // myrmidon(GITHUB-SHARED-IDENTITY): "shared" — the shared (instance-wide) GitHub authorization, issued per `repository`
-      source?: "personal" | "dedicated" | "shared";
+      // myrmidon(GITHUB-SHARED-IDENTITY): "app" — a self-hosted GitHub App token, issued per `repository`
+      source?: "personal" | "dedicated" | "app";
       repository?: string;
       reason?: string;
       connectionId?: string;

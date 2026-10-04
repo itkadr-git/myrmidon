@@ -772,35 +772,35 @@ PATCH — instance-admin) без перезапуска; следующая оц
 | `MYRMIDON_BUDGET_ENFORCEMENT_MODE` | 1.7-BUDGET-CONFIG-B | не задана (`signal_only`) | Режим исполнения, пока в `instance_settings.general.budgetEnforcement` ничего не сохранено: `signal_only` — инцидент создаётся и владелец получает сигнал, но скоуп не ставится на паузу и прогоны стартуют; `soft` — пауза плюс карточка владельцу (поднятие бюджета возобновляет скоуп); `hard` — новые прогоны пересёкшего лимит скоупа отказываются с бюджетной причиной | Любое другое значение (или не задана) — умолчание `signal_only`; как только значение сохранено с экрана настроек, окружение перестаёт иметь значение. Сами сигналы дополнительно слушаются `MYRMIDON_BUDGET_SIGNAL_MODE=off`. Полный гайд: [guides/budget-enforcement.ru.md](guides/budget-enforcement.ru.md) |
 
 
-## 1.6.3 — GITHUB-SHARED-IDENTITY: общая авторизация GitHub («авторизоваться один раз»)
+## 1.6.3 — GITHUB-SHARED-IDENTITY: собственные GitHub App («авторизоваться один раз»)
 
-Переменных окружения нет: всё меняется на лету, по компаниям.
+| Переменная | Функция | Умолчание | Что делает | Как отключить / особые случаи |
+|---|---|---|---|---|
+| `MYRMIDON_GITHUB_VENDOR_CONNECTOR` | GITHUB-SHARED-IDENTITY | не задана (**выключено**) | Выключатель облачного GitHub-коннектора вендора на весь экземпляр (OAuth через GitHub App вендора). Выключен: новые управляемые подключения GitHub и их OAuth-старт отклоняются (`github_vendor_connector_disabled`), существующие подключения GitHub через коннектор вендора резолвер учёток не видит | `1`/`true`/`yes`/`on` — включено (поведение вендора). Иное — выключено. Читается при каждом вызове |
 
-- **Подключение** — управляемое подключение GitHub (Apps → GitHub) с
-  идентичностью «Shared company GitHub account»: политика `shared`, один грант
-  `organization` из одного прохода OAuth, установлено на компанию или на
-  выбранных агентов. Управляемый метод GitHub теперь допускает вид гранта
-  `organization`; новое подключение GitHub по-прежнему по умолчанию «My GitHub
-  account».
-- **Правила доступа** хранятся в `instance_settings.general.myrmidonGithubSharedIdentity[companyId]`,
-  правятся в настройках компании → «Shared GitHub authorization» или через
-  `GET`/`PUT /api/myrmidon/companies/:companyId/github-shared-identity` (GET —
-  доска с доступом к компании; PUT — доска с правом `tools:manage_connections`):
+Остальное меняется на лету, по компаниям. Настройки компании → «Shared
+GitHub authorization» (`GET`/`PUT /api/myrmidon/companies/:companyId/github-shared-identity`;
+GET — доска с доступом к компании, PUT — доска с правом
+`tools:manage_connections`) правят
+`instance_settings.general.myrmidonGithubSharedIdentity[companyId]`:
 
 | Поле | Умолчание | Что делает |
 |---|---|---|
-| `enabled` | `false` | Общий выключатель. Выключен: общий грант никому не выдаётся, и общие подключения GitHub не считаются настроенными ни для какого агента (поведение до изменения). |
-| `connections[].connectionId` | — | Общее управляемое подключение GitHub этой компании (проверяется при сохранении). Одно правило на подключение. |
-| `connections[].roles` | `[]` | Роли агентов, которым подключение доступно. |
-| `connections[].agentIds` | `[]` | Агенты, которым оно доступно независимо от роли. Оба списка пусты — никому. |
-| `connections[].allowedRepos` | `[]` | `owner/repo` или `owner/<шаблон с *>`, которые обслуживает подключение; владелец буквальный. Пусто — ничего. Брокер выбирает подключение по целевому репозиторию каждой операции; репозиторий, совпавший с двумя подключениями разных аккаунтов GitHub, — ошибка. |
-| `commitEmailDomain` | `null` (`agents.myrmidon.invalid`) | Домен почты коммитов агента `<slug-агента>@<домен>`. Автор и коммиттер — агент; общая только аутентификация. |
+| `enabled` | `false` | Общий выключатель. Выключен: приложения никому не выдаются (поведение до изменения). |
+| `apps[].appId` | — | Id нашего GitHub App (зарегистрировано с правами Contents и Pull requests на чтение/запись, Metadata на чтение). |
+| `apps[].privateKeySecretId` | — | Секрет компании (scope company, активный) с приватным ключом приложения (PEM). Проверяется при сохранении. |
+| `apps[].installationId` | `null` | Id установки; `null` — находится по репозиторию (`GET /repos/{owner}/{repo}/installation`). |
+| `apps[].roles` / `apps[].agentIds` | `[]` | Агенты, которым доступно приложение (по роли или id). Оба пусты — никому. |
+| `apps[].allowedRepos` | `[]` | `owner/repo` или `owner/<шаблон с *>`, которые обслуживает приложение; владелец буквальный. Брокер выбирает приложение по целевому репозиторию каждой операции; репозиторий, совпавший с двумя приложениями, — ошибка. |
+| `commitEmailDomain` | `null` (`agents.myrmidon.invalid`) | Домен почты коммитов агента `<slug-агента>@<домен>`. Автор и коммиттер — агент. |
 
-Старшинство: выделенный (на агента) грант > личный грант ответственного за
-прогон > общий грант. Брокер читает правила при каждом запросе (без
-перезапуска); каждая выдача в аудите (`myrmidon.github_shared.issued`, событие
-доступа к секрету с путём `github_shared:<owner/repo>`), отказы —
-`myrmidon.github_shared.denied`. В контейнерах ботов патч 09 по-прежнему
-вырезает сырые токены; `git-credential-paperclip` (теперь с
-`useHttpPath = true`) и обёртка `gh` передают брокеру целевой репозиторий.
-Полное руководство: [guides/github-shared-identity.ru.md](guides/github-shared-identity.ru.md).
+Доска сама выпускает токены установки (JWT RS256, `POST
+/app/installations/{id}/access_tokens`), суженные до одного целевого
+репозитория и `contents: write, pull_requests: write, metadata: read`; в
+памяти до пяти минут до истечения. Старшинство: выделенный (на агента)
+грант > личный грант ответственного > приложение. Аудит:
+`myrmidon.github_app.issued`/`denied`, событие доступа к секрету с путём
+`github_app:<owner/repo>`. В контейнерах ботов патч 09 по-прежнему вырезает
+сырые токены; `git-credential-paperclip` (теперь с `useHttpPath = true`) и
+обёртка `gh` передают брокеру целевой репозиторий. Полное руководство:
+[guides/github-shared-identity.ru.md](guides/github-shared-identity.ru.md).
