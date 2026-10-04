@@ -1,0 +1,8 @@
+# Vendor base commit for the Myrmidon fork: the point in history where the
+# vendor (Paperclip) code stops and our own changes begin.
+#
+# How it was found (a repeatable command, not a guess):
+#   git tag --merged main 'v20*' --sort=-v:refname | head -1   ->  v2026.916.1
+# The newest vendor release tag reachable from our main; the release workflow
+# keeps its own versioning (myr-v*), so every commit below it is vendor code.
+d554c4789ed3930f8a53ac9fdf6503b3187097da
