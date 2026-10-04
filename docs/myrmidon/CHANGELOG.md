@@ -46,6 +46,10 @@ version file to edit. Base Paperclip version is in the image label
   also filters runs by `head_branch == the tag`, so the publish waits for
   every required image workflow of the same tag (up to ~40 minutes) and
   a failed tag run still refuses the publish with the workflow's name.
+  Follow-up (same day): the CI gate accepts a green main-branch run of the
+  same commit — `myrmidon-ci.yml` has no tag trigger, so a tag never has a
+  CI run of its own and the strictly tag-scoped gate would have refused
+  every publish after ~20 minutes of polling.
 - A manual re-run from the `main` branch no longer overrides the typed
   tag: `myrmidon-release.yml` resolves the tag as
   `inputs.tag || github.ref_name` (checkout `ref`, `TAG` env and the
