@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -84,6 +84,13 @@ const serializedServerVitestArgs = [
 const sourceOnlyVitestArgs = ["--exclude", "**/dist/**"];
 
 function walk(dir) {
+  // Truncated checkouts and synthetic fixture trees may lack one of the
+  // collected roots (for example server/scripts); treat a missing directory
+  // as an empty set instead of failing the whole selection (vitest-chat-shards
+  // builds a minimal server/src/__tests__ tree).
+  if (!existsSync(dir)) {
+    return [];
+  }
   const entries = readdirSync(dir);
   const files = [];
   for (const entry of entries) {
