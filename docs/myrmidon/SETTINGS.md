@@ -1221,3 +1221,19 @@ is configured or usable.
 | Field | Default | What it does | Bounds / special |
 |---|---|---|---|
 | `promptBudget.optimizerAgentId` | absent | Agent that receives the deep-analysis task filed by the "Deep analysis" button | A uuid of another agent of the same company; absent, blank or not a uuid answers the deep POST with 422. An additive field of the `promptBudget` area owned by the thresholds part (`instance_settings.general.promptBudget`); no environment variable |
+
+## 1.6.3 — PROMPT-BUDGET D: fleet prompt report on the Costs screen
+
+The fleet report has no environment variable of its own. It reads the live
+instance setting `instance_settings.general.promptBudget` (owned by the sibling
+part B of the same wave) and data the runs already store, so nothing has to be
+restarted and no new store appears. The report rides on the existing
+`GET /api/companies/:companyId/costs/by-agent` response as two additive
+per-agent columns — `avgPromptTokens` (average prompt size of one run) and
+`runsAboveThresholdPct` (share of judged runs above the threshold) — and shows
+up as the columns "Avg prompt" and "% runs over threshold" with a sort toggle
+on the Costs screen.
+
+| Variable | Function | Default | What it does | How to disable / special |
+|---|---|---|---|---|
+| `promptBudget` | 1.6.3-PROMPT-BUDGET D (read-only here; written by part B) | absent | Threshold settings of the prompt budget. The report judges a run against `warnPct` percent of the context window of the model that served the run (`litellm_models.maxInputTokens`); the average prompt size uses `heartbeat_runs.usageJson.promptBreakdown.total`, and the input tokens of the run's own cost events when the run recorded no breakdown | Absent, `enabled: false` or an unusable value — the share column stays empty (`null`), never zero, and the report keeps working. A run whose model window is unknown counts towards the average prompt size but is left out of the share. Removing the key removes the column content; nothing else changes |
