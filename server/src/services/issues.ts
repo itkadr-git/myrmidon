@@ -13283,6 +13283,12 @@ export function issueService(db: Db) {
       postCommitActivityPublications?: ActivityPublication[],
       postCommitActions?: IssuePostCommitAction[],
     ) => ReturnType<typeof service.update>;
+    cancelDeferredExecutionsForAgentOnReassignment: (
+      agentId: string,
+      issueId: string,
+      companyId: string,
+      dbOrTx?: any,
+    ) => Promise<number>;
   };
   const serviceApi = service as IssueServiceApi;
 
@@ -13304,6 +13310,28 @@ export function issueService(db: Db) {
       postCommitActivityPublications,
       postCommitActions,
     );
+  };
+
+
+  // Cancel deferred executions for old assignee when issue is reassigned
+  serviceApi.cancelDeferredExecutionsForAgentOnReassignment = async (agentId, issueId, companyId, dbOrTx = db) => {
+    const result = await dbOrTx
+      .update(agentWakeupRequests)
+      .set({
+        status: 'cancelled',
+        error: sql`'Cancelled due to issue reassignment from agent ' || ${agentId} || ' for issue ' || ${issueId}`
+      })
+      .where(and(
+        eq(agentWakeupRequests.agentId, agentId),
+        eq(agentWakeupRequests.status, 'deferred_issue_execution'),
+        eq(agentWakeupRequests.companyId, companyId),
+        sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`
+      ))
+      .returning({ id: agentWakeupRequests.id });
+
+    console.log(`Cancelled ${result.length} deferred executions for agent ${agentId} on issue reassignment for issue ${issueId}`);
+    
+    return result.length;
   };
 
   return serviceApi;

@@ -7,7 +7,9 @@ import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   buildBody,
+  buildManifest,
   COMPONENTS,
+  MANIFEST_NAME,
   componentDigest,
   componentDigests,
   extractChangelogSection,
@@ -129,6 +131,8 @@ case "$sub" in
           echo "release not found: $tag" >&2
           exit 1
         fi ;;
+      upload)
+        printf 'upload tag=%s manifest=%s\n' "$tag" "$(jq -c . release-components.json)" >> "$SANDBOX/mutations.log" ;;
       create)
         printf 'create tag=%s title=%s notes=%s\n' "$tag" "$title" "$(cat "$notes")" >> "$SANDBOX/mutations.log"
         jq --arg t "$tag" --arg n "$title" --arg b "$(cat "$notes")" \
@@ -480,7 +484,7 @@ describe("release-body.mjs: body construction", () => {
       ],
     });
     assert.match(body, /Myrmidon 1\.6\.0 replaces 1\.5\.0\./);
-    assert.match(body, /Deploy the board and the release component images \(dockergate, fleetd\) from this tag together/);
+    assert.match(body, /Deploy the board, the release component images \(dockergate, fleetd\) and the bot images from this tag together/);
     assert.match(body, /"Upgrading from 1\.5\.0 to 1\.6\.0"/);
     assert.match(body, /docs\/myrmidon\/deploy\.md/);
     assert.match(body, /- New thing A\./);
@@ -522,10 +526,12 @@ describe("release-body.mjs: digest resolution (injected fetch)", () => {
     };
     return componentDigests("1.6.0", { fetchImpl }).then(({ rows, missing }) => {
       assert.deepEqual(missing, []);
-      assert.equal(rows.length, 4);
+      // 4 required components plus the 2 optional bot variants (hermes-dev, hermes-node)
+      assert.equal(rows.length, 6);
       assert.match(rows[0], /board/);
-      // one token request per repository (4 components, 4 scopes)
-      assert.equal(tokenUrls.length, 4);
+      assert.match(rows.join("\n"), /hermes-dev/);
+      // one token request per repository (6 scopes)
+      assert.equal(tokenUrls.length, 6);
     });
   });
 
@@ -542,5 +548,45 @@ describe("release-body.mjs: digest resolution (injected fetch)", () => {
     return componentDigest("myrmidon", "1.6.0", { fetchImpl }).then((d) => {
       assert.equal(d, null);
     });
+  });
+});
+
+describe("release manifest (release-components.json)", () => {
+  it("buildManifest names every component by repository and digest, the bot image as hermes", () => {
+    const digests = {
+      board: { repository: "ghcr.io/itkadr-git/myrmidon", digest: `sha256:${"1".repeat(64)}` },
+      bot: { repository: "ghcr.io/itkadr-git/myrmidon-hermes", digest: `sha256:${"2".repeat(64)}` },
+      "hermes-dev": { repository: "ghcr.io/itkadr-git/myrmidon-hermes-dev", digest: `sha256:${"3".repeat(64)}` },
+    };
+    const manifest = buildManifest({ version: "1.6.2", digests });
+    assert.equal(manifest.schema, 1);
+    assert.equal(manifest.tag, "myr-v1.6.2");
+    assert.deepEqual(Object.keys(manifest.components).sort(), ["board", "hermes", "hermes-dev"]);
+    assert.equal(manifest.components.hermes.digest, `sha256:${"2".repeat(64)}`);
+    assert.equal(MANIFEST_NAME, "release-components.json");
+  });
+
+  it("an optional bot variant missing from the registry does not refuse the release", () => {
+    const state = {
+      myrmidon: "sha256:a", "myrmidon-dockergate": "sha256:b", "myrmidon-fleetd": "sha256:c", "myrmidon-hermes": "sha256:d",
+    };
+    return componentDigests("1.6.2", { registryState: state }).then(({ missing, digests }) => {
+      assert.deepEqual(missing, []);
+      assert.deepEqual(Object.keys(digests).sort(), ["board", "bot", "dockergate", "fleetd"]);
+    });
+  });
+
+  it("publish uploads the manifest asset next to the release body", () => {
+    const sb = sandbox({ runs: GREEN_RUNS });
+    const { code, out } = runScript(sb, "myr-v1.6.0");
+    assert.equal(code, 0, out);
+    const log = mutations(sb);
+    assert.match(log, /create tag=myr-v1\.6\.0/);
+    const upload = /upload tag=myr-v1\.6\.0 manifest=(.*)/.exec(log);
+    assert.ok(upload, "the manifest asset was uploaded");
+    const manifest = JSON.parse(upload[1]);
+    assert.equal(manifest.version, "1.6.0");
+    assert.deepEqual(Object.keys(manifest.components).sort(), ["board", "dockergate", "fleetd", "hermes"]);
+    assert.match(manifest.components.dockergate.digest, /^sha256:/);
   });
 });

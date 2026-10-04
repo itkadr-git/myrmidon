@@ -58,6 +58,8 @@ import { preserveSttGeneralKey } from "../myrmidon/stt/store.js";
 import { preserveBudgetEnforcementGeneralKey } from "../myrmidon/budget-enforcement/settings.js";
 // myrmidon(PLUGIN-ENTITLEMENT C): keep the plugin entitlement keys across vendor writes of `general`
 import { preservePluginEntitlementKeysGeneralKey } from "../myrmidon/plugin-entitlement/store.js";
+// myrmidon(DM-PROGRESS): keep the Telegram DM progress settings across vendor writes of `general`
+import { preserveTelegramDmProgressGeneralKey } from "../myrmidon/telegram-dm-progress/settings.js";
 import { getManagedInstanceConfig, type ManagedInstanceConfig } from "./managed-config.js";
 import { getOperatorSettingDefaults } from "./setting-defaults.js";
 
@@ -242,6 +244,8 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       ...(parsed.data.hostDisk ? { hostDisk: parsed.data.hostDisk } : {}),
       // myrmidon(BOT-DISK-A): the stored bot draft-directory lifecycle survives every general write
       ...(parsed.data.botDisk ? { botDisk: parsed.data.botDisk } : {}),
+      // myrmidon(1.6.1-BOT-DISK-C): the stored per-bot disk quota survives every general write
+      ...(parsed.data.botDiskQuota ? { botDiskQuota: parsed.data.botDiskQuota } : {}),
       // myrmidon(PARALLEL-HELPERS): the stored helper ceiling/default survive
       // every general write (they are edited on their own settings page).
       ...(parsed.data.parallelHelpers ? { parallelHelpers: parsed.data.parallelHelpers } : {}),
@@ -265,9 +269,17 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // myrmidon(1.7-BUDGET-CONFIG-B): the stored budget enforcement mode
       // survives every general write (it is edited on its own settings page).
       ...(parsed.data.budgetEnforcement ? { budgetEnforcement: parsed.data.budgetEnforcement } : {}),
+      // myrmidon(REVIEW-ROUTING): the stored review routing settings survive
+      // every general write (they are edited on their own settings page).
+      ...(parsed.data.reviewRouting ? { reviewRouting: parsed.data.reviewRouting } : {}),
       // myrmidon(PLUGIN-ENTITLEMENT C): the stored plugin entitlement keys
       // survive every general write (edited on their own settings block).
       ...(parsed.data.pluginEntitlementKeys ? { pluginEntitlementKeys: parsed.data.pluginEntitlementKeys } : {}),
+      // myrmidon(DM-PROGRESS): the stored Telegram DM progress settings survive
+      // every general write (edited on their own settings block).
+      ...(parsed.data.telegramDmProgress ? { telegramDmProgress: parsed.data.telegramDmProgress } : {}),
+      // myrmidon(MEMORY-UI): the stored agent memory settings survive every general write
+      ...(parsed.data.agentMemory ? { agentMemory: parsed.data.agentMemory } : {}),
     };
   }
   return {
@@ -618,6 +630,9 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
             ...preserveSttGeneralKey(current.general), // myrmidon(1.6.1 VOICE-STT A1)
             ...preserveBudgetEnforcementGeneralKey(current.general), // myrmidon(1.7-BUDGET-CONFIG-B)
             ...preservePluginEntitlementKeysGeneralKey(current.general), // myrmidon(PLUGIN-ENTITLEMENT C)
+            ...preserveTelegramDmProgressGeneralKey(current.general), // myrmidon(DM-PROGRESS)
+            // The preserve line above restores the stored value: a patch that carries the key wins.
+            ...(patch.telegramDmProgress !== undefined ? { telegramDmProgress: nextGeneral.telegramDmProgress } : {}),
           },
           updatedAt: now,
         })

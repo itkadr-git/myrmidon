@@ -20,10 +20,17 @@ import {
   type ExecutionReconciliation,
 } from "@paperclipai/shared";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
-import { isSupersededConversationRun } from "./agent-conversations.js";
+import { isConversation, isSupersededConversationRun } from "./agent-conversations.js";
 // myrmidon(D2): uuid-typed json comparisons for the board DB hot path. See
 // docs/myrmidon/DIVERGENCE.md.
 import { jsonTextUuid } from "../myrmidon/db-hot-path/json-uuid.js";
+// myrmidon(CHAT-HOLD): a chat's stopped turn is never held. See
+// docs/myrmidon/DIVERGENCE.md "CHAT-HOLD".
+import {
+  CHAT_CONTINUATION_POLICY,
+  CHAT_CONTINUATION_REPLAY,
+  isChatBackedIssue,
+} from "../myrmidon/chat-holds/chat-backed.js";
 
 /** An operator records observed outcomes; this is not permission to blindly retry. */
 export async function validateExecutionReconciliation(input: {
@@ -482,11 +489,34 @@ export async function settleUnrecoverableExecutions(
           !["done", "cancelled"].includes(task.status) &&
           (!task.executionRunId || task.executionRunId === run.id) &&
           (!task.checkoutRunId || task.checkoutRunId === run.id);
-        const note = current
+        // myrmidon(CHAT-HOLD): a chat is a conversation, not a work ticket.
+        // Its stopped turn is not put into `blocked` and gets no "do not
+        // replay" hold: the next message in the chat is a fresh turn, and a
+        // message parked during recovery is re-queued once the issue has no
+        // hold left (the release path promotes it). See
+        // myrmidon/chat-holds/chat-backed.ts.
+        const chat = current && await isChatBackedIssue(tx as unknown as Db, task.companyId, task.id);
+        const note = chat
+          ? "The chat turn stopped. Recorded work is preserved; the next message starts a fresh turn and nothing is replayed."
+          : current
           ? "Automatic recovery stopped. Recorded work is preserved; actions with unverified outcomes will not be repeated."
           : "Recovery closed because the task's owner, execution, or status changed. No work was replayed.";
         let nativeFailureBlock = action.evidence.nativeFailureBlock;
-        if (current) {
+        if (chat) {
+          // Back to the idle conversation shape (`in_review`, waiting for the
+          // next message), the same one a finished turn leaves.
+          await tx
+            .update(issues)
+            .set({
+              executionRunId: null,
+              checkoutRunId: null,
+              status: "in_review",
+              ...(isConversation(task) ? { conversationState: "waiting" } : {}),
+              statusVersion: sql`${issues.statusVersion} + 1`,
+              updatedAt: now,
+            })
+            .where(eq(issues.id, task.id));
+        } else if (current) {
           const [projected] = await tx
             .update(issues)
             .set({
@@ -506,7 +536,7 @@ export async function settleUnrecoverableExecutions(
           .update(issueRecoveryActions)
           .set({
             status: "resolved",
-            outcome: current ? "blocked" : "cancelled",
+            outcome: current && !chat ? "blocked" : "cancelled",
             resolvedAt: now,
             updatedAt: now,
             nextAction: note,
@@ -516,13 +546,21 @@ export async function settleUnrecoverableExecutions(
             evidence: {
               ...action.evidence,
               ...(nativeFailureBlock ? { nativeFailureBlock } : {}),
-              automaticRecovery: {
-                policy: "preserve_without_replay_v1",
-                runId: run.id,
-                replay: "blocked",
-                actionOutcome: "unknown",
-                recordedAt: now.toISOString(),
-              },
+              automaticRecovery: chat
+                ? {
+                    policy: CHAT_CONTINUATION_POLICY,
+                    runId: run.id,
+                    replay: CHAT_CONTINUATION_REPLAY,
+                    actionOutcome: "unknown",
+                    recordedAt: now.toISOString(),
+                  }
+                : {
+                    policy: "preserve_without_replay_v1",
+                    runId: run.id,
+                    replay: "blocked",
+                    actionOutcome: "unknown",
+                    recordedAt: now.toISOString(),
+                  },
             },
           })
           .where(eq(issueRecoveryActions.id, action.id));
@@ -536,8 +574,9 @@ export async function settleUnrecoverableExecutions(
           runId: run.id,
           details: {
             recoveryActionId: action.id,
-            outcome: current ? "blocked" : "cancelled",
+            outcome: current && !chat ? "blocked" : "cancelled",
             replay: "not_authorized",
+            ...(chat ? { continuation: CHAT_CONTINUATION_REPLAY } : {}),
           },
         });
         await tx
@@ -555,8 +594,8 @@ export async function settleUnrecoverableExecutions(
           payload: {
             recoveryActionId: action.id,
             cause: action.cause,
-            automaticRecovery: "preserve_without_replay_v1",
-            replay: "blocked",
+            automaticRecovery: chat ? CHAT_CONTINUATION_POLICY : "preserve_without_replay_v1",
+            replay: chat ? CHAT_CONTINUATION_REPLAY : "blocked",
           },
         });
         options.failpoint?.("persisted");

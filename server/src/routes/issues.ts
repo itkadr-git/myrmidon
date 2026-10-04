@@ -69,6 +69,7 @@ import {
   pipelines,
   projectWorkspaces,
 } from "@paperclipai/db";
+import { dbAutonomyGate } from "../myrmidon/autonomy/gate.js";
 import {
   addIssueCommentSchema,
   acceptIssueThreadInteractionSchema,
@@ -9102,6 +9103,7 @@ export function issueRoutes(
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    await dbAutonomyGate(db).assertAllowed(req, "delete");
     if (await rejectTaskWatchdogConfigMutation(req, res)) return;
     if (
       await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)
@@ -11273,6 +11275,7 @@ export function issueRoutes(
       return;
     }
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    await dbAutonomyGate(db).assertAllowed(req, "delete");
     if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue)))
       return;
     const removed = await workProductsSvc.remove(id);
@@ -11599,6 +11602,7 @@ export function issueRoutes(
     );
     if (!issue) return;
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    await dbAutonomyGate(db).assertAllowed(req, "delete");
     if (!(await assertApprovalMutationAllowedByRunContext(req, res, issue)))
       return;
     if (!(await assertCanManageIssueApprovalLinks(req, res, issue.companyId)))
@@ -13516,6 +13520,16 @@ export function issueRoutes(
             );
           }
           interruptedRunId = cancelled.id;
+
+          // Cancel any deferred executions for the old assignee related to this issue
+          if (svc.cancelDeferredExecutionsForAgentOnReassignment) {
+            await svc.cancelDeferredExecutionsForAgentOnReassignment(
+              existing.assigneeAgentId,
+              existing.id,
+              existing.companyId,
+              db
+            );
+          }
         }
       }
 
@@ -15102,6 +15116,7 @@ export function issueRoutes(
     if (!existing) return;
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
     const attachments = await svc.listAttachments(id);
+    await dbAutonomyGate(db).assertAllowed(req, "delete");
 
     const issue = await svc.remove(id);
     if (!issue) {
@@ -17023,6 +17038,7 @@ export function issueRoutes(
     if (!issue) return;
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
 
+    await dbAutonomyGate(db).assertAllowed(req, "delete");
     const comment = await svc.getComment(commentId);
     if (!comment || comment.issueId !== id) {
       res.status(404).json({ error: "Comment not found" });
@@ -18833,6 +18849,7 @@ export function issueRoutes(
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue)))
       return;
+    await dbAutonomyGate(db).assertAllowed(req, "delete");
 
     try {
       await storage.deleteObject(attachment.companyId, attachment.objectKey);

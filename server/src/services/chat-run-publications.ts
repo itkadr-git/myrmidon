@@ -45,6 +45,12 @@ import {
   composeDmStatusText,
   readDmStatusSteps,
 } from "../myrmidon/telegram-dm-status-progress.js";
+// myrmidon(DM-PROGRESS): live steps for legacy adapters, the UI settings
+// (on/off, edit interval) and the edit throttle of the DM status message.
+import { readDmProgressRuntimeSteps } from "../myrmidon/telegram-dm-progress/runtime-steps.js";
+import { readTelegramDmProgressForSweep } from "../myrmidon/telegram-dm-progress/sweep.js";
+import { decideDmStatusPublish } from "../myrmidon/telegram-dm-progress/throttle.js";
+import type { ResolvedTelegramDmProgress } from "@paperclipai/shared";
 import {
   SAFE_NATIVE_CHAT_PROGRESS_EVENT_TYPES,
   safeNativeChatProgressForEvent,
@@ -670,6 +676,14 @@ export async function enqueueChatRunMilestones(
     Awaited<ReturnType<typeof resolveChatOriginPublicationBindings>>
   >();
   const providerInteractionCache = new Map<string, boolean>();
+  // myrmidon(DM-PROGRESS): read once per sweep, only when a bridged DM needs it.
+  let dmProgressSettings: ResolvedTelegramDmProgress | null = null;
+  const loadDmProgressSettings = async (): Promise<ResolvedTelegramDmProgress> => {
+    if (dmProgressSettings) return dmProgressSettings;
+    const loaded = await readTelegramDmProgressForSweep(db);
+    dmProgressSettings = loaded;
+    return loaded;
+  };
   while (inserted < limit) {
     const pageSize = Math.max(25, Math.min(200, limit - inserted));
     const pageCursor: typeof cursor = cursor;
@@ -903,10 +917,12 @@ export async function enqueueChatRunMilestones(
       const bridgedTelegramDm =
         row.isDirectMessage &&
         parseTelegramConversationUserId(row.conversationUserId) !== null;
+      // myrmidon(DM-PROGRESS): live progress steps switched on in the
+      // instance settings also turn the status row on (the steps live in it).
       const dmStatusMilestone =
         bridgedTelegramDm &&
-        telegramDmStatusEnabled() &&
-        (milestone === "queued" || milestone === "working");
+        (milestone === "queued" || milestone === "working") &&
+        (telegramDmStatusEnabled() || (await loadDmProgressSettings()).enabled);
       if (
         bridgedTelegramDm &&
         !dmStatusMilestone &&
@@ -984,18 +1000,31 @@ export async function enqueueChatRunMilestones(
         // steps. Steps come from the run-log rows the board already records
         // (heartbeat_run_events; already redacted at the append boundary).
         // A run without step events falls back to the vendor's safe wording.
-        const steps = milestone === "working"
+        // myrmidon(DM-PROGRESS): legacy adapters (hermes_gateway,
+        // hermes_local) write no step events; their steps come from the
+        // in-memory runtime step history. The owner's settings switch the
+        // steps on/off and set the minimum spacing between edits.
+        const dmPhase: "queued" | "working" = milestone === "queued" ? "queued" : "working";
+        const progressSettings = await loadDmProgressSettings();
+        const showSteps = progressSettings.enabled;
+        const steps = milestone === "working" && showSteps
           ? await readDmStatusSteps(db, {
               companyId: row.companyId,
               runId: row.runId,
             })
           : [];
+        const runtimeSteps = milestone === "working" && showSteps && steps.length === 0
+          ? readDmProgressRuntimeSteps(row.runId)
+          : [];
+        const dmStatusNow = new Date();
         const dmStatusText = composeDmStatusText({
           agentName: row.agentName,
-          milestone,
+          milestone: dmPhase,
           startedAt: row.runStartedAt,
           steps,
-          now: new Date(),
+          runtimeSteps,
+          showSteps,
+          now: dmStatusNow,
         });
         const dmStatusPayload = projectSafeChatPublication({
           classification: "external",
@@ -1003,6 +1032,36 @@ export async function enqueueChatRunMilestones(
           text: dmStatusText,
           progressState: milestone,
         });
+        const dmStatusIdempotencyKey = `run:${row.runId}:dmstatus:${row.endpointId}`;
+        // myrmidon(DM-PROGRESS): throttle provider edits. The stored row's
+        // text and last update time decide whether the new text may go out
+        // now: a milestone change at once, a new step kind after a short
+        // floor, anything else (elapsed time, a new target of the same kind)
+        // only after the configured interval.
+        const [existingDmStatus] = await db
+          .select({
+            payload: chatPublications.payload,
+            updatedAt: chatPublications.updatedAt,
+          })
+          .from(chatPublications)
+          .where(
+            and(
+              eq(chatPublications.companyId, row.companyId),
+              eq(chatPublications.idempotencyKey, dmStatusIdempotencyKey),
+            ),
+          )
+          .limit(1);
+        const dmStatusDecision = decideDmStatusPublish({
+          previousText: existingDmStatus ? existingDmStatus.payload.text : null,
+          previousMilestone: existingDmStatus?.payload.progressState ?? null,
+          nextText: dmStatusPayload.text,
+          nextMilestone: milestone,
+          agentName: row.agentName,
+          lastEditAt: existingDmStatus?.updatedAt ?? null,
+          now: dmStatusNow,
+          intervalMs: progressSettings.intervalSec * 1000,
+        });
+        if (!dmStatusDecision.publish) continue;
         // myrmidon(U1): one durable status row per run for the bridged DM.
         // queued and working coalesce here; a later milestone updates the
         // same row (payload only — the state stays pending/retry so the
@@ -1018,7 +1077,7 @@ export async function enqueueChatRunMilestones(
             endpointId: row.endpointId,
             conversationId: row.conversationId,
             issueId: row.issueId,
-            idempotencyKey: `run:${row.runId}:dmstatus:${row.endpointId}`,
+            idempotencyKey: dmStatusIdempotencyKey,
             payload: dmStatusPayload,
             state: "pending",
           })
@@ -1035,8 +1094,8 @@ export async function enqueueChatRunMilestones(
         // re-open it for delivery so the sweep picks the update up and edits
         // the existing provider message. A pending/retry row is already queued.
         // The payload-changed condition above keeps the identical-text case
-        // closed, so the elapsed-time line does not flip the row every sweep;
-        // elapsed time updates ride along with real step changes only.
+        // closed; myrmidon(DM-PROGRESS): the throttle above keeps an
+        // elapsed-time-only change from editing faster than the interval.
         const updated = insertedRows[0];
         if (updated && milestone === "working") {
           await db

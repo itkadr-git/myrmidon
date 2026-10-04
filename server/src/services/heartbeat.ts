@@ -15,6 +15,9 @@ import { bypassesSettledHold } from "../myrmidon/settled-holds/explicit-wake-gat
 // successor run, so the run's own claim and every later automatic
 // continuation see no hold. See docs/myrmidon/DIVERGENCE.md "L2".
 import { supersedeExplicitWakeSettledHold } from "../myrmidon/settled-holds/supersede-explicit-wake.js";
+// myrmidon(CHAT-HOLD): a chat is never held; an owner message lifts a hold.
+import { isChatBackedIssue, isChatOwnerMessageWake } from "../myrmidon/chat-holds/chat-backed.js";
+import { clearChatHoldsOnOwnerMessage } from "../myrmidon/chat-holds/clear-on-message.js";
 // myrmidon(L2, round 3 fix): retire the woken agent's own waiting run that the
 // bypassed hold would cancel at its claim, so the wake is not lost with it.
 import { cancelWaitingRunDoomedByHold, carryRetryBudgetToSuccessor } from "../myrmidon/settled-holds/cancel-waiting-run.js";
@@ -604,6 +607,8 @@ import {
   sweepExpiredHeartbeatRunRuntimeStatuses,
   touchHeartbeatRunRuntimeStatus,
 } from "./heartbeat-run-runtime-status.js";
+// myrmidon(DM-PROGRESS): run-log tool lines feed the live Telegram DM status steps
+import { recordDmProgressLogChunk } from "../myrmidon/telegram-dm-progress/runtime-steps.js";
 import {
   findMissingHotRestartSnapshotRunIds,
   readHotRestartIntent,
@@ -22591,6 +22596,9 @@ export function heartbeatService(
           const sanitizedChunk = compactRunLogChunk(
             redactCurrentUserText(chunk, currentUserRedactionOptions),
           );
+          // myrmidon(DM-PROGRESS): Hermes tool lines feed the step history of
+          // the live Telegram DM status (legacy adapters write no step events).
+          recordDmProgressLogChunk(run.id, stream, sanitizedChunk);
           if (stream === "stdout")
             stdoutExcerpt = appendExcerpt(stdoutExcerpt, sanitizedChunk);
           if (stream === "stderr")
@@ -26911,10 +26919,21 @@ export function heartbeatService(
           // below. The decision is not carried to the run's claim: the claim
           // is the vendor's plain check, and it finds no hold because this
           // admission superseded every one it let the wake pass.
-          const wakeBypassesSettledHold = bypassesSettledHold({
+          // myrmidon(CHAT-HOLD): a new message a person wrote in a chat is
+          // an explicit human action on a conversation, never a replay of
+          // the stopped turn: it passes a settled hold the same way, and the
+          // successor below lifts that hold (chat-holds/clear-on-message.ts).
+          const chatOwnerMessage = isChatOwnerMessageWake({
+            durableChatRequest: Boolean(durableRequest),
+            failedRunRetry: Boolean(durableRequest?.failedRunRetry),
+            commentId: wakeCommentId ?? null,
+            requestedByActorType: opts.requestedByActorType ?? null,
+            requestedByActorId: opts.requestedByActorId ?? null,
+          }) && await isChatBackedIssue(tx as unknown as Db, issue.companyId, issue.id);
+          const wakeBypassesSettledHold = (bypassesSettledHold({
             source, triggerDetail, reason, commentId: wakeCommentId ?? null,
             requestedByActorType: opts.requestedByActorType ?? null,
-          }) && Boolean(opts.requestedByActorId);
+          }) || chatOwnerMessage) && Boolean(opts.requestedByActorId);
           const executionBlocker = await getExecutionBlocker(
             tx as unknown as Db, issue.companyId, issue.id,
             { conversationResetCommentId: opts.requestedByActorType === "user" ? wakeCommentId : null,
@@ -27801,6 +27820,17 @@ export function heartbeatService(
             enrichedContextSnapshot.forceFreshSession = true;
             enrichedContextSnapshot.previousRunId = explicitContinuation.previousRunId;
             enrichedContextSnapshot.explicitUserContinuation = explicitContinuation;
+          } else if (chatOwnerMessage && opts.requestedByActorId && wakeCommentId) {
+            // myrmidon(CHAT-HOLD): lift the chat's settled hold with this
+            // successor run, record it in the activity log, and return a chat
+            // the recovery moved to `blocked` to `todo`.
+            await clearChatHoldsOnOwnerMessage({
+              db: tx as unknown as Db, companyId: issue.companyId, issueId: issue.id,
+              issueStatus: issue.status,
+              successorRunId: explicitContinuationRunId,
+              requestedByActorId: opts.requestedByActorId,
+              commentId: wakeCommentId,
+            });
           } else if (wakeBypassesSettledHold && opts.requestedByActorId) {
             // myrmidon(L2, round 1 fix): an explicit wake with no message of
             // its own (assignment, manual wakeup, approval decision, subtree

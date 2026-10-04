@@ -20,7 +20,7 @@ model, keys and memory, report back, and ask a human only where a decision
 needs one. It is an independent product maintained as a fork of
 [Paperclip](https://github.com/paperclipai/paperclip) (MIT license, kept:
 see [License and attribution](#license-and-attribution)); today's version is
-1.5, and the project is built around one idea — an ant colony — described
+1.6.2, and the project is built around one idea — an ant colony — described
 next.
 
 ## The idea: the ant colony model
@@ -39,13 +39,13 @@ Each piece of the metaphor maps to something concrete in the product:
 |---|---|---|
 | **The nest** | A company on the board: its tasks, agents, secrets and budgets are isolated from other companies. Multi-company isolation is inherited from the base. | Works today |
 | **The swarm** | The fleet of agents: each runs in its own container with its own model, keys, tools and memory bank. | Works today (see [bot-container-card](docs/myrmidon/guides/bot-container-card.md)) |
-| **Pheromone trails** | Signals on work in the shared environment that guide who picks it up and what happens to it: issue labels, priority, wake-ups, review gates, blocker links. The board is the blackboard; a task's state, labels and relations are its scent. | The board and its signals work today; caste queues with pheromone-style labels and TTL-leased claiming arrive in the swarm-claim feature (planned, 1.6) |
-| **Castes** | Roles for agents: today per-agent configuration of models, tool permissions and skills; the lead/overseer role reviews and approves. Strict model-based castes (heavy models audit, light models execute) are part of the swarm-claim design. | Per-agent configuration works today; caste queues are planned (1.6) |
+| **Pheromone trails** | Signals on work in the shared environment that guide who picks it up and what happens to it: issue labels, priority, wake-ups, review gates, blocker links. The board is the blackboard; a task's state, labels and relations are its scent. | The board and its signals work today; caste queues with TTL-leased claiming ship as swarm-claim, off by default (1.6, see [swarm-claim-settings](docs/myrmidon/guides/swarm-claim-settings.md)) |
+| **Castes** | Roles for agents: per-agent configuration of models, tool permissions and skills; custom caste directories are company-set; the lead/overseer role reviews and approves. Strict model-based castes (heavy models audit, light models execute) remain a design goal. | Per-agent configuration and custom castes work today; model-based caste policy is planned (see [Where we are going](#where-we-are-going-the-road-to-20)) |
 | **Foraging** | Agents gathering knowledge in idle time: a source registry per role, snapshot comparison, and findings that land as skill candidates and go live only after approval. Ships off by default (`MYRMIDON_FORAGING_ENABLED`). | Works today, off by default (see [foraging](docs/myrmidon/guides/foraging.md)) |
 | **The queen / overseer** | The lead agent and the human owner: the lead decomposes work, watches the board and reviews results; the owner approves what crosses the autonomy line. | Works today (board approvals, review gates, Telegram owner cards) |
-| **Agent board administrators** | An agent the organization trusts with board administration: a **Board administrator** toggle in the agent card's Permissions tab, a badge row naming every agent administrator on the Members page, and the full grant semantics behind the flag — a fixed 17-key operator set, a snapshot that keeps personal grants on disable, and a self-toggle prohibition. | Works today (see [agent-board-admin](docs/myrmidon/guides/agent-board-admin.md)) |
-| **Autonomy matrix** | A hard line between what the colony does on its own (claiming tasks, choosing libraries, isolated debates) and what needs a human (new regulations, budget expansion, the final push to production, public posts). | Approvals and gates work today; the matrix as a first-class core policy is planned (1.6) |
-| **The colony's metabolism** | Budgets as computing energy: limits per company, per direction, per task; a hard stop for research, a soft stop (pause + question) for production work. | LLM spend tracking and budget signals work today; the full hierarchy of limits is planned (on the road to 2.0) |
+| **Agent board administrators** | An agent the organization trusts with board administration: a **Board administrator** toggle in the agent card's Permissions tab, a badge row naming every agent administrator on the Members page, and the full grant semantics behind the flag — a fixed 17-key operator set, a snapshot that keeps personal grants on disable, and a self-toggle prohibition. | Works today (1.6.1, see [agent-board-admin](docs/myrmidon/guides/agent-board-admin.md)) |
+| **Autonomy matrix** | A hard line between what the colony does on its own (claiming tasks, choosing libraries, isolated debates) and what needs a human (new regulations, budget expansion, the final push to production, public posts). The matrix is stored as company regulations with revisions, shown and edited on a settings screen, and served through a REST API. | Works today (1.6) |
+| **The colony's metabolism** | Budgets as computing energy: LLM spend is collected from the gateway and attributed per agent, per run and per task, and a crossed limit is enforced by a configurable mode — signal only, pause with a question to the owner, or a hard stop for new runs. | Works today (1.6/1.7-line settings, see [budget-enforcement](docs/myrmidon/guides/budget-enforcement.md)) |
 | **Shared memory of the swarm** | The colony's experience outlives a single run: per-agent memory banks, reviewable from the agent card. | Works today (see [agent-memory-card](docs/myrmidon/guides/agent-memory-card.md)) |
 
 Planned rows above belong to the roadmap (see
@@ -56,7 +56,7 @@ page promises a date.
 
 Release notes live in [docs/myrmidon/CHANGELOG.md](docs/myrmidon/CHANGELOG.md)
 (Russian: [CHANGELOG.ru.md](docs/myrmidon/CHANGELOG.ru.md)). Highlights of
-what exists as of 1.5:
+what exists as of 1.6.2:
 
 - **The board and the work.** A task board with agents, org structure,
   approvals and review gates, wake-ups that do not get lost, and automatic
@@ -68,12 +68,24 @@ what exists as of 1.5:
   wakes its idle agent. A WIP limit caps how many tasks one agent holds in
   flight at once — set in Company Settings, shown live on every agent row,
   and flagged in the attention feed when over
-  ([wip-limit](docs/myrmidon/guides/wip-limit.md)).
+  ([wip-limit](docs/myrmidon/guides/wip-limit.md)). A stale-block watchdog
+  lifts blocks whose every reason is dead and says why in a system comment
+  ([stale-block](docs/myrmidon/guides/stale-block.md)).
+- **Swarm-claim pilot (1.6, off by default).** Per-role task queues with
+  TTL-leased claiming, a per-agent active-task ceiling, priority-0
+  preemption, a supervisor view, and idle agents woken when their role's
+  queue is not empty. The pilot (roles, companies, lease TTL, limits) is
+  edited live in Instance settings
+  ([swarm-claim-settings](docs/myrmidon/guides/swarm-claim-settings.md)).
 - **Agents in isolated containers.** Each agent can run in a Docker container
   the board creates and maintains: its own image, CPU/memory/PID limits, its
   own LLM gateway key, its own memory bank, and its own tools — no server
   secrets ever reach a run
-  ([bot-container-card](docs/myrmidon/guides/bot-container-card.md)).
+  ([bot-container-card](docs/myrmidon/guides/bot-container-card.md)). Coding
+  roles get resource-capped language servers by policy; everyone else gets
+  none ([bot-lsp](docs/myrmidon/guides/bot-lsp.md)). A shared package cache
+  on the host keeps pnpm/Go/Gradle downloads once for all bots
+  ([bot-disk-cache](docs/myrmidon/bot-disk-cache.md)).
 - **The owner's channel.** Question and confirmation cards reach the owner's
   Telegram and can be answered there
   ([owner-telegram-cards](docs/myrmidon/guides/owner-telegram-cards.md));
@@ -90,6 +102,15 @@ what exists as of 1.5:
   changes what the fleet reads, the board approves or rolls back, and the
   approved text of the agent's role rides the compiled bot profile as
   `REGULATIONS.md` ([wiki-regulations](docs/myrmidon/guides/wiki-regulations.md)).
+- **Measuring the colony (1.6).** Baseline metrics from the task history —
+  cycle time, time in review, return rate, time blocked, runs and LLM cost
+  per task — by project and by role, with frozen snapshots a pilot can be
+  compared against; the Quality page renders the same windows. Reference-task
+  evals: a corpus for the pilot role, an LLM judge behind the company
+  gateway, and a promote/confirm/regress verdict
+  ([reference-task-evals](docs/myrmidon/guides/reference-task-evals.md)).
+  The skill lifecycle (`candidate → verified → deprecated`) promotes a skill
+  only with approval and can roll it back.
 - **Shared media tools for container bots.** The bot image stays lean: ffmpeg,
   LibreOffice, poppler, Tesseract and CAD conversion (the `dwg_convert` tool,
   DWG/DXF to DXF/SVG/PDF) run in a separate media service the bots reach over
@@ -102,11 +123,14 @@ what exists as of 1.5:
   ([maintenance-banner](docs/myrmidon/guides/maintenance-banner.md));
   deploys are digest-pinned, CI-built images only, with a database dump
   before the switch and automatic rollback by health for the board and the
-  whole bot fleet ([deploy](docs/myrmidon/deploy.md)).
-- **Cost and tracing.** LLM spend collected from the gateway and attributed
-  per agent, per run and per task; a budget stop that reaches the owner as a
-  signal in the interrupted task instead of a silent cancel; an LLM tracing
-  health card that surfaces lost traces before they pile up
+  whole bot fleet ([deploy](docs/myrmidon/deploy.md),
+  [deploy-auto-rollback](docs/myrmidon/guides/deploy-auto-rollback.md)).
+- **Cost, budgets and tracing.** LLM spend collected from the gateway and
+  attributed per agent, per run and per task; budget enforcement is a mode —
+  signal only, pause with a card to the owner, or hard refusal of new runs —
+  set live for the instance
+  ([budget-enforcement](docs/myrmidon/guides/budget-enforcement.md)); an LLM
+  tracing health card surfaces lost traces before they pile up
   ([SETTINGS](docs/myrmidon/SETTINGS.md)).
 - **Client connectors (the browser bridge).** A browser extension on a client
   PC dials out to the board, letting a company bot drive that browser — read,
@@ -125,6 +149,9 @@ what exists as of 1.5:
   in without fork code; credentials become company secrets, per-agent grants
   default to deny
   ([external-mcp-connectors](docs/myrmidon/guides/external-mcp-connectors.md)).
+  A free image generation and editing connector runs as a container the bots
+  reach the same way
+  ([alibaba-image-connector](docs/myrmidon/guides/alibaba-image-connector.md)).
 - **Live browser console.** The owner watches and drives the live browser
   sessions bots authorize in ([browsers](docs/myrmidon/guides/browsers.md)).
 - **Cloud storage.** Owner-connected cloud accounts with per-agent folder
@@ -132,12 +159,14 @@ what exists as of 1.5:
   ([cloud-files-connector](docs/myrmidon/guides/cloud-files-connector.md)).
 - **Fleet operations.** Fleet servers for bots on other machines, a canary
   rollout for bot images, a stack registry of every component with its
-  version ([stack-registry](docs/myrmidon/guides/stack-registry.md)), an
+  version and upstream release lag
+  ([stack-registry](docs/myrmidon/guides/stack-registry.md)), an
   access hub for secrets, grants and rotation
   ([access-hub](docs/myrmidon/guides/access-hub.md)), an emergency stop for
   runs left finishing by a pause
   ([emergency-stop](docs/myrmidon/guides/emergency-stop.md)), and run limits
-  that survive a mass wake ([run-limits](docs/myrmidon/guides/run-limits.md)).
+  that survive a mass wake ([run-limits](docs/myrmidon/guides/run-limits.md)) —
+  including admission by the host's free memory and a start ramp (1.6.2).
 - **UI 2.0 shell.** The first piece of the 2.0 interface — the rail, the
   nest switcher, the design tokens — behind an instance flag, off by
   default ([ui2-shell](docs/myrmidon/guides/ui2-shell.md)).
@@ -151,17 +180,12 @@ Myrmidon sends no telemetry to the vendor. All settings are
 Release groups only, no dates. The direction: first measure, then learn, then
 grow the body.
 
-- **1.6 — the swarm foundation and learning.** The baseline: cycle time,
-  rejection rate and cost per task measured before anything changes. Eval
-  sets for the pilot caste, with an automatic rollback of a "learned" rule
-  when the metric drops. The autonomy matrix as a core policy. Swarm-claim:
-  caste queues with pheromone-style labels, TTL-leased task claiming, a
-  limit of tasks per agent, priority-0 preemption, the lead as overseer. The
-  skill lifecycle: candidate → verified → stale, with rollback. Foraging:
-  research grants, findings marked "unverified" become skills after
-  approval. CTO chat: a WebSocket chat in the portal that turns the owner's
-  plain language into epics and tasks. Wiki-cortex: regulations with
-  revisions and approval.
+- **1.6 — the swarm foundation and learning.** Much of this group has landed
+  in 1.6.0–1.6.2 and is described above: the baseline metrics, the evals
+  path, the autonomy matrix as a stored policy, the swarm-claim pilot, the
+  skill lifecycle, foraging, the chat planners and the wiki regulations.
+  What remains in flight for the 1.6 line: the settings core for
+  notifications, and server-side speech-to-text.
 - **1.7 — the swarm and the body, and the rebrand.** Asymmetric debates
   between different models with a judge outside the dispute. The colony
   grows its own body: an orchestrator-managed k3s cluster over VMs,

@@ -121,10 +121,16 @@ function makeDeps(overrides: Partial<MemoryServiceDeps> = {}, env: Record<string
 }
 
 describe("readMemoryUiSettings", () => {
-  it("is off without both the address and the secret name", () => {
+  it("is off without any address", () => {
     expect(readMemoryUiSettings({}).enabled).toBe(false);
-    expect(readMemoryUiSettings({ MYRMIDON_HINDSIGHT_API_URL: API_URL }).enabled).toBe(false);
     expect(readMemoryUiSettings({ MYRMIDON_HINDSIGHT_KEY_SECRET: KEY_SECRET }).enabled).toBe(false);
+  });
+
+  it("is on with an address and no key secret", () => {
+    const settings = readMemoryUiSettings({ MYRMIDON_HINDSIGHT_API_URL: API_URL });
+    expect(settings.enabled).toBe(true);
+    expect(settings.baseUrl).toBe(API_URL);
+    expect(settings.keySecret).toBeNull();
   });
 
   it("is on with both", () => {
@@ -134,6 +140,39 @@ describe("readMemoryUiSettings", () => {
     });
     expect(settings.enabled).toBe(true);
     expect(settings.baseUrl).toBe(API_URL);
+    expect(settings.keySecret).toBe(KEY_SECRET);
+  });
+
+  it("falls back to the bot containers' memory address", () => {
+    const settings = readMemoryUiSettings({ MYRMIDON_BOT_HINDSIGHT_API_URL: "http://bots.invalid" });
+    expect(settings.enabled).toBe(true);
+    expect(settings.baseUrl).toBe("http://bots.invalid");
+    expect(settings.urlSource).toBe("bot-env");
+  });
+
+  it("prefers the section env over the bot env", () => {
+    const settings = readMemoryUiSettings({
+      MYRMIDON_HINDSIGHT_API_URL: API_URL,
+      MYRMIDON_BOT_HINDSIGHT_API_URL: "http://bots.invalid",
+    });
+    expect(settings.baseUrl).toBe(API_URL);
+    expect(settings.urlSource).toBe("env");
+  });
+
+  it("the instance setting overrides the environment", () => {
+    const settings = readMemoryUiSettings(
+      { MYRMIDON_HINDSIGHT_API_URL: API_URL, MYRMIDON_HINDSIGHT_KEY_SECRET: KEY_SECRET },
+      { apiUrl: "http://stored.invalid", keySecretName: "stored-secret" },
+    );
+    expect(settings.baseUrl).toBe("http://stored.invalid");
+    expect(settings.keySecret).toBe("stored-secret");
+    expect(settings.urlSource).toBe("setting");
+  });
+
+  it("the instance setting can switch the section off or on", () => {
+    expect(readMemoryUiSettings({ MYRMIDON_HINDSIGHT_API_URL: API_URL }, { enabled: false }).enabled).toBe(false);
+    expect(readMemoryUiSettings({}, { enabled: true, apiUrl: "http://stored.invalid" }).enabled).toBe(true);
+    expect(readMemoryUiSettings({}, { enabled: true }).enabled).toBe(false);
   });
 
   it("drops a non-http url", () => {
@@ -197,6 +236,54 @@ describe("agentMemoryService", () => {
     const service = agentMemoryService(deps);
     const status = await service.status(AGENT, COMPANY);
     expect(status).toEqual({ enabled: true, bank: { bankId: "adm", source: "agent-card" }, reason: null });
+  });
+
+  it("is enabled without a key secret and sends no key", async () => {
+    const { deps, calls, banks } = makeDeps();
+    const clientSpy = vi.fn(deps.client);
+    const service = agentMemoryService({
+      ...deps,
+      env: { MYRMIDON_BOT_HINDSIGHT_API_URL: API_URL },
+      client: clientSpy,
+    });
+    banks.set("adm", []);
+    expect((await service.status(AGENT, COMPANY)).enabled).toBe(true);
+    await service.list(AGENT, COMPANY);
+    expect(clientSpy).toHaveBeenCalledWith(API_URL, undefined);
+    expect(deps.readSecretValue).not.toHaveBeenCalled();
+    expect(calls[0]?.path).toContain("/banks/adm/memories/list");
+  });
+
+  it("passes the key only when a key secret is set", async () => {
+    const { deps } = makeDeps();
+    const clientSpy = vi.fn(deps.client);
+    const service = agentMemoryService({ ...deps, client: clientSpy });
+    await service.list(AGENT, COMPANY);
+    expect(clientSpy).toHaveBeenCalledWith(API_URL, "hsk-test");
+  });
+
+  it("re-reads the stored setting on every request", async () => {
+    const { deps } = makeDeps();
+    let stored: unknown = undefined;
+    const service = agentMemoryService({ ...deps, env: {}, readStoredSettings: async () => stored });
+    expect((await service.status(AGENT, COMPANY)).enabled).toBe(false);
+    stored = { apiUrl: API_URL };
+    expect((await service.status(AGENT, COMPANY)).enabled).toBe(true);
+    stored = { apiUrl: API_URL, enabled: false };
+    expect((await service.status(AGENT, COMPANY)).enabled).toBe(false);
+  });
+
+  it("the stored setting overrides the environment address and key secret", async () => {
+    const { deps } = makeDeps();
+    const clientSpy = vi.fn(deps.client);
+    const service = agentMemoryService({
+      ...deps,
+      client: clientSpy,
+      readStoredSettings: async () => ({ apiUrl: "http://stored.invalid", keySecretName: "stored-secret" }),
+    });
+    await service.list(AGENT, COMPANY).catch(() => undefined);
+    expect(clientSpy).toHaveBeenCalledWith("http://stored.invalid", "hsk-test");
+    expect(deps.readSecretValue).toHaveBeenCalledWith(COMPANY, "stored-secret");
   });
 
   it("status says not_enabled while the switch is off", async () => {

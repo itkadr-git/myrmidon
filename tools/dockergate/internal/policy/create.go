@@ -122,13 +122,33 @@ var PackageCacheMounts = map[string]string{
 	"gradle":   "/cache/gradle",
 }
 
+// PackageCacheReadOnlyMounts is the read-only part of the shared package
+// cache: the board's bare git mirrors (myrmidon 1.6.2-BOT-DISK-C), which only
+// the board writes and the bots clone from with --reference. It mirrors
+// GIT_MIRROR_MOUNT in server/src/myrmidon/bot-containers/template.ts. These
+// pairs are accepted only as "ro" (a "rw" bind of them is refused like any
+// other writable bind) and need no mountSources entry.
+var PackageCacheReadOnlyMounts = map[string]string{
+	"git": "/cache/git",
+}
+
 // isPackageCacheBind reports whether source:target is one of the cache pairs
 // under root. An empty root allows none.
 func isPackageCacheBind(root, source, target string) bool {
+	return isCachePair(PackageCacheMounts, root, source, target)
+}
+
+// isPackageCacheReadOnlyBind reports whether source:target is one of the
+// read-only cache pairs under root. An empty root allows none.
+func isPackageCacheReadOnlyBind(root, source, target string) bool {
+	return isCachePair(PackageCacheReadOnlyMounts, root, source, target)
+}
+
+func isCachePair(pairs map[string]string, root, source, target string) bool {
 	if root == "" || !strings.HasPrefix(source, root+"/") {
 		return false
 	}
-	want, ok := PackageCacheMounts[strings.TrimPrefix(source, root+"/")]
+	want, ok := pairs[strings.TrimPrefix(source, root+"/")]
 	return ok && want == target
 }
 
@@ -138,8 +158,9 @@ func isPackageCacheBind(root, source, target string) bool {
 // sibling directory the operator did not name) and every extra target must be a
 // safe path used once. The one exception is the shared package cache: a "rw"
 // bind is accepted only as one of the fixed pairs under env.PackageCacheRoot
-// (isPackageCacheBind), and needs no mountSources entry. The returned list is
-// what the daemon gets.
+// (isPackageCacheBind), and needs no mountSources entry; likewise the git
+// mirrors, a "ro" bind accepted as the fixed pair under the same root
+// (isPackageCacheReadOnlyBind). The returned list is what the daemon gets.
 func parseBotBinds(v *jsonx.Value, path string, env *Env, botKey string) ([]string, *deny.Error) {
 	got, err := strList(v, path)
 	if err != nil {
@@ -169,7 +190,7 @@ func parseBotBinds(v *jsonx.Value, path string, env *Env, botKey string) ([]stri
 			if !isPackageCacheBind(env.PackageCacheRoot, source, target) {
 				return nil, deny.Field(deny.MountSourceNotAllowed, path, []byte(source))
 			}
-		} else if !allowed[source] {
+		} else if !allowed[source] && !isPackageCacheReadOnlyBind(env.PackageCacheRoot, source, target) {
 			return nil, deny.Field(deny.MountSourceNotAllowed, path, []byte(source))
 		}
 		if !safeContainerTarget(target) || seen[target] {

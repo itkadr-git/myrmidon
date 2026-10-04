@@ -71,6 +71,10 @@ const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
   wip_limit: { label: "WIP limit" },
   // myrmidon(BOT-DISK-A): label for the bot disk lifecycle source.
   bot_disk_lifecycle: { label: "Bot disk" },
+  // myrmidon(1.6.1-BOT-DISK-C): label for the per-bot disk quota signal.
+  bot_disk_quota: { label: "Bot disk quota" },
+  // myrmidon(REVIEW-ROUTING): label for the review routing source.
+  review_routing: { label: "Review routing" },
 };
 
 export function sourceMeta(kind: AttentionSourceKind): SourceMeta {

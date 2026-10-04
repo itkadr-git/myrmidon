@@ -397,6 +397,43 @@ func TestBotPackageCacheMounts(t *testing.T) {
 		c, err := policy.ParseCreate(bodyWith(t, all[0], all[0]), createRoute(t, "myrmidon-bot-"+k), withRoot(cache))
 		wantDeny(t, c, err, deny.BindsMismatch)
 	})
+
+	// myrmidon(1.6.2-BOT-DISK-C): the git mirrors, read-only only.
+	gitMirror := cache + "/git:/cache/git:ro"
+
+	t.Run("the read-only git mirror pair under the root is accepted", func(t *testing.T) {
+		body := bodyWith(t, append(append([]string{}, all...), gitMirror)...)
+		c, err := policy.ParseCreate(body, createRoute(t, "myrmidon-bot-"+k), withRoot(cache))
+		if err != nil {
+			t.Fatalf("denied: %s (field %q, detail %q)", err.Code, err.Field, err.Detail)
+		}
+		if string(c.Body) != string(body) {
+			t.Fatal("the canonical body differs from the request")
+		}
+	})
+
+	t.Run("a writable git mirror bind is denied", func(t *testing.T) {
+		c, err := policy.ParseCreate(bodyWith(t, cache+"/git:/cache/git:rw"), createRoute(t, "myrmidon-bot-"+k), withRoot(cache))
+		wantDeny(t, c, err, deny.MountSourceNotAllowed)
+	})
+
+	t.Run("a git mirror bind without a root, under another root or at another target is denied", func(t *testing.T) {
+		cases := []struct {
+			bind string
+			root string
+		}{
+			{gitMirror, ""},
+			{"/srv/elsewhere/git:/cache/git:ro", cache},
+			{cache + "/git:/cache/pnpm:ro", cache},
+			{cache + "/git:/opt/git:ro", cache},
+			{cache + "/pnpm:/cache/git:ro", cache},
+			{cache + ":/cache:ro", cache},
+		}
+		for _, tc := range cases {
+			c, err := policy.ParseCreate(bodyWith(t, tc.bind), createRoute(t, "myrmidon-bot-"+k), withRoot(tc.root))
+			wantDeny(t, c, err, deny.MountSourceNotAllowed)
+		}
+	})
 }
 
 // RT1_5: the body is read strictly, and unknown fields are refused, whatever

@@ -1,8 +1,6 @@
 import { readdir, stat, rm } from 'fs/promises';
-import { join, dirname } from 'path';
-import { fileURLToPath } from 'url';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
+import { join } from 'path';
+import { findRepos, noteVolumeRoot } from './clone-hygiene.js'; // myrmidon(1.6.2-BOT-DISK-C)
 
 // Default idle TTL is 6 hours in milliseconds
 const DEFAULT_IDLE_TTL_MS = 6 * 60 * 60 * 1000;
@@ -79,6 +77,19 @@ export async function sweepBotVolume(
     return;
   }
 
+  // myrmidon(1.6.2-BOT-DISK-C): the board server has no mount of the bot volumes
+  // in production (host mounts were removed from it in 1.3.0), so the root is
+  // normally absent here: one warning, then a no-op. Clones are reaped inside
+  // the bot containers (clone-hygiene.ts); this sweep is for a host where the
+  // board does see the volumes, and it leaves git repositories to the reporter.
+  try {
+    await stat(botVolumeRoot);
+    noteVolumeRoot(true, () => undefined);
+  } catch {
+    noteVolumeRoot(false, (message) => console.warn(message));
+    return;
+  }
+
   try {
     const bots = await readdir(botVolumeRoot);
     
@@ -105,6 +116,9 @@ export async function sweepBotVolume(
           }
           const entries = await readdir(subPath);
           for (const entry of entries) {
+            // myrmidon(1.6.2-BOT-DISK-C): the bot's pnpm store (/workspace/.pnpm-store)
+            // is what every clone's node_modules hard-links into; it is not a draft.
+            if (entry === PNPM_STORE_ENTRY) continue;
             const entryPath = join(subPath, entry);
             await reapIfStale(entryPath, config);
           }
@@ -126,6 +140,13 @@ async function reapIfStale(dirPath: string, config: BotDiskLifecycleConfig): Pro
   if (await isAliveDirectory(dirPath)) {
     return;
   }
+  // myrmidon(1.6.2-BOT-DISK-C): an entry that is, or holds, a git repository is
+  // never reaped by its directory mtime (a commit or a tracked-file edit does not
+  // touch it, so a busy clone looks idle): the bot's own reporter decides, knowing
+  // whether the work is pushed (clone-hygiene.ts).
+  if ((await findRepos(dirPath)).length > 0) {
+    return;
+  }
   const lastModified = await getLastModifiedTime(dirPath);
   const now = Date.now();
   const idleTime = now - lastModified;
@@ -133,6 +154,9 @@ async function reapIfStale(dirPath: string, config: BotDiskLifecycleConfig): Pro
     await safeRemoveDirectory(dirPath);
   }
 }
+
+/** myrmidon(1.6.2-BOT-DISK-C): the workspace pnpm store entry (template.ts WORKSPACE_PNPM_STORE_DIR). */
+const PNPM_STORE_ENTRY = '.pnpm-store';
 
 /**
  * Performs a sweep of all bot volumes in the system
