@@ -13283,6 +13283,12 @@ export function issueService(db: Db) {
       postCommitActivityPublications?: ActivityPublication[],
       postCommitActions?: IssuePostCommitAction[],
     ) => ReturnType<typeof service.update>;
+    cancelDeferredExecutionsForAgentOnReassignment: (
+      agentId: string,
+      issueId: string,
+      companyId: string,
+      dbOrTx?: any,
+    ) => Promise<number>;
   };
   const serviceApi = service as IssueServiceApi;
 
