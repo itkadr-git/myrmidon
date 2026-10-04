@@ -10,6 +10,24 @@ version file to edit. Base Paperclip version is in the image label
 
 ## Unreleased
 
+### Automatic reviewer for tasks in review (REVIEW-ROUTING)
+
+- A task that moves to `in_review` with no reviewer no longer waits for a manual
+  assignment. A board sweep (every 60 s) gives it a one-stage review with the
+  least-loaded agent of the reviewer roles that is below the load ceiling — never
+  the task's author or assignee — leaves a system comment and an activity entry,
+  and wakes the reviewer. The review is the ordinary execution review stage:
+  approving closes the task as done, requesting changes returns it to the previous
+  assignee.
+- When no reviewer is available the task raises an attention card
+  (`review_routing`) instead of staying silent. A review this routing started that
+  has no verdict after the configured hours raises a card and moves to another
+  reviewer (never one that already had it).
+- Settings — enabled, reviewer roles, max load per reviewer, reassign-after hours —
+  are on the new Company Settings → Review routing screen (stored in the instance
+  settings) and apply on the next pass, without a restart. See
+  [SETTINGS.md](SETTINGS.md), section "REVIEW-ROUTING".
+
 ### Heavy builds blocked inside the dev bot image (1.6.1 BUILD-OFFLOAD, part A)
 
 - The development variant of the bot image (`runtime-dev`,

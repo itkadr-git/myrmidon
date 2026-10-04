@@ -124,6 +124,7 @@ import { swarmClaimApp } from "./myrmidon/swarm-claim/index.js"; // myrmidon(1.6
 import { myrmidonEmergencyStopRoutes } from "./myrmidon/emergency-stop.js";
 import { myrmidonStackRegistryRoutes } from "./myrmidon/stack-registry/index.js"; // myrmidon(SUA)
 import { myrmidonWipLimitRoutes } from "./myrmidon/wip-limit/index.js"; // myrmidon(1.6.1-WIP-LIMIT-A)
+import { reviewRoutingRoutes } from "./myrmidon/review-routing/routes.js"; // myrmidon(REVIEW-ROUTING)
 // myrmidon(PLUGIN-ENTITLEMENT C): instance-level plugin entitlement keys
 import { pluginEntitlementRoutes } from "./myrmidon/plugin-entitlement/index.js";
 import { agentInstructionsRevisionsRoutes } from "./myrmidon/agent-instructions-revisions/index.js"; // myrmidon(H2)
@@ -887,6 +888,7 @@ export async function createApp(
   api.use(myrmidonSkillLifecycleRoutes(db)); // myrmidon(1.6-SKILL-LIFE): skill lifecycle API
   api.use(myrmidonStackRegistryRoutes(db)); // myrmidon(SUA)
   api.use(myrmidonWipLimitRoutes(db)); // myrmidon(1.6.1-WIP-LIMIT-A): per-agent WIP limit settings and status
+  api.use(reviewRoutingRoutes(db)); // myrmidon(REVIEW-ROUTING): automatic reviewer routing settings
   api.use(pluginEntitlementRoutes(db)); // myrmidon(PLUGIN-ENTITLEMENT C): accept/remove plugin keys (instance admin)
   api.use(agentInstructionsRevisionsRoutes(db)); // myrmidon(H2)
   api.use(myrmidonFleetConsoleRoutes(db)); // myrmidon(SC1)

@@ -265,6 +265,9 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // myrmidon(1.7-BUDGET-CONFIG-B): the stored budget enforcement mode
       // survives every general write (it is edited on its own settings page).
       ...(parsed.data.budgetEnforcement ? { budgetEnforcement: parsed.data.budgetEnforcement } : {}),
+      // myrmidon(REVIEW-ROUTING): the stored review routing settings survive
+      // every general write (they are edited on their own settings page).
+      ...(parsed.data.reviewRouting ? { reviewRouting: parsed.data.reviewRouting } : {}),
       // myrmidon(PLUGIN-ENTITLEMENT C): the stored plugin entitlement keys
       // survive every general write (edited on their own settings block).
       ...(parsed.data.pluginEntitlementKeys ? { pluginEntitlementKeys: parsed.data.pluginEntitlementKeys } : {}),

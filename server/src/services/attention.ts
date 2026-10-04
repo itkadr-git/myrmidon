@@ -81,6 +81,15 @@ import {
   staleBlockSignalSeverity,
   staleBlockSignalWhyNow,
 } from "../myrmidon/stale-block/attention.js";
+// myrmidon(REVIEW-ROUTING): the cards of a task in review with no reviewer, or
+// a review without a verdict for too long.
+import {
+  readReviewRoutingSignals,
+  reviewRoutingSignalDedupKey,
+  reviewRoutingSignalSeverity,
+  reviewRoutingSignalTitle,
+  reviewRoutingSignalWhyNow,
+} from "../myrmidon/review-routing/attention.js";
 // myrmidon(1.6.1-WIP-LIMIT-A): the WIP limit cards and the settings read.
 import { buildWipLimitAttentionCards } from "../myrmidon/wip-limit/attention.js";
 import { buildWipLimitStatus } from "../myrmidon/wip-limit/status.js";
@@ -127,6 +136,8 @@ const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   "host_disk_alert",
   // myrmidon(1.6.1-WIP-LIMIT-A): the per-agent work-in-progress over-limit signal.
   "wip_limit",
+  // myrmidon(REVIEW-ROUTING): no reviewer available, or a review overdue.
+  "review_routing",
 ];
 
 const SEVERITY_RANK: Record<AttentionSeverity, number> = {
@@ -157,6 +168,9 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   wip_limit: 14,
   // myrmidon(BOT-DISK-A): bot disk lifecycle events.
   bot_disk_lifecycle: 15,
+  // myrmidon(REVIEW-ROUTING): a stuck review is a stalled delivery, ranked with
+  // the other machine-routing notices (just after the lifted stale block).
+  review_routing: 16,
 };
 
 const PENDING_INTERACTION_STATUSES = ["pending"] as const;
@@ -2091,6 +2105,49 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           detail: {
             kind: "generic",
             summaryExcerpt: excerpt(signal.reasonTexts.join("; ")),
+            images: [],
+          },
+        }));
+      }
+
+      // myrmidon(REVIEW-ROUTING): one card per task whose review has no
+      // reviewer available or no verdict for too long. The sweep replaces the
+      // company's set on every pass (myrmidon/review-routing/attention.ts),
+      // so the card exists exactly while its condition holds.
+      for (const signal of readReviewRoutingSignals(companyId)) {
+        add(createItem({
+          companyId,
+          sourceKind: "review_routing",
+          subject: {
+            kind: "issue",
+            id: signal.issueId,
+            companyId,
+            title: signal.title ?? "Task",
+            identifier: signal.identifier,
+            status: "in_review",
+            href: signal.identifier ? `/${prefix}/issues/${signal.identifier}` : null,
+            metadata: {
+              kind: signal.kind,
+              hoursInReview: signal.hoursInReview,
+            },
+          },
+          whyNow: reviewRoutingSignalWhyNow(signal),
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the task and assign or decide the review." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this notice." },
+          ),
+          inlineResolvable: true,
+          entryRule: "a task in review has no reviewer available, or its review has had no verdict for the configured hours.",
+          exitRule: "The task gets a reviewer or a verdict, leaves review, or the row is dismissed.",
+          dedupKey: reviewRoutingSignalDedupKey(signal),
+          severity: reviewRoutingSignalSeverity(signal),
+          activityAt: signal.since,
+          createdAt: signal.since,
+          updatedAt: signal.since,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: excerpt(reviewRoutingSignalTitle(signal)),
             images: [],
           },
         }));

@@ -981,6 +981,37 @@ signal per agent per UTC day: a system-notice comment on the agent's most recent
 task, deduplicated by the `wip-limit:<agentId>:<utc-day>` metadata key. The attention feed
 (source kind `wip_limit`) needs no sweep — it recomputes on every list.
 
+## REVIEW-ROUTING: automatic reviewer for tasks in review
+
+Settings of `server/src/myrmidon/review-routing/`. The feature has no environment variables:
+the values are a policy choice stored in `instance_settings.general.reviewRouting` and changed
+on the Company Settings → Review routing screen or via
+`GET`/`PUT /api/myrmidon/companies/:companyId/review-routing/settings` (any company member
+reads, instance admins write; the values are instance-wide). The sweep reads them on every
+pass, so a change applies within about a minute, with no restart. Absent or unreadable
+settings mean the defaults below.
+
+| Field | Default | What it does | How to disable / special |
+|---|---|---|---|
+| `enabled` | `true` | Master switch of the routing sweep: a task in `in_review` with no reviewer gets one, a review without a verdict is signalled and reassigned | `false` — the board does nothing and its attention cards disappear (vendor behavior: the task waits for a manual assignment) |
+| `reviewerRoles` | `["reviewer"]` | Caste keys (`agents.role`) whose invokable agents may be picked as reviewers | An empty list — nobody is eligible, so every reviewer-less task is signalled as `no_reviewer` |
+| `maxLoadPerReviewer` | `5` | A reviewer already holding this many tasks in flight (`in_progress` + `in_review`, as assignee) is not picked. From 1 to 100 | — |
+| `reassignAfterHours` | `24` | Hours a review this routing started may stay without a verdict before it is signalled (`review_overdue` attention card, one system comment) and moved to another reviewer that has not had the task. From 0 to 2160 | `0` — never signal or reassign |
+
+How it works. A pass every 60 s (an in-module interval; passes are skipped during maintenance
+mode) looks at the 200 oldest-updated visible `in_review` tasks per company, 20 moves per pass.
+A task needs a reviewer when it has no review stage participant and no execution workflow in
+flight (a policy with no stages is kept and extended; a non-idle execution state or a monitor
+leaves the task alone). The picked reviewer is the least-loaded eligible agent (ties by id),
+never the task's author (`createdByAgentId`) or its assignee, and becomes the assignee while
+the review is pending; the previous assignee is the return assignee. Approving closes the task
+as done, requesting changes sends it back. The routing writes one system comment and one
+activity entry (`issue.review_routing.assigned` / `issue.review_routing.reassigned`) per move
+and wakes the reviewer. With no eligible reviewer the task is signalled on the attention desk
+(source kind `review_routing`, `no_reviewer`) instead of staying silent. The overdue clock and
+the reassignment apply only to reviews this routing started (they are found by their activity
+entries); a review set up by a person is never reassigned automatically.
+
 ## 1.7 — METRICS: the board's own /metrics endpoint (Prometheus text)
 
 Settings of `server/src/myrmidon/monitoring/metrics/`. The endpoint answers

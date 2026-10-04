@@ -27,6 +27,8 @@ import { swarmClaimSettingsSchema } from "../myrmidon-swarm-claim.js";
 // myrmidon(1.6.1-WIP-LIMIT-A): the per-agent WIP limit settings stored in the
 // same general settings row.
 import { wipLimitSettingsSchema } from "../myrmidon-wip-limit.js";
+// myrmidon(REVIEW-ROUTING): the automatic reviewer routing settings stored in the same row.
+import { reviewRoutingSettingsSchema } from "../myrmidon-review-routing.js";
 // myrmidon(1.7-BUDGET-CONFIG-B): the budget enforcement mode stored in the
 // same general settings row.
 import { budgetEnforcementSettingsSchema } from "../myrmidon-budget-enforcement.js";
@@ -109,6 +111,9 @@ export const instanceGeneralSettingsSchema = z.object({
   // per-agent overrides, changed from /api/myrmidon/companies/:id/wip-limit/settings;
   // absent means the feature counts but never signals (all limits null).
   wipLimit: wipLimitSettingsSchema.optional(),
+  // myrmidon(REVIEW-ROUTING): automatic reviewer routing, changed from
+  // /api/myrmidon/companies/:id/review-routing/settings; absent means the defaults.
+  reviewRouting: reviewRoutingSettingsSchema.optional(),
   // myrmidon(1.7-BUDGET-CONFIG-B): what a crossed budget limit does while the
   // incident is open — signal only (default), pause with an owner card (soft),
   // or refuse new runs with the budget reason (hard); changed from
