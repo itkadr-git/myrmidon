@@ -2205,6 +2205,14 @@ import path from "node:path";
 import http2 from "node:http2";
 import { Duplex } from "node:stream";
 
+
+// myrmidon(REBRAND-C): MYRMIDON_* name with the PAPERCLIP_* alias, inline
+// because this generated gateway is zero-dependency.
+const readProductEnv = (name) => {
+  const canonical = process.env["MYRMIDON_" + name];
+  if (canonical !== undefined && canonical !== "") return canonical;
+  return process.env["PAPERCLIP_" + name];
+};
 const bridgeMode = readProductEnv("API_BRIDGE_MODE") || "${SANDBOX_CALLBACK_BRIDGE_FILE_MODE}";
 const queueDir = readProductEnv("BRIDGE_QUEUE_DIR");
 const bridgeToken = readProductEnv("BRIDGE_TOKEN");
