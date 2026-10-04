@@ -2,7 +2,7 @@ import type { FeedbackDataSharingPreference } from "./feedback.js";
 // myrmidon(WORKSPACE-HYGIENE): the workspace quotas stored in instance settings
 import type { WorkspaceHygieneLimits } from "../myrmidon-workspace-hygiene.js";
 // myrmidon(C0): the run admission limits stored in instance settings
-import type { RunLimits } from "../myrmidon-runtime-limits.js";
+import type { StoredRunLimits } from "../myrmidon-runtime-limits.js";
 import type { HostDiskSettings } from "../myrmidon-host-disk.js";
 // myrmidon(PARALLEL-HELPERS): the helper ceiling/default stored in instance settings
 import type { ParallelHelpersSettings } from "../myrmidon-parallel-helpers.js";
@@ -68,9 +68,10 @@ export interface InstanceGeneralSettings {
    * myrmidon(C0): run admission limits changed from the instance settings page
    * and `GET`/`PATCH /api/myrmidon/runtime-limits`. Absent means "use the
    * environment variable, then the default"; kept in sync with the validator of
-   * the same field (packages/shared/src/validators/instance.ts).
+   * the same field (packages/shared/src/validators/instance.ts). A row saved
+   * before 1.6.2 lacks `minFreeHostMemoryMb` (myrmidon 1.6.2 RUN-ADMISSION).
    */
-  runLimits?: RunLimits;
+  runLimits?: StoredRunLimits;
   /**
    * myrmidon(PARALLEL-HELPERS): company ceiling/default for parallel helper
    * subagents, changed from the instance settings page and
