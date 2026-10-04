@@ -1131,6 +1131,44 @@ export function createToolGatewayService(
     }
     return policyService.decide(input);
   }
+
+  // In-memory cache for policy data with TTL
+  const policyCache = new Map<string, { data: any; timestamp: number }>();
+  const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+  /**
+   * Gets cached policy data or fetches it if not available or expired
+   */
+  async function getCachedPolicyData(cacheKey: string, companyId: string, agentId: string | null) {
+    const now = Date.now();
+    const cached = policyCache.get(cacheKey);
+    
+    if (cached && (now - cached.timestamp) < CACHE_TTL_MS) {
+      return cached.data;
+    }
+    
+    // Fetch all required policy data
+    const [profiles, profileBindings, policies] = await Promise.all([
+      db.select().from(toolProfiles),
+      db.select().from(toolProfileBindings),
+      db.select().from(toolPolicies),
+    ]);
+    
+    const data = { profiles, profileBindings, policies };
+    policyCache.set(cacheKey, { data, timestamp: now });
+    
+    return data;
+  }
+
+  /**
+   * Makes a tool access decision using cached policy data
+   */
+  async function decideToolAccessWithCache(
+    input: ToolAccessPolicyInput,
+    cachedData: { profiles: any[], profileBindings: any[], policies: any[] },
+  ): Promise<ToolAccessDecision> {
+    return policyService.decideWithCachedData(input, cachedData.profiles, cachedData.profileBindings, cachedData.policies);
+  }
   const secrets = secretService(db);
   // Authentication produces a new session object for every operation. Keep
   // credential acquisition scoped to that object and out of persisted inputs.
@@ -2917,10 +2955,17 @@ export function createToolGatewayService(
         (tool.providerType !== "paperclip_self" &&
           tool.providerType !== "paperclip_plugin"),
     );
+    // Create a cache key based on company and agent ID
+    const cacheKey = `${session.companyId}:${session.agentId || 'no-agent'}`;
+    
+    // Get or create cached policy data for this request
+    const cachedData = await getCachedPolicyData(cacheKey, session.companyId, session.agentId || null);
+    
     const decisions = await Promise.all(
       tools.map(async (tool) => {
-        const decision = await decideToolAccess(
+        const decision = await decideToolAccessWithCache(
           policyInputForTool({ session, tool }),
+          cachedData,
         );
         return { tool, decision };
       }),
