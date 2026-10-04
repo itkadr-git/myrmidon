@@ -119,6 +119,7 @@ import { swarmClaimApp } from "./myrmidon/swarm-claim/index.js"; // myrmidon(1.6
 import { myrmidonEmergencyStopRoutes } from "./myrmidon/emergency-stop.js";
 import { myrmidonStackRegistryRoutes } from "./myrmidon/stack-registry/index.js"; // myrmidon(SUA)
 import { myrmidonWipLimitRoutes } from "./myrmidon/wip-limit/index.js"; // myrmidon(1.6.1-WIP-LIMIT-A)
+import { myrmidonLitellmBudgetSyncRoutes } from "./myrmidon/litellm-budget-sync/index.js"; // myrmidon(1.7-BUDGET-CONFIG-C)
 import { agentInstructionsRevisionsRoutes } from "./myrmidon/agent-instructions-revisions/index.js"; // myrmidon(H2)
 import { myrmidonFleetConsoleRoutes } from "./myrmidon/fleet-console/index.js"; // myrmidon(SC1)
 import { myrmidonCloudConnectorRoutes } from "./myrmidon/cloud-connector/index.js"; // myrmidon(CLOUD-CONNECTOR)
@@ -876,6 +877,7 @@ export async function createApp(
   api.use(myrmidonSkillLifecycleRoutes(db)); // myrmidon(1.6-SKILL-LIFE): skill lifecycle API
   api.use(myrmidonStackRegistryRoutes(db)); // myrmidon(SUA)
   api.use(myrmidonWipLimitRoutes(db)); // myrmidon(1.6.1-WIP-LIMIT-A): per-agent WIP limit settings and status
+  api.use(myrmidonLitellmBudgetSyncRoutes(db)); // myrmidon(1.7-BUDGET-CONFIG-C): LiteLLM budget projection settings, status, re-sync
   api.use(agentInstructionsRevisionsRoutes(db)); // myrmidon(H2)
   api.use(myrmidonFleetConsoleRoutes(db)); // myrmidon(SC1)
   api.use(myrmidonCloudConnectorRoutes(db)); // myrmidon(CLOUD-CONNECTOR)

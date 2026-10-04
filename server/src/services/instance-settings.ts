@@ -53,6 +53,7 @@ import { preserveTelegramNotifyGeneralKey } from "../myrmidon/telegram-notify/pr
 import { preserveWipLimitGeneralKey } from "../myrmidon/wip-limit/settings.js";
 // myrmidon(1.6.1 VOICE-STT A1): keep the per-company STT runtime settings across vendor writes of `general`
 import { preserveSttGeneralKey } from "../myrmidon/stt/store.js";
+import { preserveBudgetProjectionGeneralKey } from "../myrmidon/litellm-budget-sync/settings.js"; // myrmidon(1.7-BUDGET-CONFIG-C)
 import { getManagedInstanceConfig, type ManagedInstanceConfig } from "./managed-config.js";
 import { getOperatorSettingDefaults } from "./setting-defaults.js";
 
@@ -600,6 +601,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
             ...preserveTelegramNotifyGeneralKey(current.general), // myrmidon(1.6-TG-PROACTIVITY-E)
             ...preserveWipLimitGeneralKey(current.general), // myrmidon(1.6.1-WIP-LIMIT-A)
             ...preserveSttGeneralKey(current.general), // myrmidon(1.6.1 VOICE-STT A1)
+            ...preserveBudgetProjectionGeneralKey(current.general), // myrmidon(1.7-BUDGET-CONFIG-C)
           },
           updatedAt: now,
         })
