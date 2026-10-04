@@ -82,8 +82,9 @@ export function validateCorpusCases(
       throw new CorpusValidationError(`${source}: entry is not a corpus case`);
     }
     const { id, subtype, text } = item;
-    const category = (item as Record<string, unknown>).category;
-    const expect = (item as Record<string, unknown>).expect as
+    const rawItem = item as unknown as Record<string, unknown>;
+    const category = rawItem.category;
+    const expect = rawItem.expect as
       | { detector?: unknown }
       | undefined;
     if (!id.trim()) {
@@ -117,8 +118,9 @@ export function validateCorpusCases(
         `${source}: case ${id} has unknown expect.detector ${String(detector)}`,
       );
     }
+    const categoryTyped = category as CorpusCategory;
     const expectedDetector =
-      category === "benign" ? null : (category as CorpusDetector);
+      categoryTyped === "benign" ? null : (categoryTyped as CorpusDetector);
     if (detector !== expectedDetector) {
       throw new CorpusValidationError(
         `${source}: case ${id} category ${category} must expect detector ` +
@@ -128,7 +130,7 @@ export function validateCorpusCases(
     seen.add(id);
     out.push({
       id,
-      category,
+      category: categoryTyped,
       subtype,
       text,
       expect: { detector: detector === null ? null : (detector as CorpusDetector) },
