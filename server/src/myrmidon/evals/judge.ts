@@ -337,7 +337,7 @@ export function createHeuristicJudge(
         if (!Number.isFinite(clamped)) parseError = true;
         awarded[c.name] = Number.isFinite(clamped) ? clamped : 0;
       }
-      return { taskSlug: input.taskSlug, awarded, parseError, raw: null };
+      return { taskSlug: input.taskSlug, awarded, parseError, raw: null, sameFamily: false };
     },
   };
 }

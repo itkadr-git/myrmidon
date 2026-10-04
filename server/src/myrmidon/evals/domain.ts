@@ -91,14 +91,14 @@ export interface EvalRunScores {
 
 /** Aggregate a judge's per-task points into run scores. Pure. */
 export function aggregateEvalScores(
-  tasks: readonly { slug: string; weight: number; kind: EvalTaskKind; criteriaPoints: number; awarded: Record<string, number>; sameFamily: boolean }[],
+  tasks: readonly { slug: string; weight: number; kind: EvalTaskKind; criteriaPoints: number; awarded: Record<string, number>; sameFamily?: boolean }[],
 ): EvalRunScores {
   const taskScores: EvalTaskScore[] = tasks.map((t) => {
     const rawScore = Object.values(t.awarded).reduce((a, b) => a + b, 0);
     return {
       taskSlug: t.slug,
       criteria: t.awarded,
-      sameFamily: t.sameFamily,
+      sameFamily: t.sameFamily ?? false,
       rawScore,
       weight: t.weight,
       maxScore: t.weight * t.criteriaPoints,
