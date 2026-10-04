@@ -1,0 +1,17 @@
+#!/usr/bin/env node
+// docker/bot-runtime/build-wrappers/go
+//
+// myrmidon(1.6.1 BUILD-OFFLOAD A): go wrapper for the dev variant.
+// `go build` / `go test` compile the repository's Go modules (dockergate,
+// fleetd): a real compiler workload that must run on the build VPS
+// through `devbuild go ...`. The real toolchain is installed at
+// /opt/go/bin/go (go_dist stage); this wrapper shadows it because
+// /opt/paperclip/bin is FIRST on PATH. Gate mechanics: blocked-tool.js.
+//
+// CJS on purpose (see devbuild-gate.js): in the image this file lives
+// at /opt/paperclip/bin/, which no package.json reaches.
+"use strict";
+
+const { makeWrapper } = require("./blocked-tool.js");
+
+makeWrapper("go", "/opt/go/bin/go")();

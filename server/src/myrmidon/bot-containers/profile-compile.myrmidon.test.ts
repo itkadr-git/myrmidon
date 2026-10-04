@@ -947,3 +947,36 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
     });
   });
 });
+
+// myrmidon(BOT-LSP-DEFAULTS): the agent's role and the instance policy (a port
+// re-read per tick) decide the bot's language-server block.
+describe("myrmidon(BOT-LSP-DEFAULTS) createBotProfileCompile — language servers", () => {
+  it("compiles the limited mode for a coding role and off for another", async () => {
+    const board = fakeBoard();
+    board.agent.current = agentRecord({ role: "engineer" });
+    const engineer = await createBotProfileCompile(board.ports, { env: INSTANCE_ENV })("agent-a", "agent-a");
+    expect(fileContent(engineer, "hermes/config.yaml")).toContain('useSyntaxServer: "never"');
+
+    board.agent.current = agentRecord({ role: "general" });
+    const general = await createBotProfileCompile(board.ports, { env: INSTANCE_ENV })("agent-a", "agent-a");
+    expect(fileContent(general, "hermes/config.yaml")).toContain("lsp:\n  enabled: false");
+  });
+
+  it("re-reads the policy per compile: a change restarts the bot with the new block", async () => {
+    let policy: { codingRoles?: string[] } = {};
+    const board = fakeBoard({
+      async botLsp() {
+        return policy;
+      },
+    });
+    board.agent.current = agentRecord({ role: "dev-lead" });
+    const compile = createBotProfileCompile(board.ports, { env: INSTANCE_ENV });
+    const before = await compile("agent-a", "agent-a");
+    expect(fileContent(before, "hermes/config.yaml")).toContain("lsp:\n  enabled: false");
+
+    policy = { codingRoles: ["dev-lead"] };
+    const after = await compile("agent-a", "agent-a");
+    expect(fileContent(after, "hermes/config.yaml")).toContain("idle_timeout: 120");
+    expect(after.restartHash).not.toBe(before.restartHash);
+  });
+});

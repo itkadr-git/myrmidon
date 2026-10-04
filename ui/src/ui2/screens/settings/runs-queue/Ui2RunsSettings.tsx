@@ -17,11 +17,13 @@ import { useUi2I18n } from "../../../i18n/Ui2I18n";
 import { Ui2ErrorState, Ui2SkeletonRows } from "../../../components/ui2StateViews";
 import { Ui2Page, Ui2Section } from "../../../components/ui2Primitives";
 
-const LIMIT_FIELDS: Array<{ key: RunLimitKey; labelKey: "ui2.settings.runs.maxConcurrentRuns" | "ui2.settings.runs.maxStartsPerMinute" | "ui2.settings.runs.minFreeMemoryMb" | "ui2.settings.runs.runMemoryEstimateMb"; canOff: boolean }> = [
+const LIMIT_FIELDS: Array<{ key: RunLimitKey; labelKey: "ui2.settings.runs.maxConcurrentRuns" | "ui2.settings.runs.maxStartsPerMinute" | "ui2.settings.runs.minFreeMemoryMb" | "ui2.settings.runs.runMemoryEstimateMb" | "ui2.settings.runs.minFreeHostMemoryMb"; canOff: boolean }> = [
   { key: "maxConcurrentRuns", labelKey: "ui2.settings.runs.maxConcurrentRuns", canOff: true },
   { key: "maxStartsPerMinute", labelKey: "ui2.settings.runs.maxStartsPerMinute", canOff: true },
   { key: "minFreeMemoryMb", labelKey: "ui2.settings.runs.minFreeMemoryMb", canOff: true },
   { key: "runMemoryEstimateMb", labelKey: "ui2.settings.runs.runMemoryEstimateMb", canOff: false },
+  // myrmidon(1.6.2 RUN-ADMISSION): the host free-memory floor (bot containers live on the host).
+  { key: "minFreeHostMemoryMb", labelKey: "ui2.settings.runs.minFreeHostMemoryMb", canOff: true },
 ];
 
 function sourceLabel(source: RunLimitsSource, t: (key: never) => string): string {

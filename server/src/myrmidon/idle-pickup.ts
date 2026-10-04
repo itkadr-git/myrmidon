@@ -1,6 +1,7 @@
 import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { agentWakeupRequests, agents, companies, heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
+import { issueHasNoExecutionHold, wakeNotParkedOnExecutionHold } from "./settled-holds/ready-predicate.js";
 
 /**
  * Idle pickup (IDLE-PICKUP, Myrmidon 1.3).
@@ -178,8 +179,8 @@ function issuePriorityRank(priority: string | null | undefined): number {
 /**
  * SQL prefilter for one agent's idle-pickup candidates: assigned
  * `todo`/`in_progress`, visible, agent-assigned (not user-assigned), not a
- * chat conversation, no unresolved `blocks` relation, no open child issue.
- * The remaining checks (live run, queued wake) need per-issue lookups and
+ * chat conversation, no unresolved `blocks` relation, no open child issue,
+ * no execution hold (HOLD-READY). The remaining checks (live run, queued wake) need per-issue lookups and
  * run in the loop in `idlePickupForAgent`.
  */
 function idlePickupCandidateRows(db: Db, companyId: string, agentId: string) {
@@ -240,6 +241,13 @@ function idlePickupCandidateRows(db: Db, companyId: string, agentId: string) {
             and decomp.source_issue_id = ${issues.id}
             and decomp.status = 'in_flight'
         )`,
+        // myrmidon(HOLD-READY): not held by an execution hold. The wake
+        // admission parks every automatic wake of such an issue
+        // (`deferred_issue_execution` + `executionWait`), so reporting it as
+        // ready only produced a parked wake and hid the real reason. A board
+        // unblock clears a settled hold (settled-holds/human-unblock.ts), and
+        // the issue comes back here on the next pass.
+        issueHasNoExecutionHold(db),
       ),
     )
     .orderBy(asc(issues.createdAt))
@@ -354,6 +362,7 @@ export async function idlePickupForAgent(
     // A wake already covers this issue in any non-terminal status (queued,
     // deferred_issue_execution, claimed — not only "queued"): the admission
     // path owns it; a second wake would only coalesce into the first anyway.
+    // A wake parked on an execution hold does not count (see hasCoveringWake).
     if (await hasCoveringWake(deps.db, agent, candidate.id)) {
       result.alreadyActive += 1;
       continue;
@@ -413,7 +422,14 @@ export async function idlePickupForAgent(
   return result;
 }
 
-/** A wake already covers this issue in any non-terminal status (queued/deferred/claimed). */
+/**
+ * A wake already covers this issue in any non-terminal status (queued/deferred/claimed).
+ *
+ * myrmidon(HOLD-READY): except a deferred wake parked on an execution hold
+ * (`payload.executionWait`). That wake is not in flight — it waits for a person
+ * to lift the hold — so counting it as cover kept the issue out of every pass
+ * for good once the hold was gone (the parked wake outlives the hold).
+ */
 async function hasCoveringWake(
   db: Db,
   agent: { id: string; companyId: string },
@@ -432,6 +448,7 @@ async function hasCoveringWake(
           "claimed",
         ]),
         sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+        wakeNotParkedOnExecutionHold(),
       ),
     )
     .limit(1)

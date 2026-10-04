@@ -70,6 +70,7 @@ import { buildStackAttentionCards } from "../myrmidon/stack-registry/attention.j
 import { readStackDocument } from "../myrmidon/stack-registry/store.js";
 // myrmidon(TRACING-HEALTH): the "LLM tracing" red state raises one operator card (part D)
 import { readTracingHealthAttentionSignal } from "../myrmidon/tracing-health/attention.js";
+import { hostMemoryHoldSignal } from "../myrmidon/run-admission.js"; // myrmidon(1.6.2 RUN-ADMISSION)
 // myrmidon(BOT-RUNTIME-TUNING D): the model fallback share raises one card per agent
 import { readModelFallbackSignals } from "../myrmidon/litellm-fallback-signal/attention.js";
 
@@ -87,6 +88,8 @@ import {
   WIP_LIMIT_SETTINGS_KEY,
   normalizeWipLimitSettings,
 } from "@paperclipai/shared";
+// myrmidon(1.7-BUDGET-CONFIG-B): the enforcement mode shown on the budget card.
+import { resolveBudgetEnforcement } from "@paperclipai/shared";
 
 /**
  * myrmidon(TRACING-HEALTH): a stable UUID for the synthetic "LLM tracing"
@@ -152,6 +155,8 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   // myrmidon(1.6.1-WIP-LIMIT-A): a workload-oversignal sits below every
   // blocking kind but above nothing else — it is advice, not a stop.
   wip_limit: 14,
+  // myrmidon(BOT-DISK-A): bot disk lifecycle events.
+  bot_disk_lifecycle: 15,
 };
 
 const PENDING_INTERACTION_STATUSES = ["pending"] as const;
@@ -1808,6 +1813,23 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         }));
       }
 
+      // myrmidon(1.7-BUDGET-CONFIG-B): the enforcement mode rides the budget
+      // card — in signal-only mode the incident exists but nothing stopped,
+      // and the card must say that instead of implying a pause the operator
+      // will not find. The feed recomputes on every list, so a mode change
+      // reaches the next feed read without a restart.
+      const budgetEnforcementMode = (
+        // myrmidon(1.7-BUDGET-CONFIG-B): read the mode the same direct way the
+        // WIP settings row above is read (one settings select, no service
+        // cache), with the shared resolver doing precedence.
+        await db
+          .select({ general: instanceSettings.general })
+          .from(instanceSettings)
+          .limit(1)
+          .then((rows) => rows[0]?.general?.budgetEnforcement ?? undefined)
+          .catch(() => undefined)
+          .then((stored) => resolveBudgetEnforcement({ stored }).mode)
+      );
       const budgetOverview = await budgetService(db).overview(companyId);
       for (const incident of budgetOverview.activeIncidents) {
         const observedPercent = budgetObservedPercent(incident.amountObserved, incident.amountLimit);
@@ -1834,10 +1856,14 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
               observedPercent,
               approvalId: incident.approvalId,
               approvalStatus: incident.approvalStatus,
+              // myrmidon(1.7-BUDGET-CONFIG-B): what the crossed limit did.
+              enforcementMode: budgetEnforcementMode,
             },
           },
           whyNow: incident.thresholdType === "hard"
-            ? "Budget hard stop was reached."
+            ? budgetEnforcementMode === "signal_only"
+              ? "Budget hard stop was reached. Work continues: enforcement is in signal-only mode."
+              : "Budget hard stop was reached."
             : "Budget crossed the 85% warning threshold.",
           decisionVerbs: decisionVerbs(
             { id: "raise_budget_and_resume", label: "Raise budget", description: "Raise the budget and resume paused work." },
@@ -1847,7 +1873,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           entryRule: "open budget incident is hard, or soft with observed spend >= 85% of limit.",
           exitRule: "Budget incident is resolved or dismissed.",
           dedupKey,
-          severity: incident.thresholdType === "hard" ? "high" : "medium",
+          severity: incident.thresholdType === "hard" ? (budgetEnforcementMode === "signal_only" ? "medium" : "high") : "medium",
           activityAt: toIso(incident.updatedAt),
           createdAt: toIso(incident.createdAt),
           updatedAt: toIso(incident.updatedAt),
@@ -2113,6 +2139,54 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           detail: {
             kind: "generic",
             summaryExcerpt: excerpt(tracingSignal.whyNow),
+            images: [],
+          },
+        }));
+      }
+
+      // myrmidon(1.6.2 RUN-ADMISSION): the run admission's host memory floor
+      // has held new runs back for over 10 minutes. One card for the whole
+      // instance, deduped while the hold lasts; it disappears on the first
+      // admitted run (the admission ends the hold) — nothing is persisted.
+      const hostMemoryHold = hostMemoryHoldSignal();
+      if (hostMemoryHold) {
+        const heldAt = hostMemoryHold.heldSince.toISOString();
+        const heldMinutes = Math.floor(hostMemoryHold.heldMs / 60_000);
+        add(createItem({
+          companyId,
+          sourceKind: "agent_error_alert",
+          subject: {
+            kind: "agent",
+            id: "run-admission-host-memory",
+            companyId,
+            title: "Runs held: host memory",
+            identifier: null,
+            status: "alert",
+            href: `/${prefix}/instance`,
+            metadata: {
+              runAdmissionHostMemory: true,
+              availableMb: hostMemoryHold.availableMb,
+              thresholdMb: hostMemoryHold.thresholdMb,
+              heldSince: heldAt,
+            },
+          },
+          whyNow: `New agent runs have waited ${heldMinutes} min: host free memory ${hostMemoryHold.availableMb ?? "?"} MB is below the ${hostMemoryHold.thresholdMb ?? "?"} MB run admission floor. Free memory on the host (idle bot containers) or lower the floor in Run limits.`,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the run limits and the host memory." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this alert for this hold." },
+          ),
+          inlineResolvable: true,
+          entryRule: "the run admission host memory floor held new runs back for more than 10 minutes",
+          exitRule: "a run is admitted again (host memory recovered or the floor was lowered) or the row is dismissed",
+          dedupKey: `run_admission_host_memory:${heldAt}`,
+          severity: "high",
+          activityAt: heldAt,
+          createdAt: heldAt,
+          updatedAt: heldAt,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: excerpt(hostMemoryHold.reason ?? "host free memory is below the run admission floor"),
             images: [],
           },
         }));

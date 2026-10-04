@@ -69,6 +69,8 @@ const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
   host_disk_alert: { label: "Host disk" },
   // myrmidon(1.6.1-WIP-LIMIT-A): label for the WIP-limit source added with the per-agent WIP limit.
   wip_limit: { label: "WIP limit" },
+  // myrmidon(BOT-DISK-A): label for the bot disk lifecycle source.
+  bot_disk_lifecycle: { label: "Bot disk" },
 };
 
 export function sourceMeta(kind: AttentionSourceKind): SourceMeta {

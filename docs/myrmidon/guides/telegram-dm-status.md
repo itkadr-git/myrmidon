@@ -50,3 +50,25 @@ of the attachment. Limits:
 
 Both settings live in [../SETTINGS.md](../SETTINGS.md) with defaults and
 accepted values.
+
+## Chats are never held; no silent queue (CHAT-HOLD)
+
+A bridged DM is a perpetual conversation, so it is never treated as a work
+ticket by recovery:
+
+- **No hold.** When a chat's run is cancelled or crashes (a host OOM, for
+  example), recovery does not set the chat issue `blocked` and records no
+  "do not replay" hold. The turn is settled as `chat_continuation`; the chat
+  returns to waiting for the next message.
+- **A message always wakes.** A new message you write in the chat is an
+  explicit human action. It passes and lifts any leftover hold (also one from
+  before this behavior), moves a `blocked` chat back to `todo`, starts a run,
+  and is logged in the activity log. Only the chat's "retry the failed run"
+  action is still withheld by a hold.
+- **You are told why it waits.** If the message cannot start at once, the bot
+  answers in the chat in plain words instead of a bare "queued": the previous
+  answer is still finishing, the previous turn was interrupted and is being
+  closed, an open question needs your answer, the bot is paused or turned
+  off, its budget is used up, or the server is short of memory (checked again
+  every 15 seconds). A message that was declined and will not start by itself
+  says so and asks to send it again.

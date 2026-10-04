@@ -15,6 +15,9 @@ import { bypassesSettledHold } from "../myrmidon/settled-holds/explicit-wake-gat
 // successor run, so the run's own claim and every later automatic
 // continuation see no hold. See docs/myrmidon/DIVERGENCE.md "L2".
 import { supersedeExplicitWakeSettledHold } from "../myrmidon/settled-holds/supersede-explicit-wake.js";
+// myrmidon(CHAT-HOLD): a chat is never held; an owner message lifts a hold.
+import { isChatBackedIssue, isChatOwnerMessageWake } from "../myrmidon/chat-holds/chat-backed.js";
+import { clearChatHoldsOnOwnerMessage } from "../myrmidon/chat-holds/clear-on-message.js";
 // myrmidon(L2, round 3 fix): retire the woken agent's own waiting run that the
 // bypassed hold would cancel at its claim, so the wake is not lost with it.
 import { cancelWaitingRunDoomedByHold, carryRetryBudgetToSuccessor } from "../myrmidon/settled-holds/cancel-waiting-run.js";
@@ -688,6 +691,15 @@ import {
   type BudgetHardStopSignalInput as BudgetSignalInput,
   type BudgetSignalPorts,
 } from "../myrmidon/budget-signal.js";
+// myrmidon(1.7-BUDGET-CONFIG-B): enforcement mode wiring — the mode reader the
+// budget service asks for, and the signal-only notice delivery (see
+// budget-enforcement/).
+import { readBudgetEnforcement } from "../myrmidon/budget-enforcement/settings.js";
+import {
+  deliverBudgetSignalOnly,
+  type BudgetSignalOnlyInput,
+  type BudgetSignalOnlyPorts,
+} from "../myrmidon/budget-enforcement/signal.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
@@ -9207,6 +9219,14 @@ export function heartbeatService(
     now: () => new Date(),
     log: logger,
   };
+  // myrmidon(1.7-BUDGET-CONFIG-B): comment-writing port for the signal-only
+  // notice — the same boundary, its own delivery path (see
+  // budget-enforcement/signal.ts).
+  const budgetSignalOnlyPorts: BudgetSignalOnlyPorts = {
+    addComment: (issueId, body, actor, options) =>
+      issuesSvc.addComment(issueId, body, actor, options),
+    log: logger,
+  };
   const treeControlSvc = issueTreeControlService(db);
   const executionWorkspacesSvc = executionWorkspaceService(db);
   const environmentsSvc = environmentService(db);
@@ -9234,6 +9254,19 @@ export function heartbeatService(
       budgetSignalEnabled(runtimeEnv)
         ? (input: BudgetSignalInput) =>
             deliverBudgetHardStopSignal(db, budgetSignalPorts, input).then(() => undefined)
+        : undefined,
+    // myrmidon(1.7-BUDGET-CONFIG-B): the enforcement mode, read from the
+    // instance settings at evaluation time (no restart); the environment
+    // stays a forced override for an instance that never saved the setting.
+    resolveEnforcementMode: async () =>
+      (await readBudgetEnforcement({ getGeneral: () => instanceSettings.getGeneral() })).mode,
+    // myrmidon(1.7-BUDGET-CONFIG-B): the notice delivered when a limit
+    // crosses in signal-only mode — nothing stopped, the owner still learns.
+    // Honors MYRMIDON_BUDGET_SIGNAL_MODE=off the same way the M3 signal does.
+    signalBudgetLimitCrossed:
+      budgetSignalEnabled(runtimeEnv)
+        ? (input: BudgetSignalOnlyInput) =>
+            deliverBudgetSignalOnly(db, budgetSignalOnlyPorts, input).then(() => undefined)
         : undefined,
   };
   const budgets = budgetService(db, budgetHooks);
@@ -26881,10 +26914,21 @@ export function heartbeatService(
           // below. The decision is not carried to the run's claim: the claim
           // is the vendor's plain check, and it finds no hold because this
           // admission superseded every one it let the wake pass.
-          const wakeBypassesSettledHold = bypassesSettledHold({
+          // myrmidon(CHAT-HOLD): a new message a person wrote in a chat is
+          // an explicit human action on a conversation, never a replay of
+          // the stopped turn: it passes a settled hold the same way, and the
+          // successor below lifts that hold (chat-holds/clear-on-message.ts).
+          const chatOwnerMessage = isChatOwnerMessageWake({
+            durableChatRequest: Boolean(durableRequest),
+            failedRunRetry: Boolean(durableRequest?.failedRunRetry),
+            commentId: wakeCommentId ?? null,
+            requestedByActorType: opts.requestedByActorType ?? null,
+            requestedByActorId: opts.requestedByActorId ?? null,
+          }) && await isChatBackedIssue(tx as unknown as Db, issue.companyId, issue.id);
+          const wakeBypassesSettledHold = (bypassesSettledHold({
             source, triggerDetail, reason, commentId: wakeCommentId ?? null,
             requestedByActorType: opts.requestedByActorType ?? null,
-          }) && Boolean(opts.requestedByActorId);
+          }) || chatOwnerMessage) && Boolean(opts.requestedByActorId);
           const executionBlocker = await getExecutionBlocker(
             tx as unknown as Db, issue.companyId, issue.id,
             { conversationResetCommentId: opts.requestedByActorType === "user" ? wakeCommentId : null,
@@ -27771,6 +27815,17 @@ export function heartbeatService(
             enrichedContextSnapshot.forceFreshSession = true;
             enrichedContextSnapshot.previousRunId = explicitContinuation.previousRunId;
             enrichedContextSnapshot.explicitUserContinuation = explicitContinuation;
+          } else if (chatOwnerMessage && opts.requestedByActorId && wakeCommentId) {
+            // myrmidon(CHAT-HOLD): lift the chat's settled hold with this
+            // successor run, record it in the activity log, and return a chat
+            // the recovery moved to `blocked` to `todo`.
+            await clearChatHoldsOnOwnerMessage({
+              db: tx as unknown as Db, companyId: issue.companyId, issueId: issue.id,
+              issueStatus: issue.status,
+              successorRunId: explicitContinuationRunId,
+              requestedByActorId: opts.requestedByActorId,
+              commentId: wakeCommentId,
+            });
           } else if (wakeBypassesSettledHold && opts.requestedByActorId) {
             // myrmidon(L2, round 1 fix): an explicit wake with no message of
             // its own (assignment, manual wakeup, approval decision, subtree
