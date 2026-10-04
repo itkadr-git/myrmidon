@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
-import { isEntitled, verifyEntitlementSignature, generateEntitlementKey, clearEntitlementCache } from './plugin-entitlements.js';
+import { isEntitled, verifyEntitlementSignature, generateEntitlementKey, clearEntitlementCache, getPluginEntitlements, PluginEntitlementServiceDeps } from './plugin-entitlements.js';
 import { eq, and, isNotNull } from 'drizzle-orm';
-import { getServerInstance } from '../utils/instance.js';
 
 vi.mock('@paperclipai/db', async () => {
   const actual = await vi.importActual('@paperclipai/db');
@@ -12,6 +11,10 @@ vi.mock('@paperclipai/db', async () => {
       from: vi.fn().mockReturnThis(),
       where: vi.fn().mockReturnThis(),
       orderBy: vi.fn().mockReturnThis(),
+      insert: vi.fn().mockReturnThis(),
+      values: vi.fn().mockReturnThis(),
+      returning: vi.fn().mockResolvedValue([]),
+      delete: vi.fn().mockReturnThis(),
     },
   };
 });
@@ -26,14 +29,27 @@ vi.mock('../db', () => ({
     from: vi.fn().mockReturnThis(),
     where: vi.fn().mockReturnThis(),
     orderBy: vi.fn().mockReturnThis(),
+    insert: vi.fn().mockReturnThis(),
+    values: vi.fn().mockReturnThis(),
+    returning: vi.fn().mockResolvedValue([]),
+    delete: vi.fn().mockReturnThis(),
   },
 }));
 
+// Create mock for getServerInstance
+const mockGetServerInstance = vi.fn().mockReturnValue('test-instance-123');
+
 vi.mock('../utils/instance', () => ({
-  getServerInstance: vi.fn().mockReturnValue('test-instance-123'),
+  getServerInstance: mockGetServerInstance,
 }));
 
 describe('Plugin Entitlement Service', () => {
+  // Create mock dependencies
+  const mockDeps: PluginEntitlementServiceDeps = {
+    db,
+    getServerInstance: mockGetServerInstance,
+  };
+
   beforeEach(() => {
     vi.clearAllMocks();
     clearEntitlementCache();
@@ -53,14 +69,14 @@ describe('Plugin Entitlement Service', () => {
 
       vi.mocked(db.select().from().where().orderBy).mockResolvedValue([mockEntitlement]);
 
-      const result = await isEntitled('test-plugin');
+      const result = await isEntitled('test-plugin', mockDeps);
       expect(result).toBe(true);
     });
 
     it('should return false when plugin has no entitlement', async () => {
       vi.mocked(db.select().from().where().orderBy).mockResolvedValue([]);
 
-      const result = await isEntitled('non-existent-plugin');
+      const result = await isEntitled('non-existent-plugin', mockDeps);
       expect(result).toBe(false);
     });
 
@@ -76,7 +92,7 @@ describe('Plugin Entitlement Service', () => {
 
       vi.mocked(db.select().from().where().orderBy).mockResolvedValue([mockExpiredEntitlement]);
 
-      const result = await isEntitled('test-plugin');
+      const result = await isEntitled('test-plugin', mockDeps);
       expect(result).toBe(false);
     });
   });
@@ -87,7 +103,8 @@ describe('Plugin Entitlement Service', () => {
       const { entitlementKey, publicKey } = await generateEntitlementKey(
         'test-plugin',
         'test-instance',
-        new Date(Date.now() + 86400000) // Tomorrow
+        new Date(Date.now() + 86400000), // Tomorrow
+        mockDeps
       );
 
       const result = await verifyEntitlementSignature(entitlementKey, publicKey);
@@ -103,7 +120,8 @@ describe('Plugin Entitlement Service', () => {
       const { entitlementKey, publicKey } = await generateEntitlementKey(
         'test-plugin',
         'test-instance',
-        new Date(Date.now() + 86400000) // Tomorrow
+        new Date(Date.now() + 86400000), // Tomorrow
+        mockDeps
       );
 
       // Tamper with the payload part of the entitlement key
@@ -120,7 +138,7 @@ describe('Plugin Entitlement Service', () => {
       const instanceId = 'test-instance';
       const expiresAt = new Date(Date.now() + 86400000); // Tomorrow
 
-      const result = await generateEntitlementKey(pluginId, instanceId, expiresAt);
+      const result = await generateEntitlementKey(pluginId, instanceId, expiresAt, mockDeps);
 
       expect(result).toHaveProperty('entitlementKey');
       expect(result).toHaveProperty('publicKey');
@@ -128,6 +146,31 @@ describe('Plugin Entitlement Service', () => {
       
       // Check that the entitlement key has the expected format (payload.signature)
       expect(result.entitlementKey).toMatch(/^\S+\.\S+$/);
+    });
+  });
+
+  describe('getPluginEntitlements', () => {
+    it('should return entitlements for a given plugin', async () => {
+      const mockEntitlements = [{
+        id: 'ent-123',
+        pluginId: 'test-plugin',
+        instanceId: 'test-instance-123',
+        expiresAt: new Date(Date.now() + 86400000), // Tomorrow
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }];
+
+      vi.mocked(db.select().from().where).mockResolvedValue(mockEntitlements);
+
+      const result = await getPluginEntitlements('test-plugin', mockDeps);
+      expect(result).toEqual(mockEntitlements);
+    });
+
+    it('should return empty array when no entitlements exist', async () => {
+      vi.mocked(db.select().from().where).mockResolvedValue([]);
+
+      const result = await getPluginEntitlements('non-existent-plugin', mockDeps);
+      expect(result).toEqual([]);
     });
   });
 
@@ -146,14 +189,14 @@ describe('Plugin Entitlement Service', () => {
       vi.mocked(db.select().from().where().orderBy).mockResolvedValueOnce([mockEntitlement]);
       
       // First call should hit the DB
-      const result1 = await isEntitled('cached-plugin');
+      const result1 = await isEntitled('cached-plugin', mockDeps);
       expect(result1).toBe(true);
       
       // Reset the mock to return empty for subsequent calls
       vi.mocked(db.select().from().where().orderBy).mockResolvedValue([]);
-      
+
       // Second call should use cache
-      const result2 = await isEntitled('cached-plugin');
+      const result2 = await isEntitled('cached-plugin', mockDeps);
       expect(result2).toBe(true);
     });
   });

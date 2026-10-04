@@ -1,8 +1,6 @@
 import { eq, and, isNotNull } from 'drizzle-orm';
-import { db } from '../db';
-import { pluginEntitlements } from '../../db/src/schema/plugin-entitlements';
-import { getServerInstance } from '../utils/instance';
-import { logger } from '../utils/logger';
+import { pluginEntitlements } from '@paperclipai/db';
+import { logger } from '../middleware/logger.js';
 import { z } from 'zod';
 import { promisify } from 'util';
 import { randomBytes } from 'crypto';
@@ -11,12 +9,21 @@ import { randomBytes } from 'crypto';
 const entitlementCache = new Map<string, { entitled: boolean; timestamp: number }>();
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
+// Define dependency interface
+export interface PluginEntitlementServiceDeps {
+  db: any; // typeof import('@paperclipai/db').db;
+  getServerInstance(): string;
+}
+
 /**
  * Check if a plugin is entitled for use in the current instance
  * @param pluginKey - The plugin identifier to check
+ * @param deps - Dependencies for the function
  * @returns Promise<boolean> - True if entitled, false otherwise
  */
-export async function isEntitled(pluginKey: string): Promise<boolean> {
+export async function isEntitled(pluginKey: string, deps: PluginEntitlementServiceDeps): Promise<boolean> {
+  const { db, getServerInstance } = deps;
+  
   // Check cache first
   const cacheKey = `${getServerInstance()}:${pluginKey}`;
   const cached = entitlementCache.get(cacheKey);
@@ -104,12 +111,14 @@ export async function verifyEntitlementSignature(
  * @param pluginId - The plugin identifier
  * @param instanceId - The instance identifier
  * @param expiresAt - Expiration date
+ * @param deps - Dependencies for the function (optional, for testing)
  * @returns Promise<{entitlementKey: string, publicKey: string, privateKey: string}>
  */
 export async function generateEntitlementKey(
   pluginId: string,
   instanceId: string,
-  expiresAt: Date
+  expiresAt: Date,
+  deps?: PluginEntitlementServiceDeps
 ): Promise<{ entitlementKey: string; publicKey: string; privateKey: string }> {
   try {
     // Import crypto module
@@ -160,9 +169,11 @@ export function clearEntitlementCache(): void {
 /**
  * Get all entitlements for a plugin
  * @param pluginId - The plugin identifier
+ * @param deps - Dependencies for the function
  * @returns Promise<PluginEntitlement[]>
  */
-export async function getPluginEntitlements(pluginId: string): Promise<any[]> {
+export async function getPluginEntitlements(pluginId: string, deps: PluginEntitlementServiceDeps): Promise<any[]> {
+  const { db, getServerInstance } = deps;
   try {
     const instanceId = getServerInstance();
     

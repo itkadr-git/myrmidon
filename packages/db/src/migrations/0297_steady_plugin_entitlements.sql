@@ -1,4 +1,6 @@
 -- Migration: plugin_entitlements
+--
+-- This migration creates the plugin entitlements table for managing plugin access rights.
 
 -- Create plugin entitlements table
 CREATE TABLE plugin_entitlements (
