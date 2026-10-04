@@ -149,7 +149,7 @@ describe("startBotContainers with the flag on", () => {
     try {
       // Read the G3 settings from the same env, then build the driver over them.
       expect(h.spies.readDriverConfig).toHaveBeenCalledWith(ENABLED);
-      expect(h.spies.createDriver).toHaveBeenCalledWith(DRIVER_CONFIG);
+      expect(h.spies.createDriver).toHaveBeenCalledWith(DRIVER_CONFIG, DB);
       expect(h.spies.profileWiring).toHaveBeenCalledWith(DB, { activity: h.sink, env: ENABLED });
       expect(h.spies.maintenancePort).toHaveBeenCalledWith(DB);
       expect(h.spies.listAgents).toHaveBeenCalledWith(DB);

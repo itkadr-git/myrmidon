@@ -30,6 +30,19 @@
   concurrency-группа), поэтому `gh workflow run myrmidon-release.yml -f tag=…`
   из main публикует указанный тег без `--ref`.
 
+### Общий кэш пакетов для ботов разработки (1.6.2, BOT-DISK B)
+
+- Настройка экземпляра `general.botDisk.sharedPackageCachePath` (Instance → General или
+  `PATCH /api/myrmidon/bot-disk`, только администратор экземпляра) даёт каждому боту хоста
+  доски монтирования на запись `/cache/{pnpm,go-mod,go-build,gradle}` из одного каталога хоста,
+  а профиль направляет на них `npm_config_store_dir`, `GOMODCACHE`, `GOCACHE` и
+  `GRADLE_USER_HOME`, так что скачанное хранится один раз, а не на каждого бота. Применяется на
+  следующем проходе сверки без перезапуска; по умолчанию выключено. Боты на хосте fleetd не
+  затронуты.
+- dockergate: новый ключ `packageCacheRoot` (по умолчанию пусто — ни одной привязки кэша).
+  **Шаг оператора:** задать в нём тот же каталог и послать `SIGHUP`, создать четыре подкаталога
+  с владельцем uid/gid 10001 — см. [bot-disk-cache.ru.md](bot-disk-cache.ru.md).
+
 ### Разблокировка на доске снимает закрытое удержание; припаркованная побудка не «покрывает» задачу (HOLD-READY)
 
 - Задача с закрытой записью разбора, у которой `evidence.automaticRecovery.replay`

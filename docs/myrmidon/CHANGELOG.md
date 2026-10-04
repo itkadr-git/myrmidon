@@ -31,6 +31,18 @@ version file to edit. Base Paperclip version is in the image label
   concurrency group), so `gh workflow run myrmidon-release.yml -f tag=…`
   from `main` publishes the given tag without `--ref`.
 
+### Shared package cache for development bots (1.6.2, BOT-DISK B)
+
+- An instance setting, `general.botDisk.sharedPackageCachePath` (Instance → General or
+  `PATCH /api/myrmidon/bot-disk`, instance admins only), gives every bot on the board's host
+  read-write mounts `/cache/{pnpm,go-mod,go-build,gradle}` from one host directory, and the
+  profile points `npm_config_store_dir`, `GOMODCACHE`, `GOCACHE` and `GRADLE_USER_HOME` at
+  them, so downloads are kept once instead of once per bot. Applies on the next reconcile pass
+  without a restart; off by default. Bots on a fleetd host are not affected.
+- dockergate: new `packageCacheRoot` key (default empty: no cache bind). **Operator step:** set
+  it to the same directory and send `SIGHUP`, and create the four subdirectories owned by
+  uid/gid 10001 — see [bot-disk-cache.md](bot-disk-cache.md).
+
 ### A board unblock lifts a settled replay hold; a parked wake is not "covering" (HOLD-READY)
 
 - A task with a closed recovery action whose `evidence.automaticRecovery.replay`
