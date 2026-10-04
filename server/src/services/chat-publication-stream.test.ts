@@ -225,7 +225,7 @@ describe("safe chat publication streaming", () => {
 
   it("delivers a 9000-character answer completely and in order, each part within the Telegram limit", () => {
     const paragraph = (n: number) => `Абзац ${n}: ${"слово ".repeat(60)}`.trim();
-    const source = Array.from({ length: 22 }, (_, n) => paragraph(n)).join("\n\n");
+    const source = Array.from({ length: 30 }, (_, n) => paragraph(n)).join("\n\n");
     expect(source.length).toBeGreaterThan(9000);
     const parts = splitTelegramPublicationText(source);
     expect(parts.length).toBeGreaterThan(1);
@@ -233,6 +233,6 @@ describe("safe chat publication streaming", () => {
     for (const part of parts) expect(part.length).toBeLessThanOrEqual(4_096);
     const numbers = parts.join("").match(/Абзац (\d+):/g)!.map((m) => Number(m.replace(/\D/g, "")));
     expect(numbers).toEqual([...numbers].sort((a, b) => a - b));
-    expect(numbers).toHaveLength(22);
+    expect(numbers).toHaveLength(30);
   });
 });
