@@ -52,6 +52,26 @@ version file to edit. Base Paperclip version is in the image label
 ### SWARM-IDLE-WAKE: Free agents wake when their role queue is not empty
 
 - Third pass of the swarm supervisor (`sweep.ts`, after the release and free passes): on each tick, for each pair of "role + ready queue + free agents", wakes the missing number of agents, in batches ≤5 (`MYRMIDON_SWARM_IDLE_WAKE_BATCH`, default 5, clamp 1–25), each wake bound to the top task of the queue (P0 first — `orderSwarmQueueCandidates`). Pure modules: `idle-wake.ts` (policy: no live lease, under task ceiling, not paused/error, no live run, idempotency key) and `idle-queue.ts` (DB reads: role-queue pairs, live claim counts, coverage check). Assigned tasks go to the role of their executor; tasks without an executor are offered to every role with agents. The active task limit is respected, castes remain a gate on the claim side (`caste_excluded`, CUSTOM-CASTES B) — the point of control; the caste ceiling is respected. Supervisor metric: new total `freeAgentsWithQueue` — "free agents when queue is not empty" — which the pass should keep at 0 (unassigned tasks are now visible to roles with agents). Wakes go only through the existing `enqueueWakeup` (pause, maintenance, limits, budget — all gates preserved); the capture happens on checkout of the awakened run. The "one TTL + sweep interval" criterion is covered by a test (interval ≤ TTL/3). Docs: `MYRMIDON_SWARM_IDLE_WAKE_BATCH` in SETTINGS.md/SETTINGS.ru.md; skill `skills/paperclip/SKILL.md` supplemented with self-capture fallback (`POST /api/myrmidon/companies/{companyId}/swarm-claim/claim`).
+### Grant-based actor permission checks (ADMIN-AGENT part B)
+
+- Board-only actor-type checks on the company environments and
+  tool-connections routes now follow the company permission grant: an agent
+  actor passes when the company grants it the matching permission key —
+  `environments:manage` for the environments routes (including reading the
+  shared instance environment catalog), `tools:admin` for stdio command
+  templates and tool gateway management, `tools:manage_connections` (or
+  `tools:use` on the connection test routes) for connection testing,
+  `tools:manage_runtime` for runtime slot control, and `tools:view_audit` for
+  the raw gateway audit read. Board actors keep the exact previous semantics
+  (instance admins and the local implicit board pass; signed-in members pass
+  with the grant; viewers stay read-only), and an agent without a grant gets
+  the same 403 as before the change, so enabling nothing changes nothing.
+  Tool mutation activity-log rows now record the real acting principal — an
+  agent-actor mutation writes `actorType: "agent"` with the agent and run ids
+  instead of the old hardcoded board-user placeholder. Operator guide:
+  [guides/actor-grant-routes.md](guides/actor-grant-routes.md).
+
+
 
 ### Custom castes, consumers (CUSTOM-CASTES B)
 
