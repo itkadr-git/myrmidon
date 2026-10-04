@@ -10,6 +10,111 @@ version file to edit. Base Paperclip version is in the image label
 
 ## Unreleased
 
+### Heavy builds blocked inside the dev bot image (1.6.1 BUILD-OFFLOAD, part A)
+
+- The development variant of the bot image (`runtime-dev`,
+  `ghcr.io/itkadr-git/myrmidon-hermes-dev`) no longer relies on convention to keep
+  heavy repository operations off the bot container: `pnpm`, `tsc`, `vitest`,
+  `gradle` and `go` shims in `/opt/paperclip/bin` (first on `PATH`, ahead of the
+  real binaries) refuse every non-trivial invocation with exit 1 and a stderr
+  message naming the exact `devbuild …` replacement, unless an executable
+  `/usr/local/bin/devbuild` exists in the container. That gateway file is never
+  baked into the image — the part-B driver mounts it into the per-invocation
+  build container — so the barrier is always closed in the ordinary bot
+  container. See
+  [docker/bot-runtime/README.md](../../docker/bot-runtime/README.md), section
+  "Heavy builds are blocked at the image level".
+- Light probes keep working locally: `pnpm --version`, `pnpm config …`,
+  `pnpm store status`/`path`, and bare `--version`/`--help` of the other wrapped
+  tools. `git`, `node`, `cargo`, `gh` and `docker` are deliberately not wrapped —
+  the light, editing half of the cycle still runs in the container. To run a
+  build: `devbuild pnpm install`, `devbuild pnpm exec tsc --noEmit`,
+  `devbuild pnpm vitest run`, `devbuild go build ./...` — the workspace is
+  mounted into a build container on the build VPS and the same command runs
+  there.
+
+### Release publish waits for the tag's own image runs (RELEASE-PUBLISH-WAIT)
+
+- Pushing the `myr-v1.6.1` tag failed to publish the Release on the first
+  try: the publish gate matched workflow runs by the tag commit's
+  `head_sha` only, so it saw the already-green `main`-branch run of the
+  same commit (which builds the `main`/`sha-` image tags) instead of
+  waiting for the tag's own board image run, and then the digest probe
+  failed with "component image digests missing … board". The gate now
+  also filters runs by `head_branch == the tag`, so the publish waits for
+  every required image workflow of the same tag (up to ~40 minutes) and
+  a failed tag run still refuses the publish with the workflow's name.
+  Follow-up (same day): the CI gate accepts a green main-branch run of the
+  same commit — `myrmidon-ci.yml` has no tag trigger, so a tag never has a
+  CI run of its own and the strictly tag-scoped gate would have refused
+  every publish after ~20 minutes of polling.
+- A manual re-run from the `main` branch no longer overrides the typed
+  tag: `myrmidon-release.yml` resolves the tag as
+  `inputs.tag || github.ref_name` (checkout `ref`, `TAG` env and the
+  concurrency group), so `gh workflow run myrmidon-release.yml -f tag=…`
+  from `main` publishes the given tag without `--ref`.
+
+### Chats are never held; an owner message always wakes (CHAT-HOLD)
+
+- Incident: a host OOM cancelled the run of a perpetual Telegram DM chat;
+  execution recovery closed it as "do not replay" and set the chat issue
+  `blocked`, and every later owner message was parked as
+  `deferred_issue_execution` behind that hold. The owner saw only "Your
+  follow-up is queued" for hours.
+- A chat is a conversation, not a work ticket. An issue that backs a chat (a
+  bridged chat thread, or a board Agent Chat conversation) is never put into
+  `blocked` by automatic recovery and gets no replay hold: its stopped turn
+  is settled as `chat_continuation`, the issue returns to the idle
+  `in_review` state, and the next message is a fresh turn. Ordinary work
+  issues keep the existing recovery unchanged.
+- A new message a person writes in a chat is an explicit human action: the
+  wake admission passes any settled hold of the chat, lifts it with the
+  successor run (the same clear path as the board unblock), moves a chat the
+  recovery had blocked back to `todo`, and records it in the activity log
+  (`issue.execution_recovery_settled`, `continuation: chat_owner_message`).
+  A "retry the failed run" wake is not a message and stays withheld.
+- No silent queue: when a message in a bridged Telegram DM cannot start (the
+  previous turn is winding down, recovery, a pending decision, a paused
+  agent, an exhausted budget, the host memory gate), the chat is told why in
+  plain Russian, with a time estimate where one is known (the memory gate
+  re-checks every 15 seconds). Guide: [telegram-dm-status.md](guides/telegram-dm-status.md).
+
+### Shared package cache for development bots (1.6.2, BOT-DISK B)
+
+- An instance setting, `general.botDisk.sharedPackageCachePath` (Instance → General or
+  `PATCH /api/myrmidon/bot-disk`, instance admins only), gives every bot on the board's host
+  read-write mounts `/cache/{pnpm,go-mod,go-build,gradle}` from one host directory, and the
+  profile points `npm_config_store_dir`, `GOMODCACHE`, `GOCACHE` and `GRADLE_USER_HOME` at
+  them, so downloads are kept once instead of once per bot. Applies on the next reconcile pass
+  without a restart; off by default. Bots on a fleetd host are not affected.
+- dockergate: new `packageCacheRoot` key (default empty: no cache bind). **Operator step:** set
+  it to the same directory and send `SIGHUP`, and create the four subdirectories owned by
+  uid/gid 10001 — see [bot-disk-cache.md](bot-disk-cache.md).
+
+### A board unblock lifts a settled replay hold; a parked wake is not "covering" (HOLD-READY)
+
+- A task with a closed recovery action whose `evidence.automaticRecovery.replay`
+  reads `"blocked"` stayed stuck for good: the wake admission parked every
+  automatic wake of it (`deferred_issue_execution`, `executionWait`
+  `process_identity_missing`), idle pickup and the swarm sweep then counted that
+  parked wake as "already covering" the task and skipped it, and a manual
+  `POST /api/agents/:id/wakeup` without `issueId` answered 409 "no ready task".
+  Moving the task from `blocked` back to `todo` on the board did not help: the
+  status-change and comment wakes of that PATCH are not explicit wakes and were
+  parked as well. Agents sat idle with a full `todo` queue.
+- Now a board person (not an agent's run) who moves a task out of `blocked`
+  (to `todo`/`in_progress`) or reassigns a workable task clears its settled
+  replay holds in the same transaction, the same operator resolve as
+  `recovery-actions/resolve` (activity `issue.execution_recovery_replay_cleared`).
+  After commit one wake of the assignee (`execution_hold_cleared`) re-plans the
+  wakes parked on the hold through the ordinary admission. Active/escalated
+  recovery actions are not touched.
+- A deferred wake parked on an execution hold no longer counts as covering the
+  task in idle pickup, the manual-wake task binding or the swarm sweep, and the
+  ready-task prefilters of idle pickup and the swarm queues skip a task that is
+  really held (the same predicate the admission reads), so a held task is not
+  reported as ready. No settings change.
+
 ### Gateway spend attributed through per-bot secret references (1.6.2 hotfix, M2-A)
 
 - The gateway cost sweep wrote no rows: every collected spend row was counted as
@@ -23,6 +128,40 @@ version file to edit. Base Paperclip version is in the image label
   without their own binding; a reference to a secret that cannot be read skips that card
   instead of falling back to the shared key. The model fallback signal, which reuses the
   lookup, is fixed by the same change. No settings change.
+### Plugin bridge: invocation-scope attribution from any in-flight invocation (PLS1 -> PLS2)
+
+- The plugin bridge attributes an un-echoed worker call (a worker whose bundle
+  carries a plugin SDK that predates invocation-id echo) to the company of ANY
+  in-flight host-issued invocation — a plugin API route, `onEvent`,
+  `performAction`, `getData`, `executeTool` or an environment call — instead
+  of only an in-flight API route call. Bridge entry points register their
+  invocation scope without the apiRoute marker, so nested calls issued from
+  those handlers (the LLM Wiki plugin's `localFolders.*` calls) were answered
+  with "missing, expired, or unknown invocation scope"; this change closes the
+  same gap on `bridge/data`, `bridge/action` and plugin tool calls, fixing the
+  empty page list, pages that would not open and the failing
+  `wiki_write_page`-style tools of plugins built with the old SDK.
+- The safety guard is unchanged: attribution applies only while every
+  in-flight invocation of any kind belongs to one company; an in-flight call
+  of another company keeps the call denied (`INVOCATION_SCOPE_DENIED`), and a
+  call carrying an unknown or forged invocation id is still rejected.
+- The scope is always the host-issued one (the company the entering call
+  resolved and authorized); a value from the worker is never taken. No rights
+  are widened: the worker received the invocation ids of those calls and
+  could echo any of them.
+- The resolver moved from `server/src/myrmidon/plugin-api-route-scope.ts`
+  (deleted) to `server/src/myrmidon/plugin-invocation-scope.ts`; the vendored
+  worker manager marks the new branch `myrmidon(PLS2)` and the divergence
+  registry entry in [DIVERGENCE.md](DIVERGENCE.md) was rewritten for the
+  all-entry-points semantics. The removal condition stands: once the plugin
+  is rebuilt from `packages/plugins/plugin-llm-wiki` with the current SDK
+  (the worker echoes the invocation id itself), the PLS1/PLS2 branch, the
+  `apiRoute` field and the resolver files go away.
+- Guard test: `server/src/myrmidon/plugin-invocation-scope-bridge.myrmidon.test.ts`
+  with the fixture
+  `server/src/__tests__/fixtures/plugin-worker-invocation-scope-bridge.cjs`
+  covers the three bridge entry points (red without the fix, green with it)
+  and the cross-company denial.
 
 ### Automatic rollback by health: operator guide (AUTO-UPDATE-SETTINGS A)
 
@@ -40,6 +179,19 @@ version file to edit. Base Paperclip version is in the image label
   `server/src/myrmidon/deploy-jobs/service.myrmidon.test.ts` and
   `scripts/myrmidon/deploy/deploy-from-job.test.mjs` (a deliberately broken
   image against the fake driver).
+
+### Budget enforcement modes (1.7 BUDGET-CONFIG B)
+
+- What a crossed spend budget limit does is now a mode, not a fixed stop:
+  `signal_only` (the default — the incident and the owner signal appear, but
+  the scope is not paused and runs start), `soft` (pause plus the "raise the
+  budget or keep paused" card; raising resumes the scope), `hard` (new runs
+  of the over-limit scope are refused with the budget reason). One mode for
+  the whole instance, changed live from Instance → General or
+  `PATCH /api/myrmidon/budget-enforcement` — no restart; every change is
+  audited, and the value's source (saved / environment / default) is shown.
+  The environment override is `MYRMIDON_BUDGET_ENFORCEMENT_MODE`. Guide:
+  [guides/budget-enforcement.md](guides/budget-enforcement.md).
 
 ### Maintenance: asynchronous exit and the post-deploy fleet check (EXIT-ASYNC + POST-DEPLOY-CHECK)
 
@@ -139,6 +291,28 @@ version file to edit. Base Paperclip version is in the image label
 - `0`/`off` switches the floor or the ramp off from the environment; a
   malformed value keeps the default. See [SETTINGS.md](SETTINGS.md) and
   [guides/run-limits.md](guides/run-limits.md).
+
+
+## 1.6.2
+
+### Bot language servers by role (BOT-LSP-DEFAULTS)
+
+- Bots whose role writes code (by default the castes `engineer`, `qa`,
+  `devops`, `reviewer`, `release`) run language servers in a **limited** mode:
+  one TypeScript server per worktree (`tsserver.useSyntaxServer: "never"`),
+  no automatic typings download, a 1024 MB heap cap (`maxTsServerMemory`) and
+  a 120 s idle timeout instead of 600 s. Every other bot runs **none**
+  (`lsp.enabled: false`). Monorepo typecheck still goes through the build
+  server.
+- The policy is an instance setting (Instance settings → General → "Bot
+  language servers", `GET`/`PATCH /api/myrmidon/bot-lsp`): which roles write
+  code, the mode of coding and other roles (`off` / `limited` / `full`), the
+  idle timeout, the memory cap and excluded workspace roots. An agent card can
+  pin its own mode ("Language servers" section).
+- Changes apply without a server restart: the profile compiler re-reads the
+  policy on every reconcile tick, and a changed `lsp` block is applied while
+  the bot is paused, like a model change. On the first deploy every container
+  bot gets the new block once (one restart per bot, under its pause).
 
 ## 1.6.1
 
