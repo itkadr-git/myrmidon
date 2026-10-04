@@ -1,0 +1,95 @@
+#!/usr/bin/env node
+// docker/bot-runtime/build-wrappers/pnpm
+//
+// myrmidon(1.6.1 BUILD-OFFLOAD A): pnpm wrapper for the dev variant.
+// Stands FIRST on PATH (/opt/paperclip/bin), ahead of the real pnpm in
+// /opt/pnpm/bin, so a bare `pnpm install` in a bot container hits this
+// script before the real one. The real binary is exec'd by its absolute
+// path so the wrapper never recurses into itself.
+//
+// pnpm is special among the wrapped tools: it has lightweight,
+// no-side-effect subcommands (version, config, read-only store probes,
+// help) that a normal shell session legitimately uses. Those pass
+// through locally and run the real pnpm; everything else — install,
+// the run/test/exec lanes, publishing, any store MUTATION — refuses
+// with the devbuild replacement unless the devbuild gateway is
+// present. The allow-list is deliberately narrow and pattern-matched
+// on the first non-flag argument only: treating anything unrecognized
+// as heavy is the safe default (fail closed).
+//
+// No secrets, no addresses, no Russian hostnames: the wrapper only
+// reads its argv and the gateway file's presence.
+//
+// CJS on purpose, like the github-broker wrappers: in the image this
+// file lives at /opt/paperclip/bin/ (no package.json above /opt), so
+// Node loads it as CommonJS. The repository's "type": "module" does
+// not reach there — module resolution walks up from the file's own
+// path, not from the caller's cwd.
+
+"use strict";
+
+const { spawn } = require("node:child_process");
+const { devbuildPresent, refusalMessage } = require("./devbuild-gate.js");
+
+// Absolute path to the real binary: /opt/paperclip/bin is first on
+// PATH, so resolving through PATH would find THIS wrapper again.
+const REAL_PNPM = "/opt/pnpm/bin/pnpm";
+
+// Lightweight subcommands that may run locally in any bot container:
+// --version / -v / --help: pure output.
+// config get/set/list: reads/edits the user's ~/.npmrc, no network, no
+//   build work (the file lives on the writable /data volume).
+// store: only the read-only probes are allowed (status, path); the
+//   store itself is inspect-only — `pnpm store prune`/`add` mutate the
+//   shared store and refuse.
+const LIGHT = new Set([
+  "--version",
+  "-v",
+  "version",
+  "--help",
+  "-h",
+  "help",
+  "config",
+]);
+// `pnpm store <probe>` passes; `pnpm store <anything else>` refuses.
+const STORE_LIGHT = new Set(["status", "path"]);
+
+function isLight(argv) {
+  // A flag cluster like `-v --loglevel warn` stays light if the FIRST
+  // non-flag argument is a light subcommand.
+  const first = argv.find((a) => !a.startsWith("-"));
+  if (first === undefined) return true; // only flags: --version etc.
+  if (LIGHT.has(first)) return true;
+  if (first === "store") {
+    const rest = argv.slice(argv.indexOf(first) + 1);
+    const sub = rest.find((a) => !a.startsWith("-"));
+    return sub === undefined || STORE_LIGHT.has(sub);
+  }
+  return false;
+}
+
+function runReal(argv) {
+  const child = spawn(REAL_PNPM, argv, { stdio: "inherit" });
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+    process.on(signal, () => child.kill(signal));
+  }
+  child.once("error", (err) => {
+    process.stderr.write(`pnpm wrapper: cannot exec ${REAL_PNPM}: ${err.message}\n`);
+    process.exitCode = 127;
+  });
+  child.once("exit", (code, signal) => {
+    process.exitCode = code === null ? (signal ? 128 : 1) : code;
+  });
+}
+
+function main() {
+  const argv = process.argv.slice(2);
+  if (devbuildPresent() || isLight(argv)) {
+    runReal(argv);
+    return;
+  }
+  process.stderr.write(refusalMessage("pnpm", argv) + "\n");
+  process.exitCode = 1;
+}
+
+main();
