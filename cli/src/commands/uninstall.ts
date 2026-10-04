@@ -11,6 +11,7 @@ import {
 } from "../install-store.js";
 import { resolvePaperclipInstanceId } from "../config/home.js";
 import { detectServiceManager, launchdServiceName, systemdServiceName } from "../services/service-manager.js";
+import { PRODUCT_NAME } from "../myrmidon-product.js";
 
 type UninstallDependencies = {
   detectServiceManager: typeof detectServiceManager;
@@ -83,8 +84,8 @@ export async function uninstallCommand(
   }, paths, { initialize: !hadStore });
 
   if (!shimRemoved) {
-    console.log(pc.yellow(`Left ${paths.shimPath} unchanged because it is not a Paperclip-managed shim.`));
+    console.log(pc.yellow(`Left ${paths.shimPath} unchanged because it is not a ${PRODUCT_NAME}-managed shim.`));
   }
-  console.log(pc.green("Removed the managed Paperclip CLI install."));
+  console.log(pc.green(`Removed the managed ${PRODUCT_NAME} CLI install.`));
   console.log(pc.dim(`User data was left untouched under ${paths.paperclipHome}.`));
 }

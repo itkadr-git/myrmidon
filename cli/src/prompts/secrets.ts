@@ -2,6 +2,7 @@ import * as p from "@clack/prompts";
 import type { SecretProvider } from "@paperclipai/shared";
 import type { SecretsConfig } from "../config/schema.js";
 import { resolveDefaultSecretsKeyFilePath, resolvePaperclipInstanceId } from "../config/home.js";
+import { PRODUCT_NAME } from "../myrmidon-product.js";
 
 function defaultKeyFilePath(): string {
   return resolveDefaultSecretsKeyFilePath(resolvePaperclipInstanceId());
@@ -85,7 +86,7 @@ export async function promptSecrets(current?: SecretsConfig): Promise<SecretsCon
   if (provider !== "local_encrypted") {
     p.note(
       provider === "aws_secrets_manager"
-        ? "AWS credentials must come from the Paperclip server runtime (IAM role/workload identity, AWS_PROFILE/SSO/shared credentials, or short-lived shell env), not from Paperclip company secrets."
+        ? `AWS credentials must come from the ${PRODUCT_NAME} server runtime (IAM role/workload identity, AWS_PROFILE/SSO/shared credentials, or short-lived shell env), not from ${PRODUCT_NAME} company secrets.`
         : `${provider} is not fully wired in this build yet. Keep local_encrypted unless you are actively implementing that adapter.`,
       "Heads up",
     );
