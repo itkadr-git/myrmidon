@@ -1,6 +1,7 @@
 import { runIdentityContexts } from "@paperclipai/db";
 import { captureRunIdentity } from "./run-identity.js";
 import { resolveManagedGitHubIdentitySelection } from "./git-credentials.js";
+import { emitToolPolicyChanged, onToolPolicyChanged } from "./tool-policy-cache-events.js";
 import { logger } from "../middleware/logger.js";
 // myrmidon(P9): a failing tool must not take its whole connection down
 import {
@@ -1132,7 +1133,14 @@ export function createToolGatewayService(
     return policyService.decide(input);
   }
 
-  // In-memory cache for policy data with TTL
+  // In-memory cache for policy data, invalidated on tool policy change events.
+  // OPE-4129: the primary invalidation is event-based (see
+  // tool-policy-cache-events.ts) — every successful mutation of
+  // tool_profiles / tool_profile_bindings / tool_policies emits
+  // emitToolPolicyChanged() and the listeners below drop the snapshots
+  // immediately. The TTL below is only a cross-process safety net (a mutation
+  // performed by another board process cannot emit an in-process event), so
+  // it is short: 30 seconds instead of minutes.
   const policyCache = new Map<string, {
     data: {
       profiles: Array<typeof toolProfiles.$inferSelect>;
@@ -1141,7 +1149,10 @@ export function createToolGatewayService(
     };
     timestamp: number;
   }>();
-  const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+  const CACHE_TTL_MS = 30 * 1000; // safety net only; event invalidation is primary
+  onToolPolicyChanged(() => {
+    policyCache.clear();
+  });
 
   /**
    * Gets cached policy data or fetches it if not available or expired
@@ -8671,6 +8682,7 @@ export function createToolGatewayService(
           createdByUserId: input.actor?.userId ?? null,
         })
         .onConflictDoNothing();
+      emitToolPolicyChanged();
       await writeAudit({
         session: {
           id: `gateway:${gateway.id}`,
@@ -8829,6 +8841,7 @@ export function createToolGatewayService(
           })
           .onConflictDoNothing();
       }
+      emitToolPolicyChanged();
       return getGatewayWithTokens(input.companyId, updated.id);
     },
 

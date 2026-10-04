@@ -118,4 +118,31 @@ describe("Performance: tool-gateway policy snapshot", () => {
     expect(new Set(counts).size).toBe(1);
     expect(counts[0]).toBe(3);
   });
+
+  it("policy change event drops the snapshot cache (no TTL wait)", async () => {
+    // Mirrors the tool-gateway wiring: onToolPolicyChanged(() => policyCache.clear()).
+    // A mutation anywhere in tool-access emits emitToolPolicyChanged(); the next
+    // request must reload the snapshot instead of serving stale entries.
+    const { emitToolPolicyChanged, onToolPolicyChanged } = await import(
+      "./tool-policy-cache-events.js"
+    );
+    const policyCache = new Map<string, unknown>();
+    const unsubscribe = onToolPolicyChanged(() => {
+      policyCache.clear();
+    });
+    try {
+      policyCache.set("company-a:agent-1", { stale: true });
+      expect(policyCache.size).toBe(1);
+
+      emitToolPolicyChanged();
+
+      expect(policyCache.size).toBe(0);
+    } finally {
+      unsubscribe();
+    }
+    // events after unsubscribe do not resurrect the listener
+    policyCache.set("company-a:agent-1", { fresh: true });
+    emitToolPolicyChanged();
+    expect(policyCache.size).toBe(1);
+  });
 });
