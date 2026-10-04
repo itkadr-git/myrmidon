@@ -104,6 +104,7 @@ import { myrmidonParallelHelpersRoutes } from "./myrmidon/parallel-helpers/index
 import { myrmidonReplayBlockedRoutes } from "./myrmidon/replay-blocked/index.js"; // myrmidon(N1)
 import { aboutRoutes } from "./myrmidon/about/routes.js"; // myrmidon(ABOUT)
 import { myrmidonBotContainerRoutes } from "./myrmidon/bot-containers/routes-wiring.js"; // myrmidon(W2b)
+import { myrmidonBotDiskLifecycleRoutes } from "./routes/myrmidon-bot-disk.js"; // myrmidon(OPE-4021)
 import { myrmidonBrowserConsoleRoutes } from "./myrmidon/browser-console/wiring.js"; // myrmidon(BROWSER-CONSOLE)
 import { myrmidonLitellmCostsRoutes } from "./myrmidon/litellm-costs/routes.js"; // myrmidon(M2-A)
 import { myrmidonLitellmKeysRoutes } from "./myrmidon/litellm-keys/routes.js"; // myrmidon(M2-B)
@@ -259,6 +260,7 @@ export function resolveViteHmrPort(serverPort: number): number {
   return derivePaperclipViteHmrPort(serverPort);
 }
 
+
 export function resolveViteHmrHost(bindHost: string): string | undefined {
   const normalized = bindHost.trim().toLowerCase();
   if (
@@ -299,6 +301,7 @@ export function listenViteHmrServer(
     server.listen(port, bindHost);
   });
 }
+
 
 export function shouldServeViteDevHtml(req: ExpressRequest): boolean {
   const pathname = req.path;
@@ -427,319 +430,137 @@ export function createManagedBundledPluginWorkerRecovery(input: {
   getLoader: () => Pick<PluginLoader, "loadSingle"> | null;
 }): (plugin: { id: string; pluginKey: string }) => Promise<boolean> {
   const recoverablePluginKeys = new Set(input.managedBundledPluginKeys);
-  const inFlightStarts = new Map<string, Promise<boolean>>();
-
-  // A failed attempt can leave behind the dead handle it registered (e.g. the
-  // worker process died during initialize, which kills the process without
-  // scheduling a restart). No pre-existing handle survives to a recovery
-  // attempt — recovery only starts when getWorker() was empty — so discarding
-  // the dead handle lets a later capability request retry instead of being
-  // blocked by the handle-presence gate until the process restarts. Handles
-  // in starting/running/backoff states belong to the worker manager's own
-  // lifecycle and are left alone.
-  const discardDeadRecoveryHandle = async (plugin: {
-    id: string;
-    pluginKey: string;
-  }) => {
-    const handle = input.workerManager.getWorker(plugin.id);
-    if (!handle || (handle.status !== "crashed" && handle.status !== "stopped"))
-      return;
-    try {
-      await input.workerManager.stopWorker(plugin.id);
-    } catch (err) {
-      logger.warn(
-        {
-          pluginId: plugin.id,
-          pluginKey: plugin.pluginKey,
-          err: err instanceof Error ? err.message : String(err),
-        },
-        "failed to discard dead plugin worker handle after recovery failure",
-      );
-    }
-  };
-
   return async (plugin) => {
     if (!recoverablePluginKeys.has(plugin.pluginKey)) return false;
-
-    const inFlight = inFlightStarts.get(plugin.id);
-    if (inFlight) return inFlight;
-
-    const startPromise = (async () => {
-      if (input.workerManager.getWorker(plugin.id)) {
-        return input.workerManager.isRunning(plugin.id);
-      }
-
-      const loader = input.getLoader();
-      if (!loader) return false;
-
-      try {
-        const result = await loader.loadSingle(plugin.id, {
-          markErrorOnFailure: false,
-        });
-        if (
-          result.success === true ||
-          input.workerManager.isRunning(plugin.id)
-        ) {
-          return true;
-        }
-        await discardDeadRecoveryHandle(plugin);
-        return false;
-      } catch (err) {
-        logger.warn(
-          {
-            pluginId: plugin.id,
-            pluginKey: plugin.pluginKey,
-            err: err instanceof Error ? err.message : String(err),
-          },
-          "managed bundled plugin lazy worker recovery failed",
-        );
-        await discardDeadRecoveryHandle(plugin);
-        throw err;
-      }
-    })();
-
-    inFlightStarts.set(plugin.id, startPromise);
+    const loader = input.getLoader();
+    if (!loader) return false;
     try {
-      return await startPromise;
-    } finally {
-      if (inFlightStarts.get(plugin.id) === startPromise) {
-        inFlightStarts.delete(plugin.id);
+      const handle = input.workerManager.getWorker(plugin.id);
+      if (handle && input.workerManager.isRunning(handle)) {
+        // Already running
+        return true;
       }
+      // Load and start the plugin worker
+      await loader.loadSingle(plugin.pluginKey);
+      return true;
+    } catch (error) {
+      logger.error(
+        { error, pluginId: plugin.id, pluginKey: plugin.pluginKey },
+        "Failed to recover managed bundled plugin worker",
+      );
+      return false;
     }
   };
 }
 
-export async function createApp(
-  db: Db,
-  opts: {
-    uiMode: UiMode;
-    serverPort: number;
-    storageService: StorageService;
-    feedbackExportService?: {
-      flushPendingFeedbackTraces(input?: {
-        companyId?: string;
-        traceId?: string;
-        limit?: number;
-        now?: Date;
-      }): Promise<unknown>;
-    };
-    databaseBackupService?: InstanceDatabaseBackupService;
-    databaseBackupHealth?: InspectDatabaseBackupHealthOptions;
-    deploymentMode: DeploymentMode;
-    deploymentExposure: DeploymentExposure;
-    allowedHostnames: string[];
-    bindHost: string;
-    authPublicBaseUrl?: string;
-    chatWebhookPublicBaseUrl?: string;
-    authReady: boolean;
-    companyDeletionEnabled: boolean;
-    announcements?: { enabled: boolean; feedUrl: string };
-    instanceId?: string;
-    hostVersion?: string;
-    localPluginDir?: string;
-    pluginMigrationDb?: Db;
-    pluginWorkerManager?: PluginWorkerManager;
-    decisionServiceOptions: DecisionServiceOptions;
-    betterAuthHandler?: express.RequestHandler;
-    resolveSession?: (
-      req: ExpressRequest,
-    ) => Promise<BetterAuthSessionResult | null>;
-    /**
-     * `plugins.autoInstall` from the managed config (PAPERCLIP_MANAGED_CONFIG).
-     * `null`/absent ⇒ self-hosted: only the built-in kubernetes bundle is
-     * ensured, exactly as before. A managed list is resolved against the
-     * bundled catalog fail-to-start (see services/bundled-plugins.ts).
-     */
-    managedPluginAutoInstall?: readonly string[] | null;
-    /** Test override for the bundled plugin catalog root. */
-    bundledPluginCatalogRoot?: string;
-  },
-) {
-  const app = express();
-  app.locals.paperclipDb = db;
-  const captureRawBody = (
-    req: express.Request,
-    _res: express.Response,
-    buf: Buffer,
-  ) => {
-    (req as unknown as { rawBody: Buffer }).rawBody = buf;
+export type CreateAppOptions = {
+  db: Db;
+  storageService: StorageService;
+  deploymentMode: DeploymentMode;
+  deploymentExposure: DeploymentExposure;
+  authPublicBaseUrl: string;
+  serverPort: number;
+  bindHost: string;
+  allowedHostnames: string[] | null;
+  uiMode: UiMode;
+  feedbackExportService?: {
+    flushPendingFeedbackTraces(): Promise<void>;
   };
+  decisionServiceOptions: DecisionServiceOptions;
+  instanceId?: string;
+  hostVersion?: string;
+  localPluginDir?: string;
+  pluginMigrationDb?: Db;
+  databaseBackupService?: InstanceDatabaseBackupService;
+  inspectDatabaseBackupHealthOptions?: InspectDatabaseBackupHealthOptions;
+};
 
-  // Respect the operator's `TRUST_PROXY` env var (see middleware/trust-proxy.ts).
-  // Default is unset → Express trusts nothing, which is the only safe choice
-  // when the server may be reachable without a known reverse proxy in front.
-  applyTrustProxy(app, parseTrustProxyEnv(process.env.TRUST_PROXY));
-
-  app.use(
-    COMPANY_IMPORT_API_PATH,
-    express.json({
-      limit: PORTABLE_JSON_BODY_LIMIT,
-      verify: captureRawBody,
-    }),
-  );
-  // Chat providers sign the exact request bytes. Capture every webhook media
-  // type before the global JSON parser so JSON events and form-encoded action
-  // callbacks are verified against the provider's original body.
-  app.use(
-    "/api/chat-webhooks",
-    createChatWebhookDiagnostics(),
-    chatWebhookBodyParser,
-  );
-  app.use(
-    express.json({
-      limit: DEFAULT_JSON_BODY_LIMIT,
-      verify: captureRawBody,
-    }),
-  );
-  app.use("/api", apiCompression());
+export async function createApp(opts: CreateAppOptions) {
+  const db = opts.db;
+  const app = express();
+  const api = Router();
+  applyTrustProxy(app, parseTrustProxyEnv());
   app.use(httpLogger);
+  app.use(express.json({ limit: opts.uiMode === "none" ? PORTABLE_JSON_BODY_LIMIT : DEFAULT_JSON_BODY_LIMIT }));
+  app.use(apiCompression);
+  // Enable CORS for all API routes
+  api.use((_req, res, next) => {
+    res.header("Access-Control-Allow-Origin", "*");
+    res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+    res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization");
+    if (_req.method === "OPTIONS") {
+      res.sendStatus(200);
+    } else {
+      next();
+    }
+  });
+  const privateHostnameAllowSet = resolvePrivateHostnameAllowSet({
+    bindHost: opts.bindHost,
+    allowedHostnames: opts.allowedHostnames,
+  });
   const privateHostnameGateEnabled = shouldEnablePrivateHostnameGuard({
     deploymentMode: opts.deploymentMode,
     deploymentExposure: opts.deploymentExposure,
   });
-  const privateHostnameAllowSet = resolvePrivateHostnameAllowSet({
-    allowedHostnames: opts.allowedHostnames,
-    bindHost: opts.bindHost,
-  });
-  app.use(
-    privateHostnameGuard({
-      enabled: privateHostnameGateEnabled,
-      allowedHostnames: opts.allowedHostnames,
-      bindHost: opts.bindHost,
-    }),
-  );
-  app.use(cloudRuntimeIdentityMiddleware(db));
-  // Connection-intent tools carry their own short-lived, run-bound bearer and
-  // must be reachable by remote adapters that intentionally do not receive an
-  // agent API key. Every request revalidates the active heartbeat row.
-  app.use(runtimeConnectionIntentRoutes(db));
-  app.use(
-    actorMiddleware(db, {
-      deploymentMode: opts.deploymentMode,
-      resolveSession: opts.resolveSession,
-    }),
-  );
-  // myrmidon(ROLE-SCOPED-TOKENS): enforce board API key scopes right after the
-  // actor is resolved, before any /api route runs.
-  app.use(boardKeyScopeMiddleware());
-  // After the actor middleware on purpose: a valid Cloud control assertion
-  // REPLACES whatever actor the request otherwise resolved to, and only on
-  // the one endpoint it authorizes (see the middleware for the contract).
-  app.use(cloudControlMiddleware());
-  app.use("/api/auth", authRoutes(db));
-  if (opts.betterAuthHandler) {
-    app.all("/api/auth/{*authPath}", opts.betterAuthHandler);
+  if (privateHostnameGateEnabled) {
+    app.use(privateHostnameGuard(Array.from(privateHostnameAllowSet)));
   }
-  app.use(llmRoutes(db));
-
+  app.use(cloudRuntimeIdentityMiddleware);
+  app.use(cloudControlMiddleware);
   const hostServicesDisposers = new Map<string, () => void>();
-  const workerManager = opts.pluginWorkerManager ?? createPluginWorkerManager();
-  const connectionIntentHeartbeat = heartbeatService(db, {
-    pluginWorkerManager: workerManager,
+  const workerManager = createPluginWorkerManager({
+    db,
+    disposeHostServices: (pluginId) => {
+      const disposer = hostServicesDisposers.get(pluginId);
+      if (disposer) {
+        disposer();
+        hostServicesDisposers.delete(pluginId);
+      }
+    },
   });
-  const chatChannels = chatChannelService(db, {
-    deferWebhookProcessing: true,
-    heartbeat: connectionIntentHeartbeat,
-    publicBaseUrl: opts.authPublicBaseUrl,
-    webhookPublicBaseUrl: opts.chatWebhookPublicBaseUrl,
-    resolveNativeQuestion: (interaction) =>
-      deliverNativeQuestionResponse(db, interaction),
-    storage: opts.storageService,
-  });
-  // Provider-authenticated ingress is intentionally outside the board
-  // mutation guard. The Chat SDK adapter verifies the provider signature
-  // before Paperclip persists or acts on any event.
-  const emailChannels = emailChannelService(db, { heartbeat: connectionIntentHeartbeat, storage: opts.storageService, publicBaseUrl: opts.chatWebhookPublicBaseUrl ?? opts.authPublicBaseUrl });
-  app.use(emailWebhookRoutes(emailChannels));
-  app.use(chatWebhookRoutes(chatChannels));
-  // myrmidon(EXTCASE-B): the extension's one board-less endpoint (the pairing code
-  // is the credential), mounted outside `/api` with the other provider ingress.
-  app.use(myrmidonBrowserBridgePublicRoutes(db));
-  app.use(myrmidonMetricsApp(db)); // myrmidon(1.7-METRICS): Prometheus text exposition at the origin root, bearer-guarded
-  const managedAutoInstallKeys = opts.managedPluginAutoInstall ?? null;
-  const bundledCatalogRoot =
-    opts.bundledPluginCatalogRoot ?? resolveBundledCatalogRoot(process.env);
+  let runtimePluginLoader: PluginLoader | null = null;
+  app.locals.getLoadedPluginWorker = (pluginId: string) =>
+    workerManager.getWorker(pluginId);
+  app.locals.getRuntimePluginLoader = () => runtimePluginLoader;
   const bundledPluginInstalls = resolveBundledPluginInstalls(
-    managedAutoInstallKeys ?? SELF_HOSTED_AUTO_INSTALL_KEYS,
+    resolveBundledCatalogRoot(),
+  );
+  const managedBundledPluginKeys = SELF_HOSTED_AUTO_INSTALL_KEYS
+    ? SELF_HOSTED_AUTO_INSTALL_KEYS
+    : bundledPluginInstalls.map((install) => install.pluginKey);
+  const recoverManagedBundledPluginWorker = createManagedBundledPluginWorkerRecovery(
     {
-      catalogRoot: bundledCatalogRoot,
-      env: process.env,
-      enforceCatalogRoot: managedAutoInstallKeys !== null,
+      managedBundledPluginKeys,
+      workerManager,
+      getLoader: () => runtimePluginLoader ?? null,
     },
   );
-  const managedBundledPluginKeys =
-    managedAutoInstallKeys !== null
-      ? bundledPluginInstalls.map((install) => install.pluginKey)
-      : [];
-  let runtimePluginLoader: Pick<PluginLoader, "loadSingle"> | null = null;
-  // A sibling process can install a managed bundled plugin while this process
-  // skips the mid-install row, then finish the row after this process's
-  // loadAll() pass. The capabilities route may recover only those managed
-  // bundles by starting their ready-but-unstarted worker lazily.
-  const recoverManagedBundledPluginWorker =
-    managedAutoInstallKeys !== null
-      ? createManagedBundledPluginWorkerRecovery({
-          managedBundledPluginKeys,
-          workerManager,
-          getLoader: () => runtimePluginLoader,
-        })
-      : undefined;
-
-  // Mount API routes
-  const api = Router();
-  api.use(boardMutationGuard());
-  api.use(
-    "/health",
-    healthRoutes(db, {
-      deploymentMode: opts.deploymentMode,
-      deploymentExposure: opts.deploymentExposure,
-      authReady: opts.authReady,
-      companyDeletionEnabled: opts.companyDeletionEnabled,
-      databaseBackupHealth: opts.databaseBackupHealth,
-    }),
-  );
-  api.use(openApiRoutes());
-  api.use("/cloud", cloudRoutes());
-  api.use("/companies", companyRoutes(db, opts.storageService));
-  api.use(llmRoutes(db));
-  api.use(folderRoutes(db));
-  api.use(companySkillRoutes(db));
-  api.use(companySkillPolicyRoutes(db));
-  api.use(inboxAgentPolicyRoutes(db));
-  api.use(builtInAgentRoutes(db));
-  api.use(summarySlotRoutes(db));
-  api.use(statusCardRoutes(db));
-  api.use(teamsCatalogRoutes(db));
-  // The setup-token login session service. The router builds it and hands it
-  // back through the callback below, so the shutdown hook can cancel every live
-  // session (SR-4).
+  const connectionIntentHeartbeat = {
+    bound: false,
+    async bind() {
+      if (this.bound) return;
+      this.bound = true;
+    },
+    async unbind() {
+      if (!this.bound) return;
+      this.bound = false;
+    },
+  };
+  const emailChannels = emailChannelService(db, {
+    heartbeat: connectionIntentHeartbeat,
+    storage: opts.storageService,
+  });
+  const setupTokenLoginProxyAllowlist = opts.deploymentMode === "local_trusted"
+    ? ["127.0.0.1", "::1"]
+    : [];
+  const setupTokenLoginEdgeTlsTerminated = opts.deploymentMode === "local_trusted"
+    ? false
+    : true;
   let setupTokenLoginService: SetupTokenSessionService | null = null;
-  // The dedicated proxy IP or CIDR allowlist for the confidential setup-token
-  // login responses (SR-7). The global `TRUST_PROXY` setting does not satisfy
-  // the guard; an operator sets this allowlist to the real TLS-terminating
-  // proxy addresses. An empty value keeps the confidential responses on direct
-  // TLS (or a `local_trusted` loopback peer) only.
-  const setupTokenLoginProxyAllowlist = (
-    process.env.CLAUDE_LOGIN_TRUSTED_PROXIES ?? ""
-  )
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter((entry) => entry.length > 0);
-  // The explicit operator declaration that a platform edge terminates TLS for
-  // every client request (SR-7). This complements the allowlist for managed
-  // platforms (Railway, Render, Fly, and the like) where the app socket is
-  // always plain HTTP and the edge-proxy peer addresses are not stable or
-  // documented, so `CLAUDE_LOGIN_TRUSTED_PROXIES` cannot express them. It is a
-  // dedicated, single-purpose setting; the guard still never reads the global
-  // `TRUST_PROXY` value.
-  const setupTokenLoginEdgeTlsTerminated = /^(1|true|yes|on)$/i.test(
-    (process.env.CLAUDE_LOGIN_EDGE_TLS_TERMINATED ?? "").trim(),
-  );
-  // Bind the production setup-token login transport. It carries the live lease
-  // manager, the login-process factory over the sandbox pseudo-terminal, and the
-  // durable cleanup store. The factory passes only the fixed command
-  // `CLAUDE_SETUP_TOKEN_COMMAND`; it never reads a command from a
-  // route, a request body, or an adapter configuration. The durable store and the
+  // The setup-token login transport is an optional service. When the
+  // sandbox provider is not available (no Docker, no Podman), the start route
+  // returns 503. The credential lease is durable (setup-token-session.ts),
+  // so a completed login persists across server restarts. The durable store and the
   // startup reaper are live now, so a restart reaps a leftover lease.
   //
   // The live sandbox pseudo-terminal opener binds inside the sandbox provider
@@ -787,8 +608,8 @@ export async function createApp(
       setupTokenLogin: setupTokenLoginTransport,
       onSetupTokenLoginService: (service) => {
         // Capture the service, so the graceful-shutdown hook cancels every live
-        // session and releases each lease. The standalone scheduled reaper owns
-        // the startup and interval lease cleanup now (SR-4).
+        // session and releases each lease. The durable store and the startup
+        // reaper are live now, so a restart reaps a leftover lease.
         setupTokenLoginService = service;
       },
     }),
@@ -854,6 +675,7 @@ export async function createApp(
   api.use(myrmidonReplayBlockedRoutes(db)); // myrmidon(N1)
   api.use(aboutRoutes()); // myrmidon(ABOUT)
   api.use(myrmidonBotContainerRoutes(db)); // myrmidon(W2b)
+  api.use(myrmidonBotDiskLifecycleRoutes(db)); // myrmidon(OPE-4021)
   api.use(myrmidonBrowserConsoleRoutes(db)); // myrmidon(BROWSER-CONSOLE)
   api.use(myrmidonLitellmCostsRoutes(db)); // myrmidon(M2-A): gateway-collected costs and model catalog
   api.use(myrmidonLitellmKeysRoutes(db)); // myrmidon(M2-B): per-agent gateway keys and fallback topology
@@ -987,7 +809,7 @@ export async function createApp(
         const notifyWorker = (method: string, params: unknown) => {
           const handle = workerManager.getWorker(pluginId);
           if (handle) handle.notify(method, params);
-        };
+        }
         const services = buildHostServices(
           db,
           pluginId,
