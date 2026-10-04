@@ -6,16 +6,16 @@
 ## Использование
 ```bash
 # Запуск анализа с порогом 50% по умолчанию и вывод краткого отчета в формате markdown
-python3 scripts/myrmidon/vendor-share.py
+node scripts/myrmidon/vendor-share.mjs
 
 # Запуск с пользовательским порогом (например, 70%)
-python3 scripts/myrmidon/vendor-share.py --threshold 0.7
+node scripts/myrmidon/vendor-share.mjs --threshold 0.7
 
 # Вывод результатов в формате JSON
-python3 scripts/myrmidon/vendor-share.py --json
+node scripts/myrmidon/vendor-share.mjs --json
 
 # Показать справку
-python3 scripts/myrmidon/vendor-share.py --help
+node scripts/myrmidon/vendor-share.mjs --help
 ```
 
 ## Конфигурация
@@ -28,8 +28,7 @@ python3 scripts/myrmidon/vendor-share.py --help
 - Общее количество файлов в репозитории
 - Количество и процент вендорных файлов
 - Разбивку по каталогам верхнего уровня
-- Разбивку по пакетам (где применимо)
-- Пример вендорных файлов с процентами схожести
+- С `--json`: каждый вендорный файл с коэффициентом схожести
 
 ## Логика
 Файл считается вендорным, если:

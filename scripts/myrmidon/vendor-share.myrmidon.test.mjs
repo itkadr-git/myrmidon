@@ -1,158 +1,106 @@
-// Tests for vendor-share.mjs
-// These tests validate the functionality of the vendor share analysis script
+// Tests for vendor-share.mjs (node:test). The analysis runs against a
+// throwaway git repository so the result does not depend on the CI checkout.
 
-const fs = require('fs');
-const path = require('path');
-const { spawnSync } = require('child_process');
-const { analyzeVendorShare, calculateSimilarity, isExcluded, formatAsMarkdown } = require('./vendor-share.mjs');
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import {
+  analyzeVendorShare,
+  calculateSimilarity,
+  formatAsMarkdown,
+  isExcluded,
+  readVendorBaseCommit,
+} from './vendor-share.mjs';
 
-// Test calculateSimilarity function
-function testCalculateSimilarity() {
-  console.log('Testing calculateSimilarity function...');
-  
-  // Test identical strings
-  let result = calculateSimilarity('hello world', 'hello world');
-  console.assert(result === 1.0, `Expected 1.0, got ${result}`);
-  
-  // Test completely different strings
-  result = calculateSimilarity('hello', 'world');
-  console.assert(result === 0.0, `Expected 0.0, got ${result}`);
-  
-  // Test similar strings
-  result = calculateSimilarity('hello world', 'hello word');
-  console.assert(result > 0.8 && result < 1.0, `Expected > 0.8 and < 1.0, got ${result}`);
-  
-  // Test with null/undefined
-  result = calculateSimilarity(null, null);
-  console.assert(result === 1.0, `Expected 1.0 for null, null, got ${result}`);
-  
-  result = calculateSimilarity('hello', null);
-  console.assert(result === 0.0, `Expected 0.0 for 'hello', null, got ${result}`);
-  
-  console.log('✓ calculateSimilarity tests passed');
+const script = path.join(path.dirname(fileURLToPath(import.meta.url)), 'vendor-share.mjs');
+
+function run(cwd, cmd, args) {
+  const r = spawnSync(cmd, args, { cwd, encoding: 'utf8' });
+  assert.equal(r.status, 0, `${cmd} ${args.join(' ')}: ${r.stderr}`);
+  return r.stdout.trim();
 }
 
-// Test isExcluded function
-function testIsExcluded() {
-  console.log('Testing isExcluded function...');
-  
-  // Test various exclusion patterns
-  console.assert(isExcluded('node_modules/package/file.js', ['**/node_modules/**']) === true, 'node_modules should be excluded');
-  console.assert(isExcluded('src/index.js', ['**/node_modules/**']) === false, 'src/index.js should not be excluded');
-  console.assert(isExcluded('dist/bundle.js', ['**/dist/**']) === true, 'dist files should be excluded');
-  console.assert(isExcluded('package-lock.json', ['package-lock.json']) === true, 'package-lock.json should be excluded');
-  
-  console.log('✓ isExcluded tests passed');
+function put(dir, rel, text) {
+  mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
+  writeFileSync(path.join(dir, rel), text);
 }
 
-// Test that the script can be executed
-function testScriptExecution() {
-  console.log('Testing script execution...');
-  
-  // Test basic execution with JSON output
-  const result = spawnSync('node', ['./vendor-share.mjs', '--json'], {
-    cwd: __dirname,
-    encoding: 'utf-8'
-  });
-  
-  if (result.error) {
-    console.error('Error executing script:', result.error);
-    process.exit(1);
-  }
-  
-  if (result.status !== 0) {
-    console.error('Script exited with status:', result.status);
-    console.error('stderr:', result.stderr);
-    process.exit(1);
-  }
-  
+function makeRepo() {
+  const dir = mkdtempSync(path.join(tmpdir(), 'vendor-share-'));
+  run(dir, 'git', ['init', '-q']);
+  run(dir, 'git', ['config', 'user.email', 't@example.com']);
+  run(dir, 'git', ['config', 'user.name', 't']);
+  put(dir, 'src/same.js', 'a\nb\nc\nd\n');
+  put(dir, 'src/changed.js', 'a\nb\nc\nd\n');
+  put(dir, 'node_modules/x/index.js', 'x\n');
+  run(dir, 'git', ['add', '-A', '-f']);
+  run(dir, 'git', ['commit', '-q', '-m', 'base']);
+  const base = run(dir, 'git', ['rev-parse', 'HEAD']);
+  put(dir, 'src/changed.js', 'one\ntwo\nthree\nfour\n');
+  put(dir, 'src/new.js', 'brand new\n');
+  put(dir, 'scripts/myrmidon/vendor-base.txt', `${base}\n\nprose after the hash\n`);
+  run(dir, 'git', ['add', '-A', '-f']);
+  run(dir, 'git', ['commit', '-q', '-m', 'ours']);
+  return { dir, base };
+}
+
+test('calculateSimilarity', () => {
+  assert.equal(calculateSimilarity('a\nb', 'a\nb'), 1);
+  assert.equal(calculateSimilarity('a\nb', 'c\nd'), 0);
+  assert.equal(calculateSimilarity(null, null), 1);
+  assert.equal(calculateSimilarity('a', null), 0);
+  assert.equal(calculateSimilarity('a\r\nb\n\n', 'a\nb'), 1);
+  assert.equal(calculateSimilarity('a\nb\nc\nd', 'a\nb\nc\nx'), 0.75);
+});
+
+test('isExcluded', () => {
+  assert.equal(isExcluded('node_modules/p/f.js'), true);
+  assert.equal(isExcluded('a/b/node_modules/p/f.js'), true);
+  assert.equal(isExcluded('dist/bundle.js'), true);
+  assert.equal(isExcluded('pnpm-lock.yaml'), true);
+  assert.equal(isExcluded('src/index.js'), false);
+  assert.equal(isExcluded('src/a.js', ['src/*.js']), true);
+  assert.equal(isExcluded('src/deep/a.js', ['src/*.js']), false);
+});
+
+test('readVendorBaseCommit takes the first token', () => {
+  const { dir, base } = makeRepo();
   try {
-    const output = JSON.parse(result.stdout);
-    console.assert(typeof output.summary === 'object', 'Output should have a summary object');
-    console.assert(Array.isArray(output.details.vendorFiles), 'Output should have vendor files array');
-    console.assert(Array.isArray(output.details.nonVendorFiles), 'Output should have non-vendor files array');
-    
-    console.log('✓ Script execution test passed');
-  } catch (parseError) {
-    console.error('Error parsing script output:', parseError);
-    console.error('Output was:', result.stdout);
-    process.exit(1);
+    assert.equal(readVendorBaseCommit(dir), base);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
-}
+});
 
-// Test analyzeVendorShare function with mock data
-function testAnalyzeVendorShare() {
-  console.log('Testing analyzeVendorShare function...');
-  
-  // We'll run this on a small subset of the actual repository
-  // to make sure it works properly
+test('analyzeVendorShare splits vendor and own files', () => {
+  const { dir } = makeRepo();
   try {
-    const results = analyzeVendorShare(0.5); // Use default threshold
-    
-    console.assert(typeof results.summary === 'object', 'Results should have a summary');
-    console.assert(typeof results.summary.totalFiles === 'number', 'Total files should be a number');
-    console.assert(typeof results.summary.vendorFiles === 'number', 'Vendor files should be a number');
-    console.assert(typeof results.summary.nonVendorFiles === 'number', 'Non-vendor files should be a number');
-    console.assert(Array.isArray(results.details.vendorFiles), 'Vendor files should be an array');
-    console.assert(Array.isArray(results.details.nonVendorFiles), 'Non-vendor files should be an array');
-    
-    // Check that the numbers add up
-    console.assert(
-      results.summary.totalFiles === results.summary.vendorFiles + results.summary.nonVendorFiles,
-      `File counts don't add up: ${results.summary.totalFiles} != ${results.summary.vendorFiles} + ${results.summary.nonVendorFiles}`
-    );
-    
-    console.log('✓ analyzeVendorShare function test passed');
-  } catch (error) {
-    console.error('Error in analyzeVendorShare test:', error);
-    process.exit(1);
+    const r = analyzeVendorShare({ cwd: dir });
+    assert.deepEqual(r.details.vendorFiles.map((f) => f.path), ['src/same.js']);
+    assert.deepEqual(r.details.nonVendorFiles.sort(), ['src/changed.js', 'src/new.js']);
+    assert.equal(r.summary.totalFiles, 3);
+    assert.equal(r.summary.vendorRatio, 1 / 3);
+    const md = formatAsMarkdown(r);
+    assert.ok(md.includes('# Vendor Share Analysis Report'));
+    assert.ok(md.includes('| Total Files Analyzed | 3 |'));
+    assert.ok(md.includes('| src | 1 |'));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
-}
+});
 
-// Test formatAsMarkdown function
-function testFormatAsMarkdown() {
-  console.log('Testing formatAsMarkdown function...');
-  
-  // Create mock results
-  const mockResults = {
-    summary: {
-      totalFiles: 10,
-      vendorFiles: 7,
-      nonVendorFiles: 3,
-      vendorRatio: 0.7,
-      thresholdUsed: 0.5,
-      vendorBaseCommit: 'abc123def456'
-    },
-    grouped: {
-      byDirectory: {
-        vendor: { src: ['src/file1.js', 'src/file2.js'], docs: ['docs/readme.md'] },
-        nonVendor: { tests: ['tests/test1.js'] }
-      }
-    }
-  };
-  
-  const markdown = formatAsMarkdown(mockResults);
-  console.assert(markdown.includes('# Vendor Share Analysis Report'), 'Markdown should contain header');
-  console.assert(markdown.includes('| Total Files Analyzed | 10 |'), 'Markdown should contain correct totals');
-  console.assert(markdown.includes('src'), 'Markdown should contain directory names');
-  
-  console.log('✓ formatAsMarkdown function test passed');
-}
-
-// Run all tests
-function runAllTests() {
-  console.log('Running all tests for vendor-share.mjs...\n');
-  
-  testCalculateSimilarity();
-  testIsExcluded();
-  testScriptExecution();
-  testAnalyzeVendorShare();
-  testFormatAsMarkdown();
-  
-  console.log('\n✓ All tests passed!');
-}
-
-// Execute tests if this file is run directly
-if (require.main === module) {
-  runAllTests();
-}
+test('CLI prints JSON', () => {
+  const { dir } = makeRepo();
+  try {
+    const r = spawnSync('node', [script, '--json'], { cwd: dir, encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.summary.vendorFiles, 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

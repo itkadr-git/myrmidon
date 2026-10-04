@@ -6,16 +6,16 @@ This script analyzes the proportion of vendor-derived files in the Myrmidon repo
 ## Usage
 ```bash
 # Run analysis with default 50% threshold and output markdown summary
-python3 scripts/myrmidon/vendor-share.py
+node scripts/myrmidon/vendor-share.mjs
 
 # Run with custom threshold (e.g., 70%)
-python3 scripts/myrmidon/vendor-share.py --threshold 0.7
+node scripts/myrmidon/vendor-share.mjs --threshold 0.7
 
 # Output results in JSON format
-python3 scripts/myrmidon/vendor-share.py --json
+node scripts/myrmidon/vendor-share.mjs --json
 
 # Show help
-python3 scripts/myrmidon/vendor-share.py --help
+node scripts/myrmidon/vendor-share.mjs --help
 ```
 
 ## Configuration
@@ -28,8 +28,7 @@ The script provides:
 - Total number of files in the repository
 - Number and percentage of vendor-derived files
 - Breakdown by top-level directories
-- Breakdown by package (where applicable)
-- Sample of vendor-derived files with similarity percentages
+- With `--json`: every vendor-derived file with its similarity ratio
 
 ## Logic
 A file is considered vendor-derived if:
