@@ -746,5 +746,26 @@
     "tabWorkspaces": "Рабочие области",
     "tabConfiguration": "Конфигурация",
     "tabBudget": "Бюджет"
+  },
+  "pluginEntitlement": {
+    "title": "Ключи плагинов",
+    "description": "Управление ключами доступа к плагинам, которые определяют, какие плагины включены в этом экземпляре",
+    "pluginIdLabel": "ID плагина",
+    "pluginIdPlaceholder": "имя-пакета-плагина",
+    "keyLabel": "Ключ доступа",
+    "keyPlaceholder": "Введите ключ доступа к плагину",
+    "expiresAtLabel": "Срок действия",
+    "noKeysMessage": "Ключи доступа к плагинам ещё не зарегистрированы",
+    "statusActive": "Активен",
+    "statusExpired": "Истёк",
+    "neverExpires": "Бессрочно",
+    "expiresOn": "Истекает {{date}}",
+    "addKeyButton": "Добавить ключ",
+    "removeKeyButton": "Удалить ключ",
+    "removeKeyTitle": "Удалить ключ плагина",
+    "removeKeyDescription": "Удалить этот ключ? Плагин перестанет быть разблокированным, если не останется другого действующего ключа.",
+    "cancel": "Отмена",
+    "loading": "Загрузка настроек ключей плагинов...",
+    "saveFailed": "Не удалось сохранить ключ. Попробуйте снова."
   }
 }
