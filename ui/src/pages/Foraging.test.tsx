@@ -6,11 +6,21 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Foraging } from "./Foraging";
-import type { ForagingBudgetView, ForagingFinding, ForagingSource } from "@/api/foraging";
+import type {
+  ForagingBudgetView,
+  ForagingFinding,
+  ForagingIdleGateView,
+  ForagingPass,
+  ForagingSource,
+} from "@/api/foraging";
 
 const sourcesMock = vi.hoisted(() => vi.fn());
 const findingsMock = vi.hoisted(() => vi.fn());
 const budgetMock = vi.hoisted(() => vi.fn());
+// myrmidon(1.6.2-FORAGING-IDLE-GATE): the switch, the pass history and the write.
+const idleGateMock = vi.hoisted(() => vi.fn());
+const passesMock = vi.hoisted(() => vi.fn());
+const setIdleGateMock = vi.hoisted(() => vi.fn());
 const setBreadcrumbsMock = vi.hoisted(() => vi.fn());
 const companyContextMock = vi.hoisted(() => ({ companyId: "company-1" as string | null }));
 
@@ -22,6 +32,9 @@ vi.mock("@/api/foraging", async () => {
       sources: (...args: unknown[]) => sourcesMock(...args),
       findings: (...args: unknown[]) => findingsMock(...args),
       budget: (...args: unknown[]) => budgetMock(...args),
+      idleGate: (...args: unknown[]) => idleGateMock(...args),
+      passes: (...args: unknown[]) => passesMock(...args),
+      setIdleGate: (...args: unknown[]) => setIdleGateMock(...args),
       saveSource: vi.fn(),
       removeSource: vi.fn(),
       sweep: vi.fn(),
@@ -87,6 +100,34 @@ const budget: ForagingBudgetView = {
   intervalMs: 3_600_000,
 };
 
+// myrmidon(1.6.2-FORAGING-IDLE-GATE): the default of the rule is off, and the
+// company has no stored row — so the source of the value is the default.
+function idleGate(overrides: Partial<ForagingIdleGateView> = {}): ForagingIdleGateView {
+  return {
+    idleOnly: false,
+    source: "default",
+    storedIdleOnly: null,
+    envOverride: null,
+    updatedAt: null,
+    ...overrides,
+  };
+}
+
+function pass(overrides: Partial<ForagingPass> = {}): ForagingPass {
+  return {
+    at: "2026-10-04T09:10:00.000Z",
+    skipReason: null,
+    skippedRoles: [],
+    sourcesRead: 1,
+    findings: 0,
+    candidates: 0,
+    spentCents: 1,
+    stoppedByBudget: false,
+    errors: 0,
+    ...overrides,
+  };
+}
+
 let container: HTMLDivElement;
 let root: Root;
 let queryClient: QueryClient;
@@ -124,6 +165,9 @@ beforeEach(() => {
   sourcesMock.mockResolvedValue({ sources: [source()], enabled: true });
   findingsMock.mockResolvedValue({ findings: [finding()], enabled: true });
   budgetMock.mockResolvedValue(budget);
+  idleGateMock.mockResolvedValue(idleGate());
+  passesMock.mockResolvedValue({ passes: [], enabled: true });
+  setIdleGateMock.mockResolvedValue(idleGate({ idleOnly: true, source: "interface" }));
 });
 
 afterEach(async () => {
@@ -200,5 +244,78 @@ describe("myrmidon(1.6-FORAGE) Foraging page", () => {
   it("labels the page in the breadcrumbs", async () => {
     await renderAndSee("foraging-sources-table");
     expect(setBreadcrumbsMock).toHaveBeenCalledWith([{ label: "Foraging" }]);
+  });
+
+  // myrmidon(1.6.2-FORAGING-IDLE-GATE): the rule, the source of its value, the
+  // switch itself and the reason of a skipped pass.
+  it("shows the rule and where its value comes from", async () => {
+    idleGateMock.mockResolvedValue(
+      idleGate({ idleOnly: true, source: "env", storedIdleOnly: false, envOverride: true }),
+    );
+    await renderAndSee("foraging-idle-gate-source");
+    // The card renders before the query settles, so wait for the resolved value.
+    await vi.waitFor(() => {
+      expect(container.querySelector('[data-testid="foraging-idle-gate-source"]')?.textContent)
+        .toContain("the environment");
+    });
+    const gate = container.querySelector('[data-testid="foraging-idle-gate"]');
+    expect(gate?.textContent).toContain("Only when idle");
+  });
+
+  it("shows the default and the off label when nobody answered", async () => {
+    await renderAndSee("foraging-idle-gate-source");
+    // The switch is disabled until the stored value arrives: an enabled switch
+    // proves the panel is showing the API answer, not the pre-load placeholder.
+    await vi.waitFor(() => {
+      expect(
+        container.querySelector('[data-testid="foraging-idle-gate-toggle"]')?.hasAttribute("disabled"),
+      ).toBe(false);
+    });
+    const gate = container.querySelector('[data-testid="foraging-idle-gate"]');
+    expect(gate?.textContent).toContain("On schedule, regardless of load");
+    expect(gate?.textContent).toContain("the default");
+  });
+
+  it("flips the switch and stores the new value", async () => {
+    await renderAndSee("foraging-idle-gate-source");
+    await vi.waitFor(() => {
+      expect(
+        container.querySelector('[data-testid="foraging-idle-gate-toggle"]')?.hasAttribute("disabled"),
+      ).toBe(false);
+    });
+    const toggle = container.querySelector('[data-testid="foraging-idle-gate-toggle"]');
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+
+    await act(async () => {
+      (toggle as HTMLButtonElement).click();
+    });
+    await vi.waitFor(() => {
+      expect(setIdleGateMock).toHaveBeenCalledWith("company-1", true);
+    });
+  });
+
+  it("shows why a pass was skipped in the history", async () => {
+    passesMock.mockResolvedValue({
+      passes: [
+        pass({ skipReason: "agents_busy_for_role", skippedRoles: ["engineer"], sourcesRead: 0 }),
+      ],
+      enabled: true,
+    });
+    await renderAndSee("foraging-passes-table");
+    const skipped = container.querySelector('[data-testid="foraging-pass-skipped"]');
+    expect(skipped).not.toBeNull();
+    expect(skipped?.textContent).toContain("work in flight");
+    expect(container.querySelector('[data-testid="foraging-pass-row"]')?.textContent).toContain("engineer");
+  });
+
+  it("shows the empty history note before the first pass", async () => {
+    await renderAndSee("foraging-passes-empty");
+  });
+
+  it("shows a pass that ran without a reason", async () => {
+    passesMock.mockResolvedValue({ passes: [pass({ sourcesRead: 3, findings: 2 })], enabled: true });
+    await renderAndSee("foraging-passes-table");
+    expect(container.querySelector('[data-testid="foraging-pass-ran"]')?.textContent).toContain("Ran");
+    expect(container.querySelector('[data-testid="foraging-pass-row"]')?.textContent).toContain("3");
   });
 });

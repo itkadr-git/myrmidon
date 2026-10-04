@@ -21,6 +21,10 @@
 //     in behind it; while that module is not merged the tests pass a fake port,
 //     and the runtime logs that the port is absent instead of failing a pass.
 
+// myrmidon(1.6.2-FORAGING-IDLE-GATE): the skip vocabulary is shared with the UI
+// catalog, so the server never invents a reason the screen cannot label.
+import type { ForagingSkipReason } from "@paperclipai/shared";
+
 /** Kinds of source a registry row may have. Kept in sync with the db type. */
 export const FORAGING_SOURCE_KINDS = ["url", "feed", "repo", "docs"] as const;
 export type ForagingSourceKind = (typeof FORAGING_SOURCE_KINDS)[number];
@@ -201,6 +205,15 @@ export interface ForagingSweepResult {
   spentCents: number;
   stoppedByBudget: boolean;
   errors: number;
+  /**
+   * Why the pass did not read the sources it could have; null when it ran.
+   * myrmidon(1.6.2-FORAGING-IDLE-GATE): `agents_busy_for_role` when the
+   * "only when idle" rule held the pass back, because the role had an agent
+   * with a queued or running run — work always comes first.
+   */
+  skipReason: ForagingSkipReason | null;
+  /** The roles the idle-only rule kept out of this pass (empty when it did not act). */
+  skippedRoles: string[];
 }
 
 export interface ForagingSweepSourceResult {

@@ -479,6 +479,34 @@
     "intro": "Approved sources per role. Each pass compares a source with its previous snapshot; a difference becomes a finding, and a finding becomes a skill candidate through the skill lifecycle.",
     "selectOrganization": "Select an organization to view its foraging sources.",
     "runSweep": "Run a pass now",
+    "idleGate": {
+      "title": "Only when idle",
+      "description": "Learning happens in the idle time of a role. When this is on, a pass reads only the sources of roles whose agents have no queued or running work; a busy role is held back and the history below says why.",
+      "toggleLabel": "Learn only when the role is idle",
+      "on": "Only when idle",
+      "off": "On schedule, regardless of load",
+      "sourceLabel": "Value source: {{source}}",
+      "hint": "The change applies to the next pass and needs no restart. The environment variable MYRMIDON_FORAGING_IDLE_ONLY forces the value for the whole instance and wins over this switch.",
+      "sources": {
+        "interface": "the interface",
+        "env": "the environment",
+        "default": "the default"
+      }
+    },
+    "passes": {
+      "title": "Pass history",
+      "description": "The last passes of this company, newest first.",
+      "empty": "No passes recorded yet.",
+      "when": "When",
+      "outcome": "Outcome",
+      "roles": "Roles",
+      "read": "Sources read",
+      "found": "Findings",
+      "ran": "Ran",
+      "skipReasons": {
+        "agents_busy_for_role": "Skipped: the roles had work in flight"
+      }
+    },
     "disabledNote": "Periodic foraging is off on this instance, so no pass runs on its own. The registry below is still editable; ask the operator to switch the sweep on.",
     "budget": {
       "passBudget": "Pass budget: {{value}}",

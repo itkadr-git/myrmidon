@@ -19,11 +19,19 @@
 import { Router } from "express";
 import { z } from "zod";
 import type { Db } from "@paperclipai/db";
+import { FORAGING_PASS_JOURNAL_LIMIT, resolveForagingIdleGate } from "@paperclipai/shared";
 import { validate } from "../../middleware/validate.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "../../routes/authz.js";
 import { logActivity } from "../../services/activity-log.js";
 import { FORAGING_SOURCE_KINDS, type ForagingSourceKind } from "./domain.js";
-import { readForagingSettings } from "./settings.js";
+import { FORAGING_IDLE_ONLY_ENV, readForagingIdleOnlyEnv, readForagingSettings } from "./settings.js";
+import {
+  readForagingIdleGateSettings,
+  readForagingPassHistory,
+  readStoredForagingIdleOnly,
+  writeForagingIdleOnly,
+  type ForagingGateSettingsService,
+} from "./idle-gate-settings.js";
 import type { ForagingService } from "./service.js";
 import type { ForagingSourceRow, ForagingStore } from "./store.js";
 
@@ -34,12 +42,43 @@ const upsertSourceSchema = z.object({
   enabled: z.boolean().optional(),
 });
 
+/** myrmidon(1.6.2-FORAGING-IDLE-GATE): the only field the screen may change. */
+const idleGateSchema = z.object({
+  idleOnly: z.boolean(),
+});
+
 export interface ForagingRoutesDeps {
   /** Only for the audit rows; reads and writes go through the store. */
   db: Db;
   store: ForagingStore;
   service: ForagingService;
+  /** myrmidon(1.6.2-FORAGING-IDLE-GATE): the stored switch and pass journal. */
+  gateSettings: ForagingGateSettingsService;
   env?: NodeJS.ProcessEnv;
+}
+
+/** The effective idle-only rule of a company, with the source of the value. */
+async function idleGateView(
+  deps: ForagingRoutesDeps,
+  companyId: string,
+): Promise<{
+  idleOnly: boolean;
+  source: string;
+  storedIdleOnly: boolean | null;
+  envOverride: boolean | null;
+  updatedAt: string | null;
+}> {
+  const storedIdleOnly = await readStoredForagingIdleOnly(deps.gateSettings, companyId);
+  const envOverride = readForagingIdleOnlyEnv((deps.env ?? process.env)[FORAGING_IDLE_ONLY_ENV]);
+  const resolved = resolveForagingIdleGate({ storedIdleOnly, envOverride });
+  const settings = await readForagingIdleGateSettings(deps.gateSettings);
+  return {
+    idleOnly: resolved.idleOnly,
+    source: resolved.source,
+    storedIdleOnly,
+    envOverride,
+    updatedAt: settings.companies[companyId]?.updatedAt ?? null,
+  };
 }
 
 function sourceView(row: ForagingSourceRow) {
@@ -142,6 +181,50 @@ export function foragingRoutes(deps: ForagingRoutesDeps) {
       minHostIntervalMs: current.minHostIntervalMs,
       intervalMs: current.intervalMs,
     });
+  });
+
+  // myrmidon(1.6.2-FORAGING-IDLE-GATE): the switch the board edits on the
+  // screen, the effective value with the source of that value, and the pass
+  // history that carries the reason of a skipped pass. A change lands in the
+  // next pass — the sweep reads the stored value on every tick.
+  router.get(`${base}/idle-gate`, async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await idleGateView(deps, companyId));
+  });
+
+  router.put(`${base}/idle-gate`, validate(idleGateSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    const body = req.body as z.infer<typeof idleGateSchema>;
+    await writeForagingIdleOnly(deps.gateSettings, companyId, body.idleOnly);
+    const view = await idleGateView(deps, companyId);
+    const actor = getActorInfo(req);
+    await logActivity(deps.db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
+      action: "myrmidon.foraging.idle_gate_changed",
+      entityType: "company",
+      entityId: companyId,
+      details: { idleOnly: body.idleOnly, source: view.source },
+    });
+    res.json(view);
+  });
+
+  router.get(`${base}/passes`, async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const rawLimit = typeof req.query.limit === "string" ? Number(req.query.limit) : NaN;
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0
+      ? Math.min(Math.floor(rawLimit), 100)
+      : FORAGING_PASS_JOURNAL_LIMIT;
+    const passes = await readForagingPassHistory(deps.gateSettings, companyId, limit);
+    res.json({ passes, enabled: settings().enabled });
   });
 
   router.post(`${base}/sweep`, async (req, res) => {

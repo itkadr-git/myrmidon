@@ -51,6 +51,7 @@ import { preserveAutonomyGeneralKey } from "../myrmidon/autonomy/store.js";
 import { preserveTelegramNotifyGeneralKey } from "../myrmidon/telegram-notify/proactivity-policy.js";
 // myrmidon(1.6.1-WIP-LIMIT-A): keep the stored WIP limits across vendor writes of `general`
 import { preserveWipLimitGeneralKey } from "../myrmidon/wip-limit/settings.js";
+import { preserveForagingGeneralKeys } from "../myrmidon/foraging/idle-gate-settings.js";
 // myrmidon(1.6.1 VOICE-STT A1): keep the per-company STT runtime settings across vendor writes of `general`
 import { preserveSttGeneralKey } from "../myrmidon/stt/store.js";
 // myrmidon(1.7-BUDGET-CONFIG-B): keep the stored budget enforcement mode
@@ -262,6 +263,15 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       ...(parsed.data.browserBridge ? { browserBridge: parsed.data.browserBridge } : {}),
       // myrmidon(1.6.1-WIP-LIMIT-A): the stored WIP limits survive every general write
       ...(parsed.data.wipLimit ? { wipLimit: parsed.data.wipLimit } : {}),
+      // myrmidon(1.6.2-FORAGING-IDLE-GATE): the stored per-company idle-only
+      // switch of the FORAGING pass survives every general write (it is edited
+      // on the "Фуражирование" screen).
+      ...(parsed.data.foragingIdleGate ? { foragingIdleGate: parsed.data.foragingIdleGate } : {}),
+      // myrmidon(1.6.2-FORAGING-IDLE-GATE): the stored pass history survives
+      // every general write (the sweep writes it, the screen reads it).
+      ...(parsed.data.foragingPassJournal
+        ? { foragingPassJournal: parsed.data.foragingPassJournal }
+        : {}),
       // myrmidon(1.7-BUDGET-CONFIG-B): the stored budget enforcement mode
       // survives every general write (it is edited on its own settings page).
       ...(parsed.data.budgetEnforcement ? { budgetEnforcement: parsed.data.budgetEnforcement } : {}),
@@ -615,6 +625,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
             ...preserveAutonomyGeneralKey(current.general), // myrmidon(1.6-AUTONOMY)
             ...preserveTelegramNotifyGeneralKey(current.general), // myrmidon(1.6-TG-PROACTIVITY-E)
             ...preserveWipLimitGeneralKey(current.general), // myrmidon(1.6.1-WIP-LIMIT-A)
+            ...preserveForagingGeneralKeys(current.general), // myrmidon(1.6.2-FORAGING-IDLE-GATE)
             ...preserveSttGeneralKey(current.general), // myrmidon(1.6.1 VOICE-STT A1)
             ...preserveBudgetEnforcementGeneralKey(current.general), // myrmidon(1.7-BUDGET-CONFIG-B)
             ...preservePluginEntitlementKeysGeneralKey(current.general), // myrmidon(PLUGIN-ENTITLEMENT C)

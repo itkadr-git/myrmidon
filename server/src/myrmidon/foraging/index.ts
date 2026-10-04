@@ -9,11 +9,19 @@
 // so no other file of this feature changes.
 
 import type { Db } from "@paperclipai/db";
-import { secretService } from "../../services/index.js";
+import type { ForagingPassRecord } from "@paperclipai/shared";
+import { resolveForagingIdleGate } from "@paperclipai/shared";
+import { instanceSettingsService, secretService } from "../../services/index.js";
 import { logger } from "../../middleware/logger.js";
 import { nullForagingCandidatePort, type ForagingCandidatePort } from "./domain.js";
 import { createForagingReader } from "./reader.js";
 import { readForagingSettings } from "./settings.js";
+import { createDbRoleBusyProbe } from "./agent-idle-check.js";
+import {
+  appendForagingPass,
+  readStoredForagingIdleOnly,
+  type ForagingGateSettingsService,
+} from "./idle-gate-settings.js";
 import { createForagingService, type ForagingService } from "./service.js";
 import { createDbForagingStore, type ForagingStore } from "./store.js";
 import { foragingRoutes } from "./routes.js";
@@ -50,6 +58,8 @@ export function foragingCandidatePort(): ForagingCandidatePort {
 export interface ForagingWiring {
   store: ForagingStore;
   service: ForagingService;
+  /** myrmidon(1.6.2-FORAGING-IDLE-GATE): the stored switch and the pass journal. */
+  gateSettings: ForagingGateSettingsService;
   env: NodeJS.ProcessEnv;
 }
 
@@ -58,6 +68,7 @@ export function foragingWiring(db: Db, env: NodeJS.ProcessEnv = process.env): Fo
   const settings = readForagingSettings(env);
   const store = createDbForagingStore(db);
   const secrets = secretService(db);
+  const gateSettings = instanceSettingsService(db);
   const service = createForagingService({
     store,
     reader: createForagingReader({
@@ -72,9 +83,23 @@ export function foragingWiring(db: Db, env: NodeJS.ProcessEnv = process.env): Fo
     }),
     candidatePort: foragingCandidatePort(),
     settings: { budget: settings.budget },
+    // myrmidon(1.6.2-FORAGING-IDLE-GATE): the effective rule is resolved on
+    // every pass — the environment forces it when set, the stored per-company
+    // value answers otherwise, and the default is off. Nothing is cached, so a
+    // change on the screen lands in the next pass without a restart.
+    idleGate: {
+      isIdleOnly: async (companyId) =>
+        resolveForagingIdleGate({
+          storedIdleOnly: await readStoredForagingIdleOnly(gateSettings, companyId),
+          envOverride: settings.idleOnlyEnv,
+        }).idleOnly,
+      probe: createDbRoleBusyProbe(db),
+      recordPass: (companyId: string, record: ForagingPassRecord) =>
+        appendForagingPass(gateSettings, companyId, record),
+    },
     log: logger,
   });
-  return { store, service, env };
+  return { store, service, gateSettings, env };
 }
 
 /** Router for app.ts. */
@@ -84,6 +109,7 @@ export function myrmidonForagingRoutes(db: Db, env: NodeJS.ProcessEnv = process.
     db,
     store: wiring.store,
     service: wiring.service,
+    gateSettings: wiring.gateSettings,
     env: wiring.env,
   });
 }

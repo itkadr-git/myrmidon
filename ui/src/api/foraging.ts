@@ -52,6 +52,38 @@ export interface ForagingSourceInput {
   enabled?: boolean;
 }
 
+/** myrmidon(1.6.2-FORAGING-IDLE-GATE): where the effective switch value came from. */
+export type ForagingIdleGateSource = "interface" | "env" | "default";
+
+/** myrmidon(1.6.2-FORAGING-IDLE-GATE): why a pass was held back. */
+export type ForagingSkipReason = "agents_busy_for_role";
+
+/** myrmidon(1.6.2-FORAGING-IDLE-GATE): the "только в простое" rule of the company. */
+export interface ForagingIdleGateView {
+  /** The effective rule the next pass will use. */
+  idleOnly: boolean;
+  /** Which of the three answered: the screen, the environment, or the default. */
+  source: ForagingIdleGateSource;
+  /** The stored value, or null when the company has no stored row. */
+  storedIdleOnly: boolean | null;
+  /** The environment force, or null when the environment does not answer. */
+  envOverride: boolean | null;
+  updatedAt: string | null;
+}
+
+/** myrmidon(1.6.2-FORAGING-IDLE-GATE): one finished pass, as the history shows it. */
+export interface ForagingPass {
+  at: string;
+  skipReason: ForagingSkipReason | null;
+  skippedRoles: string[];
+  sourcesRead: number;
+  findings: number;
+  candidates: number;
+  spentCents: number;
+  stoppedByBudget: boolean;
+  errors: number;
+}
+
 const base = (companyId: string) =>
   `/myrmidon/companies/${encodeURIComponent(companyId)}/foraging`;
 
@@ -67,12 +99,21 @@ export const foragingApi = {
       `${base(companyId)}/findings?limit=${limit}`,
     ),
   budget: (companyId: string) => api.get<ForagingBudgetView>(`${base(companyId)}/budget`),
+  // myrmidon(1.6.2-FORAGING-IDLE-GATE): the switch, its source, and the passes.
+  idleGate: (companyId: string) =>
+    api.get<ForagingIdleGateView>(`${base(companyId)}/idle-gate`),
+  setIdleGate: (companyId: string, idleOnly: boolean) =>
+    api.put<ForagingIdleGateView>(`${base(companyId)}/idle-gate`, { idleOnly }),
+  passes: (companyId: string, limit = 20) =>
+    api.get<{ passes: ForagingPass[]; enabled: boolean }>(`${base(companyId)}/passes?limit=${limit}`),
   sweep: (companyId: string) => api.post<Record<string, unknown>>(`${base(companyId)}/sweep`, {}),
 };
 
 export const foragingSourcesKey = (companyId: string) => ["foraging", "sources", companyId] as const;
 export const foragingFindingsKey = (companyId: string) => ["foraging", "findings", companyId] as const;
 export const foragingBudgetKey = (companyId: string) => ["foraging", "budget", companyId] as const;
+export const foragingIdleGateKey = (companyId: string) => ["foraging", "idle-gate", companyId] as const;
+export const foragingPassesKey = (companyId: string) => ["foraging", "passes", companyId] as const;
 
 /** A short label for a finding's state, used by the table. */
 export function findingStatusLabel(status: ForagingFindingStatus): string {

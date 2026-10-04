@@ -18,6 +18,7 @@ import { useTranslation } from "@/i18n";
 import { useCompany } from "@/context/CompanyContext";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { formatCents } from "@/lib/utils";
 import {
   diffLine,
@@ -25,7 +26,11 @@ import {
   foragingApi,
   foragingBudgetKey,
   foragingFindingsKey,
+  foragingIdleGateKey,
+  foragingPassesKey,
   foragingSourcesKey,
+  type ForagingIdleGateView,
+  type ForagingPass,
   type ForagingSourceKind,
 } from "@/api/foraging";
 
@@ -101,6 +106,23 @@ export function Foraging({ embedded = false }: ForagingProps = {}) {
     staleTime: 30_000,
   });
 
+  // myrmidon(1.6.2-FORAGING-IDLE-GATE): the "только в простое" rule of the
+  // company and the history of the passes it governed. Both are read on every
+  // visit, so the panel always shows the value the NEXT pass will use.
+  const idleGateQuery = useQuery({
+    queryKey: foragingIdleGateKey(companyId),
+    queryFn: () => foragingApi.idleGate(companyId),
+    enabled: !!selectedCompanyId,
+    staleTime: 30_000,
+  });
+
+  const passesQuery = useQuery({
+    queryKey: foragingPassesKey(companyId),
+    queryFn: () => foragingApi.passes(companyId),
+    enabled: !!selectedCompanyId,
+    staleTime: 30_000,
+  });
+
   const saveSource = useMutation({
     mutationFn: () => foragingApi.saveSource(companyId, { role: role.trim(), url: url.trim(), kind }),
     onSuccess: () => {
@@ -126,6 +148,16 @@ export function Foraging({ embedded = false }: ForagingProps = {}) {
     },
   });
 
+  // myrmidon(1.6.2-FORAGING-IDLE-GATE): the switch is stored server-side, so
+  // flipping it here changes the NEXT pass without a restart.
+  const setIdleOnly = useMutation({
+    mutationFn: (next: boolean) => foragingApi.setIdleGate(companyId, next),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: foragingIdleGateKey(companyId) });
+      void queryClient.invalidateQueries({ queryKey: foragingPassesKey(companyId) });
+    },
+  });
+
   if (!selectedCompanyId) {
     return <EmptyState icon={Leaf} message={t("foraging.selectOrganization")} />;
   }
@@ -134,6 +166,19 @@ export function Foraging({ embedded = false }: ForagingProps = {}) {
   const sources = sourcesQuery.data?.sources ?? [];
   const findings = findingsQuery.data?.findings ?? [];
   const budget = budgetQuery.data;
+  const gate = idleGateQuery.data;
+  const passes = passesQuery.data?.passes ?? [];
+
+  // myrmidon(1.6.2-FORAGING-IDLE-GATE): the localized labels of the two
+  // vocabularies the panel shows — where the value came from, and why a pass
+  // was held back. Both fall back to the raw token, so an unknown value from a
+  // newer server never renders as an empty cell.
+  const gateSourceLabel = (source: ForagingIdleGateView["source"] | undefined) =>
+    t(`foraging.idleGate.sources.${source ?? "default"}`, { defaultValue: source ?? "default" });
+  const passReasonLabel = (record: ForagingPass) =>
+    record.skipReason
+      ? t(`foraging.passes.skipReasons.${record.skipReason}`, { defaultValue: record.skipReason })
+      : t("foraging.passes.ran");
 
   return (
     <div className="space-y-6">
@@ -181,6 +226,82 @@ export function Foraging({ embedded = false }: ForagingProps = {}) {
           </div>
         ) : null}
       </div>
+
+      {/* myrmidon(1.6.2-FORAGING-IDLE-GATE): the rule the next pass obeys, with
+          the source of the value (interface / env / default), and the pass
+          history that carries the reason of a skipped pass. */}
+      <Card>
+        <CardHeader className="px-5 pt-5 pb-2">
+          <CardTitle className="text-base">{t("foraging.idleGate.title")}</CardTitle>
+          <CardDescription>{t("foraging.idleGate.description")}</CardDescription>
+        </CardHeader>
+        <CardContent className="px-5 pb-5 pt-2 space-y-4">
+          <div className="flex flex-wrap items-center gap-3" data-testid="foraging-idle-gate">
+            <ToggleSwitch
+              checked={gate?.idleOnly ?? false}
+              onCheckedChange={(next) => setIdleOnly.mutate(next)}
+              disabled={!gate || setIdleOnly.isPending}
+              aria-label={t("foraging.idleGate.toggleLabel")}
+              data-testid="foraging-idle-gate-toggle"
+            />
+            <span className="text-sm text-foreground" data-testid="foraging-idle-gate-value">
+              {gate?.idleOnly ? t("foraging.idleGate.on") : t("foraging.idleGate.off")}
+            </span>
+            <span className="text-xs text-muted-foreground" data-testid="foraging-idle-gate-source">
+              {t("foraging.idleGate.sourceLabel", { source: gateSourceLabel(gate?.source) })}
+            </span>
+          </div>
+          <p className="text-xs text-muted-foreground">{t("foraging.idleGate.hint")}</p>
+
+          <div className="space-y-2">
+            <h3 className="text-sm font-medium text-foreground">{t("foraging.passes.title")}</h3>
+            <p className="text-xs text-muted-foreground">{t("foraging.passes.description")}</p>
+            {passesQuery.isLoading ? (
+              <PageSkeleton variant="costs" />
+            ) : passes.length === 0 ? (
+              <p className="text-sm text-muted-foreground" data-testid="foraging-passes-empty">
+                {t("foraging.passes.empty")}
+              </p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs" data-testid="foraging-passes-table">
+                  <thead>
+                    <tr className="border-b border-border bg-accent/20">
+                      <th scope="col" className="px-3 py-2 text-left font-medium text-muted-foreground">{t("foraging.passes.when")}</th>
+                      <th scope="col" className="px-3 py-2 text-left font-medium text-muted-foreground">{t("foraging.passes.outcome")}</th>
+                      <th scope="col" className="px-3 py-2 text-left font-medium text-muted-foreground">{t("foraging.passes.roles")}</th>
+                      <th scope="col" className="px-3 py-2 text-left font-medium text-muted-foreground">{t("foraging.passes.read")}</th>
+                      <th scope="col" className="px-3 py-2 text-left font-medium text-muted-foreground">{t("foraging.passes.found")}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {passes.map((record, index) => (
+                      <tr
+                        key={`${record.at}-${index}`}
+                        className="border-b border-border last:border-b-0"
+                        data-testid="foraging-pass-row"
+                      >
+                        <td className="px-3 py-2">{formatWhen(record.at, language)}</td>
+                        <td
+                          className="px-3 py-2"
+                          data-testid={record.skipReason ? "foraging-pass-skipped" : "foraging-pass-ran"}
+                        >
+                          {passReasonLabel(record)}
+                        </td>
+                        <td className="px-3 py-2 font-mono">
+                          {record.skippedRoles.length > 0 ? record.skippedRoles.join(", ") : "—"}
+                        </td>
+                        <td className="px-3 py-2 font-mono">{record.sourcesRead}</td>
+                        <td className="px-3 py-2 font-mono">{record.findings}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader className="px-5 pt-5 pb-2">

@@ -19,6 +19,7 @@
 // and the pass continues with the next source. Nothing here throws at the pass
 // level, so a broken source never stops the sweep.
 
+import type { ForagingPassRecord } from "@paperclipai/shared";
 import { logger } from "../../middleware/logger.js";
 import {
   buildSourceResult,
@@ -31,6 +32,7 @@ import {
   type ForagingSweepResult,
   type ForagingSourceRef,
 } from "./domain.js";
+import { nullRoleBusyProbe, planIdleGate, type IdleGatePlan, type RoleBusyProbe } from "./agent-idle-check.js";
 import type { ForagingStore } from "./store.js";
 
 export interface ForagingReaderResult {
@@ -45,6 +47,27 @@ export interface ForagingReader {
   read(source: ForagingSourceRef, signal: AbortSignal): Promise<ForagingReaderResult>;
 }
 
+/**
+ * The idle-only ports of the pass. `isIdleOnly` answers the effective rule of
+ * the company (stored value, forced by the environment, else the default),
+ * `probe` answers which roles have work in flight, and `recordPass` writes one
+ * finished pass into the history the screen reads.
+ */
+export interface ForagingIdleGatePorts {
+  isIdleOnly(companyId: string): Promise<boolean>;
+  probe: RoleBusyProbe;
+  recordPass(companyId: string, record: ForagingPassRecord): Promise<void>;
+}
+
+/** The ports used when idle-only is not wired: the rule is off, nothing is recorded. */
+export const nullForagingIdleGate: ForagingIdleGatePorts = {
+  async isIdleOnly() {
+    return false;
+  },
+  probe: nullRoleBusyProbe,
+  async recordPass() {},
+};
+
 export interface ForagingServiceDeps {
   store: ForagingStore;
   reader: ForagingReader;
@@ -52,6 +75,8 @@ export interface ForagingServiceDeps {
   settings: {
     budget: { maxCostCents: number; enabled: boolean };
   };
+  /** myrmidon(1.6.2-FORAGING-IDLE-GATE): the "только в простое" ports. */
+  idleGate?: ForagingIdleGatePorts;
   now?: () => Date;
   log?: Pick<typeof logger, "info" | "warn" | "error">;
 }
@@ -73,6 +98,45 @@ export function createForagingService(deps: ForagingServiceDeps): ForagingServic
   const now = deps.now ?? (() => new Date());
   const log = deps.log ?? logger;
   const budget = deps.settings.budget;
+  // myrmidon(1.6.2-FORAGING-IDLE-GATE): the idle-only ports, off when unwired.
+  const idleGate = deps.idleGate ?? nullForagingIdleGate;
+
+  /**
+   * Closes one pass: the counters go to the log and to the history the screen
+   * reads. Recording is best effort — a journal that cannot be written must
+   * never fail a pass that already did its work.
+   */
+  const finish = async (result: ForagingSweepResult, companyId: string): Promise<void> => {
+    log.info(
+      {
+        companyId,
+        sourcesRead: result.sourcesRead,
+        findings: result.findings,
+        candidates: result.candidates,
+        spentCents: result.spentCents,
+        stoppedByBudget: result.stoppedByBudget,
+        errors: result.errors,
+        skipReason: result.skipReason,
+        skippedRoles: result.skippedRoles,
+      },
+      "foraging pass done",
+    );
+    try {
+      await idleGate.recordPass(companyId, {
+        at: now().toISOString(),
+        skipReason: result.skipReason,
+        skippedRoles: result.skippedRoles,
+        sourcesRead: result.sourcesRead,
+        findings: result.findings,
+        candidates: result.candidates,
+        spentCents: result.spentCents,
+        stoppedByBudget: result.stoppedByBudget,
+        errors: result.errors,
+      });
+    } catch (err) {
+      log.warn({ err, companyId }, "foraging: could not record the pass");
+    }
+  };
 
   const emptyResult = (): ForagingSweepResult => ({
     sourcesRead: 0,
@@ -81,6 +145,8 @@ export function createForagingService(deps: ForagingServiceDeps): ForagingServic
     spentCents: 0,
     stoppedByBudget: false,
     errors: 0,
+    skipReason: null,
+    skippedRoles: [],
   });
 
   return {
@@ -106,9 +172,37 @@ export function createForagingService(deps: ForagingServiceDeps): ForagingServic
         log.error({ err, companyId }, "foraging: could not list sources");
         return result;
       }
+      // myrmidon(1.6.2-FORAGING-IDLE-GATE): learning happens only in the idle
+      // time of a role; work always comes first. The rule is read on every pass,
+      // so the screen changes the NEXT pass without a restart. A probe that
+      // fails never fails the pass: the gate opens and the pass runs exactly as
+      // it did before the feature.
+      let readable = sources;
+      try {
+        const idleOnly = await idleGate.isIdleOnly(companyId);
+        if (idleOnly && sources.length > 0) {
+          const roles = [...new Set(sources.map((source) => source.role))];
+          const busyRoles = await idleGate.probe.busyRoles(companyId, roles);
+          const plan: IdleGatePlan = planIdleGate({ idleOnly, roles, busyRoles });
+          result.skippedRoles = plan.blockedRoles;
+          readable = sources.filter((source) => plan.readableRoles.includes(source.role));
+          if (plan.skipReason) {
+            result.skipReason = plan.skipReason;
+            log.info(
+              { companyId, roles: plan.blockedRoles },
+              "foraging: pass skipped, the roles have work in flight",
+            );
+            await finish(result, companyId);
+            return result;
+          }
+        }
+      } catch (err) {
+        log.warn({ err, companyId }, "foraging: idle-only check failed, running the pass as before");
+      }
+
       const state: ForagingBudgetState = { spentCents: 0 };
 
-      for (const source of sources) {
+      for (const source of readable) {
         // The byte size is unknown before the read; budget the read by the
         // accepted answer cap, then settle the real cost after it. A source
         // that would exceed the ceiling is not read at all.
@@ -204,18 +298,7 @@ export function createForagingService(deps: ForagingServiceDeps): ForagingServic
         }
       }
 
-      log.info(
-        {
-          companyId,
-          sourcesRead: result.sourcesRead,
-          findings: result.findings,
-          candidates: result.candidates,
-          spentCents: result.spentCents,
-          stoppedByBudget: result.stoppedByBudget,
-          errors: result.errors,
-        },
-        "foraging pass done",
-      );
+      await finish(result, companyId);
       return result;
     },
   };

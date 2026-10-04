@@ -27,6 +27,10 @@ import { swarmClaimSettingsSchema } from "../myrmidon-swarm-claim.js";
 // myrmidon(1.6.1-WIP-LIMIT-A): the per-agent WIP limit settings stored in the
 // same general settings row.
 import { wipLimitSettingsSchema } from "../myrmidon-wip-limit.js";
+import {
+  foragingIdleGateSettingsSchema,
+  foragingPassJournalSchema,
+} from "../myrmidon-foraging-idle-gate.js";
 // myrmidon(1.7-BUDGET-CONFIG-B): the budget enforcement mode stored in the
 // same general settings row.
 import { budgetEnforcementSettingsSchema } from "../myrmidon-budget-enforcement.js";
@@ -109,6 +113,15 @@ export const instanceGeneralSettingsSchema = z.object({
   // per-agent overrides, changed from /api/myrmidon/companies/:id/wip-limit/settings;
   // absent means the feature counts but never signals (all limits null).
   wipLimit: wipLimitSettingsSchema.optional(),
+  // myrmidon(1.6.2-FORAGING-IDLE-GATE): the per-company "только в простое" switch
+  // of the FORAGING pass, changed from
+  // /api/myrmidon/companies/:id/foraging/idle-gate; absent means the default
+  // (off — a pass runs on its schedule regardless of the role's load).
+  foragingIdleGate: foragingIdleGateSettingsSchema.optional(),
+  // myrmidon(1.6.2-FORAGING-IDLE-GATE): the pass history behind the
+  // "Фуражирование" screen — the counters of every pass and the reason a pass
+  // was skipped, written by the sweep, never edited by hand.
+  foragingPassJournal: foragingPassJournalSchema.optional(),
   // myrmidon(1.7-BUDGET-CONFIG-B): what a crossed budget limit does while the
   // incident is open — signal only (default), pause with an owner card (soft),
   // or refuse new runs with the budget reason (hard); changed from

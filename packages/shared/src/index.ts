@@ -2818,6 +2818,7 @@ export * from "./myrmidon-telegram-notify.js";
 // myrmidon(1.6.1-WIP-LIMIT-A): the shared contract of the per-agent WIP limit —
 // the settings shape, the limit resolver and the status feed rows.
 export * from "./myrmidon-wip-limit.js";
+export * from "./myrmidon-foraging-idle-gate.js";
 // myrmidon(1.7-BUDGET-CONFIG-B): the shared contract of budget enforcement —
 // the global mode (signal_only / soft / hard), its storage key and resolver.
 export * from "./myrmidon-budget-enforcement.js";

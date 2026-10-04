@@ -24,6 +24,15 @@ import {
 export const FORAGING_ENABLED_ENV = "MYRMIDON_FORAGING_ENABLED";
 export { FORAGING_BUDGET_CENTS_ENV, FORAGING_INTERVAL_SEC_ENV, FORAGING_KEY_SECRET_ENV };
 export const FORAGING_MIN_HOST_INTERVAL_SEC_ENV = "MYRMIDON_FORAGING_MIN_HOST_INTERVAL_SEC";
+/**
+ * myrmidon(1.6.2-FORAGING-IDLE-GATE): the environment FORCE of the per-company
+ * "only when idle" switch. It is an operator override for the whole instance,
+ * not the normal way to change the rule: the screen stores the per-company
+ * value and the pass reads it without a restart. `1/true/yes/on` forces the
+ * rule on, `0/false/no/off` forces it off, anything else is "not set" and the
+ * stored value (then the default, off) answers.
+ */
+export const FORAGING_IDLE_ONLY_ENV = "MYRMIDON_FORAGING_IDLE_ONLY";
 
 const MIN_INTERVAL_SEC = 60;
 const MAX_INTERVAL_SEC = 86_400;
@@ -40,6 +49,24 @@ export interface ForagingSettings {
   keySecret: string | null;
   /** The smallest pause between two reads of the same host, in milliseconds. */
   minHostIntervalMs: number;
+  /**
+   * The environment force of the idle-only rule, or null when the environment
+   * does not answer. The pass then uses the per-company stored value.
+   */
+  idleOnlyEnv: boolean | null;
+}
+
+/**
+ * The environment force of the idle-only rule. A recognised word answers
+ * `true`/`false`; anything else — including an empty value — is "not set", so a
+ * typo in the variable never silently flips the rule.
+ */
+export function readForagingIdleOnlyEnv(raw: string | undefined): boolean | null {
+  const value = raw?.trim().toLowerCase();
+  if (!value) return null;
+  if (["1", "true", "yes", "on"].includes(value)) return true;
+  if (["0", "false", "no", "off"].includes(value)) return false;
+  return null;
 }
 
 function readInt(raw: string | undefined, fallback: number, min: number, max: number): number {
@@ -84,5 +111,6 @@ export function readForagingSettings(env: NodeJS.ProcessEnv = process.env): Fora
     budget: { maxCostCents, enabled: budgetEnabled },
     keySecret,
     minHostIntervalMs: minHostIntervalSec * 1000,
+    idleOnlyEnv: readForagingIdleOnlyEnv(env[FORAGING_IDLE_ONLY_ENV]),
   };
 }
