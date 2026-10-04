@@ -70,6 +70,7 @@ import type { CompiledProfile } from "./types.js";
 import { loadRegulationWorkspaceFiles } from "../wiki-cortex/delivery.js";
 import { createWikiRegulationService } from "../wiki-cortex/service.js";
 import { createDbRegulationStore } from "../wiki-cortex/store.js";
+import { readSharedPackageCachePath } from "./bot-disk-service.js"; // myrmidon(1.6.1-BOT-DISK-B)
 
 export { BOT_AGENT_API_KEY_NAME };
 
@@ -498,6 +499,12 @@ export function createDbBotProfilePorts(db: Db): BotProfilePorts {
     async parallelHelpers(): Promise<ParallelHelpersSettings | undefined> {
       const general = await instanceSettings.getGeneral();
       return general.parallelHelpers;
+    },
+
+    // myrmidon(1.6.1-BOT-DISK-B): the shared package cache path, read per tick
+    // from the same row the local driver reads for its binds.
+    async sharedPackageCachePath(): Promise<string | undefined> {
+      return readSharedPackageCachePath(db);
     },
 
     // myrmidon(BOT-LSP-DEFAULTS): the instance language-server policy. Read
