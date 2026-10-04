@@ -62,7 +62,7 @@ import type { BotContainerDriver, BotContainerSpec, BotContainerStatus, Template
 import { ISOLATED_LAYOUT, type ScopeLayout } from "@paperclipai/shared";
 import type { CompiledProfile } from "./types.js";
 import { prepareBotSharedMount } from "./shared-mount.js";
-import type { SharedMountSettings } from "./shared-mount.js";
+import type { SharedMountSettings } from "@paperclipai/shared";
 import {
   assertBotRuntimeContract,
   botVolumeLayout,

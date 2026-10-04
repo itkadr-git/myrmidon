@@ -8,7 +8,7 @@
 
 import type { BotContainerSpec, BotExtraMount } from "./driver.js";
 import { BOT_KEY_PATTERN } from "./template.js";
-import type { SharedMountSettings } from "./shared-mount.js";
+import type { SharedMountSettings } from "@paperclipai/shared";
 
 export const BOT_CONTAINERS_ENV = "MYRMIDON_BOT_CONTAINERS";
 
