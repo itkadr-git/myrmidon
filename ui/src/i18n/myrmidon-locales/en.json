@@ -325,6 +325,7 @@
     "autonomy": "Autonomy",
     "castes": "Castes & models",
     "wipLimit": "WIP limit",
+    "features": "Features",
     "reviewRouting": "Review routing"
   },
   "reviewRouting": {
@@ -789,6 +790,100 @@
     "cancel": "Cancel",
     "loading": "Loading plugin entitlement settings...",
     "saveFailed": "Could not save the key. Try again."
+  },
+  "features": {
+    "title": "Features",
+    "subtitle": "Every fork feature, the settings it runs with and whether it actually works right now. A feature that is enabled but misconfigured or failing for more than 30 minutes raises a card in the attention queue.",
+    "loading": "Loading features...",
+    "loadFailed": "Could not load the features.",
+    "toggleFailed": "Could not switch the feature.",
+    "refresh": "Check now",
+    "checked": "Checked {{time}}",
+    "never": "never",
+    "notCounted": "not counted",
+    "effect": "Effect",
+    "lastSuccess": "Last success",
+    "errors24h": "Errors in 24 h",
+    "lastError": "Last error",
+    "config": "Effective configuration",
+    "source": {
+      "settings": "from settings",
+      "env": "from the server environment",
+      "default": "default",
+      "derived": "derived"
+    },
+    "status": {
+      "failing": "Failing",
+      "misconfigured": "Misconfigured",
+      "unknown": "Unknown",
+      "working": "Working",
+      "off": "Off"
+    },
+    "toggleLabel": "Switch: {{name}}",
+    "lockedByEnv": "The value is set by a server environment variable",
+    "attentionSince": "First seen broken {{time}}. A card is raised in the attention queue once it stays broken for {{minutes}} minutes.",
+    "openSettings": "Open settings: {{panel}}",
+    "switchHere": "The switch is on this page",
+    "noPanel": "Set by the server environment",
+    "docs": "Guide",
+    "items": {
+      "swarm-claim": {
+        "name": "Swarm self-claim and idle wake",
+        "description": "Idle agents of a role take ready tasks from the role queue under a lease, and the sweeper wakes free agents next to a non-empty queue."
+      },
+      "run-admission": {
+        "name": "Run admission",
+        "description": "Instance-wide limits on concurrent runs, run starts per minute and free memory of the server and the host, so a mass wake cannot exhaust the machine."
+      },
+      "bot-disk-lifecycle": {
+        "name": "Bot disk lifecycle",
+        "description": "Reaps idle scratch and workspace clones of bot containers after a TTL; the memory volume is never touched."
+      },
+      "shared-package-cache": {
+        "name": "Shared package cache",
+        "description": "One set of package manager and build cache directories mounted read-write into every development bot container on the board host."
+      },
+      "bot-lsp": {
+        "name": "Bot language servers",
+        "description": "Writes the language-server block of each bot's profile by role: limited for coding castes, off for the rest unless a card says otherwise."
+      },
+      "agent-memory": {
+        "name": "Agent memory card",
+        "description": "The Memory tab of an agent: lists the memories of the bank the agent really uses, with invalidate, clear and export."
+      },
+      "cost-attribution": {
+        "name": "Cost attribution sweep",
+        "description": "Collects the model gateway's spend log, attributes it to agents and runs by the bot's key, and fills the prices into the cost ledger."
+      },
+      "telegram-dm-status": {
+        "name": "Telegram DM status and progress",
+        "description": "A bridged Telegram DM gets one status message per run that later milestones edit in place; long answers can be split into inline parts."
+      },
+      "chat-holds": {
+        "name": "Chat hold rules",
+        "description": "Chats are never held: a crashed or stopped turn does not block the conversation, and an owner message always wakes the bot as a fresh turn."
+      },
+      "budget-enforcement": {
+        "name": "Budget enforcement",
+        "description": "What a crossed spend limit does: only signal the owner (default), pause the scope (soft) or refuse new runs (hard)."
+      },
+      "plugin-entitlements": {
+        "name": "Plugin entitlements",
+        "description": "Plugins whose manifest requires an entitlement stay unactivated until a valid key for that plugin is accepted in the instance settings."
+      },
+      "host-disk": {
+        "name": "Host disk signal",
+        "description": "Measures the disk the server's data lives on and raises an attention signal, with the biggest consumers, when usage crosses a threshold."
+      },
+      "workspace-hygiene": {
+        "name": "Workspace quotas",
+        "description": "Measures agent workspaces and raises a clean-up signal for a workspace over its quota or a company over its total."
+      },
+      "model-fallback-signal": {
+        "name": "Model fallback signal",
+        "description": "Raises an attention card for a bot when more than a set share of its gateway calls were served by a model outside its card."
+      }
+    }
   },
   "telegramDmProgress": {
     "title": "Telegram DM: live progress",

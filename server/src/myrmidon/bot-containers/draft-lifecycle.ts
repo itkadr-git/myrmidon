@@ -12,6 +12,32 @@ interface BotDiskLifecycleConfig {
 }
 
 /**
+ * myrmidon(FEATURES): what one sweep did, so the operator can see whether it
+ * works. The sweep still logs and swallows its errors (a bad directory must not
+ * stop the next one); the report is how they reach the features page.
+ */
+export interface BotDiskSweepReport {
+  /** The volume root could not be listed (for example it does not exist). */
+  rootError: { code: string | null; message: string } | null;
+  /** Draft directories removed in this pass. */
+  reaped: number;
+  /** Directories that could not be read or removed. */
+  errors: number;
+  firstError: string | null;
+  /** The pass was skipped because the lifecycle is switched off. */
+  skipped: boolean;
+}
+
+function errorCode(error: unknown): string | null {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === 'string' ? code : null;
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
  * Checks if a directory is considered alive by looking for process group markers
  */
 async function isAliveDirectory(dirPath: string): Promise<boolean> {
@@ -71,11 +97,17 @@ async function safeRemoveDirectory(dirPath: string): Promise<boolean> {
 export async function sweepBotVolume(
   botVolumeRoot: string,
   config: BotDiskLifecycleConfig
-): Promise<void> {
+): Promise<BotDiskSweepReport> {
+  const report: BotDiskSweepReport = { rootError: null, reaped: 0, errors: 0, firstError: null, skipped: false };
   if (!config.enabled) {
     console.log('Bot disk lifecycle is disabled, skipping sweep');
-    return;
+    report.skipped = true;
+    return report;
   }
+  const fail = (error: unknown) => {
+    report.errors += 1;
+    report.firstError ??= errorText(error);
+  };
 
   // myrmidon(1.6.2-BOT-DISK-C): the board server has no mount of the bot volumes
   // in production (host mounts were removed from it in 1.3.0), so the root is
@@ -120,25 +152,30 @@ export async function sweepBotVolume(
             // is what every clone's node_modules hard-links into; it is not a draft.
             if (entry === PNPM_STORE_ENTRY) continue;
             const entryPath = join(subPath, entry);
-            await reapIfStale(entryPath, config);
+            const outcome = await reapIfStale(entryPath, config);
+            if (outcome === 'reaped') report.reaped += 1;
+            else if (outcome === 'failed') fail(new Error(`could not remove ${entryPath}`));
           }
         }
       } catch (error) {
         console.error(`Error processing bot volume ${botPath}:`, error);
+        fail(error);
       }
     }
   } catch (error) {
     console.error(`Error sweeping bot volume ${botVolumeRoot}:`, error);
+    report.rootError = { code: errorCode(error), message: errorText(error) };
   }
+  return report;
 }
 
-async function reapIfStale(dirPath: string, config: BotDiskLifecycleConfig): Promise<void> {
+async function reapIfStale(dirPath: string, config: BotDiskLifecycleConfig): Promise<'reaped' | 'failed' | 'kept'> {
   if (!isCleanupCandidate(dirPath)) {
-    return;
+    return 'kept';
   }
   // Skip if it's currently alive (has active run markers)
   if (await isAliveDirectory(dirPath)) {
-    return;
+    return 'kept';
   }
   // myrmidon(1.6.2-BOT-DISK-C): an entry that is, or holds, a git repository is
   // never reaped by its directory mtime (a commit or a tracked-file edit does not
@@ -151,8 +188,9 @@ async function reapIfStale(dirPath: string, config: BotDiskLifecycleConfig): Pro
   const now = Date.now();
   const idleTime = now - lastModified;
   if (idleTime > config.idleTtlMs) {
-    await safeRemoveDirectory(dirPath);
+    return (await safeRemoveDirectory(dirPath)) ? 'reaped' : 'failed';
   }
+  return 'kept';
 }
 
 /** myrmidon(1.6.2-BOT-DISK-C): the workspace pnpm store entry (template.ts DEFAULT_PNPM_STORE_DIR). */
@@ -161,12 +199,12 @@ const PNPM_STORE_ENTRY = '.pnpm-store';
 /**
  * Performs a sweep of all bot volumes in the system
  */
-export async function sweepAllBotVolumes(config: BotDiskLifecycleConfig): Promise<void> {
+export async function sweepAllBotVolumes(config: BotDiskLifecycleConfig): Promise<BotDiskSweepReport> {
   const botVolumeRoot = process.env.MYRMIDON_BOT_VOLUME_ROOT || '/tmp/myrmidon-bots';
   
   console.log(`Starting bot disk lifecycle sweep with TTL: ${config.idleTtlMs}ms`);
   
-  await sweepBotVolume(botVolumeRoot, config);
+  return sweepBotVolume(botVolumeRoot, config);
 }
 
 /**

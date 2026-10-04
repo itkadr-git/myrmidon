@@ -85,6 +85,7 @@ describe("CompanySettingsNav", () => {
     expect(getCompanySettingsTab("/company/settings/instance/access")).toBe("instance-access");
     expect(getCompanySettingsTab("/PAP/company/settings/instance/access")).toBe("instance-access");
     expect(getCompanySettingsTab("/company/settings/instance/experimental")).toBe("instance-experimental");
+    expect(getCompanySettingsTab("/company/settings/instance/features")).toBe("instance-features"); // myrmidon(FEATURES)
     expect(getCompanySettingsTab("/PAP/company/settings/instance/plugins/example")).toBe("instance-plugins");
     expect(getCompanySettingsTab("/company/settings/instance/adapters")).toBe("instance-adapters");
     // myrmidon(1.6.1 CUSTOM-CASTES C): the directory tab resolves before the
@@ -136,6 +137,7 @@ describe("CompanySettingsNav", () => {
           { value: "instance-access", label: "Access" },
           { value: "instance-board-api-keys", label: "Board API keys" },
           { value: "instance-experimental", label: "Experimental" },
+          { value: "instance-features", label: "Features" }, // myrmidon(FEATURES)
           { value: "instance-plugins", label: "Plugins" },
           { value: "instance-adapters", label: "Adapters" },
           { value: "browsers", label: "Browsers" }, // myrmidon(BROWSER-CONSOLE)
@@ -187,6 +189,7 @@ describe("CompanySettingsNav", () => {
       "instance-access",
       "instance-board-api-keys",
       "instance-experimental",
+      "instance-features", // myrmidon(FEATURES)
       "instance-adapters",
       "browsers", // myrmidon(BROWSER-CONSOLE)
       "clouds", // myrmidon(CLOUD-CONNECTOR)

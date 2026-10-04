@@ -5,6 +5,7 @@ import {
   Download,
   FlaskConical,
   KeyRound,
+  ListChecks,
   MonitorCog,
   Puzzle,
   Shield,
@@ -189,6 +190,12 @@ export function CompanySettingsSidebar() {
               icon={FlaskConical}
             />
           )}
+          {/* myrmidon(FEATURES): fork features with live health */}
+          <SidebarNavItem
+            to={`${INSTANCE_SETTINGS_PATH_PREFIX}/features`}
+            label="Features"
+            icon={ListChecks}
+          />
           {showPlugins && (
             <SidebarNavItem
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/plugins`}

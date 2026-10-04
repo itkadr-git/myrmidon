@@ -13,6 +13,9 @@ describe("normalizeRememberedInstanceSettingsPath", () => {
     expect(normalizeRememberedInstanceSettingsPath("/instance/settings/experimental")).toBe(
       "/company/settings/instance/experimental",
     );
+    expect(normalizeRememberedInstanceSettingsPath("/instance/settings/features")).toBe(
+      "/company/settings/instance/features",
+    ); // myrmidon(FEATURES)
     expect(normalizeRememberedInstanceSettingsPath("/instance/settings/environments")).toBe(
       "/company/settings/instance/environments",
     );

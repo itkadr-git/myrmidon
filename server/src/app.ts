@@ -105,6 +105,7 @@ import { myrmidonTelegramDmProgressRoutes } from "./myrmidon/telegram-dm-progres
 import { myrmidonChannelSettingsRoutes } from "./myrmidon/channel-settings/index.js"; // myrmidon(1.7-SETTINGS-TO-UI)
 import { myrmidonParallelHelpersRoutes } from "./myrmidon/parallel-helpers/index.js"; // myrmidon(PARALLEL-HELPERS)
 import { myrmidonBotLspRoutes } from "./myrmidon/bot-lsp/index.js"; // myrmidon(BOT-LSP-DEFAULTS)
+import { myrmidonFeaturesRoutes } from "./myrmidon/features/index.js"; // myrmidon(FEATURES)
 import { myrmidonReplayBlockedRoutes } from "./myrmidon/replay-blocked/index.js"; // myrmidon(N1)
 import { aboutRoutes } from "./myrmidon/about/routes.js"; // myrmidon(ABOUT)
 import { myrmidonBotContainerRoutes } from "./myrmidon/bot-containers/routes-wiring.js"; // myrmidon(W2b)
@@ -873,6 +874,7 @@ export async function createApp(
   api.use(myrmidonChannelSettingsRoutes(db)); // myrmidon(1.7-SETTINGS-TO-UI): GET/PATCH /api/myrmidon/channel-settings
   api.use(myrmidonParallelHelpersRoutes(db)); // myrmidon(PARALLEL-HELPERS)
   api.use(myrmidonBotLspRoutes(db)); // myrmidon(BOT-LSP-DEFAULTS)
+  api.use(myrmidonFeaturesRoutes(db)); // myrmidon(FEATURES): feature registry with live health
   api.use(myrmidonReplayBlockedRoutes(db)); // myrmidon(N1)
   api.use(aboutRoutes()); // myrmidon(ABOUT)
   api.use(myrmidonBotContainerRoutes(db)); // myrmidon(W2b)

@@ -29,6 +29,7 @@ import {
   readLitellmCostSettings,
 } from "../litellm-costs/litellm-costs.js";
 import { listGatewayBotKeys } from "../litellm-costs/bot-keys.js";
+import { recordFeatureOutcome } from "../features/recorder.js"; // myrmidon(FEATURES)
 import {
   cardModelSet,
   fallbackShares,
@@ -73,7 +74,13 @@ export async function sweepModelFallbackSignals(
   const log = deps.log ?? logger;
   let signalsTotal = 0;
   let companies = 0;
-  const companyIds = await deps.listCompanyIds().catch(() => [] as string[]);
+  // myrmidon(FEATURES): one outcome per pass for the features page.
+  const failures: string[] = [];
+  let callsTotal = 0;
+  const companyIds = await deps.listCompanyIds().catch((err: unknown) => {
+    failures.push(err instanceof Error ? err.message : String(err));
+    return [] as string[];
+  });
   companies = companyIds.length;
   for (const companyId of companyIds) {
     try {
@@ -97,15 +104,23 @@ export async function sweepModelFallbackSignals(
         signals.push(fallbackSignalForShare(share, settings, to.toISOString()));
       }
       recordModelFallbackSignals(companyId, signals);
+      callsTotal += calls.length;
       signalsTotal += signals.length;
       log.info(
         { companyId, calls: calls.length, signals: signals.length, window: { from: from.toISOString(), to: to.toISOString() } },
         "model fallback signal sweep done",
       );
     } catch (err) {
+      failures.push(err instanceof Error ? err.message : String(err));
       log.warn({ err, companyId }, "model fallback signal sweep failed for one company");
     }
   }
+  recordFeatureOutcome(
+    "model-fallback-signal",
+    failures.length > 0
+      ? { ok: false, error: failures[0]!, detail: { calls: callsTotal, signals: signalsTotal } }
+      : { ok: true, detail: { calls: callsTotal, signals: signalsTotal } },
+  );
   return { companies, signals: signalsTotal };
 }
 
