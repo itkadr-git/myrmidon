@@ -6,6 +6,7 @@ import type { RunLimits } from "../myrmidon-runtime-limits.js";
 import type { HostDiskSettings } from "../myrmidon-host-disk.js";
 // myrmidon(PARALLEL-HELPERS): the helper ceiling/default stored in instance settings
 import type { ParallelHelpersSettings } from "../myrmidon-parallel-helpers.js";
+import type { BotLspSettings } from "../myrmidon-bot-lsp.js";
 // myrmidon(EXTCASE-B): the browser-bridge allowlist stored in instance settings
 import type { BrowserBridgeSettings } from "../myrmidon-browser-bridge.js";
 import type { SwarmClaimSettings } from "../myrmidon-swarm-claim.js";
@@ -80,6 +81,15 @@ export interface InstanceGeneralSettings {
    * validator of the same field.
    */
   parallelHelpers?: ParallelHelpersSettings;
+  /**
+   * myrmidon(BOT-LSP-DEFAULTS): which roles write code and which language-server
+   * mode coding and non-coding bots run with, changed from the instance settings
+   * page and `GET`/`PATCH /api/myrmidon/bot-lsp`. Absent means "use the module
+   * defaults" (coding roles limited, every other role off — see
+   * packages/shared/src/myrmidon-bot-lsp.ts); kept in sync with the validator of
+   * the same field.
+   */
+  botLsp?: BotLspSettings;
   /**
    * myrmidon(EXTCASE-B): browser-bridge allowlist (the tender-platform domains
    * the gateway and the extension both accept), changed from the bridge panel.

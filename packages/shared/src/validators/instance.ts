@@ -16,6 +16,9 @@ import { runLimitsSchema } from "../myrmidon-runtime-limits.js";
 // myrmidon(PARALLEL-HELPERS): company ceiling/default for parallel helper
 // subagents, changed from the instance settings page and /api/myrmidon/parallel-helpers.
 import { parallelHelpersSettingsSchema, patchParallelHelpersSettingsSchema } from "../myrmidon-parallel-helpers.js";
+// myrmidon(BOT-LSP-DEFAULTS): the language-server mode per role, changed from the instance
+// settings page and /api/myrmidon/bot-lsp.
+import { botLspSettingsSchema } from "../myrmidon-bot-lsp.js";
 // myrmidon(EXTCASE-B): the browser-bridge allowlist stored in the same general settings row
 import { browserBridgeSettingsSchema } from "../myrmidon-browser-bridge.js";
 import { swarmClaimSettingsSchema } from "../myrmidon-swarm-claim.js";
@@ -67,6 +70,11 @@ export const instanceGeneralSettingsSchema = z.object({
   // and /api/myrmidon/parallel-helpers; absent means the module defaults apply
   // (see packages/shared/src/myrmidon-parallel-helpers.ts).
   parallelHelpers: parallelHelpersSettingsSchema.optional(),
+  // myrmidon(BOT-LSP-DEFAULTS): which roles write code and which language-server
+  // mode coding and non-coding bots run with, changed from the instance settings
+  // page and /api/myrmidon/bot-lsp; absent means the module defaults apply (see
+  // packages/shared/src/myrmidon-bot-lsp.ts).
+  botLsp: botLspSettingsSchema.optional(),
   // myrmidon(EXTCASE-B): browser-bridge allowlist changed from the bridge panel;
   // absent means "no domain is allowed" (deny by default).
   browserBridge: browserBridgeSettingsSchema.optional(),

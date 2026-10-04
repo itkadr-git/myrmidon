@@ -167,18 +167,11 @@ export interface HermesProfileHindsightSettings {
 }
 
 /**
- * Instance-wide LLM gateway settings (e.g. an internal OpenAI-compatible
- * gateway endpoint) — not carried by the agent card, merged in once per
- * instance by the caller (G3), the same way
- * {@link HermesProfileHindsightSettings.apiUrl} is.
- * Applied to `model.base_url`/`model.api_key` and to every `fallback_model`
- * entry's `base_url`/`key_env`: Hermes resolves each of those independently
- * (`hermes_cli/runtime_provider_backends.py` for `model`,
- * `hermes_cli/fallback_config.py` for `fallback_model` entries — neither
- * inherits `base_url`/the key from the other). Auxiliary models (vision,
- * compression) are not configured with their own endpoint at all and simply
- * reuse whatever `model.base_url`/`model.api_key` resolve to, so fixing
- * `model` covers them too.
+ * myrmidon(BOT-LSP): the bot's `lsp` block in config.yaml (Hermes
+ * `hermes_cli/config_defaults.py` "lsp"). Each field is written only when set;
+ * an unset field keeps Hermes' own default. Which values a bot gets is decided
+ * outside the compiler (profile-input.ts, by role and card — see
+ * packages/shared/src/myrmidon-bot-lsp.ts).
  */
 export interface HermesProfileLspSettings {
   /**
@@ -197,12 +190,13 @@ export interface HermesProfileLspSettings {
    */
   excludeRoots?: string[];
   /**
-   * Wait mode for language server responses ('sync' or 'async').
-   * Default: 'sync'
+   * `lsp.wait_mode`: "document" (wait for the edited file's diagnostics) or
+   * "full" (also workspace-wide diagnostics). Hermes default: "document".
    */
   waitMode?: string;
   /**
-   * Per-server configuration overrides.
+   * `lsp.servers`: per-server overrides keyed by Hermes' registry id (e.g.
+   * `typescript`): `disabled`, `command`, `env`, `initialization_options`.
    */
   servers?: Record<string, YamlNode>;
 }

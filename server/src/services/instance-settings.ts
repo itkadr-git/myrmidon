@@ -238,6 +238,9 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // myrmidon(PARALLEL-HELPERS): the stored helper ceiling/default survive
       // every general write (they are edited on their own settings page).
       ...(parsed.data.parallelHelpers ? { parallelHelpers: parsed.data.parallelHelpers } : {}),
+      // myrmidon(BOT-LSP-DEFAULTS): the stored language-server policy survives
+      // every general write (it is edited on its own settings panel).
+      ...(parsed.data.botLsp ? { botLsp: parsed.data.botLsp } : {}),
       // myrmidon(1.6-SWARM): the stored swarm-claim pilot settings survive
       // every general write (they are edited on their own settings page).
       // 1.6.1: without this line the vendor write path silently dropped the
