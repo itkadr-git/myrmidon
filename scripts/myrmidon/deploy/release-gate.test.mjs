@@ -33,6 +33,11 @@ const FAKE_DOCKER = `#!/usr/bin/env bash
 echo "docker $*" >> "$SANDBOX/calls.log"
 case "$1" in
   pull) exit 0 ;;
+  run)
+    case "$*" in
+      *check-config*) if [ -e "$SANDBOX/check-config-fails" ]; then echo "config: refused" >&2; exit 1; fi; exit 0 ;;
+      *) echo "1.4.0+0123456789ab" ;;
+    esac ;;
   image)
     case "$*" in
       *org.opencontainers.image.version*) cat "$SANDBOX/label-version" ;;
@@ -69,6 +74,7 @@ case "$1" in
         # fail-closed pre-check): the sandbox's base compose file declares
         # server + dockergate + fleetd, mirroring a real release stack.
         printf 'server\ndockergate\nfleetd\n' ;;
+      *logs*) v="\${DG_LOGGED_VERSION:-1.4.0+0123456789ab}"; echo '{"event":"self-check ok","version":"'"$v"'"}' ;;
       *) exit "\${COMPOSE_FAILS:-0}" ;;
     esac ;;
 esac
@@ -118,7 +124,15 @@ case "$*" in
     for a in "$@"; do case "$a" in *agents/*) id="\${a##*agents/}"; id="\${id%%/*}" ;; esac; done
     if [ -e "$SANDBOX/status-$id.json" ]; then cat "$SANDBOX/status-$id.json"; else echo "{}"; fi ;;
   *agents*) cat "$SANDBOX/agents.json" ;;
-  *dockergate/health*|*fleetd/health*)
+  *fleetd/health*)
+    # fleetd-health-bad holds the number of probes that still fail (then it answers)
+    if [ -f "$SANDBOX/fleetd-health-bad" ]; then
+      n="$(cat "$SANDBOX/fleetd-health-bad")"
+      if [ "$n" -gt 0 ]; then echo $((n - 1)) > "$SANDBOX/fleetd-health-bad"; exit 1; fi
+    fi
+    if [ -e "$SANDBOX/component-health-bad" ]; then exit 1; fi
+    echo "OK" ;;
+  *dockergate/health*)
     if [ -e "$SANDBOX/component-health-bad" ]; then exit 1; fi
     echo "OK" ;;
   *) echo "{}" ;;
@@ -242,6 +256,8 @@ function sandbox({
       "MYRMIDON_DEPLOY_SMOKE_INTERVAL_SEC=1",
       `MYR_DOCKERGATE_HEALTH_URL=http://127.0.0.1:3100/dockergate/health`,
       `MYR_FLEETD_HEALTH_URL=http://127.0.0.1:3100/fleetd/health`,
+      // The bot image rollout has its own tests (bot-image-rollout.test.mjs).
+      "MYRMIDON_BOT_IMAGE_ROLLOUT=0",
       "",
     ].join("\n"),
   );
@@ -258,6 +274,7 @@ function run(sb, script, args) {
         PATH: `${sb.bin}:${process.env.PATH}`,
         SANDBOX: sb.dir,
         COMPOSE_FAILS: sb.composeFails ?? "0",
+        ...(sb.env ?? {}),
       },
       encoding: "utf8",
     },
@@ -317,7 +334,7 @@ describe("deploy.sh: release components roll out together (RELEASE-GATE)", () =>
     const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
     assert.equal(code, 0, out);
     // The version label is a plain semver (a tag build): resolution used it.
-    assert.match(out, /release components \(tag 1\.4\.0\)/);
+    assert.match(out, /release components \(tag 1\.4\.0, from the registry\)/);
     // The component registry was asked for the tag, not just sha-.
     assert.match(calls(sb), /imagetools inspect ghcr.io\/itkadr-git\/myrmidon-dockergate:1\.4\.0/);
   });
@@ -331,7 +348,7 @@ describe("deploy.sh: release components roll out together (RELEASE-GATE)", () =>
     });
     const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
     assert.equal(code, 0, out);
-    assert.match(out, /release components \(sha 0123456\)/);
+    assert.match(out, /release components \(sha 0123456, from the registry\)/);
     assert.match(calls(sb), /imagetools inspect ghcr.io\/itkadr-git\/myrmidon-dockergate:sha-0123456/);
   });
 
@@ -358,11 +375,13 @@ describe("deploy.sh: release components roll out together (RELEASE-GATE)", () =>
     const before = read(sb.override);
     const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--dry-run"]);
     assert.equal(code, 0, out);
-    assert.match(out, /roll out release components.*dockergate,fleetd/);
+    assert.match(out, /release components.*board, dockergate, fleetd, bot images/);
+    assert.match(out, /dockergate: <none> -> ghcr.io\/itkadr-git\/myrmidon-dockergate@/);
+    assert.match(out, /fleetd: <none> -> ghcr.io\/itkadr-git\/myrmidon-fleetd@/);
     assert.match(out, /post-deploy smoke/);
-    // Read-only: the component registry was read, nothing was pulled.
+    // Read-only: the component registry was read, nothing was pulled or recreated.
     assert.match(calls(sb), /imagetools inspect ghcr.io\/itkadr-git\/myrmidon-dockergate:1\.4\.0/);
-    assert.doesNotMatch(calls(sb), /docker (pull|compose)/);
+    assert.doesNotMatch(calls(sb), /docker pull|up -d/);
     assert.equal(read(sb.override), before);
   });
 });
@@ -549,5 +568,172 @@ describe("bot-apply-smoke.sh", () => {
     ]);
     assert.notEqual(code, 0);
     assert.match(out, /SMOKE FAILED/);
+  });
+});
+
+const PRE_DG = `ghcr.io/itkadr-git/myrmidon-dockergate@sha256:${"1".repeat(64)}`;
+const PRE_FD = `ghcr.io/itkadr-git/myrmidon-fleetd@sha256:${"2".repeat(64)}`;
+const writeComponentOverride = (sb, name, ref) =>
+  fs.writeFileSync(
+    path.join(sb.composeDir, `docker-compose.myrmidon-${name}.yml`),
+    `services:\n  ${name}:\n    image: ${ref}\n`,
+  );
+const imageOf = (file) => /image:\s*(\S+)/.exec(read(file))?.[1];
+
+describe("ONE-DEPLOY: all components in one window, all-or-nothing", () => {
+  it("a dockergate failure rolls everything back together: the board and the config", () => {
+    const sb = sandbox();
+    writeComponentOverride(sb, "dockergate", PRE_DG);
+    writeComponentOverride(sb, "fleetd", PRE_FD);
+    // dockergate comes up reporting the wrong self-check version
+    sb.env = { DG_LOGGED_VERSION: "0.0.1+deadbeefdead" };
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.notEqual(code, 0, out);
+    assert.match(out, /dockergate self-check version is '0\.0\.1\+deadbeefdead'/);
+    assert.match(out, /ROLLING BACK TOGETHER/);
+    assert.match(out, /ROLLED BACK/);
+    // the board is back on its previous image, dockergate on its previous one
+    assert.equal(imageOf(sb.override), `${CI_IMAGE}@${OLD}`);
+    assert.equal(imageOf(path.join(sb.composeDir, "docker-compose.myrmidon-dockergate.yml")), PRE_DG);
+    // fleetd was never reached: not pulled, not recreated
+    assert.doesNotMatch(calls(sb), /docker pull --quiet ghcr.io\/itkadr-git\/myrmidon-fleetd/);
+    assert.equal(imageOf(path.join(sb.composeDir, "docker-compose.myrmidon-fleetd.yml")), PRE_FD);
+    // the window was lifted again
+    assert.match(read(path.join(sb.dir, "maintenance.log")), /exit/);
+  });
+
+  it("a fleetd failure after a healthy dockergate rolls dockergate back as well", () => {
+    const sb = sandbox();
+    writeComponentOverride(sb, "dockergate", PRE_DG);
+    writeComponentOverride(sb, "fleetd", PRE_FD);
+    fs.writeFileSync(path.join(sb.dir, "fleetd-health-bad"), "3");
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.notEqual(code, 0, out);
+    assert.match(out, /ROLLED BACK/);
+    assert.equal(imageOf(sb.override), `${CI_IMAGE}@${OLD}`);
+    assert.equal(imageOf(path.join(sb.composeDir, "docker-compose.myrmidon-dockergate.yml")), PRE_DG);
+    assert.equal(imageOf(path.join(sb.composeDir, "docker-compose.myrmidon-fleetd.yml")), PRE_FD);
+    // dockergate was switched first (pulled at its release digest), then returned
+    assert.match(calls(sb), new RegExp(`docker pull --quiet ghcr.io/itkadr-git/myrmidon-dockergate@${DG}`));
+    assert.match(calls(sb), new RegExp(`docker pull --quiet ${PRE_DG.replace(/[.@/]/g, "\\$&")}`));
+  });
+
+  it("MYRMIDON_COMPONENT_AUTO_ROLLBACK=0 keeps the old manual contract: nothing rolls back, maintenance stays on", () => {
+    const sb = sandbox();
+    writeComponentOverride(sb, "dockergate", PRE_DG);
+    writeComponentOverride(sb, "fleetd", PRE_FD);
+    fs.writeFileSync(path.join(sb.dir, "fleetd-health-bad"), "3");
+    fs.appendFileSync(sb.config, "MYRMIDON_COMPONENT_AUTO_ROLLBACK=0\n");
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.notEqual(code, 0, out);
+    assert.match(out, /automatic rollback is off/);
+    assert.equal(imageOf(sb.override), `${CI_IMAGE}@${NEW}`);
+    assert.doesNotMatch(read(path.join(sb.dir, "maintenance.log")), /exit/);
+  });
+
+  it("a component that already runs its release image is not restarted", () => {
+    const sb = sandbox();
+    writeComponentOverride(sb, "dockergate", `ghcr.io/itkadr-git/myrmidon-dockergate@${DG}`);
+    writeComponentOverride(sb, "fleetd", PRE_FD);
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.equal(code, 0, out);
+    assert.match(out, /component dockergate unchanged: not restarted/);
+    // dockergate: no pull of its image, no recreate; fleetd (changed) moved
+    assert.doesNotMatch(calls(sb), /up -d --no-deps dockergate/);
+    assert.doesNotMatch(calls(sb), new RegExp(`docker pull --quiet ghcr.io/itkadr-git/myrmidon-dockergate@${DG}`));
+    assert.match(calls(sb), /up -d --no-deps fleetd/);
+    assert.equal(imageOf(path.join(sb.composeDir, "docker-compose.myrmidon-fleetd.yml")), `ghcr.io/itkadr-git/myrmidon-fleetd@${FD}`);
+  });
+
+  it("when everything already runs the release, nothing is restarted and no window opens", () => {
+    const sb = sandbox({ current: NEW });
+    writeComponentOverride(sb, "dockergate", `ghcr.io/itkadr-git/myrmidon-dockergate@${DG}`);
+    writeComponentOverride(sb, "fleetd", `ghcr.io/itkadr-git/myrmidon-fleetd@${FD}`);
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.equal(code, 0, out);
+    assert.match(out, /nothing to restart/);
+    assert.doesNotMatch(calls(sb), /docker pull|up -d/);
+    assert.equal(read(path.join(sb.dir, "maintenance.log")), "");
+  });
+
+  it("--dry-run lists every component with what changes and what stays", () => {
+    const sb = sandbox();
+    writeComponentOverride(sb, "dockergate", `ghcr.io/itkadr-git/myrmidon-dockergate@${DG}`);
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--dry-run"]);
+    assert.equal(code, 0, out);
+    assert.match(out, /board: .* -> /);
+    assert.match(out, /dockergate: unchanged .*: not restarted/);
+    assert.match(out, /fleetd: <none> -> ghcr.io\/itkadr-git\/myrmidon-fleetd@/);
+    assert.match(out, /bot images:/);
+  });
+
+  it("--release reads the manifest: the board digest and the components come from it", () => {
+    const sb = sandbox();
+    const manifest = path.join(sb.dir, "release-components.json");
+    fs.writeFileSync(manifest, JSON.stringify({
+      schema: 1, version: "1.4.0", tag: "myr-v1.4.0",
+      components: {
+        board: { repository: CI_IMAGE, digest: NEW },
+        dockergate: { repository: "ghcr.io/itkadr-git/myrmidon-dockergate", digest: DG },
+        fleetd: { repository: "ghcr.io/itkadr-git/myrmidon-fleetd", digest: FD },
+        hermes: { repository: "ghcr.io/itkadr-git/myrmidon-hermes", digest: `sha256:${"e".repeat(64)}` },
+      },
+    }));
+    fs.appendFileSync(sb.config, `MYRMIDON_RELEASE_MANIFEST_FILE=${manifest}\n`);
+    const { code, out } = run(sb, "deploy.sh", ["--release", "myr-v1.4.0", "--dry-run"]);
+    assert.equal(code, 0, out);
+    assert.match(out, /release components \(tag 1\.4\.0, from the manifest\)/);
+    assert.match(out, new RegExp(`board: .* -> ${CI_IMAGE.replace(/\./g, "\\.")}@${NEW}`));
+    // the components were NOT resolved through the registry tags
+    assert.doesNotMatch(calls(sb), /imagetools inspect ghcr.io\/itkadr-git\/myrmidon-dockergate:/);
+    // a --digest that disagrees with the manifest is refused
+    const bad = run(sb, "deploy.sh", ["--release", "myr-v1.4.0", "--digest", `sha256:${"7".repeat(64)}`, "--dry-run"]);
+    assert.notEqual(bad.code, 0);
+    assert.match(bad.out, /does not match the board image/);
+  });
+});
+
+describe("rollout-component.sh: dockergate config before the recreate (ONE-DEPLOY)", () => {
+  const withConfig = (sb) => {
+    const cfg = path.join(sb.dir, "dockergate.config.json");
+    fs.writeFileSync(cfg, JSON.stringify({ images: [] }));
+    fs.appendFileSync(sb.config, `MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_CONFIG=${cfg}\n`);
+    return cfg;
+  };
+
+  it("runs dockergate check-config with the new image before the service is recreated", () => {
+    const sb = sandbox();
+    withConfig(sb);
+    const { code, out } = run(sb, "rollout-component.sh", ["--component", "dockergate", "--digest", DG]);
+    assert.equal(code, 0, out);
+    const log = calls(sb);
+    const check = log.indexOf("check-config");
+    const recreate = log.indexOf("up -d --no-deps dockergate");
+    assert.ok(check >= 0 && recreate > check, "check-config ran before the recreate");
+    assert.match(log, new RegExp(`myrmidon-dockergate@${DG} check-config`));
+    assert.match(out, /dockergate self-check version 1\.4\.0\+0123456789ab/);
+  });
+
+  it("a config the new dockergate refuses stops the rollout before anything is recreated", () => {
+    const sb = sandbox();
+    withConfig(sb);
+    fs.writeFileSync(path.join(sb.dir, "check-config-fails"), "");
+    const { code, out } = run(sb, "rollout-component.sh", ["--component", "dockergate", "--digest", DG]);
+    assert.notEqual(code, 0);
+    assert.match(out, /check-config refused/);
+    assert.doesNotMatch(calls(sb), /up -d --no-deps dockergate/);
+    assert.ok(!fs.existsSync(path.join(sb.composeDir, "docker-compose.myrmidon-dockergate.yml")));
+  });
+
+  it("an unchanged component exits 0 without pulling or recreating (--force recreates)", () => {
+    const sb = sandbox();
+    writeComponentOverride(sb, "fleetd", `ghcr.io/itkadr-git/myrmidon-fleetd@${FD}`);
+    const same = run(sb, "rollout-component.sh", ["--component", "fleetd", "--digest", FD]);
+    assert.equal(same.code, 0, same.out);
+    assert.match(same.out, /UNCHANGED: fleetd already runs/);
+    assert.doesNotMatch(calls(sb), /docker pull|up -d/);
+    const forced = run(sb, "rollout-component.sh", ["--component", "fleetd", "--digest", FD, "--force"]);
+    assert.equal(forced.code, 0, forced.out);
+    assert.match(calls(sb), /up -d --no-deps fleetd/);
   });
 });
