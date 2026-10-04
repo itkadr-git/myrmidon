@@ -48,6 +48,9 @@ import {
 } from "./domain.js";
 import type { ForagingStore } from "./store.js";
 import { readForagingIdleGate, type ForagingIdleGateServiceDeps } from "./idle-gate-settings.js";
+// myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): the pass journal of this pass.
+import type { ForagingPassJournalService } from "./pass-journal.js";
+import type { ForagingPassSkip } from "@paperclipai/shared";
 
 export interface ForagingReaderResult {
   /** The raw text of the source; the pass normalizes it. */
@@ -83,6 +86,12 @@ export interface ForagingServiceDeps {
   idleGate?: Pick<ForagingIdleGateServiceDeps, "getGeneral" | "env">;
   /** The per-role idle check; defaults to the swarm-queue/agent SQL check. */
   idleCheck?: ForagingIdleCheck;
+  /**
+   * myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): the pass journal. Every pass
+   * appends itself to it, so the "Foraging" page can show what a pass read and
+   * which roles it skipped with which reason. Absent = passes are not recorded.
+   */
+  journal?: Pick<ForagingPassJournalService, "record">;
   now?: () => Date;
   log?: Pick<typeof logger, "info" | "warn" | "error">;
 }
@@ -185,17 +194,45 @@ export function createForagingService(deps: ForagingServiceDeps): ForagingServic
         }
       }
 
+      // myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): the pass state and the
+      // journal writer live above the source listing, because a pass that
+      // cannot list its sources is still a pass the history must show.
+      const state: ForagingBudgetState = { spentCents: 0 };
+      const checkedRoles = new Map<string, "queue_not_empty" | "no_idle_agent" | null>();
+      // Every role this pass left alone, so the pass history names the roles,
+      // not just a single reason.
+      const skipped: ForagingPassSkip[] = [];
+      /**
+       * Writes the pass into the journal. Called on EVERY exit of the pass —
+       * a pass that stopped early is exactly the pass an operator needs to see
+       * in the history. Best effort: a journal failure never fails a pass.
+       */
+      const recordPass = async () => {
+        if (!deps.journal) return;
+        try {
+          await deps.journal.record(companyId, {
+            sourcesRead: result.sourcesRead,
+            findings: result.findings,
+            candidates: result.candidates,
+            errors: result.errors,
+            stoppedByBudget: result.stoppedByBudget,
+            skippedReason: result.skippedReason ?? skipped[0]?.reason ?? null,
+            skipped,
+          });
+        } catch (err) {
+          log.warn({ err, companyId }, "foraging: could not record the pass in the journal");
+        }
+      };
+
       const startedAt = now();
       let sources: ForagingSourceRef[];
       try {
         sources = await store.enabledSources(companyId);
       } catch (err) {
         log.error({ err, companyId }, "foraging: could not list sources");
+        await recordPass();
         return result;
       }
-
-      const state: ForagingBudgetState = { spentCents: 0 };
-      const checkedRoles = new Map<string, "queue_not_empty" | "no_idle_agent" | null>();
 
       for (const source of sources) {
         // The byte size is unknown before the read; budget the read by the
@@ -222,6 +259,9 @@ export function createForagingService(deps: ForagingServiceDeps): ForagingServic
           const reason = checkedRoles.get(source.role);
           if (reason !== null && reason !== undefined) {
             result.skippedReason = reason;
+            if (!skipped.some((entry) => entry.role === source.role)) {
+              skipped.push({ role: source.role, reason });
+            }
             log.info(
               { companyId, role: source.role, sourceId: source.id, reason },
               "foraging: role is busy, skipping its sources this pass",
@@ -316,6 +356,7 @@ export function createForagingService(deps: ForagingServiceDeps): ForagingServic
         }
       }
 
+      await recordPass();
       log.info(
         {
           companyId,

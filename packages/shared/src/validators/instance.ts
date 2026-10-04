@@ -177,6 +177,17 @@ export const instanceGeneralSettingsSchema = z.object({
   // /api/myrmidon/foraging/idle-gate; absent means the environment variable,
   // then the default (on).
   foragingIdleGate: foragingIdleGateSettingsSchema.optional(),
+  // myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): the pass journal — the last
+  // passes of every company (what each read, and which roles were skipped why),
+  // kept by the foraging pass under `general.foragingPassJournal` and read by
+  // GET /api/myrmidon/companies/:id/foraging/passes. Stored passthrough, never
+  // validated here beyond being a list-shaped value the service re-reads
+  // defensively.
+  foragingPassJournal: z.array(z.unknown()).optional(),
+  // myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys, managed
+  // from the instance settings page and PATCH /api/myrmidon/plugin-entitlement/keys;
+  // absent means "no keys are registered" (no plugin is unlocked).
+  pluginEntitlementKeys: pluginEntitlementKeysSchema.optional(),
 }).strict();
 
 export const patchInstanceGeneralSettingsSchema = z

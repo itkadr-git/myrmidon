@@ -24,6 +24,9 @@ import {
   FORAGING_IDLE_GATE_SETTINGS_KEY,
 } from "./idle-gate-settings.js";
 import { foragingIdleGateRoutes } from "./idle-gate-routes.js";
+// myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): the pass journal and its route.
+import { foragingPassJournalService } from "./pass-journal.js";
+import { foragingPassRoutes } from "./pass-routes.js";
 
 export {
   FORAGING_BUDGET_CENTS_ENV,
@@ -46,6 +49,14 @@ export {
   readForagingIdleGate,
 } from "./idle-gate-settings.js";
 export { foragingIdleGateRoutes } from "./idle-gate-routes.js";
+// myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): the pass journal of a company.
+export {
+  foragingPassJournalService,
+  FORAGING_PASS_JOURNAL_KEY,
+  type ForagingPassJournalService,
+  type ForagingPassSummary,
+} from "./pass-journal.js";
+export { foragingPassRoutes } from "./pass-routes.js";
 export { createForagingService } from "./service.js";
 export { createDbForagingStore } from "./store.js";
 export { createForagingReader } from "./reader.js";
@@ -94,6 +105,9 @@ export function foragingWiring(db: Db, env: NodeJS.ProcessEnv = process.env): Fo
       getGeneral: () => instanceSettingsService(db).getGeneral(),
       env,
     },
+    // myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): every pass appends itself
+    // to the journal, so the "Foraging" page can show the pass history.
+    journal: foragingPassJournalService(db),
     log: logger,
   });
   return { store, service, env };
@@ -117,4 +131,13 @@ export function myrmidonForagingRoutes(db: Db, env: NodeJS.ProcessEnv = process.
  */
 export function myrmidonForagingIdleGateRoutes(db: Db) {
   return foragingIdleGateRoutes(db, foragingIdleGateService(db));
+}
+
+/**
+ * Router for app.ts: GET /api/myrmidon/companies/:id/foraging/passes — the
+ * pass history of a company: what each pass read and which roles it left
+ * alone, with the reason (myrmidon 1.6.3-FORAGING-IDLE-GATE, UI half).
+ */
+export function myrmidonForagingPassRoutes(db: Db) {
+  return foragingPassRoutes(db, foragingPassJournalService(db));
 }
