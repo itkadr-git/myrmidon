@@ -553,7 +553,7 @@ export async function resolveManagedGitHubCredential(
     if (sharedIssuance && !sharedIssuance.ok) {
       sharedDenied = true;
       return {
-        configured: true, identitySource: selection.identitySource, error: sharedIssuance.error,
+        configured: true, identitySource: selection.identitySource, error: sharedIssuance.error, credential: undefined,
         ...(sharedIssuance.repository ? { repository: sharedIssuance.repository } : {}),
       };
     }
