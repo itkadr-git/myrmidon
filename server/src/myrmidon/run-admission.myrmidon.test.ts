@@ -1,22 +1,34 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  HOST_MEMORY_HOLD_SIGNAL_MS,
   applyRunAdmissionLimits,
   createRunAdmission,
   currentRunAdmissionLimits,
+  hostMemoryHoldSignal,
+  readHostMemory,
   readCgroupFreeMemoryBytes,
   readRunAdmissionLimits,
   resetSharedRunAdmissionForTests,
   scheduleQueuedResweep,
 } from "./run-admission.js";
 
-const NO_MEMORY = { minFreeMemoryMb: null, runMemoryEstimateMb: 300 };
+const NO_MEMORY = { minFreeMemoryMb: null, runMemoryEstimateMb: 300, minFreeHostMemoryMb: null };
 const MB = 1024 * 1024;
 
 describe("readRunAdmissionLimits", () => {
-  it("treats unset, empty, zero and garbage as no limit", () => {
-    expect(readRunAdmissionLimits({})).toEqual({ maxConcurrentRuns: null, maxStartsPerMinute: null, ...NO_MEMORY });
+  it("treats unset, empty, zero and garbage as no limit; the ramp and the host floor default on", () => {
+    const DEFAULT_ON = { maxStartsPerMinute: 5, minFreeHostMemoryMb: 15360 };
+    expect(readRunAdmissionLimits({})).toEqual({
+      maxConcurrentRuns: null,
+      minFreeMemoryMb: null,
+      runMemoryEstimateMb: 300,
+      ...DEFAULT_ON,
+    });
     expect(
       readRunAdmissionLimits({ MYRMIDON_MAX_CONCURRENT_RUNS: "0", MYRMIDON_MAX_RUN_STARTS_PER_MINUTE: "x" }),
+    ).toEqual({ maxConcurrentRuns: null, minFreeMemoryMb: null, runMemoryEstimateMb: 300, ...DEFAULT_ON });
+    expect(
+      readRunAdmissionLimits({ MYRMIDON_MAX_RUN_STARTS_PER_MINUTE: "0", MYRMIDON_MIN_FREE_HOST_MEMORY_MB: "off" }),
     ).toEqual({ maxConcurrentRuns: null, maxStartsPerMinute: null, ...NO_MEMORY });
     expect(
       readRunAdmissionLimits({
@@ -24,8 +36,15 @@ describe("readRunAdmissionLimits", () => {
         MYRMIDON_MAX_RUN_STARTS_PER_MINUTE: "6",
         MYRMIDON_MIN_FREE_MEMORY_MB: "1500",
         MYRMIDON_RUN_MEMORY_ESTIMATE_MB: "250",
+        MYRMIDON_MIN_FREE_HOST_MEMORY_MB: "8192",
       }),
-    ).toEqual({ maxConcurrentRuns: 12, maxStartsPerMinute: 6, minFreeMemoryMb: 1500, runMemoryEstimateMb: 250 });
+    ).toEqual({
+      maxConcurrentRuns: 12,
+      maxStartsPerMinute: 6,
+      minFreeMemoryMb: 1500,
+      runMemoryEstimateMb: 250,
+      minFreeHostMemoryMb: 8192,
+    });
   });
 });
 
@@ -78,7 +97,13 @@ describe("memory headroom", () => {
     let clock = 0;
     let free = 2500 * MB;
     const admission = createRunAdmission({
-      limits: { maxConcurrentRuns: null, maxStartsPerMinute: null, minFreeMemoryMb: 1500, runMemoryEstimateMb: 300 },
+      limits: {
+        maxConcurrentRuns: null,
+        maxStartsPerMinute: null,
+        minFreeMemoryMb: 1500,
+        runMemoryEstimateMb: 300,
+        minFreeHostMemoryMb: null,
+      },
       freeMemoryBytes: () => free,
       now: () => clock,
     });
@@ -93,7 +118,13 @@ describe("memory headroom", () => {
 
   it("leaves the other limits in charge when free memory is unknown", () => {
     const admission = createRunAdmission({
-      limits: { maxConcurrentRuns: 4, maxStartsPerMinute: null, minFreeMemoryMb: 1500, runMemoryEstimateMb: 300 },
+      limits: {
+        maxConcurrentRuns: 4,
+        maxStartsPerMinute: null,
+        minFreeMemoryMb: 1500,
+        runMemoryEstimateMb: 300,
+        minFreeHostMemoryMb: null,
+      },
       freeMemoryBytes: () => null,
     });
     expect(admission.reserve(10)).toBe(4);
@@ -116,7 +147,7 @@ describe("memory headroom", () => {
 });
 
 describe("live limit changes", () => {
-  const NO_MEMORY_LIMITS = { minFreeMemoryMb: null, runMemoryEstimateMb: 300 };
+  const NO_MEMORY_LIMITS = { minFreeMemoryMb: null, runMemoryEstimateMb: 300, minFreeHostMemoryMb: null };
 
   it("lets the runs held behind the old ceiling start as soon as it is raised", () => {
     const admission = createRunAdmission({ limits: { maxConcurrentRuns: 1, maxStartsPerMinute: null, ...NO_MEMORY_LIMITS } });
@@ -159,19 +190,33 @@ describe("live limit changes", () => {
   it("applies limits to the process-wide admission and reports them back", () => {
     resetSharedRunAdmissionForTests();
     try {
-      applyRunAdmissionLimits({ maxConcurrentRuns: 7, maxStartsPerMinute: 3, minFreeMemoryMb: 900, runMemoryEstimateMb: 200 });
+      applyRunAdmissionLimits({
+        maxConcurrentRuns: 7,
+        maxStartsPerMinute: 3,
+        minFreeMemoryMb: 900,
+        runMemoryEstimateMb: 200,
+        minFreeHostMemoryMb: 10240,
+      });
       expect(currentRunAdmissionLimits()).toEqual({
         maxConcurrentRuns: 7,
         maxStartsPerMinute: 3,
         minFreeMemoryMb: 900,
         runMemoryEstimateMb: 200,
+        minFreeHostMemoryMb: 10240,
       });
-      applyRunAdmissionLimits({ maxConcurrentRuns: null, maxStartsPerMinute: null, minFreeMemoryMb: null, runMemoryEstimateMb: 300 });
+      applyRunAdmissionLimits({
+        maxConcurrentRuns: null,
+        maxStartsPerMinute: null,
+        minFreeMemoryMb: null,
+        runMemoryEstimateMb: 300,
+        minFreeHostMemoryMb: null,
+      });
       expect(currentRunAdmissionLimits()).toEqual({
         maxConcurrentRuns: null,
         maxStartsPerMinute: null,
         minFreeMemoryMb: null,
         runMemoryEstimateMb: 300,
+        minFreeHostMemoryMb: null,
       });
     } finally {
       resetSharedRunAdmissionForTests();
@@ -213,5 +258,159 @@ describe("drift and resweep", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("myrmidon(1.6.2 RUN-ADMISSION) host memory floor", () => {
+  const GB = 1024 * MB;
+  const HOST_FLOOR = {
+    maxConcurrentRuns: null,
+    maxStartsPerMinute: null,
+    minFreeMemoryMb: null,
+    runMemoryEstimateMb: 300,
+    minFreeHostMemoryMb: 15360,
+  };
+  const host = (availableBytes: number) => () => ({ known: true as const, availableBytes, totalBytes: 64 * GB });
+
+  it("holds every new run while host MemAvailable is below the floor and admits again once it rises", () => {
+    let available = 7 * GB;
+    const admission = createRunAdmission({ limits: { ...HOST_FLOOR }, hostMemory: () => host(available)() });
+    expect(admission.reserve(5)).toBe(0);
+    expect(admission.limited()).toBe(true);
+    expect(admission.hostMemoryGate()).toMatchObject({ state: "closed", availableMb: 7168, thresholdMb: 15360 });
+    available = 20 * GB;
+    expect(admission.reserve(2)).toBe(2);
+    expect(admission.hostMemoryGate().state).toBe("open");
+  });
+
+  it("budgets runs still starting against the floor, so one reading does not admit a burst", () => {
+    let clock = 0;
+    const admission = createRunAdmission({
+      // 16 GB available, floor 15 GB, 600 MB a run: the second start is
+      // admitted with one run settling (16384 - 600 >= 15360), the third is
+      // not (16384 - 1200 < 15360).
+      limits: { ...HOST_FLOOR, runMemoryEstimateMb: 600 },
+      hostMemory: host(16 * GB),
+      now: () => clock,
+    });
+    expect(admission.reserve(1)).toBe(1);
+    expect(admission.reserve(1)).toBe(1);
+    expect(admission.reserve(1)).toBe(0);
+    expect(admission.hostMemoryGate()).toMatchObject({ state: "closed", settlingRuns: 2 });
+    // The settled runs are in MemAvailable now (the fake reading stays 16 GB).
+    clock = 30_000;
+    expect(admission.reserve(1)).toBe(1);
+  });
+
+  it("combines with the start ramp: the ramp spreads starts even with plenty of host memory", () => {
+    let clock = 0;
+    const admission = createRunAdmission({
+      limits: { ...HOST_FLOOR, maxStartsPerMinute: 5 },
+      hostMemory: host(60 * GB),
+      now: () => clock,
+    });
+    expect(admission.reserve(23)).toBe(5);
+    expect(admission.reserve(1)).toBe(0);
+    clock = 60_000;
+    expect(admission.reserve(23)).toBe(5);
+  });
+
+  it("does not read the host when the floor is off, and leaves the other limits in charge when unreadable", () => {
+    const read = vi.fn(host(1 * GB));
+    const off = createRunAdmission({ limits: { ...HOST_FLOOR, minFreeHostMemoryMb: null }, hostMemory: read });
+    expect(off.reserve(3)).toBe(3);
+    expect(read).not.toHaveBeenCalled();
+    expect(off.hostMemoryGate().state).toBe("off");
+
+    const unavailable = vi.fn();
+    const unknown = createRunAdmission({
+      limits: { ...HOST_FLOOR, maxConcurrentRuns: 2 },
+      hostMemory: () => ({ known: false, reason: "no meminfo" }),
+      onHostMemoryUnavailable: unavailable,
+    });
+    expect(unknown.reserve(5)).toBe(2);
+    expect(unavailable).toHaveBeenCalledWith("no meminfo");
+    expect(unknown.hostMemoryGate()).toMatchObject({ state: "unknown", reason: "no meminfo" });
+  });
+
+  it("applies a floor changed on the fly to the next reservation", () => {
+    const admission = createRunAdmission({ limits: { ...HOST_FLOOR }, hostMemory: host(10 * GB) });
+    expect(admission.reserve(1)).toBe(0);
+    admission.updateLimits({ ...HOST_FLOOR, minFreeHostMemoryMb: 8192 });
+    expect(admission.reserve(1)).toBe(1);
+    admission.updateLimits({ ...HOST_FLOOR, minFreeHostMemoryMb: null });
+    expect(admission.reserve(1)).toBe(1);
+  });
+
+  it("raises the attention signal only after ten minutes of continuous hold", () => {
+    let clock = Date.parse("2026-10-04T01:00:00Z");
+    let available = 7 * GB;
+    const events: string[] = [];
+    const admission = createRunAdmission({
+      limits: { ...HOST_FLOOR },
+      hostMemory: () => host(available)(),
+      onHostMemoryHold: (event) => events.push(event.state),
+      now: () => clock,
+    });
+    expect(admission.reserve(1)).toBe(0);
+    // The resweep keeps meeting the closed floor every 15 s.
+    for (let i = 0; i < 39; i += 1) {
+      clock += 15_000;
+      admission.reserve(1);
+    }
+    const gate = admission.hostMemoryGate();
+    expect(gate.heldSince?.toISOString()).toBe("2026-10-04T01:00:00.000Z");
+    expect(hostMemoryHoldSignal(gate, clock)).toBeNull();
+    clock += 15_000;
+    admission.reserve(1);
+    const signal = hostMemoryHoldSignal(admission.hostMemoryGate(), clock);
+    expect(signal).toMatchObject({ availableMb: 7168, thresholdMb: 15360 });
+    expect(signal!.heldMs).toBeGreaterThanOrEqual(HOST_MEMORY_HOLD_SIGNAL_MS);
+    // One "closed" line for the whole hold, not one per resweep.
+    expect(events).toEqual(["closed"]);
+
+    available = 20 * GB;
+    expect(admission.reserve(1)).toBe(1);
+    expect(events).toEqual(["closed", "open"]);
+    expect(hostMemoryHoldSignal(admission.hostMemoryGate(), clock)).toBeNull();
+  });
+
+  it("starts a new hold when the queue stopped asking in between", () => {
+    let clock = 0;
+    const admission = createRunAdmission({ limits: { ...HOST_FLOOR }, hostMemory: host(7 * GB), now: () => clock });
+    admission.reserve(1);
+    clock = 60_000;
+    admission.reserve(1);
+    expect(admission.hostMemoryGate().heldSince?.getTime()).toBe(0);
+    // Nobody asked for 13 minutes: the next hold starts from scratch.
+    clock = 14 * 60_000;
+    admission.reserve(1);
+    expect(admission.hostMemoryGate().heldSince?.getTime()).toBe(14 * 60_000);
+    expect(hostMemoryHoldSignal(admission.hostMemoryGate(), 15 * 60_000)).toBeNull();
+  });
+
+  it("reads MemAvailable from meminfo and refuses a container-scoped meminfo", () => {
+    const meminfo = "MemTotal:       69948044 kB\nMemFree:  1000 kB\nMemAvailable:    9907000 kB\n";
+    const files: Record<string, string> = { "/proc/meminfo": meminfo, "/cg/memory.max": "8589934592\n" };
+    const read = (path: string) => {
+      const value = files[path];
+      if (value === undefined) throw new Error("ENOENT");
+      return value;
+    };
+    expect(readHostMemory({ cgroupRoot: "/cg", readFile: read })).toEqual({
+      known: true,
+      availableBytes: 9907000 * 1024,
+      totalBytes: 69948044 * 1024,
+    });
+    // lxcfs: MemTotal is the container limit (8 GB), not the host.
+    files["/proc/meminfo"] = "MemTotal:        8388608 kB\nMemAvailable:    2000000 kB\n";
+    const scoped = readHostMemory({ cgroupRoot: "/cg", readFile: read });
+    expect(scoped.known).toBe(false);
+    // A host file mounted elsewhere is read from the configured path.
+    files["/host/meminfo"] = meminfo;
+    expect(readHostMemory({ meminfoPath: "/host/meminfo", cgroupRoot: "/cg", readFile: read }).known).toBe(true);
+    expect(readHostMemory({ meminfoPath: "/missing", readFile: read })).toMatchObject({ known: false });
+    files["/proc/meminfo"] = "MemTotal: 100 kB\n";
+    expect(readHostMemory({ cgroupRoot: "/none", readFile: read }).known).toBe(false);
   });
 });
