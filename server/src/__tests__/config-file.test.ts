@@ -72,7 +72,7 @@ describe("readConfigFile", () => {
 
     writeConfig(configPath, config);
 
-    expect(() => readConfigFile()).toThrow(/Invalid Paperclip config .* \$meta\.source:/);
+    expect(() => readConfigFile()).toThrow(/Invalid Myrmidon config .* \$meta\.source:/);
   });
 
   it("parses a valid config file", () => {
