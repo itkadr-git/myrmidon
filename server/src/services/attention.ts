@@ -49,7 +49,7 @@ import type {
   IssueReviewPolicy,
 } from "@paperclipai/shared";
 import { badRequest } from "../errors.js";
-import { listAttentionExhaustedRuns } from "./attention-exhausted-runs.js";
+import { listAttentionExhaustedRunsWithoutHeavyColumns } from "./attention-exhausted-runs.js";
 import { budgetService } from "./budgets.js";
 import { hostDiskRuntime } from "../myrmidon/host-disk/index.js"; // myrmidon(BOT-DISK E)
 import { cloneHygieneSignals, lifecycleNotEffective } from "../myrmidon/bot-containers/clone-hygiene.js"; // myrmidon(1.6.2-BOT-DISK-C)
@@ -1749,7 +1749,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         }));
       }
 
-      const failedRows = await listAttentionExhaustedRuns(db, companyId);
+      const failedRows = await listAttentionExhaustedRunsWithoutHeavyColumns(db, companyId);
       const failedIssueIds = failedRows.map((row) => readRunIssueId(row.contextSnapshot));
       const failedAgentIds = [...new Set(failedRows.map((row) => row.agentId))];
       const oldestFailedRunCreatedAt = failedRows.reduce<Date | null>((oldest, row) => {

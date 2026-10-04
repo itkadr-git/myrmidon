@@ -29281,10 +29281,11 @@ export function heartbeatService(
       companyId: string,
       agentId?: string,
       limit?: number,
-      options: { summary?: boolean } = {},
+      options: { summary?: boolean; includeHeavyColumns?: boolean } = {},
     ) => {
       const safeForLegacyEncoding = await hasUnsafeTextProjectionDatabase();
       const summary = options.summary === true;
+      const includeHeavyColumns = options.includeHeavyColumns !== false; // по умолчанию true для обратной совместимости
       const query = db
         .select(
           summary
@@ -29292,16 +29293,62 @@ export function heartbeatService(
                 ...heartbeatRunSummaryListColumns,
                 ...heartbeatRunListContextColumns,
               }
-            : safeForLegacyEncoding
-              ? {
-                  ...heartbeatRunListColumns,
-                  error: sql<string | null>`NULL`.as("error"),
-                  ...heartbeatRunListContextColumns,
-                }
+            : includeHeavyColumns
+              ? safeForLegacyEncoding
+                ? {
+                    ...heartbeatRunListColumns,
+                    error: sql<string | null>`NULL`.as("error"),
+                    ...heartbeatRunListContextColumns,
+                  }
+                : {
+                    ...heartbeatRunListColumns,
+                    ...heartbeatRunListContextColumns,
+                    ...heartbeatRunListResultColumns,
+                  }
               : {
-                  ...heartbeatRunListColumns,
+                  // Только легкие колонки без тяжелых JSON
+                  id: heartbeatRuns.id,
+                  companyId: heartbeatRuns.companyId,
+                  agentId: heartbeatRuns.agentId,
+                  invocationSource: heartbeatRuns.invocationSource,
+                  triggerDetail: heartbeatRuns.triggerDetail,
+                  status: heartbeatRuns.status,
+                  startedAt: heartbeatRuns.startedAt,
+                  finishedAt: heartbeatRuns.finishedAt,
+                  wakeupRequestId: heartbeatRuns.wakeupRequestId,
+                  exitCode: heartbeatRuns.exitCode,
+                  signal: heartbeatRuns.signal,
+                  sessionIdBefore: sql<string | null>`NULL`.as("sessionIdBefore"),
+                  sessionIdAfter: sql<string | null>`NULL`.as("sessionIdAfter"),
+                  logStore: sql<string | null>`NULL`.as("logStore"),
+                  logRef: sql<string | null>`NULL`.as("logRef"),
+                  logBytes: heartbeatRuns.logBytes,
+                  logSha256: sql<string | null>`NULL`.as("logSha256"),
+                  logCompressed: heartbeatRuns.logCompressed,
+                  errorCode: heartbeatRuns.errorCode,
+                  externalRunId: sql<string | null>`NULL`.as("externalRunId"),
+                  processPid: heartbeatRuns.processPid,
+                  processGroupId: heartbeatRunProcessGroupIdColumn,
+                  processStartedAt: heartbeatRuns.processStartedAt,
+                  lastOutputAt: heartbeatRuns.lastOutputAt,
+                  lastOutputSeq: heartbeatRuns.lastOutputSeq,
+                  lastOutputStream: heartbeatRuns.lastOutputStream,
+                  lastOutputBytes: heartbeatRuns.lastOutputBytes,
+                  retryOfRunId: heartbeatRuns.retryOfRunId,
+                  processLossRetryCount: heartbeatRuns.processLossRetryCount,
+                  scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
+                  scheduledRetryAttempt: heartbeatRuns.scheduledRetryAttempt,
+                  scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+                  livenessState: heartbeatRuns.livenessState,
+                  livenessReason: heartbeatRuns.livenessReason,
+                  continuationAttempt: heartbeatRuns.continuationAttempt,
+                  lastUsefulActionAt: heartbeatRuns.lastUsefulActionAt,
+                  nextAction: heartbeatRuns.nextAction,
+                  createdAt: heartbeatRuns.createdAt,
+                  updatedAt: heartbeatRuns.updatedAt,
+                  usageJson: sql<Record<string, unknown> | null>`NULL`.as("usageJson"),
+                  error: sql<string | null>`NULL`.as("error"), // Исключаем тяжелую колонку error
                   ...heartbeatRunListContextColumns,
-                  ...heartbeatRunListResultColumns,
                 },
         )
         .from(heartbeatRuns)
@@ -29346,7 +29393,7 @@ export function heartbeatService(
 
         return {
           ...rest,
-          contextSnapshot: summarizeHeartbeatRunContextSnapshot({
+          contextSnapshot: includeHeavyColumns ? summarizeHeartbeatRunContextSnapshot({
             issueId: contextIssueId,
             taskId: contextTaskId,
             taskKey: contextTaskKey,
@@ -29355,9 +29402,9 @@ export function heartbeatService(
             wakeReason: contextWakeReason,
             wakeSource: contextWakeSource,
             wakeTriggerDetail: contextWakeTriggerDetail,
-          }),
+          }) : { issueId: contextIssueId }, // минимальный контекст при отключенных тяжелых колонках
           resultJson:
-            safeForLegacyEncoding || summary
+            safeForLegacyEncoding || summary || !includeHeavyColumns
               ? null
               : summarizeHeartbeatRunListResultJson({
                   summary: resultSummary,
