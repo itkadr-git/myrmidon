@@ -24642,12 +24642,21 @@ export function heartbeatService(
                 : "failed";
 
         const cacheAdjustedCostUsd = resolveCacheAdjustedCostUsd(adapterResult);
+        // myrmidon(1.6.3 PROMPT-BUDGET A): persist the adapter-reported
+        // per-section prompt estimate (tokens) in usageJson.promptBreakdown.
+        // The key is present only when the adapter measured the prompt
+        // (hermes gateway does; adapters without prompt visibility omit the
+        // field entirely). Readers (readRawUsageTotals et al.) ignore unknown
+        // usageJson keys, so rows written before this change keep reading.
+        const promptBreakdown = adapterResult.promptBreakdown ?? null;
         const usageJson =
           normalizedUsage ||
           adapterResult.costUsd != null ||
-          cacheAdjustedCostUsd != null
+          cacheAdjustedCostUsd != null ||
+          promptBreakdown
             ? ({
                 ...(normalizedUsage ?? {}),
+                ...(promptBreakdown ? { promptBreakdown } : {}),
                 ...(rawUsage
                   ? {
                       rawInputTokens: rawUsage.inputTokens,

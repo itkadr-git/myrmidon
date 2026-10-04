@@ -6,6 +6,9 @@ import type {
   RuntimeStatusUpdate,
   UsageSummary,
 } from "@paperclipai/adapter-utils";
+// myrmidon(1.6.3 PROMPT-BUDGET A): prompt-size accounting per run.
+import { measureSections } from "@paperclipai/adapter-utils";
+import type { AdapterPromptBreakdown } from "@paperclipai/adapter-utils";
 import {
   asNumber,
   asString,
@@ -331,7 +334,15 @@ function buildHeaders(input: {
   };
 }
 
-function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null, idempotencyRunId: string): string {
+// myrmidon(1.6.3 PROMPT-BUDGET A): buildInput's return shape carries the
+// named sub-sections of the assembled input next to the text so buildRunBody
+// can report a per-section token estimate without re-deriving any section.
+type BuiltInput = {
+  text: string;
+  sections: Record<string, string>;
+};
+
+function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null, idempotencyRunId: string): BuiltInput {
   // Stable session keys (issue/agent strategy) resume the same remote Hermes
   // conversation across runs; a stored session id from a prior run means that
   // conversation already received the task brief, so pick the compact
@@ -352,7 +363,7 @@ function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null
   });
   const sessionHandoff = nonEmpty(ctx.context.paperclipSessionHandoffMarkdown);
   const issueWorkMode = readPaperclipIssueWorkModeFromContext(ctx.context);
-  const lines = [
+  const identityAndContract = [
     `You are ${ctx.agent.name}, an AI agent employee in a Paperclip-managed company.`,
     "",
     "Paperclip runtime identity:",
@@ -375,6 +386,9 @@ function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null
           "- Use X-Paperclip-Run-Id on mutating Paperclip API requests when a Paperclip API key is available.",
           "",
         ]),
+  ].join("\n");
+  const lines = [
+    identityAndContract,
     wakePrompt,
     ...(sessionHandoff ? ["", sessionHandoff] : []),
     ...(taskMarkdown ? ["", taskMarkdown] : []),
@@ -388,7 +402,20 @@ function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null
         ]
       : []),
   ];
-  return lines.filter((line) => line !== null && line !== undefined).join("\n").trim();
+  // myrmidon(1.6.3 PROMPT-BUDGET A): every section name is stable; consumers
+  // (run history, sweeps, UI) key off these strings, so rename only with a
+  // migration note in the divergence registry.
+  const sections: Record<string, string> = {
+    identityAndContract,
+    wakePrompt: wakePrompt ?? "",
+    sessionHandoff: sessionHandoff ?? "",
+    taskMarkdown: taskMarkdown ?? "",
+    wakePayloadJson: wakePayloadJson ?? "",
+  };
+  return {
+    text: lines.filter((line) => line !== null && line !== undefined).join("\n").trim(),
+    sections,
+  };
 }
 
 // myrmidon(G4): translate the M1 reasoning-effort card field into the
@@ -423,13 +450,18 @@ function buildRunBody(
   sessionKey: string | null,
   agentInstructionsBundle: string,
   idempotencyRunId: string,
+  // myrmidon(1.6.3 PROMPT-BUDGET A): when provided, receives the per-section
+  // token estimate for the prompt this body carries (measured on the exact
+  // text sent). The caller forwards it to the run result as promptBreakdown.
+  promptBreakdownOut?: { current: AdapterPromptBreakdown | null },
 ): Record<string, unknown> {
   const paperclipApiUrl = nonEmpty(ctx.config.paperclipApiUrl);
   const payloadTemplate = parseObject(ctx.config.payloadTemplate);
   const configuredInput = nonEmpty(payloadTemplate.input);
+  const builtInput = buildInput(ctx, paperclipApiUrl, idempotencyRunId);
   const input = configuredInput && ctx.context.conversationMode === true
-    ? `${configuredInput}\n\n${buildInput(ctx, paperclipApiUrl, idempotencyRunId)}`
-    : configuredInput ?? buildInput(ctx, paperclipApiUrl, idempotencyRunId);
+    ? `${configuredInput}\n\n${builtInput.text}`
+    : configuredInput ?? builtInput.text;
   const cardInstructions =
     nonEmpty(ctx.config.instructions) ??
     nonEmpty(payloadTemplate.instructions) ??
@@ -441,30 +473,53 @@ function buildRunBody(
   const instructions = agentInstructionsBundle
     ? `${agentInstructionsBundle.trim()}\n\n---\n\n${cardInstructions}`
     : cardInstructions;
-  // myrmidon(G4): per-run model/provider/reasoning override from the agent
-  // card (api_server.py's _request_agent_overrides); payloadTemplate is
-  // spread first so these first-class fields take precedence over it.
-  const model = nonEmpty(ctx.config.model);
-  const provider = nonEmpty(ctx.config.provider);
-  const modelOptions = buildModelOptions(ctx.config);
-  // myrmidon(CONTAINER-GITHUB-WRITE): the run-bound GitHub broker capability.
-  // Assigned after the payloadTemplate spread so a card cannot forge a
-  // capability: only the env the server itself wrote into runtimeConfig.env
-  // is forwarded, and the key is set unconditionally — `undefined` deletes a
-  // payloadTemplate-forged value and is dropped by JSON serialization — so
-  // an absent pair leaves the body without the field entirely (see
-  // buildGitHubBrokerField).
-  const githubBroker = buildGitHubBrokerField(ctx.config);
-  return {
-    ...payloadTemplate,
-    input,
-    instructions,
-    ...(sessionKey ? { session_id: sessionKey } : {}),
-    ...(model ? { model } : {}),
-    ...(provider ? { provider } : {}),
-    ...(modelOptions ? { model_options: modelOptions } : {}),
-    github_broker: githubBroker,
-  };
+  const body = assembleRunBody();
+  // myrmidon(1.6.3 PROMPT-BUDGET A): report the per-section token estimate
+  // for this body's prompt. `total` is measured on the serialized run body
+  // itself so it covers the JSON envelope, payloadTemplate extras and the
+  // broker field too; section estimates cover only their own text, so the
+  // parts need not sum exactly to `total`. Sections absent from this body are
+  // reported as 0.
+  if (promptBreakdownOut) {
+    const sections: Record<string, string> = {
+      instructionsBundle: agentInstructionsBundle.trim(),
+      cardInstructions,
+      ...(configuredInput && ctx.context.conversationMode === true
+        ? { configuredInput }
+        : {}),
+      ...builtInput.sections,
+    };
+    const measured = measureSections(sections, { joined: JSON.stringify(body) });
+    promptBreakdownOut.current = { parts: measured.parts, total: measured.total };
+  }
+  return body;
+
+  function assembleRunBody(): Record<string, unknown> {
+    // myrmidon(G4): per-run model/provider/reasoning override from the agent
+    // card (api_server.py's _request_agent_overrides); payloadTemplate is
+    // spread first so these first-class fields take precedence over it.
+    const model = nonEmpty(ctx.config.model);
+    const provider = nonEmpty(ctx.config.provider);
+    const modelOptions = buildModelOptions(ctx.config);
+    // myrmidon(CONTAINER-GITHUB-WRITE): the run-bound GitHub broker capability.
+    // Assigned after the payloadTemplate spread so a card cannot forge a
+    // capability: only the env the server itself wrote into runtimeConfig.env
+    // is forwarded, and the key is set unconditionally — `undefined` deletes a
+    // payloadTemplate-forged value and is dropped by JSON serialization — so
+    // an absent pair leaves the body without the field entirely (see
+    // buildGitHubBrokerField).
+    const githubBroker = buildGitHubBrokerField(ctx.config);
+    return {
+      ...payloadTemplate,
+      input,
+      instructions,
+      ...(sessionKey ? { session_id: sessionKey } : {}),
+      ...(model ? { model } : {}),
+      ...(provider ? { provider } : {}),
+      ...(modelOptions ? { model_options: modelOptions } : {}),
+      github_broker: githubBroker,
+    };
+  }
 }
 
 async function readResponseJson(response: Response): Promise<unknown> {
@@ -1574,6 +1629,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
     }
   }
+  // myrmidon(1.6.3 PROMPT-BUDGET A): measure the prompt sections exactly as
+  // buildRunBody assembles them (wake prompt, session handoff, task markdown,
+  // wake payload JSON, the card-input template, the instructions bundle and
+  // the card instructions). buildRunBody below reports the same numbers
+  // through its out-param; this run-scoped value is the one propagated to the
+  // run result as promptBreakdown.
+  const promptBreakdownHolder: { current: AdapterPromptBreakdown | null } = { current: null };
+  const body = buildRunBody(ctx, sessionKey, agentInstructionsBundle, idempotencyKey, promptBreakdownHolder);
+  const promptBreakdown = promptBreakdownHolder.current;
   const createRunUrl = apiUrl(baseUrl, "/v1/runs");
 
   await ctx.onMeta?.({
@@ -1772,6 +1836,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   );
 
   const state = createExecutionState(runId);
+  // myrmidon(1.6.3 PROMPT-BUDGET A): every success/terminal path below
+  // attaches the measured prompt breakdown (when buildRunBody measured one)
+  // to the result so heartbeat can persist it in usageJson.
+  const withPromptBreakdown = (result: AdapterExecutionResult): AdapterExecutionResult =>
+    promptBreakdown
+      ? {
+          ...result,
+          promptBreakdown,
+          resultJson: { ...(result.resultJson ?? {}), promptBreakdown },
+        }
+      : result;
   const controller = new AbortController();
   void consumeEvents({
     ctx,
@@ -1839,7 +1914,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // terminal status inside STOP_GRACE_MS), leave the field out rather than
     // claim something unverified.
     const terminationVerified = finalStatus !== null;
-    return {
+    return withPromptBreakdown({
       exitCode: 1,
       signal: "SIGTERM",
       timedOut: false,
@@ -1866,7 +1941,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         strategy,
       },
       sessionDisplayId: sessionKey ? redactText(sessionKey) : null,
-    };
+    });
   }
 
   if (outcome === "timeout") {
@@ -1881,7 +1956,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // give the same answer instead of leaving the platform's own Stop
     // request to 409 on a run that in fact already stopped.
     const cancelledToo = Boolean(ctx.signal?.aborted) && finalStatus !== null;
-    return {
+    return withPromptBreakdown({
       exitCode: 1,
       signal: null,
       timedOut: true,
@@ -1908,10 +1983,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         strategy,
       },
       sessionDisplayId: sessionKey ? redactText(sessionKey) : null,
-    };
+    });
   }
 
-  const finalResult = mapFinalResultForTest({
+  const finalResult = withPromptBreakdown(mapFinalResultForTest({
     terminal: outcome,
     outputChunks: state.outputChunks,
     sessionKey,
@@ -1939,6 +2014,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
     }
   }
+  }));
   // myrmidon(G4): outcome === terminal means state.terminalPromise won the
   // race — Hermes reported completion — but ctx.signal may have been
   // aborted concurrently, or in the window after the race resolved (e.g.
