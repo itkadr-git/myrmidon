@@ -106,12 +106,21 @@ func parseExtraBind(bind string) (source, target string, mode string, ok bool) {
 	return parts[0], parts[1], parts[2], true
 }
 
+// packageCacheTargets are the container paths of the shared package cache
+// (server template.ts buildBinds) — the only extra mounts that may be rw.
+var packageCacheTargets = map[string]bool{
+	"/home/user/.pnpm-store":     true,
+	"/home/user/.cache/pip":      true,
+	"/home/user/.cache/go-build": true,
+	"/home/user/.gradle":         true,
+}
+
 // parseBotBinds checks HostConfig.Binds: the three fixed binds first and in
 // order, then the bot's extra read-only mounts. Every extra source must be one
 // of env.MountSources (exact match, no prefix rule — a card cannot reach a
 // sibling directory the operator did not name) and every extra target must be a
 // safe path used once. The returned list is what the daemon gets.
-// For shared cache paths, read-write (rw) mode is allowed.
+// Only the shared package cache targets (packageCacheTargets) may be rw.
 func parseBotBinds(v *jsonx.Value, path string, env *Env, botKey string) ([]string, *deny.Error) {
 	got, err := strList(v, path)
 	if err != nil {
@@ -137,22 +146,14 @@ func parseBotBinds(v *jsonx.Value, path string, env *Env, botKey string) ([]stri
 		if !ok {
 			return nil, deny.Field(deny.BindsMismatch, path, []byte(bind))
 		}
-		
-		// Check if source is in allowed mount sources
 		if !allowed[source] {
 			return nil, deny.Field(deny.MountSourceNotAllowed, path, []byte(source))
 		}
-		
-		// For security, only allow read-write mode for specific cache paths
-		isCachePath := strings.Contains(target, "/.pnpm-store") || 
-			strings.Contains(target, "/.cache/pip") || 
-			strings.Contains(target, "/.cache/go-build") || 
-			strings.Contains(target, "/.gradle")
-			
-		if mode == "rw" && !isCachePath {
-			return nil, deny.Field(deny.BindsMismatch, path, []byte("read-write mode only allowed for cache paths"))
+		// Read-write only on the shared package cache targets the server writes
+		// itself (template.ts buildBinds); every other extra mount stays read-only.
+		if mode == "rw" && !packageCacheTargets[target] {
+			return nil, deny.Field(deny.BindsMismatch, path, []byte(bind))
 		}
-		
 		if !safeContainerTarget(target) || seen[target] {
 			return nil, deny.Field(deny.BindsMismatch, path, []byte(target))
 		}

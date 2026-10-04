@@ -234,7 +234,6 @@ export function buildHelperContainerRequestBody(params: {
   role: HelperRole;
   script: string;
   volumeRoot: string;
-  sharedPackageCachePath?: string;
 }): DockerHelperContainerBody {
   validateBotKey(params.botKey);
   const asRoot = params.role === "prepare-volumes";
@@ -254,9 +253,7 @@ export function buildHelperContainerRequestBody(params: {
       ReadonlyRootfs: true,
       RestartPolicy: { Name: "no" },
       NetworkMode: "none",
-      Binds: buildBinds(params.volumeRoot, params.botKey, {
-        sharedPackageCachePath: params.sharedPackageCachePath,
-      }),
+      Binds: buildBinds(params.volumeRoot, params.botKey),
       Privileged: false,
     },
   };
@@ -734,8 +731,7 @@ export function dockerBotContainerDriver(
   const startHealthTimeoutMs = options.startHealthTimeoutMs ?? DEFAULT_START_HEALTH_TIMEOUT_MS;
   const healthPollIntervalMs = options.healthPollIntervalMs ?? DEFAULT_HEALTH_POLL_INTERVAL_MS;
   const newNonce = options.nonce ?? (() => randomBytes(8).toString("hex"));
-  
-  // Shared package cache path - can be updated dynamically
+  // myrmidon(1.6.1-BOT-DISK-B): shared package cache path, set from instance settings
   let sharedPackageCachePath: string | undefined = undefined;
 
   const request = (opts: Parameters<typeof dockerRequest>[1]) => dockerRequest(socketPath, opts);
@@ -836,7 +832,6 @@ export function dockerBotContainerDriver(
       role: params.role,
       script: params.script,
       volumeRoot: config.volumeRoot,
-      sharedPackageCachePath: config.sharedPackageCachePath,
     });
     await createNamed(name, body);
     try {

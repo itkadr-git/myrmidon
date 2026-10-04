@@ -1,5 +1,3 @@
-import type { BotDiskSettings } from "@paperclipai/shared";
-
 export interface BotDiskView {
   settings: {
     "shared.packageStore": string | undefined;

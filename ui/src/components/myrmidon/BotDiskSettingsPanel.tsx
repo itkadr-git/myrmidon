@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from "react";
-import { Card, CardHeader, CardTitle, CardContent } from "../../../components/ui/card.js";
-import { Label } from "../../../components/ui/label.js";
-import { Input } from "../../../components/ui/input.js";
-import { Button } from "../../../components/ui/button.js";
+import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { Label } from "@/components/ui/label";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { botDiskApi, botDiskQueryKey, type BotDiskView } from "./botDiskApi.js";
+import { botDiskApi, botDiskQueryKey } from "./botDiskApi";
 
 interface DraftState {
   sharedPackageStore: string;
@@ -20,13 +20,16 @@ export const BotDiskSettingsPanel: React.FC = () => {
     queryKey: botDiskQueryKey,
     queryFn: () => botDiskApi.get(),
     retry: false,
-    onSuccess: (data) => {
-      setDraft({ 
-        sharedPackageStore: data.settings["shared.packageStore"] || "",
-        sharedEnabled: data.settings["shared.enabled"] || false
-      });
-    }
   });
+
+  // react-query v5 has no query onSuccess: seed the draft when the data arrives.
+  useEffect(() => {
+    if (!query.data) return;
+    setDraft({
+      sharedPackageStore: query.data.settings["shared.packageStore"] || "",
+      sharedEnabled: query.data.settings["shared.enabled"] || false,
+    });
+  }, [query.data]);
 
   const save = useMutation({
     mutationFn: (settings: { "shared.packageStore"?: string, "shared.enabled"?: boolean }) => botDiskApi.update(settings),

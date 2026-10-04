@@ -104,7 +104,7 @@ export async function writeBotDiskSettings(db: Db, next: BotDiskSettings): Promi
     await tx
       .update(instanceSettings)
       .set({
-        general: sql`jsonb_set(coalesce(${instanceSettings.general}, '{}'::jsonb), '{${BOT_DISK_GENERAL_KEY}}'::text[], ${JSON.stringify(next)}::jsonb, true)`,
+        general: sql`jsonb_set(coalesce(${instanceSettings.general}, '{}'::jsonb), ${`{${BOT_DISK_GENERAL_KEY}}`}::text[], ${JSON.stringify(next)}::jsonb, true)`,
       })
       .where(eq(instanceSettings.id, row.id));
     return next;
@@ -128,10 +128,10 @@ export async function writeCombinedSettings(db: Db, next: CombinedBotDiskSetting
     // Update both botDisk and shared settings
     let general = sql`coalesce(${instanceSettings.general}, '{}'::jsonb)`;
     if (next.sharedPackageCachePath !== undefined) {
-      general = sql`jsonb_set(${general}, '{${BOT_DISK_GENERAL_KEY}}'::text[], jsonb_build_object('sharedPackageCachePath', ${next.sharedPackageCachePath}), true)`;
+      general = sql`jsonb_set(${general}, ${`{${BOT_DISK_GENERAL_KEY}}`}::text[], jsonb_build_object('sharedPackageCachePath', ${next.sharedPackageCachePath}), true)`;
     }
     if (next.shared) {
-      general = sql`jsonb_set(${general}, '{${SHARED_GENERAL_KEY}}'::text[], ${JSON.stringify(next.shared)}::jsonb, true)`;
+      general = sql`jsonb_set(${general}, ${`{${SHARED_GENERAL_KEY}}`}::text[], ${JSON.stringify(next.shared)}::jsonb, true)`;
     }
     
     await tx

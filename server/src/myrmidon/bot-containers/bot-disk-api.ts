@@ -1,13 +1,13 @@
-import { Router, type Request, type Response } from "express";
-import { conflict, forbidden, notFound } from "../../errors.js";
-import { assertBoard, assertCompanyAccess, hasCompanyAccess } from "../../routes/authz.js";
+import { Router } from "express";
+import type { Db } from "@paperclipai/db";
+import { assertBoard } from "../../routes/authz.js";
 import { readBotDiskSettings, writeBotDiskSettings, type BotDiskSettings } from "./bot-disk-store.js";
 import { getBotContainerRuntime } from "./routes-wiring.js"; // myrmidon(1.6.1-BOT-DISK-B): to update driver config
 
-export function botDiskApi(db: Parameters<typeof readBotDiskSettings>[0]) {
+export function botDiskApi(db: Db) {
   const router = Router();
 
-  router.get("/", async (req, res) => {
+  router.get("/myrmidon/bot-disk", async (req, res) => {
     assertBoard(req);
     
     const settings = await readBotDiskSettings(db);
@@ -20,7 +20,7 @@ export function botDiskApi(db: Parameters<typeof readBotDiskSettings>[0]) {
     });
   });
 
-  router.patch("/", async (req, res) => {
+  router.patch("/myrmidon/bot-disk", async (req, res) => {
     assertBoard(req);
     
     // The request body follows the common contract
@@ -56,9 +56,7 @@ export function botDiskApi(db: Parameters<typeof readBotDiskSettings>[0]) {
     
     // Update the driver configuration with the new cache path
     const runtime = getBotContainerRuntime();
-    if (runtime?.driver?.updateSharedPackageCachePath) {
-      runtime.driver.updateSharedPackageCachePath(updatedSettings.sharedPackageCachePath);
-    }
+    runtime?.driver.updateSharedPackageCachePath?.(updatedSettings.sharedPackageCachePath);
     
     // Return response in the common contract format
     res.json({ 

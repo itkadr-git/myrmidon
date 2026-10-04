@@ -13,16 +13,18 @@
 
 import type { CompiledProfile } from "./types.js";
 
-/** One extra mount a bot gets from the instance-level allowlist
- *  (`MYRMIDON_BOT_MOUNT_SOURCES`, template.ts). By default, mounts are read-only for security,
- *  but specific system-defined paths (like package store paths) can be mounted as read-write. */
+/** One extra read-only mount a bot gets from the instance-level allowlist
+ *  (`MYRMIDON_BOT_MOUNT_SOURCES`, template.ts). Read-only only: a shared
+ *  directory is never mounted writable, and the driver refuses a mount whose
+ *  source the operator did not list. (The shared package cache of
+ *  1.6.1-BOT-DISK-B is not a card mount: the driver adds it itself.) */
 export interface BotExtraMount {
   /** Absolute host directory, listed in MYRMIDON_BOT_MOUNT_SOURCES. */
   source: string;
   /** Absolute mount point inside the container, outside the three fixed ones. */
   containerPath: string;
-  /** Whether the mount should be read-only (default: true). System-defined paths like package stores can be writable. */
-  readonly?: boolean;
+  /** Always true: a writable extra mount is not supported. */
+  readOnly: true;
 }
 
 /** Desired shape of a bot's container. Immutable for the life of the container:
@@ -110,11 +112,12 @@ export interface BotContainerDriver {
   status(botKey: string): Promise<BotContainerStatus>;
   /** All bots the driver currently manages (used for orphan/inventory sweeps). */
   list(): Promise<BotContainerStatus[]>;
-  /** 
-   * Updates the shared package cache path used by all subsequent container operations.
-   * This allows changing the shared cache without restarting the service.
+  /**
+   * myrmidon(1.6.1-BOT-DISK-B): set the shared package cache path used by every
+   * later create/recreate/templateDrift. Optional: only the local Docker driver
+   * implements it.
    */
-  updateSharedPackageCachePath(path: string | undefined): void;
+  updateSharedPackageCachePath?(path: string | undefined): void;
   /**
    * Side-effect-free check: does the existing container's live template (image,
    * resource limits, network, bind list) no longer match `spec`? `drifted` is

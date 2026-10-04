@@ -4,8 +4,6 @@
 // Implements the common primitive for configurable bind mounts that serves both
 // package cache and shared folder functionality.
 
-import { eq } from "drizzle-orm";
-import { instanceSettings as instanceSettingsTable } from "@paperclipai/db/schema";
 import type { Db } from "@paperclipai/db";
 import { readCombinedSettings, writeCombinedSettings, type CombinedBotDiskSettings } from "./bot-disk-store.js";
 
