@@ -10,6 +10,20 @@ version file to edit. Base Paperclip version is in the image label
 
 ## Unreleased
 
+### Gateway spend attributed through per-bot secret references (1.6.2 hotfix, M2-A)
+
+- The gateway cost sweep wrote no rows: every collected spend row was counted as
+  unattributed. Bot cards carry their gateway key as a `secret_ref` binding
+  (`adapterConfig.env.<MYRMIDON_BOT_LLM_API_KEY_ENV>` = `{ type: "secret_ref", secretId, version }`,
+  one company secret per bot), and the key lookup only understood an inline value or the one
+  shared secret. The lookup now resolves the card's secret reference by id and version, the
+  same reference the bot's container is compiled from, so the key hash matches the gateway
+  ledger and rows are attributed to the agent and its run. Inline values still work; the
+  shared secret (`MYRMIDON_BOT_LLM_API_KEY_SECRET`) is read once per pass and only for cards
+  without their own binding; a reference to a secret that cannot be read skips that card
+  instead of falling back to the shared key. The model fallback signal, which reuses the
+  lookup, is fixed by the same change. No settings change.
+
 ### Automatic rollback by health: operator guide (AUTO-UPDATE-SETTINGS A)
 
 - Docs only: the existing R5-C behavior (a failed post-deploy health check rolls
