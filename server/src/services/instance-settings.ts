@@ -268,6 +268,8 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // myrmidon(PLUGIN-ENTITLEMENT C): the stored plugin entitlement keys
       // survive every general write (edited on their own settings block).
       ...(parsed.data.pluginEntitlementKeys ? { pluginEntitlementKeys: parsed.data.pluginEntitlementKeys } : {}),
+      // myrmidon(MEMORY-UI): the stored agent memory settings survive every general write
+      ...(parsed.data.agentMemory ? { agentMemory: parsed.data.agentMemory } : {}),
     };
   }
   return {

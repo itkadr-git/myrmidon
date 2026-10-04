@@ -196,8 +196,8 @@ What changes for operators:
   every deploy still waits for an explicit human confirmation in the interface. Enable it
   only after the release scenario has run on the staging stand.
 - **New optional section on the agent card**: the Memory tab (view, export, removal of the
-  agent's memory bank) is off until the instance sets `MYRMIDON_HINDSIGHT_API_URL` and
-  `MYRMIDON_HINDSIGHT_KEY_SECRET`. Without the pair nothing changes on the card.
+  agent's memory bank) is off until a memory service address is known (instance setting, `MYRMIDON_HINDSIGHT_API_URL`
+  or `MYRMIDON_BOT_HINDSIGHT_API_URL`); the API key is optional.
 - **Cloud storage (part B)**: the owner can now connect a cloud provider from the panel
   with OAuth; the token bundle lives in a company secret of the instance secret store and
   never reaches the bots. No action needed at upgrade time — existing grants keep working.

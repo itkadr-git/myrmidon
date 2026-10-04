@@ -30,6 +30,8 @@ import { wipLimitSettingsSchema } from "../myrmidon-wip-limit.js";
 // myrmidon(1.7-BUDGET-CONFIG-B): the budget enforcement mode stored in the
 // same general settings row.
 import { budgetEnforcementSettingsSchema } from "../myrmidon-budget-enforcement.js";
+// myrmidon(MEMORY-UI): the agent memory settings stored in the same row.
+import { agentMemorySettingsSchema } from "../myrmidon-agent-memory.js";
 // myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys stored
 // in the same general settings row.
 import { pluginEntitlementKeysSchema } from "../myrmidon-plugin-entitlement.js";
@@ -118,6 +120,10 @@ export const instanceGeneralSettingsSchema = z.object({
   // from the instance settings page and PATCH /api/myrmidon/plugin-entitlement/keys;
   // absent means "no keys are registered" (no plugin is unlocked).
   pluginEntitlementKeys: pluginEntitlementKeysSchema.optional(),
+  // myrmidon(MEMORY-UI): agent card Memory tab — service address, optional key
+  // secret name and the switch, changed from the instance settings page and
+  // /api/myrmidon/agent-memory; absent means "use the environment".
+  agentMemory: agentMemorySettingsSchema.optional(),
 }).strict();
 
 export const patchInstanceGeneralSettingsSchema = z

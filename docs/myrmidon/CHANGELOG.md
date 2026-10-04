@@ -10,6 +10,20 @@ version file to edit. Base Paperclip version is in the image label
 
 ## Unreleased
 
+### Agent memory works without a key and is set in the UI (MEMORY-UI)
+
+- The Memory tab on the agent card no longer says "Agent memory is not enabled on this
+  instance" for a memory service without authentication. The API key is optional: the
+  section is on whenever an address is known, and the key is sent only when a key secret
+  is named.
+- The address defaults to `MYRMIDON_BOT_HINDSIGHT_API_URL` (the same service as the bots
+  use) when `MYRMIDON_HINDSIGHT_API_URL` is unset. Precedence: instance setting, then
+  environment, then the bot address.
+- New instance setting `general.agentMemory` (`enabled`, `apiUrl`, `keySecretName`) with an
+  "Agent memory" panel in Instance settings → General and `GET`/`PATCH
+  /api/myrmidon/agent-memory`. It is re-read on every request: no restart. See
+  [SETTINGS.md](SETTINGS.md).
+
 ### Heavy builds blocked inside the dev bot image (1.6.1 BUILD-OFFLOAD, part A)
 
 - The development variant of the bot image (`runtime-dev`,
