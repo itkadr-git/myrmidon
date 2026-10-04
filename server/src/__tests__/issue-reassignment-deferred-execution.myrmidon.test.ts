@@ -1,219 +1,137 @@
-import { and, eq, sql } from "drizzle-orm";
-import { randomUUID } from "crypto";
-import { beforeEach, afterEach, describe, it, expect, vi } from "vitest";
+// myrmidon(WAKE-STALL-B): when an issue is reassigned, deferred wakeups of the
+// previous assignee for that issue are cancelled; other issues and other
+// agents are left alone.
 
-import { db, agentWakeupRequests } from "@paperclipai/db";
+import { randomUUID } from "node:crypto";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { and, eq } from "drizzle-orm";
+import { agents, agentWakeupRequests, companies, createDb } from "@paperclipai/db";
+import {
+  getEmbeddedPostgresTestSupport,
+  startEmbeddedPostgresTestDatabase,
+} from "./helpers/embedded-postgres.js";
+import { issueService } from "../services/issues.js";
 
-import { issueServiceFactory } from "../services/issues";
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
-describe("issue reassignment with deferred executions - comprehensive test", () => {
+if (!embeddedPostgresSupport.supported) {
+  console.warn(
+    `Skipping embedded Postgres reassignment tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
+  );
+}
+
+describeEmbeddedPostgres("cancelDeferredExecutionsForAgentOnReassignment", () => {
+  let db!: ReturnType<typeof createDb>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
   const companyId = randomUUID();
   const oldAgentId = randomUUID();
-  const newAgentId = randomUUID();
+  const otherAgentId = randomUUID();
   const issueId = randomUUID();
 
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-reassignment-");
+    db = createDb(tempDb.connectionString);
+  }, 20_000);
+
   beforeEach(async () => {
-    // Clean up any existing test data
-    await db
-      .delete(agentWakeupRequests)
-      .where(
-        and(
-          eq(agentWakeupRequests.companyId, companyId),
-          sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`
-        )
-      );
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Reassignment Test Co",
+      issuePrefix: `R${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values(
+      [oldAgentId, otherAgentId].map((id) => ({
+        id,
+        companyId,
+        name: `Agent ${id.slice(0, 4)}`,
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      })),
+    );
   });
 
   afterEach(async () => {
-    // Clean up after each test
-    await db
-      .delete(agentWakeupRequests)
-      .where(
-        and(
-          eq(agentWakeupRequests.companyId, companyId),
-          sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`
-        )
-      );
+    await db.delete(agentWakeupRequests);
+    await db.delete(agents);
+    await db.delete(companies);
   });
 
-  it("cancels deferred executions for old assignee when issue is reassigned", async () => {
-    // Create some deferred executions for the old agent related to this issue
-    const deferredExecutions = await db
-      .insert(agentWakeupRequests)
-      .values([
-        {
-          id: randomUUID(),
-          companyId,
-          agentId: oldAgentId,
-          source: "automation",
-          reason: "issue_commented",
-          payload: { issueId },
-          status: "deferred_issue_execution",
-          requestedAt: new Date(),
-        },
-        {
-          id: randomUUID(),
-          companyId,
-          agentId: oldAgentId,
-          source: "automation", 
-          reason: "issue_assigned",
-          payload: { issueId },
-          status: "deferred_issue_execution",
-          requestedAt: new Date(),
-        },
-      ])
-      .returning();
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
 
-    expect(deferredExecutions.length).toBe(2);
+  function deferred(agentId: string, forIssueId: string) {
+    return {
+      id: randomUUID(),
+      companyId,
+      agentId,
+      source: "automation",
+      reason: "issue_execution_deferred",
+      payload: { issueId: forIssueId },
+      status: "deferred_issue_execution",
+    };
+  }
 
-    // Verify they exist with the correct status
-    const existingDeferred = await db
-      .select()
+  async function statusesFor(agentId: string) {
+    const rows = await db
+      .select({ status: agentWakeupRequests.status, payload: agentWakeupRequests.payload })
       .from(agentWakeupRequests)
-      .where(
-        and(
-          eq(agentWakeupRequests.agentId, oldAgentId),
-          eq(agentWakeupRequests.status, "deferred_issue_execution"),
-          eq(agentWakeupRequests.companyId, companyId),
-          sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`
-        )
-      );
-    
-    expect(existingDeferred.length).toBe(2);
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    return rows;
+  }
 
-    // Cancel deferred executions for reassignment
-    const svc = issueServiceFactory(db);
-    const cancelledCount = await svc.cancelDeferredExecutionsForAgentOnReassignment(
+  it("cancels every deferred wakeup of the old assignee for the issue", async () => {
+    await db.insert(agentWakeupRequests).values([deferred(oldAgentId, issueId), deferred(oldAgentId, issueId)]);
+
+    const cancelled = await issueService(db).cancelDeferredExecutionsForAgentOnReassignment(
       oldAgentId,
       issueId,
-      companyId
+      companyId,
     );
 
-    expect(cancelledCount).toBe(2); // Should cancel both for the specific issue
-
-    // Verify that the correct deferred executions were cancelled
-    const remainingDeferred = await db
+    expect(cancelled).toBe(2);
+    const rows = await db
       .select()
       .from(agentWakeupRequests)
-      .where(
-        and(
-          eq(agentWakeupRequests.agentId, oldAgentId),
-          eq(agentWakeupRequests.status, "deferred_issue_execution"),
-          eq(agentWakeupRequests.companyId, companyId),
-          sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`
-        )
-      );
-    
-    expect(remainingDeferred.length).toBe(0); // All should be cancelled
-
-    // Verify that the cancelled ones have the correct status
-    const cancelledExecutions = await db
-      .select()
-      .from(agentWakeupRequests)
-      .where(
-        and(
-          eq(agentWakeupRequests.agentId, oldAgentId),
-          eq(agentWakeupRequests.status, "cancelled"),
-          eq(agentWakeupRequests.companyId, companyId),
-          sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`
-        )
-      );
-    
-    expect(cancelledExecutions.length).toBe(2);
-    expect(cancelledExecutions[0]?.error).toContain("Cancelled due to issue reassignment");
+      .where(and(eq(agentWakeupRequests.agentId, oldAgentId), eq(agentWakeupRequests.status, "cancelled")));
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.error).toContain("Cancelled due to issue reassignment");
   });
 
-  it("only cancels deferred executions for the specific issue", async () => {
-    // Create deferred executions for the old agent related to different issues
+  it("leaves other issues and other agents untouched", async () => {
+    const otherIssueId = randomUUID();
     await db
       .insert(agentWakeupRequests)
-      .values([
-        {
-          id: randomUUID(),
-          companyId,
-          agentId: oldAgentId,
-          source: "automation",
-          reason: "issue_commented", 
-          payload: { issueId },
-          status: "deferred_issue_execution",
-          requestedAt: new Date(),
-        },
-        {
-          id: randomUUID(),
-          companyId,
-          agentId: oldAgentId,
-          source: "automation",
-          reason: "issue_commented",
-          payload: { issueId: randomUUID() }, // Different issue
-          status: "deferred_issue_execution",
-          requestedAt: new Date(),
-        },
-      ])
-      .returning();
+      .values([deferred(oldAgentId, issueId), deferred(oldAgentId, otherIssueId), deferred(otherAgentId, issueId)]);
 
-    // Verify both exist initially
-    const allDeferred = await db
-      .select()
-      .from(agentWakeupRequests)
-      .where(
-        and(
-          eq(agentWakeupRequests.agentId, oldAgentId),
-          eq(agentWakeupRequests.status, "deferred_issue_execution"),
-          eq(agentWakeupRequests.companyId, companyId)
-        )
-      );
-    
-    expect(allDeferred.length).toBe(2);
-
-    // Cancel deferred executions for reassignment (only for specific issue)
-    const svc = issueServiceFactory(db);
-    const cancelledCount = await svc.cancelDeferredExecutionsForAgentOnReassignment(
+    const cancelled = await issueService(db).cancelDeferredExecutionsForAgentOnReassignment(
       oldAgentId,
       issueId,
-      companyId
+      companyId,
     );
 
-    expect(cancelledCount).toBe(1); // Should cancel only the one for the specific issue
-
-    // Verify that the one for the specific issue was cancelled
-    const cancelledSpecific = await db
-      .select()
-      .from(agentWakeupRequests)
-      .where(
-        and(
-          eq(agentWakeupRequests.agentId, oldAgentId),
-          eq(agentWakeupRequests.status, "cancelled"),
-          eq(agentWakeupRequests.companyId, companyId),
-          sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`
-        )
-      );
-    
-    expect(cancelledSpecific.length).toBe(1);
-
-    // Verify that the one for the different issue is still deferred
-    const remainingForOtherIssue = await db
-      .select()
-      .from(agentWakeupRequests)
-      .where(
-        and(
-          eq(agentWakeupRequests.agentId, oldAgentId),
-          eq(agentWakeupRequests.status, "deferred_issue_execution"),
-          eq(agentWakeupRequests.companyId, companyId),
-          sql`${agentWakeupRequests.payload} ->> 'issueId' != ${issueId}`
-        )
-      );
-    
-    expect(remainingForOtherIssue.length).toBe(1);
+    expect(cancelled).toBe(1);
+    const oldRows = await statusesFor(oldAgentId);
+    expect(oldRows.filter((r) => r.status === "cancelled")).toHaveLength(1);
+    expect(
+      oldRows.filter((r) => r.status === "deferred_issue_execution").map((r) => (r.payload as { issueId: string }).issueId),
+    ).toEqual([otherIssueId]);
+    expect((await statusesFor(otherAgentId)).map((r) => r.status)).toEqual(["deferred_issue_execution"]);
   });
 
-  it("handles reassignment when no deferred executions exist for old agent", async () => {
-    const svc = issueServiceFactory(db);
-    const cancelledCount = await svc.cancelDeferredExecutionsForAgentOnReassignment(
+  it("returns 0 when nothing is deferred", async () => {
+    const cancelled = await issueService(db).cancelDeferredExecutionsForAgentOnReassignment(
       oldAgentId,
       issueId,
-      companyId
+      companyId,
     );
-
-    expect(cancelledCount).toBe(0); // Should return 0 when nothing to cancel
+    expect(cancelled).toBe(0);
   });
 });
