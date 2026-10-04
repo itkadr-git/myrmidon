@@ -3749,6 +3749,16 @@ export function issueThreadInteractionService(
       actor: InteractionActor,
     ) => {
       assertIssueOpenForInteractionResolution(issue);
+      // myrmidon(1.6.3-CTO-CHAT-B): the card's host may be the owner's standing
+      // chat conversation issue; `createChild` refuses to parent new work on a
+      // conversation, so the root task of such a card is created parentless
+      // (see the creation loop below). One row, selected once, before the
+      // transaction opens.
+      const hostConversationRows = await db
+        .select({ conversationAgentId: issues.conversationAgentId })
+        .from(issues)
+        .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)));
+      const hostConversation = hostConversationRows[0] ?? null;
       const current = await db
         .select()
         .from(issueThreadInteractions)
@@ -3865,26 +3875,69 @@ export function issueThreadInteractionService(
             );
           }
 
-          const { issue: createdIssue } = await issueService(
-            tx as unknown as Db,
-          ).createChild(parentIssueId, {
-            title: task.title,
-            description: task.description ?? null,
-            status: "todo",
-            workMode: task.workMode ?? "standard",
-            priority: task.priority ?? "medium",
-            assigneeAgentId: task.assigneeAgentId ?? null,
-            assigneeUserId: task.assigneeUserId ?? null,
-            projectId: task.projectId ?? issue.projectId,
-            goalId: task.goalId ?? issue.goalId,
-            billingCode: task.billingCode ?? null,
-            createdByAgentId: actor.agentId ?? null,
-            createdByUserId: actor.userId ?? null,
-            originIdentityContextId: interaction.sourceIdentityContextId ?? null,
-            originRunId: interaction.sourceRunId ?? null,
-            actorAgentId: actor.agentId ?? null,
-            actorUserId: actor.userId ?? null,
-          } as Parameters<ReturnType<typeof issueService>["createChild"]>[1]);
+          // myrmidon(1.6.3-CTO-CHAT-B): a suggest_tasks card can hang on the
+          // owner's standing chat conversation issue, which `createChild`
+          // refuses to parent on (conversations cannot acquire child edges).
+          // For that host the ROOT task of the card is created as a
+          // company-level task (no parent) so the vendor's own rule stays
+          // intact; every other task keeps the ordinary parenting: children
+          // follow their parentClientKey onto the root epic created here.
+          const hostIsConversation =
+            parentIssueId === issue.id && hostConversation?.conversationAgentId != null;
+          let createdIssue: Awaited<
+            ReturnType<ReturnType<typeof issueService>["createChild"]>
+          >["issue"];
+          if (hostIsConversation) {
+            // myrmidon(1.6.3-CTO-CHAT-B): a suggest_tasks card can hang on the
+            // owner's standing chat conversation issue, which `createChild`
+            // refuses to parent on (conversations cannot acquire child edges).
+            // For that host the ROOT task of the card is created as a
+            // company-level task (no parent) so the vendor's own rule stays
+            // intact; every other task keeps the ordinary parenting: children
+            // follow their parentClientKey onto the root created here.
+            createdIssue = await issueService(
+              tx as unknown as Db,
+            ).create(issue.companyId, {
+              title: task.title,
+              description: task.description ?? null,
+              status: "todo",
+              workMode: task.workMode ?? "standard",
+              priority: task.priority ?? "medium",
+              assigneeAgentId: task.assigneeAgentId ?? null,
+              assigneeUserId: task.assigneeUserId ?? null,
+              projectId: task.projectId ?? issue.projectId,
+              goalId: task.goalId ?? issue.goalId,
+              billingCode: task.billingCode ?? null,
+              createdByAgentId: actor.agentId ?? null,
+              createdByUserId: actor.userId ?? null,
+              originIdentityContextId: interaction.sourceIdentityContextId ?? null,
+              originRunId: interaction.sourceRunId ?? null,
+              actorAgentId: actor.agentId ?? null,
+              actorUserId: actor.userId ?? null,
+            } as Parameters<ReturnType<typeof issueService>["createChild"]>[1]);
+          } else {
+            const child = await issueService(
+              tx as unknown as Db,
+            ).createChild(parentIssueId, {
+              title: task.title,
+              description: task.description ?? null,
+              status: "todo",
+              workMode: task.workMode ?? "standard",
+              priority: task.priority ?? "medium",
+              assigneeAgentId: task.assigneeAgentId ?? null,
+              assigneeUserId: task.assigneeUserId ?? null,
+              projectId: task.projectId ?? issue.projectId,
+              goalId: task.goalId ?? issue.goalId,
+              billingCode: task.billingCode ?? null,
+              createdByAgentId: actor.agentId ?? null,
+              createdByUserId: actor.userId ?? null,
+              originIdentityContextId: interaction.sourceIdentityContextId ?? null,
+              originRunId: interaction.sourceRunId ?? null,
+              actorAgentId: actor.agentId ?? null,
+              actorUserId: actor.userId ?? null,
+            } as Parameters<ReturnType<typeof issueService>["createChild"]>[1]);
+            createdIssue = child.issue;
+          }
 
           const parentIdentifier =
             createdByClientKey.get(task.parentClientKey ?? "")?.identifier ??

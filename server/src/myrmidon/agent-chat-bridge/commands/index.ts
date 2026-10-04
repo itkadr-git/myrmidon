@@ -414,7 +414,11 @@ async function handleStatusCommand(
 }
 
 /**
- * Обработка команды /accept <id> для принятия плана задач
+ * myrmidon(1.6.3-CTO-CHAT-B): `/accept <id>` approves a pending
+ * `suggest_tasks` plan card from the owner's own bridged Telegram DM,
+ * through the same board service the portal accept route uses — no second
+ * implementation. The reply carries the link to the created epic and the
+ * number of created tasks.
  */
 async function handleAcceptCommand(
   input: BridgedCommandInput,
@@ -426,76 +430,65 @@ async function handleAcceptCommand(
     return {
       kind: "reply",
       command: "accept",
-      text: "Использование: /accept <id> — ID карточки для принятия",
+      text: "Укажите ID карточки: /accept <id> — ID карточки с планом из ответа бота.",
     };
   }
 
+  const service = issueThreadInteractionService(input.db);
+  const issue = {
+    id: input.conversationIssueId,
+    companyId: input.companyId,
+    projectId: null,
+    goalId: null,
+  };
   try {
-    const service = issueThreadInteractionService(input.db);
-    
-    // Проверяем, что карточка существует и принадлежит этой компании/задаче
-    const interaction = await service.getForIssue(
-      {
-        id: input.conversationIssueId,
-        companyId: input.companyId,
-      },
+    const current = await service.getForIssue(
+      { id: issue.id, companyId: issue.companyId },
       interactionId,
     );
-    if (!interaction) {
+    if (current.kind !== "suggest_tasks" || current.status !== "pending") {
       return {
         kind: "reply",
         command: "accept",
-        text: `Карточка с ID ${interactionId} не найдена`,
+        text: "Эта карточка не является предложением задач или уже обработана.",
       };
     }
-    
-    // Проверяем, что карточка типа suggest_tasks и статус pending
-    if (interaction.kind !== "suggest_tasks" || interaction.status !== "pending") {
-      return {
-        kind: "reply",
-        command: "accept",
-        text: "Эта карточка не может быть принята или уже обработана",
-      };
-    }
-    
-    // Принимаем все задачи в карточке
-    const allClientKeys = interaction.payload.tasks.map((task: { clientKey: string }) => task.clientKey);
-    
-    const result = await service.acceptInteraction(
-      {
-        id: input.conversationIssueId,
-        companyId: input.companyId,
-        projectId: null,
-        goalId: null,
-      },
+
+    const allClientKeys = current.payload.tasks.map(
+      (task: { clientKey: string }) => task.clientKey,
+    );
+    const { createdIssues } = await service.acceptInteraction(
+      issue,
       interactionId,
       { selectedClientKeys: allClientKeys },
-      { userId: input.boardUserId, agentId: null },
+      { userId: input.boardUserId, agentId: null, suggestedTaskEffectsAuthorized: true },
     );
-    
-    // Подсчитываем количество созданных задач
-    const createdTasksCount = result.createdIssues.length;
-    
-    // Формируем ответ с ссылкой на эпик и количеством задач
-    const epicLink = `${input.publicBaseUrl}/issues/${input.conversationIssueId}`;
-    
+
+    // myrmidon(X8-texts): the reply is read by the owner in the bridged DM,
+    // so the prose is Russian; the link and the count are data, not prose.
+    const epicLink = `${input.publicBaseUrl ?? ""}/issues/${
+      createdIssues[0]?.id ?? input.conversationIssueId
+    }`;
     return {
       kind: "reply",
       command: "accept",
-      text: `✅ Карточка принята!\n\nСоздан эпик: ${epicLink}\nКоличество задач: ${createdTasksCount}`,
+      text: `✅ План принят.\n\nЭпик: ${epicLink}\nСоздано задач: ${createdIssues.length}`,
     };
   } catch (error) {
-    console.error("Ошибка при принятии карточки:", error);
+    const message = (error as { message?: string }).message ?? "unknown error";
     return {
       kind: "reply",
       command: "accept",
-      text: `Ошибка при принятии карточки: ${(error as Error).message}`,
+      text: `Не удалось принять карточку: ${message}`,
     };
   }
 }
 
 /**
- * Обработка команды /reject <id> для отклонения плана задач
+ * myrmidon(1.6.3-CTO-CHAT-B): `/reject <id>` rejects a pending
+ * `suggest_tasks` plan card from the owner's own bridged Telegram DM,
+ * through the same board service as the portal reject route. No tasks are
+ * created; the card closes as rejected.
  */
 async function handleRejectCommand(
   input: BridgedCommandInput,
@@ -507,61 +500,55 @@ async function handleRejectCommand(
     return {
       kind: "reply",
       command: "reject",
-      text: "Использование: /reject <id> — ID карточки для отклонения",
+      text: "Укажите ID карточки: /reject <id> — ID карточки с планом из ответа бота.",
     };
   }
 
+  const service = issueThreadInteractionService(input.db);
+  const issue = {
+    id: input.conversationIssueId,
+    companyId: input.companyId,
+    projectId: null,
+    goalId: null,
+  };
   try {
-    const service = issueThreadInteractionService(input.db);
-    
-    // Проверяем, что карточка существует и принадлежит этой компании/задаче
-    const interaction = await service.getForIssue(
-      {
-        id: input.conversationIssueId,
-        companyId: input.companyId,
-      },
+    const current = await service.getForIssue(
+      { id: issue.id, companyId: issue.companyId },
       interactionId,
     );
-    if (!interaction) {
+    if (current.status !== "pending") {
       return {
         kind: "reply",
         command: "reject",
-        text: `Карточка с ID ${interactionId} не найдена`,
+        text: "Эта карточка уже обработана.",
       };
     }
-    
-    if (interaction.status !== "pending") {
+    if (current.kind !== "suggest_tasks") {
       return {
         kind: "reply",
         command: "reject",
-        text: "Эта карточка уже обработана",
+        text: "Эта карточка не является предложением задач; /reject применим только к планам.",
       };
     }
-    
-    // Отклоняем карточку, обновляя её статус на cancelled
-    const result = await service.cancel(
-      {
-        id: input.conversationIssueId,
-        companyId: input.companyId,
-        projectId: null,
-        goalId: null,
-      },
+
+    await service.rejectInteraction(
+      issue,
       interactionId,
       { reason: "rejected_by_owner_via_telegram" },
       { userId: input.boardUserId, agentId: null },
     );
-    
+
     return {
       kind: "reply",
       command: "reject",
-      text: `❌ Карточка отклонена.`,
+      text: "❌ План отклонён. Задачи не созданы.",
     };
   } catch (error) {
-    console.error("Ошибка при отклонении карточки:", error);
+    const message = (error as { message?: string }).message ?? "unknown error";
     return {
       kind: "reply",
       command: "reject",
-      text: `Ошибка при отклонении карточки: ${(error as Error).message}`,
+      text: `Не удалось отклонить карточку: ${message}`,
     };
   }
 }

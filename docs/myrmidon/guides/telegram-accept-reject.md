@@ -30,18 +30,18 @@ Example:
 
 1. When a plan is proposed via CTO chat, a `suggest_tasks` card is created on the standing conversation issue
 2. The card ID can be used with `/accept` or `/reject` commands
-3. `/accept` approves all tasks in the card and creates them as sub-issues
-4. `/reject` cancels the card without creating any tasks
+3. `/accept` approves all tasks in the card through the same `acceptInteraction` service call the portal accept route uses — the board's code creates the epic and the child tasks
+4. `/reject` closes the card as `rejected` through the same `rejectInteraction` service call the portal reject route uses — no tasks are created
 5. Both commands verify that the user has permission to act on the card
 
 ## Security
 
-- Only the owner of the Telegram conversation can accept/reject cards
+- Only the owner of the Telegram conversation can accept/reject cards (the command context check from X8c: a command acts only on the caller's own bridged chat)
 - Cards are validated to ensure they belong to the correct company and issue
 - Only pending `suggest_tasks` cards can be accepted/rejected
 
 ## Integration Points
 
 - Leverages the existing `suggest_tasks` interaction type
-- Uses the same acceptance path as the portal interface
-- Integrates with the Telegram DM bridge infrastructure
+- Uses `issueThreadInteractionService.acceptInteraction` / `rejectInteraction` — the same board service as the portal's accept/reject endpoints, with no second implementation
+- Integrates with the Telegram DM bridge infrastructure (X8c command runner)
