@@ -2094,6 +2094,13 @@
       "when": 1791226482772,
       "tag": "0302_heartbeat_runs_company_issue_coalesce_created_index",
       "breakpoints": true
+    },
+    {
+      "idx": 303,
+      "version": "7",
+      "when": 1791105527419,
+      "tag": "0303_remove_execution_continuation_duplication",
+      "breakpoints": true
     }
   ]
 }
