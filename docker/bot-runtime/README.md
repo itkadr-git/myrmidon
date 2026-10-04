@@ -218,6 +218,52 @@ with `--read-only`, `--user 10001:10001` and `tmpfs` in place of the volumes, ch
 contract label and the image user before that, and fails if `dockerd` is present — the image
 carries the client only.
 
+### Heavy builds are blocked at the image level (1.6.1 BUILD-OFFLOAD)
+
+The dev variant deliberately does **not** let a bot run the repository's heavy build
+operations locally. `pnpm install`, a monorepo `tsc --noEmit`, `vitest` suites, `gradle`
+builds and `go build`/`go test` are compile- and network-heavy workloads that belong on the
+build VPS, and running them inside a bot container starves the gateway (the container's CPU
+and memory budget is sized for the gateway, not a compiler).
+
+That is enforced by wrappers, not convention: `/opt/paperclip/bin` — the FIRST `PATH`
+element — carries `pnpm`, `tsc`, `vitest`, `gradle` and `go` shims (Node scripts, the same
+shape as the `gh`/`git-credential-paperclip` wrappers above) that intercept the bare names
+before the real binaries in `/opt/pnpm/bin`, `/opt/node24/bin` and `/opt/go/bin`.
+
+- **Blocked, exit 1, with the exact replacement on stderr**: `pnpm install`, `pnpm exec …`,
+  `pnpm run/test`, `pnpm store prune`, `tsc …`, `vitest …`, `gradle …`, `go build/test …`
+  and every other non-trivial invocation.
+- **Allowed locally (no network, no build work)**: `pnpm --version`, `pnpm config …`,
+  `pnpm store status`/`path`, and a bare `--version`/`--help` of the other wrapped tools.
+- **Not wrapped at all**: `git`, `node`, `cargo`, `gh`, `docker`, `jq`, `rg`, … — the
+  light/editing part of the cycle keeps running in the container.
+
+**The gate and how to run a build.** The wrappers open only when an executable
+`/usr/local/bin/devbuild` exists in the container. That file is never part of the image: it
+is mounted by the BUILD-OFFLOAD part-B driver into the per-invocation build container, so
+the ordinary bot container (this image plus its three volumes) always has the barrier
+closed. To run a heavy command, use the `devbuild` CLI, which mounts this workspace into a
+build container on the build VPS and runs the same command there:
+
+```
+devbuild pnpm install
+devbuild pnpm exec tsc --noEmit
+devbuild pnpm vitest run
+devbuild go build ./...
+```
+
+Inside a devbuild-driven container the wrappers detect the gate and exec the real binaries,
+so `devbuild pnpm install` literally runs `pnpm install` there.
+
+Build-time verification: the final `RUN` in the `runtime-dev` stage asserts, as uid `10001`
+in the finished image, that `pnpm install` fails with the refusal text (which names the
+`devbuild` replacement) and a non-zero exit, that `tsc`, `vitest`, `gradle` and `go build`
+refuse the same way, and that `pnpm --version` still answers through the wrapper. The image
+also asserts `/usr/local/bin/devbuild` does NOT exist in the built image — the gateway is
+mounted, never baked.
+
+
 ## Sealed image: lazy installs and the write-safe root
 
 `/opt/hermes-src` (the venv, the hermes source tree and the bundled skills

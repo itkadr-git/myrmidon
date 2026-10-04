@@ -34,6 +34,7 @@ import {
   type ChatModelChooser,
 } from "./models.js";
 import { applyChatAdapterOverride } from "./overrides.js";
+import { handlePlanCommand } from "./plan.js";
 import { buildChatStatusReply } from "./status.js";
 import { stopBridgedChatRuns } from "./stop.js";
 
@@ -76,6 +77,7 @@ export const TELEGRAM_DM_COMMANDS: readonly BridgedCommandSpec[] = [
   { command: "think", description: "Показать или задать глубину рассуждений" },
   { command: "stop", description: "Остановить текущий ответ" },
   { command: "status", description: "Показать модель, сессию и текущий ответ" },
+  { command: "plan", description: "Превратить сообщение в план эпика (только владелец компании)" },
 ];
 
 /**
@@ -149,6 +151,12 @@ export async function runBridgedDirectMessageCommand(
       return handleStopCommand(input);
     case "status":
       return handleStatusCommand(input, context);
+    case "plan":
+      // myrmidon(1.6-CTO-CHAT-B): everything planner-shaped (settings read
+      // per call, the company key, the plan id, the card) lives in
+      // `./plan.ts`, which delegates to the cto-chat telegram entry — no
+      // parallel secret-resolution path here.
+      return handlePlanCommand(input, parsed.args);
     case "close":
       return { kind: "reply", command: "close", text: "Этот чат не закрывается. Чтобы начать заново, отправьте /new." };
     case "task":

@@ -26,12 +26,19 @@
 // the wake; every admission gate (pause, maintenance, limits, budget) stays
 // inside enqueueWakeup.
 //
+// myrmidon(1.6.2 RUN-ADMISSION): the idle pass asks the host memory floor of
+// the run admission first. A wake on a host below the floor only adds a run
+// that waits in the queue (04.10: the idle pass and idle-pickup together had
+// 23 runs going with 7 GB of host memory left, and a global OOM followed), so
+// while the floor is closed the pass wakes nobody and logs why.
+//
 // Modelled on leases-stale-sweep.ts: one bounded page per pass, one release
 // per row with the reason recorded, a best-effort wake, a failure leaves the
 // row for the next pass.
 
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { companies, agentWakeupRequests, issues, issueClaims, type Db } from "@paperclipai/db";
+import { wakeNotParkedOnExecutionHold } from "../settled-holds/ready-predicate.js";
 import {
   SWARM_CLAIM_QUEUE_ISSUE_STATUSES,
   SWARM_CLAIM_RELEASE_REASON_ISSUE_CLOSED,
@@ -45,6 +52,7 @@ import {
   type SwarmClaimSettings,
 } from "@paperclipai/shared";
 import { logger } from "../../middleware/logger.js";
+import { currentHostMemoryGate, type HostMemoryGate } from "../run-admission.js";
 import { wakeNextAgentForIssueRole, type SwarmClaimServicePorts } from "./service.js";
 import { listClaimsOnNonQueueIssues, listExpiredClaims, releaseClaim } from "./store.js";
 import { listIdleRolePairs, liveClaimCountsByAgent } from "./idle-queue.js";
@@ -87,7 +95,16 @@ export interface SwarmClaimSweepResult {
   idleRoles: number;
   /** Free agents seen at a non-empty queue (the supervisor's zero metric). */
   idleFreeAgents: number;
+  /**
+   * myrmidon(1.6.2 RUN-ADMISSION): why the idle pass woke nobody without
+   * looking at the queues — the host memory floor of the run admission was
+   * closed — or null when the pass ran.
+   */
+  idleSkippedReason: string | null;
 }
+
+/** How often a pass skipped by the host memory floor is logged (one line per 5 min). */
+const IDLE_SKIP_LOG_INTERVAL_MS = 5 * 60_000;
 
 /** The sweeper runtime, created once per server process (see index.ts). */
 export interface SwarmClaimSweeper {
@@ -98,13 +115,22 @@ export interface SwarmClaimSweeper {
 export interface SwarmClaimSweeperDeps extends SwarmClaimServicePorts {
   /** Minimal spacing between two passes; the scheduler ticks more often. */
   intervalMs: number;
+  /**
+   * myrmidon(1.6.2 RUN-ADMISSION): the host memory floor of the run
+   * admission. Defaults to the process-wide admission, the same gate every
+   * run start goes through; tests inject a fake.
+   */
+  hostMemoryGate?: () => HostMemoryGate;
 }
 
 export function createSwarmClaimSweeper(deps: SwarmClaimSweeperDeps): SwarmClaimSweeper {
   let lastSweepAtMs = 0;
+  let lastIdleSkipLogAtMs = 0;
+  const hostMemoryGate = deps.hostMemoryGate ?? currentHostMemoryGate;
   return {
     resetForTest() {
       lastSweepAtMs = 0;
+      lastIdleSkipLogAtMs = 0;
     },
     async sweep(now = new Date()) {
       const result: SwarmClaimSweepResult = {
@@ -116,6 +142,7 @@ export function createSwarmClaimSweeper(deps: SwarmClaimSweeperDeps): SwarmClaim
         idleWoken: 0,
         idleRoles: 0,
         idleFreeAgents: 0,
+        idleSkippedReason: null,
       };
       const general = (await deps.settings.getGeneral()) as unknown as Record<string, unknown>;
       const { settings } = resolveSwarmClaimSettings({
@@ -225,6 +252,26 @@ export function createSwarmClaimSweeper(deps: SwarmClaimSweeperDeps): SwarmClaim
       // myrmidon(1.6.1 SWARM-IDLE-WAKE): the idle pass. Runs after the
       // release passes so this tick's releases are already back in the queue
       // the pair read sees. One company at a time, bounded by the batch cap.
+      // myrmidon(1.6.2 RUN-ADMISSION): no idle wakes while the host floor is
+      // closed. An unreadable host ("unknown") does not block: the floor is
+      // inactive then, exactly as it is for the run starts themselves.
+      const gate = hostMemoryGate();
+      if (gate.state === "closed") {
+        result.idleSkippedReason = gate.reason ?? "host free memory is below the run admission floor";
+        if (now.getTime() - lastIdleSkipLogAtMs >= IDLE_SKIP_LOG_INTERVAL_MS) {
+          lastIdleSkipLogAtMs = now.getTime();
+          logger.warn(
+            {
+              availableMb: gate.availableMb,
+              thresholdMb: gate.thresholdMb,
+              settlingRuns: gate.settlingRuns,
+              reason: result.idleSkippedReason,
+            },
+            "swarm idle wake pass skipped: the run admission host memory floor is closed",
+          );
+        }
+        return result;
+      }
       try {
         const idle = await sweepIdleWakes(deps, { settings, now, result });
         if (idle.idleWoken > 0) {
@@ -426,6 +473,9 @@ export async function issueHasLiveClaimOrWake(
         eq(agentWakeupRequests.companyId, companyId),
         inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution", "claimed"]),
         sql`${agentWakeupRequests.payload} ->> 'issueId' = ${target.issueId}`,
+        // myrmidon(HOLD-READY): a wake parked on an execution hold waits for a
+        // person, it is not in flight; it must not keep the task covered.
+        wakeNotParkedOnExecutionHold(),
       ),
     )
     .limit(1);

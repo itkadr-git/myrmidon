@@ -146,7 +146,10 @@ what exists as of 1.6:
   resumed with a backoff
   ([auto-resume](docs/myrmidon/guides/auto-resume.md)), a stalled run is
   interrupted and its task returned to the queue
-  ([run-stall](docs/myrmidon/guides/run-stall.md)).
+  ([run-stall](docs/myrmidon/guides/run-stall.md)). A WIP limit caps how many
+  tasks one agent holds in flight at once — set in Company Settings, shown live
+  on every agent row, and flagged in the attention feed when over
+  ([wip-limit](docs/myrmidon/guides/wip-limit.md)).
 - **Agents in isolated containers.** Each agent runs in a Docker container the
   board creates and maintains: its own image, CPU/memory/PID limits, its own
   LLM gateway key and its own tools — no server secrets reach a run
