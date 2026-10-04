@@ -62,8 +62,15 @@ const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
   agent_error_alert: { label: "Agent error" },
   // myrmidon(SUB): label for the stack-update source added with the stack registry release check.
   stack_update: { label: "Stack update" },
+  // myrmidon(BOT-RUNTIME-TUNING D): label for the model fallback signal source.
+  model_fallback_alert: { label: "Model fallback" },
   // myrmidon(STALE-BLOCK): label for the lifted-stale-block source.
   stale_block: { label: "Stale block lifted" },
+  host_disk_alert: { label: "Host disk" },
+  // myrmidon(1.6.1-WIP-LIMIT-A): label for the WIP-limit source added with the per-agent WIP limit.
+  wip_limit: { label: "WIP limit" },
+  // myrmidon(BOT-DISK-A): label for the bot disk lifecycle source.
+  bot_disk_lifecycle: { label: "Bot disk" },
 };
 
 export function sourceMeta(kind: AttentionSourceKind): SourceMeta {
@@ -131,6 +138,7 @@ export function attentionKind(item: AttentionItem): AttentionKind {
     case "blocker_attention":
     case "recovery_action":
     case "budget_alert":
+    case "host_disk_alert":
       return "blocking";
     case "approval":
     case "issue_thread_interaction":
@@ -245,6 +253,17 @@ export function attentionDetailLine(item: AttentionItem): string | null {
     }
     case "budget":
       return `${Math.round(detail.observedPercent)}% of budget used ($${detail.amountObserved} / $${detail.amountLimit})`;
+    case "host_disk": {
+      const parts = [`${detail.usedPercent}% of ${detail.totalGb} GB used (${detail.freeGb} GB free)`];
+      if (detail.growthBytesPerHour !== null) {
+        const gbPerHour = detail.growthBytesPerHour / (1024 * 1024 * 1024);
+        parts.push(gbPerHour >= 1 ? `+${gbPerHour.toFixed(1)} GB/hour` : `+${Math.round(gbPerHour * 1024)} MB/hour`);
+      }
+      if (detail.consumers.length > 0) {
+        parts.push(`biggest: ${detail.consumers.map((c) => `${c.path} (${c.sizeGb} GB)`).join(", ")}`);
+      }
+      return parts.join(" — ");
+    }
     case "generic":
       return quote(detail.summaryExcerpt);
     default:

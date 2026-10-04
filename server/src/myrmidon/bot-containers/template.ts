@@ -100,31 +100,89 @@ export const BOT_VOLUME_MOUNTS: readonly BotVolumeMount[] = [
 ];
 
 /** The fixed bind list for a bot, plus the extra read-only mounts its card asked
- *  for. Callers supply a botKey and (optionally) mount entries whose `source`
+ *  for, plus the shared package cache when the instance configures one
+ *  (1.6.1-BOT-DISK-B). Callers supply a botKey and (optionally) mount entries whose `source`
  *  already comes from the instance allowlist — never a raw path — so a card
  *  cannot smuggle in an arbitrary bind. A mount whose source is not in
  *  `MYRMIDON_BOT_MOUNT_SOURCES`, or whose container path would take over one of
- *  the driver's own mount points, throws before anything reaches the Docker API. */
+ *  the driver's own mount points, throws before anything reaches the Docker API.
+ *  The package cache binds are the only writable extra binds; their host
+ *  subdirectories and container paths are fixed here (PACKAGE_CACHE_MOUNTS)
+ *  and mirrored by dockergate, which accepts them only under its own
+ *  `packageCacheRoot` (tools/dockergate/internal/policy/create.go). */
 export function buildBinds(
   volumeRoot: string,
   botKey: string,
-  extra: { mounts?: readonly BotExtraMount[]; allowedSources?: readonly string[]; sharedMountPath?: string } = {},
+  extra: {
+    mounts?: readonly BotExtraMount[];
+    allowedSources?: readonly string[];
+    sharedPackageCachePath?: string;
+    sharedMountPath?: string;
+  } = {},
 ): string[] {
   validateBotKey(botKey);
   const mounts = extra.mounts ?? [];
   validateExtraMounts(mounts, extra.allowedSources ?? []);
-  
   const binds = [
     ...BOT_VOLUME_MOUNTS.map((mount) => `${volumeRoot}/${botKey}/${mount.hostSuffix}:${mount.containerPath}`),
     ...mounts.map((mount) => `${mount.source}:${mount.containerPath}:ro`),
   ];
-  
-  // Add shared mount if specified
+  // myrmidon(1.6.1-BOT-DISK-D): the shared directory, when this bot has access.
   if (extra.sharedMountPath) {
     binds.push(`${extra.sharedMountPath}:/shared:rw`); // Allow read-write access to shared directory
   }
-  
+  const cache = extra.sharedPackageCachePath;
+  if (cache) {
+    const reason = unsafeAbsolutePathReason(cache);
+    if (reason) {
+      throw new BotContainerTemplateError(`shared package cache path ${JSON.stringify(cache)} ${reason}`);
+    }
+    for (const [index, mount] of mounts.entries()) {
+      if (mount.containerPath === PACKAGE_CACHE_CONTAINER_ROOT || mount.containerPath.startsWith(`${PACKAGE_CACHE_CONTAINER_ROOT}/`)) {
+        throw new BotContainerTemplateError(
+          `extra mount #${index + 1} path ${JSON.stringify(mount.containerPath)} is reserved for the shared package cache`,
+        );
+      }
+    }
+    for (const mount of PACKAGE_CACHE_MOUNTS) {
+      binds.push(`${cache}/${mount.hostSubdir}:${mount.containerPath}:rw`);
+    }
+  }
   return binds;
+}
+
+/** Where the shared package cache appears inside a bot container. Outside the
+ *  three volumes and /tmp, so dockergate's reserved-target rule holds. */
+export const PACKAGE_CACHE_CONTAINER_ROOT = "/cache";
+
+export interface PackageCacheMount {
+  /** Subdirectory of the configured cache path on the host. */
+  hostSubdir: string;
+  /** Absolute mount point inside the container. */
+  containerPath: string;
+  /** The variable that points the tool at the mount (written to hermes/.env). */
+  envName: string;
+}
+
+/**
+ * Shared package cache layout (1.6.1-BOT-DISK-B). The tools only use a mount
+ * because the profile points them at it: the image's own defaults live under
+ * $HOME (/data/hermes, the per-bot volume), so profile-compile.ts writes
+ * {@link packageCacheEnv} into hermes/.env, which the gateway loads with
+ * override. pip is absent on purpose: the image sets PIP_NO_CACHE_DIR, which
+ * disables pip's cache whatever its value, and a dotenv file cannot unset it.
+ * Mirrored by dockergate (`PackageCacheMounts` in tools/dockergate/internal/policy/create.go).
+ */
+export const PACKAGE_CACHE_MOUNTS: readonly PackageCacheMount[] = [
+  { hostSubdir: "pnpm", containerPath: "/cache/pnpm", envName: "npm_config_store_dir" },
+  { hostSubdir: "go-mod", containerPath: "/cache/go-mod", envName: "GOMODCACHE" },
+  { hostSubdir: "go-build", containerPath: "/cache/go-build", envName: "GOCACHE" },
+  { hostSubdir: "gradle", containerPath: "/cache/gradle", envName: "GRADLE_USER_HOME" },
+];
+
+/** The environment that points each tool at its shared cache mount. */
+export function packageCacheEnv(): Record<string, string> {
+  return Object.fromEntries(PACKAGE_CACHE_MOUNTS.map((mount) => [mount.envName, mount.containerPath]));
 }
 
 /** Mount points and paths the driver itself owns inside every bot container: an
@@ -157,7 +215,7 @@ function unsafeAbsolutePathReason(value: string): string | null {
  *    cannot reach a sibling directory the operator did not name);
  *  - `containerPath` is a plain absolute path that is not one of the driver's
  *    own mount points (or a path under one) and is not used twice;
- *  - `readOnly` is true: a shared directory is never mounted writable.
+ *  - `readOnly` is true: a card's extra mount is never writable.
  * The check is the enforcement boundary, so it does not trust the card reader
  * (`agent-config.ts`) to have validated the list first.
  */

@@ -16,7 +16,9 @@ import type { CompiledProfile } from "./types.js";
 /** One extra read-only mount a bot gets from the instance-level allowlist
  *  (`MYRMIDON_BOT_MOUNT_SOURCES`, template.ts). Read-only only: a shared
  *  directory is never mounted writable, and the driver refuses a mount whose
- *  source the operator did not list. */
+ *  source the operator did not list. (The shared package cache of
+ *  1.6.1-BOT-DISK-B is not a card mount: the local driver adds it itself from
+ *  the instance settings; a fleetd host does not get it, see fleetd-driver.ts.) */
 export interface BotExtraMount {
   /** Absolute host directory, listed in MYRMIDON_BOT_MOUNT_SOURCES. */
   source: string;

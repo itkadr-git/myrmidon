@@ -1953,6 +1953,7 @@ export {
   issueBlockedInboxSeveritySchema,
   issueBlockedInboxStateSchema,
   updateIssueSchema,
+  updateIssueShapeSchema,
   stalledReviewDecisionSchema,
   issueExecutionPolicySchema,
   issueExecutionStateSchema,
@@ -2774,6 +2775,11 @@ export * from "./announcements.js";
 // myrmidon(WORKSPACE-HYGIENE): workspace quota values and the measurement record shared by the
 // server, the sweep and the settings validator.
 export * from "./myrmidon-workspace-hygiene.js";
+// myrmidon(BOT-DISK E): host disk usage threshold, samples and growth shared by the server, the
+// UI and the settings validator.
+export * from "./myrmidon-host-disk.js";
+// myrmidon(BOT-DISK-A): bot draft-directory lifecycle settings shared by the server and the settings validator.
+export * from "./myrmidon-bot-disk.js";
 // myrmidon(C0): live run-admission limits shared by the server, the UI and the settings validator.
 export * from "./myrmidon-runtime-limits.js";
 // myrmidon(PARALLEL-HELPERS): the card -> Hermes `delegation` contract shared by the profile
@@ -2782,6 +2788,9 @@ export * from "./myrmidon-parallel-helpers.js";
 // myrmidon(PARALLEL-HELPERS): the settings-side validator for the same module, exported next
 // to the contract so `instanceGeneralSettingsSchema`'s dependency is reachable from the barrel.
 export { parallelHelpersSettingsSchema, patchParallelHelpersSettingsSchema } from "./validators/instance.js";
+// myrmidon(BOT-LSP-DEFAULTS): language-server mode per role/card, shared by the profile
+// compiler, the agent card and the settings page.
+export * from "./myrmidon-bot-lsp.js";
 // myrmidon(EXTCASE-B): browser-bridge wire contract shared by the gateway, the extension and the panel.
 export * from "./myrmidon-browser-bridge.js";
 // myrmidon(UI2-I18N): per-user board UI language preference contract (2.0 UI tree).
@@ -2809,3 +2818,14 @@ export * from "./myrmidon-autonomy.js";
 export * from "./myrmidon-cto-chat.js";
 // myrmidon(1.6-TG-PROACTIVITY-E): the telegramNotify proactivity contract (mode, rarely ceiling, per-agent override).
 export * from "./myrmidon-telegram-notify.js";
+// myrmidon(1.6.1-WIP-LIMIT-A): the shared contract of the per-agent WIP limit —
+// the settings shape, the limit resolver and the status feed rows.
+export * from "./myrmidon-wip-limit.js";
+// myrmidon(1.7-BUDGET-CONFIG-B): the shared contract of budget enforcement —
+// the global mode (signal_only / soft / hard), its storage key and resolver.
+export * from "./myrmidon-budget-enforcement.js";
+
+// myrmidon(PLUGIN-ENTITLEMENT C): plugin entitlement keys contract.
+export * from "./myrmidon-plugin-entitlement.js";
+// myrmidon(1.6.1 MODEL-PROVIDERS): provider secret names, defaults and API schemas.
+export * from "./myrmidon-model-providers.js";

@@ -62,6 +62,8 @@ import { environmentDisplayLabel } from "../lib/managed-sandbox-environment";
 import { extractModelName, extractProviderId } from "../lib/model-utils";
 import { queryKeys } from "../lib/queryKeys";
 import { useCompany } from "../context/CompanyContext";
+// myrmidon(1.6.1 CUSTOM-CASTES C): role options from the caste directory
+import { useCasteOptions } from "./myrmidon/castes/useCasteOptions";
 import {
   Field,
   ToggleField,
@@ -78,12 +80,16 @@ import { ClaudeLocalAdvancedFields } from "../adapters/claude-local/config-field
 import { MarkdownEditor } from "./MarkdownEditor";
 import { ChoosePathButton } from "./PathInstructionsModal";
 // myrmidon(M1): extra models on the agent card
-import { AgentCardModelsFields } from "./myrmidon/AgentCardModelsFields";
+import { AgentCardModelsFields, CardEffortPicker } from "./myrmidon/AgentCardModelsFields";
+// myrmidon(BOT-TUNING-C): the per-model effort list for the hermes_local card picker.
+import { defaultEffortForModel, effortsForModel } from "../lib/card-effort-policy";
 // myrmidon(W2b): bot container settings on the agent card
 import { AgentCardContainerFields } from "./myrmidon/AgentCardContainerFields";
 // myrmidon(PARALLEL-HELPERS): parallel helper subagents on the agent card
 import { AgentCardParallelHelpersFields } from "./myrmidon/AgentCardParallelHelpersFields";
 import { parallelHelpersApi, parallelHelpersQueryKey } from "./myrmidon/parallelHelpersApi";
+import { AgentCardLspFields } from "./myrmidon/AgentCardLspFields"; // myrmidon(BOT-LSP-DEFAULTS)
+import { botLspApi, botLspQueryKey } from "./myrmidon/botLspApi"; // myrmidon(BOT-LSP-DEFAULTS)
 import { AgentCardEgressFields } from "./myrmidon/AgentCardEgressFields"; // myrmidon(EGRESS-B)
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
 import { ReportsToPicker } from "./ReportsToPicker";
@@ -361,6 +367,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const queryClient = useQueryClient();
   const environmentVariablesEditorRef = useRef<EnvironmentVariablesEditorHandle | null>(null);
 
+  // myrmidon(1.6.1 CUSTOM-CASTES C): the role select options come from the
+  // caste directory; useCasteOptions falls back to the built-in twelve when
+  // the directory is empty or unavailable.
+  const { options: casteOptions } = useCasteOptions();
+
   // Sync disabled adapter types from server so dropdown filters them out.
   const disabledTypes = useDisabledAdaptersSync();
 
@@ -616,6 +627,15 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const { data: parallelHelpersSettings } = useQuery({
     queryKey: parallelHelpersQueryKey,
     queryFn: () => parallelHelpersApi.get(),
+    enabled: !isCreate && adapterType === "hermes_gateway",
+    retry: false,
+  });
+  // myrmidon(BOT-LSP-DEFAULTS): the instance language-server policy, to show
+  // which mode the agent's role gives it. A viewer without access sees the
+  // module defaults (the server resolves the same way).
+  const { data: botLspSettings } = useQuery({
+    queryKey: botLspQueryKey,
+    queryFn: () => botLspApi.get(),
     enabled: !isCreate && adapterType === "hermes_gateway",
     retry: false,
   });
@@ -1296,6 +1316,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         : adapterType === "opencode_local"
           ? "variant"
           : adapterType === "pi_local" ? "thinking" : "effort";
+  // myrmidon(BOT-TUNING-C): hermes_local offers only the values the selected
+  // model accepts (GLM: low/high/max, no medium) instead of the claude list.
+  const isHermesLocalEffort = adapterType === "hermes_local";
+  const hermesEfforts = isHermesLocalEffort ? effortsForModel(currentModelId) : [];
+  const hermesEffortDefault = isHermesLocalEffort ? defaultEffortForModel(currentModelId) : "";
   const thinkingEffortOptions =
     adapterType === "codex_local"
       ? codexReasoningEffortOptions(currentModelId, "Auto").map((option) => ({
@@ -1310,7 +1335,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             ? kimiThinkingEffortOptions
             : adapterType === "pi_local"
               ? [{ id: "", label: "Auto" }, ...["off", "minimal", "low", "medium", "high", "xhigh"].map(id => ({ id, label: id }))]
-              : claudeThinkingEffortOptions;
+              : isHermesLocalEffort
+                // myrmidon(BOT-TUNING-C): the per-model list; "" compiles to
+                // the model's safe default, not a hardcoded level.
+                ? [{ id: "", label: hermesEffortDefault ? `Default (${hermesEffortDefault})` : "Auto" }, ...hermesEfforts.map(id => ({ id, label: id }))]
+                : claudeThinkingEffortOptions;
   const currentThinkingEffort = isCreate
     ? val!.thinkingEffort
     : adapterType === "codex_local"
@@ -1490,6 +1519,23 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 placeholder="e.g. VP of Engineering"
               />
             </Field>
+            {/* myrmidon(1.6.1 CUSTOM-CASTES C): the caste select lists the
+                company directory (with the built-in fallback below it) —
+                the choice commits as the agent's role. */}
+            <Field label="Role" hint={help.role}>
+              <select
+                className={inputClass}
+                value={String(eff("identity", "role", props.agent.role))}
+                onChange={(e) => mark("identity", "role", e.target.value)}
+                data-testid="agent-config-role-select"
+              >
+                {casteOptions.map((option) => (
+                  <option key={option.key} value={option.key}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </Field>
             <Field label="Reports to" hint={help.reportsTo}>
               <ReportsToPicker
                 agents={companyAgents}
@@ -1566,6 +1612,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             <Field label="Environment override">
               <div className="space-y-2">
                 <select
+                  data-testid="agent-config-environment-select"
                   className={inputClass}
                   value={currentDefaultEnvironmentId}
                   onChange={(event) => {
@@ -1773,6 +1820,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               )}
             />
           )}
+          {/* myrmidon(BOT-LSP-DEFAULTS): the agent's language-server mode; empty
+              follows the role policy from the instance settings. */}
+          {!isCreate && adapterType === "hermes_gateway" && (
+            <AgentCardLspFields
+              value={eff("adapterConfig", "lsp", config.lsp)}
+              onChange={(next) => mark("adapterConfig", "lsp", next)}
+              role={String(eff("identity", "role", props.agent.role)) || null}
+              settings={botLspSettings?.settings ?? null}
+            />
+          )}
           {isLocal && (<>
               <ModelDropdown
                 models={models}
@@ -1837,17 +1894,28 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
               {showThinkingEffort && (
                 <>
-                  <ThinkingEffortDropdown
-                    value={currentThinkingEffort}
-                    options={thinkingEffortOptions}
-                    onChange={(v) =>
-                      isCreate
-                        ? set!({ thinkingEffort: v })
-                        : mark("adapterConfig", thinkingEffortKey, v || undefined)
-                    }
-                    open={thinkingEffortOpen}
-                    onOpenChange={setThinkingEffortOpen}
-                  />
+                  {isHermesLocalEffort && !isCreate ? (
+                    // myrmidon(BOT-TUNING-C): the per-model effort picker with
+                    // the model's safe default badged; only values the
+                    // selected model accepts are offered.
+                    <CardEffortPicker
+                      model={currentModelId || undefined}
+                      value={currentThinkingEffort}
+                      onChange={(v) => mark("adapterConfig", thinkingEffortKey, v || undefined)}
+                    />
+                  ) : (
+                    <ThinkingEffortDropdown
+                      value={currentThinkingEffort}
+                      options={thinkingEffortOptions}
+                      onChange={(v) =>
+                        isCreate
+                          ? set!({ thinkingEffort: v })
+                          : mark("adapterConfig", thinkingEffortKey, v || undefined)
+                      }
+                      open={thinkingEffortOpen}
+                      onOpenChange={setThinkingEffortOpen}
+                    />
+                  )}
                   {adapterType === "codex_local" &&
                     codexSearchEnabled &&
                     currentThinkingEffort === "minimal" && (

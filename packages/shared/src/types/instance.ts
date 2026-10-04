@@ -2,14 +2,24 @@ import type { FeedbackDataSharingPreference } from "./feedback.js";
 // myrmidon(WORKSPACE-HYGIENE): the workspace quotas stored in instance settings
 import type { WorkspaceHygieneLimits } from "../myrmidon-workspace-hygiene.js";
 // myrmidon(C0): the run admission limits stored in instance settings
-import type { RunLimits } from "../myrmidon-runtime-limits.js";
+import type { StoredRunLimits } from "../myrmidon-runtime-limits.js";
+import type { HostDiskSettings } from "../myrmidon-host-disk.js";
+// myrmidon(BOT-DISK-A): the bot draft-directory lifecycle stored in instance settings
+import type { StoredBotDiskSettings } from "../myrmidon-bot-disk.js";
 // myrmidon(PARALLEL-HELPERS): the helper ceiling/default stored in instance settings
 import type { ParallelHelpersSettings } from "../myrmidon-parallel-helpers.js";
+import type { BotLspSettings } from "../myrmidon-bot-lsp.js";
 // myrmidon(EXTCASE-B): the browser-bridge allowlist stored in instance settings
 import type { BrowserBridgeSettings } from "../myrmidon-browser-bridge.js";
 import type { SwarmClaimSettings } from "../myrmidon-swarm-claim.js";
 // myrmidon(1.6.1-BOT-DISK-D): shared mount settings stored in instance settings
 import type { SharedMountSettings } from "../myrmidon-shared-mount.js";
+// myrmidon(1.6.1-WIP-LIMIT-A): per-agent WIP limits of the same general settings row.
+import type { WipLimitSettings } from "../myrmidon-wip-limit.js";
+import type { BudgetEnforcementSettings } from "../myrmidon-budget-enforcement.js";
+// myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys live in
+// the same general settings row.
+import type { PluginEntitlementKey } from "../myrmidon-plugin-entitlement.js";
 
 export const DAILY_RETENTION_PRESETS = [3, 7, 14] as const;
 export const WEEKLY_RETENTION_PRESETS = [1, 2, 4] as const;
@@ -57,12 +67,27 @@ export interface InstanceGeneralSettings {
    */
   workspaceHygiene?: WorkspaceHygieneLimits;
   /**
+   * myrmidon(BOT-DISK E): the host disk usage threshold, changed from
+   * `GET`/`PATCH /api/myrmidon/host-disk`. Absent means "use the environment
+   * variable, then the default (85)"; kept in sync with the validator of the
+   * same field (packages/shared/src/validators/instance.ts).
+   */
+  hostDisk?: HostDiskSettings;
+  /**
+   * myrmidon(BOT-DISK-A): the bot draft-directory lifecycle, changed from
+   * `GET`/`PATCH /api/myrmidon/bot-disk`. Absent means "use the environment
+   * variable, then the default"; kept in sync with the validator of the same
+   * field (packages/shared/src/validators/instance.ts).
+   */
+  botDisk?: StoredBotDiskSettings;
+  /**
    * myrmidon(C0): run admission limits changed from the instance settings page
    * and `GET`/`PATCH /api/myrmidon/runtime-limits`. Absent means "use the
    * environment variable, then the default"; kept in sync with the validator of
-   * the same field (packages/shared/src/validators/instance.ts).
+   * the same field (packages/shared/src/validators/instance.ts). A row saved
+   * before 1.6.2 lacks `minFreeHostMemoryMb` (myrmidon 1.6.2 RUN-ADMISSION).
    */
-  runLimits?: RunLimits;
+  runLimits?: StoredRunLimits;
   /**
    * myrmidon(PARALLEL-HELPERS): company ceiling/default for parallel helper
    * subagents, changed from the instance settings page and
@@ -72,6 +97,15 @@ export interface InstanceGeneralSettings {
    * validator of the same field.
    */
   parallelHelpers?: ParallelHelpersSettings;
+  /**
+   * myrmidon(BOT-LSP-DEFAULTS): which roles write code and which language-server
+   * mode coding and non-coding bots run with, changed from the instance settings
+   * page and `GET`/`PATCH /api/myrmidon/bot-lsp`. Absent means "use the module
+   * defaults" (coding roles limited, every other role off — see
+   * packages/shared/src/myrmidon-bot-lsp.ts); kept in sync with the validator of
+   * the same field.
+   */
+  botLsp?: BotLspSettings;
   /**
    * myrmidon(EXTCASE-B): browser-bridge allowlist (the tender-platform domains
    * the gateway and the extension both accept), changed from the bridge panel.
@@ -93,6 +127,35 @@ export interface InstanceGeneralSettings {
    * and what permissions they have. Absent means "shared mount is disabled".
    */
   sharedMount?: SharedMountSettings;
+   * myrmidon(1.6.1 SWARM-SETTINGS-UI): the change journal of the swarm-claim
+   * pilot settings — who changed what, and when, newest first. Written by the
+   * swarm-claim settings service on every PATCH, read by
+   * GET /api/myrmidon/swarm-claim. Kept in sync with the validator of the
+   * same field (packages/shared/src/validators/instance.ts).
+   */
+  swarmClaimJournal?: unknown[];
+  /**
+   * myrmidon(1.6.1-WIP-LIMIT-A): per-agent WIP limits, changed from
+   * `GET`/`PUT /api/myrmidon/companies/:companyId/wip-limit/settings`. Absent
+   * means "count only, never signal". Kept in sync with the validator of the
+   * same field (packages/shared/src/validators/instance.ts).
+   */
+  wipLimit?: WipLimitSettings;
+  /**
+   * myrmidon(1.7-BUDGET-CONFIG-B): what a crossed budget limit does —
+   * signal only (default), pause with an owner card (soft), or refuse new
+   * runs (hard); changed from `GET`/`PATCH /api/myrmidon/budget-enforcement`.
+   * Kept in sync with the validator of the same field
+   * (packages/shared/src/validators/instance.ts).
+   */
+  budgetEnforcement?: BudgetEnforcementSettings;
+  /**
+   * myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys, managed
+   * from the instance settings page. Absent means "no keys registered". Kept
+   * in sync with the validator of the same field
+   * (packages/shared/src/validators/instance.ts).
+   */
+  pluginEntitlementKeys?: PluginEntitlementKey[];
 }
 
 export interface InstanceExperimentalSettings {
