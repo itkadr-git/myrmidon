@@ -8,8 +8,8 @@ import { after, before, beforeEach, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
 // GITHUB-SHARED-IDENTITY: the bot image's GitHub broker wrappers name the target
-// repository to the board's broker, so the broker can issue the shared GitHub
-// authorization per allowed repository. The board side is covered by vitest; this
+// repository to the board's broker, so the broker can mint a GitHub App
+// installation token for that one repository. The board side is covered by vitest; this
 // pins the container half: what the git credential helper and the gh wrapper
 // send, and that they answer git/gh only with what the broker returned.
 
@@ -83,7 +83,7 @@ function run(command, args, { input = "", env = {}, cwd } = {}) {
 
 const available = {
   status: "available",
-  source: "shared",
+  source: "app",
   login: "bot-a",
   repository: "owner-a/repo-a",
   env: { GH_TOKEN: TEST_TOKEN, GITHUB_TOKEN: TEST_TOKEN },
@@ -120,8 +120,8 @@ describe("docker/bot-runtime/github-broker/git-credential-paperclip", () => {
       status: 200,
       body: {
         status: "unavailable",
-        source: "shared",
-        reason: "Repository owner-a/other is not in the allowed list of the shared GitHub authorization",
+        source: "app",
+        reason: "Repository owner-a/other is not in the allowed list of the GitHub App identity",
         env: {},
       },
     };
@@ -192,7 +192,7 @@ describe("docker/bot-runtime/github-broker/gh", () => {
   }
 
   it("runs gh without a token when the broker refuses", async () => {
-    reply = { status: 200, body: { status: "unavailable", source: "shared", reason: "not allowed", env: {} } };
+    reply = { status: 200, body: { status: "unavailable", source: "app", reason: "not allowed", env: {} } };
     const result = await run(GH_WRAPPER, ["-R", "owner-b/repo-b", "pr", "list"], {
       env: { PATH: `${fakeBin}${path.delimiter}${process.env.PATH}` },
       cwd: fakeBin,

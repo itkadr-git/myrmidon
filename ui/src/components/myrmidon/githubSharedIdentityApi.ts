@@ -1,15 +1,20 @@
-// Shared GitHub authorization access rules (myrmidon GITHUB-SHARED-IDENTITY):
+// Self-hosted GitHub App identities (myrmidon GITHUB-SHARED-IDENTITY):
 // GET/PUT /api/myrmidon/companies/:companyId/github-shared-identity.
 //
-// The shared authorization itself is an ordinary managed GitHub connection
-// with the "Shared company GitHub account" identity (one OAuth pass, under
-// Apps → GitHub). These rules say, per shared connection, which agents may
-// use it and for which repositories. Saving applies to the next git/gh
-// operation — no restart. No token ever travels through this API.
+// "Authorize once for the whole server": the operator registers our own
+// GitHub App per account or organization, stores its private key as a
+// company secret, and lists here which agents may use it for which
+// repositories. The board mints short-lived single-repository installation
+// tokens itself. Saving applies to the next git/gh operation — no restart.
+// No key or token ever travels through this API.
 import { api } from "@/api/client";
 
-export interface GitHubSharedConnectionRule {
-  connectionId: string;
+export interface GitHubAppEntry {
+  id: string;
+  name: string;
+  appId: string;
+  privateKeySecretId: string;
+  installationId: string | null;
   roles: string[];
   agentIds: string[];
   allowedRepos: string[];
@@ -18,27 +23,14 @@ export interface GitHubSharedConnectionRule {
 export interface GitHubSharedIdentitySettings {
   version: 1;
   enabled: boolean;
-  connections: GitHubSharedConnectionRule[];
+  apps: GitHubAppEntry[];
   commitEmailDomain: string | null;
-}
-
-export interface SharedGitHubConnectionView {
-  id: string;
-  name: string;
-  enabled: boolean;
-  status: string;
-  installedForCompany: boolean;
-  grant: {
-    status: string;
-    login: string | null;
-    repositoryCount: number | null;
-    repositorySelection: string | null;
-  } | null;
 }
 
 export interface GitHubSharedIdentityView {
   settings: GitHubSharedIdentitySettings;
-  connections: SharedGitHubConnectionView[];
+  /** Whether the vendor cloud GitHub connector is enabled on this instance (off by default). */
+  vendorConnectorEnabled: boolean;
 }
 
 export type GitHubSharedIdentityPut = Omit<GitHubSharedIdentitySettings, "version">;

@@ -54,8 +54,8 @@ def main() -> None:
 
     # myrmidon(GITHUB-SHARED-IDENTITY): the broker is the single credential path.
     # While a capability is bound, EVERY static token name is stripped from the
-    # terminal child env — also when the board serves a shared (instance-wide)
-    # GitHub authorization: its token reaches git/gh only through
+    # terminal child env — also when the board serves a self-hosted GitHub
+    # App identity: its token reaches git/gh only through
     # git-credential-paperclip and the gh wrapper, per invocation and per
     # allowed repository, never as an ambient env value a shell, a log or a
     # child process could read.

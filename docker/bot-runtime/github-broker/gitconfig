@@ -9,7 +9,7 @@
 # are rewritten to https so the helper covers them too.
 # myrmidon(GITHUB-SHARED-IDENTITY): useHttpPath makes git hand the helper the
 # repository path (owner/repo.git), which the helper forwards to the broker:
-# the shared GitHub authorization is issued per repository, for allowed ones only.
+# a GitHub App token is minted per repository, for allowed ones only.
 [credential]
 	helper =
 [credential "https://github.com"]
