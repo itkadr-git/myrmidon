@@ -103,6 +103,7 @@ if [[ -n "$manifest" ]]; then
   triples="$(jq -r '.components | to_entries[] | "\(.key) \(.value.repository) \(.value.digest)"' <<<"$manifest")"
 else
   # | board | `ghcr.io/itkadr-git/myrmidon@sha256:...` |   (the `bot` row is hermes)
+  # shellcheck disable=SC2016  # backticks here are literal markdown, not a command substitution
   triples="$(sed -nE 's/^\|[[:space:]]*([a-z-]+)[[:space:]]*\|[[:space:]]*`([^`@]+)@(sha256:[0-9a-f]{64})`[[:space:]]*\|.*/\1 \2 \3/p' <<<"$body" | sed -E 's/^bot /hermes /')"
 fi
 [[ -n "$triples" ]] || die "no component digests found"

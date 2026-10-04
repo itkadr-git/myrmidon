@@ -420,7 +420,12 @@ rollback_everything() {
   local what="$1" ok=1 i name
   log "ROLLING BACK TOGETHER: $what failed; restoring the board and every component this deploy changed"
   if ((dg_cfg_saved)) && [[ -f "$DG_CFG_BACKUP" ]]; then
-    cp -p "$DG_CFG_BACKUP" "$DG_CONFIG" && log "restored the dockergate config" || { ok=0; log "FAILED to restore the dockergate config from $DG_CFG_BACKUP"; }
+    if cp -p "$DG_CFG_BACKUP" "$DG_CONFIG"; then
+      log "restored the dockergate config"
+    else
+      ok=0
+      log "FAILED to restore the dockergate config from $DG_CFG_BACKUP"
+    fi
   fi
   for ((i = ${#rolled_components[@]} - 1; i >= 0; i--)); do
     name="${rolled_components[i]}"
@@ -452,7 +457,7 @@ rollback_everything() {
 
 # 7c: the components and the dockergate config, inside the window.
 roll_components_in_window() {
-  local name pre post rc
+  local name post rc
   if [[ "$MYR_BOT_ROLLOUT_ENABLED" == "1" ]]; then
     mkdir -p "$STATE_DIR"
     cp -p "$DG_CONFIG" "$DG_CFG_BACKUP" || { log "cannot back up $DG_CONFIG"; return 1; }

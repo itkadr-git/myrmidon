@@ -32,6 +32,28 @@ version file to edit. Base Paperclip version is in the image label
   left alone; progress and failures are reported. Includes BOT-IMAGE-ROLLOUT (PR #454).
 - `component_host_service_exists` no longer reports a service as missing when `grep -q`
   closes the pipe early (SIGPIPE under `pipefail`).
+### Heavy builds blocked inside the dev bot image (1.6.1 BUILD-OFFLOAD, part A)
+
+- The development variant of the bot image (`runtime-dev`,
+  `ghcr.io/itkadr-git/myrmidon-hermes-dev`) no longer relies on convention to keep
+  heavy repository operations off the bot container: `pnpm`, `tsc`, `vitest`,
+  `gradle` and `go` shims in `/opt/paperclip/bin` (first on `PATH`, ahead of the
+  real binaries) refuse every non-trivial invocation with exit 1 and a stderr
+  message naming the exact `devbuild …` replacement, unless an executable
+  `/usr/local/bin/devbuild` exists in the container. That gateway file is never
+  baked into the image — the part-B driver mounts it into the per-invocation
+  build container — so the barrier is always closed in the ordinary bot
+  container. See
+  [docker/bot-runtime/README.md](../../docker/bot-runtime/README.md), section
+  "Heavy builds are blocked at the image level".
+- Light probes keep working locally: `pnpm --version`, `pnpm config …`,
+  `pnpm store status`/`path`, and bare `--version`/`--help` of the other wrapped
+  tools. `git`, `node`, `cargo`, `gh` and `docker` are deliberately not wrapped —
+  the light, editing half of the cycle still runs in the container. To run a
+  build: `devbuild pnpm install`, `devbuild pnpm exec tsc --noEmit`,
+  `devbuild pnpm vitest run`, `devbuild go build ./...` — the workspace is
+  mounted into a build container on the build VPS and the same command runs
+  there.
 
 ### Release publish waits for the tag's own image runs (RELEASE-PUBLISH-WAIT)
 

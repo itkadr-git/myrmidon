@@ -111,7 +111,6 @@ require_cmd docker curl jq
 MYR_BOT_COMPONENTS="${MYRMIDON_BOT_IMAGE_ROLLOUT_COMPONENTS:-hermes,hermes-dev,hermes-node}"
 MYR_BOT_TIMEOUT_SEC="${MYRMIDON_BOT_IMAGE_ROLLOUT_BOT_TIMEOUT_SEC:-900}"
 MYR_BOT_DOCKERGATE_CONFIG="${MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_CONFIG:-}"
-MYR_BOT_DOCKERGATE_CHECK="${MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_CHECK_CONFIG_COMMAND:-}"
 MYR_BOT_DOCKERGATE_SIGNAL="${MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_SIGNAL_COMMAND:-}"
 MYR_BOT_FLEET_HOSTS="${MYRMIDON_BOT_IMAGE_ROLLOUT_FLEET_HOSTS:-}"
 MYR_BOT_ROLLOUT_LOG="${MYRMIDON_BOT_IMAGE_ROLLOUT_LOG:-$STATE_DIR/bot-image-rollout.log}"
@@ -390,8 +389,10 @@ if [[ -n "$bots" ]]; then
     for host in "${FLEET_HOSTS_LIST[@]}"; do
       [[ -n "$host" ]] || continue
       fleet_cfg="${MYRMIDON_BOT_IMAGE_ROLLOUT_FLEET_CONFIG:-/etc/myrmidon-fleetd/config.json}"
+      # shellcheck disable=SC2029  # the path is meant to expand on the client side
       if ssh "${fleet_ssh_opts[@]}" "$host" "test -f '$fleet_cfg'" 2>/dev/null; then
         scp -q "${fleet_ssh_opts[@]}" "$MYR_BOT_DOCKERGATE_CONFIG" "$host:/tmp/.myrmidon-bot-enroll.$$" 2>/dev/null || true
+        # shellcheck disable=SC2029  # the path is meant to expand on the client side
         ssh "${fleet_ssh_opts[@]}" "$host" \
           "jq -c '. + {bots: ((.bots // []) + (input | .bots // []) | unique_by(.botKey))}' '$fleet_cfg' /tmp/.myrmidon-bot-enroll.$$ >'$fleet_cfg.new' && mv '$fleet_cfg.new' '$fleet_cfg' && rm -f /tmp/.myrmidon-bot-enroll.$$" \
           || bot_log "WARNING: could not enroll bots[] in the fleetd config of $host ($fleet_cfg); enroll it by hand or fix MYRMIDON_BOT_IMAGE_ROLLOUT_FLEET_CONFIG"
