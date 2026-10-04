@@ -40,6 +40,10 @@ import { pluginEntitlementKeysSchema } from "../myrmidon-plugin-entitlement.js";
 // myrmidon(DM-PROGRESS): live progress steps of the bridged Telegram DM status
 // message, stored in the same general settings row.
 import { telegramDmProgressSettingsSchema } from "../myrmidon-telegram-dm-progress.js";
+// myrmidon(1.6.3 PROMPT-BUDGET B): the prompt-budget thresholds (warn/crit
+// percent of the model window, fallback window, optimizer agent) stored in the
+// same general settings row.
+import { promptBudgetSettingsSchema } from "../myrmidon-prompt-budget.js";
 
 // myrmidon(PARALLEL-HELPERS): re-exported for the barrel so the settings page and the
 // /api/myrmidon/parallel-helpers route validate with the exact schema stored here.
@@ -136,6 +140,10 @@ export const instanceGeneralSettingsSchema = z.object({
   // secret name and the switch, changed from the instance settings page and
   // /api/myrmidon/agent-memory; absent means "use the environment".
   agentMemory: agentMemorySettingsSchema.optional(),
+  // myrmidon(1.6.3 PROMPT-BUDGET B): prompt-budget thresholds, changed from
+  // /api/myrmidon/companies/:id/prompt-budget/settings; absent means the
+  // defaults (warn 70, crit 90, enabled, 200k fallback window).
+  promptBudget: promptBudgetSettingsSchema.optional(),
 }).strict();
 
 export const patchInstanceGeneralSettingsSchema = z

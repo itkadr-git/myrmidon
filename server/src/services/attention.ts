@@ -98,6 +98,13 @@ import {
   WIP_LIMIT_SETTINGS_KEY,
   normalizeWipLimitSettings,
 } from "@paperclipai/shared";
+// myrmidon(1.6.3 PROMPT-BUDGET B): the prompt-budget threshold cards.
+import { buildPromptBudgetAttentionCards } from "../myrmidon/prompt-budget/attention.js";
+import { buildPromptBudgetStatus } from "../myrmidon/prompt-budget/status.js";
+import {
+  PROMPT_BUDGET_SETTINGS_KEY,
+  normalizePromptBudgetSettings,
+} from "@paperclipai/shared";
 // myrmidon(1.7-BUDGET-CONFIG-B): the enforcement mode shown on the budget card.
 import { resolveBudgetEnforcement } from "@paperclipai/shared";
 
@@ -172,6 +179,9 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   // myrmidon(REVIEW-ROUTING): a stuck review is a stalled delivery, ranked with
   // the other machine-routing notices (just after the lifted stale block).
   review_routing: 16,
+  // myrmidon(1.6.3 PROMPT-BUDGET B): an over-threshold prompt is a capacity
+  // warning on one agent — advice, ranked with the other workload notices.
+  prompt_budget_alert: 17,
 };
 
 const PENDING_INTERACTION_STATUSES = ["pending"] as const;
@@ -2398,6 +2408,58 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             images: [],
           },
         }));
+      }
+      // myrmidon(1.6.3 PROMPT-BUDGET B): an agent whose last run's prompt
+      // crossed the warn/crit threshold (percent of the model window) raises
+      // one card. The feed recomputes on every list, so the card lives exactly
+      // as long as the last run is over the threshold — a newer run under the
+      // threshold removes it, a re-grade warn ↔ crit updates it in place (one
+      // dedup key per agent). The detail carries the top-3 prompt parts, the
+      // window and the crossed threshold. A disabled feature emits nothing.
+      const promptBudgetSettings = normalizePromptBudgetSettings(
+        wipSettingsRow?.general?.[PROMPT_BUDGET_SETTINGS_KEY],
+      );
+      if (promptBudgetSettings.enabled) {
+        const promptBudgetStatuses = await buildPromptBudgetStatus(
+          db,
+          companyId,
+          promptBudgetSettings,
+        );
+        for (const card of buildPromptBudgetAttentionCards(promptBudgetStatuses, wipAgentNameById)) {
+          add(createItem({
+            companyId,
+            sourceKind: "prompt_budget_alert",
+            subject: {
+              kind: "agent",
+              id: card.agentId,
+              companyId,
+              title: card.title,
+              identifier: null,
+              status: null,
+              href: `/${prefix}/agents/${card.agentId}`,
+              metadata: card.metadata,
+            },
+            whyNow: card.whyNow,
+            decisionVerbs: decisionVerbs(
+              { id: "inspect", label: "Inspect", description: "Open the agent card and check the prompt breakdown of the last run." },
+              { id: "dismiss", label: "Dismiss", description: "Dismiss this signal until a newer run crosses a threshold again." },
+            ),
+            inlineResolvable: false,
+            entryRule: "the agent's last run prompt share of the model window is over the warn or crit threshold.",
+            exitRule: "a newer run is back under the warn threshold, or the row is dismissed.",
+            dedupKey: card.dedupKey,
+            severity: card.severity,
+            activityAt: toIso(new Date(now)),
+            createdAt: toIso(new Date(now)),
+            updatedAt: toIso(new Date(now)),
+            relatedIssue: null,
+            detail: {
+              kind: "generic",
+              summaryExcerpt: card.summaryExcerpt,
+              images: [],
+            },
+          }));
+        }
       }
       // myrmidon(BOT-RUNTIME-TUNING D): the periodic fallback sweep records
       // one signal per agent whose gateway calls were served by a model
