@@ -6,6 +6,8 @@ import type { StoredRunLimits } from "../myrmidon-runtime-limits.js";
 import type { HostDiskSettings } from "../myrmidon-host-disk.js";
 // myrmidon(BOT-DISK-A): the bot draft-directory lifecycle stored in instance settings
 import type { StoredBotDiskSettings } from "../myrmidon-bot-disk.js";
+// myrmidon(1.6.1-BOT-DISK-C): per-bot disk quota of its own general settings key.
+import type { BotDiskQuotaSettings } from "../myrmidon-bot-disk-quota.js";
 // myrmidon(PARALLEL-HELPERS): the helper ceiling/default stored in instance settings
 import type { ParallelHelpersSettings } from "../myrmidon-parallel-helpers.js";
 import type { BotLspSettings } from "../myrmidon-bot-lsp.js";
@@ -13,11 +15,16 @@ import type { BotLspSettings } from "../myrmidon-bot-lsp.js";
 import type { BrowserBridgeSettings } from "../myrmidon-browser-bridge.js";
 import type { SwarmClaimSettings } from "../myrmidon-swarm-claim.js";
 // myrmidon(1.6.1-WIP-LIMIT-A): per-agent WIP limits of the same general settings row.
+import type { AgentMemorySettings } from "../myrmidon-agent-memory.js";
 import type { WipLimitSettings } from "../myrmidon-wip-limit.js";
+// myrmidon(REVIEW-ROUTING): automatic reviewer routing settings of the same row.
+import type { ReviewRoutingSettings } from "../myrmidon-review-routing.js";
 import type { BudgetEnforcementSettings } from "../myrmidon-budget-enforcement.js";
 // myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys live in
 // the same general settings row.
 import type { PluginEntitlementKey } from "../myrmidon-plugin-entitlement.js";
+// myrmidon(DM-PROGRESS): live progress steps of the bridged Telegram DM status message.
+import type { TelegramDmProgressSettings } from "../myrmidon-telegram-dm-progress.js";
 
 export const DAILY_RETENTION_PRESETS = [3, 7, 14] as const;
 export const WEEKLY_RETENTION_PRESETS = [1, 2, 4] as const;
@@ -79,6 +86,14 @@ export interface InstanceGeneralSettings {
    */
   botDisk?: StoredBotDiskSettings;
   /**
+   * myrmidon(1.6.1-BOT-DISK-C): per-bot disk quota (company default, per-caste
+   * and per-agent overrides), changed from `GET`/`PATCH /api/myrmidon/bot-disk-quota`.
+   * Its own key, not a sub-key of `botDisk`: part A's PATCH rewrites the whole
+   * `botDisk` object. Absent means "no quota" (enforcement off); kept in sync
+   * with the validator of the same field (packages/shared/src/validators/instance.ts).
+   */
+  botDiskQuota?: BotDiskQuotaSettings;
+  /**
    * myrmidon(C0): run admission limits changed from the instance settings page
    * and `GET`/`PATCH /api/myrmidon/runtime-limits`. Absent means "use the
    * environment variable, then the default"; kept in sync with the validator of
@@ -135,6 +150,12 @@ export interface InstanceGeneralSettings {
    */
   wipLimit?: WipLimitSettings;
   /**
+   * myrmidon(REVIEW-ROUTING): automatic reviewer routing, changed from
+   * `GET`/`PUT /api/myrmidon/companies/:companyId/review-routing/settings`.
+   * Absent means the defaults.
+   */
+  reviewRouting?: ReviewRoutingSettings;
+  /**
    * myrmidon(1.7-BUDGET-CONFIG-B): what a crossed budget limit does —
    * signal only (default), pause with an owner card (soft), or refuse new
    * runs (hard); changed from `GET`/`PATCH /api/myrmidon/budget-enforcement`.
@@ -149,6 +170,19 @@ export interface InstanceGeneralSettings {
    * (packages/shared/src/validators/instance.ts).
    */
   pluginEntitlementKeys?: PluginEntitlementKey[];
+  /**
+   * myrmidon(DM-PROGRESS): live progress steps in the bridged Telegram DM
+   * status message — on/off and the minimum spacing between edits; changed
+   * from `GET`/`PATCH /api/myrmidon/telegram-dm-progress`. Kept in sync with
+   * the validator of the same field (packages/shared/src/validators/instance.ts).
+   */
+  telegramDmProgress?: TelegramDmProgressSettings;
+  /**
+   * myrmidon(MEMORY-UI): agent memory service address, optional key secret name
+   * and switch, changed from the instance settings page. Absent means "use the
+   * environment". Kept in sync with the validator of the same field.
+   */
+  agentMemory?: AgentMemorySettings;
 }
 
 export interface InstanceExperimentalSettings {

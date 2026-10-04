@@ -1,5 +1,13 @@
 import type { HeartbeatRunStatusPhase } from "@paperclipai/shared";
 import { redactSensitiveText } from "../redaction.js";
+// myrmidon(DM-PROGRESS): every runtime status write also feeds the bounded
+// per-run step history the bridged Telegram DM status message reads; the
+// history is dropped together with the status when the run ends.
+import {
+  clearAllDmProgressRuntimeSteps,
+  clearDmProgressRuntimeSteps,
+  recordDmProgressRuntimeStatus,
+} from "../myrmidon/telegram-dm-progress/runtime-steps.js";
 
 export const HEARTBEAT_RUN_RUNTIME_STATUS_TTL_MS = 90_000;
 export const MAX_HEARTBEAT_RUN_RUNTIME_STATUS_MESSAGE_CHARS = 180;
@@ -87,6 +95,7 @@ export function setHeartbeatRunRuntimeStatus(
     lastEventAt: input.lastEventAt ? new Date(input.lastEventAt) : null,
   };
   runtimeStatusesByRunId.set(status.runId, status);
+  recordDmProgressRuntimeStatus(status); // myrmidon(DM-PROGRESS)
   return cloneStatus(status);
 }
 
@@ -162,11 +171,13 @@ export function getHeartbeatRunRuntimeStatus(
 }
 
 export function clearHeartbeatRunRuntimeStatus(runId: string): boolean {
+  clearDmProgressRuntimeSteps(runId); // myrmidon(DM-PROGRESS)
   return runtimeStatusesByRunId.delete(runId);
 }
 
 export function clearAllHeartbeatRunRuntimeStatuses(): void {
   runtimeStatusesByRunId.clear();
+  clearAllDmProgressRuntimeSteps(); // myrmidon(DM-PROGRESS)
 }
 
 export function sweepExpiredHeartbeatRunRuntimeStatuses(
