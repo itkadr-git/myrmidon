@@ -189,9 +189,9 @@ describeEmbeddedPostgres("a chat is never held and an owner message wakes (CHAT-
       id: commentId,
       companyId,
       issueId,
-      authorUserId: OWNER,
-      authorType: "user",
-      body: "Please continue",
+      authorAgentId: agentId,
+      authorType: "agent",
+      body: "note from the agent",
     });
     return { companyId, agentId, issueId, commentId };
   }
@@ -211,6 +211,17 @@ describeEmbeddedPostgres("a chat is never held and an owner message wakes (CHAT-
   }
 
   async function ownerMessageWake(input: { companyId: string; agentId: string; issueId: string; commentId: string }) {
+    // The owner's message arrives after the stopped turn.
+    const messageId = randomUUID();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await db.insert(issueComments).values({
+      id: messageId,
+      companyId: input.companyId,
+      issueId: input.issueId,
+      authorUserId: OWNER,
+      authorType: "user",
+      body: "Please continue",
+    });
     const [issue] = await db.select().from(issues).where(eq(issues.id, input.issueId));
     await queueIssueAssignmentWakeup({
       heartbeat,
@@ -221,13 +232,13 @@ describeEmbeddedPostgres("a chat is never held and an owner message wakes (CHAT-
       requestedByActorType: "user",
       requestedByActorId: OWNER,
       taskKey: issue!.identifier,
-      wakeCommentId: input.commentId,
+      wakeCommentId: messageId,
       durableChatRequest: createDurableChatWakeupRequest({
         id: randomUUID(),
         companyId: input.companyId,
         agentId: input.agentId,
         issueId: input.issueId,
-        commentId: input.commentId,
+        commentId: messageId,
         requestedByActorType: "user",
         requestedByActorId: OWNER,
         requestedAt: new Date(),
@@ -288,7 +299,7 @@ describeEmbeddedPostgres("a chat is never held and an owner message wakes (CHAT-
   }, TEST_TIMEOUT_MS);
 
   it("reproduces the incident, then an owner message starts a run, clears the hold and is logged", async () => {
-    const fixture = await seed({ chat: true, status: "blocked" });
+    const fixture = await seed({ chat: true, status: "todo" });
     const run = await seedStoppedRun(fixture);
     const [action] = await db
       .insert(issueRecoveryActions)
@@ -320,6 +331,8 @@ describeEmbeddedPostgres("a chat is never held and an owner message wakes (CHAT-
     const [parkedWake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, fixture.agentId));
     expect(parkedWake?.status).toBe("deferred_issue_execution");
     expect(mockAdapterExecute).not.toHaveBeenCalled();
+    // Recovery had set the chat blocked.
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, fixture.issueId));
 
     // The owner writes in the chat.
     await ownerMessageWake(fixture);
