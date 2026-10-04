@@ -385,9 +385,9 @@ describe("plugin-worker-manager stderr failure context", () => {
           companyId: "company-a",
         },
         renderEnvironment: null,
-      })).rejects.toMatchObject({
+      })).rejects.toMatchObject({ // myrmidon(PLS2): cross-company denial stays; the message now names the company mismatch (attribution resolves to company-a, then the gate denies company-b)
         code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
-        message: expect.stringContaining("unknown invocation scope"),
+        message: expect.stringContaining("requested company"),
       });
     } finally {
       await handle.stop().catch(() => undefined);
