@@ -10,6 +10,24 @@ version file to edit. Base Paperclip version is in the image label
 
 ## Unreleased
 
+### Idle engineers take unassigned ready work (1.6.2 SWARM-UNASSIGNED-ROUTE)
+
+- The swarm idle pass paired free agent number i with queue slot i. The engineer
+  queue is ordered by priority and also held the tasks already assigned to busy
+  peers, so those filled every slot and the unassigned tasks behind them were
+  never offered: idle engineers and ready unassigned `todo` tasks coexisted for
+  hours. Now each free agent takes its own assigned task first, else the top
+  unassigned task of its role; a peer's task is never offered to it, and tasks
+  already covered by a live claim or a wake in flight no longer take a slot. The
+  claim path (`claimNextTaskForAgent`) reads the same membership: the agent's own
+  tasks plus the unassigned tasks of its role.
+- An unassigned task is queued for one role: the one its `role:<key>` label
+  names, the engineer when it has no such label (before, every role was offered
+  every unassigned task).
+- A config gap is a signal, not idleness: ready tasks routed to a role with no
+  agents are reported on every pass (`idleUnstaffedRoles` in the pass result and
+  a warning naming the role and the tasks).
+
 ### Heavy builds blocked inside the dev bot image (1.6.1 BUILD-OFFLOAD, part A)
 
 - The development variant of the bot image (`runtime-dev`,
