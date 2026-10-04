@@ -45,7 +45,7 @@ export function AgentCardParallelHelpersFields({
   onChange: (next: BotParallelHelpersCard | undefined) => void;
   /** Company ceiling for maxConcurrent; the server clamps, this only hints. */
   ceiling: number | null;
-  /** The default limit written when the section is turned on with no limit. */
+  /** The default limit written when the section is turned on with no limit; null = no cap, nothing written. */
   defaultLimit: number | null;
   /** Same picker and model list as the main model field. */
   renderModelPicker: HelperModelPickerRenderer;
@@ -76,7 +76,7 @@ export function AgentCardParallelHelpersFields({
           onChange={(next) =>
             update(
               next
-                ? enableParallelHelpers(card, defaultLimit ?? 2)
+                ? enableParallelHelpers(card, defaultLimit)
                 : disableParallelHelpers(card),
             )
           }
@@ -86,7 +86,7 @@ export function AgentCardParallelHelpersFields({
           <>
             <Field
               label="Max concurrent helpers"
-              hint={`How many helpers may run at once. The company ceiling is ${ceiling ?? "not set (default 10)"}; values above it are clamped server-side.`}
+              hint={`How many helpers may run at once. Empty = no cap. ${ceiling === null ? "No company ceiling is set." : `The company ceiling is ${ceiling}; values above it are clamped server-side.`}`}
             >
               <input
                 type="text"

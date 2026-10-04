@@ -28,7 +28,7 @@ afterEach(() => {
 
 const VIEW: ParallelHelpersView = {
   settings: {},
-  effective: { ceiling: 10, defaultPerAgent: 2 },
+  effective: { ceiling: null, defaultPerAgent: null },
   capacity: {
     requestedTotal: 4,
     enabledAgents: 2,
@@ -68,8 +68,15 @@ function save() {
 }
 
 describe("myrmidon(PARALLEL-HELPERS) settings panel", () => {
-  it("shows the effective ceiling and default from the view", () => {
+  it("shows that helpers are uncapped when no ceiling or default is set", () => {
     renderView();
+    const text = container.querySelector("[data-testid=parallel-helpers-effective]")?.textContent ?? "";
+    expect(text).toContain("ceiling none, default none per agent");
+    expect(text).toContain("not capped by count");
+  });
+
+  it("shows the effective ceiling and default when the owner set them", () => {
+    renderView({ view: { ...VIEW, effective: { ceiling: 10, defaultPerAgent: 2 } } });
     expect(container.querySelector("[data-testid=parallel-helpers-effective]")?.textContent).toContain(
       "ceiling 10, default 2 per agent",
     );

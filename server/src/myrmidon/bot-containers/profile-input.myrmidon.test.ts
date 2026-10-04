@@ -420,11 +420,19 @@ describe("myrmidon(W2a) buildHermesProfileInput — card mapping", () => {
     });
   });
 
-  it("myrmidon(PARALLEL-HELPERS): a card that never mentioned helpers stays off with the default limit", () => {
+  it("myrmidon(HELPERS-NO-CAP): an enabled card with no limit and no ceiling is not capped", () => {
+    const { input } = buildHermesProfileInput(
+      source({ adapterConfig: { parallelHelpers: { enabled: true } } }),
+      settings(),
+    );
+    expect(input.parallelHelpers?.maxConcurrent).toBe(1000);
+  });
+
+  it("myrmidon(PARALLEL-HELPERS): a card that never mentioned helpers stays off, with no helper cap", () => {
     const { input } = buildHermesProfileInput(source(), settings());
     expect(input.parallelHelpers).toEqual({
       enabled: false,
-      maxConcurrent: 2,
+      maxConcurrent: 1000,
       model: "",
       childTurnBudget: undefined,
     });

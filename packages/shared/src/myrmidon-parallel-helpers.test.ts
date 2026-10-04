@@ -13,15 +13,16 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  DEFAULT_HELPER_LIMIT,
-  DEFAULT_HELPERS_CEILING,
+  HELPERS_UNLIMITED,
   HELPER_TURN_BUDGET_MAX,
   HELPER_TURN_BUDGET_MIN,
   HELPERS_CEILING_MAX,
   PARALLEL_HELPERS_CARD_KEY,
   helperCapacityHint,
   helpersCeiling,
+  helpersCeilingConfigured,
   helpersDefault,
+  helpersDefaultConfigured,
   readParallelHelpersCard,
   resolveParallelHelpers,
 } from "./myrmidon-parallel-helpers.js";
@@ -78,10 +79,10 @@ describe("readParallelHelpersCard", () => {
 });
 
 describe("resolveParallelHelpers", () => {
-  it("defaults to helpers off, module default limit, inherit model", () => {
+  it("defaults to helpers off, no cap, inherit model", () => {
     const resolved = resolveParallelHelpers({}, undefined);
     expect(resolved.enabled).toBe(false);
-    expect(resolved.maxConcurrent).toBe(DEFAULT_HELPER_LIMIT);
+    expect(resolved.maxConcurrent).toBe(HELPERS_UNLIMITED);
     expect(resolved.model).toBe("");
     expect(resolved.childTurnBudget).toBeUndefined();
   });
@@ -95,11 +96,19 @@ describe("resolveParallelHelpers", () => {
     expect(resolved.maxConcurrent).toBe(5);
   });
 
-  it("falls back to the default limit when a card asks for zero or less", () => {
+  it("has no cap when neither the card nor the settings name a limit", () => {
+    const resolved = resolveParallelHelpers({ [PARALLEL_HELPERS_CARD_KEY]: { enabled: true } }, {});
+    expect(resolved.maxConcurrent).toBe(HELPERS_UNLIMITED);
+    // A card can still ask for a number above any small fixed cap.
+    const many = resolveParallelHelpers({ [PARALLEL_HELPERS_CARD_KEY]: { enabled: true, maxConcurrent: 200 } }, undefined);
+    expect(many.maxConcurrent).toBe(200);
+  });
+
+  it("falls back to the default (no cap) when a card asks for zero or less", () => {
     // A card cannot go BELOW the inherited default either: `maxConcurrent: 0`
     // is a malformed value, not a request for "no helpers" (that is `enabled: false`).
     const resolved = resolveParallelHelpers({ [PARALLEL_HELPERS_CARD_KEY]: { enabled: true, maxConcurrent: 0 } }, undefined);
-    expect(resolved.maxConcurrent).toBe(DEFAULT_HELPER_LIMIT);
+    expect(resolved.maxConcurrent).toBe(HELPERS_UNLIMITED);
   });
 
   it("inherits the settings default when the card names no limit", () => {
@@ -154,17 +163,22 @@ describe("resolveParallelHelpers", () => {
 });
 
 describe("ceiling helpers", () => {
-  it("clamps a mistyped ceiling to the hard cap", () => {
-    expect(helpersCeiling({ maxPerAgent: 500 })).toBe(HELPERS_CEILING_MAX);
+  it("clamps a mistyped ceiling to the hard bound", () => {
+    expect(helpersCeiling({ maxPerAgent: 5000 })).toBe(HELPERS_CEILING_MAX);
   });
 
-  it("falls back to the module ceiling when unset", () => {
-    expect(helpersCeiling(undefined)).toBe(DEFAULT_HELPERS_CEILING);
-    expect(helpersCeiling({ maxPerAgent: 0 })).toBe(DEFAULT_HELPERS_CEILING);
+  it("means no cap when the ceiling is unset or unusable", () => {
+    expect(helpersCeiling(undefined)).toBe(HELPERS_UNLIMITED);
+    expect(helpersCeiling({ maxPerAgent: 0 })).toBe(HELPERS_UNLIMITED);
+    expect(helpersCeilingConfigured({})).toBe(false);
+    expect(helpersCeilingConfigured({ maxPerAgent: 7 })).toBe(true);
   });
 
-  it("caps the default at the module default when unset", () => {
-    expect(helpersDefault(undefined)).toBe(DEFAULT_HELPER_LIMIT);
+  it("means no cap for the default when unset, and honors a configured one", () => {
+    expect(helpersDefault(undefined)).toBe(HELPERS_UNLIMITED);
+    expect(helpersDefaultConfigured({})).toBe(false);
+    expect(helpersDefault({ defaultMaxPerAgent: 3 })).toBe(3);
+    expect(helpersDefault({ defaultMaxPerAgent: 9, maxPerAgent: 4 })).toBe(4);
   });
 });
 
@@ -182,6 +196,19 @@ describe("helperCapacityHint", () => {
     expect(hint.enabledAgents).toBe(2);
     expect(hint.exceedsBuildSlots).toBe(true);
     expect(hint.warning).toContain("above");
+  });
+
+  it("reports uncapped agents as bounded by the host memory gate, not as an excess", () => {
+    const hint = helperCapacityHint(
+      [
+        { enabled: true, maxConcurrent: HELPERS_UNLIMITED },
+        { enabled: true, maxConcurrent: 2 },
+      ],
+      { buildSlots: 4 },
+    );
+    expect(hint.exceedsBuildSlots).toBe(false);
+    expect(hint.warning).toContain("no helper cap");
+    expect(hint.warning).toContain("host memory gate");
   });
 
   it("stays silent when within the slots", () => {

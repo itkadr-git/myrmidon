@@ -713,6 +713,22 @@ them as candidates; `POST …/foraging/sweep` (board only) runs one pass by hand
 |---|---|---|---|---|
 | `MYRMIDON_BOT_HELPER_MODEL` | PARALLEL-HELPERS | unset (helpers inherit the parent agent's model) | Model that delegated helper children run on when neither the agent card nor the stored `parallelHelpers` instance settings name one. Read from the agent card's environment when the bot profile is built. A deployment value: no model name is baked into the product | Empty/unset — the child uses the parent agent's model (Hermes' own behavior for an unset `delegation.model`) |
 
+**HELPERS-NO-CAP.** There is no built-in limit on parallel helpers: with no stored
+`parallelHelpers` settings and no value on the agent card the limit is "unlimited"
+(Hermes' integer `delegation.max_concurrent_children` is written as 1000, which stands
+for "no cap"). A cap is optional and is set in Settings, "Parallel helpers", without a
+restart (the profile compiler re-reads it on its next tick):
+
+| Setting | Default | What it does |
+|---|---|---|
+| `maxPerAgent` (ceiling) | unset = no ceiling | Highest limit any agent card may set; cards above it are clamped. Accepts 1 to 1000 |
+| `defaultMaxPerAgent` | unset = no cap | What an agent gets when its card names no limit; never above the ceiling |
+
+What protects the host is not a small helper count but the run-admission host-memory
+floor (`MYRMIDON_MIN_FREE_HOST_MEMORY_MB`): new runs stay queued while host memory is
+short. The capacity hint on the settings page reports uncapped agents instead of
+treating them as a number.
+
 ## 1.6.1 — TG-NOTIFY-SETTINGS part F: the board UI for the Telegram notification settings
 
 The board-facing half of the Telegram notification settings: the "Telegram
