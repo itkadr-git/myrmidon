@@ -36,6 +36,8 @@ const agentActor = {
 };
 
 const ENV_ONLY = { MYRMIDON_MAX_CONCURRENT_RUNS: "8" };
+// myrmidon(1.6.2 RUN-ADMISSION): the start ramp and the host floor are on by default.
+const RAMP_AND_HOST = { maxStartsPerMinute: 5, minFreeHostMemoryMb: 15360 };
 
 interface HarnessOptions {
   stored?: unknown;
@@ -94,19 +96,26 @@ describe("myrmidon(C0) runtime limits: reading the effective values", () => {
     const { app } = harness();
     const res = await request(app).get(URL).expect(200);
     expect(res.body).toEqual({
-      limits: { maxConcurrentRuns: 8, maxStartsPerMinute: null, minFreeMemoryMb: null, runMemoryEstimateMb: 300 },
+      limits: { maxConcurrentRuns: 8, minFreeMemoryMb: null, runMemoryEstimateMb: 300, ...RAMP_AND_HOST },
       sources: {
         maxConcurrentRuns: "env",
         maxStartsPerMinute: "default",
         minFreeMemoryMb: "default",
         runMemoryEstimateMb: "default",
+        minFreeHostMemoryMb: "default",
       },
     });
   });
 
   it("reports the stored settings as the source once they exist", async () => {
     const { app } = harness({
-      stored: { maxConcurrentRuns: 3, maxStartsPerMinute: 4, minFreeMemoryMb: 1500, runMemoryEstimateMb: 250 },
+      stored: {
+        maxConcurrentRuns: 3,
+        maxStartsPerMinute: 4,
+        minFreeMemoryMb: 1500,
+        runMemoryEstimateMb: 250,
+        minFreeHostMemoryMb: 8192,
+      },
     });
     const res = await request(app).get(URL).expect(200);
     expect(res.body.limits).toEqual({
@@ -114,8 +123,25 @@ describe("myrmidon(C0) runtime limits: reading the effective values", () => {
       maxStartsPerMinute: 4,
       minFreeMemoryMb: 1500,
       runMemoryEstimateMb: 250,
+      minFreeHostMemoryMb: 8192,
     });
-    expect(Object.values(res.body.sources)).toEqual(["settings", "settings", "settings", "settings"]);
+    expect(Object.values(res.body.sources)).toEqual(["settings", "settings", "settings", "settings", "settings"]);
+  });
+
+  it("myrmidon(1.6.2): a row saved before the host floor existed keeps its values and gets the default floor", async () => {
+    const { app } = harness({
+      stored: { maxConcurrentRuns: 3, maxStartsPerMinute: 12, minFreeMemoryMb: 1500, runMemoryEstimateMb: 250 },
+    });
+    const res = await request(app).get(URL).expect(200);
+    expect(res.body.limits).toEqual({
+      maxConcurrentRuns: 3,
+      maxStartsPerMinute: 12,
+      minFreeMemoryMb: 1500,
+      runMemoryEstimateMb: 250,
+      minFreeHostMemoryMb: 15360,
+    });
+    expect(res.body.sources.maxStartsPerMinute).toBe("settings");
+    expect(res.body.sources.minFreeHostMemoryMb).toBe("default");
   });
 
   it("falls back to the environment when the stored row is not canonical", async () => {
@@ -150,7 +176,7 @@ describe("myrmidon(C0) runtime limits: access", () => {
     const h = harness();
     await request(h.withActor(admin)).patch(URL).send({ maxConcurrentRuns: 4 }).expect(200);
     expect(h.updated).toEqual([
-      { runLimits: { maxConcurrentRuns: 4, maxStartsPerMinute: null, minFreeMemoryMb: null, runMemoryEstimateMb: 300 } },
+      { runLimits: { maxConcurrentRuns: 4, minFreeMemoryMb: null, runMemoryEstimateMb: 300, ...RAMP_AND_HOST } },
     ]);
   });
 });
@@ -162,7 +188,7 @@ describe("myrmidon(C0) runtime limits: a change reaches the live admission", () 
 
     // The environment value became the stored value for the keys the patch leaves alone.
     expect(h.updated).toEqual([
-      { runLimits: { maxConcurrentRuns: 12, maxStartsPerMinute: null, minFreeMemoryMb: null, runMemoryEstimateMb: 300 } },
+      { runLimits: { maxConcurrentRuns: 12, minFreeMemoryMb: null, runMemoryEstimateMb: 300, ...RAMP_AND_HOST } },
     ]);
     expect(res.body.limits.maxConcurrentRuns).toBe(12);
     expect(res.body.sources.maxConcurrentRuns).toBe("settings");
@@ -171,8 +197,8 @@ describe("myrmidon(C0) runtime limits: a change reaches the live admission", () 
     for (const entry of h.audits) {
       expect(entry).toMatchObject({ action: RUNTIME_LIMITS_ACTION, entityType: "instance_settings" });
       expect(entry.details).toEqual({
-        previous: { maxConcurrentRuns: 8, maxStartsPerMinute: null, minFreeMemoryMb: null, runMemoryEstimateMb: 300 },
-        next: { maxConcurrentRuns: 12, maxStartsPerMinute: null, minFreeMemoryMb: null, runMemoryEstimateMb: 300 },
+        previous: { maxConcurrentRuns: 8, minFreeMemoryMb: null, runMemoryEstimateMb: 300, ...RAMP_AND_HOST },
+        next: { maxConcurrentRuns: 12, minFreeMemoryMb: null, runMemoryEstimateMb: 300, ...RAMP_AND_HOST },
         changedKeys: ["maxConcurrentRuns"],
       });
     }
@@ -191,7 +217,24 @@ describe("myrmidon(C0) runtime limits: a change reaches the live admission", () 
       maxStartsPerMinute: 6,
       minFreeMemoryMb: 7,
       runMemoryEstimateMb: 250,
+      minFreeHostMemoryMb: 15360,
     });
+  });
+
+  it("myrmidon(1.6.2): the host floor and the start ramp change on the fly and can be switched off", async () => {
+    const h = harness();
+    const res = await request(h.withActor(admin))
+      .patch(URL)
+      .send({ minFreeHostMemoryMb: 12288, maxStartsPerMinute: 3 })
+      .expect(200);
+    expect(res.body.limits).toMatchObject({ minFreeHostMemoryMb: 12288, maxStartsPerMinute: 3 });
+    expect(res.body.sources.minFreeHostMemoryMb).toBe("settings");
+    expect(h.audits[0]!.details).toMatchObject({ changedKeys: ["maxStartsPerMinute", "minFreeHostMemoryMb"] });
+    expect(h.calls).toEqual(["write", "audit", "apply:8", "resweep"]);
+
+    const off = await request(h.withActor(admin)).patch(URL).send({ minFreeHostMemoryMb: null }).expect(200);
+    expect(off.body.limits.minFreeHostMemoryMb).toBeNull();
+    await request(h.withActor(admin)).patch(URL).send({ minFreeHostMemoryMb: 0 }).expect(400);
   });
 
   it("refuses values that are not a positive integer and writes nothing", async () => {

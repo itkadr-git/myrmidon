@@ -508,9 +508,14 @@ RUN node /opt/node-tools/smoke.cjs && npm --version
 # toolchain below therefore lands under /opt or /usr, and no `ENV`/`BASH_ENV`
 # variable name is set (a shell that reads a file at start is refused).
 #
-# Versions are pinned exactly and verified by digest, following the rule the
-# Node.js variant above states: bump the version and its checksum together, the
-# build fails on a mismatch.
+# Version pins and wrapper checks: see the COPY/RUN block below and
+# "Heavy builds are blocked at the image level" in README.md.
+# ---------------------------------------------------------------------------
+# myrmidon(1.6.1 BUILD-OFFLOAD A): the dev variant also carries build
+# wrappers (pnpm/tsc/vitest/gradle/go) in /opt/paperclip/bin that refuse
+# heavy repository operations with a "use devbuild" error unless the
+# devbuild gateway (/usr/local/bin/devbuild, mounted by part B) is present —
+# installs, typechecks, test runs and compiler builds belong on the build VPS.
 # ---------------------------------------------------------------------------
 FROM python:3.13-slim AS node24_dist
 ARG NODE24_VERSION=24.21.0
@@ -583,7 +588,7 @@ RUN set -eu; \
 
 FROM runtime AS runtime-dev
 LABEL org.opencontainers.image.title="myrmidon-hermes-dev" \
-      org.opencontainers.image.description="Bot runtime image, development variant: hermes gateway plus Node.js, pnpm, Go, Rust, git/gh/jq/zstd and a C toolchain for a repository pull-request cycle" \
+      org.opencontainers.image.description="Bot runtime image, development variant: hermes gateway plus Node.js, pnpm, Go, Rust, git/gh/jq/zstd and a C toolchain for a repository pull-request cycle; heavy builds are routed to the build VPS via devbuild (1.6.1 BUILD-OFFLOAD)" \
       io.github.itkadr-git.myrmidon.variant="dev"
 
 # The base stage is `USER 10001:10001`; installing needs root, and the stage
@@ -685,12 +690,57 @@ RUN chmod 0755 /opt/paperclip/bin/git-credential-paperclip /opt/paperclip/bin/gh
   && /opt/node24/bin/node --check /opt/paperclip/bin/gh \
   && git config --system --list >/dev/null
 
+# myrmidon(1.6.2 BOT-DISK-C): shared git objects. /opt/paperclip/bin/git shadows
+# /usr/bin/git and adds `--reference-if-able /cache/git/<owner>/<repo>.git` to a
+# `git clone` of a GitHub repository the board mirrors (the read-only /cache/git
+# mount, absent unless the instance setting lists mirrored repositories); every
+# other git invocation runs the real git unchanged, credential helper included.
+# bot-clone-hygiene reports which clones hold unpushed work (the entrypoint
+# runs it in the background); the board's draft-directory lifecycle reads that
+# report before it removes an idle clone. Node/Python scripts under /opt only.
+COPY --chown=root:root git-reference/git git-reference/bot-clone-hygiene /opt/paperclip/bin/
+RUN chmod 0755 /opt/paperclip/bin/git /opt/paperclip/bin/bot-clone-hygiene \
+  && /opt/node24/bin/node --check /opt/paperclip/bin/git \
+  && python3 -m py_compile /opt/paperclip/bin/bot-clone-hygiene \
+  && rm -rf /opt/paperclip/bin/__pycache__
+
+# myrmidon(1.6.1 BUILD-OFFLOAD A): the build-offload wrappers. Heavy
+# repository operations (pnpm install, monorepo tsc, vitest, gradle,
+# go build/test) must run on the build VPS through the `devbuild` CLI
+# (task B mounts /usr/local/bin/devbuild into the per-invocation build
+# container), not inside a bot container where they starve the gateway.
+# These Node wrappers stand in /opt/paperclip/bin — FIRST on PATH, ahead
+# of /opt/pnpm/bin, /opt/node24/bin and /opt/go/bin — so a bare `pnpm
+# install` or `go build` hits the wrapper before the real binary:
+# a physical barrier, not a convention. The gate condition is the
+# executable /usr/local/bin/devbuild being present in THIS container
+# (it never is in the ordinary bot container); without it every wrapped
+# heavy invocation refuses on stderr with the exact devbuild replacement
+# and exits 1. Light probes pass through locally: `pnpm --version`,
+# `pnpm config`, `pnpm store status/path`, and bare `--version`/`--help`
+# of the other tools. git is deliberately not wrapped. The wrappers are
+# root-owned, read-only for `bot` at run time, carry no secrets and no
+# hostnames (the build host's address arrives with devbuild's own
+# environment in part B, never in this image). Same shape as the
+# github-broker wrappers above: Node scripts, node --check at build
+# time, /opt only.
+COPY --chown=root:root build-wrappers/devbuild-gate.js build-wrappers/blocked-tool.js \
+     build-wrappers/pnpm build-wrappers/tsc build-wrappers/vitest \
+     build-wrappers/gradle build-wrappers/go /opt/paperclip/bin/
+RUN chmod 0755 /opt/paperclip/bin/pnpm /opt/paperclip/bin/tsc /opt/paperclip/bin/vitest \
+     /opt/paperclip/bin/gradle /opt/paperclip/bin/go \
+  && chmod 0644 /opt/paperclip/bin/devbuild-gate.js /opt/paperclip/bin/blocked-tool.js \
+  && for f in devbuild-gate.js blocked-tool.js pnpm tsc vitest gradle go; do \
+       /opt/node24/bin/node --check /opt/paperclip/bin/$f; \
+     done
+
 # The root filesystem is read-only at run time and the bot's writable
 # directories are exactly its three volumes, so every path pnpm or the
 # toolchains write to must live under one of them:
-#   - the pnpm store defaults to /data/hermes/.pnpm-store (the durable volume);
-#     an operator may point it at a shared host directory mounted into /data
-#     (see docker/bot-runtime/README.md, "Variant for the development team");
+#   - the pnpm store defaults to /workspace/.pnpm-store: the SAME mount as the
+#     clones, because pnpm hard-links node_modules into its store and link(2)
+#     cannot cross a mount (EXDEV) — a store on /data or /cache would make pnpm
+#     copy every package into every clone (1.6.2 BOT-DISK-C; see README.md);
 #   - Rust's RUSTUP_HOME/CARGO_HOME stay sealed under /opt and cargo writes its
 #     target dir into the checked-out workspace, never into the image;
 #   - Go's build cache defaults under $HOME (/data/hermes) — the durable volume.
@@ -699,8 +749,11 @@ RUN chmod 0755 /opt/paperclip/bin/git-credential-paperclip /opt/paperclip/bin/gh
 # gh wrapper (which resolves run-scoped credentials before exec'ing the real
 # gh) is found first; git needs no PATH entry — it reaches the credential
 # helper through /etc/gitconfig's absolute path.
+# myrmidon(1.6.1 BUILD-OFFLOAD A): the same first position is what makes the
+# build wrappers (pnpm/tsc/vitest/gradle/go) shadow the real binaries in
+# /opt/pnpm/bin, /opt/node24/bin and /opt/go/bin — see the COPY block above.
 ENV PATH=/opt/paperclip/bin:/opt/node24/bin:/opt/pnpm/bin:/opt/go/bin:/opt/cargo/bin:/opt/docker-cli/bin:/opt/hermes-src/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-    npm_config_store_dir=/data/hermes/.pnpm-store \
+    npm_config_store_dir=/workspace/.pnpm-store \
     GOTOOLCHAIN=local \
     GOFLAGS=-mod=mod
 
@@ -710,6 +763,13 @@ USER 10001:10001
 # answers, and no PATH element is under a writable root the dockergate image
 # policy rejects. Running it here (not in a builder stage) is what makes the
 # check meaningful — it sees exactly what a bot container would.
+# myrmidon(1.6.1 BUILD-OFFLOAD A): the check also proves the build-offload
+# barrier behaves from the contract user's own eyes — with no
+# /usr/local/bin/devbuild in this image, `pnpm install` MUST fail with the
+# refusal text and a non-zero exit, while the light probes (`pnpm --version`)
+# keep working through the wrapper. `pnpm --version` answering here is doubly
+# meaningful: it goes through the wrapper (in /opt/paperclip/bin, first on
+# PATH) and exercises the pass-through path, not the bare binary.
 RUN set -eu; \
     node --version; \
     pnpm --version; \
@@ -726,4 +786,68 @@ RUN set -eu; \
         /data|/data/*|/workspace|/workspace/*|/scratch|/scratch/*|/tmp|/tmp/*) \
           echo "PATH element $el is under a writable root" >&2; exit 1 ;; \
       esac; \
-    done
+    done; \
+    if [ -e /usr/local/bin/devbuild ]; then \
+      echo "devbuild gateway present in the built image — part B must mount it, never the image" >&2; exit 1; \
+    fi; \
+    out="$(pnpm install 2>&1)" && rc=0 || rc=$?; \
+    if [ "$rc" -eq 0 ]; then \
+      echo "pnpm install must refuse without the devbuild gateway" >&2; exit 1; \
+    fi; \
+    case "$out" in \
+      *"devbuild pnpm install"*) ;; \
+      *) echo "pnpm install refusal must name the devbuild replacement, got: $out" >&2; exit 1 ;; \
+    esac; \
+    case "$out" in \
+      *"1.6.1 BUILD-OFFLOAD"*) ;; \
+      *) echo "pnpm install refusal must say why (1.6.1 BUILD-OFFLOAD), got: $out" >&2; exit 1 ;; \
+    esac; \
+    out="$(go build ./... 2>&1)" && rc=0 || rc=$?; \
+    if [ "$rc" -eq 0 ]; then \
+      echo "go build must refuse without the devbuild gateway" >&2; exit 1; \
+    fi; \
+    case "$out" in *"devbuild go build"*) ;; \
+      *) echo "go build refusal must name the devbuild replacement" >&2; exit 1 ;; \
+    esac; \
+    out="$(tsc --noEmit 2>&1)" && rc=0 || rc=$?; \
+    if [ "$rc" -eq 0 ]; then \
+      echo "tsc must refuse without the devbuild gateway (and no local tsc may pass)" >&2; exit 1; \
+    fi; \
+    case "$out" in *"devbuild tsc"*) ;; \
+      *) echo "tsc refusal must name the devbuild replacement" >&2; exit 1 ;; \
+    esac; \
+    out="$(vitest run 2>&1)" && rc=0 || rc=$?; \
+    if [ "$rc" -eq 0 ]; then \
+      echo "vitest must refuse without the devbuild gateway" >&2; exit 1; \
+    fi; \
+    case "$out" in *"devbuild vitest"*) ;; \
+      *) echo "vitest refusal must name the devbuild replacement" >&2; exit 1 ;; \
+    esac; \
+    out="$(gradle --version 2>&1)" && rc=0 || rc=$?; \
+    if [ "$rc" -eq 0 ]; then \
+      echo "gradle must refuse without the devbuild gateway" >&2; exit 1; \
+    fi; \
+    case "$out" in *"devbuild gradle"*) ;; \
+      *) echo "gradle refusal must name the devbuild replacement" >&2; exit 1 ;; \
+    esac; \
+    echo "build-offload barrier verified: heavy tools refuse, light probes pass"
+
+# myrmidon(1.6.2 BOT-DISK-C): the image's pnpm really hard-links into a store on
+# the clones' mount (same script the repository's bot-runtime test runs), and
+# the git wrapper is the git on PATH. A copy here would mean every clone's
+# node_modules duplicates the store, which is the problem this stage exists to
+# prevent; the real pnpm binary is called directly, the devbuild gate only
+# fronts the bare name.
+COPY --chown=root:root --chmod=0755 pnpm-hardlink-check.sh /opt/paperclip/pnpm-hardlink-check.sh
+RUN set -eu; \
+    out="$(PNPM=/opt/pnpm/bin/pnpm /opt/paperclip/pnpm-hardlink-check.sh)"; \
+    echo "pnpm hardlink check: $out"; \
+    case "$out" in \
+      *"samefile=yes"*) ;; \
+      *) echo "pnpm must hard-link into a store beside the project, got: $out" >&2; exit 1 ;; \
+    esac; \
+    case "$out" in \
+      "nlink=1 "*) echo "pnpm copied instead of hard-linking: $out" >&2; exit 1 ;; \
+    esac; \
+    [ "$(command -v git)" = "/opt/paperclip/bin/git" ] || { echo "git on PATH must be the reference wrapper" >&2; exit 1; }; \
+    git --version

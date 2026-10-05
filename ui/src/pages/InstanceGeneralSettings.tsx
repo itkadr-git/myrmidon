@@ -19,11 +19,17 @@ import { cn } from "../lib/utils";
 import { useSignOut } from "@/hooks/useSignOut";
 import { MaintenanceSettingsPanel } from "@/components/myrmidon/MaintenanceSettingsPanel"; // myrmidon(R3)
 import { RuntimeLimitsSettingsPanel } from "@/components/myrmidon/RuntimeLimitsSettingsPanel"; // myrmidon(C0)
+import { BudgetEnforcementSettingsPanel } from "@/components/myrmidon/BudgetEnforcementSettingsPanel"; // myrmidon(1.7-BUDGET-CONFIG-B)
+import { TelegramDmProgressSettingsPanel } from "@/components/myrmidon/TelegramDmProgressSettingsPanel"; // myrmidon(DM-PROGRESS)
 import { HostDiskSettingsPanel } from "@/components/myrmidon/HostDiskSettingsPanel"; // myrmidon(BOT-DISK E)
+import { BotDiskSettingsPanel } from "@/components/myrmidon/BotDiskSettingsPanel"; // myrmidon(1.6.1-BOT-DISK-B)
+import { AgentMemorySettingsPanel } from "@/components/myrmidon/AgentMemorySettingsPanel"; // myrmidon(MEMORY-UI)
 import { ParallelHelpersSettingsPanel } from "@/components/myrmidon/ParallelHelpersSettingsPanel"; // myrmidon(PARALLEL-HELPERS)
+import { BotLspSettingsPanel } from "@/components/myrmidon/BotLspSettingsPanel"; // myrmidon(BOT-LSP-DEFAULTS)
 import { SwarmClaimSettingsPanel } from "@/components/myrmidon/SwarmClaimSettingsPanel"; // myrmidon(1.6.1 SWARM-SETTINGS-UI)
 import { AboutSettingsPanel } from "@/components/myrmidon/AboutSettingsPanel"; // myrmidon(ABOUT)
 import { DeployJobsPanel } from "@/components/myrmidon/DeployJobsPanel"; // myrmidon(R5-A)
+import { PluginEntitlementSettings } from "@/components/myrmidon/PluginEntitlementSettingsPanel"; // myrmidon(PLUGIN-ENTITLEMENT C)
 import { PRODUCT_NAME, UPSTREAM_ATTRIBUTION } from "@/lib/myrmidon-product"; // myrmidon(B1a)
 import { useTranslation } from "@/i18n"; // myrmidon(UI-RU)
 
@@ -134,10 +140,16 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
 
       <MaintenanceSettingsPanel /> {/* myrmidon(R3) */}
       <RuntimeLimitsSettingsPanel /> {/* myrmidon(C0) */}
+      <BudgetEnforcementSettingsPanel /> {/* myrmidon(1.7-BUDGET-CONFIG-B) */}
+      <TelegramDmProgressSettingsPanel /> {/* myrmidon(DM-PROGRESS) */}
       <HostDiskSettingsPanel /> {/* myrmidon(BOT-DISK E) */}
+      <BotDiskSettingsPanel /> {/* myrmidon(1.6.1-BOT-DISK-B) */}
       <ParallelHelpersSettingsPanel /> {/* myrmidon(PARALLEL-HELPERS) */}
+      <AgentMemorySettingsPanel /> {/* myrmidon(MEMORY-UI) */}
+      <BotLspSettingsPanel /> {/* myrmidon(BOT-LSP-DEFAULTS) */}
       <SwarmClaimSettingsPanel /> {/* myrmidon(1.6.1 SWARM-SETTINGS-UI) */}
       <DeployJobsPanel /> {/* myrmidon(R5-A) */}
+      <PluginEntitlementSettings /> {/* myrmidon(PLUGIN-ENTITLEMENT C) */}
 
       {showDeploymentStatus && (
       <section>
