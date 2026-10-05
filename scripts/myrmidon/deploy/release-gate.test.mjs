@@ -132,6 +132,7 @@ case "$*" in
     for a in "$@"; do case "$a" in *agents/*) id="\${a##*agents/}"; id="\${id%%/*}" ;; esac; done
     if [ -e "$SANDBOX/status-$id.json" ]; then cat "$SANDBOX/status-$id.json"; else echo "{}"; fi ;;
   *agents*) cat "$SANDBOX/agents.json" ;;
+  *issues*) echo '{"issues": []}' ;;
   *fleetd/health*)
     # fleetd-health-bad holds the number of probes that still fail (then it answers)
     if [ -f "$SANDBOX/fleetd-health-bad" ]; then
@@ -245,6 +246,10 @@ function sandbox({
     .replaceAll("__COMPOSE_FILE_ARGS__", `-f ${composeDir}/docker-compose.yml -f ${composeDir}/docker-compose.myrmidon-image.yml`)
     .replaceAll("__COMPOSE_SERVICE__", "server");
   fs.writeFileSync(path.join(unitDir, "paperclip.service"), unit);
+  // The board's own environment for the throwaway board container of
+  // PREDEPLOY-DB-CHECK.
+  const predeployEnv = path.join(dir, "predeploy-board.env");
+  fs.writeFileSync(predeployEnv, "JWT_SECRET=test-secret\n");
   const config = path.join(dir, "deploy.env");
   fs.writeFileSync(
     config,
@@ -263,6 +268,9 @@ function sandbox({
       "RUNNING_RUNS_COMMAND='echo 0'",
       `SYSTEMD_UNIT_DIR=${unitDir}`,
       `BOARD_API_URL=http://127.0.0.1:3100/api`,
+      // PREDEPLOY-DB-CHECK: the attention list of the company is walked against
+      // the throwaway copy, so the check needs the company id too.
+      `BOARD_COMPANY_ID=${COMPANY}`,
       ...(smokeCompany ? [`MYRMIDON_DEPLOY_SMOKE_COMPANY=${smokeCompany}`] : []),
       "MYRMIDON_DEPLOY_SMOKE_TIMEOUT_SEC=2",
       "MYRMIDON_DEPLOY_SMOKE_INTERVAL_SEC=1",
@@ -270,10 +278,16 @@ function sandbox({
       `MYR_FLEETD_HEALTH_URL=http://127.0.0.1:3100/fleetd/health`,
       // The bot image rollout has its own tests (bot-image-rollout.test.mjs).
       "MYRMIDON_BOT_IMAGE_ROLLOUT=0",
+      // PREDEPLOY-DB-CHECK (the 05.10 incident): the pre-window check is ON by
+      // default; this sandbox walks the real default path list, so the attention
+      // list of the company is exercised against the throwaway copy.
+      "MYRMIDON_PREDEPLOY_POSTGRES_IMAGE=postgres:16-alpine",
+      `MYRMIDON_PREDEPLOY_BOARD_ENV_FILE=${predeployEnv}`,
+      "MYRMIDON_PREDEPLOY_BOARD_PORT=13110",
       "",
     ].join("\n"),
   );
-  return { dir, bin, config, override, composeDir, agentId };
+  return { dir, bin, config, override, composeDir, agentId, predeployEnv };
 }
 
 function run(sb, script, args) {
@@ -339,6 +353,41 @@ describe("deploy.sh: release components roll out together (RELEASE-GATE)", () =>
     // The smoke saw a running bot container.
     assert.match(out, /re-applied after the deploy/);
     assert.match(out, /release gate passed/);
+  });
+
+  it("DOCKERGATE-FIRST: the components roll out before the board is switched, so the board is verified against the NEW dockergate", () => {
+    const sb = sandbox();
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.equal(code, 0, out);
+    const log = calls(sb);
+    const dockergate = log.indexOf("up -d --no-deps dockergate");
+    const board = log.indexOf("up -d --no-deps server");
+    assert.ok(dockergate >= 0 && board >= 0, log);
+    // The 05.10 order was board first, dockergate after: the new board never
+    // became `ok` against the old dockergate (`route_not_allowed`) and the fleet
+    // stood still. The new dockergate is now recreated BEFORE the board.
+    assert.ok(dockergate < board, "the board was recreated before the new dockergate: the 05.10 order");
+    assert.match(out, /component dockergate rolled out/);
+  });
+
+  it("PREDEPLOY-DB-CHECK: the board is proven on a copy of the production database, with the new dockergate, before the window", () => {
+    const sb = sandbox();
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.equal(code, 0, out);
+    const log = calls(sb);
+    assert.match(out, /prove the image on a copy of the production database/);
+    assert.match(out, /PREDEPLOY-DB-CHECK: passed/);
+    // its own Postgres from the dump, its own network, on 127.0.0.1 only
+    assert.match(log, /docker network create myr-predeploy-/);
+    assert.match(log, /-e POSTGRES_DB=myrmidon/);
+    assert.match(log, new RegExp(`-p 127\\.0\\.0\\.1:13110:3100 ${CI_IMAGE}@${NEW}`));
+    // the NEW dockergate of the release, not the one that is running
+    assert.match(log, new RegExp(`docker run -d --name myr-predeploy-dockergate-[^ ]+ --network [^ ]+ ghcr\\.io/itkadr-git/myrmidon-dockergate@${DG}`));
+    // the attention list and the main company routes of the copy
+    assert.match(log, new RegExp(`http://127\\.0\\.0\\.1:13110/api/companies/${COMPANY}/attention`));
+    // and the copy is gone before the board is switched (the window)
+    assert.match(log, /docker rm -f myr-predeploy-board-/);
+    assert.ok(log.indexOf("docker rm -f myr-predeploy-board-") < log.indexOf("up -d --no-deps server"), "the board was switched before the copy was checked");
   });
 
   it("resolves components by the release tag when the board was built from a tag", () => {
@@ -665,7 +714,10 @@ describe("ONE-DEPLOY: all components in one window, all-or-nothing", () => {
     const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
     assert.notEqual(code, 0, out);
     assert.match(out, /automatic rollback is off/);
-    assert.equal(imageOf(sb.override), `${CI_IMAGE}@${NEW}`);
+    // DOCKERGATE-FIRST: the components roll out BEFORE the board, so the failed
+    // fleetd stopped the window with the board still on its previous image (the
+    // operator has one less thing to clean up by hand).
+    assert.equal(imageOf(sb.override), `${CI_IMAGE}@${OLD}`);
     assert.doesNotMatch(read(path.join(sb.dir, "maintenance.log")), /exit/);
   });
 

@@ -19,6 +19,12 @@
 # RESTORE_COMMAND with DUMP_FILE set while the server service is stopped.
 # Maintenance stays on until the old image passes the health check.
 #
+# ROLLBACK-WITHOUT-BOARD: the rollback does NOT require the board API to enter
+# (or leave) the maintenance window. A rollback usually runs BECAUSE the board
+# is down; demanding an admission gate from a dead board would keep the fleet on
+# the broken image. A failed enter/exit is logged loudly and the rollback
+# continues; the image switch and the health check still decide the outcome.
+#
 # Rollback is the emergency path and is never blocked by where the target image
 # came from. It does check the target the way deploy.sh checks a new image (a
 # CI image in the registry, built from a commit on origin/main or a myr-v* tag)
@@ -151,7 +157,16 @@ fi
 [[ -n "$expect_commit" ]] || expect_commit="$(image_label "$ref" org.opencontainers.image.revision)"
 
 log "2/6 enter maintenance"
-maintenance_enter "rollback to ${ref:0:80}"
+# ROLLBACK-WITHOUT-BOARD (the 05.10 lesson): a rollback is often needed BECAUSE
+# the board is down, so entering the maintenance window must not require the
+# board API to answer. A failed enter is reported and the rollback continues:
+# with the board down there is no admission gate to close, and refusing here
+# would leave the fleet on the broken image. A live board that refuses the enter
+# is reported the same way; the image switch and the health check below still
+# decide the outcome.
+if ! maintenance_enter "rollback to ${ref:0:80}"; then
+  log "WARNING: could not enter maintenance (the board API did not answer or refused the enter); continuing WITHOUT a maintenance window (a board that is down has no admission gate to close)"
+fi
 
 if [[ -n "$restore_dump" ]]; then
   if [[ "$yes_restore" != "1" ]]; then
@@ -184,5 +199,9 @@ log "5/6 verify health"
   || die "ROLLBACK FAILED health check; maintenance stays on. Inspect: docker compose logs $COMPOSE_SERVICE"
 
 log "6/6 leave maintenance"
-maintenance_exit
+# ROLLBACK-WITHOUT-BOARD: the exit cannot be required from a board that was down
+# when the rollback started (the old image it rolled back to is healthy and
+# serving; the window is only `leaving` at worst). Reported, not fatal.
+maintenance_exit \
+  || log "WARNING: could not leave maintenance (the board API did not answer); the previous image is running and its health check passed"
 log "rolled back to $ref"
