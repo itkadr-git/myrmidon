@@ -305,7 +305,9 @@ export function verifyBotCanaryImage(input: {
   }
   const onMain = input.commitOnMain(commit);
   const tags = input.releaseTagsAtCommit ?? [];
-  const tagged = tags.some((tag) => /^myr-v\d+\.\d+\.\d+$/.test(tag));
+  // RC-VERSIONS: a release candidate tag (myr-vX.Y.Z-rc.N) counts too — the
+  // canary of an rc IS the trial run of the release flow.
+  const tagged = tags.some((tag) => /^myr-v\d+\.\d+\.\d+(-rc\.\d+)?$/.test(tag));
   if (!onMain && !tagged) {
     return {
       ok: false,

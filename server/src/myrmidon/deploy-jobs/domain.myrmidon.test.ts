@@ -98,9 +98,16 @@ describe("deploy jobs: CI image verification", () => {
     expect(result.reason).toContain("neither on origin/main nor tagged myr-v*");
   });
 
-  it("ignores tags that are not myr-v<semver>", () => {
+  it("ignores tags that are not myr-v<semver> or an rc", () => {
     const result = verifyCiImage({ ...base, commitOnMain: () => false, releaseTagsAtCommit: ["v9.9.9", "myr-v1.2"] });
     expect(result.ok).toBe(false);
+  });
+
+  // RC-VERSIONS: a release candidate tag proves the commit went through the
+  // release flow — the deploy of an rc IS the trial run.
+  it("passes an image from a release candidate tag myr-vX.Y.Z-rc.N", () => {
+    const result = verifyCiImage({ ...base, commitOnMain: () => false, releaseTagsAtCommit: ["myr-v1.2.1-rc.1"] });
+    expect(result.ok).toBe(true);
   });
 });
 

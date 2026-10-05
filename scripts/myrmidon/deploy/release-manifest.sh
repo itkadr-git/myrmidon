@@ -78,7 +78,7 @@ if [[ -n "$file" ]]; then
   [[ -f "$file" ]] || die "manifest file not found: $file"
   manifest="$(cat "$file")"
 else
-  [[ "$tag" =~ ^myr-v[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "tag must look like myr-vX.Y.Z (got: $tag)"
+  [[ "$tag" =~ ^myr-v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] || die "tag must look like myr-vX.Y.Z or myr-vX.Y.Z-rc.N (got: $tag)"
   api="${MYRMIDON_RELEASE_API_URL:-https://api.github.com}"
   repo="${MYRMIDON_RELEASE_REPO:-itkadr-git/myrmidon}"
   release="$(fetch "$api/repos/$repo/releases/tags/$tag")" \
