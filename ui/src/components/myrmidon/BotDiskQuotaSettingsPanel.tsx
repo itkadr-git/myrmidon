@@ -30,8 +30,8 @@ function parseEntries<K extends string>(
   return { entries, bad: null };
 }
 
-function formatEntries(entries: ReadonlyArray<{ key: string; quotaMb: number }>): string {
-  return entries.map((entry) => `${entry.key}=${entry.quotaMb}`).join("\n");
+function formatEntries(entries: ReadonlyArray<Record<string, string | number>>, keyField: string): string {
+  return entries.map((entry) => `${entry[keyField]}=${entry.quotaMb}`).join("\n");
 }
 
 export function BotDiskQuotaSettingsPanel() {
@@ -47,10 +47,10 @@ export function BotDiskQuotaSettingsPanel() {
     if (view && defaultDraft === null) setDefaultDraft(view.settings.defaultQuotaMb === null ? "" : String(view.settings.defaultQuotaMb));
   }, [view, defaultDraft]);
   useEffect(() => {
-    if (view && casteDraft === null) setCasteDraft(formatEntries(view.settings.perCaste));
+    if (view && casteDraft === null) setCasteDraft(formatEntries(view.settings.perCaste, "casteKey"));
   }, [view, casteDraft]);
   useEffect(() => {
-    if (view && agentDraft === null) setAgentDraft(formatEntries(view.settings.perAgent));
+    if (view && agentDraft === null) setAgentDraft(formatEntries(view.settings.perAgent, "agentKey"));
   }, [view, agentDraft]);
 
   const save = useMutation({
@@ -77,8 +77,8 @@ export function BotDiskQuotaSettingsPanel() {
     onSuccess: (saved) => {
       setError(null);
       setDefaultDraft(saved.settings.defaultQuotaMb === null ? "" : String(saved.settings.defaultQuotaMb));
-      setCasteDraft(formatEntries(saved.settings.perCaste));
-      setAgentDraft(formatEntries(saved.settings.perAgent));
+      setCasteDraft(formatEntries(saved.settings.perCaste, "casteKey"));
+      setAgentDraft(formatEntries(saved.settings.perAgent, "agentKey"));
       queryClient.invalidateQueries({ queryKey: botDiskQuotaQueryKey });
     },
     onError: (err) => setError(err instanceof Error ? err.message : "Could not save the quotas. Try again."),
@@ -87,8 +87,8 @@ export function BotDiskQuotaSettingsPanel() {
   const unchanged =
     view !== undefined &&
     (defaultDraft ?? "") === (view.settings.defaultQuotaMb === null ? "" : String(view.settings.defaultQuotaMb)) &&
-    (casteDraft ?? "") === formatEntries(view.settings.perCaste) &&
-    (agentDraft ?? "") === formatEntries(view.settings.perAgent);
+    (casteDraft ?? "") === formatEntries(view.settings.perCaste, "casteKey") &&
+    (agentDraft ?? "") === formatEntries(view.settings.perAgent, "agentKey");
 
   return (
     <section className="space-y-4 rounded-lg border p-4" data-testid="bot-disk-quota-panel">
