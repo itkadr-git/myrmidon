@@ -572,7 +572,12 @@ func (d *Daemon) container(w http.ResponseWriter, r *http.Request, call Call, re
 	case tail == "archive" && call.Method == "GET":
 		marker := c.Marker
 		d.mu.Unlock()
-		if marker == nil || q.Get("path") != "/bot/hermes/.myrmidon/applied.json" {
+		// The marker of an isolated bot lives under /bot, that of a shared scope member
+		// under /bot-scope/<botKey>.
+		path := q.Get("path")
+		known := path == "/bot/hermes/.myrmidon/applied.json" ||
+			(strings.HasPrefix(path, "/bot-scope/") && strings.HasSuffix(path, "/hermes/.myrmidon/applied.json"))
+		if marker == nil || !known {
 			msg(w, http.StatusNotFound, "Could not find the file in container")
 			return
 		}

@@ -1,4 +1,4 @@
-# Shared package cache and git objects for bot containers (1.6.1-BOT-DISK-B, 1.6.2-BOT-DISK-C, BOT-DISK-D)
+# Shared package cache and git objects for bot containers (1.6.1-BOT-DISK-B, 1.6.2-BOT-DISK-C, BOT-DISK-D, BOT-DISK-F)
 
 Development bots download the same pnpm packages, Go modules and Gradle
 dependencies again and again, each into its own volume. With the shared package
@@ -221,6 +221,123 @@ Existing clones keep their copied `node_modules` until they are reinstalled
 (`rm -rf node_modules && pnpm install`) or reaped by the lifecycle; the store they
 link into is the one at `pnpmStoreDir`, which is created on first use. Roll back
 by deploying the previous image and dockergate (the host layout is the same).
+
+### Isolation scope: who shares a disk
+
+By default every bot keeps its own disk (the single mount above) and shares nothing. For
+bots that work on the same code the owner can choose, per **scope instance**, to put the
+members on one shared root (BOT-DISK-F): one directory with **one pnpm store** and a
+subdirectory per bot, so a hard link works within a bot **and across the bots of the
+instance**, and a package is stored once for all of them. Different instances never share
+a directory: developers sharing a root cannot see a marketing bot's tree.
+
+**Where an agent's scope comes from.** Seven levels, most specific first; the first level
+whose scope instance has an explicit setting decides, and nothing configured means the default
+(the agent's own disk):
+
+| # | Level | Scope instance | Identified by |
+|---|---|---|---|
+| 1 | agent override | one agent | "keep isolated" on the agent (and its own choice between several groups or projects) |
+| 2 | explicit named group | a group, any agents as members | the group's id |
+| 3 | caste | everybody with one role | `agents.role` (a key of the company caste directory) |
+| 4 | reporting subtree | a lead and everyone under it | the lead's agent id, through `agents.reports_to`; the nearest configured lead above an agent wins |
+| 5 | project | agents working in one project | the project id (an agent leads a project or is a joined member of it) |
+| 6 | installed catalog team | agents installed from one catalog team | `metadata.paperclip.catalogTeam.catalogId` |
+| 7 | company | everybody | the company |
+
+An instance set to **isolated** is an explicit "each member keeps its own disk" and stops the
+search (a lower level that is shared does not apply to those members); **shared root** gives the
+members one directory. The resolver is one pure module (`packages/shared/src/myrmidon-isolation-scope.ts`)
+that other policies can reuse with their own settings: the container scope will use it later.
+
+**Groups** are first-class: create, rename, delete and change the members in Instance settings,
+"Disk isolation of bots" or through the API, with no restart; the group's page lists the members
+and its isolation setting (*does not define isolation*, *isolated*, *shared root*). An agent may
+be in several groups, but only one may define its isolation scope: when two or more of an agent's
+groups have a setting the agent is flagged **group conflict** and the owner must choose which one
+decides. An agent in several projects that each have a setting is flagged **project ambiguous**
+in the same way. Until the choice is made the agent stays isolated (nothing is shared on a guess)
+and cannot be applied. A conflict that a higher level already settles (an agent override, or a
+group, caste or reporting subtree when the projects are in question) is not reported.
+
+**Host layout.** A shared instance is the directory `<shared root>/<kind>-<id>/` with one pnpm
+store (`.pnpm-store`) and one subdirectory per member bot:
+
+```
+<shared root>/caste-<company>-engineer/
+  .pnpm-store/
+  <botKey-1>/{hermes,workspace,scratch}
+  <botKey-2>/{hermes,workspace,scratch}
+```
+
+The shared root is `MYRMIDON_BOT_SCOPE_ROOT` (default `<volume root>/.scopes`: a bot key never
+begins with `.`; keep it on the **same filesystem** as the volume root, so a migration is a rename).
+Caste and catalog ids are only unique per company, so their directory names carry the company id.
+
+**In the container.** A member has ONE bind, the instance directory at `/bot-scope`, and no
+`/bot`. A tmpfs over `/data` holds the three links `/data/hermes`, `/data/workspace`,
+`/data/scratch`, which the entrypoint points into `/bot-scope/<botKey>/...` (the bot key arrives in
+the one non-secret variable `MYRMIDON_BOT_SCOPE_SUBDIR`); `/workspace` and `/scratch` stay links
+through `/data`. The profile writes `npm_config_store_dir=/bot-scope/.pnpm-store` for every member
+(with or without the shared package cache); the start-time self-check runs from that store into the
+member's three roots. The image must declare the label `myrmidon.bot-runtime.scope=1` (this image
+does; its `WORKDIR` is now `/` because `/workspace` does not resolve before the links exist): the
+driver refuses to create a member from an image without it.
+
+**Restart required.** Changing a group, a setting or an agent's choice changes what the agent
+*resolves to* at once, but the board keeps the container on the layout the owner last **applied**.
+The difference shows on the agent as **restart required**. Nothing restarts by itself: the owner
+presses *Apply and restart* (per agent) or *Apply to all*, and the reconcile pass then sees the
+bind difference as a template drift and recreates the container through its maintenance window.
+
+**Changing an agent's scope (what runs on restart, in order).**
+
+1. *Pause*: the reconcile pass opens the agent's maintenance window and waits for the open runs.
+2. *Check*: the migration plan is computed from the live container's binds (where it is now) and the
+   applied layout (where it goes). The three directories move whole (`rename`) onto an **absent or
+   empty** target; a target that holds data, a source that is a link or a file, or a volume root the
+   board cannot see **refuses the whole change before anything is stopped**, and the bot keeps
+   running on its old layout. Nothing is ever deleted or merged. An interrupted earlier run is
+   recognised (the source is gone, the target is there) and completed.
+3. *Prepare* the volumes of the new layout (the prepare helper also hands the instance directory
+   to the bot's uid) and *create* the replacement with the new binds, **while the old container
+   still runs**: a refusal by dockergate or the daemon (a bot not yet enrolled, a missing image)
+   changes nothing. Then *stop* the old container, *move* the directories (a failing step undoes
+   the ones before it and the old container is started again), and swap the replacement in.
+4. *Self-check*: the new container checks hard links from the store at start; a failure is raised as
+   an attention card like any other.
+5. *Resume*: the maintenance window closes and the agent runs again.
+
+The bot's old private pnpm store (`workspace/.pnpm-store`) moves along with its workspace and stays
+unused; remove it by hand when convenient (the migration never deletes). If the board cannot see
+the volumes (the usual production layout), do the move by hand with the bot paused and stopped:
+`mkdir -p <shared root>/<instance>/<botKey>` then `mv <volume root>/<botKey>/{hermes,workspace,scratch}`
+into it (or back), start the bot, and apply the change on the board.
+
+**dockergate.** The gate accepts a shared-instance bind only for a bot enrolled for that instance
+(`bots[].scopeInstances`) and only the instance's own directory, never the root or a sibling; see
+[dockergate.md](dockergate.md#members-of-a-shared-isolation-scope-bot-disk-f). Enrol the bots
+**before** applying.
+
+**Trade-offs: read this before sharing a root.** The members of an instance run as the same uid and
+each container mounts the whole instance directory, so a bot can read and write **every other
+member's** `hermes/` (profile, `.env` with its keys), `workspace` and `scratch`. Share only between
+bots that trust each other with that (the point of the levels is that a marketing bot is in another
+instance than the developers). A hard link is the same file: editing an installed file in
+`node_modules` in place edits the store copy and every clone of every member (pnpm's integrity check
+notices on a later install). A shared store is also written by several bots at once; pnpm's store is
+built for concurrent writers. A single failing disk or a full volume now affects the whole instance.
+
+**Where agents' projects come from.** The board has no agent-to-project table; an agent is in a
+project when it leads it or has a joined `project_memberships` row keyed by its id.
+
+**API.** `GET /api/myrmidon/companies/:companyId/bot-scopes` (agents with their effective scope, source,
+problems, applied layout and `restartRequired`; groups; configured instances); writes need instance-admin
+rights: `POST|PATCH|DELETE .../bot-scopes/groups[/:groupId]`, `PUT|DELETE
+.../bot-scopes/settings/:kind/:scopeId` (`{"mode":"isolated"|"shared"}`), `PUT .../bot-scopes/agents/:agentId`
+(`isolate`, `groupId`, `projectId`), `POST .../bot-scopes/agents/:agentId/apply` and `POST
+.../bot-scopes/apply-all`. Tables: `myrmidon_scope_groups`, `myrmidon_scope_group_members`,
+`myrmidon_scope_settings`, `myrmidon_scope_agent_prefs` (migration `0299_bot_isolation_scope`).
 
 ### Clone hygiene in the draft lifecycle
 

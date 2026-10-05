@@ -92,6 +92,35 @@ func TestParseAcceptsPackageCacheRoot(t *testing.T) {
 	}
 }
 
+func TestScopeRootAndInstances(t *testing.T) {
+	// Missing: the default sits under volumeRoot, where no bot key can collide with it.
+	if got := mustParse(t, goodJSON).EffectiveScopeRoot(); got != "/srv/myrmidon-bots/.scopes" {
+		t.Fatalf("default scope root %q", got)
+	}
+	s := replace(t, goodJSON, `"network"`, `"scopeRoot": "/srv/scopes", "network"`)
+	s = replace(t, s, `"maxPids": 1024}`, `"maxPids": 1024, "scopeInstances": ["caste-c0-engineer", "group-123"]}`)
+	c := mustParse(t, s)
+	if c.EffectiveScopeRoot() != "/srv/scopes" || len(c.Bots[0].ScopeInstances) != 2 {
+		t.Fatalf("scope config not read: %+v", c)
+	}
+	for name, bad := range map[string]string{
+		"relative scope root":          replace(t, goodJSON, `"network"`, `"scopeRoot": "srv/scopes", "network"`),
+		"scope root is the volumeRoot": replace(t, goodJSON, `"network"`, `"scopeRoot": "/srv/myrmidon-bots", "network"`),
+		"scope root holds volumeRoot":  replace(t, goodJSON, `"network"`, `"scopeRoot": "/srv", "network"`),
+		"scope root with ..":           replace(t, goodJSON, `"network"`, `"scopeRoot": "/srv/../x", "network"`),
+		"trailing slash":               replace(t, goodJSON, `"network"`, `"scopeRoot": "/srv/scopes/", "network"`),
+		"overlaps the package cache":   replace(t, replace(t, goodJSON, `"network"`, `"scopeRoot": "/srv/cache/s", "network"`), `"network"`, `"packageCacheRoot": "/srv/cache", "network"`),
+		"instance with a slash":        replace(t, goodJSON, `"maxPids": 1024}`, `"maxPids": 1024, "scopeInstances": ["caste-a/b"]}`),
+		"instance with .. ":            replace(t, goodJSON, `"maxPids": 1024}`, `"maxPids": 1024, "scopeInstances": ["caste-.."]}`),
+		"instance of no kind":          replace(t, goodJSON, `"maxPids": 1024}`, `"maxPids": 1024, "scopeInstances": ["engineer"]}`),
+		"duplicate instance":           replace(t, goodJSON, `"maxPids": 1024}`, `"maxPids": 1024, "scopeInstances": ["caste-a", "caste-a"]}`),
+	} {
+		if _, _, err := config.Parse([]byte(bad)); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
 func TestParseUIDMode(t *testing.T) {
 	s := replace(t, goodJSON, `"argv": ["node", "server.js"]`, `"argv": ["node"], "mode": "uid"`)
 	s = replace(t, s, "/srv/myrmidon-bots", "/tmp/ci-bots")

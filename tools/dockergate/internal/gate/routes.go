@@ -61,8 +61,9 @@ func (rs *reqState) a2(ctx context.Context, st *runtime, rt *route.Route, bs *bo
 	return nil
 }
 
-// markerPath is the query of the archive GET of the applied marker.
-const markerPath = "/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fapplied.json"
+// markerPath is the query of the archive GET of the applied marker of an
+// isolated bot.
+const markerPath = "/archive?" + route.MarkerQuery
 
 // a3: the applied marker. A marker of more than 1 MiB is reported as absent.
 func (rs *reqState) a3(ctx context.Context, st *runtime, rt *route.Route, bs *botState) *deny.Error {
@@ -77,7 +78,11 @@ func (rs *reqState) a3(ctx context.Context, st *runtime, rt *route.Route, bs *bo
 		return rs.notFound()
 	}
 	def, _, _ := rs.timeouts()
-	ans, derr := rs.call(ctx, upstream.Request{Method: "GET", Target: containerPath(ct.ID, markerPath)},
+	target := markerPath
+	if rt.ScopeMarker {
+		target = "/archive?" + route.ScopeMarkerQuery(rt.BotKey)
+	}
+	ans, derr := rs.call(ctx, upstream.Request{Method: "GET", Target: containerPath(ct.ID, target)},
 		def, maxMarker, deny.MarkerTooLarge)
 	if derr != nil {
 		return derr
@@ -99,6 +104,8 @@ func (rs *reqState) a4(ctx context.Context, st *runtime, rt *route.Route, bot co
 		Images:           st.set,
 		MountSources:     st.cfg.MountSources,
 		PackageCacheRoot: st.cfg.PackageCacheRoot,
+		ScopeRoot:        st.cfg.EffectiveScopeRoot(),
+		ScopeInstances:   bot.ScopeInstances,
 		MaxMemoryMB:      bot.MaxMemoryMB,
 		MaxCPUs:          bot.MaxCPUs,
 		MaxPids:          bot.MaxPids,
@@ -132,6 +139,11 @@ func (rs *reqState) a4(ctx context.Context, st *runtime, rt *route.Route, bot co
 	}
 	if derr := policy.CheckVolumeRoot(rs.g.lstat, st.cfg.VolumeRoot, rt.BotKey); derr != nil {
 		return derr
+	}
+	if cr.ScopeInstance != "" {
+		if derr := policy.CheckScopeDir(rs.g.lstat, st.cfg.EffectiveScopeRoot(), cr.ScopeInstance, rt.BotKey); derr != nil {
+			return derr
+		}
 	}
 
 	unlock, derr := rs.g.lockBot(ctx, bs)
