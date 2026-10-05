@@ -1340,6 +1340,167 @@ describe("myrmidon(G2) compileHermesProfile — instance defaults", () => {
     });
   });
 
+  // myrmidon(BOT-RUNTIME-TUNING-AUX-CEILING): the cheap ceiling of the
+  // auxiliary fallback chains. Hermes walks `auxiliary.<task>.fallback_chain`
+  // before the main chain, so the ceiling is what stops a title or compression
+  // call from being served by a paid model after its own model refused the
+  // request (fact 02.10: the title call's `response_format: json_schema` was
+  // rejected and the chain climbed to a paid model).
+  describe("myrmidon(BOT-RUNTIME-TUNING-AUX-CEILING) auxiliary fallback ceiling", () => {
+    const ceiling = { auxiliary: { fallbackModels: ["model-cheap", "model-cheaper"] } };
+
+    it("writes the ceiling as auxiliary.title_generation.fallback_chain on the card's provider", () => {
+      const yaml = fileByPath(
+        compileHermesProfile(
+          baseInput({
+            adapterConfig: { provider: "xai", models: { titleGeneration: "model-title" } },
+            instanceDefaults: ceiling,
+          }),
+        ).files,
+        "hermes/config.yaml",
+      ).content;
+      expect(yaml).toContain(
+        'auxiliary:\n  title_generation:\n    fallback_chain:\n    - model: "model-cheap"\n      provider: "xai"\n' +
+          '    - model: "model-cheaper"\n      provider: "xai"\n    model: "model-title"',
+      );
+    });
+
+    it("places the entries on the instance gateway endpoint when the card names no provider", () => {
+      const yaml = fileByPath(
+        compileHermesProfile(
+          baseInput({
+            adapterConfig: { models: { titleGeneration: "model-title" } },
+            llm: { baseUrl: "https://example.com/llm/v1", apiKeyEnv: "LLM_GATEWAY_API_KEY" },
+            instanceDefaults: ceiling,
+          }),
+        ).files,
+        "hermes/config.yaml",
+      ).content;
+      expect(yaml).toContain(
+        'fallback_chain:\n    - base_url: "https://example.com/llm/v1"\n      key_env: "LLM_GATEWAY_API_KEY"\n' +
+          '      model: "model-cheap"\n      provider: "custom"',
+      );
+      expect(yaml).toContain('model: "model-title"');
+    });
+
+    it("caps the compression task with the same ceiling", () => {
+      const yaml = fileByPath(
+        compileHermesProfile(
+          baseInput({
+            adapterConfig: { provider: "xai", models: { compressionSummary: "model-summary" } },
+            instanceDefaults: ceiling,
+          }),
+        ).files,
+        "hermes/config.yaml",
+      ).content;
+      expect(yaml).toContain('auxiliary:\n  compression:\n    fallback_chain:');
+      expect(yaml).toContain('    model: "model-summary"');
+    });
+
+    it("caps the instance-default auxiliary model too, and never caps vision", () => {
+      const yaml = fileByPath(
+        compileHermesProfile(
+          baseInput({
+            adapterConfig: { provider: "xai", models: { vision: "model-vision" } },
+            instanceDefaults: { auxiliary: { titleGenerationModel: "model-title", ...ceiling.auxiliary } },
+          }),
+        ).files,
+        "hermes/config.yaml",
+      ).content;
+      expect(yaml).toContain('title_generation:\n    fallback_chain:');
+      // Vision keeps its own block, with no ceiling: those entries must be
+      // vision-capable models, a class the ceiling list cannot vouch for.
+      expect(yaml).toContain('  vision:\n    model: "model-vision"');
+      expect(yaml).not.toContain("vision:\n    fallback_chain");
+    });
+
+    it("drops a ceiling entry that repeats the task's own model (it is not a fallback)", () => {
+      const { profile, warnings } = compileHermesProfileDetailed(
+        baseInput({
+          adapterConfig: { provider: "xai", models: { titleGeneration: "model-cheap" } },
+          instanceDefaults: ceiling,
+        }),
+      );
+      const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
+      expect(yaml).toContain('fallback_chain:\n    - model: "model-cheaper"\n      provider: "xai"');
+      expect(yaml).not.toContain('- model: "model-cheap"');
+      expect(warnings.filter((warning) => warning.includes("auxiliary.title_generation.fallback_chain"))).toEqual([]);
+    });
+
+    it("warns and drops the ceiling when every entry repeats the task's own model", () => {
+      const { profile, warnings } = compileHermesProfileDetailed(
+        baseInput({
+          adapterConfig: { provider: "xai", models: { titleGeneration: "model-cheap" } },
+          instanceDefaults: { auxiliary: { fallbackModels: ["model-cheap"] } },
+        }),
+      );
+      const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
+      expect(yaml).toContain('title_generation:\n    model: "model-cheap"');
+      expect(yaml).not.toContain("fallback_chain");
+      expect(warnings.some((warning) => warning.includes("auxiliary.title_generation.fallback_chain"))).toBe(true);
+    });
+
+    it("warns and drops the ceiling when there is no route to place an entry on", () => {
+      const { profile, warnings } = compileHermesProfileDetailed(
+        baseInput({
+          adapterConfig: { models: { titleGeneration: "model-title" } },
+          llm: {},
+          instanceDefaults: ceiling,
+        }),
+      );
+      const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
+      expect(yaml).toContain('title_generation:\n    model: "model-title"');
+      expect(yaml).not.toContain("fallback_chain");
+      expect(
+        warnings.some(
+          (warning) =>
+            warning.includes("auxiliary.title_generation.fallback_chain") && warning.includes("climb the main chain"),
+        ),
+      ).toBe(true);
+    });
+
+    it("drops the gateway ceiling when the profile carries no gateway key name", () => {
+      const { profile, warnings } = compileHermesProfileDetailed(
+        baseInput({
+          adapterConfig: { models: { titleGeneration: "model-title" } },
+          llm: { baseUrl: "https://example.com/llm/v1" },
+          instanceDefaults: ceiling,
+        }),
+      );
+      const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
+      expect(yaml).not.toContain("fallback_chain");
+      expect(
+        warnings.some(
+          (warning) =>
+            warning.includes("auxiliary.title_generation.fallback_chain") && warning.includes("gateway key name"),
+        ),
+      ).toBe(true);
+    });
+
+    it("warns when the ceiling is set but no auxiliary model exists to cap", () => {
+      const { profile, warnings } = compileHermesProfileDetailed(
+        baseInput({ adapterConfig: { provider: "xai" }, instanceDefaults: ceiling }),
+      );
+      expect(fileByPath(profile.files, "hermes/config.yaml").content).not.toContain("auxiliary:");
+      expect(
+        warnings.some(
+          (warning) => warning.includes("auxiliary.fallback_chain") && warning.includes("no auxiliary task block"),
+        ),
+      ).toBe(true);
+    });
+
+    it("leaves the chain out entirely when no ceiling is configured", () => {
+      const yaml = fileByPath(
+        compileHermesProfile(
+          baseInput({ adapterConfig: { provider: "xai", models: { titleGeneration: "model-title" } } }),
+        ).files,
+        "hermes/config.yaml",
+      ).content;
+      expect(yaml).toContain('auxiliary:\n  title_generation:\n    model: "model-title"');
+      expect(yaml).not.toContain("fallback_chain");
+    });
+  });
+
   it("maps sessionsRetentionDays to sessions.retention_days", () => {
     const yaml = fileByPath(
       compileHermesProfile(baseInput({ instanceDefaults: { sessionsRetentionDays: 30 } })).files,
