@@ -88,6 +88,8 @@ Job `report main status` после полного прогона на `main`:
 нарезке релиза. Сторож `scripts/myrmidon/ci/change-fragments-gate.mjs` отклоняет PR,
 чей дифф правит общий документ, и печатает подсказку (вернуть файл, добавить
 фрагмент). PR нарезки релиза сторож узнаёт по удалениям фрагментов и пропускает.
+Ветку, уже правившую общие документы, переводит
+`scripts/myrmidon/release/fragments-from-diff.mjs --slug <слаг> --revert` (см. README каталога).
 Сторож — тест `change-fragments-gate-selftest.test.mjs` внутри шага
 `node --test` job `checks`: на событии `pull_request` он гоняет сторож по
 `$GITHUB_EVENT_PATH` (checkout с `fetch-depth: 0` уже на месте), вне PR —
