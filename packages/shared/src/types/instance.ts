@@ -13,8 +13,16 @@ import type { BotLspSettings } from "../myrmidon-bot-lsp.js";
 import type { BrowserBridgeSettings } from "../myrmidon-browser-bridge.js";
 import type { SwarmClaimSettings } from "../myrmidon-swarm-claim.js";
 // myrmidon(1.6.1-WIP-LIMIT-A): per-agent WIP limits of the same general settings row.
+import type { AgentMemorySettings } from "../myrmidon-agent-memory.js";
 import type { WipLimitSettings } from "../myrmidon-wip-limit.js";
+// myrmidon(REVIEW-ROUTING): automatic reviewer routing settings of the same row.
+import type { ReviewRoutingSettings } from "../myrmidon-review-routing.js";
 import type { BudgetEnforcementSettings } from "../myrmidon-budget-enforcement.js";
+// myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys live in
+// the same general settings row.
+import type { PluginEntitlementKey } from "../myrmidon-plugin-entitlement.js";
+// myrmidon(DM-PROGRESS): live progress steps of the bridged Telegram DM status message.
+import type { TelegramDmProgressSettings } from "../myrmidon-telegram-dm-progress.js";
 
 export const DAILY_RETENTION_PRESETS = [3, 7, 14] as const;
 export const WEEKLY_RETENTION_PRESETS = [1, 2, 4] as const;
@@ -132,6 +140,12 @@ export interface InstanceGeneralSettings {
    */
   wipLimit?: WipLimitSettings;
   /**
+   * myrmidon(REVIEW-ROUTING): automatic reviewer routing, changed from
+   * `GET`/`PUT /api/myrmidon/companies/:companyId/review-routing/settings`.
+   * Absent means the defaults.
+   */
+  reviewRouting?: ReviewRoutingSettings;
+  /**
    * myrmidon(1.7-BUDGET-CONFIG-B): what a crossed budget limit does —
    * signal only (default), pause with an owner card (soft), or refuse new
    * runs (hard); changed from `GET`/`PATCH /api/myrmidon/budget-enforcement`.
@@ -139,6 +153,26 @@ export interface InstanceGeneralSettings {
    * (packages/shared/src/validators/instance.ts).
    */
   budgetEnforcement?: BudgetEnforcementSettings;
+  /**
+   * myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys, managed
+   * from the instance settings page. Absent means "no keys registered". Kept
+   * in sync with the validator of the same field
+   * (packages/shared/src/validators/instance.ts).
+   */
+  pluginEntitlementKeys?: PluginEntitlementKey[];
+  /**
+   * myrmidon(DM-PROGRESS): live progress steps in the bridged Telegram DM
+   * status message — on/off and the minimum spacing between edits; changed
+   * from `GET`/`PATCH /api/myrmidon/telegram-dm-progress`. Kept in sync with
+   * the validator of the same field (packages/shared/src/validators/instance.ts).
+   */
+  telegramDmProgress?: TelegramDmProgressSettings;
+  /**
+   * myrmidon(MEMORY-UI): agent memory service address, optional key secret name
+   * and switch, changed from the instance settings page. Absent means "use the
+   * environment". Kept in sync with the validator of the same field.
+   */
+  agentMemory?: AgentMemorySettings;
 }
 
 export interface InstanceExperimentalSettings {

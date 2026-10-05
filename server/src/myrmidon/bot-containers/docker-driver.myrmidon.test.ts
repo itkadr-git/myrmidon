@@ -86,6 +86,22 @@ function testProfile(
 const NONCE = "00112233aabbccdd";
 
 describe("buildCreateContainerRequestBody", () => {
+  it("adds the read-only git mirror bind after the writable cache binds (1.6.2-BOT-DISK-C)", () => {
+    const withMirror = buildCreateContainerRequestBody(spec(), CONFIG, "/srv/package-cache", true);
+    const binds = withMirror.HostConfig.Binds;
+    expect(binds.slice(-5)).toEqual([
+      "/srv/package-cache/pnpm:/cache/pnpm:rw",
+      "/srv/package-cache/go-mod:/cache/go-mod:rw",
+      "/srv/package-cache/go-build:/cache/go-build:rw",
+      "/srv/package-cache/gradle:/cache/gradle:rw",
+      "/srv/package-cache/git:/cache/git:ro",
+    ]);
+    const without = buildCreateContainerRequestBody(spec(), CONFIG, "/srv/package-cache", false);
+    expect(without.HostConfig.Binds.some((bind) => bind.includes("/cache/git"))).toBe(false);
+    // A mirror without a cache path has nowhere to live: no bind.
+    expect(buildCreateContainerRequestBody(spec(), CONFIG, undefined, true).HostConfig.Binds.some((bind) => bind.includes("/cache/git"))).toBe(false);
+  });
+
   it("builds the fixed template body for an allowed image and the configured network", () => {
     const body = buildCreateContainerRequestBody(spec(), CONFIG);
     expect(body).toEqual({

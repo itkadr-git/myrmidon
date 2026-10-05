@@ -2826,3 +2826,18 @@ export * from "./myrmidon-budget-enforcement.js";
 // precedence resolver shared by the server core, the settings validator and the
 // UI panels of parts B–E.
 export * from "./myrmidon-behavior-settings.js";
+// myrmidon(MEMORY-UI): the agent memory instance setting (address, optional key secret, switch).
+export * from "./myrmidon-agent-memory.js";
+
+// myrmidon(PLUGIN-ENTITLEMENT C): plugin entitlement keys contract.
+export * from "./myrmidon-plugin-entitlement.js";
+
+// myrmidon(DM-PROGRESS): live progress steps in the bridged Telegram DM
+// status message — storage key, precedence and resolver.
+export * from "./myrmidon-telegram-dm-progress.js";
+
+// myrmidon(1.6.1 MODEL-PROVIDERS): provider secret names, defaults and API schemas.
+export * from "./myrmidon-model-providers.js";
+// myrmidon(REVIEW-ROUTING): automatic reviewer routing for tasks that enter
+// in_review with no reviewer — settings contract and activity actions.
+export * from "./myrmidon-review-routing.js";
