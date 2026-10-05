@@ -686,6 +686,28 @@ cat "$SANDBOX/health.json"`;
     assert.equal(mutations(sb), "");
   });
 
+  it("sends the board API key as ONE Authorization: Bearer header (token trimmed), and none without a token file", () => {
+    const sb = promoteSandbox({ releases: FINAL_RELEASE });
+    const tokenFile = path.join(sb.dir, "token");
+    fs.writeFileSync(tokenFile, "  abc123\n");
+    const withToken = runPromote(sb, ["--tag", "myr-v1.6.0", "--health-url", "http://board/api/health", "--health-token-file", tokenFile]);
+    assert.equal(withToken.code, 0, withToken.out);
+    assert.match(read(path.join(sb.dir, "calls.log")), /^curl -fsS --max-time 30 -H Authorization: Bearer abc123 http:\/\/board\/api\/health$/m);
+
+    const sb2 = promoteSandbox({ releases: FINAL_RELEASE });
+    const noToken = runPromote(sb2, ["--tag", "myr-v1.6.0", "--health-url", "http://board/api/health"]);
+    assert.equal(noToken.code, 0, noToken.out);
+    assert.doesNotMatch(read(path.join(sb2.dir, "calls.log")), /Authorization/);
+
+    const sb3 = promoteSandbox({ releases: FINAL_RELEASE });
+    const empty = path.join(sb3.dir, "empty");
+    fs.writeFileSync(empty, "\n");
+    const bad = runPromote(sb3, ["--tag", "myr-v1.6.0", "--health-url", "http://board/api/health", "--health-token-file", empty]);
+    assert.notEqual(bad.code, 0);
+    assert.match(bad.out, /token file is empty/);
+    assert.equal(mutations(sb3), "");
+  });
+
   it("--skip-health-check moves the marker with a loud warning (rehearsed promotions only)", () => {
     const sb = promoteSandbox({ releases: FINAL_RELEASE, health: { status: "ok", version: "9.9.9", commit: COMMIT } });
     const { code, out } = runPromote(sb, ["--tag", "myr-v1.6.0", "--skip-health-check"]);
