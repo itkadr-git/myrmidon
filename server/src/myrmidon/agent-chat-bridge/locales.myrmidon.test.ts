@@ -10,7 +10,7 @@ import { authUsers, userUiLanguage, createDb } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
-} from "../../../__tests__/helpers/embedded-postgres.js";
+} from "../../__tests__/helpers/embedded-postgres.js";
 import {
   BRIDGE_LOCALE_LANGUAGES_ENV,
   BRIDGE_TEXT_CATALOGS,

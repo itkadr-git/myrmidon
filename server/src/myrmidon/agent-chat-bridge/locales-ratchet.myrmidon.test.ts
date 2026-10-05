@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
-const BRIDGE_DIR = join(HERE, "..");
+const BRIDGE_DIR = HERE;
 const CHAT_CHANNELS = join(HERE, "..", "..", "services", "chat-channels.ts");
 const LOCALES_DIR = join(BRIDGE_DIR, "locales");
 
