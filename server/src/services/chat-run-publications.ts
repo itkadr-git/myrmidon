@@ -778,6 +778,26 @@ export async function enqueueChatRunMilestones(
               hasDirectInteractionContinuation,
             ),
             hasQuestionContinuationTarget,
+            // myrmidon(CHAT-SOURCE): a run that already published chat progress
+            // in this conversation is chat-origin by construction:
+            // `run:<id>:queued|working:<endpoint>` rows can only be minted by
+            // this chat-bound scan. A terminal milestone must therefore not
+            // depend solely on the run's *current* `source`, which a coalesced
+            // background event may legitimately rewrite (see
+            // `mergeCoalescedContextSnapshot`); without this, the progress
+            // message stays "working…" forever.
+            sql`exists (
+              select 1
+              from ${chatPublications} origin_progress
+              where origin_progress.company_id = ${heartbeatRuns.companyId}
+                and origin_progress.endpoint_id = ${chatConversations.endpointId}
+                and origin_progress.conversation_id = ${chatConversations.id}
+                and origin_progress.issue_id = ${chatConversations.issueId}
+                and (
+                  origin_progress.idempotency_key = 'run:' || ${heartbeatRuns.id}::text || ':queued:' || ${chatConversations.endpointId}::text
+                  or origin_progress.idempotency_key = 'run:' || ${heartbeatRuns.id}::text || ':working:' || ${chatConversations.endpointId}::text
+                )
+            )`,
           ),
           // Heartbeat marks a run succeeded before the presentation resolver
           // finishes. Waiting for its durable decision prevents a generic
