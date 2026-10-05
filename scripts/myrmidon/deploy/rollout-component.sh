@@ -9,7 +9,15 @@
 # component after the board itself is healthy.
 #
 #   rollout-component.sh --config deploy.env --component dockergate \
-#                        --digest sha256:<64 hex> [--dry-run]
+#                        --digest sha256:<64 hex> [--dry-run] [--force]
+#
+# ONE-DEPLOY: a component that already runs the requested image is left alone
+# (exit 0, nothing pulled or restarted) unless --force. A dockergate rollout
+# checks its config with `dockergate check-config`, run with the NEW image,
+# BEFORE the service is recreated (MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_CONFIG
+# names the file; without it the check is skipped with a warning), and after
+# the recreate verifies the running dockergate's self-check version against the
+# binary of the image.
 #
 # The component registry repositories are fixed (they are CI-built exactly like
 # the board image; see scripts/myrmidon/dockergate/check-release-support.sh):
@@ -52,7 +60,7 @@ set -euo pipefail
 # shellcheck source=lib.sh source-path=SCRIPTDIR
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
-config="" component="" digest=""
+config="" component="" digest="" force=0
 DRY_RUN=0
 while (($#)); do
   case "$1" in
@@ -60,7 +68,8 @@ while (($#)); do
     --component) component="$2"; shift 2 ;;
     --digest) digest="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
-    -h|--help) sed -n '2,46p' "$0"; exit 0 ;;
+    --force) force=1; shift ;;
+    -h|--help) sed -n '2,56p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -139,10 +148,21 @@ fi
 current_ref=""
 [[ -n "$(component_cat_override)" ]] && current_ref="$(component_cat_override | sed -nE 's/^[[:space:]]*image:[[:space:]]*([^[:space:]#]+).*/\1/p' | head -n1)"
 
+# ONE-DEPLOY: an unchanged component is not restarted.
+if [[ "$current_ref" == "$ref" && "$force" != "1" ]]; then
+  log "UNCHANGED: $component already runs $ref; nothing pulled, nothing restarted (use --force to recreate)"
+  exit 0
+fi
+
+DG_CONFIG="${MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_CONFIG:-}"
+
 if [[ "$DRY_RUN" == "1" ]]; then
   log "dry run: nothing will be changed. Component plan (${COMPONENT_HOST%%:*} target):"
   plan "1. component image check passed (read-only): $ref built by CI from commit ${CI_IMAGE_REVISION:0:12}"
   plan "2. docker pull $ref"
+  if [[ "$component" == "dockergate" ]]; then
+    plan "2b. dockergate check-config of ${DG_CONFIG:-<no config configured: skipped with a warning>} with the new image, before the recreate"
+  fi
   plan "3. remember previous component image: ${current_ref:-<none>} -> $COMPONENT_PREVIOUS_FILE"
   plan "4. set image in $COMPONENT_OVERRIDE_PATH; docker compose up -d --no-deps $COMPONENT_SERVICE${COMPONENT_REMOTE:+ (through ssh $COMPONENT_REMOTE)}"
   plan "5. health: ${COMPONENT_HEALTH_URL:-<unset: deploy refuses>}"
@@ -151,6 +171,22 @@ fi
 
 log "1/5 pull $ref"
 component_docker pull --quiet "$ref" >/dev/null || die "cannot pull $ref"
+
+# ONE-DEPLOY: the dockergate config is checked with the NEW binary before the
+# service is recreated: a config the new dockergate refuses must stop the
+# rollout here, not after the proxy of every bot container is down.
+if [[ "$component" == "dockergate" ]]; then
+  if [[ -n "$DG_CONFIG" ]]; then
+    [[ -z "$COMPONENT_REMOTE" ]] || die "dockergate on a remote host: the config check runs on this host; set MYR_DOCKERGATE_HOST=local or drop MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_CONFIG"
+    [[ -f "$DG_CONFIG" ]] || die "dockergate config not found: $DG_CONFIG"
+    log "dockergate check-config ($DG_CONFIG) with $ref"
+    rc=0
+    dockergate_check_config_file "$DG_CONFIG" "$ref" || rc=$?
+    ((rc == 0)) || die "dockergate check-config refused $DG_CONFIG with $ref (rc $rc); the service was not recreated"
+  else
+    log "WARNING: MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_CONFIG is not set; the dockergate config is NOT checked before the recreate"
+  fi
+fi
 
 log "2/5 remember previous component image"
 mkdir -p "$STATE_DIR"
@@ -183,5 +219,24 @@ if [[ "$health_ok" != "1" ]]; then
   log "Roll back the board with: $MYR_SCRIPT_DIR/rollback.sh --config $config"
   log "Roll back this component with: $MYR_SCRIPT_DIR/rollback-component.sh --config $config --component $component"
   exit 1
+fi
+
+# ONE-DEPLOY: the running dockergate must report the version of the new
+# binary in its startup self-check ("self-check ok", the `version` field).
+if [[ "$component" == "dockergate" ]]; then
+  expected_version="$(component_docker run --rm --network none "$ref" version 2>/dev/null | head -n1 || true)"
+  [[ -n "$expected_version" ]] || die "cannot read the version of $ref (docker run ... version)"
+  seen_version=""
+  for _ in $(seq 1 "$((HEALTH_TIMEOUT_SEC / POLL_INTERVAL_SEC + 1))"); do
+    seen_version="$(component_compose logs --no-log-prefix --tail 400 "$COMPONENT_SERVICE" 2>/dev/null \
+      | jq -Rr 'fromjson? | select(.event == "self-check ok") | .version // empty' 2>/dev/null | tail -n1 || true)"
+    [[ "$seen_version" == "$expected_version" ]] && break
+    sleep "$POLL_INTERVAL_SEC"
+  done
+  if [[ "$seen_version" != "$expected_version" ]]; then
+    log "DEGRADED: dockergate self-check version is '${seen_version:-<none>}', expected '$expected_version'"
+    exit 1
+  fi
+  log "dockergate self-check version $seen_version"
 fi
 log "component $component rolled out ($ref, previous: ${current_ref:-<none>})"

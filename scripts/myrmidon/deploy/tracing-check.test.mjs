@@ -372,8 +372,10 @@ case "$1" in
         # HOST-TARGETING: the declared services of the sandbox's compose
         # project (the fail-closed pre-check reads them).
         printf 'server\\ndockergate\\nfleetd\\n' ;;
+      *logs*) echo '{"event":"self-check ok","version":"1.4.0+0123456789ab"}' ;;
       *) exit 0 ;;
     esac ;;
+  run) echo "1.4.0+0123456789ab" ;;
 esac
 `;
 
@@ -481,6 +483,7 @@ function deploySandbox({ langfuseHealth = { status: "OK", version: "4.2.1" }, tr
     `SYSTEMD_UNIT_DIR=${unitDir}`,
     "MYR_DOCKERGATE_HEALTH_URL=http://127.0.0.1:3100/dockergate/health",
     "MYR_FLEETD_HEALTH_URL=http://127.0.0.1:3100/fleetd/health",
+    "MYRMIDON_BOT_IMAGE_ROLLOUT=0",
     "MYRMIDON_DEPLOY_SMOKE=0",
   ];
   if (tracing) {
