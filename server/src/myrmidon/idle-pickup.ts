@@ -1,6 +1,10 @@
 import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { agentWakeupRequests, agents, companies, heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
+// myrmidon(TEAM-LIVENESS-SETTINGS): the instance settings (and the per-agent card
+// switch) this pass obeys, so an operator can change the throttle and the wake
+// budget without restarting the server — a restart drops every run in flight.
+import { resolveAgentTeamLiveness, type ResolvedTeamLiveness } from "@paperclipai/shared";
 import { issueHasNoExecutionHold, wakeNotParkedOnExecutionHold } from "./settled-holds/ready-predicate.js";
 
 /**
@@ -167,6 +171,14 @@ export interface IdleWakeBudget {
   tryConsume(companyId: string): boolean;
   /** Allowances the company still has inside the current window. */
   remaining(companyId: string): number;
+  /**
+   * myrmidon(TEAM-LIVENESS-SETTINGS): the numbers the instance settings page puts
+   * in force. The behaviour modules read the settings row asynchronously once per
+   * pass (or once per release), and the budget is synchronous, so the caller hands
+   * the resolved pair over instead of the budget reading a row per wake. Without
+   * a call the budget keeps the reader it was created with (the environment).
+   */
+  configure(settings: IdleWakeBudgetSettings): void;
   /** Drops every window (tests only). */
   resetForTest(): void;
 }
@@ -176,6 +188,9 @@ export function createIdleWakeBudget(
   nowMs: () => number = () => Date.now(),
 ): IdleWakeBudget {
   const windows = new Map<string, { startedAtMs: number; used: number }>();
+  // myrmidon(TEAM-LIVENESS-SETTINGS): the resolved pair, once a caller has one.
+  let configured: IdleWakeBudgetSettings | null = null;
+  const current = () => configured ?? readSettings();
   function currentWindow(companyId: string) {
     const at = nowMs();
     const existing = windows.get(companyId);
@@ -188,18 +203,22 @@ export function createIdleWakeBudget(
   }
   return {
     remaining(companyId) {
-      const { perMinute } = readSettings();
+      const { perMinute } = current();
       return Math.max(0, perMinute - currentWindow(companyId).used);
     },
     tryConsume(companyId) {
-      const { perMinute } = readSettings();
+      const { perMinute } = current();
       const window = currentWindow(companyId);
       if (window.used >= perMinute) return false;
       window.used += 1;
       return true;
     },
+    configure(settings) {
+      configured = settings;
+    },
     resetForTest() {
       windows.clear();
+      configured = null;
     },
   };
 }
@@ -397,10 +416,27 @@ function idlePickupCandidateRows(db: Db, companyId: string, agentId: string) {
 export async function idlePickupForAgent(
   deps: IdlePickupDeps,
   agent: { id: string; companyId: string },
-  options: { excludeIssueId?: string | null } = {},
+  options: {
+    excludeIssueId?: string | null;
+    /**
+     * myrmidon(TEAM-LIVENESS-SETTINGS): the caller's own decision for this agent
+     * — the instance switch AND the agent card switch, already resolved. The
+     * release path (heartbeat.ts) has the card at hand, so it does not make this
+     * function read the settings row once per agent; the periodic sweep resolves
+     * the pair once per pass and skips before it gets here. `undefined` keeps the
+     * pre-settings behaviour: the environment decides.
+     */
+    behaviorEnabled?: boolean;
+  } = {},
 ): Promise<IdlePickupResult> {
   const env = deps.env ?? process.env;
-  if (!readIdlePickupEnabled(env)) return emptyIdlePickupResult();
+  // The caller's decision is the resolved pair (stored settings beat the
+  // environment); only a caller that has none falls back to the environment.
+  if (options.behaviorEnabled !== undefined) {
+    if (!options.behaviorEnabled) return emptyIdlePickupResult();
+  } else if (!readIdlePickupEnabled(env)) {
+    return emptyIdlePickupResult();
+  }
 
   // Succeeded runs matter only inside the recent-success window (see below), so
   // read just those: an unbounded read pulled every succeeded run of the agent
@@ -678,6 +714,18 @@ export interface IdlePickupSweeperDeps extends IdlePickupDeps {
   }) => Promise<boolean>;
   /** Maintenance-mode gate (myrmidon R3): agents in a window are not woken. */
   isAgentUnderMaintenance: (agentId: string) => Promise<boolean>;
+  /**
+   * myrmidon(TEAM-LIVENESS-SETTINGS): the effective knobs, read once per pass so
+   * a save on the instance settings page takes effect on the next pass without a
+   * restart. Absent (unit tests that predate the settings area) means the
+   * environment variables decide, exactly as before.
+   */
+  readLiveness?: () => Promise<ResolvedTeamLiveness>;
+}
+
+/** The agent row's card as a plain object; anything else reads as an empty card. */
+function readAgentCard(raw: unknown): Record<string, unknown> {
+  return raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
 }
 
 export function createIdlePickupSweeper(deps: IdlePickupSweeperDeps): IdlePickupSweeper {
@@ -689,15 +737,28 @@ export function createIdlePickupSweeper(deps: IdlePickupSweeperDeps): IdlePickup
     },
     async sweep(now = new Date()) {
       const env = deps.env ?? process.env;
-      const intervalMs = readIdlePickupIntervalSec(env) * 1000;
-      if (!readIdlePickupEnabled(env)) {
+      // myrmidon(TEAM-LIVENESS-SETTINGS): the stored instance settings win over
+      // the environment; the reader already resolved that precedence per key.
+      // Without a reader this module keeps reading the environment itself.
+      const liveness = deps.readLiveness ? (await deps.readLiveness()).settings : null;
+      const intervalMs =
+        (liveness ? liveness.idlePickupIntervalSec : readIdlePickupIntervalSec(env)) * 1000;
+      const enabled = liveness ? liveness.idlePickupEnabled : readIdlePickupEnabled(env);
+      if (!enabled) {
         return { agentsChecked: 0, skippedOverBatch: 0, ...emptyIdlePickupResult() };
       }
       if (now.getTime() - lastSweepAtMs < intervalMs) {
         return { agentsChecked: 0, skippedOverBatch: 0, ...emptyIdlePickupResult() };
       }
       lastSweepAtMs = now.getTime();
-      const { batch } = readIdleWakeBudgetSettings(env);
+      const envWake = readIdleWakeBudgetSettings(env);
+      // A pass never spends more of the minute than the minute holds, whichever
+      // layer set the two numbers.
+      const perMinute = liveness ? liveness.idlePickupWakeBudgetPerMin : envWake.perMinute;
+      const batch = Math.min(liveness ? liveness.idlePickupWakeBatch : envWake.batch, perMinute);
+      // The release path spends the same budget object; handing it the resolved
+      // pair keeps both paths on the numbers the operator saved.
+      deps.budget?.configure({ perMinute, batch });
 
       const rows = await deps.db
         .select({
@@ -706,6 +767,7 @@ export function createIdlePickupSweeper(deps: IdlePickupSweeperDeps): IdlePickup
           name: agents.name,
           reportsTo: agents.reportsTo,
           status: agents.status,
+          adapterConfig: agents.adapterConfig,
         })
         .from(agents)
         .innerJoin(companies, eq(companies.id, agents.companyId))
@@ -716,6 +778,12 @@ export function createIdlePickupSweeper(deps: IdlePickupSweeperDeps): IdlePickup
       let agentsChecked = 0;
       let skippedOverBatch = 0;
       for (const agent of rows) {
+        // myrmidon(TEAM-LIVENESS-SETTINGS): this agent's own switch. A card that
+        // turned the behaviour off is never woken by this pass; an absent switch
+        // means the instance value applies.
+        if (liveness && !resolveAgentTeamLiveness(readAgentCard(agent.adapterConfig), liveness).idlePickupEnabled) {
+          continue;
+        }
         // Invokability covers pause, termination and a broken reporting
         // chain; the maintenance gate covers the maintenance window. A wake
         // for a paused agent would be skipped by enqueueWakeup anyway, but
@@ -731,7 +799,11 @@ export function createIdlePickupSweeper(deps: IdlePickupSweeperDeps): IdlePickup
           continue;
         }
         agentsChecked += 1;
-        const perAgent = await idlePickupForAgent(deps, agent);
+        const perAgent = await idlePickupForAgent(deps, agent, {
+          // The pass already decided with the resolved settings; handing the
+          // decision over keeps the environment from vetoing a stored "on".
+          behaviorEnabled: liveness ? true : undefined,
+        });
         wakesPerCompany.set(
           agent.companyId,
           (wakesPerCompany.get(agent.companyId) ?? 0) + perAgent.woken,

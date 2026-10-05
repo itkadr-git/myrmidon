@@ -87,7 +87,12 @@ import { defaultEffortForModel, effortsForModel } from "../lib/card-effort-polic
 import { AgentCardContainerFields } from "./myrmidon/AgentCardContainerFields";
 // myrmidon(PARALLEL-HELPERS): parallel helper subagents on the agent card
 import { AgentCardParallelHelpersFields } from "./myrmidon/AgentCardParallelHelpersFields";
+import { AgentCardTeamLivenessFields } from "./myrmidon/AgentCardTeamLivenessFields"; // myrmidon(TEAM-LIVENESS-SETTINGS)
 import { parallelHelpersApi, parallelHelpersQueryKey } from "./myrmidon/parallelHelpersApi";
+import {
+  teamLivenessApi,
+  teamLivenessQueryKey,
+} from "./myrmidon/teamLivenessApi"; // myrmidon(TEAM-LIVENESS-SETTINGS)
 import { AgentCardLspFields } from "./myrmidon/AgentCardLspFields"; // myrmidon(BOT-LSP-DEFAULTS)
 import { botLspApi, botLspQueryKey } from "./myrmidon/botLspApi"; // myrmidon(BOT-LSP-DEFAULTS)
 import { AgentCardEgressFields } from "./myrmidon/AgentCardEgressFields"; // myrmidon(EGRESS-B)
@@ -627,6 +632,15 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const { data: parallelHelpersSettings } = useQuery({
     queryKey: parallelHelpersQueryKey,
     queryFn: () => parallelHelpersApi.get(),
+    enabled: !isCreate && adapterType === "hermes_gateway",
+    retry: false,
+  });
+  // myrmidon(TEAM-LIVENESS-SETTINGS): the instance values of the three automatic
+  // behaviours, shown next to each card switch so "follow the instance" has a
+  // visible meaning. A viewer without access sees nothing and the hint says so.
+  const { data: teamLivenessSettings } = useQuery({
+    queryKey: teamLivenessQueryKey,
+    queryFn: () => teamLivenessApi.get(),
     enabled: !isCreate && adapterType === "hermes_gateway",
     retry: false,
   });
@@ -1818,6 +1832,17 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   creatable
                 />
               )}
+            />
+          )}
+          {/* myrmidon(TEAM-LIVENESS-SETTINGS): the three automatic behaviours on
+              the agent card. A switch set to "follow the instance settings" is
+              simply absent from the card; the company-wide numbers stay on the
+              instance settings page. */}
+          {!isCreate && adapterType === "hermes_gateway" && (
+            <AgentCardTeamLivenessFields
+              value={eff("adapterConfig", "teamLiveness", config.teamLiveness)}
+              onChange={(next) => mark("adapterConfig", "teamLiveness", next)}
+              settings={teamLivenessSettings?.settings ?? null}
             />
           )}
           {/* myrmidon(BOT-LSP-DEFAULTS): the agent's language-server mode; empty

@@ -42,10 +42,20 @@ import { pluginEntitlementKeysSchema } from "../myrmidon-plugin-entitlement.js";
 // myrmidon(DM-PROGRESS): live progress steps of the bridged Telegram DM status
 // message, stored in the same general settings row.
 import { telegramDmProgressSettingsSchema } from "../myrmidon-telegram-dm-progress.js";
+// myrmidon(TEAM-LIVENESS-SETTINGS): the knobs of the three automatic team-liveness
+// behaviours, changed from the instance settings page and /api/myrmidon/team-liveness.
+import {
+  patchTeamLivenessSettingsSchema,
+  storedTeamLivenessSettingsSchema,
+} from "../myrmidon-team-liveness.js";
 
 // myrmidon(PARALLEL-HELPERS): re-exported for the barrel so the settings page and the
 // /api/myrmidon/parallel-helpers route validate with the exact schema stored here.
 export { parallelHelpersSettingsSchema, patchParallelHelpersSettingsSchema };
+
+// myrmidon(TEAM-LIVENESS-SETTINGS): the same for /api/myrmidon/team-liveness — the route
+// and the settings page must validate with the schema the row is stored under.
+export { patchTeamLivenessSettingsSchema, storedTeamLivenessSettingsSchema };
 
 function presetSchema<T extends readonly number[]>(presets: T, label: string) {
   return z.number().refine(
@@ -144,6 +154,14 @@ export const instanceGeneralSettingsSchema = z.object({
   // secret name and the switch, changed from the instance settings page and
   // /api/myrmidon/agent-memory; absent means "use the environment".
   agentMemory: agentMemorySettingsSchema.optional(),
+  // myrmidon(TEAM-LIVENESS-SETTINGS): the knobs of the three automatic
+  // team-liveness behaviours (auto-resume, progress-based run liveness,
+  // wake-on-ready-work), changed from the instance settings page and
+  // /api/myrmidon/team-liveness; absent means "use the environment variable,
+  // then the default" (see packages/shared/src/myrmidon-team-liveness.ts).
+  // An agent card may override each behaviour's switch for itself
+  // (`adapterConfig.teamLiveness`), never the company-wide ceilings.
+  teamLiveness: storedTeamLivenessSettingsSchema.optional(),
 }).strict();
 
 export const patchInstanceGeneralSettingsSchema = z

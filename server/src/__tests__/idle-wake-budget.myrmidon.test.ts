@@ -19,11 +19,17 @@ vi.mock("../middleware/logger.js", () => ({
 }));
 
 import {
+  TEAM_LIVENESS_CARD_KEY,
+  resolveTeamLivenessSettings,
+  type ResolvedTeamLiveness,
+} from "@paperclipai/shared";
+import {
   createIdlePickupSweeper,
   createIdleWakeBudget,
   DEFAULT_IDLE_PICKUP_WAKE_BATCH,
   DEFAULT_IDLE_PICKUP_WAKE_BUDGET_PER_MIN,
   idlePickupForAgent,
+  IDLE_PICKUP_ENABLED_ENV,
   IDLE_PICKUP_WAKE_BATCH_ENV,
   IDLE_PICKUP_WAKE_BUDGET_PER_MIN_ENV,
   IDLE_PICKUP_WAKE_WINDOW_MS,
@@ -142,7 +148,9 @@ describeEmbeddedPostgres("idle pickup under the company wake budget", () => {
     await tempDb?.cleanup();
   });
 
-  async function seedAgent(input: { companyId?: string } = {}) {
+  async function seedAgent(
+    input: { companyId?: string; adapterConfig?: Record<string, unknown> } = {},
+  ) {
     const companyId = input.companyId ?? randomUUID();
     const agentId = randomUUID();
     if (!input.companyId) {
@@ -160,7 +168,7 @@ describeEmbeddedPostgres("idle pickup under the company wake budget", () => {
       role: "engineer",
       status: "idle",
       adapterType: "codex_local",
-      adapterConfig: {},
+      adapterConfig: input.adapterConfig ?? {},
       runtimeConfig: {},
       permissions: {},
     });
@@ -226,6 +234,7 @@ describeEmbeddedPostgres("idle pickup under the company wake budget", () => {
     budget: ReturnType<typeof createIdleWakeBudget>;
     enqueueWakeup: ReturnType<typeof vi.fn>;
     env?: Record<string, string | undefined>;
+    readLiveness?: () => Promise<ResolvedTeamLiveness>;
   }) {
     return {
       db,
@@ -234,6 +243,7 @@ describeEmbeddedPostgres("idle pickup under the company wake budget", () => {
       isAgentInvokable: vi.fn(async () => true),
       isAgentUnderMaintenance: vi.fn(async () => false),
       ...(input.env ? { env: input.env } : {}),
+      ...(input.readLiveness ? { readLiveness: input.readLiveness } : {}),
     };
   }
 
@@ -332,5 +342,99 @@ describeEmbeddedPostgres("idle pickup under the company wake budget", () => {
     expect(second.skippedOverBatch).toBe(0);
     expect(third.woken).toBe(1);
     expect(enqueueWakeup).toHaveBeenCalledTimes(2);
+  });
+  /**
+   * myrmidon(TEAM-LIVENESS-SETTINGS): the settings page decides, not the
+   * environment.
+   * These cases read the real contract (`resolveTeamLivenessSettings`) and hand
+   * the resolved pair to the sweeper, exactly as heartbeat.ts does.
+   */
+  function liveness(stored: Record<string, unknown>, env: Record<string, string | undefined> = {}) {
+    return async () => resolveTeamLivenessSettings({ stored, env });
+  }
+
+  it("obeys the stored settings over the environment", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "company-a",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    for (let index = 0; index < 3; index += 1) await seedAgent({ companyId });
+    const enqueueWakeup = fakeEnqueue();
+    const budget = createIdleWakeBudget(() => ({ perMinute: 5, batch: 5 }));
+
+    const sweeper = createIdlePickupSweeper(
+      sweeperDeps({
+        budget,
+        enqueueWakeup,
+        // The environment would wake nothing at all and spends one wake a
+        // minute; the operator saved "on", three a minute, two per pass.
+        env: { [IDLE_PICKUP_ENABLED_ENV]: "0", [IDLE_PICKUP_WAKE_BUDGET_PER_MIN_ENV]: "1" },
+        readLiveness: liveness({
+          idlePickupEnabled: true,
+          idlePickupWakeBudgetPerMin: 3,
+          idlePickupWakeBatch: 2,
+          idlePickupIntervalSec: 5,
+        }),
+      }),
+    );
+    const result = await sweeper.sweep(new Date("2026-10-05T12:00:00Z"));
+
+    expect(result.woken).toBe(2);
+    expect(result.skippedOverBatch).toBe(1);
+    expect(enqueueWakeup).toHaveBeenCalledTimes(2);
+  });
+
+  it("stops the pass when the stored settings switch the behaviour off", async () => {
+    const { companyId } = await seedAgent();
+    const enqueueWakeup = fakeEnqueue();
+    const budget = createIdleWakeBudget(() => ({ perMinute: 5, batch: 5 }));
+
+    const sweeper = createIdlePickupSweeper(
+      sweeperDeps({
+        budget,
+        enqueueWakeup,
+        // The environment still says "on": a stored "off" must win, otherwise
+        // the switch on the settings page would not switch anything off.
+        env: { [IDLE_PICKUP_ENABLED_ENV]: "1" },
+        readLiveness: liveness({ idlePickupEnabled: false }),
+      }),
+    );
+    const result = await sweeper.sweep(new Date("2026-10-05T12:00:00Z"));
+
+    expect(result).toMatchObject({ agentsChecked: 0, woken: 0 });
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it("leaves an agent whose own card switched the behaviour off", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "company-a",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    const optedOut = await seedAgent({
+      companyId,
+      adapterConfig: { [TEAM_LIVENESS_CARD_KEY]: { idlePickup: false } },
+    });
+    const participating = await seedAgent({ companyId });
+    const enqueueWakeup = fakeEnqueue();
+    const budget = createIdleWakeBudget(() => ({ perMinute: 5, batch: 5 }));
+
+    const sweeper = createIdlePickupSweeper(
+      sweeperDeps({
+        budget,
+        enqueueWakeup,
+        readLiveness: liveness({ idlePickupEnabled: true, idlePickupWakeBudgetPerMin: 5, idlePickupWakeBatch: 5 }),
+      }),
+    );
+    const result = await sweeper.sweep(new Date("2026-10-05T12:00:00Z"));
+
+    expect(result.woken).toBe(1);
+    expect(result.issueIds).toEqual([participating.issueId]);
+    expect(result.issueIds).not.toContain(optedOut.issueId);
   });
 });

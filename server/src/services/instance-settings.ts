@@ -280,6 +280,11 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       ...(parsed.data.telegramDmProgress ? { telegramDmProgress: parsed.data.telegramDmProgress } : {}),
       // myrmidon(MEMORY-UI): the stored agent memory settings survive every general write
       ...(parsed.data.agentMemory ? { agentMemory: parsed.data.agentMemory } : {}),
+      // myrmidon(TEAM-LIVENESS-SETTINGS): the stored team-liveness knobs survive
+      // every general write (they are edited on their own settings page). Without
+      // this line the vendor write path silently drops the key and the settings
+      // could only ever come from the environment.
+      ...(parsed.data.teamLiveness ? { teamLiveness: parsed.data.teamLiveness } : {}),
     };
   }
   return {
