@@ -9,7 +9,23 @@
 # component after the board itself is healthy.
 #
 #   rollout-component.sh --config deploy.env --component dockergate \
-#                        --digest sha256:<64 hex> [--dry-run]
+#                        --digest sha256:<64 hex> [--dry-run] [--force]
+#
+# PRE-CHECK (the 05.10 incident): before anything is pulled or written the
+# script makes every read-only refusal a rollout can make — the component's CI
+# image, the target host's compose project (and the REAL error of `docker
+# compose config` when the project cannot be read), the service the project
+# declares, the health URL, the dockergate config file. --dry-run therefore
+# fails exactly where a real rollout would, and deploy.sh pre-checks the whole
+# release this way BEFORE its image pull and its database dump.
+#
+# ONE-DEPLOY: a component that already runs the requested image is left alone
+# (exit 0, nothing pulled or restarted) unless --force. A dockergate rollout
+# checks its config with `dockergate check-config`, run with the NEW image,
+# BEFORE the service is recreated (MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_CONFIG
+# names the file; without it the check is skipped with a warning), and after
+# the recreate verifies the running dockergate's self-check version against the
+# binary of the image.
 #
 # The component registry repositories are fixed (they are CI-built exactly like
 # the board image; see scripts/myrmidon/dockergate/check-release-support.sh):
@@ -52,7 +68,7 @@ set -euo pipefail
 # shellcheck source=lib.sh source-path=SCRIPTDIR
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
-config="" component="" digest=""
+config="" component="" digest="" force=0
 DRY_RUN=0
 while (($#)); do
   case "$1" in
@@ -60,7 +76,8 @@ while (($#)); do
     --component) component="$2"; shift 2 ;;
     --digest) digest="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
-    -h|--help) sed -n '2,46p' "$0"; exit 0 ;;
+    --force) force=1; shift ;;
+    -h|--help) sed -n '2,65p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -112,37 +129,88 @@ component_cat_override() { component_host_cat_override; }
 component_service_exists() { component_host_service_exists; }
 component_write_override() { component_host_write_override "$@"; }
 
-# Same CI-image gate as the board: registry, labels, commit on main or a tag.
-log "checking that $ref was built by CI"
-if ! check_ci_image_for_repo "$repo" "$ref"; then
-  log "Only component images built by the CI workflows from main or a myr-v* tag are rolled out."
-  die "component image refused, nothing was changed: $CI_CHECK_REASON"
-fi
+DG_CONFIG="${MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_CONFIG:-}"
 
-# HOST-TARGETING: skip exits only after the CI check — see the case above.
-if [[ "$COMPONENT_SKIP" == "1" ]]; then
-  log "SKIP: $component rollout ends here; nothing was pulled, switched or recreated on this host"
-  exit 0
-fi
+# --- the read-only pre-check of this component --------------------------------
+# myrmidon(DEPLOY-PRECHECK, the 05.10 incident): every refusal a rollout makes
+# without pulling or writing anything lives in this one function, and it runs
+# before the pull, before the override is written and before the --dry-run plan.
+# So --dry-run fails exactly where the real rollout would, and deploy.sh's
+# pre-flight (which calls this script with --dry-run for each component it is
+# about to roll out) refuses before the image pull and the database dump. The
+# 05.10 deploy had the opposite: the dry run ran none of these checks, the real
+# run made them only after the pull and the dump, and an unreadable compose
+# project was reported as "dockergate is not a service".
+component_precheck() {
+  # Same CI-image gate as the board: registry, labels, commit on main or a tag.
+  log "checking that $ref was built by CI"
+  if ! check_ci_image_for_repo "$repo" "$ref"; then
+    log "Only component images built by the CI workflows from main or a myr-v* tag are rolled out."
+    die "component image refused, nothing was changed: $CI_CHECK_REASON"
+  fi
 
-# HOST-TARGETING (fail-closed local pre-check): before anything is pulled or
-# written, prove the service is part of the target host's compose project. A
-# component with no trace there (the 1.4.0 fleetd-on-the-board-host incident)
-# must fail HERE, not at step 4 with an image pulled and an override written on
-# a host the service never ran on.
-if ! component_service_exists; then
+  # HOST-TARGETING: skip ends here — after the CI check, which a component this
+  # deploy does not manage still has to pass (the release names a real image).
+  if [[ "$COMPONENT_SKIP" == "1" ]]; then
+    log "SKIP: $component rollout ends here; nothing was pulled, switched or recreated on this host"
+    exit 0
+  fi
+
+  # HOST-TARGETING (fail-closed local pre-check): before anything is pulled or
+  # written, prove the service is part of the target host's compose project. A
+  # component with no trace there (the 1.4.0 fleetd-on-the-board-host incident)
+  # must fail HERE, not at step 4 with an image pulled and an override written
+  # on a host the service never ran on. A compose project that cannot be read at
+  # all is reported as ITSELF, with the real compose error, and never as a
+  # missing service (the 05.10 incident).
   local_desc="this host"
   [[ -n "$COMPONENT_REMOTE" ]] && local_desc="$COMPONENT_REMOTE (remote)"
-  die "$component is not a service of the compose project on $local_desc ($COMPONENT_SERVICE missing from \$COMPOSE_FILES; a rollout would create the service from nothing, as in the 1.4.0 fleetd incident): fix MYR_${component^^}_COMPOSE_SERVICE/COMPOSE_FILES or set MYR_${component^^}_HOST to remote:/skip"
-fi
+  local srv_rc=0
+  component_service_exists || srv_rc=$?
+  if ((srv_rc == 1)); then
+    log "docker compose config on $local_desc did not run; its output:"
+    while IFS= read -r line; do
+      [[ -n "$line" ]] && log "  $line"
+    done <<<"$COMPONENT_COMPOSE_ERROR"
+    die "the compose project itself cannot be read on $local_desc (COMPOSE_DIR=$COMPOSE_DIR, COMPOSE_FILES=$COMPOSE_FILES), so its services are unknown — this is NOT a missing service: fix the compose project and run again (COMPOSE_FILES must name every file of the project; a service with neither an image nor a build context is the usual cause)"
+  fi
+  if ((srv_rc == 2)); then
+    die "$component is not a service of the compose project on $local_desc ($COMPONENT_SERVICE missing from \$COMPOSE_FILES; a rollout would create the service from nothing, as in the 1.4.0 fleetd incident): fix MYR_${component^^}_COMPOSE_SERVICE/COMPOSE_FILES or set MYR_${component^^}_HOST to remote:/skip"
+  fi
+
+  # The health URL is REQUIRED: the release deploy must prove the component
+  # answers, so a component without one is refused here — before the pull, not
+  # after its service was already recreated.
+  [[ -n "$COMPONENT_HEALTH_URL" ]] \
+    || die "$component has no MYR_${component^^}_HEALTH_URL configured: the release deploy must prove the component answers; refusing before anything is pulled"
+
+  # dockergate: the config the NEW binary must accept is read on THIS host, so a
+  # remote dockergate with a config check is refused here too.
+  if [[ "$component" == "dockergate" && -n "$DG_CONFIG" ]]; then
+    [[ -z "$COMPONENT_REMOTE" ]] || die "dockergate on a remote host: the config check runs on this host; set MYR_DOCKERGATE_HOST=local or drop MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_CONFIG"
+    [[ -f "$DG_CONFIG" ]] || die "dockergate config not found: $DG_CONFIG"
+  fi
+  log "pre-check ok: $ref is a CI image and $COMPONENT_SERVICE is a service of the compose project on $local_desc"
+}
+
+component_precheck
 
 current_ref=""
 [[ -n "$(component_cat_override)" ]] && current_ref="$(component_cat_override | sed -nE 's/^[[:space:]]*image:[[:space:]]*([^[:space:]#]+).*/\1/p' | head -n1)"
+
+# ONE-DEPLOY: an unchanged component is not restarted.
+if [[ "$current_ref" == "$ref" && "$force" != "1" ]]; then
+  log "UNCHANGED: $component already runs $ref; nothing pulled, nothing restarted (use --force to recreate)"
+  exit 0
+fi
 
 if [[ "$DRY_RUN" == "1" ]]; then
   log "dry run: nothing will be changed. Component plan (${COMPONENT_HOST%%:*} target):"
   plan "1. component image check passed (read-only): $ref built by CI from commit ${CI_IMAGE_REVISION:0:12}"
   plan "2. docker pull $ref"
+  if [[ "$component" == "dockergate" ]]; then
+    plan "2b. dockergate check-config of ${DG_CONFIG:-<no config configured: skipped with a warning>} with the new image, before the recreate"
+  fi
   plan "3. remember previous component image: ${current_ref:-<none>} -> $COMPONENT_PREVIOUS_FILE"
   plan "4. set image in $COMPONENT_OVERRIDE_PATH; docker compose up -d --no-deps $COMPONENT_SERVICE${COMPONENT_REMOTE:+ (through ssh $COMPONENT_REMOTE)}"
   plan "5. health: ${COMPONENT_HEALTH_URL:-<unset: deploy refuses>}"
@@ -151,6 +219,21 @@ fi
 
 log "1/5 pull $ref"
 component_docker pull --quiet "$ref" >/dev/null || die "cannot pull $ref"
+
+# ONE-DEPLOY: the dockergate config is checked with the NEW binary before the
+# service is recreated: a config the new dockergate refuses must stop the
+# rollout here, not after the proxy of every bot container is down.
+if [[ "$component" == "dockergate" ]]; then
+  if [[ -n "$DG_CONFIG" ]]; then
+    # the config file and the local-host rule were checked by component_precheck
+    log "dockergate check-config ($DG_CONFIG) with $ref"
+    rc=0
+    dockergate_check_config_file "$DG_CONFIG" "$ref" || rc=$?
+    ((rc == 0)) || die "dockergate check-config refused $DG_CONFIG with $ref (rc $rc); the service was not recreated"
+  else
+    log "WARNING: MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_CONFIG is not set; the dockergate config is NOT checked before the recreate"
+  fi
+fi
 
 log "2/5 remember previous component image"
 mkdir -p "$STATE_DIR"
@@ -166,7 +249,7 @@ component_compose up -d --no-deps "$COMPONENT_SERVICE" || die "compose up failed
 record_history "deploy-$component" "$ref"
 
 log "5/5 health"
-[[ -n "$COMPONENT_HEALTH_URL" ]] || die "$component has no MYR_${component^^}_HEALTH_URL configured: the release deploy must prove the component answers; refusing to report success without it"
+# the pre-check above already refused a component without MYR_*_HEALTH_URL
 # The value is the URL plus any curl arguments it needs (a unix socket, an
 # auth header): word-splitting is intended here.
 health_ok=0
@@ -183,5 +266,24 @@ if [[ "$health_ok" != "1" ]]; then
   log "Roll back the board with: $MYR_SCRIPT_DIR/rollback.sh --config $config"
   log "Roll back this component with: $MYR_SCRIPT_DIR/rollback-component.sh --config $config --component $component"
   exit 1
+fi
+
+# ONE-DEPLOY: the running dockergate must report the version of the new
+# binary in its startup self-check ("self-check ok", the `version` field).
+if [[ "$component" == "dockergate" ]]; then
+  expected_version="$(component_docker run --rm --network none "$ref" version 2>/dev/null | head -n1 || true)"
+  [[ -n "$expected_version" ]] || die "cannot read the version of $ref (docker run ... version)"
+  seen_version=""
+  for _ in $(seq 1 "$((HEALTH_TIMEOUT_SEC / POLL_INTERVAL_SEC + 1))"); do
+    seen_version="$(component_compose logs --no-log-prefix --tail 400 "$COMPONENT_SERVICE" 2>/dev/null \
+      | jq -Rr 'fromjson? | select(.event == "self-check ok") | .version // empty' 2>/dev/null | tail -n1 || true)"
+    [[ "$seen_version" == "$expected_version" ]] && break
+    sleep "$POLL_INTERVAL_SEC"
+  done
+  if [[ "$seen_version" != "$expected_version" ]]; then
+    log "DEGRADED: dockergate self-check version is '${seen_version:-<none>}', expected '$expected_version'"
+    exit 1
+  fi
+  log "dockergate self-check version $seen_version"
 fi
 log "component $component rolled out ($ref, previous: ${current_ref:-<none>})"

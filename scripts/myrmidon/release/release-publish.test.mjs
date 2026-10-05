@@ -7,7 +7,9 @@ import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   buildBody,
+  buildManifest,
   COMPONENTS,
+  MANIFEST_NAME,
   componentDigest,
   componentDigests,
   extractChangelogSection,
@@ -103,11 +105,14 @@ case "$sub" in
     fi ;;
   release)
     verb="$1"; shift
-    tag=""; title=""; notes=""; jq_filter=""
+    tag=""; title=""; notes=""; jq_filter=""; prerelease=0; latest=0
     while [ "$#" -gt 0 ]; do
       case "$1" in
         --title) shift; title="$1" ;;
         --notes-file) shift; notes="$1" ;;
+        --prerelease) prerelease=1 ;;
+        --latest) latest=1 ;;
+        --json) shift ;; # promote-latest.sh: --json isPrerelease,isLatest
         --jq) shift; jq_filter="$1" ;;
         myr-v*) tag="$1" ;;
       esac
@@ -123,28 +128,33 @@ case "$sub" in
             # gh --jq prints raw strings (jq -r semantics)
             jq -r --arg t "$tag" '.[$t] | '"$jq_filter" "$SANDBOX/releases.json"
           else
-            jq --arg t "$tag" '{name: .[$t].name, body: .[$t].body}' "$SANDBOX/releases.json"
+            jq --arg t "$tag" '{name: .[$t].name, body: .[$t].body, isPrerelease: (.[$t].isPrerelease // false), isLatest: (.[$t].isLatest // false)}' "$SANDBOX/releases.json"
           fi
         else
           echo "release not found: $tag" >&2
           exit 1
         fi ;;
+      upload)
+        printf 'upload tag=%s manifest=%s\n' "$tag" "$(jq -c . release-components.json)" >> "$SANDBOX/mutations.log" ;;
       create)
-        printf 'create tag=%s title=%s notes=%s\n' "$tag" "$title" "$(cat "$notes")" >> "$SANDBOX/mutations.log"
-        jq --arg t "$tag" --arg n "$title" --arg b "$(cat "$notes")" \
-          '.[$t] = {name: $n, body: $b}' "$SANDBOX/releases.json" > "$SANDBOX/releases.json.tmp"
+        printf 'create tag=%s title=%s prerelease=%s latest=%s notes=%s\n' "$tag" "$title" "$prerelease" "$latest" "$(cat "$notes")" >> "$SANDBOX/mutations.log"
+        jq --arg t "$tag" --arg n "$title" --arg b "$(cat "$notes")" --argjson pre "$prerelease" \
+          '.[$t] = {name: $n, body: $b, isPrerelease: $pre}' "$SANDBOX/releases.json" > "$SANDBOX/releases.json.tmp"
         mv "$SANDBOX/releases.json.tmp" "$SANDBOX/releases.json" ;;
       edit)
         # Record the mutation with the notes CONTENT (when a file is given),
         # then apply it to the state file so a later view sees the edit.
         notes_content=""
         if [ -n "$notes" ] && [ -f "$notes" ]; then notes_content="$(cat "$notes")"; fi
-        printf 'edit target=%s title=%s notes=%s\n' "$tag" "$title" "$notes_content" >> "$SANDBOX/mutations.log"
+        printf 'edit target=%s title=%s prerelease=%s latest=%s notes=%s\n' "$tag" "$title" "$prerelease" "$latest" "$notes_content" >> "$SANDBOX/mutations.log"
         if [ -n "$tag" ]; then
           new_title="$title"
-          if jq -e --arg t "$tag" 'has($t)' "$SANDBOX/releases.json" >/dev/null 2>&1 \
-             && [ "$new_title" != "null" ] && [ -n "$new_title" ]; then
-            if [ -n "$notes_content" ] || [ -n "$new_title" ]; then
+          if jq -e --arg t "$tag" 'has($t)' "$SANDBOX/releases.json" >/dev/null 2>&1; then
+            if [ "$latest" = "1" ]; then
+              jq --arg t "$tag" '.[$t].isLatest = true' "$SANDBOX/releases.json" > "$SANDBOX/releases.json.tmp"
+              mv "$SANDBOX/releases.json.tmp" "$SANDBOX/releases.json"
+            fi
+            if [ -n "$notes_content" ] || { [ "$new_title" != "null" ] && [ -n "$new_title" ]; }; then
               jq --arg t "$tag" --arg n "$new_title" '.[$t].name = $n' "$SANDBOX/releases.json" > "$SANDBOX/releases.json.tmp"
               mv "$SANDBOX/releases.json.tmp" "$SANDBOX/releases.json"
             fi
@@ -394,9 +404,21 @@ describe("publish-github-release.sh: the release body and mutations", () => {
     const { code, out } = runScript(sb, "myr-v1.6.0");
     assert.equal(code, 0, out);
     const mut = mutations(sb);
-    assert.match(mut, /create tag=myr-v1\.6\.0 title=Myrmidon 1\.6\.0 notes=.*New thing A\./s);
+    assert.match(mut, /create tag=myr-v1\.6\.0 title=Myrmidon 1\.6\.0 prerelease=0 latest=0 notes=.*New thing A\./s);
     assert.match(mut, /edit target=myr-v1\.5\.0 title=Myrmidon 1\.5\.0 \(superseded\)/);
     assert.match(mut, /check-release-support\.sh --from-tag 1\.6\.0/);
+  });
+
+  // RC-VERSIONS: a publish NEVER moves the `latest` marker — not for a final
+  // tag, not for an rc. The marker moves only via promote-latest.sh.
+  it("never publishes with --latest (the marker is the promote step's, not the publish's)", () => {
+    const sb = sandbox({ runs: GREEN_RUNS });
+    const { code, out } = runScript(sb, "myr-v1.6.0");
+    assert.equal(code, 0, out);
+    const mut = mutations(sb);
+    assert.match(mut, /create tag=myr-v1\.6\.0 .* latest=0/);
+    assert.doesNotMatch(mut, /latest=1/);
+    assert.match(out, /never --latest/);
   });
 
   it("is idempotent: an existing release is edited, not duplicated; an already-superseded previous is not renamed again", () => {
@@ -410,10 +432,266 @@ describe("publish-github-release.sh: the release body and mutations", () => {
     const { code, out } = runScript(sb, "myr-v1.6.0");
     assert.equal(code, 0, out);
     const mut = mutations(sb);
-    assert.match(mut, /edit target=myr-v1\.6\.0 title=Myrmidon 1\.6\.0 notes=Myrmidon 1\.6\.0 replaces/s);
+    assert.match(mut, /edit target=myr-v1\.6\.0 title=Myrmidon 1\.6\.0 prerelease=0 latest=0 notes=Myrmidon 1\.6\.0 replaces/s);
     assert.doesNotMatch(mut, /create tag=/);
     // previous already carries the marker: the edit for 1.5.0 must NOT appear
     assert.doesNotMatch(mut, /edit target=myr-v1\.5\.0/);
+  });
+});
+
+// RC-VERSIONS (owner requirement, 05.10): the release-candidate publish.
+describe("publish-github-release.sh: release candidates (RC-VERSIONS)", () => {
+  it("publishes an rc as a PRE-RELEASE with the rc title, the base version's notes and the rc's digests — and supersedes nothing", () => {
+    const rcRuns = [
+      run(COMMIT, ".github/workflows/myrmidon-ci.yml", "success", "completed", "myr-v1.6.0-rc.1"),
+      run(COMMIT, ".github/workflows/myrmidon-image.yml", "success", "completed", "myr-v1.6.0-rc.1"),
+    ];
+    const sb = sandbox({
+      runs: rcRuns,
+      releases: { "myr-v1.5.0": { name: "Myrmidon 1.5.0", body: "old body" } },
+    });
+    const { code, out } = runScript(sb, "myr-v1.6.0-rc.1");
+    assert.equal(code, 0, out);
+    const mut = mutations(sb);
+    // pre-release, never latest, the (RC 1) title
+    assert.match(mut, /create tag=myr-v1\.6\.0-rc\.1 title=Myrmidon 1\.6\.0-rc\.1 \(RC 1\) prerelease=1 latest=0/s);
+    // the notes are the BASE version's changelog section
+    assert.match(mut, /notes=.*New thing A\./s);
+    // the digest table and manifest probe the RC's image tags
+    assert.match(mut, /check-release-support\.sh --from-tag 1\.6\.0-rc\.1/);
+    const upload = /upload tag=myr-v1\.6\.0-rc\.1 manifest=(.*)/.exec(mut);
+    assert.ok(upload, "the manifest asset was uploaded");
+    const manifest = JSON.parse(upload[1]);
+    assert.equal(manifest.version, "1.6.0-rc.1");
+    assert.equal(manifest.tag, "myr-v1.6.0-rc.1");
+    // an rc supersedes nothing
+    assert.doesNotMatch(mut, /superseded/);
+    assert.match(out, /no supersede/);
+  });
+
+  it("the rc body carries the trial-run header pointing at the final tag and promote-latest.sh", () => {
+    const sb = sandbox({ runs: [
+      run(COMMIT, ".github/workflows/myrmidon-ci.yml", "success", "completed", "myr-v1.6.0-rc.1"),
+      run(COMMIT, ".github/workflows/myrmidon-image.yml", "success", "completed", "myr-v1.6.0-rc.1"),
+    ] });
+    const { code, out } = runScript(sb, "myr-v1.6.0-rc.1");
+    assert.equal(code, 0, out);
+    const mut = mutations(sb);
+    assert.match(mut, /Release candidate 1 of 1\.6\.0/);
+    assert.match(mut, /promote-latest\.sh/);
+  });
+
+  it("a final publish does not supersede the rc of its own version line", () => {
+    const sb = sandbox({
+      runs: GREEN_RUNS,
+      releases: {
+        "myr-v1.5.0": { name: "Myrmidon 1.5.0 (superseded)", body: "old" },
+        "myr-v1.5.0-rc.1": { name: "Myrmidon 1.5.0-rc.1 (RC 1)", body: "rc body" },
+      },
+    });
+    const { code, out } = runScript(sb, "myr-v1.6.0");
+    assert.equal(code, 0, out);
+    const mut = mutations(sb);
+    // 1.5.0 is already superseded; the rc title must stay untouched
+    assert.doesNotMatch(mut, /edit target=myr-v1\.5\.0/);
+    assert.doesNotMatch(mut, /edit target=myr-v1\.5\.0-rc\.1/);
+  });
+
+  it("a final publish supersedes the previous final, not its rc", () => {
+    const sb = sandbox({
+      runs: GREEN_RUNS,
+      releases: {
+        "myr-v1.5.0": { name: "Myrmidon 1.5.0", body: "old" },
+        "myr-v1.5.0-rc.2": { name: "Myrmidon 1.5.0-rc.2 (RC 2)", body: "rc body" },
+      },
+    });
+    const { code, out } = runScript(sb, "myr-v1.6.0");
+    assert.equal(code, 0, out);
+    const mut = mutations(sb);
+    assert.match(mut, /edit target=myr-v1\.5\.0 title=Myrmidon 1\.5\.0 \(superseded\)/);
+    assert.doesNotMatch(mut, /edit target=myr-v1\.5\.0-rc\.2/);
+  });
+
+  it("refuses a tag that is neither a final nor an rc tag", () => {
+    const sb = sandbox({ runs: GREEN_RUNS });
+    const { code, out } = runScript(sb, "myr-v1.6.0-rc1");
+    assert.notEqual(code, 0, out);
+    assert.match(out, /tag must look like myr-vX\.Y\.Z or myr-vX\.Y\.Z-rc\.N/);
+    assert.equal(mutations(sb), "");
+  });
+});
+
+// RC-VERSIONS: promote-latest.sh — the ONLY step that moves the `latest`
+// marker, and only with proof the board runs exactly this version.
+describe("promote-latest.sh: latest only after the board runs it (RC-VERSIONS)", () => {
+  const PROMOTE = path.join(HERE, "promote-latest.sh");
+
+  // The fake gh here needs the API endpoints promote-latest.sh reads; the
+  // publish fake answers only /git/ref|/git/tags + release — good enough:
+  // promote-latest.sh also reads /compare, so extend the fake inline.
+  const FAKE_GH_PROMOTE = `#!/usr/bin/env bash
+echo "gh $*" >> "$SANDBOX/calls.log"
+set -euo pipefail
+sub="$1"; shift
+case "$sub" in
+  api)
+    url=""; jq_filter=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --jq) shift; jq_filter="$1" ;;
+        -*) ;;
+        *) if [ -z "$url" ]; then url="$1"; fi ;;
+      esac
+      shift
+    done
+    case "$url" in
+      *"/git/ref/tags/"*)
+        if [ -f "$SANDBOX/ref-tag.json" ]; then body="$(cat "$SANDBOX/ref-tag.json")"; else echo "not found" >&2; exit 1; fi ;;
+      *"/git/tags/"*) body="$(cat "$SANDBOX/tag-object.json")" ;;
+      *"/compare/"*) body="$(cat "$SANDBOX/compare.json")" ;;
+      *) body="{}" ;;
+    esac
+    if [ -n "$jq_filter" ]; then jq -r "$jq_filter" <<<"$body"; else printf '%s\\n' "$body"; fi ;;
+  release)
+    verb="$1"; shift
+    tag=""; jq_filter=""; latest=0
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --latest) latest=1 ;;
+        --json) shift ;;
+        --jq) shift; jq_filter="$1" ;;
+        --repo) shift ;;
+        myr-v*) tag="$1" ;;
+      esac
+      shift
+    done
+    case "$verb" in
+      view)
+        if jq -e --arg t "$tag" 'has($t)' "$SANDBOX/releases.json" >/dev/null; then
+          if [ -n "$jq_filter" ]; then
+            jq -r --arg t "$tag" '.[$t] | '"$jq_filter" "$SANDBOX/releases.json"
+          else
+            jq --arg t "$tag" '{name: .[$t].name, isPrerelease: (.[$t].isPrerelease // false), isLatest: (.[$t].isLatest // false)}' "$SANDBOX/releases.json"
+          fi
+        else
+          echo "release not found: $tag" >&2; exit 1
+        fi ;;
+      edit)
+        printf 'edit target=%s latest=%s\\n' "$tag" "$latest" >> "$SANDBOX/mutations.log"
+        if [ "$latest" = "1" ]; then
+          jq --arg t "$tag" '.[$t].isLatest = true' "$SANDBOX/releases.json" > "$SANDBOX/releases.json.tmp"
+          mv "$SANDBOX/releases.json.tmp" "$SANDBOX/releases.json"
+        fi ;;
+    esac ;;
+  *) echo "unexpected gh subcommand: $sub" >&2; exit 1 ;;
+esac`;
+
+  const FAKE_CURL = `#!/usr/bin/env bash
+# fake curl: answers the board health URL from $SANDBOX/health.json
+echo "curl $*" >> "$SANDBOX/calls.log"
+cat "$SANDBOX/health.json"`;
+
+  function promoteSandbox({ releases = {}, compare = { status: "identical", ahead_by: 0 }, health = { status: "ok", version: "1.6.0", commit: COMMIT } } = {}) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "myrmidon-promote-"));
+    const bin = path.join(dir, "bin");
+    fs.mkdirSync(bin, { recursive: true });
+    fs.writeFileSync(path.join(bin, "gh"), FAKE_GH_PROMOTE, { mode: 0o755 });
+    fs.writeFileSync(path.join(bin, "curl"), FAKE_CURL, { mode: 0o755 });
+    fs.writeFileSync(path.join(dir, "releases.json"), JSON.stringify(releases));
+    fs.writeFileSync(path.join(dir, "compare.json"), JSON.stringify(compare));
+    fs.writeFileSync(path.join(dir, "health.json"), JSON.stringify(health));
+    fs.writeFileSync(path.join(dir, "ref-tag.json"), JSON.stringify({ object: { sha: TAG_OBJECT, type: "tag" } }));
+    fs.writeFileSync(path.join(dir, "tag-object.json"), JSON.stringify({ object: { sha: COMMIT, type: "commit" } }));
+    fs.writeFileSync(path.join(dir, "calls.log"), "");
+    fs.writeFileSync(path.join(dir, "mutations.log"), "");
+    return { dir, bin };
+  }
+
+  function runPromote(sb, args) {
+    const result = spawnSync("bash", [PROMOTE, ...args], {
+      cwd: sb.dir,
+      env: {
+        ...process.env,
+        PATH: `${sb.bin}:${process.env.PATH}`,
+        SANDBOX: sb.dir,
+        GITHUB_REPOSITORY: REPO,
+      },
+      encoding: "utf8",
+    });
+    if (result.error) throw new Error(`promote-latest.sh did not run: ${result.error.message}`);
+    return { code: result.status, out: `${result.stdout ?? ""}${result.stderr ?? ""}` };
+  }
+
+  const FINAL_RELEASE = { "myr-v1.6.0": { name: "Myrmidon 1.6.0", isPrerelease: false, isLatest: false } };
+
+  it("marks the release Latest when the board runs exactly this version", () => {
+    const sb = promoteSandbox({ releases: FINAL_RELEASE });
+    const { code, out } = runPromote(sb, ["--tag", "myr-v1.6.0", "--health-url", "http://board/api/health"]);
+    assert.equal(code, 0, out);
+    assert.match(mutations(sb), /edit target=myr-v1\.6\.0 latest=1/);
+    assert.match(out, /now the Latest release/);
+  });
+
+  it("refuses when the production board runs another version", () => {
+    const sb = promoteSandbox({ releases: FINAL_RELEASE, health: { status: "ok", version: "1.5.0", commit: COMMIT } });
+    const { code, out } = runPromote(sb, ["--tag", "myr-v1.6.0", "--health-url", "http://board/api/health"]);
+    assert.notEqual(code, 0, out);
+    assert.match(out, /board runs version 1\.5\.0, not 1\.6\.0/);
+    assert.equal(mutations(sb), "", "the marker must not move");
+  });
+
+  it("refuses a release candidate tag (an rc is the trial run, never Latest)", () => {
+    const sb = promoteSandbox({ releases: { "myr-v1.6.0-rc.1": { name: "Myrmidon 1.6.0-rc.1 (RC 1)", isPrerelease: true } } });
+    const { code, out } = runPromote(sb, ["--tag", "myr-v1.6.0-rc.1", "--health-url", "http://board/api/health"]);
+    assert.notEqual(code, 0, out);
+    assert.match(out, /only a final release tag/);
+    assert.equal(mutations(sb), "");
+  });
+
+  it("refuses a pre-release release object", () => {
+    const sb = promoteSandbox({ releases: { "myr-v1.6.0": { name: "Myrmidon 1.6.0", isPrerelease: true } } });
+    const { code, out } = runPromote(sb, ["--tag", "myr-v1.6.0", "--health-url", "http://board/api/health"]);
+    assert.notEqual(code, 0, out);
+    assert.match(out, /is a pre-release/);
+    assert.equal(mutations(sb), "");
+  });
+
+  it("refuses when the release commit is not on main", () => {
+    const sb = promoteSandbox({ releases: FINAL_RELEASE, compare: { status: "ahead", ahead_by: 2 } });
+    const { code, out } = runPromote(sb, ["--tag", "myr-v1.6.0", "--health-url", "http://board/api/health"]);
+    assert.notEqual(code, 0, out);
+    assert.match(out, /not on main/);
+    assert.equal(mutations(sb), "");
+  });
+
+  it("is idempotent: a release that is already Latest is left alone", () => {
+    const sb = promoteSandbox({ releases: { "myr-v1.6.0": { name: "Myrmidon 1.6.0", isPrerelease: false, isLatest: true } } });
+    const { code, out } = runPromote(sb, ["--tag", "myr-v1.6.0", "--health-url", "http://board/api/health"]);
+    assert.equal(code, 0, out);
+    assert.match(out, /already Latest/);
+    assert.equal(mutations(sb), "");
+  });
+
+  it("refuses without a board health URL (no proof, no promotion)", () => {
+    const sb = promoteSandbox({ releases: FINAL_RELEASE });
+    const env = { ...process.env };
+    delete env.MYRMIDON_PROD_HEALTH_URL; delete env.HEALTH_URL; delete env.MYRMIDON_PROD_HEALTH_TOKEN_FILE; delete env.HEALTH_TOKEN_FILE;
+    const result = spawnSync("bash", [PROMOTE, "--tag", "myr-v1.6.0"], {
+      cwd: sb.dir,
+      env: { ...env, PATH: `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir, GITHUB_REPOSITORY: REPO },
+      encoding: "utf8",
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(`${result.stdout}${result.stderr}`, /no production board health URL/);
+    assert.equal(mutations(sb), "");
+  });
+
+  it("--skip-health-check moves the marker with a loud warning (rehearsed promotions only)", () => {
+    const sb = promoteSandbox({ releases: FINAL_RELEASE, health: { status: "ok", version: "9.9.9", commit: COMMIT } });
+    const { code, out } = runPromote(sb, ["--tag", "myr-v1.6.0", "--skip-health-check"]);
+    assert.equal(code, 0, out);
+    assert.match(out, /WARNING: --skip-health-check/);
+    assert.match(mutations(sb), /edit target=myr-v1\.6\.0 latest=1/);
   });
 });
 
@@ -480,7 +758,7 @@ describe("release-body.mjs: body construction", () => {
       ],
     });
     assert.match(body, /Myrmidon 1\.6\.0 replaces 1\.5\.0\./);
-    assert.match(body, /Deploy the board and the release component images \(dockergate, fleetd\) from this tag together/);
+    assert.match(body, /Deploy the board, the release component images \(dockergate, fleetd\) and the bot images from this tag together/);
     assert.match(body, /"Upgrading from 1\.5\.0 to 1\.6\.0"/);
     assert.match(body, /docs\/myrmidon\/deploy\.md/);
     assert.match(body, /- New thing A\./);
@@ -522,10 +800,12 @@ describe("release-body.mjs: digest resolution (injected fetch)", () => {
     };
     return componentDigests("1.6.0", { fetchImpl }).then(({ rows, missing }) => {
       assert.deepEqual(missing, []);
-      assert.equal(rows.length, 4);
+      // 4 required components plus the 2 optional bot variants (hermes-dev, hermes-node)
+      assert.equal(rows.length, 6);
       assert.match(rows[0], /board/);
-      // one token request per repository (4 components, 4 scopes)
-      assert.equal(tokenUrls.length, 4);
+      assert.match(rows.join("\n"), /hermes-dev/);
+      // one token request per repository (6 scopes)
+      assert.equal(tokenUrls.length, 6);
     });
   });
 
@@ -542,5 +822,45 @@ describe("release-body.mjs: digest resolution (injected fetch)", () => {
     return componentDigest("myrmidon", "1.6.0", { fetchImpl }).then((d) => {
       assert.equal(d, null);
     });
+  });
+});
+
+describe("release manifest (release-components.json)", () => {
+  it("buildManifest names every component by repository and digest, the bot image as hermes", () => {
+    const digests = {
+      board: { repository: "ghcr.io/itkadr-git/myrmidon", digest: `sha256:${"1".repeat(64)}` },
+      bot: { repository: "ghcr.io/itkadr-git/myrmidon-hermes", digest: `sha256:${"2".repeat(64)}` },
+      "hermes-dev": { repository: "ghcr.io/itkadr-git/myrmidon-hermes-dev", digest: `sha256:${"3".repeat(64)}` },
+    };
+    const manifest = buildManifest({ version: "1.6.2", digests });
+    assert.equal(manifest.schema, 1);
+    assert.equal(manifest.tag, "myr-v1.6.2");
+    assert.deepEqual(Object.keys(manifest.components).sort(), ["board", "hermes", "hermes-dev"]);
+    assert.equal(manifest.components.hermes.digest, `sha256:${"2".repeat(64)}`);
+    assert.equal(MANIFEST_NAME, "release-components.json");
+  });
+
+  it("an optional bot variant missing from the registry does not refuse the release", () => {
+    const state = {
+      myrmidon: "sha256:a", "myrmidon-dockergate": "sha256:b", "myrmidon-fleetd": "sha256:c", "myrmidon-hermes": "sha256:d",
+    };
+    return componentDigests("1.6.2", { registryState: state }).then(({ missing, digests }) => {
+      assert.deepEqual(missing, []);
+      assert.deepEqual(Object.keys(digests).sort(), ["board", "bot", "dockergate", "fleetd"]);
+    });
+  });
+
+  it("publish uploads the manifest asset next to the release body", () => {
+    const sb = sandbox({ runs: GREEN_RUNS });
+    const { code, out } = runScript(sb, "myr-v1.6.0");
+    assert.equal(code, 0, out);
+    const log = mutations(sb);
+    assert.match(log, /create tag=myr-v1\.6\.0/);
+    const upload = /upload tag=myr-v1\.6\.0 manifest=(.*)/.exec(log);
+    assert.ok(upload, "the manifest asset was uploaded");
+    const manifest = JSON.parse(upload[1]);
+    assert.equal(manifest.version, "1.6.0");
+    assert.deepEqual(Object.keys(manifest.components).sort(), ["board", "dockergate", "fleetd", "hermes"]);
+    assert.match(manifest.components.dockergate.digest, /^sha256:/);
   });
 });

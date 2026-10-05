@@ -52,7 +52,7 @@ import {
   type SwarmClaimSettings,
 } from "@paperclipai/shared";
 import { logger } from "../../middleware/logger.js";
-import { currentHostMemoryGate, type HostMemoryGate } from "../run-admission.js";
+import { currentHostCpuGate, currentHostMemoryGate, type HostCpuGate, type HostMemoryGate } from "../run-admission.js";
 import { wakeNextAgentForIssueRole, type SwarmClaimServicePorts } from "./service.js";
 import { listClaimsOnNonQueueIssues, listExpiredClaims, releaseClaim } from "./store.js";
 import { listIdleRolePairs, liveClaimCountsByAgent } from "./idle-queue.js";
@@ -96,6 +96,13 @@ export interface SwarmClaimSweepResult {
   /** Free agents seen at a non-empty queue (the supervisor's zero metric). */
   idleFreeAgents: number;
   /**
+   * myrmidon(1.6.2 SWARM-UNASSIGNED-ROUTE): roles that have ready tasks queued
+   * but no agent at all — a configuration gap (a `role:<key>` label naming a
+   * caste nobody holds, or no agent of the default work role). Surfaced as a
+   * warning every pass, never as silent idleness.
+   */
+  idleUnstaffedRoles: number;
+  /**
    * myrmidon(1.6.2 RUN-ADMISSION): why the idle pass woke nobody without
    * looking at the queues — the host memory floor of the run admission was
    * closed — or null when the pass ran.
@@ -121,12 +128,20 @@ export interface SwarmClaimSweeperDeps extends SwarmClaimServicePorts {
    * run start goes through; tests inject a fake.
    */
   hostMemoryGate?: () => HostMemoryGate;
+  /**
+   * myrmidon(1.6.5 RUN-ADMISSION): the host CPU ceiling of the run
+   * admission. Same rule: an idle wake is a run start by another path, so a
+   * saturated host must not be piled onto. Defaults to the process-wide
+   * admission; tests inject a fake.
+   */
+  hostCpuGate?: () => HostCpuGate;
 }
 
 export function createSwarmClaimSweeper(deps: SwarmClaimSweeperDeps): SwarmClaimSweeper {
   let lastSweepAtMs = 0;
   let lastIdleSkipLogAtMs = 0;
   const hostMemoryGate = deps.hostMemoryGate ?? currentHostMemoryGate;
+  const hostCpuGate = deps.hostCpuGate ?? currentHostCpuGate;
   return {
     resetForTest() {
       lastSweepAtMs = 0;
@@ -142,6 +157,7 @@ export function createSwarmClaimSweeper(deps: SwarmClaimSweeperDeps): SwarmClaim
         idleWoken: 0,
         idleRoles: 0,
         idleFreeAgents: 0,
+        idleUnstaffedRoles: 0,
         idleSkippedReason: null,
       };
       const general = (await deps.settings.getGeneral()) as unknown as Record<string, unknown>;
@@ -268,6 +284,27 @@ export function createSwarmClaimSweeper(deps: SwarmClaimSweeperDeps): SwarmClaim
               reason: result.idleSkippedReason,
             },
             "swarm idle wake pass skipped: the run admission host memory floor is closed",
+          );
+        }
+        return result;
+      }
+      // myrmidon(1.6.5 RUN-ADMISSION): the host CPU ceiling. The 05.10
+      // incident was exactly this pass waking agents onto a host whose memory
+      // looked fine while its load average ran at 594 % of a core per core.
+      const cpuGate = hostCpuGate();
+      if (cpuGate.state === "closed") {
+        result.idleSkippedReason = cpuGate.reason ?? "host CPU load is at or above the run admission ceiling";
+        if (now.getTime() - lastIdleSkipLogAtMs >= IDLE_SKIP_LOG_INTERVAL_MS) {
+          lastIdleSkipLogAtMs = now.getTime();
+          logger.warn(
+            {
+              load1: cpuGate.load1,
+              cores: cpuGate.cores,
+              loadPercentPerCore: cpuGate.loadPercentPerCore,
+              thresholdPercent: cpuGate.thresholdPercent,
+              reason: result.idleSkippedReason,
+            },
+            "swarm idle wake pass skipped: the run admission host CPU ceiling is closed",
           );
         }
         return result;
@@ -405,6 +442,19 @@ async function sweepIdleWakes(
       ? new Map((await deps.castes(companyId)).map((entry) => [entry.key, entry]))
       : new Map<string, CompanyCaste>();
     for (const pair of pilotPairs) {
+      if (pair.agents.length === 0) {
+        // The attention signal: ready work routed to a role no agent holds.
+        result.idleUnstaffedRoles += 1;
+        logger.warn(
+          {
+            role: pair.role,
+            readyTasks: pair.queue.length,
+            sample: pair.queue.slice(0, 5).map((task) => task.identifier ?? task.issueId),
+          },
+          "swarm idle pass: ready tasks are routed to a role with no agents; add an agent of the role or relabel the tasks",
+        );
+        continue;
+      }
       const caste = casteByRole.get(pair.role);
       if (caste && !caste.swarmEligible) continue;
       const effectiveMaxActiveTasks =

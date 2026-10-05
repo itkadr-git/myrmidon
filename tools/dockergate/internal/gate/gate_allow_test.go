@@ -231,7 +231,7 @@ func TestAllow_A3_AppliedMarker(t *testing.T) {
 	marker := []byte("marker-tar-bytes\x00\x01\x02")
 	r.d.Modify(r.name(""), func(c *fakedocker.Container) { c.Marker = marker })
 	id := r.id("")
-	target := r.target("", "/archive?path=%2Fdata%2Fhermes%2F.myrmidon%2Fapplied.json")
+	target := r.target("", "/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fapplied.json")
 	res := r.send("GET", target, nil, nil)
 	wantStatus(t, res, 200)
 	if !bytes.Equal(res.Body, marker) {
@@ -244,14 +244,14 @@ func TestAllow_A3_AppliedMarker(t *testing.T) {
 		t.Errorf("the stat header of the daemon was passed on: %q", v)
 	}
 	r.wantURIs("GET "+r.target("", "/json"),
-		"GET /v1.45/containers/"+id+"/archive?path=%2Fdata%2Fhermes%2F.myrmidon%2Fapplied.json")
+		"GET /v1.45/containers/"+id+"/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fapplied.json")
 	r.wantDaemonHeaders()
 }
 
 func TestAllow_A3_NoMarkerIsThe404OfTheDaemon(t *testing.T) {
 	r := newRig(t)
 	r.seedMain("running")
-	res := r.send("GET", r.target("", "/archive?path=%2Fdata%2Fhermes%2F.myrmidon%2Fapplied.json"), nil, nil)
+	res := r.send("GET", r.target("", "/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fapplied.json"), nil, nil)
 	wantStatus(t, res, 404)
 	if denyCode(res) != "" || !strings.Contains(res.str(), "Could not find") {
 		t.Errorf("body %q", res.str())
@@ -331,11 +331,11 @@ func TestAllow_A4_ExtraMounts(t *testing.T) {
 	addExtra := func(t *testing.T, r *rig) []byte {
 		t.Helper()
 		_, body := r.m.FindBody(t, "bot-plain", "")
-		last := `"` + r.m.VolumeRoot + "/" + r.m.BotKey + `/scratch:/scratch"]`
+		last := `"` + r.m.VolumeRoot + "/" + r.m.BotKey + `:/bot"]`
 		if !bytes.Contains(body, []byte(last)) {
 			t.Fatalf("the recorded body has no %q", last)
 		}
-		return bytes.Replace(body, []byte(last), []byte(`"`+r.m.VolumeRoot+"/"+r.m.BotKey+`/scratch:/scratch","`+shared+`:`+shared+`:ro"]`), 1)
+		return bytes.Replace(body, []byte(last), []byte(`"`+r.m.VolumeRoot+"/"+r.m.BotKey+`:/bot","`+shared+`:`+shared+`:ro"]`), 1)
 	}
 
 	t.Run("an allowlisted source is forwarded to the daemon", func(t *testing.T) {

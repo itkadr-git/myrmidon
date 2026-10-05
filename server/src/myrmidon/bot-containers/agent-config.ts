@@ -23,6 +23,9 @@ export interface BotContainerAgentConfig {
   memoryMb: number;
   cpus: number;
   pidsLimit: number;
+  /** myrmidon(1.6.1-BOT-DISK-C): optional per-bot disk quota in MB on the card;
+   *  wins over the instance-settings per-agent/per-caste/default quota. */
+  diskQuotaMb?: number;
   /** `container.extraMounts`: extra read-only directories the bot sees (a shared
    *  sources directory, templates, common tools). Their sources are checked
    *  against MYRMIDON_BOT_MOUNT_SOURCES when the container template is built. */
@@ -80,7 +83,10 @@ export function readBotContainerAgentConfig(
   }
   const extraMounts = readExtraMounts(c.extraMounts);
   if (!extraMounts.ok) return { ok: false, reason: extraMounts.reason };
-  return { ok: true, config: { image, memoryMb, cpus, pidsLimit, extraMounts: extraMounts.mounts } };
+  // myrmidon(1.6.1-BOT-DISK-C): an optional per-bot disk quota on the card.
+  const diskQuotaMb =
+    typeof c.diskQuotaMb === "number" && Number.isInteger(c.diskQuotaMb) && c.diskQuotaMb > 0 ? c.diskQuotaMb : undefined;
+  return { ok: true, config: { image, memoryMb, cpus, pidsLimit, extraMounts: extraMounts.mounts, ...(diskQuotaMb !== undefined ? { diskQuotaMb } : {}) } };
 }
 
 /**

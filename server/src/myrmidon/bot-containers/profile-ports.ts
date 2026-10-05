@@ -70,7 +70,7 @@ import type { CompiledProfile } from "./types.js";
 import { loadRegulationWorkspaceFiles } from "../wiki-cortex/delivery.js";
 import { createWikiRegulationService } from "../wiki-cortex/service.js";
 import { createDbRegulationStore } from "../wiki-cortex/store.js";
-import { readSharedPackageCachePath } from "./bot-disk-service.js"; // myrmidon(1.6.1-BOT-DISK-B)
+import { readBotDiskLayout, readCloneIdleTtlSecForRole, readSharedPackageCachePathForRole } from "./bot-disk-service.js"; // myrmidon(1.6.1-BOT-DISK-B, 1.6.2-BOT-DISK-C)
 
 export { BOT_AGENT_API_KEY_NAME };
 
@@ -503,8 +503,19 @@ export function createDbBotProfilePorts(db: Db): BotProfilePorts {
 
     // myrmidon(1.6.1-BOT-DISK-B): the shared package cache path, read per tick
     // from the same row the local driver reads for its binds.
-    async sharedPackageCachePath(): Promise<string | undefined> {
-      return readSharedPackageCachePath(db);
+    async sharedPackageCachePath(role?: string): Promise<string | undefined> {
+      return readSharedPackageCachePathForRole(db, role);
+    },
+
+    // myrmidon(1.6.2-BOT-DISK-C): the clone lifecycle policy for the in-container reaper.
+    async cloneIdleTtlSec(role?: string): Promise<number | undefined> {
+      return readCloneIdleTtlSecForRole(db, role);
+    },
+
+    // myrmidon(BOT-DISK-D): the pnpm store directory and import method, read per tick from the same row.
+    async pnpmSettings(): Promise<{ storeDir: string; importMethod: string }> {
+      const layout = await readBotDiskLayout(db);
+      return { storeDir: layout.pnpmStoreDir, importMethod: layout.pnpmImportMethod };
     },
 
     // myrmidon(BOT-LSP-DEFAULTS): the instance language-server policy. Read

@@ -76,8 +76,25 @@ Job `report main status` после полного прогона на `main`:
 | `tests (server 1/5)` … `(server 5/5)`, `tests (serialized 1/5)` … `(5/5)`, `tests (workspaces-a 1/2)`, `(2/2)`, `tests (workspaces-b)` | full | Весь `pnpm test:run`, разбиение как у вендора |
 | `tests (other packages)` | full | Пакеты, которые `pnpm test:run` не запускает (ниже) |
 | `tests (runner)` | full | `pnpm --filter @paperclipai/paperclip-runner check:all`, как отдельная проверка раннера у вендора |
-| `checks` | все | Шаги: `shellcheck` скриптов выката; `node --test` по `scripts/myrmidon/**/*.test.mjs`; секреты (gitleaks); внутренние адреса (частные сети и запрещённые шаблоны); лицензии зависимостей; совместимость плагинов. Каждый шаг выполняется, даже если предыдущий упал: в журнале видно все сбои сразу |
+| `checks` | все | Шаги: `shellcheck` скриптов выката; `node --test` по `scripts/myrmidon/**/*.test.mjs` (сюда входит сторож CHANGE-FRAGMENTS — ниже); секреты (gitleaks); внутренние адреса (частные сети и запрещённые шаблоны); лицензии зависимостей; совместимость плагинов. Каждый шаг выполняется, даже если предыдущий упал: в журнале видно все сбои сразу |
 | **`CI result`** | все | Сводная: зелёная, если `plan` прошёл и каждая проверка прошла или не требовалась уровнем |
+
+### Сторож фрагментов изменений (CHANGE-FRAGMENTS)
+
+Общие документы-реестры (`docs/myrmidon/CHANGELOG(.ru).md`, `DIVERGENCE.md`,
+`SETTINGS(.ru).md`) в PR руками не правятся: запись идёт файлом-фрагментом в
+`docs/myrmidon/changes/` (формат — `docs/myrmidon/changes/README.md`), а в общие
+документы фрагменты складывает `scripts/myrmidon/release/collect-fragments.mjs` при
+нарезке релиза. Сторож `scripts/myrmidon/ci/change-fragments-gate.mjs` отклоняет PR,
+чей дифф правит общий документ, и печатает подсказку (вернуть файл, добавить
+фрагмент). PR нарезки релиза сторож узнаёт по удалениям фрагментов и пропускает.
+Ветку, уже правившую общие документы, переводит
+`scripts/myrmidon/release/fragments-from-diff.mjs --slug <слаг> --revert` (см. README каталога).
+Сторож — тест `change-fragments-gate-selftest.test.mjs` внутри шага
+`node --test` job `checks`: на событии `pull_request` он гоняет сторож по
+`$GITHUB_EVENT_PATH` (checkout с `fetch-depth: 0` уже на месте), вне PR —
+пропускается. Отдельного шага workflow нет: изменения `.github/workflows/**` —
+зона трека 1, и токен сессии их всё равно не пушит (нет scope `workflow`).
 | `report main status` | только `main` | issue `main-red` (выше) |
 
 **Для ruleset `main-protection` достаточно одной проверки — `CI result`.** Она есть в каждом
@@ -250,15 +267,19 @@ Workflow [`myrmidon-image.yml`](../../.github/workflows/myrmidon-image.yml), job
 архитектур по тегам `v*` вендора, с его схемой тегов и каналами npm. Свой файл проще и не
 конфликтует при переносе.
 
-- **Когда:** `push` в `main`, git-тег выпуска `myr-v<major>.<minor>.<patch>` (первый —
+- **Когда:** `push` в `main`, git-тег выпуска `myr-v<major>.<minor>.<patch>` или тег-кандидат
+  `myr-v<major>.<minor>.<patch>-rc.<n>` (RC-VERSIONS, требование владельца 05.10; первый —
   `myr-v1.0.0`), вручную. На `pull_request` не запускается вовсе, плюс проверка
   `github.repository == 'itkadr-git/myrmidon'`: PR из чужих форков образ не собирают.
 - **Что:** `Dockerfile` вендора, стадия `production`, только `linux/amd64`. Кеш BuildKit — в
   реестре (`ghcr.io/itkadr-git/myrmidon:buildcache`).
 - **Версия и коммит** для `/api/health`: `PAPERCLIP_BUILD_VERSION` и
   `PAPERCLIP_BUILD_COMMIT`. Myrmidon — свой продукт со своей версией (semver, решение
-  владельца 28.09.2026). На теге `myr-v1.2.3` версия `1.2.3`, тег образа `1.2.3`. Между
-  выпусками — `<последний выпуск>+<N>.git.<sha>` (до первого выпуска `0.0.0+…`). Версия
+  владельца 28.09.2026). На теге `myr-v1.2.3` версия `1.2.3`, тег образа `1.2.3`; на
+  теге-кандидате `myr-v1.2.3-rc.1` — версия и тег образа `1.2.3-rc.1` (RC-VERSIONS). Между
+  выпусками — `<последний выпуск>+<N>.git.<sha>` (до первого выпуска `0.0.0+…`; последним
+  выпуском может быть и кандидат — база берётся целиком, например `1.2.3-rc.1+2.git.…`).
+  Версия
   Paperclip, взятого за основу, в номер не входит: она в метке образа
   `io.github.itkadr-git.myrmidon.base.paperclip-version`.
 - **Порядок:** образ сначала публикуется только по digest, затем smoke: `docker run` с
@@ -343,7 +364,7 @@ Chromium, `docx`, OCR, ffmpeg и офисные утилиты в образ н�
 уровне образа: обёртки в `/opt/paperclip/bin` отказывают им с подсказкой `devbuild …` — сборки
 уходят на сборочный VPS (BUILD-OFFLOAD, часть A; см. раздел «Тяжёлые сборки заблокированы на
 уровне образа» в `docker/bot-runtime/README.ru.md`). Каждый инструмент закреплён точной версией и
-sha256; склад pnpm по умолчанию — `/data/hermes/.pnpm-store` (долговечный том бота), все
+sha256; склад pnpm по умолчанию — `/workspace/.pnpm-store` (на одном монтировании с клонами: жёсткая ссылка не пересекает монтирование, иначе pnpm копирует), все
 средства лежат под `/opt` и `/usr` — так требует проверка образа в dockergate (ни один
 элемент `PATH` не может быть под записываемым томом). Подробности, пути записи и ограничения —
 в `docker/bot-runtime/README.md`, раздел «Variant for the development team».

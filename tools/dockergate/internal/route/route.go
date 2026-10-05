@@ -49,7 +49,10 @@ var archiveMounts = map[string]string{
 	"%2Fscratch":       "/scratch",
 }
 
-const markerQuery = "path=%2Fdata%2Fhermes%2F.myrmidon%2Fapplied.json"
+// markerQuery is the applied-state marker of a bot, read from the bot container
+// at its real path inside the single /bot mount (not through the /data/hermes
+// link, which only exists in the image).
+const markerQuery = "path=%2Fbot%2Fhermes%2F.myrmidon%2Fapplied.json"
 
 // Route is a parsed and matched request.
 type Route struct {

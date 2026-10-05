@@ -101,6 +101,8 @@ const en = {
   "ui2.costs.agents.tokens": "Tokens (in / out)",
   "ui2.costs.agents.runs": "Runs",
   "ui2.costs.agents.unnamed": "Unknown agent",
+  "ui2.costs.agents.avgPrompt": "Avg prompt",
+  "ui2.costs.agents.aboveThreshold": "% runs over threshold",
 
   "ui2.agent.overview.title": "Overview",
   "ui2.agent.overview.status": "Status",
@@ -126,6 +128,7 @@ const en = {
   "ui2.settings.runs.minFreeMemoryMb": "Min free memory (MB)",
   "ui2.settings.runs.runMemoryEstimateMb": "Memory estimate per run (MB)",
   "ui2.settings.runs.minFreeHostMemoryMb": "Min free host memory (MB)",
+  "ui2.settings.runs.maxHostLoadPercentPerCore": "Max host load per core (% of a core)",
   "ui2.settings.runs.off": "Off",
   "ui2.settings.runs.source.settings": "Saved here",
   "ui2.settings.runs.source.env": "From the server environment",
@@ -322,6 +325,8 @@ const ru: Record<Ui2MessageKey, string> = {
   "ui2.costs.agents.tokens": "Токены (вх / вых)",
   "ui2.costs.agents.runs": "Прогоны",
   "ui2.costs.agents.unnamed": "Неизвестный агент",
+  "ui2.costs.agents.avgPrompt": "Средний промпт",
+  "ui2.costs.agents.aboveThreshold": "% прогонов выше порога",
 
   "ui2.agent.overview.title": "Обзор",
   "ui2.agent.overview.status": "Состояние",
@@ -347,6 +352,7 @@ const ru: Record<Ui2MessageKey, string> = {
   "ui2.settings.runs.minFreeMemoryMb": "Минимум свободной памяти (МБ)",
   "ui2.settings.runs.runMemoryEstimateMb": "Оценка памяти на прогон (МБ)",
   "ui2.settings.runs.minFreeHostMemoryMb": "Минимум свободной памяти хоста (МБ)",
+  "ui2.settings.runs.maxHostLoadPercentPerCore": "Максимум нагрузки хоста на ядро (% ядра)",
   "ui2.settings.runs.off": "Выкл",
   "ui2.settings.runs.source.settings": "Сохранено здесь",
   "ui2.settings.runs.source.env": "Из окружения сервера",
