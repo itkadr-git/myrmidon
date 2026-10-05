@@ -49,6 +49,12 @@ type Env struct {
 	// PackageCacheRoot is the host directory of the shared package cache
 	// (configuration key "packageCacheRoot"). Empty allows no cache mount.
 	PackageCacheRoot string
+	// ScopeRoot is the host directory of shared isolation-scope instances
+	// (configuration key "scopeRoot", BOT-DISK-F), and ScopeInstances the
+	// instance directories THIS bot is enrolled for (bots[].scopeInstances).
+	// With no enrolled instance a bot may only have its own isolated layout.
+	ScopeRoot      string
+	ScopeInstances []string
 	// Ceilings of the bot the request is for.
 	MaxMemoryMB int64
 	MaxCPUs     float64
@@ -63,6 +69,9 @@ type Create struct {
 	Image string
 	// Nonce is N of an apply helper.
 	Nonce string
+	// ScopeInstance is the shared scope instance directory the body binds
+	// ("" for the isolated layout). The caller checks the host directory.
+	ScopeInstance string
 	// Body is the canonical body: the bytes that go to the daemon.
 	Body []byte
 }
@@ -77,6 +86,59 @@ const BotMountTarget = "/bot"
 // volume root.
 func BotBind(volumeRoot, botKey string) string {
 	return volumeRoot + "/" + botKey + ":" + BotMountTarget
+}
+
+// ScopeMountTarget is where a member of a shared scope instance sees the ONE
+// directory of the instance (BOT-DISK-F): the pnpm store and every member's
+// hermes, workspace and scratch live in it, so a hard link works between any two
+// of them. /data/hermes, /workspace and /scratch are links the entrypoint makes
+// from a tmpfs over /data into this member's own subdirectory.
+const ScopeMountTarget = "/bot-scope"
+
+// ScopeSubdirEnv is the one environment variable a shared member's create body
+// carries: its own subdirectory name (the bot key). Not a secret.
+const ScopeSubdirEnv = "MYRMIDON_BOT_SCOPE_SUBDIR"
+
+// ScopeDataTmpfs is the tmpfs over /data of a shared member, which holds only
+// the links into its subdirectory. Owned by the bot, 1 MiB.
+const ScopeDataTmpfs = "uid=10001,gid=10001,mode=0755,size=1m"
+
+// ScopeHelperTarget is where the prepare helper of a shared member sees the
+// instance directory, to hand it to the bot's uid.
+const ScopeHelperTarget = "/scope"
+
+// ScopeBind is the one bind of a shared member's bot container.
+func ScopeBind(scopeRoot, instance string) string {
+	return scopeRoot + "/" + instance + ":" + ScopeMountTarget
+}
+
+// ScopeHelperBinds are the binds of a helper of a shared member: the three
+// narrow ones, now inside the member's own subdirectory of the instance
+// directory, and (prepare only) the instance directory itself at /scope.
+func ScopeHelperBinds(scopeRoot, instance, botKey string, withInstance bool) []string {
+	base := scopeRoot + "/" + instance + "/" + botKey
+	binds := []string{
+		base + "/hermes:/data/hermes",
+		base + "/workspace:/workspace",
+		base + "/scratch:/scratch",
+	}
+	if withInstance {
+		binds = append(binds, scopeRoot+"/"+instance+":"+ScopeHelperTarget)
+	}
+	return binds
+}
+
+// scopeEnrolled reports whether the bot may bind the instance.
+func (e *Env) scopeEnrolled(instance string) bool {
+	if e.ScopeRoot == "" {
+		return false
+	}
+	for _, inst := range e.ScopeInstances {
+		if inst == instance {
+			return true
+		}
+	}
+	return false
 }
 
 // Binds returns the three bind strings of a helper container: the per-bot
@@ -94,7 +156,7 @@ func Binds(volumeRoot, botKey string) []string {
 
 // reservedTargets are the mount points a bot container owns: an extra mount may
 // neither take one of them over nor shadow a path under it.
-var reservedTargets = []string{"/bot", "/data", "/data/hermes", "/workspace", "/scratch", "/tmp"}
+var reservedTargets = []string{"/bot", "/bot-scope", "/scope", "/data", "/data/hermes", "/workspace", "/scratch", "/tmp"}
 
 // safeContainerTarget reports whether p may be the destination of an extra mount:
 // a plain absolute path outside the reserved mount points.
@@ -175,18 +237,35 @@ func isCachePair(pairs map[string]string, root, source, target string) bool {
 // (isPackageCacheBind), and needs no mountSources entry; likewise the git
 // mirrors, a "ro" bind accepted as the fixed pair under the same root
 // (isPackageCacheReadOnlyBind). The returned list is what the daemon gets.
-func parseBotBinds(v *jsonx.Value, path string, env *Env, botKey string) ([]string, *deny.Error) {
+func parseBotBinds(v *jsonx.Value, path string, env *Env, botKey string, shared bool) ([]string, string, *deny.Error) {
 	got, err := strList(v, path)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	base := []string{BotBind(env.VolumeRoot, botKey)}
-	if len(got) < len(base) {
-		return nil, deny.FieldOnly(deny.BindsMismatch, path)
+	if len(got) == 0 {
+		return nil, "", deny.FieldOnly(deny.BindsMismatch, path)
 	}
-	for i := range base {
-		if got[i] != base[i] {
-			return nil, deny.Field(deny.BindsMismatch, path, []byte(got[i]))
+	// The first bind is the bot's own isolated directory, or, for a member of a
+	// shared scope instance, the one instance directory it is enrolled for and
+	// nothing broader: the instance name is read from the bind and must be one
+	// of env.ScopeInstances, the bind is rebuilt from it byte for byte.
+	instance := ""
+	var base []string
+	if shared {
+		prefix := env.ScopeRoot + "/"
+		const suffix = ":" + ScopeMountTarget
+		if env.ScopeRoot == "" || !strings.HasPrefix(got[0], prefix) || !strings.HasSuffix(got[0], suffix) {
+			return nil, "", deny.Field(deny.BindsMismatch, path, []byte(got[0]))
+		}
+		instance = strings.TrimSuffix(strings.TrimPrefix(got[0], prefix), suffix)
+		if !env.scopeEnrolled(instance) || ScopeBind(env.ScopeRoot, instance) != got[0] {
+			return nil, "", deny.Field(deny.MountSourceNotAllowed, path, []byte(got[0]))
+		}
+		base = []string{got[0]}
+	} else {
+		base = []string{BotBind(env.VolumeRoot, botKey)}
+		if got[0] != base[0] {
+			return nil, "", deny.Field(deny.BindsMismatch, path, []byte(got[0]))
 		}
 	}
 	allowed := make(map[string]bool, len(env.MountSources))
@@ -198,22 +277,22 @@ func parseBotBinds(v *jsonx.Value, path string, env *Env, botKey string) ([]stri
 	for _, bind := range got[len(base):] {
 		source, target, mode, ok := parseExtraBind(bind)
 		if !ok {
-			return nil, deny.Field(deny.BindsMismatch, path, []byte(bind))
+			return nil, "", deny.Field(deny.BindsMismatch, path, []byte(bind))
 		}
 		if mode == "rw" {
 			if !isPackageCacheBind(env.PackageCacheRoot, source, target) {
-				return nil, deny.Field(deny.MountSourceNotAllowed, path, []byte(source))
+				return nil, "", deny.Field(deny.MountSourceNotAllowed, path, []byte(source))
 			}
 		} else if !allowed[source] && !isPackageCacheReadOnlyBind(env.PackageCacheRoot, source, target) {
-			return nil, deny.Field(deny.MountSourceNotAllowed, path, []byte(source))
+			return nil, "", deny.Field(deny.MountSourceNotAllowed, path, []byte(source))
 		}
 		if !safeContainerTarget(target) || seen[target] {
-			return nil, deny.Field(deny.BindsMismatch, path, []byte(target))
+			return nil, "", deny.Field(deny.BindsMismatch, path, []byte(target))
 		}
 		seen[target] = true
 		extras = append(extras, bind)
 	}
-	return append(base, extras...), nil
+	return append(base, extras...), instance, nil
 }
 
 // ParseCreate checks a create body against the schema of the form that the
@@ -384,8 +463,37 @@ func wantSingle(v *jsonx.Value, path, key, value string) *deny.Error {
 
 // --- bot form ---------------------------------------------------------------
 
+// parseBot checks a create body of the bot form. A dev-variant bot body (BUILD-OFFLOAD C)
+// may carry the driver's own DEVBUILD_* Env entries (internal hostnames and paths, not
+// secrets — the build-server key travels only as the read-only /opt/devbuild-ssh mount);
+// they must be exactly DEVBUILD_HOST, DEVBUILD_USER, DEVBUILD_BASE in that order, and the
+// rebuilt body reproduces the list byte for byte.
+// hasKey reports whether the body carries a top-level member of the given name.
+func hasKey(root *jsonx.Value, key string) bool {
+	for _, m := range root.Members {
+		if m.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
 func parseBot(root *jsonx.Value, r *route.Route, env *Env) (*Create, *deny.Error) {
-	top, err := object(root, "", "Image", "Labels", "HostConfig")
+	// A member of a shared scope instance carries one more top-level key, Env,
+	// and a second tmpfs; nothing else about the body changes.
+	// Only the exact member Env counts; any other Env stays an unknown key.
+	shared := false
+	for _, m := range root.Members {
+		if m.Key == "Env" && m.Val.Kind == jsonx.KindArray && len(m.Val.Elems) == 1 &&
+			m.Val.Elems[0].Kind == jsonx.KindString && m.Val.Elems[0].S == ScopeSubdirEnv+"="+r.BotKey {
+			shared = true
+		}
+	}
+	keys := []string{"Image", "Labels", "HostConfig"}
+	if shared || hasKey(root, "Env") {
+		keys = []string{"Image", "Labels", "Env", "HostConfig"}
+	}
+	top, err := object(root, "", keys...)
 	if err != nil {
 		return nil, err
 	}
@@ -406,6 +514,16 @@ func parseBot(root *jsonx.Value, r *route.Route, env *Env) (*Create, *deny.Error
 	}
 	if err := wantStr(labels["myrmidon.image"], "Labels.myrmidon.image", image, deny.JSONValue); err != nil {
 		return nil, err
+	}
+
+	// Env is present only for a shared member (ScopeSubdirEnv, detected above) or a
+	// dev-variant bot (the DEVBUILD_* triple); parseBotEnv accepts exactly those forms.
+	envList, err := parseBotEnv(top["Env"], "Env")
+	if err != nil {
+		return nil, err
+	}
+	if !shared {
+		shared = len(envList) == 1 && envList[0] == ScopeSubdirEnv+"="+r.BotKey
 	}
 
 	hc, err := object(top["HostConfig"], "HostConfig",
@@ -429,12 +547,22 @@ func parseBot(root *jsonx.Value, r *route.Route, env *Env) (*Create, *deny.Error
 	if err := commonHostConfig(hc, "on-failure"); err != nil {
 		return nil, err
 	}
-	tmpfs, err := object(hc["Tmpfs"], "HostConfig.Tmpfs", "/tmp")
+	var tmpfs map[string]*jsonx.Value
+	if shared {
+		tmpfs, err = object(hc["Tmpfs"], "HostConfig.Tmpfs", "/tmp", "/data")
+	} else {
+		tmpfs, err = object(hc["Tmpfs"], "HostConfig.Tmpfs", "/tmp")
+	}
 	if err != nil {
 		return nil, err
 	}
 	if err := wantStr(tmpfs["/tmp"], "HostConfig.Tmpfs./tmp", "", deny.JSONValue); err != nil {
 		return nil, err
+	}
+	if shared {
+		if err := wantStr(tmpfs["/data"], "HostConfig.Tmpfs./data", ScopeDataTmpfs, deny.JSONValue); err != nil {
+			return nil, err
+		}
 	}
 	if err := wantBool(hc["Init"], "HostConfig.Init", true); err != nil {
 		return nil, err
@@ -442,7 +570,7 @@ func parseBot(root *jsonx.Value, r *route.Route, env *Env) (*Create, *deny.Error
 	if err := wantStr(hc["NetworkMode"], "HostConfig.NetworkMode", env.Network, deny.NetworkMismatch); err != nil {
 		return nil, err
 	}
-	binds, err := parseBotBinds(hc["Binds"], "HostConfig.Binds", env, r.BotKey)
+	binds, instance, err := parseBotBinds(hc["Binds"], "HostConfig.Binds", env, r.BotKey, shared)
 	if err != nil {
 		return nil, err
 	}
@@ -450,11 +578,25 @@ func parseBot(root *jsonx.Value, r *route.Route, env *Env) (*Create, *deny.Error
 	w := &writer{}
 	w.raw(`{"Image":`).str(image)
 	w.raw(`,"Labels":{"myrmidon.bot":`).str(r.BotKey).raw(`,"myrmidon.image":`).str(image).raw(`}`)
+	if len(envList) > 0 {
+		w.raw(`,"Env":[`)
+		for i, e := range envList {
+			if i > 0 {
+				w.raw(",")
+			}
+			w.str(e)
+		}
+		w.raw(`]`)
+	}
 	w.raw(`,"HostConfig":{"Memory":`).int(memory).raw(`,"NanoCpus":`).int(nano).raw(`,"PidsLimit":`).int(pids)
 	w.raw(`,"CapDrop":["ALL"],"SecurityOpt":["no-new-privileges"],"ReadonlyRootfs":true`)
-	w.raw(`,"Tmpfs":{"/tmp":""},"Init":true,"RestartPolicy":{"Name":"on-failure"}`)
+	if shared {
+		w.raw(`,"Tmpfs":{"/tmp":"","/data":`).str(ScopeDataTmpfs).raw(`},"Init":true,"RestartPolicy":{"Name":"on-failure"}`)
+	} else {
+		w.raw(`,"Tmpfs":{"/tmp":""},"Init":true,"RestartPolicy":{"Name":"on-failure"}`)
+	}
 	w.raw(`,"NetworkMode":`).str(env.Network).raw(`,"Binds":`).strs(binds).raw(`,"Privileged":false}}`)
-	return &Create{Form: FormBot, BotKey: r.BotKey, Image: image, Body: w.b}, nil
+	return &Create{Form: FormBot, BotKey: r.BotKey, Image: image, ScopeInstance: instance, Body: w.b}, nil
 }
 
 // ceiling reads a resource limit: 0 < value <= max. A limit above the
@@ -501,6 +643,42 @@ const (
 	helperPids   = 64
 )
 
+// devbuildContainerEnv). DEVBUILD_HOST/USER/BASE are internal hostnames and
+// paths of the build server, not secrets.
+var botEnvNames = []string{"DEVBUILD_HOST", "DEVBUILD_USER", "DEVBUILD_BASE"}
+
+// parseBotEnv checks the Env list of a bot body: empty (no devbuild wiring, not a shared
+// member), exactly the driver's three DEVBUILD_* entries in order (BUILD-OFFLOAD C — the
+// driver's builder writes all of them or none, so a prefix or a suffix is a body the driver
+// never produced), or the single shared-scope entry (MYRMIDON_BOT_SCOPE_SUBDIR=<botKey>).
+// Each entry is a single NAME=VALUE line without a NUL or a newline; the caller reproduces
+// the list byte for byte. A nil *jsonx.Value (no Env key) is the empty list.
+func parseBotEnv(v *jsonx.Value, path string) ([]string, *deny.Error) {
+	if v == nil {
+		return nil, nil
+	}
+	got, err := strList(v, path)
+	if err != nil {
+		return nil, err
+	}
+	if len(got) == 1 && strings.HasPrefix(got[0], ScopeSubdirEnv+"=") {
+		return got, nil
+	}
+	if len(got) != 0 && len(got) != len(botEnvNames) {
+		return nil, deny.FieldOnly(deny.JSONValue, path)
+	}
+	for i, e := range got {
+		name := botEnvNames[i]
+		if !strings.HasPrefix(e, name+"=") || len(e) == len(name)+1 {
+			return nil, deny.FieldOnly(deny.JSONValue, path)
+		}
+		if strings.ContainsAny(e, "\x00\n\r") {
+			return nil, deny.FieldOnly(deny.JSONValue, path)
+		}
+	}
+	return got, nil
+}
+
 func parseHelper(root *jsonx.Value, r *route.Route, env *Env) (*Create, *deny.Error) {
 	top, err := object(root, "", "Image", "User", "Entrypoint", "Cmd", "Labels", "NetworkDisabled", "HostConfig")
 	if err != nil {
@@ -546,8 +724,16 @@ func parseHelper(root *jsonx.Value, r *route.Route, env *Env) (*Create, *deny.Er
 		return nil, deny.FieldOnly(deny.JSONValue, "Cmd")
 	}
 	var nonce string
+	// The prepare helper of a shared member runs its own constant script (it also
+	// hands the instance directory to the bot's uid); which of the two applies is
+	// settled by the binds below, and the pairing is checked there.
+	sharedPrepare := false
 	if form == FormHelperPrepare {
-		if cmd[0] != PrepareScript {
+		switch cmd[0] {
+		case PrepareScript:
+		case PrepareScriptShared:
+			sharedPrepare = true
+		default:
 			return nil, deny.Field(deny.ScriptMismatch, "Cmd[0]", []byte(cmd[0])).WithDetail("prepare")
 		}
 	} else {
@@ -594,9 +780,13 @@ func parseHelper(root *jsonx.Value, r *route.Route, env *Env) (*Create, *deny.Er
 	if err := wantStr(hc["NetworkMode"], "HostConfig.NetworkMode", "none", deny.JSONValue); err != nil {
 		return nil, err
 	}
-	binds := Binds(env.VolumeRoot, r.BotKey)
-	if err := wantList(hc["Binds"], "HostConfig.Binds", binds, deny.BindsMismatch); err != nil {
+	gotBinds, err := strList(hc["Binds"], "HostConfig.Binds")
+	if err != nil {
 		return nil, err
+	}
+	binds, instance, derr := matchHelperBinds(gotBinds, env, r.BotKey, form == FormHelperPrepare, sharedPrepare)
+	if derr != nil {
+		return nil, derr
 	}
 
 	w := &writer{}
@@ -606,5 +796,48 @@ func parseHelper(root *jsonx.Value, r *route.Route, env *Env) (*Create, *deny.Er
 	w.raw(`,"HostConfig":{"Memory":134217728,"PidsLimit":64,"CapDrop":["ALL"],"CapAdd":`).strs(capAdd)
 	w.raw(`,"SecurityOpt":["no-new-privileges"],"ReadonlyRootfs":true,"RestartPolicy":{"Name":"no"}`)
 	w.raw(`,"NetworkMode":"none","Binds":`).strs(binds).raw(`,"Privileged":false}}`)
-	return &Create{Form: form, BotKey: r.BotKey, Image: image, Nonce: nonce, Body: w.b}, nil
+	return &Create{Form: form, BotKey: r.BotKey, Image: image, Nonce: nonce, ScopeInstance: instance, Body: w.b}, nil
+}
+
+// matchHelperBinds checks the binds of a helper: the bot's isolated directories,
+// or the same three inside the member's subdirectory of ONE scope instance the
+// bot is enrolled for (the prepare helper then also binds the instance
+// directory). The prepare script must be the one of the layout. The second
+// result is the instance ("" for isolated).
+func matchHelperBinds(got []string, env *Env, botKey string, prepare, sharedPrepare bool) ([]string, string, *deny.Error) {
+	equal := func(want []string) bool {
+		if len(got) != len(want) {
+			return false
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				return false
+			}
+		}
+		return true
+	}
+	if !sharedPrepare {
+		if want := Binds(env.VolumeRoot, botKey); equal(want) {
+			return want, "", nil
+		}
+	}
+	// A shared layout: the instance is read from the first bind.
+	if env.ScopeRoot != "" && len(got) > 0 {
+		prefix := env.ScopeRoot + "/"
+		suffix := "/" + botKey + "/hermes:/data/hermes"
+		if strings.HasPrefix(got[0], prefix) && strings.HasSuffix(got[0], suffix) {
+			instance := strings.TrimSuffix(strings.TrimPrefix(got[0], prefix), suffix)
+			if env.scopeEnrolled(instance) {
+				want := ScopeHelperBinds(env.ScopeRoot, instance, botKey, prepare)
+				if equal(want) {
+					if prepare && !sharedPrepare {
+						return nil, "", deny.Field(deny.ScriptMismatch, "Cmd[0]", []byte("prepare")).WithDetail("prepare_scope")
+					}
+					return want, instance, nil
+				}
+			}
+			return nil, "", deny.Field(deny.MountSourceNotAllowed, "HostConfig.Binds", []byte(got[0]))
+		}
+	}
+	return nil, "", deny.Field(deny.BindsMismatch, "HostConfig.Binds", []byte(strings.Join(got, "\x00")))
 }

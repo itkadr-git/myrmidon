@@ -30,12 +30,14 @@ import (
 
 // Limits of the answers (spec 6.3 and 11.1).
 const (
-	maxErrBody   = 64 << 10
-	maxInspectA  = 1 << 20
-	maxMarker    = 1 << 20
-	maxLogsBody  = 256 << 10
-	maxCreateRes = 64 << 10
-	maxWaitBody  = 64 << 10
+	maxErrBody  = 64 << 10
+	maxInspectA = 1 << 20
+	maxMarker   = 1 << 20
+	// maxCloneReport: the report is capped at 4 MiB by the board, plus the tar framing.
+	maxCloneReport = 5 << 20
+	maxLogsBody    = 256 << 10
+	maxCreateRes   = 64 << 10
+	maxWaitBody    = 64 << 10
 
 	statsEvery   = 15 * time.Second
 	callersEvery = 60 * time.Second
@@ -200,7 +202,7 @@ func (g *Gate) SelfCheck(ctx context.Context) error {
 	}
 	_ = g.auth.Resolve(ctx)
 	pinned := g.auth.Pinned() != nil
-	g.log.Write(Line{Event: "self-check ok", Version: g.opt.Version, API: v.APIVersion, Images: found, Pinned: &pinned})
+	g.log.Write(Line{Event: "self-check ok", Version: g.opt.Version, API: v.APIVersion, Images: found, Pinned: &pinned, ConfigHash: st.hash})
 	return nil
 }
 
@@ -261,7 +263,7 @@ func (g *Gate) Reload() {
 	g.imgMu.Lock()
 	g.imgs = nil
 	g.imgMu.Unlock()
-	g.log.Write(Line{Event: "config_reloaded"})
+	g.log.Write(Line{Event: "config_reloaded", Version: g.opt.Version, Images: len(cfg.Images), ConfigHash: hash})
 }
 
 // Listen creates the socket of dockergate: an old socket file is removed, the

@@ -1,5 +1,5 @@
 // Package route matches the raw request-target of a client request against the
-// allowlist of dockergate (A1..A12). There is no percent-decoding anywhere: the
+// allowlist of dockergate (A1..A13). There is no percent-decoding anywhere: the
 // target is compared as a string with anchored templates, and the only escapes
 // that can match are the literals that a template contains.
 package route
@@ -40,6 +40,7 @@ const (
 	A10 = "A10"
 	A11 = "A11"
 	A12 = "A12"
+	A13 = "A13"
 )
 
 // Mount paths that a tar upload (A5) may target, keyed by the raw query value.
@@ -54,6 +55,30 @@ var archiveMounts = map[string]string{
 // link, which only exists in the image).
 const markerQuery = "path=%2Fbot%2Fhermes%2F.myrmidon%2Fapplied.json"
 
+// cloneReportQuery is the one file of the bot that the board reads besides the
+// marker: the clone-hygiene report the bot image writes (A13). A fixed literal,
+// like the marker: no other path of the archive GET is allowed.
+const cloneReportQuery = "path=%2Fbot%2Fhermes%2F.myrmidon%2Fclone-hygiene.json"
+
+// MarkerQuery is markerQuery for other packages.
+const MarkerQuery = markerQuery
+
+// ScopeMarkerQuery is the marker of a member of a shared scope instance
+// (BOT-DISK-F): its own subdirectory (the bot key) of the instance directory
+// that is bound at /bot-scope.
+func ScopeMarkerQuery(botKey string) string {
+	return "path=%2Fbot-scope%2F" + botKey + "%2Fhermes%2F.myrmidon%2Fapplied.json"
+}
+
+// ScopeCloneReportQuery is the clone-hygiene report of a member of a shared scope
+// instance, next to its marker under /bot-scope/<botKey>.
+func ScopeCloneReportQuery(botKey string) string {
+	return "path=%2Fbot-scope%2F" + botKey + "%2Fhermes%2F.myrmidon%2Fclone-hygiene.json"
+}
+
+// CloneReportQuery is cloneReportQuery for other packages.
+const CloneReportQuery = cloneReportQuery
+
 // Route is a parsed and matched request.
 type Route struct {
 	ID     string
@@ -67,6 +92,9 @@ type Route struct {
 	Name string
 	// ImageRef is the reference of an A1 request.
 	ImageRef string
+	// ScopeMarker is set on an A3 request that names the marker of a shared
+	// scope member (/bot-scope/<botKey>/hermes/...) instead of /bot/hermes/....
+	ScopeMarker bool
 	// Mount is the container path of an A5 upload.
 	Mount string
 }
@@ -228,11 +256,18 @@ func Parse(method, target string, images Images) (*Route, *deny.Error) {
 			return nil, notAllowed()
 		}
 		r.ID = A2
-	case "/archive?" + markerQuery:
+	case "/archive?" + markerQuery, "/archive?" + ScopeMarkerQuery(key):
 		if method != "GET" || suffix != SuffixMain {
 			return nil, notAllowed()
 		}
 		r.ID = A3
+		r.ScopeMarker = tail != "/archive?"+markerQuery
+	case "/archive?" + cloneReportQuery, "/archive?" + ScopeCloneReportQuery(key):
+		if method != "GET" || suffix != SuffixMain {
+			return nil, notAllowed()
+		}
+		r.ID = A13
+		r.ScopeMarker = tail != "/archive?"+cloneReportQuery
 	case "/start":
 		if method != "POST" || suffix == SuffixNext {
 			return nil, notAllowed()

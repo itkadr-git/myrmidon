@@ -108,9 +108,13 @@ else
   auth=()
   if [[ -n "$health_token_file" ]]; then
     [[ -r "$health_token_file" ]] || die "health token file not readable: $health_token_file"
-    auth=(-H "Authorization: Bearer $(tr -d '[:space:]' <"$health_token_file")")
+    token="$(tr -d '[:space:]' <"$health_token_file")"
+    [[ -n "$token" ]] || die "health token file is empty: $health_token_file"
+    # Two separate curl arguments: the flag, then the whole header value.
+    auth=(-H "Authorization: Bearer ${token}")
   fi
-  body="$(curl -fsS --max-time 30 "${auth[@]}" "$health_url" 2>/dev/null)" \
+  # ${auth[@]+...}: an empty array must expand to nothing under `set -u`.
+  body="$(curl -fsS --max-time 30 ${auth[@]+"${auth[@]}"} "$health_url")" \
     || die "the production board health endpoint $health_url is unreadable — refusing to move Latest without proof the board runs $version"
   [[ "$(jq -r '.status // empty' <<<"$body")" == "ok" ]] \
     || die "the production board does not report status ok ($health_url) — refusing to move Latest"

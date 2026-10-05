@@ -25,7 +25,9 @@ import { assertBoard, assertCompanyAccess, hasCompanyAccess } from "../../routes
 import { BOT_IMAGE_ALLOWLIST_ENV } from "./docker-driver.js";
 import {
   botKeyForAgent,
+  classifyBotImageTracking,
   isBotContainersEnabled,
+  type BotImageTracking,
   readBotContainerAgentConfig,
 } from "./agent-config.js";
 import type { ApplyBotContainerOptions, ApplyBotContainerOutcome, BotContainerAgent, BotContainerRuntimeDeps } from "./index.js";
@@ -98,6 +100,9 @@ export interface BotContainerStatusResponse {
   container: { state: BotContainerState; image: string | null } | null;
   /** Set when the runtime was asked and did not answer. */
   containerError: string | null;
+  /** myrmidon(1.6.4-BOT-CONTAINER-CARD): how the release bot-image rollout treats this bot:
+   *  tracks the release, pinned (with the pinned image) or not applicable (with why). */
+  imageTracking: BotImageTracking;
   /** myrmidon(CONCURRENCY-SYNC): runtimeConfig.heartbeat.maxConcurrentRuns, normalized
    *  exactly as the profile compiler normalizes it. Always answered, so the card can
    *  show the board's value even for a gateway the board does not manage. */
@@ -155,6 +160,7 @@ export function botContainerRoutes(deps: BotContainerRoutesDeps) {
           : null,
       container: null,
       containerError: null,
+      imageTracking: classifyBotImageTracking(agent.adapterType, agent.adapterConfig),
       boardMaxConcurrentRuns: readMaxConcurrentRuns(agent.runtimeConfig),
       gatewayConcurrency: null,
       gatewayConcurrencyNote: null,

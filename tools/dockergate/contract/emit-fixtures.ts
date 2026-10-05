@@ -57,7 +57,7 @@ function write(rel: string, data: string | Buffer): void {
   fs.writeFileSync(file, data);
 }
 
-const config = { socketPath: "", volumeRoot: VOLUME_ROOT, network: NETWORK, allowlist: [IMAGE], mountSources: [] };
+const config = { socketPath: "", volumeRoot: VOLUME_ROOT, network: NETWORK, allowlist: [IMAGE], mountSources: [], devbuild: { host: null, user: "", base: "" } };
 
 const manifest: {
   botKey: string;
@@ -117,6 +117,55 @@ for (const nonce of NONCES) {
     nonce,
   });
 }
+
+// ---- shared scope instance (BOT-DISK-F) ----
+// A member of a shared isolation-scope instance: one bind of the instance
+// directory at /bot-scope, one Env entry, a tmpfs over /data; its helpers work
+// inside the member's own subdirectory of the instance (the prepare helper also
+// binds the instance directory). Kept apart from `bodies` so the loops over the
+// isolated bodies stay as they were.
+const SCOPE_ROOT = `${VOLUME_ROOT}/.scopes`;
+const SCOPE_INSTANCE = "caste-00000000-0000-4000-8000-0000000000c0-engineer";
+const scopeMount = { scopeRoot: SCOPE_ROOT, dirName: SCOPE_INSTANCE };
+const scopeSpec = { botKey: BOT_KEY, image: IMAGE, memoryMb: 1024, cpus: 1, pidsLimit: 512, network: NETWORK };
+write("scope/bot.json", JSON.stringify(buildCreateContainerRequestBody(scopeSpec, config, undefined, false, scopeMount)));
+write("scope/bot-next.json", JSON.stringify(buildCreateContainerRequestBody(scopeSpec, config, undefined, false, scopeMount)));
+write("scripts/prepare-shared.sh", buildPrepareVolumesScript({ scope: true }));
+write(
+  "scope/helper-prepare.json",
+  JSON.stringify(
+    buildHelperContainerRequestBody({
+      botKey: BOT_KEY,
+      image: IMAGE,
+      role: "prepare-volumes",
+      script: buildPrepareVolumesScript({ scope: true }),
+      volumeRoot: VOLUME_ROOT,
+      scope: scopeMount,
+    }),
+  ),
+);
+write(
+  "scope/helper-apply.json",
+  JSON.stringify(
+    buildHelperContainerRequestBody({
+      botKey: BOT_KEY,
+      image: IMAGE_ID,
+      role: "apply-profile",
+      script: buildApplyScript(NONCES[0]!),
+      volumeRoot: VOLUME_ROOT,
+      scope: scopeMount,
+    }),
+  ),
+);
+(manifest as Record<string, unknown>).scope = {
+  root: SCOPE_ROOT,
+  instance: SCOPE_INSTANCE,
+  bot: "scope/bot.json",
+  botNext: "scope/bot-next.json",
+  helperPrepare: "scope/helper-prepare.json",
+  helperApply: "scope/helper-apply.json",
+  nonce: NONCES[0],
+};
 
 // ---- inspect contract (A2) ----
 // A container inspect as a Docker daemon writes it for a bot container, plus

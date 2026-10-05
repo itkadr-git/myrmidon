@@ -15,6 +15,9 @@ func TestScriptsEqualTheDriversScripts(t *testing.T) {
 	if policy.PrepareScript != fixture.Script(t, "prepare") {
 		t.Fatal("PrepareScript differs from the driver's script")
 	}
+	if policy.PrepareScriptShared != fixture.Script(t, "prepare-shared") {
+		t.Fatal("PrepareScriptShared differs from the driver's script")
+	}
 	if len(m.Nonces) < 5 {
 		t.Fatalf("only %d nonces recorded", len(m.Nonces))
 	}

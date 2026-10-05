@@ -31,11 +31,12 @@ import { BOT_LABEL_KEYS, BOT_RUNTIME_CONTRACT_LABEL, BotContainerTemplateError }
 import type { CompiledProfile, CompiledProfileFile } from "./types.js";
 import { buildUstarArchive, parseUstarArchive, type UstarReadEntry } from "./ustar.js";
 
-const CONFIG: Pick<DockerDriverConfig, "volumeRoot" | "network" | "allowlist" | "mountSources"> = {
+const CONFIG: Pick<DockerDriverConfig, "volumeRoot" | "network" | "allowlist" | "mountSources" | "devbuild"> = {
   volumeRoot: "/srv/myrmidon/bots",
   network: "myrmidon-bots",
   allowlist: ["myrmidon-hermes:*"],
   mountSources: ["/srv/shared/sources"],
+  devbuild: { host: null, user: "", base: "" },
 };
 
 function spec(overrides: Partial<BotContainerSpec> = {}): BotContainerSpec {
@@ -180,6 +181,87 @@ describe("buildCreateContainerRequestBody", () => {
     expect(() => buildCreateContainerRequestBody(spec({ memoryMb: 0 }), CONFIG)).toThrow(BotContainerTemplateError);
     expect(() => buildCreateContainerRequestBody(spec({ cpus: -1 }), CONFIG)).toThrow(BotContainerTemplateError);
     expect(() => buildCreateContainerRequestBody(spec({ pidsLimit: 0 }), CONFIG)).toThrow(BotContainerTemplateError);
+  });
+});
+
+describe("buildCreateContainerRequestBody — BUILD-OFFLOAD C devbuild wiring", () => {
+  const DEV_IMAGE = "ghcr.io/itkadr-git/myrmidon-hermes-dev:main";
+  const KEY_DIR = "/srv/keys/devbuild-ssh";
+  const DEV_CONFIG: Pick<DockerDriverConfig, "volumeRoot" | "network" | "allowlist" | "mountSources" | "devbuild"> = {
+    ...CONFIG,
+    allowlist: ["myrmidon-hermes*", "ghcr.io/itkadr-git/myrmidon-hermes-dev:*"],
+    mountSources: ["/srv/shared/sources", KEY_DIR],
+    devbuild: { host: "build-host.internal", user: "devbuild", base: "/srv/devbuild" },
+  };
+
+  it("puts DEVBUILD_* env and the read-only key mount on a dev-variant image when HOST is set", () => {
+    const body = buildCreateContainerRequestBody(spec({ image: DEV_IMAGE }), DEV_CONFIG);
+    expect(body.Env).toEqual([
+      "DEVBUILD_HOST=build-host.internal",
+      "DEVBUILD_USER=devbuild",
+      "DEVBUILD_BASE=/srv/devbuild",
+    ]);
+    expect(body.HostConfig.Binds).toEqual([
+      "/srv/myrmidon/bots/agent-a:/bot",
+      `${KEY_DIR}:/opt/devbuild-ssh:ro`,
+    ]);
+  });
+
+  it("applies defaults for USER and BASE and mounts the key after the card's own extra mounts", () => {
+    const body = buildCreateContainerRequestBody(
+      spec({
+        image: DEV_IMAGE,
+        extraMounts: [{ source: "/srv/shared/sources", containerPath: "/srv/shared/sources", readOnly: true }],
+      }),
+      { ...DEV_CONFIG, devbuild: { host: "build-host.internal", user: "devbuild", base: "/srv/devbuild" } },
+    );
+    expect(body.Env).toEqual([
+      "DEVBUILD_HOST=build-host.internal",
+      "DEVBUILD_USER=devbuild",
+      "DEVBUILD_BASE=/srv/devbuild",
+    ]);
+    expect(body.HostConfig.Binds).toEqual([
+      "/srv/myrmidon/bots/agent-a:/bot",
+      "/srv/shared/sources:/srv/shared/sources:ro",
+      `${KEY_DIR}:/opt/devbuild-ssh:ro`,
+    ]);
+  });
+
+  it("adds nothing without MYRMIDON_DEVBUILD_HOST, even for a dev-variant image with a key source listed", () => {
+    const body = buildCreateContainerRequestBody(spec({ image: DEV_IMAGE }), { ...DEV_CONFIG, devbuild: { host: null, user: "", base: "" } });
+    expect(body.Env).toBeUndefined();
+    expect(body.HostConfig.Binds).toEqual([
+      "/srv/myrmidon/bots/agent-a:/bot",
+    ]);
+  });
+
+  it("adds no DEVBUILD_* env to a non-dev image even when HOST is set", () => {
+    const body = buildCreateContainerRequestBody(spec(), DEV_CONFIG);
+    expect(body.Env).toBeUndefined();
+    expect(body.HostConfig.Binds).toEqual([
+      "/srv/myrmidon/bots/agent-a:/bot",
+    ]);
+  });
+
+  it("omits the key mount when no allowlisted source ends with the devbuild-ssh suffix, but still sets the env", () => {
+    const body = buildCreateContainerRequestBody(spec({ image: DEV_IMAGE }), {
+      ...DEV_CONFIG,
+      mountSources: ["/srv/shared/sources"],
+    });
+    expect(body.Env).toContain("DEVBUILD_HOST=build-host.internal");
+    expect(body.HostConfig.Binds).toEqual([
+      "/srv/myrmidon/bots/agent-a:/bot",
+    ]);
+  });
+
+  it("refuses a card's extra mount that would take over /opt/devbuild-ssh", () => {
+    expect(() =>
+      buildCreateContainerRequestBody(
+        spec({ image: DEV_IMAGE, extraMounts: [{ source: KEY_DIR, containerPath: "/opt/devbuild-ssh", readOnly: true }] }),
+        // host off so only the card's own mount is in play
+        { ...DEV_CONFIG, devbuild: { host: null, user: "", base: "" } },
+      ),
+    ).toThrow(BotContainerTemplateError);
   });
 });
 
@@ -895,6 +977,7 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
         network: "myrmidon-bots",
         allowlist: ["myrmidon-hermes:*"],
         mountSources: [],
+        devbuild: { host: null, user: "", base: "" },
       },
       {
         sleep: async () => {},
@@ -965,7 +1048,7 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
 
     // helpers are gone and never listed as bots
     expect([...daemon.containers.keys()]).toEqual(["myrmidon-bot-agent-a"]);
-    expect((await driver.list()).map((s) => s.botKey)).toEqual(["agent-a"]);
+    expect((await driver.list(["agent-a", "agent-missing"])).map((s) => s.botKey)).toEqual(["agent-a"]);
 
     expect(await driver.status("agent-a")).toEqual({
       botKey: "agent-a",

@@ -99,6 +99,9 @@ type Container struct {
 	// Marker is the tar that the archive GET of the applied marker returns;
 	// nil is "no such file".
 	Marker []byte
+	// CloneReport is the tar that the archive GET of the clone-hygiene report
+	// returns; nil is "no such file".
+	CloneReport []byte
 	// Logs is the text of the log stream.
 	Logs []byte
 }
@@ -571,8 +574,17 @@ func (d *Daemon) container(w http.ResponseWriter, r *http.Request, call Call, re
 		}
 	case tail == "archive" && call.Method == "GET":
 		marker := c.Marker
+		if p := q.Get("path"); p == "/bot/hermes/.myrmidon/clone-hygiene.json" || (strings.HasPrefix(p, "/bot-scope/") && strings.HasSuffix(p, "/hermes/.myrmidon/clone-hygiene.json")) {
+			marker = c.CloneReport
+		}
 		d.mu.Unlock()
-		if marker == nil || q.Get("path") != "/bot/hermes/.myrmidon/applied.json" {
+		// The marker of an isolated bot lives under /bot, that of a shared scope member
+		// under /bot-scope/<botKey>; the clone-hygiene report is read under /bot.
+		path := q.Get("path")
+		known := path == "/bot/hermes/.myrmidon/applied.json" || path == "/bot/hermes/.myrmidon/clone-hygiene.json" ||
+			(strings.HasPrefix(path, "/bot-scope/") && strings.HasSuffix(path, "/hermes/.myrmidon/clone-hygiene.json")) ||
+			(strings.HasPrefix(path, "/bot-scope/") && strings.HasSuffix(path, "/hermes/.myrmidon/applied.json"))
+		if marker == nil || !known {
 			msg(w, http.StatusNotFound, "Could not find the file in container")
 			return
 		}
