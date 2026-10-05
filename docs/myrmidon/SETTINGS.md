@@ -1222,27 +1222,3 @@ is configured or usable.
 | Field | Default | What it does | Bounds / special |
 |---|---|---|---|
 | `promptBudget.optimizerAgentId` | absent | Agent that receives the deep-analysis task filed by the "Deep analysis" button | A uuid of another agent of the same company; absent, blank or not a uuid answers the deep POST with 422. An additive field of the `promptBudget` area owned by the thresholds part (`instance_settings.general.promptBudget`); no environment variable |
-
-## 1.6.3 — PROMPT-BUDGET B: prompt-size thresholds in live settings + signals
-
-The warn/crit thresholds of an agent's prompt (percent of its model's input window) are live
-settings, edited on the Instance → General page ("Prompt budget" panel) without a restart: the
-sweep and the status route re-read the row on every pass. When the last run's prompt crosses a
-level, the attention queue gets one card per agent (dedup key per agent, warn → medium, crit →
-high; the detail names the top-3 prompt parts, the window and the crossed threshold) and the agent
-card (Overview) shows a "Prompt budget" section with the share, the totals and the breakdown. The
-sweep additionally files one deduped system comment per agent per UTC day on the agent's latest
-in-progress task. A disabled feature reports the status but never signals. When the model's window
-is unknown to `litellm_models`, the thresholds count against `fallbackWindowTokens` (default
-200000) — the documented fallback constant.
-
-API: `GET/PUT /api/myrmidon/companies/:companyId/prompt-budget/settings` (company member reads,
-instance admin writes) and `GET .../prompt-budget/status` →
-`{ agents: [{ agentId, model, windowTokens, windowIsFallback, lastRun, settings }] }`.
-
-| Field | Default | What it does | Bounds / special |
-|---|---|---|---|
-| `promptBudget.warnPct` | `70` | Warn level, percent of the model window; a last run at or above it raises a medium card | Whole number 1–99, strictly below `critPct`; an unreadable stored row falls back to the full default set |
-| `promptBudget.critPct` | `90` | Crit level, percent of the model window; a last run at or above it raises a high card | Whole number 2–100, strictly above `warnPct` |
-| `promptBudget.enabled` | `true` | `false` = the status is still reported, but no card and no signal comment are produced | The sweep skips the pass before any query |
-| `promptBudget.fallbackWindowTokens` | `200000` | The window the thresholds count against when the agent's model has no known `maxInputTokens` | Whole number ≥ 1000; the status row marks it with `windowIsFallback: true` |
