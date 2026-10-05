@@ -60,6 +60,16 @@ const markerQuery = "path=%2Fbot%2Fhermes%2F.myrmidon%2Fapplied.json"
 // like the marker: no other path of the archive GET is allowed.
 const cloneReportQuery = "path=%2Fbot%2Fhermes%2F.myrmidon%2Fclone-hygiene.json"
 
+// MarkerQuery is markerQuery for other packages.
+const MarkerQuery = markerQuery
+
+// ScopeMarkerQuery is the marker of a member of a shared scope instance
+// (BOT-DISK-F): its own subdirectory (the bot key) of the instance directory
+// that is bound at /bot-scope.
+func ScopeMarkerQuery(botKey string) string {
+	return "path=%2Fbot-scope%2F" + botKey + "%2Fhermes%2F.myrmidon%2Fapplied.json"
+}
+
 // Route is a parsed and matched request.
 type Route struct {
 	ID     string
@@ -73,6 +83,9 @@ type Route struct {
 	Name string
 	// ImageRef is the reference of an A1 request.
 	ImageRef string
+	// ScopeMarker is set on an A3 request that names the marker of a shared
+	// scope member (/bot-scope/<botKey>/hermes/...) instead of /bot/hermes/....
+	ScopeMarker bool
 	// Mount is the container path of an A5 upload.
 	Mount string
 }
@@ -234,11 +247,12 @@ func Parse(method, target string, images Images) (*Route, *deny.Error) {
 			return nil, notAllowed()
 		}
 		r.ID = A2
-	case "/archive?" + markerQuery:
+	case "/archive?" + markerQuery, "/archive?" + ScopeMarkerQuery(key):
 		if method != "GET" || suffix != SuffixMain {
 			return nil, notAllowed()
 		}
 		r.ID = A3
+		r.ScopeMarker = tail != "/archive?"+markerQuery
 	case "/archive?" + cloneReportQuery:
 		if method != "GET" || suffix != SuffixMain {
 			return nil, notAllowed()
