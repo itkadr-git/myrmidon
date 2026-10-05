@@ -11,14 +11,18 @@
 
 import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { agents, companies, heartbeatRuns, issues, type Db } from "@paperclipai/db";
-import { SWARM_CLAIM_QUEUE_ISSUE_STATUSES, type SwarmQueueCandidate } from "@paperclipai/shared";
+import {
+  SWARM_CLAIM_QUEUE_ISSUE_STATUSES,
+  swarmRoleForUnassignedTask,
+} from "@paperclipai/shared";
+import type { SwarmIdleQueueCandidate } from "./idle-wake.js";
 import { issueHasNoExecutionHold } from "../settled-holds/ready-predicate.js";
 
 /** The read-ready role pairs of one company: queue + its agents' idle state. */
 export interface SwarmIdleRolePair {
   role: string;
   companyId: string;
-  queue: SwarmQueueCandidate[];
+  queue: SwarmIdleQueueCandidate[];
   agents: {
     id: string;
     status: string | null;
@@ -64,12 +68,9 @@ export async function listIdleRolePairs(
   const liveRuns = new Set(
     liveRunAgentIds.map((row: { agentId: string }) => row.agentId),
   );
-  const rolesWithAgents = new Set(
-    agentRows.map((agent) => agent.role).filter((role): role is string => Boolean(role)),
-  );
-  const byRole = new Map<string, SwarmQueueCandidate[]>();
+  const byRole = new Map<string, SwarmIdleQueueCandidate[]>();
   for (const row of queueRows) {
-    const roles = rolesOfQueueRow(row, rolesWithAgents);
+    const roles = rolesOfQueueRow(row);
     for (const role of roles) {
       const list = byRole.get(role) ?? [];
       if (list.length < 200) list.push(row.candidate);
@@ -114,9 +115,11 @@ export async function liveClaimCountsByAgent(
 
 /** One raw ready queue row with the roles it belongs to. */
 interface ReadyQueueRow {
-  candidate: SwarmQueueCandidate;
+  candidate: SwarmIdleQueueCandidate;
   assigneeAgentId: string | null;
   assigneeRole: string | null;
+  /** Lower-cased names of the issue's labels (the `role:<key>` tag lives here). */
+  labels: string[];
 }
 
 /** The ready queue of a company (both assigned-to-role and unassigned rows). */
@@ -129,6 +132,12 @@ async function listReadyQueueCandidates(db: Db, companyId: string) {
       queuedAt: issues.createdAt,
       assigneeAgentId: issues.assigneeAgentId,
       assigneeRole: agents.role,
+      labels: sql<string[]>`coalesce((
+        select array_agg(lower(btrim(l.name)))
+        from issue_labels il
+          join labels l on l.id = il.label_id
+        where il.issue_id = ${issues.id}
+      ), array[]::text[])`,
     })
     .from(issues)
     .leftJoin(agents, eq(agents.id, issues.assigneeAgentId))
@@ -166,6 +175,25 @@ async function listReadyQueueCandidates(db: Db, companyId: string) {
         )`,
         // myrmidon(HOLD-READY): not held by an execution hold (see idle-pickup.ts).
         issueHasNoExecutionHold(db),
+        // myrmidon(1.6.2 SWARM-UNASSIGNED-ROUTE): a task that is already
+        // covered — a live claim, or a wake in flight (not parked on a hold) —
+        // is being worked on and must not take a queue slot from a task that
+        // is not. Filtering here, before the order, is what keeps covered
+        // tasks from crowding the free tasks out of the pass.
+        sql`not exists (
+          select 1 from issue_claims ic
+          where ic.issue_id = ${issues.id} and ic.released_at is null
+        )`,
+        sql`not exists (
+          select 1 from agent_wakeup_requests w
+          where w.company_id = ${issues.companyId}
+            and w.status in ('queued', 'deferred_issue_execution', 'claimed')
+            and w.payload ->> 'issueId' = ${issues.id}::text
+            and not (
+              w.status = 'deferred_issue_execution'
+              and coalesce(jsonb_typeof(w.payload -> 'executionWait'), 'null') = 'object'
+            )
+        )`,
       ),
     )
     .orderBy(asc(issues.createdAt))
@@ -176,23 +204,26 @@ async function listReadyQueueCandidates(db: Db, companyId: string) {
       identifier: row.identifier,
       priority: row.priority,
       queuedAt: row.queuedAt,
+      assigneeAgentId: row.assigneeAgentId,
     },
     assigneeAgentId: row.assigneeAgentId,
     assigneeRole: row.assigneeRole ?? null,
+    labels: row.labels ?? [],
   }));
 }
 
 /**
- * Which role queues a ready row belongs to. An assigned task queues for the
- * assignee's role only; an unassigned task is offered to every role that has
- * agents (the roles the company actually runs, minus no-caste agents).
+ * Which role queue a ready row belongs to. An assigned task queues for its
+ * assignee's role (and, in the pass, for that agent alone); an unassigned task
+ * queues for the one role its `role:<key>` label names, the default work role
+ * when it has none. A role with no agents still gets its pair, so the sweep
+ * can report "ready work, nobody of the role exists" instead of idling silently.
  */
-function rolesOfQueueRow(row: ReadyQueueRow, knownRoles?: Set<string>): string[] {
+function rolesOfQueueRow(row: ReadyQueueRow): string[] {
   if (row.assigneeAgentId) {
     return row.assigneeRole ? [row.assigneeRole] : [];
   }
-  if (!knownRoles) return [];
-  return [...knownRoles];
+  return [swarmRoleForUnassignedTask(row.labels)];
 }
 
 export { rolesOfQueueRow };

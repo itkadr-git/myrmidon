@@ -2052,6 +2052,20 @@
       "when": 1790974688874,
       "tag": "0295_pretty_gravity",
       "breakpoints": true
+    },
+    {
+      "idx": 297,
+      "version": "7",
+      "when": 1791000000000,
+      "tag": "0297_model_providers_store",
+      "breakpoints": true
+    },
+    {
+      "idx": 298,
+      "version": "7",
+      "when": 1791172781255,
+      "tag": "0298_add_label_pinned_to_baseline_metric_snapshots",
+      "breakpoints": true
     }
   ]
 }

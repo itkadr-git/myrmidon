@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_MAX_HOST_LOAD_PERCENT_PER_CORE,
   DEFAULT_MAX_STARTS_PER_MINUTE,
   DEFAULT_MIN_FREE_HOST_MEMORY_MB,
   DEFAULT_RUN_MEMORY_ESTIMATE_MB,
@@ -21,6 +22,7 @@ const STORED = {
   minFreeMemoryMb: 1500,
   runMemoryEstimateMb: 250,
   minFreeHostMemoryMb: 12288,
+  maxHostLoadPercentPerCore: 150,
 };
 
 describe("myrmidon(C0) run limits: the stored value and the settings field", () => {
@@ -54,9 +56,15 @@ describe("myrmidon(C0) run limits: the stored value and the settings field", () 
       minFreeMemoryMb: null,
       runMemoryEstimateMb: 250,
       minFreeHostMemoryMb: 12288,
+      maxHostLoadPercentPerCore: 150,
     });
     expect(mergeRunLimits(STORED, { minFreeHostMemoryMb: null }).minFreeHostMemoryMb).toBeNull();
     expect(patchRunLimitsSchema.safeParse({ minFreeHostMemoryMb: 0 }).success).toBe(false);
+    // myrmidon(1.6.5 RUN-ADMISSION): the CPU ceiling follows the same rules.
+    expect(patchRunLimitsSchema.safeParse({ maxHostLoadPercentPerCore: null }).success).toBe(true);
+    expect(patchRunLimitsSchema.safeParse({ maxHostLoadPercentPerCore: 0 }).success).toBe(false);
+    expect(mergeRunLimits(STORED, { maxHostLoadPercentPerCore: null }).maxHostLoadPercentPerCore).toBeNull();
+    expect(mergeRunLimits(STORED, {}).maxHostLoadPercentPerCore).toBe(150);
   });
 });
 
@@ -68,9 +76,11 @@ describe("myrmidon(C0) run limits: environment values and precedence", () => {
       minFreeMemoryMb: null,
       runMemoryEstimateMb: DEFAULT_RUN_MEMORY_ESTIMATE_MB,
       minFreeHostMemoryMb: DEFAULT_MIN_FREE_HOST_MEMORY_MB,
+      maxHostLoadPercentPerCore: DEFAULT_MAX_HOST_LOAD_PERCENT_PER_CORE,
     });
     expect(DEFAULT_MAX_STARTS_PER_MINUTE).toBe(5);
     expect(DEFAULT_MIN_FREE_HOST_MEMORY_MB).toBe(15360);
+    expect(DEFAULT_MAX_HOST_LOAD_PERCENT_PER_CORE).toBe(90);
     expect(parseRunLimitValue(" 12 ")).toBe(12);
     expect(parseRunLimitValue("0")).toBeNull();
     expect(parseRunLimitValue("-3")).toBeNull();
@@ -88,6 +98,7 @@ describe("myrmidon(C0) run limits: environment values and precedence", () => {
         minFreeMemoryMb: 1500,
         runMemoryEstimateMb: 300,
         minFreeHostMemoryMb: 15360,
+        maxHostLoadPercentPerCore: 90,
       },
       sources: {
         maxConcurrentRuns: "env",
@@ -95,6 +106,7 @@ describe("myrmidon(C0) run limits: environment values and precedence", () => {
         minFreeMemoryMb: "env",
         runMemoryEstimateMb: "default",
         minFreeHostMemoryMb: "default",
+        maxHostLoadPercentPerCore: "default",
       },
     });
   });
@@ -102,7 +114,14 @@ describe("myrmidon(C0) run limits: environment values and precedence", () => {
   it("lets the stored settings override the environment, all at once", () => {
     const resolved = resolveRunLimits({ stored: STORED, env: { MYRMIDON_MAX_CONCURRENT_RUNS: "8" } });
     expect(resolved.limits).toEqual(STORED);
-    expect(Object.values(resolved.sources)).toEqual(["settings", "settings", "settings", "settings", "settings"]);
+    expect(Object.values(resolved.sources)).toEqual([
+      "settings",
+      "settings",
+      "settings",
+      "settings",
+      "settings",
+      "settings",
+    ]);
   });
 
   it("falls back to the environment when the stored value is not canonical", () => {
@@ -146,6 +165,54 @@ describe("myrmidon(1.6.2 RUN-ADMISSION) host floor and start ramp", () => {
       minFreeMemoryMb: "settings",
       runMemoryEstimateMb: "settings",
       minFreeHostMemoryMb: "env",
+      maxHostLoadPercentPerCore: "settings",
     });
+  });
+});
+
+describe("myrmidon(1.6.5 RUN-ADMISSION) host CPU ceiling", () => {
+  it("defaults the ceiling on, switches it off only on an explicit off value", () => {
+    for (const off of ["0", "off", "OFF", " none ", "false", "no"]) {
+      expect(parseDefaultOnRunLimitValue(off, 90)).toBeNull();
+    }
+    expect(readRunLimitsFromEnv({}).maxHostLoadPercentPerCore).toBe(90);
+    // A typo keeps the protection rather than silently removing it.
+    expect(readRunLimitsFromEnv({ MYRMIDON_MAX_HOST_LOAD_PERCENT_PER_CORE: "lots" }).maxHostLoadPercentPerCore).toBe(90);
+    expect(readRunLimitsFromEnv({ MYRMIDON_MAX_HOST_LOAD_PERCENT_PER_CORE: "-2" }).maxHostLoadPercentPerCore).toBe(90);
+    expect(readRunLimitsFromEnv({ MYRMIDON_MAX_HOST_LOAD_PERCENT_PER_CORE: " 150 " }).maxHostLoadPercentPerCore).toBe(150);
+    expect(
+      readRunLimitsFromEnv({ MYRMIDON_MAX_HOST_LOAD_PERCENT_PER_CORE: "off" }).maxHostLoadPercentPerCore,
+    ).toBeNull();
+  });
+
+  it("reports an explicit environment off value as the environment source", () => {
+    const resolved = resolveRunLimits({ env: { MYRMIDON_MAX_HOST_LOAD_PERCENT_PER_CORE: "off" } });
+    expect(resolved.limits.maxHostLoadPercentPerCore).toBeNull();
+    expect(resolved.sources.maxHostLoadPercentPerCore).toBe("env");
+  });
+
+  it("reads a row saved before the CPU ceiling existed, taking it from the environment", () => {
+    const { maxHostLoadPercentPerCore: _absent, ...oldRow } = STORED;
+    // The settings block must still parse without the 1.6.5 key.
+    expect(instanceGeneralSettingsSchema.safeParse({ runLimits: oldRow }).success).toBe(true);
+    expect(normalizeRunLimits(oldRow)).toEqual({ ...oldRow, maxHostLoadPercentPerCore: 90 });
+    const resolved = resolveRunLimits({
+      stored: oldRow,
+      env: { MYRMIDON_MAX_HOST_LOAD_PERCENT_PER_CORE: "120" },
+    });
+    expect(resolved.limits).toEqual({ ...oldRow, maxHostLoadPercentPerCore: 120 });
+    expect(resolved.sources.maxHostLoadPercentPerCore).toBe("env");
+    // A stored explicit null survives: "off" is a value, not a missing key.
+    const offRow = { ...oldRow, maxHostLoadPercentPerCore: null };
+    expect(resolveRunLimits({ stored: offRow }).limits.maxHostLoadPercentPerCore).toBeNull();
+    expect(resolveRunLimits({ stored: offRow }).sources.maxHostLoadPercentPerCore).toBe("settings");
+  });
+
+  it("keeps the canonical shape strict about the new key", () => {
+    expect(runLimitsSchema.safeParse(STORED).success).toBe(true);
+    const { maxHostLoadPercentPerCore: _dropped, ...withoutCeiling } = STORED;
+    expect(runLimitsSchema.safeParse(withoutCeiling).success).toBe(false);
+    expect(runLimitsSchema.safeParse({ ...STORED, maxHostLoadPercentPerCore: 1.5 }).success).toBe(false);
+    expect(runLimitsSchema.safeParse({ ...STORED, maxHostLoadPercentPerCore: 0 }).success).toBe(false);
   });
 });

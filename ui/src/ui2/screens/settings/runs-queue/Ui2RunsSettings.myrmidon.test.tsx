@@ -68,6 +68,7 @@ describe("myrmidon(UI2) Ui2RunsSettings screen parity", () => {
         minFreeMemoryMb: null,
         runMemoryEstimateMb: 1536,
         minFreeHostMemoryMb: 15360,
+        maxHostLoadPercentPerCore: 90,
       },
       sources: {
         maxConcurrentRuns: "settings",
@@ -75,6 +76,7 @@ describe("myrmidon(UI2) Ui2RunsSettings screen parity", () => {
         minFreeMemoryMb: "env",
         runMemoryEstimateMb: "default",
         minFreeHostMemoryMb: "default",
+        maxHostLoadPercentPerCore: "default",
       },
     });
     mockRuntimeLimitsApi.update.mockImplementation(async (_patch) => ({
@@ -84,6 +86,7 @@ describe("myrmidon(UI2) Ui2RunsSettings screen parity", () => {
         minFreeMemoryMb: null,
         runMemoryEstimateMb: 1536,
         minFreeHostMemoryMb: 15360,
+        maxHostLoadPercentPerCore: 90,
       },
       sources: {
         maxConcurrentRuns: "settings",
@@ -91,6 +94,7 @@ describe("myrmidon(UI2) Ui2RunsSettings screen parity", () => {
         minFreeMemoryMb: "env",
         runMemoryEstimateMb: "default",
         minFreeHostMemoryMb: "default",
+        maxHostLoadPercentPerCore: "default",
       },
     }));
   });
@@ -104,12 +108,16 @@ describe("myrmidon(UI2) Ui2RunsSettings screen parity", () => {
     vi.clearAllMocks();
   });
 
-  it("renders the five ceilings with their sources from the mocked API", async () => {
+  it("renders the six ceilings with their sources from the mocked API", async () => {
     await renderScreen();
 
     expect(mockRuntimeLimitsApi.get).toHaveBeenCalled();
     const inputs = [...container.querySelectorAll("input[id^='ui2-run-limit-']")];
-    expect(inputs.length).toBe(5);
+    expect(inputs.length).toBe(6);
+    // myrmidon(1.6.5 RUN-ADMISSION): the host CPU ceiling is editable here too.
+    const cpuCeiling = container.querySelector<HTMLInputElement>("#ui2-run-limit-maxHostLoadPercentPerCore");
+    expect(cpuCeiling?.value).toBe("90");
+    expect(cpuCeiling?.disabled).toBe(false);
     // myrmidon(1.6.2 RUN-ADMISSION): the host free-memory floor is editable here too.
     const hostFloor = container.querySelector<HTMLInputElement>("#ui2-run-limit-minFreeHostMemoryMb");
     expect(hostFloor?.value).toBe("15360");

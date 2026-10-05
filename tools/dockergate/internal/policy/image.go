@@ -38,7 +38,7 @@ type ImageInfo struct {
 
 // unsafeRoots are the directories that a bot writes to. A PATH element in or
 // under one of them would let the bot choose what the root helper runs.
-var unsafeRoots = []string{"/data", "/workspace", "/scratch", "/tmp"}
+var unsafeRoots = []string{"/bot", "/data", "/workspace", "/scratch", "/tmp"}
 
 // CheckImage is the self-check of an image before any create (spec 7.5).
 func CheckImage(info *ImageInfo) *deny.Error {

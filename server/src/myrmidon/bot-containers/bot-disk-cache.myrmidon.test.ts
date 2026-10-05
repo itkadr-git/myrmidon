@@ -6,27 +6,48 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   botDiskCachePathProblem,
+  botDiskPnpmStoreDirProblem,
+  botRoleGetsSharedCache,
+  gitMirrorRepoProblem,
   mergeBotDiskSettings,
   normalizeStoredBotDiskSettings,
   patchBotDiskSettingsSchema,
+  resolveBotDiskLayout,
   resolveBotDiskSettings,
   resolveSharedPackageCachePath,
 } from "@paperclipai/shared";
 import { FLEETD_PACKAGE_CACHE_NOTICE, fleetdBotContainerDriver } from "./fleetd-driver.js";
 import type { BotContainerSpec } from "./driver.js";
-import { buildBinds, packageCacheEnv, PACKAGE_CACHE_MOUNTS } from "./template.js";
+import { buildBinds, buildHelperBinds, GIT_MIRROR_MOUNT, packageCacheEnv, PACKAGE_CACHE_MOUNTS } from "./template.js";
 
 const volumeRoot = "/srv/bots";
 const botKey = "agent-a";
 const cache = "/srv/package-cache";
 
 describe("myrmidon(1.6.1-BOT-DISK-B) buildBinds with the shared package cache", () => {
-  it("writes only the three fixed binds when no cache is configured", () => {
-    expect(buildBinds(volumeRoot, botKey)).toEqual([
+  it("writes ONE bind, the bot's whole tree, when no cache is configured", () => {
+    // myrmidon(BOT-DISK-D): hard links cannot cross mounts, so hermes, workspace and scratch
+    // are directories of one mount, not three binds.
+    expect(buildBinds(volumeRoot, botKey)).toEqual([`${volumeRoot}/${botKey}:/bot`]);
+  });
+
+  it("gives a HELPER container the three narrow binds of the same host directories", () => {
+    expect(buildHelperBinds(volumeRoot, botKey)).toEqual([
       `${volumeRoot}/${botKey}/hermes:/data/hermes`,
       `${volumeRoot}/${botKey}/workspace:/workspace`,
       `${volumeRoot}/${botKey}/scratch:/scratch`,
     ]);
+  });
+
+  it("refuses a card mount at or under the single mount, /data, or the link paths", () => {
+    for (const containerPath of ["/bot", "/bot/x", "/data", "/data/x", "/workspace", "/scratch/y"]) {
+      expect(() =>
+        buildBinds(volumeRoot, botKey, {
+          mounts: [{ source: "/srv/docs", containerPath, readOnly: true }],
+          allowedSources: ["/srv/docs"],
+        }),
+      ).toThrow(/reserved by the driver/);
+    }
   });
 
   it("appends one writable bind per cache, under /cache, after the card mounts", () => {
@@ -35,7 +56,7 @@ describe("myrmidon(1.6.1-BOT-DISK-B) buildBinds with the shared package cache", 
       allowedSources: ["/srv/docs"],
       sharedPackageCachePath: cache,
     });
-    expect(binds.slice(3)).toEqual([
+    expect(binds.slice(1)).toEqual([
       "/srv/docs:/docs:ro",
       `${cache}/pnpm:/cache/pnpm:rw`,
       `${cache}/go-mod:/cache/go-mod:rw`,
@@ -50,7 +71,7 @@ describe("myrmidon(1.6.1-BOT-DISK-B) buildBinds with the shared package cache", 
       buildBinds(volumeRoot, botKey, { mounts, allowedSources: ["/srv/docs"], sharedPackageCachePath: cache }),
     ).toThrow(/reserved for the shared package cache/);
     // Without a cache the path is an ordinary mount point.
-    expect(buildBinds(volumeRoot, botKey, { mounts, allowedSources: ["/srv/docs"] })[3]).toBe(
+    expect(buildBinds(volumeRoot, botKey, { mounts, allowedSources: ["/srv/docs"] })[1]).toBe(
       "/srv/docs:/cache/pnpm:ro",
     );
   });
@@ -63,14 +84,41 @@ describe("myrmidon(1.6.1-BOT-DISK-B) buildBinds with the shared package cache", 
     expect(botDiskCachePathProblem(cache)).toBeNull();
   });
 
-  it("points every tool at its mount, and leaves pip out", () => {
+  it("points every tool at its mount, the pnpm store inside the single mount with hardlink import, and leaves pip out", () => {
+    // myrmidon(BOT-DISK-D): /cache/pnpm is a different mount from the clones and hard links
+    // cannot cross it: it is only a download (metadata) cache, the store is inside /bot.
     expect(packageCacheEnv()).toEqual({
-      npm_config_store_dir: "/cache/pnpm",
+      npm_config_cache_dir: "/cache/pnpm",
       GOMODCACHE: "/cache/go-mod",
       GOCACHE: "/cache/go-build",
       GRADLE_USER_HOME: "/cache/gradle",
+      npm_config_store_dir: "/workspace/.pnpm-store",
+      npm_config_package_import_method: "hardlink",
     });
     expect(PACKAGE_CACHE_MOUNTS.map((mount) => mount.hostSubdir)).not.toContain("pip");
+  });
+
+  it("never lets the pnpm store be the /cache/pnpm mount, whatever the settings", () => {
+    const env = packageCacheEnv({ storeDir: "/data/hermes/.pnpm-store", importMethod: "copy" });
+    expect(env.npm_config_store_dir).toBe("/data/hermes/.pnpm-store");
+    expect(env.npm_config_package_import_method).toBe("copy");
+    expect(Object.values(env).filter((value) => value === "/cache/pnpm")).toEqual(["/cache/pnpm"]);
+    expect(env.npm_config_cache_dir).toBe("/cache/pnpm");
+    expect(env.npm_config_store_dir).not.toMatch(/^\/cache/);
+  });
+
+  it("binds the git mirror directory read-only, and only with a cache", () => {
+    const binds = buildBinds(volumeRoot, botKey, { sharedPackageCachePath: cache, gitMirror: true });
+    expect(binds.slice(1)).toEqual([
+      `${cache}/pnpm:/cache/pnpm:rw`,
+      `${cache}/go-mod:/cache/go-mod:rw`,
+      `${cache}/go-build:/cache/go-build:rw`,
+      `${cache}/gradle:/cache/gradle:rw`,
+      `${cache}/git:/cache/git:ro`,
+    ]);
+    expect(buildBinds(volumeRoot, botKey, { gitMirror: true })).toHaveLength(1);
+    expect(buildBinds(volumeRoot, botKey, { sharedPackageCachePath: cache })).toHaveLength(5);
+    expect(GIT_MIRROR_MOUNT.containerPath).toBe("/cache/git");
   });
 });
 
@@ -144,5 +192,95 @@ describe("myrmidon(1.6.1-BOT-DISK-B) fleetd driver and the shared package cache"
     const { driver, warn } = driverWith(undefined);
     await driver.create(spec);
     expect(warn).not.toHaveBeenCalled();
+  });
+});
+
+describe("myrmidon(1.6.2-BOT-DISK-C) git mirror and pnpm store settings", () => {
+  it("accepts owner/repo names only", () => {
+    for (const ok of ["owner/repo", "Some-Org/my.repo_1", "a/b"]) expect(gitMirrorRepoProblem(ok)).toBeNull();
+    for (const bad of ["repo", "a/b/c", "-a/b", "a-/b", "a/..", "a/.", "a/b.git", "a b/c", "a/b c", "/b", "a/", "../x/y"]) {
+      expect(gitMirrorRepoProblem(bad), bad).not.toBeNull();
+    }
+  });
+
+  it("fills the defaults, lower-cases and de-duplicates the repositories, and needs a cache path", () => {
+    expect(resolveBotDiskLayout({ sharedPackageCachePath: cache })).toEqual({
+      sharedPackageCachePath: cache,
+      gitMirrorRepos: [],
+      gitMirrorRefreshMs: 15 * 60 * 1000,
+      pnpmStoreDir: "/workspace/.pnpm-store",
+      pnpmImportMethod: "hardlink",
+      sharedCacheRoles: ["engineer", "reviewer", "devops", "release", "qa"],
+    });
+    const layout = resolveBotDiskLayout({
+      sharedPackageCachePath: cache,
+      gitMirrorRepos: ["Owner/Repo", "owner/repo", "o2/r2"],
+      gitMirrorRefreshMs: 120_000,
+      pnpmStoreDir: "/scratch/store",
+      pnpmImportMethod: "copy",
+    });
+    expect(layout.gitMirrorRepos).toEqual(["owner/repo", "o2/r2"]);
+    expect(layout.gitMirrorRefreshMs).toBe(120_000);
+    expect(layout.pnpmStoreDir).toBe("/scratch/store");
+    expect(layout.pnpmImportMethod).toBe("copy");
+    // No cache path: the mirrors have nowhere to live.
+    expect(resolveBotDiskLayout({ gitMirrorRepos: ["owner/repo"] }).gitMirrorRepos).toEqual([]);
+    expect(resolveBotDiskLayout(undefined).pnpmStoreDir).toBe("/workspace/.pnpm-store");
+    expect(resolveBotDiskLayout(undefined).pnpmImportMethod).toBe("hardlink");
+    // The former pnpmStore key is gone: a stored value is ignored.
+    expect(resolveBotDiskLayout({ pnpmStore: "shared" }).pnpmStoreDir).toBe("/workspace/.pnpm-store");
+  });
+
+  it("drops an invalid stored value and keeps the rest", () => {
+    const values = normalizeStoredBotDiskSettings({
+      enabled: false,
+      gitMirrorRepos: ["bad name"],
+      gitMirrorRefreshMs: 5,
+      pnpmStoreDir: "/cache/pnpm/store",
+      pnpmImportMethod: "reflink",
+    });
+    expect(values).toEqual({ enabled: false });
+  });
+
+  it("patches the keys and clears each on null, keeping the lifecycle keys", () => {
+    const base = { enabled: true, idleTtlMs: 3_600_000, sharedPackageCachePath: cache };
+    const patch = { gitMirrorRepos: ["owner/repo"], gitMirrorRefreshMs: 300_000, pnpmStoreDir: "/data/hermes/.store", pnpmImportMethod: "clone-or-copy" } satisfies Parameters<typeof mergeBotDiskSettings>[1];
+    const set = mergeBotDiskSettings(base, patch);
+    expect(set).toEqual({ ...base, ...patch });
+    expect(mergeBotDiskSettings(set, { enabled: false })).toEqual({ ...set, enabled: false });
+    expect(mergeBotDiskSettings(set, { gitMirrorRepos: null, gitMirrorRefreshMs: null, pnpmStoreDir: null, pnpmImportMethod: null })).toEqual(base);
+    expect(mergeBotDiskSettings(set, { gitMirrorRepos: [] }).gitMirrorRepos).toBeUndefined();
+  });
+
+  it("validates a PATCH of the keys; the pnpm store must be inside the single mount", () => {
+    expect(patchBotDiskSettingsSchema.safeParse({ gitMirrorRepos: ["owner/repo"], gitMirrorRefreshMs: 60_000, pnpmStoreDir: "/workspace/.pnpm-store", pnpmImportMethod: "hardlink" }).success).toBe(true);
+    expect(patchBotDiskSettingsSchema.safeParse({ gitMirrorRepos: null, gitMirrorRefreshMs: null, pnpmStoreDir: null, pnpmImportMethod: null }).success).toBe(true);
+    for (const bad of ["/cache/pnpm", "/cache/pnpm/store", "/srv/store", "/workspace", "/workspace/", "relative", "/workspace/../etc", "/tmp/store"]) {
+      expect(patchBotDiskSettingsSchema.safeParse({ pnpmStoreDir: bad }).success, bad).toBe(false);
+      expect(botDiskPnpmStoreDirProblem(bad), bad).not.toBeNull();
+    }
+    expect(botDiskPnpmStoreDirProblem("/bot/.pnpm-store")).toBeNull();
+    expect(patchBotDiskSettingsSchema.safeParse({ pnpmImportMethod: "reflink" }).success).toBe(false);
+    // The former key is no longer accepted (the schema is strict).
+    expect(patchBotDiskSettingsSchema.safeParse({ pnpmStore: "workspace" }).success).toBe(false);
+    expect(patchBotDiskSettingsSchema.safeParse({ gitMirrorRepos: ["a/b.git"] }).success).toBe(false);
+    expect(patchBotDiskSettingsSchema.safeParse({ gitMirrorRefreshMs: 1000 }).success).toBe(false);
+  });
+});
+
+describe("myrmidon(1.6.2-BOT-DISK-C) the roles that get the cache", () => {
+  it("defaults to the coding roles, case-insensitively, and excludes everything else", () => {
+    const { sharedCacheRoles } = resolveBotDiskLayout({ sharedPackageCachePath: cache });
+    for (const role of ["engineer", "Reviewer", "devops", "release", "qa"]) expect(botRoleGetsSharedCache(sharedCacheRoles, role), role).toBe(true);
+    for (const role of ["marketing", "general", "", undefined, null]) expect(botRoleGetsSharedCache(sharedCacheRoles, role)).toBe(false);
+  });
+
+  it("is editable: a stored list replaces the default, [] means no bot, null restores the default", () => {
+    const base = { enabled: true, idleTtlMs: 3_600_000, sharedPackageCachePath: cache };
+    const set = mergeBotDiskSettings(base, { sharedCacheRoles: ["marketing"] });
+    expect(resolveBotDiskLayout(set).sharedCacheRoles).toEqual(["marketing"]);
+    expect(resolveBotDiskLayout(mergeBotDiskSettings(base, { sharedCacheRoles: [] })).sharedCacheRoles).toEqual([]);
+    expect(resolveBotDiskLayout(mergeBotDiskSettings(set, { sharedCacheRoles: null })).sharedCacheRoles).toContain("engineer");
+    expect(patchBotDiskSettingsSchema.safeParse({ sharedCacheRoles: ["Bad Role"] }).success).toBe(false);
   });
 });

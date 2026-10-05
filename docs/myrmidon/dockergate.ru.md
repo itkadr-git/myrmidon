@@ -11,7 +11,8 @@
 Дополнительные read-only тома бота (общие каталоги) описаны в
 [bot-extra-mounts.md](bot-extra-mounts.md); на стороне dockergate их разрешает
 ключ `mountSources`. Единственное исключение на запись — общий кэш пакетов
-([bot-disk-cache.ru.md](bot-disk-cache.ru.md)); его разрешает ключ `packageCacheRoot`.
+([bot-disk-cache.ru.md](bot-disk-cache.ru.md)); его разрешает ключ `packageCacheRoot`; он же разрешает зеркала git доски
+(`<packageCacheRoot>/git` → `/cache/git`), но только на чтение.
 
 ## Как решается
 
@@ -55,9 +56,9 @@
 | `upstream` | абсолютный путь сокета демона |
 | `apiVersion` | только `1.45` |
 | `caller` | обязательно. `container` (имя контейнера доски), `containerLabels`, `uid`, `gid`, `argv`, `maxStartDelayTicks`, `mode` (`container-main-process` по умолчанию, `uid` только для CI) |
-| `volumeRoot` | каталог томов ботов на хосте; том бота `<root>/<botKey>/{hermes,workspace,scratch}` |
+| `volumeRoot` | каталог томов ботов на хосте; том бота `<root>/<botKey>/{hermes,workspace,scratch}`; контейнер бота получает ОДНУ привязку `<root>/<botKey>:/bot` (жёсткие ссылки не пересекают монтирования, BOT-DISK-D), а контейнеры-помощники сохраняют три узкие привязки тех же каталогов; `/bot` и `/data` — зарезервированные пути контейнера |
 | `mountSources` | каталоги хоста, которые бот может смонтировать дополнительно, только для чтения (пустой или отсутствующий список — ни одного). Каждый дополнительный bind в теле создания должен начинаться с одного из этих путей целиком, иметь суффикс `ro` и точку монтирования вне `/data/hermes`, `/workspace`, `/scratch`, `/tmp`; иначе `mount_source_not_allowed` или `binds_mismatch`. Список применим и при `SIGHUP` |
-| `packageCacheRoot` | каталог хоста с общим кэшем пакетов, тот же путь, что в настройке экземпляра доски (см. [bot-disk-cache.ru.md](bot-disk-cache.ru.md)). Под ним, и только там, бот может смонтировать на запись фиксированные подкаталоги `pnpm`, `go-mod`, `go-build`, `gradle` в `/cache/pnpm`, `/cache/go-mod`, `/cache/go-build`, `/cache/gradle`; любой другой bind на запись — `mount_source_not_allowed`. Абсолютный каталог без `..`, `//` и завершающего `/`, вне `volumeRoot`. Пустой или отсутствующий (по умолчанию) — ни одной привязки кэша. Применим при `SIGHUP` |
+| `packageCacheRoot` | каталог хоста с общим кэшем пакетов, тот же путь, что в настройке экземпляра доски (см. [bot-disk-cache.ru.md](bot-disk-cache.ru.md)). Под ним, и только там, бот может смонтировать на запись фиксированные подкаталоги `pnpm`, `go-mod`, `go-build`, `gradle` в `/cache/pnpm`, `/cache/go-mod`, `/cache/go-build`, `/cache/gradle`; любой другой bind на запись — `mount_source_not_allowed`. Подкаталог `git` принимается только как bind **на чтение** в `/cache/git` (голые зеркала git доски, 1.6.2-BOT-DISK-C); `git` с `rw` или в другой точке монтирования отклоняется так же. Абсолютный каталог без `..`, `//` и завершающего `/`, вне `volumeRoot`. Пустой или отсутствующий (по умолчанию) — ни одной привязки кэша. Применим при `SIGHUP` |
 | `network` | единственная сеть ботов |
 | `images` | непустой список образов, только по дайджесту (`имя@sha256:...`), тег не допускается |
 | `bots[]` | запись бота: `botKey`, `maxMemoryMb`, `maxCpus`, `maxPids` |

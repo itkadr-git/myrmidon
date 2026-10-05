@@ -68,7 +68,9 @@ maintenance) and on any "no" exits with the reason, changing nothing:
    CI sets these labels at build time.
 4. **The commit is checked.** The script runs `git fetch origin main` in the clone that holds
    it and requires the label commit to be reachable from `origin/main`, or to carry a
-   `myr-v<x>.<y>.<z>` tag in `origin` (`git ls-remote --tags`). An image built from a branch
+   `myr-v<x>.<y>.<z>` tag in `origin` (`git ls-remote --tags`) — a release candidate tag
+   `myr-v<x>.<y>.<z>-rc.<n>` counts too (RC-VERSIONS: deploying an rc IS the trial run of
+   the release flow). An image built from a branch
    or from unreviewed code does not pass. No git, the script outside a clone, a foreign
    `origin`, a failed fetch — a refusal with a clear reason.
 
@@ -120,6 +122,97 @@ that actually runs, and the override file it writes is the one your compose stac
 one service, one image line, one source of the image. The override the rollout writes
 contains only the image line, so a service defined in your own compose file keeps its
 volumes, sockets and networks; the override only pins which image it runs.
+
+### One deploy for every component (ONE-DEPLOY)
+
+A release publishes several images: the board, dockergate, fleetd and the bot images. On
+04.10 only the board moved to 1.6.2 while dockergate stayed on 1.3.0, and the shared package
+cache did not work until an operator updated dockergate by hand. Now one command updates
+everything:
+
+```bash
+scripts/myrmidon/deploy/deploy.sh --config deploy.env --release myr-v1.6.2
+```
+
+- **Source of truth.** The release publish step uploads the machine-readable manifest
+  `release-components.json` (every component by repository and digest) as a release asset;
+  `release-manifest.sh` reads it (for a release published before the manifest it reads the
+  digest table of the release body). `MYRMIDON_RELEASE_MANIFEST_FILE` points at an offline
+  copy. `--digest` alone (the deploy started from the board interface) finds the same
+  release by the board image's version label.
+- **One maintenance window.** The board, dockergate, fleetd where deployed
+  (`MYR_<COMPONENT>_HOST`) and the bot image list in dockergate `images[]` change inside
+  the same window. A component that already runs its release image is **not restarted**; the
+  dry run lists every component as `old -> new` or `unchanged`. When nothing changed no
+  window opens.
+- **Config before restart.** dockergate's config (`MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_CONFIG`)
+  gets the release bot images and the fleet's `bots[]` by a structural edit, and is checked
+  with `dockergate check-config` run with the **new** dockergate image before the service is
+  recreated; a refusal stops the deploy. When dockergate itself is unchanged it is told to
+  re-read the file (SIGHUP).
+- **Verified.** The board by `/api/health` (version, commit); dockergate by its startup
+  self-check line, whose version must equal the version of the new binary; fleetd by its
+  health probe.
+- **All-or-nothing.** If any component fails inside the window, everything this deploy
+  changed rolls back together: the changed components (to the image each ran before), the
+  dockergate config and the board; then maintenance is lifted. A failure in the rollback is
+  reported as `ROLLBACK INCOMPLETE` and maintenance stays on.
+  `MYRMIDON_COMPONENT_AUTO_ROLLBACK=0` restores the old manual contract. A release whose
+  component or bot digests are missing, and a component that cannot roll out (registry, CI
+  labels, compose service), is refused **before** the window.
+- **Bot cards.** After the window, bot cards that track the release image switch: a card
+  whose image is a digest-pinned image of one of our bot repositories (hermes, hermes-dev,
+  hermes-node) that is not the release's image of that repository tracks and moves to the
+  release image of the **same** repository; any other image (another repository, a tag, none)
+  is pinned and left alone. Cards switch in **batches of at most 5**
+  (`MYRMIDON_BOT_IMAGE_ROLLOUT_BATCH_SIZE`, capped at 5), and a bot only while its agent is
+  **paused or idle**; a busy bot is retried within `MYRMIDON_BOT_IMAGE_ROLLOUT_BOT_TIMEOUT_SEC`
+  and otherwise keeps its old image (the periodic sweep applies it later), so no run is
+  interrupted. Every batch and failure is logged and journalled
+  (`$STATE_DIR/bot-image-rollout.log`), with a summary in
+  `$STATE_DIR/bot-image-rollout-summary.json`. The superseded bot images leave `images[]`
+  only after every bot moved. Bot-card failures end the deploy as DEGRADED. There is no board
+  setting for a default bot image to update.
+
+### Release candidates and the `latest` marker (RC-VERSIONS)
+
+Since 1.6.5 a release goes through a trial run on our own production before it becomes the
+GitHub **Latest** release (the owner's requirement of 05.10):
+
+1. **Cut the candidate.** The release-cut PR lands on `main`, then the tag
+   `myr-vX.Y.Z-rc.1` (next trial: `-rc.2`, …) is pushed on the release commit. CI builds
+   every component image with the tag `X.Y.Z-rc.N` and the version `/api/health` reports is
+   exactly `X.Y.Z-rc.N`. The publish workflow creates the GitHub Release as a
+   **pre-release** titled `Myrmidon X.Y.Z-rc.N (RC N)` — it never touches `latest`.
+2. **Deploy the candidate.** `deploy.sh --release myr-vX.Y.Z-rc.N` works exactly like a
+   final release (the manifest asset, the component gate, the bot rollout): the digests
+   resolve from the rc's own image tags. `--expect-version X.Y.Z-rc.N` matches what the
+   board reports.
+3. **Verify on production.** Health (`/api/health` status ok at `X.Y.Z-rc.N`), the
+   attention list empty of new deploy damage, the fleet taking tasks, the bot images
+   applied. The deploy itself already proved the bot re-apply smoke.
+4. **Cut the final tag.** When the candidate is judged «годно», tag the SAME commit
+   `myr-vX.Y.Z` and push. Nothing rebuilds from scratch for the promotion: the image
+   workflows re-run on the final tag and tag the release images `X.Y.Z` (same commit), and
+   the publish workflow publishes the final release (same notes section `## X.Y.Z`, still
+   never `latest`). Deploy the final tag with `deploy.sh --release myr-vX.Y.Z`.
+5. **Mark Latest explicitly.** Only after the final release runs on our board and passed
+   its smoke:
+
+   ```bash
+   scripts/myrmidon/release/promote-latest.sh --tag myr-vX.Y.Z \
+     --health-url https://<board>/api/health --health-token-file <board-key-file>
+   ```
+
+   The command refuses (and changes nothing) when the tag is an rc, the release is a
+   pre-release, the release commit is not on `main`, or the board reports any version
+   other than `X.Y.Z` — the marker moves only with proof the release is the version
+   actually running on our production. `--skip-health-check` is the documented escape
+   hatch for a rehearsed promotion (staging, a drill); it logs loudly.
+
+A publish — rc or final — NEVER moves `latest` by itself: `publish-github-release.sh`
+does not pass `--latest` to GitHub anymore. An rc also never marks another release
+«(superseded)», and a final tag never supersedes its own release candidates.
 
 ### Upgrading from 1.5.0 to 1.6.0
 
@@ -196,8 +289,8 @@ What changes for operators:
   every deploy still waits for an explicit human confirmation in the interface. Enable it
   only after the release scenario has run on the staging stand.
 - **New optional section on the agent card**: the Memory tab (view, export, removal of the
-  agent's memory bank) is off until the instance sets `MYRMIDON_HINDSIGHT_API_URL` and
-  `MYRMIDON_HINDSIGHT_KEY_SECRET`. Without the pair nothing changes on the card.
+  agent's memory bank) is off until a memory service address is known (instance setting, `MYRMIDON_HINDSIGHT_API_URL`
+  or `MYRMIDON_BOT_HINDSIGHT_API_URL`); the API key is optional.
 - **Cloud storage (part B)**: the owner can now connect a cloud provider from the panel
   with OAuth; the token bundle lives in a company secret of the instance secret store and
   never reaches the bots. No action needed at upgrade time — existing grants keep working.
@@ -605,6 +698,17 @@ database; less CPU is fine. Disk for the image (several GB), the database copy a
 - there are no new errors in the server log on the staging host for the duration of the
   checks;
 - the rollback on the staging host has passed and the server is healthy after it.
+
+**Cutting the version collects the change fragments.** Before the `myr-vX.Y.Z` tag
+is pushed, one PR (branch `release/X.Y.Z`) runs
+`node scripts/myrmidon/release/collect-fragments.mjs --version X.Y.Z`: the per-PR
+fragments of `docs/myrmidon/changes/` are folded into the shared registry
+documents (changelog sections under a new `## X.Y.Z`, an empty
+`## Unreleased` / `## Без выпуска` left on top; divergence/settings rows into
+their named sections) and the fragment files are deleted. The publish workflow
+reads the `## X.Y.Z` section of the merged changelog, so the tag goes on the
+merge commit of this PR or later. Format of a fragment:
+[changes/README.md](changes/README.md).
 
 **The GitHub Release is created by CI, not by hand.** Pushing a `myr-vX.Y.Z` tag
 triggers the **Myrmidon release publish** workflow

@@ -27,7 +27,7 @@ import {
   projects,
   projectWorkspaces,
 } from "@paperclipai/db";
-import { deriveProjectUrlKey } from "@paperclipai/shared";
+import { deriveProjectUrlKey, botDiskQuotaWhyNow } from "@paperclipai/shared";
 import type {
   AttentionDecisionVerb,
   AttentionFeed,
@@ -52,6 +52,7 @@ import { badRequest } from "../errors.js";
 import { listAttentionExhaustedRuns } from "./attention-exhausted-runs.js";
 import { budgetService } from "./budgets.js";
 import { hostDiskRuntime } from "../myrmidon/host-disk/index.js"; // myrmidon(BOT-DISK E)
+import { cloneHygieneSignals, lifecycleNotEffective } from "../myrmidon/bot-containers/clone-hygiene.js"; // myrmidon(1.6.2-BOT-DISK-C)
 import {
   BLOCKER_ATTENTION_MAX_DEPTH,
   BLOCKER_ATTENTION_MAX_NODES,
@@ -70,9 +71,12 @@ import { buildStackAttentionCards } from "../myrmidon/stack-registry/attention.j
 import { readStackDocument } from "../myrmidon/stack-registry/store.js";
 // myrmidon(TRACING-HEALTH): the "LLM tracing" red state raises one operator card (part D)
 import { readTracingHealthAttentionSignal } from "../myrmidon/tracing-health/attention.js";
-import { hostMemoryHoldSignal } from "../myrmidon/run-admission.js"; // myrmidon(1.6.2 RUN-ADMISSION)
+import { hostCpuHoldSignal, hostMemoryHoldSignal } from "../myrmidon/run-admission.js"; // myrmidon(1.6.2/1.6.5 RUN-ADMISSION)
 // myrmidon(BOT-RUNTIME-TUNING D): the model fallback share raises one card per agent
 import { readModelFallbackSignals } from "../myrmidon/litellm-fallback-signal/attention.js";
+// myrmidon(1.6.1-BOT-DISK-C): the disk quota sweep records one signal per bot
+// volume at/over its quota; the feed turns the registry into cards.
+import { readBotDiskQuotaSignals } from "../myrmidon/bot-containers/bot-quota.js";
 
 // myrmidon(STALE-BLOCK): the lifted-block operator signal registry.
 import {
@@ -81,6 +85,15 @@ import {
   staleBlockSignalSeverity,
   staleBlockSignalWhyNow,
 } from "../myrmidon/stale-block/attention.js";
+// myrmidon(REVIEW-ROUTING): the cards of a task in review with no reviewer, or
+// a review without a verdict for too long.
+import {
+  readReviewRoutingSignals,
+  reviewRoutingSignalDedupKey,
+  reviewRoutingSignalSeverity,
+  reviewRoutingSignalTitle,
+  reviewRoutingSignalWhyNow,
+} from "../myrmidon/review-routing/attention.js";
 // myrmidon(1.6.1-WIP-LIMIT-A): the WIP limit cards and the settings read.
 import { buildWipLimitAttentionCards } from "../myrmidon/wip-limit/attention.js";
 import { buildWipLimitStatus } from "../myrmidon/wip-limit/status.js";
@@ -127,6 +140,8 @@ const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   "host_disk_alert",
   // myrmidon(1.6.1-WIP-LIMIT-A): the per-agent work-in-progress over-limit signal.
   "wip_limit",
+  // myrmidon(REVIEW-ROUTING): no reviewer available, or a review overdue.
+  "review_routing",
 ];
 
 const SEVERITY_RANK: Record<AttentionSeverity, number> = {
@@ -157,6 +172,13 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   wip_limit: 14,
   // myrmidon(BOT-DISK-A): bot disk lifecycle events.
   bot_disk_lifecycle: 15,
+  // myrmidon(REVIEW-ROUTING): a stuck review is a stalled delivery, ranked with
+  // the other machine-routing notices (just after the lifted stale block).
+  review_routing: 16,
+  // myrmidon(1.6.1-BOT-DISK-C): a full bot disk blocks deliveries (new clones
+  // are refused), so it ranks above the advisory notices, next to the lifecycle
+  // events of the same disk it shares.
+  bot_disk_quota: 17,
 };
 
 const PENDING_INTERACTION_STATUSES = ["pending"] as const;
@@ -519,11 +541,19 @@ function itemSourceKey(item: AttentionItem) {
   return sourceKey(item.sourceKind, item.subject.id);
 }
 
+// agents.id is a uuid column: a non-uuid id in an IN list fails the whole
+// query (and with it the attention build at startup). Synthetic subjects such
+// as the bot-disk lifecycle card carry a key, not an agent id.
+const AGENT_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export function isAgentIdLike(value: unknown): value is string {
+  return typeof value === "string" && AGENT_ID_RE.test(value);
+}
+
 function readMetadataAgentId(item: AttentionItem) {
   const metadata = item.subject.metadata;
   const value = metadata?.originAgentId ?? metadata?.createdByAgentId ?? metadata?.requestedByAgentId
     ?? metadata?.agentId ?? (item.subject.kind === "agent" ? item.subject.id : null);
-  return typeof value === "string" && value.length > 0 ? value : null;
+  return isAgentIdLike(value) ? value : null;
 }
 
 function startOfUtcDay(now: number) {
@@ -657,7 +687,7 @@ async function enrichAttentionItems(db: Db, companyId: string, items: AttentionI
   const agentIds = [...new Set([
     ...items.map(readMetadataAgentId),
     ...triageRows.map((row) => row.setByAgentId),
-  ].filter((value): value is string => Boolean(value)))];
+  ].filter(isAgentIdLike))];
   const agentNameById = new Map(agentIds.length === 0 ? [] : await db
     .select({ id: agents.id, name: agents.name })
     .from(agents)
@@ -1941,6 +1971,169 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         }));
       }
 
+      // myrmidon(1.6.2-BOT-DISK-C): a bot clone with unpushed work (dirty tree,
+      // stash, operation in progress, commits on no remote) idle longer than the
+      // lifecycle TTL. The sweep keeps such a clone instead of removing it; this
+      // card is how an operator learns about it. One card per clone; it goes
+      // away when the work is pushed, the clone is touched again, or removed.
+      // The board cannot see the bot volume root and no bot delivers a clone
+      // report: the lifecycle reclaims nothing anywhere.
+      if (lifecycleNotEffective() === true) {
+        const at = new Date().toISOString();
+        add(createItem({
+          companyId,
+          sourceKind: "bot_disk_lifecycle",
+          subject: {
+            kind: "agent",
+            id: "bot-disk-lifecycle",
+            companyId,
+            title: "Bot disk lifecycle",
+            identifier: null,
+            status: "alert",
+            href: `/${prefix}/instance`,
+            metadata: {},
+          },
+          whyNow:
+            "Lifecycle not effective: the board cannot see the bot volume root and no bot container has reported its clones, so idle clones are not being reclaimed.",
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Check that bots run the development image (it reaps clones inside the container) and are running." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this signal." },
+          ),
+          inlineResolvable: false,
+          entryRule: "the bot volume root is not visible to the board and no clone report arrived in 24 hours",
+          exitRule: "a bot delivers a clone report or the board sees the volume root",
+          dedupKey: "bot_disk_lifecycle:not_effective",
+          severity: "medium",
+          activityAt: at,
+          createdAt: at,
+          updatedAt: at,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: "Idle bot clones are not being reclaimed.",
+            images: [],
+          },
+        }));
+      }
+
+      const cloneSignals = cloneHygieneSignals();
+      if (cloneSignals.length > 0) {
+        const botIds = [...new Set(cloneSignals.map((signal) => signal.botKey))].filter(isAgentIdLike);
+        const botAgents = botIds.length === 0 ? [] : await db
+          .select({ id: agents.id, name: agents.name, status: agents.status })
+          .from(agents)
+          .where(and(eq(agents.companyId, companyId), inArray(agents.id, botIds)));
+        const byId = new Map(botAgents.map((agent) => [agent.id, agent]));
+        for (const signal of cloneSignals) {
+          const agent = byId.get(signal.botKey);
+          if (!agent) continue;
+          const at = new Date(signal.observedAtMs).toISOString();
+          add(createItem({
+            companyId,
+            sourceKind: "bot_disk_lifecycle",
+            subject: {
+              kind: "agent",
+              id: agent.id,
+              companyId,
+              title: agent.name,
+              identifier: null,
+              status: agent.status,
+              href: `/${prefix}/agents/${agent.id}`,
+              metadata: { clonePath: signal.path, branch: signal.branch },
+            },
+            whyNow:
+              signal.kind === "hardlink"
+                ? `Hard links do not work in ${signal.path}: ${signal.reason}. pnpm installs there copy every package instead of linking, so the bot's disk fills quickly.`
+                : `Clone ${signal.path} has been idle past the lifecycle TTL with ${signal.reason}; it is kept, not removed.`,
+            decisionVerbs: decisionVerbs(
+              { id: "inspect", label: "Inspect", description: "Push or discard the work in the bot's clone." },
+              { id: "dismiss", label: "Dismiss", description: "Dismiss this signal." },
+            ),
+            inlineResolvable: false,
+            entryRule:
+              signal.kind === "hardlink"
+                ? "the bot's start-time hard-link self-check failed for a clone root"
+                : "a bot clone holds unpushed work and is idle longer than general.botDisk.idleTtlMs",
+            exitRule:
+              signal.kind === "hardlink"
+                ? "the bot restarts and the self-check passes (the store is inside the bot's single mount)"
+                : "the work is pushed or discarded, the clone changes again, or it is removed",
+            dedupKey: `bot_disk_${signal.kind === "hardlink" ? "hardlink" : "clone"}:${agent.id}:${signal.path}`,
+            severity: "medium",
+            activityAt: at,
+            createdAt: at,
+            updatedAt: at,
+            relatedIssue: null,
+            detail: {
+              kind: "generic",
+              summaryExcerpt: `${signal.path}${signal.branch ? ` (${signal.branch})` : ""}: ${signal.reason}`,
+              images: [],
+            },
+          }));
+        }
+      }
+
+      // myrmidon(1.6.1-BOT-DISK-C): the periodic quota sweep records one signal
+      // per bot volume at or over its disk quota into a process-level registry
+      // (myrmidon/bot-containers/bot-quota.ts); the feed turns those into cards
+      // (subject = the agent; one dedupKey per agent; over-quota is high, the
+      // approaching state medium). While a bot is over quota its new clones are
+      // refused at admission (workspace-runtime.ts), and the card says so. The
+      // signal clears when the next sweep measures the volume back under the
+      // approaching threshold — the same registry pattern stale-block uses.
+      const quotaSignals = readBotDiskQuotaSignals(companyId);
+      if (quotaSignals.length > 0) {
+        const quotaAgentIds = [...new Set(quotaSignals.map((signal) => signal.agentId))];
+        const quotaAgents = await db
+          .select({ id: agents.id, name: agents.name, status: agents.status })
+          .from(agents)
+          .where(and(eq(agents.companyId, companyId), inArray(agents.id, quotaAgentIds)));
+        const agentById = new Map(quotaAgents.map((agent) => [agent.id, agent]));
+        for (const signal of quotaSignals) {
+          const agent = agentById.get(signal.agentId);
+          if (!agent) continue;
+          const at = new Date(signal.observedAtMs).toISOString();
+          const whyNow = botDiskQuotaWhyNow(signal);
+          add(createItem({
+            companyId,
+            sourceKind: "bot_disk_quota",
+            subject: {
+              kind: "agent",
+              id: agent.id,
+              companyId,
+              title: agent.name,
+              identifier: null,
+              status: agent.status,
+              href: `/${prefix}/agents/${agent.id}`,
+              metadata: {
+                usageBytes: signal.usageBytes,
+                quotaMb: signal.quotaMb,
+                overQuota: signal.overQuota,
+              },
+            },
+            whyNow,
+            decisionVerbs: decisionVerbs(
+              { id: "inspect", label: "Inspect", description: "Open the agent card and clean up its volume." },
+              { id: "dismiss", label: "Dismiss", description: "Dismiss this signal until the next sweep." },
+            ),
+            inlineResolvable: false,
+            entryRule: "the bot volume is at 80% of its disk quota or over it (general.botDiskQuota)",
+            exitRule: "the sweep measures the volume back below the threshold, or the row is dismissed",
+            dedupKey: signal.dedupKey,
+            severity: signal.overQuota ? "high" : "medium",
+            activityAt: at,
+            createdAt: at,
+            updatedAt: at,
+            relatedIssue: null,
+            detail: {
+              kind: "generic",
+              summaryExcerpt: excerpt(whyNow),
+              images: [],
+            },
+          }));
+        }
+      }
+
       const erroredAgents = await db
         .select({
           id: agents.id,
@@ -2096,6 +2289,49 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         }));
       }
 
+      // myrmidon(REVIEW-ROUTING): one card per task whose review has no
+      // reviewer available or no verdict for too long. The sweep replaces the
+      // company's set on every pass (myrmidon/review-routing/attention.ts),
+      // so the card exists exactly while its condition holds.
+      for (const signal of readReviewRoutingSignals(companyId)) {
+        add(createItem({
+          companyId,
+          sourceKind: "review_routing",
+          subject: {
+            kind: "issue",
+            id: signal.issueId,
+            companyId,
+            title: signal.title ?? "Task",
+            identifier: signal.identifier,
+            status: "in_review",
+            href: signal.identifier ? `/${prefix}/issues/${signal.identifier}` : null,
+            metadata: {
+              kind: signal.kind,
+              hoursInReview: signal.hoursInReview,
+            },
+          },
+          whyNow: reviewRoutingSignalWhyNow(signal),
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the task and assign or decide the review." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this notice." },
+          ),
+          inlineResolvable: true,
+          entryRule: "a task in review has no reviewer available, or its review has had no verdict for the configured hours.",
+          exitRule: "The task gets a reviewer or a verdict, leaves review, or the row is dismissed.",
+          dedupKey: reviewRoutingSignalDedupKey(signal),
+          severity: reviewRoutingSignalSeverity(signal),
+          activityAt: signal.since,
+          createdAt: signal.since,
+          updatedAt: signal.since,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: excerpt(reviewRoutingSignalTitle(signal)),
+            images: [],
+          },
+        }));
+      }
+
       // myrmidon(TRACING-HEALTH): the "LLM tracing" non-ok state raises ONE
       // card on the operator desk, deduped by state — the parent ticket's
       // rule is "signal to the operator role, never the owner", and the
@@ -2187,6 +2423,58 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           detail: {
             kind: "generic",
             summaryExcerpt: excerpt(hostMemoryHold.reason ?? "host free memory is below the run admission floor"),
+            images: [],
+          },
+        }));
+      }
+
+      // myrmidon(1.6.5 RUN-ADMISSION): the run admission's host CPU ceiling
+      // has held new runs back for over 10 minutes. One card for the whole
+      // instance, deduped while the hold lasts; it disappears on the first
+      // admitted run (the admission ends the hold) — nothing is persisted.
+      // The 05.10 incident: 43+ runs at load 95 on 16 cores with the memory
+      // floor open — the memory card above would have stayed silent.
+      const hostCpuHold = hostCpuHoldSignal();
+      if (hostCpuHold) {
+        const heldAt = hostCpuHold.heldSince.toISOString();
+        const heldMinutes = Math.floor(hostCpuHold.heldMs / 60_000);
+        add(createItem({
+          companyId,
+          sourceKind: "agent_error_alert",
+          subject: {
+            kind: "agent",
+            id: "run-admission-host-cpu",
+            companyId,
+            title: "Runs held: host CPU load",
+            identifier: null,
+            status: "alert",
+            href: `/${prefix}/instance`,
+            metadata: {
+              runAdmissionHostCpu: true,
+              load1: hostCpuHold.load1,
+              cores: hostCpuHold.cores,
+              loadPercentPerCore: hostCpuHold.loadPercentPerCore,
+              thresholdPercent: hostCpuHold.thresholdPercent,
+              heldSince: heldAt,
+            },
+          },
+          whyNow: `New agent runs have waited ${heldMinutes} min: host load average ${hostCpuHold.load1 ?? "?"} on ${hostCpuHold.cores ?? "?"} core(s) (${hostCpuHold.loadPercentPerCore ?? "?"} % of a core) is at or above the ${hostCpuHold.thresholdPercent ?? "?"} % run admission CPU ceiling. Wait for the load to drop, lower more run concurrency, or raise the ceiling in Run limits.`,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the run limits and the host load." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this alert for this hold." },
+          ),
+          inlineResolvable: true,
+          entryRule: "the run admission host CPU ceiling held new runs back for more than 10 minutes",
+          exitRule: "a run is admitted again (host load recovered or the ceiling was raised) or the row is dismissed",
+          dedupKey: `run_admission_host_cpu:${heldAt}`,
+          severity: "high",
+          activityAt: heldAt,
+          createdAt: heldAt,
+          updatedAt: heldAt,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: excerpt(hostCpuHold.reason ?? "host CPU load is at or above the run admission ceiling"),
             images: [],
           },
         }));

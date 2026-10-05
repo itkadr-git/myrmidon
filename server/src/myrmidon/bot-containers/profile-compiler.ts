@@ -284,6 +284,16 @@ export interface HermesProfileInstanceDefaults {
   compression?: HermesProfileCompressionDefaults;
   sessionsRetentionDays?: number;
   /**
+   * myrmidon(MEMORY-CENTRAL-A): instance-wide switch (MYRMIDON_BOT_LOCAL_MEMORY_OFF)
+   * that turns the bot's Hermes LOCAL memory off: `memory.memory_enabled: false`
+   * and `memory.user_profile_enabled: false` are written into config.yaml (the
+   * vendor flags behind the built-in MEMORY.md/USER.md stores) so durable memory
+   * lives only in hindsight (`memory.provider: hindsight` is unchanged either
+   * way). Unset or false — the memory block is emitted exactly as before, byte
+   * for byte, so flipping the setting off restores the previous restartHash.
+   */
+  disableLocalMemory?: boolean;
+  /**
    * myrmidon(BOT-RUNTIME-TUNING-B): explicit context window per model alias
    * (gateway model name -> tokens). The card's own
    * `adapterConfig.models.contextLength` wins for the card's model; this map
@@ -786,7 +796,18 @@ function buildConfigYaml(input: HermesProfileInput, warnings: string[]): string 
     ),
     gateway: { api_server: { max_concurrent_runs: input.maxConcurrentRuns } },
     mcp_servers: buildMcpServers(input.mcpServers, warnings),
-    memory: { provider: "hindsight" },
+    // myrmidon(MEMORY-CENTRAL-A): with the instance switch on, the bot's Hermes
+    // LOCAL memory is turned off and durable memory lives only in hindsight.
+    // The vendor contract for the built-in file stores (MEMORY.md/USER.md) is
+    // memory.memory_enabled / memory.user_profile_enabled (tools/memory_tool.py
+    // get_builtin_memory_store_flags, read by agent_init); the external provider
+    // key memory.provider stays "hindsight" either way — it is a separate
+    // mechanism and is NOT disabled by these flags. Off (the default), the block
+    // is exactly the pre-feature one, byte for byte, so flipping the setting off
+    // restores the previous restartHash.
+    memory: input.instanceDefaults.disableLocalMemory
+      ? { provider: "hindsight", memory_enabled: false, user_profile_enabled: false }
+      : { provider: "hindsight" },
     model: {
       default: nonEmpty(adapterConfig.model),
       provider: nonEmpty(adapterConfig.provider),

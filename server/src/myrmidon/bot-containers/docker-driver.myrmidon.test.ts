@@ -86,6 +86,22 @@ function testProfile(
 const NONCE = "00112233aabbccdd";
 
 describe("buildCreateContainerRequestBody", () => {
+  it("adds the read-only git mirror bind after the writable cache binds (1.6.2-BOT-DISK-C)", () => {
+    const withMirror = buildCreateContainerRequestBody(spec(), CONFIG, "/srv/package-cache", true);
+    const binds = withMirror.HostConfig.Binds;
+    expect(binds.slice(-5)).toEqual([
+      "/srv/package-cache/pnpm:/cache/pnpm:rw",
+      "/srv/package-cache/go-mod:/cache/go-mod:rw",
+      "/srv/package-cache/go-build:/cache/go-build:rw",
+      "/srv/package-cache/gradle:/cache/gradle:rw",
+      "/srv/package-cache/git:/cache/git:ro",
+    ]);
+    const without = buildCreateContainerRequestBody(spec(), CONFIG, "/srv/package-cache", false);
+    expect(without.HostConfig.Binds.some((bind) => bind.includes("/cache/git"))).toBe(false);
+    // A mirror without a cache path has nowhere to live: no bind.
+    expect(buildCreateContainerRequestBody(spec(), CONFIG, undefined, true).HostConfig.Binds.some((bind) => bind.includes("/cache/git"))).toBe(false);
+  });
+
   it("builds the fixed template body for an allowed image and the configured network", () => {
     const body = buildCreateContainerRequestBody(spec(), CONFIG);
     expect(body).toEqual({
@@ -106,13 +122,19 @@ describe("buildCreateContainerRequestBody", () => {
         RestartPolicy: { Name: "on-failure" },
         NetworkMode: "myrmidon-bots",
         Binds: [
-          "/srv/myrmidon/bots/agent-a/hermes:/data/hermes",
-          "/srv/myrmidon/bots/agent-a/workspace:/workspace",
-          "/srv/myrmidon/bots/agent-a/scratch:/scratch",
+          "/srv/myrmidon/bots/agent-a:/bot",
         ],
         Privileged: false,
       },
     });
+  });
+
+  it("has exactly ONE bind for the bot's data: hard links cannot cross mounts (BOT-DISK-D)", () => {
+    const binds = buildCreateContainerRequestBody(spec(), CONFIG).HostConfig.Binds;
+    expect(binds).toEqual(["/srv/myrmidon/bots/agent-a:/bot"]);
+    expect(binds.some((bind) => bind.includes(":/data/hermes") || bind.includes(":/workspace") || bind.includes(":/scratch"))).toBe(false);
+    // The single mount is writable (no :ro) and carries no tmpfs overlay over its paths.
+    expect(buildCreateContainerRequestBody(spec(), CONFIG).HostConfig.Tmpfs).toEqual({ "/tmp": "" });
   });
 
   it("carries no profile-hash labels that could later be mistaken for applied state", () => {
@@ -128,9 +150,7 @@ describe("buildCreateContainerRequestBody", () => {
       CONFIG,
     );
     expect(body.HostConfig.Binds).toEqual([
-      "/srv/myrmidon/bots/agent-a/hermes:/data/hermes",
-      "/srv/myrmidon/bots/agent-a/workspace:/workspace",
-      "/srv/myrmidon/bots/agent-a/scratch:/scratch",
+      "/srv/myrmidon/bots/agent-a:/bot",
       "/srv/shared/sources:/srv/shared/sources:ro",
     ]);
   });
@@ -182,7 +202,16 @@ describe("containerTemplateDrifted", () => {
     { field: "pidsLimit", mutate: (e) => void (e.HostConfig.PidsLimit += 1) },
     { field: "network", mutate: (e) => void (e.HostConfig.NetworkMode = "other") },
     { field: "binds (an extra mount added)", mutate: (e) => void e.HostConfig.Binds.push("/srv/shared/sources:/srv/shared/sources:ro") },
-    { field: "binds (an extra mount removed)", mutate: (e) => void e.HostConfig.Binds.splice(1, 1) },
+    { field: "binds (the single mount removed)", mutate: (e) => void e.HostConfig.Binds.splice(0, 1) },
+    {
+      field: "binds (the former three-bind layout, which makes every bot recreate on migration)",
+      mutate: (e) =>
+        void (e.HostConfig.Binds = [
+          "/srv/myrmidon/bots/agent-a/hermes:/data/hermes",
+          "/srv/myrmidon/bots/agent-a/workspace:/workspace",
+          "/srv/myrmidon/bots/agent-a/scratch:/scratch",
+        ]),
+    },
   ];
   for (const { field, mutate } of mutations) {
     it(`is true when the ${field} changed`, () => {
@@ -281,7 +310,12 @@ describe("buildHelperContainerRequestBody", () => {
     expect(body.NetworkDisabled).toBe(true);
     expect(body.HostConfig.ReadonlyRootfs).toBe(true);
     expect(body.HostConfig.Privileged).toBe(false);
-    expect(body.HostConfig.Binds).toEqual(buildCreateContainerRequestBody(spec(), CONFIG).HostConfig.Binds);
+    // A helper only writes files, so it keeps the three narrow binds of the same host directories.
+    expect(body.HostConfig.Binds).toEqual([
+      "/srv/myrmidon/bots/agent-a/hermes:/data/hermes",
+      "/srv/myrmidon/bots/agent-a/workspace:/workspace",
+      "/srv/myrmidon/bots/agent-a/scratch:/scratch",
+    ]);
     expect(body.Entrypoint).toEqual(["/bin/sh", "-c"]);
     expect(body.Cmd).toEqual(["true", "myrmidon-helper", "/"]);
     expect(body.Labels).toEqual({ [BOT_LABEL_KEYS.helper]: "agent-a" }); // never listed as a bot
@@ -645,9 +679,14 @@ async function startFakeDaemon(tmp: string, images: Record<string, Record<string
     mountVolumes(container);
     if (options.bootNeedsProfile) {
       // What the bot image checks before its gateway serves (runtime contract "1").
-      const binds = parseBinds(container);
+      // The bot's tree is ONE mount at /bot; the directories the contract requires to be
+      // writable by uid 10001 are hermes/, workspace/ and scratch/ inside it.
+      const root = parseBinds(container).find(({ destination }) => destination === "/bot");
+      const binds = root
+        ? ["hermes", "workspace", "scratch"].map((name) => ({ source: `${root.source}/${name}`, destination: `/bot/${name}` }))
+        : [];
       const notOwned = binds.find(({ source }) => owners.get(source)?.uid !== BOT_CONTAINER_UID);
-      const hermes = binds.find(({ destination }) => destination === "/data/hermes");
+      const hermes = binds.find(({ destination }) => destination === "/bot/hermes");
       const envKey = container.body.Env?.find((entry) => entry.startsWith("API_SERVER_KEY="))?.slice("API_SERVER_KEY=".length);
       const apiKey = (hermes && readDotenvValue(path.join(hermes.source, ".env"), "API_SERVER_KEY")) ?? envKey;
       const refusal = notOwned
@@ -1055,8 +1094,8 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
       await expect(driver.status("agent-a")).rejects.toThrow(/applied-state marker/);
     });
 
-    it("reads the marker from the marker path inside the hermes volume", () => {
-      expect(APPLIED_MARKER_CONTAINER_PATH).toBe("/data/hermes/.myrmidon/applied.json");
+    it("reads the marker from its real path inside the single mount", () => {
+      expect(APPLIED_MARKER_CONTAINER_PATH).toBe("/bot/hermes/.myrmidon/applied.json");
     });
 
     it("reports Docker's health verdict", async () => {

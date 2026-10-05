@@ -82,11 +82,13 @@ parse_digest_arg() {
   fi
 }
 
-# Checks that a commit is on origin/main or carries a release tag myr-v<x>.<y>.<z>, using the git
-# clone that holds these scripts. Sets CI_CHECK_REASON and returns 1 when it cannot say yes.
+# Checks that a commit is on origin/main or carries a release tag
+# myr-v<x>.<y>.<z> (RC-VERSIONS: or the candidate myr-v<x>.<y>.<z>-rc.<n>),
+# using the git clone that holds these scripts. Sets CI_CHECK_REASON and
+# returns 1 when it cannot say yes.
 commit_is_reviewed() {
   local rev="$1" clone url tags sha name
-  local tag_re='^refs/tags/myr-v[0-9]+\.[0-9]+\.[0-9]+(\^\{\})?$'
+  local tag_re='^refs/tags/myr-v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?(\^\{\})?$'
   if ! command -v git >/dev/null 2>&1; then
     CI_CHECK_REASON="git is not installed, so commit ${rev:0:12} cannot be checked against main; run the script from a git clone of itkadr-git/myrmidon"
     return 1
@@ -308,6 +310,29 @@ load_config() {
   : "${RUNS_WAIT_TIMEOUT_SEC:=1800}"
   : "${ALLOW_UNKNOWN_RUNS:=0}"
   : "${POLL_INTERVAL_SEC:=5}"
+  # PREDEPLOY-DB-CHECK (the 05.10 incident): before the maintenance window the
+  # new board image must come up on a COPY of the production database (the
+  # predeploy dump) with the new dockergate, on its own network, and answer the
+  # attention list and the main APIs. deploy.sh calls
+  # predeploy-board-check.sh; the settings below are its inputs. The check
+  # refuses (nothing changed) when it is enabled and its inputs are missing:
+  # silently deploying an image nothing proved is the incident.
+  : "${MYRMIDON_PREDEPLOY_CHECK:=1}"
+  : "${MYRMIDON_PREDEPLOY_POSTGRES_IMAGE:=}"
+  : "${MYRMIDON_PREDEPLOY_DB_NAME:=myrmidon}"
+  : "${MYRMIDON_PREDEPLOY_DB_USER:=myrmidon}"
+  : "${MYRMIDON_PREDEPLOY_DB_READY_COMMAND:=}"
+  : "${MYRMIDON_PREDEPLOY_RESTORE_COMMAND:=}"
+  : "${MYRMIDON_PREDEPLOY_BOARD_ENV_FILE:=}"
+  : "${MYRMIDON_PREDEPLOY_DOCKERGATE_ENV_FILE:=}"
+  : "${MYRMIDON_PREDEPLOY_BOARD_ARGS:=}"
+  : "${MYRMIDON_PREDEPLOY_DOCKERGATE_ARGS:=}"
+  : "${MYRMIDON_PREDEPLOY_BOARD_PORT:=13110}"
+  : "${MYRMIDON_PREDEPLOY_NETWORK:=}"
+  : "${MYRMIDON_PREDEPLOY_HEALTH_TIMEOUT_SEC:=$HEALTH_TIMEOUT_SEC}"
+  : "${MYRMIDON_PREDEPLOY_API_PATHS:=}"
+  : "${MYRMIDON_PREDEPLOY_TOKEN_FILE:=}"
+  : "${MYRMIDON_PREDEPLOY_KEEP:=0}"
   : "${SYSTEMD_UNIT_NAME:=paperclip.service}"
   : "${SYSTEMD_UNIT_DIR:=/etc/systemd/system}"
   : "${SYSTEMD_UNIT_INSTALL:=}"
@@ -443,6 +468,10 @@ Rollback to a tag that is on the host (docker image ls $repo), or drop --local t
   fi
 }
 
+# Enters the maintenance window. Returns 1 when the window was NOT entered (api:
+# the enter POST did not answer; hook: MAINTENANCE_ENTER_COMMAND failed) so the
+# caller can report it — a rollback continues without a window (a board that is
+# down has no admission gate to close), a deploy decides for itself.
 maintenance_enter() {
   local reason="$1"
   case "$MAINTENANCE_MODE" in
@@ -457,7 +486,8 @@ maintenance_enter() {
       local body
       body="$(jq -cn --arg reason "$reason" --argjson t "$drain_timeout" --arg o "$MAINTENANCE_ON_TIMEOUT" \
         '{action: "enter", scope: {type: "instance"}, reason: $reason, drainTimeoutSec: $t, onTimeout: $o}')"
-      run http_post_json "$MAINTENANCE_API_URL" "$body" "$MAINTENANCE_TOKEN_FILE" >/dev/null
+      run http_post_json "$MAINTENANCE_API_URL" "$body" "$MAINTENANCE_TOKEN_FILE" >/dev/null \
+        || { log "maintenance: the board API did not answer the enter POST ($MAINTENANCE_API_URL)"; return 1; }
       log "maintenance: entered (onTimeout=$MAINTENANCE_ON_TIMEOUT, drainTimeoutSec=$drain_timeout)"
       ;;
     hook)
@@ -1013,12 +1043,41 @@ component_host_cat_override() {
     cat "$COMPONENT_OVERRIDE_PATH" 2>/dev/null || true
   fi
 }
-# True when $COMPONENT_SERVICE is defined by the compose files of the target
-# host (docker compose config --services). The fail-closed pre-check: a
-# component with no trace on the target host is a misconfiguration (the 1.4.0
-# fleetd incident), not something to create from nothing.
+# Is $COMPONENT_SERVICE defined by the compose files of the target host
+# (docker compose config --services)? The fail-closed pre-check: a component
+# with no trace on the target host is a misconfiguration (the 1.4.0 fleetd
+# incident), not something to create from nothing.
+#
+# Return codes — the caller MUST tell the two faults apart:
+#   0  the project is readable and declares the service;
+#   1  the compose project itself cannot be read. COMPONENT_COMPOSE_ERROR holds
+#      the real output of `docker compose config`;
+#   2  the project is valid but does not declare the service.
+#
+# myrmidon(DEPLOY-PRECHECK, the 05.10 incident): `docker compose config
+# --services` prints its error on stderr and nothing on stdout, exactly like a
+# project that simply does not declare the service. A caller that looked only at
+# the list reported the wrong fault — "dockergate is not a service of the
+# compose project" — and hid the real one: the project was invalid (COMPOSE_FILES
+# without the file that carries the image, so `server` had neither an image nor a
+# build context). The error is therefore captured here and handed to the caller
+# in COMPONENT_COMPOSE_ERROR instead of being dropped into /dev/null.
 component_host_service_exists() {
-  component_host_compose config --services 2>/dev/null | grep -qx "$COMPONENT_SERVICE"
+  local services rc=0 err
+  err="$(mktemp)"
+  # the list is captured first: `grep -q` closing the pipe early would make the
+  # producer die of SIGPIPE and, under pipefail, report a service as missing
+  services="$(component_host_compose config --services 2>"$err")" || rc=$?
+  COMPONENT_COMPOSE_ERROR="$(cat "$err" 2>/dev/null || true)"
+  rm -f "$err"
+  if ((rc != 0)); then
+    # an empty stderr would leave the caller with nothing to report
+    [[ -n "$COMPONENT_COMPOSE_ERROR" ]] \
+      || COMPONENT_COMPOSE_ERROR="docker compose config exited $rc without printing an error"
+    return 1
+  fi
+  grep -qx "$COMPONENT_SERVICE" <<<"$services" || return 2
+  return 0
 }
 component_host_write_override() {
   local target_ref="$1"
@@ -1050,4 +1109,41 @@ component_host_parse() {
       ;;
     *) die "MYR_${component^^}_HOST must be local, skip or remote:<user>@<host>, got '$value'" ;;
   esac
+}
+
+# ONE-DEPLOY: shared helpers of the all-components deploy.
+
+# The image reference a component's override file currently names (empty when
+# the component has no override yet). Reads the same host the rollout targets
+# (MYR_<COMPONENT>_HOST); runs in a subshell so the COMPONENT_* globals of the
+# caller are not touched.
+component_current_ref() (
+  local component="$1" up
+  up="$(printf '%s' "$component" | tr '[:lower:]' '[:upper:]')"
+  local ov_var="MYR_${up}_OVERRIDE_FILE" svc_var="MYR_${up}_COMPOSE_SERVICE" host_var="MYR_${up}_HOST"
+  COMPONENT_SERVICE="${!svc_var:-$component}"
+  COMPONENT_OVERRIDE_PATH="$COMPOSE_DIR/${!ov_var:-docker-compose.myrmidon-$component.yml}"
+  component_host_parse "$component" "${!host_var:-local}"
+  [[ "$COMPONENT_SKIP" == "1" ]] && exit 0
+  component_host_cat_override | sed -nE 's/^[[:space:]]*image:[[:space:]]*([^[:space:]#]+).*/\1/p' | head -n1
+)
+
+# dockergate check-config of a config file, run with the image that is about to
+# be deployed (the config must be valid for THAT binary, before it is
+# recreated). The operator's command wins when set (it may check through a
+# running container); $MYR_BOT_CFG_FILE names the file. Without a command the
+# image is run with the file mounted read-only and no network.
+#   dockergate_check_config_file <config-file> <image-ref>
+# rc 0 = valid, 1 = refused, 3 = no way to check (no command and no image).
+dockergate_check_config_file() {
+  local cfg="$1" image="${2:-}"
+  local cmd="${MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_CHECK_CONFIG_COMMAND:-}"
+  if [[ -n "$cmd" ]]; then
+    MYR_BOT_CFG_FILE="$cfg" bash -c "$cmd" >/dev/null 2>&1
+    return
+  fi
+  [[ -n "$image" ]] || return 3
+  docker run --rm --network none --read-only \
+    -v "$cfg:/etc/myrmidon-dockergate/config.json:ro" "$image" \
+    check-config --config /etc/myrmidon-dockergate/config.json >/dev/null 2>&1
 }

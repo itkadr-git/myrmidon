@@ -119,10 +119,14 @@ describe("docker/bot-runtime/Dockerfile", () => {
     assert.match(dockerfile, /^EXPOSE 8642$/m);
   });
 
-  it("declares volumes for state, workspace and scratch, not a host bind", () => {
-    // The three mounts the bot-runtime contract fixes (template.ts
-    // BOT_VOLUME_MOUNTS): hermes (under /data), workspace, scratch.
-    assert.match(dockerfile, /^VOLUME \["\/data", "\/workspace", "\/scratch"\]$/m);
+  it("declares ONE volume, the bot's whole tree, and links the three contract paths into it", () => {
+    // myrmidon(BOT-DISK-D): hard links cannot cross mounts, so /data/hermes,
+    // /workspace and /scratch are links into the single /bot mount
+    // (template.ts BOT_ROOT_MOUNT), not volumes of their own.
+    assert.match(dockerfile, /^VOLUME \["\/bot"\]$/m);
+    assert.match(dockerfile, /ln -s \/bot\/hermes \/data\/hermes/);
+    assert.match(dockerfile, /ln -s \/data\/workspace \/workspace/);
+    assert.match(dockerfile, /ln -s \/data\/scratch \/scratch/);
   });
 
   it("declares the bot-runtime contract label the G3 driver requires before it will create a container", () => {
@@ -238,7 +242,7 @@ describe("docker/bot-runtime/Dockerfile", () => {
     // write-safe root".
     assert.match(dockerfile, /HERMES_DISABLE_LAZY_INSTALLS=1/);
     assert.match(dockerfile, /HERMES_LAZY_INSTALL_TARGET=\/data\//);
-    assert.match(dockerfile, /HERMES_WRITE_SAFE_ROOT=\/data[^\n"]*\/scratch/);
+    assert.match(dockerfile, /HERMES_WRITE_SAFE_ROOT=\/data[^\n"]*\/scratch[^\n"]*\/bot/);
   });
 
   it("ships uv in the runtime stage too, so a still-permitted lazy install (an opt-in backend) actually works", () => {
@@ -537,8 +541,8 @@ describe("docker/bot-runtime/Dockerfile (development variant)", () => {
     for (const tool of ["/opt/node24/bin", "/opt/pnpm/bin", "/opt/go/bin", "/opt/cargo/bin", "/opt/docker-cli/bin"]) {
       assert.ok(path.split(":").includes(tool), `PATH must contain ${tool}`);
     }
-    // The pnpm store is redirected to the durable volume, not the read-only image.
-    assert.match(devStageInstructions, /npm_config_store_dir=\/data\/hermes\//);
+    // The pnpm store sits on the workspace mount (hard links cannot cross mounts), not the read-only image.
+    assert.match(devStageInstructions, /npm_config_store_dir=\/workspace\//);
   });
 
   it("sets no shell-start variable, which dockergate also refuses", () => {

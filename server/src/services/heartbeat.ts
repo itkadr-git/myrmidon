@@ -15,6 +15,9 @@ import { bypassesSettledHold } from "../myrmidon/settled-holds/explicit-wake-gat
 // successor run, so the run's own claim and every later automatic
 // continuation see no hold. See docs/myrmidon/DIVERGENCE.md "L2".
 import { supersedeExplicitWakeSettledHold } from "../myrmidon/settled-holds/supersede-explicit-wake.js";
+// myrmidon(CHAT-HOLD): a chat is never held; an owner message lifts a hold.
+import { isChatBackedIssue, isChatOwnerMessageWake } from "../myrmidon/chat-holds/chat-backed.js";
+import { clearChatHoldsOnOwnerMessage } from "../myrmidon/chat-holds/clear-on-message.js";
 // myrmidon(L2, round 3 fix): retire the woken agent's own waiting run that the
 // bypassed hold would cancel at its claim, so the wake is not lost with it.
 import { cancelWaitingRunDoomedByHold, carryRetryBudgetToSuccessor } from "../myrmidon/settled-holds/cancel-waiting-run.js";
@@ -604,6 +607,8 @@ import {
   sweepExpiredHeartbeatRunRuntimeStatuses,
   touchHeartbeatRunRuntimeStatus,
 } from "./heartbeat-run-runtime-status.js";
+// myrmidon(DM-PROGRESS): run-log tool lines feed the live Telegram DM status steps
+import { recordDmProgressLogChunk } from "../myrmidon/telegram-dm-progress/runtime-steps.js";
 import {
   findMissingHotRestartSnapshotRunIds,
   readHotRestartIntent,
@@ -6905,6 +6910,24 @@ const INTERACTION_CONTINUATION_CONTEXT_KEYS = [
   "newlyResolvedItemIds",
 ] as const;
 
+// myrmidon(CHAT-SOURCE): sources that carry fresh owner input through the
+// interaction pipeline. They are new provenance, not background control flow,
+// so a coalesced continuation of this kind legitimately replaces a live chat
+// origin. Used by the chat-origin preservation in mergeCoalescedContextSnapshot.
+/**
+ * Sources that carry fresh owner input through the interaction pipeline. They
+ * are new provenance, not background control flow, so a coalesced continuation
+ * of this kind legitimately replaces a live chat origin.
+ */
+const INTERACTION_CONTINUATION_SOURCES: ReadonlySet<string> = new Set([
+  "issue.interaction.respond",
+  "issue.interaction.accept",
+  "issue.interaction.reject",
+  "issue.interaction.cancel",
+  "issue.interaction.withdraw",
+  "external_chat.interaction.resolve",
+]);
+
 function isInteractionResolutionWakePayload(
   payload: Record<string, unknown> | null | undefined,
 ) {
@@ -6925,6 +6948,16 @@ function hasInteractionContinuationWakeContext(
   return INTERACTION_CONTINUATION_CONTEXT_KEYS.some((key) =>
     readNonEmptyString(contextSnapshot[key]),
   );
+}
+
+function isInteractionContinuationWake(
+  contextSnapshot: Record<string, unknown>,
+) {
+  const source = readNonEmptyString(contextSnapshot.source);
+  if (source !== null && INTERACTION_CONTINUATION_SOURCES.has(source)) {
+    return true;
+  }
+  return hasInteractionContinuationWakeContext(contextSnapshot);
 }
 
 function normalizeInteractionContinuationWakeContext(
@@ -7003,11 +7036,40 @@ export function mergeCoalescedContextSnapshot(
   const existing = parseObject(existingRaw);
   const existingSource = readNonEmptyString(existing.source);
   const incomingSource = readNonEmptyString(incoming.source);
+  const sameIssueScope =
+    readNonEmptyString(existing.issueId) !== null &&
+    existing.issueId === incoming.issueId;
+  // A verified chat origin is the run's provenance, not merely "the last event
+  // that touched it". Coalescing a background event (for example
+  // `issue.children_completed`) used to overwrite `source`, which silently
+  // dropped the chat binding for every downstream reader: the terminal
+  // presentation never reached the provider and the terminal milestone was
+  // never queued, leaving the "working…" progress message published forever.
+  // Only new owner input (a chat message, or an interactive continuation) may
+  // replace the origin; the incoming event is retained under `lastWakeSource`.
+  // This also covers the previously special-cased `native_status_decision`
+  // control wake, which is just another non-chat background event.
+  // myrmidon(CHAT-SOURCE): a verified chat origin is the run's provenance, not
+  // merely "the last event that touched it". Coalescing a background event (a
+  // native status wake, `issue.children_completed`, an automation wake) used to
+  // overwrite `source`, which silently dropped the chat binding for every
+  // downstream reader: the terminal presentation never reached the provider and
+  // the terminal milestone was never queued, leaving the "working…" progress
+  // message published forever. Only new owner input (a chat message, or an
+  // interactive continuation) may replace the origin; the incoming event moves
+  // to `lastWakeSource`. This generalizes the vendor's native-status special
+  // case, which stays covered.
   const preservesExternalChatOrigin =
     existingSource?.startsWith("chat:") === true &&
-    readNonEmptyString(existing.issueId) !== null &&
-    existing.issueId === incoming.issueId &&
-    incomingSource === "native_status_decision" &&
+    sameIssueScope &&
+    incomingSource !== null &&
+    !incomingSource.startsWith("chat:") &&
+    !isInteractionContinuationWake(incoming);
+  // A `native_status_decision` source is only a verified control wake when it
+  // carries its own marker. An unmarked claim may still be recorded as the last
+  // wake, but it must never be trusted to carry the run's admitted proof.
+  const incomingControlWakeVerified =
+    incomingSource !== "native_status_decision" ||
     readNonEmptyString(incoming.statusDecisionSource) ===
       "native_status_decision";
   const merged: Record<string, unknown> = {
@@ -7027,12 +7089,31 @@ export function mergeCoalescedContextSnapshot(
   } else {
     delete merged[EXTERNAL_ATTACHMENT_OMISSIONS_KEY];
   }
-  // A native status wake is control-flow metadata, not a new user-input
-  // provenance. When it coalesces into the live run, retain the verified chat
-  // source so the eventual terminal presentation can still prove its route.
-  // Fresh status-decision runs keep their native_status_decision source.
+  // A non-chat background event (a native status wake, `issue.children_completed`,
+  // …) is control-flow metadata, not a new user-input provenance. When it
+  // coalesces into the live run, retain the verified chat source so the eventual
+  // terminal presentation and milestone readers can still prove their route.
+  // Fresh non-chat runs keep their own source.
   if (preservesExternalChatOrigin) {
     merged.source = existingSource;
+    // The incoming event still matters, so it moves to its own key instead of
+    // being dropped. `source` and `wakeReason` describe the same event and must
+    // move together: a preserved chat `source` paired with the incoming
+    // control-flow `wakeReason` would be a contradictory provenance record.
+    merged.lastWakeSource = incomingSource;
+    const existingWakeReason = readNonEmptyString(existing.wakeReason);
+    const incomingWakeReason = readNonEmptyString(incoming.wakeReason);
+    if (existingWakeReason !== null) {
+      merged.wakeReason = existingWakeReason;
+      if (incomingWakeReason !== null) {
+        merged.lastWakeReason = incomingWakeReason;
+      }
+    }
+    // The flat merge above drops the admitted execution proof so no coalescing
+    // wake can mint one. Retention stays on the existing `preservesAdmittedWake`
+    // gate below, which requires the unchanged admitted wake payload as proof;
+    // broadening the chat-origin preservation only widens which coalesced
+    // events reach that validated path.
   }
   if (
     existing.forceFreshSession === true ||
@@ -7057,6 +7138,7 @@ export function mergeCoalescedContextSnapshot(
     : [];
   const preservesAdmittedWake =
     preservesExternalChatOrigin &&
+    incomingControlWakeVerified &&
     parseObject(existingWake.issue).id === existing.issueId &&
     CHAT_PROVIDERS.some(
       (provider) =>
@@ -22591,6 +22673,9 @@ export function heartbeatService(
           const sanitizedChunk = compactRunLogChunk(
             redactCurrentUserText(chunk, currentUserRedactionOptions),
           );
+          // myrmidon(DM-PROGRESS): Hermes tool lines feed the step history of
+          // the live Telegram DM status (legacy adapters write no step events).
+          recordDmProgressLogChunk(run.id, stream, sanitizedChunk);
           if (stream === "stdout")
             stdoutExcerpt = appendExcerpt(stdoutExcerpt, sanitizedChunk);
           if (stream === "stderr")
@@ -26911,10 +26996,21 @@ export function heartbeatService(
           // below. The decision is not carried to the run's claim: the claim
           // is the vendor's plain check, and it finds no hold because this
           // admission superseded every one it let the wake pass.
-          const wakeBypassesSettledHold = bypassesSettledHold({
+          // myrmidon(CHAT-HOLD): a new message a person wrote in a chat is
+          // an explicit human action on a conversation, never a replay of
+          // the stopped turn: it passes a settled hold the same way, and the
+          // successor below lifts that hold (chat-holds/clear-on-message.ts).
+          const chatOwnerMessage = isChatOwnerMessageWake({
+            durableChatRequest: Boolean(durableRequest),
+            failedRunRetry: Boolean(durableRequest?.failedRunRetry),
+            commentId: wakeCommentId ?? null,
+            requestedByActorType: opts.requestedByActorType ?? null,
+            requestedByActorId: opts.requestedByActorId ?? null,
+          }) && await isChatBackedIssue(tx as unknown as Db, issue.companyId, issue.id);
+          const wakeBypassesSettledHold = (bypassesSettledHold({
             source, triggerDetail, reason, commentId: wakeCommentId ?? null,
             requestedByActorType: opts.requestedByActorType ?? null,
-          }) && Boolean(opts.requestedByActorId);
+          }) || chatOwnerMessage) && Boolean(opts.requestedByActorId);
           const executionBlocker = await getExecutionBlocker(
             tx as unknown as Db, issue.companyId, issue.id,
             { conversationResetCommentId: opts.requestedByActorType === "user" ? wakeCommentId : null,
@@ -27801,6 +27897,17 @@ export function heartbeatService(
             enrichedContextSnapshot.forceFreshSession = true;
             enrichedContextSnapshot.previousRunId = explicitContinuation.previousRunId;
             enrichedContextSnapshot.explicitUserContinuation = explicitContinuation;
+          } else if (chatOwnerMessage && opts.requestedByActorId && wakeCommentId) {
+            // myrmidon(CHAT-HOLD): lift the chat's settled hold with this
+            // successor run, record it in the activity log, and return a chat
+            // the recovery moved to `blocked` to `todo`.
+            await clearChatHoldsOnOwnerMessage({
+              db: tx as unknown as Db, companyId: issue.companyId, issueId: issue.id,
+              issueStatus: issue.status,
+              successorRunId: explicitContinuationRunId,
+              requestedByActorId: opts.requestedByActorId,
+              commentId: wakeCommentId,
+            });
           } else if (wakeBypassesSettledHold && opts.requestedByActorId) {
             // myrmidon(L2, round 1 fix): an explicit wake with no message of
             // its own (assignment, manual wakeup, approval decision, subtree
