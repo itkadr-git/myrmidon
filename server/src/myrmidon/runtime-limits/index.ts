@@ -8,7 +8,7 @@
 import type { Db } from "@paperclipai/db";
 import { logger } from "../../middleware/logger.js";
 import { heartbeatService, instanceSettingsService, logActivity } from "../../services/index.js";
-import { applyRunAdmissionLimits, scheduleQueuedResweep } from "../run-admission.js";
+import { applyRunAdmissionLimits, currentHostCpuGate, scheduleQueuedResweep } from "../run-admission.js";
 import { runtimeLimitsRoutes } from "./routes.js";
 import { runtimeLimitsService, type RuntimeLimitsServiceDeps } from "./service.js";
 
@@ -26,6 +26,9 @@ function defaultDeps(db: Db): RuntimeLimitsServiceDeps {
     listCompanyIds: () => instanceSettingsService(db).listCompanyIds(),
     logActivity: (entry) => logActivity(db, entry),
     apply: applyRunAdmissionLimits,
+    // myrmidon(1.6.5 rc.2): the GET view carries the live host CPU reading, so
+    // the settings page can show the load the ceiling is measured on.
+    hostLoad: () => currentHostCpuGate(),
     scheduleResweep: () =>
       scheduleQueuedResweep(() =>
         heartbeat.resumeQueuedRuns().catch((err) => {

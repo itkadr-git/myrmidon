@@ -44,6 +44,8 @@ interface HarnessOptions {
   env?: Record<string, string | undefined>;
   companyIds?: string[];
   settingsError?: Error;
+  /** myrmidon(1.6.5 rc.2): the live host CPU reading the view carries. */
+  hostLoad?: RuntimeLimitsServiceDeps["hostLoad"];
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -72,6 +74,7 @@ function harness(options: HarnessOptions = {}) {
     },
     apply: (limits) => calls.push(`apply:${limits.maxConcurrentRuns}`),
     scheduleResweep: () => calls.push("resweep"),
+    ...(options.hostLoad ? { hostLoad: options.hostLoad } : {}),
     env: options.env ?? ENV_ONLY,
   };
 
@@ -105,7 +108,30 @@ describe("myrmidon(C0) runtime limits: reading the effective values", () => {
         minFreeHostMemoryMb: "default",
         maxHostLoadPercentPerCore: "default",
       },
+      // myrmidon(1.6.5 rc.2): the view carries the live host CPU reading; the
+      // harness has no admission, so there is none.
+      hostLoad: null,
     });
+  });
+
+  it("myrmidon(1.6.5 rc.2): carries the live host CPU reading next to the ceiling", async () => {
+    const hostLoad = {
+      state: "open" as const,
+      thresholdPercent: 90,
+      load1: 19.2,
+      cores: 16,
+      loadPercentPerCore: 120,
+      backgroundPercentPerCore: 115,
+      load15PercentPerCore: 115,
+      loadAboveBackgroundPercent: 5,
+      reason: null,
+      heldSince: null,
+    };
+    // The reading is what the settings page shows next to the field, and it
+    // comes from the same admission that decides on the run.
+    const { withActor } = harness({ hostLoad: () => hostLoad });
+    const res = await request(withActor(member)).get(URL).expect(200);
+    expect(res.body.hostLoad).toEqual(hostLoad);
   });
 
   it("reports the stored settings as the source once they exist", async () => {
