@@ -1,8 +1,31 @@
 import { describe, expect, it } from "vitest";
 import {
+  backupRetentionPolicySchema,
   instanceExperimentalSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
 } from "./instance.js";
+
+// myrmidon(OPE-4765): backupRetention keep-last-only mode.
+describe("backupRetentionPolicySchema", () => {
+  it("defaults keepLastOnly off and keeps presets mandatory for stored rows", () => {
+    const parsed = backupRetentionPolicySchema.parse({ dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 });
+    expect(parsed.keepLastOnly).toBeUndefined();
+    expect(backupRetentionPolicySchema.parse({}).dailyDays).toBe(7);
+  });
+
+  it("accepts keepLastOnly alongside presets and rejects non-boolean values", () => {
+    expect(
+      backupRetentionPolicySchema.parse({ dailyDays: 3, weeklyWeeks: 1, monthlyMonths: 1, keepLastOnly: true }),
+    ).toEqual({ dailyDays: 3, weeklyWeeks: 1, monthlyMonths: 1, keepLastOnly: true });
+    expect(
+      backupRetentionPolicySchema.safeParse({ dailyDays: 3, weeklyWeeks: 1, monthlyMonths: 1, keepLastOnly: "true" }).success,
+    ).toBe(false);
+    // Presets still validate in keep-last-only mode.
+    expect(
+      backupRetentionPolicySchema.safeParse({ dailyDays: 5, weeklyWeeks: 1, monthlyMonths: 1, keepLastOnly: true }).success,
+    ).toBe(false);
+  });
+});
 
 describe("instance experimental settings validators", () => {
   it("defaults chat connectors off independently of Apps and accepts only explicit boolean patches", () => {

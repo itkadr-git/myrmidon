@@ -33,6 +33,12 @@ export interface BackupRetentionPolicy {
   dailyDays: (typeof DAILY_RETENTION_PRESETS)[number];
   weeklyWeeks: (typeof WEEKLY_RETENTION_PRESETS)[number];
   monthlyMonths: (typeof MONTHLY_RETENTION_PRESETS)[number];
+  /**
+   * myrmidon(OPE-4765): when true the backup job keeps only the newest dump and
+   * deletes every previous one after a successful new backup. Absent/false
+   * keeps the tiered preset behaviour above (backwards compatible).
+   */
+  keepLastOnly?: boolean;
 }
 
 export const DEFAULT_BACKUP_RETENTION: BackupRetentionPolicy = {

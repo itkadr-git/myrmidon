@@ -11,6 +11,12 @@ export type BackupRetentionPolicy = {
   dailyDays: number;
   weeklyWeeks: number;
   monthlyMonths: number;
+  /**
+   * myrmidon(OPE-4765): when true, keep only the newest dump — after a
+   * successful new backup every previous dump is deleted. Absent/false keeps
+   * the tiered preset behaviour (backwards compatible).
+   */
+  keepLastOnly?: boolean;
 };
 
 export type RunDatabaseBackupOptions = {
@@ -119,8 +125,13 @@ function monthlyRetentionCutoff(nowMs: number, monthlyMonths: number): number {
  * - Weekly tier: keep the NEWEST backup per calendar week for `weeklyWeeks` weeks
  * - Monthly tier: keep the NEWEST backup per calendar month for `monthlyMonths` months
  * - Everything else is deleted
+ *
+ * myrmidon(OPE-4765): `keepLastOnly` mode keeps only the newest dump and
+ * deletes every previous one. Called only after the new dump is fully written,
+ * so a failed run never reaches this function and older dumps survive a broken
+ * new dump.
  */
-function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, filenamePrefix: string): number {
+function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, filenamePrefix: string, keepFile?: string): number {
   if (!existsSync(backupDir)) return 0;
 
   const now = Date.now();
@@ -141,6 +152,21 @@ function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, fi
 
   // Sort newest first so the first entry per week/month bucket is the one we keep
   entries.sort((a, b) => b.mtimeMs - a.mtimeMs);
+
+  // myrmidon(OPE-4765): keep only the newest dump. `keepFile` (the dump that
+  // just finished successfully) is always kept even when an mtime tie would
+  // sort it after a previous dump. Unfinished `.sql` orphans are never the
+  // keep candidate, so this mode also clears them.
+  if (retention.keepLastOnly) {
+    const keepPath = keepFile ? resolve(backupDir, keepFile) : undefined;
+    const toDelete = entries
+      .filter((entry, index) => index > 0 && entry.fullPath !== keepPath)
+      .map((entry) => entry.fullPath);
+    for (const filePath of toDelete) {
+      unlinkSync(filePath);
+    }
+    return toDelete.length;
+  }
 
   const keepWeekBuckets = new Set<string>();
   const keepMonthBuckets = new Set<string>();
@@ -183,6 +209,31 @@ function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, fi
   }
 
   return toDelete.length;
+}
+
+/**
+ * myrmidon(OPE-4765): removes unfinished `<prefix>-*.sql` orphans left behind
+ * by a killed backup run (the writer aborts only while the process is alive).
+ * Called at the START of a run so the unfinished file of a run in flight on
+ * another process is never touched, and a failed current run throws before
+ * reaching prune, so old dumps survive a broken new dump. Runs in every
+ * retention mode — an orphan is never a restorable backup.
+ * Returns the number of files removed.
+ */
+export function cleanupOrphanedSqlDumps(backupDir: string, filenamePrefix: string): number {
+  if (!existsSync(backupDir)) return 0;
+  let removed = 0;
+  for (const name of readdirSync(backupDir)) {
+    if (!name.startsWith(`${filenamePrefix}-`)) continue;
+    if (!name.endsWith(".sql")) continue;
+    try {
+      unlinkSync(resolve(backupDir, name));
+      removed += 1;
+    } catch {
+      // Best effort: a file that cannot be removed stays for the next run.
+    }
+  }
+  return removed;
 }
 
 function formatBackupSize(sizeBytes: number): string {
@@ -541,6 +592,9 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     await sql.end();
   };
   mkdirSync(opts.backupDir, { recursive: true });
+  // myrmidon(OPE-4765): sweep unfinished dumps of previous killed runs before
+  // starting a new one.
+  cleanupOrphanedSqlDumps(opts.backupDir, filenamePrefix);
   const sqlFile = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}.sql`);
   const backupFile = `${sqlFile}.gz`;
   const writer = createBufferedTextFileWriter(sqlFile);
@@ -557,7 +611,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         });
         await writer.abort();
         const sizeBytes = statSync(backupFile).size;
-        const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
+        const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix, backupFile);
         return {
           backupFile,
           sizeBytes,
@@ -1027,7 +1081,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     unlinkSync(sqlFile);
 
     const sizeBytes = statSync(backupFile).size;
-    const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
+    const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix, backupFile);
 
     return {
       backupFile,

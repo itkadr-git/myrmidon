@@ -4,7 +4,7 @@ import path from "node:path";
 import { gunzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 import postgres from "postgres";
-import { createBufferedTextFileWriter, runDatabaseBackup, runDatabaseRestore } from "./backup-lib.js";
+import { createBufferedTextFileWriter, cleanupOrphanedSqlDumps, runDatabaseBackup, runDatabaseRestore } from "./backup-lib.js";
 import { ensurePostgresDatabase } from "./client.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -74,7 +74,114 @@ describe("createBufferedTextFileWriter", () => {
   });
 });
 
+// myrmidon(OPE-4765): orphan sweep runs without a database.
+describe("cleanupOrphanedSqlDumps", () => {
+  it("removes only unfinished <prefix>-*.sql orphans and keeps finished dumps", () => {
+    const backupDir = createTempDir("paperclip-orphan-sweep-");
+    const orphan = path.join(backupDir, "paperclip-test-20260405-120000.sql");
+    const finishedNew = path.join(backupDir, "paperclip-test-20260405-130000.sql.gz");
+    const finishedOld = path.join(backupDir, "paperclip-test-20260401-120000.sql.gz");
+    const foreignSql = path.join(backupDir, "other-20260405-120000.sql");
+    const foreignGz = path.join(backupDir, "other-20260405-120000.sql.gz");
+    fs.writeFileSync(orphan, "-- unfinished dump of a killed run");
+    fs.writeFileSync(finishedNew, "gz-new");
+    fs.writeFileSync(finishedOld, "gz-old");
+    fs.writeFileSync(foreignSql, "-- another prefix's in-flight dump");
+    fs.writeFileSync(foreignGz, "gz-foreign");
+
+    const removed = cleanupOrphanedSqlDumps(backupDir, "paperclip-test");
+
+    expect(removed).toBe(1);
+    expect(fs.existsSync(orphan)).toBe(false);
+    expect(fs.existsSync(finishedNew)).toBe(true);
+    expect(fs.existsSync(finishedOld)).toBe(true);
+    expect(fs.existsSync(foreignSql)).toBe(true);
+    expect(fs.existsSync(foreignGz)).toBe(true);
+  });
+
+  it("returns 0 for a missing backup directory", () => {
+    expect(cleanupOrphanedSqlDumps(path.join(os.tmpdir(), "paperclip-no-such-dir-here"), "paperclip-test")).toBe(0);
+  });
+});
+
 describeEmbeddedPostgres("runDatabaseBackup", () => {
+  // myrmidon(OPE-4765): keep-last-only retention mode.
+  it(
+    "keepLastOnly deletes all previous dumps after a successful new backup",
+    async () => {
+      const sourceConnectionString = await createTempDatabase();
+      const backupDir = createTempDir("paperclip-db-keep-last-");
+      const previous1 = path.join(backupDir, "paperclip-test-20260403-120000.sql.gz");
+      const previous2 = path.join(backupDir, "paperclip-test-20260404-120000.sql.gz");
+      fs.writeFileSync(previous1, "old-dump-1");
+      fs.writeFileSync(previous2, "old-dump-2");
+      fs.utimesSync(previous1, new Date("2026-04-03T12:00:00Z"), new Date("2026-04-03T12:00:00Z"));
+      fs.utimesSync(previous2, new Date("2026-04-04T12:00:00Z"), new Date("2026-04-04T12:00:00Z"));
+
+      const result = await runDatabaseBackup({
+        connectionString: sourceConnectionString,
+        backupDir,
+        retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1, keepLastOnly: true },
+        filenamePrefix: "paperclip-test",
+      });
+
+      expect(result.prunedCount).toBe(2);
+      expect(fs.existsSync(previous1)).toBe(false);
+      expect(fs.existsSync(previous2)).toBe(false);
+      expect(fs.existsSync(result.backupFile)).toBe(true);
+    },
+    30_000,
+  );
+
+  it(
+    "keepLastOnly keeps the previous dump when the new backup fails",
+    async () => {
+      const backupDir = createTempDir("paperclip-db-keep-last-fail-");
+      const previous = path.join(backupDir, "paperclip-test-20260404-120000.sql.gz");
+      fs.writeFileSync(previous, "old-good-dump");
+
+      await expect(
+        runDatabaseBackup({
+          // Nothing listens on this port: the run fails before any dump exists.
+          connectionString: "postgres://localhost:1/paperclip_keep_last_fail",
+          backupDir,
+          retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1, keepLastOnly: true },
+          filenamePrefix: "paperclip-test",
+          backupEngine: "javascript",
+          connectTimeoutSeconds: 1,
+        }),
+      ).rejects.toThrow();
+
+      expect(fs.existsSync(previous)).toBe(true);
+      // No new dump may exist after the failed run.
+      expect(fs.readdirSync(backupDir).filter((name) => name.startsWith("paperclip-test-"))).toEqual([
+        path.basename(previous),
+      ]);
+    },
+    30_000,
+  );
+
+  it(
+    "sweeps an unfinished .sql orphan of a killed run on the next backup run",
+    async () => {
+      const sourceConnectionString = await createTempDatabase();
+      const backupDir = createTempDir("paperclip-db-orphan-run-");
+      const orphan = path.join(backupDir, "paperclip-test-20260404-120000.sql");
+      fs.writeFileSync(orphan, "-- unfinished dump of a killed run");
+
+      const result = await runDatabaseBackup({
+        connectionString: sourceConnectionString,
+        backupDir,
+        retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+        filenamePrefix: "paperclip-test",
+      });
+
+      expect(fs.existsSync(orphan)).toBe(false);
+      expect(fs.existsSync(result.backupFile)).toBe(true);
+    },
+    30_000,
+  );
+
   it(
     "keeps the newest backup for each retained calendar month",
     async () => {
