@@ -47,6 +47,13 @@ const FIELDS: Array<{ key: RunLimitKey; label: string; hint: string; optional: b
     hint: "A new run starts only while the host (where the bot containers run) has at least this much available memory; otherwise it waits in the queue. Default 15360 (15 GB).",
     optional: true,
   },
+  {
+    // myrmidon(1.6.5 RUN-ADMISSION)
+    key: "maxHostLoadPercentPerCore",
+    label: "Max host load per core, % of a core",
+    hint: "A new run starts only while the host's 1-minute load average stays under this many percent of one CPU core (100 = one core fully busy); otherwise runs wait in the queue. Default 90. Empty switches the ceiling off.",
+    optional: true,
+  },
 ];
 
 interface DraftParse {
@@ -83,6 +90,7 @@ export function parseRunLimitsDraft(draft: Record<RunLimitKey, string>): DraftPa
       minFreeMemoryMb: parsed.minFreeMemoryMb,
       runMemoryEstimateMb: estimate,
       minFreeHostMemoryMb: parsed.minFreeHostMemoryMb,
+      maxHostLoadPercentPerCore: parsed.maxHostLoadPercentPerCore,
     },
     errors,
   };
@@ -95,6 +103,8 @@ function toDraft(limits: RunLimits): Record<RunLimitKey, string> {
     minFreeMemoryMb: limits.minFreeMemoryMb === null ? "" : String(limits.minFreeMemoryMb),
     runMemoryEstimateMb: String(limits.runMemoryEstimateMb),
     minFreeHostMemoryMb: limits.minFreeHostMemoryMb === null ? "" : String(limits.minFreeHostMemoryMb),
+    maxHostLoadPercentPerCore:
+      limits.maxHostLoadPercentPerCore === null ? "" : String(limits.maxHostLoadPercentPerCore),
   };
 }
 
