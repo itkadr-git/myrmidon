@@ -10,26 +10,6 @@ version file to edit. Base Paperclip version is in the image label
 
 ## Unreleased
 
-### A bot can no longer fill the host disk (1.6.1-BOT-DISK-C)
-
-- Per-bot disk quota: instance setting `general.botDiskQuota` — a default in MB
-  for every bot, per-caste (`agents.role`) and per-bot overrides, plus a
-  `container.diskQuotaMb` override on the bot card (it wins). Set in the panel on
-  the instance general settings page or through `GET`/`PATCH /api/myrmidon/bot-disk-quota`
-  (instance admins only); applies without a restart.
-- Usage is the bot's own volume `<MYRMIDON_BOT_VOLUME_ROOT>/<botKey>` (hermes,
-  workspace, scratch), measured by the maintenance-tick sweep one page of bots
-  per tick; a hard-linked pnpm store counts once per bot, deep or huge volumes
-  stop at caps and report a lower bound.
-- Approaching (≥80%) or exceeding the quota raises an attention card
-  (`bot_disk_quota`) on the board's attention queue; while a bot is over quota a
-  NEW execution workspace clone is refused before its directory is created, and
-  the bot sees `BOT_DISK_QUOTA_EXCEEDED:` with its usage, the limit and the setting
-  to fix. Existing workspaces keep working; deleting old drafts frees room.
-- With no `MYRMIDON_BOT_VOLUME_ROOT` on the board's host, or no quota saved, the
-  feature is inert: no measurement, no card, no refusal. Details:
-  [bot-disk-quota.md](bot-disk-quota.md) / [bot-disk-quota.ru.md](bot-disk-quota.ru.md).
-
 ### One deploy for every component (ONE-DEPLOY)
 
 - A release deploy now updates every component in one maintenance window:

@@ -7,7 +7,7 @@ import type { HostDiskSettings } from "../myrmidon-host-disk.js";
 // myrmidon(BOT-DISK-A): the bot draft-directory lifecycle stored in instance settings
 import type { StoredBotDiskSettings } from "../myrmidon-bot-disk.js";
 // myrmidon(1.6.1-BOT-DISK-C): per-bot disk quota of its own general settings key.
-import type { BotDiskQuotaSettings } from "../myrmidon-bot-disk-quota.js";
+import type { StoredBotDiskQuotaSettings } from "../myrmidon-bot-disk-quota.js";
 // myrmidon(PARALLEL-HELPERS): the helper ceiling/default stored in instance settings
 import type { ParallelHelpersSettings } from "../myrmidon-parallel-helpers.js";
 import type { BotLspSettings } from "../myrmidon-bot-lsp.js";
@@ -92,7 +92,7 @@ export interface InstanceGeneralSettings {
    * `botDisk` object. Absent means "no quota" (enforcement off); kept in sync
    * with the validator of the same field (packages/shared/src/validators/instance.ts).
    */
-  botDiskQuota?: BotDiskQuotaSettings;
+  botDiskQuota?: StoredBotDiskQuotaSettings;
   /**
    * myrmidon(C0): run admission limits changed from the instance settings page
    * and `GET`/`PATCH /api/myrmidon/runtime-limits`. Absent means "use the
