@@ -100,7 +100,27 @@ esac
 # three-bind layout) is left alone. MYRMIDON_DATA_DIR only exists for tests.
 bot_root="${MYRMIDON_BOT_ROOT:-/bot}"
 data_dir="${MYRMIDON_DATA_DIR:-/data}"
-if [ -d "${bot_root}" ] && [ -d "${data_dir}" ] && [ -w "${data_dir}" ]; then
+# myrmidon(BOT-DISK-F): a member of a SHARED isolation-scope instance has no /bot. Its
+# one mount is the instance directory at ${MYRMIDON_BOT_SCOPE_DIR:-/bot-scope} (one pnpm
+# store plus a subdirectory per member bot), and MYRMIDON_BOT_SCOPE_SUBDIR names this
+# bot's subdirectory (its bot key; not a secret). /data is a small tmpfs the driver
+# mounts for exactly this, so the three links are made here, into this bot's own
+# subdirectory: hard links then work within the bot and across the bots of the instance
+# (one mount), and no other instance's directory is mounted at all.
+scope_dir="${MYRMIDON_BOT_SCOPE_DIR:-/bot-scope}"
+if [ -n "${MYRMIDON_BOT_SCOPE_SUBDIR:-}" ]; then
+  case "${MYRMIDON_BOT_SCOPE_SUBDIR}" in
+    */* | . | .. | -*) fail "MYRMIDON_BOT_SCOPE_SUBDIR is not a plain directory name" ;;
+  esac
+  bot_root="${scope_dir}/${MYRMIDON_BOT_SCOPE_SUBDIR}"
+  [ -d "${bot_root}" ] || fail "shared scope: ${bot_root} does not exist (the scope instance directory is not mounted at ${scope_dir}, or this bot has no subdirectory in it)"
+  [ -w "${data_dir}" ] || fail "shared scope: ${data_dir} is not writable (it must be a tmpfs owned by the bot's uid)"
+  for name in hermes workspace scratch; do
+    mkdir -p "${bot_root}/${name}" || fail "shared scope: cannot create ${bot_root}/${name}"
+    ln -sfn "${bot_root}/${name}" "${data_dir}/${name}" || fail "shared scope: cannot link ${data_dir}/${name}"
+  done
+  log "shared scope member: ${data_dir}/{hermes,workspace,scratch} -> ${bot_root}/"
+elif [ -d "${bot_root}" ] && [ -d "${data_dir}" ] && [ -w "${data_dir}" ]; then
   for name in hermes workspace scratch; do
     if [ ! -e "${data_dir}/${name}" ] && [ ! -L "${data_dir}/${name}" ]; then
       mkdir -p "${bot_root}/${name}" 2>/dev/null || true
@@ -108,6 +128,13 @@ if [ -d "${bot_root}" ] && [ -d "${data_dir}" ] && [ -w "${data_dir}" ]; then
         || log "WARNING: cannot link ${data_dir}/${name} to ${bot_root}/${name}"
     fi
   done
+fi
+
+# myrmidon(BOT-DISK-F): the image's WORKDIR is "/" (a member's /workspace link does not
+# exist until the links above are made), so enter the workspace here, now it resolves.
+workspace_dir="${MYRMIDON_WORKSPACE_DIR:-/workspace}"
+if [ -e "${workspace_dir}" ]; then
+  cd "${workspace_dir}" || fail "cannot enter the workspace ${workspace_dir} (is the bot tree mounted?)"
 fi
 
 # --- writable state -------------------------------------------------------

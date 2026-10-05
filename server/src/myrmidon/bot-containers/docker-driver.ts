@@ -45,6 +45,7 @@ import { CLONE_HYGIENE_REPORT_PATH } from "./clone-hygiene.js"; // myrmidon(1.6.
 import { randomBytes } from "node:crypto";
 import http from "node:http";
 import type { BotContainerDriver, BotContainerSpec, BotContainerStatus, TemplateDriftField, TemplateDriftReport } from "./driver.js";
+import { ISOLATED_LAYOUT, type ScopeLayout } from "@paperclipai/shared";
 import type { CompiledProfile } from "./types.js";
 import {
   assertBotRuntimeContract,
@@ -53,8 +54,14 @@ import {
   BOT_KEY_PATTERN,
   BOT_MOUNT_SOURCES_ENV,
   BOT_HERMES_REAL_PATH,
+  BOT_RUNTIME_SCOPE_LABEL,
+  BOT_SCOPE_DATA_TMPFS,
+  BOT_SCOPE_SUBDIR_ENV,
   BOT_VOLUME_MOUNTS,
+  botRealRootFromBinds,
   buildHelperBinds,
+  scopeDirNameFromBinds,
+  type BotScopeMount,
   BotContainerTemplateError,
   buildBinds,
   buildLabels,
@@ -76,6 +83,8 @@ export const DEFAULT_BOT_DOCKER_SOCKET = "/var/run/docker.sock";
 export const BOT_IMAGE_ALLOWLIST_ENV = "MYRMIDON_BOT_IMAGE_ALLOWLIST";
 export const BOT_VOLUME_ROOT_ENV = "MYRMIDON_BOT_VOLUME_ROOT";
 export const BOT_NETWORK_ENV = "MYRMIDON_BOT_NETWORK";
+/** myrmidon(BOT-DISK-F): host directory of shared isolation-scope instances; default `<volumeRoot>/.scopes`. */
+export const BOT_SCOPE_ROOT_ENV = "MYRMIDON_BOT_SCOPE_ROOT";
 export const DEFAULT_BOT_NETWORK = "myrmidon-bots";
 
 /** uid:gid the image runs the gateway as (non-root; the bot image's `USER`).
@@ -101,6 +110,8 @@ export const APPLIED_MARKER_CONTAINER_PATH = `${BOT_HERMES_REAL_PATH}/${MARKER_R
 export interface DockerDriverConfig {
   socketPath: string;
   volumeRoot: string;
+  /** myrmidon(BOT-DISK-F): host directory of shared scope instances (one subdirectory per instance). */
+  scopeRoot?: string;
   network: string;
   allowlist: readonly string[];
   /** Host directories a card may mount into a bot container, read-only
@@ -116,6 +127,8 @@ export function readDockerDriverConfig(env: NodeJS.ProcessEnv = process.env): Do
   return {
     socketPath: env[BOT_DOCKER_SOCKET_ENV]?.trim() || DEFAULT_BOT_DOCKER_SOCKET,
     volumeRoot,
+    // "." can never begin a bot key, so the default cannot collide with a bot's directory.
+    scopeRoot: env[BOT_SCOPE_ROOT_ENV]?.trim() || `${volumeRoot}/.scopes`,
     network: env[BOT_NETWORK_ENV]?.trim() || DEFAULT_BOT_NETWORK,
     allowlist: parseImageAllowlist(env[BOT_IMAGE_ALLOWLIST_ENV]),
     mountSources: parseMountSourceAllowlist(env[BOT_MOUNT_SOURCES_ENV]),
@@ -144,11 +157,32 @@ export interface DockerDriverOptions {
    * `<cache>/git:/cache/git` bind. Absent: never.
    */
   readGitMirrorEnabled?: (botKey: string) => Promise<boolean>;
+  /**
+   * myrmidon(BOT-DISK-F): the layout the board keeps this bot's disk on (its own
+   * directory, or a member subdirectory of a shared scope instance), read on
+   * every create, recreate and drift check. It is the layout the owner applied,
+   * not the one the resolver currently computes: a scope change waits for the
+   * owner's "apply" (restart required). Absent: always isolated.
+   */
+  readScopeLayout?: (botKey: string) => Promise<ScopeLayout>;
+  /**
+   * myrmidon(BOT-DISK-F): moves a bot's directories between host layouts when a
+   * recreate changes the layout. `check` runs before anything is stopped and
+   * throws when the move would conflict (or the board cannot see the volumes);
+   * `run` runs with the old container stopped and the new one not yet created.
+   * Absent: a recreate that changes the layout is refused.
+   */
+  scopeMigration?: {
+    check(args: { botKey: string; from: ScopeLayout; to: ScopeLayout }): Promise<void>;
+    run(args: { botKey: string; from: ScopeLayout; to: ScopeLayout }): Promise<void>;
+  };
 }
 
 export interface DockerCreateContainerBody {
   Image: string;
   Labels: Record<string, string>;
+  /** Only a member of a shared scope instance carries one: its subdirectory name (not a secret). */
+  Env?: string[];
   HostConfig: {
     Memory: number;
     NanoCpus: number;
@@ -180,6 +214,8 @@ export function buildCreateContainerRequestBody(
   config: Pick<DockerDriverConfig, "volumeRoot" | "network" | "allowlist" | "mountSources">,
   sharedPackageCachePath?: string,
   gitMirror = false,
+  /** myrmidon(BOT-DISK-F): the instance a shared member binds (isolated when absent). */
+  scope?: BotScopeMount,
 ): DockerCreateContainerBody {
   validateBotKey(spec.botKey);
   if (!isImageAllowed(spec.image, config.allowlist)) {
@@ -196,6 +232,7 @@ export function buildCreateContainerRequestBody(
   return {
     Image: spec.image,
     Labels: buildLabels(spec),
+    ...(scope ? { Env: [`${BOT_SCOPE_SUBDIR_ENV}=${spec.botKey}`] } : {}),
     HostConfig: {
       Memory: Math.round(spec.memoryMb * 1024 * 1024),
       NanoCpus: Math.round(spec.cpus * 1_000_000_000),
@@ -203,7 +240,8 @@ export function buildCreateContainerRequestBody(
       CapDrop: ["ALL"],
       SecurityOpt: ["no-new-privileges"],
       ReadonlyRootfs: true,
-      Tmpfs: { "/tmp": "" },
+      // A member's /data holds only the links into its own subdirectory (entrypoint.sh).
+      Tmpfs: scope ? { "/tmp": "", "/data": BOT_SCOPE_DATA_TMPFS } : { "/tmp": "" },
       Init: true,
       RestartPolicy: { Name: "on-failure" },
       NetworkMode: config.network,
@@ -212,6 +250,7 @@ export function buildCreateContainerRequestBody(
         allowedSources: config.mountSources,
         sharedPackageCachePath,
         gitMirror,
+        scope,
       }),
       Privileged: false,
     },
@@ -256,6 +295,8 @@ export function buildHelperContainerRequestBody(params: {
   role: HelperRole;
   script: string;
   volumeRoot: string;
+  /** myrmidon(BOT-DISK-F): the helper of a shared member works inside its subdirectory of the instance. */
+  scope?: BotScopeMount;
 }): DockerHelperContainerBody {
   validateBotKey(params.botKey);
   const asRoot = params.role === "prepare-volumes";
@@ -275,14 +316,20 @@ export function buildHelperContainerRequestBody(params: {
       ReadonlyRootfs: true,
       RestartPolicy: { Name: "no" },
       NetworkMode: "none",
-      Binds: buildHelperBinds(params.volumeRoot, params.botKey),
+      Binds: buildHelperBinds(params.volumeRoot, params.botKey, params.scope, asRoot),
       Privileged: false,
     },
   };
 }
 
 const MOUNT_ROOTS = BOT_VOLUME_MOUNTS.map((mount) => mountRootSegment(mount));
+/** The prepare helper's bind of the instance directory, relative to its root ("/scope"). */
+const BOT_SCOPE_HELPER_ROOT = "scope";
 const NONCE_PATTERN = /^[0-9a-f]{8,64}$/;
+
+function scopeLayoutKeyOf(layout: ScopeLayout): string {
+  return layout.kind === "isolated" ? "isolated" : `shared:${layout.dirName}`;
+}
 
 function stagingDirName(nonce: string): string {
   return `.myrmidon-next-${nonce}`;
@@ -295,11 +342,15 @@ function applyDirName(nonce: string): string {
 /** Script the "prepare-volumes" helper runs (as root, CAP_CHOWN + CAP_FOWNER):
  *  hands each mount point to the bot's uid with mode 0700. Idempotent. Paths are
  *  relative to "$1" (the container root in production). */
-export function buildPrepareVolumesScript(): string {
+export function buildPrepareVolumesScript(options: { scope?: boolean } = {}): string {
+  // myrmidon(BOT-DISK-F): a member of a shared scope instance also hands the instance
+  // directory (the helper's /scope bind) to the bot, so the container can create the
+  // instance's pnpm store in it. The text stays a constant per layout.
+  const roots = options.scope ? [...MOUNT_ROOTS, BOT_SCOPE_HELPER_ROOT] : MOUNT_ROOTS;
   return [
     "set -eu",
     'cd "$1"',
-    `for d in ${MOUNT_ROOTS.join(" ")}; do`,
+    `for d in ${roots.join(" ")}; do`,
     '  chmod 0700 "$d"',
     `  chown ${BOT_CONTAINER_UID}:${BOT_CONTAINER_UID} "$d"`,
     "done",
@@ -755,13 +806,24 @@ export function dockerBotContainerDriver(
   const newNonce = options.nonce ?? (() => randomBytes(8).toString("hex"));
   const readSharedPackageCachePath = options.readSharedPackageCachePath ?? (async () => undefined);
   const readGitMirrorEnabled = options.readGitMirrorEnabled ?? (async () => false);
+  const readScopeLayout = options.readScopeLayout ?? (async () => ISOLATED_LAYOUT);
+  const scopeRoot = config.scopeRoot ?? `${config.volumeRoot}/.scopes`;
+  /** The bind place of a layout; undefined for isolated. */
+  const scopeMountOf = (layout: ScopeLayout): BotScopeMount | undefined =>
+    layout.kind === "shared" ? { scopeRoot, dirName: layout.dirName } : undefined;
+  /** The layout a live container was created with, read off its binds. */
+  const layoutOfInspect = (info: Pick<DockerInspect, "HostConfig">): ScopeLayout => {
+    const dirName = scopeDirNameFromBinds(info.HostConfig?.Binds, scopeRoot);
+    return dirName ? { kind: "shared", dirName } : ISOLATED_LAYOUT;
+  };
   // myrmidon(1.6.2-BOT-DISK-C): the create body with the cache binds in force right now.
-  const createBody = async (spec: BotContainerSpec) =>
+  const createBody = async (spec: BotContainerSpec, layout?: ScopeLayout) =>
     buildCreateContainerRequestBody(
       spec,
       config,
       await readSharedPackageCachePath(spec.botKey),
       await readGitMirrorEnabled(spec.botKey),
+      scopeMountOf(layout ?? (await readScopeLayout(spec.botKey))),
     );
 
   const request = (opts: Parameters<typeof dockerRequest>[1]) => dockerRequest(socketPath, opts);
@@ -814,7 +876,7 @@ export function dockerBotContainerDriver(
 
   /** The image must be on the host (the driver never pulls) and declare a
    *  supported bot runtime contract (template.ts BOT_RUNTIME_CONTRACT_LABEL). */
-  async function requireBotImage(image: string): Promise<void> {
+  async function requireBotImage(image: string, layout: ScopeLayout = ISOLATED_LAYOUT): Promise<void> {
     const res = await request({ method: "GET", path: `/images/${nameSegment(image)}/json` });
     if (res.status === 404) {
       throw new Error(`image "${image}" is not present on the Docker host; build or pull it first (the driver never pulls)`);
@@ -827,6 +889,13 @@ export function dockerBotContainerDriver(
       labels = undefined;
     }
     assertBotRuntimeContract(image, labels);
+    // myrmidon(BOT-DISK-F): a member of a shared scope instance needs an image that
+    // makes its own /data links at start; an older image would fail to start.
+    if (layout.kind === "shared" && labels?.[BOT_RUNTIME_SCOPE_LABEL] !== "1") {
+      throw new BotContainerTemplateError(
+        `image "${image}" does not declare ${BOT_RUNTIME_SCOPE_LABEL}=1, so it cannot run as a member of a shared scope instance; rebuild the bot image`,
+      );
+    }
   }
 
   async function putArchive(containerName: string, mountPath: string, archive: Buffer): Promise<void> {
@@ -852,7 +921,7 @@ export function dockerBotContainerDriver(
   /** Runs one helper container to completion and removes it. */
   async function runHelper(
     botKey: string,
-    params: { image: string; role: HelperRole; script: string; archives?: readonly ProfileArchive[] },
+    params: { image: string; role: HelperRole; script: string; archives?: readonly ProfileArchive[]; layout?: ScopeLayout },
   ): Promise<void> {
     const name = helperContainerNameFor(botKey);
     await removeByName(name); // a helper left over from an interrupted earlier run
@@ -862,6 +931,7 @@ export function dockerBotContainerDriver(
       role: params.role,
       script: params.script,
       volumeRoot: config.volumeRoot,
+      scope: scopeMountOf(params.layout ?? ISOLATED_LAYOUT),
     });
     await createNamed(name, body);
     try {
@@ -885,15 +955,25 @@ export function dockerBotContainerDriver(
     }
   }
 
-  async function prepareVolumes(botKey: string, image: string): Promise<void> {
-    await runHelper(botKey, { image, role: "prepare-volumes", script: buildPrepareVolumesScript() });
+  async function prepareVolumes(botKey: string, image: string, layout: ScopeLayout = ISOLATED_LAYOUT): Promise<void> {
+    await runHelper(botKey, {
+      image,
+      role: "prepare-volumes",
+      script: buildPrepareVolumesScript({ scope: layout.kind === "shared" }),
+      layout,
+    });
   }
 
-  async function readAppliedMarker(botKey: string): Promise<AppliedMarker | null> {
+  async function readAppliedMarker(botKey: string, known?: Pick<DockerInspect, "HostConfig">): Promise<AppliedMarker | null> {
     const name = containerNameFor(botKey);
+    // The marker lives at its real path inside the container's one mount: /bot, or
+    // /bot-scope/<botKey> for a member (read off the live container's binds).
+    const info = known ?? (await inspectByName(name));
+    if (!info) return null;
+    const markerPath = `${botRealRootFromBinds(info.HostConfig?.Binds, botKey)}/hermes/${MARKER_RELATIVE_PATH}`;
     const res = await request({
       method: "GET",
-      path: `/containers/${nameSegment(name)}/archive?path=${encodeURIComponent(APPLIED_MARKER_CONTAINER_PATH)}`,
+      path: `/containers/${nameSegment(name)}/archive?path=${encodeURIComponent(markerPath)}`,
     });
     if (res.status === 404) return null;
     // Any other failure is an error of this pass, not "nothing applied": guessing
@@ -910,9 +990,12 @@ export function dockerBotContainerDriver(
   async function readCloneReport(botKey: string): Promise<string | null> {
     const name = containerNameFor(botKey);
     try {
+      const info = await inspectByName(name);
+      if (!info) return null;
+      const root = botRealRootFromBinds(info.HostConfig?.Binds, botKey);
       const res = await request({
         method: "GET",
-        path: `/containers/${nameSegment(name)}/archive?path=${encodeURIComponent(`${BOT_HERMES_REAL_PATH}/${CLONE_HYGIENE_REPORT_PATH}`)}`,
+        path: `/containers/${nameSegment(name)}/archive?path=${encodeURIComponent(`${root}/hermes/${CLONE_HYGIENE_REPORT_PATH}`)}`,
       });
       if (res.status >= 400) return null;
       const file = parseUstarArchive(res.body).find((entry) => entry.type === "file");
@@ -926,7 +1009,7 @@ export function dockerBotContainerDriver(
     const name = containerNameFor(botKey);
     const info = await inspectByName(name);
     if (!info) return { botKey, state: "missing" };
-    const marker = await readAppliedMarker(botKey);
+    const marker = await readAppliedMarker(botKey, info);
     return {
       botKey,
       state: botStateFromInspect(info),
@@ -962,23 +1045,48 @@ export function dockerBotContainerDriver(
   }
 
   async function create(spec: BotContainerSpec): Promise<void> {
-    const body = await createBody(spec);
-    await requireBotImage(spec.image);
+    const layout = await readScopeLayout(spec.botKey);
+    const body = await createBody(spec, layout);
+    await requireBotImage(spec.image, layout);
     await removeByName(replacementContainerNameFor(spec.botKey)); // stale, from an interrupted recreate
-    await prepareVolumes(spec.botKey, spec.image);
+    await prepareVolumes(spec.botKey, spec.image, layout);
     await createNamed(containerNameFor(spec.botKey), body);
   }
 
   async function recreate(spec: BotContainerSpec): Promise<void> {
-    const body = await createBody(spec);
+    const layout = await readScopeLayout(spec.botKey);
+    const body = await createBody(spec, layout);
     const name = containerNameFor(spec.botKey);
     const replacement = replacementContainerNameFor(spec.botKey);
     // Everything that can fail for a reason of its own (missing image, rejected
-    // template, daemon refusing the create) happens while the old container is
-    // still intact.
-    await requireBotImage(spec.image);
+    // template, daemon refusing the create, a disk migration that would conflict)
+    // happens while the old container is still intact.
+    await requireBotImage(spec.image, layout);
+    const existing = await inspectByName(name);
+    const from = existing ? layoutOfInspect(existing) : layout;
+    const moves = scopeLayoutKeyOf(from) !== scopeLayoutKeyOf(layout);
+    if (moves) {
+      if (!options.scopeMigration) {
+        throw new BotContainerTemplateError(
+          `${name} changes isolation scope (${scopeLayoutKeyOf(from)} -> ${scopeLayoutKeyOf(layout)}) but no disk migration is configured; nothing was changed`,
+        );
+      }
+      await options.scopeMigration.check({ botKey: spec.botKey, from, to: layout });
+    }
     await removeByName(replacement);
-    await prepareVolumes(spec.botKey, spec.image);
+    if (moves) {
+      // Pause: the old container stops first so nothing writes while its directories move.
+      // The agent is already drained (the reconciler's maintenance window). A failed move
+      // is undone by the migration itself; the old container is then started again.
+      await stopByName(name);
+      try {
+        await options.scopeMigration!.run({ botKey: spec.botKey, from, to: layout });
+      } catch (err) {
+        await startByName(name).catch(() => undefined);
+        throw err;
+      }
+    }
+    await prepareVolumes(spec.botKey, spec.image, layout);
     await createNamed(replacement, body);
     // Only now touch the old one: SIGTERM, SIGKILL after BOT_STOP_TIMEOUT_SEC.
     await stopByName(name);
@@ -997,10 +1105,11 @@ export function dockerBotContainerDriver(
     }
     const info = await inspectByName(name);
     if (!info) throw new Error(`${name} does not exist; create it before writing its profile`);
-    const previous = await readAppliedMarker(botKey);
+    const previous = await readAppliedMarker(botKey, info);
     const nonce = newNonce();
     const archives = buildProfileArchives(profile, { nonce, removals: computeProfileRemovals(previous?.files, profile) });
-    await runHelper(botKey, { image: info.Image, role: "apply-profile", script: buildApplyScript(nonce), archives });
+    // The helper works in the live container's layout (its binds), not the pending one.
+    await runHelper(botKey, { image: info.Image, role: "apply-profile", script: buildApplyScript(nonce), archives, layout: layoutOfInspect(info) });
   }
 
   async function waitForHealthy(botKey: string): Promise<void> {
