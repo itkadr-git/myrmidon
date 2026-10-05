@@ -25,6 +25,7 @@ import { HostDiskSettingsPanel } from "@/components/myrmidon/HostDiskSettingsPan
 import { BotDiskSettingsPanel } from "@/components/myrmidon/BotDiskSettingsPanel"; // myrmidon(1.6.1-BOT-DISK-B)
 import { BotScopePanel } from "@/components/myrmidon/BotScopePanel"; // myrmidon(BOT-DISK-F)
 import { BotDiskQuotaSettingsPanel } from "@/components/myrmidon/BotDiskQuotaSettingsPanel"; // myrmidon(1.6.1-BOT-DISK-C)
+import { ContainerScopePanel } from "@/components/myrmidon/ContainerScopePanel"; // myrmidon(CONTAINER-SCOPE)
 import { AgentMemorySettingsPanel } from "@/components/myrmidon/AgentMemorySettingsPanel"; // myrmidon(MEMORY-UI)
 import { ParallelHelpersSettingsPanel } from "@/components/myrmidon/ParallelHelpersSettingsPanel"; // myrmidon(PARALLEL-HELPERS)
 import { BotLspSettingsPanel } from "@/components/myrmidon/BotLspSettingsPanel"; // myrmidon(BOT-LSP-DEFAULTS)
@@ -148,6 +149,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       <BotDiskSettingsPanel /> {/* myrmidon(1.6.1-BOT-DISK-B) */}
       <BotScopePanel /> {/* myrmidon(BOT-DISK-F) */}
       <BotDiskQuotaSettingsPanel /> {/* myrmidon(1.6.1-BOT-DISK-C) */}
+      <ContainerScopePanel /> {/* myrmidon(CONTAINER-SCOPE) */}
       <ParallelHelpersSettingsPanel /> {/* myrmidon(PARALLEL-HELPERS) */}
       <AgentMemorySettingsPanel /> {/* myrmidon(MEMORY-UI) */}
       <BotLspSettingsPanel /> {/* myrmidon(BOT-LSP-DEFAULTS) */}

@@ -248,3 +248,9 @@ export {
   MODEL_PROVIDER_TYPES,
   type ModelProviderType,
 } from "./model_providers.js";
+
+// myrmidon(CONTAINER-SCOPE): the container axis of an isolation area.
+export {
+  myrmidonContainerSettings,
+  myrmidonContainerStates,
+} from "./myrmidon_container_scope.js"; // myrmidon(CONTAINER-SCOPE)
