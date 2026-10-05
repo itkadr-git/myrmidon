@@ -308,6 +308,29 @@ load_config() {
   : "${RUNS_WAIT_TIMEOUT_SEC:=1800}"
   : "${ALLOW_UNKNOWN_RUNS:=0}"
   : "${POLL_INTERVAL_SEC:=5}"
+  # PREDEPLOY-DB-CHECK (the 05.10 incident): before the maintenance window the
+  # new board image must come up on a COPY of the production database (the
+  # predeploy dump) with the new dockergate, on its own network, and answer the
+  # attention list and the main APIs. deploy.sh calls
+  # predeploy-board-check.sh; the settings below are its inputs. The check
+  # refuses (nothing changed) when it is enabled and its inputs are missing:
+  # silently deploying an image nothing proved is the incident.
+  : "${MYRMIDON_PREDEPLOY_CHECK:=1}"
+  : "${MYRMIDON_PREDEPLOY_POSTGRES_IMAGE:=}"
+  : "${MYRMIDON_PREDEPLOY_DB_NAME:=myrmidon}"
+  : "${MYRMIDON_PREDEPLOY_DB_USER:=myrmidon}"
+  : "${MYRMIDON_PREDEPLOY_DB_READY_COMMAND:=}"
+  : "${MYRMIDON_PREDEPLOY_RESTORE_COMMAND:=}"
+  : "${MYRMIDON_PREDEPLOY_BOARD_ENV_FILE:=}"
+  : "${MYRMIDON_PREDEPLOY_DOCKERGATE_ENV_FILE:=}"
+  : "${MYRMIDON_PREDEPLOY_BOARD_ARGS:=}"
+  : "${MYRMIDON_PREDEPLOY_DOCKERGATE_ARGS:=}"
+  : "${MYRMIDON_PREDEPLOY_BOARD_PORT:=13110}"
+  : "${MYRMIDON_PREDEPLOY_NETWORK:=}"
+  : "${MYRMIDON_PREDEPLOY_HEALTH_TIMEOUT_SEC:=$HEALTH_TIMEOUT_SEC}"
+  : "${MYRMIDON_PREDEPLOY_API_PATHS:=}"
+  : "${MYRMIDON_PREDEPLOY_TOKEN_FILE:=}"
+  : "${MYRMIDON_PREDEPLOY_KEEP:=0}"
   : "${SYSTEMD_UNIT_NAME:=paperclip.service}"
   : "${SYSTEMD_UNIT_DIR:=/etc/systemd/system}"
   : "${SYSTEMD_UNIT_INSTALL:=}"
@@ -443,6 +466,10 @@ Rollback to a tag that is on the host (docker image ls $repo), or drop --local t
   fi
 }
 
+# Enters the maintenance window. Returns 1 when the window was NOT entered (api:
+# the enter POST did not answer; hook: MAINTENANCE_ENTER_COMMAND failed) so the
+# caller can report it — a rollback continues without a window (a board that is
+# down has no admission gate to close), a deploy decides for itself.
 maintenance_enter() {
   local reason="$1"
   case "$MAINTENANCE_MODE" in
@@ -457,7 +484,8 @@ maintenance_enter() {
       local body
       body="$(jq -cn --arg reason "$reason" --argjson t "$drain_timeout" --arg o "$MAINTENANCE_ON_TIMEOUT" \
         '{action: "enter", scope: {type: "instance"}, reason: $reason, drainTimeoutSec: $t, onTimeout: $o}')"
-      run http_post_json "$MAINTENANCE_API_URL" "$body" "$MAINTENANCE_TOKEN_FILE" >/dev/null
+      run http_post_json "$MAINTENANCE_API_URL" "$body" "$MAINTENANCE_TOKEN_FILE" >/dev/null \
+        || { log "maintenance: the board API did not answer the enter POST ($MAINTENANCE_API_URL)"; return 1; }
       log "maintenance: entered (onTimeout=$MAINTENANCE_ON_TIMEOUT, drainTimeoutSec=$drain_timeout)"
       ;;
     hook)
@@ -1013,16 +1041,41 @@ component_host_cat_override() {
     cat "$COMPONENT_OVERRIDE_PATH" 2>/dev/null || true
   fi
 }
-# True when $COMPONENT_SERVICE is defined by the compose files of the target
-# host (docker compose config --services). The fail-closed pre-check: a
-# component with no trace on the target host is a misconfiguration (the 1.4.0
-# fleetd incident), not something to create from nothing.
+# Is $COMPONENT_SERVICE defined by the compose files of the target host
+# (docker compose config --services)? The fail-closed pre-check: a component
+# with no trace on the target host is a misconfiguration (the 1.4.0 fleetd
+# incident), not something to create from nothing.
+#
+# Return codes — the caller MUST tell the two faults apart:
+#   0  the project is readable and declares the service;
+#   1  the compose project itself cannot be read. COMPONENT_COMPOSE_ERROR holds
+#      the real output of `docker compose config`;
+#   2  the project is valid but does not declare the service.
+#
+# myrmidon(DEPLOY-PRECHECK, the 05.10 incident): `docker compose config
+# --services` prints its error on stderr and nothing on stdout, exactly like a
+# project that simply does not declare the service. A caller that looked only at
+# the list reported the wrong fault — "dockergate is not a service of the
+# compose project" — and hid the real one: the project was invalid (COMPOSE_FILES
+# without the file that carries the image, so `server` had neither an image nor a
+# build context). The error is therefore captured here and handed to the caller
+# in COMPONENT_COMPOSE_ERROR instead of being dropped into /dev/null.
 component_host_service_exists() {
+  local services rc=0 err
+  err="$(mktemp)"
   # the list is captured first: `grep -q` closing the pipe early would make the
   # producer die of SIGPIPE and, under pipefail, report a service as missing
-  local services
-  services="$(component_host_compose config --services 2>/dev/null)" || return 1
-  grep -qx "$COMPONENT_SERVICE" <<<"$services"
+  services="$(component_host_compose config --services 2>"$err")" || rc=$?
+  COMPONENT_COMPOSE_ERROR="$(cat "$err" 2>/dev/null || true)"
+  rm -f "$err"
+  if ((rc != 0)); then
+    # an empty stderr would leave the caller with nothing to report
+    [[ -n "$COMPONENT_COMPOSE_ERROR" ]] \
+      || COMPONENT_COMPOSE_ERROR="docker compose config exited $rc without printing an error"
+    return 1
+  fi
+  grep -qx "$COMPONENT_SERVICE" <<<"$services" || return 2
+  return 0
 }
 component_host_write_override() {
   local target_ref="$1"

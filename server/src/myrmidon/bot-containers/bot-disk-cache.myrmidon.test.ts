@@ -244,7 +244,7 @@ describe("myrmidon(1.6.2-BOT-DISK-C) git mirror and pnpm store settings", () => 
 
   it("patches the keys and clears each on null, keeping the lifecycle keys", () => {
     const base = { enabled: true, idleTtlMs: 3_600_000, sharedPackageCachePath: cache };
-    const patch = { gitMirrorRepos: ["owner/repo"], gitMirrorRefreshMs: 300_000, pnpmStoreDir: "/data/hermes/.store", pnpmImportMethod: "clone-or-copy" } as const;
+    const patch = { gitMirrorRepos: ["owner/repo"], gitMirrorRefreshMs: 300_000, pnpmStoreDir: "/data/hermes/.store", pnpmImportMethod: "clone-or-copy" } satisfies Parameters<typeof mergeBotDiskSettings>[1];
     const set = mergeBotDiskSettings(base, patch);
     expect(set).toEqual({ ...base, ...patch });
     expect(mergeBotDiskSettings(set, { enabled: false })).toEqual({ ...set, enabled: false });

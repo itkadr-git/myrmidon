@@ -292,6 +292,11 @@ function sandbox({
   const tokenFile = path.join(dir, "board.key");
   fs.writeFileSync(tokenFile, `pcp_${"0".repeat(24)}\n`);
 
+  // The board's own environment for the throwaway board container of
+  // PREDEPLOY-DB-CHECK (the pre-window check runs before every window).
+  const predeployEnv = path.join(dir, "predeploy-board.env");
+  fs.writeFileSync(predeployEnv, "JWT_SECRET=test-secret\n");
+
   const config = path.join(dir, "deploy.env");
   fs.writeFileSync(
     config,
@@ -323,6 +328,11 @@ function sandbox({
       // the rollouts skip.
       "MYR_DOCKERGATE_HOST=skip",
       "MYR_FLEETD_HOST=skip",
+      // PREDEPLOY-DB-CHECK (the 05.10 incident): the pre-window check is ON by
+      // default and refuses without its inputs.
+      "MYRMIDON_PREDEPLOY_POSTGRES_IMAGE=postgres:16-alpine",
+      `MYRMIDON_PREDEPLOY_BOARD_ENV_FILE=${predeployEnv}`,
+      "MYRMIDON_PREDEPLOY_BOARD_PORT=13110",
       "",
     ].join("\n"),
   );

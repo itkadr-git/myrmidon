@@ -89,6 +89,7 @@ Myrmidon не отправляет телеметрию вендору. В ко�
 | [guides/owner-telegram-cards.md](guides/owner-telegram-cards.md) | Доставка карточек вопросов и согласований владельцу задачи в Telegram-личку с агентом-автором (U2) |
 | [guides/cto-chat-planner.md](guides/cto-chat-planner.md) | Планировщик чата с доской (CTO-CHAT B): текст владельца — в предложенный эпик с задачами и критериями приёмки, карточка согласования, вход из Telegram DM, коды ошибок |
 | [guides/external-mcp-connectors.md](guides/external-mcp-connectors.md) | Внешние MCP-коннекторы: подключение любого HTTP MCP-сервера без кода форка — вердикт разведки, две точки входа, гранты агентам, регламент и проверка здоровья |
+| [guides/mcp-tool-names.md](guides/mcp-tool-names.md) | Имена MCP-инструментов доски: `myrmidon*` вместо `paperclip*`, алиасы старых имён на один релиз, план снятия в 1.8 |
 | [guides/agent-instructions-revisions.md](guides/agent-instructions-revisions.md) | История ревизий инструкций агента: снимки, откат, журнал |
 | [guides/auto-resume.md](guides/auto-resume.md) | Автовозобновление агента из `error`: бэкофф 1/5/15, карточка оператору после потолка попыток, настройки |
 | [guides/ui2-shell.md](guides/ui2-shell.md) | Оболочка Myrmidon 2.0 за флагом `enableMyrmidonUi2`: включение на инстанс и лично через `?ui=`, рамка (рейка/верхняя панель/телефонный каркас), экраны 2.0, токены и шрифты |
@@ -102,6 +103,7 @@ Myrmidon не отправляет телеметрию вендору. В ко�
 | [guides/foraging.md](guides/foraging.md) | Фуражировка (1.6 FORAGING): реестр источников по ролям, проход сравнения снимков, находки и кандидаты в навыки, бюджет прохода, экран «Foraging», API |
 | [guides/budget-enforcement.md](guides/budget-enforcement.md) | Режимы исполнения лимитов расхода (1.7 BUDGET-CONFIG B): `signal_only` по умолчанию (инцидент и сигнал без паузы), `soft` (пауза и карточка владельцу), `hard` (отказ новым прогонам); экран Instance → General, API и прецедентность настройка → env → дефолт |
 | [guides/vendor-share-analysis.md](guides/vendor-share-analysis.md) | Доля файлов, унаследованных от вендора: скрипт `vendor-share.mjs`, что считается унаследованным (путь в базовом коммите + сходство строк не ниже порога), исключения, фиксация числа в релизном ритуале |
+| [guides/baseline-snapshots-api.md](guides/baseline-snapshots-api.md) | Снимки метрик базовой линии (1.6.2 BASELINE): создание снимка произвольного окна, список и выборка по id, метка и закрепление как точка отсчёта, проверки доступа |
 
 | [media-tools.md](media-tools.md) | Общие медиа- и офисные инструменты для контейнерных ботов: сервис media-mcp, хранилище и квоты, инструменты (ffmpeg, офис, OCR, `dwg_convert`), развёртывание и границы изоляции |
 
