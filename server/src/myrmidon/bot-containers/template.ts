@@ -260,13 +260,27 @@ export function buildHelperBinds(
 ): string[] {
   validateBotKey(botKey);
   if (scope) {
+    // myrmidon(BOT-ROOT-TRAVERSE): a shared member has no separate bot root to
+    // normalize — its tree root IS the instance directory, already bound read-write
+    // at the helper's /scope and handed to uid 10001 by the prepare script itself.
     assertScopeMount(scope);
     const base = `${scope.scopeRoot}/${scope.dirName}/${botKey}`;
     const binds = BOT_VOLUME_MOUNTS.map((mount) => `${base}/${mount.hostSuffix}:${mount.containerPath}`);
     if (withInstanceDir) binds.push(`${scope.scopeRoot}/${scope.dirName}:${BOT_SCOPE_HELPER_MOUNT}`);
     return binds;
   }
-  return BOT_VOLUME_MOUNTS.map((mount) => `${volumeRoot}/${botKey}/${mount.hostSuffix}:${mount.containerPath}`);
+  const binds = BOT_VOLUME_MOUNTS.map((mount) => `${volumeRoot}/${botKey}/${mount.hostSuffix}:${mount.containerPath}`);
+  if (withInstanceDir) {
+    // myrmidon(BOT-ROOT-TRAVERSE): the isolated bot's whole directory (the one bind
+    // the bot container gets at BOT_ROOT_MOUNT) must be enterable by uid 10001, but
+    // the three narrow binds stop below it, so the helper never sees the root. The
+    // prepare helper gets the root itself, as the SAME bind string the bot container
+    // carries (`<volumeRoot>/<botKey>:/bot`, rw — chmod over a read-only bind is
+    // EROFS): the script runs one non-recursive chmod on the mount point, without
+    // ever listing or writing into the tree.
+    binds.push(`${volumeRoot}/${botKey}:${BOT_ROOT_MOUNT}`);
+  }
+  return binds;
 }
 
 /** The bot's real hermes directory inside its container, from the binds the container was created with. */

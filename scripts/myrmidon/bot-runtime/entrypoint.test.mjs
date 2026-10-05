@@ -115,6 +115,59 @@ describe("docker/bot-runtime/entrypoint.sh", () => {
   });
 });
 
+// myrmidon(BOT-ROOT-TRAVERSE): an unreachable /bot root must name itself. A host
+// directory the bot's uid cannot enter (rc.1: root-owned 0710) makes every path
+// under /bot resolve to EACCES; the entrypoint had to fail with a clear traversal
+// line, not with the misleading "API_SERVER_KEY is required" from further down.
+describe("docker/bot-runtime/entrypoint.sh bot root traversal (BOT-ROOT-TRAVERSE)", () => {
+  it("fails with a clear traversal error when the bot root is not executable, not with the API_SERVER_KEY one", () => {
+    const tree = fs.mkdtempSync(path.join(os.tmpdir(), "myrmidon-unreach-root-"));
+    const bot = path.join(tree, "bot");
+    fs.mkdirSync(path.join(bot, "hermes"), { recursive: true });
+    fs.writeFileSync(path.join(bot, "hermes", ".env"), `API_SERVER_KEY="${"a".repeat(32)}"\n`);
+    const data = path.join(tree, "data");
+    fs.mkdirSync(data);
+    fs.chmodSync(bot, 0o400); // readable, NOT traversable: the rc.1 shape for uid 10001
+    try {
+      const result = run({
+        HERMES_HOME: path.join(bot, "hermes"),
+        MYRMIDON_BOT_ROOT: bot,
+        MYRMIDON_DATA_DIR: data,
+      });
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /FATAL: no traversal into/);
+      assert.match(result.stderr, /recreate the bot/);
+      assert.doesNotMatch(result.stderr, /API_SERVER_KEY is required/);
+    } finally {
+      fs.chmodSync(bot, 0o755);
+      fs.rmSync(tree, { recursive: true, force: true });
+    }
+  });
+
+  it("does not fire the traversal error for a missing root (the old message path stays) nor for a shared member", () => {
+    const tree = fs.mkdtempSync(path.join(os.tmpdir(), "myrmidon-missing-root-"));
+    try {
+      // No /bot at all and no API key: the API_SERVER_KEY error, not the traversal one.
+      const result = run({ HERMES_HOME: path.join(tree, "home"), MYRMIDON_BOT_ROOT: path.join(tree, "bot"), MYRMIDON_DATA_DIR: tree });
+      assert.notEqual(result.status, 0);
+      assert.doesNotMatch(result.stderr, /no traversal into/);
+      // A shared member has no /bot: its own checks run instead.
+      const shared = run({
+        HERMES_HOME: path.join(tree, "home"),
+        MYRMIDON_BOT_SCOPE_SUBDIR: "bot-a",
+        MYRMIDON_BOT_ROOT: path.join(tree, "bot"),
+        MYRMIDON_DATA_DIR: tree,
+        API_SERVER_KEY: "k".repeat(32),
+      });
+      assert.notEqual(shared.status, 0);
+      assert.doesNotMatch(shared.stderr, /no traversal into/);
+      assert.match(shared.stderr, /does not exist/);
+    } finally {
+      fs.rmSync(tree, { recursive: true, force: true });
+    }
+  });
+});
+
 // myrmidon(BOT-DISK-D): the bot's tree is ONE mount; the entrypoint links /data/<x> into it
 // when the image has not, and proves at every start that a hard link from the pnpm store
 // works into each clone root. The success path execs hermes (absent here), so the tests

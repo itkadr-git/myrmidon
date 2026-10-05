@@ -95,6 +95,12 @@ describe("mounts of a shared scope instance", () => {
     expect(apply.HostConfig.Binds).toEqual(narrow);
     expect(buildPrepareVolumesScript({ scope: true })).toContain("data/hermes workspace scratch scope");
     expect(buildPrepareVolumesScript()).not.toContain("scope");
+    // myrmidon(BOT-ROOT-TRAVERSE): the shared member's tree root IS the instance
+    // directory — "scope" in the loop, chmod 0700 + chown 10001 already makes it
+    // enterable by the uid every member runs as — so no extra root chmod, and the
+    // layout of a member never touches a /bot path.
+    expect(buildPrepareVolumesScript({ scope: true })).not.toContain("chmod 0711");
+    expect(buildPrepareVolumesScript({ scope: true })).not.toContain("bot");
   });
 
   it("refuses an instance name or root that is not a plain one, and a card mount onto the instance mount point", () => {

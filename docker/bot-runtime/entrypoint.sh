@@ -42,6 +42,19 @@ data_dir="${MYRMIDON_DATA_DIR:-/data}"
 # subdirectory: hard links then work within the bot and across the bots of the instance
 # (one mount), and no other instance's directory is mounted at all.
 scope_dir="${MYRMIDON_BOT_SCOPE_DIR:-/bot-scope}"
+
+# myrmidon(BOT-ROOT-TRAVERSE): the isolated layout's whole tree lives BEHIND bot_root
+# (the one bind mounted at /bot). If the host directory's mode does not let this
+# process traverse it (a root-owned 0710/0700 left by an external operation — the rc.1
+# incident), every path under it resolves to EACCES: the links below silently do
+# nothing, ${HERMES_HOME}/.env stays unreadable and the real cause would surface as a
+# misleading "API_SERVER_KEY is required" ten steps later. Say it here, in one line,
+# naming the container-side path only (no host paths are known or leaked). The driver
+# normalizes this at every apply (the prepare helper chmods the root 0711), so the fix
+# is to recreate the bot.
+if [ -z "${MYRMIDON_BOT_SCOPE_SUBDIR:-}" ] && [ -e "${bot_root}" ] && [ ! -x "${bot_root}" ]; then
+  fail "no traversal into ${bot_root}: the bot root directory is not executable by $(id -u):$(id -g) (mode/owner of the host directory mounted at ${bot_root}); the driver fixes this at apply — recreate the bot"
+fi
 if [ -n "${MYRMIDON_BOT_SCOPE_SUBDIR:-}" ]; then
   case "${MYRMIDON_BOT_SCOPE_SUBDIR}" in
     */* | . | .. | -*) fail "MYRMIDON_BOT_SCOPE_SUBDIR is not a plain directory name" ;;
