@@ -28,7 +28,26 @@ export const teamLivenessApi = {
   get: () => api.get<TeamLivenessView>("/myrmidon/team-liveness"),
   update: (patch: TeamLivenessSettingsPatch) =>
     api.patch<TeamLivenessView>("/myrmidon/team-liveness", patch),
+  // myrmidon(TEAM-LIVENESS-METRICS): the 24-hour counters of the health card.
+  metrics: (companyId: string) =>
+    api.get<TeamLivenessMetrics>(`/myrmidon/team-liveness/metrics?companyId=${encodeURIComponent(companyId)}`),
 };
+
+/** The 24-hour counters of one company, as the server counts them. */
+export interface TeamLivenessMetrics {
+  companyId: string;
+  windowHours: number;
+  from: string;
+  to: string;
+  autoResumes: number;
+  autoResumeExhaustions: number;
+  wakes: number;
+  stalledRuns: number;
+}
+
+export function teamLivenessMetricsKey(companyId: string) {
+  return ["myrmidon", "team-liveness", "metrics", companyId] as const;
+}
 
 /** The layer a field's value comes from, in the operator's words. */
 export function describeTeamLivenessSource(source: TeamLivenessSource): string {
