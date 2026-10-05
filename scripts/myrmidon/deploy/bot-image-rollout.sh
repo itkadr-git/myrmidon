@@ -310,15 +310,28 @@ for name in $(tr ',' ' ' <<<"$MYR_BOT_COMPONENTS"); do
 done
 
 # --- 3./4. dockergate config edits --------------------------------------------
+# Every edit goes through a temp file next to the config and install_preserving:
+# the new content keeps the owner and mode of the config it replaces (dockergate
+# runs as another user than root; a file that became 0600 root made the SIGHUP
+# reload fail silently and the next restart crash-loop on "permission denied").
+
+# Replaces the config with the content of <tmp>, keeping its owner and mode.
+dockergate_config_install() {
+  local tmp="$1" cfg_file="$2"
+  install_preserving "$tmp" "$cfg_file" || { rm -f "$tmp"; die "cannot write $cfg_file with its original owner and mode; it was not changed"; }
+}
+
 # Add refs to images[] (idempotent: already-listed refs are kept once).
 dockergate_add_images() {
   local cfg_file="$1"; shift
   local -a add=("$@")
   [[ -f "$cfg_file" ]] || die "dockergate config not found: $cfg_file"
+  local tmp
+  tmp="$(mktemp "$cfg_file.XXXXXX")" || die "cannot write next to $cfg_file"
   jq '.images = ((.images // []) + $ARGS.positional) | .images |= (unique | sort)' \
-    "$cfg_file" --args "${add[@]}" >"$cfg_file.new" 2>/dev/null \
-    || { rm -f "$cfg_file.new"; die "cannot edit $cfg_file with jq (is it valid JSON?)"; }
-  mv "$cfg_file.new" "$cfg_file"
+    "$cfg_file" --args "${add[@]}" >"$tmp" 2>/dev/null \
+    || { rm -f "$tmp"; die "cannot edit $cfg_file with jq (is it valid JSON?)"; }
+  dockergate_config_install "$tmp" "$cfg_file"
 }
 
 # Remove refs from images[] (refs that are gone stay gone; pinned ones are
@@ -326,10 +339,12 @@ dockergate_add_images() {
 dockergate_remove_images() {
   local cfg_file="$1"; shift
   local -a gone=("$@")
+  local tmp
+  tmp="$(mktemp "$cfg_file.XXXXXX")" || die "cannot write next to $cfg_file"
   jq '.images = ((.images // []) | map(. as $r | select(($ARGS.positional | index($r)) == null)))' \
-    "$cfg_file" --args "${gone[@]}" >"$cfg_file.new" 2>/dev/null \
-    || { rm -f "$cfg_file.new"; die "cannot edit $cfg_file with jq (is it valid JSON?)"; }
-  mv "$cfg_file.new" "$cfg_file"
+    "$cfg_file" --args "${gone[@]}" >"$tmp" 2>/dev/null \
+    || { rm -f "$tmp"; die "cannot edit $cfg_file with jq (is it valid JSON?)"; }
+  dockergate_config_install "$tmp" "$cfg_file"
 }
 
 # Enroll the fleet in bots[]: "id|mem|cpus|pids" per line; a bot already
@@ -337,26 +352,24 @@ dockergate_remove_images() {
 dockergate_enroll_bots() {
   local cfg_file="$1" bots="$2"
   [[ -f "$cfg_file" ]] || die "dockergate config not found: $cfg_file"
+  local tmp
+  tmp="$(mktemp "$cfg_file.XXXXXX")" || die "cannot write next to $cfg_file"
   jq -Rn --rawfile cfg "$cfg_file" '
     $cfg | fromjson as $c
     | [inputs | split("|") | select(length == 4)
         | {botKey: .[0], maxMemoryMb: (.[1] | tonumber), maxCpus: (.[2] | tonumber), maxPids: (.[3] | tonumber)}] as $want
     | ($want | map(select(.botKey as $k | ($c.bots // [] | map(.botKey) | index($k)) == null))) as $add
     | $c + {bots: (($c.bots // []) + $add)}
-  ' <<<"$bots" >"$cfg_file.new" 2>/dev/null \
-    || { rm -f "$cfg_file.new"; die "cannot edit bots[] of $cfg_file with jq (is it valid JSON?)"; }
-  mv "$cfg_file.new" "$cfg_file"
+  ' <<<"$bots" >"$tmp" 2>/dev/null \
+    || { rm -f "$tmp"; die "cannot edit bots[] of $cfg_file with jq (is it valid JSON?)"; }
+  dockergate_config_install "$tmp" "$cfg_file"
 }
 
 # dockergate check-config against the real binary (the caller names the
 # command; e.g. "docker run --rm -v file:/c.json <image> check-config --config /c.json").
-dockergate_check_config() {
-  local cfg_file="$1"
-  if [[ "$DRY_RUN" == "1" ]]; then
-    bot_log "dry run: dockergate check-config of $cfg_file"
-    return 0
-  fi
-  local rc=0
+# The output of a refusal is logged by dockergate_check_config_file.
+dockergate_check_config_now() {
+  local cfg_file="$1" rc=0
   dockergate_check_config_file "$cfg_file" "$dockergate_image" || rc=$?
   case "$rc" in
     0) ;;
@@ -365,6 +378,21 @@ dockergate_check_config() {
   esac
 }
 
+dockergate_check_config() {
+  local cfg_file="$1"
+  if [[ "$DRY_RUN" == "1" ]]; then
+    bot_log "dry run: dockergate check-config of $cfg_file"
+    return 0
+  fi
+  dockergate_check_config_now "$cfg_file"
+}
+
+# SIGHUP, then proof that the process loaded the new file: dockergate logs the
+# hash of the config it loads at start and on every reload, and a reload that
+# fails (a file it cannot open, an invalid one) logs no new hash and leaves the
+# old configuration in memory - the signal "worked" and nothing changed. The
+# hash of the file on disk must show up in the log within the timeout, else
+# this dies loudly.
 dockergate_reload() {
   if ((no_reload)); then
     bot_log "dockergate is recreated next; no SIGHUP"
@@ -380,7 +408,34 @@ dockergate_reload() {
   fi
   # shellcheck disable=SC2086
   bash -c "$MYR_BOT_DOCKERGATE_SIGNAL" || die "failed to signal dockergate: $MYR_BOT_DOCKERGATE_SIGNAL"
-  bot_log "dockergate reloaded (SIGHUP)"
+  local want_hash
+  want_hash="$(dockergate_config_hash "$MYR_BOT_DOCKERGATE_CONFIG")"
+  if ! dockergate_verify_state "" "$want_hash" "${MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_RELOAD_TIMEOUT_SEC:-30}"; then
+    die "dockergate did not load the new config after SIGHUP: expected config hash $want_hash, the log says '${DG_SEEN_HASH:-<none>}'. The old image allowlist is still in memory. Look at the file's owner and mode ($(stat -c '%U:%G %a' "$MYR_BOT_DOCKERGATE_CONFIG" 2>/dev/null || echo unknown); dockergate runs as another user than root) and at the dockergate log for config_reload_failed"
+  fi
+  bot_log "dockergate reloaded (SIGHUP): it runs config hash $want_hash"
+}
+
+# The check a dry run makes of what the config phase would write: the edits are
+# made on a copy that keeps the owner and mode of the config (the real run's
+# check-config sees the same file), and the real binary checks the copy.
+dockergate_preflight_edited_config() {
+  local copy rc=0
+  copy="$(mktemp "$MYR_BOT_DOCKERGATE_CONFIG.preflight.XXXXXX" 2>/dev/null)" || copy=""
+  if [[ -z "$copy" ]]; then
+    bot_log "dry run: cannot write next to $MYR_BOT_DOCKERGATE_CONFIG; checking the config as it is"
+    dockergate_check_config_now "$MYR_BOT_DOCKERGATE_CONFIG"
+    return
+  fi
+  cp -p "$MYR_BOT_DOCKERGATE_CONFIG" "$copy" || { rm -f "$copy"; die "cannot copy $MYR_BOT_DOCKERGATE_CONFIG for the preflight check"; }
+  (
+    trap 'rm -f "$copy"' EXIT
+    dockergate_add_images "$copy" "${NEW_REFS[@]}"
+    if [[ -n "${bots:-}" ]]; then dockergate_enroll_bots "$copy" "$bots"; fi
+    dockergate_check_config_now "$copy"
+  ) || rc=$?
+  rm -f "$copy"
+  return "$rc"
 }
 
 # --- the plan (dry run) --------------------------------------------------------
@@ -402,6 +457,13 @@ if [[ "$DRY_RUN" == "1" ]]; then
     done <<<"$categories"
   fi
   bots="$(list_bots || true)"
+  if [[ "$phase" != "cards" && -f "$MYR_BOT_DOCKERGATE_CONFIG" ]]; then
+    mapfile -t NEW_REFS < <(for name in $(tr ',' ' ' <<<"$MYR_BOT_COMPONENTS"); do [[ -n "${BOT_IMAGE_BY_NAME[$name]:-}" ]] && printf '%s\n' "${BOT_IMAGE_BY_NAME[$name]}"; done)
+    bot_log "  dockergate config: the edited config is checked now (read-only, on a copy with the owner and mode of the real file)"
+    dockergate_preflight_edited_config
+  elif [[ "$phase" != "cards" ]]; then
+    die "dockergate config not found: $MYR_BOT_DOCKERGATE_CONFIG"
+  fi
   if [[ -n "$bots" ]]; then
     bot_log "  bots to roll:"
     while IFS= read -r line; do
@@ -446,7 +508,7 @@ if [[ -n "$bots" ]]; then
         scp -q "${fleet_ssh_opts[@]}" "$MYR_BOT_DOCKERGATE_CONFIG" "$host:/tmp/.myrmidon-bot-enroll.$$" 2>/dev/null || true
         # shellcheck disable=SC2029  # the path is meant to expand on the client side
         ssh "${fleet_ssh_opts[@]}" "$host" \
-          "jq -c '. + {bots: ((.bots // []) + (input | .bots // []) | unique_by(.botKey))}' '$fleet_cfg' /tmp/.myrmidon-bot-enroll.$$ >'$fleet_cfg.new' && mv '$fleet_cfg.new' '$fleet_cfg' && rm -f /tmp/.myrmidon-bot-enroll.$$" \
+          "jq -c '. + {bots: ((.bots // []) + (input | .bots // []) | unique_by(.botKey))}' '$fleet_cfg' /tmp/.myrmidon-bot-enroll.$$ >'$fleet_cfg.new' && chmod --reference='$fleet_cfg' '$fleet_cfg.new' && chown --reference='$fleet_cfg' '$fleet_cfg.new' && mv '$fleet_cfg.new' '$fleet_cfg'; rc=\$?; rm -f '$fleet_cfg.new' /tmp/.myrmidon-bot-enroll.$$; exit \$rc" \
           || bot_log "WARNING: could not enroll bots[] in the fleetd config of $host ($fleet_cfg); enroll it by hand or fix MYRMIDON_BOT_IMAGE_ROLLOUT_FLEET_CONFIG"
       else
         bot_log "NOTE: fleet host $host has no $fleet_cfg (fleetd reads its config from the host); nothing enrolled there"

@@ -67,6 +67,12 @@ case "$1" in
     else
       cat "$file"
     fi ;;
+  ps) echo "cid-x"; exit 0 ;;
+  inspect)
+    # a container exists for every service and runs; its image is not recorded
+    # here (the previous image then falls back to the override file)
+    case "$*" in *"{{.State.Status}} {{.State.Restarting}}"*) echo "running false" ;; esac
+    exit 0 ;;
   compose)
     case "$*" in
       *--services)
@@ -82,7 +88,14 @@ case "$1" in
           exit 1
         fi
         printf 'server\ndockergate\nfleetd\n' ;;
-      *logs*) v="\${DG_LOGGED_VERSION:-1.4.0+0123456789ab}"; echo '{"event":"self-check ok","version":"'"$v"'"}' ;;
+      *logs*)
+        # DG_LOGGED_VERSION: the NEW image (digest c...) logs a wrong version; the restored old one is fine
+        v="1.4.0+0123456789ab"
+        if [ -n "\${DG_LOGGED_VERSION:-}" ] && grep -q "sha256:cccc" "$SANDBOX/compose/docker-compose.myrmidon-dockergate.yml" 2>/dev/null; then v="$DG_LOGGED_VERSION"; fi
+        # the hash of the dockergate config the tests name (dg-config-file), as the real log carries it
+        h=""
+        if [ -f "$SANDBOX/dg-config-file" ]; then h="$(sha256sum "$(cat "$SANDBOX/dg-config-file")" | cut -c1-12)"; fi
+        echo '{"event":"self-check ok","version":"'"$v"'","configHash":"'"$h"'"}' ;;
       *) exit "\${COMPOSE_FAILS:-0}" ;;
     esac ;;
 esac
@@ -243,7 +256,7 @@ function sandbox({
   fs.mkdirSync(unitDir, { recursive: true });
   const unit = fs.readFileSync(path.join(HERE, "paperclip.service.template"), "utf8")
     .replaceAll("__COMPOSE_DIR__", composeDir)
-    .replaceAll("__COMPOSE_FILE_ARGS__", `-f ${composeDir}/docker-compose.yml -f ${composeDir}/docker-compose.myrmidon-image.yml`)
+    .replaceAll("__COMPOSE_FILE_ARGS__", `-f ${composeDir}/docker-compose.yml -f ${composeDir}/docker-compose.myrmidon-image.yml -f ${composeDir}/docker-compose.myrmidon-dockergate.yml -f ${composeDir}/docker-compose.myrmidon-fleetd.yml`)
     .replaceAll("__COMPOSE_SERVICE__", "server");
   fs.writeFileSync(path.join(unitDir, "paperclip.service"), unit);
   // The board's own environment for the throwaway board container of
@@ -347,9 +360,11 @@ describe("deploy.sh: release components roll out together (RELEASE-GATE)", () =>
     // Each component service was recreated.
     assert.match(log, /up -d --no-deps dockergate/);
     assert.match(log, /up -d --no-deps fleetd/);
-    // Each component health URL was probed.
-    assert.match(log, /dockergate\/health/);
+    // fleetd's health URL was probed; dockergate has no probe a host can pass and
+    // is proven by the version in its self-check log line instead.
     assert.match(log, /fleetd\/health/);
+    assert.doesNotMatch(log, /dockergate\/health/);
+    assert.match(out, /dockergate runs: version 1\.4\.0\+0123456789ab/);
     // The smoke saw a running bot container.
     assert.match(out, /re-applied after the deploy/);
     assert.match(out, /release gate passed/);
@@ -509,12 +524,20 @@ describe("rollout-component.sh", () => {
     assert.doesNotMatch(calls(sb), /docker pull/);
   });
 
-  it("refuses when the component has no health URL configured", () => {
+  it("refuses when fleetd has no health URL configured, before anything is pulled", () => {
+    const sb = sandbox();
+    fs.appendFileSync(sb.config, "MYR_FLEETD_HEALTH_URL=\n");
+    const { code, out } = run(sb, "rollout-component.sh", ["--component", "fleetd", "--digest", FD]);
+    assert.notEqual(code, 0);
+    assert.match(out, /MYR_FLEETD_HEALTH_URL/);
+    assert.doesNotMatch(calls(sb), /docker pull/);
+  });
+
+  it("dockergate needs no health URL: its self-check log line is the proof", () => {
     const sb = sandbox();
     fs.appendFileSync(sb.config, "MYR_DOCKERGATE_HEALTH_URL=\n");
     const { code, out } = run(sb, "rollout-component.sh", ["--component", "dockergate", "--digest", DG]);
-    assert.notEqual(code, 0);
-    assert.match(out, /MYR_DOCKERGATE_HEALTH_URL/);
+    assert.equal(code, 0, out);
   });
 
   it("remembers the previous component image for the rollback", () => {
@@ -676,7 +699,7 @@ describe("ONE-DEPLOY: all components in one window, all-or-nothing", () => {
     sb.env = { DG_LOGGED_VERSION: "0.0.1+deadbeefdead" };
     const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
     assert.notEqual(code, 0, out);
-    assert.match(out, /dockergate self-check version is '0\.0\.1\+deadbeefdead'/);
+    assert.match(out, /reports version '0\.0\.1\+deadbeefdead', expected '1\.4\.0\+0123456789ab'/);
     assert.match(out, /ROLLING BACK TOGETHER/);
     assert.match(out, /ROLLED BACK/);
     // the board is back on its previous image, dockergate on its previous one
@@ -787,6 +810,7 @@ describe("rollout-component.sh: dockergate config before the recreate (ONE-DEPLO
   const withConfig = (sb) => {
     const cfg = path.join(sb.dir, "dockergate.config.json");
     fs.writeFileSync(cfg, JSON.stringify({ images: [] }));
+    fs.writeFileSync(path.join(sb.dir, "dg-config-file"), cfg);
     fs.appendFileSync(sb.config, `MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_CONFIG=${cfg}\n`);
     return cfg;
   };
@@ -801,7 +825,7 @@ describe("rollout-component.sh: dockergate config before the recreate (ONE-DEPLO
     const recreate = log.indexOf("up -d --no-deps dockergate");
     assert.ok(check >= 0 && recreate > check, "check-config ran before the recreate");
     assert.match(log, new RegExp(`myrmidon-dockergate@${DG} check-config`));
-    assert.match(out, /dockergate self-check version 1\.4\.0\+0123456789ab/);
+    assert.match(out, /dockergate runs: version 1\.4\.0\+0123456789ab, config hash [0-9a-f]{12}/);
   });
 
   it("a config the new dockergate refuses stops the rollout before anything is recreated", () => {

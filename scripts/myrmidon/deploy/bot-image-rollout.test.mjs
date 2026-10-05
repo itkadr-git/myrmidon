@@ -160,6 +160,15 @@ echo "systemctl $*" >> "$SANDBOX/calls.log"
 exit 0
 `;
 
+// dockergate as the signal command sees it: after a SIGHUP it logs the hash of
+// the config it loaded (the rollout verifies that line); its log is what
+// DOCKERGATE_LOGS_COMMAND prints.
+const FAKE_DG_SIM = `#!/usr/bin/env bash
+echo hup >> "$SANDBOX/sighup.log"
+h="$(sha256sum "$SANDBOX/dockergate.config.json" | cut -c1-12)"
+echo '{"event":"config_reloaded","version":"1.4.0+0123456789ab","configHash":"'"$h"'"}' >> "$SANDBOX/dg.log"
+`;
+
 function labels() {
   return {
     "org.opencontainers.image.revision": COMMIT,
@@ -204,6 +213,8 @@ function sandbox({
   fs.writeFileSync(path.join(bin, "ssh"), FAKE_SSH, { mode: 0o755 });
   fs.writeFileSync(path.join(bin, "scp"), FAKE_SCP, { mode: 0o755 });
   fs.writeFileSync(path.join(bin, "systemctl"), FAKE_SYSTEMCTL, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, "dg-sim"), FAKE_DG_SIM, { mode: 0o755 });
+  fs.writeFileSync(path.join(dir, "dg.log"), "");
   fs.writeFileSync(path.join(dir, "calls.log"), "");
   if (sshFails) fs.writeFileSync(path.join(dir, "ssh-fails"), "");
   if (applyFails) fs.writeFileSync(path.join(dir, "apply-fails"), "");
@@ -319,7 +330,9 @@ function sandbox({
       `BOARD_COMPANY_ID=${COMPANY}`,
       `MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_CONFIG=${dgConfig}`,
       `MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_CHECK_CONFIG_COMMAND='jq -e . "$MYR_BOT_CFG_FILE" >/dev/null'`,
-      `MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_SIGNAL_COMMAND='echo hup >> ${path.join(dir, "sighup.log")}'`,
+      "MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_SIGNAL_COMMAND=dg-sim",
+      "MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_RELOAD_TIMEOUT_SEC=2",
+      `DOCKERGATE_LOGS_COMMAND='cat "$SANDBOX/dg.log"'`,
       `MYRMIDON_BOT_IMAGE_ROLLOUT_BOT_TIMEOUT_SEC=3`,
       "MYR_DOCKERGATE_HEALTH_URL=http://127.0.0.1:3100/dockergate/health",
       "MYR_FLEETD_HEALTH_URL=http://127.0.0.1:3100/fleetd/health",

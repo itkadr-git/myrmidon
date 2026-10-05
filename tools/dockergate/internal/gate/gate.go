@@ -202,7 +202,7 @@ func (g *Gate) SelfCheck(ctx context.Context) error {
 	}
 	_ = g.auth.Resolve(ctx)
 	pinned := g.auth.Pinned() != nil
-	g.log.Write(Line{Event: "self-check ok", Version: g.opt.Version, API: v.APIVersion, Images: found, Pinned: &pinned})
+	g.log.Write(Line{Event: "self-check ok", Version: g.opt.Version, API: v.APIVersion, Images: found, Pinned: &pinned, ConfigHash: st.hash})
 	return nil
 }
 
@@ -263,7 +263,7 @@ func (g *Gate) Reload() {
 	g.imgMu.Lock()
 	g.imgs = nil
 	g.imgMu.Unlock()
-	g.log.Write(Line{Event: "config_reloaded"})
+	g.log.Write(Line{Event: "config_reloaded", Version: g.opt.Version, Images: len(cfg.Images), ConfigHash: hash})
 }
 
 // Listen creates the socket of dockergate: an old socket file is removed, the
