@@ -151,6 +151,7 @@ import {
 // myrmidon(EXT-CASE-OCR): the OCR path (PDF -> text in the bot's workspace)
 import { myrmidonOcrRoutes } from "./myrmidon/ocr/index.js";
 import { myrmidonSttRoutes } from "./myrmidon/stt/index.js"; // myrmidon(1.6.1 VOICE-STT A1)
+import { createTelegramVoiceSttWiring } from "./myrmidon/telegram-voice-stt-intake/wiring.js"; // myrmidon(1.6.5 VOICE-STT A)
 import { myrmidonEvalsRoutes } from "./myrmidon/evals/index.js"; // myrmidon(1.6-EVALS)
 // myrmidon(TRACING-HEALTH): LLM tracing health check (GET /api/myrmidon/tracing/health)
 import { myrmidonTracingHealthRoutes } from "./myrmidon/tracing-health/index.js"; // myrmidon(TRACING-HEALTH)
@@ -653,6 +654,14 @@ export async function createApp(
   const connectionIntentHeartbeat = heartbeatService(db, {
     pluginWorkerManager: workerManager,
   });
+  // myrmidon(1.6.5 VOICE-STT A): the production wiring of the voice-STT intake.
+  // One binding closes the seam part B left open: inbound Telegram
+  // voice/audio turns are recognized through the shared STT core, the
+  // transcript lands in the task comment next to the kept attachment, and a
+  // recognition failure is a skip, never a delivery failure. The settings (and
+  // the key, by name) are resolved per call, so a board change or a key
+  // rotation takes effect on the next message without a restart.
+  const voiceStt = createTelegramVoiceSttWiring({ db });
   const chatChannels = chatChannelService(db, {
     deferWebhookProcessing: true,
     heartbeat: connectionIntentHeartbeat,
@@ -661,6 +670,8 @@ export async function createApp(
     resolveNativeQuestion: (interaction) =>
       deliverNativeQuestionResponse(db, interaction),
     storage: opts.storageService,
+    telegramVoiceTranscriber: voiceStt.transcriber,
+    telegramVoiceSttCompanyEnabled: voiceStt.companyEnabled,
   });
   // Provider-authenticated ingress is intentionally outside the board
   // mutation guard. The Chat SDK adapter verifies the provider signature
