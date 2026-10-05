@@ -463,6 +463,21 @@ func wantSingle(v *jsonx.Value, path, key, value string) *deny.Error {
 
 // --- bot form ---------------------------------------------------------------
 
+// parseBot checks a create body of the bot form. A dev-variant bot body (BUILD-OFFLOAD C)
+// may carry the driver's own DEVBUILD_* Env entries (internal hostnames and paths, not
+// secrets — the build-server key travels only as the read-only /opt/devbuild-ssh mount);
+// they must be exactly DEVBUILD_HOST, DEVBUILD_USER, DEVBUILD_BASE in that order, and the
+// rebuilt body reproduces the list byte for byte.
+// hasKey reports whether the body carries a top-level member of the given name.
+func hasKey(root *jsonx.Value, key string) bool {
+	for _, m := range root.Members {
+		if m.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
 func parseBot(root *jsonx.Value, r *route.Route, env *Env) (*Create, *deny.Error) {
 	// A member of a shared scope instance carries one more top-level key, Env,
 	// and a second tmpfs; nothing else about the body changes.
@@ -475,7 +490,7 @@ func parseBot(root *jsonx.Value, r *route.Route, env *Env) (*Create, *deny.Error
 		}
 	}
 	keys := []string{"Image", "Labels", "HostConfig"}
-	if shared {
+	if shared || hasKey(root, "Env") {
 		keys = []string{"Image", "Labels", "Env", "HostConfig"}
 	}
 	top, err := object(root, "", keys...)
@@ -499,6 +514,16 @@ func parseBot(root *jsonx.Value, r *route.Route, env *Env) (*Create, *deny.Error
 	}
 	if err := wantStr(labels["myrmidon.image"], "Labels.myrmidon.image", image, deny.JSONValue); err != nil {
 		return nil, err
+	}
+
+	// Env is present only for a shared member (ScopeSubdirEnv, detected above) or a
+	// dev-variant bot (the DEVBUILD_* triple); parseBotEnv accepts exactly those forms.
+	envList, err := parseBotEnv(top["Env"], "Env")
+	if err != nil {
+		return nil, err
+	}
+	if !shared {
+		shared = len(envList) == 1 && envList[0] == ScopeSubdirEnv+"="+r.BotKey
 	}
 
 	hc, err := object(top["HostConfig"], "HostConfig",
@@ -553,8 +578,15 @@ func parseBot(root *jsonx.Value, r *route.Route, env *Env) (*Create, *deny.Error
 	w := &writer{}
 	w.raw(`{"Image":`).str(image)
 	w.raw(`,"Labels":{"myrmidon.bot":`).str(r.BotKey).raw(`,"myrmidon.image":`).str(image).raw(`}`)
-	if shared {
-		w.raw(`,"Env":[`).str(ScopeSubdirEnv + "=" + r.BotKey).raw(`]`)
+	if len(envList) > 0 {
+		w.raw(`,"Env":[`)
+		for i, e := range envList {
+			if i > 0 {
+				w.raw(",")
+			}
+			w.str(e)
+		}
+		w.raw(`]`)
 	}
 	w.raw(`,"HostConfig":{"Memory":`).int(memory).raw(`,"NanoCpus":`).int(nano).raw(`,"PidsLimit":`).int(pids)
 	w.raw(`,"CapDrop":["ALL"],"SecurityOpt":["no-new-privileges"],"ReadonlyRootfs":true`)
@@ -610,6 +642,42 @@ const (
 	helperMemory = 134217728
 	helperPids   = 64
 )
+
+// devbuildContainerEnv). DEVBUILD_HOST/USER/BASE are internal hostnames and
+// paths of the build server, not secrets.
+var botEnvNames = []string{"DEVBUILD_HOST", "DEVBUILD_USER", "DEVBUILD_BASE"}
+
+// parseBotEnv checks the Env list of a bot body: empty (no devbuild wiring, not a shared
+// member), exactly the driver's three DEVBUILD_* entries in order (BUILD-OFFLOAD C — the
+// driver's builder writes all of them or none, so a prefix or a suffix is a body the driver
+// never produced), or the single shared-scope entry (MYRMIDON_BOT_SCOPE_SUBDIR=<botKey>).
+// Each entry is a single NAME=VALUE line without a NUL or a newline; the caller reproduces
+// the list byte for byte. A nil *jsonx.Value (no Env key) is the empty list.
+func parseBotEnv(v *jsonx.Value, path string) ([]string, *deny.Error) {
+	if v == nil {
+		return nil, nil
+	}
+	got, err := strList(v, path)
+	if err != nil {
+		return nil, err
+	}
+	if len(got) == 1 && strings.HasPrefix(got[0], ScopeSubdirEnv+"=") {
+		return got, nil
+	}
+	if len(got) != 0 && len(got) != len(botEnvNames) {
+		return nil, deny.FieldOnly(deny.JSONValue, path)
+	}
+	for i, e := range got {
+		name := botEnvNames[i]
+		if !strings.HasPrefix(e, name+"=") || len(e) == len(name)+1 {
+			return nil, deny.FieldOnly(deny.JSONValue, path)
+		}
+		if strings.ContainsAny(e, "\x00\n\r") {
+			return nil, deny.FieldOnly(deny.JSONValue, path)
+		}
+	}
+	return got, nil
+}
 
 func parseHelper(root *jsonx.Value, r *route.Route, env *Env) (*Create, *deny.Error) {
 	top, err := object(root, "", "Image", "User", "Entrypoint", "Cmd", "Labels", "NetworkDisabled", "HostConfig")

@@ -16,6 +16,7 @@ export interface BotDiskView {
     /** `owner/repo` names with a host-side git mirror; absent: none. */
     gitMirrorRepos?: string[];
     gitMirrorRefreshMs?: number;
+    pnpmStore?: "workspace" | "shared";
     /** pnpm store inside the bot's single mount; absent: /workspace/.pnpm-store. */
     pnpmStoreDir?: string;
     /** Absent: hardlink. */

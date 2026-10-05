@@ -57,7 +57,7 @@ function write(rel: string, data: string | Buffer): void {
   fs.writeFileSync(file, data);
 }
 
-const config = { socketPath: "", volumeRoot: VOLUME_ROOT, network: NETWORK, allowlist: [IMAGE], mountSources: [] };
+const config = { socketPath: "", volumeRoot: VOLUME_ROOT, network: NETWORK, allowlist: [IMAGE], mountSources: [], devbuild: { host: null, user: "", base: "" } };
 
 const manifest: {
   botKey: string;

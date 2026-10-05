@@ -454,13 +454,15 @@ func TestBotPackageCacheMounts(t *testing.T) {
 			wantDeny(t, c, err, deny.MountSourceNotAllowed)
 		}
 	})
+
 }
 
 // RT1_5: the body is read strictly, and unknown fields are refused, whatever
-// they are.
+// they are. Env is a known key of the bot form (BUILD-OFFLOAD C); its own
+// red-team cases are in TestBotEnvMutations.
 func TestRedTeam_RT1_5_UnknownKeys(t *testing.T) {
 	top := []string{
-		`"Env":["A=B"]`, `"Cmd":["sh"]`, `"Entrypoint":["sh"]`, `"User":"0"`, `"Volumes":{"/x":{}}`,
+		`"Cmd":["sh"]`, `"Entrypoint":["sh"]`, `"User":"0"`, `"Volumes":{"/x":{}}`,
 		`"ExposedPorts":{"80/tcp":{}}`, `"WorkingDir":"/"`, `"Hostname":"h"`, `"Domainname":"d"`,
 		`"MacAddress":"aa:bb:cc:dd:ee:ff"`, `"StopSignal":"SIGKILL"`, `"Healthcheck":{}`,
 		`"NetworkingConfig":{}`, `"AttachStdin":true`, `"Tty":true`, `"OpenStdin":true`, `"OnBuild":[]`,

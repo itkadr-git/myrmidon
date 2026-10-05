@@ -9,10 +9,14 @@ import {
   buildBinds,
   buildLabels,
   containerNameFor,
+  devbuildContainerEnv,
+  devbuildKeyMount,
   helperContainerNameFor,
+  isDevBuildImage,
   isImageAllowed,
   isUnderManagedDir,
   mountRootSegment,
+  parseDevbuildSettings,
   parseImageAllowlist,
   parseMountSourceAllowlist,
   replacementContainerNameFor,
@@ -170,6 +174,89 @@ describe("parseMountSourceAllowlist", () => {
     ]);
     expect(parseMountSourceAllowlist(undefined)).toEqual([]);
     expect(parseMountSourceAllowlist("")).toEqual([]);
+  });
+});
+
+// BUILD-OFFLOAD C: the dev-variant build server wiring.
+describe("parseDevbuildSettings", () => {
+  it("is off without MYRMIDON_DEVBUILD_HOST, and blanks count as unset", () => {
+    expect(parseDevbuildSettings({})).toEqual({ host: null, user: "devbuild", base: "/srv/devbuild" });
+    expect(parseDevbuildSettings({ MYRMIDON_DEVBUILD_HOST: "   " })).toEqual({ host: null, user: "devbuild", base: "/srv/devbuild" });
+  });
+
+  it("reads the three settings and trims them", () => {
+    expect(
+      parseDevbuildSettings({
+        MYRMIDON_DEVBUILD_HOST: " build-host.internal ",
+        MYRMIDON_DEVBUILD_USER: "builder",
+        MYRMIDON_DEVBUILD_BASE: "/builds",
+      }),
+    ).toEqual({ host: "build-host.internal", user: "builder", base: "/builds" });
+  });
+});
+
+describe("isDevBuildImage", () => {
+  it("recognizes the dev-variant image by reference, with any registry, tag or digest", () => {
+    expect(isDevBuildImage("ghcr.io/itkadr-git/myrmidon-hermes-dev:main")).toBe(true);
+    expect(isDevBuildImage("ghcr.io/itkadr-git/myrmidon-hermes-dev")).toBe(true);
+    expect(isDevBuildImage(`ghcr.io/itkadr-git/myrmidon-hermes-dev@sha256:${"0".repeat(64)}`)).toBe(true);
+    expect(isDevBuildImage("myrmidon-hermes-dev:latest")).toBe(true);
+  });
+
+  it("does not match the other variants or a merely similar name", () => {
+    expect(isDevBuildImage("ghcr.io/itkadr-git/myrmidon-hermes:1.1.0")).toBe(false);
+    expect(isDevBuildImage("ghcr.io/itkadr-git/myrmidon-hermes-node:latest")).toBe(false);
+    expect(isDevBuildImage("ghcr.io/itkadr-git/myrmidon-hermes-devx:latest")).toBe(false);
+    expect(isDevBuildImage("ghcr.io/itkadr-git/xmyrmidon-hermes-dev:latest")).toBe(false);
+  });
+});
+
+describe("devbuildContainerEnv / devbuildKeyMount", () => {
+  const settings = (over: Partial<ReturnType<typeof parseDevbuildSettings>> = {}) => ({
+    host: "build-host.internal",
+    user: "builder",
+    base: "/builds",
+    ...over,
+  });
+
+  it("returns the DEVBUILD_* entries when the wiring is on, null when it is off", () => {
+    expect(devbuildContainerEnv(settings())).toEqual({
+      DEVBUILD_HOST: "build-host.internal",
+      DEVBUILD_USER: "builder",
+      DEVBUILD_BASE: "/builds",
+    });
+    expect(devbuildContainerEnv(settings({ host: null }))).toBeNull();
+  });
+
+  it("mounts the first allowlisted source ending in devbuild-ssh, read-only, at the reserved path", () => {
+    expect(devbuildKeyMount(settings(), ["/srv/shared/sources", "/srv/keys/devbuild-ssh"])).toEqual({
+      source: "/srv/keys/devbuild-ssh",
+      containerPath: "/opt/devbuild-ssh",
+      readOnly: true,
+    });
+  });
+
+  it("returns null without HOST, and null when no source matches", () => {
+    expect(devbuildKeyMount(settings({ host: null }), ["/srv/keys/devbuild-ssh"])).toBeNull();
+    expect(devbuildKeyMount(settings(), ["/srv/shared/sources"])).toBeNull();
+  });
+
+  it("ignores a matching entry that is not a plain absolute directory", () => {
+    expect(devbuildKeyMount(settings(), ["devbuild-ssh", "/srv/keys/devbuild-ssh/"])).toBeNull();
+  });
+
+  it("produces a mount that rides the driver's own slot and renders as a read-only bind", () => {
+    const mount = devbuildKeyMount(settings(), ["/srv/keys/devbuild-ssh"])!;
+    // A card cannot pass this mount through its own list: /opt/devbuild-ssh is
+    // reserved. The driver's own slot accepts it and checks the source the same way.
+    expect(() => validateExtraMounts([mount], ["/srv/keys/devbuild-ssh"])).toThrow(BotContainerTemplateError);
+    expect(() => buildBinds("/srv/myrmidon/bots", "agent-a", { driverMount: mount })).toThrow(BotContainerTemplateError); // source not allowlisted
+    expect(
+      buildBinds("/srv/myrmidon/bots", "agent-a", { driverMount: mount, allowedSources: ["/srv/keys/devbuild-ssh"] }),
+    ).toEqual([
+      "/srv/myrmidon/bots/agent-a:/bot",
+      "/srv/keys/devbuild-ssh:/opt/devbuild-ssh:ro",
+    ]);
   });
 });
 

@@ -29,6 +29,7 @@ const DRIVER_CONFIG: DockerDriverConfig = {
   network: "test-bots-net",
   allowlist: [],
   mountSources: [],
+  devbuild: { host: null, user: "", base: "" },
 };
 
 function driver(): BotContainerDriver {
