@@ -10,12 +10,6 @@ version file to edit. Base Paperclip version is in the image label
 
 ## Unreleased
 
-### Telegram notify: one rarelyMaxPerDay range (TG-NOTIFY)
-
-- The `rarelyMaxPerDay` range is now single: 1-50, the merged proactivity contract. The
-  settings schema, the stored-document parser and the panel input all enforce it; an
-  out-of-range stored value falls back to the default of 3.
-
 ### One deploy for every component (ONE-DEPLOY)
 
 - A release deploy now updates every component in one maintenance window:
