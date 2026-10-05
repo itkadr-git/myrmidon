@@ -33,12 +33,13 @@ import {
 } from "./template.js";
 
 const COMPANY = "00000000-0000-4000-8000-0000000000c0";
-const CONFIG: Pick<DockerDriverConfig, "volumeRoot" | "network" | "allowlist" | "mountSources"> & { scopeRoot: string } = {
+const CONFIG: Pick<DockerDriverConfig, "volumeRoot" | "network" | "allowlist" | "mountSources" | "devbuild"> & { scopeRoot: string } = {
   volumeRoot: "/srv/bots",
   scopeRoot: "/srv/bots/.scopes",
   network: "myrmidon-bots",
   allowlist: ["myrmidon-hermes:*"],
   mountSources: [],
+  devbuild: { host: null, user: "", base: "" },
 };
 const ENGINEER = scopeInstanceDirName("caste", COMPANY, "engineer");
 const MARKETING = scopeInstanceDirName("caste", COMPANY, "marketing");
