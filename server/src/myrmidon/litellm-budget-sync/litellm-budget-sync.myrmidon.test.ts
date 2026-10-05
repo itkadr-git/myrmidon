@@ -314,7 +314,7 @@ describe("myrmidon(1.7-BUDGET-CONFIG-C) divergence detection", () => {
     expect(comments[0]?.body).toContain("$120");
     expect(comments[0]?.body).toContain("$999");
     expect(comments[0]?.body).toContain("does not overwrite");
-    expect(comments[0]?.metadata.sections[0]?.rows[0]?.value).toBe(
+    expect((comments[0]?.metadata as { sections?: Array<{ rows?: Array<{ value?: unknown }> }> }).sections?.[0]?.rows?.[0]?.value).toBe(
       "budget-projection:company-a:caste:engineer:tag:myrm-caste-engineer:2026-10-04",
     );
     // A repeat pass in the same state does not duplicate the comment.
