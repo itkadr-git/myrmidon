@@ -66,7 +66,7 @@ import {
 } from "./myrmidon-runtime-mcp.js";
 // myrmidon(M1): card models in the run-scoped config.yaml
 import { materializeHermesRunModels } from "./myrmidon-profile-config.js";
-import { readProductEnv, readProductEnvFrom, writeProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { deleteProductEnv, readProductEnv, readProductEnvFrom, writeProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 // ---------------------------------------------------------------------------
 // Config helpers
@@ -516,9 +516,9 @@ export async function execute(
 
   // PAPERCLIP_API_KEY is never accepted from config — the harness-minted run
   // token is the only source of Paperclip API identity.
-  delete readProductEnvFrom(env, "API_KEY");
+  deleteProductEnv(env, "API_KEY");
   // Wake context travels in the prompt; drop both inherited and configured copies.
-  delete readProductEnvFrom(env, "WAKE_PAYLOAD_JSON");
+  deleteProductEnv(env, "WAKE_PAYLOAD_JSON");
   if ((ctx as any).authToken) writeProductEnv(env, "API_KEY", (ctx as any).authToken); // myrmidon(REBRAND-C)
 
   // BUG FIX: Read task context from ctx.context (wake context), not ctx.config (adapter config)

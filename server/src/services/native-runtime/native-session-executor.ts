@@ -166,7 +166,7 @@ import {
   type NativeControllerIdentity,
   type NativeRestartRecoveryClaim,
 } from "./native-restart-recovery.js";
-import { readProductEnv, readProductEnvFrom, writeProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { deleteProductEnv, readProductEnv, readProductEnvFrom, writeProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 type ActiveNativeSession = {
   session: NativeSession;
@@ -11466,7 +11466,7 @@ async function createRunnerdBackendWithinSessionClaim(
   // This authority bit is derived only from the selected execution target.
   // Never let an agent, environment binding, or host variable disable the
   // Codex sandbox for a local runner by supplying the same key.
-  delete readProductEnvFrom(effectiveRunnerEnvironmentBase, "RUNNER_EXTERNAL_SANDBOX");
+  deleteProductEnv(effectiveRunnerEnvironmentBase, "RUNNER_EXTERNAL_SANDBOX");
   const effectiveRunnerEnvironment: NodeJS.ProcessEnv = remoteRuntimeRoot
     ? {
         ...effectiveRunnerEnvironmentBase,

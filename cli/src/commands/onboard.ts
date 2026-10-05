@@ -58,7 +58,7 @@ import {
   shouldOfferForegroundStart,
 } from "../onboard-service.js";
 import { readInstallManifest, isManagedExecutable } from "../install-store.js";
-import { readProductEnv, writeProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { deleteProductEnv, readProductEnv, writeProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 type SetupMode = "quickstart" | "advanced";
 
@@ -136,7 +136,7 @@ async function runOnboardedForeground(configPath: string): Promise<void> {
     await runCommand({ config: configPath, repair: true, yes: true });
   } finally {
     if (previousOpenOnListen === undefined) {
-      delete readProductEnv("OPEN_ON_LISTEN");
+      deleteProductEnv(process.env, "OPEN_ON_LISTEN");
     } else {
       writeProductEnv(process.env, "OPEN_ON_LISTEN", previousOpenOnListen); // myrmidon(REBRAND-C)
     }
