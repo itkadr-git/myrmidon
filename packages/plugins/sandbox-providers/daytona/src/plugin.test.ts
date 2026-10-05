@@ -3467,6 +3467,19 @@ describe("daytona native file-sync hooks", () => {
     };
   }
 
+  // Poll `condition` until it is true. Unlike a bare `setTimeout(0)`, this is
+  // robust on loaded CI runners where a single macrotask hop is not enough for
+  // an async mock to run its body.
+  async function waitFor(condition: () => boolean, timeoutMs = 5_000): Promise<void> {
+    const start = Date.now();
+    while (!condition()) {
+      if (Date.now() - start > timeoutMs) {
+        throw new Error("waitFor timed out waiting for condition");
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+  }
+
   // Write each download request's snapshot bytes to its host destination and
   // report success, matching the real batch-download contract the outbound sync
   // path expects.
@@ -5009,9 +5022,12 @@ describe("daytona native file-sync hooks", () => {
     const outboundCall = plugin.definition.onEnvironmentSyncOut?.(
       syncOutParams({ operationId: "out-active", sourcePath: `${REMOTE_DIR}/out.txt`, targetPath: outboundTarget }),
     );
-    // Let both sync calls register on the activity gate and reach their hung
-    // transfer, so teardown sees a refCount of two.
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    // Wait until both sync calls have actually entered their hung transfers so
+    // teardown sees a refCount of two. A bare setTimeout(0) is not enough on a
+    // loaded runner: `releaseDownload` is only assigned once the outbound call
+    // reaches the mocked downloadFiles, and without an explicit wait the test
+    // races and calls an unassigned handler.
+    await waitFor(() => typeof releaseUpload === "function" && typeof releaseDownload === "function");
 
     const destroyCall = plugin.definition.onEnvironmentDestroyLease?.({
       driverKey: "daytona",

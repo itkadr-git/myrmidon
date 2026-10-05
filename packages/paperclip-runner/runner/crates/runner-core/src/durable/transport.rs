@@ -2412,9 +2412,18 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
-            transport.socket.read_timeout().unwrap(),
-            Some(RUNTIME_READ_TIMEOUT)
+        let observed_read_timeout = transport
+            .socket
+            .read_timeout()
+            .unwrap()
+            .expect("runtime read timeout must be set after the handshake");
+        // The kernel may round SO_RCVTIMEO up or down by a couple of
+        // milliseconds on loaded runners (observed 252 ms for a 250 ms
+        // request), so compare with a tolerance instead of exact equality.
+        let delta = observed_read_timeout.abs_diff(RUNTIME_READ_TIMEOUT);
+        assert!(
+            delta <= Duration::from_millis(50),
+            "read timeout {observed_read_timeout:?} should approximate {RUNTIME_READ_TIMEOUT:?} (delta {delta:?})"
         );
         assert_eq!(welcome.connection.lease_id, "lease_1");
         assert_eq!(welcome.lease.unwrap().expose().unwrap(), "lease-secret");
