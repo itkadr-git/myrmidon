@@ -23,11 +23,54 @@ fail() {
 
 : "${HERMES_HOME:?HERMES_HOME is required (set by the image; do not unset it — it must point at the /data volume)}"
 
+# --- bot tree layout --------------------------------------------------------
+# myrmidon(BOT-DISK-D): a bot container has ONE bind mount, its whole writable tree
+# at ${MYRMIDON_BOT_ROOT:-/bot} (hermes/, workspace/, scratch/ inside it). Hard
+# links work only within one mount, which is what lets pnpm link node_modules into
+# its store, so /data/hermes, /workspace and /scratch must be paths INSIDE that
+# mount, not separate binds. The image already ships them as links; this makes the
+# same links when they are missing (a manual `docker run -v dir:/bot`, a tmpfs
+# over /data). An existing entry (a link, or a real directory from the old
+# three-bind layout) is left alone. MYRMIDON_DATA_DIR only exists for tests.
+bot_root="${MYRMIDON_BOT_ROOT:-/bot}"
+data_dir="${MYRMIDON_DATA_DIR:-/data}"
+# myrmidon(BOT-DISK-F): a member of a SHARED isolation-scope instance has no /bot. Its
+# one mount is the instance directory at ${MYRMIDON_BOT_SCOPE_DIR:-/bot-scope} (one pnpm
+# store plus a subdirectory per member bot), and MYRMIDON_BOT_SCOPE_SUBDIR names this
+# bot's subdirectory (its bot key; not a secret). /data is a small tmpfs the driver
+# mounts for exactly this, so the three links are made here, into this bot's own
+# subdirectory: hard links then work within the bot and across the bots of the instance
+# (one mount), and no other instance's directory is mounted at all.
+scope_dir="${MYRMIDON_BOT_SCOPE_DIR:-/bot-scope}"
+if [ -n "${MYRMIDON_BOT_SCOPE_SUBDIR:-}" ]; then
+  case "${MYRMIDON_BOT_SCOPE_SUBDIR}" in
+    */* | . | .. | -*) fail "MYRMIDON_BOT_SCOPE_SUBDIR is not a plain directory name" ;;
+  esac
+  bot_root="${scope_dir}/${MYRMIDON_BOT_SCOPE_SUBDIR}"
+  [ -d "${bot_root}" ] || fail "shared scope: ${bot_root} does not exist (the scope instance directory is not mounted at ${scope_dir}, or this bot has no subdirectory in it)"
+  [ -w "${data_dir}" ] || fail "shared scope: ${data_dir} is not writable (it must be a tmpfs owned by the bot's uid)"
+  for name in hermes workspace scratch; do
+    mkdir -p "${bot_root}/${name}" || fail "shared scope: cannot create ${bot_root}/${name}"
+    ln -sfn "${bot_root}/${name}" "${data_dir}/${name}" || fail "shared scope: cannot link ${data_dir}/${name}"
+  done
+  log "shared scope member: ${data_dir}/{hermes,workspace,scratch} -> ${bot_root}/"
+elif [ -d "${bot_root}" ] && [ -d "${data_dir}" ] && [ -w "${data_dir}" ]; then
+  for name in hermes workspace scratch; do
+    if [ ! -e "${data_dir}/${name}" ] && [ ! -L "${data_dir}/${name}" ]; then
+      mkdir -p "${bot_root}/${name}" 2>/dev/null || true
+      ln -s "${bot_root}/${name}" "${data_dir}/${name}" 2>/dev/null \
+        || log "WARNING: cannot link ${data_dir}/${name} to ${bot_root}/${name}"
+    fi
+  done
+fi
+
+
 # myrmidon(G1): API_SERVER_KEY is read from ${HERMES_HOME}/.env when the container's
 # own environment does not already have it — never required in the container's Env.
 # Bot-runtime contract "1" (server/src/myrmidon/bot-containers/template.ts,
-# BOT_RUNTIME_CONTRACT_LABEL): the G3 driver's create body never sets Env (anything
-# there is visible via `docker inspect`), so every secret the gateway needs travels
+# BOT_RUNTIME_CONTRACT_LABEL): the G3 driver's create body never sets a secret in Env (anything
+# there is visible via `docker inspect`; the one variable it may set is the non-secret
+# MYRMIDON_BOT_SCOPE_SUBDIR of a shared-scope member), so every secret the gateway needs travels
 # only in the profile's ${HERMES_HOME}/.env. hermes itself loads that same file with
 # override=True before reading API_SERVER_KEY (gateway/run.py, env_loader.py), so
 # this is only a fast first gate — the file is parsed here as data (grep/sed), never
@@ -88,47 +131,6 @@ case "${MYRMIDON_BOT_YOLO,,}" in
     log "MYRMIDON_BOT_YOLO=${MYRMIDON_BOT_YOLO}: approvals follow config.yaml (approvals.mode), unattended platforms default to deny"
     ;;
 esac
-
-# --- bot tree layout --------------------------------------------------------
-# myrmidon(BOT-DISK-D): a bot container has ONE bind mount, its whole writable tree
-# at ${MYRMIDON_BOT_ROOT:-/bot} (hermes/, workspace/, scratch/ inside it). Hard
-# links work only within one mount, which is what lets pnpm link node_modules into
-# its store, so /data/hermes, /workspace and /scratch must be paths INSIDE that
-# mount, not separate binds. The image already ships them as links; this makes the
-# same links when they are missing (a manual `docker run -v dir:/bot`, a tmpfs
-# over /data). An existing entry (a link, or a real directory from the old
-# three-bind layout) is left alone. MYRMIDON_DATA_DIR only exists for tests.
-bot_root="${MYRMIDON_BOT_ROOT:-/bot}"
-data_dir="${MYRMIDON_DATA_DIR:-/data}"
-# myrmidon(BOT-DISK-F): a member of a SHARED isolation-scope instance has no /bot. Its
-# one mount is the instance directory at ${MYRMIDON_BOT_SCOPE_DIR:-/bot-scope} (one pnpm
-# store plus a subdirectory per member bot), and MYRMIDON_BOT_SCOPE_SUBDIR names this
-# bot's subdirectory (its bot key; not a secret). /data is a small tmpfs the driver
-# mounts for exactly this, so the three links are made here, into this bot's own
-# subdirectory: hard links then work within the bot and across the bots of the instance
-# (one mount), and no other instance's directory is mounted at all.
-scope_dir="${MYRMIDON_BOT_SCOPE_DIR:-/bot-scope}"
-if [ -n "${MYRMIDON_BOT_SCOPE_SUBDIR:-}" ]; then
-  case "${MYRMIDON_BOT_SCOPE_SUBDIR}" in
-    */* | . | .. | -*) fail "MYRMIDON_BOT_SCOPE_SUBDIR is not a plain directory name" ;;
-  esac
-  bot_root="${scope_dir}/${MYRMIDON_BOT_SCOPE_SUBDIR}"
-  [ -d "${bot_root}" ] || fail "shared scope: ${bot_root} does not exist (the scope instance directory is not mounted at ${scope_dir}, or this bot has no subdirectory in it)"
-  [ -w "${data_dir}" ] || fail "shared scope: ${data_dir} is not writable (it must be a tmpfs owned by the bot's uid)"
-  for name in hermes workspace scratch; do
-    mkdir -p "${bot_root}/${name}" || fail "shared scope: cannot create ${bot_root}/${name}"
-    ln -sfn "${bot_root}/${name}" "${data_dir}/${name}" || fail "shared scope: cannot link ${data_dir}/${name}"
-  done
-  log "shared scope member: ${data_dir}/{hermes,workspace,scratch} -> ${bot_root}/"
-elif [ -d "${bot_root}" ] && [ -d "${data_dir}" ] && [ -w "${data_dir}" ]; then
-  for name in hermes workspace scratch; do
-    if [ ! -e "${data_dir}/${name}" ] && [ ! -L "${data_dir}/${name}" ]; then
-      mkdir -p "${bot_root}/${name}" 2>/dev/null || true
-      ln -s "${bot_root}/${name}" "${data_dir}/${name}" 2>/dev/null \
-        || log "WARNING: cannot link ${data_dir}/${name} to ${bot_root}/${name}"
-    fi
-  done
-fi
 
 # myrmidon(BOT-DISK-F): the image's WORKDIR is "/" (a member's /workspace link does not
 # exist until the links above are made), so enter the workspace here, now it resolves.

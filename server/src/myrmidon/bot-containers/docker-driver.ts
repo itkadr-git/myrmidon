@@ -34,8 +34,9 @@
 // `GET /containers/{id}/archive`, which works in every container state. No marker
 // means "nothing verified applied", never "unchanged".
 //
-// Secrets and the image. The create body carries no `Env`: anything there is
-// shown by `docker inspect`. API_SERVER_KEY and every other secret reach the
+// Secrets and the image. The create body carries no secret in `Env` (the only
+// variable it may carry is a shared-scope member's own subdirectory name): anything
+// there is shown by `docker inspect`. API_SERVER_KEY and every other secret reach the
 // gateway only as the profile's hermes/.env, so the image has to read them from
 // there. Whether it does is part of the runtime contract an image declares
 // (template.ts BOT_RUNTIME_CONTRACT_LABEL); create/recreate refuse an image
@@ -203,7 +204,8 @@ export interface DockerCreateContainerBody {
  * Pure builder for the `POST /containers/create` body — the actual "fixed
  * template" enforcement. Never adds anything a caller passed beyond `spec`'s
  * fields: no arbitrary binds, no host network, no privileged mode, and no
- * `Env` (secrets travel only in the profile's hermes/.env). Throws on an
+ * `Env` (secrets travel only in the profile's hermes/.env; the one exception is a
+ * member of a shared isolation scope, which carries its own non-secret subdirectory name). Throws on an
  * image outside the allowlist, a network other than the one configured for
  * this driver, or an extra mount whose source is not in
  * MYRMIDON_BOT_MOUNT_SOURCES (template.ts buildBinds). `sharedPackageCachePath`

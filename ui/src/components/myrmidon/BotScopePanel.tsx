@@ -12,7 +12,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Layers } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { useCompany } from "@/context/CompanyContext";
+import { useOptionalCompany } from "@/context/CompanyContext";
 import {
   botScopeApi,
   botScopeQueryKey,
@@ -45,8 +45,8 @@ function instanceLabel(overview: BotScopeOverview, kind: SettableScopeKind, id: 
 }
 
 export function BotScopePanel() {
-  const { selectedCompanyId } = useCompany();
-  const companyId = selectedCompanyId ?? "";
+  // Optional: the page also renders where no company is selected yet (the panel then stays empty).
+  const companyId = useOptionalCompany()?.selectedCompanyId ?? "";
   const queryClient = useQueryClient();
   const key = botScopeQueryKey(companyId);
   const { data: overview } = useQuery({
@@ -79,6 +79,7 @@ export function BotScopePanel() {
     onError: (err) => setError(errorText(err, "Could not apply the changes.")),
   });
 
+  if (companyId === "") return null;
   if (!overview) {
     return (
       <section className="space-y-4 rounded-lg border p-4" data-testid="bot-scope-panel">
