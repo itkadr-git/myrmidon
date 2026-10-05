@@ -56,6 +56,32 @@ Job `report main status` после полного прогона на `main`:
 
 Кто сломал — видно по коммиту; чинит трек, чей PR это внёс (правила — CONVENTIONS).
 
+### CI на теге релиза (TAG-CI, инцидент 1.6.4)
+
+Workflow [`myrmidon-ci-tag.yml`](../../.github/workflows/myrmidon-ci-tag.yml) — **Myrmidon
+CI (tag)**: полный уровень `myrmidon-ci.yml` (без разбиения на уровни) на каждый пуш
+релизного тега `myr-vX.Y.Z` (включая `-rc.N`) и вручную (`workflow_dispatch` с обязательным
+параметром `tag`). 05.10 тег `myr-v1.6.4` был поставлен, и через минуту боты смержили 4 PR в
+`main`: пуш в `main` отменил прогон CI коммита тега (`myrmidon-ci.yml` группирует по
+`github.ref` — тот же sha, та же группа, `cancel-in-progress: true`), автопубликация
+отказалась работать, CI тега пришлось перезапускать вручную (workflow_dispatch
+run 37277281522), а релиз публиковать руками.
+
+Отличия от `myrmidon-ci.yml`:
+
+- **своя concurrency-группа** `myrmidon-ci-tag-<тег>` с `cancel-in-progress: false` — пуш в
+  `main` его больше не отменяет;
+- **публикация берёт зелень только отсюда**: `publish-github-release.sh` ждёт завершённый
+  успешный прогон именно на теге (`head_branch == тег`); зелёный прогон того же коммита на
+  `main` публикацию больше не удовлетворяет;
+- **отменённый прогон тега — отказ публикации** с явным сообщением и указанием запасного
+  пути (Actions → Myrmidon CI (tag) → Run workflow → ввести тег), а не ожидание до таймаута;
+- без job `plan`/`tests (affected)`/`report main status` (на теге всегда полный уровень,
+  issue о красном main на теге не нужен).
+
+Пара job-состава держится в синхроне с `myrmidon-ci.yml`; за этим следит тест
+`release-publish.test.mjs` (блок «the tag CI is a separate un-cancellable run»).
+
 ### Полный прогон на PR вручную
 
 - поставить на PR метку **`full-ci`** и запушить в ветку (или перезапустить прогон,
