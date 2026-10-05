@@ -2041,15 +2041,24 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
               href: `/${prefix}/agents/${agent.id}`,
               metadata: { clonePath: signal.path, branch: signal.branch },
             },
-            whyNow: `Clone ${signal.path} has been idle past the lifecycle TTL with ${signal.reason}; it is kept, not removed.`,
+            whyNow:
+              signal.kind === "hardlink"
+                ? `Hard links do not work in ${signal.path}: ${signal.reason}. pnpm installs there copy every package instead of linking, so the bot's disk fills quickly.`
+                : `Clone ${signal.path} has been idle past the lifecycle TTL with ${signal.reason}; it is kept, not removed.`,
             decisionVerbs: decisionVerbs(
               { id: "inspect", label: "Inspect", description: "Push or discard the work in the bot's clone." },
               { id: "dismiss", label: "Dismiss", description: "Dismiss this signal." },
             ),
             inlineResolvable: false,
-            entryRule: "a bot clone holds unpushed work and is idle longer than general.botDisk.idleTtlMs",
-            exitRule: "the work is pushed or discarded, the clone changes again, or it is removed",
-            dedupKey: `bot_disk_clone:${agent.id}:${signal.path}`,
+            entryRule:
+              signal.kind === "hardlink"
+                ? "the bot's start-time hard-link self-check failed for a clone root"
+                : "a bot clone holds unpushed work and is idle longer than general.botDisk.idleTtlMs",
+            exitRule:
+              signal.kind === "hardlink"
+                ? "the bot restarts and the self-check passes (the store is inside the bot's single mount)"
+                : "the work is pushed or discarded, the clone changes again, or it is removed",
+            dedupKey: `bot_disk_${signal.kind === "hardlink" ? "hardlink" : "clone"}:${agent.id}:${signal.path}`,
             severity: "medium",
             activityAt: at,
             createdAt: at,
