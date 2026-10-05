@@ -34,6 +34,8 @@ import type { PluginEntitlementKey } from "../myrmidon-plugin-entitlement.js";
 import type { TelegramDmProgressSettings } from "../myrmidon-telegram-dm-progress.js";
 // myrmidon(BOT-RUNTIME-TUNING D2): the fallback-signal settings of the same row.
 import type { StoredFallbackSignalSettings } from "../myrmidon-fallback-signal.js";
+// myrmidon(1.7-ACTIVE-CHANNEL): the stored owner active-channel settings type.
+import type { OwnerActiveChannelSettings } from "../myrmidon-owner-active-channel.js";
 
 // myrmidon(1.6.1-FORAGING-LIMITS-UI)
 import type { ForagingSettings } from "../myrmidon-foraging.js";
@@ -278,6 +280,14 @@ export interface InstanceGeneralSettings {
    * is off)". Kept in sync with the validator of the same field.
    */
   foraging?: ForagingSettings;
+  /**
+   * myrmidon(1.7-ACTIVE-CHANNEL): the owner active-channel inactivity
+   * threshold, changed from `GET`/`PATCH /api/myrmidon/owner/active-channel`.
+   * Absent means "use the environment override, then the default". Kept in
+   * sync with the validator of the same field
+   * (packages/shared/src/validators/instance.ts).
+   */
+  ownerActiveChannel?: OwnerActiveChannelSettings;
 }
 
 

@@ -10,6 +10,8 @@ import { Link, useLocation } from "@/lib/router";
 import { MyrmidonLockup } from "@/components/myrmidon/MyrmidonLockup"; // myrmidon(B1a)
 import { UI2_NAV_GROUPS, type Ui2NavItem } from "../navModel";
 import { useUi2AttentionCount } from "../useUi2Status";
+// myrmidon(1.7-ACTIVE-CHANNEL): the owner's real active channel for the rail footer.
+import { useOwnerActiveChannel } from "../useOwnerActiveChannel";
 
 function RailItem({ item, active, badge }: { item: Ui2NavItem; active: boolean; badge?: number }) {
   const { t } = useTranslation();
@@ -86,6 +88,9 @@ export function Ui2Rail() {
   const { t } = useTranslation();
   const { selectedCompany } = useCompany();
   const attentionCount = useUi2AttentionCount();
+  // myrmidon(1.7-ACTIVE-CHANNEL): the real channel the owner is active in —
+  // the old "Web · now" literal never reflected Telegram activity at all.
+  const activeChannel = useOwnerActiveChannel();
 
   return (
     <aside
@@ -165,8 +170,12 @@ export function Ui2Rail() {
         >
           {selectedCompany?.name ?? t("ui2.owner")}
         </span>
-        <span style={{ fontSize: "var(--myr-text-nano)", color: "var(--myr-ink-muted)" }}>
-          {t("ui2.ownerChannel")}
+        <span style={{ fontSize: "var(--myr-text-nano)", color: "var(--myr-ink-muted)" }} data-testid="ui2-owner-active-channel">
+          {activeChannel === "telegram"
+            ? t("ui2.shell.activeChannel.telegram")
+            : activeChannel === "web"
+              ? t("ui2.shell.activeChannel.web")
+              : t("ui2.shell.activeChannel.none")}
         </span>
       </div>
     </aside>

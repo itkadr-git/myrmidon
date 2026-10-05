@@ -8,6 +8,8 @@ import { Link, useLocation } from "@/lib/router";
 import { MyrmidonLockup } from "@/components/myrmidon/MyrmidonLockup"; // myrmidon(B1a)
 import { UI2_PHONE_TABS } from "../navModel";
 import { useUi2AttentionCount } from "../useUi2Status";
+// myrmidon(1.7-ACTIVE-CHANNEL): the owner's real active channel for the header.
+import { useOwnerActiveChannel } from "../useOwnerActiveChannel";
 
 function PhoneTab({
   to,
@@ -94,6 +96,9 @@ import type { Gauge as GaugeIcon } from "lucide-react";
 
 export function Ui2PhoneHeader() {
   const { t } = useTranslation();
+  // myrmidon(1.7-ACTIVE-CHANNEL): the real channel the owner is active in —
+  // the old "Owner · Web" literal never reflected Telegram activity.
+  const activeChannel = useOwnerActiveChannel();
   return (
     <div
       className="myr-ui2__phone-header"
@@ -108,8 +113,15 @@ export function Ui2PhoneHeader() {
       }}
     >
       <MyrmidonLockup className="max-h-6 w-auto" decorative />
-      <span style={{ marginLeft: "auto", fontSize: "var(--myr-text-nano)", color: "var(--myr-ink-muted)" }}>
-        {t("ui2.phone.status", { defaultValue: "Owner · Web" })}
+      <span
+        style={{ marginLeft: "auto", fontSize: "var(--myr-text-nano)", color: "var(--myr-ink-muted)" }}
+        data-testid="ui2-phone-owner-active-channel"
+      >
+        {activeChannel === "telegram"
+          ? t("ui2.shell.activeChannel.telegram")
+          : activeChannel === "web"
+            ? t("ui2.shell.activeChannel.web")
+            : t("ui2.shell.activeChannel.none")}
       </span>
     </div>
   );

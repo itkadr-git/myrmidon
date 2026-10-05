@@ -256,6 +256,8 @@ import {
 // addressed reply rides the normal publication lane).
 import { stripLeadingMentionToken as x9StripAddressToken } from "../myrmidon/agent-chat-bridge/addressing.js";
 import { resolveBridgedAddressee } from "../myrmidon/agent-chat-bridge/bridge.js";
+// myrmidon(1.7-ACTIVE-CHANNEL): owner activity touch for the Telegram intake path.
+import { markOwnerActivityBestEffort } from "../myrmidon/owner-active-channel/store.js";
 import type { TelegramAddressee } from "../myrmidon/agent-chat-bridge/addressing.js";
 // myrmidon(U2): company-wide interaction lookup for callbacks on cards
 // delivered to the owner's Telegram conversation from other tasks.
@@ -17065,6 +17067,13 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         publishActivity(publication);
       }
       const { actorUserId, comment, conversation, issue } = taskMutation;
+      // myrmidon(1.7-ACTIVE-CHANNEL): an inbound Telegram DM from a linked
+      // owner marks the Telegram channel active for them; the next report
+      // decision reads it. Advisory and fire-and-forget — the delivery path
+      // never waits on it and never fails on it.
+      if (x8Dm.applies && actorUserId) {
+        markOwnerActivityBestEffort(db, { userId: actorUserId, channel: "telegram" });
+      }
       // myrmidon(X8b): resume a paused bridged conversation on a literal
       // "/new" comment (the web /new route does the same), and deliver any
       // queued bridged-command notice or one-time migration notice. Runs

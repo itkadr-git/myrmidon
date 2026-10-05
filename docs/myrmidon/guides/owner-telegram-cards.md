@@ -80,6 +80,6 @@ opens a DM": delivery is best-effort at the moment the card is enqueued.
 
 - Call site: `server/src/services/chat-interaction-publications.ts`
   (marker `myrmidon(U2)`, after the vendor binding lookup).
-- Binding search: `server/src/myrmidon/owner-delivery/telegram-owner-bindings.ts`.
+- Binding search: `server/src/myrmidon/owner-active-channel/owner-delivery-gate.ts` (since 1.7-ACTIVE-CHANNEL; the owner-delivery gate picks the channel).
 - Callback resolution: `server/src/myrmidon/owner-delivery/callback-interaction-lookup.ts`.
 - Behaviour record: [../DIVERGENCE.md](../DIVERGENCE.md), row U2.

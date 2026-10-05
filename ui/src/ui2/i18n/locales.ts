@@ -254,7 +254,6 @@ const en = {
   "ui2.screens.placeholderLegacyLink": "Open the legacy view",
 
   "ui2.owner": "Owner",
-  "ui2.ownerChannel": "Owner channel",
   "ui2.nav.railLabel": "Navigation",
   "ui2.nav.badge.attention": "Needs attention",
   "ui2.nests.all": "All nests",
@@ -503,7 +502,6 @@ const ru: Record<Ui2MessageKey, string> = {
   "ui2.screens.placeholderLegacyLink": "Открыть прежний вид",
 
   "ui2.owner": "Владелец",
-  "ui2.ownerChannel": "Канал владельца",
   "ui2.nav.railLabel": "Навигация",
   "ui2.nav.badge.attention": "Требует внимания",
   "ui2.nests.all": "Все гнёзда",

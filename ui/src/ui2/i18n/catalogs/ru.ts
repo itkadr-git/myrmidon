@@ -314,7 +314,14 @@ export const ru: Ui2Catalog = {
         navLabel: "Разделы настроек",
       },
       owner: "Владелец",
-      ownerChannel: "Веб",
+      // myrmidon(1.7-ACTIVE-CHANNEL): канал, в котором владелец активен сейчас.
+      shell: {
+        activeChannel: {
+          web: "Активен · Веб",
+          telegram: "Активен · Telegram",
+          none: "Давно не появлялся",
+        },
+      },
       nests: {
         all: "Все гнёзда",
       },
