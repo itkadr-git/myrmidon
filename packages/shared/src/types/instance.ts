@@ -98,7 +98,9 @@ export interface InstanceGeneralSettings {
    * and `GET`/`PATCH /api/myrmidon/runtime-limits`. Absent means "use the
    * environment variable, then the default"; kept in sync with the validator of
    * the same field (packages/shared/src/validators/instance.ts). A row saved
-   * before 1.6.2 lacks `minFreeHostMemoryMb` (myrmidon 1.6.2 RUN-ADMISSION).
+   * before 1.6.2 lacks `minFreeHostMemoryMb` (myrmidon 1.6.2 RUN-ADMISSION),
+   * a row saved before 1.6.5 lacks `maxHostLoadPercentPerCore` (myrmidon
+   * 1.6.5 RUN-ADMISSION).
    */
   runLimits?: StoredRunLimits;
   /**
