@@ -160,6 +160,7 @@ A track writes only into its own section. A row is added in the same PR as the s
 | `MYRMIDON_TRACING_DELIVERY_WINDOW_SEC` | TRACING-HEALTH | `900` (15 min) | The window those two counts cover, in seconds, and the value the delivery command receives | Unset or empty — the default. The value is passed to the delivery command as-is; no validation is performed |
 | `MYRMIDON_TRACING_LANGFUSE_IMAGE` | TRACING-HEALTH | unset | Image reference of the Langfuse server the bundle pins: it must carry a full `X.Y.Z` tag or a digest. A major or minor tag (for example `langfuse/langfuse:4`) moves under the deployment and is not a pin | Unset — the pin check is skipped. Set to a major/minor tag, `latest` or an untagged name — refused |
 | `MYRMIDON_TRACING_GATEWAY_IMAGE` | TRACING-HEALTH | unset | The same pin rule for the gateway (LiteLLM) image of the bundle: full `X.Y.Z` tag or digest | Unset — skipped; anything that is not a full version or a digest — refused |
+| `MYRMIDON_VENDOR_SHARE_THRESHOLD` | VENDOR-SHARE-METRIC | unset (0.5) | Forces the line-similarity threshold of the vendor-share script: a file is inherited when the share of matching lines against the vendor base commit is at or above it. The `--threshold` flag wins over this variable, which wins over the built-in 0.5; the printed report shows `thresholdSource` | A value outside 0..1 fails the run with a clear message instead of silently falling back. Unset — the built-in 0.5 and a `default` source in the report |
 
 ## Track 6 — security and models
 
