@@ -490,6 +490,12 @@ export function createDbBotProfilePorts(db: Db): BotProfilePorts {
         auxiliary: {
           ...(settings.auxiliaryTitleModel ? { titleGenerationModel: settings.auxiliaryTitleModel } : {}),
           ...(settings.auxiliaryCompressionModel ? { compressionModel: settings.auxiliaryCompressionModel } : {}),
+          // myrmidon(BOT-RUNTIME-TUNING-AUX-CEILING): the auxiliary fallback
+          // ceiling; the compiler resolves the route of each entry from the
+          // card's provider and the input's gateway settings.
+          ...(settings.auxiliaryFallbackModels && settings.auxiliaryFallbackModels.length > 0
+            ? { fallbackModels: settings.auxiliaryFallbackModels }
+            : {}),
         },
       };
     },
