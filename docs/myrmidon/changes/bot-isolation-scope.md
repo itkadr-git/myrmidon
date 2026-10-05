@@ -20,8 +20,9 @@ settings-section: BOT-DISK E — host disk usage signal
   The resolver is one shared module other policies (the container scope, later) can reuse.
 - A change marks the affected bots **restart required**; nothing restarts by itself. *Apply* runs,
   per bot, in order: pause (maintenance window), check the move (refuses on any conflict before
-  anything stops; never deletes or merges), stop, move the three directories by `rename`, recreate
-  with the new mount, start-time hard-link self-check, resume. Not run on any host by this change.
+  anything stops; never deletes or merges), build the replacement while the old one still runs (a
+  gate refusal changes nothing), stop, move the three directories by `rename`, swap in the new
+  container, start-time hard-link self-check, resume. Not run on any host by this change.
 - Container: a member has one bind, `<shared root>/<instance>:/bot-scope`, and a tmpfs over `/data`
   with links into its own `<botKey>/` subdirectory, made by the entrypoint from
   `MYRMIDON_BOT_SCOPE_SUBDIR`; the profile points pnpm at `/bot-scope/.pnpm-store`. Image: new label
@@ -57,8 +58,9 @@ settings-section: BOT-DISK E — host disk usage signal
   область контейнеров).
 - Изменение помечает затронутых ботов **нужен перезапуск**; сами ничего не перезапускается. *Применить*
   для бота делает по порядку: пауза (окно обслуживания), проверка переноса (отказ при любом конфликте
-  до остановки; ничего не удаляется и не сливается), остановка, перенос трёх каталогов через `rename`,
-  пересоздание с новым монтированием, самопроверка жёстких ссылок при старте, возобновление. Этим
+  до остановки; ничего не удаляется и не сливается), сборка замены, пока старый контейнер работает
+  (отказ шлюза ничего не меняет), остановка, перенос трёх каталогов через `rename`, подмена новым
+  контейнером, самопроверка жёстких ссылок при старте, возобновление. Этим
   изменением ни на одном хосте не запускалось.
 - Контейнер: у участника одна привязка `<общий корень>/<экземпляр>:/bot-scope` и tmpfs поверх `/data` с
   ссылками в собственный подкаталог `<botKey>/`, которые делает entrypoint по `MYRMIDON_BOT_SCOPE_SUBDIR`;

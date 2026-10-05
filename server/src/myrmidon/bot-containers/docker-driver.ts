@@ -1076,6 +1076,12 @@ export function dockerBotContainerDriver(
       await options.scopeMigration.check({ botKey: spec.botKey, from, to: layout });
     }
     await removeByName(replacement);
+    // Everything the gate or the daemon may refuse (the volumes of the new layout, the
+    // replacement itself) is done while the old container still runs, so a refusal leaves
+    // the bot untouched. The new layout's directories exist, empty, by then; the migration
+    // renames the old ones onto them.
+    await prepareVolumes(spec.botKey, spec.image, layout);
+    await createNamed(replacement, body);
     if (moves) {
       // Pause: the old container stops first so nothing writes while its directories move.
       // The agent is already drained (the reconciler's maintenance window). A failed move
@@ -1088,8 +1094,6 @@ export function dockerBotContainerDriver(
         throw err;
       }
     }
-    await prepareVolumes(spec.botKey, spec.image, layout);
-    await createNamed(replacement, body);
     // Only now touch the old one: SIGTERM, SIGKILL after BOT_STOP_TIMEOUT_SEC.
     await stopByName(name);
     await removeByName(name);

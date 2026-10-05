@@ -299,9 +299,11 @@ bind difference as a template drift and recreates the container through its main
    board cannot see **refuses the whole change before anything is stopped**, and the bot keeps
    running on its old layout. Nothing is ever deleted or merged. An interrupted earlier run is
    recognised (the source is gone, the target is there) and completed.
-3. *Stop* the old container, *move* the directories (a failing step undoes the ones before it and
-   the old container is started again), prepare the volumes (the prepare helper also hands the
-   instance directory to the bot's uid), create the replacement with the new binds, and swap it in.
+3. *Prepare* the volumes of the new layout (the prepare helper also hands the instance directory
+   to the bot's uid) and *create* the replacement with the new binds, **while the old container
+   still runs**: a refusal by dockergate or the daemon (a bot not yet enrolled, a missing image)
+   changes nothing. Then *stop* the old container, *move* the directories (a failing step undoes
+   the ones before it and the old container is started again), and swap the replacement in.
 4. *Self-check*: the new container checks hard links from the store at start; a failure is raised as
    an attention card like any other.
 5. *Resume*: the maintenance window closes and the agent runs again.

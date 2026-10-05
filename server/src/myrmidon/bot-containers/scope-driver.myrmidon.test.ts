@@ -127,7 +127,7 @@ interface Req {
   query: URLSearchParams;
 }
 
-function startDaemon(state: { binds: string[]; imageLabels: Record<string, string>; failStart?: boolean }) {
+function startDaemon(state: { binds: string[]; imageLabels: Record<string, string>; failStart?: boolean; refuseCreate?: boolean }) {
   const requests: Req[] = [];
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "scope-drv-"));
   const socketPath = path.join(dir, "d.sock");
@@ -142,7 +142,7 @@ function startDaemon(state: { binds: string[]; imageLabels: Record<string, strin
     req.resume();
     req.on("end", () => {
       if (p.startsWith("/images/")) return json(200, { Config: { Labels: state.imageLabels } });
-      if (p === "/containers/create") return json(201, { Id: "new" });
+      if (p === "/containers/create") return state.refuseCreate ? json(403, { message: "dockergate: denied (mount_source_not_allowed)" }) : json(201, { Id: "new" });
       if (req.method === "GET" && p === "/containers/myrmidon-bot-agent-a/json") {
         return json(200, {
           Image: "sha256:aa",
@@ -183,12 +183,14 @@ describe("recreate onto another layout", () => {
     binds: ["/srv/bots/agent-a:/bot"],
     imageLabels: { [BOT_RUNTIME_CONTRACT_LABEL]: "1", [BOT_RUNTIME_SCOPE_LABEL]: "1" } as Record<string, string>,
     failStart: false,
+    refuseCreate: false,
   };
 
   beforeEach(async () => {
     state.binds = ["/srv/bots/agent-a:/bot"];
     state.imageLabels = { [BOT_RUNTIME_CONTRACT_LABEL]: "1", [BOT_RUNTIME_SCOPE_LABEL]: "1" };
     state.failStart = false;
+    state.refuseCreate = false;
     daemon = await startDaemon(state);
   });
   afterEach(() => daemon.close());
@@ -200,7 +202,7 @@ describe("recreate onto another layout", () => {
     );
   const trail = () => daemon.requests.map((r) => `${r.method} ${r.path}`);
 
-  it("checks first, pauses (stops), migrates, then creates the replacement with the instance bind and swaps it in", async () => {
+  it("checks first, builds everything the gate may refuse while the bot runs, then pauses, migrates and swaps", async () => {
     const calls: string[] = [];
     const driver = driverFor(SHARED, {
       check: async () => void calls.push(`check@${trail().length}`),
@@ -210,13 +212,30 @@ describe("recreate onto another layout", () => {
     const t = trail();
     const stop = t.indexOf("POST /containers/myrmidon-bot-agent-a/stop");
     const createNext = t.findIndex((line, i) => line === "POST /containers/create" && daemon.requests[i]!.query.get("name") === "myrmidon-bot-agent-a.next");
+    const prepare = t.findIndex((line, i) => line === "POST /containers/create" && daemon.requests[i]!.query.get("name") === "myrmidon-bot-agent-a.helper");
     expect(calls).toHaveLength(2);
-    // check before the stop, run after it and before anything is created
-    expect(Number(calls[0]!.split("@")[1])).toBeLessThanOrEqual(stop);
+    // check before anything is created or stopped
+    expect(Number(calls[0]!.split("@")[1])).toBeLessThanOrEqual(prepare);
+    // the volumes of the new layout and the replacement exist before the old container is paused
+    expect(prepare).toBeGreaterThan(0);
+    expect(createNext).toBeGreaterThan(prepare);
+    expect(stop).toBeGreaterThan(createNext);
+    // the move runs right after the stop and before the old container is removed
     expect(Number(calls[1]!.split("@")[1])).toBe(stop + 1);
-    expect(createNext).toBeGreaterThan(stop);
     expect(t.indexOf("DELETE /containers/myrmidon-bot-agent-a")).toBeGreaterThan(stop);
     expect(t).toContain("POST /containers/myrmidon-bot-agent-a.next/rename");
+    // the replacement carries the instance bind, the old one is not recreated with /bot
+    const created = daemon.requests[createNext]!;
+    expect(created.query.get("name")).toBe("myrmidon-bot-agent-a.next");
+  });
+
+  it("a refusal while the replacement is built (gate or daemon) leaves the old container running and nothing moved", async () => {
+    state.refuseCreate = true;
+    let ran = false;
+    const driver = driverFor(SHARED, { check: async () => undefined, run: async () => void (ran = true) });
+    await expect(driver.recreate(spec())).rejects.toThrow();
+    expect(ran).toBe(false);
+    expect(trail().some((line) => line.includes("/stop") || line === "DELETE /containers/myrmidon-bot-agent-a")).toBe(false);
   });
 
   it("does not stop anything when the migration check refuses", async () => {
@@ -241,7 +260,9 @@ describe("recreate onto another layout", () => {
     await expect(driver.recreate(spec())).rejects.toThrow("EXDEV");
     const t = trail();
     expect(t.indexOf("POST /containers/myrmidon-bot-agent-a/start")).toBeGreaterThan(t.indexOf("POST /containers/myrmidon-bot-agent-a/stop"));
-    expect(daemon.requests.some((r) => r.path === "/containers/create")).toBe(false);
+    // the replacement was built beforehand, but the old container is neither removed nor swapped out
+    expect(t).not.toContain("DELETE /containers/myrmidon-bot-agent-a");
+    expect(t).not.toContain("POST /containers/myrmidon-bot-agent-a.next/rename");
   });
 
   it("refuses a layout change when no migration is configured, before touching the container", async () => {
