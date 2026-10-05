@@ -179,7 +179,7 @@ describe("myrmidon(1.6.1 CUSTOM-CASTES B) swarm caste gate", () => {
     );
     // The queue read was made for the reviewer role — an agent of the
     // reviewer caste is offered the reviewer queue, never another role's.
-    expect(mockListRoleQueue).toHaveBeenCalledWith(expect.anything(), COMPANY_ID, "reviewer");
+    expect(mockListRoleQueue).toHaveBeenCalledWith(expect.anything(), COMPANY_ID, "reviewer", AGENT_ID);
     expect(outcome.reason).not.toBe("caste_excluded");
   });
 

@@ -137,6 +137,32 @@ export const SWARM_CLAIM_RELEASE_REASON_LEASE_EXPIRED = "lease_expired";
 export const SWARM_CLAIM_RELEASE_REASON_SUPERVISOR_REBALANCE = "supervisor_rebalance";
 export const SWARM_CLAIM_RELEASE_REASON_ISSUE_CLOSED = "issue_closed";
 
+/**
+ * myrmidon(1.6.2 SWARM-UNASSIGNED-ROUTE): which role takes an UNASSIGNED ready
+ * task. A task carries its role as an issue label `role:<caste key>`; a task
+ * with no such label belongs to the default work role. The engineer is the
+ * default because the unassigned backlog is development work. The rule is one
+ * function so the claim path, the idle pass and the attention signal agree.
+ */
+export const SWARM_DEFAULT_UNASSIGNED_ROLE = "engineer";
+export const SWARM_ROLE_LABEL_PREFIX = "role:";
+
+/** The role a label list names, or null. The first `role:` label wins; case and spaces are ignored. */
+export function swarmRoleFromLabels(labelNames: readonly string[] | null | undefined): string | null {
+  for (const raw of labelNames ?? []) {
+    const name = raw.trim().toLowerCase();
+    if (!name.startsWith(SWARM_ROLE_LABEL_PREFIX)) continue;
+    const role = name.slice(SWARM_ROLE_LABEL_PREFIX.length).trim();
+    if (role) return role;
+  }
+  return null;
+}
+
+/** The single role an unassigned task is queued for. */
+export function swarmRoleForUnassignedTask(labelNames: readonly string[] | null | undefined): string {
+  return swarmRoleFromLabels(labelNames) ?? SWARM_DEFAULT_UNASSIGNED_ROLE;
+}
+
 /** Issue statuses whose tasks may appear in a role queue. */
 export const SWARM_CLAIM_QUEUE_ISSUE_STATUSES = ["todo"] as const;
 

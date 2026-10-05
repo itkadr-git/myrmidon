@@ -26,11 +26,20 @@ export interface SwarmIdleWakeTarget {
   role: string;
 }
 
+/**
+ * A queue entry of the idle pass. `assigneeAgentId` is set for a task already
+ * assigned to an agent (it belongs to that agent alone) and empty for an
+ * unassigned task (any free agent of the role may take it).
+ */
+export interface SwarmIdleQueueCandidate extends SwarmQueueCandidate {
+  assigneeAgentId?: string | null;
+}
+
 /** The idle read of one role, as the queue reads assemble it. */
 export interface SwarmRoleIdleInput {
   role: string;
   /** The role's ready queue candidates, un-ordered (order applied here). */
-  queue: readonly SwarmQueueCandidate[];
+  queue: readonly SwarmIdleQueueCandidate[];
   /** Live (not released, un-expired) claims of the whole company. */
   liveClaims: readonly SwarmClaimLease[];
   /** The role's agents as the read reports them. */
@@ -95,9 +104,22 @@ export function idleWakeTargetsForRole(
   }).filter((candidate) => !claimed.has(candidate.issueId));
   const free = freeAgentsOfRole(input);
   const targets: SwarmIdleWakeTarget[] = [];
-  for (let index = 0; index < free.length && index < ordered.length; index += 1) {
-    const agent = free[index]!;
-    const top = ordered[index]!;
+  // myrmidon(1.6.2 SWARM-UNASSIGNED-ROUTE): each free agent takes its OWN
+  // top task first (assigned to it), else the top UNASSIGNED task of the role.
+  // A task assigned to a peer is never offered to this agent: pairing agent i
+  // with queue slot i let peers' assigned tasks fill every slot and starved the
+  // unassigned tasks behind them (04.10: 16 idle engineers, 24 ready
+  // unassigned tasks, no wake).
+  const taken = new Set<string>();
+  for (const agent of free) {
+    const own = ordered.find(
+      (candidate) => !taken.has(candidate.issueId) && candidate.assigneeAgentId === agent.id,
+    );
+    const top =
+      own ??
+      ordered.find((candidate) => !taken.has(candidate.issueId) && !candidate.assigneeAgentId);
+    if (!top) continue;
+    taken.add(top.issueId);
     targets.push({
       agentId: agent.id,
       issueId: top.issueId,

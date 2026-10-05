@@ -96,6 +96,13 @@ export interface SwarmClaimSweepResult {
   /** Free agents seen at a non-empty queue (the supervisor's zero metric). */
   idleFreeAgents: number;
   /**
+   * myrmidon(1.6.2 SWARM-UNASSIGNED-ROUTE): roles that have ready tasks queued
+   * but no agent at all — a configuration gap (a `role:<key>` label naming a
+   * caste nobody holds, or no agent of the default work role). Surfaced as a
+   * warning every pass, never as silent idleness.
+   */
+  idleUnstaffedRoles: number;
+  /**
    * myrmidon(1.6.2 RUN-ADMISSION): why the idle pass woke nobody without
    * looking at the queues — the host memory floor of the run admission was
    * closed — or null when the pass ran.
@@ -150,6 +157,7 @@ export function createSwarmClaimSweeper(deps: SwarmClaimSweeperDeps): SwarmClaim
         idleWoken: 0,
         idleRoles: 0,
         idleFreeAgents: 0,
+        idleUnstaffedRoles: 0,
         idleSkippedReason: null,
       };
       const general = (await deps.settings.getGeneral()) as unknown as Record<string, unknown>;
@@ -434,6 +442,19 @@ async function sweepIdleWakes(
       ? new Map((await deps.castes(companyId)).map((entry) => [entry.key, entry]))
       : new Map<string, CompanyCaste>();
     for (const pair of pilotPairs) {
+      if (pair.agents.length === 0) {
+        // The attention signal: ready work routed to a role no agent holds.
+        result.idleUnstaffedRoles += 1;
+        logger.warn(
+          {
+            role: pair.role,
+            readyTasks: pair.queue.length,
+            sample: pair.queue.slice(0, 5).map((task) => task.identifier ?? task.issueId),
+          },
+          "swarm idle pass: ready tasks are routed to a role with no agents; add an agent of the role or relabel the tasks",
+        );
+        continue;
+      }
       const caste = casteByRole.get(pair.role);
       if (caste && !caste.swarmEligible) continue;
       const effectiveMaxActiveTasks =

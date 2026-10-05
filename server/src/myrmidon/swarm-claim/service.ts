@@ -168,7 +168,7 @@ export async function claimNextTaskForAgent(
     : settings;
 
   const [candidates, agentClaims, companyClaims] = await Promise.all([
-    listRoleQueue(ports.db, input.companyId, agent.role),
+    listRoleQueue(ports.db, input.companyId, agent.role, input.agentId),
     listAgentLiveClaims(ports.db, input.companyId, input.agentId),
     // The live claims of the whole company restrict the queue: a task another
     // agent holds is not in anyone's queue until its lease runs out.
