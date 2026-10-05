@@ -73,9 +73,8 @@ jobs:
           set -euo pipefail
           if [[ "$GITHUB_REF" == refs/tags/myr-v* ]]; then
             tag="${GITHUB_REF#refs/tags/myr-}"
-            # RC-VERSIONS: release candidates myr-vX.Y.Z-rc.N are valid too.
-            if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
-              echo "::error::release tag must look like myr-vX.Y.Z or myr-vX.Y.Z-rc.N, got ${GITHUB_REF#refs/tags/}"
+            if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::release tag must look like myr-vX.Y.Z, got ${GITHUB_REF#refs/tags/}"
               exit 1
             fi
             echo "image_tag=${tag#v}" >> "$GITHUB_OUTPUT"
