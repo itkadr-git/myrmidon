@@ -1,5 +1,5 @@
 ---
-divergence-section: 1.6.5 — BACKUP-KEEP-LAST: режим «хранить только последний проверенный бэкап БД»
+divergence-section: Трек 2 — ядро побудок и прогонов
 settings-section: Track 2 — wake and run core
 ---
 
@@ -65,7 +65,7 @@ settings-section: Track 2 — wake and run core
 
 ## divergence
 
-| 1.6.5-BACKUP-KEEP-LAST | Политика хранения бэкапов БД получила необязательный флаг `keepLastOnly` (`instance_settings.general.backupRetention.keepLastOnly`): при `true` прогон после записи нового дампа потоково его верифицирует (полный gunzip + наличие `COMMIT;` в хвосте, буфер хвоста 64 КиБ) и только после успеха удаляет все прочие файлы `<prefix>-*.sql.gz`/`<prefix>-*.sql`; пресеты тиров при этом игнорируются. Битый новый дамп удаляется, старые бэкапы сохраняются, прогон завершается ошибкой с причиной. Верификация работает на обоих движках (pg_dump и javascript). Независимо от флага прунинг сначала удаляет недописанные сироты `*.sql` старше 1 часа (константа `BACKUP_ORPHAN_SQL_MAX_AGE_MS`), считая их в `prunedCount`. Поле аддитивно: старые payload'ы парсятся без изменений | `packages/shared/src/types/instance.ts`, `packages/shared/src/validators/instance.ts`, `packages/db/src/backup-lib.ts` (все правки помечены `myrmidon(BACKUP-KEEP-LAST)`), тесты `packages/db/src/backup-keep-last.myrmidon.test.ts` | Решение владельца 05.10 (зонтик 1.6.5): операторам нужен режим «только последний бэкап» для инстансов с дорогим диском, при этом битый дамп не должен вытеснять годный старый |
+| 1.6.5-BACKUP-KEEP-LAST | Политика хранения бэкапов БД получила необязательный флаг `keepLastOnly` (`instance_settings.general.backupRetention.keepLastOnly`): при `true` прогон после записи нового дампа потоково его верифицирует (полный gunzip + наличие `COMMIT;` в хвосте, буфер хвоста 64 КиБ) и только после успеха удаляет все прочие файлы `<prefix>-*.sql.gz`/`<prefix>-*.sql`; пресеты тиров при этом игнорируются. Битый новый дамп удаляется, старые бэкапы сохраняются, прогон завершается ошибкой с причиной. Верификация работает на обоих движках (pg_dump и javascript). Независимо от флага прунинг сначала удаляет недописанные сироты `*.sql` старше 1 часа (константа `BACKUP_ORPHAN_SQL_MAX_AGE_MS`), считая их в `prunedCount`. Поле аддитивно: старые payload'ы парсятся без изменений | `packages/shared/src/types/instance.ts`, `packages/shared/src/validators/instance.ts`, `packages/db/src/backup-lib.ts` (все правки помечены `myrmidon(BACKUP-KEEP-LAST)`), тесты `packages/db/src/backup-keep-last.myrmidon.test.ts` | Решение владельца 05.10 (зонтик 1.6.5): операторам нужен режим «только последний бэкап» для инстансов с дорогим диском, при этом битый дамп не должен вытеснять годный старый | `packages/db/src/backup-keep-last.myrmidon.test.ts` | Никогда, наше поведение: режим держится на флаге `keepLastOnly` в политике хранения (по умолчанию выключен, снятие флага возвращает прежнее поведение тиров); если вендор сам получит режим «только последний бэкап» с верификацией — удалить куски `myrmidon(BACKUP-KEEP-LAST)` и переписать тест-сторож на поведение вендора | (этот PR) |
 
 ## settings-en
 

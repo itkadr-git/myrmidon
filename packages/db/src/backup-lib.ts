@@ -195,22 +195,16 @@ function monthlyRetentionCutoff(nowMs: number, monthlyMonths: number): number {
 }
 
 /**
- * Tiered backup pruning:
- * - Daily tier: keep ALL backups from the last `dailyDays` days
- * - Weekly tier: keep the NEWEST backup per calendar week for `weeklyWeeks` weeks
- * - Monthly tier: keep the NEWEST backup per calendar month for `monthlyMonths` months
- * - Everything else is deleted
+ * myrmidon(BACKUP-KEEP-LAST): first pass of every pruning mode — remove
+ * orphaned, never-finished plain `.sql` leftovers from interrupted runs (the
+ * file is written plain, then gzipped; a crash leaves the `.sql` behind).
+ * Only files with an mtime strictly older than the cutoff count — a live
+ * run's own in-progress `.sql` stays untouched, and these orphans count into
+ * prunedCount in BOTH retention modes (tiered and keep-last).
  */
-function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, filenamePrefix: string): number {
+function pruneOrphanedSqlLeftovers(backupDir: string, filenamePrefix: string): number {
   if (!existsSync(backupDir)) return 0;
-
   const now = Date.now();
-
-  // myrmidon(BACKUP-KEEP-LAST): first pass — remove orphaned, never-finished
-  // plain `.sql` leftovers from interrupted runs (the file is written plain,
-  // then gzipped; a crash leaves the `.sql` behind). Only files with an mtime
-  // strictly older than the cutoff count — a live run's own in-progress `.sql`
-  // stays untouched, and these orphans count into prunedCount.
   let prunedCount = 0;
   for (const name of readdirSync(backupDir)) {
     if (!name.startsWith(`${filenamePrefix}-`)) continue;
@@ -226,6 +220,23 @@ function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, fi
       // Raced deletion or unreadable entry — not an orphan we must force out.
     }
   }
+  return prunedCount;
+}
+
+/**
+ * Tiered backup pruning:
+ * - Daily tier: keep ALL backups from the last `dailyDays` days
+ * - Weekly tier: keep the NEWEST backup per calendar week for `weeklyWeeks` weeks
+ * - Monthly tier: keep the NEWEST backup per calendar month for `monthlyMonths` months
+ * - Everything else is deleted
+ */
+function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, filenamePrefix: string): number {
+  if (!existsSync(backupDir)) return 0;
+
+  const now = Date.now();
+
+  // myrmidon(BACKUP-KEEP-LAST): orphaned `.sql` leftovers go first.
+  const prunedCount = pruneOrphanedSqlLeftovers(backupDir, filenamePrefix);
 
   const dailyCutoff = now - Math.max(1, retention.dailyDays) * 24 * 60 * 60 * 1000;
   const weeklyCutoff = now - Math.max(1, retention.weeklyWeeks) * 7 * 24 * 60 * 60 * 1000;
@@ -675,9 +686,12 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
           }
         }
         const sizeBytes = statSync(backupFile).size;
-        // myrmidon(BACKUP-KEEP-LAST): keep-last replaces tiered pruning.
+        // myrmidon(BACKUP-KEEP-LAST): keep-last replaces tiered pruning, but
+        // the orphan cleanup is mode-independent and runs first in both modes,
+        // its removals counting into prunedCount.
         const prunedCount = keepLastOnly
-          ? deleteAllBackupsExcept(opts.backupDir, filenamePrefix, backupFile)
+          ? pruneOrphanedSqlLeftovers(opts.backupDir, filenamePrefix)
+            + deleteAllBackupsExcept(opts.backupDir, filenamePrefix, backupFile)
           : pruneOldBackups(opts.backupDir, retention, filenamePrefix);
         return {
           backupFile,
@@ -1159,9 +1173,12 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       }
     }
     const sizeBytes = statSync(backupFile).size;
-    // myrmidon(BACKUP-KEEP-LAST): keep-last replaces tiered pruning.
+    // myrmidon(BACKUP-KEEP-LAST): keep-last replaces tiered pruning, but the
+    // orphan cleanup is mode-independent and runs first in both modes, its
+    // removals counting into prunedCount.
     const prunedCount = keepLastOnly
-      ? deleteAllBackupsExcept(opts.backupDir, filenamePrefix, backupFile)
+      ? pruneOrphanedSqlLeftovers(opts.backupDir, filenamePrefix)
+        + deleteAllBackupsExcept(opts.backupDir, filenamePrefix, backupFile)
       : pruneOldBackups(opts.backupDir, retention, filenamePrefix);
 
     return {

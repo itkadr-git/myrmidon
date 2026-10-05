@@ -3,7 +3,11 @@ import os from "node:os";
 import path from "node:path";
 import { gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
+
+
 import { runDatabaseBackup, verifyBackupFile } from "./backup-lib.js";
+
+
 import { backupRetentionPolicySchema } from "@paperclipai/shared/validators/instance";
 import {
   getEmbeddedPostgresTestSupport,
@@ -154,24 +158,49 @@ describeEmbeddedPostgres("runDatabaseBackup keepLastOnly (BACKUP-KEEP-LAST)", ()
       );
       fs.utimesSync(oldBackup, new Date("2026-01-01T00:00:00Z"), new Date("2026-01-01T00:00:00Z"));
 
-      // Force a corrupt dump at the verify seam: the javascript engine writes
-      // <prefix>-<ts>.sql then gzips it to <prefix>-<ts>.sql.gz. With a stub
-      // pg_dump the engine never switches, so corrupting the gz stream is the
-      // deterministic way to make verifyBackupFile reject the fresh dump. The
-      // gz file the engine produces is valid; we truncate it before the verify
-      // pass by replacing the directory contents — but verify runs inside
-      // runDatabaseBackup, so the only deterministic stub seam available
-      // without monkey-patching module internals is the retention-pass helper.
-      //
-      // What this test CAN prove deterministically: with keepLastOnly on, a
-      // pre-existing CORRUPT <prefix>-*.sql.gz file (from an earlier crashed
-      // run) is still removed by the next successful verified run, while the
-      // new healthy dump is kept. The "verify rejects the fresh dump" branch
-      // itself is covered at the unit seam by the verifyBackupFile corrupt-gz
-      // case above and by the healthy keep-last case below.
-      const corruptStale = path.join(backupDir, "paperclip-test-20260102-000000.sql.gz");
-      fs.writeFileSync(corruptStale, Buffer.from("truncated gzip bytes", "utf8"));
-      fs.utimesSync(corruptStale, new Date("2026-01-02T00:00:00Z"), new Date("2026-01-02T00:00:00Z"));
+      // The pg_dump engine pipes the child's stdout through gzip into the new
+      // dump file, then verifies it before any deletion. A stub pg_dump that
+      // emits garbage (the gzip stream is valid, but the decompressed dump has
+      // no closing COMMIT; marker) deterministically lands the run in the
+      // corrupt-new-dump branch: verification fails, the new file is deleted,
+      // previous backups are kept.
+      const stubDir = createTempDir("paperclip-pg-dump-stub-");
+      const stubBin = path.join(stubDir, "pg_dump");
+      fs.writeFileSync(stubBin, "#!/bin/sh\nprintf 'garbage, not a dump\\n'\nexit 0\n", { mode: 0o755 });
+      const previousPgDumpPath = process.env.PAPERCLIP_PG_DUMP_PATH;
+      process.env.PAPERCLIP_PG_DUMP_PATH = stubBin;
+      try {
+        await expect(
+          runDatabaseBackup({
+            connectionString,
+            backupDir,
+            retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1, keepLastOnly: true },
+            filenamePrefix: "paperclip-test",
+            backupEngine: "pg_dump",
+          }),
+        ).rejects.toThrow(/Backup verification failed/);
+      } finally {
+        if (previousPgDumpPath === undefined) delete process.env.PAPERCLIP_PG_DUMP_PATH;
+        else process.env.PAPERCLIP_PG_DUMP_PATH = previousPgDumpPath;
+      }
+
+      // The corrupt new dump is dropped; the previous verified backup is kept.
+      expect(fs.existsSync(oldBackup)).toBe(true);
+      const remaining = fs.readdirSync(backupDir).filter((name) => name.startsWith("paperclip-test-"));
+      expect(remaining).toEqual([path.basename(oldBackup)]);
+    },
+    60_000,
+  );
+
+  it(
+    "keepLastOnly prunes an orphaned unfinished .sql older than 1h and counts it in prunedCount",
+    async () => {
+      const connectionString = await createTempDatabase();
+      const backupDir = createTempDir("paperclip-keep-last-orphan-mode-");
+      const staleOrphan = path.join(backupDir, "paperclip-test-20260101-000000.sql");
+      fs.writeFileSync(staleOrphan, "BEGIN;\n-- never finished\n", "utf8");
+      const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+      fs.utimesSync(staleOrphan, twoHoursAgo, twoHoursAgo);
 
       const result = await runDatabaseBackup({
         connectionString,
@@ -180,10 +209,11 @@ describeEmbeddedPostgres("runDatabaseBackup keepLastOnly (BACKUP-KEEP-LAST)", ()
         filenamePrefix: "paperclip-test",
       });
 
-      expect(result.prunedCount).toBe(2);
+      // The orphan pass runs in keep-last mode too: the stale .sql is removed
+      // and counted, the fresh verified dump is the only file left.
+      expect(result.prunedCount).toBe(1);
+      expect(fs.existsSync(staleOrphan)).toBe(false);
       expect(fs.existsSync(result.backupFile)).toBe(true);
-      expect(fs.existsSync(oldBackup)).toBe(false);
-      expect(fs.existsSync(corruptStale)).toBe(false);
       const remaining = fs.readdirSync(backupDir).filter((name) => name.startsWith("paperclip-test-"));
       expect(remaining).toEqual([path.basename(result.backupFile)]);
     },
