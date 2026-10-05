@@ -111,8 +111,11 @@ export interface BotContainerDriver {
   /** Throws when the container runtime itself cannot be asked (socket error,
    *  unexpected API error) — never guesses a state. */
   status(botKey: string): Promise<BotContainerStatus>;
-  /** All bots the driver currently manages (used for orphan/inventory sweeps). */
-  list(): Promise<BotContainerStatus[]>;
+  /** The containers of the given bots that exist (a bot without a container is left
+   *  out). The caller names the bots — the board knows them from the agent cards —
+   *  because the container runtime is never asked to list its containers: the
+   *  dockergate allowlist has no such call. */
+  list(botKeys: readonly string[]): Promise<BotContainerStatus[]>;
   /**
    * Side-effect-free check: does the existing container's live template (image,
    * resource limits, network, bind list) no longer match `spec`? `drifted` is

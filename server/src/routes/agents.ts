@@ -273,6 +273,8 @@ import {
   resolvePaperclipRunnerProviderProfile,
 } from "../services/native-runtime/provider-profile.js";
 import { managedAgentProfileService } from "../services/managed-agent-profiles.js";
+// myrmidon(1.6.4-BOT-CONTAINER-CARD): a container block without enabled/limits is refused on save
+import { botContainerCardSaveProblem } from "../myrmidon/bot-containers/agent-config.js";
 import { remoteAgentProfileService } from "../services/remote-agent-profiles.js";
 
 const AGENT_SKILL_ASSIGNMENT_MODES = ["add", "remove", "replace"] as const;
@@ -2680,6 +2682,9 @@ export function agentRoutes(
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
   ) {
+    // myrmidon(1.6.4-BOT-CONTAINER-CARD): refuse a container block the reconciler could never apply.
+    const containerProblem = botContainerCardSaveProblem(adapterType, adapterConfig);
+    if (containerProblem) throw unprocessable(`Invalid hermes_gateway adapterConfig: ${containerProblem}`);
     if (adapterType === "paperclip_runner") {
       await assertFreshPaperclipRunnerProvider(companyId, adapterType, adapterConfig);
       return;

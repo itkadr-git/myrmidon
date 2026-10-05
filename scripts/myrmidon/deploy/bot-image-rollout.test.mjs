@@ -233,9 +233,9 @@ function sandbox({
     JSON.stringify(
       agents.map((a) => ({
         id: a.id,
-        adapterType: "hermes_gateway",
+        adapterType: a.adapterType ?? "hermes_gateway",
         status: a.status ?? "idle",
-        adapterConfig: {
+        adapterConfig: a.adapterConfig ?? {
           container: {
             enabled: true,
             image: a.image,
@@ -659,5 +659,71 @@ describe("bot-image-rollout.sh: tracking vs pinned cards, batches, paused or idl
     assert.ok(dockergateConfig(sb).images.includes(`${BOT_DEV}@${HERMES_DEV}`));
     assert.doesNotMatch(calls(sb), /-X PATCH|bot-container\/apply/);
     assert.equal(sighups(sb), "", "no SIGHUP with --no-reload");
+  });
+});
+
+describe("bot-image-rollout.sh: every container bot is reported in a category (1.6.4-BOT-CONTAINER-CARD)", () => {
+  const ARGS = ["--resolution", "tag", "--ref", VERSION];
+  const uuid = (n) => `${String(n).padStart(8, "0")}-0000-4000-8000-000000000000`;
+  const summary = (sb) => JSON.parse(read(path.join(sb.stateDir, "bot-image-rollout-summary.json")));
+  const agentsFile = (sb) => JSON.parse(read(path.join(sb.dir, "agents.json")));
+  const pinnedImage = "ghcr.io/example/custom-bot@sha256:" + "7".repeat(64);
+
+  const fleet = () => [
+    { id: uuid(1), image: `${BOT_DEV}@${OLD_DEV}` }, // tracks the release
+    { id: uuid(2), image: pinnedImage }, // pinned
+    // the legacy shape: a container block with an image only
+    { id: uuid(3), adapterConfig: { container: { image: `${BOT}@${OLD_DEV}` } } },
+    // enabled, but a limit is missing
+    { id: uuid(4), adapterConfig: { container: { enabled: true, image: `${BOT}@${OLD_DEV}`, memoryMb: 1024, cpus: 1 } } },
+    // switched off on purpose
+    { id: uuid(5), adapterConfig: { container: { enabled: false, image: `${BOT}@${OLD_DEV}`, memoryMb: 1024, cpus: 1, pidsLimit: 64 } } },
+  ];
+
+  it("lists pinned and not applicable bots with their image or reason, and counts each category", () => {
+    const sb = sandbox({ agents: fleet() });
+    const { code, out } = run(sb, "bot-image-rollout.sh", ARGS);
+    assert.equal(code, 0, out);
+    assert.match(out, new RegExp(`bot ${uuid(2)} is pinned \\(image '${pinnedImage.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}'`));
+    assert.match(out, new RegExp(`bot ${uuid(3)}: not applicable \\(adapterConfig.container.enabled is not true\\)`));
+    assert.match(out, new RegExp(`bot ${uuid(4)}: not applicable \\(container.pidsLimit must be a positive integer\\)`));
+    assert.match(out, new RegExp(`bot ${uuid(5)}: not applicable \\(adapterConfig.container.enabled is not true\\)`));
+    assert.match(out, /cards: 1 tracking the release, 1 pinned .*, 3 not applicable/);
+    const sum = summary(sb);
+    assert.deepEqual([sum.tracking, sum.pinned, sum.notApplicable, sum.switched], [1, 1, 3, 1]);
+    assert.deepEqual(sum.pinnedBots, [{ id: uuid(2), image: pinnedImage }]);
+    assert.deepEqual(
+      sum.notApplicableBots.map((b) => b.id),
+      [uuid(3), uuid(4), uuid(5)],
+    );
+    // the skipped bots got neither PATCH nor apply
+    for (const n of [2, 3, 4, 5]) assert.doesNotMatch(calls(sb), new RegExp(`agents/${uuid(n)}`));
+    assert.match(journal(sb), new RegExp(`agent ${uuid(3)} not applicable`));
+  });
+
+  it("the card PATCH sends the whole container block, not the image alone", () => {
+    const sb = sandbox({ agents: [{ id: uuid(1), image: `${BOT}@${OLD_DEV}`, memoryMb: 1536, cpus: 2, pidsLimit: 256 }] });
+    const { code, out } = run(sb, "bot-image-rollout.sh", ARGS);
+    assert.equal(code, 0, out);
+    const patch = calls(sb).split("\n").find((l) => l.includes("-X PATCH"));
+    assert.ok(patch, "a PATCH was sent");
+    const data = JSON.parse(patch.slice(patch.indexOf("--data ") + 7, patch.lastIndexOf(" http")));
+    assert.deepEqual(data.adapterConfig.container, {
+      enabled: true,
+      image: `${BOT}@${HERMES}`,
+      memoryMb: 1536,
+      cpus: 2,
+      pidsLimit: 256,
+    });
+    assert.equal(agentsFile(sb)[0].adapterConfig.container.memoryMb, 1536);
+  });
+
+  it("--dry-run names every container bot with its category", () => {
+    const sb = sandbox({ agents: fleet() });
+    const { code, out } = run(sb, "bot-image-rollout.sh", [...ARGS, "--dry-run"]);
+    assert.equal(code, 0, out);
+    assert.match(out, new RegExp(`${uuid(1)}: tracks_release`));
+    assert.match(out, new RegExp(`${uuid(2)}: pinned`));
+    assert.match(out, new RegExp(`${uuid(3)}: not_applicable`));
   });
 });

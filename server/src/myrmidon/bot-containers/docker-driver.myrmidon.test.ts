@@ -965,7 +965,7 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
 
     // helpers are gone and never listed as bots
     expect([...daemon.containers.keys()]).toEqual(["myrmidon-bot-agent-a"]);
-    expect((await driver.list()).map((s) => s.botKey)).toEqual(["agent-a"]);
+    expect((await driver.list(["agent-a", "agent-missing"])).map((s) => s.botKey)).toEqual(["agent-a"]);
 
     expect(await driver.status("agent-a")).toEqual({
       botKey: "agent-a",

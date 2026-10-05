@@ -582,6 +582,36 @@ describe("agent routes adapter validation", () => {
     expect(mockSecretService.normalizeAdapterConfigForPersistence).not.toHaveBeenCalled();
   });
 
+  it("refuses a hermes_gateway container block without enabled or limits (myrmidon 1.6.4-BOT-CONTAINER-CARD)", async () => {
+    const { registerServerAdapter, unregisterServerAdapter, getServerAdapter } = await import("../adapters/index.js");
+    const previous = getServerAdapter("hermes_gateway");
+    unregisterServerAdapter("hermes_gateway");
+    registerServerAdapter({ ...externalAdapter, type: "hermes_gateway" });
+    try {
+      const app = await createApp();
+      const create = (container: Record<string, unknown>) =>
+        requestApp(app, (baseUrl) =>
+          request(baseUrl)
+            .post("/api/companies/company-1/agents")
+            .send({ name: "Bot", adapterType: "hermes_gateway", adapterConfig: { container } }),
+        );
+
+      const legacy = await create({ image: "example/hermes@sha256:aa" });
+      expect(legacy.status, JSON.stringify(legacy.body)).toBe(422);
+      expect(String(legacy.body.error ?? legacy.body.message ?? "")).toContain("container.enabled must be true or false");
+
+      const noLimits = await create({ enabled: true, image: "example/hermes@sha256:aa" });
+      expect(noLimits.status, JSON.stringify(noLimits.body)).toBe(422);
+      expect(String(noLimits.body.error ?? noLimits.body.message ?? "")).toContain("memoryMb");
+
+      const complete = await create({ enabled: true, image: "example/hermes@sha256:aa", memoryMb: 2048, cpus: 1, pidsLimit: 512 });
+      expect(complete.status, JSON.stringify(complete.body)).toBe(201);
+    } finally {
+      unregisterServerAdapter("hermes_gateway");
+      if (previous) registerServerAdapter(previous);
+    }
+  });
+
   it("rejects unknown adapter types even when schema accepts arbitrary strings", async () => {
     const app = await createApp();
     const res = await requestApp(app, (baseUrl) =>

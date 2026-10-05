@@ -11,6 +11,7 @@ import {
   AgentCardContainerFieldsView,
   applyBlockedReason,
   concurrencyView,
+  imageTrackingText,
   type AgentCardContainerFieldsViewProps,
 } from "./AgentCardContainerFields";
 import {
@@ -596,5 +597,45 @@ describe("myrmidon(W2b) connected container section", () => {
     click(byId("apply"));
     await flush();
     expect(apply).not.toHaveBeenCalled();
+  });
+});
+
+describe("myrmidon(1.6.4-BOT-CONTAINER-CARD) legacy cards and rollout category", () => {
+  const LEGACY = { image: "bot-image:1" };
+
+  it("flags a block without `enabled` and without limits instead of showing it as off", () => {
+    expect(botContainerProblems(LEGACY)).toEqual([
+      "Enabled is not set on this card: turn the section on (limits below are filled in) or off, then save. A card without it is refused.",
+      "Memory must be a whole number from 128 to 262144.",
+      "CPU must be a number from 0.1 to 128 (up to 2 decimals).",
+      "Process limit must be a whole number from 16 to 65536.",
+    ]);
+    expect(botContainerProblems({})).toEqual([]);
+    expect(botContainerProblems({ enabled: false })).toEqual([]);
+  });
+
+  it("shows the fields and the problem for a legacy block, and turning it on fills the limits", () => {
+    const { onChange } = renderView({ value: LEGACY });
+    expect(byId("enabled")?.getAttribute("aria-checked")).toBe("false");
+    expect((byId("image") as HTMLInputElement).value).toBe("bot-image:1");
+    expect(byId("memoryMb")).not.toBeNull();
+    expect(text("problems")).toContain("Enabled is not set on this card");
+    click(byId("enabled"));
+    expect(onChange).toHaveBeenCalledWith({ image: "bot-image:1", enabled: true, memoryMb: 2048, cpus: 1, pidsLimit: 512 });
+  });
+
+  it("says how the release rollout treats the bot", () => {
+    expect(imageTrackingText(STATUS)).toBeNull();
+    expect(imageTrackingText({ ...STATUS, imageTracking: { category: "tracks_release", image: "img@sha256:aa" } })).toBe(
+      "Bot image rollout: follows the release (now img@sha256:aa).",
+    );
+    expect(imageTrackingText({ ...STATUS, imageTracking: { category: "pinned", image: "img@sha256:bb", reason: "r" } })).toContain(
+      "pinned to img@sha256:bb",
+    );
+    expect(
+      imageTrackingText({ ...STATUS, imageTracking: { category: "not_applicable", image: null, reason: "container.enabled is not true" } }),
+    ).toBe("Bot image rollout: not applicable (container.enabled is not true).");
+    renderView({ status: { ...STATUS, imageTracking: { category: "pinned", image: "img@sha256:bb", reason: "r" } } });
+    expect(text("tracking")).toContain("pinned to img@sha256:bb");
   });
 });

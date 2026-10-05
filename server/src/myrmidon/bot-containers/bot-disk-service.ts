@@ -34,6 +34,7 @@ import { sweepAllBotVolumes } from "./draft-lifecycle.js";
 import { refreshGitMirrors } from "./git-mirror.js"; // myrmidon(1.6.2-BOT-DISK-C)
 import { dropCloneSignalsExcept, ingestCloneReport, noteCloneReportSeen } from "./clone-hygiene.js";
 import { getBotContainerRuntime } from "./routes-wiring.js";
+import { botKeyForAgent, readBotContainerAgentConfig } from "./agent-config.js"; // myrmidon(1.6.4-BOT-CONTAINER-CARD)
 
 export type BotDiskView = ResolvedBotDiskSettings;
 
@@ -241,26 +242,56 @@ export async function runBotDiskSweep(db: Db): Promise<void> {
   void refreshGitMirrors(layout).catch((err) => logger.warn({ err }, "git mirror refresh failed"));
   const lifecycle = await resolveBotDiskLifecycleConfig({ getGeneral: async () => general });
   await sweepAllBotVolumes(lifecycle);
-  await collectCloneReports(lifecycle.idleTtlMs).catch((err) => logger.warn({ err }, "clone hygiene report collection failed"));
+  await collectCloneReports(lifecycle.idleTtlMs, () => readContainerBotKeys(db)).catch((err) =>
+    logger.warn({ err }, "clone hygiene report collection failed"),
+  );
+}
+
+/**
+ * myrmidon(1.6.4-BOT-CONTAINER-CARD): the bots the board manages a container for,
+ * from the agent cards (an enabled, complete hermes_gateway container block).
+ * The container runtime is never listed: dockergate has no such call.
+ */
+export async function readContainerBotKeys(db: Db): Promise<string[]> {
+  const rows = await db
+    .select({ id: agents.id, adapterType: agents.adapterType, adapterConfig: agents.adapterConfig })
+    .from(agents)
+    .where(eq(agents.adapterType, "hermes_gateway"));
+  const keys: string[] = [];
+  for (const row of rows) {
+    if (!readBotContainerAgentConfig(row.adapterType, row.adapterConfig ?? {}).ok) continue;
+    const key = botKeyForAgent(row.id);
+    if (key) keys.push(key);
+  }
+  return keys;
 }
 
 /**
  * myrmidon(1.6.2-BOT-DISK-C): read each running bot's clone-hygiene report from
  * its container (the board has no mount of the volumes) and turn unpushed work
  * idle past the TTL into attention signals. A bot without a report is skipped.
+ *
+ * myrmidon(1.6.4-BOT-CONTAINER-CARD): the bots come from the agent cards
+ * (`readBotKeys`) and each is asked by its own name (inspect, then the report
+ * read) — calls dockergate allows. The earlier container listing was refused
+ * (403 route_not_allowed) on every sweep, so no report was ever collected.
  */
-export async function collectCloneReports(idleTtlMs: number): Promise<void> {
+export async function collectCloneReports(idleTtlMs: number, readBotKeys: () => Promise<string[]>): Promise<void> {
   const driver = getBotContainerRuntime()?.driver;
   if (!driver?.readCloneReport) return;
-  const bots = await driver.list();
+  const bots = await driver.list(await readBotKeys());
   const live = new Set<string>();
   for (const bot of bots) {
     if (bot.state !== "running") continue;
-    const raw = await driver.readCloneReport(bot.botKey);
-    if (raw === null) continue;
-    if (ingestCloneReport(bot.botKey, raw, idleTtlMs)) {
-      live.add(bot.botKey);
-      noteCloneReportSeen();
+    try {
+      const raw = await driver.readCloneReport(bot.botKey);
+      if (raw === null) continue;
+      if (ingestCloneReport(bot.botKey, raw, idleTtlMs)) {
+        live.add(bot.botKey);
+        noteCloneReportSeen();
+      }
+    } catch (err) {
+      logger.warn({ err, botKey: bot.botKey }, "clone hygiene report read failed");
     }
   }
   dropCloneSignalsExcept(live);

@@ -96,6 +96,14 @@ export function setBotContainerNumber(card: BotContainerCard, field: BotContaine
  *  is complete. Shown as a warning: saving stays possible, the card just will not
  *  be applied until it is fixed. */
 export function botContainerProblems(card: BotContainerCard): string[] {
+  // myrmidon(1.6.4-BOT-CONTAINER-CARD): a block without `enabled` is a legacy card the
+  // server refuses to save and never applies; say so instead of showing it as "off".
+  if (typeof card.enabled !== "boolean" && Object.keys(card).length > 0) {
+    return [
+      "Enabled is not set on this card: turn the section on (limits below are filled in) or off, then save. A card without it is refused.",
+      ...botContainerLimitProblems(card),
+    ];
+  }
   if (card.enabled !== true) return [];
   const problems: string[] = [];
   if (typeof card.image !== "string" || card.image.trim().length === 0) problems.push("Image is required.");
@@ -106,6 +114,17 @@ export function botContainerProblems(card: BotContainerCard): string[] {
   }
   if (card.group !== undefined && card.group !== null) {
     problems.push("Shared containers (Group) are not supported yet: leave Group empty.");
+  }
+  return problems;
+}
+
+/** The limits that are missing or outside the UI's ranges, in field order. */
+export function botContainerLimitProblems(card: BotContainerCard): string[] {
+  const problems: string[] = [];
+  for (const field of Object.keys(BOT_CONTAINER_NUMBER_FIELDS) as BotContainerNumberField[]) {
+    if (!isStoredNumberValid(field, card[field])) {
+      problems.push(`${BOT_CONTAINER_NUMBER_FIELDS[field].label} must be ${describeNumberRange(field)}.`);
+    }
   }
   return problems;
 }

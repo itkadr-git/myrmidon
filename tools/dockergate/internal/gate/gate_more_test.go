@@ -15,7 +15,7 @@ import (
 
 // The contract (spec 12.3): every request that the real driver sent to a fake
 // daemon, replayed in order through the gate against a daemon that keeps the
-// state, passes, and every one of them is a route of A1..A12.
+// state, passes, and every one of them is a route of A1..A13.
 func TestContract_RecordedTrafficPasses(t *testing.T) {
 	r := newRig(t)
 	recs := fixture.Traffic(t)
@@ -43,7 +43,7 @@ func TestContract_RecordedTrafficPasses(t *testing.T) {
 			t.Errorf("decision %s on %s: %s", l.Decision, l.Route, l.Reason)
 		}
 		if l.Route == "none" || l.Route == "" {
-			t.Errorf("a request outside A1..A12: %+v", l)
+			t.Errorf("a request outside A1..A13: %+v", l)
 		}
 	}
 }

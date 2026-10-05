@@ -1,5 +1,5 @@
 // Package route matches the raw request-target of a client request against the
-// allowlist of dockergate (A1..A12). There is no percent-decoding anywhere: the
+// allowlist of dockergate (A1..A13). There is no percent-decoding anywhere: the
 // target is compared as a string with anchored templates, and the only escapes
 // that can match are the literals that a template contains.
 package route
@@ -40,6 +40,7 @@ const (
 	A10 = "A10"
 	A11 = "A11"
 	A12 = "A12"
+	A13 = "A13"
 )
 
 // Mount paths that a tar upload (A5) may target, keyed by the raw query value.
@@ -53,6 +54,11 @@ var archiveMounts = map[string]string{
 // at its real path inside the single /bot mount (not through the /data/hermes
 // link, which only exists in the image).
 const markerQuery = "path=%2Fbot%2Fhermes%2F.myrmidon%2Fapplied.json"
+
+// cloneReportQuery is the one file of the bot that the board reads besides the
+// marker: the clone-hygiene report the bot image writes (A13). A fixed literal,
+// like the marker: no other path of the archive GET is allowed.
+const cloneReportQuery = "path=%2Fbot%2Fhermes%2F.myrmidon%2Fclone-hygiene.json"
 
 // Route is a parsed and matched request.
 type Route struct {
@@ -233,6 +239,11 @@ func Parse(method, target string, images Images) (*Route, *deny.Error) {
 			return nil, notAllowed()
 		}
 		r.ID = A3
+	case "/archive?" + cloneReportQuery:
+		if method != "GET" || suffix != SuffixMain {
+			return nil, notAllowed()
+		}
+		r.ID = A13
 	case "/start":
 		if method != "POST" || suffix == SuffixNext {
 			return nil, notAllowed()

@@ -4,6 +4,9 @@ import {
   CONTAINER_GROUP_UNSUPPORTED_REASON,
   botContainerSpec,
   botKeyForAgent,
+  BOT_CONTAINER_DEFAULTS,
+  botContainerCardSaveProblem,
+  classifyBotImageTracking,
   isBotContainersEnabled,
   readBotContainerAgentConfig,
 } from "./agent-config.js";
@@ -172,5 +175,80 @@ describe("readBotContainerAgentConfig: container.extraMounts", () => {
     const result = readBotContainerAgentConfig("hermes_gateway", configWith(extraMounts));
     expect(result.ok).toBe(false);
     expect(result.ok === false && result.reason).toContain("container.extraMounts");
+  });
+});
+
+describe("botContainerCardSaveProblem (1.6.4-BOT-CONTAINER-CARD)", () => {
+  it("has the defaults the form and the migration use", () => {
+    expect(BOT_CONTAINER_DEFAULTS).toEqual({ memoryMb: 2048, cpus: 1, pidsLimit: 512 });
+  });
+
+  it("accepts a card without a container block and any other adapter", () => {
+    expect(botContainerCardSaveProblem("hermes_gateway", {})).toBeNull();
+    expect(botContainerCardSaveProblem("hermes_gateway", { container: null })).toBeNull();
+    expect(botContainerCardSaveProblem("process", { container: { image: "x" } })).toBeNull();
+  });
+
+  it("accepts a complete enabled block and any explicitly disabled one", () => {
+    expect(botContainerCardSaveProblem("hermes_gateway", { container: VALID_CONTAINER_CONFIG })).toBeNull();
+    expect(botContainerCardSaveProblem("hermes_gateway", { container: { enabled: false, image: "x" } })).toBeNull();
+  });
+
+  it("refuses a block without `enabled`, naming the field", () => {
+    const problem = botContainerCardSaveProblem("hermes_gateway", { container: { image: "x" } });
+    expect(problem).toContain("container.enabled must be true or false");
+    expect(botContainerCardSaveProblem("hermes_gateway", { container: { enabled: "yes", image: "x" } })).toContain("enabled");
+    expect(botContainerCardSaveProblem("hermes_gateway", { container: "yes" })).toContain("must be an object");
+  });
+
+  it("refuses an enabled block without limits, naming each and the defaults", () => {
+    const problem = botContainerCardSaveProblem("hermes_gateway", { container: { enabled: true, image: "x", cpus: 1 } });
+    expect(problem).toContain("memoryMb");
+    expect(problem).toContain("pidsLimit");
+    expect(problem).not.toContain("cpus (");
+    expect(problem).toContain("defaults are memoryMb 2048, cpus 1, pidsLimit 512");
+    expect(
+      botContainerCardSaveProblem("hermes_gateway", { container: { ...VALID_CONTAINER_CONFIG, memoryMb: 0 } }),
+    ).toContain("memoryMb");
+    expect(
+      botContainerCardSaveProblem("hermes_gateway", { container: { ...VALID_CONTAINER_CONFIG, pidsLimit: 1.5 } }),
+    ).toContain("pidsLimit");
+  });
+});
+
+describe("classifyBotImageTracking (1.6.4-BOT-CONTAINER-CARD)", () => {
+  const digest = (repo: string) => `ghcr.io/example/${repo}@sha256:${"c".repeat(64)}`;
+
+  it("tracks the release for a digest of each of the three bot repositories", () => {
+    for (const repo of ["myrmidon-hermes", "myrmidon-hermes-dev", "myrmidon-hermes-node"]) {
+      const image = digest(repo);
+      expect(classifyBotImageTracking("hermes_gateway", { container: { ...VALID_CONTAINER_CONFIG, image } })).toEqual({
+        category: "tracks_release",
+        image,
+      });
+    }
+  });
+
+  it("is pinned for a tag, another repository or a short digest, and says which image", () => {
+    for (const image of ["myrmidon-hermes:1.1.0", digest("something-else"), "ghcr.io/example/myrmidon-hermes@sha256:abc"]) {
+      expect(classifyBotImageTracking("hermes_gateway", { container: { ...VALID_CONTAINER_CONFIG, image } })).toMatchObject({
+        category: "pinned",
+        image,
+      });
+    }
+  });
+
+  it("is not applicable, with the reason, when the card is not a managed container", () => {
+    expect(classifyBotImageTracking("process", { container: VALID_CONTAINER_CONFIG })).toMatchObject({ category: "not_applicable", reason: expect.stringContaining("not hermes_gateway") });
+    expect(classifyBotImageTracking("hermes_gateway", {})).toMatchObject({ category: "not_applicable", reason: "adapterConfig.container is not set" });
+    expect(classifyBotImageTracking("hermes_gateway", { container: { image: digest("myrmidon-hermes") } })).toEqual({
+      category: "not_applicable",
+      image: null,
+      reason: "adapterConfig.container.enabled is not true",
+    });
+    expect(classifyBotImageTracking("hermes_gateway", { container: { enabled: true, image: digest("myrmidon-hermes") } })).toMatchObject({
+      category: "not_applicable",
+      reason: "container.memoryMb must be a positive number",
+    });
   });
 });

@@ -30,12 +30,14 @@ import (
 
 // Limits of the answers (spec 6.3 and 11.1).
 const (
-	maxErrBody   = 64 << 10
-	maxInspectA  = 1 << 20
-	maxMarker    = 1 << 20
-	maxLogsBody  = 256 << 10
-	maxCreateRes = 64 << 10
-	maxWaitBody  = 64 << 10
+	maxErrBody  = 64 << 10
+	maxInspectA = 1 << 20
+	maxMarker   = 1 << 20
+	// maxCloneReport: the report is capped at 4 MiB by the board, plus the tar framing.
+	maxCloneReport = 5 << 20
+	maxLogsBody    = 256 << 10
+	maxCreateRes   = 64 << 10
+	maxWaitBody    = 64 << 10
 
 	statsEvery   = 15 * time.Second
 	callersEvery = 60 * time.Second

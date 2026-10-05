@@ -150,6 +150,8 @@ func (rs *reqState) handle() *deny.Error {
 		return rs.a2(ctx, st, rt, bs)
 	case route.A3:
 		return rs.a3(ctx, st, rt, bs)
+	case route.A13:
+		return rs.a13(ctx, st, rt, bs)
 	case route.A4:
 		return rs.a4(ctx, st, rt, bot, bs)
 	case route.A5:
