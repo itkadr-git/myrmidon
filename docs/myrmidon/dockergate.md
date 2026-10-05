@@ -77,6 +77,7 @@ Extra read-only bot mounts (shared directories) are described in
 | A10 | `POST .../myrmidon-bot-<K>/stop?t=30` | stop (only inside a recreate) |
 | A11 | `POST .../myrmidon-bot-<K>/restart?t=30` | restart (rate-limited) |
 | A12 | `POST .../myrmidon-bot-<K>.next/rename?name=myrmidon-bot-<K>` | finish the recreate |
+| A13 | `GET .../myrmidon-bot-<K>/archive?path=<clone-hygiene report>` | read the bot's clone-hygiene report (one fixed file, like A3) |
 
 `K` is a lowercase UUID. Any other path (including `exec`, `attach`, `commit`, `build`,
 `images/create`, `volumes`, `networks`, `info`, `events`, `system`, `swarm`) gets 403

@@ -15,7 +15,7 @@ import (
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/policy"
 )
 
-// The allow side: every route of the allowlist (A1 to A12) with the request as
+// The allow side: every route of the allowlist (A1 to A13) with the request as
 // the driver sends it, the exact request that reaches the daemon, and the exact
 // answer that the client gets.
 
@@ -256,6 +256,28 @@ func TestAllow_A3_NoMarkerIsThe404OfTheDaemon(t *testing.T) {
 	if denyCode(res) != "" || !strings.Contains(res.str(), "Could not find") {
 		t.Errorf("body %q", res.str())
 	}
+}
+
+func TestAllow_A13_CloneHygieneReport(t *testing.T) {
+	r := newRig(t)
+	r.seedMain("running")
+	report := []byte("report-tar-bytes\x00\x01")
+	r.d.Modify(r.name(""), func(c *fakedocker.Container) { c.CloneReport = report })
+	id := r.id("")
+	res := r.send("GET", r.target("", "/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fclone-hygiene.json"), nil, nil)
+	wantStatus(t, res, 200)
+	if !bytes.Equal(res.Body, report) {
+		t.Errorf("body %q", res.Body)
+	}
+	r.wantURIs("GET "+r.target("", "/json"),
+		"GET /v1.45/containers/"+id+"/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fclone-hygiene.json")
+}
+
+func TestAllow_A13_NoReportIsThe404OfTheDaemon(t *testing.T) {
+	r := newRig(t)
+	r.seedMain("running")
+	res := r.send("GET", r.target("", "/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fclone-hygiene.json"), nil, nil)
+	wantStatus(t, res, 404)
 }
 
 // --- A4 ---------------------------------------------------------------------------

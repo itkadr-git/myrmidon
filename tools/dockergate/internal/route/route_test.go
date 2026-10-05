@@ -53,6 +53,7 @@ func TestAllow(t *testing.T) {
 		{"A9 helper", "DELETE", v + "containers/" + nameAHelp + "?force=true&v=true", Route{ID: A9, BotKey: keyA, Suffix: SuffixHelper, Name: nameAHelp}},
 		{"A10", "POST", v + "containers/" + nameA + "/stop?t=30", Route{ID: A10, BotKey: keyA, Name: nameA}},
 		{"A11", "POST", v + "containers/" + nameA + "/restart?t=30", Route{ID: A11, BotKey: keyA, Name: nameA}},
+		{"A13", "GET", v + "containers/" + nameA + "/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fclone-hygiene.json", Route{ID: A13, BotKey: keyA, Name: nameA}},
 		{"A12", "POST", v + "containers/" + nameANext + "/rename?name=" + nameA, Route{ID: A12, BotKey: keyA, Suffix: SuffixNext, Name: nameANext}},
 	}
 	for _, tc := range cases {
@@ -126,6 +127,11 @@ func TestDenyTable(t *testing.T) {
 		{"A3 decoded path", "GET", c + nameA + "/archive?path=/bot/hermes/.myrmidon/applied.json", deny.RouteNotAllowed},
 		{"A3 lowercase escape", "GET", c + nameA + "/archive?path=%2fdata%2fhermes%2f.myrmidon%2fapplied.json", deny.RouteNotAllowed},
 		{"A3 extra query", "GET", c + nameA + "/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fapplied.json&x=1", deny.RouteNotAllowed},
+		{"A13 other file", "GET", c + nameA + "/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fclone-hygiene.jsom", deny.RouteNotAllowed},
+		{"A13 traversal", "GET", c + nameA + "/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2F..%2Fclone-hygiene.json", deny.RouteNotAllowed},
+		{"A13 extra query", "GET", c + nameA + "/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fclone-hygiene.json&x=1", deny.RouteNotAllowed},
+		{"A13 helper", "GET", c + nameAHelp + "/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fclone-hygiene.json", deny.RouteNotAllowed},
+		{"A13 PUT", "PUT", c + nameA + "/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fclone-hygiene.json", deny.RouteNotAllowed},
 		{"A3 no query", "GET", c + nameA + "/archive", deny.RouteNotAllowed},
 		{"A3 helper", "GET", c + nameAHelp + "/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fapplied.json", deny.RouteNotAllowed},
 		{"A3 PUT", "PUT", c + nameA + "/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fapplied.json", deny.RouteNotAllowed},
