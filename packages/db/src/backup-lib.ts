@@ -11,6 +11,12 @@ export type BackupRetentionPolicy = {
   dailyDays: number;
   weeklyWeeks: number;
   monthlyMonths: number;
+  // myrmidon(BACKUP-KEEP-LAST): "keep only the last verified backup" mode;
+  // when true, tiered pruning is skipped and all previous <prefix>-* files are
+  // deleted after the new dump passes verification. Kept as a local copy of the
+  // shared type (packages/shared/src/types/instance.ts): the db package does not
+  // depend on @paperclipai/shared, so the flag is mirrored here instead.
+  keepLastOnly?: boolean;
 };
 
 export type RunDatabaseBackupOptions = {
@@ -73,6 +79,81 @@ const BACKUP_BREAKPOINT_DETECT_BYTES = 64 * 1024;
 
 const STATEMENT_BREAKPOINT = "-- paperclip statement breakpoint 69f6f3f1-42fd-46a6-bf17-d1d85f8f3900";
 
+// myrmidon(BACKUP-KEEP-LAST): tail window scanned for the closing COMMIT;
+// marker when verifying a freshly written dump. Kept in the same spirit as
+// BACKUP_BREAKPOINT_DETECT_BYTES — the check streams the file and holds only
+// this many bytes of its tail.
+const BACKUP_VERIFY_TAIL_BYTES = 64 * 1024;
+
+// myrmidon(BACKUP-KEEP-LAST): unfinished `.sql` leftovers older than this are
+// treated as orphans of interrupted runs and pruned before the retention pass.
+// 1 hour is safely longer than any in-flight dump writes to its own `.sql`
+// (the live writer keeps the mtime fresh, and the cutoff is strictly past).
+const BACKUP_ORPHAN_SQL_MAX_AGE_MS = 60 * 60 * 1000;
+
+/**
+ * myrmidon(BACKUP-KEEP-LAST): stream-verify a freshly written backup file.
+ * `.gz` files are gunzipped chunk by chunk (a corrupt stream fails here); the
+ * decompressed text — or the plain `.sql` text — must end with the closing
+ * `COMMIT;` marker. Only a small tail buffer is retained, so multi-GB dumps
+ * verify without materializing the whole file.
+ */
+export async function verifyBackupFile(path: string): Promise<{ ok: boolean; reason?: string }> {
+  const raw = createReadStream(path);
+  const stream = path.endsWith(".gz") ? raw.pipe(createGunzip()) : raw;
+  stream.setEncoding("utf8");
+  let tail = "";
+  let gunzipError: unknown = null;
+
+  try {
+    for await (const chunk of stream) {
+      tail += typeof chunk === "string" ? chunk : String(chunk);
+      if (Buffer.byteLength(tail, "utf8") > BACKUP_VERIFY_TAIL_BYTES) {
+        tail = Buffer.from(tail, "utf8").subarray(-BACKUP_VERIFY_TAIL_BYTES).toString("utf8");
+      }
+    }
+  } catch (error) {
+    gunzipError = error;
+  } finally {
+    stream.destroy();
+    raw.destroy();
+  }
+
+  if (gunzipError) {
+    const message = gunzipError instanceof Error ? gunzipError.message : String(gunzipError);
+    return { ok: false, reason: `failed to decompress: ${message}` };
+  }
+  if (!tail.includes("COMMIT;")) {
+    return { ok: false, reason: "missing closing COMMIT; marker in the dump tail" };
+  }
+  return { ok: true };
+}
+
+/**
+ * myrmidon(BACKUP-KEEP-LAST): delete every `<prefix>-*.sql(.gz)` backup in the
+ * directory except `keepFile` (the just-verified new dump). Returns the number
+ * of deleted files.
+ */
+function deleteAllBackupsExcept(backupDir: string, filenamePrefix: string, keepFile: string): number {
+  if (!existsSync(backupDir)) return 0;
+  const keepResolved = resolve(keepFile);
+  let deleted = 0;
+  for (const name of readdirSync(backupDir)) {
+    if (!name.startsWith(`${filenamePrefix}-`)) continue;
+    if (!name.endsWith(".sql") && !name.endsWith(".sql.gz")) continue;
+    const fullPath = resolve(backupDir, name);
+    if (fullPath === keepResolved) continue;
+    try {
+      unlinkSync(fullPath);
+      deleted += 1;
+    } catch {
+      // A file that cannot be removed is left in place; keep-last is
+      // best-effort about the count but never touches the new dump.
+    }
+  }
+  return deleted;
+}
+
 function sanitizeRestoreErrorMessage(error: unknown): string {
   if (error && typeof error === "object") {
     const record = error as Record<string, unknown>;
@@ -124,6 +205,28 @@ function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, fi
   if (!existsSync(backupDir)) return 0;
 
   const now = Date.now();
+
+  // myrmidon(BACKUP-KEEP-LAST): first pass — remove orphaned, never-finished
+  // plain `.sql` leftovers from interrupted runs (the file is written plain,
+  // then gzipped; a crash leaves the `.sql` behind). Only files with an mtime
+  // strictly older than the cutoff count — a live run's own in-progress `.sql`
+  // stays untouched, and these orphans count into prunedCount.
+  let prunedCount = 0;
+  for (const name of readdirSync(backupDir)) {
+    if (!name.startsWith(`${filenamePrefix}-`)) continue;
+    if (!name.endsWith(".sql") || name.endsWith(".sql.gz")) continue;
+    const fullPath = resolve(backupDir, name);
+    try {
+      const stat = statSync(fullPath);
+      if (stat.mtimeMs < now - BACKUP_ORPHAN_SQL_MAX_AGE_MS) {
+        unlinkSync(fullPath);
+        prunedCount += 1;
+      }
+    } catch {
+      // Raced deletion or unreadable entry — not an orphan we must force out.
+    }
+  }
+
   const dailyCutoff = now - Math.max(1, retention.dailyDays) * 24 * 60 * 60 * 1000;
   const weeklyCutoff = now - Math.max(1, retention.weeklyWeeks) * 7 * 24 * 60 * 60 * 1000;
   const monthlyCutoff = monthlyRetentionCutoff(now, retention.monthlyMonths);
@@ -182,7 +285,7 @@ function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, fi
     unlinkSync(filePath);
   }
 
-  return toDelete.length;
+  return prunedCount + toDelete.length;
 }
 
 function formatBackupSize(sizeBytes: number): string {
@@ -529,6 +632,10 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
   const retention = opts.retention;
   const connectTimeout = Math.max(1, Math.trunc(opts.connectTimeoutSeconds ?? 5));
   const backupEngine = opts.backupEngine ?? "auto";
+  // myrmidon(BACKUP-KEEP-LAST): "keep only the last verified backup" mode
+  // skips the tier presets and, after the new dump passes verification,
+  // deletes every other <prefix>-* file in the backup directory.
+  const keepLastOnly = retention.keepLastOnly === true;
   let effectiveBackupEngine = backupEngine;
   const canUsePgDump = !hasBackupTransforms(opts);
   const excludedTableNames = normalizeTableNameSet(opts.excludeTables);
@@ -556,8 +663,22 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
           connectTimeout,
         });
         await writer.abort();
+        // myrmidon(BACKUP-KEEP-LAST): verify before any deletion — a corrupt
+        // new dump is dropped and older backups are kept, the run fails loudly.
+        if (keepLastOnly) {
+          const verification = await verifyBackupFile(backupFile);
+          if (!verification.ok) {
+            try { unlinkSync(backupFile); } catch { /* ignore */ }
+            throw new Error(
+              `Backup verification failed for ${basename(backupFile)}: ${verification.reason}; previous backups were kept`,
+            );
+          }
+        }
         const sizeBytes = statSync(backupFile).size;
-        const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
+        // myrmidon(BACKUP-KEEP-LAST): keep-last replaces tiered pruning.
+        const prunedCount = keepLastOnly
+          ? deleteAllBackupsExcept(opts.backupDir, filenamePrefix, backupFile)
+          : pruneOldBackups(opts.backupDir, retention, filenamePrefix);
         return {
           backupFile,
           sizeBytes,
@@ -1026,8 +1147,22 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     await pipeline(sqlReadStream, createGzip(), gzWriteStream);
     unlinkSync(sqlFile);
 
+    // myrmidon(BACKUP-KEEP-LAST): verify before any deletion — a corrupt
+    // new dump is dropped and older backups are kept, the run fails loudly.
+    if (keepLastOnly) {
+      const verification = await verifyBackupFile(backupFile);
+      if (!verification.ok) {
+        try { unlinkSync(backupFile); } catch { /* ignore */ }
+        throw new Error(
+          `Backup verification failed for ${basename(backupFile)}: ${verification.reason}; previous backups were kept`,
+        );
+      }
+    }
     const sizeBytes = statSync(backupFile).size;
-    const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
+    // myrmidon(BACKUP-KEEP-LAST): keep-last replaces tiered pruning.
+    const prunedCount = keepLastOnly
+      ? deleteAllBackupsExcept(opts.backupDir, filenamePrefix, backupFile)
+      : pruneOldBackups(opts.backupDir, retention, filenamePrefix);
 
     return {
       backupFile,
