@@ -42,6 +42,14 @@ import {
   updateAgentInstructionsBundleSchema,
   updateAgentPermissionsSchema,
   updateAgentInstructionsPathSchema,
+  AGENT_BOARD_ADMIN_PERMISSION_KEY,
+  AGENT_BOARD_ADMIN_SAVED_GRANT_KEYS,
+  BOARD_ADMIN_PERMISSION_KEYS,
+  boardAdminRevocableGrantKeys,
+  deriveBoardAdminFromGrants,
+  missingBoardAdminGrantKeys,
+  readAgentBoardAdminPermission,
+  readAgentBoardAdminSavedGrantKeys,
   wakeAgentSchema,
   updateAgentSchema,
   supportedEnvironmentDriversForAdapter,
@@ -52,6 +60,7 @@ import {
   toAccountHandle,
   type AgentAdapterType,
 } from "@paperclipai/shared";
+import { dbAutonomyGate } from "../myrmidon/autonomy/gate.js";
 import {
   isForbiddenConfigEnvKey,
   normalizePaperclipRunnerAdapterConfig,
@@ -81,6 +90,7 @@ import {
   syncInstructionsBundleConfigFromFilePath,
   workspaceOperationService,
 } from "../services/index.js";
+import type { AgentCasteDirectoryPort } from "../services/agents.js";
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { PAPERCLIP_CORE_SKILL_KEYS } from "../services/company-skills.js";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
@@ -265,6 +275,8 @@ import {
   resolvePaperclipRunnerProviderProfile,
 } from "../services/native-runtime/provider-profile.js";
 import { managedAgentProfileService } from "../services/managed-agent-profiles.js";
+// myrmidon(1.6.4-BOT-CONTAINER-CARD): a container block without enabled/limits is refused on save
+import { botContainerCardSaveProblem } from "../myrmidon/bot-containers/agent-config.js";
 import { remoteAgentProfileService } from "../services/remote-agent-profiles.js";
 
 const AGENT_SKILL_ASSIGNMENT_MODES = ["add", "remove", "replace"] as const;
@@ -503,6 +515,13 @@ export function agentRoutes(
        */
       completeCredential?: SetupTokenSecretWriter;
     };
+    /**
+     * myrmidon(1.6.1 CUSTOM-CASTES B): the company caste directory read. When
+     * present, the agent create/update service refuses a role key that is not
+     * a caste of the company (400). Absent until part A lands — the check is
+     * then a no-op, which keeps the pre-directory behavior exactly.
+     */
+    casteDirectory?: AgentCasteDirectoryPort;
   } = {},
 ) {
   // Legacy hardcoded maps — used as fallback when adapter module does not
@@ -545,7 +564,7 @@ export function agentRoutes(
   const KNOWN_INSTRUCTIONS_BUNDLE_KEY_SET: ReadonlySet<string> = new Set(KNOWN_INSTRUCTIONS_BUNDLE_KEYS);
 
   const router = Router();
-  const svc = agentService(db);
+  const svc = agentService(db, { castes: options.casteDirectory });
   const access = accessService(db);
   const approvalsSvc = approvalService(db);
   const budgets = budgetService(db);
@@ -1583,10 +1602,23 @@ export function agentRoutes(
       : [];
     const hasExplicitTaskAssignGrant = grants.some((grant) => grant.permissionKey === "tasks:assign");
 
+    // myrmidon(1.6.1 ADMIN-AGENT): the authoritative board-admin flag for the
+    // GET /agents/:id access block. Read-time migration: an agent that already
+    // holds the full operator set reads as an administrator without any write,
+    // so existing full sets are covered the moment the code ships; the first
+    // toggle persists the explicit flag plus snapshot. Derived value only —
+    // this never mutates stored state.
+    const grantKeys = grants.map((grant) => grant.permissionKey);
+    const boardAdmin =
+      agent.role === "ceo" ||
+      readAgentBoardAdminPermission(agent.permissions) ||
+      deriveBoardAdminFromGrants(grantKeys);
+
     if (agent.role === "ceo") {
       return {
         canAssignTasks: true,
         taskAssignSource: "ceo_role" as const,
+        boardAdmin,
         membership,
         grants,
       };
@@ -1596,6 +1628,7 @@ export function agentRoutes(
       return {
         canAssignTasks: true,
         taskAssignSource: "agent_creator" as const,
+        boardAdmin,
         membership,
         grants,
       };
@@ -1605,6 +1638,7 @@ export function agentRoutes(
       return {
         canAssignTasks: true,
         taskAssignSource: "explicit_grant" as const,
+        boardAdmin,
         membership,
         grants,
       };
@@ -1614,6 +1648,7 @@ export function agentRoutes(
       return {
         canAssignTasks: true,
         taskAssignSource: "simple_default" as const,
+        boardAdmin,
         membership,
         grants,
       };
@@ -1622,6 +1657,7 @@ export function agentRoutes(
     return {
       canAssignTasks: false,
       taskAssignSource: "none" as const,
+      boardAdmin,
       membership,
       grants,
     };
@@ -2649,6 +2685,9 @@ export function agentRoutes(
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
   ) {
+    // myrmidon(1.6.4-BOT-CONTAINER-CARD): refuse a container block the reconciler could never apply.
+    const containerProblem = botContainerCardSaveProblem(adapterType, adapterConfig);
+    if (containerProblem) throw unprocessable(`Invalid hermes_gateway adapterConfig: ${containerProblem}`);
     if (adapterType === "paperclip_runner") {
       await assertFreshPaperclipRunnerProvider(companyId, adapterType, adapterConfig);
       return;
@@ -2868,6 +2907,29 @@ export function agentRoutes(
       targetAgent,
       [agentProfileChangeTargetKey(targetAgent.id)],
     );
+  }
+
+  // Agent actors pause agents through the same direct-grant ladder as
+  // assertCanResumeAgent: `agent_config:update` with requiresChangeGrant, so
+  // an agents:configure grant authorizes the pause while agents:suggest-changes
+  // and ungranted peers stay denied. Board actors keep the previous
+  // assertBoard semantics untouched.
+  async function assertCanPauseAgent(
+    req: Request,
+    targetAgent: { id: string; companyId: string },
+  ) {
+    if (req.actor.type !== "agent") {
+      assertBoard(req);
+      return;
+    }
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "agent_config:update",
+      resource: { type: "agent", companyId: targetAgent.companyId, agentId: targetAgent.id },
+      scope: { requiresChangeGrant: true },
+    });
+    if (decision.allowed) return;
+    throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
   }
 
   async function assertCanResumeAgent(
@@ -4910,13 +4972,73 @@ export function agentRoutes(
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!existing) return;
 
+    // myrmidon(1.6.1 ADMIN-AGENT): flipping the board-admin switch requires the
+    // company `users:manage_permissions` right on top of the base permission
+    // check below. The gate applies only when the request carries `boardAdmin`,
+    // so ordinary permission updates keep their existing behavior.
+    const requestedBoardAdmin = req.body.boardAdmin as boolean | undefined;
+    if (requestedBoardAdmin !== undefined) {
+      if (req.actor.type === "agent") {
+        if (!req.actor.agentId) {
+          res.status(403).json({ error: "Agent authentication required" });
+          return;
+        }
+        if (req.actor.agentId === existing.id && requestedBoardAdmin === true) {
+          // An agent must not appoint itself as a board administrator.
+          res.status(403).json({ error: "An agent cannot grant board admin to itself" });
+          return;
+        }
+        if (
+          !(await access.hasPermission(
+            existing.companyId,
+            "agent",
+            req.actor.agentId,
+            "users:manage_permissions",
+          ))
+        ) {
+          res.status(403).json({ error: "Missing users:manage_permissions grant" });
+          return;
+        }
+      } else {
+        // Board actors: same company + the users:manage_permissions company
+        // right (the local implicit operator context passes by definition).
+        // Same shape as the assertCompanyPermission precedent in routes/access.ts.
+        // Existence-oracle guard: gate on company access first so a cross-tenant
+        // request fails as 404, not 403 (canonical hasCompanyAccess pattern).
+        if (!hasCompanyAccess(req, existing.companyId)) throw notFound("Agent not found");
+        assertCompanyAccess(req, existing.companyId);
+        const isLocalImplicitActor =
+          req.actor.source === "local_implicit" || req.actor.isInstanceAdmin === true;
+        if (!isLocalImplicitActor) {
+          const allowed = await access.canUser(
+            existing.companyId,
+            req.actor.userId,
+            "users:manage_permissions",
+          );
+          if (!allowed) {
+            throw forbidden("Missing users:manage_permissions permission for the company");
+          }
+        }
+      }
+    }
+
     if (req.actor.type === "agent") {
       const actorAgent = req.actor.agentId ? await svc.getById(req.actor.agentId) : null;
       if (!actorAgent || actorAgent.companyId !== existing.companyId) {
         res.status(403).json({ error: "Forbidden" });
         return;
       }
-      if (actorAgent.role !== "ceo") {
+      // myrmidon(1.6.1 ADMIN-AGENT): an agent holding users:manage_permissions
+      // may manage other agents' permissions; the CEO rule stays.
+      if (
+        actorAgent.role !== "ceo" &&
+        !(await access.hasPermission(
+          actorAgent.companyId,
+          "agent",
+          actorAgent.id,
+          "users:manage_permissions",
+        ))
+      ) {
         res.status(403).json({ error: "Only CEO can manage permissions" });
         return;
       }
@@ -4924,10 +5046,82 @@ export function agentRoutes(
       await assertBoardCanManageAgentsForCompany(req, existing.companyId);
     }
 
-    const agent = await svc.updatePermissions(id, req.body);
+    // myrmidon(1.6.1 ADMIN-AGENT): board-admin toggle bookkeeping. The switch
+    // must know which grant keys the agent already held BEFORE it adds the
+    // operator set, so disable can revoke exactly the keys the switch added.
+    // Capture the snapshot into locals before any write: `existing` may alias
+    // the stored row that updatePermissions mutates in place.
+    const grantsBeforeToggle = existing.role === "ceo"
+      ? []
+      : await access.listPrincipalGrants(existing.companyId, "agent", existing.id);
+    const heldGrantKeysBeforeToggle = grantsBeforeToggle.map((grant) => grant.permissionKey);
+    const wasBoardAdmin =
+      existing.role === "ceo" ||
+      readAgentBoardAdminPermission(existing.permissions) ||
+      deriveBoardAdminFromGrants(heldGrantKeysBeforeToggle);
+    // The snapshot the disable pass compares against. For a fresh enable it is
+    // the agent's pre-toggle set keys; re-enabling keeps the original snapshot
+    // so keys issued between disable and re-enable stay personal.
+    const savedSnapshotKeys = wasBoardAdmin && !readAgentBoardAdminPermission(existing.permissions)
+      ? [] // already an admin through derivation or CEO: enable below still works
+      : readAgentBoardAdminSavedGrantKeys(existing.permissions);
+    const enableSnapshot =
+      requestedBoardAdmin === true && !wasBoardAdmin
+        ? heldGrantKeysBeforeToggle.filter((key) =>
+            (BOARD_ADMIN_PERMISSION_KEYS as readonly string[]).includes(key),
+          )
+        : savedSnapshotKeys;
+
+    const agent = await svc.updatePermissions(id, {
+      ...req.body,
+      ...(requestedBoardAdmin === undefined
+        ? {}
+        : {
+            [AGENT_BOARD_ADMIN_PERMISSION_KEY]: requestedBoardAdmin,
+            [AGENT_BOARD_ADMIN_SAVED_GRANT_KEYS]: requestedBoardAdmin
+              ? enableSnapshot
+              : [],
+          }),
+    });
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
+    }
+
+    if (requestedBoardAdmin === true) {
+      // Enable: grant every missing operator-set key through the grant table.
+      const grantsNow = await access.listPrincipalGrants(agent.companyId, "agent", agent.id);
+      const heldKeys = grantsNow.map((grant) => grant.permissionKey);
+      const grantedByUserId = req.actor.type === "board" ? (req.actor.userId ?? null) : null;
+      for (const key of missingBoardAdminGrantKeys(heldKeys)) {
+        await access.ensureMembership(agent.companyId, "agent", agent.id, "member", "active");
+        await access.setPrincipalPermission(
+          agent.companyId,
+          "agent",
+          agent.id,
+          key,
+          true,
+          grantedByUserId,
+        );
+      }
+    } else if (requestedBoardAdmin === false) {
+      // Disable: revoke only the set keys the switch added (set keys that are
+      // not in the saved snapshot). Personal grants such as a separately
+      // issued tasks:assign survive. The snapshot was captured before the
+      // updatePermissions write — do not re-read it from the stored row.
+      const grantsNow = await access.listPrincipalGrants(agent.companyId, "agent", agent.id);
+      const heldKeys = grantsNow.map((grant) => grant.permissionKey);
+      const grantedByUserId = req.actor.type === "board" ? (req.actor.userId ?? null) : null;
+      for (const key of boardAdminRevocableGrantKeys(heldKeys, enableSnapshot)) {
+        await access.setPrincipalPermission(
+          agent.companyId,
+          "agent",
+          agent.id,
+          key,
+          false,
+          grantedByUserId,
+        );
+      }
     }
 
     const effectiveCanAssignTasks =
@@ -4960,6 +5154,11 @@ export function agentRoutes(
         trustPreset: agent.permissions?.trustPreset ?? "standard",
         // myrmidon(S6): the tool/connection permission is part of what the change record shows.
         toolAccess: agent.permissions?.toolAccess ?? null,
+        // myrmidon(1.6.1 ADMIN-AGENT): the board-admin switch is part of the
+        // change record when the request carried it.
+        ...(requestedBoardAdmin === undefined
+          ? {}
+          : { [AGENT_BOARD_ADMIN_PERMISSION_KEY]: requestedBoardAdmin }),
       },
     });
 
@@ -4977,6 +5176,26 @@ export function agentRoutes(
 
     await assertCanManageInstructionsPath(req, existing);
     assertExternalInstructionsAdmin(req, existing);
+    
+    // myrmidon(1.6.2-AUTONOMY-MATRIX): enforce change_instructions verdict.
+    // approval_required denies with 403 autonomy_approval_required until the
+    // holding-action follow-up (the board caller bypasses the gate entirely).
+    const gate = dbAutonomyGate(db);
+    const changeInstructionsVerdict = await gate.decide(req, "change_instructions");
+    if (changeInstructionsVerdict.verdict === "forbidden") {
+      throw forbidden("This action is forbidden for this role by the autonomy matrix", {
+        code: "autonomy_forbidden",
+        actionClass: "change_instructions",
+        role: changeInstructionsVerdict.role,
+      });
+    }
+    if (changeInstructionsVerdict.verdict === "approval_required") {
+      throw forbidden("This action requires approval under the autonomy matrix", {
+        code: "autonomy_approval_required",
+        actionClass: "change_instructions",
+        role: changeInstructionsVerdict.role,
+      });
+    }
 
     const existingAdapterConfig = asRecord(existing.adapterConfig) ?? {};
     const explicitKey = asNonEmptyString(req.body.adapterConfigKey);
@@ -5064,6 +5283,26 @@ export function agentRoutes(
     await assertCanManageInstructionsPath(req, existing);
     assertExternalInstructionsAdmin(req, existing);
     if (req.body.mode === "external") assertInstanceAdmin(req);
+    
+    // myrmidon(1.6.2-AUTONOMY-MATRIX): enforce change_instructions verdict.
+    // approval_required denies with 403 autonomy_approval_required until the
+    // holding-action follow-up (the board caller bypasses the gate entirely).
+    const gate = dbAutonomyGate(db);
+    const changeInstructionsVerdict = await gate.decide(req, "change_instructions");
+    if (changeInstructionsVerdict.verdict === "forbidden") {
+      throw forbidden("This action is forbidden for this role by the autonomy matrix", {
+        code: "autonomy_forbidden",
+        actionClass: "change_instructions",
+        role: changeInstructionsVerdict.role,
+      });
+    }
+    if (changeInstructionsVerdict.verdict === "approval_required") {
+      throw forbidden("This action requires approval under the autonomy matrix", {
+        code: "autonomy_approval_required",
+        actionClass: "change_instructions",
+        role: changeInstructionsVerdict.role,
+      });
+    }
 
     const actor = getActorInfo(req);
     const { bundle, adapterConfig } = await instructions.updateBundle(existing, req.body);
@@ -5188,6 +5427,26 @@ export function agentRoutes(
     if (!existing) return;
     await assertCanManageInstructionsPath(req, existing);
     assertExternalInstructionsAdmin(req, existing);
+    
+    // myrmidon(1.6.2-AUTONOMY-MATRIX): enforce change_instructions verdict.
+    // approval_required denies with 403 autonomy_approval_required until the
+    // holding-action follow-up (the board caller bypasses the gate entirely).
+    const gate = dbAutonomyGate(db);
+    const changeInstructionsVerdict = await gate.decide(req, "change_instructions");
+    if (changeInstructionsVerdict.verdict === "forbidden") {
+      throw forbidden("This action is forbidden for this role by the autonomy matrix", {
+        code: "autonomy_forbidden",
+        actionClass: "change_instructions",
+        role: changeInstructionsVerdict.role,
+      });
+    }
+    if (changeInstructionsVerdict.verdict === "approval_required") {
+      throw forbidden("This action requires approval under the autonomy matrix", {
+        code: "autonomy_approval_required",
+        actionClass: "change_instructions",
+        role: changeInstructionsVerdict.role,
+      });
+    }
 
     const relativePath = typeof req.query.path === "string" ? req.query.path : "";
     if (!relativePath.trim()) {
@@ -5434,11 +5693,12 @@ export function agentRoutes(
   });
 
   router.post("/agents/:id/pause", async (req, res) => {
-    assertBoard(req);
     const id = req.params.id as string;
-    if (!(await getAccessibleAgent(req, res, id))) {
+    const existing = await getAccessibleAgent(req, res, id);
+    if (!existing) {
       return;
     }
+    await assertCanPauseAgent(req, existing);
     const agent = await svc.pause(id);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
@@ -5459,10 +5719,14 @@ export function agentRoutes(
       await heartbeat.cancelActiveForAgent(id);
     }
 
+    const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: agent.companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "agent.paused",
       entityType: "agent",
       entityId: agent.id,

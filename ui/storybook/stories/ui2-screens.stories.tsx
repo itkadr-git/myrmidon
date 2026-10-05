@@ -302,12 +302,16 @@ const fixtures = {
       maxStartsPerMinute: 12,
       minFreeMemoryMb: null,
       runMemoryEstimateMb: 1536,
+      minFreeHostMemoryMb: 15360,
+      maxHostLoadPercentPerCore: 90,
     },
     sources: {
       maxConcurrentRuns: "settings",
       maxStartsPerMinute: "settings",
       minFreeMemoryMb: "env",
       runMemoryEstimateMb: "default",
+      minFreeHostMemoryMb: "default",
+      maxHostLoadPercentPerCore: "default",
     },
   },
 };

@@ -24,8 +24,8 @@ const FIELDS: Array<{ key: RunLimitKey; label: string; hint: string; optional: b
   },
   {
     key: "maxStartsPerMinute",
-    label: "Starts per minute",
-    hint: "How many runs may start in a sliding minute, so a restart or a bulk resolve does not start everything in one burst.",
+    label: "Starts per minute (start ramp)",
+    hint: "How many runs may start in a sliding minute, so a restart, a bulk resolve or a mass wake does not start everything in one burst. Default 5.",
     optional: true,
   },
   {
@@ -39,6 +39,20 @@ const FIELDS: Array<{ key: RunLimitKey; label: string; hint: string; optional: b
     label: "Memory per run, MB",
     hint: "What one run is budgeted when free memory is counted.",
     optional: false,
+  },
+  {
+    // myrmidon(1.6.2 RUN-ADMISSION)
+    key: "minFreeHostMemoryMb",
+    label: "Free host memory to keep, MB",
+    hint: "A new run starts only while the host (where the bot containers run) has at least this much available memory; otherwise it waits in the queue. Default 15360 (15 GB).",
+    optional: true,
+  },
+  {
+    // myrmidon(1.6.5 RUN-ADMISSION)
+    key: "maxHostLoadPercentPerCore",
+    label: "Max host load per core, % of a core",
+    hint: "A new run starts only while the host's 1-minute load average stays under this many percent of one CPU core (100 = one core fully busy); otherwise runs wait in the queue. Default 90. Empty switches the ceiling off.",
+    optional: true,
   },
 ];
 
@@ -75,6 +89,8 @@ export function parseRunLimitsDraft(draft: Record<RunLimitKey, string>): DraftPa
       maxStartsPerMinute: parsed.maxStartsPerMinute,
       minFreeMemoryMb: parsed.minFreeMemoryMb,
       runMemoryEstimateMb: estimate,
+      minFreeHostMemoryMb: parsed.minFreeHostMemoryMb,
+      maxHostLoadPercentPerCore: parsed.maxHostLoadPercentPerCore,
     },
     errors,
   };
@@ -86,6 +102,9 @@ function toDraft(limits: RunLimits): Record<RunLimitKey, string> {
     maxStartsPerMinute: limits.maxStartsPerMinute === null ? "" : String(limits.maxStartsPerMinute),
     minFreeMemoryMb: limits.minFreeMemoryMb === null ? "" : String(limits.minFreeMemoryMb),
     runMemoryEstimateMb: String(limits.runMemoryEstimateMb),
+    minFreeHostMemoryMb: limits.minFreeHostMemoryMb === null ? "" : String(limits.minFreeHostMemoryMb),
+    maxHostLoadPercentPerCore:
+      limits.maxHostLoadPercentPerCore === null ? "" : String(limits.maxHostLoadPercentPerCore),
   };
 }
 
@@ -114,7 +133,7 @@ export function RuntimeLimitsSettingsPanelView({
           <h2 className="text-sm font-semibold">Run limits</h2>
         </div>
         <p className="max-w-2xl text-sm text-muted-foreground">
-          How many agent runs this server starts at once, how fast, and how much memory it keeps free. A run over a
+          How many agent runs this server starts at once, how fast, and how much memory it and the host keep free. A run over a
           ceiling waits in the queue and starts when a slot frees. Saving takes effect immediately: queued runs start
           within a minute and no running run is interrupted. Leave a field empty to switch that limit off.
         </p>

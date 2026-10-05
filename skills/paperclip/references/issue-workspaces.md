@@ -71,10 +71,12 @@ For QA/browser checks, use the service whose `status` is `running` and whose `he
 
 ## MCP Tools
 
-When the Paperclip MCP tools are available, prefer these issue-scoped tools:
+When the Myrmidon MCP tools are available, prefer these issue-scoped tools:
 
-- `paperclipGetIssueWorkspaceRuntime` — reads `currentExecutionWorkspace` and service URLs for an issue.
-- `paperclipControlIssueWorkspaceServices` — starts, stops, or restarts the current issue workspace services.
-- `paperclipWaitForIssueWorkspaceService` — waits until a selected service is running and returns its URL when exposed.
+- `myrmidonGetIssueWorkspaceRuntime` — reads `currentExecutionWorkspace` and service URLs for an issue.
+- `myrmidonControlIssueWorkspaceServices` — starts, stops, or restarts the current issue workspace services.
+- `myrmidonWaitForIssueWorkspaceService` — waits until a selected service is running and returns its URL when exposed.
+
+(The old `paperclip*` names keep working as deprecated aliases until the 1.8 cleanup; do not use them in new skills.)
 
 These tools resolve the issue's workspace id for you, so QA agents do not need to know the lower-level execution workspace endpoint first.

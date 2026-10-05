@@ -40,7 +40,10 @@
     },
     "group": "Agent maintenance ({{state}}) since {{since}}: {{reason}} — agents: {{count}}, queued wakeups: {{queued}}. New agent runs are paused; wakes are delivered when maintenance ends.",
     "ending": "Agent maintenance ending — agents: {{count}}",
-    "idsSummary": "Agent ids"
+    "idsSummary": "Agent ids",
+    "summary": "Maintenance windows: {{count}} across {{rows}} kind(s), {{state}}",
+    "row": "{{scope}} ({{state}}) since {{since}}: {{reason}} — windows: {{count}}, queued wakeups: {{queued}}.",
+    "endsBy": "ends by {{time}}"
   },
   "about": {
     "title": "About Myrmidon",
@@ -90,7 +93,8 @@
       "colony": "{{active}} of {{total}}",
       "fleet": "Fleet",
       "fleetAttention": "Fleet: 1 attention",
-      "forecast": "{{spend}} of {{budget}}"
+      "forecast": "{{spend}} of {{budget}}",
+      "forecastSpendOnly": "{{spend}} spent"
     },
     "decisions": {
       "badge": "{{count}} decisions waiting"
@@ -374,6 +378,62 @@
       "empty": "No provider changes recorded yet."
     }
   },
+  "castes": {
+    "title": "Agent castes",
+    "breadcrumb": "Agent castes",
+    "intro": "The company's caste directory: the roles agents hold. The first read seeds the twelve built-in castes; add your own, edit names, colors, icons, the default model and the swarm rules. A caste in use by live agents cannot be deleted.",
+    "loading": "Loading the caste directory...",
+    "noCompany": "Select a company to manage its castes.",
+    "add": {
+      "title": "Add caste",
+      "open": "Add caste",
+      "cancel": "Cancel",
+      "key": "Key",
+      "keyHint": "Stable identifier that matches the agent's role. Latin letters and hyphen, 1–60; cannot change after creation.",
+      "nameEn": "Name (EN)",
+      "nameRu": "Name (RU)",
+      "description": "Description",
+      "color": "Color",
+      "icon": "Icon",
+      "defaultModel": "Default model",
+      "swarmEligible": "Eligible for the swarm",
+      "maxActiveTasks": "Max active tasks",
+      "maxActiveTasksHint": "Empty = the global swarm limit",
+      "save": "Save caste",
+      "saving": "Saving..."
+    },
+    "list": {
+      "title": "Castes",
+      "empty": "The directory is empty. The first read seeds the built-in castes; add one if it stays empty.",
+      "key": "Key",
+      "names": "Names",
+      "color": "Color",
+      "icon": "Icon",
+      "defaultModel": "Default model",
+      "swarm": "Swarm",
+      "swarmYes": "Eligible",
+      "swarmNo": "Excluded",
+      "maxActiveTasks": "Task limit",
+      "globalLimit": "global",
+      "builtIn": "built-in",
+      "actions": "Actions"
+    },
+    "edit": {
+      "open": "Edit",
+      "save": "Save",
+      "saving": "Saving...",
+      "cancel": "Cancel"
+    },
+    "remove": {
+      "open": "Remove",
+      "confirm": "Confirm remove",
+      "removing": "Removing...",
+      "cancel": "Cancel",
+      "inUse": "This caste is in use: agents still hold this role. Pick the caste to move them to, then confirm the removal.",
+      "reassignTo": "Reassign the agents on this caste to...",
+      "reassignPlaceholder": "Select a target caste"
+    }
+  },
   "cardModels": {
     "free": "Free",
     "paid": "Paid",
@@ -383,5 +443,39 @@
     "refresh": "Refresh models",
     "refreshing": "Refreshing…",
     "loadError": "Could not load the model list."
+  },
+  "wipLimit": {
+    "title": "WIP limit",
+    "breadcrumb": "WIP limit",
+    "intro": "How many tasks one agent may hold in work at once (in progress + in review). A capped agent is handed no new task until one of its active tasks settles; no run in flight is interrupted.",
+    "loading": "Loading the WIP limit settings...",
+    "noCompany": "Select a company to edit its WIP limit.",
+    "defaultLabel": "Default limit per agent",
+    "defaultHint": "Applies to every agent without its own value. Empty — no limit.",
+    "noLimit": "No limit",
+    "usesDefault": "uses default",
+    "agentsTitle": "Per-agent limits",
+    "colAgent": "Agent",
+    "colWip": "In work now",
+    "colLimit": "Limit",
+    "overLimit": "Over limit",
+    "noAgents": "No agents in this company yet.",
+    "save": "Save WIP limit",
+    "saving": "Saving..."
+  },
+  "cardEffort": {
+    "thinkingEffort": "Thinking effort",
+    "thinkingEffortHint": "Reasoning depth. Only values the selected model accepts are offered; empty uses the model's default.",
+    "effortDefault": "default",
+    "effortEmptyHint": "Empty compiles to the model default: {{value}}",
+    "effortSelected": "Selected: {{value}}",
+    "contextLength": "Context length (tokens)",
+    "contextLengthHint": "Explicit context window for the model. Empty keeps the profile setting.",
+    "contextLengthInvalid": "Context length must be a whole number of tokens.",
+    "contextLengthRange": "Context length must be between {{min}} and {{max}}.",
+    "titleGenerationModel": "Title generation model",
+    "titleGenerationModelHint": "Model for auxiliary title generation. Empty keeps the instance default.",
+    "compressionModel": "Compression model",
+    "compressionModelHint": "Model for auxiliary compression summaries. Empty keeps the instance default."
   }
 }

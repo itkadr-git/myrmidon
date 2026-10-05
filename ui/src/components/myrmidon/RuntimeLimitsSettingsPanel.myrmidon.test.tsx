@@ -27,12 +27,21 @@ afterEach(() => {
 });
 
 const view: RuntimeLimitsView = {
-  limits: { maxConcurrentRuns: 6, maxStartsPerMinute: null, minFreeMemoryMb: 2048, runMemoryEstimateMb: 300 },
+  limits: {
+    maxConcurrentRuns: 6,
+    maxStartsPerMinute: null,
+    minFreeMemoryMb: 2048,
+    runMemoryEstimateMb: 300,
+    minFreeHostMemoryMb: 15360,
+    maxHostLoadPercentPerCore: 90,
+  },
   sources: {
     maxConcurrentRuns: "env",
     maxStartsPerMinute: "default",
     minFreeMemoryMb: "env",
     runMemoryEstimateMb: "default",
+    minFreeHostMemoryMb: "default",
+    maxHostLoadPercentPerCore: "default",
   } as Record<RunLimitKey, RunLimitsSource>,
 };
 
@@ -76,7 +85,7 @@ describe("myrmidon(C0) run limits panel", () => {
     );
   });
 
-  it("saves all four values, an empty field as 'no limit'", () => {
+  it("saves all the values, an empty field as 'no limit'", () => {
     const onSave = render(view);
     type("maxConcurrentRuns", "12");
     flushSync(() => saveButton().dispatchEvent(new MouseEvent("click", { bubbles: true })));
@@ -85,7 +94,31 @@ describe("myrmidon(C0) run limits panel", () => {
       maxStartsPerMinute: null,
       minFreeMemoryMb: 2048,
       runMemoryEstimateMb: 300,
+      minFreeHostMemoryMb: 15360,
+      maxHostLoadPercentPerCore: 90,
     });
+  });
+
+  it("myrmidon(1.6.5): edits the host CPU ceiling and switches it off with an empty field", () => {
+    const onSave = render(view);
+    expect(field("maxHostLoadPercentPerCore").value).toBe("90");
+    type("maxHostLoadPercentPerCore", "150");
+    flushSync(() => saveButton().dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({ maxHostLoadPercentPerCore: 150 }));
+    type("maxHostLoadPercentPerCore", "");
+    flushSync(() => saveButton().dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({ maxHostLoadPercentPerCore: null }));
+  });
+
+  it("myrmidon(1.6.2): edits the host free-memory floor and switches it off with an empty field", () => {
+    const onSave = render(view);
+    expect(field("minFreeHostMemoryMb").value).toBe("15360");
+    type("minFreeHostMemoryMb", "12288");
+    flushSync(() => saveButton().dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({ minFreeHostMemoryMb: 12288 }));
+    type("minFreeHostMemoryMb", "");
+    flushSync(() => saveButton().dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({ minFreeHostMemoryMb: null }));
   });
 
   it("refuses a value that is not a positive whole number and does not save", () => {
@@ -119,9 +152,18 @@ describe("myrmidon(C0) run limits panel", () => {
         maxStartsPerMinute: " 3 ",
         minFreeMemoryMb: "",
         runMemoryEstimateMb: "300",
+        minFreeHostMemoryMb: "15360",
+        maxHostLoadPercentPerCore: "90",
       }),
     ).toEqual({
-      patch: { maxConcurrentRuns: null, maxStartsPerMinute: 3, minFreeMemoryMb: null, runMemoryEstimateMb: 300 },
+      patch: {
+        maxConcurrentRuns: null,
+        maxStartsPerMinute: 3,
+        minFreeMemoryMb: null,
+        runMemoryEstimateMb: 300,
+        minFreeHostMemoryMb: 15360,
+        maxHostLoadPercentPerCore: 90,
+      },
       errors: {},
     });
   });

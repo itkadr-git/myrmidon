@@ -41,6 +41,7 @@
 // (template.ts BOT_RUNTIME_CONTRACT_LABEL); create/recreate refuse an image
 // that does not declare it, before anything is created.
 
+import { CLONE_HYGIENE_REPORT_PATH } from "./clone-hygiene.js"; // myrmidon(1.6.2-BOT-DISK-C)
 import { randomBytes } from "node:crypto";
 import http from "node:http";
 import type { BotContainerDriver, BotContainerSpec, BotContainerStatus, TemplateDriftField, TemplateDriftReport } from "./driver.js";
@@ -51,7 +52,9 @@ import {
   BOT_MANAGED_DIRS,
   BOT_KEY_PATTERN,
   BOT_MOUNT_SOURCES_ENV,
+  BOT_HERMES_REAL_PATH,
   BOT_VOLUME_MOUNTS,
+  buildHelperBinds,
   BotContainerTemplateError,
   buildBinds,
   buildLabels,
@@ -92,7 +95,8 @@ const HELPER_PIDS_LIMIT = 64;
 const HERMES_MOUNT = BOT_VOLUME_MOUNTS.find((mount) => mount.hostSuffix === "hermes")!;
 /** Applied-state marker, relative to the hermes mount. */
 const MARKER_RELATIVE_PATH = ".myrmidon/applied.json";
-export const APPLIED_MARKER_CONTAINER_PATH = `${HERMES_MOUNT.containerPath}/${MARKER_RELATIVE_PATH}`;
+// Read at its real path inside the single mount, not through the image's /data/hermes link.
+export const APPLIED_MARKER_CONTAINER_PATH = `${BOT_HERMES_REAL_PATH}/${MARKER_RELATIVE_PATH}`;
 
 export interface DockerDriverConfig {
   socketPath: string;
@@ -125,6 +129,21 @@ export interface DockerDriverOptions {
   healthPollIntervalMs?: number;
   /** Staging-directory nonce generator (hex). */
   nonce?: () => string;
+  /**
+   * myrmidon(1.6.1-BOT-DISK-B): the shared package cache path from the
+   * instance settings (`general.botDisk`), or undefined when none is set. Read
+   * on every create, recreate and drift check, so a settings change reaches the
+   * next reconcile pass without a restart and a fresh process never compares a
+   * container against a path it has not loaded yet. Absent: no shared cache.
+   */
+  readSharedPackageCachePath?: (botKey: string) => Promise<string | undefined>;
+  /**
+   * myrmidon(1.6.2-BOT-DISK-C): whether the instance keeps git mirrors
+   * (`general.botDisk.gitMirrorRepos` not empty), read with the cache path on
+   * every create, recreate and drift check. True adds the read-only
+   * `<cache>/git:/cache/git` bind. Absent: never.
+   */
+  readGitMirrorEnabled?: (botKey: string) => Promise<boolean>;
 }
 
 export interface DockerCreateContainerBody {
@@ -153,11 +172,14 @@ export interface DockerCreateContainerBody {
  * `Env` (secrets travel only in the profile's hermes/.env). Throws on an
  * image outside the allowlist, a network other than the one configured for
  * this driver, or an extra mount whose source is not in
- * MYRMIDON_BOT_MOUNT_SOURCES (template.ts buildBinds).
+ * MYRMIDON_BOT_MOUNT_SOURCES (template.ts buildBinds). `sharedPackageCachePath`
+ * (instance settings, 1.6.1-BOT-DISK-B) adds the fixed package cache binds.
  */
 export function buildCreateContainerRequestBody(
   spec: BotContainerSpec,
   config: Pick<DockerDriverConfig, "volumeRoot" | "network" | "allowlist" | "mountSources">,
+  sharedPackageCachePath?: string,
+  gitMirror = false,
 ): DockerCreateContainerBody {
   validateBotKey(spec.botKey);
   if (!isImageAllowed(spec.image, config.allowlist)) {
@@ -188,6 +210,8 @@ export function buildCreateContainerRequestBody(
       Binds: buildBinds(config.volumeRoot, spec.botKey, {
         mounts: spec.extraMounts,
         allowedSources: config.mountSources,
+        sharedPackageCachePath,
+        gitMirror,
       }),
       Privileged: false,
     },
@@ -251,7 +275,7 @@ export function buildHelperContainerRequestBody(params: {
       ReadonlyRootfs: true,
       RestartPolicy: { Name: "no" },
       NetworkMode: "none",
-      Binds: buildBinds(params.volumeRoot, params.botKey),
+      Binds: buildHelperBinds(params.volumeRoot, params.botKey),
       Privileged: false,
     },
   };
@@ -729,6 +753,16 @@ export function dockerBotContainerDriver(
   const startHealthTimeoutMs = options.startHealthTimeoutMs ?? DEFAULT_START_HEALTH_TIMEOUT_MS;
   const healthPollIntervalMs = options.healthPollIntervalMs ?? DEFAULT_HEALTH_POLL_INTERVAL_MS;
   const newNonce = options.nonce ?? (() => randomBytes(8).toString("hex"));
+  const readSharedPackageCachePath = options.readSharedPackageCachePath ?? (async () => undefined);
+  const readGitMirrorEnabled = options.readGitMirrorEnabled ?? (async () => false);
+  // myrmidon(1.6.2-BOT-DISK-C): the create body with the cache binds in force right now.
+  const createBody = async (spec: BotContainerSpec) =>
+    buildCreateContainerRequestBody(
+      spec,
+      config,
+      await readSharedPackageCachePath(spec.botKey),
+      await readGitMirrorEnabled(spec.botKey),
+    );
 
   const request = (opts: Parameters<typeof dockerRequest>[1]) => dockerRequest(socketPath, opts);
 
@@ -873,6 +907,21 @@ export function dockerBotContainerDriver(
     }
   }
 
+  async function readCloneReport(botKey: string): Promise<string | null> {
+    const name = containerNameFor(botKey);
+    try {
+      const res = await request({
+        method: "GET",
+        path: `/containers/${nameSegment(name)}/archive?path=${encodeURIComponent(`${BOT_HERMES_REAL_PATH}/${CLONE_HYGIENE_REPORT_PATH}`)}`,
+      });
+      if (res.status >= 400) return null;
+      const file = parseUstarArchive(res.body).find((entry) => entry.type === "file");
+      return file ? file.content.toString("utf8") : null;
+    } catch {
+      return null;
+    }
+  }
+
   async function status(botKey: string): Promise<BotContainerStatus> {
     const name = containerNameFor(botKey);
     const info = await inspectByName(name);
@@ -888,24 +937,21 @@ export function dockerBotContainerDriver(
     };
   }
 
-  async function list(): Promise<BotContainerStatus[]> {
-    const filters = encodeURIComponent(JSON.stringify({ label: [BOT_LABEL_KEYS.bot] }));
-    const containers = await requestJson<Array<{ Labels?: Record<string, string> }>>({
-      method: "GET",
-      path: `/containers/json?all=true&filters=${filters}`,
-    });
-    const botKeys = new Set<string>();
-    for (const container of containers) {
-      const botKey = container.Labels?.[BOT_LABEL_KEYS.bot];
-      if (botKey && BOT_KEY_PATTERN.test(botKey)) botKeys.add(botKey);
-    }
+  /** The containers of the given bots that exist. Asked per bot (inspect + marker),
+   *  never by listing containers: dockergate keeps `containers/json` on its closed
+   *  list, so a listing answers 403 on every sweep. */
+  async function list(botKeys: readonly string[]): Promise<BotContainerStatus[]> {
     const results: BotContainerStatus[] = [];
-    for (const botKey of botKeys) results.push(await status(botKey));
+    for (const botKey of new Set(botKeys)) {
+      if (!BOT_KEY_PATTERN.test(botKey)) continue;
+      const found = await status(botKey);
+      if (found.state !== "missing") results.push(found);
+    }
     return results;
   }
 
   async function templateDrift(spec: BotContainerSpec): Promise<TemplateDriftReport> {
-    const body = buildCreateContainerRequestBody(spec, config);
+    const body = await createBody(spec);
     const existing = await inspectByName(containerNameFor(spec.botKey));
     if (!existing) return { drifted: false, fields: [] };
     const fields = templateDriftFields(existing, body);
@@ -913,7 +959,7 @@ export function dockerBotContainerDriver(
   }
 
   async function create(spec: BotContainerSpec): Promise<void> {
-    const body = buildCreateContainerRequestBody(spec, config);
+    const body = await createBody(spec);
     await requireBotImage(spec.image);
     await removeByName(replacementContainerNameFor(spec.botKey)); // stale, from an interrupted recreate
     await prepareVolumes(spec.botKey, spec.image);
@@ -921,7 +967,7 @@ export function dockerBotContainerDriver(
   }
 
   async function recreate(spec: BotContainerSpec): Promise<void> {
-    const body = buildCreateContainerRequestBody(spec, config);
+    const body = await createBody(spec);
     const name = containerNameFor(spec.botKey);
     const replacement = replacementContainerNameFor(spec.botKey);
     // Everything that can fail for a reason of its own (missing image, rejected
@@ -996,5 +1042,5 @@ export function dockerBotContainerDriver(
     await stopByName(containerNameFor(botKey));
   }
 
-  return { status, list, templateDrift, create, recreate, writeProfile, start, restart, stop };
+  return { status, list, templateDrift, create, recreate, writeProfile, start, restart, stop, readCloneReport };
 }

@@ -163,6 +163,11 @@ import {
   identifyTelegramMedia,
   telegramMediaNeedsIdentification,
 } from "./chat-telegram-media-intake.js";
+// myrmidon(1.6.1 VOICE-STT B): inbound transcription of Telegram voice/audio.
+import {
+  transcribeTelegramVoiceIntake,
+  type TelegramVoiceTranscriber,
+} from "../myrmidon/telegram-voice-stt-intake/index.js";
 import { normalizeTelegramRichMessage } from "./chat-telegram-rich-intake.js";
 import {
   TELEGRAM_DRAFT_ACTION_KIND,
@@ -244,6 +249,13 @@ import {
   refuseUnlinkedTelegramDm,
   type TelegramDmBridgeDeps,
 } from "../myrmidon/agent-chat-bridge/bridge.js";
+// myrmidon(X9b): @<alias> addressing — addressee resolution for the bridge
+// call site and the leading-token strip for an addressed turn's body (reply
+// prefixing and the mention quote live in issues.ts / cross-channel.ts; the
+// addressed reply rides the normal publication lane).
+import { stripLeadingMentionToken as x9StripAddressToken } from "../myrmidon/agent-chat-bridge/addressing.js";
+import { resolveBridgedAddressee } from "../myrmidon/agent-chat-bridge/bridge.js";
+import type { TelegramAddressee } from "../myrmidon/agent-chat-bridge/addressing.js";
 // myrmidon(U2): company-wide interaction lookup for callbacks on cards
 // delivered to the owner's Telegram conversation from other tasks.
 import { listInteractionForCallback } from "../myrmidon/owner-delivery/callback-interaction-lookup.js";
@@ -371,10 +383,36 @@ import {
   telegramAttachmentOmissionNotice,
 } from "../myrmidon/chat-attachment-omission.js";
 import { TELEGRAM_DM_COMMANDS } from "../myrmidon/agent-chat-bridge/commands/index.js";
+// myrmidon(CHAT-HOLD): no silent queue in a bridged Telegram chat.
+import {
+  chatNoticeLanguage,
+  chatWaitNoticeApplies,
+  chatWaitNoticeText,
+  classifyAgentNotInvokable,
+  classifyChatWait,
+  type ChatWaitReason,
+} from "../myrmidon/chat-holds/wait-notice.js";
+import { currentHostMemoryGate } from "../myrmidon/run-admission.js";
 import {
   telegramDmConversationsConfigured,
   telegramDmConversationsEnabled,
 } from "../myrmidon/agent-chat-bridge/settings.js";
+// myrmidon(TG-NOTIFY-D): inbound topic settings + gate for Telegram forum
+// topics (server/src/myrmidon/telegram-notify/). Off by default: the
+// settings document lives in instance settings; the gate only relaxes the
+// vendor's addressed requirement when the owner enabled topic inbound. The
+// reader lives in its own module, so the track's contract module
+// (`telegram-notify/settings.ts`, part B) stays untouched.
+import {
+  readTelegramNotifyInbound,
+  type TelegramNotifyInboundSettings,
+} from "../myrmidon/telegram-notify/topic-inbound-settings.js";
+// myrmidon(TG-NOTIFY-D): pure gate/title/body helpers for topic inbound.
+import {
+  topicInboundAdmitted,
+  topicTaskBody,
+  topicTaskTitle,
+} from "../myrmidon/telegram-notify/topic-inbound.js";
 // myrmidon(U1): settings for the editable DM status message and inline split
 // (release 1.4, item 3).
 import {
@@ -1531,6 +1569,11 @@ export interface ChatChannelServiceOptions {
     claimId: string;
   }) => Promise<void>;
   storage?: StorageService;
+  // myrmidon(1.6.1 VOICE-STT B): optional transcription hook for inbound
+  // Telegram voice/audio. Production wires the shared STT core once it is
+  // merged; tests pass a mock. Null (or unset) keeps the vendor intake path
+  // byte for byte — no byte prefetch, no transcription call.
+  telegramVoiceTranscriber?: TelegramVoiceTranscriber | null;
 }
 
 interface CredentialMutationLeaseGuard {
@@ -1963,6 +2006,30 @@ function sanitizeFilename(value: string | undefined): string | null {
   if (!value) return null;
   const leaf = value.replaceAll("\\", "/").split("/").pop()?.trim();
   return leaf ? leaf.replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 255) : null;
+}
+
+// myrmidon(1.6.1 VOICE-STT B): the voice/audio attachments of a Telegram turn
+// that are eligible for inbound transcription. A turn qualifies only when the
+// provider is Telegram, every attachment is a runtime-provenance voice/audio
+// item (no mixed media), and a download closure exists. Anything else returns
+// null and the vendor path is byte for byte.
+function telegramVoiceSttAttachments(
+  endpoint: Pick<EndpointRow, "provider">,
+  message: Pick<Message, "attachments" | "text">,
+): ReadonlyArray<Attachment> | null {
+  if (endpoint.provider !== "telegram" || message.attachments.length === 0)
+    return null;
+  const voice: Attachment[] = [];
+  for (const attachment of message.attachments) {
+    if (
+      attachment.type !== "audio" ||
+      !hasTelegramMediaProvenance(attachment) ||
+      typeof attachment.fetchData !== "function"
+    )
+      return null;
+    voice.push(attachment);
+  }
+  return voice;
 }
 
 function redactError(error: unknown): string {
@@ -11675,6 +11742,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       commentId: string;
       principalId: string;
       actorUserId: string | null;
+      /** myrmidon(X9b): the conversation's own agent when it differs from the endpoint's assigned one. */
+      wakeupAgentId?: string;
     },
   ) {
     await tx
@@ -11691,7 +11760,14 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         payload: {
           version: 1,
           issueId: input.conversation.issueId,
-          agentId: input.endpoint.assignedAgentId,
+          // myrmidon(X9b): the wakeup follows the conversation's own agent.
+          // For an @<alias>-addressed turn that agent differs from the
+          // endpoint's assigned agent; the action payload must carry the
+          // conversation's agent so the wakeup wakes the addressed agent and
+          // authorizeInboundWakeup's assignee check passes. Reading it from the
+          // issue keeps plain (non-addressed) turns byte-for-byte: there the
+          // assignee IS the endpoint's assigned agent.
+          agentId: input.wakeupAgentId ?? input.endpoint.assignedAgentId,
           commentId: input.commentId,
           sessionGeneration: input.conversation.sessionGeneration,
           requestedByActorType: input.actorUserId ? "user" : "system",
@@ -11771,7 +11847,21 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     const fence = delivery ? lifecycleRuntimeFence(delivery) : null;
     if (
       !endpoint ||
-      endpoint.assignedAgentId !== payload.agentId ||
+      // myrmidon(X9b): an X9b-addressed turn's wakeup agent is the issue's
+      // own agent — the conversation agent of an @<alias>-addressed standing
+      // conversation, or the assignee of a group/topic task routed to the
+      // addressee — and may differ from the endpoint's assigned agent. The
+      // conversation row fetched below re-verifies the binding (issue id +
+      // generation + endpoint), so the endpoint-agent equality check is
+      // relaxed only for a turn whose own issue agent matches the payload
+      // agent. Plain turns keep the strict equality.
+      !(
+        endpoint.assignedAgentId === payload.agentId ||
+        ((issue.conversationAgentId ?? issue.assigneeAgentId) != null &&
+          (issue.conversationAgentId ?? issue.assigneeAgentId) === payload.agentId &&
+          (issue.conversationAgentId ?? issue.assigneeAgentId) !==
+            endpoint.assignedAgentId)
+      ) ||
       !delivery ||
       telegramDeliveryHasZeroMessageId(delivery, endpoint.provider) ||
       delivery.endpointId !== endpoint.id ||
@@ -14123,6 +14213,13 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             return 0;
           if (prior && !(await inboundQueueNoticeStillVisible(tx, prior)))
             return 0;
+          // myrmidon(CHAT-HOLD): a bridged Telegram chat reads why its
+          // message waits, in plain words, instead of a bare "queued".
+          const noticeText = await chatWaitAwareNoticeText(tx, {
+            endpointId: action.endpointId,
+            ownerId,
+            state: context.state,
+          });
           const rows = await tx
             .insert(chatPublications)
             .values({
@@ -14140,7 +14237,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               payload: projectSafeChatPublication({
                 classification: "external",
                 source: "safe_milestone",
-                text: inboundWakePublicationText(context.state),
+                text: noticeText,
                 progressState: context.state === "queued" ? "queued" : "failed",
               }),
             })
@@ -14158,6 +14255,48 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       }
     }
     return inserted;
+  }
+
+  // myrmidon(CHAT-HOLD): the inbound-wake notice text. A bridged Telegram
+  // chat gets the closed reason projection of chat-holds/wait-notice.ts read
+  // from the owning wake receipt; every other provider, and any receipt with
+  // no nameable reason, keeps the vendor's text byte for byte.
+  async function chatWaitAwareNoticeText(
+    tx: DbOrTransaction,
+    input: {
+      endpointId: string;
+      ownerId: string;
+      state: "queued" | "not_started" | "removed";
+    },
+  ): Promise<string> {
+    const fallback = inboundWakePublicationText(input.state);
+    const state = input.state;
+    if (state === "removed") return fallback;
+    const [endpoint] = await tx
+      .select({ provider: chatEndpoints.provider })
+      .from(chatEndpoints)
+      .where(eq(chatEndpoints.id, input.endpointId))
+      .limit(1);
+    if (!chatWaitNoticeApplies(endpoint?.provider)) return fallback;
+    const [owner] = await tx
+      .select({
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+        payload: agentWakeupRequests.payload,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, input.ownerId))
+      .limit(1);
+    const reason = owner
+      ? classifyChatWait({
+          status: owner.status,
+          reason: owner.reason,
+          payload: owner.payload ?? null,
+        })
+      : null;
+    return reason
+      ? chatWaitNoticeText(reason, chatNoticeLanguage(endpoint?.provider), state)
+      : fallback;
   }
 
   async function authorizeInboundWakePublication(
@@ -14353,6 +14492,77 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       );
   }
 
+  // myrmidon(CHAT-HOLD): one plain-words status reply per inbound message and
+  // reason, staged as a task-control reply to the sender in a bridged
+  // Telegram chat. Idempotent on (message, reason), so a retried admission
+  // never repeats it. See chat-holds/wait-notice.ts.
+  async function stageChatWaitNotice(
+    action: typeof chatActions.$inferSelect,
+    reason: ChatWaitReason,
+  ): Promise<void> {
+    const issueId = action.payload.issueId;
+    if (
+      !action.conversationId ||
+      !action.principalId ||
+      typeof issueId !== "string"
+    )
+      return;
+    const conversationId = action.conversationId;
+    const principalId = action.principalId;
+    await db.transaction(async (tx) => {
+      const [endpoint] = await tx
+        .select({ provider: chatEndpoints.provider })
+        .from(chatEndpoints)
+        .where(
+          and(
+            eq(chatEndpoints.id, action.endpointId),
+            eq(chatEndpoints.companyId, action.companyId),
+          ),
+        )
+        .limit(1);
+      if (!chatWaitNoticeApplies(endpoint?.provider)) return;
+      await stageAuthorizedTaskControlPublication(tx, {
+        companyId: action.companyId,
+        endpointId: action.endpointId,
+        conversationId,
+        issueId,
+        idempotencyKey: `control:wait:${reason}:${action.id}`,
+        payload: projectSafeChatPublication({
+          classification: "external",
+          source: "task_control",
+          text: chatWaitNoticeText(reason, chatNoticeLanguage(endpoint?.provider)),
+        }),
+        principalId,
+      });
+    });
+  }
+
+  async function stageChatHostMemoryNotice(
+    action: typeof chatActions.$inferSelect,
+    runId: string,
+  ): Promise<void> {
+    try {
+      if (currentHostMemoryGate().state !== "closed") return;
+      const [run] = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, action.companyId),
+            eq(heartbeatRuns.id, runId),
+          ),
+        )
+        .limit(1);
+      if (run?.status !== "queued") return;
+      await stageChatWaitNotice(action, "host_memory");
+    } catch (error) {
+      logger.warn(
+        { error: redactError(error) },
+        "chat host-memory notice was not staged",
+      );
+    }
+  }
+
   async function processInboundWakeup(deliveryId: string): Promise<boolean> {
     const now = new Date();
     const candidate = await db
@@ -14508,6 +14718,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       });
       const durable = await receipt();
       if (!durable) throw new Error("chat_inbound_wakeup_receipt_missing");
+      // myrmidon(CHAT-HOLD): the message became a run that the host memory
+      // floor holds back: tell the chat why it waits.
+      if (durable.runId) {
+        await stageChatHostMemoryNotice(claimed, durable.runId);
+      }
       await settle(receiptDeclined(durable) ? "failed" : "processed", {
         code: receiptDeclined(durable)
           ? `inbound_wakeup_${durable.status}`
@@ -14538,6 +14753,18 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       }
       const denied =
         conflictingReceipt || isExternalActionAuthorizationChange(error);
+      // myrmidon(CHAT-HOLD): an agent that cannot take a turn right now (paused,
+      // turned off) answers the admission with a conflict, and the message is
+      // retried until it can. Say so in the chat once instead of staying silent.
+      const notInvokable = denied ? null : classifyAgentNotInvokable(error);
+      if (notInvokable) {
+        await stageChatWaitNotice(claimed, notInvokable).catch((noticeError) => {
+          logger.warn(
+            { deliveryId, error: redactError(noticeError) },
+            "chat wait notice was not staged",
+          );
+        });
+      }
       await settle(denied ? "failed" : "issued", {
         code: conflictingReceipt
           ? "inbound_wakeup_receipt_conflict"
@@ -14612,7 +14839,30 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     // identity, so it must not defeat durable deduplication.
     const providerEventId = `${durableExternalThreadIdentity(thread.id)}:${message.id}`;
     const surfaceKind = chatSurfaceKind(endpoint.provider, thread);
+    // myrmidon(TG-NOTIFY-D): topic inbound settings are read once per message
+    // from instance settings (runtime-changeable, OFF by default). The
+    // vendor path is byte-for-byte unchanged while the document is absent.
+    const telegramNotifyInbound: TelegramNotifyInboundSettings | null =
+      endpoint.provider === "telegram" && !thread.isDM
+        ? await readTelegramNotifyInbound(db)
+        : null;
+    // myrmidon(TG-NOTIFY-D): with topic inbound enabled, an unaddressed topic
+    // message may still become task work (topic → task / topic → bound
+    // conversation). requireMention (default true) keeps the vendor's
+    // group privacy contract: unaddressed messages stay ignored.
+    const topicInbound =
+      telegramNotifyInbound !== null &&
+      topicInboundAdmitted({
+        inbound: telegramNotifyInbound,
+        threadId: thread.id,
+        addressed:
+          trigger === "mention" ||
+          trigger === "direct_message" ||
+          message.isMention === true,
+      });
     const addressed =
+      // myrmidon(TG-NOTIFY-D): topic inbound admission (see above).
+      topicInbound ||
       endpoint.provider === "imessage-photon" ||
       trigger === "mention" ||
       trigger === "direct_message" ||
@@ -15678,6 +15928,29 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             }
           : null,
       });
+      // myrmidon(X9b): an @<alias>-addressed turn routes to that same-company
+      // agent's own standing Telegram conversation instead of the endpoint's
+      // assigned one. Resolved only for Telegram threads whose sender is a
+      // linked workspace member: unlinked senders never reach the addressing
+      // (the refusal path below answers them first), and non-Telegram threads
+      // keep the vendor path. A DM resolves whenever the X8b bridge applies; a
+      // group/topic message resolves only when it addressed the bot (the
+      // vendor's requireMention gate drops the rest), and the addressee then
+      // takes the thread's own task assignment. A message with no resolvable
+      // @-token leaves addressee null — the assigned-agent path below is then
+      // byte-for-byte the pre-X9b behavior.
+      let x9Addressee: TelegramAddressee | null = null;
+      if (
+        endpoint.provider === "telegram" &&
+        (x8Dm.applies || addressed) &&
+        principalResolution.userId !== null
+      ) {
+        x9Addressee = await resolveBridgedAddressee(db, {
+          companyId: endpoint.companyId,
+          endpointAgentId: endpoint.assignedAgentId,
+          text: message.text,
+        });
+      }
       if (x8Dm.detachExisting) {
         existingConversation = null;
         existingIssue = null;
@@ -16212,6 +16485,37 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       }
 
       const inboundActivityPublications: ActivityPublication[] = [];
+      // myrmidon(1.6.1 VOICE-STT B): prefetch+transcribe the turn's Telegram
+      // voice/audio BEFORE the task/comment transaction below. The vendor
+      // creates the comment before attachments download, and the open task
+      // may read it immediately — so the transcript must already be in the
+      // body at addComment time. Runs only when the setting is on and every
+      // guard passes; a skip returns null here and the vendor body is used.
+      // Delivery ordering: this runs after admission and the reach gates, so
+      // an unlinked or filtered turn never pays a prefetch.
+      const voiceSttAttachmentInput = telegramVoiceSttAttachments(endpoint, message);
+      const voiceSttOutcome = voiceSttAttachmentInput
+        ? await transcribeTelegramVoiceIntake({
+            companyId: endpoint.companyId,
+            senderText: message.text,
+            voiceAttachments: voiceSttAttachmentInput,
+            env: process.env,
+            transcriber: options.telegramVoiceTranscriber ?? null,
+          })
+        : null;
+      const voiceSttBody = voiceSttOutcome?.body ?? null;
+      // myrmidon(1.6.1 VOICE-STT B): resolve the transcript for THIS endpoint —
+      // only Telegram task endpoints consume the prefetched transcript; every
+      // other provider falls through to the vendor body untouched.
+      const voiceSttBodyFor = (taskEndpoint: EndpointRow): string | null =>
+        taskEndpoint.provider === "telegram" ? voiceSttBody : null;
+      // myrmidon(1.6.1 VOICE-STT B): `stt_disabled` is not a failure — it is
+      // the switch being off, and the vendor path must stay byte for byte
+      // (no metadata row, no body change) in that case.
+      const voiceSttSkip =
+        voiceSttOutcome?.skip && voiceSttOutcome.skip !== "stt_disabled"
+          ? voiceSttOutcome.skip
+          : null;
       const persistTaskMutation = async (
         taskTx: DbOrTransaction,
         taskEndpoint: EndpointRow,
@@ -16247,6 +16551,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                 boardUserId: taskUserId,
                 current: conversation,
                 latestConversation,
+                // myrmidon(X9b): route an @<alias>-addressed turn to the
+                // addressed agent's own standing conversation. `x9Addressee`
+                // was resolved from the pre-transaction snapshot; the identity
+                // is re-verified here via `taskUserId`, and the addressee only
+                // names a company agent, so it stays valid across the lock.
+                ...(x9Addressee ? { conversationAgentId: x9Addressee.agentId } : {}),
               },
               inboundActivityPublications,
             )
@@ -16259,14 +16569,35 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           const issue = await issuesSvc.create(
             endpoint.companyId,
             {
-              title: safeTitle(
-                message.text,
-                `${PROVIDER_LABELS[endpoint.provider]} conversation`,
-              ),
-              description: `Started from ${PROVIDER_LABELS[endpoint.provider]}: ${resource.label}`,
+              // myrmidon(TG-NOTIFY-D): a task created from a Telegram forum
+              // topic message carries the message's first words as the title
+              // and the thread link in the description.
+              title:
+                // myrmidon(TG-NOTIFY-D): see the topic-inbound gate above.
+                topicInbound && endpoint.provider === "telegram" && !thread.isDM
+                  ? topicTaskTitle(
+                      message.text,
+                      endpoint.provider === "telegram" ? endpoint.botUsername : null,
+                    )
+                  : safeTitle(
+                      message.text,
+                      `${PROVIDER_LABELS[endpoint.provider]} conversation`,
+                    ),
+              description:
+                topicInbound && endpoint.provider === "telegram" && !thread.isDM
+                  ? topicTaskBody({
+                      text: message.text.slice(0, MAX_INBOUND_TEXT),
+                      threadUrl: providerUrl,
+                      chatLabel: resource.label,
+                    })
+                  : `Started from ${PROVIDER_LABELS[endpoint.provider]}: ${resource.label}`,
               status: "todo",
               priority: "medium",
-              assigneeAgentId: endpoint.assignedAgentId,
+              // myrmidon(X9b): an @<alias>-addressed group/topic message takes
+              // the addressed agent as the task's assignee — the group twin of
+              // the DM's per-agent conversation routing. A plain (or unresolvable)
+              // turn keeps the endpoint's assigned agent, byte-for-byte.
+              assigneeAgentId: x9Addressee?.agentId ?? endpoint.assignedAgentId,
               createdByUserId: taskUserId ?? endpoint.sponsorUserId,
               responsibleUserId: taskUserId ?? endpoint.sponsorUserId,
               originKind: "chat_channel",
@@ -16376,9 +16707,21 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         }
         // myrmidon(X8b): a `message`-kind bridged command (e.g. /new) overrides
         // the comment body instead of the raw provider text.
+        // myrmidon(1.6.1 VOICE-STT B): the transcript of a Telegram
+        // voice/audio turn, prefetched and recognized before this comment
+        // is created, replaces the placeholder "Shared N file(s)." body.
+        // A skip falls back to the vendor body below; the attachment keeps
+        // going through the unchanged ingest path either way.
+        // myrmidon(X9b): an @<alias>-addressed turn's body drops the leading
+        // @-token (the addressee already routes the turn; the alias would only
+        // pollute the standing conversation) but keeps everything after it.
+        const x9Body = x9Addressee
+          ? x9StripAddressToken(message.text)
+          : message.text;
         const body =
           x8MessageBody ??
-          (message.text.trim() ||
+          voiceSttBodyFor(taskEndpoint) ??
+          (x9Body.trim() ||
           (message.attachments.length > 0
             ? taskEndpoint.provider === "microsoft-teams" &&
               !thread.isDM &&
@@ -16460,6 +16803,19 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                         ? "Linked Myrmidon user"
                         : "Sponsored external guest (restricted)",
                     },
+                    // myrmidon(1.6.1 VOICE-STT B): the redacted skip code of
+                    // this turn's transcription attempt. Only the stable code
+                    // is recorded — never the error text, the provider
+                    // payload or any transcript content.
+                    ...(voiceSttSkip
+                      ? [
+                          {
+                            type: "key_value" as const,
+                            label: "Voice transcription",
+                            value: `stt_skipped: ${voiceSttSkip}`,
+                          },
+                        ]
+                      : []),
                   ],
                 },
               ],
@@ -16520,6 +16876,19 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           commentId: comment.id,
           principalId: principalResolution.principal.id,
           actorUserId: taskUserId,
+          // myrmidon(X9b): the conversation's own agent (the X9b addressee)
+          // when it differs from the endpoint's assigned agent; a group/topic
+          // task has no conversation agent, so the wakeup follows the task's
+          // assignee the addressee routed. Plain turns leave this unset and
+          // keep the assigned agent.
+          ...(x9Addressee
+            ? {
+                wakeupAgentId:
+                  issue.conversationAgentId ??
+                  issue.assigneeAgentId ??
+                  x9Addressee.agentId,
+              }
+            : {}),
         });
         if (taskEndpoint.provider === "imessage-photon") {
           await logActivity(

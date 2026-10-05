@@ -3,6 +3,7 @@ import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import { activityLog, agents, companies, costEvents, heartbeatRuns, issues, projects } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
+import { agentPromptStats, type AgentPromptStats } from "../myrmidon/prompt-budget/fleet-prompt-report.js"; // myrmidon(1.6.3 PROMPT-BUDGET D)
 import { budgetService, type BudgetServiceHooks } from "./budgets.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 
@@ -282,7 +283,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
       if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
 
-      return db
+      const rows = await db
         .select({
           agentId: costEvents.agentId,
           agentName: agents.name,
@@ -307,6 +308,20 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .where(and(...conditions))
         .groupBy(costEvents.agentId, agents.name, agents.status)
         .orderBy(desc(sumAsNumber(costEvents.costCents)));
+
+      // myrmidon(1.6.3 PROMPT-BUDGET D): the fleet prompt report is additive on
+      // this endpoint — two extra columns per agent (the average prompt size of
+      // one run and the share of runs above the configured budget threshold).
+      // The spend columns above are untouched: the prompt side comes from its
+      // own per-run aggregate and is merged by agent id, so no join can fan out
+      // and inflate the existing sums.
+      const promptStats: Map<string, AgentPromptStats> =
+        rows.length > 0 ? await agentPromptStats(db, companyId, range) : new Map();
+      return rows.map((row) => ({
+        ...row,
+        avgPromptTokens: promptStats.get(row.agentId)?.avgPromptTokens ?? null,
+        runsAboveThresholdPct: promptStats.get(row.agentId)?.runsAboveThresholdPct ?? null,
+      }));
     },
 
     byProvider: async (companyId: string, range?: CostDateRange) => {

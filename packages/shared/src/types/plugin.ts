@@ -17,7 +17,6 @@ import type {
   PluginDatabaseNamespaceMode,
   PluginDatabaseNamespaceStatus,
   AgentAdapterType,
-  AgentRole,
   AgentStatus,
   IssuePriority,
   ProjectStatus,
@@ -269,8 +268,8 @@ export interface PluginManagedAgentDeclaration {
   agentKey: string;
   /** Suggested visible agent name. */
   displayName: string;
-  /** Optional suggested role. Defaults to `general`. */
-  role?: AgentRole | string;
+  /** Optional suggested role (a caste key). Defaults to `general`. */
+  role?: string;
   /** Optional suggested title shown in agent surfaces. */
   title?: string | null;
   /** Optional icon for agent list/detail surfaces. */
@@ -720,6 +719,13 @@ export interface PaperclipPluginManifestV1 {
   launchers?: PluginLauncherDeclaration[];
   /** UI bundle declarations. Requires `entrypoints.ui` when populated. */
   ui?: PluginUiDeclaration;
+  /**
+   * myrmidon(PLUGIN-ENTITLEMENT C): when true, the plugin is not activated and
+   * stays hidden from menus and settings until a valid entitlement key is
+   * accepted for it in the instance settings. Kept in sync with the validator
+   * of the same field (packages/shared/src/validators/plugin.ts).
+   */
+  requiresEntitlement?: boolean;
 }
 
 // ---------------------------------------------------------------------------

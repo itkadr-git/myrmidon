@@ -1,0 +1,120 @@
+#!/usr/bin/env node
+// docker/bot-runtime/git-reference/git
+//
+// myrmidon(1.6.2 BOT-DISK-C): git wrapper for the dev variant. Stands FIRST on
+// PATH (/opt/paperclip/bin), ahead of /usr/bin/git, and makes the board's
+// shared git mirrors transparent: a plain
+//
+//   git clone https://github.com/<owner>/<repo>[.git] [dir]
+//
+// becomes `git clone --reference-if-able /cache/git/<owner>/<repo>.git ...`
+// when that mirror exists in the container, so the clone stores only the
+// objects the mirror lacks (its `objects/info/alternates` points at the
+// read-only mount). Everything else — every other subcommand, every clone of
+// another host or of a repository without a mirror, a clone that already says
+// how it wants to be stored (--reference*, --dissociate, --shared, --local,
+// --mirror, --depth, --shallow-*, --filter) — runs the real git unchanged:
+// same argv, same environment, same stdio, same exit status. The credential
+// helper (/etc/gitconfig -> git-credential-paperclip) belongs to the real git
+// and is untouched.
+//
+// The mirror directory is derived from the URL only after the owner and the
+// repository name pass the same checks GitHub applies, so no URL can make the
+// wrapper point git at another path.
+//
+// CJS on purpose, like the other wrappers in /opt/paperclip/bin (no
+// package.json above /opt, so Node loads it as CommonJS).
+
+"use strict";
+
+const { spawnSync } = require("node:child_process");
+const fs = require("node:fs");
+const path = require("node:path");
+
+const REAL_GIT = process.env.MYRMIDON_GIT_REAL || "/usr/bin/git";
+const MIRROR_ROOT = process.env.MYRMIDON_GIT_MIRROR_ROOT || "/cache/git";
+
+const OWNER_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
+const REPO_RE = /^[A-Za-z0-9._-]{1,100}$/;
+
+// Global options that take their value as the NEXT argument.
+const GLOBAL_WITH_VALUE = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--config-env", "--attr-source", "--exec-path"]);
+// `git clone` options that take their value as the NEXT argument.
+const CLONE_WITH_VALUE = new Set([
+  "-b", "--branch", "-o", "--origin", "-u", "--upload-pack", "--reference", "--reference-if-able",
+  "--separate-git-dir", "--depth", "--shallow-since", "--shallow-exclude", "--filter", "-j", "--jobs",
+  "--template", "-c", "--config", "--server-option", "--bundle-uri", "--ref-format", "--revision",
+]);
+// Clone options that already decide how objects are stored: leave such a clone alone.
+const CLONE_OPT_OUT = [
+  /^--reference(?:-if-able)?(?:=|$)/, /^--dissociate$/, /^--shared$/, /^-s$/, /^--local$/, /^-l$/, /^--mirror$/,
+  /^--depth(?:=|$)/, /^--shallow-since(?:=|$)/, /^--shallow-exclude(?:=|$)/, /^--filter(?:=|$)/, /^--no-local$/,
+];
+
+/** `owner/repo` (lower case) when `url` names a GitHub repository, else null. */
+function githubRepo(url) {
+  const m =
+    /^https:\/\/(?:www\.)?github\.com\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/i.exec(url) ||
+    /^(?:ssh:\/\/)?git@github\.com[:/]([^/]+)\/([^/]+?)(?:\.git)?\/?$/i.exec(url);
+  if (!m) return null;
+  const [, owner, repo] = m;
+  if (!OWNER_RE.test(owner) || !REPO_RE.test(repo) || repo === "." || repo === "..") return null;
+  return `${owner.toLowerCase()}/${repo.toLowerCase()}`;
+}
+
+/** The mirror directory of a repository when it exists in this container, else null. */
+function mirrorFor(repo, root = MIRROR_ROOT) {
+  const dir = path.join(root, `${repo}.git`);
+  try {
+    if (fs.statSync(path.join(dir, "objects")).isDirectory() && fs.statSync(path.join(dir, "HEAD")).isFile()) return dir;
+  } catch {
+    // no mirror: clone as usual
+  }
+  return null;
+}
+
+/** argv with `--reference-if-able <mirror>` after `clone` when it applies, else argv unchanged. */
+function rewriteArgs(argv, root = MIRROR_ROOT) {
+  let i = 0;
+  while (i < argv.length && argv[i].startsWith("-")) {
+    i += GLOBAL_WITH_VALUE.has(argv[i]) ? 2 : 1;
+  }
+  if (argv[i] !== "clone") return argv;
+  const cloneAt = i;
+  let repoUrl = null;
+  for (let j = cloneAt + 1; j < argv.length; j++) {
+    const arg = argv[j];
+    if (arg === "--") {
+      repoUrl = argv[j + 1] ?? null;
+      break;
+    }
+    if (arg.startsWith("-")) {
+      if (CLONE_OPT_OUT.some((re) => re.test(arg))) return argv;
+      if (CLONE_WITH_VALUE.has(arg)) j += 1;
+      continue;
+    }
+    repoUrl = arg;
+    break;
+  }
+  if (repoUrl === null) return argv;
+  const repo = githubRepo(repoUrl);
+  const mirror = repo ? mirrorFor(repo, root) : null;
+  if (!mirror) return argv;
+  return [...argv.slice(0, cloneAt + 1), "--reference-if-able", mirror, ...argv.slice(cloneAt + 1)];
+}
+
+function main() {
+  const result = spawnSync(REAL_GIT, rewriteArgs(process.argv.slice(2)), { stdio: "inherit" });
+  if (result.error) {
+    process.stderr.write(`git: cannot run ${REAL_GIT}: ${result.error.message}\n`);
+    process.exit(127);
+  }
+  if (result.signal) {
+    process.kill(process.pid, result.signal);
+    return;
+  }
+  process.exit(result.status === null ? 1 : result.status);
+}
+
+if (require.main === module) main();
+module.exports = { githubRepo, mirrorFor, rewriteArgs };

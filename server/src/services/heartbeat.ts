@@ -17,6 +17,9 @@ import { bypassesSettledHold } from "../myrmidon/settled-holds/explicit-wake-gat
 // successor run, so the run's own claim and every later automatic
 // continuation see no hold. See docs/myrmidon/DIVERGENCE.md "L2".
 import { supersedeExplicitWakeSettledHold } from "../myrmidon/settled-holds/supersede-explicit-wake.js";
+// myrmidon(CHAT-HOLD): a chat is never held; an owner message lifts a hold.
+import { isChatBackedIssue, isChatOwnerMessageWake } from "../myrmidon/chat-holds/chat-backed.js";
+import { clearChatHoldsOnOwnerMessage } from "../myrmidon/chat-holds/clear-on-message.js";
 // myrmidon(L2, round 3 fix): retire the woken agent's own waiting run that the
 // bypassed hold would cancel at its claim, so the wake is not lost with it.
 import { cancelWaitingRunDoomedByHold, carryRetryBudgetToSuccessor } from "../myrmidon/settled-holds/cancel-waiting-run.js";
@@ -175,8 +178,8 @@ import {
 import { createHostDuplexObservabilityRecorder } from "./duplex-observability-recorder.js";
 import { incrementToolRuntimeMetricCounter } from "./tool-runtime-metrics.js";
 import { logger } from "../middleware/logger.js";
-// myrmidon(P9): run MCP selection ignores connection health
-import { isRunSelectableConnection, isRunUnavailableConnection } from "../myrmidon/tool-gateway-run-selection.js";
+// myrmidon(BOARD-TOOLS-A): run-selection predicates moved with the assignment
+// logic into ./agent-assigned-tools.ts (import there).
 import {
   createGitRemoteAuthProvider,
   resolveManagedGitHubIdentitySelection,
@@ -414,6 +417,8 @@ import {
 } from "./authorization.js";
 import { createToolGatewayService } from "./tool-gateway.js";
 import { toolAccessService } from "./tool-access.js";
+// myrmidon(BOARD-TOOLS-A): agent-assigned runtime MCP selection lives in its own module
+import { resolveAgentAssignedToolSet } from "./agent-assigned-tools.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 import { ISSUE_BLOCKERS_RESOLVED_WAKE_REASON } from "./issue-dependency-wakeups.js";
 import {
@@ -604,6 +609,8 @@ import {
   sweepExpiredHeartbeatRunRuntimeStatuses,
   touchHeartbeatRunRuntimeStatus,
 } from "./heartbeat-run-runtime-status.js";
+// myrmidon(DM-PROGRESS): run-log tool lines feed the live Telegram DM status steps
+import { recordDmProgressLogChunk } from "../myrmidon/telegram-dm-progress/runtime-steps.js";
 import {
   findMissingHotRestartSnapshotRunIds,
   readHotRestartIntent,
@@ -660,8 +667,6 @@ import {
 } from "../myrmidon/swarm-claim/hooks.js";
 import { scheduleQueuedResweep, sharedRunAdmission } from "../myrmidon/run-admission.js";
 // myrmidon(S2-hostcred): a run never inherits the host's GitHub credentials
-// myrmidon(B1c-restore): main (#206) already gates host-credential inheritance;
-// the import below is the same module main uses, restored after a rebase drop.
 import {
   filterHostGitHubCredentialEnv,
   resolveRunHostGitHubCredentials,
@@ -676,9 +681,11 @@ import {
 // immediate operator escalation
 import { shouldRetryOriginalExecutorForInfraInterrupt } from "../myrmidon/infra-interrupts.js";
 // myrmidon(X8d): quote the same person's other conversation (web <-> Telegram)
+// myrmidon(X9b): quoted context of the Telegram chat an @<alias> mention arrived in
 import {
   appendCrossChannelDelta,
   buildCrossChannelContext,
+  buildMentionedChatContext,
 } from "../myrmidon/agent-chat-bridge/cross-channel.js";
 
 // myrmidon(M3): owner signal on a budget hard-stop (see budget-signal.ts)
@@ -688,6 +695,15 @@ import {
   type BudgetHardStopSignalInput as BudgetSignalInput,
   type BudgetSignalPorts,
 } from "../myrmidon/budget-signal.js";
+// myrmidon(1.7-BUDGET-CONFIG-B): enforcement mode wiring — the mode reader the
+// budget service asks for, and the signal-only notice delivery (see
+// budget-enforcement/).
+import { readBudgetEnforcement } from "../myrmidon/budget-enforcement/settings.js";
+import {
+  deliverBudgetSignalOnly,
+  type BudgetSignalOnlyInput,
+  type BudgetSignalOnlyPorts,
+} from "../myrmidon/budget-enforcement/signal.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
@@ -4535,6 +4551,11 @@ export async function revokeHeartbeatRunGatewayTokens(input: {
     );
 }
 
+// myrmidon(BOARD-TOOLS-A): the agent's assigned MCP tool set (assignment digest,
+// immutable native:<agentId>:<digest> profile, aggregate gateway, run token) is
+// resolved in ./agent-assigned-tools.ts so heartbeat and the bot-container
+// profile compiler share one implementation. This wrapper keeps the vendor
+// call sites and the exported surface unchanged.
 export async function buildPaperclipRuntimeMcpServers(input: {
   db: Db;
   agent: Pick<typeof agents.$inferSelect, "id" | "companyId" | "name">;
@@ -4544,285 +4565,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
     connections: Array<{ id: string; name: string }>,
   ) => void | Promise<void>;
 }): Promise<AdapterRuntimeMcpServer[]> {
-  const access = toolAccessService(input.db);
-  const effective = await access.getEffectiveProfilesForAgent(
-    input.agent.companyId,
-    input.agent.id,
-  );
-  const [runIdentity] = await input.db
-    .select({
-      responsibleUserId: heartbeatRuns.responsibleUserId,
-      activeIdentityContextId: heartbeatRuns.activeIdentityContextId,
-    })
-    .from(heartbeatRuns)
-    .where(
-      and(
-        eq(heartbeatRuns.id, input.runId),
-        eq(heartbeatRuns.companyId, input.agent.companyId),
-        eq(heartbeatRuns.agentId, input.agent.id),
-      ),
-    )
-    .limit(1);
-  const resolvedInstalledConnections = runIdentity?.activeIdentityContextId
-    ? effective.installedConnections
-    : await filterResolvedGitHubConnectionsForRun({
-        db: input.db,
-        companyId: input.agent.companyId,
-        agentId: input.agent.id,
-        responsibleUserId: runIdentity?.responsibleUserId ?? null,
-        connections: effective.installedConnections,
-      });
-  const permittedConnectionIds = new Set([
-    ...effective.entries
-      .filter((entry) => entry.effect === "include" && entry.connectionId)
-      .map((entry) => entry.connectionId!),
-    ...effective.allowedTools.map((tool) => tool.connectionId),
-  ]);
-  const allInstalledConnectionIds = new Set(
-    effective.installedConnections.map((connection) => connection.id),
-  );
-  const permittedConnections =
-    permittedConnectionIds.size > 0
-      ? await input.db
-          .select({
-            id: toolConnections.id,
-            name: toolConnections.name,
-            transport: toolConnections.transport,
-          })
-          .from(toolConnections)
-          .where(
-            and(
-              eq(toolConnections.companyId, input.agent.companyId),
-              inArray(toolConnections.id, [...permittedConnectionIds]),
-            ),
-          )
-      : [];
-  const permittedNotInstalledConnections = permittedConnections
-    .filter(
-      (connection) =>
-        (connection.transport === "mcp_remote" ||
-          connection.transport === "local_stdio") &&
-        !allInstalledConnectionIds.has(connection.id),
-    )
-    .map(({ id, name }) => ({ id, name }))
-    .sort((a, b) => a.name.localeCompare(b.name));
-  // myrmidon(P9): health is not a filter; an assigned connection stays in the run
-  // unless it is disabled or inactive (same rule as native runtime-context).
-  const assignedConnections = resolvedInstalledConnections.filter(
-    (connection) => permittedConnectionIds.has(connection.id) && isRunSelectableConnection(connection),
-  );
-  const unhealthyConnections = resolvedInstalledConnections.filter(
-    (connection) => permittedConnectionIds.has(connection.id) && isRunUnavailableConnection(connection),
-  );
-  if (unhealthyConnections.length && input.onUnavailableAssignedConnections) {
-    try {
-      await input.onUnavailableAssignedConnections(
-        unhealthyConnections
-          .map(({ id, name }) => ({ id, name }))
-          .sort((a, b) => a.name.localeCompare(b.name)),
-      );
-    } catch (error) {
-      logger.warn(
-        {
-          companyId: input.agent.companyId,
-          agentId: input.agent.id,
-          runId: input.runId,
-          err: error,
-        },
-        "failed to report unavailable runtime MCP connections",
-      );
-    }
-  }
-  const assignedConnectionIds = new Set(
-    assignedConnections.map((connection) => connection.id),
-  );
-  const assignedTools = effective.allowedTools.filter((tool) =>
-    assignedConnectionIds.has(tool.connectionId),
-  );
-  const service = createToolGatewayService(input.db);
-  if (assignedConnections.length === 0) {
-    await service.recordRuntimeMcpDeliveryDiagnostic({
-      companyId: input.agent.companyId,
-      agentId: input.agent.id,
-      runId: input.runId,
-      permittedNotInstalledConnections,
-    });
-    return [];
-  }
-  const assignment = {
-    version: 1,
-    agentId: input.agent.id,
-    connections: assignedConnections.map((connection) => connection.id).sort(),
-    tools: assignedTools.map((tool) => tool.id).sort(),
-  };
-  const assignmentDigest = createHash("sha256")
-    .update(JSON.stringify(assignment))
-    .digest("hex");
-  // Native runs may lose access after their immutable context is captured, but
-  // they must never gain a new or changed assignment during dispatch.
-  if (
-    input.expectedAssignmentDigest !== undefined &&
-    input.expectedAssignmentDigest !== assignmentDigest
-  ) {
-    return [];
-  }
-  const profileKey = `native:${input.agent.id}:${assignmentDigest}`;
-  let [profile] = await input.db
-    .select()
-    .from(toolProfiles)
-    .where(
-      and(
-        eq(toolProfiles.companyId, input.agent.companyId),
-        eq(toolProfiles.profileKey, profileKey),
-      ),
-    )
-    .limit(1);
-
-  if (!profile) {
-    const fullConnectionIds = new Set(
-      effective.entries
-        .filter(
-          (entry) =>
-            entry.effect === "include" &&
-            entry.selectorType === "connection" &&
-            entry.connectionId,
-        )
-        .map((entry) => entry.connectionId!),
-    );
-    const entries = [
-      ...assignedConnections
-        .filter((connection) => fullConnectionIds.has(connection.id))
-        .map((connection) => ({
-          selectorType: "connection" as const,
-          effect: "include" as const,
-          applicationId: connection.applicationId,
-          connectionId: connection.id,
-        })),
-      ...assignedTools
-        .filter((tool) => !fullConnectionIds.has(tool.connectionId))
-        .map((tool) => ({
-          selectorType: "catalog_entry" as const,
-          effect: "include" as const,
-          applicationId: tool.applicationId,
-          connectionId: tool.connectionId,
-          catalogEntryId: tool.id,
-        })),
-    ];
-    // The 250-entry limit bounds a public profile-edit request, not the
-    // effective assignment assembled from existing profiles. Keep every exact
-    // selector here: truncating or replacing them with connection-wide grants
-    // would either lose assigned tools or authorize tools outside this snapshot.
-    try {
-      const created = await access.createProfile(input.agent.companyId, {
-        profileKey,
-        name: `Native ${input.agent.id.slice(0, 8)} ${assignmentDigest.slice(0, 12)}`,
-        // myrmidon(B1c): visible profile descriptions name our product part.
-        description: `Immutable ${PRODUCT_NAME} Runner MCP assignment profile.`,
-        status: "active",
-        defaultAction: "deny",
-        metadata: {
-          source: "paperclip_runner",
-          agentId: input.agent.id,
-          assignmentDigest,
-        },
-        entries,
-      });
-      [profile] = await input.db
-        .select()
-        .from(toolProfiles)
-        .where(eq(toolProfiles.id, created.id))
-        .limit(1);
-    } catch (error) {
-      [profile] = await input.db
-        .select()
-        .from(toolProfiles)
-        .where(
-          and(
-            eq(toolProfiles.companyId, input.agent.companyId),
-            eq(toolProfiles.profileKey, profileKey),
-          ),
-        )
-        .limit(1);
-      if (!profile) throw error;
-    }
-  }
-
-  let [gateway] = (
-    await input.db
-      .select()
-      .from(toolMcpGateways)
-      .where(
-        and(
-          eq(toolMcpGateways.companyId, input.agent.companyId),
-          eq(toolMcpGateways.status, "active"),
-          isNull(toolMcpGateways.archivedAt),
-        ),
-      )
-  ).filter(
-    (candidate) =>
-      candidate.metadata?.nativeRuntimeAssignmentDigest === assignmentDigest,
-  );
-  if (!gateway) {
-    const slug = `native-${input.agent.id.replaceAll("-", "").slice(0, 12)}-${assignmentDigest.slice(0, 16)}`;
-    try {
-      const created = await service.createNamedGateway({
-        companyId: input.agent.companyId,
-        body: {
-          name: `Native ${input.agent.name} ${assignmentDigest.slice(0, 8)}`,
-          slug,
-          description: `Run-scoped ${PRODUCT_NAME} Runner MCP gateway.`,
-          profileId: profile!.id,
-          defaultProfileMode: "gateway_only",
-          metadata: {
-            nativeRuntimeAssignmentDigest: assignmentDigest,
-            agentId: input.agent.id,
-          },
-        },
-        actor: { agentId: input.agent.id },
-      });
-      [gateway] = await input.db
-        .select()
-        .from(toolMcpGateways)
-        .where(eq(toolMcpGateways.id, created.id))
-        .limit(1);
-    } catch (error) {
-      [gateway] = await input.db
-        .select()
-        .from(toolMcpGateways)
-        .where(
-          and(
-            eq(toolMcpGateways.companyId, input.agent.companyId),
-            eq(toolMcpGateways.slug, slug),
-          ),
-        )
-        .limit(1);
-      if (!gateway) throw error;
-    }
-  }
-
-  const token = await service.createNamedGatewayToken({
-    companyId: input.agent.companyId,
-    gatewayId: gateway!.id,
-    body: {
-      name: `Run ${input.runId.slice(0, 8)}`,
-      subjectType: "heartbeat_run",
-      subjectId: input.runId,
-      clientLabel: `${input.agent.name} heartbeat run`,
-      ownerNote: `Short-lived runtime MCP token for heartbeat run ${input.runId}.`,
-      allowedActions: ["tools/list", "tools/call"],
-      expiresAt: new Date(Date.now() + 60 * 60 * 1_000),
-    },
-    actor: { agentId: input.agent.id },
-  });
-
-  return [
-    {
-      name: "paperclip-assigned",
-      url: `${paperclipApiBaseUrl()}/mcp/gateways/${gateway!.gatewayPublicId}`,
-      token: token.token,
-      connectionId: `assignment:${assignmentDigest}`,
-    },
-  ];
+  return resolveAgentAssignedToolSet(input);
 }
 function createAdapterRuntimeMcpAccess(
   servers: AdapterRuntimeMcpServer[],
@@ -7169,6 +6912,24 @@ const INTERACTION_CONTINUATION_CONTEXT_KEYS = [
   "newlyResolvedItemIds",
 ] as const;
 
+// myrmidon(CHAT-SOURCE): sources that carry fresh owner input through the
+// interaction pipeline. They are new provenance, not background control flow,
+// so a coalesced continuation of this kind legitimately replaces a live chat
+// origin. Used by the chat-origin preservation in mergeCoalescedContextSnapshot.
+/**
+ * Sources that carry fresh owner input through the interaction pipeline. They
+ * are new provenance, not background control flow, so a coalesced continuation
+ * of this kind legitimately replaces a live chat origin.
+ */
+const INTERACTION_CONTINUATION_SOURCES: ReadonlySet<string> = new Set([
+  "issue.interaction.respond",
+  "issue.interaction.accept",
+  "issue.interaction.reject",
+  "issue.interaction.cancel",
+  "issue.interaction.withdraw",
+  "external_chat.interaction.resolve",
+]);
+
 function isInteractionResolutionWakePayload(
   payload: Record<string, unknown> | null | undefined,
 ) {
@@ -7189,6 +6950,16 @@ function hasInteractionContinuationWakeContext(
   return INTERACTION_CONTINUATION_CONTEXT_KEYS.some((key) =>
     readNonEmptyString(contextSnapshot[key]),
   );
+}
+
+function isInteractionContinuationWake(
+  contextSnapshot: Record<string, unknown>,
+) {
+  const source = readNonEmptyString(contextSnapshot.source);
+  if (source !== null && INTERACTION_CONTINUATION_SOURCES.has(source)) {
+    return true;
+  }
+  return hasInteractionContinuationWakeContext(contextSnapshot);
 }
 
 function normalizeInteractionContinuationWakeContext(
@@ -7267,11 +7038,40 @@ export function mergeCoalescedContextSnapshot(
   const existing = parseObject(existingRaw);
   const existingSource = readNonEmptyString(existing.source);
   const incomingSource = readNonEmptyString(incoming.source);
+  const sameIssueScope =
+    readNonEmptyString(existing.issueId) !== null &&
+    existing.issueId === incoming.issueId;
+  // A verified chat origin is the run's provenance, not merely "the last event
+  // that touched it". Coalescing a background event (for example
+  // `issue.children_completed`) used to overwrite `source`, which silently
+  // dropped the chat binding for every downstream reader: the terminal
+  // presentation never reached the provider and the terminal milestone was
+  // never queued, leaving the "working…" progress message published forever.
+  // Only new owner input (a chat message, or an interactive continuation) may
+  // replace the origin; the incoming event is retained under `lastWakeSource`.
+  // This also covers the previously special-cased `native_status_decision`
+  // control wake, which is just another non-chat background event.
+  // myrmidon(CHAT-SOURCE): a verified chat origin is the run's provenance, not
+  // merely "the last event that touched it". Coalescing a background event (a
+  // native status wake, `issue.children_completed`, an automation wake) used to
+  // overwrite `source`, which silently dropped the chat binding for every
+  // downstream reader: the terminal presentation never reached the provider and
+  // the terminal milestone was never queued, leaving the "working…" progress
+  // message published forever. Only new owner input (a chat message, or an
+  // interactive continuation) may replace the origin; the incoming event moves
+  // to `lastWakeSource`. This generalizes the vendor's native-status special
+  // case, which stays covered.
   const preservesExternalChatOrigin =
     existingSource?.startsWith("chat:") === true &&
-    readNonEmptyString(existing.issueId) !== null &&
-    existing.issueId === incoming.issueId &&
-    incomingSource === "native_status_decision" &&
+    sameIssueScope &&
+    incomingSource !== null &&
+    !incomingSource.startsWith("chat:") &&
+    !isInteractionContinuationWake(incoming);
+  // A `native_status_decision` source is only a verified control wake when it
+  // carries its own marker. An unmarked claim may still be recorded as the last
+  // wake, but it must never be trusted to carry the run's admitted proof.
+  const incomingControlWakeVerified =
+    incomingSource !== "native_status_decision" ||
     readNonEmptyString(incoming.statusDecisionSource) ===
       "native_status_decision";
   const merged: Record<string, unknown> = {
@@ -7291,12 +7091,31 @@ export function mergeCoalescedContextSnapshot(
   } else {
     delete merged[EXTERNAL_ATTACHMENT_OMISSIONS_KEY];
   }
-  // A native status wake is control-flow metadata, not a new user-input
-  // provenance. When it coalesces into the live run, retain the verified chat
-  // source so the eventual terminal presentation can still prove its route.
-  // Fresh status-decision runs keep their native_status_decision source.
+  // A non-chat background event (a native status wake, `issue.children_completed`,
+  // …) is control-flow metadata, not a new user-input provenance. When it
+  // coalesces into the live run, retain the verified chat source so the eventual
+  // terminal presentation and milestone readers can still prove their route.
+  // Fresh non-chat runs keep their own source.
   if (preservesExternalChatOrigin) {
     merged.source = existingSource;
+    // The incoming event still matters, so it moves to its own key instead of
+    // being dropped. `source` and `wakeReason` describe the same event and must
+    // move together: a preserved chat `source` paired with the incoming
+    // control-flow `wakeReason` would be a contradictory provenance record.
+    merged.lastWakeSource = incomingSource;
+    const existingWakeReason = readNonEmptyString(existing.wakeReason);
+    const incomingWakeReason = readNonEmptyString(incoming.wakeReason);
+    if (existingWakeReason !== null) {
+      merged.wakeReason = existingWakeReason;
+      if (incomingWakeReason !== null) {
+        merged.lastWakeReason = incomingWakeReason;
+      }
+    }
+    // The flat merge above drops the admitted execution proof so no coalescing
+    // wake can mint one. Retention stays on the existing `preservesAdmittedWake`
+    // gate below, which requires the unchanged admitted wake payload as proof;
+    // broadening the chat-origin preservation only widens which coalesced
+    // events reach that validated path.
   }
   if (
     existing.forceFreshSession === true ||
@@ -7321,6 +7140,7 @@ export function mergeCoalescedContextSnapshot(
     : [];
   const preservesAdmittedWake =
     preservesExternalChatOrigin &&
+    incomingControlWakeVerified &&
     parseObject(existingWake.issue).id === existing.issueId &&
     CHAT_PROVIDERS.some(
       (provider) =>
@@ -7428,7 +7248,15 @@ export async function resolveExternalChatWakeProvider(input: {
         eq(chatConversations.issueId, input.issueId),
         inArray(chatConversations.state, ["active", "waiting"]),
         eq(chatEndpoints.provider, provider),
-        eq(chatEndpoints.assignedAgentId, input.agentId),
+        // myrmidon(X9b): an @<alias>-addressed turn's conversation agent is
+        // not the endpoint's assigned agent; the conversation is already
+        // pinned to this issue (whose conversationAgentId is the run's
+        // agent), so accept either the assigned agent matching or the
+        // conversation issue's own agent matching.
+        or(
+          eq(chatEndpoints.assignedAgentId, input.agentId),
+          sql`exists (select 1 from issues conv where conv.company_id = ${chatConversations.companyId} and conv.id = ${chatConversations.issueId} and conv.conversation_agent_id = ${input.agentId})`,
+        ),
         inArray(chatEndpoints.status, ["active", "verifying"]),
       ),
     );
@@ -9472,6 +9300,14 @@ export function heartbeatService(
     now: () => new Date(),
     log: logger,
   };
+  // myrmidon(1.7-BUDGET-CONFIG-B): comment-writing port for the signal-only
+  // notice — the same boundary, its own delivery path (see
+  // budget-enforcement/signal.ts).
+  const budgetSignalOnlyPorts: BudgetSignalOnlyPorts = {
+    addComment: (issueId, body, actor, options) =>
+      issuesSvc.addComment(issueId, body, actor, options),
+    log: logger,
+  };
   const treeControlSvc = issueTreeControlService(db);
   const executionWorkspacesSvc = executionWorkspaceService(db);
   const environmentsSvc = environmentService(db);
@@ -9499,6 +9335,19 @@ export function heartbeatService(
       budgetSignalEnabled(runtimeEnv)
         ? (input: BudgetSignalInput) =>
             deliverBudgetHardStopSignal(db, budgetSignalPorts, input).then(() => undefined)
+        : undefined,
+    // myrmidon(1.7-BUDGET-CONFIG-B): the enforcement mode, read from the
+    // instance settings at evaluation time (no restart); the environment
+    // stays a forced override for an instance that never saved the setting.
+    resolveEnforcementMode: async () =>
+      (await readBudgetEnforcement({ getGeneral: () => instanceSettings.getGeneral() })).mode,
+    // myrmidon(1.7-BUDGET-CONFIG-B): the notice delivered when a limit
+    // crosses in signal-only mode — nothing stopped, the owner still learns.
+    // Honors MYRMIDON_BUDGET_SIGNAL_MODE=off the same way the M3 signal does.
+    signalBudgetLimitCrossed:
+      budgetSignalEnabled(runtimeEnv)
+        ? (input: BudgetSignalOnlyInput) =>
+            deliverBudgetSignalOnly(db, budgetSignalOnlyPorts, input).then(() => undefined)
         : undefined,
   };
   const budgets = budgetService(db, budgetHooks);
@@ -10297,7 +10146,10 @@ export function heartbeatService(
             !["issue_commented", "issue_reopened_via_comment"].includes(reason ?? "")) continue;
         const [comment] = await db.select().from(issueComments).where(and(
           eq(issueComments.companyId, run.companyId), eq(issueComments.issueId, issueId),
-          sql`${issueComments.id}::text = ${commentId}`, eq(issueComments.authorType, "user"),
+          // myrmidon(D2): uuid-typed comparison instead of `issue_comments.id::text
+          // = $commentId`; the text cast defeated the primary-key index. The guard
+          // keeps a malformed saved id a no-match instead of a UUID cast error.
+          eq(issueComments.id, jsonTextUuid(sql`${commentId}`)), eq(issueComments.authorType, "user"),
           eq(issueComments.authorUserId, requestedByActorId), isNull(issueComments.deletedAt),
           isNull(issueComments.createdByRunId),
           stoppedNativeContinuation ? undefined : gt(issueComments.createdAt, run.finishedAt),
@@ -19298,7 +19150,13 @@ export function heartbeatService(
       .select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId })
       .from(agentWakeupRequests)
       .innerJoin(heartbeatRuns, and(
-        sql`${heartbeatRuns.resultJson}->>'queuedCommentInterruptQueueId' = ${agentWakeupRequests.id}::text`,
+        // myrmidon(D2): uuid-typed comparison instead of
+        // `heartbeat_runs.result_json->>'queuedCommentInterruptQueueId' =
+        // agent_wakeup_requests.id::text`. The text cast defeated
+        // agent_wakeup_requests' primary-key index and forced a sequential
+        // scan of the whole table on every recovery sweep. See jsonTextUuid's
+        // doc comment and docs/myrmidon/DIVERGENCE.md.
+        eq(jsonTextUuid(sql`${heartbeatRuns.resultJson}->>'queuedCommentInterruptQueueId'`), agentWakeupRequests.id),
         eq(heartbeatRuns.companyId, agentWakeupRequests.companyId),
         eq(heartbeatRuns.agentId, agentWakeupRequests.agentId),
       ))
@@ -20862,6 +20720,21 @@ export function heartbeatService(
             })
           : null;
       if (x8CrossChannel?.full) taskMarkdown += `\n\n${x8CrossChannel.full}`;
+      // myrmidon(X9b): quote the Telegram chat an @<alias> mention arrived in
+      // into the addressed agent's turn (the mention chat is another agent's
+      // conversation on the same native thread, which X8d's sibling lookup
+      // cannot express). Applied for every turn of a conversation whose agent
+      // can differ from the endpoint's assigned one; for the endpoint agent's
+      // own conversation the wake comment's link is its own conversation, so
+      // the helper finds no other chat and returns "".
+      if (isConversation(issueContext) && issueId) {
+        const x9MentionChat = await buildMentionedChatContext(db, {
+          companyId: agent.companyId,
+          issueId,
+          wakeCommentId,
+        });
+        if (x9MentionChat) taskMarkdown += `\n\n${x9MentionChat}`;
+      }
       const taskMarkdownCompact = appendCrossChannelDelta(
         buildPaperclipTaskMarkdown({
           ...taskMarkdownInput,
@@ -22377,7 +22250,7 @@ export function heartbeatService(
           responsibleUserId: responsibleUserId ?? "",
           scope: "github_credentials",
         });
-        const githubBrokerEnv = githubBrokerEnvironment(gitExecutionEnv, {
+        const githubBrokerEnv = githubBrokerEnvironment(runGitHubEnv, {
           url: configuredPaperclipApiBaseUrl() ?? "",
           token: githubBrokerToken?.token ?? "",
         });
@@ -22802,6 +22675,9 @@ export function heartbeatService(
           const sanitizedChunk = compactRunLogChunk(
             redactCurrentUserText(chunk, currentUserRedactionOptions),
           );
+          // myrmidon(DM-PROGRESS): Hermes tool lines feed the step history of
+          // the live Telegram DM status (legacy adapters write no step events).
+          recordDmProgressLogChunk(run.id, stream, sanitizedChunk);
           if (stream === "stdout")
             stdoutExcerpt = appendExcerpt(stdoutExcerpt, sanitizedChunk);
           if (stream === "stderr")
@@ -26104,6 +25980,50 @@ export function heartbeatService(
       }
       throw error;
     }
+    // myrmidon(IDLE-PICKUP): the release path is the primary trigger. The
+    // finishing agent gets a chance at its next ready task immediately, so
+    // the acceptance window ("the next run starts within N minutes") does
+    // not wait for the periodic sweep. Best-effort: the periodic sweeper
+    // catches anything this pass misses, and every admission gate still
+    // applies inside enqueueWakeup.
+    if (options.suppressImmediateRecovery !== true) {
+      try {
+        const releasedRun = await getRun(run.id);
+        if (releasedRun) {
+          const releasedIssueId = readNonEmptyString(
+            parseObject(releasedRun.contextSnapshot).issueId,
+          );
+          await idlePickupForAgent(
+            {
+              db,
+              enqueueWakeup: (agentId, opts) => enqueueWakeup(agentId, opts),
+              logActivity: async (input) => {
+                await logActivity(db, {
+                  companyId: input.companyId,
+                  actorType: input.actorType,
+                  actorId: input.actorId,
+                  agentId: input.agentId,
+                  runId: input.runId,
+                  action: input.action,
+                  entityType: input.entityType,
+                  entityId: input.entityId,
+                  details: input.details,
+                });
+              },
+            },
+            { id: releasedRun.agentId, companyId: releasedRun.companyId },
+            // The just-released issue is the past work: waking it again right
+            // after its run finished is the runaway loop the review caught.
+            { excludeIssueId: releasedIssueId },
+          );
+        }
+      } catch (idlePickupErr) {
+        logger.warn(
+          { err: idlePickupErr, runId: run.id },
+          "idle pickup after issue execution release failed",
+        );
+      }
+    }
   }
 
   async function enqueueWakeup(agentId: string, opts: WakeupOptions = {}, executionWaitRequestId?: string) {
@@ -27078,10 +26998,21 @@ export function heartbeatService(
           // below. The decision is not carried to the run's claim: the claim
           // is the vendor's plain check, and it finds no hold because this
           // admission superseded every one it let the wake pass.
-          const wakeBypassesSettledHold = bypassesSettledHold({
+          // myrmidon(CHAT-HOLD): a new message a person wrote in a chat is
+          // an explicit human action on a conversation, never a replay of
+          // the stopped turn: it passes a settled hold the same way, and the
+          // successor below lifts that hold (chat-holds/clear-on-message.ts).
+          const chatOwnerMessage = isChatOwnerMessageWake({
+            durableChatRequest: Boolean(durableRequest),
+            failedRunRetry: Boolean(durableRequest?.failedRunRetry),
+            commentId: wakeCommentId ?? null,
+            requestedByActorType: opts.requestedByActorType ?? null,
+            requestedByActorId: opts.requestedByActorId ?? null,
+          }) && await isChatBackedIssue(tx as unknown as Db, issue.companyId, issue.id);
+          const wakeBypassesSettledHold = (bypassesSettledHold({
             source, triggerDetail, reason, commentId: wakeCommentId ?? null,
             requestedByActorType: opts.requestedByActorType ?? null,
-          }) && Boolean(opts.requestedByActorId);
+          }) || chatOwnerMessage) && Boolean(opts.requestedByActorId);
           const executionBlocker = await getExecutionBlocker(
             tx as unknown as Db, issue.companyId, issue.id,
             { conversationResetCommentId: opts.requestedByActorType === "user" ? wakeCommentId : null,
@@ -27968,6 +27899,17 @@ export function heartbeatService(
             enrichedContextSnapshot.forceFreshSession = true;
             enrichedContextSnapshot.previousRunId = explicitContinuation.previousRunId;
             enrichedContextSnapshot.explicitUserContinuation = explicitContinuation;
+          } else if (chatOwnerMessage && opts.requestedByActorId && wakeCommentId) {
+            // myrmidon(CHAT-HOLD): lift the chat's settled hold with this
+            // successor run, record it in the activity log, and return a chat
+            // the recovery moved to `blocked` to `todo`.
+            await clearChatHoldsOnOwnerMessage({
+              db: tx as unknown as Db, companyId: issue.companyId, issueId: issue.id,
+              issueStatus: issue.status,
+              successorRunId: explicitContinuationRunId,
+              requestedByActorId: opts.requestedByActorId,
+              commentId: wakeCommentId,
+            });
           } else if (wakeBypassesSettledHold && opts.requestedByActorId) {
             // myrmidon(L2, round 1 fix): an explicit wake with no message of
             // its own (assignment, manual wakeup, approval decision, subtree

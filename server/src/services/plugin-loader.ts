@@ -50,6 +50,11 @@ import type { PluginJobStore } from "./plugin-job-store.js";
 import type { PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 import type { PluginLifecycleManager } from "./plugin-lifecycle.js";
 import { pluginDatabaseService } from "./plugin-database.js";
+// myrmidon(PLUGIN-ENTITLEMENT C): activation gate — a manifest that opts in
+// stays unactivated until a valid key is accepted in the instance settings.
+import { instanceSettingsService } from "./instance-settings.js";
+import { readPluginEntitlementKeys } from "../myrmidon/plugin-entitlement/store.js";
+import { resolvePluginActivation } from "./plugin-entitlement-enforcement.js";
 import { resolveBundledCatalogRoot } from "./bundled-plugins.js";
 // myrmidon(B1c): product name in user-facing texts; see product.ts.
 import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
@@ -2242,6 +2247,31 @@ export function pluginLoader(
         { pluginId, pluginKey, version: plugin.version },
         "plugin-loader: activating plugin",
       );
+
+      // ------------------------------------------------------------------
+      // 0. myrmidon(PLUGIN-ENTITLEMENT C): entitlement gate. A manifest with
+      // `requiresEntitlement: true` is not activated (no worker, no UI slots,
+      // nothing in menus) until the instance has an active key for it. The
+      // row is re-read on every pass, so accepting a key in the settings UI
+      // enables the plugin without a restart. A gated plugin is skipped as
+      // "not ready", not an error: the loader retries it on the next pass.
+      // ------------------------------------------------------------------
+      if (manifest.requiresEntitlement === true) {
+        const entitlementKeys = await readPluginEntitlementKeys(instanceSettingsService(db));
+        const activation = resolvePluginActivation(manifest, entitlementKeys);
+        if (!activation.activate) {
+          log.info(
+            { pluginId, pluginKey, reason: activation.reason },
+            "plugin-loader: plugin is not entitled, skipping activation",
+          );
+          return {
+            plugin,
+            success: false,
+            error: `Plugin ${pluginKey} requires an entitlement key; none is active on this instance`,
+            registered,
+          };
+        }
+      }
 
       // ------------------------------------------------------------------
       // 1. Resolve worker entrypoint

@@ -156,10 +156,20 @@ const mockExternalObjectService = vi.hoisted(() => ({
   syncDocumentSafely: vi.fn(async () => undefined),
   syncIssueSafely: vi.fn(async () => undefined),
 }));
+// myrmidon(1.6.2-AUTONOMY-MATRIX): the delete-class gate is mocked; its default
+// verdict is "allowed" so the pre-existing ownership tests are unaffected.
+const mockAutonomyGate = vi.hoisted(() => ({
+  decide: vi.fn(),
+  assertAllowed: vi.fn(),
+}));
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 const mockObserveCrossIssueInfluence = vi.hoisted(() => vi.fn(async () => null));
 
 function registerRouteMocks() {
+  vi.doMock("../myrmidon/autonomy/gate.js", () => ({
+    dbAutonomyGate: () => mockAutonomyGate,
+  }));
+
   vi.doMock("@paperclipai/shared/telemetry", () => ({
     trackAgentTaskCompleted: vi.fn(),
     trackErrorHandlerCrash: vi.fn(),
@@ -452,6 +462,7 @@ describe("agent issue mutation checkout ownership", () => {
     vi.doUnmock("../services/work-products.js");
     vi.doUnmock("../routes/issues.js");
     vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../myrmidon/autonomy/gate.js");
     vi.doUnmock("../middleware/index.js");
     registerRouteMocks();
     vi.clearAllMocks();
@@ -589,6 +600,9 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueApprovalService.listApprovalsForIssue.mockResolvedValue([]);
     mockIssueThreadInteractionService.listForIssue.mockReset();
     mockIssueThreadInteractionService.listForIssue.mockResolvedValue([]);
+    mockAutonomyGate.decide.mockReset();
+    mockAutonomyGate.assertAllowed.mockReset();
+    mockAutonomyGate.assertAllowed.mockResolvedValue({ verdict: "allowed", role: "engineer", actionClass: "delete" });
     mockIssueService.remove.mockReset();
     mockIssueService.removeAttachment.mockReset();
     mockIssueService.update.mockReset();
@@ -1805,9 +1819,11 @@ describe("agent issue mutation checkout ownership", () => {
   ])("rejects an agent naming %s as unblock owner", async (_label, unblockOwner) => {
     mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress" }));
 
+    // myrmidon(STALE-BLOCK): entering blocked needs a reason reference, so the descriptor carries one;
+    // the ownership rule under test is still the owner field.
     const res = await request(await createApp(ownerActor())).patch(`/api/issues/${issueId}`).send({
       status: "blocked",
-      unblockDescriptor: { owner: unblockOwner, action: "Review the blocker" },
+      unblockDescriptor: { owner: unblockOwner, action: "Review the blocker", reasonRef: { kind: "issue", issueId } },
     });
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
@@ -1837,9 +1853,10 @@ describe("agent issue mutation checkout ownership", () => {
       ...patch,
     }));
 
+    // myrmidon(STALE-BLOCK): entering blocked needs a reason reference.
     const res = await request(await createApp(boardActor())).patch(`/api/issues/${issueId}`).send({
       status: "blocked",
-      unblockDescriptor: { owner: "board", action: "Review the blocker" },
+      unblockDescriptor: { owner: "board", action: "Review the blocker", reasonRef: { kind: "issue", issueId } },
     });
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
@@ -1847,7 +1864,8 @@ describe("agent issue mutation checkout ownership", () => {
       issueId,
       expect.objectContaining({
         status: "blocked",
-        unblockDescriptor: { owner: "board", action: "Review the blocker" },
+        // myrmidon(STALE-BLOCK): the request now carries a reasonRef (see send above).
+        unblockDescriptor: { owner: "board", action: "Review the blocker", reasonRef: { kind: "issue", issueId } },
       }),
     );
   });
@@ -2748,8 +2766,13 @@ describe("agent issue mutation checkout ownership", () => {
         ...patch,
       }));
 
+      // myrmidon(STALE-BLOCK): entering blocked needs a reason reference; the
+      // watchdog (peer) agent must name itself as the unblock owner.
+      const blockedReasonRef = { status: "blocked", unblockDescriptor: { owner: { agentId: peerAgentId }, action: "Watchdog blocked the issue", reasonRef: { kind: "issue", issueId } } };
       const app = await createApp(watchdogActor(), createWatchdogDb());
-      const res = await request(app).patch(`/api/issues/${issueId}`).send({ status });
+      const res = await request(app).patch(`/api/issues/${issueId}`).send(
+        status === "blocked" ? blockedReasonRef : { status },
+      );
 
       expect(res.status, JSON.stringify(res.body)).toBe(200);
       expect(mockIssueService.update).toHaveBeenCalledWith(issueId, expect.objectContaining({ status }));
@@ -2788,7 +2811,7 @@ describe("agent issue mutation checkout ownership", () => {
       });
 
       const app = await createApp(watchdogActor(), createWatchdogDb());
-      const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "blocked" });
+      const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "blocked", unblockDescriptor: { owner: { agentId: peerAgentId }, action: "Watchdog boundary probe", reasonRef: { kind: "issue", issueId } } }) /* myrmidon(STALE-BLOCK): reason ref keeps blocked-transition validation out of the way */;
 
       expect(res.status, JSON.stringify(res.body)).toBe(409);
       expect(res.body.error).toContain("Task-watchdog review is stale");
@@ -2951,7 +2974,7 @@ describe("agent issue mutation checkout ownership", () => {
         watchdogActor(),
         createWatchdogDb({ watchedIssueId: outsideWatched, ancestryParentId: null }),
       );
-      const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "blocked" });
+      const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "blocked", unblockDescriptor: { owner: { agentId: peerAgentId }, action: "Watchdog boundary probe", reasonRef: { kind: "issue", issueId } } }) /* myrmidon(STALE-BLOCK): reason ref keeps blocked-transition validation out of the way */;
 
       expect(res.status, JSON.stringify(res.body)).toBe(403);
       expect(res.body.error).toBe("Task-watchdog runs can only mutate the watched issue subtree.");
@@ -2995,11 +3018,46 @@ describe("agent issue mutation checkout ownership", () => {
       );
       mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: peerAgentId }));
 
-      const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "blocked" });
+      const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "blocked", unblockDescriptor: { owner: { agentId: peerAgentId }, action: "Watchdog boundary probe", reasonRef: { kind: "issue", issueId } } }) /* myrmidon(STALE-BLOCK): reason ref keeps blocked-transition validation out of the way */;
 
       expect(res.status, JSON.stringify(res.body)).toBe(403);
       expect(res.body.error).toBe("Task-watchdog run context is not backed by an active persisted watchdog.");
       expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("autonomy delete class on issue delete", () => {
+    it("denies an agent delete with 403 autonomy_forbidden when the matrix forbids the delete class", async () => {
+      mockIssueService.getById.mockResolvedValue(makeIssue());
+      mockIssueService.listAttachments.mockResolvedValue([]);
+      // vi.resetModules() in beforeEach gives the route a fresh errors module;
+      // build the error from that same registry so the error handler maps it.
+      const { forbidden } = await import("../errors.js");
+      mockAutonomyGate.assertAllowed.mockRejectedValue(
+        forbidden("This action is forbidden for this role by the autonomy matrix", {
+          code: "autonomy_forbidden",
+          actionClass: "delete",
+          role: "engineer",
+        }),
+      );
+
+      const res = await request(await createApp(ownerActor())).delete(`/api/issues/${issueId}`);
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.details.code).toBe("autonomy_forbidden");
+      expect(mockAutonomyGate.assertAllowed).toHaveBeenCalledWith(expect.anything(), "delete");
+      expect(mockIssueService.remove).not.toHaveBeenCalled();
+    });
+
+    it("lets the delete through when the matrix allows the delete class", async () => {
+      mockIssueService.getById.mockResolvedValue(makeIssue());
+      mockIssueService.listAttachments.mockResolvedValue([]);
+
+      const res = await request(await createApp(ownerActor())).delete(`/api/issues/${issueId}`);
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockAutonomyGate.assertAllowed).toHaveBeenCalledWith(expect.anything(), "delete");
+      expect(mockIssueService.remove).toHaveBeenCalledWith(issueId);
     });
   });
 });

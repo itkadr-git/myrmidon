@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { PageTabBar } from "@/components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
@@ -23,8 +24,14 @@ const items = [
   { value: "clouds", label: "Clouds", href: "/company/settings/clouds" }, // myrmidon(CLOUD-CONNECTOR)
   // myrmidon(1.6 AUTONOMY-MATRIX B): role×action matrix screen
   { value: "autonomy", label: "Autonomy", href: "/company/settings/autonomy" },
+  // myrmidon(1.6.1 WIP-LIMIT B): per-agent work-in-progress limit screen
+  { value: "wip-limit", label: "WIP limit", href: "/company/settings/wip-limit" },
+  // myrmidon(REVIEW-ROUTING): automatic reviewer routing settings
+  { value: "review-routing", label: "Review routing", href: "/company/settings/review-routing" },
   // myrmidon(1.6.1 MODEL-PROVIDERS C): the ui2 "Castes and models" section
   { value: "castes", label: "Castes & models", href: "/company/settings/castes" },
+  // myrmidon(1.6.1 CUSTOM-CASTES C): the company caste directory
+  { value: "caste-directory", label: "Agent castes", href: "/company/settings/caste-directory" },
 ] as const;
 
 type CompanySettingsTab = (typeof items)[number]["value"];
@@ -118,6 +125,23 @@ export function getCompanySettingsTab(pathname: string): CompanySettingsTab {
     return "autonomy";
   }
 
+  // myrmidon(1.6.1 CUSTOM-CASTES C): the caste directory settings section.
+  // Must run before the /company/settings/castes prefix check below — that
+  // prefix would otherwise swallow the longer /caste-directory path.
+  if (pathname.includes("/company/settings/caste-directory")) {
+    return "caste-directory";
+  }
+
+  // myrmidon(1.6.1 WIP-LIMIT B): the WIP limit settings section
+  if (pathname.includes("/company/settings/wip-limit")) {
+    return "wip-limit";
+  }
+
+  // myrmidon(REVIEW-ROUTING): the review routing settings section
+  if (pathname.includes("/company/settings/review-routing")) {
+    return "review-routing";
+  }
+
   // myrmidon(1.6.1 MODEL-PROVIDERS C): the Castes and models settings section
   if (pathname.includes("/company/settings/castes")) {
     return "castes";
@@ -126,7 +150,33 @@ export function getCompanySettingsTab(pathname: string): CompanySettingsTab {
   return "general";
 }
 
+// myrmidon(UI-RU): settings tab labels run through the fork i18n catalog.
+// myrmidon(UI-RU): Partial so a tab added upstream (e.g. wip-limit in 1.6.1
+// WIP-LIMIT B) merges without a type error here; untranslated tabs fall back
+// to their English item label until a key is added.
+const SETTINGS_TAB_LABEL_KEYS: Partial<Record<string, string>> = {
+  general: "settingsNav.general",
+  export: "settingsNav.export",
+  import: "settingsNav.import",
+  members: "settingsNav.members",
+  secrets: "settingsNav.secrets",
+  "instance-profile": "settingsNav.profile",
+  "instance-environments": "settingsNav.environments",
+  "instance-access": "settingsNav.access",
+  "instance-board-api-keys": "settingsNav.boardApiKeys",
+  "instance-experimental": "settingsNav.experimental",
+  "instance-plugins": "settingsNav.plugins",
+  "instance-adapters": "settingsNav.adapters",
+  browsers: "settingsNav.browsers",
+  clouds: "settingsNav.clouds",
+  autonomy: "settingsNav.autonomy",
+  castes: "settingsNav.castes",
+  "wip-limit": "settingsNav.wipLimit",
+  "review-routing": "settingsNav.reviewRouting",
+};
+
 export function CompanySettingsNav() {
+  const { t } = useTranslation();
   const location = useLocation();
   const navigate = useNavigate();
   const { hidden: hiddenSettings } = useHiddenSettings();
@@ -149,7 +199,12 @@ export function CompanySettingsNav() {
   return (
     <Tabs value={activeTab} onValueChange={handleTabChange}>
       <PageTabBar
-        items={visibleItems.map(({ value, label }) => ({ value, label }))}
+        items={visibleItems.map(({ value, label }) => ({
+          value,
+          label: SETTINGS_TAB_LABEL_KEYS[value]
+            ? t(SETTINGS_TAB_LABEL_KEYS[value]!, { defaultValue: label })
+            : label,
+        }))}
         value={activeTab}
         onValueChange={handleTabChange}
         align="start"

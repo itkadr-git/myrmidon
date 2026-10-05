@@ -89,6 +89,27 @@ case "${MYRMIDON_BOT_YOLO,,}" in
     ;;
 esac
 
+# --- bot tree layout --------------------------------------------------------
+# myrmidon(BOT-DISK-D): a bot container has ONE bind mount, its whole writable tree
+# at ${MYRMIDON_BOT_ROOT:-/bot} (hermes/, workspace/, scratch/ inside it). Hard
+# links work only within one mount, which is what lets pnpm link node_modules into
+# its store, so /data/hermes, /workspace and /scratch must be paths INSIDE that
+# mount, not separate binds. The image already ships them as links; this makes the
+# same links when they are missing (a manual `docker run -v dir:/bot`, a tmpfs
+# over /data). An existing entry (a link, or a real directory from the old
+# three-bind layout) is left alone. MYRMIDON_DATA_DIR only exists for tests.
+bot_root="${MYRMIDON_BOT_ROOT:-/bot}"
+data_dir="${MYRMIDON_DATA_DIR:-/data}"
+if [ -d "${bot_root}" ] && [ -d "${data_dir}" ] && [ -w "${data_dir}" ]; then
+  for name in hermes workspace scratch; do
+    if [ ! -e "${data_dir}/${name}" ] && [ ! -L "${data_dir}/${name}" ]; then
+      mkdir -p "${bot_root}/${name}" 2>/dev/null || true
+      ln -s "${bot_root}/${name}" "${data_dir}/${name}" 2>/dev/null \
+        || log "WARNING: cannot link ${data_dir}/${name} to ${bot_root}/${name}"
+    fi
+  done
+fi
+
 # --- writable state -------------------------------------------------------
 
 mkdir -p "${HERMES_HOME}" || fail "cannot create HERMES_HOME=${HERMES_HOME} — is /data mounted and owned by uid 10001?"
@@ -131,6 +152,95 @@ if [ -d "${catalog_dir}/hindsight" ]; then
   fi
 else
   log "WARNING: no catalog memory provider at ${catalog_dir}/hindsight — a profile with memory.provider=hindsight starts without memory"
+fi
+
+# --- hard-link self-check (dev variant) -------------------------------------
+# myrmidon(BOT-DISK-D): pnpm falls back to copying when it cannot hard-link, which
+# silently turns every clone's node_modules into a full copy (the disk grew ~5 GB/h
+# before the bot tree became one mount). So at every start: make a file in the pnpm
+# store directory and try to hard-link it into each clone root. A failure is logged
+# as an error and written to ${HERMES_HOME}/.myrmidon/hardlink-check.json, which the
+# clone-hygiene reporter passes to the board (the bot-disk status). It never stops
+# the gateway: a bot with a broken store still works, just wastefully.
+# The store is the one the bot's tools will use: the environment's
+# npm_config_store_dir, overridden by the profile's .env, defaulting to the image's.
+dotenv_value() {
+  local file="${HERMES_HOME}/.env" line value
+  [ -r "${file}" ] || return 0
+  line="$(grep -m1 -E "^$1=" "${file}" || true)"
+  [ -n "${line}" ] || return 0
+  value="${line#"$1"=}"
+  case "${value}" in
+    \"*\") value="${value#\"}"; value="${value%\"}" ;;
+    \'*\') value="${value#\'}"; value="${value%\'}" ;;
+  esac
+  printf '%s' "${value}"
+}
+
+json_escape() {
+  printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr -d '\n\r\t'
+}
+
+hardlink_self_check() {
+  local store method roots root probe src dst err ok_all=true entries="" sep="" ok
+  store="$(dotenv_value npm_config_store_dir)"
+  store="${store:-${npm_config_store_dir:-/workspace/.pnpm-store}}"
+  method="$(dotenv_value npm_config_package_import_method)"
+  method="${method:-${npm_config_package_import_method:-hardlink}}"
+  roots="${MYRMIDON_HARDLINK_ROOTS:-/data/hermes /workspace /scratch}"
+  probe=".myrmidon-hardlink-probe.$$"
+  src="${store}/${probe}"
+  err=""
+  if ! err="$(mkdir -p "${store}" 2>&1 && : > "${src}" 2>&1)"; then
+    err="cannot create a file in the pnpm store ${store}: ${err}"
+    log "ERROR: hard-link self-check: ${err}"
+    for root in ${roots}; do
+      entries="${entries}${sep}{\"root\":\"$(json_escape "${root}")\",\"ok\":false,\"error\":\"$(json_escape "${err}")\"}"
+      sep=","
+    done
+    ok_all=false
+  else
+    for root in ${roots}; do
+      dst="${root}/${probe}"
+      ok=true
+      if ! err="$(ln "${src}" "${dst}" 2>&1)"; then
+        ok=false
+        ok_all=false
+        log "ERROR: hard-link self-check: cannot hard-link from the pnpm store ${store} into ${root}: ${err} — pnpm would copy every package into every clone there"
+      else
+        err=""
+      fi
+      rm -f "${dst}" 2>/dev/null || true
+      entries="${entries}${sep}{\"root\":\"$(json_escape "${root}")\",\"ok\":${ok},\"error\":$( [ "${ok}" = true ] && printf 'null' || printf '"%s"' "$(json_escape "${err}")" )}"
+      sep=","
+    done
+    rm -f "${src}" 2>/dev/null || true
+  fi
+  if [ "${ok_all}" = true ]; then
+    log "hard-link self-check ok: store=${store} roots=${roots} importMethod=${method}"
+  fi
+  local out_dir="${HERMES_HOME}/.myrmidon" now
+  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  if mkdir -p "${out_dir}" 2>/dev/null; then
+    printf '{"version":1,"checkedAt":"%s","store":"%s","importMethod":"%s","ok":%s,"roots":[%s]}\n' \
+      "${now}" "$(json_escape "${store}")" "$(json_escape "${method}")" "${ok_all}" "${entries}" \
+      > "${out_dir}/hardlink-check.json.tmp" 2>/dev/null \
+      && mv -f "${out_dir}/hardlink-check.json.tmp" "${out_dir}/hardlink-check.json" 2>/dev/null \
+      || log "WARNING: cannot write ${out_dir}/hardlink-check.json"
+  fi
+}
+if [ "${MYRMIDON_HARDLINK_CHECK:-1}" != "0" ]; then
+  hardlink_self_check || log "WARNING: the hard-link self-check itself failed to run"
+fi
+
+# --- clone hygiene report (dev variant) -----------------------------------
+# myrmidon(1.6.2 BOT-DISK-C): the board's draft-directory lifecycle removes an
+# idle git clone only when this container says it holds nothing unpushed. The
+# reporter only reads the clones and writes ${HERMES_HOME}/.myrmidon/clone-hygiene.json;
+# it exists in the dev variant only, so the base image skips this.
+if command -v bot-clone-hygiene >/dev/null 2>&1; then
+  bot-clone-hygiene --interval "${MYRMIDON_CLONE_HYGIENE_INTERVAL_SEC:-900}" >/dev/null &
+  log "clone hygiene reporter started (pid $!)"
 fi
 
 # --replace: a previous instance's lock (from a hard container restart) does

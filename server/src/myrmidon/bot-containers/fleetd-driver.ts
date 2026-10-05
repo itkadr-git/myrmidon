@@ -25,6 +25,8 @@
 
 import http from "node:http";
 
+import { logger } from "../../middleware/logger.js";
+
 import type { BotContainerDriver, BotContainerSpec, BotContainerStatus, TemplateDriftField, TemplateDriftReport } from "./driver.js";
 import type { CompiledProfile } from "./types.js";
 
@@ -66,7 +68,7 @@ interface RawResponse {
   body: Buffer;
 }
 
-/** Test hook; production passes none. */
+/** Test hooks and per-instance inputs; every field is optional. */
 export interface FleetdDriverOptions {
   request?: (opts: {
     method: string;
@@ -76,7 +78,23 @@ export interface FleetdDriverOptions {
     timeoutMs?: number;
   }) => Promise<RawResponse>;
   timeoutMs?: number;
+  /**
+   * myrmidon(1.6.1-BOT-DISK-B): the instance's shared package cache path, the
+   * same reader the local driver gets. A fleetd host never mounts it: the path
+   * names a directory on the board's host, fleetd builds its own fixed template
+   * (no cache binds), and the profile compiler only points bots on the default
+   * host at the cache (profile-compile.ts). So this driver deliberately does
+   * nothing with the path and says so once in the server log, rather than
+   * leaving an operator to wonder why a fleetd-hosted bot has no shared cache.
+   */
+  readSharedPackageCachePath?: () => Promise<string | undefined>;
+  /** Where that one notice goes; the server logger by default. */
+  log?: { warn(fields: Record<string, unknown>, message: string): void };
 }
+
+/** The notice logged once per fleetd driver when the instance has a shared package cache. */
+export const FLEETD_PACKAGE_CACHE_NOTICE =
+  "shared package cache is not applied to bots on a fleetd host: fleetd builds its own container template without the cache binds; these bots keep their per-bot caches";
 
 export interface FleetdEndpoint {
   host: string;
@@ -145,6 +163,22 @@ export function fleetdBotContainerDriver(
   options: FleetdDriverOptions = {},
 ): BotContainerDriver {
   const request = options.request ?? ((opts) => fleetdRequest(config, opts));
+  const log = options.log ?? logger;
+  let packageCacheNoticeLogged = false;
+
+  /** The explicit no-op of the shared package cache (see FleetdDriverOptions). */
+  async function noticeSharedPackageCache(): Promise<void> {
+    if (packageCacheNoticeLogged || !options.readSharedPackageCachePath) return;
+    let path: string | undefined;
+    try {
+      path = await options.readSharedPackageCachePath();
+    } catch {
+      return; // the notice is advisory: a failed settings read must not fail a reconcile
+    }
+    if (!path) return;
+    packageCacheNoticeLogged = true;
+    log.warn({ fleetdHost: parseFleetdEndpoint(config.baseUrl).host }, FLEETD_PACKAGE_CACHE_NOTICE);
+  }
 
   async function callJson<T>(opts: {
     method: string;
@@ -180,12 +214,13 @@ export function fleetdBotContainerDriver(
       return callJson<BotContainerStatus>({ method: "GET", path: `/bots/${encodeURIComponent(botKey)}/status` });
     },
 
-    async list(): Promise<BotContainerStatus[]> {
+    async list(botKeys: readonly string[]): Promise<BotContainerStatus[]> {
       const res = await callJson<{ bots: BotContainerStatus[] } | BotContainerStatus[]>({
         method: "GET",
         path: "/bots",
       });
-      return Array.isArray(res) ? res : res.bots;
+      const wanted = new Set(botKeys);
+      return (Array.isArray(res) ? res : res.bots).filter((bot) => wanted.has(bot.botKey));
     },
 
     async templateDrift(spec: BotContainerSpec): Promise<TemplateDriftReport> {
@@ -200,10 +235,12 @@ export function fleetdBotContainerDriver(
     },
 
     async create(spec: BotContainerSpec): Promise<void> {
+      await noticeSharedPackageCache();
       await callVoid({ method: "POST", path: "/bots", body: { spec } });
     },
 
     async recreate(spec: BotContainerSpec): Promise<void> {
+      await noticeSharedPackageCache();
       await callVoid({ method: "POST", path: `/bots/${encodeURIComponent(spec.botKey)}/recreate`, body: { spec } });
     },
 
