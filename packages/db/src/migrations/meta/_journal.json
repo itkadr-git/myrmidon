@@ -2066,6 +2066,13 @@
       "when": 1791169274409,
       "tag": "0298_bot_isolation_scope",
       "breakpoints": true
+    },
+    {
+      "idx": 299,
+      "version": "7",
+      "when": 1791183416684,
+      "tag": "0299_container_scope",
+      "breakpoints": true
     }
   ]
 }

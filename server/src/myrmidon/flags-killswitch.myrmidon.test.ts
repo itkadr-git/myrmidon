@@ -221,10 +221,14 @@ describe("myrmidon env coverage guard (code vs docs)", () => {
   // Every MYRMIDON_* environment name that server/src/myrmidon actually reads
   // must be documented somewhere: docs/myrmidon/FLAGS.md (a kill switch with an
   // L1-L5 semantics row, checked by the guard above), docs/myrmidon/SETTINGS.md
-  // (an ordinary setting), or the explicit list below (run-admission limits
-  // documented in docs/myrmidon/ROADMAP.md, item C0 — numeric limits, not kill
-  // switches). A brand-new flag nobody classified makes this test red: add it to
-  // FLAGS.md if it is a kill switch, to SETTINGS.md if it is a setting.
+  // (an ordinary setting), a change fragment under docs/myrmidon/changes/ (where
+  // a PR declares the settings rows it adds — SETTINGS.md itself is assembled at
+  // the release cut and must not be edited by hand in a PR, see
+  // scripts/myrmidon/ci/change-fragments-gate.mjs), or the explicit list below
+  // (run-admission limits documented in docs/myrmidon/ROADMAP.md, item C0 —
+  // numeric limits, not kill switches). A brand-new flag nobody classified makes
+  // this test red: add it to FLAGS.md if it is a kill switch, declare it in the
+  // change fragment (or SETTINGS.md) if it is a setting.
   const DOCUMENTED_IN_ROADMAP_C0 = new Set([
     "MYRMIDON_MAX_CONCURRENT_RUNS",
     "MYRMIDON_MAX_RUN_STARTS_PER_MINUTE",
@@ -274,17 +278,34 @@ describe("myrmidon env coverage guard (code vs docs)", () => {
       flagNames.add(match[0].slice(2, -1));
     }
 
+    // Names a change fragment declares (its settings rows / changelog text). The
+    // fragment is the PR's registry surface: SETTINGS.md gets the rows only when
+    // the release cut folds the fragment, so a PR that adds a setting cannot
+    // document it in SETTINGS.md itself without tripping the change-fragments
+    // gate. Accept the declaration the PR does carry, and keep requiring that the
+    // name appears in a reviewed document.
+    const fragmentNames = new Set<string>();
+    const fragmentsDir = fileURLToPath(new URL("../../../docs/myrmidon/changes/", import.meta.url));
+    for (const entry of readdirSync(fragmentsDir, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
+      const body = readFileSync(join(fragmentsDir, entry.name), "utf8");
+      for (const match of body.matchAll(/`MYRMIDON_[A-Z0-9_]+`/g)) {
+        fragmentNames.add(match[0].slice(1, -1));
+      }
+    }
+
     const undocumented = [...seen]
       .filter(
         (name) =>
           !flagNames.has(name) &&
           !settingsNames.has(name) &&
+          !fragmentNames.has(name) &&
           !DOCUMENTED_IN_ROADMAP_C0.has(name),
       )
       .sort();
     expect(
       undocumented,
-      "new MYRMIDON_* env name(s) read by myrmidon code: classify each in docs/myrmidon/FLAGS.md (kill switch) or docs/myrmidon/SETTINGS.md (setting)",
+      "new MYRMIDON_* env name(s) read by myrmidon code: classify each in docs/myrmidon/FLAGS.md (kill switch), docs/myrmidon/SETTINGS.md, or the change fragment that adds the setting",
     ).toEqual([]);
   });
 });
