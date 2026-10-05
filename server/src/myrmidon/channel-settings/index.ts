@@ -1,28 +1,38 @@
-import { Router } from 'express';
-import { channelSettingsRouter } from './routes.js';
+// server/src/myrmidon/channel-settings/index.ts
+//
+// myrmidon(1.7-SETTINGS-TO-UI) entry point: the channel settings router for
+// app.ts, built over the real instance-settings service. The document and its
+// resolver live in settings.ts, the read/update service in service.ts.
 
-export { 
-  type ChannelSettings,
-  type ChannelSettingsUpdate,
-  type ChannelSettingsAuditEntry
-} from './settings.js';
+import type { Db } from "@paperclipai/db";
+import { channelSettingsRoutes } from "./routes.js";
+import { channelSettingsService } from "./service.js";
 
-export { 
-  ChannelSettingsService, 
-  ChannelSettingsServiceImpl 
-} from './service.js';
+export {
+  channelSettingsService,
+  CHANNEL_SETTINGS_ACTION,
+  CHANNEL_SETTINGS_GENERAL_KEY,
+} from "./service.js";
+export type {
+  ChannelSettingsActor,
+  ChannelSettingsService,
+  ChannelSettingsServiceDeps,
+} from "./service.js";
+export {
+  getEffectiveChannelSettings,
+  parseChannelSettingsPatch,
+  readStoredChannelSettings,
+} from "./settings.js";
+export type {
+  ChannelSettingKey,
+  ChannelSettingValue,
+  ChannelSettings,
+  ChannelSettingsDocument,
+  ChannelSettingsPatch,
+  SettingSource,
+} from "./settings.js";
 
-export { 
-  getEffectiveChannelSettings 
-} from './settings.js';
-
-export { channelSettingsRouter } from './routes.js';
-
-export const channelSettingsRoutes = (db: any) => {
-  const router = Router();
-  router.use('/api/myrmidon/channels', channelSettingsRouter);
-  return router;
-};
-
-// Export the router as the default export
-export default channelSettingsRouter;
+/** Router for app.ts: GET/PATCH /api/myrmidon/channel-settings. */
+export function myrmidonChannelSettingsRoutes(db: Db) {
+  return channelSettingsRoutes(db, channelSettingsService(db));
+}

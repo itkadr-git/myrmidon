@@ -1,5 +1,4 @@
-import { formatAttachmentSize } from "../attachment-types.js";
-import { getEffectiveChannelSettings } from "./channel-settings/settings.js";
+import { formatAttachmentSize, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
 
 // myrmidon(P7): tell a Telegram sender which attachments were dropped at import
 // instead of acknowledging the turn as if every file arrived.
@@ -65,16 +64,17 @@ const TELEGRAM_CLOUD_API_LIMIT_BYTES = 20 * 1024 * 1024;
  */
 export function effectiveTelegramAttachmentLimitBytes(
   env: NodeJS.ProcessEnv = process.env,
-  instanceSettings: any = null,
-  companySettings: any = null
+  boardLimitBytes: number = MAX_ATTACHMENT_BYTES,
 ): number {
-  const settings = getEffectiveChannelSettings(instanceSettings, companySettings, env);
-  const configured = settings.telegramFileLimitBytes.value;
+  const configured = Math.max(
+    0,
+    Math.trunc(Number(env.MYRMIDON_TELEGRAM_FILE_LIMIT_BYTES)),
+  );
   const adapterLimit = configured || TELEGRAM_ADAPTER_DEFAULT_LIMIT_BYTES;
   const apiLimit = env.TELEGRAM_API_BASE_URL?.trim()
     ? Number.POSITIVE_INFINITY
     : TELEGRAM_CLOUD_API_LIMIT_BYTES;
-  return Math.min(settings.paperclipAttachmentMaxBytes.value, adapterLimit, apiLimit);
+  return Math.min(boardLimitBytes, adapterLimit, apiLimit);
 }
 
 /**
@@ -87,8 +87,6 @@ export function telegramAttachmentOmissionNotice(
     omitted: ReadonlyArray<OmittedAttachment>;
   },
   limitBytes: number = effectiveTelegramAttachmentLimitBytes(),
-  instanceSettings: any = null,
-  companySettings: any = null
 ): string | null {
   const total = Object.values(result.omissionReasons).reduce(
     (sum, count) => sum + count,

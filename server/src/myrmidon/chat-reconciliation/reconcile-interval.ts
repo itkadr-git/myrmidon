@@ -1,8 +1,6 @@
 // myrmidon(D1): MYRMIDON_CHAT_RECONCILE_INTERVAL_MS setting. See
 // docs/myrmidon/SETTINGS.md.
 
-import { getEffectiveChannelSettings } from '../channel-settings/settings.js';
-
 /**
  * Minimum spacing (ms) between runs of the run milestone sweep
  * (enqueueChatRunMilestones), the one chat reconciliation lane this setting
@@ -24,10 +22,10 @@ import { getEffectiveChannelSettings } from '../channel-settings/settings.js';
  * cadence.
  */
 export function chatReconcileMinimumSpacingMs(
-  instanceSettings: any = null,
-  companySettings: any = null,
   env: { MYRMIDON_CHAT_RECONCILE_INTERVAL_MS?: string } = process.env,
 ): number | undefined {
-  const settings = getEffectiveChannelSettings(instanceSettings, companySettings, env);
-  return settings.chatReconcileIntervalMs.value;
+  const raw = env.MYRMIDON_CHAT_RECONCILE_INTERVAL_MS;
+  if (!raw) return undefined;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }

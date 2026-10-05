@@ -146,6 +146,16 @@ export interface InstanceGeneralSettings {
    */
   reviewRouting?: ReviewRoutingSettings;
   /**
+   * myrmidon(1.7-SETTINGS-TO-UI): the channel settings document — the Telegram
+   * bridge switches, the chat limits and the cross-channel numbers, changed from
+   * `GET`/`PATCH /api/myrmidon/channel-settings`. An absent (or partial) document
+   * means "use the environment variable, then the default" for every key; the
+   * resolver in server/src/myrmidon/channel-settings/settings.ts normalizes it,
+   * so the stored value is read back defensively. Kept in sync with the
+   * validator of the same field (packages/shared/src/validators/instance.ts).
+   */
+  channelSettings?: unknown;
+  /**
    * myrmidon(1.7-BUDGET-CONFIG-B): what a crossed budget limit does —
    * signal only (default), pause with an owner card (soft), or refuse new
    * runs (hard); changed from `GET`/`PATCH /api/myrmidon/budget-enforcement`.

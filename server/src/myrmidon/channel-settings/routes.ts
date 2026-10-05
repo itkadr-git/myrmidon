@@ -1,58 +1,39 @@
-import express from 'express';
-import { authenticateUser, requireCompanyAccess } from '../auth/middleware';
-import { ChannelSettingsServiceImpl } from './service.js';
-import { BadRequestError, ForbiddenError } from '../errors';
+// GET/PATCH /api/myrmidon/channel-settings (myrmidon 1.7-SETTINGS-TO-UI).
+//
+// GET reports the effective channel settings and where each value came from
+// (the interface, the environment, or the built-in default); any authenticated
+// board member with organisation access may read it. PATCH writes
+// `instance_settings.general.channelSettings`, records the change and answers
+// with the settings now in force; it is instance-admin only, the same rule the
+// rest of the instance settings follow.
 
-const service = new ChannelSettingsServiceImpl();
+import { Router } from "express";
+import type { Db } from "@paperclipai/db";
+import { badRequest } from "../../errors.js";
+import { assertBoardOrgAccess, assertInstanceAdmin, getActorInfo } from "../../routes/authz.js";
+import { parseChannelSettingsPatch, type ChannelSettingsPatch } from "./settings.js";
+import type { ChannelSettingsService } from "./service.js";
 
-export const channelSettingsRouter = express.Router();
-
-channelSettingsRouter.get('/settings', authenticateUser, requireCompanyAccess, async (req, res) => {
-  const companyId = req.companyId;
-  
-  if (!companyId) {
-    throw new ForbiddenError('Company access required');
+function readPatch(body: unknown): ChannelSettingsPatch {
+  try {
+    return parseChannelSettingsPatch(body);
+  } catch (err) {
+    throw badRequest(err instanceof Error ? err.message : "invalid channel settings patch");
   }
+}
 
-  const settings = await service.getSettings(companyId);
-  res.json(settings);
-});
+export function channelSettingsRoutes(_db: Db, service: ChannelSettingsService) {
+  const router = Router();
 
-channelSettingsRouter.patch('/settings', authenticateUser, requireCompanyAccess, async (req, res) => {
-  const companyId = req.companyId;
-  const userId = req.userId;
-  
-  if (!companyId || !userId) {
-    throw new ForbiddenError('Company access and user authentication required');
-  }
+  router.get("/myrmidon/channel-settings", async (req, res) => {
+    assertBoardOrgAccess(req);
+    res.json(await service.read());
+  });
 
-  const updates = req.body;
+  router.patch("/myrmidon/channel-settings", async (req, res) => {
+    assertInstanceAdmin(req);
+    res.json(await service.update(readPatch(req.body), getActorInfo(req)));
+  });
 
-  // Validate the structure of the updates
-  const allowedFields = [
-    'telegramDmConversations',
-    'telegramDmStatus', 
-    'telegramSplitMaxParts',
-    'telegramFileLimitBytes',
-    'paperclipAttachmentMaxBytes',
-    'chatCrossChannelMessages',
-    'chatCrossChannelMessageChars',
-    'chatCrossChannelTotalChars',
-    'chatCrossChannelLookbackHours',
-    'chatReconcileIntervalMs'
-  ];
-
-  for (const field in updates) {
-    if (!allowedFields.includes(field)) {
-      throw new BadRequestError(`Invalid field: ${field}`);
-    }
-  }
-
-  await service.updateSettings(companyId, userId, updates);
-  
-  // Return updated settings
-  const settings = await service.getSettings(companyId);
-  res.json(settings);
-});
-
-export default channelSettingsRouter;
+  return router;
+}

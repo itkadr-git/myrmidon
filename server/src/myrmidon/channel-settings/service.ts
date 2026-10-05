@@ -1,104 +1,131 @@
-import { 
-  getInstanceSettings, 
-  getCompanySettings, 
-  updateInstanceSetting, 
-  updateCompanySetting,
-  auditLog
-} from '../settings';
-import { 
-  getEffectiveChannelSettings, 
-  ChannelSettings, 
-  ChannelSettingsUpdate,
-  ChannelSettingsAuditEntry 
-} from './settings';
-import { getUserById } from '../../users';
-import { ChatEndpoint } from '../../chat-endpoints';
+// server/src/myrmidon/channel-settings/service.ts
+//
+// myrmidon(1.7-SETTINGS-TO-UI): read and change the channel settings without a
+// restart.
+//
+// Contract: `instance_settings.general.channelSettings` is the source of truth
+// once an operator saves it, and the environment stays the override above it
+// (the precedence itself lives in settings.ts). A change writes the row and
+// records it in the activity log for every company, so the board can answer
+// "who changed the Telegram bridge, and when".
+//
+// Two overlapping requests can commit their rows in one order and reach the
+// audit in the other; the log would then disagree with the document actually
+// stored. Every request's read-write-audit sequence runs through one queue,
+// exactly as the RUNTIME-LIMITS transition does.
 
-export interface ChannelSettingsService {
-  getSettings(companyId: string): Promise<ChannelSettings>;
-  updateSettings(companyId: string, userId: string, updates: ChannelSettingsUpdate): Promise<void>;
+import type { Db } from "@paperclipai/db";
+import { instanceSettingsService, logActivity } from "../../services/index.js";
+import {
+  getEffectiveChannelSettings,
+  mergeChannelSettingsDocument,
+  readStoredChannelSettings,
+  type ChannelSettings,
+  type ChannelSettingsDocument,
+  type ChannelSettingsPatch,
+} from "./settings.js";
+
+/** The stored-document key inside `instance_settings.general`. */
+export const CHANNEL_SETTINGS_GENERAL_KEY = "channelSettings";
+
+/** `instance.channel_settings.updated` — the audit action of a settings change. */
+export const CHANNEL_SETTINGS_ACTION = "instance.channel_settings.updated";
+
+/** Who changed the settings, for the activity log. */
+export interface ChannelSettingsActor {
+  actorType: "agent" | "user" | "system" | "plugin";
+  actorId: string;
+  agentId: string | null;
+  runId: string | null;
+  agentApiKeyId: string | null;
 }
 
-export class ChannelSettingsServiceImpl implements ChannelSettingsService {
-  async getSettings(companyId: string): Promise<ChannelSettings> {
-    const [instanceSettings, companySettings] = await Promise.all([
-      getInstanceSettings(),
-      getCompanySettings(companyId)
-    ]);
+/** One activity row; the database service fills in the entity fields. */
+export type ChannelSettingsAuditEntry = ChannelSettingsActor & {
+  companyId: string;
+  action: string;
+  entityType: string;
+  entityId: string;
+  details: Record<string, unknown>;
+};
 
-    return getEffectiveChannelSettings(instanceSettings, companySettings);
-  }
+/** Everything the service needs, so tests run it without a database. */
+export interface ChannelSettingsServiceDeps {
+  settings: {
+    getGeneral(): Promise<unknown>;
+    updateGeneral(patch: { channelSettings: ChannelSettingsDocument }): Promise<unknown>;
+  };
+  listCompanyIds(): Promise<string[]>;
+  logActivity(entry: ChannelSettingsAuditEntry): Promise<unknown>;
+  env?: Record<string, string | undefined>;
+}
 
-  async updateSettings(companyId: string, userId: string, updates: ChannelSettingsUpdate): Promise<void> {
-    // Validate telegramDmConversations against existing chat-endpoints if provided
-    if (updates.telegramDmConversations !== undefined) {
-      await this.validateTelegramDmConversations(updates.telegramDmConversations);
-    }
+export interface ChannelSettingsService {
+  /** The effective settings and where each value came from. */
+  read(): Promise<ChannelSettings>;
+  /** Persist a patch, record it and return the settings now in force. */
+  update(patch: ChannelSettingsPatch, actor: ChannelSettingsActor): Promise<ChannelSettings>;
+}
 
-    const currentUser = await getUserById(userId);
+let channelSettingsTransitionQueue: Promise<void> = Promise.resolve();
 
-    // Get current settings to log changes
-    const currentSettings = await this.getSettings(companyId);
+function withChannelSettingsTransition<T>(run: () => Promise<T>): Promise<T> {
+  const turn = channelSettingsTransitionQueue.then(run);
+  // Normalize to a settled void promise for the next caller in line, so a
+  // rejected transition cannot wedge every later one behind it.
+  channelSettingsTransitionQueue = turn.then(
+    () => undefined,
+    () => undefined,
+  );
+  return turn;
+}
 
-    // Update each setting individually
-    for (const [key, value] of Object.entries(updates)) {
-      const settingKey = key as keyof ChannelSettingsUpdate;
-      
-      // Skip if value hasn't changed
-      if (currentSettings[settingKey].value === value) continue;
+export function channelSettingsService(
+  db: Db,
+  overrides: Partial<ChannelSettingsServiceDeps> = {},
+): ChannelSettingsService {
+  const deps: ChannelSettingsServiceDeps = {
+    settings: instanceSettingsService(db),
+    listCompanyIds: () => instanceSettingsService(db).listCompanyIds(),
+    logActivity: (entry) => logActivity(db, entry),
+    ...overrides,
+  };
+  const env = deps.env ?? process.env;
+  const resolve = (stored: ChannelSettingsDocument): ChannelSettings =>
+    getEffectiveChannelSettings(stored, env);
 
-      // Update the setting in company settings
-      await updateCompanySetting(companyId, `channel.${settingKey}`, value);
+  return {
+    read: async () => resolve(readStoredChannelSettings(await deps.settings.getGeneral())),
 
-      // Log the change
-      const auditEntry: ChannelSettingsAuditEntry = {
-        timestamp: new Date(),
-        actor: {
-          id: userId,
-          name: currentUser.name,
-          email: currentUser.email
-        },
-        action: 'update',
-        field: settingKey,
-        oldValue: currentSettings[settingKey].value,
-        newValue: value
-      };
+    update: async (patch, actor) =>
+      withChannelSettingsTransition(async () => {
+        const general = await deps.settings.getGeneral();
+        const next = mergeChannelSettingsDocument(readStoredChannelSettings(general), patch);
+        const changedKeys = Object.keys(patch);
 
-      await auditLog(auditEntry);
-    }
-  }
+        if (changedKeys.length > 0) {
+          await deps.settings.updateGeneral({ channelSettings: next });
 
-  private async validateTelegramDmConversations(conversations: string): Promise<void> {
-    if (!conversations || conversations.trim() === '') {
-      return; // Empty list is valid
-    }
+          const companyIds = await deps.listCompanyIds();
+          await Promise.all(
+            companyIds.map((companyId) =>
+              deps.logActivity({
+                companyId,
+                actorType: actor.actorType,
+                actorId: actor.actorId,
+                agentId: actor.agentId,
+                runId: actor.runId,
+                agentApiKeyId: actor.agentApiKeyId,
+                action: CHANNEL_SETTINGS_ACTION,
+                entityType: "instance_settings",
+                entityId: CHANNEL_SETTINGS_GENERAL_KEY,
+                details: { changedKeys, channel: next.channel ?? {} },
+              }),
+            ),
+          );
+        }
 
-    if (conversations.trim() === '*') {
-      return; // Wildcard is valid
-    }
-
-    // Parse the comma-separated list of endpoint IDs
-    const endpointIds = conversations
-      .split(',')
-      .map(id => id.trim())
-      .filter(id => id.length > 0);
-
-    if (endpointIds.length === 0) {
-      return; // No valid IDs is valid (empty list)
-    }
-
-    // Fetch all chat endpoints to validate IDs
-    // Note: We'll need to implement the actual fetching mechanism
-    // For now, we'll just validate that the IDs look like valid IDs
-    for (const id of endpointIds) {
-      if (!this.isValidEndpointId(id)) {
-        throw new Error(`Invalid chat endpoint ID in MYRMIDON_TELEGRAM_DM_CONVERSATIONS: ${id}`);
-      }
-    }
-  }
-
-  private isValidEndpointId(id: string): boolean {
-    // Basic validation - could be enhanced based on actual ID format
-    return /^[a-zA-Z0-9_-]+$/.test(id);
-  }
+        return resolve(next);
+      }),
+  };
 }
