@@ -718,12 +718,22 @@ describe("deploy.sh: only CI images from the registry", () => {
       assert.equal(code, 0, out);
     });
 
+    // RC-VERSIONS: a release candidate tag is a release tag — the deploy of
+    // an rc IS the trial run of the release flow.
+    it("accepts a commit that carries a release candidate tag myr-vX.Y.Z-rc.N", () => {
+      const tags = `${"9".repeat(40)}\trefs/tags/myr-v1.2.3-rc.1\n${COMMIT}\trefs/tags/myr-v1.2.3-rc.1^{}\n`;
+      const sb = sandbox({ onMain: false, tags });
+      const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+      assert.equal(code, 0, out);
+      assert.match(calls(sb), /git -C \S+ ls-remote --tags origin refs\/tags\/myr-v\*/);
+    });
+
     it("refuses when the myr-v tags point at other commits", () => {
       const sb = sandbox({ onMain: false, tags: `${"9".repeat(40)}\trefs/tags/myr-v1.0.0\n${"8".repeat(40)}\trefs/tags/myr-v1.0.0^{}\n` });
       assertRefused(sb, ["--digest", NEW], /neither on origin\/main nor tagged myr-v/);
     });
 
-    it("refuses a tag that CI would not build (not myr-v<x>.<y>.<z>)", () => {
+    it("refuses a tag that CI would not build (not myr-v<x>.<y>.<z> or an rc)", () => {
       const sb = sandbox({ onMain: false, tags: `${COMMIT}\trefs/tags/myr-v1.0.2-rc1\n${COMMIT}\trefs/tags/myr-vnext\n` });
       assertRefused(sb, ["--digest", NEW], /neither on origin\/main nor tagged myr-v/);
     });

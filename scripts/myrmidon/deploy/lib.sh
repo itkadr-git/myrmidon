@@ -82,11 +82,13 @@ parse_digest_arg() {
   fi
 }
 
-# Checks that a commit is on origin/main or carries a release tag myr-v<x>.<y>.<z>, using the git
-# clone that holds these scripts. Sets CI_CHECK_REASON and returns 1 when it cannot say yes.
+# Checks that a commit is on origin/main or carries a release tag
+# myr-v<x>.<y>.<z> (RC-VERSIONS: or the candidate myr-v<x>.<y>.<z>-rc.<n>),
+# using the git clone that holds these scripts. Sets CI_CHECK_REASON and
+# returns 1 when it cannot say yes.
 commit_is_reviewed() {
   local rev="$1" clone url tags sha name
-  local tag_re='^refs/tags/myr-v[0-9]+\.[0-9]+\.[0-9]+(\^\{\})?$'
+  local tag_re='^refs/tags/myr-v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?(\^\{\})?$'
   if ! command -v git >/dev/null 2>&1; then
     CI_CHECK_REASON="git is not installed, so commit ${rev:0:12} cannot be checked against main; run the script from a git clone of itkadr-git/myrmidon"
     return 1
