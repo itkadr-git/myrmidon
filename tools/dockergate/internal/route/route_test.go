@@ -39,6 +39,7 @@ func TestAllow(t *testing.T) {
 		{"A2", "GET", v + "containers/" + nameA + "/json", Route{ID: A2, BotKey: keyA, Name: nameA}},
 		{"A3", "GET", v + "containers/" + nameA + "/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fapplied.json", Route{ID: A3, BotKey: keyA, Name: nameA}},
 		{"A3 shared member", "GET", v + "containers/" + nameA + "/archive?path=%2Fbot-scope%2F" + keyA + "%2Fhermes%2F.myrmidon%2Fapplied.json", Route{ID: A3, BotKey: keyA, Name: nameA, ScopeMarker: true}},
+		{"A13 shared member", "GET", v + "containers/" + nameA + "/archive?path=%2Fbot-scope%2F" + keyA + "%2Fhermes%2F.myrmidon%2Fclone-hygiene.json", Route{ID: A13, BotKey: keyA, Name: nameA, ScopeMarker: true}},
 		{"A4 main", "POST", v + "containers/create?name=" + nameA, Route{ID: A4, BotKey: keyA, Name: nameA}},
 		{"A4 next", "POST", v + "containers/create?name=" + nameANext, Route{ID: A4, BotKey: keyA, Suffix: SuffixNext, Name: nameANext}},
 		{"A4 helper", "POST", v + "containers/create?name=" + nameAHelp, Route{ID: A4, BotKey: keyA, Suffix: SuffixHelper, Name: nameAHelp}},

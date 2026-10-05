@@ -75,11 +75,15 @@ func (rs *reqState) a3(ctx context.Context, st *runtime, rt *route.Route, bs *bo
 }
 
 // cloneReportPath is the query of the archive GET of the clone-hygiene report.
-const cloneReportPath = "/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fclone-hygiene.json"
+const cloneReportPath = "/archive?" + route.CloneReportQuery
 
 // a13: the clone-hygiene report of the bot, one fixed file, read-only.
 func (rs *reqState) a13(ctx context.Context, st *runtime, rt *route.Route, bs *botState) *deny.Error {
-	return rs.archiveRead(ctx, rt, bs, cloneReportPath, maxCloneReport)
+	target := cloneReportPath
+	if rt.ScopeMarker {
+		target = "/archive?" + route.ScopeCloneReportQuery(rt.BotKey)
+	}
+	return rs.archiveRead(ctx, rt, bs, target, maxCloneReport)
 }
 
 // archiveRead reads one fixed file of the main container as a tar.
