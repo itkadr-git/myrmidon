@@ -512,9 +512,10 @@ export function createDbBotProfilePorts(db: Db): BotProfilePorts {
       return readCloneIdleTtlSecForRole(db, role);
     },
 
-    // myrmidon(1.6.2-BOT-DISK-C): the pnpm store mode, read per tick from the same row.
-    async pnpmStore(): Promise<"workspace" | "shared"> {
-      return (await readBotDiskLayout(db)).pnpmStore;
+    // myrmidon(BOT-DISK-D): the pnpm store directory and import method, read per tick from the same row.
+    async pnpmSettings(): Promise<{ storeDir: string; importMethod: string }> {
+      const layout = await readBotDiskLayout(db);
+      return { storeDir: layout.pnpmStoreDir, importMethod: layout.pnpmImportMethod };
     },
 
     // myrmidon(BOT-LSP-DEFAULTS): the instance language-server policy. Read

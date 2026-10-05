@@ -16,7 +16,10 @@ export interface BotDiskView {
     /** `owner/repo` names with a host-side git mirror; absent: none. */
     gitMirrorRepos?: string[];
     gitMirrorRefreshMs?: number;
-    pnpmStore?: "workspace" | "shared";
+    /** pnpm store inside the bot's single mount; absent: /workspace/.pnpm-store. */
+    pnpmStoreDir?: string;
+    /** Absent: hardlink. */
+    pnpmImportMethod?: "hardlink" | "clone-or-copy" | "copy";
   };
   sources: Record<"enabled" | "idleTtlMs", "settings" | "env" | "default">;
 }
@@ -31,4 +34,7 @@ export const botDiskApi = {
   /** [] (or null) turns the git mirrors off. */
   setGitMirrorRepos: (repos: string[] | null) =>
     api.patch<BotDiskView>("/myrmidon/bot-disk", { gitMirrorRepos: repos }),
+  /** null returns either value to its default. */
+  setPnpm: (change: { pnpmStoreDir?: string | null; pnpmImportMethod?: "hardlink" | "clone-or-copy" | "copy" | null }) =>
+    api.patch<BotDiskView>("/myrmidon/bot-disk", change),
 };

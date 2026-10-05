@@ -62,7 +62,7 @@ func (rs *reqState) a2(ctx context.Context, st *runtime, rt *route.Route, bs *bo
 }
 
 // markerPath is the query of the archive GET of the applied marker.
-const markerPath = "/archive?path=%2Fdata%2Fhermes%2F.myrmidon%2Fapplied.json"
+const markerPath = "/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fapplied.json"
 
 // a3: the applied marker. A marker of more than 1 MiB is reported as absent.
 func (rs *reqState) a3(ctx context.Context, st *runtime, rt *route.Route, bs *botState) *deny.Error {

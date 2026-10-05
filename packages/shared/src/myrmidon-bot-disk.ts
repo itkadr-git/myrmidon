@@ -41,11 +41,17 @@ import { z } from "zod";
  *   at `/cache/git` and clone with `--reference-if-able`, so the objects live
  *   once on the host. Empty or absent: no mirrors and no `/cache/git` mount;
  * - `gitMirrorRefreshMs` — how often the board fetches each mirror;
- * - `pnpmStore` — where pnpm keeps its content-addressed store: `workspace`
- *   (the default, `/workspace/.pnpm-store`, the same mount as the clones, so
- *   pnpm hardlinks on any filesystem) or `shared` (`/cache/pnpm`, a different
- *   mount: pnpm can only clone (reflink) across it, on a filesystem that
- *   supports that, and copies otherwise).
+ * - `pnpmStoreDir` — where pnpm keeps its content-addressed store, a path inside
+ *   the bot's single mount (default `/workspace/.pnpm-store`). Never under
+ *   `/cache`: that is another mount, and hard links cannot cross mounts;
+ * - `pnpmImportMethod` — how pnpm puts a package into a clone: `hardlink` (the
+ *   default; only hard links are tried), `clone-or-copy` or `copy` (an explicit
+ *   opt-out of hard links). pnpm 9 copies silently where the kernel refuses a
+ *   link; the container's start-time self-check reports that.
+ *
+ * myrmidon(BOT-DISK-D): the three binds of a bot container became ONE mount (the
+ * bot's whole tree), which is what makes hard links possible at all; the former
+ * `pnpmStore: "workspace" | "shared"` key is gone (a stored value is ignored).
  */
 
 /** Environment variables — first-start defaults only. */
@@ -99,10 +105,36 @@ const cachePathSchema = z
     if (problem) ctx.addIssue({ code: "custom", message: `sharedPackageCachePath ${problem}` });
   });
 
-/** myrmidon(1.6.2-BOT-DISK-C): where the pnpm store lives (see the module comment). */
-export const BOT_DISK_PNPM_STORE_MODES = ["workspace", "shared"] as const;
-export type BotDiskPnpmStoreMode = (typeof BOT_DISK_PNPM_STORE_MODES)[number];
-export const BOT_DISK_DEFAULT_PNPM_STORE: BotDiskPnpmStoreMode = "workspace";
+/** myrmidon(BOT-DISK-D): where the pnpm store lives and how pnpm imports (see the module comment). */
+export const BOT_DISK_DEFAULT_PNPM_STORE_DIR = "/workspace/.pnpm-store";
+export const BOT_DISK_PNPM_IMPORT_METHODS = ["hardlink", "clone-or-copy", "copy"] as const;
+export type BotDiskPnpmImportMethod = (typeof BOT_DISK_PNPM_IMPORT_METHODS)[number];
+export const BOT_DISK_DEFAULT_PNPM_IMPORT_METHOD: BotDiskPnpmImportMethod = "hardlink";
+/** Container roots a store may live under: all inside the bot's single mount. */
+export const BOT_DISK_PNPM_STORE_ROOTS = ["/workspace", "/data", "/scratch", "/bot"] as const;
+
+/**
+ * Why `value` cannot be the pnpm store directory, or null when it can: a plain
+ * absolute path (the cache-path rules) strictly under one of
+ * {@link BOT_DISK_PNPM_STORE_ROOTS}. A store anywhere else is outside the bot's
+ * single mount and pnpm would copy instead of hard-linking.
+ */
+export function botDiskPnpmStoreDirProblem(value: string): string | null {
+  const plain = botDiskCachePathProblem(value);
+  if (plain) return plain;
+  if (!BOT_DISK_PNPM_STORE_ROOTS.some((root) => value.startsWith(`${root}/`))) {
+    return `is not inside the bot's single mount (under ${BOT_DISK_PNPM_STORE_ROOTS.join(", ")})`;
+  }
+  return null;
+}
+
+const pnpmStoreDirSchema = z
+  .string()
+  .max(4096)
+  .superRefine((value, ctx) => {
+    const problem = botDiskPnpmStoreDirProblem(value);
+    if (problem) ctx.addIssue({ code: "custom", message: `pnpmStoreDir ${problem}` });
+  });
 
 export const BOT_DISK_MIN_GIT_MIRROR_REFRESH_MS = 60 * 1000;
 export const BOT_DISK_MAX_GIT_MIRROR_REFRESH_MS = 24 * 60 * 60 * 1000;
@@ -158,7 +190,7 @@ const gitMirrorRefreshMsSchema = z
   .min(BOT_DISK_MIN_GIT_MIRROR_REFRESH_MS)
   .max(BOT_DISK_MAX_GIT_MIRROR_REFRESH_MS);
 
-const pnpmStoreSchema = z.enum(BOT_DISK_PNPM_STORE_MODES);
+const pnpmImportMethodSchema = z.enum(BOT_DISK_PNPM_IMPORT_METHODS);
 
 const idleTtlMsSchema = z
   .number()
@@ -176,7 +208,8 @@ export const botDiskSettingsSchema = z
     // myrmidon(1.6.2-BOT-DISK-C): absent = the defaults of resolveBotDiskLayout.
     gitMirrorRepos: gitMirrorReposSchema.optional(),
     gitMirrorRefreshMs: gitMirrorRefreshMsSchema.optional(),
-    pnpmStore: pnpmStoreSchema.optional(),
+    pnpmStoreDir: pnpmStoreDirSchema.optional(),
+    pnpmImportMethod: pnpmImportMethodSchema.optional(),
     sharedCacheRoles: sharedCacheRolesSchema.optional(),
   })
   .strict();
@@ -188,7 +221,8 @@ const storedBotDiskObjectSchema = z
     sharedPackageCachePath: cachePathSchema.optional().catch(undefined),
     gitMirrorRepos: gitMirrorReposSchema.optional().catch(undefined),
     gitMirrorRefreshMs: gitMirrorRefreshMsSchema.optional().catch(undefined),
-    pnpmStore: pnpmStoreSchema.optional().catch(undefined),
+    pnpmStoreDir: pnpmStoreDirSchema.optional().catch(undefined),
+    pnpmImportMethod: pnpmImportMethodSchema.optional().catch(undefined),
     sharedCacheRoles: sharedCacheRolesSchema.optional().catch(undefined),
   })
   .passthrough();
@@ -209,7 +243,8 @@ export const patchBotDiskSettingsSchema = z
     // myrmidon(1.6.2-BOT-DISK-C): null (or, for the list, []) returns the key to its default.
     gitMirrorRepos: z.union([gitMirrorReposSchema, z.null()]).optional(),
     gitMirrorRefreshMs: z.union([gitMirrorRefreshMsSchema, z.null()]).optional(),
-    pnpmStore: z.union([pnpmStoreSchema, z.null()]).optional(),
+    pnpmStoreDir: z.union([pnpmStoreDirSchema, z.null()]).optional(),
+    pnpmImportMethod: z.union([pnpmImportMethodSchema, z.null()]).optional(),
     // null returns the default role list; [] is allowed and means no bot.
     sharedCacheRoles: z.union([sharedCacheRolesSchema, z.null()]).optional(),
   })
@@ -253,7 +288,8 @@ export function normalizeStoredBotDiskSettings(raw: unknown): Partial<BotDiskSet
     out.gitMirrorRepos = parsed.data.gitMirrorRepos;
   }
   if (typeof parsed.data.gitMirrorRefreshMs === "number") out.gitMirrorRefreshMs = parsed.data.gitMirrorRefreshMs;
-  if (typeof parsed.data.pnpmStore === "string") out.pnpmStore = parsed.data.pnpmStore;
+  if (typeof parsed.data.pnpmStoreDir === "string") out.pnpmStoreDir = parsed.data.pnpmStoreDir;
+  if (typeof parsed.data.pnpmImportMethod === "string") out.pnpmImportMethod = parsed.data.pnpmImportMethod;
   if (Array.isArray(parsed.data.sharedCacheRoles)) out.sharedCacheRoles = parsed.data.sharedCacheRoles;
   return out;
 }
@@ -298,7 +334,8 @@ function optionalLayoutKeys(values: Partial<BotDiskSettings>): Partial<BotDiskSe
   return {
     ...(values.gitMirrorRepos && values.gitMirrorRepos.length > 0 ? { gitMirrorRepos: values.gitMirrorRepos } : {}),
     ...(values.gitMirrorRefreshMs !== undefined ? { gitMirrorRefreshMs: values.gitMirrorRefreshMs } : {}),
-    ...(values.pnpmStore !== undefined ? { pnpmStore: values.pnpmStore } : {}),
+    ...(values.pnpmStoreDir !== undefined ? { pnpmStoreDir: values.pnpmStoreDir } : {}),
+    ...(values.pnpmImportMethod !== undefined ? { pnpmImportMethod: values.pnpmImportMethod } : {}),
     ...(values.sharedCacheRoles !== undefined ? { sharedCacheRoles: values.sharedCacheRoles } : {}),
   };
 }
@@ -323,14 +360,15 @@ export function mergeBotDiskSettings(
     ...optionalLayoutKeys({
       gitMirrorRepos: pick(patch.gitMirrorRepos, base.gitMirrorRepos),
       gitMirrorRefreshMs: pick(patch.gitMirrorRefreshMs, base.gitMirrorRefreshMs),
-      pnpmStore: pick(patch.pnpmStore, base.pnpmStore),
+      pnpmStoreDir: pick(patch.pnpmStoreDir, base.pnpmStoreDir),
+      pnpmImportMethod: pick(patch.pnpmImportMethod, base.pnpmImportMethod),
       sharedCacheRoles: pick(patch.sharedCacheRoles, base.sharedCacheRoles),
     }),
   };
 }
 
 /** The 1.6.2-BOT-DISK-C keys a settings change compares besides the env-backed ones. */
-export const BOT_DISK_LAYOUT_KEYS = ["sharedPackageCachePath", "gitMirrorRepos", "gitMirrorRefreshMs", "pnpmStore", "sharedCacheRoles"] as const;
+export const BOT_DISK_LAYOUT_KEYS = ["sharedPackageCachePath", "gitMirrorRepos", "gitMirrorRefreshMs", "pnpmStoreDir", "pnpmImportMethod", "sharedCacheRoles"] as const;
 
 /**
  * myrmidon(1.6.2-BOT-DISK-C): the shared-cache layout in force, with the
@@ -342,7 +380,8 @@ export interface BotDiskLayout {
   sharedPackageCachePath?: string;
   gitMirrorRepos: string[];
   gitMirrorRefreshMs: number;
-  pnpmStore: BotDiskPnpmStoreMode;
+  pnpmStoreDir: string;
+  pnpmImportMethod: BotDiskPnpmImportMethod;
   /** Roles whose bots get the cache and mirror mounts (lower case); default {@link BOT_DISK_DEFAULT_SHARED_CACHE_ROLES}. */
   sharedCacheRoles: string[];
 }
@@ -356,7 +395,8 @@ export function resolveBotDiskLayout(stored: unknown): BotDiskLayout {
     ...(values.sharedPackageCachePath ? { sharedPackageCachePath: values.sharedPackageCachePath } : {}),
     gitMirrorRepos: repos,
     gitMirrorRefreshMs: values.gitMirrorRefreshMs ?? BOT_DISK_DEFAULT_GIT_MIRROR_REFRESH_MS,
-    pnpmStore: values.pnpmStore ?? BOT_DISK_DEFAULT_PNPM_STORE,
+    pnpmStoreDir: values.pnpmStoreDir ?? BOT_DISK_DEFAULT_PNPM_STORE_DIR,
+    pnpmImportMethod: values.pnpmImportMethod ?? BOT_DISK_DEFAULT_PNPM_IMPORT_METHOD,
     sharedCacheRoles: [...new Set((values.sharedCacheRoles ?? BOT_DISK_DEFAULT_SHARED_CACHE_ROLES).map((r) => r.toLowerCase()))],
   };
 }

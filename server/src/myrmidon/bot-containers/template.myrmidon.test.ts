@@ -87,24 +87,18 @@ describe("parseImageAllowlist / isImageAllowed", () => {
 });
 
 describe("buildBinds", () => {
-  it("produces exactly the three fixed binds for a bot, and nothing else", () => {
-    expect(buildBinds("/srv/myrmidon/bots", "agent-a")).toEqual([
-      "/srv/myrmidon/bots/agent-a/hermes:/data/hermes",
-      "/srv/myrmidon/bots/agent-a/workspace:/workspace",
-      "/srv/myrmidon/bots/agent-a/scratch:/scratch",
-    ]);
+  it("produces exactly ONE bind for a bot (its whole tree at /bot), and nothing else", () => {
+    expect(buildBinds("/srv/myrmidon/bots", "agent-a")).toEqual(["/srv/myrmidon/bots/agent-a:/bot"]);
   });
 
   it("rejects a bot key that could escape the volume root", () => {
     expect(() => buildBinds("/srv/myrmidon/bots", "../../etc")).toThrow(BotContainerTemplateError);
   });
 
-  it("appends an allowlisted extra mount as read-only, after the three fixed binds", () => {
+  it("appends an allowlisted extra mount as read-only, after the single bind", () => {
     const mounts = [{ source: "/srv/shared/sources", containerPath: "/srv/shared/sources", readOnly: true } as const];
     expect(buildBinds("/srv/myrmidon/bots", "agent-a", { mounts, allowedSources: ["/srv/shared/sources"] })).toEqual([
-      "/srv/myrmidon/bots/agent-a/hermes:/data/hermes",
-      "/srv/myrmidon/bots/agent-a/workspace:/workspace",
-      "/srv/myrmidon/bots/agent-a/scratch:/scratch",
+      "/srv/myrmidon/bots/agent-a:/bot",
       "/srv/shared/sources:/srv/shared/sources:ro",
     ]);
   });
@@ -150,7 +144,7 @@ describe("validateExtraMounts", () => {
     },
   );
 
-  it.each(["/data/hermes", "/workspace", "/workspace/shared", "/scratch", "/tmp", "/tmp/x", "relative", "/x/../y"])(
+  it.each(["/bot", "/bot/x", "/data", "/data/x", "/data/hermes", "/workspace", "/workspace/shared", "/scratch", "/tmp", "/tmp/x", "relative", "/x/../y"])(
     "rejects a reserved or unsafe container path %j",
     (containerPath) => {
       expect(() => validateExtraMounts([mount({ containerPath })], allowed)).toThrow(BotContainerTemplateError);
@@ -182,7 +176,7 @@ describe("parseMountSourceAllowlist", () => {
 describe("mountRootSegment", () => {
   it("uses the container mount path, not the host bind suffix, for the hermes mount", () => {
     const binds = buildBinds("/srv/myrmidon/bots", "agent-a");
-    expect(binds[0]).toContain(":/data/hermes");
+    expect(binds[0]).toBe("/srv/myrmidon/bots/agent-a:/bot");
     expect(mountRootSegment({ hostSuffix: "hermes", containerPath: "/data/hermes" })).toBe("data/hermes");
     expect(mountRootSegment({ hostSuffix: "workspace", containerPath: "/workspace" })).toBe("workspace");
     expect(mountRootSegment({ hostSuffix: "scratch", containerPath: "/scratch" })).toBe("scratch");

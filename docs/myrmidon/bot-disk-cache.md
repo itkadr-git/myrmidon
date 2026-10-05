@@ -1,4 +1,4 @@
-# Shared package cache and git objects for bot containers (1.6.1-BOT-DISK-B, 1.6.2-BOT-DISK-C)
+# Shared package cache and git objects for bot containers (1.6.1-BOT-DISK-B, 1.6.2-BOT-DISK-C, BOT-DISK-D)
 
 Development bots download the same pnpm packages, Go modules and Gradle
 dependencies again and again, each into its own volume. With the shared package
@@ -7,12 +7,15 @@ read-write and the downloads are kept once.
 
 ## What a bot gets
 
-When the instance setting is set, the local driver adds four binds to every bot
-container on the default host, after the card's extra mounts:
+Every bot container has exactly **one** bind for its own data (the bot's whole
+directory under the volume root, mounted at `/bot`; see
+[The bot's single mount](#the-bots-single-mount)). When the instance setting is
+set, the local driver adds four more binds to every bot container on the default
+host, after the card's extra mounts:
 
 | Host directory | Mount point in the bot | Variable written to `hermes/.env` |
 |---|---|---|
-| `<cache>/pnpm` | `/cache/pnpm` | `npm_config_store_dir` (only with `pnpmStore: "shared"`, see [Hard-linked node_modules](#hard-linked-node_modules)) |
+| `<cache>/pnpm` | `/cache/pnpm` | `npm_config_cache_dir` (a download cache only; the pnpm **store** is never here, see [Hard-linked node_modules](#hard-linked-node_modules)) |
 | `<cache>/go-mod` | `/cache/go-mod` | `GOMODCACHE` |
 | `<cache>/go-build` | `/cache/go-build` | `GOCACHE` |
 | `<cache>/gradle` | `/cache/gradle` | `GRADLE_USER_HOME` |
@@ -114,33 +117,110 @@ container does not mount it: `pnpm install`, `tsc`, `vitest` and the like do not
 read git history, but a build step that does (`git log`, a version stamp) should
 run `git repack -a -d` first.
 
+### The bot's single mount
+
+link(2) refuses to cross a mount point (`EXDEV`) even when two mounts come from the
+same host filesystem (ext4 included). A bot container used to get three separate
+binds (`hermes` at `/data/hermes`, `workspace` at `/workspace`, `scratch` at
+`/scratch`) plus the cache binds, so a hard link from the pnpm store into a clone
+failed everywhere, pnpm quietly fell back to **copying**, and every clone's
+`node_modules` was a full copy (link count 1; a bot's disk grew by about 5 GB per
+hour).
+
+Now a bot container has **one** bind for its writable data: the bot's directory
+`<volume root>/<bot key>` is mounted at `/bot`, and `hermes/`, `workspace/` and
+`scratch/` are directories inside it. The three paths bots and tools know are links
+made by the image, not mounts:
+
+| Path in the container | Is |
+|---|---|
+| `/data/hermes` (`HERMES_HOME`, `HOME`) | link to `/bot/hermes` |
+| `/workspace` (the working directory) | link to `/data/workspace`, which links to `/bot/workspace` |
+| `/scratch` | link to `/data/scratch`, which links to `/bot/scratch` |
+
+The host layout is unchanged (`<root>/<key>/{hermes,workspace,scratch}`), so
+nothing on disk moves. The read-only and shared cache mounts stay separate binds
+(`/cache/pnpm`, `/cache/go-mod`, `/cache/go-build`, `/cache/gradle`, `/cache/git`).
+The profile, the applied-state marker and the clone-hygiene report are read and
+written at their real paths under `/bot/hermes`. The helper containers that
+prepare the volumes and lay the profile down keep their three narrow binds: they
+only write files and never need a hard link. dockergate accepts the bot body
+with the single `<root>/<key>:/bot` bind and the helper body with the three
+narrow ones; `/bot` and `/data` are reserved container paths a card mount cannot
+take.
+
 ### Hard-linked node_modules
 
-pnpm keeps one content-addressed store and links each project's
-`node_modules` to it with hard links. A hard link cannot cross a mount point
-(`EXDEV`), even when both mounts come from the same host filesystem. In a bot
-container `/workspace` and `/cache/pnpm` are two separate binds, and so was the
-image's previous default store, `/data/hermes/.pnpm-store`: with the store on
-either of them, pnpm quietly **copied** every package into every clone.
+pnpm keeps one content-addressed store and links each project's `node_modules`
+to it with hard links. With the bot's tree one mount, the store sits inside it:
 
-The store therefore now sits on the same mount as the clones:
+- **Store**: `/workspace/.pnpm-store` by default (setting `pnpmStoreDir`; any
+  path under `/workspace`, `/data`, `/scratch` or `/bot`), set as
+  `npm_config_store_dir` in the image, in the entrypoint's self-check and in the
+  profile's `.env` (for bots with the shared cache) from the same setting. The
+  lifecycle sweep never treats the store as a draft. A store outside the single
+  mount is refused by the settings API.
+- **Import method**: `package-import-method=hardlink` (setting
+  `pnpmImportMethod`, default `hardlink`; `clone-or-copy` and `copy` are explicit
+  opt-outs). `hardlink` makes pnpm try only hard links. It does **not** make a
+  refused link an error: pnpm 9 (tested with 9.15) falls back to copying when the
+  kernel returns `EXDEV`, silently, whatever the method. The guards that see it are
+  the image build check and the start-time self-check below.
+- **`/cache/pnpm` is a download source only**: it is the pnpm metadata cache
+  (`npm_config_cache_dir`), never the store. The former `pnpmStore: "shared"`
+  mode, which put the store there and copied on ext4, is gone; a stored
+  `pnpmStore` value is ignored.
+- The runtime writes no `.npmrc`; every pnpm run in the container reads the
+  variables above (image `ENV`, the profile `.env`).
 
-| `pnpmStore` | Store | Result |
-|---|---|---|
-| `workspace` (default) | `/workspace/.pnpm-store` | One copy of each package per bot, hard-linked into every clone of that bot, on any filesystem. The lifecycle sweep never treats the store as a draft |
-| `shared` | `/cache/pnpm` | One copy per host, shared by all bots, but a different mount: pnpm is told `package-import-method=clone-or-copy`, so it reflinks where the filesystem supports it (XFS with reflink, btrfs; Linux allows a reflink across mounts of one filesystem) and copies on ext4. Choose it only on such a filesystem |
+One copy of each package per bot is hard-linked into every clone of that bot,
+whichever root the clone is in (`/data/hermes/cache/*`, `/workspace/*`,
+`/data/hermes/work/*`, `/scratch/*`). A hard link is the same file: a bot that
+edits an installed file in `node_modules` in place also edits the store copy and
+its other clones (pnpm's store integrity check, on by default, notices on a later
+install). The store is per bot, so this never crosses bots.
 
-The image sets the same default (`npm_config_store_dir=/workspace/.pnpm-store`),
-so a bot without the shared cache gets it too. A hard link is the same file: a
-bot that edits an installed file in `node_modules` in place also edits the
-store copy and its other clones (pnpm's store integrity check, on by default,
-notices on a later install). The store is per bot, so this never crosses bots.
+**Start-time self-check.** At every container start the entrypoint creates a file
+in the pnpm store directory and tries to hard-link it into each clone root
+(`/data/hermes`, `/workspace`, `/scratch`). A failure is logged as
+`ERROR: hard-link self-check: ...` and written to
+`/data/hermes/.myrmidon/hardlink-check.json`; the clone-hygiene reporter copies it
+into its report (`hardlinkCheck`), and the board raises an attention card (source
+`bot_disk_lifecycle`, one per failing root) that goes away when the bot restarts
+and the check passes. The check never stops the gateway.
 
-`docker/bot-runtime/pnpm-hardlink-check.sh` proves the behaviour: it installs a
-local tarball package offline and prints the installed file's link count. The
-dev image's build runs it as uid 10001 against the image's own pnpm and fails
-the build on a copy, and `scripts/myrmidon/bot-runtime/pnpm-hardlink.test.mjs`
-runs it in CI, including the negative case of a store on another mount.
+`docker/bot-runtime/pnpm-hardlink-check.sh` proves the behaviour from every clone
+root: it installs a local tarball package offline into a project under each root
+and prints the installed file's link count, one line per root. The dev image's
+build runs it as uid 10001 against the image's own pnpm for `/data/hermes`,
+`/workspace` and `/scratch` and fails the build on a copy, and
+`scripts/myrmidon/bot-runtime/pnpm-hardlink.test.mjs` runs it in CI, including the
+negative case of a store on another mount, which shows up as a copy (link count 1)
+although the install succeeds.
+
+### Migrating running bots to the single mount
+
+Nothing on the host moves, so a bot only needs a new container. Per bot, with the
+board running the reconcile pass (or by hand):
+
+1. **Pause** the bot's agent in the board (no new runs; wait for open turns).
+2. Roll out the new bot image and board (the container template changes: the
+   three binds become `<root>/<key>:/bot`; the drift check sees it and recreates
+   the container on the next pass, which also needs the matching dockergate: it
+   refuses the new body otherwise, with `binds_mismatch`).
+3. **Recreate** the container (the reconcile pass does it; a stopped bot is
+   recreated by `recreate`).
+4. **Verify**: `docker inspect` shows one bind `...:/bot` and no `/data/hermes`,
+   `/workspace` or `/scratch` mounts; the container log has
+   `hard-link self-check ok`; inside, `stat -c %h` on a file of an existing
+   clone's `node_modules` stays 1 (old installs are still copies) while a fresh
+   `pnpm install` gives a count above 1.
+5. **Resume** the agent.
+
+Existing clones keep their copied `node_modules` until they are reinstalled
+(`rm -rf node_modules && pnpm install`) or reaped by the lifecycle; the store they
+link into is the one at `pnpmStoreDir`, which is created on first use. Roll back
+by deploying the previous image and dockergate (the host layout is the same).
 
 ### Clone hygiene in the draft lifecycle
 
@@ -210,7 +290,8 @@ its default:
 | `sharedPackageCachePath` | unset | The shared cache directory (above) |
 | `gitMirrorRepos` | `[]` | `owner/repo` names to mirror; empty: no mirrors and no `/cache/git` mount. Needs `sharedPackageCachePath` |
 | `gitMirrorRefreshMs` | `900000` (15 min) | How often each mirror is fetched, 1 min to 24 h |
-| `pnpmStore` | `workspace` | `workspace` or `shared` (above) |
+| `pnpmStoreDir` | `/workspace/.pnpm-store` | The pnpm store, a path under `/workspace`, `/data`, `/scratch` or `/bot` (above) |
+| `pnpmImportMethod` | `hardlink` | `hardlink`, `clone-or-copy` or `copy` (above) |
 | `sharedCacheRoles` | `engineer`, `reviewer`, `devops`, `release`, `qa` | Roles whose bots get the cache and mirror mounts; other bots get none and are not recreated when the cache is enabled |
 | `idleTtlMs`, `enabled` | 6 h, on | The draft lifecycle of BOT-DISK A, which the clone hygiene follows |
 
@@ -260,7 +341,7 @@ object database is about 1.7 GiB packed):
   about 68 GiB of object databases before, about 2 GiB after.
 - **node_modules:** a copy per clone becomes a hard link per file, which costs a
   directory entry and an inode, not the content: the content is stored once per
-  bot (`workspace`) or once per host (`shared` on a reflink filesystem). The
+  bot, on any filesystem including ext4. The
   saving per extra clone is the size of its `node_modules` (typically one to a few
   GiB for a monorepo of this size; not measured here).
 - **Reclaiming:** clean, pushed, idle clones are removed instead of waiting for a
@@ -275,7 +356,7 @@ runtime proof is the hard-link check and the `git clone` alternates test in CI.
 Git objects are shared read-only: no bot can change another's history. The
 mirror is trusted as the board's own fetch (it is as trustworthy as the upstream
 and the token). A clone made with an alternate depends on the mirror directory
-for its history, which is why the mirror never prunes. With `pnpmStore: workspace`
+for its history, which is why the mirror never prunes. With the default store inside the bot's mount
 the store belongs to one bot and grows with its installs; pnpm's own
 `store prune` (run through `devbuild`) reclaims packages no clone uses.
 
@@ -286,7 +367,7 @@ own container template without the cache binds, and the path names a directory
 on the board's host. The compiler leaves the variables out for such a bot, and
 the fleetd driver logs once that the cache is not applied there. The same holds
 for the git mirrors (no `/cache/git` mount, so a clone there is a full one) and
-for the workspace pnpm store variable.
+for the pnpm store variables. (A fleetd bot builds its own container, outside this single-mount layout.)
 
 ## Trade-offs of the shared cache
 

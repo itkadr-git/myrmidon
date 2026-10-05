@@ -114,3 +114,173 @@ describe("docker/bot-runtime/entrypoint.sh", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 });
+
+// myrmidon(BOT-DISK-D): the bot's tree is ONE mount; the entrypoint links /data/<x> into it
+// when the image has not, and proves at every start that a hard link from the pnpm store
+// works into each clone root. The success path execs hermes (absent here), so the tests
+// look at what was written before the exec, with a stub hermes on PATH.
+function stubHermes() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "myrmidon-stub-bin-"));
+  fs.writeFileSync(path.join(dir, "hermes"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  return dir;
+}
+
+function runWithStub(env) {
+  const bin = stubHermes();
+  try {
+    return spawnSync("bash", [ENTRYPOINT], {
+      env: { PATH: `${bin}:${process.env.PATH}`, HOME: process.env.HOME, ...env },
+      encoding: "utf8",
+      timeout: 20_000,
+      cwd: env.MYRMIDON_TEST_CWD,
+    });
+  } finally {
+    fs.rmSync(bin, { recursive: true, force: true });
+  }
+}
+
+/** A /bot-like tree (one directory) with the three clone roots, plus a /data of links. */
+function botLayout() {
+  const tree = fs.mkdtempSync(path.join(os.tmpdir(), "myrmidon-bot-layout-"));
+  const bot = path.join(tree, "bot");
+  const data = path.join(tree, "data");
+  for (const name of ["hermes", "workspace", "scratch"]) fs.mkdirSync(path.join(bot, name), { recursive: true });
+  fs.mkdirSync(data);
+  fs.writeFileSync(path.join(bot, "hermes", ".env"), `API_SERVER_KEY="${"k".repeat(32)}"\n`);
+  return { tree, bot, data };
+}
+
+describe("docker/bot-runtime/entrypoint.sh bot tree layout and hard-link self-check", () => {
+  it("links /data/<x> into the single mount when they are missing, and leaves existing entries alone", () => {
+    const { tree, bot, data } = botLayout();
+    try {
+      fs.mkdirSync(path.join(data, "scratch")); // an old-layout real directory stays
+      const result = runWithStub({
+        HERMES_HOME: path.join(bot, "hermes"),
+        MYRMIDON_BOT_ROOT: bot,
+        MYRMIDON_DATA_DIR: data,
+        MYRMIDON_HARDLINK_CHECK: "0",
+        MYRMIDON_TEST_CWD: path.join(bot, "workspace"),
+      });
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(fs.readlinkSync(path.join(data, "hermes")), path.join(bot, "hermes"));
+      assert.equal(fs.readlinkSync(path.join(data, "workspace")), path.join(bot, "workspace"));
+      assert.equal(fs.lstatSync(path.join(data, "scratch")).isDirectory(), true);
+      assert.equal(fs.lstatSync(path.join(data, "scratch")).isSymbolicLink(), false);
+    } finally {
+      fs.rmSync(tree, { recursive: true, force: true });
+    }
+  });
+
+  it("self-check passes when the store and every clone root share one mount, and reports it", () => {
+    const { tree, bot, data } = botLayout();
+    try {
+      const store = path.join(bot, "workspace", ".pnpm-store");
+      const roots = ["hermes", "workspace", "scratch"].map((name) => path.join(bot, name));
+      const result = runWithStub({
+        HERMES_HOME: path.join(bot, "hermes"),
+        MYRMIDON_BOT_ROOT: bot,
+        MYRMIDON_DATA_DIR: data,
+        npm_config_store_dir: store,
+        MYRMIDON_HARDLINK_ROOTS: roots.join(" "),
+        MYRMIDON_TEST_CWD: path.join(bot, "workspace"),
+      });
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stderr, /hard-link self-check ok/);
+      assert.doesNotMatch(result.stderr, /ERROR: hard-link/);
+      const report = JSON.parse(fs.readFileSync(path.join(bot, "hermes", ".myrmidon", "hardlink-check.json"), "utf8"));
+      assert.equal(report.ok, true);
+      assert.equal(report.store, store);
+      assert.equal(report.importMethod, "hardlink");
+      assert.deepEqual(report.roots.map((r) => r.root), roots);
+      assert.ok(report.roots.every((r) => r.ok && r.error === null));
+      // The probe files are gone.
+      for (const dir of [store, ...roots]) {
+        assert.deepEqual(fs.readdirSync(dir).filter((n) => n.startsWith(".myrmidon-hardlink-probe")), []);
+      }
+    } finally {
+      fs.rmSync(tree, { recursive: true, force: true });
+    }
+  });
+
+  it("self-check logs a clear error and reports the root when the store is on another mount", () => {
+    const shm = "/dev/shm";
+    let crossDevice = false;
+    try {
+      fs.accessSync(shm, fs.constants.W_OK);
+      crossDevice = fs.statSync(shm).dev !== fs.statSync(os.tmpdir()).dev;
+    } catch {
+      crossDevice = false;
+    }
+    if (!crossDevice) return; // one filesystem here: no EXDEV to provoke
+    const { tree, bot, data } = botLayout();
+    const store = fs.mkdtempSync(path.join(shm, "myrmidon-store-"));
+    try {
+      const roots = ["hermes", "workspace", "scratch"].map((name) => path.join(bot, name));
+      const result = runWithStub({
+        HERMES_HOME: path.join(bot, "hermes"),
+        MYRMIDON_BOT_ROOT: bot,
+        MYRMIDON_DATA_DIR: data,
+        npm_config_store_dir: store,
+        MYRMIDON_HARDLINK_ROOTS: roots.join(" "),
+        MYRMIDON_TEST_CWD: path.join(bot, "workspace"),
+      });
+      assert.equal(result.status, 0, "a failed check never stops the gateway");
+      for (const root of roots) {
+        assert.match(result.stderr, new RegExp(`ERROR: hard-link self-check: cannot hard-link from the pnpm store ${store.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} into ${root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+      }
+      const report = JSON.parse(fs.readFileSync(path.join(bot, "hermes", ".myrmidon", "hardlink-check.json"), "utf8"));
+      assert.equal(report.ok, false);
+      assert.ok(report.roots.every((r) => r.ok === false && /cross-device|Invalid cross-device/i.test(r.error)));
+    } finally {
+      fs.rmSync(tree, { recursive: true, force: true });
+      fs.rmSync(store, { recursive: true, force: true });
+    }
+  });
+
+  it("self-check reports an unusable store directory for every root", () => {
+    const { tree, bot, data } = botLayout();
+    try {
+      const blocker = path.join(bot, "workspace", "not-a-dir");
+      fs.writeFileSync(blocker, "x");
+      const roots = ["hermes", "workspace"].map((name) => path.join(bot, name));
+      const result = runWithStub({
+        HERMES_HOME: path.join(bot, "hermes"),
+        MYRMIDON_BOT_ROOT: bot,
+        MYRMIDON_DATA_DIR: data,
+        npm_config_store_dir: path.join(blocker, "store"),
+        MYRMIDON_HARDLINK_ROOTS: roots.join(" "),
+        MYRMIDON_TEST_CWD: path.join(bot, "workspace"),
+      });
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stderr, /ERROR: hard-link self-check: cannot create a file in the pnpm store/);
+      const report = JSON.parse(fs.readFileSync(path.join(bot, "hermes", ".myrmidon", "hardlink-check.json"), "utf8"));
+      assert.equal(report.ok, false);
+      assert.equal(report.roots.length, 2);
+    } finally {
+      fs.rmSync(tree, { recursive: true, force: true });
+    }
+  });
+
+  it("the store the check uses is the profile's .env value when it overrides the environment", () => {
+    const { tree, bot, data } = botLayout();
+    try {
+      const store = path.join(bot, "scratch", ".store-from-env-file");
+      fs.appendFileSync(path.join(bot, "hermes", ".env"), `npm_config_store_dir="${store}"\nnpm_config_package_import_method=hardlink\n`);
+      const result = runWithStub({
+        HERMES_HOME: path.join(bot, "hermes"),
+        MYRMIDON_BOT_ROOT: bot,
+        MYRMIDON_DATA_DIR: data,
+        npm_config_store_dir: "/nonexistent/should-not-be-used",
+        MYRMIDON_HARDLINK_ROOTS: path.join(bot, "workspace"),
+        MYRMIDON_TEST_CWD: path.join(bot, "workspace"),
+      });
+      assert.equal(result.status, 0, result.stderr);
+      const report = JSON.parse(fs.readFileSync(path.join(bot, "hermes", ".myrmidon", "hardlink-check.json"), "utf8"));
+      assert.equal(report.store, store);
+      assert.equal(report.ok, true);
+    } finally {
+      fs.rmSync(tree, { recursive: true, force: true });
+    }
+  });
+});

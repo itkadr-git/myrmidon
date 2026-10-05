@@ -207,25 +207,45 @@ func TestRedTeam_RT1_6_Network(t *testing.T) {
 func TestBotBindsMismatch(t *testing.T) {
 	m := fixture.Load(t)
 	k, root := m.BotKey, m.VolumeRoot
-	hermes := root + "/" + k + "/hermes:/data/hermes"
-	work := root + "/" + k + "/workspace:/workspace"
-	scratch := root + "/" + k + "/scratch:/scratch"
+	bot := root + "/" + k + ":/bot"
 	runMutations(t, "bot-plain", "", []mutation{
-		{"host root", `"` + hermes + `"`, `"/:/data/hermes"`, false, deny.BindsMismatch},
-		{"etc", `"` + hermes + `"`, `"/etc:/data/hermes"`, false, deny.BindsMismatch},
-		{"docker socket", `"` + scratch + `"`, `"/var/run/docker.sock:/scratch"`, false, deny.BindsMismatch},
-		{"fourth bind", `"` + scratch + `"]`, `"` + scratch + `","/var/run/docker.sock:/var/run/docker.sock"]`, false, deny.BindsMismatch},
-		{"read-only flag", `"` + work + `"`, `"` + work + `:ro"`, false, deny.BindsMismatch},
-		{"another bot", `"` + hermes + `"`, `"` + root + "/" + otherKey + `/hermes:/data/hermes"`, false, deny.BindsMismatch},
-		{"another root", `"` + hermes + `"`, `"/srv/other/` + k + `/hermes:/data/hermes"`, false, deny.BindsMismatch},
-		{"traversal", `"` + hermes + `"`, `"` + root + "/" + k + `/../x/hermes:/data/hermes"`, false, deny.BindsMismatch},
-		{"trailing slash", `"` + hermes + `"`, `"` + hermes + `/"`, false, deny.BindsMismatch},
-		{"swapped order", `"` + hermes + `","` + work + `"`, `"` + work + `","` + hermes + `"`, false, deny.BindsMismatch},
-		{"one bind missing", `,"` + scratch + `"`, ``, false, deny.BindsMismatch},
-		{"no binds", `"Binds":["` + hermes + `","` + work + `","` + scratch + `"]`, `"Binds":[]`, false, deny.BindsMismatch},
-		{"binds as string", `"Binds":["` + hermes + `","` + work + `","` + scratch + `"]`, `"Binds":"x"`, false, deny.JSONType},
-		{"bind is a number", `"` + scratch + `"`, `1`, false, deny.JSONType},
+		{"host root", `"` + bot + `"`, `"/:/bot"`, false, deny.BindsMismatch},
+		{"etc", `"` + bot + `"`, `"/etc:/bot"`, false, deny.BindsMismatch},
+		{"docker socket", `"` + bot + `"`, `"/var/run/docker.sock:/bot"`, false, deny.BindsMismatch},
+		{"fourth bind", `"` + bot + `"]`, `"` + bot + `","/var/run/docker.sock:/var/run/docker.sock"]`, false, deny.BindsMismatch},
+		{"read-only flag", `"` + bot + `"`, `"` + bot + `:ro"`, false, deny.BindsMismatch},
+		{"another bot", `"` + bot + `"`, `"` + root + "/" + otherKey + `:/bot"`, false, deny.BindsMismatch},
+		{"another root", `"` + bot + `"`, `"/srv/other/` + k + `:/bot"`, false, deny.BindsMismatch},
+		{"traversal", `"` + bot + `"`, `"` + root + "/" + k + `/../x:/bot"`, false, deny.BindsMismatch},
+		{"trailing slash", `"` + bot + `"`, `"` + root + "/" + k + `/:/bot"`, false, deny.BindsMismatch},
+		{"wrong mount point", `"` + bot + `"`, `"` + root + "/" + k + `:/data"`, false, deny.BindsMismatch},
+		{"a sub-directory of the bot instead of the bot", `"` + bot + `"`, `"` + root + "/" + k + `/workspace:/bot"`, false, deny.BindsMismatch},
+		{"the helper's three narrow binds", `"` + bot + `"`, `"` + root + "/" + k + `/hermes:/data/hermes","` + root + "/" + k + `/workspace:/workspace","` + root + "/" + k + `/scratch:/scratch"`, false, deny.BindsMismatch},
+		{"no binds", `"Binds":["` + bot + `"]`, `"Binds":[]`, false, deny.BindsMismatch},
+		{"binds as string", `"Binds":["` + bot + `"]`, `"Binds":"x"`, false, deny.JSONType},
+		{"bind is a number", `"` + bot + `"`, `1`, false, deny.JSONType},
 	})
+}
+
+// The bot form has exactly ONE bind (hard links need one mount); the recorded
+// body carries it and the canonical rebuild reproduces it.
+func TestBotBindIsTheSingleMount(t *testing.T) {
+	m := fixture.Load(t)
+	want := []string{m.VolumeRoot + "/" + m.BotKey + ":/bot"}
+	if got := []string{policy.BotBind(m.VolumeRoot, m.BotKey)}; got[0] != want[0] {
+		t.Fatalf("BotBind = %q, want %q", got[0], want[0])
+	}
+	_, body := m.FindBody(t, "bot-plain", "")
+	c, err := policy.ParseCreate(body, createRoute(t, "myrmidon-bot-"+m.BotKey), env(m))
+	if err != nil {
+		t.Fatalf("denied: %s", err.Code)
+	}
+	if !strings.Contains(string(c.Body), `"Binds":["`+want[0]+`"]`) {
+		t.Fatalf("the canonical bot body does not carry exactly the single bind: %s", c.Body)
+	}
+	if strings.Contains(string(c.Body), ":/data/hermes") || strings.Contains(string(c.Body), ":/workspace") {
+		t.Fatal("a bot body must not carry the helper's narrow binds")
+	}
 }
 
 // The bot's extra read-only mounts: the three fixed binds stay first and in
@@ -233,7 +253,7 @@ func TestBotBindsMismatch(t *testing.T) {
 func TestBotExtraMounts(t *testing.T) {
 	m := fixture.Load(t)
 	k, root := m.BotKey, m.VolumeRoot
-	scratch := root + "/" + k + "/scratch:/scratch"
+	scratch := root + "/" + k + ":/bot"
 	tail := `"` + scratch + `"]`
 	shared := "/srv/shared/sources"
 
@@ -288,7 +308,7 @@ func TestBotExtraMounts(t *testing.T) {
 	})
 
 	t.Run("an extra mount over a reserved path is denied", func(t *testing.T) {
-		for _, target := range []string{"/workspace", "/workspace/shared", "/data/hermes", "/scratch", "/tmp", "/tmp/x", "relative", "/", "/x/../y"} {
+		for _, target := range []string{"/bot", "/bot/x", "/data", "/data/x", "/workspace", "/workspace/shared", "/data/hermes", "/scratch", "/tmp", "/tmp/x", "relative", "/", "/x/../y"} {
 			body := bodyWith(t, shared+":"+target+":ro")
 			c, err := policy.ParseCreate(body, createRoute(t, "myrmidon-bot-"+k), withEnv(shared))
 			wantDeny(t, c, err, deny.BindsMismatch)
@@ -323,7 +343,7 @@ func TestBotExtraMounts(t *testing.T) {
 func TestBotPackageCacheMounts(t *testing.T) {
 	m := fixture.Load(t)
 	k := m.BotKey
-	scratch := m.VolumeRoot + "/" + k + "/scratch:/scratch"
+	scratch := m.VolumeRoot + "/" + k + ":/bot"
 	tail := `"` + scratch + `"]`
 	cache := "/srv/package-cache"
 

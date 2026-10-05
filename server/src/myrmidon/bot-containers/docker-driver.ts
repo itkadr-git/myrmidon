@@ -52,7 +52,9 @@ import {
   BOT_MANAGED_DIRS,
   BOT_KEY_PATTERN,
   BOT_MOUNT_SOURCES_ENV,
+  BOT_HERMES_REAL_PATH,
   BOT_VOLUME_MOUNTS,
+  buildHelperBinds,
   BotContainerTemplateError,
   buildBinds,
   buildLabels,
@@ -93,7 +95,8 @@ const HELPER_PIDS_LIMIT = 64;
 const HERMES_MOUNT = BOT_VOLUME_MOUNTS.find((mount) => mount.hostSuffix === "hermes")!;
 /** Applied-state marker, relative to the hermes mount. */
 const MARKER_RELATIVE_PATH = ".myrmidon/applied.json";
-export const APPLIED_MARKER_CONTAINER_PATH = `${HERMES_MOUNT.containerPath}/${MARKER_RELATIVE_PATH}`;
+// Read at its real path inside the single mount, not through the image's /data/hermes link.
+export const APPLIED_MARKER_CONTAINER_PATH = `${BOT_HERMES_REAL_PATH}/${MARKER_RELATIVE_PATH}`;
 
 export interface DockerDriverConfig {
   socketPath: string;
@@ -272,7 +275,7 @@ export function buildHelperContainerRequestBody(params: {
       ReadonlyRootfs: true,
       RestartPolicy: { Name: "no" },
       NetworkMode: "none",
-      Binds: buildBinds(params.volumeRoot, params.botKey),
+      Binds: buildHelperBinds(params.volumeRoot, params.botKey),
       Privileged: false,
     },
   };
@@ -909,7 +912,7 @@ export function dockerBotContainerDriver(
     try {
       const res = await request({
         method: "GET",
-        path: `/containers/${nameSegment(name)}/archive?path=${encodeURIComponent(`/data/hermes/${CLONE_HYGIENE_REPORT_PATH}`)}`,
+        path: `/containers/${nameSegment(name)}/archive?path=${encodeURIComponent(`${BOT_HERMES_REAL_PATH}/${CLONE_HYGIENE_REPORT_PATH}`)}`,
       });
       if (res.status >= 400) return null;
       const file = parseUstarArchive(res.body).find((entry) => entry.type === "file");

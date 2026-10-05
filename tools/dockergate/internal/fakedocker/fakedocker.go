@@ -572,7 +572,7 @@ func (d *Daemon) container(w http.ResponseWriter, r *http.Request, call Call, re
 	case tail == "archive" && call.Method == "GET":
 		marker := c.Marker
 		d.mu.Unlock()
-		if marker == nil || q.Get("path") != "/data/hermes/.myrmidon/applied.json" {
+		if marker == nil || q.Get("path") != "/bot/hermes/.myrmidon/applied.json" {
 			msg(w, http.StatusNotFound, "Could not find the file in container")
 			return
 		}
