@@ -474,7 +474,7 @@ describe("publish-github-release.sh: the release body and mutations", () => {
 describe("publish-github-release.sh: release candidates (RC-VERSIONS)", () => {
   it("publishes an rc as a PRE-RELEASE with the rc title, the base version's notes and the rc's digests — and supersedes nothing", () => {
     const rcRuns = [
-      run(COMMIT, ".github/workflows/myrmidon-ci.yml", "success", "completed", "myr-v1.6.0-rc.1"),
+      run(COMMIT, ".github/workflows/myrmidon-ci-tag.yml", "success", "completed", "myr-v1.6.0-rc.1"),
       run(COMMIT, ".github/workflows/myrmidon-image.yml", "success", "completed", "myr-v1.6.0-rc.1"),
     ];
     const sb = sandbox({
@@ -502,7 +502,7 @@ describe("publish-github-release.sh: release candidates (RC-VERSIONS)", () => {
 
   it("the rc body carries the trial-run header pointing at the final tag and promote-latest.sh", () => {
     const sb = sandbox({ runs: [
-      run(COMMIT, ".github/workflows/myrmidon-ci.yml", "success", "completed", "myr-v1.6.0-rc.1"),
+      run(COMMIT, ".github/workflows/myrmidon-ci-tag.yml", "success", "completed", "myr-v1.6.0-rc.1"),
       run(COMMIT, ".github/workflows/myrmidon-image.yml", "success", "completed", "myr-v1.6.0-rc.1"),
     ] });
     const { code, out } = runScript(sb, "myr-v1.6.0-rc.1");
@@ -828,7 +828,7 @@ describe("publish-github-release.sh: the gate takes its green from the tag CI wo
   });
 
   it("accepts -rc.N tags", () => {
-    assert.match(SCRIPT_TEXT, /\^myr-v\[0-9\].*\(-rc\\\.\[0-9\]\+\)\?\$/);
+    assert.match(SCRIPT_TEXT, /\^myr-v\(\[0-9\]\+\\\.\[0-9\]\+\\\.\[0-9\]\+\)\(-rc\\\.\(\[0-9\]\+\)\)\?\$/);
   });
 });
 
