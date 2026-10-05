@@ -137,33 +137,27 @@ export async function getConversationOwnershipBlocker(db: Db, companyId: string,
     runtimeMode: heartbeatRuns.runtimeMode,
     activeLease: activeLease,
   }).from(heartbeatRuns)
+  const candidates = await db.select({ run: heartbeatRuns, activeLease }).from(heartbeatRuns)
     .where(and(
-      eq(heartbeatRuns.companyId, companyId), 
-      eq(heartbeatRuns.runtimeMode, "legacy"),
+      eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.runtimeMode, "legacy"),
       conversationRunPredicate(),
       sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${issueId}`,
       inArray(heartbeatRuns.status, ["failed", "timed_out", "interrupted", "cancelled"]),
-      or(
-        isNotNull(heartbeatRuns.processPid), 
-        isNotNull(heartbeatRuns.processGroupId), 
-        activeLease
-      ),
+      or(isNotNull(heartbeatRuns.processPid), isNotNull(heartbeatRuns.processGroupId), activeLease),
     )).orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id));
-    
-  for (const record of candidates) {
-    const leaseHeld = record.activeLease;
-    let pidAlive = record.processPid !== null && processMayBeAlive(record.processPid);
-    if (pidAlive && record.processStartedAt) {
+  for (const { run, activeLease: leaseHeld } of candidates) {
+    let pidAlive = run.processPid !== null && processMayBeAlive(run.processPid);
+    if (pidAlive && run.processStartedAt) {
       // A recycled PID cannot keep an old task blocked. An unreadable identity
       // stays conservative; the original process may still own execution.
-      const observed = await readProcessStartedAt(record.processPid!).catch(() => null);
-      if (observed && new Date(observed).getTime() !== record.processStartedAt.getTime()) pidAlive = false;
+      const observed = await readProcessStartedAt(run.processPid!).catch(() => null);
+      if (observed && new Date(observed).getTime() !== run.processStartedAt.getTime()) pidAlive = false;
     }
-    const groupAlive = record.processGroupId !== null && processMayBeAlive(-record.processGroupId);
+    const groupAlive = run.processGroupId !== null && processMayBeAlive(-run.processGroupId);
     if (pidAlive || groupAlive || leaseHeld) {
       return {
-        runId: record.id,
-        agentId: record.agentId,
+        runId: run.id,
+        agentId: run.agentId,
         cause: "execution_owner_active",
         nextAction: pidAlive || groupAlive
           ? "The previous provider process is still running. Stop it before continuing this task."

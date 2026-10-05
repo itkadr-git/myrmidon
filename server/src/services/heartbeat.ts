@@ -29392,76 +29392,27 @@ export function heartbeatService(
       companyId: string,
       agentId?: string,
       limit?: number,
-      options: { summary?: boolean; cursor?: string; includeHeavyColumns?: boolean } = {},
+      options: { summary?: boolean } = {},
     ) => {
       const safeForLegacyEncoding = await hasUnsafeTextProjectionDatabase();
       const summary = options.summary === true;
-      // По умолчанию не включаем тяжелые колонки для производительности
-      const includeHeavyColumns = options.includeHeavyColumns !== false; 
-      
-      // Построение запроса с возможностью курсорной пагинации
-      let query = db
+      const query = db
         .select(
           summary
             ? {
                 ...heartbeatRunSummaryListColumns,
                 ...heartbeatRunListContextColumns,
               }
-            : includeHeavyColumns
-              ? safeForLegacyEncoding
-                ? {
-                    ...heartbeatRunListColumns,
-                    error: sql<string | null>`NULL`.as("error"),
-                    ...heartbeatRunListContextColumns,
-                  }
-                : {
-                    ...heartbeatRunListColumns,
-                    ...heartbeatRunListContextColumns,
-                    ...heartbeatRunListResultColumns,
-                  }
+            : safeForLegacyEncoding
+              ? {
+                  ...heartbeatRunListColumns,
+                  error: sql<string | null>`NULL`.as("error"),
+                  ...heartbeatRunListContextColumns,
+                }
               : {
-                  // Только легкие колонки без тяжелых JSON
-                  id: heartbeatRuns.id,
-                  companyId: heartbeatRuns.companyId,
-                  agentId: heartbeatRuns.agentId,
-                  invocationSource: heartbeatRuns.invocationSource,
-                  triggerDetail: heartbeatRuns.triggerDetail,
-                  status: heartbeatRuns.status,
-                  startedAt: heartbeatRuns.startedAt,
-                  finishedAt: heartbeatRuns.finishedAt,
-                  error: heartbeatRuns.error,
-                  wakeupRequestId: heartbeatRuns.wakeupRequestId,
-                  exitCode: heartbeatRuns.exitCode,
-                  signal: heartbeatRuns.signal,
-                  sessionIdBefore: heartbeatRuns.sessionIdBefore,
-                  sessionIdAfter: heartbeatRuns.sessionIdAfter,
-                  logStore: heartbeatRuns.logStore,
-                  logRef: heartbeatRuns.logRef,
-                  logBytes: heartbeatRuns.logBytes,
-                  logSha256: heartbeatRuns.logSha256,
-                  logCompressed: heartbeatRuns.logCompressed,
-                  errorCode: heartbeatRuns.errorCode,
-                  externalRunId: heartbeatRuns.externalRunId,
-                  processPid: heartbeatRuns.processPid,
-                  processGroupId: heartbeatRunProcessGroupIdColumn,
-                  processStartedAt: heartbeatRuns.processStartedAt,
-                  lastOutputAt: heartbeatRuns.lastOutputAt,
-                  lastOutputSeq: heartbeatRuns.lastOutputSeq,
-                  lastOutputStream: heartbeatRuns.lastOutputStream,
-                  lastOutputBytes: heartbeatRuns.lastOutputBytes,
-                  retryOfRunId: heartbeatRuns.retryOfRunId,
-                  processLossRetryCount: heartbeatRuns.processLossRetryCount,
-                  scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
-                  scheduledRetryAttempt: heartbeatRuns.scheduledRetryAttempt,
-                  scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
-                  livenessState: heartbeatRuns.livenessState,
-                  livenessReason: heartbeatRuns.livenessReason,
-                  continuationAttempt: heartbeatRuns.continuationAttempt,
-                  lastUsefulActionAt: heartbeatRuns.lastUsefulActionAt,
-                  nextAction: heartbeatRuns.nextAction,
-                  createdAt: heartbeatRuns.createdAt,
-                  updatedAt: heartbeatRuns.updatedAt,
-                  ...heartbeatRunListContextColumns, // Контекстные колонки извлекаются как текстовые поля
+                  ...heartbeatRunListColumns,
+                  ...heartbeatRunListContextColumns,
+                  ...heartbeatRunListResultColumns,
                 },
         )
         .from(heartbeatRuns)
@@ -29473,14 +29424,9 @@ export function heartbeatService(
               )
             : eq(heartbeatRuns.companyId, companyId),
         )
-        .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id));
+        .orderBy(desc(heartbeatRuns.createdAt));
 
-      // Добавляем лимит, если указан
-      if (limit) {
-        query = query.limit(limit);
-      }
-
-      const rows = await query;
+      const rows = limit ? await query.limit(limit) : await query;
       return rows.map((row) => {
         const {
           contextIssueId,
@@ -29522,7 +29468,7 @@ export function heartbeatService(
             wakeTriggerDetail: contextWakeTriggerDetail,
           }),
           resultJson:
-            safeForLegacyEncoding || summary || !includeHeavyColumns
+            safeForLegacyEncoding || summary
               ? null
               : summarizeHeartbeatRunListResultJson({
                   summary: resultSummary,
