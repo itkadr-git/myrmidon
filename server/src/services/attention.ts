@@ -27,7 +27,7 @@ import {
   projects,
   projectWorkspaces,
 } from "@paperclipai/db";
-import { deriveProjectUrlKey } from "@paperclipai/shared";
+import { deriveProjectUrlKey, botDiskQuotaWhyNow } from "@paperclipai/shared";
 import type {
   AttentionDecisionVerb,
   AttentionFeed,
@@ -74,6 +74,9 @@ import { readTracingHealthAttentionSignal } from "../myrmidon/tracing-health/att
 import { hostMemoryHoldSignal } from "../myrmidon/run-admission.js"; // myrmidon(1.6.2 RUN-ADMISSION)
 // myrmidon(BOT-RUNTIME-TUNING D): the model fallback share raises one card per agent
 import { readModelFallbackSignals } from "../myrmidon/litellm-fallback-signal/attention.js";
+// myrmidon(1.6.1-BOT-DISK-C): the disk quota sweep records one signal per bot
+// volume at/over its quota; the feed turns the registry into cards.
+import { readBotDiskQuotaSignals } from "../myrmidon/bot-containers/bot-quota.js";
 
 // myrmidon(STALE-BLOCK): the lifted-block operator signal registry.
 import {
@@ -172,6 +175,10 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   // myrmidon(REVIEW-ROUTING): a stuck review is a stalled delivery, ranked with
   // the other machine-routing notices (just after the lifted stale block).
   review_routing: 16,
+  // myrmidon(1.6.1-BOT-DISK-C): a full bot disk blocks deliveries (new clones
+  // are refused), so it ranks above the advisory notices, next to the lifecycle
+  // events of the same disk it shares.
+  bot_disk_quota: 17,
 };
 
 const PENDING_INTERACTION_STATUSES = ["pending"] as const;
@@ -2051,6 +2058,67 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             detail: {
               kind: "generic",
               summaryExcerpt: `${signal.path}${signal.branch ? ` (${signal.branch})` : ""}: ${signal.reason}`,
+              images: [],
+            },
+          }));
+        }
+      }
+
+      // myrmidon(1.6.1-BOT-DISK-C): the periodic quota sweep records one signal
+      // per bot volume at or over its disk quota into a process-level registry
+      // (myrmidon/bot-containers/bot-quota.ts); the feed turns those into cards
+      // (subject = the agent; one dedupKey per agent; over-quota is high, the
+      // approaching state medium). While a bot is over quota its new clones are
+      // refused at admission (workspace-runtime.ts), and the card says so. The
+      // signal clears when the next sweep measures the volume back under the
+      // approaching threshold — the same registry pattern stale-block uses.
+      const quotaSignals = readBotDiskQuotaSignals(companyId);
+      if (quotaSignals.length > 0) {
+        const quotaAgentIds = [...new Set(quotaSignals.map((signal) => signal.agentId))];
+        const quotaAgents = await db
+          .select({ id: agents.id, name: agents.name, status: agents.status })
+          .from(agents)
+          .where(and(eq(agents.companyId, companyId), inArray(agents.id, quotaAgentIds)));
+        const agentById = new Map(quotaAgents.map((agent) => [agent.id, agent]));
+        for (const signal of quotaSignals) {
+          const agent = agentById.get(signal.agentId);
+          if (!agent) continue;
+          const at = new Date(signal.observedAtMs).toISOString();
+          const whyNow = botDiskQuotaWhyNow(signal);
+          add(createItem({
+            companyId,
+            sourceKind: "bot_disk_quota",
+            subject: {
+              kind: "agent",
+              id: agent.id,
+              companyId,
+              title: agent.name,
+              identifier: null,
+              status: agent.status,
+              href: `/${prefix}/agents/${agent.id}`,
+              metadata: {
+                usageBytes: signal.usageBytes,
+                quotaMb: signal.quotaMb,
+                overQuota: signal.overQuota,
+              },
+            },
+            whyNow,
+            decisionVerbs: decisionVerbs(
+              { id: "inspect", label: "Inspect", description: "Open the agent card and clean up its volume." },
+              { id: "dismiss", label: "Dismiss", description: "Dismiss this signal until the next sweep." },
+            ),
+            inlineResolvable: false,
+            entryRule: "the bot volume is at 80% of its disk quota or over it (general.botDiskQuota)",
+            exitRule: "the sweep measures the volume back below the threshold, or the row is dismissed",
+            dedupKey: signal.dedupKey,
+            severity: signal.overQuota ? "high" : "medium",
+            activityAt: at,
+            createdAt: at,
+            updatedAt: at,
+            relatedIssue: null,
+            detail: {
+              kind: "generic",
+              summaryExcerpt: excerpt(whyNow),
               images: [],
             },
           }));

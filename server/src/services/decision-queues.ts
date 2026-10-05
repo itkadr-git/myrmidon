@@ -334,6 +334,16 @@ async function sourceIssueId(
         .then((rows) => rows[0] ?? null);
       return { exists: Boolean(row), issueId: null, agentId: row?.id ?? null };
     }
+    // myrmidon(1.6.1-BOT-DISK-C): the quota signal subject is an agent bot of
+    // the company; existence is the live agent row (the signal is computed by
+    // the sweep, not stored, so there is nothing else to check).
+    case "bot_disk_quota": {
+      const row = await db.select({ id: agents.id })
+        .from(agents)
+        .where(and(eq(agents.companyId, companyId), eq(agents.id, sourceId)))
+        .then((rows) => rows[0] ?? null);
+      return { exists: Boolean(row), issueId: null, agentId: row?.id ?? null };
+    }
   }
 }
 

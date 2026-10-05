@@ -38,6 +38,9 @@ export const ATTENTION_SOURCE_KINDS = [
   "review_routing",
   // myrmidon(BOT-DISK-A): bot disk lifecycle events.
   "bot_disk_lifecycle",
+  // myrmidon(1.6.1-BOT-DISK-C): a bot volume is approaching (>=80%) or over its
+  // disk quota; the over-quota state also makes new workspace clones refuse.
+  "bot_disk_quota",
 ] as const;
 
 export type AttentionSourceKind = (typeof ATTENTION_SOURCE_KINDS)[number];

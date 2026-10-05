@@ -6,6 +6,8 @@ import type { StoredRunLimits } from "../myrmidon-runtime-limits.js";
 import type { HostDiskSettings } from "../myrmidon-host-disk.js";
 // myrmidon(BOT-DISK-A): the bot draft-directory lifecycle stored in instance settings
 import type { StoredBotDiskSettings } from "../myrmidon-bot-disk.js";
+// myrmidon(1.6.1-BOT-DISK-C): per-bot disk quota of its own general settings key.
+import type { StoredBotDiskQuotaSettings } from "../myrmidon-bot-disk-quota.js";
 // myrmidon(PARALLEL-HELPERS): the helper ceiling/default stored in instance settings
 import type { ParallelHelpersSettings } from "../myrmidon-parallel-helpers.js";
 import type { BotLspSettings } from "../myrmidon-bot-lsp.js";
@@ -83,6 +85,14 @@ export interface InstanceGeneralSettings {
    * field (packages/shared/src/validators/instance.ts).
    */
   botDisk?: StoredBotDiskSettings;
+  /**
+   * myrmidon(1.6.1-BOT-DISK-C): per-bot disk quota (company default, per-caste
+   * and per-agent overrides), changed from `GET`/`PATCH /api/myrmidon/bot-disk-quota`.
+   * Its own key, not a sub-key of `botDisk`: part A's PATCH rewrites the whole
+   * `botDisk` object. Absent means "no quota" (enforcement off); kept in sync
+   * with the validator of the same field (packages/shared/src/validators/instance.ts).
+   */
+  botDiskQuota?: StoredBotDiskQuotaSettings;
   /**
    * myrmidon(C0): run admission limits changed from the instance settings page
    * and `GET`/`PATCH /api/myrmidon/runtime-limits`. Absent means "use the
