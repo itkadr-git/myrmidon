@@ -73,6 +73,14 @@ case "$1" in
         # The compose project's declared services (for the HOST-TARGETING
         # fail-closed pre-check): the sandbox's base compose file declares
         # server + dockergate + fleetd, mirroring a real release stack.
+        # DEPLOY-PRECHECK (the 05.10 incident): with composeConfigFails the
+        # project cannot be read — the real compose error on stderr, nothing on
+        # stdout, exit 1, exactly like docker compose on an invalid project.
+        if [ -e "$SANDBOX/compose-config-fails" ]; then
+          echo 'service "server" has neither an image nor a build context specified' >&2
+          echo "ERROR: Invalid compose project" >&2
+          exit 1
+        fi
         printf 'server\ndockergate\nfleetd\n' ;;
       *logs*) v="\${DG_LOGGED_VERSION:-1.4.0+0123456789ab}"; echo '{"event":"self-check ok","version":"'"$v"'"}' ;;
       *) exit "\${COMPOSE_FAILS:-0}" ;;
@@ -162,6 +170,9 @@ function sandbox({
   smoke = "ok",
   smokeCompany = COMPANY,
   composeFails = "0",
+  // DEPLOY-PRECHECK (the 05.10 incident): the compose project cannot be read —
+  // `docker compose config --services` prints the real compose error and exits 1.
+  composeConfigFails = false,
   origin = ORIGIN,
   tags = "",
   sshFails = false,
@@ -194,6 +205,7 @@ function sandbox({
   );
   if (registryMissing) fs.writeFileSync(path.join(dir, "registry-missing"), "");
   if (componentsMissing) fs.writeFileSync(path.join(dir, "components-missing"), "");
+  if (composeConfigFails) fs.writeFileSync(path.join(dir, "compose-config-fails"), "");
   if (componentHealth !== "ok") fs.writeFileSync(path.join(dir, "component-health-bad"), "");
   fs.writeFileSync(path.join(dir, "git-origin"), `${origin}\n`);
   fs.writeFileSync(path.join(dir, "git-tags"), tags);
@@ -429,7 +441,7 @@ describe("rollout-component.sh", () => {
     fs.appendFileSync(sb.config, "MYR_FLEETD_HOST=remote:root@vm-exec\n");
     const { code, out } = run(sb, "rollout-component.sh", ["--component", "fleetd", "--digest", FD]);
     assert.notEqual(code, 0);
-    assert.match(out, /cannot pull|compose up failed|not a service of the compose project/);
+    assert.match(out, /cannot pull|compose up failed|not a service of the compose project|compose project itself cannot be read/);
   });
 
   it("rejects a malformed MYR_<COMPONENT>_HOST value", () => {
@@ -481,6 +493,32 @@ describe("rollout-component.sh", () => {
     assert.match(out, /nonexistent-gate missing/);
     // Fail-closed BEFORE the pull and the override write.
     assert.doesNotMatch(calls(sb), /docker pull ghcr\.io\/itkadr-git\/myrmidon-dockergate/);
+    assert.ok(!fs.existsSync(path.join(sb.composeDir, "docker-compose.myrmidon-dockergate.yml")));
+  });
+
+  // DEPLOY-PRECHECK (the 05.10 incident): when `docker compose config` itself
+  // fails, the pre-check reports the REAL compose error — not the misleading
+  // "is not a service of the compose project", which is what the 05.10 deploy
+  // printed (the compose project was invalid: `server` had no image).
+  it("reports the real compose error when the project cannot be read, not a missing service", () => {
+    const sb = sandbox({ composeConfigFails: true });
+    const { code, out } = run(sb, "rollout-component.sh", ["--component", "dockergate", "--digest", DG]);
+    assert.notEqual(code, 0);
+    assert.match(out, /compose project itself cannot be read/);
+    assert.match(out, /neither an image nor a build context/);
+    assert.doesNotMatch(out, /is not a service of the compose project/);
+    // Fail-closed BEFORE the pull and the override write.
+    assert.doesNotMatch(calls(sb), /docker pull/);
+    assert.ok(!fs.existsSync(path.join(sb.composeDir, "docker-compose.myrmidon-dockergate.yml")));
+  });
+
+  it("--dry-run refuses the same unreadable compose project, changing nothing", () => {
+    const sb = sandbox({ composeConfigFails: true });
+    const { code, out } = run(sb, "rollout-component.sh", ["--component", "dockergate", "--digest", DG, "--dry-run"]);
+    assert.notEqual(code, 0);
+    assert.match(out, /compose project itself cannot be read/);
+    assert.match(out, /neither an image nor a build context/);
+    assert.doesNotMatch(calls(sb), /docker pull/);
     assert.ok(!fs.existsSync(path.join(sb.composeDir, "docker-compose.myrmidon-dockergate.yml")));
   });
 });

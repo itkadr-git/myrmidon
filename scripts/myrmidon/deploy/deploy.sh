@@ -71,6 +71,15 @@
 # prints the rollback command. --dry-run changes nothing and prints the plan
 # (the image checks are read-only, so they run in a dry run too).
 #
+# PRE-CHECK (the 05.10 incident): every component this deploy is about to roll
+# out is pre-checked — its CI image, the target host's compose project (the REAL
+# error of `docker compose config` when the project cannot be read, never a
+# misleading "not a service"), the service that project declares, the health
+# URL — BEFORE the image pull and the database dump, and in a dry run as well.
+# A dry run that passes now proves the window gets past its first component
+# refusal; on 05.10 it passed and the refusal surfaced after the pull and the
+# dump.
+#
 # TRACING-HEALTH: right after the health check the deploy verifies the LLM
 # tracing configuration (tracing-check.sh, step 7b): the callback set is the
 # OTLP-only one (a legacy `langfuse` callback against a v4 Langfuse server is
@@ -348,6 +357,25 @@ if ((need_window == 0)); then
   log "board and every release component already run the release images; nothing to restart (use --force to redeploy the board)"
 fi
 
+# ONE-DEPLOY (the 05.10 incident): the read-only pre-check of every component
+# this deploy is about to roll out — the CI image, the target host's compose
+# project (and the REAL error of `docker compose config` when the project cannot
+# be read, instead of a misleading "not a service"), the service it declares and
+# the health URL. It runs BEFORE the image pull and the database dump, and it
+# runs in a dry run too, so a rehearsal fails exactly where the real window
+# would: on 05.10 the dry run passed and the fault surfaced only after the pull
+# and the dump. rollout-component.sh --dry-run IS this pre-check.
+preflight_components() {
+  local name
+  for name in "${changed_components[@]}"; do
+    log "pre-checking component $name (before the pull and the dump)"
+    if ! "$MYR_SCRIPT_DIR/rollout-component.sh" --config "$config" --component "$name" --digest "${COMP_REF[$name]#*@}" --dry-run; then
+      die "the pre-check of component $name failed; nothing was pulled and nothing was changed"
+    fi
+  done
+}
+preflight_components
+
 if [[ "$DRY_RUN" == "1" ]]; then
   log "dry run: nothing will be changed. Plan:"
   plan "0. image check passed (read-only): $ref is in the registry, commit ${CI_IMAGE_REVISION:0:12} is on origin/main or a myr-v* tag"
@@ -392,21 +420,6 @@ if [[ "$DRY_RUN" == "1" ]]; then
 fi
 
 # ---- helpers of the window ---------------------------------------------------
-# ONE-DEPLOY: a read-only preflight of every changed component (registry, CI
-# labels, compose service, health URL), run after the dump and BEFORE the
-# window: a component that cannot roll out must stop the deploy while nothing
-# has changed yet.
-preflight_components() {
-  local name pf_out
-  for name in "${changed_components[@]}"; do
-    pf_out=""
-    if ! pf_out="$("$MYR_SCRIPT_DIR/rollout-component.sh" --config "$config" --component "$name" --digest "${COMP_REF[$name]#*@}" --dry-run 2>&1)"; then
-      printf '%s\n' "$pf_out" >&2
-      die "preflight of component $name failed; nothing was changed"
-    fi
-  done
-}
-
 DG_CFG_BACKUP="$STATE_DIR/dockergate-config.pre-deploy"
 dg_cfg_saved=0
 rolled_components=()
@@ -523,7 +536,6 @@ log "3/8 database dump"
 take_dump "${digest#sha256:}"
 LAST_DUMP_FILE="${LAST_DUMP_FILE:-}"
 fi
-preflight_components
 
 # myrmidon(POST-DEPLOY-CHECK): the deploy window starts when the first
 # board-affecting step runs (the maintenance enter below). Issues blocked after

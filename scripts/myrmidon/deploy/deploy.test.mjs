@@ -71,7 +71,15 @@ case "$1" in
     case "$*" in
       *--services)
         # HOST-TARGETING: the declared services of the sandbox's compose
-        # project (the fail-closed pre-check reads them).
+        # project (the fail-closed pre-check reads them). DEPLOY-PRECHECK (the
+        # 05.10 incident): composeConfigFails makes the project unreadable —
+        # the real compose error on stderr, nothing on stdout, exit 1, exactly
+        # like docker compose on an invalid project.
+        if [ -e "$SANDBOX/compose-config-fails" ]; then
+          echo 'service "server" has neither an image nor a build context specified' >&2
+          echo "ERROR: Invalid compose project" >&2
+          exit 1
+        fi
         printf 'server\\ndockergate\\nfleetd\\n' ;;
       *logs*) echo '{"event":"self-check ok","version":"1.4.0+0123456789ab"}' ;;
       *) exit 0 ;;
@@ -126,6 +134,10 @@ function sandbox({
   localTags = "",
   localIds = "",
 
+  // DEPLOY-PRECHECK (the 05.10 incident): the compose project cannot be read —
+  // `docker compose config --services` prints the real compose error and exits 1.
+  composeConfigFails = false,
+
   // BOOT-PATH: the boot unit in the sandbox. A function (gets the template
   // renderer) written into systemd/paperclip.service; null = no unit.
   // Default: the canonical unit for this sandbox's compose dir.
@@ -156,6 +168,7 @@ function sandbox({
     JSON.stringify({ architecture: "amd64", os: "linux", config: { Env: ["A=1"], Labels: labels } }),
   );
   if (registryMissing) fs.writeFileSync(path.join(dir, "registry-missing"), "");
+  if (composeConfigFails) fs.writeFileSync(path.join(dir, "compose-config-fails"), "");
   // RELEASE-GATE: component registry answers for the same commit.
   fs.writeFileSync(
     path.join(dir, "component-digests.json"),
@@ -311,7 +324,10 @@ describe("deploy.sh", () => {
     assert.notEqual(code, 0);
     assert.match(out, /dump .* empty/);
     assert.equal(read(sb.override), before);
-    assert.doesNotMatch(calls(sb), /compose/);
+    // DEPLOY-PRECHECK: the read-only component pre-check (docker compose config
+    // --services) may have run; nothing was recreated and no maintenance was
+    // entered (the pull precedes the dump by design).
+    assert.doesNotMatch(calls(sb), /up -d/);
     assert.equal(maintenance(sb), "");
   });
 
@@ -324,11 +340,54 @@ describe("deploy.sh", () => {
     assert.match(out, /docker pull/);
     assert.match(out, /image check passed/);
     assert.equal(read(sb.override), before);
-    // Only the read-only image check ran: no pull, no compose.
+    // Only read-only checks ran: the registry reads and the component
+    // pre-check's compose project read (docker compose config --services).
     assert.match(calls(sb), /buildx imagetools inspect/);
-    assert.doesNotMatch(calls(sb), /docker (pull|compose)/);
+    assert.match(calls(sb), /compose .* config --services/);
+    assert.doesNotMatch(calls(sb), /docker pull|up -d/);
     assert.equal(maintenance(sb), "");
     assert.ok(!fs.existsSync(path.join(sb.dir, "dumps")));
+  });
+
+  // DEPLOY-PRECHECK (the 05.10 incident): the dry run makes every component
+  // pre-check the real window would, so an unreadable compose project fails
+  // HERE, with the real compose error, instead of passing and surfacing after
+  // the image pull and the database dump.
+  it("--dry-run fails with the real compose error when the compose project cannot be read", () => {
+    const sb = sandbox({ composeConfigFails: true });
+    const before = read(sb.override);
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--dry-run"]);
+    assert.notEqual(code, 0);
+    assert.match(out, /compose project itself cannot be read/);
+    // The real compose error is reported, not "dockergate is not a service".
+    assert.match(out, /neither an image nor a build context/);
+    assert.doesNotMatch(out, /is not a service of the compose project/);
+    assert.doesNotMatch(calls(sb), /docker pull/);
+    assert.equal(read(sb.override), before);
+    assert.ok(!fs.existsSync(path.join(sb.dir, "dumps")));
+  });
+
+  it("pre-checks the components before the pull and the database dump", () => {
+    const sb = sandbox({ composeConfigFails: true });
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.notEqual(code, 0);
+    assert.match(out, /compose project itself cannot be read/);
+    // Nothing was pulled, dumped or entered maintenance: the refusal came first.
+    assert.doesNotMatch(calls(sb), /docker pull/);
+    assert.equal(maintenance(sb), "");
+    assert.ok(!fs.existsSync(path.join(sb.dir, "dumps")));
+    assert.ok(!fs.existsSync(path.join(sb.dir, "state")));
+  });
+
+  it("runs the component pre-check before the pull when the compose project is valid", () => {
+    const sb = sandbox();
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.equal(code, 0, out);
+    const log = calls(sb);
+    const precheck = log.indexOf("config --services");
+    const pull = log.indexOf(`docker pull --quiet ${CI_IMAGE}@${NEW}`);
+    assert.ok(precheck >= 0, `the compose pre-check ran:\n${log}`);
+    assert.ok(pull >= 0 && precheck < pull, `the pre-check ran before the pull:\n${log}`);
   });
 
   it("rejects a malformed digest", () => {
