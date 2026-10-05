@@ -1013,16 +1013,41 @@ component_host_cat_override() {
     cat "$COMPONENT_OVERRIDE_PATH" 2>/dev/null || true
   fi
 }
-# True when $COMPONENT_SERVICE is defined by the compose files of the target
-# host (docker compose config --services). The fail-closed pre-check: a
-# component with no trace on the target host is a misconfiguration (the 1.4.0
-# fleetd incident), not something to create from nothing.
+# Is $COMPONENT_SERVICE defined by the compose files of the target host
+# (docker compose config --services)? The fail-closed pre-check: a component
+# with no trace on the target host is a misconfiguration (the 1.4.0 fleetd
+# incident), not something to create from nothing.
+#
+# Return codes — the caller MUST tell the two faults apart:
+#   0  the project is readable and declares the service;
+#   1  the compose project itself cannot be read. COMPONENT_COMPOSE_ERROR holds
+#      the real output of `docker compose config`;
+#   2  the project is valid but does not declare the service.
+#
+# myrmidon(DEPLOY-PRECHECK, the 05.10 incident): `docker compose config
+# --services` prints its error on stderr and nothing on stdout, exactly like a
+# project that simply does not declare the service. A caller that looked only at
+# the list reported the wrong fault — "dockergate is not a service of the
+# compose project" — and hid the real one: the project was invalid (COMPOSE_FILES
+# without the file that carries the image, so `server` had neither an image nor a
+# build context). The error is therefore captured here and handed to the caller
+# in COMPONENT_COMPOSE_ERROR instead of being dropped into /dev/null.
 component_host_service_exists() {
+  local services rc=0 err
+  err="$(mktemp)"
   # the list is captured first: `grep -q` closing the pipe early would make the
   # producer die of SIGPIPE and, under pipefail, report a service as missing
-  local services
-  services="$(component_host_compose config --services 2>/dev/null)" || return 1
-  grep -qx "$COMPONENT_SERVICE" <<<"$services"
+  services="$(component_host_compose config --services 2>"$err")" || rc=$?
+  COMPONENT_COMPOSE_ERROR="$(cat "$err" 2>/dev/null || true)"
+  rm -f "$err"
+  if ((rc != 0)); then
+    # an empty stderr would leave the caller with nothing to report
+    [[ -n "$COMPONENT_COMPOSE_ERROR" ]] \
+      || COMPONENT_COMPOSE_ERROR="docker compose config exited $rc without printing an error"
+    return 1
+  fi
+  grep -qx "$COMPONENT_SERVICE" <<<"$services" || return 2
+  return 0
 }
 component_host_write_override() {
   local target_ref="$1"
