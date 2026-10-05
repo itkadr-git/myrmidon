@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { cpus } from "node:os";
 import {
   RUN_LIMITS_ENV_KEYS,
   readRunLimitsFromEnv,
@@ -53,6 +54,19 @@ import { logger } from "../middleware/logger.js";
  * The admission remembers since when the floor has held runs back; after 10
  * minutes `hostMemoryHoldSignal` returns an attention signal.
  *
+ * myrmidon(1.6.5 RUN-ADMISSION): memory alone did not save the night of 05.10
+ * — 43+ runs started at once while the memory floor stayed open, the host ran
+ * load average 95 on 16 cores (594 % of a core per core), and the board's own
+ * API answered 3+ s until it fell over on timeouts. A saturated CPU queue is
+ * invisible to every memory reading, so `reserve` also refuses a new run while
+ * the host's 1-minute load average per core is at or above
+ * MYRMIDON_MAX_HOST_LOAD_PERCENT_PER_CORE (default 90, `0`/`off` switches the
+ * ceiling off; changeable on the fly like the other run limits). The load is
+ * the host's: /proc/loadavg and the visible CPU count are not namespaced by
+ * Docker. The hold is tracked exactly like the host memory hold — the run
+ * stays `queued`, the 15 s resweep retries it, and after 10 minutes
+ * `hostCpuHoldSignal` returns an attention signal.
+ *
  * No locks: the server is one Node.js thread, and `reserve` checks and counts
  * without awaiting anything, so two agents cannot both take the last slot.
  */
@@ -62,6 +76,8 @@ export const MAX_RUN_STARTS_PER_MINUTE_ENV = RUN_LIMITS_ENV_KEYS.maxStartsPerMin
 export const MIN_FREE_MEMORY_MB_ENV = RUN_LIMITS_ENV_KEYS.minFreeMemoryMb;
 export const RUN_MEMORY_ESTIMATE_MB_ENV = RUN_LIMITS_ENV_KEYS.runMemoryEstimateMb;
 export const MIN_FREE_HOST_MEMORY_MB_ENV = RUN_LIMITS_ENV_KEYS.minFreeHostMemoryMb;
+// myrmidon(1.6.5 RUN-ADMISSION): the host CPU ceiling.
+export const MAX_HOST_LOAD_PERCENT_PER_CORE_ENV = RUN_LIMITS_ENV_KEYS.maxHostLoadPercentPerCore;
 /** myrmidon(1.6.2 RUN-ADMISSION): where the host meminfo is read; default /proc/meminfo. */
 export const HOST_MEMINFO_PATH_ENV = "MYRMIDON_HOST_MEMINFO_PATH";
 const DEFAULT_HOST_MEMINFO_PATH = "/proc/meminfo";
@@ -70,6 +86,14 @@ export const HOST_MEMORY_HOLD_SIGNAL_MS = 10 * 60_000;
 // Two holds further apart than this are two separate holds: the queue was
 // served (or emptied) in between. The resweep retries every 15 s while held.
 const HOST_MEMORY_HOLD_CONTINUITY_MS = 2 * 60_000;
+/** myrmidon(1.6.5 RUN-ADMISSION): how long the CPU ceiling must hold runs back before the signal (10 min). */
+export const HOST_CPU_HOLD_SIGNAL_MS = 10 * 60_000;
+// Same continuity rule as the host memory hold: two CPU holds further apart
+// than this are two separate holds.
+const HOST_CPU_HOLD_CONTINUITY_MS = 2 * 60_000;
+/** myrmidon(1.6.5 RUN-ADMISSION): where the host load average is read; default /proc/loadavg. */
+export const HOST_LOADAVG_PATH_ENV = "MYRMIDON_HOST_LOADAVG_PATH";
+const DEFAULT_HOST_LOADAVG_PATH = "/proc/loadavg";
 
 const START_WINDOW_MS = 60_000;
 // A run started this recently has not grown into the cgroup memory yet.
@@ -204,6 +228,91 @@ export function readHostMemory(
   return { known: true, availableBytes, totalBytes };
 }
 
+/** myrmidon(1.6.5 RUN-ADMISSION): the host's CPU load, or why it cannot be read. */
+export type HostCpuReading =
+  | { known: true; load1: number; cores: number }
+  | { known: false; reason: string };
+
+/**
+ * Host 1-minute load average from /proc/loadavg and the visible CPU count.
+ * Synchronous for the same reason as the memory read, and the load average is
+ * a host-wide kernel counter: Docker does not namespace /proc/loadavg, and
+ * `os.cpus()` lists the host's CPUs in a container without lxcfs. The ratio
+ * load1/cores is what the ceiling compares against (a load of 95 on 16 cores
+ * is 594 % of a core, whatever the machine's absolute size). A failed or
+ * empty `os.cpus()` — hidden CPUs, an unsupported platform — refuses the
+ * reading as "unknown" rather than dividing by a guessed core count.
+ */
+export function readHostCpuLoad(
+  options: {
+    loadavgPath?: string;
+    readFile?: (path: string) => string;
+    cpuCount?: () => number;
+  } = {},
+): HostCpuReading {
+  const loadavgPath = options.loadavgPath ?? DEFAULT_HOST_LOADAVG_PATH;
+  const readFile = options.readFile ?? ((path: string) => readFileSync(path, "utf8"));
+  const coresOf = options.cpuCount ?? (() => cpus().length);
+  let raw: string;
+  try {
+    raw = readFile(loadavgPath);
+  } catch {
+    return { known: false, reason: `${loadavgPath} is not readable` };
+  }
+  const load1 = Number.parseFloat(/^\s*(\d+(?:\.\d+)?)/.exec(raw)?.[1] ?? "");
+  if (!Number.isFinite(load1)) {
+    return { known: false, reason: `${loadavgPath} has no numeric 1-minute load field: '${raw.trim().slice(0, 80)}'` };
+  }
+  let cores: number;
+  try {
+    cores = coresOf();
+  } catch {
+    cores = 0;
+  }
+  if (!Number.isInteger(cores) || cores <= 0) {
+    return { known: false, reason: "the number of visible CPU cores is unknown, so load per core cannot be counted" };
+  }
+  return { known: true, load1, cores };
+}
+
+/**
+ * One continuous hold of a gate (myrmidon 1.6.5: shared by the host memory
+ * floor and the host CPU ceiling). The hold starts at the first closed
+ * reading and ends when the gate opens, when a fresh closed reading follows a
+ * gap longer than `continuityMs` (the queue was served or emptied in between),
+ * or when the cap is switched off. `observe` returns true when the state
+ * changed, which is exactly when the hold event fires — one line per hold,
+ * not one per resweep.
+ */
+function createGateHold(continuityMs: number) {
+  let since: number | null = null;
+  let lastHeldAt = 0;
+  return {
+    /** The continuous hold, or null; pass the time of a `closed` reading. */
+    current(at: number): number | null {
+      if (since === null) return null;
+      return at - lastHeldAt <= continuityMs ? since : null;
+    },
+    /** Record a closed reading; returns true when the hold (re)started. */
+    start(at: number): boolean {
+      const continuing = this.current(at);
+      since = continuing ?? at;
+      lastHeldAt = at;
+      return continuing === null;
+    },
+    /** Record an open/off reading; returns the hold length in ms, or null when nothing was held. */
+    end(at: number): number | null {
+      const held = this.current(at);
+      since = null;
+      return held === null ? null : at - held;
+    },
+    reset(): void {
+      since = null;
+      lastHeldAt = 0;
+    },
+  };
+}
+
 /** myrmidon(1.6.2 RUN-ADMISSION): the host memory floor as the admission sees it now. */
 export interface HostMemoryGate {
   /** `off`: no floor set; `unknown`: host memory unreadable (floor inactive); `open`/`closed`. */
@@ -216,6 +325,24 @@ export interface HostMemoryGate {
   /** Why the floor is closed or unknown, for logs; null when open or off. */
   reason: string | null;
   /** Since when the floor has held runs back (continuous hold), or null. */
+  heldSince: Date | null;
+}
+
+/** myrmidon(1.6.5 RUN-ADMISSION): the host CPU ceiling as the admission sees it now. */
+export interface HostCpuGate {
+  /** `off`: no ceiling set; `unknown`: load unreadable (ceiling inactive); `open`/`closed`. */
+  state: "off" | "unknown" | "open" | "closed";
+  /** The ceiling in percent of one core, or null when off. */
+  thresholdPercent: number | null;
+  /** Host 1-minute load average, when known. */
+  load1: number | null;
+  /** Visible CPU cores, when known. */
+  cores: number | null;
+  /** load1 per core in percent of one core, when known. */
+  loadPercentPerCore: number | null;
+  /** Why the ceiling is closed or unknown, for logs; null when open or off. */
+  reason: string | null;
+  /** Since when the ceiling has held runs back (continuous hold), or null. */
   heldSince: Date | null;
 }
 
@@ -250,6 +377,13 @@ export interface RunAdmission {
    * the same rule `reserve` applies. Reads the host meminfo; takes no slot.
    */
   hostMemoryGate(): HostMemoryGate;
+  /**
+   * myrmidon(1.6.5 RUN-ADMISSION): the host CPU ceiling, evaluated now with
+   * the same rule `reserve` applies. Reads the host load average; takes no
+   * slot. The swarm idle-wake pass asks this before it wakes anyone, so it
+   * does not pile wakes onto a saturated host.
+   */
+  hostCpuGate(): HostCpuGate;
 }
 
 export function createRunAdmission(options: {
@@ -263,18 +397,27 @@ export function createRunAdmission(options: {
   onHostMemoryUnavailable?: (reason: string) => void;
   /** myrmidon(1.6.2): the host floor started (`closed`) or stopped (`open`) holding runs back. */
   onHostMemoryHold?: (event: { state: "closed" | "open"; gate: HostMemoryGate; heldMs: number }) => void;
+  /** myrmidon(1.6.5): host load source; defaults to /proc/loadavg + os.cpus(). */
+  hostCpuLoad?: () => HostCpuReading;
+  /** myrmidon(1.6.5): the host CPU ceiling unreadable, so it stays inactive. */
+  onHostCpuUnavailable?: (reason: string) => void;
+  /** myrmidon(1.6.5): the CPU ceiling started (`closed`) or stopped (`open`) holding runs back. */
+  onHostCpuHold?: (event: { state: "closed" | "open"; gate: HostCpuGate; heldMs: number }) => void;
   now?: () => number;
 }): RunAdmission {
   const { limits } = options;
   const freeMemoryBytes = options.freeMemoryBytes ?? (() => readCgroupFreeMemoryBytes());
   const hostMemory = options.hostMemory ?? (() => readHostMemory());
+  const hostCpuLoad = options.hostCpuLoad ?? (() => readHostCpuLoad());
   const now = options.now ?? Date.now;
   const starts: number[] = [];
   let active = 0;
   let lastLimited = false;
   // myrmidon(1.6.2): the current continuous hold by the host floor.
-  let hostHeldSince: number | null = null;
-  let hostLastHeldAt = 0;
+  // myrmidon(1.6.5): both holds run through the same gate-hold machine.
+  const hostMemoryHold = createGateHold(HOST_MEMORY_HOLD_CONTINUITY_MS);
+  // myrmidon(1.6.5): the current continuous hold by the host CPU ceiling.
+  const cpuHold = createGateHold(HOST_CPU_HOLD_CONTINUITY_MS);
 
   function prune(at: number) {
     while (starts.length > 0 && at - starts[0]! >= START_WINDOW_MS) starts.shift();
@@ -284,15 +427,10 @@ export function createRunAdmission(options: {
     return starts.filter((startedAt) => at - startedAt < MEMORY_SETTLE_MS).length;
   }
 
-  function currentHold(at: number): number | null {
-    if (hostHeldSince === null) return null;
-    return at - hostLastHeldAt <= HOST_MEMORY_HOLD_CONTINUITY_MS ? hostHeldSince : null;
-  }
-
   function evaluateHostGate(at: number): HostMemoryGate {
     const thresholdMb = limits.minFreeHostMemoryMb;
     const settlingRuns = settlingAt(at);
-    const held = currentHold(at);
+    const held = hostMemoryHold.current(at);
     const heldSince = held === null ? null : new Date(held);
     if (thresholdMb === null) {
       return { state: "off", thresholdMb, availableMb: null, settlingRuns, reason: null, heldSince: null };
@@ -315,6 +453,57 @@ export function createRunAdmission(options: {
         settlingRuns > 0
           ? `host MemAvailable ${availableMb} MB minus ${settlingRuns} run(s) still starting (${limits.runMemoryEstimateMb} MB each) is below the ${thresholdMb} MB floor`
           : `host MemAvailable ${availableMb} MB is below the ${thresholdMb} MB floor`,
+      heldSince,
+    };
+  }
+
+  /** myrmidon(1.6.5 RUN-ADMISSION): the host CPU ceiling, evaluated like the memory floor. */
+  function evaluateHostCpuGate(at: number): HostCpuGate {
+    const thresholdPercent = limits.maxHostLoadPercentPerCore;
+    const held = cpuHold.current(at);
+    const heldSince = held === null ? null : new Date(held);
+    if (thresholdPercent === null) {
+      return {
+        state: "off",
+        thresholdPercent,
+        load1: null,
+        cores: null,
+        loadPercentPerCore: null,
+        reason: null,
+        heldSince: null,
+      };
+    }
+    const reading = hostCpuLoad();
+    if (!reading.known) {
+      return {
+        state: "unknown",
+        thresholdPercent,
+        load1: null,
+        cores: null,
+        loadPercentPerCore: null,
+        reason: reading.reason,
+        heldSince,
+      };
+    }
+    const loadPercentPerCore = Math.round((reading.load1 / reading.cores) * 100);
+    if (loadPercentPerCore < thresholdPercent) {
+      return {
+        state: "open",
+        thresholdPercent,
+        load1: reading.load1,
+        cores: reading.cores,
+        loadPercentPerCore,
+        reason: null,
+        heldSince,
+      };
+    }
+    return {
+      state: "closed",
+      thresholdPercent,
+      load1: reading.load1,
+      cores: reading.cores,
+      loadPercentPerCore,
+      reason: `host load average ${reading.load1.toFixed(2)} on ${reading.cores} core(s) is ${loadPercentPerCore} % of a core, at or above the ${thresholdPercent} % CPU ceiling`,
       heldSince,
     };
   }
@@ -350,19 +539,34 @@ export function createRunAdmission(options: {
         const gate = evaluateHostGate(at);
         if (gate.state === "closed") {
           allowed = 0;
-          const continuing = currentHold(at);
-          hostHeldSince = continuing ?? at;
-          hostLastHeldAt = at;
-          if (continuing === null) {
+          if (hostMemoryHold.start(at)) {
             options.onHostMemoryHold?.({ state: "closed", gate: { ...gate, heldSince: new Date(at) }, heldMs: 0 });
           }
         } else {
           if (gate.state === "unknown") options.onHostMemoryUnavailable?.(gate.reason ?? "unknown");
-          const held = currentHold(at);
-          if (held !== null) {
-            options.onHostMemoryHold?.({ state: "open", gate, heldMs: at - held });
+          const heldMs = hostMemoryHold.end(at);
+          if (heldMs !== null) {
+            options.onHostMemoryHold?.({ state: "open", gate, heldMs });
           }
-          hostHeldSince = null;
+        }
+      }
+      // myrmidon(1.6.5 RUN-ADMISSION): the host CPU ceiling, after the memory
+      // floor: both are host readings, the memory one fails first on the
+      // 05.10 pattern and the log should name the floor that held. A run
+      // refused by the ceiling stays `queued` like one refused by the floor.
+      if (limits.maxHostLoadPercentPerCore !== null && allowed > 0) {
+        const gate = evaluateHostCpuGate(at);
+        if (gate.state === "closed") {
+          allowed = 0;
+          if (cpuHold.start(at)) {
+            options.onHostCpuHold?.({ state: "closed", gate: { ...gate, heldSince: new Date(at) }, heldMs: 0 });
+          }
+        } else {
+          if (gate.state === "unknown") options.onHostCpuUnavailable?.(gate.reason ?? "unknown");
+          const heldMs = cpuHold.end(at);
+          if (heldMs !== null) {
+            options.onHostCpuHold?.({ state: "open", gate, heldMs });
+          }
         }
       }
       allowed = Math.max(0, allowed);
@@ -392,9 +596,12 @@ export function createRunAdmission(options: {
       limits.minFreeMemoryMb = next.minFreeMemoryMb;
       limits.runMemoryEstimateMb = next.runMemoryEstimateMb;
       limits.minFreeHostMemoryMb = next.minFreeHostMemoryMb;
+      limits.maxHostLoadPercentPerCore = next.maxHostLoadPercentPerCore;
       // A floor switched off (or changed) ends the hold it caused; the next
-      // reservation measures again against the new floor.
-      if (next.minFreeHostMemoryMb === null) hostHeldSince = null;
+      // reservation measures again against the new floor. Same for the CPU
+      // ceiling (myrmidon 1.6.5).
+      if (next.minFreeHostMemoryMb === null) hostMemoryHold.reset();
+      if (next.maxHostLoadPercentPerCore === null) cpuHold.reset();
     },
     limits() {
       return { ...limits };
@@ -403,6 +610,11 @@ export function createRunAdmission(options: {
       const at = now();
       prune(at);
       return evaluateHostGate(at);
+    },
+    hostCpuGate() {
+      const at = now();
+      prune(at);
+      return evaluateHostCpuGate(at);
     },
   };
 }
@@ -461,6 +673,39 @@ function warnHostMemoryUnavailableOnce(reason: string): void {
   );
 }
 
+// myrmidon(1.6.5 RUN-ADMISSION): an unreadable host load leaves the CPU
+// ceiling inactive; like the memory case, that is said once, not dropped.
+let hostCpuWarningLogged = false;
+
+function warnHostCpuUnavailableOnce(reason: string): void {
+  if (hostCpuWarningLogged) return;
+  hostCpuWarningLogged = true;
+  logger.warn(
+    { env: MAX_HOST_LOAD_PERCENT_PER_CORE_ENV, reason },
+    "run admission cannot read the host CPU load: the host load ceiling is inactive, the other run limits still apply",
+  );
+}
+
+function logHostCpuHold(event: { state: "closed" | "open"; gate: HostCpuGate; heldMs: number }): void {
+  const fields = {
+    load1: event.gate.load1,
+    cores: event.gate.cores,
+    loadPercentPerCore: event.gate.loadPercentPerCore,
+    thresholdPercent: event.gate.thresholdPercent,
+  };
+  if (event.state === "closed") {
+    logger.warn(
+      { ...fields, reason: event.gate.reason },
+      "run admission holds new runs: the host CPU load is at or above the ceiling; runs stay queued and are retried",
+    );
+  } else {
+    logger.info(
+      { ...fields, heldMs: event.heldMs },
+      "run admission resumes starting runs: the host CPU load is back below the ceiling",
+    );
+  }
+}
+
 function logHostMemoryHold(event: { state: "closed" | "open"; gate: HostMemoryGate; heldMs: number }): void {
   const fields = {
     availableMb: event.gate.availableMb,
@@ -487,12 +732,17 @@ function logHostMemoryHold(event: { state: "closed" | "open"; gate: HostMemoryGa
 export function sharedRunAdmission(): RunAdmission {
   if (!shared) {
     const meminfoPath = process.env[HOST_MEMINFO_PATH_ENV]?.trim() || undefined;
+    // myrmidon(1.6.5 RUN-ADMISSION): the host load average path, like meminfo.
+    const loadavgPath = process.env[HOST_LOADAVG_PATH_ENV]?.trim() || undefined;
     shared = createRunAdmission({
       limits: readRunAdmissionLimits(),
       onMemoryLimitUnavailable: warnMemoryLimitUnavailableOnce,
       hostMemory: () => readHostMemory({ meminfoPath }),
       onHostMemoryUnavailable: warnHostMemoryUnavailableOnce,
       onHostMemoryHold: logHostMemoryHold,
+      hostCpuLoad: () => readHostCpuLoad({ loadavgPath }),
+      onHostCpuUnavailable: warnHostCpuUnavailableOnce,
+      onHostCpuHold: logHostCpuHold,
     });
   }
   return shared;
@@ -503,6 +753,7 @@ export function resetSharedRunAdmissionForTests(): void {
   shared = null;
   memoryLimitWarningLogged = false;
   hostMemoryWarningLogged = false;
+  hostCpuWarningLogged = false;
 }
 
 /**
@@ -529,6 +780,15 @@ export function currentRunAdmissionLimits(): RunAdmissionLimits {
  */
 export function currentHostMemoryGate(): HostMemoryGate {
   return sharedRunAdmission().hostMemoryGate();
+}
+
+/**
+ * myrmidon(1.6.5 RUN-ADMISSION): the host CPU ceiling of the process-wide
+ * admission, evaluated now. The swarm idle-wake pass asks this before it
+ * wakes anyone, so it does not pile wakes onto a saturated host.
+ */
+export function currentHostCpuGate(): HostCpuGate {
+  return sharedRunAdmission().hostCpuGate();
 }
 
 /** The attention signal: runs held back by the host floor for over 10 minutes. */
@@ -559,6 +819,43 @@ export function hostMemoryHoldSignal(
     heldMs,
     availableMb: gate.availableMb,
     thresholdMb: gate.thresholdMb,
+    reason: gate.reason,
+  };
+}
+
+/** The attention signal: runs held back by the host CPU ceiling for over 10 minutes. */
+export interface HostCpuHoldSignal {
+  heldSince: Date;
+  heldMs: number;
+  load1: number | null;
+  cores: number | null;
+  loadPercentPerCore: number | null;
+  thresholdPercent: number | null;
+  reason: string | null;
+}
+
+/**
+ * myrmidon(1.6.5 RUN-ADMISSION): the signal while the host CPU ceiling has
+ * held new runs back continuously for longer than `HOST_CPU_HOLD_SIGNAL_MS`,
+ * or null. The same continuity rule as the host memory hold: the 15 s resweep
+ * keeps meeting the closed ceiling; the hold ends the first time the ceiling
+ * admits a run or the queue stops asking.
+ */
+export function hostCpuHoldSignal(
+  gate: HostCpuGate = currentHostCpuGate(),
+  now: number = Date.now(),
+  thresholdMs: number = HOST_CPU_HOLD_SIGNAL_MS,
+): HostCpuHoldSignal | null {
+  if (gate.state !== "closed" || !gate.heldSince) return null;
+  const heldMs = now - gate.heldSince.getTime();
+  if (heldMs < thresholdMs) return null;
+  return {
+    heldSince: gate.heldSince,
+    heldMs,
+    load1: gate.load1,
+    cores: gate.cores,
+    loadPercentPerCore: gate.loadPercentPerCore,
+    thresholdPercent: gate.thresholdPercent,
     reason: gate.reason,
   };
 }

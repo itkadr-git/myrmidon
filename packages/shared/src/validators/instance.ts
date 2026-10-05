@@ -80,6 +80,8 @@ export const instanceGeneralSettingsSchema = z.object({
   // myrmidon(1.6.2 RUN-ADMISSION): the stored shape, so a row saved before
   // `minFreeHostMemoryMb` existed still parses (a strict miss here would fail
   // the whole general block and the next write would drop every setting).
+  // myrmidon(1.6.5 RUN-ADMISSION): the shape also tolerates a row saved
+  // before `maxHostLoadPercentPerCore` existed.
   runLimits: storedRunLimitsSchema.optional(),
   // myrmidon(BOT-DISK E): the host disk usage threshold, changed from
   // /api/myrmidon/host-disk; absent means "use the environment variable, then

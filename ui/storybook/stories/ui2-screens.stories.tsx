@@ -303,6 +303,7 @@ const fixtures = {
       minFreeMemoryMb: null,
       runMemoryEstimateMb: 1536,
       minFreeHostMemoryMb: 15360,
+      maxHostLoadPercentPerCore: 90,
     },
     sources: {
       maxConcurrentRuns: "settings",
@@ -310,6 +311,7 @@ const fixtures = {
       minFreeMemoryMb: "env",
       runMemoryEstimateMb: "default",
       minFreeHostMemoryMb: "default",
+      maxHostLoadPercentPerCore: "default",
     },
   },
 };

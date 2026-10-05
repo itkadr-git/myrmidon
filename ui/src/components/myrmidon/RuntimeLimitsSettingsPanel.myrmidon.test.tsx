@@ -33,6 +33,7 @@ const view: RuntimeLimitsView = {
     minFreeMemoryMb: 2048,
     runMemoryEstimateMb: 300,
     minFreeHostMemoryMb: 15360,
+    maxHostLoadPercentPerCore: 90,
   },
   sources: {
     maxConcurrentRuns: "env",
@@ -40,6 +41,7 @@ const view: RuntimeLimitsView = {
     minFreeMemoryMb: "env",
     runMemoryEstimateMb: "default",
     minFreeHostMemoryMb: "default",
+    maxHostLoadPercentPerCore: "default",
   } as Record<RunLimitKey, RunLimitsSource>,
 };
 
@@ -93,7 +95,19 @@ describe("myrmidon(C0) run limits panel", () => {
       minFreeMemoryMb: 2048,
       runMemoryEstimateMb: 300,
       minFreeHostMemoryMb: 15360,
+      maxHostLoadPercentPerCore: 90,
     });
+  });
+
+  it("myrmidon(1.6.5): edits the host CPU ceiling and switches it off with an empty field", () => {
+    const onSave = render(view);
+    expect(field("maxHostLoadPercentPerCore").value).toBe("90");
+    type("maxHostLoadPercentPerCore", "150");
+    flushSync(() => saveButton().dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({ maxHostLoadPercentPerCore: 150 }));
+    type("maxHostLoadPercentPerCore", "");
+    flushSync(() => saveButton().dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({ maxHostLoadPercentPerCore: null }));
   });
 
   it("myrmidon(1.6.2): edits the host free-memory floor and switches it off with an empty field", () => {
@@ -139,6 +153,7 @@ describe("myrmidon(C0) run limits panel", () => {
         minFreeMemoryMb: "",
         runMemoryEstimateMb: "300",
         minFreeHostMemoryMb: "15360",
+        maxHostLoadPercentPerCore: "90",
       }),
     ).toEqual({
       patch: {
@@ -147,6 +162,7 @@ describe("myrmidon(C0) run limits panel", () => {
         minFreeMemoryMb: null,
         runMemoryEstimateMb: 300,
         minFreeHostMemoryMb: 15360,
+        maxHostLoadPercentPerCore: 90,
       },
       errors: {},
     });

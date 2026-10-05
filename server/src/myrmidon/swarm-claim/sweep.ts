@@ -52,7 +52,7 @@ import {
   type SwarmClaimSettings,
 } from "@paperclipai/shared";
 import { logger } from "../../middleware/logger.js";
-import { currentHostMemoryGate, type HostMemoryGate } from "../run-admission.js";
+import { currentHostCpuGate, currentHostMemoryGate, type HostCpuGate, type HostMemoryGate } from "../run-admission.js";
 import { wakeNextAgentForIssueRole, type SwarmClaimServicePorts } from "./service.js";
 import { listClaimsOnNonQueueIssues, listExpiredClaims, releaseClaim } from "./store.js";
 import { listIdleRolePairs, liveClaimCountsByAgent } from "./idle-queue.js";
@@ -121,12 +121,20 @@ export interface SwarmClaimSweeperDeps extends SwarmClaimServicePorts {
    * run start goes through; tests inject a fake.
    */
   hostMemoryGate?: () => HostMemoryGate;
+  /**
+   * myrmidon(1.6.5 RUN-ADMISSION): the host CPU ceiling of the run
+   * admission. Same rule: an idle wake is a run start by another path, so a
+   * saturated host must not be piled onto. Defaults to the process-wide
+   * admission; tests inject a fake.
+   */
+  hostCpuGate?: () => HostCpuGate;
 }
 
 export function createSwarmClaimSweeper(deps: SwarmClaimSweeperDeps): SwarmClaimSweeper {
   let lastSweepAtMs = 0;
   let lastIdleSkipLogAtMs = 0;
   const hostMemoryGate = deps.hostMemoryGate ?? currentHostMemoryGate;
+  const hostCpuGate = deps.hostCpuGate ?? currentHostCpuGate;
   return {
     resetForTest() {
       lastSweepAtMs = 0;
@@ -268,6 +276,27 @@ export function createSwarmClaimSweeper(deps: SwarmClaimSweeperDeps): SwarmClaim
               reason: result.idleSkippedReason,
             },
             "swarm idle wake pass skipped: the run admission host memory floor is closed",
+          );
+        }
+        return result;
+      }
+      // myrmidon(1.6.5 RUN-ADMISSION): the host CPU ceiling. The 05.10
+      // incident was exactly this pass waking agents onto a host whose memory
+      // looked fine while its load average ran at 594 % of a core per core.
+      const cpuGate = hostCpuGate();
+      if (cpuGate.state === "closed") {
+        result.idleSkippedReason = cpuGate.reason ?? "host CPU load is at or above the run admission ceiling";
+        if (now.getTime() - lastIdleSkipLogAtMs >= IDLE_SKIP_LOG_INTERVAL_MS) {
+          lastIdleSkipLogAtMs = now.getTime();
+          logger.warn(
+            {
+              load1: cpuGate.load1,
+              cores: cpuGate.cores,
+              loadPercentPerCore: cpuGate.loadPercentPerCore,
+              thresholdPercent: cpuGate.thresholdPercent,
+              reason: result.idleSkippedReason,
+            },
+            "swarm idle wake pass skipped: the run admission host CPU ceiling is closed",
           );
         }
         return result;

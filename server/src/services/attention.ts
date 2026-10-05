@@ -71,7 +71,7 @@ import { buildStackAttentionCards } from "../myrmidon/stack-registry/attention.j
 import { readStackDocument } from "../myrmidon/stack-registry/store.js";
 // myrmidon(TRACING-HEALTH): the "LLM tracing" red state raises one operator card (part D)
 import { readTracingHealthAttentionSignal } from "../myrmidon/tracing-health/attention.js";
-import { hostMemoryHoldSignal } from "../myrmidon/run-admission.js"; // myrmidon(1.6.2 RUN-ADMISSION)
+import { hostCpuHoldSignal, hostMemoryHoldSignal } from "../myrmidon/run-admission.js"; // myrmidon(1.6.2/1.6.5 RUN-ADMISSION)
 // myrmidon(BOT-RUNTIME-TUNING D): the model fallback share raises one card per agent
 import { readModelFallbackSignals } from "../myrmidon/litellm-fallback-signal/attention.js";
 // myrmidon(1.6.1-BOT-DISK-C): the disk quota sweep records one signal per bot
@@ -2414,6 +2414,58 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           detail: {
             kind: "generic",
             summaryExcerpt: excerpt(hostMemoryHold.reason ?? "host free memory is below the run admission floor"),
+            images: [],
+          },
+        }));
+      }
+
+      // myrmidon(1.6.5 RUN-ADMISSION): the run admission's host CPU ceiling
+      // has held new runs back for over 10 minutes. One card for the whole
+      // instance, deduped while the hold lasts; it disappears on the first
+      // admitted run (the admission ends the hold) — nothing is persisted.
+      // The 05.10 incident: 43+ runs at load 95 on 16 cores with the memory
+      // floor open — the memory card above would have stayed silent.
+      const hostCpuHold = hostCpuHoldSignal();
+      if (hostCpuHold) {
+        const heldAt = hostCpuHold.heldSince.toISOString();
+        const heldMinutes = Math.floor(hostCpuHold.heldMs / 60_000);
+        add(createItem({
+          companyId,
+          sourceKind: "agent_error_alert",
+          subject: {
+            kind: "agent",
+            id: "run-admission-host-cpu",
+            companyId,
+            title: "Runs held: host CPU load",
+            identifier: null,
+            status: "alert",
+            href: `/${prefix}/instance`,
+            metadata: {
+              runAdmissionHostCpu: true,
+              load1: hostCpuHold.load1,
+              cores: hostCpuHold.cores,
+              loadPercentPerCore: hostCpuHold.loadPercentPerCore,
+              thresholdPercent: hostCpuHold.thresholdPercent,
+              heldSince: heldAt,
+            },
+          },
+          whyNow: `New agent runs have waited ${heldMinutes} min: host load average ${hostCpuHold.load1 ?? "?"} on ${hostCpuHold.cores ?? "?"} core(s) (${hostCpuHold.loadPercentPerCore ?? "?"} % of a core) is at or above the ${hostCpuHold.thresholdPercent ?? "?"} % run admission CPU ceiling. Wait for the load to drop, lower more run concurrency, or raise the ceiling in Run limits.`,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the run limits and the host load." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this alert for this hold." },
+          ),
+          inlineResolvable: true,
+          entryRule: "the run admission host CPU ceiling held new runs back for more than 10 minutes",
+          exitRule: "a run is admitted again (host load recovered or the ceiling was raised) or the row is dismissed",
+          dedupKey: `run_admission_host_cpu:${heldAt}`,
+          severity: "high",
+          activityAt: heldAt,
+          createdAt: heldAt,
+          updatedAt: heldAt,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: excerpt(hostCpuHold.reason ?? "host CPU load is at or above the run admission ceiling"),
             images: [],
           },
         }));
