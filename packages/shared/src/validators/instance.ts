@@ -127,6 +127,13 @@ export const instanceGeneralSettingsSchema = z.object({
   // myrmidon(REVIEW-ROUTING): automatic reviewer routing, changed from
   // /api/myrmidon/companies/:id/review-routing/settings; absent means the defaults.
   reviewRouting: reviewRoutingSettingsSchema.optional(),
+  // myrmidon(1.7-SETTINGS-TO-UI): the channel settings document (the Telegram
+  // bridge switches, the chat limits, the cross-channel numbers), changed from
+  // /api/myrmidon/channel-settings; absent means "use the environment variable,
+  // then the default". Passthrough on purpose: the resolver in
+  // server/src/myrmidon/channel-settings/settings.ts re-reads it defensively, so
+  // a row written by an older or a newer version still parses.
+  channelSettings: z.unknown().optional(),
   // myrmidon(1.7-BUDGET-CONFIG-B): what a crossed budget limit does while the
   // incident is open — signal only (default), pause with an owner card (soft),
   // or refuse new runs with the budget reason (hard); changed from
