@@ -95,7 +95,7 @@ jobs:
     name: typecheck
     needs: plan
     if: ${{ needs.plan.outputs.tier == 'fast' || needs.plan.outputs.tier == 'full' }}
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_TYPECHECK || '"ubuntu-latest"') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - name: Checkout repository
@@ -160,7 +160,7 @@ jobs:
     name: build
     needs: plan
     if: ${{ needs.plan.outputs.tier == 'fast' || needs.plan.outputs.tier == 'full' }}
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_BUILD || '"ubuntu-latest"') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
       NODE_OPTIONS: --max-old-space-size=4096
@@ -280,7 +280,7 @@ jobs:
     name: tests (${{ matrix.label }})
     needs: plan
     if: ${{ needs.plan.outputs.tier == 'full' }}
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_TESTS || '"ubuntu-latest"') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -356,7 +356,7 @@ jobs:
     name: tests (other packages)
     needs: plan
     if: ${{ needs.plan.outputs.tier == 'full' }}
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_TESTS_OTHER || '"ubuntu-latest"') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - name: Checkout repository
@@ -402,7 +402,7 @@ jobs:
     name: tests (runner)
     needs: plan
     if: ${{ needs.plan.outputs.tier == 'full' }}
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_TESTS_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
       - name: Checkout repository

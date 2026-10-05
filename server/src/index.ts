@@ -145,6 +145,7 @@ import { createRunStallSweepFromHeartbeat } from "./myrmidon/run-stall/index.js"
 import { createTaskPrSyncScheduler } from "./myrmidon/task-pr-sync/index.js"; // myrmidon(TASK-PR-SYNC)
 import { createStaleBlockScheduler } from "./myrmidon/stale-block/index.js"; // myrmidon(STALE-BLOCK)
 import { createReviewRoutingScheduler } from "./myrmidon/review-routing/index.js"; // myrmidon(REVIEW-ROUTING)
+import { createReviewReworkScheduler } from "./myrmidon/review-rework/index.js"; // myrmidon(REVIEW-REWORK)
 import { buildWipLimitSweeper } from "./myrmidon/wip-limit/index.js"; // myrmidon(1.6.1-WIP-LIMIT-A)
 import {
   createPendingInteractionWakeSweep,
@@ -1351,6 +1352,16 @@ async function startServerWithDatabaseTeardown(
       environmentLeaseCleanupHeartbeat.wakeup(agentId, options as any)),
     track: trackHeartbeatSchedulerWork,
   });
+  // myrmidon(REVIEW-REWORK): a RETURN review verdict opens the rework task and
+  // blocks the review on it; the PR head moving releases the review to todo
+  // with the reviewer woken; a merged/closed PR settles the review. Settings
+  // are read on every pass; the interval is enforced inside the sweep.
+  const scheduleReviewReworkSweep = createReviewReworkScheduler({
+    db: db as any,
+    wakeup: ((agentId: string, options: Record<string, unknown>) =>
+      environmentLeaseCleanupHeartbeat.wakeup(agentId, options as any)),
+    track: trackHeartbeatSchedulerWork,
+  });
   // myrmidon(1.6.1-WIP-LIMIT-A): the periodic WIP check — one pass per interval
   // per company behind its own settings gate (no limit set = no pass); the
   // attention feed needs no sweep, it recomputes on every list.
@@ -1848,6 +1859,7 @@ async function startServerWithDatabaseTeardown(
         scheduleTaskPrSyncSweep(); // myrmidon(TASK-PR-SYNC)
         scheduleStaleBlockSweep(); // myrmidon(STALE-BLOCK)
         scheduleReviewRoutingSweep(); // myrmidon(REVIEW-ROUTING)
+        scheduleReviewReworkSweep(); // myrmidon(REVIEW-REWORK)
         scheduleWipLimitSweep(); // myrmidon(1.6.1-WIP-LIMIT-A)
         scheduleAutoResumeSweep(); // myrmidon(AUTO-RESUME)
 
@@ -2029,6 +2041,7 @@ async function startServerWithDatabaseTeardown(
       scheduleAutoResumeSweep(); // myrmidon(AUTO-RESUME)
       scheduleStaleBlockSweep(); // myrmidon(STALE-BLOCK)
       scheduleReviewRoutingSweep(); // myrmidon(REVIEW-ROUTING)
+      scheduleReviewReworkSweep(); // myrmidon(REVIEW-REWORK)
       scheduleGitHubConnectionEventPoll();
       scheduleGitHubConnectionContinuitySweep();
     });

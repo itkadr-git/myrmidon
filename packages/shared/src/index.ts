@@ -2836,3 +2836,7 @@ export * from "./myrmidon-model-providers.js";
 // myrmidon(REVIEW-ROUTING): automatic reviewer routing for tasks that enter
 // in_review with no reviewer — settings contract and activity actions.
 export * from "./myrmidon-review-routing.js";
+// myrmidon(REVIEW-REWORK): the review-return loop — a RETURN verdict opens a
+// rework task, blocks the review on it, and a new PR head releases the review.
+// Settings contract, verdict-marker parser and activity actions.
+export * from "./myrmidon-review-rework.js";

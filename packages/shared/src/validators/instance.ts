@@ -29,6 +29,8 @@ import { swarmClaimSettingsSchema } from "../myrmidon-swarm-claim.js";
 import { wipLimitSettingsSchema } from "../myrmidon-wip-limit.js";
 // myrmidon(REVIEW-ROUTING): the automatic reviewer routing settings stored in the same row.
 import { reviewRoutingSettingsSchema } from "../myrmidon-review-routing.js";
+// myrmidon(REVIEW-REWORK): the review-return loop settings stored in the same row.
+import { reviewReworkSettingsSchema } from "../myrmidon-review-rework.js";
 // myrmidon(1.7-BUDGET-CONFIG-B): the budget enforcement mode stored in the
 // same general settings row.
 import { budgetEnforcementSettingsSchema } from "../myrmidon-budget-enforcement.js";
@@ -119,6 +121,14 @@ export const instanceGeneralSettingsSchema = z.object({
   // myrmidon(REVIEW-ROUTING): automatic reviewer routing, changed from
   // /api/myrmidon/companies/:id/review-routing/settings; absent means the defaults.
   reviewRouting: reviewRoutingSettingsSchema.optional(),
+  // myrmidon(REVIEW-REWORK): the review-return loop (RETURN verdict -> rework
+  // task; review blocked until the PR head moves), changed from
+  // /api/myrmidon/review-rework; absent means the defaults (the fix is on).
+  reviewRework: reviewReworkSettingsSchema.optional(),
+  // myrmidon(REVIEW-REWORK): the change journal of the loop settings, kept by
+  // the settings service under `general.reviewReworkJournal` and read by
+  // GET /api/myrmidon/review-rework. Stored passthrough, like swarmClaimJournal.
+  reviewReworkJournal: z.array(z.unknown()).optional(),
   // myrmidon(1.7-BUDGET-CONFIG-B): what a crossed budget limit does while the
   // incident is open — signal only (default), pause with an owner card (soft),
   // or refuse new runs with the budget reason (hard); changed from
