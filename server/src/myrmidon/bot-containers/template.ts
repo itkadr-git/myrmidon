@@ -100,23 +100,127 @@ export const BOT_VOLUME_MOUNTS: readonly BotVolumeMount[] = [
 ];
 
 /** The fixed bind list for a bot, plus the extra read-only mounts its card asked
- *  for. Callers supply a botKey and (optionally) mount entries whose `source`
+ *  for, plus the shared package cache when the instance configures one
+ *  (1.6.1-BOT-DISK-B). Callers supply a botKey and (optionally) mount entries whose `source`
  *  already comes from the instance allowlist — never a raw path — so a card
  *  cannot smuggle in an arbitrary bind. A mount whose source is not in
  *  `MYRMIDON_BOT_MOUNT_SOURCES`, or whose container path would take over one of
- *  the driver's own mount points, throws before anything reaches the Docker API. */
+ *  the driver's own mount points, throws before anything reaches the Docker API.
+ *  The package cache binds are the only writable extra binds; their host
+ *  subdirectories and container paths are fixed here (PACKAGE_CACHE_MOUNTS)
+ *  and mirrored by dockergate, which accepts them only under its own
+ *  `packageCacheRoot` (tools/dockergate/internal/policy/create.go). */
 export function buildBinds(
   volumeRoot: string,
   botKey: string,
-  extra: { mounts?: readonly BotExtraMount[]; allowedSources?: readonly string[] } = {},
+  extra: {
+    mounts?: readonly BotExtraMount[];
+    allowedSources?: readonly string[];
+    sharedPackageCachePath?: string;
+    /** myrmidon(1.6.2-BOT-DISK-C): also bind `<cache>/git` read-only at
+     *  `/cache/git` (the board's git mirrors). Ignored without a cache path. */
+    gitMirror?: boolean;
+  } = {},
 ): string[] {
   validateBotKey(botKey);
   const mounts = extra.mounts ?? [];
   validateExtraMounts(mounts, extra.allowedSources ?? []);
-  return [
+  const binds = [
     ...BOT_VOLUME_MOUNTS.map((mount) => `${volumeRoot}/${botKey}/${mount.hostSuffix}:${mount.containerPath}`),
     ...mounts.map((mount) => `${mount.source}:${mount.containerPath}:ro`),
   ];
+  const cache = extra.sharedPackageCachePath;
+  if (cache) {
+    const reason = unsafeAbsolutePathReason(cache);
+    if (reason) {
+      throw new BotContainerTemplateError(`shared package cache path ${JSON.stringify(cache)} ${reason}`);
+    }
+    for (const [index, mount] of mounts.entries()) {
+      if (mount.containerPath === PACKAGE_CACHE_CONTAINER_ROOT || mount.containerPath.startsWith(`${PACKAGE_CACHE_CONTAINER_ROOT}/`)) {
+        throw new BotContainerTemplateError(
+          `extra mount #${index + 1} path ${JSON.stringify(mount.containerPath)} is reserved for the shared package cache`,
+        );
+      }
+    }
+    for (const mount of PACKAGE_CACHE_MOUNTS) {
+      binds.push(`${cache}/${mount.hostSubdir}:${mount.containerPath}:rw`);
+    }
+    if (extra.gitMirror) {
+      binds.push(`${cache}/${GIT_MIRROR_MOUNT.hostSubdir}:${GIT_MIRROR_MOUNT.containerPath}:ro`);
+    }
+  }
+  return binds;
+}
+
+/**
+ * myrmidon(1.6.2-BOT-DISK-C): the board's bare git mirrors, one per
+ * `owner/repo`, at `<cache>/git/<owner>/<repo>.git` on the host. Bots mount the
+ * directory READ-ONLY: only the board writes it (git-mirror.ts), so no bot can
+ * rewrite or delete an object another bot's clone borrows through its
+ * alternates file — git does not re-hash objects it reads from an alternate,
+ * so a writable mirror would let one bot change what another checks out. The
+ * image's git wrapper (docker/bot-runtime/git-reference) adds
+ * `--reference-if-able /cache/git/<owner>/<repo>.git` to a `git clone` of a
+ * mirrored GitHub repository. Mirrored by dockergate
+ * (`PackageCacheReadOnlyMounts` in tools/dockergate/internal/policy/create.go).
+ */
+export const GIT_MIRROR_MOUNT = { hostSubdir: "git", containerPath: "/cache/git" } as const;
+
+/** myrmidon(1.6.2-BOT-DISK-C): the pnpm store on the workspace mount (see packageCacheEnv). */
+export const WORKSPACE_PNPM_STORE_DIR = "/workspace/.pnpm-store";
+
+/** Where the shared package cache appears inside a bot container. Outside the
+ *  three volumes and /tmp, so dockergate's reserved-target rule holds. */
+export const PACKAGE_CACHE_CONTAINER_ROOT = "/cache";
+
+export interface PackageCacheMount {
+  /** Subdirectory of the configured cache path on the host. */
+  hostSubdir: string;
+  /** Absolute mount point inside the container. */
+  containerPath: string;
+  /** The variable that points the tool at the mount (written to hermes/.env). */
+  envName: string;
+}
+
+/**
+ * Shared package cache layout (1.6.1-BOT-DISK-B). The tools only use a mount
+ * because the profile points them at it: the image's own defaults live under
+ * $HOME (/data/hermes, the per-bot volume), so profile-compile.ts writes
+ * {@link packageCacheEnv} into hermes/.env, which the gateway loads with
+ * override. pip is absent on purpose: the image sets PIP_NO_CACHE_DIR, which
+ * disables pip's cache whatever its value, and a dotenv file cannot unset it.
+ * Mirrored by dockergate (`PackageCacheMounts` in tools/dockergate/internal/policy/create.go).
+ */
+export const PACKAGE_CACHE_MOUNTS: readonly PackageCacheMount[] = [
+  { hostSubdir: "pnpm", containerPath: "/cache/pnpm", envName: "npm_config_store_dir" },
+  { hostSubdir: "go-mod", containerPath: "/cache/go-mod", envName: "GOMODCACHE" },
+  { hostSubdir: "go-build", containerPath: "/cache/go-build", envName: "GOCACHE" },
+  { hostSubdir: "gradle", containerPath: "/cache/gradle", envName: "GRADLE_USER_HOME" },
+];
+
+/**
+ * The environment that points each tool at its shared cache mount.
+ *
+ * myrmidon(1.6.2-BOT-DISK-C): pnpm is the exception. pnpm links a project's
+ * node_modules to its store with hard links, and link(2) refuses to cross a
+ * mount point (EXDEV) even when both binds come from the same host
+ * filesystem — `/cache/pnpm` and `/workspace` are two binds, so with the store
+ * on `/cache/pnpm` every install COPIES each package into the clone. With
+ * `pnpmStore: "workspace"` (the default) the store is
+ * {@link WORKSPACE_PNPM_STORE_DIR}, on the same mount as the clones: every
+ * clone of the bot hard-links one copy. With `"shared"` the store stays on
+ * `/cache/pnpm` and pnpm is told to import by clone (reflink, which Linux
+ * allows across mounts of one filesystem since 5.18) and to copy where the
+ * filesystem cannot (ext4): only worth it on XFS with reflink or btrfs.
+ */
+export function packageCacheEnv(pnpmStore: "workspace" | "shared" = "workspace"): Record<string, string> {
+  const env = Object.fromEntries(PACKAGE_CACHE_MOUNTS.map((mount) => [mount.envName, mount.containerPath]));
+  if (pnpmStore === "workspace") {
+    env.npm_config_store_dir = WORKSPACE_PNPM_STORE_DIR;
+  } else {
+    env.npm_config_package_import_method = "clone-or-copy";
+  }
+  return env;
 }
 
 /** Mount points and paths the driver itself owns inside every bot container: an
@@ -149,7 +253,7 @@ function unsafeAbsolutePathReason(value: string): string | null {
  *    cannot reach a sibling directory the operator did not name);
  *  - `containerPath` is a plain absolute path that is not one of the driver's
  *    own mount points (or a path under one) and is not used twice;
- *  - `readOnly` is true: a shared directory is never mounted writable.
+ *  - `readOnly` is true: a card's extra mount is never writable.
  * The check is the enforcement boundary, so it does not trust the card reader
  * (`agent-config.ts`) to have validated the list first.
  */
