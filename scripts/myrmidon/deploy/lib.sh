@@ -1018,7 +1018,11 @@ component_host_cat_override() {
 # component with no trace on the target host is a misconfiguration (the 1.4.0
 # fleetd incident), not something to create from nothing.
 component_host_service_exists() {
-  component_host_compose config --services 2>/dev/null | grep -qx "$COMPONENT_SERVICE"
+  # the list is captured first: `grep -q` closing the pipe early would make the
+  # producer die of SIGPIPE and, under pipefail, report a service as missing
+  local services
+  services="$(component_host_compose config --services 2>/dev/null)" || return 1
+  grep -qx "$COMPONENT_SERVICE" <<<"$services"
 }
 component_host_write_override() {
   local target_ref="$1"
@@ -1050,4 +1054,41 @@ component_host_parse() {
       ;;
     *) die "MYR_${component^^}_HOST must be local, skip or remote:<user>@<host>, got '$value'" ;;
   esac
+}
+
+# ONE-DEPLOY: shared helpers of the all-components deploy.
+
+# The image reference a component's override file currently names (empty when
+# the component has no override yet). Reads the same host the rollout targets
+# (MYR_<COMPONENT>_HOST); runs in a subshell so the COMPONENT_* globals of the
+# caller are not touched.
+component_current_ref() (
+  local component="$1" up
+  up="$(printf '%s' "$component" | tr '[:lower:]' '[:upper:]')"
+  local ov_var="MYR_${up}_OVERRIDE_FILE" svc_var="MYR_${up}_COMPOSE_SERVICE" host_var="MYR_${up}_HOST"
+  COMPONENT_SERVICE="${!svc_var:-$component}"
+  COMPONENT_OVERRIDE_PATH="$COMPOSE_DIR/${!ov_var:-docker-compose.myrmidon-$component.yml}"
+  component_host_parse "$component" "${!host_var:-local}"
+  [[ "$COMPONENT_SKIP" == "1" ]] && exit 0
+  component_host_cat_override | sed -nE 's/^[[:space:]]*image:[[:space:]]*([^[:space:]#]+).*/\1/p' | head -n1
+)
+
+# dockergate check-config of a config file, run with the image that is about to
+# be deployed (the config must be valid for THAT binary, before it is
+# recreated). The operator's command wins when set (it may check through a
+# running container); $MYR_BOT_CFG_FILE names the file. Without a command the
+# image is run with the file mounted read-only and no network.
+#   dockergate_check_config_file <config-file> <image-ref>
+# rc 0 = valid, 1 = refused, 3 = no way to check (no command and no image).
+dockergate_check_config_file() {
+  local cfg="$1" image="${2:-}"
+  local cmd="${MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_CHECK_CONFIG_COMMAND:-}"
+  if [[ -n "$cmd" ]]; then
+    MYR_BOT_CFG_FILE="$cfg" bash -c "$cmd" >/dev/null 2>&1
+    return
+  fi
+  [[ -n "$image" ]] || return 3
+  docker run --rm --network none --read-only \
+    -v "$cfg:/etc/myrmidon-dockergate/config.json:ro" "$image" \
+    check-config --config /etc/myrmidon-dockergate/config.json >/dev/null 2>&1
 }

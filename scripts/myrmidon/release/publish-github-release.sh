@@ -32,7 +32,9 @@
 #      without notes = defect, exit 1), the deploy line + "Upgrading from …"
 #      link, and the component digest table from the registry.
 #   4. `gh release create --latest`; when the release exists, `gh release
-#      edit` (idempotent re-run).
+#      edit` (idempotent re-run); then the machine-readable manifest
+#      (release-components.json: every component digest) is uploaded as a
+#      release asset (deploy.sh --release reads it).
 #   5. Mark the previous minor/patch release title "(superseded)" (the manual
 #      convention of 1.3.x/1.4.0).
 #
@@ -204,6 +206,9 @@ body_args=()
 if [[ -n "${MYRMIDON_RELEASE_REGISTRY_STATE:-}" ]]; then
   body_args+=(--registry-state "$MYRMIDON_RELEASE_REGISTRY_STATE")
 fi
+# --manifest-out: the machine-readable component manifest published as a
+# release asset (release-components.json); deploy/release-manifest.sh reads it.
+body_args+=(--manifest-out release-components.json)
 node "$here/release-body.mjs" "${body_args[@]}" "$version" > release-body.md \
   || die "release body could not be built for $version (missing notes or component digests)"
 log "release body built ($(wc -c < release-body.md) bytes)"
@@ -218,6 +223,11 @@ else
   gh release create "$tag" --repo "$repo" --title "$title" --latest \
     --notes-file release-body.md
 fi
+
+# The manifest asset: replaced on a re-run (--clobber), so it always matches
+# the body of the same publish.
+gh release upload "$tag" release-components.json --repo "$repo" --clobber
+log "uploaded the component manifest asset release-components.json"
 
 # ----------------------------------------------- 5. supersede the previous --
 # The manual convention for 1.3.x/1.4.0: the previous minor/patch release's

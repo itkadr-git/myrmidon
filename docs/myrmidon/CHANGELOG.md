@@ -10,6 +10,86 @@ version file to edit. Base Paperclip version is in the image label
 
 ## Unreleased
 
+### One deploy for every component (ONE-DEPLOY)
+
+- A release deploy now updates every component in one maintenance window:
+  `deploy.sh --release myr-vX.Y.Z` reads the release's component digests (board,
+  dockergate, fleetd, bot images) from the new machine-readable release asset
+  `release-components.json` (the release publish step uploads it; the digest table of the
+  release body is the fallback for older releases). On 04.10 the board moved to 1.6.2 while
+  dockergate stayed on 1.3.0 and the shared package cache did not work until dockergate was
+  updated by hand.
+- Components that already run their release image are not restarted; a release with
+  missing digests, or a component that cannot roll out, is refused before the window.
+- The window is all-or-nothing: a failing component rolls the changed components, the
+  dockergate config and the board back together (`MYRMIDON_COMPONENT_AUTO_ROLLBACK=0` keeps
+  the manual contract).
+- dockergate: `dockergate check-config` runs with the new image before the service is
+  recreated; after the recreate the startup self-check version is verified; the release bot
+  images (including the dev variant) are added to `images[]`.
+- Bot cards that track the release image (a previous release image of the same repository)
+  switch in batches of at most 5, only while the agent is paused or idle; pinned cards are
+  left alone; progress and failures are reported. Includes BOT-IMAGE-ROLLOUT (PR #454).
+- `component_host_service_exists` no longer reports a service as missing when `grep -q`
+  closes the pipe early (SIGPIPE under `pipefail`).
+
+### Agent memory works without a key and is set in the UI (MEMORY-UI)
+
+- The Memory tab on the agent card no longer says "Agent memory is not enabled on this
+  instance" for a memory service without authentication. The API key is optional: the
+  section is on whenever an address is known, and the key is sent only when a key secret
+  is named.
+- The address defaults to `MYRMIDON_BOT_HINDSIGHT_API_URL` (the same service as the bots
+  use) when `MYRMIDON_HINDSIGHT_API_URL` is unset. Precedence: instance setting, then
+  environment, then the bot address.
+- New instance setting `general.agentMemory` (`enabled`, `apiUrl`, `keySecretName`) with an
+  "Agent memory" panel in Instance settings → General and `GET`/`PATCH
+  /api/myrmidon/agent-memory`. It is re-read on every request: no restart. See
+  [SETTINGS.md](SETTINGS.md).
+
+### Automatic reviewer for tasks in review (REVIEW-ROUTING)
+
+- A task that moves to `in_review` with no reviewer no longer waits for a manual
+  assignment. A board sweep (every 60 s) gives it a one-stage review with the
+  least-loaded agent of the reviewer roles that is below the load ceiling — never
+  the task's author or assignee — leaves a system comment and an activity entry,
+  and wakes the reviewer. The review is the ordinary execution review stage:
+  approving closes the task as done, requesting changes returns it to the previous
+  assignee.
+- When no reviewer is available the task raises an attention card
+  (`review_routing`) instead of staying silent. A review this routing started that
+  has no verdict after the configured hours raises a card and moves to another
+  reviewer (never one that already had it).
+- Settings — enabled, reviewer roles, max load per reviewer, reassign-after hours —
+  are on the new Company Settings → Review routing screen (stored in the instance
+  settings) and apply on the next pass, without a restart. See
+  [SETTINGS.md](SETTINGS.md), section "REVIEW-ROUTING".
+
+### Live progress steps in the Telegram DM status message (DM-PROGRESS)
+
+- The owner reported that a bot in a bridged Telegram DM only says "queued",
+  "working" and then the result, with nothing in between. While a run is
+  active the one status message now shows what the bot is doing — "читаю
+  презентацию deck.pptx", "правлю слайды 4, 9", "проверяю результат" — plus the
+  last few finished steps and the elapsed time, and is edited in place until
+  the answer replaces it.
+- Steps come from the run's native step events and, for adapters that write
+  none (the Hermes gateway and local adapters), from a small in-memory step
+  history fed by the runtime status and the run-log tool lines. A tool call
+  reaches the chat only as a short phrase with at most a file basename or
+  slide numbers; commands, paths and arguments never do.
+- Edits are throttled: a milestone change posts at once, a change of the step
+  kind (reading, editing, checking) after about 5 seconds, anything else only
+  once the configured interval has passed (default 45 s).
+- On/off and the interval live in Instance settings → General ("Telegram DM:
+  live progress", `GET`/`PATCH /api/myrmidon/telegram-dm-progress`) and apply at
+  the next status update without a restart. Environment overrides:
+  `MYRMIDON_TELEGRAM_DM_PROGRESS`, `MYRMIDON_TELEGRAM_DM_PROGRESS_INTERVAL_SEC`;
+  the default of "on" follows `MYRMIDON_TELEGRAM_DM_STATUS`. Turning it on also
+  turns the status message on for bridged DMs.
+- The queued and working texts of the status message are now in Russian, like
+  the step labels. Guide: [telegram-dm-status.md](guides/telegram-dm-status.md).
+
 ### Parallel helpers are no longer capped by a built-in number (HELPERS-NO-CAP)
 
 - The helper limit used to default to 2 per agent under a built-in ceiling of 10
@@ -99,6 +179,42 @@ version file to edit. Base Paperclip version is in the image label
 - dockergate: new `packageCacheRoot` key (default empty: no cache bind). **Operator step:** set
   it to the same directory and send `SIGHUP`, and create the four subdirectories owned by
   uid/gid 10001 — see [bot-disk-cache.md](bot-disk-cache.md).
+
+### Bot workspace duplication: shared git objects, hard-linked node_modules, clone hygiene (1.6.2, BOT-DISK C)
+
+- Shared git objects. `general.botDisk.gitMirrorRepos` lists GitHub `owner/repo` names; the board
+  keeps one bare mirror of each under `<sharedPackageCachePath>/git/<owner>/<repo>.git`
+  (refreshed by `git fetch --prune` every `gitMirrorRefreshMs`, default 15 minutes, under a lock;
+  gc never prunes), and bots mount it **read-only** at `/cache/git`. The dev image's `git`
+  wrapper adds `--reference-if-able` to `git clone https://github.com/<owner>/<repo>` when the
+  mirror exists, so a clone stores only objects the mirror lacks; every other git invocation is
+  unchanged and `git-credential-paperclip` keeps working. Off by default (empty list). dockergate
+  accepts `<packageCacheRoot>/git` only as a read-only bind to `/cache/git`.
+- Hard-linked node_modules. A hard link cannot cross a mount, and `/workspace`, `/cache/pnpm`
+  and the image's previous store `/data/hermes/.pnpm-store` are three different mounts, so pnpm
+  silently **copied** every package into every clone. The store now defaults to
+  `/workspace/.pnpm-store` (image and profile), on the clones' mount; `general.botDisk.pnpmStore:
+  "shared"` keeps it on `/cache/pnpm` and sets `package-import-method=clone-or-copy` for
+  reflink-capable filesystems. The dev image's build runs `pnpm-hardlink-check.sh` and fails on a
+  copy; CI runs the same proof, including the cross-mount copy.
+- Clone hygiene in the BOT-DISK A lifecycle. A git clone is no longer reaped by its directory's
+  mtime. The board server has no mount of the bot volumes, so the BOT-DISK A sweep found no root
+  and reclaimed nothing in production; it now logs one warning, does nothing, and raises a
+  "Lifecycle not effective" Attention card when no bot reports either. The deletion runs inside
+  each bot container (`bot-clone-hygiene`, policy `MYRMIDON_CLONE_IDLE_TTL_SEC` written into the
+  profile): a clean, fully pushed, idle clone is removed, a clone with unpushed work (dirty tree,
+  operation in progress, stash, commits on no remote) never is, and the board reads the report to
+  raise an Attention card (source `bot_disk_lifecycle`) for it. The workspace pnpm store is
+  never swept.
+- Scope: the shared package cache and the git mirror now apply only to bots whose role is in
+  `general.botDisk.sharedCacheRoles` (default `engineer`, `reviewer`, `devops`, `release`, `qa`;
+  editable without a restart). Other bots (e.g. marketing) get no cache mounts or variables, so
+  enabling the cache no longer recreates them.
+- **Operator steps:** see [bot-disk-cache.md](bot-disk-cache.md#enabling-git-mirrors-operator-steps)
+  — create `<cache>/git` owned by the board's user (mode 0755), then
+  `PATCH /api/myrmidon/bot-disk` with `{"gitMirrorRepos": ["owner/repo"]}`. The bot image must be
+  rebuilt (the wrapper, the reporter and the store default are in the image); older images keep
+  working without them.
 
 ### A board unblock lifts a settled replay hold; a parked wake is not "covering" (HOLD-READY)
 
