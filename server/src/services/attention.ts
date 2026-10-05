@@ -51,6 +51,8 @@ import type {
 import { badRequest } from "../errors.js";
 import { listAttentionExhaustedRuns } from "./attention-exhausted-runs.js";
 import { budgetService } from "./budgets.js";
+import { hostDiskRuntime } from "../myrmidon/host-disk/index.js"; // myrmidon(BOT-DISK E)
+import { cloneHygieneSignals, lifecycleNotEffective } from "../myrmidon/bot-containers/clone-hygiene.js"; // myrmidon(1.6.2-BOT-DISK-C)
 import {
   BLOCKER_ATTENTION_MAX_DEPTH,
   BLOCKER_ATTENTION_MAX_NODES,
@@ -69,6 +71,7 @@ import { buildStackAttentionCards } from "../myrmidon/stack-registry/attention.j
 import { readStackDocument } from "../myrmidon/stack-registry/store.js";
 // myrmidon(TRACING-HEALTH): the "LLM tracing" red state raises one operator card (part D)
 import { readTracingHealthAttentionSignal } from "../myrmidon/tracing-health/attention.js";
+import { hostMemoryHoldSignal } from "../myrmidon/run-admission.js"; // myrmidon(1.6.2 RUN-ADMISSION)
 // myrmidon(BOT-RUNTIME-TUNING D): the model fallback share raises one card per agent
 import { readModelFallbackSignals } from "../myrmidon/litellm-fallback-signal/attention.js";
 
@@ -79,6 +82,15 @@ import {
   staleBlockSignalSeverity,
   staleBlockSignalWhyNow,
 } from "../myrmidon/stale-block/attention.js";
+// myrmidon(REVIEW-ROUTING): the cards of a task in review with no reviewer, or
+// a review without a verdict for too long.
+import {
+  readReviewRoutingSignals,
+  reviewRoutingSignalDedupKey,
+  reviewRoutingSignalSeverity,
+  reviewRoutingSignalTitle,
+  reviewRoutingSignalWhyNow,
+} from "../myrmidon/review-routing/attention.js";
 // myrmidon(1.6.1-WIP-LIMIT-A): the WIP limit cards and the settings read.
 import { buildWipLimitAttentionCards } from "../myrmidon/wip-limit/attention.js";
 import { buildWipLimitStatus } from "../myrmidon/wip-limit/status.js";
@@ -86,6 +98,8 @@ import {
   WIP_LIMIT_SETTINGS_KEY,
   normalizeWipLimitSettings,
 } from "@paperclipai/shared";
+// myrmidon(1.7-BUDGET-CONFIG-B): the enforcement mode shown on the budget card.
+import { resolveBudgetEnforcement } from "@paperclipai/shared";
 
 /**
  * myrmidon(TRACING-HEALTH): a stable UUID for the synthetic "LLM tracing"
@@ -120,8 +134,11 @@ const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   "model_fallback_alert",
   // myrmidon(STALE-BLOCK): one card per block the watchdog lifted.
   "stale_block",
+  "host_disk_alert",
   // myrmidon(1.6.1-WIP-LIMIT-A): the per-agent work-in-progress over-limit signal.
   "wip_limit",
+  // myrmidon(REVIEW-ROUTING): no reviewer available, or a review overdue.
+  "review_routing",
 ];
 
 const SEVERITY_RANK: Record<AttentionSeverity, number> = {
@@ -145,10 +162,16 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   join_request: 10,
   stack_update: 11,
   stale_block: 12,
+  host_disk_alert: 0,
   model_fallback_alert: 13,
   // myrmidon(1.6.1-WIP-LIMIT-A): a workload-oversignal sits below every
   // blocking kind but above nothing else — it is advice, not a stop.
   wip_limit: 14,
+  // myrmidon(BOT-DISK-A): bot disk lifecycle events.
+  bot_disk_lifecycle: 15,
+  // myrmidon(REVIEW-ROUTING): a stuck review is a stalled delivery, ranked with
+  // the other machine-routing notices (just after the lifted stale block).
+  review_routing: 16,
 };
 
 const PENDING_INTERACTION_STATUSES = ["pending"] as const;
@@ -1805,6 +1828,23 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         }));
       }
 
+      // myrmidon(1.7-BUDGET-CONFIG-B): the enforcement mode rides the budget
+      // card — in signal-only mode the incident exists but nothing stopped,
+      // and the card must say that instead of implying a pause the operator
+      // will not find. The feed recomputes on every list, so a mode change
+      // reaches the next feed read without a restart.
+      const budgetEnforcementMode = (
+        // myrmidon(1.7-BUDGET-CONFIG-B): read the mode the same direct way the
+        // WIP settings row above is read (one settings select, no service
+        // cache), with the shared resolver doing precedence.
+        await db
+          .select({ general: instanceSettings.general })
+          .from(instanceSettings)
+          .limit(1)
+          .then((rows) => rows[0]?.general?.budgetEnforcement ?? undefined)
+          .catch(() => undefined)
+          .then((stored) => resolveBudgetEnforcement({ stored }).mode)
+      );
       const budgetOverview = await budgetService(db).overview(companyId);
       for (const incident of budgetOverview.activeIncidents) {
         const observedPercent = budgetObservedPercent(incident.amountObserved, incident.amountLimit);
@@ -1831,10 +1871,14 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
               observedPercent,
               approvalId: incident.approvalId,
               approvalStatus: incident.approvalStatus,
+              // myrmidon(1.7-BUDGET-CONFIG-B): what the crossed limit did.
+              enforcementMode: budgetEnforcementMode,
             },
           },
           whyNow: incident.thresholdType === "hard"
-            ? "Budget hard stop was reached."
+            ? budgetEnforcementMode === "signal_only"
+              ? "Budget hard stop was reached. Work continues: enforcement is in signal-only mode."
+              : "Budget hard stop was reached."
             : "Budget crossed the 85% warning threshold.",
           decisionVerbs: decisionVerbs(
             { id: "raise_budget_and_resume", label: "Raise budget", description: "Raise the budget and resume paused work." },
@@ -1844,7 +1888,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           entryRule: "open budget incident is hard, or soft with observed spend >= 85% of limit.",
           exitRule: "Budget incident is resolved or dismissed.",
           dedupKey,
-          severity: incident.thresholdType === "hard" ? "high" : "medium",
+          severity: incident.thresholdType === "hard" ? (budgetEnforcementMode === "signal_only" ? "medium" : "high") : "medium",
           activityAt: toIso(incident.updatedAt),
           createdAt: toIso(incident.createdAt),
           updatedAt: toIso(incident.updatedAt),
@@ -1857,6 +1901,152 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             images: [],
           },
         }));
+      }
+
+      // myrmidon(BOT-DISK E): the host disk crossed the usage threshold in
+      // this process's sweep. One item for the whole instance; the numbers
+      // (fill level, free space, growth per hour, biggest consumers) travel
+      // in the detail, and the dedup key stays constant while the threshold
+      // stays crossed, so a fresh measurement refreshes the row.
+      const hostDisk = hostDiskRuntime(db).sweep.lastResult();
+      if (hostDisk?.overThreshold) {
+        const dedupKey = `host_disk:${hostDisk.measuredPath ?? "unknown"}`;
+        add(createItem({
+          companyId,
+          sourceKind: "host_disk_alert",
+          subject: {
+            kind: "agent",
+            id: "host-disk",
+            companyId,
+            title: "Host disk",
+            identifier: null,
+            status: "alert",
+            href: `/${prefix}/instance`,
+            metadata: { measuredPath: hostDisk.measuredPath },
+          },
+          whyNow: `Host disk is ${hostDisk.usedPercent}% full (threshold ${hostDisk.thresholdPercent}%).`,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the host disk panel and free space." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this alert until usage drops and crosses again." },
+          ),
+          inlineResolvable: false,
+          entryRule: "the host disk fill level crossed the saved threshold",
+          exitRule: "usage drops below the threshold or the row is dismissed",
+          dedupKey,
+          severity: (hostDisk.usedPercent ?? 0) >= 95 ? "critical" : "high",
+          activityAt: toIso(hostDisk.at),
+          createdAt: toIso(hostDisk.at),
+          updatedAt: toIso(hostDisk.at),
+          relatedIssue: null,
+          detail: {
+            kind: "host_disk",
+            usedPercent: hostDisk.usedPercent ?? 0,
+            thresholdPercent: hostDisk.thresholdPercent ?? 0,
+            usedGb: Math.round((hostDisk.usedBytes ?? 0) / (1024 * 1024 * 1024)),
+            totalGb: Math.round((hostDisk.totalBytes ?? 0) / (1024 * 1024 * 1024)),
+            freeGb: Math.round((hostDisk.freeBytes ?? 0) / (1024 * 1024 * 1024)),
+            growthBytesPerHour: hostDisk.growthBytesPerHour,
+            mountPoint: hostDisk.measuredPath,
+            consumers: hostDisk.consumers.map((c) => ({
+              path: c.path,
+              sizeGb: Math.round(c.sizeBytes / (1024 * 1024 * 1024)),
+            })),
+            images: [],
+          },
+        }));
+      }
+
+      // myrmidon(1.6.2-BOT-DISK-C): a bot clone with unpushed work (dirty tree,
+      // stash, operation in progress, commits on no remote) idle longer than the
+      // lifecycle TTL. The sweep keeps such a clone instead of removing it; this
+      // card is how an operator learns about it. One card per clone; it goes
+      // away when the work is pushed, the clone is touched again, or removed.
+      // The board cannot see the bot volume root and no bot delivers a clone
+      // report: the lifecycle reclaims nothing anywhere.
+      if (lifecycleNotEffective() === true) {
+        const at = new Date().toISOString();
+        add(createItem({
+          companyId,
+          sourceKind: "bot_disk_lifecycle",
+          subject: {
+            kind: "agent",
+            id: "bot-disk-lifecycle",
+            companyId,
+            title: "Bot disk lifecycle",
+            identifier: null,
+            status: "alert",
+            href: `/${prefix}/instance`,
+            metadata: {},
+          },
+          whyNow:
+            "Lifecycle not effective: the board cannot see the bot volume root and no bot container has reported its clones, so idle clones are not being reclaimed.",
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Check that bots run the development image (it reaps clones inside the container) and are running." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this signal." },
+          ),
+          inlineResolvable: false,
+          entryRule: "the bot volume root is not visible to the board and no clone report arrived in 24 hours",
+          exitRule: "a bot delivers a clone report or the board sees the volume root",
+          dedupKey: "bot_disk_lifecycle:not_effective",
+          severity: "medium",
+          activityAt: at,
+          createdAt: at,
+          updatedAt: at,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: "Idle bot clones are not being reclaimed.",
+            images: [],
+          },
+        }));
+      }
+
+      const cloneSignals = cloneHygieneSignals();
+      if (cloneSignals.length > 0) {
+        const botIds = [...new Set(cloneSignals.map((signal) => signal.botKey))];
+        const botAgents = await db
+          .select({ id: agents.id, name: agents.name, status: agents.status })
+          .from(agents)
+          .where(and(eq(agents.companyId, companyId), inArray(agents.id, botIds)));
+        const byId = new Map(botAgents.map((agent) => [agent.id, agent]));
+        for (const signal of cloneSignals) {
+          const agent = byId.get(signal.botKey);
+          if (!agent) continue;
+          const at = new Date(signal.observedAtMs).toISOString();
+          add(createItem({
+            companyId,
+            sourceKind: "bot_disk_lifecycle",
+            subject: {
+              kind: "agent",
+              id: agent.id,
+              companyId,
+              title: agent.name,
+              identifier: null,
+              status: agent.status,
+              href: `/${prefix}/agents/${agent.id}`,
+              metadata: { clonePath: signal.path, branch: signal.branch },
+            },
+            whyNow: `Clone ${signal.path} has been idle past the lifecycle TTL with ${signal.reason}; it is kept, not removed.`,
+            decisionVerbs: decisionVerbs(
+              { id: "inspect", label: "Inspect", description: "Push or discard the work in the bot's clone." },
+              { id: "dismiss", label: "Dismiss", description: "Dismiss this signal." },
+            ),
+            inlineResolvable: false,
+            entryRule: "a bot clone holds unpushed work and is idle longer than general.botDisk.idleTtlMs",
+            exitRule: "the work is pushed or discarded, the clone changes again, or it is removed",
+            dedupKey: `bot_disk_clone:${agent.id}:${signal.path}`,
+            severity: "medium",
+            activityAt: at,
+            createdAt: at,
+            updatedAt: at,
+            relatedIssue: null,
+            detail: {
+              kind: "generic",
+              summaryExcerpt: `${signal.path}${signal.branch ? ` (${signal.branch})` : ""}: ${signal.reason}`,
+              images: [],
+            },
+          }));
+        }
       }
 
       const erroredAgents = await db
@@ -2014,6 +2204,49 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         }));
       }
 
+      // myrmidon(REVIEW-ROUTING): one card per task whose review has no
+      // reviewer available or no verdict for too long. The sweep replaces the
+      // company's set on every pass (myrmidon/review-routing/attention.ts),
+      // so the card exists exactly while its condition holds.
+      for (const signal of readReviewRoutingSignals(companyId)) {
+        add(createItem({
+          companyId,
+          sourceKind: "review_routing",
+          subject: {
+            kind: "issue",
+            id: signal.issueId,
+            companyId,
+            title: signal.title ?? "Task",
+            identifier: signal.identifier,
+            status: "in_review",
+            href: signal.identifier ? `/${prefix}/issues/${signal.identifier}` : null,
+            metadata: {
+              kind: signal.kind,
+              hoursInReview: signal.hoursInReview,
+            },
+          },
+          whyNow: reviewRoutingSignalWhyNow(signal),
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the task and assign or decide the review." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this notice." },
+          ),
+          inlineResolvable: true,
+          entryRule: "a task in review has no reviewer available, or its review has had no verdict for the configured hours.",
+          exitRule: "The task gets a reviewer or a verdict, leaves review, or the row is dismissed.",
+          dedupKey: reviewRoutingSignalDedupKey(signal),
+          severity: reviewRoutingSignalSeverity(signal),
+          activityAt: signal.since,
+          createdAt: signal.since,
+          updatedAt: signal.since,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: excerpt(reviewRoutingSignalTitle(signal)),
+            images: [],
+          },
+        }));
+      }
+
       // myrmidon(TRACING-HEALTH): the "LLM tracing" non-ok state raises ONE
       // card on the operator desk, deduped by state — the parent ticket's
       // rule is "signal to the operator role, never the owner", and the
@@ -2057,6 +2290,54 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           detail: {
             kind: "generic",
             summaryExcerpt: excerpt(tracingSignal.whyNow),
+            images: [],
+          },
+        }));
+      }
+
+      // myrmidon(1.6.2 RUN-ADMISSION): the run admission's host memory floor
+      // has held new runs back for over 10 minutes. One card for the whole
+      // instance, deduped while the hold lasts; it disappears on the first
+      // admitted run (the admission ends the hold) — nothing is persisted.
+      const hostMemoryHold = hostMemoryHoldSignal();
+      if (hostMemoryHold) {
+        const heldAt = hostMemoryHold.heldSince.toISOString();
+        const heldMinutes = Math.floor(hostMemoryHold.heldMs / 60_000);
+        add(createItem({
+          companyId,
+          sourceKind: "agent_error_alert",
+          subject: {
+            kind: "agent",
+            id: "run-admission-host-memory",
+            companyId,
+            title: "Runs held: host memory",
+            identifier: null,
+            status: "alert",
+            href: `/${prefix}/instance`,
+            metadata: {
+              runAdmissionHostMemory: true,
+              availableMb: hostMemoryHold.availableMb,
+              thresholdMb: hostMemoryHold.thresholdMb,
+              heldSince: heldAt,
+            },
+          },
+          whyNow: `New agent runs have waited ${heldMinutes} min: host free memory ${hostMemoryHold.availableMb ?? "?"} MB is below the ${hostMemoryHold.thresholdMb ?? "?"} MB run admission floor. Free memory on the host (idle bot containers) or lower the floor in Run limits.`,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the run limits and the host memory." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this alert for this hold." },
+          ),
+          inlineResolvable: true,
+          entryRule: "the run admission host memory floor held new runs back for more than 10 minutes",
+          exitRule: "a run is admitted again (host memory recovered or the floor was lowered) or the row is dismissed",
+          dedupKey: `run_admission_host_memory:${heldAt}`,
+          severity: "high",
+          activityAt: heldAt,
+          createdAt: heldAt,
+          updatedAt: heldAt,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: excerpt(hostMemoryHold.reason ?? "host free memory is below the run admission floor"),
             images: [],
           },
         }));

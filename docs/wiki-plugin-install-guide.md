@@ -30,6 +30,7 @@ After installation:
 2. Set up the local folder with initial content:
    - Create the directory structure: `raw/`, `wiki/`, `wiki/sources/`, `wiki/projects/`, `wiki/entities/`, `wiki/concepts/`, `wiki/synthesis/`
    - Add initial files: `AGENTS.md`, `IDEA.md`, `wiki/index.md`, `wiki/log.md`
+   - The `wiki/` subdirectories are conventional, not enforced: add further categories such as `wiki/areas/` as the domain demands, and record the new category in the wiki schema `AGENTS.md`
 
 ## Upgrade Process
 

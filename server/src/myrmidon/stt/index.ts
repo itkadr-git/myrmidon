@@ -102,9 +102,6 @@ const patchSchema = z
     language: z.enum(["auto", "ru"]).optional(),
     diarization: z.boolean().optional(),
     maxDurationSec: z.number().int().positive().max(86400).optional(),
-    keySecret: z.string().min(1).nullable().optional(),
-    deepgramKeySecret: z.string().min(1).nullable().optional(),
-    baseUrl: z.string().url().nullable().optional(),
   })
   .strict();
 
@@ -119,8 +116,6 @@ function settingsView(settings: SttSettings) {
     language: settings.language,
     diarization: settings.diarization,
     maxDurationSec: settings.maxDurationSec,
-    keySecret: settings.keySecret,
-    deepgramKeySecret: settings.deepgramKeySecret,
     problem: problem ? { code: problem.code, message: problem.message } : null,
   };
 }
@@ -148,7 +143,7 @@ export function myrmidonSttRoutes(
     assertBoard(req);
     const body = req.body as z.infer<typeof patchSchema>;
     const { doc: stored } = await writeOverrides(db, companyId, (current) => {
-      // Explicit null clears the stored field — back to the environment default.
+      // Explicit null clears the stored model — back to the environment default.
       const next: StoredSttOverrides = {
         enabled: body.enabled ?? current?.enabled ?? false,
         backend: body.backend ?? current?.backend ?? "dashscope",
@@ -156,9 +151,6 @@ export function myrmidonSttRoutes(
         language: body.language ?? current?.language ?? "auto",
         diarization: body.diarization ?? current?.diarization ?? false,
         maxDurationSec: body.maxDurationSec ?? current?.maxDurationSec ?? 1800,
-        baseUrl: body.baseUrl === undefined ? (current?.baseUrl ?? null) : body.baseUrl,
-        keySecret: body.keySecret === undefined ? (current?.keySecret ?? null) : body.keySecret,
-        deepgramKeySecret: body.deepgramKeySecret === undefined ? (current?.deepgramKeySecret ?? null) : body.deepgramKeySecret,
       };
       return { next, result: null };
     });

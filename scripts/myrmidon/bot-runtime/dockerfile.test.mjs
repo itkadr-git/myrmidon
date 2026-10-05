@@ -537,8 +537,8 @@ describe("docker/bot-runtime/Dockerfile (development variant)", () => {
     for (const tool of ["/opt/node24/bin", "/opt/pnpm/bin", "/opt/go/bin", "/opt/cargo/bin", "/opt/docker-cli/bin"]) {
       assert.ok(path.split(":").includes(tool), `PATH must contain ${tool}`);
     }
-    // The pnpm store is redirected to the durable volume, not the read-only image.
-    assert.match(devStageInstructions, /npm_config_store_dir=\/data\/hermes\//);
+    // The pnpm store sits on the workspace mount (hard links cannot cross mounts), not the read-only image.
+    assert.match(devStageInstructions, /npm_config_store_dir=\/workspace\//);
   });
 
   it("sets no shell-start variable, which dockergate also refuses", () => {

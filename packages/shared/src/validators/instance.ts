@@ -10,17 +10,36 @@ import { feedbackDataSharingPreferenceSchema } from "./feedback.js";
 import { shapeWithoutDefaults } from "./partial.js";
 // myrmidon(WORKSPACE-HYGIENE): workspace disk quotas that can be changed while the server runs
 import { workspaceHygieneLimitsSchema } from "../myrmidon-workspace-hygiene.js";
+import { hostDiskSettingsSchema } from "../myrmidon-host-disk.js";
+// myrmidon(BOT-DISK-A): bot draft-directory lifecycle settings, lenient stored shape
+import { storedBotDiskSettingsSchema } from "../myrmidon-bot-disk.js";
 // myrmidon(C0): run admission limits that can be changed while the server runs
-import { runLimitsSchema } from "../myrmidon-runtime-limits.js";
+import { storedRunLimitsSchema } from "../myrmidon-runtime-limits.js";
 // myrmidon(PARALLEL-HELPERS): company ceiling/default for parallel helper
 // subagents, changed from the instance settings page and /api/myrmidon/parallel-helpers.
 import { parallelHelpersSettingsSchema, patchParallelHelpersSettingsSchema } from "../myrmidon-parallel-helpers.js";
+// myrmidon(BOT-LSP-DEFAULTS): the language-server mode per role, changed from the instance
+// settings page and /api/myrmidon/bot-lsp.
+import { botLspSettingsSchema } from "../myrmidon-bot-lsp.js";
 // myrmidon(EXTCASE-B): the browser-bridge allowlist stored in the same general settings row
 import { browserBridgeSettingsSchema } from "../myrmidon-browser-bridge.js";
 import { swarmClaimSettingsSchema } from "../myrmidon-swarm-claim.js";
 // myrmidon(1.6.1-WIP-LIMIT-A): the per-agent WIP limit settings stored in the
 // same general settings row.
 import { wipLimitSettingsSchema } from "../myrmidon-wip-limit.js";
+// myrmidon(REVIEW-ROUTING): the automatic reviewer routing settings stored in the same row.
+import { reviewRoutingSettingsSchema } from "../myrmidon-review-routing.js";
+// myrmidon(1.7-BUDGET-CONFIG-B): the budget enforcement mode stored in the
+// same general settings row.
+import { budgetEnforcementSettingsSchema } from "../myrmidon-budget-enforcement.js";
+// myrmidon(MEMORY-UI): the agent memory settings stored in the same row.
+import { agentMemorySettingsSchema } from "../myrmidon-agent-memory.js";
+// myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys stored
+// in the same general settings row.
+import { pluginEntitlementKeysSchema } from "../myrmidon-plugin-entitlement.js";
+// myrmidon(DM-PROGRESS): live progress steps of the bridged Telegram DM status
+// message, stored in the same general settings row.
+import { telegramDmProgressSettingsSchema } from "../myrmidon-telegram-dm-progress.js";
 
 // myrmidon(PARALLEL-HELPERS): re-exported for the barrel so the settings page and the
 // /api/myrmidon/parallel-helpers route validate with the exact schema stored here.
@@ -56,12 +75,29 @@ export const instanceGeneralSettingsSchema = z.object({
   // myrmidon(C0): run admission limits changed from the instance settings
   // page and /api/myrmidon/runtime-limits; absent means "use the environment
   // variable, then the default" (see packages/shared/src/myrmidon-runtime-limits.ts).
-  runLimits: runLimitsSchema.optional(),
+  // myrmidon(1.6.2 RUN-ADMISSION): the stored shape, so a row saved before
+  // `minFreeHostMemoryMb` existed still parses (a strict miss here would fail
+  // the whole general block and the next write would drop every setting).
+  runLimits: storedRunLimitsSchema.optional(),
+  // myrmidon(BOT-DISK E): the host disk usage threshold, changed from
+  // /api/myrmidon/host-disk; absent means "use the environment variable, then
+  // the default (85)".
+  hostDisk: hostDiskSettingsSchema.optional(),
+  // myrmidon(BOT-DISK-A): the bot draft-directory lifecycle (enabled, idle TTL),
+  // changed from /api/myrmidon/bot-disk; absent means "use the environment
+  // variable, then the default". Lenient: a row without the key, with unknown
+  // keys or with an invalid value still parses (see myrmidon-bot-disk.ts).
+  botDisk: storedBotDiskSettingsSchema,
   // myrmidon(PARALLEL-HELPERS): company ceiling and default for the "Parallel
   // helpers" block on an agent card, changed from the instance settings page
   // and /api/myrmidon/parallel-helpers; absent means the module defaults apply
   // (see packages/shared/src/myrmidon-parallel-helpers.ts).
   parallelHelpers: parallelHelpersSettingsSchema.optional(),
+  // myrmidon(BOT-LSP-DEFAULTS): which roles write code and which language-server
+  // mode coding and non-coding bots run with, changed from the instance settings
+  // page and /api/myrmidon/bot-lsp; absent means the module defaults apply (see
+  // packages/shared/src/myrmidon-bot-lsp.ts).
+  botLsp: botLspSettingsSchema.optional(),
   // myrmidon(EXTCASE-B): browser-bridge allowlist changed from the bridge panel;
   // absent means "no domain is allowed" (deny by default).
   browserBridge: browserBridgeSettingsSchema.optional(),
@@ -70,10 +106,36 @@ export const instanceGeneralSettingsSchema = z.object({
   // /api/myrmidon/swarm-claim; absent means "use the environment variable, then
   // the default (the pilot is off)".
   swarmClaim: swarmClaimSettingsSchema.optional(),
+  // myrmidon(1.6.1 SWARM-SETTINGS-UI): the change journal of the swarm-claim
+  // pilot settings (who changed what, and when), kept by the settings service
+  // under `general.swarmClaimJournal` and read by GET /api/myrmidon/swarm-claim.
+  // Stored passthrough, never validated here beyond being a list-shaped value
+  // the service re-reads defensively.
+  swarmClaimJournal: z.array(z.unknown()).optional(),
   // myrmidon(1.6.1-WIP-LIMIT-A): per-agent WIP limits — the company default and
   // per-agent overrides, changed from /api/myrmidon/companies/:id/wip-limit/settings;
   // absent means the feature counts but never signals (all limits null).
   wipLimit: wipLimitSettingsSchema.optional(),
+  // myrmidon(REVIEW-ROUTING): automatic reviewer routing, changed from
+  // /api/myrmidon/companies/:id/review-routing/settings; absent means the defaults.
+  reviewRouting: reviewRoutingSettingsSchema.optional(),
+  // myrmidon(1.7-BUDGET-CONFIG-B): what a crossed budget limit does while the
+  // incident is open — signal only (default), pause with an owner card (soft),
+  // or refuse new runs with the budget reason (hard); changed from
+  // /api/myrmidon/budget-enforcement; absent means the default (signal only).
+  budgetEnforcement: budgetEnforcementSettingsSchema.optional(),
+  // myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys, managed
+  // from the instance settings page and PATCH /api/myrmidon/plugin-entitlement/keys;
+  // absent means "no keys are registered" (no plugin is unlocked).
+  pluginEntitlementKeys: pluginEntitlementKeysSchema.optional(),
+  // myrmidon(DM-PROGRESS): live progress steps in the bridged Telegram DM status
+  // message (on/off and the minimum spacing between edits), changed from
+  // /api/myrmidon/telegram-dm-progress; absent means the defaults.
+  telegramDmProgress: telegramDmProgressSettingsSchema.optional(),
+  // myrmidon(MEMORY-UI): agent card Memory tab — service address, optional key
+  // secret name and the switch, changed from the instance settings page and
+  // /api/myrmidon/agent-memory; absent means "use the environment".
+  agentMemory: agentMemorySettingsSchema.optional(),
 }).strict();
 
 export const patchInstanceGeneralSettingsSchema = z

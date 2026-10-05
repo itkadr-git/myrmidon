@@ -141,9 +141,16 @@ type Config struct {
 	// on top of its three volumes (an empty list allows none). A bind naming any
 	// other source is refused.
 	MountSources []string `json:"mountSources"`
-	Bots         []Bot    `json:"bots"`
-	Limits       Limits   `json:"limits"`
-	StatsFile    string   `json:"statsFile"`
+	// PackageCacheRoot is the host directory of the shared package cache of
+	// the bots (the board's instance setting of the same path). Under it, and
+	// only there, a bot may mount the fixed cache subdirectories read-write at
+	// their fixed mount points (policy.PackageCacheMounts), and the board's git
+	// mirrors read-only (policy.PackageCacheReadOnlyMounts, 1.6.2-BOT-DISK-C).
+	// Empty or missing (the default) allows no cache mount at all.
+	PackageCacheRoot string `json:"packageCacheRoot"`
+	Bots             []Bot  `json:"bots"`
+	Limits           Limits `json:"limits"`
+	StatsFile        string `json:"statsFile"`
 }
 
 var (
@@ -245,6 +252,16 @@ func (c *Config) Validate() error {
 			return errors.New("config: duplicate entry in mountSources")
 		}
 		seenSources[src] = true
+	}
+	if c.PackageCacheRoot != "" {
+		r := c.PackageCacheRoot
+		if !strings.HasPrefix(r, "/") || r == "/" || strings.Contains(r, "..") ||
+			strings.Contains(r, "//") || strings.HasSuffix(r, "/") || strings.Contains(r, "\x00") {
+			return errors.New("config: packageCacheRoot must be an absolute directory without .., // and a trailing /")
+		}
+		if r == c.VolumeRoot || strings.HasPrefix(r, c.VolumeRoot+"/") || strings.HasPrefix(c.VolumeRoot, r+"/") {
+			return errors.New("config: packageCacheRoot must not overlap volumeRoot")
+		}
 	}
 	if len(c.Images) == 0 {
 		return errors.New("config: images must not be empty")
