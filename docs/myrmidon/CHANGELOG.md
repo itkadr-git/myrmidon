@@ -112,32 +112,6 @@ version file to edit. Base Paperclip version is in the image label
   mounted into a build container on the build VPS and the same command runs
   there.
 
-### Authorize GitHub once for the whole server with our own GitHub Apps (GITHUB-SHARED-IDENTITY)
-
-- Development agents could push only with an OAuth GitHub identity connected
-  per person or per agent through the vendor's cloud connector and the
-  vendor's GitHub App (a third party with write access to the code); bot
-  containers strip raw tokens from the terminal, so agents without such an
-  authorization could not push at all.
-- Company settings → "Shared GitHub authorization"
-  (`GET`/`PUT /api/myrmidon/companies/:companyId/github-shared-identity`)
-  lists **our own GitHub Apps**: App id, private key (a company secret),
-  installation, the agents (roles and/or agents) and the allowed
-  repositories (`owner/repo` patterns). Applied without a restart.
-- The board mints the installation tokens itself — no external broker — for
-  the one target repository with contents/pull requests read-write and
-  metadata read only. The App is picked by the target repository of each
-  operation: products under different accounts never mix; a repository
-  matched by no App stays absent, by two is an error. A dedicated per-agent
-  grant (and the run's personal grant) still wins.
-- The commit author and committer stay the agent; each issuance is audited
-  (`myrmidon.github_app.issued`); the key and the token are never logged.
-- The vendor cloud GitHub connector is **off by default**
-  (`MYRMIDON_GITHUB_VENDOR_CONNECTOR=1` turns it on).
-- Bot image: patch 09 keeps stripping raw tokens; `git-credential-paperclip`
-  (`useHttpPath = true`) and the `gh` wrapper send the target repository to
-  the broker. [guides/github-shared-identity.md](guides/github-shared-identity.md).
-
 ### Release publish waits for the tag's own image runs (RELEASE-PUBLISH-WAIT)
 
 - Pushing the `myr-v1.6.1` tag failed to publish the Release on the first

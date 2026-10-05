@@ -859,36 +859,3 @@ API: `GET /api/myrmidon/companies/:companyId/prompt-budget/agents/:agentId/advic
 | Поле | Умолчание | Что делает | Границы / особые случаи |
 |---|---|---|---|
 | `promptBudget.optimizerAgentId` | нет | Агент, которому ставится задача глубокого разбора по кнопке «Deep analysis» | uuid другого агента той же компании; пустое, отсутствующее или не-uuid значение отвечает на deep-POST ошибкой 422. Аддитивное поле области `promptBudget`, которой владеет часть порогов (`instance_settings.general.promptBudget`); переменной окружения нет |
-
-## 1.6.3 — GITHUB-SHARED-IDENTITY: собственные GitHub App («авторизоваться один раз»)
-
-| Переменная | Функция | Умолчание | Что делает | Как отключить / особые случаи |
-|---|---|---|---|---|
-| `MYRMIDON_GITHUB_VENDOR_CONNECTOR` | GITHUB-SHARED-IDENTITY | не задана (**выключено**) | Выключатель облачного GitHub-коннектора вендора на весь экземпляр (OAuth через GitHub App вендора). Выключен: новые управляемые подключения GitHub и их OAuth-старт отклоняются (`github_vendor_connector_disabled`), существующие подключения GitHub через коннектор вендора резолвер учёток не видит | `1`/`true`/`yes`/`on` — включено (поведение вендора). Иное — выключено. Читается при каждом вызове |
-
-Остальное меняется на лету, по компаниям. Настройки компании → «Shared
-GitHub authorization» (`GET`/`PUT /api/myrmidon/companies/:companyId/github-shared-identity`;
-GET — доска с доступом к компании, PUT — доска с правом
-`tools:manage_connections`) правят
-`instance_settings.general.myrmidonGithubSharedIdentity[companyId]`:
-
-| Поле | Умолчание | Что делает |
-|---|---|---|
-| `enabled` | `false` | Общий выключатель. Выключен: приложения никому не выдаются (поведение до изменения). |
-| `apps[].appId` | — | Id нашего GitHub App (зарегистрировано с правами Contents и Pull requests на чтение/запись, Metadata на чтение). |
-| `apps[].privateKeySecretId` | — | Секрет компании (scope company, активный) с приватным ключом приложения (PEM). Проверяется при сохранении. |
-| `apps[].installationId` | `null` | Id установки; `null` — находится по репозиторию (`GET /repos/{owner}/{repo}/installation`). |
-| `apps[].roles` / `apps[].agentIds` | `[]` | Агенты, которым доступно приложение (по роли или id). Оба пусты — никому. |
-| `apps[].allowedRepos` | `[]` | `owner/repo` или `owner/<шаблон с *>`, которые обслуживает приложение; владелец буквальный. Брокер выбирает приложение по целевому репозиторию каждой операции; репозиторий, совпавший с двумя приложениями, — ошибка. |
-| `commitEmailDomain` | `null` (`agents.myrmidon.invalid`) | Домен почты коммитов агента `<slug-агента>@<домен>`. Автор и коммиттер — агент. |
-
-Доска сама выпускает токены установки (JWT RS256, `POST
-/app/installations/{id}/access_tokens`), суженные до одного целевого
-репозитория и `contents: write, pull_requests: write, metadata: read`; в
-памяти до пяти минут до истечения. Старшинство: выделенный (на агента)
-грант > личный грант ответственного > приложение. Аудит:
-`myrmidon.github_app.issued`/`denied`, событие доступа к секрету с путём
-`github_app:<owner/repo>`. В контейнерах ботов патч 09 по-прежнему вырезает
-сырые токены; `git-credential-paperclip` (теперь с `useHttpPath = true`) и
-обёртка `gh` передают брокеру целевой репозиторий. Полное руководство:
-[guides/github-shared-identity.ru.md](guides/github-shared-identity.ru.md).
