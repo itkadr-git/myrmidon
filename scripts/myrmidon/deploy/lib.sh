@@ -308,6 +308,29 @@ load_config() {
   : "${RUNS_WAIT_TIMEOUT_SEC:=1800}"
   : "${ALLOW_UNKNOWN_RUNS:=0}"
   : "${POLL_INTERVAL_SEC:=5}"
+  # PREDEPLOY-DB-CHECK (the 05.10 incident): before the maintenance window the
+  # new board image must come up on a COPY of the production database (the
+  # predeploy dump) with the new dockergate, on its own network, and answer the
+  # attention list and the main APIs. deploy.sh calls
+  # predeploy-board-check.sh; the settings below are its inputs. The check
+  # refuses (nothing changed) when it is enabled and its inputs are missing:
+  # silently deploying an image nothing proved is the incident.
+  : "${MYRMIDON_PREDEPLOY_CHECK:=1}"
+  : "${MYRMIDON_PREDEPLOY_POSTGRES_IMAGE:=}"
+  : "${MYRMIDON_PREDEPLOY_DB_NAME:=myrmidon}"
+  : "${MYRMIDON_PREDEPLOY_DB_USER:=myrmidon}"
+  : "${MYRMIDON_PREDEPLOY_DB_READY_COMMAND:=}"
+  : "${MYRMIDON_PREDEPLOY_RESTORE_COMMAND:=}"
+  : "${MYRMIDON_PREDEPLOY_BOARD_ENV_FILE:=}"
+  : "${MYRMIDON_PREDEPLOY_DOCKERGATE_ENV_FILE:=}"
+  : "${MYRMIDON_PREDEPLOY_BOARD_ARGS:=}"
+  : "${MYRMIDON_PREDEPLOY_DOCKERGATE_ARGS:=}"
+  : "${MYRMIDON_PREDEPLOY_BOARD_PORT:=13110}"
+  : "${MYRMIDON_PREDEPLOY_NETWORK:=}"
+  : "${MYRMIDON_PREDEPLOY_HEALTH_TIMEOUT_SEC:=$HEALTH_TIMEOUT_SEC}"
+  : "${MYRMIDON_PREDEPLOY_API_PATHS:=}"
+  : "${MYRMIDON_PREDEPLOY_TOKEN_FILE:=}"
+  : "${MYRMIDON_PREDEPLOY_KEEP:=0}"
   : "${SYSTEMD_UNIT_NAME:=paperclip.service}"
   : "${SYSTEMD_UNIT_DIR:=/etc/systemd/system}"
   : "${SYSTEMD_UNIT_INSTALL:=}"
@@ -443,6 +466,10 @@ Rollback to a tag that is on the host (docker image ls $repo), or drop --local t
   fi
 }
 
+# Enters the maintenance window. Returns 1 when the window was NOT entered (api:
+# the enter POST did not answer; hook: MAINTENANCE_ENTER_COMMAND failed) so the
+# caller can report it — a rollback continues without a window (a board that is
+# down has no admission gate to close), a deploy decides for itself.
 maintenance_enter() {
   local reason="$1"
   case "$MAINTENANCE_MODE" in
@@ -457,7 +484,8 @@ maintenance_enter() {
       local body
       body="$(jq -cn --arg reason "$reason" --argjson t "$drain_timeout" --arg o "$MAINTENANCE_ON_TIMEOUT" \
         '{action: "enter", scope: {type: "instance"}, reason: $reason, drainTimeoutSec: $t, onTimeout: $o}')"
-      run http_post_json "$MAINTENANCE_API_URL" "$body" "$MAINTENANCE_TOKEN_FILE" >/dev/null
+      run http_post_json "$MAINTENANCE_API_URL" "$body" "$MAINTENANCE_TOKEN_FILE" >/dev/null \
+        || { log "maintenance: the board API did not answer the enter POST ($MAINTENANCE_API_URL)"; return 1; }
       log "maintenance: entered (onTimeout=$MAINTENANCE_ON_TIMEOUT, drainTimeoutSec=$drain_timeout)"
       ;;
     hook)
