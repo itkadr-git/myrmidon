@@ -117,7 +117,7 @@ read_manifest() {
 }
 manifest_digest() { sed -n "s/^$1=//p" <<<"$manifest_lines" | head -n1; }
 if [[ -n "$release_tag" ]]; then
-  [[ "$release_tag" =~ ^myr-v[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "--release must look like myr-vX.Y.Z (got: $release_tag)"
+  [[ "$release_tag" =~ ^myr-v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] || die "--release must look like myr-vX.Y.Z or myr-vX.Y.Z-rc.N (got: $release_tag)"
   manifest_lines="$(read_manifest "$release_tag")" || die "cannot read the component digests of release $release_tag; nothing was changed"
   manifest_board="$(manifest_digest board)"
   [[ -n "$manifest_board" ]] || die "release $release_tag names no board image; nothing was changed"
@@ -163,7 +163,8 @@ component_source="registry"
 bot_digest_args=()
 bot_digests_known=0
 version_tag=""
-if [[ "${CI_IMAGE_VERSION:-}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+# RC-VERSIONS: the version label of a tag build is X.Y.Z or X.Y.Z-rc.N.
+if [[ "${CI_IMAGE_VERSION:-}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
   version_tag="$CI_IMAGE_VERSION"
 fi
 # The job flow (--digest only): the release of the board image is found by its

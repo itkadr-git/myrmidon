@@ -68,7 +68,9 @@ maintenance) and on any "no" exits with the reason, changing nothing:
    CI sets these labels at build time.
 4. **The commit is checked.** The script runs `git fetch origin main` in the clone that holds
    it and requires the label commit to be reachable from `origin/main`, or to carry a
-   `myr-v<x>.<y>.<z>` tag in `origin` (`git ls-remote --tags`). An image built from a branch
+   `myr-v<x>.<y>.<z>` tag in `origin` (`git ls-remote --tags`) — a release candidate tag
+   `myr-v<x>.<y>.<z>-rc.<n>` counts too (RC-VERSIONS: deploying an rc IS the trial run of
+   the release flow). An image built from a branch
    or from unreviewed code does not pass. No git, the script outside a clone, a foreign
    `origin`, a failed fetch — a refusal with a clear reason.
 
@@ -171,6 +173,46 @@ scripts/myrmidon/deploy/deploy.sh --config deploy.env --release myr-v1.6.2
   `$STATE_DIR/bot-image-rollout-summary.json`. The superseded bot images leave `images[]`
   only after every bot moved. Bot-card failures end the deploy as DEGRADED. There is no board
   setting for a default bot image to update.
+
+### Release candidates and the `latest` marker (RC-VERSIONS)
+
+Since 1.6.5 a release goes through a trial run on our own production before it becomes the
+GitHub **Latest** release (the owner's requirement of 05.10):
+
+1. **Cut the candidate.** The release-cut PR lands on `main`, then the tag
+   `myr-vX.Y.Z-rc.1` (next trial: `-rc.2`, …) is pushed on the release commit. CI builds
+   every component image with the tag `X.Y.Z-rc.N` and the version `/api/health` reports is
+   exactly `X.Y.Z-rc.N`. The publish workflow creates the GitHub Release as a
+   **pre-release** titled `Myrmidon X.Y.Z-rc.N (RC N)` — it never touches `latest`.
+2. **Deploy the candidate.** `deploy.sh --release myr-vX.Y.Z-rc.N` works exactly like a
+   final release (the manifest asset, the component gate, the bot rollout): the digests
+   resolve from the rc's own image tags. `--expect-version X.Y.Z-rc.N` matches what the
+   board reports.
+3. **Verify on production.** Health (`/api/health` status ok at `X.Y.Z-rc.N`), the
+   attention list empty of new deploy damage, the fleet taking tasks, the bot images
+   applied. The deploy itself already proved the bot re-apply smoke.
+4. **Cut the final tag.** When the candidate is judged «годно», tag the SAME commit
+   `myr-vX.Y.Z` and push. Nothing rebuilds from scratch for the promotion: the image
+   workflows re-run on the final tag and tag the release images `X.Y.Z` (same commit), and
+   the publish workflow publishes the final release (same notes section `## X.Y.Z`, still
+   never `latest`). Deploy the final tag with `deploy.sh --release myr-vX.Y.Z`.
+5. **Mark Latest explicitly.** Only after the final release runs on our board and passed
+   its smoke:
+
+   ```bash
+   scripts/myrmidon/release/promote-latest.sh --tag myr-vX.Y.Z \
+     --health-url https://<board>/api/health --health-token-file <board-key-file>
+   ```
+
+   The command refuses (and changes nothing) when the tag is an rc, the release is a
+   pre-release, the release commit is not on `main`, or the board reports any version
+   other than `X.Y.Z` — the marker moves only with proof the release is the version
+   actually running on our production. `--skip-health-check` is the documented escape
+   hatch for a rehearsed promotion (staging, a drill); it logs loudly.
+
+A publish — rc or final — NEVER moves `latest` by itself: `publish-github-release.sh`
+does not pass `--latest` to GitHub anymore. An rc also never marks another release
+«(superseded)», and a final tag never supersedes its own release candidates.
 
 ### Upgrading from 1.5.0 to 1.6.0
 

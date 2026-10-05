@@ -49,20 +49,25 @@ jobs:
           vendor_version="${vendor_tag#v}"
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             tag="${GITHUB_REF#refs/tags/}"
-            if [[ ! "$tag" =~ ^myr-v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
-              echo "::error::release tag must look like myr-v<major>.<minor>.<patch>, got $tag"
+            # RC-VERSIONS (owner requirement, 05.10): release candidate tags
+            # myr-vX.Y.Z-rc.N build exactly like final tags; the image version
+            # (and the version /api/health reports) is X.Y.Z-rc.N.
+            if [[ ! "$tag" =~ ^myr-v([0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?)$ ]]; then
+              echo "::error::release tag must look like myr-v<major>.<minor>.<patch> or myr-v<major>.<minor>.<patch>-rc.<n>, got $tag"
               exit 1
             fi
             expected_version="${BASH_REMATCH[1]}"
             image_tag="$expected_version"
           else
             # Between releases: <last release>+<commits>.git.<sha>; before the first release 0.0.0.
+            # RC-VERSIONS: the nearest release tag may be an rc (myr-vX.Y.Z-rc.N);
+            # the match then takes its full X.Y.Z-rc.N as the base version.
             if describe="$(git describe --tags --long --abbrev=7 --match 'myr-v*' HEAD 2>/dev/null)" \
-              && [[ "$describe" =~ ^myr-v([0-9]+\.[0-9]+\.[0-9]+)-([0-9]+)-g([0-9a-f]+)$ ]]; then
-              if [[ "${BASH_REMATCH[2]}" == "0" ]]; then
+              && [[ "$describe" =~ ^myr-v([0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?)-([0-9]+)-g([0-9a-f]+)$ ]]; then
+              if [[ "${BASH_REMATCH[3]}" == "0" ]]; then
                 expected_version="${BASH_REMATCH[1]}"
               else
-                expected_version="${BASH_REMATCH[1]}+${BASH_REMATCH[2]}.git.${BASH_REMATCH[3]}"
+                expected_version="${BASH_REMATCH[1]}+${BASH_REMATCH[3]}.git.${BASH_REMATCH[4]}"
               fi
             else
               expected_version="0.0.0+$(git rev-list --count HEAD).git.$(git rev-parse --short=7 HEAD)"
