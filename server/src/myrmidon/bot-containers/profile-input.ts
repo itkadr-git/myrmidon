@@ -65,6 +65,16 @@ export const BOT_MODEL_CONTEXT_LENGTH_ENV = "MYRMIDON_BOT_MODEL_CONTEXT_LENGTH";
 export const BOT_AUX_TITLE_MODEL_ENV = "MYRMIDON_BOT_AUX_TITLE_MODEL";
 /** myrmidon(BOT-RUNTIME-TUNING-B): instance default for auxiliary.compression.model (a gateway model alias). */
 export const BOT_AUX_COMPRESSION_MODEL_ENV = "MYRMIDON_BOT_AUX_COMPRESSION_MODEL";
+/**
+ * myrmidon(BOT-RUNTIME-TUNING-AUX-CEILING): MYRMIDON_BOT_AUX_FALLBACK_MODELS —
+ * comma-separated gateway model aliases that form the CHEAP CEILING of every
+ * auxiliary call the compiler configures (title generation, compression): they
+ * are written as `auxiliary.<task>.fallback_chain`, which Hermes walks BEFORE
+ * the main chain. Without it an auxiliary call that fails on its own model
+ * climbs the card's `models.fallbacks` / the gateway's own ladder and can be
+ * served by a paid model (fact 02.10: session titles did exactly that).
+ */
+export const BOT_AUX_FALLBACK_MODELS_ENV = "MYRMIDON_BOT_AUX_FALLBACK_MODELS";
 
 /**
  * One instance-wide MCP server. The token is never in the setting: `tokenSecret`
@@ -152,6 +162,17 @@ export interface BotProfileSettings {
    * for `auxiliary.compression.model`.
    */
   auxiliaryCompressionModel?: string | null;
+  /**
+   * myrmidon(BOT-RUNTIME-TUNING-AUX-CEILING): MYRMIDON_BOT_AUX_FALLBACK_MODELS
+   * — the auxiliary fallback ceiling: gateway aliases the compiler writes to
+   * `auxiliary.title_generation.fallback_chain` and
+   * `auxiliary.compression.fallback_chain`. Null/empty = no chain is written
+   * and Hermes keeps its own policy (an auxiliary task on `provider: auto`
+   * follows the main chain). The ceiling is an instance-wide policy, not a card
+   * field: it caps a class of models for every bot, and an operator names
+   * aliases the gateway actually serves.
+   */
+  auxiliaryFallbackModels?: string[] | null;
 }
 
 function readSetting(env: NodeJS.ProcessEnv, name: string): string | null {
@@ -315,6 +336,30 @@ export function parseBotModelContextLengths(raw: string | null): { map: Record<s
   return { map, error: errors.length > 0 ? `${BOT_MODEL_CONTEXT_LENGTH_ENV}: ${errors.join("; ")} (skipped)` : null };
 }
 
+/**
+ * myrmidon(BOT-RUNTIME-TUNING-AUX-CEILING): MYRMIDON_BOT_AUX_FALLBACK_MODELS —
+ * comma-separated gateway model aliases. Comma-separated like
+ * MODEL_CONTEXT_LENGTH, but a bare alias list (no "="): each item is the model
+ * name of one `auxiliary.<task>.fallback_chain` entry. Duplicates are folded
+ * away, order is kept as written (the chain is walked in that order), blanks
+ * are skipped. Unset/blank/commas-only → null: no ceiling, Hermes keeps its own
+ * auxiliary fallback policy. There is no per-entry error path — any non-empty
+ * item is a usable alias, and whether the gateway serves it is the operator's
+ * problem (a dropped entry would look like "no ceiling", the bug this closes).
+ */
+export function parseBotAuxFallbackModels(raw: string | null): string[] | null {
+  if (raw === null) return null;
+  const seen = new Set<string>();
+  const models: string[] = [];
+  for (const item of raw.split(",")) {
+    const model = item.trim();
+    if (!model || seen.has(model)) continue;
+    seen.add(model);
+    models.push(model);
+  }
+  return models.length > 0 ? models : null;
+}
+
 export function readBotProfileSettings(env: NodeJS.ProcessEnv = process.env): BotProfileSettings {
   const llmApiKeyEnv = readSetting(env, BOT_LLM_API_KEY_ENV_ENV);
   const mcp = parseBotMcpServers(readSetting(env, BOT_MCP_SERVERS_ENV));
@@ -323,6 +368,9 @@ export function readBotProfileSettings(env: NodeJS.ProcessEnv = process.env): Bo
   // on the next compile tick, like the rest of this settings object.
   const compressionTokens = parseBotCompressionThresholdTokens(readSetting(env, BOT_COMPRESSION_THRESHOLD_TOKENS_ENV));
   const contextLengths = parseBotModelContextLengths(readSetting(env, BOT_MODEL_CONTEXT_LENGTH_ENV));
+  // myrmidon(BOT-RUNTIME-TUNING-AUX-CEILING): the cheap ceiling of the
+  // auxiliary fallback chains.
+  const auxiliaryFallbackModels = parseBotAuxFallbackModels(readSetting(env, BOT_AUX_FALLBACK_MODELS_ENV));
   return {
     hindsightApiUrl: readSetting(env, BOT_HINDSIGHT_API_URL_ENV),
     hindsightBank: readSetting(env, BOT_HINDSIGHT_BANK_ENV),
@@ -340,6 +388,7 @@ export function readBotProfileSettings(env: NodeJS.ProcessEnv = process.env): Bo
     modelContextLengthsError: contextLengths.error,
     auxiliaryTitleModel: readSetting(env, BOT_AUX_TITLE_MODEL_ENV),
     auxiliaryCompressionModel: readSetting(env, BOT_AUX_COMPRESSION_MODEL_ENV),
+    auxiliaryFallbackModels,
   };
 }
 
@@ -828,6 +877,12 @@ export function buildHermesProfileInput(source: BotProfileSource, settings: BotP
       ...(source.instanceDefaults?.auxiliary ?? {}),
       ...(settings.auxiliaryTitleModel ? { titleGenerationModel: settings.auxiliaryTitleModel } : {}),
       ...(settings.auxiliaryCompressionModel ? { compressionModel: settings.auxiliaryCompressionModel } : {}),
+      // myrmidon(BOT-RUNTIME-TUNING-AUX-CEILING): the instance-wide cheap
+      // ceiling for auxiliary fallback chains; null (unset) leaves Hermes's own
+      // policy in place.
+      ...(settings.auxiliaryFallbackModels && settings.auxiliaryFallbackModels.length > 0
+        ? { fallbackModels: settings.auxiliaryFallbackModels }
+        : {}),
     },
   };
   const instanceDefaultsWarnings: string[] = [];

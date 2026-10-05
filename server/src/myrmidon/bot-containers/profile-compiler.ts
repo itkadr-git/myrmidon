@@ -278,6 +278,18 @@ export interface HermesProfileAuxiliaryDefaults {
   titleGenerationModel?: string;
   /** Gateway model alias for `auxiliary.compression.model`. Empty = not written. */
   compressionModel?: string;
+  /**
+   * myrmidon(BOT-RUNTIME-TUNING-AUX-CEILING): the cheap ceiling for auxiliary
+   * calls — model aliases written to `auxiliary.<task>.fallback_chain` for the
+   * auxiliary tasks this compiler configures (title generation, compression).
+   * Hermes walks that chain before the main one, so an auxiliary call that
+   * cannot be served by its own model lands on another model of the same
+   * (cheap) class instead of climbing the card's `models.fallbacks` — or the
+   * gateway's own ladder — into a paid model. Empty/absent = no chain written
+   * (Hermes's own policy). Vision is not capped: its entries must be
+   * vision-capable, a class this list cannot vouch for.
+   */
+  fallbackModels?: readonly string[];
 }
 
 export interface HermesProfileInstanceDefaults {
@@ -541,18 +553,122 @@ const COMPRESSION_THRESHOLD_TOKENS_MAX = 2_000_000;
 const MODEL_CONTEXT_LENGTH_MIN = 8_000;
 const MODEL_CONTEXT_LENGTH_MAX = 10_000_000;
 
+/**
+ * myrmidon(BOT-RUNTIME-TUNING-AUX-CEILING): the resolved cheap ceiling of the
+ * auxiliary fallback chains. `models` non-empty; `provider`/`baseUrl`/
+ * `apiKeyEnv` describe the route the entries live on and may lack `provider`
+ * when the card names none and the instance has no gateway endpoint (there is
+ * then nowhere to place an entry — the chain is dropped with a warning).
+ */
+interface AuxiliaryCeiling {
+  models: readonly string[];
+  provider?: string;
+  baseUrl?: string;
+  apiKeyEnv?: string;
+}
+
+/**
+ * myrmidon(BOT-RUNTIME-TUNING-AUX-CEILING): the provider of an auxiliary
+ * fallback entry. The card's own provider when it names one (a native provider
+ * keeps its identity, exactly like `buildFallbackModelSequence`); a card that
+ * leaves the provider empty or `auto` talks to the instance LLM gateway, whose
+ * entries must carry that endpoint explicitly (`custom` + base_url + key_env)
+ * — Hermes resolves every fallback entry on its own and inherits neither from
+ * `model` (hermes_cli/fallback_config.py). No provider and no gateway endpoint
+ * → undefined: no ceiling can be placed.
+ */
+function auxiliaryCeilingProvider(provider: string | undefined, llmBaseUrl: string | undefined): string | undefined {
+  const explicit = nonEmpty(provider);
+  if (explicit && explicit.toLowerCase() !== "auto") return explicit;
+  return llmBaseUrl ? "custom" : undefined;
+}
+
+/**
+ * myrmidon(BOT-RUNTIME-TUNING-AUX-CEILING): `fallback_chain` for one auxiliary
+ * task — the ceiling aliases as Hermes fallback entries, in the configured
+ * order. An alias that repeats the task's own model is dropped: Hermes skips
+ * the backend that just failed anyway, so such an entry is not a fallback.
+ * Returns undefined (with a warning) when the route cannot be resolved or every
+ * entry repeats the task's own model — the task block is still written with its
+ * model, only the ceiling is missing.
+ */
+function buildAuxiliaryFallbackChain(
+  task: string,
+  model: string,
+  ceiling: AuxiliaryCeiling,
+  warnings: string[],
+): YamlMapping[] | undefined {
+  const aliases = ceiling.models.filter((alias) => alias !== model);
+  if (aliases.length === 0) {
+    warnings.push(
+      `auxiliary.${task}.fallback_chain: every entry of the auxiliary fallback ceiling repeats the task's own model "${model}"; dropped`,
+    );
+    return undefined;
+  }
+  const provider = ceiling.provider;
+  if (!provider) {
+    warnings.push(
+      `auxiliary.${task}.fallback_chain: the card names no provider and the instance sets no LLM gateway endpoint, so the auxiliary fallback ceiling cannot be placed; dropped (the auxiliary call would climb the main chain)`,
+    );
+    return undefined;
+  }
+  if (provider === "custom" && !ceiling.apiKeyEnv) {
+    warnings.push(
+      `auxiliary.${task}.fallback_chain: the gateway fallback entries need the LLM gateway key name, which this profile does not carry; ceiling dropped`,
+    );
+    return undefined;
+  }
+  return aliases.map(
+    (alias): YamlMapping => ({
+      provider,
+      model: alias,
+      base_url: ceiling.baseUrl,
+      key_env: ceiling.apiKeyEnv,
+    }),
+  );
+}
+
+/** One auxiliary task block: the model, plus the ceiling chain when there is one. */
+function buildAuxiliaryTask(
+  task: string,
+  model: string,
+  ceiling: AuxiliaryCeiling | undefined,
+  warnings: string[],
+): YamlMapping {
+  if (!ceiling) return { model };
+  const chain = buildAuxiliaryFallbackChain(task, model, ceiling, warnings);
+  return chain ? { model, fallback_chain: chain } : { model };
+}
+
+/**
+ * myrmidon(BOT-RUNTIME-TUNING-B): the `auxiliary` section. Vision, title
+ * generation and compression as far as the card (or the instance default for
+ * the last two) names a model.
+ * myrmidon(BOT-RUNTIME-TUNING-AUX-CEILING): title generation and compression
+ * also get the cheap fallback ceiling — without it an auxiliary call that fails
+ * on its own model walks the main chain up to a paid model (fact 02.10).
+ */
 function buildAuxiliary(
   vision: string | undefined,
   titleGeneration: string | undefined,
   compression: string | undefined,
+  ceiling: AuxiliaryCeiling | undefined,
+  warnings: string[],
 ): YamlMapping | undefined {
   const visionModel = nonEmpty(vision);
   const titleModel = nonEmpty(titleGeneration);
   const compressionModel = nonEmpty(compression);
-  if (!visionModel && !titleModel && !compressionModel) return undefined;
+  if (!visionModel && !titleModel && !compressionModel) {
+    if (ceiling) {
+      warnings.push(
+        `auxiliary.fallback_chain: the auxiliary fallback ceiling is set, but neither the cards nor the instance name a title-generation or compression model, so no auxiliary task block exists to cap; nothing written`,
+      );
+    }
+    return undefined;
+  }
   const mapping: Record<string, YamlMapping> = Object.create(null);
-  if (compressionModel) mapping.compression = { model: compressionModel };
-  if (titleModel) mapping.title_generation = { model: titleModel };
+  if (compressionModel) mapping.compression = buildAuxiliaryTask("compression", compressionModel, ceiling, warnings);
+  if (titleModel) mapping.title_generation = buildAuxiliaryTask("title_generation", titleModel, ceiling, warnings);
   if (visionModel) mapping.vision = { model: visionModel };
   return mapping;
 }
@@ -756,6 +872,21 @@ function buildConfigYaml(input: HermesProfileInput, warnings: string[]): string 
   // Build LSP configuration
   const lspConfig = buildLspConfig(input);
 
+  // myrmidon(BOT-RUNTIME-TUNING-AUX-CEILING): the cheap ceiling of auxiliary
+  // fallback chains, resolved once per compile (the routes of its entries need
+  // the same provider/base_url/key_env treatment every `fallback_model` entry
+  // gets — Hermes resolves each independently and inherits none of them).
+  const ceilingModels = input.instanceDefaults.auxiliary?.fallbackModels;
+  const auxCeiling: AuxiliaryCeiling | undefined =
+    ceilingModels && ceilingModels.length > 0
+      ? {
+          models: ceilingModels,
+          provider: auxiliaryCeilingProvider(adapterConfig.provider, llmBaseUrl),
+          baseUrl: llmBaseUrl,
+          apiKeyEnv: llmApiKeyEnv,
+        }
+      : undefined;
+
   const root: YamlMapping = {
     agent: {
       reasoning_effort: buildReasoningEffort(adapterConfig.effort, warnings),
@@ -767,10 +898,14 @@ function buildConfigYaml(input: HermesProfileInput, warnings: string[]): string 
     approvals: { mode: "off" },
     // myrmidon(BOT-RUNTIME-TUNING-B): title/compression auxiliary models — the
     // card's map entry first, the instance default when the card is empty.
+    // myrmidon(BOT-RUNTIME-TUNING-AUX-CEILING): and their cheap fallback
+    // ceiling, so neither task can climb into a paid model.
     auxiliary: buildAuxiliary(
       adapterConfig.models?.vision,
       adapterConfig.models?.titleGeneration ?? input.instanceDefaults.auxiliary?.titleGenerationModel,
       adapterConfig.models?.compressionSummary ?? input.instanceDefaults.auxiliary?.compressionModel,
+      auxCeiling,
+      warnings,
     ),
     compression: buildCompression(input.instanceDefaults.compression, warnings),
     // myrmidon(BOT-LSP): language server protocol settings
