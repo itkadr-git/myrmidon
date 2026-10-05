@@ -133,6 +133,16 @@ else
   log "WARNING: no catalog memory provider at ${catalog_dir}/hindsight — a profile with memory.provider=hindsight starts without memory"
 fi
 
+# --- clone hygiene report (dev variant) -----------------------------------
+# myrmidon(1.6.2 BOT-DISK-C): the board's draft-directory lifecycle removes an
+# idle git clone only when this container says it holds nothing unpushed. The
+# reporter only reads the clones and writes ${HERMES_HOME}/.myrmidon/clone-hygiene.json;
+# it exists in the dev variant only, so the base image skips this.
+if command -v bot-clone-hygiene >/dev/null 2>&1; then
+  bot-clone-hygiene --interval "${MYRMIDON_CLONE_HYGIENE_INTERVAL_SEC:-900}" >/dev/null &
+  log "clone hygiene reporter started (pid $!)"
+fi
+
 # --replace: a previous instance's lock (from a hard container restart) does
 # not block this one — the fleet manager, not hermes, decides whether two
 # instances should ever coexist. --accept-hooks: no TTY to answer a shell

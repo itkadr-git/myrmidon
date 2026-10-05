@@ -163,6 +163,11 @@ import {
   identifyTelegramMedia,
   telegramMediaNeedsIdentification,
 } from "./chat-telegram-media-intake.js";
+// myrmidon(1.6.1 VOICE-STT B): inbound transcription of Telegram voice/audio.
+import {
+  transcribeTelegramVoiceIntake,
+  type TelegramVoiceTranscriber,
+} from "../myrmidon/telegram-voice-stt-intake/index.js";
 import { normalizeTelegramRichMessage } from "./chat-telegram-rich-intake.js";
 import {
   TELEGRAM_DRAFT_ACTION_KIND,
@@ -378,6 +383,16 @@ import {
   telegramAttachmentOmissionNotice,
 } from "../myrmidon/chat-attachment-omission.js";
 import { TELEGRAM_DM_COMMANDS } from "../myrmidon/agent-chat-bridge/commands/index.js";
+// myrmidon(CHAT-HOLD): no silent queue in a bridged Telegram chat.
+import {
+  chatNoticeLanguage,
+  chatWaitNoticeApplies,
+  chatWaitNoticeText,
+  classifyAgentNotInvokable,
+  classifyChatWait,
+  type ChatWaitReason,
+} from "../myrmidon/chat-holds/wait-notice.js";
+import { currentHostMemoryGate } from "../myrmidon/run-admission.js";
 import {
   telegramDmConversationsConfigured,
   telegramDmConversationsEnabled,
@@ -1538,6 +1553,11 @@ export interface ChatChannelServiceOptions {
     claimId: string;
   }) => Promise<void>;
   storage?: StorageService;
+  // myrmidon(1.6.1 VOICE-STT B): optional transcription hook for inbound
+  // Telegram voice/audio. Production wires the shared STT core once it is
+  // merged; tests pass a mock. Null (or unset) keeps the vendor intake path
+  // byte for byte — no byte prefetch, no transcription call.
+  telegramVoiceTranscriber?: TelegramVoiceTranscriber | null;
 }
 
 interface CredentialMutationLeaseGuard {
@@ -1970,6 +1990,30 @@ function sanitizeFilename(value: string | undefined): string | null {
   if (!value) return null;
   const leaf = value.replaceAll("\\", "/").split("/").pop()?.trim();
   return leaf ? leaf.replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 255) : null;
+}
+
+// myrmidon(1.6.1 VOICE-STT B): the voice/audio attachments of a Telegram turn
+// that are eligible for inbound transcription. A turn qualifies only when the
+// provider is Telegram, every attachment is a runtime-provenance voice/audio
+// item (no mixed media), and a download closure exists. Anything else returns
+// null and the vendor path is byte for byte.
+function telegramVoiceSttAttachments(
+  endpoint: Pick<EndpointRow, "provider">,
+  message: Pick<Message, "attachments" | "text">,
+): ReadonlyArray<Attachment> | null {
+  if (endpoint.provider !== "telegram" || message.attachments.length === 0)
+    return null;
+  const voice: Attachment[] = [];
+  for (const attachment of message.attachments) {
+    if (
+      attachment.type !== "audio" ||
+      !hasTelegramMediaProvenance(attachment) ||
+      typeof attachment.fetchData !== "function"
+    )
+      return null;
+    voice.push(attachment);
+  }
+  return voice;
 }
 
 function redactError(error: unknown): string {
@@ -14153,6 +14197,13 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             return 0;
           if (prior && !(await inboundQueueNoticeStillVisible(tx, prior)))
             return 0;
+          // myrmidon(CHAT-HOLD): a bridged Telegram chat reads why its
+          // message waits, in plain words, instead of a bare "queued".
+          const noticeText = await chatWaitAwareNoticeText(tx, {
+            endpointId: action.endpointId,
+            ownerId,
+            state: context.state,
+          });
           const rows = await tx
             .insert(chatPublications)
             .values({
@@ -14170,7 +14221,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               payload: projectSafeChatPublication({
                 classification: "external",
                 source: "safe_milestone",
-                text: inboundWakePublicationText(context.state),
+                text: noticeText,
                 progressState: context.state === "queued" ? "queued" : "failed",
               }),
             })
@@ -14188,6 +14239,48 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       }
     }
     return inserted;
+  }
+
+  // myrmidon(CHAT-HOLD): the inbound-wake notice text. A bridged Telegram
+  // chat gets the closed reason projection of chat-holds/wait-notice.ts read
+  // from the owning wake receipt; every other provider, and any receipt with
+  // no nameable reason, keeps the vendor's text byte for byte.
+  async function chatWaitAwareNoticeText(
+    tx: DbOrTransaction,
+    input: {
+      endpointId: string;
+      ownerId: string;
+      state: "queued" | "not_started" | "removed";
+    },
+  ): Promise<string> {
+    const fallback = inboundWakePublicationText(input.state);
+    const state = input.state;
+    if (state === "removed") return fallback;
+    const [endpoint] = await tx
+      .select({ provider: chatEndpoints.provider })
+      .from(chatEndpoints)
+      .where(eq(chatEndpoints.id, input.endpointId))
+      .limit(1);
+    if (!chatWaitNoticeApplies(endpoint?.provider)) return fallback;
+    const [owner] = await tx
+      .select({
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+        payload: agentWakeupRequests.payload,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, input.ownerId))
+      .limit(1);
+    const reason = owner
+      ? classifyChatWait({
+          status: owner.status,
+          reason: owner.reason,
+          payload: owner.payload ?? null,
+        })
+      : null;
+    return reason
+      ? chatWaitNoticeText(reason, chatNoticeLanguage(endpoint?.provider), state)
+      : fallback;
   }
 
   async function authorizeInboundWakePublication(
@@ -14383,6 +14476,77 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       );
   }
 
+  // myrmidon(CHAT-HOLD): one plain-words status reply per inbound message and
+  // reason, staged as a task-control reply to the sender in a bridged
+  // Telegram chat. Idempotent on (message, reason), so a retried admission
+  // never repeats it. See chat-holds/wait-notice.ts.
+  async function stageChatWaitNotice(
+    action: typeof chatActions.$inferSelect,
+    reason: ChatWaitReason,
+  ): Promise<void> {
+    const issueId = action.payload.issueId;
+    if (
+      !action.conversationId ||
+      !action.principalId ||
+      typeof issueId !== "string"
+    )
+      return;
+    const conversationId = action.conversationId;
+    const principalId = action.principalId;
+    await db.transaction(async (tx) => {
+      const [endpoint] = await tx
+        .select({ provider: chatEndpoints.provider })
+        .from(chatEndpoints)
+        .where(
+          and(
+            eq(chatEndpoints.id, action.endpointId),
+            eq(chatEndpoints.companyId, action.companyId),
+          ),
+        )
+        .limit(1);
+      if (!chatWaitNoticeApplies(endpoint?.provider)) return;
+      await stageAuthorizedTaskControlPublication(tx, {
+        companyId: action.companyId,
+        endpointId: action.endpointId,
+        conversationId,
+        issueId,
+        idempotencyKey: `control:wait:${reason}:${action.id}`,
+        payload: projectSafeChatPublication({
+          classification: "external",
+          source: "task_control",
+          text: chatWaitNoticeText(reason, chatNoticeLanguage(endpoint?.provider)),
+        }),
+        principalId,
+      });
+    });
+  }
+
+  async function stageChatHostMemoryNotice(
+    action: typeof chatActions.$inferSelect,
+    runId: string,
+  ): Promise<void> {
+    try {
+      if (currentHostMemoryGate().state !== "closed") return;
+      const [run] = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, action.companyId),
+            eq(heartbeatRuns.id, runId),
+          ),
+        )
+        .limit(1);
+      if (run?.status !== "queued") return;
+      await stageChatWaitNotice(action, "host_memory");
+    } catch (error) {
+      logger.warn(
+        { error: redactError(error) },
+        "chat host-memory notice was not staged",
+      );
+    }
+  }
+
   async function processInboundWakeup(deliveryId: string): Promise<boolean> {
     const now = new Date();
     const candidate = await db
@@ -14538,6 +14702,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       });
       const durable = await receipt();
       if (!durable) throw new Error("chat_inbound_wakeup_receipt_missing");
+      // myrmidon(CHAT-HOLD): the message became a run that the host memory
+      // floor holds back: tell the chat why it waits.
+      if (durable.runId) {
+        await stageChatHostMemoryNotice(claimed, durable.runId);
+      }
       await settle(receiptDeclined(durable) ? "failed" : "processed", {
         code: receiptDeclined(durable)
           ? `inbound_wakeup_${durable.status}`
@@ -14568,6 +14737,18 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       }
       const denied =
         conflictingReceipt || isExternalActionAuthorizationChange(error);
+      // myrmidon(CHAT-HOLD): an agent that cannot take a turn right now (paused,
+      // turned off) answers the admission with a conflict, and the message is
+      // retried until it can. Say so in the chat once instead of staying silent.
+      const notInvokable = denied ? null : classifyAgentNotInvokable(error);
+      if (notInvokable) {
+        await stageChatWaitNotice(claimed, notInvokable).catch((noticeError) => {
+          logger.warn(
+            { deliveryId, error: redactError(noticeError) },
+            "chat wait notice was not staged",
+          );
+        });
+      }
       await settle(denied ? "failed" : "issued", {
         code: conflictingReceipt
           ? "inbound_wakeup_receipt_conflict"
@@ -16265,6 +16446,37 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       }
 
       const inboundActivityPublications: ActivityPublication[] = [];
+      // myrmidon(1.6.1 VOICE-STT B): prefetch+transcribe the turn's Telegram
+      // voice/audio BEFORE the task/comment transaction below. The vendor
+      // creates the comment before attachments download, and the open task
+      // may read it immediately — so the transcript must already be in the
+      // body at addComment time. Runs only when the setting is on and every
+      // guard passes; a skip returns null here and the vendor body is used.
+      // Delivery ordering: this runs after admission and the reach gates, so
+      // an unlinked or filtered turn never pays a prefetch.
+      const voiceSttAttachmentInput = telegramVoiceSttAttachments(endpoint, message);
+      const voiceSttOutcome = voiceSttAttachmentInput
+        ? await transcribeTelegramVoiceIntake({
+            companyId: endpoint.companyId,
+            senderText: message.text,
+            voiceAttachments: voiceSttAttachmentInput,
+            env: process.env,
+            transcriber: options.telegramVoiceTranscriber ?? null,
+          })
+        : null;
+      const voiceSttBody = voiceSttOutcome?.body ?? null;
+      // myrmidon(1.6.1 VOICE-STT B): resolve the transcript for THIS endpoint —
+      // only Telegram task endpoints consume the prefetched transcript; every
+      // other provider falls through to the vendor body untouched.
+      const voiceSttBodyFor = (taskEndpoint: EndpointRow): string | null =>
+        taskEndpoint.provider === "telegram" ? voiceSttBody : null;
+      // myrmidon(1.6.1 VOICE-STT B): `stt_disabled` is not a failure — it is
+      // the switch being off, and the vendor path must stay byte for byte
+      // (no metadata row, no body change) in that case.
+      const voiceSttSkip =
+        voiceSttOutcome?.skip && voiceSttOutcome.skip !== "stt_disabled"
+          ? voiceSttOutcome.skip
+          : null;
       const persistTaskMutation = async (
         taskTx: DbOrTransaction,
         taskEndpoint: EndpointRow,
@@ -16439,6 +16651,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         }
         // myrmidon(X8b): a `message`-kind bridged command (e.g. /new) overrides
         // the comment body instead of the raw provider text.
+        // myrmidon(1.6.1 VOICE-STT B): the transcript of a Telegram
+        // voice/audio turn, prefetched and recognized before this comment
+        // is created, replaces the placeholder "Shared N file(s)." body.
+        // A skip falls back to the vendor body below; the attachment keeps
+        // going through the unchanged ingest path either way.
         // myrmidon(X9b): an @<alias>-addressed turn's body drops the leading
         // @-token (the addressee already routes the turn; the alias would only
         // pollute the standing conversation) but keeps everything after it.
@@ -16447,6 +16664,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           : message.text;
         const body =
           x8MessageBody ??
+          voiceSttBodyFor(taskEndpoint) ??
           (x9Body.trim() ||
           (message.attachments.length > 0
             ? taskEndpoint.provider === "microsoft-teams" &&
@@ -16529,6 +16747,19 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                         ? "Linked Myrmidon user"
                         : "Sponsored external guest (restricted)",
                     },
+                    // myrmidon(1.6.1 VOICE-STT B): the redacted skip code of
+                    // this turn's transcription attempt. Only the stable code
+                    // is recorded — never the error text, the provider
+                    // payload or any transcript content.
+                    ...(voiceSttSkip
+                      ? [
+                          {
+                            type: "key_value" as const,
+                            label: "Voice transcription",
+                            value: `stt_skipped: ${voiceSttSkip}`,
+                          },
+                        ]
+                      : []),
                   ],
                 },
               ],
