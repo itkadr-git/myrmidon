@@ -127,21 +127,24 @@ behaviorSettingRegistry.register({
 });
 
 /**
- * Parse an environment value based on the setting definition
+ * Parse an environment value based on the setting definition.
+ * Returns null when the environment does not declare the setting: either the
+ * variable is unset/empty, or its value fails validation. This mirrors
+ * `envDeclares` in myrmidon-runtime-limits.ts, where the source is decided by
+ * the fact that the environment is set — never by comparing the parsed value
+ * against the default (OPE-4094 review, blocker 1).
  */
 export function parseSettingFromEnv<T>(raw: string | undefined, def: BehaviorSettingDef<T>): T | null {
-  if (!raw) return def.default;
-  
-  const parsed = def.validate(raw);
-  return parsed !== null ? parsed : def.default;
+  if (raw === undefined || raw === "") return null;
+  return def.validate(raw);
 }
 
 /**
- * Get the value from environment for a setting
+ * Get the value from environment for a setting, or null when the environment
+ * does not declare it.
  */
-export function readSettingFromEnv<T>(env: Record<string, string | undefined>, def: BehaviorSettingDef<T>): T {
-  const raw = env[def.envName];
-  return parseSettingFromEnv(raw, def) ?? def.default;
+export function readSettingFromEnv<T>(env: Record<string, string | undefined>, def: BehaviorSettingDef<T>): T | null {
+  return parseSettingFromEnv(env[def.envName], def);
 }
 
 /**
@@ -175,9 +178,11 @@ export function resolveSetting<T>(options: {
     }
   }
   
-  // Then try environment
+  // Then try environment: the source is "env" whenever the environment
+  // declares a valid value, even when that value equals the default
+  // (mirrors resolveRunLimits' envDeclares semantics).
   const envValue = readSettingFromEnv(env, def);
-  if (envValue !== def.default) {
+  if (envValue !== null) {
     return { value: envValue, source: "env" };
   }
   

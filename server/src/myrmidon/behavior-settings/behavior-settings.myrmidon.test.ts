@@ -102,13 +102,23 @@ const INSTANCE_URL = "/api/myrmidon/behavior-settings";
 const COMPANY_URL = (companyId: string) => `/api/myrmidon/behavior-settings/${companyId}`;
 
 describe("myrmidon(1.7) behavior settings: reading the effective values", () => {
-  it("reports the environment values as the source when settings never saved them", async () => {
-    const { app } = harness();
+  it("reports the environment as the source when it declares a value", async () => {
+    const { app } = harness({ env: { MYRMIDON_DEBUG_MODE: "true" } });
     const res = await request(app).get(INSTANCE_URL).expect(200);
-    
-    // Check that default values are returned with correct sources
-    expect(res.body.settings).toBeDefined();
-    expect(res.body.sources).toBeDefined();
+
+    expect(res.body.settings.debug_mode).toBe(true);
+    expect(res.body.sources.debug_mode).toBe("env");
+  });
+
+  it("keeps the environment as the source when its value equals the default", async () => {
+    // Review blocker 1 (OPE-4094): MYRMIDON_DEBUG_MODE=false is an explicit
+    // env declaration equal to the default; resolveRunLimits' envDeclares
+    // semantics report it as "env", not "default".
+    const { app } = harness({ env: { MYRMIDON_DEBUG_MODE: "false" } });
+    const res = await request(app).get(INSTANCE_URL).expect(200);
+
+    expect(res.body.settings.debug_mode).toBe(false);
+    expect(res.body.sources.debug_mode).toBe("env");
   });
 
   it("reports the stored settings as the source once they exist", async () => {
