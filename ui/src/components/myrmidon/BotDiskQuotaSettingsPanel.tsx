@@ -14,8 +14,10 @@ import { Textarea } from "@/components/ui/textarea";
 import { botDiskQuotaApi, botDiskQuotaQueryKey } from "./botDiskQuotaApi";
 
 /** Parse `key=MB` lines; returns the entries and the first bad line. */
-function parseEntries(text: string): { entries: Array<{ key: string; quotaMb: number }>; bad: string | null } {
-  const entries: Array<{ key: string; quotaMb: number }> = [];
+function parseEntries<K extends string>(
+  text: string,
+): { entries: Array<{ key: K; quotaMb: number }>; bad: string | null } {
+  const entries: Array<{ key: K; quotaMb: number }> = [];
   for (const rawLine of text.split(/\r?\n/)) {
     const line = rawLine.trim();
     if (line === "") continue;
@@ -23,7 +25,7 @@ function parseEntries(text: string): { entries: Array<{ key: string; quotaMb: nu
     const key = eq === -1 ? "" : line.slice(0, eq).trim();
     const value = eq === -1 ? NaN : Number(line.slice(eq + 1).trim());
     if (!key || !Number.isInteger(value) || value <= 0) return { entries: [], bad: line };
-    entries.push({ key, quotaMb: value });
+    entries.push({ key: key as K, quotaMb: value });
   }
   return { entries, bad: null };
 }
