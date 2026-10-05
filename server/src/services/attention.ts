@@ -2013,8 +2013,6 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       if (cloneSignals.length > 0) {
         const botIds = [...new Set(cloneSignals.map((signal) => signal.botKey))].filter(isAgentIdLike);
         const botAgents = botIds.length === 0 ? [] : await db
-        const botIds = [...new Set(cloneSignals.map((signal) => signal.botKey))];
-        const botAgents = await db
           .select({ id: agents.id, name: agents.name, status: agents.status })
           .from(agents)
           .where(and(eq(agents.companyId, companyId), inArray(agents.id, botIds)));
