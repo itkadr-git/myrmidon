@@ -2080,6 +2080,13 @@
       "when": 1791206402990,
       "tag": "0300_bot_isolation_scope",
       "breakpoints": true
+    },
+    {
+      "idx": 301,
+      "version": "7",
+      "when": 1791215000000,
+      "tag": "0301_heartbeat_run_ownership_index",
+      "breakpoints": true
     }
   ]
 }
