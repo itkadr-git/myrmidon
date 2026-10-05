@@ -85,8 +85,23 @@
 # DEGRADED and prints the rollback commands.
 #
 # On a failed health check the script stops with maintenance still on and
-# prints the rollback command. --dry-run changes nothing and prints the plan
-# (the image checks are read-only, so they run in a dry run too).
+# prints the rollback command.
+#
+# --dry-run runs EVERY check the real run makes before it changes anything and
+# fails exactly when the real run would: the CI image checks, the boot unit, the
+# compose project of the full file set (with compose's own error text), every
+# component's service and health setting, the dockergate config check (the edited
+# config, with the new binary).
+# Then it prints the plan. All of this runs before the first pull and before the
+# dump, in the real run too.
+#
+# The proof of the new board image on a copy of the production data before the
+# window is PREDEPLOY-DB-CHECK (predeploy-board-check.sh, step 3b).
+#
+# One source of truth per component image: the generated override file
+# docker-compose.myrmidon-<component>.yml is read by the deploy, by the rollback
+# and by the boot unit. The "previous" image of a component is the image of the
+# container that runs (docker inspect), not a file.
 #
 # PRE-CHECK (the 05.10 incident): every component this deploy is about to roll
 # out is pre-checked — its CI image, the target host's compose project (the REAL
@@ -304,10 +319,12 @@ if ! verify_boot_unit; then
   log "Only a boot unit pointing at the compose files of this deploy (COMPOSE_DIR, COMPOSE_FILES, the override) is accepted; this cannot be skipped."
   die "boot unit not verified, nothing was changed: $BOOT_UNIT_REASON"
 fi
-log "boot unit ok: $(boot_unit_path) starts $COMPOSE_SERVICE from COMPOSE_DIR ($COMPOSE_FILES + $COMPOSE_OVERRIDE_FILE)"
+log "boot unit ok: $(boot_unit_path) starts $COMPOSE_SERVICE from COMPOSE_DIR ($COMPOSE_FILES + $COMPOSE_OVERRIDE_FILE + the local component overrides)"
 
-previous="$(current_digest)"
-previous_image="$(current_image)"
+# One source of truth: the board's previous image is the image of the running
+# container; the override file only when no container exists.
+previous_image="$(previous_board_image)"
+previous="$(ref_digest "$previous_image")"
 
 # ONE-DEPLOY: what changes. The board, each release component whose running
 # image differs from the release's, and the bot images (dockergate images[]).
@@ -378,14 +395,34 @@ if ((need_window == 0)); then
   log "board and every release component already run the release images; nothing to restart (use --force to redeploy the board)"
 fi
 
+# ---- preflight: every check the real run makes before it changes anything ----
+# Read-only. Runs in a dry run and in the real run alike, before the first pull
+# and before the dump (a component that cannot roll out used to be found only
+# after the image was pulled and the database dumped). Each check prints its own
+# words on failure and stops the deploy with nothing changed.
+
+# The compose project of the full file set must validate.
+preflight_board_compose() {
+  local err rc=0 line
+  err="$(mktemp)"
+  compose config --quiet 2>"$err" >/dev/null || rc=$?
+  if ((rc != 0)); then
+    log "docker compose cannot validate the project this deploy manages; compose says:"
+    while IFS= read -r line; do log "  | $line"; done <"$err"
+    rm -f "$err"
+    die "the compose project (COMPOSE_FILES + $COMPOSE_OVERRIDE_FILE + the component overrides) does not validate; nothing was changed"
+  fi
+  rm -f "$err"
+}
+
 # ONE-DEPLOY (the 05.10 incident): the read-only pre-check of every component
 # this deploy is about to roll out — the CI image, the target host's compose
 # project (and the REAL error of `docker compose config` when the project cannot
-# be read, instead of a misleading "not a service"), the service it declares and
-# the health URL. It runs BEFORE the image pull and the database dump, and it
-# runs in a dry run too, so a rehearsal fails exactly where the real window
-# would: on 05.10 the dry run passed and the fault surfaced only after the pull
-# and the dump. rollout-component.sh --dry-run IS this pre-check.
+# be read, instead of a misleading "not a service"), the service it declares, the
+# health setting and, for dockergate, the config check with the new binary. It
+# runs BEFORE the image pull and the database dump, and in a dry run too, so a
+# rehearsal fails exactly where the real window would. rollout-component.sh
+# --dry-run IS this pre-check.
 preflight_components() {
   local name
   for name in "${changed_components[@]}"; do
@@ -395,12 +432,49 @@ preflight_components() {
     fi
   done
 }
-preflight_components
+
+# The image check-config runs with: the new dockergate when it changes, else the
+# one that runs. Empty when neither is known (the operator's command, if any,
+# does the check).
+dockergate_check_image() {
+  if is_changed_component dockergate; then
+    printf '%s\n' "${COMP_REF[dockergate]}"
+  else
+    printf '%s\n' "${COMP_PRE[dockergate]:-}"
+  fi
+}
+
+# The dockergate config phase of the bot image rollout, as a dry run: the edited
+# config (new bot images, enrollment) is built on a copy with the owner and mode
+# of the real file and checked by the real binary.
+preflight_bot_config() {
+  [[ "$MYR_BOT_ROLLOUT_ENABLED" == "1" ]] || return 0
+  local pf_out="" dg_image
+  local -a pf_args=(--config "$config" --phase config --dry-run --resolution "${bot_rollout_resolution%% *}" --ref "$bot_rollout_ref" "${bot_digest_args[@]}")
+  dg_image="$(dockergate_check_image)"
+  [[ -n "$dg_image" ]] && pf_args+=(--dockergate-image "$dg_image")
+  if ! pf_out="$("$MYR_SCRIPT_DIR/bot-image-rollout.sh" "${pf_args[@]}" 2>&1)"; then
+    printf '%s\n' "$pf_out" >&2
+    die "preflight of the dockergate config / bot images failed; nothing was changed"
+  fi
+}
+
+preflight_all() {
+  ((need_window)) || return 0
+  preflight_board_compose
+  preflight_components
+  preflight_bot_config
+  log "preflight ok: compose project, components, dockergate config"
+}
+preflight_all
 
 if [[ "$DRY_RUN" == "1" ]]; then
   log "dry run: nothing will be changed. Plan:"
   plan "0. image check passed (read-only): $ref is in the registry, commit ${CI_IMAGE_REVISION:0:12} is on origin/main or a myr-v* tag"
-  plan "0.5 boot unit check passed (read-only): $(boot_unit_path) reads the compose files of this deploy"
+  plan "0.5 boot unit check passed (read-only): $(boot_unit_path) reads the compose files of this deploy${BOOT_UNIT_NOTE:+ ($BOOT_UNIT_NOTE)}"
+  if ((need_window)); then
+    plan "0.55 preflight passed (read-only, the same checks the real run makes before its first pull): the compose project of the full file set validates; every changed component's service, health setting and CI image; the dockergate config check of the edited config with the new binary"
+  fi
   plan "0.6 release components (${component_resolution:-none}, from the $component_source): board, ${MYR_RELEASE_COMPONENTS//,/, }, bot images; one maintenance window, all-or-nothing"
   if ((board_changed)); then
     plan "board: ${previous_image:-<none>} -> $ref"
@@ -481,7 +555,14 @@ rollback_everything() {
   done
   # dockergate stayed on its image but its config changed: tell it to re-read.
   if ((dg_cfg_saved)) && ! is_changed_component dockergate && [[ -n "${MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_SIGNAL_COMMAND:-}" ]]; then
-    bash -c "$MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_SIGNAL_COMMAND" || { ok=0; log "FAILED to signal dockergate after the config restore"; }
+    if bash -c "$MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_SIGNAL_COMMAND"; then
+      # the old image allowlist must be what dockergate holds again, not just what the file says
+      dockergate_verify_state "" "$(dockergate_config_hash "$DG_CONFIG")" "${MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_RELOAD_TIMEOUT_SEC:-30}" \
+        || { ok=0; log "FAILED: dockergate did not load the restored config after SIGHUP"; }
+    else
+      ok=0
+      log "FAILED to signal dockergate after the config restore"
+    fi
   fi
   # DOCKERGATE-FIRST: the components now roll out BEFORE the board is switched,
   # so a component failure can happen with the board never touched. Rolling a
@@ -502,7 +583,7 @@ rollback_everything() {
 
 # 7c: the components and the dockergate config, inside the window.
 roll_components_in_window() {
-  local name post rc
+  local name post post_file rc
   if [[ "$MYR_BOT_ROLLOUT_ENABLED" == "1" ]]; then
     mkdir -p "$STATE_DIR"
     cp -p "$DG_CONFIG" "$DG_CFG_BACKUP" || { log "cannot back up $DG_CONFIG"; return 1; }
@@ -511,8 +592,10 @@ roll_components_in_window() {
     if is_changed_component dockergate; then
       # the recreate that follows reads the file at start; check-config here
       # runs with the NEW dockergate image
-      cfg_args+=(--no-reload --dockergate-image "${COMP_REF[dockergate]}")
+      cfg_args+=(--no-reload)
     fi
+    dg_image="$(dockergate_check_image)"
+    [[ -n "$dg_image" ]] && cfg_args+=(--dockergate-image "$dg_image")
     log "7c/8 dockergate config: bot images and enrollment"
     "$MYR_SCRIPT_DIR/bot-image-rollout.sh" "${cfg_args[@]}" || { log "FAILED: dockergate config / bot images"; return 1; }
   fi
@@ -522,9 +605,12 @@ roll_components_in_window() {
     rc=0
     "$MYR_SCRIPT_DIR/rollout-component.sh" --config "$config" --component "$name" --digest "${COMP_REF[$name]#*@}" || rc=$?
     post="$(component_current_ref "$name")"
-    # a component whose override moved (even when its health then failed) must
-    # roll back with the rest
-    [[ "$post" != "${COMP_PRE[$name]}" ]] && rolled_components+=("$name")
+    post_file="$(component_override_ref "$name")"
+    # a component whose container or override moved (even when its health then
+    # failed) must roll back with the rest: the override is what the boot reads
+    if [[ "$post" != "${COMP_PRE[$name]}" || "$post_file" != "${COMP_PRE[$name]}" ]]; then
+      rolled_components+=("$name")
+    fi
     ((rc == 0)) || { log "FAILED: component $name"; return 1; }
   done
   return 0
@@ -539,6 +625,19 @@ fail_window() {
   log "Roll back with: $MYR_SCRIPT_DIR/rollback.sh --config $config; components: $MYR_SCRIPT_DIR/rollback-component.sh --config $config --component <dockergate|fleetd>"
   exit 1
 }
+
+# One source of truth: the generated override of every local component names the
+# image that runs (the boot unit reads that file). A stale file is corrected
+# before anything else happens; nothing is restarted.
+for name in "${component_names[@]}"; do
+  component_sync_override "$name"
+done
+# The same for the board: a stale board override is corrected to the image that runs.
+board_running="$(board_running_image)"
+if [[ -n "$board_running" && "$(current_image)" != "$board_running" ]]; then
+  log "override $OVERRIDE_PATH: $(current_image || true) -> $board_running (the image that runs; the boot unit reads this file)"
+  write_override_ref "$board_running"
+fi
 
 if ((need_window == 0)); then
   # Nothing to restart. The bot cards (and an images[] that needs no window)
@@ -567,6 +666,7 @@ fi
 log "3/8 database dump"
 take_dump "${digest#sha256:}"
 LAST_DUMP_FILE="${LAST_DUMP_FILE:-}"
+
 fi
 
 # PREDEPLOY-DB-CHECK (the 05.10 incident): the new board image must come up on a

@@ -52,7 +52,7 @@ while (($#)); do
     --expect-version) expect_version="$2"; shift 2 ;;
     --expect-commit) expect_commit="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
-    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -106,8 +106,8 @@ else
   die "no previous image recorded in $STATE_DIR; pass --to sha256:... or --to-image <ref>"
 fi
 [[ "$ref" =~ ^[A-Za-z0-9./_:@-]+$ ]] || die "rollback target is not an image reference: $ref"
-current="$(current_digest)"
-current_ref="$(current_image)"
+current_ref="$(previous_board_image)"
+current="$(ref_digest "$current_ref")"
 
 if [[ "$rollback_local" == "1" ]]; then
   # The local daemon is the source of truth here: checked before anything
@@ -135,7 +135,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   else
     plan "1. docker pull $ref"
   fi
-  plan "2. enter maintenance (MAINTENANCE_MODE=$MAINTENANCE_MODE) if not already on"
+  plan "2. enter maintenance (MAINTENANCE_MODE=$MAINTENANCE_MODE) if not already on; a board API that does not answer does not block the rollback (ROLLBACK-WITHOUT-BOARD)"
   if [[ -n "$restore_dump" ]]; then
     plan "3. stop $COMPOSE_SERVICE and restore database from $restore_dump (RESTORE_COMMAND), after confirmation"
   else
@@ -143,7 +143,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   fi
   plan "4. set image in $OVERRIDE_PATH from ${current_ref:-<none>} to $ref; docker compose up -d --no-deps $COMPOSE_SERVICE"
   plan "5. verify $HEALTH_URL against the image labels"
-  plan "6. leave maintenance"
+  plan "6. leave maintenance (api mode: only when the board API answers; otherwise recorded as pending)"
   exit 0
 fi
 
