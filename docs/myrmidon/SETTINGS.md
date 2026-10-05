@@ -707,7 +707,6 @@ from the Telegram DM bridge) becomes a proposed epic with child tasks and
 per-task acceptance criteria. The proposal is a plan only: it validates against
 the shared zod contract before any card, and nothing is created until the
 owner accepts the `suggest_tasks` card on the standing Agent Chat conversation
-- `MYRMIDON_TELEGRAM_ACCEPT_REJECT_ENABLED` (boolean): Enables /accept and /reject commands in Telegram DMs
 task. Off unless both the address and the key secret are set: with either
 missing the route answers a stable 503 `planner_disabled` with the names of the
 missing settings (names only, never values), and not a single request goes out.
