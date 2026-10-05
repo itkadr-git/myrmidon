@@ -301,6 +301,10 @@ export function createSwarmClaimSweeper(deps: SwarmClaimSweeperDeps): SwarmClaim
               load1: cpuGate.load1,
               cores: cpuGate.cores,
               loadPercentPerCore: cpuGate.loadPercentPerCore,
+              // myrmidon(1.6.5 rc.2): the ceiling is measured above the host's
+              // own background load, so both numbers go to the log.
+              backgroundPercentPerCore: cpuGate.backgroundPercentPerCore,
+              loadAboveBackgroundPercent: cpuGate.loadAboveBackgroundPercent,
               thresholdPercent: cpuGate.thresholdPercent,
               reason: result.idleSkippedReason,
             },

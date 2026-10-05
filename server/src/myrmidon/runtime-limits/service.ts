@@ -27,8 +27,15 @@ import {
 } from "@paperclipai/shared";
 import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService, logActivity } from "../../services/index.js";
+import type { HostCpuGate } from "../run-admission.js";
 
-export type RuntimeLimitsView = ResolvedRunLimits;
+/**
+ * Effective limits, where each value came from, and — myrmidon(1.6.5 rc.2) —
+ * the host CPU reading the ceiling is applied to right now, so the settings
+ * page can show the operator the load next to the field instead of only the
+ * number they typed.
+ */
+export type RuntimeLimitsView = ResolvedRunLimits & { hostLoad: HostCpuGate | null };
 
 /** Who changed the limits, for the activity log. */
 export interface RuntimeLimitsActor {
@@ -60,6 +67,12 @@ export interface RuntimeLimitsServiceDeps {
   apply(limits: RunLimits): void;
   /** Ask the queued-run sweep to run shortly, so held runs start without waiting for the tick. */
   scheduleResweep(): void;
+  /**
+   * myrmidon(1.6.5 rc.2): the host CPU reading the ceiling is applied to right
+   * now — the load, the host's background floor and the hold, if any. `null`
+   * when the process has no admission yet, so the view never fails on it.
+   */
+  hostLoad?(): HostCpuGate | null;
   env?: Record<string, string | undefined>;
 }
 
@@ -100,10 +113,20 @@ export function runtimeLimitsService(
   };
   const env = deps.env ?? process.env;
 
+  /**
+   * myrmidon(1.6.5 rc.2): the live host CPU reading, or null. Reading the gate
+   * touches /proc/loadavg and feeds the background floor, so the settings page
+   * sees the same numbers the admission is deciding on; a missing admission
+   * (a unit test, an early route call) is simply no reading.
+   */
+  function hostLoad(): HostCpuGate | null {
+    return deps.hostLoad?.() ?? null;
+  }
+
   return {
     read: async (): Promise<RuntimeLimitsView> => {
       const general = await deps.settings.getGeneral();
-      return resolveRunLimits({ stored: general.runLimits, env });
+      return { ...resolveRunLimits({ stored: general.runLimits, env }), hostLoad: hostLoad() };
     },
 
     update: async (patch, actor) =>
@@ -141,7 +164,7 @@ export function runtimeLimitsService(
           { limits: next, changedKeys, actorType: actor.actorType },
           "run admission limits updated without a restart",
         );
-        return resolveRunLimits({ stored: next, env });
+        return { ...resolveRunLimits({ stored: next, env }), hostLoad: hostLoad() };
       }),
   };
 }

@@ -11,7 +11,9 @@ import { z } from "zod";
  * containers live on the host, outside the server cgroup). myrmidon
  * (1.6.5 RUN-ADMISSION) adds the host CPU ceiling: a new run starts only
  * while the host's 1-minute load average per core stays under
- * `maxHostLoadPercentPerCore` percent of one core. In the
+ * `maxHostLoadPercentPerCore` percent of one core — counted above the load the
+ * host carries anyway (rc.2), so a host whose own services keep it busy is not
+ * held shut. In the
  * deployment they come from the environment (`MYRMIDON_*`); this module also
  * stores them in `instance_settings.general.runLimits` so an operator can
  * change them from the API and the settings page without restarting the
@@ -90,6 +92,18 @@ export const DEFAULT_MIN_FREE_HOST_MEMORY_MB = 15_360;
  * board's own API. A load-per-core reading has no meaningful zero ("load may
  * never be zero"), so the default is a percentage, and the cap is switched off
  * with `0`/`off` exactly like the other default-on caps.
+ *
+ * myrmidon(1.6.5 RUN-ADMISSION, rc.2): that 90 % is measured ABOVE the host's
+ * own background load, not against a fixed reading. rc.1 compared the absolute
+ * number, and a bot host whose background services (RAGFlow, hindsight,
+ * Langfuse) hold 100–145 % of a core per core was held shut from the first
+ * second: on 05.10 at 17:34 the fleet stood still with 4 runs going and 34
+ * waiting, and the threshold had to be raised by hand to 200. The host is busy
+ * for reasons the admission did not start and cannot stop, so the ceiling
+ * counts the load the runs themselves add on top of the background the host
+ * shows; see `server/src/myrmidon/run-admission.ts` for how that background is
+ * learned. An instance that saved 200 while the ceiling was absolute keeps it,
+ * and under the new rule it means two cores' worth of added load.
  */
 export const DEFAULT_MAX_HOST_LOAD_PERCENT_PER_CORE = 90;
 
