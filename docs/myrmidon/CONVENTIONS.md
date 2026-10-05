@@ -54,6 +54,10 @@ the staging installation and roll them out.
 
 ## 5. Pull requests
 
+- Registry entries (CHANGELOG, DIVERGENCE, SETTINGS) ship as one fragment
+  file per PR in [changes/](changes/) — never as a hand edit of the shared
+  documents (the CI gate refuses those). Format, naming and the release-cut
+  collect: [changes/README.md](changes/README.md).
 - Small, one topic. If a PR grows beyond ~600 changed lines excluding tests and generated
   code, split it.
 - Title in English, with the feature number and the track: `P1: release environment leases on
@@ -73,10 +77,12 @@ the staging installation and roll them out.
 - Прочее: <что ещё запускалось>.
 
 ## Реестр отличий
-Строка в DIVERGENCE.md, раздел «Трек N»: добавлена / изменена.
+Строка DIVERGENCE.md (раздел «Трек N») — в разделе `## divergence` фрагмента
+`docs/myrmidon/changes/<ветка>.md`, не правкой самого реестра: добавлена / изменена.
 
 ## Настройки
-Новые переменные MYRMIDON_* (или «нет»); строка в SETTINGS.md.
+Новые переменные MYRMIDON_* (или «нет»); строка SETTINGS.md — в разделах
+`## settings-en` / `## settings-ru` того же фрагмента.
 
 ## Миграции БД
 Только аддитивные: новая таблица, столбец или индекс; номер — следующий свободный после миграций
@@ -104,7 +110,8 @@ A session merges its own PR when everything below holds:
    branch; if the platform forbids force pushes, merge `main` into the branch). After the
    update the tests are run again.
 3. No conflicts.
-4. The lines in DIVERGENCE.md and SETTINGS.md are in place.
+4. The lines in DIVERGENCE.md and SETTINGS.md are in place — as rows of the
+   PR's fragment in [changes/](changes/), not as edits of the shared documents.
 5. The self-check for secrets and internal addresses has passed (section 9).
 6. The PR touches only files of its own track, or shared files under the rules of section 12.
 7. A database migration in the PR is additive, and its number is checked against vendor
@@ -313,7 +320,7 @@ describe it in the PR.
 | `pnpm-lock.yaml` | 4 (P8). Others — only for a forced new dependency | 4 |
 | Root `package.json` | 1 (scripts) | 1. Other tracks do not touch it: they run their scripts directly (`node scripts/myrmidon/…`) |
 | `.github/workflows/**` | 1 | 1. If a track needs a new CI check, it writes that in the report |
-| `docs/myrmidon/DIVERGENCE.md`, `docs/myrmidon/SETTINGS.md` | All | Each track writes only in its own section |
+| `docs/myrmidon/DIVERGENCE.md`, `docs/myrmidon/SETTINGS.md` | All | Never edited in a PR — entries go in as rows of the PR's fragment in `docs/myrmidon/changes/` (the fragment names its section); the release-cut collect folds them in |
 | `docs/myrmidon/tracks/N.md` | Only track N, the "Status" section | — |
 
 **Rule:** whoever merges first is right. Everyone else updates their branch from fresh
