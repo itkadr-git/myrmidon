@@ -18,6 +18,86 @@ export function isBotContainersEnabled(env: NodeJS.ProcessEnv = process.env): bo
 
 const HERMES_GATEWAY_ADAPTER_TYPE = "hermes_gateway";
 
+/**
+ * The product defaults of a container card's limits: what the card form writes
+ * when the section is switched on (ui/src/components/myrmidon/botContainerConfig.ts),
+ * what the bot image rollout enrolls a card without limits with, and what the
+ * migration that completed legacy cards used. There is one set for every bot
+ * image family (hermes, hermes-dev, hermes-node): no per-family limits exist.
+ */
+export const BOT_CONTAINER_DEFAULTS = { memoryMb: 2048, cpus: 1, pidsLimit: 512 } as const;
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * myrmidon(1.6.4-BOT-CONTAINER-CARD): why a card's `container` block may not be
+ * SAVED, or null. A block must say `enabled` (true or false) and, while enabled,
+ * carry positive `memoryMb`, `cpus` and `pidsLimit` — a card without them is
+ * refused by the reconciler at apply time ("container.enabled is not true",
+ * "container.memoryMb must be a positive number"), which is too late and too
+ * quiet for whoever saved it. A card without a `container` block is fine, and
+ * so is any other adapter type.
+ */
+export function botContainerCardSaveProblem(
+  adapterType: string | null | undefined,
+  adapterConfig: Record<string, unknown> | null | undefined,
+): string | null {
+  if (adapterType !== HERMES_GATEWAY_ADAPTER_TYPE) return null;
+  const raw = adapterConfig?.container;
+  if (raw === undefined || raw === null) return null;
+  if (!isPlainRecord(raw)) return "adapterConfig.container must be an object";
+  if (typeof raw.enabled !== "boolean") {
+    return "adapterConfig.container.enabled must be true or false: a container block without it is never applied";
+  }
+  if (raw.enabled !== true) return null;
+  const { memoryMb, cpus, pidsLimit } = raw;
+  const missing: string[] = [];
+  if (typeof memoryMb !== "number" || !Number.isFinite(memoryMb) || memoryMb <= 0) missing.push("memoryMb (a positive number)");
+  if (typeof cpus !== "number" || !Number.isFinite(cpus) || cpus <= 0) missing.push("cpus (a positive number)");
+  if (typeof pidsLimit !== "number" || !Number.isInteger(pidsLimit) || pidsLimit <= 0) missing.push("pidsLimit (a positive integer)");
+  if (missing.length > 0) {
+    return `adapterConfig.container is enabled but lacks ${missing.join(", ")}; defaults are memoryMb ${BOT_CONTAINER_DEFAULTS.memoryMb}, cpus ${BOT_CONTAINER_DEFAULTS.cpus}, pidsLimit ${BOT_CONTAINER_DEFAULTS.pidsLimit}`;
+  }
+  return null;
+}
+
+/** How a bot follows the release's bot image (myrmidon(1.6.4-BOT-CONTAINER-CARD)). */
+export type BotImageTracking =
+  | { category: "tracks_release"; image: string }
+  | { category: "pinned"; image: string | null; reason: string }
+  | { category: "not_applicable"; image: null; reason: string };
+
+/** A digest-pinned image of one of the three bot image repositories. Mirrors
+ *  `release_image_for` of scripts/myrmidon/deploy/bot-image-rollout.sh. */
+const RELEASE_BOT_IMAGE_PATTERN = /myrmidon-hermes(?:-dev|-node)?@sha256:[0-9a-f]{64}$/;
+
+/**
+ * The category a rollout puts a container bot in: it TRACKS the release (an
+ * enabled, complete card whose image is a digest of one of our bot repositories:
+ * the rollout moves it to the release image of that repository), is PINNED
+ * (an enabled card on any other image or none: the rollout leaves it alone), or
+ * is NOT APPLICABLE (no managed container: other adapter, no block, disabled,
+ * incomplete). Shared by the status API and mirrored in the rollout script, so
+ * a bot is never skipped without being named.
+ */
+export function classifyBotImageTracking(
+  adapterType: string,
+  adapterConfig: Record<string, unknown>,
+): BotImageTracking {
+  const parsed = readBotContainerAgentConfig(adapterType, adapterConfig);
+  if (!parsed.ok) return { category: "not_applicable", image: null, reason: parsed.reason };
+  if (RELEASE_BOT_IMAGE_PATTERN.test(parsed.config.image.trim())) {
+    return { category: "tracks_release", image: parsed.config.image.trim() };
+  }
+  return {
+    category: "pinned",
+    image: parsed.config.image.trim(),
+    reason: "the card names an image that is not a digest of a bot image repository; the rollout does not move it",
+  };
+}
+
 export interface BotContainerAgentConfig {
   image: string;
   memoryMb: number;

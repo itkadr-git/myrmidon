@@ -126,7 +126,7 @@ describe("myrmidon(FLEETD-VMEXEC) fleet routing — every driver call goes by th
   it("list is the union over the local driver and every fleet host", async () => {
     const d = deps();
     const routed = fleetRoutingDriver(d, () => agent(null));
-    const bots = await routed.list();
+    const bots = await routed.list(["bot-a"]);
     expect(bots).toHaveLength(2);
     expect(d.local.calls).toEqual(["local:list"]);
     expect(d.fleetA.calls).toEqual(["fleet-a:list"]);

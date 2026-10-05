@@ -39,6 +39,7 @@
 | A10 | `POST .../myrmidon-bot-<K>/stop?t=30` | остановка (только внутри recreate) |
 | A11 | `POST .../myrmidon-bot-<K>/restart?t=30` | перезапуск (с пределом частоты) |
 | A12 | `POST .../myrmidon-bot-<K>.next/rename?name=myrmidon-bot-<K>` | завершение recreate |
+| A13 | `GET .../myrmidon-bot-<K>/archive?path=<отчёт clone-hygiene>` | чтение отчёта гигиены клонов бота (один фиксированный файл, как A3) |
 
 `K` — строчный UUID. Любой другой путь (в том числе `exec`, `attach`, `commit`, `build`, `images/create`, `volumes`, `networks`, `info`, `events`, `system`, `swarm`) получает 403 `route_not_allowed`.
 

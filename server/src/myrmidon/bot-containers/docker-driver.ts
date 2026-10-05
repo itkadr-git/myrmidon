@@ -937,19 +937,16 @@ export function dockerBotContainerDriver(
     };
   }
 
-  async function list(): Promise<BotContainerStatus[]> {
-    const filters = encodeURIComponent(JSON.stringify({ label: [BOT_LABEL_KEYS.bot] }));
-    const containers = await requestJson<Array<{ Labels?: Record<string, string> }>>({
-      method: "GET",
-      path: `/containers/json?all=true&filters=${filters}`,
-    });
-    const botKeys = new Set<string>();
-    for (const container of containers) {
-      const botKey = container.Labels?.[BOT_LABEL_KEYS.bot];
-      if (botKey && BOT_KEY_PATTERN.test(botKey)) botKeys.add(botKey);
-    }
+  /** The containers of the given bots that exist. Asked per bot (inspect + marker),
+   *  never by listing containers: dockergate keeps `containers/json` on its closed
+   *  list, so a listing answers 403 on every sweep. */
+  async function list(botKeys: readonly string[]): Promise<BotContainerStatus[]> {
     const results: BotContainerStatus[] = [];
-    for (const botKey of botKeys) results.push(await status(botKey));
+    for (const botKey of new Set(botKeys)) {
+      if (!BOT_KEY_PATTERN.test(botKey)) continue;
+      const found = await status(botKey);
+      if (found.state !== "missing") results.push(found);
+    }
     return results;
   }
 

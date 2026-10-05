@@ -161,6 +161,11 @@ describe("myrmidon(W2b) bot container routes: status", () => {
       imageAllowed: true,
       container: { state: "running", image: "bot-image:1.1.0" },
       containerError: null,
+      imageTracking: {
+        category: "pinned",
+        image: "bot-image:1.1.0",
+        reason: expect.stringContaining("not a digest of a bot image repository"),
+      },
       boardMaxConcurrentRuns: AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
       gatewayConcurrency: {
         board: AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
@@ -173,6 +178,25 @@ describe("myrmidon(W2b) bot container routes: status", () => {
     });
     // No profile hashes leave the server.
     expect(JSON.stringify(res.body)).not.toContain("restartHash");
+  });
+
+  it("says whether the release rollout follows, skips or cannot apply to the bot", async () => {
+    const digest = `ghcr.io/example/myrmidon-hermes@sha256:${"a".repeat(64)}`;
+    const ask = async (agent: BotContainerRouteAgent) =>
+      (await request(app(member, { agent })).get(statusUrl).expect(200)).body.imageTracking;
+    expect(await ask(card({ ...ENABLED_CARD, image: digest }))).toEqual({ category: "tracks_release", image: digest });
+    expect(await ask(card({ ...ENABLED_CARD, image: "other/thing@sha256:" + "b".repeat(64) }))).toMatchObject({
+      category: "pinned",
+      image: "other/thing@sha256:" + "b".repeat(64),
+    });
+    // the legacy shape: image only
+    expect(await ask(card({ image: digest }))).toEqual({
+      category: "not_applicable",
+      image: null,
+      reason: "adapterConfig.container.enabled is not true",
+    });
+    expect(await ask(card(undefined))).toMatchObject({ category: "not_applicable", reason: "adapterConfig.container is not set" });
+    expect(await ask(card(ENABLED_CARD, { adapterType: "hermes_local" }))).toMatchObject({ category: "not_applicable" });
   });
 
   it("flags an image outside the allowlist", async () => {
