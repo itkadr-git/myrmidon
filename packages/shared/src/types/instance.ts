@@ -197,6 +197,15 @@ export interface InstanceGeneralSettings {
    */
   budgetEnforcement?: BudgetEnforcementSettings;
   /**
+   * myrmidon(1.7-DEBATE-ASYM-A): the asymmetric-debates engine settings —
+   * generator/critic/judge roles (cross-family validated), rounds and the
+   * token ceiling; changed from `GET`/`PATCH /api/myrmidon/debate`. Absent
+   * means "use the environment override, then the built-in default". Kept in
+   * sync with the validator of the same field
+   * (packages/shared/src/validators/instance.ts).
+   */
+  debate?: unknown;
+  /**
    * myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys, managed
    * from the instance settings page. Absent means "no keys registered". Kept
    * in sync with the validator of the same field
