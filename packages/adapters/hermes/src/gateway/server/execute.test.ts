@@ -2610,3 +2610,107 @@ describe("execute — predecessor overlap guard (RECOVERY-HERMES-GATEWAY)", () =
     expect(agentStrategyResult.sessionParams).toMatchObject({ strategy: "agent" });
   });
 });
+
+describe("prompt breakdown (myrmidon 1.6.5 PROMPT-BUDGET A)", () => {
+  function completedFetchMock() {
+    return vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-hermes-1", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(
+          sseStream(
+            [
+              "event: run.completed",
+              'data: {"status":"completed","output":"done","session_id":"session-1","usage":{"input_tokens":3,"output_tokens":2}}',
+              "",
+            ].join("\n"),
+          ),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      return new Response(JSON.stringify({ status: "completed", output: "done" }), { status: 200 });
+    });
+  }
+
+  it("records a per-section prompt breakdown on the run result and keeps it out of the request body", async () => {
+    const fetchMock = completedFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const ctx = makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      timeoutSec: 5,
+    });
+    ctx.context = {
+      ...ctx.context,
+      paperclipSessionHandoffMarkdown: "## Session handoff\n\nEarlier progress notes.",
+      paperclipTaskMarkdown: "# Task\n\n" + "Work on the thing. ".repeat(40),
+    };
+
+    const result = await execute(ctx);
+    expect(result.exitCode).toBe(0);
+
+    const breakdown = (result.resultJson as Record<string, unknown> | null)?.promptBreakdown as
+      | { parts: Record<string, number>; total: number }
+      | undefined;
+    expect(breakdown).toBeTruthy();
+    const parts = breakdown?.parts ?? {};
+    for (const section of [
+      "identityContract",
+      "wakePrompt",
+      "sessionHandoff",
+      "taskMarkdown",
+      "wakePayloadJson",
+      "instructions",
+    ]) {
+      expect(parts[section], `section ${section}`).toBeGreaterThan(0);
+    }
+    // Exact total/parts reconciliation, pinned to the estimator contract.
+    const partSum = Object.values(parts).reduce((a, b) => a + b, 0);
+    expect(breakdown?.total).toBe(partSum);
+    expect(breakdown?.total).toBeGreaterThan(0);
+
+    // The measurement stays out of the wire payload.
+    const calls = fetchMock.mock.calls as Array<[RequestInfo | URL, RequestInit?]>;
+    const createCall = calls.find(([input]) => String(input).endsWith("/v1/runs"));
+    const body = JSON.parse(String((createCall?.[1] as RequestInit).body));
+    expect(body.promptBreakdown).toBeUndefined();
+    // And the assembled input still carries the sections that were measured.
+    expect(body.input).toContain("You are Hermes, an AI agent employee");
+    expect(body.input).toContain("Session handoff");
+    expect(body.input).toContain("Work on the thing.");
+  });
+
+  it("keeps the breakdown on the cancelled-before-dispatch result", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ run_id: "unexpected" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const ctx = makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      timeoutSec: 5,
+    });
+    const controller = new AbortController();
+    controller.abort();
+    ctx.signal = controller.signal;
+
+    const result = await execute(ctx);
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("hermes_gateway_cancelled");
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    const breakdown = (result.resultJson as Record<string, unknown> | null)?.promptBreakdown as
+      | { parts: Record<string, number>; total: number }
+      | undefined;
+    expect(breakdown).toBeTruthy();
+    expect(breakdown?.total).toBeGreaterThan(0);
+    // No session handoff / task markdown in this context: those sections are
+    // omitted, the always-present ones remain.
+    expect(breakdown?.parts.identityContract).toBeGreaterThan(0);
+    expect(breakdown?.parts.wakePrompt).toBeGreaterThan(0);
+    expect(breakdown?.parts.instructions).toBeGreaterThan(0);
+    expect(breakdown?.parts.sessionHandoff).toBeUndefined();
+  });
+});

@@ -71,6 +71,12 @@ export {
 } from "./command-redaction.js";
 export { buildSandboxNpmInstallCommand } from "./sandbox-install-command.js";
 export {
+  PROMPT_METER_CHARS_PER_TOKEN,
+  estimateTokens,
+  measureSections,
+} from "./prompt-meter.js";
+export type { PromptBreakdown } from "./prompt-meter.js";
+export {
   buildAdapterEnvConfig,
   parseEnvBindings,
   parseEnvVars,
