@@ -25,7 +25,7 @@ export function budgetProjectionSyncDeps(
   db: Db,
   companyId: string,
   env: NodeJS.ProcessEnv = process.env,
-): BudgetProjectionSyncDeps & { gatewayBaseUrl: string | null; adminKeySecret: string | null } {
+): Omit<BudgetProjectionSyncDeps, "gateway"> & { gatewayBaseUrl: string | null; adminKeySecret: string | null } {
   return {
     db,
     readSettings: () => readBudgetProjectionSettings(db, companyId),
@@ -118,7 +118,9 @@ export function startBudgetProjectionSweep(
   opts: { env?: NodeJS.ProcessEnv; ports?: BudgetProjectionSweepPorts } = {},
 ): () => void {
   const env = opts.env ?? process.env;
-  const ports = opts.ports ?? {};
+  const ports: BudgetProjectionSweepPorts = opts.ports ?? {
+    listCompanyIds: async () => [],
+  };
   const log = ports.log ?? logger;
   const pass = ports.gateway
     ? (companyId: string) =>
