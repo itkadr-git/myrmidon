@@ -1045,7 +1045,7 @@ export function recoveryService(
       .then((rows) => rows[0] ?? null);
   }
 
-  // myrmidon(OPE-4043): helper to check if agent has a live run on any issue
+  // myrmidon(REVIEW-PARTICIPANT-LIVE-SKIP): helper to check if agent has a live run on any issue
   async function getLatestLiveRunForAgent(
     companyId: string,
     agentId: string,
@@ -5287,7 +5287,7 @@ export function recoveryService(
           continue;
         }
 
-        // myrmidon(OPE-4043): check if participant has a live run on another issue before escalating
+        // myrmidon(REVIEW-PARTICIPANT-LIVE-SKIP): check if participant has a live run on another issue before escalating
         const participantLiveRun = await getLatestLiveRunForAgent(
           issue.companyId,
           participantAgentId,
@@ -5375,7 +5375,7 @@ export function recoveryService(
               EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON,
             )
           ) {
-            // myrmidon(OPE-4043): even if automatic recovery failed, if participant has a live run 
+            // myrmidon(REVIEW-PARTICIPANT-LIVE-SKIP): even if automatic recovery failed, if participant has a live run 
             // on another issue, we shouldn't escalate to board-only blocked state
             if (participantHasLiveRun) {
               // Instead of escalating, just skip and let the live run handle it
