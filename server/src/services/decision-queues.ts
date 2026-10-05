@@ -288,6 +288,12 @@ async function sourceIssueId(
       const doc = await readStackDocument(db);
       return { exists: doc.components.some((component) => component.name === sourceId), issueId: null };
     }
+    // myrmidon(BOT-DISK E): the host disk alert is process-level state; the
+    // source id is the fixed "host-disk" subject, so existence is always true
+    // while the board runs (the row is dismissable, never stale-checked).
+    case "host_disk_alert": {
+      return { exists: true, issueId: null };
+    }
     // myrmidon(BOT-RUNTIME-TUNING D): the fallback alert's source id is the
     // agent id — the card's subject — so existence is the agent row.
     case "model_fallback_alert": {
@@ -299,6 +305,8 @@ async function sourceIssueId(
     }
     // myrmidon(STALE-BLOCK): a lifted-block signal lives in the process-level
     // registry; the source id is the task the sweep unblocked.
+    // myrmidon(REVIEW-ROUTING): the review routing signal is also about one task.
+    case "review_routing":
     case "stale_block": {
       const row = await db
         .select({ id: issues.id })
@@ -311,6 +319,15 @@ async function sourceIssueId(
     // company; existence is the live agent row (the status feed is computed,
     // not stored, so there is nothing else to check).
     case "wip_limit": {
+      const row = await db.select({ id: agents.id })
+        .from(agents)
+        .where(and(eq(agents.companyId, companyId), eq(agents.id, sourceId)))
+        .then((rows) => rows[0] ?? null);
+      return { exists: Boolean(row), issueId: null, agentId: row?.id ?? null };
+    }
+    // myrmidon(BOT-DISK-A): the bot disk lifecycle signal subject is an agent
+    // bot of the company; existence is the live agent row.
+    case "bot_disk_lifecycle": {
       const row = await db.select({ id: agents.id })
         .from(agents)
         .where(and(eq(agents.companyId, companyId), eq(agents.id, sourceId)))
