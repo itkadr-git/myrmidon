@@ -67,6 +67,7 @@ import {
   BOT_KEY_PATTERN,
   BOT_MOUNT_SOURCES_ENV,
   BOT_HERMES_REAL_PATH,
+  BOT_ROOT_MOUNT,
   BOT_RUNTIME_SCOPE_LABEL,
   BOT_SCOPE_DATA_TMPFS,
   BOT_SCOPE_SUBDIR_ENV,
@@ -382,21 +383,35 @@ function applyDirName(nonce: string): string {
 }
 
 /** Script the "prepare-volumes" helper runs (as root, CAP_CHOWN + CAP_FOWNER):
- *  hands each mount point to the bot's uid with mode 0700. Idempotent. Paths are
- *  relative to "$1" (the container root in production). */
+ *  hands each mount point to the bot's uid with mode 0700 and makes the bot's
+ *  root directory (its /bot bind) traversable, so uid 10001 can reach the tree
+ *  mounted inside it. Idempotent. Paths are relative to "$1" (the container root
+ *  in production). */
 export function buildPrepareVolumesScript(options: { scope?: boolean } = {}): string {
   // myrmidon(BOT-DISK-F): a member of a shared scope instance also hands the instance
   // directory (the helper's /scope bind) to the bot, so the container can create the
   // instance's pnpm store in it. The text stays a constant per layout.
+  // myrmidon(BOT-ROOT-TRAVERSE): an isolated bot gets ONE bind — its whole directory at
+  // /bot — and the three narrow chmods above never reach the root of that bind. Since
+  // #572 a root left externally as e.g. 0710 (rc.1: root:65532 on 51/74 bots) hides the
+  // entire tree from uid 10001 and the bot dies on a missing API_SERVER_KEY, far from
+  // the real cause. So the prepare helper also binds the root itself (same bind string
+  // as the bot container) and fixes its traversal here: one non-recursive chmod 0711,
+  // owner untouched (the gate keeps demanding a root-owned volume.K), content never
+  // listed or written — "x" without "r" is exactly "the bot can enter, cannot browse".
+  // A shared member's root IS the instance directory ("scope" below): chmod 0700 +
+  // chown 10001 already makes it enterable by the uid every member runs as.
   const roots = options.scope ? [...MOUNT_ROOTS, BOT_SCOPE_HELPER_ROOT] : MOUNT_ROOTS;
-  return [
+  const lines = [
     "set -eu",
     'cd "$1"',
     `for d in ${roots.join(" ")}; do`,
     '  chmod 0700 "$d"',
     `  chown ${BOT_CONTAINER_UID}:${BOT_CONTAINER_UID} "$d"`,
     "done",
-  ].join("\n");
+  ];
+  if (!options.scope) lines.push(`chmod 0711 ${BOT_ROOT_MOUNT.slice(1)}`);
+  return lines.join("\n");
 }
 
 /**

@@ -11,20 +11,27 @@ package policy
 //  1. The text is a constant. It contains no recursion (-R), no symlink option
 //     (-L, -H), no find, no xargs and no glob, so nothing that lives in the
 //     bot's directories can change what it touches.
-//  2. It touches exactly three paths, the mount points of the bind mounts
-//     (data/hermes, workspace, scratch), each with one chmod and one chown, in a
-//     container without network, with a read-only root file system and only the
-//     CHOWN and FOWNER capabilities. What sits behind the mount points is fixed
-//     by dockergate before the container is created (the volume-root
-//     invariants).
+//  2. It touches exactly four paths: the mount points of the bind mounts
+//     (data/hermes, workspace, scratch), each with one chmod and one chown, and
+//     the bot's root bind (/bot, BOT-ROOT-TRAVERSE) with one chmod. All are mount
+//     points fixed by dockergate before the container is created (the volume-root
+//     invariants), in a container without network, with a read-only root file
+//     system and only the CHOWN and FOWNER capabilities.
 
 // PrepareScript is Cmd[0] of the prepare helper.
+// myrmidon(BOT-ROOT-TRAVERSE): the last line fixes traversal into the bot's root
+// directory (the helper's /bot bind, the one mount the bot container gets): an
+// externally imposed 0710/0700 root hid the whole tree from uid 10001 and the bot
+// died on a missing API_SERVER_KEY. chmod 0711 keeps the root root-owned (the gate
+// invariant) and not writable by group or others, while making it enterable; the
+// content is never listed, written or chowned.
 const PrepareScript = `set -eu
 cd "$1"
 for d in data/hermes workspace scratch; do
   chmod 0700 "$d"
   chown 10001:10001 "$d"
-done`
+done
+chmod 0711 bot`
 
 // PrepareScriptShared is Cmd[0] of the prepare helper of a member of a shared
 // scope instance (BOT-DISK-F). The same three paths as PrepareScript, plus the

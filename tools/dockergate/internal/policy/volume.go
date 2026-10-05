@@ -60,7 +60,15 @@ func volumeDenied(which string) *deny.Error {
 //     group or others.
 //   - volumeRoot/K, when it exists: the same, and dockergate can enter it
 //     (EACCES on a child is a denial: a directory that cannot be checked is
-//     not a checked directory).
+//     not a checked directory). Traversal by the BOT's uid is deliberately not
+//     an invariant here (myrmidon(BOT-ROOT-TRAVERSE)): the incident mode —
+//     root-owned 0710, group r-x only for dockergate — passes this check (the
+//     gate can enter via the group bit, uid 10001 cannot), and that is exactly
+//     the window the product fix needs: the prepare-helper create goes through
+//     the gate, then its script chmods K to 0711 so the bot can enter its one
+//     /bot mount, without the gate ever widening what any create may touch.
+//     The child invariants stay strict, and dockergate keeps its own traversal
+//     after the fix (0711 gives "other" the x bit too).
 //   - hermes, workspace, scratch, when they exist: a directory (not a link,
 //     not another type), owned by root or by the bot uid, not writable by group
 //     or others.

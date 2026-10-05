@@ -415,6 +415,16 @@ describe("buildHelperContainerRequestBody", () => {
     expect(body.HostConfig.CapDrop).toEqual(["ALL"]);
     expect(body.HostConfig.CapAdd).toEqual(["CHOWN", "FOWNER"]);
     expect(body.HostConfig.NetworkMode).toBe("none");
+    // myrmidon(BOT-ROOT-TRAVERSE): besides the three narrow binds the prepare helper
+    // also carries the bot's own root as the SAME bind the bot container gets at /bot,
+    // so its script can fix the traversal bit of the one mount point the narrow binds
+    // never reach.
+    expect(body.HostConfig.Binds).toEqual([
+      "/srv/myrmidon/bots/agent-a/hermes:/data/hermes",
+      "/srv/myrmidon/bots/agent-a/workspace:/workspace",
+      "/srv/myrmidon/bots/agent-a/scratch:/scratch",
+      "/srv/myrmidon/bots/agent-a:/bot",
+    ]);
   });
 });
 
