@@ -44,6 +44,9 @@ export const botDiskQuotaSettingsSchema = z
 
 export type BotDiskQuotaSettings = z.infer<typeof botDiskQuotaSettingsSchema>;
 
+/** The lenient stored view of the general-settings row: partial and fail-open. */
+export type StoredBotDiskQuotaSettings = z.infer<typeof storedBotDiskQuotaSettingsSchema>;
+
 export const patchBotDiskQuotaSettingsSchema = botDiskQuotaSettingsSchema.partial();
 export type BotDiskQuotaSettingsPatch = z.infer<typeof patchBotDiskQuotaSettingsSchema>;
 
