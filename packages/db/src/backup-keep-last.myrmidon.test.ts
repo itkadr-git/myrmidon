@@ -5,7 +5,7 @@ import { gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 
 
-import { runDatabaseBackup, verifyBackupFile } from "./backup-lib.js";
+import { runDatabaseBackup, verifyBackupFile, BackupVerificationError } from "./backup-lib.js";
 
 
 import { backupRetentionPolicySchema } from "@paperclipai/shared/validators/instance";
@@ -25,6 +25,28 @@ function createTempDir(prefix: string): string {
   });
   return dir;
 }
+
+// OPE-4832: a faithful stub of the tail of a real `pg_dump --format=plain`
+// dump (PGDG 18.6 on the verification stand). The closing `COMMIT;` of the
+// data section sits above this window (post-data/ACL blocks follow it), so
+// the last 64 KiB carry only the dump-complete trailer — verification must
+// accept that.
+const PG_DUMP_TAIL_SAMPLE = [
+  "COPY public.sessions (id, company_id) FROM stdin;",
+  "\\N\t\\N",
+  "\\.;",
+  "",
+  "--",
+  "-- Name: DEFAULT PRIVILEGES FOR SEQUENCES; Type: DEFAULT ACL; Schema: -; Owner: -",
+  "--",
+  "",
+  "ALTER DEFAULT PRIVILEGES FOR ROLE postgres REVOKE ALL ON SEQUENCES  FROM postgres;",
+  "",
+  "--",
+  "-- PostgreSQL database dump complete",
+  "--",
+  "",
+].join("\n");
 
 async function createTempDatabase(): Promise<string> {
   const db = await startEmbeddedPostgresTestDatabase("paperclip-keep-last-backup-");
@@ -115,6 +137,30 @@ describe("verifyBackupFile (BACKUP-KEEP-LAST)", () => {
     expect(result.ok).toBe(false);
     expect(result.reason).toMatch(/COMMIT/);
   });
+
+  // OPE-4832: `pg_dump --format=plain` never ends its output with COMMIT; —
+  // the last COMMIT; belongs to the final data section and the utility
+  // instead closes a successful dump with the trailer comment
+  // "-- PostgreSQL database dump complete". That tail must verify.
+  it("accepts a real pg_dump plain tail ending in the dump-complete trailer", async () => {
+    const dir = createTempDir("paperclip-verify-pgdump-tail-");
+    const file = path.join(dir, "paperclip-test-20260101-000000.sql.gz");
+    fs.writeFileSync(
+      file,
+      gzipSync(Buffer.from(PG_DUMP_TAIL_SAMPLE, "utf8")),
+    );
+    await expect(verifyBackupFile(file)).resolves.toEqual({ ok: true });
+  });
+
+  it("rejects a pg_dump-shaped tail truncated before the completion trailer", async () => {
+    const dir = createTempDir("paperclip-verify-pgdump-trunc-");
+    const file = path.join(dir, "paperclip-test-20260101-000000.sql");
+    // A dump interrupted mid-COPY: no COMMIT; anywhere and no trailer.
+    fs.writeFileSync(file, "COPY public.t (id) FROM stdin;\n1\n", "utf8");
+    const result = await verifyBackupFile(file);
+    expect(result.ok).toBe(false);
+    expect(result.reason).toMatch(/completion marker/);
+  });
 });
 
 describeEmbeddedPostgres("runDatabaseBackup keepLastOnly (BACKUP-KEEP-LAST)", () => {
@@ -188,6 +234,136 @@ describeEmbeddedPostgres("runDatabaseBackup keepLastOnly (BACKUP-KEEP-LAST)", ()
       expect(fs.existsSync(oldBackup)).toBe(true);
       const remaining = fs.readdirSync(backupDir).filter((name) => name.startsWith("paperclip-test-"));
       expect(remaining).toEqual([path.basename(oldBackup)]);
+    },
+    60_000,
+  );
+
+  // OPE-4832: the exact live-stand repro. With a real pg_dump on PATH the
+  // auto engine used to fail every keep-last run ("missing closing COMMIT;
+  // marker") and then crash the JavaScript fallback on the aborted writer.
+  // A faithful pg_dump tail (completion trailer, no closing COMMIT; in the
+  // tail window) must now verify, prune the old backups, and return the new
+  // file — on the pg_dump engine, without any fallback.
+  it(
+    "a real-shaped pg_dump plain stub passes verification, creates the backup and prunes the old one",
+    async () => {
+      const connectionString = await createTempDatabase();
+      const backupDir = createTempDir("paperclip-keep-last-pgdump-ok-");
+      const oldBackup = path.join(backupDir, "paperclip-test-20260101-000000.sql.gz");
+      fs.writeFileSync(
+        oldBackup,
+        gzipSync(Buffer.from("BEGIN;\nSELECT 1;\nCOMMIT;\n", "utf8")),
+      );
+      fs.utimesSync(oldBackup, new Date("2026-01-01T00:00:00Z"), new Date("2026-01-01T00:00:00Z"));
+
+      const stubDir = createTempDir("paperclip-pg-dump-stub-ok-");
+      const dumpBody = path.join(stubDir, "dump.sql");
+      fs.writeFileSync(dumpBody, PG_DUMP_TAIL_SAMPLE, "utf8");
+      const stubBin = path.join(stubDir, "pg_dump");
+      fs.writeFileSync(stubBin, `#!/bin/sh\ncat ${dumpBody}\nexit 0\n`, { mode: 0o755 });
+      const previousPgDumpPath = process.env.PAPERCLIP_PG_DUMP_PATH;
+      process.env.PAPERCLIP_PG_DUMP_PATH = stubBin;
+      try {
+        const result = await runDatabaseBackup({
+          connectionString,
+          backupDir,
+          retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1, keepLastOnly: true },
+          filenamePrefix: "paperclip-test",
+        });
+        // The run completed on the pg_dump path: the verified new dump is the
+        // only file left.
+        expect(fs.existsSync(result.backupFile)).toBe(true);
+        expect(fs.existsSync(oldBackup)).toBe(false);
+        expect(result.prunedCount).toBe(1);
+        const remaining = fs.readdirSync(backupDir).filter((name) => name.startsWith("paperclip-test-"));
+        expect(remaining).toEqual([path.basename(result.backupFile)]);
+      } finally {
+        if (previousPgDumpPath === undefined) delete process.env.PAPERCLIP_PG_DUMP_PATH;
+        else process.env.PAPERCLIP_PG_DUMP_PATH = previousPgDumpPath;
+      }
+    },
+    60_000,
+  );
+
+  // OPE-4832 fact 2: a corrupt dump under the auto engine must NOT be retried
+  // on JavaScript (that used to surface as "Cannot write to closed backup
+  // file" on the already-aborted writer and hid the real reason). The run
+  // fails loudly with the verification reason, the corrupt file is dropped
+  // and the previous backups stay untouched.
+  it(
+    "engine auto with a corrupt pg_dump output fails as a verification error without falling back",
+    async () => {
+      const connectionString = await createTempDatabase();
+      const backupDir = createTempDir("paperclip-keep-last-pgdump-bad-");
+      const oldBackup = path.join(backupDir, "paperclip-test-20260101-000000.sql.gz");
+      fs.writeFileSync(
+        oldBackup,
+        gzipSync(Buffer.from("BEGIN;\nSELECT 1;\nCOMMIT;\n", "utf8")),
+      );
+      fs.utimesSync(oldBackup, new Date("2026-01-01T00:00:00Z"), new Date("2026-01-01T00:00:00Z"));
+
+      const stubDir = createTempDir("paperclip-pg-dump-stub-bad-");
+      const stubBin = path.join(stubDir, "pg_dump");
+      fs.writeFileSync(stubBin, "#!/bin/sh\nprintf 'garbage, not a dump\\n'\nexit 0\n", { mode: 0o755 });
+      const previousPgDumpPath = process.env.PAPERCLIP_PG_DUMP_PATH;
+      process.env.PAPERCLIP_PG_DUMP_PATH = stubBin;
+      try {
+        // The run must fail with the verification error itself — not a
+        // closed-writer crash from a JavaScript fallback.
+        const error = await runDatabaseBackup({
+          connectionString,
+          backupDir,
+          retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1, keepLastOnly: true },
+          filenamePrefix: "paperclip-test",
+          // auto (not pg_dump): this is the engine that used to fall through
+          // to JavaScript on the closed writer.
+        }).then(
+          () => null,
+          (caught: unknown) => caught,
+        );
+        expect(error).toBeInstanceOf(BackupVerificationError);
+        expect(String(error)).toMatch(/Backup verification failed/);
+        expect(String(error)).not.toMatch(/closed backup file/);
+      } finally {
+        if (previousPgDumpPath === undefined) delete process.env.PAPERCLIP_PG_DUMP_PATH;
+        else process.env.PAPERCLIP_PG_DUMP_PATH = previousPgDumpPath;
+      }
+      // The corrupt new dump is dropped; the previous backup is kept.
+      expect(fs.existsSync(oldBackup)).toBe(true);
+      const remaining = fs.readdirSync(backupDir).filter((name) => name.startsWith("paperclip-test-"));
+      expect(remaining).toEqual([path.basename(oldBackup)]);
+    },
+    60_000,
+  );
+
+  // A genuine pg_dump failure (non-zero exit) still falls back to JavaScript,
+  // and the fallback now writes into a freshly opened writer instead of the
+  // aborted one.
+  it(
+    "engine auto falls back to JavaScript when the pg_dump child itself fails",
+    async () => {
+      const connectionString = await createTempDatabase();
+      const backupDir = createTempDir("paperclip-keep-last-pgdump-crash-");
+
+      const stubDir = createTempDir("paperclip-pg-dump-stub-crash-");
+      const stubBin = path.join(stubDir, "pg_dump");
+      fs.writeFileSync(stubBin, "#!/bin/sh\nprintf 'pg_dump: error: simulated crash\\n' >&2\nexit 1\n", { mode: 0o755 });
+      const previousPgDumpPath = process.env.PAPERCLIP_PG_DUMP_PATH;
+      process.env.PAPERCLIP_PG_DUMP_PATH = stubBin;
+      try {
+        const result = await runDatabaseBackup({
+          connectionString,
+          backupDir,
+          retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1, keepLastOnly: true },
+          filenamePrefix: "paperclip-test",
+        });
+        // The JavaScript engine wrote and verified a complete dump.
+        expect(fs.existsSync(result.backupFile)).toBe(true);
+        await expect(verifyBackupFile(result.backupFile)).resolves.toEqual({ ok: true });
+      } finally {
+        if (previousPgDumpPath === undefined) delete process.env.PAPERCLIP_PG_DUMP_PATH;
+        else process.env.PAPERCLIP_PG_DUMP_PATH = previousPgDumpPath;
+      }
     },
     60_000,
   );

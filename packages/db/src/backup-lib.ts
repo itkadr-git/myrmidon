@@ -79,11 +79,37 @@ const BACKUP_BREAKPOINT_DETECT_BYTES = 64 * 1024;
 
 const STATEMENT_BREAKPOINT = "-- paperclip statement breakpoint 69f6f3f1-42fd-46a6-bf17-d1d85f8f3900";
 
-// myrmidon(BACKUP-KEEP-LAST): tail window scanned for the closing COMMIT;
+// myrmidon(BACKUP-KEEP-LAST): tail window scanned for the dump completion
 // marker when verifying a freshly written dump. Kept in the same spirit as
 // BACKUP_BREAKPOINT_DETECT_BYTES — the check streams the file and holds only
 // this many bytes of its tail.
 const BACKUP_VERIFY_TAIL_BYTES = 64 * 1024;
+
+// myrmidon(BACKUP-KEEP-LAST / OPE-4832): each dump engine closes its output
+// with its own completion marker. The JavaScript logical dump ends its
+// transaction with "COMMIT;"; `pg_dump --format=plain` never prints a closing
+// COMMIT; in that position — the last COMMIT; belongs to the final data
+// section and can sit far above the tail window, and the utility instead ends
+// a successful dump with the trailer comment
+// "-- PostgreSQL database dump complete" (printed as the very last content
+// line, followed only by "--"). A tail carrying neither marker means the dump
+// was truncated or is not a dump at all.
+const BACKUP_COMPLETION_MARKERS = ["COMMIT;", "-- PostgreSQL database dump complete"];
+
+/**
+ * myrmidon(OPE-4832): a freshly written dump failed keep-last verification.
+ * The engine `auto` must NOT retry such a run on JavaScript: verification is
+ * raised after the pg_dump path already aborted its writer, so a fallback
+ * would write into a closed file and mask the real error (and a dump the
+ * utility itself reports as broken is exactly the case where "previous
+ * backups kept, run failed loudly" is the documented contract).
+ */
+export class BackupVerificationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "BackupVerificationError";
+  }
+}
 
 // myrmidon(BACKUP-KEEP-LAST): unfinished `.sql` leftovers older than this are
 // treated as orphans of interrupted runs and pruned before the retention pass.
@@ -94,9 +120,10 @@ const BACKUP_ORPHAN_SQL_MAX_AGE_MS = 60 * 60 * 1000;
 /**
  * myrmidon(BACKUP-KEEP-LAST): stream-verify a freshly written backup file.
  * `.gz` files are gunzipped chunk by chunk (a corrupt stream fails here); the
- * decompressed text — or the plain `.sql` text — must end with the closing
- * `COMMIT;` marker. Only a small tail buffer is retained, so multi-GB dumps
- * verify without materializing the whole file.
+ * decompressed text — or the plain `.sql` text — must carry one of the engine
+ * dump completion markers (`BACKUP_COMPLETION_MARKERS`) in its tail. Only a
+ * small tail buffer is retained, so multi-GB dumps verify without
+ * materializing the whole file.
  */
 export async function verifyBackupFile(path: string): Promise<{ ok: boolean; reason?: string }> {
   const raw = createReadStream(path);
@@ -123,8 +150,11 @@ export async function verifyBackupFile(path: string): Promise<{ ok: boolean; rea
     const message = gunzipError instanceof Error ? gunzipError.message : String(gunzipError);
     return { ok: false, reason: `failed to decompress: ${message}` };
   }
-  if (!tail.includes("COMMIT;")) {
-    return { ok: false, reason: "missing closing COMMIT; marker in the dump tail" };
+  if (!BACKUP_COMPLETION_MARKERS.some((marker) => tail.includes(marker))) {
+    return {
+      ok: false,
+      reason: "missing dump completion marker (COMMIT; or the pg_dump trailer) in the dump tail",
+    };
   }
   return { ok: true };
 }
@@ -661,7 +691,10 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
   mkdirSync(opts.backupDir, { recursive: true });
   const sqlFile = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}.sql`);
   const backupFile = `${sqlFile}.gz`;
-  const writer = createBufferedTextFileWriter(sqlFile);
+  // myrmidon(OPE-4832): mutable because an engine-auto fallback onto the
+  // JavaScript path reopens a fresh writer after the pg_dump path aborted the
+  // original one (abort closes the handle and deletes the .sql).
+  let writer = createBufferedTextFileWriter(sqlFile);
 
   try {
     if (backupEngine === "pg_dump" || (backupEngine === "auto" && canUsePgDump)) {
@@ -680,7 +713,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
           const verification = await verifyBackupFile(backupFile);
           if (!verification.ok) {
             try { unlinkSync(backupFile); } catch { /* ignore */ }
-            throw new Error(
+            throw new BackupVerificationError(
               `Backup verification failed for ${basename(backupFile)}: ${verification.reason}; previous backups were kept`,
             );
           }
@@ -702,10 +735,28 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         if (existsSync(backupFile)) {
           try { unlinkSync(backupFile); } catch { /* ignore */ }
         }
+        // myrmidon(OPE-4832): a verification failure means pg_dump ran to
+        // completion and its output failed the integrity check. The contract
+        // is "fail loudly, keep the previous backups" — do NOT fall back to
+        // JavaScript here: the writer this path would emit into was already
+        // aborted above, so a fallback only crashes with "Cannot write to
+        // closed backup file" and masks the real reason.
+        if (error instanceof BackupVerificationError) {
+          throw error;
+        }
         if (backupEngine === "pg_dump") {
           throw error;
         }
         effectiveBackupEngine = "javascript";
+        // myrmidon(OPE-4832): the aborted-on-success pg_dump path may have
+        // already closed and deleted the plain .sql writer above; when the
+        // child itself failed, the original writer is still open. `abort()`
+        // is idempotent, so run it first and then reopen a fresh writer on
+        // the same path — the JavaScript path below emits through `writer`
+        // and must never see a closed handle ("Cannot write to closed
+        // backup file").
+        await writer.abort();
+        writer = createBufferedTextFileWriter(sqlFile);
         sql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
         sqlClosed = false;
       }
@@ -1167,7 +1218,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       const verification = await verifyBackupFile(backupFile);
       if (!verification.ok) {
         try { unlinkSync(backupFile); } catch { /* ignore */ }
-        throw new Error(
+        throw new BackupVerificationError(
           `Backup verification failed for ${basename(backupFile)}: ${verification.reason}; previous backups were kept`,
         );
       }
