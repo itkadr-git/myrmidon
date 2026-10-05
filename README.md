@@ -118,8 +118,9 @@ flowchart LR
 Day-to-day setup happens in the interface: models and agents on their cards,
 the autonomy matrix and the member list in Company Settings, the UI 2.0 shell
 under Instance Settings → Experimental, and a per-user board language (RU/EN)
-on the 2.0 "Language and formats" screen. Swarm queue parameters, custom
-castes and model providers move into the interface in 1.6.1 (in progress).
+on the 2.0 "Language and formats" screen. Swarm queue parameters are edited
+live in Instance settings; custom castes and model providers move into the
+interface in 1.6.1 (in progress).
 
 The 1.6 feature switches are still `MYRMIDON_*` environment variables, all off
 by default — the full reference is
@@ -137,7 +138,7 @@ by default — the full reference is
 
 Release notes live in [docs/myrmidon/CHANGELOG.md](docs/myrmidon/CHANGELOG.md)
 (Russian: [CHANGELOG.ru.md](docs/myrmidon/CHANGELOG.ru.md)). Highlights of
-what exists as of 1.6:
+what exists as of 1.6.2:
 
 ### Work and agents
 
@@ -149,16 +150,24 @@ what exists as of 1.6:
   ([run-stall](docs/myrmidon/guides/run-stall.md)). A WIP limit caps how many
   tasks one agent holds in flight at once — set in Company Settings, shown live
   on every agent row, and flagged in the attention feed when over
-  ([wip-limit](docs/myrmidon/guides/wip-limit.md)).
+  ([wip-limit](docs/myrmidon/guides/wip-limit.md)). A stale-block watchdog
+  lifts blocks whose every reason is dead and says why in a system comment
+  ([stale-block](docs/myrmidon/guides/stale-block.md)).
 - **Agents in isolated containers.** Each agent runs in a Docker container the
   board creates and maintains: its own image, CPU/memory/PID limits, its own
   LLM gateway key and its own tools — no server secrets reach a run
-  ([bot-container-card](docs/myrmidon/guides/bot-container-card.md)).
+  ([bot-container-card](docs/myrmidon/guides/bot-container-card.md)). Coding
+  roles get resource-capped language servers by policy; everyone else gets
+  none ([bot-lsp](docs/myrmidon/guides/bot-lsp.md)). A shared package cache on
+  the host keeps pnpm/Go/Gradle downloads once for all bots
+  ([bot-disk-cache](docs/myrmidon/bot-disk-cache.md)).
 - **The swarm.** Per-role task queues: an agent takes the top task of its
   role's queue behind a lease (TTL + heartbeat), an expired lease returns to
   the queue, a P0 task preempts, a per-agent active-task limit applies, and a
   supervisor view reports against a frozen baseline. Off until enabled — see
-  [Configuration](#configuration).
+  [Configuration](#configuration); the pilot (roles, companies, lease TTL,
+  limits) is edited live in Instance settings
+  ([swarm-claim-settings](docs/myrmidon/guides/swarm-claim-settings.md)).
 - **Parallel helpers.** Per-agent helper subagents with a company ceiling and
   a helper model — see [CHANGELOG](docs/myrmidon/CHANGELOG.md) (1.6.0).
 - **Memory per agent.** View, export and remove an agent's memory bank from
@@ -200,6 +209,9 @@ what exists as of 1.6:
 - **External MCP connectors.** Any standards-compliant HTTP MCP server plugs
   in without fork code; per-agent grants default to deny
   ([external-mcp-connectors](docs/myrmidon/guides/external-mcp-connectors.md)).
+  A free image generation and editing connector runs as a container the bots
+  reach the same way
+  ([alibaba-image-connector](docs/myrmidon/guides/alibaba-image-connector.md)).
 - **Cloud storage.** Owner-connected cloud accounts with per-agent folder
   grants; tokens stay in the company secret store
   ([cloud-files-connector](docs/myrmidon/guides/cloud-files-connector.md)).
@@ -222,7 +234,9 @@ what exists as of 1.6:
   runs and queues wake-ups
   ([maintenance-banner](docs/myrmidon/guides/maintenance-banner.md)); deploys
   are digest-pinned, CI-built images only, with a database dump before the
-  switch and automatic rollback by health ([deploy](docs/myrmidon/deploy.md)).
+  switch and automatic rollback by health for the board and the whole bot
+  fleet ([deploy](docs/myrmidon/deploy.md),
+  [deploy-auto-rollback](docs/myrmidon/guides/deploy-auto-rollback.md)).
 - **Stack updates.** The Stack screen shows release lag, patch status and an
   update planner; the whole cycle is documented
   ([stack-registry](docs/myrmidon/guides/stack-registry.md),
@@ -232,9 +246,13 @@ what exists as of 1.6:
   ([access-hub](docs/myrmidon/guides/access-hub.md)), an emergency stop for
   draining runs ([emergency-stop](docs/myrmidon/guides/emergency-stop.md)) and
   run limits that survive a mass wake
-  ([run-limits](docs/myrmidon/guides/run-limits.md)).
-- **Cost and tracing.** LLM spend collected from the gateway and attributed
-  per agent, run and task; a budget stop reaches the owner as a signal; a
+  ([run-limits](docs/myrmidon/guides/run-limits.md)), including admission by
+  the host's free memory and a start ramp (1.6.2).
+- **Cost, budgets and tracing.** LLM spend collected from the gateway and
+  attributed per agent, run and task; budget enforcement is a mode — signal
+  only, pause with a card to the owner, or hard refusal of new runs — set live
+  for the instance
+  ([budget-enforcement](docs/myrmidon/guides/budget-enforcement.md)); a
   tracing health card surfaces lost traces
   ([SETTINGS](docs/myrmidon/SETTINGS.md)).
 - **UI 2.0 + language.** The 2.0 shell with six re-skinned data screens
@@ -285,12 +303,10 @@ grow the body.
   `candidate → verified → deprecated`; foraging; the autonomy matrix screen
   and API; CTO chat and the Commander screen; wiki regulations with revisions;
   parallel helpers; the stack update screen; the 2.0 shell behind a flag.
-- **Next: 1.6.x (in progress).** Custom castes (a company directory), swarm
-  queue settings in the interface without a restart, model providers managed
-  from the interface, speech-to-text, @-addressing agents in Telegram,
-  Telegram notification settings, learning limits in the interface, an agent
-  as board administrator, a stale-block watchdog, a per-agent concurrent-task
-  limit.
+- **Next: 1.6.x (in progress).** Custom castes (a company directory), model
+  providers managed from the interface, speech-to-text, @-addressing agents in
+  Telegram, Telegram notification settings, learning limits in the interface,
+  an agent as board administrator, a per-agent concurrent-task limit.
 - **1.7 — the swarm and the body, and the rebrand.** Asymmetric debates
   between different models with a judge outside the dispute. The colony grows
   its own body: an orchestrator-managed k3s cluster over VMs, hibernation of

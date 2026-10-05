@@ -144,8 +144,9 @@ type Config struct {
 	// PackageCacheRoot is the host directory of the shared package cache of
 	// the bots (the board's instance setting of the same path). Under it, and
 	// only there, a bot may mount the fixed cache subdirectories read-write at
-	// their fixed mount points (policy.PackageCacheMounts). Empty or missing
-	// (the default) allows no cache mount at all.
+	// their fixed mount points (policy.PackageCacheMounts), and the board's git
+	// mirrors read-only (policy.PackageCacheReadOnlyMounts, 1.6.2-BOT-DISK-C).
+	// Empty or missing (the default) allows no cache mount at all.
 	PackageCacheRoot string `json:"packageCacheRoot"`
 	Bots             []Bot  `json:"bots"`
 	Limits           Limits `json:"limits"`
