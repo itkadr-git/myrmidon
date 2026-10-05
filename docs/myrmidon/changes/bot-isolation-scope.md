@@ -37,7 +37,7 @@ settings-section: BOT-DISK E — host disk usage signal
   so each can read and write the others' `hermes/` (keys included), `workspace` and `scratch`.
   Share only between bots that trust each other.
 - DB: tables `myrmidon_scope_groups`, `myrmidon_scope_group_members`, `myrmidon_scope_settings`,
-  `myrmidon_scope_agent_prefs` (migration 0298).
+  `myrmidon_scope_agent_prefs` (migration 0299).
 
 ## changelog-ru
 
@@ -75,7 +75,7 @@ settings-section: BOT-DISK E — host disk usage signal
   поэтому каждый может читать и писать `hermes/` (с ключами), `workspace` и `scratch` остальных. Делитесь
   только между ботами, которые доверяют друг другу.
 - БД: таблицы `myrmidon_scope_groups`, `myrmidon_scope_group_members`, `myrmidon_scope_settings`,
-  `myrmidon_scope_agent_prefs` (миграция 0298).
+  `myrmidon_scope_agent_prefs` (миграция 0299).
 
 ## settings-en
 

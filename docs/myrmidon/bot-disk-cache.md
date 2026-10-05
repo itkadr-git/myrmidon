@@ -337,7 +337,7 @@ rights: `POST|PATCH|DELETE .../bot-scopes/groups[/:groupId]`, `PUT|DELETE
 .../bot-scopes/settings/:kind/:scopeId` (`{"mode":"isolated"|"shared"}`), `PUT .../bot-scopes/agents/:agentId`
 (`isolate`, `groupId`, `projectId`), `POST .../bot-scopes/agents/:agentId/apply` and `POST
 .../bot-scopes/apply-all`. Tables: `myrmidon_scope_groups`, `myrmidon_scope_group_members`,
-`myrmidon_scope_settings`, `myrmidon_scope_agent_prefs` (migration `0298_bot_isolation_scope`).
+`myrmidon_scope_settings`, `myrmidon_scope_agent_prefs` (migration `0299_bot_isolation_scope`).
 
 ### Clone hygiene in the draft lifecycle
 

@@ -338,7 +338,7 @@ id компании.
 .../bot-scopes/settings/:kind/:scopeId` (`{"mode":"isolated"|"shared"}`), `PUT .../bot-scopes/agents/:agentId`
 (`isolate`, `groupId`, `projectId`), `POST .../bot-scopes/agents/:agentId/apply` и `POST
 .../bot-scopes/apply-all`. Таблицы: `myrmidon_scope_groups`, `myrmidon_scope_group_members`,
-`myrmidon_scope_settings`, `myrmidon_scope_agent_prefs` (миграция `0298_bot_isolation_scope`).
+`myrmidon_scope_settings`, `myrmidon_scope_agent_prefs` (миграция `0299_bot_isolation_scope`).
 
 ### Гигиена клонов в жизненном цикле черновиков
 
