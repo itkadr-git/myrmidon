@@ -308,20 +308,6 @@ version file to edit. Base Paperclip version is in the image label
   The environment override is `MYRMIDON_BUDGET_ENFORCEMENT_MODE`. Guide:
   [guides/budget-enforcement.md](guides/budget-enforcement.md).
 
-### LiteLLM budget projection (BUDGET-CONFIG C)
-
-- Limits saved on the board are projected into the LLM gateway's own budgets
-  without a restart and within a minute: per-key budgets via `/key/update`
-  (addressed by the M2-B key alias) and tag budgets via `/budget/update` on
-  the stable `myrm-<level>-<scope>` tag. One point of change: the limit is
-  edited on the board. A per-company sweep (interval from the stored
-  document, default 30 s; env is a forced override only) pushes changed
-  limits and compares both sides: a manual gateway edit is a divergence —
-  signalled as a system-notice comment, never silently overwritten; the way
-  out is re-saving the limit or `POST …/litellm-budget-sync/re-sync`. The
-  global signal-only mode is on by default, so no projected limit stops work
-  until the owner turns it off.
-
 ### Maintenance: asynchronous exit and the post-deploy fleet check (EXIT-ASYNC + POST-DEPLOY-CHECK)
 
 - Leaving maintenance mode is asynchronous (#268): the `exit` call returns as

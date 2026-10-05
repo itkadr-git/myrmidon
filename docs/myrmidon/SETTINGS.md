@@ -1221,21 +1221,3 @@ is configured or usable.
 | Field | Default | What it does | Bounds / special |
 |---|---|---|---|
 | `promptBudget.optimizerAgentId` | absent | Agent that receives the deep-analysis task filed by the "Deep analysis" button | A uuid of another agent of the same company; absent, blank or not a uuid answers the deep POST with 422. An additive field of the `promptBudget` area owned by the thresholds part (`instance_settings.general.promptBudget`); no environment variable |
-
-## 1.7 — LiteLLM budget projection (BUDGET-CONFIG C)
-
-Settings of `server/src/myrmidon/litellm-budget-sync/` (the 1.7 BUDGET-CONFIG
-epic, part C). The feature is off by default: the sweep is a no-op and the
-status/re-sync endpoints answer 503 `enabled: false` until the instance names
-the gateway contour (the M2-A/M2-B variables below) AND the company's stored
-document turns the master switch on. Limits live per company in
-`instance_settings.general.myrmidonBudgetProjectionCompanies[companyId]`
-(no new migration — the JSON-column pattern the STT overrides use) and are
-managed through `GET`/`PUT /api/myrmidon/companies/:companyId/litellm-budget-sync/settings`;
-the signal-only global mode is on by default, so no projected limit stops
-work until the owner turns it off. See the guide
-[guides/litellm-budget-projection.md](guides/litellm-budget-projection.md).
-
-| Variable | Function | Default | What it does | How to disable / special |
-|---|---|---|---|---|
-| `MYRMIDON_LITELLM_BUDGET_SYNC_INTERVAL_SEC` | 1.7-BUDGET-CONFIG-C | `30` | The sweep interval of the budget projection pass, in seconds — a changed limit reaches LiteLLM within this window (the acceptance criterion is ≤ 60 s). The stored per-company `sweepIntervalSec` is the source the UI writes; this variable is a **forced override** for its key only, and the settings GET answers which side won | Unset — the stored value or the default applies. Clamped to 10–3600; non-integer values are ignored |
