@@ -149,6 +149,22 @@ with the single `<root>/<key>:/bot` bind and the helper body with the three
 narrow ones; `/bot` and `/data` are reserved container paths a card mount cannot
 take.
 
+**Traversal of `/bot` itself.** The whole tree lives behind the bot's root, so the
+root must at least let the bot's uid `10001` enter it: a host directory left by an
+external operation as `root:65532 0710` (or any mode without the traversal bit) hides
+everything under `/bot` from the bot, and the entrypoint then fails on an unreadable
+`.env` without naming the real cause. At every apply the prepare helper also carries
+the bot's root bind (`<root>/<key>:/bot`, its fourth bind — the gate accepts exactly
+these four) and normalizes the root's mode to `0711` with one non-recursive `chmod`:
+enterable, not browsable (no `r`), the owner stays `root`, and the content is never
+listed, written or chowned. The fix is idempotent — an external `0710`/`0700` stops
+being fatal at the next apply. If a bot still starts on a root it cannot enter (it
+was never applied after the external change), the entrypoint fails in one line
+naming the traversal problem and the fix (recreate the bot) instead of the
+misleading `API_SERVER_KEY is required`. A member of a shared scope needs no such
+line: its tree root is the instance directory, which the prepare script already
+chowns to uid `10001` and chmods `0700`.
+
 ### Hard-linked node_modules
 
 pnpm keeps one content-addressed store and links each project's `node_modules`
