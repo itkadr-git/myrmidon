@@ -93,6 +93,42 @@ describe("myrmidon(UI2) Ui2Costs screen parity", () => {
         subscriptionCachedInputTokens: 0,
         subscriptionInputTokens: 0,
         subscriptionOutputTokens: 0,
+        // myrmidon(1.6.3 PROMPT-BUDGET D): the fleet prompt columns.
+        avgPromptTokens: 2_000,
+        runsAboveThresholdPct: 0,
+      },
+      {
+        agentId: "agent-2",
+        agentName: "agent-b",
+        agentStatus: "active",
+        costCents: 12_000,
+        inputTokens: 900_000,
+        cachedInputTokens: 0,
+        outputTokens: 120_000,
+        apiRunCount: 9,
+        subscriptionRunCount: 0,
+        subscriptionCachedInputTokens: 0,
+        subscriptionInputTokens: 0,
+        subscriptionOutputTokens: 0,
+        avgPromptTokens: 91_000,
+        runsAboveThresholdPct: 100,
+      },
+      {
+        agentId: "agent-3",
+        agentName: "agent-c",
+        agentStatus: "active",
+        costCents: 1_000,
+        inputTokens: 10_000,
+        cachedInputTokens: 0,
+        outputTokens: 1_000,
+        apiRunCount: 1,
+        subscriptionRunCount: 0,
+        subscriptionCachedInputTokens: 0,
+        subscriptionInputTokens: 0,
+        subscriptionOutputTokens: 0,
+        // A run history without prompt data, and no threshold settings stored.
+        avgPromptTokens: null,
+        runsAboveThresholdPct: null,
       },
     ]);
     mockBudgetsApi.overview.mockResolvedValue({
@@ -179,8 +215,47 @@ describe("myrmidon(UI2) Ui2Costs screen parity", () => {
     await renderScreen();
 
     const rows = [...container.querySelectorAll(".ui2-costs-agents-row")];
-    expect(rows.length).toBe(1);
+    expect(rows.length).toBe(3);
     expect(rows[0]?.textContent).toContain("agent-a");
+  });
+
+  it("renders the fleet prompt columns and shows a dash without data", async () => {
+    await renderScreen();
+
+    const rows = [...container.querySelectorAll(".ui2-costs-agents-row")];
+    const rowA = rows.find((row) => row.textContent?.includes("agent-a"));
+    const rowB = rows.find((row) => row.textContent?.includes("agent-b"));
+    const rowC = rows.find((row) => row.textContent?.includes("agent-c"));
+
+    // agent-a: 2,000 prompt tokens on average, no run above the threshold.
+    expect(rowA?.querySelector(".ui2-costs-agents-agent-prompt")?.textContent).toBe("2,000");
+    expect(rowA?.querySelector(".ui2-costs-agents-agent-over-budget")?.textContent).toBe("0%");
+    // agent-b: 91,000 prompt tokens, every judged run above the threshold.
+    expect(rowB?.querySelector(".ui2-costs-agents-agent-prompt")?.textContent).toBe("91,000");
+    expect(rowB?.querySelector(".ui2-costs-agents-agent-over-budget")?.textContent).toBe("100%");
+    // agent-c: no prompt data and no threshold settings — both columns stay empty.
+    expect(rowC?.querySelector(".ui2-costs-agents-agent-prompt")?.textContent).toBe("—");
+    expect(rowC?.querySelector(".ui2-costs-agents-agent-over-budget")?.textContent).toBe("—");
+  });
+
+  it("orders the agent table by average prompt size on demand", async () => {
+    await renderScreen();
+
+    // The default order is by spend: agent-a, agent-b, agent-c.
+    expect(
+      [...container.querySelectorAll(".ui2-costs-agents-agent-name")].map((cell) => cell.textContent),
+    ).toEqual(["agent-a", "agent-b", "agent-c"]);
+
+    const sortButton = container.querySelector(".ui2-costs-agents-sort-prompt");
+    expect(sortButton?.textContent).toContain("Avg prompt");
+    (sortButton as HTMLButtonElement | null)?.click();
+    await flushReact();
+
+    // Sorted by the average prompt size: agent-b (91,000), agent-a (2,000), agent-c (empty).
+    expect(
+      [...container.querySelectorAll(".ui2-costs-agents-agent-name")].map((cell) => cell.textContent),
+    ).toEqual(["agent-b", "agent-a", "agent-c"]);
+    expect(container.querySelector(".ui2-costs-agents-sort-prompt")?.textContent).toContain("\u2193");
   });
 
   it("exposes the legacy incident resolution actions with the vendor payloads", async () => {

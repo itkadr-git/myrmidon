@@ -101,6 +101,8 @@ const en = {
   "ui2.costs.agents.tokens": "Tokens (in / out)",
   "ui2.costs.agents.runs": "Runs",
   "ui2.costs.agents.unnamed": "Unknown agent",
+  "ui2.costs.agents.avgPrompt": "Avg prompt",
+  "ui2.costs.agents.aboveThreshold": "% runs over threshold",
 
   "ui2.agent.overview.title": "Overview",
   "ui2.agent.overview.status": "Status",
@@ -322,6 +324,8 @@ const ru: Record<Ui2MessageKey, string> = {
   "ui2.costs.agents.tokens": "Токены (вх / вых)",
   "ui2.costs.agents.runs": "Прогоны",
   "ui2.costs.agents.unnamed": "Неизвестный агент",
+  "ui2.costs.agents.avgPrompt": "Средний промпт",
+  "ui2.costs.agents.aboveThreshold": "% прогонов выше порога",
 
   "ui2.agent.overview.title": "Обзор",
   "ui2.agent.overview.status": "Состояние",
