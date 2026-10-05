@@ -444,6 +444,13 @@ are links the image makes into it (`/data/hermes` → `/bot/hermes`, `/workspace
 `/data/workspace` → `/bot/workspace`, `/scratch` → `/data/scratch` → `/bot/scratch`), not
 mounts. The ownership requirement applies to the three directories inside `/bot`.
 
+A member of a **shared isolation scope** (BOT-DISK-F, label `myrmidon.bot-runtime.scope=1`) has no
+`/bot`: its one mount is the scope instance's directory at `/bot-scope`, a tmpfs over `/data`
+holds the three links, and the entrypoint points them into `/bot-scope/$MYRMIDON_BOT_SCOPE_SUBDIR/`
+(the one non-secret variable the driver sets) before anything reads `HERMES_HOME`. The image's
+`WORKDIR` is `/` for that reason (`/workspace` only resolves after the links); the entrypoint enters
+`/workspace` itself. See [docs/myrmidon/bot-disk-cache.md](../../docs/myrmidon/bot-disk-cache.md).
+
 - `/data` — `HERMES_HOME=/data/hermes`: config, `.env`, `sessions/`,
   `state.db`. Must be owned by uid `10001` before the container starts
   (this image does not chown it — that is the fleet manager's job, since

@@ -15,7 +15,7 @@
 //   - warnings are reported when they change, not on every tick.
 
 import { isBotBoardGatewayEnabled } from "./board-gateway.js";
-import type { BotLspSettings, ParallelHelpersSettings } from "@paperclipai/shared";
+import type { BotLspSettings, ParallelHelpersSettings, ScopeLayout } from "@paperclipai/shared";
 import {
   assertBotEgressSettings,
   BOT_EGRESS_MODE_ENV,
@@ -43,7 +43,7 @@ import {
 } from "./profile-input.js";
 import type { BotContainerActivitySink } from "./reconciler.js";
 import { cardFleetHost } from "./fleetd-hosts.js"; // myrmidon(1.6.1-BOT-DISK-B)
-import { packageCacheEnv } from "./template.js"; // myrmidon(1.6.1-BOT-DISK-B)
+import { BOT_SCOPE_STORE_DIR, packageCacheEnv, pnpmEnv } from "./template.js"; // myrmidon(1.6.1-BOT-DISK-B, BOT-DISK-F)
 import type { CompiledProfile } from "./types.js";
 import type { RegulationDelivery } from "../wiki-cortex/delivery.js"; // myrmidon(1.6-WIKI)
 
@@ -157,6 +157,15 @@ export interface BotProfilePorts {
    * absent = the defaults.
    */
   pnpmSettings?(): Promise<{ storeDir: string; importMethod: string }>;
+  /**
+   * myrmidon(BOT-DISK-F): the layout the board keeps this bot's container on (the
+   * applied isolation scope). A member of a shared scope instance gets the
+   * instance's own pnpm store (`/bot-scope/.pnpm-store`) whatever the instance
+   * `pnpmStoreDir` says, with or without the shared package cache, because a
+   * store anywhere else is outside the one mount its hard links need. Read per
+   * tick, with the driver's reader. Optional: absent = isolated.
+   */
+  scopeLayout?(agentId: string): Promise<ScopeLayout>;
   /**
    * myrmidon(1.6.2-BOT-DISK-C): the clone-lifecycle policy for a bot of `role`, in
    * seconds, written as `MYRMIDON_CLONE_IDLE_TTL_SEC` for the in-container reporter
@@ -308,6 +317,15 @@ export function createBotProfileCompile(
       sharedPackageCachePath && cardFleetHost(agent.adapterConfig) === null
         ? Object.fromEntries(Object.entries(packageCacheEnv({ storeDir: pnpm?.storeDir, importMethod: pnpm?.importMethod })).map(([name, value]) => [name, { value, secret: false }]))
         : {};
+    if (ports.scopeLayout && cardFleetHost(agent.adapterConfig) === null) {
+      const layout = await ports.scopeLayout(agent.id);
+      if (layout.kind === "shared") {
+        const method = (await ports.pnpmSettings?.())?.importMethod;
+        for (const [name, value] of Object.entries(pnpmEnv({ storeDir: BOT_SCOPE_STORE_DIR, importMethod: method }))) {
+          cacheEnv[name] = { value, secret: false };
+        }
+      }
+    }
     const cloneTtlSec =
       ports.cloneIdleTtlSec && cardFleetHost(agent.adapterConfig) === null ? await ports.cloneIdleTtlSec(agent.role) : undefined;
     if (cloneTtlSec !== undefined) cacheEnv.MYRMIDON_CLONE_IDLE_TTL_SEC = { value: String(cloneTtlSec), secret: false };

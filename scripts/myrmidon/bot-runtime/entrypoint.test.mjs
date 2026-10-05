@@ -284,3 +284,104 @@ describe("docker/bot-runtime/entrypoint.sh bot tree layout and hard-link self-ch
     }
   });
 });
+
+// myrmidon(BOT-DISK-F): a member of a shared isolation-scope instance. The instance directory is
+// its one mount; /data is a tmpfs of links the entrypoint makes into the member's own
+// subdirectory, and the pnpm store sits in the instance directory next to every member.
+describe("docker/bot-runtime/entrypoint.sh shared scope member", () => {
+  function scopeLayout() {
+    const tree = fs.mkdtempSync(path.join(os.tmpdir(), "myrmidon-scope-layout-"));
+    const scope = path.join(tree, "bot-scope");
+    const data = path.join(tree, "data");
+    for (const bot of ["bot-a", "bot-b"]) {
+      for (const name of ["hermes", "workspace", "scratch"]) fs.mkdirSync(path.join(scope, bot, name), { recursive: true });
+    }
+    fs.mkdirSync(data);
+    fs.writeFileSync(path.join(scope, "bot-a", "hermes", ".env"), `API_SERVER_KEY="${"k".repeat(32)}"\n`);
+    return { tree, scope, data };
+  }
+
+  it("links /data/<x> into its own subdirectory, reads the key through the link, and starts", () => {
+    const { tree, scope, data } = scopeLayout();
+    try {
+      const result = runWithStub({
+        HERMES_HOME: path.join(data, "hermes"),
+        MYRMIDON_BOT_SCOPE_DIR: scope,
+        MYRMIDON_BOT_SCOPE_SUBDIR: "bot-a",
+        MYRMIDON_DATA_DIR: data,
+        MYRMIDON_HARDLINK_CHECK: "0",
+        MYRMIDON_TEST_CWD: tree,
+        MYRMIDON_WORKSPACE_DIR: path.join(data, "workspace"),
+      });
+      assert.equal(result.status, 0, result.stderr);
+      for (const name of ["hermes", "workspace", "scratch"]) {
+        assert.equal(fs.readlinkSync(path.join(data, name)), path.join(scope, "bot-a", name));
+      }
+      assert.match(result.stderr, /shared scope member/);
+      // the other member's tree is not linked or touched
+      assert.deepEqual(fs.readdirSync(path.join(scope, "bot-b", "hermes")), []);
+    } finally {
+      fs.rmSync(tree, { recursive: true, force: true });
+    }
+  });
+
+  it("hard links work from the instance store into the member's clone roots AND into another member's", () => {
+    const { tree, scope, data } = scopeLayout();
+    try {
+      const store = path.join(scope, ".pnpm-store");
+      const other = path.join(scope, "bot-b", "workspace");
+      const result = runWithStub({
+        HERMES_HOME: path.join(data, "hermes"),
+        MYRMIDON_BOT_SCOPE_DIR: scope,
+        MYRMIDON_BOT_SCOPE_SUBDIR: "bot-a",
+        MYRMIDON_DATA_DIR: data,
+        npm_config_store_dir: store,
+        MYRMIDON_HARDLINK_ROOTS: [path.join(data, "hermes"), path.join(data, "workspace"), path.join(data, "scratch"), other].join(" "),
+        MYRMIDON_TEST_CWD: tree,
+        MYRMIDON_WORKSPACE_DIR: path.join(data, "workspace"),
+      });
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stderr, /hard-link self-check ok/);
+      const report = JSON.parse(fs.readFileSync(path.join(scope, "bot-a", "hermes", ".myrmidon", "hardlink-check.json"), "utf8"));
+      assert.equal(report.ok, true);
+      assert.equal(report.store, store);
+      assert.equal(report.roots.length, 4);
+    } finally {
+      fs.rmSync(tree, { recursive: true, force: true });
+    }
+  });
+
+  it("fails fast when the instance directory is not mounted or the subdirectory is missing", () => {
+    const { tree, scope, data } = scopeLayout();
+    try {
+      const base = { HERMES_HOME: path.join(data, "hermes"), MYRMIDON_DATA_DIR: data, MYRMIDON_HARDLINK_CHECK: "0", API_SERVER_KEY: "k".repeat(32) };
+      const missing = run({ ...base, MYRMIDON_BOT_SCOPE_DIR: path.join(tree, "nowhere"), MYRMIDON_BOT_SCOPE_SUBDIR: "bot-a" });
+      assert.notEqual(missing.status, 0);
+      assert.match(missing.stderr, /does not exist/);
+      const noSub = run({ ...base, MYRMIDON_BOT_SCOPE_DIR: scope, MYRMIDON_BOT_SCOPE_SUBDIR: "bot-z" });
+      assert.notEqual(noSub.status, 0);
+      assert.match(noSub.stderr, /does not exist/);
+    } finally {
+      fs.rmSync(tree, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a subdirectory name that could leave the instance directory", () => {
+    const { tree, scope, data } = scopeLayout();
+    try {
+      for (const bad of ["../bot-b", "a/b", "..", "-x"]) {
+        const result = run({
+          HERMES_HOME: path.join(data, "hermes"),
+          MYRMIDON_DATA_DIR: data,
+          MYRMIDON_BOT_SCOPE_DIR: scope,
+          MYRMIDON_BOT_SCOPE_SUBDIR: bad,
+          API_SERVER_KEY: "k".repeat(32),
+        });
+        assert.notEqual(result.status, 0, bad);
+        assert.match(result.stderr, /not a plain directory name/, bad);
+      }
+    } finally {
+      fs.rmSync(tree, { recursive: true, force: true });
+    }
+  });
+});

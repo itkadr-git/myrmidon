@@ -168,5 +168,14 @@
    "mtime": 1780000000,
    "file": "archives/minimal-data_hermes.tar"
   }
- ]
+ ],
+ "scope": {
+  "root": "/srv/myrmidon-bots/.scopes",
+  "instance": "caste-00000000-0000-4000-8000-0000000000c0-engineer",
+  "bot": "scope/bot.json",
+  "botNext": "scope/bot-next.json",
+  "helperPrepare": "scope/helper-prepare.json",
+  "helperApply": "scope/helper-apply.json",
+  "nonce": "0123456789abcdef"
+ }
 }

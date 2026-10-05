@@ -134,6 +134,36 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
     expect(fileContent(profile, "hermes/hindsight/config.json")).toContain("fleet-default");
   });
 
+  describe("myrmidon(BOT-DISK-F) isolation scope", () => {
+    it("a member of a shared scope instance gets the instance's pnpm store, with or without the shared package cache", async () => {
+      const board = fakeBoard({
+        scopeLayout: async () => ({ kind: "shared", dirName: "caste-x-engineer" }),
+        pnpmSettings: async () => ({ storeDir: "/workspace/.pnpm-store", importMethod: "hardlink" }),
+      });
+      const env = fileContent(await createBotProfileCompile(board.ports, { env: INSTANCE_ENV })("agent-a", "agent-a"), "hermes/.env");
+      expect(env).toContain('npm_config_store_dir="/bot-scope/.pnpm-store"');
+      expect(env).toContain('npm_config_package_import_method="hardlink"');
+      expect(env).not.toContain("/workspace/.pnpm-store");
+    });
+
+    it("an isolated bot, or a port that is absent, keeps the profile it had (no store variable without the cache)", async () => {
+      for (const ports of [{ scopeLayout: async () => ({ kind: "isolated" as const }) }, {}]) {
+        const board = fakeBoard(ports);
+        const env = fileContent(await createBotProfileCompile(board.ports, { env: INSTANCE_ENV })("agent-a", "agent-a"), "hermes/.env");
+        expect(env).not.toContain("npm_config_store_dir");
+      }
+    });
+
+    it("changing the applied layout changes the restart hash, so the container restarts onto it", async () => {
+      const isolated = await createBotProfileCompile(fakeBoard({ scopeLayout: async () => ({ kind: "isolated" }) }).ports, { env: INSTANCE_ENV })("agent-a", "agent-a");
+      const shared = await createBotProfileCompile(
+        fakeBoard({ scopeLayout: async () => ({ kind: "shared", dirName: "caste-x-engineer" }) }).ports,
+        { env: INSTANCE_ENV },
+      )("agent-a", "agent-a");
+      expect(shared.restartHash).not.toBe(isolated.restartHash);
+    });
+  });
+
   it("is idempotent: a second tick with nothing changed gives the same hashes", async () => {
     const board = fakeBoard();
     const compile = createBotProfileCompile(board.ports, { env: INSTANCE_ENV });

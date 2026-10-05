@@ -129,6 +129,15 @@ describe("docker/bot-runtime/Dockerfile", () => {
     assert.match(dockerfile, /ln -s \/data\/scratch \/scratch/);
   });
 
+  it("can run as a member of a shared isolation scope (BOT-DISK-F): scope label, a working directory that always resolves, /bot-scope write-safe", () => {
+    // The scope label is what the driver checks before it creates a member; WORKDIR must not be a
+    // path that only exists after the entrypoint made its links; hermes may write under /bot-scope.
+    assert.match(dockerfile, /myrmidon\.bot-runtime\.scope="1"/);
+    assert.match(dockerfile, /^WORKDIR \/$/m);
+    assert.doesNotMatch(dockerfile, /^WORKDIR \/workspace$/m);
+    assert.match(dockerfile, /HERMES_WRITE_SAFE_ROOT=[^ ]*:\/bot-scope\b/);
+  });
+
   it("declares the bot-runtime contract label the G3 driver requires before it will create a container", () => {
     assert.match(dockerfile, /myrmidon\.bot-runtime\.contract="1"/);
   });

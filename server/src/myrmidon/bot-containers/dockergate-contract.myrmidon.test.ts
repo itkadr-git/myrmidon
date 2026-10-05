@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { APPLIED_MARKER_CONTAINER_PATH, BOT_STOP_TIMEOUT_SEC } from "./docker-driver.js";
 import { CLONE_HYGIENE_REPORT_PATH } from "./clone-hygiene.js";
-import { BOT_HERMES_REAL_PATH } from "./template.js";
+import { BOT_ROOT_MOUNT } from "./template.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "../../../..");
@@ -91,8 +91,12 @@ function expand(expression: string): string[] {
     if (expr === "encodeURIComponent(name)") return SUFFIXES.map((s) => `myrmidon-bot-${KEY}${s}`);
     if (expr === "encodeURIComponent(mountPath)") return table.routes.flatMap((r) => r.mounts ?? []);
     if (expr === "encodeURIComponent(APPLIED_MARKER_CONTAINER_PATH)") return [encodeURIComponent(APPLIED_MARKER_CONTAINER_PATH)];
-    if (expr === "encodeURIComponent(`${BOT_HERMES_REAL_PATH}/${CLONE_HYGIENE_REPORT_PATH}`)") {
-      return [encodeURIComponent(`${BOT_HERMES_REAL_PATH}/${CLONE_HYGIENE_REPORT_PATH}`)];
+    if (expr === "encodeURIComponent(`${root}/hermes/${CLONE_HYGIENE_REPORT_PATH}`)") {
+      return [`/bot-scope/${KEY}`, BOT_ROOT_MOUNT].map((root) => encodeURIComponent(`${root}/hermes/${CLONE_HYGIENE_REPORT_PATH}`));
+    }
+    if (expr === "encodeURIComponent(markerPath)") {
+      // The marker of an isolated bot (/bot) and of a shared scope member (/bot-scope/<botKey>).
+      return [`/bot-scope/${KEY}`, BOT_ROOT_MOUNT].map((root) => encodeURIComponent(`${root}/hermes/.myrmidon/applied.json`));
     }
     if (expr === "BOT_STOP_TIMEOUT_SEC") return [String(BOT_STOP_TIMEOUT_SEC)];
     if (expr === "filters") return ["%7B%22label%22%3A%5B%22myrmidon.bot%22%5D%7D"];

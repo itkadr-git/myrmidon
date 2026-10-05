@@ -52,16 +52,29 @@ type InspectContract struct {
 	Fields  []InspectField  `json:"fields"`
 }
 
+// ScopeFixture is the shared-scope-instance part of manifest.json (BOT-DISK-F):
+// the create bodies of a member of one instance, written by the same driver code.
+type ScopeFixture struct {
+	Root          string `json:"root"`
+	Instance      string `json:"instance"`
+	Bot           string `json:"bot"`
+	BotNext       string `json:"botNext"`
+	HelperPrepare string `json:"helperPrepare"`
+	HelperApply   string `json:"helperApply"`
+	Nonce         string `json:"nonce"`
+}
+
 // Manifest is manifest.json.
 type Manifest struct {
-	BotKey     string    `json:"botKey"`
-	Image      string    `json:"image"`
-	ImageID    string    `json:"imageId"`
-	VolumeRoot string    `json:"volumeRoot"`
-	Network    string    `json:"network"`
-	Nonces     []string  `json:"nonces"`
-	Bodies     []Body    `json:"bodies"`
-	Archives   []Archive `json:"archives"`
+	Scope      *ScopeFixture `json:"scope"`
+	BotKey     string        `json:"botKey"`
+	Image      string        `json:"image"`
+	ImageID    string        `json:"imageId"`
+	VolumeRoot string        `json:"volumeRoot"`
+	Network    string        `json:"network"`
+	Nonces     []string      `json:"nonces"`
+	Bodies     []Body        `json:"bodies"`
+	Archives   []Archive     `json:"archives"`
 }
 
 // Record is one request of traffic.json.

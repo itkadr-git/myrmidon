@@ -39,6 +39,8 @@ import { botProfileWiring } from "./profile-ports.js";
 import type { BotContainerActivitySink, BotMaintenancePort } from "./reconciler.js";
 import { botContainerAgentReader, getBotContainerRuntime, setBotContainerRuntime } from "./routes-wiring.js";
 import { readBotCacheLayoutForBot } from "./bot-disk-service.js"; // myrmidon(1.6.1-BOT-DISK-B, 1.6.2-BOT-DISK-C)
+import { scopeMigrator } from "./scope-migration.js"; // myrmidon(BOT-DISK-F)
+import { readAppliedScopeLayout } from "./scope-wiring.js"; // myrmidon(BOT-DISK-F)
 
 export const BOT_RECONCILE_INTERVAL_ENV = "MYRMIDON_BOT_RECONCILE_INTERVAL_SEC";
 const MIN_RECONCILE_INTERVAL_SEC = 5;
@@ -100,6 +102,10 @@ const defaultPorts: BotContainersStartupPorts = {
   readDriverConfig: (env) => readDockerDriverConfig(env),
   createDriver: (config, db) =>
     dockerBotContainerDriver(config, {
+      // myrmidon(BOT-DISK-F): the layout the owner applied (isolated unless a scope change was applied),
+      // and the host-side move of a bot's directories when a recreate changes it.
+      readScopeLayout: (botKey) => readAppliedScopeLayout(db, botKey),
+      scopeMigration: scopeMigrator({ volumeRoot: config.volumeRoot, scopeRoot: config.scopeRoot ?? `${config.volumeRoot}/.scopes` }),
       // myrmidon(1.6.2-BOT-DISK-C): only bots of the configured roles get cache mounts.
       readSharedPackageCachePath: async (botKey) => (await readBotCacheLayoutForBot(db, botKey)).path,
       readGitMirrorEnabled: async (botKey) => (await readBotCacheLayoutForBot(db, botKey)).gitMirror,

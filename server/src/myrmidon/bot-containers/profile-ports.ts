@@ -70,6 +70,7 @@ import type { CompiledProfile } from "./types.js";
 import { loadRegulationWorkspaceFiles } from "../wiki-cortex/delivery.js";
 import { createWikiRegulationService } from "../wiki-cortex/service.js";
 import { createDbRegulationStore } from "../wiki-cortex/store.js";
+import { readAppliedScopeLayout } from "./scope-wiring.js"; // myrmidon(BOT-DISK-F)
 import { readBotDiskLayout, readCloneIdleTtlSecForRole, readSharedPackageCachePathForRole } from "./bot-disk-service.js"; // myrmidon(1.6.1-BOT-DISK-B, 1.6.2-BOT-DISK-C)
 
 export { BOT_AGENT_API_KEY_NAME };
@@ -516,6 +517,12 @@ export function createDbBotProfilePorts(db: Db): BotProfilePorts {
     async pnpmSettings(): Promise<{ storeDir: string; importMethod: string }> {
       const layout = await readBotDiskLayout(db);
       return { storeDir: layout.pnpmStoreDir, importMethod: layout.pnpmImportMethod };
+    },
+
+    // myrmidon(BOT-DISK-F): the layout the board keeps this bot on, so a member of a shared
+    // scope instance gets the instance's pnpm store path.
+    async scopeLayout(agentId: string) {
+      return readAppliedScopeLayout(db, agentId);
     },
 
     // myrmidon(BOT-LSP-DEFAULTS): the instance language-server policy. Read

@@ -26,6 +26,18 @@ for d in data/hermes workspace scratch; do
   chown 10001:10001 "$d"
 done`
 
+// PrepareScriptShared is Cmd[0] of the prepare helper of a member of a shared
+// scope instance (BOT-DISK-F). The same three paths as PrepareScript, plus the
+// instance directory itself (the helper's /scope bind), which has to belong to
+// the bot's uid so the container can create the instance's pnpm store there.
+// Still no recursion, no link-following option, no find and no glob.
+const PrepareScriptShared = `set -eu
+cd "$1"
+for d in data/hermes workspace scratch scope; do
+  chmod 0700 "$d"
+  chown 10001:10001 "$d"
+done`
+
 // NoncePlaceholder marks the nonce in the apply script template.
 const NoncePlaceholder = "@N@"
 
