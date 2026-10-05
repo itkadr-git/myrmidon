@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -62,4 +63,32 @@ describe("myrmidon-image.yml", () => {
     assert.match(workflow, /type=raw,value=\$\{\{ steps\.version\.outputs\.image_tag \}\}/);
     assert.doesNotMatch(workflow, /-myr\./);
   });
+});
+
+// RC-TAGS: every release image workflow accepts myr-vX.Y.Z-rc.N and
+// still rejects anything else; none of them publishes `latest` or a floating tag.
+describe("release candidate tags in the image workflows", () => {
+  const files = [
+    "myrmidon-image", "myrmidon-dockergate", "myrmidon-fleetd", "myrmidon-bot-image",
+    "myrmidon-media-tools", "myrmidon-cloud-files", "myrmidon-image-mcp",
+  ];
+  const accepts = (regex, value) =>
+    spawnSync("bash", ["-c", `[[ "$1" =~ ${regex} ]]`, "_", value]).status === 0;
+
+  for (const name of files) {
+    it(`${name}.yml: tag regex takes X.Y.Z and X.Y.Z-rc.N only; no latest/X.Y tag`, () => {
+      const text = fs.readFileSync(path.join(ROOT, `.github/workflows/${name}.yml`), "utf8");
+      const regexes = [...text.matchAll(/\[\[ ! "\$tag" =~ (\S+) \]\]/g)].map((m) => m[1]);
+      assert.ok(regexes.length >= 1, "a tag regex exists");
+      const prefix = name === "myrmidon-image" ? "myr-v" : "v";
+      for (const regex of regexes) {
+        assert.ok(accepts(regex, `${prefix}1.7.0`), regex);
+        assert.ok(accepts(regex, `${prefix}1.7.0-rc.3`), regex);
+        assert.ok(!accepts(regex, `${prefix}1.7.0-rc`), regex);
+        assert.ok(!accepts(regex, `${prefix}1.7.0-beta.1`), regex);
+        assert.ok(!accepts(regex, `${prefix}1.7`), regex);
+      }
+      assert.doesNotMatch(text, /type=raw,value=latest|latest=true|type=semver|type=ref,event=tag/);
+    });
+  }
 });
