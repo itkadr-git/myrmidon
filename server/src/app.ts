@@ -121,6 +121,7 @@ import { myrmidonHostDiskRoutes } from "./myrmidon/host-disk/index.js"; // myrmi
 import { myrmidonBotDiskLifecycleRoutes } from "./myrmidon/bot-containers/bot-disk-routes.js"; // myrmidon(BOT-DISK-A)
 import { myrmidonBotScopeRoutes } from "./myrmidon/bot-containers/scope-wiring.js"; // myrmidon(BOT-DISK-F)
 import { myrmidonBotDiskQuotaRoutes } from "./myrmidon/bot-containers/bot-disk-quota-routes.js"; // myrmidon(1.6.1-BOT-DISK-C)
+import { myrmidonContainerScopeRoutes } from "./myrmidon/container-scope/index.js"; // myrmidon(CONTAINER-SCOPE)
 import { myrmidonMetricsApp } from "./myrmidon/monitoring/metrics/index.js"; // myrmidon(1.7-METRICS)
 import { swarmClaimApp } from "./myrmidon/swarm-claim/index.js"; // myrmidon(1.6-SWARM)
 // myrmidon(EMERGENCY-STOP): immediate stop of the runs a draining pause left running
@@ -884,6 +885,7 @@ export async function createApp(
   api.use(myrmidonBotDiskLifecycleRoutes(db)); // myrmidon(BOT-DISK-A)
   api.use(myrmidonBotScopeRoutes(db)); // myrmidon(BOT-DISK-F)
   api.use(myrmidonBotDiskQuotaRoutes(db)); // myrmidon(1.6.1-BOT-DISK-C)
+  api.use(myrmidonContainerScopeRoutes(db)); // myrmidon(CONTAINER-SCOPE): the container axis of an isolation area
   api.use(swarmClaimApp({
     db,
     settings: instanceSettingsService(db),
