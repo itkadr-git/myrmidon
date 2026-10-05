@@ -86,11 +86,12 @@ company_id="${BOARD_COMPANY_ID:-}"
 token_file="${MYRMIDON_PREDEPLOY_TOKEN_FILE:-${HEALTH_TOKEN_FILE:-${BOARD_TOKEN_FILE:-}}}"
 api_paths="${MYRMIDON_PREDEPLOY_API_PATHS:-/api/health,/api/companies/:company:/attention,/api/companies/:company:/issues?limit=1,/api/companies/:company:/agents,/api/companies/:company:/dashboard}"
 
-# shellcheck disable=SC2016  # the quotes are part of the command the operator overrides
 db_ready_command="${MYRMIDON_PREDEPLOY_DB_READY_COMMAND:-}"
-[[ -n "$db_ready_command" ]] || db_ready_command='docker exec "$MYR_PREDEPLOY_DB_CONTAINER" pg_isready -U "$MYR_PREDEPLOY_DB_USER" -d "$MYR_PREDEPLOY_DB_NAME"'
 # shellcheck disable=SC2016  # the quotes are part of the command the operator overrides
+[[ -n "$db_ready_command" ]] || db_ready_command='docker exec "$MYR_PREDEPLOY_DB_CONTAINER" pg_isready -U "$MYR_PREDEPLOY_DB_USER" -d "$MYR_PREDEPLOY_DB_NAME"'
+
 restore_command="${MYRMIDON_PREDEPLOY_RESTORE_COMMAND:-}"
+# shellcheck disable=SC2016  # the quotes are part of the command the operator overrides
 [[ -n "$restore_command" ]] || restore_command='docker exec -i -e PGPASSWORD="$MYR_PREDEPLOY_DB_PASSWORD" "$MYR_PREDEPLOY_DB_CONTAINER" pg_restore -U "$MYR_PREDEPLOY_DB_USER" -d "$MYR_PREDEPLOY_DB_NAME" --no-owner < "$DUMP_FILE"'
 
 # Fail closed: without these the step would quietly prove nothing.
