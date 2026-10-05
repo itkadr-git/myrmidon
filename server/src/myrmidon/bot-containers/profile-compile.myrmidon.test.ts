@@ -891,10 +891,36 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
       expect(fileContent(profile, "hermes/config.yaml")).toContain("threshold_tokens: 100000");
     });
 
-    it("leaves threshold_tokens out when the setting is unset (Hermes applies its own default)", async () => {
+    it("writes the company default 100k for threshold_tokens when the setting is unset", async () => {
+      // myrmidon(BOT-RUNTIME-TUNING-A): the setting is an override of the
+      // company default now — an instance that configures nothing still caps
+      // its bots at 100k instead of letting a large-window model grow a
+      // session to half the window before compacting.
       const board = fakeBoard();
       const profile = await createBotProfileCompile(board.ports, { env: INSTANCE_ENV })("agent-a", "agent-a");
+      expect(fileContent(profile, "hermes/config.yaml")).toContain("threshold_tokens: 100000");
+    });
+
+    it("an explicit 0 in the setting leaves threshold_tokens out (Hermes's own default)", async () => {
+      const board = fakeBoard();
+      const profile = await createBotProfileCompile(board.ports, {
+        env: { ...INSTANCE_ENV, [BOT_COMPRESSION_THRESHOLD_TOKENS_ENV]: "0" },
+      })("agent-a", "agent-a");
       expect(fileContent(profile, "hermes/config.yaml")).not.toContain("threshold_tokens");
+    });
+
+    it("writes the card's own threshold over the company default", async () => {
+      const board = fakeBoard({
+        async loadAgent() {
+          return agentRecord({
+            adapterConfig: { model: "some-model", provider: "custom", models: { compressionThresholdTokens: 120_000 } },
+          });
+        },
+      });
+      const profile = await createBotProfileCompile(board.ports, { env: INSTANCE_ENV })("agent-a", "agent-a");
+      const yaml = fileContent(profile, "hermes/config.yaml");
+      expect(yaml).toContain("threshold_tokens: 120000");
+      expect(yaml).not.toContain("threshold_tokens: 100000");
     });
 
     it("writes model.context_length from MYRMIDON_BOT_MODEL_CONTEXT_LENGTH for the card's model", async () => {

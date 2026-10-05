@@ -7,6 +7,7 @@ import {
   BOT_AUX_TITLE_MODEL_ENV,
   BOT_BOARD_URL_ENV,
   BOT_COMPRESSION_THRESHOLD_TOKENS_ENV,
+  BOT_DEFAULT_COMPRESSION_THRESHOLD_TOKENS,
   BOT_HINDSIGHT_ALLOWED_BANKS_ENV,
   BOT_HINDSIGHT_API_URL_ENV,
   BOT_HINDSIGHT_BANK_ENV,
@@ -103,7 +104,9 @@ describe("myrmidon(W2a) readBotProfileSettings", () => {
       runtimeMcpUrlBase: "http://board.example.com:3100",
       mcpServers: [],
       mcpServersError: null,
-      compressionThresholdTokens: null,
+      // myrmidon(BOT-RUNTIME-TUNING-A): an unset variable means the company
+      // default, not "no threshold".
+      compressionThresholdTokens: BOT_DEFAULT_COMPRESSION_THRESHOLD_TOKENS,
       compressionThresholdTokensError: null,
       modelContextLengths: null,
       modelContextLengthsError: null,
@@ -133,14 +136,24 @@ describe("myrmidon(BOT-RUNTIME-TUNING-B) instance settings", () => {
     expect(read.compressionThresholdTokensError).toBeNull();
   });
 
-  it("treats an unset or blank threshold as unset (Hermes's own default applies)", () => {
-    expect(readBotProfileSettings({}).compressionThresholdTokens).toBeNull();
-    expect(readBotProfileSettings({ [BOT_COMPRESSION_THRESHOLD_TOKENS_ENV]: "   " }).compressionThresholdTokens).toBeNull();
+  it("falls back to the company default 100k when the threshold is unset or blank", () => {
+    // myrmidon(BOT-RUNTIME-TUNING-A): the variable is an override of the
+    // company default, not an all-or-nothing switch: an instance that says
+    // nothing still gets the fleet's 100k cap.
+    expect(readBotProfileSettings({}).compressionThresholdTokens).toBe(BOT_DEFAULT_COMPRESSION_THRESHOLD_TOKENS);
+    expect(readBotProfileSettings({ [BOT_COMPRESSION_THRESHOLD_TOKENS_ENV]: "   " }).compressionThresholdTokens).toBe(
+      BOT_DEFAULT_COMPRESSION_THRESHOLD_TOKENS,
+    );
+    expect(BOT_DEFAULT_COMPRESSION_THRESHOLD_TOKENS).toBe(100_000);
   });
 
-  it("reports a non-integer threshold instead of throwing", () => {
+  it("an explicit 0 in the variable turns the cap off (no threshold written)", () => {
+    expect(readBotProfileSettings({ [BOT_COMPRESSION_THRESHOLD_TOKENS_ENV]: "0" }).compressionThresholdTokens).toBeNull();
+  });
+
+  it("reports a non-integer threshold instead of throwing, and keeps the company default", () => {
     const read = readBotProfileSettings({ [BOT_COMPRESSION_THRESHOLD_TOKENS_ENV]: "100k" });
-    expect(read.compressionThresholdTokens).toBeNull();
+    expect(read.compressionThresholdTokens).toBe(BOT_DEFAULT_COMPRESSION_THRESHOLD_TOKENS);
     expect(read.compressionThresholdTokensError).toContain(BOT_COMPRESSION_THRESHOLD_TOKENS_ENV);
     expect(parseBotCompressionThresholdTokens(null)).toEqual({ value: null, error: null });
     expect(parseBotCompressionThresholdTokens("0")).toEqual({ value: 0, error: null });
@@ -190,6 +203,40 @@ describe("myrmidon(BOT-RUNTIME-TUNING-B) instance settings", () => {
     expect(yaml).toContain("threshold_tokens: 100000");
     expect(yaml).not.toContain("context_length"); // the card names no model
     expect(yaml).toContain('auxiliary:\n  compression:\n    model: "model-summary"\n  title_generation:\n    model: "model-title"');
+  });
+
+  // myrmidon(BOT-RUNTIME-TUNING-A): the same compression cap, but set on the
+  // agent card — the card wins over the company default.
+  it("carries the card's models.compressionThresholdTokens into config.yaml over the instance default", () => {
+    const { input, warnings } = buildHermesProfileInput(
+      source({ adapterConfig: { models: { compressionThresholdTokens: 120_000 } } }),
+      settings({ compressionThresholdTokens: 100_000 }),
+    );
+    expect(warnings).toEqual([]);
+    const yaml = fileContent(compileHermesProfile(input), "hermes/config.yaml");
+    expect(yaml).toContain("threshold_tokens: 120000");
+  });
+
+  it("the card's threshold compiles even when the instance sets none", () => {
+    const { input } = buildHermesProfileInput(
+      source({ adapterConfig: { models: { compressionThresholdTokens: 120_000 } } }),
+      settings({ compressionThresholdTokens: null }),
+    );
+    expect(fileContent(compileHermesProfile(input), "hermes/config.yaml")).toContain("threshold_tokens: 120000");
+  });
+
+  it("ignores an unusable card threshold, so the company default applies", () => {
+    // A card is user-edited JSON: a string, a blank or a non-positive value
+    // never reaches the compiler (asTrimmedPositiveInt), and the instance
+    // default stays in force.
+    for (const bad of ["120k", " ", 0, -5, 12.5, null, undefined]) {
+      const { input, warnings } = buildHermesProfileInput(
+        source({ adapterConfig: { models: { compressionThresholdTokens: bad as unknown as number } } }),
+        settings({ compressionThresholdTokens: 100_000 }),
+      );
+      expect(warnings).toEqual([]);
+      expect(fileContent(compileHermesProfile(input), "hermes/config.yaml")).toContain("threshold_tokens: 100000");
+    }
   });
 
   it("the alias map reaches model.context_length for the card's model", () => {
