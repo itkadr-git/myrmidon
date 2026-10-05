@@ -749,6 +749,19 @@ RUN chmod 0755 /opt/paperclip/bin/pnpm /opt/paperclip/bin/tsc /opt/paperclip/bin
 # gh wrapper (which resolves run-scoped credentials before exec'ing the real
 # gh) is found first; git needs no PATH entry — it reaches the credential
 # helper through /etc/gitconfig's absolute path.
+# myrmidon 1.6.1 BUILD-OFFLOAD B: the `devbuild` entry point (rsync + ssh to
+# the shared build VPS with the shared /srv/devcache caches). Root-owned,
+# outside the writable volumes, so a bot cannot rewrite its own transport.
+# It lives in /opt/paperclip/bin, NOT /usr/local/bin: the part-A wrappers open
+# only when an executable /usr/local/bin/devbuild exists, and this transport
+# must not open the local barrier — the heavy command runs on the build VPS;
+# the key it reads is mounted separately by the runtime template (part C).
+# rsync is part of the transport contract and lives in /usr/bin.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends rsync \
+  && rm -rf /var/lib/apt/lists/*
+COPY --chown=root:root devbuild/devbuild /opt/paperclip/bin/devbuild
+RUN chmod 0755 /opt/paperclip/bin/devbuild
 # myrmidon(1.6.1 BUILD-OFFLOAD A): the same first position is what makes the
 # build wrappers (pnpm/tsc/vitest/gradle/go) shadow the real binaries in
 # /opt/pnpm/bin, /opt/node24/bin and /opt/go/bin — see the COPY block above.
@@ -763,6 +776,8 @@ USER 10001:10001
 # answers, and no PATH element is under a writable root the dockergate image
 # policy rejects. Running it here (not in a builder stage) is what makes the
 # check meaningful — it sees exactly what a bot container would.
+# The devbuild entry point answers --help as uid 10001 (it must: bots invoke
+# it; the image build fails if its mode or interpreter ever break).
 # myrmidon(1.6.1 BUILD-OFFLOAD A): the check also proves the build-offload
 # barrier behaves from the contract user's own eyes — with no
 # /usr/local/bin/devbuild in this image, `pnpm install` MUST fail with the
@@ -781,6 +796,7 @@ RUN set -eu; \
     zstd --version; \
     git --version; \
     docker --version; \
+    devbuild --help >/dev/null; \
     for el in $(echo "$PATH" | tr ':' ' '); do \
       case "$el" in \
         /data|/data/*|/workspace|/workspace/*|/scratch|/scratch/*|/tmp|/tmp/*) \
