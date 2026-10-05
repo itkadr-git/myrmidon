@@ -273,8 +273,7 @@ Decision register — `containers-plan-senior-2026-09-28.md`.
 | `MYRMIDON_BOT_CONTAINER_GITHUB_ENV_ALLOWLIST` | FLEETD-VMEXEC | unset (empty) | Names of agents (comma-separated) whose cards may hold board-managed GitHub tokens (`env.GITHUB_TOKEN`, `GH_TOKEN` and relatives) as `secret_ref` for the container profile: the value is resolved with a check of the secret's binding to the agent and lands only in the container's `hermes/.env` (0600, secret), never in the container `Env` | Empty/unset — GitHub tokens from container cards are dropped with a warning, as before. The list is read at every resolution (once a minute per bot): emptying the setting restores default behavior on the next pass, without a restart. A fallback for development bots on a machine where the board's GitHub broker address is genuinely unreachable: since the run-bound broker capability reaches bot containers (CONTAINER-GITHUB-WRITE), most dev bots no longer need it — see the "Bot containers" section note below the table |
 | `MYRMIDON_FLEET_HOST_URL` / `MYRMIDON_FLEET_HOST_TOKEN` | FLEETD-VMEXEC | unset | Address of the fleetd service (`http://host:port`, http only — internal network) and its token for the client driver `fleetd-driver.ts`; these are named wrappers over a host entry from the per-host map `MYRMIDON_FLEET_HOSTS` (see the next step of the branch), until the map is introduced the pair is read directly | Without both values the fleetd driver is not instantiated (configuration error), the local docker driver and default behavior are unchanged. The token is a value only in myrmidon-deploy, it is not in the repository or logs |
 | `MYRMIDON_FLEET_HOSTS` | FLEETD-VMEXEC | unset (empty) | Map of named fleetd hosts for placing container bots: JSON array of entries `[{"name":"…","url":"http://…","tokenSecret":"…"}]` — host name (the bot card references it in `adapterConfig.container.host`), fleetd service address (only `http://`), name of the company secret with the fleetd token | Empty/unset — only the local driver, named hosts are impossible, a card with `container.host` gets an error. Invalid JSON, unknown key, duplicate name, non-http url or empty `tokenSecret` — an error, settings are not applied partially. Read at server startup |
-|| `MYRMIDON_BOT_HINDSIGHT_API_URL` | W2a | unset (required when containers are enabled) | Address of the shared hindsight service as the bot container sees it; goes into `hermes/hindsight/config.json` (`api_url`). The memory mode is always `local_external`, a card cannot switch a bot to a cloud address | Without a value the profile is not assembled: the pass over a bot ends with an error in the activity log, the container is neither created nor changed. Address `http(s)://…`; the host's `localhost` from inside the container is not the same |
-|| `MYRMIDON_BOT_CENTRAL_HISTORY` | G4 | `0` (off) | When enabled (`1`/`true`/`yes`/`on`), bot session history is stored in the central hindsight store instead of the container volume. Preserves session history across container recreation. | `0`/`false`/`no`/`off` — legacy behavior (session history stored in container volume). Non-empty value — central history enabled |
+| `MYRMIDON_BOT_HINDSIGHT_API_URL` | W2a | unset (required when containers are enabled) | Address of the shared hindsight service as the bot container sees it; goes into `hermes/hindsight/config.json` (`api_url`). The memory mode is always `local_external`, a card cannot switch a bot to a cloud address | Without a value the profile is not assembled: the pass over a bot ends with an error in the activity log, the container is neither created nor changed. Address `http(s)://…`; the host's `localhost` from inside the container is not the same |
 | `MYRMIDON_BOT_HINDSIGHT_BANK` | W2a | unset | Default memory bank for a bot whose card has no `adapterConfig.hindsight.bankId` | No bank either in the card or here — the profile is not assembled (an error, not a "default" bank at hindsight) |
 | `MYRMIDON_BOT_HINDSIGHT_ALLOWED_BANKS` | W2a | unset (no check) | Comma-separated list of allowed banks; a bank in the card or from `MYRMIDON_BOT_HINDSIGHT_BANK` that is not in the list — a compilation error. Protection against a typo in `bankId` that would silently create a new bank | Empty or unset — no check (current behavior). Duplicates and empty list elements are ignored. The error names the bank and the setting. The card's `adapterConfig.hindsight.observationScopes` block is carried into the profile's `observation_scopes` (the same format as live hermes_local profiles: a list of tag lists) |
 | `MYRMIDON_BOT_LLM_BASE_URL` | W2a | unset; required for a card whose provider is not "own" | Address of the shared LLM gateway (OpenAI-compatible, e.g. LiteLLM) as the container sees it; goes into `model.base_url` and into every fallback model of the profile, but only of a card that talks through the gateway (provider empty, `auto`, `custom`, `custom:<name>`). A card with its own provider is not given the address: Hermes takes `model.base_url` for a named provider too, and the provider key would go to the gateway address | Needed by every card whose `provider` is empty, `auto`, `custom` or `custom:<name>`: without the address Hermes would go to the default OpenRouter address, so such a bot's profile is not assembled, and the error names this setting. A card with its own provider (`anthropic`, `gemini` and the like) does not need the setting: such a bot talks to its provider's address. Address `http(s)://…` |
@@ -761,46 +760,6 @@ outside: an operator turns it on together with `MYRMIDON_FORAGING_KEY_SECRET` wh
 sources need a token. Findings are recorded `unverified` until the skill lifecycle accepts
 them as candidates; `POST …/foraging/sweep` (board only) runs one pass by hand.
 
-
-
-## 1.6.1 — BOT-RUNTIME-TUNING D: model fallback attention signal
-
-Settings of `server/src/myrmidon/litellm-fallback-signal/`. The signal is off
-by default: without `MYRMIDON_MODEL_FALLBACK_ENABLED=1` no timer is armed and
-the attention feed never sees a fallback card. When on, the sweep reads the
-gateway spend log (the same client and master-key secret as M2-A
-litellm-costs), attributes rows to agents by the sha256 of each bot's virtual
-key, and raises ONE medium-severity attention card per agent whose fallback
-share — calls served by a model outside the agent's card model set — is at or
-above the threshold over the window. The card disappears when the share drops
-below half the threshold (hysteresis) or the window empties below min calls.
-
-| Variable | Function | Default | What it does | How to disable / special |
-|---|---|---|---|---|
-| `MYRMIDON_MODEL_FALLBACK_ENABLED` | BOT-RUNTIME-TUNING D | unset (off) | Master switch of the fallback signal sweep: computes each agent's share of gateway calls served outside its card model set and records the attention signals the feed turns into cards | Only the exact values `1` or `true` enable it; unset, `0`, `false` or a typo — off, no timer, no card. Needs `MYRMIDON_LITELLM_*` (M2-A) to read the spend log; without them the sweep logs one warn per tick and stays idle |
-| `MYRMIDON_MODEL_FALLBACK_THRESHOLD_PCT` | BOT-RUNTIME-TUNING D | `20` | Fallback share (percent of attributed calls in the window) at which an agent gets the card. Exit is half of this (hysteresis: a share hovering at the threshold must not blink) | Integer from 1 to 100; non-integer or out of bounds — `20` |
-| `MYRMIDON_MODEL_FALLBACK_MIN_CALLS` | BOT-RUNTIME-TUNING D | `20` | Minimum attributed calls in the window before the agent is evaluated at all — two calls must not raise a signal | Integer from 1; non-integer or below — `20` |
-| `MYRMIDON_MODEL_FALLBACK_WINDOW_SEC` | BOT-RUNTIME-TUNING D | `3600` (1 h) | Length of the rolling window the share is computed over | Integer from 300 to 86400; non-integer or out of bounds — `3600` |
-| `MYRMIDON_MODEL_FALLBACK_INTERVAL_SEC` | BOT-RUNTIME-TUNING D | `300` | Sweep period, in seconds. A tick whose previous sweep is still running is skipped, not queued | Integer from 60 to 86400; non-integer or out of bounds — `300` |
-
-## 1.6.1 — TG-NOTIFY jobs (daily digest and escalations, part B)
-
-Settings of `server/src/myrmidon/telegram-notify/jobs.ts` — the periodic digest and
-escalation jobs of the Telegram notify track (part B; the routes and the
-`telegramNotify` settings area belong to part A). Both jobs read the owner
-settings through part A's JSON contract every pass, so they are
-runtime-changeable, and both are OFF by default: with the defaults the owner
-receives in Telegram only replies to his own messages and U2 decision cards.
-Delivery goes through the existing chat publication path (`chat_publications`,
-the vendor outbox), never a second client. No new table: the escalation state
-and the last digest day live under our own key of `instance_settings.general`.
-
-The jobs are wired maintenance-style: `server/src/index.ts` has one marked call,
-`startTelegramNotifyJobs(db)`; everything else lives in the module.
-
-| Variable | Function | Default | What it does | How to disable / special |
-|---|---|---|---|---|
-| `MYRMIDON_TELEGRAM_NOTIFY_TICK_SEC` | 1.6.1-TG-NOTIFY-B | `300` | Period of the shared job interval: how often the jobs check whether the digest time has arrived or an escalation threshold has passed. The jobs still send only when the owner settings enable them | From 30 to 3600; non-integer or out of bounds — the default (300). A pass whose previous run is still going is skipped, not queued |
 
 ## 1.6 — PARALLEL-HELPERS (delegated helper agents)
 
