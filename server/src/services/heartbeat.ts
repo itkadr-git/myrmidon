@@ -652,6 +652,7 @@ import { hasOtherActionableWork, skipIdleHeartbeatsEnabled } from "../myrmidon/h
 // myrmidon(IDLE-PICKUP): the board wakes an idle agent on its next ready task
 import {
   createIdlePickupSweeper,
+  createIdleWakeBudget,
   idlePickupForAgent,
 } from "../myrmidon/idle-pickup.js";
 // myrmidon(AUTO-RESUME): the board resumes an agent left in `error` with backoff
@@ -18141,8 +18142,15 @@ export function heartbeatService(
   // reassignment) once per MYRMIDON_IDLE_PICKUP_INTERVAL_SEC for every
   // invokable agent. All admission gates (pause, maintenance, limits,
   // concurrency, budget) are enforced by enqueueWakeup itself.
+  // myrmidon(IDLE-WAKE-BUDGET): one company-wide wake budget for both idle
+  // pickup paths — the periodic sweeper below and the release-path pickup —
+  // so the pair never emits more than
+  // MYRMIDON_IDLE_PICKUP_WAKE_BUDGET_PER_MIN (default 5) wakes a minute for one
+  // company, spread over passes in batches of MYRMIDON_IDLE_PICKUP_WAKE_BATCH.
+  const idleWakeBudget = createIdleWakeBudget();
   const idlePickupSweeper = createIdlePickupSweeper({
     db,
+    budget: idleWakeBudget,
     enqueueWakeup: (agentId, opts) => enqueueWakeup(agentId, opts),
     logActivity: async (input) => {
       await logActivity(db, {
@@ -25994,6 +26002,10 @@ export function heartbeatService(
           await idlePickupForAgent(
             {
               db,
+              // myrmidon(IDLE-WAKE-BUDGET): the release path spends the same
+              // company-wide allowance as the periodic sweeper, so a fleet of
+              // finishing runs cannot burst past the per-minute ceiling.
+              budget: idleWakeBudget,
               enqueueWakeup: (agentId, opts) => enqueueWakeup(agentId, opts),
               logActivity: async (input) => {
                 await logActivity(db, {

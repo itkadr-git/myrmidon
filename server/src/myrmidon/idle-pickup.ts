@@ -38,6 +38,8 @@ import { issueHasNoExecutionHold, wakeNotParkedOnExecutionHold } from "./settled
 export const IDLE_PICKUP_INTERVAL_SEC_ENV = "MYRMIDON_IDLE_PICKUP_INTERVAL_SEC";
 export const IDLE_PICKUP_ENABLED_ENV = "MYRMIDON_IDLE_PICKUP_ENABLED";
 export const IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS_ENV = "MYRMIDON_IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS";
+export const IDLE_PICKUP_WAKE_BUDGET_PER_MIN_ENV = "MYRMIDON_IDLE_PICKUP_WAKE_BUDGET_PER_MIN";
+export const IDLE_PICKUP_WAKE_BATCH_ENV = "MYRMIDON_IDLE_PICKUP_WAKE_BATCH";
 export const IDLE_WAKE_REASON = "idle_pickup";
 export const IDLE_WAKE_IDEMPOTENCY_PREFIX = "idle_pickup";
 
@@ -46,6 +48,25 @@ export const DEFAULT_IDLE_PICKUP_INTERVAL_SEC = 30;
 export const MIN_IDLE_PICKUP_INTERVAL_SEC = 5;
 /** Default: an issue whose own run succeeded this recently is left to the handoff/recovery paths. */
 export const DEFAULT_IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS = 15 * 60 * 1000;
+
+/**
+ * Company-wide wake budget: at most this many idle-pickup wakes for one company
+ * inside one minute. A board with twenty idle agents must not start twenty runs
+ * at once: the 28.09 OOM came from exactly that burst, and every wake is a full
+ * LLM session. The budget is per company, so one busy company never starves
+ * another.
+ */
+export const DEFAULT_IDLE_PICKUP_WAKE_BUDGET_PER_MIN = 5;
+export const MAX_IDLE_PICKUP_WAKE_BUDGET_PER_MIN = 60;
+/**
+ * How many of the minute's wakes one sweep pass may emit for one company: the
+ * wakes go out in batches instead of one burst, and the rest wait for the next
+ * pass. Clamped to the minute budget (a batch larger than the budget would only
+ * spend the whole window at once).
+ */
+export const DEFAULT_IDLE_PICKUP_WAKE_BATCH = 5;
+/** Window the company budget is counted over. */
+export const IDLE_PICKUP_WAKE_WINDOW_MS = 60_000;
 
 const WAKEABLE_ISSUE_STATUSES = ["todo", "in_progress"] as const;
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
@@ -84,6 +105,105 @@ export function readIdlePickupRecentSuccessWindowMs(env: NodeJS.ProcessEnv = pro
   return value;
 }
 
+/** Bounded non-negative integer reader shared by the two budget knobs. */
+function readBoundedInt(
+  env: NodeJS.ProcessEnv,
+  name: string,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  const raw = env[name]?.trim();
+  if (!raw || !/^\d+$/.test(raw)) return fallback;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < min || value > max) return fallback;
+  return value;
+}
+
+export interface IdleWakeBudgetSettings {
+  /** Company-wide ceiling of idle-pickup wakes inside one minute. */
+  perMinute: number;
+  /** Ceiling of wakes one pass may emit for one company. */
+  batch: number;
+}
+
+/**
+ * How many wakes the board may emit for one company. The default is the ticket's
+ * own number (at most five a minute); the batch never exceeds the minute budget,
+ * so a batch knob above the budget is silently the budget instead of a way to
+ * spend the whole window in one pass.
+ */
+export function readIdleWakeBudgetSettings(env: NodeJS.ProcessEnv = process.env): IdleWakeBudgetSettings {
+  const perMinute = readBoundedInt(
+    env,
+    IDLE_PICKUP_WAKE_BUDGET_PER_MIN_ENV,
+    DEFAULT_IDLE_PICKUP_WAKE_BUDGET_PER_MIN,
+    1,
+    MAX_IDLE_PICKUP_WAKE_BUDGET_PER_MIN,
+  );
+  const batch = readBoundedInt(
+    env,
+    IDLE_PICKUP_WAKE_BATCH_ENV,
+    DEFAULT_IDLE_PICKUP_WAKE_BATCH,
+    1,
+    MAX_IDLE_PICKUP_WAKE_BUDGET_PER_MIN,
+  );
+  return { perMinute, batch: Math.min(perMinute, batch) };
+}
+
+/**
+ * The company-wide wake budget itself. One instance is shared by every path that
+ * emits an idle-pickup wake (the periodic sweeper and the release-path pickup),
+ * so "at most five a minute for one company" holds across both instead of per
+ * path.
+ *
+ * The window is process-local and rolls on its own: the board runs one scheduler
+ * process, a restart only ever resets the counter towards allowing more wakes,
+ * and a denied wake is never lost — the candidate is re-evaluated on the next
+ * pass, inside the next window.
+ */
+export interface IdleWakeBudget {
+  /** Takes one wake allowance for the company; false when this minute is spent. */
+  tryConsume(companyId: string): boolean;
+  /** Allowances the company still has inside the current window. */
+  remaining(companyId: string): number;
+  /** Drops every window (tests only). */
+  resetForTest(): void;
+}
+
+export function createIdleWakeBudget(
+  readSettings: () => IdleWakeBudgetSettings = () => readIdleWakeBudgetSettings(),
+  nowMs: () => number = () => Date.now(),
+): IdleWakeBudget {
+  const windows = new Map<string, { startedAtMs: number; used: number }>();
+  function currentWindow(companyId: string) {
+    const at = nowMs();
+    const existing = windows.get(companyId);
+    if (!existing || at - existing.startedAtMs >= IDLE_PICKUP_WAKE_WINDOW_MS) {
+      const fresh = { startedAtMs: at, used: 0 };
+      windows.set(companyId, fresh);
+      return fresh;
+    }
+    return existing;
+  }
+  return {
+    remaining(companyId) {
+      const { perMinute } = readSettings();
+      return Math.max(0, perMinute - currentWindow(companyId).used);
+    },
+    tryConsume(companyId) {
+      const { perMinute } = readSettings();
+      const window = currentWindow(companyId);
+      if (window.used >= perMinute) return false;
+      window.used += 1;
+      return true;
+    },
+    resetForTest() {
+      windows.clear();
+    },
+  };
+}
+
 export interface IdlePickupIssueCandidate {
   id: string;
   identifier: string | null;
@@ -106,6 +226,12 @@ export interface IdlePickupDeps {
       contextSnapshot?: Record<string, unknown>;
     },
   ) => Promise<unknown>;
+  /**
+   * Company-wide wake budget (IDLE-WAKE-BUDGET). One instance is shared by the
+   * periodic sweeper and the release-path pickup, so the ceiling holds for the
+   * pair. Absent (unit tests that predate it) means unbudgeted.
+   */
+  budget?: IdleWakeBudget;
   /** Optional activity log for observability; absent in unit tests. */
   logActivity?: (input: {
     companyId: string;
@@ -130,6 +256,12 @@ export interface IdlePickupResult {
   suppressed: number;
   /** Candidates that reached the loop after the SQL prefilter (blocked issues and containers are excluded there). */
   considered: number;
+  /**
+   * Ready issues left alone because the company's wake budget for this minute
+   * was spent. The candidate is not lost: the next window (and the next pass)
+   * picks it up again.
+   */
+  budgetSkipped: number;
   issueIds: string[];
 }
 
@@ -138,6 +270,7 @@ const IDLE_PICKUP_RESULT_ZERO: Omit<IdlePickupResult, "issueIds"> = {
   alreadyActive: 0,
   suppressed: 0,
   considered: 0,
+  budgetSkipped: 0,
 };
 
 /** A fresh zero result; a bare spread of IDLE_PICKUP_RESULT_ZERO would share the issueIds array across calls. */
@@ -367,6 +500,15 @@ export async function idlePickupForAgent(
       result.alreadyActive += 1;
       continue;
     }
+    // myrmidon(IDLE-WAKE-BUDGET): the company-wide ceiling. The candidate above
+    // passed every gate, so this is the moment a wake costs a full LLM session;
+    // when the minute's budget is spent the pass stops here instead of scanning
+    // the agent's remaining tasks. Nothing is dropped: the next window allows
+    // again and the next pass re-reads the same candidate.
+    if (deps.budget && !deps.budget.tryConsume(agent.companyId)) {
+      result.budgetSkipped += 1;
+      break;
+    }
 
     const idempotencyKey = `${IDLE_WAKE_IDEMPOTENCY_PREFIX}:${candidate.id}`;
     try {
@@ -511,8 +653,18 @@ export async function findTopReadyIssueForAgent(
  * caller can skip ticks inside the interval.
  */
 export interface IdlePickupSweeper {
-  sweep(now?: Date): Promise<{ agentsChecked: number } & IdlePickupResult>;
+  sweep(now?: Date): Promise<IdlePickupSweepResult>;
   resetForTest(): void;
+}
+
+export interface IdlePickupSweepResult extends IdlePickupResult {
+  agentsChecked: number;
+  /**
+   * Agents left for a later pass because their company had already received
+   * this pass's batch (MYRMIDON_IDLE_PICKUP_WAKE_BATCH). The batch is what makes
+   * the minute's wakes arrive in batches instead of one burst.
+   */
+  skippedOverBatch: number;
 }
 
 export interface IdlePickupSweeperDeps extends IdlePickupDeps {
@@ -533,15 +685,19 @@ export function createIdlePickupSweeper(deps: IdlePickupSweeperDeps): IdlePickup
   return {
     resetForTest() {
       lastSweepAtMs = 0;
+      deps.budget?.resetForTest();
     },
     async sweep(now = new Date()) {
       const env = deps.env ?? process.env;
       const intervalMs = readIdlePickupIntervalSec(env) * 1000;
-      if (!readIdlePickupEnabled(env)) return { agentsChecked: 0, ...emptyIdlePickupResult() };
+      if (!readIdlePickupEnabled(env)) {
+        return { agentsChecked: 0, skippedOverBatch: 0, ...emptyIdlePickupResult() };
+      }
       if (now.getTime() - lastSweepAtMs < intervalMs) {
-        return { agentsChecked: 0, ...emptyIdlePickupResult() };
+        return { agentsChecked: 0, skippedOverBatch: 0, ...emptyIdlePickupResult() };
       }
       lastSweepAtMs = now.getTime();
+      const { batch } = readIdleWakeBudgetSettings(env);
 
       const rows = await deps.db
         .select({
@@ -556,7 +712,9 @@ export function createIdlePickupSweeper(deps: IdlePickupSweeperDeps): IdlePickup
         .where(eq(companies.status, "active"));
 
       const totals: IdlePickupResult = emptyIdlePickupResult();
+      const wakesPerCompany = new Map<string, number>();
       let agentsChecked = 0;
+      let skippedOverBatch = 0;
       for (const agent of rows) {
         // Invokability covers pause, termination and a broken reporting
         // chain; the maintenance gate covers the maintenance window. A wake
@@ -564,11 +722,24 @@ export function createIdlePickupSweeper(deps: IdlePickupSweeperDeps): IdlePickup
         // skipping earlier keeps the sweep off the admission path.
         if (!(await deps.isAgentInvokable(agent))) continue;
         if (await deps.isAgentUnderMaintenance(agent.id)) continue;
+        // myrmidon(IDLE-WAKE-BUDGET): the batch cap. A company that already got
+        // its batch this pass waits for the next one, so its minute allowance
+        // arrives spread over passes; other companies in the same pass are not
+        // delayed by it.
+        if ((wakesPerCompany.get(agent.companyId) ?? 0) >= batch) {
+          skippedOverBatch += 1;
+          continue;
+        }
         agentsChecked += 1;
         const perAgent = await idlePickupForAgent(deps, agent);
+        wakesPerCompany.set(
+          agent.companyId,
+          (wakesPerCompany.get(agent.companyId) ?? 0) + perAgent.woken,
+        );
         totals.woken += perAgent.woken;
         totals.alreadyActive += perAgent.alreadyActive;
         totals.suppressed += perAgent.suppressed;
+        totals.budgetSkipped += perAgent.budgetSkipped;
         totals.issueIds.push(...perAgent.issueIds);
       }
       if (totals.woken > 0) {
@@ -577,7 +748,7 @@ export function createIdlePickupSweeper(deps: IdlePickupSweeperDeps): IdlePickup
           "idle pickup woke ready assigned issues",
         );
       }
-      return { agentsChecked, ...totals };
+      return { agentsChecked, skippedOverBatch, ...totals };
     },
   };
 }
