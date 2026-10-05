@@ -58,6 +58,9 @@ export const backupRetentionPolicySchema = z.object({
   dailyDays: presetSchema(DAILY_RETENTION_PRESETS, "dailyDays").default(DEFAULT_BACKUP_RETENTION.dailyDays),
   weeklyWeeks: presetSchema(WEEKLY_RETENTION_PRESETS, "weeklyWeeks").default(DEFAULT_BACKUP_RETENTION.weeklyWeeks),
   monthlyMonths: presetSchema(MONTHLY_RETENTION_PRESETS, "monthlyMonths").default(DEFAULT_BACKUP_RETENTION.monthlyMonths),
+  // myrmidon(BACKUP-KEEP-LAST): "keep only the last verified backup" mode;
+  // absent/false keeps tiered retention. Additive — old payloads parse unchanged.
+  keepLastOnly: z.boolean().optional(),
 });
 
 export const instanceGeneralSettingsSchema = z.object({

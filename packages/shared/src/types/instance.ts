@@ -33,6 +33,12 @@ export interface BackupRetentionPolicy {
   dailyDays: (typeof DAILY_RETENTION_PRESETS)[number];
   weeklyWeeks: (typeof WEEKLY_RETENTION_PRESETS)[number];
   monthlyMonths: (typeof MONTHLY_RETENTION_PRESETS)[number];
+  /**
+   * myrmidon(BACKUP-KEEP-LAST): when true, after a successfully created and
+   * verified dump all previous `<prefix>-*` backup files are deleted and the
+   * tier presets above are ignored. Absent/false keeps tiered retention.
+   */
+  keepLastOnly?: boolean;
 }
 
 export const DEFAULT_BACKUP_RETENTION: BackupRetentionPolicy = {
