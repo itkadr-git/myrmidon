@@ -287,7 +287,8 @@ LABEL org.opencontainers.image.title="myrmidon-hermes" \
       org.opencontainers.image.source="https://github.com/itkadr-git/myrmidon" \
       org.opencontainers.image.licenses="MIT" \
       io.github.itkadr-git.myrmidon.base.hermes-version="${HERMES_VERSION}" \
-      myrmidon.bot-runtime.contract="1"
+      myrmidon.bot-runtime.contract="1" \
+      myrmidon.bot-runtime.scope="1"
 
 # ripgrep: hermes' file-search tool shells out to `rg`. git: workspace tools
 # (status/diff/commit) for coding-agent bots. curl: HEALTHCHECK only. openssh-client:
@@ -376,7 +377,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     HERMES_HOME=/data/hermes \
     HERMES_BUNDLED_SKILLS=/opt/hermes-src/skills \
     HERMES_CATALOG_PLUGINS_DIR=/opt/hermes-plugins \
-    HERMES_WRITE_SAFE_ROOT=/data:/workspace:/scratch:/bot \
+    HERMES_WRITE_SAFE_ROOT=/data:/workspace:/scratch:/bot:/bot-scope \
     HERMES_DISABLE_LAZY_INSTALLS=1 \
     HERMES_LAZY_INSTALL_TARGET=/data/hermes/lazy-packages \
     NO_COLOR=1 \
@@ -390,7 +391,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 ENV HOME=/data/hermes
 
 USER 10001:10001
-WORKDIR /workspace
+# myrmidon(BOT-DISK-F): "/" and not /workspace: for a member of a shared isolation scope /workspace
+# is a link that only exists after the entrypoint makes it, and a container whose working
+# directory does not resolve at start does not start. The entrypoint enters /workspace itself.
+WORKDIR /
 VOLUME ["/bot"]
 EXPOSE 8642
 

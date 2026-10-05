@@ -10,6 +10,7 @@
 // volume or the driver's reserved bookkeeping paths — only what these functions
 // accept ever reaches the Docker API.
 
+import { isScopeInstanceDirName } from "@paperclipai/shared";
 import type { BotContainerSpec, BotExtraMount } from "./driver.js";
 import type { CompiledProfileFile } from "./types.js";
 
@@ -103,6 +104,44 @@ export interface BotVolumeMount {
  */
 export const BOT_ROOT_MOUNT = "/bot";
 
+/**
+ * myrmidon(BOT-DISK-F): the mount of a member of a SHARED isolation-scope
+ * instance. Instead of `<volumeRoot>/<botKey>:/bot` the container gets ONE bind,
+ * `<scopeRoot>/<instance>:/bot-scope`: the instance directory holds one pnpm
+ * store ({@link BOT_SCOPE_STORE_DIR}) and a subdirectory per member bot
+ * (`<botKey>/{hermes,workspace,scratch}`), so a hard link works within a bot and
+ * between the bots of the instance. The image's `/data/hermes`, `/workspace` and
+ * `/scratch` links point at `/bot`, which does not exist for a member, so a
+ * tmpfs over `/data` carries links made at start from the one variable
+ * {@link BOT_SCOPE_SUBDIR_ENV} (docker/bot-runtime/entrypoint.sh). The bot sees
+ * only its own instance's directory: a second instance is a different directory
+ * and never mounted.
+ */
+export const BOT_SCOPE_MOUNT = "/bot-scope";
+export const BOT_SCOPE_STORE_DIR = `${BOT_SCOPE_MOUNT}/.pnpm-store`;
+export const BOT_SCOPE_SUBDIR_ENV = "MYRMIDON_BOT_SCOPE_SUBDIR";
+/** The tmpfs over `/data` of a member: only links, owned by the bot's uid. */
+export const BOT_SCOPE_DATA_TMPFS = "uid=10001,gid=10001,mode=0755,size=1m";
+/** Where the prepare helper of a member sees the instance directory (to hand it to the bot's uid). */
+export const BOT_SCOPE_HELPER_MOUNT = "/scope";
+/** Image label declaring the runtime can run as a member (entrypoint links, WORKDIR-independent start). */
+export const BOT_RUNTIME_SCOPE_LABEL = "myrmidon.bot-runtime.scope";
+
+/** A member's place: the instance directory name under the shared root. */
+export interface BotScopeMount {
+  scopeRoot: string;
+  /** `<kind>-<id>`, see `scopeInstanceDirName` in @paperclipai/shared. */
+  dirName: string;
+}
+
+function assertScopeMount(scope: BotScopeMount): void {
+  const reason = unsafeAbsolutePathReason(scope.scopeRoot);
+  if (reason) throw new BotContainerTemplateError(`shared scope root ${JSON.stringify(scope.scopeRoot)} ${reason}`);
+  if (!isScopeInstanceDirName(scope.dirName)) {
+    throw new BotContainerTemplateError(`invalid scope instance directory name ${JSON.stringify(scope.dirName)}`);
+  }
+}
+
 /** Where the compiled profile, the applied-state marker and the clone-hygiene
  *  report live, at their real paths inside {@link BOT_ROOT_MOUNT}. */
 export const BOT_HERMES_REAL_PATH = `${BOT_ROOT_MOUNT}/hermes`;
@@ -122,9 +161,39 @@ export const BOT_VOLUME_MOUNTS: readonly BotVolumeMount[] = [
  * one bind per directory; only the bot container itself gets the single mount
  * ({@link buildBinds}). Same host directories either way.
  */
-export function buildHelperBinds(volumeRoot: string, botKey: string): string[] {
+export function buildHelperBinds(
+  volumeRoot: string,
+  botKey: string,
+  scope?: BotScopeMount,
+  /** The prepare helper of a member also binds the instance directory itself. */
+  withInstanceDir = false,
+): string[] {
   validateBotKey(botKey);
+  if (scope) {
+    assertScopeMount(scope);
+    const base = `${scope.scopeRoot}/${scope.dirName}/${botKey}`;
+    const binds = BOT_VOLUME_MOUNTS.map((mount) => `${base}/${mount.hostSuffix}:${mount.containerPath}`);
+    if (withInstanceDir) binds.push(`${scope.scopeRoot}/${scope.dirName}:${BOT_SCOPE_HELPER_MOUNT}`);
+    return binds;
+  }
   return BOT_VOLUME_MOUNTS.map((mount) => `${volumeRoot}/${botKey}/${mount.hostSuffix}:${mount.containerPath}`);
+}
+
+/** The bot's real hermes directory inside its container, from the binds the container was created with. */
+export function botRealRootFromBinds(binds: readonly string[] | undefined, botKey: string): string {
+  const shared = (binds ?? []).some((bind) => bind.endsWith(`:${BOT_SCOPE_MOUNT}`));
+  return shared ? `${BOT_SCOPE_MOUNT}/${botKey}` : BOT_ROOT_MOUNT;
+}
+
+/** The shared scope instance directory name a container's binds name, or null for an isolated one. */
+export function scopeDirNameFromBinds(binds: readonly string[] | undefined, scopeRoot: string): string | null {
+  const prefix = `${scopeRoot}/`;
+  for (const bind of binds ?? []) {
+    if (bind.startsWith(prefix) && bind.endsWith(`:${BOT_SCOPE_MOUNT}`)) {
+      return bind.slice(prefix.length, bind.length - `:${BOT_SCOPE_MOUNT}`.length);
+    }
+  }
+  return null;
 }
 
 /** The fixed bind list for a bot, plus the extra read-only mounts its card asked
@@ -148,13 +217,16 @@ export function buildBinds(
     /** myrmidon(1.6.2-BOT-DISK-C): also bind `<cache>/git` read-only at
      *  `/cache/git` (the board's git mirrors). Ignored without a cache path. */
     gitMirror?: boolean;
+    /** myrmidon(BOT-DISK-F): a member of a shared scope instance binds the instance directory instead of its own. */
+    scope?: BotScopeMount;
   } = {},
 ): string[] {
   validateBotKey(botKey);
   const mounts = extra.mounts ?? [];
   validateExtraMounts(mounts, extra.allowedSources ?? []);
+  if (extra.scope) assertScopeMount(extra.scope);
   const binds = [
-    `${volumeRoot}/${botKey}:${BOT_ROOT_MOUNT}`,
+    extra.scope ? `${extra.scope.scopeRoot}/${extra.scope.dirName}:${BOT_SCOPE_MOUNT}` : `${volumeRoot}/${botKey}:${BOT_ROOT_MOUNT}`,
     ...mounts.map((mount) => `${mount.source}:${mount.containerPath}:ro`),
   ];
   const cache = extra.sharedPackageCachePath;
@@ -210,7 +282,7 @@ export const DEFAULT_PNPM_STORE_DIR = "/workspace/.pnpm-store";
 export const DEFAULT_PNPM_IMPORT_METHOD = "hardlink";
 
 /** Container roots a pnpm store may live under (all inside the single mount). */
-export const PNPM_STORE_ROOTS: readonly string[] = ["/workspace", "/data", "/scratch", BOT_ROOT_MOUNT];
+export const PNPM_STORE_ROOTS: readonly string[] = ["/workspace", "/data", "/scratch", BOT_ROOT_MOUNT, BOT_SCOPE_MOUNT];
 
 /** Where the shared package cache appears inside a bot container. Outside the
  *  three volumes and /tmp, so dockergate's reserved-target rule holds. */
@@ -274,6 +346,8 @@ export function pnpmEnv(pnpm: { storeDir?: string; importMethod?: string } = {})
 const RESERVED_CONTAINER_PATHS: readonly string[] = [
   ...BOT_VOLUME_MOUNTS.map((mount) => mount.containerPath),
   BOT_ROOT_MOUNT,
+  BOT_SCOPE_MOUNT,
+  BOT_SCOPE_HELPER_MOUNT,
   "/data",
   "/tmp",
 ];
