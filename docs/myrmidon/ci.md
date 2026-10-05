@@ -6,7 +6,8 @@
 ## Два уровня CI
 
 Workflow [`myrmidon-ci.yml`](../../.github/workflows/myrmidon-ci.yml) — на каждый
-`pull_request`, на `push` в `main` и вручную (`workflow_dispatch`). Все job идут на
+`pull_request`, на `push` в `main`, на тег `myr-vX.Y.Z` (гейт журнала релиза в
+lane `checks` — таблица ниже) и вручную (`workflow_dispatch`). Все job идут на
 раннерах GitHub (`ubuntu-latest`), секреты не нужны. Уровень выбирает job `plan`
 (`scripts/myrmidon/ci/affected-tests.mjs plan`):
 
@@ -102,7 +103,7 @@ run 37277281522), а релиз публиковать руками.
 | `tests (server 1/5)` … `(server 5/5)`, `tests (serialized 1/5)` … `(5/5)`, `tests (workspaces-a 1/2)`, `(2/2)`, `tests (workspaces-b)` | full | Весь `pnpm test:run`, разбиение как у вендора |
 | `tests (other packages)` | full | Пакеты, которые `pnpm test:run` не запускает (ниже) |
 | `tests (runner)` | full | `pnpm --filter @paperclipai/paperclip-runner check:all`, как отдельная проверка раннера у вендора |
-| `checks` | все | Шаги: `shellcheck` скриптов выката; `node --test` по `scripts/myrmidon/**/*.test.mjs` (сюда входят сторож CHANGE-FRAGMENTS — ниже — и сторож полос тестов `test-lane-coverage.test.mjs`: каждый серверный тест ровно в одной полосе, OPE-4472); секреты (gitleaks); внутренние адреса (частные сети и запрещённые шаблоны); лицензии зависимостей; совместимость плагинов. Каждый шаг выполняется, даже если предыдущий упал: в журнале видно все сбои сразу |
+| `checks` | все | Шаги: `shellcheck` скриптов выката; на теге `myr-vX.Y.Z` — гейт журнала релиза (RELEASE-CUT-CHANGELOG: `collect-fragments.mjs --version X.Y.Z --check`, непустой раздел версии и пустой «без выпуска» в обоих CHANGELOG, без него тег красный — инцидент 1.6.3); `node --test` по `scripts/myrmidon/**/*.test.mjs` (сюда входят сторож CHANGE-FRAGMENTS — ниже — и сторож полос тестов `test-lane-coverage.test.mjs`: каждый серверный тест ровно в одной полосе, OPE-4472); секреты (gitleaks); внутренние адреса (частные сети и запрещённые шаблоны); лицензии зависимостей; совместимость плагинов. Каждый шаг выполняется, даже если предыдущий упал: в журнале видно все сбои сразу |
 | **`CI result`** | все | Сводная: зелёная, если `plan` прошёл и каждая проверка прошла или не требовалась уровнем |
 
 ### Сторож фрагментов изменений (CHANGE-FRAGMENTS)
