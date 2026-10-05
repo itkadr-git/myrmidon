@@ -93,7 +93,14 @@ describe("prepare script: bot root traversal (BOT-ROOT-TRAVERSE)", () => {
       fs.chmodSync(path.join(dir, "bot"), 0o400); // readable but NOT executable: no traversal
       // Precondition for this uid: paths under the root resolve through it, so an
       // entry inside is unreachable — exactly the rc.1 symptom (EACCES through /bot).
-      assert.throws(() => fs.statSync(sentinel), /EACCES/);
+      // Under root that premise is unobservable: CAP_DAC_OVERRIDE walks through the
+      // mode, so assert the untraversable mode itself — the bit the bot uid sees —
+      // and let the script's real chmod fix it byte-exactly as in production.
+      if (AM_ROOT) {
+        assert.equal(mode(path.join(dir, "bot")), "400");
+      } else {
+        assert.throws(() => fs.statSync(sentinel), /EACCES/);
+      }
       const { result, chowned } = runPrepare(PREPARE_SH, dir);
       assert.equal(result.status, 0, result.stderr);
       // Traversal restored, content intact and never written into. 0711: group and
