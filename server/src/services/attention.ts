@@ -534,11 +534,19 @@ function itemSourceKey(item: AttentionItem) {
   return sourceKey(item.sourceKind, item.subject.id);
 }
 
+// agents.id is a uuid column: a non-uuid id in an IN list fails the whole
+// query (and with it the attention build at startup). Synthetic subjects such
+// as the bot-disk lifecycle card carry a key, not an agent id.
+const AGENT_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export function isAgentIdLike(value: unknown): value is string {
+  return typeof value === "string" && AGENT_ID_RE.test(value);
+}
+
 function readMetadataAgentId(item: AttentionItem) {
   const metadata = item.subject.metadata;
   const value = metadata?.originAgentId ?? metadata?.createdByAgentId ?? metadata?.requestedByAgentId
     ?? metadata?.agentId ?? (item.subject.kind === "agent" ? item.subject.id : null);
-  return typeof value === "string" && value.length > 0 ? value : null;
+  return isAgentIdLike(value) ? value : null;
 }
 
 function startOfUtcDay(now: number) {
@@ -672,7 +680,7 @@ async function enrichAttentionItems(db: Db, companyId: string, items: AttentionI
   const agentIds = [...new Set([
     ...items.map(readMetadataAgentId),
     ...triageRows.map((row) => row.setByAgentId),
-  ].filter((value): value is string => Boolean(value)))];
+  ].filter(isAgentIdLike))];
   const agentNameById = new Map(agentIds.length === 0 ? [] : await db
     .select({ id: agents.id, name: agents.name })
     .from(agents)
@@ -2003,8 +2011,8 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
 
       const cloneSignals = cloneHygieneSignals();
       if (cloneSignals.length > 0) {
-        const botIds = [...new Set(cloneSignals.map((signal) => signal.botKey))];
-        const botAgents = await db
+        const botIds = [...new Set(cloneSignals.map((signal) => signal.botKey))].filter(isAgentIdLike);
+        const botAgents = botIds.length === 0 ? [] : await db
           .select({ id: agents.id, name: agents.name, status: agents.status })
           .from(agents)
           .where(and(eq(agents.companyId, companyId), inArray(agents.id, botIds)));
