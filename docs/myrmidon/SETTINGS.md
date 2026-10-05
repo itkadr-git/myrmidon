@@ -1221,3 +1221,9 @@ is configured or usable.
 | Field | Default | What it does | Bounds / special |
 |---|---|---|---|
 | `promptBudget.optimizerAgentId` | absent | Agent that receives the deep-analysis task filed by the "Deep analysis" button | A uuid of another agent of the same company; absent, blank or not a uuid answers the deep POST with 422. An additive field of the `promptBudget` area owned by the thresholds part (`instance_settings.general.promptBudget`); no environment variable |
+
+## 1.6.3 — GITHUB-SHARED-IDENTITY: vendor cloud connector switch
+
+| Variable | Function | Default | What it does | How to disable / special |
+|---|---|---|---|---|
+| `MYRMIDON_GITHUB_VENDOR_CONNECTOR` | T3 | unset (off) | Emergency re-enable of the vendor's cloud GitHub connector. Off (default): new managed GitHub connections through the vendor OAuth path (`github.code` connector profile) are refused, and existing vendor-connector connections are ignored by the credential resolver (shell git/gh, the run broker, workspace git) — the instance uses the self-hosted GitHub Apps registered in Company settings → Shared GitHub authorization | `1`/`true`/`yes`/`on` — emergency enable of the vendor path. Any other value or unset — off. Read on every call; a change takes effect on process restart |
