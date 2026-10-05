@@ -17,7 +17,7 @@
   {
    "id": "A3",
    "method": "GET",
-   "template": "containers/{name}/archive?path=%2Fdata%2Fhermes%2F.myrmidon%2Fapplied.json",
+   "template": "containers/{name}/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fapplied.json",
    "suffixes": [
     ""
    ]
