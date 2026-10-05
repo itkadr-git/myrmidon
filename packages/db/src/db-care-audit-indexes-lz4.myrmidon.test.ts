@@ -21,7 +21,7 @@ const INDEXES_MIGRATION_TAG = "0308_db_care_audit_indexes";
 const INDEXES_SNAPSHOT_FILE = "./migrations/meta/0308_snapshot.json";
 const COMPRESSION_MIGRATION_FILE = "./migrations/0309_db_care_lz4_compression.sql";
 const COMPRESSION_MIGRATION_TAG = "0309_db_care_lz4_compression";
-const COMPRESSION_SNAPSHOT_FILE = "./migrations/meta/0309_snapshot.json";
+const COMPRESSION_SNAPSHOT_FILE = "./migrations/meta/0402_snapshot.json";
 const PREVIOUS_SNAPSHOT_FILE = "./migrations/meta/0307_snapshot.json";
 
 // The six indexes of DBC-2: the five this change persists, keyed by table, plus

@@ -26,7 +26,7 @@ describe("analyzeSnapshotChain", () => {
 
   it("flags a parent that is not the preceding snapshot from the strict zone on", () => {
     const problems = analyzeSnapshotChain([
-      link("0309_snapshot.json", "a", "z"),
+      link("0402_snapshot.json", "a", "z"),
       link("0310_snapshot.json", "b", "a"),
       link("0313_snapshot.json", "c", "a"),
     ]);

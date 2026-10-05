@@ -144,19 +144,8 @@ answers it with ordinary text in the same Telegram chat.
 
 ## Source of truth
 
-- Mode contract: `packages/shared/src/myrmidon-owner-delivery.ts`
-  (`OWNER_DELIVERY_MODES`, `ownerDeliveryAllowsCard`); settings read/write:
-  `server/src/myrmidon/owner-delivery/settings.ts`
-  (markers `myrmidon(1.6.5-OWNER-DM-FILTER)` and `myrmidon(1.6.5-OWNER-VIA-BOT)`).
-- Mode storage and routes: `server/src/myrmidon/owner-delivery/settings.ts`,
-  `server/src/myrmidon/owner-delivery/routes.ts`.
-- Bot message and owner-reply resolution:
-  `server/src/myrmidon/owner-delivery/owner-message.ts`,
-  `server/src/myrmidon/owner-delivery/routes.ts`.
-- Call site for card delivery: `server/src/services/chat-interaction-publications.ts`
-  (marker `myrmidon(U2)`, after the vendor binding lookup; the mode filter
-  lives inside the binding search).
-- Binding search: `server/src/myrmidon/owner-delivery/telegram-owner-bindings.ts`.
-- Human-readable card prefix: `server/src/myrmidon/owner-delivery/owner-card-text.ts`.
+- Call site: `server/src/services/chat-interaction-publications.ts`
+  (marker `myrmidon(U2)`, after the vendor binding lookup).
+- Binding search: `server/src/myrmidon/owner-active-channel/owner-delivery-gate.ts` (since 1.7-ACTIVE-CHANNEL; the owner-delivery gate picks the channel).
 - Callback resolution: `server/src/myrmidon/owner-delivery/callback-interaction-lookup.ts`.
 - Behaviour record: [../DIVERGENCE.md](../DIVERGENCE.md), row U2.

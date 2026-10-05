@@ -2375,6 +2375,13 @@
       "when": 1792395501000,
       "tag": "0401_wakeup_key_partial_unique_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 340,
+      "version": "7",
+      "when": 1791312572333,
+      "tag": "0402_owner_active_channel",
+      "breakpoints": true
     }
   ]
 }
