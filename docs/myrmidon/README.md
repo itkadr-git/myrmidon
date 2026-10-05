@@ -69,7 +69,7 @@ Myrmidon не отправляет телеметрию вендору. В ко�
 |---|---|
 | [guides/run-limits.md](guides/run-limits.md) | Лимиты допуска прогонов: четыре лимита, источники значений, изменение из UI и API |
 | [guides/run-stall.md](guides/run-stall.md) | Обнаружение зависших прогонов: что считается прогрессом, прерывание `run_stalled`, возврат задачи в `todo`, настройки |
-| [guides/stale-block.md](guides/stale-block.md) | Сторож мёртвых блоков (STALE-BLOCK B): какие причины мертвы, снятие блока с системным комментарием, карточка `stale_block` в attention-фиде, настройки |
+| [guides/stale-block.md](guides/stale-block.md) | Гард причины-ссылки при переходе в blocked (STALE-BLOCK A) и сторож мёртвых блоков (часть B): какие причины мертвы, снятие блока с системным комментарием, карточка `stale_block` в attention-фиде, настройки |
 | [guides/workspace-cleanup.md](guides/workspace-cleanup.md) | Очистка рабочих копий после слияния и сигнал о застрявшей копии |
 | [guides/cloud-files-connector.md](guides/cloud-files-connector.md) | Коннектор Microsoft 365 для ботов-контейнеров: настройка и журнал |
 | [guides/maintenance-banner.md](guides/maintenance-banner.md) | Как баннер обслуживания группирует окна агентов |
@@ -101,6 +101,8 @@ Myrmidon не отправляет телеметрию вендору. В ко�
 | [guides/actor-grant-routes.md](guides/actor-grant-routes.md) | Грантовые проверки актора (1.6.1 ADMIN-AGENT часть B): какие маршруты окружений и tool-подключений пускают агента с грантом, ключи прав по маршрутам, выдача грантов, атрибуция агента в журнале активности |
 | [guides/foraging.md](guides/foraging.md) | Фуражировка (1.6 FORAGING): реестр источников по ролям, проход сравнения снимков, находки и кандидаты в навыки, бюджет прохода, экран «Foraging», API |
 | [guides/budget-enforcement.md](guides/budget-enforcement.md) | Режимы исполнения лимитов расхода (1.7 BUDGET-CONFIG B): `signal_only` по умолчанию (инцидент и сигнал без паузы), `soft` (пауза и карточка владельцу), `hard` (отказ новым прогонам); экран Instance → General, API и прецедентность настройка → env → дефолт |
+| [guides/vendor-share-analysis.md](guides/vendor-share-analysis.md) | Доля файлов, унаследованных от вендора: скрипт `vendor-share.mjs`, что считается унаследованным (путь в базовом коммите + сходство строк не ниже порога), исключения, фиксация числа в релизном ритуале |
+
 | [guides/github-shared-identity.md](guides/github-shared-identity.md) | Авторизоваться в GitHub один раз на весь сервер (GITHUB-SHARED-IDENTITY): свои GitHub App вместо облачного коннектора вендора, токены установки на один репозиторий выпускает доска, выбор приложения по целевому репозиторию, авторство агента, аудит, выключатель коннектора вендора |
 
 | [media-tools.md](media-tools.md) | Общие медиа- и офисные инструменты для контейнерных ботов: сервис media-mcp, хранилище и квоты, инструменты (ffmpeg, офис, OCR, `dwg_convert`), развёртывание и границы изоляции |

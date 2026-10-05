@@ -42,6 +42,8 @@ import {
   type BotProfileSettings,
 } from "./profile-input.js";
 import type { BotContainerActivitySink } from "./reconciler.js";
+import { cardFleetHost } from "./fleetd-hosts.js"; // myrmidon(1.6.1-BOT-DISK-B)
+import { packageCacheEnv } from "./template.js"; // myrmidon(1.6.1-BOT-DISK-B)
 import type { CompiledProfile } from "./types.js";
 import type { RegulationDelivery } from "../wiki-cortex/delivery.js"; // myrmidon(1.6-WIKI)
 
@@ -139,6 +141,30 @@ export interface BotProfilePorts {
    * reconcile without a restart.
    */
   parallelHelpers?(): Promise<ParallelHelpersSettings | undefined>;
+  /**
+   * myrmidon(1.6.1-BOT-DISK-B): the shared package cache path from the instance
+   * settings (`general.botDisk`), undefined when none is set. Read per tick,
+   * the same reader the local driver uses for its binds, so the cache mounts
+   * and the variables pointing the tools at them change together. Optional:
+   * without it no bot gets the variables.
+   */
+  sharedPackageCachePath?(role?: string): Promise<string | undefined>;
+  /**
+   * myrmidon(1.6.2-BOT-DISK-C): where the pnpm store of a bot with the shared
+   * cache lives (`general.botDisk.pnpmStore`, default "workspace": on the same
+   * mount as the clones, so pnpm hard-links instead of copying; see
+   * template.ts packageCacheEnv). Read per tick. Optional: absent = "workspace".
+   */
+  pnpmStore?(): Promise<"workspace" | "shared">;
+  /**
+   * myrmidon(1.6.2-BOT-DISK-C): the clone-lifecycle policy for a bot of `role`, in
+   * seconds, written as `MYRMIDON_CLONE_IDLE_TTL_SEC` for the in-container reporter
+   * that reaps clean, pushed, idle clones (0: lifecycle off). The board has no
+   * mount of the bot volumes, so the policy travels in the profile. `undefined`:
+   * the bot is outside `general.botDisk.sharedCacheRoles` and gets no variable.
+   * Read per tick. Optional: absent = none.
+   */
+  cloneIdleTtlSec?(role?: string): Promise<number | undefined>;
   /**
    * myrmidon(BOT-LSP-DEFAULTS): the instance language-server policy
    * (`general.botLsp`): which roles write code and the mode of coding and
@@ -268,6 +294,26 @@ export function createBotProfileCompile(
         ports.botLsp ? ports.botLsp() : Promise.resolve(undefined),
       ]);
 
+    // myrmidon(1.6.1-BOT-DISK-B): with a shared package cache, a bot on the
+    // default host (the local driver mounts the cache there) gets the variables
+    // that point pnpm, Go and Gradle at the mounts. A bot on a fleetd host has
+    // no cache mounts (fleetd-driver.ts), so its tools keep their own defaults.
+    // Instance values win over the card's, like the egress variables below.
+    const sharedPackageCachePath = ports.sharedPackageCachePath ? await ports.sharedPackageCachePath(agent.role) : undefined;
+    // myrmidon(1.6.2-BOT-DISK-C): the pnpm store mode decides whether the store
+    // shares the clones' mount (hard links) or the cache mount (reflink/copy).
+    const pnpmStore = sharedPackageCachePath && ports.pnpmStore ? await ports.pnpmStore() : "workspace";
+    const cacheEnv: Record<string, HermesProfileEnvEntry> =
+      sharedPackageCachePath && cardFleetHost(agent.adapterConfig) === null
+        ? Object.fromEntries(Object.entries(packageCacheEnv(pnpmStore)).map(([name, value]) => [name, { value, secret: false }]))
+        : {};
+    const cloneTtlSec =
+      ports.cloneIdleTtlSec && cardFleetHost(agent.adapterConfig) === null ? await ports.cloneIdleTtlSec(agent.role) : undefined;
+    if (cloneTtlSec !== undefined) cacheEnv.MYRMIDON_CLONE_IDLE_TTL_SEC = { value: String(cloneTtlSec), secret: false };
+    const cacheWarnings = Object.keys(cacheEnv)
+      .filter((name) => cardEnv.env[name] !== undefined)
+      .map((name) => `.env: "${name}" is set by the shared package cache setting; the card's value was dropped`);
+
     // myrmidon(1.6-WIKI): the approved regulations of the agent's role ride the profile's
     // workspace files, so a bot picks up a newly approved text on its next run. The
     // resolver reads the wiki on every compile, and the renderer is deterministic, so
@@ -306,7 +352,7 @@ export function createBotProfileCompile(
         botKey,
         adapterConfig: agent.adapterConfig,
         runtimeConfig: agent.runtimeConfig,
-        env: { ...cardEnv.env, ...egressEnv },
+        env: { ...cardEnv.env, ...egressEnv, ...cacheEnv },
         skills: skills.skills,
         // No workspace/AGENTS.md: the gateway injection-scans it and drops the whole file
         // on a match. The instructions reach the model through the run request instead
@@ -338,6 +384,7 @@ export function createBotProfileCompile(
       ...gatewayWarnings,
       ...cardEnv.warnings,
       ...egressWarnings,
+      ...cacheWarnings,
       ...(paperclipApiKey.warnings ?? []),
       ...skills.warnings,
       ...instructions.warnings,

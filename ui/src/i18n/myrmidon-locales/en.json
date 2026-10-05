@@ -324,7 +324,26 @@
     "clouds": "Clouds",
     "autonomy": "Autonomy",
     "castes": "Castes & models",
-    "wipLimit": "WIP limit"
+    "wipLimit": "WIP limit",
+    "reviewRouting": "Review routing"
+  },
+  "reviewRouting": {
+    "title": "Review routing",
+    "breadcrumb": "Review routing",
+    "intro": "A task that moves to review with no reviewer gets one automatically: the least loaded agent of the reviewer roles, never the task's author or assignee. With no reviewer available, the task is signalled on the attention desk. A review without a verdict past the set hours is signalled and moved to another reviewer. Changes apply without a restart.",
+    "loading": "Loading the review routing settings...",
+    "noCompany": "Select a company to edit its review routing.",
+    "enabledLabel": "Route reviews automatically",
+    "rolesLabel": "Reviewer roles",
+    "rolesHint": "Caste keys of the agents that may review, separated by commas.",
+    "maxLoadLabel": "Max load per reviewer",
+    "maxLoadHint": "A reviewer already holding this many tasks in flight (in progress + in review) is not picked.",
+    "maxLoadInvalid": "Enter a whole number from 1 to 100.",
+    "hoursLabel": "Reassign after, hours",
+    "hoursHint": "Hours in review without a verdict before the task is signalled and moved to another reviewer. 0 — never.",
+    "hoursInvalid": "Enter a whole number from 0 to 2160.",
+    "save": "Save review routing",
+    "saving": "Saving..."
   },
   "quality": {
     "title": "Quality",
@@ -767,5 +786,21 @@
     "cancel": "Cancel",
     "loading": "Loading plugin entitlement settings...",
     "saveFailed": "Could not save the key. Try again."
+  },
+  "telegramDmProgress": {
+    "title": "Telegram DM: live progress",
+    "description": "While a bot works on a message in a bridged Telegram DM, one status message shows what it is doing now (reading a file, editing slides, checking the result) and is edited in place until the answer replaces it. Saving takes effect at the next status update — no server restart.",
+    "enabledLabel": "Show live progress steps",
+    "enabledAria": "Show live progress in Telegram DM",
+    "intervalLabel": "Minimum seconds between edits",
+    "intervalBounds": "{{min}}–{{max}} s",
+    "sourceSettings": "Saved here",
+    "sourceEnv": "Forced by the server environment",
+    "sourceDefault": "Default",
+    "save": "Save live progress",
+    "saving": "Saving...",
+    "loading": "Loading the live progress settings...",
+    "loadFailed": "Failed to load the live progress settings.",
+    "saveFailed": "Saving the live progress settings failed."
   }
 }
