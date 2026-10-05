@@ -72,7 +72,7 @@
 
 | Variable | Function | Default | What it does | How to disable / special |
 |---|---|---|---|---|
-| `MYRMIDON_GITHUB_VENDOR_CONNECTOR` | GITHUB-SHARED-IDENTITY | unset (**off**) | Instance-wide switch of the vendor's cloud GitHub connector (OAuth through the vendor's GitHub App). Off: new managed GitHub connections and their OAuth start are refused (`github_vendor_connector_disabled`), existing vendor-connector GitHub connections are ignored by the credential resolver | `1`/`true`/`yes`/`on` — on (vendor behavior). Anything else — off. Read on every call |
+| `MYRMIDON_GITHUB_VENDOR_CONNECTOR` | GITHUB-SHARED-IDENTITY (T3) | unset (**off**) | Instance-wide switch of the vendor's cloud GitHub connector (OAuth through the vendor's GitHub App, `github.code` connector profile). Off (default): new managed GitHub connections and their OAuth start are refused (`github_vendor_connector_disabled`), and existing vendor-connector connections are ignored by the credential resolver (shell git/gh, the run broker, workspace git) — the instance uses the self-hosted GitHub Apps registered in Company settings → Shared GitHub authorization | `1`/`true`/`yes`/`on` — emergency enable of the vendor path. Any other value or unset — off. Read on every call; a change takes effect on process restart |
 
 Everything else is runtime-changeable per company. Company settings →
 "Shared GitHub authorization" (`GET`/`PUT /api/myrmidon/companies/:companyId/github-shared-identity`;
@@ -108,7 +108,7 @@ tokens; `git-credential-paperclip` (now with `useHttpPath = true`) and the
 
 | Переменная | Функция | Умолчание | Что делает | Как отключить / особые случаи |
 |---|---|---|---|---|
-| `MYRMIDON_GITHUB_VENDOR_CONNECTOR` | GITHUB-SHARED-IDENTITY | не задана (**выключено**) | Выключатель облачного GitHub-коннектора вендора на весь экземпляр (OAuth через GitHub App вендора). Выключен: новые управляемые подключения GitHub и их OAuth-старт отклоняются (`github_vendor_connector_disabled`), существующие подключения GitHub через коннектор вендора резолвер учёток не видит | `1`/`true`/`yes`/`on` — включено (поведение вендора). Иное — выключено. Читается при каждом вызове |
+| `MYRMIDON_GITHUB_VENDOR_CONNECTOR` | GITHUB-SHARED-IDENTITY (T3) | не задана (**выключено**) | Выключатель облачного GitHub-коннектора вендора на весь экземпляр (OAuth через GitHub App вендора, профиль коннектора `github.code`). Выключен (по умолчанию): новые управляемые GitHub-подключения и их OAuth-старт отклоняются (`github_vendor_connector_disabled`), а существующие подключения коннектора вендора игнорируются распознавателем учётных данных (shell git/gh, брокер прогонов, git рабочих копий) — инстанс работает через собственные GitHub Apps, зарегистрированные в Настройки компании → Общая GitHub-авторизация | `1`/`true`/`yes`/`on` — аварийное включение пути вендора. Любое другое значение или отсутствие — выключено. Читается при каждом вызове; изменение применяется перезапуском процесса |
 
 Остальное меняется на лету, по компаниям. Настройки компании → «Shared
 GitHub authorization» (`GET`/`PUT /api/myrmidon/companies/:companyId/github-shared-identity`;
