@@ -181,13 +181,41 @@ export interface BotVolumeMount {
   containerPath: string;
 }
 
-/** The only three mounts a bot container ever gets. Fixed on purpose: see the
- *  module comment above. */
+/**
+ * myrmidon(BOT-DISK-D): the ONE bind mount of a bot container. link(2) refuses to
+ * cross a mount point (EXDEV) even between two binds of the same host filesystem,
+ * so with `hermes`, `workspace` and `scratch` as three binds (and a pnpm store on
+ * a fourth) pnpm silently copied every package into every clone. The bot's whole
+ * writable tree, `<MYRMIDON_BOT_VOLUME_ROOT>/<botKey>`, is now ONE bind at
+ * {@link BOT_ROOT_MOUNT}; `/data/hermes`, `/workspace` and `/scratch` are links
+ * made by the image (docker/bot-runtime/Dockerfile) that resolve into it, so a
+ * hard link works between any two of them and the pnpm store.
+ */
+export const BOT_ROOT_MOUNT = "/bot";
+
+/** Where the compiled profile, the applied-state marker and the clone-hygiene
+ *  report live, at their real paths inside {@link BOT_ROOT_MOUNT}. */
+export const BOT_HERMES_REAL_PATH = `${BOT_ROOT_MOUNT}/hermes`;
+
+/** The three directories of a bot's tree, each a path inside the single mount
+ *  that the image also exposes as `containerPath`-style links
+ *  (`/data/hermes`, `/workspace`, `/scratch`). */
 export const BOT_VOLUME_MOUNTS: readonly BotVolumeMount[] = [
   { hostSuffix: "hermes", containerPath: "/data/hermes" },
   { hostSuffix: "workspace", containerPath: "/workspace" },
   { hostSuffix: "scratch", containerPath: "/scratch" },
 ];
+
+/**
+ * The three narrow binds of a HELPER container (prepare-volumes, apply-profile).
+ * A helper only chowns and renames files and never needs a hard link, so it keeps
+ * one bind per directory; only the bot container itself gets the single mount
+ * ({@link buildBinds}). Same host directories either way.
+ */
+export function buildHelperBinds(volumeRoot: string, botKey: string): string[] {
+  validateBotKey(botKey);
+  return BOT_VOLUME_MOUNTS.map((mount) => `${volumeRoot}/${botKey}/${mount.hostSuffix}:${mount.containerPath}`);
+}
 
 /** The fixed bind list for a bot, plus the extra read-only mounts its card asked
  *  for, plus the shared package cache when the instance configures one
@@ -226,7 +254,7 @@ export function buildBinds(
   validateExtraMounts(mounts, extra.allowedSources ?? []);
   const driverBind = extra.driverMount ? [validateDriverMount(extra.driverMount, extra.allowedSources ?? [])] : [];
   const binds = [
-    ...BOT_VOLUME_MOUNTS.map((mount) => `${volumeRoot}/${botKey}/${mount.hostSuffix}:${mount.containerPath}`),
+    `${volumeRoot}/${botKey}:${BOT_ROOT_MOUNT}`,
     ...mounts.map((mount) => `${mount.source}:${mount.containerPath}:ro`),
     ...driverBind,
   ];
@@ -267,8 +295,23 @@ export function buildBinds(
  */
 export const GIT_MIRROR_MOUNT = { hostSubdir: "git", containerPath: "/cache/git" } as const;
 
-/** myrmidon(1.6.2-BOT-DISK-C): the pnpm store on the workspace mount (see packageCacheEnv). */
-export const WORKSPACE_PNPM_STORE_DIR = "/workspace/.pnpm-store";
+/**
+ * myrmidon(BOT-DISK-D): where pnpm keeps its content-addressed store by default
+ * (settings `pnpmStoreDir`; the image's `npm_config_store_dir` is the same
+ * value). It is inside the bot's single mount, so every clone anywhere in the
+ * bot's tree can hard-link into it. Never `/cache/pnpm`: that is a different
+ * mount, and pnpm cannot hard-link across mounts.
+ */
+export const DEFAULT_PNPM_STORE_DIR = "/workspace/.pnpm-store";
+
+/** The import method pnpm is told to use: `hardlink` only tries hard links (no
+ *  reflink attempts). pnpm 9 still copies when the kernel refuses a link, so a
+ *  broken layout is caught by the container's start-time self-check
+ *  (docker/bot-runtime/entrypoint.sh), not by pnpm. */
+export const DEFAULT_PNPM_IMPORT_METHOD = "hardlink";
+
+/** Container roots a pnpm store may live under (all inside the single mount). */
+export const PNPM_STORE_ROOTS: readonly string[] = ["/workspace", "/data", "/scratch", BOT_ROOT_MOUNT];
 
 /** Where the shared package cache appears inside a bot container. Outside the
  *  three volumes and /tmp, so dockergate's reserved-target rule holds. */
@@ -293,35 +336,37 @@ export interface PackageCacheMount {
  * Mirrored by dockergate (`PackageCacheMounts` in tools/dockergate/internal/policy/create.go).
  */
 export const PACKAGE_CACHE_MOUNTS: readonly PackageCacheMount[] = [
-  { hostSubdir: "pnpm", containerPath: "/cache/pnpm", envName: "npm_config_store_dir" },
+  // pnpm: a DOWNLOAD cache only (registry metadata), never the store (see DEFAULT_PNPM_STORE_DIR).
+  { hostSubdir: "pnpm", containerPath: "/cache/pnpm", envName: "npm_config_cache_dir" },
   { hostSubdir: "go-mod", containerPath: "/cache/go-mod", envName: "GOMODCACHE" },
   { hostSubdir: "go-build", containerPath: "/cache/go-build", envName: "GOCACHE" },
   { hostSubdir: "gradle", containerPath: "/cache/gradle", envName: "GRADLE_USER_HOME" },
 ];
 
 /**
- * The environment that points each tool at its shared cache mount.
+ * The environment that points each tool at its shared cache mount, plus the pnpm
+ * store variables.
  *
- * myrmidon(1.6.2-BOT-DISK-C): pnpm is the exception. pnpm links a project's
- * node_modules to its store with hard links, and link(2) refuses to cross a
- * mount point (EXDEV) even when both binds come from the same host
- * filesystem — `/cache/pnpm` and `/workspace` are two binds, so with the store
- * on `/cache/pnpm` every install COPIES each package into the clone. With
- * `pnpmStore: "workspace"` (the default) the store is
- * {@link WORKSPACE_PNPM_STORE_DIR}, on the same mount as the clones: every
- * clone of the bot hard-links one copy. With `"shared"` the store stays on
- * `/cache/pnpm` and pnpm is told to import by clone (reflink, which Linux
- * allows across mounts of one filesystem since 5.18) and to copy where the
- * filesystem cannot (ext4): only worth it on XFS with reflink or btrfs.
+ * myrmidon(BOT-DISK-D): pnpm links a project's node_modules to its store with hard
+ * links, and link(2) refuses to cross a mount point. The store therefore lives
+ * INSIDE the bot's single mount ({@link DEFAULT_PNPM_STORE_DIR}), `/cache/pnpm`
+ * stays a download cache only, and the import method is `hardlink` by default (pnpm
+ * does not report a refused link, it copies: the start-time self-check does). Both values come from the
+ * bot-disk settings (`pnpmStoreDir`, `pnpmImportMethod`).
  */
-export function packageCacheEnv(pnpmStore: "workspace" | "shared" = "workspace"): Record<string, string> {
+export function packageCacheEnv(
+  pnpm: { storeDir?: string; importMethod?: string } = {},
+): Record<string, string> {
   const env = Object.fromEntries(PACKAGE_CACHE_MOUNTS.map((mount) => [mount.envName, mount.containerPath]));
-  if (pnpmStore === "workspace") {
-    env.npm_config_store_dir = WORKSPACE_PNPM_STORE_DIR;
-  } else {
-    env.npm_config_package_import_method = "clone-or-copy";
-  }
-  return env;
+  return { ...env, ...pnpmEnv(pnpm) };
+}
+
+/** Just the pnpm variables (see {@link packageCacheEnv}). */
+export function pnpmEnv(pnpm: { storeDir?: string; importMethod?: string } = {}): Record<string, string> {
+  return {
+    npm_config_store_dir: pnpm.storeDir ?? DEFAULT_PNPM_STORE_DIR,
+    npm_config_package_import_method: pnpm.importMethod ?? DEFAULT_PNPM_IMPORT_METHOD,
+  };
 }
 
 /** The one extra bind the driver itself may add (the devbuild ssh key mount).
@@ -355,6 +400,8 @@ function validateDriverMount(mount: BotExtraMount, allowedSources: readonly stri
 export const DEVBUILD_SSH_CONTAINER_PATH = "/opt/devbuild-ssh";
 const RESERVED_CONTAINER_PATHS: readonly string[] = [
   ...BOT_VOLUME_MOUNTS.map((mount) => mount.containerPath),
+  BOT_ROOT_MOUNT,
+  "/data",
   "/tmp",
   DEVBUILD_SSH_CONTAINER_PATH,
 ];

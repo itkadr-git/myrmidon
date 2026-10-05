@@ -59,9 +59,47 @@ export interface CloneReportEntry {
   error: string | null;
 }
 
+/** myrmidon(BOT-DISK-D): one clone root of the container-start hard-link self-check. */
+export interface HardlinkRootResult {
+  /** Container path of the root: /data/hermes, /workspace or /scratch. */
+  root: string;
+  ok: boolean;
+  error: string | null;
+}
+
+/** The self-check the entrypoint runs at every start (docker/bot-runtime/entrypoint.sh)
+ *  and the reporter passes on: a hard link from the pnpm store into each clone root. */
+export interface HardlinkCheck {
+  store: string;
+  importMethod: string;
+  ok: boolean;
+  roots: HardlinkRootResult[];
+}
+
 export interface CloneReport {
   inspectedAtMs: number;
   repos: Map<string, CloneReportEntry>;
+  hardlinkCheck: HardlinkCheck | null;
+}
+
+/** The report's `hardlinkCheck`, or null when absent or malformed. */
+export function parseHardlinkCheck(value: unknown): HardlinkCheck | null {
+  if (!value || typeof value !== "object") return null;
+  const v = value as Record<string, unknown>;
+  if (typeof v.store !== "string" || typeof v.ok !== "boolean" || !Array.isArray(v.roots)) return null;
+  const roots: HardlinkRootResult[] = [];
+  for (const item of v.roots.slice(0, 20)) {
+    if (!item || typeof item !== "object") continue;
+    const r = item as Record<string, unknown>;
+    if (typeof r.root !== "string" || typeof r.ok !== "boolean") continue;
+    roots.push({ root: r.root.slice(0, 200), ok: r.ok, error: typeof r.error === "string" ? r.error.slice(0, 500) : null });
+  }
+  return {
+    store: v.store.slice(0, 500),
+    importMethod: typeof v.importMethod === "string" ? v.importMethod.slice(0, 40) : "unknown",
+    ok: v.ok,
+    roots,
+  };
 }
 
 /** Parse the report file; null when it is not a usable report. */
@@ -106,7 +144,7 @@ export function parseCloneReport(raw: string, nowMs: number): CloneReport | null
       error: malformed ? entry.error ?? "malformed report entry" : entry.error,
     });
   }
-  return { inspectedAtMs, repos };
+  return { inspectedAtMs, repos, hardlinkCheck: parseHardlinkCheck(obj.hardlinkCheck) };
 }
 
 /** Why a reported container path cannot name a clone, or null when it can. */
@@ -147,6 +185,9 @@ export function decideCloneFate(entry: CloneReportEntry | undefined, quiet: bool
 
 /** A clone kept with unpushed work, idle longer than the TTL. */
 export interface CloneHygieneSignal {
+  /** `clone`: unpushed work in an idle clone. `hardlink` (BOT-DISK-D): pnpm cannot
+   *  hard-link from its store into `path` (a clone root), so installs there copy. */
+  kind?: "clone" | "hardlink";
   botKey: string;
   /** Container path of the clone. */
   path: string;
@@ -183,6 +224,19 @@ export function ingestCloneReport(botKey: string, raw: string, idleTtlMs: number
       path: containerPath,
       branch: entry.branch,
       reason: fate.reason,
+      observedAtMs: signals.get(key)?.observedAtMs ?? nowMs,
+    });
+  }
+  // myrmidon(BOT-DISK-D): a clone root the start-time self-check could not hard-link into.
+  for (const failed of report.hardlinkCheck?.roots.filter((root) => !root.ok) ?? []) {
+    const key = `${botKey}:hardlink:${failed.root}`;
+    seen.add(key);
+    signals.set(key, {
+      kind: "hardlink",
+      botKey,
+      path: failed.root,
+      branch: null,
+      reason: `cannot hard-link from the pnpm store ${report.hardlinkCheck?.store}: ${failed.error ?? "unknown error"}`,
       observedAtMs: signals.get(key)?.observedAtMs ?? nowMs,
     });
   }

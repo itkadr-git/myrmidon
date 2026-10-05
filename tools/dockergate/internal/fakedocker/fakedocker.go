@@ -99,6 +99,9 @@ type Container struct {
 	// Marker is the tar that the archive GET of the applied marker returns;
 	// nil is "no such file".
 	Marker []byte
+	// CloneReport is the tar that the archive GET of the clone-hygiene report
+	// returns; nil is "no such file".
+	CloneReport []byte
 	// Logs is the text of the log stream.
 	Logs []byte
 }
@@ -571,8 +574,11 @@ func (d *Daemon) container(w http.ResponseWriter, r *http.Request, call Call, re
 		}
 	case tail == "archive" && call.Method == "GET":
 		marker := c.Marker
+		if q.Get("path") == "/bot/hermes/.myrmidon/clone-hygiene.json" {
+			marker = c.CloneReport
+		}
 		d.mu.Unlock()
-		if marker == nil || q.Get("path") != "/data/hermes/.myrmidon/applied.json" {
+		if marker == nil || (q.Get("path") != "/bot/hermes/.myrmidon/applied.json" && q.Get("path") != "/bot/hermes/.myrmidon/clone-hygiene.json") {
 			msg(w, http.StatusNotFound, "Could not find the file in container")
 			return
 		}

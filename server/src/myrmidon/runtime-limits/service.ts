@@ -1,5 +1,5 @@
 // Live run admission limits (myrmidon C0, RUNTIME-LIMITS): read, change and
-// apply the four ceilings without restarting the server.
+// apply the ceilings without restarting the server.
 //
 // Contract: `instance_settings.general.runLimits` is the source of truth once
 // an operator saves it; the environment stays the default for an instance that

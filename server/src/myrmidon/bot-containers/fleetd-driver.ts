@@ -214,12 +214,13 @@ export function fleetdBotContainerDriver(
       return callJson<BotContainerStatus>({ method: "GET", path: `/bots/${encodeURIComponent(botKey)}/status` });
     },
 
-    async list(): Promise<BotContainerStatus[]> {
+    async list(botKeys: readonly string[]): Promise<BotContainerStatus[]> {
       const res = await callJson<{ bots: BotContainerStatus[] } | BotContainerStatus[]>({
         method: "GET",
         path: "/bots",
       });
-      return Array.isArray(res) ? res : res.bots;
+      const wanted = new Set(botKeys);
+      return (Array.isArray(res) ? res : res.bots).filter((bot) => wanted.has(bot.botKey));
     },
 
     async templateDrift(spec: BotContainerSpec): Promise<TemplateDriftReport> {

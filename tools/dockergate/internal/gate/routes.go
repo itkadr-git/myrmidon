@@ -62,10 +62,23 @@ func (rs *reqState) a2(ctx context.Context, st *runtime, rt *route.Route, bs *bo
 }
 
 // markerPath is the query of the archive GET of the applied marker.
-const markerPath = "/archive?path=%2Fdata%2Fhermes%2F.myrmidon%2Fapplied.json"
+const markerPath = "/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fapplied.json"
 
 // a3: the applied marker. A marker of more than 1 MiB is reported as absent.
 func (rs *reqState) a3(ctx context.Context, st *runtime, rt *route.Route, bs *botState) *deny.Error {
+	return rs.archiveRead(ctx, rt, bs, markerPath, maxMarker)
+}
+
+// cloneReportPath is the query of the archive GET of the clone-hygiene report.
+const cloneReportPath = "/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fclone-hygiene.json"
+
+// a13: the clone-hygiene report of the bot, one fixed file, read-only.
+func (rs *reqState) a13(ctx context.Context, st *runtime, rt *route.Route, bs *botState) *deny.Error {
+	return rs.archiveRead(ctx, rt, bs, cloneReportPath, maxCloneReport)
+}
+
+// archiveRead reads one fixed file of the main container as a tar.
+func (rs *reqState) archiveRead(ctx context.Context, rt *route.Route, bs *botState, query string, limit int) *deny.Error {
 	if derr := rs.g.allow(bs, rateInspect); derr != nil {
 		return derr
 	}
@@ -77,8 +90,8 @@ func (rs *reqState) a3(ctx context.Context, st *runtime, rt *route.Route, bs *bo
 		return rs.notFound()
 	}
 	def, _, _ := rs.timeouts()
-	ans, derr := rs.call(ctx, upstream.Request{Method: "GET", Target: containerPath(ct.ID, markerPath)},
-		def, maxMarker, deny.MarkerTooLarge)
+	ans, derr := rs.call(ctx, upstream.Request{Method: "GET", Target: containerPath(ct.ID, query)},
+		def, limit, deny.MarkerTooLarge)
 	if derr != nil {
 		return derr
 	}

@@ -215,7 +215,7 @@ func TestRedTeam_RT1_8_MethodsOutsideTheAllowlist(t *testing.T) {
 	targets := []string{
 		r.imageTarget(),
 		r.target("", "/json"),
-		r.target("", "/archive?path=%2Fdata%2Fhermes%2F.myrmidon%2Fapplied.json"),
+		r.target("", "/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fapplied.json"),
 		"/v1.45/containers/create?name=" + r.name(""),
 		r.target("", "/start"),
 		r.target(".helper", "/wait?condition=not-running"),
@@ -270,7 +270,7 @@ func TestDeny_MethodsOfTheRouteAreExact(t *testing.T) {
 		cases = append(cases,
 			denyCase{method: method, target: r.target("", "/json"), code: deny.RouteNotAllowed},
 			denyCase{method: method, target: r.imageTarget(), code: deny.RouteNotAllowed},
-			denyCase{method: method, target: r.target("", "/archive?path=%2Fdata%2Fhermes%2F.myrmidon%2Fapplied.json"), code: deny.RouteNotAllowed},
+			denyCase{method: method, target: r.target("", "/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fapplied.json"), code: deny.RouteNotAllowed},
 		)
 	}
 	r.runDeny(t, cases)
@@ -290,7 +290,7 @@ func TestRedTeam_RT1_8_RouteBypass(t *testing.T) {
 
 	M, N, H, K := r.name(""), r.name(".next"), r.name(".helper"), r.key()
 	P := pfx + "/containers/"
-	marker := "path=%2Fdata%2Fhermes%2F.myrmidon%2Fapplied.json"
+	marker := "path=%2Fbot%2Fhermes%2F.myrmidon%2Fapplied.json"
 	flag := "&noOverwriteDirNonDir=true"
 	otherM := "myrmidon-bot-" + otherKey
 
@@ -387,14 +387,14 @@ func TestRedTeam_RT1_8_RouteBypass(t *testing.T) {
 		a3+marker+"&"+marker,
 		a3+"path=%2Fetc%2Fpasswd",
 		a3+"path=%2Fdata%2Fhermes%2F.myrmidon%2Fapplied.jsom",
-		a3+"path=/data/hermes/.myrmidon/applied.json",
+		a3+"path=/bot/hermes/.myrmidon/applied.json",
 		a3+"path=%2fdata%2fhermes%2f.myrmidon%2fapplied.json",
 		a3+"path=%2Fdata%2Fhermes%2F%2Emyrmidon%2Fapplied.json",
 		a3+"path=%2Fdata%2Fhermes%2F.myrmidon%2F..%2F..%2Fetc%2Fpasswd",
 		a3+"path=%2Fdata%2Fhermes",
-		a3+"path=%2Fdata%2Fhermes%2F.myrmidon%2Fapplied.json%2F",
+		a3+"path=%2Fbot%2Fhermes%2F.myrmidon%2Fapplied.json%2F",
 		a3+"path=",
-		a3+"Path=%2Fdata%2Fhermes%2F.myrmidon%2Fapplied.json",
+		a3+"Path=%2Fbot%2Fhermes%2F.myrmidon%2Fapplied.json",
 		P+M+"/archive",
 		P+M+"/archive?",
 		P+M+"/archive/?"+marker,
@@ -814,7 +814,7 @@ func TestDeny_BodyWhereThereIsNone(t *testing.T) {
 	r.runDeny(t, []denyCase{
 		{method: "GET", target: r.imageTarget(), hdr: jsonHdr, body: json, code: deny.BodyNotAllowed},
 		{method: "GET", target: P + M + "/json", hdr: jsonHdr, body: json, code: deny.BodyNotAllowed},
-		{method: "GET", target: P + M + "/archive?path=%2Fdata%2Fhermes%2F.myrmidon%2Fapplied.json", body: []byte("x"), code: deny.BodyNotAllowed},
+		{method: "GET", target: P + M + "/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fapplied.json", body: []byte("x"), code: deny.BodyNotAllowed},
 		{method: "GET", target: P + H + "/logs?stdout=true&stderr=true&tail=20", body: []byte("x"), code: deny.BodyNotAllowed},
 		{method: "POST", target: P + M + "/start", hdr: jsonHdr, body: json, code: deny.BodyNotAllowed},
 		{method: "POST", target: P + H + "/start", body: []byte("x"), code: deny.BodyNotAllowed},
@@ -1009,7 +1009,7 @@ func TestDeny_BotNotEnrolled(t *testing.T) {
 	_, body := r.m.FindBody(t, "bot-plain", "")
 	r.runDeny(t, []denyCase{
 		{method: "GET", target: P + other("") + "/json", code: deny.BotNotEnrolled},
-		{method: "GET", target: P + other("") + "/archive?path=%2Fdata%2Fhermes%2F.myrmidon%2Fapplied.json", code: deny.BotNotEnrolled},
+		{method: "GET", target: P + other("") + "/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fapplied.json", code: deny.BotNotEnrolled},
 		{method: "POST", target: pfx + "/containers/create?name=" + other(""), hdr: jsonHdr, body: body, code: deny.BotNotEnrolled},
 		{method: "POST", target: pfx + "/containers/create?name=" + other(".next"), hdr: jsonHdr, body: body, code: deny.BotNotEnrolled},
 		{method: "POST", target: pfx + "/containers/create?name=" + other(".helper"), hdr: jsonHdr, body: body, code: deny.BotNotEnrolled},
@@ -1045,8 +1045,8 @@ func TestRedTeam_RT1_5_CreateBodiesOnTheWire(t *testing.T) {
 	r := newRig(t)
 	m := r.m
 	k, root := m.BotKey, m.VolumeRoot
-	hermes := `"` + root + "/" + k + `/hermes:/data/hermes"`
-	scratch := `"` + root + "/" + k + `/scratch:/scratch"`
+	hermes := `"` + root + "/" + k + `:/bot"`
+	scratch := hermes
 	otherImg := strings.Replace(m.Image, "0123456789abcdef0123456789abcdef", "ffffffffffffffffffffffffffffffff", 1)
 	netMode := `"NetworkMode":"` + m.Network + `"`
 	apply := "helper-apply-0123456789abcdef"
@@ -1064,8 +1064,9 @@ func TestRedTeam_RT1_5_CreateBodiesOnTheWire(t *testing.T) {
 		c("bridge network", "bot-plain", "", netMode, `"NetworkMode":"bridge"`, deny.NetworkMismatch),
 		c("network of a container", "bot-plain", "", netMode, `"NetworkMode":"container:abc"`, deny.NetworkMismatch),
 		c("networking config", "bot-plain", "", `"HostConfig":`, `"NetworkingConfig":{},"HostConfig":`, deny.JSONUnknownKey),
-		c("docker socket as a bind", "bot-plain", "", scratch, `"/var/run/docker.sock:/scratch"`, deny.BindsMismatch),
-		c("host root as a bind", "bot-plain", "", hermes, `"/:/data/hermes"`, deny.BindsMismatch),
+		c("docker socket as a bind", "bot-plain", "", scratch, `"/var/run/docker.sock:/bot"`, deny.BindsMismatch),
+		c("host root as a bind", "bot-plain", "", hermes, `"/:/bot"`, deny.BindsMismatch),
+		c("the three narrow binds on a bot (the helper layout)", "bot-plain", "", hermes, `"`+root+"/"+k+`/hermes:/data/hermes","`+root+"/"+k+`/workspace:/workspace","`+root+"/"+k+`/scratch:/scratch"`, deny.BindsMismatch),
 		c("fourth bind", "bot-plain", "", scratch+`]`, scratch+`,"/var/run/docker.sock:/var/run/docker.sock"]`, deny.BindsMismatch),
 		c("image not in the list", "bot-plain", "", `"Image":"`+m.Image, `"Image":"`+otherImg, deny.ImageNotAllowed),
 		c("image by tag", "bot-plain", "", `"Image":"`+m.Image, `"Image":"ghcr.io/itkadr-git/myrmidon-hermes:latest`, deny.ImageNotAllowed),
@@ -1098,7 +1099,7 @@ func TestRedTeam_RT1_5_CreateBodiesOnTheWire(t *testing.T) {
 		c("prepare: appended command", "helper-prepare", ".helper", `done"`, `done; id"`, deny.ScriptMismatch),
 		c("prepare: network on", "helper-prepare", ".helper", `"NetworkDisabled":true`, `"NetworkDisabled":false`, deny.JSONValue),
 		c("prepare: sys_admin", "helper-prepare", ".helper", `"CapAdd":["CHOWN","FOWNER"]`, `"CapAdd":["CHOWN","FOWNER","SYS_ADMIN"]`, deny.JSONValue),
-		c("prepare: docker socket", "helper-prepare", ".helper", hermes, `"/var/run/docker.sock:/data/hermes"`, deny.BindsMismatch),
+		c("prepare: docker socket", "helper-prepare", ".helper", `"`+root+"/"+k+`/hermes:/data/hermes"`, `"/var/run/docker.sock:/data/hermes"`, deny.BindsMismatch),
 		c("prepare: image by tag", "helper-prepare", ".helper", `"Image":"`+m.Image+`"`, `"Image":"busybox:latest"`, deny.ImageNotAllowed),
 		c("prepare: label of another bot", "helper-prepare", ".helper", `"myrmidon.bot-helper":"`+k+`"`, `"myrmidon.bot-helper":"`+otherKey+`"`, deny.NameLabelMismatch),
 

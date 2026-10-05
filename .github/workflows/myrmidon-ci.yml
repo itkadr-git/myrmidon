@@ -129,7 +129,15 @@ jobs:
       - name: Select pinned Rust toolchain
         if: ${{ needs.plan.outputs.tier == 'full' }}
         working-directory: packages/paperclip-runner
-        run: rustup show active-toolchain || rustup toolchain install
+        run: |
+          set -euo pipefail
+          if ! command -v rustup >/dev/null 2>&1; then
+            echo '::notice title=Rust toolchain::rustup is missing on this runner; bootstrapping via rustup.rs'
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          rustup show active-toolchain || rustup toolchain install
 
       - name: Cache Rust dependencies
         if: ${{ needs.plan.outputs.tier == 'full' }}
@@ -196,7 +204,15 @@ jobs:
       - name: Select pinned Rust toolchain
         if: ${{ needs.plan.outputs.tier == 'full' }}
         working-directory: packages/paperclip-runner
-        run: rustup show active-toolchain || rustup toolchain install
+        run: |
+          set -euo pipefail
+          if ! command -v rustup >/dev/null 2>&1; then
+            echo '::notice title=Rust toolchain::rustup is missing on this runner; bootstrapping via rustup.rs'
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          rustup show active-toolchain || rustup toolchain install
 
       - name: Cache Rust dependencies
         if: ${{ needs.plan.outputs.tier == 'full' }}
@@ -436,7 +452,15 @@ jobs:
       - name: Select pinned Rust toolchain
         if: ${{ needs.plan.outputs.tier == 'full' }}
         working-directory: packages/paperclip-runner
-        run: rustup show active-toolchain || rustup toolchain install
+        run: |
+          set -euo pipefail
+          if ! command -v rustup >/dev/null 2>&1; then
+            echo '::notice title=Rust toolchain::rustup is missing on this runner; bootstrapping via rustup.rs'
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          rustup show active-toolchain || rustup toolchain install
 
       - name: Cache Rust dependencies
         if: ${{ needs.plan.outputs.tier == 'full' }}

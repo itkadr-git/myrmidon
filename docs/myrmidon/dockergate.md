@@ -77,6 +77,7 @@ Extra read-only bot mounts (shared directories) are described in
 | A10 | `POST .../myrmidon-bot-<K>/stop?t=30` | stop (only inside a recreate) |
 | A11 | `POST .../myrmidon-bot-<K>/restart?t=30` | restart (rate-limited) |
 | A12 | `POST .../myrmidon-bot-<K>.next/rename?name=myrmidon-bot-<K>` | finish the recreate |
+| A13 | `GET .../myrmidon-bot-<K>/archive?path=<clone-hygiene report>` | read the bot's clone-hygiene report (one fixed file, like A3) |
 
 `K` is a lowercase UUID. Any other path (including `exec`, `attach`, `commit`, `build`,
 `images/create`, `volumes`, `networks`, `info`, `events`, `system`, `swarm`) gets 403
@@ -104,7 +105,7 @@ A JSON file. An unknown key at any level, or a missing required key, prevents st
 | `upstream` | absolute path of the daemon socket |
 | `apiVersion` | `1.45` only |
 | `caller` | required. `container` (the board container name), `containerLabels`, `uid`, `gid`, `argv`, `maxStartDelayTicks`, `mode` (`container-main-process` by default, `uid` for CI only) |
-| `volumeRoot` | the host directory of bot volumes; a bot's volumes are `<root>/<botKey>/{hermes,workspace,scratch}` |
+| `volumeRoot` | the host directory of bot volumes; a bot's volumes are `<root>/<botKey>/{hermes,workspace,scratch}`; the bot container gets ONE bind, `<root>/<botKey>:/bot` (hard links cannot cross mounts, BOT-DISK-D), while the helper containers keep three narrow binds of the same directories; `/bot` and `/data` are reserved container paths |
 | `mountSources` | host directories a bot may mount in addition, read-only only (an empty or missing list allows none). Every extra bind in a create body must start with one of these paths in full, carry the `ro` suffix and use a mount point outside `/data/hermes`, `/workspace`, `/scratch`, `/tmp`; otherwise `mount_source_not_allowed` or `binds_mismatch`. The list is also applied on `SIGHUP` |
 | `packageCacheRoot` | the host directory of the shared package cache, the same path as the board's instance setting (see [bot-disk-cache.md](bot-disk-cache.md)). Under it, and only there, a bot may mount the fixed subdirectories `pnpm`, `go-mod`, `go-build`, `gradle` read-write at `/cache/pnpm`, `/cache/go-mod`, `/cache/go-build`, `/cache/gradle`; any other writable bind is `mount_source_not_allowed`. The subdirectory `git` is accepted only as a **read-only** bind at `/cache/git` (the board's bare git mirrors, 1.6.2-BOT-DISK-C); `git` with `rw`, or at another mount point, is refused the same way. An absolute directory without `..`, `//` or a trailing `/`, outside `volumeRoot`. Empty or missing (the default) allows no cache bind. Applied on `SIGHUP` |
 | `network` | the single bot network |

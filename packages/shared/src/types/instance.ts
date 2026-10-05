@@ -6,6 +6,8 @@ import type { StoredRunLimits } from "../myrmidon-runtime-limits.js";
 import type { HostDiskSettings } from "../myrmidon-host-disk.js";
 // myrmidon(BOT-DISK-A): the bot draft-directory lifecycle stored in instance settings
 import type { StoredBotDiskSettings } from "../myrmidon-bot-disk.js";
+// myrmidon(1.6.1-BOT-DISK-C): per-bot disk quota of its own general settings key.
+import type { StoredBotDiskQuotaSettings } from "../myrmidon-bot-disk-quota.js";
 // myrmidon(PARALLEL-HELPERS): the helper ceiling/default stored in instance settings
 import type { ParallelHelpersSettings } from "../myrmidon-parallel-helpers.js";
 import type { BotLspSettings } from "../myrmidon-bot-lsp.js";
@@ -84,11 +86,21 @@ export interface InstanceGeneralSettings {
    */
   botDisk?: StoredBotDiskSettings;
   /**
+   * myrmidon(1.6.1-BOT-DISK-C): per-bot disk quota (company default, per-caste
+   * and per-agent overrides), changed from `GET`/`PATCH /api/myrmidon/bot-disk-quota`.
+   * Its own key, not a sub-key of `botDisk`: part A's PATCH rewrites the whole
+   * `botDisk` object. Absent means "no quota" (enforcement off); kept in sync
+   * with the validator of the same field (packages/shared/src/validators/instance.ts).
+   */
+  botDiskQuota?: StoredBotDiskQuotaSettings;
+  /**
    * myrmidon(C0): run admission limits changed from the instance settings page
    * and `GET`/`PATCH /api/myrmidon/runtime-limits`. Absent means "use the
    * environment variable, then the default"; kept in sync with the validator of
    * the same field (packages/shared/src/validators/instance.ts). A row saved
-   * before 1.6.2 lacks `minFreeHostMemoryMb` (myrmidon 1.6.2 RUN-ADMISSION).
+   * before 1.6.2 lacks `minFreeHostMemoryMb` (myrmidon 1.6.2 RUN-ADMISSION),
+   * a row saved before 1.6.5 lacks `maxHostLoadPercentPerCore` (myrmidon
+   * 1.6.5 RUN-ADMISSION).
    */
   runLimits?: StoredRunLimits;
   /**
@@ -145,6 +157,16 @@ export interface InstanceGeneralSettings {
    * Absent means the defaults.
    */
   reviewRouting?: ReviewRoutingSettings;
+  /**
+   * myrmidon(1.7-SETTINGS-TO-UI): the channel settings document — the Telegram
+   * bridge switches, the chat limits and the cross-channel numbers, changed from
+   * `GET`/`PATCH /api/myrmidon/channel-settings`. An absent (or partial) document
+   * means "use the environment variable, then the default" for every key; the
+   * resolver in server/src/myrmidon/channel-settings/settings.ts normalizes it,
+   * so the stored value is read back defensively. Kept in sync with the
+   * validator of the same field (packages/shared/src/validators/instance.ts).
+   */
+  channelSettings?: unknown;
   /**
    * myrmidon(1.7-BUDGET-CONFIG-B): what a crossed budget limit does —
    * signal only (default), pause with an owner card (soft), or refuse new

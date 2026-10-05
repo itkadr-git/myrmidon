@@ -139,6 +139,7 @@ import { startStackCheckSweep } from "./myrmidon/stack-registry/index.js"; // my
 import { startTelegramNotifyJobs } from "./myrmidon/telegram-notify/index.js";
 import { interactionContinuationOutboxService } from "./myrmidon/interaction-continuation-outbox.js"; // myrmidon(O1)
 import { createWorkspaceHygieneScheduler } from "./myrmidon/workspace-hygiene/index.js"; // myrmidon(WORKSPACE-HYGIENE)
+import { createBotDiskQuotaScheduler } from "./myrmidon/bot-containers/bot-disk-quota-runtime.js"; // myrmidon(1.6.1-BOT-DISK-C)
 // myrmidon(BOT-DISK E): measures the host disk and signals when it crosses the threshold
 import { createHostDiskScheduler } from "./myrmidon/host-disk/index.js"; // myrmidon(BOT-DISK E)
 import { createRunStallSweepFromHeartbeat } from "./myrmidon/run-stall/index.js"; // myrmidon(RUN-STALL)
@@ -1511,6 +1512,12 @@ async function startServerWithDatabaseTeardown(
       db: db as any,
       track: trackHeartbeatSchedulerWork,
     });
+    // myrmidon(1.6.1-BOT-DISK-C): measures bot volumes and signals the bots at/over
+    // their disk quota; the quotas live in the instance settings (GET/PATCH /api/myrmidon/bot-disk-quota)
+    const scheduleBotDiskQuotaSweep = createBotDiskQuotaScheduler({
+      db: db as any,
+      track: trackHeartbeatSchedulerWork,
+    });
 
     // myrmidon(BOT-DISK E): measures the host disk every tick and signals when
     // the fill level crosses the threshold saved in the instance settings
@@ -1840,6 +1847,7 @@ async function startServerWithDatabaseTeardown(
         scheduleGitHubConnectionContinuitySweep();
         scheduleTerminalWorkspaceSweep();
         scheduleWorkspaceHygieneSweep(); // myrmidon(WORKSPACE-HYGIENE)
+        scheduleBotDiskQuotaSweep(); // myrmidon(1.6.1-BOT-DISK-C)
         scheduleHostDiskSweep(); // myrmidon(BOT-DISK E)
         scheduleAdapterLoginReaperSweep();
         scheduleSetupTokenReaperSweep();

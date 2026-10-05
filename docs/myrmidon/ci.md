@@ -88,6 +88,8 @@ Job `report main status` после полного прогона на `main`:
 нарезке релиза. Сторож `scripts/myrmidon/ci/change-fragments-gate.mjs` отклоняет PR,
 чей дифф правит общий документ, и печатает подсказку (вернуть файл, добавить
 фрагмент). PR нарезки релиза сторож узнаёт по удалениям фрагментов и пропускает.
+Ветку, уже правившую общие документы, переводит
+`scripts/myrmidon/release/fragments-from-diff.mjs --slug <слаг> --revert` (см. README каталога).
 Сторож — тест `change-fragments-gate-selftest.test.mjs` внутри шага
 `node --test` job `checks`: на событии `pull_request` он гоняет сторож по
 `$GITHUB_EVENT_PATH` (checkout с `fetch-depth: 0` уже на месте), вне PR —
@@ -265,15 +267,19 @@ Workflow [`myrmidon-image.yml`](../../.github/workflows/myrmidon-image.yml), job
 архитектур по тегам `v*` вендора, с его схемой тегов и каналами npm. Свой файл проще и не
 конфликтует при переносе.
 
-- **Когда:** `push` в `main`, git-тег выпуска `myr-v<major>.<minor>.<patch>` (первый —
+- **Когда:** `push` в `main`, git-тег выпуска `myr-v<major>.<minor>.<patch>` или тег-кандидат
+  `myr-v<major>.<minor>.<patch>-rc.<n>` (RC-VERSIONS, требование владельца 05.10; первый —
   `myr-v1.0.0`), вручную. На `pull_request` не запускается вовсе, плюс проверка
   `github.repository == 'itkadr-git/myrmidon'`: PR из чужих форков образ не собирают.
 - **Что:** `Dockerfile` вендора, стадия `production`, только `linux/amd64`. Кеш BuildKit — в
   реестре (`ghcr.io/itkadr-git/myrmidon:buildcache`).
 - **Версия и коммит** для `/api/health`: `PAPERCLIP_BUILD_VERSION` и
   `PAPERCLIP_BUILD_COMMIT`. Myrmidon — свой продукт со своей версией (semver, решение
-  владельца 28.09.2026). На теге `myr-v1.2.3` версия `1.2.3`, тег образа `1.2.3`. Между
-  выпусками — `<последний выпуск>+<N>.git.<sha>` (до первого выпуска `0.0.0+…`). Версия
+  владельца 28.09.2026). На теге `myr-v1.2.3` версия `1.2.3`, тег образа `1.2.3`; на
+  теге-кандидате `myr-v1.2.3-rc.1` — версия и тег образа `1.2.3-rc.1` (RC-VERSIONS). Между
+  выпусками — `<последний выпуск>+<N>.git.<sha>` (до первого выпуска `0.0.0+…`; последним
+  выпуском может быть и кандидат — база берётся целиком, например `1.2.3-rc.1+2.git.…`).
+  Версия
   Paperclip, взятого за основу, в номер не входит: она в метке образа
   `io.github.itkadr-git.myrmidon.base.paperclip-version`.
 - **Порядок:** образ сначала публикуется только по digest, затем smoke: `docker run` с
