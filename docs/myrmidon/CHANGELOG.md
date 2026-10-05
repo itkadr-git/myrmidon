@@ -481,15 +481,7 @@ version file to edit. Base Paperclip version is in the image label
   instead of the old hardcoded board-user placeholder. Operator guide:
   [guides/actor-grant-routes.md](guides/actor-grant-routes.md).
 
-### Aggregated maintenance plaque (MAINTENANCE-BANNER)
 
-- The maintenance banner is now always a single collapsed plaque instead of
-  one line per window: the summary carries the total window count, the
-  aggregate state (on / draining / ending) and an ends-by bound from the
-  latest drain deadline; the expanded details keep one row per kind of
-  window (scope type + state + reason, agent ids stripped), with agent ids
-  only inside the expanded rows. See
-  [guides/maintenance-banner.md](guides/maintenance-banner.md).
 
 ### Custom castes, consumers (CUSTOM-CASTES B)
 
