@@ -84,7 +84,7 @@ export async function mutateBudgetProjectionDocument<T>(
       .where(eq(instanceSettings.singletonKey, SINGLETON_KEY))
       .for("update")
       .then((rows) => rows[0]!);
-    const companies = readCompaniesMap(row.general);
+    const companies = readBudgetProjectionCompaniesMap(row.general);
     const current = normalizeBudgetProjectionSettings(companies[key]);
     const { next, result } = change(current);
     const changed = JSON.stringify(next) !== JSON.stringify(current);
