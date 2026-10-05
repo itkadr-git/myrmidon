@@ -467,6 +467,11 @@ function deploySandbox({ langfuseHealth = { status: "OK", version: "4.2.1" }, tr
     .replaceAll("__COMPOSE_SERVICE__", "server");
   fs.writeFileSync(path.join(unitDir, "paperclip.service"), unit);
 
+  // The board's own environment for the throwaway board container of
+  // PREDEPLOY-DB-CHECK.
+  const predeployEnv = path.join(dir, "predeploy-board.env");
+  fs.writeFileSync(predeployEnv, "JWT_SECRET=test-secret\n");
+
   const lines = [
     `COMPOSE_DIR=${composeDir}`,
     "COMPOSE_SERVICE=server",
@@ -485,6 +490,13 @@ function deploySandbox({ langfuseHealth = { status: "OK", version: "4.2.1" }, tr
     "MYR_FLEETD_HEALTH_URL=http://127.0.0.1:3100/fleetd/health",
     "MYRMIDON_BOT_IMAGE_ROLLOUT=0",
     "MYRMIDON_DEPLOY_SMOKE=0",
+    // PREDEPLOY-DB-CHECK (the 05.10 incident): the pre-window check is ON by
+    // default and refuses without its inputs. No BOARD_COMPANY_ID here, so the
+    // walked path list stays company-free.
+    "MYRMIDON_PREDEPLOY_POSTGRES_IMAGE=postgres:16-alpine",
+    `MYRMIDON_PREDEPLOY_BOARD_ENV_FILE=${predeployEnv}`,
+    "MYRMIDON_PREDEPLOY_BOARD_PORT=13110",
+    "MYRMIDON_PREDEPLOY_API_PATHS=/api/health,/api/companies",
   ];
   if (tracing) {
     fs.writeFileSync(path.join(dir, "effective-callbacks"), `${tracing.effectiveCallbacks.join("\n")}\n`);
