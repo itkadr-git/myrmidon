@@ -78,7 +78,7 @@ export function createBotDiskQuotaSweep(deps: {
   /** Live signals per company, kept across the ticks of one rotation. */
   const accumulated = new Map<string, Map<string, BotDiskQuotaSignal>>();
   /** keyset cursor of the rotation; null means "start at the head". */
-  let cursor: { updatedAt: Date | null; id: string } | null = null;
+  let cursor: { updatedAt: Date; id: string } | null = null;
 
   let lastResult: BotDiskQuotaSweepResult | null = null;
   let inFlight: Promise<BotDiskQuotaSweepResult> | null = null;
