@@ -89,6 +89,7 @@ Myrmidon не отправляет телеметрию вендору. В ко�
 | [guides/owner-telegram-cards.md](guides/owner-telegram-cards.md) | Доставка карточек вопросов и согласований владельцу задачи в Telegram-личку с агентом-автором (U2) |
 | [guides/cto-chat-planner.md](guides/cto-chat-planner.md) | Планировщик чата с доской (CTO-CHAT B): текст владельца — в предложенный эпик с задачами и критериями приёмки, карточка согласования, вход из Telegram DM, коды ошибок |
 | [guides/external-mcp-connectors.md](guides/external-mcp-connectors.md) | Внешние MCP-коннекторы: подключение любого HTTP MCP-сервера без кода форка — вердикт разведки, две точки входа, гранты агентам, регламент и проверка здоровья |
+| [guides/mcp-tool-names.md](guides/mcp-tool-names.md) | Имена MCP-инструментов доски: `myrmidon*` вместо `paperclip*`, алиасы старых имён на один релиз, план снятия в 1.8 |
 | [guides/agent-instructions-revisions.md](guides/agent-instructions-revisions.md) | История ревизий инструкций агента: снимки, откат, журнал |
 | [guides/auto-resume.md](guides/auto-resume.md) | Автовозобновление агента из `error`: бэкофф 1/5/15, карточка оператору после потолка попыток, настройки |
 | [guides/ui2-shell.md](guides/ui2-shell.md) | Оболочка Myrmidon 2.0 за флагом `enableMyrmidonUi2`: включение на инстанс и лично через `?ui=`, рамка (рейка/верхняя панель/телефонный каркас), экраны 2.0, токены и шрифты |
