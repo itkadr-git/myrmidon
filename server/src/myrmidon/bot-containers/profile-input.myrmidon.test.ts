@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { compileHermesProfile } from "./profile-compiler.js";
 import {
   BOT_AUX_COMPRESSION_MODEL_ENV,
+  BOT_AUX_FALLBACK_MODELS_ENV,
   BOT_AUX_TITLE_MODEL_ENV,
   BOT_BOARD_URL_ENV,
   BOT_COMPRESSION_THRESHOLD_TOKENS_ENV,
@@ -23,6 +24,7 @@ import {
   cardUsesLlmGateway,
   parseBotCompressionThresholdTokens,
   parseBotMcpServers,
+  parseBotAuxFallbackModels,
   parseBotModelContextLengths,
   parseBotHindsightAllowedBanks,
   parseObservationScopes,
@@ -109,6 +111,7 @@ describe("myrmidon(W2a) readBotProfileSettings", () => {
       modelContextLengthsError: null,
       auxiliaryTitleModel: null,
       auxiliaryCompressionModel: null,
+      auxiliaryFallbackModels: null,
     });
     expect(readBotProfileSettings({ [BOT_BOARD_URL_ENV]: "   " }).boardUrl).toBeNull();
     expect(readBotProfileSettings({}).hindsightApiUrl).toBeNull();
@@ -176,6 +179,34 @@ describe("myrmidon(BOT-RUNTIME-TUNING-B) instance settings", () => {
     const read = readBotProfileSettings({});
     expect(read.auxiliaryTitleModel).toBeNull();
     expect(read.auxiliaryCompressionModel).toBeNull();
+  });
+
+  // myrmidon(BOT-RUNTIME-TUNING-AUX-CEILING): the cheap ceiling of the
+  // auxiliary fallback chains.
+  it("parses MYRMIDON_BOT_AUX_FALLBACK_MODELS as an ordered alias list", () => {
+    const read = readBotProfileSettings({
+      [BOT_AUX_FALLBACK_MODELS_ENV]: " model-cheap , model-cheaper ,, model-cheap ",
+    });
+    expect(read.auxiliaryFallbackModels).toEqual(["model-cheap", "model-cheaper"]);
+    expect(readBotProfileSettings({}).auxiliaryFallbackModels).toBeNull();
+    expect(readBotProfileSettings({ [BOT_AUX_FALLBACK_MODELS_ENV]: " , ," }).auxiliaryFallbackModels).toBeNull();
+    expect(parseBotAuxFallbackModels(null)).toBeNull();
+  });
+
+  it("the ceiling reaches the compiled auxiliary chain, on the instance gateway route", () => {
+    const { input, warnings } = buildHermesProfileInput(
+      // No provider on the card: the profile talks to the instance gateway, so
+      // the ceiling entries carry that endpoint and its key name themselves.
+      source({ adapterConfig: { model: "model-a" } }),
+      settings({ auxiliaryTitleModel: "model-title", auxiliaryFallbackModels: ["model-cheap"] }),
+    );
+    expect(warnings).toEqual([]);
+    const yaml = fileContent(compileHermesProfile(input), "hermes/config.yaml");
+    expect(yaml).toContain(
+      'auxiliary:\n  title_generation:\n    fallback_chain:\n    - base_url: "https://example.com/llm/v1"\n' +
+        '      key_env: "FLEET_LLM_API_KEY"\n      model: "model-cheap"\n      provider: "custom"\n' +
+        '    model: "model-title"',
+    );
   });
 
   it("carries the settings into instanceDefaults and then into the compiled config.yaml", () => {

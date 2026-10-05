@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   BOT_AUX_COMPRESSION_MODEL_ENV,
+  BOT_AUX_FALLBACK_MODELS_ENV,
   BOT_AUX_TITLE_MODEL_ENV,
   BOT_BOARD_URL_ENV,
   BOT_COMPRESSION_THRESHOLD_TOKENS_ENV,
@@ -920,6 +921,28 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
       })("agent-a", "agent-a");
       const yaml = fileContent(profile, "hermes/config.yaml");
       expect(yaml).toContain('auxiliary:\n  compression:\n    model: "model-summary"\n  title_generation:\n    model: "model-title"');
+    });
+
+    it("caps the auxiliary chain with MYRMIDON_BOT_AUX_FALLBACK_MODELS", async () => {
+      const board = fakeBoard();
+      const profile = await createBotProfileCompile(board.ports, {
+        env: {
+          ...INSTANCE_ENV,
+          [BOT_AUX_TITLE_MODEL_ENV]: "model-title",
+          [BOT_AUX_FALLBACK_MODELS_ENV]: "model-cheap,model-cheaper",
+        },
+      })("agent-a", "agent-a");
+      const yaml = fileContent(profile, "hermes/config.yaml");
+      // The card names `provider: custom` and INSTANCE_ENV carries the gateway
+      // endpoint, so each ceiling entry spells both out (Hermes resolves a
+      // fallback entry on its own and inherits neither from `model`).
+      expect(yaml).toContain('model: "model-title"');
+      expect(yaml).toContain(
+        'fallback_chain:\n    - base_url: "https://example.com/llm/v1"\n      key_env: "FLEET_LLM_API_KEY"\n' +
+          '      model: "model-cheap"\n      provider: "custom"\n' +
+          '    - base_url: "https://example.com/llm/v1"\n      key_env: "FLEET_LLM_API_KEY"\n' +
+          '      model: "model-cheaper"\n      provider: "custom"',
+      );
     });
 
     it("the card's models block wins over the instance settings", async () => {
