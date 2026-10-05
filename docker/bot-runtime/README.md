@@ -193,13 +193,17 @@ Every downloaded toolchain is pinned by exact version and verified by sha256 bef
 mismatch fails the build, the same rule the Node.js variant states above.
 
 **Where things write.** The root filesystem is read-only at run time and the bot's writable
-directories are exactly its three volumes, so:
+directories are exactly its single `/bot` mount (BOT-DISK-D), so:
 
-- the pnpm store defaults to `/workspace/.pnpm-store` via `npm_config_store_dir` — the same
-  mount as the clones, because pnpm hard-links `node_modules` into its store and a hard link
-  cannot cross a mount (a store on `/data` or `/cache` made pnpm copy every package into every
-  clone; 1.6.2 BOT-DISK-C). `pnpm-hardlink-check.sh` proves it at build time. The instance's
-  shared package cache can host the store instead (`pnpmStore: "shared"`, reflink or copy), see
+- the pnpm store defaults to `/workspace/.pnpm-store` via `npm_config_store_dir`, inside that
+  mount like every clone root, because pnpm hard-links `node_modules` into its store and a hard
+  link cannot cross a mount (a store on a separate bind made pnpm copy every package into every
+  clone). `npm_config_package_import_method=hardlink` is set too; pnpm 9 still copies silently
+  when the kernel refuses a link, so `pnpm-hardlink-check.sh` proves the link from `/data/hermes`,
+  `/workspace` and `/scratch` at build time and `entrypoint.sh` repeats the check at every start
+  (`/data/hermes/.myrmidon/hardlink-check.json`, shown on the board). `/cache/pnpm` is a download
+  cache only, never the store; the paths and the method are the `pnpmStoreDir` and
+  `pnpmImportMethod` settings, see
   [docs/myrmidon/bot-disk-cache.md](../../docs/myrmidon/bot-disk-cache.md);
 - `RUSTUP_HOME`/`CARGO_HOME` stay sealed under `/opt` and `cargo` writes its target dir into
   the checked-out workspace;
@@ -417,6 +421,12 @@ POSIX shell with `find`, `mv -T`, `mkdir -p`, `rm`, `chmod`, `chown`,
 
 ## Volumes
 
+The container has ONE writable bind, the bot's whole tree, at `/bot` (with `hermes/`,
+`workspace/` and `scratch/` inside it); link(2) cannot cross mounts, so the three paths below
+are links the image makes into it (`/data/hermes` → `/bot/hermes`, `/workspace` →
+`/data/workspace` → `/bot/workspace`, `/scratch` → `/data/scratch` → `/bot/scratch`), not
+mounts. The ownership requirement applies to the three directories inside `/bot`.
+
 - `/data` — `HERMES_HOME=/data/hermes`: config, `.env`, `sessions/`,
   `state.db`. Must be owned by uid `10001` before the container starts
   (this image does not chown it — that is the fleet manager's job, since
@@ -473,10 +483,9 @@ It checks, over the live gateway HTTP API:
 The check needs no secrets: the API server key is generated per run and
 used only in headers/env of that run; the mock provider never leaves
 loopback and streams one chunk per second so the run is stoppable. The
-script binds `/data/hermes` from a throwaway directory (key through
-`${HERMES_HOME}/.env`, per the bot-runtime contract) and mounts
-`/workspace`/`/scratch` as uid-10001 tmpfs, mirroring the container
-driver's volume layout.
+script binds `/bot` from a throwaway directory whose `hermes/` carries the key through
+`${HERMES_HOME}/.env`, per the bot-runtime contract, mirroring the container
+driver's single-mount layout.
 
 ## What's not verified yet
 
