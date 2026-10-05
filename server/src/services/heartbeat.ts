@@ -6910,6 +6910,24 @@ const INTERACTION_CONTINUATION_CONTEXT_KEYS = [
   "newlyResolvedItemIds",
 ] as const;
 
+// myrmidon(CHAT-SOURCE): sources that carry fresh owner input through the
+// interaction pipeline. They are new provenance, not background control flow,
+// so a coalesced continuation of this kind legitimately replaces a live chat
+// origin. Used by the chat-origin preservation in mergeCoalescedContextSnapshot.
+/**
+ * Sources that carry fresh owner input through the interaction pipeline. They
+ * are new provenance, not background control flow, so a coalesced continuation
+ * of this kind legitimately replaces a live chat origin.
+ */
+const INTERACTION_CONTINUATION_SOURCES: ReadonlySet<string> = new Set([
+  "issue.interaction.respond",
+  "issue.interaction.accept",
+  "issue.interaction.reject",
+  "issue.interaction.cancel",
+  "issue.interaction.withdraw",
+  "external_chat.interaction.resolve",
+]);
+
 function isInteractionResolutionWakePayload(
   payload: Record<string, unknown> | null | undefined,
 ) {
@@ -6930,6 +6948,16 @@ function hasInteractionContinuationWakeContext(
   return INTERACTION_CONTINUATION_CONTEXT_KEYS.some((key) =>
     readNonEmptyString(contextSnapshot[key]),
   );
+}
+
+function isInteractionContinuationWake(
+  contextSnapshot: Record<string, unknown>,
+) {
+  const source = readNonEmptyString(contextSnapshot.source);
+  if (source !== null && INTERACTION_CONTINUATION_SOURCES.has(source)) {
+    return true;
+  }
+  return hasInteractionContinuationWakeContext(contextSnapshot);
 }
 
 function normalizeInteractionContinuationWakeContext(
@@ -7008,11 +7036,40 @@ export function mergeCoalescedContextSnapshot(
   const existing = parseObject(existingRaw);
   const existingSource = readNonEmptyString(existing.source);
   const incomingSource = readNonEmptyString(incoming.source);
+  const sameIssueScope =
+    readNonEmptyString(existing.issueId) !== null &&
+    existing.issueId === incoming.issueId;
+  // A verified chat origin is the run's provenance, not merely "the last event
+  // that touched it". Coalescing a background event (for example
+  // `issue.children_completed`) used to overwrite `source`, which silently
+  // dropped the chat binding for every downstream reader: the terminal
+  // presentation never reached the provider and the terminal milestone was
+  // never queued, leaving the "working…" progress message published forever.
+  // Only new owner input (a chat message, or an interactive continuation) may
+  // replace the origin; the incoming event is retained under `lastWakeSource`.
+  // This also covers the previously special-cased `native_status_decision`
+  // control wake, which is just another non-chat background event.
+  // myrmidon(CHAT-SOURCE): a verified chat origin is the run's provenance, not
+  // merely "the last event that touched it". Coalescing a background event (a
+  // native status wake, `issue.children_completed`, an automation wake) used to
+  // overwrite `source`, which silently dropped the chat binding for every
+  // downstream reader: the terminal presentation never reached the provider and
+  // the terminal milestone was never queued, leaving the "working…" progress
+  // message published forever. Only new owner input (a chat message, or an
+  // interactive continuation) may replace the origin; the incoming event moves
+  // to `lastWakeSource`. This generalizes the vendor's native-status special
+  // case, which stays covered.
   const preservesExternalChatOrigin =
     existingSource?.startsWith("chat:") === true &&
-    readNonEmptyString(existing.issueId) !== null &&
-    existing.issueId === incoming.issueId &&
-    incomingSource === "native_status_decision" &&
+    sameIssueScope &&
+    incomingSource !== null &&
+    !incomingSource.startsWith("chat:") &&
+    !isInteractionContinuationWake(incoming);
+  // A `native_status_decision` source is only a verified control wake when it
+  // carries its own marker. An unmarked claim may still be recorded as the last
+  // wake, but it must never be trusted to carry the run's admitted proof.
+  const incomingControlWakeVerified =
+    incomingSource !== "native_status_decision" ||
     readNonEmptyString(incoming.statusDecisionSource) ===
       "native_status_decision";
   const merged: Record<string, unknown> = {
@@ -7032,12 +7089,31 @@ export function mergeCoalescedContextSnapshot(
   } else {
     delete merged[EXTERNAL_ATTACHMENT_OMISSIONS_KEY];
   }
-  // A native status wake is control-flow metadata, not a new user-input
-  // provenance. When it coalesces into the live run, retain the verified chat
-  // source so the eventual terminal presentation can still prove its route.
-  // Fresh status-decision runs keep their native_status_decision source.
+  // A non-chat background event (a native status wake, `issue.children_completed`,
+  // …) is control-flow metadata, not a new user-input provenance. When it
+  // coalesces into the live run, retain the verified chat source so the eventual
+  // terminal presentation and milestone readers can still prove their route.
+  // Fresh non-chat runs keep their own source.
   if (preservesExternalChatOrigin) {
     merged.source = existingSource;
+    // The incoming event still matters, so it moves to its own key instead of
+    // being dropped. `source` and `wakeReason` describe the same event and must
+    // move together: a preserved chat `source` paired with the incoming
+    // control-flow `wakeReason` would be a contradictory provenance record.
+    merged.lastWakeSource = incomingSource;
+    const existingWakeReason = readNonEmptyString(existing.wakeReason);
+    const incomingWakeReason = readNonEmptyString(incoming.wakeReason);
+    if (existingWakeReason !== null) {
+      merged.wakeReason = existingWakeReason;
+      if (incomingWakeReason !== null) {
+        merged.lastWakeReason = incomingWakeReason;
+      }
+    }
+    // The flat merge above drops the admitted execution proof so no coalescing
+    // wake can mint one. Retention stays on the existing `preservesAdmittedWake`
+    // gate below, which requires the unchanged admitted wake payload as proof;
+    // broadening the chat-origin preservation only widens which coalesced
+    // events reach that validated path.
   }
   if (
     existing.forceFreshSession === true ||
@@ -7062,6 +7138,7 @@ export function mergeCoalescedContextSnapshot(
     : [];
   const preservesAdmittedWake =
     preservesExternalChatOrigin &&
+    incomingControlWakeVerified &&
     parseObject(existingWake.issue).id === existing.issueId &&
     CHAT_PROVIDERS.some(
       (provider) =>
