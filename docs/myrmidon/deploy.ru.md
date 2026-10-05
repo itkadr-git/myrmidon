@@ -606,6 +606,16 @@ Digest доска проверяет сама — реестр и GitHub. Есл
 - на стенде нет новых ошибок в журнале сервера за время проверки;
 - откат на стенде прошёл и сервер после него здоров.
 
+**Нарезка версии собирает фрагменты изменений.** До пуша тега `myr-vX.Y.Z` один PR
+(ветка `release/X.Y.Z`) выполняет
+`node scripts/myrmidon/release/collect-fragments.mjs --version X.Y.Z`: фрагменты
+`docs/myrmidon/changes/` складываются в общие документы-реестры (разделы журнала под
+новый заголовок `## X.Y.Z`, пустой `## Unreleased` / `## Без выпуска` остаётся
+наверху; строки divergence/settings — в названные фрагментом разделы), а файлы
+фрагментов удаляются. Публикация релиза читает раздел `## X.Y.Z` уже влитого
+журнала, поэтому тег ставится на коммит слияния этого PR или позже. Формат
+фрагмента: [changes/README.md](changes/README.md).
+
 **GitHub Release создаёт CI, а не человек.** Пуш тега `myr-vX.Y.Z` запускает
 workflow **Myrmidon release publish**
 ([myrmidon-release.yml](https://github.com/itkadr-git/myrmidon/blob/main/.github/workflows/myrmidon-release.yml)):
