@@ -14,19 +14,27 @@
 # Fail-closed and idempotent:
 #   1. Resolve the tag's commit (annotated tags dereferenced).
 #   2. GATE: require a successful "Myrmidon CI" run and a successful
-#      "Myrmidon image" (board) run for THIS commit; a failed run exits 1
-#      BEFORE anything is published. Dockergate and fleetd are paths-filtered
-#      workflows, so their tag run may legitimately be absent — but their
-#      digests must exist in the registry (step 3) or the publish is refused
-#      (fail-closed, the RELEASE-GATE contract). Runs still in progress are
-#      waited for (the image workflows start alongside this workflow on a
+#      "Myrmidon image" (board) run for THIS tag (image/component runs are
+#      matched by head_branch == the tag — the same commit's main-branch
+#      runs build different image tags and must not satisfy the gate,
+#      RELEASE-PUBLISH-WAIT). "Myrmidon CI" is commit-level validation and
+#      myrmidon-ci.yml has no tag trigger, so its gate also accepts a green
+#      main-branch run of the SAME commit; a failed run (tag or main) exits 1
+#      BEFORE anything is published. Dockergate and
+#      fleetd are paths-filtered workflows, so their tag run may
+#      legitimately be absent — but their digests must exist in the registry
+#      (step 3) or the publish is refused (fail-closed, the RELEASE-GATE
+#      contract). Runs still in progress are waited for (the image
+#      workflows start alongside this workflow on a
 #      tag push).
 #   3. Build the body with scripts/myrmidon/release/release-body.mjs: the
 #      `## X.Y.Z` section of docs/myrmidon/CHANGELOG.md (missing = a release
 #      without notes = defect, exit 1), the deploy line + "Upgrading from …"
 #      link, and the component digest table from the registry.
 #   4. `gh release create --latest`; when the release exists, `gh release
-#      edit` (idempotent re-run).
+#      edit` (idempotent re-run); then the machine-readable manifest
+#      (release-components.json: every component digest) is uploaded as a
+#      release asset (deploy.sh --release reads it).
 #   5. Mark the previous minor/patch release title "(superseded)" (the manual
 #      convention of 1.3.x/1.4.0).
 #
@@ -79,28 +87,63 @@ fi
 log "tag $tag -> commit $sha"
 
 # ------------------------------------------------------------- 2. CI gate ----
-# Completed-run verdict of one workflow for this commit: prints "missing"
+# Completed-run verdict of one workflow for THIS tag: prints "missing"
 # when no completed run exists, else the unique conclusion, else "mixed"
 # (at least two different conclusions — a failed attempt exists, fail closed).
+#
+# RELEASE-PUBLISH-WAIT: runs are selected by head_branch == the tag, not just by head_sha.
+# The release commit normally lands on main BEFORE the tag is pushed, so the
+# API also answers with the main-branch runs of the same commit; those build
+# the `main`/`sha-<short>` image tags, not the `myr-vX.Y.Z` version tag this
+# release publishes. Matching them made the publish skip the wait (1.6.1:
+# the main image run was green, the tag image run was still building, and
+# the digest probe then failed with "component image digests missing").
+# branch_match_expr <branches...>: a jq expression true when the run's
+# head_branch is one of the given values (the tag itself and, where allowed,
+# the main branch of the same commit).
+branch_match_expr() {
+  local list
+  list="$(printf '"%s",' "$@" | sed 's/,$//')"
+  printf '((.head_branch) as $b | [%s] | index($b) != null)' "$list"
+}
+
+# Runs of one workflow for THIS tag (and, optionally, of the same commit from
+# other branches such as main — the caller decides which branches count).
+runs_of() {
+  local workflow_file="$1" branches="$2"
+  gh api --paginate "repos/$repo/actions/runs?head_sha=$sha&per_page=100" \
+    --jq "[.workflow_runs[]? | select(.path == \"$workflow_file\" and $branches)]" 2>/dev/null || true
+}
+
 run_verdict() {
-  local workflow_file="$1" verdict
-  verdict="$(gh api --paginate "repos/$repo/actions/runs?head_sha=$sha&per_page=100" \
-    --jq "[.workflow_runs[]? | select(.path == \"$workflow_file\")]
-          | map(select(.status == \"completed\"))
+  local workflow_file="$1" branches verdict
+  branches="$(branch_match_expr "$tag" main)"
+  # RELEASE-PUBLISH-WAIT follow-up: CI is commit-level validation — the
+  # release commit reaches main before the tag is pushed, and myrmidon-ci.yml
+  # has no tag trigger, so the tag's own CI run never exists. A green CI run
+  # of the same commit on main is the evidence the gate wants (same sha).
+  if [[ "$workflow_file" != ".github/workflows/myrmidon-ci.yml" ]]; then
+    branches="$(branch_match_expr "$tag")"
+  fi
+  verdict="$(runs_of "$workflow_file" "$branches" \
+    | jq "[.[] | select(.status == \"completed\")]
           | if length == 0 then \"missing\"
              else (map(.conclusion) | unique)
                   | if length == 1 then .[0] else \"mixed\" end end" 2>/dev/null)" \
     || verdict="missing"
-  # gh --jq prints a JSON string: strip the quotes to get the bare value.
+  # jq output is a JSON string: strip the quotes to get the bare value.
   printf '%s\n' "${verdict//\"/}"
 }
 
-# Status of the newest run (any state) of one workflow for this commit.
+# Status of the newest run (any state) of one workflow for THIS tag.
 run_status() {
-  local workflow_file="$1" status
-  status="$(gh api --paginate "repos/$repo/actions/runs?head_sha=$sha&per_page=100" \
-    --jq "[.workflow_runs[]? | select(.path == \"$workflow_file\")][0].status // \"missing\"" \
-    2>/dev/null)" \
+  local workflow_file="$1" branches status
+  branches="$(branch_match_expr "$tag" main)"
+  if [[ "$workflow_file" != ".github/workflows/myrmidon-ci.yml" ]]; then
+    branches="$(branch_match_expr "$tag")"
+  fi
+  status="$(runs_of "$workflow_file" "$branches" \
+    | jq ".[0].status // \"missing\"" 2>/dev/null)" \
     || status="missing"
   printf '%s\n' "${status//\"/}"
 }
@@ -163,6 +206,9 @@ body_args=()
 if [[ -n "${MYRMIDON_RELEASE_REGISTRY_STATE:-}" ]]; then
   body_args+=(--registry-state "$MYRMIDON_RELEASE_REGISTRY_STATE")
 fi
+# --manifest-out: the machine-readable component manifest published as a
+# release asset (release-components.json); deploy/release-manifest.sh reads it.
+body_args+=(--manifest-out release-components.json)
 node "$here/release-body.mjs" "${body_args[@]}" "$version" > release-body.md \
   || die "release body could not be built for $version (missing notes or component digests)"
 log "release body built ($(wc -c < release-body.md) bytes)"
@@ -177,6 +223,11 @@ else
   gh release create "$tag" --repo "$repo" --title "$title" --latest \
     --notes-file release-body.md
 fi
+
+# The manifest asset: replaced on a re-run (--clobber), so it always matches
+# the body of the same publish.
+gh release upload "$tag" release-components.json --repo "$repo" --clobber
+log "uploaded the component manifest asset release-components.json"
 
 # ----------------------------------------------- 5. supersede the previous --
 # The manual convention for 1.3.x/1.4.0: the previous minor/patch release's

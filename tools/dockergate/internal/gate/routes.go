@@ -94,13 +94,14 @@ func (rs *reqState) a4(ctx context.Context, st *runtime, rt *route.Route, bot co
 		return derr
 	}
 	env := &policy.Env{
-		VolumeRoot:   st.cfg.VolumeRoot,
-		Network:      st.cfg.Network,
-		Images:       st.set,
-		MountSources: st.cfg.MountSources,
-		MaxMemoryMB:  bot.MaxMemoryMB,
-		MaxCPUs:      bot.MaxCPUs,
-		MaxPids:      bot.MaxPids,
+		VolumeRoot:       st.cfg.VolumeRoot,
+		Network:          st.cfg.Network,
+		Images:           st.set,
+		MountSources:     st.cfg.MountSources,
+		PackageCacheRoot: st.cfg.PackageCacheRoot,
+		MaxMemoryMB:      bot.MaxMemoryMB,
+		MaxCPUs:          bot.MaxCPUs,
+		MaxPids:          bot.MaxPids,
 	}
 	cr, derr := policy.ParseCreate(body, rt, env)
 	if derr != nil {

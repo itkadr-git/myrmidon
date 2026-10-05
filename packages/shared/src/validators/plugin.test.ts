@@ -422,3 +422,37 @@ describe("login pty transport capability and legacy alias", () => {
     expect(rejected.success).toBe(false);
   });
 });
+
+// myrmidon(PLUGIN-ENTITLEMENT C): the manifest gate flag is optional and
+// additive — a manifest without it parses exactly as before, a manifest with
+// it parses with the flag true.
+describe("plugin manifest requiresEntitlement (myrmidon PLUGIN-ENTITLEMENT C)", () => {
+  const baseManifest = {
+    id: "example.premium-feature",
+    apiVersion: 1,
+    version: "1.0.0",
+    displayName: "Premium Feature",
+    description: "Example plugin that requires an entitlement key",
+    author: "Paperclip",
+    categories: ["automation"],
+    capabilities: ["plugin.state.read"],
+    entrypoints: { worker: "./dist/worker.js" },
+  };
+
+  it("accepts a manifest with requiresEntitlement: true", () => {
+    const result = pluginManifestV1Schema.safeParse({ ...baseManifest, requiresEntitlement: true });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.requiresEntitlement).toBe(true);
+  });
+
+  it("accepts a manifest without the flag (unchanged vendor behavior)", () => {
+    const result = pluginManifestV1Schema.safeParse(baseManifest);
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.requiresEntitlement).toBeUndefined();
+  });
+
+  it("rejects a non-boolean flag value", () => {
+    const result = pluginManifestV1Schema.safeParse({ ...baseManifest, requiresEntitlement: "yes" });
+    expect(result.success).toBe(false);
+  });
+});

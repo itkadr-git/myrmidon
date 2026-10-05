@@ -803,6 +803,10 @@ export const pluginManifestV1Schema = z.object({
     slots: z.array(pluginUiSlotDeclarationSchema).min(1).optional(),
     launchers: z.array(pluginLauncherDeclarationSchema).optional(),
   }).optional(),
+  // myrmidon(PLUGIN-ENTITLEMENT C): when true, the plugin is not activated and
+  // stays hidden from menus and settings until a valid entitlement key is
+  // accepted in the instance settings.
+  requiresEntitlement: z.boolean().optional(),
 }).superRefine((manifest, ctx) => {
   // ── Entrypoint ↔ UI slot consistency ──────────────────────────────────
   // Plugins that declare UI slots must also declare a UI entrypoint so the

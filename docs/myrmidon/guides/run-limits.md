@@ -7,18 +7,36 @@ starts them, and how much free memory it keeps. Since release 1.3 these limits
 are changeable at runtime: from the UI or the API, without restarting the
 server and without interrupting runs that are already in flight.
 
-## The four limits
+## The limits
 
 | Setting | What it bounds | Default |
 |---|---|---|
 | `maxConcurrentRuns` | How many runs this server process may have in flight at once. Runs over the cap stay `queued`; the queue goes oldest first | off |
-| `maxStartsPerMinute` | How many runs may start within a sliding minute | off |
+| `maxStartsPerMinute` | The start ramp: how many runs may start within a sliding minute, whatever woke them | `5` (since 1.6.2; was off) |
 | `minFreeMemoryMb` | A run starts only if this much free memory remains in the server's cgroup (v2) after budgeting the run | off |
 | `runMemoryEstimateMb` | How many megabytes one run is budgeted at when free memory is counted | `300` |
+| `minFreeHostMemoryMb` | A run starts only while the HOST keeps at least this much `MemAvailable` (minus the budget of runs started in the last 30 s). Bots run in their own containers, outside the server cgroup, so `minFreeMemoryMb` cannot see them; this one can | `15360` (15 GB, since 1.6.2) |
 
 A value of "off" (empty field, `null` in the stored settings) disables that
 limit. `runMemoryEstimateMb` cannot be disabled: it is the budget the free-
 memory check counts with.
+
+### The host memory floor (1.6.2)
+
+`minFreeHostMemoryMb` reads `MemAvailable` from `/proc/meminfo`. Inside a
+Docker container without lxcfs that file is the host's, so the board needs no
+mount and no Docker API access. If lxcfs makes the file report the container
+limit, the floor refuses the reading, logs `run admission cannot read host
+memory…` once and stays inactive; mount the host's `/proc/meminfo` read-only
+and set `MYRMIDON_HOST_MEMINFO_PATH` to the mount path.
+
+A run held by the floor stays `queued`; the queue pass retries every 15 s and
+the run starts as soon as host memory recovers or the floor is lowered. The
+swarm idle-wake pass wakes nobody while the floor is closed. If the floor
+holds runs back for more than 10 minutes, the operator gets an attention card
+"Runs held: host memory" with the current free memory and the floor; it
+disappears with the first admitted run. Lowering the floor (or switching it
+off) in the settings releases the queue within a minute, without a restart.
 
 ## Where the effective value comes from
 

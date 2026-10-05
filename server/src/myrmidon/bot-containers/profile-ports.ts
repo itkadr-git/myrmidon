@@ -28,7 +28,7 @@ import path from "node:path";
 import { agentApiKeys, companies, companyMemberships, type Db } from "@paperclipai/db";
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
 // myrmidon(PARALLEL-HELPERS): the settings type the parallel-helpers port returns.
-import type { ParallelHelpersSettings } from "@paperclipai/shared";
+import type { BotLspSettings, ParallelHelpersSettings } from "@paperclipai/shared";
 import {
   readPaperclipSkillSyncPreference,
   resolveLegacyPaperclipDesiredSkillNames,
@@ -70,6 +70,7 @@ import type { CompiledProfile } from "./types.js";
 import { loadRegulationWorkspaceFiles } from "../wiki-cortex/delivery.js";
 import { createWikiRegulationService } from "../wiki-cortex/service.js";
 import { createDbRegulationStore } from "../wiki-cortex/store.js";
+import { readBotDiskLayout, readCloneIdleTtlSecForRole, readSharedPackageCachePathForRole } from "./bot-disk-service.js"; // myrmidon(1.6.1-BOT-DISK-B, 1.6.2-BOT-DISK-C)
 
 export { BOT_AGENT_API_KEY_NAME };
 
@@ -498,6 +499,31 @@ export function createDbBotProfilePorts(db: Db): BotProfilePorts {
     async parallelHelpers(): Promise<ParallelHelpersSettings | undefined> {
       const general = await instanceSettings.getGeneral();
       return general.parallelHelpers;
+    },
+
+    // myrmidon(1.6.1-BOT-DISK-B): the shared package cache path, read per tick
+    // from the same row the local driver reads for its binds.
+    async sharedPackageCachePath(role?: string): Promise<string | undefined> {
+      return readSharedPackageCachePathForRole(db, role);
+    },
+
+    // myrmidon(1.6.2-BOT-DISK-C): the clone lifecycle policy for the in-container reaper.
+    async cloneIdleTtlSec(role?: string): Promise<number | undefined> {
+      return readCloneIdleTtlSecForRole(db, role);
+    },
+
+    // myrmidon(1.6.2-BOT-DISK-C): the pnpm store mode, read per tick from the same row.
+    async pnpmStore(): Promise<"workspace" | "shared"> {
+      return (await readBotDiskLayout(db)).pnpmStore;
+    },
+
+    // myrmidon(BOT-LSP-DEFAULTS): the instance language-server policy. Read
+    // from the settings row on every tick: a change applies on the next
+    // reconcile (a config.yaml change, so under the per-bot pause), no restart
+    // of the server.
+    async botLsp(): Promise<BotLspSettings | undefined> {
+      const general = await instanceSettings.getGeneral();
+      return general.botLsp;
     },
 
     // myrmidon(1.6-WIKI): the approved regulations of the agent's role, as workspace files

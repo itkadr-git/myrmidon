@@ -7,7 +7,9 @@ import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   buildBody,
+  buildManifest,
   COMPONENTS,
+  MANIFEST_NAME,
   componentDigest,
   componentDigests,
   extractChangelogSection,
@@ -75,7 +77,25 @@ case "$sub" in
     case "$url" in
       *"/git/ref/tags/"*) body="$(cat "$SANDBOX/ref-tag.json")" ;;
       *"/git/tags/"*)     body="$(cat "$SANDBOX/tag-object.json")" ;;
-      *"actions/runs?head_sha="*) body="$(cat "$SANDBOX/runs.json")" ;;
+      *"actions/runs?head_sha="*)
+        # RELEASE-PUBLISH-WAIT: scripted progression — when $SANDBOX/runs-after.json
+        # exists, the first GH_RUNS_SWITCH_AFTER reads answer "before" (the
+        # state runs.json holds), the rest answer "after". Lets a test watch
+        # the publish WAIT while the tag's image run is still building, then
+        # succeed when it completes. GH_RUNS_SWITCH_AFTER is always exported
+        # by the test harness (0 = switch on the first read).
+        if [ -f "$SANDBOX/runs-after.json" ]; then
+          count_file="$SANDBOX/runs-reads.count"
+          reads=$(( $(cat "$count_file" 2>/dev/null || echo 0) + 1 ))
+          echo "$reads" > "$count_file"
+          if [ "$reads" -gt "$GH_RUNS_SWITCH_AFTER" ]; then
+            body="$(cat "$SANDBOX/runs-after.json")"
+          else
+            body="$(cat "$SANDBOX/runs.json")"
+          fi
+        else
+          body="$(cat "$SANDBOX/runs.json")"
+        fi ;;
       *) body="{}" ;;
     esac
     if [ -n "$jq_filter" ]; then
@@ -111,6 +131,8 @@ case "$sub" in
           echo "release not found: $tag" >&2
           exit 1
         fi ;;
+      upload)
+        printf 'upload tag=%s manifest=%s\n' "$tag" "$(jq -c . release-components.json)" >> "$SANDBOX/mutations.log" ;;
       create)
         printf 'create tag=%s title=%s notes=%s\n' "$tag" "$title" "$(cat "$notes")" >> "$SANDBOX/mutations.log"
         jq --arg t "$tag" --arg n "$title" --arg b "$(cat "$notes")" \
@@ -166,8 +188,11 @@ function sandbox({ runs = [], releases = {}, changelog = CHANGELOG } = {}) {
   return { dir, bin };
 }
 
-const run = (sha, pathOfWf, conclusion, status = "completed") => ({
-  head_sha: sha, path: pathOfWf, status, conclusion,
+// head_branch mirrors the GitHub API: for a push of tag myr-vX.Y.Z the runs
+// started by that push report head_branch = the tag; runs of the same commit
+// pushed to main earlier report head_branch = "main".
+const run = (sha, pathOfWf, conclusion, status = "completed", headBranch = "myr-v1.6.0") => ({
+  head_sha: sha, path: pathOfWf, status, conclusion, head_branch: headBranch,
 });
 
 function runScript(sb, tag, { extraEnv = {} } = {}) {
@@ -183,11 +208,18 @@ function runScript(sb, tag, { extraEnv = {} } = {}) {
       MYRMIDON_RELEASE_REGISTRY_STATE: path.join(sb.dir, "registry-state.json"),
       MYRMIDON_RELEASE_POLL_SECONDS: "0",
       MYRMIDON_RELEASE_POLL_MAX: "4",
+      // RELEASE-PUBLISH-WAIT: the fake gh's runs-state switch (absent fixtures never read
+      // it; 0 = the first runs read already answers "after")
+      GH_RUNS_SWITCH_AFTER: "0",
       ...extraEnv,
     },
     encoding: "utf8",
   });
-  return { code: result.status, out: `${result.stdout}${result.stderr}` };
+  // A spawn that never ran (bash missing, ENOBUFS, a kill) leaves stdout and
+  // stderr undefined; without this the assertions saw "undefinedundefined"
+  // instead of the real reason. Surface the spawn error itself.
+  if (result.error) throw new Error(`publish-github-release.sh did not run: ${result.error.message}`);
+  return { code: result.status, out: `${result.stdout ?? ""}${result.stderr ?? ""}` };
 }
 
 const read = (file) => (fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "");
@@ -269,6 +301,84 @@ describe("publish-github-release.sh: the CI gate", () => {
     assert.match(out, /Myrmidon CI did not succeed.*mixed/);
     assert.equal(mutations(sb), "");
   });
+
+  // ---- RELEASE-PUBLISH-WAIT: the gate must wait for the TAG's runs, not the commit's ----
+
+  it("waits for the board image run of the tag while it is still building, then publishes (the 1.6.1 incident)", () => {
+    // The exact shape of 2026-10-04 04:40: the release commit was on main
+    // (its CI + image runs completed green by 04:31, but those are
+    // head_branch=main runs that build the `main`/`sha-` tags), the tag push
+    // at 04:40 started the tag's own image run (head_branch=myr-v1.6.1),
+    // which was still in progress. The old gate matched by head_sha only,
+    // saw the green main run, skipped the wait and the digest probe failed.
+    const before = [
+      run(COMMIT, ".github/workflows/myrmidon-ci.yml", "success", "completed", "main"),
+      run(COMMIT, ".github/workflows/myrmidon-image.yml", "success", "completed", "main"),
+      // the tag's own CI run completed with the push; the image run builds
+      run(COMMIT, ".github/workflows/myrmidon-ci.yml", "success"),
+      run(COMMIT, ".github/workflows/myrmidon-image.yml", null, "in_progress"),
+    ];
+    const after = [
+      ...before.slice(0, 3),
+      run(COMMIT, ".github/workflows/myrmidon-image.yml", "success"),
+    ];
+    const sb = sandbox({ runs: before });
+    fs.writeFileSync(path.join(sb.dir, "runs-after.json"),
+      JSON.stringify({ total_count: after.length, workflow_runs: after }));
+    const { code, out } = runScript(sb, "myr-v1.6.0", { extraEnv: { GH_RUNS_SWITCH_AFTER: "2" } });
+    assert.equal(code, 0, out);
+    // the wait actually happened: the gate polled before the switch
+    assert.match(out, /gate: Myrmidon image \(board\) success/);
+    assert.match(mutations(sb), /create tag=myr-v1\.6\.0/);
+  });
+
+  it("refuses with the tag's failure when the main-branch run of the same commit is green", () => {
+    // Same layout, but the TAG's image run completed with a failure: the
+    // refusal must name the tag run, not be masked by the green main run.
+    const sb = sandbox({ runs: [
+      run(COMMIT, ".github/workflows/myrmidon-ci.yml", "success", "completed", "main"),
+      run(COMMIT, ".github/workflows/myrmidon-image.yml", "success", "completed", "main"),
+      run(COMMIT, ".github/workflows/myrmidon-ci.yml", "success"),
+      run(COMMIT, ".github/workflows/myrmidon-image.yml", "failure"),
+    ] });
+    const { code, out } = runScript(sb, "myr-v1.6.0");
+    assert.notEqual(code, 0, out);
+    assert.match(out, /Myrmidon image \(board\) did not succeed for commit/);
+    assert.match(out, /NOT publishing/);
+    assert.equal(mutations(sb), "");
+  });
+
+  it("CI gate accepts the same-commit main run (myrmidon-ci.yml has no tag trigger), but the image gate still refuses only-main runs", () => {
+    // Only main-branch runs exist. myrmidon-ci.yml triggers on pull_request /
+    // push to main / workflow_dispatch — NOT on tags, so a release tag never
+    // has a CI run of its own; CI is commit-level validation and a green
+    // main run of the SAME commit is the evidence the gate wants
+    // (RELEASE-PUBLISH-WAIT follow-up). The image workflows DO run on tags,
+    // so their gates stay tag-scoped: a green main image run must NOT
+    // satisfy the board-image gate.
+    const sb = sandbox({ runs: [
+      run(COMMIT, ".github/workflows/myrmidon-ci.yml", "success", "completed", "main"),
+      run(COMMIT, ".github/workflows/myrmidon-image.yml", "success", "completed", "main"),
+    ] });
+    const { code, out } = runScript(sb, "myr-v1.6.0");
+    // the CI gate passed on the main run, the image gate timed out waiting
+    assert.notEqual(code, 0, out);
+    assert.match(out, /gate: Myrmidon CI success for/);
+    assert.match(out, /no run of Myrmidon image \(board\) found|timed out waiting for Myrmidon image \(board\)/);
+    assert.equal(mutations(sb), "");
+  });
+
+  it("CI gate refuses when the same-commit CI run failed on main (fail-closed stays)", () => {
+    const sb = sandbox({ runs: [
+      run(COMMIT, ".github/workflows/myrmidon-ci.yml", "failure", "completed", "main"),
+      run(COMMIT, ".github/workflows/myrmidon-image.yml", "success"),
+    ] });
+    const { code, out } = runScript(sb, "myr-v1.6.0");
+    assert.notEqual(code, 0, out);
+    assert.match(out, /Myrmidon CI did not succeed/);
+    assert.match(out, /NOT publishing/);
+    assert.equal(mutations(sb), "");
+  });
 });
 
 describe("publish-github-release.sh: the release body and mutations", () => {
@@ -311,6 +421,34 @@ describe("publish-github-release.sh: the release body and mutations", () => {
   });
 });
 
+// RELEASE-PUBLISH-WAIT: the workflow must prefer the typed tag input over ref_name. A
+// workflow_dispatch from a branch sets github.ref_name to that branch
+// (e.g. "main"); with "ref_name || inputs.tag" the typed tag was overridden
+// and the publish died with "tag must look like myr-vX.Y.Z (got: main)".
+describe("myrmidon-release.yml: the tag input wins over ref_name", () => {
+  const HERE = path.dirname(fileURLToPath(import.meta.url));
+  const WORKFLOW = path.join(HERE, "..", "..", "..", ".github", "workflows", "myrmidon-release.yml");
+  const workflow = fs.readFileSync(WORKFLOW, "utf8");
+
+  it("every tag reference resolves the workflow_dispatch input first", () => {
+    const tagRefs = [...workflow.matchAll(/\$\{\{ ([^}]+) \}\}/g)]
+      .map((m) => m[1])
+      .filter((expr) => expr.includes("inputs.tag") || expr.includes("github.ref_name"));
+    assert.ok(tagRefs.length >= 3, "checkout ref, TAG env and the concurrency group all use the tag");
+    for (const expr of tagRefs) {
+      assert.equal(
+        expr, "inputs.tag || github.ref_name",
+        `the tag expression must be "inputs.tag || github.ref_name" (got: "${expr}") — a workflow_dispatch from a branch must not override the typed tag`,
+      );
+    }
+    assert.doesNotMatch(workflow, /github\.ref_name \|\| inputs\.tag/);
+  });
+
+  it("declares the tag input as required", () => {
+    assert.match(workflow, /tag:\s*\n\s+description:[^\n]+\n\s+required: true/);
+  });
+});
+
 describe("release-body.mjs: body construction", () => {
 
   it("extracts the X.Y.Z section and stops at the next heading", () => {
@@ -346,7 +484,7 @@ describe("release-body.mjs: body construction", () => {
       ],
     });
     assert.match(body, /Myrmidon 1\.6\.0 replaces 1\.5\.0\./);
-    assert.match(body, /Deploy the board and the release component images \(dockergate, fleetd\) from this tag together/);
+    assert.match(body, /Deploy the board, the release component images \(dockergate, fleetd\) and the bot images from this tag together/);
     assert.match(body, /"Upgrading from 1\.5\.0 to 1\.6\.0"/);
     assert.match(body, /docs\/myrmidon\/deploy\.md/);
     assert.match(body, /- New thing A\./);
@@ -388,10 +526,12 @@ describe("release-body.mjs: digest resolution (injected fetch)", () => {
     };
     return componentDigests("1.6.0", { fetchImpl }).then(({ rows, missing }) => {
       assert.deepEqual(missing, []);
-      assert.equal(rows.length, 4);
+      // 4 required components plus the 2 optional bot variants (hermes-dev, hermes-node)
+      assert.equal(rows.length, 6);
       assert.match(rows[0], /board/);
-      // one token request per repository (4 components, 4 scopes)
-      assert.equal(tokenUrls.length, 4);
+      assert.match(rows.join("\n"), /hermes-dev/);
+      // one token request per repository (6 scopes)
+      assert.equal(tokenUrls.length, 6);
     });
   });
 
@@ -408,5 +548,45 @@ describe("release-body.mjs: digest resolution (injected fetch)", () => {
     return componentDigest("myrmidon", "1.6.0", { fetchImpl }).then((d) => {
       assert.equal(d, null);
     });
+  });
+});
+
+describe("release manifest (release-components.json)", () => {
+  it("buildManifest names every component by repository and digest, the bot image as hermes", () => {
+    const digests = {
+      board: { repository: "ghcr.io/itkadr-git/myrmidon", digest: `sha256:${"1".repeat(64)}` },
+      bot: { repository: "ghcr.io/itkadr-git/myrmidon-hermes", digest: `sha256:${"2".repeat(64)}` },
+      "hermes-dev": { repository: "ghcr.io/itkadr-git/myrmidon-hermes-dev", digest: `sha256:${"3".repeat(64)}` },
+    };
+    const manifest = buildManifest({ version: "1.6.2", digests });
+    assert.equal(manifest.schema, 1);
+    assert.equal(manifest.tag, "myr-v1.6.2");
+    assert.deepEqual(Object.keys(manifest.components).sort(), ["board", "hermes", "hermes-dev"]);
+    assert.equal(manifest.components.hermes.digest, `sha256:${"2".repeat(64)}`);
+    assert.equal(MANIFEST_NAME, "release-components.json");
+  });
+
+  it("an optional bot variant missing from the registry does not refuse the release", () => {
+    const state = {
+      myrmidon: "sha256:a", "myrmidon-dockergate": "sha256:b", "myrmidon-fleetd": "sha256:c", "myrmidon-hermes": "sha256:d",
+    };
+    return componentDigests("1.6.2", { registryState: state }).then(({ missing, digests }) => {
+      assert.deepEqual(missing, []);
+      assert.deepEqual(Object.keys(digests).sort(), ["board", "bot", "dockergate", "fleetd"]);
+    });
+  });
+
+  it("publish uploads the manifest asset next to the release body", () => {
+    const sb = sandbox({ runs: GREEN_RUNS });
+    const { code, out } = runScript(sb, "myr-v1.6.0");
+    assert.equal(code, 0, out);
+    const log = mutations(sb);
+    assert.match(log, /create tag=myr-v1\.6\.0/);
+    const upload = /upload tag=myr-v1\.6\.0 manifest=(.*)/.exec(log);
+    assert.ok(upload, "the manifest asset was uploaded");
+    const manifest = JSON.parse(upload[1]);
+    assert.equal(manifest.version, "1.6.0");
+    assert.deepEqual(Object.keys(manifest.components).sort(), ["board", "dockergate", "fleetd", "hermes"]);
+    assert.match(manifest.components.dockergate.digest, /^sha256:/);
   });
 });

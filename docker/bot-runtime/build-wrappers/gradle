@@ -1,0 +1,36 @@
+#!/usr/bin/env node
+// docker/bot-runtime/build-wrappers/gradle
+//
+// myrmidon(1.6.1 BUILD-OFFLOAD A): gradle wrapper for the dev variant.
+// Gradle builds (JVM startup, daemon, dependency downloads) are heavy
+// and belong on the build VPS through `devbuild gradle ...`. The image
+// does not ship gradle itself, so without the devbuild gateway there is
+// nothing to pass through to — the wrapper refuses either way, and
+// reports that no local JVM build toolchain exists. Gate mechanics:
+// blocked-tool.js.
+//
+// CJS on purpose (see devbuild-gate.js): in the image this file lives
+// at /opt/paperclip/bin/, which no package.json reaches.
+"use strict";
+
+const { makeWrapper } = require("./blocked-tool.js");
+const { devbuildPresent } = require("./devbuild-gate.js");
+
+const REAL_GRADLE = "/usr/bin/gradle";
+
+if (!devbuildPresent()) {
+  // No gateway and no image-baked gradle: refuse with the replacement
+  // and say why there is no local fallback.
+  process.stderr.write(
+    [
+      "gradle: heavy build operations are blocked inside the bot container (1.6.1 BUILD-OFFLOAD).",
+      "Gradle builds must run on the build VPS. Instead run:  devbuild gradle <args>",
+      "This image carries no JVM build toolchain; there is no local gradle to fall back to.",
+    ].join("\n") + "\n",
+  );
+  process.exitCode = 1;
+} else {
+  // Gateway present: the real binary (whenever the image gains one) is
+  // reached by its absolute path; makeWrapper handles the exec.
+  makeWrapper("gradle", REAL_GRADLE)();
+}

@@ -66,7 +66,7 @@ import {
 } from "./login-command.js";
 import { logger } from "../middleware/logger.js";
 import { traceparentFromContextToken } from "../instrumentation.js";
-import { resolveUnechoedApiRouteInvocation } from "../myrmidon/plugin-api-route-scope.js";
+import { resolveUnechoedInvocation } from "../myrmidon/plugin-invocation-scope.js"; // myrmidon(PLS2): any in-flight invocation attributes an un-echoed call
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -2689,15 +2689,16 @@ export function createPluginWorkerHandle(
       if (proactiveCompanyId && proactiveCompanyScopes.has(proactiveCompanyId)) {
         return { invocationScope: { companyId: proactiveCompanyId } };
       }
-      // myrmidon(PLS1): a worker whose bundle carries an SDK that predates
-      // invocation-id echo never sends an id. Attribute its call to the company of
-      // the in-flight plugin API route calls only when every in-flight invocation
-      // of any kind belongs to that company; never broader.
-      const apiRouteInvocation = resolveUnechoedApiRouteInvocation(activeInvocations.values());
-      if (apiRouteInvocation) {
+      // myrmidon(PLS2): a worker whose bundle carries an SDK that predates
+      // invocation-id echo never sends an id. Attribute its call to the company
+      // of the in-flight invocations of ANY entry point (route, event, action,
+      // data read, tool call) only when every in-flight invocation belongs to
+      // that one company; never broader.
+      const inFlightInvocation = resolveUnechoedInvocation(activeInvocations.values()); // myrmidon(PLS2)
+      if (inFlightInvocation) { // myrmidon(PLS2)
         return {
-          invocationScope: apiRouteInvocation.scope,
-          traceparent: apiRouteInvocation.traceparent,
+          invocationScope: inFlightInvocation.scope, // myrmidon(PLS2)
+          traceparent: inFlightInvocation.traceparent, // myrmidon(PLS2)
         };
       }
       const hasActiveInvocation = activeInvocations.size > 0 ||

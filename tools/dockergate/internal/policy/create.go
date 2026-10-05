@@ -46,6 +46,9 @@ type Env struct {
 	// its three volumes (configuration key "mountSources"). An empty list allows
 	// no extra mount at all.
 	MountSources []string
+	// PackageCacheRoot is the host directory of the shared package cache
+	// (configuration key "packageCacheRoot"). Empty allows no cache mount.
+	PackageCacheRoot string
 	// Ceilings of the bot the request is for.
 	MaxMemoryMB int64
 	MaxCPUs     float64
@@ -93,21 +96,71 @@ func safeContainerTarget(p string) bool {
 	return true
 }
 
-// parseExtraBind splits "source:target:ro" — the only form an extra mount may
-// take. Read-only is not optional: a shared directory is never mounted writable.
-func parseExtraBind(bind string) (source, target string, ok bool) {
+// parseExtraBind splits "source:target:ro" or "source:target:rw", the two
+// forms an extra mount may take. Only a shared package cache mount may be "rw"
+// (see PackageCacheMounts); every other extra mount must be "ro".
+func parseExtraBind(bind string) (source, target, mode string, ok bool) {
 	parts := strings.Split(bind, ":")
-	if len(parts) != 3 || parts[2] != "ro" {
-		return "", "", false
+	if len(parts) != 3 {
+		return "", "", "", false
 	}
-	return parts[0], parts[1], true
+	if parts[2] != "ro" && parts[2] != "rw" {
+		return "", "", "", false
+	}
+	return parts[0], parts[1], parts[2], true
+}
+
+// PackageCacheMounts is the layout of the shared package cache: the
+// subdirectory of env.PackageCacheRoot -> its mount point in the bot. It
+// mirrors PACKAGE_CACHE_MOUNTS in server/src/myrmidon/bot-containers/template.ts.
+// These are the only extra mounts that may be read-write, and only as exactly
+// these pairs: a writable bind cannot name another source or another target.
+var PackageCacheMounts = map[string]string{
+	"pnpm":     "/cache/pnpm",
+	"go-mod":   "/cache/go-mod",
+	"go-build": "/cache/go-build",
+	"gradle":   "/cache/gradle",
+}
+
+// PackageCacheReadOnlyMounts is the read-only part of the shared package
+// cache: the board's bare git mirrors (myrmidon 1.6.2-BOT-DISK-C), which only
+// the board writes and the bots clone from with --reference. It mirrors
+// GIT_MIRROR_MOUNT in server/src/myrmidon/bot-containers/template.ts. These
+// pairs are accepted only as "ro" (a "rw" bind of them is refused like any
+// other writable bind) and need no mountSources entry.
+var PackageCacheReadOnlyMounts = map[string]string{
+	"git": "/cache/git",
+}
+
+// isPackageCacheBind reports whether source:target is one of the cache pairs
+// under root. An empty root allows none.
+func isPackageCacheBind(root, source, target string) bool {
+	return isCachePair(PackageCacheMounts, root, source, target)
+}
+
+// isPackageCacheReadOnlyBind reports whether source:target is one of the
+// read-only cache pairs under root. An empty root allows none.
+func isPackageCacheReadOnlyBind(root, source, target string) bool {
+	return isCachePair(PackageCacheReadOnlyMounts, root, source, target)
+}
+
+func isCachePair(pairs map[string]string, root, source, target string) bool {
+	if root == "" || !strings.HasPrefix(source, root+"/") {
+		return false
+	}
+	want, ok := pairs[strings.TrimPrefix(source, root+"/")]
+	return ok && want == target
 }
 
 // parseBotBinds checks HostConfig.Binds: the three fixed binds first and in
 // order, then the bot's extra read-only mounts. Every extra source must be one
 // of env.MountSources (exact match, no prefix rule — a card cannot reach a
 // sibling directory the operator did not name) and every extra target must be a
-// safe path used once. The returned list is what the daemon gets.
+// safe path used once. The one exception is the shared package cache: a "rw"
+// bind is accepted only as one of the fixed pairs under env.PackageCacheRoot
+// (isPackageCacheBind), and needs no mountSources entry; likewise the git
+// mirrors, a "ro" bind accepted as the fixed pair under the same root
+// (isPackageCacheReadOnlyBind). The returned list is what the daemon gets.
 func parseBotBinds(v *jsonx.Value, path string, env *Env, botKey string) ([]string, *deny.Error) {
 	got, err := strList(v, path)
 	if err != nil {
@@ -129,11 +182,15 @@ func parseBotBinds(v *jsonx.Value, path string, env *Env, botKey string) ([]stri
 	seen := make(map[string]bool, len(got)-len(base))
 	extras := make([]string, 0, len(got)-len(base))
 	for _, bind := range got[len(base):] {
-		source, target, ok := parseExtraBind(bind)
+		source, target, mode, ok := parseExtraBind(bind)
 		if !ok {
 			return nil, deny.Field(deny.BindsMismatch, path, []byte(bind))
 		}
-		if !allowed[source] {
+		if mode == "rw" {
+			if !isPackageCacheBind(env.PackageCacheRoot, source, target) {
+				return nil, deny.Field(deny.MountSourceNotAllowed, path, []byte(source))
+			}
+		} else if !allowed[source] && !isPackageCacheReadOnlyBind(env.PackageCacheRoot, source, target) {
 			return nil, deny.Field(deny.MountSourceNotAllowed, path, []byte(source))
 		}
 		if !safeContainerTarget(target) || seen[target] {
