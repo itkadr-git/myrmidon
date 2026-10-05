@@ -83,7 +83,8 @@ function resolveAgentJwtSecretStatus(
 
   if (existsSync(envFilePath)) {
     const parsed = parseEnvFileContents(readFileSync(envFilePath, "utf-8"));
-    const fileValue = typeof readProductEnvFrom(parsed, "AGENT_JWT_SECRET") === "string" ? readProductEnvFrom(parsed, "AGENT_JWT_SECRET").trim() : "";
+    const fileSecret = readProductEnvFrom(parsed, "AGENT_JWT_SECRET");
+    const fileValue = typeof fileSecret === "string" ? fileSecret.trim() : "";
     if (fileValue) {
       return {
         status: "warn",

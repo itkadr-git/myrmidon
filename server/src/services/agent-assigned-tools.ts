@@ -31,10 +31,10 @@ import { toolAccessService } from "./tool-access.js";
 import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 function configuredPaperclipApiBaseUrl(): string | null {
+  const apiUrlEnv = readProductEnv("API_URL");
   const configured =
-    typeof readProductEnv("API_URL") === "string" &&
-    readProductEnv("API_URL").trim().length > 0
-      ? readProductEnv("API_URL")
+    typeof apiUrlEnv === "string" && apiUrlEnv.trim().length > 0
+      ? apiUrlEnv
       : null;
   return configured
     ? configured.replace(/\/+$/, "").replace(/\/api$/, "")

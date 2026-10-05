@@ -65,10 +65,10 @@ function sortModels(models: AdapterModel[]): AdapterModel[] {
 }
 
 function resolvePiCommand(input: unknown): string {
+  const envOverrideRaw = readProductEnv("PI_COMMAND");
   const envOverride =
-    typeof readProductEnv("PI_COMMAND") === "string" &&
-    readProductEnv("PI_COMMAND").trim().length > 0
-      ? readProductEnv("PI_COMMAND").trim()
+    typeof envOverrideRaw === "string" && envOverrideRaw.trim().length > 0
+      ? envOverrideRaw.trim()
       : "pi";
   return asString(input, envOverride);
 }

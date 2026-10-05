@@ -22,10 +22,10 @@ function sleep(ms: number): Promise<void> {
 }
 
 function resolveOpenCodeCommand(input: unknown): string {
+  const envOverrideRaw = readProductEnv("OPENCODE_COMMAND");
   const envOverride =
-    typeof readProductEnv("OPENCODE_COMMAND") === "string" &&
-    readProductEnv("OPENCODE_COMMAND").trim().length > 0
-      ? readProductEnv("OPENCODE_COMMAND").trim()
+    typeof envOverrideRaw === "string" && envOverrideRaw.trim().length > 0
+      ? envOverrideRaw.trim()
       : "opencode";
   return asString(input, envOverride);
 }
