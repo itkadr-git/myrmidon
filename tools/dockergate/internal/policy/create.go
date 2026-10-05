@@ -817,7 +817,16 @@ func matchHelperBinds(got []string, env *Env, botKey string, prepare, sharedPrep
 		return true
 	}
 	if !sharedPrepare {
-		if want := Binds(env.VolumeRoot, botKey); equal(want) {
+		// myrmidon(BOT-ROOT-TRAVERSE): the prepare helper of an isolated bot also
+		// binds the bot's root itself — the same bind string the bot container
+		// carries at /bot — so its script can chmod the traversal bit of the one
+		// mount point the three narrow binds never reach. Byte-for-byte the shape
+		// of the current driver: prepare has four binds, apply still has three.
+		want := Binds(env.VolumeRoot, botKey)
+		if prepare {
+			want = append(want, BotBind(env.VolumeRoot, botKey))
+		}
+		if equal(want) {
 			return want, "", nil
 		}
 	}

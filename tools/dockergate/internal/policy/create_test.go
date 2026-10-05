@@ -643,10 +643,14 @@ func TestHelperBodyMutations(t *testing.T) {
 		{"user as number", `"User":"0:0"`, `"User":0`, false, deny.JSONType},
 		{"script: recursive chown", `chown 10001:10001`, `chown -R 10001:10001`, false, deny.ScriptMismatch},
 		{"script: chmod 777", `chmod 0700`, `chmod 0777`, false, deny.ScriptMismatch},
+		// myrmidon(BOT-ROOT-TRAVERSE): the root's traversal chmod is fixed text too —
+		// a widened mode or a recursive flag is a mismatch, not a "same shape".
+		{"script: root chmod 777", `chmod 0711 bot`, `chmod 0777 bot`, false, deny.ScriptMismatch},
+		{"script: root chmod recursive", `chmod 0711 bot`, `chmod -R 0711 bot`, false, deny.ScriptMismatch},
 		{"script: another target", `data/hermes workspace scratch`, `data/hermes workspace scratch /`, false, deny.ScriptMismatch},
 		{"script: no -u", `set -eu`, `set -e`, false, deny.ScriptMismatch},
-		{"script: appended command", `done"`, `done; id"`, false, deny.ScriptMismatch},
-		{"script: empty", `"set -eu\ncd \"$1\"\nfor d in data/hermes workspace scratch; do\n  chmod 0700 \"$d\"\n  chown 10001:10001 \"$d\"\ndone"`, `""`, false, deny.ScriptMismatch},
+		{"script: appended command", `chmod 0711 bot"`, `chmod 0711 bot; id"`, false, deny.ScriptMismatch},
+		{"script: empty", `"set -eu\ncd \"$1\"\nfor d in data/hermes workspace scratch; do\n  chmod 0700 \"$d\"\n  chown 10001:10001 \"$d\"\ndone\nchmod 0711 bot"`, `""`, false, deny.ScriptMismatch},
 		{"entrypoint changed", `"Entrypoint":["/bin/sh","-c"]`, `"Entrypoint":["/bin/sh"]`, false, deny.JSONValue},
 		{"entrypoint bash", `"Entrypoint":["/bin/sh","-c"]`, `"Entrypoint":["/bin/bash","-c"]`, false, deny.JSONValue},
 		{"cmd argument 1", `"myrmidon-helper"`, `"other"`, false, deny.JSONValue},
