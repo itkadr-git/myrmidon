@@ -67,6 +67,23 @@ import { logger } from "../middleware/logger.js";
  * stays `queued`, the 15 s resweep retries it, and after 10 minutes
  * `hostCpuHoldSignal` returns an attention signal.
  *
+ * myrmidon(1.6.5 RUN-ADMISSION, rc.2): that ceiling is measured ABOVE the
+ * host's own background load, not against a fixed percentage of a core. rc.1
+ * compared the absolute reading, and on a bot host the background services
+ * (RAGFlow, hindsight, Langfuse) hold 100–145 % of a core per core by
+ * themselves: the 90 % default was closed from the first second, so 34 of 38
+ * waking runs waited behind it while 4 ran. The host is busy for reasons the
+ * admission neither started nor may stop, so one fixed percentage cannot be
+ * both safe on an idle host and open on a loaded one. The floor — the
+ * "background" — is learned from the readings themselves: the lower of the 1-
+ * and 15-minute load averages per core, kept as the lowest value seen and
+ * allowed to rise by at most HOST_CPU_FLOOR_RISE_PERCENT_PER_MINUTE per
+ * minute. A burst of runs cannot raise it (load rises in seconds, the floor
+ * takes minutes), the 15-minute average is the kernel's own memory of the
+ * recent past so a restart during a spike starts with a floor from before it,
+ * and a genuinely busier host is absorbed within tens of minutes. 90 now means
+ * "90 % of one core ABOVE what the host is busy with anyway".
+ *
  * No locks: the server is one Node.js thread, and `reserve` checks and counts
  * without awaiting anything, so two agents cannot both take the last slot.
  */
@@ -94,6 +111,17 @@ const HOST_CPU_HOLD_CONTINUITY_MS = 2 * 60_000;
 /** myrmidon(1.6.5 RUN-ADMISSION): where the host load average is read; default /proc/loadavg. */
 export const HOST_LOADAVG_PATH_ENV = "MYRMIDON_HOST_LOADAVG_PATH";
 const DEFAULT_HOST_LOADAVG_PATH = "/proc/loadavg";
+/**
+ * myrmidon(1.6.5 RUN-ADMISSION, rc.2): how fast the background floor of the
+ * host may rise, in percent of one core per minute. The floor is the lowest
+ * load the host has shown; it takes any lower reading at once, so the ceiling
+ * over it can only bite when the load rises ABOVE that floor. The rise is the
+ * only way the floor follows a host that became genuinely busier (a new
+ * service, a bigger bot): 1 % of a core per minute absorbs 100 % of extra
+ * background in under two hours, while a burst of runs — seconds — cannot move
+ * it at all.
+ */
+export const HOST_CPU_FLOOR_RISE_PERCENT_PER_MINUTE = 1;
 
 const START_WINDOW_MS = 60_000;
 // A run started this recently has not grown into the cgroup memory yet.
@@ -230,18 +258,26 @@ export function readHostMemory(
 
 /** myrmidon(1.6.5 RUN-ADMISSION): the host's CPU load, or why it cannot be read. */
 export type HostCpuReading =
-  | { known: true; load1: number; cores: number }
+  | { known: true; load1: number; load15: number | null; cores: number }
   | { known: false; reason: string };
 
 /**
  * Host 1-minute load average from /proc/loadavg and the visible CPU count.
  * Synchronous for the same reason as the memory read, and the load average is
  * a host-wide kernel counter: Docker does not namespace /proc/loadavg, and
- * `os.cpus()` lists the host's CPUs in a container without lxcfs. The ratio
- * load1/cores is what the ceiling compares against (a load of 95 on 16 cores
- * is 594 % of a core, whatever the machine's absolute size). A failed or
- * empty `os.cpus()` — hidden CPUs, an unsupported platform — refuses the
- * reading as "unknown" rather than dividing by a guessed core count.
+ * `os.cpus()` lists the host's CPUs in a container without lxcfs.
+ *
+ * myrmidon(1.6.5 RUN-ADMISSION, rc.2): the 15-minute average comes with it. It
+ * is the kernel's own memory of the recent past: taken together with the
+ * 1-minute average it gives the run admission a background floor that survives
+ * a restart of the server even when the host is busy at that moment, without
+ * keeping any state of its own (see `createHostLoadFloor`). A missing or
+ * unreadable third field is `load15: null`, not a failed reading: the 1-minute
+ * average alone still measures the host.
+ *
+ * A failed or empty `os.cpus()` — hidden CPUs, an unsupported platform —
+ * refuses the reading as "unknown" rather than dividing by a guessed core
+ * count.
  */
 export function readHostCpuLoad(
   options: {
@@ -263,6 +299,8 @@ export function readHostCpuLoad(
   if (!Number.isFinite(load1)) {
     return { known: false, reason: `${loadavgPath} has no numeric 1-minute load field: '${raw.trim().slice(0, 80)}'` };
   }
+  const load15Field = Number.parseFloat(/^\s*\d+(?:\.\d+)?\s+\d+(?:\.\d+)?\s+(\d+(?:\.\d+)?)/.exec(raw)?.[1] ?? "");
+  const load15 = Number.isFinite(load15Field) ? load15Field : null;
   let cores: number;
   try {
     cores = coresOf();
@@ -272,7 +310,47 @@ export function readHostCpuLoad(
   if (!Number.isInteger(cores) || cores <= 0) {
     return { known: false, reason: "the number of visible CPU cores is unknown, so load per core cannot be counted" };
   }
-  return { known: true, load1, cores };
+  return { known: true, load1, load15, cores };
+}
+
+/**
+ * myrmidon(1.6.5 RUN-ADMISSION, rc.2): the background floor of the host — the
+ * load the host carries without the runs this admission starts.
+ *
+ * The admission cannot see the background services (they are other containers
+ * on the same host, and the kernel offers no per-cgroup load average), so the
+ * floor is learned from the readings: the lowest load per core seen, with a
+ * slow upward drift. A lower reading drops the floor at once, a higher one
+ * raises it only by `risePercentPerMinute` for the time that passed, so a
+ * burst of runs — which raises the 1-minute average within seconds — cannot
+ * raise the floor and open the gate it just closed. Percent of one core, so it
+ * is independent of the core count of the host.
+ */
+function createHostLoadFloor() {
+  let percent: number | null = null;
+  let observedAt: number | null = null;
+  return {
+    /**
+     * Fold one reading in and return the floor in percent of one core. The
+     * first reading becomes the floor: a fresh process has nothing else, and a
+     * restart during a spike is covered by the 15-minute average the caller
+     * passes as `candidatePercent`.
+     */
+    observe(at: number, candidatePercent: number): number {
+      if (percent === null || observedAt === null) {
+        percent = candidatePercent;
+      } else {
+        const minutes = Math.max(0, at - observedAt) / 60_000;
+        const allowed = percent + HOST_CPU_FLOOR_RISE_PERCENT_PER_MINUTE * minutes;
+        percent = Math.min(candidatePercent, allowed);
+      }
+      observedAt = at;
+      return percent;
+    },
+    current(): number | null {
+      return percent;
+    },
+  };
 }
 
 /**
@@ -340,6 +418,21 @@ export interface HostCpuGate {
   cores: number | null;
   /** load1 per core in percent of one core, when known. */
   loadPercentPerCore: number | null;
+  /**
+   * myrmidon(1.6.5 rc.2): the host's background floor — the load the host
+   * carries without the runs the admission starts — in percent of one core,
+   * when known. The ceiling is measured above it, so this is the number an
+   * operator compares the reading with.
+   */
+  backgroundPercentPerCore: number | null;
+  /** The 15-minute load average per core, when the file carries it. */
+  load15PercentPerCore: number | null;
+  /**
+   * myrmidon(1.6.5 rc.2): how far the reading is above the background floor,
+   * in percent of one core. This is what the ceiling compares: the gate is
+   * closed when it reaches `thresholdPercent`.
+   */
+  loadAboveBackgroundPercent: number | null;
   /** Why the ceiling is closed or unknown, for logs; null when open or off. */
   reason: string | null;
   /** Since when the ceiling has held runs back (continuous hold), or null. */
@@ -418,6 +511,11 @@ export function createRunAdmission(options: {
   const hostMemoryHold = createGateHold(HOST_MEMORY_HOLD_CONTINUITY_MS);
   // myrmidon(1.6.5): the current continuous hold by the host CPU ceiling.
   const cpuHold = createGateHold(HOST_CPU_HOLD_CONTINUITY_MS);
+  // myrmidon(1.6.5 RUN-ADMISSION, rc.2): the host's background floor, the
+  // baseline the CPU ceiling is measured above. Lives with the admission, not
+  // with the limit, so switching the ceiling off and on again does not throw
+  // away what the host's background is.
+  const hostLoadFloor = createHostLoadFloor();
 
   function prune(at: number) {
     while (starts.length > 0 && at - starts[0]! >= START_WINDOW_MS) starts.shift();
@@ -469,6 +567,9 @@ export function createRunAdmission(options: {
         load1: null,
         cores: null,
         loadPercentPerCore: null,
+        backgroundPercentPerCore: null,
+        load15PercentPerCore: null,
+        loadAboveBackgroundPercent: null,
         reason: null,
         heldSince: null,
       };
@@ -481,29 +582,41 @@ export function createRunAdmission(options: {
         load1: null,
         cores: null,
         loadPercentPerCore: null,
+        backgroundPercentPerCore: null,
+        load15PercentPerCore: null,
+        loadAboveBackgroundPercent: null,
         reason: reading.reason,
         heldSince,
       };
     }
     const loadPercentPerCore = Math.round((reading.load1 / reading.cores) * 100);
-    if (loadPercentPerCore < thresholdPercent) {
-      return {
-        state: "open",
-        thresholdPercent,
-        load1: reading.load1,
-        cores: reading.cores,
-        loadPercentPerCore,
-        reason: null,
-        heldSince,
-      };
-    }
-    return {
-      state: "closed",
+    const load15PercentPerCore =
+      reading.load15 === null ? null : Math.round((reading.load15 / reading.cores) * 100);
+    // myrmidon(1.6.5 rc.2): the floor is fed by the lower of the two averages,
+    // so a burst that has already raised the 1-minute reading still meets the
+    // background the host had before it, and the 15-minute average carries that
+    // background across a restart of the server.
+    const backgroundPercentPerCore = hostLoadFloor.observe(
+      at,
+      Math.min(loadPercentPerCore, load15PercentPerCore ?? loadPercentPerCore),
+    );
+    const loadAboveBackgroundPercent = loadPercentPerCore - backgroundPercentPerCore;
+    const fields = {
       thresholdPercent,
       load1: reading.load1,
       cores: reading.cores,
       loadPercentPerCore,
-      reason: `host load average ${reading.load1.toFixed(2)} on ${reading.cores} core(s) is ${loadPercentPerCore} % of a core, at or above the ${thresholdPercent} % CPU ceiling`,
+      backgroundPercentPerCore,
+      load15PercentPerCore,
+      loadAboveBackgroundPercent,
+    };
+    if (loadAboveBackgroundPercent < thresholdPercent) {
+      return { state: "open", ...fields, reason: null, heldSince };
+    }
+    return {
+      state: "closed",
+      ...fields,
+      reason: `host load average ${reading.load1.toFixed(2)} on ${reading.cores} core(s) is ${loadPercentPerCore} % of a core, ${loadAboveBackgroundPercent} % of a core above the host's background floor of ${backgroundPercentPerCore} %, at or above the ${thresholdPercent} % CPU ceiling`,
       heldSince,
     };
   }
@@ -691,17 +804,20 @@ function logHostCpuHold(event: { state: "closed" | "open"; gate: HostCpuGate; he
     load1: event.gate.load1,
     cores: event.gate.cores,
     loadPercentPerCore: event.gate.loadPercentPerCore,
+    // myrmidon(1.6.5 rc.2): the ceiling sits above the host's background floor.
+    backgroundPercentPerCore: event.gate.backgroundPercentPerCore,
+    loadAboveBackgroundPercent: event.gate.loadAboveBackgroundPercent,
     thresholdPercent: event.gate.thresholdPercent,
   };
   if (event.state === "closed") {
     logger.warn(
       { ...fields, reason: event.gate.reason },
-      "run admission holds new runs: the host CPU load is at or above the ceiling; runs stay queued and are retried",
+      "run admission holds new runs: the host CPU load is at or above the ceiling above the host's background; runs stay queued and are retried",
     );
   } else {
     logger.info(
       { ...fields, heldMs: event.heldMs },
-      "run admission resumes starting runs: the host CPU load is back below the ceiling",
+      "run admission resumes starting runs: the host CPU load is back below the ceiling above the host's background",
     );
   }
 }
@@ -830,6 +946,9 @@ export interface HostCpuHoldSignal {
   load1: number | null;
   cores: number | null;
   loadPercentPerCore: number | null;
+  /** myrmidon(1.6.5 rc.2): the ceiling is measured above this background floor. */
+  backgroundPercentPerCore: number | null;
+  loadAboveBackgroundPercent: number | null;
   thresholdPercent: number | null;
   reason: string | null;
 }
@@ -855,6 +974,8 @@ export function hostCpuHoldSignal(
     load1: gate.load1,
     cores: gate.cores,
     loadPercentPerCore: gate.loadPercentPerCore,
+    backgroundPercentPerCore: gate.backgroundPercentPerCore,
+    loadAboveBackgroundPercent: gate.loadAboveBackgroundPercent,
     thresholdPercent: gate.thresholdPercent,
     reason: gate.reason,
   };

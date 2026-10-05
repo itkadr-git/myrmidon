@@ -2454,11 +2454,15 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
               load1: hostCpuHold.load1,
               cores: hostCpuHold.cores,
               loadPercentPerCore: hostCpuHold.loadPercentPerCore,
+              // myrmidon(1.6.5 rc.2): the ceiling sits above the host's own
+              // background load, so the card names both numbers.
+              backgroundPercentPerCore: hostCpuHold.backgroundPercentPerCore,
+              loadAboveBackgroundPercent: hostCpuHold.loadAboveBackgroundPercent,
               thresholdPercent: hostCpuHold.thresholdPercent,
               heldSince: heldAt,
             },
           },
-          whyNow: `New agent runs have waited ${heldMinutes} min: host load average ${hostCpuHold.load1 ?? "?"} on ${hostCpuHold.cores ?? "?"} core(s) (${hostCpuHold.loadPercentPerCore ?? "?"} % of a core) is at or above the ${hostCpuHold.thresholdPercent ?? "?"} % run admission CPU ceiling. Wait for the load to drop, lower more run concurrency, or raise the ceiling in Run limits.`,
+          whyNow: `New agent runs have waited ${heldMinutes} min: host load average ${hostCpuHold.load1 ?? "?"} on ${hostCpuHold.cores ?? "?"} core(s) (${hostCpuHold.loadPercentPerCore ?? "?"} % of a core — ${hostCpuHold.loadAboveBackgroundPercent ?? "?"} % above the host's own background floor of ${hostCpuHold.backgroundPercentPerCore ?? "?"} %) is at or above the ${hostCpuHold.thresholdPercent ?? "?"} % run admission CPU ceiling. Wait for the load to drop, lower more run concurrency, or raise the ceiling in Run limits.`,
           decisionVerbs: decisionVerbs(
             { id: "inspect", label: "Inspect", description: "Open the run limits and the host load." },
             { id: "dismiss", label: "Dismiss", description: "Dismiss this alert for this hold." },
