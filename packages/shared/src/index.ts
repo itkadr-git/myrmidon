@@ -2821,6 +2821,18 @@ export * from "./myrmidon-wip-limit.js";
 // myrmidon(1.7-BUDGET-CONFIG-B): the shared contract of budget enforcement —
 // the global mode (signal_only / soft / hard), its storage key and resolver.
 export * from "./myrmidon-budget-enforcement.js";
+// myrmidon(MEMORY-UI): the agent memory instance setting (address, optional key secret, switch).
+export * from "./myrmidon-agent-memory.js";
 
 // myrmidon(PLUGIN-ENTITLEMENT C): plugin entitlement keys contract.
 export * from "./myrmidon-plugin-entitlement.js";
+
+// myrmidon(DM-PROGRESS): live progress steps in the bridged Telegram DM
+// status message — storage key, precedence and resolver.
+export * from "./myrmidon-telegram-dm-progress.js";
+
+// myrmidon(1.6.1 MODEL-PROVIDERS): provider secret names, defaults and API schemas.
+export * from "./myrmidon-model-providers.js";
+// myrmidon(REVIEW-ROUTING): automatic reviewer routing for tasks that enter
+// in_review with no reviewer — settings contract and activity actions.
+export * from "./myrmidon-review-routing.js";
