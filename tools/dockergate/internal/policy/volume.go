@@ -96,3 +96,59 @@ func CheckVolumeRoot(lstat LstatFunc, volumeRoot, botKey string) *deny.Error {
 	}
 	return nil
 }
+
+// CheckScopeDir verifies the host tree of a member of a shared scope instance
+// (BOT-DISK-F), the way CheckVolumeRoot does for an isolated bot. It runs on
+// every create whose body names an instance, before anything reaches the
+// daemon, for the same reason: Docker follows a link in the source of a bind.
+//
+//   - scopeRoot, when it exists: a directory, not a link, owned by root, not
+//     writable by group or others;
+//   - scopeRoot/I (the instance directory) and scopeRoot/I/K (the member's
+//     subdirectory), when they exist: a directory, not a link, owned by root or
+//     by the bot uid, not writable by group or others, and enterable;
+//   - hermes, workspace, scratch under the member's subdirectory: as in
+//     CheckVolumeRoot.
+//
+// Absence is allowed: Docker creates what is missing, as root.
+func CheckScopeDir(lstat LstatFunc, scopeRoot, instance, botKey string) *deny.Error {
+	rootFI, err := lstat(scopeRoot)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return volumeDenied("scope.root")
+	}
+	if !rootFI.Dir || rootFI.Symlink || rootFI.UID != 0 || rootFI.Perm&0o022 != 0 {
+		return volumeDenied("scope.root")
+	}
+	for _, level := range []struct{ path, which string }{
+		{scopeRoot + "/" + instance, "scope.instance"},
+		{scopeRoot + "/" + instance + "/" + botKey, "scope.K"},
+	} {
+		fi, err := lstat(level.path)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil
+			}
+			return volumeDenied(level.which)
+		}
+		if !fi.Dir || fi.Symlink || (fi.UID != 0 && fi.UID != BotUID) || fi.Perm&0o022 != 0 {
+			return volumeDenied(level.which)
+		}
+	}
+	kPath := scopeRoot + "/" + instance + "/" + botKey
+	for _, child := range []string{"hermes", "workspace", "scratch"} {
+		fi, err := lstat(kPath + "/" + child)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			return volumeDenied("scope." + child)
+		}
+		if !fi.Dir || fi.Symlink || (fi.UID != 0 && fi.UID != BotUID) || fi.Perm&0o022 != 0 {
+			return volumeDenied("scope." + child)
+		}
+	}
+	return nil
+}

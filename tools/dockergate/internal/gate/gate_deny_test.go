@@ -1082,7 +1082,7 @@ func TestRedTeam_RT1_5_CreateBodiesOnTheWire(t *testing.T) {
 		c("restart always", "bot-plain", "", `"RestartPolicy":{"Name":"on-failure"}`, `"RestartPolicy":{"Name":"always"}`, deny.JSONValue),
 		c("tmpfs with exec", "bot-plain", "", `"Tmpfs":{"/tmp":""}`, `"Tmpfs":{"/tmp":"exec"}`, deny.JSONValue),
 
-		c("env", "bot-plain", "", `"Env":[]`, `"Env":["A=B"]`, deny.JSONValue),
+		c("env", "bot-plain", "", `{"Image":`, `{"Env":["A=B"],"Image":`, deny.JSONValue),
 		c("cmd", "bot-plain", "", `{"Image":`, `{"Cmd":["sh"],"Image":`, deny.JSONUnknownKey),
 		c("entrypoint", "bot-plain", "", `{"Image":`, `{"Entrypoint":["sh"],"Image":`, deny.JSONUnknownKey),
 		c("user", "bot-plain", "", `{"Image":`, `{"User":"0","Image":`, deny.JSONUnknownKey),

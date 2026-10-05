@@ -111,7 +111,6 @@ describe("buildCreateContainerRequestBody", () => {
         [BOT_LABEL_KEYS.bot]: "agent-a",
         [BOT_LABEL_KEYS.image]: "myrmidon-hermes:1.1.0",
       },
-      Env: [],
       HostConfig: {
         Memory: 1536 * 1024 * 1024,
         NanoCpus: 1_000_000_000,
@@ -230,7 +229,7 @@ describe("buildCreateContainerRequestBody — BUILD-OFFLOAD C devbuild wiring", 
 
   it("adds nothing without MYRMIDON_DEVBUILD_HOST, even for a dev-variant image with a key source listed", () => {
     const body = buildCreateContainerRequestBody(spec({ image: DEV_IMAGE }), { ...DEV_CONFIG, devbuild: { host: null, user: "", base: "" } });
-    expect(body.Env).toEqual([]);
+    expect(body.Env).toBeUndefined();
     expect(body.HostConfig.Binds).toEqual([
       "/srv/myrmidon/bots/agent-a:/bot",
     ]);
@@ -238,7 +237,7 @@ describe("buildCreateContainerRequestBody — BUILD-OFFLOAD C devbuild wiring", 
 
   it("adds no DEVBUILD_* env to a non-dev image even when HOST is set", () => {
     const body = buildCreateContainerRequestBody(spec(), DEV_CONFIG);
-    expect(body.Env).toEqual([]);
+    expect(body.Env).toBeUndefined();
     expect(body.HostConfig.Binds).toEqual([
       "/srv/myrmidon/bots/agent-a:/bot",
     ]);
@@ -1021,7 +1020,7 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
     expect(bot()?.state).toBe("running");
 
     // the key reached the gateway through hermes/.env only, never the container environment
-    expect(bot()?.body.Env).toEqual([]);
+    expect(bot()?.body.Env).toBeUndefined();
     expect(JSON.stringify(bot()?.body)).not.toContain("test-api-server-key");
 
     // every archive went to a volume mount point, never to "/"
