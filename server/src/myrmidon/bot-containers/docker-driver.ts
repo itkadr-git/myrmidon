@@ -52,7 +52,9 @@ import {
   BOT_MANAGED_DIRS,
   BOT_KEY_PATTERN,
   BOT_MOUNT_SOURCES_ENV,
+  BOT_HERMES_REAL_PATH,
   BOT_VOLUME_MOUNTS,
+  buildHelperBinds,
   BotContainerTemplateError,
   buildBinds,
   buildLabels,
@@ -93,7 +95,8 @@ const HELPER_PIDS_LIMIT = 64;
 const HERMES_MOUNT = BOT_VOLUME_MOUNTS.find((mount) => mount.hostSuffix === "hermes")!;
 /** Applied-state marker, relative to the hermes mount. */
 const MARKER_RELATIVE_PATH = ".myrmidon/applied.json";
-export const APPLIED_MARKER_CONTAINER_PATH = `${HERMES_MOUNT.containerPath}/${MARKER_RELATIVE_PATH}`;
+// Read at its real path inside the single mount, not through the image's /data/hermes link.
+export const APPLIED_MARKER_CONTAINER_PATH = `${BOT_HERMES_REAL_PATH}/${MARKER_RELATIVE_PATH}`;
 
 export interface DockerDriverConfig {
   socketPath: string;
@@ -272,7 +275,7 @@ export function buildHelperContainerRequestBody(params: {
       ReadonlyRootfs: true,
       RestartPolicy: { Name: "no" },
       NetworkMode: "none",
-      Binds: buildBinds(params.volumeRoot, params.botKey),
+      Binds: buildHelperBinds(params.volumeRoot, params.botKey),
       Privileged: false,
     },
   };
@@ -909,7 +912,7 @@ export function dockerBotContainerDriver(
     try {
       const res = await request({
         method: "GET",
-        path: `/containers/${nameSegment(name)}/archive?path=${encodeURIComponent(`/data/hermes/${CLONE_HYGIENE_REPORT_PATH}`)}`,
+        path: `/containers/${nameSegment(name)}/archive?path=${encodeURIComponent(`${BOT_HERMES_REAL_PATH}/${CLONE_HYGIENE_REPORT_PATH}`)}`,
       });
       if (res.status >= 400) return null;
       const file = parseUstarArchive(res.body).find((entry) => entry.type === "file");
@@ -934,19 +937,16 @@ export function dockerBotContainerDriver(
     };
   }
 
-  async function list(): Promise<BotContainerStatus[]> {
-    const filters = encodeURIComponent(JSON.stringify({ label: [BOT_LABEL_KEYS.bot] }));
-    const containers = await requestJson<Array<{ Labels?: Record<string, string> }>>({
-      method: "GET",
-      path: `/containers/json?all=true&filters=${filters}`,
-    });
-    const botKeys = new Set<string>();
-    for (const container of containers) {
-      const botKey = container.Labels?.[BOT_LABEL_KEYS.bot];
-      if (botKey && BOT_KEY_PATTERN.test(botKey)) botKeys.add(botKey);
-    }
+  /** The containers of the given bots that exist. Asked per bot (inspect + marker),
+   *  never by listing containers: dockergate keeps `containers/json` on its closed
+   *  list, so a listing answers 403 on every sweep. */
+  async function list(botKeys: readonly string[]): Promise<BotContainerStatus[]> {
     const results: BotContainerStatus[] = [];
-    for (const botKey of botKeys) results.push(await status(botKey));
+    for (const botKey of new Set(botKeys)) {
+      if (!BOT_KEY_PATTERN.test(botKey)) continue;
+      const found = await status(botKey);
+      if (found.state !== "missing") results.push(found);
+    }
     return results;
   }
 

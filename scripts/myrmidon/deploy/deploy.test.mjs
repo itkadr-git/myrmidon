@@ -67,11 +67,25 @@ case "$1" in
         cat "$SANDBOX/imagetools.json" ;;
     esac ;;
   run) echo "1.4.0+0123456789ab" ;;
+  ps) echo "cid-x"; exit 0 ;;
+  inspect)
+    # a container exists for every service and runs; its image is not recorded
+    # here (the previous image then falls back to the override file)
+    case "$*" in *"{{.State.Status}} {{.State.Restarting}}"*) echo "running false" ;; esac
+    exit 0 ;;
   compose)
     case "$*" in
       *--services)
         # HOST-TARGETING: the declared services of the sandbox's compose
-        # project (the fail-closed pre-check reads them).
+        # project (the fail-closed pre-check reads them). DEPLOY-PRECHECK (the
+        # 05.10 incident): composeConfigFails makes the project unreadable —
+        # the real compose error on stderr, nothing on stdout, exit 1, exactly
+        # like docker compose on an invalid project.
+        if [ -e "$SANDBOX/compose-config-fails" ]; then
+          echo 'service "server" has neither an image nor a build context specified' >&2
+          echo "ERROR: Invalid compose project" >&2
+          exit 1
+        fi
         printf 'server\\ndockergate\\nfleetd\\n' ;;
       *logs*) echo '{"event":"self-check ok","version":"1.4.0+0123456789ab"}' ;;
       *) exit 0 ;;
@@ -95,7 +109,19 @@ esac
 
 const FAKE_CURL = `#!/usr/bin/env bash
 echo "curl $*" >> "$SANDBOX/calls.log"
-cat "$SANDBOX/health.json"
+case "$*" in
+  *"-X POST"*)
+    # ROLLBACK-WITHOUT-BOARD: the rollback may run exactly because the board API
+    # is down; curl-post-fails makes the maintenance POST unreachable.
+    if [ -e "$SANDBOX/curl-post-fails" ]; then echo "curl: (7) Failed to connect" >&2; exit 7; fi ;;
+esac
+case "$*" in
+  # PREDEPLOY-DB-CHECK: the throwaway copy of the production database answers
+  # from its own health file (port 13110, never the board's HEALTH_URL port).
+  *":13110"*)
+    if [ -e "$SANDBOX/predeploy-health.json" ]; then cat "$SANDBOX/predeploy-health.json"; else cat "$SANDBOX/health.json"; fi ;;
+  *) cat "$SANDBOX/health.json" ;;
+esac
 `;
 
 // The real boot-unit template, read from the deploy directory, so the tests
@@ -106,6 +132,10 @@ const VENDOR = "ghcr.io/paperclipai/paperclip:2026.916.1";
 
 function sandbox({
   health,
+  // PREDEPLOY-DB-CHECK: what the throwaway COPY of the production database
+  // answers on /api/health. Green by default, so only the tests about the
+  // pre-window check have to think about it.
+  predeployHealth,
   dumpBytes = 2048,
   labelVersion = VERSION,
   labelRevision = COMMIT,
@@ -125,6 +155,10 @@ function sandbox({
   localImages = [],
   localTags = "",
   localIds = "",
+
+  // DEPLOY-PRECHECK (the 05.10 incident): the compose project cannot be read —
+  // `docker compose config --services` prints the real compose error and exits 1.
+  composeConfigFails = false,
 
   // BOOT-PATH: the boot unit in the sandbox. A function (gets the template
   // renderer) written into systemd/paperclip.service; null = no unit.
@@ -156,6 +190,7 @@ function sandbox({
     JSON.stringify({ architecture: "amd64", os: "linux", config: { Env: ["A=1"], Labels: labels } }),
   );
   if (registryMissing) fs.writeFileSync(path.join(dir, "registry-missing"), "");
+  if (composeConfigFails) fs.writeFileSync(path.join(dir, "compose-config-fails"), "");
   // RELEASE-GATE: component registry answers for the same commit.
   fs.writeFileSync(
     path.join(dir, "component-digests.json"),
@@ -187,6 +222,15 @@ function sandbox({
     path.join(dir, "health.json"),
     JSON.stringify(health ?? { status: "ok", version: VERSION, commit: COMMIT }),
   );
+  // PREDEPLOY-DB-CHECK: the copy of the production database answers from its
+  // own file; green unless the test says otherwise.
+  fs.writeFileSync(
+    path.join(dir, "predeploy-health.json"),
+    JSON.stringify(predeployHealth ?? { status: "ok", version: labelVersion, commit: COMMIT }),
+  );
+  // The board's own environment for the throwaway board container.
+  const predeployEnv = path.join(dir, "predeploy-board.env");
+  fs.writeFileSync(predeployEnv, "JWT_SECRET=test-secret\n");
   const override = path.join(composeDir, "docker-compose.myrmidon-image.yml");
   if (currentImage) {
     fs.writeFileSync(override, `services:\n  server:\n    image: ${currentImage}\n`);
@@ -224,10 +268,20 @@ function sandbox({
       "MYR_FLEETD_HEALTH_URL=http://127.0.0.1:3100/fleetd/health",
       // The bot image rollout has its own tests (bot-image-rollout.test.mjs).
       "MYRMIDON_BOT_IMAGE_ROLLOUT=0",
+      // PREDEPLOY-DB-CHECK (the 05.10 incident): the pre-window check is ON by
+      // default and refuses without its inputs. This sandbox walks a company-free
+      // path list (the attention list has its own tests in
+      // predeploy-board-check.test.mjs and in the release-gate sandbox, which
+      // knows BOARD_COMPANY_ID).
+      "MYRMIDON_PREDEPLOY_POSTGRES_IMAGE=postgres:16-alpine",
+      `MYRMIDON_PREDEPLOY_BOARD_ENV_FILE=${predeployEnv}`,
+      "MYRMIDON_PREDEPLOY_BOARD_PORT=13110",
+      `MYRMIDON_PREDEPLOY_HEALTH_TIMEOUT_SEC=2`,
+      "MYRMIDON_PREDEPLOY_API_PATHS=/api/health,/api/companies",
       "",
     ].join("\n"),
   );
-  return { dir, bin, config, override, unitDir, noGit };
+  return { dir, bin, config, override, unitDir, noGit, predeployEnv };
 }
 
 // The canonical unit rendered for a sandbox compose dir: exactly what
@@ -235,7 +289,7 @@ function sandbox({
 function sbPaths(composeDir) {
   return (template) => template
     .replaceAll("__COMPOSE_DIR__", composeDir)
-    .replaceAll("__COMPOSE_FILE_ARGS__", `-f ${composeDir}/docker-compose.yml -f ${composeDir}/docker-compose.myrmidon-image.yml`)
+    .replaceAll("__COMPOSE_FILE_ARGS__", `-f ${composeDir}/docker-compose.yml -f ${composeDir}/docker-compose.myrmidon-image.yml -f ${composeDir}/docker-compose.myrmidon-dockergate.yml -f ${composeDir}/docker-compose.myrmidon-fleetd.yml`)
     .replaceAll("__COMPOSE_SERVICE__", "server");
 }
 
@@ -288,6 +342,43 @@ describe("deploy.sh", () => {
     assert.equal(maintenance(sb), "enter\nexit\n");
   });
 
+  // PREDEPLOY-DB-CHECK (the 05.10 incident): release 1.6.3's board started on
+  // the CI database (empty) and crashed on production data. An image that does
+  // not come up on a copy of the production database must stop the deploy
+  // BEFORE the maintenance window, with nothing on production changed.
+  it("stops before the window when the image does not come up on a copy of the production database", () => {
+    const sb = sandbox({ predeployHealth: { status: "degraded", version: VERSION, commit: COMMIT } });
+    const before = read(sb.override);
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.notEqual(code, 0, out);
+    assert.match(out, /PREDEPLOY-DB-CHECK/);
+    assert.match(out, /did not come up on the copy/);
+    assert.match(out, /DEPLOY STOPPED BEFORE THE WINDOW/);
+    // Nothing on production changed: no window opened, no image switch.
+    assert.equal(maintenance(sb), "");
+    assert.equal(read(sb.override), before);
+    assert.doesNotMatch(calls(sb), /up -d/);
+    // The copy was built for the check and torn down again.
+    assert.match(calls(sb), /docker network create myr-predeploy-/);
+    assert.match(calls(sb), /docker rm -f myr-predeploy-board-/);
+  });
+
+  // PREDEPLOY-DB-CHECK: the check is a step of its own with its own tests
+  // (predeploy-board-check.test.mjs); here we only pin that deploy.sh runs it
+  // BEFORE the window and only for a board that actually changes.
+  it("proves the changing image on the copy before the window opens", () => {
+    const sb = sandbox();
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.equal(code, 0, out);
+    const log = calls(sb);
+    const copyCheck = log.indexOf("docker network create myr-predeploy-");
+    assert.ok(copyCheck >= 0, "the copy of the production database was not built");
+    // The window opened only after the copy answered: the board was recreated
+    // after the throwaway stack was torn down.
+    assert.ok(log.indexOf("docker rm -f myr-predeploy-board-") < log.indexOf("up -d --no-deps server"), "the board was switched before the copy was checked");
+    assert.equal(maintenance(sb), "enter\nexit\n");
+  });
+
   it("fails on a version mismatch, keeps maintenance on and prints the rollback command", () => {
     const sb = sandbox({ health: { status: "ok", version: "2026.916.1-myr.0", commit: COMMIT } });
     const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
@@ -311,7 +402,10 @@ describe("deploy.sh", () => {
     assert.notEqual(code, 0);
     assert.match(out, /dump .* empty/);
     assert.equal(read(sb.override), before);
-    assert.doesNotMatch(calls(sb), /compose/);
+    // DEPLOY-PRECHECK: the read-only component pre-check (docker compose config
+    // --services) may have run; nothing was recreated and no maintenance was
+    // entered (the pull precedes the dump by design).
+    assert.doesNotMatch(calls(sb), /up -d/);
     assert.equal(maintenance(sb), "");
   });
 
@@ -324,11 +418,54 @@ describe("deploy.sh", () => {
     assert.match(out, /docker pull/);
     assert.match(out, /image check passed/);
     assert.equal(read(sb.override), before);
-    // Only the read-only image check ran: no pull, no compose.
+    // Only read-only checks ran: the registry reads and the component
+    // pre-check's compose project read (docker compose config --services).
     assert.match(calls(sb), /buildx imagetools inspect/);
-    assert.doesNotMatch(calls(sb), /docker (pull|compose)/);
+    assert.match(calls(sb), /compose .* config --services/);
+    assert.doesNotMatch(calls(sb), /docker pull|up -d/);
     assert.equal(maintenance(sb), "");
     assert.ok(!fs.existsSync(path.join(sb.dir, "dumps")));
+  });
+
+  // DEPLOY-PRECHECK (the 05.10 incident): the dry run makes every component
+  // pre-check the real window would, so an unreadable compose project fails
+  // HERE, with the real compose error, instead of passing and surfacing after
+  // the image pull and the database dump.
+  it("--dry-run fails with the real compose error when the compose project cannot be read", () => {
+    const sb = sandbox({ composeConfigFails: true });
+    const before = read(sb.override);
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--dry-run"]);
+    assert.notEqual(code, 0);
+    assert.match(out, /compose project itself cannot be read/);
+    // The real compose error is reported, not "dockergate is not a service".
+    assert.match(out, /neither an image nor a build context/);
+    assert.doesNotMatch(out, /is not a service of the compose project/);
+    assert.doesNotMatch(calls(sb), /docker pull/);
+    assert.equal(read(sb.override), before);
+    assert.ok(!fs.existsSync(path.join(sb.dir, "dumps")));
+  });
+
+  it("pre-checks the components before the pull and the database dump", () => {
+    const sb = sandbox({ composeConfigFails: true });
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.notEqual(code, 0);
+    assert.match(out, /compose project itself cannot be read/);
+    // Nothing was pulled, dumped or entered maintenance: the refusal came first.
+    assert.doesNotMatch(calls(sb), /docker pull/);
+    assert.equal(maintenance(sb), "");
+    assert.ok(!fs.existsSync(path.join(sb.dir, "dumps")));
+    assert.ok(!fs.existsSync(path.join(sb.dir, "state")));
+  });
+
+  it("runs the component pre-check before the pull when the compose project is valid", () => {
+    const sb = sandbox();
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.equal(code, 0, out);
+    const log = calls(sb);
+    const precheck = log.indexOf("config --services");
+    const pull = log.indexOf(`docker pull --quiet ${CI_IMAGE}@${NEW}`);
+    assert.ok(precheck >= 0, `the compose pre-check ran:\n${log}`);
+    assert.ok(pull >= 0 && precheck < pull, `the pre-check ran before the pull:\n${log}`);
   });
 
   it("rejects a malformed digest", () => {
@@ -587,12 +724,22 @@ describe("deploy.sh: only CI images from the registry", () => {
       assert.equal(code, 0, out);
     });
 
+    // RC-VERSIONS: a release candidate tag is a release tag — the deploy of
+    // an rc IS the trial run of the release flow.
+    it("accepts a commit that carries a release candidate tag myr-vX.Y.Z-rc.N", () => {
+      const tags = `${"9".repeat(40)}\trefs/tags/myr-v1.2.3-rc.1\n${COMMIT}\trefs/tags/myr-v1.2.3-rc.1^{}\n`;
+      const sb = sandbox({ onMain: false, tags });
+      const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+      assert.equal(code, 0, out);
+      assert.match(calls(sb), /git -C \S+ ls-remote --tags origin refs\/tags\/myr-v\*/);
+    });
+
     it("refuses when the myr-v tags point at other commits", () => {
       const sb = sandbox({ onMain: false, tags: `${"9".repeat(40)}\trefs/tags/myr-v1.0.0\n${"8".repeat(40)}\trefs/tags/myr-v1.0.0^{}\n` });
       assertRefused(sb, ["--digest", NEW], /neither on origin\/main nor tagged myr-v/);
     });
 
-    it("refuses a tag that CI would not build (not myr-v<x>.<y>.<z>)", () => {
+    it("refuses a tag that CI would not build (not myr-v<x>.<y>.<z> or an rc)", () => {
       const sb = sandbox({ onMain: false, tags: `${COMMIT}\trefs/tags/myr-v1.0.2-rc1\n${COMMIT}\trefs/tags/myr-vnext\n` });
       assertRefused(sb, ["--digest", NEW], /neither on origin\/main nor tagged myr-v/);
     });
@@ -911,6 +1058,26 @@ esac
 });
 
 describe("rollback.sh", () => {
+  // ROLLBACK-WITHOUT-BOARD (the 05.10 lesson): a rollback usually runs BECAUSE
+  // the board is down. Entering (and leaving) the maintenance window must not
+  // require the board API to answer: the image switch and the health check
+  // decide the outcome, not an admission gate nobody can serve.
+  it("rolls back when the board API is down (ROLLBACK-WITHOUT-BOARD)", () => {
+    const sb = sandbox();
+    assert.equal(run(sb, "deploy.sh", ["--digest", NEW]).code, 0);
+    // The board is down: its maintenance API does not answer at all.
+    fs.appendFileSync(sb.config, `MAINTENANCE_MODE=api\nMAINTENANCE_API_URL=http://127.0.0.1:3100/api/myrmidon/maintenance\n`);
+    fs.writeFileSync(path.join(sb.dir, "curl-post-fails"), "");
+    const { code, out } = run(sb, "rollback.sh", []);
+    assert.equal(code, 0, out);
+    assert.match(out, /WARNING: could not enter maintenance/);
+    assert.match(out, /continuing WITHOUT a maintenance window/);
+    // The rollback itself went through: the previous image is running and passed
+    // its health check.
+    assert.match(read(sb.override), new RegExp(`@${OLD}`));
+    assert.match(out, /rolled back to/);
+  });
+
   it("returns to the previous digest without restoring the database", () => {
     const sb = sandbox();
     assert.equal(run(sb, "deploy.sh", ["--digest", NEW]).code, 0);

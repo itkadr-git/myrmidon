@@ -150,12 +150,13 @@ export interface BotProfilePorts {
    */
   sharedPackageCachePath?(role?: string): Promise<string | undefined>;
   /**
-   * myrmidon(1.6.2-BOT-DISK-C): where the pnpm store of a bot with the shared
-   * cache lives (`general.botDisk.pnpmStore`, default "workspace": on the same
-   * mount as the clones, so pnpm hard-links instead of copying; see
-   * template.ts packageCacheEnv). Read per tick. Optional: absent = "workspace".
+   * myrmidon(BOT-DISK-D): where the pnpm store of a bot with the shared cache
+   * lives and how pnpm imports (`general.botDisk.pnpmStoreDir` and
+   * `pnpmImportMethod`; defaults: a store inside the bot's single mount and
+   * `hardlink`, see template.ts packageCacheEnv). Read per tick. Optional:
+   * absent = the defaults.
    */
-  pnpmStore?(): Promise<"workspace" | "shared">;
+  pnpmSettings?(): Promise<{ storeDir: string; importMethod: string }>;
   /**
    * myrmidon(1.6.2-BOT-DISK-C): the clone-lifecycle policy for a bot of `role`, in
    * seconds, written as `MYRMIDON_CLONE_IDLE_TTL_SEC` for the in-container reporter
@@ -300,12 +301,12 @@ export function createBotProfileCompile(
     // no cache mounts (fleetd-driver.ts), so its tools keep their own defaults.
     // Instance values win over the card's, like the egress variables below.
     const sharedPackageCachePath = ports.sharedPackageCachePath ? await ports.sharedPackageCachePath(agent.role) : undefined;
-    // myrmidon(1.6.2-BOT-DISK-C): the pnpm store mode decides whether the store
-    // shares the clones' mount (hard links) or the cache mount (reflink/copy).
-    const pnpmStore = sharedPackageCachePath && ports.pnpmStore ? await ports.pnpmStore() : "workspace";
+    // myrmidon(BOT-DISK-D): the store directory and import method (hard links
+    // need the store inside the bot's single mount).
+    const pnpm = sharedPackageCachePath && ports.pnpmSettings ? await ports.pnpmSettings() : undefined;
     const cacheEnv: Record<string, HermesProfileEnvEntry> =
       sharedPackageCachePath && cardFleetHost(agent.adapterConfig) === null
-        ? Object.fromEntries(Object.entries(packageCacheEnv(pnpmStore)).map(([name, value]) => [name, { value, secret: false }]))
+        ? Object.fromEntries(Object.entries(packageCacheEnv({ storeDir: pnpm?.storeDir, importMethod: pnpm?.importMethod })).map(([name, value]) => [name, { value, secret: false }]))
         : {};
     const cloneTtlSec =
       ports.cloneIdleTtlSec && cardFleetHost(agent.adapterConfig) === null ? await ports.cloneIdleTtlSec(agent.role) : undefined;

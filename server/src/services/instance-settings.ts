@@ -244,6 +244,8 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       ...(parsed.data.hostDisk ? { hostDisk: parsed.data.hostDisk } : {}),
       // myrmidon(BOT-DISK-A): the stored bot draft-directory lifecycle survives every general write
       ...(parsed.data.botDisk ? { botDisk: parsed.data.botDisk } : {}),
+      // myrmidon(1.6.1-BOT-DISK-C): the stored per-bot disk quota survives every general write
+      ...(parsed.data.botDiskQuota ? { botDiskQuota: parsed.data.botDiskQuota } : {}),
       // myrmidon(PARALLEL-HELPERS): the stored helper ceiling/default survive
       // every general write (they are edited on their own settings page).
       ...(parsed.data.parallelHelpers ? { parallelHelpers: parsed.data.parallelHelpers } : {}),

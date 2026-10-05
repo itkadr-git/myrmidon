@@ -2059,6 +2059,20 @@
       "when": 1791000000000,
       "tag": "0297_model_providers_store",
       "breakpoints": true
+    },
+    {
+      "idx": 298,
+      "version": "7",
+      "when": 1791172781255,
+      "tag": "0298_add_label_pinned_to_baseline_metric_snapshots",
+      "breakpoints": true
+    },
+    {
+      "idx": 299,
+      "version": "7",
+      "when": 1791172800000,
+      "tag": "0299_bot_container_card_complete",
+      "breakpoints": true
     }
   ]
 }

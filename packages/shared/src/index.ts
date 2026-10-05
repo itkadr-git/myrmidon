@@ -2780,6 +2780,9 @@ export * from "./myrmidon-workspace-hygiene.js";
 export * from "./myrmidon-host-disk.js";
 // myrmidon(BOT-DISK-A): bot draft-directory lifecycle settings shared by the server and the settings validator.
 export * from "./myrmidon-bot-disk.js";
+// myrmidon(1.6.1-BOT-DISK-C): per-bot disk quota settings, resolution and the rejection contract
+// shared by the server, the board UI and the settings validator.
+export * from "./myrmidon-bot-disk-quota.js";
 // myrmidon(C0): live run-admission limits shared by the server, the UI and the settings validator.
 export * from "./myrmidon-runtime-limits.js";
 // myrmidon(PARALLEL-HELPERS): the card -> Hermes `delegation` contract shared by the profile

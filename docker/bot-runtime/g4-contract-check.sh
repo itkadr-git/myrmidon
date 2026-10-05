@@ -128,16 +128,18 @@ give_uid_10001() {
 give_uid_10001 "$WORK/hermes-home"
 
 # uid 10001 must be able to write the mounted volumes (bot-runtime contract).
-# /data itself is chowned to bot in the image; /data/hermes comes from the bind
-# mount above; /workspace and /scratch are fresh tmpfs mounts, like the
-# workflow's node-variant job uses.
+# The bot's whole tree is ONE mount at /bot (BOT-DISK-D): a bind of $WORK/bot, whose
+# hermes/ is the profile prepared above and whose workspace/ and scratch/ start empty.
+# /data/hermes, /workspace and /scratch are links the image makes into it.
+mkdir -p "$WORK/bot/workspace" "$WORK/bot/scratch"
+mv "$WORK/hermes-home" "$WORK/bot/hermes"
+chmod a+rwx "$WORK/bot" "$WORK/bot/workspace" "$WORK/bot/scratch" 2>/dev/null || true
+chown 10001:10001 "$WORK/bot" "$WORK/bot/workspace" "$WORK/bot/scratch" 2>/dev/null || true
 run_gateway() {
   docker run -d --name "$CONTAINER" \
     -p "127.0.0.1:${PORT}:8642" \
     --add-host=host.docker.internal:host-gateway \
-    --tmpfs /workspace:uid=10001,gid=10001 \
-    --tmpfs /scratch:uid=10001,gid=10001 \
-    -v "$WORK/hermes-home:/data/hermes" \
+    -v "$WORK/bot:/bot" \
     -e "MYRMIDON_BOT_YOLO=${1:-1}" \
     "$IMAGE"
 }
