@@ -2,7 +2,7 @@
 //
 // Every Docker API call the board's driver can make (every `path:` of a request
 // in docker-driver.ts) must be a call dockergate's route table allows. The table
-// is read from tools/dockergate/contract/testdata/allowed-routes.json, which the
+// is read from tools/dockergate/contract/allowed-routes.json, which the
 // Go route tests keep equal to route.Parse (tools/dockergate/internal/route/
 // allowed_table_test.go). The defect this guards against: the driver listed
 // containers (`GET /containers/json?...`), dockergate keeps that call on its
@@ -19,7 +19,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "../../../..");
 const driverSource = fs.readFileSync(path.join(here, "docker-driver.ts"), "utf8");
 const table = JSON.parse(
-  fs.readFileSync(path.join(repoRoot, "tools/dockergate/contract/testdata/allowed-routes.json"), "utf8"),
+  fs.readFileSync(path.join(repoRoot, "tools/dockergate/contract/allowed-routes.json"), "utf8"),
 ) as { apiPrefix: string; routes: AllowedRoute[] };
 
 interface AllowedRoute {

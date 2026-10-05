@@ -39,7 +39,7 @@ var allowedTable = []allowedEntry{
 	{ID: A13, Method: "GET", Template: "containers/{name}/archive?" + cloneReportQuery, Suffixes: []string{""}},
 }
 
-const fixtureRelPath = "../../contract/testdata/allowed-routes.json"
+const fixtureRelPath = "../../contract/allowed-routes.json"
 
 func instantiate(e allowedEntry, suffix, mount string, images Images) string {
 	t := e.Template
@@ -105,7 +105,9 @@ func TestAllowedTableMatchesParse(t *testing.T) {
 	}
 }
 
-// The fixture the TypeScript contract test reads is the table above. After a
+// The fixture the TypeScript contract test reads is the table above. It is
+// generated here (Go is the source of truth), so it lives beside testdata, not in
+// it: CI diffs testdata against what emit-fixtures.ts (the TS side) writes. After a
 // route change run: UPDATE_ALLOWED_ROUTES=1 go test ./internal/route
 func TestAllowedRoutesFixtureIsCurrent(t *testing.T) {
 	want, err := json.MarshalIndent(map[string]any{

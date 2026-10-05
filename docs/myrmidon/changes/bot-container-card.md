@@ -37,7 +37,7 @@ divergence-section: 1.6.1 — BOT-DISK B: общий кэш пакетов дл�
   report read was refused too. No other route changed.
 - Contract test board <-> dockergate: every Docker API path in the board driver's
   request sites must be allowed by the route table
-  (`tools/dockergate/contract/testdata/allowed-routes.json`, kept equal to the Go
+  (`tools/dockergate/contract/allowed-routes.json`, kept equal to the Go
   route parser by a Go test); it fails on a container listing.
 
 ## changelog-ru
@@ -77,7 +77,7 @@ divergence-section: 1.6.1 — BOT-DISK B: общий кэш пакетов дл�
   маршрутов не менялось.
 - Контрактный тест доска <-> dockergate: каждый путь Docker API в местах запросов
   драйвера доски должен разрешаться таблицей маршрутов
-  (`tools/dockergate/contract/testdata/allowed-routes.json`, её равенство разборщику
+  (`tools/dockergate/contract/allowed-routes.json`, её равенство разборщику
   маршрутов на Go держит тест на Go); тест падает на листинге контейнеров.
 
 ## divergence
