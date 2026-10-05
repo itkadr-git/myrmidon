@@ -698,49 +698,6 @@ in the UI takes effect without a restart (no env override, no new settings keys)
 No environment variables, no new secrets. Remove: the autonomy tree, the export line in
 `packages/shared/src/index.ts`, the two marker lines in `app.ts`/`instance-settings.ts`
 and this section.
-
-## 1.6 — AUTONOMY-MATRIX (execution point registry)
-
-`server/src/myrmidon/autonomy/registry.ts` is the readable answer to "where is
-this action class enforced?". Each entry names a route or tool, the repo-relative
-file that holds the gate call, and the gate function the seam calls
-(`assertAllowed` or `decide`).
-
-`server/src/myrmidon/autonomy/registry.myrmidon.test.ts` reads every seam back out
-of the source and matches `call(req, "<class>")`, so deleting the gate call from a
-connected route turns the suite red — the registry cannot drift into a wish list.
-It also fails when a class the matrix can hold is in neither the registry nor the
-pending list, when the two lists overlap, or when either names a class outside
-`AUTONOMY_ACTION_CLASSES`.
-
-A class the matrix defines but no seam enforces on this tree is listed in
-`PENDING_ENFORCEMENT` with its reason instead of the registry (today:
-`pause_wake_agents`, `merge`, `deploy`, `external_message`); `other` and
-`spend_above_threshold` are exempt (`REGISTRY_EXEMPT_CLASSES`). The same table is
-mirrored in `docs/myrmidon/guides/autonomy-matrix.md` (EN) and `.ru.md` (RU).
-
-| Action class | Execution point | Source seam |
-|---|---|---|
-| `delete` | `DELETE /api/issues/:id` and the five sibling DELETE routes | `server/src/routes/issues.ts` (`assertAllowed(req, "delete")`) |
-| `change_instructions` | `PATCH /api/agents/:id/instructions-path`, `PATCH /api/agents/:id/instructions-bundle`, `DELETE /api/agents/:id/instructions-bundle/file` | `server/src/routes/agents.ts` (`decide(req, "change_instructions")`) |
-| `change_instructions` | `POST /api/agents/:id/instructions-revisions/:revisionId/rollback` | `server/src/myrmidon/agent-instructions-revisions/index.ts` (`decide(req, "change_instructions")`) |
-
-No environment variables, no new secrets, nothing to toggle: the registry is a
-static map plus its guard test, so a matrix edit needs no restart and no re-read.
-
-Three tests hold the behaviour: `registry.myrmidon.test.ts` reads each seam out of
-the source (remove the gate call from a connected route and it goes red),
-`gate-deny.myrmidon.test.ts` pins the deny half of the gate itself, and
-`server/src/routes/agents-autonomy-e2e.myrmidon.test.ts` drives the real express
-route with the real gate and a real matrix document (only the DB-backed factory
-is swapped for an in-memory store): an agent caller whose instructions demand a
-forbidden `change_instructions` gets 403 `autonomy_forbidden` and the instructions
-bundle is not rewritten.
-
-Remove: `registry.ts`, `registry.myrmidon.test.ts`, `gate-deny.myrmidon.test.ts`,
-`server/src/routes/agents-autonomy-e2e.myrmidon.test.ts`, the two guide files and
-this section (the enforcement seams themselves belong to their own entries above).
-
 ## 1.6 — CTO-CHAT B (the board chat planner: owner text -> proposed epic)
 
 The planner behind the CTO chat (the 1.6 CTO-CHAT epic, part B): the owner's free text
