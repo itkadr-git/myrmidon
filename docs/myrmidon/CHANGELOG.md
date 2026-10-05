@@ -89,16 +89,6 @@ version file to edit. Base Paperclip version is in the image label
   turns the status message on for bridged DMs.
 - The queued and working texts of the status message are now in Russian, like
   the step labels. Guide: [telegram-dm-status.md](guides/telegram-dm-status.md).
-
-### Parallel helpers are no longer capped by a built-in number (HELPERS-NO-CAP)
-
-- The helper limit used to default to 2 per agent under a built-in ceiling of 10
-  (hard maximum 50). It is now unlimited by default: with no stored settings and no
-  value on the agent card nothing caps the helpers. A ceiling and a per-agent default
-  stay available as optional settings (1 to 1000), editable in the UI without a
-  restart. The host is protected by the run-admission host-memory floor, not by a
-  small helper count. See [SETTINGS.md](SETTINGS.md), section PARALLEL-HELPERS.
-
 ### Heavy builds blocked inside the dev bot image (1.6.1 BUILD-OFFLOAD, part A)
 
 - The development variant of the bot image (`runtime-dev`,
