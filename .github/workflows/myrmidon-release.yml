@@ -29,6 +29,8 @@ concurrency:
 jobs:
   publish:
     name: publish
+    # RELEASE-PUBLISH-WAIT: the tag input wins over ref_name, and the
+    # release tag pattern accepts -rc.N suffixes (myr-v1.6.5-rc.1).
     if: ${{ github.repository == 'itkadr-git/myrmidon' }}
     runs-on: ubuntu-latest
     timeout-minutes: 90

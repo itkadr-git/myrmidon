@@ -22,14 +22,17 @@
 #
 # Fail-closed and idempotent:
 #   1. Resolve the tag's commit (annotated tags dereferenced).
-#   2. GATE: require a successful "Myrmidon CI" run and a successful
-#      "Myrmidon image" (board) run for THIS tag (image/component runs are
-#      matched by head_branch == the tag — the same commit's main-branch
-#      runs build different image tags and must not satisfy the gate,
-#      RELEASE-PUBLISH-WAIT). "Myrmidon CI" is commit-level validation and
-#      myrmidon-ci.yml has no tag trigger, so its gate also accepts a green
-#      main-branch run of the SAME commit; a failed run (tag or main) exits 1
-#      BEFORE anything is published. Dockergate and
+#   2. GATE: require a successful "Myrmidon CI (tag)" run and a successful
+#      "Myrmidon image" (board) run for THIS tag (runs are matched by
+#      head_branch == the tag). TAG-CI (the 1.6.4 incident): the tag has its
+#      own un-cancellable CI run (myrmidon-ci-tag.yml, its own concurrency
+#      group with cancel-in-progress: false — a push to main that supersedes
+#      the main-branch CI of the same commit can no longer cancel it). The
+#      publish takes its green ONLY from the tag's own run: a main-branch
+#      run of the same commit never satisfies the gate, and a CANCELLED tag
+#      run refuses the publish loudly (an operator cancelling the tag run
+#      must not silently fall back to the wait). A failed run (any lane)
+#      exits 1 BEFORE anything is published. Dockergate and
 #      fleetd are paths-filtered workflows, so their tag run may
 #      legitimately be absent — but their digests must exist in the registry
 #      (step 3) or the publish is refused (fail-closed, the RELEASE-GATE
@@ -140,14 +143,13 @@ runs_of() {
 
 run_verdict() {
   local workflow_file="$1" branches verdict
-  branches="$(branch_match_expr "$tag" main)"
-  # RELEASE-PUBLISH-WAIT follow-up: CI is commit-level validation — the
-  # release commit reaches main before the tag is pushed, and myrmidon-ci.yml
-  # has no tag trigger, so the tag's own CI run never exists. A green CI run
-  # of the same commit on main is the evidence the gate wants (same sha).
-  if [[ "$workflow_file" != ".github/workflows/myrmidon-ci.yml" ]]; then
-    branches="$(branch_match_expr "$tag")"
-  fi
+  # TAG-CI (the 1.6.4 incident): the release green comes ONLY from the tag's
+  # own runs (head_branch == the tag). A green main-branch run of the same
+  # commit used to satisfy the CI gate (myrmidon-ci.yml had no tag trigger);
+  # myrmidon-ci-tag.yml now runs the full pipeline on the tag itself, so the
+  # main fallback is gone — and a push to main can no longer cancel the
+  # tag's run (own concurrency group, cancel-in-progress: false).
+  branches="$(branch_match_expr "$tag")"
   verdict="$(runs_of "$workflow_file" "$branches" \
     | jq "[.[] | select(.status == \"completed\")]
           | if length == 0 then \"missing\"
@@ -161,10 +163,7 @@ run_verdict() {
 # Status of the newest run (any state) of one workflow for THIS tag.
 run_status() {
   local workflow_file="$1" branches status
-  branches="$(branch_match_expr "$tag" main)"
-  if [[ "$workflow_file" != ".github/workflows/myrmidon-ci.yml" ]]; then
-    branches="$(branch_match_expr "$tag")"
-  fi
+  branches="$(branch_match_expr "$tag")"
   status="$(runs_of "$workflow_file" "$branches" \
     | jq ".[0].status // \"missing\"" 2>/dev/null)" \
     || status="missing"
@@ -211,8 +210,27 @@ wait_for() {
   log "gate: $label success for $sha"
 }
 
-log "gate: Myrmidon CI on $sha"
-wait_for ".github/workflows/myrmidon-ci.yml" must "Myrmidon CI"
+# TAG-CI (the 1.6.4 incident): the tag's own CI run is un-cancellable by
+# main pushes, but an operator can still cancel it by hand. A cancelled tag
+# run must refuse the publish loudly — never look like "no run yet" and
+# fall back into the wait (the wait would time out ~40 minutes later with a
+# misleading message).
+refuse_if_cancelled() {
+  local workflow_file="$1" label="$2" branches cancelled
+  branches="$(branch_match_expr "$tag")"
+  cancelled="$(runs_of "$workflow_file" "$branches" \
+    | jq '[.[] | select(.status == "completed" and .conclusion == "cancelled")] | length' 2>/dev/null)" \
+    || cancelled="0"
+  cancelled="${cancelled//\"/}"
+  [[ "$cancelled" =~ ^[0-9]+$ ]] || cancelled="0"
+  if ((cancelled > 0)); then
+    die "$label has a CANCELLED run for $sha (tag) — NOT publishing. Re-run Actions → Myrmidon CI (tag) for $tag (workflow_dispatch) and let it complete."
+  fi
+}
+
+log "gate: Myrmidon CI (tag) on $sha"
+refuse_if_cancelled ".github/workflows/myrmidon-ci-tag.yml" "Myrmidon CI (tag)"
+wait_for ".github/workflows/myrmidon-ci-tag.yml" must "Myrmidon CI (tag)"
 log "gate: Myrmidon image (board) on $sha"
 wait_for ".github/workflows/myrmidon-image.yml" must "Myrmidon image (board)"
 log "gate: Myrmidon dockergate image on $sha"
