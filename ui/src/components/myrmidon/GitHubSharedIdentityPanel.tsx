@@ -5,6 +5,12 @@
 // repositories it serves. The board mints single-repository installation
 // tokens itself; a repository matched by two entries is refused. Commits stay
 // authored by the agent. Saving applies at the next operation — no restart.
+//
+// myrmidon(GITHUB-APP-MANIFEST): the one-click creation path. "Create GitHub
+// App" asks the server for a manifest, then POSTs it to github.com (the
+// official manifest flow); GitHub redirects back to the server callback,
+// which lands here with ?github_app_created=1 or ?github_app_error=<message>.
+// The manual path (App id + key secret) is untouched.
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { KeyRound, Plus, Trash2 } from "lucide-react";
@@ -16,11 +22,13 @@ import { SecretPicker } from "@/components/environment-variables-editor/SecretPi
 import { agentsApi } from "@/api/agents";
 import { secretsApi } from "@/api/secrets";
 import { useCompany } from "@/context/CompanyContext";
+import { useTranslation } from "@/i18n";
 import { queryKeys } from "@/lib/queryKeys";
 import {
   githubSharedIdentityApi,
   githubSharedIdentityQueryKey,
   splitList,
+  type BeginAppManifestBody,
   type GitHubSharedIdentityPut,
   type GitHubSharedIdentityView,
 } from "./githubSharedIdentityApi";
@@ -34,6 +42,9 @@ type AppDraft = {
   roles: string;
   agentIds: string[];
   allowedRepos: string;
+  /** myrmidon(GITHUB-APP-MANIFEST): slug of a manifest-created App; not part
+   * of the PUT body (the server owns it), kept in the draft only for render. */
+  slug?: string | null;
 };
 
 type Draft = { enabled: boolean; commitEmailDomain: string; apps: AppDraft[] };
@@ -51,6 +62,7 @@ function draftFrom(view: GitHubSharedIdentityView): Draft {
       roles: app.roles.join(", "),
       agentIds: app.agentIds,
       allowedRepos: app.allowedRepos.join("\n"),
+      slug: app.slug ?? null,
     })),
   };
 }
@@ -79,6 +91,53 @@ function newEntryId(): string {
     : "00000000-0000-4000-8000-000000000000".replace(/0/g, () => Math.floor(Math.random() * 16).toString(16));
 }
 
+// myrmidon(GITHUB-APP-MANIFEST): outcome of the server callback, read once
+// from the page query string (?github_app_created=1 / ?github_app_error=...).
+// The parameters are removed from the URL afterwards so a reload does not
+// repeat the notice.
+export type ManifestCallbackNotice = { kind: "created" } | { kind: "error"; message: string } | null;
+
+export function readManifestCallbackNotice(search: string): ManifestCallbackNotice {
+  const params = new URLSearchParams(search);
+  if (params.has("github_app_created")) return { kind: "created" };
+  const message = params.get("github_app_error");
+  if (message) return { kind: "error", message };
+  return null;
+}
+
+export function clearManifestCallbackQuery(): void {
+  const url = new URL(window.location.href);
+  if (!url.searchParams.has("github_app_created") && !url.searchParams.has("github_app_error")) return;
+  url.searchParams.delete("github_app_created");
+  url.searchParams.delete("github_app_error");
+  window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+}
+
+/** myrmidon(GITHUB-APP-MANIFEST): POST the manifest to github.com — the
+ * official way GitHub accepts a manifest (a POST form, not a JSON call). */
+export function submitManifestForm(manifestUrl: string, manifest: Record<string, unknown>): void {
+  const form = document.createElement("form");
+  form.method = "POST";
+  form.action = manifestUrl;
+  const input = document.createElement("input");
+  input.type = "hidden";
+  input.name = "manifest";
+  input.value = JSON.stringify(manifest);
+  form.appendChild(input);
+  document.body.appendChild(form);
+  form.submit();
+}
+
+type ManifestDialogState =
+  | { open: false }
+  | { open: true; ownerKind: "user" | "org"; orgLogin: string; name: string; description: string };
+
+/** myrmidon(GITHUB-APP-MANIFEST): the description pre-filled in the create
+ * dialog, in the exact English wording the GitHub App page should carry. The
+ * Russian rendering sits next to the field (descriptionDefaultRu). */
+export const DEFAULT_APP_DESCRIPTION =
+  "Lets the agents of your Myrmidon server push branches and open pull requests in the repositories you choose. Tokens are issued by your own Myrmidon server; no third-party service is involved.";
+
 export function GitHubSharedIdentityPanelView({
   view,
   agents,
@@ -87,6 +146,12 @@ export function GitHubSharedIdentityPanelView({
   pending,
   error,
   newId = newEntryId,
+  onBeginAppManifest,
+  manifestPending = false,
+  manifestError = null,
+  onInstallApp,
+  installPendingEntryId = null,
+  companyName = null,
 }: {
   view: GitHubSharedIdentityView | null | undefined;
   agents: readonly Pick<Agent, "id" | "name" | "role">[];
@@ -95,7 +160,17 @@ export function GitHubSharedIdentityPanelView({
   pending: boolean;
   error: string | null;
   newId?: () => string;
+  // myrmidon(GITHUB-APP-MANIFEST): optional manifest-flow hooks. The view
+  // renders the Create GitHub App dialog against these; the container wires
+  // them to the server. Tests of the view inject spies directly.
+  onBeginAppManifest?: (body: BeginAppManifestBody) => void;
+  manifestPending?: boolean;
+  manifestError?: string | null;
+  onInstallApp?: (entryId: string) => void;
+  installPendingEntryId?: string | null;
+  companyName?: string | null;
 }) {
+  const { t } = useTranslation();
   // The draft follows a new server view (after load or save): derived state,
   // reset during render when the view object changes.
   const [state, setState] = useState<{ view: GitHubSharedIdentityView | null | undefined; draft: Draft | null }>(
@@ -111,6 +186,29 @@ export function GitHubSharedIdentityPanelView({
   );
   const updateApp = (id: string, patch: Partial<AppDraft>) =>
     setDraft((current) => ({ ...current, apps: current.apps.map((app) => (app.id === id ? { ...app, ...patch } : app)) }));
+
+  const defaultAppName = companyName ? `Myrmidon — ${companyName}` : "Myrmidon";
+  const [manifestDialog, setManifestDialog] = useState<ManifestDialogState>({ open: false });
+  const openManifestDialog = () =>
+    setManifestDialog({
+      open: true,
+      ownerKind: "user",
+      orgLogin: "",
+      name: defaultAppName,
+      description: DEFAULT_APP_DESCRIPTION,
+    });
+  const submitManifestDialog = () => {
+    if (!manifestDialog.open || !onBeginAppManifest) return;
+    const body: BeginAppManifestBody = {
+      ownerKind: manifestDialog.ownerKind,
+      ...(manifestDialog.ownerKind === "org" && manifestDialog.orgLogin.trim()
+        ? { orgLogin: manifestDialog.orgLogin.trim() }
+        : {}),
+      name: manifestDialog.name.trim(),
+      ...(manifestDialog.description.trim() ? { description: manifestDialog.description.trim() } : {}),
+    };
+    onBeginAppManifest(body);
+  };
 
   return (
     <section className="space-y-4" data-testid="myrmidon-github-shared-identity">
@@ -138,6 +236,16 @@ export function GitHubSharedIdentityPanelView({
       {error ? (
         <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
           {error}
+        </div>
+      ) : null}
+
+      {manifestError ? (
+        <div
+          className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive"
+          data-testid="github-app-manifest-error"
+        >
+          {manifestError}
+          <p className="mt-1 text-xs">{t("githubSharedIdentity.manifest.uniqueNameHint")}</p>
         </div>
       ) : null}
 
@@ -221,34 +329,134 @@ export function GitHubSharedIdentityPanelView({
                     ))}
                   </div>
                 </fieldset>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setDraft((current) => ({ ...current, apps: current.apps.filter((candidate) => candidate.id !== app.id) }))}
-                >
-                  <Trash2 className="mr-1 h-3.5 w-3.5" /> Remove {label}
-                </Button>
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setDraft((current) => ({ ...current, apps: current.apps.filter((candidate) => candidate.id !== app.id) }))}
+                    >
+                      <Trash2 className="mr-1 h-3.5 w-3.5" /> Remove {label}
+                    </Button>
+                    {app.slug && onInstallApp ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={installPendingEntryId === app.id}
+                        onClick={() => onInstallApp(app.id)}
+                      >
+                        {installPendingEntryId === app.id
+                          ? t("githubSharedIdentity.manifest.installing")
+                          : t("githubSharedIdentity.manifest.installButton")}
+                      </Button>
+                    ) : null}
+                  </div>
+                  {app.slug && onInstallApp ? (
+                    <p className="text-xs text-muted-foreground">{t("githubSharedIdentity.manifest.installHint")}</p>
+                  ) : null}
+                </div>
               </div>
             );
           })}
 
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() =>
-              setDraft((current) => ({
-                ...current,
-                apps: [
-                  ...current.apps,
-                  { id: newId(), name: "", appId: "", privateKeySecretId: "", installationId: "", roles: "", agentIds: [], allowedRepos: "" },
-                ],
-              }))
-            }
-          >
-            <Plus className="mr-1 h-3.5 w-3.5" /> Add GitHub App
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() =>
+                setDraft((current) => ({
+                  ...current,
+                  apps: [
+                    ...current.apps,
+                    { id: newId(), name: "", appId: "", privateKeySecretId: "", installationId: "", roles: "", agentIds: [], allowedRepos: "" },
+                  ],
+                }))
+              }
+            >
+              <Plus className="mr-1 h-3.5 w-3.5" /> Add GitHub App
+            </Button>
+            {onBeginAppManifest ? (
+              <Button type="button" variant="outline" size="sm" onClick={openManifestDialog}>
+                <Plus className="mr-1 h-3.5 w-3.5" /> {t("githubSharedIdentity.manifest.createButton")}
+              </Button>
+            ) : null}
+          </div>
+
+          {manifestDialog.open ? (
+            <div className="space-y-3 rounded-md border border-border p-4" data-testid="github-app-manifest-dialog">
+              <h3 className="text-sm font-semibold">{t("githubSharedIdentity.manifest.dialogTitle")}</h3>
+              <p className="text-xs text-muted-foreground">{t("githubSharedIdentity.manifest.dialogHint")}</p>
+              <fieldset className="grid gap-1 text-sm">
+                <legend>{t("githubSharedIdentity.manifest.ownerLabel")}</legend>
+                <label className="flex items-center gap-2">
+                  <input
+                    type="radio"
+                    name="github-app-owner-kind"
+                    aria-label={t("githubSharedIdentity.manifest.ownerUser")}
+                    checked={manifestDialog.ownerKind === "user"}
+                    onChange={() => setManifestDialog({ ...manifestDialog, ownerKind: "user" })}
+                  />
+                  {t("githubSharedIdentity.manifest.ownerUser")}
+                </label>
+                <label className="flex items-center gap-2">
+                  <input
+                    type="radio"
+                    name="github-app-owner-kind"
+                    aria-label={t("githubSharedIdentity.manifest.ownerOrg")}
+                    checked={manifestDialog.ownerKind === "org"}
+                    onChange={() => setManifestDialog({ ...manifestDialog, ownerKind: "org" })}
+                  />
+                  {t("githubSharedIdentity.manifest.ownerOrg")}
+                </label>
+                {manifestDialog.ownerKind === "org" ? (
+                  <label className="grid gap-1">
+                    {t("githubSharedIdentity.manifest.orgLoginLabel")}
+                    <Input
+                      aria-label={t("githubSharedIdentity.manifest.orgLoginLabel")}
+                      value={manifestDialog.orgLogin}
+                      onChange={(event) => setManifestDialog({ ...manifestDialog, orgLogin: event.target.value })}
+                    />
+                  </label>
+                ) : null}
+              </fieldset>
+              <label className="grid gap-1 text-sm">
+                {t("githubSharedIdentity.manifest.nameLabel")}
+                <Input
+                  aria-label={t("githubSharedIdentity.manifest.nameLabel")}
+                  value={manifestDialog.name}
+                  onChange={(event) => setManifestDialog({ ...manifestDialog, name: event.target.value })}
+                />
+              </label>
+              <label className="grid gap-1 text-sm">
+                {t("githubSharedIdentity.manifest.descriptionLabel")}
+                <Textarea
+                  aria-label={t("githubSharedIdentity.manifest.descriptionLabel")}
+                  value={manifestDialog.description}
+                  onChange={(event) => setManifestDialog({ ...manifestDialog, description: event.target.value })}
+                  rows={3}
+                />
+                <span className="text-xs text-muted-foreground">{t("githubSharedIdentity.manifest.descriptionDefaultRu")}</span>
+              </label>
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={manifestPending || !manifestDialog.name.trim()}
+                  onClick={submitManifestDialog}
+                >
+                  {manifestPending
+                    ? t("githubSharedIdentity.manifest.creating")
+                    : t("githubSharedIdentity.manifest.submitButton")}
+                </Button>
+                <Button type="button" variant="ghost" size="sm" onClick={() => setManifestDialog({ open: false })}>
+                  {t("githubSharedIdentity.manifest.cancel")}
+                </Button>
+              </div>
+            </div>
+          ) : null}
 
           <label className="grid max-w-md gap-1 text-sm">
             Commit email domain of the agents (empty: a reserved placeholder domain)
@@ -272,10 +480,13 @@ export function GitHubSharedIdentityPanelView({
 }
 
 export function GitHubSharedIdentityPanel() {
-  const { selectedCompanyId } = useCompany();
+  const { t } = useTranslation();
+  const { selectedCompanyId, selectedCompany } = useCompany();
   const companyId = selectedCompanyId ?? "";
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
+  const [manifestError, setManifestError] = useState<string | null>(null);
+  const [installPendingEntryId, setInstallPendingEntryId] = useState<string | null>(null);
   const query = useQuery({
     queryKey: githubSharedIdentityQueryKey(companyId),
     queryFn: () => githubSharedIdentityApi.get(companyId),
@@ -302,6 +513,44 @@ export function GitHubSharedIdentityPanel() {
     },
   });
 
+  // myrmidon(GITHUB-APP-MANIFEST): outcome of the server callback, read once
+  // from the page query string (?github_app_created=1 / ?github_app_error=...).
+  // The parameters are removed from the URL afterwards so a reload does not
+  // repeat the notice. Derived state pattern: process each unseen search
+  // during render and remember the search we handled.
+  const [callbackHandled, setCallbackHandled] = useState<{ search: string | null; success: boolean }>({
+    search: null,
+    success: false,
+  });
+  if (callbackHandled.search !== window.location.search) {
+    const notice = readManifestCallbackNotice(window.location.search);
+    clearManifestCallbackQuery();
+    // Mark the cleaned search as handled: replaceState above changed
+    // location.search, so the marker must be the post-clean value.
+    const cleanedSearch = window.location.search;
+    if (notice?.kind === "created") {
+      void queryClient.invalidateQueries({ queryKey: githubSharedIdentityQueryKey(companyId) });
+      setCallbackHandled({ search: cleanedSearch, success: true });
+    } else {
+      if (notice?.kind === "error") setManifestError(notice.message);
+      setCallbackHandled({ search: cleanedSearch, success: false });
+    }
+  }
+  const callbackSuccess = callbackHandled.success;
+
+  const beginManifest = useMutation({
+    mutationFn: (body: BeginAppManifestBody) => githubSharedIdentityApi.beginAppManifest(companyId, body),
+    onMutate: () => setManifestError(null),
+    onError: (err) =>
+      setManifestError(
+        err instanceof Error ? err.message : t("githubSharedIdentity.manifest.beginFailed"),
+      ),
+    onSuccess: (response) => {
+      setManifestError(null);
+      submitManifestForm(response.manifestUrl, response.manifest);
+    },
+  });
+
   if (!companyId) return null;
   if (query.error) {
     return (
@@ -311,13 +560,41 @@ export function GitHubSharedIdentityPanel() {
     );
   }
   return (
-    <GitHubSharedIdentityPanelView
-      view={query.data}
-      agents={agentsQuery.data ?? []}
-      secrets={(secretsQuery.data ?? []).filter((secret) => secret.scope === "company")}
-      onSave={(body) => save.mutate(body)}
-      pending={save.isPending}
-      error={error}
-    />
+    <>
+      {callbackSuccess ? (
+        <div
+          className="mb-4 rounded-md border border-border bg-muted/40 px-3 py-2 text-sm"
+          data-testid="github-app-created-notice"
+        >
+          {t("githubSharedIdentity.manifest.createdNotice")}
+        </div>
+      ) : null}
+      <GitHubSharedIdentityPanelView
+        view={query.data}
+        agents={agentsQuery.data ?? []}
+        secrets={(secretsQuery.data ?? []).filter((secret) => secret.scope === "company")}
+        onSave={(body) => save.mutate(body)}
+        pending={save.isPending}
+        error={error}
+        companyName={selectedCompany?.name ?? null}
+        onBeginAppManifest={(body) => beginManifest.mutate(body)}
+        manifestPending={beginManifest.isPending}
+        manifestError={manifestError}
+        onInstallApp={(entryId) => {
+          setInstallPendingEntryId(entryId);
+          setManifestError(null);
+          githubSharedIdentityApi
+            .getAppInstallUrl(companyId, entryId)
+            .then(({ installUrl }) => window.location.assign(installUrl))
+            .catch((err: unknown) =>
+              setManifestError(
+                err instanceof Error ? err.message : t("githubSharedIdentity.manifest.installFailed"),
+              ),
+            )
+            .finally(() => setInstallPendingEntryId(null));
+        }}
+        installPendingEntryId={installPendingEntryId}
+      />
+    </>
   );
 }
