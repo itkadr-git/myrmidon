@@ -1,6 +1,4 @@
 {
-  "id": "81da3610-f549-45a6-a01c-afe527d72240",
-  "prevId": "0302_heartbeat_runs_company_issue_coalesce_created_index",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -23485,8 +23483,8 @@
             },
             {
               "expression": "(coalesce(\"native_issue_id\"::text, \"context_snapshot\" ->> 'issueId'))",
-              "isExpression": true,
               "asc": true,
+              "isExpression": true,
               "nulls": "last"
             },
             {
@@ -50770,8 +50768,10 @@
   "policies": {},
   "views": {},
   "_meta": {
-    "columns": {},
     "schemas": {},
-    "tables": {}
-  }
+    "tables": {},
+    "columns": {}
+  },
+  "id": "783f5cb0-9a69-4050-a923-2dd0760b181a",
+  "prevId": "0302_heartbeat_runs_company_issue_coalesce_created_index"
 }
