@@ -183,5 +183,23 @@ export const heartbeatRuns = pgTable(
       table.createdAt.desc(),
       table.id.desc(),
     ).where(sql`${table.runtimeMode} = 'legacy' and ${table.status} in ('failed', 'timed_out', 'interrupted', 'cancelled')`),
+    // myrmidon(DB-AUDIT-INDEXES): attention-feed lookup (server/src/services/
+    // attention.ts) filters company + agent id + created_at window. The only
+    // agent-keyed index is on started_at, so the planner scanned that index and
+    // filtered created_at row by row. See the db audit, finding P3.
+    companyAgentCreatedIdx: index("heartbeat_runs_company_agent_created_idx").on(
+      table.companyId,
+      table.agentId,
+      table.createdAt,
+    ),
+    // myrmidon(DB-AUDIT-INDEXES): chat-reconcile milestone projection joins
+    // context_snapshot->>'issueId' to chat conversations and filters status.
+    // The 0209 sibling index orders by created_at and carries no status column,
+    // so the join+status filter had no usable index. See the db audit, P5.
+    companyCtxIssueStatusIdx: index("heartbeat_runs_ctx_issue_status_idx").on(
+      table.companyId,
+      sql`(${table.contextSnapshot} ->> 'issueId')`,
+      table.status,
+    ),
   }),
 );
