@@ -9,8 +9,14 @@ import (
 )
 
 // RuntimeContractLabel is the label an image carries when it is built for the
-// bot runtime (template.ts).
+// bot runtime (template.ts). The values mirror SUPPORTED_BOT_RUNTIME_CONTRACTS
+// in template.ts: "1" (the contract of the three-volume images and, since
+// BOT-DISK-D/F shipped under it, also of the transition images — the scope
+// label separates them) and "2" (the single-mount contract introduced when the
+// volume layout was versioned).
 const RuntimeContractLabel = "myrmidon.bot-runtime.contract"
+
+var supportedRuntimeContracts = map[string]bool{"1": true, "2": true}
 
 // BotUser is Config.User of an allowed image.
 const BotUser = "10001:10001"
@@ -45,7 +51,7 @@ func CheckImage(info *ImageInfo) *deny.Error {
 	bad := func(detail string) *deny.Error {
 		return deny.New(deny.ImageContract).WithDetail(detail)
 	}
-	if info.Labels[RuntimeContractLabel] != "1" {
+	if !supportedRuntimeContracts[info.Labels[RuntimeContractLabel]] {
 		return bad("contract_label")
 	}
 	if info.User != BotUser {

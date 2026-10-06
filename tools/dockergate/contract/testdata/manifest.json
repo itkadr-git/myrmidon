@@ -85,6 +85,42 @@
    "pidsLimit": 64
   },
   {
+   "id": "legacy-bot-plain",
+   "memoryMb": 1024,
+   "cpus": 1,
+   "pidsLimit": 512,
+   "form": "bot",
+   "name": "myrmidon-bot-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+   "file": "bodies/legacy-bot-plain.json"
+  },
+  {
+   "id": "legacy-bot-fractional-cpus",
+   "memoryMb": 768,
+   "cpus": 0.25,
+   "pidsLimit": 256,
+   "form": "bot",
+   "name": "myrmidon-bot-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+   "file": "bodies/legacy-bot-fractional-cpus.json"
+  },
+  {
+   "id": "legacy-bot-fractional-both",
+   "memoryMb": 1536.5,
+   "cpus": 2.3,
+   "pidsLimit": 1024,
+   "form": "bot",
+   "name": "myrmidon-bot-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+   "file": "bodies/legacy-bot-fractional-both.json"
+  },
+  {
+   "id": "legacy-bot-tenth",
+   "memoryMb": 512,
+   "cpus": 0.1,
+   "pidsLimit": 64,
+   "form": "bot",
+   "name": "myrmidon-bot-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+   "file": "bodies/legacy-bot-tenth.json"
+  },
+  {
    "id": "helper-prepare",
    "form": "helper-prepare",
    "name": "myrmidon-bot-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.helper",

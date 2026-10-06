@@ -82,6 +82,18 @@ type Create struct {
 // are links made by the image that resolve into it.
 const BotMountTarget = "/bot"
 
+// LegacyBotBindsAreAllowed: a LEGACY-layout bot (a contract "1" image without
+// the scope label — an image built for the three separate volumes) gets the
+// three narrow binds as its own container binds, in the order Binds() returns:
+// the same host directories, mounted directly. Such an image resolves
+// HERMES_HOME through those mounts; under the single-mount form its /data is
+// an empty anonymous volume and it crash-loops (the 1.6.5-rc.1 rollout). The
+// driver picks the form from the image's own contract
+// (server/src/myrmidon/bot-containers/template.ts botVolumeLayout); the gate
+// accepts both, so an old card keeps a working container under a newer board.
+// The three-bind form is recognised only in the order Binds() builds it, and
+// only as the exact first three entries of a bot body.
+
 // BotBind is the one bind of a bot container: its own directory under the
 // volume root.
 func BotBind(volumeRoot, botKey string) string {
@@ -126,6 +138,13 @@ func ScopeHelperBinds(scopeRoot, instance, botKey string, withInstance bool) []s
 		binds = append(binds, scopeRoot+"/"+instance+":"+ScopeHelperTarget)
 	}
 	return binds
+}
+
+// legacyBot is the i-th bind of a LEGACY-layout bot (0 hermes, 1 workspace,
+// 2 scratch): the same three host directories the helper binds, mounted into
+// the bot container itself at /data/hermes, /workspace and /scratch.
+func legacyBot(volumeRoot, botKey string, i int) string {
+	return Binds(volumeRoot, botKey)[i]
 }
 
 // scopeEnrolled reports whether the bot may bind the instance.
@@ -262,6 +281,11 @@ func parseBotBinds(v *jsonx.Value, path string, env *Env, botKey string, shared 
 			return nil, "", deny.Field(deny.MountSourceNotAllowed, path, []byte(got[0]))
 		}
 		base = []string{got[0]}
+	} else if len(got) >= 3 && got[0] == legacyBot(env.VolumeRoot, botKey, 0) && got[1] == legacyBot(env.VolumeRoot, botKey, 1) && got[2] == legacyBot(env.VolumeRoot, botKey, 2) {
+		// The legacy three-bind form (contract "1" images): exactly the first
+		// three entries in the driver's order, then the same extras the
+		// single-mount form may carry.
+		base = append([]string(nil), got[:3]...)
 	} else {
 		base = []string{BotBind(env.VolumeRoot, botKey)}
 		if got[0] != base[0] {

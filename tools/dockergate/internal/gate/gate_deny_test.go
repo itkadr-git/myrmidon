@@ -1066,7 +1066,10 @@ func TestRedTeam_RT1_5_CreateBodiesOnTheWire(t *testing.T) {
 		c("networking config", "bot-plain", "", `"HostConfig":`, `"NetworkingConfig":{},"HostConfig":`, deny.JSONUnknownKey),
 		c("docker socket as a bind", "bot-plain", "", scratch, `"/var/run/docker.sock:/bot"`, deny.BindsMismatch),
 		c("host root as a bind", "bot-plain", "", hermes, `"/:/bot"`, deny.BindsMismatch),
-		c("the three narrow binds on a bot (the helper layout)", "bot-plain", "", hermes, `"`+root+"/"+k+`/hermes:/data/hermes","`+root+"/"+k+`/workspace:/workspace","`+root+"/"+k+`/scratch:/scratch"`, deny.BindsMismatch),
+		// myrmidon(1.6.5-BOT-LAYOUT-V): the three narrow binds in the driver's
+		// order are the LEGACY bot form and allowed (see the legacy bodies in the
+		// contract); out of order they are not a body the driver can ever build.
+		c("the legacy binds out of order", "bot-plain", "", hermes, `"`+root+"/"+k+`/workspace:/workspace","`+root+"/"+k+`/hermes:/data/hermes","`+root+"/"+k+`/scratch:/scratch"`, deny.BindsMismatch),
 		c("fourth bind", "bot-plain", "", scratch+`]`, scratch+`,"/var/run/docker.sock:/var/run/docker.sock"]`, deny.BindsMismatch),
 		c("image not in the list", "bot-plain", "", `"Image":"`+m.Image, `"Image":"`+otherImg, deny.ImageNotAllowed),
 		c("image by tag", "bot-plain", "", `"Image":"`+m.Image, `"Image":"ghcr.io/itkadr-git/myrmidon-hermes:latest`, deny.ImageNotAllowed),

@@ -23,6 +23,14 @@
    ]
   },
   {
+   "id": "A3",
+   "method": "GET",
+   "template": "containers/{name}/archive?path=%2Fdata%2Fhermes%2F.myrmidon%2Fapplied.json",
+   "suffixes": [
+    ""
+   ]
+  },
+  {
    "id": "A4",
    "method": "POST",
    "template": "containers/create?name={name}",
@@ -108,6 +116,14 @@
    "id": "A13",
    "method": "GET",
    "template": "containers/{name}/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fclone-hygiene.json",
+   "suffixes": [
+    ""
+   ]
+  },
+  {
+   "id": "A13",
+   "method": "GET",
+   "template": "containers/{name}/archive?path=%2Fdata%2Fhermes%2F.myrmidon%2Fclone-hygiene.json",
    "suffixes": [
     ""
    ]

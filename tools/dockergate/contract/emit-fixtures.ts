@@ -92,6 +92,22 @@ for (const spec of specs) {
     manifest.bodies.push({ id, form: "bot", name: `myrmidon-bot-${BOT_KEY}${suffix}`, file: `bodies/${id}.json`, ...spec });
   }
 }
+// The LEGACY volume layout (contract "1" images without the scope label —
+// 1.6.4 and earlier): the same bot specs, but the three separate binds. The
+// gate must accept both forms byte for byte (1.6.5-rc.1: a single-mount body
+// under an old image crash-loops the bot).
+for (const spec of specs) {
+  const body = buildCreateContainerRequestBody(
+    { botKey: BOT_KEY, image: IMAGE, memoryMb: spec.memoryMb, cpus: spec.cpus, pidsLimit: spec.pidsLimit, network: NETWORK },
+    config,
+    undefined,
+    false,
+    undefined,
+    "legacy",
+  );
+  write(`bodies/legacy-${spec.id}.json`, JSON.stringify(body));
+  manifest.bodies.push({ ...spec, id: `legacy-${spec.id}`, form: "bot", name: `myrmidon-bot-${BOT_KEY}`, file: `bodies/legacy-${spec.id}.json` });
+}
 for (const image of [IMAGE, IMAGE_ID]) {
   write(`bodies/helper-prepare${image === IMAGE ? "" : "-by-id"}.json`, JSON.stringify(
     buildHelperContainerRequestBody({ botKey: BOT_KEY, image, role: "prepare-volumes", script: buildPrepareVolumesScript(), volumeRoot: VOLUME_ROOT }),
@@ -312,7 +328,10 @@ const server = http.createServer((req, res) => {
     };
     const parts = url.pathname.split("/").filter(Boolean); // v1.45, containers, <ref>, <action>
     if (parts[1] === "images" && parts[parts.length - 1] === "json") {
-      return send(200, JSON.stringify({ Id: IMAGE_ID, Config: { Labels: { "myrmidon.bot-runtime.contract": "1" }, User: "10001:10001", Env: ["PATH=/usr/local/bin:/usr/bin"] } }));
+      // Contract "2": the traffic contract records the modern board with a
+      // single-mount image; the LEGACY bodies join the contract as static
+      // fixtures (bodies/legacy-*.json) and are replayed against the gate.
+      return send(200, JSON.stringify({ Id: IMAGE_ID, Config: { Labels: { "myrmidon.bot-runtime.contract": "2" }, User: "10001:10001", Env: ["PATH=/usr/local/bin:/usr/bin"] } }));
     }
     if (parts[1] !== "containers") return send(404, JSON.stringify({ message: "not found" }));
     if (parts[2] === "create") {

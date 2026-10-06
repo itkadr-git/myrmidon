@@ -194,6 +194,12 @@ export interface BotVolumeMount {
  */
 export const BOT_ROOT_MOUNT = "/bot";
 
+/** Where a LEGACY-layout (contract "1") image mounts its hermes volume, and the
+ *  root {@link botRealRootFromBinds} answers for such a container: hermes is
+ *  mounted directly at /data/hermes, so `${root}/hermes` resolves there. */
+const HERMES_MOUNT_PATH = "/data/hermes";
+export const LEGACY_BOT_REAL_ROOT = "/data";
+
 /**
  * myrmidon(BOT-DISK-F): the mount of a member of a SHARED isolation-scope
  * instance. Instead of `<volumeRoot>/<botKey>:/bot` the container gets ONE bind,
@@ -297,10 +303,22 @@ export function buildHelperBinds(
   return binds;
 }
 
-/** The bot's real hermes directory inside its container, from the binds the container was created with. */
+/**
+ * The bot's real root inside its container, from the binds the container was
+ * created with: the parent directory of `hermes` under which
+ * `${root}/hermes/.myrmidon/...` is readable. A single-layout bot has its whole
+ * tree at {@link BOT_ROOT_MOUNT}; a member of a shared scope instance at
+ * `${BOT_SCOPE_MOUNT}/<botKey>`; a LEGACY-layout bot (contract "1", the three
+ * separate binds) has hermes mounted directly at `/data/hermes`, so its root
+ * is `/data`. The answer keys off the container's own binds — never off the
+ * board's current template — because the marker and the clone report live where
+ * the running container's image reads them.
+ */
 export function botRealRootFromBinds(binds: readonly string[] | undefined, botKey: string): string {
-  const shared = (binds ?? []).some((bind) => bind.endsWith(`:${BOT_SCOPE_MOUNT}`));
-  return shared ? `${BOT_SCOPE_MOUNT}/${botKey}` : BOT_ROOT_MOUNT;
+  const list = binds ?? [];
+  if (list.some((bind) => bind.endsWith(`:${BOT_SCOPE_MOUNT}`))) return `${BOT_SCOPE_MOUNT}/${botKey}`;
+  if (list.some((bind) => bind.endsWith(`:${HERMES_MOUNT_PATH}`))) return LEGACY_BOT_REAL_ROOT;
+  return BOT_ROOT_MOUNT;
 }
 
 /** The shared scope instance directory name a container's binds name, or null for an isolated one. */
@@ -329,7 +347,12 @@ export function scopeDirNameFromBinds(binds: readonly string[] | undefined, scop
  *  its container path is exactly the reserved DEVBUILD_SSH_CONTAINER_PATH (so it
  *  cannot go through validateExtraMounts, which rejects reserved paths for card
  *  mounts on purpose), but its source is held to the same
- *  MYRMIDON_BOT_MOUNT_SOURCES check as any card mount. */
+ *  MYRMIDON_BOT_MOUNT_SOURCES check as any card mount.
+ *  `volumeLayout` (default "single") is the bind layout the bot's image contract
+ *  pins — "legacy" puts the three separate binds first, "single" its one
+ *  directory at {@link BOT_ROOT_MOUNT}; everything after them (extras, driver
+ *  mount, cache) is identical under both (template.ts botVolumeLayout). A shared
+ *  `scope` is only ever single layout. */
 export function buildBinds(
   volumeRoot: string,
   botKey: string,
@@ -346,6 +369,8 @@ export function buildBinds(
     driverMount?: BotExtraMount | null;
     /** myrmidon(BOT-DISK-F): a member of a shared scope instance binds the instance directory instead of its own. */
     scope?: BotScopeMount;
+    /** The bind layout the image's runtime contract declares (legacy = three binds, single = one /bot bind). */
+    volumeLayout?: BotVolumeLayout;
   } = {},
 ): string[] {
   validateBotKey(botKey);
@@ -353,11 +378,14 @@ export function buildBinds(
   validateExtraMounts(mounts, extra.allowedSources ?? []);
   const driverBind = extra.driverMount ? [validateDriverMount(extra.driverMount, extra.allowedSources ?? [])] : [];
   if (extra.scope) assertScopeMount(extra.scope);
+  const legacy = extra.volumeLayout === "legacy" && !extra.scope;
   const binds = [
-    extra.scope ? `${extra.scope.scopeRoot}/${extra.scope.dirName}:${BOT_SCOPE_MOUNT}` : `${volumeRoot}/${botKey}:${BOT_ROOT_MOUNT}`,
+    legacy
+      ? BOT_VOLUME_MOUNTS.map((mount) => `${volumeRoot}/${botKey}/${mount.hostSuffix}:${mount.containerPath}`)
+      : [extra.scope ? `${extra.scope.scopeRoot}/${extra.scope.dirName}:${BOT_SCOPE_MOUNT}` : `${volumeRoot}/${botKey}:${BOT_ROOT_MOUNT}`],
     ...mounts.map((mount) => `${mount.source}:${mount.containerPath}:ro`),
     ...driverBind,
-  ];
+  ].flat();
   const cache = extra.sharedPackageCachePath;
   if (cache) {
     const reason = unsafeAbsolutePathReason(cache);
@@ -620,30 +648,65 @@ export const BOT_LABEL_KEYS = {
  * created and started, and then crash-loop under its restart policy on every
  * pass.
  *
- * Contract "1":
+ * Both contracts say the same about the process:
  *  - the gateway runs as uid:gid 10001:10001 with HERMES_HOME=/data/hermes and
- *    /workspace as its working directory: the driver mounts exactly
- *    /data/hermes, /workspace and /scratch, owned by 10001, mode 0700;
+ *    /workspace as its working directory;
  *  - every secret the gateway needs, API_SERVER_KEY included, is read from
  *    $HERMES_HOME/.env (dotenv `KEY="value"` lines, read as data and never
  *    executed by a shell). The driver never puts a secret in the container's
  *    environment, where `docker inspect` shows it, so the image must not
  *    require one there;
- *  - it writes nothing outside those three mounts, /tmp (a tmpfs) and volumes
+ *  - it writes nothing outside its bot tree, /tmp (a tmpfs) and volumes
  *    the image declares itself: the driver runs it with a read-only root
  *    filesystem;
  *  - /bin/sh with find, mv (with -T), mkdir -p, rm, chmod, chown and dirname:
  *    the driver's helper containers run its scripts with the image's own shell.
+ *
+ * They differ in ONE thing, the volume layout the driver must mount (this is
+ * the versioning the 1.6.5-rc.1 rollout defect was missing: the layout changed
+ * under contract "1" without changing it, and the board recreated 1.6.4
+ * containers with the new one-mount template — the old image then found its
+ * $HERMES_HOME an empty anonymous volume and crash-looped on
+ * "API_SERVER_KEY is required"):
+ *
+ * Contract "1" — the LEGACY layout ("legacy"): three separate binds,
+ *    `<volumeRoot>/<botKey>/{hermes,workspace,scratch}` mounted at
+ *    /data/hermes, /workspace and /scratch, owned by 10001, mode 0700. An
+ *    image built for this contract resolves HERMES_HOME through the real
+ *    mount, so the one-mount layout would leave it writing into an anonymous
+ *    volume. Old release images (1.6.4) keep working under a newer board:
+ *    their containers are recreated under the layout they were built for.
+ * Contract "2" — the SINGLE-mount layout ("single", BOT-DISK-D): the bot's
+ *    whole writable tree, `<volumeRoot>/<botKey>`, is ONE bind at
+ *    {@link BOT_ROOT_MOUNT} (`/bot`); /data/hermes, /workspace and /scratch
+ *    are links made by the image into it, so hard links (pnpm's node_modules
+ *    into its store) work within the tree. A member of a shared isolation
+ *    scope ({@link BOT_RUNTIME_SCOPE_LABEL}, BOT-DISK-F) is only ever single
+ *    layout: it binds the instance directory at {@link BOT_SCOPE_MOUNT}.
+ *
+ * Transition rule: images built between the layout change and this versioning
+ * carry contract "1" AND the scope label (BOT-DISK-F shipped with the single
+ * mount): the scope label is the only thing that tells them apart from a
+ * three-volume release image, so a contract "1" image that declares it is
+ * handled as single layout. A contract "1" image without it gets the legacy
+ * binds — the three host directories it mounts are the same ones /bot holds,
+ * so even a BOT-DISK-D-era image boots under them (its /data links are
+ * shadowed by the mounts), and a profile apply needs no /bot at all.
  */
 export const BOT_RUNTIME_CONTRACT_LABEL = "myrmidon.bot-runtime.contract";
-export const SUPPORTED_BOT_RUNTIME_CONTRACTS: readonly string[] = ["1"];
+export const LEGACY_BOT_RUNTIME_CONTRACT = "1";
+export const SINGLE_BOT_RUNTIME_CONTRACT = "2";
+export const SUPPORTED_BOT_RUNTIME_CONTRACTS: readonly string[] = [LEGACY_BOT_RUNTIME_CONTRACT, SINGLE_BOT_RUNTIME_CONTRACT];
 
-/** Throws unless the image labels (`Config.Labels` of `GET /images/{name}/json`,
- *  which Docker returns as null for an image without labels) declare a
- *  supported bot runtime contract. */
-export function assertBotRuntimeContract(image: string, labels: Record<string, string> | null | undefined): void {
+/** The volume layout an image's contract pins the driver to (see above). */
+export type BotVolumeLayout = "legacy" | "single";
+
+/** The contract an image declares, or a clear refusal. Never returns an
+ *  unsupported value: an image without the label or with a contract this
+ *  driver does not know is refused before anything is created. */
+export function declaredBotRuntimeContract(image: string, labels: Record<string, string> | null | undefined): string {
   const declared = labels?.[BOT_RUNTIME_CONTRACT_LABEL];
-  if (declared !== undefined && SUPPORTED_BOT_RUNTIME_CONTRACTS.includes(declared)) return;
+  if (declared !== undefined && SUPPORTED_BOT_RUNTIME_CONTRACTS.includes(declared)) return declared;
   const wanted = SUPPORTED_BOT_RUNTIME_CONTRACTS.map((version) => `${BOT_RUNTIME_CONTRACT_LABEL}=${version}`).join(" or ");
   throw new BotContainerTemplateError(
     declared === undefined
@@ -651,6 +714,23 @@ export function assertBotRuntimeContract(image: string, labels: Record<string, s
           "nothing is created from an image not known to take API_SERVER_KEY from $HERMES_HOME/.env"
       : `image "${image}" declares bot runtime contract "${declared}", this driver supports only ${wanted}`,
   );
+}
+
+/** The volume layout the driver must mount for an image: contract "2" is the
+ *  single mount; contract "1" is the legacy three-volume layout, except for
+ *  images that also declare the scope label, which are BOT-DISK-D/F builds
+ *  from before the layout was versioned and take the single mount (see the
+ *  contract docstring). Throws on an image without a supported contract. */
+export function botVolumeLayout(image: string, labels: Record<string, string> | null | undefined): BotVolumeLayout {
+  if (declaredBotRuntimeContract(image, labels) === SINGLE_BOT_RUNTIME_CONTRACT) return "single";
+  return labels?.[BOT_RUNTIME_SCOPE_LABEL] === "1" ? "single" : "legacy";
+}
+
+/** Throws unless the image labels (`Config.Labels` of `GET /images/{name}/json`,
+ *  which Docker returns as null for an image without labels) declare a
+ *  supported bot runtime contract. */
+export function assertBotRuntimeContract(image: string, labels: Record<string, string> | null | undefined): void {
+  declaredBotRuntimeContract(image, labels);
 }
 
 /**
