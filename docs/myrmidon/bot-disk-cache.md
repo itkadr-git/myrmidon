@@ -1,4 +1,4 @@
-# Shared package cache and git objects for bot containers (1.6.1-BOT-DISK-B, 1.6.2-BOT-DISK-C, BOT-DISK-D, BOT-DISK-F)
+# Shared package cache and git objects for bot containers (1.6.1-BOT-DISK-B, 1.6.2-BOT-DISK-C, BOT-DISK-D, BOT-DISK-F, 1.6.5 BOT-DISK-G)
 
 Development bots download the same pnpm packages, Go modules and Gradle
 dependencies again and again, each into its own volume. With the shared package
@@ -74,6 +74,65 @@ The directory must not be inside the bot volume root.
 A package cache keeps downloads once, but a development bot also holds several
 full clones of the same repositories under `/workspace`, each with its own
 object database and its own `node_modules`. Three parts remove that.
+
+### One object store per bot and per scope (1.6.5 BOT-DISK-G)
+
+A bot terminal rebuilds `PATH` without `/opt/paperclip/bin`, where the wrapper
+above stood, so a bare `git clone` in a bot terminal ran the real git, and the
+wrapper itself could not start there (its shebang named `node` through the
+environment). The image now also shadows git with a symlink
+`/usr/local/bin/git` — an element every rebuilt `PATH` keeps — and the
+wrapper's shebang names the Node interpreter by its absolute path, so the
+wrapper answers and runs in a bot terminal.
+
+When the clone URL names a GitHub repository, the wrapper first tries the
+board's mirror (above); when the board has no mirror for it, it keeps a bare
+mirror of its own inside the bot's (or the scope's) mount and makes every
+clone after the first borrow its objects with `--reference-if-able`:
+
+- **Per bot:** `${MYRMIDON_GIT_LOCAL_MIRROR:-<HERMES_HOME>/.myrmidon/git-objects}`
+  (inside the bot's single mount, so no lifecycle ever reaps it).
+- **Per scope:** a member of a shared isolation scope gets
+  `MYRMIDON_GIT_LOCAL_MIRROR=/bot-scope/.git-objects` from the profile
+  compiler, so all members of the scope instance keep ONE store.
+
+The first clone of a repository pays one full fetch into the store; later
+clones store only their working tree and their own commits. A store mirror is
+refreshed at most once per `MYRMIDON_GIT_LOCAL_MIRROR_REFRESH_SEC` (default
+900; `0` never refetches) and the store keeps mirrors for at most
+`MYRMIDON_GIT_LOCAL_MIRROR_MAX` repositories (default 8); past that a clone of
+a new repository runs the real git unchanged. A mirror never prunes an object
+a clone may still borrow (`gc.pruneExpire=never`, automatic gc off), the
+board's mirror still wins when it is mounted, and every failure falls back to
+a plain clone.
+
+At every start the entrypoint runs a self-check of the whole chain: the
+`/usr/local/bin/git` shadow answers, the wrapper runs, the store is writable,
+and a real offline clone with `--reference-if-able` borrows objects. The
+result is written to `<HERMES_HOME>/.myrmidon/git-objects-check.json` and
+rides the clone-hygiene report as `gitRefCheck` (checks `usr-local-shadow`,
+`wrapper-runs`, `store-writable`, `reference-clone`). A failed check raises an
+attention card (source `bot_disk_lifecycle`, kind `gitref`) that names the
+check and the store path; the card goes away when the bot restarts and the
+self-check passes. `MYRMIDON_GIT_OBJECTS_CHECK=0` skips the self-check.
+
+A clone that borrows from the store names a path of this container in its
+`objects/info/alternates`, which does not exist on the build host — `devbuild`
+therefore follows the alternates: each borrowed mirror is synced once to the
+build host under `/srv/devcache/git`, and the synced copy's
+`objects/info/alternates` is repointed at it, so git commands in a remote
+build keep working against reference-cloned task workspaces.
+
+Switches (bot-side environment or the profile's `.env`):
+`MYRMIDON_GIT_LOCAL_MIRROR=""` turns the store off (every clone copies
+objects; the board's `/cache/git` mirror still applies when set);
+`MYRMIDON_GIT_LOCAL_MIRROR_REFRESH_SEC=0` never refetches the store;
+`MYRMIDON_GIT_OBJECTS_CHECK=0` skips the start-time self-check.
+
+Measured on this repository (full history): a fresh clone without a store is
+414 MB in 25.5 s with a 144 MB `.git`; with the store mirrored it is 272 MB in
+1.1 s with a 2 MB `.git` (the working tree of 270 MB is unchanged), and the
+store itself is 145 MB once per bot or scope.
 
 ### Shared git objects
 
