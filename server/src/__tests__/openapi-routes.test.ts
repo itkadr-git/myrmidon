@@ -33,6 +33,8 @@ const apiPrefixes: Record<string, string> = {
   "companies.ts": "/api/companies",
   "company-skills.ts": "/api",
   "company-skill-policy.ts": "/api",
+  // myrmidon(1.6.5 BASE-SKILLS): the company base-skills registry routes.
+  "company-base-skills.ts": "/api",
   "connection-intents.ts": "/api",
   "costs.ts": "/api",
   "dashboard.ts": "/api",

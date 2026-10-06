@@ -31,6 +31,12 @@ import {
 import {
   normalizePaperclipRunnerAdapterConfig,
 } from "@paperclipai/adapter-utils/server-utils";
+// myrmidon(1.6.5 BASE-SKILLS): the company base skills are merged into every
+// agent at creation, whichever path creates it.
+import {
+  mergeCompanyBaseSkillsIntoAgentConfig,
+  readCompanyBaseSkillKeys,
+} from "./company-base-skill-keys.js";
 import { conflict, notFound, unprocessable, badRequest } from "../errors.js";
 import {
   collectSecretRefs,
@@ -923,11 +929,20 @@ export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort 
         ? await secretsSvc.normalizeAdapterConfigForPersistence(companyId, data.adapterConfig, { adapterType })
         : {};
       const adapterConfig = normalizePaperclipRunnerAdapterConfig(adapterType, rawAdapterConfig);
+      // myrmidon(1.6.5 BASE-SKILLS): the company's base skills become part of
+      // the agent's own selection here, so a new agent has them from its first
+      // run on. Every creation path lands in this function — the hire/create
+      // routes, a template or built-in agent, an approved hire request — and a
+      // company without base skills is untouched.
+      const configWithBaseSkills = mergeCompanyBaseSkillsIntoAgentConfig(
+        adapterConfig,
+        await readCompanyBaseSkillKeys(db, companyId),
+      );
       // Run the server-enforced binding invariant after generic normalization
       // and before any database write. A create has no prior config.
       const bindingDecision = assertClaudeOAuthBindingInvariant({
         adapterType,
-        nextConfig: adapterConfig,
+        nextConfig: configWithBaseSkills,
         priorConfig: null,
       });
       return db.transaction(async (tx) => {
@@ -941,7 +956,7 @@ export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort 
           consume: true,
           environmentId: (data.defaultEnvironmentId as string | null | undefined) ?? null,
           claudeLogin: options?.claudeLogin,
-          childAdapterConfig: adapterConfig,
+          childAdapterConfig: configWithBaseSkills,
         });
         const created = await tx
           .insert(agents)
@@ -951,7 +966,7 @@ export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort 
             companyId,
             role,
             adapterType,
-            adapterConfig,
+            adapterConfig: configWithBaseSkills,
             permissions: normalizedPermissions,
             runtimeConfig,
           })

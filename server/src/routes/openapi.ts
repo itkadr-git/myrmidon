@@ -36,6 +36,8 @@ import {
   wakeAgentSchema,
   resetAgentSessionSchema,
   agentSkillSyncSchema,
+  // myrmidon(1.6.5 BASE-SKILLS): the body of the base-skills add route.
+  companyBaseSkillAddSchema,
   testAdapterEnvironmentSchema,
   // Issue
   createIssueSchema,
@@ -3361,6 +3363,56 @@ registry.registerPath({
     401: r.unauthorized,
     404: r.notFound,
     422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/base-skills",
+  tags: ["skills"],
+  summary: "List the company base skills and the agents missing them",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/base-skills",
+  tags: ["skills"],
+  summary: "Declare skills as company base skills and apply them to every agent",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(companyBaseSkillAddSchema),
+  },
+  responses: {
+    201: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/base-skills/apply",
+  tags: ["skills"],
+  summary: "Apply the company base skills to every agent again",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/companies/{companyId}/base-skills/{key}",
+  tags: ["skills"],
+  summary: "Remove a skill from the company base skills",
+  request: { params: z.object({ companyId: z.string(), key: z.string() }) },
+  responses: {
+    200: r.ok(),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
   },
 });
 

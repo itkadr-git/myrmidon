@@ -71,6 +71,12 @@ import {
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
 import { trackAgentCreated } from "@paperclipai/shared/telemetry";
+// myrmidon(1.6.5 BASE-SKILLS): the union helper keeps company base skills in
+// every agent's selection when the board edits that agent's own skills.
+import {
+  readCompanyBaseSkillKeys,
+  unionCompanyBaseSkillEntries,
+} from "../services/company-base-skill-keys.js";
 import { validate } from "../middleware/validate.js";
 import { agentInstructionsBundleMode } from "../services/agent-instructions.js";
 import {
@@ -3160,18 +3166,26 @@ export function agentRoutes(
       (entry, index, entries) => entries.findIndex((candidate) => candidate.key === entry.key) === index,
     );
 
-    const desiredSkillEntries = mergeDesiredSkillEntries(
-      currentSkillEntries,
-      requestedSkillEntries,
-      mode,
-    ).filter(
-      (entry) => !isConnectorSkill(entry.key) && (adapterType !== "paperclip_runner"
-        || entry.key.trim().toLowerCase() !== PAPERCLIP_OPERATIONAL_SKILL_KEY),
+    const baseSkillKeys = await readCompanyBaseSkillKeys(db, companyId);
+    const desiredSkillEntries = unionCompanyBaseSkillEntries(
+      baseSkillKeys,
+      mergeDesiredSkillEntries(
+        currentSkillEntries,
+        requestedSkillEntries,
+        mode,
+      ).filter(
+        (entry) => !isConnectorSkill(entry.key) && (adapterType !== "paperclip_runner"
+          || entry.key.trim().toLowerCase() !== PAPERCLIP_OPERATIONAL_SKILL_KEY),
+      ),
     );
     const desiredSkills = desiredSkillEntries.map((entry) => entry.key);
     const resolvedKeys = new Set([
       ...resolvedCurrentSkillEntries.map((entry) => entry.key),
       ...resolvedRequestedSkillEntries.map((entry) => entry.key),
+      // myrmidon(1.6.5 BASE-SKILLS): the base list holds library keys only, so
+      // they stay materialized for the runtime even when this edit did not name
+      // them. Stale keys keep the old behaviour — persisted, not delivered.
+      ...baseSkillKeys,
     ]);
     // Runtime materialization + version selection only ever consider final
     // assignments that resolve to the company library; stale keys remain
