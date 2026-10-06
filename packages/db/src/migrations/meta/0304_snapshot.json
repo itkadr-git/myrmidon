@@ -1,5 +1,5 @@
 {
-  "id": "6bc93b74-4a4f-41c9-b688-28bf2523b844",
+  "id": "8f9f5bb7-88ee-4974-97c5-374e7d0be199",
   "prevId": "dd8aad60-7c3e-45e4-8bf7-7b4b216d6c4a",
   "version": "7",
   "dialect": "postgresql",
@@ -50758,8 +50758,8 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.agent_castes": {
-      "name": "agent_castes",
+    "public.foraging_spend_events": {
+      "name": "foraging_spend_events",
       "schema": "",
       "columns": {
         "id": {
@@ -50775,68 +50775,48 @@
           "primaryKey": false,
           "notNull": true
         },
-        "key": {
-          "name": "key",
+        "source_id": {
+          "name": "source_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "role": {
+          "name": "role",
           "type": "text",
           "primaryKey": false,
           "notNull": true
         },
-        "name_en": {
-          "name": "name_en",
+        "agent_id": {
+          "name": "agent_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "url": {
+          "name": "url",
           "type": "text",
           "primaryKey": false,
           "notNull": true
         },
-        "name_ru": {
-          "name": "name_ru",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "description": {
-          "name": "description",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "color": {
-          "name": "color",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'gray'"
-        },
-        "icon": {
-          "name": "icon",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "default_model": {
-          "name": "default_model",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "swarm_eligible": {
-          "name": "swarm_eligible",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": true
-        },
-        "max_active_tasks": {
-          "name": "max_active_tasks",
+        "cost_cents": {
+          "name": "cost_cents",
           "type": "integer",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
-        "built_in": {
-          "name": "built_in",
-          "type": "boolean",
+        "outcome": {
+          "name": "outcome",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "occurred_at": {
+          "name": "occurred_at",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
-          "default": false
+          "default": "now()"
         },
         "created_at": {
           "name": "created_at",
@@ -50844,18 +50824,11 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
         }
       },
       "indexes": {
-        "agent_castes_company_key_uq": {
-          "name": "agent_castes_company_key_uq",
+        "foraging_spend_company_occurred_idx": {
+          "name": "foraging_spend_company_occurred_idx",
           "columns": [
             {
               "expression": "company_id",
@@ -50864,22 +50837,70 @@
               "nulls": "last"
             },
             {
-              "expression": "key",
+              "expression": "occurred_at",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
             }
           ],
-          "isUnique": true,
+          "isUnique": false,
           "concurrently": false,
           "method": "btree",
           "with": {}
         },
-        "agent_castes_company_idx": {
-          "name": "agent_castes_company_idx",
+        "foraging_spend_company_role_idx": {
+          "name": "foraging_spend_company_role_idx",
           "columns": [
             {
               "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "role",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "foraging_spend_company_agent_idx": {
+          "name": "foraging_spend_company_agent_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "agent_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "occurred_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "foraging_spend_source_idx": {
+          "name": "foraging_spend_source_idx",
+          "columns": [
+            {
+              "expression": "source_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -50892,12 +50913,25 @@
         }
       },
       "foreignKeys": {
-        "agent_castes_company_id_companies_id_fk": {
-          "name": "agent_castes_company_id_companies_id_fk",
-          "tableFrom": "agent_castes",
+        "foraging_spend_events_company_id_companies_id_fk": {
+          "name": "foraging_spend_events_company_id_companies_id_fk",
+          "tableFrom": "foraging_spend_events",
           "tableTo": "companies",
           "columnsFrom": [
             "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "foraging_spend_events_source_id_foraging_sources_id_fk": {
+          "name": "foraging_spend_events_source_id_foraging_sources_id_fk",
+          "tableFrom": "foraging_spend_events",
+          "tableTo": "foraging_sources",
+          "columnsFrom": [
+            "source_id"
           ],
           "columnsTo": [
             "id"

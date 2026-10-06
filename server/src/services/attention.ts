@@ -2377,6 +2377,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           decisionVerbs: decisionVerbs(
             { id: "inspect", label: "Inspect", description: "Open the Foraging page and the learning limits." },
           ),
+          inlineResolvable: true,
           entryRule: "a foraging pass stopped on a spend limit, or the cost-per-task threshold switched learning off",
           exitRule: "the next pass runs without a stop (limit card), learning is re-enabled, or the row is dismissed.",
           dedupKey: foragingSignal.dedupKey,
