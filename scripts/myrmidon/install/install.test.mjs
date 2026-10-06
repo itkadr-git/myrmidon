@@ -231,4 +231,43 @@ describe("install.sh", () => {
     assert.equal(bad.status, 1);
     assert.match(bad.stderr, /--version must look like/);
   });
+
+  it("refuses a CPU below the x86-64-v2 baseline before changing the machine", () => {
+    const sb = sandbox();
+    const old = path.join(sb.dir, "cpuinfo-old");
+    fs.writeFileSync(old, "processor\t: 0\nflags\t\t: fpu vme de pse sse sse2\nvendor_id\t: GenuineIntel\n");
+    const r = run(sb, [], { MYRMIDON_INSTALL_CPUINFO: old });
+    assert.equal(r.status, 1, "a CPU the board image cannot start on is a refusal, not a late failure");
+    assert.match(r.stderr, /x86-64-v2/);
+    assert.ok(!fs.existsSync(sb.opt), "the refusal comes before anything is created");
+
+    const good = path.join(sb.dir, "cpuinfo-ok");
+    fs.writeFileSync(good, "processor\t: 0\nflags\t\t: fpu vme sse4_1 sse4_2 popcnt cx16 ssse3\n");
+    const ok = run(sb, [], { MYRMIDON_INSTALL_CPUINFO: good });
+    assert.equal(ok.status, 0, ok.stderr);
+  });
+
+  it("answers --help and names a missing option value in plain language when piped", () => {
+    // The documented form pipes the script into bash, so $0 is "bash". Reading
+    // the header back out of $0 (sed -n '2,40p' "$0") answered
+    // "sed: can't read bash" — a novice asking for help got an error instead.
+    const piped = (args) =>
+      spawnSync("bash", ["-s", "--", ...args], {
+        cwd: os.tmpdir(),
+        encoding: "utf8",
+        input: fs.readFileSync(INSTALL, "utf8"),
+        env: { ...process.env, MYRMIDON_INSTALL_LANG: "en" },
+      });
+
+    const help = piped(["--help"]);
+    assert.equal(help.status, 0, help.stderr);
+    assert.match(help.stdout, /ONE-COMMAND-INSTALL/);
+    assert.match(help.stdout, /--uninstall/);
+    assert.doesNotMatch(help.stdout + help.stderr, /can't read bash/);
+
+    // --version without its value used to die on `$2: unbound variable`.
+    const missing = piped(["--version"]);
+    assert.equal(missing.status, 1);
+    assert.match(missing.stderr, /--version needs a value/);
+  });
 });
