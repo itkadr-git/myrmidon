@@ -22,6 +22,7 @@ import { collectDispositionRepairSourceState } from "../../../services/recovery/
 import { appendHeartbeatRunEvent } from "../../../services/heartbeat-run-events.js";
 import { emitAgentTaskRun } from "../../../services/agent-task-run-telemetry.js";
 import { issueService } from "../../../services/issues.js";
+import { randomUUID } from "node:crypto";
 import {
   issueTreeControlService,
   isVerifiedIssueTreeControlInteractionWake,
@@ -879,6 +880,56 @@ export function createPostgresRunDispatchAdapter(
               eq(agentWakeupRequests.companyId, row.companyId),
             ),
           );
+
+        // myrmidon(WAKE-STALL-ROOT-A): a wake skipped because execution
+        // reconciliation is required is not terminal — after the
+        // reconciliation commit, re-enqueue it once (new idempotency key,
+        // parent = the skipped record, resurrection_count < 1, and never
+        // when the recovery evidence blocks replay).
+        if (decision.errorCode === "execution_reconciliation_required") {
+          const originalWakeup = await tx
+            .select()
+            .from(agentWakeupRequests)
+            .where(
+              and(
+                eq(agentWakeupRequests.id, row.wakeupRequestId),
+                eq(agentWakeupRequests.companyId, row.companyId),
+              ),
+            )
+            .then(rows => rows[0]);
+
+          const payload = parseObject(originalWakeup?.payload);
+          const evidence = parseObject(
+            (payload as Record<string, unknown> | null)?.evidence,
+          );
+          const replayBlocked =
+            parseObject(evidence.automaticRecovery).replay === "blocked";
+
+          if (
+            originalWakeup &&
+            (originalWakeup.resurrectionCount ?? 0) < 1 &&
+            !replayBlocked
+          ) {
+            await tx
+              .insert(agentWakeupRequests)
+              .values({
+                id: randomUUID(),
+                companyId: originalWakeup.companyId,
+                agentId: originalWakeup.agentId,
+                source: originalWakeup.source,
+                triggerDetail: originalWakeup.triggerDetail,
+                reason: "resurrection_execution_reconciliation_required",
+                payload: originalWakeup.payload,
+                status: "pending",
+                requestedByActorType: originalWakeup.requestedByActorType,
+                requestedByActorId: originalWakeup.requestedByActorId,
+                idempotencyKey: `${originalWakeup.idempotencyKey ?? originalWakeup.id}:resurrection:${randomUUID()}`,
+                resurrectionCount: (originalWakeup.resurrectionCount ?? 0) + 1,
+                createdAt: now,
+                updatedAt: now,
+              });
+          }
+        }
       }
 
       await tx
