@@ -8,6 +8,7 @@ import type { HostDiskSettings } from "../myrmidon-host-disk.js";
 import type { StoredBotDiskSettings } from "../myrmidon-bot-disk.js";
 // myrmidon(1.6.1-BOT-DISK-C): per-bot disk quota of its own general settings key.
 import type { StoredBotDiskQuotaSettings } from "../myrmidon-bot-disk-quota.js";
+import type { StoredSessionGenerationsSettings } from "../myrmidon-session-generations.js";
 // myrmidon(PARALLEL-HELPERS): the helper ceiling/default stored in instance settings
 import type { ParallelHelpersSettings } from "../myrmidon-parallel-helpers.js";
 import type { BotLspSettings } from "../myrmidon-bot-lsp.js";
@@ -100,6 +101,14 @@ export interface InstanceGeneralSettings {
    * with the validator of the same field (packages/shared/src/validators/instance.ts).
    */
   botDiskQuota?: StoredBotDiskQuotaSettings;
+  /**
+   * myrmidon(PERF-DIET-K): thresholds of the issue-scoped session generations
+   * of a container bot (`maxMessages` runs and `maxDays` age, plus `enabled`).
+   * Read at every run dispatch. Absent means the plan's defaults (400 / 14, the
+   * fix on); kept in sync with the validator of the same field
+   * (packages/shared/src/validators/instance.ts).
+   */
+  sessions?: StoredSessionGenerationsSettings;
   /**
    * myrmidon(C0): run admission limits changed from the instance settings page
    * and `GET`/`PATCH /api/myrmidon/runtime-limits`. Absent means "use the
