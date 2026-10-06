@@ -193,9 +193,9 @@ export async function runBridgedDirectMessageCommand(
       // parallel secret-resolution path here.
       return handlePlanCommand(input, parsed.args);
     case "accept":
-      return handleAcceptCommand(input, context, parsed.args);
+      return handleAcceptCommand(input, context, parsed.args, locale);
     case "reject":
-      return handleRejectCommand(input, context, parsed.args);
+      return handleRejectCommand(input, context, parsed.args, locale);
     case "close":
       return { kind: "reply", command: "close", text: t(locale, "close.reply") };
     case "task":
@@ -424,13 +424,14 @@ async function handleAcceptCommand(
   input: BridgedCommandInput,
   context: BridgedCommandContext,
   args: string,
+  locale: BridgeLocale,
 ): Promise<BridgedCommandResult> {
   const interactionId = args.trim();
   if (!interactionId) {
     return {
       kind: "reply",
       command: "accept",
-      text: "Укажите ID карточки: /accept <id> — ID карточки с планом из ответа бота.",
+      text: t(locale, "accept.noId"),
     };
   }
 
@@ -450,7 +451,7 @@ async function handleAcceptCommand(
       return {
         kind: "reply",
         command: "accept",
-        text: "Эта карточка не является предложением задач или уже обработана.",
+        text: t(locale, "accept.notPlanOrProcessed"),
       };
     }
 
@@ -464,22 +465,22 @@ async function handleAcceptCommand(
       { userId: input.boardUserId, agentId: null, suggestedTaskEffectsAuthorized: true },
     );
 
-    // myrmidon(X8-texts): the reply is read by the owner in the bridged DM,
-    // so the prose is Russian; the link and the count are data, not prose.
+    // myrmidon(X8-texts): the reply is read by the owner in the bridged DM —
+    // prose via t(), the link and the count are data, not prose.
     const epicLink = `${input.publicBaseUrl ?? ""}/issues/${
       createdIssues[0]?.id ?? input.conversationIssueId
     }`;
     return {
       kind: "reply",
       command: "accept",
-      text: `✅ План принят.\n\nЭпик: ${epicLink}\nСоздано задач: ${createdIssues.length}`,
+      text: t(locale, "accept.ok", { epicLink, count: createdIssues.length }),
     };
   } catch (error) {
     const message = (error as { message?: string }).message ?? "unknown error";
     return {
       kind: "reply",
       command: "accept",
-      text: `Не удалось принять карточку: ${message}`,
+      text: t(locale, "accept.error", { message }),
     };
   }
 }
@@ -494,13 +495,14 @@ async function handleRejectCommand(
   input: BridgedCommandInput,
   context: BridgedCommandContext,
   args: string,
+  locale: BridgeLocale,
 ): Promise<BridgedCommandResult> {
   const interactionId = args.trim();
   if (!interactionId) {
     return {
       kind: "reply",
       command: "reject",
-      text: "Укажите ID карточки: /reject <id> — ID карточки с планом из ответа бота.",
+      text: t(locale, "reject.noId"),
     };
   }
 
@@ -520,14 +522,14 @@ async function handleRejectCommand(
       return {
         kind: "reply",
         command: "reject",
-        text: "Эта карточка уже обработана.",
+        text: t(locale, "reject.alreadyProcessed"),
       };
     }
     if (current.kind !== "suggest_tasks") {
       return {
         kind: "reply",
         command: "reject",
-        text: "Эта карточка не является предложением задач; /reject применим только к планам.",
+        text: t(locale, "reject.notPlan"),
       };
     }
 
@@ -541,14 +543,14 @@ async function handleRejectCommand(
     return {
       kind: "reply",
       command: "reject",
-      text: "❌ План отклонён. Задачи не созданы.",
+      text: t(locale, "reject.ok"),
     };
   } catch (error) {
     const message = (error as { message?: string }).message ?? "unknown error";
     return {
       kind: "reply",
       command: "reject",
-      text: `Не удалось отклонить карточку: ${message}`,
+      text: t(locale, "reject.error", { message }),
     };
   }
 }

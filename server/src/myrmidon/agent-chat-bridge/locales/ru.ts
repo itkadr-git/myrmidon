@@ -15,6 +15,17 @@ export const bridgeTextRu: Record<BridgeTextKey, string> = {
   "menu.accept": "Принять карточку плана (только владелец компании)",
   "menu.reject": "Отклонить карточку плана (только владелец компании)",
 
+  // /accept and /reject (1.6.3-CTO-CHAT-B)
+  "accept.noId": "Укажите ID карточки: /accept <id> — ID карточки с планом из ответа бота.",
+  "accept.notPlanOrProcessed": "Эта карточка не является предложением задач или уже обработана.",
+  "accept.ok": "✅ План принят.\n\nЭпик: {epicLink}\nСоздано задач: {count}",
+  "accept.error": "Не удалось принять карточку: {message}",
+  "reject.noId": "Укажите ID карточки: /reject <id> — ID карточки с планом из ответа бота.",
+  "reject.alreadyProcessed": "Эта карточка уже обработана.",
+  "reject.notPlan": "Эта карточка не является предложением задач; /reject применим только к планам.",
+  "reject.ok": "❌ План отклонён. Задачи не созданы.",
+  "reject.error": "Не удалось отклонить карточку: {message}",
+
   // /help
   "help.intro": "Здесь вы общаетесь с {agent}. Задачи из этого чата создаются по необходимости.",
   "help.menuLine": "/{command} — {description}",
