@@ -10,6 +10,23 @@ version file to edit. Base Paperclip version is in the image label
 
 ## Unreleased
 
+### Tab and home-screen icon — Myrmidon ant mark (1.7 FAVICON)
+
+- The browser tab and the phone home screen ship the Myrmidon ant mark from
+  the design-system export (`ui/public/brand/myrmidon/`): `favicon.svg` (the
+  bare mark, adaptive navy/white), `favicon.ico` (16/32/48), 16/32 px PNGs for
+  the tab, `apple-touch-icon.png` (180) and `android-chrome-192/512.png`
+  (maskable 512 included) for the home screen, referenced from `index.html`
+  and `site.webmanifest`; no vendor paperclip artwork ships. Icon and manifest
+  URLs are served with `?v=<build version>` so a deploy refreshes the browser
+  icon store.
+- New guard test `ui/src/lib/myrmidon-favicon-build.myrmidon.test.ts`: the
+  page links the full tab icon set, the manifest carries the 192/512 icons
+  (incl. maskable), a built `ui/dist` ships the same ant files, and no
+  paperclip artwork remains in `ui/public`.
+- Guide: [guides/favicon.md](guides/favicon.md) (EN) and
+  [guides/favicon.ru.md](guides/favicon.ru.md) (RU).
+
 ## 1.6.4
 
 ### Fix: the board failed to start when a synthetic attention card was present
