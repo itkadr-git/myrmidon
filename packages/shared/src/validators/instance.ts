@@ -19,6 +19,8 @@ import { storedBotDiskQuotaSettingsSchema } from "../myrmidon-bot-disk-quota.js"
 import { storedBotImageRolloutSettingsSchema } from "../myrmidon-bot-image-rollout.js";
 // myrmidon(C0): run admission limits that can be changed while the server runs
 import { storedRunLimitsSchema } from "../myrmidon-runtime-limits.js";
+// myrmidon(RUN-STALL-SETTINGS): the run stall detection settings stored in instance settings
+import { runStallSettingsSchema } from "../myrmidon-run-stall.js";
 // myrmidon(PARALLEL-HELPERS): company ceiling/default for parallel helper
 // subagents, changed from the instance settings page and /api/myrmidon/parallel-helpers.
 import { parallelHelpersSettingsSchema, patchParallelHelpersSettingsSchema } from "../myrmidon-parallel-helpers.js";
@@ -104,6 +106,13 @@ export const instanceGeneralSettingsSchema = z.object({
   // myrmidon(1.6.5 RUN-ADMISSION): the shape also tolerates a row saved
   // before `maxHostLoadPercentPerCore` existed.
   runLimits: storedRunLimitsSchema.optional(),
+  // myrmidon(RUN-STALL-SETTINGS): the run stall detection settings, changed
+  // from the instance settings page and /api/myrmidon/run-stall; absent means
+  // "use the environment variable, then the default" (see
+  // packages/shared/src/myrmidon-run-stall.ts). Canonical: every key present,
+  // numbers whole and in range, so a strict miss here cannot hide behind an
+  // older row — the key did not exist before 1.6.5.
+  runStall: runStallSettingsSchema.optional(),
   // myrmidon(BOT-DISK E): the host disk usage threshold, changed from
   // /api/myrmidon/host-disk; absent means "use the environment variable, then
   // the default (85)".
