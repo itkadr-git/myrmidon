@@ -141,6 +141,14 @@ export function CompanySettingsSidebar() {
           )}
           {showPage("company.secrets") && (
             <SidebarNavItem
+              to="/company/settings/channel-allowlist"
+              label="Channel allowlist"
+              icon={Users}
+              end
+            />
+          )}
+          {showPage("company.secrets") && (
+            <SidebarNavItem
               to="/company/settings/access-hub"
               label="Access hub"
               icon={ShieldCheck}

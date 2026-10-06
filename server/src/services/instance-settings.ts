@@ -302,6 +302,10 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // this line the vendor write path silently drops the key and the settings
       // could only ever come from the environment.
       ...(parsed.data.teamLiveness ? { teamLiveness: parsed.data.teamLiveness } : {}),
+      // myrmidon(CA-A): the stored channel settings document (including the
+      // channelAccessMode toggle) survives every general write — it is edited
+      // through its own routes and read live by the admission gate.
+      ...(parsed.data.channelSettings ? { channelSettings: parsed.data.channelSettings } : {}),
     };
   }
   return {

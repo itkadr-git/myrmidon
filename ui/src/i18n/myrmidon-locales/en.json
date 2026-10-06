@@ -852,5 +852,31 @@
     "loading": "Loading the live progress settings...",
     "loadFailed": "Failed to load the live progress settings.",
     "saveFailed": "Saving the live progress settings failed."
+  },
+  "channelAllowlist": {
+    "title": "Who may write to the bots",
+    "breadcrumb": "Channel allowlist",
+    "intro": "Admission is set on the board, not by company membership: a person writes to the bots by their channel identity (a Telegram id or @username) — a board account is optional. Anyone outside the list is not served: they get one refusal line and the owner receives an access request to approve or deny. Changes apply without a restart.",
+    "noCompany": "Select a company to edit its channel allowlist.",
+    "modeLabel": "Admission mode",
+    "modeSponsor": "Guest sponsorship (vendor default)",
+    "modeAllowlist": "Channel allowlist (board decides)",
+    "modeHint": "The allowlist decides who may write to the bots; the linked members keep their path.",
+    "modeOverridden": "Pinned by MYRMIDON_CHANNEL_ACCESS_MODE — change it in the deployment environment.",
+    "listLabel": "Admitted people",
+    "listEmpty": "No one is on the list yet.",
+    "scopeCompany": "all bots",
+    "scopeEndpoint": "one bot",
+    "endpointLabel": "Bot",
+    "providerLabel": "Channel",
+    "externalIdLabel": "Channel id",
+    "handleLabel": "@username (optional)",
+    "scopeLabel": "Scope",
+    "addLabel": "Admit a person",
+    "add": "Admit",
+    "addHint": "The channel id is what the bot sees (numeric Telegram id — ask the person for it, or take it from the access request card).",
+    "revoke": "Revoke",
+    "restore": "Restore",
+    "revokedBadge": "revoked"
   }
 }

@@ -88,7 +88,9 @@ describe("myrmidon(1.7-SETTINGS-TO-UI) channel settings: resolving the document"
     expect(settings.chatCrossChannelLookbackHours.value).toBe(168);
     expect(settings.chatReconcileIntervalMs.value).toBeNull();
     expect(settings.telegramApiBaseUrl.value).toBeNull();
-    expect(Object.values(settings).map((entry) => entry.source)).toEqual(Array(11).fill("default"));
+    // myrmidon(CA-A): the document gained channelAccessMode (default "sponsor").
+    expect(settings.channelAccessMode.value).toBe("sponsor");
+    expect(Object.values(settings).map((entry) => entry.source)).toEqual(Array(12).fill("default"));
   });
 
   it("reads the environment and marks those keys as overridden", () => {

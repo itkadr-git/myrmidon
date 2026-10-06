@@ -2857,3 +2857,8 @@ export * from "./myrmidon-review-rework.js";
 export * from "./myrmidon-budget-projection.js"; // myrmidon(1.7-BUDGET-CONFIG-C)
 // myrmidon(CUSTOM-CASTES): the company caste directory contract (view, POST/PATCH/DELETE bodies, seed).
 export * from "./myrmidon-castes.js";
+
+// myrmidon(CA-A): the channel allowlist — who may write to the company bots
+// (channel identity, board account optional). Contract of the board screen
+// and the server gate.
+export * from "./myrmidon-channel-allowlist.js";
