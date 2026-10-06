@@ -275,6 +275,49 @@ if [ "${MYRMIDON_HARDLINK_CHECK:-1}" != "0" ]; then
   hardlink_self_check || log "WARNING: the hard-link self-check itself failed to run"
 fi
 
+# --- shared git-object store facts (myrmidon 1.6.5 BOT-DISK-G live check) ---
+# The live acceptance of the shared-objects fix needs FACTS, not only pass/fail:
+# how many mirrors the store holds, how large it is and which repositories it
+# carries, so the board can say "the store is not empty" without an exec into
+# the bot. git_store_state emits them as one JSON object whose field names are
+# shared with the reporter's `gitStore` (docker/bot-runtime/git-reference/
+# bot-clone-hygiene) and the board's parser (server/…/clone-hygiene.ts):
+#
+#   {"path":"…","enabled":true,"mirrorCount":1,"totalBytes":1048576,
+#    "repos":["owner/repo"]}
+#
+# A mirror is a directory <store>/<owner>/<repo>.git holding objects/ and HEAD
+# — the test the wrapper's isMirror applies, so a junk directory never counts.
+# `path` is "" and `enabled` false when the store is explicitly off. The count
+# is bounded (MYRMIDON_GIT_STORE_STATE_MAX, default 200 mirrors), totalBytes is
+# the store's allocated size (du -sk, in bytes) and repos lists the mirrors as
+# `owner/repo`. Never fails: a store that cannot be walked answers 0/[].
+git_store_state() {
+  local store="$1" dir rel count=0 repos="" sep="" kib
+  if [ -z "${store}" ]; then
+    printf '{"path":"","enabled":false,"mirrorCount":0,"totalBytes":0,"repos":[]}'
+    return 0
+  fi
+  if [ -d "${store}" ]; then
+    for dir in "${store}"/*/*.git; do
+      [ -d "${dir}/objects" ] && [ -f "${dir}/HEAD" ] || continue
+      [ "${count}" -lt "${MYRMIDON_GIT_STORE_STATE_MAX:-200}" ] || break
+      count=$((count + 1))
+      rel=${dir#"${store}"/}
+      repos="${repos}${sep}\"$(json_escape "${rel%.git}")\""
+      sep=","
+    done
+  fi
+  # Allocated size in bytes, from the same `du -sk` the acceptance script uses —
+  # but 0 for a store holding no mirror: du counts the directory's own block
+  # (4 KiB), and "empty" has to read as 0/[] for the acceptance to be unambiguous.
+  kib="$(du -sk "${store}" 2>/dev/null)"
+  kib="${kib%%[!0-9]*}"
+  [ "${count}" -gt 0 ] || kib=0
+  printf '{"path":"%s","enabled":true,"mirrorCount":%s,"totalBytes":%s,"repos":[%s]}' \
+    "$(json_escape "${store}")" "${count}" "$(( ${kib:-0} * 1024 ))" "${repos}"
+}
+
 # --- shared-git-objects self-check (dev variant) ---------------------------
 # myrmidon(1.6.5 BOT-DISK-G): task clones share one object store through
 # --reference-if-able (the git wrapper, the board's mirror or the bot's own
@@ -457,11 +500,14 @@ git_objects_self_check() {
   else
     log "ERROR: shared-objects self-check failed — task clones on this bot copy git history per clone again (see git-objects-check.json)"
   fi
-  local out_dir="${HERMES_HOME}/.myrmidon" now
+  local out_dir="${HERMES_HOME}/.myrmidon" now store_state
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  # myrmidon(1.6.5 BOT-DISK-G live check): the facts of the store at this start,
+  # next to the checks — the reporter passes them on and the board reads them.
+  store_state="$(git_store_state "${store}")"
   if mkdir -p "${out_dir}" 2>/dev/null; then
-    printf '{"version":1,"checkedAt":"%s","store":"%s","ok":%s,"checks":[%s]}\n' \
-      "${now}" "$(json_escape "${store}")" "${ok_all}" "${checks}" \
+    printf '{"version":1,"checkedAt":"%s","store":"%s","ok":%s,"checks":[%s],"storeState":%s}\n' \
+      "${now}" "$(json_escape "${store}")" "${ok_all}" "${checks}" "${store_state}" \
       > "${out_dir}/git-objects-check.json.tmp" 2>/dev/null \
       && mv -f "${out_dir}/git-objects-check.json.tmp" "${out_dir}/git-objects-check.json" 2>/dev/null \
       || log "WARNING: cannot write ${out_dir}/git-objects-check.json"
