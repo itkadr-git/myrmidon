@@ -63,6 +63,14 @@ resolved limits against the host's build slots. Saving applies on every bot's
 next reconcile tick, without a restart. Details:
 [parallel-helpers](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/parallel-helpers.md).
 
+## Agent castes (the company role directory)
+
+**Company Settings → Agent castes** — the company's own directory of agent
+roles. It starts from the twelve built-in castes and the owner can create,
+edit, and delete castes; the role on the agent card is a key from this
+directory, and changes are visible to the swarm at once, without a restart
+([custom-castes](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/custom-castes.md)).
+
 ## Backups
 
 The database backup retention policy lives in the general instance settings
