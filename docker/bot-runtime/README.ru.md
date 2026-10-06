@@ -27,10 +27,8 @@ hermes-процессами; она приводит желаемый профи
   разрешается вне `/root` и импортирует `hermes_state`.
 - `hermes-agent`, закреплённый за git-тегом (build-аргументы
   `HERMES_VERSION`/`HERMES_GIT_REF`, по умолчанию `0.21.5` / `v2026.9.24`),
-  установленный **editable** из чистого клона нашего форка
-  `https://github.com/BastionPrime/hermes-agent` (форк зеркалирует апстрим-теги
-  побайтово; наши изменения hermes и подъёмы закреплений попадают туда
-  рецензированными коммитами) — см. «Почему editable, а не pip install» ниже.
+  установленный **editable** из чистого клона репозитория автора
+  `https://github.com/NousResearch/hermes-agent` на закреплённом коммите (`HERMES_GIT_SHA`); наши правки hermes лежат в `docker/bot-runtime/patches/` этого репозитория — см. «Почему editable, а не pip install» ниже.
   hermes помечает релизы датой (`vYYYY.M.D`); `v2026.9.24` — тег, в котором мы
   подтвердили (через GitHub API и `git ls-remote --tags`, проверяя `pyproject.toml`
   на каждом недавнем релизном теге) именно `version = "0.21.5"`: два числа живут в

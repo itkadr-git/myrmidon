@@ -311,7 +311,7 @@ Workflow [`myrmidon-bot-image.yml`](../../.github/workflows/myrmidon-bot-image.y
 условием публикации (только `push` в `main` и тег `myr-v*`; на PR образ собирается и
 проверяется, но не публикуется). hermes-agent ставится в образ из закреплённого тега
 нашего зеркала-форка (`HERMES_REPO` в том же Dockerfile,
-`https://github.com/BastionPrime/hermes-agent`; теги форка побайтово совпадают с
+`https://github.com/NousResearch/hermes-agent`; теги форка побайтово совпадают с
 вышестоящими, точное дерево пиннится `HERMES_GIT_SHA`; реестр отличий —
 [hermes-deltas.md](hermes-deltas.md)):
 
