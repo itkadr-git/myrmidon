@@ -799,19 +799,24 @@ merge commit of this PR or later. Format of a fragment:
 [changes/README.md](changes/README.md).
 
 **The GitHub Release is created by CI, not by hand.** Pushing a `myr-vX.Y.Z` tag
-triggers the **Myrmidon release publish** workflow
+(including `-rc.N`) triggers the **Myrmidon release publish** workflow
 ([myrmidon-release.yml](https://github.com/itkadr-git/myrmidon/blob/main/.github/workflows/myrmidon-release.yml)):
-it waits for the tag's image workflow runs to succeed and for `Myrmidon CI`
-to be green on the release commit — the image/component gate matches runs by
-the tag, not by the commit (the release commit is usually already on `main`,
-whose runs build the `main`/`sha-` image tags, not the version tag; that
-mix-up is what failed the 1.6.1 publish), while the CI gate also accepts a
-green `main`-branch run of the same commit, because `myrmidon-ci.yml` has no
-tag trigger and a tag never has a CI run of its own — so the publish waits
-up to ~40 minutes while the tag's images build — then
+it waits for the tag's own **Myrmidon CI (tag)** run
+([myrmidon-ci-tag.yml](https://github.com/itkadr-git/myrmidon/blob/main/.github/workflows/myrmidon-ci-tag.yml)
+— the full CI tier as a separate, un-cancellable run on the tag; the 1.6.4 incident,
+where a main push cancelled the tag commit's CI through the shared concurrency
+group, is what created it) and the tag's image workflow runs
+to succeed — the gate matches runs by the tag, not by the commit (the release
+commit is usually already on `main`, whose runs build the `main`/`sha-` image
+tags, not the version tag; that mix-up is what failed the 1.6.1 publish), so
+the publish waits up to ~40 minutes while the tag's images build — then
 creates the Release (Latest) with the `## X.Y.Z` section of
 [CHANGELOG.md](CHANGELOG.md) and the component image digests, and marks the
-previous release "(superseded)". A failed CI run produces no Release. To
+previous release "(superseded)". A failed or cancelled tag run produces no
+Release (a cancelled tag CI run refuses the publish with an explicit message —
+re-run Actions → Myrmidon CI (tag) with the tag name). A green main-branch run
+of the same commit never satisfies the gate: the tag's own run is the only
+source of green. To
 re-run it (for example after fixing a failed gate, or to refresh the body):
 Actions → Myrmidon release publish → Run workflow → the tag name in the `tag`
 input — the input wins over the branch you dispatch from, so running from
