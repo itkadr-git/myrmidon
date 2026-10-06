@@ -1022,8 +1022,10 @@ describe("mapFinalResultForTest", () => {
 
   // myrmidon(1.6.4-HERMES-LONG-RESPONSE): a long answer must survive in the
   // standard `result` field so the issue comment (and the Telegram splitter)
-  // receive the whole text; only `summary` stays bounded for run lists.
-  it("keeps the full answer in resultJson.result and bounds only the summary", () => {
+  // receive the whole text. The top-level `summary` already carries the full
+  // answer (myrmidon(TG-REPLY-FULL) in main), so this test pins only the
+  // `resultJson.result` contract.
+  it("keeps the full answer in resultJson.result", () => {
     const longAnswer = "A".repeat(9_000);
     const result = mapFinalResultForTest({
       terminal: {
@@ -1036,13 +1038,10 @@ describe("mapFinalResultForTest", () => {
       strategy: "issue",
     });
 
-    expect(result.summary).toHaveLength(2_000);
+    expect(result.summary).toBe(longAnswer);
     expect(result.resultJson?.result).toBe(longAnswer);
     expect(result.resultJson?.result).toHaveLength(9_000);
     expect(result.resultJson?.output).toBe(longAnswer);
-    expect((result.summary as string).length).toBeLessThan(
-      (result.resultJson?.result as string).length,
-    );
   });
 });
 
