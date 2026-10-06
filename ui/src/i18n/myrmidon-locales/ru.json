@@ -860,7 +860,7 @@
     "loading": "Загрузка настроек ключей плагинов...",
     "saveFailed": "Не удалось сохранить ключ. Попробуйте снова.",
     "publicKeyLabel": "Открытый ключ проверки",
-    "publicKeyPlaceholder": "-----BEGIN PUBLIC KEY----- (ED25519, PEM); пусто — очистить",
+    "publicKeyPlaceholder": "Ключ в формате PEM (ED25519); пусто — очистить",
     "publicKeySourceSettings": "Источник: настройки экземпляра",
     "publicKeySourceEnv": "Источник: принудительно задан MYRMIDON_PLUGIN_ENTITLEMENT_PUBLIC_KEY",
     "publicKeySourceNone": "Открытый ключ проверки не задан — ни один ключ доступа не будет принят",
