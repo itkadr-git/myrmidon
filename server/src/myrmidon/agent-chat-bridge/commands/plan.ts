@@ -8,10 +8,11 @@
 // conversation's task, and returns an outcome a bridge can turn into prose
 // without a stack trace ever reaching the chat.
 //
-// myrmidon(X8-texts): the refusal and the error replies are Russian — the
-// language of the pilot chat (see the merge note at the top of
-// commands/index.ts). The planner's own reply wording comes from
-// `describeTelegramOutcome`, which the portal entry shares.
+// myrmidon(1.7-TG-LOCALE): the refusal and the error replies render from the
+// locale catalogs in the sender's language (the caller resolves it per turn;
+// see the locale note at the top of commands/index.ts). The planner's own
+// reply wording comes from `describeTelegramOutcome`, which the portal entry
+// shares.
 
 import { randomUUID } from "node:crypto";
 
@@ -21,17 +22,13 @@ import { companyMemberships } from "@paperclipai/db";
 
 import { safeChatTaskUrl } from "../../../services/chat-task-url.js";
 import { readCtoChatSettings } from "../../cto-chat/settings.js";
+import { resolveBridgeLocale, t } from "../locales/index.js";
 import {
   describeTelegramOutcome,
   planFromTelegramTurn,
   type CtoChatTelegramOutcome,
 } from "../../cto-chat/telegram-entry.js";
 import type { BridgedCommandInput, BridgedCommandResult } from "./index.js";
-
-/** The refusal a non-owner receives; the board stays untouched. */
-export const PLAN_NOT_OWNER_TEXT = "Команда /plan доступна только владельцу компании.";
-/** The hint when the command arrives with no text to plan. */
-export const PLAN_EMPTY_TEXT_TEXT = "Напишите запрос после команды: /plan <что нужно спланировать>.";
 
 /** Active, user-typed membership with the owner role for this company. */
 export async function isCompanyOwner(
@@ -77,13 +74,16 @@ export async function handlePlanCommand(
   args: string,
   deps: PlanCommandDeps = {},
 ): Promise<BridgedCommandResult> {
+  // myrmidon(1.7-TG-LOCALE): bridge-owned replies render in the sender's
+  // language; the planner's own outcome prose stays the portal English.
+  const locale = await resolveBridgeLocale(input.db, input.boardUserId);
   const text = args.trim();
   if (!text) {
-    return { kind: "reply", command: "plan", text: PLAN_EMPTY_TEXT_TEXT };
+    return { kind: "reply", command: "plan", text: t(locale, "plan.empty") };
   }
 
   if (!(await isCompanyOwner(input.db, input.companyId, input.boardUserId))) {
-    return { kind: "reply", command: "plan", text: PLAN_NOT_OWNER_TEXT };
+    return { kind: "reply", command: "plan", text: t(locale, "plan.notOwner") };
   }
 
   const settings = readCtoChatSettings();
@@ -123,7 +123,7 @@ export async function handlePlanCommand(
     return {
       kind: "reply",
       command: "plan",
-      text: "Не удалось создать план. Попробуйте позже или напишите запрос текстом.",
+      text: t(locale, "plan.failed"),
     };
   }
 
