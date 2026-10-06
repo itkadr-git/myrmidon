@@ -57,6 +57,15 @@
 import { CLONE_HYGIENE_REPORT_PATH } from "./clone-hygiene.js"; // myrmidon(1.6.2-BOT-DISK-C)
 import { randomBytes } from "node:crypto";
 import http from "node:http";
+import {
+  RATE_LIMIT_BACKOFF_BASE_MS,
+  RATE_LIMIT_BACKOFF_CAP_MS,
+  RATE_LIMIT_MAX_RETRIES,
+  backoffDelayMs,
+  createRateLimiter,
+  parseRetryAfterMs,
+  type RateLimiter,
+} from "./dockergate-pacing.js"; // myrmidon(1.6.5-DOCKERGATE-A2A3-STORM)
 import type { BotContainerDriver, BotContainerSpec, BotContainerStatus, TemplateDriftField, TemplateDriftReport } from "./driver.js";
 import { ISOLATED_LAYOUT, type ScopeLayout } from "@paperclipai/shared";
 import type { CompiledProfile } from "./types.js";
@@ -67,7 +76,6 @@ import {
   BOT_KEY_PATTERN,
   BOT_MOUNT_SOURCES_ENV,
   BOT_HERMES_REAL_PATH,
-  BOT_ROOT_MOUNT,
   BOT_RUNTIME_SCOPE_LABEL,
   BOT_SCOPE_DATA_TMPFS,
   BOT_SCOPE_SUBDIR_ENV,
@@ -114,7 +122,12 @@ const DOCKER_API_VERSION = "v1.45";
 /** Seconds Docker waits after SIGTERM before SIGKILL on stop/restart. */
 export const BOT_STOP_TIMEOUT_SEC = 30;
 const DEFAULT_START_HEALTH_TIMEOUT_MS = 120_000;
-const DEFAULT_HEALTH_POLL_INTERVAL_MS = 1_000;
+// myrmidon(1.6.5-DOCKERGATE-A2A3-STORM): 1 s polling of a container's health was
+// the rollout's second storm source — a 120 s wait meant up to 120 A2 inspects
+// per bot, and dockergate bills every one against the per-bot inspect bucket and
+// the global rate. The image's HEALTHCHECK interval is 30 s; polling faster than
+// that re-reads the same verdict. 5 s is the floor the fleet budget allows.
+const DEFAULT_HEALTH_POLL_INTERVAL_MS = 5_000;
 const REQUEST_TIMEOUT_MS = 60_000;
 const HELPER_WAIT_TIMEOUT_MS = 120_000;
 const HELPER_MEMORY_BYTES = 128 * 1024 * 1024;
@@ -140,12 +153,31 @@ export interface DockerDriverConfig {
    *  devbuild wiring is off; no DEVBUILD_* env and no key mount is added to any
    *  container. Only a dev-variant image (isDevBuildImage) ever gets them. */
   devbuild: DevbuildSettings;
+  /** myrmidon(1.6.5-DOCKERGATE-A2A3-STORM): MYRMIDON_DOCKERGATE_MAX_RPS — the
+   *  ceiling of board→gate requests per second across every loop (sweep, health
+   *  wait, clone-report collection, "apply now"). The gate's own global bucket is
+   *  50/s (tools/dockergate/internal/config/config.go: GlobalRate); the board
+   *  stays under it with margin so a rollout never rides the gate's limit.
+   *  0 disables the client-side bucket; absent (a config built in tests, not by
+   *  readDockerDriverConfig) means the same: pacing off. */
+  maxRps?: number;
 }
+
+/** MYRMIDON_DOCKERGATE_MAX_RPS: 0..50 requests/s, default 20 (half the gate's
+ *  global bucket: a second caller — fleetd, a future collector — shares it). */
+export const DOCKERGATE_MAX_RPS_ENV = "MYRMIDON_DOCKERGATE_MAX_RPS";
+const DEFAULT_DOCKERGATE_MAX_RPS = 20;
 
 export function readDockerDriverConfig(env: NodeJS.ProcessEnv = process.env): DockerDriverConfig {
   const volumeRoot = env[BOT_VOLUME_ROOT_ENV]?.trim();
   if (!volumeRoot) {
     throw new BotContainerTemplateError(`${BOT_VOLUME_ROOT_ENV} must be set to use the bot container driver`);
+  }
+  let maxRps = DEFAULT_DOCKERGATE_MAX_RPS;
+  const rawRps = env[DOCKERGATE_MAX_RPS_ENV]?.trim();
+  if (rawRps) {
+    const value = Number(rawRps);
+    if (Number.isFinite(value) && value >= 0 && value <= 50) maxRps = value;
   }
   return {
     socketPath: env[BOT_DOCKER_SOCKET_ENV]?.trim() || DEFAULT_BOT_DOCKER_SOCKET,
@@ -156,6 +188,7 @@ export function readDockerDriverConfig(env: NodeJS.ProcessEnv = process.env): Do
     allowlist: parseImageAllowlist(env[BOT_IMAGE_ALLOWLIST_ENV]),
     mountSources: parseMountSourceAllowlist(env[BOT_MOUNT_SOURCES_ENV]),
     devbuild: parseDevbuildSettings(env),
+    maxRps,
   };
 }
 
@@ -166,6 +199,13 @@ export interface DockerDriverOptions {
   healthPollIntervalMs?: number;
   /** Staging-directory nonce generator (hex). */
   nonce?: () => string;
+  /**
+   * myrmidon(1.6.5-DOCKERGATE-A2A3-STORM): the wall clock and the jitter source
+   * of the 429 retry backoff (see dockergate-pacing.ts). Tests inject a fixed
+   * clock and rng to assert the retry schedule without waiting on time.
+   */
+  clock?: () => number;
+  rng?: () => number;
   /**
    * myrmidon(1.6.1-BOT-DISK-B): the shared package cache path from the
    * instance settings (`general.botDisk`), or undefined when none is set. Read
@@ -383,35 +423,21 @@ function applyDirName(nonce: string): string {
 }
 
 /** Script the "prepare-volumes" helper runs (as root, CAP_CHOWN + CAP_FOWNER):
- *  hands each mount point to the bot's uid with mode 0700 and makes the bot's
- *  root directory (its /bot bind) traversable, so uid 10001 can reach the tree
- *  mounted inside it. Idempotent. Paths are relative to "$1" (the container root
- *  in production). */
+ *  hands each mount point to the bot's uid with mode 0700. Idempotent. Paths are
+ *  relative to "$1" (the container root in production). */
 export function buildPrepareVolumesScript(options: { scope?: boolean } = {}): string {
   // myrmidon(BOT-DISK-F): a member of a shared scope instance also hands the instance
   // directory (the helper's /scope bind) to the bot, so the container can create the
   // instance's pnpm store in it. The text stays a constant per layout.
-  // myrmidon(BOT-ROOT-TRAVERSE): an isolated bot gets ONE bind — its whole directory at
-  // /bot — and the three narrow chmods above never reach the root of that bind. Since
-  // #572 a root left externally as e.g. 0710 (rc.1: root:65532 on 51/74 bots) hides the
-  // entire tree from uid 10001 and the bot dies on a missing API_SERVER_KEY, far from
-  // the real cause. So the prepare helper also binds the root itself (same bind string
-  // as the bot container) and fixes its traversal here: one non-recursive chmod 0711,
-  // owner untouched (the gate keeps demanding a root-owned volume.K), content never
-  // listed or written — "x" without "r" is exactly "the bot can enter, cannot browse".
-  // A shared member's root IS the instance directory ("scope" below): chmod 0700 +
-  // chown 10001 already makes it enterable by the uid every member runs as.
   const roots = options.scope ? [...MOUNT_ROOTS, BOT_SCOPE_HELPER_ROOT] : MOUNT_ROOTS;
-  const lines = [
+  return [
     "set -eu",
     'cd "$1"',
     `for d in ${roots.join(" ")}; do`,
     '  chmod 0700 "$d"',
     `  chown ${BOT_CONTAINER_UID}:${BOT_CONTAINER_UID} "$d"`,
     "done",
-  ];
-  if (!options.scope) lines.push(`chmod 0711 ${BOT_ROOT_MOUNT.slice(1)}`);
-  return lines.join("\n");
+  ].join("\n");
 }
 
 /**
@@ -807,6 +833,7 @@ export function demuxDockerLogs(buf: Buffer): string {
 
 interface DockerHttpResponse {
   status: number;
+  headers: http.IncomingHttpHeaders;
   body: Buffer;
 }
 
@@ -823,7 +850,7 @@ function dockerRequest(
         const chunks: Buffer[] = [];
         res.on("data", (chunk: Buffer) => chunks.push(chunk));
         res.on("error", reject);
-        res.on("end", () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks) }));
+        res.on("end", () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body: Buffer.concat(chunks) }));
       },
     );
     const timeoutMs = opts.timeoutMs ?? REQUEST_TIMEOUT_MS;
@@ -861,6 +888,11 @@ export function dockerBotContainerDriver(
   const startHealthTimeoutMs = options.startHealthTimeoutMs ?? DEFAULT_START_HEALTH_TIMEOUT_MS;
   const healthPollIntervalMs = options.healthPollIntervalMs ?? DEFAULT_HEALTH_POLL_INTERVAL_MS;
   const newNonce = options.nonce ?? (() => randomBytes(8).toString("hex"));
+  // myrmidon(1.6.5-DOCKERGATE-A2A3-STORM): the clock and jitter source of the
+  // pacing layer (dockergate-pacing.ts); tests drive them to assert the schedule.
+  const clock = options.clock ?? (() => Date.now());
+  const rng = options.rng ?? Math.random;
+  const limiter: RateLimiter = createRateLimiter({ ratePerSec: config.maxRps ?? 0, clock, sleep });
   const readSharedPackageCachePath = options.readSharedPackageCachePath ?? (async () => undefined);
   const readGitMirrorEnabled = options.readGitMirrorEnabled ?? (async () => false);
   const readScopeLayout = options.readScopeLayout ?? (async () => ISOLATED_LAYOUT);
@@ -883,7 +915,40 @@ export function dockerBotContainerDriver(
       scopeMountOf(layout ?? (await readScopeLayout(spec.botKey))),
     );
 
-  const request = (opts: Parameters<typeof dockerRequest>[1]) => dockerRequest(socketPath, opts);
+  /** One request to the Docker API through dockergate, paced and 429-aware
+   *  (myrmidon(1.6.5-DOCKERGATE-A2A3-STORM)).
+   *  - Every call first takes a token of the client-side bucket (config.maxRps),
+   *    so the loops the board runs concurrently — the reconcile sweep, the health
+   *    wait, the clone-report collector, "apply now" — cannot add up past the
+   *    gate's global bucket between them.
+   *  - A 429 whose body names dockergate's own denial (`rate_limited` /
+   *    `concurrency_limited`, see tools/dockergate/internal/deny/deny.go) is
+   *    retried up to RATE_LIMIT_MAX_RETRIES times with exponential backoff and
+   *    full jitter, and a Retry-After header on the refusal is honoured. Before
+   *    this change a 429 simply failed the pass, and the next sweep tick retried
+   *    it immediately — the hammering that kept the fleet at the rate limit.
+   *  - Every other status returns exactly as the daemon answered: the callers'
+   *    404/304 handling must not see a retry of a real "no such container". */
+  async function request(opts: Parameters<typeof dockerRequest>[1]): Promise<DockerHttpResponse> {
+    for (let attempt = 0; ; attempt += 1) {
+      await limiter.acquire();
+      const res = await dockerRequest(socketPath, opts);
+      if (!isGateRateDenial(res)) return res;
+      if (attempt >= RATE_LIMIT_MAX_RETRIES) return res;
+      const retryAfterMs = parseRetryAfterMs(res.headers["retry-after"], clock());
+      const delay = retryAfterMs ?? backoffDelayMs(attempt + 1, { rng });
+      await sleep(delay);
+    }
+  }
+
+  /** True for dockergate's flood answers: 429 with a denial body from the gate
+   *  itself. A 429 from the Docker daemon (it has none on these routes) is not
+   *  retried here — the caller's own error path reports it. */
+  function isGateRateDenial(res: DockerHttpResponse): boolean {
+    if (res.status !== 429) return false;
+    const body = res.body.toString("utf8");
+    return body.includes("rate_limited") || body.includes("concurrency_limited");
+  }
 
   async function requestJson<T>(opts: { method: string; path: string; body?: unknown; timeoutMs?: number }): Promise<T> {
     const res = await request({
@@ -1090,12 +1155,40 @@ export function dockerBotContainerDriver(
     return results;
   }
 
-  async function templateDrift(spec: BotContainerSpec): Promise<TemplateDriftReport> {
+  async function templateDriftOf(existing: DockerInspect, spec: BotContainerSpec): Promise<TemplateDriftReport> {
     const body = await createBody(spec);
-    const existing = await inspectByName(containerNameFor(spec.botKey));
-    if (!existing) return { drifted: false, fields: [] };
     const fields = templateDriftFields(existing, body);
     return { drifted: fields.length > 0, fields };
+  }
+
+  async function templateDrift(spec: BotContainerSpec): Promise<TemplateDriftReport> {
+    const existing = await inspectByName(containerNameFor(spec.botKey));
+    if (!existing) return { drifted: false, fields: [] };
+    return templateDriftOf(existing, spec);
+  }
+
+  /** myrmidon(1.6.5-DOCKERGATE-A2A3-STORM): status and drift from ONE inspect
+   *  (A2) plus the marker read (A3): the facts the reconcile pass needs for two
+   *  gate requests instead of three. Semantically identical to calling
+   *  `status` then `templateDrift` back to back — the same `info` object feeds
+   *  both, which is also what the old pair did per call, so a container that
+   *  changes between the two reads behaves exactly as before. */
+  async function statusWithDrift(
+    spec: BotContainerSpec,
+  ): Promise<{ status: BotContainerStatus; drift: TemplateDriftReport }> {
+    const name = containerNameFor(spec.botKey);
+    const info = await inspectByName(name);
+    if (!info) return { status: { botKey: spec.botKey, state: "missing" }, drift: { drifted: false, fields: [] } };
+    const marker = await readAppliedMarker(spec.botKey, info);
+    const status: BotContainerStatus = {
+      botKey: spec.botKey,
+      state: botStateFromInspect(info),
+      image: info.Config?.Image,
+      restartHash: marker?.restartHash,
+      filesHash: marker?.filesHash,
+      maxConcurrentRuns: marker?.maxConcurrentRuns,
+    };
+    return { status, drift: await templateDriftOf(info, spec) };
   }
 
   async function create(spec: BotContainerSpec): Promise<void> {
@@ -1172,7 +1265,7 @@ export function dockerBotContainerDriver(
 
   async function waitForHealthy(botKey: string): Promise<void> {
     const name = containerNameFor(botKey);
-    const deadline = Date.now() + startHealthTimeoutMs;
+    const deadline = clock() + startHealthTimeoutMs;
     for (;;) {
       const info = await inspectByName(name);
       if (!info) throw new Error(`${name} disappeared while waiting for it to become healthy`);
@@ -1183,7 +1276,7 @@ export function dockerBotContainerDriver(
       if (state === "exited" || state === "dead") {
         throw new Error(`${name} ${state} (exit code ${info.State?.ExitCode ?? "unknown"}) instead of becoming healthy`);
       }
-      if (Date.now() >= deadline) {
+      if (clock() >= deadline) {
         throw new Error(
           `${name} did not become healthy within ${startHealthTimeoutMs}ms (last state: ${health ? `${state}/${health}` : state})`,
         );
@@ -1212,5 +1305,5 @@ export function dockerBotContainerDriver(
     await stopByName(containerNameFor(botKey));
   }
 
-  return { status, list, templateDrift, create, recreate, writeProfile, start, restart, stop, readCloneReport };
+  return { status, list, templateDrift, statusWithDrift, create, recreate, writeProfile, start, restart, stop, readCloneReport };
 }

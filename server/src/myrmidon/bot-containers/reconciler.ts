@@ -183,7 +183,13 @@ export async function reconcileBot(input: ReconcileBotInput): Promise<ReconcileO
     activity.record({ level: "info", agentId, botKey, message, details });
 
   try {
-    const status = await driver.status(botKey);
+    // myrmidon(1.6.5-DOCKERGATE-A2A3-STORM): when the driver can answer status
+    // and drift from one inspect (docker-driver's statusWithDrift), do that —
+    // the separate status + templateDrift pair cost two A2 inspects per bot per
+    // pass, which alone put the 74-bot sweep over the planned request budget.
+    // A driver without the probe (fleetd) keeps the old pair.
+    const probed = driver.statusWithDrift ? await driver.statusWithDrift(spec) : null;
+    const status = probed ? probed.status : await driver.status(botKey);
 
     if (status.state === "missing") {
       const profile = await compile();
@@ -199,7 +205,7 @@ export async function reconcileBot(input: ReconcileBotInput): Promise<ReconcileO
 
     const profile = await compile();
     // Side-effect free; a drift is only ever applied below, through recreate.
-    const drift = await driver.templateDrift(spec);
+    const drift = probed ? probed.drift : await driver.templateDrift(spec);
     const drifted = drift.drifted;
     if (drifted) {
       // Names the field and both values, so a drift is diagnosable from the
