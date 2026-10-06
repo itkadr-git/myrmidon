@@ -546,7 +546,6 @@ const RESERVED_CONTAINER_PATHS: readonly string[] = [
   "/data",
   "/tmp",
   DEVBUILD_SSH_CONTAINER_PATH,
- *  (the profile lands in the three volumes, and `/tmp` is the image's tmpfs). */
   "/shared",
 ];
 

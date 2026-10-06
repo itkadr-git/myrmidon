@@ -253,6 +253,8 @@ describe("classifyBotImageTracking (1.6.4-BOT-CONTAINER-CARD)", () => {
       category: "not_applicable",
       reason: "container.memoryMb must be a positive number",
     });
+  });
+});
 describe("readBotContainerAgentConfig: shared mount access", () => {
   function config() {
     return { container: { ...VALID_CONTAINER_CONFIG } };
@@ -260,12 +262,15 @@ describe("readBotContainerAgentConfig: shared mount access", () => {
   it("denies shared mount access by default (no instance settings)", () => {
     const result = readBotContainerAgentConfig("hermes_gateway", config());
     expect(result.ok && result.config.hasSharedMountAccess).toBe(false);
+  });
   it("denies access when the instance settings disable the shared mount", () => {
     const result = readBotContainerAgentConfig("hermes_gateway", config(), { enabled: false });
     expect(result.ok && result.config.hasSharedMountAccess).toBe(false);
+  });
   it("grants access to every bot when the allowlist is empty", () => {
     const result = readBotContainerAgentConfig("hermes_gateway", config(), { enabled: true, allowedBots: [] });
     expect(result.ok && result.config.hasSharedMountAccess).toBe(true);
+  });
   it("grants access only to allowlisted bots (per-bot control)", () => {
     const settings = { enabled: true, allowedBots: ["bot-a"] };
     const allowed = readBotContainerAgentConfig("hermes_gateway", config(), settings, "bot-a");

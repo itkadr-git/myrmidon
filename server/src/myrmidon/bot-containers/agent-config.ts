@@ -163,10 +163,6 @@ export function readBotContainerAgentConfig(
   // myrmidon(1.6.1-BOT-DISK-C): an optional per-bot disk quota on the card.
   const diskQuotaMb =
     typeof c.diskQuotaMb === "number" && Number.isInteger(c.diskQuotaMb) && c.diskQuotaMb > 0 ? c.diskQuotaMb : undefined;
-  return { ok: true, config: { image, memoryMb, cpus, pidsLimit, extraMounts: extraMounts.mounts, ...(diskQuotaMb !== undefined ? { diskQuotaMb } : {}) } };
-  // Read shared mount access setting (defaults to false if not specified)
-  // If instance settings are provided, use them to determine access; otherwise default to false
-  const hasSharedMountAccess = instanceSharedMountSettings 
   // Read shared mount access: only when the instance enables it and the bot is
   // allowlisted (an empty/absent allowlist means "every bot", matching
   // isBotAllowedSharedAccess in shared-mount.ts).
@@ -178,7 +174,19 @@ export function readBotContainerAgentConfig(
       )
     : false;
 
-  return { ok: true, config: { image, memoryMb, cpus, pidsLimit, extraMounts: extraMounts.mounts, hasSharedMountAccess } };
+  return {
+    ok: true,
+    config: {
+      image,
+      memoryMb,
+      cpus,
+      pidsLimit,
+      extraMounts: extraMounts.mounts,
+      // myrmidon(1.6.1-BOT-DISK-C): the optional per-bot quota stays on the card.
+      ...(diskQuotaMb !== undefined ? { diskQuotaMb } : {}),
+      hasSharedMountAccess,
+    },
+  };
 }
 
 /**

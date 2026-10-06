@@ -349,6 +349,7 @@ export function buildCreateContainerRequestBody(
   let sharedMountPath: string | undefined;
   if (spec.hasSharedMountAccess) {
     sharedMountPath = path.join(process.env.MYRMIDON_BOT_VOLUME_ROOT || "/var/lib/myrmidon-bots", "shared");
+  }
   return {
     Image: spec.image,
     Labels: buildLabels(spec),
@@ -1349,8 +1350,6 @@ export function dockerBotContainerDriver(
     const body = await createBody(spec, layout, volumeLayout);
     await removeByName(replacementContainerNameFor(spec.botKey)); // stale, from an interrupted recreate
     await prepareVolumes(spec.botKey, spec.image, layout);
-    // Prepare volumes first
-    await prepareVolumes(spec.botKey, spec.image);
     // Handle shared mount if enabled for this bot
     if (spec.hasSharedMountAccess) {
       // Prepare the shared mount for this bot
@@ -1393,7 +1392,6 @@ export function dockerBotContainerDriver(
     // the bot untouched. The new layout's directories exist, empty, by then; the migration
     // renames the old ones onto them.
     await prepareVolumes(spec.botKey, spec.image, layout);
-    await prepareVolumes(spec.botKey, spec.image);
     // Handle shared mount if enabled for this bot
     if (spec.hasSharedMountAccess) {
       // Prepare the shared mount for this bot
