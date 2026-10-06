@@ -70,7 +70,7 @@ function formatTimestamp(value: string | null): string {
 
 export function DataRetentionSettingsPanel() {
   const queryClient = useQueryClient();
-  const { data: view } = useQuery({
+  const { data: view, isError } = useQuery({
     queryKey: dataRetentionQueryKey,
     queryFn: dataRetentionApi.get,
   });
@@ -109,8 +109,18 @@ export function DataRetentionSettingsPanel() {
     save.mutate(parsed as DataRetentionSettings);
   };
 
-  const status = view?.status;
-  const sources = view?.sources;
+  // myrmidon(1.6.5-DB-RETENTION): the panel belongs to instances that serve the
+  // data retention route. Until the view arrives — and on an instance that does
+  // not serve that route yet — the section renders nothing, so the settings page
+  // never shows an empty block of dead inputs.
+  // myrmidon(1.6.5-DB-RETENTION): the panel belongs to instances that serve the
+  // data retention route. Until the view arrives — and on an instance that does
+  // not serve that route yet — the section renders nothing, so the settings page
+  // never shows an empty block of dead inputs.
+  if (isError || !view) return null;
+
+  const status = view.status;
+  const sources = view.sources;
 
   return (
     <section className="space-y-4 rounded-lg border p-4" data-testid="data-retention-panel">
@@ -152,7 +162,7 @@ export function DataRetentionSettingsPanel() {
                 }}
                 data-testid={`data-retention-${field.key}-input`}
               />
-              {sources && sources[field.key] !== "settings" && (
+              {sources[field.key] !== "settings" && (
                 <span className="text-xs text-muted-foreground">Default</span>
               )}
             </div>

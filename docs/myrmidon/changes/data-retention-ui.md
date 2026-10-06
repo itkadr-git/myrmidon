@@ -19,8 +19,10 @@
   panel shows a visible note that cleanup starts once a backup younger than
   24 hours exists — nothing is deleted until then.
 - Each window also shows whether its value comes from the stored settings or
-  from the default. The server side of the feature ships separately; until it
-  lands, the panel reads the contract above.
+  from the default. On an instance that does not serve the route the section is
+  not rendered at all, so the settings page never shows an empty block of dead
+  inputs. The server side of the feature ships separately; until it lands, the
+  panel reads the contract above.
 
 ## changelog-ru
 
@@ -44,5 +46,7 @@
   показывает заметную подсказку, что удаление начнётся, когда появится копия
   моложе 24 часов — до этого не удаляется ничего.
 - Для каждого срока также видно, откуда взято значение: из сохранённых
-  настроек или по умолчанию. Серверная часть поставляется отдельно; до её
+  настроек или по умолчанию. На инстансе, который маршрут не обслуживает,
+  раздел вообще не отрисовывается — страница настроек не показывает пустой
+  блок из мёртвых полей. Серверная часть поставляется отдельно; до её
   слияния панель работает по описанному контракту.
