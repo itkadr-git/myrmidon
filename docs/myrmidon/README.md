@@ -67,6 +67,7 @@ Myrmidon — плоскость управления компаниями из �
 | [guides/run-stall.md](guides/run-stall.md) | Обнаружение зависших прогонов: что считается прогрессом, прерывание `run_stalled`, возврат задачи в `todo`, настройки |
 | [guides/stale-block.md](guides/stale-block.md) | Гард причины-ссылки при переходе в blocked (STALE-BLOCK A) и сторож мёртвых блоков (часть B): какие причины мертвы, снятие блока с системным комментарием, карточка `stale_block` в attention-фиде, настройки |
 | [guides/workspace-cleanup.md](guides/workspace-cleanup.md) | Очистка рабочих копий после слияния и сигнал о застрявшей копии |
+| [guides/telegram-bridge-locale.md](guides/telegram-bridge-locale.md) | Тексты Telegram-моста по языку пользователя: выбор, принуждение env, источник значения на экране «Язык» (TG-LOCALE) |
 | [guides/cloud-files-connector.md](guides/cloud-files-connector.md) | Коннектор Microsoft 365 для ботов-контейнеров: настройка и журнал |
 | [guides/maintenance-banner.md](guides/maintenance-banner.md) | Как баннер обслуживания группирует окна агентов |
 | [guides/access-hub.md](guides/access-hub.md) | Хаб доступов в настройках: секреты парка, выдача агентам, ротация, SSH-ключи, журнал |
