@@ -34,7 +34,7 @@ env:
 jobs:
   plan:
     name: plan
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 10
     outputs:
       tier: ${{ steps.plan.outputs.tier }}
@@ -95,7 +95,7 @@ jobs:
     name: typecheck
     needs: plan
     if: ${{ needs.plan.outputs.tier == 'fast' || needs.plan.outputs.tier == 'full' }}
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_TYPECHECK || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_TYPECHECK || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 30
     steps:
       - name: Checkout repository
@@ -168,7 +168,7 @@ jobs:
     name: build
     needs: plan
     if: ${{ needs.plan.outputs.tier == 'fast' || needs.plan.outputs.tier == 'full' }}
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_BUILD || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_BUILD || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 40
     env:
       NODE_OPTIONS: --max-old-space-size=4096
@@ -246,7 +246,7 @@ jobs:
     name: tests (affected)
     needs: plan
     if: ${{ needs.plan.outputs.tier == 'fast' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 30
     steps:
       - name: Checkout repository
@@ -296,7 +296,7 @@ jobs:
     name: tests (${{ matrix.label }})
     needs: plan
     if: ${{ needs.plan.outputs.tier == 'full' }}
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_TESTS || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_TESTS || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -372,7 +372,7 @@ jobs:
     name: tests (other packages)
     needs: plan
     if: ${{ needs.plan.outputs.tier == 'full' }}
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_TESTS_OTHER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_TESTS_OTHER || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 20
     steps:
       - name: Checkout repository
@@ -418,7 +418,7 @@ jobs:
     name: tests (runner)
     needs: plan
     if: ${{ needs.plan.outputs.tier == 'full' }}
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_TESTS_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_TESTS_RUNNER || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 40
     steps:
       - name: Checkout repository
@@ -483,7 +483,7 @@ jobs:
     # gitleaks, the internal-address scan, dependency licenses and plugin
     # compatibility. Every step runs even if an earlier one failed.
     name: checks
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 20
     env:
       GITLEAKS_VERSION: 8.30.1
@@ -620,7 +620,7 @@ jobs:
     # image the fleetd image workflow builds from. The image itself is built
     # by myrmidon-fleetd.yml. See docs/myrmidon/fleetd-vmexec.md.
     name: fleetd
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 20
     env:
       GO_IMAGE: golang:1.25-bookworm@sha256:3b4a11519ad929d1e1d261a12cff056f0c85b735253d7d861346b9c6f8b36437
@@ -657,7 +657,7 @@ jobs:
     # minutes and a red dockergate must not merge. The image itself is built by
     # myrmidon-dockergate.yml. See docs/myrmidon/dockergate.md.
     name: dockergate
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 20
     env:
       GO_IMAGE: golang:1.25-bookworm@sha256:3b4a11519ad929d1e1d261a12cff056f0c85b735253d7d861346b9c6f8b36437
@@ -731,9 +731,23 @@ jobs:
     name: CI result
     if: ${{ !cancelled() }}
     needs: [plan, typecheck, build, tests-affected, tests, tests-other, tests-runner, checks, dockergate, fleetd]
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 5
     steps:
+      - name: Ensure gh and jq (self-hosted runners may lack them)
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="$RUNNER_TEMP/tools-bin"; mkdir -p "$bin"
+          if ! command -v jq >/dev/null; then
+            curl -fsSL -o "$bin/jq" https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-amd64
+            chmod +x "$bin/jq"
+          fi
+          if ! command -v gh >/dev/null; then
+            curl -fsSL https://github.com/cli/cli/releases/download/v2.62.0/gh_2.62.0_linux_amd64.tar.gz | tar -xz -C "$RUNNER_TEMP"
+            cp "$RUNNER_TEMP/gh_2.62.0_linux_amd64/bin/gh" "$bin/gh"
+          fi
+          echo "$bin" >> "$GITHUB_PATH"
       - name: Check lane results
         env:
           RESULTS: ${{ toJSON(needs) }}
@@ -752,7 +766,7 @@ jobs:
     name: report main status
     needs: [ci-result]
     if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 5
     permissions:
       actions: read
