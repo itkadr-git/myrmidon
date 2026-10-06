@@ -1,0 +1,5 @@
+{
+  "key": "ABC-101",
+  "repo": "acme/widgets",
+  "baseRef": "main"
+}
