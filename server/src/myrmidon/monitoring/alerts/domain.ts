@@ -227,6 +227,8 @@ export interface AlertRouteRule {
   match: string;
   /** Role name or agent id from the board. */
   assignee: string;
+  /** Runbook steps the assignee follows; absent = the default template. */
+  runbook?: string[];
 }
 
 /** Settings stored in instance_settings.general. Default route: adm-devops. */
@@ -255,14 +257,28 @@ export function routeAssignee(
   routes: AlertRouteRule[],
   defaultAssignee: string = DEFAULT_ALERT_ROUTE_ASSIGNEE,
 ): string {
+  return routeMatch(alert, routes)?.assignee ?? defaultAssignee;
+}
+
+/** The first rule matching the alert title, or null (the default route). */
+export function routeMatch(alert: NormalizedAlert, routes: AlertRouteRule[]): AlertRouteRule | null {
   const title = alert.title.toLowerCase();
   for (const rule of routes) {
     const match = rule.match.trim().toLowerCase();
     if (!match || !rule.assignee.trim()) continue;
-    if (title.includes(match)) return rule.assignee.trim();
+    if (title.includes(match)) return rule;
   }
-  return defaultAssignee;
+  return null;
 }
+
+/** The generic runbook template when neither the route nor the operator gives steps. */
+export const DEFAULT_ALERT_RUNBOOK: string[] = [
+  "Acknowledge the alert and open the source link in the issue description.",
+  "Identify the affected host(s) and check the alert-specific metric.",
+  "Apply the standard remediation for the alert type.",
+  "Verify the alert clears in the monitoring system; this issue closes automatically on recovery.",
+  "If the alert does not clear within 30 minutes, escalate to the on-call engineer.",
+];
 
 /** The title of the board issue for one alert. */
 export function issueTitleFor(alert: NormalizedAlert): string {
@@ -270,8 +286,9 @@ export function issueTitleFor(alert: NormalizedAlert): string {
   return `[${alert.source}] ${alert.title}${hosts}`;
 }
 
-/** The body of the board issue for one alert, including the source link. */
-export function issueBodyFor(alert: NormalizedAlert): string {
+/** The body of the board issue for one alert, including the source link and the runbook. */
+export function issueBodyFor(alert: NormalizedAlert, runbook: string[] = DEFAULT_ALERT_RUNBOOK): string {
+  const steps = runbook.filter((s) => typeof s === "string" && s.trim().length > 0);
   const lines = [
     `Monitoring alert from ${alert.source}.`,
     "",
@@ -281,6 +298,9 @@ export function issueBodyFor(alert: NormalizedAlert): string {
     `- Severity: ${alert.severity}`,
     alert.startedAt ? `- Started: ${alert.startedAt}` : null,
     alert.url ? `- Source: ${alert.url}` : null,
+    "",
+    "## Runbook",
+    ...steps.map((step, i) => `${i + 1}. ${step.trim()}`),
     "",
     "The issue auto-closes when the alert recovers.",
   ];

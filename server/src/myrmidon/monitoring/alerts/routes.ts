@@ -22,7 +22,7 @@ import { logger } from "../../../middleware/logger.js";
 import { issueService } from "../../../services/issues.js";
 import { agents } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
-import { alertPriority, detectAlertSource, parseAlertmanagerAlerts, parseZabbixAlert, type AlertRouteSettings } from "./domain.js";
+import { alertPriority, detectAlertSource, parseAlertmanagerAlerts, parseZabbixAlert, type AlertRouteSettings, type NormalizedAlert } from "./domain.js";
 import { createAlertService, tokenMatches, type AssigneeResolver, type IssuePorts } from "./service.js";
 import {
   alertRoutesPatchSchema,
@@ -33,6 +33,7 @@ import {
 } from "./settings.js";
 import { createDbAlertDedupStore, type AlertDedupStore } from "./store.js";
 import { readAlertsSettings, resolveAlertTokenRef } from "./token.js";
+import { createAlertsMetrics, outcomeToMetric, type AlertsMetrics } from "./metrics.js";
 
 export interface AlertRoutesDeps {
   db: Db;
@@ -52,6 +53,8 @@ export interface AlertRoutesDeps {
   dedupStore?: AlertDedupStore;
   /** Injectable for tests: the audit-log writer. */
   auditLog?: typeof logActivity;
+  /** Injectable for tests: the processed-alerts counter. */
+  metrics?: AlertsMetrics;
 }
 
 function bearerToken(req: Request): string | undefined {
@@ -107,6 +110,7 @@ export function monitoringAlertsRoutes(deps: AlertRoutesDeps) {
   const issues = deps.issuePorts ?? vendorIssuePorts(db);
   const assigneeResolver = deps.assigneeResolver ?? dbAssigneeResolver(db);
   const service = createAlertService({ store: dedupStore, issues, assigneeResolver });
+  const alertsMetrics = deps.metrics ?? createAlertsMetrics();
   const webhookSettings = readAlertsSettings(env);
 
   const companyId = (): string => {
@@ -145,6 +149,7 @@ export function monitoringAlertsRoutes(deps: AlertRoutesDeps) {
     for (const alert of alerts) {
       try {
         const outcome = await service.handleAlert(company, alert, alertPriority(alert), settings);
+        alertsMetrics.record(outcomeToMetric(outcome.action));
         results.push(outcome);
         await writeAudit(db, {
           companyId: company,
@@ -156,6 +161,7 @@ export function monitoringAlertsRoutes(deps: AlertRoutesDeps) {
           details: { issueId: outcome.issueId, issueIdentifier: outcome.issueIdentifier },
         });
       } catch (err) {
+        alertsMetrics.record("error");
         logger.error({ err }, "monitoring alerts webhook: one alert failed");
         results.push({ identity: `${alert.source}:${alert.key}`, action: "error", issueId: null, issueIdentifier: null });
       }
@@ -168,6 +174,41 @@ export function monitoringAlertsRoutes(deps: AlertRoutesDeps) {
     assertCompanyAccess(req, company);
     assertBoard(req);
     res.json(alertSettingsView(await settingsStore.get(company)));
+  });
+
+  router.post("/myrmidon/monitoring/alerts/selfcheck", async (req, res) => {
+    const company = typeof req.query.companyId === "string" ? req.query.companyId : companyId();
+    assertCompanyAccess(req, company);
+    assertBoard(req);
+
+    const settings = await settingsStore.get(company);
+    const firedAt = new Date().toISOString();
+    const firingAlert: NormalizedAlert = {
+      source: "zabbix",
+      key: `selfcheck-${Date.now()}`,
+      title: "monitoring-selfcheck: synthetic disk alert",
+      severity: "high",
+      severityCode: 4,
+      hosts: ["selfcheck-host.example.com"],
+      resolved: false,
+      resolvedAt: null,
+      startedAt: firedAt,
+      labels: {},
+      url: null,
+    };
+    const created = await service.handleAlert(company, firingAlert, "high", settings);
+    alertsMetrics.record(outcomeToMetric(created.action));
+    const resolvedAlert: NormalizedAlert = { ...firingAlert, resolved: true, resolvedAt: new Date().toISOString() };
+    const closed = await service.handleAlert(company, resolvedAlert, "high", settings);
+    alertsMetrics.record(outcomeToMetric(closed.action));
+    const entry = await dedupStore.get(company, firingAlert.source, firingAlert.key);
+    const ok = created.action === "create" && closed.action === "resolve" && entry?.issueStatus === "resolved";
+    res.status(ok ? 200 : 500).json({
+      ok,
+      created_issue: created.issueIdentifier ?? created.issueId,
+      auto_closed: closed.action === "resolve" && entry?.issueStatus === "resolved",
+      metrics: alertsMetrics.snapshot(),
+    });
   });
 
   router.patch("/myrmidon/monitoring/alerts/settings", validate(alertRoutesPatchSchema), async (req, res) => {

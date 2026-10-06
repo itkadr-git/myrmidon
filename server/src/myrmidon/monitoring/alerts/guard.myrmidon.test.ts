@@ -17,6 +17,14 @@ describe("myrmidon(1.6.6-ALERTS) module presence", () => {
     expect(alerts.ALERTS_SWEEP_INTERVAL_SEC_ENV).toBe("MYRMIDON_ALERTS_SWEEP_INTERVAL_SEC");
     expect(alerts.ALERTS_RETENTION_DAYS_ENV).toBe("MYRMIDON_ALERTS_RETENTION_DAYS");
   });
+
+  it("exports the metrics and the default runbook for the selfcheck and part A", () => {
+    expect(alerts.ALERTS_METRIC_NAME).toBe("myrmidon_alerts_processed_total");
+    expect(typeof alerts.createAlertsMetrics).toBe("function");
+    expect(typeof alerts.outcomeToMetric).toBe("function");
+    expect(Array.isArray(alerts.DEFAULT_ALERT_RUNBOOK)).toBe(true);
+    expect(alerts.DEFAULT_ALERT_RUNBOOK.length).toBeGreaterThan(0);
+  });
 });
 
 // Routes and domain behavior are pinned in routes.myrmidon.test.ts and

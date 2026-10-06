@@ -28,6 +28,7 @@ export const alertRouteRuleSchema = z
   .object({
     match: z.string().trim().min(1).max(120),
     assignee: z.string().trim().min(1).max(120),
+    runbook: z.array(z.string().trim().min(1).max(500)).max(20).optional(),
   })
   .strict();
 

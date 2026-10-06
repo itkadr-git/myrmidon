@@ -170,13 +170,25 @@ describe("myrmidon(1.6.6-ALERTS) issue text", () => {
     expect(issueTitleFor(alert)).toBe("[zabbix] Free disk space is less than 10% on volume / — host-a.example.com");
   });
 
-  it("builds a description with the key, severity and the source link", () => {
+  it("builds a description with the key, severity, the source link and the default runbook", () => {
     const alert = parseZabbixAlert(zabbixFiring)!;
     const body = issueBodyFor(alert);
     expect(body).toContain("Key: 101");
     expect(body).toContain("Severity: high");
     expect(body).toContain(zabbixFiring.url);
     expect(body).toContain("auto-closes");
+    expect(body).toContain("## Runbook");
+    expect(body).toContain("1. Acknowledge the alert");
+    expect(body).toContain("5. If the alert does not clear");
+  });
+
+  it("uses the route runbook when the matched rule carries one", () => {
+    const alert = parseZabbixAlert(zabbixFiring)!;
+    const body = issueBodyFor(alert, ["Check the volume.", "Free space."]);
+    expect(body).toContain("## Runbook");
+    expect(body).toContain("1. Check the volume.");
+    expect(body).toContain("2. Free space.");
+    expect(body).not.toContain("Acknowledge the alert");
   });
 
   it("builds the update and recovery comment bodies", () => {
