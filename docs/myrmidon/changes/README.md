@@ -67,10 +67,18 @@ Rules:
   starting with `|`). The collector appends them to the section named by the
   front-matter key: `divergence-section` is the `## …` heading of
   DIVERGENCE.md (e.g. `Трек 5 — эксплуатация`), `settings-section` is the
-  `## …` heading of SETTINGS.md and SETTINGS.ru.md (the RU file reuses the EN
-  headings, e.g. `Track 5 — operations`). A section present without its
+  `## …` heading of SETTINGS.md. SETTINGS.ru.md carries Russian variants of
+  the same headings (`Track 5 — operations` → `Трек 5 — эксплуатация`,
+  `1.6.1 — BOT-DISK B: shared package cache …` → `1.6.1 — BOT-DISK B: общий
+  кэш пакетов …`); the collector first looks for the exact heading, then
+  resolves the section by its key — the release version plus the all-caps
+  feature-id tokens. Write the EN heading in `settings-section`; the RU fold
+  follows it automatically when the RU file has a section with the same key.
+  A section present without its
   front-matter key is an error; an unknown heading name fails the release
-  collect loudly, listing the available sections.
+  collect loudly, listing the available sections. A key that matches several
+  RU sections is not guessed — the fold fails; disambiguate by adding the
+  missing RU heading or by pointing the fragment at another section.
 - Table rows follow the same pipe-escaping rule as the shared documents:
   `a \|\| b` inside a cell.
 - The collector validates the fragment; the PR author can run it any time:

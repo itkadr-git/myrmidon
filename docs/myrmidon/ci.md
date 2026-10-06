@@ -93,8 +93,11 @@ Job `report main status` после полного прогона на `main`:
 Сторож — тест `change-fragments-gate-selftest.test.mjs` внутри шага
 `node --test` job `checks`: на событии `pull_request` он гоняет сторож по
 `$GITHUB_EVENT_PATH` (checkout с `fetch-depth: 0` уже на месте), вне PR —
-пропускается. Отдельного шага workflow нет: изменения `.github/workflows/**` —
-зона трека 1, и токен сессии их всё равно не пушит (нет scope `workflow`).
+пропускается. Тот же тест гоняет `collect-fragments.mjs --version 0.0.0
+--dry-run` по дереву PR: фрагмент, который сборщик не может
+сложить (ссылка на заголовок раздела, которого нет в целевом документе),
+красит PR до слияния — такие фрагменты молча ломают нарезку релиза.
+Отдельного шага workflow нет: изменения `.github/workflows/**` — зона трека 1, и токен сессии их всё равно не пушит (нет scope `workflow`).
 | `report main status` | только `main` | issue `main-red` (выше) |
 
 **Для ruleset `main-protection` достаточно одной проверки — `CI result`.** Она есть в каждом
