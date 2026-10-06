@@ -52,6 +52,9 @@ import {
   patchTeamLivenessSettingsSchema,
   storedTeamLivenessSettingsSchema,
 } from "../myrmidon-team-liveness.js";
+// myrmidon(DB-PERF-C-P4): the TTL of the tool gateway policy cache, stored in
+// the same general settings row.
+import { toolPolicyCacheSettingsSchema } from "../myrmidon-tool-policy-cache.js";
 
 // myrmidon(PARALLEL-HELPERS): re-exported for the barrel so the settings page and the
 // /api/myrmidon/parallel-helpers route validate with the exact schema stored here.
@@ -189,6 +192,11 @@ export const instanceGeneralSettingsSchema = z.object({
   // An agent card may override each behaviour's switch for itself
   // (`adapterConfig.teamLiveness`), never the company-wide ceilings.
   teamLiveness: storedTeamLivenessSettingsSchema.optional(),
+  // myrmidon(DB-PERF-C-P4): TTL of the in-process cache behind the tool
+  // gateway's policy, profile, binding and profile-entry reads, changed from
+  // GET/PATCH /api/myrmidon/tool-policy-cache; absent means the default (30 s)
+  // and `0` switches the cache off (every read is a fresh query).
+  toolPolicyCache: toolPolicyCacheSettingsSchema.optional(),
 }).strict();
 
 export const patchInstanceGeneralSettingsSchema = z

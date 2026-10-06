@@ -2851,3 +2851,7 @@ export * from "./myrmidon-review-routing.js";
 // Settings contract, verdict-marker parser and activity actions.
 export * from "./myrmidon-review-rework.js";
 export * from "./myrmidon-budget-projection.js"; // myrmidon(1.7-BUDGET-CONFIG-C)
+// myrmidon(DB-PERF-C-P4): the TTL of the tool gateway policy cache — the
+// instance setting, its bounds and the lenient reader shared by the settings
+// route and the cache itself.
+export * from "./myrmidon-tool-policy-cache.js";
