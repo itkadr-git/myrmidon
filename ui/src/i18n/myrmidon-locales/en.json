@@ -392,7 +392,30 @@
     "generated": "Generated {{time}}",
     "hoursUnit": "h",
     "intro": "Delivery quality over the selected window: cycle time, review time, return rate, blocked time, runs and cost per task, by project and by role.",
-    "notAvailableDescription": "The periodic metrics job is off by default; ask the operator to enable the baseline sweep."
+    "notAvailableDescription": "The periodic metrics job is off by default; ask the operator to enable the baseline sweep.",
+    "compare": {
+      "title": "Comparison with the pinned snapshot",
+      "description": "Current window against the pinned baseline snapshot, by project and by role.",
+      "loading": "Loading comparison…",
+      "error": "Failed to load the comparison. The metrics above are unaffected.",
+      "noBaseline": "No pinned baseline snapshot yet — the comparison appears once a snapshot is pinned.",
+      "noDelta": "—",
+      "percentPoints": "pp",
+      "baselineMeta": "Pinned snapshot window: {{window}}",
+      "byProject": "By project",
+      "byRole": "By role",
+      "columns": {
+        "metric": "Metric",
+        "current": "Current window",
+        "baseline": "Baseline",
+        "delta": "Delta",
+        "tasksDone": "Tasks done",
+        "cycleTime": "Cycle time (mean)",
+        "reviewTime": "Review time (mean)",
+        "returnRate": "Return rate",
+        "costPerTask": "Cost per task (mean)"
+      }
+    }
   },
   "swarm": {
     "title": "Swarm supervisor",
