@@ -348,6 +348,7 @@ and reads the journal; any authenticated panel user reads the registry; agents g
 except the registry. While a session is open, the screen node receives `pause` for bots (the contract) and
 the board server rejects MCP calls into that browser (423, a safeguard). Site-data cleanup takes a
 domain typed in (bare domain); cookies+storage are cleaned on the node via CDP.
+Flow end to end: [guides/browsers.md](guides/browsers.md).
 
 ## 1.3 — WORKSPACE-HYGIENE (agent workspaces)
 
@@ -459,6 +460,8 @@ environment variables.
 | Variable | Function | Default | What it does | How to disable / special |
 |---|---|---|---|---|
 | `MYRMIDON_FLEET_CONSOLE_URL` | SC1 | unset (off) | Base address of the Guacamole client for which the panel signs the auth-JSON (e.g. `https://guac.example.com`, no trailing `/`). It also goes into the token-issuing response and the `consoleUrl` address | Unset or empty — token issuance answers `503 console_not_configured`, the node registry and the log keep working. The company secret with the shared key is `guacamole-json-secret-key` (the value is read by the server, never appears in a response or the log); a registry row may reference a secret with the node password. Read at route assembly on server startup |
+
+Operator guide: [guides/server-console.md](guides/server-console.md) — the registry, the one-time token, the journal and the error codes.
 
 ## CLOUD-CONNECTOR — cloud storage connector (1.4)
 
