@@ -16,7 +16,10 @@
 //   ## settings-en    -> table rows appended to SETTINGS.md, section
 //                        `settings-section`
 //   ## settings-ru    -> table rows appended to SETTINGS.ru.md, same section
-//                        name (the RU file reuses the EN section headings)
+//                        name; when the RU file carries the Russian variant of
+//                        the heading instead of the EN one, the section is
+//                        resolved by its key (version + feature id tokens, see
+//                        `sectionKey`)
 // Then every consumed fragment file is deleted.
 //
 // Fragment format (docs/myrmidon/changes/README.md):
@@ -254,6 +257,65 @@ export function parseFragment(text, fileName = "<fragment>") {
     );
   }
   return { meta, sections: out, edits };
+}
+
+/**
+ * Language-independent key of a registry section heading: the leading release
+ * version (if any) plus the all-caps Latin feature-id tokens (`BOT-DISK`,
+ * `P12`, `EXTCASE-B`, `WAKE-GUARD`), joined. Track headings key on the track
+ * number (`track:5`). Single-letter part markers (`B` in `BOT-DISK B`) are
+ * noise and are dropped, so EN `... BOT-DISK B: shared package cache ...` and
+ * RU `... BOT-DISK B: общий кэш ...` share the key. Used to pair the heading
+ * named by a fragment's `settings-section` with the translated variant of the
+ * same section in the RU document.
+ */
+export function sectionKey(heading) {
+  const h = String(heading).trim();
+  const track = /^(?:Track|Трек)\s*(\d+)\b/i.exec(h);
+  if (track) return `track:${track[1]}`;
+  const version = /^(\d+\.\d+(?:\.\d+)?)\s+[—-]\s+/.exec(h);
+  const body = version ? h.slice(version[0].length) : h;
+  const runs = (body.match(/[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*/g) || []).filter(
+    (t) => t.length >= 2,
+  );
+  if (runs.length === 0) return null;
+  return `${version ? version[1] : ""}|${runs.join("|")}`;
+}
+
+/**
+ * Resolves the heading of a section inside `docText`. The exact heading wins;
+ * otherwise the section whose `sectionKey` matches is returned (the RU settings
+ * document carries Russian variants of the EN headings that fragments name).
+ * Ambiguous or missing key matches return the heading unchanged so
+ * foldTableRows fails with its usual list of available sections.
+ */
+export function resolveSectionHeading(docText, heading) {
+  const lines = docText.split("\n");
+  const wanted = `## ${heading}`;
+  if (lines.some((l) => l.trim() === wanted)) return heading;
+  const key = sectionKey(heading);
+  if (key === null) return heading;
+  const candidates = lines
+    .filter((l) => /^## /.test(l))
+    .map((l) => l.slice(3).trim())
+    .filter((h) => sectionKey(h) === key);
+  if (candidates.length === 1) return candidates[0];
+  if (candidates.length === 0 && key.includes("|")) {
+    // Relaxed match: version + first feature-id token (RU headings sometimes
+    // carry fewer capitalised tokens than their EN twin, e.g. an EN heading
+    // mentions «part B, UI» while the RU one is a short translation).
+    const prefix = key.split("|").slice(0, 2).join("|");
+    const relaxed = lines
+      .filter((l) => /^## /.test(l))
+      .map((l) => l.slice(3).trim())
+      .filter((h) => {
+        const k = sectionKey(h);
+        return k !== null && (k === prefix || k.startsWith(`${prefix}|`));
+      });
+    const seen = new Set(relaxed);
+    if (seen.size === 1) return [...seen][0];
+  }
+  return heading;
 }
 
 /** Lists fragment files of the changes directory (README.md is not one). */
@@ -563,13 +625,16 @@ export function collect(root, { version, dryRun = false, log = () => {} } = {}) 
         edits.set(rel, foldReplaceRows(read(rel), { rows: e.body, section: e.directives.section ?? null, occurrence: e.directives.occurrence ? Number(e.directives.occurrence) : null }, { fileName: f.name }));
       }
     }
-    // 2. rows appended to the section named in the front matter
+    // 2. rows appended to the section named in the front matter; the RU settings
+    //    document carries Russian variants of the EN headings, so its heading is
+    //    resolved by language-independent key (see `sectionKey`)
     for (const f of fragments) {
       if (!f.sections[doc]) continue;
+      const target = doc === "settings-ru" ? resolveSectionHeading(read(rel), f.meta[sectionKey[doc]]) : f.meta[sectionKey[doc]];
       edits.set(
         rel,
         foldTableRows(read(rel), {
-          sectionHeading: f.meta[sectionKey[doc]],
+          sectionHeading: target,
           rows: f.sections[doc],
         }, { fileName: f.name }),
       );
