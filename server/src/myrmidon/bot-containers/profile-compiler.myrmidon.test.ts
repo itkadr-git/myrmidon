@@ -1164,6 +1164,68 @@ describe("myrmidon(G2) compileHermesProfile — instance defaults", () => {
     });
   });
 
+  // myrmidon(BOT-RUNTIME-TUNING-A): the same cap, set on the agent card.
+  describe("myrmidon(BOT-RUNTIME-TUNING-A) compression.threshold_tokens from the card", () => {
+    const yamlOf = (input: HermesProfileInput): string =>
+      fileByPath(compileHermesProfile(input).files, "hermes/config.yaml").content;
+
+    it("writes the card's threshold when the instance sets none at all", () => {
+      const yaml = yamlOf(baseInput({ adapterConfig: { models: { compressionThresholdTokens: 120_000 } } }));
+      expect(yaml).toContain("compression:\n  threshold_tokens: 120000");
+    });
+
+    it("the card's threshold wins over the instance default", () => {
+      const yaml = yamlOf(
+        baseInput({
+          adapterConfig: { models: { compressionThresholdTokens: 120_000 } },
+          instanceDefaults: { compression: { thresholdTokens: 100_000 } },
+        }),
+      );
+      expect(yaml).toContain("threshold_tokens: 120000");
+      expect(yaml).not.toContain("threshold_tokens: 100000");
+    });
+
+    it("keeps the instance ratio settings around the card's threshold", () => {
+      const yaml = yamlOf(
+        baseInput({
+          adapterConfig: { models: { compressionThresholdTokens: 120_000 } },
+          instanceDefaults: { compression: { enabled: true, threshold: 0.5, targetRatio: 0.2, thresholdTokens: 100_000 } },
+        }),
+      );
+      expect(yaml).toContain(
+        "compression:\n  enabled: true\n  target_ratio: 0.2\n  threshold: 0.5\n  threshold_tokens: 120000",
+      );
+    });
+
+    it("drops an out-of-range card value with a warning instead of substituting the instance default", () => {
+      const { profile, warnings } = compileHermesProfileDetailed(
+        baseInput({
+          adapterConfig: { models: { compressionThresholdTokens: 9_999 } },
+          instanceDefaults: { compression: { thresholdTokens: 100_000 } },
+        }),
+      );
+      const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
+      expect(yaml).not.toContain("threshold_tokens");
+      const warning = warnings.find((item) => item.includes("compression.threshold_tokens"));
+      expect(warning).toBeDefined();
+      // The warning names where the rejected value came from.
+      expect(warning).toContain("from the card");
+    });
+
+    it("names the instance default in the warning when that is the rejected value", () => {
+      const { warnings } = compileHermesProfileDetailed(
+        baseInput({ instanceDefaults: { compression: { thresholdTokens: 2_000_001 } } }),
+      );
+      expect(warnings.some((item) => item.includes("compression.threshold_tokens") && item.includes("from the instance default"))).toBe(true);
+    });
+
+    it("writes no compression block when neither the card nor the instance sets a threshold", () => {
+      const yaml = yamlOf(baseInput({ instanceDefaults: { compression: {} } }));
+      expect(yaml).not.toContain("compression:");
+      expect(yaml).not.toContain("threshold_tokens");
+    });
+  });
+
   // myrmidon(BOT-RUNTIME-TUNING-B): the model context window override.
   describe("myrmidon(BOT-RUNTIME-TUNING-B) model.context_length", () => {
     it("writes model.context_length from the card's models.contextLength", () => {
