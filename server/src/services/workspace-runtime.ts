@@ -36,6 +36,8 @@ import { and, desc, eq, gte, inArray, isNull, lte, ne, or } from "drizzle-orm";
 import { asNumber, asString, parseObject, renderTemplate } from "../adapters/utils.js";
 import { conflict } from "../errors.js";
 import { resolveHomeAwarePath } from "../home-paths.js";
+// myrmidon(1.6.1-BOT-DISK-C): refuse a NEW clone when the bot is over its disk quota
+import { botDiskQuotaRejection } from "../myrmidon/bot-containers/bot-quota.js";
 import { hasVerifiedWorktreeSeedManifest, isVerifiedWorktreeSeedManifest } from "../worktree-seed-manifest.js";
 import {
   buildManagedWorkspaceGuestEnv,
@@ -3479,6 +3481,23 @@ export async function realizeExecutionWorkspace(input: {
       );
     }
     throw new Error(`Registered worktree for branch "${branchName}" at "${registeredBranchWorktree}" is not reusable${reason}.`);
+  }
+
+  // myrmidon(1.6.1-BOT-DISK-C): a bot over its disk quota gets NO new clone.
+  // Both paths below create a fresh worktree directory (a pinned existing branch
+  // is still checked out into new files); reuse of an existing workspace
+  // returned above, so the check never bricks a bot that only keeps working
+  // where it already works. The rejection message carries the stable code
+  // BOT_DISK_QUOTA_EXCEEDED for the agent to parse.
+  const quotaRejection = await botDiskQuotaRejection(input.db, input.agent.id);
+  if (quotaRejection) {
+    throw new WorkspaceRuntimeValidationFailure(quotaRejection, {
+      workspaceValidation: {
+        reason: "bot_disk_quota_exceeded",
+        reasonCode: "BOT_DISK_QUOTA_EXCEEDED",
+        agentId: input.agent.id ?? null,
+      },
+    });
   }
 
   if (requestedExistingBranch) {

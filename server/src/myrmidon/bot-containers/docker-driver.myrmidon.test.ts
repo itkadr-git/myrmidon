@@ -31,11 +31,12 @@ import { BOT_LABEL_KEYS, BOT_RUNTIME_CONTRACT_LABEL, BotContainerTemplateError }
 import type { CompiledProfile, CompiledProfileFile } from "./types.js";
 import { buildUstarArchive, parseUstarArchive, type UstarReadEntry } from "./ustar.js";
 
-const CONFIG: Pick<DockerDriverConfig, "volumeRoot" | "network" | "allowlist" | "mountSources"> = {
+const CONFIG: Pick<DockerDriverConfig, "volumeRoot" | "network" | "allowlist" | "mountSources" | "devbuild"> = {
   volumeRoot: "/srv/myrmidon/bots",
   network: "myrmidon-bots",
   allowlist: ["myrmidon-hermes:*"],
   mountSources: ["/srv/shared/sources"],
+  devbuild: { host: null, user: "", base: "" },
 };
 
 function spec(overrides: Partial<BotContainerSpec> = {}): BotContainerSpec {
@@ -86,6 +87,22 @@ function testProfile(
 const NONCE = "00112233aabbccdd";
 
 describe("buildCreateContainerRequestBody", () => {
+  it("adds the read-only git mirror bind after the writable cache binds (1.6.2-BOT-DISK-C)", () => {
+    const withMirror = buildCreateContainerRequestBody(spec(), CONFIG, "/srv/package-cache", true);
+    const binds = withMirror.HostConfig.Binds;
+    expect(binds.slice(-5)).toEqual([
+      "/srv/package-cache/pnpm:/cache/pnpm:rw",
+      "/srv/package-cache/go-mod:/cache/go-mod:rw",
+      "/srv/package-cache/go-build:/cache/go-build:rw",
+      "/srv/package-cache/gradle:/cache/gradle:rw",
+      "/srv/package-cache/git:/cache/git:ro",
+    ]);
+    const without = buildCreateContainerRequestBody(spec(), CONFIG, "/srv/package-cache", false);
+    expect(without.HostConfig.Binds.some((bind) => bind.includes("/cache/git"))).toBe(false);
+    // A mirror without a cache path has nowhere to live: no bind.
+    expect(buildCreateContainerRequestBody(spec(), CONFIG, undefined, true).HostConfig.Binds.some((bind) => bind.includes("/cache/git"))).toBe(false);
+  });
+
   it("builds the fixed template body for an allowed image and the configured network", () => {
     const body = buildCreateContainerRequestBody(spec(), CONFIG);
     expect(body).toEqual({
@@ -106,13 +123,19 @@ describe("buildCreateContainerRequestBody", () => {
         RestartPolicy: { Name: "on-failure" },
         NetworkMode: "myrmidon-bots",
         Binds: [
-          "/srv/myrmidon/bots/agent-a/hermes:/data/hermes",
-          "/srv/myrmidon/bots/agent-a/workspace:/workspace",
-          "/srv/myrmidon/bots/agent-a/scratch:/scratch",
+          "/srv/myrmidon/bots/agent-a:/bot",
         ],
         Privileged: false,
       },
     });
+  });
+
+  it("has exactly ONE bind for the bot's data: hard links cannot cross mounts (BOT-DISK-D)", () => {
+    const binds = buildCreateContainerRequestBody(spec(), CONFIG).HostConfig.Binds;
+    expect(binds).toEqual(["/srv/myrmidon/bots/agent-a:/bot"]);
+    expect(binds.some((bind) => bind.includes(":/data/hermes") || bind.includes(":/workspace") || bind.includes(":/scratch"))).toBe(false);
+    // The single mount is writable (no :ro) and carries no tmpfs overlay over its paths.
+    expect(buildCreateContainerRequestBody(spec(), CONFIG).HostConfig.Tmpfs).toEqual({ "/tmp": "" });
   });
 
   it("carries no profile-hash labels that could later be mistaken for applied state", () => {
@@ -128,9 +151,7 @@ describe("buildCreateContainerRequestBody", () => {
       CONFIG,
     );
     expect(body.HostConfig.Binds).toEqual([
-      "/srv/myrmidon/bots/agent-a/hermes:/data/hermes",
-      "/srv/myrmidon/bots/agent-a/workspace:/workspace",
-      "/srv/myrmidon/bots/agent-a/scratch:/scratch",
+      "/srv/myrmidon/bots/agent-a:/bot",
       "/srv/shared/sources:/srv/shared/sources:ro",
     ]);
   });
@@ -163,6 +184,87 @@ describe("buildCreateContainerRequestBody", () => {
   });
 });
 
+describe("buildCreateContainerRequestBody — BUILD-OFFLOAD C devbuild wiring", () => {
+  const DEV_IMAGE = "ghcr.io/itkadr-git/myrmidon-hermes-dev:main";
+  const KEY_DIR = "/srv/keys/devbuild-ssh";
+  const DEV_CONFIG: Pick<DockerDriverConfig, "volumeRoot" | "network" | "allowlist" | "mountSources" | "devbuild"> = {
+    ...CONFIG,
+    allowlist: ["myrmidon-hermes*", "ghcr.io/itkadr-git/myrmidon-hermes-dev:*"],
+    mountSources: ["/srv/shared/sources", KEY_DIR],
+    devbuild: { host: "build-host.internal", user: "devbuild", base: "/srv/devbuild" },
+  };
+
+  it("puts DEVBUILD_* env and the read-only key mount on a dev-variant image when HOST is set", () => {
+    const body = buildCreateContainerRequestBody(spec({ image: DEV_IMAGE }), DEV_CONFIG);
+    expect(body.Env).toEqual([
+      "DEVBUILD_HOST=build-host.internal",
+      "DEVBUILD_USER=devbuild",
+      "DEVBUILD_BASE=/srv/devbuild",
+    ]);
+    expect(body.HostConfig.Binds).toEqual([
+      "/srv/myrmidon/bots/agent-a:/bot",
+      `${KEY_DIR}:/opt/devbuild-ssh:ro`,
+    ]);
+  });
+
+  it("applies defaults for USER and BASE and mounts the key after the card's own extra mounts", () => {
+    const body = buildCreateContainerRequestBody(
+      spec({
+        image: DEV_IMAGE,
+        extraMounts: [{ source: "/srv/shared/sources", containerPath: "/srv/shared/sources", readOnly: true }],
+      }),
+      { ...DEV_CONFIG, devbuild: { host: "build-host.internal", user: "devbuild", base: "/srv/devbuild" } },
+    );
+    expect(body.Env).toEqual([
+      "DEVBUILD_HOST=build-host.internal",
+      "DEVBUILD_USER=devbuild",
+      "DEVBUILD_BASE=/srv/devbuild",
+    ]);
+    expect(body.HostConfig.Binds).toEqual([
+      "/srv/myrmidon/bots/agent-a:/bot",
+      "/srv/shared/sources:/srv/shared/sources:ro",
+      `${KEY_DIR}:/opt/devbuild-ssh:ro`,
+    ]);
+  });
+
+  it("adds nothing without MYRMIDON_DEVBUILD_HOST, even for a dev-variant image with a key source listed", () => {
+    const body = buildCreateContainerRequestBody(spec({ image: DEV_IMAGE }), { ...DEV_CONFIG, devbuild: { host: null, user: "", base: "" } });
+    expect(body.Env).toBeUndefined();
+    expect(body.HostConfig.Binds).toEqual([
+      "/srv/myrmidon/bots/agent-a:/bot",
+    ]);
+  });
+
+  it("adds no DEVBUILD_* env to a non-dev image even when HOST is set", () => {
+    const body = buildCreateContainerRequestBody(spec(), DEV_CONFIG);
+    expect(body.Env).toBeUndefined();
+    expect(body.HostConfig.Binds).toEqual([
+      "/srv/myrmidon/bots/agent-a:/bot",
+    ]);
+  });
+
+  it("omits the key mount when no allowlisted source ends with the devbuild-ssh suffix, but still sets the env", () => {
+    const body = buildCreateContainerRequestBody(spec({ image: DEV_IMAGE }), {
+      ...DEV_CONFIG,
+      mountSources: ["/srv/shared/sources"],
+    });
+    expect(body.Env).toContain("DEVBUILD_HOST=build-host.internal");
+    expect(body.HostConfig.Binds).toEqual([
+      "/srv/myrmidon/bots/agent-a:/bot",
+    ]);
+  });
+
+  it("refuses a card's extra mount that would take over /opt/devbuild-ssh", () => {
+    expect(() =>
+      buildCreateContainerRequestBody(
+        spec({ image: DEV_IMAGE, extraMounts: [{ source: KEY_DIR, containerPath: "/opt/devbuild-ssh", readOnly: true }] }),
+        // host off so only the card's own mount is in play
+        { ...DEV_CONFIG, devbuild: { host: null, user: "", base: "" } },
+      ),
+    ).toThrow(BotContainerTemplateError);
+  });
+});
+
 describe("containerTemplateDrifted", () => {
   const body = buildCreateContainerRequestBody(spec(), CONFIG);
   function matchingInspect(): { Config: { Image: string }; HostConfig: typeof body.HostConfig } {
@@ -182,7 +284,16 @@ describe("containerTemplateDrifted", () => {
     { field: "pidsLimit", mutate: (e) => void (e.HostConfig.PidsLimit += 1) },
     { field: "network", mutate: (e) => void (e.HostConfig.NetworkMode = "other") },
     { field: "binds (an extra mount added)", mutate: (e) => void e.HostConfig.Binds.push("/srv/shared/sources:/srv/shared/sources:ro") },
-    { field: "binds (an extra mount removed)", mutate: (e) => void e.HostConfig.Binds.splice(1, 1) },
+    { field: "binds (the single mount removed)", mutate: (e) => void e.HostConfig.Binds.splice(0, 1) },
+    {
+      field: "binds (the former three-bind layout, which makes every bot recreate on migration)",
+      mutate: (e) =>
+        void (e.HostConfig.Binds = [
+          "/srv/myrmidon/bots/agent-a/hermes:/data/hermes",
+          "/srv/myrmidon/bots/agent-a/workspace:/workspace",
+          "/srv/myrmidon/bots/agent-a/scratch:/scratch",
+        ]),
+    },
   ];
   for (const { field, mutate } of mutations) {
     it(`is true when the ${field} changed`, () => {
@@ -281,7 +392,12 @@ describe("buildHelperContainerRequestBody", () => {
     expect(body.NetworkDisabled).toBe(true);
     expect(body.HostConfig.ReadonlyRootfs).toBe(true);
     expect(body.HostConfig.Privileged).toBe(false);
-    expect(body.HostConfig.Binds).toEqual(buildCreateContainerRequestBody(spec(), CONFIG).HostConfig.Binds);
+    // A helper only writes files, so it keeps the three narrow binds of the same host directories.
+    expect(body.HostConfig.Binds).toEqual([
+      "/srv/myrmidon/bots/agent-a/hermes:/data/hermes",
+      "/srv/myrmidon/bots/agent-a/workspace:/workspace",
+      "/srv/myrmidon/bots/agent-a/scratch:/scratch",
+    ]);
     expect(body.Entrypoint).toEqual(["/bin/sh", "-c"]);
     expect(body.Cmd).toEqual(["true", "myrmidon-helper", "/"]);
     expect(body.Labels).toEqual({ [BOT_LABEL_KEYS.helper]: "agent-a" }); // never listed as a bot
@@ -299,6 +415,16 @@ describe("buildHelperContainerRequestBody", () => {
     expect(body.HostConfig.CapDrop).toEqual(["ALL"]);
     expect(body.HostConfig.CapAdd).toEqual(["CHOWN", "FOWNER"]);
     expect(body.HostConfig.NetworkMode).toBe("none");
+    // myrmidon(BOT-ROOT-TRAVERSE): besides the three narrow binds the prepare helper
+    // also carries the bot's own root as the SAME bind the bot container gets at /bot,
+    // so its script can fix the traversal bit of the one mount point the narrow binds
+    // never reach.
+    expect(body.HostConfig.Binds).toEqual([
+      "/srv/myrmidon/bots/agent-a/hermes:/data/hermes",
+      "/srv/myrmidon/bots/agent-a/workspace:/workspace",
+      "/srv/myrmidon/bots/agent-a/scratch:/scratch",
+      "/srv/myrmidon/bots/agent-a:/bot",
+    ]);
   });
 });
 
@@ -502,7 +628,15 @@ interface FakeDaemon {
   containers: Map<string, FakeContainer>;
   owners: Map<string, Owner>;
   requests: RecordedRequest[];
-  options: { healthOnStart: "starting" | "healthy" | "unhealthy" | null; failMarkerRead: boolean; bootNeedsProfile: boolean };
+  options: {
+    healthOnStart: "starting" | "healthy" | "unhealthy" | null;
+    failMarkerRead: boolean;
+    bootNeedsProfile: boolean;
+    /** myrmidon(OPE-4789): answer every request with 429 this many times first
+     *  (the gate over its limit), optionally carrying a Retry-After header. */
+    rateLimitFirstRequests: number;
+    rateLimitRetryAfterSec: number | null;
+  };
   close(): Promise<void>;
 }
 
@@ -548,7 +682,7 @@ async function startFakeDaemon(tmp: string, images: Record<string, Record<string
   const containers = new Map<string, FakeContainer>();
   const owners = new Map<string, Owner>();
   const requests: RecordedRequest[] = [];
-  const options: FakeDaemon["options"] = { healthOnStart: "healthy", failMarkerRead: false, bootNeedsProfile: true };
+  const options: FakeDaemon["options"] = { healthOnStart: "healthy", failMarkerRead: false, bootNeedsProfile: true, rateLimitFirstRequests: 0, rateLimitRetryAfterSec: null };
   const imageLabels = new Map<string, Record<string, string> | null>();
   for (const [ref, labels] of Object.entries(images)) {
     imageLabels.set(ref, labels);
@@ -645,9 +779,14 @@ async function startFakeDaemon(tmp: string, images: Record<string, Record<string
     mountVolumes(container);
     if (options.bootNeedsProfile) {
       // What the bot image checks before its gateway serves (runtime contract "1").
-      const binds = parseBinds(container);
+      // The bot's tree is ONE mount at /bot; the directories the contract requires to be
+      // writable by uid 10001 are hermes/, workspace/ and scratch/ inside it.
+      const root = parseBinds(container).find(({ destination }) => destination === "/bot");
+      const binds = root
+        ? ["hermes", "workspace", "scratch"].map((name) => ({ source: `${root.source}/${name}`, destination: `/bot/${name}` }))
+        : [];
       const notOwned = binds.find(({ source }) => owners.get(source)?.uid !== BOT_CONTAINER_UID);
-      const hermes = binds.find(({ destination }) => destination === "/data/hermes");
+      const hermes = binds.find(({ destination }) => destination === "/bot/hermes");
       const envKey = container.body.Env?.find((entry) => entry.startsWith("API_SERVER_KEY="))?.slice("API_SERVER_KEY=".length);
       const apiKey = (hermes && readDotenvValue(path.join(hermes.source, ".env"), "API_SERVER_KEY")) ?? envKey;
       const refusal = notOwned
@@ -678,16 +817,24 @@ async function startFakeDaemon(tmp: string, images: Record<string, Record<string
     const query = Object.fromEntries(url.searchParams);
     const recorded: RecordedRequest = { method, path: decodeURIComponent(route), query };
     requests.push(recorded);
-    const send = (status: number, body?: unknown) => {
+    const send = (status: number, body?: unknown, extraHeaders?: Record<string, string>) => {
       if (Buffer.isBuffer(body)) {
-        res.writeHead(status, { "Content-Type": "application/x-tar" });
+        res.writeHead(status, { "Content-Type": "application/x-tar", ...extraHeaders });
         res.end(body);
         return;
       }
-      res.writeHead(status, { "Content-Type": "application/json" });
+      res.writeHead(status, { "Content-Type": "application/json", ...extraHeaders });
       res.end(body === undefined ? "" : JSON.stringify(body));
     };
     let m: RegExpMatchArray | null;
+
+    // myrmidon(OPE-4789): the gate over its limit answers 429 to everything,
+    // optionally with a Retry-After hint, until the configured count is spent.
+    if (options.rateLimitFirstRequests > 0) {
+      options.rateLimitFirstRequests -= 1;
+      const headers = options.rateLimitRetryAfterSec === null ? undefined : { "Retry-After": String(options.rateLimitRetryAfterSec) };
+      return send(429, { code: "rate_limited", message: "too many requests" }, headers);
+    }
 
     if ((m = route.match(/^\/images\/(.+)\/json$/)) && method === "GET") {
       const ref = m[1].split("/").map(decodeURIComponent).join("/");
@@ -856,6 +1003,7 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
         network: "myrmidon-bots",
         allowlist: ["myrmidon-hermes:*"],
         mountSources: [],
+        devbuild: { host: null, user: "", base: "" },
       },
       {
         sleep: async () => {},
@@ -926,15 +1074,19 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
 
     // helpers are gone and never listed as bots
     expect([...daemon.containers.keys()]).toEqual(["myrmidon-bot-agent-a"]);
-    expect((await driver.list()).map((s) => s.botKey)).toEqual(["agent-a"]);
+    expect((await driver.list(["agent-a", "agent-missing"])).map((s) => s.botKey)).toEqual(["agent-a"]);
 
-    expect(await driver.status("agent-a")).toEqual({
+    const status = await driver.status("agent-a");
+    expect({ ...status, inspect: undefined }).toEqual({
       botKey: "agent-a",
       state: "running",
       image: "myrmidon-hermes:1.1.0",
       restartHash: "restart-1",
       filesHash: "files-1",
+      // myrmidon(OPE-4789): the raw inspect rides along for the drift check.
+      inspect: undefined,
     });
+    expect(status.inspect).toMatchObject({ State: { Status: "running" } });
   });
 
   it("the apply helper runs as uid 10001 with every directory it touches owned by 10001 (explicit tar directory entries)", async () => {
@@ -1055,8 +1207,8 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
       await expect(driver.status("agent-a")).rejects.toThrow(/applied-state marker/);
     });
 
-    it("reads the marker from the marker path inside the hermes volume", () => {
-      expect(APPLIED_MARKER_CONTAINER_PATH).toBe("/data/hermes/.myrmidon/applied.json");
+    it("reads the marker from its real path inside the single mount", () => {
+      expect(APPLIED_MARKER_CONTAINER_PATH).toBe("/bot/hermes/.myrmidon/applied.json");
     });
 
     it("reports Docker's health verdict", async () => {
@@ -1227,6 +1379,115 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
       expect(daemon.containers.size).toBe(0);
       expect(fs.existsSync(volumes.hermes)).toBe(false);
       expect(daemon.requests.some((r) => r.method !== "GET")).toBe(false);
+    });
+  });
+
+  describe("myrmidon(OPE-4789): request budget and rate-limit behavior", () => {
+    const unusedPort = async (): Promise<never> => {
+      throw new Error("this pass must not need a maintenance window");
+    };
+    const noMaintenance: BotMaintenancePort = { enter: unusedPort, status: unusedPort, exit: unusedPort };
+    const countByPath = (requests: RecordedRequest[], pattern: RegExp) => requests.filter((r) => pattern.test(`${r.method} ${r.path}?${new URLSearchParams(r.query).toString()}`)).length;
+    const inspects = (requests: RecordedRequest[]) => countByPath(requests, /^GET \/containers\/myrmidon-bot-[^/]+\/json\?$/);
+    const markerReads = (requests: RecordedRequest[]) =>
+      requests.filter((r) => r.method === "GET" && /\/containers\/myrmidon-bot-[^/]+\/archive/.test(r.path) && (r.query.path ?? "").includes("applied.json")).length;
+
+    it("one unchanged pass costs one inspect and one marker read (the status's inspect serves the drift check)", async () => {
+      await driver.create(spec());
+      await driver.writeProfile("agent-a", testProfile());
+      await driver.start("agent-a");
+      const before = daemon.requests.length;
+      expect(await reconcileBot({
+        agentId: "agent-a",
+        botKey: "agent-a",
+        spec: spec(),
+        compile: async () => testProfile(),
+        driver,
+        maintenance: noMaintenance,
+      })).toEqual({ kind: "unchanged" });
+      const pass = daemon.requests.slice(before);
+      // 1 inspect (status) + 1 marker archive read; the drift check reuses the
+      // status's inspect (was: a second inspect), and no write/start happens.
+      expect(inspects(pass)).toBe(1);
+      expect(markerReads(pass)).toBe(1);
+      expect(pass.filter((r) => r.method !== "GET")).toEqual([]);
+    });
+
+    it("templateDrift with the pass's own status pays no inspect at all", async () => {
+      await driver.create(spec());
+      await driver.writeProfile("agent-a", testProfile());
+      await driver.start("agent-a");
+      const status = await driver.status("agent-a");
+      const before = daemon.requests.length;
+      const drift = await driver.templateDrift(spec(), status);
+      expect(drift).toEqual({ drifted: false, fields: [] });
+      expect(inspects(daemon.requests.slice(before))).toBe(0);
+    });
+
+    it("a 429 is retried after a pause and the call succeeds once the gate lets it through", async () => {
+      daemon.options.rateLimitFirstRequests = 2;
+      const status = await driver.status("agent-a");
+      expect(status.state).toBe("missing");
+      // 2 refused + 1 served
+      expect(daemon.requests.filter((r) => r.path === "/containers/myrmidon-bot-agent-a/json").length).toBe(3);
+    });
+
+    it("honors the gate's Retry-After hint as the pause", async () => {
+      daemon.options.rateLimitFirstRequests = 1;
+      daemon.options.rateLimitRetryAfterSec = 2;
+      const waits: number[] = [];
+      const patientDriver = dockerBotContainerDriver(
+        {
+          socketPath: daemon.socketPath,
+          volumeRoot: path.join(tmp, "bots"),
+          network: "myrmidon-bots",
+          allowlist: ["myrmidon-hermes:*"],
+          mountSources: [],
+          devbuild: { host: null, user: "", base: "" },
+        },
+        { sleep: async (ms) => { waits.push(ms); } },
+      );
+      await patientDriver.status("agent-a");
+      expect(waits).toEqual([2000]);
+    });
+
+    it("a gate that never lets through fails after the attempt budget, with no further requests", async () => {
+      daemon.options.rateLimitFirstRequests = 100;
+      await expect(driver.status("agent-a")).rejects.toThrow(/429/);
+      expect(daemon.requests.length).toBe(4); // RATE_LIMIT_MAX_ATTEMPTS
+    });
+
+    it("start polls the health verdict at the configured interval, not once a second", async () => {
+      daemon.options.healthOnStart = "starting";
+      const waits: number[] = [];
+      let polls = 0;
+      const slowDriver = dockerBotContainerDriver(
+        {
+          socketPath: daemon.socketPath,
+          volumeRoot: path.join(tmp, "bots"),
+          network: "myrmidon-bots",
+          allowlist: ["myrmidon-hermes:*"],
+          mountSources: [],
+          devbuild: { host: null, user: "", base: "" },
+        },
+        {
+          healthPollIntervalMs: 3_000,
+          startHealthTimeoutMs: 60_000,
+          sleep: async (ms) => {
+            waits.push(ms);
+            // Become healthy after two polls (the fake daemon has no clock, so
+            // the sleep hook flips the verdict the next inspect will read).
+            if (++polls >= 2) {
+              const container = daemon.containers.get("myrmidon-bot-agent-a");
+              if (container) container.health = "healthy";
+            }
+          },
+        },
+      );
+      await slowDriver.create(spec());
+      await slowDriver.writeProfile("agent-a", testProfile());
+      await slowDriver.start("agent-a");
+      expect(waits).toEqual([3_000, 3_000]);
     });
   });
 });

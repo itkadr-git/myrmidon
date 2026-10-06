@@ -2780,6 +2780,11 @@ export * from "./myrmidon-workspace-hygiene.js";
 export * from "./myrmidon-host-disk.js";
 // myrmidon(BOT-DISK-A): bot draft-directory lifecycle settings shared by the server and the settings validator.
 export * from "./myrmidon-bot-disk.js";
+// myrmidon(BOT-DISK-F): isolation scope resolver and bot-disk scope layout shared by the server and the UI.
+export * from "./myrmidon-isolation-scope.js";
+// myrmidon(1.6.1-BOT-DISK-C): per-bot disk quota settings, resolution and the rejection contract
+// shared by the server, the board UI and the settings validator.
+export * from "./myrmidon-bot-disk-quota.js";
 // myrmidon(C0): live run-admission limits shared by the server, the UI and the settings validator.
 export * from "./myrmidon-runtime-limits.js";
 // myrmidon(PARALLEL-HELPERS): the card -> Hermes `delegation` contract shared by the profile
@@ -2821,6 +2826,18 @@ export * from "./myrmidon-wip-limit.js";
 // myrmidon(1.7-BUDGET-CONFIG-B): the shared contract of budget enforcement —
 // the global mode (signal_only / soft / hard), its storage key and resolver.
 export * from "./myrmidon-budget-enforcement.js";
+// myrmidon(MEMORY-UI): the agent memory instance setting (address, optional key secret, switch).
+export * from "./myrmidon-agent-memory.js";
 
 // myrmidon(PLUGIN-ENTITLEMENT C): plugin entitlement keys contract.
 export * from "./myrmidon-plugin-entitlement.js";
+
+// myrmidon(DM-PROGRESS): live progress steps in the bridged Telegram DM
+// status message — storage key, precedence and resolver.
+export * from "./myrmidon-telegram-dm-progress.js";
+
+// myrmidon(1.6.1 MODEL-PROVIDERS): provider secret names, defaults and API schemas.
+export * from "./myrmidon-model-providers.js";
+// myrmidon(REVIEW-ROUTING): automatic reviewer routing for tasks that enter
+// in_review with no reviewer — settings contract and activity actions.
+export * from "./myrmidon-review-routing.js";

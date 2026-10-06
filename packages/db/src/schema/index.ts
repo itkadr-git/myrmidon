@@ -219,6 +219,13 @@ export { litellmCostEvents, litellmModels, type LitellmModelRates } from "./lite
 export { baselineMetricSnapshots } from "./baseline_metric_snapshots.js";
 // myrmidon(EGRESS-B): destination allowlists and per-project mode of the bot egress proxy.
 export { myrmidonEgressPolicies } from "./myrmidon_egress_policies.js";
+// myrmidon(BOT-DISK-F): isolation scope of the bot disk (groups, per-instance settings, per-agent choices).
+export {
+  myrmidonScopeGroups,
+  myrmidonScopeGroupMembers,
+  myrmidonScopeSettings,
+  myrmidonScopeAgentPrefs,
+} from "./myrmidon_bot_scope.js";
 export { myrmidonFleetServers } from "./myrmidon_fleet_servers.js"; // myrmidon(SC1): fleet-server registry for the browser console
 // myrmidon(1.6-SWARM): leases of the per-role task queues.
 export { issueClaims } from "./issue_claims.js";
@@ -234,3 +241,10 @@ export {
 } from "./myrmidon_wiki_regulations.js";
 // myrmidon(1.6-EVALS): reference tasks and judge runs for the evals module.
 export { evalReferenceTasks, evalRuns } from "./myrmidon_evals.js";
+// myrmidon(1.6.1 MODEL-PROVIDERS): company model-provider registry and model cache.
+export {
+  modelProviders,
+  modelProviderModels,
+  MODEL_PROVIDER_TYPES,
+  type ModelProviderType,
+} from "./model_providers.js";

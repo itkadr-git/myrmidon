@@ -20,8 +20,12 @@ import { useSignOut } from "@/hooks/useSignOut";
 import { MaintenanceSettingsPanel } from "@/components/myrmidon/MaintenanceSettingsPanel"; // myrmidon(R3)
 import { RuntimeLimitsSettingsPanel } from "@/components/myrmidon/RuntimeLimitsSettingsPanel"; // myrmidon(C0)
 import { BudgetEnforcementSettingsPanel } from "@/components/myrmidon/BudgetEnforcementSettingsPanel"; // myrmidon(1.7-BUDGET-CONFIG-B)
+import { TelegramDmProgressSettingsPanel } from "@/components/myrmidon/TelegramDmProgressSettingsPanel"; // myrmidon(DM-PROGRESS)
 import { HostDiskSettingsPanel } from "@/components/myrmidon/HostDiskSettingsPanel"; // myrmidon(BOT-DISK E)
 import { BotDiskSettingsPanel } from "@/components/myrmidon/BotDiskSettingsPanel"; // myrmidon(1.6.1-BOT-DISK-B)
+import { BotScopePanel } from "@/components/myrmidon/BotScopePanel"; // myrmidon(BOT-DISK-F)
+import { BotDiskQuotaSettingsPanel } from "@/components/myrmidon/BotDiskQuotaSettingsPanel"; // myrmidon(1.6.1-BOT-DISK-C)
+import { AgentMemorySettingsPanel } from "@/components/myrmidon/AgentMemorySettingsPanel"; // myrmidon(MEMORY-UI)
 import { ParallelHelpersSettingsPanel } from "@/components/myrmidon/ParallelHelpersSettingsPanel"; // myrmidon(PARALLEL-HELPERS)
 import { BotLspSettingsPanel } from "@/components/myrmidon/BotLspSettingsPanel"; // myrmidon(BOT-LSP-DEFAULTS)
 import { SwarmClaimSettingsPanel } from "@/components/myrmidon/SwarmClaimSettingsPanel"; // myrmidon(1.6.1 SWARM-SETTINGS-UI)
@@ -139,9 +143,13 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       <MaintenanceSettingsPanel /> {/* myrmidon(R3) */}
       <RuntimeLimitsSettingsPanel /> {/* myrmidon(C0) */}
       <BudgetEnforcementSettingsPanel /> {/* myrmidon(1.7-BUDGET-CONFIG-B) */}
+      <TelegramDmProgressSettingsPanel /> {/* myrmidon(DM-PROGRESS) */}
       <HostDiskSettingsPanel /> {/* myrmidon(BOT-DISK E) */}
       <BotDiskSettingsPanel /> {/* myrmidon(1.6.1-BOT-DISK-B) */}
+      <BotScopePanel /> {/* myrmidon(BOT-DISK-F) */}
+      <BotDiskQuotaSettingsPanel /> {/* myrmidon(1.6.1-BOT-DISK-C) */}
       <ParallelHelpersSettingsPanel /> {/* myrmidon(PARALLEL-HELPERS) */}
+      <AgentMemorySettingsPanel /> {/* myrmidon(MEMORY-UI) */}
       <BotLspSettingsPanel /> {/* myrmidon(BOT-LSP-DEFAULTS) */}
       <SwarmClaimSettingsPanel /> {/* myrmidon(1.6.1 SWARM-SETTINGS-UI) */}
       <DeployJobsPanel /> {/* myrmidon(R5-A) */}

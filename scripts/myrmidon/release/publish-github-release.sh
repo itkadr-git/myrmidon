@@ -6,8 +6,17 @@
 # and the board ran 1.5.0, but GitHub still showed 1.4.0 as Latest because
 # nobody had run `gh release create` by hand.
 #
+# RC-VERSIONS (owner requirement, 05.10): release candidate tags
+# myr-vX.Y.Z-rc.N go through the same path and are published as a GitHub
+# PRE-RELEASE. A publish (rc or final) NEVER moves the GitHub `latest`
+# marker: the Latest release is only set by promote-latest.sh, which checks
+# that the release is the version actually running on our production board
+# before it edits the marker. The final tag myr-vX.Y.Z of the same commit
+# publishes the SAME images the rc built — no rebuild.
+#
 # Called by .github/workflows/myrmidon-release.yml. Inputs:
-#   --tag myr-vX.Y.Z   the release tag to publish (the workflow passes the
+#   --tag myr-vX.Y.Z | myr-vX.Y.Z-rc.N
+#                      the release tag to publish (the workflow passes the
 #                      pushed tag, or the tag input of a workflow_dispatch
 #                      re-run; the tag must already exist on origin)
 #
@@ -28,13 +37,21 @@
 #      workflows start alongside this workflow on a
 #      tag push).
 #   3. Build the body with scripts/myrmidon/release/release-body.mjs: the
-#      `## X.Y.Z` section of docs/myrmidon/CHANGELOG.md (missing = a release
-#      without notes = defect, exit 1), the deploy line + "Upgrading from …"
-#      link, and the component digest table from the registry.
-#   4. `gh release create --latest`; when the release exists, `gh release
-#      edit` (idempotent re-run).
+#      `## X.Y.Z` section of docs/myrmidon/CHANGELOG.md (an rc reads the
+#      section of its base version; missing = a release without notes =
+#      defect, exit 1), the deploy line + "Upgrading from …" link, and the
+#      component digest table from the registry (probed with the tag's own
+#      version — the rc tags of the component images, X.Y.Z-rc.N).
+#   4. `gh release create` — NEVER --latest, and an rc always goes out as a
+#      pre-release; when the release exists, `gh release edit` (idempotent
+#      re-run); then the machine-readable manifest (release-components.json:
+#      every component digest) is uploaded as a release asset
+#      (deploy.sh --release reads it). The `latest` marker moves only via
+#      promote-latest.sh, after the release proved itself on our board.
 #   5. Mark the previous minor/patch release title "(superseded)" (the manual
-#      convention of 1.3.x/1.4.0).
+#      convention of 1.3.x/1.4.0). Final tags only: an rc supersedes nothing,
+#      and a final tag never supersedes its own rc's (a pre-release keeps its
+#      title).
 #
 # Uses only GITHUB_TOKEN (contents: write). Nothing host- or deployment-
 # specific enters the body: the public repository rules (CONVENTIONS section
@@ -43,7 +60,7 @@
 set -euo pipefail
 
 usage() {
-  sed -n '2,37p' "$0"
+  sed -n '2,58p' "$0"
   exit 0
 }
 
@@ -62,8 +79,16 @@ done
 command -v gh >/dev/null 2>&1 || die "gh is not installed"
 command -v jq >/dev/null 2>&1 || die "jq is not installed"
 
-[[ "$tag" =~ ^myr-v[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "tag must look like myr-vX.Y.Z (got: $tag)"
+# RC-VERSIONS: the tag is myr-vX.Y.Z or the release candidate myr-vX.Y.Z-rc.N.
+[[ "$tag" =~ ^myr-v([0-9]+\.[0-9]+\.[0-9]+)(-rc\.([0-9]+))?$ ]] || die "tag must look like myr-vX.Y.Z or myr-vX.Y.Z-rc.N (got: $tag)"
 version="${tag#myr-v}"
+base_version="${BASH_REMATCH[1]}"
+prerelease=0
+title_suffix=""
+if [[ -n "${BASH_REMATCH[2]:-}" ]]; then
+  prerelease=1
+  title_suffix=" (RC ${BASH_REMATCH[3]})"
+fi
 repo="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is not set}"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -200,40 +225,65 @@ wait_for ".github/workflows/myrmidon-fleetd.yml" soft "Myrmidon fleetd image"
 # digest is missing — the script then dies before publishing anything.
 # --registry-state (offline digest simulation) is for tests; CI resolves the
 # digests from the live registry.
-body_args=()
+# RC-VERSIONS: the digest table and the manifest probe the rc's own image
+# tags (X.Y.Z-rc.N — the workflows tag them that way); the CHANGELOG notes
+# live under the base version (## X.Y.Z), the same section the final
+# myr-vX.Y.Z publishes again from the same commit (no rebuild).
+body_args=(--notes-version "$base_version")
 if [[ -n "${MYRMIDON_RELEASE_REGISTRY_STATE:-}" ]]; then
   body_args+=(--registry-state "$MYRMIDON_RELEASE_REGISTRY_STATE")
 fi
+# --manifest-out: the machine-readable component manifest published as a
+# release asset (release-components.json); deploy/release-manifest.sh reads it.
+body_args+=(--manifest-out release-components.json)
 node "$here/release-body.mjs" "${body_args[@]}" "$version" > release-body.md \
   || die "release body could not be built for $version (missing notes or component digests)"
 log "release body built ($(wc -c < release-body.md) bytes)"
 
 # -------------------------------------------------------- 4. publish --------
-title="Myrmidon $version"
+# RC-VERSIONS: a publish NEVER touches the `latest` marker — that is the
+# explicit promote step (promote-latest.sh) after the release proved itself
+# on our board. An rc tag always goes out as a pre-release.
+title="Myrmidon $version$title_suffix"
+prerelease_args=()
+((prerelease)) && prerelease_args+=(--prerelease)
 if gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
-  log "release $tag already exists — updating (idempotent re-run)"
-  gh release edit "$tag" --repo "$repo" --title "$title" --latest \
+  log "release $tag already exists — updating (idempotent re-run, never --latest)"
+  gh release edit "$tag" --repo "$repo" --title "$title" "${prerelease_args[@]}" \
     --notes-file release-body.md
 else
-  gh release create "$tag" --repo "$repo" --title "$title" --latest \
+  gh release create "$tag" --repo "$repo" --title "$title" "${prerelease_args[@]}" \
     --notes-file release-body.md
 fi
+
+# The manifest asset: replaced on a re-run (--clobber), so it always matches
+# the body of the same publish.
+gh release upload "$tag" release-components.json --repo "$repo" --clobber
+log "uploaded the component manifest asset release-components.json"
 
 # ----------------------------------------------- 5. supersede the previous --
 # The manual convention for 1.3.x/1.4.0: the previous minor/patch release's
 # title gains "(superseded)". Idempotent: no-op when the marker is already
 # there. The previous version is derived from the tag the same way the body
 # builder derives it.
-prev_version="$(node "$here/release-body.mjs" --previous "$version")"
+# RC-VERSIONS: final tags only. An rc supersedes nothing, and a final tag
+# never supersedes its own release candidates — a pre-release keeps its
+# title.
+if ((prerelease == 0)); then
+prev_version="$(node "$here/release-body.mjs" --previous "$base_version")"
 if [[ -n "$prev_version" ]]; then
   prev_tag="myr-v$prev_version"
   prev_title="$(gh release view "$prev_tag" --repo "$repo" --json name --jq '.name' 2>/dev/null || true)"
-  if [[ -n "$prev_title" ]] && ! grep -qi 'superseded' <<<"$prev_title"; then
+  # RC-VERSIONS: never mark an rc "(superseded)".
+  if [[ -n "$prev_title" ]] && [[ "$prev_title" != *"(RC "* ]] && ! grep -qi 'superseded' <<<"$prev_title"; then
     gh release edit "$prev_tag" --repo "$repo" --title "$prev_title (superseded)"
     log "marked $prev_tag title '(superseded)'"
   else
-    log "previous release $prev_tag not found or already superseded — no rename"
+    log "previous release $prev_tag not found, an rc, or already superseded — no rename"
   fi
 fi
+else
+  log "rc publish: no supersede (release candidates never rename other releases)"
+fi
 
-log "published release $tag ($title) — body from CHANGELOG section $version + digest table"
+log "published release $tag ($title) — body from CHANGELOG section $base_version + digest table (never --latest; promote-latest.sh moves Latest after the release proved itself on our board)"

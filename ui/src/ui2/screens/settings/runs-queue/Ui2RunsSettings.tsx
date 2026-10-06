@@ -2,7 +2,7 @@
 //
 // myrmidon(UI2): Settings → "Runs & queue" in the new shell. This is the
 // closest-to-port screen of the set: the vendor already ships
-// RuntimeLimitsSettingsPanel (the four admission ceilings, GET/PATCH
+// RuntimeLimitsSettingsPanel (the admission ceilings, GET/PATCH
 // /api/myrmidon/runtime-limits, applied without restart). The ui2 variant
 // restyles the same contract; per the map "the ceilings panel moves over
 // almost ready". P0–P3 priority-class slots, TTL/timeouts/retries per
@@ -17,13 +17,15 @@ import { useUi2I18n } from "../../../i18n/Ui2I18n";
 import { Ui2ErrorState, Ui2SkeletonRows } from "../../../components/ui2StateViews";
 import { Ui2Page, Ui2Section } from "../../../components/ui2Primitives";
 
-const LIMIT_FIELDS: Array<{ key: RunLimitKey; labelKey: "ui2.settings.runs.maxConcurrentRuns" | "ui2.settings.runs.maxStartsPerMinute" | "ui2.settings.runs.minFreeMemoryMb" | "ui2.settings.runs.runMemoryEstimateMb" | "ui2.settings.runs.minFreeHostMemoryMb"; canOff: boolean }> = [
+const LIMIT_FIELDS: Array<{ key: RunLimitKey; labelKey: "ui2.settings.runs.maxConcurrentRuns" | "ui2.settings.runs.maxStartsPerMinute" | "ui2.settings.runs.minFreeMemoryMb" | "ui2.settings.runs.runMemoryEstimateMb" | "ui2.settings.runs.minFreeHostMemoryMb" | "ui2.settings.runs.maxHostLoadPercentPerCore"; canOff: boolean }> = [
   { key: "maxConcurrentRuns", labelKey: "ui2.settings.runs.maxConcurrentRuns", canOff: true },
   { key: "maxStartsPerMinute", labelKey: "ui2.settings.runs.maxStartsPerMinute", canOff: true },
   { key: "minFreeMemoryMb", labelKey: "ui2.settings.runs.minFreeMemoryMb", canOff: true },
   { key: "runMemoryEstimateMb", labelKey: "ui2.settings.runs.runMemoryEstimateMb", canOff: false },
   // myrmidon(1.6.2 RUN-ADMISSION): the host free-memory floor (bot containers live on the host).
   { key: "minFreeHostMemoryMb", labelKey: "ui2.settings.runs.minFreeHostMemoryMb", canOff: true },
+  // myrmidon(1.6.5 RUN-ADMISSION): the host CPU ceiling (load average per core).
+  { key: "maxHostLoadPercentPerCore", labelKey: "ui2.settings.runs.maxHostLoadPercentPerCore", canOff: true },
 ];
 
 function sourceLabel(source: RunLimitsSource, t: (key: never) => string): string {
@@ -94,6 +96,37 @@ export function Ui2RunsSettings() {
   const dirty =
     draft != null && LIMIT_FIELDS.some((field) => (draft[field.key] ?? null) !== null && draft[field.key] !== view.limits[field.key]);
 
+  // myrmidon(1.6.5 RUN-ADMISSION rc.2): the ceiling is counted above the load
+  // the host carries on its own, so the field gets a line with what the host is
+  // doing right now: the reading, how much of it is the host's own background,
+  // and whether the ceiling is open for a new run. `null` when the server sent
+  // no reading — the panel then shows no number instead of a made-up one.
+  const hostLoadLine = ((): string | null => {
+    const load = view.hostLoad;
+    if (!load) return null;
+    if (load.state === "off") return t("ui2.settings.runs.hostLoad.off");
+    if (load.state === "unknown" || load.loadPercentPerCore === null) {
+      return t("ui2.settings.runs.hostLoad.unknown");
+    }
+    const now = t("ui2.settings.runs.hostLoad.now", {
+      load: load.loadPercentPerCore,
+      load1: load.load1 ?? "?",
+      cores: load.cores ?? "?",
+    });
+    const above =
+      load.loadAboveBackgroundPercent === null || load.backgroundPercentPerCore === null
+        ? ""
+        : ` ${t("ui2.settings.runs.hostLoad.above", {
+            above: load.loadAboveBackgroundPercent,
+            background: load.backgroundPercentPerCore,
+          })}.`;
+    const verdict =
+      load.state === "open"
+        ? t("ui2.settings.runs.hostLoad.open", { threshold: load.thresholdPercent ?? "?" })
+        : t("ui2.settings.runs.hostLoad.closed", { threshold: load.thresholdPercent ?? "?" });
+    return `${now}${above} ${verdict}.`;
+  })();
+
   return (
     <Ui2Page title={t("ui2.settings.runs.title")} subtitle={t("ui2.settings.runs.subtitle")}>
       <Ui2Section title={t("ui2.settings.runs.title")}>
@@ -111,6 +144,19 @@ export function Ui2RunsSettings() {
                   <span className="ui2-run-limit-source text-xs text-muted-foreground">
                     {sourceLabel(source, t)}
                   </span>
+                  {field.key === "maxHostLoadPercentPerCore" && hostLoadLine ? (
+                    <span
+                      data-testid="ui2-run-limit-host-load"
+                      className="ui2-run-limit-host-load text-xs text-muted-foreground"
+                    >
+                      {hostLoadLine}
+                    </span>
+                  ) : null}
+                  {field.key === "maxHostLoadPercentPerCore" ? (
+                    <span className="ui2-run-limit-hint max-w-md text-xs text-muted-foreground">
+                      {t("ui2.settings.runs.maxHostLoadPercentPerCore.hint")}
+                    </span>
+                  ) : null}
                 </div>
                 <div className="ui2-run-limit-control flex items-center gap-2">
                   <input

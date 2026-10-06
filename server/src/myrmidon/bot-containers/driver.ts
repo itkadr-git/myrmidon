@@ -81,6 +81,14 @@ export interface BotContainerStatus {
    *  Absent when nothing is verifiably applied, or when the marker predates the
    *  field — "not reported", which the card shows as unknown, never as a match. */
   maxConcurrentRuns?: number;
+  /**
+   * myrmidon(OPE-4789): the raw container inspect behind this status, when the
+   * driver has it (the local docker driver always does — the status IS an
+   * inspect). Lets a caller that already paid for one inspect hand it to
+   * `templateDrift(spec, status)` instead of the pass paying a second one.
+   * Never set by a driver that answers without inspecting (fleetd).
+   */
+  inspect?: unknown;
 }
 
 /** One template field whose live value (the container's inspect) no longer
@@ -111,8 +119,19 @@ export interface BotContainerDriver {
   /** Throws when the container runtime itself cannot be asked (socket error,
    *  unexpected API error) — never guesses a state. */
   status(botKey: string): Promise<BotContainerStatus>;
-  /** All bots the driver currently manages (used for orphan/inventory sweeps). */
-  list(): Promise<BotContainerStatus[]>;
+  /** The containers of the given bots that exist (a bot without a container is left
+   *  out). The caller names the bots — the board knows them from the agent cards —
+   *  because the container runtime is never asked to list its containers: the
+   *  dockergate allowlist has no such call. */
+  list(botKeys: readonly string[]): Promise<BotContainerStatus[]>;
+  /**
+   * myrmidon(OPE-4789): the containers of the given bots that exist AND are
+   * running. Same per-bot reads as `list`; the clone-report collector asks
+   * this instead, so a stopped bot's inspect+marker pair is not paid on every
+   * collection pass. Optional: a driver that cannot answer it (fleetd) leaves
+   * it out, and the collector then uses `list` and filters itself.
+   */
+  listRunning?(botKeys: readonly string[]): Promise<BotContainerStatus[]>;
   /**
    * Side-effect-free check: does the existing container's live template (image,
    * resource limits, network, bind list) no longer match `spec`? `drifted` is
@@ -121,8 +140,14 @@ export interface BotContainerDriver {
    * The reconciler applies a `drifted: true` with `recreate`, gated behind the
    * same maintenance-pause-and-drain flow as a profile "restart" class change
    * whenever the container is live.
+   *
+   * myrmidon(OPE-4789): `knownStatus` is a status the caller has just read for
+   * this bot (the reconciler reads one at the top of every pass). When its
+   * state is not "missing" the driver reuses the inspect it carries instead of
+   * asking the runtime again — one inspect serves both the status and the
+   * drift check of one pass.
    */
-  templateDrift(spec: BotContainerSpec): Promise<TemplateDriftReport>;
+  templateDrift(spec: BotContainerSpec, knownStatus?: BotContainerStatus): Promise<TemplateDriftReport>;
   /** Creates the bot's container from `spec` without starting it, after
    *  preparing its volumes (created if absent, owned by the container's uid,
    *  mode 0700). Throws, before creating anything, if the image is not present
@@ -149,4 +174,12 @@ export interface BotContainerDriver {
    *  already written to disk. Resolves once healthy again; throws otherwise. */
   restart(botKey: string): Promise<void>;
   stop(botKey: string): Promise<void>;
+  /**
+   * myrmidon(1.6.2-BOT-DISK-C): the text of the bot's clone-hygiene report
+   * (`$HERMES_HOME/.myrmidon/clone-hygiene.json`, written inside the container),
+   * or null when there is none or it cannot be read. The board has no mount of the
+   * bot volumes, so this is how it learns which clones hold unpushed work.
+   * Optional: a driver that cannot read it (fleetd) leaves it out.
+   */
+  readCloneReport?(botKey: string): Promise<string | null>;
 }

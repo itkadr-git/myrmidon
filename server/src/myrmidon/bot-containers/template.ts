@@ -10,6 +10,7 @@
 // volume or the driver's reserved bookkeeping paths — only what these functions
 // accept ever reaches the Docker API.
 
+import { isScopeInstanceDirName } from "@paperclipai/shared";
 import type { BotContainerSpec, BotExtraMount } from "./driver.js";
 import type { CompiledProfileFile } from "./types.js";
 
@@ -67,6 +68,96 @@ export function parseMountSourceAllowlist(raw: string | undefined): string[] {
     .filter((entry) => entry.length > 0);
 }
 
+// ---------------------------------------------------------------------------
+// BUILD-OFFLOAD C: the dev-variant build server (devbuild)
+// ---------------------------------------------------------------------------
+
+/** Board env: hostname of the build server a dev-variant bot runs its builds
+ *  on. Unset/blank — the devbuild wiring is off and nothing is added to any
+ *  container (the operator keeps the address itself off the board's hosts, part
+ *  D of BUILD-OFFLOAD sets it on the board host). */
+export const DEVBUILD_HOST_ENV = "MYRMIDON_DEVBUILD_HOST";
+/** Board env: ssh user on the build server. Default `devbuild`. */
+export const DEVBUILD_USER_ENV = "MYRMIDON_DEVBUILD_USER";
+export const DEFAULT_DEVBUILD_USER = "devbuild";
+/** Board env: base directory of build workspaces on the build server.
+ *  Default `/srv/devbuild`. */
+export const DEVBUILD_BASE_ENV = "MYRMIDON_DEVBUILD_BASE";
+export const DEFAULT_DEVBUILD_BASE = "/srv/devbuild";
+
+/** Parsed MYRMIDON_DEVBUILD_* settings. `host: null` means "the devbuild
+ *  wiring is off": no DEVBUILD_* env, no key mount, for any bot. Whitespace-only
+ *  values count as unset (the same trim rule the other comma lists use). */
+export interface DevbuildSettings {
+  host: string | null;
+  /** Default DEFAULT_DEVBUILD_USER when the setting is unset. */
+  user: string;
+  /** Default DEFAULT_DEVBUILD_BASE when the setting is unset. */
+  base: string;
+}
+
+/** Directory-name suffix the operator's MYRMIDON_BOT_MOUNT_SOURCES entry for
+ *  the devbuild ssh key must end with (`…/devbuild-ssh`). Only the suffix is
+ *  fixed here: the parent directory is the operator's choice, and the address
+ *  of the build server itself never enters the code. */
+export const DEVBUILD_KEY_MOUNT_SOURCE_SUFFIX = "devbuild-ssh";
+
+export function parseDevbuildSettings(env: NodeJS.ProcessEnv): DevbuildSettings {
+  const host = env[DEVBUILD_HOST_ENV]?.trim() || null;
+  const user = env[DEVBUILD_USER_ENV]?.trim() || DEFAULT_DEVBUILD_USER;
+  const base = env[DEVBUILD_BASE_ENV]?.trim() || DEFAULT_DEVBUILD_BASE;
+  return { host, user, base };
+}
+
+/** True for the development variant of the bot runtime image
+ *  (`ghcr.io/itkadr-git/myrmidon-hermes-dev`). The image carries the
+ *  `io.github.itkadr-git.myrmidon.variant="dev"` label, but the driver never
+ *  inspects image labels at create time (it only checks the runtime-contract
+ *  label), so the variant is recognized by the image reference itself: the
+ *  repository name must end in `myrmidon-hermes-dev`, with any registry prefix
+ *  and any tag/digest. This is deliberately conservative — a similarly named
+ *  image in another namespace gets the devbuild wiring only if its repo path
+ *  ends with the exact segment, and an operator who allows such an image in
+ *  MYRMIDON_BOT_IMAGE_ALLOWLIST has named it explicitly. */
+export function isDevBuildImage(image: string): boolean {
+  // Strip a tag or digest ("name:tag", "name@sha256:…"), keeping any registry
+  // and namespace prefixes; then compare the last path segment.
+  const name = image.split("@")[0]!.replace(/:[^:/@]+$/, "");
+  const segments = name.split("/");
+  return segments[segments.length - 1] === "myrmidon-hermes-dev";
+}
+
+/** The container env entries a dev-variant bot gets when the devbuild wiring is
+ *  on (DEVBUILD_HOST set). The values are internal hostnames and paths, not
+ *  secrets: they may sit in the container env (which `docker inspect` shows),
+ *  unlike the ssh key, which travels only as the read-only file mount at
+ *  DEVBUILD_SSH_CONTAINER_PATH. Null when the wiring is off — the caller adds
+ *  nothing. The card's profile .env is a separate file (hermes/.env) and is not
+ *  touched by this. */
+export function devbuildContainerEnv(settings: DevbuildSettings): Record<string, string> | null {
+  if (settings.host === null) return null;
+  return {
+    DEVBUILD_HOST: settings.host,
+    DEVBUILD_USER: settings.user,
+    DEVBUILD_BASE: settings.base,
+  };
+}
+
+/** The read-only key mount a dev-variant bot gets when the devbuild wiring is
+ *  on, or null. The source must come from MYRMIDON_BOT_MOUNT_SOURCES — the
+ *  operator names the key directory there like any other extra mount source —
+ *  so a card can never invent a host path. The container path
+ *  (/opt/devbuild-ssh) is reserved in RESERVED_CONTAINER_PATHS, so a card's own
+ *  extraMounts can never take it over. */
+export function devbuildKeyMount(settings: DevbuildSettings, mountSources: readonly string[]): BotExtraMount | null {
+  if (settings.host === null) return null;
+  const source = mountSources.find(
+    (candidate) => unsafeAbsolutePathReason(candidate) === null && candidate.endsWith(DEVBUILD_KEY_MOUNT_SOURCE_SUFFIX),
+  );
+  if (!source) return null;
+  return { source, containerPath: DEVBUILD_SSH_CONTAINER_PATH, readOnly: true };
+}
+
 function escapeRegExpLiteral(chunk: string): string {
   return chunk.replace(/[.+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -91,13 +182,123 @@ export interface BotVolumeMount {
   containerPath: string;
 }
 
-/** The only three mounts a bot container ever gets. Fixed on purpose: see the
- *  module comment above. */
+/**
+ * myrmidon(BOT-DISK-D): the ONE bind mount of a bot container. link(2) refuses to
+ * cross a mount point (EXDEV) even between two binds of the same host filesystem,
+ * so with `hermes`, `workspace` and `scratch` as three binds (and a pnpm store on
+ * a fourth) pnpm silently copied every package into every clone. The bot's whole
+ * writable tree, `<MYRMIDON_BOT_VOLUME_ROOT>/<botKey>`, is now ONE bind at
+ * {@link BOT_ROOT_MOUNT}; `/data/hermes`, `/workspace` and `/scratch` are links
+ * made by the image (docker/bot-runtime/Dockerfile) that resolve into it, so a
+ * hard link works between any two of them and the pnpm store.
+ */
+export const BOT_ROOT_MOUNT = "/bot";
+
+/**
+ * myrmidon(BOT-DISK-F): the mount of a member of a SHARED isolation-scope
+ * instance. Instead of `<volumeRoot>/<botKey>:/bot` the container gets ONE bind,
+ * `<scopeRoot>/<instance>:/bot-scope`: the instance directory holds one pnpm
+ * store ({@link BOT_SCOPE_STORE_DIR}) and a subdirectory per member bot
+ * (`<botKey>/{hermes,workspace,scratch}`), so a hard link works within a bot and
+ * between the bots of the instance. The image's `/data/hermes`, `/workspace` and
+ * `/scratch` links point at `/bot`, which does not exist for a member, so a
+ * tmpfs over `/data` carries links made at start from the one variable
+ * {@link BOT_SCOPE_SUBDIR_ENV} (docker/bot-runtime/entrypoint.sh). The bot sees
+ * only its own instance's directory: a second instance is a different directory
+ * and never mounted.
+ */
+export const BOT_SCOPE_MOUNT = "/bot-scope";
+export const BOT_SCOPE_STORE_DIR = `${BOT_SCOPE_MOUNT}/.pnpm-store`;
+export const BOT_SCOPE_SUBDIR_ENV = "MYRMIDON_BOT_SCOPE_SUBDIR";
+/** The tmpfs over `/data` of a member: only links, owned by the bot's uid. */
+export const BOT_SCOPE_DATA_TMPFS = "uid=10001,gid=10001,mode=0755,size=1m";
+/** Where the prepare helper of a member sees the instance directory (to hand it to the bot's uid). */
+export const BOT_SCOPE_HELPER_MOUNT = "/scope";
+/** Image label declaring the runtime can run as a member (entrypoint links, WORKDIR-independent start). */
+export const BOT_RUNTIME_SCOPE_LABEL = "myrmidon.bot-runtime.scope";
+
+/** A member's place: the instance directory name under the shared root. */
+export interface BotScopeMount {
+  scopeRoot: string;
+  /** `<kind>-<id>`, see `scopeInstanceDirName` in @paperclipai/shared. */
+  dirName: string;
+}
+
+function assertScopeMount(scope: BotScopeMount): void {
+  const reason = unsafeAbsolutePathReason(scope.scopeRoot);
+  if (reason) throw new BotContainerTemplateError(`shared scope root ${JSON.stringify(scope.scopeRoot)} ${reason}`);
+  if (!isScopeInstanceDirName(scope.dirName)) {
+    throw new BotContainerTemplateError(`invalid scope instance directory name ${JSON.stringify(scope.dirName)}`);
+  }
+}
+
+/** Where the compiled profile, the applied-state marker and the clone-hygiene
+ *  report live, at their real paths inside {@link BOT_ROOT_MOUNT}. */
+export const BOT_HERMES_REAL_PATH = `${BOT_ROOT_MOUNT}/hermes`;
+
+/** The three directories of a bot's tree, each a path inside the single mount
+ *  that the image also exposes as `containerPath`-style links
+ *  (`/data/hermes`, `/workspace`, `/scratch`). */
 export const BOT_VOLUME_MOUNTS: readonly BotVolumeMount[] = [
   { hostSuffix: "hermes", containerPath: "/data/hermes" },
   { hostSuffix: "workspace", containerPath: "/workspace" },
   { hostSuffix: "scratch", containerPath: "/scratch" },
 ];
+
+/**
+ * The three narrow binds of a HELPER container (prepare-volumes, apply-profile).
+ * A helper only chowns and renames files and never needs a hard link, so it keeps
+ * one bind per directory; only the bot container itself gets the single mount
+ * ({@link buildBinds}). Same host directories either way.
+ */
+export function buildHelperBinds(
+  volumeRoot: string,
+  botKey: string,
+  scope?: BotScopeMount,
+  /** The prepare helper of a member also binds the instance directory itself. */
+  withInstanceDir = false,
+): string[] {
+  validateBotKey(botKey);
+  if (scope) {
+    // myrmidon(BOT-ROOT-TRAVERSE): a shared member has no separate bot root to
+    // normalize — its tree root IS the instance directory, already bound read-write
+    // at the helper's /scope and handed to uid 10001 by the prepare script itself.
+    assertScopeMount(scope);
+    const base = `${scope.scopeRoot}/${scope.dirName}/${botKey}`;
+    const binds = BOT_VOLUME_MOUNTS.map((mount) => `${base}/${mount.hostSuffix}:${mount.containerPath}`);
+    if (withInstanceDir) binds.push(`${scope.scopeRoot}/${scope.dirName}:${BOT_SCOPE_HELPER_MOUNT}`);
+    return binds;
+  }
+  const binds = BOT_VOLUME_MOUNTS.map((mount) => `${volumeRoot}/${botKey}/${mount.hostSuffix}:${mount.containerPath}`);
+  if (withInstanceDir) {
+    // myrmidon(BOT-ROOT-TRAVERSE): the isolated bot's whole directory (the one bind
+    // the bot container gets at BOT_ROOT_MOUNT) must be enterable by uid 10001, but
+    // the three narrow binds stop below it, so the helper never sees the root. The
+    // prepare helper gets the root itself, as the SAME bind string the bot container
+    // carries (`<volumeRoot>/<botKey>:/bot`, rw — chmod over a read-only bind is
+    // EROFS): the script runs one non-recursive chmod on the mount point, without
+    // ever listing or writing into the tree.
+    binds.push(`${volumeRoot}/${botKey}:${BOT_ROOT_MOUNT}`);
+  }
+  return binds;
+}
+
+/** The bot's real hermes directory inside its container, from the binds the container was created with. */
+export function botRealRootFromBinds(binds: readonly string[] | undefined, botKey: string): string {
+  const shared = (binds ?? []).some((bind) => bind.endsWith(`:${BOT_SCOPE_MOUNT}`));
+  return shared ? `${BOT_SCOPE_MOUNT}/${botKey}` : BOT_ROOT_MOUNT;
+}
+
+/** The shared scope instance directory name a container's binds name, or null for an isolated one. */
+export function scopeDirNameFromBinds(binds: readonly string[] | undefined, scopeRoot: string): string | null {
+  const prefix = `${scopeRoot}/`;
+  for (const bind of binds ?? []) {
+    if (bind.startsWith(prefix) && bind.endsWith(`:${BOT_SCOPE_MOUNT}`)) {
+      return bind.slice(prefix.length, bind.length - `:${BOT_SCOPE_MOUNT}`.length);
+    }
+  }
+  return null;
+}
 
 /** The fixed bind list for a bot, plus the extra read-only mounts its card asked
  *  for, plus the shared package cache when the instance configures one
@@ -109,7 +310,12 @@ export const BOT_VOLUME_MOUNTS: readonly BotVolumeMount[] = [
  *  The package cache binds are the only writable extra binds; their host
  *  subdirectories and container paths are fixed here (PACKAGE_CACHE_MOUNTS)
  *  and mirrored by dockergate, which accepts them only under its own
- *  `packageCacheRoot` (tools/dockergate/internal/policy/create.go). */
+ *  `packageCacheRoot` (tools/dockergate/internal/policy/create.go).
+ *  The driver's own devbuild key mount (BUILD-OFFLOAD C) rides `driverMount`:
+ *  its container path is exactly the reserved DEVBUILD_SSH_CONTAINER_PATH (so it
+ *  cannot go through validateExtraMounts, which rejects reserved paths for card
+ *  mounts on purpose), but its source is held to the same
+ *  MYRMIDON_BOT_MOUNT_SOURCES check as any card mount. */
 export function buildBinds(
   volumeRoot: string,
   botKey: string,
@@ -117,14 +323,26 @@ export function buildBinds(
     mounts?: readonly BotExtraMount[];
     allowedSources?: readonly string[];
     sharedPackageCachePath?: string;
+    /** myrmidon(1.6.2-BOT-DISK-C): also bind `<cache>/git` read-only at
+     *  `/cache/git` (the board's git mirrors). Ignored without a cache path. */
+    gitMirror?: boolean;
+    /** myrmidon(1.6.1-BUILD-OFFLOAD C): a mount the DRIVER itself introduces
+     *  (the devbuild ssh key), not the bot card. Validated against the same
+     *  source allowlist and reserved-path rules, appended after extra mounts. */
+    driverMount?: BotExtraMount | null;
+    /** myrmidon(BOT-DISK-F): a member of a shared scope instance binds the instance directory instead of its own. */
+    scope?: BotScopeMount;
   } = {},
 ): string[] {
   validateBotKey(botKey);
   const mounts = extra.mounts ?? [];
   validateExtraMounts(mounts, extra.allowedSources ?? []);
+  const driverBind = extra.driverMount ? [validateDriverMount(extra.driverMount, extra.allowedSources ?? [])] : [];
+  if (extra.scope) assertScopeMount(extra.scope);
   const binds = [
-    ...BOT_VOLUME_MOUNTS.map((mount) => `${volumeRoot}/${botKey}/${mount.hostSuffix}:${mount.containerPath}`),
+    extra.scope ? `${extra.scope.scopeRoot}/${extra.scope.dirName}:${BOT_SCOPE_MOUNT}` : `${volumeRoot}/${botKey}:${BOT_ROOT_MOUNT}`,
     ...mounts.map((mount) => `${mount.source}:${mount.containerPath}:ro`),
+    ...driverBind,
   ];
   const cache = extra.sharedPackageCachePath;
   if (cache) {
@@ -142,9 +360,44 @@ export function buildBinds(
     for (const mount of PACKAGE_CACHE_MOUNTS) {
       binds.push(`${cache}/${mount.hostSubdir}:${mount.containerPath}:rw`);
     }
+    if (extra.gitMirror) {
+      binds.push(`${cache}/${GIT_MIRROR_MOUNT.hostSubdir}:${GIT_MIRROR_MOUNT.containerPath}:ro`);
+    }
   }
   return binds;
 }
+
+/**
+ * myrmidon(1.6.2-BOT-DISK-C): the board's bare git mirrors, one per
+ * `owner/repo`, at `<cache>/git/<owner>/<repo>.git` on the host. Bots mount the
+ * directory READ-ONLY: only the board writes it (git-mirror.ts), so no bot can
+ * rewrite or delete an object another bot's clone borrows through its
+ * alternates file — git does not re-hash objects it reads from an alternate,
+ * so a writable mirror would let one bot change what another checks out. The
+ * image's git wrapper (docker/bot-runtime/git-reference) adds
+ * `--reference-if-able /cache/git/<owner>/<repo>.git` to a `git clone` of a
+ * mirrored GitHub repository. Mirrored by dockergate
+ * (`PackageCacheReadOnlyMounts` in tools/dockergate/internal/policy/create.go).
+ */
+export const GIT_MIRROR_MOUNT = { hostSubdir: "git", containerPath: "/cache/git" } as const;
+
+/**
+ * myrmidon(BOT-DISK-D): where pnpm keeps its content-addressed store by default
+ * (settings `pnpmStoreDir`; the image's `npm_config_store_dir` is the same
+ * value). It is inside the bot's single mount, so every clone anywhere in the
+ * bot's tree can hard-link into it. Never `/cache/pnpm`: that is a different
+ * mount, and pnpm cannot hard-link across mounts.
+ */
+export const DEFAULT_PNPM_STORE_DIR = "/workspace/.pnpm-store";
+
+/** The import method pnpm is told to use: `hardlink` only tries hard links (no
+ *  reflink attempts). pnpm 9 still copies when the kernel refuses a link, so a
+ *  broken layout is caught by the container's start-time self-check
+ *  (docker/bot-runtime/entrypoint.sh), not by pnpm. */
+export const DEFAULT_PNPM_IMPORT_METHOD = "hardlink";
+
+/** Container roots a pnpm store may live under (all inside the single mount). */
+export const PNPM_STORE_ROOTS: readonly string[] = ["/workspace", "/data", "/scratch", BOT_ROOT_MOUNT, BOT_SCOPE_MOUNT];
 
 /** Where the shared package cache appears inside a bot container. Outside the
  *  three volumes and /tmp, so dockergate's reserved-target rule holds. */
@@ -169,21 +422,77 @@ export interface PackageCacheMount {
  * Mirrored by dockergate (`PackageCacheMounts` in tools/dockergate/internal/policy/create.go).
  */
 export const PACKAGE_CACHE_MOUNTS: readonly PackageCacheMount[] = [
-  { hostSubdir: "pnpm", containerPath: "/cache/pnpm", envName: "npm_config_store_dir" },
+  // pnpm: a DOWNLOAD cache only (registry metadata), never the store (see DEFAULT_PNPM_STORE_DIR).
+  { hostSubdir: "pnpm", containerPath: "/cache/pnpm", envName: "npm_config_cache_dir" },
   { hostSubdir: "go-mod", containerPath: "/cache/go-mod", envName: "GOMODCACHE" },
   { hostSubdir: "go-build", containerPath: "/cache/go-build", envName: "GOCACHE" },
   { hostSubdir: "gradle", containerPath: "/cache/gradle", envName: "GRADLE_USER_HOME" },
 ];
 
-/** The environment that points each tool at its shared cache mount. */
-export function packageCacheEnv(): Record<string, string> {
-  return Object.fromEntries(PACKAGE_CACHE_MOUNTS.map((mount) => [mount.envName, mount.containerPath]));
+/**
+ * The environment that points each tool at its shared cache mount, plus the pnpm
+ * store variables.
+ *
+ * myrmidon(BOT-DISK-D): pnpm links a project's node_modules to its store with hard
+ * links, and link(2) refuses to cross a mount point. The store therefore lives
+ * INSIDE the bot's single mount ({@link DEFAULT_PNPM_STORE_DIR}), `/cache/pnpm`
+ * stays a download cache only, and the import method is `hardlink` by default (pnpm
+ * does not report a refused link, it copies: the start-time self-check does). Both values come from the
+ * bot-disk settings (`pnpmStoreDir`, `pnpmImportMethod`).
+ */
+export function packageCacheEnv(
+  pnpm: { storeDir?: string; importMethod?: string } = {},
+): Record<string, string> {
+  const env = Object.fromEntries(PACKAGE_CACHE_MOUNTS.map((mount) => [mount.envName, mount.containerPath]));
+  return { ...env, ...pnpmEnv(pnpm) };
+}
+
+/** Just the pnpm variables (see {@link packageCacheEnv}). */
+export function pnpmEnv(pnpm: { storeDir?: string; importMethod?: string } = {}): Record<string, string> {
+  return {
+    npm_config_store_dir: pnpm.storeDir ?? DEFAULT_PNPM_STORE_DIR,
+    npm_config_package_import_method: pnpm.importMethod ?? DEFAULT_PNPM_IMPORT_METHOD,
+  };
+}
+
+/** The one extra bind the driver itself may add (the devbuild ssh key mount).
+ *  Checked like a card mount for its source, but its container path is fixed to
+ *  DEVBUILD_SSH_CONTAINER_PATH — the path a card's mount is refused at, so only
+ *  the driver can ever occupy it. */
+function validateDriverMount(mount: BotExtraMount, allowedSources: readonly string[]): string {
+  if (mount.readOnly !== true) {
+    throw new BotContainerTemplateError(`driver mount of ${JSON.stringify(mount.source)} must be read-only`);
+  }
+  if (mount.containerPath !== DEVBUILD_SSH_CONTAINER_PATH) {
+    throw new BotContainerTemplateError(
+      `driver mount of ${JSON.stringify(mount.source)} must use ${DEVBUILD_SSH_CONTAINER_PATH}`,
+    );
+  }
+  const allowed = new Set(allowedSources.filter((source) => unsafeAbsolutePathReason(source) === null));
+  if (!allowed.has(mount.source)) {
+    throw new BotContainerTemplateError(
+      `driver mount source ${JSON.stringify(mount.source)} is not listed in ${BOT_MOUNT_SOURCES_ENV}`,
+    );
+  }
+  return `${mount.source}:${mount.containerPath}:ro`;
 }
 
 /** Mount points and paths the driver itself owns inside every bot container: an
  *  extra mount may neither take one of them over nor shadow a path under them
- *  (the profile lands in the three volumes, and `/tmp` is the image's tmpfs). */
-const RESERVED_CONTAINER_PATHS: readonly string[] = [...BOT_VOLUME_MOUNTS.map((mount) => mount.containerPath), "/tmp"];
+ *  (the profile lands in the three volumes, and `/tmp` is the image's tmpfs).
+ *  DEVBUILD_SSH_CONTAINER_PATH is the driver's own devbuild key mount (BUILD-
+ *  OFFLOAD C: the read-only ssh key of the build server a dev-variant bot uses);
+ *  reserving it here means a card's `extraMounts` can never take it over. */
+export const DEVBUILD_SSH_CONTAINER_PATH = "/opt/devbuild-ssh";
+const RESERVED_CONTAINER_PATHS: readonly string[] = [
+  ...BOT_VOLUME_MOUNTS.map((mount) => mount.containerPath),
+  BOT_ROOT_MOUNT,
+  BOT_SCOPE_MOUNT,
+  BOT_SCOPE_HELPER_MOUNT,
+  "/data",
+  "/tmp",
+  DEVBUILD_SSH_CONTAINER_PATH,
+];
 
 /** Why `value` is not usable as an absolute host directory or container mount
  *  point, or null when it is. Deliberately strict: no relative form, no "..",

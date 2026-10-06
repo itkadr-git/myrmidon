@@ -55,15 +55,15 @@ export function fleetRoutingDriver(
     async status(botKey: string): Promise<BotContainerStatus> {
       return driverFor(deps, agentOf(botKey)).status(botKey);
     },
-    async list(): Promise<BotContainerStatus[]> {
+    async list(botKeys: readonly string[]): Promise<BotContainerStatus[]> {
       // A routed list is the union of all hosts' own lists.
       const results = await Promise.all(
-        [deps.local, ...deps.fleet.values()].map((driver) => driver.list()),
+        [deps.local, ...deps.fleet.values()].map((driver) => driver.list(botKeys)),
       );
       return results.flat();
     },
-    async templateDrift(spec: BotContainerSpec): Promise<TemplateDriftReport> {
-      return driverFor(deps, agentOf(spec.botKey)).templateDrift(spec);
+    async templateDrift(spec: BotContainerSpec, knownStatus?: BotContainerStatus): Promise<TemplateDriftReport> {
+      return driverFor(deps, agentOf(spec.botKey)).templateDrift(spec, knownStatus);
     },
     async create(spec: BotContainerSpec): Promise<void> {
       await driverFor(deps, agentOf(spec.botKey)).create(spec);

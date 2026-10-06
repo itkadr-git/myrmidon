@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   BOT_AUX_COMPRESSION_MODEL_ENV,
+  BOT_AUX_FALLBACK_MODELS_ENV,
   BOT_AUX_TITLE_MODEL_ENV,
   BOT_BOARD_URL_ENV,
   BOT_COMPRESSION_THRESHOLD_TOKENS_ENV,
@@ -132,6 +133,36 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
     expect(env).toMatch(/PAPERCLIP_API_KEY="fake-paperclip-api-key-\d+"/);
     expect(fileContent(profile, "hermes/config.yaml")).not.toContain("fake-llm-key-0001");
     expect(fileContent(profile, "hermes/hindsight/config.json")).toContain("fleet-default");
+  });
+
+  describe("myrmidon(BOT-DISK-F) isolation scope", () => {
+    it("a member of a shared scope instance gets the instance's pnpm store, with or without the shared package cache", async () => {
+      const board = fakeBoard({
+        scopeLayout: async () => ({ kind: "shared", dirName: "caste-x-engineer" }),
+        pnpmSettings: async () => ({ storeDir: "/workspace/.pnpm-store", importMethod: "hardlink" }),
+      });
+      const env = fileContent(await createBotProfileCompile(board.ports, { env: INSTANCE_ENV })("agent-a", "agent-a"), "hermes/.env");
+      expect(env).toContain('npm_config_store_dir="/bot-scope/.pnpm-store"');
+      expect(env).toContain('npm_config_package_import_method="hardlink"');
+      expect(env).not.toContain("/workspace/.pnpm-store");
+    });
+
+    it("an isolated bot, or a port that is absent, keeps the profile it had (no store variable without the cache)", async () => {
+      for (const ports of [{ scopeLayout: async () => ({ kind: "isolated" as const }) }, {}]) {
+        const board = fakeBoard(ports);
+        const env = fileContent(await createBotProfileCompile(board.ports, { env: INSTANCE_ENV })("agent-a", "agent-a"), "hermes/.env");
+        expect(env).not.toContain("npm_config_store_dir");
+      }
+    });
+
+    it("changing the applied layout changes the restart hash, so the container restarts onto it", async () => {
+      const isolated = await createBotProfileCompile(fakeBoard({ scopeLayout: async () => ({ kind: "isolated" }) }).ports, { env: INSTANCE_ENV })("agent-a", "agent-a");
+      const shared = await createBotProfileCompile(
+        fakeBoard({ scopeLayout: async () => ({ kind: "shared", dirName: "caste-x-engineer" }) }).ports,
+        { env: INSTANCE_ENV },
+      )("agent-a", "agent-a");
+      expect(shared.restartHash).not.toBe(isolated.restartHash);
+    });
   });
 
   it("is idempotent: a second tick with nothing changed gives the same hashes", async () => {
@@ -890,6 +921,28 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
       })("agent-a", "agent-a");
       const yaml = fileContent(profile, "hermes/config.yaml");
       expect(yaml).toContain('auxiliary:\n  compression:\n    model: "model-summary"\n  title_generation:\n    model: "model-title"');
+    });
+
+    it("caps the auxiliary chain with MYRMIDON_BOT_AUX_FALLBACK_MODELS", async () => {
+      const board = fakeBoard();
+      const profile = await createBotProfileCompile(board.ports, {
+        env: {
+          ...INSTANCE_ENV,
+          [BOT_AUX_TITLE_MODEL_ENV]: "model-title",
+          [BOT_AUX_FALLBACK_MODELS_ENV]: "model-cheap,model-cheaper",
+        },
+      })("agent-a", "agent-a");
+      const yaml = fileContent(profile, "hermes/config.yaml");
+      // The card names `provider: custom` and INSTANCE_ENV carries the gateway
+      // endpoint, so each ceiling entry spells both out (Hermes resolves a
+      // fallback entry on its own and inherits neither from `model`).
+      expect(yaml).toContain('model: "model-title"');
+      expect(yaml).toContain(
+        'fallback_chain:\n    - base_url: "https://example.com/llm/v1"\n      key_env: "FLEET_LLM_API_KEY"\n' +
+          '      model: "model-cheap"\n      provider: "custom"\n' +
+          '    - base_url: "https://example.com/llm/v1"\n      key_env: "FLEET_LLM_API_KEY"\n' +
+          '      model: "model-cheaper"\n      provider: "custom"',
+      );
     });
 
     it("the card's models block wins over the instance settings", async () => {

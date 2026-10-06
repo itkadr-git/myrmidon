@@ -51,6 +51,12 @@ type Bot struct {
 	MaxMemoryMB int64   `json:"maxMemoryMb"`
 	MaxCPUs     float64 `json:"maxCpus"`
 	MaxPids     int64   `json:"maxPids"`
+	// ScopeInstances are the shared isolation-scope instance directories this
+	// bot may bind (BOT-DISK-F), e.g. "caste-<company>-engineer". A bot binds
+	// at most one of them at a time and only one that is listed here: its own
+	// scope instance, never a sibling's. Empty (the default): the bot is never
+	// a member of a shared instance.
+	ScopeInstances []string `json:"scopeInstances"`
 }
 
 // Limits are the limits and timeouts of section 11.1 and the rates of 9.2.
@@ -144,12 +150,33 @@ type Config struct {
 	// PackageCacheRoot is the host directory of the shared package cache of
 	// the bots (the board's instance setting of the same path). Under it, and
 	// only there, a bot may mount the fixed cache subdirectories read-write at
-	// their fixed mount points (policy.PackageCacheMounts). Empty or missing
-	// (the default) allows no cache mount at all.
+	// their fixed mount points (policy.PackageCacheMounts), and the board's git
+	// mirrors read-only (policy.PackageCacheReadOnlyMounts, 1.6.2-BOT-DISK-C).
+	// Empty or missing (the default) allows no cache mount at all.
 	PackageCacheRoot string `json:"packageCacheRoot"`
-	Bots             []Bot  `json:"bots"`
-	Limits           Limits `json:"limits"`
-	StatsFile        string `json:"statsFile"`
+	// ScopeRoot is the host directory of shared isolation-scope instances
+	// (BOT-DISK-F, the board's shared root): one subdirectory per instance,
+	// "<kind>-<id>", holding one pnpm store and a subdirectory per member bot.
+	// A bot may bind only an instance listed in its own scopeInstances. Empty
+	// (the default) means "<volumeRoot>/.scopes" ("." can never begin a bot
+	// key, so the name cannot collide with a bot's directory).
+	ScopeRoot string `json:"scopeRoot"`
+	Bots      []Bot  `json:"bots"`
+	Limits    Limits `json:"limits"`
+	StatsFile string `json:"statsFile"`
+}
+
+// ScopeInstanceRe is the name of a shared scope instance directory:
+// <kind>-<id>, as the board's resolver spells it.
+var ScopeInstanceRe = regexp.MustCompile(`^(group|caste|subtree|project|catalog|company)-[a-z0-9][a-z0-9_-]{0,99}$`)
+
+// EffectiveScopeRoot is the shared scope root in force: the configured one, or
+// the default under volumeRoot.
+func (c *Config) EffectiveScopeRoot() string {
+	if c.ScopeRoot != "" {
+		return c.ScopeRoot
+	}
+	return c.VolumeRoot + "/.scopes"
 }
 
 var (
@@ -262,6 +289,20 @@ func (c *Config) Validate() error {
 			return errors.New("config: packageCacheRoot must not overlap volumeRoot")
 		}
 	}
+	if c.ScopeRoot != "" {
+		r := c.ScopeRoot
+		if !strings.HasPrefix(r, "/") || r == "/" || strings.Contains(r, "..") ||
+			strings.Contains(r, "//") || strings.HasSuffix(r, "/") || strings.Contains(r, "\x00") {
+			return errors.New("config: scopeRoot must be an absolute directory without .., // and a trailing /")
+		}
+		if r == c.VolumeRoot || strings.HasPrefix(c.VolumeRoot, r+"/") {
+			return errors.New("config: scopeRoot must not be or contain volumeRoot")
+		}
+		if c.PackageCacheRoot != "" && (r == c.PackageCacheRoot || strings.HasPrefix(r, c.PackageCacheRoot+"/") ||
+			strings.HasPrefix(c.PackageCacheRoot, r+"/")) {
+			return errors.New("config: scopeRoot must not overlap packageCacheRoot")
+		}
+	}
 	if len(c.Images) == 0 {
 		return errors.New("config: images must not be empty")
 	}
@@ -286,6 +327,16 @@ func (c *Config) Validate() error {
 		keys[b.BotKey] = true
 		if b.MaxMemoryMB <= 0 || b.MaxPids <= 0 || !(b.MaxCPUs > 0) {
 			return errors.New("config: the ceilings of a bot must be greater than zero")
+		}
+		seenInstances := map[string]bool{}
+		for _, inst := range b.ScopeInstances {
+			if !ScopeInstanceRe.MatchString(inst) {
+				return errors.New("config: bots[].scopeInstances entries must be <kind>-<id> scope instance names")
+			}
+			if seenInstances[inst] {
+				return errors.New("config: duplicate entry in bots[].scopeInstances")
+			}
+			seenInstances[inst] = true
 		}
 	}
 	return c.Limits.validate()

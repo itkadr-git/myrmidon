@@ -58,6 +58,7 @@ import {
   toAccountHandle,
   type AgentAdapterType,
 } from "@paperclipai/shared";
+import { dbAutonomyGate } from "../myrmidon/autonomy/gate.js";
 import {
   isForbiddenConfigEnvKey,
   normalizePaperclipRunnerAdapterConfig,
@@ -272,6 +273,8 @@ import {
   resolvePaperclipRunnerProviderProfile,
 } from "../services/native-runtime/provider-profile.js";
 import { managedAgentProfileService } from "../services/managed-agent-profiles.js";
+// myrmidon(1.6.4-BOT-CONTAINER-CARD): a container block without enabled/limits is refused on save
+import { botContainerCardSaveProblem } from "../myrmidon/bot-containers/agent-config.js";
 import { remoteAgentProfileService } from "../services/remote-agent-profiles.js";
 
 const AGENT_SKILL_ASSIGNMENT_MODES = ["add", "remove", "replace"] as const;
@@ -2679,6 +2682,9 @@ export function agentRoutes(
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
   ) {
+    // myrmidon(1.6.4-BOT-CONTAINER-CARD): refuse a container block the reconciler could never apply.
+    const containerProblem = botContainerCardSaveProblem(adapterType, adapterConfig);
+    if (containerProblem) throw unprocessable(`Invalid hermes_gateway adapterConfig: ${containerProblem}`);
     if (adapterType === "paperclip_runner") {
       await assertFreshPaperclipRunnerProvider(companyId, adapterType, adapterConfig);
       return;
@@ -5167,6 +5173,26 @@ export function agentRoutes(
 
     await assertCanManageInstructionsPath(req, existing);
     assertExternalInstructionsAdmin(req, existing);
+    
+    // myrmidon(1.6.2-AUTONOMY-MATRIX): enforce change_instructions verdict.
+    // approval_required denies with 403 autonomy_approval_required until the
+    // holding-action follow-up (the board caller bypasses the gate entirely).
+    const gate = dbAutonomyGate(db);
+    const changeInstructionsVerdict = await gate.decide(req, "change_instructions");
+    if (changeInstructionsVerdict.verdict === "forbidden") {
+      throw forbidden("This action is forbidden for this role by the autonomy matrix", {
+        code: "autonomy_forbidden",
+        actionClass: "change_instructions",
+        role: changeInstructionsVerdict.role,
+      });
+    }
+    if (changeInstructionsVerdict.verdict === "approval_required") {
+      throw forbidden("This action requires approval under the autonomy matrix", {
+        code: "autonomy_approval_required",
+        actionClass: "change_instructions",
+        role: changeInstructionsVerdict.role,
+      });
+    }
 
     const existingAdapterConfig = asRecord(existing.adapterConfig) ?? {};
     const explicitKey = asNonEmptyString(req.body.adapterConfigKey);
@@ -5254,6 +5280,26 @@ export function agentRoutes(
     await assertCanManageInstructionsPath(req, existing);
     assertExternalInstructionsAdmin(req, existing);
     if (req.body.mode === "external") assertInstanceAdmin(req);
+    
+    // myrmidon(1.6.2-AUTONOMY-MATRIX): enforce change_instructions verdict.
+    // approval_required denies with 403 autonomy_approval_required until the
+    // holding-action follow-up (the board caller bypasses the gate entirely).
+    const gate = dbAutonomyGate(db);
+    const changeInstructionsVerdict = await gate.decide(req, "change_instructions");
+    if (changeInstructionsVerdict.verdict === "forbidden") {
+      throw forbidden("This action is forbidden for this role by the autonomy matrix", {
+        code: "autonomy_forbidden",
+        actionClass: "change_instructions",
+        role: changeInstructionsVerdict.role,
+      });
+    }
+    if (changeInstructionsVerdict.verdict === "approval_required") {
+      throw forbidden("This action requires approval under the autonomy matrix", {
+        code: "autonomy_approval_required",
+        actionClass: "change_instructions",
+        role: changeInstructionsVerdict.role,
+      });
+    }
 
     const actor = getActorInfo(req);
     const { bundle, adapterConfig } = await instructions.updateBundle(existing, req.body);
@@ -5378,6 +5424,26 @@ export function agentRoutes(
     if (!existing) return;
     await assertCanManageInstructionsPath(req, existing);
     assertExternalInstructionsAdmin(req, existing);
+    
+    // myrmidon(1.6.2-AUTONOMY-MATRIX): enforce change_instructions verdict.
+    // approval_required denies with 403 autonomy_approval_required until the
+    // holding-action follow-up (the board caller bypasses the gate entirely).
+    const gate = dbAutonomyGate(db);
+    const changeInstructionsVerdict = await gate.decide(req, "change_instructions");
+    if (changeInstructionsVerdict.verdict === "forbidden") {
+      throw forbidden("This action is forbidden for this role by the autonomy matrix", {
+        code: "autonomy_forbidden",
+        actionClass: "change_instructions",
+        role: changeInstructionsVerdict.role,
+      });
+    }
+    if (changeInstructionsVerdict.verdict === "approval_required") {
+      throw forbidden("This action requires approval under the autonomy matrix", {
+        code: "autonomy_approval_required",
+        actionClass: "change_instructions",
+        role: changeInstructionsVerdict.role,
+      });
+    }
 
     const relativePath = typeof req.query.path === "string" ? req.query.path : "";
     if (!relativePath.trim()) {
