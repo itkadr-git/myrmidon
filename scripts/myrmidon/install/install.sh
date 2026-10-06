@@ -423,6 +423,24 @@ services:
     # and immediately dies on "the daemon does not answer: upstream_error".
     group_add:
       - "${MYRMIDON_DOCKER_GID:-0}"
+    # dockergate decides who is calling by a walk over /proc: it pins the first
+    # child of the *board container's* main process (docs/myrmidon/dockergate.md,
+    # step 1). In its own pid namespace it sees only its own processes, so
+    # /proc/<board pid> is missing: the container stays up, the self-check says
+    # ok, and every hourly re-resolve logs "caller_resolve_failed:
+    # board_not_running" — a stack that looks healthy and serves no call.
+    pid: host
+    # The rest mirrors the production service (deploy.sh): a unix-socket-only
+    # proxy needs no network, no capabilities and no writable root.
+    network_mode: none
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 128m
+    cpus: 1
+    pids_limit: 128
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./dockergate/config.json:/etc/myrmidon-dockergate/config.json:ro

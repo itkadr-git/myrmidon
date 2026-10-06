@@ -126,6 +126,12 @@ describe("install.sh", () => {
     assert.match(env, /MYRMIDON_DOCKER_GID=[0-9]+/);
     const compose = fs.readFileSync(path.join(sb.opt, "compose.yml"), "utf8");
     assert.ok(compose.includes("group_add:"), "dockergate must be granted the docker socket group");
+    // dockergate pins the board's main process by a walk over /proc, so it has to
+    // share the host pid namespace: without `pid: host` it sees only its own
+    // processes, the board pid is missing, and every resolve fails with
+    // "caller_resolve_failed: board_not_running" while the container looks up.
+    assert.match(compose, /pid:\s*host/, "dockergate must share the host pid namespace");
+    assert.match(compose, /network_mode:\s*none/, "dockergate serves a unix socket only");
     assert.ok(
       compose.includes("${MYRMIDON_BOARD_REPOSITORY:?the board repository must be set}@${MYRMIDON_BOARD_DIGEST:?the board digest must be set}"),
       "the board image reference is built from the manifest repository and digest",
