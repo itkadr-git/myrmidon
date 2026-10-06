@@ -55,3 +55,31 @@ jobs:
         run: |
           set -euo pipefail
           ./scripts/myrmidon/release/publish-github-release.sh --tag "$TAG"
+
+  # RELEASE-FREEZE: maintain the freeze state from the tag's CI outcome.
+  # Runs on every tag push alongside publish; on success the freeze (the
+  # open "release-freeze: <tag>" issue) is cleared, which turns the
+  # "Release freeze gate" PR check green again. Needs issues:write to
+  # open/close the freeze issue; GH_FREEZE_TOKEN (a PAT with issues:write)
+  # is optional — github.token of THIS workflow already has it.
+  freeze:
+    name: release-freeze state
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+          persist-credentials: false
+
+      - name: Set or clear the release freeze from the tag CI outcome
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_FREEZE_TOKEN || github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          ./scripts/myrmidon/release/release-freeze.sh --set-state
