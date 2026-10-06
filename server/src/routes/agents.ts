@@ -260,7 +260,6 @@ import {
   shouldCancelActiveRunsOnOperatorPause,
 } from "../myrmidon/pause-drain.js";
 // myrmidon(WAKE-BIND): a manual wake binds to the agent's top ready task
-import { dbAutonomyGate } from "../myrmidon/autonomy/gate.js";
 import { findTopReadyIssueForAgent } from "../myrmidon/idle-pickup.js";
 import {
   AGENT_PROFILE_CHANGE_CONSENT_FIELDS,
