@@ -1169,7 +1169,11 @@ export function mapFinalResultForTest(input: {
     ...(errorFamily ? { errorFamily } : {}),
     ...(usage ? { usage } : {}),
     ...(costUsd !== null ? { costUsd } : {}),
-    ...(output ? { summary: output.slice(0, 2_000) } : {}),
+    // myrmidon(TG-REPLY-FULL): the summary is the text the chat bridge delivers to
+    // the owner when the run has no separate final message, so it must carry the
+    // complete answer. A 2,000-character cut here reached Telegram as a
+    // silently truncated reply; length is handled downstream by splitting.
+    ...(output ? { summary: output } : {}),
     sessionId: sessionDisplayId,
     sessionParams: {
       hermesRunId: input.terminal.runId,
