@@ -958,6 +958,19 @@ describe("testEnvironment", () => {
 });
 
 describe("mapFinalResultForTest", () => {
+  it("keeps the whole answer in the summary instead of cutting it at 2000 characters", () => {
+    const output = `${"Абзац ответа. ".repeat(700)}КОНЕЦ`;
+    expect(output.length).toBeGreaterThan(9000);
+    const result = mapFinalResultForTest({
+      terminal: { runId: "run-1", status: "completed", payload: { status: "completed" }, output },
+      outputChunks: [],
+      sessionKey: "session-key",
+      strategy: "issue",
+    });
+    expect(result.summary).toBe(output);
+    expect(result.summary?.endsWith("КОНЕЦ")).toBe(true);
+  });
+
   it("maps failed statuses into adapter errors", () => {
     const result = mapFinalResultForTest({
       terminal: {
@@ -1005,6 +1018,30 @@ describe("mapFinalResultForTest", () => {
       strategy: "issue",
     });
     expect(result.errorFamily).toBeUndefined();
+  });
+
+  // myrmidon(1.6.4-HERMES-LONG-RESPONSE): a long answer must survive in the
+  // standard `result` field so the issue comment (and the Telegram splitter)
+  // receive the whole text. The top-level `summary` already carries the full
+  // answer (myrmidon(TG-REPLY-FULL) in main), so this test pins only the
+  // `resultJson.result` contract.
+  it("keeps the full answer in resultJson.result", () => {
+    const longAnswer = "A".repeat(9_000);
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-long",
+        status: "completed",
+        payload: { status: "completed", output: longAnswer },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+    });
+
+    expect(result.summary).toBe(longAnswer);
+    expect(result.resultJson?.result).toBe(longAnswer);
+    expect(result.resultJson?.result).toHaveLength(9_000);
+    expect(result.resultJson?.output).toBe(longAnswer);
   });
 });
 
