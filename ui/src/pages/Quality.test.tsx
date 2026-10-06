@@ -7,15 +7,22 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Quality, rowKeyLabel, topCausesLine } from "./Quality";
-import type { BaselineMetricRow, BaselineMetricsReport } from "@/api/baseline";
+import type { BaselineComparisonResult, BaselineMetricRow, BaselineMetricsReport } from "@/api/baseline";
 
 const metricsMock = vi.hoisted(() => vi.fn());
+const compareMock = vi.hoisted(() => vi.fn());
 const setBreadcrumbsMock = vi.hoisted(() => vi.fn());
 const companyContextMock = vi.hoisted(() => ({ companyId: "company-1" as string | null }));
 
 vi.mock("@/api/baseline", async () => {
   const actual = await vi.importActual<typeof import("@/api/baseline")>("@/api/baseline");
-  return { ...actual, baselineApi: { metrics: (...args: unknown[]) => metricsMock(...args) } };
+  return {
+    ...actual,
+    baselineApi: {
+      metrics: (...args: unknown[]) => metricsMock(...args),
+      compare: (...args: unknown[]) => compareMock(...args),
+    },
+  };
 });
 
 vi.mock("@/context/CompanyContext", () => ({
@@ -75,6 +82,57 @@ function report(overrides: Partial<BaselineMetricsReport> = {}): BaselineMetrics
   };
 }
 
+// myrmidon(1.6.5-BASELINE-COMPARE-UI): the default baseline snapshot for the
+// comparison block — same shape as `report`, weaker numbers, so every delta
+// is a visible improvement of the current window.
+function baselineSnapshot(): BaselineMetricsReport {
+  return report({
+    window: { from: "2026-09-04T00:00:00.000Z", to: "2026-09-18T00:00:00.000Z" },
+    generatedAt: "2026-09-18T00:05:00.000Z",
+    byProject: [
+      row({
+        tasksCompleted: 4,
+        cycleTimeHours: { mean: 41.0, median: 36.5, p90: 81.5 },
+        timeInReviewHours: { mean: 9.0, median: 6.5 },
+        returnRate: { enteredReview: 8, returned: 4, rate: 0.5 },
+        costPerTask: { totalCents: 2500, meanCents: 416 },
+      }),
+    ],
+    byRole: [
+      row({
+        key: "engineer",
+        tasksCompleted: 2,
+        cycleTimeHours: { mean: 41.0, median: 36.5, p90: 81.5 },
+        timeInReviewHours: { mean: 9.0, median: 6.5 },
+        returnRate: { enteredReview: 4, returned: 2, rate: 0.5 },
+        costPerTask: { totalCents: 1250, meanCents: 416 },
+      }),
+    ],
+  });
+}
+
+function comparison(overrides: Partial<BaselineComparisonResult> = {}): BaselineComparisonResult {
+  return {
+    current: report(),
+    baseline: baselineSnapshot(),
+    differences: {
+      cycleTimeMean: { absolute: -20.5, percentage: -50 },
+      cycleTimeMedian: null,
+      cycleTimeP90: null,
+      reviewTimeMean: { absolute: -4.5, percentage: -50 },
+      reviewTimeMedian: null,
+      reviewTimeP90: null,
+      returnRate: { absolute: -0.25, percentage: -50 },
+      blockedTotal: null,
+      blockedMean: null,
+      runsPerTask: null,
+      costPerTask: { absolute: -208, percentage: -50 },
+      tasksCompleted: { absolute: 2, percentage: 50 },
+    },
+    ...overrides,
+  };
+}
+
 let container: HTMLDivElement;
 let root: Root | null;
 
@@ -82,6 +140,9 @@ beforeEach(() => {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = null;
+  // myrmidon(1.6.5-BASELINE-COMPARE-UI): default — no pinned snapshot; the
+  // comparison block shows its "no baseline" state unless a test overrides.
+  compareMock.mockResolvedValue(comparison({ baseline: null }));
 });
 
 afterEach(() => {
@@ -280,6 +341,69 @@ describe("Quality page", () => {
     } finally {
       companyContextMock.companyId = "company-1";
     }
+  });
+});
+
+// myrmidon(1.6.5-BASELINE-COMPARE-UI): the comparison-with-pinned-snapshot
+// block — deltas per project/role, a "no baseline" state that is not an
+// error, and an isolated error state.
+describe("Quality page — comparison with the pinned snapshot", () => {
+  it("renders the comparison tables with per-row deltas against the snapshot", async () => {
+    metricsMock.mockResolvedValue(report());
+    compareMock.mockResolvedValue(comparison());
+    await renderPage();
+
+    await vi.waitFor(() => {
+      expect(container.querySelector('[data-testid="quality-compare-by-project-table"]')).not.toBeNull();
+    });
+
+    const projectTable = container.querySelector('[data-testid="quality-compare-by-project-table"]');
+    // current vs baseline values side by side
+    expect(projectTable?.textContent).toContain("project-a");
+    expect(projectTable?.textContent).toContain("20.50 h"); // current cycle mean
+    expect(projectTable?.textContent).toContain("41.00 h"); // baseline cycle mean
+    expect(projectTable?.textContent).toContain("$2.08"); // current cost per task mean
+    expect(projectTable?.textContent).toContain("$4.16"); // baseline cost per task mean
+    // deltas: cycle time halved (-50.0%), return rate down 25 pp
+    expect(projectTable?.textContent).toContain("50.0%");
+    expect(projectTable?.textContent).toContain("25.0 pp");
+
+    const roleTable = container.querySelector('[data-testid="quality-compare-by-role-table"]');
+    expect(roleTable?.textContent).toContain("engineer");
+
+    // same window as the metrics query
+    expect(compareMock).toHaveBeenCalledTimes(1);
+    const [companyId, from, to] = compareMock.mock.calls[0] as unknown[];
+    expect(companyId).toBe("company-1");
+    expect(from).toBeDefined();
+    expect(to).toBeDefined();
+  });
+
+  it("shows the no-baseline state (not an error) when no snapshot is pinned", async () => {
+    metricsMock.mockResolvedValue(report());
+    compareMock.mockResolvedValue(comparison({ baseline: null }));
+    await renderPage();
+
+    await vi.waitFor(() => {
+      expect(container.querySelector('[data-testid="quality-compare-no-baseline"]')).not.toBeNull();
+    });
+    expect(container.textContent).toContain("No pinned baseline snapshot yet");
+    // the metrics tables still render normally
+    expect(container.querySelector('[data-testid="quality-by-project-table"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="quality-compare-error"]')).toBeNull();
+  });
+
+  it("shows an isolated error state when the compare request fails", async () => {
+    metricsMock.mockResolvedValue(report());
+    compareMock.mockRejectedValue(new Error("Request failed: 500"));
+    await renderPage();
+
+    await vi.waitFor(() => {
+      expect(container.querySelector('[data-testid="quality-compare-error"]')).not.toBeNull();
+    });
+    expect(container.textContent).toContain("Failed to load the comparison");
+    // the metrics tables are unaffected
+    expect(container.querySelector('[data-testid="quality-by-project-table"]')).not.toBeNull();
   });
 });
 
