@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/config"
+	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/deny"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/fakedocker"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/fixture"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/policy"
@@ -255,6 +256,40 @@ func TestAllow_A3_NoMarkerIsThe404OfTheDaemon(t *testing.T) {
 	wantStatus(t, res, 404)
 	if denyCode(res) != "" || !strings.Contains(res.str(), "Could not find") {
 		t.Errorf("body %q", res.str())
+	}
+}
+
+// TestAllow_A3_LegacyMarkerReadsTheLegacyPath (myrmidon(1.6.5-BOT-LAYOUT-V)):
+// the board reads the applied marker of a LEGACY-layout bot (a contract "1"
+// image: its hermes volume is bound at /data/hermes) at that path — the route
+// is allowed and the gate forwards the request to the daemon unchanged.
+func TestAllow_A3_LegacyMarkerReadsTheLegacyPath(t *testing.T) {
+	r := newRig(t)
+	r.seedMain("running")
+	marker := []byte("legacy-marker-tar-bytes")
+	r.d.Modify(r.name(""), func(c *fakedocker.Container) { c.Marker = marker })
+	target := r.target("", "/archive?path=%2Fdata%2Fhermes%2F.myrmidon%2Fapplied.json")
+	res := r.send("GET", target, nil, nil)
+	wantStatus(t, res, 200)
+	if !bytes.Equal(res.Body, marker) {
+		t.Errorf("body %q", res.Body)
+	}
+	r.wantURIs("GET "+r.target("", "/json"), "GET /v1.45/containers/"+r.id("")+"/archive?path=%2Fdata%2Fhermes%2F.myrmidon%2Fapplied.json")
+}
+
+// The legacy path is exact: only the marker file, not anything else under
+// /data/hermes.
+func TestDeny_A3_LegacyPathMutations(t *testing.T) {
+	r := newRig(t)
+	r.seedMain("running")
+	for _, q := range []string{
+		"/archive?path=%2Fdata%2Fhermes",
+		"/archive?path=%2Fdata%2Fhermes%2F.myrmidon%2Fapplied.json%2F..",
+		"/archive?path=%2Fdata%2Fhermes%2F.myrmidon%2Fapplied.json2",
+		"/archive?path=%2Fdata%2Fworkspace%2F.myrmidon%2Fapplied.json",
+		"/archive?path=%2Fdata%2Fhermes%2F.myrmidon%2Fapplied.json&x=1",
+	} {
+		wantDeny(t, r.send("GET", r.target("", q), nil, nil), deny.RouteNotAllowed)
 	}
 }
 

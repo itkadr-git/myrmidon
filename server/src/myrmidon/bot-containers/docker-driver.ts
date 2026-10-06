@@ -62,6 +62,7 @@ import { ISOLATED_LAYOUT, type ScopeLayout } from "@paperclipai/shared";
 import type { CompiledProfile } from "./types.js";
 import {
   assertBotRuntimeContract,
+  botVolumeLayout,
   BOT_LABEL_KEYS,
   BOT_MANAGED_DIRS,
   BOT_KEY_PATTERN,
@@ -76,6 +77,7 @@ import {
   buildHelperBinds,
   scopeDirNameFromBinds,
   type BotScopeMount,
+  type BotVolumeLayout,
   BotContainerTemplateError,
   buildBinds,
   buildLabels,
@@ -291,6 +293,12 @@ export interface DockerCreateContainerBody {
  * source is not in
  * MYRMIDON_BOT_MOUNT_SOURCES (template.ts buildBinds). `sharedPackageCachePath`
  * (instance settings, 1.6.1-BOT-DISK-B) adds the fixed package cache binds.
+ * `volumeLayout` is the layout the image's runtime contract pins (template.ts
+ * botVolumeLayout): a "legacy" image gets the three separate binds it boots
+ * from, anything else (the default — every existing caller and fixture passes
+ * none) gets the single mount. The layout of an image is decided from its own
+ * labels by requireBotImage before create/recreate/drift ever build a body, so
+ * a body can never carry the new scheme under an old image.
  */
 export function buildCreateContainerRequestBody(
   spec: BotContainerSpec,
@@ -299,6 +307,8 @@ export function buildCreateContainerRequestBody(
   gitMirror = false,
   /** myrmidon(BOT-DISK-F): the instance a shared member binds (isolated when absent). */
   scope?: BotScopeMount,
+  /** myrmidon(BOT-DISK-D layout versioning): the bind layout the image's contract declares. */
+  volumeLayout: BotVolumeLayout = "single",
 ): DockerCreateContainerBody {
   validateBotKey(spec.botKey);
   if (!isImageAllowed(spec.image, config.allowlist)) {
@@ -323,6 +333,15 @@ export function buildCreateContainerRequestBody(
     : { host: null, user: "", base: "" };
   const env = devbuildContainerEnv(devbuild);
   const keyMount = devbuildKeyMount(devbuild, config.mountSources);
+  // A legacy image never runs as a shared member: the scope layout needs the
+  // image's start-time links (BOT_RUNTIME_SCOPE_LABEL), which only single-
+  // layout images have. Callers keep the layouts apart, but the body builder
+  // refuses to mix them rather than emit a body nothing can boot.
+  if (scope && volumeLayout === "legacy") {
+    throw new BotContainerTemplateError(
+      `image "${spec.image}" declares the legacy volume layout, which cannot bind a shared scope instance`,
+    );
+  }
   return {
     Image: spec.image,
     Labels: buildLabels(spec),
@@ -349,7 +368,9 @@ export function buildCreateContainerRequestBody(
         sharedPackageCachePath,
         gitMirror,
         driverMount: keyMount,
-        scope,      }),
+        scope,
+        volumeLayout,
+      }),
       Privileged: false,
     },
   };
@@ -943,9 +964,20 @@ export function dockerBotContainerDriver(
   // myrmidon(OPE-4789): the context reads behind it (cache path, git-mirror
   // flag, scope layout) are cached per bot for templateContextTtlMs — see
   // templateContextFor below.
-  const createBody = async (spec: BotContainerSpec, layout?: ScopeLayout) => {
+  // `volumeLayout` (BOT-LAYOUT-V) is the bind layout the image's runtime
+  // contract pins (requireBotImage): the body of a legacy image always carries
+  // the three separate binds, so a drift is never diagnosed against a layout
+  // the image cannot boot.
+  const createBody = async (spec: BotContainerSpec, layout?: ScopeLayout, volumeLayout?: BotVolumeLayout) => {
     const context = await templateContextFor(spec.botKey, layout);
-    return buildCreateContainerRequestBody(spec, config, context.cachePath, context.gitMirror, scopeMountOf(context.layout));
+    return buildCreateContainerRequestBody(
+      spec,
+      config,
+      context.cachePath,
+      context.gitMirror,
+      scopeMountOf(context.layout),
+      volumeLayout,
+    );
   };
 
   /**
@@ -1082,8 +1114,13 @@ export function dockerBotContainerDriver(
   }
 
   /** The image must be on the host (the driver never pulls) and declare a
-   *  supported bot runtime contract (template.ts BOT_RUNTIME_CONTRACT_LABEL). */
-  async function requireBotImage(image: string, layout: ScopeLayout = ISOLATED_LAYOUT): Promise<void> {
+   *  supported bot runtime contract (template.ts BOT_RUNTIME_CONTRACT_LABEL).
+   *  Returns the VOLUME LAYOUT the contract pins — "legacy" (three separate
+   *  binds) or "single" (one /bot) — so every caller builds its create body,
+   *  drift expectation and helper plan for the layout THIS image boots from
+   *  (the 1.6.5-rc.1 defect: a body of the new scheme under an old image).
+   *  Throws on an unknown contract, before anything is created. */
+  async function requireBotImage(image: string, layout: ScopeLayout = ISOLATED_LAYOUT): Promise<BotVolumeLayout> {
     const res = await requestWithRateLimitRetry({ method: "GET", path: `/images/${nameSegment(image)}/json` });
     if (res.status === 404) {
       throw new Error(`image "${image}" is not present on the Docker host; build or pull it first (the driver never pulls)`);
@@ -1103,6 +1140,7 @@ export function dockerBotContainerDriver(
         `image "${image}" does not declare ${BOT_RUNTIME_SCOPE_LABEL}=1, so it cannot run as a member of a shared scope instance; rebuild the bot image`,
       );
     }
+    return botVolumeLayout(image, labels);
   }
 
   async function putArchive(containerName: string, mountPath: string, archive: Buffer): Promise<void> {
@@ -1262,15 +1300,24 @@ export function dockerBotContainerDriver(
     if (knownStatus?.state === "missing") return { drifted: false, fields: [] };
     const existing = (knownStatus?.inspect as DockerInspect | undefined) ?? (await inspectByName(containerNameFor(spec.botKey)));
     if (!existing) return { drifted: false, fields: [] };
-    const body = await createBody(spec);
+    // The expectation the live container is compared against must be built for
+    // the layout THIS image boots from (its contract, read off the host labels)
+    // — comparing a 1.6.4 container against a single-mount body is exactly the
+    // phantom drift that recreated 12 bots under a layout their image cannot
+    // start with (1.6.5-rc.1). An image the host does not have or with an
+    // unknown contract fails here, the same way create/recreate would, and the
+    // reconciler logs the error instead of acting on a guess.
+    const layout = await readScopeLayout(spec.botKey);
+    const volumeLayout = await requireBotImage(spec.image, layout);
+    const body = await createBody(spec, layout, volumeLayout);
     const fields = templateDriftFields(existing, body);
     return { drifted: fields.length > 0, fields };
   }
 
   async function create(spec: BotContainerSpec): Promise<void> {
     const layout = await readScopeLayout(spec.botKey);
-    const body = await createBody(spec, layout);
-    await requireBotImage(spec.image, layout);
+    const volumeLayout = await requireBotImage(spec.image, layout);
+    const body = await createBody(spec, layout, volumeLayout);
     await removeByName(replacementContainerNameFor(spec.botKey)); // stale, from an interrupted recreate
     await prepareVolumes(spec.botKey, spec.image, layout);
     await createNamed(containerNameFor(spec.botKey), body);
@@ -1278,13 +1325,15 @@ export function dockerBotContainerDriver(
 
   async function recreate(spec: BotContainerSpec): Promise<void> {
     const layout = await readScopeLayout(spec.botKey);
-    const body = await createBody(spec, layout);
     const name = containerNameFor(spec.botKey);
     const replacement = replacementContainerNameFor(spec.botKey);
     // Everything that can fail for a reason of its own (missing image, rejected
     // template, daemon refusing the create, a disk migration that would conflict)
-    // happens while the old container is still intact.
-    await requireBotImage(spec.image, layout);
+    // happens while the old container is still intact. The image check also
+    // decides the VOLUME LAYOUT the replacement body is built with: an old card
+    // keeps being recreated under the layout its own image understands.
+    const volumeLayout = await requireBotImage(spec.image, layout);
+    const body = await createBody(spec, layout, volumeLayout);
     const existing = await inspectByName(name);
     const from = existing ? layoutOfInspect(existing) : layout;
     const moves = scopeLayoutKeyOf(from) !== scopeLayoutKeyOf(layout);
