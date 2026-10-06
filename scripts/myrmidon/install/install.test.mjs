@@ -231,4 +231,19 @@ describe("install.sh", () => {
     assert.equal(bad.status, 1);
     assert.match(bad.stderr, /--version must look like/);
   });
+
+  it("refuses a CPU below the x86-64-v2 baseline before changing the machine", () => {
+    const sb = sandbox();
+    const old = path.join(sb.dir, "cpuinfo-old");
+    fs.writeFileSync(old, "processor\t: 0\nflags\t\t: fpu vme de pse sse sse2\nvendor_id\t: GenuineIntel\n");
+    const r = run(sb, [], { MYRMIDON_INSTALL_CPUINFO: old });
+    assert.equal(r.status, 1, "a CPU the board image cannot start on is a refusal, not a late failure");
+    assert.match(r.stderr, /x86-64-v2/);
+    assert.ok(!fs.existsSync(sb.opt), "the refusal comes before anything is created");
+
+    const good = path.join(sb.dir, "cpuinfo-ok");
+    fs.writeFileSync(good, "processor\t: 0\nflags\t\t: fpu vme sse4_1 sse4_2 popcnt cx16 ssse3\n");
+    const ok = run(sb, [], { MYRMIDON_INSTALL_CPUINFO: good });
+    assert.equal(ok.status, 0, ok.stderr);
+  });
 });
