@@ -60,6 +60,13 @@ describe("issueNeedsReviewer", () => {
     expect(issueNeedsReviewer(issue({ executionState: { status: "pending" } }))).toBe(false);
     expect(issueNeedsReviewer(issue({ executionState: { status: "idle", monitor: { status: "cleared" } } }))).toBe(false);
   });
+
+  it("myrmidon(HUMAN-REVIEW-WAIT): never routes a human-only wait to an agent reviewer", () => {
+    expect(issueNeedsReviewer(issue({ reviewPolicy: "human_only", responsibleUserId: "owner" }))).toBe(false);
+    // other policies do not declare a human wait — routing stays available
+    expect(issueNeedsReviewer(issue({ reviewPolicy: "anyone" }))).toBe(true);
+    expect(issueNeedsReviewer(issue({ reviewPolicy: "not_creator" }))).toBe(true);
+  });
 });
 
 describe("pickReviewer", () => {

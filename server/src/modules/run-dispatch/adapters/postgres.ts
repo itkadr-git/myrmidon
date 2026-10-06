@@ -330,6 +330,8 @@ export function createPostgresRunDispatchAdapter(
         executionPolicy: issues.executionPolicy,
         executionState: issues.executionState,
         monitorNextCheckAt: issues.monitorNextCheckAt,
+        // myrmidon(HUMAN-REVIEW-WAIT): read for collectDispositionRepairSourceState below.
+        reviewPolicy: issues.reviewPolicy,
       })
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, input.companyId)));
