@@ -41,6 +41,7 @@ import {
   type GatewayConcurrencyStatus,
 } from "./concurrency-sync.js";
 import { readMaxConcurrentRuns } from "./profile-input.js";
+import { hasReleaseBotImage, resolveBotImageRolloutStatus, type BotImageRolloutStatus } from "@paperclipai/shared";
 import { isImageAllowed, parseImageAllowlist } from "./template.js";
 import type { BotContainerState } from "./driver.js";
 
@@ -51,6 +52,9 @@ export interface BotContainerRouteAgent {
   adapterConfig: Record<string, unknown>;
   /** The card's scheduling policy; read for heartbeat.maxConcurrentRuns. */
   runtimeConfig: Record<string, unknown>;
+  /** myrmidon(BOT-ROLLOUT): the agent's lifecycle status (idle, paused, running, …) —
+   *  the same value the rollout script reads off the agents list to decide a switch. */
+  status?: string | null;
 }
 
 export interface BotContainerRoutesDeps {
@@ -103,6 +107,10 @@ export interface BotContainerStatusResponse {
   /** myrmidon(1.6.4-BOT-CONTAINER-CARD): how the release bot-image rollout treats this bot:
    *  tracks the release, pinned (with the pinned image) or not applicable (with why). */
   imageTracking: BotImageTracking;
+  /** myrmidon(BOT-ROLLOUT): the release bot-image rollout verdict of this bot —
+   *  on the release image, or why not (busy / no release image configured /
+   *  pinned / not applicable). Additive; absent on an older server. */
+  imageRollout: BotImageRolloutStatus;
   /** myrmidon(CONCURRENCY-SYNC): runtimeConfig.heartbeat.maxConcurrentRuns, normalized
    *  exactly as the profile compiler normalizes it. Always answered, so the card can
    *  show the board's value even for a gateway the board does not manage. */
@@ -161,6 +169,14 @@ export function botContainerRoutes(deps: BotContainerRoutesDeps) {
       container: null,
       containerError: null,
       imageTracking: classifyBotImageTracking(agent.adapterType, agent.adapterConfig),
+      // myrmidon(BOT-ROLLOUT): the verdict reads the card's tracking category and
+      // the agent's status (the same source the rollout script uses) — no docker
+      // query beyond the container status below.
+      imageRollout: resolveBotImageRolloutStatus({
+        tracking: classifyBotImageTracking(agent.adapterType, agent.adapterConfig),
+        agentStatus: agent.status ?? null,
+        hasReleaseImage: hasReleaseBotImage(env),
+      }),
       boardMaxConcurrentRuns: readMaxConcurrentRuns(agent.runtimeConfig),
       gatewayConcurrency: null,
       gatewayConcurrencyNote: null,

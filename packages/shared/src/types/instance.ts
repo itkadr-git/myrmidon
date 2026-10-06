@@ -8,6 +8,8 @@ import type { HostDiskSettings } from "../myrmidon-host-disk.js";
 import type { StoredBotDiskSettings } from "../myrmidon-bot-disk.js";
 // myrmidon(1.6.1-BOT-DISK-C): per-bot disk quota of its own general settings key.
 import type { StoredBotDiskQuotaSettings } from "../myrmidon-bot-disk-quota.js";
+// myrmidon(BOT-ROLLOUT): the release bot-image rollout settings of the same row.
+import type { BotImageRolloutSettings } from "../myrmidon-bot-image-rollout.js";
 // myrmidon(PARALLEL-HELPERS): the helper ceiling/default stored in instance settings
 import type { ParallelHelpersSettings } from "../myrmidon-parallel-helpers.js";
 import type { BotLspSettings } from "../myrmidon-bot-lsp.js";
@@ -100,6 +102,15 @@ export interface InstanceGeneralSettings {
    * with the validator of the same field (packages/shared/src/validators/instance.ts).
    */
   botDiskQuota?: StoredBotDiskQuotaSettings;
+  /**
+   * myrmidon(BOT-ROLLOUT): the release bot-image rollout settings (busy-wait
+   * timeout, batch size, soft pause after a busy bot), changed from
+   * `GET`/`PATCH /api/myrmidon/bot-image-rollout`. Absent means \"use the
+   * environment variable, then the default\"; the env value stays the upper
+   * bound of each knob. Kept in sync with the validator of the same field
+   * (packages/shared/src/validators/instance.ts).
+   */
+  myrmidonBotImageRollout?: BotImageRolloutSettings;
   /**
    * myrmidon(C0): run admission limits changed from the instance settings page
    * and `GET`/`PATCH /api/myrmidon/runtime-limits`. Absent means "use the

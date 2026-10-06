@@ -73,6 +73,9 @@ export function myrmidonBotContainerRoutes(db: Db) {
           // myrmidon(CONCURRENCY-SYNC): the card's heartbeat.maxConcurrentRuns, so the
           // status route can report the limit the board would apply.
           runtimeConfig: agents.runtimeConfig,
+          // myrmidon(BOT-ROLLOUT): the agent's lifecycle status, the same value the
+          // rollout script reads to decide a switch (idle/pause only).
+          status: agents.status,
         })
         .from(agents)
         .where(eq(agents.id, id))

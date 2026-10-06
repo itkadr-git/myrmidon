@@ -15,6 +15,8 @@ import { hostDiskSettingsSchema } from "../myrmidon-host-disk.js";
 import { storedBotDiskSettingsSchema } from "../myrmidon-bot-disk.js";
 // myrmidon(1.6.1-BOT-DISK-C): the per-bot disk quota stored in the same general settings row.
 import { storedBotDiskQuotaSettingsSchema } from "../myrmidon-bot-disk-quota.js";
+// myrmidon(BOT-ROLLOUT): the release bot-image rollout settings stored in the same row.
+import { storedBotImageRolloutSettingsSchema } from "../myrmidon-bot-image-rollout.js";
 // myrmidon(C0): run admission limits that can be changed while the server runs
 import { storedRunLimitsSchema } from "../myrmidon-runtime-limits.js";
 // myrmidon(PARALLEL-HELPERS): company ceiling/default for parallel helper
@@ -101,6 +103,11 @@ export const instanceGeneralSettingsSchema = z.object({
   // /api/myrmidon/bot-disk-quota; absent means "no quota" (enforcement off).
   // Lenient: an invalid value reads as absent (see myrmidon-bot-disk-quota.ts).
   botDiskQuota: storedBotDiskQuotaSettingsSchema,
+  // myrmidon(BOT-ROLLOUT): the release bot-image rollout settings (busy-wait
+  // timeout, batch size, soft pause), changed from /api/myrmidon/bot-image-rollout;
+  // absent means \"use the environment variable, then the default\". Lenient: an
+  // invalid value reads as absent (see myrmidon-bot-image-rollout.ts).
+  myrmidonBotImageRollout: storedBotImageRolloutSettingsSchema,
   // myrmidon(PARALLEL-HELPERS): company ceiling and default for the "Parallel
   // helpers" block on an agent card, changed from the instance settings page
   // and /api/myrmidon/parallel-helpers; absent means the module defaults apply
