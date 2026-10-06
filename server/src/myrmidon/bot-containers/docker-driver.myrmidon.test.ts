@@ -28,6 +28,7 @@ import {
 import type { BotContainerDriver, BotContainerSpec } from "./driver.js";
 import { reconcileBot, type BotMaintenancePort } from "./reconciler.js";
 import { BOT_LABEL_KEYS, BOT_RUNTIME_CONTRACT_LABEL, BotContainerTemplateError } from "./template.js";
+import { CLONE_HYGIENE_REPORT_PATH } from "./clone-hygiene.js";
 import type { CompiledProfile, CompiledProfileFile } from "./types.js";
 import { buildUstarArchive, parseUstarArchive, type UstarReadEntry } from "./ustar.js";
 
@@ -850,11 +851,14 @@ async function startFakeDaemon(tmp: string, images: Record<string, Record<string
       return send(201, { Id: `id-${seq}`, Warnings: [] });
     }
     if (route === "/containers/json" && method === "GET") {
-      const wanted = (JSON.parse(query.filters ?? "{}") as { label?: string[] }).label ?? [];
-      const list = [...containers.values()]
-        .filter((c) => wanted.every((key) => c.body.Labels?.[key] !== undefined))
-        .map((c) => ({ Id: c.id, Names: [`/${c.name}`], Labels: c.body.Labels ?? {} }));
-      return send(200, list);
+      // myrmidon(1.6.5-DOCKER-DRIVER-REPORTS / OPE-4624): the board never talks to a
+      // bare daemon — the socket it dials is dockergate's, and dockergate keeps the
+      // container listing on its closed list (403 route_not_allowed). The fake used
+      // to answer 200 here: that is how the board's listing call passed every local
+      // suite and then failed 164 times per quarter-hour on the live board. Answer
+      // exactly what the gate answers, so a regression to any listing call fails
+      // here rather than only in production.
+      return send(403, { message: "dockergate: denied (route_not_allowed)" });
     }
     if (!(m = route.match(/^\/containers\/([^/]+)(?:\/([a-z]+))?$/))) return send(404, { message: "no such route" });
     const name = decodeURIComponent(m[1]);
@@ -1087,6 +1091,39 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
       inspect: undefined,
     });
     expect(status.inspect).toMatchObject({ State: { Status: "running" } });
+  });
+
+  // myrmidon(1.6.5-DOCKER-DRIVER-REPORTS / OPE-4624): the behavioral half of the
+  // dockergate contract. dockergate-contract.myrmidon.test.ts reads the driver's
+  // source and refuses a closed path; this test runs the driver against a fake
+  // daemon that answers like the gate, so a call to a closed route fails in CI.
+  // The fake used to answer the container listing with 200, and that is how the
+  // old `list()` shipped: green in every local suite, 403 route_not_allowed on
+  // every sweep on the live board (OPE-4624).
+  it("collects the clone-hygiene report over gate-allowed routes; the closed container listing stays refused", async () => {
+    await driver.create(spec());
+    await driver.writeProfile("agent-a", testProfile());
+    await driver.start("agent-a");
+
+    // The report the bot image writes, at its real path inside the /bot mount.
+    const report = JSON.stringify({ version: 1, inspectedAt: new Date().toISOString(), repos: [] });
+    fs.mkdirSync(path.join(volumes.hermes, path.dirname(CLONE_HYGIENE_REPORT_PATH)), { recursive: true });
+    fs.writeFileSync(path.join(volumes.hermes, CLONE_HYGIENE_REPORT_PATH), report);
+
+    // The hygiene sweep's two calls: per-bot inspect/list of known keys (A2), then
+    // the fixed-path report read (A13) — both allowed, both working end to end.
+    expect((await driver.list(["agent-a", "agent-missing"])).map((s) => s.botKey)).toEqual(["agent-a"]);
+    // The docker driver always provides readCloneReport (fleetd's may not).
+    expect(await driver.readCloneReport!("agent-a")).toBe(report);
+
+    // Nothing in that flow touched the closed listing ...
+    expect(daemon.requests.filter((r) => r.method === "GET" && r.path === "/containers/json")).toEqual([]);
+    // ... and a caller that asks for it gets exactly what dockergate answers (403,
+    // reason code in Docker's error shape): the regression that produced OPE-4624
+    // now fails here instead of only on the live board.
+    const listing = await rawRequest(daemon.socketPath, "GET", "/v1.45/containers/json?all=true&filters=%7B%22label%22%3A%5B%22myrmidon.bot%22%5D%7D");
+    expect(listing.status).toBe(403);
+    expect(listing.body).toContain("route_not_allowed");
   });
 
   it("the apply helper runs as uid 10001 with every directory it touches owned by 10001 (explicit tar directory entries)", async () => {
