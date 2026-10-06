@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "version": "1.6.5-rc.2",
+  "tag": "myr-v1.6.5-rc.2",
+  "components": {
+    "board": {
+      "repository": "ghcr.io/itkadr-git/myrmidon",
+      "digest": "sha256:beb1459ea7c52b008c3df2325c022ad7d81fa0542f2fecc8c1816ce8c72f466a"
+    },
+    "dockergate": {
+      "repository": "ghcr.io/itkadr-git/myrmidon-dockergate",
+      "digest": "sha256:942bf13c0c7f69bf04245a6a5b79ed2bf40dcc4d6bc2a383d54c151640edc9f0"
+    },
+    "fleetd": {
+      "repository": "ghcr.io/itkadr-git/myrmidon-fleetd",
+      "digest": "sha256:efd9e144f51b21cd9ceb46e0bc9e0f0605ece54a9c7e517dc0f85db3a6be55c5"
+    },
+    "hermes": {
+      "repository": "ghcr.io/itkadr-git/myrmidon-hermes",
+      "digest": "sha256:edfd1c9ecc67086c409534d04636e802ca6d0b1bda942c7b3dd29fca1ea976b1"
+    },
+    "hermes-dev": {
+      "repository": "ghcr.io/itkadr-git/myrmidon-hermes-dev",
+      "digest": "sha256:0be36128c9630d68cc784b282d8ec2f4dd60613bbbbfbbe0078157aea7762a49"
+    },
+    "hermes-node": {
+      "repository": "ghcr.io/itkadr-git/myrmidon-hermes-node",
+      "digest": "sha256:37ebb39fc22b6842198776123033e23471c5935e02ec2b37d04dcefb17f469b2"
+    }
+  }
+}
