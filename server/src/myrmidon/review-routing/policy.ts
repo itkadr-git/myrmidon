@@ -212,6 +212,68 @@ export function buildReviewRoutingAssignPatch(input: {
   return patch;
 }
 
+export interface PrRoutingTaskPatch {
+  status: string;
+  assigneeAgentId: string;
+  assigneeUserId: null;
+  executionPolicy: Record<string, unknown>;
+  executionState: Record<string, unknown> | null;
+}
+
+/**
+ * myrmidon(REVIEW-ROUTING): the create-time shape of a PR-lane task. The new
+ * task gets exactly the review-stage shape the task lane writes when it routes
+ * a fresh `in_review` task — one review stage with the picked agent as its
+ * only participant, produced through `applyIssueExecutionPolicyTransition` —
+ * with the PR author as the return assignee (the human/bot whose PR this is
+ * has no board identity here, so the lane hands changes back to nobody:
+ * `returnAssignee` stays absent and "request changes" lands on the reviewer
+ * like any stage-less task). The transition decides the status; the lane
+ * mirrors whatever it produces (in practice `in_review` with the reviewer as
+ * assignee), never inventing a new stage shape.
+ */
+export function buildPrRoutingTaskPatch(input: {
+  reviewerAgentId: string;
+}): PrRoutingTaskPatch {
+  const policy = {
+    mode: "normal",
+    commentRequired: false,
+    stages: [
+      {
+        id: randomUUID(),
+        type: "review",
+        approvalsNeeded: 1,
+        participants: [{ id: randomUUID(), type: "agent", agentId: input.reviewerAgentId, userId: null }],
+      },
+    ],
+  } as unknown as IssueExecutionPolicy;
+  const transition = applyIssueExecutionPolicyTransition({
+    issue: {
+      status: "todo",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      responsibleUserId: null,
+      createdByUserId: null,
+      executionPolicy: null,
+      executionState: null,
+    },
+    policy,
+    previousPolicy: null,
+    requestedStatus: "in_review",
+    requestedAssigneePatch: {},
+    actor: { agentId: null, userId: null },
+    reviewRequest: { instructions: REVIEW_ROUTING_REVIEW_INSTRUCTIONS },
+  });
+  const patch = { ...transition.patch, executionPolicy: policy } as Record<string, unknown>;
+  return {
+    status: typeof patch.status === "string" ? patch.status : "in_review",
+    assigneeAgentId: typeof patch.assigneeAgentId === "string" ? patch.assigneeAgentId : input.reviewerAgentId,
+    assigneeUserId: null,
+    executionPolicy: patch.executionPolicy as Record<string, unknown>,
+    executionState: (patch.executionState as Record<string, unknown> | null) ?? null,
+  };
+}
+
 /**
  * Builds the patch that moves a pending review to another agent reviewer: the
  * stage keeps its id and state (round counter, request, return assignee), only

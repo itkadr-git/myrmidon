@@ -45,7 +45,31 @@ export interface ReviewRoutingSignal {
   pr?: ReviewRoutingSignalPr | null;
 }
 
+/**
+ * Stable uuid-shaped synthetic subject id for a PR signal. The attention
+ * enrichment joins subject ids against uuid columns, so a readable string id
+ * breaks the feed query — the same trick the tracing-health card uses: a
+ * deterministic, hex-safe derivation of the (repository, number), unique and
+ * stable across passes.
+ */
+export function prSignalSubjectId(repository: string, number: number): string {
+  const hex = `${repository}#${number}`
+    .split("")
+    .map((ch) => ch.charCodeAt(0).toString(16))
+    .join("")
+    .replace(/[^0-9a-f]/gi, "0")
+    .padEnd(24, "0")
+    .slice(0, 24);
+  const body = `00000000${hex}`.padEnd(32, "0").slice(0, 32);
+  return `${body.slice(0, 8)}-${body.slice(8, 12)}-${body.slice(12, 16)}-${body.slice(16, 20)}-${body.slice(20, 32)}`;
+}
+
 const signalsByCompany = new Map<string, Map<string, ReviewRoutingSignal>>();
+
+/** Registry key: a task may hold one card per kind; PR cards key on the synthetic subject. */
+function signalKey(signal: ReviewRoutingSignal): string {
+  return `${signal.kind}:${signal.issueId}`;
+}
 
 /**
  * Replaces the company's signals with `next`. A signal that already exists for
@@ -58,12 +82,12 @@ export function replaceReviewRoutingSignals(companyId: string, next: ReviewRouti
     signalsByCompany.delete(companyId);
     return;
   }
-  const byIssue = new Map<string, ReviewRoutingSignal>();
+  const byKey = new Map<string, ReviewRoutingSignal>();
   for (const signal of next) {
-    const before = previous?.get(signal.issueId);
-    byIssue.set(signal.issueId, before && before.kind === signal.kind ? { ...signal, since: before.since } : signal);
+    const before = previous?.get(signalKey(signal));
+    byKey.set(signalKey(signal), before ? { ...signal, since: before.since } : signal);
   }
-  signalsByCompany.set(companyId, byIssue);
+  signalsByCompany.set(companyId, byKey);
 }
 
 export function readReviewRoutingSignals(companyId: string): ReviewRoutingSignal[] {

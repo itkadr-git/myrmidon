@@ -108,7 +108,9 @@ export const reviewRoutingPrWatchSchema = z
       .min(MIN_REVIEW_ROUTING_PR_POLL_INTERVAL_SEC)
       .max(MAX_REVIEW_ROUTING_PR_POLL_INTERVAL_SEC)
       .default(DEFAULT_REVIEW_ROUTING_PR_POLL_INTERVAL_SEC),
-    steward: reviewRoutingStewardSchema.default({}),
+    // zod v4 `.default({})` would hand back the literal `{}` without filling
+    // the nested defaults — normalize an absent block through the schema.
+    steward: z.preprocess((value: unknown) => value ?? {}, reviewRoutingStewardSchema),
   })
   .strict();
 
@@ -133,8 +135,10 @@ export function normalizeReviewRoutingPrWatch(raw: unknown): ReviewRoutingPrWatc
 }
 
 const reviewRoutingPrWatchField = z.preprocess(
-  (value) => (value === undefined ? undefined : normalizeReviewRoutingPrWatch(value)),
-  reviewRoutingPrWatchSchema.optional().default({}),
+  // Always normalize: absent, malformed, or partial — the prWatch defaults are
+  // the schema's own defaults, never a literal `{}` passing through a default.
+  (value: unknown) => normalizeReviewRoutingPrWatch(value),
+  reviewRoutingPrWatchSchema,
 );
 
 export const reviewRoutingSettingsSchema = z

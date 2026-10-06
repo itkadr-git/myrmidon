@@ -1,24 +1,31 @@
 // myrmidon(REVIEW-ROUTING): the sweep against a fake store — assignment by
 // least load, the attention signal when nobody is available, the overdue
-// reassignment, settings applied on the next pass, and idempotency.
+// reassignment, settings applied on the next pass, and idempotency. The PR
+// lane rides here against a fake store and a fake head resolver.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_REVIEW_ROUTING_REASSIGN_AFTER_HOURS,
   REVIEW_ROUTING_ASSIGNED_ACTION,
+  REVIEW_ROUTING_PR_TASK_CREATED_ACTION,
   REVIEW_ROUTING_REASSIGNED_ACTION,
+  REVIEW_ROUTING_STEWARD_TASK_CREATED_ACTION,
   normalizeReviewRoutingSettings,
   type ReviewRoutingSettings,
 } from "@paperclipai/shared";
 import { readReviewRoutingSignals, resetReviewRoutingSignals } from "./attention.js";
-import type { InReviewIssueRow, ReviewRoutingStore, RoutingHistory } from "./store.js";
+import type { InReviewIssueRow, PrCandidateRow, ReviewRoutingStore, RoutingHistory } from "./store.js";
+import type { PrRoutedTask } from "./pr-policy.js";
 import { createReviewRoutingSweep } from "./sweep.js";
+import type { PullRequestHeadResolver } from "./github.js";
+import type { PullRequestHeadState } from "./pr-policy.js";
 
 const COMPANY = "company-1";
 const AUTHOR = "aaaaaaaa-0000-4000-8000-000000000001";
 const ASSIGNEE = "aaaaaaaa-0000-4000-8000-000000000002";
 const REV_A = "bbbbbbbb-0000-4000-8000-000000000001";
 const REV_B = "bbbbbbbb-0000-4000-8000-000000000002";
+const STEWARD = "cccccccc-0000-4000-8000-000000000001";
 const NOW = new Date("2026-03-10T12:00:00Z");
 
 function row(id: string, overrides: Partial<InReviewIssueRow> = {}): InReviewIssueRow {
@@ -324,6 +331,219 @@ describe("overdue review", () => {
     t.fixture.rows.set("1", row("1", { assigneeAgentId: REV_A, executionPolicy: policy, executionState: state }));
     const result = await t.sweep.sweep(new Date(NOW.getTime() + 500 * 3_600_000), { force: true });
     expect(result).toMatchObject({ reassigned: 0, signaled: 0 });
+  });
+});
+
+describe("PR lane (fake store + fake resolver)", () => {
+  interface PrFixture {
+    candidates: PrCandidateRow[];
+    knownRepos: string[];
+    routed: PrRoutedTask[];
+    openReviewLoad: Map<string, number>;
+    openMergeLoad: Map<string, number>;
+    created: Array<{ title: string; kind: string; assigneeAgentId: string; headSha: string }>;
+    cancelled: string[];
+  }
+
+  function prStore(fx: PrFixture): ReviewRoutingStore {
+    const base = makeStore({
+      rows: new Map(),
+      reviewers: [{ id: REV_A, role: "reviewer" }, { id: STEWARD, role: "devops" }],
+      load: new Map(),
+      history: new Map(),
+    });
+    return {
+      ...base,
+      listPrCandidates: async () => fx.candidates,
+      listKnownPrRepositories: async () => fx.knownRepos,
+      listOpenPrRoutingTasks: async () => fx.routed,
+      openPrTaskLoadByAgent: async (_company, kind) => (kind === "review" ? fx.openReviewLoad : fx.openMergeLoad),
+      findAgentIdsByGitHubLogin: async () => [],
+      createPrRoutingTask: async (input) => {
+        fx.created.push({ title: input.title, kind: input.kind, assigneeAgentId: input.assigneeAgentId, headSha: input.headSha });
+        fx.routed.push({ issueId: `task-${input.kind}-${input.number}`, repository: input.repository, number: input.number, kind: input.kind, headSha: input.headSha });
+        return { issueId: `task-${input.kind}-${input.number}`, deduplicated: false };
+      },
+      cancelPrRoutingTask: async ({ issueId }) => {
+        fx.cancelled.push(issueId);
+        fx.routed = fx.routed.filter((task) => task.issueId !== issueId);
+        return true;
+      },
+    } as unknown as ReviewRoutingStore;
+  }
+
+  function headState(overrides: Partial<PullRequestHeadState> = {}): PullRequestHeadState {
+    return {
+      repository: "acme/widgets",
+      number: 7,
+      open: true,
+      draft: false,
+      headSha: "aaaaaaaa",
+      ci: "green",
+      reviewDecision: null,
+      fetchFailed: false,
+      title: "Add routing",
+      url: "https://github.com/acme/widgets/pull/7",
+      authorLogin: "author-a",
+      baseRef: "main",
+      ...overrides,
+    };
+  }
+
+  function prSetup(
+    settings: Partial<ReviewRoutingSettings> = {},
+    fx?: Partial<PrFixture> & { headState?: PullRequestHeadState; resolverThrows?: boolean; authorAgents?: string[] },
+  ) {
+    const fixture: PrFixture = {
+      candidates: [{ repository: "acme/widgets", number: 7, headSha: "aaaaaaaa", title: "Add routing", url: null, authorLogin: "author-a", baseRef: "main", draft: false }],
+      knownRepos: [],
+      routed: [],
+      openReviewLoad: new Map(),
+      openMergeLoad: new Map(),
+      created: [],
+      cancelled: [],
+      ...fx,
+    };
+    const state = fx?.headState ?? headState();
+    const resolver = {
+      resolve: async ({ number }: { repository: string; number: number }) => {
+        if (fx?.resolverThrows) throw new Error("resolver exploded");
+        return { ...state, number };
+      },
+      listOpenPullRequests: async () => [],
+      resetCache: () => undefined,
+    } as unknown as PullRequestHeadResolver;
+    const store = prStore(fixture);
+    (store as unknown as Record<string, unknown>).findAgentIdsByGitHubLogin = async () => fx?.authorAgents ?? [];
+    let current = normalizeReviewRoutingSettings(settings);
+    const activities: Array<{ action: string; issueId: string }> = [];
+    const wakes: Array<{ agentId: string; issueId: string }> = [];
+    const comments: Array<{ issueId: string; body: string }> = [];
+    const sweep = createReviewRoutingSweep({
+      store,
+      prResolver: resolver,
+      readSettings: async () => current,
+      addComment: async (issueId, body) => { comments.push({ issueId, body }); },
+      wakeReviewer: async (agentId, wake) => { wakes.push({ agentId, issueId: wake.issueId }); },
+      logActivity: async (entry) => { activities.push({ action: entry.action, issueId: entry.issueId }); },
+      log: { info: vi.fn(), warn: vi.fn() },
+    });
+    return { fixture, sweep, activities, wakes, comments,
+      setSettings: (next: Partial<ReviewRoutingSettings>) => { current = normalizeReviewRoutingSettings(next); } };
+  }
+
+  it("creates a review task on the first green sighting", async () => {
+    const t = prSetup();
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result).toMatchObject({ prScanned: 1, prTasksCreated: 1, stewardTasksCreated: 0, prSuperseded: 0, failed: 0 });
+    expect(t.fixture.created).toEqual([
+      expect.objectContaining({ title: "Review PR acme/widgets#7: Add routing", kind: "review", assigneeAgentId: REV_A, headSha: "aaaaaaaa" }),
+    ]);
+    expect(t.activities.map((a) => a.action)).toEqual([REVIEW_ROUTING_PR_TASK_CREATED_ACTION]);
+    expect(t.wakes).toEqual([{ agentId: REV_A, issueId: "task-review-7" }]);
+  });
+
+  it("does not re-create while an open task covers the head", async () => {
+    const t = prSetup();
+    await t.sweep.sweep(NOW, { force: true });
+    const second = await t.sweep.sweep(new Date(NOW.getTime() + 60_000), { force: true });
+    expect(second.prTasksCreated).toBe(0);
+    expect(t.fixture.created).toHaveLength(1);
+  });
+
+  it("creates a steward task only on APPROVED", async () => {
+    const changes = prSetup({}, { headState: headState({ reviewDecision: "CHANGES_REQUESTED" }) });
+    const result = await changes.sweep.sweep(NOW, { force: true });
+    expect(result).toMatchObject({ prTasksCreated: 0, stewardTasksCreated: 0 });
+    expect(changes.fixture.created).toHaveLength(0);
+
+    const approved = prSetup({}, { headState: headState({ reviewDecision: "APPROVED" }) });
+    const approvedResult = await approved.sweep.sweep(NOW, { force: true });
+    expect(approvedResult).toMatchObject({ stewardTasksCreated: 1, prTasksCreated: 0 });
+    expect(approved.fixture.created).toEqual([expect.objectContaining({ title: "Merge PR acme/widgets#7", kind: "merge" })]);
+    expect(approved.activities.map((a) => a.action)).toEqual([REVIEW_ROUTING_STEWARD_TASK_CREATED_ACTION]);
+  });
+
+  it("cancels a task whose recorded head moved on and routes the new head the same pass", async () => {
+    const t = prSetup({}, {
+      routed: [{ issueId: "old-task", repository: "acme/widgets", number: 7, kind: "review", headSha: "older-sha" }],
+      headState: headState({ headSha: "newer-sha" }),
+    });
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result.prSuperseded).toBe(1);
+    expect(result.prTasksCreated).toBe(1);
+    expect(t.fixture.cancelled).toEqual(["old-task"]);
+    expect(t.comments.some((c) => c.issueId === "old-task" && c.body.includes("newer-sha"))).toBe(true);
+    expect(t.fixture.created[0]?.headSha).toBe("newer-sha");
+  });
+
+  it("a resolver failure creates nothing and counts no failure", async () => {
+    const t = prSetup({}, { headState: headState({ fetchFailed: true, ci: "unknown", open: false }) });
+    const result = await t.sweep.sweep(NOW, { force: true });
+    // The candidate was looked at, but a failed read must not create, cancel,
+    // or inflate `failed` — the desk would misread an outage as a broken lane.
+    expect(result).toMatchObject({ prScanned: 1, prTasksCreated: 0, prSuperseded: 0, failed: 0 });
+    expect(t.fixture.created).toHaveLength(0);
+    expect(t.fixture.cancelled).toHaveLength(0);
+
+    const exploded = prSetup({}, { resolverThrows: true });
+    const explodedResult = await exploded.sweep.sweep(NOW, { force: true });
+    expect(explodedResult).toMatchObject({ prScanned: 0, prTasksCreated: 0, failed: 0 });
+    expect(exploded.fixture.created).toHaveLength(0);
+  });
+
+  it("raises a no_reviewer card carrying the PR coordinates when nobody is eligible", async () => {
+    const t = prSetup({ reviewerRoles: ["qa"] });
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result).toMatchObject({ prTasksCreated: 0, signaled: 1 });
+    expect(readReviewRoutingSignals(COMPANY)).toEqual([
+      expect.objectContaining({ kind: "no_reviewer", pr: { repository: "acme/widgets", number: 7, headSha: "aaaaaaaa" } }),
+    ]);
+  });
+
+  it("skips the PR author's linked agent", async () => {
+    const t = prSetup({}, { authorAgents: [REV_A] });
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result.prTasksCreated).toBe(0);
+    expect(readReviewRoutingSignals(COMPANY)[0]?.kind).toBe("no_reviewer");
+  });
+
+  it("pollIntervalSec gates only the PR lane", async () => {
+    const t = prSetup({ prWatch: { pollIntervalSec: 300 } });
+    await t.sweep.sweep(NOW, { force: true });
+    expect(t.fixture.created).toHaveLength(1);
+    t.fixture.created.length = 0;
+    const second = await t.sweep.sweep(new Date(NOW.getTime() + 61_000));
+    expect(second).toMatchObject({ skippedPass: false, prScanned: 0 });
+    const far = await t.sweep.sweep(new Date(NOW.getTime() + 301_000));
+    expect(far.prScanned).toBe(1);
+  });
+
+  it("with prWatch disabled the lane is inert and its cards drop", async () => {
+    const t = prSetup();
+    await t.sweep.sweep(NOW, { force: true });
+    expect(t.fixture.created).toHaveLength(1);
+    t.setSettings({ prWatch: { enabled: false } });
+    const disabled = await t.sweep.sweep(new Date(NOW.getTime() + 3_600_000), { force: true });
+    expect(disabled.prScanned).toBe(0);
+    expect(readReviewRoutingSignals(COMPANY)).toEqual([]);
+  });
+
+  it("no candidates: the lane scans nothing", async () => {
+    const t = prSetup({}, { candidates: [] });
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result).toMatchObject({ prScanned: 0, prTasksCreated: 0 });
+  });
+
+  it("counts the per-pass ceiling of new assignments", async () => {
+    const t = prSetup({ prWatch: { maxNewAssignmentsPerPass: 1 } }, {
+      candidates: [
+        { repository: "acme/widgets", number: 7, headSha: "aaaaaaaa", title: null, url: null, authorLogin: null, baseRef: null, draft: false },
+        { repository: "acme/widgets", number: 8, headSha: "bbbbbbbb", title: null, url: null, authorLogin: null, baseRef: null, draft: false },
+      ],
+    });
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result.prTasksCreated).toBe(1);
   });
 });
 
