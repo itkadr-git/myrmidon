@@ -12,8 +12,13 @@ import {
   myrmidonMetricsRoutes,
   resolveMetricsToken,
   tokenMatches,
+  type MetricsRoutesDeps,
 } from "./routes.js";
-import { METRIC_FAMILIES, METRICS_CONTENT_TYPE, type MetricsSnapshot } from "./metrics.js";
+import {
+  METRIC_FAMILIES,
+  METRICS_CONTENT_TYPE,
+  type MetricsSnapshot,
+} from "./metrics.js";
 
 const TOKEN = "scraper-token-a";
 const SECRET_TOKEN = "secret-token-a";
@@ -23,6 +28,7 @@ describe("metrics endpoint routes", () => {
   function appWith(input: {
     env?: Record<string, string | undefined>;
     secretToken?: string | null;
+    selfCheck?: MetricsRoutesDeps["runSelfCheck"];
   } = {}) {
     const env: Record<string, string | undefined> = {
       [METRICS_TOKEN_ENV]: TOKEN,
@@ -40,6 +46,7 @@ describe("metrics endpoint routes", () => {
         listSecretRowsByName: async (name) =>
           name === "metrics-scraper-token" ? [{ id: "secret-id-a", companyId: "company-a" }] : [],
         readSecretValue: async () => secretToken,
+        ...(input.selfCheck ? { runSelfCheck: input.selfCheck } : {}),
       }),
     );
     return app;
@@ -97,6 +104,62 @@ describe("metrics endpoint routes", () => {
       .get("/metrics")
       .set("Authorization", `Bearer ${SECRET_TOKEN}`);
     expect(secretTokenRes.status).toBe(200);
+  });
+
+  it("the selfcheck probe answers 401 without the bearer token", async () => {
+    const res = await request(appWith()).get("/api/myrmidon/monitoring/selfcheck");
+    expect(res.status).toBe(401);
+  });
+
+  it("the selfcheck probe answers 200 with the aggregate shape and no values", async () => {
+    const app = appWith({
+      selfCheck: async () => ({
+        ok: true,
+        families_ok: METRIC_FAMILIES.length,
+        families_failed: [],
+        scrape_ms: 7,
+        checked_at: NOW.toISOString(),
+      }),
+    });
+    const res = await request(app).get("/api/myrmidon/monitoring/selfcheck").set("Authorization", `Bearer ${TOKEN}`);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      ok: true,
+      families_ok: METRIC_FAMILIES.length,
+      families_failed: [],
+      scrape_ms: 7,
+      checked_at: NOW.toISOString(),
+    });
+    // The probe body carries no metric value beyond family counts, no token.
+    expect(JSON.stringify(res.body)).not.toContain(TOKEN);
+  });
+
+  it("the selfcheck probe answers 503 when a family failed", async () => {
+    const app = appWith({
+      selfCheck: async () => ({
+        ok: false,
+        families_ok: METRIC_FAMILIES.length - 1,
+        families_failed: ["myrmidon_role_queue_tasks"],
+        scrape_ms: 3,
+        checked_at: NOW.toISOString(),
+      }),
+    });
+    const res = await request(app).get("/api/myrmidon/monitoring/selfcheck").set("Authorization", `Bearer ${TOKEN}`);
+    expect(res.status).toBe(503);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.families_failed).toEqual(["myrmidon_role_queue_tasks"]);
+  });
+
+  it("the selfcheck probe answers 500 with a shape when it throws", async () => {
+    const app = appWith({
+      selfCheck: async () => {
+        throw new Error("collector exploded");
+      },
+    });
+    const res = await request(app).get("/api/myrmidon/monitoring/selfcheck").set("Authorization", `Bearer ${TOKEN}`);
+    expect(res.status).toBe(500);
+    expect(res.body.ok).toBe(false);
+    expect(JSON.stringify(res.body)).not.toContain("exploded");
   });
 
   it("tokenMatches is constant-shape and length-strict", () => {
