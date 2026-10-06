@@ -70,6 +70,18 @@ export interface SkillLifecycleDelivery {
   reasons: Map<string, string>;
 }
 
+/**
+ * myrmidon(PERF-DIET-G): a caller-provided cache of one sweep (the shape of
+ * bot-containers/profile-pass.ts `BotProfilePass`, declared here so this module
+ * needs no dependency on the bot containers). `resolveDelivery` is per agent,
+ * but the two reads behind it — the company's skills and their lifecycle
+ * records — are company-scoped and identical for every bot, so a caller that
+ * compiles a whole sweep shares them through this.
+ */
+export interface SkillLifecycleReadCache {
+  once<T>(key: string, read: () => Promise<T>): Promise<T>;
+}
+
 export interface SkillLifecycleService {
   list(companyId: string): Promise<SkillLifecycleView[]>;
   state(companyId: string, skillId: string): Promise<SkillLifecycleView>;
@@ -91,7 +103,7 @@ export interface SkillLifecycleService {
     companyId: string,
     skillId: string,
   ): Promise<{ versionId: string; revisionNumber: number; files: Array<{ path: string; content: string }> } | null>;
-  resolveDelivery(companyId: string, agentId: string): Promise<SkillLifecycleDelivery>;
+  resolveDelivery(companyId: string, agentId: string, cache?: SkillLifecycleReadCache): Promise<SkillLifecycleDelivery>;
 }
 
 function actorIdOf(actor: SkillLifecycleActor): string {
@@ -353,8 +365,15 @@ export function createSkillLifecycleService(deps: SkillLifecycleServiceDeps): Sk
       };
     },
 
-    async resolveDelivery(companyId, agentId) {
-      const [skills, records] = await Promise.all([store.listSkills(companyId), store.listRecords(companyId)]);
+    // myrmidon(PERF-DIET-G): the two reads are company-scoped and identical for
+    // every bot of the company — shared through `cache` when the caller compiles
+    // more than one bot (a sweep). The decision below stays per agent: a
+    // candidate reaches the pilot set, not the fleet.
+    async resolveDelivery(companyId, agentId, cache) {
+      const readCatalogue = () => Promise.all([store.listSkills(companyId), store.listRecords(companyId)]);
+      const [skills, records] = cache
+        ? await cache.once(`skill-lifecycle:${companyId}`, readCatalogue)
+        : await readCatalogue();
       const byId = new Map(records.map((record) => [record.skillId, record] as const));
       const pilotAgentIds = readSkillPilotAgents(env);
       const delivery: SkillLifecycleDelivery = { blockedKeys: new Set(), pinnedVersions: new Map(), reasons: new Map() };

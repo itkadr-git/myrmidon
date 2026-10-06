@@ -15,7 +15,7 @@ import { skillLifecycleRoutes } from "./routes.js";
 
 export { SKILL_PILOT_AGENTS_ENV, SKILL_PROMOTION_APPROVAL_TYPE, SKILL_LIFECYCLE_STATES } from "./domain.js";
 export type { SkillLifecycleState, SkillDeliveryState } from "./domain.js";
-export type { SkillLifecycleService, SkillLifecycleView, SkillLifecycleDelivery } from "./service.js";
+export type { SkillLifecycleService, SkillLifecycleView, SkillLifecycleDelivery, SkillLifecycleReadCache } from "./service.js";
 export { createSkillLifecycleService } from "./service.js";
 export { createDbSkillLifecycleStore } from "./store.js";
 

@@ -45,6 +45,8 @@ import {
   type ReconcileOutcome,
 } from "./reconciler.js";
 import type { CompiledProfile } from "./types.js";
+// myrmidon(PERF-DIET-G): the cache one sweep shares between the bots it reconciles.
+import type { BotProfilePass } from "./profile-pass.js";
 
 export const BOT_CONTAINER_ACTOR = { actorType: "system", actorId: "myrmidon-bot-containers" } as const;
 
@@ -116,8 +118,17 @@ export interface BotContainerAgent {
 export interface BotContainerRuntimeDeps {
   driver: BotContainerDriver;
   /** Builds the bot's compiled profile: createBotProfileCompile (profile-compile.ts), which
-   *  feeds G2's compileHermesProfile from the card. */
-  compile: (agentId: string, botKey: string) => Promise<CompiledProfile>;
+   *  feeds G2's compileHermesProfile from the card. myrmidon(PERF-DIET-G): `pass` is the
+   *  sweep's shared cache of the company- and instance-scoped reads; omit it for a single
+   *  compile (the card's "Apply now"), which then caches inside its own call only. */
+  compile: (agentId: string, botKey: string, pass?: BotProfilePass) => Promise<CompiledProfile>;
+  /** myrmidon(PERF-DIET-G): the pass pair of one sweep (createBotProfileCompile's
+   *  `beginPass`/`endPass`). Optional: without it the sweep compiles without a
+   *  shared cache, exactly as before. The sweep begins one pass per tick and ends
+   *  it after the last bot, so nothing survives into the next tick and a settings
+   *  or skill change still reaches the bots on the next sweep. */
+  beginProfilePass?: () => BotProfilePass;
+  endProfilePass?: (pass: BotProfilePass) => void;
   /** Optional. Runs after a reconcile pass that left the container in place with its
    *  profile applied (created / applied_* / unchanged), inside the same per-bot lock:
    *  createBotCardSync (card-sync.ts) sets the card's apiBaseUrl/apiKey to the
@@ -173,6 +184,13 @@ export interface ApplyBotContainerOptions {
    * sweep's recent verdict. The canary tick and the sweep use the default.
    */
   force?: boolean;
+  /**
+   * myrmidon(PERF-DIET-G): the shared cache of the sweep this pass belongs to.
+   * The card's "Apply now" and the canary tick omit it (one bot, nothing to
+   * share); the sweep hands its own to every pass of the tick, so the
+   * company-scoped reads behind the profiles are paid once per sweep.
+   */
+  pass?: BotProfilePass;
 }
 
 /**
@@ -216,7 +234,7 @@ export async function applyBotContainerNow(
       agentId: agent.agentId,
       botKey,
       spec,
-      compile: () => deps.compile(agent.agentId, botKey),
+      compile: () => deps.compile(agent.agentId, botKey, opts.pass),
       driver: deps.driver,
       maintenance: deps.maintenance,
       activity: deps.activity,
@@ -445,12 +463,23 @@ export function startBotContainerReconciliation(
       }
       // Only after a successful listing: a failed one must not read as "no agents", which would release every gateway.
       await releaseStrayGatewaysOfSweep(agents, deps);
-      await runWithConcurrency(agents, RECONCILE_CONCURRENCY, async (agent) => {
-        if (stopped) return;
-        // reconcileBot (inside applyBotContainerNow) never throws; this catch only
-        // guards the config-reading path around it.
-        await applyBotContainerNow(agent, deps, { env: opts.env }).catch(() => undefined);
-      });
+      // myrmidon(PERF-DIET-G): one pass for the whole sweep. The company- and
+      // instance-scoped reads behind the profiles (the skill catalogue, the
+      // instance settings) were paid once per bot; inside one tick they are paid
+      // once per sweep. The pass ends here and is never reused, so each tick
+      // reads live values again — a settings or skill change reaches the bots
+      // within one interval, exactly as when every read was its own query.
+      const pass = deps.beginProfilePass?.();
+      try {
+        await runWithConcurrency(agents, RECONCILE_CONCURRENCY, async (agent) => {
+          if (stopped) return;
+          // reconcileBot (inside applyBotContainerNow) never throws; this catch only
+          // guards the config-reading path around it.
+          await applyBotContainerNow(agent, deps, { env: opts.env, ...(pass ? { pass } : {}) }).catch(() => undefined);
+        });
+      } finally {
+        if (pass) deps.endProfilePass?.(pass);
+      }
     })().finally(() => {
       tickInFlight = null;
     });
@@ -506,6 +535,11 @@ export { dockerBotContainerDriver, readDockerDriverConfig } from "./docker-drive
 export { botProfileWiring } from "./profile-ports.js";
 export { createActivityWarningSink, createBotProfileCompile } from "./profile-compile.js";
 export type { BotProfileAgentRecord, BotProfilePorts, BotProfileCompileOptions } from "./profile-compile.js";
+// myrmidon(PERF-DIET-G): the per-sweep cache of the company- and instance-scoped profile reads.
+export { beginBotProfilePass } from "./profile-pass.js";
+export type { BotProfilePass, BotProfilePassReader } from "./profile-pass.js";
+export { createBotProfileSkillLoader, readSkillFiles, versionSelectionSignature } from "./profile-skills.js";
+export type { BotProfileSkillReaders, BotProfileSkillsResult } from "./profile-skills.js";
 export { BOT_GATEWAY_PORT, createBotCardSync, gatewayApiBaseUrl, planGatewayCardSync } from "./card-sync.js";
 export type { BotCardSyncPorts, BotCardSyncResult, GatewayCardPlan } from "./card-sync.js";
 export { BOT_MCP_SERVERS_ENV, buildHermesProfileInput, readBotProfileSettings } from "./profile-input.js";
