@@ -16,12 +16,59 @@
 
 import type { EvalRubric, EvalTaskKind } from "./domain.js";
 
+/** Models that belong to the Qwen family (DashScope models) */
+const QWEN_FAMILY_MODELS = [
+  "qwen-plus-free",
+  "qwen-plus",
+  "qwen-max",
+  "qwen-max-free",
+  "qwen-turbo",
+  "qwen-turbo-free",
+  "dashscope/*"
+];
+
+/**
+ * Check if two models belong to the same family
+ * @param judgeModel - The model used by the judge
+ * @param agentModel - The model used by the agent being evaluated
+ * @returns true if both models are from the same family, false otherwise
+ */
+function isSameModelFamily(judgeModel: string, agentModel?: string): boolean {
+  if (!agentModel) {
+    return false;
+  }
+  
+  // Normalize model names by removing potential prefixes like "dashscope/"
+  const normalizedJudgeModel = judgeModel.replace(/^dashscope\//, "");
+  const normalizedAgentModel = agentModel.replace(/^dashscope\//, "");
+  
+  // Check if both models are in the Qwen family
+  const judgeInQwenFamily = QWEN_FAMILY_MODELS.some(familyModel => 
+    normalizedJudgeModel === familyModel || normalizedJudgeModel.startsWith(`${familyModel}/`) ||
+    familyModel === "dashscope/*" && normalizedJudgeModel.includes("qwen")
+  );
+  const agentInQwenFamily = QWEN_FAMILY_MODELS.some(familyModel => 
+    normalizedAgentModel === familyModel || normalizedAgentModel.startsWith(`${familyModel}/`) ||
+    familyModel === "dashscope/*" && normalizedAgentModel.includes("qwen")
+  );
+  
+  // If both are in Qwen family, return true
+  if (judgeInQwenFamily && agentInQwenFamily) {
+    return true;
+  }
+  
+  // Otherwise, compare the normalized model names directly
+  return normalizedJudgeModel === normalizedAgentModel;
+}
+
 /** Env vars the evals contour reads; mirrors the OCR settings shape. */
 export const EVALS_BASE_URL_ENV = "MYRMIDON_EVALS_BASE_URL";
 export const EVALS_KEY_SECRET_ENV = "MYRMIDON_EVALS_KEY_SECRET";
 export const EVALS_MODEL_ENV = "MYRMIDON_EVALS_MODEL";
 export const EVALS_TIMEOUT_SEC_ENV = "MYRMIDON_EVALS_TIMEOUT_SEC";
 export const EVALS_LANGFUSE_FLAG_ENV = "MYRMIDON_EVALS_LANGFUSE";
+// myrmidon(1.6.3 EVALS-JUDGE-FAMILY): ordered judge fallback list.
+export const EVALS_JUDGE_PRIORITY_MODELS_ENV = "MYRMIDON_EVALS_JUDGE_PRIORITY_MODELS";
 
 /**
  * Default model: a free DashScope model behind the gateway. The instance can
@@ -29,6 +76,30 @@ export const EVALS_LANGFUSE_FLAG_ENV = "MYRMIDON_EVALS_LANGFUSE";
  * concern, per the wave rule.
  */
 export const DEFAULT_EVALS_MODEL = "qwen-plus-free";
+
+/**
+ * myrmidon(1.6.3 EVALS-JUDGE-FAMILY): default judge priority list — the
+ * head model first, then sensible free DashScope fallbacks. Read on every
+ * run, so a change takes effect on the next evaluation without a restart.
+ */
+export const DEFAULT_EVALS_JUDGE_PRIORITY_MODELS = [
+  DEFAULT_EVALS_MODEL,
+  "qwen-plus",
+  "qwen-max",
+];
+
+/**
+ * myrmidon(1.6.3 EVALS-JUDGE-FAMILY): parse the comma-separated
+ * MYRMIDON_EVALS_JUDGE_PRIORITY_MODELS value. Invalid input (empty after
+ * trimming, no entries) falls back to the default list. Pure.
+ */
+export function parseJudgePriorityModels(raw: string | undefined): string[] {
+  const models = (raw ?? "")
+    .split(",")
+    .map((m) => m.trim())
+    .filter((m) => m.length > 0);
+  return models.length > 0 ? models : DEFAULT_EVALS_JUDGE_PRIORITY_MODELS;
+}
 
 export interface EvalsSettings {
   /** Off unless a base URL and a key secret name are both configured. */
@@ -40,6 +111,8 @@ export interface EvalsSettings {
   timeoutMs: number;
   /** Langfuse score export flag; scoring is written locally regardless. */
   langfuseExport: boolean;
+  /** myrmidon(1.6.3 EVALS-JUDGE-FAMILY): ordered judge model fallback list. */
+  judgeModels: string[];
 }
 
 export function readEvalsSettings(env: NodeJS.ProcessEnv = process.env): EvalsSettings {
@@ -48,6 +121,7 @@ export function readEvalsSettings(env: NodeJS.ProcessEnv = process.env): EvalsSe
   const timeoutRaw = Number(env[EVALS_TIMEOUT_SEC_ENV]?.trim() ?? "");
   const timeoutSec =
     Number.isInteger(timeoutRaw) && timeoutRaw >= 5 && timeoutRaw <= 600 ? timeoutRaw : 120;
+  const judgeModels = parseJudgePriorityModels(env[EVALS_JUDGE_PRIORITY_MODELS_ENV]);
   return {
     enabled: Boolean(baseUrl && keySecret),
     baseUrl,
@@ -55,6 +129,7 @@ export function readEvalsSettings(env: NodeJS.ProcessEnv = process.env): EvalsSe
     model: env[EVALS_MODEL_ENV]?.trim() || DEFAULT_EVALS_MODEL,
     timeoutMs: timeoutSec * 1000,
     langfuseExport: (env[EVALS_LANGFUSE_FLAG_ENV]?.trim() || "").toLowerCase() === "true",
+    judgeModels,
   };
 }
 
@@ -86,6 +161,8 @@ export interface JudgeTaskResult {
   parseError: boolean;
   /** The raw model text, kept for audit in `eval_runs.scores`. */
   raw: string | null;
+  /** True when the judge and the agent being evaluated are from the same model family */
+  sameFamily: boolean;
 }
 
 export interface JudgePort {
@@ -96,6 +173,8 @@ export interface JudgePort {
     answer: string;
     rubric: EvalRubric;
     kind: EvalTaskKind;
+    /** The model used by the agent being evaluated (to determine sameFamily) */
+    agentModel?: string;
   }): Promise<JudgeTaskResult>;
 }
 
@@ -191,7 +270,11 @@ export function createJudge(deps: JudgeDeps): JudgePort {
     answer: string;
     rubric: EvalRubric;
     kind: EvalTaskKind;
+    agentModel?: string;
   }): Promise<JudgeTaskResult> => {
+    const judgeModel = deps.model;
+    const isSameFamily = isSameModelFamily(judgeModel, input.agentModel);
+
     let response: Response;
     try {
       response = await deps.fetch(url, {
@@ -227,10 +310,10 @@ export function createJudge(deps: JudgeDeps): JudgePort {
     };
     const content = body.choices?.[0]?.message?.content;
     if (typeof content !== "string") {
-      return { taskSlug: input.taskSlug, awarded: {}, parseError: true, raw: null };
+      return { taskSlug: input.taskSlug, awarded: {}, parseError: true, raw: null, sameFamily: isSameFamily };
     }
     const { awarded, parseError } = parseJudgeResponse(content, input.rubric);
-    return { taskSlug: input.taskSlug, awarded, parseError, raw: content };
+    return { taskSlug: input.taskSlug, awarded, parseError, raw: content, sameFamily: isSameFamily };
   };
   return { judgeTask };
 }
@@ -254,7 +337,7 @@ export function createHeuristicJudge(
         if (!Number.isFinite(clamped)) parseError = true;
         awarded[c.name] = Number.isFinite(clamped) ? clamped : 0;
       }
-      return { taskSlug: input.taskSlug, awarded, parseError, raw: null };
+      return { taskSlug: input.taskSlug, awarded, parseError, raw: null, sameFamily: false };
     },
   };
 }
