@@ -74,9 +74,9 @@ import { trackAgentCreated } from "@paperclipai/shared/telemetry";
 // myrmidon(1.6.5 BASE-SKILLS): the union helper keeps company base skills in
 // every agent's selection when the board edits that agent's own skills.
 import {
-  readCompanyBaseSkillKeys,
   unionCompanyBaseSkillEntries,
 } from "../services/company-base-skill-keys.js";
+import { readCompanyBaseSkillKeysPort } from "../services/company-base-skill-keys-port.js";
 import { validate } from "../middleware/validate.js";
 import { agentInstructionsBundleMode } from "../services/agent-instructions.js";
 import {
@@ -3166,7 +3166,7 @@ export function agentRoutes(
       (entry, index, entries) => entries.findIndex((candidate) => candidate.key === entry.key) === index,
     );
 
-    const baseSkillKeys = await readCompanyBaseSkillKeys(db, companyId);
+    const baseSkillKeys = await readCompanyBaseSkillKeysPort(db, companyId);
     const desiredSkillEntries = unionCompanyBaseSkillEntries(
       baseSkillKeys,
       mergeDesiredSkillEntries(

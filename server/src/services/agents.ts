@@ -35,8 +35,8 @@ import {
 // agent at creation, whichever path creates it.
 import {
   mergeCompanyBaseSkillsIntoAgentConfig,
-  readCompanyBaseSkillKeys,
 } from "./company-base-skill-keys.js";
+import { readCompanyBaseSkillKeysPort } from "./company-base-skill-keys-port.js";
 import { conflict, notFound, unprocessable, badRequest } from "../errors.js";
 import {
   collectSecretRefs,
@@ -936,7 +936,7 @@ export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort 
       // company without base skills is untouched.
       const configWithBaseSkills = mergeCompanyBaseSkillsIntoAgentConfig(
         adapterConfig,
-        await readCompanyBaseSkillKeys(db, companyId),
+        await readCompanyBaseSkillKeysPort(db, companyId),
       );
       // Run the server-enforced binding invariant after generic normalization
       // and before any database write. A create has no prior config.
