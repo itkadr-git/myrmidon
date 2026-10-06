@@ -9897,6 +9897,8 @@ registerCurrentRoute({
   tags: ["connection-intents"],
   summary:
     "Resolve operation credentials using a run capability with github_credentials scope; browser sessions are rejected",
+  // myrmidon(GITHUB-SHARED-IDENTITY): optional target repository for GitHub App tokens
+  body: z.object({ repository: z.string().max(300).optional() }),
   responses: {
     200: r.ok(),
     401: r.unauthorized,

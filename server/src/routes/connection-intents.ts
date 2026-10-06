@@ -52,8 +52,12 @@ export function runtimeConnectionIntentRoutes(db: Db) {
       ? req.headers["x-paperclip-github-capability"] : bearer(req), "github_credentials");
     if (!claims) throw unauthorized("Invalid GitHub runtime capability");
     res.setHeader("Cache-Control", "no-store");
+    // myrmidon(GITHUB-SHARED-IDENTITY): the optional `repository` (owner/repo) the
+    // git/gh operation targets; a GitHub App token is minted per repository.
+    const repository = typeof req.body?.repository === "string" && req.body.repository.length <= 300
+      ? req.body.repository : null;
     res.json(await resolveGitHubOperationCredentials(db, {
-      companyId: claims.company_id, agentId: claims.sub, runId: claims.run_id,
+      companyId: claims.company_id, agentId: claims.sub, runId: claims.run_id, repository,
     }));
   });
 
