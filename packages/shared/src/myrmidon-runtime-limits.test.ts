@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_MAX_HOST_CPU_BUSY_PERCENT,
   DEFAULT_MAX_HOST_LOAD_PERCENT_PER_CORE,
   DEFAULT_MAX_PER_AGENT_START_SHARE_PERCENT,
   DEFAULT_MAX_STARTS_PER_MINUTE,
@@ -93,11 +94,16 @@ describe("myrmidon(C0) run limits: environment values and precedence", () => {
       minFreeHostMemoryMb: DEFAULT_MIN_FREE_HOST_MEMORY_MB,
       maxHostLoadPercentPerCore: DEFAULT_MAX_HOST_LOAD_PERCENT_PER_CORE,
       maxPerAgentStartSharePercent: DEFAULT_MAX_PER_AGENT_START_SHARE_PERCENT,
+      // myrmidon(1.6.5 RUN-ADMISSION, rc.3): the busy ceiling is default-on;
+      // the PSI ceiling is default-off — only the operator turns it on.
+      maxHostCpuBusyPercent: DEFAULT_MAX_HOST_CPU_BUSY_PERCENT,
+      maxHostCpuPsiSomeAvg10: null,
     });
     expect(DEFAULT_MAX_STARTS_PER_MINUTE).toBe(5);
     expect(DEFAULT_MIN_FREE_HOST_MEMORY_MB).toBe(15360);
     expect(DEFAULT_MAX_HOST_LOAD_PERCENT_PER_CORE).toBe(90);
     expect(DEFAULT_MAX_PER_AGENT_START_SHARE_PERCENT).toBe(15);
+    expect(DEFAULT_MAX_HOST_CPU_BUSY_PERCENT).toBe(90);
     expect(parseRunLimitValue(" 12 ")).toBe(12);
     expect(parseRunLimitValue("0")).toBeNull();
     expect(parseRunLimitValue("-3")).toBeNull();
@@ -117,6 +123,8 @@ describe("myrmidon(C0) run limits: environment values and precedence", () => {
         minFreeHostMemoryMb: 15360,
         maxHostLoadPercentPerCore: 90,
         maxPerAgentStartSharePercent: 15,
+        maxHostCpuBusyPercent: 90,
+        maxHostCpuPsiSomeAvg10: null,
       },
       sources: {
         maxConcurrentRuns: "env",
