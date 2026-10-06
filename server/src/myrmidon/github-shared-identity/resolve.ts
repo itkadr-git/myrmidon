@@ -174,6 +174,7 @@ export async function resolveGitHubAppCredential(
       privateKeyPem,
       installationId: entry.installationId,
       repository,
+      permissions: entry.permissions,
       fetchImpl: input.fetchImpl,
     });
   } catch (error) {
@@ -191,6 +192,7 @@ export async function resolveGitHubAppCredential(
       installationId: minted.installationId,
       expiresAt: minted.expiresAt,
       reused: minted.reused,
+      permissions: entry.permissions,
     },
   });
   return {
