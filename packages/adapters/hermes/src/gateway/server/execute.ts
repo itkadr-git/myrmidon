@@ -1000,15 +1000,21 @@ async function handleEvent(input: {
 async function delay(ms: number, signal: AbortSignal): Promise<void> {
   if (signal.aborted) return;
   await new Promise<void>((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    signal.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(timer);
-        resolve();
-      },
-      { once: true },
-    );
+    // myrmidon(GATEWAY-DELAY-LEAK): the abort listener must go when the timer
+    // fires. `{ once: true }` only removes it on abort, so every poll tick of a
+    // long run left one more listener on the run's signal; with thousands of
+    // them each add/remove on that signal (undici fetch adds one per request)
+    // walked the whole list and the board's single process spent ~40 % of its
+    // CPU there (live profile 06.10).
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener("abort", onAbort, { once: true });
   });
 }
 
