@@ -602,6 +602,27 @@ describe("reconcileBot", () => {
   it("exposes its default drain timeout for callers to reference", () => {
     expect(DEFAULT_MAINTENANCE_DRAIN_TIMEOUT_SEC).toBe(300);
   });
+
+  it("hands the status it just read to the drift check, so one pass pays one inspect (OPE-4789)", async () => {
+    const driver = fakeDriver({ botKey: "agent-a", state: "running", restartHash: "restart-1", filesHash: "files-1" });
+    const driftArgs: Array<BotContainerStatus | undefined> = [];
+    const original = driver.templateDrift.bind(driver);
+    driver.templateDrift = (async (_spec: BotContainerSpec, knownStatus?: BotContainerStatus) => {
+      driftArgs.push(knownStatus);
+      return original(_spec, knownStatus);
+    }) as BotContainerDriver["templateDrift"];
+    const outcome = await run(driver, fakeMaintenance([0]));
+    expect(outcome).toEqual({ kind: "unchanged" });
+    expect(driftArgs).toHaveLength(1);
+    expect(driftArgs[0]?.state).toBe("running");
+  });
+
+  it("a missing bot's pass does not ask for a drift check at all", async () => {
+    const driver = fakeDriver({ botKey: "agent-a", state: "missing" });
+    const outcome = await run(driver, fakeMaintenance([0]));
+    expect(outcome).toEqual({ kind: "created" });
+    expect(driver.calls).toEqual(["status", "create", "writeProfile", "start"]);
+  });
 });
 
 function hashesOf(applied: CompiledProfile): Pick<BotContainerStatus, "restartHash" | "filesHash"> {

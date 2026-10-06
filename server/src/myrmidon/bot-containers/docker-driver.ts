@@ -114,11 +114,54 @@ const DOCKER_API_VERSION = "v1.45";
 /** Seconds Docker waits after SIGTERM before SIGKILL on stop/restart. */
 export const BOT_STOP_TIMEOUT_SEC = 30;
 const DEFAULT_START_HEALTH_TIMEOUT_MS = 120_000;
-const DEFAULT_HEALTH_POLL_INTERVAL_MS = 1_000;
+/**
+ * myrmidon(OPE-4789): the gap between health polls of a container that was
+ * just (re)started. The bot image's own HEALTHCHECK runs every 30 s
+ * (docker/bot-runtime/Dockerfile), so polling inspect once a second — the old
+ * default — never saw a verdict change between ~29 of 30 consecutive polls;
+ * it only burned dockergate requests (the A2 storm of OPE-4752). 3 s still
+ * notices "healthy" the moment Docker's own probe has passed it, at ~1/3 of
+ * the request rate. Tests pass a much smaller value.
+ */
+const DEFAULT_HEALTH_POLL_INTERVAL_MS = 3_000;
 const REQUEST_TIMEOUT_MS = 60_000;
 const HELPER_WAIT_TIMEOUT_MS = 120_000;
 const HELPER_MEMORY_BYTES = 128 * 1024 * 1024;
 const HELPER_PIDS_LIMIT = 64;
+
+const DEFAULT_TEMPLATE_CONTEXT_TTL_MS = 60_000;
+/** Digits and non-negative decimals only — anything else (including a bare
+ *  word) means "no hint". */
+const RETRY_AFTER_NUMBER_PATTERN = /^\d+(?:\.\d+)?$/;
+
+/**
+ * myrmidon(OPE-4789): dockergate answers a burst it cannot serve with 429
+ * (`rate_limited`/`concurrency_limited`, deny.go) and no Retry-After header;
+ * the old driver treated it as a terminal error, so every caller that retries
+ * on its own (the reconcile sweep, the canary wave tick, a manual apply)
+ * re-asked at once and kept the gate over the limit — the 394 refusals of the
+ * 05.10 incident. One 429 now pauses the call that got it (the gate's hint
+ * when it sends one, otherwise a short growing backoff) and asks again, a
+ * handful of times, before failing the pass. The pause applies to the single
+ * request only; nothing global is muted.
+ */
+const RATE_LIMIT_MAX_ATTEMPTS = 4;
+const RATE_LIMIT_BACKOFF_BASE_MS = 1_000;
+const RATE_LIMIT_BACKOFF_MAX_MS = 8_000;
+/** Parsed `Retry-After` is clamped into this window: a header of "0" would
+ *  retry at once, and a pathological one must not park a reconcile pass. */
+const RETRY_AFTER_MIN_MS = 250;
+const RETRY_AFTER_MAX_MS = 30_000;
+
+function retryAfterDelayMs(header: string | undefined): number | null {
+  const trimmed = header?.trim();
+  if (!trimmed || !RETRY_AFTER_NUMBER_PATTERN.test(trimmed)) return null;
+  return Math.min(RETRY_AFTER_MAX_MS, Math.max(RETRY_AFTER_MIN_MS, Math.round(Number(trimmed) * 1000)));
+}
+
+function rateLimitBackoffMs(attempt: number): number {
+  return Math.min(RATE_LIMIT_BACKOFF_MAX_MS, RATE_LIMIT_BACKOFF_BASE_MS * 2 ** (attempt - 1));
+}
 
 const HERMES_MOUNT = BOT_VOLUME_MOUNTS.find((mount) => mount.hostSuffix === "hermes")!;
 /** Applied-state marker, relative to the hermes mount. */
@@ -164,6 +207,18 @@ export interface DockerDriverOptions {
   sleep?: (ms: number) => Promise<void>;
   startHealthTimeoutMs?: number;
   healthPollIntervalMs?: number;
+  /**
+   * myrmidon(OPE-4789): how long one freshly read template context (shared
+   * package cache path, git-mirror flag, scope layout) stays valid for a bot.
+   * Every template use — the drift check, create, recreate — read all three
+   * per call, so one unchanged reconcile pass re-read the same instance
+   * settings row three times. These values change at most when the operator
+   * saves the bot-disk settings (or applies a scope change), both of which the
+   * caller applies within seconds; 60 s of reuse per bot is far inside that,
+   * and the bound keeps a changed value from being held onto indefinitely.
+   * Tests pass 0 to disable the cache. Default 60 s.
+   */
+  templateContextTtlMs?: number;
   /** Staging-directory nonce generator (hex). */
   nonce?: () => string;
   /**
@@ -808,6 +863,8 @@ export function demuxDockerLogs(buf: Buffer): string {
 interface DockerHttpResponse {
   status: number;
   body: Buffer;
+  /** Lower-cased response headers; needed for `Retry-After` on a 429. */
+  headers: Record<string, string>;
 }
 
 function dockerRequest(
@@ -823,7 +880,15 @@ function dockerRequest(
         const chunks: Buffer[] = [];
         res.on("data", (chunk: Buffer) => chunks.push(chunk));
         res.on("error", reject);
-        res.on("end", () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks) }));
+        res.on("end", () =>
+          resolve({
+            status: res.statusCode ?? 0,
+            body: Buffer.concat(chunks),
+            headers: Object.fromEntries(
+              Object.entries(res.headers).map(([key, value]) => [key.toLowerCase(), Array.isArray(value) ? value.join(", ") : (value ?? "")]),
+            ),
+          }),
+        );
       },
     );
     const timeoutMs = opts.timeoutMs ?? REQUEST_TIMEOUT_MS;
@@ -860,6 +925,7 @@ export function dockerBotContainerDriver(
   const sleep = options.sleep ?? realSleep;
   const startHealthTimeoutMs = options.startHealthTimeoutMs ?? DEFAULT_START_HEALTH_TIMEOUT_MS;
   const healthPollIntervalMs = options.healthPollIntervalMs ?? DEFAULT_HEALTH_POLL_INTERVAL_MS;
+  const templateContextTtlMs = options.templateContextTtlMs ?? DEFAULT_TEMPLATE_CONTEXT_TTL_MS;
   const newNonce = options.nonce ?? (() => randomBytes(8).toString("hex"));
   const readSharedPackageCachePath = options.readSharedPackageCachePath ?? (async () => undefined);
   const readGitMirrorEnabled = options.readGitMirrorEnabled ?? (async () => false);
@@ -874,19 +940,110 @@ export function dockerBotContainerDriver(
     return dirName ? { kind: "shared", dirName } : ISOLATED_LAYOUT;
   };
   // myrmidon(1.6.2-BOT-DISK-C): the create body with the cache binds in force right now.
-  const createBody = async (spec: BotContainerSpec, layout?: ScopeLayout) =>
-    buildCreateContainerRequestBody(
-      spec,
-      config,
-      await readSharedPackageCachePath(spec.botKey),
-      await readGitMirrorEnabled(spec.botKey),
-      scopeMountOf(layout ?? (await readScopeLayout(spec.botKey))),
-    );
+  // myrmidon(OPE-4789): the context reads behind it (cache path, git-mirror
+  // flag, scope layout) are cached per bot for templateContextTtlMs — see
+  // templateContextFor below.
+  const createBody = async (spec: BotContainerSpec, layout?: ScopeLayout) => {
+    const context = await templateContextFor(spec.botKey, layout);
+    return buildCreateContainerRequestBody(spec, config, context.cachePath, context.gitMirror, scopeMountOf(context.layout));
+  };
 
-  const request = (opts: Parameters<typeof dockerRequest>[1]) => dockerRequest(socketPath, opts);
+  /**
+   * myrmidon(OPE-4789): every request goes through this wrapper. A 429 from
+   * dockergate (`rate_limited`/`concurrency_limited`) pauses this call by the
+   * gate's `Retry-After` hint when one arrives, otherwise by a short growing
+   * backoff, and asks again — up to RATE_LIMIT_MAX_ATTEMPTS tries before the
+   * answer is handed back as the failure it is. Every other status passes
+   * through untouched (the callers' 404/400 handling stays exactly as it was).
+   */
+  async function requestWithRateLimitRetry(opts: Parameters<typeof dockerRequest>[1]): Promise<DockerHttpResponse> {
+    for (let attempt = 1; ; attempt++) {
+      const res = await dockerRequest(socketPath, opts);
+      if (res.status !== 429 || attempt >= RATE_LIMIT_MAX_ATTEMPTS) return res;
+      const delayMs = retryAfterDelayMs(res.headers["retry-after"]) ?? rateLimitBackoffMs(attempt);
+      await sleep(delayMs);
+    }
+  }
+
+  /**
+   * myrmidon(OPE-4789): the template context (shared cache path, git-mirror
+   * flag, scope layout) behind one bot's create body. `createBody` is used by
+   * the drift check, create and recreate alike; the three option reads inside
+   * it each hit the instance settings (and scope store) per call, so one
+   * unchanged reconcile pass read the same row three times. The cache keeps
+   * the triple per bot for `templateContextTtlMs`; a failed read is never
+   * cached (the next call asks again).
+   */
+  interface TemplateContext {
+    atMs: number;
+    cachePath: string | undefined;
+    gitMirror: boolean;
+    layout: ScopeLayout;
+  }
+  const templateContextCache = new Map<string, TemplateContext>();
+  const templateContextInFlight = new Map<string, Promise<TemplateContext>>();
+
+  async function templateContextFor(botKey: string, layoutOverride?: ScopeLayout): Promise<TemplateContext> {
+    if (layoutOverride) {
+      // A caller that already knows the layout (create/recreate read it as part
+      // of their own flow) still shares the cached cache-path/git-mirror pair.
+      const cached = templateContextCache.get(botKey);
+      if (cached && Date.now() - cached.atMs < templateContextTtlMs) {
+        return { ...cached, layout: layoutOverride };
+      }
+      const [cachePath, gitMirror] = await Promise.all([readSharedPackageCachePath(botKey), readGitMirrorEnabled(botKey)]);
+      const fresh: TemplateContext = { atMs: Date.now(), cachePath, gitMirror, layout: layoutOverride };
+      templateContextCache.set(botKey, fresh);
+      return fresh;
+    }
+    const cached = templateContextCache.get(botKey);
+    if (cached && Date.now() - cached.atMs < templateContextTtlMs) return cached;
+    const pending = templateContextInFlight.get(botKey);
+    if (pending) return pending;
+    const read = (async (): Promise<TemplateContext> => {
+      const [cachePath, gitMirror, layout] = await Promise.all([
+        readSharedPackageCachePath(botKey),
+        readGitMirrorEnabled(botKey),
+        readScopeLayout(botKey),
+      ]);
+      const fresh: TemplateContext = { atMs: Date.now(), cachePath, gitMirror, layout };
+      templateContextCache.set(botKey, fresh);
+      return fresh;
+    })();
+    templateContextInFlight.set(botKey, read);
+    try {
+      return await read;
+    } finally {
+      templateContextInFlight.delete(botKey);
+    }
+  }
+
+  /** One live inspect per (bot, moment): a sweep pass and a canary wave
+   *  reconcile of the same bot overlap regularly (OPE-4789); both need the
+   *  same inspect within milliseconds of each other, so the second shares the
+   *  first's in-flight request instead of doubling it. Failures are shared
+   *  too — the entry is dropped either way once settled. */
+  const inspectInFlight = new Map<string, Promise<DockerInspect | null>>();
+
+  async function inspectByName(name: string): Promise<DockerInspect | null> {
+    const pending = inspectInFlight.get(name);
+    if (pending) return pending;
+    const read = (async (): Promise<DockerInspect | null> => {
+      const res = await requestWithRateLimitRetry({ method: "GET", path: `/containers/${nameSegment(name)}/json` });
+      if (res.status === 404) return null;
+      if (res.status >= 400) throw describeFailure(`docker inspect ${name}`, res);
+      return JSON.parse(res.body.toString("utf8")) as DockerInspect;
+    })();
+    inspectInFlight.set(name, read);
+    try {
+      return await read;
+    } finally {
+      inspectInFlight.delete(name);
+    }
+  }
 
   async function requestJson<T>(opts: { method: string; path: string; body?: unknown; timeoutMs?: number }): Promise<T> {
-    const res = await request({
+    const res = await requestWithRateLimitRetry({
       method: opts.method,
       path: opts.path,
       body: opts.body === undefined ? undefined : Buffer.from(JSON.stringify(opts.body), "utf8"),
@@ -898,24 +1055,17 @@ export function dockerBotContainerDriver(
     return JSON.parse(res.body.toString("utf8")) as T;
   }
 
-  async function inspectByName(name: string): Promise<DockerInspect | null> {
-    const res = await request({ method: "GET", path: `/containers/${nameSegment(name)}/json` });
-    if (res.status === 404) return null;
-    if (res.status >= 400) throw describeFailure(`docker inspect ${name}`, res);
-    return JSON.parse(res.body.toString("utf8")) as DockerInspect;
-  }
-
   async function createNamed(name: string, body: unknown): Promise<void> {
     await requestJson({ method: "POST", path: `/containers/create?name=${encodeURIComponent(name)}`, body });
   }
 
   async function startByName(name: string): Promise<void> {
-    const res = await request({ method: "POST", path: `/containers/${nameSegment(name)}/start` });
+    const res = await requestWithRateLimitRetry({ method: "POST", path: `/containers/${nameSegment(name)}/start` });
     if (res.status >= 400) throw describeFailure(`docker start ${name}`, res);
   }
 
   async function stopByName(name: string): Promise<void> {
-    const res = await request({
+    const res = await requestWithRateLimitRetry({
       method: "POST",
       path: `/containers/${nameSegment(name)}/stop?t=${BOT_STOP_TIMEOUT_SEC}`,
       timeoutMs: (BOT_STOP_TIMEOUT_SEC + 30) * 1000,
@@ -927,14 +1077,14 @@ export function dockerBotContainerDriver(
    *  bind mount). Only ever called on a helper, a stale replacement, or a bot
    *  container that has already been stopped gracefully. */
   async function removeByName(name: string): Promise<void> {
-    const res = await request({ method: "DELETE", path: `/containers/${nameSegment(name)}?force=true&v=true` });
+    const res = await requestWithRateLimitRetry({ method: "DELETE", path: `/containers/${nameSegment(name)}?force=true&v=true` });
     if (res.status >= 400 && res.status !== 404) throw describeFailure(`docker remove ${name}`, res);
   }
 
   /** The image must be on the host (the driver never pulls) and declare a
    *  supported bot runtime contract (template.ts BOT_RUNTIME_CONTRACT_LABEL). */
   async function requireBotImage(image: string, layout: ScopeLayout = ISOLATED_LAYOUT): Promise<void> {
-    const res = await request({ method: "GET", path: `/images/${nameSegment(image)}/json` });
+    const res = await requestWithRateLimitRetry({ method: "GET", path: `/images/${nameSegment(image)}/json` });
     if (res.status === 404) {
       throw new Error(`image "${image}" is not present on the Docker host; build or pull it first (the driver never pulls)`);
     }
@@ -956,7 +1106,7 @@ export function dockerBotContainerDriver(
   }
 
   async function putArchive(containerName: string, mountPath: string, archive: Buffer): Promise<void> {
-    const res = await request({
+    const res = await requestWithRateLimitRetry({
       method: "PUT",
       path: `/containers/${nameSegment(containerName)}/archive?path=${encodeURIComponent(mountPath)}&noOverwriteDirNonDir=true`,
       body: archive,
@@ -967,7 +1117,7 @@ export function dockerBotContainerDriver(
 
   async function helperLogs(name: string): Promise<string> {
     try {
-      const res = await request({ method: "GET", path: `/containers/${nameSegment(name)}/logs?stdout=true&stderr=true&tail=20` });
+      const res = await requestWithRateLimitRetry({ method: "GET", path: `/containers/${nameSegment(name)}/logs?stdout=true&stderr=true&tail=20` });
       if (res.status >= 400) return "";
       return demuxDockerLogs(res.body).trim().slice(-500);
     } catch {
@@ -1028,7 +1178,7 @@ export function dockerBotContainerDriver(
     const info = known ?? (await inspectByName(name));
     if (!info) return null;
     const markerPath = `${botRealRootFromBinds(info.HostConfig?.Binds, botKey)}/hermes/${MARKER_RELATIVE_PATH}`;
-    const res = await request({
+    const res = await requestWithRateLimitRetry({
       method: "GET",
       path: `/containers/${nameSegment(name)}/archive?path=${encodeURIComponent(markerPath)}`,
     });
@@ -1050,7 +1200,7 @@ export function dockerBotContainerDriver(
       const info = await inspectByName(name);
       if (!info) return null;
       const root = botRealRootFromBinds(info.HostConfig?.Binds, botKey);
-      const res = await request({
+      const res = await requestWithRateLimitRetry({
         method: "GET",
         path: `/containers/${nameSegment(name)}/archive?path=${encodeURIComponent(`${root}/hermes/${CLONE_HYGIENE_REPORT_PATH}`)}`,
       });
@@ -1074,6 +1224,10 @@ export function dockerBotContainerDriver(
       restartHash: marker?.restartHash,
       filesHash: marker?.filesHash,
       maxConcurrentRuns: marker?.maxConcurrentRuns,
+      // myrmidon(OPE-4789): the raw inspect rides along, so a caller that
+      // already asked for the status (the reconciler, once per bot per pass)
+      // can hand it to templateDrift instead of paying a second inspect.
+      inspect: info,
     };
   }
 
@@ -1090,10 +1244,25 @@ export function dockerBotContainerDriver(
     return results;
   }
 
-  async function templateDrift(spec: BotContainerSpec): Promise<TemplateDriftReport> {
-    const body = await createBody(spec);
-    const existing = await inspectByName(containerNameFor(spec.botKey));
+  /** The containers of the given bots that exist AND are running. Same per-bot
+   *  reads as `list` (dockergate has no filtered listing), but stopped and
+   *  unhealthy bots are left out — the clone-report collector's question
+   *  (myrmidon(OPE-4789)), which must not wake a stopped bot's inspect+marker
+   *  pair on every pass. */
+  async function listRunning(botKeys: readonly string[]): Promise<BotContainerStatus[]> {
+    const bots = await list(botKeys);
+    return bots.filter((bot) => bot.state === "running");
+  }
+
+  async function templateDrift(spec: BotContainerSpec, knownStatus?: BotContainerStatus): Promise<TemplateDriftReport> {
+    // myrmidon(OPE-4789): a caller that has just read the bot's status (the
+    // reconciler, once per bot per pass) hands it in; its inspect is the same
+    // answer a fresh inspectByName would give, so the drift check pays no
+    // second inspect. A missing container has no template to drift from.
+    if (knownStatus?.state === "missing") return { drifted: false, fields: [] };
+    const existing = (knownStatus?.inspect as DockerInspect | undefined) ?? (await inspectByName(containerNameFor(spec.botKey)));
     if (!existing) return { drifted: false, fields: [] };
+    const body = await createBody(spec);
     const fields = templateDriftFields(existing, body);
     return { drifted: fields.length > 0, fields };
   }
@@ -1149,7 +1318,7 @@ export function dockerBotContainerDriver(
     // Only now touch the old one: SIGTERM, SIGKILL after BOT_STOP_TIMEOUT_SEC.
     await stopByName(name);
     await removeByName(name);
-    const res = await request({
+    const res = await requestWithRateLimitRetry({
       method: "POST",
       path: `/containers/${nameSegment(replacement)}/rename?name=${encodeURIComponent(name)}`,
     });
@@ -1199,7 +1368,7 @@ export function dockerBotContainerDriver(
 
   async function restart(botKey: string): Promise<void> {
     const name = containerNameFor(botKey);
-    const res = await request({
+    const res = await requestWithRateLimitRetry({
       method: "POST",
       path: `/containers/${nameSegment(name)}/restart?t=${BOT_STOP_TIMEOUT_SEC}`,
       timeoutMs: (BOT_STOP_TIMEOUT_SEC + 30) * 1000,
@@ -1212,5 +1381,5 @@ export function dockerBotContainerDriver(
     await stopByName(containerNameFor(botKey));
   }
 
-  return { status, list, templateDrift, create, recreate, writeProfile, start, restart, stop, readCloneReport };
+  return { status, list, listRunning, templateDrift, create, recreate, writeProfile, start, restart, stop, readCloneReport };
 }
