@@ -128,6 +128,93 @@ const START_WINDOW_MS = 60_000;
 const MEMORY_SETTLE_MS = 30_000;
 const MB = 1024 * 1024;
 
+// myrmidon(1.6.5 RUN-FAIRNESS): the sliding window of the per-agent start
+// share. Without a share gate the queued-run sweep visits the agents in
+// creation order and the agent first in the loop takes every freed global
+// slot (on 06.10 one agent took ~48 % of the starts of an hour while the
+// global cap sat at 48–50 of 51). With a queue of several agents waiting, an
+// agent that already started this share of the runs in the window waits until
+// the others caught up.
+export const AGENT_START_SHARE_WINDOW_MS = 10 * 60_000;
+/** myrmidon(1.6.5 RUN-FAIRNESS): one agent's share of the starts in the window by default. */
+export const DEFAULT_MAX_PER_AGENT_START_SHARE_PERCENT = 15;
+
+/**
+ * myrmidon(1.6.5 RUN-FAIRNESS): why the last `reserve` gave fewer slots than
+ * wanted (the gate that closed first), or `null` when the last reservation
+ * was served in full. `agent_fair_share` and `agent_concurrency` are decided
+ * by the caller around `reserve`, never by the admission itself, so they are
+ * not reported here.
+ */
+export type RunAdmissionDenialReason =
+  | "global_cap"
+  | "start_ramp"
+  | "memory"
+  | "host_memory"
+  | "host_cpu";
+
+/** myrmidon(1.6.5 RUN-FAIRNESS): the outcome of one fair-share evaluation. */
+export type AgentStartShareVerdict =
+  | { allowed: true }
+  | {
+      allowed: false;
+      reason: "agent_fair_share";
+      sharePercent: number;
+      windowedStarts: number;
+      agentStarts: number;
+    };
+
+/**
+ * myrmidon(1.6.5 RUN-FAIRNESS): may `agentId` start another run, given the
+ * starts of the sliding window and the share ceiling? The gate bites only
+ * when other agents wait (`otherAgentsWaiting`): a lone queue is never
+ * throttled by a share — the work exists and nobody else is starved by
+ * letting it run. A queue shorter than one full share step
+ * (100 / sharePercent) lets everyone through: any start would cross the
+ * ceiling arithmetically, and holding the whole queue for that would idle the
+ * host instead of being fair.
+ */
+export function evaluateAgentStartShare(input: {
+  windowedStarts: number;
+  agentStarts: number;
+  sharePercent: number;
+  otherAgentsWaiting: boolean;
+}): AgentStartShareVerdict {
+  if (!input.otherAgentsWaiting) return { allowed: true };
+  if (!(input.sharePercent > 0) || input.sharePercent > 100) return { allowed: true };
+  const shareStarts = Math.ceil((input.sharePercent / 100) * input.windowedStarts);
+  // No share step fits into the window yet: the first start of any agent
+  // would already cross the ceiling, so the gate stays open until the window
+  // has seen at least one full share step.
+  if (shareStarts < 1 || input.windowedStarts < 100 / input.sharePercent) return { allowed: true };
+  if (input.agentStarts >= shareStarts) {
+    return {
+      allowed: false,
+      reason: "agent_fair_share",
+      sharePercent: input.sharePercent,
+      windowedStarts: input.windowedStarts,
+      agentStarts: input.agentStarts,
+    };
+  }
+  return { allowed: true };
+}
+
+/**
+ * myrmidon(1.6.5 RUN-FAIRNESS): the visit order of the queued-run sweep. The
+ * queue read is already ordered by run `createdAt`, so the first run of each
+ * agent is that agent's oldest waiting run; sorting the agents by that age
+ * hands a freed global slot to the agent whose run has waited longest, not
+ * to the agent that happens to be first in the loop. Entries in the order of
+ * first appearance: `[agentId, createdAt of the agent's oldest queued run]`.
+ */
+export function orderAgentIdsByOldestQueuedRun(
+  firstQueuedRunAtByAgent: ReadonlyArray<readonly [string, Date]>,
+): string[] {
+  return [...firstQueuedRunAtByAgent]
+    .sort((left, right) => left[1].getTime() - right[1].getTime())
+    .map(([agentId]) => agentId);
+}
+
 export type RunAdmissionLimits = RunLimits;
 
 /** The limits as the environment declares them, with the built-in defaults. */
@@ -444,8 +531,15 @@ export interface RunAdmission {
    * How many of `wanted` runs may start now; the slots are taken at once.
    * Hand back the ones not started with `release(unused)`, and call
    * `finish()` once for every started run when it ends.
+   *
+   * myrmidon(1.6.5 RUN-FAIRNESS): pass `agentId` when the reservation serves
+   * one agent's queue (the per-agent sweep). The start is then counted in the
+   * agent's share of the sliding start window (`agentStartShare`), so the
+   * queued-run sweep can hold an agent over its share while other agents
+   * wait. Without `agentId` the reservation is share-blind (a non-sweep start
+   * path).
    */
-  reserve(wanted: number): number;
+  reserve(wanted: number, opts?: { agentId?: string }): number;
   release(unused: number): void;
   finish(): void;
   /**
@@ -456,6 +550,20 @@ export interface RunAdmission {
   syncRunning(running: number): void;
   /** True when the last `reserve` gave fewer slots than wanted because of a limit. */
   limited(): boolean;
+  /**
+   * myrmidon(1.6.5 RUN-FAIRNESS): which gate closed the last `reserve` that
+   * gave fewer slots than wanted, or `null` when the last reservation was
+   * served in full. The per-agent sweep writes this onto the runs left queued
+   * (`contextSnapshot.waitReason`), so a held run says why it waits. Cleared
+   * by the next `reserve`, whatever it returns.
+   */
+  lastDenialReason(): RunAdmissionDenialReason | null;
+  /**
+   * myrmidon(1.6.5 RUN-FAIRNESS): the starts of the sliding 10-minute window
+   * by agent, for the fair-share rule of the queued-run sweep. Counts only
+   * starts that asked to be counted (`reserve(wanted, { agentId })`).
+   */
+  agentStartShare(at?: number): { total: number; byAgent: ReadonlyMap<string, number> };
   /**
    * Replace the limits in force. Written into the object `reserve` reads, so
    * the next reservation sees the new ceiling without a restart (no run in
@@ -504,8 +612,16 @@ export function createRunAdmission(options: {
   const hostCpuLoad = options.hostCpuLoad ?? (() => readHostCpuLoad());
   const now = options.now ?? Date.now;
   const starts: number[] = [];
+  // myrmidon(1.6.5 RUN-FAIRNESS): starts that asked to count against the
+  // per-agent share of the sliding window (`reserve(wanted, { agentId })` of
+  // the queued-run sweep), pruned to the window. Non-sweep starts (no
+  // agentId) never land here: they are no agent's queue work.
+  const agentStarts: Array<{ at: number; agentId: string }> = [];
   let active = 0;
   let lastLimited = false;
+  // myrmidon(1.6.5 RUN-FAIRNESS): the gate that closed the last limited
+  // reservation; read by `lastDenialReason`.
+  let lastDenial: RunAdmissionDenialReason | null = null;
   // myrmidon(1.6.2): the current continuous hold by the host floor.
   // myrmidon(1.6.5): both holds run through the same gate-hold machine.
   const hostMemoryHold = createGateHold(HOST_MEMORY_HOLD_CONTINUITY_MS);
@@ -519,6 +635,11 @@ export function createRunAdmission(options: {
 
   function prune(at: number) {
     while (starts.length > 0 && at - starts[0]! >= START_WINDOW_MS) starts.shift();
+    // myrmidon(1.6.5 RUN-FAIRNESS): the share window slides with the start
+    // window; entries older than it no longer count against an agent.
+    while (agentStarts.length > 0 && at - agentStarts[0]!.at >= AGENT_START_SHARE_WINDOW_MS) {
+      agentStarts.shift();
+    }
   }
 
   function settlingAt(at: number): number {
@@ -622,16 +743,23 @@ export function createRunAdmission(options: {
   }
 
   return {
-    reserve(wanted) {
+    reserve(wanted, opts) {
       if (wanted <= 0) return 0;
       const at = now();
       prune(at);
       let allowed = wanted;
+      // myrmidon(1.6.5 RUN-FAIRNESS): the first gate that clips the
+      // reservation names the denial; a served-in-full reservation clears it.
+      let denial: RunAdmissionDenialReason | null = null;
       if (limits.maxConcurrentRuns !== null) {
-        allowed = Math.min(allowed, limits.maxConcurrentRuns - active);
+        const capLeft = limits.maxConcurrentRuns - active;
+        if (capLeft < allowed) denial ??= "global_cap";
+        allowed = Math.min(allowed, capLeft);
       }
       if (limits.maxStartsPerMinute !== null) {
-        allowed = Math.min(allowed, limits.maxStartsPerMinute - starts.length);
+        const rampLeft = limits.maxStartsPerMinute - starts.length;
+        if (rampLeft < allowed) denial ??= "start_ramp";
+        allowed = Math.min(allowed, rampLeft);
       }
       if (limits.minFreeMemoryMb !== null && allowed > 0) {
         const free = freeMemoryBytes();
@@ -640,7 +768,9 @@ export function createRunAdmission(options: {
           const settling = settlingAt(at);
           const estimate = limits.runMemoryEstimateMb * MB;
           const spare = free - limits.minFreeMemoryMb * MB - settling * estimate;
-          allowed = Math.min(allowed, Math.floor(spare / estimate));
+          const memoryLeft = Math.floor(spare / estimate);
+          if (memoryLeft < allowed) denial ??= "memory";
+          allowed = Math.min(allowed, memoryLeft);
         } else {
           // myrmidon(C0): the guard is inactive, and that must be visible.
           options.onMemoryLimitUnavailable?.();
@@ -652,6 +782,7 @@ export function createRunAdmission(options: {
         const gate = evaluateHostGate(at);
         if (gate.state === "closed") {
           allowed = 0;
+          denial ??= "host_memory";
           if (hostMemoryHold.start(at)) {
             options.onHostMemoryHold?.({ state: "closed", gate: { ...gate, heldSince: new Date(at) }, heldMs: 0 });
           }
@@ -671,6 +802,7 @@ export function createRunAdmission(options: {
         const gate = evaluateHostCpuGate(at);
         if (gate.state === "closed") {
           allowed = 0;
+          denial ??= "host_cpu";
           if (cpuHold.start(at)) {
             options.onHostCpuHold?.({ state: "closed", gate: { ...gate, heldSince: new Date(at) }, heldMs: 0 });
           }
@@ -684,8 +816,14 @@ export function createRunAdmission(options: {
       }
       allowed = Math.max(0, allowed);
       lastLimited = allowed < wanted;
+      lastDenial = lastLimited ? denial : null;
       active += allowed;
-      for (let i = 0; i < allowed; i += 1) starts.push(at);
+      for (let i = 0; i < allowed; i += 1) {
+        starts.push(at);
+        // myrmidon(1.6.5 RUN-FAIRNESS): only a reservation that names its
+        // agent counts against that agent's share of the window.
+        if (opts?.agentId) agentStarts.push({ at, agentId: opts.agentId });
+      }
       return allowed;
     },
     release(unused) {
@@ -702,6 +840,18 @@ export function createRunAdmission(options: {
     },
     limited() {
       return lastLimited;
+    },
+    lastDenialReason() {
+      return lastDenial;
+    },
+    agentStartShare(at) {
+      const when = at ?? now();
+      prune(when);
+      const byAgent = new Map<string, number>();
+      for (const start of agentStarts) {
+        byAgent.set(start.agentId, (byAgent.get(start.agentId) ?? 0) + 1);
+      }
+      return { total: agentStarts.length, byAgent };
     },
     updateLimits(next) {
       limits.maxConcurrentRuns = next.maxConcurrentRuns;
