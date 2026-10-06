@@ -78,18 +78,45 @@ say_out() {
 }
 
 usage() {
-  sed -n '2,40p' "$0"
+  cat <<'USAGE'
+scripts/myrmidon/install/install.sh — ONE-COMMAND-INSTALL
+
+  curl -fsSL https://github.com/itkadr-git/myrmidon/releases/latest/download/install.sh | sudo bash
+
+Options:
+  --version myr-vX.Y.Z   install that release instead of releases/latest
+  --dir PATH             where to install (default /opt/myrmidon)
+  --port N               port the board listens on (default 3100)
+  --url URL              public address of the board
+  --lang ru|en           language of the messages (default: taken from the locale)
+  --interactive          ask the questions instead of answering them silently
+  --yes, -y              answer yes to everything
+  --uninstall            stop and remove the stack (your data is kept)
+  --purge                with --uninstall: also delete the database volume
+  -h, --help             print this help
+
+Re-running the script without --uninstall is the update path: it takes the
+latest release, dumps the database first and rolls back if the board does not
+become healthy. Nothing is asked by default.
+USAGE
   exit 0
 }
 
 # ------------------------------------------------------------------- args -----
+# An option that takes a value must be given one. Under `set -u` the plain
+# "$2" would kill the run with a bare bash error — and because the documented
+# form pipes the script into bash, that error is all a novice would ever see.
+value_for() {
+  (($# >= 2)) || die "option $1 needs a value"
+}
+
 while (($#)); do
   case "$1" in
-    --version) RELEASE_TAG="$2"; shift 2 ;;
-    --dir) DIR="$2"; shift 2 ;;
-    --port) PORT="$2"; shift 2 ;;
-    --url) PUBLIC_URL="$2"; shift 2 ;;
-    --lang) LANG_CODE="$2"; shift 2 ;;
+    --version) value_for "$@" ; RELEASE_TAG="$2"; shift 2 ;;
+    --dir) value_for "$@" ; DIR="$2"; shift 2 ;;
+    --port) value_for "$@" ; PORT="$2"; shift 2 ;;
+    --url) value_for "$@" ; PUBLIC_URL="$2"; shift 2 ;;
+    --lang) value_for "$@" ; LANG_CODE="$2"; shift 2 ;;
     --interactive) INTERACTIVE=1; shift ;;
     --yes|-y) ASSUME_YES=1; shift ;;
     --uninstall) MODE="uninstall"; shift ;;
@@ -156,6 +183,17 @@ require_tools() {
   fi
 }
 
+# The board image carries native code built for the x86-64-v2 baseline. On an
+# older CPU the container dies minutes in with a raw module-load error, so the
+# fact is read here, before anything on the machine is changed.
+cpu_supports_x86_64_v2() {
+  local cpuinfo="${MYRMIDON_INSTALL_CPUINFO:-/proc/cpuinfo}" flags
+  [[ -r "$cpuinfo" ]] || return 0   # cannot tell: do not block a valid machine
+  flags="$(awk -F: '/^flags/{print $2; exit}' "$cpuinfo")"
+  [[ -n "$flags" ]] || return 0
+  [[ "$flags" == *sse4_2* && "$flags" == *popcnt* && "$flags" == *cx16* ]]
+}
+
 # -------------------------------------------------------------- preflight -----
 # Every requirement is a fact read from the machine, not an assumption: the
 # script names what is missing instead of failing later inside docker.
@@ -188,6 +226,12 @@ preflight() {
     x86_64|aarch64) ;;
     *) die "architecture $arch is not supported (x86_64 or aarch64)" ;;
   esac
+
+  if [[ "$arch" == x86_64 ]] && ! cpu_supports_x86_64_v2; then
+    say "This CPU does not meet the x86-64-v2 baseline (SSE4.2, POPCNT, CMPXCHG16B): the board image cannot start on it." \
+        "Процессор не дотягивает до базового уровня x86-64-v2 (SSE4.2, POPCNT, CMPXCHG16B): образ доски на нём не запустится."
+    die "unsupported CPU (x86-64-v2 is required)"
+  fi
 
   have systemctl || say "systemd was not found: the stack is not covered by the host reboot." \
                        "systemd не найден: после перезагрузки хост не поднимет стек сам."
