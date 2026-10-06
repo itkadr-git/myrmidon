@@ -9,3 +9,15 @@
   existing Telegram publication path then splits anything above the 4,096 limit into
   ordered messages at paragraph, line, then word boundaries (and sends long
   structured Markdown as one attached document). Nothing is silently dropped.
+
+## changelog-ru
+
+### Ответы бота больше не обрезаются на 2000 символов (TG-REPLY-FULL)
+
+- Адаптеры Hermes (local и gateway) копировали в сводку прогона только первые
+  2000 символов ответа, и мост чатов доставлял владельцу именно её, когда у
+  прогона нет отдельного финального сообщения. Длинные ответы поэтому доходили
+  в Telegram обрезанными. Теперь сводка несёт ответ целиком; существующий путь
+  публикации в Telegram делит всё, что длиннее лимита 4096, на упорядоченные
+  сообщения по границам абзацев, строк и слов (а длинный структурированный
+  Markdown отправляет одним вложенным документом). Ничего не теряется молча.

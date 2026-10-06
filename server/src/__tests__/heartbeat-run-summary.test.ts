@@ -227,6 +227,27 @@ describe("buildHeartbeatRunIssueComment", () => {
     );
   });
 
+  // myrmidon(1.6.4-HERMES-LONG-RESPONSE): adapters keep a bounded `summary`
+  // copy for run lists and the whole answer under `result`. The comment must be
+  // the full text, never the truncated summary copy.
+  it("prefers the full result over a truncated summary for long answers", () => {
+    const fullAnswer = "x".repeat(9_000);
+    const comment = buildHeartbeatRunIssueComment({
+      result: fullAnswer,
+      summary: fullAnswer.slice(0, 2_000),
+    });
+
+    expect(comment).toBe(fullAnswer);
+    expect(comment).toHaveLength(9_000);
+    expect(comment).not.toBe(fullAnswer.slice(0, 2_000));
+  });
+
+  it("still posts a summary-only payload", () => {
+    expect(buildHeartbeatRunIssueComment({ summary: "short status" })).toBe(
+      "short status",
+    );
+  });
+
   it("returns null when there is no usable final text", () => {
     expect(buildHeartbeatRunIssueComment({ costUsd: 1.2 })).toBeNull();
   });
