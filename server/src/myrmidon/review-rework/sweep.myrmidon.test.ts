@@ -106,7 +106,11 @@ class FakeStore implements ReviewReworkStore {
 }
 
 function candidateRow(task: ReviewReworkTaskFacts): ReworkCandidateRow {
-  return { task, textParts: [task.title, ""], products: [{ repo: "acme/repo", number: 484, status: "active" }] };
+  return {
+    task,
+    textParts: [task.title, ""],
+    products: [{ repo: "acme/repo", number: 484, url: PR_URL, status: "active" }],
+  };
 }
 
 function verdictComment() {
@@ -405,6 +409,48 @@ describe("review rework sweep", () => {
     expect(result.blocked).toBe(0);
     expect(store.created).toHaveLength(0);
   });
+
+  it("a work product without a repo does not fail the pass — the valid PR is still handled", async () => {
+    const store = new FakeStore();
+    // A legacy work product whose coordinates could not be read (no repo in
+    // the metadata, no parseable URL): the spread lands a repo-less entry.
+    const broken = { ...(null as unknown as object), status: "active" } as unknown as ReworkCandidateRow["products"][number];
+    const row = candidateRow(reviewTask());
+    row.products = [broken, ...row.products];
+    store.rows = [row];
+    store.comments = verdictComment();
+    const { sweep } = build({
+      store,
+      snapshot: { state: "open", headSha: HEAD_OLD, reviewDecision: null, updatedAt: null },
+    });
+
+    const result = await sweep.sweep(new Date("2026-10-04T17:00:00Z"), { force: true });
+
+    expect(result.failed).toBe(0);
+    expect(result.reworkCreated).toBe(1);
+    expect(store.created).toHaveLength(1);
+    expect(store.created[0]!.originFingerprint).toBe(`acme/repo#484@${HEAD_OLD}`);
+  });
+
+  it("a work product with only a URL restores the repo from the URL", async () => {
+    const store = new FakeStore();
+    const urlOnly = { repo: null, number: 484, url: PR_URL, status: "active" } as unknown as ReworkCandidateRow["products"][number];
+    const row = candidateRow(reviewTask());
+    row.products = [urlOnly];
+    row.textParts = ["no coordinates in text", ""];
+    store.rows = [row];
+    store.comments = verdictComment();
+    const { sweep } = build({
+      store,
+      snapshot: { state: "open", headSha: HEAD_OLD, reviewDecision: null, updatedAt: null },
+    });
+
+    const result = await sweep.sweep(new Date("2026-10-04T17:00:00Z"), { force: true });
+
+    expect(result.failed).toBe(0);
+    expect(result.reworkCreated).toBe(1);
+    expect(store.created[0]!.originFingerprint).toBe(`acme/repo#484@${HEAD_OLD}`);
+  });
 });
 
 describe("review rework PR coordinate extraction", () => {
@@ -430,5 +476,26 @@ describe("review rework PR coordinate extraction", () => {
   it("keeps the work-product coordinates", () => {
     const coords = extractPrCoordinates(["no text refs"], [{ repo: "acme/repo", number: 9 }]);
     expect(coords).toEqual([{ repo: "acme/repo", number: 9 }]);
+  });
+
+  it("skips a known entry with no repo instead of throwing", () => {
+    const coords = extractPrCoordinates(["no text refs"], [{ number: 484 }]);
+    expect(coords).toEqual([]);
+  });
+
+  it("restores the repo from the entry's pull-request URL", () => {
+    const coords = extractPrCoordinates(
+      ["no text refs"],
+      [{ number: 484, url: "https://github.com/acme/repo/pull/484" }],
+    );
+    expect(coords).toEqual([{ repo: "acme/repo", number: 484 }]);
+  });
+
+  it("skips a known entry whose URL is not a pull-request link", () => {
+    const coords = extractPrCoordinates(
+      ["no text refs"],
+      [{ repo: null, number: 484, url: "https://example.com/not-a-pr" }],
+    );
+    expect(coords).toEqual([]);
   });
 });
