@@ -10,17 +10,6 @@ version file to edit. Base Paperclip version is in the image label
 
 ## Unreleased
 
-### Telegram notification settings UI (TG-NOTIFY-SETTINGS part F)
-
-- The "Telegram notifications" panel on the System screen of the 2.0 UI: all
-  five sections of the telegramNotify settings are visible and editable
-  (digest, errors, owner messages, escalations, head-bot proactivity), every
-  section off by default, with the settings change log rendered from the
-  document the settings core serves. Saving sends one PATCH with only the
-  changed fields. Depends on the settings core (part A); while that is not
-  merged the UI is covered by tests against the mocked JSON contract.
-## Unreleased
-
 ## 1.6.4
 
 ### Fix: the board failed to start when a synthetic attention card was present
@@ -517,21 +506,6 @@ version file to edit. Base Paperclip version is in the image label
 
 ## 1.6.1
 
-### Multi-agent addressing in the bridged Telegram chat (TG-MULTI-AGENT)
-
-- A message in a bridged Telegram chat (bot DM or a group topic that
-  addressed the bot) whose `@<token>` matches an alias, name or title of a
-  same-company agent routes into that agent's own standing Agent Chat
-  conversation, and the reply returns into the same Telegram thread
-  prefixed with the agent's display name. Aliases are the
-  `telegramAliases` string array of the agent card JSON; the leading token
-  is dropped from the turn body, and the first turn of the addressed
-  agent quotes the chat's recent messages. Linked-identity,
-  same-company and mention gates apply. The management commands
-  `/agents`, `/to <alias>`, `/who` follow the part B contract. No new
-  setting: the addressing rides the X8b bridge
-  ([telegram-alias-addressing](guides/telegram-alias-addressing.md)).
-
 ### Role queues as instance settings (SWARM-SETTINGS-UI)
 
 - The pilot of the per-role task queues is set in the interface, without a
@@ -614,21 +588,6 @@ version file to edit. Base Paperclip version is in the image label
   card for the lead and the operator, computed on the fly from a
   process-level signal registry (no new store); cards fade after
   `MYRMIDON_STALE_BLOCK_SIGNAL_TTL_MS` (default 24 h).
-### Gateway-priced hermes runs (HERMES-USAGE-COST)
-
-- hermes_gateway runs no longer land in the cost ledger as unpriced $0
-  rows: after every LLM-gateway spend collection sweep, a reconcile pass
-  fills each run's `cost_events` row with the gateway's own spend for that
-  run (cost_status=reported) and refreshes the agent/company monthly
-  counters. Only unpriced hermes_gateway rows are touched — adapter-priced
-  rows and other providers are never overwritten, and a run with no
-  collected spend stays unpriced instead of getting an invented price. The
-  first sweep can look back up to 90 days
-  (`MYRMIDON_LITELLM_FIRST_LOOKBACK_DAYS`), and
-  `POST /api/myrmidon/companies/:id/litellm/sweep` accepts a `from` body
-  for one-off month backfills. The UI-2.0 forecast chip shows
-  "spent" only when no monthly budget is configured, ending the
-  "$0 of $0" placeholder.
 
 ### Gateway-priced hermes runs (HERMES-USAGE-COST)
 

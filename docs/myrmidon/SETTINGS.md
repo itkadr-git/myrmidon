@@ -92,8 +92,6 @@ A track writes only into its own section. A row is added in the same PR as the s
 | `MYRMIDON_CHAT_RECONCILE_INTERVAL_MS` | D1 | unset | Minimum interval between run-milestone sweep runs (`enqueueChatRunMilestones`); replaces the standard coalescing-trigger interval (100 ms) rather than adding to it. The publication sweep (delivering messages to the provider) is untouched — it keeps its usual pace | Unset, `0`, negative or non-numeric — today's pace (the fix of the D1 queries themselves is always on, this is not a defect switch). Set (e.g. `15000`) if after D1 the milestone sweep is still noticeable in load when chats are idle |
 | `MYRMIDON_CHAT_RECONCILE_FALLBACK_INTERVAL_MS` | 1.6.3 | `30000` | How often the full chat reconciliation pass (provider runtimes, deliveries, webhook recovery, Slack syncs) runs when no publication or milestone event wakes it; publication and milestone lanes are woken by commit events directly, and one full pass still runs at startup. Replaces the former once-per-second timer | Unset, `0`, negative or non-numeric — 30 seconds. Lower it if deliveries or provider recovery feel slow after the change |
 | `MYRMIDON_TELEGRAM_VOICE_STT` | 1.6.1 VOICE-STT B | off | Transcribe an inbound Telegram voice/audio message at intake: the bytes are prefetched (bounded, 20 MB, 45 s), recognized through the shared STT core (part A1) and the transcript is written into the task comment next to the kept attachment — the bot reads it as user input on the same wakeup. Speaker segments render as «Говорящий N [mm:ss]: …». An STT failure is a skip: the comment keeps the vendor body, the redacted `stt_skipped` code lands in the comment metadata, and the delivery is unaffected | Any value other than `1`/`true`/`yes`/`on` — the vendor path byte for byte: no byte prefetch, zero calls to the transcription core. Read per delivery, no restart. Until the STT core is wired (part A1 merged and connected), an enabled setting records `stt_unconfigured` skips |
-| — | X9a/X9b (X9d row) | — (no variable) | `@<alias>` addressing in a bridged Telegram chat: a message from a linked board user whose leading `@`-token (or any `@`-token in the text) matches an alias, name or title of a **same-company** agent routes into that agent's own standing Agent Chat conversation (same `conversation_user_id`), the reply returns into the same Telegram thread prefixed `[<display name>]`, the first turn quotes the chat's recent messages (X8d settings), and the leading token is dropped from the turn body. Aliases live in the agent card (`telegramAliases` array in `agents.metadata`/`adapter_config`). Commands `/agents`, `/to <alias>`, `/who` (part B contract) manage the default addressee from the chat. No new variable: riding the X8b bridge, the addressing is on exactly when the bridge is; see the guide `guides/telegram-alias-addressing.md` | Off with the bridge: unset `MYRMIDON_TELEGRAM_DM_CONVERSATIONS` — the vendor path is byte for byte, no resolution, no prefix, no commands. An unresolvable token goes to the endpoint's assigned agent; an unlinked sender is refused before resolution; in group topics only bot-addressed messages resolve. X9a/X9b in DIVERGENCE.md, PRs #407/#424 |
-| `MYRMIDON_TELEGRAM_VOICE_STT` | 1.6.1 VOICE-STT B | off | Transcribe an inbound Telegram voice/audio message at intake: the bytes are prefetched (bounded, 20 MB, 45 s), recognized through the shared STT core (part A1) and the transcript is written into the task comment next to the kept attachment — the bot reads it as user input on the same wakeup. Speaker segments render as «Говорящий N [mm:ss]: …». An STT failure is a skip: the comment keeps the vendor body, the redacted `stt_skipped` code lands in the comment metadata, and the delivery is unaffected | Any value other than `1`/`true`/`yes`/`on` — the vendor path byte for byte: no byte prefetch, zero calls to the transcription core. Read per delivery, no restart. Until the STT core is wired (part A1 merged and connected), an enabled setting records `stt_unconfigured` skips |
 
 ## Track 5 — operations
 
@@ -260,7 +258,6 @@ Decision register — `containers-plan-senior-2026-09-28.md`.
 | `MYRMIDON_LITELLM_BASE_URL` | M2-A | unset (off) | Address of the LLM gateway (OpenAI-compatible, e.g. LiteLLM) from which the board server assembles the spend log and model prices: `http(s)://…`, read at startup and at every collection pass. The address is not stored in the open repository — the value is set by the deployment | Set together with `MYRMIDON_LITELLM_KEY_SECRET`; without both, collection is off: the periodic pass does not start, and `/api/myrmidon/…/litellm/*` answers 503 `enabled: false`, and the Costs "Gateway" tab writes "collection is not enabled" |
 | `MYRMIDON_LITELLM_KEY_SECRET` | M2-A | unset (off) | Name of the company secret holding the gateway key with access to `/spend/logs/v2` and `/v1/model/info` (for LiteLLM this is a virtual key with the right to read the spend log) | The value is read only for the duration of the pass, is not written to the log and is not stored; spend rows are attributed to agents by sha256 of bot key values — the values themselves do not leave the process |
 | `MYRMIDON_LITELLM_COST_INTERVAL_SEC` | M2-A | `300` | Collection pass period (in seconds): reads `/spend/logs/v2` since the last collected event (first pass — a 24 h window), refreshes the model catalog `/v1/model/info` | From 30 to 86400; non-integer or out of bounds — `300` is taken. An overlapping pass skips the tick instead of queueing up |
-| `MYRMIDON_LITELLM_FIRST_LOOKBACK_DAYS` | HERMES-USAGE-COST | `1` | How far back a FIRST collection pass reads when nothing has been collected yet: the whole unpriced month can be collected by setting this to its length in days. After the pass, the reconcile step fills the unpriced `hermes_gateway` rows of the vendor cost ledger with the collected prices, so the dashboard and Costs screens stop showing $0 | From 1 to 90; non-integer or out of bounds — `1` is taken. A one-off backfill can instead pin the window start with `POST /api/myrmidon/companies/:id/litellm/sweep` body `{ "from": "2026-10-01" }` (board only) |
 | `MYRMIDON_LITELLM_FIRST_LOOKBACK_DAYS` | HERMES-USAGE-COST | `1` | How far back a FIRST collection pass reads when nothing has been collected yet: the whole unpriced month can be collected by setting this to its length in days. After the pass, the reconcile step fills the unpriced `hermes_gateway` rows of the vendor cost ledger with the collected prices, so the dashboard and Costs screens stop showing $0 | From 1 to 90; non-integer or out of bounds — `1` is taken. A one-off backfill can instead pin the window start with `POST /api/myrmidon/companies/:id/litellm/sweep` body `{ "from": "2026-10-01" }` (board only) |
 | `MYRMIDON_LITELLM_ADMIN_KEY_SECRET` | M2-B | unset (key management off) | Name of the company secret holding the gateway ADMIN key (for LiteLLM — the master key): it manages the agents' virtual keys and is never handed to an agent. It is used only to read key names and to issue or rotate one agent's key; the value is not written to the log. Without it, together with `MYRMIDON_LITELLM_BASE_URL`, the keys API answers 503 `enabled: false` | — |
 | `MYRMIDON_BUDGET_SIGNAL_MODE` | M3 | on | When a budget hard-stop is reached, the owner gets a signal: a system-notice comment in the thread of every open issue the stop interrupted (cause, limit, observed spend, how to continue — raise the budget or keep the scope paused), written once per incident per issue. Without this the stop is silent in the issue thread: runs are cancelled and queued wakeups dropped, and the only trace is the decision inbox card the owner must open on their own | `off` (case-insensitive) — disable the signal entirely; any other value or unset — on. The vendor pause/cancel/incident mechanics are not affected by this switch, only the delivery of the signal |
@@ -766,25 +763,6 @@ sources need a token. Findings are recorded `unverified` until the skill lifecyc
 them as candidates; `POST …/foraging/sweep` (board only) runs one pass by hand.
 
 
-## 1.6.1 — TG-NOTIFY jobs (daily digest and escalations, part B)
-
-Settings of `server/src/myrmidon/telegram-notify/jobs.ts` — the periodic digest and
-escalation jobs of the Telegram notify track (part B; the routes and the
-`telegramNotify` settings area belong to part A). Both jobs read the owner
-settings through part A's JSON contract every pass, so they are
-runtime-changeable, and both are OFF by default: with the defaults the owner
-receives in Telegram only replies to his own messages and U2 decision cards.
-Delivery goes through the existing chat publication path (`chat_publications`,
-the vendor outbox), never a second client. No new table: the escalation state
-and the last digest day live under our own key of `instance_settings.general`.
-
-The jobs are wired maintenance-style: `server/src/index.ts` has one marked call,
-`startTelegramNotifyJobs(db)`; everything else lives in the module.
-
-| Variable | Function | Default | What it does | How to disable / special |
-|---|---|---|---|---|
-| `MYRMIDON_TELEGRAM_NOTIFY_TICK_SEC` | 1.6.1-TG-NOTIFY-B | `300` | Period of the shared job interval: how often the jobs check whether the digest time has arrived or an escalation threshold has passed. The jobs still send only when the owner settings enable them | From 30 to 3600; non-integer or out of bounds — the default (300). A pass whose previous run is still going is skipped, not queued |
-
 ## 1.6 — PARALLEL-HELPERS (delegated helper agents)
 
 | Variable | Function | Default | What it does | How to disable / special |
@@ -802,61 +780,6 @@ high put a real load on the host — make sure this is intended, not a typo");
 it is never clamped or rejected. The module applies its own defaults
 (`maxPerAgent` unset → 10, `defaultMaxPerAgent` unset → 2) only while the row
 says nothing.
-
-## 1.6.1 — TG-NOTIFY-SETTINGS part F: the board UI for the Telegram notification settings
-
-The board-facing half of the Telegram notification settings: the "Telegram
-notifications" panel on the System screen of the 2.0 UI (Settings → System,
-under the UI-2.0 shell). It edits the company-level `telegramNotify` document
-the settings core (part A) stores and serves; no environment variables —
-everything is runtime-changeable per company through the same API.
-
-- The panel shows all five sections with their options: the daily digest
-  (send time, chat id, topic id, sections), error notifications (chat id,
-  topic id, minimum severity, rate limit per hour), owner messages
-  (require mention), escalations (stuck hours, channel, chat id, topic id) and
-  head-bot proactivity (mode, cap per day in "rarely" mode). With the contract
-  defaults every section reads OFF.
-- Saving sends one `PATCH /api/myrmidon/telegram-notify` with only the fields
-  that differ from the stored values; the answer is applied back, so a change
-  is reflected immediately. Editing is board-only on the server; a read
-  without board access renders the denied state.
-- The settings change log from the GET answer (actor, field path, previous and
-  next value) is rendered under the sections — the same changelog the core
-  records for every changed field.
-
-## 1.6.1 — TG-NOTIFY head-bot proactivity (part E: gate, rarely limit, U2 bundling)
-
-Settings of `server/src/myrmidon/telegram-notify/` (the proactivity half of the
-TG-NOTIFY-SETTINGS epic, part E). The head bot's own-initiative publications are
-gated per agent: `only_on_owner_request` (the default — the owner receives only
-replies to their own messages and the U2 decision cards), `rarely` (at most
-`rarelyMaxPerDay` proactive messages per agent per UTC day, everything beyond
-the ceiling is bundled into a daily summary publication), or `normal` (no
-limit). The mode and the ceiling live in the `proactivity` area of the
-`telegramNotify` settings document (instance settings, runtime-changeable; the
-contract and defaults are defined in `packages/shared/src/myrmidon-telegram-notify.ts`).
-A per-agent override uses the same enum under the `mode` key of the agent's
-metadata and wins over the company default.
-
-Storage: no new tables. The rarely day counters and the bundle queues sit under
-`instance_settings.general.myrmidonTelegramNotify` (the instance-settings JSON
-pattern; preserved across vendor `general` writes). The U2 card bundling turns
-several pending interaction cards older than 5 minutes in one conversation into
-one summary publication; each bundled card keeps its own callback action rows,
-so every card stays individually answerable.
-
-| Variable | Function | Default | What it does | How to disable / special |
-|---|---|---|---|---|
-| `telegramNotify.proactivity.mode` (settings area) | 1.6-TG-PROACTIVITY-E | `only_on_owner_request` | Proactivity of the head bot per company: `only_on_owner_request` blocks every own-initiative publication; `rarely` allows at most `rarelyMaxPerDay` per agent per day and bundles the rest; `normal` removes the limit | Any other value is rejected by the validator; a malformed stored value falls back to the default |
-| `telegramNotify.proactivity.rarelyMaxPerDay` (settings area) | 1.6-TG-PROACTIVITY-E | `3` | Daily ceiling of proactive messages per agent in `rarely` mode; the counter resets on the UTC day boundary | Integer from 1 to 50; anything else falls back to 3 |
-| agent metadata key `mode` | 1.6-TG-PROACTIVITY-E | unset | Per-agent override of the mode (the same three values). Wins over the company default for that agent | A malformed value is ignored — the company default applies; an override can only pick one of the three modes |
-
-No environment variables, no new secrets. The gate runs inside the chat
-publication sweep; the bundling window is fixed at 5 minutes. Remove: the
-`server/src/myrmidon/telegram-notify/` tree, the export line in
-`packages/shared/src/index.ts`, the two marker lines in `app.ts` and
-`instance-settings.ts`, and this section.
 
 ## 1.6.1 — TG-NOTIFY-SETTINGS part F: the board UI for the Telegram notification settings
 
