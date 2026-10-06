@@ -84,6 +84,31 @@ limits and mounts still come from the freshly read card — the override
 survives the fresh read. See [design/bot-canary.md](../design/bot-canary.md)
 (Russian).
 
+**Apply now** always runs a real pass: it bypasses the 30-second freshness
+window that lets the periodic sweep and the canary wave share one recent pass.
+
+## How often the board talks to the container runtime
+
+The container layer keeps its reads of the container runtime (dockergate on a
+production host) bounded:
+
+- The periodic sweep reconciles each bot once a minute. One unchanged pass
+  costs one inspect and one marker read: the drift check reuses the inspect
+  the status read already paid for, and the template context behind the
+  create body (shared cache path, git-mirror flag, scope layout) is cached
+  per bot for 60 s.
+- A second reconcile of the same bot within 30 s of a pass (the sweep and a
+  canary wave tick can race) is answered from that freshness instead of
+  re-reading everything; a pass that errored never stamps, so the next tick
+  retries it. **Apply now**, secret-rotation restarts and the canary wave
+  itself always run a real pass.
+- The health wait after a (re)start polls every 3 s, matching the image's
+  own 30 s HEALTHCHECK cadence.
+- A 429 from dockergate is retried by the call that got it — after the
+  gate's `Retry-After` hint when one arrives, otherwise after a growing
+  backoff (1 s, 2 s, 4 s, capped at 8 s, at most 4 attempts) — so a burst
+  against the gate's limit resolves in place instead of failing the pass.
+
 ## Status and errors
 
 The section shows the container's state as a label: **Running**, **Stopped**,
