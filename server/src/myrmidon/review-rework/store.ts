@@ -32,7 +32,7 @@ export interface ReworkCandidateRow {
   /** Title + description text, for PR-reference extraction (comments are read separately). */
   textParts: string[];
   /** The task's pull_request work products (non-archived). */
-  products: Array<{ repo: string; number: number; status: string }>;
+  products: Array<{ repo: string; number: number; url: string | null; status: string }>;
 }
 
 export interface CreateReworkTaskInput {
@@ -245,8 +245,20 @@ export function createPgReviewReworkStore(db: Db): ReviewReworkStore {
           task: taskFacts(row),
           textParts: [row.title, row.description ?? ""],
           products: products
-            .map((product) => ({ ...productCoordinates(product.metadata, product.url), status: product.status }))
-            .filter((entry): entry is { repo: string; number: number; status: string } => entry !== null),
+            // Spreading `null` yields `{ status }` with no repo — the guard
+            // below must drop entries whose coordinates could not be read,
+            // not just the literal null (a coordinate-less entry downstream
+            // throws on the first sweep pass).
+            .map((product) => ({
+              ...productCoordinates(product.metadata, product.url),
+              url: product.url,
+              status: product.status,
+            }))
+            .filter(
+              (entry): entry is { repo: string; number: number; url: string | null; status: string } =>
+                typeof entry.repo === "string" && entry.repo.length > 0
+                && typeof entry.number === "number" && Number.isSafeInteger(entry.number) && entry.number > 0,
+            ),
         });
       }
       return out;
