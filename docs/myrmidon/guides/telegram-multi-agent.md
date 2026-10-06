@@ -41,9 +41,13 @@ Names the current addressee with its aliases and how it was chosen: `chosen with
 
 - The commands run only inside the sender's own bridged conversation: the sender must be a board user with a linked Telegram account (the same identity-link gate that guards every bridged-DM command). A sender without a linked account gets the bridge's refusal, not a command reply.
 - Only agents of the sender's own company are ever listed or addressable — the company scope is part of every lookup.
-- Group topics are unchanged: they keep the previous mention rules, and these commands are DM-only.
+- Group topics are unchanged by this feature: these commands are DM-only. The
+  topic mention rules now depend on the topic-inbound gate — see
+  [telegram-topic-inbound.md](telegram-topic-inbound.md): with the gate off or
+  with `requireMention` on, a topic message still has to address the bot.
 
 ## Related
 
 - [telegram-dm-status.md](telegram-dm-status.md) — the bridged DM itself: what the standing conversation is and how to enable it (`MYRMIDON_TELEGRAM_DM_CONVERSATIONS`).
 - [telegram-bridge-locale.md](telegram-bridge-locale.md) — the language of the bot's replies and command menu (the new commands' texts come from the same catalogs).
+- [telegram-topic-inbound.md](telegram-topic-inbound.md) — messages of Telegram forum topics becoming tasks (TG-NOTIFY part D); off by default.
