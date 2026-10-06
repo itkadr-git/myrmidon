@@ -87,6 +87,20 @@ survives the fresh read. See [design/bot-canary.md](../design/bot-canary.md)
 **Apply now** always runs a real pass: it bypasses the 30-second freshness
 window that lets the periodic sweep and the canary wave share one recent pass.
 
+### The vendor's config backups are wiped on every apply
+
+The vendored Hermes CLI snapshots `config.yaml` into `hermes/backups/config/`
+on every successful config load and offers no switch to turn that off. The
+compiled `config.yaml` itself never holds a secret value — a credential field
+carries only a `${VAR}` reference, and the value lives in `hermes/.env`
+(mode `0600`) — but a backup copy can hold the value the CLI resolved at load
+time, and the host's backup of the bot volume would then carry it. Every
+apply (a reconcile pass or **Apply now**) therefore removes
+`hermes/backups` as a best-effort step: it runs after the staged files have
+landed and before the applied-state marker moves, a failure of the removal
+never fails the apply, and the CLI recreates the directory from the
+reference-only `config.yaml` on its next load.
+
 ## How often the board talks to the container runtime
 
 The container layer keeps its reads of the container runtime (dockergate on a
