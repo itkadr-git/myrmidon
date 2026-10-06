@@ -5802,6 +5802,34 @@
           "method": "btree",
           "name": "chat_actions_provider_action_uq",
           "with": {}
+        },
+        "chat_actions_work_pending_retry_idx": {
+          "name": "chat_actions_work_pending_retry_idx",
+          "columns": [
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"chat_actions\".\"status\" in ('received', 'processing')",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "isRLSEnabled": false,
@@ -8316,6 +8344,28 @@
           "isUnique": false,
           "method": "btree",
           "name": "chat_publications_work_idx",
+          "with": {}
+        },
+        "chat_publications_work_pending_retry_idx": {
+          "name": "chat_publications_work_pending_retry_idx",
+          "columns": [
+            {
+              "expression": "state",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "next_attempt_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"chat_publications\".\"state\" in ('pending', 'retry', 'streaming')",
+          "concurrently": false,
+          "method": "btree",
           "with": {}
         }
       },
@@ -25005,6 +25055,33 @@
           "method": "btree",
           "name": "heartbeat_runs_native_replacement_predecessor_uq",
           "where": "\"heartbeat_runs\".\"scheduled_retry_reason\" = 'native_safe_replacement'",
+          "with": {}
+        },
+        "heartbeat_runs_company_status_updated_idx": {
+          "name": "heartbeat_runs_company_status_updated_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "updated_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
           "with": {}
         }
       },
