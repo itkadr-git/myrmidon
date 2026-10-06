@@ -103,7 +103,10 @@ function filterAgents(agents: Agent[], tab: FilterTab, builtInAgentIds: Set<stri
 }
 
 function getConfiguredModel(agent: Agent): string | null {
-  const value = agent.adapterConfig?.model;
+  // myrmidon(PERF-DIET-G): the list ships the model precomputed; adapterConfig
+  // no longer travels with the row (the config lives behind
+  // GET /agents/:id/configuration).
+  const value = agent.adapterModel;
   if (typeof value !== "string") return null;
   const model = value.trim();
   return model.length > 0 ? model : null;
