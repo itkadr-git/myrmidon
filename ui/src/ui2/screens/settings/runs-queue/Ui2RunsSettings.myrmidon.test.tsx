@@ -19,9 +19,24 @@ const mockRuntimeLimitsApi = vi.hoisted(() => ({
   update: vi.fn(),
 }));
 
+const mockHeartbeatsApi = vi.hoisted(() => ({
+  liveRunsForCompany: vi.fn(),
+}));
+
 vi.mock("@/components/myrmidon/runtimeLimitsApi", () => ({
   runtimeLimitsApi: mockRuntimeLimitsApi,
   runtimeLimitsQueryKey: ["myrmidon", "runtime-limits"],
+}));
+
+// myrmidon(1.6.5 RUN-FAIRNESS): the screen reads the wait reason of the
+// queue head from the existing live-runs endpoint — mocked here, no real API.
+vi.mock("@/api/heartbeats", () => ({
+  heartbeatsApi: mockHeartbeatsApi,
+}));
+
+// The screen reads the selected company for the live-runs query.
+vi.mock("@/context/CompanyContext", () => ({
+  useCompany: () => ({ selectedCompanyId: "company-1" }),
 }));
 
 async function flushReact() {
@@ -70,6 +85,15 @@ const openView = {
     loadAboveBackgroundPercent: 5,
     reason: null,
     heldSince: null,
+  },
+  // myrmidon(1.6.5 RUN-FAIRNESS): the queue snapshot — a full ceiling and a
+  // waiting queue with a named head.
+  queue: {
+    active: 50,
+    limit: 51,
+    queued: 3,
+    oldestQueuedAt: "2026-10-06T08:00:00.000Z",
+    oldestQueuedAgentId: "agent-1",
   },
 };
 
@@ -128,7 +152,43 @@ describe("myrmidon(UI2) Ui2RunsSettings screen parity", () => {
         reason: null,
         heldSince: null,
       },
+      queue: {
+        active: 10,
+        limit: 51,
+        queued: 0,
+        oldestQueuedAt: null,
+        oldestQueuedAgentId: null,
+      },
     }));
+    // myrmidon(1.6.5 RUN-FAIRNESS): the live-runs list of the company — one
+    // running, one queued with a wait reason (the oldest queued = the head).
+    mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([
+      {
+        id: "run-1",
+        status: "running",
+        createdAt: "2026-10-06T09:00:00.000Z",
+        agentId: "agent-2",
+        agentName: "Runner",
+        adapterType: "claude",
+        invocationSource: "assignment",
+        triggerDetail: null,
+        startedAt: "2026-10-06T09:00:01.000Z",
+        finishedAt: null,
+      },
+      {
+        id: "run-2",
+        status: "queued",
+        createdAt: "2026-10-06T08:00:00.000Z",
+        agentId: "agent-1",
+        agentName: "Waiting",
+        adapterType: "claude",
+        invocationSource: "assignment",
+        triggerDetail: null,
+        startedAt: null,
+        finishedAt: null,
+        contextSnapshot: { waitReason: "agent_fair_share" },
+      },
+    ]);
   });
 
   afterEach(() => {
@@ -140,12 +200,17 @@ describe("myrmidon(UI2) Ui2RunsSettings screen parity", () => {
     vi.clearAllMocks();
   });
 
-  it("renders the six ceilings with their sources from the mocked API", async () => {
+  it("renders the seven ceilings with their sources from the mocked API", async () => {
     await renderScreen();
 
     expect(mockRuntimeLimitsApi.get).toHaveBeenCalled();
     const inputs = [...container.querySelectorAll("input[id^='ui2-run-limit-']")];
-    expect(inputs.length).toBe(6);
+    expect(inputs.length).toBe(7);
+    // myrmidon(1.6.5 RUN-FAIRNESS): the single-agent start share renders at
+    // its default 15 while the server does not serve the key yet.
+    const share = container.querySelector<HTMLInputElement>("#ui2-run-limit-maxPerAgentStartSharePercent");
+    expect(share?.value).toBe("15");
+    expect(share?.disabled).toBe(false);
     // myrmidon(1.6.5 RUN-ADMISSION): the host CPU ceiling is editable here too.
     const cpuCeiling = container.querySelector<HTMLInputElement>("#ui2-run-limit-maxHostLoadPercentPerCore");
     expect(cpuCeiling?.value).toBe("90");
@@ -164,6 +229,90 @@ describe("myrmidon(UI2) Ui2RunsSettings screen parity", () => {
     const body = container.textContent ?? "";
     expect(body).toContain("Saved here");
     expect(body).toContain("From the server environment");
+  });
+
+  it("myrmidon(1.6.5 RUN-FAIRNESS): shows the queue snapshot and the wait reason of the queue head", async () => {
+    await renderScreen();
+
+    const line = container.querySelector("[data-testid=ui2-run-queue]")?.textContent ?? "";
+    expect(line).toContain("Runs in flight: 50 of at most 51.");
+    expect(line).toContain("In the queue: 3");
+    expect(line).toContain("the oldest waits since 08:00:00 UTC");
+    expect(line).toContain("(agent agent-1)");
+    // The oldest queued run carries waitReason=agent_fair_share — human-readable.
+    const reason = container.querySelector("[data-testid=ui2-run-queue-wait-reason]")?.textContent ?? "";
+    expect(reason).toContain("The oldest waits: another agent's turn comes first (fair share).");
+  });
+
+  it("myrmidon(1.6.5 RUN-FAIRNESS): an empty queue shows no wait reason; a missing snapshot shows no block", async () => {
+    mockRuntimeLimitsApi.get.mockResolvedValue({
+      ...openView,
+      queue: { active: 10, limit: 51, queued: 0, oldestQueuedAt: null, oldestQueuedAgentId: null },
+    });
+    await renderScreen();
+    expect(container.querySelector("[data-testid=ui2-run-queue]")?.textContent).toBe(
+      "Runs in flight: 10 of at most 51. The queue is empty.",
+    );
+    expect(container.querySelector("[data-testid=ui2-run-queue-wait-reason]")).toBeNull();
+
+    mockRuntimeLimitsApi.get.mockResolvedValue({ ...openView, queue: null });
+    flushSync(() => root?.unmount());
+    root = null;
+    await renderScreen();
+    expect(container.querySelector("[data-testid=ui2-run-queue]")).toBeNull();
+  });
+
+  it("myrmidon(1.6.5 RUN-FAIRNESS): the queue block and the fair-share field are localized (ru)", async () => {
+    root = createRoot(container);
+    flushSync(() => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <Ui2I18nProvider initialLocale="ru">
+            <Ui2RunsSettings />
+          </Ui2I18nProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const body = container.textContent ?? "";
+    expect(body).toContain("Доля стартов одного агента, % за 10 мин");
+    const line = container.querySelector("[data-testid=ui2-run-queue]")?.textContent ?? "";
+    expect(line).toContain("В работе: 50 из не более 51.");
+    expect(line).toContain("В очереди: 3");
+    expect(line).toContain("самый старый ждёт с 08:00:00 UTC");
+    expect(line).toContain("(агент agent-1)");
+    const reason = container.querySelector("[data-testid=ui2-run-queue-wait-reason]")?.textContent ?? "";
+    expect(reason).toContain("Самый старый ждёт: очередь другого агента раньше (справедливая доля).");
+  });
+
+  it("myrmidon(1.6.5 RUN-FAIRNESS): edits the fair share and a share over 100 keeps Apply disabled", async () => {
+    await renderScreen();
+
+    const share = container.querySelector<HTMLInputElement>("#ui2-run-limit-maxPerAgentStartSharePercent");
+    expect(share).not.toBeNull();
+    setNativeValue(share!, "30");
+    await flushReact();
+    expect(container.querySelector("[data-testid=ui2-run-limit-fair-share-error]")).toBeNull();
+
+    const save = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent === "Apply",
+    ) as HTMLButtonElement;
+    expect(save.disabled).toBe(false);
+    save.click();
+    await flushReact();
+    expect(mockRuntimeLimitsApi.update).toHaveBeenCalledWith({ maxPerAgentStartSharePercent: 30 });
+
+    mockRuntimeLimitsApi.update.mockClear();
+    setNativeValue(share!, "150");
+    await flushReact();
+    expect(
+      container.querySelector("[data-testid=ui2-run-limit-fair-share-error]")?.textContent,
+    ).toContain("1 to 100");
+    expect(save.disabled).toBe(true);
+    save.click();
+    await flushReact();
+    expect(mockRuntimeLimitsApi.update).not.toHaveBeenCalled();
   });
 
   it("myrmidon(1.6.5 rc.2): shows the current host load and the background next to the ceiling field", async () => {
