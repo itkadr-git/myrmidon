@@ -248,3 +248,5 @@ export {
   MODEL_PROVIDER_TYPES,
   type ModelProviderType,
 } from "./model_providers.js";
+// myrmidon(CUSTOM-CASTES): the company caste (agent role) directory.
+export { agentCastes } from "./agent_castes.js";
