@@ -26,9 +26,9 @@ Docker socket, no host mounts, and no media tools. (The optional Node.js variant
   and imports `hermes_state`.
 - `hermes-agent`, pinned to a git tag (`HERMES_VERSION`/`HERMES_GIT_REF`
   build args, default `0.21.5` / `v2026.9.24`), installed **editable** from
-  a clean clone of our fork `https://github.com/BastionPrime/hermes-agent`
-  (the fork mirrors upstream tags byte-for-byte; our own hermes changes and
-  pin bumps land there as reviewed commits) — see
+  a clean clone of the author's repository `https://github.com/NousResearch/hermes-agent`
+  at the pinned commit (`HERMES_GIT_SHA`); our own hermes changes live in
+  `docker/bot-runtime/patches/` in this repository — see
   "Why editable, not pip install" below. hermes tags releases by date
   (`vYYYY.M.D`); `v2026.9.24` is the tag we confirmed (via the GitHub API
   and `git ls-remote --tags`, checking `pyproject.toml` on every recent
