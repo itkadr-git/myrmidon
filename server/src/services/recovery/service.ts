@@ -52,6 +52,7 @@ import {
   nativeRunResults,
   statusDecisions,
   workAssessments,
+  runContextPersistenceFields,
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
@@ -2736,7 +2737,7 @@ export function recoveryService(
           scheduledRetryAt: retryAt,
           scheduledRetryAttempt: 1,
           scheduledRetryReason: "provider_quota_recovery",
-          contextSnapshot: withRecoveryContext(
+          ...runContextPersistenceFields(withRecoveryContext(
             {
               issueId: input.issue.id,
               taskId: input.issue.id,
@@ -2745,7 +2746,7 @@ export function recoveryService(
               providerQuotaRetryNotBefore: retryAt.toISOString(),
             },
             "normal_model",
-          ),
+          )),
           updatedAt: now,
         })
         .returning()
@@ -3311,7 +3312,7 @@ export function recoveryService(
                 scheduledRetryAt: retryAt,
                 scheduledRetryAttempt: input.attempt,
                 scheduledRetryReason: ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
-                contextSnapshot: context,
+                ...runContextPersistenceFields(context),
                 updatedAt: now,
               })
               .returning()

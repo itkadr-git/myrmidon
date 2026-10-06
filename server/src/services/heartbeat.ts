@@ -176,6 +176,8 @@ import {
   toolProfileEntries,
   toolProfiles,
   workspaceOperations,
+  runContextPersistenceFields,
+  heartbeatRunListContextColumnProjections,
 } from "@paperclipai/db";
 import { conflict, HttpError, notFound } from "../errors.js";
 import {
@@ -3474,36 +3476,10 @@ const heartbeatRunSummaryListColumns = {
   resultJson: sql<Record<string, unknown> | null>`NULL`.as("resultJson"),
 } as const;
 
-const heartbeatRunListContextColumns = {
-  contextIssueId: sql<
-    string | null
-  >`${heartbeatRuns.contextSnapshot} ->> 'issueId'`.as("contextIssueId"),
-  contextTaskId: sql<
-    string | null
-  >`${heartbeatRuns.contextSnapshot} ->> 'taskId'`.as("contextTaskId"),
-  contextTaskKey: sql<
-    string | null
-  >`${heartbeatRuns.contextSnapshot} ->> 'taskKey'`.as("contextTaskKey"),
-  contextCommentId: sql<
-    string | null
-  >`${heartbeatRuns.contextSnapshot} ->> 'commentId'`.as("contextCommentId"),
-  contextWakeCommentId: sql<
-    string | null
-  >`${heartbeatRuns.contextSnapshot} ->> 'wakeCommentId'`.as(
-    "contextWakeCommentId",
-  ),
-  contextWakeReason: sql<
-    string | null
-  >`${heartbeatRuns.contextSnapshot} ->> 'wakeReason'`.as("contextWakeReason"),
-  contextWakeSource: sql<
-    string | null
-  >`${heartbeatRuns.contextSnapshot} ->> 'wakeSource'`.as("contextWakeSource"),
-  contextWakeTriggerDetail: sql<
-    string | null
-  >`${heartbeatRuns.contextSnapshot} ->> 'wakeTriggerDetail'`.as(
-    "contextWakeTriggerDetail",
-  ),
-} as const;
+// Thin-column projections with a snapshot coalesce fallback for historical
+// rows; see packages/db/src/run-context-columns.ts. OPE-5007 П2: the run list
+// must not detoast context_snapshot for rows that already carry the columns.
+const heartbeatRunListContextColumns = heartbeatRunListContextColumnProjections;
 
 const heartbeatRunListResultColumns = {
   resultSummary: sql<
@@ -13963,7 +13939,7 @@ export function heartbeatService(
           triggerDetail: "system",
           status: "queued",
           wakeupRequestId: wakeupRequest.id,
-          contextSnapshot: retryContextSnapshot,
+          ...runContextPersistenceFields(retryContextSnapshot),
           responsibleUserId,
           sessionIdBefore: sessionBefore,
           retryOfRunId: run.id,
@@ -15760,7 +15736,7 @@ export function heartbeatService(
             triggerDetail: "system",
             status: "scheduled_retry",
             wakeupRequestId: wakeupRequest.id,
-            contextSnapshot: retryContextSnapshot,
+            ...runContextPersistenceFields(retryContextSnapshot),
             ...(hasConversationContinuationPolicy(run.resultJson)
               ? { resultJson: { conversationContinuation: CONVERSATION_CONTINUATION_POLICY } } : {}),
             responsibleUserId,
@@ -16390,7 +16366,7 @@ export function heartbeatService(
         .update(heartbeatRuns)
         .set({
           scheduledRetryAt: now,
-          contextSnapshot,
+          ...runContextPersistenceFields(contextSnapshot),
           updatedAt: now,
         })
         .where(
@@ -17502,9 +17478,11 @@ export function heartbeatService(
                     ...legacyControllerClaim(run.runtimeMode),
                   responsibleUserId,
                   startedAt: lockedRun.startedAt ?? claimedAt,
-                  contextSnapshot: withQueuedCommentIdsInRunContext(
-                    lockedRun.contextSnapshot,
-                    liveIds,
+                  ...runContextPersistenceFields(
+                    withQueuedCommentIdsInRunContext(
+                      lockedRun.contextSnapshot,
+                      liveIds,
+                    ),
                   ),
                   updatedAt: claimedAt,
                 })
@@ -20301,7 +20279,7 @@ export function heartbeatService(
       run = { ...run, contextSnapshot: preparedConversation.context };
       if (preparedConversation.reset) {
         const contextSnapshot = { ...preparedConversation.context, conversationReset: true };
-        await setRunStatus(run.id, "succeeded", { finishedAt: new Date(), contextSnapshot, resultJson: { conversationReset: true }, issueCommentStatus: "not_applicable" });
+        await setRunStatus(run.id, "succeeded", { finishedAt: new Date(), ...runContextPersistenceFields(contextSnapshot), resultJson: { conversationReset: true }, issueCommentStatus: "not_applicable" });
         await setWakeupStatus(run.wakeupRequestId, "completed", { finishedAt: new Date() });
         const resetRun = (await getRun(run.id))!;
         await settleConversationTurn(db, resetRun);
@@ -22220,7 +22198,7 @@ export function heartbeatService(
         await db
           .update(heartbeatRuns)
           .set({
-            contextSnapshot: context,
+            ...runContextPersistenceFields(context),
             updatedAt: new Date(),
           })
           .where(eq(heartbeatRuns.id, run.id));
@@ -22557,7 +22535,7 @@ export function heartbeatService(
       await db
         .update(heartbeatRuns)
         .set({
-          contextSnapshot: context,
+          ...runContextPersistenceFields(context),
           updatedAt: new Date(),
         })
         .where(eq(heartbeatRuns.id, run.id));
@@ -22898,7 +22876,7 @@ export function heartbeatService(
             startedAt,
             sessionIdBefore:
               runtimeForAdapter.sessionDisplayId ?? runtimeForAdapter.sessionId,
-            contextSnapshot: context,
+            ...runContextPersistenceFields(context),
             updatedAt: new Date(),
           })
           .where(eq(heartbeatRuns.id, run.id))
@@ -23123,7 +23101,7 @@ export function heartbeatService(
           await db
             .update(heartbeatRuns)
             .set({
-              contextSnapshot: context,
+              ...runContextPersistenceFields(context),
               updatedAt: new Date(),
             })
             .where(eq(heartbeatRuns.id, run.id));
@@ -24858,7 +24836,7 @@ export function heartbeatService(
           await db
             .update(heartbeatRuns)
             .set({
-              contextSnapshot: context,
+              ...runContextPersistenceFields(context),
               updatedAt: new Date(),
             })
             .where(eq(heartbeatRuns.id, run.id));
@@ -28456,12 +28434,14 @@ export function heartbeatService(
               retryOfRunId: failedChatRetry
                 ? durableRequest!.failedRunRetry!.failedRunId
                 : opts.failedRunId ?? automaticParentRunId,
-              contextSnapshot: adoptedComments.length
-                ? withQueuedCommentIdsInRunContext(
-                    enrichedContextSnapshot,
-                    adoptedCommentIds,
-                  )
-                : enrichedContextSnapshot,
+              ...runContextPersistenceFields(
+                adoptedComments.length
+                  ? withQueuedCommentIdsInRunContext(
+                      enrichedContextSnapshot,
+                      adoptedCommentIds,
+                    )
+                  : enrichedContextSnapshot,
+              ),
               sessionIdBefore: explicitContinuation ? null : sessionBefore,
               continuationAttempt,
               ...(reconciledSourceRunId
@@ -28630,7 +28610,7 @@ export function heartbeatService(
       const mergedRun = await db
         .update(heartbeatRuns)
         .set({
-          contextSnapshot: mergedContextSnapshot,
+          ...runContextPersistenceFields(mergedContextSnapshot),
           updatedAt: new Date(),
         })
         .where(eq(heartbeatRuns.id, coalescedTargetRun.id))
@@ -28731,7 +28711,7 @@ export function heartbeatService(
           status: "queued",
           responsibleUserId: await resolveQueuedResponsibleUserId(),
           wakeupRequestId: wakeupRequest.id,
-          contextSnapshot: enrichedContextSnapshot,
+          ...runContextPersistenceFields(enrichedContextSnapshot),
           sessionIdBefore: sessionBefore,
           continuationAttempt,
         })

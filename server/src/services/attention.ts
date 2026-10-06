@@ -1,5 +1,6 @@
 import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { attentionRunIssueTaskColumns } from "@paperclipai/db";
 import {
   agents,
   approvals,
@@ -1766,7 +1767,9 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       }
 
       const failedRows = await listAttentionExhaustedRuns(db, companyId);
-      const failedIssueIds = failedRows.map((row) => readRunIssueId(row.contextSnapshot));
+      const failedIssueIds = failedRows.map((row) =>
+        readRunIssueId({ issueId: row.runIssueId, taskId: row.runTaskId }),
+      );
       const failedAgentIds = [...new Set(failedRows.map((row) => row.agentId))];
       const oldestFailedRunCreatedAt = failedRows.reduce<Date | null>((oldest, row) => {
         if (!oldest || row.createdAt < oldest) return row.createdAt;
@@ -1784,10 +1787,9 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             .select({
               agentId: heartbeatRuns.agentId,
               createdAt: heartbeatRuns.createdAt,
-              // Project just the ids readRunIssueId needs; pulling the whole
-              // context_snapshot detoasts megabytes per feed build.
-              runIssueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
-              runTaskId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'taskId'`,
+              // Project just the ids readRunIssueId needs. Thin columns first;
+              // the coalesce detoasts context_snapshot only for historical rows.
+              ...attentionRunIssueTaskColumns,
             })
             .from(heartbeatRuns)
             .where(and(
@@ -1807,7 +1809,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         }
       }
       for (const run of failedRows) {
-        const issueId = readRunIssueId(run.contextSnapshot);
+        const issueId = readRunIssueId({ issueId: run.runIssueId, taskId: run.runTaskId });
         const runKey = `${run.agentId}:${issueId ?? ""}`;
         const hasNewerRun = (latestRunCreatedAtByKey.get(runKey)?.getTime() ?? 0) > run.createdAt.getTime();
         if (hasNewerRun) continue;
