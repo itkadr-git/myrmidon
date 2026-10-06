@@ -38,6 +38,14 @@ import { THINKING_PREFIX, TOOL_OUTPUT_PREFIX } from "../../shared/constants.js";
 // myrmidon(G4): reuse the M1 card-model reader (adapterConfig.model/.effort/
 // .models.reasoningEffort) instead of re-parsing the same fields here.
 import { readHermesCardModels } from "../../server/myrmidon-profile-config.js";
+// myrmidon(MEMORY-CENTRAL-B): central session history behind
+// MYRMIDON_BOT_CENTRAL_HISTORY; everything is a no-op while the setting is off.
+import {
+  createCentralHistoryClient,
+  renderRestoredHistory,
+  readCentralHistorySettings,
+  type CentralHistoryClient,
+} from "./central-history.js";
 
 type SessionKeyStrategy = "issue" | "agent" | "run" | "none";
 
@@ -1161,7 +1169,11 @@ export function mapFinalResultForTest(input: {
     ...(errorFamily ? { errorFamily } : {}),
     ...(usage ? { usage } : {}),
     ...(costUsd !== null ? { costUsd } : {}),
-    ...(output ? { summary: output.slice(0, 2_000) } : {}),
+    // myrmidon(TG-REPLY-FULL): the summary is the text the chat bridge delivers to
+    // the owner when the run has no separate final message, so it must carry the
+    // complete answer. A 2,000-character cut here reached Telegram as a
+    // silently truncated reply; length is handled downstream by splitting.
+    ...(output ? { summary: output } : {}),
     sessionId: sessionDisplayId,
     sessionParams: {
       hermesRunId: input.terminal.runId,
@@ -1174,6 +1186,11 @@ export function mapFinalResultForTest(input: {
       status: input.terminal.status,
       session_id: sessionDisplayId,
       last_event: input.terminal.eventName ?? null,
+      // myrmidon(1.6.4-HERMES-LONG-RESPONSE): the full agent answer lives here
+      // under the standard `result` key the comment builder reads, while the
+      // top-level `summary` stays a bounded copy for run lists/journals. The
+      // `output` key is kept for existing gateway-specific consumers.
+      result: output ?? "",
       output: output ?? "",
       usage: usage ?? null,
       cost_usd: costUsd,
@@ -1474,6 +1491,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     issueId: issueIdFromContext(ctx),
   });
   const extraHeaders = parseHeaders(ctx.config.headers);
+  // myrmidon(MEMORY-CENTRAL-B): create the client here (no network yet); the
+  // read happens below once the redactor exists, before the run body is
+  // built. Off/unconfigured => null and every branch below is untouched
+  // vendor behavior.
+  const centralHistorySettings = readCentralHistorySettings(ctx);
+  const centralHistoryClient: CentralHistoryClient | null = createCentralHistoryClient(centralHistorySettings);
   const runHeaders = buildHeaders({
     apiKey,
     sessionKey,
@@ -1526,6 +1549,31 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
 
   const body = buildRunBody(ctx, sessionKey, agentInstructionsBundle, idempotencyKey);
+  // myrmidon(MEMORY-CENTRAL-B): the read happens before the run body is
+  // consumed — a store failure never blocks a run: the wake proceeds without
+  // the restored block, the reason is logged.
+  let restoredHistoryBlock = "";
+  if (centralHistoryClient && sessionKey) {
+    try {
+      const storedTurns = await centralHistoryClient.loadTurns({
+        sessionKey,
+        maxTurns: centralHistorySettings.maxTurns,
+      });
+      restoredHistoryBlock = renderRestoredHistory(storedTurns, centralHistorySettings.maxTurns);
+      if (restoredHistoryBlock) {
+        body.input = `${body.input}\n\n---\n\n${restoredHistoryBlock}`;
+        await ctx.onLog(
+          "stdout",
+          `[hermes-gateway] central history: restored ${storedTurns.length} turn(s) into the wake input\n`,
+        );
+      }
+    } catch (err) {
+      await ctx.onLog(
+        "stderr",
+        `[hermes-gateway] central history: read failed (${redactErrorMessage(err, redactText)}); continuing without restored turns\n`,
+      );
+    }
+  }
   const createRunUrl = apiUrl(baseUrl, "/v1/runs");
 
   await ctx.onMeta?.({
@@ -1870,6 +1918,27 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     strategy,
     redactText,
   });
+  // myrmidon(MEMORY-CENTRAL-B): remember this turn in the central store once
+  // the run reached a terminal outcome (whatever it was — a failed turn's
+  // output is history too). Only the run's own final output is stored; the
+  // write is best-effort: a store failure is logged and never changes the
+  // run's result. Skipped when the output redacts away to nothing.
+  if (centralHistoryClient && sessionKey && finalResult.summary) {
+    try {
+      await centralHistoryClient.saveTurn({
+        sessionKey,
+        runId,
+        output: finalResult.summary,
+        model: finalResult.model,
+      });
+      await ctx.onLog("stdout", "[hermes-gateway] central history: turn saved\n");
+    } catch (err) {
+      await ctx.onLog(
+        "stderr",
+        `[hermes-gateway] central history: save failed (${redactErrorMessage(err, redactText)}); history for this turn stays volume-only\n`,
+      );
+    }
+  }
   // myrmidon(G4): outcome === terminal means state.terminalPromise won the
   // race — Hermes reported completion — but ctx.signal may have been
   // aborted concurrently, or in the window after the race resolved (e.g.
