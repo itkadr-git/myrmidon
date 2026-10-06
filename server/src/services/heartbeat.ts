@@ -24753,6 +24753,24 @@ export function heartbeatService(
                 : "failed";
 
         const cacheAdjustedCostUsd = resolveCacheAdjustedCostUsd(adapterResult);
+        // myrmidon(1.6.5 PROMPT-BUDGET A): the adapter's estimated
+        // per-section prompt-token breakdown, carried on resultJson by the
+        // hermes-gateway adapter (see its execute.ts). Written here into
+        // usageJson.promptBreakdown — the frozen inter-part contract
+        // ({ parts, total }) the prompt-budget report and advice read.
+        // The normalizedUsage/costUsd gate below keeps usageJson null for
+        // runs with no usage signal at all, so the breakdown alone never
+        // forces a row: such a run's cost pipeline is silent and there is
+        // nothing to reconcile the breakdown against.
+        const promptBreakdown = (() => {
+          const candidate = parseObject(
+            parseObject(adapterResult.resultJson)?.promptBreakdown,
+          );
+          if (!candidate) return null;
+          const total = asNumber(candidate.total, Number.NaN);
+          if (!Number.isFinite(total) || total <= 0) return null;
+          return candidate;
+        })();
         const usageJson =
           normalizedUsage ||
           adapterResult.costUsd != null ||
@@ -24808,6 +24826,7 @@ export function heartbeatService(
                 billingType: normalizeLedgerBillingType(
                   adapterResult.billingType,
                 ),
+                ...(promptBreakdown ? { promptBreakdown } : {}),
               } as Record<string, unknown>)
             : null;
 
