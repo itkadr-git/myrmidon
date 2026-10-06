@@ -6,7 +6,7 @@
   },
   "dialect": "postgresql",
   "enums": {},
-  "id": "b94dfd3b-3eed-4821-a797-22ca1bec5239",
+  "id": "def58aad-abc1-4563-81ae-03e729978fef",
   "policies": {},
   "prevId": "805666b2-412f-4d67-8c84-3564a5120c01",
   "roles": {},
@@ -31088,6 +31088,13 @@
           "notNull": true,
           "primaryKey": false,
           "type": "text"
+        },
+        "last_activity_at": {
+          "name": "last_activity_at",
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "default": "now()",
+          "primaryKey": false
         }
       },
       "compositePrimaryKeys": {},
@@ -31931,6 +31938,27 @@
           "isUnique": false,
           "method": "btree",
           "name": "issues_company_checkout_run_idx",
+          "with": {}
+        },
+        "issues_company_last_activity_at_idx": {
+          "name": "issues_company_last_activity_at_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "last_activity_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
           "with": {}
         }
       },
