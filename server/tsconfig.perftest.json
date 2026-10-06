@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.json",
+  "include": ["src/__tests__/attention-perf-proof.myrmidon.test.ts"],
+  "exclude": []
+}
