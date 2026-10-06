@@ -747,6 +747,7 @@ describe("myrmidon(1.6.5 RUN-FAIRNESS)", () => {
     runMemoryEstimateMb: 300,
     minFreeHostMemoryMb: null,
     maxHostLoadPercentPerCore: null,
+    maxPerAgentStartSharePercent: null,
   };
   const AGENT_A = "aaaaaaaa-1111-4111-8111-111111111111";
   const AGENT_B = "bbbbbbbb-2222-4222-8222-222222222222";
