@@ -42,6 +42,8 @@ import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
 import { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 export { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
+// myrmidon(RUN-SNAPSHOT-DEDUP): the single-copy continuation invariant.
+import { wakePayloadForDispatch } from "./run-continuation-snapshot.js";
 import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
 import { PROJECT_REPOSITORIES_DIR, readGitWorkspaceSnapshot } from "@paperclipai/adapter-utils/git-workspace-sync";
 import { isWorkspaceGitScanError, WorkspaceGitScanError, WORKSPACE_GIT_SCAN_ERROR_CODES } from "./workspace-git-operation-scheduler.js";
@@ -7886,7 +7888,10 @@ export async function buildPaperclipWakePayload(input: {
     : [];
   const payload = {
     reason: readNonEmptyString(input.contextSnapshot.wakeReason),
-    executionContinuation: input.contextSnapshot.executionContinuation ?? null,
+    // myrmidon(RUN-SNAPSHOT-DEDUP): no second copy of the continuation here.
+    // The canonical envelope is `contextSnapshot.executionContinuation`;
+    // dispatch re-attaches it to the wake payload handed to the adapter, and a
+    // response drops a nested duplicate of it (run-continuation-snapshot.ts).
     attachmentOmissions,
     externalChatProvider,
     recovery:
@@ -23360,7 +23365,9 @@ export function heartbeatService(
                         ? `## Project repositories\nThe task workspace also contains these editable Git repositories:\n${projectRepositoryPaths.map((repo) => `- ${repo}`).join("\n")}`
                         : null,
                     ].filter(Boolean).join("\n\n"),
-                    wakePayload: context.paperclipWake,
+                    // myrmidon(RUN-SNAPSHOT-DEDUP): the persisted payload carries
+                    // no continuation copy; attach the canonical one for delivery.
+                    wakePayload: wakePayloadForDispatch(context),
                     resumedSession,
                     conversationMode: context.conversationMode === true,
                     agentId: agent.id,
@@ -24147,6 +24154,7 @@ export function heartbeatService(
             // adapters need it in their prompt, but the authoritative answers
             // remain on the interaction instead of being duplicated in the
             // heartbeat run snapshot.
+            const dispatchWakePayload = wakePayloadForDispatch(context);
             const adapterContext: Record<string, unknown> = {
               ...context,
               // myrmidon(HERMES-RUN-REATTACH): the gateway run id this run
@@ -24155,10 +24163,19 @@ export function heartbeatService(
               ...(runOptions.gatewayRunReattach
                 ? { reattachGatewayRunId: runOptions.gatewayRunReattach }
                 : {}),
+
+              // myrmidon(RUN-SNAPSHOT-DEDUP): the persisted wake payload no
+              // longer holds its own copy of the continuation, so attach the
+              // canonical envelope to the payload the adapter renders. Like the
+              // question-response projection below, this is invocation-only and
+              // never written back to `context`.
+              ...(dispatchWakePayload === undefined
+                ? {}
+                : { [PAPERCLIP_WAKE_PAYLOAD_KEY]: dispatchWakePayload }),
               ...(legacyQuestionResponse
                 ? {
                     [PAPERCLIP_WAKE_PAYLOAD_KEY]: {
-                      ...parseObject(context[PAPERCLIP_WAKE_PAYLOAD_KEY]),
+                      ...parseObject(dispatchWakePayload),
                       questionResponse: legacyQuestionResponse,
                     },
                   }

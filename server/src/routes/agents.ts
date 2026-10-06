@@ -10,6 +10,8 @@ import { applyConnectorSkills, resolveConnectorAssignments, annotateConnectorSki
 import { getExecutionBlocker } from "../services/execution-blocker.js";
 import { paperclipRunnerTransitionConfig, normalizeLegacyRunnerProvider, isPaperclipRunnerProvider } from "@paperclipai/adapter-utils";
 import { executionProjectionForRun, executionProjectionsForRuns } from "../services/execution-projection.js";
+// myrmidon(RUN-SNAPSHOT-DEDUP): a run response carries one continuation copy.
+import { withoutDuplicateExecutionContinuation } from "../services/run-continuation-snapshot.js";
 import { Router, type NextFunction, type Request, type Response } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { readFile, rm } from "node:fs/promises";
@@ -7058,11 +7060,21 @@ export function agentRoutes(
     if (!(await assertRunTelemetryReadAllowed(req, res, run.companyId))) return;
     const retryExhaustedReason = await heartbeat.getRetryExhaustedReason(runId);
     const decoratedRun = heartbeat.decorateActiveRunStatus(run);
+    // myrmidon(RUN-SNAPSHOT-DEDUP): a run snapshot written before the
+    // single-copy change still holds the continuation twice. The response keeps
+    // the canonical `executionContinuation` and drops a byte-identical nested
+    // copy; a payload that differs from it is left untouched.
+    const singleContinuationRun = {
+      ...decoratedRun,
+      contextSnapshot: withoutDuplicateExecutionContinuation(
+        decoratedRun.contextSnapshot,
+      ),
+    };
     res.json(await runRedactions.redactForRun(
       run.companyId,
       run.id,
       redactCurrentUserValue(
-        { ...decoratedRun, execution: await executionProjectionForRun(db, run.companyId, run.id), identityHistory: await listRunIdentityContexts(db, run.companyId, run.id), retryExhaustedReason, outputSilence: await heartbeat.buildRunOutputSilence(run) },
+        { ...singleContinuationRun, execution: await executionProjectionForRun(db, run.companyId, run.id), identityHistory: await listRunIdentityContexts(db, run.companyId, run.id), retryExhaustedReason, outputSilence: await heartbeat.buildRunOutputSilence(run) },
         await getCurrentUserRedactionOptions(),
       ),
     ));
