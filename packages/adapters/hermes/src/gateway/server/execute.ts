@@ -1128,6 +1128,14 @@ function terminalResultCode(status: string): { exitCode: number; signal: string 
 // hermes_gateway_run_failed keeps the vendor's hold-and-ask behavior.
 const HERMES_GATEWAY_CONNECTION_ERROR_SIGNATURE = "Connection error.";
 
+// myrmidon(PERF-DIET-I): the LiteLLM key-permission signature. When the key a
+// bot runs with is not allowed to serve the requested model, the gateway
+// returns 403 and the turn ends with a "key not allowed to access model
+// <model>" message. Retrying re-issues the same 403 forever (257 empty
+// retries a day, perf-plan-v2 §1.4), so this family is permanent_config_error:
+// the recovery classifier blocks the issue instead of scheduling a retry.
+const HERMES_GATEWAY_KEY_NOT_ALLOWED_SIGNATURE = "key not allowed";
+
 export function mapFinalResultForTest(input: {
   terminal: TerminalState;
   outputChunks: string[];
@@ -1152,12 +1160,22 @@ export function mapFinalResultForTest(input: {
   // failed turn whose message carries the upstream-connection signature is
   // transient, so it is marked for a bounded retry. Any other failed turn
   // stays a plain provider failure.
+  // myrmidon(PERF-DIET-I): a failed turn carrying the LiteLLM key-permission
+  // signature is permanent_config_error (case-insensitive — the 403 body's
+  // casing varies with the gateway version), so recovery blocks the issue
+  // instead of retrying the same 403.
   const errorFamily =
     mapped.errorCode === "hermes_gateway_run_failed" &&
     errorMessage !== null &&
     errorMessage.includes(HERMES_GATEWAY_CONNECTION_ERROR_SIGNATURE)
       ? "transient_upstream"
-      : null;
+      : mapped.errorCode === "hermes_gateway_run_failed" &&
+          errorMessage !== null &&
+          errorMessage
+            .toLowerCase()
+            .includes(HERMES_GATEWAY_KEY_NOT_ALLOWED_SIGNATURE)
+        ? "permanent_config_error"
+        : null;
   return {
     exitCode: mapped.exitCode,
     signal: mapped.signal,

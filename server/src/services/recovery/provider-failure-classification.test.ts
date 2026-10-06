@@ -126,4 +126,45 @@ describe("classifyAdapterFailureForRecovery", () => {
       resultJson: null,
     })).toBeNull();
   });
+
+  // myrmidon(PERF-DIET-I): the LiteLLM 403 key-permission failure must reach
+  // the configuration blocker (blocked issue, no retry) whether it arrives
+  // with the new adapter error-family field or only as raw 403 text from a
+  // historical run or a different adapter. The gateway code
+  // "hermes_gateway_run_failed" is not part of the error-code gate, which is
+  // why the branch lives ahead of it.
+  it("routes the 403 key-not-allowed text to a configuration blocker", () => {
+    expect(classifyAdapterFailureForRecovery({
+      errorCode: "hermes_gateway_run_failed",
+      error:
+        'litellm.BadRequestError: LLM Provider NOT allowed. 403 - {"error": {"message": "key not allowed to access model dashscope-glm-5.3"}}',
+      resultJson: null,
+    })).toEqual({ kind: "configuration_incomplete" });
+    expect(classifyAdapterFailureForRecovery({
+      errorCode: "adapter_failed",
+      error: "Key Not Allowed To Access Model dashscope-glm-5.3",
+      resultJson: null,
+    })).toEqual({ kind: "configuration_incomplete" });
+  });
+
+  it("routes a run carrying the permanent_config_error family to a configuration blocker", () => {
+    expect(classifyAdapterFailureForRecovery({
+      errorCode: "hermes_gateway_run_failed",
+      error: "Hermes run failed",
+      resultJson: { errorFamily: "permanent_config_error" },
+    })).toEqual({ kind: "configuration_incomplete" });
+  });
+
+  it("leaves the gateway connection-error transient outside the configuration blocker", () => {
+    expect(classifyAdapterFailureForRecovery({
+      errorCode: "hermes_gateway_run_failed",
+      error: "Connection error.",
+      resultJson: { errorFamily: "transient_upstream" },
+    })).toBeNull();
+    expect(classifyAdapterFailureForRecovery({
+      errorCode: "adapter_failed",
+      error: "Connection error.",
+      resultJson: null,
+    })).toBeNull();
+  });
 });
