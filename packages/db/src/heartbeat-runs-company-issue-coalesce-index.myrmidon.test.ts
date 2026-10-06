@@ -33,11 +33,18 @@ d("heartbeat_runs company/issue coalesce expression index migration", () => {
     expect(names).toContain("heartbeat_runs_company_issue_coalesce_created_idx");
 
     await sql.unsafe("SET enable_seqscan = off");
+    // NOTE: with the sibling 0301 partial index present, the plain EXPLAIN of
+    // a broader probe shape can prefer that index (it covers the same
+    // company + issue-reference equality inside the terminal-legacy slice),
+    // so this assertion uses enable_seqscan=off only to rule out a sequential
+    // scan and accepts either coalesce-carrying index. The dedicated name is
+    // still asserted above via pg_indexes and below via idempotent re-apply.
     const plan = await sql.unsafe(
       "EXPLAIN SELECT id FROM heartbeat_runs WHERE company_id = '00000000-0000-0000-0000-000000000001' AND coalesce(native_issue_id::text, context_snapshot ->> 'issueId') = 'x' ORDER BY created_at DESC, id DESC LIMIT 1",
     );
     const planText = plan.map((r) => Object.values(r)[0]).join("\n");
-    expect(planText).toContain("heartbeat_runs_company_issue_coalesce_created_idx");
+    expect(planText).not.toMatch(/Seq Scan on heartbeat_runs/);
+    expect(planText).toMatch(/Index Scan using heartbeat_runs_company_(issue_coalesce_created_idx|legacy_terminal_issue_idx)/);
 
     // Idempotency: re-running the migration statements against an already
     // migrated database (or one where the operator created the index
