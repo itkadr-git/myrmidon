@@ -56,6 +56,9 @@ import { preserveSttGeneralKey } from "../myrmidon/stt/store.js";
 // myrmidon(1.7-BUDGET-CONFIG-B): keep the stored budget enforcement mode
 // across vendor writes of `general`
 import { preserveBudgetEnforcementGeneralKey } from "../myrmidon/budget-enforcement/settings.js";
+// myrmidon(1.7 USERS-ADMIN-UI A): the blocked-user list and the
+// self-registration switch survive vendor general writes.
+import { preserveUsersAdminAGeneralKey } from "../myrmidon/users-admin-a/store.js";
 // myrmidon(PLUGIN-ENTITLEMENT C): keep the plugin entitlement keys across vendor writes of `general`
 import { preservePluginEntitlementKeysGeneralKey } from "../myrmidon/plugin-entitlement/store.js";
 // myrmidon(DM-PROGRESS): keep the Telegram DM progress settings across vendor writes of `general`
@@ -277,6 +280,14 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // myrmidon(1.7-BUDGET-CONFIG-B): the stored budget enforcement mode
       // survives every general write (it is edited on its own settings page).
       ...(parsed.data.budgetEnforcement ? { budgetEnforcement: parsed.data.budgetEnforcement } : {}),
+      // myrmidon(1.7 USERS-ADMIN-UI A): the stored self-registration switch and
+      // the blocked-user list survive every general write (they are edited on
+      // their own settings paths; without these lines a vendor general write
+      // would silently drop both keys).
+      ...(parsed.data.authSelfSignUp ? { authSelfSignUp: parsed.data.authSelfSignUp } : {}),
+      ...(parsed.data.myrmidonAuthBlockedUsers
+        ? { myrmidonAuthBlockedUsers: parsed.data.myrmidonAuthBlockedUsers }
+        : {}),
       // myrmidon(REVIEW-ROUTING): the stored review routing settings survive
       // every general write (they are edited on their own settings page).
       ...(parsed.data.reviewRouting ? { reviewRouting: parsed.data.reviewRouting } : {}),
@@ -637,6 +648,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
             ...preserveWipLimitGeneralKey(current.general), // myrmidon(1.6.1-WIP-LIMIT-A)
             ...preserveSttGeneralKey(current.general), // myrmidon(1.6.1 VOICE-STT A1)
             ...preserveBudgetEnforcementGeneralKey(current.general), // myrmidon(1.7-BUDGET-CONFIG-B)
+            ...preserveUsersAdminAGeneralKey(current.general), // myrmidon(1.7 USERS-ADMIN-UI A)
             ...preservePluginEntitlementKeysGeneralKey(current.general), // myrmidon(PLUGIN-ENTITLEMENT C)
             ...preserveTelegramDmProgressGeneralKey(current.general), // myrmidon(DM-PROGRESS)
             // The preserve line above restores the stored value: a patch that carries the key wins.

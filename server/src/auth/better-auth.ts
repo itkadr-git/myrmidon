@@ -9,13 +9,18 @@ import {
   authSessions,
   authUsers,
   authVerifications,
+  instanceSettings,
 } from "@paperclipai/db";
+import { eq } from "drizzle-orm";
 import type { Config } from "../config.js";
 import { resolvePaperclipInstanceId } from "../home-paths.js";
 import {
   workspaceLoginHandoffPlugin,
   type WorkspaceHandoffExpectedIdentity,
 } from "./workspace-login-handoff-plugin.js";
+// myrmidon(1.7 USERS-ADMIN-UI A): self-registration gate, blocked sign-in
+// guard, username sign-in.
+import { usersAdminAuthPlugin } from "./users-admin-a-plugin.js";
 import {
   normalizeWorkspaceHandoffOrigin,
   resolveWorkspaceHandoffLocalCompanyId,
@@ -275,18 +280,12 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
       requireEmailVerification: false,
       disableSignUp: config.authDisableSignUp,
     },
-    rateLimit: buildBetterAuthRateLimitOptions({
-      deploymentMode: config.deploymentMode,
-      deploymentExposure: config.deploymentExposure,
-      override: process.env.PAPERCLIP_AUTH_RATE_LIMIT_ENABLED,
-    }),
-    advanced: buildBetterAuthAdvancedOptions({ disableSecureCookies }),
-    // Registered only for a managed workspace instance: the plugin is what makes
-    // `Open workspace` password-independent, and a control-plane instance that
-    // was never handed a workspace key must not expose the exchange at all.
-    ...(resolveWorkspaceHandoffIdentity(config)
-      ? {
-          plugins: [
+    // myrmidon(1.7 USERS-ADMIN-UI A): the self-registration gate, the blocked
+    // sign-in guard and username sign-in. `readGeneral` reads live per request,
+    // so toggling the settings needs no restart; env stays a forced override.
+    plugins: [
+      ...(resolveWorkspaceHandoffIdentity(config)
+        ? [
             workspaceLoginHandoffPlugin({
               db,
               // Re-resolved per exchange so a hot restart cannot keep validating
@@ -300,9 +299,26 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
                   origin: null,
                 },
             }),
-          ],
-        }
-      : {}),
+          ]
+        : []),
+      usersAdminAuthPlugin({
+        db,
+        readGeneral: async () => {
+          const row = await db
+            .select({ general: instanceSettings.general })
+            .from(instanceSettings)
+            .where(eq(instanceSettings.singletonKey, "default"))
+            .then((rows) => rows[0] ?? null);
+          return row?.general ?? null;
+        },
+      }),
+    ],
+    rateLimit: buildBetterAuthRateLimitOptions({
+      deploymentMode: config.deploymentMode,
+      deploymentExposure: config.deploymentExposure,
+      override: process.env.PAPERCLIP_AUTH_RATE_LIMIT_ENABLED,
+    }),
+    advanced: buildBetterAuthAdvancedOptions({ disableSecureCookies }),
   };
 
   if (!baseUrl) {

@@ -17,10 +17,13 @@ import type { SwarmClaimSettings } from "../myrmidon-swarm-claim.js";
 // myrmidon(1.6.1-WIP-LIMIT-A): per-agent WIP limits of the same general settings row.
 import type { AgentMemorySettings } from "../myrmidon-agent-memory.js";
 import type { WipLimitSettings } from "../myrmidon-wip-limit.js";
+// myrmidon(1.7-BUDGET-CONFIG-B): the budget enforcement mode of the same general settings row.
+import type { BudgetEnforcementSettings } from "../myrmidon-budget-enforcement.js";
+// myrmidon(1.7 USERS-ADMIN-UI A): the self-registration switch.
+import type { AuthSelfSignUpSettings } from "../myrmidon-auth-self-signup.js";
 // myrmidon(REVIEW-ROUTING): automatic reviewer routing settings of the same row.
 import type { ReviewRoutingSettings } from "../myrmidon-review-routing.js";
 import type { ReviewReworkSettings } from "../myrmidon-review-rework.js";
-import type { BudgetEnforcementSettings } from "../myrmidon-budget-enforcement.js";
 // myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys live in
 // the same general settings row.
 import type { PluginEntitlementKey } from "../myrmidon-plugin-entitlement.js";
@@ -196,6 +199,13 @@ export interface InstanceGeneralSettings {
    * (packages/shared/src/validators/instance.ts).
    */
   budgetEnforcement?: BudgetEnforcementSettings;
+  /**
+   * myrmidon(1.7 USERS-ADMIN-UI A): the self-registration switch, changed from
+   * `GET`/`PATCH /api/myrmidon/auth-self-sign-up`. Absent means
+   * self-registration is off. Kept in sync with the validator of the same
+   * field (packages/shared/src/validators/instance.ts).
+   */
+  authSelfSignUp?: AuthSelfSignUpSettings;
   /**
    * myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys, managed
    * from the instance settings page. Absent means "no keys registered". Kept
