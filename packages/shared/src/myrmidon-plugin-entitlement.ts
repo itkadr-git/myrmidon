@@ -63,6 +63,69 @@ export interface ParsedPluginEntitlementToken {
   signedPayload: string;
 }
 
+const BASE64URL_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+/**
+ * Decode one unpadded base64url segment into bytes.
+ * Hand-rolled on purpose: this module is reachable from the shared barrel, so
+ * it is compiled by workspaces that carry neither node types (no `Buffer`)
+ * nor a DOM lib (no `atob`). Throws on anything outside the base64url
+ * alphabet and on impossible lengths.
+ */
+function decodeBase64UrlBytes(value: string): number[] {
+  const bytes: number[] = [];
+  let buffer = 0;
+  let bits = 0;
+  for (const char of value) {
+    const index = BASE64URL_ALPHABET.indexOf(char);
+    if (index < 0) throw new Error("invalid base64url character");
+    buffer = (buffer << 6) | index;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      bytes.push((buffer >> bits) & 0xff);
+    }
+  }
+  // A trailing group of 6 bits can never come from a whole number of bytes.
+  if (bits >= 6) throw new Error("invalid base64url length");
+  return bytes;
+}
+
+/**
+ * Decode a base64url segment into a UTF-8 string without `Buffer` and without
+ * `TextDecoder` (see above). Throws on malformed input; the parser turns that
+ * into "not a token".
+ */
+function decodeBase64UrlToUtf8(value: string): string {
+  const bytes = decodeBase64UrlBytes(value);
+  let out = "";
+  let index = 0;
+  const readContinuation = (): number => {
+    if (index >= bytes.length) throw new Error("truncated utf-8 sequence");
+    const byte = bytes[index++];
+    if ((byte & 0xc0) !== 0x80) throw new Error("invalid utf-8 continuation byte");
+    return byte & 0x3f;
+  };
+  while (index < bytes.length) {
+    const lead = bytes[index++];
+    let codePoint: number;
+    if (lead < 0x80) codePoint = lead;
+    else if (lead >= 0xc2 && lead < 0xe0) codePoint = ((lead & 0x1f) << 6) | readContinuation();
+    else if (lead >= 0xe0 && lead < 0xf0) {
+      codePoint = ((lead & 0x0f) << 12) | (readContinuation() << 6) | readContinuation();
+    } else if (lead >= 0xf0 && lead < 0xf5) {
+      codePoint = ((lead & 0x07) << 18) | (readContinuation() << 12) | (readContinuation() << 6) | readContinuation();
+    } else throw new Error("invalid utf-8 lead byte");
+    if (codePoint > 0xffff) {
+      const adjusted = codePoint - 0x10000;
+      out += String.fromCharCode(0xd800 + (adjusted >> 10), 0xdc00 + (adjusted & 0x3ff));
+    } else {
+      out += String.fromCharCode(codePoint);
+    }
+  }
+  return out;
+}
+
 /**
  * Parse and shape-check a token string without verifying the signature.
  * Returns null when the string is not a PEK1 token of a valid shape.
@@ -78,7 +141,7 @@ export function parsePluginEntitlementToken(raw: string): ParsedPluginEntitlemen
   if (!payloadB64 || !signatureB64) return null;
   let payloadJson: string;
   try {
-    payloadJson = Buffer.from(payloadB64, "base64url").toString("utf8");
+    payloadJson = decodeBase64UrlToUtf8(payloadB64);
   } catch {
     return null;
   }

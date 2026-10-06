@@ -54,7 +54,7 @@ import { pluginDatabaseService } from "./plugin-database.js";
 // stays unactivated until a valid key is accepted in the instance settings.
 import { instanceSettingsService } from "./instance-settings.js";
 import { readPluginEntitlementKeys, readPluginEntitlementPublicKey } from "../myrmidon/plugin-entitlement/store.js";
-import { resolvePaperclipInstanceId } from "@paperclipai/shared";
+import { resolvePaperclipInstanceId } from "../home-paths.js";
 import { resolvePluginActivation } from "./plugin-entitlement-enforcement.js";
 import { resolveBundledCatalogRoot } from "./bundled-plugins.js";
 // myrmidon(B1c): product name in user-facing texts; see product.ts.

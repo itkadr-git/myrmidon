@@ -25,7 +25,7 @@
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { toPluginEntitlementKeyViews } from "@paperclipai/shared";
-import { resolvePaperclipInstanceId } from "@paperclipai/shared";
+import { resolvePaperclipInstanceId } from "../../home-paths.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { assertInstanceAdmin } from "../../routes/authz.js";
 import {
