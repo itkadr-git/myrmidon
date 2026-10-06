@@ -15,9 +15,10 @@
 #      missing in plain language (root, OS, arch, CPU, memory, disk, ports);
 #   2. installs docker and the compose plugin when they are absent;
 #   3. resolves the release: `releases/latest` (or --version myr-vX.Y.Z) and its
-#      machine-readable manifest `release-components.json` — the board, dockergate
-#      and bot images are pinned BY DIGEST, never by a moving tag (the same
-#      CI-only rule deploy.sh enforces);
+#      machine-readable manifest `release-components.json`, read over the public
+#      download endpoints (no token, no API request budget) — the board,
+#      dockergate and bot images are pinned BY DIGEST, never by a moving tag (the
+#      same CI-only rule deploy.sh enforces);
 #   4. generates every secret (database password, session secret, tool-action
 #      signing secret), writes `deploy.env` (mode 0600) and `compose.yml`;
 #   5. pulls the images and brings up the database, the board and dockergate;
@@ -37,7 +38,11 @@ set -euo pipefail
 
 MYR_DEFAULT_DIR=/opt/myrmidon
 MYR_REPO="${MYRMIDON_INSTALL_REPO:-itkadr-git/myrmidon}"
-MYR_API="${MYRMIDON_INSTALL_API_URL:-https://api.github.com}"
+# Release assets are read over the public download endpoints of GitHub
+# (github.com/<repo>/releases/...): they need no token and carry no per-hour
+# request budget, unlike the anonymous API (60 requests/hour per IP), which a
+# shared NAT address exhausts quickly.
+MYR_WEB="${MYRMIDON_INSTALL_WEB_URL:-https://github.com}"
 MYR_PROJECT=myrmidon
 
 DIR=""
@@ -122,9 +127,9 @@ require_root() {
   fi
 }
 
-# fetch <url> [outfile]: prints to stdout, or writes outfile. The GitHub API is
-# mirrored by MYRMIDON_INSTALL_TOKEN_FILE for a private repository; the token is
-# never printed.
+# fetch <url> [outfile]: prints to stdout, or writes outfile. The public download
+# endpoints are mirrored by MYRMIDON_INSTALL_TOKEN_FILE for a private repository;
+# the token is never printed.
 fetch() {
   local url="$1" out="${2:-}"
   local -a auth=()
@@ -260,35 +265,58 @@ install_docker() {
 # CI from that tag reach a host: the installer pins them by digest, exactly as
 # deploy.sh does, and there is no flag that skips the check.
 resolve_release() {
-  local tag="$1" body
+  local tag="$1" manifest_url
   if [[ -n "$tag" ]]; then
     RELEASE_TAG="$tag"
+    manifest_url="$MYR_WEB/$MYR_REPO/releases/download/$tag/release-components.json"
   else
-    body="$(fetch "$MYR_API/repos/$MYR_REPO/releases/latest")" || die "cannot reach GitHub to read the latest release"
-    RELEASE_TAG="$(printf '%s' "$body" | jq -r '.tag_name // ""')"
-    [[ -n "$RELEASE_TAG" ]] || die "the latest release of $MYR_REPO has no tag"
+    # releases/latest follows the newest STABLE release: a pre-release is served
+    # only when it is asked for by tag (--version myr-vX.Y.Z-rc.N).
+    RELEASE_TAG=""
+    manifest_url="$MYR_WEB/$MYR_REPO/releases/latest/download/release-components.json"
   fi
-  say "Release: $RELEASE_TAG" "Выпуск: $RELEASE_TAG"
 
   MANIFEST="$(mktemp)"
-  if fetch "$MYR_API/repos/$MYR_REPO/releases/tags/$RELEASE_TAG" > "$MANIFEST.json" 2>/dev/null; then
-    local url
-    url="$(jq -r --arg n release-components.json '.assets[]? | select(.name == $n) | .browser_download_url' "$MANIFEST.json")"
-    [[ -n "$url" && "$url" != "null" ]] || die "release $RELEASE_TAG publishes no release-components.json (a release without image digests cannot be installed)"
-    fetch "$url" "$MANIFEST" || die "cannot download the manifest of $RELEASE_TAG"
-  else
-    die "cannot read release $RELEASE_TAG from GitHub"
-  fi
+  fetch "$manifest_url" "$MANIFEST" \
+    || die "cannot download the release manifest $manifest_url (check the network and the repository name)"
 
+  # The published manifest names every component with its repository and digest:
+  #   {"schema":1,"version":"1.6.5","tag":"myr-v1.6.5",
+  #    "components":{"board":{"repository":"ghcr.io/...","digest":"sha256:..."},...}}
   MANIFEST_VERSION="$(jq -r '.version // ""' "$MANIFEST")"
-  BOARD_DIGEST="$(jq -r '.components.board // ""' "$MANIFEST")"
-  DOCKERGATE_DIGEST="$(jq -r '.components.dockergate // ""' "$MANIFEST")"
-  BOT_DIGEST="$(jq -r '.components.hermes // .components["hermes-dev"] // ""' "$MANIFEST")"
+  if [[ -z "$RELEASE_TAG" ]]; then
+    RELEASE_TAG="$(jq -r '.tag // ""' "$MANIFEST")"
+    if [[ -z "$RELEASE_TAG" && -n "$MANIFEST_VERSION" ]]; then RELEASE_TAG="myr-v$MANIFEST_VERSION"; fi
+    if [[ -z "$RELEASE_TAG" ]]; then RELEASE_TAG="$(latest_tag)"; fi
+    [[ -n "$RELEASE_TAG" ]] || RELEASE_TAG="latest"
+  fi
+  [[ -n "$MANIFEST_VERSION" ]] || MANIFEST_VERSION="${RELEASE_TAG#myr-v}"
+
+  BOARD_REPOSITORY="$(jq -r '.components.board.repository // ""' "$MANIFEST")"
+  DOCKERGATE_REPOSITORY="$(jq -r '.components.dockergate.repository // ""' "$MANIFEST")"
+  BOT_REPOSITORY="$(jq -r '.components.hermes.repository // .components["hermes-dev"].repository // ""' "$MANIFEST")"
+  BOARD_DIGEST="$(jq -r '.components.board.digest // ""' "$MANIFEST")"
+  DOCKERGATE_DIGEST="$(jq -r '.components.dockergate.digest // ""' "$MANIFEST")"
+  BOT_DIGEST="$(jq -r '.components.hermes.digest // .components["hermes-dev"].digest // ""' "$MANIFEST")"
+
+  [[ -n "$BOARD_REPOSITORY" ]] || BOARD_REPOSITORY="ghcr.io/itkadr-git/myrmidon"
+  [[ -n "$DOCKERGATE_REPOSITORY" ]] || DOCKERGATE_REPOSITORY="ghcr.io/itkadr-git/myrmidon-dockergate"
+  [[ -n "$BOT_REPOSITORY" ]] || BOT_REPOSITORY="ghcr.io/itkadr-git/myrmidon-hermes"
+
   [[ "$BOARD_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || die "the manifest of $RELEASE_TAG names no board image digest"
   [[ "$DOCKERGATE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || die "the manifest of $RELEASE_TAG names no dockergate image digest"
   [[ "$BOT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || die "the manifest of $RELEASE_TAG names no bot image digest (dockergate needs at least one allowed image)"
+  say "Release: $RELEASE_TAG" "Выпуск: $RELEASE_TAG"
   say "Images: board ${BOARD_DIGEST:0:19}, dockergate ${DOCKERGATE_DIGEST:0:19}, bot ${BOT_DIGEST:0:19} (pinned by digest)." \
       "Образы: доска ${BOARD_DIGEST:0:19}, dockergate ${DOCKERGATE_DIGEST:0:19}, бот ${BOT_DIGEST:0:19} (закреплены дайджестом)."
+}
+
+# latest_tag: the tag `releases/latest` points at, read from the redirect of the
+# public page. Used only when the manifest of the newest release names neither a
+# tag nor a version (releases published before 1.6.5).
+latest_tag() {
+  curl -fsSIL --retry 3 --retry-delay 2 "$MYR_WEB/$MYR_REPO/releases/latest" 2>/dev/null \
+    | sed -n 's|^[Ll]ocation: .*/tag/\([^[:space:]\r]*\).*|\1|p' | tail -1
 }
 
 rand_hex() { openssl rand -hex "$1"; }
@@ -326,6 +354,9 @@ MYRMIDON_PUBLIC_URL=$PUBLIC_URL
 MYRMIDON_BOARD_DIGEST=$BOARD_DIGEST
 MYRMIDON_DOCKERGATE_DIGEST=$DOCKERGATE_DIGEST
 MYRMIDON_BOT_DIGEST=$BOT_DIGEST
+MYRMIDON_BOARD_REPOSITORY=$BOARD_REPOSITORY
+MYRMIDON_DOCKERGATE_REPOSITORY=$DOCKERGATE_REPOSITORY
+MYRMIDON_BOT_REPOSITORY=$BOT_REPOSITORY
 POSTGRES_DB=paperclip
 POSTGRES_USER=paperclip
 POSTGRES_PASSWORD=$POSTGRES_PASSWORD
@@ -356,7 +387,7 @@ services:
       - pgdata:/var/lib/postgresql/data
 
   server:
-    image: ghcr.io/itkadr-git/myrmidon@${MYRMIDON_BOARD_DIGEST:?the board digest must be set}
+    image: ${MYRMIDON_BOARD_REPOSITORY:?the board repository must be set}@${MYRMIDON_BOARD_DIGEST:?the board digest must be set}
     restart: unless-stopped
     pids_limit: 2048
     depends_on:
@@ -383,7 +414,7 @@ services:
   dockergate:
     # The caller is pinned to the board container's main process (see the
     # generated config.json): the uid/gid mode is refused for a production root.
-    image: ghcr.io/itkadr-git/myrmidon-dockergate@${MYRMIDON_DOCKERGATE_DIGEST:?the dockergate digest must be set}
+    image: ${MYRMIDON_DOCKERGATE_REPOSITORY:?the dockergate repository must be set}@${MYRMIDON_DOCKERGATE_DIGEST:?the dockergate digest must be set}
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -414,7 +445,7 @@ COMPOSE
   },
   "volumeRoot": "$DIR/bots",
   "network": "myrmidon-bots",
-  "images": ["ghcr.io/itkadr-git/myrmidon-hermes@$BOT_DIGEST"],
+  "images": ["$BOT_REPOSITORY@$BOT_DIGEST"],
   "bots": [],
   "statsFile": "/run/myrmidon-dockergate-state/stats.json"
 }
@@ -526,6 +557,8 @@ do_update() {
   need_window=0
   if [[ "$BOARD_DIGEST" != "${MYRMIDON_BOARD_DIGEST:-}" ]]; then need_window=1; fi
   if [[ "$DOCKERGATE_DIGEST" != "${MYRMIDON_DOCKERGATE_DIGEST:-}" ]]; then need_window=1; fi
+  if [[ "$BOARD_REPOSITORY" != "${MYRMIDON_BOARD_REPOSITORY:-}" ]]; then need_window=1; fi
+  if [[ "$DOCKERGATE_REPOSITORY" != "${MYRMIDON_DOCKERGATE_REPOSITORY:-}" ]]; then need_window=1; fi
   if (( need_window == 0 )); then
     say "The installation in $DIR already runs $RELEASE_TAG; nothing to change." \
         "Установка в $DIR уже работает на $RELEASE_TAG; менять нечего."
@@ -534,6 +567,8 @@ do_update() {
 
   local previous_board="${MYRMIDON_BOARD_DIGEST:-}" previous_docker="${MYRMIDON_DOCKERGATE_DIGEST:-}" previous_bot="${MYRMIDON_BOT_DIGEST:-}"
   local previous_version="${MYRMIDON_VERSION:-}" previous_tag="${MYRMIDON_RELEASE_TAG:-}"
+  local previous_board_repo="${MYRMIDON_BOARD_REPOSITORY:-}" previous_docker_repo="${MYRMIDON_DOCKERGATE_REPOSITORY:-}"
+  local previous_bot_repo="${MYRMIDON_BOT_REPOSITORY:-}"
   local dump
   dump="$DIR/state/pre-update-$(date -u +%Y%m%dT%H%M%SZ).dump"
 
@@ -565,6 +600,7 @@ do_update() {
 
   log "the new board did not become healthy: rolling back to the previous digests"
   BOARD_DIGEST="$previous_board"; DOCKERGATE_DIGEST="$previous_docker"; BOT_DIGEST="$previous_bot"
+  BOARD_REPOSITORY="$previous_board_repo"; DOCKERGATE_REPOSITORY="$previous_docker_repo"; BOT_REPOSITORY="$previous_bot_repo"
   MANIFEST_VERSION="$previous_version"; RELEASE_TAG="$previous_tag"
   write_env
   ( cd "$DIR" && compose up -d ) || true

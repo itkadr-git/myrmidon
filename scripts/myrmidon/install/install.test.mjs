@@ -42,10 +42,19 @@ done
 TAG="$(cat "$SANDBOX/tag" 2>/dev/null || echo myr-v1.6.6)"
 VERSION="\${TAG#myr-v}"
 BOARD="$(cat "$SANDBOX/board-digest" 2>/dev/null || echo ${A})"
+ [ -n "$url" ] && printf '%s\\n' "$url" >> "$SANDBOX/curl.log"
+if [ -f "$SANDBOX/broken-manifest" ]; then
+  MANIFEST=\'{"schema":1,"version":"\'"$VERSION"\'","tag":"\'"$TAG"\'","components":{"dockergate":{"repository":"ghcr.io/itkadr-git/myrmidon-dockergate","digest":"${B}"}}}\'
+else
+  # The shape the release really publishes (structure identical to
+  # releases/download/myr-v1.6.5-rc.2/release-components.json): a component is
+  # an object {repository,digest}, not a bare digest string.
+  MANIFEST=\'{"schema":1,"version":"\'"$VERSION"\'","tag":"\'"$TAG"\'","components":{"board":{"repository":"ghcr.io/itkadr-git/myrmidon","digest":"\'"$BOARD"\'"},"dockergate":{"repository":"ghcr.io/itkadr-git/myrmidon-dockergate","digest":"${B}"},"hermes":{"repository":"ghcr.io/itkadr-git/myrmidon-hermes","digest":"${C}"}}}\'
+fi
 case "$url" in
-  */releases/latest) body='{"tag_name":"'"$TAG"'"}' ;;
-  */releases/tags/*) body='{"assets":[{"name":"release-components.json","browser_download_url":"https://example.invalid/rc.json"}]}' ;;
-  */rc.json) body='{"schema":1,"version":"'"$VERSION"'","tag":"'"$TAG"'","components":{"board":"'"$BOARD"'","dockergate":"${B}","hermes":"${C}"}}' ;;
+  */releases/latest/download/release-components.json) body="$MANIFEST" ;;
+  */releases/download/*/release-components.json) body="$MANIFEST" ;;
+  */releases/latest) body="Location: https://github.com/itkadr-git/myrmidon/releases/tag/$TAG" ;;
   */api/health)
     n=0; [ -f "$SANDBOX/health-calls" ] && n="$(cat "$SANDBOX/health-calls")"
     if [ -f "$SANDBOX/health-fail-until" ] && [ "$n" -lt "$(cat "$SANDBOX/health-fail-until")" ]; then
@@ -112,13 +121,29 @@ describe("install.sh", () => {
     assert.match(env, /BETTER_AUTH_SECRET=[0-9a-f]{64}/);
     assert.equal(fs.statSync(path.join(sb.opt, "deploy.env")).mode & 0o777, 0o600);
     const compose = fs.readFileSync(path.join(sb.opt, "compose.yml"), "utf8");
-    assert.match(compose, /myrmidon@\$\{MYRMIDON_BOARD_DIGEST/);
+    assert.ok(
+      compose.includes("${MYRMIDON_BOARD_REPOSITORY:?the board repository must be set}@${MYRMIDON_BOARD_DIGEST:?the board digest must be set}"),
+      "the board image reference is built from the manifest repository and digest",
+    );
     const config = JSON.parse(fs.readFileSync(path.join(sb.opt, "dockergate", "config.json"), "utf8"));
     assert.deepEqual(config.images, [`ghcr.io/itkadr-git/myrmidon-hermes@${C}`]);
     assert.equal(config.caller.mode, "container-main-process");
     assert.ok(calls(sb).includes("pull --quiet"));
     assert.ok(calls(sb).includes("up -d"));
     assert.match(r.stdout, /first account becomes the administrator/);
+    // The release is read over the public download endpoints: the anonymous
+    // GitHub API (60 requests per hour per IP) must not appear on this path.
+    const urls = fs.readFileSync(path.join(sb.dir, "curl.log"), "utf8");
+    assert.ok(urls.includes("/releases/latest/download/release-components.json"), urls);
+    assert.ok(!urls.includes("api.github.com"), `no anonymous API call expected, got: ${urls}`);
+  });
+
+  it("refuses a manifest that does not name a board digest", () => {
+    const sb = sandbox();
+    fs.writeFileSync(path.join(sb.dir, "broken-manifest"), "");
+    const r = run(sb);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /names no board image digest/);
   });
 
   it("re-running against a newer release dumps the database and switches the digests", () => {
