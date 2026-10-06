@@ -26,6 +26,8 @@ const items = [
   { value: "autonomy", label: "Autonomy", href: "/company/settings/autonomy" },
   // myrmidon(1.6.1 WIP-LIMIT B): per-agent work-in-progress limit screen
   { value: "wip-limit", label: "WIP limit", href: "/company/settings/wip-limit" },
+  // myrmidon(1.7 GRD-MODES): guardrail enforcement-mode settings screen
+  { value: "guardrails", label: "Guardrails", href: "/company/settings/guardrails" },
   // myrmidon(REVIEW-ROUTING): automatic reviewer routing settings
   { value: "review-routing", label: "Review routing", href: "/company/settings/review-routing" },
   // myrmidon(1.6.1 MODEL-PROVIDERS C): the ui2 "Castes and models" section
@@ -137,6 +139,10 @@ export function getCompanySettingsTab(pathname: string): CompanySettingsTab {
     return "wip-limit";
   }
 
+  // myrmidon(1.7 GRD-MODES): the Guardrails settings section
+  if (pathname.includes("/company/settings/guardrails")) {
+    return "guardrails";
+  }
   // myrmidon(REVIEW-ROUTING): the review routing settings section
   if (pathname.includes("/company/settings/review-routing")) {
     return "review-routing";
@@ -172,6 +178,7 @@ const SETTINGS_TAB_LABEL_KEYS: Partial<Record<string, string>> = {
   autonomy: "settingsNav.autonomy",
   castes: "settingsNav.castes",
   "wip-limit": "settingsNav.wipLimit",
+  guardrails: "settingsNav.guardrails",
   "review-routing": "settingsNav.reviewRouting",
 };
 

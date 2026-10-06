@@ -17,6 +17,8 @@ import type { SwarmClaimSettings } from "../myrmidon-swarm-claim.js";
 // myrmidon(1.6.1-WIP-LIMIT-A): per-agent WIP limits of the same general settings row.
 import type { AgentMemorySettings } from "../myrmidon-agent-memory.js";
 import type { WipLimitSettings } from "../myrmidon-wip-limit.js";
+// myrmidon(1.7-GRD-MODES): guardrail enforcement-mode settings type
+import type { GuardrailModesSettings } from "../myrmidon-guardrail-modes.js";
 // myrmidon(REVIEW-ROUTING): automatic reviewer routing settings of the same row.
 import type { ReviewRoutingSettings } from "../myrmidon-review-routing.js";
 import type { ReviewReworkSettings } from "../myrmidon-review-rework.js";
@@ -158,6 +160,13 @@ export interface InstanceGeneralSettings {
    * same field (packages/shared/src/validators/instance.ts).
    */
   wipLimit?: WipLimitSettings;
+  /**
+   * myrmidon(1.7-GRD-MODES): guardrail enforcement-mode overrides, changed
+   * from `GET`/`PUT /api/myrmidon/companies/:companyId/guardrails/settings`.
+   * Absent means every rule is flag-only. Kept in sync with the validator
+   * of the same field (packages/shared/src/validators/instance.ts).
+   */
+  guardrailModes?: GuardrailModesSettings;
   /**
    * myrmidon(REVIEW-ROUTING): automatic reviewer routing, changed from
    * `GET`/`PUT /api/myrmidon/companies/:companyId/review-routing/settings`.

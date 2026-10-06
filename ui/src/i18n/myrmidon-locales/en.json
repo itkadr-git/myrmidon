@@ -325,6 +325,7 @@
     "autonomy": "Autonomy",
     "castes": "Castes & models",
     "wipLimit": "WIP limit",
+    "guardrails": "Guardrails",
     "reviewRouting": "Review routing"
   },
   "reviewRouting": {
@@ -768,6 +769,54 @@
     "tabWorkspaces": "Workspaces",
     "tabConfiguration": "Configuration",
     "tabBudget": "Budget"
+  },
+  "guardrails": {
+    "title": "Guardrails",
+    "breadcrumb": "Guardrails",
+    "intro": "What a guardrail hit does: flag (journal only, the default), mask (replace the matched text), or block (withhold the answer). Set per company, caste, or agent; a change applies to the next run answer without a restart.",
+    "loading": "Loading the guardrail settings...",
+    "noCompany": "Select a company to edit its guardrails.",
+    "companyTitle": "Company-wide modes",
+    "companyHint": "Applies to every agent without its own or caste override. Inherit removes the override (default: flag).",
+    "casteTitle": "Caste modes",
+    "castePlaceholder": "Caste name",
+    "casteHint": "Type or pick a caste to override its modes; Inherit falls back to the company value.",
+    "agentsTitle": "Per-agent modes",
+    "noAgents": "No agents in this company yet.",
+    "colAgent": "Agent",
+    "colEffective": "Effective (source)",
+    "inherit": "Inherit",
+    "save": "Save guardrails",
+    "saving": "Saving...",
+    "mode": {
+      "flag": "Flag only",
+      "mask": "Mask",
+      "block": "Block"
+    },
+    "rule": {
+      "secret": "Secrets",
+      "pii": "Personal data",
+      "injection": "Prompt injection"
+    },
+    "source": {
+      "agent": "agent",
+      "caste": "caste",
+      "company": "company",
+      "default": "default",
+      "env": "env force"
+    },
+    "journalTitle": "Firing journal",
+    "filterKind": "Kind",
+    "filterSeverity": "Severity",
+    "filterRunId": "Run id",
+    "filterAny": "Any",
+    "colTime": "When",
+    "colSurface": "Surface",
+    "colRun": "Run",
+    "colSnippet": "Snippet",
+    "journalEmpty": "No guardrail events recorded yet.",
+    "journalLoading": "Loading the journal...",
+    "journalError": "Could not load the guardrail journal."
   },
   "pluginEntitlement": {
     "title": "Plugin Entitlement Keys",

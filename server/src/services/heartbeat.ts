@@ -663,6 +663,8 @@ import {
   recordSwarmClaimOnCheckoutImpl,
   releaseSwarmClaimsForRunImpl,
 } from "../myrmidon/swarm-claim/hooks.js";
+// myrmidon(1.6-GRD): flag-only secret/pii detectors on the final run output
+import { guardrailsOnRunOutput } from "../myrmidon/guardrails/run-output.js"; // myrmidon(1.6-GRD)
 import { scheduleQueuedResweep, sharedRunAdmission } from "../myrmidon/run-admission.js";
 // myrmidon(S2-hostcred): a run never inherits the host's GitHub credentials
 import {
@@ -24964,6 +24966,19 @@ export function heartbeatService(
               presentationDecision.commentAction === "create" &&
               resolved.text
             ) {
+              // myrmidon(1.6-GRD): output scan of the final run text before it
+              // becomes the visible issue comment. myrmidon(1.7-GRD-MODES):
+              // the resolved per-agent mode decides what a hit does — flag
+              // journals only, mask replaces the spans with [masked], block
+              // withholds the answer and posts the refusal text instead.
+              const guardrailDecision = await guardrailsOnRunOutput({
+                db,
+                companyId: livenessRun.companyId,
+                runId: livenessRun.id,
+                issueId,
+                agentId: agent.id,
+                text: resolved.text,
+              }).catch(() => null);
               // The presentation resolver exposes only the final assistant
               // surface selected from completed final messages or accepted
               // semantic results. For an exactly bound external-chat run,
@@ -24977,7 +24992,10 @@ export function heartbeatService(
                 });
               const comment = await issuesSvc.addComment(
                 issueId,
-                resolved.text,
+                // myrmidon(1.7-GRD-MODES): the guardrail decision's text —
+                // unchanged for flag, span-masked for mask, the refusal for
+                // block. Null decision (layer off / error) keeps the text.
+                guardrailDecision?.text ?? resolved.text,
                 { agentId: agent.id, runId: livenessRun.id },
                 { authorizationReason: presentationAuthorizationReason },
               );

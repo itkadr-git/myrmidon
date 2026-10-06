@@ -2818,11 +2818,11 @@ export * from "./myrmidon-swarm-claim.js";
 export * from "./myrmidon-autonomy.js";
 // myrmidon(1.6-CTO-CHAT-B): the owner-message-to-epic proposal contract of the CTO chat.
 export * from "./myrmidon-cto-chat.js";
-// myrmidon(1.6-TG-PROACTIVITY-E): the telegramNotify proactivity contract (mode, rarely ceiling, per-agent override).
-export * from "./myrmidon-telegram-notify.js";
 // myrmidon(1.6.1-WIP-LIMIT-A): the shared contract of the per-agent WIP limit —
 // the settings shape, the limit resolver and the status feed rows.
 export * from "./myrmidon-wip-limit.js";
+// myrmidon(1.7-GRD-MODES): guardrail enforcement-mode contract
+export * from "./myrmidon-guardrail-modes.js";
 // myrmidon(1.7-BUDGET-CONFIG-B): the shared contract of budget enforcement —
 // the global mode (signal_only / soft / hard), its storage key and resolver.
 export * from "./myrmidon-budget-enforcement.js";
