@@ -15,6 +15,11 @@ import {
   publishActivity,
   type ActivityPublication,
 } from "./activity-log.js";
+// myrmidon(1.6-AUTONOMY): an approved held autonomy action is replayed here.
+// `replayHeldAutonomyAction` answers `not_autonomy` for ordinary tool actions,
+// so every approval can call it and only our holds are replayed.
+import { replayHeldAutonomyAction } from "../myrmidon/autonomy/action-execution.js";
+import { autonomyActionExecutors } from "../myrmidon/autonomy/action-execution-runtime.js";
 
 /** The shared transaction for both task and Connections review decisions. */
 export async function commitToolActionReview(
@@ -237,6 +242,34 @@ export async function commitToolActionReview(
     }
     return updated;
   });
+  // myrmidon(1.6-AUTONOMY): replay a held autonomy action after the approval
+  // commits. The row can be `approved` because this call did it or because an
+  // earlier process died before replaying (the gateway sweep re-approves such
+  // rows); `replayHeldAutonomyAction` claims the row itself, so a double
+  // approval or a retry never runs the action twice. It answers `not_autonomy`
+  // for ordinary tool actions, which are then left to the tool conveyor.
+  if (input.decision === "approved" && result.status === "approved") {
+    const outcome = await replayHeldAutonomyAction({
+      db,
+      actionRequestId: result.id,
+      approvedBy: { userId: input.actor.userId ?? null },
+      executors: autonomyActionExecutors(db),
+    }).catch(() => "failed" as const);
+    if (outcome !== "not_autonomy")
+      await logActivity(
+        db,
+        {
+          companyId: input.companyId,
+          actorType: "system",
+          actorId: "autonomy",
+          action: "myrmidon.autonomy.action_executed",
+          entityType: "tool_action_request",
+          entityId: result.id,
+          details: { outcome },
+        },
+        publications,
+      );
+  }
   for (const publication of publications) publishActivity(publication);
   return result;
 }

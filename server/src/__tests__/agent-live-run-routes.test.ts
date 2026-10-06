@@ -75,6 +75,17 @@ const mockIdlePickup = vi.hoisted(() => ({
   findTopReadyIssueForAgent: vi.fn(),
 }));
 
+// myrmidon(1.6-AUTONOMY): the pause/resume/wakeup routes consult the autonomy
+// gate before they act. This suite is about vendor wake/retry admission, so the
+// gate is stubbed as "allowed" and keeps the route hermetic; the matrix and its
+// holding are covered by src/myrmidon/autonomy/*.myrmidon.test.ts and
+// src/routes/agents.myrmidon.test.ts.
+const mockAutonomyGate = vi.hoisted(() => ({
+  decide: vi.fn(async () => ({ verdict: "allowed", role: null, actionClass: "pause_wake_agents" })),
+  assertAllowed: vi.fn(async () => undefined),
+  holdOrAssert: vi.fn(async () => ({ verdict: "allowed", held: false })),
+}));
+
 const routeAgentId = "11111111-1111-4111-8111-111111111111";
 const failedChatRunId = "22222222-2222-4222-8222-222222222222";
 const failedChatIssueId = "33333333-3333-4333-8333-333333333333";
@@ -156,6 +167,11 @@ function registerModuleMocks() {
 
   // myrmidon(WAKE-BIND): wake-binding resolves the top ready task via idle-pickup.
   vi.doMock("../myrmidon/idle-pickup.js", () => mockIdlePickup);
+  // myrmidon(1.6-AUTONOMY): the wakeup route consults the autonomy gate first.
+  vi.doMock("../myrmidon/autonomy/gate.js", () => ({
+    dbAutonomyGate: () => mockAutonomyGate,
+    autonomyGate: () => mockAutonomyGate,
+  }));
 }
 
 async function createApp(
@@ -293,6 +309,7 @@ describe("agent live run routes", () => {
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
     vi.doUnmock("../myrmidon/idle-pickup.js");
+    vi.doUnmock("../myrmidon/autonomy/gate.js");
     registerModuleMocks();
     vi.clearAllMocks();
     // myrmidon(WAKE-BIND): default — the agent has no ready task, so an
