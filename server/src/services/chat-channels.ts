@@ -382,7 +382,8 @@ import {
   createOmissionTracker,
   telegramAttachmentOmissionNotice,
 } from "../myrmidon/chat-attachment-omission.js";
-import { TELEGRAM_DM_COMMANDS } from "../myrmidon/agent-chat-bridge/commands/index.js";
+import { TELEGRAM_DM_COMMANDS, telegramDmCommandsForLocale } from "../myrmidon/agent-chat-bridge/commands/index.js";
+import { telegramDmMenuLocale } from "../myrmidon/agent-chat-bridge/locales/index.js";
 // myrmidon(CHAT-HOLD): no silent queue in a bridged Telegram chat.
 import {
   chatNoticeLanguage,
@@ -4448,11 +4449,15 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           if (telegramDmConversationsConfigured()) {
             await credentialLease.assertOwned();
             if (telegramDmConversationsEnabled(record.endpoint.id)) {
+              // myrmidon(1.7-TG-LOCALE): the menu renders in the instance
+              // locale that holds when this action runs (env force, else the
+              // English default) — same once-per-version rule as the
+              // bridge-enabled state; the version hashes the canonical list.
               await telegramMaintenanceRequest(
                 credentials.botToken,
                 "setMyCommands",
                 {
-                  commands: TELEGRAM_DM_COMMANDS,
+                  commands: telegramDmCommandsForLocale(telegramDmMenuLocale()),
                   scope: { type: "all_private_chats" },
                 },
               );
@@ -17062,6 +17067,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           issueId: issue.id,
           deliveryId: activeDelivery.id,
           principalId: principalResolution.principal.id,
+          // myrmidon(1.7-TG-LOCALE): the linked user decides the migration
+          // notice's language.
+          boardUserId: principalResolution.userId!,
           notice: x8Notice,
           migratedFromIssueId: x8Dm.migratedFromIssueId,
         });

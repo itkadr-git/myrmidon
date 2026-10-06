@@ -15,6 +15,7 @@ import {
   createDb,
   heartbeatRuns,
   issues,
+  userUiLanguage,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -189,7 +190,7 @@ const support = await getEmbeddedPostgresTestSupport();
     );
     expect(result?.kind).toBe("reply");
     const text = (result as { kind: "reply"; text: string }).text;
-    expect(text).toContain("Модель: model-a (по умолчанию у агента)");
+    expect(text).toContain("Model: model-a (agent default)");
     expect(text).toMatch(/1\)\s*model-a/);
     expect(text).toMatch(/2\)\s*model-b/);
     expect(text).toMatch(/3\)\s*model-c/);
@@ -204,7 +205,7 @@ const support = await getEmbeddedPostgresTestSupport();
     const text = (result as { kind: "reply"; text: string }).text;
     // Neither the card's "default" model nor its "auto" fallback is a real
     // choice; only model-b (a real fallback) and model-c (discovered) are.
-    expect(text).toContain("Модель: по умолчанию у адаптера (по умолчанию у адаптера)");
+    expect(text).toContain("Model: adapter default (adapter default)");
     expect(text).not.toMatch(/\)\s*default\b/i);
     expect(text).not.toMatch(/\)\s*auto\b/i);
     expect(text).toMatch(/1\)\s*model-b/);
@@ -214,7 +215,7 @@ const support = await getEmbeddedPostgresTestSupport();
       baseInput({ conversationIssueId: issue.id, boardUserId, agentId: sentinelAgentId, text: "/status" }),
     );
     const statusText = (status as { kind: "reply"; text: string }).text;
-    expect(statusText).toContain("Модель: по умолчанию у адаптера (по умолчанию у адаптера)");
+    expect(statusText).toContain("Model: adapter default (adapter default)");
   });
 
   it("2. /model model-b sets the override, keeps other override keys, drops the session and logs the change", async () => {
@@ -236,7 +237,7 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(result).toEqual({
       kind: "reply",
       command: "model",
-      text: "Модель для этого чата: model-b. Следующий ответ начнёт новую сессию модели с недавней историей этого чата.",
+      text: "Model for this chat: model-b. The next reply starts a new model session with this chat's recent history.",
     });
 
     const overrides = await readOverrides(issue.id);
@@ -264,13 +265,13 @@ const support = await getEmbeddedPostgresTestSupport();
     const byIndexResult = await runBridgedDirectMessageCommand(
       baseInput({ conversationIssueId: byIndex.issue.id, boardUserId: byIndex.boardUserId, text: "/model 3" }),
     );
-    expect(byIndexResult).toMatchObject({ kind: "reply", text: expect.stringContaining("Модель для этого чата: model-c.") });
+    expect(byIndexResult).toMatchObject({ kind: "reply", text: expect.stringContaining("Model for this chat: model-c.") });
 
     const byName = await createTelegramConversation();
     const byNameResult = await runBridgedDirectMessageCommand(
       baseInput({ conversationIssueId: byName.issue.id, boardUserId: byName.boardUserId, text: "/model MODEL-B" }),
     );
-    expect(byNameResult).toMatchObject({ kind: "reply", text: expect.stringContaining("Модель для этого чата: model-b.") });
+    expect(byNameResult).toMatchObject({ kind: "reply", text: expect.stringContaining("Model for this chat: model-b.") });
   });
 
   it("4. /model nope is rejected and changes nothing", async () => {
@@ -278,7 +279,7 @@ const support = await getEmbeddedPostgresTestSupport();
     const result = await runBridgedDirectMessageCommand(
       baseInput({ conversationIssueId: issue.id, boardUserId, text: "/model nope" }),
     );
-    expect(result).toMatchObject({ kind: "reply", command: "model", text: expect.stringContaining('Неизвестная модель «nope».') });
+    expect(result).toMatchObject({ kind: "reply", command: "model", text: expect.stringContaining('Unknown model “nope”.') });
     expect(await readOverrides(issue.id)).toBeNull();
   });
 
@@ -295,7 +296,7 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(result).toEqual({
       kind: "reply",
       command: "model",
-      text: "Сейчас идёт ответ. Попробуйте после него или отправьте /stop.",
+      text: "A reply is in progress right now. Try after it finishes or send /stop.",
     });
     expect(await readOverrides(issue.id)).toBeNull();
   });
@@ -360,7 +361,7 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(result).toEqual({
       kind: "reply",
       command: "model",
-      text: "Модель для этого чата: по умолчанию у агента (model-a).",
+      text: "Model for this chat: agent default (model-a).",
     });
     expect(await readOverrides(issue.id)).toBeNull();
   });
@@ -373,7 +374,7 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(result).toEqual({
       kind: "reply",
       command: "model",
-      text: "Смена модели недоступна для этого агента.",
+      text: "Changing the model is unavailable for this agent.",
     });
   });
 
@@ -385,7 +386,7 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(high).toEqual({
       kind: "reply",
       command: "think",
-      text: "Рассуждения для этого чата: high. Следующий ответ начнёт новую сессию модели с недавней историей этого чата.",
+      text: "Reasoning for this chat: high. The next reply starts a new model session with this chat's recent history.",
     });
     expect(await readOverrides(issue.id)).toEqual({ adapterConfig: { effort: "high" } });
 
@@ -395,7 +396,7 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(bogus).toMatchObject({
       kind: "reply",
       command: "think",
-      text: expect.stringContaining('Неизвестная глубина рассуждений «bogus».'),
+      text: expect.stringContaining('Unknown reasoning effort “bogus”.'),
     });
   });
 
@@ -407,7 +408,7 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(withModelResult).toEqual({
       kind: "message",
       body: "/new",
-      notice: "Новая сессия начата с моделью model-b. История остаётся на доске.",
+      notice: "New session started with model model-b. The history stays on the board.",
     });
     expect(await readOverrides(withModel.issue.id)).toEqual({ adapterConfig: { model: "model-b" } });
 
@@ -418,7 +419,7 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(resetResult).toEqual({
       kind: "message",
       body: "/new",
-      notice: "Новая сессия начата. История остаётся на доске.",
+      notice: "New session started. The history stays on the board.",
     });
   });
 
@@ -453,7 +454,7 @@ const support = await getEmbeddedPostgresTestSupport();
     const result = await runBridgedDirectMessageCommand(
       baseInput({ conversationIssueId: issue.id, boardUserId, text: "/stop", cancelRun }),
     );
-    expect(result).toEqual({ kind: "reply", command: "stop", text: "Останавливаю текущий ответ." });
+    expect(result).toEqual({ kind: "reply", command: "stop", text: "Stopping the current reply." });
     expect(cancelled.map((c) => c.runId).sort()).toEqual([queued!.id, running!.id].sort());
     for (const call of cancelled) {
       expect(call.options).toMatchObject({
@@ -466,7 +467,7 @@ const support = await getEmbeddedPostgresTestSupport();
     const idleResult = await runBridgedDirectMessageCommand(
       baseInput({ conversationIssueId: idle.issue.id, boardUserId: idle.boardUserId, text: "/stop" }),
     );
-    expect(idleResult).toEqual({ kind: "reply", command: "stop", text: "Сейчас ничего не выполняется." });
+    expect(idleResult).toEqual({ kind: "reply", command: "stop", text: "Nothing is running right now." });
   });
 
   it("11. /status reports model source and session state without leaking any id", async () => {
@@ -476,9 +477,9 @@ const support = await getEmbeddedPostgresTestSupport();
     );
     expect(result?.kind).toBe("reply");
     const text = (result as { kind: "reply"; text: string }).text;
-    expect(text).toContain("Модель: model-a (по умолчанию у агента)");
-    expect(text).toContain("Сессия: #1, сессия модели начнётся заново со следующим ответом");
-    expect(text).toContain("Сейчас: простаивает");
+    expect(text).toContain("Model: model-a (agent default)");
+    expect(text).toContain("Session: #1, model session will start fresh with the next reply");
+    expect(text).toContain("Now: idle");
     expect(text).not.toMatch(UUID_PATTERN);
   });
 
@@ -501,7 +502,7 @@ const support = await getEmbeddedPostgresTestSupport();
       // myrmidon(X8c): `command` is a fixed literal here, not the chat's
       // own text — see the "12b" case below for why.
       command: "unknown",
-      text: "Неизвестная команда /foo. Список команд — /help.",
+      text: "Unknown command /foo. The command list is in /help.",
     });
 
     expect(parseBridgedCommand("/home/x")).toBeNull();
@@ -523,7 +524,7 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(withDigits).toEqual({
       kind: "reply",
       command: "unknown",
-      text: "Неизвестная команда /aaa_123. Список команд — /help.",
+      text: "Unknown command /aaa_123. The command list is in /help.",
     });
 
     // COMMAND_PATTERN also does not bound the command name's length; the
@@ -539,6 +540,55 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(longText).toContain("…");
   });
 
+  it("12c. (1.7-TG-LOCALE) an RU user's commands answer in Russian, an EN user's in English", async () => {
+    const ruUser = randomUUID();
+    const enUser = randomUUID();
+    await db.insert(userUiLanguage).values([
+      { userId: ruUser, language: "ru" },
+      { userId: enUser, language: "en" },
+    ]);
+    const ruConv = await createTelegramConversation({ boardUserId: ruUser });
+    const ruReply = await runBridgedDirectMessageCommand(
+      baseInput({ conversationIssueId: ruConv.issue.id, boardUserId: ruUser, text: "/foo" }),
+    );
+    expect(ruReply).toEqual({
+      kind: "reply",
+      command: "unknown",
+      text: "Неизвестная команда /foo. Список команд — /help.",
+    });
+
+    const enConv = await createTelegramConversation({ boardUserId: enUser });
+    const enReply = await runBridgedDirectMessageCommand(
+      baseInput({ conversationIssueId: enConv.issue.id, boardUserId: enUser, text: "/foo" }),
+    );
+    expect(enReply).toEqual({
+      kind: "reply",
+      command: "unknown",
+      text: "Unknown command /foo. The command list is in /help.",
+    });
+
+    // /model for the RU user keeps identifiers and renders labels in RU.
+    const ruModel = await runBridgedDirectMessageCommand(
+      baseInput({ conversationIssueId: ruConv.issue.id, boardUserId: ruUser, text: "/model" }),
+    );
+    const ruModelText = (ruModel as { kind: "reply"; text: string }).text;
+    expect(ruModelText).toContain("Модель: model-a (по умолчанию у агента)");
+    expect(ruModelText).toContain("model-b");
+
+    // The preference is read per message: switching it takes effect on the
+    // very next reply without a restart.
+    await db
+      .update(userUiLanguage)
+      .set({ language: "en" })
+      .where(eq(userUiLanguage.userId, ruUser));
+    const switched = await runBridgedDirectMessageCommand(
+      baseInput({ conversationIssueId: ruConv.issue.id, boardUserId: ruUser, text: "/foo" }),
+    );
+    expect((switched as { text: string }).text).toBe(
+      "Unknown command /foo. The command list is in /help.",
+    );
+  });
+
   it("13. commands refuse a web conversation and another person's Telegram conversation, writing nothing", async () => {
     const web = await createWebConversation();
     const webResult = await runBridgedDirectMessageCommand(
@@ -546,13 +596,13 @@ const support = await getEmbeddedPostgresTestSupport();
     );
     // myrmidon(X8c): `command` is a fixed literal ("not-available"), not the
     // command that was typed — see the "13b" case below for why.
-    expect(webResult).toEqual({ kind: "reply", command: "not-available", text: "Этот чат недоступен." });
+    expect(webResult).toEqual({ kind: "reply", command: "not-available", text: "This chat is not available." });
 
     const { issue, boardUserId } = await createTelegramConversation();
     const impersonating = await runBridgedDirectMessageCommand(
       baseInput({ conversationIssueId: issue.id, boardUserId: randomUUID(), text: "/model model-b" }),
     );
-    expect(impersonating).toEqual({ kind: "reply", command: "not-available", text: "Этот чат недоступен." });
+    expect(impersonating).toEqual({ kind: "reply", command: "not-available", text: "This chat is not available." });
     expect(await readOverrides(issue.id)).toBeNull();
 
     const activityForIssue = await db
@@ -567,6 +617,6 @@ const support = await getEmbeddedPostgresTestSupport();
     const result = await runBridgedDirectMessageCommand(
       baseInput({ conversationIssueId: web.issue.id, boardUserId: web.boardUserId, text: "/aaa_123 with args" }),
     );
-    expect(result).toEqual({ kind: "reply", command: "not-available", text: "Этот чат недоступен." });
+    expect(result).toEqual({ kind: "reply", command: "not-available", text: "This chat is not available." });
   });
 });

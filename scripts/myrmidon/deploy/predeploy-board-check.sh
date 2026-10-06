@@ -97,8 +97,17 @@ db_ready_command="${MYRMIDON_PREDEPLOY_DB_READY_COMMAND:-}"
 [[ -n "$db_ready_command" ]] || db_ready_command='docker exec "$MYR_PREDEPLOY_DB_CONTAINER" pg_isready -U "$MYR_PREDEPLOY_DB_USER" -d "$MYR_PREDEPLOY_DB_NAME"'
 
 restore_command="${MYRMIDON_PREDEPLOY_RESTORE_COMMAND:-}"
+# myrmidon(PREDEPLOY-NO-ACL) (OPE-4875): --no-acl is part of the default, not an
+# operator option. The production dump carries GRANTs to roles that exist only on
+# the production server (e.g. backup_ro); the throwaway Postgres does not have
+# them and pg_restore aborted with `role "backup_ro" does not exist` — the check
+# died on the restore of every production dump that used such roles. The check
+# proves the board reads the production DATA on the copy; ownership and ACLs of
+# the production roles are not what is being proven, so the default skips them
+# (--no-owner --no-acl). An operator who wants the production grants modelled on
+# the copy pre-creates the roles and overrides MYRMIDON_PREDEPLOY_RESTORE_COMMAND.
 # shellcheck disable=SC2016  # the quotes are part of the command the operator overrides
-[[ -n "$restore_command" ]] || restore_command='docker exec -i -e PGPASSWORD="$MYR_PREDEPLOY_DB_PASSWORD" "$MYR_PREDEPLOY_DB_CONTAINER" pg_restore -U "$MYR_PREDEPLOY_DB_USER" -d "$MYR_PREDEPLOY_DB_NAME" --no-owner < "$DUMP_FILE"'
+[[ -n "$restore_command" ]] || restore_command='docker exec -i -e PGPASSWORD="$MYR_PREDEPLOY_DB_PASSWORD" "$MYR_PREDEPLOY_DB_CONTAINER" pg_restore -U "$MYR_PREDEPLOY_DB_USER" -d "$MYR_PREDEPLOY_DB_NAME" --no-owner --no-acl < "$DUMP_FILE"'
 
 # Fail closed: without these the step would quietly prove nothing.
 [[ -n "$postgres_image" ]] || die "MYRMIDON_PREDEPLOY_POSTGRES_IMAGE is required: the check restores the predeploy dump into its own Postgres (set MYRMIDON_PREDEPLOY_CHECK=0 to deploy without the check); nothing was changed"

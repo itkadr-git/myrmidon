@@ -386,6 +386,29 @@ describe("myrmidon(G2) compileHermesProfile — LLM gateway (instance-level base
     expect(yaml).not.toMatch(/api_key:\s*"(?!\$\{)/);
   });
 
+  // myrmidon(4329-hermes-config-backup-secrets): the key's VALUE reaches the
+  // compiler through input.env (it lands in hermes/.env, 0600, secret). Even
+  // with it in hand, config.yaml must never contain it — only the ${VAR}
+  // reference. This is the guarantee whose violation (via the vendor's
+  // hermes/backups copies) the apply-script cleanup exists for.
+  it("never writes the llm key's actual value into config.yaml even though it holds it for .env", () => {
+    const { profile, warnings } = compileHermesProfileDetailed(
+      baseInput({
+        adapterConfig: { model: "custom-provider/some-model", provider: "custom" },
+        llm: { baseUrl: "https://example.com/llm/v1", apiKeyEnv: "LLM_GATEWAY_API_KEY" },
+        env: { LLM_GATEWAY_API_KEY: { value: "sk-fake-llm-gateway-key-0001", secret: true } },
+      }),
+    );
+    const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
+    expect(yaml).not.toContain("sk-fake-llm-gateway-key-0001");
+    expect(yaml).toContain('api_key: "${LLM_GATEWAY_API_KEY}"');
+    expect(warnings).toEqual([]);
+    // The value itself travels only in hermes/.env, marked secret.
+    const envFile = profile.files.find((file) => file.path === "hermes/.env");
+    expect(envFile?.secret).toBe(true);
+    expect(envFile?.content).toContain('LLM_GATEWAY_API_KEY="sk-fake-llm-gateway-key-0001"');
+  });
+
   it("writes base_url alone, with api_key left out, when apiKeyEnv is not set", () => {
     const profile = compileHermesProfile(
       baseInput({ adapterConfig: { provider: "custom" }, llm: { baseUrl: "https://example.com/llm/v1" } }),

@@ -1567,7 +1567,9 @@ describeEmbeddedPostgres("Telegram direct messages become a standing Agent Chat 
 
     await vi.waitFor(() =>
       expect(
-        firstPost.mock.calls.some(([text]) => text.includes("Попросите администратора")),
+        // myrmidon(1.7-TG-LOCALE): unlinked accounts have no board user, so
+        // the refusal follows the instance default (English).
+        firstPost.mock.calls.some(([text]) => text.includes("link your Telegram account")),
       ).toBe(true),
     );
   });

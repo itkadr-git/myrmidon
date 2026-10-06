@@ -16,6 +16,10 @@ import type { Db } from "@paperclipai/db";
 import { upsertUi2LanguageSchema, type Ui2Language } from "@paperclipai/shared";
 import { validate } from "../../middleware/validate.js";
 import { getActorInfo } from "../../routes/authz.js";
+// myrmidon(1.7-TG-LOCALE): the Settings → Language screen shows the source of
+// the effective value, including the instance-wide env force on the Telegram
+// bridge's language (null when unset).
+import { forcedBridgeLocale } from "../agent-chat-bridge/locales/index.js";
 import {
   createUi2LanguageService,
   ui2LanguageAuditEntries,
@@ -42,7 +46,21 @@ export function ui2LanguageRoutes(db: Db, deps?: Ui2LanguageServiceDeps) {
     const userId = requireBoardUserId(req, res);
     if (!userId) return;
     const language = await service.getLanguage(userId);
-    res.json({ language: language ?? "en", updatedAt: null });
+    // myrmidon(1.7-TG-LOCALE): the Settings → Language screen must show the
+    // SOURCE of the effective value. `telegramBridge.source` is
+    // "environment" while MYRMIDON_TELEGRAM_DM_LANGUAGE forces all bridged DM
+    // texts instance-wide; "user" when the person's own preference decides.
+    // Recomputed per read: the env var is read on every request, so a screen
+    // refresh shows the truth without a server restart.
+    const forced = forcedBridgeLocale(process.env);
+    res.json({
+      language: language ?? "en",
+      updatedAt: null,
+      telegramBridge:
+        forced !== null
+          ? { source: "environment" as const, forcedLanguage: forced }
+          : { source: "user" as const },
+    });
   });
 
   router.put("/myrmidon/ui2/language/me", validate(upsertUi2LanguageSchema), async (req, res) => {
