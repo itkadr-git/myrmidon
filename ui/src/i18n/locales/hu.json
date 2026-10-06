@@ -477,5 +477,11 @@
     "titleGenerationModelHint": "Model for auxiliary title generation. Empty keeps the instance default.",
     "compressionModel": "Compression model",
     "compressionModelHint": "Model for auxiliary compression summaries. Empty keeps the instance default."
+  },
+  "evals": {
+    "sameFamily": {
+      "label": "Same-family judge",
+      "tooltip": "The judge model belongs to the same family as the evaluated agent model"
+    }
   }
 }
