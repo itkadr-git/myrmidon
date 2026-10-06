@@ -5241,7 +5241,7 @@ export function agentRoutes(
 
     await assertCanManageInstructionsPath(req, existing);
     assertExternalInstructionsAdmin(req, existing);
-    
+
     // myrmidon(1.6.2-AUTONOMY-MATRIX): enforce change_instructions verdict.
     // approval_required denies with 403 autonomy_approval_required until the
     // holding-action follow-up (the board caller bypasses the gate entirely).
@@ -5348,7 +5348,7 @@ export function agentRoutes(
     await assertCanManageInstructionsPath(req, existing);
     assertExternalInstructionsAdmin(req, existing);
     if (req.body.mode === "external") assertInstanceAdmin(req);
-    
+
     // myrmidon(1.6.2-AUTONOMY-MATRIX): enforce change_instructions verdict.
     // approval_required denies with 403 autonomy_approval_required until the
     // holding-action follow-up (the board caller bypasses the gate entirely).
@@ -5492,7 +5492,7 @@ export function agentRoutes(
     if (!existing) return;
     await assertCanManageInstructionsPath(req, existing);
     assertExternalInstructionsAdmin(req, existing);
-    
+
     // myrmidon(1.6.2-AUTONOMY-MATRIX): enforce change_instructions verdict.
     // approval_required denies with 403 autonomy_approval_required until the
     // holding-action follow-up (the board caller bypasses the gate entirely).
@@ -5768,6 +5768,21 @@ export function agentRoutes(
       await dbAutonomyGate(db).assertAllowed(req, "pause_wake_agents");
     }
     await assertCanPauseAgent(req, existing);
+    // myrmidon(1.6-AUTONOMY): pause is an action class of its own. An agent
+    // caller whose matrix cell says `approval_required` does not pause anyone:
+    // the action is held behind an approval card and answered 202, and only an
+    // approval replays it (myrmidon/autonomy/action-execution.ts). `forbidden`
+    // throws the 403 below; non-agent callers are not subject to the matrix.
+    const pausedHold = await dbAutonomyGate(db).holdOrAssert(req, "pause_wake_agents", {
+      route: `/agents/${id}/pause`,
+      method: "POST",
+      params: { agentId: id },
+      body: req.body,
+    });
+    if (pausedHold.held) {
+      res.status(202).json({ held: true, approvalId: pausedHold.approvalId });
+      return;
+    }
     const agent = await svc.pause(id);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
@@ -5819,6 +5834,18 @@ export function agentRoutes(
       res.status(409).json({
         error: existing.orgChainHealth?.repairGuidance ?? "Repair this agent's reporting chain before resuming it",
       });
+      return;
+    }
+    // myrmidon(1.6-AUTONOMY): same hold as pause — an `approval_required` cell
+    // holds the resume behind an approval card instead of waking the agent.
+    const resumedHold = await dbAutonomyGate(db).holdOrAssert(req, "pause_wake_agents", {
+      route: `/agents/${id}/resume`,
+      method: "POST",
+      params: { agentId: id },
+      body: req.body,
+    });
+    if (resumedHold.held) {
+      res.status(202).json({ held: true, approvalId: resumedHold.approvalId });
       return;
     }
     const agent = await svc.resume(id);
@@ -6189,6 +6216,21 @@ export function agentRoutes(
       res.status(409).json({
         error: agent.orgChainHealth?.repairGuidance ?? "Repair this agent's reporting chain before starting runs",
       });
+      return;
+    }
+
+    // myrmidon(1.6-AUTONOMY): waking an agent is the same action class as
+    // pausing it. An agent caller whose cell says `approval_required` gets 202
+    // with an approval card instead of a run; the wake is replayed only after
+    // the approval lands. Board/admin callers are not subject to the matrix.
+    const wakeHold = await dbAutonomyGate(db).holdOrAssert(req, "pause_wake_agents", {
+      route: `/agents/${id}/wakeup`,
+      method: "POST",
+      params: { agentId: id },
+      body: req.body,
+    });
+    if (wakeHold.held) {
+      res.status(202).json({ held: true, approvalId: wakeHold.approvalId });
       return;
     }
 
