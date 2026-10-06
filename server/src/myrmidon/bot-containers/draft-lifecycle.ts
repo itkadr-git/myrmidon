@@ -119,7 +119,7 @@ export async function sweepBotVolume(
     noteVolumeRoot(true, () => undefined);
   } catch {
     noteVolumeRoot(false, (message) => console.warn(message));
-    return;
+    return report;
   }
 
   try {
@@ -182,7 +182,7 @@ async function reapIfStale(dirPath: string, config: BotDiskLifecycleConfig): Pro
   // touch it, so a busy clone looks idle): the bot's own reporter decides, knowing
   // whether the work is pushed (clone-hygiene.ts).
   if ((await findRepos(dirPath)).length > 0) {
-    return;
+    return 'kept';
   }
   const lastModified = await getLastModifiedTime(dirPath);
   const now = Date.now();

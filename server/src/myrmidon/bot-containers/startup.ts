@@ -38,7 +38,6 @@ import {
 import { botProfileWiring } from "./profile-ports.js";
 import type { BotContainerActivitySink, BotMaintenancePort } from "./reconciler.js";
 import { botContainerAgentReader, getBotContainerRuntime, setBotContainerRuntime } from "./routes-wiring.js";
-import { readSharedPackageCachePath } from "./bot-disk-service.js"; // myrmidon(1.6.1-BOT-DISK-B)
 import { reportBotContainerEvent } from "../features/reporters.js"; // myrmidon(FEATURES)
 import { readBotCacheLayoutForBot } from "./bot-disk-service.js"; // myrmidon(1.6.1-BOT-DISK-B, 1.6.2-BOT-DISK-C)
 import { scopeMigrator } from "./scope-migration.js"; // myrmidon(BOT-DISK-F)

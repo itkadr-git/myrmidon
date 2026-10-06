@@ -54,7 +54,6 @@ import {
 import { logger } from "../../middleware/logger.js";
 import { recordFeatureOutcome } from "../features/recorder.js"; // myrmidon(FEATURES)
 import { SWARM_CLAIM_SWEEP_FEATURE_KEY } from "../features/reporters.js"; // myrmidon(FEATURES)
-import { currentHostMemoryGate, type HostMemoryGate } from "../run-admission.js";
 import { currentHostCpuGate, currentHostMemoryGate, type HostCpuGate, type HostMemoryGate } from "../run-admission.js";
 import { wakeNextAgentForIssueRole, type SwarmClaimServicePorts } from "./service.js";
 import { listClaimsOnNonQueueIssues, listExpiredClaims, releaseClaim } from "./store.js";
