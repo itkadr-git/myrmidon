@@ -18,6 +18,7 @@
 
 import fs from "node:fs";
 import process from "node:process";
+import { listFragments, parseFragment } from "./collect-fragments.mjs";
 
 export const COMPONENTS = [
   { label: "board", repository: "myrmidon" },
@@ -225,7 +226,13 @@ async function main() {
   }
   const notes = notesVersion ?? baseOf(version);
   const previous = previousMinorPatch(version);
-  const section = extractChangelogSection(readChangelog(), notes);
+  let section = extractChangelogSection(readChangelog(), notes);
+  // RC-NOTES: a release candidate is cut before the changelog is folded, so its
+  // notes come from the pending change fragments (docs/myrmidon/changes/*,
+  // their "changelog-en" blocks). A final release still requires its section.
+  if (!section && /-rc\.\d+$/.test(version)) {
+    section = rcNotesFromFragments();
+  }
   if (!section) {
     console.error(
       `docs/myrmidon/CHANGELOG.md has no "## ${notes}" section — a release without notes is a defect`,
@@ -250,4 +257,14 @@ async function main() {
 
 if (process.argv[1] && process.argv[1].endsWith("release-body.mjs")) {
   await main();
+}
+
+function rcNotesFromFragments(root = ".") {
+  const blocks = [];
+  for (const name of listFragments(root)) {
+    const parsed = parseFragment(fs.readFileSync(`${root}/docs/myrmidon/changes/${name}`, "utf8"), name);
+    const body = parsed?.sections?.["changelog-en"];
+    if (body && body.trim()) blocks.push(body.trim());
+  }
+  return blocks.length ? blocks.join("\n\n") : null;
 }
