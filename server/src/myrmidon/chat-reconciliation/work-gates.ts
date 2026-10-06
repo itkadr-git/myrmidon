@@ -30,7 +30,6 @@
 //      the one the audit's index work (the DB-PERF A part) completes.
 
 import {
-  agentWakeupRequests,
   chatActions,
   chatConversations,
   chatDeliveries,
@@ -92,9 +91,6 @@ const MILESTONE_RUN_STATUSES = sql.raw(
   "('queued', 'running', 'succeeded', 'interrupted', 'failed', 'timed_out', 'cancelled')",
 );
 
-const MILESTONE_OWNER_STATUSES = sql.raw(
-  "('deferred_issue_execution', 'cancelled', 'failed', 'skipped')",
-);
 
 /**
  * One statement, one boolean. `select 1 where <probe> limit 1` returns a row
@@ -115,35 +111,24 @@ function companyScope(column: SQLWrapper, companyId: string | undefined): SQL {
 /**
  * The publication flush has work when the durable outbox holds a due row,
  * when a publication is stuck mid-flight (the lane quarantines stale
- * `streaming` rows), or when one of the two notice producers the same lane
- * runs has a settled wakeup whose notice publication is still missing
- * (`enqueueInboundWakeupPublications`, `enqueueFailedChatRetryPublications`).
- * Without that last branch a settled wakeup would wait for the next
- * publication write of any kind before its "queued"/"not started" notice
- * reached the chat.
+ * `streaming` rows), or when a queued confirmation reply is waiting for its
+ * terminal reconciliation.
+ *
+ * The same lane also runs two notice producers
+ * (`enqueueInboundWakeupPublications`, `enqueueFailedChatRetryPublications`)
+ * whose condition is the absence of a notice publication for a settled
+ * wakeup. That question cannot be answered inside a cheap index probe: it
+ * costs one scan of the settled-wakeup population plus one publication probe
+ * per row, which measured slower than the sweep it would replace. The lane
+ * therefore reaches those producers through its safety window instead — one
+ * forced pass every `PUBLICATION_SAFETY_WINDOW_MS`, so a notice is delayed by
+ * at most that window on an otherwise idle instance, and is immediate
+ * whenever any other publication work opens the lane or a live commit signal
+ * arrives. See the PR's "Risks" note.
  */
 export function publicationWorkProbe(options: WorkGateOptions = {}): SQL {
   const now = options.now ?? new Date();
   const company = options.companyId;
-  // The notice publication key is minted by the two producers:
-  // `'wake:' || <owner> || ':' || <state> || ':' || endpoint || ':' || conversation`.
-  // The owner is the wakeup row itself for a failed-run retry and the
-  // coalesced owner for an inbound wakeup.
-  const noticeOwner = sql`case
-    when ${chatActions.kind} = 'failed_run_retry' then ${chatActions.id}::text
-    else coalesce(
-      ${agentWakeupRequests.payload} ->> 'coalescedIntoWakeupRequestId',
-      ${agentWakeupRequests.id}::text
-    )
-  end`;
-  const noticeState = sql`case
-    when ${agentWakeupRequests.status} = 'deferred_issue_execution' then 'queued'
-    else 'not_started'
-  end`;
-  const noticeSuffix = sql`':' || ${chatActions.endpointId}::text
-    || ':' || ${chatActions.conversationId}::text`;
-  const noticeKey = sql`'wake:' || ${noticeOwner} || ':' || ${noticeState} || ${noticeSuffix}`;
-  const removedNoticeKey = sql`'wake:' || ${noticeOwner} || ':removed' || ${noticeSuffix}`;
   return sql`(
     exists (
       select 1
@@ -170,29 +155,6 @@ export function publicationWorkProbe(options: WorkGateOptions = {}): SQL {
           chatActions.companyId,
           company,
         )}
-    )
-    or exists (
-      select 1
-      from ${chatActions}
-      inner join ${agentWakeupRequests}
-        on ${agentWakeupRequests.id} = ${chatActions.id}
-        and ${agentWakeupRequests.companyId} = ${chatActions.companyId}
-      where ${chatActions.kind} in ('inbound_wakeup', 'failed_run_retry')
-        and ${chatActions.status} in ('processed', 'failed')
-        and ${chatActions.conversationId} is not null
-        and ${agentWakeupRequests.status} in ${MILESTONE_OWNER_STATUSES}
-        and not exists (
-          select 1
-          from ${chatPublications}
-          where ${chatPublications.companyId} = ${chatActions.companyId}
-            and (
-              ${chatPublications.idempotencyKey} = ${noticeKey}
-              or (
-                ${chatActions.kind} = 'inbound_wakeup'
-                and ${chatPublications.idempotencyKey} = ${removedNoticeKey}
-              )
-            )
-        )${companyScope(chatActions.companyId, company)}
     )
   )`;
 }
@@ -347,6 +309,12 @@ export interface ChatReconciliationWorkGates {
    * place costs one extra (empty) pass and cannot lose a milestone.
    */
   noteMilestonePassCompleted(startedAt: Date, inserted: number): void;
+  /**
+   * Records a completed publication pass, so the cheap probe is not the only
+   * thing that decides whether the lane opens: see
+   * `PUBLICATION_SAFETY_WINDOW_MS`.
+   */
+  notePublicationPassCompleted(at: Date): void;
   /** Test seam: forget the run-milestone watermark. */
   resetMilestoneWatermark(): void;
 }
@@ -362,20 +330,43 @@ export interface ChatReconciliationWorkGates {
  */
 export const MILESTONE_WATERMARK_SAFETY_WINDOW_MS = 10 * 60_000;
 
+/**
+ * Default bound on how long the publication gate may stay closed without a
+ * pass. The two notice producers inside the publication lane
+ * (`enqueueInboundWakeupPublications`, `enqueueFailedChatRetryPublications`)
+ * answer a question that no cheap index probe can answer (see
+ * `publicationWorkProbe`), so the lane reaches them through a forced pass
+ * every window instead. A window of a few seconds keeps a notice's delay
+ * bounded while still removing the overwhelming majority of the lane's idle
+ * ticks; a live publication commit signal is unaffected and always wakes the
+ * lane immediately.
+ */
+export const PUBLICATION_SAFETY_WINDOW_MS = 5_000;
+
 export function createChatReconciliationWorkGates(input: {
   db: WorkGateDb;
   companyId?: string;
   now?: () => Date;
   /** Safety-window override (a test seam); see the constant above. */
   milestoneSafetyWindowMs?: number;
+  /** Safety-window override (a test seam); see the constant above. */
+  publicationSafetyWindowMs?: number;
 }): ChatReconciliationWorkGates {
   const now = input.now ?? (() => new Date());
   const safetyWindowMs =
     input.milestoneSafetyWindowMs ?? MILESTONE_WATERMARK_SAFETY_WINDOW_MS;
+  const publicationWindowMs =
+    input.publicationSafetyWindowMs ?? PUBLICATION_SAFETY_WINDOW_MS;
   let milestoneWatermark: Date | null = null;
+  let lastPublicationPassAt: Date | null = null;
 
   return {
     async hasPublicationWork() {
+      if (
+        lastPublicationPassAt === null ||
+        now().getTime() - lastPublicationPassAt.getTime() >= publicationWindowMs
+      )
+        return true;
       return probe(
         input.db,
         publicationWorkProbe({ now: now(), companyId: input.companyId }),
@@ -414,6 +405,9 @@ export function createChatReconciliationWorkGates(input: {
     },
     noteMilestonePassCompleted(startedAt, inserted) {
       if (inserted === 0) milestoneWatermark = startedAt;
+    },
+    notePublicationPassCompleted(at) {
+      lastPublicationPassAt = at;
     },
     resetMilestoneWatermark() {
       milestoneWatermark = null;

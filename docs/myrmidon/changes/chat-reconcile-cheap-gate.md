@@ -41,6 +41,17 @@ divergence-section: Трек 4 — чаты и навыки
 - The Telegram-notify proactivity sweep used to sit in front of the publication
   flush inside the same lane. It is a producer for that queue, so it moved to
   its own lane and keeps its cadence while the flush is gated.
+- The publication lane also runs two notice producers
+  (`enqueueInboundWakeupPublications`, `enqueueFailedChatRetryPublications`)
+  whose condition is "a settled wakeup whose notice publication is still
+  missing". That one question cannot be asked inside a cheap index probe — it
+  costs a scan of the whole settled-wakeup population plus one publication
+  probe per row, and measured slower than the sweep it would replace — so the
+  lane reaches those producers through a safety window instead: one forced pass
+  every 5 seconds. An idle instance therefore pays for the sweep a fifth as
+  often (a fifth of its previous share of the tick), and a notice waits at most
+  that window; any other publication work, or a live commit signal, opens the lane
+  immediately.
 - Left ungated on purpose: provider-runtime reconciliation, GitHub webhook
   delivery recovery, and the periodic Telegram endpoint state-repair staging
   inside `processPendingTelegramMaintenance` (its condition is a
@@ -84,6 +95,16 @@ divergence-section: Трек 4 — чаты и навыки
 - Сводка проактивных сообщений Telegram раньше стояла в том же лейне перед
   сбросом публикаций. Она — производитель для этой очереди, поэтому переехала в
   свой лейн и сохраняет частоту, пока сброс закрыт гейтом.
+- В лейне публикаций живут ещё два производителя уведомлений
+  (`enqueueInboundWakeupPublications`, `enqueueFailedChatRetryPublications`),
+  их условие — «есть осевший wakeup, для которого ещё нет публикации
+  уведомления». Этот вопрос нельзя задать дешёвым индексным зондом: он стоит
+  проход по всей популяции осевших wakeup плюс зонд публикации на строку и на
+  замере оказался дороже той сводки, которую заменяет. Поэтому лейн добирается
+  до этих производителей через безопасное окно: один принудительный проход раз
+  в 5 секунд. Пустой инстанс платит за сводку в пять раз реже, а уведомление
+  ждёт не дольше окна; любая другая работа по публикациям или живой сигнал
+  коммита открывают лейн сразу.
 - Специально без гейтов: сверка провайдерских рантаймов, восстановление
   доставки GitHub-вебхуков и периодическая постановка ремонта состояния
   Telegram-эндпоинтов внутри `processPendingTelegramMaintenance` (её условие —
@@ -96,4 +117,4 @@ divergence-section: Трек 4 — чаты и навыки
 
 | ID | Что меняем | Файлы вендора | Причина | Тест-сторож | Как снимать | PR |
 |---|---|---|---|---|---|---|
-| DB-PERF-C-P5 | Перед запуском тяжёлого лейна сверки чатов координатор спрашивает дешёвый гейт «есть работа» (`select 1 … limit 1` по очереди лейна, модуль `server/src/myrmidon/chat-reconciliation/work-gates.ts`) и пропускает лейн на этом тике, если работы нет; `notifyPublications()` будит лейны публикаций и вех минуя гейт ровно на один проход; лейн вех ведёт в памяти процесса отметку последнего завершённого прохода (старт процесса — полный проход, вставивший проход отметку не двигает, раз в 10 минут — полный проход для ограничения задержки); сводка проактивных сообщений Telegram выделена в отдельный лейн, чтобы гейт сброса публикаций её не останавливал. Без переданных гейтов поведение вендорское, лейн за лейном | `server/src/app.ts` (фабрика `createChatReconciliationCoordinator`: необязательные входы `workGates` и `sweepTelegramNotifyProactivity`, имя лейна и точки вызова; проводка в `startServer`), метки `myrmidon(DB-PERF-C-P5)` | Пункт П5 аудита базы (документ db-audit, 04.10): секундный тик стоит ≈5,5 тыс. с CPU за 13,6 ч на почти пустых очередях | `server/src/myrmidon/chat-reconciliation/work-gates.myrmidon.test.ts`, `server/src/myrmidon/chat-reconciliation/coordinator-work-gates.myrmidon.test.ts` | Никогда (наше решение по цене пустого тика). Снимать: убрать передачу `workGates` в проводке `startServer` — координатор вернётся к запуску всех лейнов каждый тик; при переносе сверить `grep -rn 'myrmidon(DB-PERF-C-P5)'` | (PR) |
+| DB-PERF-C-P5 | Перед запуском тяжёлого лейна сверки чатов координатор спрашивает дешёвый гейт «есть работа» (`select 1 … limit 1` по очереди лейна, модуль `server/src/myrmidon/chat-reconciliation/work-gates.ts`) и пропускает лейн на этом тике, если работы нет; `notifyPublications()` будит лейны публикаций и вех минуя гейт ровно на один проход; лейн вех ведёт в памяти процесса отметку последнего завершённого прохода (старт процесса — полный проход, вставивший проход отметку не двигает, раз в 10 минут — полный проход для ограничения задержки); сводка проактивных сообщений Telegram выделена в отдельный лейн, чтобы гейт сброса публикаций её не останавливал. Лейн публикаций добирается до двух производителей уведомлений через безопасное окно — один принудительный проход раз в 5 секунд (условие этих производителей не сводится к дешёвому индексному зонду). Без переданных гейтов поведение вендорское, лейн за лейном | `server/src/app.ts` (фабрика `createChatReconciliationCoordinator`: необязательные входы `workGates` и `sweepTelegramNotifyProactivity`, имя лейна и точки вызова; проводка в `startServer`), метки `myrmidon(DB-PERF-C-P5)` | Пункт П5 аудита базы (документ db-audit, 04.10): секундный тик стоит ≈5,5 тыс. с CPU за 13,6 ч на почти пустых очередях | `server/src/myrmidon/chat-reconciliation/work-gates.myrmidon.test.ts`, `server/src/myrmidon/chat-reconciliation/coordinator-work-gates.myrmidon.test.ts` | Никогда (наше решение по цене пустого тика). Снимать: убрать передачу `workGates` в проводке `startServer` — координатор вернётся к запуску всех лейнов каждый тик; при переносе сверить `grep -rn 'myrmidon(DB-PERF-C-P5)'` | (PR) |
