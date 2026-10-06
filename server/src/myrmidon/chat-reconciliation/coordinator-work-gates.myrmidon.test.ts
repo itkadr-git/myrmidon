@@ -19,6 +19,7 @@ function createGates(answer: boolean): ChatReconciliationWorkGates {
     hasSlackSessionSyncWork: vi.fn(async () => answer),
     hasMilestoneWork: vi.fn(async () => answer),
     noteMilestonePassCompleted: vi.fn(),
+    notePublicationPassCompleted: vi.fn(),
     resetMilestoneWatermark: vi.fn(),
   };
 }
@@ -44,7 +45,7 @@ function createHarness(options: {
     onError: (lane, error) => errors.push({ lane, error }),
     milestoneMinimumSpacingMs: 0,
   });
-  return { lanes, errors, coordinator };
+  return { lanes, errors, coordinator, gates: options.workGates };
 }
 
 describe("chat reconciliation coordinator work gates", () => {
@@ -76,6 +77,9 @@ describe("chat reconciliation coordinator work gates", () => {
       1,
     );
     expect(h.lanes.sweepTelegramNotifyProactivity).toHaveBeenCalledTimes(1);
+
+    // A skipped pass must not postpone the lane's safety pass.
+    expect(gates.notePublicationPassCompleted).not.toHaveBeenCalled();
   });
 
   it("runs each lane exactly as often as a coordinator without gates", async () => {
@@ -104,6 +108,8 @@ describe("chat reconciliation coordinator work gates", () => {
     }
     expect(gated.errors).toEqual([]);
     expect(plain.errors).toEqual([]);
+    // A pass that ran is recorded, so it also postpones the safety pass.
+    expect(gated.gates!.notePublicationPassCompleted).toHaveBeenCalledTimes(1);
   });
 
   it("runs the gated lanes without gates against the same empty queues", async () => {

@@ -430,6 +430,10 @@ export function createChatReconciliationCoordinator(input: {
         return;
       publicationForced = false;
       await input.flushPublications();
+      // myrmidon(DB-PERF-C-P5): a completed pass postpones the lane's forced
+      // safety pass. The gate's own probe only covers the durable publication
+      // outbox; the notice producers inside the lane need this window.
+      input.workGates?.notePublicationPassCompleted(new Date());
     },
     onError: (error) => input.onError("publications", error),
   });

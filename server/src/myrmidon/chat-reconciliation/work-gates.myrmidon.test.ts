@@ -7,6 +7,7 @@ import { PgDialect } from "drizzle-orm/pg-core";
 import { describe, expect, it, vi } from "vitest";
 import {
   MILESTONE_WATERMARK_SAFETY_WINDOW_MS,
+  PUBLICATION_SAFETY_WINDOW_MS,
   createChatReconciliationWorkGates,
   hasDeliveryWork,
   hasPublicationWork,
@@ -90,9 +91,12 @@ describe("chat reconciliation work gates", () => {
     expect(publications).toContain(
       `"chat_actions"."kind" = 'confirmation_response'`,
     );
-    // The notice branch reads the wakeup owner and the notice's idempotency key.
-    expect(publications).toContain(`inner join "agent_wakeup_requests"`);
-    expect(publications).toContain(`"chat_publications"."idempotency_key" =`);
+    // The settled-wakeup notice producers are NOT modelled here: that
+    // question needs a scan of the whole settled population and measured
+    // slower than the sweep it would replace. The lane reaches them through
+    // its safety window instead.
+    expect(publications).not.toContain(`inner join "agent_wakeup_requests"`);
+    expect(publications).not.toContain(`"chat_publications"."idempotency_key" =`);
 
     // Deliveries: chat_deliveries_work_idx plus the chat_actions outboxes.
     expect(deliveries).toContain(
@@ -135,6 +139,45 @@ describe("chat reconciliation work gates", () => {
     // Only the queue's own `now` bound is bound; no company scope is added.
     expect(h.params()[0]).toHaveLength(1);
     expect(h.params()[0]).not.toContain(COMPANY_ID);
+  });
+});
+
+describe("publication gate safety window", () => {
+  it("treats the first pass of a process as a full pass without a query", async () => {
+    const h = harness([]);
+    const gates = createChatReconciliationWorkGates({ db: h.db });
+    await expect(gates.hasPublicationWork()).resolves.toBe(true);
+    expect(h.statements).toHaveLength(0);
+  });
+
+  it("probes the outbox while the window is still open", async () => {
+    const passAt = new Date("2026-01-01T00:00:00.000Z");
+    const h = harness([]);
+    const gates = createChatReconciliationWorkGates({
+      db: h.db,
+      now: () => new Date(passAt.getTime() + PUBLICATION_SAFETY_WINDOW_MS - 1),
+    });
+    gates.notePublicationPassCompleted(passAt);
+    await expect(gates.hasPublicationWork()).resolves.toBe(false);
+    expect(h.statements).toHaveLength(1);
+    expect(h.rendered()[0]).toContain(
+      `"chat_publications"."state" in ('pending', 'retry')`,
+    );
+  });
+
+  it("forces one pass per safety window, so idle ticks stay cheap", async () => {
+    // The two notice producers inside the publication lane ask a question no
+    // cheap index probe can answer; the window is what keeps their notices
+    // bounded while the lane's idle ticks stop paying for the sweep.
+    const passAt = new Date("2026-01-01T00:00:00.000Z");
+    const h = harness([]);
+    const gates = createChatReconciliationWorkGates({
+      db: h.db,
+      now: () => new Date(passAt.getTime() + PUBLICATION_SAFETY_WINDOW_MS),
+    });
+    gates.notePublicationPassCompleted(passAt);
+    await expect(gates.hasPublicationWork()).resolves.toBe(true);
+    expect(h.statements).toHaveLength(0);
   });
 });
 
@@ -214,12 +257,14 @@ describe("chat reconciliation work gate factory", () => {
   it("runs one statement per gate and forwards the queue answers", async () => {
     const h = harness([{ probe: 1 }]);
     const gates = createChatReconciliationWorkGates({ db: h.db });
+    // The first publication tick is a full pass too (its own safety window
+    // starts empty), so three queue probes run here and nothing else.
     await expect(gates.hasPublicationWork()).resolves.toBe(true);
     await expect(gates.hasDeliveryWork()).resolves.toBe(true);
     await expect(gates.hasSlackFileReceiptWork()).resolves.toBe(true);
     await expect(gates.hasSlackSessionSyncWork()).resolves.toBe(true);
     // The milestone gate answers from memory until a pass has been recorded.
     await expect(gates.hasMilestoneWork()).resolves.toBe(true);
-    expect(h.statements).toHaveLength(4);
+    expect(h.statements).toHaveLength(3);
   });
 });
