@@ -162,5 +162,21 @@ export const heartbeatRuns = pgTable(
       sql`(${table.contextSnapshot} ->> 'taskKey')`,
       table.createdAt.desc(),
     ),
+    // myrmidon(HEARTBEAT-POLL): driver index for the run-ownership probe
+    // (server/src/services/conversation-continuation.ts,
+    // getConversationOwnershipBlocker). That probe asks one question on every
+    // wake: "does this task still have a terminal legacy run of a conversation
+    // adapter that may own a process or an environment lease?". Its predicate is
+    // company + runtime_mode + the run's issue reference
+    // (native_issue_id, else context_snapshot->>'issueId') + four terminal
+    // statuses, with an OR over JSON evidence and a correlated exists over the
+    // run events. Only this index carries the issue reference and the
+    // terminal-legacy filter together. See docs/myrmidon/DIVERGENCE.md.
+    companyLegacyTerminalIssueIdx: index("heartbeat_runs_company_legacy_terminal_issue_idx").on(
+      table.companyId,
+      sql`(coalesce(${table.nativeIssueId}::text, ${table.contextSnapshot} ->> 'issueId'))`,
+      table.createdAt.desc(),
+      table.id.desc(),
+    ).where(sql`${table.runtimeMode} = 'legacy' and ${table.status} in ('failed', 'timed_out', 'interrupted', 'cancelled')`),
   }),
 );
