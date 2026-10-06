@@ -261,6 +261,16 @@ fi
 gh release upload "$tag" release-components.json --repo "$repo" --clobber
 log "uploaded the component manifest asset release-components.json"
 
+# ONE-COMMAND-INSTALL (1.6.6): the installer of a fresh installation rides with
+# every release as the asset `install.sh`, so
+# https://github.com/<repo>/releases/latest/download/install.sh always serves the
+# installer of the latest release. The same file is committed at
+# scripts/myrmidon/install/install.sh (the single source of truth).
+installer="$here/../install/install.sh"
+[[ -f "$installer" ]] || die "the installer script $installer is missing"
+gh release upload "$tag" "$installer#install.sh" --repo "$repo" --clobber
+log "uploaded the installer asset install.sh"
+
 # ----------------------------------------------- 5. supersede the previous --
 # The manual convention for 1.3.x/1.4.0: the previous minor/patch release's
 # title gains "(superseded)". Idempotent: no-op when the marker is already
