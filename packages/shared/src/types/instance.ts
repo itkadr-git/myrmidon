@@ -167,6 +167,7 @@ export interface InstanceGeneralSettings {
    * of the same field (packages/shared/src/validators/instance.ts).
    */
   guardrailModes?: GuardrailModesSettings;
+  /**
    * myrmidon(REVIEW-ROUTING): automatic reviewer routing, changed from
    * `GET`/`PUT /api/myrmidon/companies/:companyId/review-routing/settings`.
    * Absent means the defaults.

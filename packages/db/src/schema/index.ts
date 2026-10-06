@@ -227,7 +227,7 @@ export {
   myrmidonScopeAgentPrefs,
 } from "./myrmidon_bot_scope.js";
 // myrmidon(1.6-GRD): flag-only guardrail events (secrets/pii detected on run output).
-export { guardrailEvents } from "./guardrail_events.js"; (1.6.1 GUARDRAILS A: flag-only secret/pii output detectors, guardrail_events journal, read route (1.6-GRD))
+export { guardrailEvents } from "./guardrail_events.js";
 export { myrmidonFleetServers } from "./myrmidon_fleet_servers.js"; // myrmidon(SC1): fleet-server registry for the browser console
 // myrmidon(1.6-SWARM): leases of the per-role task queues.
 export { issueClaims } from "./issue_claims.js";

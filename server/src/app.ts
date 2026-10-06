@@ -144,7 +144,7 @@ import { ui2LanguageRoutes } from "./myrmidon/ui2-language/routes.js"; // myrmid
 import { myrmidonForagingRoutes } from "./myrmidon/foraging/index.js"; // myrmidon(1.6-FORAGE)
 // myrmidon(1.6-GRD): guardrail event journal for the flag-only output detectors
 import { myrmidonGuardrailsRoutes } from "./myrmidon/guardrails/index.js"; // myrmidon(1.6-GRD)
-import { myrmidonAgentMemoryRoutes, myrmidonAgentMemorySettingsRoutes } from "./myrmidon/agent-memory/index.js"; // myrmidon(MEMORY-UI) (1.6.1 GUARDRAILS A: flag-only secret/pii output detectors, guardrail_events journal, read route (1.6-GRD))
+import { myrmidonAgentMemoryRoutes, myrmidonAgentMemorySettingsRoutes } from "./myrmidon/agent-memory/index.js"; // myrmidon(MEMORY-UI)
 // myrmidon(1.6-SKILL-LIFE): company skill lifecycle (candidate/verified/deprecated, rollback)
 import { myrmidonSkillLifecycleRoutes } from "./myrmidon/skill-lifecycle/index.js";
 import {
