@@ -112,7 +112,21 @@ export async function getConversationOwnershipBlocker(db: Db, companyId: string,
       and (${environmentLeases.releasedAt} is null
         or ${environmentLeases.status} = 'pending_cleanup'
         or ${environmentLeases.cleanupStatus} = 'failed'))`;
-  const candidates = await db.select({ run: heartbeatRuns, activeLease }).from(heartbeatRuns)
+  // myrmidon(OPE-4131-B): the blocker reads only the fields it returns and
+  // checks. A full-row select dragged the multi-KB result_json / runner
+  // profile / context snapshot through the executor ~10 times per run, and
+  // planning alone took 74 ms on production. See docs/myrmidon/DIVERGENCE.md
+  // "OPE-4131-B".
+  const candidates = await db.select({
+    run: {
+      id: heartbeatRuns.id,
+      agentId: heartbeatRuns.agentId,
+      processPid: heartbeatRuns.processPid,
+      processGroupId: heartbeatRuns.processGroupId,
+      processStartedAt: heartbeatRuns.processStartedAt,
+    },
+    activeLease,
+  }).from(heartbeatRuns)
     .where(and(
       eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.runtimeMode, "legacy"),
       conversationRunPredicate(),
