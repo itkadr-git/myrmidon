@@ -235,12 +235,6 @@ export interface InstanceGeneralSettings {
    * environment". Kept in sync with the validator of the same field.
    */
   agentMemory?: AgentMemorySettings;
-  /**
-   * myrmidon(1.6.1-BOT-DISK-D): shared mount settings for bots, changed from
-   * the instance settings page. Controls whether bots can access a shared directory
-   * and what permissions they have. Absent means "shared mount is disabled".
-   */
-  sharedMount?: SharedMountSettings;
 }
 
 export interface InstanceExperimentalSettings {
