@@ -34,6 +34,9 @@ import { swarmClaimSettingsSchema } from "../myrmidon-swarm-claim.js";
 // myrmidon(1.6.1-WIP-LIMIT-A): the per-agent WIP limit settings stored in the
 // same general settings row.
 import { wipLimitSettingsSchema } from "../myrmidon-wip-limit.js";
+// myrmidon(1.6.5-DB-RETENTION): the retention sweep settings stored in the
+// same general settings row (the `lastRun` sub-key rides along passthrough).
+import { dataRetentionSettingsSchema } from "../myrmidon-data-retention.js";
 // myrmidon(REVIEW-ROUTING): the automatic reviewer routing settings stored in the same row.
 import { reviewRoutingSettingsSchema } from "../myrmidon-review-routing.js";
 // myrmidon(REVIEW-REWORK): the review-return loop settings stored in the same row.
@@ -167,6 +170,14 @@ export const instanceGeneralSettingsSchema = z.object({
   // per-agent overrides, changed from /api/myrmidon/companies/:id/wip-limit/settings;
   // absent means the feature counts but never signals (all limits null).
   wipLimit: wipLimitSettingsSchema.optional(),
+  // myrmidon(1.6.5-DB-RETENTION): retention of runs and logs in whole days per
+  // table group (0 = keep forever), changed from /api/myrmidon/data-retention;
+  // absent means the built-in defaults (90/90/90). `lastRun` is the sweep's own
+  // state: carried through, never required (re-validated on read by the
+  // feature module).
+  dataRetention: dataRetentionSettingsSchema
+    .extend({ lastRun: z.record(z.string(), z.unknown()).optional() })
+    .optional(),
   // myrmidon(REVIEW-ROUTING): automatic reviewer routing, changed from
   // /api/myrmidon/companies/:id/review-routing/settings; absent means the defaults.
   reviewRouting: reviewRoutingSettingsSchema.optional(),

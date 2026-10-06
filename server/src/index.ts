@@ -146,6 +146,8 @@ import { createBotDiskQuotaScheduler } from "./myrmidon/bot-containers/bot-disk-
 // myrmidon(BOT-DISK E): measures the host disk and signals when it crosses the threshold
 import { createHostDiskScheduler } from "./myrmidon/host-disk/index.js"; // myrmidon(BOT-DISK E)
 import { createAlertRecoveryScheduler } from "./myrmidon/monitoring/alert-recovery/index.js"; // myrmidon(1.6.6-MONITORING-D)
+// myrmidon(1.6.5-DB-RETENTION): sweeps runs and logs past their retention
+import { createDataRetentionScheduler } from "./myrmidon/data-retention/index.js"; // myrmidon(1.6.5-DB-RETENTION)
 import { createRunStallSweepFromHeartbeat } from "./myrmidon/run-stall/index.js"; // myrmidon(RUN-STALL)
 // myrmidon(HERMES-RUN-REATTACH): reattach live gateway runs after a board restart
 import { sweepGatewayRunReattach, GATEWAY_REATTACH_SWEEP_INTERVAL_MS } from "./myrmidon/gateway-run-reattach.js";
@@ -1607,6 +1609,14 @@ async function startServerWithDatabaseTeardown(
       track: trackHeartbeatSchedulerWork,
     });
 
+    // myrmidon(1.6.5-DB-RETENTION): one retention pass per tick; the pass
+    // deletes old runs and logs in bounded batches and re-reads its settings
+    // (GET/PATCH /api/myrmidon/data-retention) at the top of every pass
+    const scheduleDataRetentionSweep = createDataRetentionScheduler({
+      db: db as any,
+      track: trackHeartbeatSchedulerWork,
+    });
+
     // The restart-safe cleanup backstop for adapter login sessions. The
     // in-process five-minute timer stays the primary control. This reaper runs
     // on startup and on the scheduler interval. It deletes the login sandbox for
@@ -1972,6 +1982,7 @@ async function startServerWithDatabaseTeardown(
         scheduleBotDiskQuotaSweep(); // myrmidon(1.6.1-BOT-DISK-C)
         scheduleHostDiskSweep(); // myrmidon(BOT-DISK E)
         scheduleAlertRecoverySweep(); // myrmidon(1.6.6-MONITORING-D)
+        scheduleDataRetentionSweep(); // myrmidon(1.6.5-DB-RETENTION)
         scheduleAdapterLoginReaperSweep();
         scheduleSetupTokenReaperSweep();
         scheduleEnvironmentLeaseCleanupSweep();

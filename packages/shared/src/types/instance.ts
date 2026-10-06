@@ -21,6 +21,8 @@ import type { SwarmClaimSettings } from "../myrmidon-swarm-claim.js";
 // myrmidon(1.6.1-WIP-LIMIT-A): per-agent WIP limits of the same general settings row.
 import type { AgentMemorySettings } from "../myrmidon-agent-memory.js";
 import type { WipLimitSettings } from "../myrmidon-wip-limit.js";
+// myrmidon(1.6.5-DB-RETENTION): the stored retention settings shape
+import type { DataRetentionSettings, DataRetentionLastRun } from "../myrmidon-data-retention.js";
 // myrmidon(REVIEW-ROUTING): automatic reviewer routing settings of the same row.
 import type { ReviewRoutingSettings } from "../myrmidon-review-routing.js";
 import type { ReviewReworkSettings } from "../myrmidon-review-rework.js";
@@ -186,6 +188,17 @@ export interface InstanceGeneralSettings {
    * same field (packages/shared/src/validators/instance.ts).
    */
   wipLimit?: WipLimitSettings;
+  /**
+   * myrmidon(1.6.5-DB-RETENTION): retention of runs and logs in whole days
+   * per table group (0 = keep forever), changed from
+   * `GET`/`PATCH /api/myrmidon/data-retention`. Absent means the built-in
+   * defaults (90/90/90). The sweep's own state rides the same object under
+   * `lastRun`; kept in sync with the validator of the same field
+   * (packages/shared/src/validators/instance.ts).
+   */
+  dataRetention?: DataRetentionSettings & {
+    lastRun?: DataRetentionLastRun | Record<string, unknown>;
+  };
   /**
    * myrmidon(REVIEW-ROUTING): automatic reviewer routing, changed from
    * `GET`/`PUT /api/myrmidon/companies/:companyId/review-routing/settings`.
