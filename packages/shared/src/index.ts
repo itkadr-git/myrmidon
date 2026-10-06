@@ -2819,6 +2819,9 @@ export * from "./myrmidon-litellm-sync.js";
 // contract of the core queue, the supervisor view and the pilot settings.
 export * from "./myrmidon-swarm-claim.js";
 
+// myrmidon(1.6.5 BASE-SKILLS): the company base-skills contract — the list of
+// skills every agent carries automatically and the gaps of that list.
+export * from "./myrmidon-base-skills.js";
 // myrmidon(1.6-AUTONOMY): role × action-class matrix, verdict resolver and per-role regulations.
 export * from "./myrmidon-autonomy.js";
 // myrmidon(1.6-CTO-CHAT-B): the owner-message-to-epic proposal contract of the CTO chat.
