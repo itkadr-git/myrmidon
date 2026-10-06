@@ -3,9 +3,11 @@ import fs from "node:fs/promises";
 import type {
   AdapterExecutionContext,
   AdapterExecutionResult,
+  PromptBreakdown,
   RuntimeStatusUpdate,
   UsageSummary,
 } from "@paperclipai/adapter-utils";
+import { measureSections } from "@paperclipai/adapter-utils/prompt-meter";
 import {
   asNumber,
   asString,
@@ -331,7 +333,10 @@ function buildHeaders(input: {
   };
 }
 
-function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null, idempotencyRunId: string): string {
+function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null, idempotencyRunId: string): {
+  text: string;
+  sections: Record<string, string | null | undefined>;
+} {
   // Stable session keys (issue/agent strategy) resume the same remote Hermes
   // conversation across runs; a stored session id from a prior run means that
   // conversation already received the task brief, so pick the compact
@@ -352,7 +357,9 @@ function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null
   });
   const sessionHandoff = nonEmpty(ctx.context.paperclipSessionHandoffMarkdown);
   const issueWorkMode = readPaperclipIssueWorkModeFromContext(ctx.context);
-  const lines = [
+  // myrmidon(1.6.5 PROMPT-BUDGET A): the identity/contract head of the input,
+  // measured as its own prompt section.
+  const identityContract = [
     `You are ${ctx.agent.name}, an AI agent employee in a Paperclip-managed company.`,
     "",
     "Paperclip runtime identity:",
@@ -375,20 +382,31 @@ function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null
           "- Use X-Paperclip-Run-Id on mutating Paperclip API requests when a Paperclip API key is available.",
           "",
         ]),
+  ].join("\n");
+  const wakePayloadBlock = wakePayloadJson
+    ? ["Structured wake payload JSON:", "```json", wakePayloadJson, "```"].join("\n")
+    : null;
+  const lines = [
+    identityContract,
     wakePrompt,
     ...(sessionHandoff ? ["", sessionHandoff] : []),
     ...(taskMarkdown ? ["", taskMarkdown] : []),
-    ...(wakePayloadJson
-      ? [
-          "",
-          "Structured wake payload JSON:",
-          "```json",
-          wakePayloadJson,
-          "```",
-        ]
-      : []),
+    ...(wakePayloadBlock ? ["", wakePayloadBlock] : []),
   ];
-  return lines.filter((line) => line !== null && line !== undefined).join("\n").trim();
+  return {
+    text: lines.filter((line) => line !== null && line !== undefined).join("\n").trim(),
+    // myrmidon(1.6.5 PROMPT-BUDGET A): the raw prompt sections, returned so
+    // buildRunBody can measure them together with the sections it owns
+    // (instructions, configuredInput) in one pass. They partition the input
+    // text almost exactly — only inter-section newlines are unaccounted for.
+    sections: {
+      identityContract,
+      wakePrompt,
+      sessionHandoff,
+      taskMarkdown,
+      wakePayloadJson: wakePayloadBlock,
+    },
+  };
 }
 
 // myrmidon(G4): translate the M1 reasoning-effort card field into the
@@ -423,13 +441,14 @@ function buildRunBody(
   sessionKey: string | null,
   agentInstructionsBundle: string,
   idempotencyRunId: string,
-): Record<string, unknown> {
+): { body: Record<string, unknown>; promptBreakdown: PromptBreakdown } {
   const paperclipApiUrl = nonEmpty(ctx.config.paperclipApiUrl);
   const payloadTemplate = parseObject(ctx.config.payloadTemplate);
   const configuredInput = nonEmpty(payloadTemplate.input);
+  const builtInput = buildInput(ctx, paperclipApiUrl, idempotencyRunId);
   const input = configuredInput && ctx.context.conversationMode === true
-    ? `${configuredInput}\n\n${buildInput(ctx, paperclipApiUrl, idempotencyRunId)}`
-    : configuredInput ?? buildInput(ctx, paperclipApiUrl, idempotencyRunId);
+    ? `${configuredInput}\n\n${builtInput.text}`
+    : configuredInput ?? builtInput.text;
   const cardInstructions =
     nonEmpty(ctx.config.instructions) ??
     nonEmpty(payloadTemplate.instructions) ??
@@ -455,7 +474,7 @@ function buildRunBody(
   // an absent pair leaves the body without the field entirely (see
   // buildGitHubBrokerField).
   const githubBroker = buildGitHubBrokerField(ctx.config);
-  return {
+  const body: Record<string, unknown> = {
     ...payloadTemplate,
     input,
     instructions,
@@ -465,6 +484,34 @@ function buildRunBody(
     ...(modelOptions ? { model_options: modelOptions } : {}),
     github_broker: githubBroker,
   };
+  // myrmidon(1.6.5 PROMPT-BUDGET A): extend buildInput's per-section
+  // breakdown with the sections buildRunBody owns. `instructionsBundle` and
+  // `cardInstructions` are measured separately (the bundle dominates and is
+  // the first optimization target); the wire `instructions` field is their
+  // join. A configured payloadTemplate input replaces the assembled input
+  // text, so its sections are replaced by `configuredInput` rather than
+  // summed with them. `total` is measured against the serialized run body
+  // itself so it covers the JSON envelope, payloadTemplate extras and the
+  // broker field too; section estimates cover only their own text, so the
+  // parts need not sum exactly to `total` (unlike the joined-less contract,
+  // where total is the exact parts sum).
+  const promptBreakdown = measureSections(
+    {
+      instructionsBundle: agentInstructionsBundle,
+      cardInstructions,
+      ...(configuredInput && ctx.context.conversationMode === true
+        ? // conversation mode appends the assembled input after the configured
+          // input, so both are on the wire and both are measured.
+          { ...builtInput.sections, configuredInput }
+        : configuredInput
+          ? // a configured input replaces the assembled input text: measuring
+            // both would double-count a prompt only one of which was sent.
+            { configuredInput }
+          : builtInput.sections),
+    },
+    { joined: JSON.stringify(body) },
+  );
+  return { body, promptBreakdown };
 }
 
 async function readResponseJson(response: Response): Promise<unknown> {
@@ -1142,6 +1189,11 @@ export function mapFinalResultForTest(input: {
   sessionKey: string | null;
   strategy: SessionKeyStrategy;
   redactText?: TextRedactor;
+  /** myrmidon(1.6.5 PROMPT-BUDGET A): per-section prompt-token breakdown of
+   * the run's request body, recorded on resultJson for the server to persist
+   * into heartbeat_runs.usageJson.promptBreakdown. Optional so existing test
+   * callers that exercise only the result mapping keep their shape. */
+  promptBreakdown?: PromptBreakdown;
 }): AdapterExecutionResult {
   const redactText = input.redactText ?? sanitizeSensitiveText;
   const payload = input.terminal.payload ?? {};
@@ -1182,6 +1234,7 @@ export function mapFinalResultForTest(input: {
     timedOut: false,
     provider: "hermes_gateway",
     model: extractModel(payload),
+    ...(input.promptBreakdown ? { promptBreakdown: input.promptBreakdown } : {}),
     ...(mapped.errorCode ? { errorCode: mapped.errorCode } : {}),
     ...(errorMessage ? { errorMessage } : {}),
     ...(errorFamily ? { errorFamily } : {}),
@@ -1212,6 +1265,7 @@ export function mapFinalResultForTest(input: {
       output: output ?? "",
       usage: usage ?? null,
       cost_usd: costUsd,
+      ...(input.promptBreakdown ? { promptBreakdown: input.promptBreakdown } : {}),
     },
   };
 }
@@ -1651,6 +1705,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
 
   const body = buildRunBody(ctx, sessionKey, agentInstructionsBundle, idempotencyKey);
+  // myrmidon(1.6.5 PROMPT-BUDGET A): the per-section prompt-token breakdown
+  // of the request body. Recorded on every return path's resultJson so the
+  // server can persist it into heartbeat_runs.usageJson.promptBreakdown even
+  // for a run that never reached a terminal provider usage report.
+  // Note: the breakdown is measured on the wake input BEFORE the central
+  // history block below is appended, so `input` sections reflect the prompt
+  // as assembled by buildInput — not the post-restore wake text.
+  const promptBreakdown = body.promptBreakdown;
   // myrmidon(MEMORY-CENTRAL-B): the read happens before the run body is
   // consumed — a store failure never blocks a run: the wake proceeds without
   // the restored block, the reason is logged.
@@ -1663,7 +1725,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       });
       restoredHistoryBlock = renderRestoredHistory(storedTurns, centralHistorySettings.maxTurns);
       if (restoredHistoryBlock) {
-        body.input = `${body.input}\n\n---\n\n${restoredHistoryBlock}`;
+        body.body.input = `${body.body.input}\n\n---\n\n${restoredHistoryBlock}`;
         await ctx.onLog(
           "stdout",
           `[hermes-gateway] central history: restored ${storedTurns.length} turn(s) into the wake input\n`,
@@ -1711,6 +1773,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       provider: "hermes_gateway",
       executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
       resultJson: {
+        promptBreakdown,
         executionCancellation: {
           state: "acknowledged",
           acknowledgedAt: new Date().toISOString(),
@@ -1781,6 +1844,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         errorFamily: "transient_upstream",
         errorMessage: `Hermes gateway run ${predecessorRunId} from the previous attempt is still running; waiting for it to stop instead of running two turns at once.`,
         provider: "hermes_gateway",
+        resultJson: { promptBreakdown },
         // Keep the predecessor's id in the task session: the transient retry
         // must check the same live run again rather than start a fresh one
         // beside it.
@@ -1813,7 +1877,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const created = await fetchJson(createRunUrl, {
       method: "POST",
       headers: runHeaders,
-      body: JSON.stringify(body),
+      body: JSON.stringify(body.body),
       signal: createSignal,
     });
     runId = extractRunId(created);
@@ -1826,6 +1890,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         errorCode: "hermes_gateway_protocol_error",
         errorMessage: "Hermes /v1/runs response did not include run_id.",
         errorMeta: { response: redactForLog(created, [], 0, redactText) as Record<string, unknown> },
+        resultJson: { promptBreakdown },
       };
     }
     // myrmidon(HERMES-RUN-REATTACH): report the provider run id to the host the
@@ -1864,6 +1929,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           : `Hermes /v1/runs did not respond within ${createTimeoutMs}ms.`,
         errorFamily: cancelled ? null : "transient_upstream",
         provider: "hermes_gateway",
+        resultJson: { promptBreakdown },
         sessionParams: { strategy },
         sessionDisplayId: sessionKey ? redactText(sessionKey) : null,
       };
@@ -1885,6 +1951,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         provider: "hermes_gateway",
         executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
         resultJson: {
+          promptBreakdown,
           executionCancellation: {
             state: "acknowledged",
             acknowledgedAt: new Date().toISOString(),
@@ -1990,6 +2057,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         run_id: runId,
         status: extractStatus(finalStatus) ?? "cancelled",
         last_event: state.lastEventName,
+        promptBreakdown,
         final_status: redactForLog(finalStatus, [], 0, redactText),
         ...(terminationVerified
           ? {
@@ -2032,6 +2100,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         run_id: runId,
         status: extractStatus(finalStatus) ?? "timeout",
         last_event: state.lastEventName,
+        promptBreakdown,
         final_status: redactForLog(finalStatus, [], 0, redactText),
         ...(cancelledToo
           ? {
@@ -2057,6 +2126,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     sessionKey,
     strategy,
     redactText,
+    promptBreakdown,
   });
   // myrmidon(MEMORY-CENTRAL-B): remember this turn in the central store once
   // the run reached a terminal outcome (whatever it was — a failed turn's
