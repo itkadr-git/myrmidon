@@ -246,4 +246,28 @@ describe("install.sh", () => {
     const ok = run(sb, [], { MYRMIDON_INSTALL_CPUINFO: good });
     assert.equal(ok.status, 0, ok.stderr);
   });
+
+  it("answers --help and names a missing option value in plain language when piped", () => {
+    // The documented form pipes the script into bash, so $0 is "bash". Reading
+    // the header back out of $0 (sed -n '2,40p' "$0") answered
+    // "sed: can't read bash" — a novice asking for help got an error instead.
+    const piped = (args) =>
+      spawnSync("bash", ["-s", "--", ...args], {
+        cwd: os.tmpdir(),
+        encoding: "utf8",
+        input: fs.readFileSync(INSTALL, "utf8"),
+        env: { ...process.env, MYRMIDON_INSTALL_LANG: "en" },
+      });
+
+    const help = piped(["--help"]);
+    assert.equal(help.status, 0, help.stderr);
+    assert.match(help.stdout, /ONE-COMMAND-INSTALL/);
+    assert.match(help.stdout, /--uninstall/);
+    assert.doesNotMatch(help.stdout + help.stderr, /can't read bash/);
+
+    // --version without its value used to die on `$2: unbound variable`.
+    const missing = piped(["--version"]);
+    assert.equal(missing.status, 1);
+    assert.match(missing.stderr, /--version needs a value/);
+  });
 });

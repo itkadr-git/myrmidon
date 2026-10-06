@@ -78,18 +78,45 @@ say_out() {
 }
 
 usage() {
-  sed -n '2,40p' "$0"
+  cat <<'USAGE'
+scripts/myrmidon/install/install.sh — ONE-COMMAND-INSTALL
+
+  curl -fsSL https://github.com/itkadr-git/myrmidon/releases/latest/download/install.sh | sudo bash
+
+Options:
+  --version myr-vX.Y.Z   install that release instead of releases/latest
+  --dir PATH             where to install (default /opt/myrmidon)
+  --port N               port the board listens on (default 3100)
+  --url URL              public address of the board
+  --lang ru|en           language of the messages (default: taken from the locale)
+  --interactive          ask the questions instead of answering them silently
+  --yes, -y              answer yes to everything
+  --uninstall            stop and remove the stack (your data is kept)
+  --purge                with --uninstall: also delete the database volume
+  -h, --help             print this help
+
+Re-running the script without --uninstall is the update path: it takes the
+latest release, dumps the database first and rolls back if the board does not
+become healthy. Nothing is asked by default.
+USAGE
   exit 0
 }
 
 # ------------------------------------------------------------------- args -----
+# An option that takes a value must be given one. Under `set -u` the plain
+# "$2" would kill the run with a bare bash error — and because the documented
+# form pipes the script into bash, that error is all a novice would ever see.
+value_for() {
+  (($# >= 2)) || die "option $1 needs a value"
+}
+
 while (($#)); do
   case "$1" in
-    --version) RELEASE_TAG="$2"; shift 2 ;;
-    --dir) DIR="$2"; shift 2 ;;
-    --port) PORT="$2"; shift 2 ;;
-    --url) PUBLIC_URL="$2"; shift 2 ;;
-    --lang) LANG_CODE="$2"; shift 2 ;;
+    --version) value_for "$@" ; RELEASE_TAG="$2"; shift 2 ;;
+    --dir) value_for "$@" ; DIR="$2"; shift 2 ;;
+    --port) value_for "$@" ; PORT="$2"; shift 2 ;;
+    --url) value_for "$@" ; PUBLIC_URL="$2"; shift 2 ;;
+    --lang) value_for "$@" ; LANG_CODE="$2"; shift 2 ;;
     --interactive) INTERACTIVE=1; shift ;;
     --yes|-y) ASSUME_YES=1; shift ;;
     --uninstall) MODE="uninstall"; shift ;;
