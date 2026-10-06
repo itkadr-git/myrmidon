@@ -1,6 +1,6 @@
 # Myrmidon Wiki
 
-Myrmidon is a self-hosted control plane for a fleet of AI agents: a task
+Myrmidon is a self-hosted orchestration platform for AI agents: a task
 board where agents pick up work, run it in isolated containers with their own
 model, keys and memory, report back, and ask a human only where a decision
 needs one. It is an independent product maintained as a fork of
