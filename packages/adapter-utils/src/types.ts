@@ -68,6 +68,7 @@ export interface AdapterRuntimeServiceReport {
 
 export type AdapterExecutionErrorFamily =
   | "transient_upstream"
+  | "permanent_config_error"
   | "provider_quota"
   | "model_refusal"
   | "refresh_token_reused"

@@ -1020,6 +1020,56 @@ describe("mapFinalResultForTest", () => {
     expect(result.errorFamily).toBeUndefined();
   });
 
+  // myrmidon(PERF-DIET-I): the LiteLLM 403 key-permission signature is a
+  // permanent configuration failure — the same 403 comes back on every retry,
+  // so the run must carry permanent_config_error, not the generic failure.
+  it("marks a failed run carrying the LiteLLM key-not-allowed signature as permanent config error", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-1",
+        status: "failed",
+        payload: {
+          status: "failed",
+          error:
+            'litellm.BadRequestError: LLM Provider NOT allowed. 403 - {"error": {"message": "key not allowed to access model dashscope-glm-5.3"}}',
+        },
+      },
+      outputChunks: [],
+      sessionKey: "session-key",
+      strategy: "issue",
+    });
+    expect(result.errorCode).toBe("hermes_gateway_run_failed");
+    expect(result.errorFamily).toBe("permanent_config_error");
+  });
+
+  it("matches the key-not-allowed signature case-insensitively", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-1",
+        status: "failed",
+        payload: { status: "failed", error: "Key Not Allowed To Access Model gpt-5" },
+      },
+      outputChunks: [],
+      sessionKey: "session-key",
+      strategy: "issue",
+    });
+    expect(result.errorFamily).toBe("permanent_config_error");
+  });
+
+  it("keeps a failure without the key-permission signature a plain provider failure", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-1",
+        status: "failed",
+        payload: { status: "failed", error: "Request to keyring backend failed" },
+      },
+      outputChunks: [],
+      sessionKey: "session-key",
+      strategy: "issue",
+    });
+    expect(result.errorFamily).toBeUndefined();
+  });
+
   // myrmidon(1.6.4-HERMES-LONG-RESPONSE): a long answer must survive in the
   // standard `result` field so the issue comment (and the Telegram splitter)
   // receive the whole text. The top-level `summary` already carries the full
