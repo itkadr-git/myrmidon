@@ -262,6 +262,12 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // pilot settings survives every general write (one atomic write carries the
       // settings and the journal entry together).
       ...(parsed.data.swarmClaimJournal ? { swarmClaimJournal: parsed.data.swarmClaimJournal } : {}),
+      // myrmidon(REVIEW-REWORK): the stored review-return loop settings survive
+      // every general write (they are edited on their own settings page).
+      ...(parsed.data.reviewRework ? { reviewRework: parsed.data.reviewRework } : {}),
+      // myrmidon(REVIEW-REWORK): the loop settings' change journal survives every
+      // general write (one atomic write carries the settings and the journal entry).
+      ...(parsed.data.reviewReworkJournal ? { reviewReworkJournal: parsed.data.reviewReworkJournal } : {}),
       // myrmidon(EXTCASE-B): the stored browser-bridge allowlist survives every general write
       ...(parsed.data.browserBridge ? { browserBridge: parsed.data.browserBridge } : {}),
       // myrmidon(1.6.1-WIP-LIMIT-A): the stored WIP limits survive every general write
