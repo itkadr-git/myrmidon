@@ -275,6 +275,127 @@ if [ "${MYRMIDON_HARDLINK_CHECK:-1}" != "0" ]; then
   hardlink_self_check || log "WARNING: the hard-link self-check itself failed to run"
 fi
 
+# --- shared-git-objects self-check (dev variant) ---------------------------
+# myrmidon(1.6.5 BOT-DISK-G): task clones share one object store through
+# --reference-if-able (the git wrapper, the board's mirror or the bot's own
+# store). A broken chain costs 0.4 GB and a slow clone per task, silently —
+# so at every start, in one pass:
+#   1. the wrapper answers for a bare `git` through BOTH PATH positions:
+#      /opt/paperclip/bin/git first on the image's PATH, and the
+#      /usr/local/bin/git symlink, which is what makes a terminal whose PATH
+#      the adapter rebuilt (without /opt/paperclip/bin) still get the wrapper;
+#   2. the object store directory is writable;
+#   3. a real reference-clone round trip offline: make a small origin,
+#      bare-mirror it, clone --reference-if-able from the mirror and check the
+#      clone's objects/info/alternates points at it. This is the mechanism the
+#      wrapper relies on; if it fails here, clones copy objects again.
+# A failure is logged as an error and written to
+# ${HERMES_HOME}/.myrmidon/git-objects-check.json, which the clone-hygiene
+# reporter passes to the board. It never stops the gateway: a bot with a
+# broken store still works, just wastefully (the same contract as the
+# hard-link check). Skipped entirely on the base image, which has no wrapper.
+git_objects_self_check() {
+  local store checks="" ok_all=true err sep=""
+  local wrapper="${MYRMIDON_GIT_WRAPPER:-/opt/paperclip/bin/git}"
+  local shadow="${MYRMIDON_GIT_SHADOW:-/usr/local/bin/git}"
+  local real_git="${MYRMIDON_GIT_REAL:-/usr/bin/git}"
+  if [ -n "${MYRMIDON_GIT_LOCAL_MIRROR+x}" ]; then
+    store="${MYRMIDON_GIT_LOCAL_MIRROR}"
+  else
+    store="$(dotenv_value MYRMIDON_GIT_LOCAL_MIRROR)"
+    [ -n "${store}" ] || store="${HERMES_HOME}/.myrmidon/git-objects"
+  fi
+  # (If MYRMIDON_GIT_LOCAL_MIRROR is explicitly empty, the store is off; the
+  # wrapper reads the same value. Record that as a passing "off" state.)
+  add_check() {
+    local cname="$1" cok="$2" cerr="$3"
+    checks="${checks}${sep}{\"check\":\"$(json_escape "${cname}")\",\"ok\":${cok},\"error\":$( [ "${cok}" = true ] && printf 'null' || printf '"%s"' "$(json_escape "${cerr}")" )}"
+    sep=","
+    [ "${cok}" = true ] || ok_all=false
+  }
+
+  if [ ! -x "${wrapper}" ]; then
+    log "shared-objects self-check: no git wrapper at ${wrapper} (base image) — skipped"
+    return 0
+  fi
+  # 1. wrapper resolution: image PATH and the /usr/local/bin symlink.
+  local resolved
+  if ! resolved="$(PATH="$(dirname "${shadow}"):/usr/bin:/bin" command -v git)" || [ "${resolved}" != "${shadow}" ]; then
+    add_check "usr-local-shadow" false "${shadow} does not shadow git for a rebuilt terminal PATH (found: ${resolved:-none}) — a bare git there runs without shared objects"
+  elif ! err="$("${shadow}" --version 2>&1 >/dev/null)"; then
+    add_check "usr-local-shadow" false "${shadow} --version failed: ${err}"
+  else
+    add_check "usr-local-shadow" true ""
+  fi
+  if ! err="$("${wrapper}" --version 2>&1 >/dev/null)"; then
+    add_check "wrapper-runs" false "the wrapper cannot run its interpreter: ${err}"
+  else
+    add_check "wrapper-runs" true ""
+  fi
+  # 2. the store is writable.
+  if [ -z "${store}" ]; then
+    add_check "store-writable" true "" # the store is explicitly off; nothing to write
+  elif ! err="$(mkdir -p "${store}" 2>&1 && : > "${store}/.selfcheck-probe" 2>&1)"; then
+    add_check "store-writable" false "cannot create a file in the git objects store ${store}: ${err}"
+  else
+    rm -f "${store}/.selfcheck-probe" 2>/dev/null || true
+    add_check "store-writable" true ""
+  fi
+  # 3. offline reference-clone round trip in a scratch under HERMES_HOME.
+  local work rc=0
+  mkdir -p "${HERMES_HOME}/.myrmidon" 2>/dev/null || true
+  work="$(mktemp -d "${HERMES_HOME}/.myrmidon/git-selfcheck.XXXXXX" 2>/dev/null)" || rc=1
+  if [ "${rc}" -eq 0 ]; then
+    err="$(
+      {
+        set -e
+        export GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.com
+        origin="${work}/origin"; mirror="${work}/mirror.git"; dest="${work}/clone"
+        mkdir -p "${origin}"
+        "${real_git}" init -q -b main "${origin}"
+        echo one > "${origin}/a.txt"
+        "${real_git}" -C "${origin}" add a.txt
+        "${real_git}" -C "${origin}" commit -q -m one
+        "${real_git}" clone -q --bare "${origin}" "${mirror}"
+        # The round trip runs against the REAL git on purpose: it proves the
+        # mechanism (--reference-if-able borrows objects), while the checks
+        # above proved the wrapper answers and runs. The wrapper would pass the
+        # local-path URL through unchanged anyway.
+        "${real_git}" clone -q --reference-if-able "${mirror}" "${origin}" "${dest}"
+        target="$(sed -n '1p' "${dest}/.git/objects/info/alternates")"
+        # git records the realpath; HERMES_HOME itself may be a link into the bot's mount.
+        want="$(cd "${mirror}/objects" 2>/dev/null && pwd -P)"
+        [ -n "${target}" ] && [ "${target%/}" = "${want}" ]
+      } 2>&1
+    )"; rc=$?
+    rm -rf "${work}" 2>/dev/null || true
+    if [ "${rc}" -ne 0 ]; then
+      add_check "reference-clone" false "a test clone with --reference-if-able did not borrow the mirror's objects: ${err}"
+    else
+      add_check "reference-clone" true ""
+    fi
+  else
+    add_check "reference-clone" false "cannot create a scratch under ${HERMES_HOME}"
+  fi
+  if [ "${ok_all}" = true ]; then
+    log "shared-objects self-check ok: store=${store:-off}"
+  else
+    log "ERROR: shared-objects self-check failed — task clones on this bot copy git history per clone again (see git-objects-check.json)"
+  fi
+  local out_dir="${HERMES_HOME}/.myrmidon" now
+  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  if mkdir -p "${out_dir}" 2>/dev/null; then
+    printf '{"version":1,"checkedAt":"%s","store":"%s","ok":%s,"checks":[%s]}\n' \
+      "${now}" "$(json_escape "${store}")" "${ok_all}" "${checks}" \
+      > "${out_dir}/git-objects-check.json.tmp" 2>/dev/null \
+      && mv -f "${out_dir}/git-objects-check.json.tmp" "${out_dir}/git-objects-check.json" 2>/dev/null \
+      || log "WARNING: cannot write ${out_dir}/git-objects-check.json"
+  fi
+}
+if [ "${MYRMIDON_GIT_OBJECTS_CHECK:-1}" != "0" ]; then
+  git_objects_self_check || log "WARNING: the shared-objects self-check itself failed to run"
+fi
+
 # --- clone hygiene report (dev variant) -----------------------------------
 # myrmidon(1.6.2 BOT-DISK-C): the board's draft-directory lifecycle removes an
 # idle git clone only when this container says it holds nothing unpushed. The

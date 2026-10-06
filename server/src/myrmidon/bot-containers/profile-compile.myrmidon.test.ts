@@ -145,6 +145,8 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
       expect(env).toContain('npm_config_store_dir="/bot-scope/.pnpm-store"');
       expect(env).toContain('npm_config_package_import_method="hardlink"');
       expect(env).not.toContain("/workspace/.pnpm-store");
+      // myrmidon(1.6.5 BOT-DISK-G): and the instance's shared git object store.
+      expect(env).toContain('MYRMIDON_GIT_LOCAL_MIRROR="/bot-scope/.git-objects"');
     });
 
     it("an isolated bot, or a port that is absent, keeps the profile it had (no store variable without the cache)", async () => {
@@ -152,6 +154,9 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
         const board = fakeBoard(ports);
         const env = fileContent(await createBotProfileCompile(board.ports, { env: INSTANCE_ENV })("agent-a", "agent-a"), "hermes/.env");
         expect(env).not.toContain("npm_config_store_dir");
+        // myrmidon(1.6.5 BOT-DISK-G): an isolated bot keeps the wrapper's own
+        // per-bot default (no variable): its store lives in its own hermes home.
+        expect(env).not.toContain("MYRMIDON_GIT_LOCAL_MIRROR");
       }
     });
 

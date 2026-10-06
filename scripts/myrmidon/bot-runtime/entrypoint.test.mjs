@@ -213,6 +213,7 @@ describe("docker/bot-runtime/entrypoint.sh bot tree layout and hard-link self-ch
         MYRMIDON_BOT_ROOT: bot,
         MYRMIDON_DATA_DIR: data,
         MYRMIDON_HARDLINK_CHECK: "0",
+        MYRMIDON_GIT_OBJECTS_CHECK: "0",
         MYRMIDON_TEST_CWD: path.join(bot, "workspace"),
       });
       assert.equal(result.status, 0, result.stderr);
@@ -237,6 +238,7 @@ describe("docker/bot-runtime/entrypoint.sh bot tree layout and hard-link self-ch
         npm_config_store_dir: store,
         MYRMIDON_HARDLINK_ROOTS: roots.join(" "),
         MYRMIDON_TEST_CWD: path.join(bot, "workspace"),
+        MYRMIDON_GIT_OBJECTS_CHECK: "0",
       });
       assert.equal(result.status, 0, result.stderr);
       assert.match(result.stderr, /hard-link self-check ok/);
@@ -277,6 +279,7 @@ describe("docker/bot-runtime/entrypoint.sh bot tree layout and hard-link self-ch
         npm_config_store_dir: store,
         MYRMIDON_HARDLINK_ROOTS: roots.join(" "),
         MYRMIDON_TEST_CWD: path.join(bot, "workspace"),
+        MYRMIDON_GIT_OBJECTS_CHECK: "0",
       });
       assert.equal(result.status, 0, "a failed check never stops the gateway");
       for (const root of roots) {
@@ -304,6 +307,7 @@ describe("docker/bot-runtime/entrypoint.sh bot tree layout and hard-link self-ch
         npm_config_store_dir: path.join(blocker, "store"),
         MYRMIDON_HARDLINK_ROOTS: roots.join(" "),
         MYRMIDON_TEST_CWD: path.join(bot, "workspace"),
+        MYRMIDON_GIT_OBJECTS_CHECK: "0",
       });
       assert.equal(result.status, 0, result.stderr);
       assert.match(result.stderr, /ERROR: hard-link self-check: cannot create a file in the pnpm store/);
@@ -327,6 +331,7 @@ describe("docker/bot-runtime/entrypoint.sh bot tree layout and hard-link self-ch
         npm_config_store_dir: "/nonexistent/should-not-be-used",
         MYRMIDON_HARDLINK_ROOTS: path.join(bot, "workspace"),
         MYRMIDON_TEST_CWD: path.join(bot, "workspace"),
+        MYRMIDON_GIT_OBJECTS_CHECK: "0",
       });
       assert.equal(result.status, 0, result.stderr);
       const report = JSON.parse(fs.readFileSync(path.join(bot, "hermes", ".myrmidon", "hardlink-check.json"), "utf8"));
@@ -334,6 +339,121 @@ describe("docker/bot-runtime/entrypoint.sh bot tree layout and hard-link self-ch
       assert.equal(report.ok, true);
     } finally {
       fs.rmSync(tree, { recursive: true, force: true });
+    }
+  });
+});
+
+// myrmidon(1.6.5 BOT-DISK-G): the shared-git-objects self-check. The wrapper
+// and its /usr/local/bin shadow are stubbed (the tests run outside the image),
+// and the reference-clone round trip runs against the real git of the runner.
+describe("docker/bot-runtime/entrypoint.sh shared-git-objects self-check", () => {
+  const realGit = () => spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim();
+  /** A bin dir with a fake `git` wrapper that answers --version, and a shadow symlink. */
+  function wrapperStub() {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "myrmidon-gitstub-"));
+    const wrapper = path.join(dir, "opt-paperclip-git");
+    fs.writeFileSync(wrapper, "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'git version stub'; exit 0; fi\nexec git \"$@\"\n", { mode: 0o755 });
+    const shadowDir = path.join(dir, "shadow");
+    fs.mkdirSync(shadowDir);
+    fs.symlinkSync(wrapper, path.join(shadowDir, "git"));
+    return { dir, wrapper, shadow: path.join(shadowDir, "git") };
+  }
+
+  it("passes every check and reports them", () => {
+    const { tree, bot, data } = botLayout();
+    const stub = wrapperStub();
+    try {
+      const result = runWithStub({
+        HERMES_HOME: path.join(bot, "hermes"),
+        MYRMIDON_BOT_ROOT: bot,
+        MYRMIDON_DATA_DIR: data,
+        MYRMIDON_HARDLINK_CHECK: "0",
+        MYRMIDON_GIT_WRAPPER: stub.wrapper,
+        MYRMIDON_GIT_SHADOW: stub.shadow,
+        MYRMIDON_GIT_REAL: realGit(),
+        MYRMIDON_TEST_CWD: path.join(bot, "workspace"),
+      });
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stderr, /shared-objects self-check ok/);
+      const report = JSON.parse(fs.readFileSync(path.join(bot, "hermes", ".myrmidon", "git-objects-check.json"), "utf8"));
+      assert.equal(report.ok, true);
+      assert.equal(report.store, path.join(bot, "hermes", ".myrmidon", "git-objects"));
+      assert.deepEqual(report.checks.map((c) => c.check), ["usr-local-shadow", "wrapper-runs", "store-writable", "reference-clone"]);
+      assert.ok(report.checks.every((c) => c.ok && c.error === null));
+    } finally {
+      fs.rmSync(tree, { recursive: true, force: true });
+      fs.rmSync(stub.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("a missing shadow reports usr-local-shadow failed but never stops the gateway", () => {
+    const { tree, bot, data } = botLayout();
+    const stub = wrapperStub();
+    try {
+      const result = runWithStub({
+        HERMES_HOME: path.join(bot, "hermes"),
+        MYRMIDON_BOT_ROOT: bot,
+        MYRMIDON_DATA_DIR: data,
+        MYRMIDON_HARDLINK_CHECK: "0",
+        MYRMIDON_GIT_WRAPPER: stub.wrapper,
+        MYRMIDON_GIT_SHADOW: path.join(stub.dir, "no-shadow", "git"),
+        MYRMIDON_GIT_REAL: realGit(),
+        MYRMIDON_TEST_CWD: path.join(bot, "workspace"),
+      });
+      assert.equal(result.status, 0, "a failed check never stops the gateway");
+      assert.match(result.stderr, /ERROR: shared-objects self-check failed/);
+      const report = JSON.parse(fs.readFileSync(path.join(bot, "hermes", ".myrmidon", "git-objects-check.json"), "utf8"));
+      assert.equal(report.ok, false);
+      const shadow = report.checks.find((c) => c.check === "usr-local-shadow");
+      assert.equal(shadow.ok, false);
+      assert.match(shadow.error, /does not shadow git/);
+    } finally {
+      fs.rmSync(tree, { recursive: true, force: true });
+      fs.rmSync(stub.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("skips the whole check when there is no wrapper (the base image)", () => {
+    const { tree, bot, data } = botLayout();
+    try {
+      const result = runWithStub({
+        HERMES_HOME: path.join(bot, "hermes"),
+        MYRMIDON_BOT_ROOT: bot,
+        MYRMIDON_DATA_DIR: data,
+        MYRMIDON_HARDLINK_CHECK: "0",
+        MYRMIDON_GIT_WRAPPER: path.join(tree, "no-such-wrapper"),
+        MYRMIDON_TEST_CWD: path.join(bot, "workspace"),
+      });
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stderr, /no git wrapper at .* — skipped/);
+      assert.ok(!fs.existsSync(path.join(bot, "hermes", ".myrmidon", "git-objects-check.json")));
+    } finally {
+      fs.rmSync(tree, { recursive: true, force: true });
+    }
+  });
+
+  it("an explicit empty MYRMIDON_GIT_LOCAL_MIRROR records the store as off and passes", () => {
+    const { tree, bot, data } = botLayout();
+    const stub = wrapperStub();
+    try {
+      const result = runWithStub({
+        HERMES_HOME: path.join(bot, "hermes"),
+        MYRMIDON_BOT_ROOT: bot,
+        MYRMIDON_DATA_DIR: data,
+        MYRMIDON_HARDLINK_CHECK: "0",
+        MYRMIDON_GIT_WRAPPER: stub.wrapper,
+        MYRMIDON_GIT_SHADOW: stub.shadow,
+        MYRMIDON_GIT_REAL: realGit(),
+        MYRMIDON_GIT_LOCAL_MIRROR: "",
+        MYRMIDON_TEST_CWD: path.join(bot, "workspace"),
+      });
+      assert.equal(result.status, 0, result.stderr);
+      const report = JSON.parse(fs.readFileSync(path.join(bot, "hermes", ".myrmidon", "git-objects-check.json"), "utf8"));
+      assert.equal(report.ok, true);
+      assert.equal(report.store, "");
+    } finally {
+      fs.rmSync(tree, { recursive: true, force: true });
+      fs.rmSync(stub.dir, { recursive: true, force: true });
     }
   });
 });
@@ -363,6 +483,7 @@ describe("docker/bot-runtime/entrypoint.sh shared scope member", () => {
         MYRMIDON_BOT_SCOPE_SUBDIR: "bot-a",
         MYRMIDON_DATA_DIR: data,
         MYRMIDON_HARDLINK_CHECK: "0",
+        MYRMIDON_GIT_OBJECTS_CHECK: "0",
         MYRMIDON_TEST_CWD: tree,
         MYRMIDON_WORKSPACE_DIR: path.join(data, "workspace"),
       });
@@ -390,6 +511,7 @@ describe("docker/bot-runtime/entrypoint.sh shared scope member", () => {
         MYRMIDON_DATA_DIR: data,
         npm_config_store_dir: store,
         MYRMIDON_HARDLINK_ROOTS: [path.join(data, "hermes"), path.join(data, "workspace"), path.join(data, "scratch"), other].join(" "),
+        MYRMIDON_GIT_OBJECTS_CHECK: "0",
         MYRMIDON_TEST_CWD: tree,
         MYRMIDON_WORKSPACE_DIR: path.join(data, "workspace"),
       });
@@ -407,7 +529,8 @@ describe("docker/bot-runtime/entrypoint.sh shared scope member", () => {
   it("fails fast when the instance directory is not mounted or the subdirectory is missing", () => {
     const { tree, scope, data } = scopeLayout();
     try {
-      const base = { HERMES_HOME: path.join(data, "hermes"), MYRMIDON_DATA_DIR: data, MYRMIDON_HARDLINK_CHECK: "0", API_SERVER_KEY: "k".repeat(32) };
+      const base = { HERMES_HOME: path.join(data, "hermes"), MYRMIDON_DATA_DIR: data, MYRMIDON_HARDLINK_CHECK: "0",
+        MYRMIDON_GIT_OBJECTS_CHECK: "0", API_SERVER_KEY: "k".repeat(32) };
       const missing = run({ ...base, MYRMIDON_BOT_SCOPE_DIR: path.join(tree, "nowhere"), MYRMIDON_BOT_SCOPE_SUBDIR: "bot-a" });
       assert.notEqual(missing.status, 0);
       assert.match(missing.stderr, /does not exist/);
