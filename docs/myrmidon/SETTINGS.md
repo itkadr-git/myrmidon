@@ -701,6 +701,26 @@ in the UI takes effect without a restart (no env override, no new settings keys)
 No environment variables, no new secrets. Remove: the autonomy tree, the export line in
 `packages/shared/src/index.ts`, the two marker lines in `app.ts`/`instance-settings.ts`
 and this section.
+
+## 1.6.2 — AUTONOMY-MATRIX deploy and merge action classes
+
+Extension of the autonomy matrix to enforce deploy and merge actions. The system now
+checks the autonomy matrix for `deploy` and `merge` action classes before allowing
+deployment and merge operations.
+
+- `deploy` action class: Controls deployment operations and maintenance mode transitions
+- `merge` action class: Controls pull request merge operations (future functionality)
+
+By default, the `deploy` action class is set to `approval_required` for all roles,
+meaning that any deployment or maintenance operation initiated by an agent will
+require explicit approval unless specifically allowed in the matrix configuration.
+
+The following routes now enforce the `deploy` action class:
+- `POST /api/myrmidon/deploy-jobs` - Initiates a deployment job
+- `POST /api/myrmidon/maintenance` - Enters maintenance mode
+
+Enforcement is implemented through the autonomy gate (`dbAutonomyGate`) which checks
+the matrix before allowing the operation to proceed.
 ## 1.6 — CTO-CHAT B (the board chat planner: owner text -> proposed epic)
 
 The planner behind the CTO chat (the 1.6 CTO-CHAT epic, part B): the owner's free text

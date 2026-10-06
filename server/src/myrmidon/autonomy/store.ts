@@ -149,7 +149,20 @@ export function parseAutonomyDocument(raw: unknown): AutonomyDocument {
   const regulations = Array.isArray(raw.regulations)
     ? raw.regulations.map(parseRegulation).filter((entry): entry is AutonomyRegulation => entry !== null)
     : [];
-  return { version: 1, matrix: { version, rules, defaults }, regulations };
+  const document: AutonomyDocument = { version: 1, matrix: { version, rules, defaults }, regulations };
+
+  // Migration: the factory default for deploy changed from allowed to
+  // approval_required. If a stored document still has deploy: allowed and
+  // no explicit rule overrides it, lift the default so existing installs
+  // do not silently keep the old permissive behaviour.
+  if (document.matrix.defaults.deploy === "allowed") {
+    const hasDeployRule = document.matrix.rules.some((r) => r.actionClass === "deploy");
+    if (!hasDeployRule) {
+      document.matrix.defaults.deploy = "approval_required";
+    }
+  }
+
+  return document;
 }
 
 /** Keep our key across vendor writes of instance_settings.general. */

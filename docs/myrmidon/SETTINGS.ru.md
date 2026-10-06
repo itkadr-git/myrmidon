@@ -874,3 +874,11 @@ API: `GET /api/myrmidon/companies/:companyId/prompt-budget/agents/:agentId/advic
 | Поле | Умолчание | Что делает | Границы / особые случаи |
 |---|---|---|---|
 | `promptBudget.optimizerAgentId` | нет | Агент, которому ставится задача глубокого разбора по кнопке «Deep analysis» | uuid другого агента той же компании; пустое, отсутствующее или не-uuid значение отвечает на deep-POST ошибкой 422. Аддитивное поле области `promptBudget`, которой владеет часть порогов (`instance_settings.general.promptBudget`); переменной окружения нет |
+
+## 1.6.2 — AUTONOMY-MATRIX: класс действия deploy
+
+Ни переменной окружения, ни новой настройки: существующая матрица автономии (Company Settings, Autonomy)
+теперь отвечает и за `POST /api/myrmidon/deploy-jobs` и `POST /api/myrmidon/maintenance`. Агент, чья роль
+для `deploy` стоит в `forbidden` или `approval_required`, получает 403 (`autonomy_forbidden` /
+`autonomy_approval_required`); пользователи доски под матрицу не попадают. Заводское умолчание остаётся
+`allowed`. Руководство: [autonomy-deploy-merge.ru.md](guides/autonomy-deploy-merge.ru.md).
