@@ -90,6 +90,15 @@ export const BOT_AUX_COMPRESSION_MODEL_ENV = "MYRMIDON_BOT_AUX_COMPRESSION_MODEL
  * served by a paid model (fact 02.10: session titles did exactly that).
  */
 export const BOT_AUX_FALLBACK_MODELS_ENV = "MYRMIDON_BOT_AUX_FALLBACK_MODELS";
+/**
+ * myrmidon(MEMORY-CENTRAL-A): instance-wide switch that turns every bot's Hermes
+ * LOCAL memory off (config.yaml `memory.enabled: false`), so durable memory
+ * lives only in the shared hindsight service. Truthy like the other bot
+ * switches (`1`/`true`/`yes`/`on`, case-insensitive); anything else, including
+ * a typo, keeps local memory on — off is the default, an opt-in feature must
+ * not flip on by accident.
+ */
+export const BOT_LOCAL_MEMORY_OFF_ENV = "MYRMIDON_BOT_LOCAL_MEMORY_OFF";
 
 /**
  * One instance-wide MCP server. The token is never in the setting: `tokenSecret`
@@ -191,11 +200,31 @@ export interface BotProfileSettings {
    * aliases the gateway actually serves.
    */
   auxiliaryFallbackModels?: string[] | null;
+  /**
+   * myrmidon(MEMORY-CENTRAL-A): MYRMIDON_BOT_LOCAL_MEMORY_OFF — when truthy,
+   * every bot's Hermes LOCAL memory is turned off in config.yaml
+   * (`memory.memory_enabled`/`user_profile_enabled: false`); durable memory
+   * then lives only in hindsight. Optional in the type so preexisting
+   * hand-built settings objects keep compiling; `readBotProfileSettings`
+   * always fills it.
+   */
+  localMemoryOff?: boolean;
 }
 
 function readSetting(env: NodeJS.ProcessEnv, name: string): string | null {
   const value = env[name]?.trim();
   return value ? value : null;
+}
+
+/**
+ * myrmidon(MEMORY-CENTRAL-A): the shared truthiness of the bot instance
+ * switches (`1`/`true`/`yes`/`on`, case-insensitive) — the same set
+ * `isBotContainersEnabled` accepts in agent-config.ts.
+ */
+function isTruthyBotSwitch(value: string | null): boolean {
+  if (!value) return false;
+  const raw = value.toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
 }
 
 /**
@@ -424,6 +453,10 @@ export function readBotProfileSettings(env: NodeJS.ProcessEnv = process.env): Bo
     auxiliaryTitleModel: readSetting(env, BOT_AUX_TITLE_MODEL_ENV),
     auxiliaryCompressionModel: readSetting(env, BOT_AUX_COMPRESSION_MODEL_ENV),
     auxiliaryFallbackModels,
+    // myrmidon(MEMORY-CENTRAL-A): MYRMIDON_BOT_LOCAL_MEMORY_OFF, truthy like
+    // the other bot switches; anything else (including a typo) keeps local
+    // memory on — the feature is opt-in and off by default.
+    localMemoryOff: isTruthyBotSwitch(readSetting(env, BOT_LOCAL_MEMORY_OFF_ENV)),
   };
 }
 
@@ -914,6 +947,10 @@ export function buildHermesProfileInput(source: BotProfileSource, settings: BotP
       ...(source.instanceDefaults?.compression ?? {}),
     },
     sessionsRetentionDays: source.instanceDefaults?.sessionsRetentionDays,
+    // myrmidon(MEMORY-CENTRAL-A): MYRMIDON_BOT_LOCAL_MEMORY_OFF is an instance
+    // switch read into settings; a hand-built settings object without the
+    // field falls back to the caller's own instanceDefaults.
+    disableLocalMemory: settings.localMemoryOff ?? source.instanceDefaults?.disableLocalMemory,
     modelContextLengths: settings.modelContextLengths ?? source.instanceDefaults?.modelContextLengths,
     auxiliary: {
       ...(source.instanceDefaults?.auxiliary ?? {}),

@@ -15,6 +15,7 @@ import {
   BOT_LLM_API_KEY_ENV_ENV,
   BOT_LLM_API_KEY_SECRET_ENV,
   BOT_LLM_BASE_URL_ENV,
+  BOT_LOCAL_MEMORY_OFF_ENV,
   BOT_MCP_SERVERS_ENV,
   BOT_MODEL_CONTEXT_LENGTH_ENV,
   BOT_RUNTIME_MCP_URL_BASE_ENV,
@@ -115,6 +116,8 @@ describe("myrmidon(W2a) readBotProfileSettings", () => {
       auxiliaryTitleModel: null,
       auxiliaryCompressionModel: null,
       auxiliaryFallbackModels: null,
+      // myrmidon(MEMORY-CENTRAL-A): unset in the env above -> the switch is off.
+      localMemoryOff: false,
     });
     expect(readBotProfileSettings({ [BOT_BOARD_URL_ENV]: "   " }).boardUrl).toBeNull();
     expect(readBotProfileSettings({}).hindsightApiUrl).toBeNull();
@@ -309,6 +312,69 @@ describe("myrmidon(BOT-RUNTIME-TUNING-B) instance settings", () => {
       modelContextLengthsError: null,
     }));
     expect(warnings).toEqual([`${BOT_COMPRESSION_THRESHOLD_TOKENS_ENV}: "100k" is not an integer`]);
+  });
+});
+
+// myrmidon(MEMORY-CENTRAL-A): the instance switch that turns every bot's Hermes
+// LOCAL memory (the built-in MEMORY.md/USER.md file stores) off, so durable
+// memory lives only in the shared hindsight service.
+describe("myrmidon(MEMORY-CENTRAL-A) MYRMIDON_BOT_LOCAL_MEMORY_OFF", () => {
+  it("reads the env switch: 1/true/yes/on (case-insensitive, trimmed) turn it on, anything else keeps it off", () => {
+    for (const value of ["1", "true", "TRUE", "yes", "on", " 1 "]) {
+      expect(readBotProfileSettings({ [BOT_LOCAL_MEMORY_OFF_ENV]: value }).localMemoryOff).toBe(true);
+    }
+    // Off by default and on anything unrecognized — a typo must not silently
+    // disable a bot's memory.
+    for (const value of [undefined, "", "   ", "0", "false", "nope", "treu"]) {
+      expect(readBotProfileSettings(value ? { [BOT_LOCAL_MEMORY_OFF_ENV]: value } : {}).localMemoryOff).toBe(false);
+    }
+  });
+
+  it("switch on: the compiled config.yaml disables the local memory stores and keeps the hindsight provider", () => {
+    const { input } = buildHermesProfileInput(source(), settings({ localMemoryOff: true }));
+    const yaml = fileContent(compileHermesProfile(input), "hermes/config.yaml");
+    // Sorted keys: memory_enabled, provider, user_profile_enabled.
+    expect(yaml).toContain(
+      'memory:\n  memory_enabled: false\n  provider: "hindsight"\n  user_profile_enabled: false',
+    );
+  });
+
+  it("switch off (the default): the memory block is exactly the pre-feature one and carries no enabled flags", () => {
+    const off = buildHermesProfileInput(source(), settings({ localMemoryOff: false }));
+    const unset = buildHermesProfileInput(source(), settings());
+    const yaml = fileContent(compileHermesProfile(off.input), "hermes/config.yaml");
+    expect(yaml).toContain('memory:\n  provider: "hindsight"');
+    expect(yaml).not.toContain("memory_enabled");
+    expect(yaml).not.toContain("user_profile_enabled");
+    // A hand-built settings object without the new field compiles the same as
+    // the explicit off.
+    expect(fileContent(compileHermesProfile(unset.input), "hermes/config.yaml")).toBe(yaml);
+  });
+
+  it("flipping the switch off restores the byte-identical profile a pre-feature build compiled (restartHash stable)", () => {
+    const before = compileHermesProfile(buildHermesProfileInput(source(), settings()).input);
+    const on = compileHermesProfile(buildHermesProfileInput(source(), settings({ localMemoryOff: true })).input);
+    expect(on.restartHash).not.toBe(before.restartHash);
+    const offAgain = compileHermesProfile(buildHermesProfileInput(source(), settings({ localMemoryOff: false })).input);
+    expect(offAgain.restartHash).toBe(before.restartHash);
+  });
+
+  it("the caller's own instanceDefaults.disableLocalMemory applies only when the settings object predates the field", () => {
+    const fromCaller = buildHermesProfileInput(
+      source({ instanceDefaults: { disableLocalMemory: true } }),
+      // settings() carries no localMemoryOff key: a hand-built pre-feature
+      // settings object, where the caller's instance default is honored.
+      settings(),
+    );
+    expect(fileContent(compileHermesProfile(fromCaller.input), "hermes/config.yaml")).toContain(
+      "memory_enabled: false",
+    );
+    // readBotProfileSettings always fills the field, so in production the
+    // instance switch wins both ways: off restores the pre-feature block even
+    // if a caller passes an on-flagged instanceDefaults.
+    const settingsOff: BotProfileSettings = { ...settings(), localMemoryOff: false };
+    const fromEnv = buildHermesProfileInput(source({ instanceDefaults: { disableLocalMemory: true } }), settingsOff);
+    expect(fileContent(compileHermesProfile(fromEnv.input), "hermes/config.yaml")).not.toContain("memory_enabled");
   });
 });
 
