@@ -13,6 +13,10 @@ export const bridgeTextEn = {
   "menu.stop": "Stop the current reply",
   "menu.status": "Show model, session and current reply",
   "menu.plan": "Turn a message into an epic plan (company owner only)",
+  // myrmidon(X9c): /agents, /to, /who — addressing the company's agents.
+  "menu.agents": "Show the company's agents and their aliases",
+  "menu.to": "Choose the default addressee (/to <alias>; no argument resets)",
+  "menu.who": "Show the current addressee",
 
   // /help
   "help.intro": "You are talking to {agent} here. Tasks from this chat are created as needed.",
@@ -81,6 +85,24 @@ export const bridgeTextEn = {
   "plan.notOwner": "The /plan command is available to the company owner only.",
   "plan.empty": "Write the request after the command: /plan <what to plan>.",
   "plan.failed": "Could not create the plan. Try later or write the request as plain text.",
+
+  // myrmidon(X9c): /agents, /to and /who — which agent of the company this
+  // chat addresses. Agent names and aliases are data, not prose.
+  "agents.header": "The company's agents:",
+  "agents.noAliases": "—",
+  "agents.currentSuffix": "current addressee",
+  "agents.none": "This company has no agents available for addressing.",
+  "agents.hint": "Choose the default addressee: /to <alias>. /to without an argument resets the choice.",
+  "to.unsetLine": "No default addressee set: {agent} replies.",
+  "to.cleared": "Addressee choice reset. The chat's default agent replies from now on.",
+  "to.alreadySet": "The addressee is already {agent} ({aliases}).",
+  "to.set": "{agent} ({aliases}) replies by default now, until you choose another one.",
+  "to.unknownAlias": "There is no agent with the alias “{alias}” in this company. Available aliases:\n{list}",
+  "to.unknownAliasNoAliases": "There is no agent with such an alias in this company. No aliases are set yet — see /agents.",
+  "who.line": "{agent} ({aliases}) replies now — {source}.",
+  "who.sourceSticky": "chosen with /to",
+  "who.sourceDefault": "the chat's default agent",
+  "who.unavailable": "The current addressee is unavailable. Choose a new one: /to <alias>.",
 
   // Bridge notices
   "bridge.migrated": "This is now a standing chat with {agent}. Previous tasks stay on the board{linkSuffix}",

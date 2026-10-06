@@ -12,6 +12,10 @@ export const bridgeTextRu: Record<BridgeTextKey, string> = {
   "menu.stop": "Остановить текущий ответ",
   "menu.status": "Показать модель, сессию и текущий ответ",
   "menu.plan": "Превратить сообщение в план эпика (только владелец компании)",
+  // myrmidon(X9c): /agents, /to, /who — addressing the company's agents.
+  "menu.agents": "Показать агентов компании и их алиасы",
+  "menu.to": "Выбрать адресата по умолчанию (/to <алиас>; без аргумента — сброс)",
+  "menu.who": "Показать текущего адресата",
 
   // /help
   "help.intro": "Здесь вы общаетесь с {agent}. Задачи из этого чата создаются по необходимости.",
@@ -79,6 +83,24 @@ export const bridgeTextRu: Record<BridgeTextKey, string> = {
   "plan.notOwner": "Команда /plan доступна только владельцу компании.",
   "plan.empty": "Напишите запрос после команды: /plan <что нужно спланировать>.",
   "plan.failed": "Не удалось создать план. Попробуйте позже или напишите запрос текстом.",
+
+  // myrmidon(X9c): /agents, /to and /who — which agent of the company this
+  // chat addresses. Agent names and aliases are data, not prose.
+  "agents.header": "Агенты компании:",
+  "agents.noAliases": "—",
+  "agents.currentSuffix": "текущий адресат",
+  "agents.none": "В этой компании нет агентов, доступных для адресации.",
+  "agents.hint": "Выбрать адресата по умолчанию: /to <алиас>. /to без аргумента сбрасывает выбор.",
+  "to.unsetLine": "Адресат по умолчанию не задан: отвечает {agent}.",
+  "to.cleared": "Выбор адресата сброшен. Дальше отвечает агент этого чата по умолчанию.",
+  "to.alreadySet": "Адресат уже {agent} ({aliases}).",
+  "to.set": "Теперь по умолчанию отвечает {agent} ({aliases}), пока вы не выберете другого.",
+  "to.unknownAlias": "Агента с алиасом «{alias}» в этой компании нет. Доступные алиасы:\n{list}",
+  "to.unknownAliasNoAliases": "Агента с таким алиасом в этой компании нет. Доступные алиасы пока не заданы — посмотрите /agents.",
+  "who.line": "Сейчас отвечает {agent} ({aliases}) — {source}.",
+  "who.sourceSticky": "выбран /to",
+  "who.sourceDefault": "агент этого чата по умолчанию",
+  "who.unavailable": "Текущий адресат недоступен. Выберите нового: /to <алиас>.",
 
   // Bridge notices
   "bridge.migrated": "Теперь это постоянный чат с {agent}. Прежние задачи остаются на доске{linkSuffix}",
