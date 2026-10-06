@@ -120,7 +120,12 @@ describe("install.sh", () => {
     assert.match(env, /POSTGRES_PASSWORD=[0-9a-f]{48}/);
     assert.match(env, /BETTER_AUTH_SECRET=[0-9a-f]{64}/);
     assert.equal(fs.statSync(path.join(sb.opt, "deploy.env")).mode & 0o777, 0o600);
+    // The daemon socket is root:docker 0660 and dockergate runs as the nonroot
+    // user 65532: without the socket's group the container dies on
+    // "the daemon does not answer: upstream_error".
+    assert.match(env, /MYRMIDON_DOCKER_GID=[0-9]+/);
     const compose = fs.readFileSync(path.join(sb.opt, "compose.yml"), "utf8");
+    assert.ok(compose.includes("group_add:"), "dockergate must be granted the docker socket group");
     assert.ok(
       compose.includes("${MYRMIDON_BOARD_REPOSITORY:?the board repository must be set}@${MYRMIDON_BOARD_DIGEST:?the board digest must be set}"),
       "the board image reference is built from the manifest repository and digest",
