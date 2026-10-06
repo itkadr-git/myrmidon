@@ -1188,7 +1188,11 @@ export function agentRoutes(
     return false;
   }
 
-  async function filterAgentsForActor<T extends Record<string, unknown>>(
+  // myrmidon(PERF-DIET-G): the row shape is generic on purpose. The slim list
+  // projection (AgentListItem) is an interface without an index signature, so it
+  // does not satisfy a `Record<string, unknown>` constraint — this filter only
+  // reads the identity fields, which both shapes carry.
+  async function filterAgentsForActor<T extends { id?: unknown; companyId?: unknown }>(
     req: Request,
     rows: T[],
     fallbackCompanyId?: string,
