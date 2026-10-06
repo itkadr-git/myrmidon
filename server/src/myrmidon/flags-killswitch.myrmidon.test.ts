@@ -282,24 +282,6 @@ describe("myrmidon env coverage guard (code vs docs)", () => {
       collectSettingsNames(readFileSync(join(changesDir, entry.name), "utf8"));
     }
 
-    // Since CHANGE-FRAGMENTS, a PR's SETTINGS.md row lives in its fragment
-    // docs/myrmidon/changes/<slug>.md and reaches SETTINGS.md only at release
-    // cut (collect-fragments.mjs). A brand-new env documented in a pending
-    // fragment is documented — read the fragments too, or every PR adding an
-    // env var would fail this guard between merge and the next release cut.
-    const changesDir = fileURLToPath(
-      new URL("../../../docs/myrmidon/changes", import.meta.url),
-    );
-    for (const entry of readdirSync(changesDir, { withFileTypes: true })) {
-      if (!entry.isFile() || !entry.name.endsWith(".md") || entry.name === "README.md") {
-        continue;
-      }
-      const fragmentMd = readFileSync(join(changesDir, entry.name), "utf8");
-      for (const match of fragmentMd.matchAll(/`MYRMIDON_[A-Z0-9_]+`/g)) {
-        settingsNames.add(match[0].slice(1, -1));
-      }
-    }
-
     const flagsMd = readFileSync(FLAGS_MD_PATH, "utf8");
     const flagNames = new Set<string>();
     for (const match of flagsMd.matchAll(/^\| `MYRMIDON_[A-Z0-9_]+`/gm)) {
