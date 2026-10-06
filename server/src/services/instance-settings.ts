@@ -43,6 +43,8 @@ import { preserveStackGeneralKey } from "../myrmidon/stack-registry/store.js";
 import { preserveBotCanaryGeneralKey } from "../myrmidon/bot-containers/canary-store.js";
 // myrmidon(BOT-ROLLOUT): keep the release bot-image rollout settings across vendor writes of `general`
 import { preserveBotImageRolloutGeneralKey } from "../myrmidon/bot-containers/bot-image-rollout-store.js";
+// myrmidon(BOT-ROLLOUT): keep the deferred bot rollout records across vendor writes of `general`
+import { preserveBotRolloutDeferredGeneralKey } from "../myrmidon/bot-containers/deferred-store.js";
 // myrmidon(CLOUD-CONNECTOR): keep the cloud connector state across vendor writes of `general`
 import { preserveCloudConnectorGeneralKey } from "../myrmidon/cloud-connector/store.js";
 // myrmidon(SEC1): keep the access-hub host registry across vendor writes of `general`
@@ -651,6 +653,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
             ...preserveBrowserConsoleGeneralKey(current.general), // myrmidon(BROWSER-CONSOLE)
             ...preserveStackGeneralKey(current.general), // myrmidon(SUA)
             ...preserveBotCanaryGeneralKey(current.general), // myrmidon(R5-B)
+            ...preserveBotRolloutDeferredGeneralKey(current.general), // myrmidon(BOT-ROLLOUT)
             ...preserveAccessHubHostsGeneralKey(current.general), // myrmidon(SEC1)
             ...preserveCloudConnectorGeneralKey(current.general), // myrmidon(CLOUD-CONNECTOR)
             ...preserveAutonomyGeneralKey(current.general), // myrmidon(1.6-AUTONOMY)
