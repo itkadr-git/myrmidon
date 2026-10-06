@@ -7,7 +7,7 @@
 // Errors here are caught per alert: one bad alert answers 500 for that alert
 // only in the route, never stops the batch.
 
-import { issueTitleFor, issueBodyFor, routeAssignee, decideDedup, updateCommentFor, resolvedCommentFor, alertIdentity, type AlertPriority, type NormalizedAlert } from "./domain.js";
+import { issueTitleFor, issueBodyFor, routeAssignee, routeMatch, decideDedup, updateCommentFor, resolvedCommentFor, alertIdentity, type AlertPriority, type NormalizedAlert } from "./domain.js";
 import type { AlertDedupStore, DedupEntry } from "./store.js";
 import type { AlertRouteSettings } from "./domain.js";
 
@@ -65,9 +65,10 @@ export function createAlertService(deps: AlertServiceDeps) {
     if (decision.action === "create") {
       const assigneeName = routeAssignee(alert, settings.routes, settings.defaultAssignee);
       const assigneeAgentId = await deps.assigneeResolver.resolve(companyId, assigneeName);
+      const matched = routeMatch(alert, settings.routes);
       const issue = await deps.issues.createIssue(companyId, {
         title: issueTitleFor(alert),
-        description: issueBodyFor(alert),
+        description: issueBodyFor(alert, matched?.runbook),
         priority,
         assigneeAgentId,
       });

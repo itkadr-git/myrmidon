@@ -173,6 +173,7 @@ describe("myrmidon(1.6.6-ALERTS) webhook", () => {
     expect(ports.created[0].title).toContain("disk");
     expect(ports.created[0].priority).toBe("critical");
     expect(ports.created[0].description).toContain(zabbixDisk.url);
+    expect(ports.created[0].description).toContain("## Runbook");
     expect(dedup.entries.get("zabbix:101")).toMatchObject({ issueId: "issue-1" });
   });
 
@@ -279,6 +280,30 @@ describe("myrmidon(1.6.6-ALERTS) webhook", () => {
       })
       .expect(200);
     expect(resolvedBatch.body.results[0]).toMatchObject({ action: "resolve", issueId: "issue-1" });
+  });
+});
+
+describe("myrmidon(1.6.6-ALERTS) selfcheck", () => {
+  it("runs the full create → resolve → auto-close cycle and reports metrics", async () => {
+    const { app, ports } = appFor();
+    const res = await request(app)
+      .post("/api/myrmidon/monitoring/alerts/selfcheck")
+      .expect(200);
+    expect(res.body).toMatchObject({ ok: true, auto_closed: true });
+    expect(res.body.created_issue).toBeTruthy();
+    expect(res.body.metrics.created).toBeGreaterThanOrEqual(1);
+    expect(res.body.metrics.closed).toBeGreaterThanOrEqual(1);
+    expect(ports.created).toHaveLength(1);
+    expect(ports.created[0].description).toContain("monitoring-selfcheck");
+    expect(ports.statusUpdates).toEqual([{ issueId: "issue-1", status: "done" }]);
+  });
+
+  it("answers 503 on selfcheck when the company is not configured", async () => {
+    const app = express();
+    app.use(express.json());
+    app.use("/api", monitoringAlertsRoutes({ db, env: {} as NodeJS.ProcessEnv, settingsStore: fakeSettingsStore() }));
+    app.use(errorHandler);
+    await request(app).post("/api/myrmidon/monitoring/alerts/selfcheck").expect(503);
   });
 });
 

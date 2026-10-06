@@ -36,6 +36,8 @@ export {
   ALERTS_RETENTION_DAYS_ENV,
 } from "./sweep.js";
 export { readAlertsSettings, resolveAlertTokenRef, ALERT_WEBHOOK_TOKEN_REF_ENV, ALERTS_COMPANY_ID_ENV } from "./token.js";
+export { createAlertsMetrics, outcomeToMetric, ALERTS_METRIC_NAME, type AlertMetricResult, type AlertsMetrics } from "./metrics.js";
+export { DEFAULT_ALERT_RUNBOOK, routeMatch } from "./domain.js";
 
 /** Router for app.ts: `api.use(monitoringAlertsRoutes(db))`. */
 export function myrmidonMonitoringAlertsRoutes(db: Db, env: NodeJS.ProcessEnv = process.env) {
