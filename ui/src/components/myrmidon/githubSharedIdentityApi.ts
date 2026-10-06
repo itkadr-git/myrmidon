@@ -59,6 +59,9 @@ export interface GitHubAppEntry {
   appId: string;
   privateKeySecretId: string;
   installationId: string | null;
+  // myrmidon(GITHUB-APP-MANIFEST): the App's GitHub slug, set by the manifest
+  // flow; null for a manually registered App.
+  slug?: string | null;
   roles: string[];
   agentIds: string[];
   allowedRepos: string[];
@@ -81,6 +84,8 @@ export interface BeginAppManifestBody {
 export interface BeginAppManifestResponse {
   manifestUrl: string;
   manifest: Record<string, unknown>;
+  /** Anti-CSRF state: POST to GitHub as a separate form field; echoed back on the callback. */
+  state: string;
 }
 
 export interface AppInstallUrlResponse {

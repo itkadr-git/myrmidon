@@ -404,7 +404,7 @@ describe("manifest flow helpers", () => {
     expect(readManifestCallbackNotice("")).toBeNull();
   });
 
-  it("submitManifestForm posts the manifest to the manifest url", () => {
+  it("submitManifestForm posts the manifest and the state to the manifest url", () => {
     let submitted: HTMLFormElement | null = null;
     const submitSpy = vi
       .spyOn(HTMLFormElement.prototype, "submit")
@@ -413,7 +413,7 @@ describe("manifest flow helpers", () => {
       });
     try {
       const manifest = { name: "my-app", public: false };
-      submitManifestForm("https://github.com/settings/apps/new", manifest);
+      submitManifestForm("https://github.com/settings/apps/new", manifest, "state-abc");
       expect(submitSpy).toHaveBeenCalledTimes(1);
       const form = submitted as unknown as HTMLFormElement | null;
       expect(form).not.toBeNull();
@@ -422,6 +422,9 @@ describe("manifest flow helpers", () => {
       const input = form!.querySelector("input[name='manifest']") as HTMLInputElement;
       expect(input.type).toBe("hidden");
       expect(JSON.parse(input.value)).toEqual(manifest);
+      const stateInput = form!.querySelector("input[name='state']") as HTMLInputElement;
+      expect(stateInput.type).toBe("hidden");
+      expect(stateInput.value).toBe("state-abc");
       form!.remove();
     } finally {
       submitSpy.mockRestore();
@@ -468,6 +471,7 @@ describe("GitHubSharedIdentityPanel — server callback", () => {
     apiMocks.beginAppManifest.mockResolvedValue({
       manifestUrl: "https://github.com/settings/apps/new",
       manifest: { name: "my-app" },
+      state: "state-from-begin",
     });
     apiMocks.getAppInstallUrl.mockResolvedValue({ installUrl: "https://github.com/apps/my-app/installations/new" });
   });
@@ -510,6 +514,7 @@ describe("GitHubSharedIdentityPanel — server callback", () => {
       const form = [...document.querySelectorAll("form")].find((f) => f.action === "https://github.com/settings/apps/new");
       expect(form).toBeTruthy();
       expect(JSON.parse((form!.querySelector("input[name='manifest']") as HTMLInputElement).value)).toEqual({ name: "my-app" });
+      expect((form!.querySelector("input[name='state']") as HTMLInputElement).value).toBe("state-from-begin");
       form!.remove();
     } finally {
       submitSpy.mockRestore();
