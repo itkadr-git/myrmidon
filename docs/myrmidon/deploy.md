@@ -272,6 +272,23 @@ reproduces it.
   logged line by line whenever it refuses a config, in the preflight, the bot rollout and the
   component rollout.
 
+### Upgrading from 1.6.4 to 1.6.5
+
+What changes for operators:
+
+- **The vendor's config backups in bot volumes are wiped by the board.** The
+  vendored Hermes CLI snapshots each bot's `config.yaml` into
+  `hermes/backups/config/` on every successful config load and offers no
+  switch to turn that off. The compiled `config.yaml` never holds a secret
+  value (only a `${VAR}` reference; the value lives in `hermes/.env`, mode
+  `0600`), but a backup copy can hold the resolved value, and a host backup
+  of the bot volume would then carry it. From 1.6.5 the apply script of every
+  profile rebuild removes `hermes/backups` as a best-effort step, so the
+  copies disappear on each bot's first profile rebuild after the upgrade.
+  There are no manual steps: if a bot's volume was included in a host backup
+  taken before the upgrade, treat the older copies inside that host backup as
+  potentially holding the bot's LLM gateway key.
+
 ### Upgrading from 1.5.0 to 1.6.0
 
 What changes for operators:
