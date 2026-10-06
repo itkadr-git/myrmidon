@@ -35,8 +35,8 @@
 // injected activity sink, and returned as `{kind: "error"}` — a bad reconcile pass
 // for one bot must not take the sweep in index.ts down with it.
 
-import { classifyProfileChange, type CompiledProfile } from "./types.js";
-import type { BotContainerDriver, BotContainerSpec } from "./driver.js";
+import { classifyProfileChange, type CompiledProfile, type ProfileChangeClass } from "./types.js";
+import type { BotContainerDriver, BotContainerSpec, BotContainerState } from "./driver.js";
 
 export type MaintenanceWindowState = "entering" | "on" | "leaving" | "off";
 
@@ -174,6 +174,41 @@ async function withAgentPaused(
   }
 }
 
+/**
+ * myrmidon(APPLY-LOG): the created branch reads no drift report and no change
+ * class — a container that does not exist has nothing to compare against — so
+ * its trigger names its own shape instead of inventing two comparable states.
+ */
+const CREATED_TRIGGER = "missing:new";
+
+/**
+ * myrmidon(APPLY-LOG): the one field that answers "why did this pass apply
+ * anything" for a single record — the container state the pass read, whether
+ * the template had drifted, and the profile change class
+ * ("running:nodrift:restart"). Without it the reason for a restart is spread
+ * over two or three separate records, and a restart-class change with no drift
+ * states it nowhere at all.
+ */
+function applyTrigger(state: BotContainerState, drifted: boolean, changeClass: ProfileChangeClass): string {
+  return `${state}:${drifted ? "drift" : "nodrift"}:${changeClass}`;
+}
+
+/**
+ * myrmidon(APPLY-LOG): the diagnostic tail every apply-branch info record
+ * carries — the hashes of the profile this pass wrote, the concurrency limit the
+ * compiled profile hands the gateway, and the trigger. `maxConcurrentRuns` is
+ * optional on a compiled profile: an absent key means "this profile does not set
+ * one", never a default the profile does not carry.
+ */
+function appliedDetails(profile: CompiledProfile, trigger: string): Record<string, unknown> {
+  return {
+    restartHash: profile.restartHash,
+    appliedFilesHash: profile.filesHash,
+    ...(profile.maxConcurrentRuns === undefined ? {} : { appliedMaxConcurrentRuns: profile.maxConcurrentRuns }),
+    trigger,
+  };
+}
+
 export async function reconcileBot(input: ReconcileBotInput): Promise<ReconcileOutcome> {
   const { agentId, botKey, spec, compile, driver, maintenance } = input;
   const activity = input.activity ?? noopActivitySink;
@@ -190,10 +225,7 @@ export async function reconcileBot(input: ReconcileBotInput): Promise<ReconcileO
       await driver.create(spec);
       await driver.writeProfile(botKey, profile);
       await driver.start(botKey);
-      await info("bot container created and profile applied", {
-        restartHash: profile.restartHash,
-        filesHash: profile.filesHash,
-      });
+      await info("bot container created and profile applied", appliedDetails(profile, CREATED_TRIGGER));
       return { kind: "created" };
     }
 
@@ -212,13 +244,16 @@ export async function reconcileBot(input: ReconcileBotInput): Promise<ReconcileO
     // Hashes come only from the applied-state marker; none there means nothing
     // verified applied, which classifies as "restart", never "none".
     const changeClass = classifyProfileChange({ restartHash: status.restartHash, filesHash: status.filesHash }, profile);
-    const hashes = { restartHash: profile.restartHash, filesHash: profile.filesHash };
 
     if (status.state === "stopped") {
       if (drifted) await driver.recreate(spec);
       if (changeClass !== "none") await driver.writeProfile(botKey, profile);
       await driver.start(botKey);
-      await info("stopped bot container brought up", { drifted, changeClass, ...hashes });
+      await info("stopped bot container brought up", {
+        drifted,
+        changeClass,
+        ...appliedDetails(profile, applyTrigger(status.state, drifted, changeClass)),
+      });
       return { kind: "applied_restart" };
     }
 
@@ -226,7 +261,10 @@ export async function reconcileBot(input: ReconcileBotInput): Promise<ReconcileO
       if (changeClass === "none") return { kind: "unchanged" };
       if (changeClass === "files") {
         await driver.writeProfile(botKey, profile);
-        await info("bot container profile files applied without restart", { filesHash: profile.filesHash });
+        await info(
+          "bot container profile files applied without restart",
+          appliedDetails(profile, applyTrigger(status.state, drifted, changeClass)),
+        );
         return { kind: "applied_files" };
       }
     }
@@ -248,8 +286,18 @@ export async function reconcileBot(input: ReconcileBotInput): Promise<ReconcileO
       if (changeClass !== "none") await driver.writeProfile(botKey, profile);
       await driver.restart(botKey); // resolves once the gateway reports healthy, or throws
     });
+    // The window's own reason is what maintenance.enter received; the deferred
+    // record's `reason` is the outcome explanation, so they carry different keys.
+    const trigger = applyTrigger(status.state, drifted, changeClass);
     if (result.kind === "deferred") {
-      await info("bot container update deferred", { reason: result.reason, drifted, changeClass, state: status.state });
+      await info("bot container update deferred", {
+        reason: result.reason,
+        drifted,
+        changeClass,
+        state: status.state,
+        trigger,
+        maintenanceReason: reason,
+      });
       return result;
     }
     await info(
@@ -258,7 +306,7 @@ export async function reconcileBot(input: ReconcileBotInput): Promise<ReconcileO
         : status.state === "unhealthy"
           ? "unhealthy bot container restarted"
           : "bot container restarted with updated profile",
-      { drifted, changeClass, previousState: status.state, ...hashes },
+      { drifted, changeClass, previousState: status.state, maintenanceReason: reason, ...appliedDetails(profile, trigger) },
     );
     return { kind: "applied_restart" };
   } catch (err) {
