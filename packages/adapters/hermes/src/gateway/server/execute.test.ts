@@ -2663,14 +2663,20 @@ describe("prompt breakdown (myrmidon 1.6.5 PROMPT-BUDGET A)", () => {
       "sessionHandoff",
       "taskMarkdown",
       "wakePayloadJson",
-      "instructions",
+      "cardInstructions",
     ]) {
       expect(parts[section], `section ${section}`).toBeGreaterThan(0);
     }
-    // Exact total/parts reconciliation, pinned to the estimator contract.
-    const partSum = Object.values(parts).reduce((a, b) => a + b, 0);
-    expect(breakdown?.total).toBe(partSum);
+    // No instructions bundle file configured in this context: the bundle
+    // section is omitted (empty sections never appear in parts).
+    expect(parts.instructionsBundle).toBeUndefined();
+    // The total is measured against the serialized run body, so it covers
+    // the JSON envelope on top of the sections and is at least as large as
+    // every individual part.
     expect(breakdown?.total).toBeGreaterThan(0);
+    for (const value of Object.values(parts)) {
+      expect(breakdown?.total).toBeGreaterThanOrEqual(value);
+    }
 
     // The measurement stays out of the wire payload.
     const calls = fetchMock.mock.calls as Array<[RequestInfo | URL, RequestInit?]>;
@@ -2710,7 +2716,42 @@ describe("prompt breakdown (myrmidon 1.6.5 PROMPT-BUDGET A)", () => {
     // omitted, the always-present ones remain.
     expect(breakdown?.parts.identityContract).toBeGreaterThan(0);
     expect(breakdown?.parts.wakePrompt).toBeGreaterThan(0);
-    expect(breakdown?.parts.instructions).toBeGreaterThan(0);
+    expect(breakdown?.parts.cardInstructions).toBeGreaterThan(0);
     expect(breakdown?.parts.sessionHandoff).toBeUndefined();
+  });
+
+  // Ported from the #558 duplicate (execute-prompt-breakdown.myrmidon.test.ts):
+  // the bundle and the card instructions are measured as separate sections.
+  it("measures the instructions bundle separately from card instructions when instructionsFilePath is set", async () => {
+    const fetchMock = completedFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const bundleText = `# Instructions bundle\n\n${"Follow the runbook. ".repeat(80)}`;
+    const { mkdtemp, writeFile, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const path = await import("node:path");
+    const dir = await mkdtemp(path.join(tmpdir(), "prompt-budget-"));
+    const bundlePath = path.join(dir, "bundle.md");
+    await writeFile(bundlePath, bundleText, "utf-8");
+    try {
+      const result = await execute(
+        makeCtx({
+          apiBaseUrl: "http://127.0.0.1:8642",
+          apiKey: "test-key",
+          timeoutSec: 5,
+          instructionsFilePath: bundlePath,
+          instructions: "Card instructions: be careful.",
+        }),
+      );
+      expect(result.exitCode).toBe(0);
+      const parts = (result.resultJson as Record<string, unknown> | null)
+        ?.promptBreakdown as { parts: Record<string, number> } | undefined;
+      expect(parts?.parts.instructionsBundle).toBeGreaterThan(0);
+      expect(parts?.parts.cardInstructions).toBeGreaterThan(0);
+      // The bundle part reflects the bundle text only, not the card text.
+      expect(parts?.parts.instructionsBundle).toBeGreaterThan(parts?.parts.cardInstructions ?? 0);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

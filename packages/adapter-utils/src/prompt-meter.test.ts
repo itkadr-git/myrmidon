@@ -80,3 +80,19 @@ describe("measureSections", () => {
     expect(measureSections({ a: "", b: null })).toEqual({ parts: {}, total: 0 });
   });
 });
+
+describe("measureSections with joined total (ported from #558)", () => {
+  it("measures the total against the exact joined text when provided", () => {
+    const sections = { one: "a".repeat(400), two: "b".repeat(40) };
+    const joined = `${sections.one}\n\n---\n\n${sections.two}`;
+    const result = measureSections(sections, { joined });
+    expect(result.parts).toEqual({ one: 100, two: 10 });
+    expect(result.total).toBe(Math.ceil(joined.length / PROMPT_METER_CHARS_PER_TOKEN));
+  });
+
+  it("is monotone in text size", () => {
+    const small = estimateTokens("hello world");
+    const large = estimateTokens("hello world".repeat(100));
+    expect(large).toBeGreaterThan(small);
+  });
+});

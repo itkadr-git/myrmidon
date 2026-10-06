@@ -474,37 +474,44 @@ function buildRunBody(
   // an absent pair leaves the body without the field entirely (see
   // buildGitHubBrokerField).
   const githubBroker = buildGitHubBrokerField(ctx.config);
-  // myrmidon(1.6.5 PROMPT-BUDGET A): extend buildInput's per-section
-  // breakdown with the sections buildRunBody owns. `instructions` is the
-  // full instructions field actually sent (bundle + card instructions); a
-  // configured payloadTemplate input replaces the assembled input text, so
-  // its sections are replaced by `configuredInput` rather than summed with
-  // them. The recorded total is the estimator's view of the whole prompt
-  // (input + instructions), within inter-section-newline accuracy.
-  const promptBreakdown = measureSections(
-    configuredInput && ctx.context.conversationMode === true
-      ? // conversation mode appends the assembled input after the configured
-        // input, so both are on the wire and both are measured.
-        { ...builtInput.sections, configuredInput, instructions }
-      : configuredInput
-        ? // a configured input replaces the assembled input text: measuring
-          // both would double-count a prompt only one of which was sent.
-          { configuredInput, instructions }
-        : { ...builtInput.sections, instructions },
-  );
-  return {
-    body: {
-      ...payloadTemplate,
-      input,
-      instructions,
-      ...(sessionKey ? { session_id: sessionKey } : {}),
-      ...(model ? { model } : {}),
-      ...(provider ? { provider } : {}),
-      ...(modelOptions ? { model_options: modelOptions } : {}),
-      github_broker: githubBroker,
-    },
-    promptBreakdown,
+  const body: Record<string, unknown> = {
+    ...payloadTemplate,
+    input,
+    instructions,
+    ...(sessionKey ? { session_id: sessionKey } : {}),
+    ...(model ? { model } : {}),
+    ...(provider ? { provider } : {}),
+    ...(modelOptions ? { model_options: modelOptions } : {}),
+    github_broker: githubBroker,
   };
+  // myrmidon(1.6.5 PROMPT-BUDGET A): extend buildInput's per-section
+  // breakdown with the sections buildRunBody owns. `instructionsBundle` and
+  // `cardInstructions` are measured separately (the bundle dominates and is
+  // the first optimization target); the wire `instructions` field is their
+  // join. A configured payloadTemplate input replaces the assembled input
+  // text, so its sections are replaced by `configuredInput` rather than
+  // summed with them. `total` is measured against the serialized run body
+  // itself so it covers the JSON envelope, payloadTemplate extras and the
+  // broker field too; section estimates cover only their own text, so the
+  // parts need not sum exactly to `total` (unlike the joined-less contract,
+  // where total is the exact parts sum).
+  const promptBreakdown = measureSections(
+    {
+      instructionsBundle: agentInstructionsBundle,
+      cardInstructions,
+      ...(configuredInput && ctx.context.conversationMode === true
+        ? // conversation mode appends the assembled input after the configured
+          // input, so both are on the wire and both are measured.
+          { ...builtInput.sections, configuredInput }
+        : configuredInput
+          ? // a configured input replaces the assembled input text: measuring
+            // both would double-count a prompt only one of which was sent.
+            { configuredInput }
+          : builtInput.sections),
+    },
+    { joined: JSON.stringify(body) },
+  );
+  return { body, promptBreakdown };
 }
 
 async function readResponseJson(response: Response): Promise<unknown> {

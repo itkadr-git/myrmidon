@@ -41,11 +41,18 @@ export interface PromptBreakdown {
 
 /**
  * Measure a named set of prompt sections. Empty/blank sections are omitted
- * from `parts`; `total` is always the exact sum of the listed parts, so
+ * from `parts`; by default `total` is the exact sum of the listed parts, so
  * consumers can reconcile `total` against `parts` without re-estimating.
+ *
+ * When `options.joined` is given, `total` is instead measured against that
+ * exact text (e.g. the serialized request body actually sent), so the total
+ * accounts for separators, envelope fields and other bytes between sections
+ * instead of assuming the prompt is only the sum of its parts. Callers that
+ * reconcile `total` against `parts` must NOT pass `joined`.
  */
 export function measureSections(
   sections: Record<string, string | null | undefined>,
+  options: { joined?: string } = {},
 ): PromptBreakdown {
   const parts: Record<string, number> = {};
   let total = 0;
@@ -54,6 +61,9 @@ export function measureSections(
     if (tokens <= 0) continue;
     parts[name] = tokens;
     total += tokens;
+  }
+  if (options.joined != null) {
+    total = estimateTokens(options.joined);
   }
   return { parts, total };
 }
