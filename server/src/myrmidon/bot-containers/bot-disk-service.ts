@@ -31,6 +31,7 @@ import {
 import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService, logActivity } from "../../services/index.js";
 import { sweepAllBotVolumes } from "./draft-lifecycle.js";
+import { recordBotDiskSweepOutcome } from "../features/reporters.js"; // myrmidon(FEATURES)
 import { refreshGitMirrors } from "./git-mirror.js"; // myrmidon(1.6.2-BOT-DISK-C)
 import { dropCloneSignalsExcept, ingestCloneReport, noteCloneReportSeen } from "./clone-hygiene.js";
 import { getBotContainerRuntime } from "./routes-wiring.js";
@@ -241,7 +242,15 @@ export async function runBotDiskSweep(db: Db): Promise<void> {
   const layout = resolveBotDiskLayout(general.botDisk);
   void refreshGitMirrors(layout).catch((err) => logger.warn({ err }, "git mirror refresh failed"));
   const lifecycle = await resolveBotDiskLifecycleConfig({ getGeneral: async () => general });
-  await sweepAllBotVolumes(lifecycle);
+  // myrmidon(FEATURES): the sweep's report reaches the features page, so a pass
+  // that fails on every tick (a volume root that does not exist) is visible.
+  try {
+    const report = await sweepAllBotVolumes(lifecycle);
+    recordBotDiskSweepOutcome(report);
+  } catch (err) {
+    recordBotDiskSweepOutcome(null, err);
+    throw err;
+  }
   await collectCloneReports(lifecycle.idleTtlMs, () => readContainerBotKeys(db), lifecycle.enabled ? CLONE_REPORT_COLLECT_INTERVAL_MS : undefined).catch((err) =>
     logger.warn({ err }, "clone hygiene report collection failed"),
   );

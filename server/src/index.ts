@@ -130,6 +130,7 @@ import { startRuntimeLimits } from "./myrmidon/runtime-limits/index.js"; // myrm
 import { startBotContainers, stopBotContainers } from "./myrmidon/bot-containers/startup.js"; // myrmidon(W2a)
 import { startLitellmCostSweep, stopLitellmCostSweep } from "./myrmidon/litellm-costs/startup.js"; // myrmidon(M2-A)
 import { startModelFallbackSignalSweep } from "./myrmidon/litellm-fallback-signal/sweep.js"; // myrmidon(BOT-RUNTIME-TUNING D)
+import { startFeatureHealthSweep, stopFeatureHealthSweep } from "./myrmidon/features/sweep.js"; // myrmidon(FEATURES)
 import { startBaselineSnapshots, stopBaselineSnapshots } from "./myrmidon/baseline/startup.js"; // myrmidon(1.6-BASELINE)
 import { startForagingSweep, stopForagingSweep } from "./myrmidon/foraging/startup.js"; // myrmidon(1.6-FORAGE)
 import { startTracingAttentionSweep, stopTracingAttentionSweep } from "./myrmidon/tracing-health/attention-sweep.js"; // myrmidon(TRACING-HEALTH)
@@ -1618,6 +1619,7 @@ async function startServerWithDatabaseTeardown(
     startBotContainers(db as any); // myrmidon(W2a): bot container sweep and the card's "Apply now" runtime; a no-op unless MYRMIDON_BOT_CONTAINERS is on
     startLitellmCostSweep(db as any); // myrmidon(M2-A): gateway spend sweep; a no-op unless MYRMIDON_LITELLM_* is set
     startModelFallbackSignalSweep(db as any); // myrmidon(BOT-RUNTIME-TUNING D): model fallback attention signals; a no-op unless MYRMIDON_MODEL_FALLBACK_ENABLED=1
+    startFeatureHealthSweep(db as any); // myrmidon(FEATURES): feature health pass that feeds the attention signal
     startBaselineSnapshots(db as any); // myrmidon(1.6-BASELINE): freeze the 14-day metric window; a no-op unless MYRMIDON_BASELINE_INTERVAL_SEC is set
     startForagingSweep(db as any); // myrmidon(1.6-FORAGE): source comparison sweep; a no-op unless MYRMIDON_FORAGING_ENABLED=1
     startTracingAttentionSweep(db as any); // myrmidon(TRACING-HEALTH): keep the "LLM tracing" operator signal fresh; a no-op unless the tracing settings are on
@@ -2197,6 +2199,7 @@ async function startServerWithDatabaseTeardown(
     clearInterval(executionControlInterval);
     stopBotContainers(); // myrmidon(W2a)
     stopLitellmCostSweep(); // myrmidon(M2-A)
+    stopFeatureHealthSweep(); // myrmidon(FEATURES)
     stopBaselineSnapshots(); // myrmidon(1.6-BASELINE)
     stopForagingSweep(); // myrmidon(1.6-FORAGE)
     stopTracingAttentionSweep(); // myrmidon(TRACING-HEALTH)

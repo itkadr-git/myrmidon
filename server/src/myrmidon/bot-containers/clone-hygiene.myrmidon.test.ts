@@ -162,8 +162,12 @@ describe("the board without a mount of the bot volumes", () => {
     const config = { enabled: true, idleTtlMs: 1000, defaultIdleTtlMs: 1000 };
 
     expect(lifecycleNotEffective()).toBeNull();
-    await expect(sweepAllBotVolumes(config)).resolves.toBeUndefined();
-    await expect(sweepAllBotVolumes(config)).resolves.toBeUndefined();
+    // myrmidon(FEATURES): the sweep returns a BotDiskSweepReport; the
+    // no-mount pass reports the missing root as rootError.
+    const first = await sweepAllBotVolumes(config);
+    const second = await sweepAllBotVolumes(config);
+    expect(first?.rootError?.code).toBe("ENOENT");
+    expect(second?.rootError?.code).toBe("ENOENT");
     expect(warn).toHaveBeenCalledTimes(1);
     expect(error).not.toHaveBeenCalled();
     expect(lifecycleNotEffective()).toBe(true);

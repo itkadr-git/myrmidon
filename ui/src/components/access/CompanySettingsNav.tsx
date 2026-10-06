@@ -18,6 +18,8 @@ const items = [
   // myrmidon(ROLE-SCOPED-TOKENS): scoped board API key management
   { value: "instance-board-api-keys", label: "Board API keys", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/board-api-keys` },
   { value: "instance-experimental", label: "Experimental", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/experimental` },
+  // myrmidon(FEATURES): fork features with live health
+  { value: "instance-features", label: "Features", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/features` },
   { value: "instance-plugins", label: "Plugins", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/plugins` },
   { value: "instance-adapters", label: "Adapters", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/adapters` },
   { value: "browsers", label: "Browsers", href: "/company/settings/browsers" },
@@ -72,6 +74,11 @@ export function getCompanySettingsTab(pathname: string): CompanySettingsTab {
 
   if (pathname.includes(`${INSTANCE_SETTINGS_PATH_PREFIX}/experimental`)) {
     return "instance-experimental";
+  }
+
+  // myrmidon(FEATURES): the Features page
+  if (pathname.includes(`${INSTANCE_SETTINGS_PATH_PREFIX}/features`)) {
+    return "instance-features";
   }
 
   if (pathname.includes(`${INSTANCE_SETTINGS_PATH_PREFIX}/plugins`)) {
@@ -165,6 +172,7 @@ const SETTINGS_TAB_LABEL_KEYS: Partial<Record<string, string>> = {
   "instance-access": "settingsNav.access",
   "instance-board-api-keys": "settingsNav.boardApiKeys",
   "instance-experimental": "settingsNav.experimental",
+  "instance-features": "settingsNav.features",
   "instance-plugins": "settingsNav.plugins",
   "instance-adapters": "settingsNav.adapters",
   browsers: "settingsNav.browsers",

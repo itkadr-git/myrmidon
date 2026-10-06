@@ -38,6 +38,7 @@ import {
 import { botProfileWiring } from "./profile-ports.js";
 import type { BotContainerActivitySink, BotMaintenancePort } from "./reconciler.js";
 import { botContainerAgentReader, getBotContainerRuntime, setBotContainerRuntime } from "./routes-wiring.js";
+import { reportBotContainerEvent } from "../features/reporters.js"; // myrmidon(FEATURES)
 import { readBotCacheLayoutForBot } from "./bot-disk-service.js"; // myrmidon(1.6.1-BOT-DISK-B, 1.6.2-BOT-DISK-C)
 import { scopeMigrator } from "./scope-migration.js"; // myrmidon(BOT-DISK-F)
 import { readAppliedScopeLayout } from "./scope-wiring.js"; // myrmidon(BOT-DISK-F)
@@ -71,6 +72,7 @@ export function createBotContainerLogSink(log: BotContainersLog = logger): BotCo
       const fields = { agentId: entry.agentId, botKey: entry.botKey, ...(entry.details ? { details: entry.details } : {}) };
       if (entry.level === "error") log.error(fields, `bot containers: ${entry.message}`);
       else log.info(fields, `bot containers: ${entry.message}`);
+      reportBotContainerEvent(entry); // myrmidon(FEATURES): evidence for the shared package cache
     },
   };
 }

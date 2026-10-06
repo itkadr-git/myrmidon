@@ -19,6 +19,8 @@ import { logger } from "../../middleware/logger.js";
 import { secretService } from "../../services/index.js";
 import { createLitellmGatewayClient, readLitellmCostSettings, sweepLitellmCosts } from "./litellm-costs.js";
 import { listGatewayBotKeys } from "./bot-keys.js";
+import { recordFeatureOutcome } from "../features/recorder.js"; // myrmidon(FEATURES)
+import { COST_ATTRIBUTION_FEATURE_KEY } from "../features/reporters.js"; // myrmidon(FEATURES)
 
 export interface LitellmSweepPorts {
   listCompanyIds(db: Db): Promise<string[]>;
@@ -60,11 +62,15 @@ export function startLitellmCostSweep(
   const tick = async () => {
     if (sweeping || stopped) return;
     sweeping = true;
+    // myrmidon(FEATURES): one outcome per tick for the features page.
+    let written = 0;
+    let keyMissing = 0;
+    const failures: string[] = [];
     try {
       const companyIds = await ports.listCompanyIds(db);
       for (const companyId of companyIds) {
         try {
-          await sweepLitellmCosts(
+          const result = await sweepLitellmCosts(
             {
               db,
               readGatewayKey: (id, name) => ports.readGatewayKey(db, id, name),
@@ -76,14 +82,29 @@ export function startLitellmCostSweep(
             companyId,
             settings,
           );
+          written += result?.written ?? 0;
+          if (result?.keyMissing) keyMissing += 1;
         } catch (err) {
+          failures.push(err instanceof Error ? err.message : String(err));
           ports.log.warn({ err, companyId }, "litellm cost sweep failed for one company");
         }
       }
+      // One company without the key is that company's choice; every company without it
+      // means the collection cannot work anywhere.
+      if (companyIds.length > 0 && keyMissing === companyIds.length) {
+        failures.push("the gateway key secret was not found in any company");
+      }
     } catch (err) {
+      failures.push(err instanceof Error ? err.message : String(err));
       ports.log.error({ err }, "litellm cost sweep tick failed");
     } finally {
       sweeping = false;
+      recordFeatureOutcome(
+        COST_ATTRIBUTION_FEATURE_KEY,
+        failures.length > 0
+          ? { ok: false, error: failures[0]!, effect: written }
+          : { ok: true, effect: written },
+      );
     }
   };
 

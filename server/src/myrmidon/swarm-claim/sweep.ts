@@ -52,11 +52,33 @@ import {
   type SwarmClaimSettings,
 } from "@paperclipai/shared";
 import { logger } from "../../middleware/logger.js";
+import { recordFeatureOutcome } from "../features/recorder.js"; // myrmidon(FEATURES)
+import { SWARM_CLAIM_SWEEP_FEATURE_KEY } from "../features/reporters.js"; // myrmidon(FEATURES)
 import { currentHostCpuGate, currentHostMemoryGate, type HostCpuGate, type HostMemoryGate } from "../run-admission.js";
 import { wakeNextAgentForIssueRole, type SwarmClaimServicePorts } from "./service.js";
 import { listClaimsOnNonQueueIssues, listExpiredClaims, releaseClaim } from "./store.js";
 import { listIdleRolePairs, liveClaimCountsByAgent } from "./idle-queue.js";
 import { idleWakeTargetsForRole, idleWakeIdempotencyKey, type SwarmRoleIdleInput } from "./idle-wake.js";
+
+/**
+ * myrmidon(FEATURES): one pass of the sweeper reported to the features page —
+ * "the loop is alive", what it woke, and what the idle pass saw. A release that
+ * threw or an idle pass that failed is a failed pass.
+ */
+function recordSwarmPass(result: SwarmClaimSweepResult, failure: string | null): void {
+  const detail = {
+    idleRoles: result.idleRoles,
+    idleFreeAgents: result.idleFreeAgents,
+    idleWoken: result.idleWoken,
+    idleSkippedReason: result.idleSkippedReason,
+  };
+  const effect = result.woken + result.idleWoken;
+  const error = failure ?? (result.failed > 0 ? `${result.failed} claim release(s) failed` : null);
+  recordFeatureOutcome(
+    SWARM_CLAIM_SWEEP_FEATURE_KEY,
+    error ? { ok: false, error, effect, detail } : { ok: true, effect, detail },
+  );
+}
 
 /** The sweep inspects at most this many claims per pass. */
 export const SWARM_CLAIM_SWEEP_PAGE_SIZE = 50;
@@ -286,6 +308,7 @@ export function createSwarmClaimSweeper(deps: SwarmClaimSweeperDeps): SwarmClaim
             "swarm idle wake pass skipped: the run admission host memory floor is closed",
           );
         }
+        recordSwarmPass(result, null); // myrmidon(FEATURES)
         return result;
       }
       // myrmidon(1.6.5 RUN-ADMISSION): the host CPU ceiling. The 05.10
@@ -331,7 +354,11 @@ export function createSwarmClaimSweeper(deps: SwarmClaimSweeperDeps): SwarmClaim
           { errorKind: "swarm_idle_wake_failed" },
           "swarm idle wake pass failed; the next tick retries",
         );
+        // myrmidon(FEATURES): constant text too, the exception can carry a credential.
+        recordSwarmPass(result, "the idle wake pass failed");
+        return result;
       }
+      recordSwarmPass(result, null); // myrmidon(FEATURES)
       return result;
     },
   };

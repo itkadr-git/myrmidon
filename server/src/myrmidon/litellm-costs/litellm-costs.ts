@@ -387,6 +387,8 @@ export interface SweepResult {
   /** myrmidon(HERMES-USAGE-COST): unpriced vendor cost_events filled by the reconcile pass. */
   reconciledCostEvents: number;
   window: { from: Date; to: Date };
+  /** myrmidon(FEATURES): the pass collected nothing because the gateway key secret is missing. */
+  keyMissing?: boolean;
 }
 
 /**
@@ -416,7 +418,15 @@ export async function sweepLitellmCosts(
   const keyValue = await deps.readGatewayKey(companyId, settings.keySecret);
   if (!keyValue) {
     log.warn({ companyId }, "litellm cost sweep skipped: gateway key secret not found");
-    return { collected: 0, written: 0, skippedUnattributed: 0, modelsRefreshed: null, reconciledCostEvents: 0, window };
+    return {
+      collected: 0,
+      written: 0,
+      skippedUnattributed: 0,
+      modelsRefreshed: null,
+      reconciledCostEvents: 0,
+      window,
+      keyMissing: true,
+    };
   }
 
   const entries = await deps.client(settings.baseUrl, keyValue).listSpendLogs(window);
