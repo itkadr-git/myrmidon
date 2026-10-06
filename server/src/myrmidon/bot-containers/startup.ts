@@ -84,7 +84,10 @@ export interface BotContainersStartupPorts {
   profileWiring(
     db: Db,
     opts: { activity: BotContainerActivitySink; env: NodeJS.ProcessEnv },
-  ): Pick<BotContainerRuntimeDeps, "compile" | "syncCard" | "releaseStrayGateways">;
+  ): Pick<
+    BotContainerRuntimeDeps,
+    "compile" | "beginProfilePass" | "endProfilePass" | "syncCard" | "releaseStrayGateways"
+  >;
   maintenancePort(db: Db): BotMaintenancePort;
   listAgents(db: Db): () => Promise<BotContainerAgent[]>;
   /** One agent's card at the moment of a pass (index.ts `readAgent`): the sweep
@@ -168,10 +171,14 @@ function build(
   try {
     const driverConfig = ports.readDriverConfig(env);
     const activity = ports.activitySink();
-    const { compile, syncCard, releaseStrayGateways } = ports.profileWiring(db, { activity, env });
+    const { compile, beginProfilePass, endProfilePass, syncCard, releaseStrayGateways } = ports.profileWiring(db, { activity, env });
     const runtime: BotContainerRuntimeDeps = {
       driver: ports.createDriver(driverConfig, db),
       compile,
+      // myrmidon(PERF-DIET-G): the sweep shares one pass between the bots it
+      // reconciles (index.ts); the wiring supplies the pair beside compile.
+      ...(beginProfilePass ? { beginProfilePass } : {}),
+      ...(endProfilePass ? { endProfilePass } : {}),
       syncCard,
       ...(releaseStrayGateways ? { releaseStrayGateways } : {}),
       maintenance: ports.maintenancePort(db),
