@@ -1,5 +1,3 @@
-// myrmidon(B1c): product name constant, see myrmidon-product.ts.
-export { PRODUCT_NAME } from "./myrmidon-product.js";
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
 export {
   RUNNER_GOAL_MAX_OBJECTIVE_CHARS,
@@ -919,9 +917,6 @@ export type {
   Agent,
   AgentAccessState,
   AgentChainOfCommandEntry,
-  // myrmidon(PERF-DIET-G): the slim company list row and the configuration read
-  AgentListItem,
-  AgentConfigurationSummary,
   AgentDetail,
   ClearAgentErrorResponse,
   AgentPermissions,
@@ -2791,13 +2786,6 @@ export * from "./myrmidon-isolation-scope.js";
 // shared by the server, the board UI and the settings validator.
 export * from "./myrmidon-bot-disk-quota.js";
 export * from "./myrmidon-bot-image-rollout.js"; // myrmidon(BOT-ROLLOUT)
-// myrmidon(1.6.5-BOT-DISK-H0): the interface contract of the bot-disk project — directory
-// layout, myr-ws CLI, desired-state and disk-report payloads, dockergate disk routes, the
-// /v1/runs workspace field and the botDisk settings keys. All BOT-DISK-H tasks code against it.
-export * from "./myrmidon-bot-workspace.js";
-// myrmidon(PERF-DIET-K): issue-scoped session-generation thresholds shared by the server and the
-// settings validator.
-export * from "./myrmidon-session-generations.js";
 // myrmidon(C0): live run-admission limits shared by the server, the UI and the settings validator.
 export * from "./myrmidon-runtime-limits.js";
 // myrmidon(PARALLEL-HELPERS): the card -> Hermes `delegation` contract shared by the profile
@@ -2806,10 +2794,6 @@ export * from "./myrmidon-parallel-helpers.js";
 // myrmidon(PARALLEL-HELPERS): the settings-side validator for the same module, exported next
 // to the contract so `instanceGeneralSettingsSchema`'s dependency is reachable from the barrel.
 export { parallelHelpersSettingsSchema, patchParallelHelpersSettingsSchema } from "./validators/instance.js";
-// myrmidon(TEAM-LIVENESS-SETTINGS): the instance + per-agent knobs of the automatic
-// team-liveness behaviours, shared by the three behaviour modules, the settings page
-// and the settings validator.
-export * from "./myrmidon-team-liveness.js";
 // myrmidon(BOT-LSP-DEFAULTS): language-server mode per role/card, shared by the profile
 // compiler, the agent card and the settings page.
 export * from "./myrmidon-bot-lsp.js";
@@ -2830,13 +2814,11 @@ export * from "./myrmidon-litellm-sync.js";
 // myrmidon(1.6-SWARM): per-role task queues with leased claims — the shared
 // contract of the core queue, the supervisor view and the pilot settings.
 export * from "./myrmidon-swarm-claim.js";
-// myrmidon(BOT-RUNTIME-TUNING D2): the settings contract of the model fallback
-// signal (stored instance settings over environment over defaults).
-export * from "./myrmidon-fallback-signal.js";
+// myrmidon(1.6.1-FORAGING-LIMITS-UI): the enable switch, pass tuning and spend
+// limits of the foraging sweep — shared by the server, the settings page and
+// the settings validator.
+export * from "./myrmidon-foraging.js";
 
-// myrmidon(1.6.5 BASE-SKILLS): the company base-skills contract — the list of
-// skills every agent carries automatically and the gaps of that list.
-export * from "./myrmidon-base-skills.js";
 // myrmidon(1.6-AUTONOMY): role × action-class matrix, verdict resolver and per-role regulations.
 export * from "./myrmidon-autonomy.js";
 // myrmidon(1.6-CTO-CHAT-B): the owner-message-to-epic proposal contract of the CTO chat.
@@ -2846,7 +2828,6 @@ export * from "./myrmidon-telegram-notify.js";
 // myrmidon(1.6.1-WIP-LIMIT-A): the shared contract of the per-agent WIP limit —
 // the settings shape, the limit resolver and the status feed rows.
 export * from "./myrmidon-wip-limit.js";
-export * from "./myrmidon-prompt-budget.js"; // myrmidon(1.6.3 PROMPT-BUDGET B)
 // myrmidon(1.7-BUDGET-CONFIG-B): the shared contract of budget enforcement —
 // the global mode (signal_only / soft / hard), its storage key and resolver.
 export * from "./myrmidon-budget-enforcement.js";
@@ -2870,5 +2851,3 @@ export * from "./myrmidon-review-routing.js";
 // Settings contract, verdict-marker parser and activity actions.
 export * from "./myrmidon-review-rework.js";
 export * from "./myrmidon-budget-projection.js"; // myrmidon(1.7-BUDGET-CONFIG-C)
-// myrmidon(CUSTOM-CASTES): the company caste directory contract (view, POST/PATCH/DELETE bodies, seed).
-export * from "./myrmidon-castes.js";

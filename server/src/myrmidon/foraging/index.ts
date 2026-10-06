@@ -7,13 +7,23 @@
 // that module is not merged the port is absent and findings stay `unverified`;
 // once it lands, `foragingCandidatePort` below is the single place to connect it,
 // so no other file of this feature changes.
+//
+// 1.6.1 (FORAGING-LIMITS-UI): the settings the sweep runs with are the instance
+// settings row (`general.foraging`), resolved on EVERY pass — the env stays the
+// per-key override, the built-in default the floor. The wiring reads the row
+// through `instanceSettingsService` on each resolve, so a value changed in the
+// interface applies with the next pass, no restart. The finance port records
+// one `training_charge` event per pass, and the baseline port feeds the
+// cost-per-task auto-off rule.
 
 import type { Db } from "@paperclipai/db";
+import { financeEvents } from "@paperclipai/db";
 import { secretService } from "../../services/index.js";
+import { instanceSettingsService } from "../../services/instance-settings.js";
 import { logger } from "../../middleware/logger.js";
 import { nullForagingCandidatePort, type ForagingCandidatePort } from "./domain.js";
 import { createForagingReader } from "./reader.js";
-import { readForagingSettings } from "./settings.js";
+import { readForagingSettings, resolveForagingEffectiveSettings, foragingSettingsService } from "./settings.js";
 import { createForagingService, type ForagingService } from "./service.js";
 import { createDbForagingStore, type ForagingStore } from "./store.js";
 import { foragingRoutes } from "./routes.js";
@@ -30,10 +40,12 @@ export {
   nullForagingCandidatePort,
 } from "./domain.js";
 export type { ForagingCandidatePort, ForagingSweepResult, ForagingSourceRef } from "./domain.js";
-export { readForagingSettings, FORAGING_ENABLED_ENV } from "./settings.js";
+export { readForagingSettings, FORAGING_ENABLED_ENV, foragingSettingsService, resolveForagingEffectiveSettings } from "./settings.js";
 export { createForagingService } from "./service.js";
 export { createDbForagingStore } from "./store.js";
 export { createForagingReader } from "./reader.js";
+// myrmidon(1.6.1-FORAGING-LIMITS-UI)
+export * from "./limits.js";
 
 /**
  * The candidate port of the running instance.
@@ -55,14 +67,14 @@ export interface ForagingWiring {
 
 /** The store, the reader and the service bound to the database. */
 export function foragingWiring(db: Db, env: NodeJS.ProcessEnv = process.env): ForagingWiring {
-  const settings = readForagingSettings(env);
   const store = createDbForagingStore(db);
   const secrets = secretService(db);
+  const settings = instanceSettingsService(db);
   const service = createForagingService({
     store,
     reader: createForagingReader({
       env,
-      minHostIntervalMs: settings.minHostIntervalMs,
+      minHostIntervalMs: readForagingSettings(env).minHostIntervalMs,
       readKey: async (companyId, secretName) => {
         if (!secretName) return null;
         const row = await secrets.getByName(companyId, secretName);
@@ -71,7 +83,34 @@ export function foragingWiring(db: Db, env: NodeJS.ProcessEnv = process.env): Fo
       },
     }),
     candidatePort: foragingCandidatePort(),
-    settings: { budget: settings.budget },
+    // 1.6.1: live settings — the row is read on every pass, no restart.
+    resolveSettings: async () => {
+      const effective = await resolveForagingEffectiveSettings(settings, env);
+      return {
+        enabled: effective.settings.enabled,
+        intervalMs: effective.intervalMs,
+        budget: effective.budget,
+        settings: effective.settings,
+      };
+    },
+    // 1.6.1: one training_charge finance event per pass — the learning spend
+    // shows as its own "Training" line in the Costs screen, by kind.
+    finance: {
+      recordTrainingCharge: async (input) => {
+        await db.insert(financeEvents).values({
+          companyId: input.companyId,
+          agentId: input.agentId,
+          eventKind: "training_charge",
+          direction: "debit",
+          biller: "myrmidon",
+          provider: "foraging",
+          description: input.description,
+          amountCents: input.amountCents,
+          estimated: true,
+          occurredAt: input.occurredAt,
+        });
+      },
+    },
     log: logger,
   });
   return { store, service, env };
@@ -80,10 +119,13 @@ export function foragingWiring(db: Db, env: NodeJS.ProcessEnv = process.env): Fo
 /** Router for app.ts. */
 export function myrmidonForagingRoutes(db: Db, env: NodeJS.ProcessEnv = process.env) {
   const wiring = foragingWiring(db, env);
+  const settings = instanceSettingsService(db);
   return foragingRoutes({
     db,
     store: wiring.store,
     service: wiring.service,
+    // 1.6.1: the settings service of the sweep (GET/PATCH /api/myrmidon/foraging-settings).
+    settingsService: foragingSettingsService(db, { settings, env }),
     env: wiring.env,
   });
 }
