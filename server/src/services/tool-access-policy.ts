@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { and, asc, desc, eq, gt, inArray, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { emitToolPolicyChanged } from "./tool-policy-cache-events.js";
 import {
   agents,
   heartbeatRuns,
@@ -722,11 +723,15 @@ export function toolAccessPolicyService(db: Db) {
           .set({ priority: (index + 1) * 100, updatedAt: now })
           .where(eq(toolPolicies.id, policyId));
       }
-      return tx
+      const result = await tx
         .select()
         .from(toolPolicies)
         .where(and(eq(toolPolicies.companyId, companyId), ne(toolPolicies.policyType, "trust_rule")))
         .orderBy(asc(toolPolicies.priority), desc(toolPolicies.updatedAt));
+      // OPE-4129: invalidate the tool-gateway policy snapshot cache after a
+      // successful reorder so the next tools/list sees the new priorities.
+      emitToolPolicyChanged();
+      return result;
     });
   }
 
@@ -769,6 +774,7 @@ export function toolAccessPolicyService(db: Db) {
         updatedAt: now,
       })
       .returning();
+    emitToolPolicyChanged();
     return policy;
   }
 
@@ -797,6 +803,7 @@ export function toolAccessPolicyService(db: Db) {
         updatedAt: now,
       })
       .returning();
+    emitToolPolicyChanged();
     return policy;
   }
 
@@ -826,6 +833,7 @@ export function toolAccessPolicyService(db: Db) {
       })
       .where(eq(toolPolicies.id, existing.id))
       .returning();
+    emitToolPolicyChanged();
     return policy;
   }
 
@@ -835,6 +843,7 @@ export function toolAccessPolicyService(db: Db) {
       .delete(toolPolicies)
       .where(eq(toolPolicies.id, existing.id))
       .returning();
+    emitToolPolicyChanged();
     return deleted;
   }
 
@@ -1856,7 +1865,37 @@ export function toolAccessPolicyService(db: Db) {
     const { ctx, redaction } = loaded;
     const profileState = await effectiveProfilesWithCachedData(ctx, bindings, profiles);
     const effectiveProfileIds = profileState.profiles.map((profile) => profile.id);
-    
+
+    // Pre-pass identical to decide(): a matching policy with unsupported
+    // conditions must deny before any policy is evaluated (OPE-4129 review fix).
+    for (const policy of policies) {
+      const conditions = policyConditions(policy);
+      if (conditions && selectorMatches(policy.selectors, ctx)) {
+        const parsed = toolPolicyConditionsSchema.safeParse(conditions);
+        if (!parsed.success) {
+          return decision(
+            "deny",
+            "deny_policy_block",
+            "Tool access denied because a matching policy uses unsupported runtime conditions.",
+            effectiveProfileIds,
+            [policy.id],
+            {
+              redactionPlan: redaction.redactionPlan,
+              policyExplanation: {
+                policyId: policy.id,
+                policyType: policy.policyType,
+                selectorMatched: true,
+                conditionsError: parsed.error.issues.map((issue) => ({
+                  path: issue.path.join("."),
+                  message: issue.message,
+                })),
+              },
+            },
+          );
+        }
+      }
+    }
+
     const matchingPolicies = policies
       .map((policy) => ({ policy, conditionEvaluation: evaluatePolicyConditions(policyConditions(policy), ctx) }))
       .filter(({ policy, conditionEvaluation }) => selectorMatches(policy.selectors, ctx) && conditionEvaluation.matched);

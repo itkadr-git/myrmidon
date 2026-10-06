@@ -14089,6 +14089,11 @@ export function toolAccessService(
       profileBindings: transactionResult.profileBindings,
       policies: transactionResult.policies,
     };
+    // OPE-4129: finishGalleryAppConnection rewrites profile entries, bindings
+    // and ask-first policies in one transaction — invalidate the policy
+    // snapshot cache after it completes (not only from upsertAskFirstPolicies,
+    // which emits before the gallery bindings are written).
+    emitToolPolicyChanged();
   }
 
   /**
@@ -18500,6 +18505,9 @@ export function toolAccessService(
           details: extension,
         });
       }
+      // OPE-4129: install/uninstall rewrites toolProfileBindings for the
+      // connection profile — invalidate the policy snapshot cache.
+      emitToolPolicyChanged();
       return {
         connectionId: connection.id,
         installs: await listConnectionInstalls(

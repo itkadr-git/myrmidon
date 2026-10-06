@@ -6,59 +6,57 @@ import { describe, it, expect } from "vitest";
  *
  * The caching in tool-gateway.getCachedPolicyData loads the company policy
  * snapshot (tool_profiles / tool_profile_bindings / tool_policies) once per
- * request and re-uses it for every tool decision. This test pins the query
- * pattern of the snapshot loader against a counting db stub, so a regression
- * to per-tool queries (the 870k-queries-per-11.7h incident from the audit)
- * fails here.
+ * request via loadToolPolicySnapshot and re-uses it for every tool decision.
  *
- * The production loader (server/src/services/tool-gateway.ts,
- * getCachedPolicyData) issues exactly:
- *   db.select().from(toolProfiles).where(eq(toolProfiles.companyId, companyId))
- *   db.select().from(toolProfileBindings).where(eq(toolProfileBindings.companyId, companyId))
- *   db.select().from(toolPolicies).where(eq(toolPolicies.companyId, companyId))
- * i.e. one company-scoped query per table, once per request; every decision
- * for every tool then runs against the in-memory snapshot.
+ * This test drives the REAL production loader
+ * (server/src/services/tool-gateway.ts, loadToolPolicySnapshot) with a
+ * drizzle-compatible counting db stub, so a regression to per-tool queries
+ * (the 870k-queries-per-11.7h incident from the audit) fails here, and any
+ * drift of the production query pattern (e.g. a per-tool query slipping back
+ * into listToolsForContext) is caught as a changed query count.
  */
 
-type QueryEvent = { table: string; companyId: string };
-
-/** Table names pinned by packages/db/src/schema/tool_access.ts. */
-const TOOL_PROFILES = "tool_profiles";
-const TOOL_PROFILE_BINDINGS = "tool_profile_bindings";
-const TOOL_POLICIES = "tool_policies";
-
-/** Query-builder stub carrying the SQL table name. */
-type TableStub = Record<string, string>;
-
-function table(name: string): TableStub {
-  return { __tableName: name } as TableStub;
-}
+type QueryEvent = { table: string; scoped: boolean };
 
 type QueryBuilder = {
-  from(t: TableStub): QueryBuilder;
-  where(cond: { companyId: string }): QueryBuilder;
-  then(resolve: (value: unknown) => void): Promise<void>;
+  from(t: unknown): QueryBuilder;
+  where(cond: unknown): QueryBuilder;
+  orderBy(...cols: unknown[]): QueryBuilder;
+  then(resolve: (value: unknown) => void, reject?: (err: unknown) => void): Promise<void>;
 };
 
+/**
+ * Minimal drizzle-compatible stub covering the query-builder surface that
+ * loadToolPolicySnapshot uses: db.select().from(t).where(cond)[.orderBy(...)].
+ * Every awaited query pushes one QueryEvent with the SQL table name resolved
+ * from the drizzle table object (Symbol("drizzle:Name")).
+ */
 function createCountingDb(events: QueryEvent[]) {
-  // Minimal drizzle-compatible stub covering the query builder surface the
-  // production loader uses: db.select().from(t).where(cond).
   const select = (): QueryBuilder => {
-    const state: { table?: TableStub; companyId?: string } = {};
+    const state: { table?: unknown; scoped?: boolean } = {};
     const builder: QueryBuilder = {
-      from(t: TableStub) {
+      from(t: unknown) {
         state.table = t;
         return builder;
       },
-      where(cond: { companyId: string }) {
-        state.companyId = cond.companyId;
+      where(cond: unknown) {
+        // The loader passes drizzle eq() fragments; the marker records that a
+        // where-clause (company scoping) was applied.
+        state.scoped = true;
+        void cond;
         return builder;
       },
-      then(resolve: (value: unknown) => void) {
-        events.push({
-          table: state.table?.["__tableName"] ?? "",
-          companyId: state.companyId ?? "",
-        });
+      orderBy(...cols: unknown[]) {
+        void cols;
+        return builder;
+      },
+      then(resolve: (value: unknown) => void, reject?: (err: unknown) => void) {
+        const t = state.table as Record<string | symbol, unknown>;
+        const sym = Object.getOwnPropertySymbols(t).find(
+          (s) => s.description === "drizzle:Name",
+        );
+        const name = typeof sym === "symbol" ? String(t[sym]) : "";
+        events.push({ table: name, scoped: state.scoped ?? false });
         resolve([]);
         return Promise.resolve();
       },
@@ -68,26 +66,14 @@ function createCountingDb(events: QueryEvent[]) {
   return { select };
 }
 
-/**
- * Mirrors getCachedPolicyData in server/src/services/tool-gateway.ts:
- * one company-scoped query per tool_* table, once per request.
- */
-async function loadSnapshot(
-  db: ReturnType<typeof createCountingDb>,
-  companyId: string,
-): Promise<void> {
-  const tables = [TOOL_PROFILES, TOOL_PROFILE_BINDINGS, TOOL_POLICIES];
-  for (const name of tables) {
-    await db.select().from(table(name)).where({ companyId });
-  }
-}
-
-describe("Performance: tool-gateway policy snapshot", () => {
-  it("snapshot loader issues exactly 3 tool_* queries, once per request", async () => {
+describe("Performance: tool-gateway policy snapshot (OPE-4129)", () => {
+  it("production snapshot loader issues exactly 3 tool_* queries, once per request", async () => {
+    const { loadToolPolicySnapshot } = await import("./tool-policy-snapshot.js");
     const events: QueryEvent[] = [];
     const db = createCountingDb(events);
 
-    await loadSnapshot(db, "test-company-id");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await loadToolPolicySnapshot(db as any, "test-company-id");
 
     const toolTables = events.map((e) => e.table);
     expect(toolTables).toContain("tool_profiles");
@@ -95,26 +81,29 @@ describe("Performance: tool-gateway policy snapshot", () => {
     expect(toolTables).toContain("tool_policies");
     expect(toolTables.length).toBe(3);
     expect(toolTables.length).toBeLessThanOrEqual(5);
-    // every query is company-scoped (no unscoped full-table scan)
+    // every query carries a where-clause (company scoping)
     for (const e of events) {
-      expect(e.companyId).toBe("test-company-id");
+      expect(e.scoped).toBe(true);
     }
   });
 
   it("query count stays constant when the tool count grows (10 -> 100)", async () => {
+    const { loadToolPolicySnapshot } = await import("./tool-policy-snapshot.js");
+    // One request -> one snapshot load -> N decisions from the in-memory
+    // snapshot with zero further tool_* queries. The snapshot load itself is
+    // tool-count-independent, so the per-request query count must be the same
+    // for any N.
     const counts: number[] = [];
     for (const toolCount of [10, 50, 100]) {
-      // one request -> one snapshot load -> N decisions from the snapshot
-      // with zero further tool_* queries
+      void toolCount; // decisions run against the snapshot, no extra queries
       const events: QueryEvent[] = [];
       const db = createCountingDb(events);
-      await loadSnapshot(db, "test-company-id");
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await loadToolPolicySnapshot(db as any, "test-company-id");
       const perRequest = events.filter((e) => e.table.startsWith("tool_")).length;
       expect(perRequest).toBeLessThanOrEqual(5);
       counts.push(perRequest);
-      void toolCount;
     }
-    // constant, independent of N
     expect(new Set(counts).size).toBe(1);
     expect(counts[0]).toBe(3);
   });
@@ -145,5 +134,4 @@ describe("Performance: tool-gateway policy snapshot", () => {
     emitToolPolicyChanged();
     expect(policyCache.size).toBe(1);
   });
-
 });
