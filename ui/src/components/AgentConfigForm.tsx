@@ -85,8 +85,6 @@ import { AgentCardModelsFields, CardEffortPicker } from "./myrmidon/AgentCardMod
 import { defaultEffortForModel, effortsForModel } from "../lib/card-effort-policy";
 // myrmidon(W2b): bot container settings on the agent card
 import { AgentCardContainerFields } from "./myrmidon/AgentCardContainerFields";
-// myrmidon(GITHUB-IDENTITIES-C): the GitHub accounts a bot may act as, on its card
-import { AgentCardGitHubIdentitiesFields } from "./myrmidon/AgentCardGitHubIdentitiesFields";
 // myrmidon(PARALLEL-HELPERS): parallel helper subagents on the agent card
 import { AgentCardParallelHelpersFields } from "./myrmidon/AgentCardParallelHelpersFields";
 import { parallelHelpersApi, parallelHelpersQueryKey } from "./myrmidon/parallelHelpersApi";
@@ -1792,13 +1790,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               savedValue={props.agent.adapterConfig?.container}
               unsaved={"container" in overlay.adapterConfig || overlay.adapterType !== undefined}
               onChange={(next) => mark("adapterConfig", "container", next)}
-            />
-          )}
-          {/* myrmidon(GITHUB-IDENTITIES-C): the GitHub accounts the bot may act as.
-              Read-only: the list is written through the API and the secrets it names. */}
-          {!isCreate && adapterType === "hermes_gateway" && (
-            <AgentCardGitHubIdentitiesFields
-              value={eff("adapterConfig", "githubIdentities", config.githubIdentities)}
             />
           )}
           {/* myrmidon(EGRESS-B): the bot's project and its own egress list */}
