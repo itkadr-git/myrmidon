@@ -23,7 +23,10 @@
 // stop the whole board.
 
 import type { Db } from "@paperclipai/db";
+import { agents } from "@paperclipai/db";
+import { eq } from "drizzle-orm";
 import { logger } from "../../middleware/logger.js";
+import { logActivity } from "../../services/activity-log.js";
 import { listBotContainerAgents } from "./agents-query.js";
 import { isBotContainersEnabled } from "./agent-config.js";
 import type { BotContainerDriver } from "./driver.js";
@@ -189,6 +192,28 @@ function build(
       activity,
       readAgent: ports.readAgent(db),
       network: driverConfig.network,
+      // myrmidon(BOT-ROLLOUT): deferred-rollout records (deferred-store.ts)
+      // and the watcher's backstop audit.
+      db,
+      rolloutAudit: (entry) =>
+        logActivity(db, {
+          companyId: entry.companyId,
+          actorType: "system",
+          actorId: "myrmidon-bot-containers",
+          agentId: entry.agentId,
+          action: entry.action,
+          entityType: "myrmidon_bot_rollout",
+          entityId: entry.entityId,
+          details: entry.details,
+        }).then(() => undefined),
+      rolloutCompanyIdOf: async (agentId) => {
+        const row = await db
+          .select({ companyId: agents.companyId })
+          .from(agents)
+          .where(eq(agents.id, agentId))
+          .then((rows) => rows[0] ?? null);
+        return row?.companyId ?? null;
+      },
     };
     const stopSweep = ports.startReconciliation(ports.listAgents(db), runtime, { intervalMs, env });
     return { runtime, stopSweep };
