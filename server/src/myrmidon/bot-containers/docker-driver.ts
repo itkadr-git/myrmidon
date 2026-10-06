@@ -503,6 +503,8 @@ export function buildPrepareVolumesScript(options: { scope?: boolean } = {}): st
  *      rename within the volume), creating parent directories as needed;
  *   4. delete files the previous apply wrote that this profile no longer has
  *      (the list is computed by the driver and staged as remove.list);
+ *   4.5 best-effort: delete hermes/backups (the vendor's point-in-time copies
+ *      of config.yaml, a possible secret leak — see the step's comment below);
  *   5. only then move the applied-state marker into place, and clean up.
  * `set -e` aborts at the first failure, before the marker moves, so a partial
  * apply is never reported as applied and the next pass simply repeats it.
@@ -573,6 +575,25 @@ export function buildApplyScript(nonce: string): string {
     '    if [ -f "$dest" ] || [ -L "$dest" ]; then rm -f -- "$dest"; fi',
     '  done < "$removals"',
     "fi",
+    // myrmidon(4329-hermes-config-backup-secrets): remove the vendor's config
+    // backups under hermes/backups — hermes_cli/config_backups.py backup_config()
+    // (pinned tag v2026.9.24) writes a copy of config.yaml there on every
+    // successful config load ("good") and has no setting that turns it off.
+    // The compiler's own config.yaml only ever holds a "${VAR}" reference, but
+    // a backup copy can hold the resolved key value (260 files across 72 bots
+    // on 04.10, per the parent), so every apply wipes the subtree. Step 4.5:
+    // best effort — a failure here must not fail the apply, because at this
+    // point the new, reference-only config.yaml is already in place and
+    // correct; hermes simply recreates backups/config from it on its next
+    // load. Runs BEFORE the marker move so the cleanup is covered by the same
+    // applied.json transaction: an apply that moved the marker cleaned backups,
+    // and one that failed before it left the old profile reported (with the
+    // backups still there for the retry to remove).
+    "# 4.5 vendor config backups under hermes (possible secret leak), best effort",
+    `backups="${hermesRoot}/backups"`,
+    'if [ -d "$backups" ]; then',
+    '  rm -rf -- "$backups" 2>/dev/null || true',
+    'fi',
     "# 5. the applied-state marker, strictly last",
     `mkdir -p -- "${hermesRoot}/${MARKER_RELATIVE_PATH.split("/")[0]}"`,
     `mv -f -T -- "${applyDir}/applied.json" "${hermesRoot}/${MARKER_RELATIVE_PATH}"`,
