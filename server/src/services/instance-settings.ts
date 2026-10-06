@@ -304,6 +304,11 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // this line the vendor write path silently drops the key and the settings
       // could only ever come from the environment.
       ...(parsed.data.teamLiveness ? { teamLiveness: parsed.data.teamLiveness } : {}),
+      // myrmidon(BOT-RUNTIME-TUNING D2): the stored fallback-signal settings
+      // survive every general write (they are edited on their own settings
+      // page). Without this line `updateGeneral` normalizes the patch away, so
+      // PATCH /api/myrmidon/model-fallback/settings would never roundtrip.
+      ...(parsed.data.modelFallbackSignal ? { modelFallbackSignal: parsed.data.modelFallbackSignal } : {}),
     };
   }
   return {
@@ -656,6 +661,9 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
             ...preservePluginEntitlementKeysGeneralKey(current.general), // myrmidon(PLUGIN-ENTITLEMENT C)
             ...preserveTelegramDmProgressGeneralKey(current.general), // myrmidon(DM-PROGRESS)
             ...preserveFallbackSignalGeneralKey(current.general), // myrmidon(BOT-RUNTIME-TUNING D2)
+            // The preserve line above restores the old stored value: a patch
+            // that carries the key must win, the same rule as DM-PROGRESS.
+            ...(patch.modelFallbackSignal !== undefined ? { modelFallbackSignal: nextGeneral.modelFallbackSignal } : {}),
             // The preserve line above restores the stored value: a patch that carries the key wins.
             ...(patch.telegramDmProgress !== undefined ? { telegramDmProgress: nextGeneral.telegramDmProgress } : {}),
             ...preserveGitHubSharedIdentityGeneralKey(current.general), // myrmidon(GITHUB-SHARED-IDENTITY)
