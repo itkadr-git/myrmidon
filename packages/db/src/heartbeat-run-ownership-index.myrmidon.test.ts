@@ -208,19 +208,35 @@ d("heartbeat run-ownership probe index migration", () => {
     await sql`ANALYZE heartbeat_runs`;
     await sql`ANALYZE heartbeat_run_events`;
 
-    // 3) With the migration's index the issue-reference equality is an index
-    // condition: a handful of rows, no sequential scan, no filter sweep.
+    // 3) With a coalesce-carrying index the issue-reference equality is an
+    // index condition: a handful of rows, no sequential scan, no filter sweep.
+    // Sibling migration 0302 adds a full (non-partial) index on the same
+    // (company_id, coalesce(native_issue_id::text, context_snapshot->>'issueId'),
+    // created_at, id) shape; the planner may prefer either, so the assertion
+    // accepts both names. The dedicated partial index is still asserted via
+    // pg_indexes above and is restored after the drop below.
     const indexed = await explain(sql, companyId, issueId);
-    expect(indexed.text).toContain(INDEX_NAME);
+    expect(indexed.text).toMatch(/Index Scan using heartbeat_runs_company_(legacy_terminal_issue_idx|issue_coalesce_created_idx)/);
     expect(indexed.text).toMatch(/COALESCE\(\(native_issue_id\)::text/);
     expect(indexed.text).not.toMatch(/Seq Scan on heartbeat_runs/);
     expect(rowsRemovedByFilter(indexed.text)).toBeLessThan(50);
 
-    // 4) Without the companion index the same statement can only narrow to the
-    // company + terminal-status slice: it filters thousands of rows away and
-    // costs an order of magnitude more. That is the measurement the change is
-    // judged on. The index is restored right after.
-    await sql.unsafe(`DROP INDEX "${INDEX_NAME}"`);
+    // 4) Without any coalesce-carrying index the same statement can only
+    // narrow to the company + terminal-status slice: it filters thousands of
+    // rows away and costs an order of magnitude more. That is the measurement
+    // the change is judged on. The partial index is restored right after.
+    // The sibling 0302 full index (when present — merged earlier or later)
+    // carries the same equality, so it is dropped for the measurement and
+    // restored as well.
+    await sql.unsafe(`DROP INDEX IF EXISTS "${INDEX_NAME}"`);
+    const siblingBeforeDrop = await sql`
+      SELECT indexname FROM pg_indexes
+      WHERE indexname = 'heartbeat_runs_company_issue_coalesce_created_idx'
+    `;
+    const siblingExisted = siblingBeforeDrop.length === 1;
+    await sql.unsafe(
+      `DROP INDEX IF EXISTS "heartbeat_runs_company_issue_coalesce_created_idx"`,
+    );
     const unindexed = await explain(sql, companyId, issueId);
     expect(unindexed.text).not.toContain(INDEX_NAME);
     expect(unindexed.text).not.toMatch(/Seq Scan on heartbeat_runs/);
@@ -236,6 +252,11 @@ d("heartbeat run-ownership probe index migration", () => {
 
     // 5) Idempotency: re-applying the migration statement is a no-op.
     await sql.unsafe(CREATE_INDEX);
+    if (siblingExisted) {
+      await sql.unsafe(
+        `CREATE INDEX IF NOT EXISTS heartbeat_runs_company_issue_coalesce_created_idx ON heartbeat_runs (company_id, coalesce(native_issue_id::text, context_snapshot->>'issueId'), created_at DESC, id DESC)`,
+      );
+    }
     const restored = await sql`
       SELECT indexname FROM pg_indexes WHERE indexname = ${INDEX_NAME}
     `;

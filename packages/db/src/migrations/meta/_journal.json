@@ -2087,6 +2087,13 @@
       "when": 1791215000000,
       "tag": "0301_heartbeat_run_ownership_index",
       "breakpoints": true
+    },
+    {
+      "idx": 302,
+      "version": "7",
+      "when": 1791226482772,
+      "tag": "0302_heartbeat_runs_company_issue_coalesce_created_index",
+      "breakpoints": true
     }
   ]
 }
