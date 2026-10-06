@@ -224,10 +224,13 @@ describeLive("attention perf proof (live, seeded production-volume load)", () =>
     emit("=== EXPLAIN ANALYZE: listAttentionExhaustedRuns ===");
     emit((planA as unknown as Array<{ "QUERY PLAN"?: string }>).map((row) => row["QUERY PLAN"] ?? JSON.stringify(row)).join("\n"));
 
-    // Pin the window to the OLDEST unresolved failed run (production symptom):
+    // Pin the window to the OLDEST unresolved failed run (production symptom).
+    // status='failed' only, matching prod: the newerRuns window derives from
+    // exhaustion-event-bearing failed runs; timed_out rows without an event are
+    // not in the window (OPE-5273 review non-blocker 2).
     const oldestRow = await db.execute(sql.raw(`
       SELECT min(created_at) AS oldest FROM heartbeat_runs
-      WHERE company_id = '${companyId}'::uuid AND status IN ('failed', 'timed_out')
+      WHERE company_id = '${companyId}'::uuid AND status = 'failed'
     `)) as unknown as Array<{ oldest: string | null }>;
     const oldestFailedRunCreatedAt = new Date(oldestRow[0]?.oldest ?? new Date(0));
 
