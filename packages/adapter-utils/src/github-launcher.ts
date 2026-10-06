@@ -1,5 +1,8 @@
 // myrmidon(P6): broker candidate walk embedded into the launcher
-import { githubBrokerCandidatesLauncherSource } from "./myrmidon-github-broker.js";
+// myrmidon(GITHUB-SHARED-IDENTITY): plus the target-repository resolution a
+// non-container run needs to name the repository to the broker.
+import { githubBrokerCandidatesLauncherSource, githubBrokerRepositoryLauncherSource } from "./myrmidon-github-broker.js";
+import { GITHUB_CREDENTIAL_HELPER_PROGRAM } from "./github-credential-helper.js";
 
 /** Standalone source is staged unchanged on local, SSH, and sandbox runtimes. No secrets in files. */
 export function githubLauncherSource(): string {
@@ -21,6 +24,7 @@ if (!['git', 'gh'].includes(program) || !executable) {
   process.exit(127);
 }
 ${githubBrokerCandidatesLauncherSource()}
+${githubBrokerRepositoryLauncherSource()}
 async function main() {
   let env = { ...process.env };
   const diagnostic = (code) => process.stderr.write('Paperclip: GitHub ' + code + '; continuing without managed credentials.\n');
@@ -40,25 +44,45 @@ async function main() {
     for (const key of Object.keys(env)) {
       if (/^(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRISE_TOKEN|PAPERCLIP_GIT_TOKEN|GIT_AUTHOR_.*|GIT_COMMITTER_.*|GIT_CONFIG_.*|GIT_ASKPASS|SSH_ASKPASS|SSH_AUTH_SOCK|GIT_SSH.*)$/.test(key)) delete env[key];
     }
+    // myrmidon(GITHUB-SHARED-IDENTITY): the same Git config the bot image
+    // installs at /etc/gitconfig — the leading empty helper clears ambient
+    // helpers, and the URL-scoped one, with useHttpPath, makes git hand the
+    // staged helper the repository path of the operation so the broker can
+    // mint a GitHub App token for exactly that repository.
+    const credentialHelper = path.join(directory, '${GITHUB_CREDENTIAL_HELPER_PROGRAM}');
+    const gitConfig = [
+      ['credential.helper', ''],
+      ['credential.https://github.com.helper', credentialHelper],
+      ['credential.https://www.github.com.helper', credentialHelper],
+      ['credential.https://github.com.useHttpPath', 'true'],
+      ['credential.https://www.github.com.useHttpPath', 'true'],
+      ['url.https://github.com/.insteadOf', 'git@github.com:'],
+      ['url.https://github.com/.insteadOf', 'ssh://git@github.com/'],
+      ['core.askPass', ''],
+      // The inherited identity was deleted above. Empty identity env values
+      // override even explicit repository/command config and break local commits.
+      // Require configured identity instead of guessing the OS user's details.
+      ['user.useConfigOnly', 'true'],
+    ];
     Object.assign(env, {
       GH_CONFIG_DIR: configDirectory, SSH_AUTH_SOCK: '',
       GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
       GIT_TERMINAL_PROMPT: '0',
-      // The inherited identity was deleted above. Empty identity env values
-      // override even explicit repository/command config and break local commits.
-      // Require configured identity instead of guessing the OS user's details.
-      GIT_CONFIG_COUNT: '5', GIT_CONFIG_KEY_0: 'credential.helper', GIT_CONFIG_VALUE_0: '',
-      GIT_CONFIG_KEY_1: 'url.https://github.com/.insteadOf', GIT_CONFIG_VALUE_1: 'git@github.com:',
-      GIT_CONFIG_KEY_2: 'url.https://github.com/.insteadOf', GIT_CONFIG_VALUE_2: 'ssh://git@github.com/',
-      GIT_CONFIG_KEY_3: 'core.askPass', GIT_CONFIG_VALUE_3: '',
-      GIT_CONFIG_KEY_4: 'user.useConfigOnly', GIT_CONFIG_VALUE_4: 'true',
+      GIT_CONFIG_COUNT: String(gitConfig.length),
+    });
+    gitConfig.forEach(([key, value], index) => {
+      env['GIT_CONFIG_KEY_' + index] = key;
+      env['GIT_CONFIG_VALUE_' + index] = value;
     });
     // myrmidon(P6): walk up to six broker candidates instead of one URL.
+    // myrmidon(GITHUB-SHARED-IDENTITY): and name the repository this command
+    // targets, so an App identity serves it.
     const brokerBaseUrls = paperclipBrokerCandidateUrls(env);
     try {
     let response;
     if (brokerBaseUrls.length > 0 && env.PAPERCLIP_GITHUB_BROKER_TOKEN) {
-      const brokerAttempt = await paperclipRequestBrokerCredentials(env, brokerBaseUrls);
+      const repository = paperclipTargetRepository(program, process.argv.slice(2), env, originalPath);
+      const brokerAttempt = await paperclipRequestBrokerCredentials(env, brokerBaseUrls, undefined, repository);
       response = brokerAttempt.response;
       if (!response || !response.ok) {
         if (brokerAttempt.tried.length > 0) process.stderr.write('Paperclip: GitHub broker candidates tried: ' + brokerAttempt.tried.join(', ') + '.\n');
@@ -73,8 +97,12 @@ async function main() {
         process.stderr.write('Paperclip: GitHub access unavailable: ' + reason + '. Continuing without GitHub credentials.\n');
       }
       if (result.status === 'available' && configReady) {
+        // The Git configuration above is the launcher's own: only the token,
+        // the terminal-prompt switch and the commit identity are taken from the
+        // broker, so a broker-supplied credential helper can never replace the
+        // staged one that names the repository.
         for (const [key, value] of Object.entries(result.env || {})) {
-          if (/^(GH_TOKEN|GITHUB_TOKEN|PAPERCLIP_GIT_TOKEN|GIT_TERMINAL_PROMPT|GIT_AUTHOR_(NAME|EMAIL)|GIT_COMMITTER_(NAME|EMAIL)|GIT_CONFIG_COUNT|GIT_CONFIG_(KEY|VALUE)_\d+)$/.test(key) && typeof value === 'string') env[key] = value;
+          if (/^(GH_TOKEN|GITHUB_TOKEN|PAPERCLIP_GIT_TOKEN|GIT_TERMINAL_PROMPT|GIT_AUTHOR_(NAME|EMAIL)|GIT_COMMITTER_(NAME|EMAIL))$/.test(key) && typeof value === 'string') env[key] = value;
         }
       }
       }

@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { githubLauncherSource } from "./github-launcher.js";
+import { GITHUB_CREDENTIAL_HELPER_PROGRAM, githubCredentialHelperSource } from "./github-credential-helper.js";
 import type { SshRemoteExecutionSpec } from "./ssh.js";
 import {
   prepareCommandManagedRuntime,
@@ -1723,11 +1724,16 @@ export async function prepareGitHubOperationLaunchers(input: {
     .map((key) => `if [ -z "\${${key}-}" ]; then unset ${key}; fi\n`)
     .join("");
   const profile = `export PATH=${shellQuote(managedPath)}\n${clearEmptyGitIdentity}`;
+  // myrmidon(GITHUB-SHARED-IDENTITY): the credential helper is staged next to
+  // git/gh and named in the launcher's Git config (useHttpPath), so a
+  // non-container run resolves its credential per repository through the
+  // broker — the same path the bot image wires in /etc/gitconfig.
   const files: Record<string, string> = Object.fromEntries([
     // Remote launchers live beneath the checkout. Pin their own package scope
     // so an enclosing project's "type": "module" cannot reinterpret require().
     ["package.json", '{"type":"commonjs"}\n'],
     ...["git", "gh"].map((name) => [name, githubLauncherSource()] as const),
+    [GITHUB_CREDENTIAL_HELPER_PROGRAM, githubCredentialHelperSource()] as const,
     ...[".zshenv", ".zprofile", ".zshrc", ".bash_profile", ".bashrc", ".profile"].map((name) => [name, profile] as const),
   ]);
   if (remote) {
@@ -1741,7 +1747,7 @@ export async function prepareGitHubOperationLaunchers(input: {
         timeoutMs: 15_000, shellCommand: adapterExecutionTargetShellCommand(remote),
       });
     }
-    const permissions = await runner.execute({ command: "sh", args: ["-c", `chmod 700 ${shellQuote(directory)}/git ${shellQuote(directory)}/gh && mkdir -p ${shellQuote(configDirectory)}`], cwd: remote.remoteCwd, timeoutMs: 15_000 });
+    const permissions = await runner.execute({ command: "sh", args: ["-c", `chmod 700 ${shellQuote(directory)}/git ${shellQuote(directory)}/gh ${shellQuote(directory)}/${GITHUB_CREDENTIAL_HELPER_PROGRAM} && mkdir -p ${shellQuote(configDirectory)}`], cwd: remote.remoteCwd, timeoutMs: 15_000 });
     if (permissions.exitCode !== 0) throw new Error("Could not prepare managed GitHub launchers");
   } else {
     await fs.mkdir(directory, { recursive: true, mode: 0o700 });
