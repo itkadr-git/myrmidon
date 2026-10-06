@@ -2129,6 +2129,13 @@
       "when": 1791312571333,
       "tag": "0306_audit_indexes_heartbeat_issues",
       "breakpoints": true
+    },
+    {
+      "idx": 307,
+      "version": "7",
+      "when": 1791345600000,
+      "tag": "0307_issues_last_activity_at",
+      "breakpoints": true
     }
   ]
 }
