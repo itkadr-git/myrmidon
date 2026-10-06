@@ -44,6 +44,7 @@
 import { createHash } from "node:crypto";
 
 import type { ParallelHelpersCard, ResolvedParallelHelpers } from "@paperclipai/shared";
+import { effortForModel } from "../effort-policy/effort-policy.js";
 import type { CompiledProfile, CompiledProfileFile } from "./types.js";
 import { writeYamlDocument, type YamlMapping, type YamlNode } from "./deterministic-yaml.js";
 
@@ -398,7 +399,6 @@ export interface CompileHermesProfileResult {
 // Constants
 // ---------------------------------------------------------------------------
 
-const HERMES_REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 const HINDSIGHT_RECALL_BUDGETS = ["low", "mid", "high"];
 const HINDSIGHT_MODES: readonly HermesProfileHindsightMode[] = ["local_external", "cloud", "local_embedded"];
 /** The fleet's only supported mode — see {@link HermesProfileHindsightSettings.mode}. */
@@ -497,15 +497,27 @@ function resolveLlmApiKeyEnv(llm: HermesProfileLlmSettings, warnings: string[]):
   return apiKeyEnv;
 }
 
-function buildReasoningEffort(effort: string | undefined, warnings: string[]): string | undefined {
-  const trimmed = nonEmpty(effort);
-  if (!trimmed) return undefined;
-  const lowered = trimmed.toLowerCase();
-  if (!HERMES_REASONING_EFFORTS.includes(lowered)) {
-    warnings.push(`agent.reasoning_effort: "${trimmed}" is not a Hermes effort level; dropped`);
+/**
+ * myrmidon(BOT-TUNING-C): the card effort compiles through the shared effort
+ * policy — an empty field resolves to the model's safe default (never the
+ * Hermes-global "medium" a GLM model rejects), and a value outside the
+ * model's accepted list is dropped with a warning. Hermes omits
+ * reasoning_effort only when no value resolves at all.
+ */
+function buildReasoningEffort(
+  model: string | undefined,
+  effort: string | undefined,
+  warnings: string[],
+): string | undefined {
+  const resolved = effortForModel(model, effort);
+  if (resolved.source === undefined || resolved.value === undefined) return undefined;
+  if (resolved.source === "invalid") {
+    warnings.push(
+      `agent.reasoning_effort: "${effort?.trim()}" is not accepted by model "${model ?? ""}" (accepted: ${resolved.efforts.join(", ")}); dropped`,
+    );
     return undefined;
   }
-  return lowered;
+  return resolved.value;
 }
 
 function buildToolsets(toolsets: string | undefined): string[] | undefined {
@@ -919,7 +931,7 @@ function buildConfigYaml(input: HermesProfileInput, warnings: string[]): string 
 
   const root: YamlMapping = {
     agent: {
-      reasoning_effort: buildReasoningEffort(adapterConfig.effort, warnings),
+      reasoning_effort: buildReasoningEffort(adapterConfig.model, adapterConfig.effort, warnings),
       // myrmidon(PARALLEL-HELPERS): "helpers off" removes delegate_task from the
       // agent's tool surface. Omitted entirely when helpers are on (or the card
       // predates the field), so no unrelated toolset is ever disabled.
