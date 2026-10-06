@@ -28,14 +28,14 @@ function createHarness(options: {
   inserted?: number;
 } = {}) {
   const lanes = {
-    reconcileProviderRuntimes: vi.fn(async () => undefined),
-    processPendingDeliveries: vi.fn(async () => undefined),
-    processFailedGitHubWebhookDeliveries: vi.fn(async () => undefined),
+    reconcileProviderRuntimes: vi.fn(async () => {}),
+    processPendingDeliveries: vi.fn(async () => {}),
+    processFailedGitHubWebhookDeliveries: vi.fn(async () => {}),
     projectRunMilestones: vi.fn(async () => options.inserted ?? 0),
-    flushPublications: vi.fn(async () => undefined),
-    processPendingSlackFileUploadReceipts: vi.fn(async () => undefined),
-    processPendingSlackSessionSyncs: vi.fn(async () => undefined),
-    sweepTelegramNotifyProactivity: vi.fn(async () => undefined),
+    flushPublications: vi.fn(async () => {}),
+    processPendingSlackFileUploadReceipts: vi.fn(async () => {}),
+    processPendingSlackSessionSyncs: vi.fn(async () => {}),
+    sweepTelegramNotifyProactivity: vi.fn(async () => {}),
   };
   const errors: unknown[] = [];
   const coordinator = createChatReconciliationCoordinator({
