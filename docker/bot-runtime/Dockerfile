@@ -707,9 +707,21 @@ RUN chmod 0755 /opt/paperclip/bin/git-credential-paperclip /opt/paperclip/bin/gh
 # bot-clone-hygiene reports which clones hold unpushed work (the entrypoint
 # runs it in the background); the board's draft-directory lifecycle reads that
 # report before it removes an idle clone. Node/Python scripts under /opt only.
+#
+# myrmidon(1.6.5 BOT-DISK-G): the same wrapper also answers for a bare `git`
+# when a bot terminal rebuilds PATH without /opt/paperclip/bin (the hermes
+# adapter appends only its own directories and the sane /usr and /usr/local
+# elements to the PATH the gateway captured). A /usr/local/bin symlink shadows
+# /usr/bin/git through the *reordered* PATH, and the wrapper's shebang names
+# /opt/node24/bin/node absolutely, so both facts hold in that terminal — which
+# is exactly where the clones happen. The build-time check below asserts both:
+# without the symlink a bare `git` is the real binary; with a broken shebang it
+# dies with 127 in a PATH the wrapper cannot inject itself into.
 COPY --chown=root:root git-reference/git git-reference/bot-clone-hygiene /opt/paperclip/bin/
 RUN chmod 0755 /opt/paperclip/bin/git /opt/paperclip/bin/bot-clone-hygiene \
+  && ln -s /opt/paperclip/bin/git /usr/local/bin/git \
   && /opt/node24/bin/node --check /opt/paperclip/bin/git \
+  && head -1 /opt/paperclip/bin/git | grep -qx "#!/opt/node24/bin/node" \
   && python3 -m py_compile /opt/paperclip/bin/bot-clone-hygiene \
   && rm -rf /opt/paperclip/bin/__pycache__
 

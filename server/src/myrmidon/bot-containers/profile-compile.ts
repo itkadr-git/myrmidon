@@ -43,7 +43,7 @@ import {
 } from "./profile-input.js";
 import type { BotContainerActivitySink } from "./reconciler.js";
 import { cardFleetHost } from "./fleetd-hosts.js"; // myrmidon(1.6.1-BOT-DISK-B)
-import { BOT_SCOPE_STORE_DIR, packageCacheEnv, pnpmEnv } from "./template.js"; // myrmidon(1.6.1-BOT-DISK-B, BOT-DISK-F)
+import { BOT_SCOPE_GIT_OBJECTS_DIR, BOT_SCOPE_STORE_DIR, packageCacheEnv, pnpmEnv } from "./template.js"; // myrmidon(1.6.1-BOT-DISK-B, BOT-DISK-F, 1.6.5-BOT-DISK-G)
 import type { CompiledProfile } from "./types.js";
 import type { RegulationDelivery } from "../wiki-cortex/delivery.js"; // myrmidon(1.6-WIKI)
 
@@ -324,6 +324,12 @@ export function createBotProfileCompile(
         for (const [name, value] of Object.entries(pnpmEnv({ storeDir: BOT_SCOPE_STORE_DIR, importMethod: method }))) {
           cacheEnv[name] = { value, secret: false };
         }
+        // myrmidon(1.6.5 BOT-DISK-G): one git object store for the whole scope
+        // instance (template.ts BOT_SCOPE_GIT_OBJECTS_DIR). The wrapper's own
+        // default would be per-bot (inside this member's hermes home); the
+        // scope store is what makes a clone of bot A borrow bot B's objects —
+        // one mount, so the alternate resolves for every member.
+        cacheEnv.MYRMIDON_GIT_LOCAL_MIRROR = { value: BOT_SCOPE_GIT_OBJECTS_DIR, secret: false };
       }
     }
     const cloneTtlSec =

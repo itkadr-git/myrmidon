@@ -1,26 +1,50 @@
-#!/usr/bin/env node
+#!/opt/node24/bin/node
 // docker/bot-runtime/git-reference/git
 //
 // myrmidon(1.6.2 BOT-DISK-C): git wrapper for the dev variant. Stands FIRST on
-// PATH (/opt/paperclip/bin), ahead of /usr/bin/git, and makes the board's
-// shared git mirrors transparent: a plain
+// PATH (/opt/paperclip/bin) and shadows /usr/bin/git through a /usr/local/bin
+// symlink too (myrmidon 1.6.5 BOT-DISK-G: an agent terminal rebuilds PATH
+// without /opt/paperclip/bin; the symlink is what makes the wrapper answer a
+// bare `git` there — the absolute interpreter in the shebang above is what
+// makes it run at all), and makes shared git objects transparent: a plain
 //
 //   git clone https://github.com/<owner>/<repo>[.git] [dir]
 //
-// becomes `git clone --reference-if-able /cache/git/<owner>/<repo>.git ...`
-// when that mirror exists in the container, so the clone stores only the
-// objects the mirror lacks (its `objects/info/alternates` points at the
-// read-only mount). Everything else — every other subcommand, every clone of
-// another host or of a repository without a mirror, a clone that already says
-// how it wants to be stored (--reference*, --dissociate, --shared, --local,
-// --mirror, --depth, --shallow-*, --filter) — runs the real git unchanged:
-// same argv, same environment, same stdio, same exit status. The credential
-// helper (/etc/gitconfig -> git-credential-paperclip) belongs to the real git
-// and is untouched.
+// becomes `git clone --reference-if-able <mirror> ...` when a mirror exists:
+// first the board's read-only mirror at /cache/git/<owner>/<repo>.git (when
+// the instance lists mirrored repositories), else — myrmidon(1.6.5 BOT-DISK-G)
+// — the bot's OWN bare mirror under ${MYRMIDON_GIT_LOCAL_MIRROR:-<HERMES_HOME>/.myrmidon/git-objects}
+// (for a member of a shared isolation scope the profile compiler points the
+// variable at one store for the whole scope, inside the scope's single mount,
+// where a hard link and an alternate both work across the member bots). The
+// clone then stores only the objects the mirror lacks, so dozens of task
+// clones on one bot keep ONE git history instead of a full copy each. The
+// bot-local mirror is created on the first clone of a repository (one full
+// download, the traffic every clone used to make on its own) and refreshed at
+// most once per MYRMIDON_GIT_LOCAL_MIRROR_REFRESH_SEC (default 900) by later
+// clones; every step is best effort — a mirror that cannot be created or
+// refreshed never fails the clone, which then simply copies objects as before.
+// Everything else — every other subcommand, every clone of another host or of
+// a repository without a mirror, a clone that already says how it wants to be
+// stored (--reference*, --dissociate, --shared, --local, --mirror, --depth,
+// --shallow-*, --filter) — runs the real git unchanged: same argv, same
+// environment, same stdio, same exit status. The credential helper
+// (/etc/gitconfig -> git-credential-paperclip) belongs to the real git and is
+// untouched; the bot-local mirror fetches through the same helper, so a
+// private repository works with the bot's own run-scoped credentials and no
+// board token.
 //
 // The mirror directory is derived from the URL only after the owner and the
 // repository name pass the same checks GitHub applies, so no URL can make the
-// wrapper point git at another path.
+// wrapper point git at another path. Bot-local mirrors are kept only for a
+// bounded number of repositories (MYRMIDON_GIT_LOCAL_MIRROR_MAX, default 8):
+// past that, a clone of a new repository again runs the real git unchanged.
+//
+// A bot-local mirror must never lose an object another clone borrows through
+// its alternates: automatic gc is off, gc.pruneExpire=never, fetch prunes
+// refs only (the same rules as the board's mirrors, git-mirror.ts), and the
+// store lives under HERMES_HOME (or the scope root), which neither the board's
+// draft-directory lifecycle nor this image's own clone hygiene ever removes.
 //
 // CJS on purpose, like the other wrappers in /opt/paperclip/bin (no
 // package.json above /opt, so Node loads it as CommonJS).
@@ -33,9 +57,25 @@ const path = require("node:path");
 
 const REAL_GIT = process.env.MYRMIDON_GIT_REAL || "/usr/bin/git";
 const MIRROR_ROOT = process.env.MYRMIDON_GIT_MIRROR_ROOT || "/cache/git";
+const HERMES_HOME = process.env.HERMES_HOME || "/data/hermes";
+
+/** One git command of mirror maintenance may run this long. */
+const LOCAL_COMMAND_TIMEOUT_MS = intEnv("MYRMIDON_GIT_LOCAL_MIRROR_TIMEOUT_MS", 15 * 60 * 1000, 1000);
+/** A bot-local mirror is refetched at most once per this many seconds (0: never). */
+const LOCAL_REFRESH_SEC = intEnv("MYRMIDON_GIT_LOCAL_MIRROR_REFRESH_SEC", 900, 0);
+/** How many repositories one store keeps mirrors for. */
+const LOCAL_MAX_MIRRORS = intEnv("MYRMIDON_GIT_LOCAL_MIRROR_MAX", 8, 1);
+/** File inside a mirror marking the last successful fetch (same stamp name as the board's mirrors). */
+const MIRROR_STAMP = "myrmidon-fetched-at";
 
 const OWNER_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
 const REPO_RE = /^[A-Za-z0-9._-]{1,100}$/;
+
+function intEnv(name, fallback, min) {
+  const raw = process.env[name];
+  const n = raw === undefined || raw === "" ? NaN : Math.floor(Number(raw));
+  return Number.isFinite(n) && n >= min ? n : fallback;
+}
 
 // Global options that take their value as the NEXT argument.
 const GLOBAL_WITH_VALUE = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--config-env", "--attr-source", "--exec-path"]);
@@ -62,19 +102,223 @@ function githubRepo(url) {
   return `${owner.toLowerCase()}/${repo.toLowerCase()}`;
 }
 
+/** True when `dir` looks like a finished bare mirror. */
+function isMirror(dir) {
+  try {
+    if (!fs.statSync(path.join(dir, "objects")).isDirectory()) return false;
+    if (!fs.statSync(path.join(dir, "HEAD")).isFile()) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** The mirror directory of a repository when it exists in this container, else null. */
 function mirrorFor(repo, root = MIRROR_ROOT) {
   const dir = path.join(root, `${repo}.git`);
+  return isMirror(dir) ? dir : null;
+}
+
+/**
+ * The bot-local mirror store (myrmidon 1.6.5 BOT-DISK-G): the environment
+ * value first, else the profile's ${HERMES_HOME}/.env value (the profile
+ * compiler writes a scope member's store there; a terminal environment may not
+ * carry it yet), else the per-bot default inside the bot's own mount. An
+ * explicit empty MYRMIDON_GIT_LOCAL_MIRROR="" turns the store off.
+ */
+function localMirrorRoot(env = process.env, home = HERMES_HOME) {
+  if (env.MYRMIDON_GIT_LOCAL_MIRROR !== undefined) return env.MYRMIDON_GIT_LOCAL_MIRROR;
+  const fromEnvFile = dotenvValue(path.join(home, ".env"), "MYRMIDON_GIT_LOCAL_MIRROR");
+  if (fromEnvFile !== null) return fromEnvFile;
+  return path.join(home, ".myrmidon", "git-objects");
+}
+
+/** One KEY=VALUE line of a dotenv file, one layer of quotes stripped; null when absent. */
+function dotenvValue(file, key) {
   try {
-    if (fs.statSync(path.join(dir, "objects")).isDirectory() && fs.statSync(path.join(dir, "HEAD")).isFile()) return dir;
+    for (const line of fs.readFileSync(file, "utf8").split("\n")) {
+      if (!line.startsWith(`${key}=`)) continue;
+      let value = line.slice(key.length + 1).trim();
+      if (value.length > 1 && value.startsWith('"') && value.endsWith('"')) value = value.slice(1, -1);
+      else if (value.length > 1 && value.startsWith("'") && value.endsWith("'")) value = value.slice(1, -1);
+      return value;
+    }
   } catch {
-    // no mirror: clone as usual
+    // unreadable .env: the caller falls back to the default
   }
   return null;
 }
 
+function localMirrorDir(repo, root) {
+  return path.join(root, `${repo}.git`);
+}
+
+/** How many mirrors the store holds now (the cap counts repositories, not owners). */
+function countLocalMirrors(root) {
+  let owners;
+  try {
+    owners = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    return 0;
+  }
+  let n = 0;
+  for (const owner of owners) {
+    if (!owner.isDirectory()) continue;
+    try {
+      n += fs.readdirSync(path.join(root, owner.name)).filter((name) => name.endsWith(".git")).length;
+    } catch {
+      // unreadable owner directory: not ours to guess
+    }
+  }
+  return n;
+}
+
+function spawnRealGit(args, opts = {}) {
+  return spawnSync(REAL_GIT, args, {
+    stdio: opts.stdio || "ignore",
+    timeout: opts.timeout === undefined ? LOCAL_COMMAND_TIMEOUT_MS : opts.timeout,
+    env: childEnv(),
+  });
+}
+
+/**
+ * The environment every real-git child runs with: no prompts, and
+ * /opt/node24/bin on PATH when the caller's PATH lost it. The image's PATH
+ * holds it; a bot terminal's PATH does not (the adapter rebuilds PATH without
+ * the image elements). /etc/gitconfig's credential helper
+ * (git-credential-paperclip) is a `#!/usr/bin/env node` script, so without
+ * this a private-repository clone or mirror fetch could not answer for
+ * credentials from exactly the terminals where task clones happen. Prepending
+ * a missing directory is harmless outside the image (CI, tests).
+ */
+function childEnv() {
+  const pathKey = Object.keys(process.env).find((k) => k.toUpperCase() === "PATH") || "PATH";
+  const current = process.env[pathKey] || "";
+  const entries = current.split(":");
+  const extra = "/opt/node24/bin";
+  if (entries[0] !== extra && !entries.includes(extra)) {
+    return { ...process.env, GIT_TERMINAL_PROMPT: "0", [pathKey]: `${extra}:${current}` };
+  }
+  return { ...process.env, GIT_TERMINAL_PROMPT: "0" };
+}
+
+/**
+ * A usable bot-local mirror for `repo` cloned from `url`, or null when there is
+ * none and none should be made. The first clone creates the mirror (a bare
+ * clone into a temporary directory, renamed into place, so a half mirror never
+ * stays behind); a later clone refreshes it at most once per
+ * LOCAL_REFRESH_SEC through a lock directory. `configArgs` are the `-c` pairs
+ * of the outer git command, re-applied to the mirror commands so an
+ * `url.<base>.insteadOf` rewrite (or any other per-command config) shapes the
+ * fetch the same way. Every failure here is silent by design: the caller then
+ * clones without a reference, exactly like before this feature existed.
+ */
+function ensureLocalMirror(repo, url, root, configArgs = []) {
+  const dir = localMirrorDir(repo, root);
+  if (isMirror(dir)) {
+    refreshLocalMirror(dir, configArgs);
+    return dir;
+  }
+  if (countLocalMirrors(root) >= LOCAL_MAX_MIRRORS) return null;
+  const tmp = `${dir}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+  try {
+    fs.mkdirSync(path.dirname(dir), { recursive: true, mode: 0o755 });
+    // The first clone of this repository pays one full download — the same
+    // traffic every clone used to make on its own. Say so once, on stderr:
+    // the user is waiting on it and should know why.
+    process.stderr.write(`[myrmidon-git] shared object store: first fetch of ${repo} (once per bot)\n`);
+    if (spawnRealGit([...configArgs, "clone", "--quiet", "--bare", "--", url, tmp]).status !== 0) return null;
+    for (const [key, value] of [
+      ["core.logAllRefUpdates", "false"],
+      ["gc.auto", "0"],
+      ["gc.pruneExpire", "never"],
+      ["fetch.prune", "true"],
+      ["remote.origin.fetch", "+refs/heads/*:refs/heads/*"],
+    ]) {
+      if (spawnRealGit([...configArgs, "-C", tmp, "config", "--replace-all", key, value]).status !== 0) {
+        fs.rmSync(tmp, { recursive: true, force: true });
+        return null;
+      }
+    }
+    if (spawnRealGit([...configArgs, "-C", tmp, "config", "--add", "remote.origin.fetch", "+refs/tags/*:refs/tags/*"]).status !== 0) {
+      fs.rmSync(tmp, { recursive: true, force: true });
+      return null;
+    }
+    // Mirror first, then announce: --reference-if-able must never see a half mirror.
+    try {
+      fs.renameSync(tmp, dir);
+    } catch (err) {
+      // A concurrent first clone of the same repository won the race: use its mirror.
+      if (!err || err.code !== "ENOTEMPTY") throw err;
+      fs.rmSync(tmp, { recursive: true, force: true });
+      return isMirror(dir) ? dir : null;
+    }
+    touchStamp(dir);
+    return dir;
+  } catch {
+    try {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    } catch {
+      // nothing left to clean
+    }
+    return null;
+  }
+}
+
+/** True when a refresh is due; takes the lock as it says so. */
+function refreshDue(dir, now = Date.now()) {
+  if (LOCAL_REFRESH_SEC === 0) return false;
+  let stampMtime;
+  try {
+    stampMtime = fs.statSync(path.join(dir, MIRROR_STAMP)).mtimeMs;
+  } catch {
+    stampMtime = 0; // no stamp: due
+  }
+  if (now - stampMtime < LOCAL_REFRESH_SEC * 1000) return false;
+  // The stamp stays old when a fetch fails, so a failed attempt must not be
+  // retried on every clone: the lock directory doubles as the attempt marker,
+  // held for the refresh interval and taken over when older (a dead wrapper).
+  const lock = `${dir}.lock`;
+  try {
+    fs.mkdirSync(lock);
+    return true;
+  } catch (err) {
+    if (!err || err.code !== "EEXIST") return false;
+  }
+  try {
+    if (now - fs.statSync(lock).mtimeMs < LOCAL_REFRESH_SEC * 1000) return false;
+    fs.rmSync(lock, { recursive: true, force: true });
+    fs.mkdirSync(lock);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function refreshLocalMirror(dir, configArgs = []) {
+  if (!refreshDue(dir)) return;
+  try {
+    if (spawnRealGit([...configArgs, "-C", dir, "fetch", "--quiet", "--prune", "origin"]).status === 0) touchStamp(dir);
+  } finally {
+    try {
+      fs.rmSync(`${dir}.lock`, { recursive: true, force: true });
+    } catch {
+      // leave it: it goes stale on its own
+    }
+  }
+}
+
+function touchStamp(dir) {
+  try {
+    const fd = fs.openSync(path.join(dir, MIRROR_STAMP), "w", 0o644);
+    fs.closeSync(fd);
+  } catch {
+    // a missing stamp only means the next clone refreshes again
+  }
+}
+
 /** argv with `--reference-if-able <mirror>` after `clone` when it applies, else argv unchanged. */
-function rewriteArgs(argv, root = MIRROR_ROOT) {
+function rewriteArgs(argv, root = MIRROR_ROOT, localMirror = null) {
   let i = 0;
   while (i < argv.length && argv[i].startsWith("-")) {
     i += GLOBAL_WITH_VALUE.has(argv[i]) ? 2 : 1;
@@ -98,13 +342,81 @@ function rewriteArgs(argv, root = MIRROR_ROOT) {
   }
   if (repoUrl === null) return argv;
   const repo = githubRepo(repoUrl);
-  const mirror = repo ? mirrorFor(repo, root) : null;
+  const mirror = (repo && mirrorFor(repo, root)) || localMirror || null;
   if (!mirror) return argv;
   return [...argv.slice(0, cloneAt + 1), "--reference-if-able", mirror, ...argv.slice(cloneAt + 1)];
 }
 
+/**
+ * The repository URL of a `git clone` in argv — the exact clone rewriteArgs
+ * would be willing to touch (no storage-deciding option, a parseable
+ * repository argument) — or null.
+ */
+function scanCloneArgs(argv) {
+  let i = 0;
+  while (i < argv.length && argv[i].startsWith("-")) {
+    i += GLOBAL_WITH_VALUE.has(argv[i]) ? 2 : 1;
+  }
+  if (argv[i] !== "clone") return null;
+  const cloneAt = i;
+  for (let j = i + 1; j < argv.length; j++) {
+    const arg = argv[j];
+    if (arg === "--") return argv[j + 1] === undefined ? null : { cloneAt, url: argv[j + 1] };
+    if (arg.startsWith("-")) {
+      if (CLONE_OPT_OUT.some((re) => re.test(arg))) return null;
+      if (CLONE_WITH_VALUE.has(arg)) j += 1;
+      continue;
+    }
+    return { cloneAt, url: arg };
+  }
+  return null;
+}
+
+/**
+ * The `-c key=value` pairs of a clone command: global options before the
+ * subcommand and clone-level `-c` options up to the repository argument. The
+ * wrapper re-applies them to its own mirror commands so the bot-local mirror
+ * is built from exactly the URL the clone would reach (insteadOf rewrites).
+ * Call with the argv of a clone scanCloneArgs accepted (cloneAt known).
+ */
+function collectConfigArgs(argv, cloneAt) {
+  const out = [];
+  let i = 0;
+  while (i < cloneAt && i < argv.length) {
+    if (argv[i] === "-c" && i + 1 < argv.length) out.push("-c", argv[i + 1]);
+    i += GLOBAL_WITH_VALUE.has(argv[i]) ? 2 : 1;
+  }
+  for (let j = cloneAt + 1; j < argv.length; j++) {
+    const arg = argv[j];
+    if (arg === "--") break;
+    if (arg.startsWith("-")) {
+      if (arg === "-c" && j + 1 < argv.length) out.push("-c", argv[j + 1]);
+      if (CLONE_WITH_VALUE.has(arg)) j += 1;
+      continue;
+    }
+    break; // the repository argument
+  }
+  return out;
+}
+
 function main() {
-  const result = spawnSync(REAL_GIT, rewriteArgs(process.argv.slice(2)), { stdio: "inherit" });
+  const argv = process.argv.slice(2);
+  let localMirror = null;
+  // Decide the bot-local mirror BEFORE running the clone; the injection itself
+  // stays in the tested pure function. The board's mirror always wins.
+  const scanned = scanCloneArgs(argv);
+  if (scanned) {
+    const repo = githubRepo(scanned.url);
+    const root = localMirrorRoot();
+    if (repo && root && mirrorFor(repo) === null) {
+      try {
+        localMirror = ensureLocalMirror(repo, scanned.url, root, collectConfigArgs(argv, scanned.cloneAt));
+      } catch {
+        localMirror = null;
+      }
+    }
+  }
+  const result = spawnSync(REAL_GIT, rewriteArgs(argv, MIRROR_ROOT, localMirror), { stdio: "inherit", env: childEnv() });
   if (result.error) {
     process.stderr.write(`git: cannot run ${REAL_GIT}: ${result.error.message}\n`);
     process.exit(127);
@@ -117,4 +429,15 @@ function main() {
 }
 
 if (require.main === module) main();
-module.exports = { githubRepo, mirrorFor, rewriteArgs };
+module.exports = {
+  githubRepo,
+  isMirror,
+  mirrorFor,
+  rewriteArgs,
+  scanCloneArgs,
+  localMirrorRoot,
+  localMirrorDir,
+  countLocalMirrors,
+  ensureLocalMirror,
+  refreshDue,
+};

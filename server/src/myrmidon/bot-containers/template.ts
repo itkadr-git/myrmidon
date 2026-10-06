@@ -209,6 +209,20 @@ export const BOT_ROOT_MOUNT = "/bot";
  */
 export const BOT_SCOPE_MOUNT = "/bot-scope";
 export const BOT_SCOPE_STORE_DIR = `${BOT_SCOPE_MOUNT}/.pnpm-store`;
+/**
+ * myrmidon(1.6.5 BOT-DISK-G): the shared git object store of a scope instance,
+ * written to every member's profile as `MYRMIDON_GIT_LOCAL_MIRROR`. One bare
+ * mirror per repository lives here (`<dir>/<owner>/<repo>.git`), made by the
+ * image's git wrapper on the first clone inside the instance, and every later
+ * clone of the same repository on ANY member borrows its objects through
+ * `--reference-if-able` — so a task clone carries only its working tree. The
+ * store is inside the instance's single mount (like the pnpm store above), it
+ * lives beside it and is never a draft, so no clone lifecycle ever removes it;
+ * the wrapper keeps its gc from pruning objects any clone may still borrow.
+ */
+export const BOT_SCOPE_GIT_OBJECTS_DIR = `${BOT_SCOPE_MOUNT}/.git-objects`;
+/** The per-bot default of the same store when no scope instance owns one (entrypoint + wrapper agree on this path). */
+export const BOT_GIT_OBJECTS_DIR = "/data/hermes/.myrmidon/git-objects";
 export const BOT_SCOPE_SUBDIR_ENV = "MYRMIDON_BOT_SCOPE_SUBDIR";
 /** The tmpfs over `/data` of a member: only links, owned by the bot's uid. */
 export const BOT_SCOPE_DATA_TMPFS = "uid=10001,gid=10001,mode=0755,size=1m";

@@ -127,6 +127,60 @@ rsync -a --delete --info=stats1 \
   -e "ssh ${SSH_OPTS[*]}" \
   "$WORKSPACE_SRC/" "$DEVBUILD_USER@$DEVBUILD_HOST:$dest_root/"
 
+# myrmidon(1.6.5 BOT-DISK-G): a task clone may borrow its objects from a shared
+# git store (git-reference/git --reference-if-able), and its
+# .git/objects/info/alternates then names a path on THIS container that does not
+# exist on the build host — every git command in the synced copy would fail on
+# missing objects. Sync each borrowed mirror into the shared devcache git
+# directory (one copy per host, keyed by the container path it borrows from)
+# and repoint the remote alternates file at it. Only lines inside the known
+# store roots are followed — a crafted alternates file must not make this
+# script ship another directory to a shared path — and only plain path
+# characters are accepted.
+hermes_home="${HERMES_HOME:-/data/hermes}"
+local_mirror="${MYRMIDON_GIT_LOCAL_MIRROR:-$(grep -m1 -E '^MYRMIDON_GIT_LOCAL_MIRROR=' "${hermes_home}/.env" 2>/dev/null | cut -d= -f2- | tr -d "\"'")}"
+devbuild_git="${DEVBUILD_CACHES}/git"
+declare -A mirror_shipped=()
+map_args=()
+for root in "${local_mirror:-${hermes_home}/.myrmidon/git-objects}" "/cache/git"; do
+  [ -n "$root" ] || continue
+  case "$root" in */) root="${root%/}";; esac
+  while IFS= read -r alt_file; do
+    while IFS= read -r alt_line; do
+      case "$alt_line" in "$root"/*) ;; *) continue ;; esac
+      case "$alt_line" in *[!A-Za-z0-9._/-]*) continue ;; esac
+      src_mirror="${alt_line%/objects}"
+      [ -d "$src_mirror" ] || continue
+      key="$(printf '%s' "$alt_line" | sha256sum | cut -c1-16)"
+      map_args+=("$alt_file" "$alt_line" "${devbuild_git}/${key}.git/objects")
+      if [ -z "${mirror_shipped[$key]:-}" ]; then
+        mirror_shipped[$key]=1
+        ssh "${SSH_OPTS[@]}" "$DEVBUILD_USER@$DEVBUILD_HOST" \
+          "mkdir -p '${devbuild_git}/${key}.git'"
+        rsync -a --info=stats0 \
+          -e "ssh ${SSH_OPTS[*]}" \
+          "$src_mirror/" "$DEVBUILD_USER@$DEVBUILD_HOST:${devbuild_git}/${key}.git/"
+      fi
+    done < "$alt_file"
+  done < <(find "$WORKSPACE_SRC" -maxdepth 6 \( -name node_modules -o -name .pnpm-store \) -prune -o -type f -path '*/objects/info/alternates' -print 2>/dev/null)
+done
+if [ "${#map_args[@]}" -gt 0 ]; then
+  # Rewrite the alternates files on the VPS copy. Arguments are the LOCAL
+  # alternates paths (their WORKSPACE_SRC prefix maps to dest_root), the old
+  # line and the new line; both paths passed the plain-character filter above,
+  # so the sed pattern is safe with the | delimiter.
+  ssh "${SSH_OPTS[@]}" "$DEVBUILD_USER@$DEVBUILD_HOST" bash -s -- "$dest_root" "$WORKSPACE_SRC" "${map_args[@]}" <<'REWRITE'
+set -eu
+dest_root="$1"; ws_src="$2"; shift 2
+while [ "$#" -ge 3 ]; do
+  local_file="$1"; old="$2"; new="$3"; shift 3
+  remote_file="${dest_root}/${local_file#"$ws_src"/}"
+  [ -f "$remote_file" ] || continue
+  sed -i "s|^${old}\$|${new}|" "$remote_file"
+done
+REWRITE
+fi
+
 # Run the command remotely, with the shared caches exported and the cwd at
 # the repo root. ssh propagates the remote command's exit status as its own.
 ssh "${SSH_OPTS[@]}" "$DEVBUILD_USER@$DEVBUILD_HOST" \

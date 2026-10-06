@@ -19,6 +19,7 @@ import {
   noteCloneReportSeen,
   noteVolumeRoot,
   parseCloneReport,
+  parseGitRefCheck,
   parseHardlinkCheck,
   resetCloneHygieneStateForTests,
   type CloneReportEntry,
@@ -242,6 +243,59 @@ describe("hard-link self-check in the clone report", () => {
     }
     // The next report, with the check passing (the bot restarted), clears them.
     const passing = { ...failing, ok: true, roots: failing.roots.map((root) => ({ ...root, ok: true, error: null })) };
+    ingestCloneReport("bot-a", reportWith(passing), 3_600_000, now);
+    expect(cloneHygieneSignals()).toEqual([]);
+  });
+});
+
+// myrmidon(1.6.5 BOT-DISK-G): the container-start shared-git-objects self-check
+// rides the same report and becomes an attention signal per failed check.
+describe("shared-git-objects self-check in the clone report", () => {
+  const now = Date.parse("2026-10-05T12:00:00Z");
+  const reportWith = (gitRefCheck: unknown) =>
+    JSON.stringify({ version: 1, inspectedAt: "2026-10-05T11:59:00Z", repos: [], ...(gitRefCheck === undefined ? {} : { gitRefCheck }) });
+  const failing = {
+    version: 1,
+    ok: false,
+    store: "/bot-scope/.git-objects",
+    checks: [
+      { check: "usr-local-shadow", ok: true, error: null },
+      { check: "wrapper-runs", ok: false, error: "env: ‘node’: No such file or directory" },
+      { check: "reference-clone", ok: false, error: "did not borrow the mirror's objects" },
+    ],
+  };
+
+  beforeEach(() => resetCloneHygieneStateForTests());
+
+  it("parses the check and tolerates its absence or garbage", () => {
+    expect(parseCloneReport(reportWith(undefined), now)?.gitRefCheck).toBeNull();
+    expect(parseCloneReport(reportWith("x"), now)?.gitRefCheck).toBeNull();
+    expect(parseGitRefCheck({ store: "s", ok: "no", checks: [] })).toBeNull();
+    expect(parseGitRefCheck({ ok: true })).toBeNull(); // checks must be an array
+    const parsed = parseCloneReport(reportWith(failing), now)?.gitRefCheck;
+    expect(parsed?.ok).toBe(false);
+    expect(parsed?.store).toBe("/bot-scope/.git-objects");
+    expect(parsed?.checks).toHaveLength(3);
+    // A garbage item is dropped, a long field is truncated, not a crash.
+    const ragged = parseGitRefCheck({ ok: false, store: "x".repeat(900), checks: [{ check: 1, ok: true }, { check: "c", ok: false, error: "e".repeat(900) }] });
+    expect(ragged?.checks).toHaveLength(1);
+    expect(ragged?.checks[0]?.error).toHaveLength(500);
+    expect(ragged?.store).toHaveLength(500);
+  });
+
+  it("raises one signal per failing check, naming the store and the error, and none for a passing check", () => {
+    expect(ingestCloneReport("bot-a", reportWith(failing), 3_600_000, now)).toBe(true);
+    const signals = cloneHygieneSignals();
+    expect(signals.map((signal) => signal.reason)).toEqual([
+      "shared git objects check wrapper-runs failed: env: ‘node’: No such file or directory",
+      "shared git objects check reference-clone failed: did not borrow the mirror's objects",
+    ]);
+    for (const signal of signals) {
+      expect(signal.kind).toBe("gitref");
+      expect(signal.path).toBe("/bot-scope/.git-objects");
+    }
+    // The next report, with the check passing (the bot restarted), clears them.
+    const passing = { ...failing, ok: true, checks: failing.checks.map((c) => ({ ...c, ok: true, error: null })) };
     ingestCloneReport("bot-a", reportWith(passing), 3_600_000, now);
     expect(cloneHygieneSignals()).toEqual([]);
   });
