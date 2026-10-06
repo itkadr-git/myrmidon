@@ -42,7 +42,10 @@
 # window and production is never touched (predeploy-board-check.sh). The 05.10
 # board started on CI's empty database and crashed on production data.
 #
-# Steps: pull the image by digest; remember the current digest as "previous";
+# Steps: check the free disk space BEFORE the first pull and the dump
+# (DEPLOY-HYGIENE, MYRMIDON_DEPLOY_MIN_FREE_GB; below the threshold the
+# deploy stops with nothing changed and names the cleanup candidates); pull
+# the image by digest; remember the current digest as "previous";
 # dump the database (DUMP_COMMAND, refuses an empty dump); check the image on a
 # copy of that dump (PREDEPLOY-DB-CHECK) and read-only preflight every changed
 # component; enter maintenance; wait until no runs are in progress. The window
@@ -82,7 +85,10 @@
 # board has bot containers configured; 0 restores the manual path).
 # Last, a post-deploy smoke (bot-apply-smoke.sh) waits for at least one bot
 # container to re-apply; failing that within its window the deploy reports
-# DEGRADED and prints the rollback commands.
+# DEGRADED and prints the rollback commands. Then the DEPLOY-HYGIENE image
+# retention removes the component images older than MYRMIDON_DEPLOY_IMAGE_KEEP
+# previous releases (an image any container uses is never removed; a cleanup
+# failure is a WARNING, not a failed deploy).
 #
 # On a failed health check the script stops with maintenance still on and
 # prints the rollback command.
@@ -468,6 +474,15 @@ preflight_all() {
 }
 preflight_all
 
+# DEPLOY-HYGIENE (OPE-5107): refuse BEFORE the first pull and the dump when
+# the filesystem of /var/lib/docker cannot hold the images of this release
+# (MYRMIDON_DEPLOY_MIN_FREE_GB, default 15 GiB). In a dry run the check is
+# reported with the current value instead.
+deploy_disk_precheck deploy.sh
+# The check above covers the whole deploy: the bot-image rollout script skips
+# its own precheck and its own end-of-run image cleanup (deploy.sh runs them).
+export MYRMIDON_DEPLOY_DISK_PRECHECK_DONE=1
+
 if [[ "$DRY_RUN" == "1" ]]; then
   log "dry run: nothing will be changed. Plan:"
   plan "0. image check passed (read-only): $ref is in the registry, commit ${CI_IMAGE_REVISION:0:12} is on origin/main or a myr-v* tag"
@@ -476,6 +491,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
     plan "0.55 preflight passed (read-only, the same checks the real run makes before its first pull): the compose project of the full file set validates; every changed component's service, health setting and CI image; the dockergate config check of the edited config with the new binary"
   fi
   plan "0.6 release components (${component_resolution:-none}, from the $component_source): board, ${MYR_RELEASE_COMPONENTS//,/, }, bot images; one maintenance window, all-or-nothing"
+  plan "0.7 disk precheck passed (read-only): ${MYRMIDON_DEPLOY_MIN_FREE_GB:-15} GiB free on the filesystem of /var/lib/docker required before the first pull (MYRMIDON_DEPLOY_MIN_FREE_GB)"
   if ((board_changed)); then
     plan "board: ${previous_image:-<none>} -> $ref"
   else
@@ -518,6 +534,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   if [[ "$MYR_SMOKE_ENABLED" == "1" ]]; then
     plan "10. post-deploy smoke: wait for a bot container to re-apply (bot-apply-smoke.sh, timeout ${MYR_SMOKE_TIMEOUT_SEC}s); on failure the deploy reports DEGRADED and prints the rollback commands"
   fi
+  plan "11. DEPLOY-HYGIENE: remove the component images older than ${MYRMIDON_DEPLOY_IMAGE_KEEP:-1} previous release(s) per repository (MYRMIDON_DEPLOY_IMAGE_KEEP; images used by a container are always kept)"
   exit 0
 fi
 
@@ -843,6 +860,13 @@ if [[ "$MYR_SMOKE_ENABLED" == "1" ]]; then
       exit 1
     fi
   fi
+fi
+
+# DEPLOY-HYGIENE (OPE-5107): the deploy is done and healthy — free the disk of
+# the releases before the kept ones. Images used by any container are never
+# removed; a failure of the cleanup itself never fails the finished deploy.
+if deploy_image_retention; then :; else
+  log "WARNING: the old image cleanup failed; the deploy itself is complete and healthy (remove old images by hand: docker image ls)"
 fi
 
 log "release gate passed: board and ${MYR_RELEASE_COMPONENTS:-no components} rolled out together, bots re-apply"

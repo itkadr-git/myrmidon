@@ -42,7 +42,10 @@
 # before the first docker call, so an unusable token file fails early — and not
 # while waiting for health, after Postgres and the dump are already up.
 #
-# The stack is removed on exit; MYRMIDON_PREDEPLOY_KEEP=1 keeps it and prints
+# The stack is removed on exit — containers, the network and the copy's data
+# volume (myr-predeploy-dbvol-<digest8>-<pid>, DEPLOY-HYGIENE: an anonymous
+# volume would survive `docker rm -f` and stay on the disk forever).
+# MYRMIDON_PREDEPLOY_KEEP=1 keeps it and prints
 # the container names instead. The production DATABASE_URL of the settings file
 # is ignored on purpose: the throwaway board talks to the copy only.
 set -euo pipefail
@@ -130,6 +133,11 @@ network="${MYRMIDON_PREDEPLOY_NETWORK:-myr-predeploy-$suffix}"
 db_ctr="myr-predeploy-db-$suffix"
 dg_ctr="myr-predeploy-dockergate-$suffix"
 board_ctr="myr-predeploy-board-$suffix"
+# DEPLOY-HYGIENE (OPE-5107): the copy's data lives in a NAMED volume of this
+# run, removed by the same trap that removes the containers. An anonymous
+# volume (-v /var/lib/postgresql/data) survives `docker rm -f` and stays on
+# the disk forever — the 3.4/3.6 GB orphans of 05.10 and rc.3.
+db_vol="${MYRMIDON_PREDEPLOY_DB_VOLUME:-myr-predeploy-dbvol-$suffix}"
 board_ref="$MYRMIDON_IMAGE@$board_digest"
 dockergate_ref=""
 [[ -n "$dockergate_digest" ]] && dockergate_ref="ghcr.io/itkadr-git/myrmidon-dockergate@$dockergate_digest"
@@ -143,7 +151,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   log "dry run: nothing will be changed. Predeploy check plan:"
   plan "0. read the predeploy dump $dump_file ($(wc -c <"$dump_file" | tr -d ' ') bytes) as the production snapshot (read-only)"
   plan "1. docker network create $network (no bot container, no production dockergate on it)"
-  plan "2. docker run -d --name $db_ctr --network $network $postgres_image (database $db_name, user $db_user, generated password)"
+  plan "2. docker run -d --name $db_ctr --network $network -v $db_vol:/var/lib/postgresql/data $postgres_image (database $db_name, user $db_user, generated password)"
   plan "3. wait for the copy to accept connections, then restore the dump into it"
   if [[ -n "$dockergate_ref" ]]; then
     plan "4. docker run -d --name $dg_ctr --network $network $dockergate_ref (the NEW dockergate of this release)"
@@ -153,23 +161,26 @@ if [[ "$DRY_RUN" == "1" ]]; then
   plan "5. docker run -d --name $board_ctr --network $network -p 127.0.0.1:$board_port:3100 $board_ref (production DATABASE_URL ignored; the copy's URL is set)"
   plan "6. wait for http://127.0.0.1:$board_port/api/health: status ok, version/commit of $board_ref (timeout ${health_timeout}s)"
   plan "7. walk ${api_paths//:company:/$company_id} against the copy"
-  plan "8. remove the throwaway stack (network $network, $db_ctr, $dg_ctr, $board_ctr)"
+  plan "8. remove the throwaway stack (network $network, $db_ctr, $dg_ctr, $board_ctr, volume $db_vol)"
   plan "any failure stops deploy.sh BEFORE the maintenance window; production is never touched"
   exit 0
 fi
 
 log "PREDEPLOY-DB-CHECK: proving $board_ref against a copy of the production database (dump: $dump_file)"
 
-# The throwaway stack never outlives this run.
+# The throwaway stack never outlives this run — and neither does the copy's
+# data volume (DEPLOY-HYGIENE): the trap runs on success, on failure and on an
+# interrupt alike.
 cleanup() {
   local names=() n
   for n in "$board_ctr" "$dg_ctr" "$db_ctr"; do [[ -n "$n" ]] && names+=("$n"); done
   if [[ "$keep" == "1" ]]; then
-    log "PREDEPLOY-DB-CHECK: keeping the throwaway stack (MYRMIDON_PREDEPLOY_KEEP=1): network=$network db=$db_ctr dockergate=${dg_ctr:-<none>} board=$board_ctr (port $board_port)"
+    log "PREDEPLOY-DB-CHECK: keeping the throwaway stack (MYRMIDON_PREDEPLOY_KEEP=1): network=$network db=$db_ctr dockergate=${dg_ctr:-<none>} board=$board_ctr (port $board_port) volume=$db_vol"
     return 0
   fi
   docker rm -f "${names[@]}" >/dev/null 2>&1 || true
   docker network rm "$network" >/dev/null 2>&1 || true
+  docker volume rm -f "$db_vol" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -205,6 +216,7 @@ export DUMP_FILE="$dump_file"
 log "PREDEPLOY-DB-CHECK: 2/6 copy of the production database ($postgres_image)"
 # shellcheck disable=SC2086  # the operator's extra docker arguments are word-split on purpose
 docker run -d --name "$db_ctr" --network "$network" \
+  -v "$db_vol:/var/lib/postgresql/data" \
   -e POSTGRES_DB="$db_name" -e POSTGRES_USER="$db_user" -e POSTGRES_PASSWORD="$db_password" \
   $postgres_image >/dev/null || die "cannot start the throwaway Postgres ($postgres_image); production was not touched"
 

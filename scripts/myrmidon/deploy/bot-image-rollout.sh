@@ -289,6 +289,13 @@ is_release_ref() {
 }
 
 # --- 2. pull the images everywhere the bots run ------------------------------
+# DEPLOY-HYGIENE (OPE-5107): refuse BEFORE the first pull when the filesystem
+# of /var/lib/docker cannot hold the bot images (in a dry run the check is
+# reported with the current value instead). Standalone runs only: when
+# deploy.sh drives the rollout, deploy.sh already checked the same disk.
+if [[ "$phase" != "cards" && -z "${MYRMIDON_DEPLOY_DISK_PRECHECK_DONE:-}" ]]; then
+  deploy_disk_precheck bot-image-rollout
+fi
 mapfile -t FLEET_HOSTS_LIST < <(fleet_hosts)
 for name in $(tr ',' ' ' <<<"$MYR_BOT_COMPONENTS"); do
   ref="${BOT_IMAGE_BY_NAME[$name]:-}"
@@ -447,6 +454,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   bot_log "  4. enroll every hermes_gateway bot of company $BOARD_COMPANY_ID in bots of the dockergate config"
   bot_log "  5. switch every bot card to the release image, one at a time${canary:+ (canary $canary first)}, through PATCH + apply; deferred bots retry up to ${MYR_BOT_TIMEOUT_SEC}s; no run is interrupted"
   bot_log "  6. remove the superseded bot images from images; SIGHUP"
+  bot_log "  6b. DEPLOY-HYGIENE: remove the local bot/component images older than MYRMIDON_DEPLOY_IMAGE_KEEP=${MYRMIDON_DEPLOY_IMAGE_KEEP:-1} previous release(s) (images used by a container are kept)"
   bot_log "  7. journal: $MYR_BOT_ROLLOUT_LOG"
   categories="$(bot_categories || true)"
   if [[ -n "$categories" ]]; then
@@ -735,4 +743,16 @@ fi
 
 bot_log "bot image rollout complete: $switched bot(s) on the release images, journal $MYR_BOT_ROLLOUT_LOG"
 journal "rollout complete: $switched bot(s) on the release images ($resolution $res_ref)"
+
+# DEPLOY-HYGIENE (OPE-5107): the bots moved to the release images — free the
+# disk of the superseded ones (older than MYRMIDON_DEPLOY_IMAGE_KEEP previous
+# releases; an image used by any container is never removed). Standalone runs
+# only: when deploy.sh drives the rollout, deploy.sh runs the same cleanup
+# once after its post-deploy steps. A failure here never fails the rollout.
+if [[ -z "${MYRMIDON_DEPLOY_DISK_PRECHECK_DONE:-}" ]]; then
+  if deploy_image_retention; then :; else
+    bot_log "WARNING: the old image cleanup failed; the rollout itself is complete (remove old images by hand: docker image ls)"
+  fi
+fi
+
 exit 0
