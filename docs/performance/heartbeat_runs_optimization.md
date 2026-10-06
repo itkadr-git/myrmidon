@@ -27,11 +27,7 @@ This optimization addresses performance issues with heartbeat runs by:
 
 ### Database Migrations
 
-#### Migration 0296: Performance Indexes
-- Added `heartbeat_runs_company_issue_coalesce_created_idx` index
-- Improves performance of queries filtering by company ID, issue ID, and creation time
-
-#### Migration 0297: Remove Execution Continuation Duplication
+#### Migration 0303: Remove Execution Continuation Duplication
 - Removes duplicate storage of `executionContinuation` field
 - Ensures the field is stored only once inside `paperclipWake` object
 
