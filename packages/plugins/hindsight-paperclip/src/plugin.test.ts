@@ -86,6 +86,19 @@ function retainMetadata(call: MockCall): Record<string, unknown> {
   return firstRetainItem(call).metadata ?? {};
 }
 
+/** A comment body long enough to earn a line in a run digest (>= 200 chars). */
+function digestBody(label: string): string {
+  return `${label}. ${"The agent recorded this step of the work while the run was open. ".repeat(4)}`.trim();
+}
+
+function retainCalls(hindsight: MockHindsight): MockCall[] {
+  return hindsight.calls.filter((call) => call.path.endsWith("/memories") && call.method === "POST");
+}
+
+function recallCalls(hindsight: MockHindsight): MockCall[] {
+  return hindsight.calls.filter((call) => call.path.endsWith("/memories/recall"));
+}
+
 function jsonResponse(payload: unknown, status = 200): Response {
   return new Response(JSON.stringify(payload), { status, headers: { "Content-Type": "application/json" } });
 }
@@ -488,10 +501,241 @@ describe("hindsight plugin memory routing", () => {
   });
 });
 
+describe("run digest retention", () => {
+  it("buffers a run's comments and retains one digest when the run finishes", async () => {
+    const hindsight = mockHindsight();
+    const harness = createTestHarness({
+      manifest: manifest as PaperclipPluginManifestV1,
+      config: { hindsightApiUrl: API_URL },
+    });
+    const first = digestBody("first step of the work");
+    const second = digestBody("second step of the work");
+    harness.seed({
+      agents: [agent({ id: AGENT_ADM, name: "ops-agent", bankId: "adm" })],
+      issues: [issue({ id: "issue-digest", title: "Deploy the fleet", assigneeAgentId: AGENT_ADM })],
+      issueComments: [
+        comment({ id: "comment-first", issueId: "issue-digest", body: first, authorAgentId: AGENT_ADM }),
+        comment({ id: "comment-second", issueId: "issue-digest", body: second, authorAgentId: AGENT_ADM }),
+      ],
+    });
+    const plugin = createHindsightPlugin({ fetchImpl: hindsight.fetch });
+    await plugin.definition.setup(harness.ctx);
+
+    const base = { companyId: COMPANY, entityId: "issue-digest" };
+    await harness.emit("issue.comment.created", { commentId: "comment-first", agentId: AGENT_ADM, runId: "run-digest" }, base);
+    await harness.emit("issue.comment.created", { commentId: "comment-second", agentId: AGENT_ADM, runId: "run-digest" }, base);
+
+    // While the run is open nothing is written: the comments wait in state.
+    assert.equal(hindsight.calls.length, 0, "no retain on issue.comment.created");
+
+    await harness.emit("agent.run.finished", { agentId: AGENT_ADM, runId: "run-digest" }, { companyId: COMPANY, entityId: "run-digest" });
+
+    const retains = retainCalls(hindsight);
+    assert.equal(retains.length, 1);
+    assert.equal(currentBankId(retains[0]!.path), "adm");
+    const content = firstRetainItem(retains[0]!).content;
+    assert.ok(content.startsWith("Run run-digest digest"), content);
+    assert.ok(content.includes(first));
+    assert.ok(content.includes(second));
+    assert.equal(firstRetainItem(retains[0]!)["document_id"], "run-digest-digest");
+    const metadata = retainMetadata(retains[0]!);
+    assert.equal(metadata["kind"], "run-digest");
+    assert.equal(metadata["runId"], "run-digest");
+    assert.equal(metadata["commentCount"], 2);
+    assert.deepEqual(metadata["agentIds"], [AGENT_ADM]);
+    assert.deepEqual(metadata["issueIds"], ["issue-digest"]);
+
+    // The buffer is cleared once the digest is away.
+    assert.equal(harness.getState({ scopeKind: "run", scopeId: "run-digest", stateKey: "retain-buffer" }), undefined);
+  });
+
+  it("drops short comments and board milestone comments from the digest", async () => {
+    const hindsight = mockHindsight();
+    const harness = createTestHarness({
+      manifest: manifest as PaperclipPluginManifestV1,
+      config: { hindsightApiUrl: API_URL },
+    });
+    const milestone = `## Milestone\n\n${digestBody("status block")}`;
+    const kept = digestBody("kept step");
+    harness.seed({
+      agents: [agent({ id: AGENT_ADM, name: "ops-agent", bankId: "adm" })],
+      issues: [issue({ id: "issue-filter", title: "Filter probe", assigneeAgentId: AGENT_ADM })],
+      issueComments: [
+        comment({ id: "comment-short", issueId: "issue-filter", body: "too short", authorAgentId: AGENT_ADM }),
+        comment({ id: "comment-milestone", issueId: "issue-filter", body: milestone, authorAgentId: AGENT_ADM }),
+        comment({ id: "comment-kept", issueId: "issue-filter", body: kept, authorAgentId: AGENT_ADM }),
+      ],
+    });
+    const plugin = createHindsightPlugin({ fetchImpl: hindsight.fetch });
+    await plugin.definition.setup(harness.ctx);
+
+    const base = { companyId: COMPANY, entityId: "issue-filter" };
+    for (const commentId of ["comment-short", "comment-milestone", "comment-kept"]) {
+      await harness.emit("issue.comment.created", { commentId, agentId: AGENT_ADM, runId: "run-filter" }, base);
+    }
+    await harness.emit("agent.run.finished", { agentId: AGENT_ADM, runId: "run-filter" }, { companyId: COMPANY, entityId: "run-filter" });
+
+    const retains = retainCalls(hindsight);
+    assert.equal(retains.length, 1);
+    const content = firstRetainItem(retains[0]!).content;
+    assert.ok(content.includes(kept));
+    assert.ok(!content.includes("too short"));
+    assert.ok(!content.includes("## Milestone"));
+    assert.equal(retainMetadata(retains[0]!)["commentCount"], 1);
+  });
+
+  it("writes one digest per bank when a run spans two agents", async () => {
+    const hindsight = mockHindsight();
+    const harness = createTestHarness({
+      manifest: manifest as PaperclipPluginManifestV1,
+      config: { hindsightApiUrl: API_URL },
+    });
+    const admBody = digestBody("adm step");
+    const bbqBody = digestBody("bbq step");
+    harness.seed({
+      agents: [
+        agent({ id: AGENT_ADM, name: "ops-agent", bankId: "adm" }),
+        agent({ id: AGENT_BBQ, name: "bbq-grill", bankId: "fleet-bbq" }),
+      ],
+      issues: [issue({ id: "issue-mix", title: "Shared ticket", assigneeAgentId: AGENT_ADM })],
+      issueComments: [
+        comment({ id: "comment-adm", issueId: "issue-mix", body: admBody, authorAgentId: AGENT_ADM }),
+        comment({ id: "comment-bbq", issueId: "issue-mix", body: bbqBody, authorAgentId: AGENT_BBQ }),
+      ],
+    });
+    const plugin = createHindsightPlugin({ fetchImpl: hindsight.fetch });
+    await plugin.definition.setup(harness.ctx);
+
+    const base = { companyId: COMPANY, entityId: "issue-mix" };
+    await harness.emit("issue.comment.created", { commentId: "comment-adm", agentId: AGENT_ADM, runId: "run-mix" }, base);
+    await harness.emit("issue.comment.created", { commentId: "comment-bbq", agentId: AGENT_BBQ, runId: "run-mix" }, base);
+    await harness.emit("agent.run.finished", { agentId: AGENT_ADM, runId: "run-mix" }, { companyId: COMPANY, entityId: "run-mix" });
+
+    const retains = retainCalls(hindsight);
+    assert.deepEqual(retains.map((call) => currentBankId(call.path)).sort(), ["adm", "fleet-bbq"]);
+    const adm = retains.find((call) => currentBankId(call.path) === "adm")!;
+    const bbq = retains.find((call) => currentBankId(call.path) === "fleet-bbq")!;
+    assert.ok(firstRetainItem(adm).content.includes(admBody));
+    assert.ok(!firstRetainItem(adm).content.includes(bbqBody));
+    assert.ok(firstRetainItem(bbq).content.includes(bbqBody));
+    assert.equal(retainMetadata(adm)["commentCount"], 1);
+    assert.deepEqual(retainMetadata(bbq)["agentIds"], [AGENT_BBQ]);
+  });
+
+it("retains a comment that carries no run id right away", async () => {
+    const hindsight = mockHindsight();
+    const harness = createTestHarness({
+      manifest: manifest as PaperclipPluginManifestV1,
+      config: { hindsightApiUrl: API_URL },
+    });
+    const body = digestBody("standalone comment");
+    harness.seed({
+      agents: [agent({ id: AGENT_ADM, name: "ops-agent", bankId: "adm" })],
+      issues: [issue({ id: "issue-standalone", title: "Standalone", assigneeAgentId: AGENT_ADM })],
+      issueComments: [
+        comment({ id: "comment-standalone", issueId: "issue-standalone", body, authorAgentId: AGENT_ADM }),
+      ],
+    });
+    const plugin = createHindsightPlugin({ fetchImpl: hindsight.fetch });
+    await plugin.definition.setup(harness.ctx);
+
+    await harness.emit(
+      "issue.comment.created",
+      { commentId: "comment-standalone", agentId: AGENT_ADM },
+      { companyId: COMPANY, entityId: "issue-standalone" },
+    );
+
+    const retains = retainCalls(hindsight);
+    assert.equal(retains.length, 1);
+    assert.equal(currentBankId(retains[0]!.path), "adm");
+    assert.equal(firstRetainItem(retains[0]!).content, body);
+    assert.equal(firstRetainItem(retains[0]!)["document_id"], "comment-standalone");
+
+    // A run that buffered nothing writes nothing when it finishes.
+    await harness.emit("agent.run.finished", { agentId: AGENT_ADM, runId: "run-empty" }, { companyId: COMPANY, entityId: "run-empty" });
+    assert.equal(retainCalls(hindsight).length, 1);
+  });
+});
+
+describe("conditional run-start recall", () => {
+  it("recalls once per ticket in the default new-issue mode", async () => {
+    const hindsight = mockHindsight();
+    const harness = createTestHarness({
+      manifest: manifest as PaperclipPluginManifestV1,
+      config: { hindsightApiUrl: API_URL },
+    });
+    harness.seed({
+      agents: [agent({ id: AGENT_ADM, name: "ops-agent", bankId: "adm" })],
+      issues: [
+        issue({ id: "issue-one", title: "First ticket", assigneeAgentId: AGENT_ADM }),
+        issue({ id: "issue-two", title: "Second ticket", assigneeAgentId: AGENT_ADM }),
+      ],
+    });
+    const plugin = createHindsightPlugin({ fetchImpl: hindsight.fetch });
+    await plugin.definition.setup(harness.ctx);
+
+    await harness.emit("agent.run.started", { agentId: AGENT_ADM, runId: "run-a", issueId: "issue-one" }, { companyId: COMPANY, entityId: "issue-one" });
+    await harness.emit("agent.run.started", { agentId: AGENT_ADM, runId: "run-b", issueId: "issue-one" }, { companyId: COMPANY, entityId: "issue-one" });
+    assert.equal(recallCalls(hindsight).length, 1, "the second wake of the same ticket skips the search");
+
+    // The marker names the ticket that was recalled.
+    assert.equal(
+      harness.getState({ scopeKind: "agent", scopeId: AGENT_ADM, stateKey: "hindsight-last-recall-issue" }),
+      "issue-one",
+    );
+
+    await harness.emit("agent.run.started", { agentId: AGENT_ADM, runId: "run-c", issueId: "issue-two" }, { companyId: COMPANY, entityId: "issue-two" });
+    assert.equal(recallCalls(hindsight).length, 2, "a new ticket recalls again");
+    assert.deepEqual(recallCalls(hindsight).map((call) => currentBankId(call.path)), ["adm", "adm"]);
+  });
+
+  it("recalls on every run start in always mode", async () => {
+    const hindsight = mockHindsight();
+    const harness = createTestHarness({
+      manifest: manifest as PaperclipPluginManifestV1,
+      config: { hindsightApiUrl: API_URL, recallOnRunStart: "always" },
+    });
+    harness.seed({
+      agents: [agent({ id: AGENT_ADM, name: "ops-agent", bankId: "adm" })],
+      issues: [issue({ id: "issue-always", title: "Repeat ticket", assigneeAgentId: AGENT_ADM })],
+    });
+    const plugin = createHindsightPlugin({ fetchImpl: hindsight.fetch });
+    await plugin.definition.setup(harness.ctx);
+
+    await harness.emit("agent.run.started", { agentId: AGENT_ADM, runId: "run-x", issueId: "issue-always" }, { companyId: COMPANY, entityId: "issue-always" });
+    await harness.emit("agent.run.started", { agentId: AGENT_ADM, runId: "run-y", issueId: "issue-always" }, { companyId: COMPANY, entityId: "issue-always" });
+    assert.equal(recallCalls(hindsight).length, 2);
+  });
+
+  it("does not recall on run start in never mode", async () => {
+    const hindsight = mockHindsight();
+    const harness = createTestHarness({
+      manifest: manifest as PaperclipPluginManifestV1,
+      config: { hindsightApiUrl: API_URL, recallOnRunStart: "never" },
+    });
+    harness.seed({
+      agents: [agent({ id: AGENT_ADM, name: "ops-agent", bankId: "adm" })],
+      issues: [issue({ id: "issue-never", title: "Quiet ticket", assigneeAgentId: AGENT_ADM })],
+    });
+    const plugin = createHindsightPlugin({ fetchImpl: hindsight.fetch });
+    await plugin.definition.setup(harness.ctx);
+
+    await harness.emit("agent.run.started", { agentId: AGENT_ADM, runId: "run-n1", issueId: "issue-never" }, { companyId: COMPANY, entityId: "issue-never" });
+    await harness.emit("agent.run.started", { agentId: AGENT_ADM, runId: "run-n2", issueId: "issue-never" }, { companyId: COMPANY, entityId: "issue-never" });
+
+    assert.equal(hindsight.calls.length, 0);
+    assert.ok(harness.logs.some((entry) => entry.level === "debug" && entry.message.includes("Run-start recall is off")));
+    // The tool still reaches memory on demand.
+    const tool = await harness.executeTool("hindsight_recall", { query: "quiet" }, { agentId: AGENT_ADM, runId: "run-n1", companyId: COMPANY, projectId: PROJECT });
+    assert.equal(recallCalls(hindsight).length, 1);
+    assert.equal(tool.content, "No relevant memories found.");
+  });
+});
+
 describe("manifest", () => {
   it("replaces the upstream id and versions the fork", () => {
     assert.equal(manifest.id, "paperclip-plugin-hindsight");
-    assert.equal(manifest.version, "0.3.0-myrmidon.1");
+    assert.equal(manifest.version, "0.3.0-myrmidon.2");
     assert.ok(manifest.capabilities.includes("agents.read"));
     assert.ok(manifest.capabilities.includes("events.subscribe"));
     assert.ok(manifest.capabilities.includes("agent.tools.register"));
@@ -503,5 +747,13 @@ describe("manifest", () => {
     assert.ok(!properties["bankId"]);
     assert.ok(!properties["dynamicBankId"]);
     assert.ok(!properties["bankGranularity"]);
+  });
+
+  it("documents the conditional run-start recall", () => {
+    const properties = manifest.instanceConfigSchema?.["properties"] as Record<string, { default?: unknown; enum?: unknown[] }>;
+    const field = properties["recallOnRunStart"];
+    assert.ok(field);
+    assert.deepEqual(field.enum, ["always", "new-issue", "never"]);
+    assert.equal(field.default, "new-issue");
   });
 });

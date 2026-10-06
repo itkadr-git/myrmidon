@@ -9,7 +9,7 @@ import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
  */
 
 const PLUGIN_ID = "paperclip-plugin-hindsight";
-const PLUGIN_VERSION = "0.3.0-myrmidon.1";
+const PLUGIN_VERSION = "0.3.0-myrmidon.2";
 
 const BANK_RESOLUTION_DESCRIPTION = [
   "Memory bank routing. Per agent, in order:",
@@ -67,8 +67,17 @@ const manifest: PaperclipPluginManifestV1 = {
       autoRetain: {
         type: "boolean",
         title: "Auto-retain Comments",
-        description: "Automatically retain ticket comments to Hindsight as they are created.",
+        description:
+          "Retain a run's comments to Hindsight as one consolidated digest when the run finishes. A comment outside a run (a human's) is retained immediately. Off means no automatic retention at all.",
         default: true,
+      },
+      recallOnRunStart: {
+        type: "string",
+        title: "Recall on Run Start",
+        description:
+          "'new-issue' (default) recalls once per ticket an agent picks up; 'always' recalls on every run start; 'never' turns run-start recall off. The hindsight_recall tool is unaffected.",
+        enum: ["always", "new-issue", "never"],
+        default: "new-issue",
       },
       bankByAgentId: {
         type: "object",

@@ -1,6 +1,6 @@
 {
   "name": "@myrmidon/hindsight-paperclip",
-  "version": "0.3.0-myrmidon.1",
+  "version": "0.3.0-myrmidon.2",
   "description": "Persistent long-term memory for Paperclip agents via Hindsight, with per-agent bank routing (local fork of @vectorize-io/hindsight-paperclip 0.3.0)",
   "type": "module",
   "private": true,

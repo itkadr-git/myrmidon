@@ -21,18 +21,27 @@ routing. This fork routes per agent and is **closed by default**:
    plugin log, recall returns nothing.** There is no fallback to a shared
    bank.
 
-The same resolution (`src/bank.ts`) is applied in all four memory paths:
+The same resolution (`src/bank.ts`) is applied in every memory path:
 
-- `issue.comment.created` — retain the comment into the author's (or, for a
-  human comment, the ticket assignee's) bank;
+- `issue.comment.created` — an agent's comment waits in run-scoped plugin
+  state; a comment outside a run (a human's, or an event with no run id) is
+  retained immediately into the author's (or, for a human comment, the ticket
+  assignee's) bank;
+- `agent.run.finished` — one consolidated digest document per bank is retained
+  for the run's buffered comments: duplicates collapse, bodies under 200
+  characters and board-machinery comments (milestone headings, status
+  transitions, wake notices, review verdicts) are dropped, and the buffer is
+  cleared afterwards. A retention failure is warned about, never fatal;
 - `agent.run.started` — recall into the running agent's bank, cached in
-  run-scoped plugin state;
+  run-scoped plugin state, and gated by `recallOnRunStart` (`new-issue` by
+  default: once per ticket this agent picks up);
 - the `hindsight_recall` tool — reads the same bank;
 - the `hindsight_retain` tool — writes the same bank.
 
 Retain metadata now carries `agentName` (the agent card's name) next to
 `agentId`, so memory can be classified by author without touching the
-board's database.
+board's database; a run digest additionally carries `kind: "run-digest"`,
+`runId`, `agentIds`, `issueIds` and `commentCount`.
 
 The per-user `bankGranularity` mode and the static/dynamic `bankId` modes of
 upstream are removed: every agent must resolve through the sources above.
@@ -44,7 +53,8 @@ upstream are removed: every agent must resolve through the sources above.
 | `hindsightApiUrl` | Hindsight API base URL (required) |
 | `hindsightApiKeyRef` | secret ref for the API key (self-hosted: leave empty) |
 | `recallBudget` | `low` / `mid` / `high` (default `mid`) |
-| `autoRetain` | retain comments as they are created (default `true`) |
+| `autoRetain` | retain a run's comments as one digest when the run finishes (default `true`) |
+| `recallOnRunStart` | `always` / `new-issue` (default) / `never` — run-start recall policy |
 | `bankByAgentId` | agent id → bank id map, the card-less fallback |
 | `enabledAgentIds` | optional allowlist of agent ids |
 
