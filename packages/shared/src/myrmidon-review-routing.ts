@@ -118,20 +118,67 @@ export type ReviewRoutingPrWatchSteward = z.infer<typeof reviewRoutingStewardSch
 export type ReviewRoutingPrWatch = z.infer<typeof reviewRoutingPrWatchSchema>;
 
 /**
- * The PR-watch half of the settings: absent or malformed means the prWatch
- * defaults, and nothing from a bad value survives (it never blanks the
- * sibling keys — the outer object parses its own fields independently).
+ * The PR-watch half of the settings: absent or malformed means the defaults.
+ * Degradation is per field — a malformed `steward` keeps a valid
+ * `pollIntervalSec`, and a malformed `prWatch` never blanks the outer block's
+ * sibling keys (the outer object normalizes this value as a whole).
  */
+function parseOr<T>(schema: z.ZodType<T>, fallback: T, value: unknown): T {
+  const parsed = schema.safeParse(value);
+  return parsed.success ? parsed.data : fallback;
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+export function normalizeReviewRoutingPrWatchSteward(raw: unknown): ReviewRoutingPrWatchSteward {
+  const record = asRecord(raw);
+  return {
+    enabled: parseOr(z.boolean(), DEFAULT_REVIEW_ROUTING_PR_STEWARD_ENABLED, record.enabled),
+    roles: [
+      ...new Set(
+        parseOr(
+          z.array(z.string().trim().min(1).max(64)).max(50),
+          [...DEFAULT_REVIEW_ROUTING_PR_STEWARD_ROLES],
+          record.roles,
+        ),
+      ),
+    ],
+    maxMergesPerSteward: parseOr(
+      z.number().int().min(1).max(MAX_REVIEW_ROUTING_PR_MAX_MERGES_PER_STEWARD),
+      DEFAULT_REVIEW_ROUTING_PR_MAX_MERGES_PER_STEWARD,
+      record.maxMergesPerSteward,
+    ),
+  };
+}
+
 export function normalizeReviewRoutingPrWatch(raw: unknown): ReviewRoutingPrWatch {
-  const parsed = reviewRoutingPrWatchSchema.safeParse(raw ?? {});
-  if (parsed.success) {
-    return {
-      ...parsed.data,
-      repositories: [...new Set(parsed.data.repositories)],
-      steward: { ...parsed.data.steward, roles: [...new Set(parsed.data.steward.roles)] },
-    };
-  }
-  return reviewRoutingPrWatchSchema.parse({});
+  const record = asRecord(raw);
+  return {
+    enabled: parseOr(z.boolean(), DEFAULT_REVIEW_ROUTING_PR_WATCH_ENABLED, record.enabled),
+    repositories: [
+      ...new Set(parseOr(reviewRoutingRepositoryListSchema, [...DEFAULT_REVIEW_ROUTING_PR_REPOSITORIES], record.repositories)),
+    ],
+    maxOpenReviewsPerReviewer: parseOr(
+      z.number().int().min(1).max(MAX_REVIEW_ROUTING_PR_MAX_OPEN_REVIEWS_PER_REVIEWER),
+      DEFAULT_REVIEW_ROUTING_PR_MAX_OPEN_REVIEWS_PER_REVIEWER,
+      record.maxOpenReviewsPerReviewer,
+    ),
+    maxNewAssignmentsPerPass: parseOr(
+      z.number().int().min(1).max(MAX_REVIEW_ROUTING_PR_MAX_NEW_ASSIGNMENTS_PER_PASS),
+      DEFAULT_REVIEW_ROUTING_PR_MAX_NEW_ASSIGNMENTS_PER_PASS,
+      record.maxNewAssignmentsPerPass,
+    ),
+    pollIntervalSec: parseOr(
+      z.number().int().min(MIN_REVIEW_ROUTING_PR_POLL_INTERVAL_SEC).max(MAX_REVIEW_ROUTING_PR_POLL_INTERVAL_SEC),
+      DEFAULT_REVIEW_ROUTING_PR_POLL_INTERVAL_SEC,
+      record.pollIntervalSec,
+    ),
+    steward: normalizeReviewRoutingPrWatchSteward(record.steward),
+  };
 }
 
 const reviewRoutingPrWatchField = z.preprocess(

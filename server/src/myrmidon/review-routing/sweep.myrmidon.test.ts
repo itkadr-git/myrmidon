@@ -14,8 +14,9 @@ import {
   type ReviewRoutingSettings,
 } from "@paperclipai/shared";
 import { readReviewRoutingSignals, resetReviewRoutingSignals } from "./attention.js";
-import type { InReviewIssueRow, PrCandidateRow, ReviewRoutingStore, RoutingHistory } from "./store.js";
+import type { CreatePrRoutingTaskInput, InReviewIssueRow, PrCandidateRow, PrRoutingKind, ReviewRoutingStore, RoutingHistory } from "./store.js";
 import type { PrRoutedTask } from "./pr-policy.js";
+import type { RoutingIssue } from "./policy.js";
 import { createReviewRoutingSweep } from "./sweep.js";
 import type { PullRequestHeadResolver } from "./github.js";
 import type { PullRequestHeadState } from "./pr-policy.js";
@@ -52,14 +53,14 @@ interface Fixture {
   history: Map<string, RoutingHistory>;
 }
 
-function makeStore(fx: Fixture): ReviewRoutingStore {
+function makeStore(fx: Fixture) {
   return {
     listActiveCompanyIds: async () => [COMPANY],
     listInReviewIssues: async () => [...fx.rows.values()],
-    listReviewerAgents: async (_company, roles) => fx.reviewers.filter((agent) => roles.includes(agent.role)),
+    listReviewerAgents: async (_company: string, roles: readonly string[]) => fx.reviewers.filter((agent) => roles.includes(agent.role)),
     loadByAgent: async () => new Map(fx.load),
-    routingHistory: async (_company, ids) => new Map([...fx.history].filter(([id]) => ids.includes(id))),
-    applyPatch: async ({ issueId, guard, build }) => {
+    routingHistory: async (_company: string, ids: readonly string[]) => new Map([...fx.history].filter(([id]) => ids.includes(id))),
+    applyPatch: async ({ issueId, guard, build }: { issueId: string; companyId: string; guard: (fresh: RoutingIssue) => boolean; build: (fresh: RoutingIssue) => Record<string, unknown> | null }) => {
       const current = fx.rows.get(issueId);
       if (!current || !guard(current)) return null;
       const patch = build(current);
@@ -68,10 +69,22 @@ function makeStore(fx: Fixture): ReviewRoutingStore {
       fx.rows.set(issueId, next as InReviewIssueRow);
       return { executionState: (next.executionState as Record<string, unknown>) ?? null };
     },
-  };
+  } as unknown as ReviewRoutingStore;
 }
 
-function setup(settings: Partial<ReviewRoutingSettings> = {}, fx?: Partial<Fixture>) {
+// A settings override as written in a settings screen: every key, including
+// nested prWatch keys, may be absent — normalization fills the defaults.
+type SettingsOverride = {
+  enabled?: boolean;
+  reviewerRoles?: string[];
+  maxLoadPerReviewer?: number;
+  reassignAfterHours?: number;
+  prWatch?: Partial<ReviewRoutingSettings["prWatch"]> & {
+    steward?: Partial<ReviewRoutingSettings["prWatch"]["steward"]>;
+  };
+};
+
+function setup(settings: SettingsOverride = {}, fx?: Partial<Fixture>) {
   const fixture: Fixture = {
     rows: new Map(),
     reviewers: [
@@ -114,7 +127,7 @@ function setup(settings: Partial<ReviewRoutingSettings> = {}, fx?: Partial<Fixtu
     comments,
     wakes,
     wakeReviewer,
-    setSettings: (next: Partial<ReviewRoutingSettings>) => {
+    setSettings: (next: SettingsOverride) => {
       current = normalizeReviewRoutingSettings(next);
     },
   };
@@ -357,14 +370,14 @@ describe("PR lane (fake store + fake resolver)", () => {
       listPrCandidates: async () => fx.candidates,
       listKnownPrRepositories: async () => fx.knownRepos,
       listOpenPrRoutingTasks: async () => fx.routed,
-      openPrTaskLoadByAgent: async (_company, kind) => (kind === "review" ? fx.openReviewLoad : fx.openMergeLoad),
+      openPrTaskLoadByAgent: async (_company: string, kind: PrRoutingKind) => (kind === "review" ? fx.openReviewLoad : fx.openMergeLoad),
       findAgentIdsByGitHubLogin: async () => [],
-      createPrRoutingTask: async (input) => {
+      createPrRoutingTask: async (input: CreatePrRoutingTaskInput) => {
         fx.created.push({ title: input.title, kind: input.kind, assigneeAgentId: input.assigneeAgentId, headSha: input.headSha });
         fx.routed.push({ issueId: `task-${input.kind}-${input.number}`, repository: input.repository, number: input.number, kind: input.kind, headSha: input.headSha });
         return { issueId: `task-${input.kind}-${input.number}`, deduplicated: false };
       },
-      cancelPrRoutingTask: async ({ issueId }) => {
+      cancelPrRoutingTask: async ({ issueId }: { issueId: string; companyId: string }) => {
         fx.cancelled.push(issueId);
         fx.routed = fx.routed.filter((task) => task.issueId !== issueId);
         return true;
@@ -391,7 +404,7 @@ describe("PR lane (fake store + fake resolver)", () => {
   }
 
   function prSetup(
-    settings: Partial<ReviewRoutingSettings> = {},
+    settings: SettingsOverride = {},
     fx?: Partial<PrFixture> & { headState?: PullRequestHeadState; resolverThrows?: boolean; authorAgents?: string[] },
   ) {
     const fixture: PrFixture = {
@@ -429,7 +442,7 @@ describe("PR lane (fake store + fake resolver)", () => {
       log: { info: vi.fn(), warn: vi.fn() },
     });
     return { fixture, sweep, activities, wakes, comments,
-      setSettings: (next: Partial<ReviewRoutingSettings>) => { current = normalizeReviewRoutingSettings(next); } };
+      setSettings: (next: SettingsOverride) => { current = normalizeReviewRoutingSettings(next); } };
   }
 
   it("creates a review task on the first green sighting", async () => {
