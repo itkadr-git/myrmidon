@@ -85,11 +85,16 @@ export GH_TOKEN="$token"
 
 # Newest myr-vX.Y.Z[-rc.N] tag by version (an rc cut freezes main too) (NOT by ref list order — the API
 # sorts by refname, so myr-v1.10.0 would sort below myr-v1.9.0 lexically).
+# An rc sorts BELOW the final of the same X.Y.Z (myr-v1.6.5-rc.2 < myr-v1.6.5):
+# GNU sort -V puts "-rc" suffixes after the bare version, so after a final tag
+# is pushed the gate would keep watching the stale rc's CI and the freeze
+# intended for the final cut would never engage.
 newest_release_tag() {
   local ref
   ref="$(gh api --paginate "repos/$repo/git/refs/tags" --jq '.[].ref' 2>/dev/null \
-    | sed -n 's#^refs/tags/\(myr-v[0-9]*\.[0-9]*\.[0-9]*\(-rc\.[0-9]*\)\{0,1\}\)$#\1#p' \
-    | sort -V | tail -1 || true)"
+    | sed -n 's#^refs/tags/myr-v\([0-9]*\)\.\([0-9]*\)\.\([0-9]*\)\(-rc\.\([0-9]*\)\)\{0,1\}$#\1 \2 \3 \5#p' \
+    | awk '{ printf "%012d %012d %012d %012d %s\n", $1, $2, $3, ($4=="" ? 999999999999 : $4), ($4=="" ? "F" : "R") }' \
+    | sort -k1,1n -k2,2n -k3,3n -k4,4n | tail -1 | awk '{ tag = "myr-v" ($1+0) "." ($2+0) "." ($3+0); if ($5=="R") tag = tag "-rc." ($4+0); print tag }' || true)"
   printf '%s\n' "$ref"
 }
 

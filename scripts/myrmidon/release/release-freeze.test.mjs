@@ -169,6 +169,41 @@ describe("release-freeze.sh (fake gh)", () => {
     assert.equal(setR.status, 1, setR.stderr);
   });
 
+  it("final tag wins over its rc even when the rc CI is green (freeze engages on the final cut)", () => {
+    const sb = makeSandbox({
+      tags: [
+        { ref: "refs/tags/myr-v1.6.4" },
+        { ref: "refs/tags/myr-v1.6.5-rc.4" },
+        { ref: "refs/tags/myr-v1.6.5" }, // final just pushed, its CI is missing
+        { ref: "refs/tags/myr-v1.6.10-rc.1" },
+      ],
+      headBranch: "myr-v1.6.5-rc.4", // rc CI is green...
+      ciConclusion: "success",
+    });
+    // Newest by version is myr-v1.6.10-rc.1 (an rc of a NEWER version beats
+    // an older final); the fixture's green CI run answers for the stale rc
+    // myr-v1.6.5-rc.4, so the newest tag's CI is missing -> freeze active.
+    const r = runScript(sb, "--check");
+    assert.equal(r.status, 1, `expected red gate: ${r.stderr}`);
+    assert.match(r.stderr, /RELEASE FREEZE ACTIVE/);
+    assert.match(r.stderr, /newest release tag: myr-v1\.6\.10-rc\.1/);
+  });
+
+  it("final of the same version outranks its rc (myr-v1.6.5 > myr-v1.6.5-rc.4)", () => {
+    const sb = makeSandbox({
+      tags: [
+        { ref: "refs/tags/myr-v1.6.5-rc.4" }, // rc CI green below
+        { ref: "refs/tags/myr-v1.6.5" },      // final pushed, CI not reported yet
+      ],
+      headBranch: "myr-v1.6.5-rc.4",
+      ciConclusion: "success",
+    });
+    const r = runScript(sb, "--check");
+    assert.equal(r.status, 1, `expected red gate: ${r.stderr}`);
+    assert.match(r.stderr, /RELEASE FREEZE ACTIVE/);
+    assert.match(r.stderr, /newest release tag: myr-v1\.6\.5$/m);
+  });
+
   it("picks the NEWEST tag by semver, not lexical ref order (1.6.10 > 1.6.5)", () => {
     const sb = makeSandbox({ ciConclusion: "success" });
     // The fake's runs.json answers for head_branch myr-v1.6.10 — but the
