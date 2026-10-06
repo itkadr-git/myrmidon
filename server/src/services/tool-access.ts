@@ -3,6 +3,9 @@ import { syncConnectionCredentialBindings } from "./connection-credential-bindin
 import { canBrowseProjectRepositoryGrant, mergeProjectRepository } from "./project-repositories.js";
 import { captureRunIdentity } from "./run-identity.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+// myrmidon(DB-PERF-C-P4): drop the company's tool gateway policy snapshot whenever a
+// profile, binding or entry of `tool_profile*` changes here.
+import { invalidateToolPolicyCache } from "../myrmidon/tool-policy-cache/runtime.js";
 import { readFileSync } from "node:fs";
 import {
   and,
@@ -5290,6 +5293,10 @@ export function toolAccessService(
           : input.newCatalogEntryIds,
       ),
     ];
+    // myrmidon(DB-PERF-C-P4): the managed profile, its bindings and the retired
+    // ask-first policies changed above; drop the company snapshot even when no
+    // catalog entry is added.
+    invalidateToolPolicyCache(db, input.connection.companyId);
     if (candidateIds.length === 0) return;
     const existingEntries = await db
       .select({ catalogEntryId: toolProfileEntries.catalogEntryId })
@@ -5307,6 +5314,9 @@ export function toolAccessService(
       ),
     );
     const entryIds = candidateIds.filter((id) => !configuredIds.has(id));
+    // myrmidon(DB-PERF-C-P4): same reason — the profile state changed whether or not
+    // new entries follow.
+    invalidateToolPolicyCache(db, input.connection.companyId);
     if (entryIds.length === 0) return;
     await db.insert(toolProfileEntries).values(
       entryIds.map((catalogEntryId) => ({
@@ -5319,6 +5329,9 @@ export function toolAccessService(
         catalogEntryId,
       })),
     );
+    // myrmidon(DB-PERF-C-P4): the new entries are in; drop the company snapshot again so
+    // nothing cached between the two invalidations is served.
+    invalidateToolPolicyCache(db, input.connection.companyId);
   }
 
   async function listConnectionInstalls(
@@ -5700,6 +5713,10 @@ export function toolAccessService(
       .set({ newToolsReviewedAt: nowAt, updatedAt: nowAt })
       .where(eq(toolProfiles.id, profile.id));
 
+    // myrmidon(DB-PERF-C-P4): the profile's review stamp and its new entries changed;
+    // drop the company snapshot.
+    invalidateToolPolicyCache(db, profile.companyId);
+
     return {
       profile: await profileDetails(profile.id, profile.companyId),
       reviewedAt: nowAt,
@@ -5733,6 +5750,8 @@ export function toolAccessService(
         conditions: entry.conditions ?? null,
       })),
     );
+    // myrmidon(DB-PERF-C-P4): the profile gained entries; drop the company snapshot.
+    invalidateToolPolicyCache(db, companyId);
   }
 
   async function replaceProfileEntries(
@@ -5752,6 +5771,9 @@ export function toolAccessService(
         ),
       );
     await createProfileEntries(companyId, profileId, entries);
+    // myrmidon(DB-PERF-C-P4): the delete above changed the profile even with an empty
+    // entry list; drop the company snapshot.
+    invalidateToolPolicyCache(db, companyId);
   }
 
   /**
@@ -6452,6 +6474,10 @@ export function toolAccessService(
           ),
         );
     }
+
+    // myrmidon(DB-PERF-C-P4): the app-managed profile, its entries and its bindings were
+    // removed or archived above; drop the company snapshot.
+    invalidateToolPolicyCache(db, connection.companyId);
 
     return {
       connection: toConnection(cleared ?? archived.connection),
@@ -13737,6 +13763,10 @@ export function toolAccessService(
           .where(eq(toolPolicies.id, policy.id));
       }
     }
+    // myrmidon(DB-PERF-C-P4): ask-first policies were created or disabled for the company;
+    // drop the snapshot. `dbClient` may be a caller's transaction, so the callers of this
+    // helper invalidate again once they commit.
+    invalidateToolPolicyCache(db, input.companyId);
     return results;
   }
 
@@ -14067,6 +14097,10 @@ export function toolAccessService(
 
       return { profileId, profileBindings, policies, updatedConnection };
     });
+
+    // myrmidon(DB-PERF-C-P4): the transaction above wrote the profile, its bindings and
+    // the app's ask-first policies; drop the company snapshot after the commit.
+    invalidateToolPolicyCache(db, companyId);
 
     const details = await profileDetails(
       transactionResult.profileId,
@@ -17130,6 +17164,9 @@ export function toolAccessService(
         before.profileBinding,
         actor,
       );
+      // myrmidon(DB-PERF-C-P4): this example wrote its profile, entries and binding; drop
+      // the company snapshot (one invalidation per example installed).
+      invalidateToolPolicyCache(db, companyId);
       const after = await exampleRows(companyId, definition);
       return {
         example: exampleSummary(definition, after),
@@ -18495,6 +18532,9 @@ export function toolAccessService(
           });
         }
       });
+      // myrmidon(DB-PERF-C-P4): the transaction created or cleaned up the app profile and
+      // its bindings; drop the company snapshot after the commit.
+      invalidateToolPolicyCache(db, connection.companyId);
       for (const extension of accessExtensions) {
         await logActivity(db, {
           companyId: connection.companyId,
@@ -19182,6 +19222,9 @@ export function toolAccessService(
           })),
         );
       }
+      // myrmidon(DB-PERF-C-P4): the copy added a profile, its entries and its bindings;
+      // drop the company snapshot.
+      invalidateToolPolicyCache(db, existing.companyId);
       return profileDetails(created.id, existing.companyId);
     },
 
@@ -19272,6 +19315,9 @@ export function toolAccessService(
         .where(eq(toolProfiles.id, existing.id))
         .returning();
       if (!deleted) throw notFound("Tool profile not found");
+      // myrmidon(DB-PERF-C-P4): the profile and its bindings are gone (or were reassigned);
+      // drop the company snapshot.
+      invalidateToolPolicyCache(db, existing.companyId);
       return {
         profile: toProfile(deleted),
         summary: details.summary,
@@ -19305,6 +19351,8 @@ export function toolAccessService(
         .update(toolProfiles)
         .set({ updatedAt: new Date() })
         .where(eq(toolProfiles.id, profile.id));
+      // myrmidon(DB-PERF-C-P4): the profile gained an entry; drop the company snapshot.
+      invalidateToolPolicyCache(db, profile.companyId);
       return toProfileEntry(row);
     },
 
@@ -19356,6 +19404,8 @@ export function toolAccessService(
         .update(toolProfiles)
         .set({ updatedAt: new Date() })
         .where(eq(toolProfiles.id, existing.profileId));
+      // myrmidon(DB-PERF-C-P4): the entry changed; drop the company snapshot.
+      invalidateToolPolicyCache(db, existing.companyId);
       return toProfileEntry(row);
     },
 
@@ -19369,6 +19419,8 @@ export function toolAccessService(
         .update(toolProfiles)
         .set({ updatedAt: new Date() })
         .where(eq(toolProfiles.id, row.profileId));
+      // myrmidon(DB-PERF-C-P4): the entry is gone; drop the company snapshot.
+      invalidateToolPolicyCache(db, row.companyId);
       return toProfileEntry(row);
     },
 
@@ -19402,6 +19454,8 @@ export function toolAccessService(
         .update(toolProfiles)
         .set({ updatedAt: new Date() })
         .where(eq(toolProfiles.id, profile.id));
+      // myrmidon(DB-PERF-C-P4): the binding changed; drop the company snapshot.
+      invalidateToolPolicyCache(db, profile.companyId);
       return toProfileBinding(row);
     },
 
@@ -19432,6 +19486,9 @@ export function toolAccessService(
           .set({ updatedAt: new Date() })
           .where(eq(toolProfiles.id, profile.id));
       }
+      // myrmidon(DB-PERF-C-P4): bindings were removed (or the target was already unbound);
+      // drop the company snapshot.
+      invalidateToolPolicyCache(db, profile.companyId);
       return { unbound: rows.length };
     },
 
