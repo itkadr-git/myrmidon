@@ -289,6 +289,16 @@ fi
 #      bare-mirror it, clone --reference-if-able from the mirror and check the
 #      clone's objects/info/alternates points at it. This is the mechanism the
 #      wrapper relies on; if it fails here, clones copy objects again.
+#   4. a task-shaped clone THROUGH the wrapper (myrmidon 1.6.5 BOT-DISK-G-A):
+#      the argv the field actually uses — `clone --reference-if-able <stale>
+#      --depth 50 <github url>` — must leave a mirror in the store and a clone
+#      borrowing it. Both of those options were opt-outs before, so this check
+#      is what turns "the store is empty again" into a failure instead of a
+#      green report.
+#   5. the store is in use: a bot that already holds GitHub task clones must
+#      have a mirror in the store. On 06.10 every bot of the fleet reported
+#      green while the store stayed empty and every task clone copied a full
+#      history; this check names that state.
 # A failure is logged as an error and written to
 # ${HERMES_HOME}/.myrmidon/git-objects-check.json, which the clone-hygiene
 # reporter passes to the board. It never stops the gateway: a bot with a
@@ -376,6 +386,71 @@ git_objects_self_check() {
     fi
   else
     add_check "reference-clone" false "cannot create a scratch under ${HERMES_HOME}"
+  fi
+  # 4. a task-shaped clone through the wrapper fills the store and borrows it.
+  local probe_repo="myrmidon-selfcheck/probe"
+  if [ -z "${store}" ]; then
+    add_check "store-fills" true "" # the store is explicitly off; nothing to fill
+  else
+    work="$(mktemp -d "${HERMES_HOME}/.myrmidon/git-selffill.XXXXXX" 2>/dev/null)" || work=""
+    if [ -z "${work}" ]; then
+      add_check "store-fills" false "cannot create a scratch under ${HERMES_HOME}"
+    else
+      err="$(
+        {
+          set -e
+          export GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.com
+          export MYRMIDON_GIT_LOCAL_MIRROR="${store}"
+          origin="${work}/origin"; dest="${work}/clone"
+          mkdir -p "${origin}"
+          "${real_git}" init -q -b main "${origin}"
+          echo one > "${origin}/a.txt"
+          "${real_git}" -C "${origin}" add a.txt
+          "${real_git}" -C "${origin}" commit -q -m one
+          # A stale reference of the same repository, exactly like the
+          # /workspace/<old> a task clone points at in the field.
+          "${real_git}" clone -q --bare "${origin}" "${work}/stale.git"
+          # The argv task clones actually use in the field: a stale reference
+          # (--reference-if-able) plus a bounded history (--depth 50). Neither
+          # may talk the wrapper out of the store; both used to.
+          "${wrapper}" -c "url.file://${origin}.insteadOf=https://github.com/${probe_repo}" \
+            clone -q --reference-if-able "${work}/stale.git" --depth 50 "https://github.com/${probe_repo}" "${dest}"
+          target="$(sed -n '1p' "${dest}/.git/objects/info/alternates" 2>/dev/null)"
+          want="$(cd "${store}/${probe_repo}.git/objects" 2>/dev/null && pwd -P)"
+          [ -n "${target}" ] && [ -n "${want}" ] && [ "${target%/}" = "${want}" ]
+        } 2>&1
+      )"; rc=$?
+      rm -rf "${work}" "${store}/${probe_repo}.git" "${store}/${probe_repo%%/*}" 2>/dev/null || true
+      if [ "${rc}" -ne 0 ]; then
+        add_check "store-fills" false "a task-shaped clone (--reference-if-able + --depth) through the wrapper did not leave a mirror in the store ${store} and borrow it: ${err}"
+      else
+        add_check "store-fills" true ""
+      fi
+    fi
+  fi
+  # 5. the store is in use: GitHub task clones exist, so a mirror must.
+  # Roots and shape follow bot-clone-hygiene (myrmidon BOT-DISK-F/H): clones sit
+  # below a top-level entry of /workspace and /scratch, whatever the depth.
+  local task_roots="${MYRMIDON_TASK_ROOTS:-/workspace:/scratch}" clones=0 mirrors=0 sample="" d
+ 
+  if [ -n "${store}" ] && [ -d "${store}" ]; then
+    mirrors="$(find "${store}" -mindepth 2 -maxdepth 2 -name '*.git' -type d 2>/dev/null | wc -l | tr -d ' ')"
+  fi
+  for g in $(printf '%s' "${task_roots}" | tr ':' ' '); do
+    for d in $(find "${g}" -maxdepth 4 -name .git 2>/dev/null | head -200); do
+      d="${d%/.git}"
+      case "$("${real_git}" -C "${d}" config --get remote.origin.url 2>/dev/null)" in
+        *github.com*)
+          clones=$((clones + 1))
+          [ -n "${sample}" ] || sample="${d}"
+          ;;
+      esac
+    done
+  done
+  if [ "${clones}" -eq 0 ] || [ "${mirrors}" -gt 0 ] || [ -z "${store}" ]; then
+    add_check "store-in-use" true ""
+  else
+    add_check "store-in-use" false "${clones} GitHub task clone(s) on this bot (e.g. ${sample}) but the store ${store} holds no mirror: those clones copied their git history in full. A clone through the wrapper fills the store — see store-fills above for the shape it accepts."
   fi
   if [ "${ok_all}" = true ]; then
     log "shared-objects self-check ok: store=${store:-off}"

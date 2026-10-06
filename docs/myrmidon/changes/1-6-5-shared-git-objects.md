@@ -31,6 +31,32 @@ settings-section: BOT-DISK E — host disk usage signal
   objects. The result rides the clone-hygiene report (`gitRefCheck`); a failed
   check raises a `bot_disk_lifecycle` attention card per bot, gone at the next
   clean start.
+- On the fleet the store stayed empty next to live GitHub task clones. The task
+  clones on a bot name another local clone in their `objects/info/alternates`
+  file, and only `--reference` (or `--shared`) writes that entry: the clone runs
+  with `--reference <neighbour clone>`, and the wrapper read `--reference` as
+  the clone's own storage decision, so it stepped aside — in silence, without a
+  mirror and without a trace. Reproduced with the old wrapper: a
+  `git clone --reference <neighbour> https://github.com/<owner>/<repo> <dir>`
+  leaves the store empty and prints no line. The opt-outs are now only the
+  options that pick the storage of the clone's own objects (`--dissociate`,
+  `--shared`, `--local`, `--mirror`, `--filter`); a clone that names
+  `--reference`/`--reference-if-able`/`--no-local`, a bounded clone (`--depth`,
+  `--shallow-since`, `--shallow-exclude`) and a non-GitHub clone keep the store's
+  mirror as one more alternate. The field command line through both wrappers:
+  the old one leaves the store empty, the new one leaves
+  `<store>/<owner>/<repo>.git` and an `alternates` entry.
+- A clone the store does not serve is no longer silent: the wrapper prints one
+  `[myrmidon-git]` line on stderr and writes
+  `<HERMES_HOME>/.myrmidon/git-objects-last-error.json` (kind, reason, detail,
+  the command line, one counter per kind). The clone still never fails because
+  of the store.
+- The start-time check gained two steps: `store-fills` runs the task clone's own
+  command line (a bounded clone that also names a stale `--reference-if-able`)
+  through the wrapper and requires a mirror in the store plus an alternates
+  entry, and `store-in-use` fails when GitHub task clones exist below
+  `/workspace` or `/scratch` and the store holds no mirror. The silent fleet
+  state now raises the `gitref` card.
 - `devbuild` follows the alternates: a borrowed mirror is synced once to the
   build host's `/srv/devcache/git` and the synced clone's `objects/info/alternates`
   is repointed at it, so git commands in a remote build keep working against
@@ -76,6 +102,32 @@ settings-section: BOT-DISK E — host disk usage signal
   одалживает объекты. Результат едет в отчёте clone-hygiene (`gitRefCheck`);
   провалившаяся проверка поднимает карточку `bot_disk_lifecycle` на бота,
   исчезающую при следующем чистом старте.
+- На бою хранилище оставалось пустым рядом с живыми GitHub-клонами задач: клоны
+  задач на боте называют в `objects/info/alternates` другой локальный клон, а
+  такую запись пишет только `--reference` (или `--shared`), то есть клон шёл с
+  `--reference <соседний клон>`, и обёртка принимала `--reference` за решение
+  клона о своём хранении — отступала молча, без зеркала и без следа.
+  Воспроизведение на старой обёртке: `git clone --reference <сосед>
+  https://github.com/<owner>/<repo> <dir>` оставляет хранилище пустым и не
+  печатает ни строки. Opt-out'ами теперь остались только опции, выбирающие
+  хранение собственных объектов клона (`--dissociate`, `--shared`, `--local`,
+  `--mirror`, `--filter`); клон с `--reference`/`--reference-if-able`/
+  `--no-local`, клон с ограниченной историей (`--depth`, `--shallow-since`,
+  `--shallow-exclude`) и клон не-GitHub адреса берут зеркало хранилища ещё
+  одной альтернативой — боевая командная строка на старой обёртке оставляет
+  хранилище пустым, на новой — `<store>/<owner>/<repo>.git` и запись в
+  `alternates`.
+- Клон, которому хранилище не служит, больше не молчит: обёртка печатает одну
+  строку `[myrmidon-git]` в stderr и пишет
+  `<HERMES_HOME>/.myrmidon/git-objects-last-error.json` (вид, причина,
+  подробность, командная строка, счётчик на каждый вид). Клон по-прежнему
+  никогда не падает из-за хранилища.
+- Самопроверка на старте получила две проверки: `store-fills` прогоняет через
+  обёртку собственную командную строку клона задачи (клон с ограниченной
+  историей и устаревшим `--reference-if-able`) и требует зеркало в хранилище и
+  запись в alternates, а `store-in-use` падает, когда под `/workspace` или
+  `/scratch` есть GitHub-клоны задач, а в хранилище нет ни одного зеркала.
+  Молчаливое состояние боя теперь поднимает карточку `gitref`.
 - `devbuild` проходит по alternates: одолженное зеркало один раз синхронизируется
   на сборочный хост в `/srv/devcache/git`, и `objects/info/alternates`
   синхронизированного клона переставляется на него, чтобы git на удалённой

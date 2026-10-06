@@ -108,13 +108,19 @@ a plain clone.
 
 At every start the entrypoint runs a self-check of the whole chain: the
 `/usr/local/bin/git` shadow answers, the wrapper runs, the store is writable,
-and a real offline clone with `--reference-if-able` borrows objects. The
-result is written to `<HERMES_HOME>/.myrmidon/git-objects-check.json` and
-rides the clone-hygiene report as `gitRefCheck` (checks `usr-local-shadow`,
-`wrapper-runs`, `store-writable`, `reference-clone`). A failed check raises an
-attention card (source `bot_disk_lifecycle`, kind `gitref`) that names the
-check and the store path; the card goes away when the bot restarts and the
-self-check passes. `MYRMIDON_GIT_OBJECTS_CHECK=0` skips the self-check.
+and a real offline clone with `--reference-if-able` borrows objects. Two further
+steps watch the store itself: `store-fills` runs the command line a task clone
+uses (a bounded clone that also names a stale `--reference-if-able`) through the
+wrapper and requires a mirror in the store plus an alternates entry, and
+`store-in-use` fails when GitHub task clones exist below `/workspace` or
+`/scratch` and the store holds no mirror — the state that a silent bypass
+leaves behind. The result is written to
+`<HERMES_HOME>/.myrmidon/git-objects-check.json` and rides the clone-hygiene
+report as `gitRefCheck` (checks `usr-local-shadow`, `wrapper-runs`,
+`store-writable`, `reference-clone`, `store-fills`, `store-in-use`). A failed
+check raises an attention card (source `bot_disk_lifecycle`, kind `gitref`) that
+names the check and the store path; the card goes away when the bot restarts and
+the self-check passes. `MYRMIDON_GIT_OBJECTS_CHECK=0` skips the self-check.
 
 A clone that borrows from the store names a path of this container in its
 `objects/info/alternates`, which does not exist on the build host — `devbuild`
@@ -161,10 +167,17 @@ scp-like GitHub forms, which `/etc/gitconfig` already rewrites to https) it adds
 the container, so the clone's `objects/info/alternates` points at the mirror and
 the clone stores only what the mirror lacks: the bot's own commits and whatever
 arrived upstream since the last refresh. Nothing else changes: other
-subcommands, other hosts, repositories without a mirror, and clones that already
-choose their storage (`--reference`, `--dissociate`, `--shared`, `--local`,
-`--mirror`, `--depth`, `--filter`) run the real git with the same arguments,
-environment, streams and exit status. The credential helper
+subcommands, other hosts, repositories without a mirror, and clones that pick the
+storage of their own objects (`--dissociate`, `--shared`, `--local`, `--mirror`,
+`--filter`) run the real git with the same arguments, environment, streams and
+exit status. A bounded clone (`--depth`, `--shallow-since`, `--shallow-exclude`),
+a clone that names `--reference`/`--reference-if-able`/`--no-local` and a
+non-GitHub clone do run through the store: the wrapper adds its mirror as one
+more alternate and the clone still gets the history it asked for. A clone the
+store does not serve is not silent: the wrapper prints one `[myrmidon-git]` line
+on stderr and writes `<HERMES_HOME>/.myrmidon/git-objects-last-error.json`
+(kind, reason, detail, the command line, one counter per kind). The clone itself
+still runs and still exits with the status of the real git. The credential helper
 (`git-credential-paperclip`, installed in `/etc/gitconfig`) belongs to the real
 git and is unaffected: a clone from the mirror still fetches the missing objects
 through it. A bot that wants a self-contained clone runs `git repack -a -d` in

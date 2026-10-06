@@ -247,9 +247,12 @@ the fleet operator's part (D). The image adds `rsync` to the apt set for the tra
   `/usr/bin/git`. For `git clone https://github.com/<owner>/<repo>` it adds
   `--reference-if-able /cache/git/<owner>/<repo>.git` when that directory exists (the board's
   read-only mirror, mounted only when the instance lists mirrored repositories); everything else
-  runs the real git unchanged, so `git-credential-paperclip` keeps working. Clones that choose
-  their own storage (`--reference`, `--dissociate`, `--shared`, `--local`, `--mirror`, `--depth`,
-  `--filter`) are left alone.
+  runs the real git unchanged, so `git-credential-paperclip` keeps working. Clones that pick the
+  storage of their own objects (`--dissociate`, `--shared`, `--local`, `--mirror`, `--filter`) are
+  left alone; a bounded clone (`--depth` and the shallow options), a clone that names
+  `--reference`/`--reference-if-able`/`--no-local` and a non-GitHub clone take the mirror as one
+  more alternate, and one that the store does not serve prints a `[myrmidon-git]` line and writes
+  `$HERMES_HOME/.myrmidon/git-objects-last-error.json`.
 - `/opt/paperclip/bin/bot-clone-hygiene` (`git-reference/bot-clone-hygiene`, Python standard
   library) is started by the entrypoint (every `MYRMIDON_CLONE_HYGIENE_INTERVAL_SEC`, default
   900) and writes `$HERMES_HOME/.myrmidon/clone-hygiene.json`: per repository under `/workspace`

@@ -25,14 +25,30 @@
 // clones; every step is best effort — a mirror that cannot be created or
 // refreshed never fails the clone, which then simply copies objects as before.
 // Everything else — every other subcommand, every clone of another host or of
-// a repository without a mirror, a clone that already says how it wants to be
-// stored (--reference*, --dissociate, --shared, --local, --mirror, --depth,
-// --shallow-*, --filter) — runs the real git unchanged: same argv, same
-// environment, same stdio, same exit status. The credential helper
+// a repository without a mirror, a clone that decides the storage of its own
+// objects (--dissociate, --shared/--local/--mirror, --filter) — runs the real
+// git unchanged: same argv, same environment, same stdio, same exit status.
+// A clone that only NAMES a reference or limits its history (--reference,
+// --reference-if-able, --depth, --shallow-since, --shallow-exclude, --no-local)
+// does not decide our storage: the wrapper still makes the store mirror and adds
+// --reference-if-able next to the caller's own options, so the objects come
+// from the store as well. That is the shape task clones actually take in the
+// field (`git clone --reference-if-able /workspace/<old> --depth 50 <url>`):
+// such a clone used to leave the store empty while every bot copied a full
+// history (the fleet incident of 06.10). The credential helper
 // (/etc/gitconfig -> git-credential-paperclip) belongs to the real git and is
 // untouched; the bot-local mirror fetches through the same helper, so a
 // private repository works with the bot's own run-scoped credentials and no
 // board token.
+//
+// myrmidon(1.6.5 BOT-DISK-G-A): a clone that did NOT get the store leaves a
+// trail — one [myrmidon-git] line on stderr and one record in
+// ${HERMES_HOME}/.myrmidon/git-objects-last-error.json (kind bypass: an
+// opt-out option, a non-GitHub repository URL, the store switched off, the
+// mirror cap reached; kind store-error: the mirror fetch or its configuration
+// failed). The contract is unchanged — a clone never fails because of the
+// store — but the silent version of it kept an empty store invisible for as
+// long as nobody looked at the disk.
 //
 // The mirror directory is derived from the URL only after the owner and the
 // repository name pass the same checks GitHub applies, so no URL can make the
@@ -85,12 +101,16 @@ const CLONE_WITH_VALUE = new Set([
   "--separate-git-dir", "--depth", "--shallow-since", "--shallow-exclude", "--filter", "-j", "--jobs",
   "--template", "-c", "--config", "--server-option", "--bundle-uri", "--ref-format", "--revision",
 ]);
-// Clone options that already decide how objects are stored: leave such a clone alone.
+// Clone options that decide the storage of the clone's own objects: leave such
+// a clone alone (our --reference-if-able would contradict the choice, and
+// --filter keeps objects out on purpose). Naming a reference (--reference,
+// --reference-if-able) or bounding the history (--depth, --shallow-since,
+// --shallow-exclude, --no-local) is NOT such a decision — those clones still
+// take the store (myrmidon 1.6.5 BOT-DISK-G-A).
 const CLONE_OPT_OUT = [
-  /^--reference(?:-if-able)?(?:=|$)/, /^--dissociate$/, /^--shared$/, /^-s$/, /^--local$/, /^-l$/, /^--mirror$/,
-  /^--depth(?:=|$)/, /^--shallow-since(?:=|$)/, /^--shallow-exclude(?:=|$)/, /^--filter(?:=|$)/, /^--no-local$/,
+  /^--dissociate$/, /^--shared$/, /^-s$/, /^--local$/, /^-l$/, /^--mirror$/,
+  /^--filter(?:=|$)/,
 ];
-
 /** `owner/repo` (lower case) when `url` names a GitHub repository, else null. */
 function githubRepo(url) {
   const m =
@@ -173,12 +193,101 @@ function countLocalMirrors(root) {
   return n;
 }
 
+/**
+ * `${HERMES_HOME}/.myrmidon/git-objects-last-error.json` — the trail file the
+ * clone-hygiene reporter reads (the sibling of git-objects-check.json, which
+ * carries the entrypoint's self-check).
+ */
+function storeTrailFile(home = HERMES_HOME) {
+  return path.join(home, ".myrmidon", "git-objects-last-error.json");
+}
+
+/**
+ * One phrase for the stderr line of a bypass (null: no line — only the
+ * explicit "the store is off" switch stays quiet, since an operator asked for
+ * it and the self-check reports that state).
+ */
+function bypassPhrase(reason, detail) {
+  switch (reason) {
+    case "opt-out":
+      return `the clone carries a storage option of its own (${detail})`;
+    case "url":
+      return `the repository argument is not a GitHub URL (${detail})`;
+    case "cap":
+      return `the store already keeps ${detail} repositories (MYRMIDON_GIT_LOCAL_MIRROR_MAX)`;
+    case "store-off":
+      return null;
+    case "mirror":
+      return `the store mirror could not be built (${detail})`;
+    default:
+      return detail === null || detail === undefined ? String(reason) : String(detail);
+  }
+}
+
+/**
+ * Leave a trail when THIS clone does not take the shared object store from the
+ * store side: one [myrmidon-git] line on stderr and one record in the trail
+ * file, with per-kind counters kept from the previous record so a reporter can
+ * tell a single stray clone from a bot that never uses the store.
+ *
+ * BOT-DISK-G's contract — a clone never fails because of the store — is what
+ * made a bypass invisible: on 06.10 every clone of the fleet's bot local store
+ * stayed empty while each task clone copied a full history (0.4 GB per task),
+ * and the start-time self-check could not see it (its round trip runs in a
+ * scratch directory and proves the mechanism, not that the store is used).
+ * The clone's own argv, streams and exit status are untouched: this only adds
+ * a line and a file, and never throws.
+ */
+function recordStoreEvent({ kind, reason, detail = null, repo = null, url = null, store = null, quiet = false }) {
+  try {
+    const file = storeTrailFile();
+    let previous = null;
+    try {
+      previous = JSON.parse(fs.readFileSync(file, "utf8"));
+    } catch {
+      previous = null; // no file yet, or an unreadable one: counters restart
+    }
+    const totals = previous && typeof previous.totals === "object" && previous.totals !== null ? { ...previous.totals } : {};
+    const key = `${kind}:${reason}`;
+    totals[key] = (Number(totals[key]) || 0) + 1;
+    const record = {
+      version: 1,
+      at: new Date().toISOString(),
+      kind,
+      reason,
+      detail,
+      repo,
+      url,
+      store,
+      argv: process.argv.slice(2),
+      totals,
+    };
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o755 });
+    const tmp = `${file}.tmp-${process.pid}`;
+    fs.writeFileSync(tmp, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o644 });
+    fs.renameSync(tmp, file);
+    if (quiet) return;
+    process.stderr.write(`[myrmidon-git] shared object store bypassed: ${bypassPhrase(reason, detail)} — this clone copies git history on its own (${file})\n`);
+  } catch {
+    // The trail is diagnostic: a store that cannot be written must not change the clone.
+  }
+}
+
 function spawnRealGit(args, opts = {}) {
+  const capture = opts.capture === true;
   return spawnSync(REAL_GIT, args, {
-    stdio: opts.stdio || "ignore",
+    stdio: capture ? ["ignore", "pipe", "pipe"] : opts.stdio || "ignore",
+    encoding: capture ? "utf8" : undefined,
     timeout: opts.timeout === undefined ? LOCAL_COMMAND_TIMEOUT_MS : opts.timeout,
     env: childEnv(),
   });
+}
+
+/** The first non-empty stderr line of a captured git run, for the trail file. */
+function gitErrorText(result) {
+  const text = (result && (result.stderr || (result.error && result.error.message))) || "";
+  const line = String(text).split("\n").map((l) => l.trim()).filter(Boolean)[0] || "";
+  return line.slice(0, 300) || "no output";
 }
 
 /**
@@ -211,15 +320,22 @@ function childEnv() {
  * of the outer git command, re-applied to the mirror commands so an
  * `url.<base>.insteadOf` rewrite (or any other per-command config) shapes the
  * fetch the same way. Every failure here is silent by design: the caller then
- * clones without a reference, exactly like before this feature existed.
+ * clones without a reference, exactly like before this feature existed — but
+ * not mute: the reason lands in `notes` (`{ reason, detail }`) and the caller
+ * writes it to the shared-objects trail, so an empty store can be explained
+ * instead of guessed at.
  */
-function ensureLocalMirror(repo, url, root, configArgs = []) {
+function ensureLocalMirror(repo, url, root, configArgs = [], notes = {}) {
   const dir = localMirrorDir(repo, root);
   if (isMirror(dir)) {
     refreshLocalMirror(dir, configArgs);
     return dir;
   }
-  if (countLocalMirrors(root) >= LOCAL_MAX_MIRRORS) return null;
+  if (countLocalMirrors(root) >= LOCAL_MAX_MIRRORS) {
+    notes.reason = "cap";
+    notes.detail = `${LOCAL_MAX_MIRRORS}`;
+    return null;
+  }
   const tmp = `${dir}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
   try {
     fs.mkdirSync(path.dirname(dir), { recursive: true, mode: 0o755 });
@@ -227,7 +343,13 @@ function ensureLocalMirror(repo, url, root, configArgs = []) {
     // traffic every clone used to make on its own. Say so once, on stderr:
     // the user is waiting on it and should know why.
     process.stderr.write(`[myrmidon-git] shared object store: first fetch of ${repo} (once per bot)\n`);
-    if (spawnRealGit([...configArgs, "clone", "--quiet", "--bare", "--", url, tmp]).status !== 0) return null;
+    const fetched = spawnRealGit([...configArgs, "clone", "--quiet", "--bare", "--", url, tmp], { capture: true });
+    if (fetched.status !== 0) {
+      notes.reason = "mirror";
+      notes.detail = gitErrorText(fetched);
+      fs.rmSync(tmp, { recursive: true, force: true });
+      return null;
+    }
     for (const [key, value] of [
       ["core.logAllRefUpdates", "false"],
       ["gc.auto", "0"],
@@ -235,12 +357,18 @@ function ensureLocalMirror(repo, url, root, configArgs = []) {
       ["fetch.prune", "true"],
       ["remote.origin.fetch", "+refs/heads/*:refs/heads/*"],
     ]) {
-      if (spawnRealGit([...configArgs, "-C", tmp, "config", "--replace-all", key, value]).status !== 0) {
+      const configured = spawnRealGit([...configArgs, "-C", tmp, "config", "--replace-all", key, value], { capture: true });
+      if (configured.status !== 0) {
+        notes.reason = "mirror";
+        notes.detail = `git config ${key}: ${gitErrorText(configured)}`;
         fs.rmSync(tmp, { recursive: true, force: true });
         return null;
       }
     }
-    if (spawnRealGit([...configArgs, "-C", tmp, "config", "--add", "remote.origin.fetch", "+refs/tags/*:refs/tags/*"]).status !== 0) {
+    const tags = spawnRealGit([...configArgs, "-C", tmp, "config", "--add", "remote.origin.fetch", "+refs/tags/*:refs/tags/*"], { capture: true });
+    if (tags.status !== 0) {
+      notes.reason = "mirror";
+      notes.detail = `git config remote.origin.fetch (tags): ${gitErrorText(tags)}`;
       fs.rmSync(tmp, { recursive: true, force: true });
       return null;
     }
@@ -255,7 +383,9 @@ function ensureLocalMirror(repo, url, root, configArgs = []) {
     }
     touchStamp(dir);
     return dir;
-  } catch {
+  } catch (err) {
+    notes.reason = "mirror";
+    notes.detail = String((err && err.message) || err).slice(0, 300);
     try {
       fs.rmSync(tmp, { recursive: true, force: true });
     } catch {
@@ -348,28 +478,56 @@ function rewriteArgs(argv, root = MIRROR_ROOT, localMirror = null) {
 }
 
 /**
+ * One walk over a `git clone` argv: where the subcommand sits, which repository
+ * argument the clone reaches, and — when the wrapper declines the clone — the
+ * option that made it decline (`optOut`). `notClone` marks argv that is no
+ * clone at all. Both the rewrite decision (scanCloneArgs) and the trail
+ * (main) read this single walk, so "why did the store not see this clone"
+ * cannot drift from "why did the wrapper leave it alone".
+ */
+function scanClone(argv) {
+  let i = 0;
+  while (i < argv.length && argv[i].startsWith("-")) {
+    i += GLOBAL_WITH_VALUE.has(argv[i]) ? 2 : 1;
+  }
+  if (argv[i] !== "clone") return { notClone: true, cloneAt: null, url: null, optOut: null };
+  const cloneAt = i;
+  for (let j = i + 1; j < argv.length; j++) {
+    const arg = argv[j];
+    if (arg === "--") {
+      return { notClone: false, cloneAt, url: argv[j + 1] ?? null, optOut: null };
+    }
+    if (arg.startsWith("-")) {
+      if (CLONE_OPT_OUT.some((re) => re.test(arg))) return { notClone: false, cloneAt, url: null, optOut: arg };
+      if (CLONE_WITH_VALUE.has(arg)) j += 1;
+      continue;
+    }
+    return { notClone: false, cloneAt, url: arg, optOut: null };
+  }
+  return { notClone: false, cloneAt, url: null, optOut: null };
+}
+
+/**
  * The repository URL of a `git clone` in argv — the exact clone rewriteArgs
  * would be willing to touch (no storage-deciding option, a parseable
  * repository argument) — or null.
  */
 function scanCloneArgs(argv) {
-  let i = 0;
-  while (i < argv.length && argv[i].startsWith("-")) {
-    i += GLOBAL_WITH_VALUE.has(argv[i]) ? 2 : 1;
-  }
-  if (argv[i] !== "clone") return null;
-  const cloneAt = i;
-  for (let j = i + 1; j < argv.length; j++) {
-    const arg = argv[j];
-    if (arg === "--") return argv[j + 1] === undefined ? null : { cloneAt, url: argv[j + 1] };
-    if (arg.startsWith("-")) {
-      if (CLONE_OPT_OUT.some((re) => re.test(arg))) return null;
-      if (CLONE_WITH_VALUE.has(arg)) j += 1;
-      continue;
-    }
-    return { cloneAt, url: arg };
-  }
-  return null;
+  const scan = scanClone(argv);
+  if (scan.notClone || scan.optOut !== null || scan.url === null) return null;
+  return { cloneAt: scan.cloneAt, url: scan.url };
+}
+
+/**
+ * True when a clone source is a remote URL — what the store exists for. A local
+ * path (or a file:// URL) clones by hard linking the source's objects: it
+ * borrows them already, so it is no store bypass and stays out of the trail.
+ */
+function isRemoteUrl(url) {
+  if (url === null || url === undefined) return false;
+  if (/^file:/i.test(url)) return false;
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(url)) return true;
+  return /^[^/@\s]+@[^/:\s]+:/.test(url); // scp-like user@host:path
 }
 
 /**
@@ -404,15 +562,48 @@ function main() {
   let localMirror = null;
   // Decide the bot-local mirror BEFORE running the clone; the injection itself
   // stays in the tested pure function. The board's mirror always wins.
-  const scanned = scanCloneArgs(argv);
-  if (scanned) {
-    const repo = githubRepo(scanned.url);
-    const root = localMirrorRoot();
-    if (repo && root && mirrorFor(repo) === null) {
+  const scan = scanClone(argv);
+  // An empty MYRMIDON_GIT_LOCAL_MIRROR is the documented "the store is off"
+  // switch (localMirrorRoot): it must not fall through to the default path and
+  // must not build a mirror relative to the caller's cwd.
+  const storeRoot = scan.notClone ? null : localMirrorRoot() || null;
+  const repo = scan.url === null ? null : githubRepo(scan.url);
+  if (!scan.notClone) {
+    // A clone the store does not get leaves a trail (see recordStoreEvent).
+    const boardMirror = repo === null ? null : mirrorFor(repo);
+    if (scan.optOut !== null) {
+      recordStoreEvent({ kind: "bypass", reason: "opt-out", detail: scan.optOut, repo, url: scan.url, store: storeRoot });
+    } else if (repo === null && isRemoteUrl(scan.url)) {
+      recordStoreEvent({
+        kind: "bypass",
+        reason: "url",
+        detail: scan.url ?? "no repository argument",
+        repo: null,
+        url: scan.url,
+        store: storeRoot,
+      });
+    } else if (repo !== null && boardMirror === null && storeRoot === null) {
+      // The store is switched off by the operator: the trail records it, the
+      // clone stays quiet about it, and the self-check reports that state too.
+      recordStoreEvent({ kind: "bypass", reason: "store-off", detail: null, repo, url: scan.url, store: null, quiet: true });
+    } else if (repo !== null && boardMirror === null) {
+      const notes = {};
       try {
-        localMirror = ensureLocalMirror(repo, scanned.url, root, collectConfigArgs(argv, scanned.cloneAt));
-      } catch {
+        localMirror = ensureLocalMirror(repo, scan.url, storeRoot, collectConfigArgs(argv, scan.cloneAt), notes);
+      } catch (err) {
         localMirror = null;
+        notes.reason = "mirror";
+        notes.detail = String((err && err.message) || err).slice(0, 300);
+      }
+      if (localMirror === null) {
+        recordStoreEvent({
+          kind: notes.reason === "cap" ? "bypass" : "store-error",
+          reason: notes.reason || "mirror",
+          detail: notes.detail || null,
+          repo,
+          url: scan.url,
+          store: storeRoot,
+        });
       }
     }
   }
@@ -434,7 +625,12 @@ module.exports = {
   isMirror,
   mirrorFor,
   rewriteArgs,
+  scanClone,
   scanCloneArgs,
+  isRemoteUrl,
+  bypassPhrase,
+  storeTrailFile,
+  recordStoreEvent,
   localMirrorRoot,
   localMirrorDir,
   countLocalMirrors,

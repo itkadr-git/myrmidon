@@ -359,9 +359,50 @@ describe("docker/bot-runtime/entrypoint.sh shared-git-objects self-check", () =>
     return { dir, wrapper, shadow: path.join(shadowDir, "git") };
   }
 
+  /**
+   * The real shared-objects wrapper, as the image installs it as
+   * /opt/paperclip/bin/git. The store checks must see the wrapper a bot
+   * actually runs, not a pass-through stub. Copied out of the repository (so
+   * node reads it as CJS, as the image's /opt/paperclip copy is) and reached
+   * through a shim, so the test needs no /opt/node24.
+   */
+  function realWrapperStub() {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "myrmidon-gitreal-"));
+    const copy = path.join(dir, "git-wrapper.cjs");
+    fs.copyFileSync(path.join(ROOT, "docker/bot-runtime/git-reference/git"), copy);
+    const wrapper = path.join(dir, "opt-paperclip-git");
+    fs.writeFileSync(wrapper, `#!/bin/sh\nexec "${process.execPath}" "${copy}" "$@"\n`, { mode: 0o755 });
+    const shadowDir = path.join(dir, "shadow");
+    fs.mkdirSync(shadowDir);
+    fs.symlinkSync(wrapper, path.join(shadowDir, "git"));
+    return { dir, wrapper, shadow: path.join(shadowDir, "git") };
+  }
+
+  /** Mirrors currently in the bot's store, as the check counts them. */
+  function findMirrors(bot) {
+    const store = path.join(bot, "hermes", ".myrmidon", "git-objects");
+    if (!fs.existsSync(store)) return [];
+    return fs.readdirSync(store, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .flatMap((owner) => fs.readdirSync(path.join(store, owner.name))
+        .filter((name) => name.endsWith(".git"))
+        .map((name) => `${owner.name}/${name}`));
+  }
+
+  /** A task clone of a GitHub repository, as /workspace/<TICKET>/repo holds it. */
+  function taskClone(bot, ticket, url) {
+    const clone = path.join(bot, "workspace", ticket, "repo");
+    fs.mkdirSync(clone, { recursive: true });
+    for (const args of [["init", "-q", "-b", "main"], ["remote", "add", "origin", url]]) {
+      const result = spawnSync(realGit(), args, { cwd: clone, encoding: "utf8" });
+      assert.equal(result.status, 0, `git ${args.join(" ")}: ${result.stderr}`);
+    }
+    return clone;
+  }
+
   it("passes every check and reports them", () => {
     const { tree, bot, data } = botLayout();
-    const stub = wrapperStub();
+    const stub = realWrapperStub();
     try {
       const result = runWithStub({
         HERMES_HOME: path.join(bot, "hermes"),
@@ -371,6 +412,7 @@ describe("docker/bot-runtime/entrypoint.sh shared-git-objects self-check", () =>
         MYRMIDON_GIT_WRAPPER: stub.wrapper,
         MYRMIDON_GIT_SHADOW: stub.shadow,
         MYRMIDON_GIT_REAL: realGit(),
+        MYRMIDON_TASK_ROOTS: path.join(bot, "workspace"),
         MYRMIDON_TEST_CWD: path.join(bot, "workspace"),
       });
       assert.equal(result.status, 0, result.stderr);
@@ -378,8 +420,10 @@ describe("docker/bot-runtime/entrypoint.sh shared-git-objects self-check", () =>
       const report = JSON.parse(fs.readFileSync(path.join(bot, "hermes", ".myrmidon", "git-objects-check.json"), "utf8"));
       assert.equal(report.ok, true);
       assert.equal(report.store, path.join(bot, "hermes", ".myrmidon", "git-objects"));
-      assert.deepEqual(report.checks.map((c) => c.check), ["usr-local-shadow", "wrapper-runs", "store-writable", "reference-clone"]);
+      assert.deepEqual(report.checks.map((c) => c.check), ["usr-local-shadow", "wrapper-runs", "store-writable", "reference-clone", "store-fills", "store-in-use"]);
       assert.ok(report.checks.every((c) => c.ok && c.error === null));
+      // The store-fills probe borrows the store and leaves nothing behind.
+      assert.deepEqual(findMirrors(bot), []);
     } finally {
       fs.rmSync(tree, { recursive: true, force: true });
       fs.rmSync(stub.dir, { recursive: true, force: true });
@@ -451,6 +495,74 @@ describe("docker/bot-runtime/entrypoint.sh shared-git-objects self-check", () =>
       const report = JSON.parse(fs.readFileSync(path.join(bot, "hermes", ".myrmidon", "git-objects-check.json"), "utf8"));
       assert.equal(report.ok, true);
       assert.equal(report.store, "");
+    } finally {
+      fs.rmSync(tree, { recursive: true, force: true });
+      fs.rmSync(stub.dir, { recursive: true, force: true });
+    }
+  });
+
+  // myrmidon(1.6.5 BOT-DISK-G-A): the incident's state — live task clones and an
+  // empty store. The old check went green on it: its reference-clone round trip
+  // ran in a scratch directory and left the store empty either way.
+  it("catches a store that live task clones never filled", () => {
+    const { tree, bot, data } = botLayout();
+    const stub = realWrapperStub();
+    try {
+      const clone = taskClone(bot, "OPE-1", "https://github.com/owner/repo.git");
+      const result = runWithStub({
+        HERMES_HOME: path.join(bot, "hermes"),
+        MYRMIDON_BOT_ROOT: bot,
+        MYRMIDON_DATA_DIR: data,
+        MYRMIDON_HARDLINK_CHECK: "0",
+        MYRMIDON_GIT_WRAPPER: stub.wrapper,
+        MYRMIDON_GIT_SHADOW: stub.shadow,
+        MYRMIDON_GIT_REAL: realGit(),
+        MYRMIDON_TASK_ROOTS: path.join(bot, "workspace"),
+        MYRMIDON_TEST_CWD: path.join(bot, "workspace"),
+      });
+      assert.equal(result.status, 0, "a failed check never stops the gateway");
+      assert.match(result.stderr, /ERROR: shared-objects self-check failed/);
+      const report = JSON.parse(fs.readFileSync(path.join(bot, "hermes", ".myrmidon", "git-objects-check.json"), "utf8"));
+      assert.equal(report.ok, false);
+      // The wrapper's own field-shaped clone does fill the store…
+      assert.equal(report.checks.find((c) => c.check === "store-fills").ok, true);
+      // …but nothing on this bot ever borrowed it: that is the incident.
+      const inUse = report.checks.find((c) => c.check === "store-in-use");
+      assert.equal(inUse.ok, false);
+      assert.match(inUse.error, /1 GitHub task clone\(s\)/);
+      assert.match(inUse.error, /OPE-1/);
+      assert.deepEqual(findMirrors(bot), [], "the probe does not leave a mirror behind");
+      assert.ok(fs.existsSync(clone));
+    } finally {
+      fs.rmSync(tree, { recursive: true, force: true });
+      fs.rmSync(stub.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("a store that a task clone did use passes", () => {
+    const { tree, bot, data } = botLayout();
+    const stub = realWrapperStub();
+    try {
+      taskClone(bot, "OPE-2", "https://github.com/owner/repo.git");
+      fs.mkdirSync(path.join(bot, "hermes", ".myrmidon", "git-objects", "owner", "repo.git", "objects"), { recursive: true });
+      const result = runWithStub({
+        HERMES_HOME: path.join(bot, "hermes"),
+        MYRMIDON_BOT_ROOT: bot,
+        MYRMIDON_DATA_DIR: data,
+        MYRMIDON_HARDLINK_CHECK: "0",
+        MYRMIDON_GIT_WRAPPER: stub.wrapper,
+        MYRMIDON_GIT_SHADOW: stub.shadow,
+        MYRMIDON_GIT_REAL: realGit(),
+        MYRMIDON_TASK_ROOTS: path.join(bot, "workspace"),
+        MYRMIDON_TEST_CWD: path.join(bot, "workspace"),
+      });
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stderr, /shared-objects self-check ok/);
+      const report = JSON.parse(fs.readFileSync(path.join(bot, "hermes", ".myrmidon", "git-objects-check.json"), "utf8"));
+      assert.equal(report.ok, true);
+      assert.equal(report.checks.find((c) => c.check === "store-in-use").ok, true);
+      // A live clone that is not a GitHub one is not the store's business.
+      assert.deepEqual(findMirrors(bot), ["owner/repo.git"]);
     } finally {
       fs.rmSync(tree, { recursive: true, force: true });
       fs.rmSync(stub.dir, { recursive: true, force: true });
