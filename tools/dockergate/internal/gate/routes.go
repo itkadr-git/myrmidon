@@ -132,6 +132,7 @@ func (rs *reqState) a4(ctx context.Context, st *runtime, rt *route.Route, bot co
 		Images:           st.set,
 		MountSources:     st.cfg.MountSources,
 		PackageCacheRoot: st.cfg.PackageCacheRoot,
+		BotRuntimeRoot:   st.cfg.BotRuntimeRoot,
 		ScopeRoot:        st.cfg.EffectiveScopeRoot(),
 		ScopeInstances:   bot.ScopeInstances,
 		MaxMemoryMB:      bot.MaxMemoryMB,

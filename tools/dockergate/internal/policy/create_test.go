@@ -752,3 +752,108 @@ func TestQuoteMatchesJSONStringify(t *testing.T) {
 		}
 	}
 }
+
+// myrmidon(1.6.5-BOT-DISK-H11): the shared bot runtime (class C) and an
+// operator data directory inside the bot's own tree (class J).
+func TestBotSharedRuntimeMounts(t *testing.T) {
+	m := fixture.Load(t)
+	k := m.BotKey
+	scratch := m.VolumeRoot + "/" + k + ":/bot"
+	tail := `"` + scratch + `"]`
+	runtime := "/srv/bot-runtime"
+
+	withRoot := func(root string, sources ...string) *policy.Env {
+		e := env(m)
+		e.BotRuntimeRoot = root
+		e.MountSources = sources
+		return e
+	}
+	bodyWith := func(t *testing.T, binds ...string) []byte {
+		t.Helper()
+		_, body := m.FindBody(t, "bot-plain", "")
+		return replace(t, body, tail, `"`+scratch+`","`+strings.Join(binds, `","`)+`"]`)
+	}
+	all := []string{
+		runtime + "/bin:/bot/hermes/bin:ro",
+		runtime + "/lazy-packages:/bot/hermes/lazy-packages:ro",
+		runtime + "/lsp:/bot/hermes/lsp:ro",
+	}
+
+	t.Run("the three runtime pairs under the root are accepted and kept canonical", func(t *testing.T) {
+		body := bodyWith(t, all...)
+		c, err := policy.ParseCreate(body, createRoute(t, "myrmidon-bot-"+k), withRoot(runtime))
+		if err != nil {
+			t.Fatalf("denied: %s (field %q, detail %q)", err.Code, err.Field, err.Detail)
+		}
+		if string(c.Body) != string(body) {
+			t.Fatal("the canonical body differs from the request")
+		}
+	})
+
+	t.Run("next to the package cache binds and a card mount", func(t *testing.T) {
+		cache := "/srv/package-cache"
+		shared := "/srv/media"
+		body := bodyWith(
+			t,
+			shared+":/bot/hermes/media/site:ro",
+			cache+"/pnpm:/cache/pnpm:rw",
+			all[0], all[1], all[2],
+		)
+		e := withRoot(runtime, shared)
+		e.PackageCacheRoot = cache
+		if _, err := policy.ParseCreate(body, createRoute(t, "myrmidon-bot-"+k), e); err != nil {
+			t.Fatalf("denied: %s (field %q, detail %q)", err.Code, err.Field, err.Detail)
+		}
+	})
+
+	t.Run("without a botRuntimeRoot the runtime binds are denied", func(t *testing.T) {
+		for _, bind := range all {
+			c, err := policy.ParseCreate(bodyWith(t, bind), createRoute(t, "myrmidon-bot-"+k), withRoot(""))
+			wantDeny(t, c, err, deny.MountSourceNotAllowed)
+		}
+	})
+
+	t.Run("a pair outside the root, in another subdirectory or writable is denied", func(t *testing.T) {
+		for _, bind := range []string{
+			"/srv/elsewhere/bin:/bot/hermes/bin:ro",
+			runtime + "/sub/lsp:/bot/hermes/lsp:ro",
+			runtime + "/bin:/bot/hermes/bin:rw",
+		} {
+			c, err := policy.ParseCreate(bodyWith(t, bind), createRoute(t, "myrmidon-bot-"+k), withRoot(runtime))
+			wantDeny(t, c, err, deny.MountSourceNotAllowed)
+		}
+	})
+
+	t.Run("a runtime pair at the wrong mount point or at the path the bot sees is denied", func(t *testing.T) {
+		// The source of a runtime pair is never an exact env.MountSources entry
+		// (the whole root is not a mount source), so a pair whose target is not
+		// the one path it may be bound at is refused as mount_source_not_allowed,
+		// exactly like a malformed package-cache pair.
+		for _, bind := range []string{
+			runtime + "/bin:/bot/hermes/lsp:ro",
+			runtime + "/bin:/data/hermes/bin:ro",
+			runtime + "/lsp:/bot/hermes/lsp/site:ro",
+		} {
+			c, err := policy.ParseCreate(bodyWith(t, bind), createRoute(t, "myrmidon-bot-"+k), withRoot(runtime))
+			wantDeny(t, c, err, deny.MountSourceNotAllowed)
+		}
+	})
+
+	t.Run("an allowlisted source mounted inside the bot's own tree is accepted (class J)", func(t *testing.T) {
+		shared := "/srv/media"
+		for _, target := range []string{"/bot/hermes/media/site", "/bot/hermes/work", "/bot/hermes/.hermes/shared/x"} {
+			body := bodyWith(t, shared+":"+target+":ro")
+			if _, err := policy.ParseCreate(body, createRoute(t, "myrmidon-bot-"+k), withRoot(runtime, shared)); err != nil {
+				t.Fatalf("denied for %s: %s (field %q, detail %q)", target, err.Code, err.Field, err.Detail)
+			}
+		}
+	})
+
+	t.Run("an allowlisted source at a path outside the owner-data roots is denied", func(t *testing.T) {
+		shared := "/srv/media"
+		for _, target := range []string{"/bot/hermes/bin", "/bot/hermes/lsp/x", "/bot/hermes/other", "/bot"} {
+			c, err := policy.ParseCreate(bodyWith(t, shared+":"+target+":ro"), createRoute(t, "myrmidon-bot-"+k), withRoot(runtime, shared))
+			wantDeny(t, c, err, deny.BindsMismatch)
+		}
+	})
+}

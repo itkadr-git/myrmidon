@@ -7,6 +7,10 @@
 // 1.6.2-BOT-DISK-C: the same panel lists the GitHub repositories the board
 // keeps a shared bare git mirror of, so bot clones borrow objects instead of
 // duplicating them.
+//
+// 1.6.5-BOT-DISK-H11: it also edits the shared bot runtime directory, whose
+// bin, lazy-packages and lsp subdirectories every bot mounts read-only, so the
+// runtime lives on the host once instead of once per bot.
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Package } from "lucide-react";
@@ -23,6 +27,8 @@ export function BotDiskSettingsPanel() {
   const [error, setError] = useState<string | null>(null);
   const [reposDraft, setReposDraft] = useState<string | null>(null);
   const [reposError, setReposError] = useState<string | null>(null);
+  const [runtimeDraft, setRuntimeDraft] = useState<string | null>(null);
+  const [runtimeError, setRuntimeError] = useState<string | null>(null);
 
   // Seed the draft once the stored value arrives (react-query v5 has no onSuccess).
   useEffect(() => {
@@ -31,6 +37,9 @@ export function BotDiskSettingsPanel() {
   useEffect(() => {
     if (view && reposDraft === null) setReposDraft((view.settings.gitMirrorRepos ?? []).join("\n"));
   }, [view, reposDraft]);
+  useEffect(() => {
+    if (view && runtimeDraft === null) setRuntimeDraft(view.settings.sharedBotRuntimePath ?? "");
+  }, [view, runtimeDraft]);
 
   const saveRepos = useMutation({
     mutationFn: (repos: string[]) => botDiskApi.setGitMirrorRepos(repos.length === 0 ? null : repos),
@@ -85,6 +94,27 @@ export function BotDiskSettingsPanel() {
 
   const reposUnchanged =
     view !== undefined && parseRepos(reposDraft ?? "").join("\n") === (view.settings.gitMirrorRepos ?? []).join("\n");
+
+  // myrmidon(1.6.5-BOT-DISK-H11): the host directory whose bin, lazy-packages
+  // and lsp subdirectories every bot mounts read-only over its own runtime.
+  const saveRuntime = useMutation({
+    mutationFn: (path: string) => botDiskApi.setSharedBotRuntimePath(path === "" ? null : path),
+    onSuccess: (saved) => {
+      setRuntimeError(null);
+      setRuntimeDraft(saved.settings.sharedBotRuntimePath ?? "");
+      queryClient.invalidateQueries({ queryKey: botDiskQueryKey });
+    },
+    onError: (err) => setRuntimeError(err instanceof Error ? err.message : "Could not save the runtime path. Try again."),
+  });
+  const submitRuntime = () => {
+    const path = (runtimeDraft ?? "").trim();
+    if (path !== "" && (!path.startsWith("/") || path.endsWith("/") || path.includes("//") || path.split("/").includes(".."))) {
+      setRuntimeError("Enter an absolute directory without a trailing slash or \"..\", or leave it empty");
+      return;
+    }
+    saveRuntime.mutate(path);
+  };
+  const runtimeUnchanged = view !== undefined && (runtimeDraft ?? "").trim() === (view.settings.sharedBotRuntimePath ?? "");
 
   const save = useMutation({
     mutationFn: (path: string) => botDiskApi.setSharedPackageCachePath(path === "" ? null : path),
@@ -169,6 +199,35 @@ export function BotDiskSettingsPanel() {
         </p>
         {reposError && <p className="text-xs text-red-600">{reposError}</p>}
         {saveRepos.isSuccess && !reposError && <p className="text-xs text-green-600">Saved</p>}
+      </div>
+      <div className="space-y-2">
+        <Label htmlFor="bot-disk-runtime-path">Shared bot runtime directory</Label>
+        <div className="flex items-center gap-2">
+          <Input
+            id="bot-disk-runtime-path"
+            placeholder="Empty: every bot keeps its own bin, lazy-packages and lsp"
+            value={runtimeDraft ?? ""}
+            onChange={(event) => {
+              setRuntimeDraft(event.target.value);
+              setRuntimeError(null);
+            }}
+            data-testid="bot-disk-runtime-path-input"
+          />
+          <Button size="sm" onClick={submitRuntime} disabled={saveRuntime.isPending || runtimeDraft === null || runtimeUnchanged}>
+            {saveRuntime.isPending ? "Saving…" : "Save"}
+          </Button>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Bots on this server mount its bin, lazy-packages and lsp
+          subdirectories read-only over their own runtime paths, so the runtime
+          lives on the host once instead of once per bot. The same path must be
+          set as botRuntimeRoot in the dockergate configuration, and the
+          subdirectories must exist and belong to the bot user. Applies on the
+          next reconcile pass: bots are recreated with the new mounts. Bots on
+          a fleet host are not affected.
+        </p>
+        {runtimeError && <p className="text-xs text-red-600">{runtimeError}</p>}
+        {saveRuntime.isSuccess && !runtimeError && <p className="text-xs text-green-600">Saved</p>}
       </div>
       <div className="space-y-2">
         <Label htmlFor="bot-disk-pnpm-store">pnpm store directory</Label>

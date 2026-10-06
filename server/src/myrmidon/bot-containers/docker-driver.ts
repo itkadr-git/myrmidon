@@ -239,6 +239,15 @@ export interface DockerDriverOptions {
    */
   readGitMirrorEnabled?: (botKey: string) => Promise<boolean>;
   /**
+   * myrmidon(1.6.5-BOT-DISK-H11): the host directory the instance shares the bot
+   * runtime from (`general.botDisk.sharedBotRuntimePath`), read with the cache
+   * path on every create, recreate and drift check. Set adds three READ-ONLY
+   * binds (`<root>/bin`, `<root>/lazy-packages`, `<root>/lsp`) over the bot's
+   * own runtime paths, so the instance keeps one copy instead of one per bot.
+   * Absent: every bot keeps its own.
+   */
+  readSharedBotRuntimePath?: (botKey: string) => Promise<string | undefined>;
+  /**
    * myrmidon(BOT-DISK-F): the layout the board keeps this bot's disk on (its own
    * directory, or a member subdirectory of a shared scope instance), read on
    * every create, recreate and drift check. It is the layout the owner applied,
@@ -309,6 +318,8 @@ export function buildCreateContainerRequestBody(
   scope?: BotScopeMount,
   /** myrmidon(BOT-DISK-D layout versioning): the bind layout the image's contract declares. */
   volumeLayout: BotVolumeLayout = "single",
+  /** myrmidon(1.6.5-BOT-DISK-H11): `general.botDisk.sharedBotRuntimePath` (absent: per-bot runtime). */
+  sharedBotRuntimePath?: string,
 ): DockerCreateContainerBody {
   validateBotKey(spec.botKey);
   if (!isImageAllowed(spec.image, config.allowlist)) {
@@ -366,6 +377,7 @@ export function buildCreateContainerRequestBody(
         mounts: spec.extraMounts,
         allowedSources: config.mountSources,
         sharedPackageCachePath,
+        sharedBotRuntimePath,
         gitMirror,
         driverMount: keyMount,
         scope,
@@ -970,6 +982,7 @@ export function dockerBotContainerDriver(
   const templateContextTtlMs = options.templateContextTtlMs ?? DEFAULT_TEMPLATE_CONTEXT_TTL_MS;
   const newNonce = options.nonce ?? (() => randomBytes(8).toString("hex"));
   const readSharedPackageCachePath = options.readSharedPackageCachePath ?? (async () => undefined);
+  const readSharedBotRuntimePath = options.readSharedBotRuntimePath ?? (async () => undefined);
   const readGitMirrorEnabled = options.readGitMirrorEnabled ?? (async () => false);
   const readScopeLayout = options.readScopeLayout ?? (async () => ISOLATED_LAYOUT);
   const scopeRoot = config.scopeRoot ?? `${config.volumeRoot}/.scopes`;
@@ -998,6 +1011,7 @@ export function dockerBotContainerDriver(
       context.gitMirror,
       scopeMountOf(context.layout),
       volumeLayout,
+      context.runtimePath,
     );
   };
 
@@ -1030,6 +1044,8 @@ export function dockerBotContainerDriver(
   interface TemplateContext {
     atMs: number;
     cachePath: string | undefined;
+    /** myrmidon(1.6.5-BOT-DISK-H11): `general.botDisk.sharedBotRuntimePath`. */
+    runtimePath: string | undefined;
     gitMirror: boolean;
     layout: ScopeLayout;
   }
@@ -1044,8 +1060,12 @@ export function dockerBotContainerDriver(
       if (cached && Date.now() - cached.atMs < templateContextTtlMs) {
         return { ...cached, layout: layoutOverride };
       }
-      const [cachePath, gitMirror] = await Promise.all([readSharedPackageCachePath(botKey), readGitMirrorEnabled(botKey)]);
-      const fresh: TemplateContext = { atMs: Date.now(), cachePath, gitMirror, layout: layoutOverride };
+      const [cachePath, runtimePath, gitMirror] = await Promise.all([
+        readSharedPackageCachePath(botKey),
+        readSharedBotRuntimePath(botKey),
+        readGitMirrorEnabled(botKey),
+      ]);
+      const fresh: TemplateContext = { atMs: Date.now(), cachePath, runtimePath, gitMirror, layout: layoutOverride };
       templateContextCache.set(botKey, fresh);
       return fresh;
     }
@@ -1054,12 +1074,13 @@ export function dockerBotContainerDriver(
     const pending = templateContextInFlight.get(botKey);
     if (pending) return pending;
     const read = (async (): Promise<TemplateContext> => {
-      const [cachePath, gitMirror, layout] = await Promise.all([
+      const [cachePath, runtimePath, gitMirror, layout] = await Promise.all([
         readSharedPackageCachePath(botKey),
+        readSharedBotRuntimePath(botKey),
         readGitMirrorEnabled(botKey),
         readScopeLayout(botKey),
       ]);
-      const fresh: TemplateContext = { atMs: Date.now(), cachePath, gitMirror, layout };
+      const fresh: TemplateContext = { atMs: Date.now(), cachePath, runtimePath, gitMirror, layout };
       templateContextCache.set(botKey, fresh);
       return fresh;
     })();

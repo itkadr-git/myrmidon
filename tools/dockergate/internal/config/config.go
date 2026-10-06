@@ -154,6 +154,12 @@ type Config struct {
 	// mirrors read-only (policy.PackageCacheReadOnlyMounts, 1.6.2-BOT-DISK-C).
 	// Empty or missing (the default) allows no cache mount at all.
 	PackageCacheRoot string `json:"packageCacheRoot"`
+	// BotRuntimeRoot is the host directory of the shared bot runtime of the
+	// bots (myrmidon 1.6.5-BOT-DISK-H11, the board's instance setting of the
+	// same path). Under it, and only there, a bot may mount the fixed runtime
+	// subdirectories read-only at their fixed mount points
+	// (policy.BotRuntimeMounts). Empty or missing (the default) allows none.
+	BotRuntimeRoot string `json:"botRuntimeRoot"`
 	// ScopeRoot is the host directory of shared isolation-scope instances
 	// (BOT-DISK-F, the board's shared root): one subdirectory per instance,
 	// "<kind>-<id>", holding one pnpm store and a subdirectory per member bot.
@@ -289,6 +295,16 @@ func (c *Config) Validate() error {
 			return errors.New("config: packageCacheRoot must not overlap volumeRoot")
 		}
 	}
+	if c.BotRuntimeRoot != "" {
+		r := c.BotRuntimeRoot
+		if !strings.HasPrefix(r, "/") || r == "/" || strings.Contains(r, "..") ||
+			strings.Contains(r, "//") || strings.HasSuffix(r, "/") || strings.Contains(r, "\x00") {
+			return errors.New("config: botRuntimeRoot must be an absolute directory without .., // and a trailing /")
+		}
+		if r == c.VolumeRoot || strings.HasPrefix(r, c.VolumeRoot+"/") || strings.HasPrefix(c.VolumeRoot, r+"/") {
+			return errors.New("config: botRuntimeRoot must not overlap volumeRoot")
+		}
+	}
 	if c.ScopeRoot != "" {
 		r := c.ScopeRoot
 		if !strings.HasPrefix(r, "/") || r == "/" || strings.Contains(r, "..") ||
@@ -301,6 +317,10 @@ func (c *Config) Validate() error {
 		if c.PackageCacheRoot != "" && (r == c.PackageCacheRoot || strings.HasPrefix(r, c.PackageCacheRoot+"/") ||
 			strings.HasPrefix(c.PackageCacheRoot, r+"/")) {
 			return errors.New("config: scopeRoot must not overlap packageCacheRoot")
+		}
+		if c.BotRuntimeRoot != "" && (r == c.BotRuntimeRoot || strings.HasPrefix(r, c.BotRuntimeRoot+"/") ||
+			strings.HasPrefix(c.BotRuntimeRoot, r+"/")) {
+			return errors.New("config: scopeRoot must not overlap botRuntimeRoot")
 		}
 	}
 	if len(c.Images) == 0 {
