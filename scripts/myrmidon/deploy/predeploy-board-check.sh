@@ -36,6 +36,12 @@
 # On any failure the throwaway containers' logs are printed and the exit status
 # is non-zero, so deploy.sh stops before the window.
 #
+# The route walk may carry a token (MYRMIDON_PREDEPLOY_TOKEN_FILE, an optional
+# input). Without one the walk still runs and a 401/403 on a route is a warning;
+# with one, the token file is checked next to the other inputs of this step,
+# before the first docker call, so an unusable token file fails early — and not
+# while waiting for health, after Postgres and the dump are already up.
+#
 # The stack is removed on exit; MYRMIDON_PREDEPLOY_KEEP=1 keeps it and prints
 # the container names instead. The production DATABASE_URL of the settings file
 # is ignored on purpose: the throwaway board talks to the copy only.
@@ -52,7 +58,7 @@ while (($#)); do
     --dockergate-digest) dockergate_digest="$2"; shift 2 ;;
     --dump) dump_file="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
-    -h|--help) sed -n '2,42p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,48p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -98,6 +104,17 @@ restore_command="${MYRMIDON_PREDEPLOY_RESTORE_COMMAND:-}"
 [[ -n "$postgres_image" ]] || die "MYRMIDON_PREDEPLOY_POSTGRES_IMAGE is required: the check restores the predeploy dump into its own Postgres (set MYRMIDON_PREDEPLOY_CHECK=0 to deploy without the check); nothing was changed"
 [[ -n "$board_env_file" ]] || die "MYRMIDON_PREDEPLOY_BOARD_ENV_FILE is required: the throwaway board needs the board's own environment (secrets, tokens) to start like the production board; nothing was changed"
 [[ -f "$board_env_file" ]] || die "MYRMIDON_PREDEPLOY_BOARD_ENV_FILE not found: $board_env_file; nothing was changed"
+# The token is optional — without one the route walk answers 401/403 and that
+# stays a WARNING (the route was reached, the data path was not exercised).
+# A token file that IS set but unusable is an input of this step, so it fails
+# here with the other inputs, before the first docker call — and not later in
+# auth_header_args while waiting for health, after Postgres has been started and
+# the dump restored.
+if [[ -n "$token_file" ]]; then
+  [[ -f "$token_file" ]] || die "MYRMIDON_PREDEPLOY_TOKEN_FILE is set but is not a file: $token_file (an input of the predeploy check: the token is read when the routes are walked); nothing was changed"
+  [[ -r "$token_file" ]] || die "MYRMIDON_PREDEPLOY_TOKEN_FILE is set but is not readable: $token_file (an input of the predeploy check: the token is read when the routes are walked); nothing was changed"
+  [[ -s "$token_file" ]] || die "MYRMIDON_PREDEPLOY_TOKEN_FILE is set but is empty: $token_file (an input of the predeploy check: an empty token cannot be sent, so the route walk would only answer 401/403); nothing was changed"
+fi
 if [[ -n "$dockergate_digest" && -z "$dockergate_env_file" ]]; then
   log "PREDEPLOY-DB-CHECK: WARNING: no MYRMIDON_PREDEPLOY_DOCKERGATE_ENV_FILE: the throwaway dockergate starts with its image defaults; a config it needs (caller mode, volumeRoot, allowed images) must come from MYRMIDON_PREDEPLOY_DOCKERGATE_ARGS"
 fi
@@ -224,6 +241,9 @@ expect_commit="$(image_label "$board_ref" org.opencontainers.image.revision)"
 
 auth=()
 mapfile -t auth < <(auth_header_args "$token_file")
+# "no credentials" vs "the configured credentials were refused": the token file
+# was checked with the other inputs of this step, so a token here is a readable,
+# non-empty one.
 has_token=0
 [[ -n "$token_file" ]] && has_token=1
 

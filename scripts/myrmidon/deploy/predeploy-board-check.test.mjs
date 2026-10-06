@@ -237,11 +237,66 @@ describe("predeploy-board-check.sh (PREDEPLOY-DB-CHECK: the 05.10 incident)", ()
     assert.match(anonRun.out, /WARNING .*attention answered HTTP 403/);
     assert.match(anonRun.out, /no credentials are configured/);
 
-    const withToken = sandbox({ extraConfig: "MYRMIDON_PREDEPLOY_TOKEN_FILE=/nonexistent/token\n" });
+    const withToken = sandbox();
+    const tokenFile = path.join(withToken.dir, "board-token");
+    fs.writeFileSync(tokenFile, "test-board-token\n");
+    fs.appendFileSync(withToken.config, `MYRMIDON_PREDEPLOY_TOKEN_FILE=${tokenFile}\n`);
     fs.writeFileSync(path.join(withToken.dir, "http-codes"), "attention 403\n");
     const tokenRun = full(withToken);
     assert.notEqual(tokenRun.code, 0, tokenRun.out);
     assert.match(tokenRun.out, /refused the configured credentials \(HTTP 403\)/);
+  });
+
+  it("a token file that is set but unusable stops the check before the first docker call", () => {
+    // The token stays optional (without it a 401/403 is a warning), but a file
+    // that IS configured is an input of this step: a missing, unreadable or
+    // empty token file must fail with the other inputs — before Postgres is
+    // started and the dump restored — and not in auth_header_args while waiting
+    // for health, where the message never says the check's inputs were wrong.
+
+    // set, but there is no such file
+    const missing = sandbox();
+    fs.appendFileSync(missing.config, `MYRMIDON_PREDEPLOY_TOKEN_FILE=${path.join(missing.dir, "absent-token")}\n`);
+    const missingRun = full(missing);
+    assert.notEqual(missingRun.code, 0, missingRun.out);
+    assert.match(missingRun.out, /MYRMIDON_PREDEPLOY_TOKEN_FILE is set but is not a file/);
+    assert.match(missingRun.out, /an input of the predeploy check/);
+    assert.match(missingRun.out, /nothing was changed/);
+    assert.equal(calls(missing), "");
+
+    // set, but to a directory: not a usable file however the caller is privileged
+    const directory = sandbox();
+    const tokenDir = path.join(directory.dir, "tokens");
+    fs.mkdirSync(tokenDir);
+    fs.appendFileSync(directory.config, `MYRMIDON_PREDEPLOY_TOKEN_FILE=${tokenDir}\n`);
+    const directoryRun = full(directory);
+    assert.notEqual(directoryRun.code, 0, directoryRun.out);
+    assert.match(directoryRun.out, /MYRMIDON_PREDEPLOY_TOKEN_FILE is set but is not a file/);
+    assert.equal(calls(directory), "");
+
+    // set, and the file exists, but it is empty: nothing to send
+    const empty = sandbox();
+    const emptyFile = path.join(empty.dir, "empty-token");
+    fs.writeFileSync(emptyFile, "");
+    fs.appendFileSync(empty.config, `MYRMIDON_PREDEPLOY_TOKEN_FILE=${emptyFile}\n`);
+    const emptyRun = full(empty);
+    assert.notEqual(emptyRun.code, 0, emptyRun.out);
+    assert.match(emptyRun.out, /MYRMIDON_PREDEPLOY_TOKEN_FILE is set but is empty/);
+    assert.match(emptyRun.out, /an input of the predeploy check/);
+    assert.equal(calls(empty), "");
+
+    // set, and the file exists but cannot be read. Mode bits only stop a read
+    // for a non-root caller, so as root the case is skipped rather than faked.
+    if (typeof process.getuid === "function" && process.getuid() !== 0) {
+      const unreadable = sandbox();
+      const unreadableFile = path.join(unreadable.dir, "unreadable-token");
+      fs.writeFileSync(unreadableFile, "test-board-token\n", { mode: 0o000 });
+      fs.appendFileSync(unreadable.config, `MYRMIDON_PREDEPLOY_TOKEN_FILE=${unreadableFile}\n`);
+      const unreadableRun = full(unreadable);
+      assert.notEqual(unreadableRun.code, 0, unreadableRun.out);
+      assert.match(unreadableRun.out, /MYRMIDON_PREDEPLOY_TOKEN_FILE is set but is not readable/);
+      assert.equal(calls(unreadable), "");
+    }
   });
 
   it("refuses before any docker call when the Postgres image is not configured", () => {
