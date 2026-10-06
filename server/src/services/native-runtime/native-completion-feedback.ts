@@ -1,4 +1,5 @@
 import { validateNativeDeliverableEvidence } from "./native-deliverable-feedback.js";
+import { readExecutionContinuation } from "../execution-continuation.js";
 import { findAutomaticCompletionReviews } from "./automatic-completion-reviews.js";
 import { issueService } from "../issues.js";
 import { and, eq, inArray, notInArray } from "drizzle-orm";
@@ -62,7 +63,7 @@ export async function nativeCompletionFeedback(
   if (issue.executionRunId && issue.executionRunId !== runId) {
     return "Report accepted; a newer run owns the task. Do not claim this report changed its status.";
   }
-  const continuation = run.contextSnapshot?.executionContinuation as { objective?: unknown } | undefined;
+  const continuation = readExecutionContinuation(run.contextSnapshot) as { objective?: unknown };
   const objective = typeof continuation?.objective === "string"
     ? continuation.objective : [issue.title, issue.description].filter(Boolean).join("\n");
   await validateNativeDeliverableEvidence(db, { companyId: run.companyId, issueId: issue.id, runId,

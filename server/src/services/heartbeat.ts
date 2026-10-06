@@ -7496,6 +7496,9 @@ export async function buildPaperclipWakePayload(input: {
     executionPolicy?: unknown;
   } | null;
   exposeLowTrustRaw?: boolean;
+  // PERF-DIET: the continuation envelope is owned by the wake payload. Callers
+  // pass it explicitly so the run snapshot never carries a second top-level copy.
+  executionContinuation?: unknown;
   // Experimental: agents write user-interaction content in ASD-STE100
   // Simplified Technical English (rendered as a prompt directive downstream).
   simplifiedEnglishInteractions?: boolean;
@@ -20529,7 +20532,6 @@ export function heartbeatService(
       if (isConversation(issueContext)) {
         delete context.resumeSessionParams;
         delete context.resumeSessionDisplayId;
-        delete context.executionContinuation;
         delete context.paperclipContinuationSummary;
       }
       const taskSessionDecodedParams = normalizeSessionParams(
@@ -20628,13 +20630,13 @@ export function heartbeatService(
               exposeLowTrustRaw,
             })
           : null;
-      context.executionContinuation = executionContinuation;
       const paperclipWakePayload = await buildPaperclipWakePayload({
         db,
         companyId: agent.companyId,
         agentId: agent.id,
         runId: run.id,
         contextSnapshot: context,
+        executionContinuation,
         continuationSummary,
         issueSummary: issueRef
           ? {

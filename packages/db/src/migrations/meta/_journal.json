@@ -2101,6 +2101,13 @@
       "when": 1791226482773,
       "tag": "0303_add_resurrection_count_to_wakeup_requests",
       "breakpoints": true
+    },
+    {
+      "idx": 304,
+      "version": "7",
+      "when": 1791266580528,
+      "tag": "0304_remove_execution_continuation_duplication",
+      "breakpoints": true
     }
   ]
 }

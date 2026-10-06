@@ -22,9 +22,28 @@ const object = (v: unknown): Record<string, unknown> =>
     : {};
 const string = (v: unknown) =>
   typeof v === "string" && v.length > 0 ? v : null;
+
+const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
+
+/**
+ * PERF-DIET: the continuation envelope is stored once, inside `paperclipWake`,
+ * so a run snapshot no longer carries a second copy at its top level. Snapshots
+ * written before the dedupe migration still hold the legacy top-level copy, so
+ * read that as a fallback until the migration has stripped every row.
+ */
+export function readExecutionContinuation(
+  contextSnapshot: unknown,
+): Record<string, unknown> {
+  const snapshot = object(contextSnapshot);
+  const wakePayload = object(snapshot[PAPERCLIP_WAKE_PAYLOAD_KEY]);
+  return object(
+    wakePayload.executionContinuation ?? snapshot.executionContinuation,
+  );
+}
+
 export function continuationOriginCommentIds(context: unknown): string[] {
   const c = object(context);
-  const prior = object(c.executionContinuation);
+  const prior = readExecutionContinuation(context);
   return [
     ...new Set(
       [
@@ -190,7 +209,7 @@ export async function buildExecutionContinuation(input: {
           )
       )[0]
     : null;
-  const priorEnvelope = object(previousRun?.context?.executionContinuation);
+  const priorEnvelope = readExecutionContinuation(previousRun?.context);
   const deliveredMessages = Array.isArray(priorEnvelope.messages)
     ? priorEnvelope.messages.map(object)
     : null;
