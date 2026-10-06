@@ -663,7 +663,15 @@ import {
   recordSwarmClaimOnCheckoutImpl,
   releaseSwarmClaimsForRunImpl,
 } from "../myrmidon/swarm-claim/hooks.js";
-import { scheduleQueuedResweep, sharedRunAdmission } from "../myrmidon/run-admission.js";
+import {
+  // myrmidon(1.6.5 RUN-FAIRNESS): the fair-share rule and the sweep order.
+  DEFAULT_MAX_PER_AGENT_START_SHARE_PERCENT,
+  evaluateAgentStartShare,
+  orderAgentIdsByOldestQueuedRun,
+  scheduleQueuedResweep,
+  sharedRunAdmission,
+  type RunAdmissionDenialReason,
+} from "../myrmidon/run-admission.js";
 // myrmidon(S2-hostcred): a run never inherits the host's GitHub credentials
 import {
   filterHostGitHubCredentialEnv,
@@ -19128,8 +19136,68 @@ export function heartbeatService(
     return { reaped: reaped.length, runIds: reaped };
   }
 
+  // myrmidon(1.6.5 RUN-FAIRNESS): why a run stays queued. Written onto the
+  // run itself (`contextSnapshot.waitReason`) whenever a sweep pass leaves it
+  // queued because of an admission gate; removed by the claim that starts it.
+  // `agent_fair_share` and `agent_concurrency` are decided by the sweep around
+  // the admission (the share gate and the per-agent ceiling); the admission
+  // itself names only its own gates (`lastDenialReason`).
+  type QueuedRunWaitReason = RunAdmissionDenialReason | "agent_fair_share" | "agent_concurrency";
+
+  async function writeQueuedRunWaitReason(
+    runIds: ReadonlyArray<string>,
+    waitReason: QueuedRunWaitReason,
+  ): Promise<void> {
+    if (runIds.length === 0) return;
+    const rows = await db
+      .select({ id: heartbeatRuns.id, contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(and(inArray(heartbeatRuns.id, [...runIds]), eq(heartbeatRuns.status, "queued")));
+    const at = new Date();
+    for (const row of rows) {
+      const context = parseObject(row.contextSnapshot);
+      if (context.waitReason === waitReason) continue;
+      await db
+        .update(heartbeatRuns)
+        .set({ contextSnapshot: { ...context, waitReason }, updatedAt: at })
+        .where(and(eq(heartbeatRuns.id, row.id), eq(heartbeatRuns.status, "queued")));
+    }
+  }
+
+  async function clearQueuedRunWaitReason(
+    runIds: ReadonlyArray<string>,
+  ): Promise<void> {
+    if (runIds.length === 0) return;
+    const rows = await db
+      .select({ id: heartbeatRuns.id, contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(inArray(heartbeatRuns.id, [...runIds]));
+    for (const row of rows) {
+      const context = parseObject(row.contextSnapshot);
+      if (context.waitReason === undefined) continue;
+      const { waitReason: _cleared, ...rest } = context;
+      await db
+        .update(heartbeatRuns)
+        .set({ contextSnapshot: rest })
+        .where(eq(heartbeatRuns.id, row.id));
+    }
+  }
+
+  // myrmidon(1.6.5 RUN-FAIRNESS): the per-agent share ceiling of the sliding
+  // start window, in percent. The key arrives with the runtime-limits part of
+  // the feature; until then the name is read from the live limits as a
+  // forward-compatible string and every read falls back to the default.
+  function maxPerAgentStartSharePercent(): number {
+    const raw = (sharedRunAdmission().limits() as Record<string, unknown>)[
+      "maxPerAgentStartSharePercent"
+    ];
+    return typeof raw === "number" && Number.isFinite(raw) && raw > 0
+      ? raw
+      : DEFAULT_MAX_PER_AGENT_START_SHARE_PERCENT;
+  }
+
   async function resumeQueuedRuns() {
-    if ((await getSchedulingSuppression()).suppressed) return;
+    if ((await getSchedulingSuppression()).suppressed) return [];
     await resumeExecutionWaitComments();
     const cutoff = await getWorktreeExecutionCutoff();
     const pendingInterrupts = await db.select({ id: agentWakeupRequests.id, companyId: agentWakeupRequests.companyId })
@@ -19217,8 +19285,10 @@ export function heartbeatService(
       });
     }
 
+    // myrmidon(1.6.5 RUN-FAIRNESS): the fair-share gate reads the age of each
+    // agent's oldest queued run, so the queue read selects it with the agent.
     const queuedRuns = await db
-      .select({ agentId: heartbeatRuns.agentId })
+      .select({ agentId: heartbeatRuns.agentId, createdAt: heartbeatRuns.createdAt })
       .from(heartbeatRuns)
       .innerJoin(companies, eq(companies.id, heartbeatRuns.companyId))
       .where(
@@ -19238,12 +19308,28 @@ export function heartbeatService(
       .where(eq(heartbeatRuns.status, "running"));
     sharedRunAdmission().syncRunning(Number(running ?? 0));
 
-    const agentIds = [...new Set(queuedRuns.map((r) => r.agentId))];
+    // myrmidon(1.6.5 RUN-FAIRNESS): the sweep visits the agents by the age of
+    // each agent's OLDEST queued run, so a freed global slot goes to the
+    // longest-waiting run instead of the agent that happens to be first in
+    // the loop. The queue read above is already ordered by run createdAt, so
+    // the first appearance of an agent is its oldest waiting run.
+    const firstQueuedRunAtByAgent = new Map<string, Date>();
+    for (const run of queuedRuns) {
+      if (!firstQueuedRunAtByAgent.has(run.agentId)) {
+        firstQueuedRunAtByAgent.set(run.agentId, run.createdAt);
+      }
+    }
+    const agentIds = orderAgentIdsByOldestQueuedRun([...firstQueuedRunAtByAgent]);
     for (const agentId of agentIds) {
       // myrmidon: one agent's failure (e.g. a duplicate routine issue on claim)
       // must not stop the sweep for every agent queued after it
       try {
-        await startNextQueuedRunForAgent(agentId);
+        await startNextQueuedRunForAgent(
+          agentId,
+          // myrmidon(1.6.5 RUN-FAIRNESS): the share gate holds an agent only
+          // while OTHER agents wait — a lone queue is never throttled.
+          { otherAgentsWaiting: agentIds.length > 1 },
+        );
       } catch (err) {
         logger.error({ err, agentId }, "queued run sweep: start failed for agent");
       }
@@ -19592,7 +19678,14 @@ export function heartbeatService(
     }
   }
 
-  async function startNextQueuedRunForAgent(agentId: string) {
+  async function startNextQueuedRunForAgent(
+    agentId: string,
+    // myrmidon(1.6.5 RUN-FAIRNESS): passed by the queued-run sweep — whether
+    // runs of other agents wait in the same pass. The fair-share gate holds
+    // an agent over its share only then; an ad-hoc call (one agent) never
+    // holds its own queue.
+    options: { otherAgentsWaiting?: boolean } = {},
+  ) {
     if ((await getSchedulingSuppression()).suppressed) return [];
     // myrmidon(R3): queued runs wait for maintenance exit — except the
     // CHAT-FIRST exemption below.
@@ -19653,6 +19746,48 @@ export function heartbeatService(
         )
         .orderBy(asc(heartbeatRuns.createdAt));
       if (queuedRuns.length === 0) return [];
+
+      // myrmidon(1.6.5 RUN-FAIRNESS): the per-agent ceiling holds these runs;
+      // name the wait on them (also covers the availableSlots<=0 exit above).
+      if (availableSlots <= 0) {
+        await writeQueuedRunWaitReason(
+          queuedRuns.map((run) => run.id),
+          "agent_concurrency",
+        );
+        return [];
+      }
+
+      // myrmidon(1.6.5 RUN-FAIRNESS): the fair-share gate. While runs of
+      // other agents wait in the same pass, an agent that already took its
+      // share of the sliding start window is skipped, so a freed global slot
+      // reaches the queue of the agents that did not start yet.
+      if (options.otherAgentsWaiting) {
+        const share = sharedRunAdmission().agentStartShare();
+        const sharePercent = maxPerAgentStartSharePercent();
+        const verdict = evaluateAgentStartShare({
+          windowedStarts: share.total,
+          agentStarts: share.byAgent.get(agentId) ?? 0,
+          sharePercent,
+          otherAgentsWaiting: true,
+        });
+        if (!verdict.allowed) {
+          logger.info(
+            {
+              agentId,
+              sharePercent: verdict.sharePercent,
+              windowedStarts: verdict.windowedStarts,
+              agentStarts: verdict.agentStarts,
+            },
+            "queued run sweep: fair share hold — the agent is over its share of the start window, other agents wait",
+          );
+          await writeQueuedRunWaitReason(
+            queuedRuns.map((run) => run.id),
+            "agent_fair_share",
+          );
+          scheduleAdmissionResweep();
+          return [];
+        }
+      }
 
       const dependencyReadiness = await listQueuedRunDependencyReadiness(
         agent.companyId,
@@ -19729,9 +19864,22 @@ export function heartbeatService(
 
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
       // myrmidon: instance-wide cap, start rate and free memory on top of the
-      // per-agent slots; slots are taken synchronously, so no lock is needed
+      // per-agent slots; slots are taken synchronously, so no lock is needed.
+      // myrmidon(1.6.5 RUN-FAIRNESS): the reservation names its agent, so the
+      // start counts against this agent's share of the sliding start window.
       const admission = sharedRunAdmission();
-      const admitted = admission.reserve(availableSlots);
+      const admitted = admission.reserve(availableSlots, { agentId });
+      // myrmidon(1.6.5 RUN-FAIRNESS): the runs an admission gate leaves
+      // queued say why they wait; a claimed run drops the note.
+      const runsLeftQueued = admitted < prioritizedRuns.length
+        ? prioritizedRuns.slice(Math.max(admitted, 0))
+        : [];
+      if (runsLeftQueued.length > 0) {
+        await writeQueuedRunWaitReason(
+          runsLeftQueued.map((run) => run.id),
+          admission.lastDenialReason() ?? "global_cap",
+        );
+      }
       try {
         for (const queuedRun of prioritizedRuns) {
           if (claimedRuns.length >= admitted) break;
@@ -19745,6 +19893,8 @@ export function heartbeatService(
         scheduleAdmissionResweep();
       }
       if (claimedRuns.length === 0) return [];
+
+      await clearQueuedRunWaitReason(claimedRuns.map((run) => run.id));
 
       for (const claimedRun of claimedRuns) {
         const execution = executeRun(claimedRun.id)

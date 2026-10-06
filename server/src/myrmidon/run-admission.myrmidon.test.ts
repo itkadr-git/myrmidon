@@ -1,12 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  AGENT_START_SHARE_WINDOW_MS,
   HOST_CPU_HOLD_SIGNAL_MS,
   HOST_MEMORY_HOLD_SIGNAL_MS,
   applyRunAdmissionLimits,
+  compareQueuedRunsForGlobalQueue,
   createRunAdmission,
   currentRunAdmissionLimits,
+  evaluateAgentStartShare,
   hostCpuHoldSignal,
   hostMemoryHoldSignal,
+  orderAgentIdsByOldestQueuedRun,
   readHostCpuLoad,
   readHostMemory,
   readCgroupFreeMemoryBytes,
@@ -696,5 +700,287 @@ describe("myrmidon(1.6.5 RUN-ADMISSION) host CPU ceiling", () => {
     expect(readHostCpuLoad({ readFile: read, cpuCount: () => 0 })).toMatchObject({ known: false });
     expect(readHostCpuLoad({ loadavgPath: "/host/loadavg", readFile: read })).toMatchObject({ known: false });
     expect(readHostCpuLoad({ readFile: () => "garly\n", cpuCount: () => 4 })).toMatchObject({ known: false });
+  });
+});
+// ---------------------------------------------------------------------------
+// myrmidon(1.6.5 RUN-FAIRNESS): the fair queue at a busy global cap.
+//
+// What this suite pins, with the admission built on in-memory limits and
+// readings (no database, neutral data):
+//
+//   1. `lastDenialReason` names the gate that closed the last reservation
+//      (global cap, start ramp, server memory, host memory, host CPU) and is
+//      null again after a reservation served in full;
+//   2. a reservation that names its agent counts against that agent's share
+//      of the sliding 10-minute start window (`agentStartShare`), and an
+//      anonymous reservation never does;
+//   3. the share gate (`evaluateAgentStartShare`) holds an agent at or over
+//      its share ONLY while other agents wait, and never holds a queue
+//      shorter than one full share step;
+//   4. the sweep order (`orderAgentIdsByOldestQueuedRun`) hands a freed
+//      global slot to the agent whose oldest queued run waited longest —
+//      the acceptance rule of the ticket: at a busy cap the longest-waiting
+//      run gets the slot;
+//   5. the cross-agent queue order (`compareQueuedRunsForGlobalQueue`) keeps
+//      the rank/priority rule of the per-agent queue and lets the older run
+//      win every tie.
+// ---------------------------------------------------------------------------
+
+describe("myrmidon(1.6.5 RUN-FAIRNESS)", () => {
+  const OPEN = {
+    maxConcurrentRuns: null,
+    maxStartsPerMinute: null,
+    minFreeMemoryMb: null,
+    runMemoryEstimateMb: 300,
+    minFreeHostMemoryMb: null,
+    maxHostLoadPercentPerCore: null,
+  };
+  const AGENT_A = "aaaaaaaa-1111-4111-8111-111111111111";
+  const AGENT_B = "bbbbbbbb-2222-4222-8222-222222222222";
+  const AGENT_C = "cccccccc-3333-4333-8333-333333333333";
+
+  describe("lastDenialReason", () => {
+    it("is null while reservations are served in full", () => {
+      const admission = createRunAdmission({ limits: { ...OPEN } });
+      expect(admission.lastDenialReason()).toBeNull();
+      expect(admission.reserve(3)).toBe(3);
+      expect(admission.lastDenialReason()).toBeNull();
+    });
+
+    it("names the global concurrency cap", () => {
+      const admission = createRunAdmission({ limits: { ...OPEN, maxConcurrentRuns: 2 } });
+      expect(admission.reserve(2)).toBe(2);
+      expect(admission.lastDenialReason()).toBeNull();
+      expect(admission.reserve(1)).toBe(0);
+      expect(admission.lastDenialReason()).toBe("global_cap");
+    });
+
+    it("names the start ramp when the ramp binds before the cap", () => {
+      // The cap leaves room (5 of 10), the ramp does not (1 start left).
+      const admission = createRunAdmission({
+        limits: { ...OPEN, maxConcurrentRuns: 10, maxStartsPerMinute: 3 },
+      });
+      expect(admission.reserve(2)).toBe(2);
+      expect(admission.lastDenialReason()).toBeNull();
+      expect(admission.reserve(5)).toBe(1);
+      expect(admission.lastDenialReason()).toBe("start_ramp");
+    });
+
+    it("names the server free-memory guard", () => {
+      const admission = createRunAdmission({
+        limits: { ...OPEN, minFreeMemoryMb: 1000, runMemoryEstimateMb: 300 },
+        freeMemoryBytes: () => (1000 + 300) * MB,
+      });
+      expect(admission.reserve(2)).toBe(1);
+      expect(admission.lastDenialReason()).toBe("memory");
+      expect(admission.reserve(2)).toBe(0);
+      expect(admission.lastDenialReason()).toBe("memory");
+    });
+
+    it("names the host memory floor", () => {
+      const GB = 1024 * MB;
+      const admission = createRunAdmission({
+        limits: { ...OPEN, minFreeHostMemoryMb: 15360 },
+        hostMemory: () => ({ known: true, availableBytes: 10 * GB, totalBytes: 64 * GB }),
+      });
+      expect(admission.reserve(1)).toBe(0);
+      expect(admission.lastDenialReason()).toBe("host_memory");
+    });
+
+    it("names the host CPU ceiling", () => {
+      const admission = createRunAdmission({
+        limits: { ...OPEN, maxHostLoadPercentPerCore: 90 },
+        hostCpuLoad: () => ({ known: true, load1: 95, load15: 5, cores: 16 }),
+      });
+      expect(admission.reserve(1)).toBe(0);
+      expect(admission.lastDenialReason()).toBe("host_cpu");
+    });
+
+    it("clears on the next reservation, whatever it returns", () => {
+      const admission = createRunAdmission({ limits: { ...OPEN, maxConcurrentRuns: 1 } });
+      expect(admission.reserve(2)).toBe(1);
+      expect(admission.lastDenialReason()).toBe("global_cap");
+      admission.finish();
+      expect(admission.reserve(1)).toBe(1);
+      expect(admission.lastDenialReason()).toBeNull();
+    });
+  });
+
+  describe("per-agent share of the sliding start window", () => {
+    it("counts only reservations that name their agent", () => {
+      const admission = createRunAdmission({ limits: { ...OPEN } });
+      admission.reserve(2, { agentId: AGENT_A });
+      admission.reserve(1); // a non-sweep start path: no agent
+      admission.reserve(1, { agentId: AGENT_B });
+      const share = admission.agentStartShare();
+      expect(share.total).toBe(3);
+      expect(share.byAgent.get(AGENT_A)).toBe(2);
+      expect(share.byAgent.get(AGENT_B)).toBe(1);
+      expect(share.byAgent.has("anonymous")).toBe(false);
+    });
+
+    it("drops starts older than the 10-minute window", () => {
+      let clock = 0;
+      const admission = createRunAdmission({ limits: { ...OPEN }, now: () => clock });
+      admission.reserve(2, { agentId: AGENT_A });
+      clock = AGENT_START_SHARE_WINDOW_MS + 1;
+      admission.reserve(1, { agentId: AGENT_B });
+      const share = admission.agentStartShare();
+      expect(share.total).toBe(1);
+      expect(share.byAgent.get(AGENT_A)).toBeUndefined();
+      expect(share.byAgent.get(AGENT_B)).toBe(1);
+    });
+
+    it("holds an agent at or over its share while other agents wait, and only then", () => {
+      // 20 starts in the window, 3 of them by AGENT_A, the share ceiling 15 %:
+      // 3 >= ceil(0.15 * 20) = 3 — the agent waits while others queue.
+      expect(
+        evaluateAgentStartShare({
+          windowedStarts: 20,
+          agentStarts: 3,
+          sharePercent: 15,
+          otherAgentsWaiting: true,
+        }),
+      ).toEqual({
+        allowed: false,
+        reason: "agent_fair_share",
+        sharePercent: 15,
+        windowedStarts: 20,
+        agentStarts: 3,
+      });
+      // The same numbers with nobody else waiting: the share never idles a
+      // lone queue.
+      expect(
+        evaluateAgentStartShare({
+          windowedStarts: 20,
+          agentStarts: 3,
+          sharePercent: 15,
+          otherAgentsWaiting: false,
+        }).allowed,
+      ).toBe(true);
+      // Under the share: 2 < 3, the agent starts.
+      expect(
+        evaluateAgentStartShare({
+          windowedStarts: 20,
+          agentStarts: 2,
+          sharePercent: 15,
+          otherAgentsWaiting: true,
+        }).allowed,
+      ).toBe(true);
+    });
+
+    it("never holds a queue shorter than one full share step", () => {
+      // 5 starts in the window, all by AGENT_A: 5 < 100 / 15 = 6.67 — any
+      // start would cross the share arithmetically, so the gate stays open.
+      expect(
+        evaluateAgentStartShare({
+          windowedStarts: 5,
+          agentStarts: 5,
+          sharePercent: 15,
+          otherAgentsWaiting: true,
+        }).allowed,
+      ).toBe(true);
+      // At 7 starts the first share step exists: 7 >= 6.67 and
+      // 7 >= ceil(0.15 * 7) = 2 — the agent over its share waits.
+      expect(
+        evaluateAgentStartShare({
+          windowedStarts: 7,
+          agentStarts: 7,
+          sharePercent: 15,
+          otherAgentsWaiting: true,
+        }).allowed,
+      ).toBe(false);
+    });
+
+    it("lets the agents below their share through while the agent over its share waits (the acceptance rule at a busy cap)", () => {
+      // The incident shape: the global cap is full, several agents wait, and
+      // one agent took ~half the starts of the window. With the share gate
+      // the freed slot passes the dominant agent by and reaches the agents
+      // that have not started.
+      const sharePercent = 15;
+      const windowedStarts = 48;
+      const dominant = evaluateAgentStartShare({
+        windowedStarts,
+        agentStarts: 23, // ~48 % of the window
+        sharePercent,
+        otherAgentsWaiting: true,
+      });
+      expect(dominant.allowed).toBe(false);
+      const shareStep = Math.ceil((sharePercent / 100) * windowedStarts); // 8
+      for (const agentStarts of [0, 1, shareStep - 1]) {
+        expect(
+          evaluateAgentStartShare({
+            windowedStarts,
+            agentStarts,
+            sharePercent,
+            otherAgentsWaiting: true,
+          }).allowed,
+        ).toBe(true);
+      }
+    });
+  });
+
+  describe("sweep order: the oldest waiter first", () => {
+    it("orders the agents by the createdAt of each agent's oldest queued run", () => {
+      const t = (minutesAgo: number) => new Date(Date.UTC(2026, 9, 6, 12, 0, 0) - minutesAgo * 60_000);
+      // The queue read is ordered by run createdAt, so the first appearance
+      // of an agent is its oldest run. AGENT_C queued first but appears once.
+      const order = orderAgentIdsByOldestQueuedRun([
+        [AGENT_B, t(9)],
+        [AGENT_A, t(12)],
+        [AGENT_C, t(30)],
+      ]);
+      expect(order).toEqual([AGENT_C, AGENT_A, AGENT_B]);
+    });
+
+    it("at a busy cap the longest-waiting run gets the freed slot (the ticket's acceptance rule)", () => {
+      // Two agents queued; the sweep order decides whose reserve() runs
+      // first, and the admission has exactly one free slot.
+      const t = (minutesAgo: number) => new Date(Date.UTC(2026, 9, 6, 12, 0, 0) - minutesAgo * 60_000);
+      const order = orderAgentIdsByOldestQueuedRun([
+        [AGENT_B, t(1)],
+        [AGENT_A, t(25)],
+      ]);
+      const admission = createRunAdmission({ limits: { ...OPEN, maxConcurrentRuns: 51 } });
+      admission.syncRunning(50); // the cap is 51, 50 run: one slot free
+      const winners: string[] = [];
+      for (const agentId of order) {
+        if (admission.reserve(1, { agentId }) > 0) winners.push(agentId);
+      }
+      expect(winners).toEqual([AGENT_A]); // the 25-minute waiter, not the first in line
+      expect(admission.lastDenialReason()).toBe("global_cap");
+    });
+  });
+
+  describe("cross-agent queue order", () => {
+    const run = (
+      agentId: string,
+      createdAt: Date,
+      extra: Partial<Parameters<typeof compareQueuedRunsForGlobalQueue>[0]> = {},
+    ) => ({ agentId, createdAt, ...extra });
+    const t = (minutesAgo: number) => new Date(Date.UTC(2026, 9, 6, 12, 0, 0) - minutesAgo * 60_000);
+
+    it("serves the older run first when every rank ties", () => {
+      const older = run(AGENT_A, t(20));
+      const newer = run(AGENT_B, t(2));
+      expect(compareQueuedRunsForGlobalQueue(older, newer)).toBeLessThan(0);
+      expect(compareQueuedRunsForGlobalQueue(newer, older)).toBeGreaterThan(0);
+    });
+
+    it("lets issue priority reorder runs of one rank, and keeps a blocked issue last whatever its priority", () => {
+      const critical = run(AGENT_A, t(2), { issueStatus: "backlog", priority: "critical" });
+      const low = run(AGENT_B, t(30), { issueStatus: "backlog", priority: "low" });
+      // Same rank (a waiting issue): the critical run jumps the older low one.
+      expect(compareQueuedRunsForGlobalQueue(critical, low)).toBeLessThan(0);
+      // A run behind unresolved blockers waits even when it is critical and old.
+      const blocked = run(AGENT_C, t(60), { issueStatus: "in_progress", priority: "critical", dependencyReady: false });
+      const plain = run(AGENT_B, t(1), { issueStatus: "in_progress", priority: "low" });
+      expect(compareQueuedRunsForGlobalQueue(blocked, plain)).toBeGreaterThan(0);
+      // A run with no issue sits between a waiting issue and a blocked one.
+      const noIssue = run(AGENT_B, t(1));
+      const waiting = run(AGENT_A, t(1), { issueStatus: "todo" });
+      expect(compareQueuedRunsForGlobalQueue(noIssue, waiting)).toBeGreaterThan(0);
+      expect(compareQueuedRunsForGlobalQueue(noIssue, blocked)).toBeLessThan(0);
+    });
   });
 });
