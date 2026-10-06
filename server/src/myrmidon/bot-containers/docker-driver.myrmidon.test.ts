@@ -27,7 +27,7 @@ import {
 } from "./docker-driver.js";
 import type { BotContainerDriver, BotContainerSpec } from "./driver.js";
 import { reconcileBot, type BotMaintenancePort } from "./reconciler.js";
-import { BOT_LABEL_KEYS, BOT_RUNTIME_CONTRACT_LABEL, BotContainerTemplateError } from "./template.js";
+import { BOT_LABEL_KEYS, BOT_RUNTIME_CONTRACT_LABEL, BOT_RUNTIME_SCOPE_LABEL, BotContainerTemplateError } from "./template.js";
 import { CLONE_HYGIENE_REPORT_PATH } from "./clone-hygiene.js";
 import type { CompiledProfile, CompiledProfileFile } from "./types.js";
 import { buildUstarArchive, parseUstarArchive, type UstarReadEntry } from "./ustar.js";
@@ -309,6 +309,26 @@ describe("containerTemplateDrifted", () => {
     expect(containerTemplateDrifted({ Config: existing.Config, HostConfig: { ...existing.HostConfig, Binds: undefined } }, body)).toBe(
       true,
     );
+  });
+
+  // myrmidon(1.6.5-BOT-LAYOUT-V), the rc.1 rollout defect: a live 1.6.4
+  // container (three binds, the image's own legacy layout) compared against a
+  // body built for ITS contract shows NO drift — the phantom Binds drift that
+  // recreated 12 bots under a layout their image could not boot is gone. The
+  // single-layout body above (the same spec on a single-layout image) still
+  // reports the drift: it is the NEW layout, and comparing across layouts is
+  // exactly what the contract-based body builder now prevents.
+  it("is false for a 1.6.4 container against a body built under the legacy layout", () => {
+    const legacyBody = buildCreateContainerRequestBody(spec(), CONFIG, undefined, false, undefined, "legacy");
+    const legacyInspect = {
+      Config: { Image: legacyBody.Image },
+      HostConfig: { ...legacyBody.HostConfig, Binds: [...legacyBody.HostConfig.Binds] },
+    };
+    expect(containerTemplateDrifted(legacyInspect, legacyBody)).toBe(false);
+    expect(templateDriftFields(legacyInspect, legacyBody)).toEqual([]);
+    // and the other way around: the single body against the legacy container
+    // is still a real drift — the layouts are never silently conflated.
+    expect(containerTemplateDrifted(legacyInspect, body)).toBe(true);
   });
 
   // The 01.10 incident: the inspect the board reads (through dockergate) had no
@@ -675,7 +695,10 @@ function readDotenvValue(file: string, key: string): string | undefined {
   return value;
 }
 
-const CONTRACT_LABELS: Record<string, string> = { [BOT_RUNTIME_CONTRACT_LABEL]: "1" };
+const CONTRACT_LABELS: Record<string, string> = { [BOT_RUNTIME_CONTRACT_LABEL]: "1", [BOT_RUNTIME_SCOPE_LABEL]: "1" };
+// The three-volume images (1.6.4 and earlier): contract "1" without the scope
+// label — the botVolumeLayout transition rule gives them the legacy binds.
+const LEGACY_CONTRACT_LABELS: Record<string, string> = { [BOT_RUNTIME_CONTRACT_LABEL]: "1" };
 
 /** `images`: image reference -> its labels (null: an image without labels). */
 async function startFakeDaemon(tmp: string, images: Record<string, Record<string, string> | null>): Promise<FakeDaemon> {
@@ -781,13 +804,17 @@ async function startFakeDaemon(tmp: string, images: Record<string, Record<string
     if (options.bootNeedsProfile) {
       // What the bot image checks before its gateway serves (runtime contract "1").
       // The bot's tree is ONE mount at /bot; the directories the contract requires to be
-      // writable by uid 10001 are hermes/, workspace/ and scratch/ inside it.
-      const root = parseBinds(container).find(({ destination }) => destination === "/bot");
-      const binds = root
+      // writable by uid 10001 are hermes/, workspace/ and scratch/ inside it. A
+      // LEGACY-layout container (contract "1" without the scope label) carries the
+      // same three host directories as three separate binds — the hermes bind IS
+      // the hermes directory — and boots through them.
+      const binds = parseBinds(container);
+      const root = binds.find(({ destination }) => destination === "/bot");
+      const directories = root
         ? ["hermes", "workspace", "scratch"].map((name) => ({ source: `${root.source}/${name}`, destination: `/bot/${name}` }))
-        : [];
-      const notOwned = binds.find(({ source }) => owners.get(source)?.uid !== BOT_CONTAINER_UID);
-      const hermes = binds.find(({ destination }) => destination === "/bot/hermes");
+        : binds.filter(({ destination }) => destination === "/data/hermes" || destination === "/workspace" || destination === "/scratch");
+      const notOwned = directories.find(({ source }) => owners.get(source)?.uid !== BOT_CONTAINER_UID);
+      const hermes = directories.find(({ destination }) => destination === "/bot/hermes" || destination === "/data/hermes");
       const envKey = container.body.Env?.find((entry) => entry.startsWith("API_SERVER_KEY="))?.slice("API_SERVER_KEY=".length);
       const apiKey = (hermes && readDotenvValue(path.join(hermes.source, ".env"), "API_SERVER_KEY")) ?? envKey;
       const refusal = notOwned
@@ -991,8 +1018,10 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
     daemon = await startFakeDaemon(tmp, {
       "myrmidon-hermes:1.1.0": CONTRACT_LABELS,
       "myrmidon-hermes:1.2.0": CONTRACT_LABELS,
+      "myrmidon-hermes:1.6.5": { [BOT_RUNTIME_CONTRACT_LABEL]: "2" }, // the versioned single-mount contract
+      "myrmidon-hermes:1.6.4": LEGACY_CONTRACT_LABELS, // the three-volume release image of the rollout defect
       "myrmidon-hermes:1.0.0": null, // built before the runtime contract: no label at all
-      "myrmidon-hermes:3.0.0": { [BOT_RUNTIME_CONTRACT_LABEL]: "2" }, // a contract this driver does not know
+      "myrmidon-hermes:3.0.0": { [BOT_RUNTIME_CONTRACT_LABEL]: "3" }, // a contract this driver does not know
     });
     const volumeRoot = path.join(tmp, "bots");
     volumes = {
@@ -1294,7 +1323,7 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
 
     it.each([
       { label: "declares no bot runtime contract", image: "myrmidon-hermes:1.0.0", error: /does not declare the bot runtime contract/ },
-      { label: "declares a contract this driver does not support", image: "myrmidon-hermes:3.0.0", error: /declares bot runtime contract "2"/ },
+      { label: "declares a contract this driver does not support", image: "myrmidon-hermes:3.0.0", error: /declares bot runtime contract "3"/ },
     ])("create refuses an image that $label, before preparing or creating anything", async ({ image, error }) => {
       await expect(driver.create(spec({ image }))).rejects.toThrow(error);
       expect(daemon.requests.map((r) => `${r.method} ${r.path}`)).toEqual([`GET /images/${image}/json`]);
@@ -1376,6 +1405,109 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
       await driver.recreate(spec({ image: "myrmidon-hermes:1.2.0" }));
       expect([...daemon.containers.keys()]).toEqual(["myrmidon-bot-agent-a"]);
       expect(bot()?.body.Image).toBe("myrmidon-hermes:1.2.0");
+    });
+
+    // The acceptance of the ticket: a card on the OLD image (1.6.4: contract
+    // "1" without the scope label) under the NEW board (1.6.5-rc.1 recreated
+    // 12 bots against a single-mount template, the image then found its
+    // $HERMES_HOME empty and crash-looped on "API_SERVER_KEY is required").
+    // The layout now follows the image's contract, not the board's newest
+    // template, so an old card neither drifts nor gets a body it cannot boot.
+    describe("a card on the legacy 1.6.4 image (contract \"1\", no scope label)", () => {
+      const legacy = () => spec({ image: "myrmidon-hermes:1.6.4" });
+      // The driver of this describe mounts under the tmp volume root (volumes
+      // is set in beforeEach), so the expected binds name those very dirs.
+      const LEGACY_BINDS = () => [
+        `${volumes.hermes}:/data/hermes`,
+        `${volumes.workspace}:/workspace`,
+        `${volumes.scratch}:/scratch`,
+      ];
+
+      it("the fresh create body carries the three separate binds, never the /bot mount", () => {
+        const body = buildCreateContainerRequestBody(legacy(), CONFIG, undefined, false, undefined, "legacy");
+        expect(body.HostConfig.Binds.slice(0, 3)).toEqual([
+          "/srv/myrmidon/bots/agent-a/hermes:/data/hermes",
+          "/srv/myrmidon/bots/agent-a/workspace:/workspace",
+          "/srv/myrmidon/bots/agent-a/scratch:/scratch",
+        ]);
+        expect(body.HostConfig.Binds.some((bind) => bind.endsWith(":/bot") || bind.includes(":/bot:"))).toBe(false);
+      });
+
+      it("the body builder refuses to combine the legacy layout with a shared scope instance", () => {
+        expect(() =>
+          buildCreateContainerRequestBody(legacy(), CONFIG, undefined, false, { scopeRoot: "/srv/scopes", dirName: "team-x" }, "legacy"),
+        ).toThrow(/legacy volume layout/);
+      });
+
+      it("templateDrift reports NO drift for a 1.6.4 container living with the legacy binds", async () => {
+        await driver.create(legacy());
+        expect(bot()?.body.HostConfig.Binds).toEqual(LEGACY_BINDS());
+        // The 1.6.5 board compares the live container against a fresh body —
+        // built for THIS image's contract: no phantom Binds drift.
+        expect(await driver.templateDrift(legacy())).toEqual({ drifted: false, fields: [] });
+        // Limits still drift like any other template field.
+        const drifted = await driver.templateDrift(spec({ image: "myrmidon-hermes:1.6.4", memoryMb: 2048 }));
+        expect(drifted.fields.map((f) => f.field)).toEqual(["HostConfig.Memory"]);
+      });
+
+      it("create lays the profile, starts, and the image boots through its own binds", async () => {
+        await driver.create(legacy());
+        await driver.writeProfile("agent-a", testProfile());
+        // The marker of a legacy container is read through /data/hermes, not /bot.
+        expect((await driver.status("agent-a")).restartHash).toBe("restart-1");
+        await driver.start("agent-a");
+        expect(bot()?.state).toBe("running");
+        expect(bot()?.logs).toBe("");
+        expect(read(path.join(volumes.hermes, "config.yaml"))).toContain("example-model");
+        expect(fs.existsSync(path.join(volumes.hermes, ".myrmidon/applied.json"))).toBe(true);
+      });
+
+      it("recreate rebuilds the container under the legacy layout and it boots again (the rollout defect)", async () => {
+        await driver.create(legacy());
+        await driver.writeProfile("agent-a", testProfile());
+        await driver.start("agent-a");
+        const oldId = bot()!.id;
+        const before = daemon.requests.length;
+        await driver.recreate(legacy());
+        const creates = daemon.requests.slice(before).filter((r) => r.method === "POST" && r.path === "/containers/create" && r.query.name === "myrmidon-bot-agent-a.next");
+        expect(creates.length).toBe(1);
+        expect(bot()?.id).not.toBe(oldId);
+        expect(bot()?.body.HostConfig.Binds).toEqual(LEGACY_BINDS());
+        // the applied profile survived (same host directories): no re-apply needed
+        expect((await driver.status("agent-a")).restartHash).toBe("restart-1");
+        await driver.start("agent-a");
+        expect(bot()?.state).toBe("running");
+        expect(await driver.templateDrift(legacy())).toEqual({ drifted: false, fields: [] });
+      });
+
+      it("reconcileBot over the whole board path: an old card converges with NO recreate, and the gateway comes up", async () => {
+        const noMaintenance: BotMaintenancePort = {
+          enter: async () => ({ state: "on", runningRuns: 0, owned: true }),
+          status: async () => ({ state: "on", runningRuns: 0 }),
+          exit: async () => {},
+        };
+        const first = await reconcileBot({
+          agentId: "agent-a",
+          botKey: "agent-a",
+          spec: legacy(),
+          compile: async () => testProfile(),
+          driver,
+          maintenance: noMaintenance,
+        });
+        expect(first.kind).toBe("created");
+        expect(bot()?.body.HostConfig.Binds).toEqual(LEGACY_BINDS());
+        expect(bot()?.state).toBe("running");
+        // the next pass: no phantom drift, nothing recreated, nothing restarted
+        const pass2 = await reconcileBot({
+          agentId: "agent-a",
+          botKey: "agent-a",
+          spec: legacy(),
+          compile: async () => testProfile(),
+          driver,
+          maintenance: noMaintenance,
+        });
+        expect(pass2.kind).toBe("unchanged");
+      });
     });
   });
 

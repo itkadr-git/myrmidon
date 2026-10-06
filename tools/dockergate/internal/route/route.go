@@ -55,10 +55,18 @@ var archiveMounts = map[string]string{
 // link, which only exists in the image).
 const markerQuery = "path=%2Fbot%2Fhermes%2F.myrmidon%2Fapplied.json"
 
+// LegacyMarkerQuery is the marker of a LEGACY-layout bot (contract "1"): its
+// hermes volume is bound at /data/hermes itself, so the marker sits there.
+const LegacyMarkerQuery = "path=%2Fdata%2Fhermes%2F.myrmidon%2Fapplied.json"
+
 // cloneReportQuery is the one file of the bot that the board reads besides the
 // marker: the clone-hygiene report the bot image writes (A13). A fixed literal,
 // like the marker: no other path of the archive GET is allowed.
 const cloneReportQuery = "path=%2Fbot%2Fhermes%2F.myrmidon%2Fclone-hygiene.json"
+
+// LegacyCloneReportQuery is the clone-hygiene report of a LEGACY-layout bot,
+// next to its marker under the /data/hermes bind.
+const LegacyCloneReportQuery = "path=%2Fdata%2Fhermes%2F.myrmidon%2Fclone-hygiene.json"
 
 // MarkerQuery is markerQuery for other packages.
 const MarkerQuery = markerQuery
@@ -95,6 +103,11 @@ type Route struct {
 	// ScopeMarker is set on an A3 request that names the marker of a shared
 	// scope member (/bot-scope/<botKey>/hermes/...) instead of /bot/hermes/....
 	ScopeMarker bool
+	// LegacyMarker is set on an A3/A13 request that names the marker or the
+	// clone report of a LEGACY-layout bot (/data/hermes/...): the hermes
+	// volume of a contract "1" image is bound at /data/hermes itself, so the
+	// board reads its files there.
+	LegacyMarker bool
 	// Mount is the container path of an A5 upload.
 	Mount string
 }
@@ -256,18 +269,20 @@ func Parse(method, target string, images Images) (*Route, *deny.Error) {
 			return nil, notAllowed()
 		}
 		r.ID = A2
-	case "/archive?" + markerQuery, "/archive?" + ScopeMarkerQuery(key):
+	case "/archive?" + markerQuery, "/archive?" + LegacyMarkerQuery, "/archive?" + ScopeMarkerQuery(key):
 		if method != "GET" || suffix != SuffixMain {
 			return nil, notAllowed()
 		}
 		r.ID = A3
-		r.ScopeMarker = tail != "/archive?"+markerQuery
-	case "/archive?" + cloneReportQuery, "/archive?" + ScopeCloneReportQuery(key):
+		r.ScopeMarker = tail == "/archive?"+ScopeMarkerQuery(key)
+		r.LegacyMarker = tail == "/archive?"+LegacyMarkerQuery
+	case "/archive?" + cloneReportQuery, "/archive?" + LegacyCloneReportQuery, "/archive?" + ScopeCloneReportQuery(key):
 		if method != "GET" || suffix != SuffixMain {
 			return nil, notAllowed()
 		}
 		r.ID = A13
-		r.ScopeMarker = tail != "/archive?"+cloneReportQuery
+		r.ScopeMarker = tail == "/archive?"+ScopeCloneReportQuery(key)
+		r.LegacyMarker = tail == "/archive?"+LegacyCloneReportQuery
 	case "/start":
 		if method != "POST" || suffix == SuffixNext {
 			return nil, notAllowed()

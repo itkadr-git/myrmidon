@@ -65,10 +65,16 @@ func (rs *reqState) a2(ctx context.Context, st *runtime, rt *route.Route, bs *bo
 // isolated bot.
 const markerPath = "/archive?" + route.MarkerQuery
 
+// legacyMarkerPath is the applied marker of a LEGACY-layout bot (contract "1"),
+// read through its /data/hermes bind.
+const legacyMarkerPath = "/archive?" + route.LegacyMarkerQuery
+
 // a3: the applied marker. A marker of more than 1 MiB is reported as absent.
 func (rs *reqState) a3(ctx context.Context, st *runtime, rt *route.Route, bs *botState) *deny.Error {
 	target := markerPath
-	if rt.ScopeMarker {
+	if rt.LegacyMarker {
+		target = legacyMarkerPath
+	} else if rt.ScopeMarker {
 		target = "/archive?" + route.ScopeMarkerQuery(rt.BotKey)
 	}
 	return rs.archiveRead(ctx, rt, bs, target, maxMarker)
@@ -77,10 +83,15 @@ func (rs *reqState) a3(ctx context.Context, st *runtime, rt *route.Route, bs *bo
 // cloneReportPath is the query of the archive GET of the clone-hygiene report.
 const cloneReportPath = "/archive?" + route.CloneReportQuery
 
+// legacyCloneReportPath is the clone-hygiene report of a LEGACY-layout bot.
+const legacyCloneReportPath = "/archive?" + route.LegacyCloneReportQuery
+
 // a13: the clone-hygiene report of the bot, one fixed file, read-only.
 func (rs *reqState) a13(ctx context.Context, st *runtime, rt *route.Route, bs *botState) *deny.Error {
 	target := cloneReportPath
-	if rt.ScopeMarker {
+	if rt.LegacyMarker {
+		target = legacyCloneReportPath
+	} else if rt.ScopeMarker {
 		target = "/archive?" + route.ScopeCloneReportQuery(rt.BotKey)
 	}
 	return rs.archiveRead(ctx, rt, bs, target, maxCloneReport)

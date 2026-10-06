@@ -2,13 +2,16 @@ import { describe, expect, it } from "vitest";
 import type { BotExtraMount } from "./driver.js";
 import {
   assertBotRuntimeContract,
+  botVolumeLayout,
   BOT_KEY_PATTERN,
   BOT_LABEL_KEYS,
   BOT_RUNTIME_CONTRACT_LABEL,
+  BOT_RUNTIME_SCOPE_LABEL,
   BotContainerTemplateError,
   buildBinds,
   buildLabels,
   containerNameFor,
+  declaredBotRuntimeContract,
   devbuildContainerEnv,
   devbuildKeyMount,
   helperContainerNameFor,
@@ -93,6 +96,34 @@ describe("parseImageAllowlist / isImageAllowed", () => {
 describe("buildBinds", () => {
   it("produces exactly ONE bind for a bot (its whole tree at /bot), and nothing else", () => {
     expect(buildBinds("/srv/myrmidon/bots", "agent-a")).toEqual(["/srv/myrmidon/bots/agent-a:/bot"]);
+  });
+
+  it("lays the three separate binds under the legacy volume layout (contract \"1\")", () => {
+    expect(buildBinds("/srv/myrmidon/bots", "agent-a", { volumeLayout: "legacy" })).toEqual([
+      "/srv/myrmidon/bots/agent-a/hermes:/data/hermes",
+      "/srv/myrmidon/bots/agent-a/workspace:/workspace",
+      "/srv/myrmidon/bots/agent-a/scratch:/scratch",
+    ]);
+  });
+
+  it("keeps extras and cache binds identical under both layouts, after the base binds", () => {
+    const mounts = [{ source: "/srv/shared/sources", containerPath: "/srv/shared/sources", readOnly: true } as const];
+    for (const volumeLayout of ["legacy", "single"] as const) {
+      expect(buildBinds("/srv/bots", "agent-a", { mounts, allowedSources: ["/srv/shared/sources"], sharedPackageCachePath: "/srv/cache", gitMirror: true, volumeLayout }).slice(0, volumeLayout === "legacy" ? 3 : 1)).toEqual(
+        volumeLayout === "legacy"
+          ? ["/srv/bots/agent-a/hermes:/data/hermes", "/srv/bots/agent-a/workspace:/workspace", "/srv/bots/agent-a/scratch:/scratch"]
+          : ["/srv/bots/agent-a:/bot"],
+      );
+      const full = buildBinds("/srv/bots", "agent-a", { mounts, allowedSources: ["/srv/shared/sources"], sharedPackageCachePath: "/srv/cache", gitMirror: true, volumeLayout });
+      expect(full.slice(-6)).toEqual([
+        "/srv/shared/sources:/srv/shared/sources:ro",
+        "/srv/cache/pnpm:/cache/pnpm:rw",
+        "/srv/cache/go-mod:/cache/go-mod:rw",
+        "/srv/cache/go-build:/cache/go-build:rw",
+        "/srv/cache/gradle:/cache/gradle:rw",
+        "/srv/cache/git:/cache/git:ro",
+      ]);
+    }
   });
 
   it("rejects a bot key that could escape the volume root", () => {
@@ -378,14 +409,45 @@ describe("assertBotRuntimeContract", () => {
     ).not.toThrow();
   });
 
+  it("accepts the single-mount contract \"2\" too", () => {
+    expect(() => assertBotRuntimeContract("myrmidon-hermes:1.6.5", { [BOT_RUNTIME_CONTRACT_LABEL]: "2" })).not.toThrow();
+  });
+
   const refused: Array<{ label: string; labels: Record<string, string> | null | undefined }> = [
     { label: "no labels (Docker's null)", labels: null },
     { label: "no labels (absent)", labels: undefined },
     { label: "other labels only", labels: { "org.opencontainers.image.title": "myrmidon-hermes" } },
     { label: "an empty contract", labels: { [BOT_RUNTIME_CONTRACT_LABEL]: "" } },
-    { label: "an unknown contract", labels: { [BOT_RUNTIME_CONTRACT_LABEL]: "2" } },
+    { label: "an unknown contract", labels: { [BOT_RUNTIME_CONTRACT_LABEL]: "3" } },
   ];
   it.each(refused)("refuses an image with $label", ({ labels }) => {
     expect(() => assertBotRuntimeContract("myrmidon-hermes:1.0.0", labels)).toThrow(BotContainerTemplateError);
+  });
+});
+
+// The acceptance of the ticket: the volume layout follows the IMAGE's contract,
+// never the board's newest template (1.6.5-rc.1: containers of the 1.6.4 image
+// were recreated with the single-mount layout and crash-looped on an empty
+// $HERMES_HOME).
+describe("botVolumeLayout (volume layout pinned by the image contract)", () => {
+  it("contract \"2\" is the single /bot mount", () => {
+    expect(botVolumeLayout("myrmidon-hermes:1.6.5", { [BOT_RUNTIME_CONTRACT_LABEL]: "2" })).toBe("single");
+    expect(botVolumeLayout("img", { [BOT_RUNTIME_CONTRACT_LABEL]: "2", [BOT_RUNTIME_SCOPE_LABEL]: "1" })).toBe("single");
+  });
+
+  it("contract \"1\" without the scope label is the legacy three-volume layout (the 1.6.4 release images)", () => {
+    expect(botVolumeLayout("myrmidon-hermes@sha256:164", { [BOT_RUNTIME_CONTRACT_LABEL]: "1" })).toBe("legacy");
+    expect(botVolumeLayout("myrmidon-hermes@sha256:164", { [BOT_RUNTIME_CONTRACT_LABEL]: "1", "org.opencontainers.image.title": "myrmidon-hermes" })).toBe("legacy");
+  });
+
+  it("contract \"1\" WITH the scope label is the single mount: the BOT-DISK-D/F-era images shipped before the layout was versioned", () => {
+    expect(botVolumeLayout("myrmidon-hermes@sha256:rc1", { [BOT_RUNTIME_CONTRACT_LABEL]: "1", [BOT_RUNTIME_SCOPE_LABEL]: "1" })).toBe("single");
+  });
+
+  it("refuses an image without a supported contract, like assertBotRuntimeContract", () => {
+    expect(() => botVolumeLayout("myrmidon-hermes:1.0.0", null)).toThrow(BotContainerTemplateError);
+    expect(() => botVolumeLayout("myrmidon-hermes:bad", { [BOT_RUNTIME_CONTRACT_LABEL]: "9" })).toThrow(/supports only/);
+    expect(() => declaredBotRuntimeContract("img", { [BOT_RUNTIME_CONTRACT_LABEL]: "1" })).not.toThrow();
+    expect(declaredBotRuntimeContract("img", { [BOT_RUNTIME_CONTRACT_LABEL]: "2" })).toBe("2");
   });
 });
