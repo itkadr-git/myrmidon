@@ -4,7 +4,6 @@ import {
   HOST_CPU_HOLD_SIGNAL_MS,
   HOST_MEMORY_HOLD_SIGNAL_MS,
   applyRunAdmissionLimits,
-  compareQueuedRunsForGlobalQueue,
   createRunAdmission,
   currentRunAdmissionLimits,
   evaluateAgentStartShare,
@@ -720,10 +719,7 @@ describe("myrmidon(1.6.5 RUN-ADMISSION) host CPU ceiling", () => {
 //   4. the sweep order (`orderAgentIdsByOldestQueuedRun`) hands a freed
 //      global slot to the agent whose oldest queued run waited longest —
 //      the acceptance rule of the ticket: at a busy cap the longest-waiting
-//      run gets the slot;
-//   5. the cross-agent queue order (`compareQueuedRunsForGlobalQueue`) keeps
-//      the rank/priority rule of the per-agent queue and lets the older run
-//      win every tie.
+//      run gets the slot.
 // ---------------------------------------------------------------------------
 
 describe("myrmidon(1.6.5 RUN-FAIRNESS)", () => {
@@ -949,38 +945,6 @@ describe("myrmidon(1.6.5 RUN-FAIRNESS)", () => {
       }
       expect(winners).toEqual([AGENT_A]); // the 25-minute waiter, not the first in line
       expect(admission.lastDenialReason()).toBe("global_cap");
-    });
-  });
-
-  describe("cross-agent queue order", () => {
-    const run = (
-      agentId: string,
-      createdAt: Date,
-      extra: Partial<Parameters<typeof compareQueuedRunsForGlobalQueue>[0]> = {},
-    ) => ({ agentId, createdAt, ...extra });
-    const t = (minutesAgo: number) => new Date(Date.UTC(2026, 9, 6, 12, 0, 0) - minutesAgo * 60_000);
-
-    it("serves the older run first when every rank ties", () => {
-      const older = run(AGENT_A, t(20));
-      const newer = run(AGENT_B, t(2));
-      expect(compareQueuedRunsForGlobalQueue(older, newer)).toBeLessThan(0);
-      expect(compareQueuedRunsForGlobalQueue(newer, older)).toBeGreaterThan(0);
-    });
-
-    it("lets issue priority reorder runs of one rank, and keeps a blocked issue last whatever its priority", () => {
-      const critical = run(AGENT_A, t(2), { issueStatus: "backlog", priority: "critical" });
-      const low = run(AGENT_B, t(30), { issueStatus: "backlog", priority: "low" });
-      // Same rank (a waiting issue): the critical run jumps the older low one.
-      expect(compareQueuedRunsForGlobalQueue(critical, low)).toBeLessThan(0);
-      // A run behind unresolved blockers waits even when it is critical and old.
-      const blocked = run(AGENT_C, t(60), { issueStatus: "in_progress", priority: "critical", dependencyReady: false });
-      const plain = run(AGENT_B, t(1), { issueStatus: "in_progress", priority: "low" });
-      expect(compareQueuedRunsForGlobalQueue(blocked, plain)).toBeGreaterThan(0);
-      // A run with no issue sits between a waiting issue and a blocked one.
-      const noIssue = run(AGENT_B, t(1));
-      const waiting = run(AGENT_A, t(1), { issueStatus: "todo" });
-      expect(compareQueuedRunsForGlobalQueue(noIssue, waiting)).toBeGreaterThan(0);
-      expect(compareQueuedRunsForGlobalQueue(noIssue, blocked)).toBeLessThan(0);
     });
   });
 });

@@ -19197,7 +19197,7 @@ export function heartbeatService(
   }
 
   async function resumeQueuedRuns() {
-    if ((await getSchedulingSuppression()).suppressed) return [];
+    if ((await getSchedulingSuppression()).suppressed) return;
     await resumeExecutionWaitComments();
     const cutoff = await getWorktreeExecutionCutoff();
     const pendingInterrupts = await db.select({ id: agentWakeupRequests.id, companyId: agentWakeupRequests.companyId })
@@ -19732,8 +19732,8 @@ export function heartbeatService(
         0,
         policy.maxConcurrentRuns - runningCount,
       );
-      if (availableSlots <= 0) return [];
-
+      // myrmidon(1.6.5 RUN-FAIRNESS): the per-agent ceiling check moved below
+      // the queue read, so the runs it holds get their waitReason.
       const queuedRuns = await db
         .select()
         .from(heartbeatRuns)
@@ -19748,7 +19748,7 @@ export function heartbeatService(
       if (queuedRuns.length === 0) return [];
 
       // myrmidon(1.6.5 RUN-FAIRNESS): the per-agent ceiling holds these runs;
-      // name the wait on them (also covers the availableSlots<=0 exit above).
+      // name the wait on them.
       if (availableSlots <= 0) {
         await writeQueuedRunWaitReason(
           queuedRuns.map((run) => run.id),

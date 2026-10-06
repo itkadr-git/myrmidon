@@ -215,59 +215,6 @@ export function orderAgentIdsByOldestQueuedRun(
     .map(([agentId]) => agentId);
 }
 
-/**
- * myrmidon(1.6.5 RUN-FAIRNESS): the queue order of runs across agents when
- * freed slots are handed out — the same rank the per-agent queue applies to
- * the issues of one agent, then the age of the run: a run whose issue sits
- * in progress comes first, a run on a waiting issue next, a run without an
- * issue after that, a run behind unresolved blockers last; inside one rank
- * the issue priority (critical before high before medium before low before
- * none), then the oldest run. Priority only reorders runs of one rank — an
- * urgent run on an issue behind blockers still waits, and a fresh run on a
- * live issue is not stuck behind an old run whose issue cannot start. When
- * two runs tie on every rank the older one wins: the oldest waiter is served
- * first at the cap.
- */
-export type QueuedRunQueueOrderInput = ReadonlyArray<{
-  agentId: string;
-  createdAt: Date;
-  priority?: string | null;
-  issueStatus?: string | null;
-  dependencyReady?: boolean;
-}>;
-
-export function compareQueuedRunsForGlobalQueue(
-  left: QueuedRunQueueOrderInput[number],
-  right: QueuedRunQueueOrderInput[number],
-): number {
-  const rank = (run: QueuedRunQueueOrderInput[number]): number => {
-    if (run.issueStatus == null) return 2;
-    if (!(run.dependencyReady ?? true)) return 3;
-    return run.issueStatus === "in_progress" ? 0 : 1;
-  };
-  const leftRank = rank(left);
-  const rightRank = rank(right);
-  if (leftRank !== rightRank) return leftRank - rightRank;
-  const priorityRank = (priority: string | null | undefined): number => {
-    switch (priority) {
-      case "critical":
-        return 0;
-      case "high":
-        return 1;
-      case "medium":
-        return 2;
-      case "low":
-        return 3;
-      default:
-        return 4;
-    }
-  };
-  const leftPriority = priorityRank(left.priority);
-  const rightPriority = priorityRank(right.priority);
-  if (leftPriority !== rightPriority) return leftPriority - rightPriority;
-  return left.createdAt.getTime() - right.createdAt.getTime();
-}
-
 export type RunAdmissionLimits = RunLimits;
 
 /** The limits as the environment declares them, with the built-in defaults. */
