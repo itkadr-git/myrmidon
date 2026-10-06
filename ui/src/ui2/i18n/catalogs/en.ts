@@ -94,6 +94,8 @@ export const en = {
     savedToast: "Language saved",
     saveFailed: "Could not save the language choice. It stays for this browser only.",
     serverHint: "The choice is saved to your user profile and follows you across devices.",
+    telegramBridgeUser: "The Telegram bot answers you in this language too.",
+    telegramBridgeEnv: "The Telegram bot ignores this choice right now: the server environment forces {language} for every chat.",
   },
   status: {
     open: "Open",
@@ -449,6 +451,8 @@ export type Ui2Catalog = {
     savedToast: string;
     saveFailed: string;
     serverHint: string;
+    telegramBridgeUser: string;
+    telegramBridgeEnv: string;
   };
   status: Record<
     | "open"
