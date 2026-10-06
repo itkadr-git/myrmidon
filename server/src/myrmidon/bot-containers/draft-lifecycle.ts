@@ -117,8 +117,11 @@ export async function sweepBotVolume(
   try {
     await stat(botVolumeRoot);
     noteVolumeRoot(true, () => undefined);
-  } catch {
+  } catch (error) {
     noteVolumeRoot(false, (message) => console.warn(message));
+    // myrmidon(FEATURES): the missing root is the sweep's root error — the
+    // features page shows it as the bot-disk health signal.
+    report.rootError = { code: errorCode(error), message: errorText(error) };
     return report;
   }
 
