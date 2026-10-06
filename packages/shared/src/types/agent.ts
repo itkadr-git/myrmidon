@@ -92,7 +92,17 @@ export interface Agent {
   reportsTo: string | null;
   capabilities: string | null;
   adapterType: AgentAdapterType;
-  adapterConfig: Record<string, unknown>;
+  // myrmidon(PERF-DIET-G): the company agent LIST (GET /companies/:id/agents)
+  // is a slim projection that never carries the heavy adapterConfig (it holds
+  // environment bindings and secret references). Detail and configuration
+  // reads still return it: GET /agents/:id, GET /agents/:id/configuration and
+  // GET /companies/:id/agent-configurations. A list row exposes the model as
+  // AgentListItem.adapterModel instead.
+  adapterConfig?: Record<string, unknown>;
+  // myrmidon(PERF-DIET-G): adapterConfig->>'model' of the row. Present on the
+  // slim list projection (where adapterConfig is absent), absent on detail
+  // reads (which carry the whole adapterConfig).
+  adapterModel?: string | null;
   runtimeConfig: AgentRuntimeConfig;
   defaultEnvironmentId?: string | null;
   budgetMonthlyCents: number;
@@ -108,9 +118,37 @@ export interface Agent {
   updatedAt: Date;
 }
 
+export interface AgentListItem extends Agent {
+  // myrmidon(PERF-DIET-G): adapterConfig->>'model' of the row, computed by the
+  // server so the slim list keeps the model column without shipping the config.
+  adapterModel: string | null;
+}
+
 export interface AgentDetail extends Agent {
   chainOfCommand: AgentChainOfCommandEntry[];
   access: AgentAccessState;
+  // myrmidon(PERF-DIET-G): detail reads always carry the configuration (the
+  // company list projection is the only read that omits it).
+  adapterConfig: Record<string, unknown>;
+}
+
+// myrmidon(PERF-DIET-G): the configuration read the slim list hands off to —
+// GET /agents/:id/configuration and GET /companies/:id/agent-configurations.
+// Same redaction as the detail read (env values masked), but without the
+// chain-of-command/access extras.
+export interface AgentConfigurationSummary {
+  id: string;
+  companyId: string;
+  name: string;
+  role: string;
+  title: string | null;
+  status: AgentStatus;
+  reportsTo: string | null;
+  adapterType: AgentAdapterType;
+  adapterConfig: Record<string, unknown>;
+  runtimeConfig: Record<string, unknown>;
+  permissions: AgentPermissions;
+  updatedAt: Date;
 }
 
 export type ClearAgentErrorResponse = Agent;

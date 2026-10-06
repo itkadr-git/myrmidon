@@ -59,6 +59,8 @@ import {
   submitBrowserCodeRequestSchema,
   toAccountHandle,
   type AgentAdapterType,
+  // myrmidon(PERF-DIET-G): the slim list row returned by GET /companies/:id/agents
+  type AgentListItem,
 } from "@paperclipai/shared";
 import { dbAutonomyGate } from "../myrmidon/autonomy/gate.js";
 import {
@@ -3214,6 +3216,18 @@ export function agentRoutes(
     };
   }
 
+  // myrmidon(PERF-DIET-G): the restricted view of a slim list row. The row
+  // carries no adapterConfig, so blanking the runtime config and the
+  // config-derived model preserves exactly the disclosure the pre-slim list
+  // made to an actor without agent_config:read.
+  function redactAgentListItemForRestrictedView(agent: AgentListItem): AgentListItem {
+    return {
+      ...agent,
+      runtimeConfig: {},
+      adapterModel: null,
+    };
+  }
+
   // Single presenter for every response that emits a raw agent row. Restricted
   // views blank the config wholesale for authorization reasons; this runs for
   // config-reading (board) callers too, so plaintext `adapterConfig.env` values
@@ -4104,13 +4118,18 @@ export function agentRoutes(
       });
       return;
     }
-    const result = await filterAgentsForActor(req, await svc.list(companyId));
+    const result = await filterAgentsForActor(req, await svc.listSummaries(companyId));
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
+    // myrmidon(PERF-DIET-G): the list is a slim projection. It carries no
+    // adapterConfig (so no per-row env redaction is needed any more) and the
+    // model column travels as the SQL-computed `adapterModel`; the full
+    // configuration stays behind GET /agents/:id/configuration and
+    // GET /companies/:id/agent-configurations.
     if (canReadConfigs) {
-      res.json(result.map((agent) => redactAgentRowForResponse(agent)));
+      res.json(result);
       return;
     }
-    res.json(result.map((agent) => redactForRestrictedAgentView(agent)));
+    res.json(result.map((agent) => redactAgentListItemForRestrictedView(agent)));
   });
 
   router.get("/instance/scheduler-heartbeats", async (req, res) => {
