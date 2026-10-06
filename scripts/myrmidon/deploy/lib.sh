@@ -415,6 +415,15 @@ load_config() {
   : "${MYRMIDON_PREDEPLOY_API_PATHS:=}"
   : "${MYRMIDON_PREDEPLOY_TOKEN_FILE:=}"
   : "${MYRMIDON_PREDEPLOY_KEEP:=0}"
+  # DEPLOY-HYGIENE (OPE-5107): the deploy must not fill the disk it deploys
+  # from. Before the first pull the free space of the filesystem that holds
+  # /var/lib/docker is checked (deploy_disk_precheck); after a successful
+  # deploy the component images older than MYRMIDON_DEPLOY_IMAGE_KEEP previous
+  # releases are removed (deploy_image_retention; the running and the
+  # just-deployed images are always kept).
+  : "${MYRMIDON_DEPLOY_MIN_FREE_GB:=15}"
+  : "${MYRMIDON_DEPLOY_IMAGE_KEEP:=1}"
+  : "${MYRMIDON_DEPLOY_IMAGE_REPOS:=$MYRMIDON_IMAGE,ghcr.io/itkadr-git/myrmidon-dockergate,ghcr.io/itkadr-git/myrmidon-fleetd,ghcr.io/itkadr-git/myrmidon-hermes,ghcr.io/itkadr-git/myrmidon-hermes-dev,ghcr.io/itkadr-git/myrmidon-hermes-node}"
   : "${SYSTEMD_UNIT_NAME:=paperclip.service}"
   : "${SYSTEMD_UNIT_DIR:=/etc/systemd/system}"
   : "${SYSTEMD_UNIT_INSTALL:=}"
@@ -1491,4 +1500,112 @@ dockergate_verify_state() {
   done
   log "dockergate is not proven healthy: $reason"
   return 1
+}
+
+# --- DEPLOY-HYGIENE (OPE-5107): disk precheck and image retention ------------
+# The 06.10 disk incident: one deploy of rc.3 moved the root filesystem of the
+# deploy host from 86 % to 92 % in an hour. Three leaks: the anonymous volume
+# of the predeploy database copy survived the check (handled in
+# predeploy-board-check.sh), the component images of past releases were never
+# removed (deploy_image_retention), and the deploy started pulling images
+# without checking the disk could hold them (deploy_disk_precheck).
+
+# Free gibibytes (integer) of the filesystem that holds /var/lib/docker.
+# Prints nothing when the number cannot be read.
+docker_free_gb() {
+  local kb
+  kb="$(df -Pk /var/lib/docker 2>/dev/null | awk 'NR==2 {print $4}')" || kb=""
+  [[ "$kb" =~ ^[0-9]+$ ]] || return 1
+  printf '%s\n' $((kb / 1024 / 1024))
+}
+
+# Refuses the deploy BEFORE the first image pull and the dump when the
+# filesystem of /var/lib/docker has less than MYRMIDON_DEPLOY_MIN_FREE_GB
+# gibibytes free (default 15; the board image alone is about 7 GB, the bot
+# images several more). The refusal names the requirement, the current value
+# and the candidates for cleanup, and runs before anything was changed.
+# A threshold of 0 switches the check off. In a dry run the check is reported
+# with the current value and the plan continues.
+deploy_disk_precheck() {
+  local where="$1" min_gb="${MYRMIDON_DEPLOY_MIN_FREE_GB:-15}" free
+  [[ "$min_gb" =~ ^[0-9]+$ ]] || die "MYRMIDON_DEPLOY_MIN_FREE_GB must be a non-negative integer (got '$min_gb')"
+  free="$(docker_free_gb)" || free=""
+  if ((min_gb == 0)); then
+    log "disk precheck ($where): MYRMIDON_DEPLOY_MIN_FREE_GB=0, the check is off (free: ${free:-unknown} GiB)"
+    return 0
+  fi
+  if [[ "$DRY_RUN" == "1" ]]; then
+    log "disk precheck ($where): dry run, nothing refused; the real run needs ${min_gb} GiB free on the filesystem of /var/lib/docker (now: ${free:-unknown} GiB)"
+    return 0
+  fi
+  [[ -n "$free" ]] || { log "disk precheck ($where): cannot read the free space of /var/lib/docker; continuing (df gave no answer)"; return 0; }
+  if ((free < min_gb)); then
+    log "disk precheck ($where): ${free} GiB free on the filesystem of /var/lib/docker, less than the required ${min_gb} GiB (MYRMIDON_DEPLOY_MIN_FREE_GB)"
+    log "disk precheck: the deploy is NOT started: no image was pulled, no dump was taken, nothing was changed"
+    log "disk precheck: candidates for cleanup (docker system df): the component images of past releases (docker image ls ghcr.io/itkadr-git/myrmidon), orphaned volumes of past predeploy checks (docker volume ls -f name=myr-predeploy-dbvol-), build cache"
+    docker system df 2>/dev/null >&2 || true
+    die "not enough free disk space for the deploy: ${free} GiB < ${min_gb} GiB; free space (see the candidates above) or lower MYRMIDON_DEPLOY_MIN_FREE_GB"
+  fi
+  log "disk precheck ($where): ${free} GiB free on the filesystem of /var/lib/docker (>= ${min_gb} GiB required)"
+}
+
+# Removes the local images of the deploy's component repositories that are
+# older than MYRMIDON_DEPLOY_IMAGE_KEEP previous releases (default 1: the
+# current release plus the one before it, kept for a rollback). Order is the
+# image creation date (docker image ls). An image used by ANY container
+# (running or stopped) is never removed: it is skipped with a log line.
+# <none> tags left by a removed image are taken with it. A keep of 0 switches
+# the cleanup off. A failure here must never fail a finished deploy: the
+# caller warns and moves on.
+deploy_image_retention() {
+  local keep="${MYRMIDON_DEPLOY_IMAGE_KEEP:-1}" repos="${MYRMIDON_DEPLOY_IMAGE_REPOS:-}"
+  local repo entry id created tag kept entries
+  [[ "$keep" =~ ^[0-9]+$ ]] || { log "image retention: MYRMIDON_DEPLOY_IMAGE_KEEP must be a non-negative integer (got '$keep'); the cleanup is skipped"; return 1; }
+  if ((keep == 0)); then
+    log "image retention: MYRMIDON_DEPLOY_IMAGE_KEEP=0, the cleanup is off"
+    return 0
+  fi
+  # Image ids any container uses right now. Never removed, whatever their age.
+  local used_ids
+  used_ids="$(docker ps -a -q 2>/dev/null | while IFS= read -r cid; do
+    [[ -n "$cid" ]] && docker inspect --format '{{.Image}}' "$cid" 2>/dev/null
+done | sed 's/^sha256://' | sort -u)" || used_ids=""
+  local removed=0 skipped=0
+  for repo in $(tr ',' ' ' <<<"$repos"); do
+    [[ -n "$repo" ]] || continue
+    # Newest first: one image per line as "created<TAB>id<TAB>tag" (a tab
+    # survives the raw echo of the fakes the tests drive and never appears in
+    # a docker tag or id; the timestamp is cut at the first two fields).
+    entries="$(docker image ls "$repo" --no-trunc --format '{{.CreatedAt}}{{"\t"}}{{.ID}}{{"\t"}}{{.Tag}}' 2>/dev/null \
+      | sort -t"$(printf '\t')" -k1,1r)" || entries=""
+    [[ -n "$entries" ]] || continue
+    # The keep window counts only images the cleanup may touch: an image a
+    # container uses is never removed, so it must not eat the budget of
+    # releases the operator still needs for a rollback.
+    kept=0
+    while IFS= read -r entry; do
+      [[ -n "$entry" ]] || continue
+      created="$(printf '%s' "$entry" | cut -f1)"
+      id="$(printf '%s' "$entry" | cut -f2)"
+      tag="$(printf '%s' "$entry" | cut -f3-)"
+      [[ -n "$id" ]] || continue
+      if grep -qx "${id#sha256:}" <<<"$used_ids"; then
+        log "image retention: $repo image ${id#sha256:} (created $created) is used by a container: skipped"
+        skipped=$((skipped + 1))
+        continue
+      fi
+      if ((kept < keep + 1)); then
+        kept=$((kept + 1))
+        continue
+      fi
+      if [[ -n "$tag" && "$tag" != "<none>" ]]; then
+        docker image rm "$repo:$tag" >/dev/null 2>&1 || docker image rm "$id" >/dev/null 2>&1 || true
+      else
+        docker image rm "$id" >/dev/null 2>&1 || true
+      fi
+      log "image retention: removed $repo image ${id#sha256:} (created $created; older than $keep previous release(s))"
+      removed=$((removed + 1))
+    done <<<"$entries"
+  done
+  log "image retention: $removed image(s) removed, $skipped in use and kept (keep $keep previous release(s) per repository)"
 }

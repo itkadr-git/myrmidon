@@ -64,6 +64,9 @@ case "$1" in
     exit 0 ;;
   rm)
     exit 0 ;;
+  volume)
+    # DEPLOY-HYGIENE: the copy's named volume must be removed by the trap
+    exit 0 ;;
   image)
     case "$*" in
       *org.opencontainers.image.version*) cat "$SANDBOX/label-version"; exit 0 ;;
@@ -185,6 +188,11 @@ describe("predeploy-board-check.sh (PREDEPLOY-DB-CHECK: the 05.10 incident)", ()
     assert.match(log, new RegExp(`curl .*http://127\\.0\\.0\\.1:13110/api/companies/${COMPANY}/issues\\?limit=1`));
     assert.match(out, /board ok on the copy/);
     assert.match(out, /passed: .* comes up ok on a copy of the production database/);
+    // DEPLOY-HYGIENE (OPE-5107): the copy's data lives in a NAMED volume of
+    // this run (an anonymous one survives `docker rm -f` and stays on the
+    // disk), mounted into the throwaway Postgres and removed with the stack
+    assert.match(log, /docker run -d --name myr-predeploy-db-[^ ]+ --network myr-predeploy-[^ ]+ -v myr-predeploy-dbvol-bbbbbbbb-\d+:\/var\/lib\/postgresql\/data/);
+    assert.match(log, /docker volume rm -f myr-predeploy-dbvol-bbbbbbbb-\d+/);
     // everything was removed again
     assert.match(log, /docker rm -f myr-predeploy-board-[^ ]+ myr-predeploy-dockergate-[^ ]+ myr-predeploy-db-/);
     assert.match(log, /docker network rm myr-predeploy-/);
@@ -220,6 +228,10 @@ describe("predeploy-board-check.sh (PREDEPLOY-DB-CHECK: the 05.10 incident)", ()
     // the container logs are the operator's evidence, and the stack is removed
     assert.match(out, /logs of myr-predeploy-board-/);
     assert.match(calls(sb), /docker rm -f myr-predeploy-board-/);
+    // DEPLOY-HYGIENE: a FAILED check removes the copy's volume too (the trap
+    // runs on every exit) — the 3.4/3.6 GB orphans of 05.10 and rc.3 were
+    // exactly failed/successful checks whose volume survived
+    assert.match(calls(sb), /docker volume rm -f myr-predeploy-dbvol-/);
   });
 
   it("a 5xx from the attention list fails the check (the data path 1.6.3 broke)", () => {
@@ -415,6 +427,9 @@ describe("predeploy-board-check.sh (PREDEPLOY-DB-CHECK: the 05.10 incident)", ()
     const { code, out } = full(sb, "--dockergate-digest", DG);
     assert.equal(code, 0, out);
     assert.match(out, /keeping the throwaway stack/);
+    // DEPLOY-HYGIENE: the kept stack INCLUDES the volume, and its name is printed
+    assert.match(out, /volume=myr-predeploy-dbvol-/);
     assert.doesNotMatch(calls(sb), /docker rm -f/);
+    assert.doesNotMatch(calls(sb), /docker volume rm/);
   });
 });

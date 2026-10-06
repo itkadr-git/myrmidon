@@ -245,6 +245,10 @@ dockergate_config_preflight() {
 }
 
 if [[ "$DRY_RUN" == "1" ]]; then
+  # DEPLOY-HYGIENE (OPE-5107): the real run refuses here when the disk cannot
+  # hold the image; the dry run reports the check with the current value.
+  # Local components only: a remote host's disk is that host's own concern.
+  [[ -n "$COMPONENT_REMOTE" ]] || deploy_disk_precheck "rollout-component $component"
   [[ "$component" != "dockergate" ]] || dockergate_config_preflight
   log "dry run: nothing will be changed. Component plan (${COMPONENT_HOST%%:*} target):"
   plan "1. component image check passed (read-only): $ref built by CI from commit ${CI_IMAGE_REVISION:0:12}"
@@ -262,6 +266,12 @@ if [[ "$DRY_RUN" == "1" ]]; then
   fi
   exit 0
 fi
+
+# DEPLOY-HYGIENE (OPE-5107): refuse BEFORE the pull when the filesystem of
+# /var/lib/docker cannot hold the image (a standalone component rollout has no
+# deploy.sh precheck ahead of it). Local components only: a remote host's
+# disk is that host's own concern.
+[[ -n "$COMPONENT_REMOTE" ]] || deploy_disk_precheck "rollout-component $component"
 
 log "1/5 pull $ref"
 component_docker pull --quiet "$ref" >/dev/null || die "cannot pull $ref"
