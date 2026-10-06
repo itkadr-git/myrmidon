@@ -628,7 +628,15 @@ interface FakeDaemon {
   containers: Map<string, FakeContainer>;
   owners: Map<string, Owner>;
   requests: RecordedRequest[];
-  options: { healthOnStart: "starting" | "healthy" | "unhealthy" | null; failMarkerRead: boolean; bootNeedsProfile: boolean };
+  options: {
+    healthOnStart: "starting" | "healthy" | "unhealthy" | null;
+    failMarkerRead: boolean;
+    bootNeedsProfile: boolean;
+    /** myrmidon(OPE-4789): answer every request with 429 this many times first
+     *  (the gate over its limit), optionally carrying a Retry-After header. */
+    rateLimitFirstRequests: number;
+    rateLimitRetryAfterSec: number | null;
+  };
   close(): Promise<void>;
 }
 
@@ -674,7 +682,7 @@ async function startFakeDaemon(tmp: string, images: Record<string, Record<string
   const containers = new Map<string, FakeContainer>();
   const owners = new Map<string, Owner>();
   const requests: RecordedRequest[] = [];
-  const options: FakeDaemon["options"] = { healthOnStart: "healthy", failMarkerRead: false, bootNeedsProfile: true };
+  const options: FakeDaemon["options"] = { healthOnStart: "healthy", failMarkerRead: false, bootNeedsProfile: true, rateLimitFirstRequests: 0, rateLimitRetryAfterSec: null };
   const imageLabels = new Map<string, Record<string, string> | null>();
   for (const [ref, labels] of Object.entries(images)) {
     imageLabels.set(ref, labels);
@@ -809,16 +817,24 @@ async function startFakeDaemon(tmp: string, images: Record<string, Record<string
     const query = Object.fromEntries(url.searchParams);
     const recorded: RecordedRequest = { method, path: decodeURIComponent(route), query };
     requests.push(recorded);
-    const send = (status: number, body?: unknown) => {
+    const send = (status: number, body?: unknown, extraHeaders?: Record<string, string>) => {
       if (Buffer.isBuffer(body)) {
-        res.writeHead(status, { "Content-Type": "application/x-tar" });
+        res.writeHead(status, { "Content-Type": "application/x-tar", ...extraHeaders });
         res.end(body);
         return;
       }
-      res.writeHead(status, { "Content-Type": "application/json" });
+      res.writeHead(status, { "Content-Type": "application/json", ...extraHeaders });
       res.end(body === undefined ? "" : JSON.stringify(body));
     };
     let m: RegExpMatchArray | null;
+
+    // myrmidon(OPE-4789): the gate over its limit answers 429 to everything,
+    // optionally with a Retry-After hint, until the configured count is spent.
+    if (options.rateLimitFirstRequests > 0) {
+      options.rateLimitFirstRequests -= 1;
+      const headers = options.rateLimitRetryAfterSec === null ? undefined : { "Retry-After": String(options.rateLimitRetryAfterSec) };
+      return send(429, { code: "rate_limited", message: "too many requests" }, headers);
+    }
 
     if ((m = route.match(/^\/images\/(.+)\/json$/)) && method === "GET") {
       const ref = m[1].split("/").map(decodeURIComponent).join("/");
@@ -1060,13 +1076,17 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
     expect([...daemon.containers.keys()]).toEqual(["myrmidon-bot-agent-a"]);
     expect((await driver.list(["agent-a", "agent-missing"])).map((s) => s.botKey)).toEqual(["agent-a"]);
 
-    expect(await driver.status("agent-a")).toEqual({
+    const status = await driver.status("agent-a");
+    expect({ ...status, inspect: undefined }).toEqual({
       botKey: "agent-a",
       state: "running",
       image: "myrmidon-hermes:1.1.0",
       restartHash: "restart-1",
       filesHash: "files-1",
+      // myrmidon(OPE-4789): the raw inspect rides along for the drift check.
+      inspect: undefined,
     });
+    expect(status.inspect).toMatchObject({ State: { Status: "running" } });
   });
 
   it("the apply helper runs as uid 10001 with every directory it touches owned by 10001 (explicit tar directory entries)", async () => {
@@ -1359,6 +1379,115 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
       expect(daemon.containers.size).toBe(0);
       expect(fs.existsSync(volumes.hermes)).toBe(false);
       expect(daemon.requests.some((r) => r.method !== "GET")).toBe(false);
+    });
+  });
+
+  describe("myrmidon(OPE-4789): request budget and rate-limit behavior", () => {
+    const unusedPort = async (): Promise<never> => {
+      throw new Error("this pass must not need a maintenance window");
+    };
+    const noMaintenance: BotMaintenancePort = { enter: unusedPort, status: unusedPort, exit: unusedPort };
+    const countByPath = (requests: RecordedRequest[], pattern: RegExp) => requests.filter((r) => pattern.test(`${r.method} ${r.path}?${new URLSearchParams(r.query).toString()}`)).length;
+    const inspects = (requests: RecordedRequest[]) => countByPath(requests, /^GET \/containers\/myrmidon-bot-[^/]+\/json\?$/);
+    const markerReads = (requests: RecordedRequest[]) =>
+      requests.filter((r) => r.method === "GET" && /\/containers\/myrmidon-bot-[^/]+\/archive/.test(r.path) && (r.query.path ?? "").includes("applied.json")).length;
+
+    it("one unchanged pass costs one inspect and one marker read (the status's inspect serves the drift check)", async () => {
+      await driver.create(spec());
+      await driver.writeProfile("agent-a", testProfile());
+      await driver.start("agent-a");
+      const before = daemon.requests.length;
+      expect(await reconcileBot({
+        agentId: "agent-a",
+        botKey: "agent-a",
+        spec: spec(),
+        compile: async () => testProfile(),
+        driver,
+        maintenance: noMaintenance,
+      })).toEqual({ kind: "unchanged" });
+      const pass = daemon.requests.slice(before);
+      // 1 inspect (status) + 1 marker archive read; the drift check reuses the
+      // status's inspect (was: a second inspect), and no write/start happens.
+      expect(inspects(pass)).toBe(1);
+      expect(markerReads(pass)).toBe(1);
+      expect(pass.filter((r) => r.method !== "GET")).toEqual([]);
+    });
+
+    it("templateDrift with the pass's own status pays no inspect at all", async () => {
+      await driver.create(spec());
+      await driver.writeProfile("agent-a", testProfile());
+      await driver.start("agent-a");
+      const status = await driver.status("agent-a");
+      const before = daemon.requests.length;
+      const drift = await driver.templateDrift(spec(), status);
+      expect(drift).toEqual({ drifted: false, fields: [] });
+      expect(inspects(daemon.requests.slice(before))).toBe(0);
+    });
+
+    it("a 429 is retried after a pause and the call succeeds once the gate lets it through", async () => {
+      daemon.options.rateLimitFirstRequests = 2;
+      const status = await driver.status("agent-a");
+      expect(status.state).toBe("missing");
+      // 2 refused + 1 served
+      expect(daemon.requests.filter((r) => r.path === "/containers/myrmidon-bot-agent-a/json").length).toBe(3);
+    });
+
+    it("honors the gate's Retry-After hint as the pause", async () => {
+      daemon.options.rateLimitFirstRequests = 1;
+      daemon.options.rateLimitRetryAfterSec = 2;
+      const waits: number[] = [];
+      const patientDriver = dockerBotContainerDriver(
+        {
+          socketPath: daemon.socketPath,
+          volumeRoot: path.join(tmp, "bots"),
+          network: "myrmidon-bots",
+          allowlist: ["myrmidon-hermes:*"],
+          mountSources: [],
+          devbuild: { host: null, user: "", base: "" },
+        },
+        { sleep: async (ms) => { waits.push(ms); } },
+      );
+      await patientDriver.status("agent-a");
+      expect(waits).toEqual([2000]);
+    });
+
+    it("a gate that never lets through fails after the attempt budget, with no further requests", async () => {
+      daemon.options.rateLimitFirstRequests = 100;
+      await expect(driver.status("agent-a")).rejects.toThrow(/429/);
+      expect(daemon.requests.length).toBe(4); // RATE_LIMIT_MAX_ATTEMPTS
+    });
+
+    it("start polls the health verdict at the configured interval, not once a second", async () => {
+      daemon.options.healthOnStart = "starting";
+      const waits: number[] = [];
+      let polls = 0;
+      const slowDriver = dockerBotContainerDriver(
+        {
+          socketPath: daemon.socketPath,
+          volumeRoot: path.join(tmp, "bots"),
+          network: "myrmidon-bots",
+          allowlist: ["myrmidon-hermes:*"],
+          mountSources: [],
+          devbuild: { host: null, user: "", base: "" },
+        },
+        {
+          healthPollIntervalMs: 3_000,
+          startHealthTimeoutMs: 60_000,
+          sleep: async (ms) => {
+            waits.push(ms);
+            // Become healthy after two polls (the fake daemon has no clock, so
+            // the sleep hook flips the verdict the next inspect will read).
+            if (++polls >= 2) {
+              const container = daemon.containers.get("myrmidon-bot-agent-a");
+              if (container) container.health = "healthy";
+            }
+          },
+        },
+      );
+      await slowDriver.create(spec());
+      await slowDriver.writeProfile("agent-a", testProfile());
+      await slowDriver.start("agent-a");
+      expect(waits).toEqual([3_000, 3_000]);
     });
   });
 });
