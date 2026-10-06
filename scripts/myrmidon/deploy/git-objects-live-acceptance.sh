@@ -96,6 +96,9 @@ docker inspect --format '{{.State.Running}}' "${bot}" >/dev/null 2>&1 \
 
 # The whole check runs as one script inside the bot: the facts come back as
 # KEY=VALUE lines on stdout, so nothing here parses the bot's file system.
+# The body is single-quoted on purpose: the bot's own shell expands it when the
+# check runs inside the container, not this one.
+# shellcheck disable=SC2016  # single-quoted on purpose: the bot's shell expands it, not this one
 remote_script='set -u
 d=$(mktemp -d /tmp/git-store-acceptance.XXXXXX) || exit 1
 if [ "${KEEP:-0}" != "1" ]; then trap "rm -rf \"$d\"" EXIT; fi
