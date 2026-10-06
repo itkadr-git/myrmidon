@@ -227,6 +227,25 @@ describe("managed GitHub launcher environment", () => {
     },
   );
 
+  it("stages the Git credential helper the launcher's Git config names", async () => {
+    const fixture = await sandbox("nvm/current/bin");
+    const env = await prepareGitHubOperationLaunchers({
+      runId: "run-helper", target: fixture.target, cwd: fixture.root, env: {},
+    });
+    const helper = `${env.PAPERCLIP_GITHUB_LAUNCHER_DIR}/git-credential-paperclip`;
+    const result = await fixture.runner.execute({
+      command: "bash",
+      args: ["--noprofile", "--norc", "-c", `command -v git-credential-paperclip && test -x ${helper} && echo executable`],
+      env,
+    });
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(result.stdout.trim().split("\n")).toEqual([helper, "executable"]);
+    const source = await readFile(helper, "utf8");
+    expect(source.startsWith("#!/usr/bin/env node")).toBe(true);
+    // Only the helper names a repository: it must never carry a credential itself.
+    expect(source).not.toMatch(/password=[^\s'"]/);
+  });
+
   it("preserves an explicit remote PATH without querying the remote environment", async () => {
     const fixture = await sandbox("custom/bin");
     const env = await prepareGitHubOperationLaunchers({

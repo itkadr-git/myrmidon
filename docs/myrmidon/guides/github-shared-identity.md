@@ -103,11 +103,41 @@ broker capability. The only path to a credential is the image's
   `origin` remote of the current directory, and runs the real `gh` with the
   token in that child's environment only.
 
+## Where the token goes outside a bot container
+
+A run with a local or SSH execution target — the dev agents on the build
+machine, and any bot whose container is started by `fleetd` on a second
+machine — has no image of its own, so it gets the same path staged instead:
+`prepareGitHubOperationLaunchers` writes `git`, `gh` and
+`git-credential-paperclip` into the run's launcher directory, prepends that
+directory to the run's `PATH`, and the launcher hands Git the same
+configuration the image puts in `/etc/gitconfig` (the leading empty
+`credential.helper`, ours URL-scoped to github.com, `useHttpPath = true`).
+Everything else is identical to the container:
+
+- git hands the staged `git-credential-paperclip` the repository path of the
+  operation, and the helper sends `{"repository": "owner/repo"}` to the broker
+  for exactly that repository;
+- the staged `gh` wrapper sends the repository from `-R/--repo`, `GH_REPO`, or
+  the `origin` remote of the current directory, and runs the real `gh` with the
+  token in that child's environment only;
+- a `git` invocation that carries no repository of its own (`push origin`,
+  `fetch`, `status`) names the `origin` remote of its working directory, and a
+  remote written into the arguments (`git clone https://github.com/…`,
+  `git fetch git@github.com:…`) names that repository. A ref such as
+  `origin/main` is never read as a repository;
+- an operation that names no usable repository, or one that no App serves,
+  stays without managed credentials and Git/`gh` behave exactly as they did
+  before the launcher existed.
+
+The launcher's Git configuration is its own: only the token, the terminal
+prompt switch and the commit identity are taken from the broker's answer, so a
+broker-supplied credential helper can never replace the staged one that names
+the repository.
+
 ## Limits
 
 - The GitHub App manifest flow (one-click registration) is not automated
   yet: the App is registered by hand with the permissions listed above.
-- The local/SSH launcher of non-container adapters does not name a
-  repository yet, so it never receives an App token.
 - The App's own MCP tools are not wired: App tokens serve shell git/gh
   through the broker and the server-side workspace git of a run.
