@@ -2270,7 +2270,8 @@ describe("IssueProperties", () => {
         title: null,
         status: "active",
         adapterType: "codex_local",
-        adapterConfig: { model: "gpt-6-astra" },
+        // myrmidon(PERF-DIET-G): the inherited model comes from the list row.
+        adapterModel: "gpt-6-astra",
         icon: null,
       },
     ]);

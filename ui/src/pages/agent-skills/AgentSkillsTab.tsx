@@ -308,7 +308,9 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
     if (!unsupported) return null;
     if (
       agent.adapterType === "acpx_local" &&
-      typeof agent.adapterConfig.agent === "string" &&
+      // myrmidon(PERF-DIET-G): adapterConfig is absent on the slim list rows;
+      // this tab only renders on the detail read, but stay explicit.
+      typeof agent.adapterConfig?.agent === "string" &&
       agent.adapterConfig.agent === "custom"
     ) {
       return "Myrmidon cannot manage skills for custom ACP commands yet.";
@@ -317,7 +319,7 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
       return "Myrmidon cannot manage OpenClaw skills here. Visit your OpenClaw instance to manage this agent's skills.";
     }
     return "Myrmidon cannot manage skills for this adapter yet. Manage them in the adapter directly.";
-  }, [agent.adapterConfig.agent, agent.adapterType, unsupported]);
+  }, [agent.adapterConfig?.agent, agent.adapterType, unsupported]);
 
   const hasUnsavedChanges = !sameSkillSelection(skillDraft, lastSavedSkills);
 

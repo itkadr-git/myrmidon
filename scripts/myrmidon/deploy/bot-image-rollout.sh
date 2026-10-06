@@ -29,10 +29,12 @@
 #      `dockergate check-config` when a command is configured), then SIGHUP.
 #      The OLD bot images stay allowed until the last bot moved: a
 #      mid-rollout failure must not strand the un-moved bots.
-#   4. Enroll the fleet in `bots[]`: the board's agents list is the source of
+#   4. Enroll the fleet in `bots[]`: the board's agent cards are the source of
 #      truth. A bot missing from `bots[]` is exactly the `bot_not_enrolled`
 #      refusal Wiki Maintainer hit on 03.10. Limits come from the card
-#      (container.memoryMb/cpus/pidsLimit).
+#      (container.memoryMb/cpus/pidsLimit), read together with the rest of the
+#      card config from GET /companies/:id/agent-configurations (the company
+#      agents list carries no adapterConfig — PERF-DIET-G).
 #   5. Switch the bot cards to the release image, one bot at a time (canary
 #      first when --canary names one): PATCH the card's
 #      adapterConfig.container.image, then POST the card's "apply" so the
@@ -179,11 +181,22 @@ board_post_json() {
     "$BOARD_API_URL$path" 2>/dev/null || return 1
 }
 
+# The company's agent configurations: the card config (adapterConfig, the
+# container block included) of every agent of the company.
+# myrmidon(PERF-DIET-G): the company agents list (GET /companies/:id/agents)
+# no longer carries adapterConfig, so every container read below asks for the
+# configurations endpoint instead. It answers the same rows with the same
+# access rules; the agent list keeps only the narrow projection (id,
+# adapterType, status, adapterModel).
+board_configs() {
+  board_get "/companies/$BOARD_COMPANY_ID/agent-configurations"
+}
+
 # The company's hermes_gateway agents with enabled container blocks, shaped as
 # "id|memoryMb|cpus|pidsLimit" per line. Card limits are the enrollment limits.
 list_bots() {
   local body
-  body="$(board_get "/companies/$BOARD_COMPANY_ID/agents")" || return 1
+  body="$(board_configs)" || return 1
   jq -r '[.[]? | select(.adapterType == "hermes_gateway")
       | select((.adapterConfig.container // {}) | (.enabled == true))
       | [.id,
@@ -195,14 +208,14 @@ list_bots() {
 # The image a bot card pins right now ("" when the card names none).
 card_image() {
   local id="$1" body
-  body="$(board_get "/companies/$BOARD_COMPANY_ID/agents")" || return 1
+  body="$(board_configs)" || return 1
   jq -r --arg id "$id" 'first(.[]? | select(.id == $id) | .adapterConfig.container.image // "")' <<<"$body" 2>/dev/null
 }
 
 # The whole container block of a card as compact JSON ("{}" when none).
 card_container() {
   local id="$1" body
-  body="$(board_get "/companies/$BOARD_COMPANY_ID/agents")" || return 1
+  body="$(board_configs)" || return 1
   jq -c --arg id "$id" 'first(.[]? | select(.id == $id) | .adapterConfig.container // {})' <<<"$body" 2>/dev/null
 }
 
@@ -211,7 +224,7 @@ card_container() {
 # Mirrors classifyBotImageTracking (server/src/myrmidon/bot-containers/agent-config.ts).
 bot_categories() {
   local body
-  body="$(board_get "/companies/$BOARD_COMPANY_ID/agents")" || return 1
+  body="$(board_configs)" || return 1
   jq -r '.[]? | select(.adapterType == "hermes_gateway")
       | select((.adapterConfig.container | type) == "object")
       | .adapterConfig.container as $c

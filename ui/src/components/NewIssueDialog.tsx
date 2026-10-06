@@ -588,14 +588,31 @@ export function NewIssueDialog() {
     [agents, selectedAssigneeAgentId],
   );
   const assigneeAdapterType = selectedAssigneeAgent?.adapterType ?? null;
-  const assigneePrimaryModel = isRecord(selectedAssigneeAgent?.adapterConfig)
-    && typeof selectedAssigneeAgent.adapterConfig.model === "string"
-    ? selectedAssigneeAgent.adapterConfig.model
-    : "";
+  // myrmidon(PERF-DIET-G): the company agent list is a slim projection — the
+  // model rides along as `adapterModel`, while the runner provider and the env
+  // bindings this dialog inspects come from the assignee's configuration read.
+  // That read is fetched only while it is needed: a paperclip_runner provider
+  // decides the model catalog, and a todo/in_progress issue warns about the
+  // user secrets the run will need.
+  const assigneePrimaryModel = selectedAssigneeAgent?.adapterModel ?? "";
   const effectiveAssigneeModel = assigneeModelOverride || assigneePrimaryModel;
   const supportsAssigneeOverrides = Boolean(
     assigneeAdapterType && ISSUE_OVERRIDE_ADAPTER_TYPES.has(assigneeAdapterType),
   );
+  const needsAssigneeConfig = Boolean(
+    newIssueOpen
+    && selectedAssigneeAgentId
+    && (assigneeAdapterType === "paperclip_runner"
+      || shouldWarnAboutRunUserSecrets(status, selectedAssigneeAgentId)),
+  );
+  const { data: assigneeConfiguration } = useQuery({
+    queryKey: queryKeys.agents.configuration(selectedAssigneeAgentId ?? "__none__"),
+    queryFn: () => agentsApi.getConfiguration(selectedAssigneeAgentId!, effectiveCompanyId ?? undefined),
+    enabled: needsAssigneeConfig,
+  });
+  const assigneeAdapterConfig = isRecord(assigneeConfiguration?.adapterConfig)
+    ? assigneeConfiguration.adapterConfig
+    : null;
   const mentionOptions = useMemo<MentionOption[]>(() => {
     return buildMarkdownMentionOptions({
       agents,
@@ -604,7 +621,7 @@ export function NewIssueDialog() {
     });
   }, [agents, companyMembers?.users, orderedProjects]);
 
-  const catalogProvider = assigneeAdapterType === "paperclip_runner" ? String(normalizeLegacyRunnerProvider(selectedAssigneeAgent?.adapterConfig ?? {}).provider ?? "codex") : undefined;
+  const catalogProvider = assigneeAdapterType === "paperclip_runner" ? String(normalizeLegacyRunnerProvider(assigneeAdapterConfig ?? {}).provider ?? "codex") : undefined;
   const { data: assigneeAdapterModels } = useQuery({
     queryKey:
       effectiveCompanyId && assigneeAdapterType
@@ -1163,11 +1180,11 @@ export function NewIssueDialog() {
     () => {
       if (!shouldWarnAboutRunUserSecrets(status, selectedAssigneeAgentId)) return [];
       return uniqueRequiredUserSecretKeys([
-        isRecord(currentAssignee?.adapterConfig) ? currentAssignee.adapterConfig.env as Record<string, unknown> : null,
+        assigneeAdapterConfig?.env as Record<string, unknown> | undefined,
         currentProject?.env ?? null,
       ]);
     },
-    [currentAssignee?.adapterConfig, currentProject?.env, selectedAssigneeAgentId, status],
+    [assigneeAdapterConfig, currentProject?.env, selectedAssigneeAgentId, status],
   );
   const currentProjectExecutionWorkspacePolicy =
     experimentalSettings?.enableIsolatedWorkspaces === true

@@ -95,8 +95,13 @@ case "$*" in
   *companies/*/issues*)
     # The post-deploy fleet check: no blocked issues in the deploy window.
     echo '{"issues": []}'; exit 0 ;;
-  *companies/*/agents*)
+  *companies/*/agent-configurations*)
+    # The card config of every agent, adapterConfig (container block) included.
     cat "$SANDBOX/agents.json"; exit 0 ;;
+  *companies/*/agents*)
+    # The narrow company agents list: no adapterConfig (myrmidon(PERF-DIET-G)).
+    # The rollout must not read the container block from here.
+    jq '[.[] | {id, adapterType, status}]' "$SANDBOX/agents.json"; exit 0 ;;
   *api/agents/*)
     case " $* " in
       *" -X PATCH "*)

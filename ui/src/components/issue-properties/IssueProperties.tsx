@@ -731,10 +731,18 @@ export function IssueProperties({
   const assigneeOverrideAdapterConfig = asRecord(assigneeAdapterOverrides?.adapterConfig);
   const assigneeOverrideModel =
     typeof assigneeOverrideAdapterConfig.model === "string" ? assigneeOverrideAdapterConfig.model : "";
-  const assigneePrimaryAdapterConfig = asRecord(assignee?.adapterConfig);
-  const assigneePrimaryModel =
-    typeof assigneePrimaryAdapterConfig.model === "string" ? assigneePrimaryAdapterConfig.model : "";
+  // myrmidon(PERF-DIET-G): the company list is a slim projection — the model
+  // comes precomputed as `adapterModel`; the runner provider the catalog query
+  // needs comes from the assignee's configuration read (fetched only for a
+  // paperclip_runner assignee, which is the only case that reads it).
+  const assigneePrimaryModel = assignee?.adapterModel ?? "";
   const effectiveAssigneeModel = assigneeOverrideModel || assigneePrimaryModel;
+  const { data: assigneeConfiguration } = useQuery({
+    queryKey: queryKeys.agents.configuration(assignee?.id ?? "__none__"),
+    queryFn: () => agentsApi.getConfiguration(assignee!.id, companyId ?? undefined),
+    enabled: Boolean(companyId && assignee?.id && assigneeAdapterType === "paperclip_runner"),
+  });
+  const assigneePrimaryAdapterConfig = asRecord(assigneeConfiguration?.adapterConfig);
   const assigneeOverrideThinkingEffort = thinkingEffortValueFor(
     assigneeAdapterType,
     assigneeOverrideAdapterConfig,

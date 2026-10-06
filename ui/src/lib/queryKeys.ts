@@ -215,6 +215,10 @@ export const queryKeys = {
   agents: {
     list: (companyId: string) => ["agents", companyId] as const,
     detail: (id: string) => ["agents", "detail", id] as const,
+    // myrmidon(PERF-DIET-G): the configuration read an agent-row consumer falls
+    // back to once the company list stopped shipping adapterConfig.
+    configuration: (id: string) => ["agents", "configuration", id] as const,
+    configurations: (companyId: string) => ["agents", companyId, "configurations"] as const,
     runtimeState: (id: string) => ["agents", "runtime-state", id] as const,
     taskSessions: (id: string) => ["agents", "task-sessions", id] as const,
     skills: (id: string) => ["agents", "skills", id] as const,
