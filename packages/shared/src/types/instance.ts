@@ -30,6 +30,9 @@ import type { PluginEntitlementKey } from "../myrmidon-plugin-entitlement.js";
 import type { TelegramDmProgressSettings } from "../myrmidon-telegram-dm-progress.js";
 // myrmidon(BOT-RUNTIME-TUNING D2): the fallback-signal settings of the same row.
 import type { StoredFallbackSignalSettings } from "../myrmidon-fallback-signal.js";
+// myrmidon(1.6.5-PAUSE-GUARD): the forgotten-operator-pause guard of the same
+// general settings row.
+import type { StoredPauseGuardSettings } from "../myrmidon-pause-guard.js";
 
 export const DAILY_RETENTION_PRESETS = [3, 7, 14] as const;
 export const WEEKLY_RETENTION_PRESETS = [1, 2, 4] as const;
@@ -191,6 +194,15 @@ export interface InstanceGeneralSettings {
    * `swarmClaimJournal`.
    */
   reviewReworkJournal?: unknown[];
+  /**
+   * myrmidon(1.6.5-PAUSE-GUARD): the forgotten-pause guard — the board lifts an
+   * agent the OPERATOR paused by hand once it has been paused longer than the
+   * threshold (system pauses are never touched) — changed from
+   * `GET`/`PATCH /api/myrmidon/pause-guard`. Absent means "use the environment
+   * variable, then the default (on, 20 minutes)"; kept in sync with the
+   * validator of the same field (packages/shared/src/validators/instance.ts).
+   */
+  pauseGuard?: StoredPauseGuardSettings;
   /**
    * myrmidon(1.7-SETTINGS-TO-UI): the channel settings document — the Telegram
    * bridge switches, the chat limits and the cross-channel numbers, changed from
