@@ -2,12 +2,35 @@
 
 > Русская версия: [Upgrading-and-rollback.ru](Upgrading-and-rollback.ru)
 
-Source:
-[`docs/myrmidon/deploy.md`](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/deploy.md)
-— the per-release operator notes live in its "Upgrading" section, and the
-changelog names the release each change landed in.
+## Upgrading with the installer (the usual way)
+
+On a server installed with the one-line command, updating is the same
+command again:
+
+```sh
+curl -fsSL https://github.com/itkadr-git/myrmidon/releases/latest/download/install.sh | sudo bash
+```
+
+The installer resolves the latest release, **dumps the database before
+anything changes**, switches to it and waits for the board to answer. If the
+new board does not come up healthy, it **rolls back to the previous release
+on its own** and keeps the dump. A specific release:
+`install.sh --version myr-vX.Y.Z`. Pre-releases (RC) are never served by the
+one-line command — it follows the newest **stable** release; an RC installs
+only when asked for by its exact tag.
+
+## Upgrading with deploy.sh (manual flow)
+
+For servers managed by hand the deploy script is the path — see
+[Manual deployment](Manual-deployment). Per-release operator notes live in
+[`docs/myrmidon/deploy.md`](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/deploy.md),
+and the changelog names the release each change landed in.
 
 ## Upgrading
+
+The rest of this page describes the manual `deploy.sh` flow for servers
+managed by hand — the full procedure lives in
+[Manual deployment](Manual-deployment); here is the operator reference.
 
 Upgrading uses the same script as installing:
 
