@@ -142,6 +142,7 @@ export function getCompanySettingsTab(pathname: string): CompanySettingsTab {
   // myrmidon(1.7 GRD-MODES): the Guardrails settings section
   if (pathname.includes("/company/settings/guardrails")) {
     return "guardrails";
+  }
   // myrmidon(REVIEW-ROUTING): the review routing settings section
   if (pathname.includes("/company/settings/review-routing")) {
     return "review-routing";
