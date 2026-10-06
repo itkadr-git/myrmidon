@@ -2,7 +2,7 @@
 
 # Myrmidon
 
-**A control plane for a fleet of AI agents that run a company's work.**
+**An orchestration platform for AI agents that run a company's work.**
 
 [![Latest release](https://img.shields.io/github/v/release/itkadr-git/myrmidon?sort=semver&label=release)](https://github.com/itkadr-git/myrmidon/releases/latest)
 
@@ -16,7 +16,7 @@ English &middot; [Русский](README.ru.md)
 
 ## What Myrmidon is
 
-Myrmidon is a self-hosted control plane for a fleet of AI agents: a task board
+Myrmidon is a self-hosted orchestration platform for AI agents: a task board
 where agents pick up work, run it in isolated containers with their own model,
 keys and memory, report back, and ask a human only where a decision needs one.
 It is an independent product maintained as a fork of
@@ -138,7 +138,7 @@ by default — the full reference is
 
 Release notes live in [docs/myrmidon/CHANGELOG.md](docs/myrmidon/CHANGELOG.md)
 (Russian: [CHANGELOG.ru.md](docs/myrmidon/CHANGELOG.ru.md)). Highlights of
-what exists as of 1.6.2:
+what exists as of 1.6.4 (latest release; 1.6.5-rc.2 is the current release candidate):
 
 ### Work and agents
 
@@ -258,6 +258,54 @@ what exists as of 1.6.2:
 - **UI 2.0 + language.** The 2.0 shell with six re-skinned data screens
   (behind the `enableMyrmidonUi2` flag, off by default) and a per-user board
   language RU/EN ([ui2-shell](docs/myrmidon/guides/ui2-shell.md)).
+
+### New in the 1.6 line
+
+Full notes per release: [CHANGELOG.md](docs/myrmidon/CHANGELOG.md) and the
+[releases page](https://github.com/itkadr-git/myrmidon/releases) — latest is
+[1.6.4](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.4);
+[1.6.5-rc.2](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.5-rc.2)
+is the current release candidate.
+
+- **1.6.3 — one deploy for every component.** `deploy.sh --release` updates
+  the board, dockergate, fleetd and the bot images in one all-or-nothing
+  maintenance window: the digests come from a machine-readable release asset,
+  bot cards that track the release image switch in small batches while their
+  agents are idle, and a failing component rolls everything back together.
+- **1.6.3 — a reviewer is assigned automatically.** A task that moves to
+  `in_review` with no reviewer gets a one-stage review with the least-loaded
+  agent of the reviewer roles — never the author — and an over-due review
+  moves to another reviewer.
+- **1.6.3 — live progress in the Telegram DM.** While a run is active, the
+  one status message shows what the bot is doing and the last finished steps,
+  edited in place.
+- **1.6.3 — agent memory without a key, set in the UI.** The Memory tab works
+  for a memory service without authentication, and the address and key are
+  edited in Instance settings without a restart.
+- **1.6.4 — board MCP tools renamed to `myrmidon*`.** Every tool of the board
+  MCP server publishes under a `myrmidon*` name; the old `paperclip*` names
+  stay registered as deprecated aliases for one release, so installed agents
+  keep working ([mcp-tool-names](docs/myrmidon/guides/mcp-tool-names.md)).
+- **1.6.4 — release records as per-PR fragments, and a fork-inheritance
+  metric.** Changelog, divergence and settings entries land as one file per
+  PR (no more append conflicts), folded at the release cut; a script measures
+  how many files the fork still inherits from the vendor base.
+- **1.6.5 (release candidate) — run admission by host CPU load.** A new run
+  starts only while the host's load average per core stays under a
+  configurable ceiling above the host's own background, so a mass wake can
+  no longer saturate the host (see
+  [run-limits](docs/myrmidon/guides/run-limits.md)).
+- **1.6.5 (rc) — keep only the last verified backup.** An optional backup
+  retention mode stream-verifies each new dump and only then deletes the
+  previous ones; a dump that fails verification is deleted instead, leaving
+  the older copies untouched.
+- **1.6.5 (rc) — the review-return loop.** A review verdict that returns a
+  pull request opens the rework task itself, blocks the review until the PR
+  head moves, and wakes the reviewer with the new head.
+- **1.6.5 (rc) — cheaper auxiliary calls, a calmer dockergate.** Auxiliary
+  bot calls (titles, compression) follow a cheap fallback chain instead of
+  climbing into a paid model, and the board's container layer polls
+  dockergate at a fraction of its former rate.
 
 ### Privacy
 
