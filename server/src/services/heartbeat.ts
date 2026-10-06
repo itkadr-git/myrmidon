@@ -923,6 +923,34 @@ function nonRetryablePreflightFailureCode(error: unknown): string | null {
   const code = readNonEmptyString(parseObject(error.details).code);
   return code && NON_RETRYABLE_PREFLIGHT_FAILURE_CODES.has(code) ? code : null;
 }
+
+/**
+ * myrmidon(MODEL-SWITCH-SESSION): recognize context window/session size errors that should
+ * not put the agent into a sticky error state. These are recoverable conditions
+ * where the agent can continue by compressing the session or starting a new one.
+ */
+const CONTEXT_WINDOW_ERROR_SIGNATURES = [
+  "Context compression could not bring this session under the model's context window",
+  "Exceeded limit on max bytes to request body",
+  "context window exceeded",
+  "session too large",
+  "context limit exceeded",
+  "max tokens exceeded",
+  "input too long",
+  "prompt too long",
+];
+
+/**
+ * Check if an error message indicates a context window/session size issue that
+ * should be treated as recoverable rather than an agent failure.
+ */
+export function isContextWindowError(message: string | null | undefined): boolean {
+  if (!message) return false;
+  const normalized = message.toLowerCase();
+  return CONTEXT_WINDOW_ERROR_SIGNATURES.some((signature) =>
+    normalized.includes(signature.toLowerCase()),
+  );
+}
 class ChatControlRecoveryUnresolvedError extends Error {
   constructor() {
     super(
@@ -25224,9 +25252,39 @@ export function heartbeatService(
               // going to error while its own runs are simply queued out.
               readHeartbeatRunErrorFamily(finalizedRun ?? run) ===
                 "transient_upstream" ||
-              isWorkspaceSyncConflictFailure(adapterResult.errorMessage)),
+              isWorkspaceSyncConflictFailure(adapterResult.errorMessage) ||
+              isContextWindowError(runErrorMessage)),
           wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
         });
+
+        // myrmidon(MODEL-SWITCH-SESSION): a context-window overflow is recoverable, not an
+        // agent failure. Drop the saved session for this task key so the next
+        // heartbeat starts a fresh session instead of the agent sitting in the
+        // sticky error state a smaller model's window would otherwise cause.
+        if (outcome === "failed" && taskKey && isContextWindowError(runErrorMessage)) {
+          try {
+            await clearTaskSessions(agent.companyId, agent.id, {
+              taskKey,
+              adapterType: agent.adapterType,
+              expectedRunId: run.id,
+            });
+            await appendRunEvent(run, {
+              eventType: "lifecycle",
+              stream: "system",
+              level: "info",
+              message: `Context window error detected, session cleared for task key: ${taskKey}`,
+              payload: {
+                reason: "context_window_error",
+                taskKey,
+              },
+            });
+          } catch (sessionResetErr) {
+            logger.warn(
+              { err: sessionResetErr, agentId: agent.id, taskKey },
+              "failed to auto-reset session after context window error",
+            );
+          }
+        }
       } catch (err) {
         if (err instanceof NativeControllerDetachedForRestartError) {
           nativeSessionResumeScheduled = true;
@@ -25554,7 +25612,8 @@ export function heartbeatService(
           wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
           keepIdleOnFailure:
             Boolean(nonRetryablePreflightFailureCode(err)) ||
-            isWorkspaceSyncConflictFailure(message),
+            isWorkspaceSyncConflictFailure(message) ||
+            isContextWindowError(message),
         });
       }
     } catch (outerErr) {
