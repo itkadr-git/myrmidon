@@ -2780,6 +2780,11 @@ export * from "./myrmidon-workspace-hygiene.js";
 export * from "./myrmidon-host-disk.js";
 // myrmidon(BOT-DISK-A): bot draft-directory lifecycle settings shared by the server and the settings validator.
 export * from "./myrmidon-bot-disk.js";
+// myrmidon(BOT-DISK-F): isolation scope resolver and bot-disk scope layout shared by the server and the UI.
+export * from "./myrmidon-isolation-scope.js";
+// myrmidon(1.6.1-BOT-DISK-C): per-bot disk quota settings, resolution and the rejection contract
+// shared by the server, the board UI and the settings validator.
+export * from "./myrmidon-bot-disk-quota.js";
 // myrmidon(C0): live run-admission limits shared by the server, the UI and the settings validator.
 export * from "./myrmidon-runtime-limits.js";
 // myrmidon(PARALLEL-HELPERS): the card -> Hermes `delegation` contract shared by the profile
@@ -2836,3 +2841,7 @@ export * from "./myrmidon-model-providers.js";
 // myrmidon(REVIEW-ROUTING): automatic reviewer routing for tasks that enter
 // in_review with no reviewer — settings contract and activity actions.
 export * from "./myrmidon-review-routing.js";
+// myrmidon(REVIEW-REWORK): the review-return loop — a RETURN verdict opens a
+// rework task, blocks the review on it, and a new PR head releases the review.
+// Settings contract, verdict-marker parser and activity actions.
+export * from "./myrmidon-review-rework.js";

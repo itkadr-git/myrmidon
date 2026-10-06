@@ -1,10 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  HOST_CPU_HOLD_SIGNAL_MS,
   HOST_MEMORY_HOLD_SIGNAL_MS,
   applyRunAdmissionLimits,
   createRunAdmission,
   currentRunAdmissionLimits,
+  hostCpuHoldSignal,
   hostMemoryHoldSignal,
+  readHostCpuLoad,
   readHostMemory,
   readCgroupFreeMemoryBytes,
   readRunAdmissionLimits,
@@ -12,12 +15,18 @@ import {
   scheduleQueuedResweep,
 } from "./run-admission.js";
 
-const NO_MEMORY = { minFreeMemoryMb: null, runMemoryEstimateMb: 300, minFreeHostMemoryMb: null };
+const NO_MEMORY = {
+  minFreeMemoryMb: null,
+  runMemoryEstimateMb: 300,
+  minFreeHostMemoryMb: null,
+  // myrmidon(1.6.5): off unless a test says otherwise.
+  maxHostLoadPercentPerCore: null,
+};
 const MB = 1024 * 1024;
 
 describe("readRunAdmissionLimits", () => {
-  it("treats unset, empty, zero and garbage as no limit; the ramp and the host floor default on", () => {
-    const DEFAULT_ON = { maxStartsPerMinute: 5, minFreeHostMemoryMb: 15360 };
+  it("treats unset, empty, zero and garbage as no limit; the ramp, the host floor and the CPU ceiling default on", () => {
+    const DEFAULT_ON = { maxStartsPerMinute: 5, minFreeHostMemoryMb: 15360, maxHostLoadPercentPerCore: 90 };
     expect(readRunAdmissionLimits({})).toEqual({
       maxConcurrentRuns: null,
       minFreeMemoryMb: null,
@@ -29,7 +38,7 @@ describe("readRunAdmissionLimits", () => {
     ).toEqual({ maxConcurrentRuns: null, minFreeMemoryMb: null, runMemoryEstimateMb: 300, ...DEFAULT_ON });
     expect(
       readRunAdmissionLimits({ MYRMIDON_MAX_RUN_STARTS_PER_MINUTE: "0", MYRMIDON_MIN_FREE_HOST_MEMORY_MB: "off" }),
-    ).toEqual({ maxConcurrentRuns: null, maxStartsPerMinute: null, ...NO_MEMORY });
+    ).toEqual({ maxConcurrentRuns: null, maxStartsPerMinute: null, ...NO_MEMORY, maxHostLoadPercentPerCore: 90 });
     expect(
       readRunAdmissionLimits({
         MYRMIDON_MAX_CONCURRENT_RUNS: " 12 ",
@@ -37,6 +46,7 @@ describe("readRunAdmissionLimits", () => {
         MYRMIDON_MIN_FREE_MEMORY_MB: "1500",
         MYRMIDON_RUN_MEMORY_ESTIMATE_MB: "250",
         MYRMIDON_MIN_FREE_HOST_MEMORY_MB: "8192",
+        MYRMIDON_MAX_HOST_LOAD_PERCENT_PER_CORE: "off",
       }),
     ).toEqual({
       maxConcurrentRuns: 12,
@@ -44,6 +54,7 @@ describe("readRunAdmissionLimits", () => {
       minFreeMemoryMb: 1500,
       runMemoryEstimateMb: 250,
       minFreeHostMemoryMb: 8192,
+      maxHostLoadPercentPerCore: null,
     });
   });
 });
@@ -103,6 +114,7 @@ describe("memory headroom", () => {
         minFreeMemoryMb: 1500,
         runMemoryEstimateMb: 300,
         minFreeHostMemoryMb: null,
+        maxHostLoadPercentPerCore: null,
       },
       freeMemoryBytes: () => free,
       now: () => clock,
@@ -124,6 +136,7 @@ describe("memory headroom", () => {
         minFreeMemoryMb: 1500,
         runMemoryEstimateMb: 300,
         minFreeHostMemoryMb: null,
+        maxHostLoadPercentPerCore: null,
       },
       freeMemoryBytes: () => null,
     });
@@ -147,7 +160,12 @@ describe("memory headroom", () => {
 });
 
 describe("live limit changes", () => {
-  const NO_MEMORY_LIMITS = { minFreeMemoryMb: null, runMemoryEstimateMb: 300, minFreeHostMemoryMb: null };
+  const NO_MEMORY_LIMITS = {
+    minFreeMemoryMb: null,
+    runMemoryEstimateMb: 300,
+    minFreeHostMemoryMb: null,
+    maxHostLoadPercentPerCore: null,
+  };
 
   it("lets the runs held behind the old ceiling start as soon as it is raised", () => {
     const admission = createRunAdmission({ limits: { maxConcurrentRuns: 1, maxStartsPerMinute: null, ...NO_MEMORY_LIMITS } });
@@ -196,6 +214,7 @@ describe("live limit changes", () => {
         minFreeMemoryMb: 900,
         runMemoryEstimateMb: 200,
         minFreeHostMemoryMb: 10240,
+        maxHostLoadPercentPerCore: 150,
       });
       expect(currentRunAdmissionLimits()).toEqual({
         maxConcurrentRuns: 7,
@@ -203,6 +222,7 @@ describe("live limit changes", () => {
         minFreeMemoryMb: 900,
         runMemoryEstimateMb: 200,
         minFreeHostMemoryMb: 10240,
+        maxHostLoadPercentPerCore: 150,
       });
       applyRunAdmissionLimits({
         maxConcurrentRuns: null,
@@ -210,6 +230,7 @@ describe("live limit changes", () => {
         minFreeMemoryMb: null,
         runMemoryEstimateMb: 300,
         minFreeHostMemoryMb: null,
+        maxHostLoadPercentPerCore: null,
       });
       expect(currentRunAdmissionLimits()).toEqual({
         maxConcurrentRuns: null,
@@ -217,6 +238,7 @@ describe("live limit changes", () => {
         minFreeMemoryMb: null,
         runMemoryEstimateMb: 300,
         minFreeHostMemoryMb: null,
+        maxHostLoadPercentPerCore: null,
       });
     } finally {
       resetSharedRunAdmissionForTests();
@@ -269,6 +291,9 @@ describe("myrmidon(1.6.2 RUN-ADMISSION) host memory floor", () => {
     minFreeMemoryMb: null,
     runMemoryEstimateMb: 300,
     minFreeHostMemoryMb: 15360,
+    // myrmidon(1.6.5): the CPU ceiling stays off here so the memory tests
+    // read only memory; the CPU suite below sets its own limits.
+    maxHostLoadPercentPerCore: null,
   };
   const host = (availableBytes: number) => () => ({ known: true as const, availableBytes, totalBytes: 64 * GB });
 
@@ -412,5 +437,264 @@ describe("myrmidon(1.6.2 RUN-ADMISSION) host memory floor", () => {
     expect(readHostMemory({ meminfoPath: "/missing", readFile: read })).toMatchObject({ known: false });
     files["/proc/meminfo"] = "MemTotal: 100 kB\n";
     expect(readHostMemory({ cgroupRoot: "/none", readFile: read }).known).toBe(false);
+  });
+});
+
+describe("myrmidon(1.6.5 RUN-ADMISSION) host CPU ceiling", () => {
+  // Limits with the memory floor off and the CPU ceiling on (the night of
+  // 05.10: memory stayed open while load ran at 594 % of a core per core).
+  const CPU_CEILING = {
+    maxConcurrentRuns: null,
+    maxStartsPerMinute: null,
+    ...NO_MEMORY,
+    maxHostLoadPercentPerCore: 90,
+  };
+  /**
+   * A load source: the 1-minute average, the core count, and (rc.2) the
+   * 15-minute average. The default makes both averages equal, which is what a
+   * steady host looks like.
+   */
+  const cpu =
+    (load1: number, cores = 16, load15: number | null = load1) =>
+    () => ({ known: true as const, load1, load15, cores });
+  /** The rounded percent-of-one-core a reading means, the way the gate counts it. */
+  const percent = (load: number) => Math.round((load / 16) * 100);
+
+  it("keeps admitting runs on a host whose own background is above the old fixed ceiling", () => {
+    // The rc.1 regression (05.10 17:34): the background services of a bot host
+    // hold ~120 % of a core per core by themselves, so the absolute 90 %
+    // ceiling was closed from the first reading — the fleet stood still with 4
+    // runs going and 34 waiting until the threshold was raised by hand to 200.
+    let load = 19.2; // 120 % of a core
+    const admission = createRunAdmission({
+      limits: { ...CPU_CEILING },
+      hostCpuLoad: () => cpu(load, 16, 18.4)(), // the 15-minute average is 115 %
+      now: () => 0,
+    });
+    expect(admission.reserve(3)).toBe(3);
+    expect(admission.hostCpuGate()).toMatchObject({
+      state: "open",
+      load1: 19.2,
+      cores: 16,
+      loadPercentPerCore: 120,
+      backgroundPercentPerCore: 115,
+      load15PercentPerCore: 115,
+      loadAboveBackgroundPercent: 5,
+      thresholdPercent: 90,
+    });
+    // What the runs add is what counts: 210 % of a core is 95 % above the
+    // background, so the ceiling closes there — well above the old fixed 90 %.
+    load = 33.6;
+    expect(admission.reserve(1)).toBe(0);
+    expect(admission.limited()).toBe(true);
+    expect(admission.hostCpuGate()).toMatchObject({
+      state: "closed",
+      loadPercentPerCore: 210,
+      backgroundPercentPerCore: 115,
+      loadAboveBackgroundPercent: 95,
+    });
+    // ... and the hold ends when the runs let go again.
+    load = 24;
+    expect(admission.reserve(1)).toBe(1);
+    expect(admission.hostCpuGate().state).toBe("open");
+  });
+
+  it("counts the load above the background floor, not the absolute reading", () => {
+    // The same 594 % of a core. On a host that was near-idle a moment ago that
+    // is a burst of runs and the ceiling closes; on a host whose own services
+    // sit at that level it is the background, and runs may start.
+    const burst = createRunAdmission({ limits: { ...CPU_CEILING }, hostCpuLoad: cpu(95, 16, 5) });
+    expect(burst.reserve(1)).toBe(0);
+    expect(burst.hostCpuGate()).toMatchObject({
+      state: "closed",
+      loadPercentPerCore: 594,
+      backgroundPercentPerCore: 31,
+      loadAboveBackgroundPercent: 563,
+    });
+    const background = createRunAdmission({ limits: { ...CPU_CEILING }, hostCpuLoad: cpu(95, 16, 95) });
+    expect(background.reserve(1)).toBe(1);
+    expect(background.hostCpuGate()).toMatchObject({ state: "open", loadAboveBackgroundPercent: 0 });
+  });
+
+  it("takes the background from the 15-minute average, so a restart during a spike is not open", () => {
+    // The board itself fell over on 05.10 and came back while the host was
+    // saturated: the 1-minute average alone would read "the host is just like
+    // that" and the whole queue would start into the same wall again.
+    const admission = createRunAdmission({ limits: { ...CPU_CEILING }, hostCpuLoad: cpu(95, 16, 40) });
+    expect(admission.reserve(1)).toBe(0);
+    expect(admission.hostCpuGate()).toMatchObject({
+      state: "closed",
+      loadPercentPerCore: 594,
+      backgroundPercentPerCore: 250,
+      loadAboveBackgroundPercent: 344,
+    });
+  });
+
+  it("drops the floor to a lower reading at once and lets a burst raise it only by the slow drift", () => {
+    let clock = 0;
+    let load15 = 16; // the host idles at 100 % of a core per core
+    let load1 = 16;
+    const admission = createRunAdmission({
+      limits: { ...CPU_CEILING },
+      hostCpuLoad: () => cpu(load1, 16, load15)(),
+      now: () => clock,
+    });
+    expect(admission.hostCpuGate().backgroundPercentPerCore).toBe(100);
+
+    // A mass wake: the 1-minute average jumps to 352 % of a core within
+    // seconds — the burst cannot pull the floor up with it.
+    load1 = 56.32;
+    expect(admission.reserve(1)).toBe(0);
+    expect(admission.hostCpuGate()).toMatchObject({
+      state: "closed",
+      backgroundPercentPerCore: 100,
+      loadAboveBackgroundPercent: 252,
+    });
+
+    // The 15-minute average catches up with the burst. From here the floor
+    // follows the host, but only by HOST_CPU_FLOOR_RISE_PERCENT_PER_MINUTE of a
+    // core per minute: 15 minutes of the burst buy 15 %.
+    load15 = load1;
+    clock += 15 * 60_000;
+    expect(admission.hostCpuGate().backgroundPercentPerCore).toBe(115);
+    // 148 minutes later the floor has absorbed the whole burst (263 %, 89 %
+    // below the reading) and the ceiling is open again — a host that became
+    // genuinely busier is followed, not fought.
+    clock += 148 * 60_000;
+    expect(admission.hostCpuGate()).toMatchObject({
+      state: "open",
+      backgroundPercentPerCore: 263,
+      loadAboveBackgroundPercent: 89,
+    });
+
+    // A lower reading drops the floor at once: the host calmed down.
+    load15 = 16;
+    load1 = 16;
+    expect(admission.hostCpuGate().backgroundPercentPerCore).toBe(percent(16));
+  });
+
+  it("does not read the host load when the ceiling is off, and leaves the other limits in charge when unreadable", () => {
+    const read = vi.fn(cpu(95));
+    const off = createRunAdmission({ limits: { ...CPU_CEILING, maxHostLoadPercentPerCore: null }, hostCpuLoad: read });
+    expect(off.reserve(3)).toBe(3);
+    expect(read).not.toHaveBeenCalled();
+    expect(off.hostCpuGate()).toMatchObject({ state: "off", backgroundPercentPerCore: null, loadAboveBackgroundPercent: null });
+
+    const unavailable = vi.fn();
+    const unknown = createRunAdmission({
+      limits: { ...CPU_CEILING, maxConcurrentRuns: 2 },
+      hostCpuLoad: () => ({ known: false, reason: "no loadavg" }),
+      onHostCpuUnavailable: unavailable,
+    });
+    expect(unknown.reserve(5)).toBe(2);
+    expect(unavailable).toHaveBeenCalledWith("no loadavg");
+    expect(unknown.hostCpuGate()).toMatchObject({ state: "unknown", reason: "no loadavg" });
+  });
+
+  it("applies a ceiling changed on the fly to the next reservation", () => {
+    let load = 20; // 125 % of a core, all of it background: nothing added yet
+    const admission = createRunAdmission({ limits: { ...CPU_CEILING }, hostCpuLoad: () => cpu(load, 16, 20)() });
+    expect(admission.reserve(1)).toBe(1);
+    load = 35; // 219 %: 94 % of a core above the floor, over the 90 % ceiling
+    expect(admission.reserve(1)).toBe(0);
+    admission.updateLimits({ ...CPU_CEILING, maxHostLoadPercentPerCore: 200 });
+    expect(admission.reserve(1)).toBe(1);
+    admission.updateLimits({ ...CPU_CEILING, maxHostLoadPercentPerCore: null });
+    expect(admission.reserve(1)).toBe(1);
+  });
+
+  it("holds on both gates at once without mixing them up", () => {
+    // Both gates hold independently: reserve() checks memory first, then CPU.
+    const admission = createRunAdmission({
+      limits: {
+        ...NO_MEMORY,
+        maxConcurrentRuns: null,
+        maxStartsPerMinute: null,
+        minFreeHostMemoryMb: 15360,
+        maxHostLoadPercentPerCore: 90,
+      },
+      hostMemory: () => ({ known: true, availableBytes: 7 * 1024 * MB, totalBytes: 64 * 1024 * MB }),
+      hostCpuLoad: cpu(60, 16, 16), // 375 % of a core, 275 % of it above the background
+    });
+    expect(admission.reserve(1)).toBe(0);
+    expect(admission.hostMemoryGate().state).toBe("closed");
+    expect(admission.hostCpuGate()).toMatchObject({ state: "closed", backgroundPercentPerCore: 100 });
+  });
+
+  it("raises the CPU attention signal only after ten minutes of continuous hold", () => {
+    let clock = Date.parse("2026-10-05T01:00:00Z");
+    let load = 60; // 375 % of a core with the background at 100 %
+    const events: string[] = [];
+    const admission = createRunAdmission({
+      limits: { ...CPU_CEILING },
+      hostCpuLoad: () => cpu(load, 16, 16)(),
+      onHostCpuHold: (event) => events.push(event.state),
+      now: () => clock,
+    });
+    expect(admission.reserve(1)).toBe(0);
+    for (let i = 0; i < 39; i += 1) {
+      clock += 15_000;
+      admission.reserve(1);
+    }
+    const gate = admission.hostCpuGate();
+    expect(gate.heldSince?.toISOString()).toBe("2026-10-05T01:00:00.000Z");
+    expect(hostCpuHoldSignal(gate, clock)).toBeNull();
+    clock += 15_000;
+    admission.reserve(1);
+    const signal = hostCpuHoldSignal(admission.hostCpuGate(), clock);
+    expect(signal).toMatchObject({
+      load1: 60,
+      cores: 16,
+      loadPercentPerCore: 375,
+      backgroundPercentPerCore: 100,
+      thresholdPercent: 90,
+    });
+    expect(signal!.heldMs).toBeGreaterThanOrEqual(HOST_CPU_HOLD_SIGNAL_MS);
+    // One "closed" line for the whole hold, not one per resweep.
+    expect(events).toEqual(["closed"]);
+
+    load = 20; // 125 % of a core: 25 % above the floor — open.
+    expect(admission.reserve(1)).toBe(1);
+    expect(events).toEqual(["closed", "open"]);
+    expect(hostCpuHoldSignal(admission.hostCpuGate(), clock)).toBeNull();
+  });
+
+  it("starts a new CPU hold when the queue stopped asking in between", () => {
+    let clock = 0;
+    const admission = createRunAdmission({ limits: { ...CPU_CEILING }, hostCpuLoad: cpu(60, 16, 16), now: () => clock });
+    admission.reserve(1);
+    clock = 60_000;
+    admission.reserve(1);
+    expect(admission.hostCpuGate().heldSince?.getTime()).toBe(0);
+    // Nobody asked for 13 minutes: the next hold starts from scratch.
+    clock = 14 * 60_000;
+    admission.reserve(1);
+    expect(admission.hostCpuGate().heldSince?.getTime()).toBe(14 * 60_000);
+    expect(hostCpuHoldSignal(admission.hostCpuGate(), 15 * 60_000)).toBeNull();
+  });
+
+  it("reads load1 and load15 from /proc/loadavg and refuses an unknown core count", () => {
+    const loadavg = "0.52 0.58 0.59 1/389 27714\n";
+    const read = (path: string) => {
+      if (path === "/proc/loadavg") return loadavg;
+      throw new Error("ENOENT");
+    };
+    expect(readHostCpuLoad({ readFile: read, cpuCount: () => 16 })).toEqual({
+      known: true,
+      load1: 0.52,
+      load15: 0.59,
+      cores: 16,
+    });
+    // A file with only the two shortest averages (an old kernel, a fixture):
+    // the 15-minute average is missing, the reading itself still stands.
+    expect(readHostCpuLoad({ readFile: () => "1.5 1.4\n", cpuCount: () => 4 })).toEqual({
+      known: true,
+      load1: 1.5,
+      load15: null,
+      cores: 4,
+    });
+    expect(readHostCpuLoad({ readFile: read, cpuCount: () => 0 })).toMatchObject({ known: false });
+    expect(readHostCpuLoad({ loadavgPath: "/host/loadavg", readFile: read })).toMatchObject({ known: false });
+    expect(readHostCpuLoad({ readFile: () => "garly\n", cpuCount: () => 4 })).toMatchObject({ known: false });
   });
 });

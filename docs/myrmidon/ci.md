@@ -77,8 +77,28 @@ Job `report main status` после полного прогона на `main`:
 | `tests (server 1/5)` … `(server 5/5)`, `tests (serialized 1/5)` … `(5/5)`, `tests (workspaces-a 1/2)`, `(2/2)`, `tests (workspaces-b)` | full | Весь `pnpm test:run`, разбиение как у вендора |
 | `tests (other packages)` | full | Пакеты, которые `pnpm test:run` не запускает (ниже) |
 | `tests (runner)` | full | `pnpm --filter @paperclipai/paperclip-runner check:all`, как отдельная проверка раннера у вендора |
-| `checks` | все | Шаги: `shellcheck` скриптов выката; `node --test` по `scripts/myrmidon/**/*.test.mjs`; секреты (gitleaks); внутренние адреса (частные сети и запрещённые шаблоны); лицензии зависимостей; совместимость плагинов. Каждый шаг выполняется, даже если предыдущий упал: в журнале видно все сбои сразу |
+| `checks` | все | Шаги: `shellcheck` скриптов выката; `node --test` по `scripts/myrmidon/**/*.test.mjs` (сюда входит сторож CHANGE-FRAGMENTS — ниже); секреты (gitleaks); внутренние адреса (частные сети и запрещённые шаблоны); лицензии зависимостей; совместимость плагинов. Каждый шаг выполняется, даже если предыдущий упал: в журнале видно все сбои сразу |
 | **`CI result`** | все | Сводная: зелёная, если `plan` прошёл и каждая проверка прошла или не требовалась уровнем |
+
+### Сторож фрагментов изменений (CHANGE-FRAGMENTS)
+
+Общие документы-реестры (`docs/myrmidon/CHANGELOG(.ru).md`, `DIVERGENCE.md`,
+`SETTINGS(.ru).md`) в PR руками не правятся: запись идёт файлом-фрагментом в
+`docs/myrmidon/changes/` (формат — `docs/myrmidon/changes/README.md`), а в общие
+документы фрагменты складывает `scripts/myrmidon/release/collect-fragments.mjs` при
+нарезке релиза. Сторож `scripts/myrmidon/ci/change-fragments-gate.mjs` отклоняет PR,
+чей дифф правит общий документ, и печатает подсказку (вернуть файл, добавить
+фрагмент). PR нарезки релиза сторож узнаёт по удалениям фрагментов и пропускает.
+Ветку, уже правившую общие документы, переводит
+`scripts/myrmidon/release/fragments-from-diff.mjs --slug <слаг> --revert` (см. README каталога).
+Сторож — тест `change-fragments-gate-selftest.test.mjs` внутри шага
+`node --test` job `checks`: на событии `pull_request` он гоняет сторож по
+`$GITHUB_EVENT_PATH` (checkout с `fetch-depth: 0` уже на месте), вне PR —
+пропускается. Тот же тест гоняет `collect-fragments.mjs --version 0.0.0
+--dry-run` по дереву PR: фрагмент, который сборщик не может
+сложить (ссылка на заголовок раздела, которого нет в целевом документе),
+красит PR до слияния — такие фрагменты молча ломают нарезку релиза.
+Отдельного шага workflow нет: изменения `.github/workflows/**` — зона трека 1, и токен сессии их всё равно не пушит (нет scope `workflow`).
 | `report main status` | только `main` | issue `main-red` (выше) |
 
 **Для ruleset `main-protection` достаточно одной проверки — `CI result`.** Она есть в каждом
@@ -264,15 +284,19 @@ Workflow [`myrmidon-image.yml`](../../.github/workflows/myrmidon-image.yml), job
 архитектур по тегам `v*` вендора, с его схемой тегов и каналами npm. Свой файл проще и не
 конфликтует при переносе.
 
-- **Когда:** `push` в `main`, git-тег выпуска `myr-v<major>.<minor>.<patch>` (первый —
+- **Когда:** `push` в `main`, git-тег выпуска `myr-v<major>.<minor>.<patch>` или тег-кандидат
+  `myr-v<major>.<minor>.<patch>-rc.<n>` (RC-VERSIONS, требование владельца 05.10; первый —
   `myr-v1.0.0`), вручную. На `pull_request` не запускается вовсе, плюс проверка
   `github.repository == 'itkadr-git/myrmidon'`: PR из чужих форков образ не собирают.
 - **Что:** `Dockerfile` вендора, стадия `production`, только `linux/amd64`. Кеш BuildKit — в
   реестре (`ghcr.io/itkadr-git/myrmidon:buildcache`).
 - **Версия и коммит** для `/api/health`: `PAPERCLIP_BUILD_VERSION` и
   `PAPERCLIP_BUILD_COMMIT`. Myrmidon — свой продукт со своей версией (semver, решение
-  владельца 28.09.2026). На теге `myr-v1.2.3` версия `1.2.3`, тег образа `1.2.3`. Между
-  выпусками — `<последний выпуск>+<N>.git.<sha>` (до первого выпуска `0.0.0+…`). Версия
+  владельца 28.09.2026). На теге `myr-v1.2.3` версия `1.2.3`, тег образа `1.2.3`; на
+  теге-кандидате `myr-v1.2.3-rc.1` — версия и тег образа `1.2.3-rc.1` (RC-VERSIONS). Между
+  выпусками — `<последний выпуск>+<N>.git.<sha>` (до первого выпуска `0.0.0+…`; последним
+  выпуском может быть и кандидат — база берётся целиком, например `1.2.3-rc.1+2.git.…`).
+  Версия
   Paperclip, взятого за основу, в номер не входит: она в метке образа
   `io.github.itkadr-git.myrmidon.base.paperclip-version`.
 - **Порядок:** образ сначала публикуется только по digest, затем smoke: `docker run` с
@@ -303,9 +327,9 @@ Workflow [`myrmidon-bot-image.yml`](../../.github/workflows/myrmidon-bot-image.y
 из одного `docker/bot-runtime/Dockerfile` три образа, каждый своим job и с одинаковым
 условием публикации (только `push` в `main` и тег `myr-v*`; на PR образ собирается и
 проверяется, но не публикуется). hermes-agent ставится в образ из закреплённого тега
-нашего зеркала-форка (`HERMES_REPO` в том же Dockerfile,
-`https://github.com/BastionPrime/hermes-agent`; теги форка побайтово совпадают с
-вышестоящими, точное дерево пиннится `HERMES_GIT_SHA`; реестр отличий —
+репозитория автора (`HERMES_REPO` в том же Dockerfile,
+`https://github.com/NousResearch/hermes-agent`; точное дерево пиннится `HERMES_GIT_SHA`; наши правки —
+патчи в `docker/bot-runtime/patches/`; реестр отличий —
 [hermes-deltas.md](hermes-deltas.md)):
 
 - `ghcr.io/itkadr-git/myrmidon-hermes` — основной образ бота (стадия `runtime`), без Node.js;

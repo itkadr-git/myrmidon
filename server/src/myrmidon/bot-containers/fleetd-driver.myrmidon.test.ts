@@ -91,7 +91,7 @@ describe("myrmidon(FLEETD-VMEXEC) fleetd driver — the HTTP contract", () => {
       });
       try {
         const driver = fleetdBotContainerDriver(config);
-        expect(await driver.list()).toEqual([{ botKey: "bot-a", state: "stopped" }]);
+        expect(await driver.list(["bot-a"])).toEqual([{ botKey: "bot-a", state: "stopped" }]);
       } finally {
         server.close();
       }

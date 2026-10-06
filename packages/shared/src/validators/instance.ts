@@ -13,6 +13,8 @@ import { workspaceHygieneLimitsSchema } from "../myrmidon-workspace-hygiene.js";
 import { hostDiskSettingsSchema } from "../myrmidon-host-disk.js";
 // myrmidon(BOT-DISK-A): bot draft-directory lifecycle settings, lenient stored shape
 import { storedBotDiskSettingsSchema } from "../myrmidon-bot-disk.js";
+// myrmidon(1.6.1-BOT-DISK-C): the per-bot disk quota stored in the same general settings row.
+import { storedBotDiskQuotaSettingsSchema } from "../myrmidon-bot-disk-quota.js";
 // myrmidon(C0): run admission limits that can be changed while the server runs
 import { storedRunLimitsSchema } from "../myrmidon-runtime-limits.js";
 // myrmidon(PARALLEL-HELPERS): company ceiling/default for parallel helper
@@ -29,6 +31,8 @@ import { swarmClaimSettingsSchema } from "../myrmidon-swarm-claim.js";
 import { wipLimitSettingsSchema } from "../myrmidon-wip-limit.js";
 // myrmidon(REVIEW-ROUTING): the automatic reviewer routing settings stored in the same row.
 import { reviewRoutingSettingsSchema } from "../myrmidon-review-routing.js";
+// myrmidon(REVIEW-REWORK): the review-return loop settings stored in the same row.
+import { reviewReworkSettingsSchema } from "../myrmidon-review-rework.js";
 // myrmidon(1.7-BUDGET-CONFIG-B): the budget enforcement mode stored in the
 // same general settings row.
 import { budgetEnforcementSettingsSchema } from "../myrmidon-budget-enforcement.js";
@@ -56,6 +60,9 @@ export const backupRetentionPolicySchema = z.object({
   dailyDays: presetSchema(DAILY_RETENTION_PRESETS, "dailyDays").default(DEFAULT_BACKUP_RETENTION.dailyDays),
   weeklyWeeks: presetSchema(WEEKLY_RETENTION_PRESETS, "weeklyWeeks").default(DEFAULT_BACKUP_RETENTION.weeklyWeeks),
   monthlyMonths: presetSchema(MONTHLY_RETENTION_PRESETS, "monthlyMonths").default(DEFAULT_BACKUP_RETENTION.monthlyMonths),
+  // myrmidon(BACKUP-KEEP-LAST): "keep only the last verified backup" mode;
+  // absent/false keeps tiered retention. Additive — old payloads parse unchanged.
+  keepLastOnly: z.boolean().optional(),
 });
 
 export const instanceGeneralSettingsSchema = z.object({
@@ -78,6 +85,8 @@ export const instanceGeneralSettingsSchema = z.object({
   // myrmidon(1.6.2 RUN-ADMISSION): the stored shape, so a row saved before
   // `minFreeHostMemoryMb` existed still parses (a strict miss here would fail
   // the whole general block and the next write would drop every setting).
+  // myrmidon(1.6.5 RUN-ADMISSION): the shape also tolerates a row saved
+  // before `maxHostLoadPercentPerCore` existed.
   runLimits: storedRunLimitsSchema.optional(),
   // myrmidon(BOT-DISK E): the host disk usage threshold, changed from
   // /api/myrmidon/host-disk; absent means "use the environment variable, then
@@ -88,6 +97,10 @@ export const instanceGeneralSettingsSchema = z.object({
   // variable, then the default". Lenient: a row without the key, with unknown
   // keys or with an invalid value still parses (see myrmidon-bot-disk.ts).
   botDisk: storedBotDiskSettingsSchema,
+  // myrmidon(1.6.1-BOT-DISK-C): the per-bot disk quota, changed from
+  // /api/myrmidon/bot-disk-quota; absent means "no quota" (enforcement off).
+  // Lenient: an invalid value reads as absent (see myrmidon-bot-disk-quota.ts).
+  botDiskQuota: storedBotDiskQuotaSettingsSchema,
   // myrmidon(PARALLEL-HELPERS): company ceiling and default for the "Parallel
   // helpers" block on an agent card, changed from the instance settings page
   // and /api/myrmidon/parallel-helpers; absent means the module defaults apply
@@ -119,6 +132,21 @@ export const instanceGeneralSettingsSchema = z.object({
   // myrmidon(REVIEW-ROUTING): automatic reviewer routing, changed from
   // /api/myrmidon/companies/:id/review-routing/settings; absent means the defaults.
   reviewRouting: reviewRoutingSettingsSchema.optional(),
+  // myrmidon(REVIEW-REWORK): the review-return loop (RETURN verdict -> rework
+  // task; review blocked until the PR head moves), changed from
+  // /api/myrmidon/review-rework; absent means the defaults (the fix is on).
+  reviewRework: reviewReworkSettingsSchema.optional(),
+  // myrmidon(REVIEW-REWORK): the change journal of the loop settings, kept by
+  // the settings service under `general.reviewReworkJournal` and read by
+  // GET /api/myrmidon/review-rework. Stored passthrough, like swarmClaimJournal.
+  reviewReworkJournal: z.array(z.unknown()).optional(),
+  // myrmidon(1.7-SETTINGS-TO-UI): the channel settings document (the Telegram
+  // bridge switches, the chat limits, the cross-channel numbers), changed from
+  // /api/myrmidon/channel-settings; absent means "use the environment variable,
+  // then the default". Passthrough on purpose: the resolver in
+  // server/src/myrmidon/channel-settings/settings.ts re-reads it defensively, so
+  // a row written by an older or a newer version still parses.
+  channelSettings: z.unknown().optional(),
   // myrmidon(1.7-BUDGET-CONFIG-B): what a crossed budget limit does while the
   // incident is open — signal only (default), pause with an owner card (soft),
   // or refuse new runs with the budget reason (hard); changed from

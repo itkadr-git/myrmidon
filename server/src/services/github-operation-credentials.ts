@@ -17,10 +17,14 @@ import {
 import { secretService } from "./secrets.js";
 import { resolveCoreTrustPreset } from "./trust-preset-resolver.js";
 import { isLowTrustQuarantined } from "./source-trust.js";
+// myrmidon(GITHUB-SHARED-IDENTITY): self-hosted GitHub App identities, chosen by the target repository
+import { applyGitHubAppIdentity } from "../myrmidon/github-shared-identity/broker.js";
 
 export type GitHubCredentialSummary = {
   status: "available" | "absent" | "unavailable";
-  source?: "personal" | "dedicated";
+  // myrmidon(GITHUB-SHARED-IDENTITY): "app" — a self-hosted GitHub App token for `repository`
+  source?: "personal" | "dedicated" | "app";
+  repository?: string;
   login?: string;
   reason?: string;
   connectionId?: string;
@@ -110,6 +114,8 @@ export async function resolveGitHubOperationCredentials(
     companyId: string;
     agentId: string;
     runId: string;
+    // myrmidon(GITHUB-SHARED-IDENTITY): `owner/repo` (or a github.com remote) the operation targets
+    repository?: string | null;
   },
 ) {
   const { run, context } = await captureRunIdentity(db, input);
@@ -172,6 +178,28 @@ export async function resolveGitHubOperationCredentials(
         source: resolved.identitySource ?? "personal",
         reason: resolved.error ?? "No GitHub identity connected",
       };
+      // myrmidon(GITHUB-SHARED-IDENTITY): no dedicated/personal/delegated OAuth
+      // grant for this run — a self-hosted GitHub App may serve the repository.
+      if (!resolved.configured || resolved.noCandidate) {
+        const app = await applyGitHubAppIdentity(db, {
+          companyId: input.companyId,
+          agentId: input.agentId,
+          runId: input.runId,
+          issueId:
+            typeof run.contextSnapshot?.issueId === "string"
+              ? run.contextSnapshot.issueId
+              : null,
+          responsibleUserId:
+            context?.cause === "company_default"
+              ? null
+              : (context?.responsibleUserId ?? null),
+          repository: input.repository ?? null,
+        });
+        if (app) {
+          summary = app.summary;
+          env = app.env;
+        }
+      }
     }
   } catch {
     // Provider/secret errors can contain sensitive response bodies. Never persist them.

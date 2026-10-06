@@ -22,44 +22,39 @@ Myrmidon — плоскость управления компаниями из �
 - Каждое наше отличие от кода вендора записано в [DIVERGENCE.md](DIVERGENCE.md): что изменено,
   зачем, каким тестом проверено и когда правку можно снять.
 
-## Что добавляет первый выпуск (V1.0)
+## Статус
 
-- **Надёжность прогонов:** аренды окружения освобождаются, побудки не гаснут, прогон стартует
-  при длинной истории задачи, один сбойный инструмент не отключает весь каталог MCP.
-- **Безопасность:** прогон агента не получает окружение сервера (пароль базы, секреты
-  подписи). Агент не может менять свои настройки. Значения секретов маскируются в журналах и
-  сообщениях.
-- **Эксплуатация:** режим обслуживания, выкат по отпечатку образа с откатом, еженедельный
-  перенос релизов вендора, CI с проверкой лицензий и поиском секретов.
-- **Агенты Hermes:** инструменты MCP доски доступны в прогоне, навыки ставятся в профиль своего
-  агента, модели для текста, зрения, видео, слуха, голоса и резервные модели задаются в карточке.
+- Статус: см. [последний выпуск](https://github.com/itkadr-git/myrmidon/releases/latest) и
+  [журнал изменений](CHANGELOG.ru.md).
+- Status: see the [latest release](https://github.com/itkadr-git/myrmidon/releases/latest) and
+  the [changelog](CHANGELOG.md).
+- Образ публикуется в `ghcr.io/itkadr-git/myrmidon`; выкат — по [deploy.md](deploy.md).
 
-Подробно — в [ROADMAP.md](ROADMAP.md).
+## История
 
-## Телеметрия
-
-Myrmidon не отправляет телеметрию вендору. В коде нет адресов вендора, по умолчанию телеметрия
-выключена. Включить её можно только явно, указав свой адрес приёма.
-
-## Статус (27.09.2026)
-
-- В репозитории — история вендора до `v2026.916.1`, своих изменений кода пока нет.
-- Идёт работа над V1.0: шесть параллельных треков, см. [tracks/](tracks/).
-- Выпусков пока нет. Образ будет публиковаться в `ghcr.io/itkadr-git/myrmidon`.
-- Для боевого использования Myrmidon ещё не готов.
+- Репозиторий начался с истории вендора до `v2026.916.1`; первые выпуски (состав V1.0)
+  планировались по [ROADMAP.md](ROADMAP.md) и шли шестью параллельными треками
+  ([tracks/](tracks/), [SESSION-PROMPTS.md](SESSION-PROMPTS.md)).
 
 ## Документы
 
 | Файл | О чём |
 |---|---|
+| [CHANGELOG.md](CHANGELOG.md) | Журнал изменений по выпускам (русская версия: [CHANGELOG.ru.md](CHANGELOG.ru.md)) |
 | [ROADMAP.md](ROADMAP.md) | Состав V1.0 с критериями готовности, порядок V1.x, «Потом» |
 | [CONVENTIONS.md](CONVENTIONS.md) | Как мы работаем: ветки, PR, тесты, слияние, открытость, карта файлов по трекам |
 | [DIVERGENCE.md](DIVERGENCE.md) | Реестр наших отличий от вендора |
-| [SETTINGS.md](SETTINGS.md) | Наши настройки (переменные `MYRMIDON_*`) и их значения по умолчанию |
+| [SETTINGS.md](SETTINGS.md) | Наши настройки (переменные `MYRMIDON_*`) и их значения по умолчанию (русская версия: [SETTINGS.ru.md](SETTINGS.ru.md)) |
+| [ci.md](ci.md) | CI: проверки, сканеры, сборка образа |
+| [deploy.md](deploy.md) | Выкат, обновление и откат по отпечатку образа (русская версия: [deploy.ru.md](deploy.ru.md)) |
+| [dockergate.md](dockergate.md) | Allowlist-прокси к Docker-демону для контейнеров агентов (русская версия: [dockergate.ru.md](dockergate.ru.md)) |
+| [egress.md](egress.md) | Правила исходящих обращений во внешние сервисы |
+| [media-tools.md](media-tools.md) | Общие медиа- и офисные инструменты для контейнерных ботов: сервис media-mcp, хранилище и квоты, инструменты (ffmpeg, офис, OCR, `dwg_convert`), развёртывание и границы изоляции (русская версия: [media-tools.ru.md](media-tools.ru.md)) |
 | [board-key-rotation.md](board-key-rotation.md) | Runbook оператора: ротация и отзыв ключей доски / PAT по ролям (ROLE-SCOPED-TOKENS) |
 | [stack-updates.md](stack-updates.md) | Цикл обновлений стека: откуда «наше» и «у автора», отставание, вердикт «патч закрыт», плановая сверка и карточка `stack_update` (STACK-UPDATES часть D) |
 | [tracks/](tracks/) | Задания шести треков V1.0 |
 | [SESSION-PROMPTS.md](SESSION-PROMPTS.md) | Промпты для запуска сессий по трекам |
+| [guides/](guides/) | Руководства пользователя и администратора — таблица ниже |
 
 ### Руководства (guides/)
 
@@ -69,8 +64,9 @@ Myrmidon не отправляет телеметрию вендору. В ко�
 |---|---|
 | [guides/run-limits.md](guides/run-limits.md) | Лимиты допуска прогонов: четыре лимита, источники значений, изменение из UI и API |
 | [guides/run-stall.md](guides/run-stall.md) | Обнаружение зависших прогонов: что считается прогрессом, прерывание `run_stalled`, возврат задачи в `todo`, настройки |
-| [guides/stale-block.md](guides/stale-block.md) | Сторож мёртвых блоков (STALE-BLOCK B): какие причины мертвы, снятие блока с системным комментарием, карточка `stale_block` в attention-фиде, настройки |
+| [guides/stale-block.md](guides/stale-block.md) | Гард причины-ссылки при переходе в blocked (STALE-BLOCK A) и сторож мёртвых блоков (часть B): какие причины мертвы, снятие блока с системным комментарием, карточка `stale_block` в attention-фиде, настройки |
 | [guides/workspace-cleanup.md](guides/workspace-cleanup.md) | Очистка рабочих копий после слияния и сигнал о застрявшей копии |
+| [guides/telegram-bridge-locale.md](guides/telegram-bridge-locale.md) | Тексты Telegram-моста по языку пользователя: выбор, принуждение env, источник значения на экране «Язык» (TG-LOCALE) |
 | [guides/cloud-files-connector.md](guides/cloud-files-connector.md) | Коннектор Microsoft 365 для ботов-контейнеров: настройка и журнал |
 | [guides/maintenance-banner.md](guides/maintenance-banner.md) | Как баннер обслуживания группирует окна агентов |
 | [guides/access-hub.md](guides/access-hub.md) | Хаб доступов в настройках: секреты парка, выдача агентам, ротация, SSH-ключи, журнал |
@@ -89,6 +85,7 @@ Myrmidon не отправляет телеметрию вендору. В ко�
 | [guides/owner-telegram-cards.md](guides/owner-telegram-cards.md) | Доставка карточек вопросов и согласований владельцу задачи в Telegram-личку с агентом-автором (U2) |
 | [guides/cto-chat-planner.md](guides/cto-chat-planner.md) | Планировщик чата с доской (CTO-CHAT B): текст владельца — в предложенный эпик с задачами и критериями приёмки, карточка согласования, вход из Telegram DM, коды ошибок |
 | [guides/external-mcp-connectors.md](guides/external-mcp-connectors.md) | Внешние MCP-коннекторы: подключение любого HTTP MCP-сервера без кода форка — вердикт разведки, две точки входа, гранты агентам, регламент и проверка здоровья |
+| [guides/mcp-tool-names.md](guides/mcp-tool-names.md) | Имена MCP-инструментов доски: `myrmidon*` вместо `paperclip*`, алиасы старых имён на один релиз, план снятия в 1.8 |
 | [guides/agent-instructions-revisions.md](guides/agent-instructions-revisions.md) | История ревизий инструкций агента: снимки, откат, журнал |
 | [guides/auto-resume.md](guides/auto-resume.md) | Автовозобновление агента из `error`: бэкофф 1/5/15, карточка оператору после потолка попыток, настройки |
 | [guides/ui2-shell.md](guides/ui2-shell.md) | Оболочка Myrmidon 2.0 за флагом `enableMyrmidonUi2`: включение на инстанс и лично через `?ui=`, рамка (рейка/верхняя панель/телефонный каркас), экраны 2.0, токены и шрифты |
@@ -101,11 +98,12 @@ Myrmidon не отправляет телеметрию вендору. В ко�
 | [guides/actor-grant-routes.md](guides/actor-grant-routes.md) | Грантовые проверки актора (1.6.1 ADMIN-AGENT часть B): какие маршруты окружений и tool-подключений пускают агента с грантом, ключи прав по маршрутам, выдача грантов, атрибуция агента в журнале активности |
 | [guides/foraging.md](guides/foraging.md) | Фуражировка (1.6 FORAGING): реестр источников по ролям, проход сравнения снимков, находки и кандидаты в навыки, бюджет прохода, экран «Foraging», API |
 | [guides/budget-enforcement.md](guides/budget-enforcement.md) | Режимы исполнения лимитов расхода (1.7 BUDGET-CONFIG B): `signal_only` по умолчанию (инцидент и сигнал без паузы), `soft` (пауза и карточка владельцу), `hard` (отказ новым прогонам); экран Instance → General, API и прецедентность настройка → env → дефолт |
-
-| [media-tools.md](media-tools.md) | Общие медиа- и офисные инструменты для контейнерных ботов: сервис media-mcp, хранилище и квоты, инструменты (ffmpeg, офис, OCR, `dwg_convert`), развёртывание и границы изоляции |
+| [guides/vendor-share-analysis.md](guides/vendor-share-analysis.md) | Доля файлов, унаследованных от вендора: скрипт `vendor-share.mjs`, что считается унаследованным (путь в базовом коммите + сходство строк не ниже порога), исключения, фиксация числа в релизном ритуале |
+| [guides/baseline-snapshots-api.md](guides/baseline-snapshots-api.md) | Снимки метрик базовой линии (1.6.2 BASELINE): создание снимка произвольного окна, список и выборка по id, метка и закрепление как точка отсчёта, проверки доступа |
+| [guides/github-shared-identity.md](guides/github-shared-identity.md) | Авторизоваться в GitHub один раз на весь сервер (GITHUB-SHARED-IDENTITY): свои GitHub App вместо облачного коннектора вендора, токены установки на один репозиторий выпускает доска, выбор приложения по целевому репозиторию, авторство агента, аудит, выключатель коннектора вендора |
 
 ## Сборка и запуск
 
-Пока всё как у вендора: [doc/DEVELOPING.md](../../doc/DEVELOPING.md),
+Процесс разработки — как у вендора: [doc/DEVELOPING.md](../../doc/DEVELOPING.md),
 [doc/DOCKER.md](../../doc/DOCKER.md). Нужны Node 24 (не ниже 24.11) и pnpm 9.15.4.
-Сборку образа и выкат трек 1 опишет в `docs/myrmidon/ci.md` и `docs/myrmidon/deploy.md`.
+Сборка образа — [ci.md](ci.md), выкат — [deploy.md](deploy.md).

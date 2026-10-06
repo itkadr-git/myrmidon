@@ -13,6 +13,12 @@ import { and, eq, inArray, or } from "drizzle-orm";
 import { isGitHubDotCom } from "./github-fetch.js";
 import { secretService } from "./secrets.js";
 import { toolAccessService } from "./tool-access.js";
+// myrmidon(GITHUB-SHARED-IDENTITY): target repository for self-hosted App tokens; the vendor cloud connector switch
+import { normalizeGitHubRepository } from "../myrmidon/github-shared-identity/settings.js";
+import {
+  isVendorCloudGitHubConnection,
+  vendorGitHubConnectorEnabled,
+} from "../myrmidon/github-shared-identity/vendor-connector.js";
 
 /**
  * Server-side git credentials for managed project checkouts and execution-workspace base
@@ -46,13 +52,18 @@ const GIT_CREDENTIAL_HELPER =
 
 export type GitCredential = {
   token: string;
-  source: "managed_connection" | "company_secret" | "server_env";
+  // myrmidon(GITHUB-SHARED-IDENTITY): "github_app" — an installation token minted by a self-hosted GitHub App
+  source: "managed_connection" | "company_secret" | "server_env" | "github_app";
   /** The company-secret name the token came from; null for a server-environment token. */
   secretName: string | null;
   githubIdentity?: { userId: string; login: string };
-  identitySource?: "personal" | "dedicated";
+  // myrmidon(GITHUB-SHARED-IDENTITY): "app" — a self-hosted GitHub App installation
+  identitySource?: "personal" | "dedicated" | "app";
   connectionId?: string;
   grantId?: string;
+  // myrmidon(GITHUB-SHARED-IDENTITY): the commit author/committer when it is not
+  // the authenticating account (the agent itself under a GitHub App token)
+  commitIdentity?: { name: string; email: string };
 };
 
 /** A prepared, credential-bearing git invocation: config args plus the env that carries the token. */
@@ -113,8 +124,15 @@ export function scrubGitCredentialText(text: string): string {
 }
 
 export function buildGitAuthInvocation(credential: GitCredential): GitAuthInvocation {
-  const identity = credential.githubIdentity;
-  const noreplyEmail = identity ? `${identity.userId}+${identity.login}@users.noreply.github.com` : null;
+  // myrmidon(GITHUB-SHARED-IDENTITY): an explicit commit identity (the agent)
+  // wins over the authenticating account's noreply identity.
+  const author = credential.commitIdentity
+    ?? (credential.githubIdentity
+      ? {
+          name: credential.githubIdentity.login,
+          email: `${credential.githubIdentity.userId}+${credential.githubIdentity.login}@users.noreply.github.com`,
+        }
+      : null);
   const configEntries = [
     ["credential.helper", ""],
     ["credential.https://github.com.helper", GIT_CREDENTIAL_HELPER],
@@ -123,9 +141,9 @@ export function buildGitAuthInvocation(credential: GitCredential): GitAuthInvoca
     ["url.https://github.com/.insteadOf", "ssh://git@github.com/"],
     ["url.https://github.com/.insteadOf", "git@www.github.com:"],
     ["url.https://github.com/.insteadOf", "ssh://git@www.github.com/"],
-    ...(identity ? [
-      ["user.name", identity.login],
-      ["user.email", noreplyEmail!],
+    ...(author ? [
+      ["user.name", author.name],
+      ["user.email", author.email],
     ] : []),
   ];
   return {
@@ -144,11 +162,11 @@ export function buildGitAuthInvocation(credential: GitCredential): GitAuthInvoca
       GH_TOKEN: credential.token,
       GITHUB_TOKEN: credential.token,
       GIT_TERMINAL_PROMPT: "0",
-      ...(identity ? {
-        GIT_AUTHOR_NAME: identity.login,
-        GIT_AUTHOR_EMAIL: noreplyEmail!,
-        GIT_COMMITTER_NAME: identity.login,
-        GIT_COMMITTER_EMAIL: noreplyEmail!,
+      ...(author ? {
+        GIT_AUTHOR_NAME: author.name,
+        GIT_AUTHOR_EMAIL: author.email,
+        GIT_COMMITTER_NAME: author.name,
+        GIT_COMMITTER_EMAIL: author.email,
       } : {}),
       GIT_CONFIG_COUNT: String(configEntries.length),
       ...Object.fromEntries(configEntries.flatMap(([key, value], index) => [
@@ -182,6 +200,9 @@ export function describeGitAuthFailure(input: {
       ? `the ${input.used.secretName} company-secret GitHub credential`
       : input.used.source === "managed_connection"
         ? "the resolved GitHub connection"
+      // myrmidon(GITHUB-SHARED-IDENTITY): name the self-hosted GitHub App in auth-failure hints
+      : input.used.source === "github_app"
+        ? "the self-hosted GitHub App installation token"
       : "the server-environment GitHub credential";
     return `The operation authenticated with ${label}, which was rejected or lacks access to this repository.`;
   }
@@ -273,6 +294,8 @@ export function createGitRemoteAuthProvider(
         const { resolveGitHubOperationCredentials } = await import("./github-operation-credentials.js");
         const result = await resolveGitHubOperationCredentials(db, {
           companyId, runId: context.heartbeatRunId, agentId: context.agentId,
+          // myrmidon(GITHUB-SHARED-IDENTITY): GitHub App tokens are minted per repository
+          repository: normalizeGitHubRepository(remoteUrl),
         });
         if (result.status === "absent") {
           const credential = await resolveCredential();
@@ -307,6 +330,8 @@ export async function resolveManagedGitHubIdentitySelection(
   identitySource?: "personal" | "dedicated";
   grant?: typeof connectionGrants.$inferSelect;
   error?: string;
+  // myrmidon(GITHUB-SHARED-IDENTITY): true when no dedicated/personal/delegated grant exists for the run
+  noCandidate?: boolean;
 }> {
   const connections = await db.select().from(toolConnections).where(and(
     eq(toolConnections.companyId, companyId),
@@ -317,7 +342,9 @@ export async function resolveManagedGitHubIdentitySelection(
       ? connection.transportConfig as Record<string, unknown>
       : {};
     return config.sourceTemplateKey === "github" || transportConfig.sourceTemplateKey === "github";
-  });
+  // myrmidon(GITHUB-SHARED-IDENTITY): vendor cloud-connector GitHub connections
+  // do not exist while the vendor connector is switched off (the default).
+  }).filter((connection) => vendorGitHubConnectorEnabled() || !isVendorCloudGitHubConnection(connection));
   if (githubConnections.length === 0) return { configured: false };
 
   const connectionIds = githubConnections.map((connection) => connection.id);
@@ -372,6 +399,8 @@ export async function resolveManagedGitHubIdentitySelection(
   ))) {
     return {
       configured: true, identitySource,
+      // myrmidon(GITHUB-SHARED-IDENTITY): lets the broker fall back to a self-hosted GitHub App
+      ...(candidates.length === 0 ? { noCandidate: true } : {}),
       error: candidates.length === 0
         ? "No managed GitHub identity is available for this run"
         : "More than one managed GitHub identity matches this run",
@@ -472,10 +501,11 @@ export async function resolveManagedGitHubCredential(
     agentId?: string | null;
     allowStandingDelegation?: boolean;
   },
-): Promise<{ configured: boolean; identitySource?: "personal" | "dedicated"; credential?: GitCredential; error?: string }> {
+): Promise<{ configured: boolean; identitySource?: "personal" | "dedicated"; credential?: GitCredential; error?: string; noCandidate?: boolean }> {
   const selection = await resolveManagedGitHubIdentitySelection(db, companyId, context);
   if (!selection.configured) return { configured: false };
-  if (!selection.grant) return { configured: true, identitySource: selection.identitySource, error: selection.error };
+  // myrmidon(GITHUB-SHARED-IDENTITY): carry `noCandidate` to the broker
+  if (!selection.grant) return { configured: true, identitySource: selection.identitySource, error: selection.error, ...(selection.noCandidate ? { noCandidate: true } : {}) };
   const acquire = async (selection: Awaited<ReturnType<typeof resolveManagedGitHubIdentitySelection>>) => {
     let grant = selection.grant!;
     if (grant.kind === "user" && grant.subjectUserId) {

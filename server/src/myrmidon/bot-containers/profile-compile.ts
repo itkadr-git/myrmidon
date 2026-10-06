@@ -15,7 +15,7 @@
 //   - warnings are reported when they change, not on every tick.
 
 import { isBotBoardGatewayEnabled } from "./board-gateway.js";
-import type { BotLspSettings, ParallelHelpersSettings } from "@paperclipai/shared";
+import type { BotLspSettings, ParallelHelpersSettings, ScopeLayout } from "@paperclipai/shared";
 import {
   assertBotEgressSettings,
   BOT_EGRESS_MODE_ENV,
@@ -43,7 +43,7 @@ import {
 } from "./profile-input.js";
 import type { BotContainerActivitySink } from "./reconciler.js";
 import { cardFleetHost } from "./fleetd-hosts.js"; // myrmidon(1.6.1-BOT-DISK-B)
-import { packageCacheEnv } from "./template.js"; // myrmidon(1.6.1-BOT-DISK-B)
+import { BOT_SCOPE_GIT_OBJECTS_DIR, BOT_SCOPE_STORE_DIR, packageCacheEnv, pnpmEnv } from "./template.js"; // myrmidon(1.6.1-BOT-DISK-B, BOT-DISK-F, 1.6.5-BOT-DISK-G)
 import type { CompiledProfile } from "./types.js";
 import type { RegulationDelivery } from "../wiki-cortex/delivery.js"; // myrmidon(1.6-WIKI)
 
@@ -150,12 +150,22 @@ export interface BotProfilePorts {
    */
   sharedPackageCachePath?(role?: string): Promise<string | undefined>;
   /**
-   * myrmidon(1.6.2-BOT-DISK-C): where the pnpm store of a bot with the shared
-   * cache lives (`general.botDisk.pnpmStore`, default "workspace": on the same
-   * mount as the clones, so pnpm hard-links instead of copying; see
-   * template.ts packageCacheEnv). Read per tick. Optional: absent = "workspace".
+   * myrmidon(BOT-DISK-D): where the pnpm store of a bot with the shared cache
+   * lives and how pnpm imports (`general.botDisk.pnpmStoreDir` and
+   * `pnpmImportMethod`; defaults: a store inside the bot's single mount and
+   * `hardlink`, see template.ts packageCacheEnv). Read per tick. Optional:
+   * absent = the defaults.
    */
-  pnpmStore?(): Promise<"workspace" | "shared">;
+  pnpmSettings?(): Promise<{ storeDir: string; importMethod: string }>;
+  /**
+   * myrmidon(BOT-DISK-F): the layout the board keeps this bot's container on (the
+   * applied isolation scope). A member of a shared scope instance gets the
+   * instance's own pnpm store (`/bot-scope/.pnpm-store`) whatever the instance
+   * `pnpmStoreDir` says, with or without the shared package cache, because a
+   * store anywhere else is outside the one mount its hard links need. Read per
+   * tick, with the driver's reader. Optional: absent = isolated.
+   */
+  scopeLayout?(agentId: string): Promise<ScopeLayout>;
   /**
    * myrmidon(1.6.2-BOT-DISK-C): the clone-lifecycle policy for a bot of `role`, in
    * seconds, written as `MYRMIDON_CLONE_IDLE_TTL_SEC` for the in-container reporter
@@ -300,13 +310,28 @@ export function createBotProfileCompile(
     // no cache mounts (fleetd-driver.ts), so its tools keep their own defaults.
     // Instance values win over the card's, like the egress variables below.
     const sharedPackageCachePath = ports.sharedPackageCachePath ? await ports.sharedPackageCachePath(agent.role) : undefined;
-    // myrmidon(1.6.2-BOT-DISK-C): the pnpm store mode decides whether the store
-    // shares the clones' mount (hard links) or the cache mount (reflink/copy).
-    const pnpmStore = sharedPackageCachePath && ports.pnpmStore ? await ports.pnpmStore() : "workspace";
+    // myrmidon(BOT-DISK-D): the store directory and import method (hard links
+    // need the store inside the bot's single mount).
+    const pnpm = sharedPackageCachePath && ports.pnpmSettings ? await ports.pnpmSettings() : undefined;
     const cacheEnv: Record<string, HermesProfileEnvEntry> =
       sharedPackageCachePath && cardFleetHost(agent.adapterConfig) === null
-        ? Object.fromEntries(Object.entries(packageCacheEnv(pnpmStore)).map(([name, value]) => [name, { value, secret: false }]))
+        ? Object.fromEntries(Object.entries(packageCacheEnv({ storeDir: pnpm?.storeDir, importMethod: pnpm?.importMethod })).map(([name, value]) => [name, { value, secret: false }]))
         : {};
+    if (ports.scopeLayout && cardFleetHost(agent.adapterConfig) === null) {
+      const layout = await ports.scopeLayout(agent.id);
+      if (layout.kind === "shared") {
+        const method = (await ports.pnpmSettings?.())?.importMethod;
+        for (const [name, value] of Object.entries(pnpmEnv({ storeDir: BOT_SCOPE_STORE_DIR, importMethod: method }))) {
+          cacheEnv[name] = { value, secret: false };
+        }
+        // myrmidon(1.6.5 BOT-DISK-G): one git object store for the whole scope
+        // instance (template.ts BOT_SCOPE_GIT_OBJECTS_DIR). The wrapper's own
+        // default would be per-bot (inside this member's hermes home); the
+        // scope store is what makes a clone of bot A borrow bot B's objects —
+        // one mount, so the alternate resolves for every member.
+        cacheEnv.MYRMIDON_GIT_LOCAL_MIRROR = { value: BOT_SCOPE_GIT_OBJECTS_DIR, secret: false };
+      }
+    }
     const cloneTtlSec =
       ports.cloneIdleTtlSec && cardFleetHost(agent.adapterConfig) === null ? await ports.cloneIdleTtlSec(agent.role) : undefined;
     if (cloneTtlSec !== undefined) cacheEnv.MYRMIDON_CLONE_IDLE_TTL_SEC = { value: String(cloneTtlSec), secret: false };

@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
+  describeHostLoad,
   describeRunLimitSource,
   runtimeLimitsApi,
   runtimeLimitsQueryKey,
@@ -47,6 +48,13 @@ const FIELDS: Array<{ key: RunLimitKey; label: string; hint: string; optional: b
     hint: "A new run starts only while the host (where the bot containers run) has at least this much available memory; otherwise it waits in the queue. Default 15360 (15 GB).",
     optional: true,
   },
+  {
+    // myrmidon(1.6.5 RUN-ADMISSION)
+    key: "maxHostLoadPercentPerCore",
+    label: "Max host load per core, % of a core",
+    hint: "A new run starts only while the host's 1-minute load average is this many percent of one CPU core ABOVE the load the host carries on its own (100 = one core fully busy). The host's own background — the services that keep it busy without any run — does not close the ceiling: only the load the runs add counts. Default 90. Empty switches the ceiling off.",
+    optional: true,
+  },
 ];
 
 interface DraftParse {
@@ -83,6 +91,7 @@ export function parseRunLimitsDraft(draft: Record<RunLimitKey, string>): DraftPa
       minFreeMemoryMb: parsed.minFreeMemoryMb,
       runMemoryEstimateMb: estimate,
       minFreeHostMemoryMb: parsed.minFreeHostMemoryMb,
+      maxHostLoadPercentPerCore: parsed.maxHostLoadPercentPerCore,
     },
     errors,
   };
@@ -95,6 +104,8 @@ function toDraft(limits: RunLimits): Record<RunLimitKey, string> {
     minFreeMemoryMb: limits.minFreeMemoryMb === null ? "" : String(limits.minFreeMemoryMb),
     runMemoryEstimateMb: String(limits.runMemoryEstimateMb),
     minFreeHostMemoryMb: limits.minFreeHostMemoryMb === null ? "" : String(limits.minFreeHostMemoryMb),
+    maxHostLoadPercentPerCore:
+      limits.maxHostLoadPercentPerCore === null ? "" : String(limits.maxHostLoadPercentPerCore),
   };
 }
 
@@ -114,6 +125,9 @@ export function RuntimeLimitsSettingsPanelView({
   const { patch, errors } = current
     ? parseRunLimitsDraft(current)
     : { patch: null, errors: {} as Partial<Record<RunLimitKey, string>> };
+  // myrmidon(1.6.5 RUN-ADMISSION rc.2): the live host reading next to the
+  // ceiling field, so the operator sees what the number is measured against.
+  const hostLoadLine = describeHostLoad(view?.hostLoad);
 
   return (
     <section className="space-y-4" data-testid="myrmidon-runtime-limits">
@@ -159,6 +173,11 @@ export function RuntimeLimitsSettingsPanelView({
                   </span>
                 ) : null}
               </div>
+              {key === "maxHostLoadPercentPerCore" && hostLoadLine ? (
+                <p data-testid="runtime-limit-host-load" className="text-xs text-muted-foreground">
+                  {hostLoadLine}
+                </p>
+              ) : null}
               <p className="text-xs text-muted-foreground">{hint}</p>
             </div>
           ))}

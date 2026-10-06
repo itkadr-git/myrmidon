@@ -33,6 +33,7 @@ const view: RuntimeLimitsView = {
     minFreeMemoryMb: 2048,
     runMemoryEstimateMb: 300,
     minFreeHostMemoryMb: 15360,
+    maxHostLoadPercentPerCore: 90,
   },
   sources: {
     maxConcurrentRuns: "env",
@@ -40,7 +41,21 @@ const view: RuntimeLimitsView = {
     minFreeMemoryMb: "env",
     runMemoryEstimateMb: "default",
     minFreeHostMemoryMb: "default",
+    maxHostLoadPercentPerCore: "default",
   } as Record<RunLimitKey, RunLimitsSource>,
+  // myrmidon(1.6.5 rc.2): the live host reading the ceiling is applied to.
+  hostLoad: {
+    state: "open",
+    thresholdPercent: 90,
+    load1: 19.2,
+    cores: 16,
+    loadPercentPerCore: 120,
+    backgroundPercentPerCore: 115,
+    load15PercentPerCore: 115,
+    loadAboveBackgroundPercent: 5,
+    reason: null,
+    heldSince: null,
+  },
 };
 
 function render(value: RuntimeLimitsView | null, onSave = vi.fn(), pending = false, error: string | null = null) {
@@ -93,7 +108,61 @@ describe("myrmidon(C0) run limits panel", () => {
       minFreeMemoryMb: 2048,
       runMemoryEstimateMb: 300,
       minFreeHostMemoryMb: 15360,
+      maxHostLoadPercentPerCore: 90,
     });
+  });
+
+  it("myrmidon(1.6.5): edits the host CPU ceiling and switches it off with an empty field", () => {
+    const onSave = render(view);
+    expect(field("maxHostLoadPercentPerCore").value).toBe("90");
+    type("maxHostLoadPercentPerCore", "150");
+    flushSync(() => saveButton().dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({ maxHostLoadPercentPerCore: 150 }));
+    type("maxHostLoadPercentPerCore", "");
+    flushSync(() => saveButton().dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({ maxHostLoadPercentPerCore: null }));
+  });
+
+  it("myrmidon(1.6.5 rc.2): shows the current host load and the background floor next to the ceiling", () => {
+    render(view);
+    const line = container.querySelector("[data-testid=runtime-limit-host-load]")?.textContent ?? "";
+    // The numbers the ceiling counts: the reading, the host's own background
+    // and the part the runs add — the rc.1 panel showed only the typed number.
+    expect(line).toContain("Host load right now: 120 % of a core");
+    expect(line).toContain("load 19.2 on 16 core(s)");
+    expect(line).toContain("5 % of a core above the host's background floor of 115 %");
+    expect(line).toContain("Ceiling 90 %: open");
+    // The hint says the ceiling counts the load above the host's background.
+    expect(container.textContent).toContain("ABOVE the load the host carries on its own");
+  });
+
+  it("myrmidon(1.6.5 rc.2): names a closed ceiling and a switched-off one", () => {
+    render({
+      ...view,
+      hostLoad: {
+        ...view.hostLoad!,
+        state: "closed",
+        load1: 33.6,
+        loadPercentPerCore: 210,
+        loadAboveBackgroundPercent: 95,
+      },
+    });
+    const closed = container.querySelector("[data-testid=runtime-limit-host-load]")?.textContent ?? "";
+    expect(closed).toContain("210 % of a core");
+    expect(closed).toContain("95 % of a core above the host's background floor of 115 %");
+    expect(closed).toContain("Ceiling 90 %: closed — new runs wait in the queue.");
+
+    render({ ...view, hostLoad: { ...view.hostLoad!, state: "off", thresholdPercent: null } });
+    expect(container.querySelector("[data-testid=runtime-limit-host-load]")?.textContent).toBe(
+      "Ceiling is off: new runs start whatever the host load is.",
+    );
+  });
+
+  it("myrmidon(1.6.5 rc.2): shows no reading when the server sent none", () => {
+    // An older server (or a request before the reading exists): the panel does
+    // not invent a number.
+    render({ ...view, hostLoad: null });
+    expect(container.querySelector("[data-testid=runtime-limit-host-load]")).toBeNull();
   });
 
   it("myrmidon(1.6.2): edits the host free-memory floor and switches it off with an empty field", () => {
@@ -139,6 +208,7 @@ describe("myrmidon(C0) run limits panel", () => {
         minFreeMemoryMb: "",
         runMemoryEstimateMb: "300",
         minFreeHostMemoryMb: "15360",
+        maxHostLoadPercentPerCore: "90",
       }),
     ).toEqual({
       patch: {
@@ -147,6 +217,7 @@ describe("myrmidon(C0) run limits panel", () => {
         minFreeMemoryMb: null,
         runMemoryEstimateMb: 300,
         minFreeHostMemoryMb: 15360,
+        maxHostLoadPercentPerCore: 90,
       },
       errors: {},
     });

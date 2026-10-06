@@ -1,0 +1,132 @@
+{
+ "apiPrefix": "/v1.45",
+ "routes": [
+  {
+   "id": "A1",
+   "method": "GET",
+   "template": "images/{image}/json"
+  },
+  {
+   "id": "A2",
+   "method": "GET",
+   "template": "containers/{name}/json",
+   "suffixes": [
+    ""
+   ]
+  },
+  {
+   "id": "A3",
+   "method": "GET",
+   "template": "containers/{name}/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fapplied.json",
+   "suffixes": [
+    ""
+   ]
+  },
+  {
+   "id": "A3",
+   "method": "GET",
+   "template": "containers/{name}/archive?path=%2Fdata%2Fhermes%2F.myrmidon%2Fapplied.json",
+   "suffixes": [
+    ""
+   ]
+  },
+  {
+   "id": "A4",
+   "method": "POST",
+   "template": "containers/create?name={name}",
+   "suffixes": [
+    "",
+    ".next",
+    ".helper"
+   ]
+  },
+  {
+   "id": "A5",
+   "method": "PUT",
+   "template": "containers/{name}/archive?path={mount}\u0026noOverwriteDirNonDir=true",
+   "suffixes": [
+    ".helper"
+   ],
+   "mounts": [
+    "%2Fdata%2Fhermes",
+    "%2Fworkspace",
+    "%2Fscratch"
+   ]
+  },
+  {
+   "id": "A6",
+   "method": "POST",
+   "template": "containers/{name}/start",
+   "suffixes": [
+    "",
+    ".helper"
+   ]
+  },
+  {
+   "id": "A7",
+   "method": "POST",
+   "template": "containers/{name}/wait?condition=not-running",
+   "suffixes": [
+    ".helper"
+   ]
+  },
+  {
+   "id": "A8",
+   "method": "GET",
+   "template": "containers/{name}/logs?stdout=true\u0026stderr=true\u0026tail=20",
+   "suffixes": [
+    ".helper"
+   ]
+  },
+  {
+   "id": "A9",
+   "method": "DELETE",
+   "template": "containers/{name}?force=true\u0026v=true",
+   "suffixes": [
+    "",
+    ".next",
+    ".helper"
+   ]
+  },
+  {
+   "id": "A10",
+   "method": "POST",
+   "template": "containers/{name}/stop?t=30",
+   "suffixes": [
+    ""
+   ]
+  },
+  {
+   "id": "A11",
+   "method": "POST",
+   "template": "containers/{name}/restart?t=30",
+   "suffixes": [
+    ""
+   ]
+  },
+  {
+   "id": "A12",
+   "method": "POST",
+   "template": "containers/{name}/rename?name={mainName}",
+   "suffixes": [
+    ".next"
+   ]
+  },
+  {
+   "id": "A13",
+   "method": "GET",
+   "template": "containers/{name}/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fclone-hygiene.json",
+   "suffixes": [
+    ""
+   ]
+  },
+  {
+   "id": "A13",
+   "method": "GET",
+   "template": "containers/{name}/archive?path=%2Fdata%2Fhermes%2F.myrmidon%2Fclone-hygiene.json",
+   "suffixes": [
+    ""
+   ]
+  }
+ ]
+}

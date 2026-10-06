@@ -119,10 +119,23 @@ describe("docker/bot-runtime/Dockerfile", () => {
     assert.match(dockerfile, /^EXPOSE 8642$/m);
   });
 
-  it("declares volumes for state, workspace and scratch, not a host bind", () => {
-    // The three mounts the bot-runtime contract fixes (template.ts
-    // BOT_VOLUME_MOUNTS): hermes (under /data), workspace, scratch.
-    assert.match(dockerfile, /^VOLUME \["\/data", "\/workspace", "\/scratch"\]$/m);
+  it("declares ONE volume, the bot's whole tree, and links the three contract paths into it", () => {
+    // myrmidon(BOT-DISK-D): hard links cannot cross mounts, so /data/hermes,
+    // /workspace and /scratch are links into the single /bot mount
+    // (template.ts BOT_ROOT_MOUNT), not volumes of their own.
+    assert.match(dockerfile, /^VOLUME \["\/bot"\]$/m);
+    assert.match(dockerfile, /ln -s \/bot\/hermes \/data\/hermes/);
+    assert.match(dockerfile, /ln -s \/data\/workspace \/workspace/);
+    assert.match(dockerfile, /ln -s \/data\/scratch \/scratch/);
+  });
+
+  it("can run as a member of a shared isolation scope (BOT-DISK-F): scope label, a working directory that always resolves, /bot-scope write-safe", () => {
+    // The scope label is what the driver checks before it creates a member; WORKDIR must not be a
+    // path that only exists after the entrypoint made its links; hermes may write under /bot-scope.
+    assert.match(dockerfile, /myrmidon\.bot-runtime\.scope="1"/);
+    assert.match(dockerfile, /^WORKDIR \/$/m);
+    assert.doesNotMatch(dockerfile, /^WORKDIR \/workspace$/m);
+    assert.match(dockerfile, /HERMES_WRITE_SAFE_ROOT=[^ ]*:\/bot-scope\b/);
   });
 
   it("declares the bot-runtime contract label the G3 driver requires before it will create a container", () => {
@@ -238,7 +251,7 @@ describe("docker/bot-runtime/Dockerfile", () => {
     // write-safe root".
     assert.match(dockerfile, /HERMES_DISABLE_LAZY_INSTALLS=1/);
     assert.match(dockerfile, /HERMES_LAZY_INSTALL_TARGET=\/data\//);
-    assert.match(dockerfile, /HERMES_WRITE_SAFE_ROOT=\/data[^\n"]*\/scratch/);
+    assert.match(dockerfile, /HERMES_WRITE_SAFE_ROOT=\/data[^\n"]*\/scratch[^\n"]*\/bot/);
   });
 
   it("ships uv in the runtime stage too, so a still-permitted lazy install (an opt-in backend) actually works", () => {

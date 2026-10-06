@@ -155,7 +155,7 @@ async function reapIfStale(dirPath: string, config: BotDiskLifecycleConfig): Pro
   }
 }
 
-/** myrmidon(1.6.2-BOT-DISK-C): the workspace pnpm store entry (template.ts WORKSPACE_PNPM_STORE_DIR). */
+/** myrmidon(1.6.2-BOT-DISK-C): the workspace pnpm store entry (template.ts DEFAULT_PNPM_STORE_DIR). */
 const PNPM_STORE_ENTRY = '.pnpm-store';
 
 /**

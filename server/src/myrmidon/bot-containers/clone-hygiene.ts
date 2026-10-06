@@ -59,9 +59,84 @@ export interface CloneReportEntry {
   error: string | null;
 }
 
+/** myrmidon(BOT-DISK-D): one clone root of the container-start hard-link self-check. */
+export interface HardlinkRootResult {
+  /** Container path of the root: /data/hermes, /workspace or /scratch. */
+  root: string;
+  ok: boolean;
+  error: string | null;
+}
+
+/** The self-check the entrypoint runs at every start (docker/bot-runtime/entrypoint.sh)
+ *  and the reporter passes on: a hard link from the pnpm store into each clone root. */
+export interface HardlinkCheck {
+  store: string;
+  importMethod: string;
+  ok: boolean;
+  roots: HardlinkRootResult[];
+}
+
+/** myrmidon(1.6.5 BOT-DISK-G): one check of the container-start shared-git-objects self-check. */
+export interface GitRefCheckItem {
+  /** Which check: usr-local-shadow, wrapper-runs, store-writable or reference-clone. */
+  check: string;
+  ok: boolean;
+  error: string | null;
+}
+
+/** The shared-git-objects self-check the entrypoint runs at every start and the
+ *  reporter passes on: the git wrapper answers where clones run, its store is
+ *  writable, and a test reference-clone really borrows the mirror's objects. */
+export interface GitRefCheck {
+  store: string;
+  ok: boolean;
+  checks: GitRefCheckItem[];
+}
+
 export interface CloneReport {
   inspectedAtMs: number;
   repos: Map<string, CloneReportEntry>;
+  hardlinkCheck: HardlinkCheck | null;
+  gitRefCheck: GitRefCheck | null;
+}
+
+/** The report's `hardlinkCheck`, or null when absent or malformed. */
+export function parseHardlinkCheck(value: unknown): HardlinkCheck | null {
+  if (!value || typeof value !== "object") return null;
+  const v = value as Record<string, unknown>;
+  if (typeof v.store !== "string" || typeof v.ok !== "boolean" || !Array.isArray(v.roots)) return null;
+  const roots: HardlinkRootResult[] = [];
+  for (const item of v.roots.slice(0, 20)) {
+    if (!item || typeof item !== "object") continue;
+    const r = item as Record<string, unknown>;
+    if (typeof r.root !== "string" || typeof r.ok !== "boolean") continue;
+    roots.push({ root: r.root.slice(0, 200), ok: r.ok, error: typeof r.error === "string" ? r.error.slice(0, 500) : null });
+  }
+  return {
+    store: v.store.slice(0, 500),
+    importMethod: typeof v.importMethod === "string" ? v.importMethod.slice(0, 40) : "unknown",
+    ok: v.ok,
+    roots,
+  };
+}
+
+/** The report's `gitRefCheck` (myrmidon 1.6.5 BOT-DISK-G), or null when absent or malformed. */
+export function parseGitRefCheck(value: unknown): GitRefCheck | null {
+  if (!value || typeof value !== "object") return null;
+  const v = value as Record<string, unknown>;
+  if (typeof v.ok !== "boolean" || !Array.isArray(v.checks)) return null;
+  const checks: GitRefCheckItem[] = [];
+  for (const item of v.checks.slice(0, 20)) {
+    if (!item || typeof item !== "object") continue;
+    const c = item as Record<string, unknown>;
+    if (typeof c.check !== "string" || typeof c.ok !== "boolean") continue;
+    checks.push({ check: c.check.slice(0, 80), ok: c.ok, error: typeof c.error === "string" ? c.error.slice(0, 500) : null });
+  }
+  return {
+    store: typeof v.store === "string" ? v.store.slice(0, 500) : "unknown",
+    ok: v.ok,
+    checks,
+  };
 }
 
 /** Parse the report file; null when it is not a usable report. */
@@ -106,7 +181,7 @@ export function parseCloneReport(raw: string, nowMs: number): CloneReport | null
       error: malformed ? entry.error ?? "malformed report entry" : entry.error,
     });
   }
-  return { inspectedAtMs, repos };
+  return { inspectedAtMs, repos, hardlinkCheck: parseHardlinkCheck(obj.hardlinkCheck), gitRefCheck: parseGitRefCheck(obj.gitRefCheck) };
 }
 
 /** Why a reported container path cannot name a clone, or null when it can. */
@@ -147,6 +222,11 @@ export function decideCloneFate(entry: CloneReportEntry | undefined, quiet: bool
 
 /** A clone kept with unpushed work, idle longer than the TTL. */
 export interface CloneHygieneSignal {
+  /** `clone`: unpushed work in an idle clone. `hardlink` (BOT-DISK-D): pnpm cannot
+   *  hard-link from its store into `path` (a clone root), so installs there copy.
+   *  `gitref` (1.6.5 BOT-DISK-G): the shared-git-objects self-check failed, so
+   *  task clones on this bot copy the git history again. */
+  kind?: "clone" | "hardlink" | "gitref";
   botKey: string;
   /** Container path of the clone. */
   path: string;
@@ -183,6 +263,33 @@ export function ingestCloneReport(botKey: string, raw: string, idleTtlMs: number
       path: containerPath,
       branch: entry.branch,
       reason: fate.reason,
+      observedAtMs: signals.get(key)?.observedAtMs ?? nowMs,
+    });
+  }
+  // myrmidon(BOT-DISK-D): a clone root the start-time self-check could not hard-link into.
+  for (const failed of report.hardlinkCheck?.roots.filter((root) => !root.ok) ?? []) {
+    const key = `${botKey}:hardlink:${failed.root}`;
+    seen.add(key);
+    signals.set(key, {
+      kind: "hardlink",
+      botKey,
+      path: failed.root,
+      branch: null,
+      reason: `cannot hard-link from the pnpm store ${report.hardlinkCheck?.store}: ${failed.error ?? "unknown error"}`,
+      observedAtMs: signals.get(key)?.observedAtMs ?? nowMs,
+    });
+  }
+  // myrmidon(1.6.5 BOT-DISK-G): a shared-git-objects check that failed at the
+  // bot's last start (one signal per failed check, keyed by the check name).
+  for (const failed of report.gitRefCheck?.checks.filter((check) => !check.ok) ?? []) {
+    const key = `${botKey}:gitref:${failed.check}`;
+    seen.add(key);
+    signals.set(key, {
+      kind: "gitref",
+      botKey,
+      path: report.gitRefCheck?.store ?? "",
+      branch: null,
+      reason: `shared git objects check ${failed.check} failed: ${failed.error ?? "unknown error"}`,
       observedAtMs: signals.get(key)?.observedAtMs ?? nowMs,
     });
   }

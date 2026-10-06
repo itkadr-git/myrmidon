@@ -382,7 +382,8 @@ import {
   createOmissionTracker,
   telegramAttachmentOmissionNotice,
 } from "../myrmidon/chat-attachment-omission.js";
-import { TELEGRAM_DM_COMMANDS } from "../myrmidon/agent-chat-bridge/commands/index.js";
+import { TELEGRAM_DM_COMMANDS, telegramDmCommandsForLocale } from "../myrmidon/agent-chat-bridge/commands/index.js";
+import { telegramDmMenuLocale } from "../myrmidon/agent-chat-bridge/locales/index.js";
 // myrmidon(CHAT-HOLD): no silent queue in a bridged Telegram chat.
 import {
   chatNoticeLanguage,
@@ -397,6 +398,22 @@ import {
   telegramDmConversationsConfigured,
   telegramDmConversationsEnabled,
 } from "../myrmidon/agent-chat-bridge/settings.js";
+// myrmidon(TG-NOTIFY-D): inbound topic settings + gate for Telegram forum
+// topics (server/src/myrmidon/telegram-notify/). Off by default: the
+// settings document lives in instance settings; the gate only relaxes the
+// vendor's addressed requirement when the owner enabled topic inbound. The
+// reader lives in its own module, so the track's contract module
+// (`telegram-notify/settings.ts`, part B) stays untouched.
+import {
+  readTelegramNotifyInbound,
+  type TelegramNotifyInboundSettings,
+} from "../myrmidon/telegram-notify/topic-inbound-settings.js";
+// myrmidon(TG-NOTIFY-D): pure gate/title/body helpers for topic inbound.
+import {
+  topicInboundAdmitted,
+  topicTaskBody,
+  topicTaskTitle,
+} from "../myrmidon/telegram-notify/topic-inbound.js";
 // myrmidon(U1): settings for the editable DM status message and inline split
 // (release 1.4, item 3).
 import {
@@ -4432,11 +4449,15 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           if (telegramDmConversationsConfigured()) {
             await credentialLease.assertOwned();
             if (telegramDmConversationsEnabled(record.endpoint.id)) {
+              // myrmidon(1.7-TG-LOCALE): the menu renders in the instance
+              // locale that holds when this action runs (env force, else the
+              // English default) — same once-per-version rule as the
+              // bridge-enabled state; the version hashes the canonical list.
               await telegramMaintenanceRequest(
                 credentials.botToken,
                 "setMyCommands",
                 {
-                  commands: TELEGRAM_DM_COMMANDS,
+                  commands: telegramDmCommandsForLocale(telegramDmMenuLocale()),
                   scope: { type: "all_private_chats" },
                 },
               );
@@ -14823,7 +14844,30 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     // identity, so it must not defeat durable deduplication.
     const providerEventId = `${durableExternalThreadIdentity(thread.id)}:${message.id}`;
     const surfaceKind = chatSurfaceKind(endpoint.provider, thread);
+    // myrmidon(TG-NOTIFY-D): topic inbound settings are read once per message
+    // from instance settings (runtime-changeable, OFF by default). The
+    // vendor path is byte-for-byte unchanged while the document is absent.
+    const telegramNotifyInbound: TelegramNotifyInboundSettings | null =
+      endpoint.provider === "telegram" && !thread.isDM
+        ? await readTelegramNotifyInbound(db)
+        : null;
+    // myrmidon(TG-NOTIFY-D): with topic inbound enabled, an unaddressed topic
+    // message may still become task work (topic → task / topic → bound
+    // conversation). requireMention (default true) keeps the vendor's
+    // group privacy contract: unaddressed messages stay ignored.
+    const topicInbound =
+      telegramNotifyInbound !== null &&
+      topicInboundAdmitted({
+        inbound: telegramNotifyInbound,
+        threadId: thread.id,
+        addressed:
+          trigger === "mention" ||
+          trigger === "direct_message" ||
+          message.isMention === true,
+      });
     const addressed =
+      // myrmidon(TG-NOTIFY-D): topic inbound admission (see above).
+      topicInbound ||
       endpoint.provider === "imessage-photon" ||
       trigger === "mention" ||
       trigger === "direct_message" ||
@@ -16530,11 +16574,28 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           const issue = await issuesSvc.create(
             endpoint.companyId,
             {
-              title: safeTitle(
-                message.text,
-                `${PROVIDER_LABELS[endpoint.provider]} conversation`,
-              ),
-              description: `Started from ${PROVIDER_LABELS[endpoint.provider]}: ${resource.label}`,
+              // myrmidon(TG-NOTIFY-D): a task created from a Telegram forum
+              // topic message carries the message's first words as the title
+              // and the thread link in the description.
+              title:
+                // myrmidon(TG-NOTIFY-D): see the topic-inbound gate above.
+                topicInbound && endpoint.provider === "telegram" && !thread.isDM
+                  ? topicTaskTitle(
+                      message.text,
+                      endpoint.provider === "telegram" ? endpoint.botUsername : null,
+                    )
+                  : safeTitle(
+                      message.text,
+                      `${PROVIDER_LABELS[endpoint.provider]} conversation`,
+                    ),
+              description:
+                topicInbound && endpoint.provider === "telegram" && !thread.isDM
+                  ? topicTaskBody({
+                      text: message.text.slice(0, MAX_INBOUND_TEXT),
+                      threadUrl: providerUrl,
+                      chatLabel: resource.label,
+                    })
+                  : `Started from ${PROVIDER_LABELS[endpoint.provider]}: ${resource.label}`,
               status: "todo",
               priority: "medium",
               // myrmidon(X9b): an @<alias>-addressed group/topic message takes
@@ -17006,6 +17067,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           issueId: issue.id,
           deliveryId: activeDelivery.id,
           principalId: principalResolution.principal.id,
+          // myrmidon(1.7-TG-LOCALE): the linked user decides the migration
+          // notice's language.
+          boardUserId: principalResolution.userId!,
           notice: x8Notice,
           migratedFromIssueId: x8Dm.migratedFromIssueId,
         });

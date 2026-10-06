@@ -37,13 +37,15 @@ const agentActor = {
 
 const ENV_ONLY = { MYRMIDON_MAX_CONCURRENT_RUNS: "8" };
 // myrmidon(1.6.2 RUN-ADMISSION): the start ramp and the host floor are on by default.
-const RAMP_AND_HOST = { maxStartsPerMinute: 5, minFreeHostMemoryMb: 15360 };
+const RAMP_AND_HOST = { maxStartsPerMinute: 5, minFreeHostMemoryMb: 15360, maxHostLoadPercentPerCore: 90 };
 
 interface HarnessOptions {
   stored?: unknown;
   env?: Record<string, string | undefined>;
   companyIds?: string[];
   settingsError?: Error;
+  /** myrmidon(1.6.5 rc.2): the live host CPU reading the view carries. */
+  hostLoad?: RuntimeLimitsServiceDeps["hostLoad"];
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -72,6 +74,7 @@ function harness(options: HarnessOptions = {}) {
     },
     apply: (limits) => calls.push(`apply:${limits.maxConcurrentRuns}`),
     scheduleResweep: () => calls.push("resweep"),
+    ...(options.hostLoad ? { hostLoad: options.hostLoad } : {}),
     env: options.env ?? ENV_ONLY,
   };
 
@@ -103,8 +106,32 @@ describe("myrmidon(C0) runtime limits: reading the effective values", () => {
         minFreeMemoryMb: "default",
         runMemoryEstimateMb: "default",
         minFreeHostMemoryMb: "default",
+        maxHostLoadPercentPerCore: "default",
       },
+      // myrmidon(1.6.5 rc.2): the view carries the live host CPU reading; the
+      // harness has no admission, so there is none.
+      hostLoad: null,
     });
+  });
+
+  it("myrmidon(1.6.5 rc.2): carries the live host CPU reading next to the ceiling", async () => {
+    const hostLoad = {
+      state: "open" as const,
+      thresholdPercent: 90,
+      load1: 19.2,
+      cores: 16,
+      loadPercentPerCore: 120,
+      backgroundPercentPerCore: 115,
+      load15PercentPerCore: 115,
+      loadAboveBackgroundPercent: 5,
+      reason: null,
+      heldSince: null,
+    };
+    // The reading is what the settings page shows next to the field, and it
+    // comes from the same admission that decides on the run.
+    const { withActor } = harness({ hostLoad: () => hostLoad });
+    const res = await request(withActor(member)).get(URL).expect(200);
+    expect(res.body.hostLoad).toEqual(hostLoad);
   });
 
   it("reports the stored settings as the source once they exist", async () => {
@@ -124,8 +151,17 @@ describe("myrmidon(C0) runtime limits: reading the effective values", () => {
       minFreeMemoryMb: 1500,
       runMemoryEstimateMb: 250,
       minFreeHostMemoryMb: 8192,
+      // myrmidon(1.6.5): the row lacks the CPU ceiling; it resolves from the default.
+      maxHostLoadPercentPerCore: 90,
     });
-    expect(Object.values(res.body.sources)).toEqual(["settings", "settings", "settings", "settings", "settings"]);
+    expect(Object.values(res.body.sources)).toEqual([
+      "settings",
+      "settings",
+      "settings",
+      "settings",
+      "settings",
+      "default",
+    ]);
   });
 
   it("myrmidon(1.6.2): a row saved before the host floor existed keeps its values and gets the default floor", async () => {
@@ -139,9 +175,11 @@ describe("myrmidon(C0) runtime limits: reading the effective values", () => {
       minFreeMemoryMb: 1500,
       runMemoryEstimateMb: 250,
       minFreeHostMemoryMb: 15360,
+      maxHostLoadPercentPerCore: 90,
     });
     expect(res.body.sources.maxStartsPerMinute).toBe("settings");
     expect(res.body.sources.minFreeHostMemoryMb).toBe("default");
+    expect(res.body.sources.maxHostLoadPercentPerCore).toBe("default");
   });
 
   it("falls back to the environment when the stored row is not canonical", async () => {
@@ -218,6 +256,7 @@ describe("myrmidon(C0) runtime limits: a change reaches the live admission", () 
       minFreeMemoryMb: 7,
       runMemoryEstimateMb: 250,
       minFreeHostMemoryMb: 15360,
+      maxHostLoadPercentPerCore: 90,
     });
   });
 
@@ -235,6 +274,24 @@ describe("myrmidon(C0) runtime limits: a change reaches the live admission", () 
     const off = await request(h.withActor(admin)).patch(URL).send({ minFreeHostMemoryMb: null }).expect(200);
     expect(off.body.limits.minFreeHostMemoryMb).toBeNull();
     await request(h.withActor(admin)).patch(URL).send({ minFreeHostMemoryMb: 0 }).expect(400);
+  });
+
+  it("myrmidon(1.6.5): the host CPU ceiling changes on the fly and can be switched off", async () => {
+    const h = harness();
+    const res = await request(h.withActor(admin))
+      .patch(URL)
+      .send({ maxHostLoadPercentPerCore: 150 })
+      .expect(200);
+    expect(res.body.limits.maxHostLoadPercentPerCore).toBe(150);
+    expect(res.body.sources.maxHostLoadPercentPerCore).toBe("settings");
+    expect(h.audits[0]!.details).toMatchObject({ changedKeys: ["maxHostLoadPercentPerCore"] });
+
+    const off = await request(h.withActor(admin)).patch(URL).send({ maxHostLoadPercentPerCore: null }).expect(200);
+    expect(off.body.limits.maxHostLoadPercentPerCore).toBeNull();
+    await request(h.withActor(admin)).patch(URL).send({ maxHostLoadPercentPerCore: 0 }).expect(400);
+    await request(h.withActor(admin)).patch(URL).send({ maxHostLoadPercentPerCore: 1.5 }).expect(400);
+    // The refused writes changed nothing after the two accepted ones.
+    expect(h.updated.at(-1)!.runLimits).toMatchObject({ maxHostLoadPercentPerCore: null });
   });
 
   it("refuses values that are not a positive integer and writes nothing", async () => {

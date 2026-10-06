@@ -57,7 +57,7 @@ function write(rel: string, data: string | Buffer): void {
   fs.writeFileSync(file, data);
 }
 
-const config = { socketPath: "", volumeRoot: VOLUME_ROOT, network: NETWORK, allowlist: [IMAGE], mountSources: [] };
+const config = { socketPath: "", volumeRoot: VOLUME_ROOT, network: NETWORK, allowlist: [IMAGE], mountSources: [], devbuild: { host: null, user: "", base: "" } };
 
 const manifest: {
   botKey: string;
@@ -92,6 +92,22 @@ for (const spec of specs) {
     manifest.bodies.push({ id, form: "bot", name: `myrmidon-bot-${BOT_KEY}${suffix}`, file: `bodies/${id}.json`, ...spec });
   }
 }
+// The LEGACY volume layout (contract "1" images without the scope label —
+// 1.6.4 and earlier): the same bot specs, but the three separate binds. The
+// gate must accept both forms byte for byte (1.6.5-rc.1: a single-mount body
+// under an old image crash-loops the bot).
+for (const spec of specs) {
+  const body = buildCreateContainerRequestBody(
+    { botKey: BOT_KEY, image: IMAGE, memoryMb: spec.memoryMb, cpus: spec.cpus, pidsLimit: spec.pidsLimit, network: NETWORK },
+    config,
+    undefined,
+    false,
+    undefined,
+    "legacy",
+  );
+  write(`bodies/legacy-${spec.id}.json`, JSON.stringify(body));
+  manifest.bodies.push({ ...spec, id: `legacy-${spec.id}`, form: "bot", name: `myrmidon-bot-${BOT_KEY}`, file: `bodies/legacy-${spec.id}.json` });
+}
 for (const image of [IMAGE, IMAGE_ID]) {
   write(`bodies/helper-prepare${image === IMAGE ? "" : "-by-id"}.json`, JSON.stringify(
     buildHelperContainerRequestBody({ botKey: BOT_KEY, image, role: "prepare-volumes", script: buildPrepareVolumesScript(), volumeRoot: VOLUME_ROOT }),
@@ -117,6 +133,55 @@ for (const nonce of NONCES) {
     nonce,
   });
 }
+
+// ---- shared scope instance (BOT-DISK-F) ----
+// A member of a shared isolation-scope instance: one bind of the instance
+// directory at /bot-scope, one Env entry, a tmpfs over /data; its helpers work
+// inside the member's own subdirectory of the instance (the prepare helper also
+// binds the instance directory). Kept apart from `bodies` so the loops over the
+// isolated bodies stay as they were.
+const SCOPE_ROOT = `${VOLUME_ROOT}/.scopes`;
+const SCOPE_INSTANCE = "caste-00000000-0000-4000-8000-0000000000c0-engineer";
+const scopeMount = { scopeRoot: SCOPE_ROOT, dirName: SCOPE_INSTANCE };
+const scopeSpec = { botKey: BOT_KEY, image: IMAGE, memoryMb: 1024, cpus: 1, pidsLimit: 512, network: NETWORK };
+write("scope/bot.json", JSON.stringify(buildCreateContainerRequestBody(scopeSpec, config, undefined, false, scopeMount)));
+write("scope/bot-next.json", JSON.stringify(buildCreateContainerRequestBody(scopeSpec, config, undefined, false, scopeMount)));
+write("scripts/prepare-shared.sh", buildPrepareVolumesScript({ scope: true }));
+write(
+  "scope/helper-prepare.json",
+  JSON.stringify(
+    buildHelperContainerRequestBody({
+      botKey: BOT_KEY,
+      image: IMAGE,
+      role: "prepare-volumes",
+      script: buildPrepareVolumesScript({ scope: true }),
+      volumeRoot: VOLUME_ROOT,
+      scope: scopeMount,
+    }),
+  ),
+);
+write(
+  "scope/helper-apply.json",
+  JSON.stringify(
+    buildHelperContainerRequestBody({
+      botKey: BOT_KEY,
+      image: IMAGE_ID,
+      role: "apply-profile",
+      script: buildApplyScript(NONCES[0]!),
+      volumeRoot: VOLUME_ROOT,
+      scope: scopeMount,
+    }),
+  ),
+);
+(manifest as Record<string, unknown>).scope = {
+  root: SCOPE_ROOT,
+  instance: SCOPE_INSTANCE,
+  bot: "scope/bot.json",
+  botNext: "scope/bot-next.json",
+  helperPrepare: "scope/helper-prepare.json",
+  helperApply: "scope/helper-apply.json",
+  nonce: NONCES[0],
+};
 
 // ---- inspect contract (A2) ----
 // A container inspect as a Docker daemon writes it for a bot container, plus
@@ -263,7 +328,10 @@ const server = http.createServer((req, res) => {
     };
     const parts = url.pathname.split("/").filter(Boolean); // v1.45, containers, <ref>, <action>
     if (parts[1] === "images" && parts[parts.length - 1] === "json") {
-      return send(200, JSON.stringify({ Id: IMAGE_ID, Config: { Labels: { "myrmidon.bot-runtime.contract": "1" }, User: "10001:10001", Env: ["PATH=/usr/local/bin:/usr/bin"] } }));
+      // Contract "2": the traffic contract records the modern board with a
+      // single-mount image; the LEGACY bodies join the contract as static
+      // fixtures (bodies/legacy-*.json) and are replayed against the gate.
+      return send(200, JSON.stringify({ Id: IMAGE_ID, Config: { Labels: { "myrmidon.bot-runtime.contract": "2" }, User: "10001:10001", Env: ["PATH=/usr/local/bin:/usr/bin"] } }));
     }
     if (parts[1] !== "containers") return send(404, JSON.stringify({ message: "not found" }));
     if (parts[2] === "create") {

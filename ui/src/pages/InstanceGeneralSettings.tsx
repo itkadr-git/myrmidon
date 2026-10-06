@@ -23,15 +23,24 @@ import { BudgetEnforcementSettingsPanel } from "@/components/myrmidon/BudgetEnfo
 import { TelegramDmProgressSettingsPanel } from "@/components/myrmidon/TelegramDmProgressSettingsPanel"; // myrmidon(DM-PROGRESS)
 import { HostDiskSettingsPanel } from "@/components/myrmidon/HostDiskSettingsPanel"; // myrmidon(BOT-DISK E)
 import { BotDiskSettingsPanel } from "@/components/myrmidon/BotDiskSettingsPanel"; // myrmidon(1.6.1-BOT-DISK-B)
+import { BotScopePanel } from "@/components/myrmidon/BotScopePanel"; // myrmidon(BOT-DISK-F)
+import { BotDiskQuotaSettingsPanel } from "@/components/myrmidon/BotDiskQuotaSettingsPanel"; // myrmidon(1.6.1-BOT-DISK-C)
 import { AgentMemorySettingsPanel } from "@/components/myrmidon/AgentMemorySettingsPanel"; // myrmidon(MEMORY-UI)
 import { ParallelHelpersSettingsPanel } from "@/components/myrmidon/ParallelHelpersSettingsPanel"; // myrmidon(PARALLEL-HELPERS)
 import { BotLspSettingsPanel } from "@/components/myrmidon/BotLspSettingsPanel"; // myrmidon(BOT-LSP-DEFAULTS)
 import { SwarmClaimSettingsPanel } from "@/components/myrmidon/SwarmClaimSettingsPanel"; // myrmidon(1.6.1 SWARM-SETTINGS-UI)
+import { ReviewReworkSettingsPanel } from "@/components/myrmidon/ReviewReworkSettingsPanel"; // myrmidon(REVIEW-REWORK)
 import { AboutSettingsPanel } from "@/components/myrmidon/AboutSettingsPanel"; // myrmidon(ABOUT)
 import { DeployJobsPanel } from "@/components/myrmidon/DeployJobsPanel"; // myrmidon(R5-A)
 import { PluginEntitlementSettings } from "@/components/myrmidon/PluginEntitlementSettingsPanel"; // myrmidon(PLUGIN-ENTITLEMENT C)
 import { PRODUCT_NAME, UPSTREAM_ATTRIBUTION } from "@/lib/myrmidon-product"; // myrmidon(B1a)
 import { useTranslation } from "@/i18n"; // myrmidon(UI-RU)
+
+// myrmidon(BACKUP-KEEP-LAST): the shared `BackupRetentionPolicy` gains
+// `keepLastOnly?: boolean` together with the server side of this feature. This local
+// widening keeps the page typechecking before that merge too; it is purely additive
+// and has no runtime effect.
+type BackupRetentionSettings = BackupRetentionPolicy & { keepLastOnly?: boolean };
 
 const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
 
@@ -94,7 +103,12 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
   const censorUsernameInLogs = generalQuery.data?.censorUsernameInLogs === true;
   const keyboardShortcuts = generalQuery.data?.keyboardShortcuts === true;
   const feedbackDataSharingPreference = generalQuery.data?.feedbackDataSharingPreference ?? "prompt";
-  const backupRetention: BackupRetentionPolicy = generalQuery.data?.backupRetention ?? DEFAULT_BACKUP_RETENTION;
+  const backupRetention = (generalQuery.data?.backupRetention ??
+    DEFAULT_BACKUP_RETENTION) as BackupRetentionSettings; // myrmidon(BACKUP-KEEP-LAST)
+  // myrmidon(BACKUP-KEEP-LAST): retention patch payload carrying the additive
+  // `keepLastOnly` flag; the widening is temporary until the shared type has it.
+  const retentionPatch = (updates: Partial<BackupRetentionSettings>): BackupRetentionPolicy =>
+    ({ ...backupRetention, ...updates }) as BackupRetentionPolicy;
   const hiddenSettings = new Set(healthQuery.data?.hiddenSettings ?? []);
   const showDeploymentStatus = !hiddenSettings.has("instance.general.deploymentStatus");
   const showCensorUsernameInLogs = !hiddenSettings.has("instance.general.censorUsernameInLogs");
@@ -144,10 +158,13 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       <TelegramDmProgressSettingsPanel /> {/* myrmidon(DM-PROGRESS) */}
       <HostDiskSettingsPanel /> {/* myrmidon(BOT-DISK E) */}
       <BotDiskSettingsPanel /> {/* myrmidon(1.6.1-BOT-DISK-B) */}
+      <BotScopePanel /> {/* myrmidon(BOT-DISK-F) */}
+      <BotDiskQuotaSettingsPanel /> {/* myrmidon(1.6.1-BOT-DISK-C) */}
       <ParallelHelpersSettingsPanel /> {/* myrmidon(PARALLEL-HELPERS) */}
       <AgentMemorySettingsPanel /> {/* myrmidon(MEMORY-UI) */}
       <BotLspSettingsPanel /> {/* myrmidon(BOT-LSP-DEFAULTS) */}
       <SwarmClaimSettingsPanel /> {/* myrmidon(1.6.1 SWARM-SETTINGS-UI) */}
+      <ReviewReworkSettingsPanel /> {/* myrmidon(REVIEW-REWORK) */}
       <DeployJobsPanel /> {/* myrmidon(R5-A) */}
       <PluginEntitlementSettings /> {/* myrmidon(PLUGIN-ENTITLEMENT C) */}
 
@@ -234,6 +251,36 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
             </p>
           </div>
 
+          {/* myrmidon(BACKUP-KEEP-LAST): "keep only the latest backup" mode; presets are ignored while it is on. */}
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              disabled={updateGeneralMutation.isPending || signOutMutation.isPending}
+              className={cn(
+                "rounded-lg border px-3 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60",
+                backupRetention.keepLastOnly === true
+                  ? "border-foreground bg-accent text-foreground"
+                  : "border-border bg-background hover:bg-accent/50",
+              )}
+              onClick={() =>
+                updateGeneralMutation.mutate({
+                  backupRetention: retentionPatch({ keepLastOnly: true }),
+                })
+              }
+            >
+              <div className="text-sm font-medium">{t("settings.keepLastBackupOnly")}</div>
+            </button>
+          </div>
+          {/* myrmidon(BACKUP-KEEP-LAST): server risk note — a broken new dump leaves the older backups in place. */}
+          <p className="max-w-2xl text-xs text-muted-foreground">
+            {t("settings.keepLastBackupOnlyRisk")}
+          </p>
+          {backupRetention.keepLastOnly === true ? (
+            <p className="text-xs text-muted-foreground">
+              {t("settings.keepLastBackupOnlyHint")}
+            </p>
+          ) : null}
+
           <div className="space-y-1.5">
             <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">{t("settings.daily")}</h3>
             <div className="flex flex-wrap gap-2">
@@ -252,7 +299,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
                     )}
                     onClick={() =>
                       updateGeneralMutation.mutate({
-                        backupRetention: { ...backupRetention, dailyDays: days },
+                        backupRetention: retentionPatch({ dailyDays: days, keepLastOnly: false }), // myrmidon(BACKUP-KEEP-LAST): picking a preset turns the keep-last-only mode off
                       })
                     }
                   >
@@ -282,7 +329,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
                     )}
                     onClick={() =>
                       updateGeneralMutation.mutate({
-                        backupRetention: { ...backupRetention, weeklyWeeks: weeks },
+                        backupRetention: retentionPatch({ weeklyWeeks: weeks, keepLastOnly: false }), // myrmidon(BACKUP-KEEP-LAST): picking a preset turns the keep-last-only mode off
                       })
                     }
                   >
@@ -312,7 +359,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
                     )}
                     onClick={() =>
                       updateGeneralMutation.mutate({
-                        backupRetention: { ...backupRetention, monthlyMonths: months },
+                        backupRetention: retentionPatch({ monthlyMonths: months, keepLastOnly: false }), // myrmidon(BACKUP-KEEP-LAST): picking a preset turns the keep-last-only mode off
                       })
                     }
                   >
