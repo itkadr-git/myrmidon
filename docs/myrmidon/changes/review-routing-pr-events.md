@@ -1,6 +1,6 @@
 ---
-divergence-section: 1.6.5 — REVIEW-ROUTING (PR events), part A: shared contract + server sweep
-settings-section: 1.6.5 — REVIEW-ROUTING (PR events), part A: server PR lane
+divergence-section: REVIEW-ROUTING — автоназначение ревьюера задачам на ревью
+settings-section: REVIEW-ROUTING: automatic reviewer for tasks in review
 ---
 
 ## changelog-en
