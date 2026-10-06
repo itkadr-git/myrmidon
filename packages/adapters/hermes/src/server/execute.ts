@@ -663,9 +663,11 @@ export async function execute(
     executionResult.costUsd = parsed.costUsd;
   }
 
-  // Summary from agent response
+  // Summary from agent response. myrmidon(TG-REPLY-FULL): never cut here; this
+  // text is what the chat bridge delivers to the owner, and long answers are
+  // split into several messages downstream rather than truncated.
   if (parsed.response) {
-    executionResult.summary = parsed.response.slice(0, 2000);
+    executionResult.summary = parsed.response;
   }
 
   // Set resultJson so Paperclip can persist run metadata (used for UI display + auto-comments)

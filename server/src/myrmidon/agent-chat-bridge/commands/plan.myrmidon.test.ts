@@ -188,7 +188,7 @@ const support = await getEmbeddedPostgresTestSupport();
 
     expect(result).toMatchObject({ kind: "reply", command: "plan" });
     const text = (result as { kind: "reply"; text: string }).text;
-    expect(text).toBe("Команда /plan доступна только владельцу компании.");
+    expect(text).toBe("The /plan command is available to the company owner only.");
     expect(await interactionsFor(issue.id)).toHaveLength(0);
   });
 
@@ -221,7 +221,7 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(result).toMatchObject({
       kind: "reply",
       command: "plan",
-      text: "Напишите запрос после команды: /plan <что нужно спланировать>.",
+      text: "Write the request after the command: /plan <what to plan>.",
     });
     expect(await interactionsFor(issue.id)).toHaveLength(0);
   });

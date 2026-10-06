@@ -39,6 +39,9 @@ import {
   type ConversationKey,
 } from "./identity.js";
 import { telegramDmConversationsEnabled } from "./settings.js";
+// myrmidon(1.7-TG-LOCALE): bridge-owned prose (migration notice, unlinked
+// refusal) renders from the locale catalogs in the linked user's language.
+import { resolveBridgeLocale, forcedBridgeLocale, DEFAULT_BRIDGE_LOCALE, t } from "./locales/index.js";
 // myrmidon(X9b): @<alias> addressing — alias resolution plus the reply prefix
 // and the first-contact context quote for an addressed agent's turn.
 import { resolveBridgeAddressee, type TelegramAddressee } from "./addressing.js";
@@ -187,6 +190,9 @@ async function buildMigrationNoticeText(
     agentId: string;
     publicBaseUrl: string | null;
     migratedFromIssueId: string;
+    /** myrmidon(1.7-TG-LOCALE): the linked board user whose language decides the notice. */
+    boardUserId: string;
+    env?: NodeJS.ProcessEnv;
   },
 ): Promise<string> {
   const [agent] = await db
@@ -194,9 +200,13 @@ async function buildMigrationNoticeText(
     .from(agents)
     .where(and(eq(agents.companyId, input.companyId), eq(agents.id, input.agentId)));
   const link = safeChatTaskUrl(input.publicBaseUrl, input.migratedFromIssueId);
-  // myrmidon(X8-texts): this notice is read in the bridged Telegram DM, so it
-  // is Russian like the rest of the command surface.
-  return `Теперь это постоянный чат с ${agent?.name ?? "этим агентом"}. Прежние задачи остаются на доске${link ? `: ${link}` : "."}`;
+  // myrmidon(1.7-TG-LOCALE): this notice is read in the bridged Telegram DM,
+  // so it renders in the linked user's locale like the command surface.
+  const locale = await resolveBridgeLocale(db as unknown as Db, input.boardUserId, input.env);
+  return t(locale, "bridge.migrated", {
+    agent: agent?.name ?? t(locale, "bridge.thisAgent"),
+    linkSuffix: link ? t(locale, "bridge.linkWith", { url: link }) : t(locale, "bridge.linkNone"),
+  });
 }
 
 const MAX_LOGGED_ERROR_TEXT = 2_000;
@@ -484,6 +494,7 @@ export async function handleTelegramDmCommand(input: {
         agentId: input.endpoint.assignedAgentId,
         publicBaseUrl: input.deps.publicBaseUrl,
         migratedFromIssueId: input.migratedFromIssueId,
+        boardUserId: input.boardUserId,
       });
       await input.deps.stageTaskControlPublication(tx as unknown as Db, {
         companyId: input.endpoint.companyId,
@@ -519,9 +530,15 @@ export async function refuseUnlinkedTelegramDm(
     deliveryId: string | null;
     resourceId: string;
     runtimeContext: { credentialFingerprint: string; generation: number };
+    /** myrmidon(1.7-TG-LOCALE): test seam for the forced-locale env. */
+    env?: NodeJS.ProcessEnv;
   },
 ): Promise<void> {
   const day = new Date().toISOString().slice(0, 10);
+  // myrmidon(1.7-TG-LOCALE): an unlinked account has no board user, so the
+  // refusal follows the instance decision only: the env force, else the
+  // English default.
+  const locale = forcedBridgeLocale(input.env ?? process.env) ?? DEFAULT_BRIDGE_LOCALE;
   try {
     const effect = await deps.stageProviderEffect(db, {
       endpoint: input.endpoint,
@@ -533,7 +550,7 @@ export async function refuseUnlinkedTelegramDm(
         authorizationMode: "safe_notice",
         effect: "thread_message",
         threadId: input.thread.id,
-        text: "Этот бот доступен только участникам рабочего пространства. Попросите администратора привязать ваш аккаунт Telegram.",
+        text: t(locale, "bridge.refusalUnlinked"),
         settleDelivery: false,
         resourceId: input.resourceId,
       },
@@ -571,6 +588,8 @@ export async function afterTelegramDmMessage(input: {
   issueId: string;
   deliveryId: string;
   principalId: string;
+  /** myrmidon(1.7-TG-LOCALE): linked board user; decides the notice's language. */
+  boardUserId?: string;
   notice?: string;
   migratedFromIssueId?: string;
 }): Promise<void> {
@@ -613,6 +632,10 @@ export async function afterTelegramDmMessage(input: {
       agentId: input.agentId,
       publicBaseUrl: input.deps.publicBaseUrl,
       migratedFromIssueId: input.migratedFromIssueId,
+      // myrmidon(1.7-TG-LOCALE): the migration only runs for a linked person
+      // (x8Dm.applies requires a board user); an unlinked thread's old
+      // binding never reaches this path.
+      boardUserId: input.boardUserId ?? "",
     });
     await input.db.transaction((tx) =>
       input.deps.stageTaskControlPublication(tx as unknown as Db, {
