@@ -177,4 +177,20 @@ describe("DataRetentionSettingsPanel", () => {
     expect(container.textContent).toContain("it starts once a backup younger than 24 hours exists");
     expect(container.textContent).toContain("Last cleanup: never");
   });
+
+  it("renders nothing when the instance does not serve the retention route", async () => {
+    vi.spyOn(dataRetentionApiModule.dataRetentionApi, "get").mockRejectedValue(
+      new Error("Request failed: 404"),
+    );
+    const container = renderPanel();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 80));
+    });
+    // No empty "Data retention" block of dead inputs on an instance without the route.
+    expect(container.querySelector('[data-testid="data-retention-panel"]')).toBeNull();
+    expect(
+      container.querySelector('[data-testid="data-retention-heartbeatRunsDays-input"]'),
+    ).toBeNull();
+    expect(container.textContent).toBe("");
+  });
 });
