@@ -19,6 +19,7 @@ import type { AgentMemorySettings } from "../myrmidon-agent-memory.js";
 import type { WipLimitSettings } from "../myrmidon-wip-limit.js";
 // myrmidon(REVIEW-ROUTING): automatic reviewer routing settings of the same row.
 import type { ReviewRoutingSettings } from "../myrmidon-review-routing.js";
+import type { ReviewReworkSettings } from "../myrmidon-review-rework.js";
 import type { BudgetEnforcementSettings } from "../myrmidon-budget-enforcement.js";
 // myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys live in
 // the same general settings row.
@@ -163,6 +164,20 @@ export interface InstanceGeneralSettings {
    * Absent means the defaults.
    */
   reviewRouting?: ReviewRoutingSettings;
+  /**
+   * myrmidon(REVIEW-REWORK): the review-return loop — a RETURN verdict opens
+   * the rework task and the review waits blocked until the PR head moves,
+   * changed from `GET`/`PATCH /api/myrmidon/review-rework`. Absent means the
+   * defaults (the fix is on); kept in sync with the validator of the same
+   * field (packages/shared/src/validators/instance.ts).
+   */
+  reviewRework?: ReviewReworkSettings;
+  /**
+   * myrmidon(REVIEW-REWORK): the change journal of the loop settings (who
+   * changed what, and when), newest first. Stored passthrough, like
+   * `swarmClaimJournal`.
+   */
+  reviewReworkJournal?: unknown[];
   /**
    * myrmidon(1.7-SETTINGS-TO-UI): the channel settings document — the Telegram
    * bridge switches, the chat limits and the cross-channel numbers, changed from
