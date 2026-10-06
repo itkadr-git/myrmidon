@@ -48,8 +48,9 @@ export interface ReviewRoutingSettings {
   /** Hours without a verdict before the review is reassigned; 0 — never. */
   reassignAfterHours: number;
   /**
-   * Pull-request lane. Optional in the wire shape until part A merges: an
-   * older server omits it, and the screen then shows the schema defaults.
+   * Pull-request lane. Optional in the wire shape until part A (PR 705) merges:
+   * an older server omits it, and because the PUT schema is `.strict()` the
+   * screen then hides the section and never sends the key back.
    */
   prWatch?: ReviewRoutingPrWatchSettings;
 }

@@ -24,6 +24,7 @@ import {
   parseBoundedInt,
   repositoriesValid,
   settingsFromDraft,
+  supportsPrWatch,
   type ReviewRoutingDraft,
 } from "./reviewRoutingConfig";
 import type { ReviewRoutingSettings } from "./reviewRoutingApi";
@@ -43,28 +44,36 @@ export function ReviewRoutingScreenView({
   const [draft, setDraft] = useState<ReviewRoutingDraft | null>(null);
 
   const current: ReviewRoutingDraft | null = draft ?? (settings ? draftFromSettings(settings) : null);
+  // The PR lane section is only editable against a server whose settings
+  // already carry `prWatch` (part A of PR 705). Against an older server the block
+  // is hidden and the PUT omits the key — `.strict()` would 400 it.
+  const prWatchSupported = supportsPrWatch(settings);
   const maxLoadOk =
     current !== null &&
     parseBoundedInt(current.maxLoad, REVIEW_ROUTING_MAX_LOAD_MIN, REVIEW_ROUTING_MAX_LOAD_MAX).ok;
   const hoursOk =
     current !== null && parseBoundedInt(current.reassignHours, 0, REVIEW_ROUTING_REASSIGN_HOURS_MAX).ok;
-  const repositoriesOk = current !== null && repositoriesValid(current.prRepositories);
+  const repositoriesOk = !prWatchSupported || (current !== null && repositoriesValid(current.prRepositories));
   const maxOpenReviewsOk =
-    current !== null &&
-    parseBoundedInt(current.prMaxOpenReviews, PR_WATCH_MAX_OPEN_REVIEWS_MIN, PR_WATCH_MAX_OPEN_REVIEWS_MAX).ok;
+    !prWatchSupported ||
+    (current !== null &&
+      parseBoundedInt(current.prMaxOpenReviews, PR_WATCH_MAX_OPEN_REVIEWS_MIN, PR_WATCH_MAX_OPEN_REVIEWS_MAX).ok);
   const maxNewAssignmentsOk =
-    current !== null &&
-    parseBoundedInt(
-      current.prMaxNewAssignments,
-      PR_WATCH_MAX_NEW_ASSIGNMENTS_MIN,
-      PR_WATCH_MAX_NEW_ASSIGNMENTS_MAX,
-    ).ok;
+    !prWatchSupported ||
+    (current !== null &&
+      parseBoundedInt(
+        current.prMaxNewAssignments,
+        PR_WATCH_MAX_NEW_ASSIGNMENTS_MIN,
+        PR_WATCH_MAX_NEW_ASSIGNMENTS_MAX,
+      ).ok);
   const pollIntervalOk =
-    current !== null &&
-    parseBoundedInt(current.prPollIntervalSec, PR_WATCH_POLL_INTERVAL_MIN, PR_WATCH_POLL_INTERVAL_MAX).ok;
+    !prWatchSupported ||
+    (current !== null &&
+      parseBoundedInt(current.prPollIntervalSec, PR_WATCH_POLL_INTERVAL_MIN, PR_WATCH_POLL_INTERVAL_MAX).ok);
   const stewardMaxMergesOk =
-    current !== null &&
-    parseBoundedInt(current.stewardMaxMerges, PR_STEWARD_MAX_MERGES_MIN, PR_STEWARD_MAX_MERGES_MAX).ok;
+    !prWatchSupported ||
+    (current !== null &&
+      parseBoundedInt(current.stewardMaxMerges, PR_STEWARD_MAX_MERGES_MIN, PR_STEWARD_MAX_MERGES_MAX).ok);
   const allOk =
     maxLoadOk &&
     hoursOk &&
@@ -159,6 +168,7 @@ export function ReviewRoutingScreenView({
             ) : null}
           </div>
 
+          {prWatchSupported ? (
           <div className="space-y-4 rounded-md border border-border/60 p-3" data-testid="review-routing-pr-watch">
             <div className="space-y-1">
               <div className="flex items-center gap-2">
@@ -305,6 +315,7 @@ export function ReviewRoutingScreenView({
               </fieldset>
             </div>
           </div>
+          ) : null}
 
           <div>
             <Button type="button" size="sm" disabled={pending || !allOk} onClick={save}>

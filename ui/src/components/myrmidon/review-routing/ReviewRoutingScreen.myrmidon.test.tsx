@@ -2,9 +2,11 @@
 // myrmidon(REVIEW-ROUTING): the review routing settings screen — pure helpers
 // and the view tier, no network.
 //
-// myrmidon(REVIEW-ROUTING PR-events UI): prWatch guard tests — defaults render,
-// the full-object round-trip preserves unrelated keys, an invalid repository
-// entry is rejected client-side, and the steward fields follow steward.enabled.
+// myrmidon(REVIEW-ROUTING PR-events UI): prWatch guard tests — the section
+// renders and round-trips when the server carries the block, is hidden and
+// never PUT when the loaded settings omit it (the server schema is .strict()),
+// an invalid repository entry is rejected client-side, and the steward fields
+// follow steward.enabled.
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -17,6 +19,7 @@ import {
   parseRoles,
   repositoriesValid,
   settingsFromDraft,
+  supportsPrWatch,
 } from "./reviewRoutingConfig";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -38,6 +41,13 @@ const SETTINGS: ReviewRoutingSettings = {
     pollIntervalSec: 60,
     steward: { enabled: true, roles: ["devops"], maxMergesPerSteward: 3 },
   },
+};
+
+const BASE_WITHOUT_PR_WATCH: ReviewRoutingSettings = {
+  enabled: true,
+  reviewerRoles: ["reviewer"],
+  maxLoadPerReviewer: 5,
+  reassignAfterHours: 24,
 };
 
 let container: HTMLDivElement;
@@ -86,13 +96,18 @@ describe("reviewRoutingConfig", () => {
     expect(parseBoundedInt("", 0, 100).ok).toBe(false);
   });
 
-  it("validates owner/repo repository entries", () => {
+  it("validates owner/repo repository entries with the server's pattern", () => {
+    // Mirrors GITHUB_REPOSITORY_PATTERN ([A-Za-z0-9_.-]+ halves): the client
+    // must not accept an entry the server schema then rejects.
     expect(repositoriesValid("company-a/repo-a\ncompany-b/repo-b")).toBe(true);
+    expect(repositoriesValid("org.name/repo_name.git")).toBe(true);
     expect(repositoriesValid("")).toBe(true);
     expect(repositoriesValid("repo-a")).toBe(false);
     expect(repositoriesValid("company-a/")).toBe(false);
     expect(repositoriesValid("company a/repo")).toBe(false);
     expect(repositoriesValid("company-a/repo-a/ref-head")).toBe(false);
+    expect(repositoriesValid("owner/repo@sha")).toBe(false);
+    expect(repositoriesValid("owner/repo#1")).toBe(false);
   });
 
   it("round-trips a draft and rejects an invalid one", () => {
@@ -101,6 +116,21 @@ describe("reviewRoutingConfig", () => {
     expect(
       settingsFromDraft({ ...draftFromSettings(SETTINGS), prRepositories: "not-a-repo" }, SETTINGS),
     ).toBeNull();
+  });
+
+  it("omits prWatch from the saved object when the loaded base has no block", () => {
+    // The server schema is .strict(): PUTting prWatch to an older server without the PR lane
+    // would 400 the whole save. The draft still carries the display defaults.
+    expect(supportsPrWatch(SETTINGS)).toBe(true);
+    expect(supportsPrWatch(BASE_WITHOUT_PR_WATCH)).toBe(false);
+    expect(supportsPrWatch(null)).toBe(false);
+    const draft = draftFromSettings(BASE_WITHOUT_PR_WATCH);
+    expect(draft.prPollIntervalSec).toBe(String(defaultPrWatchSettings().pollIntervalSec));
+    const saved = settingsFromDraft({ ...draft, maxLoad: "7" }, BASE_WITHOUT_PR_WATCH);
+    expect(saved).not.toBeNull();
+    expect(saved!.prWatch).toBeUndefined();
+    expect("prWatch" in saved!).toBe(false);
+    expect(saved).toEqual({ ...BASE_WITHOUT_PR_WATCH, maxLoadPerReviewer: 7 });
   });
 
   it("keeps unknown top-level keys and prWatch fields byte-identically on the round-trip", () => {
@@ -132,28 +162,37 @@ describe("ReviewRoutingScreenView", () => {
     expect(container.querySelector('[data-testid="myrmidon-review-routing-loading"]')).not.toBeNull();
   });
 
-  it("renders prWatch inputs with the schema defaults when the server omits the block", () => {
-    const withoutPrWatch: ReviewRoutingSettings = {
-      enabled: true,
-      reviewerRoles: ["reviewer"],
-      maxLoadPerReviewer: 5,
-      reassignAfterHours: 24,
-    };
-    act(() => root.render(<ReviewRoutingScreenView settings={withoutPrWatch} onSave={vi.fn()} pending={false} error={null} />));
-    const defaults = defaultPrWatchSettings();
+  it("hides the prWatch section when the server omits the block", () => {
+    // An older server without the PR lane: .strict() would reject a prWatch key, so the screen
+    // shows nothing of the lane and its save must not carry the key.
+    const onSave = vi.fn();
+    act(() =>
+      root.render(<ReviewRoutingScreenView settings={BASE_WITHOUT_PR_WATCH} onSave={onSave} pending={false} error={null} />),
+    );
+    expect(container.querySelector('[data-testid="review-routing-pr-watch"]')).toBeNull();
+    const button = clickSave();
+    expect(button.disabled).toBe(false);
+    expect(onSave).toHaveBeenCalledWith(BASE_WITHOUT_PR_WATCH);
+    expect("prWatch" in onSave.mock.calls[0]![0]).toBe(false);
+  });
+
+  it("renders prWatch inputs with the values the server sent", () => {
+    act(() => root.render(<ReviewRoutingScreenView settings={SETTINGS} onSave={vi.fn()} pending={false} error={null} />));
+    const prWatch = SETTINGS.prWatch!;
     const value = (id: string) => container.querySelector<HTMLInputElement>(`#${id}`)!.value;
+    expect(container.querySelector('[data-testid="review-routing-pr-watch"]')).not.toBeNull();
     expect(container.querySelector<HTMLInputElement>("#review-routing-pr-watch-enabled")!.checked).toBe(
-      defaults.enabled,
+      prWatch.enabled,
     );
-    expect(value("review-routing-pr-repositories")).toBe("");
-    expect(value("review-routing-pr-max-open")).toBe(String(defaults.maxOpenReviewsPerReviewer));
-    expect(value("review-routing-pr-max-new")).toBe(String(defaults.maxNewAssignmentsPerPass));
-    expect(value("review-routing-pr-poll-interval")).toBe(String(defaults.pollIntervalSec));
+    expect(value("review-routing-pr-repositories")).toBe(prWatch.repositories.join("\n"));
+    expect(value("review-routing-pr-max-open")).toBe(String(prWatch.maxOpenReviewsPerReviewer));
+    expect(value("review-routing-pr-max-new")).toBe(String(prWatch.maxNewAssignmentsPerPass));
+    expect(value("review-routing-pr-poll-interval")).toBe(String(prWatch.pollIntervalSec));
     expect(container.querySelector<HTMLInputElement>("#review-routing-steward-enabled")!.checked).toBe(
-      defaults.steward.enabled,
+      prWatch.steward.enabled,
     );
-    expect(value("review-routing-steward-roles")).toBe(defaults.steward.roles.join(", "));
-    expect(value("review-routing-steward-max-merges")).toBe(String(defaults.steward.maxMergesPerSteward));
+    expect(value("review-routing-steward-roles")).toBe(prWatch.steward.roles.join(", "));
+    expect(value("review-routing-steward-max-merges")).toBe(String(prWatch.steward.maxMergesPerSteward));
   });
 
   it("saves the edited values", () => {

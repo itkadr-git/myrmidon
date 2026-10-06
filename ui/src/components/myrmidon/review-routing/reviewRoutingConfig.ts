@@ -4,6 +4,8 @@
 //
 // myrmidon(REVIEW-ROUTING PR-events UI): the prWatch bounds and defaults match
 // the contract part A (server) adds to the schema — keep them byte-identical.
+// The PUT is `.strict()` server-side, so the screen sends `prWatch` only when
+// the loaded settings already carry it (see supportsPrWatch).
 
 import type {
   ReviewRoutingPrStewardSettings,
@@ -25,8 +27,23 @@ export const PR_WATCH_POLL_INTERVAL_MAX = 3600;
 export const PR_STEWARD_MAX_MERGES_MIN = 1;
 export const PR_STEWARD_MAX_MERGES_MAX = 50;
 
-/** `owner/repo` entry: one slash, both halves non-empty, no spaces or refs. */
-export const PR_REPOSITORY_PATTERN = /^[^/\s]+\/[^/\s]+$/;
+/**
+ * `owner/repo` entry — mirrors the server's GITHUB_REPOSITORY_PATTERN
+ * (packages/shared/src/myrmidon-review-routing.ts, the PR lane of PR 705):
+ * one slash, both halves made only of [A-Za-z0-9_.-]. A looser client-side
+ * pattern would let a save through that the schema then rejects.
+ */
+export const PR_REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+
+/**
+ * The PR lane section is editable only when the loaded settings actually carry
+ * the block. The server schema is `.strict()`: PUTting a `prWatch` key at a
+ * server that predates the PR lane (part A of PR 705) fails with 400, so the save
+ * path sends `prWatch` only when the base object already has it.
+ */
+export function supportsPrWatch(base: ReviewRoutingSettings | null | undefined): boolean {
+  return base?.prWatch !== undefined;
+}
 
 /** Role keys typed as a comma/space separated list; duplicates and blanks dropped. */
 export function parseRoles(text: string): string[] {
@@ -107,13 +124,34 @@ export function repositoriesValid(text: string): boolean {
   return parseRepositoryLines(text).every((entry) => PR_REPOSITORY_PATTERN.test(entry));
 }
 
-/** The settings object a draft saves, or null while any field is invalid. */
+/** The settings object a draft saves, or null while any visible field is invalid. */
 export function settingsFromDraft(
   draft: ReviewRoutingDraft,
   base: ReviewRoutingSettings | null,
 ): ReviewRoutingSettings | null {
   const maxLoad = parseBoundedInt(draft.maxLoad, REVIEW_ROUTING_MAX_LOAD_MIN, REVIEW_ROUTING_MAX_LOAD_MAX);
   const hours = parseBoundedInt(draft.reassignHours, 0, REVIEW_ROUTING_REASSIGN_HOURS_MAX);
+  if (!maxLoad.ok || !hours.ok) return null;
+
+  // PUT has full-object semantics: copy the loaded settings and replace only
+  // the fields this screen owns, so any pre-existing or future top-level key
+  // survives the round-trip untouched.
+  const next: ReviewRoutingSettings = {
+    ...(base ?? {}),
+    enabled: draft.enabled,
+    reviewerRoles: parseRoles(draft.roles),
+    maxLoadPerReviewer: maxLoad.value,
+    reassignAfterHours: hours.value,
+  };
+
+  // The server schema is `.strict()`: sending a `prWatch` key to a server
+  // without the PR lane (part A of PR 705) would 400 the whole save. The block is
+  // only editable when the loaded settings carry it; otherwise the screen
+  // hides the section and the PUT omits the key — the draft's default prWatch
+  // fields are client-side display values and never leave the browser.
+  const basePrWatch = base?.prWatch;
+  if (basePrWatch === undefined) return next;
+
   const maxOpen = parseBoundedInt(
     draft.prMaxOpenReviews,
     PR_WATCH_MAX_OPEN_REVIEWS_MIN,
@@ -126,7 +164,7 @@ export function settingsFromDraft(
   );
   const poll = parseBoundedInt(draft.prPollIntervalSec, PR_WATCH_POLL_INTERVAL_MIN, PR_WATCH_POLL_INTERVAL_MAX);
   const maxMerges = parseBoundedInt(draft.stewardMaxMerges, PR_STEWARD_MAX_MERGES_MIN, PR_STEWARD_MAX_MERGES_MAX);
-  if (!maxLoad.ok || !hours.ok || !maxOpen.ok || !maxNew.ok || !poll.ok || !maxMerges.ok) return null;
+  if (!maxOpen.ok || !maxNew.ok || !poll.ok || !maxMerges.ok) return null;
   if (!repositoriesValid(draft.prRepositories)) return null;
 
   const prWatch: ReviewRoutingPrWatchSettings = {
@@ -142,16 +180,6 @@ export function settingsFromDraft(
     },
   };
 
-  // PUT has full-object semantics: copy the loaded settings and replace only
-  // the fields this screen owns, so any pre-existing or future top-level key
-  // survives the round-trip untouched.
-  const basePrWatch: ReviewRoutingPrWatchSettings = base?.prWatch ?? defaultPrWatchSettings();
-  return {
-    ...(base ?? {}),
-    enabled: draft.enabled,
-    reviewerRoles: parseRoles(draft.roles),
-    maxLoadPerReviewer: maxLoad.value,
-    reassignAfterHours: hours.value,
-    prWatch: { ...basePrWatch, ...prWatch },
-  };
+  next.prWatch = { ...basePrWatch, ...prWatch };
+  return next;
 }
