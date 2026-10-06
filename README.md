@@ -198,6 +198,9 @@ what exists as of 1.6.4 (latest release; 1.6.5-rc.2 is the current release candi
   ([owner-telegram-cards](docs/myrmidon/guides/owner-telegram-cards.md)); a
   run shows one live status message in the DM
   ([telegram-dm-status](docs/myrmidon/guides/telegram-dm-status.md)).
+- **Any agent from one Telegram chat.** A bridged DM addresses any agent of
+  the company with a `@`-mention or the `/agents`, `/to` and `/who` commands
+  ([telegram-multi-agent](docs/myrmidon/guides/telegram-multi-agent.md)).
 - **CTO chat.** The owner writes one free-text request and gets a proposed
   epic with child tasks, approved by a card
   ([cto-chat-planner](docs/myrmidon/guides/cto-chat-planner.md)); the
