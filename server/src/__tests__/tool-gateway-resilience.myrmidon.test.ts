@@ -56,6 +56,9 @@ import { createToolGatewayService, ToolGatewayHttpError } from "../services/tool
 import { resolveConnectedToolTimeoutMs } from "../myrmidon/tool-gateway-resilience.js";
 import type { ComposioClient } from "../services/composio.js";
 import { secretService } from "../services/secrets.js";
+// myrmidon(DB-PERF-C-P4): the fixtures below write profiles, bindings, entries and policies
+// around the tool-access CRUD, so they drop the company snapshot the way those CRUD paths do.
+import { invalidateToolPolicyCache } from "../myrmidon/tool-policy-cache/runtime.js";
 import { createKvDemoHttpServer, type KvDemoHttpServer } from "../../../packages/kv-demo-mcp-server/src/http.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -163,6 +166,8 @@ async function allowToolsForAgent(db: Db, companyId: string, agentId: string, to
       toolName,
     })));
   }
+  // myrmidon(DB-PERF-C-P4): the fixture writes around the tool-access CRUD.
+  invalidateToolPolicyCache(db, companyId);
   return profile;
 }
 
@@ -183,6 +188,8 @@ async function allowAllToolsForAgent(db: Db, companyId: string, agentId: string)
     targetType: "agent",
     targetId: agentId,
   });
+  // myrmidon(DB-PERF-C-P4): the fixture writes around the tool-access CRUD.
+  invalidateToolPolicyCache(db, companyId);
   return profile;
 }
 
@@ -1141,6 +1148,8 @@ describeEmbeddedPostgres("tool gateway: a failing tool does not take its connect
         description: "Blocked for the test.",
         priority: 1,
       }).returning();
+      // myrmidon(DB-PERF-C-P4): the block policy above bypasses the service's own invalidation.
+      invalidateToolPolicyCache(db, company.id);
       await gateway.executeTool({
         sessionToken: session.token,
         tool: toolName,
@@ -1152,6 +1161,8 @@ describeEmbeddedPostgres("tool gateway: a failing tool does not take its connect
         (error) => expectGatewayError(error, 403, "deny_policy_block"),
       );
       await db.delete(toolPolicies).where(eq(toolPolicies.id, blockPolicy!.id));
+      // myrmidon(DB-PERF-C-P4): the delete above bypasses the service's own invalidation.
+      invalidateToolPolicyCache(db, company.id);
 
       // An ask-first policy still creates the approval request (409), not 503...
       const [approvalPolicy] = await db.insert(toolPolicies).values({
@@ -1162,6 +1173,8 @@ describeEmbeddedPostgres("tool gateway: a failing tool does not take its connect
         description: "Needs review.",
         priority: 10,
       }).returning();
+      // myrmidon(DB-PERF-C-P4): the ask-first policy above bypasses the service's own invalidation.
+      invalidateToolPolicyCache(db, company.id);
       const expectApprovalRequired = () =>
         gateway.executeTool({
           sessionToken: session.token,

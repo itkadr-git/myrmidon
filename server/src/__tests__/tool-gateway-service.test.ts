@@ -38,6 +38,8 @@ import { commitToolActionReview } from "../services/tool-action-review.js";
 import { materializeNativeInteractionResponses } from "../services/native-runtime/native-interaction-bridge.js";
 import { toolActionDeliveryService } from "../services/tool-action-delivery.js";
 import { secretService } from "../services/secrets.js";
+// myrmidon(DB-PERF-C-P4): this case writes an explicit denial around the tool-access CRUD.
+import { invalidateToolPolicyCache } from "../myrmidon/tool-policy-cache/runtime.js";
 import {
   createToolGatewayService,
   ToolGatewayHttpError,
@@ -556,6 +558,8 @@ describeEmbeddedPostgres("tool gateway service", () => {
     }
     expect(calls).toBe(2);
     const [deny] = await db.insert(toolPolicies).values({ companyId: company.id, name: "Explicit denial", policyType: "block", priority: 999, selectors: { connectionId: connection.id } }).returning();
+    // myrmidon(DB-PERF-C-P4): the denial above bypasses the service's own invalidation.
+    invalidateToolPolicyCache(db, company.id);
     await expect(call(30)).rejects.toMatchObject({ status: 403 });
     expect(calls).toBe(2);
     await db.delete(toolPolicies).where(eq(toolPolicies.id, deny.id));

@@ -65,6 +65,8 @@ import { preserveTelegramDmProgressGeneralKey } from "../myrmidon/telegram-dm-pr
 // myrmidon(GITHUB-SHARED-IDENTITY): keep the per-company shared GitHub access rules across vendor writes of `general`
 import { preserveGitHubSharedIdentityGeneralKey } from "../myrmidon/github-shared-identity/store.js";
 import { preserveBudgetProjectionGeneralKey } from "../myrmidon/litellm-budget-sync/settings.js"; // myrmidon(1.7-BUDGET-CONFIG-C)
+// myrmidon(DB-PERF-C-P4): keep the tool gateway policy cache TTL across vendor writes of `general`
+import { preserveToolPolicyCacheGeneralKey } from "../myrmidon/tool-policy-cache/settings.js";
 import { getManagedInstanceConfig, type ManagedInstanceConfig } from "./managed-config.js";
 import { getOperatorSettingDefaults } from "./setting-defaults.js";
 
@@ -298,6 +300,9 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // this line the vendor write path silently drops the key and the settings
       // could only ever come from the environment.
       ...(parsed.data.teamLiveness ? { teamLiveness: parsed.data.teamLiveness } : {}),
+      // myrmidon(DB-PERF-C-P4): the stored tool gateway policy cache TTL
+      // survives every general write (it is edited on its own settings route).
+      ...(parsed.data.toolPolicyCache ? { toolPolicyCache: parsed.data.toolPolicyCache } : {}),
     };
   }
   return {
@@ -654,6 +659,9 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
             ...preserveGitHubSharedIdentityGeneralKey(current.general), // myrmidon(GITHUB-SHARED-IDENTITY)
             ...preserveBudgetProjectionGeneralKey(current.general), // myrmidon(1.7-BUDGET-CONFIG-C)
             ...preserveBotImageRolloutGeneralKey(current.general), // myrmidon(BOT-ROLLOUT)
+            ...preserveToolPolicyCacheGeneralKey(current.general), // myrmidon(DB-PERF-C-P4)
+            // myrmidon(DB-PERF-C-P4): a patch that carries the key wins over the restored value.
+            ...(patch.toolPolicyCache !== undefined ? { toolPolicyCache: nextGeneral.toolPolicyCache } : {}),
           },
           updatedAt: now,
         })
