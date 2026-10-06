@@ -401,6 +401,7 @@ MYRMIDON_BOT_DIGEST=$BOT_DIGEST
 MYRMIDON_BOARD_REPOSITORY=$BOARD_REPOSITORY
 MYRMIDON_DOCKERGATE_REPOSITORY=$DOCKERGATE_REPOSITORY
 MYRMIDON_BOT_REPOSITORY=$BOT_REPOSITORY
+MYRMIDON_DOCKER_GID=$DOCKER_GID
 POSTGRES_DB=paperclip
 POSTGRES_USER=paperclip
 POSTGRES_PASSWORD=$POSTGRES_PASSWORD
@@ -460,6 +461,30 @@ services:
     # generated config.json): the uid/gid mode is refused for a production root.
     image: ${MYRMIDON_DOCKERGATE_REPOSITORY:?the dockergate repository must be set}@${MYRMIDON_DOCKERGATE_DIGEST:?the dockergate digest must be set}
     restart: unless-stopped
+    # dockergate talks to the daemon over /var/run/docker.sock, which on a stock
+    # host is root:docker 0660. The image runs as the nonroot user 65532, so the
+    # socket's group must be granted explicitly — otherwise the container starts
+    # and immediately dies on "the daemon does not answer: upstream_error".
+    group_add:
+      - "${MYRMIDON_DOCKER_GID:-0}"
+    # dockergate decides who is calling by a walk over /proc: it pins the first
+    # child of the *board container's* main process (docs/myrmidon/dockergate.md,
+    # step 1). In its own pid namespace it sees only its own processes, so
+    # /proc/<board pid> is missing: the container stays up, the self-check says
+    # ok, and every hourly re-resolve logs "caller_resolve_failed:
+    # board_not_running" — a stack that looks healthy and serves no call.
+    pid: host
+    # The rest mirrors the production service (deploy.sh): a unix-socket-only
+    # proxy needs no network, no capabilities and no writable root.
+    network_mode: none
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 128m
+    cpus: 1
+    pids_limit: 128
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./dockergate/config.json:/etc/myrmidon-dockergate/config.json:ro
@@ -494,6 +519,15 @@ COMPOSE
   "statsFile": "/run/myrmidon-dockergate-state/stats.json"
 }
 DG
+
+  # dockergate opens this file as its nonroot user (65532), so root-only 0600 is
+  # unreadable for it and the container dies with "config: open ...: permission
+  # denied". Nothing secret is in here (listen, upstream, the caller shape, the
+  # pinned bot digest), and this is the shape the production install uses.
+  if [[ "$(id -u)" == "0" ]]; then
+    chown 65532:65532 "$DIR/dockergate/config.json"
+    chmod 0640 "$DIR/dockergate/config.json"
+  fi
 }
 
 # ------------------------------------------------------------ the stack -------
@@ -698,6 +732,15 @@ interactive_questions() {
   [[ "$PORT" =~ ^[0-9]+$ ]] || die "--port must be a number"
 }
 
+# The daemon socket is root:docker 0660 on a stock host, while dockergate runs as
+# the image's nonroot user: the container needs the socket's group. The value is
+# read from the socket itself, so it is right whatever the docker group id is.
+detect_docker_gid() {
+  DOCKER_GID="$(stat -c '%g' /var/run/docker.sock 2>/dev/null || true)"
+  [[ "$DOCKER_GID" =~ ^[0-9]+$ ]] || DOCKER_GID=0
+  return 0
+}
+
 main() {
   require_root
   case "$MODE" in
@@ -705,6 +748,7 @@ main() {
     install)
       interactive_questions
       install_docker
+      detect_docker_gid
       do_install ;;
   esac
 }
