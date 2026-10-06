@@ -15,6 +15,9 @@ import {
   RUN_STALL_WAKE_REASON,
 } from "./constants.js";
 import { createRunStallSweep, type RunStallSweep } from "./sweep.js";
+// myrmidon(TEAM-LIVENESS-SETTINGS): the effective knobs the pass obeys, resolved
+// from the settings row over the environment on every pass.
+import { teamLivenessReader, type TeamLivenessReader } from "../team-liveness/settings.js";
 
 /** The narrow heartbeat surface this module uses; the full service satisfies it. */
 export interface RunStallHeartbeatPort {
@@ -57,6 +60,11 @@ export interface CreateRunStallSweepInput {
   heartbeat: RunStallHeartbeatPort;
   issues: RunStallIssuePort;
   isRunUnderMaintenance?: (runId: string) => Promise<boolean>;
+  /**
+   * myrmidon(TEAM-LIVENESS-SETTINGS): the effective knobs. Absent means the pass
+   * reads the settings row itself (the default below).
+   */
+  readLiveness?: TeamLivenessReader;
   env?: NodeJS.ProcessEnv;
 }
 
@@ -117,6 +125,9 @@ export function createRunStallSweepFromHeartbeat(input: CreateRunStallSweepInput
       return true;
     },
     isRunUnderMaintenance: input.isRunUnderMaintenance ?? ((runId) => isRunUnderMaintenance(input.db, runId)),
+    // Stored instance settings beat the environment; the sweep reads them once
+    // per pass, so a saved threshold or switch takes effect without a restart.
+    readLiveness: input.readLiveness ?? teamLivenessReader(input.db, input.env),
     logActivity: async (entry) => {
       await logActivity(input.db, {
         companyId: entry.companyId,

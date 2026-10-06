@@ -24,6 +24,11 @@ import { cancelWaitingRunDoomedByHold, carryRetryBudgetToSuccessor } from "../my
 import { connectionIntentService } from "./connection-intents.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings, isAiConnectionBusy, AI_AUTH_ENV_KEYS } from "./ai-connection-runtime.js";
 import { aiConnectionBindingSchema } from "@paperclipai/shared";
+// myrmidon(TEAM-LIVENESS-SETTINGS): the reader that resolves the stored instance
+// settings against the environment, plus the per-agent card switch, so the three
+// automatic behaviours obey the settings page without a restart.
+import { myrmidonTeamLivenessReader } from "../myrmidon/team-liveness/index.js";
+import { resolveAgentTeamLiveness } from "@paperclipai/shared";
 import { executionBlockerPredicate, getExecutionBlocker } from "./execution-blocker.js";
 import { CONVERSATION_CONTINUATION_POLICY, claimedAdapterType, runUsedConversationAdapter, hasConversationContinuationPolicy, isConversationAdapter } from "./conversation-continuation.js";
 import { recordExecutionWait } from "./execution-wait.js";
@@ -654,6 +659,7 @@ import { hasOtherActionableWork, skipIdleHeartbeatsEnabled } from "../myrmidon/h
 // myrmidon(IDLE-PICKUP): the board wakes an idle agent on its next ready task
 import {
   createIdlePickupSweeper,
+  createIdleWakeBudget,
   idlePickupForAgent,
 } from "../myrmidon/idle-pickup.js";
 // myrmidon(AUTO-RESUME): the board resumes an agent left in `error` with backoff
@@ -18191,8 +18197,24 @@ export function heartbeatService(
   // reassignment) once per MYRMIDON_IDLE_PICKUP_INTERVAL_SEC for every
   // invokable agent. All admission gates (pause, maintenance, limits,
   // concurrency, budget) are enforced by enqueueWakeup itself.
+  // myrmidon(IDLE-WAKE-BUDGET): one company-wide wake budget for both idle
+  // pickup paths — the periodic sweeper below and the release-path pickup —
+  // so the pair never emits more than
+  // MYRMIDON_IDLE_PICKUP_WAKE_BUDGET_PER_MIN (default 5) wakes a minute for one
+  // company, spread over passes in batches of MYRMIDON_IDLE_PICKUP_WAKE_BATCH.
+  const idleWakeBudget = createIdleWakeBudget();
+  // myrmidon(TEAM-LIVENESS-SETTINGS): one reader for the three behaviours — the
+  // periodic idle-pickup sweep, the auto-resume sweep and the release-path pickup
+  // all resolve `instance_settings.general.teamLiveness` over the environment on
+  // every pass, so a saved change takes effect without a restart.
+  const teamLivenessRead = myrmidonTeamLivenessReader(db);
+  /** The agent row's card as a plain object; anything else reads as an empty card. */
+  const readAgentCard = (raw: unknown): Record<string, unknown> =>
+    raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
   const idlePickupSweeper = createIdlePickupSweeper({
     db,
+    budget: idleWakeBudget,
+    readLiveness: teamLivenessRead,
     enqueueWakeup: (agentId, opts) => enqueueWakeup(agentId, opts),
     logActivity: async (input) => {
       await logActivity(db, {
@@ -18225,6 +18247,7 @@ export function heartbeatService(
   // live in myrmidon/auto-resume.ts; state is kept in agents.metadata.
   const autoResumeSweeper = createAutoResumeSweeper({
     db,
+    readLiveness: teamLivenessRead,
     resumeWake: (agentId) => pauseResumeWakeAgent({ db, startNextQueuedRunForAgent, enqueueWakeup }, agentId),
     logActivity: async (input) => {
       await logActivity(db, {
@@ -26083,12 +26106,35 @@ export function heartbeatService(
       try {
         const releasedRun = await getRun(run.id);
         if (releasedRun) {
+          // myrmidon(TEAM-LIVENESS-SETTINGS): the instance switch and this
+          // agent's own card switch gate the release path exactly as they gate
+          // the periodic sweep, so a behaviour switched off really stops.
+          const releasedAgent = await getAgent(releasedRun.agentId);
+          const releaseLiveness = await teamLivenessRead();
+          const pickupAllowed =
+            releaseLiveness.settings.idlePickupEnabled &&
+            resolveAgentTeamLiveness(readAgentCard(releasedAgent?.adapterConfig), releaseLiveness.settings)
+              .idlePickupEnabled;
+          // The release path spends the same budget object as the periodic pass;
+          // handing it the resolved pair keeps both on the numbers the operator
+          // saved instead of the creation-time environment values.
+          idleWakeBudget.configure({
+            perMinute: releaseLiveness.settings.idlePickupWakeBudgetPerMin,
+            batch: Math.min(
+              releaseLiveness.settings.idlePickupWakeBatch,
+              releaseLiveness.settings.idlePickupWakeBudgetPerMin,
+            ),
+          });
           const releasedIssueId = readNonEmptyString(
             parseObject(releasedRun.contextSnapshot).issueId,
           );
           await idlePickupForAgent(
             {
               db,
+              // myrmidon(IDLE-WAKE-BUDGET): the release path spends the same
+              // company-wide allowance as the periodic sweeper, so a fleet of
+              // finishing runs cannot burst past the per-minute ceiling.
+              budget: idleWakeBudget,
               enqueueWakeup: (agentId, opts) => enqueueWakeup(agentId, opts),
               logActivity: async (input) => {
                 await logActivity(db, {
@@ -26107,7 +26153,7 @@ export function heartbeatService(
             { id: releasedRun.agentId, companyId: releasedRun.companyId },
             // The just-released issue is the past work: waking it again right
             // after its run finished is the runaway loop the review caught.
-            { excludeIssueId: releasedIssueId },
+            { excludeIssueId: releasedIssueId, behaviorEnabled: pickupAllowed },
           );
         }
       } catch (idlePickupErr) {
