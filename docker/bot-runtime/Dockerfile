@@ -38,16 +38,11 @@ ARG HERMES_GIT_REF=v2026.9.24
 # check is only meaningful pinned here, not as a comment. Update both together when
 # HERMES_GIT_REF moves to a new tag.
 ARG HERMES_GIT_SHA=f97608f178d1ffeca59860195ab7da295f7c8e5f
-# myrmidon(HERMES-FORK-CI): clone the pinned tag from our fork of hermes-agent
-# instead of the author's repository. The fork is an unmodified mirror (its tag
-# objects are byte-identical to upstream's, and HERMES_GIT_SHA below still pins
-# the exact tree, so a moved or tampered ref cannot ship anything different),
-# and it is the place our own patches and pin bumps of hermes land as commits:
-# the image build then reviews those changes the same way it reviews this
-# repository, instead of pinning against a remote we do not control. Upstream
-# stays the source of new tags — a new pin is still looked up upstream first,
-# then the fork is fast-forwarded to it.
-ARG HERMES_REPO=https://github.com/BastionPrime/hermes-agent.git
+# myrmidon(HERMES-UPSTREAM): clone the pinned tag from the author's repository.
+# Our hermes changes live in this repository (docker/bot-runtime/patches/*.patch)
+# and HERMES_GIT_SHA below pins the exact tree, so a moved or tampered upstream
+# ref cannot ship anything different. No separate fork is kept.
+ARG HERMES_REPO=https://github.com/NousResearch/hermes-agent.git
 # gateway/platforms/api_server.py uses aiohttp.web, but aiohttp is not a core
 # dependency of hermes-agent — it only ships inside optional extras, most of
 # which also pull in Telegram/Discord/Slack client libraries we do not need
