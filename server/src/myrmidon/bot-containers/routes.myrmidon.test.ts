@@ -166,6 +166,11 @@ describe("myrmidon(W2b) bot container routes: status", () => {
         image: "bot-image:1.1.0",
         reason: expect.stringContaining("not a digest of a bot image repository"),
       },
+      imageRollout: {
+        onReleaseImage: false,
+        targetImage: null,
+        reason: expect.stringContaining("pinned"),
+      },
       boardMaxConcurrentRuns: AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
       gatewayConcurrency: {
         board: AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
@@ -197,6 +202,44 @@ describe("myrmidon(W2b) bot container routes: status", () => {
     });
     expect(await ask(card(undefined))).toMatchObject({ category: "not_applicable", reason: "adapterConfig.container is not set" });
     expect(await ask(card(ENABLED_CARD, { adapterType: "hermes_local" }))).toMatchObject({ category: "not_applicable" });
+  });
+
+  it("myrmidon(BOT-ROLLOUT): imageRollout names why a bot is not on the release image", async () => {
+    const digest = `ghcr.io/example/myrmidon-hermes@sha256:${"a".repeat(64)}`;
+    const ask = async (agent: BotContainerRouteAgent, env: Record<string, string> = {}) =>
+      (await request(app(member, { agent, env: { ...ENABLED_ENV, ...env } })).get(statusUrl).expect(200)).body.imageRollout;
+    // tracking + busy (the rollout switches only idle/paused): switches when freed
+    expect(await ask(card({ ...ENABLED_CARD, image: digest }, { status: "running" }))).toEqual({
+      onReleaseImage: false,
+      targetImage: null,
+      reason: "agent busy (status running): переключится при освобождении",
+    });
+    // an unknown status is busy (fail-closed, as the rollout treats it)
+    expect(await ask(card({ ...ENABLED_CARD, image: digest }))).toMatchObject({
+      onReleaseImage: false,
+      reason: expect.stringContaining("agent busy (status unknown)"),
+    });
+    // tracking + idle but no release image is known to the instance
+    expect(await ask(card({ ...ENABLED_CARD, image: digest }, { status: "idle" }))).toEqual({
+      onReleaseImage: false,
+      targetImage: null,
+      reason: "no release image configured",
+    });
+    // tracking + idle + a release image known: on it (waiting for the next rollout pass)
+    expect(
+      await ask(card({ ...ENABLED_CARD, image: digest }, { status: "paused" }), {
+        MYRMIDON_BOT_RELEASE_IMAGE: digest,
+      }),
+    ).toEqual({ onReleaseImage: true, targetImage: null, reason: null });
+    // pinned and not applicable keep their reasons
+    expect(await ask(card({ ...ENABLED_CARD, image: "other/thing:1" }, { status: "idle" }))).toMatchObject({
+      onReleaseImage: false,
+      reason: expect.stringContaining("pinned"),
+    });
+    expect(await ask(card(undefined, { status: "idle" }))).toMatchObject({
+      onReleaseImage: false,
+      reason: expect.stringContaining("not_applicable: adapterConfig.container is not set"),
+    });
   });
 
   it("flags an image outside the allowlist", async () => {
