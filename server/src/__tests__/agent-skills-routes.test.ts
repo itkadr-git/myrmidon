@@ -1,6 +1,11 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+// myrmidon(1.6.5 BASE-SKILLS): this suite's db double cannot answer the
+// drizzle query on `company_base_skills`; the read is mocked at the port so
+// the routes exercise the base-skills union without a full database. The
+// factory is `vi.hoisted` because it is referenced from `registerModuleMocks`.
+const mockReadCompanyBaseSkillKeysPort = vi.hoisted(() => vi.fn(async () => [] as string[]));
 
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -118,6 +123,11 @@ vi.mock("../adapters/index.js", () => ({
   detectAdapterModel: vi.fn(),
 }));
 
+vi.mock("../services/company-base-skill-keys-port.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../services/company-base-skill-keys-port.js")>()),
+  readCompanyBaseSkillKeysPort: mockReadCompanyBaseSkillKeysPort,
+}));
+
 function registerModuleMocks() {
   vi.doMock("@paperclipai/shared/telemetry", () => ({
     trackAgentCreated: mockTrackAgentCreated,
@@ -159,6 +169,11 @@ function registerModuleMocks() {
     findActiveServerAdapter: vi.fn(() => mockAdapter),
     listAdapterModels: vi.fn(),
     detectAdapterModel: vi.fn(),
+  }));
+
+  vi.doMock("../services/company-base-skill-keys-port.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../services/company-base-skill-keys-port.js")>()),
+    readCompanyBaseSkillKeysPort: mockReadCompanyBaseSkillKeysPort,
   }));
 }
 
@@ -252,6 +267,8 @@ describe.sequential("agent skill routes", () => {
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
     vi.clearAllMocks();
+    mockReadCompanyBaseSkillKeysPort.mockClear();
+    mockReadCompanyBaseSkillKeysPort.mockResolvedValue([]);
     for (const mock of Object.values(mockAgentService)) mock.mockReset();
     for (const mock of Object.values(mockAccessService)) mock.mockReset();
     for (const mock of Object.values(mockApprovalService)) mock.mockReset();

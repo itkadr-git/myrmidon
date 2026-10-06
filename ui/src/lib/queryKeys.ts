@@ -152,6 +152,9 @@ export const queryKeys = {
   },
   companySkills: {
     list: (companyId: string) => ["company-skills", companyId] as const,
+    // myrmidon(1.6.5 BASE-SKILLS): the company base-skills registry.
+    baseSkills: (companyId: string) =>
+      ["company-skills", companyId, "base-skills"] as const,
     listRecent: (companyId: string) =>
       ["company-skills", companyId, "recent-updated"] as const,
     detail: (companyId: string, skillId: string) =>

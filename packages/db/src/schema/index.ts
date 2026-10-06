@@ -192,6 +192,8 @@ export {
 } from "./company_skills.js";
 // myrmidon(1.6-SKILL-LIFE): additive skill lifecycle tables.
 export { companySkillLifecycle, companySkillLifecycleEvents } from "./company_skill_lifecycle.js";
+// myrmidon(1.6.5 BASE-SKILLS): the company-level registry of mandatory skills.
+export { companyBaseSkills } from "./company_base_skills.js";
 export { plugins } from "./plugins.js";
 export { pluginConfig } from "./plugin_config.js";
 export { pluginCompanySettings } from "./plugin_company_settings.js";
