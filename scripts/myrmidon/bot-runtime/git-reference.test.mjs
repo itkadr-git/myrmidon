@@ -140,6 +140,37 @@ describe("git wrapper: which clones get a reference", () => {
       assert.deepEqual(lib.rewriteArgs(argv, root), argv, url);
     }
   });
+
+  // myrmidon(1.6.5 BOT-DISK-G): the bot-local mirror is the second reference source.
+  it("prefers the board's mirror and falls back to the local one; scanCloneArgs finds only rewritable clones", () => {
+    const root = mirrors();
+    const local = path.join(tmp, "local-store", "owner", "repo.git");
+    const argv = ["clone", "https://github.com/owner/repo", "dest"];
+    // Board mirror wins when both exist.
+    assert.deepEqual(lib.rewriteArgs(argv, root, local), ["clone", "--reference-if-able", path.join(root, "owner", "repo.git"), "https://github.com/owner/repo", "dest"]);
+    // No board mirror: the local one is used.
+    assert.deepEqual(lib.rewriteArgs(argv, path.join(tmp, "no-board"), local), ["clone", "--reference-if-able", local, "https://github.com/owner/repo", "dest"]);
+    // Neither: untouched.
+    assert.deepEqual(lib.rewriteArgs(argv, path.join(tmp, "no-board"), null), argv);
+    // scanCloneArgs names the repository of exactly the clones rewriteArgs would touch.
+    assert.deepEqual(lib.scanCloneArgs(argv), { cloneAt: 0, url: "https://github.com/owner/repo" });
+    assert.deepEqual(lib.scanCloneArgs(["-C", "/x", "clone", "-b", "main", "git@github.com:owner/repo.git"]), { cloneAt: 2, url: "git@github.com:owner/repo.git" });
+    assert.deepEqual(lib.scanCloneArgs(["clone", "--", "https://github.com/owner/repo"]), { cloneAt: 0, url: "https://github.com/owner/repo" });
+    for (const other of [["status"], ["clone", "--depth", "1", "https://github.com/owner/repo"], ["clone", "--reference", "/x", "https://github.com/o/r"], ["clone"], ["-c", "a=b", "fetch"]]) {
+      assert.equal(lib.scanCloneArgs(other), null, JSON.stringify(other));
+    }
+  });
+
+  it("resolves the local store: environment first, then the profile .env, then the default under HERMES_HOME", () => {
+    const home = path.join(tmp, "store-home");
+    fs.mkdirSync(home, { recursive: true });
+    assert.equal(lib.localMirrorRoot({}, home), path.join(home, ".myrmidon", "git-objects"));
+    fs.writeFileSync(path.join(home, ".env"), 'MYRMIDON_GIT_LOCAL_MIRROR="/bot-scope/.git-objects"\n', "utf8");
+    assert.equal(lib.localMirrorRoot({}, home), "/bot-scope/.git-objects");
+    assert.equal(lib.localMirrorRoot({ MYRMIDON_GIT_LOCAL_MIRROR: "/env/override" }, home), "/env/override");
+    // An explicit empty value is kept: the store is off.
+    assert.equal(lib.localMirrorRoot({ MYRMIDON_GIT_LOCAL_MIRROR: "" }, home), "");
+  });
 });
 
 describe("git wrapper: end to end with a local mirror", { skip: !hasGit }, () => {
@@ -170,7 +201,9 @@ describe("git wrapper: end to end with a local mirror", { skip: !hasGit }, () =>
     const cloned = run("-c", `url.file://${origin}.insteadOf=https://github.com/owner/repo`, "clone", "-q", "https://github.com/owner/repo", dest);
     assert.equal(cloned.status, 0, cloned.stderr);
     const alternates = fs.readFileSync(path.join(dest, ".git", "objects", "info", "alternates"), "utf8").trim();
-    assert.equal(alternates, path.join(mirror, "objects"));
+    // git records the realpath of the alternate; a tmpdir behind a symlink (a container's
+    // scratch under a linked home) must not make this comparison depend on spelling.
+    assert.equal(alternates, fs.realpathSync(path.join(mirror, "objects")));
     assert.equal(fs.readFileSync(path.join(dest, "a.txt"), "utf8"), "a\n");
     // The clone's own object store holds no commit, tree or blob of the mirrored history.
     const own = git(dest, "count-objects", "-v");
@@ -179,6 +212,99 @@ describe("git wrapper: end to end with a local mirror", { skip: !hasGit }, () =>
 
     assert.equal(run("rev-parse", "--is-inside-work-tree").status, 128); // not a repository: status passes through
     assert.equal(run("-C", dest, "rev-parse", "--is-inside-work-tree").stdout.trim(), "true");
+  });
+});
+
+// myrmidon(1.6.5 BOT-DISK-G): the bot's OWN mirror, made on the first clone and
+// borrowed by every later one, with no board /cache/git mount anywhere.
+describe("git wrapper: bot-local mirror end to end", { skip: !hasGit }, () => {
+  const realGit = () => spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim();
+
+  /** A local "GitHub" origin, reached from the wrapper through insteadOf. */
+  function makeOrigin(name) {
+    const origin = path.join(tmp, name);
+    fs.mkdirSync(origin);
+    git(origin, "init", "-q", "-b", "main");
+    fs.writeFileSync(path.join(origin, "a.txt"), "a\n");
+    git(origin, "add", ".");
+    git(origin, "commit", "-q", "-m", "one");
+    fs.writeFileSync(path.join(origin, "b.txt"), "b\n");
+    git(origin, "add", ".");
+    git(origin, "commit", "-q", "-m", "two");
+    return origin;
+  }
+
+  function runWrapper(storeRoot, mirrorRoot, ...args) {
+    return spawnSync(process.execPath, [wrapper, ...args], {
+      encoding: "utf8",
+      cwd: tmp,
+      env: {
+        PATH: process.env.PATH,
+        HOME: tmp,
+        GIT_CONFIG_NOSYSTEM: "1",
+        MYRMIDON_GIT_REAL: realGit(),
+        MYRMIDON_GIT_MIRROR_ROOT: mirrorRoot,
+        MYRMIDON_GIT_LOCAL_MIRROR: storeRoot,
+      },
+    });
+  }
+
+  it("first clone builds the mirror, later clones borrow its objects, gc never prunes", () => {
+    const origin = makeOrigin("local-origin");
+    const store = path.join(tmp, "local-store");
+    const noBoard = path.join(tmp, "no-board-mirrors");
+    const instead = `url.file://${origin}.insteadOf=https://github.com/owner/repo`;
+    const cloneUrl = "https://github.com/owner/repo";
+
+    const first = path.join(tmp, "local-clone1");
+    const r1 = runWrapper(store, noBoard, "-c", instead, "clone", "-q", cloneUrl, first);
+    assert.equal(r1.status, 0, r1.stderr);
+    assert.match(r1.stderr, /shared object store: first fetch/);
+    const mirror = path.join(store, "owner", "repo.git");
+    assert.ok(fs.existsSync(path.join(mirror, "objects")), "the store holds a bare mirror after the first clone");
+    // git writes the realpath of the alternate (the tmp dir may live behind a symlink).
+    assert.equal(fs.readFileSync(path.join(first, ".git", "objects", "info", "alternates"), "utf8").trim(), fs.realpathSync(path.join(mirror, "objects")));
+    // gc of the mirror must keep objects a borrowed clone may still read.
+    const gcAuto = git(mirror, "config", "gc.auto");
+    const prune = git(mirror, "config", "gc.pruneExpire");
+    assert.equal(gcAuto, "0");
+    assert.equal(prune, "never");
+    // Only the board's own objects live in the clone.
+    const own = git(first, "count-objects", "-v");
+    assert.match(own, /^count: 0$/m);
+
+    // A second clone borrows too, without a second fetch (the stamp is fresh).
+    const second = path.join(tmp, "local-clone2");
+    const r2 = runWrapper(store, noBoard, "-c", instead, "clone", "-q", cloneUrl, second);
+    assert.equal(r2.status, 0, r2.stderr);
+    assert.doesNotMatch(r2.stderr, /first fetch/, "the second clone does not rebuild the mirror");
+    assert.ok(fs.existsSync(path.join(second, ".git", "objects", "info", "alternates")));
+    // The clone reads the mirrored history through the alternate.
+    assert.equal(git(second, "log", "--oneline").split("\n").length, 2);
+
+    // A clone with its own storage decision is not touched.
+    const dissociated = path.join(tmp, "local-clone3");
+    const r3 = runWrapper(store, noBoard, "-c", instead, "clone", "-q", "--dissociate", cloneUrl, dissociated);
+    assert.equal(r3.status, 0, r3.stderr);
+    assert.ok(!fs.existsSync(path.join(dissociated, ".git", "objects", "info", "alternates")), "--dissociate keeps its own objects");
+
+    // The board's mirror still wins when present.
+    const board = path.join(tmp, "board-mirrors");
+    fs.mkdirSync(path.join(board, "owner", "repo.git", "objects"), { recursive: true });
+    fs.writeFileSync(path.join(board, "owner", "repo.git", "HEAD"), "ref: refs/heads/main\n");
+    const fourth = path.join(tmp, "local-clone4");
+    const r4 = runWrapper(store, board, "-c", instead, "clone", "-q", cloneUrl, fourth);
+    assert.equal(r4.status, 0, r4.stderr);
+    assert.equal(fs.readFileSync(path.join(fourth, ".git", "objects", "info", "alternates"), "utf8").trim(), fs.realpathSync(path.join(board, "owner", "repo.git", "objects")));
+  });
+
+  it("an empty MYRMIDON_GIT_LOCAL_MIRROR turns the store off (the documented disable)", () => {
+    const origin = makeOrigin("off-origin");
+    const dest = path.join(tmp, "off-clone");
+    const instead = `url.file://${origin}.insteadOf=https://github.com/owner2/repo`;
+    const r = runWrapper("", path.join(tmp, "no-board2"), "-c", instead, "clone", "-q", "https://github.com/owner2/repo", dest);
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(!fs.existsSync(path.join(dest, ".git", "objects", "info", "alternates")), "no store: a plain full clone");
   });
 });
 
@@ -409,5 +535,33 @@ describe("bot-clone-hygiene", { skip: !hasGit || !hasPython }, () => {
     const written = JSON.parse(fs.readFileSync(r.reportPath, "utf8"));
     assert.equal(written.hardlinkCheck.ok, false);
     assert.equal(written.hardlinkCheck.roots[0].root, "/scratch");
+  });
+
+  // myrmidon(1.6.5 BOT-DISK-G): the shared-git-objects self-check rides the report too.
+  it("passes the shared-git-objects self-check on to the board", () => {
+    const base = path.join(tmp, "gitref-pass");
+    const volume = path.join(base, "workspace");
+    fs.mkdirSync(volume, { recursive: true });
+    const check = path.join(base, "git-objects-check.json");
+    fs.writeFileSync(
+      check,
+      JSON.stringify({
+        version: 1,
+        ok: false,
+        store: "/bot-scope/.git-objects",
+        checks: [
+          { check: "usr-local-shadow", ok: true, error: null },
+          { check: "reference-clone", ok: false, error: "fatal: object not found" },
+        ],
+      }),
+    );
+    const r = report([volume], { MYRMIDON_GIT_OBJECTS_CHECK_FILE: check });
+    const written = JSON.parse(fs.readFileSync(r.reportPath, "utf8"));
+    assert.equal(written.gitRefCheck.ok, false);
+    assert.equal(written.gitRefCheck.store, "/bot-scope/.git-objects");
+    assert.equal(written.gitRefCheck.checks[1].check, "reference-clone");
+    // No file: the report carries null and nothing breaks.
+    const r2 = report([volume], { MYRMIDON_GIT_OBJECTS_CHECK_FILE: path.join(base, "absent.json") });
+    assert.equal(JSON.parse(fs.readFileSync(r2.reportPath, "utf8")).gitRefCheck, null);
   });
 });

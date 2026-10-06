@@ -347,6 +347,7 @@ def build_report(roots):
         "ttlSeconds": ttl,
         "removed": removed[:200],
         "hardlinkCheck": read_hardlink_check(),
+        "gitRefCheck": read_git_objects_check(),  # myrmidon(1.6.5 BOT-DISK-G)
         "version": 1,
         "inspectedAt": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
         "repos": entries,
@@ -358,6 +359,21 @@ def read_hardlink_check():
     board shows it next to the clones; null when the entrypoint wrote none."""
     path = os.environ.get("MYRMIDON_HARDLINK_CHECK_FILE") or os.path.join(
         os.environ.get("HERMES_HOME", "/data/hermes"), ".myrmidon", "hardlink-check.json"
+    )
+    try:
+        with open(path, encoding="utf-8") as handle:
+            data = json.load(handle)
+        return data if isinstance(data, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def read_git_objects_check():
+    """The container-start shared-git-objects self-check (entrypoint.sh,
+    myrmidon 1.6.5 BOT-DISK-G), passed on so the board shows it next to the
+    clones; null when the entrypoint wrote none."""
+    path = os.environ.get("MYRMIDON_GIT_OBJECTS_CHECK_FILE") or os.path.join(
+        os.environ.get("HERMES_HOME", "/data/hermes"), ".myrmidon", "git-objects-check.json"
     )
     try:
         with open(path, encoding="utf-8") as handle:
