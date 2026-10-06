@@ -15,10 +15,14 @@
 // new runtime knob; it *drives* the existing ones from the board so an owner
 // changes them in the card instead of editing a container's config.yaml.
 //
-// Values are bounded by a company-level ceiling the owner edits in settings,
-// never by a literal in this module: the whole point is that the allowed range
-// is itself configurable. `maxPerAgent` is the ceiling, `defaultMaxPerAgent`
-// is what an agent inherits when its card says nothing.
+// myrmidon(HELPERS-NO-CAP): there is NO built-in cap on parallel helpers. With
+// no settings row and no card value the limit is "unlimited"; the number
+// written to Hermes (which needs an integer) is {@link HELPERS_UNLIMITED}, far
+// above anything a bot fans out to. The owner can still set a ceiling
+// (`maxPerAgent`) and a per-agent default (`defaultMaxPerAgent`) in settings,
+// without a restart, but nothing here supplies one. What actually protects the
+// host is the run-admission host-memory floor (MYRMIDON_MIN_FREE_HOST_MEMORY_MB),
+// which holds new runs while host memory is short, not a small helper count.
 
 import { z } from "zod";
 
@@ -43,28 +47,20 @@ export const PARALLEL_HELPERS_SETTINGS_KEY = "parallelHelpers";
 export const PARALLEL_HELPERS_DEFAULT_MODEL_ENV = "MYRMIDON_BOT_HELPER_MODEL";
 
 /**
- * Helpers an agent gets when its card says nothing and the settings carry no
- * default. Deliberately small: helpers multiply cost, and the pilot's own
- * acceptance criterion is two helpers on one real task.
+ * The value written to Hermes' integer `max_concurrent_children` when no cap is
+ * configured anywhere. It stands for "no cap", not for a recommendation.
  */
-export const DEFAULT_HELPER_LIMIT = 2;
-
-/**
- * Ceiling used when the settings carry none. Matches Hermes' own default for
- * `delegation.max_concurrent_children`; the settings page exists to lower it
- * for a tighter host, not to be the only thing keeping it finite.
- */
-export const DEFAULT_HELPERS_CEILING = 10;
+export const HELPERS_UNLIMITED = 1000;
 
 /** Bounds of a single helper budget, so a card cannot ask for an absurd child turn cap. */
 export const HELPER_TURN_BUDGET_MIN = 1;
 export const HELPER_TURN_BUDGET_MAX = 500;
 
 /**
- * Cap on the company ceiling itself. A ceiling above this is clamped, so a
- * mistyped settings row cannot authorize an unbounded fan-out on a small host.
+ * Upper bound of any configured limit (card, ceiling, default): the same value
+ * as {@link HELPERS_UNLIMITED}, so a configured number can never exceed "no cap".
  */
-export const HELPERS_CEILING_MAX = 50;
+export const HELPERS_CEILING_MAX = HELPERS_UNLIMITED;
 
 /** The card block, exactly as stored in adapterConfig. */
 export interface ParallelHelpersCard {
@@ -84,9 +80,9 @@ export interface ParallelHelpersCard {
  * describe the host, they never clamp a card value.
  */
 export interface ParallelHelpersSettings {
-  /** Highest `maxConcurrent` any agent in this company may be given. */
+  /** Highest `maxConcurrent` any agent may be given; absent = no ceiling. */
   maxPerAgent?: number;
-  /** What an agent gets when its card is silent. */
+  /** What an agent gets when its card is silent; absent = no cap. */
   defaultMaxPerAgent?: number;
   /** Build slots shared by the team, for the capacity hint; null/absent = unknown. */
   buildSlots?: number | null;
@@ -111,7 +107,7 @@ export const patchParallelHelpersSettingsSchema = parallelHelpersSettingsSchema.
 /** The card value after normalization: always explicit, so the compiler needs no second lookup. */
 export interface ResolvedParallelHelpers {
   enabled: boolean;
-  /** 1..ceiling. Meaningless when `enabled` is false, but always present. */
+  /** 1..ceiling; {@link HELPERS_UNLIMITED} stands for "no cap". Meaningless when `enabled` is false, but always present. */
   maxConcurrent: number;
   /** Empty string = inherit the parent's model. */
   model: string;
@@ -162,21 +158,32 @@ export function readParallelHelpersCard(card: Record<string, unknown>): ReadPara
   };
 }
 
-/** The company ceiling, clamped so a mistyped row still yields a usable bound. */
-export function helpersCeiling(settings: ParallelHelpersSettings | undefined): number {
+/** True when the settings carry a usable (positive integer) company ceiling. */
+export function helpersCeilingConfigured(settings: ParallelHelpersSettings | undefined): boolean {
   const raw = settings?.maxPerAgent;
-  if (typeof raw !== "number" || !Number.isInteger(raw) || raw <= 0) return DEFAULT_HELPERS_CEILING;
-  return Math.min(HELPERS_CEILING_MAX, raw);
+  return typeof raw === "number" && Number.isInteger(raw) && raw > 0;
 }
 
-/** The per-agent default, clamped into the ceiling (never above it). */
+/** True when the settings carry a usable per-agent default. */
+export function helpersDefaultConfigured(settings: ParallelHelpersSettings | undefined): boolean {
+  const raw = settings?.defaultMaxPerAgent;
+  return typeof raw === "number" && Number.isInteger(raw) && raw > 0;
+}
+
+/** The company ceiling; {@link HELPERS_UNLIMITED} (no cap) when none is configured. */
+export function helpersCeiling(settings: ParallelHelpersSettings | undefined): number {
+  if (!helpersCeilingConfigured(settings)) return HELPERS_UNLIMITED;
+  return Math.min(HELPERS_CEILING_MAX, settings!.maxPerAgent!);
+}
+
+/**
+ * The per-agent default, clamped into the ceiling (never above it). With no
+ * default configured an agent inherits the ceiling, i.e. no cap by default.
+ */
 export function helpersDefault(settings: ParallelHelpersSettings | undefined): number {
   const ceiling = helpersCeiling(settings);
-  const raw = settings?.defaultMaxPerAgent;
-  if (typeof raw !== "number" || !Number.isInteger(raw) || raw <= 0) {
-    return Math.min(DEFAULT_HELPER_LIMIT, ceiling);
-  }
-  return Math.min(raw, ceiling);
+  if (!helpersDefaultConfigured(settings)) return ceiling;
+  return Math.min(settings!.defaultMaxPerAgent!, ceiling);
 }
 
 /**
@@ -239,14 +246,19 @@ export function helperCapacityHint(
   settings: ParallelHelpersSettings | undefined,
 ): HelperCapacityHint {
   const enabled = agents.filter((agent) => agent.enabled);
+  const unbounded = enabled.filter((agent) => agent.maxConcurrent >= HELPERS_UNLIMITED).length;
   const requestedTotal = enabled.reduce((sum, agent) => sum + agent.maxConcurrent, 0);
   const slots =
     typeof settings?.buildSlots === "number" && Number.isInteger(settings.buildSlots) && settings.buildSlots > 0
       ? settings.buildSlots
       : null;
-  const exceeds = slots !== null && requestedTotal > slots;
+  // An uncapped agent has no meaningful "total": say so instead of printing a
+  // sentinel as if it were a plan, and never present it as an excess.
+  const exceeds = slots !== null && unbounded === 0 && requestedTotal > slots;
   let warning: string | null = null;
-  if (exceeds) {
+  if (unbounded > 0) {
+    warning = `${unbounded} of ${enabled.length} agent(s) with helpers have no helper cap; concurrency is bounded only by the host memory gate that holds new runs.`;
+  } else if (exceeds) {
     warning =
       `Helpers across ${enabled.length} agent(s) can reach ${requestedTotal} at once, above the ` +
       `${slots} shared build slot(s). Builds queue; runs are not blocked.`;

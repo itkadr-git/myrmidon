@@ -8,6 +8,7 @@
 // typo from asking for an absurd fan-out, they do not invent policy.
 
 import {
+  HELPERS_UNLIMITED,
   HELPER_TURN_BUDGET_MAX,
   HELPER_TURN_BUDGET_MIN,
 } from "@paperclipai/shared";
@@ -24,13 +25,13 @@ export type HelpersNumberParse = { ok: true; value: number } | { ok: false; mess
 
 const LIMIT_MIN = 1;
 /** The server clamps to the company ceiling anyway; this only rejects nonsense. */
-const LIMIT_MAX = 50;
+const LIMIT_MAX = HELPERS_UNLIMITED;
 
 export function parseHelpersLimit(text: string): HelpersNumberParse {
   const trimmed = text.trim();
   const value = /^\d+$/.test(trimmed) ? Number(trimmed) : Number.NaN;
   if (!Number.isFinite(value) || value < LIMIT_MIN || value > LIMIT_MAX) {
-    return { ok: false, message: `Enter a whole number from ${LIMIT_MIN} to ${LIMIT_MAX}.` };
+    return { ok: false, message: `Enter a whole number from ${LIMIT_MIN} to ${LIMIT_MAX}, or leave it empty for no cap.` };
   }
   return { ok: true, value };
 }
@@ -48,15 +49,16 @@ export function parseHelpersTurnBudget(text: string): HelpersNumberParse {
 }
 
 /**
- * Turning the section on writes an explicit limit: the server resolves an
- * absent one to the company default, and a default that only exists in the UI
- * would hide what the card actually says. The limit is kept when the section
+ * Turning the section on writes the company default when one is configured,
+ * so the card says what applies. With no configured default there is no cap and
+ * no limit is written (absent = unlimited, resolved on the server). The limit is kept when the section
  * is turned back on (so toggling off/on restores the settings), matching the
  * Container section's behavior.
  */
-export function enableParallelHelpers(card: BotParallelHelpersCard, defaultLimit: number): BotParallelHelpersCard {
+export function enableParallelHelpers(card: BotParallelHelpersCard, defaultLimit: number | null): BotParallelHelpersCard {
   const next: BotParallelHelpersCard = { ...card, enabled: true };
-  if (typeof next.maxConcurrent !== "number") next.maxConcurrent = defaultLimit;
+  // No configured default means no cap: leave the limit absent rather than invent one.
+  if (typeof next.maxConcurrent !== "number" && defaultLimit !== null) next.maxConcurrent = defaultLimit;
   return next;
 }
 

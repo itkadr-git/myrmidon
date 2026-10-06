@@ -20,6 +20,10 @@
 import type { Db } from "@paperclipai/db";
 import {
   helperCapacityHint,
+  helpersCeiling,
+  helpersCeilingConfigured,
+  helpersDefault,
+  helpersDefaultConfigured,
   resolveParallelHelpers,
   type HelperCapacityHint,
   type ParallelHelpersSettings,
@@ -32,8 +36,8 @@ export interface ParallelHelpersView {
   settings: ParallelHelpersSettings;
   /** Defaults the module applies when a field is unset (shown, not stored). */
   effective: {
-    ceiling: number;
-    defaultPerAgent: number;
+    ceiling: number | null;
+    defaultPerAgent: number | null;
   };
   capacity: HelperCapacityHint;
 }
@@ -109,11 +113,9 @@ export function parallelHelpersService(
     return {
       settings,
       effective: {
-        ceiling: Math.min(
-          settings.maxPerAgent && settings.maxPerAgent > 0 ? settings.maxPerAgent : 10,
-          50,
-        ),
-        defaultPerAgent: settings.defaultMaxPerAgent && settings.defaultMaxPerAgent > 0 ? settings.defaultMaxPerAgent : 2,
+        // null = no cap configured (the default): helpers are not limited by count.
+        ceiling: helpersCeilingConfigured(settings) ? helpersCeiling(settings) : null,
+        defaultPerAgent: helpersDefaultConfigured(settings) ? helpersDefault(settings) : null,
       },
       capacity: helperCapacityHint(agents, settings),
     };

@@ -23,13 +23,13 @@ const NUMBER_FIELDS: Array<{ key: NumberKey; label: string; hint: string; option
   {
     key: "maxPerAgent",
     label: "Helpers per agent (ceiling)",
-    hint: "The highest value any agent card in this company may set. Cards above it are clamped server-side.",
+    hint: "Optional. The highest value any agent card may set; cards above it are clamped server-side. Empty = no ceiling (the default). Applies without a restart.",
     optional: true,
   },
   {
     key: "defaultMaxPerAgent",
     label: "Default helpers per agent",
-    hint: "What an agent gets when its card says nothing. New agents inherit it.",
+    hint: "Optional. What an agent gets when its card says nothing. Empty = no cap (the default).",
     optional: true,
   },
   {
@@ -138,8 +138,10 @@ export function ParallelHelpersSettingsPanelView({
           ))}
           <div className="md:col-span-2 space-y-1">
             <div className="text-xs text-muted-foreground" data-testid="parallel-helpers-effective">
-              In force: ceiling {view.effective.ceiling}, default {view.effective.defaultPerAgent} per agent.
-              Cards are clamped to the ceiling when they compile.
+              In force: ceiling {view.effective.ceiling ?? "none"}, default {view.effective.defaultPerAgent ?? "none"} per agent.
+              {view.effective.ceiling === null
+                ? " Helpers are not capped by count; new runs are held by the host memory gate."
+                : " Cards are clamped to the ceiling when they compile."}
             </div>
             {view.capacity.warning ? (
               <div

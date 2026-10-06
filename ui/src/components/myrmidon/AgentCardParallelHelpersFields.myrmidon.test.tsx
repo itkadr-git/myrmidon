@@ -38,7 +38,7 @@ const picker: HelperModelPickerRenderer = ({ value }) => (
   <span data-testid="model-picker">{value || "Inherit"}</span>
 );
 
-function render(value: unknown, onChange = vi.fn(), ceiling = 6, defaultLimit = 2) {
+function render(value: unknown, onChange = vi.fn(), ceiling: number | null = 6, defaultLimit: number | null = 2) {
   act(() => {
     root.render(
       <TooltipProvider>
@@ -74,7 +74,13 @@ describe("myrmidon(PARALLEL-HELPERS) agent card fields", () => {
     expect(container.querySelector("[data-testid=model-picker]")).toBeNull();
   });
 
-  it("turning the section on writes an explicit default limit", () => {
+  it("turning the section on with no configured default writes no limit (no cap)", () => {
+    const onChange = render(undefined, vi.fn(), null, null);
+    clickToggle();
+    expect(onChange).toHaveBeenCalledWith({ enabled: true });
+  });
+
+  it("turning the section on writes the configured default limit", () => {
     const onChange = render(undefined);
     clickToggle();
     expect(onChange).toHaveBeenCalledWith({ enabled: true, maxConcurrent: 2 });
@@ -117,7 +123,7 @@ describe("myrmidon(PARALLEL-HELPERS) agent card fields", () => {
       input.dispatchEvent(new Event("blur", { bubbles: true }));
     });
     expect(onChange).not.toHaveBeenCalled();
-    expect(container.textContent).toContain("Enter a whole number from 1 to 50");
+    expect(container.textContent).toContain("Enter a whole number from 1 to 1000");
   });
 
   it("shows the company ceiling in the limit field's hint (tooltip)", () => {
@@ -137,7 +143,8 @@ describe("myrmidon(PARALLEL-HELPERS) pure helpers", () => {
     expect(parseHelpersLimit("4")).toEqual({ ok: true, value: 4 });
     expect(parseHelpersLimit("").ok).toBe(false);
     expect(parseHelpersLimit("banana").ok).toBe(false);
-    expect(parseHelpersLimit("999").ok).toBe(false);
+    expect(parseHelpersLimit("999")).toEqual({ ok: true, value: 999 });
+    expect(parseHelpersLimit("1001").ok).toBe(false);
     expect(parseHelpersTurnBudget("40")).toEqual({ ok: true, value: 40 });
     expect(parseHelpersTurnBudget("").ok).toBe(false);
   });
@@ -155,5 +162,9 @@ describe("myrmidon(PARALLEL-HELPERS) pure helpers", () => {
   it("enable keeps an existing limit and fills a default otherwise", () => {
     expect(enableParallelHelpers({ maxConcurrent: 7 }, 2)).toEqual({ maxConcurrent: 7, enabled: true });
     expect(enableParallelHelpers({}, 3)).toEqual({ maxConcurrent: 3, enabled: true });
+  });
+
+  it("enable writes no limit when no default is configured (no cap)", () => {
+    expect(enableParallelHelpers({}, null)).toEqual({ enabled: true });
   });
 });

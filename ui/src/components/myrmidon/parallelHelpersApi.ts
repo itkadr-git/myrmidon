@@ -10,8 +10,10 @@ import { api } from "@/api/client";
 export interface ParallelHelpersView {
   settings: ParallelHelpersSettings;
   effective: {
-    ceiling: number;
-    defaultPerAgent: number;
+    /** null = no ceiling configured (helpers are not capped by count). */
+    ceiling: number | null;
+    /** null = no default configured (an agent with a silent card is not capped). */
+    defaultPerAgent: number | null;
   };
   capacity: HelperCapacityHint;
 }

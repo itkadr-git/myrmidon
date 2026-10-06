@@ -78,11 +78,11 @@ function harness(options: HarnessOptions = {}) {
 const URL = "/api/myrmidon/parallel-helpers";
 
 describe("myrmidon(PARALLEL-HELPERS) routes: reading the settings and hint", () => {
-  it("reports module defaults and a hint with no agents", async () => {
+  it("reports no ceiling and no default (uncapped) and a hint with no agents", async () => {
     const { app } = harness();
     const res = await request(app).get(URL).expect(200);
     expect(res.body.settings).toEqual({});
-    expect(res.body.effective).toEqual({ ceiling: 10, defaultPerAgent: 2 });
+    expect(res.body.effective).toEqual({ ceiling: null, defaultPerAgent: null });
     expect(res.body.capacity).toMatchObject({ requestedTotal: 0, enabledAgents: 0, warning: null });
   });
 
@@ -99,6 +99,12 @@ describe("myrmidon(PARALLEL-HELPERS) routes: reading the settings and hint", () 
     });
     const res = await request(app).get(URL).expect(200);
     expect(res.body.capacity).toMatchObject({ requestedTotal: 10, enabledAgents: 2 });
+  });
+
+  it("reports an optional ceiling once the owner sets one, without a restart", async () => {
+    const { app } = harness({ stored: { maxPerAgent: 6, defaultMaxPerAgent: 3 } });
+    const res = await request(app).get(URL).expect(200);
+    expect(res.body.effective).toEqual({ ceiling: 6, defaultPerAgent: 3 });
   });
 
   it("is readable by a board member, denied for an agent and an outsider", async () => {
