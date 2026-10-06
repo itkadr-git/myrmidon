@@ -10,6 +10,10 @@ import { foragingRoutes } from "./routes.js";
 import type { ForagingService } from "./service.js";
 import type { ForagingFindingRow, ForagingSourceRow, ForagingStore } from "./store.js";
 
+// The sweep audit row goes through logActivity, which needs a real db; this
+// suite pins the HTTP surface with fakes (same mock as panel-journal-route).
+vi.mock("../../services/activity-log.js", () => ({ logActivity: vi.fn(async () => ({})) }));
+
 const source: ForagingSourceRow = {
   id: "source-1",
   companyId: "company-a",
@@ -65,7 +69,10 @@ const service: ForagingService = {
   budgetState: vi.fn(async () => ({ spentCents: 4, maxCostCents: 50, enabled: true })),
 };
 
-const boardActor = { type: "board", userId: "user-1", source: "session" };
+// assertCompanyAccess requires a session board actor to list the company in
+// `companyIds` (only `source: "local_implicit"` bypasses it); same shape as
+// the access-hub routes test fixture.
+const boardActor = { type: "board", userId: "user-1", source: "session", companyIds: ["company-a"] };
 const agentActor = { type: "agent", agentId: "agent-a", companyId: "company-a", source: "agent_key" };
 
 const base = "/api/myrmidon/companies/company-a/foraging";
