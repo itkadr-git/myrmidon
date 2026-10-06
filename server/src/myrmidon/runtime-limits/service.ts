@@ -35,7 +35,27 @@ import type { HostCpuGate } from "../run-admission.js";
  * page can show the operator the load next to the field instead of only the
  * number they typed.
  */
-export type RuntimeLimitsView = ResolvedRunLimits & { hostLoad: HostCpuGate | null };
+export type RuntimeLimitsView = ResolvedRunLimits & {
+  hostLoad: HostCpuGate | null;
+  /**
+   * myrmidon(1.6.5 RUN-FAIRNESS): the live queue snapshot — runs in flight
+   * against the ceiling, runs still waiting, and the oldest waiter. `null`
+   * when the admission or the database is unavailable, so the settings page
+   * shows nothing rather than a number it made up.
+   */
+  queue: {
+    /** Runs in flight right now. */
+    active: number;
+    /** The concurrency ceiling in force, or null when it is off. */
+    limit: number | null;
+    /** Runs still waiting in the queue. */
+    queued: number;
+    /** ISO timestamp of the oldest waiting run, or null when the queue is empty. */
+    oldestQueuedAt: string | null;
+    /** The agent whose run waits longest, or null when the queue is empty. */
+    oldestQueuedAgentId: string | null;
+  } | null;
+};
 
 /** Who changed the limits, for the activity log. */
 export interface RuntimeLimitsActor {
@@ -73,6 +93,12 @@ export interface RuntimeLimitsServiceDeps {
    * when the process has no admission yet, so the view never fails on it.
    */
   hostLoad?(): HostCpuGate | null;
+  /**
+   * myrmidon(1.6.5 RUN-FAIRNESS): the live queue snapshot for the GET view.
+   * `null` when the admission or the database is unavailable, so the view
+   * never fails on it.
+   */
+  queueSnapshot?(): Promise<RuntimeLimitsView["queue"]>;
   env?: Record<string, string | undefined>;
 }
 
@@ -123,10 +149,29 @@ export function runtimeLimitsService(
     return deps.hostLoad?.() ?? null;
   }
 
+  /**
+   * myrmidon(1.6.5 RUN-FAIRNESS): the live queue snapshot, or null when the
+   * admission or the database is unavailable. Reading it must never fail the
+   * view, exactly like the host CPU reading.
+   */
+  async function queueSnapshot(): Promise<RuntimeLimitsView["queue"]> {
+    if (!deps.queueSnapshot) return null;
+    try {
+      return await deps.queueSnapshot();
+    } catch (err) {
+      logger.warn({ err }, "run admission queue snapshot unavailable for the runtime limits view");
+      return null;
+    }
+  }
+
   return {
     read: async (): Promise<RuntimeLimitsView> => {
       const general = await deps.settings.getGeneral();
-      return { ...resolveRunLimits({ stored: general.runLimits, env }), hostLoad: hostLoad() };
+      return {
+        ...resolveRunLimits({ stored: general.runLimits, env }),
+        hostLoad: hostLoad(),
+        queue: await queueSnapshot(),
+      };
     },
 
     update: async (patch, actor) =>
@@ -164,7 +209,11 @@ export function runtimeLimitsService(
           { limits: next, changedKeys, actorType: actor.actorType },
           "run admission limits updated without a restart",
         );
-        return { ...resolveRunLimits({ stored: next, env }), hostLoad: hostLoad() };
+        return {
+          ...resolveRunLimits({ stored: next, env }),
+          hostLoad: hostLoad(),
+          queue: await queueSnapshot(),
+        };
       }),
   };
 }
