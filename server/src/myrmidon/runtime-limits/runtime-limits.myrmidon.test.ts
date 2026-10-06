@@ -38,6 +38,8 @@ const agentActor = {
 const ENV_ONLY = { MYRMIDON_MAX_CONCURRENT_RUNS: "8" };
 // myrmidon(1.6.2 RUN-ADMISSION): the start ramp and the host floor are on by default.
 const RAMP_AND_HOST = { maxStartsPerMinute: 5, minFreeHostMemoryMb: 15360, maxHostLoadPercentPerCore: 90 };
+// myrmidon(1.6.5 RUN-FAIRNESS): the per-agent start share is on by default.
+const SHARE = { maxPerAgentStartSharePercent: 15 };
 
 interface HarnessOptions {
   stored?: unknown;
@@ -46,6 +48,8 @@ interface HarnessOptions {
   settingsError?: Error;
   /** myrmidon(1.6.5 rc.2): the live host CPU reading the view carries. */
   hostLoad?: RuntimeLimitsServiceDeps["hostLoad"];
+  /** myrmidon(1.6.5 RUN-FAIRNESS): the live queue snapshot the view carries. */
+  queueSnapshot?: RuntimeLimitsServiceDeps["queueSnapshot"];
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -75,6 +79,7 @@ function harness(options: HarnessOptions = {}) {
     apply: (limits) => calls.push(`apply:${limits.maxConcurrentRuns}`),
     scheduleResweep: () => calls.push("resweep"),
     ...(options.hostLoad ? { hostLoad: options.hostLoad } : {}),
+    ...(options.queueSnapshot ? { queueSnapshot: options.queueSnapshot } : {}),
     env: options.env ?? ENV_ONLY,
   };
 
@@ -99,7 +104,7 @@ describe("myrmidon(C0) runtime limits: reading the effective values", () => {
     const { app } = harness();
     const res = await request(app).get(URL).expect(200);
     expect(res.body).toEqual({
-      limits: { maxConcurrentRuns: 8, minFreeMemoryMb: null, runMemoryEstimateMb: 300, ...RAMP_AND_HOST },
+      limits: { maxConcurrentRuns: 8, minFreeMemoryMb: null, runMemoryEstimateMb: 300, ...RAMP_AND_HOST, ...SHARE },
       sources: {
         maxConcurrentRuns: "env",
         maxStartsPerMinute: "default",
@@ -107,10 +112,14 @@ describe("myrmidon(C0) runtime limits: reading the effective values", () => {
         runMemoryEstimateMb: "default",
         minFreeHostMemoryMb: "default",
         maxHostLoadPercentPerCore: "default",
+        maxPerAgentStartSharePercent: "default",
       },
       // myrmidon(1.6.5 rc.2): the view carries the live host CPU reading; the
       // harness has no admission, so there is none.
       hostLoad: null,
+      // myrmidon(1.6.5 RUN-FAIRNESS): without a queue snapshot source the view
+      // carries none.
+      queue: null,
     });
   });
 
@@ -153,6 +162,8 @@ describe("myrmidon(C0) runtime limits: reading the effective values", () => {
       minFreeHostMemoryMb: 8192,
       // myrmidon(1.6.5): the row lacks the CPU ceiling; it resolves from the default.
       maxHostLoadPercentPerCore: 90,
+      // myrmidon(1.6.5 RUN-FAIRNESS): the row lacks the start share; the default.
+      maxPerAgentStartSharePercent: 15,
     });
     expect(Object.values(res.body.sources)).toEqual([
       "settings",
@@ -160,6 +171,7 @@ describe("myrmidon(C0) runtime limits: reading the effective values", () => {
       "settings",
       "settings",
       "settings",
+      "default",
       "default",
     ]);
   });
@@ -176,10 +188,12 @@ describe("myrmidon(C0) runtime limits: reading the effective values", () => {
       runMemoryEstimateMb: 250,
       minFreeHostMemoryMb: 15360,
       maxHostLoadPercentPerCore: 90,
+      maxPerAgentStartSharePercent: 15,
     });
     expect(res.body.sources.maxStartsPerMinute).toBe("settings");
     expect(res.body.sources.minFreeHostMemoryMb).toBe("default");
     expect(res.body.sources.maxHostLoadPercentPerCore).toBe("default");
+    expect(res.body.sources.maxPerAgentStartSharePercent).toBe("default");
   });
 
   it("falls back to the environment when the stored row is not canonical", async () => {
@@ -214,7 +228,7 @@ describe("myrmidon(C0) runtime limits: access", () => {
     const h = harness();
     await request(h.withActor(admin)).patch(URL).send({ maxConcurrentRuns: 4 }).expect(200);
     expect(h.updated).toEqual([
-      { runLimits: { maxConcurrentRuns: 4, minFreeMemoryMb: null, runMemoryEstimateMb: 300, ...RAMP_AND_HOST } },
+      { runLimits: { maxConcurrentRuns: 4, minFreeMemoryMb: null, runMemoryEstimateMb: 300, ...RAMP_AND_HOST, ...SHARE } },
     ]);
   });
 });
@@ -226,7 +240,7 @@ describe("myrmidon(C0) runtime limits: a change reaches the live admission", () 
 
     // The environment value became the stored value for the keys the patch leaves alone.
     expect(h.updated).toEqual([
-      { runLimits: { maxConcurrentRuns: 12, minFreeMemoryMb: null, runMemoryEstimateMb: 300, ...RAMP_AND_HOST } },
+      { runLimits: { maxConcurrentRuns: 12, minFreeMemoryMb: null, runMemoryEstimateMb: 300, ...RAMP_AND_HOST, ...SHARE } },
     ]);
     expect(res.body.limits.maxConcurrentRuns).toBe(12);
     expect(res.body.sources.maxConcurrentRuns).toBe("settings");
@@ -235,8 +249,8 @@ describe("myrmidon(C0) runtime limits: a change reaches the live admission", () 
     for (const entry of h.audits) {
       expect(entry).toMatchObject({ action: RUNTIME_LIMITS_ACTION, entityType: "instance_settings" });
       expect(entry.details).toEqual({
-        previous: { maxConcurrentRuns: 8, minFreeMemoryMb: null, runMemoryEstimateMb: 300, ...RAMP_AND_HOST },
-        next: { maxConcurrentRuns: 12, minFreeMemoryMb: null, runMemoryEstimateMb: 300, ...RAMP_AND_HOST },
+        previous: { maxConcurrentRuns: 8, minFreeMemoryMb: null, runMemoryEstimateMb: 300, ...RAMP_AND_HOST, ...SHARE },
+        next: { maxConcurrentRuns: 12, minFreeMemoryMb: null, runMemoryEstimateMb: 300, ...RAMP_AND_HOST, ...SHARE },
         changedKeys: ["maxConcurrentRuns"],
       });
     }
@@ -257,6 +271,7 @@ describe("myrmidon(C0) runtime limits: a change reaches the live admission", () 
       runMemoryEstimateMb: 250,
       minFreeHostMemoryMb: 15360,
       maxHostLoadPercentPerCore: 90,
+      maxPerAgentStartSharePercent: 15,
     });
   });
 
@@ -316,5 +331,70 @@ describe("myrmidon(C0) runtime limits: a change reaches the live admission", () 
     vi.spyOn(h.deps.settings!, "updateGeneral").mockRejectedValue(new Error("database is down"));
     await request(h.withActor(admin)).patch(URL).send({ maxConcurrentRuns: 12 }).expect(500);
     expect(h.calls).toEqual([]);
+  });
+});
+
+describe("myrmidon(1.6.5 RUN-FAIRNESS) runtime limits: the per-agent start share", () => {
+  it("changes the share on the fly, validates it as a percentage and can switch it off", async () => {
+    const h = harness();
+    const res = await request(h.withActor(admin))
+      .patch(URL)
+      .send({ maxPerAgentStartSharePercent: 25 })
+      .expect(200);
+    expect(res.body.limits.maxPerAgentStartSharePercent).toBe(25);
+    expect(res.body.sources.maxPerAgentStartSharePercent).toBe("settings");
+    expect(h.audits[0]!.details).toMatchObject({ changedKeys: ["maxPerAgentStartSharePercent"] });
+
+    const off = await request(h.withActor(admin)).patch(URL).send({ maxPerAgentStartSharePercent: null }).expect(200);
+    expect(off.body.limits.maxPerAgentStartSharePercent).toBeNull();
+
+    await request(h.withActor(admin)).patch(URL).send({ maxPerAgentStartSharePercent: 0 }).expect(400);
+    await request(h.withActor(admin)).patch(URL).send({ maxPerAgentStartSharePercent: 101 }).expect(400);
+    await request(h.withActor(admin)).patch(URL).send({ maxPerAgentStartSharePercent: 1.5 }).expect(400);
+    // The refused writes changed nothing after the two accepted ones.
+    expect(h.updated.at(-1)!.runLimits).toMatchObject({ maxPerAgentStartSharePercent: null });
+  });
+
+  it("carries the share in the GET view, default 15", async () => {
+    const { app } = harness();
+    const res = await request(app).get(URL).expect(200);
+    expect(res.body.limits.maxPerAgentStartSharePercent).toBe(15);
+    expect(res.body.sources.maxPerAgentStartSharePercent).toBe("default");
+  });
+});
+
+describe("myrmidon(1.6.5 RUN-FAIRNESS) runtime limits: the queue snapshot", () => {
+  const SNAPSHOT = {
+    active: 48,
+    limit: 51,
+    queued: 12,
+    oldestQueuedAt: "2026-10-06T10:00:00.000Z",
+    oldestQueuedAgentId: "agent-9",
+  };
+
+  it("carries the queue snapshot in the read view", async () => {
+    const { app } = harness({ queueSnapshot: async () => SNAPSHOT });
+    const res = await request(app).get(URL).expect(200);
+    expect(res.body.queue).toEqual(SNAPSHOT);
+  });
+
+  it("returns the queue snapshot after an update too", async () => {
+    const h = harness({ queueSnapshot: async () => SNAPSHOT });
+    const res = await request(h.withActor(admin)).patch(URL).send({ maxConcurrentRuns: 60 }).expect(200);
+    expect(res.body.queue).toEqual(SNAPSHOT);
+  });
+
+  it("reads null when the snapshot source is missing, and survives a source failure", async () => {
+    const missing = harness();
+    const resMissing = await request(missing.app).get(URL).expect(200);
+    expect(resMissing.body.queue).toBeNull();
+
+    const failing = harness({
+      queueSnapshot: async () => {
+        throw new Error("database is down");
+      },
+    });
+    const resFailing = await request(failing.app).get(URL).expect(200);
+    expect(resFailing.body.queue).toBeNull();
   });
 });

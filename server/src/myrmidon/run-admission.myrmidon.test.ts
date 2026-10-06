@@ -24,12 +24,15 @@ const NO_MEMORY = {
   minFreeHostMemoryMb: null,
   // myrmidon(1.6.5): off unless a test says otherwise.
   maxHostLoadPercentPerCore: null,
+  // myrmidon(1.6.5 RUN-FAIRNESS): the start share is a limit the admission
+  // does not read yet (part 1); the fixtures carry its default.
+  maxPerAgentStartSharePercent: 15,
 };
 const MB = 1024 * 1024;
 
 describe("readRunAdmissionLimits", () => {
   it("treats unset, empty, zero and garbage as no limit; the ramp, the host floor and the CPU ceiling default on", () => {
-    const DEFAULT_ON = { maxStartsPerMinute: 5, minFreeHostMemoryMb: 15360, maxHostLoadPercentPerCore: 90 };
+    const DEFAULT_ON = { maxStartsPerMinute: 5, minFreeHostMemoryMb: 15360, maxHostLoadPercentPerCore: 90, maxPerAgentStartSharePercent: 15 };
     expect(readRunAdmissionLimits({})).toEqual({
       maxConcurrentRuns: null,
       minFreeMemoryMb: null,
@@ -41,7 +44,7 @@ describe("readRunAdmissionLimits", () => {
     ).toEqual({ maxConcurrentRuns: null, minFreeMemoryMb: null, runMemoryEstimateMb: 300, ...DEFAULT_ON });
     expect(
       readRunAdmissionLimits({ MYRMIDON_MAX_RUN_STARTS_PER_MINUTE: "0", MYRMIDON_MIN_FREE_HOST_MEMORY_MB: "off" }),
-    ).toEqual({ maxConcurrentRuns: null, maxStartsPerMinute: null, ...NO_MEMORY, maxHostLoadPercentPerCore: 90 });
+    ).toEqual({ maxConcurrentRuns: null, maxStartsPerMinute: null, ...NO_MEMORY, maxHostLoadPercentPerCore: 90, maxPerAgentStartSharePercent: 15 });
     expect(
       readRunAdmissionLimits({
         MYRMIDON_MAX_CONCURRENT_RUNS: " 12 ",
@@ -58,6 +61,7 @@ describe("readRunAdmissionLimits", () => {
       runMemoryEstimateMb: 250,
       minFreeHostMemoryMb: 8192,
       maxHostLoadPercentPerCore: null,
+      maxPerAgentStartSharePercent: 15,
     });
   });
 });
@@ -118,6 +122,7 @@ describe("memory headroom", () => {
         runMemoryEstimateMb: 300,
         minFreeHostMemoryMb: null,
         maxHostLoadPercentPerCore: null,
+        maxPerAgentStartSharePercent: 15,
       },
       freeMemoryBytes: () => free,
       now: () => clock,
@@ -140,6 +145,7 @@ describe("memory headroom", () => {
         runMemoryEstimateMb: 300,
         minFreeHostMemoryMb: null,
         maxHostLoadPercentPerCore: null,
+        maxPerAgentStartSharePercent: 15,
       },
       freeMemoryBytes: () => null,
     });
@@ -168,6 +174,8 @@ describe("live limit changes", () => {
     runMemoryEstimateMb: 300,
     minFreeHostMemoryMb: null,
     maxHostLoadPercentPerCore: null,
+    // myrmidon(1.6.5 RUN-FAIRNESS): the share default; the admission ignores it.
+    maxPerAgentStartSharePercent: 15,
   };
 
   it("lets the runs held behind the old ceiling start as soon as it is raised", () => {
@@ -218,6 +226,9 @@ describe("live limit changes", () => {
         runMemoryEstimateMb: 200,
         minFreeHostMemoryMb: 10240,
         maxHostLoadPercentPerCore: 150,
+        // myrmidon(1.6.5 RUN-FAIRNESS): the admission ignores the share (part 1
+        // will read it), so the report carries the default back.
+        maxPerAgentStartSharePercent: 15,
       });
       expect(currentRunAdmissionLimits()).toEqual({
         maxConcurrentRuns: 7,
@@ -226,6 +237,7 @@ describe("live limit changes", () => {
         runMemoryEstimateMb: 200,
         minFreeHostMemoryMb: 10240,
         maxHostLoadPercentPerCore: 150,
+        maxPerAgentStartSharePercent: 15,
       });
       applyRunAdmissionLimits({
         maxConcurrentRuns: null,
@@ -234,6 +246,8 @@ describe("live limit changes", () => {
         runMemoryEstimateMb: 300,
         minFreeHostMemoryMb: null,
         maxHostLoadPercentPerCore: null,
+        // myrmidon(1.6.5 RUN-FAIRNESS): the share has no null (default-on 15).
+        maxPerAgentStartSharePercent: 15,
       });
       expect(currentRunAdmissionLimits()).toEqual({
         maxConcurrentRuns: null,
@@ -242,6 +256,7 @@ describe("live limit changes", () => {
         runMemoryEstimateMb: 300,
         minFreeHostMemoryMb: null,
         maxHostLoadPercentPerCore: null,
+        maxPerAgentStartSharePercent: 15,
       });
     } finally {
       resetSharedRunAdmissionForTests();
@@ -297,6 +312,8 @@ describe("myrmidon(1.6.2 RUN-ADMISSION) host memory floor", () => {
     // myrmidon(1.6.5): the CPU ceiling stays off here so the memory tests
     // read only memory; the CPU suite below sets its own limits.
     maxHostLoadPercentPerCore: null,
+    // myrmidon(1.6.5 RUN-FAIRNESS): the share default; the admission ignores it.
+    maxPerAgentStartSharePercent: 15,
   };
   const host = (availableBytes: number) => () => ({ known: true as const, availableBytes, totalBytes: 64 * GB });
 

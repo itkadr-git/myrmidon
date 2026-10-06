@@ -26,7 +26,8 @@ import { z } from "zod";
  *   start on an instance that has never saved these settings;
  * - otherwise the built-in default: 300 MB for the per-run budget, 5 starts a
  *   minute for the start ramp, 15360 MB (15 GB) of free host memory, "off"
- *   for the concurrency ceiling and the server free-memory floor.
+ *   for the concurrency ceiling and the server free-memory floor, 15 % of
+ *   start slots for the per-agent start share.
  *
  * myrmidon(1.6.2 RUN-ADMISSION): the two values with an "on" default (the
  * start ramp and the host memory floor) read an unset, empty or unreadable
@@ -34,7 +35,8 @@ import { z } from "zod";
  * can still switch them off from the environment. myrmidon(1.6.5
  * RUN-ADMISSION): the host CPU ceiling joins them with the same rule — an
  * unset or unreadable environment value means the default, `0`/`off` means
- * "no CPU ceiling".
+ * "no CPU ceiling". myrmidon(1.6.5 RUN-FAIRNESS): the per-agent start share
+ * (`maxPerAgentStartSharePercent`) follows the same default-on rule.
  *
  * `null` means "this cap is off" — the same meaning an unset, empty, zero,
  * negative or non-numeric environment value has today. A value is a positive
@@ -42,7 +44,8 @@ import { z } from "zod";
  *
  * The stored object is canonical: every key, caps null or a positive
  * integer. A row saved before a key existed (1.6.2 added
- * `minFreeHostMemoryMb`, 1.6.5 added `maxHostLoadPercentPerCore`) is still
+ * `minFreeHostMemoryMb`, 1.6.5 added `maxHostLoadPercentPerCore` and —
+ * RUN-FAIRNESS — `maxPerAgentStartSharePercent`) is still
  * read: the missing key resolves from the environment or the default, and
  * the next save writes it.
  * `resolveRunLimits` accepts anything and falls back to the environment for a
@@ -59,6 +62,8 @@ export const RUN_LIMITS_ENV_KEYS = {
   minFreeHostMemoryMb: "MYRMIDON_MIN_FREE_HOST_MEMORY_MB",
   // myrmidon(1.6.5 RUN-ADMISSION): the host CPU ceiling of run admission.
   maxHostLoadPercentPerCore: "MYRMIDON_MAX_HOST_LOAD_PERCENT_PER_CORE",
+  // myrmidon(1.6.5 RUN-FAIRNESS): the per-agent share of start slots.
+  maxPerAgentStartSharePercent: "MYRMIDON_MAX_PER_AGENT_START_SHARE_PERCENT",
 } as const;
 
 export const RUN_LIMIT_KEYS = [
@@ -68,6 +73,7 @@ export const RUN_LIMIT_KEYS = [
   "runMemoryEstimateMb",
   "minFreeHostMemoryMb",
   "maxHostLoadPercentPerCore",
+  "maxPerAgentStartSharePercent",
 ] as const;
 
 export type RunLimitKey = (typeof RUN_LIMIT_KEYS)[number];
@@ -107,8 +113,27 @@ export const DEFAULT_MIN_FREE_HOST_MEMORY_MB = 15_360;
  */
 export const DEFAULT_MAX_HOST_LOAD_PERCENT_PER_CORE = 90;
 
+/**
+ * myrmidon(1.6.5 RUN-FAIRNESS): the share of start slots of the global
+ * ceiling one agent may take by default — 15 %. While the global concurrency
+ * ceiling is busy, the queue pass admits the agent that asked earliest, not
+ * the one that called `reserve` first, and no agent may hold more than this
+ * share of the slots. A percentage has a meaningful zero ("no share at
+ * all"), so unlike the other caps this value is bounded: 1..100, and `null`
+ * switches the limit off ("any agent may take every free slot") — the same
+ * default-on rule the start ramp and the host ceilings follow.
+ */
+export const DEFAULT_MAX_PER_AGENT_START_SHARE_PERCENT = 15;
+
 /** A cap: a positive integer, or null for "off". */
 const runLimitCapSchema = z.number().int().positive().nullable();
+
+/**
+ * myrmidon(1.6.5 RUN-FAIRNESS): a share of the global ceiling, 1..100 %, or
+ * null for "off". A separate schema, not runLimitCapSchema: a share over
+ * 100 % is a nonsense value the other caps do not have to refuse.
+ */
+const runLimitSharePercentSchema = z.number().int().min(1).max(100).nullable();
 
 /** The canonical stored shape of `instance_settings.general.runLimits`. */
 export const runLimitsSchema = z
@@ -119,6 +144,7 @@ export const runLimitsSchema = z
     runMemoryEstimateMb: z.number().int().positive(),
     minFreeHostMemoryMb: runLimitCapSchema,
     maxHostLoadPercentPerCore: runLimitCapSchema,
+    maxPerAgentStartSharePercent: runLimitSharePercentSchema,
   })
   .strict();
 
@@ -131,6 +157,8 @@ export const storedRunLimitsSchema = runLimitsSchema.extend({
   minFreeHostMemoryMb: runLimitCapSchema.optional(),
   // myrmidon(1.6.5 RUN-ADMISSION): a row saved before the CPU ceiling existed.
   maxHostLoadPercentPerCore: runLimitCapSchema.optional(),
+  // myrmidon(1.6.5 RUN-FAIRNESS): a row saved before the start share existed.
+  maxPerAgentStartSharePercent: runLimitSharePercentSchema.optional(),
 });
 
 /**
@@ -148,6 +176,8 @@ export const patchRunLimitsSchema = z
     minFreeHostMemoryMb: runLimitCapSchema.optional(),
     // myrmidon(1.6.5 RUN-ADMISSION): the host CPU ceiling.
     maxHostLoadPercentPerCore: runLimitCapSchema.optional(),
+    // myrmidon(1.6.5 RUN-FAIRNESS): the per-agent share of start slots.
+    maxPerAgentStartSharePercent: runLimitSharePercentSchema.optional(),
   })
   .strict();
 
@@ -194,7 +224,10 @@ function envDeclares(env: Record<string, string | undefined>, key: RunLimitKey):
   if (parseRunLimitValue(raw) !== null) return true;
   // A default-on cap switched off from the environment.
   return (
-    (key === "maxStartsPerMinute" || key === "minFreeHostMemoryMb" || key === "maxHostLoadPercentPerCore") &&
+    (key === "maxStartsPerMinute" ||
+      key === "minFreeHostMemoryMb" ||
+      key === "maxHostLoadPercentPerCore" ||
+      key === "maxPerAgentStartSharePercent") &&
     isRunLimitOffWord(raw)
   );
 }
@@ -219,6 +252,11 @@ export function readRunLimitsFromEnv(env: Record<string, string | undefined> = {
       env[RUN_LIMITS_ENV_KEYS.maxHostLoadPercentPerCore],
       DEFAULT_MAX_HOST_LOAD_PERCENT_PER_CORE,
     ),
+    // myrmidon(1.6.5 RUN-FAIRNESS): the per-agent start share, default-on.
+    maxPerAgentStartSharePercent: parseDefaultOnRunLimitValue(
+      env[RUN_LIMITS_ENV_KEYS.maxPerAgentStartSharePercent],
+      DEFAULT_MAX_PER_AGENT_START_SHARE_PERCENT,
+    ),
   };
 }
 
@@ -238,6 +276,11 @@ export function normalizeRunLimits(raw: unknown, fallback: RunLimits = readRunLi
       parsed.data.maxHostLoadPercentPerCore === undefined
         ? fallback.maxHostLoadPercentPerCore
         : parsed.data.maxHostLoadPercentPerCore,
+    // myrmidon(1.6.5 RUN-FAIRNESS): a row saved before the start share existed.
+    maxPerAgentStartSharePercent:
+      parsed.data.maxPerAgentStartSharePercent === undefined
+        ? fallback.maxPerAgentStartSharePercent
+        : parsed.data.maxPerAgentStartSharePercent,
   };
 }
 
@@ -283,5 +326,10 @@ export function mergeRunLimits(base: RunLimits, patch: RunLimitsPatch): RunLimit
       patch.maxHostLoadPercentPerCore === undefined
         ? base.maxHostLoadPercentPerCore
         : patch.maxHostLoadPercentPerCore,
+    // myrmidon(1.6.5 RUN-FAIRNESS): the per-agent start share.
+    maxPerAgentStartSharePercent:
+      patch.maxPerAgentStartSharePercent === undefined
+        ? base.maxPerAgentStartSharePercent
+        : patch.maxPerAgentStartSharePercent,
   };
 }

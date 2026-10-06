@@ -492,6 +492,8 @@ describe("myrmidon(1.6.2 RUN-ADMISSION) the idle pass respects the host memory f
         // myrmidon(1.6.5): the CPU ceiling is off here; this test pins the
         // memory floor path of the shared admission.
         maxHostLoadPercentPerCore: null,
+        // myrmidon(1.6.5 RUN-FAIRNESS): the share default; the admission ignores it.
+        maxPerAgentStartSharePercent: 15,
       });
       const gateState = admission.currentHostMemoryGate().state;
       idleRole();
