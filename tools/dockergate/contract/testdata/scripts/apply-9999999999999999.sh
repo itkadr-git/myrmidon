@@ -47,6 +47,11 @@ if [ -f "$removals" ]; then
     if [ -f "$dest" ] || [ -L "$dest" ]; then rm -f -- "$dest"; fi
   done < "$removals"
 fi
+# 4.5 vendor config backups under hermes (possible secret leak), best effort
+backups="data/hermes/backups"
+if [ -d "$backups" ]; then
+  rm -rf -- "$backups" 2>/dev/null || true
+fi
 # 5. the applied-state marker, strictly last
 mkdir -p -- "data/hermes/.myrmidon"
 mv -f -T -- "data/hermes/.myrmidon-apply-9999999999999999/applied.json" "data/hermes/.myrmidon/applied.json"

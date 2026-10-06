@@ -45,7 +45,17 @@ case "$1" in
     echo "0123456789ab"
     exit 0 ;;
   exec)
-    case "$*" in *pg_restore*) [ -e "$SANDBOX/restore-fails" ] && exit 1 ;; esac
+    case "$*" in *pg_restore*)
+      # myrmidon(PREDEPLOY-NO-ACL): models a dump with GRANTs to production-only
+      # roles. Such a dump restores only when pg_restore skips privileges:
+      # without --no-acl the restore aborts on the missing role, exactly like
+      # the real pg_restore on "GRANT ... TO backup_ro" when backup_ro is absent.
+      if [ -e "$SANDBOX/grant-to-missing-role" ] && ! printf '%s' "$*" | grep -q -- '--no-acl'; then
+        echo 'pg_restore: error: could not execute query: ERROR: role "backup_ro" does not exist' >&2
+        exit 1
+      fi
+      [ -e "$SANDBOX/restore-fails" ] && exit 1 ;;
+    esac
     exit 0 ;;
   logs)
     name=""
@@ -361,6 +371,43 @@ describe("predeploy-board-check.sh (PREDEPLOY-DB-CHECK: the 05.10 incident)", ()
     assert.notEqual(code, 0, out);
     assert.match(out, /cannot restore .* into the throwaway database/);
     assert.doesNotMatch(calls(sb), /--name myr-predeploy-board-/);
+  });
+
+  it("a dump with GRANTs to production-only roles restores on the default command (OPE-4875)", () => {
+    // The production dump carries grants to roles that exist only on the
+    // production server (backup_ro, ...). The throwaway Postgres does not have
+    // them: without --no-acl pg_restore aborts on the missing role and the
+    // check dies before the board is ever started. The default must skip the
+    // privileges and restore the data.
+    const sb = sandbox();
+    fs.writeFileSync(path.join(sb.dir, "grant-to-missing-role"), "");
+    const { code, out } = full(sb);
+    assert.equal(code, 0, out);
+    assert.match(calls(sb), /pg_restore .*--no-owner --no-acl/);
+    assert.doesNotMatch(out, /role "backup_ro" does not exist/);
+    assert.match(out, /board ok on the copy/);
+    assert.match(out, /passed: .* comes up ok on a copy of the production database/);
+  });
+
+  it("the old default (--no-owner without --no-acl) fails on such a dump: the fake models the real abort", () => {
+    // Proof the previous test is not vacuous: an operator override that keeps
+    // the pre-OPE-4875 flags hits exactly the production failure the incident
+    // comment describes, and the check stops before the window.
+    const sb = sandbox({
+      extraConfig: 'MYRMIDON_PREDEPLOY_RESTORE_COMMAND=\'docker exec -i -e PGPASSWORD="$MYR_PREDEPLOY_DB_PASSWORD" "$MYR_PREDEPLOY_DB_CONTAINER" pg_restore -U "$MYR_PREDEPLOY_DB_USER" -d "$MYR_PREDEPLOY_DB_NAME" --no-owner < "$DUMP_FILE"\'\n',
+    });
+    fs.writeFileSync(path.join(sb.dir, "grant-to-missing-role"), "");
+    const { code, out } = full(sb);
+    assert.notEqual(code, 0, out);
+    assert.match(out, /cannot restore .* into the throwaway database/);
+    assert.doesNotMatch(calls(sb), /--name myr-predeploy-board-/);
+  });
+
+  it("an operator override of the restore command is used as given", () => {
+    const sb = sandbox({ extraConfig: "MYRMIDON_PREDEPLOY_RESTORE_COMMAND='docker exec -i custom-db pg_restore -U custom --no-acl < \"$DUMP_FILE\"'\n" });
+    const { code, out } = full(sb);
+    assert.equal(code, 0, out);
+    assert.match(calls(sb), /docker exec -i custom-db pg_restore -U custom --no-acl/);
   });
 
   it("MYRMIDON_PREDEPLOY_KEEP=1 keeps the stack and names it for the operator", () => {

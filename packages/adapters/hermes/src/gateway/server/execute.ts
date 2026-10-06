@@ -1186,6 +1186,11 @@ export function mapFinalResultForTest(input: {
       status: input.terminal.status,
       session_id: sessionDisplayId,
       last_event: input.terminal.eventName ?? null,
+      // myrmidon(1.6.4-HERMES-LONG-RESPONSE): the full agent answer lives here
+      // under the standard `result` key the comment builder reads, while the
+      // top-level `summary` stays a bounded copy for run lists/journals. The
+      // `output` key is kept for existing gateway-specific consumers.
+      result: output ?? "",
       output: output ?? "",
       usage: usage ?? null,
       cost_usd: costUsd,
