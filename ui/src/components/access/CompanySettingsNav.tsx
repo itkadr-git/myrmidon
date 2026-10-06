@@ -32,6 +32,8 @@ const items = [
   { value: "castes", label: "Castes & models", href: "/company/settings/castes" },
   // myrmidon(1.6.1 CUSTOM-CASTES C): the company caste directory
   { value: "caste-directory", label: "Agent castes", href: "/company/settings/caste-directory" },
+  // myrmidon(1.6.5-OWNER-DM-FILTER): owner Telegram delivery mode screen
+  { value: "owner-delivery", label: "Owner Telegram delivery", href: "/company/settings/owner-delivery" },
 ] as const;
 
 type CompanySettingsTab = (typeof items)[number]["value"];
@@ -135,6 +137,11 @@ export function getCompanySettingsTab(pathname: string): CompanySettingsTab {
   // myrmidon(1.6.1 WIP-LIMIT B): the WIP limit settings section
   if (pathname.includes("/company/settings/wip-limit")) {
     return "wip-limit";
+  }
+
+  // myrmidon(1.6.5-OWNER-DM-FILTER): the owner Telegram delivery settings section
+  if (pathname.includes("/company/settings/owner-delivery")) {
+    return "owner-delivery";
   }
 
   // myrmidon(REVIEW-ROUTING): the review routing settings section
