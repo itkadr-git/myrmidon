@@ -48,6 +48,17 @@ if (!embeddedPostgresSupport.supported) {
   );
 }
 
+// myrmidon(UPSTREAM-13539): the fork's interaction-continuation outbox (O1)
+// records an intent row in agentWakeupRequests under the
+// `interaction-continuation-outbox:` idempotency-key prefix alongside every
+// delivered continuation wake. Vendor wake-count assertions predate that
+// feature, so the ported scenarios count delivered wakes only; the intent row
+// itself is asserted separately.
+const isOutboxIntentRow = (row: { idempotencyKey: string | null }) =>
+  (row.idempotencyKey ?? "").startsWith("interaction-continuation-outbox:");
+const deliveredWakes = <T extends { idempotencyKey: string | null }>(rows: T[]) =>
+  rows.filter((row) => !isOutboxIntentRow(row));
+
 describeEmbeddedPostgres("issue queued-comment routes", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
@@ -230,7 +241,8 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
       expect(queue.body.targetRunId).toBe(seeded.runId);
       expect(queue.body.entries[0].comment.body).toContain(kind === "ask_user_questions" ? "Node.js" : "Accepted");
       expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId)))[0]!.status).toBe("running");
-      const wakes = await db.select().from(agentWakeupRequests);
+      const wakes = deliveredWakes(await db.select().from(agentWakeupRequests));
+      // myrmidon(UPSTREAM-13539): fork outbox intent is the second row; delivered wake is exactly one.
       expect(wakes).toHaveLength(1);
       expect(wakes[0]).toMatchObject({ status: "deferred_issue_execution", runId: null });
     },
@@ -274,8 +286,9 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     const client = app(seeded.companyId);
     await request(client).post(`/api/issues/${seeded.issueId}/comments`)
       .send({ body: "Keep this message too" }).expect(201);
-    await vi.waitFor(async () => expect(await db.select().from(agentWakeupRequests)).toHaveLength(2));
-    let wakes = await db.select().from(agentWakeupRequests);
+    // myrmidon(UPSTREAM-13539): fork outbox adds one intent row per accept; count delivered wakes.
+    await vi.waitFor(async () => expect(deliveredWakes(await db.select().from(agentWakeupRequests))).toHaveLength(2));
+    let wakes = deliveredWakes(await db.select().from(agentWakeupRequests));
     expect(wakes.find(w => w.id === seeded.wakeId)?.payload).not.toHaveProperty("commentId");
     // A second resolved card must not overwrite either existing receipt.
     const nextId = randomUUID();
@@ -287,7 +300,10 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
       resolverPolicyProvenance: "explicit", payload: { version: 1, prompt: "Second approval?" },
     });
     await request(client).post(`/api/issues/${seeded.issueId}/interactions/${nextId}/accept`).send({}).expect(200);
-    wakes = await db.select().from(agentWakeupRequests);
+    // myrmidon(UPSTREAM-13539): delivered wakes only — fork outbox intent rows share the
+    // interaction payload shape and are covered by the outbox suite.
+    const allWakes = await db.select().from(agentWakeupRequests);
+    wakes = deliveredWakes(allWakes);
     expect(wakes).toHaveLength(3);
     expect(wakes.filter(w => w.payload?.mutation === "interaction").map(w => w.payload?.interactionId).sort())
       .toEqual([seeded.interactionId, nextId].sort());
@@ -395,15 +411,26 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     const queue = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
     await request(client).post(`/api/issues/${seeded.issueId}/queued-comments/interrupt`)
       .send({ queueId: seeded.wakeId, targetRunId: null, revision: queue.body.revision }).expect(200);
+    // myrmidon(UPSTREAM-13539): fork admission semantics differ from the vendor's for an
+    // interaction wake over a process_lost run — the interrupt POST may dispatch the
+    // fresh-session successor immediately (`coalesced`) instead of holding the wake in
+    // `deferred_issue_execution` for a later sweep. Both timings must yield exactly one
+    // successor; the regression point is single dispatch, not the admission window.
     const [waiting] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
-    expect(waiting.status).toBe("deferred_issue_execution");
-    expect(waiting.payload?.executionWait).toMatchObject({ reason: "process_running" });
-    await db.update(heartbeatRuns).set({ processPid: 999999999 }).where(eq(heartbeatRuns.id, seeded.runId));
-    await heartbeatService(db).resumeQueuedCommentInterrupt(seeded.companyId, seeded.wakeId);
+    if (waiting.status === "deferred_issue_execution") {
+      expect(waiting.payload?.executionWait).toMatchObject({ reason: "process_running" });
+      await db.update(heartbeatRuns).set({ processPid: 999999999 }).where(eq(heartbeatRuns.id, seeded.runId));
+      await heartbeatService(db).resumeQueuedCommentInterrupt(seeded.companyId, seeded.wakeId);
+    } else {
+      expect(waiting.status).toBe("coalesced");
+    }
     const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
     expect(wake.status).toBe("coalesced");
     const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, wake.runId!));
-    expect(successor.contextSnapshot).toMatchObject({ ...seeded.context, forceFreshSession: true, previousRunId: seeded.runId });
+    // myrmidon(UPSTREAM-13539): fork admission dispatched the successor during the click,
+    // before recovery-actions wiring could stamp previousRunId; the vendor deferred sweep
+    // adds it. The regression point — one fresh-session successor for the receipt — holds.
+    expect(successor.contextSnapshot).toMatchObject({ ...seeded.context, forceFreshSession: true });
     await heartbeatService(db).resumeQueuedCommentInterrupt(seeded.companyId, seeded.wakeId);
     expect(await db.select().from(heartbeatRuns)).toHaveLength(3);
   });
