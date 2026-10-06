@@ -121,6 +121,38 @@ export function pickReviewer(input: {
   return [...eligible].sort((a, b) => a.load - b.load || a.id.localeCompare(b.id))[0] ?? null;
 }
 
+/**
+ * myrmidon(REVIEW-ROUTING): the PR lane's reviewer pick. Both gates apply:
+ * the general board ceiling (`maxLoadPerReviewer` over `in_progress` +
+ * `in_review` board tasks) and the lane's own OPEN pr-review ceiling
+ * (`maxOpenReviewsPerReviewer`). `openPrLoadByAgent` counts only this lane's
+ * open review tasks; excluded ids cover the PR author's linked agent and any
+ * other hand-set exclusion. Least combined load wins, ties by id.
+ */
+export function pickPrReviewer(input: {
+  reviewers: readonly ReviewerCandidate[];
+  boardLoadByAgent: ReadonlyMap<string, number>;
+  openPrLoadByAgent: ReadonlyMap<string, number>;
+  excluded: ReadonlySet<string>;
+  maxLoadPerReviewer: number;
+  maxOpenReviewsPerReviewer: number;
+}): ReviewerCandidate | null {
+  const candidates: ReviewerCandidate[] = [];
+  for (const reviewer of input.reviewers) {
+    if (input.excluded.has(reviewer.id)) continue;
+    const openReviews = input.openPrLoadByAgent.get(reviewer.id) ?? 0;
+    if (openReviews >= input.maxOpenReviewsPerReviewer) continue;
+    const boardLoad = input.boardLoadByAgent.get(reviewer.id) ?? 0;
+    if (boardLoad >= input.maxLoadPerReviewer) continue;
+    candidates.push({ id: reviewer.id, role: reviewer.role, load: boardLoad + openReviews });
+  }
+  return pickReviewer({
+    candidates,
+    excluded: new Set<string>(),
+    maxLoad: Number.POSITIVE_INFINITY,
+  });
+}
+
 export const REVIEW_ROUTING_REVIEW_INSTRUCTIONS =
   "Automatic review routing: this task was in review with no reviewer. Approve only if the work is " +
   "complete and correct (that closes the task as done); request changes to send it back to the " +

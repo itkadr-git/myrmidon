@@ -14,8 +14,24 @@
 //     reviewer (never one that already had it); with no other reviewer the
 //     signal is what remains.
 //
+// The 1.6.5 PR lane runs after the task lane on the same pass but on its own
+// `pollIntervalSec` throttle, per company:
+//
+//  4. open pull requests (from the webhook-fed externalObjects rows, plus a
+//     repo poll of the configured/known repositories) whose CURRENT head is
+//     green with no review verdict get a `Review PR …` task with the
+//     least-loaded reviewer (both load gates, never the PR author's linked
+//     agent); an approved green head gets a `Merge PR …` steward task;
+//  5. a routed task whose recorded head no longer matches the PR's current
+//     head is superseded: cancelled with one system comment naming the new
+//     head;
+//  6. with no eligible reviewer/steward the PR raises a `no_reviewer` /
+//     `no_steward` attention card carrying its coordinates.
+//
 // The sweep is idempotent: the assignment re-checks its premise under a row
-// lock, so a second pass (or a racing human) never double-assigns.
+// lock, so a second pass (or a racing human) never double-assigns. The PR lane
+// re-checks the work-product coverage inside its guarded create path, and a
+// GitHub read failure creates and closes nothing.
 
 import type { Logger } from "pino";
 import {

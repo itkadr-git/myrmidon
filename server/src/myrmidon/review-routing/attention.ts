@@ -1,13 +1,17 @@
 // myrmidon(REVIEW-ROUTING): the attention signals of the review routing.
 //
-// Two conditions raise a card on the operator desk, one per task:
+// Conditions raise a card on the operator desk, one per task/PR:
 //
 //   - `no_reviewer`: a task is in review with no reviewer and the routing
 //     could not pick one (no eligible reviewer, or all are at their load
-//     ceiling), so the review would otherwise stay silent;
+//     ceiling), so the review would otherwise stay silent; the PR lane raises
+//     the same kind for a green PR head it could not route (carrying the PR
+//     coordinates instead of a board task);
 //   - `review_overdue`: a task has been in review longer than the configured
 //     hours with no verdict (and, when the routing could not move it to
-//     another reviewer, this card is what is left for a person to act on).
+//     another reviewer, this card is what is left for a person to act on);
+//   - `no_steward` (1.6.5 PR lane): an approved green PR head has no eligible
+//     merge steward.
 //
 // The sweep REPLACES the whole set of a company on every pass
 // (`replaceReviewRoutingSignals`): a card exists exactly while its condition
@@ -18,7 +22,14 @@
 
 import type { AttentionSeverity } from "@paperclipai/shared";
 
-export type ReviewRoutingSignalKind = "no_reviewer" | "review_overdue";
+export type ReviewRoutingSignalKind = "no_reviewer" | "review_overdue" | "no_steward";
+
+/** The PR coordinates a PR-lane signal carries (1.6.5; board signals leave it absent). */
+export interface ReviewRoutingSignalPr {
+  repository: string;
+  number: number;
+  headSha: string | null;
+}
 
 export interface ReviewRoutingSignal {
   kind: ReviewRoutingSignalKind;
@@ -30,6 +41,8 @@ export interface ReviewRoutingSignal {
   since: string;
   /** Hours in review, for `review_overdue`. */
   hoursInReview: number | null;
+  /** PR coordinates for the PR lane's signals (`no_reviewer`/`no_steward`). */
+  pr?: ReviewRoutingSignalPr | null;
 }
 
 const signalsByCompany = new Map<string, Map<string, ReviewRoutingSignal>>();
@@ -63,16 +76,35 @@ export function resetReviewRoutingSignals(): void {
 }
 
 export function reviewRoutingSignalDedupKey(signal: ReviewRoutingSignal): string {
+  if (signal.pr) {
+    return `review_routing:${signal.kind}:pr:${signal.pr.repository}#${signal.pr.number}`;
+  }
   return `review_routing:${signal.kind}:${signal.issueId}`;
 }
 
 export function reviewRoutingSignalTitle(signal: ReviewRoutingSignal): string {
-  return signal.kind === "no_reviewer"
-    ? "A task in review has no reviewer"
-    : "A review has had no verdict for too long";
+  if (signal.pr) {
+    return signal.kind === "no_steward"
+      ? `An approved pull request has no merge steward (${signal.pr.repository}#${signal.pr.number})`
+      : `A green pull request has no reviewer (${signal.pr.repository}#${signal.pr.number})`;
+  }
+  switch (signal.kind) {
+    case "no_reviewer":
+      return "A task in review has no reviewer";
+    case "no_steward":
+      return "An approved pull request has no merge steward";
+    default:
+      return "A review has had no verdict for too long";
+  }
 }
 
 export function reviewRoutingSignalWhyNow(signal: ReviewRoutingSignal): string {
+  if (signal.pr && signal.kind === "no_steward") {
+    return `The pull request ${signal.pr.repository}#${signal.pr.number} is green and approved on its current head, but no merge steward could be assigned automatically (no invokable agent in the steward roles, or all are at their merge ceiling). Assign a steward or raise the ceiling.`;
+  }
+  if (signal.pr) {
+    return `The pull request ${signal.pr.repository}#${signal.pr.number} is green without a review verdict on its current head, but no reviewer could be assigned automatically (none in the reviewer roles, or all are at their load ceilings). Assign a reviewer or add reviewer capacity.`;
+  }
   if (signal.kind === "no_reviewer") {
     return "The task is in review and no reviewer could be assigned automatically: no eligible reviewer is available (none in the reviewer roles, or all are at their load ceiling). Assign a reviewer or add reviewer capacity.";
   }
@@ -81,5 +113,5 @@ export function reviewRoutingSignalWhyNow(signal: ReviewRoutingSignal): string {
 }
 
 export function reviewRoutingSignalSeverity(signal: ReviewRoutingSignal): AttentionSeverity {
-  return signal.kind === "no_reviewer" ? "high" : "medium";
+  return signal.kind === "review_overdue" ? "medium" : "high";
 }
