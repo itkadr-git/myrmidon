@@ -7,6 +7,7 @@ import type { AdapterConfigSection } from "../adapters/types";
 import { useConfigSchema } from "../adapters/schema-config-fields";
 import { schemaFieldSection } from "../adapters/config-sections";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useOptionalToastActions } from "@/context/ToastContext";
 import type {
   Agent,
   AdapterAuthSessionPrompt,
@@ -370,6 +371,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const canConfigureProviderTrace = props.canConfigureProviderTrace === true;
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
+  // myrmidon(MODEL-SWITCH-SESSION): the board's own toast channel (the ui package has no
+  // third-party toast dependency). Optional so the form still renders when it
+  // is mounted outside a ToastProvider.
+  const toastActions = useOptionalToastActions();
   const environmentVariablesEditorRef = useRef<EnvironmentVariablesEditorHandle | null>(null);
 
   // myrmidon(1.6.1 CUSTOM-CASTES C): the role select options come from the
@@ -1864,6 +1869,25 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   const clearUnsupportedEffort = adapterType === "codex_local"
                     && Boolean(currentThinkingEffort)
                     && !supportedEfforts.some((option) => option.value === currentThinkingEffort);
+
+                  // myrmidon(MODEL-SWITCH-SESSION): a model switch keeps the saved session.
+                  // If the new model has a smaller context window, the next
+                  // heartbeat can overflow it. The picker list carries no
+                  // per-model window (AdapterModel is id/label/pricing only), so
+                  // the warning names the switch itself instead of a token count
+                  // the ui does not have.
+                  if (!isCreate && v && v !== currentModelId) {
+                    const previousModelLabel =
+                      models.find((model: AdapterModel) => model.id === currentModelId)?.label ?? currentModelId;
+                    const nextModelLabel = models.find((model: AdapterModel) => model.id === v)?.label ?? v;
+                    toastActions?.pushToast({
+                      tone: "warn",
+                      dedupeKey: `model-switch-context-window:${props.agent.id}:${v}`,
+                      title: "Model changed: the saved session is kept",
+                      body: `Switching ${previousModelLabel} → ${nextModelLabel} keeps this agent's saved session. If ${nextModelLabel} has a smaller context window, the next run can fail with a context-window error; Myrmidon then clears the session automatically and the run continues in a fresh one.`,
+                    });
+                  }
+
                   if (isCreate) {
                     set!({
                       model: v,
