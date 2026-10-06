@@ -18,6 +18,28 @@ export interface GitHubAppEntry {
   roles: string[];
   agentIds: string[];
   allowedRepos: string[];
+  /** GitHub App slug for Apps created through the manifest flow (myrmidon GITHUB-APP-MANIFEST). */
+  slug?: string | null;
+}
+
+// myrmidon(GITHUB-APP-MANIFEST): one-click GitHub App creation — the server
+// builds the manifest, the browser POSTs it to github.com (manifest flow),
+// GitHub redirects back to the server callback, which lands on the company
+// settings page with ?github_app_created=1 or ?github_app_error=<message>.
+export interface BeginAppManifestBody {
+  ownerKind: "user" | "org";
+  orgLogin?: string;
+  name: string;
+  description?: string;
+}
+
+export interface BeginAppManifestResponse {
+  manifestUrl: string;
+  manifest: Record<string, unknown>;
+}
+
+export interface AppInstallUrlResponse {
+  installUrl: string;
 }
 
 export interface GitHubSharedIdentitySettings {
@@ -43,6 +65,15 @@ export const githubSharedIdentityApi = {
     api.get<GitHubSharedIdentityView>(`/myrmidon/companies/${companyId}/github-shared-identity`),
   save: (companyId: string, body: GitHubSharedIdentityPut) =>
     api.put<GitHubSharedIdentityView>(`/myrmidon/companies/${companyId}/github-shared-identity`, body),
+  beginAppManifest: (companyId: string, body: BeginAppManifestBody) =>
+    api.post<BeginAppManifestResponse>(
+      `/myrmidon/companies/${companyId}/github-shared-identity/app-manifest/begin`,
+      body,
+    ),
+  getAppInstallUrl: (companyId: string, entryId: string) =>
+    api.get<AppInstallUrlResponse>(
+      `/myrmidon/companies/${companyId}/github-shared-identity/apps/${entryId}/install`,
+    ),
 };
 
 /** One entry per line or comma; blanks dropped. */

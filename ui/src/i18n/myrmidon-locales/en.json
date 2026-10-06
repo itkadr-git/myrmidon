@@ -769,6 +769,30 @@
     "tabConfiguration": "Configuration",
     "tabBudget": "Budget"
   },
+  "githubSharedIdentity": {
+    "manifest": {
+      "createButton": "Create GitHub App",
+      "dialogTitle": "Create a GitHub App on github.com",
+      "dialogHint": "GitHub opens in this tab with a pre-filled registration form. Confirm it there — the App is created under the account or organization you pick, and you land back here.",
+      "ownerLabel": "App owner",
+      "ownerUser": "My personal account",
+      "ownerOrg": "An organization",
+      "orgLoginLabel": "Organization login",
+      "nameLabel": "App name",
+      "descriptionLabel": "Description (shown on GitHub)",
+      "descriptionDefaultRu": "RU: Позволяет агентам вашего сервера Myrmidon отправлять ветки и открывать запросы на слияние в выбранных вами репозиториях. Токены выдаёт ваш собственный сервер Myrmidon; сторонние сервисы не участвуют.",
+      "submitButton": "Create on GitHub",
+      "creating": "Creating...",
+      "cancel": "Cancel",
+      "createdNotice": "The GitHub App was created and added to the list below.",
+      "uniqueNameHint": "GitHub requires a unique App name — change the name and try again.",
+      "beginFailed": "Could not start the GitHub App creation.",
+      "installButton": "Install on repositories",
+      "installing": "Opening GitHub...",
+      "installHint": "After installing the App on GitHub, come back to the board — the board finds the installation id itself by the repository.",
+      "installFailed": "Could not get the install page of the App."
+    }
+  },
   "pluginEntitlement": {
     "title": "Plugin Entitlement Keys",
     "description": "Manage plugin entitlement keys that control which plugins are enabled on this instance",
