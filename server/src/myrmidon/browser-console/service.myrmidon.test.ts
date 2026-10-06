@@ -10,7 +10,12 @@ import {
 } from "../../__tests__/helpers/embedded-postgres.js";
 import type { ScreenConsoleClient } from "./screen-console-client.js";
 import { browserConsoleService } from "./service.js";
+import { readBrowserConsoleSettings } from "./settings.js";
+import { decodeGuacamoleAuthJson } from "../fleet-console/token.js";
 import { autoCloseReason, readBrowserConsoleTimers, sessionDeadlines } from "./timers.js";
+
+// A 32-hex Guacamole json-secret-key (test material, not a real secret).
+const SIGNING_KEY = "0123456789abcdef0123456789abcdef";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -218,6 +223,92 @@ describeEmbeddedPostgres("browser console service", () => {
     await expect(service.assertBrowserScreenFreeForMcp("browser-a")).rejects.toMatchObject({ status: 423, message: expect.stringContaining("MCP calls are paused") });
     await service.done("browser-a", "user-a");
     await expect(service.assertBrowserScreenFreeForMcp("browser-a")).resolves.toBeUndefined();
+  });
+
+  it("part B: the console token rides the open session and decodes with the shared key", async () => {
+    clock = 1_000_000;
+    const fake = fakeScreenConsole();
+    const service = browserConsoleService({
+      db,
+      client: fake.client,
+      env: { MYRMIDON_BROWSER_FLEET: FLEET_JSON } as NodeJS.ProcessEnv,
+      now: () => clock,
+      settings: readBrowserConsoleSettings({
+        MYRMIDON_FLEET_CONSOLE_URL: "https://guac.invalid",
+        MYRMIDON_BROWSER_VNC_TARGET: "exec-host.invalid:5900",
+      } as NodeJS.ProcessEnv),
+      readSecretKey: async () => SIGNING_KEY,
+    });
+
+    // No session yet: the token refuses without touching the node or the journal.
+    await expect(service.consoleToken({ browserId: "browser-a", userId: "user-a", companyId: "company-a" }))
+      .rejects.toMatchObject({ status: 409, code: "screen_session_required" });
+    expect(fake.calls.open).toEqual([]);
+
+    const opened = await service.openScreen({ browserId: "browser-a", userId: "user-a" });
+    const issued = await service.consoleToken({ browserId: "browser-a", userId: "user-a", companyId: "company-a" });
+
+    // Bound to the existing part-A session — no second session, no journal row.
+    expect(issued.screenSessionId).toBe(opened.screenSessionId);
+    expect(await service.journal()).toEqual([]);
+
+    // The blob decodes with the SAME key and decoder the fleet console uses,
+    // and expires exactly at now + TTL (the test-guardian hinge for part B:
+    // break the expires binding in console-token.ts and this assertion is RED).
+    const decoded = decodeGuacamoleAuthJson(issued.token, SIGNING_KEY, clock);
+    expect(decoded.username).toBe("browser-a");
+    expect(decoded.connections["browser-a"]).toMatchObject({
+      protocol: "vnc",
+      parameters: { hostname: "exec-host.invalid", port: "5900" },
+    });
+    expect(decoded.expires).toBe(clock + 5 * 60_000);
+    expect(issued.consoleUrl).toBe(`https://guac.invalid/#/?data=${encodeURIComponent(issued.token)}`);
+
+    // Another owner of the board must not get a token for this session.
+    await expect(service.consoleToken({ browserId: "browser-a", userId: "user-b", companyId: "company-a" }))
+      .rejects.toMatchObject({ status: 403 });
+
+    clock += 5 * 60_000;
+    await service.done("browser-a", "user-a");
+    // After the session closed the token refuses again (the session is gone).
+    await expect(service.consoleToken({ browserId: "browser-a", userId: "user-a", companyId: "company-a" }))
+      .rejects.toMatchObject({ status: 409 });
+  });
+
+  it("part B: unconfigured console answers 503 console_not_configured", async () => {
+    clock = 1_000_000;
+    const service = browserConsoleService({
+      db,
+      client: fakeScreenConsole().client,
+      env: { MYRMIDON_BROWSER_FLEET: FLEET_JSON } as NodeJS.ProcessEnv,
+      now: () => clock,
+      settings: readBrowserConsoleSettings({} as NodeJS.ProcessEnv),
+      readSecretKey: async () => SIGNING_KEY,
+    });
+    await service.openScreen({ browserId: "browser-a", userId: "user-a" });
+    await expect(service.consoleToken({ browserId: "browser-a", userId: "user-a", companyId: "company-a" }))
+      .rejects.toMatchObject({ status: 503, code: "console_not_configured" });
+  });
+
+  it("part B: a missing signing secret answers 503 console_secret_missing", async () => {
+    clock = 1_000_000;
+    const service = browserConsoleService({
+      db,
+      client: fakeScreenConsole().client,
+      env: { MYRMIDON_BROWSER_FLEET: FLEET_JSON } as NodeJS.ProcessEnv,
+      now: () => clock,
+      settings: readBrowserConsoleSettings({
+        MYRMIDON_FLEET_CONSOLE_URL: "https://guac.invalid",
+        MYRMIDON_BROWSER_VNC_TARGET: "exec-host.invalid",
+      } as NodeJS.ProcessEnv),
+      readSecretKey: async () => null,
+    });
+    await service.openScreen({ browserId: "browser-a", userId: "user-a" });
+    await expect(service.consoleToken({ browserId: "browser-a", userId: "user-a", companyId: "company-a" }))
+      .rejects.toMatchObject({ status: 503, code: "console_secret_missing" });
+    // Without a company there is no secret to read — same refusal, not a crash.
+    await expect(service.consoleToken({ browserId: "browser-a", userId: "user-a", companyId: null }))
+      .rejects.toMatchObject({ status: 503, code: "console_secret_missing" });
   });
 });
 

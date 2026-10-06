@@ -1,0 +1,33 @@
+# myrmidon(BROWSER-CONSOLE): the screen node service (part B).
+#
+# Listens on the exec host interface given in the environment file and serves
+# the node contract from ops/browser-console-node/node.py. The token is NOT
+# in the repo: adm-dev-release generates it (openssl rand -hex 32) and writes
+# /etc/myrmidon/browser-console-node.env root:root 0600 alongside
+# MYRMIDON_BROWSER_CONSOLE_TOKEN on the board side (same value, two files).
+
+[Unit]
+Description=Myrmidon browser screen node (x11vnc sessions + bot pause + CDP clear)
+Documentation=https://github.com/itkadr-git/myrmidon/tree/main/ops/browser-console-node
+After=network-online.target live-browser.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/myrmidon/browser-console-node/node.py
+EnvironmentFile=/etc/myrmidon/browser-console-node.env
+Restart=on-failure
+RestartSec=3
+User=root
+# The node shells out to systemctl (transient x11vnc units, reaper proxy
+# stop/start) — that is its whole job, so it runs unprivileged-narrow instead:
+# root, but with everything it does not need removed.
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/run/systemd/transient
+PrivateTmp=true
+NoNewPrivileges=true
+MemoryMax=200M
+
+[Install]
+WantedBy=multi-user.target

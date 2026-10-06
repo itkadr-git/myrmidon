@@ -181,6 +181,7 @@ import {
   verifyToolArgumentsSignature,
 } from "./tool-content-guards.js";
 import { extendApprovedExecutionWaitDeadline } from "./approved-execution-wait.js";
+import { browserConsoleMcpPauseForEndpoint } from "../myrmidon/browser-console/mcp-guard.js"; // myrmidon(BROWSER-CONSOLE-B)
 
 const DEFAULT_SESSION_TTL_MS = 15 * 60 * 1000;
 const MAX_SESSION_TTL_MS = 60 * 60 * 1000;
@@ -5911,6 +5912,20 @@ export function createToolGatewayService(
     let endpoint =
       composioSession?.url ??
       (await resolvedRemoteEndpoint(session, connection, grant));
+    // myrmidon(BROWSER-CONSOLE-B): the bot-pause server guard (contour 2) on
+    // the real MCP dispatch path. When an owner screen session is open on the
+    // live browser this endpoint drives, the call is refused with 423 before
+    // it reaches playwright-mcp. Endpoints outside
+    // MYRMIDON_BROWSER_CONSOLE_MCP_URLS are not a live browser and pass.
+    const browserPause = await browserConsoleMcpPauseForEndpoint(endpoint);
+    if (browserPause) {
+      throw new ToolGatewayHttpError(
+        423,
+        browserPause.message,
+        "browser_console_mcp_paused",
+        { browserId: browserPause.browserId },
+      );
+    }
     // Method-defined headers are trusted catalog configuration. Treat them as
     // managed headers so callers cannot override the scope that was reviewed
     // during tools/list. Credentials remain authoritative on collisions.

@@ -20,6 +20,8 @@ import type { Db } from "@paperclipai/db";
 import { logger } from "../../middleware/logger.js";
 import { autoCloseReason, readBrowserConsoleTimers, sessionDeadlines, type BrowserConsoleTimers } from "./timers.js";
 import type { ScreenConsoleClient, ScreenConsoleOpenResult } from "./screen-console-client.js";
+import { issueScreenToken, type ScreenTokenIssueFailure } from "./console-token.js";
+import { readBrowserConsoleSettings, type BrowserConsoleSettings } from "./settings.js";
 import {
   readBrowserSessionDocument,
   mutateBrowserSessionDocument,
@@ -38,6 +40,10 @@ export interface BrowserSessionServiceDeps {
   now?: () => number;
   newSessionId?: () => string;
   log?: Pick<typeof logger, "warn" | "error">;
+  /** Part B: the Guacamole client/VNC settings; defaults to the process env. */
+  settings?: BrowserConsoleSettings;
+  /** Part B: the shared `json-secret-key` from the panel secret store, per company. */
+  readSecretKey?: (companyId: string) => Promise<string | null>;
 }
 
 export interface OpenScreenInput {
@@ -53,8 +59,10 @@ export interface OpenScreenResult {
 
 export class BrowserConsoleError extends Error {
   constructor(
-    readonly status: 400 | 403 | 404 | 409 | 423 | 502,
+    readonly status: 400 | 403 | 404 | 409 | 423 | 502 | 503,
     message: string,
+    /** Stable machine-readable code for part-B failures (the UI keys on it). */
+    readonly code?: string,
   ) {
     super(message);
   }
@@ -137,9 +145,12 @@ export function browserConsoleService(deps: BrowserSessionServiceDeps) {
     return record;
   }
 
+  const settings: BrowserConsoleSettings = deps.settings ?? readBrowserConsoleSettings(env);
+
   return {
     fleet,
     timers,
+    settings,
 
     async listBrowsers() {
       const doc = await readBrowserSessionDocument(deps.db);
@@ -247,6 +258,52 @@ export function browserConsoleService(deps: BrowserSessionServiceDeps) {
     async journal(): Promise<BrowserSessionDocument["journal"]> {
       const doc = await readBrowserSessionDocument(deps.db);
       return doc.journal;
+    },
+
+    /**
+     * Part B: sign the Guacamole auth-JSON for the browser the owner already
+     * opened. Requires the live part-A session and its owner — a token for a
+     * closed session would open a VNC connection nothing scheduled; a token
+     * issued for another owner's session would let a second viewer in. The
+     * issue writes no second journal row: the part-A session record covers it.
+     */
+    async consoleToken(input: { browserId: string; userId: string; companyId: string | null }): Promise<{
+      screenSessionId: string;
+      token: string;
+      consoleUrl: string;
+      expiresAt: string;
+    }> {
+      browserOrThrow(input.browserId);
+      const record = await liveSession(input.browserId);
+      if (!record) throw new BrowserConsoleError(409, "Open the screen before requesting a console token", "screen_session_required");
+      if (record.userId !== input.userId) throw new BrowserConsoleError(403, "The open screen session belongs to another owner");
+      let secretKey: string | null = null;
+      if (input.companyId && deps.readSecretKey) {
+        try {
+          secretKey = await deps.readSecretKey(input.companyId);
+        } catch (err) {
+          log.warn({ err: err instanceof Error ? err.message : String(err) }, "browser console: signing secret could not be resolved");
+          secretKey = null;
+        }
+      }
+      const issued = issueScreenToken({
+        browserId: input.browserId,
+        nowMs: now(),
+        guacamoleUrl: settings.guacamoleUrl,
+        vncTarget: settings.vncTarget,
+        secretKey,
+        tokenTtlMs: settings.tokenTtlMs,
+      });
+      if (!issued.ok) {
+        const failure = issued as ScreenTokenIssueFailure;
+        throw new BrowserConsoleError(failure.status, failure.message ?? "The panel cannot sign a console token", failure.code);
+      }
+      return {
+        screenSessionId: record.sessionId,
+        token: issued.token,
+        consoleUrl: issued.consoleUrl,
+        expiresAt: new Date(issued.expiresAt).toISOString(),
+      };
     },
 
     /** The server guard of the bot pause (contour 2). */
