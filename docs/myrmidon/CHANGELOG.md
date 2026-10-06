@@ -234,6 +234,23 @@ version file to edit. Base Paperclip version is in the image label
   agent, an exhausted budget, the host memory gate), the chat is told why in
   plain Russian, with a time estimate where one is known (the memory gate
   re-checks every 15 seconds). Guide: [telegram-dm-status.md](guides/telegram-dm-status.md).
+### Release CI runs on the tag itself (RELEASE-GATE, 1.6.4)
+
+- Pushing `myr-v1.6.3` failed to publish on 05.10: minutes after the tag a
+  merge to `main` cancelled the tag commit's main CI run (one run per
+  `main` by the concurrency rule), and the publish gate — which had no
+  tag run to look at — refused with "Myrmidon CI did not succeed …
+  (conclusion: cancelled)"; a manual CI re-run plus a publish re-run
+  cost ~30 minutes. `myrmidon-ci.yml` now also triggers on `myr-v*.*.*`
+  tags and runs the full tier on the tag itself, in its own per-tag
+  concurrency group with cancellation disabled, so a merge to `main` can
+  no longer cancel the run a release depends on. The publish gate prefers
+  the tag's own completed CI run; a green same-commit `main` run is
+  accepted only while no completed tag run exists (tags pushed before
+  1.6.4, or the tag run still building), and a cancelled `main` run no
+  longer refuses the publish while the tag's own run exists or is still
+  awaited — the gate waits for it. Fail-closed is unchanged: a failed CI
+  run (tag or main, when it is the verdict) still blocks the publish.
 
 ### Shared package cache for development bots (1.6.2, BOT-DISK B)
 
