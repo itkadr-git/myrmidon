@@ -2847,3 +2847,5 @@ export * from "./myrmidon-review-routing.js";
 // Settings contract, verdict-marker parser and activity actions.
 export * from "./myrmidon-review-rework.js";
 export * from "./myrmidon-budget-projection.js"; // myrmidon(1.7-BUDGET-CONFIG-C)
+// myrmidon(CUSTOM-CASTES): the company caste directory contract (view, POST/PATCH/DELETE bodies, seed).
+export * from "./myrmidon-castes.js";

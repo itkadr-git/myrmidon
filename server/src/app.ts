@@ -246,6 +246,8 @@ import { COMPANY_IMPORT_API_PATH } from "./routes/company-import-paths.js";
 import { apiCompression } from "./middleware/api-compression.js";
 import { chatWebhookBodyParser } from "./middleware/chat-webhook-body.js";
 import { createChatWebhookDiagnostics } from "./services/chat-webhook-diagnostics.js";
+// myrmidon(CUSTOM-CASTES): company caste directory — table, seed, CRUD API
+import { myrmidonCasteRoutes } from "./myrmidon/castes/wiring.js";
 
 type UiMode = "none" | "static" | "vite-dev";
 const FEEDBACK_EXPORT_FLUSH_INTERVAL_MS = 5_000;
@@ -1078,6 +1080,7 @@ export async function createApp(
           .enableNativeRunner === true,
     }),
   );
+  api.use(myrmidonCasteRoutes(db)); // myrmidon(CUSTOM-CASTES): caste directory CRUD
   api.use(
     accessRoutes(db, {
       deploymentMode: opts.deploymentMode,

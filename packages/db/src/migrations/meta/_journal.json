@@ -2101,6 +2101,13 @@
       "when": 1791226482773,
       "tag": "0303_add_resurrection_count_to_wakeup_requests",
       "breakpoints": true
+    },
+    {
+      "idx": 304,
+      "version": "7",
+      "when": 1770000000438,
+      "tag": "0304_agent_castes",
+      "breakpoints": true
     }
   ]
 }
