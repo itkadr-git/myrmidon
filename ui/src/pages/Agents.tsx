@@ -39,6 +39,13 @@ import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSh
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
 import { AgentWipBadge } from "../components/myrmidon/AgentWipBadge"; // myrmidon(1.6.1 WIP-LIMIT B)
 import { wipLimitApi, wipLimitStatusQueryKey, type WipLimitStatusEntry } from "../components/myrmidon/wip-limit/wipLimitApi"; // myrmidon(1.6.1 WIP-LIMIT B)
+// myrmidon(BOT-RUNTIME-TUNING D2): the model-fallback signal on an agent card
+import { AgentFallbackSignalBadge } from "../components/myrmidon/AgentFallbackSignalBadge";
+import {
+  fallbackSignalApi,
+  fallbackSignalStatusQueryKey,
+  type FallbackSignalStatusRow,
+} from "../components/myrmidon/modelFallbackSignalApi";
 
 const roleLabels = AGENT_ROLE_LABELS as Record<string, string>;
 
@@ -316,6 +323,22 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
     return map;
   }, [wipStatus]);
 
+  // myrmidon(BOT-RUNTIME-TUNING D2): the last sweep's per-agent fallback share.
+  // The badge shows the signal on the bot's own card (the attention feed carries
+  // the same event); a failing or empty status simply shows no badge. Read-only:
+  // the threshold and the window are instance settings.
+  const { data: fallbackStatus } = useQuery({
+    queryKey: fallbackSignalStatusQueryKey(selectedCompanyId ?? ""),
+    queryFn: () => fallbackSignalApi.getStatus(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+    retry: false,
+  });
+  const fallbackRowsByAgent = useMemo(() => {
+    const map = new Map<string, FallbackSignalStatusRow>();
+    for (const row of fallbackStatus?.rows ?? []) map.set(row.agentId, row);
+    return map;
+  }, [fallbackStatus]);
+
   // Map agentId -> first live run + live run count
   const liveRunByAgent = useMemo(() => {
     const map = new Map<string, { runId: string; liveCount: number }>();
@@ -462,6 +485,7 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
             {agentChat.enabled && <Button variant="ghost" size="sm" onClick={event => { event.preventDefault(); event.stopPropagation(); navigate(`/chats/${agentRouteRef(agent)}`); }}>{t("agents.chat")}</Button>}
             <div className="hidden sm:flex items-center gap-3">
               <AgentWipBadge status={wipStatusByAgent.get(agent.id)} /> {/* myrmidon(1.6.1 WIP-LIMIT B) */}
+              <AgentFallbackSignalBadge row={fallbackRowsByAgent.get(agent.id)} /> {/* myrmidon(BOT-RUNTIME-TUNING D2) */}
               {liveRunByAgent.has(agent.id) && (
                 <LiveRunIndicator
                   agentRef={agentRouteRef(agent)}
@@ -632,6 +656,7 @@ function OrgTreeNode({
   builtInByAgentId,
   onConfigureBuiltIn,
   wipStatusByAgent,
+  fallbackRowsByAgent,
 }: {
   node: OrgNode;
   depth: number;
@@ -646,6 +671,7 @@ function OrgTreeNode({
   builtInByAgentId: Map<string, BuiltInAgentState>;
   onConfigureBuiltIn: (state: BuiltInAgentState) => void;
   wipStatusByAgent: Map<string, WipLimitStatusEntry>;
+  fallbackRowsByAgent: Map<string, FallbackSignalStatusRow>;
 }) {
   const agent = agentMap.get(node.id);
   const builtInState = builtInByAgentId.get(node.id);
@@ -718,6 +744,7 @@ function OrgTreeNode({
           </span>
           <div className="hidden sm:flex items-center gap-3">
             <AgentWipBadge status={wipStatusByAgent.get(node.id)} /> {/* myrmidon(1.6.1 WIP-LIMIT B) */}
+            <AgentFallbackSignalBadge row={fallbackRowsByAgent.get(node.id)} /> {/* myrmidon(BOT-RUNTIME-TUNING D2) */}
             {liveRunByAgent.has(node.id) && (
               <LiveRunIndicator
                 agentRef={agent ? agentRouteRef(agent) : node.id}
@@ -794,6 +821,7 @@ function OrgTreeNode({
               builtInByAgentId={builtInByAgentId}
               onConfigureBuiltIn={onConfigureBuiltIn}
               wipStatusByAgent={wipStatusByAgent}
+              fallbackRowsByAgent={fallbackRowsByAgent}
             />
           ))}
         </div>

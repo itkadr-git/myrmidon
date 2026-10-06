@@ -57,6 +57,11 @@ import {
 // same general settings row.
 import { promptBudgetSettingsSchema } from "../myrmidon-prompt-budget.js";
 
+// myrmidon(1.6.5 BOT-RUNTIME-TUNING D2): the fallback-signal settings (switch,
+// threshold percent, minimum calls, window and sweep interval) stored in the
+// same general settings row.
+import { storedFallbackSignalSettingsSchema } from "../myrmidon-fallback-signal.js";
+
 // myrmidon(PARALLEL-HELPERS): re-exported for the barrel so the settings page and the
 // /api/myrmidon/parallel-helpers route validate with the exact schema stored here.
 export { parallelHelpersSettingsSchema, patchParallelHelpersSettingsSchema };
@@ -190,6 +195,11 @@ export const instanceGeneralSettingsSchema = z.object({
   // /api/myrmidon/companies/:id/prompt-budget/settings; absent means the
   // defaults (warn 70, crit 90, enabled, 200k fallback window).
   promptBudget: promptBudgetSettingsSchema.optional(),
+  // myrmidon(1.6.5 BOT-RUNTIME-TUNING D2): the fallback-signal settings, changed
+  // from /api/myrmidon/model-fallback/settings; absent means "use the
+  // environment variable, then the default" (see
+  // packages/shared/src/myrmidon-fallback-signal.ts).
+  modelFallbackSignal: storedFallbackSignalSettingsSchema.optional(),
 }).strict();
 
 export const patchInstanceGeneralSettingsSchema = z

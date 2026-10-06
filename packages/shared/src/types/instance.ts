@@ -28,6 +28,8 @@ import type { BudgetEnforcementSettings } from "../myrmidon-budget-enforcement.j
 import type { PluginEntitlementKey } from "../myrmidon-plugin-entitlement.js";
 // myrmidon(DM-PROGRESS): live progress steps of the bridged Telegram DM status message.
 import type { TelegramDmProgressSettings } from "../myrmidon-telegram-dm-progress.js";
+// myrmidon(BOT-RUNTIME-TUNING D2): the fallback-signal settings of the same row.
+import type { StoredFallbackSignalSettings } from "../myrmidon-fallback-signal.js";
 
 export const DAILY_RETENTION_PRESETS = [3, 7, 14] as const;
 export const WEEKLY_RETENTION_PRESETS = [1, 2, 4] as const;
@@ -227,6 +229,16 @@ export interface InstanceGeneralSettings {
    * environment". Kept in sync with the validator of the same field.
    */
   agentMemory?: AgentMemorySettings;
+  /**
+   * myrmidon(BOT-RUNTIME-TUNING D2): the model fallback signal — threshold,
+   * window, minimum calls and sweep period, changed from
+   * `GET`/`PATCH /api/myrmidon/model-fallback/settings`. Absent means "use the
+   * environment variable (MYRMIDON_MODEL_FALLBACK_*), then the default" per
+   * key; the resolver in packages/shared/src/myrmidon-fallback-signal.ts
+   * normalizes the stored row. Kept in sync with the validator of the same
+   * field (packages/shared/src/validators/instance.ts).
+   */
+  modelFallbackSignal?: StoredFallbackSignalSettings;
 }
 
 export interface InstanceExperimentalSettings {
