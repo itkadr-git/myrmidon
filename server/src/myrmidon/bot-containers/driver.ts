@@ -81,6 +81,14 @@ export interface BotContainerStatus {
    *  Absent when nothing is verifiably applied, or when the marker predates the
    *  field — "not reported", which the card shows as unknown, never as a match. */
   maxConcurrentRuns?: number;
+  /**
+   * myrmidon(OPE-4789): the raw container inspect behind this status, when the
+   * driver has it (the local docker driver always does — the status IS an
+   * inspect). Lets a caller that already paid for one inspect hand it to
+   * `templateDrift(spec, status)` instead of the pass paying a second one.
+   * Never set by a driver that answers without inspecting (fleetd).
+   */
+  inspect?: unknown;
 }
 
 /** One template field whose live value (the container's inspect) no longer
@@ -117,6 +125,14 @@ export interface BotContainerDriver {
    *  dockergate allowlist has no such call. */
   list(botKeys: readonly string[]): Promise<BotContainerStatus[]>;
   /**
+   * myrmidon(OPE-4789): the containers of the given bots that exist AND are
+   * running. Same per-bot reads as `list`; the clone-report collector asks
+   * this instead, so a stopped bot's inspect+marker pair is not paid on every
+   * collection pass. Optional: a driver that cannot answer it (fleetd) leaves
+   * it out, and the collector then uses `list` and filters itself.
+   */
+  listRunning?(botKeys: readonly string[]): Promise<BotContainerStatus[]>;
+  /**
    * Side-effect-free check: does the existing container's live template (image,
    * resource limits, network, bind list) no longer match `spec`? `drifted` is
    * false when no container exists; `fields` names every field that differs,
@@ -124,8 +140,14 @@ export interface BotContainerDriver {
    * The reconciler applies a `drifted: true` with `recreate`, gated behind the
    * same maintenance-pause-and-drain flow as a profile "restart" class change
    * whenever the container is live.
+   *
+   * myrmidon(OPE-4789): `knownStatus` is a status the caller has just read for
+   * this bot (the reconciler reads one at the top of every pass). When its
+   * state is not "missing" the driver reuses the inspect it carries instead of
+   * asking the runtime again — one inspect serves both the status and the
+   * drift check of one pass.
    */
-  templateDrift(spec: BotContainerSpec): Promise<TemplateDriftReport>;
+  templateDrift(spec: BotContainerSpec, knownStatus?: BotContainerStatus): Promise<TemplateDriftReport>;
   /** Creates the bot's container from `spec` without starting it, after
    *  preparing its volumes (created if absent, owned by the container's uid,
    *  mode 0700). Throws, before creating anything, if the image is not present

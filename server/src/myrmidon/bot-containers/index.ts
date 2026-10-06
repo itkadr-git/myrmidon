@@ -146,6 +146,18 @@ export interface BotContainerRuntimeDeps {
 
 export type ApplyBotContainerOutcome = ReconcileOutcome | { kind: "not_applicable"; reason: string };
 
+/** myrmidon(OPE-4789): when the last successful-or-deferred pass for a bot
+ *  started (epoch ms). Keyed by botKey; process-local, which is enough — the
+ *  two paths that race (sweep and canary tick) run in this one process. */
+const lastPassStartedAtMs = new Map<string, number>();
+
+/** A pass eligible for freshness reuse: it either verified the container's
+ *  state (`unchanged`), applied something, or deliberately stepped aside. An
+ *  errored pass is forgotten at once so the next tick retries it. */
+function passCountsForFreshness(outcome: ReconcileOutcome): boolean {
+  return outcome.kind !== "error";
+}
+
 export interface ApplyBotContainerOptions {
   /** Read per request; defaults to process.env. */
   env?: NodeJS.ProcessEnv;
@@ -154,6 +166,13 @@ export interface ApplyBotContainerOptions {
    *  point: the spec's limits and mounts still come from the card, only the
    *  image is the rollout's. */
   specImage?: string;
+  /**
+   * myrmidon(OPE-4789): bypass the freshness reuse (APPLY_FRESHNESS_MS). The
+   * card's "Apply now" button and secret-rotation restarts pass `true`: a
+   * human who just pressed the button asked for a pass now, not for the
+   * sweep's recent verdict. The canary tick and the sweep use the default.
+   */
+  force?: boolean;
 }
 
 /**
@@ -182,6 +201,14 @@ export async function applyBotContainerNow(
   if (!botKey) return { kind: "not_applicable", reason: `agent id "${agent.agentId}" cannot be used as a bot key` };
   const lock = deps.lock ?? botKeyLock;
   return lock.run(botKey, async () => {
+    // myrmidon(OPE-4789): inside the lock, so the stamp one pass sets is the
+    // same one the overlapping pass reads. `opts.force` (a human's "Apply now")
+    // skips the reuse; a fresh pass also stamps itself on success.
+    const startedAt = lastPassStartedAtMs.get(botKey);
+    if (!opts.force && startedAt !== undefined && Date.now() - startedAt < APPLY_FRESHNESS_MS) {
+      return { kind: "not_applicable", reason: `a reconcile pass for ${botKey} ran less than ${APPLY_FRESHNESS_MS / 1000}s ago` };
+    }
+    const passStartedAt = Date.now();
     const current = await readAgentForPass(agent, botKey, deps);
     if (!current.ok) return current.outcome;
     const spec = botContainerSpec(botKey, opts.specImage ? { ...current.config, image: opts.specImage } : current.config, deps.network);
@@ -194,6 +221,8 @@ export async function applyBotContainerNow(
       maintenance: deps.maintenance,
       activity: deps.activity,
     });
+    if (passCountsForFreshness(outcome)) lastPassStartedAtMs.set(botKey, passStartedAt);
+    else lastPassStartedAtMs.delete(botKey);
     if (deps.syncCard && leavesContainerApplied(outcome)) {
       await syncCardAfterReconcile(agent.agentId, botKey, deps.syncCard, deps.activity);
     }
@@ -335,6 +364,21 @@ async function releaseStrayGatewaysOfSweep(
 export const DEFAULT_RECONCILE_INTERVAL_MS = 60_000;
 
 /**
+ * myrmidon(OPE-4789): a reconcile pass for one bot that started less than
+ * this long ago is the same work asked twice — the periodic sweep and the
+ * canary wave tick (`startBotCanary`, every 5 s during a rollout) both drive
+ * `applyBotContainerNow`, and the per-bot lock alone only serialized the two:
+ * the second pass still re-read status, drift and profile the moment the first
+ * let go (the "one bot polled by two paths at once" half of the dockergate
+ * storm). A pass inside the freshness window returns `not_applicable` /
+ * `recent_pass` instead. It is a freshness reuse, not a state cache: every
+ * pass that runs still reads everything live, so the sweep stays the
+ * authority on drift. A pass that errored does NOT count — retrying an error
+ * on the next tick is how a transient docker failure heals.
+ */
+export const APPLY_FRESHNESS_MS = 30_000;
+
+/**
  * How many bots a sweep reconciles concurrently. A single "restart"- or
  * drift-class reconcile can legitimately take minutes (maintenance drain timeout +
  * grace + the start's own health wait, see reconciler.ts / docker-driver.ts), so
@@ -433,6 +477,10 @@ export {
 export type { BotContainerAgentConfig, BotContainerAgentConfigResult } from "./agent-config.js";
 export { botKeyLock, createBotKeyLock } from "./bot-key-lock.js";
 export type { BotKeyLock } from "./bot-key-lock.js";
+/** Test hook: forgets the freshness stamps (OPE-4789) between tests. */
+export function resetBotContainerApplyFreshnessForTests(): void {
+  lastPassStartedAtMs.clear();
+}
 export type { BotContainerDriver, BotContainerSpec, BotContainerStatus } from "./driver.js";
 export type {
   BotContainerActivitySink,

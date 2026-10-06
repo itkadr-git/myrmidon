@@ -50,7 +50,11 @@ export function botCanaryRuntimePort(db: Db, env: NodeJS.ProcessEnv = process.en
       // own (memory, cpu, pids, mounts). The pass re-reads the card under the
       // per-bot lock and the per-bot lock serializes this with the sweep for
       // this bot.
-      return applyBotContainerNow(agent, runtime, { env: envForApply, specImage: image });
+      // myrmidon(OPE-4789): force: a rollout asks for a change by definition,
+      // so the sweep's freshness window must not answer it with a stale
+      // "recent_pass" — otherwise the wave marks the bot done on the old
+      // image. Dedupe of identical work stays with the per-bot lock.
+      return applyBotContainerNow(agent, runtime, { env: envForApply, specImage: image, force: true });
     },
     status: async (botKey: string) => {
       const runtime = getBotContainerRuntime();

@@ -6,6 +6,7 @@ import {
   BOT_CONTAINER_ACTOR,
   applyBotContainerNow,
   botMaintenancePortFromService,
+  resetBotContainerApplyFreshnessForTests,
   startBotContainerReconciliation,
   type BotContainerAgent,
   type BotContainerRuntimeDeps,
@@ -13,6 +14,10 @@ import {
 } from "./index.js";
 
 const ENABLED = { [BOT_CONTAINERS_ENV]: "1" };
+
+// myrmidon(OPE-4789): the freshness stamps are module state; every test starts
+// with none, or one test's pass answers the next test's apply from freshness.
+afterEach(() => resetBotContainerApplyFreshnessForTests());
 
 function agent(overrides: Partial<BotContainerAgent> = {}, containerOverrides: Record<string, unknown> = {}): BotContainerAgent {
   return {
@@ -138,7 +143,9 @@ describe("applyBotContainerNow", () => {
     try {
       await flush();
       expect(events).toEqual(["status#1"]); // the sweep's reconcile is in flight
-      const applied = applyBotContainerNow(agent(), shared, { env: ENABLED });
+      // myrmidon(OPE-4789): the button's force:true bypasses the freshness
+      // reuse, which would otherwise answer this with "recent_pass".
+      const applied = applyBotContainerNow(agent(), shared, { env: ENABLED, force: true });
       await flush();
       expect(events).toEqual(["status#1"]); // "apply now" is queued, not running
       gate.resolve();
@@ -147,6 +154,87 @@ describe("applyBotContainerNow", () => {
     } finally {
       stop();
     }
+  });
+
+  describe("myrmidon(OPE-4789): freshness reuse — one bot is not reconciled by two paths at once", () => {
+    afterEach(() => resetBotContainerApplyFreshnessForTests());
+
+    it("a second apply within the freshness window is answered without touching the driver", async () => {
+      let statusCalls = 0;
+      const driver = minimalDriver({
+        status: async (botKey) => {
+          statusCalls++;
+          return { botKey, state: "running", restartHash: "r", filesHash: "f" };
+        },
+      });
+      const shared = deps(driver);
+      expect(await applyBotContainerNow(agent(), shared, { env: ENABLED })).toEqual({ kind: "unchanged" });
+      const again = await applyBotContainerNow(agent(), shared, { env: ENABLED });
+      expect(again.kind).toBe("not_applicable");
+      expect(again.kind === "not_applicable" ? again.reason : "").toContain("reconcile pass");
+      expect(statusCalls).toBe(1);
+    });
+
+    it("force:true (the card's Apply now) always runs a real pass", async () => {
+      let statusCalls = 0;
+      const driver = minimalDriver({
+        status: async (botKey) => {
+          statusCalls++;
+          return { botKey, state: "running", restartHash: "r", filesHash: "f" };
+        },
+      });
+      const shared = deps(driver);
+      await applyBotContainerNow(agent(), shared, { env: ENABLED });
+      expect(await applyBotContainerNow(agent(), shared, { env: ENABLED, force: true })).toEqual({ kind: "unchanged" });
+      expect(statusCalls).toBe(2);
+    });
+
+    it("an errored pass does not stamp: the next tick retries it", async () => {
+      let failures = 1;
+      let statusCalls = 0;
+      const driver = minimalDriver({
+        status: async (botKey) => {
+          statusCalls++;
+          if (failures-- > 0) throw new Error("docker socket gone");
+          return { botKey, state: "running", restartHash: "r", filesHash: "f" };
+        },
+      });
+      const shared = deps(driver);
+      const first = await applyBotContainerNow(agent(), shared, { env: ENABLED });
+      expect(first.kind).toBe("error");
+      expect(await applyBotContainerNow(agent(), shared, { env: ENABLED })).toEqual({ kind: "unchanged" });
+      expect(statusCalls).toBe(2);
+    });
+
+    // myrmidon(OPE-4789): regression for the review blocker — the canary wave
+    // asks for a different image inside the sweep's freshness window. With the
+    // rollout path forcing its pass, the bot is really recreated; without it
+    // the wave got "recent_pass" and marked the bot done on the old image.
+    it("a canary pass with a different specImage inside the freshness window still recreates", async () => {
+      let currentImage = "old-image";
+      const recreated: Array<{ image: string }> = [];
+      const driver = minimalDriver({
+        status: async (botKey) => ({ botKey, state: "running", restartHash: "r", filesHash: "f" }),
+        templateDrift: async (spec) => ({ drifted: spec.image !== currentImage, fields: spec.image === currentImage ? [] : [{ field: "image", expected: spec.image, actual: currentImage }] }),
+        recreate: async (spec) => {
+          recreated.push({ image: spec.image });
+          currentImage = spec.image;
+        },
+      });
+      const shared = deps(driver);
+      // The sweep reconciles the card (unchanged) and stamps the bot fresh.
+      expect(await applyBotContainerNow(agent({}, { image: "old-image" }), shared, { env: ENABLED })).toEqual({ kind: "unchanged" });
+      // The wave arrives ≤30s later with the rollout image — forced, so it is
+      // a real pass, not a freshness answer.
+      const wave = await applyBotContainerNow(agent({}, { image: "old-image" }), shared, {
+        env: ENABLED,
+        specImage: "rollout-image",
+        force: true,
+      });
+      expect(wave).toEqual({ kind: "applied_restart" });
+      expect(recreated[0]?.image).toBe("rollout-image");
+      expect(currentImage).toBe("rollout-image");
+    });
   });
 });
 
@@ -226,6 +314,9 @@ describe("startBotContainerReconciliation", () => {
       gate.resolve();
       await vi.advanceTimersByTimeAsync(0);
 
+      // myrmidon(OPE-4789): the freshness window must not swallow the resumed
+      // tick's pass (vi fake timers freeze Date.now, so the window never ages).
+      resetBotContainerApplyFreshnessForTests();
       await vi.advanceTimersByTimeAsync(1_000);
       expect(listAgents.mock.calls.length).toBeGreaterThan(1);
       expect(statusCalls).toBeGreaterThan(1);
@@ -327,6 +418,7 @@ describe("applyBotContainerNow: syncCard hook (W2a)", () => {
       ],
     ];
     for (const [label, driver, kind] of cases) {
+      resetBotContainerApplyFreshnessForTests(); // the loop runs three passes for one bot
       const syncCard = vi.fn(async () => ({ changedKeys: ["apiBaseUrl", "apiKey"] }));
       const sink = activitySink();
       const outcome = await applyBotContainerNow(agent(), deps(driver, { syncCard, activity: sink }), { env: ENABLED });
@@ -410,7 +502,9 @@ describe("applyBotContainerNow: syncCard hook (W2a)", () => {
     const shared = deps(driver, { syncCard });
     const first = applyBotContainerNow(agent(), shared, { env: ENABLED });
     await flush();
-    const second = applyBotContainerNow(agent(), shared, { env: ENABLED });
+    // myrmidon(OPE-4789): forced — the point under test is the lock, not the
+    // freshness reuse (which the sweep-vs-canary case exercises separately).
+    const second = applyBotContainerNow(agent(), shared, { env: ENABLED, force: true });
     await flush();
     expect(events).toEqual(["status", "sync:start"]);
     gate.resolve();

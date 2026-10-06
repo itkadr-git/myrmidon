@@ -223,9 +223,11 @@ export function fleetdBotContainerDriver(
       return (Array.isArray(res) ? res : res.bots).filter((bot) => wanted.has(bot.botKey));
     },
 
-    async templateDrift(spec: BotContainerSpec): Promise<TemplateDriftReport> {
+    async templateDrift(spec: BotContainerSpec, _knownStatus?: BotContainerStatus): Promise<TemplateDriftReport> {
       // fleetd answers `drift` and, since the inspect contract, optionally the
-      // per-field report; an older fleetd answers only `drift`.
+      // per-field report; an older fleetd answers only `drift`. The knownStatus
+      // hint (OPE-4789) is a local-driver optimization; fleetd's drift call is
+      // already one request.
       const res = await callJson<{ drift: boolean; fields?: TemplateDriftField[] }>({
         method: "POST",
         path: `/bots/${encodeURIComponent(spec.botKey)}/template-drift`,

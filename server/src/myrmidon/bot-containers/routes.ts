@@ -235,7 +235,9 @@ export function botContainerRoutes(deps: BotContainerRoutesDeps) {
     const outcome = await deps.applyNow(
       { agentId: agent.id, adapterType: agent.adapterType, adapterConfig: agent.adapterConfig },
       runtime,
-      { env },
+      // myrmidon(OPE-4789): the button asks for a pass NOW; the freshness
+      // reuse of the sweep/canary paths must not answer it with "recent_pass".
+      { env, force: true },
     );
     if (outcome.kind === "not_applicable") {
       throw conflict(clip(outcome.reason), { code: "bot_container_not_applicable" });

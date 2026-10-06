@@ -119,7 +119,10 @@ export function rotationRestartRuntime(
           adapterConfig: agent.adapterConfig ?? {},
         },
         runtime,
-        { env },
+        // myrmidon(OPE-4789): a rotation restart is an explicit, rare event
+        // (the operator rotated a secret) — it must not be answered by the
+        // sweep's freshness reuse.
+        { env, force: true },
       );
       return { kind: outcome.kind };
     },
