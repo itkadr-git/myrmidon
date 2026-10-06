@@ -10,26 +10,28 @@ needs one. It is an independent product maintained as a fork of
 
 ## Pages
 
-- [System requirements](System-requirements) — what the host needs: software,
-  Docker, database, ports, bot data disk.
-- [Installation](Installation) — from a clean server to a running board and
-  the first agent.
-- [Upgrading and rollback](Upgrading-and-rollback) — `deploy.sh --release`,
-  release candidates, final releases, the predeploy check on a database copy.
+- [System requirements](System-requirements) — supported OS and
+  architectures, minimum and recommended CPU/RAM/disk, network and ports.
+- [Installation](Installation) — one command brings a clean server to a
+  working board.
+- [Upgrading and rollback](Upgrading-and-rollback) — re-run the installer to
+  update; RC and final releases; the manual `deploy.sh --release` flow.
 - [Settings in the interface](Settings-in-the-interface) — where run limits,
   per-agent parallelism and backups are tuned.
 - [Quick start](Quick-start) — the shortest path, condensed from
   Installation.
+- [Manual deployment](Manual-deployment) — the hands-on `deploy.sh` flow
+  with a maintenance window, for experienced administrators.
 
 ## Releases
 
 - [Releases on GitHub](https://github.com/itkadr-git/myrmidon/releases) —
-  final releases and RC pre-releases with digest manifests.
+  final releases and RC pre-releases.
 - [Changelog](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/CHANGELOG.md)
   ([Russian](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/CHANGELOG.ru.md))
   — what landed in which version.
-- Releases are pinned by image digest, never by tag; the deploy script
-  accepts only CI-built images from `main` or a `myr-v*` tag.
+- A release on GitHub never changes after publication: an install or an
+  update always fetches exactly the files that passed the release checks.
 
 ## Sources
 
