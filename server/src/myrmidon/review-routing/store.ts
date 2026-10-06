@@ -68,6 +68,8 @@ function toRoutingIssue(row: typeof issues.$inferSelect): RoutingIssue {
     responsibleUserId: row.responsibleUserId ?? null,
     executionPolicy: row.executionPolicy,
     executionState: row.executionState,
+    // myrmidon(HUMAN-REVIEW-WAIT): the human wait must reach issueNeedsReviewer.
+    reviewPolicy: row.reviewPolicy ?? null,
   };
 }
 

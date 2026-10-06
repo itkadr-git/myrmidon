@@ -744,11 +744,13 @@ function isTerminalIssueStatus(status: string) {
 
 function isWatchdogReviewDisposition(issue: Pick<
   IssueRow,
-  "status" | "assigneeUserId" | "executionState" | "monitorNextCheckAt"
+  "status" | "assigneeUserId" | "executionState" | "monitorNextCheckAt" | "reviewPolicy"
 >, hasPendingReviewPath: boolean) {
   if (issue.status === "done" || issue.status === "blocked") return true;
   if (issue.status !== "in_review") return false;
-  return Boolean(issue.assigneeUserId || issue.executionState || issue.monitorNextCheckAt || hasPendingReviewPath);
+  // myrmidon(HUMAN-REVIEW-WAIT): a declared human-only wait is a settled
+  // disposition too — the verdict belongs to a person, not to a fresh wake.
+  return Boolean(issue.assigneeUserId || issue.executionState || issue.monitorNextCheckAt || hasPendingReviewPath || issue.reviewPolicy === "human_only");
 }
 
 function isUniqueConstraintConflict(error: unknown, constraintName: string) {

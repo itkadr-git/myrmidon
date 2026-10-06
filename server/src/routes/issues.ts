@@ -2047,7 +2047,7 @@ const INVALID_AGENT_IN_REVIEW_DISPOSITION_MESSAGE =
   "This request would leave the issue in_review without anyone or anything owning the next action. " +
   "Keep working instead of moving to review, create a request_confirmation or ask_user_questions interaction, " +
   "link or request a pending approval, assign a human reviewer with assigneeUserId, set a typed executionState.currentParticipant through an execution policy, " +
-  "or schedule an issue monitor for an external review/check. After creating one of those review paths, retry the status update.";
+  "declare reviewPolicy \"human_only\" so the verdict waits on a person, or schedule an issue monitor for an external review/check. After creating one of those review paths, retry the status update.";
 
 function executionPrincipalsEqual(
   left: ParsedExecutionState["currentParticipant"] | null,
@@ -4653,6 +4653,7 @@ export function issueRoutes(
       assigneeUserId?: string | null;
       executionState?: unknown;
       monitorNextCheckAt?: Date | null;
+      reviewPolicy?: IssueReviewPolicy | null;
     };
     updateFields: Record<string, unknown>;
     actorType: "agent" | "user";
@@ -4750,6 +4751,18 @@ export function issueRoutes(
     )
       return null;
 
+    // myrmidon(HUMAN-REVIEW-WAIT): declaring `reviewPolicy: "human_only"` when
+    // moving to in_review is itself a real review path — the verdict can only
+    // come from a person, and a human comment wakes the assignee through the
+    // normal comment path. Without this the guard forced agents to fabricate an
+    // interaction/approval just to enter a lawful "waiting for the owner" state
+    // (a human-only review on a board, 05.10).
+    const nextReviewPolicy =
+      input.updateFields.reviewPolicy === undefined
+        ? input.existing.reviewPolicy
+        : input.updateFields.reviewPolicy;
+    if (nextReviewPolicy === "human_only") return null;
+
     throw unprocessable(INVALID_AGENT_IN_REVIEW_DISPOSITION_MESSAGE, {
       code: "invalid_issue_disposition",
       missing: "review_path",
@@ -4759,6 +4772,7 @@ export function issueRoutes(
         "human_assignee_user_id",
         "typed_execution_state_current_participant",
         "scheduled_issue_monitor",
+        "human_only_review_policy",
       ],
     });
   }

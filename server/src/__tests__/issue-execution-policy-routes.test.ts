@@ -337,6 +337,78 @@ describe("issue execution policy routes", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
+  it("allows an agent-authored in_review transition with reviewPolicy human_only as the review path", async () => {
+    // myrmidon(HUMAN-REVIEW-WAIT): declaring the human-only wait is itself a
+    // real reviewer path — no fabricated interaction/approval needed.
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "todo",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1003H",
+      title: "Waiting on the owner",
+      executionPolicy: null,
+      executionState: null,
+      reviewPolicy: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "55555555-5555-4555-8555-555555555555",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "in_review", reviewPolicy: "human_only" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      expect.objectContaining({ status: "in_review", reviewPolicy: "human_only" }),
+      expect.anything(),
+    );
+  });
+
+  it("rejects an agent-authored in_review transition that would remain pathless after a non-human policy", async () => {
+    // myrmidon(HUMAN-REVIEW-WAIT): "anyone"/"not_creator" do NOT declare a
+    // human wait, so the existing invalid-disposition guard must still fire.
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "todo",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1003N",
+      title: "Anyone review is not a human wait",
+      executionPolicy: null,
+      executionState: null,
+      reviewPolicy: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "55555555-5555-4555-8555-555555555555",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "in_review", reviewPolicy: "anyone" });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("invalid_issue_disposition");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
   it("allows an agent-authored in_review transition with a pending confirmation interaction", async () => {
     const issue = {
       id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",

@@ -16,6 +16,9 @@ export interface RoutingIssue {
   responsibleUserId?: string | null;
   executionPolicy: unknown;
   executionState: unknown;
+  // myrmidon(HUMAN-REVIEW-WAIT): a declared human-only wait is never routed to
+  // an agent reviewer — the verdict belongs to a person by policy.
+  reviewPolicy?: string | null;
 }
 
 export interface ReviewerCandidate {
@@ -48,6 +51,8 @@ export function policyHasReviewerParticipant(policy: unknown): boolean {
  */
 export function issueNeedsReviewer(issue: RoutingIssue): boolean {
   if (issue.status !== "in_review") return false;
+  // myrmidon(HUMAN-REVIEW-WAIT): see the RoutingIssue field.
+  if (issue.reviewPolicy === "human_only") return false;
   if (policyHasReviewerParticipant(issue.executionPolicy)) return false;
   const state = asRecord(issue.executionState);
   if (state) {

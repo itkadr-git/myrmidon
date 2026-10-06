@@ -174,6 +174,7 @@ describeEmbeddedPostgres("attention service", () => {
     blockedTransitionAt?: Date | null;
     harnessKind?: string | null;
     reviewPolicy?: "anyone" | "not_creator" | "human_only" | null;
+    responsibleUserId?: string | null;
   }) {
     const id = input.id ?? randomUUID();
     await db.insert(issues).values({
@@ -184,6 +185,7 @@ describeEmbeddedPostgres("attention service", () => {
       status: input.status,
       priority: input.priority ?? "medium",
       reviewPolicy: input.reviewPolicy ?? null,
+      responsibleUserId: input.responsibleUserId ?? null,
       parentId: input.parentId ?? null,
       projectId: input.projectId ?? null,
       projectWorkspaceId: input.projectWorkspaceId ?? null,
@@ -318,8 +320,9 @@ describeEmbeddedPostgres("attention service", () => {
       status: "in_review",
       assigneeAgentId: reviewerId,
       // PAP-16506: the /decisions review card states who may give the verdict,
-      // so the subject has to carry the issue's opt-in constraint.
-      reviewPolicy: "human_only",
+      // so the subject has to carry the issue's opt-in constraint. The policy is
+      // "anyone": a review on an agent with no maintained path stays stalled.
+      reviewPolicy: "anyone",
       updatedAt: new Date("2026-07-09T12:05:00.000Z"),
     });
     await db.insert(issueRelations).values({
@@ -687,7 +690,7 @@ describeEmbeddedPostgres("attention service", () => {
       subject: expect.objectContaining({
         metadata: expect.objectContaining({
           reviewAttentionState: "stalled",
-          reviewPolicy: "human_only",
+          reviewPolicy: "anyone",
         }),
       }),
       decisionVerbs: expect.arrayContaining([
@@ -707,6 +710,27 @@ describeEmbeddedPostgres("attention service", () => {
       agentName: "Broken Agent",
       failureReasonExcerpt: "adapter config missing",
     });
+  });
+
+  it("keeps a human_only review waiting on a person out of the decisions feed", async () => {
+    const { companyId, reviewerId } = await seedCompany("ATW");
+    const waitingReviewId = await insertIssue({
+      companyId,
+      identifier: "ATW-1",
+      title: "Deck delivered to the owner",
+      status: "in_review",
+      assigneeAgentId: reviewerId,
+      // The review waits on a person by policy: the board must not surface it
+      // as a stalled review demanding a disposition, and the executor stays
+      // unwoken until the person answers.
+      reviewPolicy: "human_only",
+      responsibleUserId: "board-user",
+      updatedAt: new Date("2026-07-09T12:05:00.000Z"),
+    });
+
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+
+    expect(feed.items.some((item) => item.subject.id === waitingReviewId)).toBe(false);
   });
 
   it("returns addressed interactions to board attention after addressee pause or termination", async () => {
