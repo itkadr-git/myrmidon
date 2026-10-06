@@ -674,4 +674,59 @@ describe("bot-clone-hygiene", { skip: !hasGit || !hasPython }, () => {
     const r2 = report([volume], { MYRMIDON_GIT_OBJECTS_CHECK_FILE: path.join(base, "absent.json") });
     assert.equal(JSON.parse(fs.readFileSync(r2.reportPath, "utf8")).gitRefCheck, null);
   });
+
+  // myrmidon(1.6.5 BOT-DISK-G live check, OPE-5281 ч.B): the store's FACTS ride
+  // the report as `gitStore`, so the live acceptance ("the store is not empty")
+  // can be read over the API instead of exec-ing into the bot.
+  it("carries the git-object store's facts in the report", () => {
+    const base = path.join(tmp, "gitstore");
+    const volume = path.join(base, "workspace");
+    const store = path.join(base, "git-objects");
+    for (const dir of [
+      path.join(store, "itkadr-git", "myrmidon.git", "objects"),
+      path.join(store, "itkadr-git", "half.git", "objects"),
+    ]) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    fs.writeFileSync(path.join(store, "itkadr-git", "myrmidon.git", "objects", "pack-a.pack"), "pack");
+    fs.writeFileSync(path.join(store, "itkadr-git", "myrmidon.git", "HEAD"), "ref: refs/heads/main\n");
+    const home = path.join(base, "hermes");
+
+    const written = JSON.parse(fs.readFileSync(report([volume], { MYRMIDON_GIT_LOCAL_MIRROR: store, HERMES_HOME: home }).reportPath, "utf8"));
+    assert.equal(written.gitStore.enabled, true);
+    assert.equal(written.gitStore.path, store);
+    assert.deepEqual(written.gitStore.repos, ["itkadr-git/myrmidon"], "only a mirror with objects/ and HEAD is listed");
+    assert.equal(written.gitStore.mirrorCount, 1);
+    assert.ok(written.gitStore.totalBytes > 0, `the store size is reported, got ${written.gitStore.totalBytes}`);
+
+    // A store without a mirror is reported as empty: the gap the acceptance looks for.
+    const empty = path.join(base, "no-store-yet");
+    fs.mkdirSync(empty);
+    const second = JSON.parse(fs.readFileSync(report([volume], { MYRMIDON_GIT_LOCAL_MIRROR: empty, HERMES_HOME: home }).reportPath, "utf8")).gitStore;
+    assert.equal(second.enabled, true);
+    assert.equal(second.mirrorCount, 0);
+    assert.deepEqual(second.repos, []);
+
+    // The documented disable.
+    const off = JSON.parse(fs.readFileSync(report([volume], { MYRMIDON_GIT_LOCAL_MIRROR: "", HERMES_HOME: home }).reportPath, "utf8")).gitStore;
+    assert.equal(off.enabled, false);
+    assert.equal(off.path, "");
+    assert.equal(off.mirrorCount, 0);
+  });
+
+  it("reads the store the profile wrote into .env when the environment carries none", () => {
+    const base = path.join(tmp, "gitstore-envfile");
+    const volume = path.join(base, "workspace");
+    fs.mkdirSync(volume, { recursive: true });
+    const store = path.join(base, "git-objects-from-env");
+    fs.mkdirSync(path.join(store, "itkadr-git", "myrmidon.git", "objects"), { recursive: true });
+    fs.writeFileSync(path.join(store, "itkadr-git", "myrmidon.git", "HEAD"), "ref: refs/heads/main\n");
+    const home = path.join(base, "hermes");
+    fs.mkdirSync(home, { recursive: true });
+    fs.writeFileSync(path.join(home, ".env"), `MYRMIDON_GIT_LOCAL_MIRROR="${store}"\n`);
+
+    const written = JSON.parse(fs.readFileSync(report([volume], { HERMES_HOME: home }).reportPath, "utf8"));
+    assert.equal(written.gitStore.path, store);
+    assert.deepEqual(written.gitStore.repos, ["itkadr-git/myrmidon"]);
+  });
 });

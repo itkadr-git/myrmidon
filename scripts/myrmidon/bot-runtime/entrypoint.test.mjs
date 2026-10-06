@@ -568,6 +568,79 @@ describe("docker/bot-runtime/entrypoint.sh shared-git-objects self-check", () =>
       fs.rmSync(stub.dir, { recursive: true, force: true });
     }
   });
+
+  // myrmidon(1.6.5 BOT-DISK-G live check, OPE-5281 ч.B): the store's FACTS, not
+  // only the checks. The board's live acceptance ("the store is not empty", "the
+  // second clone borrows from it") reads storeState, which the reporter passes on
+  // and the server parses — without an exec into the bot.
+  function gitStoreStateOf(bot) {
+    const report = JSON.parse(fs.readFileSync(path.join(bot, "hermes", ".myrmidon", "git-objects-check.json"), "utf8"));
+    return report.storeState;
+  }
+
+  it("records a store that holds no mirror as empty, so acceptance can see the gap", () => {
+    const { tree, bot, data } = botLayout();
+    const stub = wrapperStub();
+    try {
+      const result = runWithStub({
+        HERMES_HOME: path.join(bot, "hermes"),
+        MYRMIDON_BOT_ROOT: bot,
+        MYRMIDON_DATA_DIR: data,
+        MYRMIDON_HARDLINK_CHECK: "0",
+        MYRMIDON_GIT_WRAPPER: stub.wrapper,
+        MYRMIDON_GIT_SHADOW: stub.shadow,
+        MYRMIDON_GIT_REAL: realGit(),
+        MYRMIDON_TEST_CWD: path.join(bot, "workspace"),
+      });
+      assert.equal(result.status, 0, result.stderr);
+      const state = gitStoreStateOf(bot);
+      assert.equal(state.enabled, true);
+      assert.equal(state.path, path.join(bot, "hermes", ".myrmidon", "git-objects"));
+      assert.equal(state.mirrorCount, 0);
+      assert.equal(state.totalBytes, 0);
+      assert.deepEqual(state.repos, []);
+    } finally {
+      fs.rmSync(tree, { recursive: true, force: true });
+      fs.rmSync(stub.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("records every mirror of the store as owner/repo, and never a junk directory", () => {
+    const { tree, bot, data } = botLayout();
+    const stub = wrapperStub();
+    const store = path.join(bot, "hermes", ".myrmidon", "git-objects");
+    // One real mirror (objects/ + HEAD, the wrapper's isMirror test) and two
+    // directories that only look like one.
+    for (const dir of [
+      path.join(store, "itkadr-git", "myrmidon.git", "objects"),
+      path.join(store, "itkadr-git", "other.git", "objects"),
+    ]) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    fs.writeFileSync(path.join(store, "itkadr-git", "myrmidon.git", "objects", "pack-x.pack"), "pack");
+    fs.writeFileSync(path.join(store, "itkadr-git", "myrmidon.git", "HEAD"), "ref: refs/heads/main\n");
+    fs.mkdirSync(path.join(store, "owner"), { recursive: true }); // no *.git at all
+    try {
+      const result = runWithStub({
+        HERMES_HOME: path.join(bot, "hermes"),
+        MYRMIDON_BOT_ROOT: bot,
+        MYRMIDON_DATA_DIR: data,
+        MYRMIDON_HARDLINK_CHECK: "0",
+        MYRMIDON_GIT_WRAPPER: stub.wrapper,
+        MYRMIDON_GIT_SHADOW: stub.shadow,
+        MYRMIDON_GIT_REAL: realGit(),
+        MYRMIDON_TEST_CWD: path.join(bot, "workspace"),
+      });
+      assert.equal(result.status, 0, result.stderr);
+      const state = gitStoreStateOf(bot);
+      assert.equal(state.mirrorCount, 1, "only the mirror with objects/ and HEAD counts");
+      assert.deepEqual(state.repos, ["itkadr-git/myrmidon"]);
+      assert.ok(state.totalBytes > 0, `the store size is reported, got ${state.totalBytes}`);
+    } finally {
+      fs.rmSync(tree, { recursive: true, force: true });
+      fs.rmSync(stub.dir, { recursive: true, force: true });
+    }
+  });
 });
 
 // myrmidon(BOT-DISK-F): a member of a shared isolation-scope instance. The instance directory is
