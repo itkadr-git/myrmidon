@@ -38,7 +38,7 @@ import {
 import { botProfileWiring } from "./profile-ports.js";
 import type { BotContainerActivitySink, BotMaintenancePort } from "./reconciler.js";
 import { botContainerAgentReader, getBotContainerRuntime, setBotContainerRuntime } from "./routes-wiring.js";
-import { readBotCacheLayoutForBot } from "./bot-disk-service.js"; // myrmidon(1.6.1-BOT-DISK-B, 1.6.2-BOT-DISK-C)
+import { readBotCacheLayoutForBot, readSharedBotRuntimePath } from "./bot-disk-service.js"; // myrmidon(1.6.1-BOT-DISK-B, 1.6.2-BOT-DISK-C, 1.6.5-BOT-DISK-H11)
 import { scopeMigrator } from "./scope-migration.js"; // myrmidon(BOT-DISK-F)
 import { readAppliedScopeLayout } from "./scope-wiring.js"; // myrmidon(BOT-DISK-F)
 
@@ -112,6 +112,10 @@ const defaultPorts: BotContainersStartupPorts = {
       // myrmidon(1.6.2-BOT-DISK-C): only bots of the configured roles get cache mounts.
       readSharedPackageCachePath: async (botKey) => (await readBotCacheLayoutForBot(db, botKey)).path,
       readGitMirrorEnabled: async (botKey) => (await readBotCacheLayoutForBot(db, botKey)).gitMirror,
+      // myrmidon(1.6.5-BOT-DISK-H11): the shared bot runtime is the same for
+      // every bot of the instance, so it is not role-gated; the driver adds the
+      // three read-only binds only when the operator has set the path.
+      readSharedBotRuntimePath: async () => readSharedBotRuntimePath(db),
     }),
   profileWiring: (db, opts) => botProfileWiring(db, opts),
   maintenancePort: (db) => realBotMaintenancePort(db),
