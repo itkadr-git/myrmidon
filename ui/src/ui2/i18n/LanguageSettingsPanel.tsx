@@ -65,6 +65,19 @@ export function LanguageSettingsPanel() {
       <p className="ui2-language-settings__hint" data-testid="ui2-language-server-hint">
         {t("language.serverHint")}
       </p>
+      {/* myrmidon(1.7-TG-LOCALE): the source of the value the bridged Telegram
+          DM answers with — shown, never silently overridden. "environment"
+          while the instance force is set (the user's choice still decides the
+          interface and every unforced instance). */}
+      <p className="ui2-language-settings__hint" data-testid="ui2-language-telegram-source">
+        {preference.data?.telegramBridge?.source === "environment"
+          ? t("language.telegramBridgeEnv", {
+              language: ui2LanguageLabel(
+                preference.data.telegramBridge.forcedLanguage === "ru" ? "ru" : "en",
+              ),
+            })
+          : t("language.telegramBridgeUser")}
+      </p>
       {saveError ? (
         <p className="ui2-language-settings__error" role="alert" data-testid="ui2-language-save-error">
           {t("language.saveFailed")}

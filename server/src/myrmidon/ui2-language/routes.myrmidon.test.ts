@@ -81,7 +81,32 @@ describe("myrmidon(UI2-I18N) ui2 language: reading the preference", () => {
   it("answers en for a user who never saved a preference", async () => {
     const { app } = harness();
     const res = await request(app).get(URL).expect(200);
-    expect(res.body).toEqual({ language: "en", updatedAt: null });
+    // myrmidon(1.7-TG-LOCALE): the read also carries the SOURCE the Settings
+    // screen shows; with no instance force in play the bridge follows the user.
+    expect(res.body).toEqual({
+      language: "en",
+      updatedAt: null,
+      telegramBridge: { source: "user" },
+    });
+  });
+
+  it("reports the environment as the source while the instance force is set", async () => {
+    const original = process.env.MYRMIDON_TELEGRAM_DM_LANGUAGE;
+    process.env.MYRMIDON_TELEGRAM_DM_LANGUAGE = "ru";
+    try {
+      const { app } = harness({ stored: "en" });
+      const res = await request(app).get(URL).expect(200);
+      expect(res.body.telegramBridge).toEqual({
+        source: "environment",
+        forcedLanguage: "ru",
+      });
+      // The person's own UI choice is still theirs: the force does not rewrite
+      // the stored preference, it only explains the Telegram lane.
+      expect(res.body.language).toBe("en");
+    } finally {
+      if (original === undefined) delete process.env.MYRMIDON_TELEGRAM_DM_LANGUAGE;
+      else process.env.MYRMIDON_TELEGRAM_DM_LANGUAGE = original;
+    }
   });
 
   it("answers the stored language once one exists", async () => {
