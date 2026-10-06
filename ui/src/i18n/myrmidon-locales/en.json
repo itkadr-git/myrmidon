@@ -802,5 +802,18 @@
     "loading": "Loading the live progress settings...",
     "loadFailed": "Failed to load the live progress settings.",
     "saveFailed": "Saving the live progress settings failed."
+  },
+  "evalResults": {
+    "title": "Reference-task results",
+    "subtitle": "Judge scores per reference task for the chosen run. The badge marks results whose judge comes from the same model family as the evaluated agent.",
+    "loading": "Loading the reference-task results...",
+    "loadFailed": "Failed to load the reference-task results",
+    "empty": "No reference-task runs yet.",
+    "noRunSelected": "Pick a run to see its results.",
+    "runLabel": "Run",
+    "runOption": "{{role}} — {{subject}} — {{percent}}",
+    "scoreLabel": "Score",
+    "judgeModelLabel": "Judge model",
+    "statusLabel": "Status"
   }
 }

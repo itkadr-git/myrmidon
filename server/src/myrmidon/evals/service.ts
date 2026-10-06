@@ -88,9 +88,22 @@ export interface EvalsServiceDeps {
   exporter?: EvalsScoreExporter;
   /** The model id the judge runs on, recorded on the run. */
   model: string;
-  /** The model id of the agent being evaluated, used to determine sameFamily flag */
-  subjectModel: string;
+  /**
+   * myrmidon(1.6.5 EVALS-JUDGE-FAMILY): the model of the *subject* — the agent
+   * whose work is judged — used for the sameFamily flag. It must be resolved
+   * from the subject (the agent card of the evaluated role), never from the
+   * judge: passing the judge's own model made the flag true for every run,
+   * because the judge always matches itself. Absent, empty or
+   * "let the adapter decide" values mean unknown, and the flag stays false.
+   */
+  subjectModelFor?(input: EvalRunSubject): string | undefined | Promise<string | undefined>;
   now(): Date;
+}
+
+/** The identity of the thing being judged, as far as the subject model needs. */
+export interface EvalRunSubject {
+  role: string;
+  subject: string;
 }
 
 export class EvalsServiceError extends Error {
@@ -169,13 +182,27 @@ export function createEvalsService(db: Db, deps: EvalsServiceDeps) {
   }
 
   /**
+   * myrmidon(1.6.5 EVALS-JUDGE-FAMILY): the subject's model for this run. In
+   * production the caller resolves it from the agent card of the evaluated
+   * role; anything empty — or a value that only means "let the adapter
+   * decide" — is unknown, so the sameFamily flag stays false instead of
+   * claiming a match.
+   */
+  async function subjectModelFor(input: EvalRunSubject): Promise<string | undefined> {
+    const resolved = await deps.subjectModelFor?.(input);
+    const trimmed = typeof resolved === "string" ? resolved.trim() : "";
+    if (!trimmed || trimmed === "default" || trimmed === "auto") return undefined;
+    return trimmed;
+  }
+
+  /**
    * The pure scoring step: judge every task, fold the CI pass rate for code
    * tasks in as a criterion-shaped score line, aggregate.
    */
   async function scoreRun(
     tasks: readonly EvalTaskRow[],
     answers: Record<string, string>,
-    input: { ciPassRate?: number | null; subject: string; role: string },
+    input: { ciPassRate?: number | null; subject: string; role: string; agentModel?: string },
   ): Promise<{ scores: EvalRunScores; judgeResults: (JudgeTaskResult & { criteriaPoints: number })[] }> {
     const judgeResults: (JudgeTaskResult & { criteriaPoints: number })[] = [];
     for (const task of tasks) {
@@ -186,7 +213,7 @@ export function createEvalsService(db: Db, deps: EvalsServiceDeps) {
         answer,
         rubric: task.rubric,
         kind: task.kind,
-        agentModel: deps.subjectModel,
+        agentModel: input.agentModel,
       });
       const criteriaPoints = task.rubric.criteria.reduce((a, c) => a + c.points, 0);
       judgeResults.push({ ...result, criteriaPoints });
@@ -256,7 +283,12 @@ export function createEvalsService(db: Db, deps: EvalsServiceDeps) {
       })
       .returning();
     try {
-      const { scores } = await scoreRun(tasks, input.answers, { ciPassRate: input.ciPassRate, subject: input.subject, role: input.role });
+      const { scores } = await scoreRun(tasks, input.answers, {
+        ciPassRate: input.ciPassRate,
+        subject: input.subject,
+        role: input.role,
+        agentModel: await subjectModelFor({ role: input.role, subject: input.subject }),
+      });
       let verdict: EvalVerdict | null = null;
       let verdictReason: string | null = null;
       let confirmRunId: string | null = null;
@@ -345,6 +377,9 @@ export function createEvalsService(db: Db, deps: EvalsServiceDeps) {
         ciPassRate: first.ciPassRate,
         subject: first.subject,
         role: first.role,
+        // myrmidon(1.6.5 EVALS-JUDGE-FAMILY): the subject is the same agent as
+        // in the first run, so the badge keeps reflecting its model.
+        agentModel: await subjectModelFor({ role: first.role, subject: first.subject }),
       });
       const baseline = first.baselineId ? await getRun(first.companyId, first.baselineId) : null;
       let verdict: EvalVerdict;

@@ -73,7 +73,7 @@ describeEmbeddedPostgres("myrmidon(1.6-EVALS): routes", () => {
   });
 
   function app(actor: unknown) {
-    const service = createEvalsService(db, { judge: createHeuristicJudge(({ answer }) => (answer.includes(GOOD) ? 99 : 0)), model: "test-judge", subjectModel: "test-subject", now: () => new Date() });
+    const service = createEvalsService(db, { judge: createHeuristicJudge(({ answer }) => (answer.includes(GOOD) ? 99 : 0)), model: "test-judge", subjectModelFor: () => "test-subject", now: () => new Date() });
     const expressApp = express();
     expressApp.use(express.json());
     expressApp.use((req, _res, next) => {

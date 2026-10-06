@@ -26,6 +26,7 @@ import {
 import { InstanceGeneralSettings } from "./InstanceGeneralSettings";
 import { ConnectorPanel } from "@/components/myrmidon/ConnectorPanel"; // myrmidon(EXTCASE-PANEL)
 import { FleetConsolePanel } from "../components/myrmidon/FleetConsolePanel"; // myrmidon(SC1)
+import { ReferenceTaskEvalsPanel } from "../components/myrmidon/evals/ReferenceTaskEvalsPanel"; // myrmidon(1.6.5 EVALS-JUDGE-FAMILY)
 import { TracingHealthCard } from "../components/myrmidon/tracing-health/TracingHealthCard"; // myrmidon(TRACING-HEALTH)
 import { useTranslation } from "@/i18n"; // myrmidon(UI-RU)
 
@@ -337,6 +338,10 @@ export function CompanySettings() {
       />
 
       <FleetConsolePanel /> {/* myrmidon(SC1) */}
+
+      {/* Reference-task results with the same-family judge badge
+          (myrmidon(1.6.5 EVALS-JUDGE-FAMILY)) */}
+      <ReferenceTaskEvalsPanel />
 
       <TracingHealthCard /> {/* myrmidon(TRACING-HEALTH): "LLM tracing" status card (part D) */}
 
