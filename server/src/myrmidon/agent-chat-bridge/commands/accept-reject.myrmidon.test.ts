@@ -22,6 +22,7 @@ import {
   createDb,
   issues,
   issueThreadInteractions,
+  userUiLanguage,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -64,6 +65,7 @@ describeEmbeddedPostgres("myrmidon(1.6.3-CTO-CHAT-B) /accept and /reject in the 
     await db.delete(issues);
     await db.delete(agents);
     await db.delete(companies);
+    await db.delete(userUiLanguage);
   });
 
   afterAll(async () => {
@@ -85,6 +87,10 @@ describeEmbeddedPostgres("myrmidon(1.6.3-CTO-CHAT-B) /accept and /reject in the 
       adapterType: "hermes_local",
       status: "active",
     });
+    // The board user's bridge locale is Russian (the reply assertions below
+    // expect the RU catalog): the bridge resolves locale per board user from
+    // user_ui_language, defaulting to English.
+    await db.insert(userUiLanguage).values({ userId: boardUserId, language: "ru" });
     const [conversation] = await db
       .insert(issues)
       .values({
@@ -237,6 +243,10 @@ describeEmbeddedPostgres("myrmidon(1.6.3-CTO-CHAT-B) /accept and /reject in the 
   it("a user who does not own the conversation cannot accept", async () => {
     const { companyId, agentId, boardUserId, conversation, cardId } = await seedWithCard();
     const strangerId = randomUUID();
+    // The stranger's bridge locale is Russian too: the reply assertion
+    // below expects the RU catalog, and the bridge resolves locale per
+    // board user from user_ui_language.
+    await db.insert(userUiLanguage).values({ userId: strangerId, language: "ru" });
 
     const result = await runBridgedDirectMessageCommand(
       commandInput({
