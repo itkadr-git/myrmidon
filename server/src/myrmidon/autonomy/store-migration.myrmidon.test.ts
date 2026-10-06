@@ -39,13 +39,9 @@ describe("autonomy store migration (deploy default)", () => {
         version: 2,
         rules: [
           {
-            id: "rule-1",
+            role: "engineer",
             actionClass: "deploy",
-            subjectKind: "role",
-            subject: "engineer",
             verdict: "allowed",
-            createdAt: "2025-01-01T00:00:00.000Z",
-            updatedAt: "2025-01-01T00:00:00.000Z",
           },
         ],
         defaults: {

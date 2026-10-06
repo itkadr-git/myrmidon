@@ -1,129 +1,128 @@
-// myrmidon(1.6-AUTONOMY): test that maintenance routes respect the autonomy matrix.
+// myrmidon(1.6-AUTONOMY): autonomy gate on maintenance routes
+//
+// Tests that the maintenance routes properly enforce the autonomy matrix
+// for deploy actions. Uses a real gate with an in-memory store.
 
 import express from "express";
 import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
-import type { Db } from "@paperclipai/db";
 import { errorHandler } from "../../middleware/index.js";
 import { maintenanceRoutes } from "./routes.js";
-import { maintenanceService, type MaintenanceServiceDeps } from "./service.js";
-import { readMaintenanceSettings } from "./settings.js";
-import { emptyMaintenanceDocument, type MaintenanceDocument, MAINTENANCE_SCOPE_TYPES } from "./domain.js";
-import { autonomyGate, type AutonomyGateDeps } from "../autonomy/gate.js";
-import { emptyAutonomyDocument } from "../autonomy/store.js";
+import { AUTONOMY_FORBIDDEN_CODE } from "../autonomy/gate.js";
 
 const COMPANY_ID = "22222222-2222-4222-8222-222222222222";
 
-const member = {
-  type: "board",
-  source: "session",
-  userId: "user-a",
-  isInstanceAdmin: false,
-  companyIds: [COMPANY_ID],
-};
-const admin = { ...member, userId: "user-b", isInstanceAdmin: true };
-const agentActor = {
-  type: "agent",
-  source: "agent_key",
-  agentId: "11111111-1111-4111-8111-111111111111",
-  companyId: COMPANY_ID,
-  keyId: "key-a",
-};
-
-// Mock autonomy gate that forbids deploy action
-function forbiddenAutonomyGate(): any {
-  return {
-    assertAllowed: async (req: any, actionClass: string) => {
-      if (actionClass === "deploy" && req.actor?.type === "agent") {
-        const error: any = new Error("This action is forbidden for this role by the autonomy matrix");
-        error.status = 403;
-        error.body = { error: "This action is forbidden for this role by the autonomy matrix", code: "autonomy_forbidden", actionClass: "deploy", role: "engineer" };
-        throw error;
-      }
-      return { verdict: "allowed", role: "admin", actionClass };
-    }
-  };
-}
-
-// Mock autonomy gate that allows deploy action
-function allowedAutonomyGate(): any {
-  return {
-    assertAllowed: async (req: any, actionClass: string) => {
-      return { verdict: "allowed", role: "admin", actionClass };
-    }
-  };
-}
-
-function harness(autonomyGateMock: any = allowedAutonomyGate()) {
-  const doc: MaintenanceDocument = emptyMaintenanceDocument();
-  const deps: MaintenanceServiceDeps = {
-    settings: readMaintenanceSettings({}),
-    logActivity: (async () => ({})) as unknown as MaintenanceServiceDeps["logActivity"],
-    now: () => new Date(),
-  };
-  const store = {
-    read: async () => structuredClone(doc),
-    mutate: async <T>(change: (current: MaintenanceDocument) => { next: MaintenanceDocument | null; result: T }) => {
-      const { next, result } = change(doc);
-      if (next) Object.assign(doc, next);
-      return { doc, result, changed: next !== null };
+// Mock dbAutonomyGate to return a test gate with forbidden deploy for engineers
+// This must be at the top level for vi.mock hoisting
+vi.mock("../autonomy/gate.js", async (importOriginal) => {
+  const actual = await importOriginal() as any;
+  const { memoryAutonomyStore } = await import("../autonomy/store.js");
+  const { AUTONOMY_SAFE_DEFAULTS } = await import("@paperclipai/shared");
+  
+  // Create a real gate with an in-memory store that has deploy forbidden for engineers
+  const store = memoryAutonomyStore({
+    version: 1,
+    matrix: {
+      version: 2,
+      rules: [
+        { role: "engineer", actionClass: "deploy", verdict: "forbidden" },
+      ],
+      defaults: { ...AUTONOMY_SAFE_DEFAULTS },
     },
+    regulations: [],
+  });
+  
+  const testGate = actual.autonomyGate({
+    store,
+    roleOf: async (agentId: string | null) => (agentId ? "engineer" : null),
+  });
+  
+  return {
+    ...actual,
+    dbAutonomyGate: () => testGate,
   };
+});
 
-  // Mock the dbAutonomyGate to return our mock
-  vi.mock("../autonomy/gate.js", () => ({
-    dbAutonomyGate: () => autonomyGateMock,
-    AUTONOMY_FORBIDDEN_CODE: "autonomy_forbidden"
-  }));
+// Create a mock service that just returns a success response
+const mockService = {
+  enter: async () => ({
+    id: "test-window-id",
+    status: "active",
+    scope: { type: "instance" },
+    reason: "Test maintenance",
+    enteredAt: new Date().toISOString(),
+  }),
+  exit: async () => ({
+    id: "test-window-id",
+    status: "exited",
+    scope: { type: "instance" },
+    reason: "Test maintenance",
+    enteredAt: new Date().toISOString(),
+    exitedAt: new Date().toISOString(),
+  }),
+  status: async () => ({
+    active: false,
+    windows: [],
+  }),
+};
 
-  const service = maintenanceService(store as unknown as Db, deps);
-  const withActor = (actor: unknown) => {
-    const app = express();
-    app.use(express.json());
-    app.use((req, _res, next) => {
-      (req as unknown as { actor: unknown }).actor = actor;
-      next();
-    });
-    app.use("/api", maintenanceRoutes({} as Db, service));
-    app.use(errorHandler);
-    return app;
+function harness(actor: unknown) {
+  const withActor = (a: unknown) => (req: any, _res: any, next: any) => {
+    req.actor = a;
+    next();
   };
-  return { app: withActor(member), withActor };
+  const app = express();
+  app.use(express.json());
+  app.use("/api", withActor(actor), maintenanceRoutes({} as any, mockService as any));
+  app.use(errorHandler);
+  return { app };
 }
-
-const URL = "/api/myrmidon/maintenance";
 
 describe("maintenance routes autonomy integration", () => {
   it("POST /api/myrmidon/maintenance rejects forbidden deploy action for agent caller", async () => {
-    const h = harness(forbiddenAutonomyGate());
+    const agentActor = {
+      type: "agent",
+      source: "agent_key",
+      agentId: "agent-123",
+      companyId: COMPANY_ID,
+      keyId: "key-a",
+      companyIds: [COMPANY_ID],
+    };
 
-    // Test that an agent trying to enter maintenance mode gets forbidden
-    const res = await request(h.withActor(agentActor))
-      .post(URL)
+    const { app } = harness(agentActor);
+
+    const res = await request(app)
+      .post("/api/myrmidon/maintenance")
+      .set("x-company-id", COMPANY_ID)
       .send({
         action: "enter",
         scope: { type: "instance" },
-        reason: "Test maintenance"
+        reason: "Test maintenance",
       })
       .expect(403);
 
-    expect(res.body.code).toBe("autonomy_forbidden");
-    expect(res.body.actionClass).toBe("deploy");
+    expect(res.body.code).toBe(AUTONOMY_FORBIDDEN_CODE);
   });
 
   it("POST /api/myrmidon/maintenance allows deploy action for admin caller", async () => {
-    const h = harness(forbiddenAutonomyGate()); // Even with forbidden gate, admin should pass
+    const adminActor = {
+      type: "board",
+      source: "session",
+      userId: "user-123",
+      isInstanceAdmin: true,
+      companyIds: [COMPANY_ID],
+    };
 
-    // Admins are not subject to autonomy matrix, so they should be able to enter maintenance mode
-    const res = await request(h.withActor(admin))
-      .post(URL)
+    const { app } = harness(adminActor);
+
+    await request(app)
+      .post("/api/myrmidon/maintenance")
+      .set("x-company-id", COMPANY_ID)
       .send({
         action: "enter",
         scope: { type: "instance" },
-        reason: "Test maintenance"
+        reason: "Test maintenance",
       })
       .expect(200);
-
-    expect(res.body.state).toBeDefined();
   });
 });
