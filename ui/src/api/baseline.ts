@@ -3,6 +3,7 @@
 // Server side: GET /api/myrmidon/companies/:id/baseline/metrics (part A,
 // eng-4 — the JSON contract is frozen in the design note; until part A
 // merges, the tests mock this client's return shape).
+// Also includes comparison API: GET /api/myrmidon/companies/:id/baseline/compare
 
 import { api } from "@/api/client";
 
@@ -74,8 +75,30 @@ export interface BaselineMetricsReport {
   byRole: BaselineMetricRow[];
 }
 
+export interface BaselineComparisonResult {
+  current: BaselineMetricsReport;
+  baseline: BaselineMetricsReport | null;
+  differences: {
+    cycleTimeMean: { absolute: number; percentage: number } | null;
+    cycleTimeMedian: { absolute: number; percentage: number } | null;
+    cycleTimeP90: { absolute: number; percentage: number } | null;
+    reviewTimeMean: { absolute: number; percentage: number } | null;
+    reviewTimeMedian: { absolute: number; percentage: number } | null;
+    reviewTimeP90: { absolute: number; percentage: number } | null;
+    returnRate: { absolute: number; percentage: number } | null;
+    blockedTotal: { absolute: number; percentage: number } | null;
+    blockedMean: { absolute: number; percentage: number } | null;
+    runsPerTask: { absolute: number; percentage: number } | null;
+    costPerTask: { absolute: number; percentage: number } | null;
+    tasksCompleted: { absolute: number; percentage: number } | null;
+  };
+}
+
 const base = (companyId: string) =>
   `/myrmidon/companies/${encodeURIComponent(companyId)}/baseline/metrics`;
+
+const compareBase = (companyId: string) =>
+  `/myrmidon/companies/${encodeURIComponent(companyId)}/baseline/compare`;
 
 export const baselineApi = {
   metrics: (companyId: string, from?: string, to?: string) => {
@@ -85,10 +108,20 @@ export const baselineApi = {
     const qs = params.toString();
     return api.get<BaselineMetricsReport>(`${base(companyId)}${qs ? `?${qs}` : ""}`);
   },
+  compare: (companyId: string, from?: string, to?: string) => {
+    const params = new URLSearchParams();
+    if (from) params.set("from", from);
+    if (to) params.set("to", to);
+    const qs = params.toString();
+    return api.get<BaselineComparisonResult>(`${compareBase(companyId)}${qs ? `?${qs}` : ""}`);
+  },
 };
 
 export const baselineMetricsKey = (companyId: string, from?: string, to?: string) =>
   ["myrmidon", "baseline", "metrics", companyId, from ?? null, to ?? null] as const;
+
+export const baselineCompareKey = (companyId: string, from?: string, to?: string) =>
+  ["myrmidon", "baseline", "compare", companyId, from ?? null, to ?? null] as const;
 
 /** 503 body while the server-side part is not enabled: "not enabled" style. */
 export function isNotEnabledError(err: unknown): boolean {
