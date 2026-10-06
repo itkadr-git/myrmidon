@@ -41,6 +41,8 @@ import { preserveDeployJobsGeneralKey } from "../myrmidon/deploy-jobs/store.js";
 import { preserveStackGeneralKey } from "../myrmidon/stack-registry/store.js";
 // myrmidon(R5-B): keep bot image canary state across vendor writes of `general`
 import { preserveBotCanaryGeneralKey } from "../myrmidon/bot-containers/canary-store.js";
+// myrmidon(BOT-ROLLOUT): keep the release bot-image rollout settings across vendor writes of `general`
+import { preserveBotImageRolloutGeneralKey } from "../myrmidon/bot-containers/bot-image-rollout-store.js";
 // myrmidon(CLOUD-CONNECTOR): keep the cloud connector state across vendor writes of `general`
 import { preserveCloudConnectorGeneralKey } from "../myrmidon/cloud-connector/store.js";
 // myrmidon(SEC1): keep the access-hub host registry across vendor writes of `general`
@@ -249,6 +251,8 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       ...(parsed.data.botDisk ? { botDisk: parsed.data.botDisk } : {}),
       // myrmidon(1.6.1-BOT-DISK-C): the stored per-bot disk quota survives every general write
       ...(parsed.data.botDiskQuota ? { botDiskQuota: parsed.data.botDiskQuota } : {}),
+      // myrmidon(BOT-ROLLOUT): the stored release bot-image rollout settings survive every general write
+      ...(parsed.data.myrmidonBotImageRollout ? { myrmidonBotImageRollout: parsed.data.myrmidonBotImageRollout } : {}),
       // myrmidon(PARALLEL-HELPERS): the stored helper ceiling/default survive
       // every general write (they are edited on their own settings page).
       ...(parsed.data.parallelHelpers ? { parallelHelpers: parsed.data.parallelHelpers } : {}),
@@ -644,6 +648,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
             ...(patch.telegramDmProgress !== undefined ? { telegramDmProgress: nextGeneral.telegramDmProgress } : {}),
             ...preserveGitHubSharedIdentityGeneralKey(current.general), // myrmidon(GITHUB-SHARED-IDENTITY)
             ...preserveBudgetProjectionGeneralKey(current.general), // myrmidon(1.7-BUDGET-CONFIG-C)
+            ...preserveBotImageRolloutGeneralKey(current.general), // myrmidon(BOT-ROLLOUT)
           },
           updatedAt: now,
         })

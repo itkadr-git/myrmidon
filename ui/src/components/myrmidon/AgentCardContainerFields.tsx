@@ -113,6 +113,15 @@ export function imageTrackingText(status: BotContainerStatus | null): string | n
   }
 }
 
+/** myrmidon(BOT-ROLLOUT): the release-image verdict line of the card, or null when
+ *  the server did not say (older server). */
+export function imageRolloutText(status: BotContainerStatus | null): string | null {
+  const rollout = status?.imageRollout;
+  if (!rollout) return null;
+  if (rollout.onReleaseImage) return "On the release image.";
+  return `Not on the current release image: ${rollout.reason}.`;
+}
+
 /** Why "Apply now" cannot run right now, or null when it can. */
 export function applyBlockedReason(
   status: BotContainerStatus | null,
@@ -287,6 +296,21 @@ export function AgentCardContainerFieldsView({
               {imageTrackingText(status) && (
                 <div className="mt-1 break-words text-xs text-muted-foreground" data-testid="myrmidon-bot-container-tracking">
                   {imageTrackingText(status)}
+                </div>
+              )}
+              {imageRolloutText(status) && (
+                <div className="mt-1 flex items-center gap-1.5 break-words text-xs" data-testid="myrmidon-bot-container-release-image">
+                  {!status?.imageRollout?.onReleaseImage && (
+                    <span
+                      className="inline-flex shrink-0 items-center rounded-full border border-amber-400/40 px-1.5 py-0.5 text-[10px] font-medium text-amber-400"
+                      data-testid="myrmidon-bot-container-not-on-release"
+                    >
+                      Not on the current image
+                    </span>
+                  )}
+                  <span className={status?.imageRollout?.onReleaseImage ? "text-muted-foreground" : "text-amber-400/90"}>
+                    Release image: {imageRolloutText(status)}
+                  </span>
                 </div>
               )}
             </div>
