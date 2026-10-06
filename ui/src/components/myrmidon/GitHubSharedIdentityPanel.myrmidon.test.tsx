@@ -96,6 +96,18 @@ function button(text: string): HTMLButtonElement {
   return [...container.querySelectorAll("button")].find((el) => el.textContent?.includes(text))!;
 }
 
+/** Async-safe button lookup: poll until the control appears. The container
+ * renders after several data queries resolve, and CI runners are slow enough
+ * that a fixed number of ticks is not reliable. */
+async function waitForButton(text: string, attempts = 50): Promise<HTMLButtonElement> {
+  for (let i = 0; i < attempts; i++) {
+    const found = [...container.querySelectorAll("button")].find((el) => el.textContent?.includes(text));
+    if (found) return found as HTMLButtonElement;
+    await act(async () => Promise.resolve());
+  }
+  throw new Error(`button not found: ${text}`);
+}
+
 function byLabel<T extends HTMLElement>(label: string): T {
   return container.querySelector(`[aria-label="${label}"]`) as T;
 }
@@ -406,7 +418,7 @@ describe("GitHubSharedIdentityPanel — server callback", () => {
     );
     // Flush the three data queries (identity, agents, secrets) before the
     // caller interacts: poll for the panel instead of guessing tick counts.
-    for (let i = 0; i < 20 && !container.querySelector("[data-testid='myrmidon-github-shared-identity'] input"); i++) {
+    for (let i = 0; i < 50 && !container.querySelector("[data-testid='myrmidon-github-shared-identity'] input"); i++) {
       await act(async () => Promise.resolve());
     }
   }
@@ -450,8 +462,8 @@ describe("GitHubSharedIdentityPanel — server callback", () => {
     await renderContainer("");
     const submitSpy = vi.spyOn(HTMLFormElement.prototype, "submit").mockImplementation(() => {});
     try {
-      await act(async () => button("Create GitHub App").click());
-      await act(async () => button("Create on GitHub").click());
+      await act(async () => (await waitForButton("Create GitHub App")).click());
+      await act(async () => (await waitForButton("Create on GitHub")).click());
       expect(apiMocks.beginAppManifest).toHaveBeenCalledWith("company-a", {
         ownerKind: "user",
         name: "Myrmidon — Company A",
@@ -498,7 +510,7 @@ describe("GitHubSharedIdentityPanel — server callback", () => {
       value: { ...originalLocation, assign: assignSpy },
     });
     try {
-      await act(async () => button("Install on repositories").click());
+      await act(async () => (await waitForButton("Install on repositories")).click());
       expect(apiMocks.getAppInstallUrl).toHaveBeenCalledWith("company-a", ENTRY_A);
       await act(async () => Promise.resolve());
       expect(assignSpy).toHaveBeenCalledWith("https://github.com/apps/my-app/installations/new");
