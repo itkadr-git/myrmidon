@@ -337,7 +337,11 @@ async function sourceIssueId(
     // myrmidon(1.6.1-BOT-DISK-C): the quota signal subject is an agent bot of
     // the company; existence is the live agent row (the signal is computed by
     // the sweep, not stored, so there is nothing else to check).
-    case "bot_disk_quota": {
+    case "bot_disk_quota":
+    // myrmidon(1.6.5 PROMPT-BUDGET B): the signal subject is an agent of the
+    // company; existence is the live agent row (the status feed is computed,
+    // not stored, so there is nothing else to check).
+    case "prompt_budget_alert": {
       const row = await db.select({ id: agents.id })
         .from(agents)
         .where(and(eq(agents.companyId, companyId), eq(agents.id, sourceId)))
@@ -382,6 +386,15 @@ export async function canReadDecisionSource(
   // myrmidon(1.6.1-WIP-LIMIT-A): the signal subject is an agent, so an agent
   // read follows the same agent:read decision the error alert uses.
   if (sourceKind === "wip_limit" && source.agentId) {
+    return (await authz.decide({
+      actor,
+      action: "agent:read",
+      resource: { type: "agent", companyId, agentId: source.agentId },
+    })).allowed;
+  }
+  // myrmidon(1.6.3 PROMPT-BUDGET B): the signal subject is an agent — the same
+  // agent:read decision the WIP limit alert uses.
+  if (sourceKind === "prompt_budget_alert" && source.agentId) {
     return (await authz.decide({
       actor,
       action: "agent:read",

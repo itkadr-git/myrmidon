@@ -279,6 +279,10 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       ...(parsed.data.browserBridge ? { browserBridge: parsed.data.browserBridge } : {}),
       // myrmidon(1.6.1-WIP-LIMIT-A): the stored WIP limits survive every general write
       ...(parsed.data.wipLimit ? { wipLimit: parsed.data.wipLimit } : {}),
+      // myrmidon(1.6.3 PROMPT-BUDGET B): the stored prompt-budget thresholds
+      // (and the optimizer agent id of the advice part) survive every general
+      // write — without this line the vendor write path silently drops the key.
+      ...(parsed.data.promptBudget ? { promptBudget: parsed.data.promptBudget } : {}),
       // myrmidon(1.7-BUDGET-CONFIG-B): the stored budget enforcement mode
       // survives every general write (it is edited on its own settings page).
       ...(parsed.data.budgetEnforcement ? { budgetEnforcement: parsed.data.budgetEnforcement } : {}),

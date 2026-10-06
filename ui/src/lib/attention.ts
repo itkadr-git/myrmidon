@@ -75,6 +75,8 @@ const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
   bot_disk_quota: { label: "Bot disk quota" },
   // myrmidon(REVIEW-ROUTING): label for the review routing source.
   review_routing: { label: "Review routing" },
+  // myrmidon(1.6.3 PROMPT-BUDGET B): label for the prompt-budget threshold source.
+  prompt_budget_alert: { label: "Prompt budget" },
 };
 
 export function sourceMeta(kind: AttentionSourceKind): SourceMeta {

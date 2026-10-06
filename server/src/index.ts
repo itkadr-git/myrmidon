@@ -151,6 +151,7 @@ import { createStaleBlockScheduler } from "./myrmidon/stale-block/index.js"; // 
 import { createReviewRoutingScheduler } from "./myrmidon/review-routing/index.js"; // myrmidon(REVIEW-ROUTING)
 import { createReviewReworkScheduler } from "./myrmidon/review-rework/index.js"; // myrmidon(REVIEW-REWORK)
 import { buildWipLimitSweeper } from "./myrmidon/wip-limit/index.js"; // myrmidon(1.6.1-WIP-LIMIT-A)
+import { buildPromptBudgetSweeper } from "./myrmidon/prompt-budget/index.js"; // myrmidon(1.6.3 PROMPT-BUDGET B)
 import {
   createPendingInteractionWakeSweep,
   readPendingInteractionWakeContextSnapshot,
@@ -1382,6 +1383,24 @@ async function startServerWithDatabaseTeardown(
       }));
     };
   })();
+  // myrmidon(1.6.3 PROMPT-BUDGET B): the periodic prompt-budget check — one
+  // pass per interval per company behind its own settings gate (enabled=false
+  // skips the pass); the attention feed needs no sweep, it recomputes on every
+  // list. The thresholds re-read on every pass, so a settings PUT applies on
+  // the next tick without a restart.
+  const schedulePromptBudgetSweep = (() => {
+    const sweeper = buildPromptBudgetSweeper(db as any);
+    return () => {
+      if (heartbeatSchedulerStopped) return;
+      trackHeartbeatSchedulerWork(sweeper.sweep().then((result) => {
+        if (result.signaled > 0 || result.failed > 0) {
+          logger.info(result, "Prompt budget sweep completed");
+        }
+      }).catch((err) => {
+        logger.error({ err }, "Prompt budget sweep failed");
+      }));
+    };
+  })();
   // myrmidon(AUTO-RESUME): resumes an agent left in `error` once its 1/5/15 min
   // backoff step is due; the per-agent maintenance gate lives in the sweeper.
   // Runs on the same mutually-exclusive scheduler paths as the other
@@ -1897,6 +1916,7 @@ async function startServerWithDatabaseTeardown(
         scheduleReviewRoutingSweep(); // myrmidon(REVIEW-ROUTING)
         scheduleReviewReworkSweep(); // myrmidon(REVIEW-REWORK)
         scheduleWipLimitSweep(); // myrmidon(1.6.1-WIP-LIMIT-A)
+        schedulePromptBudgetSweep(); // myrmidon(1.6.3 PROMPT-BUDGET B)
         scheduleAutoResumeSweep(); // myrmidon(AUTO-RESUME)
 
         if (heartbeatSchedulerStopped) return;

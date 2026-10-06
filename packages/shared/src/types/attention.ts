@@ -33,6 +33,9 @@ export const ATTENTION_SOURCE_KINDS = [
   // + in_review) is over its resolved WIP limit, or a lead holds a
   // implementation task (lead limit = 0).
   "wip_limit",
+  // myrmidon(1.6.3 PROMPT-BUDGET B): an agent's last run prompt crossed the
+  // warn/crit threshold (percent of the model window) of the live settings.
+  "prompt_budget_alert",
   // myrmidon(REVIEW-ROUTING): a task in review has no reviewer available, or
   // its review has had no verdict for longer than the configured hours.
   "review_routing",
