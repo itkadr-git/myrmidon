@@ -182,6 +182,8 @@ import {
   unprocessable,
 } from "../errors.js";
 import { isUniqueViolation } from "../db-errors.js";
+// myrmidon(GITHUB-SHARED-IDENTITY): instance-wide switch of the vendor cloud GitHub connector
+import { assertVendorGitHubConnectorAllowed } from "../myrmidon/github-shared-identity/vendor-connector.js";
 import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
 import {
@@ -12667,6 +12669,8 @@ export function toolAccessService(
       const profile = managedConnectorProfile(connectorProfile);
       if (!profile)
         throw badRequest("This app has an invalid managed connector profile");
+      // myrmidon(GITHUB-SHARED-IDENTITY): the vendor cloud GitHub connector is off unless enabled instance-wide
+      assertVendorGitHubConnectorAllowed(profile.id);
       config.oauth = {
         strategy: method.oauthStrategy,
         provider: profile.provider,
@@ -14538,6 +14542,8 @@ export function toolAccessService(
       const managedProfile = managedConnectorProfile(connectorProfile);
       if (!managedProfile)
         throw badRequest("This app has an invalid managed connector profile");
+      // myrmidon(GITHUB-SHARED-IDENTITY): the vendor cloud GitHub connector is off unless enabled instance-wide
+      assertVendorGitHubConnectorAllowed(managedProfile.id);
       const providerName = galleryEntry?.name ?? "Google Workspace";
       const cloudConnector = currentCloudConnector();
       if (!cloudConnector) {
@@ -15234,6 +15240,8 @@ export function toolAccessService(
     const connectorProfile = method.connectorProfile;
     const profile = managedConnectorProfile(connectorProfile);
     if (!profile) throw badRequest("Managed connector profile is invalid");
+    // myrmidon(GITHUB-SHARED-IDENTITY): the vendor cloud GitHub connector is off unless enabled instance-wide
+    assertVendorGitHubConnectorAllowed(profile.id);
     const connectorSubject = subjectAgentId
       ? `agent:${subjectAgentId}`
       : subjectUserId!;

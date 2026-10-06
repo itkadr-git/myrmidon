@@ -60,6 +60,8 @@ import { preserveBudgetEnforcementGeneralKey } from "../myrmidon/budget-enforcem
 import { preservePluginEntitlementKeysGeneralKey } from "../myrmidon/plugin-entitlement/store.js";
 // myrmidon(DM-PROGRESS): keep the Telegram DM progress settings across vendor writes of `general`
 import { preserveTelegramDmProgressGeneralKey } from "../myrmidon/telegram-dm-progress/settings.js";
+// myrmidon(GITHUB-SHARED-IDENTITY): keep the per-company shared GitHub access rules across vendor writes of `general`
+import { preserveGitHubSharedIdentityGeneralKey } from "../myrmidon/github-shared-identity/store.js";
 import { getManagedInstanceConfig, type ManagedInstanceConfig } from "./managed-config.js";
 import { getOperatorSettingDefaults } from "./setting-defaults.js";
 
@@ -639,6 +641,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
             ...preserveTelegramDmProgressGeneralKey(current.general), // myrmidon(DM-PROGRESS)
             // The preserve line above restores the stored value: a patch that carries the key wins.
             ...(patch.telegramDmProgress !== undefined ? { telegramDmProgress: nextGeneral.telegramDmProgress } : {}),
+            ...preserveGitHubSharedIdentityGeneralKey(current.general), // myrmidon(GITHUB-SHARED-IDENTITY)
           },
           updatedAt: now,
         })

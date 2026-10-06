@@ -25,6 +25,7 @@ import {
 } from "../components/agent-config-primitives";
 import { InstanceGeneralSettings } from "./InstanceGeneralSettings";
 import { ConnectorPanel } from "@/components/myrmidon/ConnectorPanel"; // myrmidon(EXTCASE-PANEL)
+import { GitHubSharedIdentityPanel } from "@/components/myrmidon/GitHubSharedIdentityPanel"; // myrmidon(GITHUB-SHARED-IDENTITY)
 import { FleetConsolePanel } from "../components/myrmidon/FleetConsolePanel"; // myrmidon(SC1)
 import { TracingHealthCard } from "../components/myrmidon/tracing-health/TracingHealthCard"; // myrmidon(TRACING-HEALTH)
 import { useTranslation } from "@/i18n"; // myrmidon(UI-RU)
@@ -344,6 +345,7 @@ export function CompanySettings() {
 
       {/* Connectors (client devices through the browser bridge) */}
       <ConnectorPanel /> {/* myrmidon(EXTCASE-PANEL) */}
+      <GitHubSharedIdentityPanel /> {/* myrmidon(GITHUB-SHARED-IDENTITY): shared GitHub authorization access rules */}
 
       {/* Danger Zone */}
       <div className="space-y-4">
