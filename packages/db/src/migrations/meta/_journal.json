@@ -2136,6 +2136,13 @@
       "when": 1770000000447,
       "tag": "0307_foraging_spend",
       "breakpoints": true
+    },
+    {
+      "idx": 308,
+      "version": "7",
+      "when": 1791371400000,
+      "tag": "0308_issue_claims_active_unique",
+      "breakpoints": true
     }
   ]
 }
