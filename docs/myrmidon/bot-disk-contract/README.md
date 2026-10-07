@@ -40,3 +40,12 @@ H1–H10 пишут код только против этих схем и фик
 `disk-report-response.json`, `dockergate-disk.json`,
 `dockergate-quota-put-request.json`, `dockergate-quota-put-response.json`,
 `run-workspace-field.json`, `botdisk-settings.json`.
+
+## rc.9 additions to C3 (optional fields)
+
+- `closedKeys[]`: issue keys of done/cancelled tasks the bot holds or held, with no lookback limit.
+  botd removes a legacy directory named like a task only for a key listed here; a key in `protectKeys`
+  or listed in `workspaces` but not closed is kept; without the field nothing under `/workspace` is removed.
+- `grace.legacyPressureIdleDays` (1..90, default 7): idle days before a named directory without a closing
+  task is archived under hard pressure.
+- The route answers 503 when `general.botDisk.enabled` is false; botd treats it as no desired state.

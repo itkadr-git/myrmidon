@@ -28,5 +28,6 @@
       "branch": "bot/ABC-099"
     }
   ],
-  "protectKeys": ["ABC-101"]
+  "protectKeys": ["ABC-101"],
+  "closedKeys": ["ABC-050"]
 }

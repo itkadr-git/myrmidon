@@ -10,8 +10,10 @@
 //   lib/archive.js  (H3c)  optional: archive(path, key) before a scratch removal
 // Without desired.js nothing is ever removed (fail-safe), only reported.
 //
-// Usage: botd            loop every 60 s (+SIGUSR1)
-//        botd --once     one pass, then exit
+// Usage: botd                  loop; the delay is the board's nextReportSec (300 s), +SIGUSR1
+//        botd --once           one pass, then exit
+//        botd --once --plan    dry run: inventory + plan as JSON on stdout, nothing executed,
+//                              nothing written, no report sent
 
 const fs = require("node:fs");
 const path = require("node:path");
@@ -249,6 +251,7 @@ async function main() {
       isGit: (p) => fs.existsSync(path.join(p, ".git")),
       remove: (p) => guardedRemove(p, roots),
       archiveRoot: ARCHIVE_DIR,
+      nestedGit: legacyMod.findNestedGit,
     });
   const executor = {
     // E: the CLI owns worktree removal and the archive; G: files under a scratch root
@@ -258,6 +261,16 @@ async function main() {
         const force = /pr-merged/.test(a.reason || "");
         const r = await ws(["close", a.key, ...(force ? ["--force"] : [])]);
         return r.archived ? `archived to ${r.archivePath || "archive"}` : "closed";
+      }
+      // a scratch directory holding repositories is archived like a legacy one
+      if (legacyMod.findNestedGit(a.path).length > 0) {
+        return legacyMod.archiveThenRemove(a, {
+          archiveMod,
+          isGit: (p) => fs.existsSync(path.join(p, ".git")),
+          remove: (p) => guardedRemove(p, SCRATCH_ROOTS),
+          archiveRoot: ARCHIVE_DIR,
+          nestedGit: legacyMod.findNestedGit,
+        });
       }
       guardedRemove(a.path, SCRATCH_ROOTS);
       return "removed";
@@ -273,6 +286,7 @@ async function main() {
         isGit: (p) => fs.existsSync(path.join(p, ".git")),
         remove: (p) => guardedRemove(p, SCRATCH_ROOTS),
         archiveRoot: ARCHIVE_DIR,
+        nestedGit: legacyMod.findNestedGit,
       });
     },
     prune: async () => {
@@ -301,6 +315,22 @@ async function main() {
     imageGeneration: process.env.MYRMIDON_IMAGE_GENERATION || process.env.MYRMIDON_IMAGE_TAG || "unknown",
   });
 
+  if (process.argv.includes("--once") && process.argv.includes("--plan")) {
+    const r = await loop.runOnce({ dryRun: true });
+    const byOp = {};
+    for (const a of (r.planned && r.planned.actions) || []) byOp[a.op] = (byOp[a.op] || 0) + 1;
+    process.stdout.write(
+      `${JSON.stringify({
+        desiredOk: r.desiredOk,
+        pressure: (r.planned && r.planned.pressure) || null,
+        actions: (r.planned && r.planned.actions) || [],
+        held: (r.planned && r.planned.held) || [],
+        summary: { byOp },
+        notes: r.results.filter((x) => x.result === "skipped" && x.path === "/").map((x) => x.detail),
+      })}\n`,
+    );
+    return;
+  }
   if (process.argv.includes("--once")) {
     const r = await loop.runOnce();
     log(`botd: pass done, desired ${r.desiredOk ? "ok" : "unavailable"}, actions ${r.executed.length}, report ${r.sent.ok ? "sent" : `not sent (${r.sent.reason})`}`);

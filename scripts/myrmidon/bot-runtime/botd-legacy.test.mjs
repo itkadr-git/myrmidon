@@ -127,7 +127,7 @@ describe("archiveThenRemove: legacy path outside the registry", () => {
   it("a failed archive leaves the directory in place (nothing is removed)", () => {
     const { removed, remove } = mk();
     const failing = { archive: () => ({ ok: false, reason: "boom" }), archiveTree: () => ({ ok: false, reason: "boom" }) };
-    assert.throws(() => archiveThenRemove({ path: path.join(ws, "x"), key: "x" }, { archiveMod: failing, isGit: () => false, remove, archiveRoot }), /archive failed, not removed: boom/);
+    assert.throws(() => archiveThenRemove({ path: path.join(ws, "x"), key: "x" }, { archiveMod: failing, isGit: () => false, remove, archiveRoot }), /archive-incomplete: directory tree: boom, not removed/);
     assert.throws(() => archiveThenRemove({ path: path.join(ws, "x"), key: "x" }, { archiveMod: null, isGit: () => false, remove, archiveRoot }), /not in this image/);
     assert.deepEqual(removed, []);
   });

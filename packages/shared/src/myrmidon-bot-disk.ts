@@ -322,6 +322,9 @@ const graceClosingMinutesSchema = z.number().int().min(5).max(24 * 60);
 const scratchTtlHoursSchema = z.number().int().min(1).max(24 * 30);
 const partitionPercentSchema = z.number().int().min(50).max(100);
 const botdIntervalSecSchema = z.number().int().min(30).max(24 * 60 * 60);
+// myrmidon(1.6.5-BOT-DISK-H, rc.9): days a directory the board does not close may sit idle before botd
+// archives it under HARD partition pressure. Absent = 7.
+const legacyPressureIdleDaysSchema = z.number().int().min(1).max(90);
 // myrmidon(1.6.5-BOT-DISK-H4b): `owner/repo` of the fallback repository for tasks
 // that have neither a project repository nor a pull request. Absent = none.
 const defaultRepoSchema = z
@@ -350,6 +353,7 @@ export const botDiskSettingsSchema = z
     partitionRefuseOpenPercent: partitionPercentSchema.optional(),
     partitionCriticalPercent: partitionPercentSchema.optional(),
     botdIntervalSec: botdIntervalSecSchema.optional(),
+    legacyPressureIdleDays: legacyPressureIdleDaysSchema.optional(),
     defaultRepo: defaultRepoSchema.optional(),
   })
   .strict();
@@ -371,6 +375,7 @@ const storedBotDiskObjectSchema = z
     partitionRefuseOpenPercent: partitionPercentSchema.optional().catch(undefined),
     partitionCriticalPercent: partitionPercentSchema.optional().catch(undefined),
     botdIntervalSec: botdIntervalSecSchema.optional().catch(undefined),
+    legacyPressureIdleDays: legacyPressureIdleDaysSchema.optional().catch(undefined),
     defaultRepo: defaultRepoSchema.optional().catch(undefined),
   })
   .passthrough();
@@ -405,6 +410,7 @@ export const patchBotDiskSettingsSchema = z
     partitionRefuseOpenPercent: z.union([partitionPercentSchema, z.null()]).optional(),
     partitionCriticalPercent: z.union([partitionPercentSchema, z.null()]).optional(),
     botdIntervalSec: z.union([botdIntervalSecSchema, z.null()]).optional(),
+    legacyPressureIdleDays: z.union([legacyPressureIdleDaysSchema, z.null()]).optional(),
     // myrmidon(1.6.5-BOT-DISK-H4b): a repository sets the fallback, null or "" clears it.
     defaultRepo: z.union([defaultRepoSchema, z.literal(""), z.null()]).optional(),
   })
@@ -463,6 +469,7 @@ export function normalizeStoredBotDiskSettings(raw: unknown): Partial<BotDiskSet
   if (typeof parsed.data.partitionRefuseOpenPercent === "number") out.partitionRefuseOpenPercent = parsed.data.partitionRefuseOpenPercent;
   if (typeof parsed.data.partitionCriticalPercent === "number") out.partitionCriticalPercent = parsed.data.partitionCriticalPercent;
   if (typeof parsed.data.botdIntervalSec === "number") out.botdIntervalSec = parsed.data.botdIntervalSec;
+  if (typeof parsed.data.legacyPressureIdleDays === "number") out.legacyPressureIdleDays = parsed.data.legacyPressureIdleDays;
   if (typeof parsed.data.defaultRepo === "string") out.defaultRepo = parsed.data.defaultRepo;
   return out;
 }
@@ -556,6 +563,7 @@ export function mergeBotDiskSettings(
       partitionRefuseOpenPercent: pick(patch.partitionRefuseOpenPercent, base.partitionRefuseOpenPercent),
       partitionCriticalPercent: pick(patch.partitionCriticalPercent, base.partitionCriticalPercent),
       botdIntervalSec: pick(patch.botdIntervalSec, base.botdIntervalSec),
+      legacyPressureIdleDays: pick(patch.legacyPressureIdleDays, base.legacyPressureIdleDays),
     }),
   };
 }
@@ -569,6 +577,7 @@ function optionalMechanicsKeys(values: Partial<BotDiskSettings>): Partial<BotDis
     ...(values.partitionRefuseOpenPercent !== undefined ? { partitionRefuseOpenPercent: values.partitionRefuseOpenPercent } : {}),
     ...(values.partitionCriticalPercent !== undefined ? { partitionCriticalPercent: values.partitionCriticalPercent } : {}),
     ...(values.botdIntervalSec !== undefined ? { botdIntervalSec: values.botdIntervalSec } : {}),
+    ...(values.legacyPressureIdleDays !== undefined ? { legacyPressureIdleDays: values.legacyPressureIdleDays } : {}),
   };
 }
 
