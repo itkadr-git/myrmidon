@@ -79,6 +79,15 @@ fails with the reason
 ([changelog](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/CHANGELOG.md),
 1.6.5 BACKUP-KEEP-LAST).
 
+Backup and restore runs are not bounded by the database's
+`statement_timeout`: since 1.6.5 every connection the backup or the restore
+opens sets the session `statement_timeout` to `0` — no limit — (a startup
+parameter of the JavaScript client, and `PGOPTIONS="-c statement_timeout=0"`
+for the pg_dump/psql child processes), so a long `COPY` of a large table is
+never aborted by a database-wide limit set with
+`ALTER DATABASE ... SET statement_timeout`. All other board connections
+keep the database limit unchanged (1.6.5 BACKUP-STATEMENT-TIMEOUT).
+
 ## Also in the interface
 
 - **Host disk threshold** — Instance → General, "Host disk" (default 85 %);
