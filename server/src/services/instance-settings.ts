@@ -293,6 +293,10 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // myrmidon(1.7-BUDGET-CONFIG-B): the stored budget enforcement mode
       // survives every general write (it is edited on its own settings page).
       ...(parsed.data.budgetEnforcement ? { budgetEnforcement: parsed.data.budgetEnforcement } : {}),
+      // myrmidon(1.7-AGENT-EXCHANGE-A): the stored discussion-room settings
+      // survive every general write (they are edited on their own settings
+      // panel on Instance → General).
+      ...(parsed.data.agentExchange ? { agentExchange: parsed.data.agentExchange } : {}),
       // myrmidon(REVIEW-ROUTING): the stored review routing settings survive
       // every general write (they are edited on their own settings page).
       ...(parsed.data.reviewRouting ? { reviewRouting: parsed.data.reviewRouting } : {}),
