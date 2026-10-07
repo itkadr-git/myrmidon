@@ -4,7 +4,7 @@ import {
 } from "@paperclipai/shared";
 import {
   BOT_DOCKER_SOCKET_ENV_NAME,
-  createDockergateDiskClient as   dockergateDiskClientFromEnv,
+  dockergateDiskClientFromEnv,
   type DockergateDiskClient as DockergateSocketClient,
 } from "../bot-containers/dockergate-disk-client.js";
 
