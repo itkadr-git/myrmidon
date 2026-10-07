@@ -344,7 +344,7 @@ describe("install.sh", () => {
   });
 
   it("the external profile uses the operator's shared server and creates no db container", () => {
-    const url = "postgresql://boardrole:***@10.10.10.9:5432/paperclip";
+    const url = "postgresql://boardrole:***@shared-db.internal:5432/paperclip";
     const sb = sandbox();
     const r = run(sb, ["--database-url", url]);
     assert.equal(r.status, 0, r.stderr);
