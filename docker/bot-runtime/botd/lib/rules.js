@@ -89,6 +89,10 @@ function resolveLimits(desired, settings) {
 // so a mismatched producer deletes nothing instead of throwing.
 const arr = (v) => (Array.isArray(v) ? v : []);
 
+const TASK_KEY_RE = /^[A-Z][A-Z0-9]*-[0-9]+$/;
+const isTaskKeyedWorkspaceDir = (sc) =>
+  typeof sc.path === "string" && sc.path.startsWith("/workspace/") && TASK_KEY_RE.test(String(sc.name));
+
 function pressureLevel(desired) {
   const level = desired?.pressure?.level;
   return level === "soft" || level === "hard" ? level : "none";
@@ -166,9 +170,16 @@ export function plan(inventory, desired, now, settings) {
   }
 
   // --- class G: scratch ---------------------------------------------------
+  // `desired.protectKeys` (optional, board): keys of open tasks assigned to the bot. The board
+  // may not build a workspace for them (no repo), so `workspaces` alone cannot protect them.
+  // Without the field (an older board) a task-keyed directory under /workspace is never
+  // removed: only reported.
+  const protectKeys = Array.isArray(desired.protectKeys) ? new Set(desired.protectKeys) : null;
   const scratchTtl = pressed ? lim.pressureScratchTtlMs : lim.scratchTtlMs;
   for (const sc of arr(inv.scratch)) {
     if (activePaths.has(sc.path) || activeKeys.has(sc.name)) continue;
+    if (protectKeys !== null && protectKeys.has(sc.name)) continue;
+    if (protectKeys === null && isTaskKeyedWorkspaceDir(sc)) continue;
     const mtime = toMs(sc.mtime);
     if (mtime === null || nowMs - mtime < scratchTtl) continue;
     if (sc.isGit && !(sc.clean === true && sc.pushed === true)) {

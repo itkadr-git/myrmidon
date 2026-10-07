@@ -28,6 +28,9 @@ export const RETENTION_CAP_BYTES = 2 * 1024 * 1024 * 1024;
 export const MANIFEST_NAME = "manifest.json";
 
 const ISSUE_KEY_RE = /^[A-Z][A-Z0-9]*-[0-9]+$/;
+// Legacy (non-registry) directories keep their own name as the archive key; it only has to be
+// a safe file-name stem. Issue keys are a subset of it.
+const SAFE_KEY_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$/;
 const REPO_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const MAX_BUFFER = 1024 * 1024 * 1024;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -97,7 +100,7 @@ function writeManifest(archiveRoot, manifest) {
 }
 
 function entryFiles(entry) {
-  return [entry.bundle, entry.patch, entry.untrackedTar].filter((f) => typeof f === "string" && f);
+  return [entry.bundle, entry.patch, entry.untrackedTar, entry.dirTar].filter((f) => typeof f === "string" && f);
 }
 
 function sizeOf(file) {
@@ -150,14 +153,16 @@ function totalSize(copyPath, files) {
  * Archives the unpushed work of a task copy.
  * @param {string} copyPath worktree/clone directory
  * @param {string} key issue key (ABC-101)
- * @param {{archiveRoot?:string, repo?:string, now?:Date, untrackedCapBytes?:number, gitBin?:string}} [opts]
+ * @param {{archiveRoot?:string, repo?:string, now?:Date, untrackedCapBytes?:number, gitBin?:string, looseKey?:boolean}} [opts]
+ *   `looseKey`: accept any safe file-name stem as the key (legacy directories that are not named after an issue)
  * @returns {{ok:true, entry:object}|{ok:false, reason:string}}
  */
 export function archive(copyPath, key, opts = {}) {
   const archiveRoot = opts.archiveRoot || DEFAULT_ARCHIVE_ROOT;
   const cap = opts.untrackedCapBytes ?? UNTRACKED_CAP_BYTES;
   const now = opts.now || new Date();
-  if (typeof key !== "string" || !ISSUE_KEY_RE.test(key)) return { ok: false, reason: `invalid issue key ${JSON.stringify(key)}` };
+  const keyRe = opts.looseKey ? SAFE_KEY_RE : ISSUE_KEY_RE;
+  if (typeof key !== "string" || !keyRe.test(key)) return { ok: false, reason: `invalid issue key ${JSON.stringify(key)}` };
   if (typeof copyPath !== "string" || !fs.existsSync(path.join(copyPath, ".git"))) {
     return { ok: false, reason: `${copyPath} is not a git working copy` };
   }
@@ -247,6 +252,41 @@ export function archive(copyPath, key, opts = {}) {
 }
 
 /**
+ * Archives a directory that is not a git working copy (a legacy task directory
+ * without `.git`) as one tar. `.git` is never part of it. Layout:
+ * `<archiveRoot>/<name>-<ts>.dir.tar`, manifest entry `{key, dirTar, createdAt,
+ * sizeBytes, truncatedUntracked:false}`. Same contract as `archive()`: ok:true only
+ * after the tar was listed back; otherwise nothing is left behind.
+ * @returns {{ok:true, entry:object}|{ok:false, reason:string}}
+ */
+export function archiveTree(dirPath, key, opts = {}) {
+  const archiveRoot = opts.archiveRoot || DEFAULT_ARCHIVE_ROOT;
+  const now = opts.now || new Date();
+  if (typeof key !== "string" || !SAFE_KEY_RE.test(key)) return { ok: false, reason: `invalid archive key ${JSON.stringify(key)}` };
+  let tar;
+  try {
+    if (!fs.statSync(dirPath).isDirectory()) return { ok: false, reason: `${dirPath} is not a directory` };
+    fs.mkdirSync(archiveRoot, { recursive: true });
+    let ts = new Date(now.getTime());
+    for (;;) {
+      tar = path.join(archiveRoot, `${key}-${compactTs(ts)}.dir.tar`);
+      if (!fs.existsSync(tar)) break;
+      ts = new Date(ts.getTime() + 1000);
+    }
+    run("tar", ["-cf", tar, "--exclude=.git", "-C", dirPath, "."]);
+    run("tar", ["-tf", tar]);
+    const entry = { key, dirTar: tar, createdAt: now.toISOString(), sizeBytes: sizeOf(tar), truncatedUntracked: false };
+    const manifest = readManifest(archiveRoot, now);
+    manifest.archives.push(entry);
+    writeManifest(archiveRoot, manifest);
+    return { ok: true, entry };
+  } catch (e) {
+    if (tar) fs.rmSync(tar, { force: true });
+    return { ok: false, reason: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/**
  * Re-checks an existing archive entry: bundle verifies against `copyPath`'s
  * repository (or any repo that has the prerequisites), tar is listable.
  * @returns {{ok:true}|{ok:false, reason:string}}
@@ -259,6 +299,7 @@ export function verifyEntry(entry, opts = {}) {
       verifyBundle(gitBin(opts), opts.repoPath, entry.bundle, path.dirname(entry.bundle));
     }
     if (entry.untrackedTar) run("tar", ["-tf", entry.untrackedTar]);
+    if (entry.dirTar) run("tar", ["-tf", entry.dirTar]);
     return { ok: true };
   } catch (e) {
     return { ok: false, reason: e instanceof Error ? e.message : String(e) };

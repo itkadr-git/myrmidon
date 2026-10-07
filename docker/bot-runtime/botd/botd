@@ -157,11 +157,11 @@ function listArchives() {
     return out;
   }
   for (const n of names) {
-    if (!n.endsWith(".bundle")) continue;
+    if (!n.endsWith(".bundle") && !n.endsWith(".dir.tar")) continue;
     const p = path.join(ARCHIVE_DIR, n);
     try {
       const st = fs.statSync(p);
-      const m = /^(.+)-\d{8}T\d{6}Z\.bundle$/.exec(n);
+      const m = /^(.+)-\d{8}T\d{6}Z\.(?:bundle|dir\.tar)$/.exec(n);
       out.push({ key: m ? m[1] : n, path: p, sizeBytes: st.size, createdAt: st.mtime });
     } catch {
       /* gone */
@@ -171,13 +171,14 @@ function listArchives() {
 }
 
 async function main() {
-  const [desiredMod, rulesMod, classifyMod, archiveMod, loopMod, reportMod] = await Promise.all([
+  const [desiredMod, rulesMod, classifyMod, archiveMod, loopMod, reportMod, legacyMod] = await Promise.all([
     tryImport("desired.js"),
     tryImport("rules.js"),
     tryImport("classify.js"),
     tryImport("archive.js"),
     import(path.join(__dirname, "lib", "loop.js")),
     import(path.join(__dirname, "lib", "report.js")),
+    import(path.join(__dirname, "lib", "legacy.js")),
   ]);
 
   const desiredClient = desiredMod ? desiredMod.createDesiredClient({ log }) : null;
@@ -208,7 +209,6 @@ async function main() {
       classified = classifyMod.classifyAll({ registry, desired: state, now: Date.now() });
       parts = classifyMod.toReportParts(classified.items, classified.actions);
     }
-    const ageOf = new Map(classified.items.map((it) => [it.path, it.ageSec]));
     const nowMs = Date.now();
     const inventory = {
       worktrees: entries
@@ -222,12 +222,8 @@ async function main() {
           pushed: e.pushed,
           openedAt: e.openedAt,
         })),
-      scratch: [
-        ...entries.filter((e) => e.class === "G").map((e) => ({ name: e.key, path: e.path, mtime: e.openedAt, isGit: e.clean !== null, clean: e.clean, pushed: e.pushed })),
-        ...classified.items
-          .filter((it) => it.class === "G" && !entries.some((e) => e.path === it.path))
-          .map((it) => ({ name: path.basename(it.path), path: it.path, mtime: nowMs - (ageOf.get(it.path) || 0) * 1000, isGit: fs.existsSync(path.join(it.path, ".git")), clean: null, pushed: null })),
-      ],
+      // G (registry and legacy) and X: the rules apply TTL/grace and the activeKeys protection
+      scratch: legacyMod.scratchInventory(entries, classified.items, nowMs, (p) => fs.existsSync(path.join(p, ".git"))),
       bases: bases.map((b) => ({
         path: b.path,
         repo: b.repo,
@@ -243,10 +239,22 @@ async function main() {
   }
 
   const isWorkspace = (p) => inside("/workspace", path.resolve(p));
+  const roots = ["/workspace", ...SCRATCH_ROOTS];
+  const owned = (p) => legacyMod.inRegistry((readJson(REGISTRY_PATH, { entries: [] }).entries) || [], p);
+  // A path under /workspace that the registry does not list (an old clone, a task directory
+  // from before myr-ws): `myr-ws close` would fail with "no open copy", so archive it here.
+  const legacyRemove = (a) =>
+    legacyMod.archiveThenRemove(a, {
+      archiveMod,
+      isGit: (p) => fs.existsSync(path.join(p, ".git")),
+      remove: (p) => guardedRemove(p, roots),
+      archiveRoot: ARCHIVE_DIR,
+    });
   const executor = {
     // E: the CLI owns worktree removal and the archive; G: files under a scratch root
     remove: async (a) => {
       if (isWorkspace(a.path)) {
+        if (!owned(a.path)) return legacyRemove(a);
         const force = /pr-merged/.test(a.reason || "");
         const r = await ws(["close", a.key, ...(force ? ["--force"] : [])]);
         return r.archived ? `archived to ${r.archivePath || "archive"}` : "closed";
@@ -256,15 +264,16 @@ async function main() {
     },
     "archive-remove": async (a) => {
       if (isWorkspace(a.path)) {
+        if (!owned(a.path)) return legacyRemove(a);
         const r = await ws(["close", a.key, "--force"]);
         return r.archived ? `archived to ${r.archivePath || "archive"}` : "closed";
       }
-      if (!archiveMod || typeof archiveMod.archive !== "function") {
-        throw new Error("archive module is not in this image: not removed");
-      }
-      await archiveMod.archive(a.path, a.key);
-      guardedRemove(a.path, SCRATCH_ROOTS);
-      return "archived, removed";
+      return legacyMod.archiveThenRemove(a, {
+        archiveMod,
+        isGit: (p) => fs.existsSync(path.join(p, ".git")),
+        remove: (p) => guardedRemove(p, SCRATCH_ROOTS),
+        archiveRoot: ARCHIVE_DIR,
+      });
     },
     prune: async () => {
       for (const b of listBases()) await run(GIT_BIN, ["--git-dir", b.path, "worktree", "prune"]);

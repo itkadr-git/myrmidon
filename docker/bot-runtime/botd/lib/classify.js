@@ -173,12 +173,14 @@ export function readRepoFacts(repo) {
 // size and age: one bounded walk, symbolic links not followed
 // ---------------------------------------------------------------------------
 
-const SKIP_AGE_DIRS = new Set(["node_modules", ".pnpm-store"]);
+// `.git` is skipped for the age: `git fetch` / `git status` (the host janitor runs them
+// every 30 min) rewrite files in it and would reset every TTL. The working tree decides.
+const SKIP_AGE_DIRS = new Set(["node_modules", ".pnpm-store", ".git"]);
 
 /**
  * `{ sizeBytes, newestMs }` of a directory tree. `sizeBytes` is apparent size
  * with hard-linked files counted once (null when the walk hit the entry limit);
- * `newestMs` is the latest mtime/ctime of anything outside node_modules (a
+ * `newestMs` is the latest mtime/ctime of anything outside node_modules and .git (a
  * hard-linked file is judged by mtime only: another link bumps its ctime).
  */
 export function measureTree(root, limit = WALK_ENTRY_LIMIT) {
