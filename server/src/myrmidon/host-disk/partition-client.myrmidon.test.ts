@@ -87,7 +87,8 @@ describe("partitionClientFromEnv", () => {
       expect(client).not.toBeNull();
       const usage = await client!.readPartitionUsage();
       expect(usage?.usedPercent).toBe(55.1);
-      expect(seen).toEqual(["GET /myrmidon/disk"]);
+      // three calls above (raw client, env client, selector client), every one a plain GET
+      expect(seen).toEqual(Array(3).fill("GET /myrmidon/disk"));
       expect(fetchSpy).not.toHaveBeenCalled();
     } finally {
       await new Promise((resolve) => server.close(resolve));
