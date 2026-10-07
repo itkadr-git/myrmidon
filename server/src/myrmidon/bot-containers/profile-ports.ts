@@ -470,6 +470,14 @@ export function createDbBotProfilePorts(db: Db): BotProfilePorts {
       return { storeDir: layout.pnpmStoreDir, importMethod: layout.pnpmImportMethod };
     },
 
+    // myrmidon(1.6.5-BOT-DISK-UV-A): the uv cache directory and link mode, read
+    // per tick from the same row (the layout resolves defaults for a key the
+    // operator never set).
+    async uvSettings(): Promise<{ cacheDir: string; linkMode: string }> {
+      const layout = await readBotDiskLayout(db);
+      return { cacheDir: layout.uvCacheDir, linkMode: layout.uvLinkMode };
+    },
+
     // myrmidon(1.6.5-BOT-DISK-H5c): the BOT-DISK-H mechanics (C7), read per tick
     // from the same `general.botDisk` row, so a settings change reaches the bots
     // on the next reconcile without a restart.

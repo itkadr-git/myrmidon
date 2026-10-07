@@ -49,7 +49,18 @@ import { z } from "zod";
  * - `pnpmImportMethod` — how pnpm puts a package into a clone: `clone` (the
  *   default, a reflink; strictly, a refused reflink fails loudly) or `copy` (an
  *   explicit opt-out). `clone-or-copy` and `hardlink` are refused; stored by an
- *   earlier release they read as `clone`.
+ *   earlier release they read as `clone`;
+ * - `uvCacheDir` (myrmidon(1.6.5-BOT-DISK-UV-A)) — where uv keeps its package
+ *   cache (default `/cache/uv`, one per partition, bound read-write to every
+ *   bot of `sharedCacheRoles`; a path inside the bot's own tree is a cache per
+ *   bot and draws a warning);
+ * - `uvLinkMode` — how uv moves a cached package into an environment: `clone`
+ *   (the default, a reflink on a CoW filesystem), `hardlink` or `copy`.
+ *   `symlink` is refused: site-packages through symlinks would make the shared
+ *   cache writable from other bots' environments. Unlike pnpm, uv falls back
+ *   clone -> hardlink -> copy itself (with a warning in the bot's log), so a
+ *   refused reflink does not fail the install — `hardlink` is a documented uv
+ *   value and stays allowed.
  *
  * myrmidon(BOT-DISK-D): the three binds of a bot container became ONE mount (the
  * bot's whole tree), which is what makes hard links possible at all; the former
@@ -242,6 +253,114 @@ const pnpmStoreDirSchema = z
     if (problem) ctx.addIssue({ code: "custom", message: `pnpmStoreDir ${problem}` });
   });
 
+/**
+ * myrmidon(1.6.5-BOT-DISK-UV-A): where uv keeps its package cache by default —
+ * ONE per partition, `/cache/uv` (host `<sharedPackageCachePath>/uv`, bound
+ * read-write to every bot of `sharedCacheRoles`), mirroring the shared pnpm
+ * store above. A path inside the bot's own tree is a cache PER BOT (no sharing,
+ * counted in that bot's quota) and draws a warning, like the pnpm store.
+ */
+export const BOT_DISK_DEFAULT_UV_CACHE_DIR = "/cache/uv";
+/** The shared per-partition uv cache mount inside a bot container. */
+export const BOT_DISK_SHARED_UV_CACHE_DIR = BOT_DISK_DEFAULT_UV_CACHE_DIR;
+/** How uv moves a cached package into an environment; `clone` (a reflink) is the default. */
+export const BOT_DISK_UV_LINK_MODES = ["clone", "hardlink", "copy"] as const;
+export type BotDiskUvLinkMode = (typeof BOT_DISK_UV_LINK_MODES)[number];
+export const BOT_DISK_DEFAULT_UV_LINK_MODE: BotDiskUvLinkMode = "clone";
+/** Container roots of the bot's own tree: a cache there is per bot, not shared. */
+export const BOT_DISK_UV_CACHE_ROOTS = ["/workspace", "/data", "/scratch", "/bot"] as const;
+
+/**
+ * Why `value` cannot be the uv cache directory, or null when it can: a plain
+ * absolute path (the cache-path rules) strictly under one of
+ * {@link BOT_DISK_UV_CACHE_ROOTS}, or the shared cache mount
+ * {@link BOT_DISK_SHARED_UV_CACHE_DIR} itself or something under it. A cache
+ * anywhere else is on another filesystem than the bot's environments, so a
+ * reflink (and a hard link) fails and uv copies every wheel into every bot.
+ */
+export function botDiskUvCacheDirProblem(value: string): string | null {
+  const plain = botDiskCachePathProblem(value);
+  if (plain) return plain;
+  if (value === BOT_DISK_SHARED_UV_CACHE_DIR || value.startsWith(`${BOT_DISK_SHARED_UV_CACHE_DIR}/`)) return null;
+  if (!BOT_DISK_UV_CACHE_ROOTS.some((root) => value.startsWith(`${root}/`))) {
+    return `must be ${BOT_DISK_SHARED_UV_CACHE_DIR} (the cache shared by the partition) or inside the bot's own tree (under ${BOT_DISK_UV_CACHE_ROOTS.join(", ")}): any other path is on another filesystem than the bot's environments`;
+  }
+  return null;
+}
+
+/**
+ * A warning (not an error) for a cache that is allowed but defeats the point:
+ * one inside the bot's own tree is a cache PER BOT — no sharing between bots,
+ * counted against that bot's quota. Null for the shared cache.
+ */
+export function botDiskUvCacheDirWarning(value: string): string | null {
+  if (botDiskUvCacheDirProblem(value) !== null) return null;
+  if (BOT_DISK_UV_CACHE_ROOTS.some((root) => value.startsWith(`${root}/`))) {
+    return `uvCacheDir ${value} is inside the bot's own tree: a cache per bot, not shared and counted in the bot's quota; the shared cache is ${BOT_DISK_SHARED_UV_CACHE_DIR}`;
+  }
+  return null;
+}
+
+/**
+ * Why `value` cannot be the uv link mode, or null when it can: `clone`,
+ * `hardlink` or `copy` (the documented uv values). `symlink` is refused on
+ * purpose: an environment whose site-packages are symlinks into the shared
+ * cache breaks the isolation of the bots — a write through one bot's
+ * environment reaches the cache every other bot installs from. Unlike pnpm's
+ * `clone-or-copy`, uv's own fallback (clone -> hardlink -> copy, with a warning
+ * in the bot's log) is acceptable here, so `clone` strictness is not required.
+ */
+export function botDiskUvLinkModeProblem(value: string): string | null {
+  if ((BOT_DISK_UV_LINK_MODES as readonly string[]).includes(value)) return null;
+  if (value === "symlink") {
+    return "symlink is not allowed: environments linked into the shared cache break bot isolation — the cache becomes writable through other bots' site-packages; use clone (a reflink), hardlink or copy";
+  }
+  return `must be one of ${BOT_DISK_UV_LINK_MODES.join(", ")}`;
+}
+
+/**
+ * myrmidon(1.6.5-BOT-DISK-UV-A): uv is a new feature — no earlier release stored
+ * `uvCacheDir` or `uvLinkMode`, so there is nothing to migrate. The function
+ * mirrors {@link migrateBotDiskPnpm} so the wiring reads the same and a later
+ * release can add real migrations here; today it validates and passes values
+ * through (an unknown link mode is dropped to the default by the caller).
+ */
+export function migrateBotDiskUv(stored: { uvCacheDir?: string; uvLinkMode?: string }): {
+  uvCacheDir?: string;
+  uvLinkMode?: BotDiskUvLinkMode;
+  notes: string[];
+} {
+  const notes: string[] = [];
+  const out: { uvCacheDir?: string; uvLinkMode?: BotDiskUvLinkMode; notes: string[] } = { notes };
+  if (typeof stored.uvCacheDir === "string" && botDiskUvCacheDirProblem(stored.uvCacheDir) === null) {
+    out.uvCacheDir = stored.uvCacheDir;
+  }
+  const mode = stored.uvLinkMode;
+  if (typeof mode === "string" && (BOT_DISK_UV_LINK_MODES as readonly string[]).includes(mode)) {
+    out.uvLinkMode = mode as BotDiskUvLinkMode;
+  }
+  return out;
+}
+
+const uvCacheDirSchema = z
+  .string()
+  .max(4096)
+  .superRefine((value, ctx) => {
+    const problem = botDiskUvCacheDirProblem(value);
+    if (problem) ctx.addIssue({ code: "custom", message: `uvCacheDir ${problem}` });
+  });
+
+const uvLinkModeSchema = z
+  .string()
+  .superRefine((value, ctx) => {
+    const problem = botDiskUvLinkModeProblem(value);
+    if (problem) ctx.addIssue({ code: "custom", message: `uvLinkMode ${problem}` });
+  })
+  .transform((value) => value as BotDiskUvLinkMode);
+
+/** What an earlier release may have stored: any string; {@link migrateBotDiskUv} reads it. */
+const storedUvLinkModeSchema = z.string().max(64);
+
 export const BOT_DISK_MIN_GIT_MIRROR_REFRESH_MS = 60 * 1000;
 export const BOT_DISK_MAX_GIT_MIRROR_REFRESH_MS = 24 * 60 * 60 * 1000;
 export const BOT_DISK_DEFAULT_GIT_MIRROR_REFRESH_MS = 15 * 60 * 1000;
@@ -345,6 +464,9 @@ export const botDiskSettingsSchema = z
     gitMirrorRefreshMs: gitMirrorRefreshMsSchema.optional(),
     pnpmStoreDir: pnpmStoreDirSchema.optional(),
     pnpmImportMethod: pnpmImportMethodSchema.optional(),
+    // myrmidon(1.6.5-BOT-DISK-UV-A): the uv cache, like the pnpm store above.
+    uvCacheDir: uvCacheDirSchema.optional(),
+    uvLinkMode: uvLinkModeSchema.optional(),
     sharedCacheRoles: sharedCacheRolesSchema.optional(),
     // myrmidon(1.6.5-BOT-DISK-H5c): the C7 mechanics keys; absent = the C7 defaults.
     graceClosingMinutes: graceClosingMinutesSchema.optional(),
@@ -368,6 +490,9 @@ const storedBotDiskObjectSchema = z
     gitMirrorRefreshMs: gitMirrorRefreshMsSchema.optional().catch(undefined),
     pnpmStoreDir: pnpmStoreDirSchema.optional().catch(undefined),
     pnpmImportMethod: storedPnpmImportMethodSchema.optional().catch(undefined),
+    // myrmidon(1.6.5-BOT-DISK-UV-A): uv — new keys; a stored value is validated, nothing migrated.
+    uvCacheDir: uvCacheDirSchema.optional().catch(undefined),
+    uvLinkMode: storedUvLinkModeSchema.optional().catch(undefined),
     sharedCacheRoles: sharedCacheRolesSchema.optional().catch(undefined),
     graceClosingMinutes: graceClosingMinutesSchema.optional().catch(undefined),
     scratchTtlHours: scratchTtlHoursSchema.optional().catch(undefined),
@@ -400,6 +525,9 @@ export const patchBotDiskSettingsSchema = z
     gitMirrorRefreshMs: z.union([gitMirrorRefreshMsSchema, z.null()]).optional(),
     pnpmStoreDir: z.union([pnpmStoreDirSchema, z.null()]).optional(),
     pnpmImportMethod: pnpmImportMethodSchema.nullable().optional(),
+    // myrmidon(1.6.5-BOT-DISK-UV-A): null returns each uv key to its default.
+    uvCacheDir: z.union([uvCacheDirSchema, z.null()]).optional(),
+    uvLinkMode: uvLinkModeSchema.nullable().optional(),
     // null returns the default role list; [] is allowed and means no bot.
     sharedCacheRoles: z.union([sharedCacheRolesSchema, z.null()]).optional(),
     // myrmidon(1.6.5-BOT-DISK-H5c): the C7 mechanics keys; null returns a key to
@@ -461,6 +589,13 @@ export function normalizeStoredBotDiskSettings(raw: unknown): Partial<BotDiskSet
   const pnpm = migrateBotDiskPnpm(parsed.data);
   if (pnpm.pnpmStoreDir !== undefined) out.pnpmStoreDir = pnpm.pnpmStoreDir;
   if (pnpm.pnpmImportMethod !== undefined) out.pnpmImportMethod = pnpm.pnpmImportMethod;
+  // myrmidon(1.6.5-BOT-DISK-UV-A): the uv keys (new — validation only, no migration).
+  const uv = migrateBotDiskUv({
+    uvCacheDir: typeof parsed.data.uvCacheDir === "string" ? parsed.data.uvCacheDir : undefined,
+    uvLinkMode: typeof parsed.data.uvLinkMode === "string" ? parsed.data.uvLinkMode : undefined,
+  });
+  if (uv.uvCacheDir !== undefined) out.uvCacheDir = uv.uvCacheDir;
+  if (uv.uvLinkMode !== undefined) out.uvLinkMode = uv.uvLinkMode;
   if (Array.isArray(parsed.data.sharedCacheRoles)) out.sharedCacheRoles = parsed.data.sharedCacheRoles;
   // myrmidon(1.6.5-BOT-DISK-H5c): the C7 mechanics keys.
   if (typeof parsed.data.graceClosingMinutes === "number") out.graceClosingMinutes = parsed.data.graceClosingMinutes;
@@ -517,6 +652,9 @@ function optionalLayoutKeys(values: Partial<BotDiskSettings>): Partial<BotDiskSe
     ...(values.gitMirrorRefreshMs !== undefined ? { gitMirrorRefreshMs: values.gitMirrorRefreshMs } : {}),
     ...(values.pnpmStoreDir !== undefined ? { pnpmStoreDir: values.pnpmStoreDir } : {}),
     ...(values.pnpmImportMethod !== undefined ? { pnpmImportMethod: values.pnpmImportMethod } : {}),
+    // myrmidon(1.6.5-BOT-DISK-UV-A): stored or absent, like the pnpm keys.
+    ...(values.uvCacheDir !== undefined ? { uvCacheDir: values.uvCacheDir } : {}),
+    ...(values.uvLinkMode !== undefined ? { uvLinkMode: values.uvLinkMode } : {}),
     ...(values.sharedCacheRoles !== undefined ? { sharedCacheRoles: values.sharedCacheRoles } : {}),
     // myrmidon(1.6.5-BOT-DISK-H11): stored or absent, like the cache path.
     ...(values.sharedBotRuntimePath !== undefined ? { sharedBotRuntimePath: values.sharedBotRuntimePath } : {}),
@@ -551,6 +689,9 @@ export function mergeBotDiskSettings(
       gitMirrorRefreshMs: pick(patch.gitMirrorRefreshMs, base.gitMirrorRefreshMs),
       pnpmStoreDir: pick(patch.pnpmStoreDir, base.pnpmStoreDir),
       pnpmImportMethod: pick(patch.pnpmImportMethod, base.pnpmImportMethod),
+      // myrmidon(1.6.5-BOT-DISK-UV-A): the uv keys merge like the pnpm ones.
+      uvCacheDir: pick(patch.uvCacheDir, base.uvCacheDir),
+      uvLinkMode: pick(patch.uvLinkMode, base.uvLinkMode),
       sharedCacheRoles: pick(patch.sharedCacheRoles, base.sharedCacheRoles),
     }),
     // myrmidon(1.6.5-BOT-DISK-H5c): the C7 mechanics keys merge like the layout
@@ -582,7 +723,7 @@ function optionalMechanicsKeys(values: Partial<BotDiskSettings>): Partial<BotDis
 }
 
 /** The 1.6.2-BOT-DISK-C keys a settings change compares besides the env-backed ones. */
-export const BOT_DISK_LAYOUT_KEYS = ["sharedPackageCachePath", "sharedBotRuntimePath", "gitMirrorRepos", "gitMirrorRefreshMs", "pnpmStoreDir", "pnpmImportMethod", "sharedCacheRoles"] as const;
+export const BOT_DISK_LAYOUT_KEYS = ["sharedPackageCachePath", "sharedBotRuntimePath", "gitMirrorRepos", "gitMirrorRefreshMs", "pnpmStoreDir", "pnpmImportMethod", "uvCacheDir", "uvLinkMode", "sharedCacheRoles"] as const;
 
 /**
  * myrmidon(1.6.5-BOT-DISK-H5c): the stored C7 mechanics keys, resolved with the
@@ -631,6 +772,10 @@ export interface BotDiskLayout {
   gitMirrorRefreshMs: number;
   pnpmStoreDir: string;
   pnpmImportMethod: BotDiskPnpmImportMethod;
+  /** myrmidon(1.6.5-BOT-DISK-UV-A): where uv keeps its cache (default: the shared `/cache/uv` mount). */
+  uvCacheDir: string;
+  /** How uv moves a cached package into an environment (`clone` by default). */
+  uvLinkMode: BotDiskUvLinkMode;
   /** Roles whose bots get the cache and mirror mounts (lower case); default {@link BOT_DISK_DEFAULT_SHARED_CACHE_ROLES}. */
   sharedCacheRoles: string[];
 }
@@ -647,6 +792,9 @@ export function resolveBotDiskLayout(stored: unknown): BotDiskLayout {
     gitMirrorRefreshMs: values.gitMirrorRefreshMs ?? BOT_DISK_DEFAULT_GIT_MIRROR_REFRESH_MS,
     pnpmStoreDir: values.pnpmStoreDir ?? BOT_DISK_DEFAULT_PNPM_STORE_DIR,
     pnpmImportMethod: values.pnpmImportMethod ?? BOT_DISK_DEFAULT_PNPM_IMPORT_METHOD,
+    // myrmidon(1.6.5-BOT-DISK-UV-A): the uv cache, like the pnpm store above.
+    uvCacheDir: values.uvCacheDir ?? BOT_DISK_DEFAULT_UV_CACHE_DIR,
+    uvLinkMode: values.uvLinkMode ?? BOT_DISK_DEFAULT_UV_LINK_MODE,
     sharedCacheRoles: [...new Set((values.sharedCacheRoles ?? BOT_DISK_DEFAULT_SHARED_CACHE_ROLES).map((r) => r.toLowerCase()))],
   };
 }
@@ -662,6 +810,24 @@ export function botDiskPnpmWarnings(stored: unknown): string[] {
   if (!parsed.success || !parsed.data) return [];
   const migrated = migrateBotDiskPnpm(parsed.data);
   const warning = migrated.pnpmStoreDir ? botDiskPnpmStoreDirWarning(migrated.pnpmStoreDir) : null;
+  return warning ? [...migrated.notes, warning] : migrated.notes;
+}
+
+/**
+ * myrmidon(1.6.5-BOT-DISK-UV-A): what to tell the operator about the uv
+ * settings in the stored `general.botDisk`: a cache inside the bot's own tree
+ * (a cache per bot) and its migration notes (uv is new, so today the notes are
+ * always empty — the shape mirrors {@link botDiskPnpmWarnings}). A warning,
+ * never a silent fall back.
+ */
+export function botDiskUvWarnings(stored: unknown): string[] {
+  const parsed = storedBotDiskSettingsSchema.safeParse(stored);
+  if (!parsed.success || !parsed.data) return [];
+  const migrated = migrateBotDiskUv({
+    uvCacheDir: typeof parsed.data.uvCacheDir === "string" ? parsed.data.uvCacheDir : undefined,
+    uvLinkMode: typeof parsed.data.uvLinkMode === "string" ? parsed.data.uvLinkMode : undefined,
+  });
+  const warning = migrated.uvCacheDir ? botDiskUvCacheDirWarning(migrated.uvCacheDir) : null;
   return warning ? [...migrated.notes, warning] : migrated.notes;
 }
 
