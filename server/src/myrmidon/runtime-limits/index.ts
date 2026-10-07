@@ -65,6 +65,9 @@ function defaultDeps(db: Db): RuntimeLimitsServiceDeps {
           logger.error({ err }, "queued run resweep after a runtime limits change failed");
         }),
       ),
+    // myrmidon(1.6.5 C0-ui): the host and container memory the load screen is
+    // about, read by the same admission that gates on it.
+    memorySnapshot: () => sharedRunAdmission?.memorySnapshot() ?? null,
   };
 }
 
