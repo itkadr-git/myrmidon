@@ -22,6 +22,9 @@ const contractDir = "../../../../docs/myrmidon/bot-disk-contract/"
 func contractFixture(t *testing.T, name string) []byte {
 	t.Helper()
 	b, err := os.ReadFile(contractDir + name)
+	if os.IsNotExist(err) {
+		t.Skipf("contract fixture %s is outside this build context", name)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
