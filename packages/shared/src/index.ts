@@ -2783,6 +2783,10 @@ export * from "./myrmidon-workspace-hygiene.js";
 // myrmidon(BOT-DISK E): host disk usage threshold, samples and growth shared by the server, the
 // UI and the settings validator.
 export * from "./myrmidon-host-disk.js";
+// myrmidon(1.6.6 MONITORING D): the alert-recovery contract — the owner task of an alert
+// (runbook steps and document link) and the sustained-resolution auto-close, shared by the
+// server, the settings validator and the board UI.
+export * from "./myrmidon-alert-recovery.js";
 // myrmidon(BOT-DISK-A): bot draft-directory lifecycle settings shared by the server and the settings validator.
 export * from "./myrmidon-bot-disk.js";
 // myrmidon(BOT-DISK-F): isolation scope resolver and bot-disk scope layout shared by the server and the UI.
