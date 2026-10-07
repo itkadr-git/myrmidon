@@ -38,6 +38,7 @@ import { myrmidonGitHubSharedIdentityRoutes } from "../myrmidon/github-shared-id
 import { defaultGitHubSharedIdentitySettings } from "../myrmidon/github-shared-identity/settings.js";
 import { readGitHubSharedIdentitySettings, writeGitHubSharedIdentitySettings } from "../myrmidon/github-shared-identity/store.js";
 import { GITHUB_APP_MANIFEST_DEFAULT_DESCRIPTION } from "../myrmidon/github-shared-identity/app-manifest.js";
+import { DEFAULT_GITHUB_APP_PERMISSIONS } from "../myrmidon/github-shared-identity/app-token.js";
 
 const PUBLIC_BASE = "https://board.example.com";
 const PEM = "-----BEGIN PRIVATE KEY-----\nmanifest-flow-test-key-material\n-----END PRIVATE KEY-----\n";
@@ -184,7 +185,6 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(entry).toMatchObject({ name: "App X", appId: "424242", slug: "my-app-x", installationId: null, roles: [], agentIds: [], allowedRepos: [] });
       const [secret] = await db.select().from(companySecrets).where(eq(companySecrets.id, entry.privateKeySecretId));
       expect(secret).toMatchObject({ companyId, scope: "company", provider: "local_encrypted" });
-
       // The key is nowhere: not the redirect, not the journal, not the rules.
       expect(res.headers.location).not.toContain("PRIVATE KEY");
       expect(res.text ?? "").not.toContain("PRIVATE KEY");
@@ -193,6 +193,32 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(JSON.stringify(journal)).not.toContain("PRIVATE KEY");
       const settingsRows = await db.select().from(instanceSettings);
       expect(JSON.stringify(settingsRows)).not.toContain("PRIVATE KEY");
+    });
+
+    it("stores the manifest's permissions on the entry and normalizes unknown levels to the default", async () => {
+      const { companyId } = await seed();
+      github.outcome = {
+        status: 201,
+        body: {
+          id: 424242,
+          slug: "my-app-x",
+          name: "App X",
+          pem: PEM,
+          html_url: "https://github.com/apps/my-app-x",
+          default_permissions: { contents: "read", pull_requests: "admin" },
+        },
+      };
+      const state = await beginState(companyId);
+      const res = await request(server(operator)).get(`${path(companyId)}/app-manifest/callback?code=one-time-code&state=${state}`);
+      expect(res.status).toBe(302);
+
+      const settings = await readGitHubSharedIdentitySettings(db, companyId);
+      expect(settings.apps).toHaveLength(1);
+      expect(settings.apps[0]!.permissions).toEqual({
+        ...DEFAULT_GITHUB_APP_PERMISSIONS,
+        contents: "read",
+        pull_requests: "write",
+      });
     });
 
     it("redirects with github_app_error on GitHub's 422 and stores nothing", async () => {

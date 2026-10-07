@@ -38,8 +38,10 @@ import { getActorInfo } from "../../routes/authz.js";
 import { loadConfig } from "../../config.js";
 import { secretService } from "../../services/secrets.js";
 import {
+  normalizeGitHubAppPermissions,
   type GitHubAppEntry,
 } from "./settings.js";
+import type { GitHubAppPermissions } from "./app-token.js";
 import { readGitHubSharedIdentitySettings, writeGitHubSharedIdentitySettings } from "./store.js";
 import type { Db } from "@paperclipai/db";
 
@@ -64,6 +66,23 @@ export interface GitHubAppManifest {
   hook_attributes: { active: boolean };
   default_permissions: { contents: "write"; pull_requests: "write"; metadata: "read" };
   redirect_url: string;
+}
+
+/**
+ * The manifest permission set as the stored permission list: the three
+ * `default_permissions` lines, every other allow-listed key at the default.
+ * Unknown levels in GitHub's conversion answer normalize back to the
+ * default — a stored document can never widen the broker beyond what the
+ * manifest asked for.
+ */
+function manifestPermissions(input: Record<string, unknown> | undefined): GitHubAppPermissions {
+  const levels = new Set(["none", "read", "write"]);
+  const requested: Record<string, string> = {};
+  for (const key of ["contents", "pull_requests"] as const) {
+    const level = input?.[key];
+    requested[key] = typeof level === "string" && levels.has(level) ? level : "write";
+  }
+  return normalizeGitHubAppPermissions(requested);
 }
 
 function publicBaseUrl(): string | null {
@@ -237,6 +256,11 @@ async function convertManifestCode(code: string, fetchImpl: typeof fetch): Promi
     appId: String(id),
     slug: typeof parsed.slug === "string" && parsed.slug ? parsed.slug : `app-${String(id)}`,
     name: typeof parsed.name === "string" && parsed.name ? parsed.name : `GitHub App ${String(id)}`,
+    permissions: manifestPermissions(
+      typeof parsed.default_permissions === "object" && parsed.default_permissions !== null
+        ? (parsed.default_permissions as Record<string, unknown>)
+        : undefined,
+    ),
     privateKey: pem,
   };
 }
@@ -278,6 +302,7 @@ export async function completeGitHubAppManifest(
     roles: [],
     agentIds: [],
     allowedRepos: [],
+    permissions: conversion.permissions,
   };
   const current = await readGitHubSharedIdentitySettings(db, input.companyId);
   const next = { ...current, apps: [...current.apps, entry] };
