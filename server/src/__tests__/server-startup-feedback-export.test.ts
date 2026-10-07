@@ -342,6 +342,14 @@ vi.mock("../services/index.js", () => ({
   reconcilePersistedRuntimeServicesOnStartup: vi.fn(async () => ({ reconciled: 0 })),
   resolveHeartbeatSchedulingSuppression: resolveHeartbeatSchedulingSuppressionMock,
   routineService: routineServiceFactoryMock,
+  // myrmidon(1.6.1-FORAGING-LIMITS-UI): the foraging wiring pulls the secret
+  // service at startup to resolve the learning reader key. The test company
+  // has no saved key, so the lookup finds nothing — same shape as the real
+  // service returning null for an unknown secret name.
+  secretService: vi.fn(() => ({
+    getByName: vi.fn(async () => null),
+    resolveSecretValue: vi.fn(async () => null),
+  })),
   statusCardService: vi.fn(() => ({})),
   toolAccessService: vi.fn(() => ({
     sweepConnectionHealth: vi.fn(async () => ({

@@ -47,8 +47,20 @@ export const GIT_CREDENTIAL_TOKEN_ENV_KEY = "PAPERCLIP_GIT_TOKEN";
 // rewrites, so a rewritten remote could otherwise request the token for an arbitrary host.
 // The helper is additionally installed URL-scoped (`credential.https://github.com.helper`)
 // so git does not consult it for other hosts in the first place — two independent gates.
+//
+// Escape-free by construction (myrmidon(CONTAINER-GITHUB-WRITE), OPE-3678/OPE-5618): the
+// answer lines are emitted with two `echo` calls instead of one `printf` with backslash-n
+// escapes. This string travels GIT_CONFIG_VALUE_* env vars and `-c` argv through extra
+// encoding layers (broker JSON, docker env, shell quoting). A backslash run that printf
+// interprets correctly at one depth becomes the literal two-character sequence of
+// backslash-plus-n after any layer doubles it, and git then sees ONE line with the password
+// glued to the username — the exact `could not read Password` failure observed live in the
+// container push path. With zero backslashes in the helper there is nothing left for any
+// layer to double. GitHub token character sets (ghp_/ghu_/gho_/ghs_/ghr_/github_pat_ plus
+// alphanumeric/_/-) contain no backslashes, whitespace, or shell metacharacters, so `echo`
+// of the double-quoted token is byte-exact on dash and bash alike.
 const GIT_CREDENTIAL_HELPER =
-  `!f() { ok=; proto=; while IFS= read -r l && [ -n "$l" ]; do case "$l" in host=github.com|host=www.github.com) ok=1;; protocol=https) proto=1;; esac; done; if [ "$1" = get ] && [ -n "$ok" ] && [ -n "$proto" ]; then printf 'username=x-access-token\\npassword=%s\\n' "$PAPERCLIP_GIT_TOKEN"; fi; }; f`;
+  `!f() { ok=; proto=; while IFS= read -r l && [ -n "$l" ]; do case "$l" in host=github.com|host=www.github.com) ok=1;; protocol=https) proto=1;; esac; done; if [ "$1" = get ] && [ -n "$ok" ] && [ -n "$proto" ]; then echo username=x-access-token; echo "password=$PAPERCLIP_GIT_TOKEN"; fi; }; f`;
 
 export type GitCredential = {
   token: string;

@@ -74,6 +74,10 @@ const mockRunnerGoalService = vi.hoisted(() => ({
 }));
 
 function registerModuleMocks() {
+  // myrmidon(UPSTREAM-13539): stub the queue projection so the fake DB stays comment-only.
+  vi.doMock("../myrmidon/upstream-steer/queued-interaction-response.js", () => ({
+    hasQueuedInteractionResponse: vi.fn(async () => false),
+  }));
   vi.doMock("../services/runner-goals.js", () => ({
     runnerGoalService: () => mockRunnerGoalService,
     RunnerGoalActionError: class RunnerGoalActionError extends Error {},

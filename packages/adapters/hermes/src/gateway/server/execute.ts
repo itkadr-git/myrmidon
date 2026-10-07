@@ -7,6 +7,7 @@ import type {
   RuntimeStatusUpdate,
   UsageSummary,
 } from "@paperclipai/adapter-utils";
+import { githubLauncherPayload } from "@paperclipai/adapter-utils/github-launcher";
 import { measureSections } from "@paperclipai/adapter-utils/prompt-meter";
 import {
   asNumber,
@@ -471,6 +472,85 @@ function buildGitHubBrokerField(
   return { broker_url: brokerUrl, capability };
 }
 
+// myrmidon(1.6.5 BOT-DISK-H5a, contract C6): the `workspace` field of a
+// /v1/runs request — `{key, repo, baseRef}` — from which the gateway runs
+// `myr-ws open` before the model starts. The shapes mirror
+// `runWorkspaceFieldSchema` of @paperclipai/shared (this package does not
+// depend on it; execute.test.ts checks the output against the real schema).
+// key: the board identifier of the run's issue; repo: `owner/name` derived
+// from the project workspace's repo URL (github.com only: https, ssh:// or scp-like
+// form, userinfo/.git stripped); baseRef: the workspace's repoRef when it is a
+// valid git ref. A task without a usable repository or issue key yields
+// undefined — the field is then absent and the bot works in /scratch.
+const WS_ISSUE_KEY_RE = /^[A-Z][A-Z0-9]*-[0-9]+$/;
+const WS_REPO_NAME_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+const WS_GIT_REF_RE = /^[^\s~^:?*[\]\\]+$/;
+
+function deriveWorkspaceRepoName(repoUrl: string): string | null {
+  // Only github.com is accepted (myr-ws fetches from github.com): any other
+  // host, including look-alikes such as github.com.evil.example, yields null.
+  let path: string | null = null;
+  const scp = /^(?:[^@/\s]+@)?([^:/\s]+):(?!\/\/)(.+)$/.exec(repoUrl);
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(repoUrl)) {
+    try {
+      const url = new URL(repoUrl);
+      if (url.protocol !== "https:" && url.protocol !== "ssh:") return null;
+      if (url.hostname.toLowerCase() !== "github.com") return null;
+      path = url.pathname;
+    } catch {
+      return null;
+    }
+  } else if (scp) {
+    if (scp[1].toLowerCase() !== "github.com") return null;
+    path = scp[2];
+  }
+  if (!path) return null;
+  const parts = path.replace(/^\/+|\/+$/g, "").replace(/\.git$/i, "").split("/");
+  if (parts.length !== 2) return null;
+  const name = parts.join("/");
+  return WS_REPO_NAME_RE.test(name) ? name : null;
+}
+
+function buildWorkspaceField(
+  context: Record<string, unknown>,
+): { key: string; repo: string; baseRef?: string } | undefined {
+  const wake = parseObject(context.paperclipWake);
+  const key = asString(parseObject(wake.issue).identifier, "").trim();
+  if (!WS_ISSUE_KEY_RE.test(key)) return undefined;
+  const workspace = parseObject(context.paperclipWorkspace);
+  const repoUrl = asString(workspace.repoUrl, "").trim();
+  const repo = repoUrl ? deriveWorkspaceRepoName(repoUrl) : null;
+  if (!repo) return undefined;
+  const baseRef = asString(workspace.repoRef, "").trim();
+  return {
+    key,
+    repo,
+    ...(baseRef && baseRef.length <= 200 && WS_GIT_REF_RE.test(baseRef) ? { baseRef } : {}),
+  };
+}
+
+// myrmidon(GITHUB-SHARED-IDENTITY): the managed Git launcher, delivered as
+// request content (NONCONTAINER-GITHUB-LAUNCHER).
+//
+// A hermes gateway run has no execution target on the board's side, so
+// `prepareGitHubOperationLaunchers` (which stages git/gh/the credential helper
+// on a local or SSH target) never reaches it: the gateway may run on another
+// host, or in a container whose image the board cannot write into. The gateway
+// therefore stages the launcher itself, from the bodies this field carries,
+// next to the run's own terminals.
+//
+// Gated on the broker pair above: the launcher resolves credentials through
+// that run's broker capability, so shipping it without one would only stage
+// programs that cannot act (and would keep a static token around). Bodies are
+// constants, so the field is byte-stable per run and does not disturb the
+// Idempotency-Key fingerprint of a replay.
+function buildGitHubLauncherField(
+  broker: { broker_url: string; capability: string } | undefined,
+): { version: number; files: Record<string, string> } | undefined {
+  if (!broker) return undefined;
+  return githubLauncherPayload();
+}
+
 function buildRunBody(
   ctx: AdapterExecutionContext,
   sessionKey: string | null,
@@ -509,6 +589,15 @@ function buildRunBody(
   // an absent pair leaves the body without the field entirely (see
   // buildGitHubBrokerField).
   const githubBroker = buildGitHubBrokerField(ctx.config);
+  // myrmidon(1.6.5 BOT-DISK-H5a): same discipline for the `workspace` field —
+  // derived from the run context only, set after the spread (a card cannot
+  // forge it), `undefined` when the task has no repository.
+  const workspaceField = buildWorkspaceField(ctx.context);
+  // myrmidon(GITHUB-SHARED-IDENTITY): same forgery rule as github_broker —
+  // set unconditionally after the payloadTemplate spread, so a card's attempt
+  // to inject launcher content is deleted (`undefined` drops the key); only
+  // this builder decides (see buildGitHubLauncherField).
+  const githubLauncher = buildGitHubLauncherField(githubBroker);
   const body: Record<string, unknown> = {
     ...payloadTemplate,
     input,
@@ -518,6 +607,8 @@ function buildRunBody(
     ...(provider ? { provider } : {}),
     ...(modelOptions ? { model_options: modelOptions } : {}),
     github_broker: githubBroker,
+    workspace: workspaceField,
+    github_launcher: githubLauncher,
   };
   // myrmidon(1.6.5 PROMPT-BUDGET A): extend buildInput's per-section
   // breakdown with the sections buildRunBody owns. `instructionsBundle` and

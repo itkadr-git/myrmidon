@@ -14,11 +14,16 @@ screen is `/foraging`, a sidebar item next to Quality.
 
 ## Off by default
 
-Foraging ships DISABLED. Without `MYRMIDON_FORAGING_ENABLED=1` no timer is
-armed and no source is read; any other value keeps it off, so a typo cannot
-turn the feature on. The registry and the findings list stay readable and
-editable while the sweep is off: the screen shows a note that passes are not
-running, and the manual sweep answers `503` with `enabled: false`.
+Foraging ships DISABLED. The built-in default is off: without the instance
+switch (`enabled` in the "Learning (foraging)" section of Instance → General,
+key `general.foraging`) and without `MYRMIDON_FORAGING_ENABLED=1` as a forced
+env override no timer is armed, no source is read; any other value keeps it
+off, so a typo cannot turn the feature on. The switch is live — the sweep
+re-resolves the settings row before every pass, so turning learning on or off
+in the interface takes effect with the next pass, no restart
+(FORAGING-LIMITS-UI, 1.6.4). The registry and the findings list stay readable
+and editable while the sweep is off: the screen shows a note that passes are
+not running, and the manual sweep answers `503` with `enabled: false`.
 
 ## The source registry
 
@@ -66,16 +71,42 @@ logged or stored.
 
 ## Settings
 
-All settings are `MYRMIDON_FORAGING_*` environment variables (the full table
-with bounds and defaults is in [../SETTINGS.md](../SETTINGS.md)):
+Since 1.6.4 (FORAGING-LIMITS-UI) the operating parameters are **instance
+settings**: the "Learning (foraging)" section of Instance → General
+(`GET`/`PATCH /api/myrmidon/foraging-settings`, key `general.foraging`) holds
+the enable switch, the pass interval, the same-host pause, the per-pass
+budget, the daily and monthly company ceilings, the daily per-role and
+per-agent ceilings, the hard/soft enforcement mode and the cost-per-task
+auto-off threshold. The sweep re-resolves that row before **every** pass, so a
+changed value applies with the next pass — no restart.
 
-| Variable | Default | What it does |
+The environment variables do not go away: each one stays a **forced override**
+of its field (UI value → env when set → built-in default), and the panel
+shows which side is in force per field:
+
+| Variable | Overrides | Default |
 |---|---|---|
-| `MYRMIDON_FORAGING_ENABLED` | unset (off) | Master switch of the periodic pass; only the exact value `1` turns it on |
-| `MYRMIDON_FORAGING_INTERVAL_SEC` | `3600` | Period of the pass, in seconds (60–86400) |
-| `MYRMIDON_FORAGING_BUDGET_CENTS` | `50` | Per-pass cost ceiling in cents; a configured `0` or a negative number is the explicit «no limit» |
-| `MYRMIDON_FORAGING_KEY_SECRET` | unset | **Name** of the company secret whose value is sent as a bearer token to the sources |
-| `MYRMIDON_FORAGING_MIN_HOST_INTERVAL_SEC` | `60` | Pause between two reads of one host, in seconds (5–86400) |
+| `MYRMIDON_FORAGING_ENABLED` | `enabled` | off |
+| `MYRMIDON_FORAGING_INTERVAL_SEC` | `intervalSec` | `3600` (60–86400) |
+| `MYRMIDON_FORAGING_MIN_HOST_INTERVAL_SEC` | `minHostIntervalSec` | `60` (≥ 5) |
+| `MYRMIDON_FORAGING_BUDGET_CENTS` | `passBudgetCents` | `50` |
+| `MYRMIDON_FORAGING_DAILY_BUDGET_CENTS` | `dailyBudgetCents` | unset (no limit) |
+| `MYRMIDON_FORAGING_MONTHLY_BUDGET_CENTS` | `monthlyBudgetCents` | unset (no limit) |
+| `MYRMIDON_FORAGING_ROLE_BUDGET_CENTS` | `roleBudgetCents` | unset (no limit) |
+| `MYRMIDON_FORAGING_AGENT_BUDGET_CENTS` | `agentBudgetCents` | unset (no limit) |
+| `MYRMIDON_FORAGING_ENFORCEMENT` | `enforcement` | `hard` |
+| `MYRMIDON_FORAGING_AUTO_OFF_COST_PER_TASK_CENTS` | `autoOffCostPerTaskCents` | unset (check off) |
+
+`MYRMIDON_FORAGING_KEY_SECRET` stays env-only: it is the **name** of a company
+secret, not a limit, so it has no place in the settings row. Empty cents
+field — no limit of that kind. The full table with bounds is in
+[../SETTINGS.md](../SETTINGS.md).
+
+When a limit stops a pass (sources after the stop stay untouched), a
+`foraging_limit` card lands in the attention feed; soft mode marks it as a
+question to the owner (raise the limit or switch learning off). When the mean
+cost per task (BASELINE) rises above the auto-off threshold, learning
+switches itself off and signals the same feed.
 
 ## The screen
 
@@ -105,7 +136,12 @@ All routes live under `/api/myrmidon/companies/:companyId/foraging`:
 | `DELETE /sources/:sourceId` | board only | Removes a source |
 | `GET /findings?limit` | company read | The findings, newest first (`limit` defaults to 50, maximum 200) |
 | `GET /budget` | company read | The budget view for the screen |
+| `GET /spend` | company read | The learning-spend breakdown (by role and source, last 90 days) behind the Costs "Training" line (FORAGING-LIMITS-UI) |
 | `POST /sweep` | board only | Runs one pass by hand; answers `503 {enabled: false}` while the sweep is off |
+
+The limits themselves live outside the company routes:
+`GET`/`PATCH /api/myrmidon/foraging-settings` (instance settings, board-org
+access / instance admin) read and write `general.foraging`.
 
 Reads need company access; the mutations need a board actor — the manual
 sweep spends real external reads. Every mutation writes an activity-log row

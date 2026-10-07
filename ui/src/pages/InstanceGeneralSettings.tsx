@@ -20,7 +20,9 @@ import { useSignOut } from "@/hooks/useSignOut";
 import { MaintenanceSettingsPanel } from "@/components/myrmidon/MaintenanceSettingsPanel"; // myrmidon(R3)
 import { RuntimeLimitsSettingsPanel } from "@/components/myrmidon/RuntimeLimitsSettingsPanel"; // myrmidon(C0)
 import { BudgetEnforcementSettingsPanel } from "@/components/myrmidon/BudgetEnforcementSettingsPanel"; // myrmidon(1.7-BUDGET-CONFIG-B)
+import { AgentExchangeSettingsPanel } from "@/components/myrmidon/AgentExchangeSettingsPanel"; // myrmidon(1.7-AGENT-EXCHANGE-A)
 import { TelegramDmProgressSettingsPanel } from "@/components/myrmidon/TelegramDmProgressSettingsPanel"; // myrmidon(DM-PROGRESS)
+import { DebateSettingsPanel } from "@/components/myrmidon/DebateSettingsPanel"; // myrmidon(1.7-DEBATE-ASYM-A)
 import { HostDiskSettingsPanel } from "@/components/myrmidon/HostDiskSettingsPanel"; // myrmidon(BOT-DISK E)
 import { PromptBudgetSettingsPanel } from "@/components/myrmidon/PromptBudgetSettingsPanel"; // myrmidon(1.6.3 PROMPT-BUDGET B)
 import { BotDiskSettingsPanel } from "@/components/myrmidon/BotDiskSettingsPanel"; // myrmidon(1.6.1-BOT-DISK-B)
@@ -34,6 +36,7 @@ import { TeamLivenessSettingsPanel } from "@/components/myrmidon/TeamLivenessSet
 import { BotLspSettingsPanel } from "@/components/myrmidon/BotLspSettingsPanel"; // myrmidon(BOT-LSP-DEFAULTS)
 import { SwarmClaimSettingsPanel } from "@/components/myrmidon/SwarmClaimSettingsPanel"; // myrmidon(1.6.1 SWARM-SETTINGS-UI)
 import { ReviewReworkSettingsPanel } from "@/components/myrmidon/ReviewReworkSettingsPanel"; // myrmidon(REVIEW-REWORK)
+import { ForagingSettingsPanel } from "@/components/myrmidon/ForagingSettingsPanel"; // myrmidon(1.6.1-FORAGING-LIMITS-UI)
 import { AboutSettingsPanel } from "@/components/myrmidon/AboutSettingsPanel"; // myrmidon(ABOUT)
 import { DeployJobsPanel } from "@/components/myrmidon/DeployJobsPanel"; // myrmidon(R5-A)
 import { PluginEntitlementSettings } from "@/components/myrmidon/PluginEntitlementSettingsPanel"; // myrmidon(PLUGIN-ENTITLEMENT C)
@@ -159,7 +162,9 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       <MaintenanceSettingsPanel /> {/* myrmidon(R3) */}
       <RuntimeLimitsSettingsPanel /> {/* myrmidon(C0) */}
       <BudgetEnforcementSettingsPanel /> {/* myrmidon(1.7-BUDGET-CONFIG-B) */}
+      <AgentExchangeSettingsPanel /> {/* myrmidon(1.7-AGENT-EXCHANGE-A) */}
       <TelegramDmProgressSettingsPanel /> {/* myrmidon(DM-PROGRESS) */}
+      <DebateSettingsPanel /> {/* myrmidon(1.7-DEBATE-ASYM-A) */}
       <HostDiskSettingsPanel /> {/* myrmidon(BOT-DISK E) */}
       <PromptBudgetSettingsPanel /> {/* myrmidon(1.6.3 PROMPT-BUDGET B) */}
       <BotDiskSettingsPanel /> {/* myrmidon(1.6.1-BOT-DISK-B) */}
@@ -173,6 +178,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       <BotLspSettingsPanel /> {/* myrmidon(BOT-LSP-DEFAULTS) */}
       <SwarmClaimSettingsPanel /> {/* myrmidon(1.6.1 SWARM-SETTINGS-UI) */}
       <ReviewReworkSettingsPanel /> {/* myrmidon(REVIEW-REWORK) */}
+      <ForagingSettingsPanel /> {/* myrmidon(1.6.1-FORAGING-LIMITS-UI) */}
       <DeployJobsPanel /> {/* myrmidon(R5-A) */}
       <PluginEntitlementSettings /> {/* myrmidon(PLUGIN-ENTITLEMENT C) */}
 
