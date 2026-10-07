@@ -19,13 +19,60 @@
 //     that item straight from heartbeat_runs, so the run row itself must
 //     stay while no newer run exists for the same agent+issue pair and no
 //     dismissal covers it — the exclusion mirrors exactly the feed's
-//     derivation in server/src/services/attention.ts). The run's
-//     heartbeat_run_events rows go first (the FK has no cascade), then the
-//     run row; the sweep transaction also nulls the plain (non-cascading,
-//     non-set-null) FK references into heartbeat_runs (cost_events,
-//     finance_events, decisions, decision_bundles, decision_queues,
-//     agent_task_sessions, document_annotation_comments) so the delete
-//     cannot trip a foreign key.
+//     derivation in server/src/services/attention.ts).
+//
+//   Every column in packages/db/src/schema/*.ts that references
+//   heartbeat_runs is classified below and handled in the runs-group
+//   transaction, in dependency order (children first):
+//
+//   DELETE with the run (the row has no meaning without it):
+//     - heartbeat_run_events (NOT NULL run_id, no action)
+//     - native_run_finalizations (run_id is the PK; composite
+//       run_owner_fk, no action) — first, it points back into
+//       status_decisions / work_assessments / native_run_results
+//     - status_decision_effects (composite decision_owner_fk into
+//       status_decisions, no action)
+//     - status_decisions (composite assessment_owner_fk into
+//       work_assessments, no action)
+//     - work_assessments (NOT NULL run_id, composite run_owner_fk, no
+//       action)
+//     - native_run_results (NOT NULL run_id, composite
+//       run_contract_owner_fk into heartbeat_runs, no action)
+//     - activity_log rows of the doomed runs (run_id has no cascade and
+//       no set-null; the surviving runs' trail stays complete — the
+//       activity group skips them)
+//     - decisions (origin_run_id is NOT NULL, no action — a null UPDATE
+//       would raise 23502; decision_target_issues and
+//       decision_effect_executions cascade with the decision, and
+//       bundle_id on the surviving decisions is ON DELETE SET NULL)
+//     - decision_bundles (same NOT NULL origin_run_id)
+//
+//   NULL before the delete (nullable column, no action in the schema):
+//     - cost_events.heartbeat_run_id, finance_events.heartbeat_run_id,
+//       agent_task_sessions.last_run_id,
+//       document_annotation_comments.created_by_run_id
+//     - the five run columns of the decision-queue family, one per table:
+//       decision_queues.created_by_run_id,
+//       decision_queue_items.added_by_run_id, decision_triage.set_by_run_id,
+//       decision_triage_events.actor_run_id,
+//       decision_retention.archived_by_run_id
+//
+//   KEEP, no statement needed (the FK action clears the reference):
+//     every column declared with { onDelete: "cascade" } or
+//     { onDelete: "set null" } — heartbeat_run_watchdog_decisions,
+//     tool_access.run_id (cascade), company_secret_proposals,
+//     provider_trace_records (cascade), document_revisions,
+//     environment_leases, execution_workspace_runtime_leases,
+//     issue_attachments, issue_claims, issue_comments,
+//     issue_execution_decisions, issue_inbox_archives,
+//     issue_plan_decompositions, issue_question_response_deliveries,
+//     issue_thread_interactions, issue_tree_hold_members,
+//     issue_tree_holds, issue_watchdogs, issue_work_products,
+//     issues.checkout_run_id / execution_run_id, routines,
+//     secret_access_events, status_cards, workspace_operations,
+//     workspace_runtime_services, heartbeat_runs.retry_of_run_id
+//     (self, set null).
+//
 //   - `activity` (activityLogDays): activity_log rows older than the cutoff,
 //     except rows whose runId points at a run that survives — the audit
 //     trail of a kept run stays complete.
@@ -185,6 +232,29 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
           ORDER BY r.created_at
           LIMIT ${DATA_RETENTION_DELETE_BATCH_SIZE}
         ),
+        -- the native-run chain: every row is keyed/linked to the run by
+        -- NOT NULL composite FKs with no action, so it goes with the run,
+        -- children before parents
+        del_native_run_finalizations AS (
+          DELETE FROM native_run_finalizations f WHERE f.run_id IN (SELECT id FROM doomed)
+        ),
+        del_status_decision_effects AS (
+          DELETE FROM status_decision_effects e
+          WHERE (e.company_id, e.issue_id, e.decision_id) IN (
+            SELECT sd.company_id, sd.issue_id, sd.id
+            FROM status_decisions sd
+            WHERE sd.run_id IN (SELECT id FROM doomed)
+          )
+        ),
+        del_status_decisions AS (
+          DELETE FROM status_decisions sd WHERE sd.run_id IN (SELECT id FROM doomed)
+        ),
+        del_work_assessments AS (
+          DELETE FROM work_assessments wa WHERE wa.run_id IN (SELECT id FROM doomed)
+        ),
+        del_native_run_results AS (
+          DELETE FROM native_run_results nr WHERE nr.run_id IN (SELECT id FROM doomed)
+        ),
         -- plain (non-cascading, non-set-null) references into heartbeat_runs
         -- must let go first; the FKs otherwise refuse the delete
         null_cost_events AS (
@@ -195,17 +265,41 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
           UPDATE finance_events fe SET heartbeat_run_id = NULL
           WHERE fe.heartbeat_run_id IN (SELECT id FROM doomed)
         ),
-        null_decisions AS (
-          UPDATE decisions d SET origin_run_id = NULL
-          WHERE d.origin_run_id IN (SELECT id FROM doomed)
+        -- decisions/decision_bundles.origin_run_id are NOT NULL with no
+        -- action: the rows cannot be nulled (23502), so they go with the
+        -- run (decisions first — the bundle_id of a surviving decision is
+        -- ON DELETE SET NULL and does not protect the bundle)
+        del_decisions AS (
+          DELETE FROM decisions d WHERE d.origin_run_id IN (SELECT id FROM doomed)
         ),
-        null_decision_bundles AS (
-          UPDATE decision_bundles db SET origin_run_id = NULL
-          WHERE db.origin_run_id IN (SELECT id FROM doomed)
+        del_decision_bundles AS (
+          DELETE FROM decision_bundles db WHERE db.origin_run_id IN (SELECT id FROM doomed)
         ),
+        -- every run column the decision-queue family declares (one per
+        -- table): decision_queues.created_by_run_id,
+        -- decision_queue_items.added_by_run_id,
+        -- decision_triage.set_by_run_id,
+        -- decision_triage_events.actor_run_id,
+        -- decision_retention.archived_by_run_id
         null_decision_queues AS (
           UPDATE decision_queues dq SET created_by_run_id = NULL
           WHERE dq.created_by_run_id IN (SELECT id FROM doomed)
+        ),
+        null_decision_queue_items AS (
+          UPDATE decision_queue_items dqi SET added_by_run_id = NULL
+          WHERE dqi.added_by_run_id IN (SELECT id FROM doomed)
+        ),
+        null_decision_triage AS (
+          UPDATE decision_triage dt SET set_by_run_id = NULL
+          WHERE dt.set_by_run_id IN (SELECT id FROM doomed)
+        ),
+        null_decision_triage_events AS (
+          UPDATE decision_triage_events dte SET actor_run_id = NULL
+          WHERE dte.actor_run_id IN (SELECT id FROM doomed)
+        ),
+        null_decision_retention AS (
+          UPDATE decision_retention dr SET archived_by_run_id = NULL
+          WHERE dr.archived_by_run_id IN (SELECT id FROM doomed)
         ),
         null_agent_task_sessions AS (
           UPDATE agent_task_sessions ats SET last_run_id = NULL

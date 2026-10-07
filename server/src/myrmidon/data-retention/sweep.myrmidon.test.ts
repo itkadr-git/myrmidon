@@ -16,16 +16,32 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
+  agentTaskSessions,
   agents,
   companies,
+  completionContracts,
+  costEvents,
   createDb,
+  decisionBundles,
+  decisionQueueItems,
+  decisionQueues,
+  decisionRetention,
+  decisions,
+  decisionTriage,
+  decisionTriageEvents,
+  financeEvents,
   heartbeatRunEvents,
   heartbeatRuns,
   inboxDismissals,
   instanceSettings,
   issues,
+  nativeRunFinalizations,
+  nativeRunResults,
   secretAccessEvents,
+  statusDecisionEffects,
+  statusDecisions,
   toolAccessAuditEvents,
+  workAssessments,
 } from "@paperclipai/db";
 import { DATA_RETENTION_WAITING_FOR_BACKUP_ACTION } from "@paperclipai/shared";
 import { eq } from "drizzle-orm";
@@ -60,6 +76,22 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
   const cleanupDirs: string[] = [];
 
   afterEach(async () => {
+    await db.delete(statusDecisionEffects);
+    await db.delete(nativeRunFinalizations);
+    await db.delete(statusDecisions);
+    await db.delete(workAssessments);
+    await db.delete(nativeRunResults);
+    await db.delete(completionContracts);
+    await db.delete(decisions);
+    await db.delete(decisionBundles);
+    await db.delete(decisionQueueItems);
+    await db.delete(decisionTriageEvents);
+    await db.delete(decisionTriage);
+    await db.delete(decisionRetention);
+    await db.delete(decisionQueues);
+    await db.delete(agentTaskSessions);
+    await db.delete(costEvents);
+    await db.delete(financeEvents);
     await db.delete(inboxDismissals);
     await db.delete(activityLog);
     await db.delete(secretAccessEvents);
@@ -167,6 +199,283 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
       .where(eq(heartbeatRuns.id, runId));
     return rows.length;
   }
+
+  async function seedIssue(input: { companyId: string; title: string }) {
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId: input.companyId,
+      title: input.title,
+      status: "done",
+    });
+    return issueId;
+  }
+
+  it("FK safety: a run that originates decisions/bundles goes with them, no NOT NULL violation", async () => {
+    const { companyId, agentId } = await seedCompany();
+    const issueId = await seedIssue({ companyId, title: "decided work" });
+    const doomedRun = await seedRun({ companyId, agentId, status: "succeeded", ageDays: 100 });
+    // a young run of the same company — survives and keeps its decision
+    const youngKeptRun = await seedRun({ companyId, agentId, status: "succeeded", ageDays: 10 });
+
+    // a bundle + two decisions from the doomed run; one decision of the
+    // young run points into the bundle (bundle_id is ON DELETE SET NULL)
+    const bundleId = randomUUID();
+    await db.insert(decisionBundles).values({
+      id: bundleId,
+      companyId,
+      title: "bundle-a",
+      summary: "summary",
+      originAgentId: agentId,
+      originIssueId: issueId,
+      originRunId: doomedRun,
+    });
+    const doomedDecisionId = randomUUID();
+    await db.insert(decisions).values({
+      id: doomedDecisionId,
+      companyId,
+      bundleId,
+      originAgentId: agentId,
+      originIssueId: issueId,
+      originRunId: doomedRun,
+      title: "d1",
+      body: "b1",
+      options: [],
+      expiresAt: new Date(Date.now() + DAY_MS),
+      signedSpec: "spec",
+      targetSnapshots: {},
+    });
+    const survivingDecisionId = randomUUID();
+    await db.insert(decisions).values({
+      id: survivingDecisionId,
+      companyId,
+      bundleId,
+      originAgentId: agentId,
+      originIssueId: issueId,
+      originRunId: youngKeptRun,
+      title: "d2",
+      body: "b2",
+      options: [],
+      expiresAt: new Date(Date.now() + DAY_MS),
+      signedSpec: "spec",
+      targetSnapshots: {},
+    });
+
+    const { sweep } = makeSweep({ freshBackup: true });
+    const result = await sweep.sweep();
+
+    // doomedRun is old and unreferenced → 1 run
+    expect(result.perTable.runs.deleted).toBe(1);
+    expect(await runCount(doomedRun)).toBe(0);
+    // the NOT NULL origin rows went with the run, no 23502
+    expect(await db.select({ id: decisionBundles.id }).from(decisionBundles)).toHaveLength(0);
+    expect(await db.select({ id: decisions.id }).from(decisions)).toHaveLength(1);
+    const surviving = await db
+      .select({ id: decisions.id, bundleId: decisions.bundleId })
+      .from(decisions)
+      .where(eq(decisions.id, survivingDecisionId));
+    expect(surviving).toEqual([{ id: survivingDecisionId, bundleId: null }]);
+    expect(await runCount(youngKeptRun)).toBe(1);
+  });
+
+  it("FK safety: the composite-FK native chain (results → assessments → decisions → effects → finalizations) goes with the run", async () => {
+    const { companyId, agentId } = await seedCompany();
+    const issueId = await seedIssue({ companyId, title: "native work" });
+    const doomedRun = await seedRun({ companyId, agentId, status: "succeeded", ageDays: 100 });
+    // the composite FKs into heartbeat_runs key on (company_id,
+    // native_issue_id, id [, completion_contract_id]) — the run must carry
+    // the issue and its contract
+    const contractId = randomUUID();
+    await db
+      .update(heartbeatRuns)
+      .set({ nativeIssueId: issueId, completionContractId: contractId })
+      .where(eq(heartbeatRuns.id, doomedRun));
+
+    await db.insert(completionContracts).values({
+      id: contractId,
+      companyId,
+      issueId,
+      revision: 1,
+      schemaVersion: "v1",
+      policyVersion: "p1",
+      risk: "low",
+      completionAuthority: "agent",
+      incompleteCriteriaPolicy: "block",
+      contractJson: {},
+      canonicalSha256: "sha-contract",
+      createdByActorType: "agent",
+      createdByActorId: agentId,
+    });
+    const resultId = randomUUID();
+    await db.insert(nativeRunResults).values({
+      id: resultId,
+      companyId,
+      issueId,
+      runId: doomedRun,
+      completionContractId: contractId,
+      serverFingerprint: "fp",
+      schemaStatus: "ok",
+      resultJson: {},
+      canonicalSha256: "sha-result",
+    });
+    const assessmentId = randomUUID();
+    await db.insert(workAssessments).values({
+      id: assessmentId,
+      companyId,
+      issueId,
+      runId: doomedRun,
+      contractId,
+      resultId,
+      triggerKind: "manual",
+      triggerActorCompanyId: companyId,
+      priorIssueStatus: "in_progress",
+      priorStatusVersion: 1,
+      policyVersion: "p1",
+      assessmentJson: {},
+      inputDigest: "digest-a",
+    });
+    const statusDecisionId = randomUUID();
+    await db.insert(statusDecisions).values({
+      id: statusDecisionId,
+      companyId,
+      issueId,
+      runId: doomedRun,
+      assessmentId,
+      decisionVersion: 1,
+      policyVersion: "p1",
+      fromStatus: "in_progress",
+      toStatus: "done",
+      reasonCode: "complete",
+      decisionJson: {},
+      decisionDigest: "digest-d",
+    });
+    await db.insert(statusDecisionEffects).values({
+      companyId,
+      issueId,
+      decisionId: statusDecisionId,
+      ordinal: 1,
+      effectKind: "notify",
+      targetType: "issue",
+      idempotencyKey: "k1",
+      payload: {},
+    });
+    await db.insert(nativeRunFinalizations).values({
+      runId: doomedRun,
+      companyId,
+      issueId,
+      phase: "done",
+      resultId,
+      assessmentId,
+      decisionId: statusDecisionId,
+    });
+
+    const { sweep } = makeSweep({ freshBackup: true });
+    const result = await sweep.sweep();
+
+    expect(result.perTable.runs.deleted).toBe(1);
+    expect(await runCount(doomedRun)).toBe(0);
+    expect(await db.select({ id: nativeRunFinalizations.runId }).from(nativeRunFinalizations)).toHaveLength(0);
+    expect(await db.select({ id: statusDecisionEffects.id }).from(statusDecisionEffects)).toHaveLength(0);
+    expect(await db.select({ id: statusDecisions.id }).from(statusDecisions)).toHaveLength(0);
+    expect(await db.select({ id: workAssessments.id }).from(workAssessments)).toHaveLength(0);
+    expect(await db.select({ id: nativeRunResults.id }).from(nativeRunResults)).toHaveLength(0);
+    // the contract has no run FK and survives
+    expect(await db.select({ id: completionContracts.id }).from(completionContracts)).toHaveLength(1);
+  });
+
+  it("FK safety: all five decision-queue run columns and the remaining nullable run FKs are nulled", async () => {
+    const { companyId, agentId } = await seedCompany();
+    const doomedRun = await seedRun({ companyId, agentId, status: "succeeded", ageDays: 100 });
+
+    const queueId = randomUUID();
+    await db.insert(decisionQueues).values({
+      id: queueId,
+      companyId,
+      key: "q1",
+      title: "queue",
+      createdByType: "system",
+      createdByRunId: doomedRun,
+    });
+    await db.insert(decisionQueueItems).values({
+      companyId,
+      queueId,
+      sourceKind: "issue",
+      sourceId: "s1",
+      addedByType: "system",
+      addedByRunId: doomedRun,
+    });
+    await db.insert(decisionTriage).values({
+      companyId,
+      sourceKind: "issue",
+      sourceId: "s2",
+      setByType: "agent",
+      setByAgentId: agentId,
+      setByRunId: doomedRun,
+    });
+    await db.insert(decisionTriageEvents).values({
+      companyId,
+      queueId,
+      action: "triaged",
+      actorType: "agent",
+      actorAgentId: agentId,
+      actorRunId: doomedRun,
+    });
+    await db.insert(decisionRetention).values({
+      companyId,
+      sourceKind: "issue",
+      sourceId: "s3",
+      sourceActivityAt: new Date(),
+      archivedByRunId: doomedRun,
+    });
+    await db.insert(costEvents).values({
+      companyId,
+      agentId,
+      heartbeatRunId: doomedRun,
+      provider: "anthropic",
+      model: "m",
+      costCents: 1,
+      occurredAt: new Date(),
+    });
+    await db.insert(financeEvents).values({
+      companyId,
+      agentId,
+      heartbeatRunId: doomedRun,
+      eventKind: "usage",
+      biller: "b",
+      amountCents: 1,
+      occurredAt: new Date(),
+    });
+    await db.insert(agentTaskSessions).values({
+      companyId,
+      agentId,
+      adapterType: "codex_local",
+      taskKey: "task-1",
+      lastRunId: doomedRun,
+    });
+
+    const { sweep } = makeSweep({ freshBackup: true });
+    const result = await sweep.sweep();
+
+    expect(result.perTable.runs.deleted).toBe(1);
+    expect(await runCount(doomedRun)).toBe(0);
+
+    const queue = await db.select({ c: decisionQueues.createdByRunId }).from(decisionQueues);
+    expect(queue).toEqual([{ c: null }]);
+    const item = await db.select({ c: decisionQueueItems.addedByRunId }).from(decisionQueueItems);
+    expect(item).toEqual([{ c: null }]);
+    const triage = await db.select({ c: decisionTriage.setByRunId }).from(decisionTriage);
+    expect(triage).toEqual([{ c: null }]);
+    const triageEvent = await db.select({ c: decisionTriageEvents.actorRunId }).from(decisionTriageEvents);
+    expect(triageEvent).toEqual([{ c: null }]);
+    const retention = await db.select({ c: decisionRetention.archivedByRunId }).from(decisionRetention);
+    expect(retention).toEqual([{ c: null }]);
+    const cost = await db.select({ c: costEvents.heartbeatRunId }).from(costEvents);
+    expect(cost).toEqual([{ c: null }]);
+    const finance = await db.select({ c: financeEvents.heartbeatRunId }).from(financeEvents);
+    expect(finance).toEqual([{ c: null }]);
+    const session = await db.select({ c: agentTaskSessions.lastRunId }).from(agentTaskSessions);
+    expect(session).toEqual([{ c: null }]);
+  });
 
   it("deletes finished runs and their events past the retention, keeps young and referenced runs", async () => {
     const { companyId, agentId } = await seedCompany();
