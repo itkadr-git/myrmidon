@@ -746,3 +746,73 @@ describe("docker/bot-runtime/entrypoint.sh shared scope member", () => {
     }
   });
 });
+
+// myrmidon(1.6.5 BOT-DISK-H1c): the entrypoint starts botd; an image without it keeps the old reporter.
+describe("docker/bot-runtime/entrypoint.sh botd start", () => {
+  /** A bin dir with a stub hermes and the named stub agents, each writing its marker file on start. */
+  function agentsBin(names) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "myrmidon-botd-bin-"));
+    fs.writeFileSync(path.join(dir, "hermes"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    for (const name of names) {
+      fs.writeFileSync(path.join(dir, name), `#!/bin/sh\necho "$0 $*" > "${dir}/${name}.started"\n`, { mode: 0o755 });
+    }
+    return dir;
+  }
+
+  function start(names) {
+    const { tree, bot, data } = botLayout();
+    const bin = agentsBin(names);
+    const result = spawnSync("bash", [ENTRYPOINT], {
+      env: {
+        PATH: `${bin}:${process.env.PATH}`,
+        HOME: process.env.HOME,
+        HERMES_HOME: path.join(bot, "hermes"),
+        MYRMIDON_BOT_ROOT: bot,
+        MYRMIDON_DATA_DIR: data,
+        MYRMIDON_HARDLINK_CHECK: "0",
+        MYRMIDON_GIT_OBJECTS_CHECK: "0",
+      },
+      encoding: "utf8",
+      timeout: 20_000,
+    });
+    // The agents run in the background: give them a moment to write their marker.
+    const deadline = Date.now() + 3000;
+    const started = (n) => fs.existsSync(path.join(bin, `${n}.started`));
+    while (Date.now() < deadline && !names.some(started)) spawnSync("sleep", ["0.1"]);
+    spawnSync("sleep", ["0.3"]);
+    return { result, started, cleanup: () => { fs.rmSync(tree, { recursive: true, force: true }); fs.rmSync(bin, { recursive: true, force: true }); } };
+  }
+
+  it("starts botd, and not the old reporter, when the image has botd", () => {
+    const run1 = start(["botd", "bot-clone-hygiene"]);
+    try {
+      assert.equal(run1.result.status, 0, run1.result.stderr);
+      assert.match(run1.result.stderr, /botd started/);
+      assert.ok(run1.started("botd"), "botd must be started");
+      assert.ok(!run1.started("bot-clone-hygiene"), "bot-clone-hygiene must not run next to botd");
+    } finally {
+      run1.cleanup();
+    }
+  });
+
+  it("falls back to bot-clone-hygiene when the image has no botd", () => {
+    const run1 = start(["bot-clone-hygiene"]);
+    try {
+      assert.equal(run1.result.status, 0, run1.result.stderr);
+      assert.match(run1.result.stderr, /clone hygiene reporter started/);
+      assert.ok(run1.started("bot-clone-hygiene"), "the fallback reporter must be started");
+    } finally {
+      run1.cleanup();
+    }
+  });
+
+  it("starts neither agent in an image that has neither (base image) and still execs hermes", () => {
+    const run1 = start([]);
+    try {
+      assert.equal(run1.result.status, 0, run1.result.stderr);
+      assert.doesNotMatch(run1.result.stderr, /botd started|clone hygiene reporter started/);
+    } finally {
+      run1.cleanup();
+    }
+  });
+});

@@ -725,6 +725,56 @@ RUN chmod 0755 /opt/paperclip/bin/git /opt/paperclip/bin/bot-clone-hygiene \
   && python3 -m py_compile /opt/paperclip/bin/bot-clone-hygiene \
   && rm -rf /opt/paperclip/bin/__pycache__
 
+# myrmidon(1.6.5 BOT-DISK-H1c): the real git moves out of PATH. The Debian binary
+# goes to /opt/paperclip/libexec/git (dpkg-divert keeps a later `apt` upgrade of
+# the git package from putting it back), and /usr/bin/git becomes a symlink to the
+# wrapper, so EVERY bare `git` — whatever PATH a bot terminal rebuilds — answers
+# through the wrapper; there is no regular way to reach the real binary but its
+# absolute libexec path (which the ownership and quota layers catch). The wrapper's
+# default REAL_GIT is that libexec path (MYRMIDON_GIT_REAL still overrides it) —
+# without that, the wrapper would exec itself. git finds its helpers
+# (git-upload-pack, git-remote-https, ...) through the compiled-in
+# /usr/lib/git-core, not through the binary's own path, so moving it is safe; the
+# build asserts that with a real `git ls-remote` of a local repository (the
+# git-upload-pack helper) through the wrapper.
+#
+# myr-ws (CLI, H2) and botd (lifecycle agent, H3) are installed from the build
+# context directory bot-disk/ (bot-disk/myr-ws, bot-disk/botd) into
+# /opt/paperclip/bin, plus /usr/local/bin/myr-ws for a terminal PATH without
+# /opt/paperclip/bin. Until those parts merge the directory holds only .gitkeep:
+# the image then builds without them and the entrypoint falls back to
+# bot-clone-hygiene (see entrypoint.sh). Nothing here may fail the build when
+# they are absent, and nothing here may skip them once they are present.
+COPY --chown=root:root bot-disk/ /tmp/bot-disk-src/
+RUN set -eu; \
+    mkdir -p /opt/paperclip/libexec; \
+    dpkg-divert --local --rename --divert /opt/paperclip/libexec/git --add /usr/bin/git; \
+    ln -s /opt/paperclip/bin/git /usr/bin/git; \
+    chmod 0755 /opt/paperclip/libexec/git; \
+    if [ -f /tmp/bot-disk-src/myr-ws ]; then \
+      install -m 0755 -o root -g root /tmp/bot-disk-src/myr-ws /opt/paperclip/bin/myr-ws; \
+      ln -s /opt/paperclip/bin/myr-ws /usr/local/bin/myr-ws; \
+      [ -x /usr/local/bin/myr-ws ] || { echo "myr-ws is not executable" >&2; exit 1; }; \
+    fi; \
+    if [ -f /tmp/bot-disk-src/botd ]; then \
+      install -m 0755 -o root -g root /tmp/bot-disk-src/botd /opt/paperclip/bin/botd; \
+      [ -x /opt/paperclip/bin/botd ] || { echo "botd is not executable" >&2; exit 1; }; \
+    fi; \
+    rm -rf /tmp/bot-disk-src; \
+    [ "$(readlink /usr/bin/git)" = "/opt/paperclip/bin/git" ] || { echo "/usr/bin/git must be the wrapper symlink" >&2; exit 1; }; \
+    [ -x /opt/paperclip/libexec/git ] && [ ! -L /opt/paperclip/libexec/git ] || { echo "the real git must sit in libexec as a regular file" >&2; exit 1; }; \
+    for el in $(echo "$PATH" | tr ':' ' '); do \
+      [ "$el" = /opt/paperclip/libexec ] && { echo "libexec must not be on PATH" >&2; exit 1; }; \
+      if [ -e "$el/git" ] && [ "$(readlink -f "$el/git")" != "$(readlink -f /opt/paperclip/bin/git)" ]; then \
+        echo "$el/git is a real git outside libexec" >&2; exit 1; \
+      fi; \
+    done; \
+    out="$(env -i PATH=/usr/bin:/bin git --version)"; \
+    case "$out" in "git version "*) ;; *) echo "git --version through the wrapper failed: $out" >&2; exit 1 ;; esac; \
+    d="$(mktemp -d)"; /opt/paperclip/libexec/git init -q "$d/r"; \
+    env -i PATH=/usr/bin:/bin git ls-remote "$d/r" >/dev/null; \
+    rm -rf "$d"
+
 # myrmidon(1.6.1 BUILD-OFFLOAD A): the build-offload wrappers. Heavy
 # repository operations (pnpm install, monorepo tsc, vitest, gradle,
 # go build/test) must run on the build VPS through the `devbuild` CLI
