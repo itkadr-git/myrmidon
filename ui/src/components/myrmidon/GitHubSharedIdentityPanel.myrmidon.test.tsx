@@ -2,8 +2,8 @@
 //
 // myrmidon(GITHUB-SHARED-IDENTITY): the self-hosted GitHub App identities
 // panel of the company settings — entries per App (id, key secret,
-// installation, repositories, roles, agents), the dirty gate on Save, the
-// PUT body it sends and the vendor connector state line.
+// installation, repositories, roles, agents, token permissions), the dirty
+// gate on Save, the PUT body it sends and the vendor connector state line.
 
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
@@ -19,6 +19,7 @@ import {
   readManifestCallbackNotice,
   submitManifestForm,
 } from "./GitHubSharedIdentityPanel";
+import { DEFAULT_GITHUB_APP_PERMISSIONS } from "./githubSharedIdentityApi";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -66,6 +67,7 @@ const view: GitHubSharedIdentityView = {
         roles: ["engineer"],
         agentIds: [],
         allowedRepos: ["owner-a/*"],
+        permissions: { ...DEFAULT_GITHUB_APP_PERMISSIONS },
       },
     ],
     commitEmailDomain: null,
@@ -191,12 +193,43 @@ describe("GitHubSharedIdentityPanelView", () => {
           roles: [],
           agentIds: [AGENT_A],
           allowedRepos: ["owner-b/*", "owner-b/app-b"],
+          permissions: { ...DEFAULT_GITHUB_APP_PERMISSIONS },
         },
       ],
     });
   });
 
-  it("builds the body from a draft: trims, empties to null, splits lists", () => {
+  it("widens the permission list of an entry: workflows write, pulls the token defaults down", () => {
+    const onSave = render();
+    const workflowSelect = byLabel<HTMLSelectElement>("Permissions of App A: workflows");
+    expect(workflowSelect.value).toBe("none");
+    // GitHub's token API has no `workflows: read` — only none/write are offered.
+    expect([...workflowSelect.querySelectorAll("option")].map((option) => option.value)).toEqual(["none", "write"]);
+    flushSync(() => {
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(workflowSelect, "write");
+      workflowSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    flushSync(() => {
+      const issuesSelect = byLabel<HTMLSelectElement>("Permissions of App A: issues");
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(issuesSelect, "read");
+      issuesSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    flushSync(() => {
+      const prSelect = byLabel<HTMLSelectElement>("Permissions of App A: pull_requests");
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(prSelect, "none");
+      prSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    flushSync(() => button("Save GitHub access").click());
+    expect(onSave).toHaveBeenCalledTimes(1);
+    expect(onSave.mock.calls[0]![0].apps[0]!.permissions).toEqual({
+      ...DEFAULT_GITHUB_APP_PERMISSIONS,
+      workflows: "write",
+      issues: "read",
+      pull_requests: "none",
+    });
+  });
+
+  it("builds the body from a draft: trims, empties to null, splits lists, copies permissions", () => {
     expect(
       bodyFromDraft({
         enabled: false,
@@ -211,6 +244,7 @@ describe("GitHubSharedIdentityPanelView", () => {
             roles: "engineer, reviewer",
             agentIds: [],
             allowedRepos: "owner-a/repo-a, owner-a/repo-b",
+            permissions: { ...DEFAULT_GITHUB_APP_PERMISSIONS, workflows: "write" },
           },
         ],
       }),
@@ -227,6 +261,7 @@ describe("GitHubSharedIdentityPanelView", () => {
           roles: ["engineer", "reviewer"],
           agentIds: [],
           allowedRepos: ["owner-a/repo-a", "owner-a/repo-b"],
+          permissions: { ...DEFAULT_GITHUB_APP_PERMISSIONS, workflows: "write" },
         },
       ],
     });
@@ -354,6 +389,7 @@ describe("GitHubSharedIdentityPanelView — manifest flow", () => {
           roles: [],
           agentIds: [],
           allowedRepos: [],
+          permissions: { ...DEFAULT_GITHUB_APP_PERMISSIONS },
         },
       ],
     });
@@ -500,6 +536,7 @@ describe("GitHubSharedIdentityPanel — server callback", () => {
             roles: [],
             agentIds: [],
             allowedRepos: [],
+            permissions: { ...DEFAULT_GITHUB_APP_PERMISSIONS },
             slug: "my-app",
           },
         ],
