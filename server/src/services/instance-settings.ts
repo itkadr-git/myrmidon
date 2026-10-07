@@ -69,6 +69,8 @@ import { preserveGitHubSharedIdentityGeneralKey } from "../myrmidon/github-share
 import { preserveBudgetProjectionGeneralKey } from "../myrmidon/litellm-budget-sync/settings.js"; // myrmidon(1.7-BUDGET-CONFIG-C)
 // myrmidon(BOT-RUNTIME-TUNING D2): keep the fallback-signal settings across vendor writes of `general`
 import { preserveFallbackSignalGeneralKey } from "../myrmidon/litellm-fallback-signal/settings.js";
+// myrmidon(DB-PERF-C-P4): keep the tool gateway policy cache TTL across vendor writes of `general`
+import { preserveToolPolicyCacheGeneralKey } from "../myrmidon/tool-policy-cache/settings.js";
 import { getManagedInstanceConfig, type ManagedInstanceConfig } from "./managed-config.js";
 import { getOperatorSettingDefaults } from "./setting-defaults.js";
 
@@ -311,6 +313,9 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // page). Without this line `updateGeneral` normalizes the patch away, so
       // PATCH /api/myrmidon/model-fallback/settings would never roundtrip.
       ...(parsed.data.modelFallbackSignal ? { modelFallbackSignal: parsed.data.modelFallbackSignal } : {}),
+      // myrmidon(DB-PERF-C-P4): the stored tool gateway policy cache TTL
+      // survives every general write (it is edited on its own settings route).
+      ...(parsed.data.toolPolicyCache ? { toolPolicyCache: parsed.data.toolPolicyCache } : {}),
     };
   }
   return {
@@ -672,6 +677,9 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
             ...preserveGitHubSharedIdentityGeneralKey(current.general), // myrmidon(GITHUB-SHARED-IDENTITY)
             ...preserveBudgetProjectionGeneralKey(current.general), // myrmidon(1.7-BUDGET-CONFIG-C)
             ...preserveBotImageRolloutGeneralKey(current.general), // myrmidon(BOT-ROLLOUT)
+            ...preserveToolPolicyCacheGeneralKey(current.general), // myrmidon(DB-PERF-C-P4)
+            // myrmidon(DB-PERF-C-P4): a patch that carries the key wins over the restored value.
+            ...(patch.toolPolicyCache !== undefined ? { toolPolicyCache: nextGeneral.toolPolicyCache } : {}),
           },
           updatedAt: now,
         })
