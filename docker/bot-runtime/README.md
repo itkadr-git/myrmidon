@@ -514,6 +514,45 @@ script binds `/bot` from a throwaway directory whose `hermes/` carries the key t
 `${HERMES_HOME}/.env`, per the bot-runtime contract, mirroring the container
 driver's single-mount layout.
 
+### Task workspaces: `myr-ws`, `git clone` interception, quota refusals (1.6.5 BOT-DISK-H, contract H0)
+
+How a bot gets its task copy now, per the interface contract
+(`docs/myrmidon/bot-disk-contract/README.md`):
+
+- A run arrives with `workspace: {key, repo, baseRef?}`. The gateway opens the
+  copy itself with `myr-ws open <key> <repo> [--base <baseRef>] --json` and
+  starts the run with `MYRMIDON_TASK_WORKSPACE=/workspace/<key>` as cwd. If
+  `open` fails with exit 3/4/5 (quota, base limit, network), the run still
+  starts — in `/scratch`, with a warning event.
+- The copy is a **worktree** of a per-bot bare base at
+  `$HERMES_HOME/.myrmidon/git-base/<owner>/<repo>.git` on branch
+  `bot/<KEY>`: no per-copy objects, no promisor packs, no token in
+  `.git/config` (auth stays with `git-credential-paperclip`).
+- `git clone https://github.com/<owner>/<repo>` inside the container is
+  intercepted into `myr-ws open`: with `MYRMIDON_TASK_WORKSPACE` set it opens
+  the task copy, otherwise it becomes a scratch copy at `/scratch/<name>`.
+  `--filter`, `--depth`, `--mirror` and `--bare` are ignored with a message —
+  the objects are already in the base. The real git lives at
+  `/opt/paperclip/libexec/git` outside PATH.
+- `myr-ws` commands: `open <KEY> [owner/repo] [--base <ref>] [--scratch]`,
+  `list`, `close <KEY> [--force]`, `restore <KEY>`, `migrate`; global
+  `--json`. Exit codes: `0` ok, `2` invalid arguments, `3` quota/disk
+  refusal — the message starts with `BOT_DISK_QUOTA_EXCEEDED:` — `4`
+  repository over the base limit (8), `5` network/fetch, `6` no such
+  copy/archive, `7` unpushed work without `--force`.
+- On `BOT_DISK_QUOTA_EXCEEDED:` the bot partition is over its quota or past
+  the refuse-open fill level: stop cloning, commit and push what you have,
+  report to the board, do not retry in a loop.
+- The in-container agent `botd` follows the board's desired state
+  (`GET /api/myrmidon/bots/me/workspaces`): a copy whose task went terminal,
+  was reassigned or had its PR merged turns `closing`, survives a grace
+  (`general.botDisk.graceClosingMinutes`, default 30 min), and is removed;
+  unpushed work is archived first (`$HERMES_HOME/.myrmidon/archive/`, cap 2
+  GiB / 30 days) and is restorable with `myr-ws restore <KEY>`. Scratch
+  copies expire by idle TTL (`general.botDisk.scratchTtlHours`, default 24 h).
+  When the board is unreachable botd deletes nothing. Botd reports disk state
+  back with `POST /api/myrmidon/bots/me/disk-report`.
+
 ## What's not verified yet
 
 This Dockerfile and entrypoint were written by reading a reference
