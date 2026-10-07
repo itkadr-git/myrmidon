@@ -910,5 +910,55 @@
     "ageHours": "{{count}} h",
     "ageDays": "{{count}} d",
     "ageSeconds": "{{count}} s"
+  },
+  "runQueue": {
+    "priorityTitle": "Run queue priority",
+    "priorityDescription": "When the admission ceilings are closed, queued runs start in priority order: review, release and current-release work first. Weights apply on the next admission pass — saving needs no server restart.",
+    "notServed": "This server does not expose queue priority settings yet (the feature arrives with a release update); nothing here is saved.",
+    "loading": "Loading the queue priority settings...",
+    "role": {
+      "review": "Review weight",
+      "release": "Release weight",
+      "lead": "Lead weight",
+      "engineer": "Engineer weight",
+      "docs": "Docs weight"
+    },
+    "weightOff": "off",
+    "source": {
+      "settings": "Saved here",
+      "env": "From the server environment",
+      "default": "Default"
+    },
+    "currentRelease": "Current release",
+    "currentReleaseOff": "off",
+    "currentReleaseHint": "Release tag or string tasks are matched against (label or branch marker); leave it empty for no release bonus.",
+    "currentReleaseBonus": "Current-release bonus",
+    "currentReleaseBonusHint": "Weight added on top of the role weight for tasks of the current release.",
+    "agingStep": "Aging step (weight per hour)",
+    "agingStepHint": "Weight a waiting run gains for every full hour in the queue — keeps low-priority runs from starving.",
+    "agingMax": "Aging cap",
+    "agingMaxHint": "Maximum weight the aging can add on top of the base weight.",
+    "save": "Save queue priority",
+    "saving": "Saving...",
+    "loadFailed": "Failed to load the queue priority settings.",
+    "saveFailed": "Saving the queue priority settings failed.",
+    "error": {
+      "wholeNumber": "Enter a whole number of 0 or more, or leave it empty"
+    },
+    "position": {
+      "of": "Queue position {{position}} of {{total}}",
+      "only": "Queue position {{position}}"
+    },
+    "waiting": "waiting: {{reason}}",
+    "waitReason": {
+      "global_cap": "the concurrency ceiling is full",
+      "start_ramp": "the start ramp paces new starts",
+      "memory": "the server keeps its free-memory floor",
+      "host_memory": "the host free-memory floor is closed",
+      "host_cpu": "the host CPU ceiling is closed",
+      "agent_fair_share": "another agent's turn comes first (fair share)",
+      "agent_concurrency": "the agent's own concurrency limit is full",
+      "priority": "higher-priority runs are ahead"
+    }
   }
 }

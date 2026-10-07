@@ -19,6 +19,7 @@ import { cn } from "../lib/utils";
 import { useSignOut } from "@/hooks/useSignOut";
 import { MaintenanceSettingsPanel } from "@/components/myrmidon/MaintenanceSettingsPanel"; // myrmidon(R3)
 import { RuntimeLimitsSettingsPanel } from "@/components/myrmidon/RuntimeLimitsSettingsPanel"; // myrmidon(C0)
+import { RunQueuePrioritySettingsPanel } from "@/components/myrmidon/RunQueuePrioritySettingsPanel"; // myrmidon(1.6.5 RUN-PRIORITY B)
 import { BudgetEnforcementSettingsPanel } from "@/components/myrmidon/BudgetEnforcementSettingsPanel"; // myrmidon(1.7-BUDGET-CONFIG-B)
 import { TelegramDmProgressSettingsPanel } from "@/components/myrmidon/TelegramDmProgressSettingsPanel"; // myrmidon(DM-PROGRESS)
 import { HostDiskSettingsPanel } from "@/components/myrmidon/HostDiskSettingsPanel"; // myrmidon(BOT-DISK E)
@@ -158,6 +159,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
 
       <MaintenanceSettingsPanel /> {/* myrmidon(R3) */}
       <RuntimeLimitsSettingsPanel /> {/* myrmidon(C0) */}
+      <RunQueuePrioritySettingsPanel /> {/* myrmidon(1.6.5 RUN-PRIORITY B) */}
       <BudgetEnforcementSettingsPanel /> {/* myrmidon(1.7-BUDGET-CONFIG-B) */}
       <TelegramDmProgressSettingsPanel /> {/* myrmidon(DM-PROGRESS) */}
       <HostDiskSettingsPanel /> {/* myrmidon(BOT-DISK E) */}
