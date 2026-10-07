@@ -650,16 +650,17 @@ describe("myrmidon-bot-image.yml", () => {
       assert.match(devStage, /env -i PATH=\/usr\/bin:\/bin git ls-remote/);
     });
 
-    it("installs myr-ws (bin + /usr/local/bin) and botd as executables from bot-disk/, tolerating their absence", () => {
-      assert.match(devStage, /COPY --chown=root:root bot-disk\/ \/tmp\/bot-disk-src\//);
-      assert.match(devStage, /install -m 0755 -o root -g root \/tmp\/bot-disk-src\/myr-ws \/opt\/paperclip\/bin\/myr-ws/);
-      assert.match(devStage, /ln -s \/opt\/paperclip\/bin\/myr-ws \/usr\/local\/bin\/myr-ws/);
+    it("installs the myr-ws and botd directories whole, links myr-ws (bin + /usr/local/bin) and botd, tolerating a missing botd entry point", () => {
+      assert.match(devStage, /COPY --chown=root:root myr-ws\/ \/opt\/paperclip\/myr-ws\//);
+      assert.match(devStage, /COPY --chown=root:root botd\/ \/opt\/paperclip\/botd\//);
+      assert.match(devStage, /chmod 0755 \/opt\/paperclip\/myr-ws\/myr-ws/);
+      assert.match(devStage, /ln -s \/opt\/paperclip\/myr-ws\/myr-ws \/opt\/paperclip\/bin\/myr-ws/);
+      assert.match(devStage, /ln -s \/opt\/paperclip\/myr-ws\/myr-ws \/usr\/local\/bin\/myr-ws/);
       assert.match(devStage, /\[ -x \/usr\/local\/bin\/myr-ws \]/);
-      assert.match(devStage, /install -m 0755 -o root -g root \/tmp\/bot-disk-src\/botd \/opt\/paperclip\/bin\/botd/);
+      assert.match(devStage, /if \[ -f \/opt\/paperclip\/botd\/botd \]/);
+      assert.match(devStage, /ln -s \/opt\/paperclip\/botd\/botd \/opt\/paperclip\/bin\/botd/);
       assert.match(devStage, /\[ -x \/opt\/paperclip\/bin\/botd \]/);
-      assert.match(devStage, /if \[ -f \/tmp\/bot-disk-src\/myr-ws \]/);
-      assert.match(devStage, /if \[ -f \/tmp\/bot-disk-src\/botd \]/);
-      assert.ok(fs.existsSync(path.join(IMAGE_DIR, "bot-disk")), "the bot-disk build-context directory must exist so COPY never fails");
+      assert.doesNotMatch(devStage, /bot-disk-src/);
     });
 
     it("the wrapper's default real git is the libexec path (a wrapper that execs itself would loop)", () => {
