@@ -11,7 +11,10 @@
 // mirrored by hand and checked against the contract fixtures in the test.
 
 const DEFAULT_TIMEOUT_MS = 10_000;
-const DEFAULT_INTERVAL_MS = 60_000;
+// botd never runs this timer alongside the main loop (the entry wires .poll()
+// only); 300 s keeps even an autonomous start() off the board's hot path
+// (BOT-DISK-H LOAD).
+const DEFAULT_INTERVAL_MS = 300_000;
 const DESIRED_PATH = "/api/myrmidon/bots/me/workspaces";
 const STATES = ["active", "closing"];
 const PR_STATES = ["none", "open", "merged", "closed"];
@@ -76,7 +79,8 @@ function desiredUrl(env) {
  * @param {(line: string) => void} [opts.log]
  * @param {() => Date} [opts.now]
  * @param {number} [opts.timeoutMs]  default 10 s
- * @param {number} [opts.intervalMs] default 60 s
+ * @param {number} [opts.intervalMs] default 300 s (autonomous start() only;
+ *   botd drives polling through lib/loop.js and never calls start())
  * @param {(result: object) => void} [opts.onResult]  called after every poll (start())
  */
 export function createDesiredClient(opts = {}) {
