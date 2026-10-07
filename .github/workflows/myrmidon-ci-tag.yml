@@ -403,8 +403,12 @@ jobs:
           TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
+          # A release candidate is tagged before the release cut renames the
+          # collected entries; only the final tag must carry its version section.
+          case "$TAG" in
+            *-rc.*) echo "release candidate $TAG: the changelog cut happens at the final tag; skipped"; exit 0 ;;
+          esac
           version="${TAG#myr-v}"
-          version="${version%%-rc.*}"
           node scripts/myrmidon/release/collect-fragments.mjs --version "$version" --check
 
       - name: Script tests (node:test under scripts/myrmidon)

@@ -26,6 +26,7 @@ import {
   type BotProfilePorts,
 } from "./profile-compile.js";
 import { BOT_EGRESS_MODE_ENV, BOT_EGRESS_PROXY_ENV } from "./egress.js";
+import { WS_BOTD_BOARD_KEY_ENV_VALUE, WS_BOT_DISK_SETTING_DEFAULTS, WS_PROFILE_ENV } from "@paperclipai/shared";
 import { classifyProfileChange, type CompiledProfile } from "./types.js";
 
 // Placeholder data only: fake ids, example.com URLs, obviously-fake secrets.
@@ -139,12 +140,12 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
     it("a member of a shared scope instance gets the instance's pnpm store, with or without the shared package cache", async () => {
       const board = fakeBoard({
         scopeLayout: async () => ({ kind: "shared", dirName: "caste-x-engineer" }),
-        pnpmSettings: async () => ({ storeDir: "/workspace/.pnpm-store", importMethod: "hardlink" }),
+        pnpmSettings: async () => ({ storeDir: "/cache/pnpm-store", importMethod: "clone" }),
       });
       const env = fileContent(await createBotProfileCompile(board.ports, { env: INSTANCE_ENV })("agent-a", "agent-a"), "hermes/.env");
       expect(env).toContain('npm_config_store_dir="/bot-scope/.pnpm-store"');
-      expect(env).toContain('npm_config_package_import_method="hardlink"');
-      expect(env).not.toContain("/workspace/.pnpm-store");
+      expect(env).toContain('npm_config_package_import_method="clone"');
+      expect(env).not.toContain("/cache/pnpm-store");
       // myrmidon(1.6.5 BOT-DISK-G): and the instance's shared git object store.
       expect(env).toContain('MYRMIDON_GIT_LOCAL_MIRROR="/bot-scope/.git-objects"');
     });
@@ -178,6 +179,120 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
     expect(second.restartHash).toBe(first.restartHash);
     expect(second.filesHash).toBe(first.filesHash);
     expect(board.secrets.size).toBe(3); // the LLM key plus the two per-bot secrets, created once
+  });
+
+  describe("myrmidon(1.6.5-BOT-DISK-H5c) workspace/botd mechanics (C7)", () => {
+    it("compiles the mechanics env with the contract defaults when the settings row is empty", async () => {
+      const board = fakeBoard({
+        botDiskMechanics: async () => ({
+          graceClosingMinutes: WS_BOT_DISK_SETTING_DEFAULTS.graceClosingMinutes,
+          scratchTtlHours: WS_BOT_DISK_SETTING_DEFAULTS.scratchTtlHours,
+          partitionThresholdPercent: WS_BOT_DISK_SETTING_DEFAULTS.partitionThresholdPercent,
+          partitionRefuseOpenPercent: WS_BOT_DISK_SETTING_DEFAULTS.partitionRefuseOpenPercent,
+          partitionCriticalPercent: WS_BOT_DISK_SETTING_DEFAULTS.partitionCriticalPercent,
+        }),
+      });
+      const env = fileContent(await createBotProfileCompile(board.ports, { env: INSTANCE_ENV })("agent-a", "agent-a"), "hermes/.env");
+      expect(env).toContain(`${WS_PROFILE_ENV.partitionThresholdPercent}="85"`);
+      expect(env).toContain(`${WS_PROFILE_ENV.partitionRefuseOpenPercent}="90"`);
+      expect(env).toContain(`${WS_PROFILE_ENV.partitionCriticalPercent}="95"`);
+      expect(env).toContain(`${WS_PROFILE_ENV.graceClosingMinutes}="30"`);
+      expect(env).toContain(`${WS_PROFILE_ENV.scratchTtlHours}="24"`);
+      // No operator-set interval: no variable, botd's in-image default applies (H3).
+      expect(env).not.toContain(WS_PROFILE_ENV.botdIntervalSec);
+      // The board address is the one the gateway already points the bot at, and the
+      // key travels only as the NAME of the .env variable holding it — never the value.
+      expect(env).toContain(`${WS_PROFILE_ENV.boardUrl}="http://board.example.com:3100"`);
+      expect(env).toContain(`${WS_PROFILE_ENV.boardKeyEnv}="${WS_BOTD_BOARD_KEY_ENV_VALUE}"`);
+      expect(env).not.toContain(`${WS_PROFILE_ENV.boardKeyEnv}="fake-paperclip-api-key`);
+    });
+
+    it("compiles the operator-set values (incl. the botd interval) over the defaults", async () => {
+      const board = fakeBoard({
+        botDiskMechanics: async () => ({
+          graceClosingMinutes: 45,
+          scratchTtlHours: 12,
+          partitionThresholdPercent: 80,
+          partitionRefuseOpenPercent: 88,
+          partitionCriticalPercent: 93,
+          botdIntervalSec: 300,
+        }),
+      });
+      const env = fileContent(await createBotProfileCompile(board.ports, { env: INSTANCE_ENV })("agent-a", "agent-a"), "hermes/.env");
+      expect(env).toContain(`${WS_PROFILE_ENV.partitionThresholdPercent}="80"`);
+      expect(env).toContain(`${WS_PROFILE_ENV.partitionRefuseOpenPercent}="88"`);
+      expect(env).toContain(`${WS_PROFILE_ENV.partitionCriticalPercent}="93"`);
+      expect(env).toContain(`${WS_PROFILE_ENV.graceClosingMinutes}="45"`);
+      expect(env).toContain(`${WS_PROFILE_ENV.scratchTtlHours}="12"`);
+      expect(env).toContain(`${WS_PROFILE_ENV.botdIntervalSec}="300"`);
+    });
+
+    it("the instance values win over the card's own, with a warning", async () => {
+      const board = fakeBoard({
+        async resolveCardEnv() {
+          return { env: { [WS_PROFILE_ENV.partitionThresholdPercent]: { value: "99", secret: false } }, warnings: [] };
+        },
+        botDiskMechanics: async () => ({
+          graceClosingMinutes: 30,
+          scratchTtlHours: 24,
+          partitionThresholdPercent: 85,
+          partitionRefuseOpenPercent: 90,
+          partitionCriticalPercent: 95,
+        }),
+      });
+      const profile = await createBotProfileCompile(board.ports, { env: INSTANCE_ENV })("agent-a", "agent-a");
+      const env = fileContent(profile, "hermes/.env");
+      expect(env).toContain(`${WS_PROFILE_ENV.partitionThresholdPercent}="85"`);
+      expect(env).not.toContain('"99"');
+    });
+
+    it("changes the restart hash when the mechanics change: the next tick restarts the bot onto them", async () => {
+      const defaults = fakeBoard({
+        botDiskMechanics: async () => ({
+          graceClosingMinutes: 30,
+          scratchTtlHours: 24,
+          partitionThresholdPercent: 85,
+          partitionRefuseOpenPercent: 90,
+          partitionCriticalPercent: 95,
+        }),
+      });
+      const changed = fakeBoard({
+        botDiskMechanics: async () => ({
+          graceClosingMinutes: 60,
+          scratchTtlHours: 24,
+          partitionThresholdPercent: 85,
+          partitionRefuseOpenPercent: 90,
+          partitionCriticalPercent: 95,
+        }),
+      });
+      const first = await createBotProfileCompile(defaults.ports, { env: INSTANCE_ENV })("agent-a", "agent-a");
+      const second = await createBotProfileCompile(changed.ports, { env: INSTANCE_ENV })("agent-a", "agent-a");
+      expect(second.restartHash).not.toBe(first.restartHash);
+    });
+
+    it("keeps the profile byte-identical between two compiles of the same settings (deterministic output)", async () => {
+      const ports: Partial<BotProfilePorts> = {
+        botDiskMechanics: async () => ({
+          graceClosingMinutes: 45,
+          scratchTtlHours: 12,
+          partitionThresholdPercent: 80,
+          partitionRefuseOpenPercent: 88,
+          partitionCriticalPercent: 93,
+          botdIntervalSec: 300,
+        }),
+      };
+      const a = await createBotProfileCompile(fakeBoard(ports).ports, { env: INSTANCE_ENV })("agent-a", "agent-a");
+      const b = await createBotProfileCompile(fakeBoard(ports).ports, { env: INSTANCE_ENV })("agent-a", "agent-a");
+      expect(fileContent(b, "hermes/.env")).toBe(fileContent(a, "hermes/.env"));
+      expect(fileContent(b, "hermes/config.yaml")).toBe(fileContent(a, "hermes/config.yaml"));
+    });
+
+    it("without the port the profile carries no BOT-DISK-H variables (a board before H5c)", async () => {
+      const env = fileContent(await createBotProfileCompile(fakeBoard().ports, { env: INSTANCE_ENV })("agent-a", "agent-a"), "hermes/.env");
+      for (const name of Object.values(WS_PROFILE_ENV)) {
+        expect(env).not.toContain(name);
+      }
+    });
   });
 
   it("puts the company's skills, MCP servers and instance defaults through to the profile", async () => {

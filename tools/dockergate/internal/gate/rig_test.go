@@ -21,6 +21,7 @@ import (
 
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/config"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/deny"
+	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/disk"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/fakedocker"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/fixture"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/gate"
@@ -184,6 +185,8 @@ type rigOptions struct {
 	container bool
 	noServe   bool
 	log       io.Writer
+	disk      gate.DiskQuota
+	diskHost  disk.Deps
 }
 
 type rigOpt func(*rigOptions)
@@ -195,6 +198,13 @@ func withConfig(f func(*config.Config)) rigOpt {
 // withContainerCaller makes the caller the main process of the board container
 // (the production mode), against a fake /proc.
 func withContainerCaller() rigOpt { return func(o *rigOptions) { o.container = true } }
+
+// withDisk replaces the quota code of the disk routes (A15).
+func withDisk(d gate.DiskQuota) rigOpt { return func(o *rigOptions) { o.disk = d } }
+
+// withDiskHost replaces the host side of GET /myrmidon/disk (statfs, xfs_quota, the
+// project table).
+func withDiskHost(d disk.Deps) rigOpt { return func(o *rigOptions) { o.diskHost = d } }
 
 // withoutServe builds the gate and the daemon but does not listen.
 func withoutServe() rigOpt { return func(o *rigOptions) { o.noServe = true } }
@@ -321,7 +331,7 @@ func newRig(t *testing.T, opts ...rigOpt) *rig {
 
 	gopt := gate.Options{
 		Cfg: cfg, ConfigHash: "test", Version: "test", Log: r.log,
-		Cred: r.credFn, Lstat: r.lstat,
+		Cred: r.credFn, Lstat: r.lstat, Disk: o.disk, DiskHost: o.diskHost,
 	}
 	if r.proc != nil {
 		gopt.Proc = r.proc

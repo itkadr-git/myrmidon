@@ -210,13 +210,14 @@ RUN /opt/hermes-src/.venv/bin/python -c 'import aiohttp, mcp, hindsight_client'
 
 # myrmidon(G1): import smoke for every module a patch in patches/ changes
 # (hermes_state: 04, 06; tools.environments.base and base_session_env: 02; gateway.run: 05;
-# gateway.platforms.api_server_runs, tools.environments.local and tools.github_broker_context: 09)
+# gateway.platforms.api_server_runs, tools.environments.local and tools.github_broker_context: 09;
+# tools.run_workspace (also api_server_runs/local): 10)
 # plus the vendored memory provider (a relative-import package, so a broken plugin tree
 # fails the build here, not at the first bot start). `git apply` only proves the hunks
 # land; a patch that applies cleanly but breaks a module's imports or top-level code
 # would otherwise surface only when a bot starts. No bytecode is written, so the sealed
 # tree stays as the build left it.
-RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python -c 'import hermes_state, tools.environments.base, tools.environments.base_session_env, gateway.run, gateway.platforms.api_server_runs, tools.environments.local, tools.github_broker_context'
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python -c 'import hermes_state, tools.environments.base, tools.environments.base_session_env, gateway.run, gateway.platforms.api_server_runs, tools.environments.local, tools.github_broker_context, tools.run_workspace'
 
 # myrmidon(G1): behaviour check for patch 06 — the state-DB generation probe must not
 # walk /proc/self/fd once per write while the gateway holds hundreds of descriptors
@@ -231,10 +232,17 @@ RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/
 # (contextvars), bridge into terminal child envs, and never touch the process
 # env shared by concurrent runs.
 RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/github_broker_run_scope.py /opt/hermes-src
+# myrmidon(BOT-DISK-H5b): behaviour regression for 10-run-workspace-open.patch
+# (bot-disk contract C6): the workspace body field must run `myr-ws open`
+# (fake CLI via MYRMIDON_WS_BIN) with the contract argv, bind the opened path as
+# cwd + MYRMIDON_TASK_WORKSPACE per run, fall back to /scratch with a warning on
+# exit codes 3/4/5, and be a no-op — never an inherited stale value — without
+# the field.
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/run_workspace_open.py /opt/hermes-src
 # myrmidon(G1): names imported inside functions of the patched modules resolve too
 # (the import smoke above runs only top-level imports; a missing lazily imported name
 # broke every run of the 1.6.0 dev image while the build passed).
-RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/lazy_imports_resolve.py /opt/hermes-src hermes_state tools.environments.base tools.environments.base_session_env gateway.run gateway.platforms.api_server_runs tools.environments.local tools.github_broker_context
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/lazy_imports_resolve.py /opt/hermes-src hermes_state tools.environments.base tools.environments.base_session_env gateway.run gateway.platforms.api_server_runs tools.environments.local tools.github_broker_context tools.run_workspace
 
 # The provider itself, through hermes' OWN discovery path (the same one the gateway uses at
 # start): a staging home gets the same symlink the entrypoint will make at run time, and
@@ -671,7 +679,7 @@ COPY --from=docker_cli_dist --chown=root:root /opt/docker-cli /opt/docker-cli
 # variant keeps its global prefix off PATH: an element under a writable volume
 # is refused by dockergate, so the package manager may not live in /scratch.
 # corepack is deliberately not used (it fails on this base).
-ARG PNPM_VERSION=9.15.4
+ARG PNPM_VERSION=10.18.1
 RUN PATH=/opt/node24/bin:$PATH npm install --global --prefix /opt/pnpm "pnpm@${PNPM_VERSION}" \
   && PATH=/opt/node24/bin:$PATH /opt/pnpm/bin/pnpm --version | grep -x "${PNPM_VERSION}" \
   && rm -rf /root/.npm
@@ -717,13 +725,65 @@ RUN chmod 0755 /opt/paperclip/bin/git-credential-paperclip /opt/paperclip/bin/gh
 # is exactly where the clones happen. The build-time check below asserts both:
 # without the symlink a bare `git` is the real binary; with a broken shebang it
 # dies with 127 in a PATH the wrapper cannot inject itself into.
-COPY --chown=root:root git-reference/git git-reference/bot-clone-hygiene /opt/paperclip/bin/
+COPY --chown=root:root git-reference/git git-reference/bot-clone-hygiene git-reference/clone-args.js /opt/paperclip/bin/
 RUN chmod 0755 /opt/paperclip/bin/git /opt/paperclip/bin/bot-clone-hygiene \
   && ln -s /opt/paperclip/bin/git /usr/local/bin/git \
   && /opt/node24/bin/node --check /opt/paperclip/bin/git \
   && head -1 /opt/paperclip/bin/git | grep -qx "#!/opt/node24/bin/node" \
   && python3 -m py_compile /opt/paperclip/bin/bot-clone-hygiene \
   && rm -rf /opt/paperclip/bin/__pycache__
+
+# myrmidon(1.6.5 BOT-DISK-H1c): the real git moves out of PATH. The Debian binary
+# goes to /opt/paperclip/libexec/git (dpkg-divert keeps a later `apt` upgrade of
+# the git package from putting it back), and /usr/bin/git becomes a symlink to the
+# wrapper, so EVERY bare `git` — whatever PATH a bot terminal rebuilds — answers
+# through the wrapper; there is no regular way to reach the real binary but its
+# absolute libexec path (which the ownership and quota layers catch). The wrapper's
+# default REAL_GIT is that libexec path (MYRMIDON_GIT_REAL still overrides it) —
+# without that, the wrapper would exec itself. git finds its helpers
+# (git-upload-pack, git-remote-https, ...) through the compiled-in
+# /usr/lib/git-core, not through the binary's own path, so moving it is safe; the
+# build asserts that with a real `git ls-remote` of a local repository (the
+# git-upload-pack helper) through the wrapper.
+#
+# myr-ws (CLI, H2) and botd (lifecycle agent, H3) are installed whole, as
+# directories (lib/*.js and package.json go with the entry point): myr-ws/ to
+# /opt/paperclip/myr-ws, botd/ to /opt/paperclip/botd. /opt/paperclip/bin/myr-ws
+# and /usr/local/bin/myr-ws (a terminal PATH without /opt/paperclip/bin) are
+# symlinks to /opt/paperclip/myr-ws/myr-ws; /opt/paperclip/bin/botd links to the
+# botd entry point /opt/paperclip/botd/botd. Until that entry point exists in the
+# tree (H3 ships lib/ first) there is no botd link, the image still builds and the
+# entrypoint falls back to bot-clone-hygiene (see entrypoint.sh). The two
+# directories must be in the tree: this change merges after BOT-DISK-H2/H3a.
+COPY --chown=root:root myr-ws/ /opt/paperclip/myr-ws/
+COPY --chown=root:root botd/ /opt/paperclip/botd/
+RUN set -eu; \
+    mkdir -p /opt/paperclip/libexec; \
+    dpkg-divert --local --rename --divert /opt/paperclip/libexec/git --add /usr/bin/git; \
+    ln -s /opt/paperclip/bin/git /usr/bin/git; \
+    chmod 0755 /opt/paperclip/libexec/git; \
+    chmod 0755 /opt/paperclip/myr-ws/myr-ws; \
+    ln -s /opt/paperclip/myr-ws/myr-ws /opt/paperclip/bin/myr-ws; \
+    ln -s /opt/paperclip/myr-ws/myr-ws /usr/local/bin/myr-ws; \
+    [ -x /usr/local/bin/myr-ws ] && [ -x /opt/paperclip/bin/myr-ws ] || { echo "myr-ws is not executable" >&2; exit 1; }; \
+    if [ -f /opt/paperclip/botd/botd ]; then \
+      chmod 0755 /opt/paperclip/botd/botd; \
+      ln -s /opt/paperclip/botd/botd /opt/paperclip/bin/botd; \
+      [ -x /opt/paperclip/bin/botd ] || { echo "botd is not executable" >&2; exit 1; }; \
+    fi; \
+    [ "$(readlink /usr/bin/git)" = "/opt/paperclip/bin/git" ] || { echo "/usr/bin/git must be the wrapper symlink" >&2; exit 1; }; \
+    [ -x /opt/paperclip/libexec/git ] && [ ! -L /opt/paperclip/libexec/git ] || { echo "the real git must sit in libexec as a regular file" >&2; exit 1; }; \
+    for el in $(echo "$PATH" | tr ':' ' '); do \
+      [ "$el" = /opt/paperclip/libexec ] && { echo "libexec must not be on PATH" >&2; exit 1; }; \
+      if [ -e "$el/git" ] && [ "$(readlink -f "$el/git")" != "$(readlink -f /opt/paperclip/bin/git)" ]; then \
+        echo "$el/git is a real git outside libexec" >&2; exit 1; \
+      fi; \
+    done; \
+    out="$(env -i PATH=/usr/bin:/bin git --version)"; \
+    case "$out" in "git version "*) ;; *) echo "git --version through the wrapper failed: $out" >&2; exit 1 ;; esac; \
+    d="$(mktemp -d)"; /opt/paperclip/libexec/git init -q "$d/r"; \
+    env -i PATH=/usr/bin:/bin git ls-remote "$d/r" >/dev/null; \
+    rm -rf "$d"
 
 # myrmidon(1.6.1 BUILD-OFFLOAD A): the build-offload wrappers. Heavy
 # repository operations (pnpm install, monorepo tsc, vitest, gradle,
@@ -759,13 +819,13 @@ RUN chmod 0755 /opt/paperclip/bin/pnpm /opt/paperclip/bin/tsc /opt/paperclip/bin
 # directories are exactly its single /bot mount, so every path pnpm or the
 # toolchains write to must live under it:
 #   - the pnpm store defaults to /workspace/.pnpm-store, INSIDE the /bot mount like
-#     every clone root (/data/hermes, /workspace, /scratch), because pnpm
-#     hard-links node_modules into its store and link(2) cannot cross a mount
-#     (EXDEV) — a store on /cache would make pnpm copy every package into every
-#     clone (see README.md). package-import-method=hardlink stops pnpm from trying
-#     reflinks first; pnpm 9 itself still COPIES when the kernel refuses a link, so
-#     the guards are the build-time check below and the start-time self-check in
-#     entrypoint.sh (BOT-DISK-D);
+#     every clone root (/data/hermes, /workspace, /scratch), because pnpm imports
+#     node_modules from its store with package-import-method=clone (cp
+#     --reflink, FICLONE) and reflinks cannot cross a superblock (EXDEV) — a
+#     store on /cache would make pnpm copy every package into every clone
+#     (see README.md). pnpm 10 itself still COPIES when the kernel refuses the
+#     clone, so the guards are the build-time check below and the start-time
+#     reflink self-check in entrypoint.sh (BOT-DISK-D, BOT-DISK-H8b);
 #   - Rust's RUSTUP_HOME/CARGO_HOME stay sealed under /opt and cargo writes its
 #     target dir into the checked-out workspace, never into the image;
 #   - Go's build cache defaults under $HOME (/data/hermes) — the durable volume.
@@ -792,7 +852,7 @@ RUN chmod 0755 /opt/paperclip/bin/devbuild
 # /opt/pnpm/bin, /opt/node24/bin and /opt/go/bin — see the COPY block above.
 ENV PATH=/opt/paperclip/bin:/opt/node24/bin:/opt/pnpm/bin:/opt/go/bin:/opt/cargo/bin:/opt/docker-cli/bin:/opt/hermes-src/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     npm_config_store_dir=/workspace/.pnpm-store \
-    npm_config_package_import_method=hardlink \
+    npm_config_package_import_method=clone \
     GOTOOLCHAIN=local \
     GOFLAGS=-mod=mod
 
@@ -881,6 +941,18 @@ RUN set -eu; \
 # exists to prevent; the real pnpm binary is called directly, the devbuild gate only
 # fronts the bare name.
 COPY --chown=root:root --chmod=0755 pnpm-hardlink-check.sh /opt/paperclip/pnpm-hardlink-check.sh
+COPY --chown=root:root --chmod=0755 pnpm-reflink-check.sh /opt/paperclip/pnpm-reflink-check.sh
+# myrmidon(BOT-DISK-H8b): the image's pnpm really reflink-imports into the
+# store from EVERY clone root of the single /bot mount — the import method the
+# fleet now runs (template.ts DEFAULT_PNPM_IMPORT_METHOD). pnpm copies silently
+# when FICLONE is refused (another superblock, a filesystem without reflinks),
+# and a copy means every clone's node_modules duplicates the store, the problem
+# this stage exists to prevent. shared=yes needs filefrag's extent comparison;
+# on a build filesystem without reflink support this stage fails the build,
+# which is the point of the CI gate.
+# The reflink check runs at container start (entrypoint reflink_self_check) on the
+# real bot volume; a build filesystem (overlayfs on the CI runner) has no reflinks,
+# so a build-time gate here could never pass.
 RUN set -eu; \
     out="$(PNPM=/opt/pnpm/bin/pnpm ROOTS="/data/hermes /workspace /scratch" STORE_DIR=/workspace/.pnpm-store /opt/paperclip/pnpm-hardlink-check.sh)"; \
     echo "pnpm hardlink check: $out"; \

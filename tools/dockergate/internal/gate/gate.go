@@ -21,6 +21,7 @@ import (
 
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/config"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/deny"
+	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/disk"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/limit"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/peer"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/policy"
@@ -79,6 +80,17 @@ type Options struct {
 	// Lstat is how the volume root is looked at; tests replace it.
 	Lstat policy.LstatFunc
 	Now   func() time.Time
+	// Disk sets the project quotas of the disk routes (A15). Nil is the real
+	// xfs_quota on the volume root of the configuration.
+	Disk DiskQuota
+	// DiskHost is how GET /myrmidon/disk (A14) looks at the host: statfs, the
+	// quota command and the project table. Zero fields mean the real host.
+	DiskHost disk.Deps
+}
+
+// DiskQuota is what the disk routes need of the quota code (disk.Quota).
+type DiskQuota interface {
+	Put(ctx context.Context, botKey string, hard int64) (disk.Result, error)
 }
 
 // Gate is the dockergate server.
@@ -90,6 +102,7 @@ type Gate struct {
 	stats   *Stats
 	now     func() time.Time
 	lstat   policy.LstatFunc
+	disk    disk.Deps
 	started time.Time
 
 	st atomic.Pointer[runtime]
@@ -133,11 +146,15 @@ func New(opt Options) (*Gate, error) {
 		opt.Lstat = policy.OSLstat
 	}
 	cfg := opt.Cfg
+	if opt.Disk == nil {
+		opt.Disk = disk.NewQuota(cfg.VolumeRoot, nil)
+	}
 	lim := cfg.Limits
 	g := &Gate{
 		opt:      opt,
 		now:      opt.Now,
 		lstat:    opt.Lstat,
+		disk:     opt.DiskHost,
 		started:  opt.Now(),
 		log:      NewLogger(opt.Log, opt.Now),
 		stats:    newStats(),

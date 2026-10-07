@@ -1,5 +1,5 @@
 // Package route matches the raw request-target of a client request against the
-// allowlist of dockergate (A1..A13). There is no percent-decoding anywhere: the
+// allowlist of dockergate (A1..A14). There is no percent-decoding anywhere: the
 // target is compared as a string with anchored templates, and the only escapes
 // that can match are the literals that a template contains.
 package route
@@ -41,7 +41,28 @@ const (
 	A11 = "A11"
 	A12 = "A12"
 	A13 = "A13"
+	// A14 is GET /myrmidon/disk: the one route outside the Docker API prefix. It
+	// reads the bot partition (statfs and the project quotas), never the daemon.
+	A14 = "A14"
 )
+
+// A15 is the disk route PUT /myrmidon/disk/<botKey>/quota (contract C5). It is
+// not a Docker API route: it has no APIPrefix and never reaches the daemon.
+const A15 = "A15"
+
+// DiskPrefix is the start of the disk routes (A14, A15).
+const DiskPrefix = "/myrmidon/disk/"
+
+// diskQuotaTail ends the target of A15.
+const diskQuotaTail = "/quota"
+
+// DiskTarget is the request-target of A14 (contract C5). It has no API prefix:
+// it is not a call to the daemon.
+const DiskTarget = "/myrmidon/disk"
+
+// diskPrefix is where every disk route lives; what is under it and is not a
+// route of this list is refused as route_not_allowed.
+const diskPrefix = "/myrmidon/"
 
 // Mount paths that a tar upload (A5) may target, keyed by the raw query value.
 var archiveMounts = map[string]string{
@@ -201,6 +222,17 @@ func splitName(name string) (key string, suffix Suffix, ok bool) {
 
 func notAllowed() *deny.Error { return deny.New(deny.RouteNotAllowed) }
 
+// parseDisk matches the target that follows DiskPrefix: A15 is exactly
+// "<botKey>/quota" with the PUT method. Nothing else is decoded or accepted: a
+// key that is not a lowercase UUID ("..", an escape, a query) is not a route.
+func parseDisk(method, rest string) (*Route, *deny.Error) {
+	key, ok := strings.CutSuffix(rest, diskQuotaTail)
+	if !ok || !IsBotKey(key) || method != "PUT" {
+		return nil, notAllowed()
+	}
+	return &Route{ID: A15, Method: method, BotKey: key}, nil
+}
+
 // Parse matches a request against the allowlist. target is the raw
 // request-target exactly as the client sent it; images is the A1 set.
 func Parse(method, target string, images Images) (*Route, *deny.Error) {
@@ -213,6 +245,20 @@ func Parse(method, target string, images Images) (*Route, *deny.Error) {
 	case "GET", "POST", "PUT", "DELETE":
 	default:
 		return nil, deny.New(deny.MethodNotAllowed)
+	}
+	// A14: the exact target, GET only. A15 lives under DiskPrefix. Anything else
+	// under /myrmidon/ is not a route.
+	if target == DiskTarget {
+		if method == "GET" {
+			return &Route{ID: A14, Method: method}, nil
+		}
+		return nil, notAllowed()
+	}
+	if rest, ok := strings.CutPrefix(target, DiskPrefix); ok {
+		return parseDisk(method, rest)
+	}
+	if strings.HasPrefix(target, diskPrefix) {
+		return nil, notAllowed()
 	}
 	if !strings.HasPrefix(target, APIPrefix) {
 		return nil, deny.New(deny.APIVersion)

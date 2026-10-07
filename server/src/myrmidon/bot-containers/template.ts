@@ -10,7 +10,7 @@
 // volume or the driver's reserved bookkeeping paths — only what these functions
 // accept ever reaches the Docker API.
 
-import { isScopeInstanceDirName } from "@paperclipai/shared";
+import { isScopeInstanceDirName, WS_BOTD_BOARD_KEY_ENV_VALUE, WS_PROFILE_ENV, type BotDiskMechanics } from "@paperclipai/shared"; // myrmidon(1.6.5-BOT-DISK-H5c)
 import type { BotContainerSpec, BotExtraMount } from "./driver.js";
 import type { CompiledProfileFile } from "./types.js";
 
@@ -552,22 +552,35 @@ export function botTreeRealPath(
 export const GIT_MIRROR_MOUNT = { hostSubdir: "git", containerPath: "/cache/git" } as const;
 
 /**
- * myrmidon(BOT-DISK-D): where pnpm keeps its content-addressed store by default
- * (settings `pnpmStoreDir`; the image's `npm_config_store_dir` is the same
- * value). It is inside the bot's single mount, so every clone anywhere in the
- * bot's tree can hard-link into it. Never `/cache/pnpm`: that is a different
- * mount, and pnpm cannot hard-link across mounts.
+ * myrmidon(1.6.5-BOT-DISK-H8a): where pnpm keeps its content-addressed store by
+ * default (settings `pnpmStoreDir`; the image's `npm_config_store_dir` is the
+ * same value): ONE store per partition, the host directory
+ * `<sharedPackageCachePath>/pnpm-store` bound read-write at `/cache/pnpm-store`
+ * into every bot of `sharedCacheRoles` (see {@link PACKAGE_CACHE_MOUNTS}). It
+ * replaces the per-bot `/workspace/.pnpm-store` of BOT-DISK-D (8 stores of
+ * 2.4 GiB each). It must be on the same partition as the bot volumes: a reflink
+ * only works inside one filesystem, and the instance setting is validated for
+ * that (packages/shared myrmidon-bot-disk.ts). Never `/cache/pnpm`: that is the
+ * download cache.
  */
-export const DEFAULT_PNPM_STORE_DIR = "/workspace/.pnpm-store";
+export const DEFAULT_PNPM_STORE_DIR = "/cache/pnpm-store";
 
-/** The import method pnpm is told to use: `hardlink` only tries hard links (no
- *  reflink attempts). pnpm 9 still copies when the kernel refuses a link, so a
- *  broken layout is caught by the container's start-time self-check
- *  (docker/bot-runtime/entrypoint.sh), not by pnpm. */
-export const DEFAULT_PNPM_IMPORT_METHOD = "hardlink";
+/** The import method pnpm is told to use: `clone` — a reflink, strictly. Not
+ *  `clone-or-copy`: that copies silently where the reflink is refused, and the
+ *  refusal has to be loud. A write to a file in node_modules never reaches the
+ *  store (copy-on-write), unlike a hard link. */
+export const DEFAULT_PNPM_IMPORT_METHOD = "clone";
 
-/** Container roots a pnpm store may live under (all inside the single mount). */
-export const PNPM_STORE_ROOTS: readonly string[] = ["/workspace", "/data", "/scratch", BOT_ROOT_MOUNT, BOT_SCOPE_MOUNT];
+/** Container roots a pnpm store may live under: the shared store mount, and the
+ *  bot's own tree (a store per bot; the settings validation warns about it). */
+export const PNPM_STORE_ROOTS: readonly string[] = [
+  DEFAULT_PNPM_STORE_DIR,
+  "/workspace",
+  "/data",
+  "/scratch",
+  BOT_ROOT_MOUNT,
+  BOT_SCOPE_MOUNT,
+];
 
 /** Where the shared package cache appears inside a bot container. Outside the
  *  three volumes and /tmp, so dockergate's reserved-target rule holds. */
@@ -592,8 +605,10 @@ export interface PackageCacheMount {
  * Mirrored by dockergate (`PackageCacheMounts` in tools/dockergate/internal/policy/create.go).
  */
 export const PACKAGE_CACHE_MOUNTS: readonly PackageCacheMount[] = [
-  // pnpm: a DOWNLOAD cache only (registry metadata), never the store (see DEFAULT_PNPM_STORE_DIR).
+  // pnpm: a DOWNLOAD cache only (registry metadata), never the store (see the next entry).
   { hostSubdir: "pnpm", containerPath: "/cache/pnpm", envName: "npm_config_cache_dir" },
+  // myrmidon(1.6.5-BOT-DISK-H8a): the pnpm STORE, one per partition (DEFAULT_PNPM_STORE_DIR).
+  { hostSubdir: "pnpm-store", containerPath: DEFAULT_PNPM_STORE_DIR, envName: "npm_config_store_dir" },
   { hostSubdir: "go-mod", containerPath: "/cache/go-mod", envName: "GOMODCACHE" },
   { hostSubdir: "go-build", containerPath: "/cache/go-build", envName: "GOCACHE" },
   { hostSubdir: "gradle", containerPath: "/cache/gradle", envName: "GRADLE_USER_HOME" },
@@ -603,12 +618,13 @@ export const PACKAGE_CACHE_MOUNTS: readonly PackageCacheMount[] = [
  * The environment that points each tool at its shared cache mount, plus the pnpm
  * store variables.
  *
- * myrmidon(BOT-DISK-D): pnpm links a project's node_modules to its store with hard
- * links, and link(2) refuses to cross a mount point. The store therefore lives
- * INSIDE the bot's single mount ({@link DEFAULT_PNPM_STORE_DIR}), `/cache/pnpm`
- * stays a download cache only, and the import method is `hardlink` by default (pnpm
- * does not report a refused link, it copies: the start-time self-check does). Both values come from the
- * bot-disk settings (`pnpmStoreDir`, `pnpmImportMethod`).
+ * myrmidon(1.6.5-BOT-DISK-H8a): pnpm imports a package into a project's
+ * node_modules by reflink (`clone`): the copy shares the store's blocks on disk
+ * and a write does not reach the store. A reflink works between mount points of
+ * one filesystem, so the store is the shared `/cache/pnpm-store` mount (one per
+ * partition, {@link DEFAULT_PNPM_STORE_DIR}); `/cache/pnpm` stays a download
+ * cache only. Both values come from the bot-disk settings (`pnpmStoreDir`,
+ * `pnpmImportMethod`); a stored value of an earlier release is migrated on read.
  */
 export function packageCacheEnv(
   pnpm: { storeDir?: string; importMethod?: string } = {},
@@ -623,6 +639,37 @@ export function pnpmEnv(pnpm: { storeDir?: string; importMethod?: string } = {})
     npm_config_store_dir: pnpm.storeDir ?? DEFAULT_PNPM_STORE_DIR,
     npm_config_package_import_method: pnpm.importMethod ?? DEFAULT_PNPM_IMPORT_METHOD,
   };
+}
+
+/**
+ * myrmidon(1.6.5-BOT-DISK-H5c): the environment of the BOT-DISK-H mechanics
+ * (C7) that the profile compiler writes into every bot's hermes/.env. The
+ * variable NAMES come from the H0 contract (`WS_PROFILE_ENV`), the values from
+ * `general.botDisk.*` with the contract defaults for a key the operator never
+ * set, so `myr-ws` (H2) and botd (H3) on every bot of the instance apply the
+ * same policy — and a settings PATCH reaches the bots on the next reconcile
+ * pass, without a board restart (the port re-reads the settings per tick, like
+ * the pnpm store settings above).
+ *
+ * The board address is the one the gateway already compiled for the bot
+ * (MYRMIDON_BOT_BOARD_URL — the board as the container reaches it), and the
+ * key travels only as the NAME of the .env variable that holds it
+ * (PAPERCLIP_API_KEY): the value itself stays in the one place the driver
+ * already puts it. `botdIntervalSec` is written only when the operator set it
+ * — the contract pins no default for it (botd's in-image default, H3).
+ */
+export function botdProfileEnv(mechanics: BotDiskMechanics, boardUrl: string): Record<string, string> {
+  const env: Record<string, string> = {
+    [WS_PROFILE_ENV.partitionThresholdPercent]: String(mechanics.partitionThresholdPercent),
+    [WS_PROFILE_ENV.partitionRefuseOpenPercent]: String(mechanics.partitionRefuseOpenPercent),
+    [WS_PROFILE_ENV.partitionCriticalPercent]: String(mechanics.partitionCriticalPercent),
+    [WS_PROFILE_ENV.graceClosingMinutes]: String(mechanics.graceClosingMinutes),
+    [WS_PROFILE_ENV.scratchTtlHours]: String(mechanics.scratchTtlHours),
+    [WS_PROFILE_ENV.boardUrl]: boardUrl,
+    [WS_PROFILE_ENV.boardKeyEnv]: WS_BOTD_BOARD_KEY_ENV_VALUE,
+  };
+  if (mechanics.botdIntervalSec !== undefined) env[WS_PROFILE_ENV.botdIntervalSec] = String(mechanics.botdIntervalSec);
+  return env;
 }
 
 /** The one extra bind the driver itself may add (the devbuild ssh key mount).

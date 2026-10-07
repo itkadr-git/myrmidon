@@ -19,12 +19,15 @@ import {
   botRoleGetsSharedCache,
   BOT_DISK_SETTING_KEYS,
   BOT_DISK_UPDATED_ACTION,
+  botDiskPnpmWarnings,
   mergeBotDiskSettings,
   resolveBotDiskSettings,
   resolveBotDiskLayout,
+  resolveBotDiskMechanics,
   resolveSharedPackageCachePath,
   resolveSharedBotRuntimePath,
   type BotDiskLayout,
+  type BotDiskMechanics,
   type BotDiskSettings,
   type BotDiskSettingsPatch,
   type ResolvedBotDiskSettings,
@@ -198,7 +201,36 @@ export async function readSharedBotRuntimePath(db: Db): Promise<string | undefin
  */
 export async function readBotDiskLayout(db: Db): Promise<BotDiskLayout> {
   const settings = instanceSettingsService(db) as unknown as { getGeneral(): Promise<{ botDisk?: unknown }> };
-  return resolveBotDiskLayout((await settings.getGeneral()).botDisk);
+  const stored = (await settings.getGeneral()).botDisk;
+  warnPnpmSettings(stored);
+  return resolveBotDiskLayout(stored);
+}
+
+/** The pnpm warnings already logged (a layout is read on every tick; each text goes out once per process). */
+const loggedPnpmWarnings = new Set<string>();
+
+/**
+ * myrmidon(1.6.5-BOT-DISK-H8a): a pnpm value of an earlier release that reads as
+ * a different one today, or a store inside the bot's own tree, is logged — once
+ * per text — rather than applied or dropped silently.
+ */
+function warnPnpmSettings(stored: unknown): void {
+  for (const warning of botDiskPnpmWarnings(stored)) {
+    if (loggedPnpmWarnings.has(warning)) continue;
+    loggedPnpmWarnings.add(warning);
+    logger.warn({ setting: "general.botDisk" }, warning);
+  }
+}
+
+/**
+ * myrmidon(1.6.5-BOT-DISK-H5c): the BOT-DISK-H mechanics (C7) resolved from the
+ * same `general.botDisk` row, read per tick like the layout above — the profile
+ * compiler hands them to the bots (template.ts `botdProfileEnv`), so a settings
+ * PATCH reaches the bots on the next reconcile pass.
+ */
+export async function readBotDiskMechanics(db: Db): Promise<BotDiskMechanics> {
+  const settings = instanceSettingsService(db) as unknown as { getGeneral(): Promise<{ botDisk?: unknown }> };
+  return resolveBotDiskMechanics((await settings.getGeneral()).botDisk);
 }
 
 /**

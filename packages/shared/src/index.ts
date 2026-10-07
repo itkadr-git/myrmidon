@@ -2795,6 +2795,9 @@ export * from "./myrmidon-bot-image-rollout.js"; // myrmidon(BOT-ROLLOUT)
 // layout, myr-ws CLI, desired-state and disk-report payloads, dockergate disk routes, the
 // /v1/runs workspace field and the botDisk settings keys. All BOT-DISK-H tasks code against it.
 export * from "./myrmidon-bot-workspace.js";
+// myrmidon(1.6.5-BOT-DISK-H10): bot-partition thresholds (85/90/95), their resolution and the
+// pressure/alert level derivations shared by the server sweep, the desired-state route and the UI.
+export * from "./myrmidon-bot-disk-partition.js";
 // myrmidon(PERF-DIET-K): issue-scoped session-generation thresholds shared by the server and the
 // settings validator.
 export * from "./myrmidon-session-generations.js";
