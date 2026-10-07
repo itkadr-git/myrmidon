@@ -10,6 +10,7 @@ import type { StoredBotDiskSettings } from "../myrmidon-bot-disk.js";
 import type { StoredBotDiskQuotaSettings } from "../myrmidon-bot-disk-quota.js";
 // myrmidon(BOT-ROLLOUT): the release bot-image rollout settings of the same row.
 import type { BotImageRolloutSettings } from "../myrmidon-bot-image-rollout.js";
+import type { StoredSessionGenerationsSettings } from "../myrmidon-session-generations.js";
 // myrmidon(PARALLEL-HELPERS): the helper ceiling/default stored in instance settings
 import type { ParallelHelpersSettings } from "../myrmidon-parallel-helpers.js";
 import type { BotLspSettings } from "../myrmidon-bot-lsp.js";
@@ -28,9 +29,11 @@ import type { BudgetEnforcementSettings } from "../myrmidon-budget-enforcement.j
 import type { PluginEntitlementKey } from "../myrmidon-plugin-entitlement.js";
 // myrmidon(DM-PROGRESS): live progress steps of the bridged Telegram DM status message.
 import type { TelegramDmProgressSettings } from "../myrmidon-telegram-dm-progress.js";
+// myrmidon(BOT-RUNTIME-TUNING D2): the fallback-signal settings of the same row.
+import type { StoredFallbackSignalSettings } from "../myrmidon-fallback-signal.js";
+
 // myrmidon(1.6.1-FORAGING-LIMITS-UI)
 import type { ForagingSettings } from "../myrmidon-foraging.js";
-
 export const DAILY_RETENTION_PRESETS = [3, 7, 14] as const;
 export const WEEKLY_RETENTION_PRESETS = [1, 2, 4] as const;
 export const MONTHLY_RETENTION_PRESETS = [1, 3, 6] as const;
@@ -113,6 +116,14 @@ export interface InstanceGeneralSettings {
    * (packages/shared/src/validators/instance.ts).
    */
   myrmidonBotImageRollout?: BotImageRolloutSettings;
+  /**
+   * myrmidon(PERF-DIET-K): thresholds of the issue-scoped session generations
+   * of a container bot (`maxMessages` runs and `maxDays` age, plus `enabled`).
+   * Read at every run dispatch. Absent means the plan's defaults (400 / 14, the
+   * fix on); kept in sync with the validator of the same field
+   * (packages/shared/src/validators/instance.ts).
+   */
+  sessions?: StoredSessionGenerationsSettings;
   /**
    * myrmidon(C0): run admission limits changed from the instance settings page
    * and `GET`/`PATCH /api/myrmidon/runtime-limits`. Absent means "use the
@@ -230,6 +241,16 @@ export interface InstanceGeneralSettings {
    */
   agentMemory?: AgentMemorySettings;
   /**
+   * myrmidon(BOT-RUNTIME-TUNING D2): the model fallback signal — threshold,
+   * window, minimum calls and sweep period, changed from
+   * `GET`/`PATCH /api/myrmidon/model-fallback/settings`. Absent means "use the
+   * environment variable (MYRMIDON_MODEL_FALLBACK_*), then the default" per
+   * key; the resolver in packages/shared/src/myrmidon-fallback-signal.ts
+   * normalizes the stored row. Kept in sync with the validator of the same
+   * field (packages/shared/src/validators/instance.ts).
+   */
+  modelFallbackSignal?: StoredFallbackSignalSettings;
+  /**
    * myrmidon(1.6.1-FORAGING-LIMITS-UI): the enable switch, pass tuning and
    * spend limits of the foraging sweep, changed from the "Foraging" block on
    * Instance → General and `GET`/`PATCH /api/myrmidon/foraging-settings`.
@@ -238,6 +259,7 @@ export interface InstanceGeneralSettings {
    */
   foraging?: ForagingSettings;
 }
+
 
 export interface InstanceExperimentalSettings {
   enableEnvironments: boolean;

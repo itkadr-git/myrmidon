@@ -17,6 +17,8 @@ import { storedBotDiskSettingsSchema } from "../myrmidon-bot-disk.js";
 import { storedBotDiskQuotaSettingsSchema } from "../myrmidon-bot-disk-quota.js";
 // myrmidon(BOT-ROLLOUT): the release bot-image rollout settings stored in the same row.
 import { storedBotImageRolloutSettingsSchema } from "../myrmidon-bot-image-rollout.js";
+// myrmidon(PERF-DIET-K): issue-scoped session-generation thresholds, lenient stored shape
+import { storedSessionGenerationsSettingsSchema } from "../myrmidon-session-generations.js";
 // myrmidon(C0): run admission limits that can be changed while the server runs
 import { storedRunLimitsSchema } from "../myrmidon-runtime-limits.js";
 // myrmidon(PARALLEL-HELPERS): company ceiling/default for parallel helper
@@ -48,10 +50,29 @@ import { pluginEntitlementKeysSchema } from "../myrmidon-plugin-entitlement.js";
 import { telegramDmProgressSettingsSchema } from "../myrmidon-telegram-dm-progress.js";
 // myrmidon(1.6.1-FORAGING-LIMITS-UI)
 import { foragingSettingsSchema } from "../myrmidon-foraging.js";
+// myrmidon(TEAM-LIVENESS-SETTINGS): the knobs of the three automatic team-liveness
+// behaviours, changed from the instance settings page and /api/myrmidon/team-liveness.
+import {
+  patchTeamLivenessSettingsSchema,
+  storedTeamLivenessSettingsSchema,
+} from "../myrmidon-team-liveness.js";
+// myrmidon(1.6.3 PROMPT-BUDGET B): the prompt-budget thresholds (warn/crit
+// percent of the model window, fallback window, optimizer agent) stored in the
+// same general settings row.
+import { promptBudgetSettingsSchema } from "../myrmidon-prompt-budget.js";
+
+// myrmidon(1.6.5 BOT-RUNTIME-TUNING D2): the fallback-signal settings (switch,
+// threshold percent, minimum calls, window and sweep interval) stored in the
+// same general settings row.
+import { storedFallbackSignalSettingsSchema } from "../myrmidon-fallback-signal.js";
 
 // myrmidon(PARALLEL-HELPERS): re-exported for the barrel so the settings page and the
 // /api/myrmidon/parallel-helpers route validate with the exact schema stored here.
 export { parallelHelpersSettingsSchema, patchParallelHelpersSettingsSchema };
+
+// myrmidon(TEAM-LIVENESS-SETTINGS): the same for /api/myrmidon/team-liveness — the route
+// and the settings page must validate with the schema the row is stored under.
+export { patchTeamLivenessSettingsSchema, storedTeamLivenessSettingsSchema };
 
 function presetSchema<T extends readonly number[]>(presets: T, label: string) {
   return z.number().refine(
@@ -110,6 +131,11 @@ export const instanceGeneralSettingsSchema = z.object({
   // absent means \"use the environment variable, then the default\". Lenient: an
   // invalid value reads as absent (see myrmidon-bot-image-rollout.ts).
   myrmidonBotImageRollout: storedBotImageRolloutSettingsSchema,
+  // myrmidon(PERF-DIET-K): thresholds of the issue-scoped session generations
+  // of a container bot, read at every run dispatch; absent means the plan's
+  // defaults (400 runs / 14 days, the fix on). Lenient: an invalid value reads
+  // as absent (see myrmidon-session-generations.ts).
+  sessions: storedSessionGenerationsSettingsSchema,
   // myrmidon(PARALLEL-HELPERS): company ceiling and default for the "Parallel
   // helpers" block on an agent card, changed from the instance settings page
   // and /api/myrmidon/parallel-helpers; absent means the module defaults apply
@@ -173,6 +199,16 @@ export const instanceGeneralSettingsSchema = z.object({
   // secret name and the switch, changed from the instance settings page and
   // /api/myrmidon/agent-memory; absent means "use the environment".
   agentMemory: agentMemorySettingsSchema.optional(),
+  teamLiveness: storedTeamLivenessSettingsSchema.optional(),
+  // myrmidon(1.6.3 PROMPT-BUDGET B): prompt-budget thresholds, changed from
+  // /api/myrmidon/companies/:id/prompt-budget/settings; absent means the
+  // defaults (warn 70, crit 90, enabled, 200k fallback window).
+  promptBudget: promptBudgetSettingsSchema.optional(),
+  // myrmidon(1.6.5 BOT-RUNTIME-TUNING D2): the fallback-signal settings, changed
+  // from /api/myrmidon/model-fallback/settings; absent means "use the
+  // environment variable, then the default" (see
+  // packages/shared/src/myrmidon-fallback-signal.ts).
+  modelFallbackSignal: storedFallbackSignalSettingsSchema.optional(),
   // myrmidon(1.6.1-FORAGING-LIMITS-UI): the foraging switch and spend limits,
   // changed from /api/myrmidon/foraging-settings; absent means "use the
   // environment variable, then the default (the sweep is off)".
