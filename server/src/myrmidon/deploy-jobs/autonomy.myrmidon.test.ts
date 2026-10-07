@@ -10,6 +10,7 @@ import { errorHandler } from "../../middleware/index.js";
 import { deployJobsRoutes } from "./routes.js";
 import { deployJobsService } from "./service.js";
 import { AUTONOMY_FORBIDDEN_CODE } from "../autonomy/gate.js";
+import { readDeployJobsSettings } from "./settings.js";
 
 const COMPANY_ID = "22222222-2222-4222-8222-222222222222";
 
@@ -65,21 +66,22 @@ function harness(actor: unknown) {
   const store = mockStore();
   const svc = deployJobsService(store as any, {
     maintenance: {
-      assertCanStart: async () => {},
-      assertCanEnter: async () => {},
-      recordMaintenanceEvent: async () => {},
+      enter: async () => ({ id: "window-a", state: "entering" }),
+      exit: async () => ({ state: "off" }),
+      status: async () => ({ instance: { id: "window-a", state: "entering" } }),
     },
     readHostReport: async () => null,
     readHealth: async () => null,
     now: () => new Date("2026-10-06T00:00:00.000Z"),
     settings: {
+      ...readDeployJobsSettings({}),
       enabled: true,
-      retentionDays: 30,
-      gracePeriodMinutes: 5,
-      defaultHealthcheckTimeoutMinutes: 10,
     },
     probes: {
-      verifyImage: async () => ({ ok: true }),
+      fetchJson: async () => {
+        throw new Error("network disabled in tests");
+      },
+      registryInspectUrl: "https://registry-inspect.example.com/inspect",
     },
   });
   const withActor = (a: unknown) => (req: any, _res: any, next: any) => {
