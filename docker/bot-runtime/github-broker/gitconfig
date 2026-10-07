@@ -7,12 +7,17 @@
 # callbacks; ours is URL-scoped to github.com over https and re-validates the
 # request host itself, so a rewritten remote cannot reach it. SSH remote URLs
 # are rewritten to https so the helper covers them too.
+# myrmidon(GITHUB-SHARED-IDENTITY): useHttpPath makes git hand the helper the
+# repository path (owner/repo.git), which the helper forwards to the broker:
+# a GitHub App token is minted per repository, for allowed ones only.
 [credential]
 	helper =
 [credential "https://github.com"]
 	helper = !/opt/paperclip/bin/git-credential-paperclip
+	useHttpPath = true
 [credential "https://www.github.com"]
 	helper = !/opt/paperclip/bin/git-credential-paperclip
+	useHttpPath = true
 [url "https://github.com/"]
 	insteadOf = git@github.com:
 [url "https://github.com/"]

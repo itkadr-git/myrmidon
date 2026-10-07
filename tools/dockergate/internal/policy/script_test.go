@@ -15,6 +15,9 @@ func TestScriptsEqualTheDriversScripts(t *testing.T) {
 	if policy.PrepareScript != fixture.Script(t, "prepare") {
 		t.Fatal("PrepareScript differs from the driver's script")
 	}
+	if policy.PrepareScriptShared != fixture.Script(t, "prepare-shared") {
+		t.Fatal("PrepareScriptShared differs from the driver's script")
+	}
 	if len(m.Nonces) < 5 {
 		t.Fatalf("only %d nonces recorded", len(m.Nonces))
 	}
@@ -45,13 +48,18 @@ func TestRedTeam_RT1_2_PrepareScriptStatic(t *testing.T) {
 			t.Errorf("the prepare script contains %q", bad)
 		}
 	}
-	if strings.Count(s, "chmod") != 1 || strings.Count(s, "chown") != 1 {
-		t.Errorf("want exactly one chmod and one chown")
+	if strings.Count(s, "chmod") != 2 || strings.Count(s, "chown") != 1 {
+		t.Errorf("want two chmods (the three mount points, the bot root) and one chown")
 	}
 	if !strings.Contains(s, "for d in data/hermes workspace scratch; do") {
 		t.Errorf("the three mount points are not the fixed list")
 	}
-	if strings.Count(s, "\n") != 5 {
+	// myrmidon(BOT-ROOT-TRAVERSE): the fixed traversal fix on the bot's root bind,
+	// one non-recursive chmod on the /bot mount point, owner untouched.
+	if !strings.HasSuffix(s, "\nchmod 0711 bot") {
+		t.Errorf("the bot root traversal line is missing or different")
+	}
+	if strings.Count(s, "\n") != 6 {
 		t.Errorf("unexpected shape: %d lines", strings.Count(s, "\n")+1)
 	}
 	// It does not depend on the nonce or on anything the board sends.

@@ -1,0 +1,63 @@
+{
+  "schema": 1,
+  "botKey": "bot-001",
+  "imageGeneration": "myr-v1.6.5-rc.5",
+  "at": "2026-10-06T14:07:00Z",
+  "selfChecks": {
+    "reflink": true,
+    "gitref": true,
+    "wsCli": true
+  },
+  "bases": [
+    {
+      "repo": "acme/widgets",
+      "path": "/data/hermes/.myrmidon/git-base/acme/widgets.git",
+      "sizeBytes": 157286400,
+      "lastFetchAt": "2026-10-06T13:55:00Z"
+    }
+  ],
+  "copies": [
+    {
+      "path": "/workspace/ABC-101",
+      "class": "E",
+      "key": "ABC-101",
+      "repo": "acme/widgets",
+      "branch": "bot/ABC-101",
+      "clean": true,
+      "pushed": true,
+      "sizeBytes": 367001600,
+      "ageSec": 420
+    },
+    {
+      "path": "/scratch/probe-reflink",
+      "class": "G",
+      "key": "probe-reflink",
+      "clean": null,
+      "pushed": null,
+      "sizeBytes": null,
+      "ageSec": 2220
+    }
+  ],
+  "archives": [
+    {
+      "key": "ABC-099",
+      "path": "/data/hermes/.myrmidon/archive/ABC-099-20261006T140100Z.bundle",
+      "sizeBytes": 2457600,
+      "createdAt": "2026-10-06T14:01:00Z"
+    }
+  ],
+  "actions": [
+    {
+      "at": "2026-10-06T14:01:00Z",
+      "action": "archive",
+      "path": "/workspace/ABC-099",
+      "result": "ok"
+    }
+  ],
+  "foreign": [
+    {
+      "path": "/workspace/odd-clone",
+      "sign": "full-clone"
+    }
+  ]
+}

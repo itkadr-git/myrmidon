@@ -70539,21 +70539,33 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     // on and a wired transcriber gets its transcript in the task comment
     // body, the attachment itself still stored, and a single wakeup. A skip
     // (transcriber error) keeps the vendor body and the delivery intact.
+    // myrmidon(1.6.5 VOICE-STT A): the last two modes exercise the
+    // per-company switch with the environment switch unset — the board's
+    // settings screen turns the feature on (no restart) without an operator
+    // touching the server environment.
     it.each([
       "transcribed",
       "stt_error",
       "stt_disabled",
+      "company_enabled",
+      "company_off",
     ] as const)(
       "attaches the voice transcript to the inbound comment (%s)",
       async (mode) => {
         const fixture = await seedCompany();
         const storage = createStorageService();
-        // myrmidon(1.6.1 VOICE-STT B): the switch is read per delivery; only
-        // the disabled mode keeps the environment untouched.
+        // myrmidon(1.6.1 VOICE-STT B): the switch is read per delivery; the
+        // disabled and company modes keep the environment untouched.
         const previousStt = process.env.MYRMIDON_TELEGRAM_VOICE_STT;
-        if (mode !== "stt_disabled")
-          process.env.MYRMIDON_TELEGRAM_VOICE_STT = "1";
+        const envOn = mode === "transcribed" || mode === "stt_error";
+        if (envOn) process.env.MYRMIDON_TELEGRAM_VOICE_STT = "1";
         else delete process.env.MYRMIDON_TELEGRAM_VOICE_STT;
+        const transcriptModes = mode === "transcribed" || mode === "company_enabled";
+        // myrmidon(1.6.5 VOICE-STT A): the per-company gate, wired only in the
+        // company modes; production wires it from the stored settings.
+        const companyEnabled = vi.fn(async () =>
+          mode === "company_enabled" ? true : mode === "company_off" ? false : null,
+        );
         // myrmidon(1.6.1 VOICE-STT B): the transcriber stands in for the
         // shared STT core's `transcribeAudio` contract.
         const transcribeAudio = vi.fn(async () => {
@@ -70566,8 +70578,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           }
           return {
             text: "привет, это голосовое сообщение",
-            segments:
-              mode === "transcribed"
+            segments: transcriptModes
                 ? [
                     {
                       speaker: "1",
@@ -70586,6 +70597,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         const context = await configuredTelegramEndpoint(fixture, {
           storage: storage.storage,
           telegramVoiceTranscriber: { transcribeAudio },
+          ...(mode === "company_enabled" || mode === "company_off"
+            ? { telegramVoiceSttCompanyEnabled: companyEnabled }
+            : {}),
         });
         const { service, runtime, endpoint, callbacks, wakeup } = context;
         const pinned = createChatSdkEndpointRuntime({
@@ -70660,12 +70674,17 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             .from(issueComments)
             .where(eq(issueComments.companyId, fixture.companyId));
           expect(comment).toBeDefined();
-          if (mode === "transcribed") {
+          if (transcriptModes) {
             expect(comment!.body).toContain("привет, это голосовое сообщение");
             expect(comment!.body).toContain("Говорящий 1 [0:00]");
             // The transcript is the body: the placeholder is gone.
             expect(comment!.body).not.toContain("Shared");
             expect(transcribeAudio).toHaveBeenCalledOnce();
+            // myrmidon(1.6.5 VOICE-STT A): the env modes never read the
+            // company gate; the company modes read it exactly once.
+            expect(companyEnabled).toHaveBeenCalledTimes(
+              mode === "company_enabled" ? 1 : 0,
+            );
           } else {
             // Fallback: the vendor placeholder body, delivery intact, and
             // (when the core ran and failed) the redacted skip code in the
@@ -70690,6 +70709,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             } else {
               // Guard: the setting is off — zero transcriber calls.
               expect(transcribeAudio).not.toHaveBeenCalled();
+              // myrmidon(1.6.5 VOICE-STT A): the company gate answered "off"
+              // (read once), the env modes never read it at all.
+              expect(companyEnabled).toHaveBeenCalledTimes(
+                mode === "company_off" ? 1 : 0,
+              );
               expect(comment!.metadata?.sections?.[0]?.rows ?? []).not.toEqual(
                 expect.arrayContaining([
                   expect.objectContaining({ label: "Voice transcription" }),

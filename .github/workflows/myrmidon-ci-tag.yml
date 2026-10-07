@@ -1,0 +1,598 @@
+name: Myrmidon CI (tag)
+
+# TAG-CI (the 1.6.4 incident): the full Myrmidon CI runs on every release
+# tag push as its own, un-cancellable run. On 05.10 the tag myr-v1.6.4 was
+# pushed and a minute later bots merged 4 PRs into main: the main push
+# superseded and cancelled the CI run of the tag's commit (myrmidon-ci.yml
+# groups by github.ref — same sha, same group, cancel-in-progress: true),
+# so the automatic publish had no green run and refused; the tag CI had to
+# be re-run by hand (workflow_dispatch run 37277281522) and the release was
+# published manually.
+#
+# This workflow is the full tier of myrmidon-ci.yml without the plan/tier
+# split (a release tag always runs the full pipeline), but:
+#   - it triggers on release tags (`myr-v*.*.*`, including `-rc.N`),
+#   - its concurrency group is keyed by the TAG ref with
+#     cancel-in-progress: false — a push to main can never cancel it,
+#   - its `CI result` is the ONLY source of green the publish gate accepts
+#     (publish-github-release.sh refuses a tag whose tag-CI run is missing,
+#     failed or cancelled; a green main run of the same commit no longer
+#     counts).
+#
+# The job bodies are kept in sync with myrmidon-ci.yml by
+# scripts/myrmidon/release/release-publish.test.mjs (the "tag CI workflow"
+# block). When a lane of myrmidon-ci.yml changes, change it here too.
+
+on:
+  push:
+    tags:
+      - "myr-v*.*.*"
+  workflow_dispatch:
+    # Manual fallback path (the 1.6.4 recovery): re-run the tag CI by hand.
+    inputs:
+      tag:
+        description: Release tag to run CI for, e.g. myr-v1.6.4
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  # Own group per tag, never cancelled by a superseding push — the whole
+  # point of the workflow: the tag's run is un-cancellable.
+  group: myrmidon-ci-tag-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  NPM_CONFIG_AUDIT: "false"
+  NPM_CONFIG_FUND: "false"
+  NPM_CONFIG_UPDATE_NOTIFIER: "false"
+
+jobs:
+  typecheck:
+    name: typecheck
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_TYPECHECK || '"ubuntu-latest"') }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          # workflow_dispatch from a branch checks out the typed tag.
+          ref: ${{ inputs.tag || '' }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+          run_install: false
+
+      - name: Locate pnpm store
+        id: pnpm_store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache pnpm store
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ${{ steps.pnpm_store.outputs.path }}
+          key: myr-pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: myr-pnpm-${{ runner.os }}-
+
+      - name: Select pinned Rust toolchain
+        working-directory: packages/paperclip-runner
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: packages/paperclip-runner/runner -> target
+          shared-key: myr-check
+          cache-workspace-crates: false
+          cache-bin: false
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck all workspaces
+        run: pnpm typecheck
+
+  build:
+    name: build
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_BUILD || '"ubuntu-latest"') }}
+    timeout-minutes: 40
+    env:
+      NODE_OPTIONS: --max-old-space-size=4096
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.tag || '' }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+          run_install: false
+
+      - name: Locate pnpm store
+        id: pnpm_store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore pnpm store (read only)
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ${{ steps.pnpm_store.outputs.path }}
+          key: myr-pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: myr-pnpm-${{ runner.os }}-
+
+      - name: Select pinned Rust toolchain
+        working-directory: packages/paperclip-runner
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: packages/paperclip-runner/runner -> target
+          shared-key: myr-build
+          cache-workspace-crates: false
+          cache-bin: false
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Runner issue-thread viewer
+        run: pnpm --filter @paperclipai/paperclip-runner build:issue-thread
+
+      - name: Build
+        run: pnpm build
+
+  tests:
+    name: tests (${{ matrix.label }})
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_TESTS || '"ubuntu-latest"') }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # Same split as myrmidon-ci.yml (the vendor's trusted PR CI):
+        # `pnpm test:run` equals the union of the general groups and the
+        # serialized server suites.
+        include:
+          - { label: "server 1/5", mode: general, group: general-server, shard_index: 0, shard_count: 5 }
+          - { label: "server 2/5", mode: general, group: general-server, shard_index: 1, shard_count: 5 }
+          - { label: "server 3/5", mode: general, group: general-server, shard_index: 2, shard_count: 5 }
+          - { label: "server 4/5", mode: general, group: general-server, shard_index: 3, shard_count: 5 }
+          - { label: "server 5/5", mode: general, group: general-server, shard_index: 4, shard_count: 5 }
+          - { label: "workspaces-a 1/2", mode: general, group: general-workspaces-a, shard_index: 0, shard_count: 2 }
+          - { label: "workspaces-a 2/2", mode: general, group: general-workspaces-a, shard_index: 1, shard_count: 2 }
+          - { label: "workspaces-b", mode: general, group: general-workspaces-b }
+          - { label: "serialized 1/5", mode: serialized, shard_index: 0, shard_count: 5 }
+          - { label: "serialized 2/5", mode: serialized, shard_index: 1, shard_count: 5 }
+          - { label: "serialized 3/5", mode: serialized, shard_index: 2, shard_count: 5 }
+          - { label: "serialized 4/5", mode: serialized, shard_index: 3, shard_count: 5 }
+          - { label: "serialized 5/5", mode: serialized, shard_index: 4, shard_count: 5 }
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.tag || '' }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+          run_install: false
+
+      - name: Locate pnpm store
+        id: pnpm_store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore pnpm store (read only)
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ${{ steps.pnpm_store.outputs.path }}
+          key: myr-pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: myr-pnpm-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run vitest (${{ matrix.label }})
+        env:
+          MODE: ${{ matrix.mode }}
+          GROUP: ${{ matrix.group }}
+          SHARD_INDEX: ${{ matrix.shard_index }}
+          SHARD_COUNT: ${{ matrix.shard_count }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [ "$MODE" = "general" ]; then
+            args+=(--group "$GROUP")
+          fi
+          if [ -n "$SHARD_COUNT" ]; then
+            args+=(--shard-index "$SHARD_INDEX" --shard-count "$SHARD_COUNT")
+          fi
+          pnpm "test:run:$MODE" -- "${args[@]}"
+
+  tests-other:
+    # Packages whose tests `pnpm test:run` does not run (hermes adapter, MCP
+    # servers, several adapters...): scripts/myrmidon/ci/extra-test-lanes.json.
+    name: tests (other packages)
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_TESTS_OTHER || '"ubuntu-latest"') }}
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.tag || '' }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+          run_install: false
+
+      - name: Locate pnpm store
+        id: pnpm_store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore pnpm store (read only)
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ${{ steps.pnpm_store.outputs.path }}
+          key: myr-pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: myr-pnpm-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build plugin SDK dependencies
+        run: pnpm --filter @paperclipai/plugin-sdk ensure-build-deps
+
+      - name: Run tests of the other packages
+        run: node scripts/myrmidon/ci/affected-tests.mjs extra
+
+  tests-runner:
+    # The vendor verifies the runner in its own lane (check:all: TypeScript,
+    # protocol, Rust and API authority checks).
+    name: tests (runner)
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_TESTS_RUNNER || '"ubuntu-latest"') }}
+    timeout-minutes: 40
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.tag || '' }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+          run_install: false
+
+      - name: Locate pnpm store
+        id: pnpm_store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore pnpm store (read only)
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ${{ steps.pnpm_store.outputs.path }}
+          key: myr-pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: myr-pnpm-${{ runner.os }}-
+
+      - name: Select pinned Rust toolchain
+        working-directory: packages/paperclip-runner
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: packages/paperclip-runner/runner -> target
+          shared-key: myr-runner
+          cache-workspace-crates: false
+          cache-bin: false
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify the runner
+        run: pnpm --filter @paperclipai/paperclip-runner check:all
+
+  checks:
+    # Cheap checks: node:test suites of our scripts, gitleaks, the
+    # internal-address scan, dependency licenses and plugin compatibility.
+    # Every step runs even if an earlier one failed.
+    name: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GITLEAKS_VERSION: 8.30.1
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.tag || '' }}
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+          run_install: false
+
+      - name: Locate pnpm store
+        id: pnpm_store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore pnpm store (read only)
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ${{ steps.pnpm_store.outputs.path }}
+          key: myr-pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: myr-pnpm-${{ runner.os }}-
+
+      - name: Select commit range
+        id: range
+        env:
+          EVENT: ${{ github.event_name }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          if [ -n "${PUSH_BEFORE:-}" ] && [ "$PUSH_BEFORE" != "0000000000000000000000000000000000000000" ] \
+            && git cat-file -e "$PUSH_BEFORE^{commit}" 2>/dev/null; then
+            base="$PUSH_BEFORE"; head="$GITHUB_SHA"
+          else
+            base="$GITHUB_SHA~1"; head="$GITHUB_SHA"
+          fi
+          {
+            echo "base=$base"
+            echo "head=$head"
+            echo "skip_tests="
+          } >> "$GITHUB_OUTPUT"
+          echo "range: $base..$head"
+
+      - name: Shellcheck deploy scripts
+        run: shellcheck --version && shellcheck -x scripts/myrmidon/deploy/*.sh
+
+      - name: Changelog gate (release tag has its version section)
+        if: ${{ !cancelled() }}
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#myr-v}"
+          version="${version%%-rc.*}"
+          node scripts/myrmidon/release/collect-fragments.mjs --version "$version" --check
+
+      - name: Script tests (node:test under scripts/myrmidon)
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(find scripts/myrmidon -name '*.test.mjs' -type f | sort)
+          printf 'Running %s\n' "${files[@]}"
+          node --test "${files[@]}"
+
+      - name: Secrets (gitleaks, new commits)
+        if: ${{ !cancelled() }}
+        env:
+          BASE: ${{ steps.range.outputs.base }}
+          HEAD: ${{ steps.range.outputs.head }}
+        run: |
+          set -euo pipefail
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -fsSL -o "$RUNNER_TEMP/$archive" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${archive}"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/$archive" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" gitleaks
+          "$RUNNER_TEMP/gitleaks" git --no-banner --redact --verbose \
+            --config .gitleaks.toml --log-opts="$BASE..$HEAD" .
+
+      - name: Internal addresses (private networks)
+        if: ${{ !cancelled() }}
+        env:
+          BASE: ${{ steps.range.outputs.base }}
+          HEAD: ${{ steps.range.outputs.head }}
+          SKIP_TESTS: ${{ steps.range.outputs.skip_tests }}
+        run: |
+          args=(--check private-ip --base "$BASE" --head "$HEAD")
+          if [ -n "$SKIP_TESTS" ]; then args+=("$SKIP_TESTS"); fi
+          node scripts/myrmidon/scan-diff.mjs "${args[@]}"
+
+      - name: Internal addresses (forbidden patterns from the repository secret)
+        if: ${{ !cancelled() }}
+        env:
+          BASE: ${{ steps.range.outputs.base }}
+          HEAD: ${{ steps.range.outputs.head }}
+          MYRMIDON_FORBIDDEN_PATTERNS: ${{ secrets.MYRMIDON_FORBIDDEN_PATTERNS }}
+        run: node scripts/myrmidon/scan-diff.mjs --check forbidden --base "$BASE" --head "$HEAD"
+
+      - name: Install dependencies
+        if: ${{ !cancelled() }}
+        run: pnpm install --frozen-lockfile
+
+      - name: Licenses of production dependencies
+        if: ${{ !cancelled() }}
+        run: node scripts/myrmidon/check-licenses.mjs
+
+      - name: Plugin compatibility — build plugin SDK and shared from the repository
+        id: sdk
+        if: ${{ !cancelled() }}
+        run: pnpm --filter @paperclipai/plugin-sdk ensure-build-deps
+
+      - name: Plugin compatibility — manifest snapshots (offline)
+        if: ${{ !cancelled() && steps.sdk.outcome == 'success' }}
+        run: pnpm --filter @paperclipai/server exec tsx ../scripts/myrmidon/plugin-compat/check.ts --fixtures-only
+
+      - name: Plugin compatibility — installed plugins against the host
+        if: ${{ !cancelled() && steps.sdk.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          node scripts/myrmidon/plugin-compat/install.mjs --work "$RUNNER_TEMP/plugin-compat"
+          pnpm --filter @paperclipai/server exec tsx ../scripts/myrmidon/plugin-compat/check.ts --work "$RUNNER_TEMP/plugin-compat"
+
+  fleetd:
+    # tools/fleetd: gofmt, go vet and the unit tests, in the same pinned Go
+    # image the fleetd image workflow builds from.
+    name: fleetd
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GO_IMAGE: golang:1.25-bookworm@sha256:3b4a11519ad929d1e1d261a12cff056f0c85b735253d7d861346b9c6f8b36437
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.tag || '' }}
+
+      - name: go.mod has no requirements (stdlib only)
+        run: |
+          set -euo pipefail
+          if grep -qE '^\s*(require|tool)\s' tools/fleetd/go.mod; then
+            echo "tools/fleetd/go.mod must stay stdlib-only"
+            exit 1
+          fi
+
+      - name: gofmt, go vet, go test
+        run: |
+          set -euo pipefail
+          docker run --rm --network none -v "$PWD/tools/fleetd:/src" -w /src \
+            -e GOFLAGS=-mod=mod -e GOTOOLCHAIN=local -e GOCACHE=/tmp/gocache "$GO_IMAGE" sh -euc '
+              out="$(gofmt -l .)"
+              if [ -n "$out" ]; then echo "gofmt: $out"; exit 1; fi
+              go vet ./...
+              go test -count=1 ./...
+            '
+
+  dockergate:
+    # tools/dockergate: gofmt, go vet, the unit tests, and the contract with
+    # the driver (fixtures emitted afresh from the TypeScript of this commit).
+    name: dockergate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GO_IMAGE: golang:1.25-bookworm@sha256:3b4a11519ad929d1e1d261a12cff056f0c85b735253d7d861346b9c6f8b36437
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.tag || '' }}
+
+      - name: go.mod has no requirements (stdlib only)
+        run: |
+          set -euo pipefail
+          if grep -Eq '^\s*require\b' tools/dockergate/go.mod || [ -e tools/dockergate/go.sum ]; then
+            echo "::error::tools/dockergate must depend on the standard library only"
+            exit 1
+          fi
+
+      - name: gofmt, go vet, go test (checked-in fixtures)
+        run: |
+          set -euo pipefail
+          docker run --rm --network none -v "$PWD/tools/dockergate:/src" -w /src \
+            -e GOFLAGS=-mod=mod -e GOTOOLCHAIN=local -e GOCACHE=/tmp/gocache "$GO_IMAGE" sh -euc '
+              out="$(gofmt -l .)"
+              if [ -n "$out" ]; then echo "gofmt: $out"; exit 1; fi
+              go vet ./...
+              go test -count=1 ./...
+            '
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+          run_install: false
+
+      - name: Locate pnpm store
+        id: pnpm_store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore pnpm store (read only)
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ${{ steps.pnpm_store.outputs.path }}
+          key: myr-pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: myr-pnpm-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Contract with the driver (fixtures emitted from this commit)
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/dockergate-contract"
+          rm -rf "$out" && mkdir -p "$out"
+          pnpm --filter @paperclipai/server exec tsx ../tools/dockergate/contract/emit-fixtures.ts "$out"
+          # The static fixtures must equal the checked-in ones; traffic.json
+          # carries wall-clock mtimes and is only replayed, not compared.
+          diff -r -x traffic.json tools/dockergate/contract/testdata "$out"
+          docker run --rm --network none -v "$PWD/tools/dockergate:/src" -v "$out:/contract:ro" -w /src \
+            -e GOFLAGS=-mod=mod -e GOTOOLCHAIN=local -e GOCACHE=/tmp/gocache \
+            -e DOCKERGATE_CONTRACT_DIR=/contract "$GO_IMAGE" go test -count=1 ./...
+
+  ci-result:
+    # Single stable conclusion the publish gate reads. A release tag runs
+    # the full tier: every lane must be success (nothing may skip).
+    name: CI result
+    if: ${{ !cancelled() }}
+    needs: [typecheck, build, tests, tests-other, tests-runner, checks, dockergate, fleetd]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check lane results
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          echo "$RESULTS" | jq -e '
+            all(to_entries[]; .value.result == "success")
+          ' > /dev/null

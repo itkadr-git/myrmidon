@@ -18,7 +18,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "../../../__tests__/helpers/embedded-postgres.js";
-import { collectMetricsSnapshot } from "./metrics.js";
+import { collectMetricsSnapshot, runMetricsSelfCheck, METRIC_FAMILIES } from "./metrics.js";
 import { recordSwarmClaimSignal, resetSwarmClaimSignals } from "./swarm-signals.js";
 import { resetStaleBlockSignals, recordStaleBlockSignal } from "../../stale-block/attention.js";
 import { resetTracingHealthSignals } from "../../tracing-health/attention.js";
@@ -344,5 +344,28 @@ describeEmbeddedPostgres("metrics collector", () => {
     expect(snapshot.scrapeErrors).toBeGreaterThan(0);
     expect(snapshot.runsActive).toBe(0);
     expect(snapshot.roleQueueTasks).toEqual([]);
+  });
+
+  it("the self-check probe is green over real rows — the runbook link", async () => {
+    // 1.6.6 annex: every link self-checks. The probe scrapes every family
+    // once against the real tables; the failures it names are exactly what
+    // myrmidon_scrape_errors exposes in /metrics, and the alerting half
+    // opens a task for the owning role from that counter (runbook link:
+    // visible scrape errors in /metrics -> alerting maps them -> role task).
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId, "engineer");
+    await seedRun(companyId, agentId, { status: "running", startedAt: NOW });
+
+    const result = await runMetricsSelfCheck({
+      db,
+      now: () => NOW,
+      errorWindowSec: 3600,
+      latencyWindowSec: 3600,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.families_failed).toEqual([]);
+    expect(result.families_ok).toBe(METRIC_FAMILIES.length);
+    expect(result.scrape_ms).toBeGreaterThanOrEqual(0);
+    expect(JSON.stringify(result)).not.toContain("company-a");
   });
 });

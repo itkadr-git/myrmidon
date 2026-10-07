@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   AgentCardModelsFields,
+  CARD_COMPRESSION_THRESHOLD_DEFAULT,
+  CardCompressionThresholdField,
   CardContextLengthField,
   CardEffortPicker,
   compactCardModels,
@@ -62,7 +64,9 @@ describe("myrmidon(M1) agent card model fields", () => {
     render("codex_local", { stt: "stt-model" });
     // myrmidon(BOT-TUNING-C): four single-model pickers, two auxiliary model
     // pickers, the context-length note and the fallbacks note.
-    expect(container.textContent?.match(/Not supported by this adapter\./g)).toHaveLength(8);
+    // myrmidon(BOT-RUNTIME-TUNING-A): the compression-threshold note is added
+    // to that list (nine notes now).
+    expect(container.textContent?.match(/Not supported by this adapter\./g)).toHaveLength(9);
   });
 
   it("hermes_local supports everything except a separate video model", () => {
@@ -147,6 +151,63 @@ describe("myrmidon(BOT-TUNING-C) card fields for context length and auxiliary mo
       contextLength: 128_000,
     });
     expect(compactCardModels({ compressionSummary: " " })).toBeUndefined();
+  });
+});
+
+// myrmidon(BOT-RUNTIME-TUNING-A): the compression token cap on the card.
+describe("myrmidon(BOT-RUNTIME-TUNING-A) card field for the compression threshold", () => {
+  it("reads and writes compressionThresholdTokens on the models block", () => {
+    const onChange = render("hermes_local", { compressionThresholdTokens: 150_000 });
+    const input = container.querySelector<HTMLInputElement>("[data-testid=myrmidon-card-compression-threshold]")!;
+    expect(input.value).toBe("150000");
+    // An empty field means "the company default", so the default is shown as
+    // the placeholder rather than written into the card.
+    expect(input.placeholder).toBe(String(CARD_COMPRESSION_THRESHOLD_DEFAULT));
+
+    setInputValue(input, "80000");
+    flushSync(() => {});
+    const last = onChange.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(last.compressionThresholdTokens).toBe(80_000);
+  });
+
+  it("rejects a threshold outside the compiled range without writing", () => {
+    const onChange = vi.fn();
+    flushSync(() => {
+      root.render(
+        <TooltipProvider>
+          <CardCompressionThresholdField value={100_000} onChange={onChange} />
+        </TooltipProvider>,
+      );
+    });
+    const input = container.querySelector<HTMLInputElement>("[data-testid=myrmidon-card-compression-threshold]")!;
+    setInputValue(input, "9999");
+    flushSync(() => {});
+    const error = container.querySelector("[data-testid=myrmidon-card-compression-threshold-error]");
+    expect(error).not.toBeNull();
+    expect(error?.textContent).toContain("10000");
+    expect(onChange).not.toHaveBeenCalledWith(9_999);
+  });
+
+  it("clearing the field reports undefined, so nothing is stored and the company default applies", () => {
+    const onChange = vi.fn();
+    flushSync(() => {
+      root.render(
+        <TooltipProvider>
+          <CardCompressionThresholdField value={80_000} onChange={onChange} />
+        </TooltipProvider>,
+      );
+    });
+    const input = container.querySelector<HTMLInputElement>("[data-testid=myrmidon-card-compression-threshold]")!;
+    setInputValue(input, "");
+    flushSync(() => {});
+    expect(onChange).toHaveBeenCalledWith(undefined);
+  });
+
+  it("compacts a finite threshold and keeps supporting it for hermes_local only", () => {
+    expect(compactCardModels({ compressionThresholdTokens: 100_000 })).toEqual({ compressionThresholdTokens: 100_000 });
+    expect(compactCardModels({ compressionThresholdTokens: Number.NaN })).toBeUndefined();
+    expect(isCardModelFieldSupported("hermes_local", "compressionThresholdTokens")).toBe(true);
+    expect(isCardModelFieldSupported("codex_local", "compressionThresholdTokens")).toBe(false);
   });
 });
 

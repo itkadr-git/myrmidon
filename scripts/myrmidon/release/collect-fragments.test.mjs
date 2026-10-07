@@ -11,6 +11,8 @@ import {
   foldTableRows,
   listFragments,
   parseFragment,
+  resolveSectionHeading,
+  sectionKey,
 } from "./collect-fragments.mjs";
 
 // CHANGE-FRAGMENTS: unit tests of the release fragment collector. Everything
@@ -276,6 +278,55 @@ describe("foldTableRows", () => {
   });
 });
 
+describe("sectionKey / resolveSectionHeading (EN↔RU heading pairing)", () => {
+  it("keys the versioned feature heading identically in both languages", () => {
+    const en = "1.6.1 — BOT-DISK B: shared package cache for bot containers";
+    const ru = "1.6.1 — BOT-DISK B: общий кэш пакетов для контейнеров ботов";
+    assert.equal(sectionKey(en), sectionKey(ru));
+  });
+
+  it("keys the track headings across languages", () => {
+    assert.equal(sectionKey("Track 5 — operations"), sectionKey("Трек 5 — эксплуатация"));
+  });
+
+  it("returns null for a heading without a version and a feature-id token", () => {
+    assert.equal(sectionKey("Vendor settings that matter for Myrmidon"), null);
+  });
+
+  it("prefers the exact heading over a key match", () => {
+    const doc = "## Track 5 — operations\n\n| a |\n\n## Трек 5 — эксплуатация\n\n| b |\n";
+    assert.equal(resolveSectionHeading(doc, "Track 5 — operations"), "Track 5 — operations");
+  });
+
+  it("resolves an EN heading to its RU variant in the RU document", () => {
+    const doc =
+      "# Настройки Myrmidon\n\n" +
+      "## Трек 1 — платформа\n\n| a |\n\n" +
+      "## 1.6.1 — BOT-DISK B: общий кэш пакетов для контейнеров ботов\n\n| b |\n";
+    assert.equal(
+      resolveSectionHeading(doc, "1.6.1 — BOT-DISK B: shared package cache for bot containers"),
+      "1.6.1 — BOT-DISK B: общий кэш пакетов для контейнеров ботов",
+    );
+  });
+
+  it("leaves an unknown heading unchanged so the fold fails loudly", () => {
+    const doc = "## Совсем другой раздел\n\n| a |\n";
+    assert.equal(
+      resolveSectionHeading(doc, "1.6.1 — BOT-DISK Q: no such section"),
+      "1.6.1 — BOT-DISK Q: no such section",
+    );
+  });
+
+  it("does not guess when the key matches several RU sections", () => {
+    const doc =
+      "## TASK-PR-SYNC — задача закрывается, когда её PR слиты\n\n| a |\n\n" +
+      "## TASK-PR-SYNC WAKE-GUARD — прогон не создаётся для задачи, чьи PR все слиты\n\n| b |\n";
+    const heading = "TASK-PR-SYNC — a task settles once its pull requests merge";
+    // exact heading is absent; the relaxed prefix matches two distinct sections
+    assert.equal(resolveSectionHeading(doc, heading), heading);
+  });
+});
+
 describe("collect", () => {
   it("folds two fragments into all four documents and deletes the fragments", () => {
     const dir = fullTree();
@@ -312,6 +363,20 @@ describe("collect", () => {
       "docs/myrmidon/changes/feat-b.md": "## changelog-en\n\n### Only EN\n\n- x\n",
     });
     assert.throws(() => collect(dir, { version: "1.7.0" }), /counts differ/);
+  });
+
+  it("folds a settings-ru row into the RU section under its Russian heading", () => {
+    const dir = sandbox({
+      "docs/myrmidon/SETTINGS.md": SETTINGS,
+      "docs/myrmidon/SETTINGS.ru.md":
+        "# Настройки Myrmidon\n\n## Трек 5 — эксплуатация\n\n" +
+        "| Переменная | Функция | Умолчание | Что делает | Как выключить / особенности |\n|---|---|---|---|---|\n",
+      "docs/myrmidon/changes/feat-ru.md":
+        "---\nsettings-section: Track 5 — operations\n---\n\n## settings-ru\n\n| `MYRMIDON_RU` | FEAT-RU | `5` | Ручка | `0` — выкл |\n",
+    });
+    collect(dir, { version: "1.7.0" });
+    const settingsRu = fs.readFileSync(path.join(dir, "docs/myrmidon/SETTINGS.ru.md"), "utf8");
+    assert.match(settingsRu, /## Трек 5 — эксплуатация[\s\S]*\| `MYRMIDON_RU` \|/);
   });
 
   it("with no fragments nothing changes and the run is green", () => {
@@ -353,5 +418,70 @@ describe("collect", () => {
     assert.match(res.stderr, /feat-b\.md: unknown section/);
     // A failed collect leaves the tree untouched.
     assert.ok(fs.existsSync(path.join(dir, "docs/myrmidon/changes/feat-a.md")));
+  });
+
+  it("CLI: --check passes on a tag commit with the version section in both languages", () => {
+    const dir = fullTree();
+    collect(dir, { version: "1.7.0" });
+    const out = execFileSync("node", [SCRIPT, "--version", "1.7.0", "--check", "--root", dir], {
+      encoding: "utf8",
+    });
+    assert.match(out, /release changelog check ok: 1\.7\.0/);
+  });
+
+  it("CLI: --check refuses a tag commit without the version section (the 1.6.3 incident)", () => {
+    // Both changelogs still carry the release notes under the unreleased
+    // heading — the state of the myr-v1.6.3 tag.
+    const dir = sandbox({
+      "docs/myrmidon/CHANGELOG.md": CHANGELOG_EN,
+      "docs/myrmidon/CHANGELOG.ru.md": CHANGELOG_RU,
+    });
+    const res = spawnSync("node", [SCRIPT, "--version", "1.7.0", "--check", "--root", dir], {
+      encoding: "utf8",
+    });
+    assert.equal(res.status, 1);
+    // The unreleased section still holds the notes: the exact failure the
+    // 1.6.3 publish hit one step later.
+    assert.match(res.stderr, /"## Unreleased" is not empty/);
+  });
+
+  it("CLI: --check refuses a tag commit whose unreleased section was left non-empty", () => {
+    const dir = fullTree();
+    collect(dir, { version: "1.7.0" });
+    fs.writeFileSync(
+      path.join(dir, "docs/myrmidon/CHANGELOG.ru.md"),
+      fs
+        .readFileSync(path.join(dir, "docs/myrmidon/CHANGELOG.ru.md"), "utf8")
+        .replace("## Без выпуска\n", "## Без выпуска\n\n### Забытая запись\n\n- Строка.\n"),
+    );
+    const res = spawnSync("node", [SCRIPT, "--version", "1.7.0", "--check", "--root", dir], {
+      encoding: "utf8",
+    });
+    assert.equal(res.status, 1);
+    assert.match(res.stderr, /"## Без выпуска" is not empty/);
+  });
+
+  it("CLI: --check refuses a missing version section even with an empty unreleased one", () => {
+    const dir = sandbox({
+      "docs/myrmidon/CHANGELOG.md": "## Unreleased\n\n## 1.6.2\n\n- Shipped.\n",
+      "docs/myrmidon/CHANGELOG.ru.md": "## Без выпуска\n\n## 1.6.2\n\n- Вышло.\n",
+    });
+    const res = spawnSync("node", [SCRIPT, "--version", "1.7.0", "--check", "--root", dir], {
+      encoding: "utf8",
+    });
+    assert.equal(res.status, 1);
+    assert.match(res.stderr, /no "## 1\.7\.0" section/);
+  });
+
+  it("CLI: --check refuses an empty version section", () => {
+    const dir = sandbox({
+      "docs/myrmidon/CHANGELOG.md": "## Unreleased\n\n## 1.7.0\n\n## 1.6.2\n\n- Shipped.\n",
+      "docs/myrmidon/CHANGELOG.ru.md": "## Без выпуска\n\n## 1.7.0\n\n- Заметка.\n",
+    });
+    const res = spawnSync("node", [SCRIPT, "--version", "1.7.0", "--check", "--root", dir], {
+      encoding: "utf8",
+    });
+    assert.equal(res.status, 1);
+    assert.match(res.stderr, /"## 1\.7\.0" is empty/);
   });
 });

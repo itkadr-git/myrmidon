@@ -1,5 +1,5 @@
 // Live run admission limits (myrmidon C0, RUNTIME-LIMITS): read, change and
-// apply the four ceilings without restarting the server.
+// apply the ceilings without restarting the server.
 //
 // Contract: `instance_settings.general.runLimits` is the source of truth once
 // an operator saves it; the environment stays the default for an instance that
@@ -18,17 +18,44 @@
 
 import type { Db } from "@paperclipai/db";
 import {
-  RUN_LIMIT_KEYS,
+  RUN_LIMITS_PATCH_KEYS,
   mergeRunLimits,
   resolveRunLimits,
-  type ResolvedRunLimits,
   type RunLimits,
   type RunLimitsPatch,
+  type ResolvedRunLimits,
 } from "@paperclipai/shared";
 import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService, logActivity } from "../../services/index.js";
+import type { HostCpuGate } from "../run-admission.js";
 
-export type RuntimeLimitsView = ResolvedRunLimits;
+/**
+ * Effective limits, where each value came from, and — myrmidon(1.6.5 rc.2) —
+ * the host CPU reading the ceiling is applied to right now, so the settings
+ * page can show the operator the load next to the field instead of only the
+ * number they typed.
+ */
+export type RuntimeLimitsView = ResolvedRunLimits & {
+  hostLoad: HostCpuGate | null;
+  /**
+   * myrmidon(1.6.5 RUN-FAIRNESS): the live queue snapshot — runs in flight
+   * against the ceiling, runs still waiting, and the oldest waiter. `null`
+   * when the admission or the database is unavailable, so the settings page
+   * shows nothing rather than a number it made up.
+   */
+  queue: {
+    /** Runs in flight right now. */
+    active: number;
+    /** The concurrency ceiling in force, or null when it is off. */
+    limit: number | null;
+    /** Runs still waiting in the queue. */
+    queued: number;
+    /** ISO timestamp of the oldest waiting run, or null when the queue is empty. */
+    oldestQueuedAt: string | null;
+    /** The agent whose run waits longest, or null when the queue is empty. */
+    oldestQueuedAgentId: string | null;
+  } | null;
+};
 
 /** Who changed the limits, for the activity log. */
 export interface RuntimeLimitsActor {
@@ -60,6 +87,18 @@ export interface RuntimeLimitsServiceDeps {
   apply(limits: RunLimits): void;
   /** Ask the queued-run sweep to run shortly, so held runs start without waiting for the tick. */
   scheduleResweep(): void;
+  /**
+   * myrmidon(1.6.5 rc.2): the host CPU reading the ceiling is applied to right
+   * now — the load, the host's background floor and the hold, if any. `null`
+   * when the process has no admission yet, so the view never fails on it.
+   */
+  hostLoad?(): HostCpuGate | null;
+  /**
+   * myrmidon(1.6.5 RUN-FAIRNESS): the live queue snapshot for the GET view.
+   * `null` when the admission or the database is unavailable, so the view
+   * never fails on it.
+   */
+  queueSnapshot?(): Promise<RuntimeLimitsView["queue"]>;
   env?: Record<string, string | undefined>;
 }
 
@@ -100,10 +139,39 @@ export function runtimeLimitsService(
   };
   const env = deps.env ?? process.env;
 
+  /**
+   * myrmidon(1.6.5 rc.2): the live host CPU reading, or null. Reading the gate
+   * touches /proc/loadavg and feeds the background floor, so the settings page
+   * sees the same numbers the admission is deciding on; a missing admission
+   * (a unit test, an early route call) is simply no reading.
+   */
+  function hostLoad(): HostCpuGate | null {
+    return deps.hostLoad?.() ?? null;
+  }
+
+  /**
+   * myrmidon(1.6.5 RUN-FAIRNESS): the live queue snapshot, or null when the
+   * admission or the database is unavailable. Reading it must never fail the
+   * view, exactly like the host CPU reading.
+   */
+  async function queueSnapshot(): Promise<RuntimeLimitsView["queue"]> {
+    if (!deps.queueSnapshot) return null;
+    try {
+      return await deps.queueSnapshot();
+    } catch (err) {
+      logger.warn({ err }, "run admission queue snapshot unavailable for the runtime limits view");
+      return null;
+    }
+  }
+
   return {
     read: async (): Promise<RuntimeLimitsView> => {
       const general = await deps.settings.getGeneral();
-      return resolveRunLimits({ stored: general.runLimits, env });
+      return {
+        ...resolveRunLimits({ stored: general.runLimits, env }),
+        hostLoad: hostLoad(),
+        queue: await queueSnapshot(),
+      };
     },
 
     update: async (patch, actor) =>
@@ -111,7 +179,9 @@ export function runtimeLimitsService(
         const general = await deps.settings.getGeneral();
         const before = resolveRunLimits({ stored: general.runLimits, env });
         const next = mergeRunLimits(before.limits, patch);
-        const changedKeys = RUN_LIMIT_KEYS.filter((key) => before.limits[key] !== next[key]);
+        const changedKeys = RUN_LIMITS_PATCH_KEYS.filter(
+          (key) => (before.limits[key] ?? null) !== (next[key] ?? null),
+        );
 
         await deps.settings.updateGeneral({ runLimits: next });
 
@@ -141,7 +211,11 @@ export function runtimeLimitsService(
           { limits: next, changedKeys, actorType: actor.actorType },
           "run admission limits updated without a restart",
         );
-        return resolveRunLimits({ stored: next, env });
+        return {
+          ...resolveRunLimits({ stored: next, env }),
+          hostLoad: hostLoad(),
+          queue: await queueSnapshot(),
+        };
       }),
   };
 }

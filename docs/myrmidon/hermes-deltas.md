@@ -4,11 +4,10 @@
 English-only on purpose: this file is part of the open repository.
 
 The bot runtime images (`myrmidon-hermes`, `myrmidon-hermes-node`) install
-hermes-agent from a pinned tag of **our fork**
-(`https://github.com/BastionPrime/hermes-agent`, mirrored byte-for-byte from
-upstream — `docker/bot-runtime/Dockerfile`,
-`HERMES_GIT_REF`/`HERMES_GIT_SHA`/`HERMES_VERSION`, where `HERMES_REPO` points
-at the fork and `HERMES_GIT_SHA` still pins the exact tree). Everything we add
+hermes-agent from a pinned tag of the author's repository
+(`https://github.com/NousResearch/hermes-agent` — `docker/bot-runtime/Dockerfile`,
+`HERMES_GIT_REF`/`HERMES_GIT_SHA`/`HERMES_VERSION`; `HERMES_GIT_SHA` pins the
+exact tree). Everything we add
 or change on top of that tag is a *delta*, and the goal is to keep the list
 short: a delta stays only while upstream (or the plugin's own authors) do not
 carry it, and it leaves as soon as they do.
@@ -66,7 +65,7 @@ listed here so a reader of an older commit can see where they went.
 ## Not deltas
 
 - **The fork itself.** `HERMES_REPO` in the Dockerfile points at
-  `https://github.com/BastionPrime/hermes-agent`, a mirror of upstream whose
+  `https://github.com/NousResearch/hermes-agent`, a mirror of upstream whose
   tag objects are byte-identical. It is infrastructure for how the pin is
   served and reviewed, not a change to hermes: nothing in the fork's pinned
   tree differs from upstream's, and `HERMES_GIT_SHA` fails the build if it

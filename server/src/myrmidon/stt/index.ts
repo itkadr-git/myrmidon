@@ -38,8 +38,11 @@ import { SttError, type SttAudioMime, type SttResult } from "./types.js";
 
 export { sttSettings } from "./settings.js";
 export { transcribeAudio } from "./service.js";
+// myrmidon(1.6.5 VOICE-STT B): the diarization report and its marker helper —
+// the intake renders the marker, the meeting flow reads the report.
+export { summarizeDiarization, diarizationMissing } from "./diarization.js";
 export type { SttSettings } from "./settings.js";
-export type { SttResult, SttSegment, SttAudioMime, SttErrorCode } from "./types.js";
+export type { SttResult, SttSegment, SttAudioMime, SttErrorCode, SttDiarizationReport, SttDiarizationReason } from "./types.js";
 export { SttError } from "./types.js";
 
 export interface SttRuntimeOptions {
@@ -102,6 +105,9 @@ const patchSchema = z
     language: z.enum(["auto", "ru"]).optional(),
     diarization: z.boolean().optional(),
     maxDurationSec: z.number().int().positive().max(86400).optional(),
+    keySecret: z.string().min(1).nullable().optional(),
+    deepgramKeySecret: z.string().min(1).nullable().optional(),
+    baseUrl: z.string().url().nullable().optional(),
   })
   .strict();
 
@@ -143,7 +149,7 @@ export function myrmidonSttRoutes(
     assertBoard(req);
     const body = req.body as z.infer<typeof patchSchema>;
     const { doc: stored } = await writeOverrides(db, companyId, (current) => {
-      // Explicit null clears the stored model — back to the environment default.
+      // Explicit null clears the stored field — back to the environment default.
       const next: StoredSttOverrides = {
         enabled: body.enabled ?? current?.enabled ?? false,
         backend: body.backend ?? current?.backend ?? "dashscope",
@@ -151,6 +157,9 @@ export function myrmidonSttRoutes(
         language: body.language ?? current?.language ?? "auto",
         diarization: body.diarization ?? current?.diarization ?? false,
         maxDurationSec: body.maxDurationSec ?? current?.maxDurationSec ?? 1800,
+        baseUrl: body.baseUrl === undefined ? (current?.baseUrl ?? null) : body.baseUrl,
+        keySecret: body.keySecret === undefined ? (current?.keySecret ?? null) : body.keySecret,
+        deepgramKeySecret: body.deepgramKeySecret === undefined ? (current?.deepgramKeySecret ?? null) : body.deepgramKeySecret,
       };
       return { next, result: null };
     });

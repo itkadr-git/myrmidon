@@ -25,8 +25,11 @@ import {
 } from "../components/agent-config-primitives";
 import { InstanceGeneralSettings } from "./InstanceGeneralSettings";
 import { ConnectorPanel } from "@/components/myrmidon/ConnectorPanel"; // myrmidon(EXTCASE-PANEL)
+import { GitHubSharedIdentityPanel } from "@/components/myrmidon/GitHubSharedIdentityPanel"; // myrmidon(GITHUB-SHARED-IDENTITY)
 import { FleetConsolePanel } from "../components/myrmidon/FleetConsolePanel"; // myrmidon(SC1)
+import { ReferenceTaskEvalsPanel } from "../components/myrmidon/evals/ReferenceTaskEvalsPanel"; // myrmidon(1.6.5 EVALS-JUDGE-FAMILY)
 import { TracingHealthCard } from "../components/myrmidon/tracing-health/TracingHealthCard"; // myrmidon(TRACING-HEALTH)
+import { TeamLivenessHealthCard } from "../components/myrmidon/TeamLivenessHealthCard"; // myrmidon(TEAM-LIVENESS-METRICS)
 import { useTranslation } from "@/i18n"; // myrmidon(UI-RU)
 
 export function CompanySettings() {
@@ -338,12 +341,20 @@ export function CompanySettings() {
 
       <FleetConsolePanel /> {/* myrmidon(SC1) */}
 
+      {/* Reference-task results with the same-family judge badge
+          (myrmidon(1.6.5 EVALS-JUDGE-FAMILY)) */}
+      <ReferenceTaskEvalsPanel />
+
       <TracingHealthCard /> {/* myrmidon(TRACING-HEALTH): "LLM tracing" status card (part D) */}
+
+      {/* myrmidon(TEAM-LIVENESS-METRICS): what the board did on its own in the last 24 h */}
+      <TeamLivenessHealthCard />
 
       <InstanceGeneralSettings embedded />
 
       {/* Connectors (client devices through the browser bridge) */}
       <ConnectorPanel /> {/* myrmidon(EXTCASE-PANEL) */}
+      <GitHubSharedIdentityPanel /> {/* myrmidon(GITHUB-SHARED-IDENTITY): shared GitHub authorization access rules */}
 
       {/* Danger Zone */}
       <div className="space-y-4">

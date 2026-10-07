@@ -38,7 +38,7 @@ type ExecFile = (
   opts: Record<string, unknown>,
 ) => Promise<{ stdout: string | Buffer }>;
 
-function fakeExecFile(behavior: { failCommands?: RegExp; keyMaterial?: string }): ExecFile {
+function fakeExecFile(behavior: { failCommands?: RegExp; keyMaterial?: string; failureError?: () => Error }): ExecFile {
   return async (file, args) => {
     expect(file).toBe("ssh");
     // ssh arguments: [..., "user@host", command]
@@ -51,6 +51,9 @@ function fakeExecFile(behavior: { failCommands?: RegExp; keyMaterial?: string })
     createdKeyFiles.push(keyPath);
     if (behavior.keyMaterial !== undefined) {
       expect(readFileSync(keyPath, "utf8")).toBe(behavior.keyMaterial);
+    }
+    if (behavior.failureError) {
+      throw behavior.failureError();
     }
     if (behavior.failCommands && behavior.failCommands.test(command)) {
       const err = new Error("ssh exited with code 255") as Error & { code?: string; killed?: boolean };
@@ -281,6 +284,59 @@ describe("myrmidon(SEC1-C) ssh-ops: deploy/revoke through the fake ssh", () => {
       expect(result.note).not.toContain(USER_A);
       expect(result.note).not.toContain("PRIVATE KEY");
     }
+  });
+
+  it("a non-timeout ssh failure never echoes argv (host, user, key path, err message) in the note", async () => {
+    // The exact error shape node:child_process produces on a failed ssh:
+    // err.message carries the full argv — user@host, the admin key file
+    // path, and the whole remote command (the leak path of review 489c6988).
+    const keyPath = join(scratchRoot, "fake", "access-hub-key-xyz", "id");
+    const leaking = new Error(
+      `Command failed: ssh -i ${keyPath} -p 22 -o BatchMode=yes ${USER_A}@${HOST_A} cat ~/.ssh/authorized_keys 2>/dev/null || true`,
+    ) as Error & { code?: number; killed?: boolean };
+    leaking.code = 255;
+    leaking.killed = false;
+    const port = createSshDeployPort(
+      { adminKey: async () => ADMIN_KEY },
+      {
+        deps: {
+          execFile: fakeExecFile({ failureError: () => leaking }) as never,
+          scratchDir: () => scratchRoot,
+          mkdtemp: async (prefix: string) => {
+            const dir = `${prefix}${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+            mkdirSync(dir, { recursive: true });
+            return dir;
+          },
+        },
+      },
+    );
+    const result = await port.deploy(DEPLOY_INPUT);
+    expect(result.outcome).toBe("not_deployed");
+    expect(result.note).toContain("ssh command failed");
+    // The guard: none of the argv pieces may survive into the note.
+    expect(result.note).not.toContain(HOST_A);
+    expect(result.note).not.toContain(USER_A);
+    expect(result.note).not.toContain(keyPath);
+    expect(result.note).not.toContain("authorized_keys");
+    expect(result.note).not.toContain("Command failed");
+    expect(result.note).not.toContain("PRIVATE KEY");
+  });
+
+  it("an unparseable or missing public key is refused without any ssh run", async () => {
+    for (const publicKey of ["", "garbage", "  \n  "]) {
+      const port = makePort();
+      const result = await port.deploy({ ...DEPLOY_INPUT, publicKey });
+      expect(result.outcome).toBe("not_deployed");
+      expect(result.note).toContain("public key");
+      expect(createdKeyFiles).toHaveLength(0);
+    }
+  });
+
+  it("dryRun refuses an unparseable public key the same way", async () => {
+    const port = makePort();
+    const result = await port.dryRun({ ...DEPLOY_INPUT, publicKey: "garbage" });
+    expect(result.outcome).toBe("not_deployed");
+    expect(result.note).toContain("public key");
   });
 
   it("an oversized read body is refused, not echoed back", async () => {

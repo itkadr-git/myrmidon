@@ -10,6 +10,64 @@ version file to edit. Base Paperclip version is in the image label
 
 ## Unreleased
 
+## 1.6.4
+
+### Fix: the board failed to start when a synthetic attention card was present
+
+- The attention list looks up agent names with `agents.id IN (...)`. The
+  bot-disk lifecycle card uses a key (`bot-disk-lifecycle`) as its subject id,
+  not an agent id, and that key went into the lookup; Postgres rejected the
+  uuid cast and the board exited at start. Agent-name lookups now take only
+  uuid-shaped ids (`isAgentIdLike`), and the clone-hygiene lookup skips the
+  query when no bot key is a uuid.
+
+### Registry entries as per-PR change fragments (CHANGE-FRAGMENTS)
+
+- The shared registry documents — `docs/myrmidon/CHANGELOG(.ru).md`,
+  `DIVERGENCE.md`, `SETTINGS(.ru).md` — are no longer appended to by hand.
+  Every PR adds its entry as one file in `docs/myrmidon/changes/` (format and
+  template: `docs/myrmidon/changes/README.md`), so two PRs with changelog
+  entries merge back to back without conflicts instead of re-resolving the
+  same append conflict in a circle.
+- At release cut `node scripts/myrmidon/release/collect-fragments.mjs
+  --version X.Y.Z` folds every fragment into the shared documents (changelog
+  sections under a new `## X.Y.Z`, an empty `## Unreleased` /
+  `## Без выпуска` left on top; divergence/settings table rows into the
+  section the fragment names) and deletes the fragment files.
+- A CI gate (`scripts/myrmidon/ci/change-fragments-gate.mjs`, running inside
+  the existing node:test step of the checks job — no workflow change) refuses
+  a PR that edits a shared registry document by hand and prints the hint:
+  restore the file, add a fragment. The release-cut PR is recognized by the
+  fragment deletions it carries and passes.
+
+### Vendor share metric: measuring files inherited from the vendor (VENDOR-SHARE-METRIC)
+
+- `node scripts/myrmidon/vendor-share.mjs` measures how many tracked files the
+  fork still inherits from the pinned vendor base commit
+  (`scripts/myrmidon/vendor-base.txt`, refreshed per vendor import). A file is
+  inherited when its path existed at the base (renames followed via
+  `git diff -M`) and its line similarity against the base revision is at or
+  above the threshold (`--threshold` flag → `MYRMIDON_VENDOR_SHARE_THRESHOLD`
+  → built-in 0.5; the report names the source it used). Output is JSON or a
+  short Markdown table; the release ritual records the number, replacing the
+  hand audit.
+
+### Board MCP tool names renamed to `myrmidon*` with one-release aliases (1.7 REBRAND D)
+
+- The board MCP server (`packages/mcp-server`) publishes every tool under a
+  `myrmidon*` name (`myrmidonMe`, `myrmidonListIssues`, `myrmidonUpdateIssue`,
+  …). Each old `paperclip*` name stays registered as a deprecated alias bound
+  to the same handler for exactly one release, so existing agent skills and
+  installed systems keep working; the alias is marked in the tool description.
+  The `connections_search`/`connection_request` tools have no vendor prefix
+  and are unchanged. Details and the 1.8 removal plan:
+  [guides/mcp-tool-names.md](guides/mcp-tool-names.md).
+- Guard test: `packages/mcp-server/src/tool-aliases.test.ts` (both names call
+  one handler; every old name mapped and marked deprecated; catalog-drift
+  guard).
+
+## 1.6.3
+
 ### One deploy for every component (ONE-DEPLOY)
 
 - A release deploy now updates every component in one maintenance window:
@@ -32,6 +90,22 @@ version file to edit. Base Paperclip version is in the image label
   left alone; progress and failures are reported. Includes BOT-IMAGE-ROLLOUT (PR #454).
 - `component_host_service_exists` no longer reports a service as missing when `grep -q`
   closes the pipe early (SIGPIPE under `pipefail`).
+
+### Prompt-budget advice and deep analysis (PROMPT-BUDGET part C)
+
+- The agent card's Overview tab carries a "Prompt budget advice" panel: the last run's
+  prompt breakdown by parts, a concrete recommendation for every part whose share crosses
+  30% (Critical from 50%; below 2000 prompt tokens no advice is produced — the thresholds
+  are code constants, not settings), and a "Deep analysis" button that files a task for a
+  cheap-model optimizer agent. The optimizer drafts instruction edits as a comment on that
+  task; nothing is scheduled and nothing is changed automatically.
+- The optimizer agent is the instance general setting `promptBudget.optimizerAgentId`
+  (no environment variable); the deep POST answers 422 with a clear message when it is
+  absent, not a uuid, the analysed agent itself, or not an agent of the company. Dedup:
+  one deep task per target agent per run.
+- API: `GET /api/myrmidon/companies/:companyId/prompt-budget/agents/:agentId/advice`
+  (company member), `POST .../advice/deep` (board). Operator guide:
+  [guides/prompt-budget-advice.md](guides/prompt-budget-advice.md).
 
 ### Agent memory works without a key and is set in the UI (MEMORY-UI)
 
@@ -89,6 +163,25 @@ version file to edit. Base Paperclip version is in the image label
   turns the status message on for bridged DMs.
 - The queued and working texts of the status message are now in Russian, like
   the step labels. Guide: [telegram-dm-status.md](guides/telegram-dm-status.md).
+
+### Idle engineers take unassigned ready work (1.6.2 SWARM-UNASSIGNED-ROUTE)
+
+- The swarm idle pass paired free agent number i with queue slot i. The engineer
+  queue is ordered by priority and also held the tasks already assigned to busy
+  peers, so those filled every slot and the unassigned tasks behind them were
+  never offered: idle engineers and ready unassigned `todo` tasks coexisted for
+  hours. Now each free agent takes its own assigned task first, else the top
+  unassigned task of its role; a peer's task is never offered to it, and tasks
+  already covered by a live claim or a wake in flight no longer take a slot. The
+  claim path (`claimNextTaskForAgent`) reads the same membership: the agent's own
+  tasks plus the unassigned tasks of its role.
+- An unassigned task is queued for one role: the one its `role:<key>` label
+  names, the engineer when it has no such label (before, every role was offered
+  every unassigned task).
+- A config gap is a signal, not idleness: ready tasks routed to a role with no
+  agents are reported on every pass (`idleUnstaffedRoles` in the pass result and
+  a warning naming the role and the tasks).
+
 ### Heavy builds blocked inside the dev bot image (1.6.1 BUILD-OFFLOAD, part A)
 
 - The development variant of the bot image (`runtime-dev`,
@@ -347,7 +440,6 @@ version file to edit. Base Paperclip version is in the image label
   limit of 0 — any task it holds in flight is over the limit by
   definition. See [wip-limit](guides/wip-limit.md).
 
-
 ### Telegram notification settings UI (TG-NOTIFY-SETTINGS part F)
 
 - The "Telegram notifications" panel on the System screen of the 2.0 UI: all
@@ -407,7 +499,6 @@ version file to edit. Base Paperclip version is in the image label
   malformed value keeps the default. See [SETTINGS.md](SETTINGS.md) and
   [guides/run-limits.md](guides/run-limits.md).
 
-
 ## 1.6.2
 
 ### Bot language servers by role (BOT-LSP-DEFAULTS)
@@ -457,8 +548,6 @@ version file to edit. Base Paperclip version is in the image label
   enabled from the environment) — fixed together with the journal key.
   See [SETTINGS.md](SETTINGS.md).
 
-
-
 ### SWARM-IDLE-WAKE: Free agents wake when their role queue is not empty
 
 - Third pass of the swarm supervisor (`sweep.ts`, after the release and free passes): on each tick, for each pair of "role + ready queue + free agents", wakes the missing number of agents, in batches ≤5 (`MYRMIDON_SWARM_IDLE_WAKE_BATCH`, default 5, clamp 1–25), each wake bound to the top task of the queue (P0 first — `orderSwarmQueueCandidates`). Pure modules: `idle-wake.ts` (policy: no live lease, under task ceiling, not paused/error, no live run, idempotency key) and `idle-queue.ts` (DB reads: role-queue pairs, live claim counts, coverage check). Assigned tasks go to the role of their executor; tasks without an executor are offered to every role with agents. The active task limit is respected, castes remain a gate on the claim side (`caste_excluded`, CUSTOM-CASTES B) — the point of control; the caste ceiling is respected. Supervisor metric: new total `freeAgentsWithQueue` — "free agents when queue is not empty" — which the pass should keep at 0 (unassigned tasks are now visible to roles with agents). Wakes go only through the existing `enqueueWakeup` (pause, maintenance, limits, budget — all gates preserved); the capture happens on checkout of the awakened run. The "one TTL + sweep interval" criterion is covered by a test (interval ≤ TTL/3). Docs: `MYRMIDON_SWARM_IDLE_WAKE_BATCH` in SETTINGS.md/SETTINGS.ru.md; skill `skills/paperclip/SKILL.md` supplemented with self-capture fallback (`POST /api/myrmidon/companies/{companyId}/swarm-claim/claim`).
@@ -480,8 +569,6 @@ version file to edit. Base Paperclip version is in the image label
   agent-actor mutation writes `actorType: "agent"` with the agent and run ids
   instead of the old hardcoded board-user placeholder. Operator guide:
   [guides/actor-grant-routes.md](guides/actor-grant-routes.md).
-
-
 
 ### Custom castes, consumers (CUSTOM-CASTES B)
 
@@ -518,7 +605,6 @@ version file to edit. Base Paperclip version is in the image label
   process-level signal registry (no new store); cards fade after
   `MYRMIDON_STALE_BLOCK_SIGNAL_TTL_MS` (default 24 h).
 
-
 ### Gateway-priced hermes runs (HERMES-USAGE-COST)
 
 - hermes_gateway runs no longer land in the cost ledger as unpriced $0
@@ -534,6 +620,31 @@ version file to edit. Base Paperclip version is in the image label
   for one-off month backfills. The UI-2.0 forecast chip shows
   "spent" only when no monthly budget is configured, ending the
   "$0 of $0" placeholder.
+
+### Bot runtime tuning from the profile compiler (BOT-RUNTIME-TUNING part B)
+
+- The bot profile compiler writes three settings into each bot's
+  `hermes/config.yaml` that it never wrote before:
+  `compression.threshold_tokens` (an absolute token cap — Hermes compresses
+  at the lower of its ratio threshold and this count, so a long session on a
+  large-window model no longer grows to half the window before compacting),
+  `model.context_length` (the context window of the card's model, from the
+  card's own `models.contextLength` or the instance's
+  `MYRMIDON_BOT_MODEL_CONTEXT_LENGTH` alias map), and the auxiliary models
+  `auxiliary.title_generation.model` / `auxiliary.compression.model` (the
+  title generator and the compression summarizer stop riding the main,
+  expensive model). Instance settings:
+  `MYRMIDON_BOT_COMPRESSION_THRESHOLD_TOKENS`,
+  `MYRMIDON_BOT_MODEL_CONTEXT_LENGTH`,
+  `MYRMIDON_BOT_AUX_TITLE_MODEL`, `MYRMIDON_BOT_AUX_COMPRESSION_MODEL`.
+  The card's entry always wins over the instance setting; unset stays unset
+  (no compiler-invented defaults). Values are validated in ranges at compile
+  time (10 000–2 000 000 for the token cap, 8 000–10 000 000 for the context
+  window): an out-of-range or non-integer value is dropped with a profile
+  warning in the container activity log — never a compile failure. Settings
+  are read on every profile build, and a change restarts the affected bot
+  containers on the next pass. Settings documentation:
+  [SETTINGS.md](SETTINGS.md) § Bot containers.
 
 
 ### Board administrators from agents (ADMIN-AGENT part C)
@@ -572,7 +683,40 @@ version file to edit. Base Paperclip version is in the image label
   principal. Same guide:
   [guides/agent-board-admin.md](guides/agent-board-admin.md).
 
+### Parallel helpers without a hard cap (HELPERS-NO-CAP)
+
+- The number of parallel helpers is a setting with **no built-in upper
+  limit**; the default stays 2 (owner's decision, repeated 03.10). The hard
+  cap of 50 that clamped even the owner's own settings value is gone: the
+  company ceiling (`maxPerAgent`) and the per-agent limit are taken exactly
+  as saved, from the interface, and the profile compiler resolves a card
+  against the owner's number as written. Protection against a typo is a
+  warning, not a clamp: the settings page shows a host-load note for a saved
+  ceiling above 50 ("values this high put a real load on the host — make
+  sure this is intended, not a typo"), and saving is never blocked. The
+  agent card's limit field likewise accepts any whole number ≥ 1 and only
+  rejects non-numbers. Settings documentation:
+  [SETTINGS.md](SETTINGS.md) § PARALLEL-HELPERS.
+
 ## 1.6.0
+
+### Telegram notifications (TG-NOTIFY-SETTINGS, part A: the settings core)
+
+- The company-level settings that say what the board sends to the owner in
+  Telegram: the daily digest, error notifications, inbound rules, escalations
+  and head-bot proactivity, as ONE runtime-changeable contract
+  (`packages/shared/src/myrmidon-telegram-notify.ts` — types and zod
+  validators shared by the server and the UI). Storage without migration:
+  the `myrmidonTelegramNotifySettings` key of `instance_settings.general`,
+  company-keyed. API: `GET /api/myrmidon/telegram-notify` answers the full
+  document (every field of every section always present), `PATCH
+  /api/myrmidon/telegram-notify` applies a partial update; each changed
+  field is recorded in a bounded changelog (200 entries) with the actor, the
+  field path and the from/to values. Reads need company access; PATCH is
+  board only. Every section defaults to OFF — with the defaults the owner
+  keeps receiving only the replies to their own messages and the U2 decision
+  cards; the parts that actually send (digest, errors, inbound, escalations,
+  proactivity) consume this contract. No environment variables are added.
 
 ### CTO chat planner (CTO-CHAT B)
 

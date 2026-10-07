@@ -71,8 +71,14 @@ const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
   wip_limit: { label: "WIP limit" },
   // myrmidon(BOT-DISK-A): label for the bot disk lifecycle source.
   bot_disk_lifecycle: { label: "Bot disk" },
+  // myrmidon(1.6.1-BOT-DISK-C): label for the per-bot disk quota signal.
+  bot_disk_quota: { label: "Bot disk quota" },
   // myrmidon(REVIEW-ROUTING): label for the review routing source.
   review_routing: { label: "Review routing" },
+  // myrmidon(1.6.3 PROMPT-BUDGET B): label for the prompt-budget threshold source.
+  prompt_budget_alert: { label: "Prompt budget" },
+  // myrmidon(1.6.1-FORAGING-LIMITS-UI): label for the learning-spend source.
+  foraging_limit: { label: "Learning limit" },
 };
 
 export function sourceMeta(kind: AttentionSourceKind): SourceMeta {
@@ -141,6 +147,7 @@ export function attentionKind(item: AttentionItem): AttentionKind {
     case "recovery_action":
     case "budget_alert":
     case "host_disk_alert":
+    case "foraging_limit":
       return "blocking";
     case "approval":
     case "issue_thread_interaction":

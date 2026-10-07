@@ -99,6 +99,29 @@ function statusText(status: BotContainerStatus | null, statusError: string | nul
   return `${stateLabel(status.container.state)}${image}`;
 }
 
+/** One line for the rollout category of the saved card, or null when the server did not say. */
+export function imageTrackingText(status: BotContainerStatus | null): string | null {
+  const tracking = status?.imageTracking;
+  if (!tracking) return null;
+  switch (tracking.category) {
+    case "tracks_release":
+      return `Bot image rollout: follows the release (now ${tracking.image}).`;
+    case "pinned":
+      return `Bot image rollout: pinned${tracking.image ? ` to ${tracking.image}` : ""}; the release does not move this bot.`;
+    default:
+      return `Bot image rollout: not applicable (${tracking.reason}).`;
+  }
+}
+
+/** myrmidon(BOT-ROLLOUT): the release-image verdict line of the card, or null when
+ *  the server did not say (older server). */
+export function imageRolloutText(status: BotContainerStatus | null): string | null {
+  const rollout = status?.imageRollout;
+  if (!rollout) return null;
+  if (rollout.onReleaseImage) return "On the release image.";
+  return `Not on the current release image: ${rollout.reason}.`;
+}
+
 /** Why "Apply now" cannot run right now, or null when it can. */
 export function applyBlockedReason(
   status: BotContainerStatus | null,
@@ -176,6 +199,8 @@ export function AgentCardContainerFieldsView({
 }: AgentCardContainerFieldsViewProps) {
   const card = readBotContainerCard(value);
   const enabled = card.enabled === true;
+  // A legacy block without `enabled` shows its fields too, so the missing values are visible.
+  const showFields = enabled || (typeof card.enabled !== "boolean" && Object.keys(card).length > 0);
   const [expanded, setExpanded] = useState(() => Object.keys(card).length > 0);
   const problems = botContainerProblems(card);
   const blocked = applyBlockedReason(status, unsaved, statusError);
@@ -197,7 +222,7 @@ export function AgentCardContainerFieldsView({
           toggleTestId="myrmidon-bot-container-enabled"
         />
 
-        {enabled && (
+        {showFields && (
           <>
             <Field label="Image" hint="The bot image to run. Only images the instance allows can be applied.">
               <DraftInput
@@ -268,6 +293,26 @@ export function AgentCardContainerFieldsView({
               <div className="break-words text-sm" data-testid="myrmidon-bot-container-status">
                 {statusText(status, statusError)}
               </div>
+              {imageTrackingText(status) && (
+                <div className="mt-1 break-words text-xs text-muted-foreground" data-testid="myrmidon-bot-container-tracking">
+                  {imageTrackingText(status)}
+                </div>
+              )}
+              {imageRolloutText(status) && (
+                <div className="mt-1 flex items-center gap-1.5 break-words text-xs" data-testid="myrmidon-bot-container-release-image">
+                  {!status?.imageRollout?.onReleaseImage && (
+                    <span
+                      className="inline-flex shrink-0 items-center rounded-full border border-amber-400/40 px-1.5 py-0.5 text-[10px] font-medium text-amber-400"
+                      data-testid="myrmidon-bot-container-not-on-release"
+                    >
+                      Not on the current image
+                    </span>
+                  )}
+                  <span className={status?.imageRollout?.onReleaseImage ? "text-muted-foreground" : "text-amber-400/90"}>
+                    Release image: {imageRolloutText(status)}
+                  </span>
+                </div>
+              )}
             </div>
             <div className="flex shrink-0 items-center gap-2">
               <Button

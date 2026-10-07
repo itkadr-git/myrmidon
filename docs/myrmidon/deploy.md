@@ -68,7 +68,9 @@ maintenance) and on any "no" exits with the reason, changing nothing:
    CI sets these labels at build time.
 4. **The commit is checked.** The script runs `git fetch origin main` in the clone that holds
    it and requires the label commit to be reachable from `origin/main`, or to carry a
-   `myr-v<x>.<y>.<z>` tag in `origin` (`git ls-remote --tags`). An image built from a branch
+   `myr-v<x>.<y>.<z>` tag in `origin` (`git ls-remote --tags`) — a release candidate tag
+   `myr-v<x>.<y>.<z>-rc.<n>` counts too (RC-VERSIONS: deploying an rc IS the trial run of
+   the release flow). An image built from a branch
    or from unreviewed code does not pass. No git, the script outside a clone, a foreign
    `origin`, a failed fetch — a refusal with a clear reason.
 
@@ -89,9 +91,10 @@ digests itself.
 
 The components are listed in `MYRMIDON_RELEASE_COMPONENTS` (default `dockergate,fleetd`).
 Each component rolls with its own pull by digest, its own override file
-(`docker-compose.myrmidon-<component>.yml`), a service recreate and a **required** health
-probe (`MYR_<COMPONENT>_HEALTH_URL`; unset means the component rollout refuses after the
-switch — fail-closed). A failed component rollout or a failed post-deploy smoke ends the
+(`docker-compose.myrmidon-<component>.yml`), a service recreate and a health proof: fleetd
+has a **required** probe (`MYR_FLEETD_HEALTH_URL`; unset means the rollout refuses before it
+pulls anything — fail-closed), dockergate is proven by its own log (see
+[Deploy hardening](#deploy-hardening-the-0510-follow-up)). A failed component rollout or a failed post-deploy smoke ends the
 deploy as DEGRADED with the rollback commands printed; the board itself is already healthy
 at that point, so the rollback is the operator's decision. `MYRMIDON_RELEASE_COMPONENTS=none`
 restores the board-only behavior (not for a release: the 01.10 incident was exactly that
@@ -148,9 +151,9 @@ scripts/myrmidon/deploy/deploy.sh --config deploy.env --release myr-v1.6.2
   with `dockergate check-config` run with the **new** dockergate image before the service is
   recreated; a refusal stops the deploy. When dockergate itself is unchanged it is told to
   re-read the file (SIGHUP).
-- **Verified.** The board by `/api/health` (version, commit); dockergate by its startup
-  self-check line, whose version must equal the version of the new binary; fleetd by its
-  health probe.
+- **Verified.** The board by `/api/health` (version, commit); dockergate by its log: the
+  container runs and its newest `self-check ok` / `config_reloaded` line reports the version of
+  the new binary and the hash of the config it loaded; fleetd by its health probe.
 - **All-or-nothing.** If any component fails inside the window, everything this deploy
   changed rolls back together: the changed components (to the image each ran before), the
   dockergate config and the board; then maintenance is lifted. A failure in the rollback is
@@ -171,6 +174,120 @@ scripts/myrmidon/deploy/deploy.sh --config deploy.env --release myr-v1.6.2
   `$STATE_DIR/bot-image-rollout-summary.json`. The superseded bot images leave `images[]`
   only after every bot moved. Bot-card failures end the deploy as DEGRADED. There is no board
   setting for a default bot image to update.
+
+### Release candidates and the `latest` marker (RC-VERSIONS)
+
+Since 1.6.5 a release goes through a trial run on our own production before it becomes the
+GitHub **Latest** release (the owner's requirement of 05.10):
+
+1. **Cut the candidate.** The release-cut PR lands on `main`, then the tag
+   `myr-vX.Y.Z-rc.1` (next trial: `-rc.2`, …) is pushed on the release commit. CI builds
+   every component image with the tag `X.Y.Z-rc.N` and the version `/api/health` reports is
+   exactly `X.Y.Z-rc.N`. The publish workflow creates the GitHub Release as a
+   **pre-release** titled `Myrmidon X.Y.Z-rc.N (RC N)` — it never touches `latest`.
+2. **Deploy the candidate.** `deploy.sh --release myr-vX.Y.Z-rc.N` works exactly like a
+   final release (the manifest asset, the component gate, the bot rollout): the digests
+   resolve from the rc's own image tags. `--expect-version X.Y.Z-rc.N` matches what the
+   board reports.
+3. **Verify on production.** Health (`/api/health` status ok at `X.Y.Z-rc.N`), the
+   attention list empty of new deploy damage, the fleet taking tasks, the bot images
+   applied. The deploy itself already proved the bot re-apply smoke.
+4. **Cut the final tag.** When the candidate is judged «годно», tag the SAME commit
+   `myr-vX.Y.Z` and push. Nothing rebuilds from scratch for the promotion: the image
+   workflows re-run on the final tag and tag the release images `X.Y.Z` (same commit), and
+   the publish workflow publishes the final release (same notes section `## X.Y.Z`, still
+   never `latest`). Deploy the final tag with `deploy.sh --release myr-vX.Y.Z`.
+5. **Mark Latest explicitly.** Only after the final release runs on our board and passed
+   its smoke:
+
+   ```bash
+   scripts/myrmidon/release/promote-latest.sh --tag myr-vX.Y.Z \
+     --health-url https://<board>/api/health --health-token-file <board-key-file>
+   ```
+
+   The command refuses (and changes nothing) when the tag is an rc, the release is a
+   pre-release, the release commit is not on `main`, or the board reports any version
+   other than `X.Y.Z` — the marker moves only with proof the release is the version
+   actually running on our production. `--skip-health-check` is the documented escape
+   hatch for a rehearsed promotion (staging, a drill); it logs loudly.
+
+A publish — rc or final — NEVER moves `latest` by itself: `publish-github-release.sh`
+does not pass `--latest` to GitHub anymore. An rc also never marks another release
+«(superseded)», and a final tag never supersedes its own release candidates.
+### Deploy hardening (the 05.10 follow-up)
+
+The production deploy of 1.6.3/1.6.4 on 05.10 hit seven failures in the deploy scripts. Each
+one is fixed and has a test in `scripts/myrmidon/deploy/deploy-hardening.test.mjs` that
+reproduces it.
+
+- **One source of truth per component image.** The generated override file
+  `docker-compose.myrmidon-<component>.yml` is what the deploy writes, what the rollback
+  restores and what the boot unit reads: the canonical `paperclip.service` lists the override
+  files of the local release components (`MYRMIDON_RELEASE_COMPONENTS`, hosts `local`) after
+  the board override. The "previous" image of a component — and of the board — is the image of the **running
+  container** (`docker inspect`, found by its compose labels), never a file; the file is the
+  fallback only when no container exists. Before anything else the deploy corrects a stale
+  override to the image that runs (the rollback once restored dockergate to an image an old
+  override file named instead of the one that had been running). A unit written before this
+  change is the *previous canonical unit*: with `SYSTEMD_UNIT_INSTALL=1` it is replaced by the
+  current one (`systemctl daemon-reload`), without it the deploy refuses and says so; any other
+  unit is still refused. A component whose host is `remote:`/`skip` is not part of this
+  host's unit.
+- **The compose project is checked as a whole.** Every compose call of a component (the
+  service-existence check included) uses `COMPOSE_FILES`, the board image override
+  (`COMPOSE_OVERRIDE_FILE`) and the component's override. Without the board override the project
+  is invalid (the `server` service has no image) and the check used to report a healthy
+  component as "not a service". Now a project that does not validate is reported with compose's
+  own error text, and "not a service" is said only about a project that validates.
+- **`--dry-run` is the real preflight.** Before the first pull and before the dump, in the dry
+  run and in the real run alike, the deploy checks: the compose project of the full file set
+  (`docker compose config`), the CI image checks, the boot unit, every changed component's
+  service and health setting (fleetd's URL is checked before the pull, not after the
+  recreate), and the dockergate config check — the **edited** config (new bot images,
+  enrollment) made on a copy that keeps the owner and mode of the real file, run by the new
+  dockergate binary as its own user (the image is fetched by `docker run` when it is not on
+  the host yet). The dry run then fails exactly when
+  the real run would, and the real run stops before the first pull.
+- **dockergate health.** dockergate's socket answers only the board's main process, so the
+  host's `curl --unix-socket .../engine.sock http://localhost/_ping` gets `403
+  caller_not_board_main` and can never pass — a healthy dockergate was declared dead by it, and the
+  rollback's own check failed the same way. `MYR_DOCKERGATE_HEALTH_URL` is no longer used (it is
+  ignored with a note). dockergate is proven by what it logs: the container runs (not
+  restarting), and its newest `self-check ok` / `config_reloaded` line reports the expected
+  version (the new binary's) and the expected config hash (the first 12 hex digits of the
+  sha256 of `MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_CONFIG`, the value `check-config` prints).
+  The log is read from the compose service, or from `DOCKERGATE_LOGS_COMMAND` when dockergate is
+  not a compose service of this host. The rollback uses the same proof for the restored image
+  (an older dockergate that does not log a hash is accepted with a warning).
+- **Config writes keep owner and mode.** Every edit of `config.json` (images, `bots[]`, the
+  fleetd config on a fleet host) and of an override file goes through a temp file whose
+  owner and mode are first set from the file it replaces; if that is not possible (not root, a
+  different owner) the file is left untouched and the deploy fails. A strict `umask` can no
+  longer turn a readable config into `0600 root`, which dockergate (uid 65532) could neither
+  reload nor restart on. After SIGHUP the deploy verifies that dockergate **loaded** the new
+  hash (`MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_RELOAD_TIMEOUT_SEC`, 30 s) and fails loudly with
+  the file's owner and mode otherwise; the all-or-nothing rollback does the same after it
+  restores the config.
+- **A refusal is readable.** The output of `dockergate check-config` (stdout and stderr) is
+  logged line by line whenever it refuses a config, in the preflight, the bot rollout and the
+  component rollout.
+
+### Upgrading from 1.6.4 to 1.6.5
+
+What changes for operators:
+
+- **The vendor's config backups in bot volumes are wiped by the board.** The
+  vendored Hermes CLI snapshots each bot's `config.yaml` into
+  `hermes/backups/config/` on every successful config load and offers no
+  switch to turn that off. The compiled `config.yaml` never holds a secret
+  value (only a `${VAR}` reference; the value lives in `hermes/.env`, mode
+  `0600`), but a backup copy can hold the resolved value, and a host backup
+  of the bot volume would then carry it. From 1.6.5 the apply script of every
+  profile rebuild removes `hermes/backups` as a best-effort step, so the
+  copies disappear on each bot's first profile rebuild after the upgrade.
+  There are no manual steps: if a bot's volume was included in a host backup
+  taken before the upgrade, treat the older copies inside that host backup as
+  potentially holding the bot's LLM gateway key.
 
 ### Upgrading from 1.5.0 to 1.6.0
 
@@ -227,8 +344,9 @@ Deploy the board, dockergate and fleetd images from the same 1.4.0 tag together 
 1.4.0 the script does this in one run (the section above): pass the board digest, and the
 dockergate and fleetd digests of the same tag are resolved and rolled automatically. No new
 migrations to run by hand: the upgrade is image-only on the host side. For the component
-health probes to pass, set `MYR_DOCKERGATE_HEALTH_URL` and `MYR_FLEETD_HEALTH_URL` in
-`deploy.env` before the deploy (see [SETTINGS.md](SETTINGS.md)).
+health proof to pass, set `MYR_FLEETD_HEALTH_URL` in `deploy.env` before the deploy
+(see [SETTINGS.md](SETTINGS.md)); dockergate has no probe setting — the host cannot ping it,
+the deploy reads its log (see [Deploy hardening](#deploy-hardening-the-0510-follow-up)).
 
 What changes for operators:
 
@@ -363,7 +481,83 @@ board is healthy and maintenance is already lifted: the script exits with an err
 DEGRADED line, and the rollback of the board and of each component is the operator's call.
 
 `--dry-run` changes nothing (does not pull the image, does not dump, does not touch files)
-and prints the plan. The image check (step 0) does run in it: it only reads.
+and prints the plan. Every check the real run makes before its first pull runs in it — the
+image check (step 0), the boot unit, the compose project, the components, the dockergate
+config check (step 0.55; see
+[Deploy hardening](#deploy-hardening-the-0510-follow-up)): it fails exactly when the real run
+would.
+
+## Applying PostgreSQL settings with the deploy (DB-TUNING)
+
+The PostgreSQL settings from the database audit (OPE-4270) are applied **declaratively by
+the deploy**, never by a manual `ALTER SYSTEM` on the running server. The source of truth is
+in the repository:
+
+- `scripts/myrmidon/deploy/db-tuning.sql` — the audit values, applied by the deploy;
+- `scripts/myrmidon/deploy/db-tuning-rollback.sql` — the reset back to the defaults, applied
+  by `rollback.sh` (and by the failed DB-TUNING step itself).
+
+| Parameter | Value | Scope |
+| --- | --- | --- |
+| `jit` | `off` | server (ALTER SYSTEM) |
+| `work_mem` | `16MB` | server |
+| `wal_compression` | `lz4` | server |
+| `autovacuum_vacuum_scale_factor` | `0.05` | server |
+| `autovacuum_vacuum_scale_factor` | `0.02` | tables `heartbeat_runs`, `agent_wakeup_requests`, `company_secrets` |
+| `autovacuum_analyze_scale_factor` | `0.02` | table `issues` |
+
+Four optional settings wire the step into the deploy (`deploy.env`, documented in
+`scripts/myrmidon/deploy/deploy.env.example`):
+
+- `DB_TUNE_COMMAND` — the shell command that applies `db-tuning.sql` (an empty value skips
+  the whole step):
+  ```
+  DB_TUNE_COMMAND='docker compose --project-directory $COMPOSE_DIR exec -T db psql -U <user> -d <db> -v ON_ERROR_STOP=1 -f - < scripts/myrmidon/deploy/db-tuning.sql'
+  ```
+- `DB_TUNE_SHOW_COMMAND` — a command that receives the parameter name in `DB_TUNE_PARAM`
+  and prints its `SHOW` value:
+  ```
+  DB_TUNE_SHOW_COMMAND='docker compose --project-directory $COMPOSE_DIR exec -T db psql -U <user> -d <db> -tAc "SHOW $DB_TUNE_PARAM"'
+  ```
+- `DB_TUNE_EXPECTED` — the `name=value` pairs (one per line) the deploy verifies through
+  `DB_TUNE_SHOW_COMMAND` after applying:
+  ```
+  DB_TUNE_EXPECTED='jit=off
+  work_mem=16MB
+  wal_compression=lz4
+  autovacuum_vacuum_scale_factor=0.05'
+  ```
+- `DB_TUNE_ROLLBACK_COMMAND` — the command that returns the previous settings (runs
+  `db-tuning-rollback.sql`); called by `rollback.sh` and by the deploy when the DB-TUNING
+  step fails after applying. Empty — the settings rollback is skipped with a warning in the
+  log.
+
+The step runs after the health check (deploy step "7d" of the plan; the dry-run describes it
+like every other step). Before the first apply the deploy records the live `SHOW` values of
+every `DB_TUNE_EXPECTED` parameter into `$STATE_DIR/db-tuning-previous` — that file is what
+the rollback restores to and what `rollback.sh` checks against. A `SHOW` mismatch is
+`DEPLOY FAILED`: maintenance stays on, the rollback command is printed, and the half-applied
+settings are returned immediately if `DB_TUNE_ROLLBACK_COMMAND` is set. `rollback.sh` applies
+`DB_TUNE_ROLLBACK_COMMAND` after the image and health steps and verifies the same parameters
+against the recorded previous values.
+
+To measure the effect before/after a release, pull the top queries' time statistics from
+`pg_stat_statements` (same command shape as above). The view stores only `mean_exec_time`
+and `stddev_exec_time` per statement, so `mean + stddev` is the p95-normal approximation
+(about 84–95 % of executions fall below it):
+
+```
+docker compose --project-directory $COMPOSE_DIR exec -T db psql -U <user> -d <db> -c "
+SELECT round((mean_exec_time + stddev_exec_time)::numeric, 1) AS p95_ms_approx,
+       round(total_exec_time::numeric / nullif(calls, 0), 1) AS mean_ms,
+       calls, rows, round(total_exec_time::numeric / 1000, 0) AS total_s,
+       left(query, 80) AS query
+FROM pg_stat_statements
+ORDER BY total_exec_time DESC LIMIT 20;"
+```
+
+A reset of the counters between the two samples makes the comparison clean:
+`SELECT pg_stat_statements_reset();` (same `exec -T db psql -c` shape, run by the operator).
 
 ## One boot path (systemd unit)
 
@@ -389,7 +583,12 @@ skips it (`--force` does not skip it either).
   either copy the filled template to `/etc/systemd/system/paperclip.service`
   by hand, or set `SYSTEMD_UNIT_INSTALL=1` in the settings file (the deploy
   then installs it when it does not exist yet; needs root).
-- `SYSTEMD_UNIT_INSTALL=1` **never overwrites an existing unit**: a foreign
+- The canonical unit lists, after the board override, the override files of the local release
+  components (`docker-compose.myrmidon-dockergate.yml`, `...-fleetd.yml`): the boot starts
+  the image the deploy and the rollback manage, not a second source. `SYSTEMD_UNIT_INSTALL=1`
+  also replaces the unit of the previous release (the same file list without the component
+  overrides) — and only that one.
+- `SYSTEMD_UNIT_INSTALL=1` **never overwrites an existing foreign unit**: a foreign
   unit is a refusal, because silently replacing an unknown boot path is how
   the incident happened. Remove or fix the foreign unit by hand, then deploy.
 - The unit references the compose **files**, not a digest: a new deploy writes
@@ -456,7 +655,9 @@ scripts/myrmidon/deploy/rollback.sh --config /path/to/deploy.env --to-image ghcr
 
 Without `--to`/`--to-image` the rollback takes the image remembered at the last deploy —
 including the vendor image on the first switch to the fork. The rollback restores the image
-and checks health against the old image's labels. **The database is not restored.**
+and checks health against the old image's labels. **The database is not restored.** The
+rollback does not need the board: a failed maintenance enter or exit is logged and the
+rollback goes on (ROLLBACK-WITHOUT-BOARD).
 
 A rollback is the emergency path and is **not blocked** by the CI-only check: the image
 recorded by `deploy.sh` as previous is restored wherever it came from. But the target is
@@ -596,7 +797,8 @@ case the interface refuses — which is exactly the case the script would refuse
   is off.
 - The component probes of the release gate: the deploy output ends with
   `release gate passed: board and <components> rolled out together, bots re-apply`. Each
-  component answers its own probe (the exact target is your `MYR_<COMPONENT>_HEALTH_URL`).
+  component is proven (fleetd answers its probe, your `MYR_FLEETD_HEALTH_URL`; dockergate's log
+  reports the new version and config hash).
 - The server log: migrations applied, no startup errors:
   `docker compose logs --since 10m <service>`.
 - Ad-hoc operator indexes: a migration may drop indexes created by hand outside the
@@ -668,19 +870,77 @@ reads the `## X.Y.Z` section of the merged changelog, so the tag goes on the
 merge commit of this PR or later. Format of a fragment:
 [changes/README.md](changes/README.md).
 
+**A tag without its changelog section fails CI (RELEASE-CUT-CHANGELOG).**
+Pushing a `myr-vX.Y.Z` tag runs **Myrmidon CI (tag)** (`myrmidon-ci-tag.yml`), whose `checks`
+lane verifies both changelogs with
+`node scripts/myrmidon/release/collect-fragments.mjs --version X.Y.Z --check`:
+a non-empty `## X.Y.Z` section and an empty unreleased heading, in EN and RU
+alike. A tag cut without the release-cut PR (the 1.6.3 incident: the notes
+sat under `## Unreleased` and the publish refused with "release body could
+not be built (missing notes)") goes red here, before the release publish
+starts. `collect-fragments.mjs` itself runs the same check before writing
+anything, so a cut that would not pass CI fails locally instead.
+
 **The GitHub Release is created by CI, not by hand.** Pushing a `myr-vX.Y.Z` tag
-triggers the **Myrmidon release publish** workflow
+(including `-rc.N`) triggers the **Myrmidon release publish** workflow
 ([myrmidon-release.yml](https://github.com/itkadr-git/myrmidon/blob/main/.github/workflows/myrmidon-release.yml)):
-it waits for the tag's own `Myrmidon CI` run and the tag's image workflow runs
+it waits for the tag's own **Myrmidon CI (tag)** run
+([myrmidon-ci-tag.yml](https://github.com/itkadr-git/myrmidon/blob/main/.github/workflows/myrmidon-ci-tag.yml)
+— the full CI tier as a separate, un-cancellable run on the tag; the 1.6.4 incident,
+where a main push cancelled the tag commit's CI through the shared concurrency
+group, is what created it) and the tag's image workflow runs
 to succeed — the gate matches runs by the tag, not by the commit (the release
 commit is usually already on `main`, whose runs build the `main`/`sha-` image
 tags, not the version tag; that mix-up is what failed the 1.6.1 publish), so
 the publish waits up to ~40 minutes while the tag's images build — then
 creates the Release (Latest) with the `## X.Y.Z` section of
 [CHANGELOG.md](CHANGELOG.md) and the component image digests, and marks the
-previous release "(superseded)". A failed CI run produces no Release. To
+previous release "(superseded)". A failed or cancelled tag run produces no
+Release (a cancelled tag CI run refuses the publish with an explicit message —
+re-run Actions → Myrmidon CI (tag) with the tag name). A green main-branch run
+of the same commit never satisfies the gate: the tag's own run is the only
+source of green. To
 re-run it (for example after fixing a failed gate, or to refresh the body):
 Actions → Myrmidon release publish → Run workflow → the tag name in the `tag`
 input — the input wins over the branch you dispatch from, so running from
 `main` publishes the typed tag; the publish is idempotent — an existing
 Release is updated, not duplicated.
+
+## Release mode (merge freeze)
+
+Between the release cut and a green CI on the tag, `main` is frozen: merges
+(bots included) wait. The reason is the 1.6.4 incident (04.10): one minute
+after the tag, bots merged #475 plus three more PRs, the tag commit's CI run
+was cancelled as superseded, the autopublish refused, and the release had to
+be published by hand.
+
+**How it works.** The **Myrmidon release publish** workflow (started by the
+`myr-vX.Y.Z` tag push) opens an issue titled `release-freeze: <tag>`; the
+issue being open IS the freeze. The **Release freeze gate** check (workflow
+[myrmidon-release-freeze.yml](https://github.com/itkadr-git/myrmidon/blob/main/.github/workflows/myrmidon-release-freeze.yml))
+fails on every PR into `main` while the freeze is active. As soon as
+`Myrmidon CI` is green on the tag, the same tag workflow closes the issue —
+freeze cleared. The state is derived from GitHub (newest tag + its CI + the
+open freeze issue); there is no file flag in the repo. The logic lives in
+[release-freeze.sh](https://github.com/itkadr-git/myrmidon/blob/main/scripts/myrmidon/release/release-freeze.sh).
+
+**Gate behaviour.**
+
+- Fails (red check) while the newest tag's CI is not green or the freeze
+  issue of that tag is open.
+- A green tag CI clears the freeze immediately, even before the issue-closing
+  step has run (no lag window).
+- A FAILED tag CI is not a merge freeze but a broken release: the merge gate
+  passes, and the release gate refuses the publish.
+- If the repo state cannot be read (no token, API down) the gate fails
+  closed.
+
+**To make the freeze binding,** the operator adds the `freeze` check of the
+**Release freeze gate** workflow to the required status checks of `main`
+(Settings → Branches). Without that it is advisory: red, but an admin can
+still merge.
+
+**Manual control.** The freeze is the issue: manual release = close the
+`release-freeze: <tag>` issue (the gate stays red until the tag CI is green
+anyway); manual freeze = open an issue with that title. Both actions are
+documented in the issue body; the automation never overwrites them.

@@ -15,7 +15,7 @@
 //   - warnings are reported when they change, not on every tick.
 
 import { isBotBoardGatewayEnabled } from "./board-gateway.js";
-import type { BotLspSettings, ParallelHelpersSettings } from "@paperclipai/shared";
+import type { BotLspSettings, ParallelHelpersSettings, ScopeLayout } from "@paperclipai/shared";
 import {
   assertBotEgressSettings,
   BOT_EGRESS_MODE_ENV,
@@ -42,8 +42,10 @@ import {
   type BotProfileSettings,
 } from "./profile-input.js";
 import type { BotContainerActivitySink } from "./reconciler.js";
+// myrmidon(PERF-DIET-G): the cache one sweep shares between the bots it compiles.
+import { beginBotProfilePass, type BotProfilePass } from "./profile-pass.js";
 import { cardFleetHost } from "./fleetd-hosts.js"; // myrmidon(1.6.1-BOT-DISK-B)
-import { packageCacheEnv } from "./template.js"; // myrmidon(1.6.1-BOT-DISK-B)
+import { BOT_SCOPE_GIT_OBJECTS_DIR, BOT_SCOPE_STORE_DIR, packageCacheEnv, pnpmEnv } from "./template.js"; // myrmidon(1.6.1-BOT-DISK-B, BOT-DISK-F, 1.6.5-BOT-DISK-G)
 import type { CompiledProfile } from "./types.js";
 import type { RegulationDelivery } from "../wiki-cortex/delivery.js"; // myrmidon(1.6-WIKI)
 
@@ -103,7 +105,14 @@ export type BotMcpServersResult = BotMcpSource[] | { servers: BotMcpSource[]; wa
 
 /** Everything compile needs from the board. Implemented over the database in
  *  profile-ports.ts; faked in tests. Every method is read-or-get-or-create: none
- *  may produce a different value for the same bot on a second call. */
+ *  may produce a different value for the same bot on a second call.
+ *
+ *  myrmidon(PERF-DIET-G): the instance-scoped methods below (instanceDefaults,
+ *  parallelHelpers, botLsp, pnpmSettings, sharedPackageCachePath,
+ *  cloneIdleTtlSec, and the company-scoped part of loadSkills) are read once per
+ *  pass when compile is given one, so a port must keep answering the same value
+ *  inside a single pass — and must read live again on the next one: the pass is
+ *  the invalidation, there is no TTL. */
 export interface BotProfilePorts {
   /** The agent as stored right now (compile never trusts a copy from an earlier tick). */
   loadAgent(agentId: string): Promise<BotProfileAgentRecord | null>;
@@ -116,9 +125,13 @@ export interface BotProfilePorts {
   ensureApiServerKey(agent: BotProfileAgentRecord): Promise<{ value: string; secretId: string }>;
   /** The bot's own board API key (PAPERCLIP_API_KEY): created once, company secret, then reused. */
   ensureAgentApiKey(agent: BotProfileAgentRecord): Promise<{ value: string; warnings?: string[] }>;
-  /** Company skills the card's desiredSkills name, as files, keyed by runtime name. */
+  /** Company skills the card's desiredSkills name, as files, keyed by runtime name.
+   *  myrmidon(PERF-DIET-G): `pass` shares the company-scoped reads behind this
+   *  (the lifecycle delivery, the runtime catalogue, the skill files) with the rest
+   *  of the sweep. A port that ignores it stays correct, only slower. */
   loadSkills(
     agent: BotProfileAgentRecord,
+    pass?: BotProfilePass,
   ): Promise<{ skills: Record<string, readonly HermesProfileSkillFile[]>; warnings: string[] }>;
   /** The instructions bundle's files (every text file except its entry file), for /workspace.
    *  The instructions themselves are not compiled into the profile: they travel in the run request. */
@@ -150,12 +163,22 @@ export interface BotProfilePorts {
    */
   sharedPackageCachePath?(role?: string): Promise<string | undefined>;
   /**
-   * myrmidon(1.6.2-BOT-DISK-C): where the pnpm store of a bot with the shared
-   * cache lives (`general.botDisk.pnpmStore`, default "workspace": on the same
-   * mount as the clones, so pnpm hard-links instead of copying; see
-   * template.ts packageCacheEnv). Read per tick. Optional: absent = "workspace".
+   * myrmidon(BOT-DISK-D): where the pnpm store of a bot with the shared cache
+   * lives and how pnpm imports (`general.botDisk.pnpmStoreDir` and
+   * `pnpmImportMethod`; defaults: a store inside the bot's single mount and
+   * `hardlink`, see template.ts packageCacheEnv). Read per tick. Optional:
+   * absent = the defaults.
    */
-  pnpmStore?(): Promise<"workspace" | "shared">;
+  pnpmSettings?(): Promise<{ storeDir: string; importMethod: string }>;
+  /**
+   * myrmidon(BOT-DISK-F): the layout the board keeps this bot's container on (the
+   * applied isolation scope). A member of a shared scope instance gets the
+   * instance's own pnpm store (`/bot-scope/.pnpm-store`) whatever the instance
+   * `pnpmStoreDir` says, with or without the shared package cache, because a
+   * store anywhere else is outside the one mount its hard links need. Read per
+   * tick, with the driver's reader. Optional: absent = isolated.
+   */
+  scopeLayout?(agentId: string): Promise<ScopeLayout>;
   /**
    * myrmidon(1.6.2-BOT-DISK-C): the clone-lifecycle policy for a bot of `role`, in
    * seconds, written as `MYRMIDON_CLONE_IDLE_TTL_SEC` for the in-container reporter
@@ -186,6 +209,24 @@ export interface BotProfilePorts {
 export interface BotProfileCompileOptions {
   env?: NodeJS.ProcessEnv;
   onWarnings?: BotProfileWarningSink;
+}
+
+/**
+ * The compile function the reconciler calls, plus the pass pair one sweep uses.
+ *
+ * myrmidon(PERF-DIET-G): `pass` is optional and the signature is unchanged for
+ * every existing caller ("Apply now", a test) — without one, compile caches
+ * inside its own call only. `beginPass()`/`endPass()` belong to the sweep: hand
+ * the SAME object to every compile of a sweep and end it when the last bot is
+ * done, so the company- and instance-scoped reads are paid once per sweep and a
+ * settings or skill change still lands on the next one.
+ */
+export interface BotProfileCompile {
+  (agentId: string, botKey: string, pass?: BotProfilePass): Promise<CompiledProfile>;
+  /** A fresh, empty pass. */
+  beginPass(): BotProfilePass;
+  /** Drops what the pass collected: the next sweep reads live values again. */
+  endPass(pass: BotProfilePass): void;
 }
 
 /**
@@ -231,7 +272,7 @@ async function resolveStaticMcpServers(
 export function createBotProfileCompile(
   ports: BotProfilePorts,
   opts: BotProfileCompileOptions = {},
-): (agentId: string, botKey: string) => Promise<CompiledProfile> {
+): BotProfileCompile {
   const lastWarnings = new Map<string, string>();
 
   async function reportWarnings(agentId: string, botKey: string, warnings: string[]): Promise<void> {
@@ -246,7 +287,17 @@ export function createBotProfileCompile(
     }
   }
 
-  return async function compile(agentId: string, botKey: string): Promise<CompiledProfile> {
+  const compile = async function compile(
+    agentId: string,
+    botKey: string,
+    pass?: BotProfilePass,
+  ): Promise<CompiledProfile> {
+    // myrmidon(PERF-DIET-G): one read per pass. The sweep hands the same pass to
+    // every bot it reconciles; without one (a single "Apply now", a one-off call)
+    // the cache lives for this call only — still enough to stop compile reading
+    // the same instance settings twice for one bot.
+    const cache = pass ?? beginBotProfilePass();
+    const once = <T>(key: string, read: () => Promise<T>): Promise<T> => cache.once(key, read);
     const settings = readBotProfileSettings(opts.env);
     const boardGatewayEnabled = isBotBoardGatewayEnabled(opts.env);
     // Before any lookup or secret creation: an unconfigured instance fails here
@@ -278,7 +329,9 @@ export function createBotProfileCompile(
     const [cardEnv, skills, instructions, apiServerKey, paperclipApiKey, gatewayResult, instanceDefaults, parallelHelpersSettings, botLspSettings] =
       await Promise.all([
         ports.resolveCardEnv(agent),
-        ports.loadSkills(agent),
+        // myrmidon(PERF-DIET-G): the pass goes into the skills port too: its
+        // company-scoped catalogue reads are the same for every bot of a sweep.
+        ports.loadSkills(agent, cache),
         ports.loadInstructions(agent),
         ports.ensureApiServerKey(agent),
         ports.ensureAgentApiKey(agent),
@@ -286,12 +339,15 @@ export function createBotProfileCompile(
           ? // settings.boardUrl is non-null here: assertBotProfileSettings threw otherwise.
             ports.listMcpServers(agent, { boardUrl: settings.boardUrl as string, enabled: boardGatewayEnabled })
           : Promise.resolve([] as BotMcpSource[]),
-        ports.instanceDefaults ? ports.instanceDefaults() : Promise.resolve(undefined),
-        // myrmidon(PARALLEL-HELPERS): re-read per tick, like the other per-tick
-        // settings, so a ceiling change applies on the next reconcile.
-        ports.parallelHelpers ? ports.parallelHelpers() : Promise.resolve(undefined),
-        // myrmidon(BOT-LSP-DEFAULTS): re-read per tick, same reason.
-        ports.botLsp ? ports.botLsp() : Promise.resolve(undefined),
+        // myrmidon(PERF-DIET-G): instance-scoped, so one read per pass rather than
+        // one per bot; the next pass reads again, which is what makes a corrected
+        // variable (or a settings change) take effect on the next sweep.
+        ports.instanceDefaults ? once("instance-defaults", () => ports.instanceDefaults!()) : Promise.resolve(undefined),
+        // myrmidon(PARALLEL-HELPERS): same per-pass read, so a ceiling change
+        // applies on the next reconcile.
+        ports.parallelHelpers ? once("parallel-helpers", () => ports.parallelHelpers!()) : Promise.resolve(undefined),
+        // myrmidon(BOT-LSP-DEFAULTS): same, for the language-server policy.
+        ports.botLsp ? once("bot-lsp", () => ports.botLsp!()) : Promise.resolve(undefined),
       ]);
 
     // myrmidon(1.6.1-BOT-DISK-B): with a shared package cache, a bot on the
@@ -299,16 +355,43 @@ export function createBotProfileCompile(
     // that point pnpm, Go and Gradle at the mounts. A bot on a fleetd host has
     // no cache mounts (fleetd-driver.ts), so its tools keep their own defaults.
     // Instance values win over the card's, like the egress variables below.
-    const sharedPackageCachePath = ports.sharedPackageCachePath ? await ports.sharedPackageCachePath(agent.role) : undefined;
-    // myrmidon(1.6.2-BOT-DISK-C): the pnpm store mode decides whether the store
-    // shares the clones' mount (hard links) or the cache mount (reflink/copy).
-    const pnpmStore = sharedPackageCachePath && ports.pnpmStore ? await ports.pnpmStore() : "workspace";
+    // myrmidon(PERF-DIET-G): the cache outlives one bot only inside a pass; each
+    // reader keeps its own role-scoped key, because sharedPackageCachePath and
+    // cloneIdleTtlSec answer per role.
+    const sharedPackageCachePath = ports.sharedPackageCachePath
+      ? await once(`shared-package-cache:${agent.role ?? ""}`, () => ports.sharedPackageCachePath!(agent.role))
+      : undefined;
+    // myrmidon(BOT-DISK-D): the store directory and import method (hard links
+    // need the store inside the bot's single mount).
+    const pnpm = sharedPackageCachePath && ports.pnpmSettings
+      ? await once("pnpm-settings", () => ports.pnpmSettings!())
+      : undefined;
     const cacheEnv: Record<string, HermesProfileEnvEntry> =
       sharedPackageCachePath && cardFleetHost(agent.adapterConfig) === null
-        ? Object.fromEntries(Object.entries(packageCacheEnv(pnpmStore)).map(([name, value]) => [name, { value, secret: false }]))
+        ? Object.fromEntries(Object.entries(packageCacheEnv({ storeDir: pnpm?.storeDir, importMethod: pnpm?.importMethod })).map(([name, value]) => [name, { value, secret: false }]))
         : {};
+    if (ports.scopeLayout && cardFleetHost(agent.adapterConfig) === null) {
+      // myrmidon(BOT-DISK-F): the scope layout itself is per bot (its own applied
+      // isolation scope) and is NOT cached; the pnpm import method beside it is
+      // instance-scoped and comes from the pass.
+      const layout = await ports.scopeLayout(agent.id);
+      if (layout.kind === "shared") {
+        const method = ports.pnpmSettings ? (await once("pnpm-settings", () => ports.pnpmSettings!()))?.importMethod : undefined;
+        for (const [name, value] of Object.entries(pnpmEnv({ storeDir: BOT_SCOPE_STORE_DIR, importMethod: method }))) {
+          cacheEnv[name] = { value, secret: false };
+        }
+        // myrmidon(1.6.5 BOT-DISK-G): one git object store for the whole scope
+        // instance (template.ts BOT_SCOPE_GIT_OBJECTS_DIR). The wrapper's own
+        // default would be per-bot (inside this member's hermes home); the
+        // scope store is what makes a clone of bot A borrow bot B's objects —
+        // one mount, so the alternate resolves for every member.
+        cacheEnv.MYRMIDON_GIT_LOCAL_MIRROR = { value: BOT_SCOPE_GIT_OBJECTS_DIR, secret: false };
+      }
+    }
     const cloneTtlSec =
-      ports.cloneIdleTtlSec && cardFleetHost(agent.adapterConfig) === null ? await ports.cloneIdleTtlSec(agent.role) : undefined;
+      ports.cloneIdleTtlSec && cardFleetHost(agent.adapterConfig) === null
+        ? await once(`clone-idle-ttl:${agent.role ?? ""}`, () => ports.cloneIdleTtlSec!(agent.role))
+        : undefined;
     if (cloneTtlSec !== undefined) cacheEnv.MYRMIDON_CLONE_IDLE_TTL_SEC = { value: String(cloneTtlSec), secret: false };
     const cacheWarnings = Object.keys(cacheEnv)
       .filter((name) => cardEnv.env[name] !== undefined)
@@ -394,4 +477,12 @@ export function createBotProfileCompile(
     ]);
     return result.profile;
   };
+
+  // myrmidon(PERF-DIET-G): the pass pair for the sweep that drives many compiles
+  // in one tick (bot-containers/index.ts). Object.assign keeps the callable shape
+  // the reconciler already expects and adds the two methods beside it.
+  return Object.assign(compile, {
+    beginPass: (): BotProfilePass => beginBotProfilePass(),
+    endPass: (value: BotProfilePass): void => value.end(),
+  });
 }

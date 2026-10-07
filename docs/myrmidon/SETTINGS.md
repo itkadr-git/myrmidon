@@ -90,6 +90,7 @@ A track writes only into its own section. A row is added in the same PR as the s
 | `MYRMIDON_CHAT_CROSS_CHANNEL_TOTAL_CHARS` | X8d | `4000` | Total character limit on the quote block; the oldest lines are dropped first, the skipped counter is a `(k earlier messages not shown)` line | Non-numeric or negative — the default |
 | `MYRMIDON_CHAT_CROSS_CHANNEL_LOOKBACK_HOURS` | X8d | `168` (a week) | How old adjacent-conversation messages are still quoted | Non-numeric or negative — the default |
 | `MYRMIDON_CHAT_RECONCILE_INTERVAL_MS` | D1 | unset | Minimum interval between run-milestone sweep runs (`enqueueChatRunMilestones`); replaces the standard coalescing-trigger interval (100 ms) rather than adding to it. The publication sweep (delivering messages to the provider) is untouched — it keeps its usual pace | Unset, `0`, negative or non-numeric — today's pace (the fix of the D1 queries themselves is always on, this is not a defect switch). Set (e.g. `15000`) if after D1 the milestone sweep is still noticeable in load when chats are idle |
+| `MYRMIDON_CHAT_RECONCILE_FALLBACK_INTERVAL_MS` | 1.6.3 | `30000` | How often the full chat reconciliation pass (provider runtimes, deliveries, webhook recovery, Slack syncs) runs when no publication or milestone event wakes it; publication and milestone lanes are woken by commit events directly, and one full pass still runs at startup. Replaces the former once-per-second timer | Unset, `0`, negative or non-numeric — 30 seconds. Lower it if deliveries or provider recovery feel slow after the change |
 | `MYRMIDON_TELEGRAM_VOICE_STT` | 1.6.1 VOICE-STT B | off | Transcribe an inbound Telegram voice/audio message at intake: the bytes are prefetched (bounded, 20 MB, 45 s), recognized through the shared STT core (part A1) and the transcript is written into the task comment next to the kept attachment — the bot reads it as user input on the same wakeup. Speaker segments render as «Говорящий N [mm:ss]: …». An STT failure is a skip: the comment keeps the vendor body, the redacted `stt_skipped` code lands in the comment metadata, and the delivery is unaffected | Any value other than `1`/`true`/`yes`/`on` — the vendor path byte for byte: no byte prefetch, zero calls to the transcription core. Read per delivery, no restart. Until the STT core is wired (part A1 merged and connected), an enabled setting records `stt_unconfigured` skips |
 
 ## Track 5 — operations
@@ -132,6 +133,7 @@ A track writes only into its own section. A row is added in the same PR as the s
 | `MYRMIDON_BOT_IMAGE_ROLLOUT` | BOT-IMAGE-ROLLOUT | `1` (on) | The bot runtime images (hermes, hermes-dev, hermes-node) of the same release roll out with the board (deploy.sh step 9.5, `bot-image-rollout.sh`): digests resolved from the same release, pulled, added to dockergate's `images` (config re-read by SIGHUP), the fleet enrolled in `bots[]`, the bot cards switched one at a time (canary first, a running run is never interrupted — a deferred bot retries), the superseded images removed after the fleet moved, every switch journalled | `0` — the manual path (the deploy warns: that is the 03.10 split by choice) |
 | `MYRMIDON_BOT_IMAGE_ROLLOUT_CANARY` | BOT-IMAGE-ROLLOUT | unset | Agent id switched first, before the rest of the fleet (canary) | Unset — plain order |
 | `MYRMIDON_BOT_IMAGE_ROLLOUT_BOT_TIMEOUT_SEC` | BOT-IMAGE-ROLLOUT | `900` | How long one deferred bot is retried (it keeps its old image; the periodic sweep applies the release image later) | From 10 to 86400 |
+| `MYRMIDON_BOT_IMAGE_ROLLOUT_FORCE_DEFERRED_SEC` | BOT-IMAGE-ROLLOUT | same as `MYRMIDON_BOT_IMAGE_ROLLOUT_BOT_TIMEOUT_SEC` | How long after the tail-pass deadline the still-deferred bots are applied WITHOUT the status gate (the reconciler opens the maintenance window and drains the in-flight run to its end — a run is never interrupted). `0` disables the force stage | From 0 to 86400 |
 | `MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_CONFIG` | BOT-IMAGE-ROLLOUT | unset | Path of the dockergate `config.json` this rollout edits (`images[]`, `bots[]`): structural jq edits, verified by `dockergate check-config` when the command below is set | Unset — the rollout refuses (fail-closed): the images and enrollment are its job |
 | `MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_CHECK_CONFIG_COMMAND` | BOT-IMAGE-ROLLOUT | unset | Command run after each config edit with `MYR_BOT_CFG_FILE` naming the edited file, e.g. `docker exec dockergate /dockergate check-config --config "$MYR_BOT_CFG_FILE"` | Unset — a warning: the edits are not verified by the real binary |
 | `MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_SIGNAL_COMMAND` | BOT-IMAGE-ROLLOUT | unset | How dockergate is told to re-read its config (SIGHUP), e.g. `docker exec dockergate kill -HUP 1` | Unset — a warning: the file changed but dockergate keeps the old config until reloaded |
@@ -160,6 +162,7 @@ A track writes only into its own section. A row is added in the same PR as the s
 | `MYRMIDON_TRACING_DELIVERY_WINDOW_SEC` | TRACING-HEALTH | `900` (15 min) | The window those two counts cover, in seconds, and the value the delivery command receives | Unset or empty — the default. The value is passed to the delivery command as-is; no validation is performed |
 | `MYRMIDON_TRACING_LANGFUSE_IMAGE` | TRACING-HEALTH | unset | Image reference of the Langfuse server the bundle pins: it must carry a full `X.Y.Z` tag or a digest. A major or minor tag (for example `langfuse/langfuse:4`) moves under the deployment and is not a pin | Unset — the pin check is skipped. Set to a major/minor tag, `latest` or an untagged name — refused |
 | `MYRMIDON_TRACING_GATEWAY_IMAGE` | TRACING-HEALTH | unset | The same pin rule for the gateway (LiteLLM) image of the bundle: full `X.Y.Z` tag or digest | Unset — skipped; anything that is not a full version or a digest — refused |
+| `MYRMIDON_VENDOR_SHARE_THRESHOLD` | VENDOR-SHARE-METRIC | unset (0.5) | Forces the line-similarity threshold of the vendor-share script: a file is inherited when the share of matching lines against the vendor base commit is at or above it. The `--threshold` flag wins over this variable, which wins over the built-in 0.5; the printed report shows `thresholdSource` | A value outside 0..1 fails the run with a clear message instead of silently falling back. Unset — the built-in 0.5 and a `default` source in the report |
 
 ## Track 6 — security and models
 
@@ -378,8 +381,8 @@ domain typed in (bare domain); cookies+storage are cleaned on the node via CDP.
 |---|---|---|---|---|
 | `MYRMIDON_BROWSER_BRIDGE_PEPPER` | EXTCASE-B | не задана | Перец HMAC для pairing-кодов и bridge-токенов моста: в базе лежат только дайджесты, по ним проверяются предъявленный код (обмен на токен устройства) и токен при подключении расширения к `/bridge/v1` | Не задана — процесс берёт случайный перец на свой старт и пишет предупреждение: всё выданное до перезапуска перестаёт проверяться, устройства парируются заново (панель выдаёт новый код). Задаётся в окружении доски, значение — секрет, в репозитории и логах не хранится. Перец общий на инстанс, поэтому он не лежит в настройках, которые панель читает и правит |
 
+При включённом `MYRMIDON_BOT_CONTAINERS` W2a собирает профиль из карточки `hermes_gateway`, а после успешного прохода по боту прописывает в карточке `adapterConfig.apiBaseUrl` (`http://myrmidon-bot-<botKey>:8642`), `adapterConfig.apiKey` (ссылка на секрет компании `myrmidon-bot-<agentId>-api-server-key`, ключ шлюза бота, создаётся при первой сборке). Флага небезопасного http в карточке больше нет (H3, выпуск 1.1.2): адаптер шлюза Hermes сам доверяет именам контейнеров ботов (`myrmidon-bot-<botKey>`) для plain http — трафик не выходит из docker-сети ботов (`MYRMIDON_BOT_NETWORK`), это путь доски к своему же контейнеру, а сгенерированное системой имя не может быть занято произвольным хостом. Остаточный `dangerouslyAllowInsecureRemoteHttp: true` от прежней проводки сверка контейнеров удаляет с ближайшего прохода; все остальные удалённые хосты — по-прежнему HTTPS или dev-only escape hatch из сырого JSON конфига.Эти три поля в контейнерном режиме принадлежат системе: то, что в них введено руками, будет заменено. Адрес MCP-шлюза для профиля подменяется тем же `MYRMIDON_HERMES_RUNTIME_MCP_URL_BASE` и теми же полями карточки (`runtimeMcpUrlBase`, `runtimeMcpUrlRewrite`), что и у `hermes_local` (P4). Блок `adapterConfig.hindsight` (`bankId`, `tags`, `mission`, `recallBudget`, `memoryMode`, `autoRetain`) необязателен. Инструкции бота приходят в модель один раз, и только в запросе `/v1/runs`: адаптер (G4) отправляет файл-вход пакета инструкций агента, затем `adapterConfig.instructions` (или `payloadTemplate.instructions`, или стандартную строку адаптера) через разделитель `---`, ровно как для карточки вне контейнера. `workspace/AGENTS.md` профиль не пишет: Hermes проверяет `AGENTS.md`, `CLAUDE.md`, `.cursorrules` и `.hermes.md` сканером инъекций и при совпадении (например, в тексте есть команда `curl` с `$PAPERCLIP_API_KEY`) заменяет весь файл заглушкой, а поле `instructions` запроса он не сканирует. Остальные текстовые файлы пакета (`HEARTBEAT.md`, `SOUL.md`, папка `docs/`) кладутся в `workspace/` под теми же относительными путями, потому что файл-вход ссылается на них; файл под именем, которое Hermes загружает как контекст проекта (`AGENTS.md`, `CLAUDE.md`, `.cursorrules`, `.cursor/rules/*.mdc`, `.hermes.md`, в любом каталоге и любом регистре), пропускается с записью в журнал. Пределы пакета: не больше 50 файлов, файл не больше 256 КиБ, путь не длиннее 200 знаков; бинарный, слишком большой или лишний файл пропускается с записью в журнал, а не обрезается. Правка любого файла пакета перезаписывает файлы в контейнере без перезапуска. Переменные `env` карточки читаются так же, как при прогоне карточки на доске: имена, зарезервированные доской (`PAPERCLIP_API_KEY`, переменные моста GitHub и сетевого доступа раннера), и токены GitHub (`GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`, `PAPERCLIP_GIT_TOKEN`: прогон их отбрасывает при управляемых доской учётных данных GitHub, а контейнер бота режима «учётные данные хоста» не имеет) отбрасываются с предупреждением; секрет должен быть привязан к этому агенту на `env.<ИМЯ>` (иначе профиль не собирается); значение читается один раз и держится в памяти, повторно читается только при смене привязок или версии/статуса секрета, чтобы проход раз в минуту не писал в журнал доступа к секретам. Шлюз инструментов доски входит в профиль бота как MCP-сервер `paperclip-assigned`: у каждого бота свой шлюз и свой токен (см. `MYRMIDON_BOT_BOARD_GATEWAY`); подключения агента, которым нужна личность прогона (личный OAuth пользователя), в контейнер не попадают, а в журнале активности контейнеров об этом пишется предупреждение (один раз на изменение). Общие серверы из `MYRMIDON_BOT_MCP_SERVERS` работают независимо от шлюза. Ключ бота на доске (`myrmidon-bot-container`) заводится и хранится атомарно: токен в секрете должен принадлежать действующему ключу; если запись секрета не удалась, только что созданный ключ отзывается; лишние действующие ключи с тем же именем отзываются после успеха. Ключ выдаётся на ответственного пользователя: доска отвергает ключ агента без него (403 `RESPONSIBLE_USER_UNAVAILABLE` на каждый вызов). Пользователь берётся по тому же правилу, что у работы доски без действующего лица (рутины): пользователь по умолчанию компании (`defaultResponsibleUserId`), иначе её старейший действующий владелец; нет ни того ни другого — ключ не выдаётся и сборка профиля падает с ошибкой, контейнер не создаётся. Ключ без пользователя, выданный прежней версией драйвера, исправляется на месте на ближайшем проходе: пустое поле заполняется тем же правилом одним условным UPDATE (только действующий ключ `myrmidon-bot-container` и только пока поле пусто), токен и секрет не меняются, контейнер не перезапускается; уже заполненное поле (например, руками) не трогается. Если пользователя взять не из чего или обновление не удалось, в журнале активности контейнеров пишется предупреждение и проход повторяется на следующем тике.
 ## 1.4 — EXT-CASE-OCR (the OCR path: PDF -> text in the bot workspace)
-
 | Variable | Function | Default | What it does | How to disable / special |
 |---|---|---|---|---|
 | `MYRMIDON_OCR_BASE_URL` | EXT-CASE-OCR | unset (path closed) | Address of the company's OCR contour as the board sees it: the MCP address of RAGFlow or an OpenAI-compatible gateway address (LiteLLM). Together with `MYRMIDON_OCR_KEY_SECRET` it opens the path; without either of the two settings the bot gets a stable `ocr_disabled` refusal and not a single request goes out | Empty/unset — the path is closed. The address may end with `/v1` (then it is not duplicated) |
@@ -761,11 +764,50 @@ sources need a token. Findings are recorded `unverified` until the skill lifecyc
 them as candidates; `POST …/foraging/sweep` (board only) runs one pass by hand.
 
 
+## 1.6 — TG-NOTIFY-SETTINGS: what the board sends the owner in Telegram (part A, the settings core)
+
+The company-level telegramNotify settings of `server/src/myrmidon/telegram-notify/` (the
+TG-NOTIFY-SETTINGS epic, part A). This core only stores and serves the contract;
+the parts that actually send (digest, errors, inbound, escalations, proactivity)
+consume it. No environment variables: the settings are runtime-changeable per
+company through the API.
+
+- Storage: the `myrmidonTelegramNotifySettings` key of `instance_settings.general`, keyed by
+  companyId (no migration, the vendor settings service keeps the key across its writes).
+- API: `GET /api/myrmidon/telegram-notify` (company access) answers the full document —
+  every field of every section always present; `PATCH /api/myrmidon/telegram-notify`
+  (board only) applies a partial update, and every changed field is recorded in the
+  changelog (actor, field path, from/to values, 200 entries kept).
+- Defaults: every section OFF. With the defaults the owner receives only the replies to
+  their own messages and the U2 decision cards; nothing else is sent to Telegram until
+  a section is turned on.
+- Sections: `digest` (time "HH:MM", chatId, topicId, sections list), `errors`
+  (minSeverity warn|error|fatal, maxPerHour, chatId, topicId), `inbound`
+  (requireMention), `escalations` (hours, channel dm|topic|none, chatId, topicId),
+  `proactivity` (mode only_on_owner_request|rarely|normal, rarelyMaxPerDay). The
+  proactivity per-agent override lives in `agents.metadata` under the same `"mode"`
+  key (company level is the default for all agents).
+- Contract: `packages/shared/src/myrmidon-telegram-notify.ts` (types and zod
+  validators); the contract is fixed — later changes only add fields, names do not
+  change.
+
 ## 1.6 — PARALLEL-HELPERS (delegated helper agents)
 
 | Variable | Function | Default | What it does | How to disable / special |
 |---|---|---|---|---|
 | `MYRMIDON_BOT_HELPER_MODEL` | PARALLEL-HELPERS | unset (helpers inherit the parent agent's model) | Model that delegated helper children run on when neither the agent card nor the stored `parallelHelpers` instance settings name one. Read from the agent card's environment when the bot profile is built. A deployment value: no model name is baked into the product | Empty/unset — the child uses the parent agent's model (Hermes' own behavior for an unset `delegation.model`) |
+
+Instance settings (`instance_settings.general.parallelHelpers`, the "Parallel
+helpers" card in Instance → General, instance-admin only): `maxPerAgent` is the
+company ceiling agent cards are clamped to, `defaultMaxPerAgent` (default 2)
+is what a card inherits when it says nothing, `buildSlots`/`hostMemoryMb`
+feed the capacity hint. **There is no built-in upper limit on the ceiling
+(HELPERS-NO-CAP, 1.6.1): the number the owner saves is the limit.** A saved
+ceiling above 50 shows a host-load warning on the settings page ("values this
+high put a real load on the host — make sure this is intended, not a typo");
+it is never clamped or rejected. The module applies its own defaults
+(`maxPerAgent` unset → 10, `defaultMaxPerAgent` unset → 2) only while the row
+says nothing.
 
 ## 1.6.1 — TG-NOTIFY-SETTINGS part F: the board UI for the Telegram notification settings
 
@@ -1206,6 +1248,7 @@ What the last run's prompt was made of — which part dominates it and what to d
 on the agent card (Overview). The advice is computed on request from the recorded breakdown; a
 "Deep analysis" button files a task for a cheap-model optimizer agent, which drafts instruction
 edits as a comment on that task. Nothing is scheduled and nothing is changed automatically.
+Operator guide: [guides/prompt-budget-advice.md](guides/prompt-budget-advice.md).
 
 The static thresholds are code constants of
 `server/src/myrmidon/prompt-budget-advice/advice.ts`, not settings: a part is worth a recommendation
@@ -1221,3 +1264,11 @@ is configured or usable.
 | Field | Default | What it does | Bounds / special |
 |---|---|---|---|
 | `promptBudget.optimizerAgentId` | absent | Agent that receives the deep-analysis task filed by the "Deep analysis" button | A uuid of another agent of the same company; absent, blank or not a uuid answers the deep POST with 422. An additive field of the `promptBudget` area owned by the thresholds part (`instance_settings.general.promptBudget`); no environment variable |
+
+## 1.6.4 — AUTONOMY-DELETE: matrix enforcement tests and route mapping
+
+Unit tests for the `delete` action-class enforcement on agent-accessible DELETE routes
+(`server/src/routes/issues.autonomy.myrmidon.test.ts` — gate level, no DB: forbidden role gets
+403 `autonomy_forbidden` and the handler never runs; allowed and board calls pass), plus the
+route-to-guard mapping in `docs/myrmidon/guides/delete-route-mapping.md`. See the guide
+`docs/myrmidon/guides/autonomy-delete-enforcement.md` (+ `.ru.md`) for operator docs.

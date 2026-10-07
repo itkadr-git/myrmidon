@@ -7,6 +7,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { queryKeys } from "@/lib/queryKeys";
 import { InstanceGeneralSettings } from "./InstanceGeneralSettings";
 
+// myrmidon(BACKUP-KEEP-LAST): the shared type gains `keepLastOnly?: boolean`
+// from the server-side part A; until that lands, extend the response shape
+// locally in this test (additive contract).
+type TestBackupRetention = {
+  dailyDays: number;
+  weeklyWeeks: number;
+  monthlyMonths: number;
+  keepLastOnly?: boolean;
+};
+
 const mockAuthApi = vi.hoisted(() => ({ signOut: vi.fn() }));
 const mockHealthApi = vi.hoisted(() => ({ get: vi.fn() }));
 const mockInstanceSettingsApi = vi.hoisted(() => ({
@@ -267,5 +277,110 @@ describe("InstanceGeneralSettings operator-hidden sections", () => {
     expect(container.textContent).toContain("Deployment and auth");
     expect(container.textContent).toContain("Censor username in logs");
     expect(container.textContent).toContain("Backup retention");
+  });
+});
+
+describe("InstanceGeneralSettings backup retention keep-last-only", () => {
+  let container: HTMLDivElement;
+  let root: Root | null;
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = null;
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockInstanceSettingsApi.getGeneral.mockResolvedValue({
+      censorUsernameInLogs: false,
+      keyboardShortcuts: false,
+      feedbackDataSharingPreference: "not_allowed",
+      backupRetention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+    });
+    mockInstanceSettingsApi.updateGeneral.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    flushSync(() => root?.unmount());
+    queryClient.clear();
+    container.remove();
+    vi.clearAllMocks();
+  });
+
+  async function renderPage(backupRetention: TestBackupRetention) {
+    mockHealthApi.get.mockResolvedValue(SELF_HOSTED_HEALTH);
+    queryClient.setQueryData(queryKeys.health, SELF_HOSTED_HEALTH);
+    mockInstanceSettingsApi.getGeneral.mockResolvedValue({
+      censorUsernameInLogs: false,
+      keyboardShortcuts: false,
+      feedbackDataSharingPreference: "not_allowed",
+      backupRetention,
+    });
+    root = createRoot(container);
+    flushSync(() => {
+      root?.render(
+        <QueryClientProvider client={queryClient}>
+          <InstanceGeneralSettings />
+        </QueryClientProvider>,
+      );
+    });
+    await vi.waitFor(() => expect(container.textContent).toContain("Backup retention"));
+  }
+
+  function findButton(text: string) {
+    return Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === text,
+    );
+  }
+
+  it("renders the active keep-last-only mode from the settings response", async () => {
+    await renderPage({ dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1, keepLastOnly: true });
+
+    const modeButton = findButton("Keep only the latest backup");
+    expect(modeButton).toBeDefined();
+    expect(modeButton?.className).toContain("border-foreground");
+    expect(container.textContent).toContain(
+      "The daily, weekly and monthly presets are ignored while this mode is on.",
+    );
+    expect(container.textContent).toContain("the older backups stay in place");
+  });
+
+  it("sends keepLastOnly: true when the mode is enabled", async () => {
+    await renderPage({ dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 });
+
+    const modeButton = findButton("Keep only the latest backup");
+    flushSync(() => modeButton?.click());
+
+    await vi.waitFor(() => expect(mockInstanceSettingsApi.updateGeneral).toHaveBeenCalledOnce());
+    expect(mockInstanceSettingsApi.updateGeneral).toHaveBeenCalledWith(
+      {
+        backupRetention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1, keepLastOnly: true },
+      },
+      expect.anything(),
+    );
+  });
+
+  it("shows the safety note about a broken new dump even while the mode is off", async () => {
+    await renderPage({ dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 });
+
+    expect(container.textContent).toContain("the older backups stay in place");
+    expect(container.textContent).not.toContain(
+      "The daily, weekly and monthly presets are ignored while this mode is on.",
+    );
+  });
+
+  it("sends keepLastOnly: false when a preset is picked while the mode is on", async () => {
+    await renderPage({ dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1, keepLastOnly: true });
+
+    const presetButton = findButton("3 days");
+    expect(presetButton).toBeDefined();
+    flushSync(() => presetButton?.click());
+
+    await vi.waitFor(() => expect(mockInstanceSettingsApi.updateGeneral).toHaveBeenCalledOnce());
+    expect(mockInstanceSettingsApi.updateGeneral).toHaveBeenCalledWith(
+      {
+        backupRetention: { dailyDays: 3, weeklyWeeks: 4, monthlyMonths: 1, keepLastOnly: false },
+      },
+      expect.anything(),
+    );
   });
 });

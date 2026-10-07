@@ -23,7 +23,14 @@ import {
   collectMetricsSnapshot,
   METRICS_CONTENT_TYPE,
   renderMetricsText,
+  runMetricsSelfCheck,
+  type MetricsCollectorDeps,
+  type MetricsSelfCheck,
 } from "./metrics.js";
+import {
+  startProcessMetricsObservation,
+  type ProcessMetricsSource,
+} from "./process-metrics.js";
 
 /** Settings env: the NAME of the company secret holding the scraper token. */
 export const METRICS_TOKEN_SECRET_ENV = "MYRMIDON_METRICS_TOKEN_SECRET";
@@ -50,6 +57,13 @@ export interface MetricsRoutesDeps {
   listSecretRowsByName?: ListSecretRowsByName;
   /** Secret value seam; the real wiring resolves through the secret service. */
   readSecretValue?: ReadSecretValue;
+  /** Self-check seam; the real wiring runs the collector against `db`. */
+  runSelfCheck?: (deps: MetricsCollectorDeps) => Promise<MetricsSelfCheck>;
+  /**
+   * myrmidon(1.6.5-PROCS-Q3): the process-metrics seam (event loop delay,
+   * memory, live events). Absent → the production in-process source.
+   */
+  processMetrics?: ProcessMetricsSource | null;
 }
 
 /**
@@ -116,34 +130,85 @@ export function myrmidonMetricsRoutes(deps: MetricsRoutesDeps) {
     });
   const defaultErrorWindowSec = clampErrorWindowSec(env[METRICS_ERROR_WINDOW_ENV]);
   const defaultLatencyWindowSec = clampLatencyWindowSec(env[METRICS_LATENCY_WINDOW_ENV]);
+  const runSelfCheck: (deps: MetricsCollectorDeps) => Promise<MetricsSelfCheck> =
+    deps.runSelfCheck ?? runMetricsSelfCheck;
 
-  router.get("/metrics", async (req: Request, res: Response) => {
-    // The guard runs before any collection: a scraper without the token
+  // myrmidon(1.6.5-PROCS-Q3): the process observers (delay histogram +
+  // live-event subscribers) start lazily on the FIRST authorized scrape and
+  // never cost anything before that — an unconfigured endpoint stays exactly
+  // as cheap as before. Injected fakes (tests) skip the start.
+  let processObservationStarted = false;
+  function ensureProcessObservation(): void {
+    if (deps.processMetrics || processObservationStarted) return;
+    processObservationStarted = true;
+    startProcessMetricsObservation();
+  }
+
+  /** Resolves the bearer guard for this router; false answers 401. */
+  async function authorized(req: Request, res: Response): Promise<boolean> {
+    // The guard runs before any collection: a caller without the token
     // learns nothing about the board (not even which families exist).
     const token = await resolveMetricsToken({ env, listSecretRowsByName, readSecretValue });
     if (!token) {
       res.status(401).send("metrics token is not configured");
-      return;
+      return false;
     }
     const header = req.headers.authorization ?? "";
     if (!header.startsWith("Bearer ")) {
       res.status(401).send("bearer token required");
-      return;
+      return false;
     }
     const provided = header.slice("Bearer ".length).trim();
     if (!provided || !tokenMatches(token, provided)) {
       res.status(401).send("invalid bearer token");
-      return;
+      return false;
     }
+    return true;
+  }
 
+  router.get("/metrics", async (req: Request, res: Response) => {
+    if (!(await authorized(req, res))) return;
+
+    ensureProcessObservation();
     const query = req.query as Record<string, unknown>;
     const snapshot = await collectMetricsSnapshot({
       db: deps.db,
       now: deps.now,
       errorWindowSec: clampErrorWindowSec(query.window ?? defaultErrorWindowSec),
       latencyWindowSec: clampLatencyWindowSec(query.latency_window ?? defaultLatencyWindowSec),
+      ...(deps.processMetrics !== undefined ? { processMetrics: deps.processMetrics } : {}),
     });
     res.status(200).set("Content-Type", METRICS_CONTENT_TYPE).send(renderMetricsText(snapshot));
+  });
+
+  // Self-check link (myrmidon 1.6.6 annex): the probe answers under the
+  // canonical /api path but rides this same router — no second app.ts
+  // mount, no new credentials. It carries only aggregate numbers (which
+  // families worked, how long the scrape took): no secret and no metric
+  // value ever leaves it.
+  router.get("/api/myrmidon/monitoring/selfcheck", async (req: Request, res: Response) => {
+    if (!(await authorized(req, res))) return;
+
+    const query = req.query as Record<string, unknown>;
+    try {
+      const result = await runSelfCheck({
+        db: deps.db,
+        now: deps.now,
+        errorWindowSec: clampErrorWindowSec(query.window ?? defaultErrorWindowSec),
+        latencyWindowSec: clampLatencyWindowSec(query.latency_window ?? defaultLatencyWindowSec),
+        ...(deps.processMetrics !== undefined ? { processMetrics: deps.processMetrics } : {}),
+      });
+      res.status(result.ok ? 200 : 503).json(result);
+    } catch {
+      // A probe that itself throws still answers with a shape, never a stack.
+      res.status(500).json({
+        ok: false,
+        families_ok: 0,
+        families_failed: ["selfcheck_crash"],
+        scrape_ms: 0,
+        checked_at: deps.now().toISOString(),
+      });
+    }
   });
 
   return router;

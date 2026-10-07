@@ -112,7 +112,18 @@ export async function getConversationOwnershipBlocker(db: Db, companyId: string,
       and (${environmentLeases.releasedAt} is null
         or ${environmentLeases.status} = 'pending_cleanup'
         or ${environmentLeases.cleanupStatus} = 'failed'))`;
-  const candidates = await db.select({ run: heartbeatRuns, activeLease }).from(heartbeatRuns)
+  // myrmidon(RUN-SNAPSHOT-DEDUP): read only the columns this probe needs.
+  // The previous `select { run: heartbeatRuns }` loaded the whole row — the
+  // snapshot and the result JSON included — for every candidate run, several
+  // times per dispatched run; nothing below reads another column.
+  const candidates = await db.select({
+    runId: heartbeatRuns.id,
+    agentId: heartbeatRuns.agentId,
+    processPid: heartbeatRuns.processPid,
+    processGroupId: heartbeatRuns.processGroupId,
+    processStartedAt: heartbeatRuns.processStartedAt,
+    activeLease,
+  }).from(heartbeatRuns)
     .where(and(
       eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.runtimeMode, "legacy"),
       conversationRunPredicate(),
@@ -120,19 +131,19 @@ export async function getConversationOwnershipBlocker(db: Db, companyId: string,
       inArray(heartbeatRuns.status, ["failed", "timed_out", "interrupted", "cancelled"]),
       or(isNotNull(heartbeatRuns.processPid), isNotNull(heartbeatRuns.processGroupId), activeLease),
     )).orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id));
-  for (const { run, activeLease: leaseHeld } of candidates) {
-    let pidAlive = run.processPid !== null && processMayBeAlive(run.processPid);
-    if (pidAlive && run.processStartedAt) {
+  for (const { runId, agentId, processPid, processGroupId, processStartedAt, activeLease: leaseHeld } of candidates) {
+    let pidAlive = processPid !== null && processMayBeAlive(processPid);
+    if (pidAlive && processStartedAt) {
       // A recycled PID cannot keep an old task blocked. An unreadable identity
       // stays conservative; the original process may still own execution.
-      const observed = await readProcessStartedAt(run.processPid!).catch(() => null);
-      if (observed && new Date(observed).getTime() !== run.processStartedAt.getTime()) pidAlive = false;
+      const observed = await readProcessStartedAt(processPid!).catch(() => null);
+      if (observed && new Date(observed).getTime() !== processStartedAt.getTime()) pidAlive = false;
     }
-    const groupAlive = run.processGroupId !== null && processMayBeAlive(-run.processGroupId);
+    const groupAlive = processGroupId !== null && processMayBeAlive(-processGroupId);
     if (pidAlive || groupAlive || leaseHeld) {
       return {
-        runId: run.id,
-        agentId: run.agentId,
+        runId,
+        agentId,
         cause: "execution_owner_active",
         nextAction: pidAlive || groupAlive
           ? "The previous provider process is still running. Stop it before continuing this task."

@@ -101,9 +101,7 @@ describe("myrmidon(BOT-TUNING-C) compiled-config contract with the compiler part
     const compiled = compileHermesProfile(contractInput());
     const config = compiled.files.find((f) => f.path === "hermes/config.yaml")!.content;
     expect(config).not.toContain('reasoning_effort: "medium"');
-    if (config.includes("reasoning_effort")) {
-      expect(config).toContain(`reasoning_effort: "${resolved.value}"`);
-    }
+    expect(config).toContain(`reasoning_effort: "${resolved.value}"`);
   });
 
   it("a declared effort inside the model list compiles unchanged", () => {

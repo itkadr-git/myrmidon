@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -95,8 +95,23 @@ case "$*" in
   *companies/*/issues*)
     # The post-deploy fleet check: no blocked issues in the deploy window.
     echo '{"issues": []}'; exit 0 ;;
-  *companies/*/agents*)
+  *companies/*/agent-configurations*)
+    # The card config of every agent, adapterConfig (container block) included.
     cat "$SANDBOX/agents.json"; exit 0 ;;
+  *companies/*/agents*)
+    # The narrow company agents list: no adapterConfig (myrmidon(PERF-DIET-G)).
+    # The rollout must not read the container block from here.
+    # A test may override an agent's status mid-run: $SANDBOX/status-<id>
+    # holds the status to report from the next call on (the busy->idle flip).
+    tmp="$SANDBOX/agents.status.json"
+    cp "$SANDBOX/agents.json" "$tmp"
+    for f in "$SANDBOX"/status-*; do
+      [ -e "$f" ] || continue
+      sid="\${f##*/status-}"
+      sval="$(cat "$f")"
+      jq --arg id "$sid" --arg s "$sval" 'map(if .id == $id then .status = $s else . end)' "$tmp" > "$tmp.new" && mv "$tmp.new" "$tmp"
+    done
+    jq '[.[] | {id, adapterType, status}]' "$tmp"; exit 0 ;;
   *api/agents/*)
     case " $* " in
       *" -X PATCH "*)
@@ -160,6 +175,15 @@ echo "systemctl $*" >> "$SANDBOX/calls.log"
 exit 0
 `;
 
+// dockergate as the signal command sees it: after a SIGHUP it logs the hash of
+// the config it loaded (the rollout verifies that line); its log is what
+// DOCKERGATE_LOGS_COMMAND prints.
+const FAKE_DG_SIM = `#!/usr/bin/env bash
+echo hup >> "$SANDBOX/sighup.log"
+h="$(sha256sum "$SANDBOX/dockergate.config.json" | cut -c1-12)"
+echo '{"event":"config_reloaded","version":"1.4.0+0123456789ab","configHash":"'"$h"'"}' >> "$SANDBOX/dg.log"
+`;
+
 function labels() {
   return {
     "org.opencontainers.image.revision": COMMIT,
@@ -204,6 +228,8 @@ function sandbox({
   fs.writeFileSync(path.join(bin, "ssh"), FAKE_SSH, { mode: 0o755 });
   fs.writeFileSync(path.join(bin, "scp"), FAKE_SCP, { mode: 0o755 });
   fs.writeFileSync(path.join(bin, "systemctl"), FAKE_SYSTEMCTL, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, "dg-sim"), FAKE_DG_SIM, { mode: 0o755 });
+  fs.writeFileSync(path.join(dir, "dg.log"), "");
   fs.writeFileSync(path.join(dir, "calls.log"), "");
   if (sshFails) fs.writeFileSync(path.join(dir, "ssh-fails"), "");
   if (applyFails) fs.writeFileSync(path.join(dir, "apply-fails"), "");
@@ -233,9 +259,9 @@ function sandbox({
     JSON.stringify(
       agents.map((a) => ({
         id: a.id,
-        adapterType: "hermes_gateway",
+        adapterType: a.adapterType ?? "hermes_gateway",
         status: a.status ?? "idle",
-        adapterConfig: {
+        adapterConfig: a.adapterConfig ?? {
           container: {
             enabled: true,
             image: a.image,
@@ -292,6 +318,11 @@ function sandbox({
   const tokenFile = path.join(dir, "board.key");
   fs.writeFileSync(tokenFile, `pcp_${"0".repeat(24)}\n`);
 
+  // The board's own environment for the throwaway board container of
+  // PREDEPLOY-DB-CHECK (the pre-window check runs before every window).
+  const predeployEnv = path.join(dir, "predeploy-board.env");
+  fs.writeFileSync(predeployEnv, "JWT_SECRET=test-secret\n");
+
   const config = path.join(dir, "deploy.env");
   fs.writeFileSync(
     config,
@@ -314,8 +345,13 @@ function sandbox({
       `BOARD_COMPANY_ID=${COMPANY}`,
       `MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_CONFIG=${dgConfig}`,
       `MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_CHECK_CONFIG_COMMAND='jq -e . "$MYR_BOT_CFG_FILE" >/dev/null'`,
-      `MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_SIGNAL_COMMAND='echo hup >> ${path.join(dir, "sighup.log")}'`,
+      "MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_SIGNAL_COMMAND=dg-sim",
+      "MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_RELOAD_TIMEOUT_SEC=2",
+      `DOCKERGATE_LOGS_COMMAND='cat "$SANDBOX/dg.log"'`,
       `MYRMIDON_BOT_IMAGE_ROLLOUT_BOT_TIMEOUT_SEC=3`,
+      // OPE-5098: the force stage is OFF in the default sandbox so the tests
+      // of the status gate stay deterministic; the force-stage test opts in.
+      `MYRMIDON_BOT_IMAGE_ROLLOUT_FORCE_DEFERRED_SEC=0`,
       "MYR_DOCKERGATE_HEALTH_URL=http://127.0.0.1:3100/dockergate/health",
       "MYR_FLEETD_HEALTH_URL=http://127.0.0.1:3100/fleetd/health",
       // The components are not part of this sandbox compose project; the
@@ -323,6 +359,11 @@ function sandbox({
       // the rollouts skip.
       "MYR_DOCKERGATE_HOST=skip",
       "MYR_FLEETD_HOST=skip",
+      // PREDEPLOY-DB-CHECK (the 05.10 incident): the pre-window check is ON by
+      // default and refuses without its inputs.
+      "MYRMIDON_PREDEPLOY_POSTGRES_IMAGE=postgres:16-alpine",
+      `MYRMIDON_PREDEPLOY_BOARD_ENV_FILE=${predeployEnv}`,
+      "MYRMIDON_PREDEPLOY_BOARD_PORT=13110",
       "",
     ].join("\n"),
   );
@@ -642,6 +683,89 @@ describe("bot-image-rollout.sh: tracking vs pinned cards, batches, paused or idl
     assert.ok(dockergateConfig(sb).images.includes(`${BOT}@${OLD_DEV}`));
   });
 
+  it("a busy bot does NOT hold its batch: it moves to the tail and the batch ends immediately", () => {
+    const sb = sandbox({
+      agents: [
+        { id: uuid(1), image: `${BOT}@${OLD_DEV}`, status: "running" },
+        { id: uuid(2), image: `${BOT}@${OLD_DEV}`, status: "idle" },
+      ],
+    });
+    const { code, out } = run(sb, "bot-image-rollout.sh", ARGS);
+    assert.equal(code, 0, out);
+    // The busy bot was deferred and never got a PATCH/apply (force stage is
+    // off in this sandbox): only the status GETs touched it.
+    assert.doesNotMatch(calls(sb), new RegExp(`-X PATCH.*agents/${uuid(1)}`));
+    assert.doesNotMatch(calls(sb), new RegExp(`agents/${uuid(1)}/bot-container/apply`));
+    // The free bot was switched immediately
+    assert.equal(cardImage(sb, uuid(2)), `${BOT}@${HERMES}`);
+    // The batch finished at once: one switched, the busy one in the tail.
+    assert.match(out, /batch 1\/1 done: 1 switched, 0 failed, 1 deferred/);
+    // The tail pass retried it until the deadline and left it on the old image.
+    assert.equal(cardImage(sb, uuid(1)), `${BOT}@${OLD_DEV}`);
+    assert.match(out, /tail pass: 1 deferred bot/);
+    assert.match(out, /tail pass done: 1 bot\(s\) still deferred/);
+    // The final report names the bot with the reason.
+    assert.match(out, /final: 1 bot\(s\) not on the release image/);
+    assert.match(out, new RegExp(`${uuid(1)}: agent status 'running'`));
+    // The summary lists the deferred bot with its reason.
+    const sum = summary(sb);
+    assert.equal(sum.deferred, 1);
+    assert.ok(Array.isArray(sum.deferredBots), "summary has deferredBots array");
+    assert.equal(sum.deferredBots[0].id, uuid(1));
+    assert.match(sum.deferredBots[0].reason, /status 'running'/);
+  });
+
+  it("a deferred bot switches in the tail pass once it frees up, in the same run", async () => {
+    const sb = sandbox({
+      agents: [
+        { id: uuid(1), image: `${BOT}@${OLD_DEV}`, status: "running" },
+        { id: uuid(2), image: `${BOT}@${OLD_DEV}`, status: "idle" },
+      ],
+    });
+    // Run the script in the background and flip the busy bot's status to idle
+    // while the tail pass polls: the SAME run switches it.
+    const bash = process.env.PATH.split(":").map((d) => path.join(d, "bash")).find((f) => fs.existsSync(f));
+    const child = spawn(bash, [path.join(HERE, "bot-image-rollout.sh"), "--config", sb.config, ...ARGS], {
+      env: { ...process.env, PATH: `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir },
+    });
+    let out = "";
+    child.stdout.on("data", (d) => (out += d));
+    child.stderr.on("data", (d) => (out += d));
+    // The batch phase takes a moment (image resolution, dockergate edit); flip
+    // the status a little after the start, inside the tail-pass window
+    // (MYRMIDON_BOT_IMAGE_ROLLOUT_BOT_TIMEOUT_SEC=3, POLL_INTERVAL_SEC=1).
+    setTimeout(() => {
+      fs.writeFileSync(path.join(sb.dir, `status-${uuid(1)}`), "idle\n");
+    }, 800);
+    const code = await new Promise((resolve) => child.on("close", resolve));
+    assert.equal(code, 0, out);
+    // The busy bot was switched by the tail pass of this run.
+    assert.equal(cardImage(sb, uuid(1)), `${BOT}@${HERMES}`);
+    assert.equal(cardImage(sb, uuid(2)), `${BOT}@${HERMES}`);
+    assert.match(out, /tail pass done: all deferred bots switched/);
+    const sum = summary(sb);
+    assert.equal(sum.switched, 2);
+    assert.equal(sum.deferred, 0);
+    assert.deepEqual(sum.deferredBots, []);
+  });
+
+  it("the force stage applies a still-deferred bot without the status gate", () => {
+    const sb = sandbox({
+      agents: [
+        { id: uuid(1), image: `${BOT}@${OLD_DEV}`, status: "running" },
+        { id: uuid(2), image: `${BOT}@${OLD_DEV}`, status: "idle" },
+      ],
+    });
+    fs.appendFileSync(sb.config, "MYRMIDON_BOT_IMAGE_ROLLOUT_FORCE_DEFERRED_SEC=2\n");
+    const { code, out } = run(sb, "bot-image-rollout.sh", ARGS);
+    assert.equal(code, 0, out);
+    // The force stage ran and applied the busy bot (PATCH + apply went through).
+    assert.match(out, /force stage: 1 deferred bot/);
+    assert.match(calls(sb), new RegExp(`-X PATCH.*agents/${uuid(1)}`));
+    assert.match(calls(sb), new RegExp(`agents/${uuid(1)}/bot-container/apply`));
+    assert.equal(cardImage(sb, uuid(1)), `${BOT}@${HERMES}`);
+  });
+
   it("the config phase edits dockergate's images[] and does not touch a card", () => {
     const sb = sandbox();
     const { code, out } = run(sb, "bot-image-rollout.sh", [...ARGS, "--phase", "config", "--no-reload"]);
@@ -649,5 +773,71 @@ describe("bot-image-rollout.sh: tracking vs pinned cards, batches, paused or idl
     assert.ok(dockergateConfig(sb).images.includes(`${BOT_DEV}@${HERMES_DEV}`));
     assert.doesNotMatch(calls(sb), /-X PATCH|bot-container\/apply/);
     assert.equal(sighups(sb), "", "no SIGHUP with --no-reload");
+  });
+});
+
+describe("bot-image-rollout.sh: every container bot is reported in a category (1.6.4-BOT-CONTAINER-CARD)", () => {
+  const ARGS = ["--resolution", "tag", "--ref", VERSION];
+  const uuid = (n) => `${String(n).padStart(8, "0")}-0000-4000-8000-000000000000`;
+  const summary = (sb) => JSON.parse(read(path.join(sb.stateDir, "bot-image-rollout-summary.json")));
+  const agentsFile = (sb) => JSON.parse(read(path.join(sb.dir, "agents.json")));
+  const pinnedImage = "ghcr.io/example/custom-bot@sha256:" + "7".repeat(64);
+
+  const fleet = () => [
+    { id: uuid(1), image: `${BOT_DEV}@${OLD_DEV}` }, // tracks the release
+    { id: uuid(2), image: pinnedImage }, // pinned
+    // the legacy shape: a container block with an image only
+    { id: uuid(3), adapterConfig: { container: { image: `${BOT}@${OLD_DEV}` } } },
+    // enabled, but a limit is missing
+    { id: uuid(4), adapterConfig: { container: { enabled: true, image: `${BOT}@${OLD_DEV}`, memoryMb: 1024, cpus: 1 } } },
+    // switched off on purpose
+    { id: uuid(5), adapterConfig: { container: { enabled: false, image: `${BOT}@${OLD_DEV}`, memoryMb: 1024, cpus: 1, pidsLimit: 64 } } },
+  ];
+
+  it("lists pinned and not applicable bots with their image or reason, and counts each category", () => {
+    const sb = sandbox({ agents: fleet() });
+    const { code, out } = run(sb, "bot-image-rollout.sh", ARGS);
+    assert.equal(code, 0, out);
+    assert.match(out, new RegExp(`bot ${uuid(2)} is pinned \\(image '${pinnedImage.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}'`));
+    assert.match(out, new RegExp(`bot ${uuid(3)}: not applicable \\(adapterConfig.container.enabled is not true\\)`));
+    assert.match(out, new RegExp(`bot ${uuid(4)}: not applicable \\(container.pidsLimit must be a positive integer\\)`));
+    assert.match(out, new RegExp(`bot ${uuid(5)}: not applicable \\(adapterConfig.container.enabled is not true\\)`));
+    assert.match(out, /cards: 1 tracking the release, 1 pinned .*, 3 not applicable/);
+    const sum = summary(sb);
+    assert.deepEqual([sum.tracking, sum.pinned, sum.notApplicable, sum.switched], [1, 1, 3, 1]);
+    assert.deepEqual(sum.pinnedBots, [{ id: uuid(2), image: pinnedImage }]);
+    assert.deepEqual(
+      sum.notApplicableBots.map((b) => b.id),
+      [uuid(3), uuid(4), uuid(5)],
+    );
+    // the skipped bots got neither PATCH nor apply
+    for (const n of [2, 3, 4, 5]) assert.doesNotMatch(calls(sb), new RegExp(`agents/${uuid(n)}`));
+    assert.match(journal(sb), new RegExp(`agent ${uuid(3)} not applicable`));
+  });
+
+  it("the card PATCH sends the whole container block, not the image alone", () => {
+    const sb = sandbox({ agents: [{ id: uuid(1), image: `${BOT}@${OLD_DEV}`, memoryMb: 1536, cpus: 2, pidsLimit: 256 }] });
+    const { code, out } = run(sb, "bot-image-rollout.sh", ARGS);
+    assert.equal(code, 0, out);
+    const patch = calls(sb).split("\n").find((l) => l.includes("-X PATCH"));
+    assert.ok(patch, "a PATCH was sent");
+    const data = JSON.parse(patch.slice(patch.indexOf("--data ") + 7, patch.lastIndexOf(" http")));
+    assert.deepEqual(data.adapterConfig.container, {
+      enabled: true,
+      image: `${BOT}@${HERMES}`,
+      memoryMb: 1536,
+      cpus: 2,
+      pidsLimit: 256,
+    });
+    assert.equal(agentsFile(sb)[0].adapterConfig.container.memoryMb, 1536);
+  });
+
+  it("--dry-run names every container bot with its category", () => {
+    const sb = sandbox({ agents: fleet() });
+    const { code, out } = run(sb, "bot-image-rollout.sh", [...ARGS, "--dry-run"]);
+    assert.equal(code, 0, out);
+    assert.match(out, new RegExp(`${uuid(1)}: tracks_release`));
+    assert.match(out, new RegExp(`${uuid(2)}: pinned`));
+    assert.match(out, new RegExp(`${uuid(3)}: not_applicable`));
   });
 });

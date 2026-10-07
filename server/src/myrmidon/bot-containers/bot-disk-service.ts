@@ -23,6 +23,7 @@ import {
   resolveBotDiskSettings,
   resolveBotDiskLayout,
   resolveSharedPackageCachePath,
+  resolveSharedBotRuntimePath,
   type BotDiskLayout,
   type BotDiskSettings,
   type BotDiskSettingsPatch,
@@ -34,6 +35,8 @@ import { sweepAllBotVolumes } from "./draft-lifecycle.js";
 import { refreshGitMirrors } from "./git-mirror.js"; // myrmidon(1.6.2-BOT-DISK-C)
 import { dropCloneSignalsExcept, ingestCloneReport, noteCloneReportSeen } from "./clone-hygiene.js";
 import { getBotContainerRuntime } from "./routes-wiring.js";
+import { botKeyForAgent, readBotContainerAgentConfig } from "./agent-config.js"; // myrmidon(1.6.4-BOT-CONTAINER-CARD)
+import { botKeyLock, type BotKeyLock } from "./bot-key-lock.js"; // myrmidon(1.6.5-DOCKERGATE-A2A3-STORM)
 
 export type BotDiskView = ResolvedBotDiskSettings;
 
@@ -175,6 +178,19 @@ export async function readSharedPackageCachePath(db: Db): Promise<string | undef
 }
 
 /**
+ * myrmidon(1.6.5-BOT-DISK-H11): the shared bot runtime root stored right now
+ * (undefined: every bot keeps its own `bin`, `lazy-packages` and `lsp`). The
+ * local bot driver (the read-only binds) reads it on every create, recreate and
+ * drift check, so a PATCH applies on the next pass without a restart; the
+ * operator's own rollout (populate the host directory, then remove the per-bot
+ * copies) is described in docs/myrmidon/bot-shared-runtime.md.
+ */
+export async function readSharedBotRuntimePath(db: Db): Promise<string | undefined> {
+  const settings = instanceSettingsService(db) as unknown as { getGeneral(): Promise<{ botDisk?: unknown }> };
+  return resolveSharedBotRuntimePath((await settings.getGeneral()).botDisk);
+}
+
+/**
  * myrmidon(1.6.2-BOT-DISK-C): the shared-cache layout stored right now (git
  * mirrors, pnpm store mode, with defaults). The local driver (the read-only
  * `/cache/git` bind), the profile compiler (the pnpm store variables) and the
@@ -228,9 +244,15 @@ export async function readBotCacheLayoutForBot(
  * calls. Async throughout, so a failed settings read rejects (the caller logs
  * it) instead of throwing inside the timer.
  *
- * myrmidon(1.6.2-BOT-DISK-C): the same tick refreshes the git mirrors (each at
- * most once per `gitMirrorRefreshMs`, one refresh at a time) and the sweep
- * judges git clones by the bots' own hygiene reports (draft-lifecycle.ts).
+ * myrmidon(1.6.2-BOT-DISK-C): the same tick refreshed the git mirrors (each at
+ * most once per `gitMirrorRefreshMs`, one refresh at a time) and judged git
+ * clones by the bots' own hygiene reports (draft-lifecycle.ts).
+ *
+ * myrmidon(1.6.5-DOCKERGATE-A2A3-STORM): the report COLLECTION moved off this
+ * tick onto its own timer (`startCloneReportCollection`): the maintenance tick
+ * is 5 s by design (window transitions), and collecting 74 bots' reports on it
+ * meant ~30 dockergate requests per second — the A2/A3 storm. The lifecycle
+ * sweep itself (disk work on the host, no gate calls) stays on the tick.
  */
 export async function runBotDiskSweep(db: Db): Promise<void> {
   const settings = instanceSettingsService(db) as unknown as {
@@ -241,27 +263,165 @@ export async function runBotDiskSweep(db: Db): Promise<void> {
   void refreshGitMirrors(layout).catch((err) => logger.warn({ err }, "git mirror refresh failed"));
   const lifecycle = await resolveBotDiskLifecycleConfig({ getGeneral: async () => general });
   await sweepAllBotVolumes(lifecycle);
-  await collectCloneReports(lifecycle.idleTtlMs).catch((err) => logger.warn({ err }, "clone hygiene report collection failed"));
+}
+
+/**
+ * myrmidon(1.6.5-DOCKERGATE-A2A3-STORM): the clone-hygiene collector on its own
+ * interval (readCloneReportIntervalMs, default 300 s), each bot read under the
+ * process-wide per-bot lock so the pass and a reconcile never run side by side
+ * on one bot. Started by startBotContainers when the container runtime is on;
+ * a runtime that was never built (the flag is off) collects nothing — the
+ * reports live in containers this board does not manage. Returns the stop
+ * function; never throws.
+ */
+export function startCloneReportCollection(
+  db: Db,
+  opts: { intervalMs?: number; env?: NodeJS.ProcessEnv; lock?: BotKeyLock } = {},
+): () => void {
+  const env = opts.env ?? process.env;
+  const intervalMs = opts.intervalMs ?? readCloneReportIntervalMs(env);
+  const lock = opts.lock ?? botKeyLock;
+  let inFlight: Promise<void> | null = null;
+  const pass = (): Promise<void> => {
+    if (inFlight) return inFlight;
+    inFlight = (async () => {
+      const general = await instanceSettingsService(db).getGeneral();
+      const lifecycle = await resolveBotDiskLifecycleConfig({ getGeneral: async () => general });
+      await collectCloneReports(lifecycle.idleTtlMs, () => readContainerBotKeys(db), undefined, (botKey, fn) => lock.run(botKey, fn));
+    })()
+      .catch((err) => logger.warn({ err }, "clone hygiene report collection failed"))
+      .finally(() => {
+        inFlight = null;
+      });
+    return inFlight;
+  };
+  const timer = setInterval(() => void pass(), intervalMs);
+  timer.unref?.();
+  void pass();
+  return () => {
+    clearInterval(timer);
+  };
+}
+
+/**
+ * myrmidon(OPE-4789): how often `collectCloneReports` may poll the containers.
+ * It runs from the maintenance tick (default 5 s), and each poll is a per-bot
+ * inspect + archive read against dockergate — on a 74-bot fleet that alone was
+ * ~59 requests/s of the ~30/s storm of OPE-4752. The reports feed attention
+ * signals about unpushed work idle past the lifecycle TTL (default an hour);
+ * a 60 s cadence loses nothing an operator can notice, at 1/12 of the load.
+ * The collection runs at most once per this interval, whichever tick asks.
+ */
+export const CLONE_REPORT_COLLECT_INTERVAL_MS = 60_000;
+
+/**
+ * myrmidon(1.6.4-BOT-CONTAINER-CARD): the bots the board manages a container for,
+ * from the agent cards (an enabled, complete hermes_gateway container block).
+ * The container runtime is never listed: dockergate has no such call.
+ */
+export async function readContainerBotKeys(db: Db): Promise<string[]> {
+  const rows = await db
+    .select({ id: agents.id, adapterType: agents.adapterType, adapterConfig: agents.adapterConfig })
+    .from(agents)
+    .where(eq(agents.adapterType, "hermes_gateway"));
+  const keys: string[] = [];
+  for (const row of rows) {
+    if (!readBotContainerAgentConfig(row.adapterType, row.adapterConfig ?? {}).ok) continue;
+    const key = botKeyForAgent(row.id);
+    if (key) keys.push(key);
+  }
+  return keys;
+}
+
+// myrmidon(1.6.5-DOCKERGATE-A2A3-STORM): the clone-hygiene reports ride their
+// OWN timer, not the maintenance tick. Until here `runBotDiskSweep` ran on the
+// maintenance interval (MYRMIDON_MAINTENANCE_TICK_SEC, default 5 s) and each
+// pass asked for every bot (inspect + report read): 74 bots x 2 = ~30 gate
+// requests per second — 05.10's A2/A3 storm, which drained the gate's global
+// bucket and stalled fleet rollouts on 429. A report is valid for 24 h
+// (CLONE_HYGIENE_REPORT_MAX_AGE_MS) and the idle TTL it feeds is in hours: the
+// 5 s cadence bought nothing. The collector now runs at its own interval
+// (MYRMIDON_CLONE_REPORT_INTERVAL_SEC, default 300 s) and takes the per-bot
+// lock around each read, so a report read never interleaves a reconcile or a
+// rollout of the same bot.
+const CLONE_REPORT_INTERVAL_ENV = "MYRMIDON_CLONE_REPORT_INTERVAL_SEC";
+const DEFAULT_CLONE_REPORT_INTERVAL_SEC = 300;
+const MIN_CLONE_REPORT_INTERVAL_SEC = 60;
+const MAX_CLONE_REPORT_INTERVAL_SEC = 86_400;
+
+/** The collector period; an unset, non-integer or out-of-range value falls back
+ *  to the default (the same rule as the reconcile interval, startup.ts). */
+export function readCloneReportIntervalMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env[CLONE_REPORT_INTERVAL_ENV]?.trim();
+  if (!raw) return DEFAULT_CLONE_REPORT_INTERVAL_SEC * 1000;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < MIN_CLONE_REPORT_INTERVAL_SEC || value > MAX_CLONE_REPORT_INTERVAL_SEC) {
+    return DEFAULT_CLONE_REPORT_INTERVAL_SEC * 1000;
+  }
+  return value * 1000;
 }
 
 /**
  * myrmidon(1.6.2-BOT-DISK-C): read each running bot's clone-hygiene report from
  * its container (the board has no mount of the volumes) and turn unpushed work
  * idle past the TTL into attention signals. A bot without a report is skipped.
+ *
+ * myrmidon(1.6.4-BOT-CONTAINER-CARD): the bots come from the agent cards
+ * (`readBotKeys`) and each is asked by its own name (inspect, then the report
+ * read) — calls dockergate allows. The earlier container listing was refused
+ * (403 route_not_allowed) on every sweep, so no report was ever collected.
+ *
+ * myrmidon(OPE-4789): `minIntervalMs` throttles the collection — it rides the
+ * 5 s maintenance tick, and a per-bot poll at that pace was the A2/A3 storm
+ * (OPE-4752). Within the interval the call returns without touching the
+ * runtime (the in-memory signals simply stay as they are; a skipped pass drops
+ * nothing — a removed bot's signals age out on the next real pass). A driver
+ * with `listRunning` is asked for running bots only, so a stopped bot's
+ * inspect is not paid for a report it cannot serve.
+ *
+ * myrmidon(1.6.5-DOCKERGATE-A2A3-STORM): each bot is read under the same
+ * per-bot lock the reconcile sweep holds (`withBotKey`), so a collection pass
+ * and a rollout of one bot cannot interleave their gate calls (the task's
+ * mutual-exclusion requirement). Without the port (tests, a runtime with a
+ * custom lock) the reads run unlocked, as before.
  */
-export async function collectCloneReports(idleTtlMs: number): Promise<void> {
+let lastCloneReportCollectionAtMs: number | null = null;
+
+/** Test hook: lets a test run two collections back to back. */
+export function resetCloneReportCollectionClockForTests(): void {
+  lastCloneReportCollectionAtMs = null;
+}
+
+export async function collectCloneReports(
+  idleTtlMs: number,
+  readBotKeys: () => Promise<string[]>,
+  minIntervalMs?: number,
+  withBotKey?: (botKey: string, fn: () => Promise<void>) => Promise<void>,
+): Promise<void> {
+  if (minIntervalMs !== undefined && lastCloneReportCollectionAtMs !== null && Date.now() - lastCloneReportCollectionAtMs < minIntervalMs) {
+    return;
+  }
   const driver = getBotContainerRuntime()?.driver;
   if (!driver?.readCloneReport) return;
-  const bots = await driver.list();
+  const botKeys = await readBotKeys();
+  const bots = driver.listRunning ? await driver.listRunning(botKeys) : (await driver.list(botKeys)).filter((bot) => bot.state === "running");
+  lastCloneReportCollectionAtMs = Date.now();
   const live = new Set<string>();
   for (const bot of bots) {
-    if (bot.state !== "running") continue;
-    const raw = await driver.readCloneReport(bot.botKey);
-    if (raw === null) continue;
-    if (ingestCloneReport(bot.botKey, raw, idleTtlMs)) {
-      live.add(bot.botKey);
-      noteCloneReportSeen();
-    }
+    const read = async () => {
+      try {
+        const raw = await driver.readCloneReport!(bot.botKey);
+        if (raw === null) return;
+        if (ingestCloneReport(bot.botKey, raw, idleTtlMs)) {
+          live.add(bot.botKey);
+          noteCloneReportSeen();
+        }
+      } catch (err) {
+        logger.warn({ err, botKey: bot.botKey }, "clone hygiene report read failed");
+      }
+    };
+    if (withBotKey) await withBotKey(bot.botKey, read);
+    else await read();
   }
   dropCloneSignalsExcept(live);
 }

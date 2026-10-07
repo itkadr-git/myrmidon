@@ -17,7 +17,11 @@
 
 import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { agents, issues, type Db } from "@paperclipai/db";
-import { SWARM_CLAIM_QUEUE_ISSUE_STATUSES, type SwarmQueueCandidate } from "@paperclipai/shared";
+import {
+  SWARM_CLAIM_QUEUE_ISSUE_STATUSES,
+  SWARM_DEFAULT_UNASSIGNED_ROLE,
+  type SwarmQueueCandidate,
+} from "@paperclipai/shared";
 import { issueHasNoExecutionHold } from "../settled-holds/ready-predicate.js";
 
 /** One row of a role queue as the SQL reads it, before the claim join. */
@@ -32,10 +36,38 @@ export interface RoleQueueRow {
 }
 
 /**
- * The candidate rows of one role's queue. The status filter is the queue
+ * myrmidon(1.6.2 SWARM-UNASSIGNED-ROUTE): SQL twin of `swarmRoleForUnassignedTask`
+ * over the outer `issues` row — true when an unassigned task is queued for
+ * `role`: it carries the label `role:<role>`, or it carries no `role:` label
+ * and `role` is the default work role.
+ */
+export function unassignedTaskRoutedToRole(role: string) {
+  const wanted = `role:${role.trim().toLowerCase()}`;
+  const hasLabel = sql`exists (
+    select 1
+    from issue_labels il
+      join labels l on l.id = il.label_id
+    where il.issue_id = ${issues.id}
+      and regexp_replace(lower(btrim(l.name)), '^role:[[:space:]]*', 'role:') = ${wanted}
+  )`;
+  if (role.trim().toLowerCase() !== SWARM_DEFAULT_UNASSIGNED_ROLE) return hasLabel;
+  const hasAnyRoleLabel = sql`exists (
+    select 1
+    from issue_labels il
+      join labels l on l.id = il.label_id
+    where il.issue_id = ${issues.id}
+      and lower(btrim(l.name)) ~ '^role:[[:space:]]*[^[:space:]]'
+  )`;
+  return sql`(${hasLabel} or not ${hasAnyRoleLabel})`;
+}
+
+/**
+ * The candidate rows of one role's queue. With `agentId` the assigned part is
+ * that agent's own todo only (a task assigned to a peer is the peer's, not
+ * this agent's); the unassigned part is the tasks routed to the role. The status filter is the queue
  * statuses (`todo`); the readiness filters mirror `idlePickupCandidateRows`.
  */
-export function roleQueueRows(db: Db, companyId: string, role: string) {
+export function roleQueueRows(db: Db, companyId: string, role: string, agentId?: string) {
   return db
     .select({
       issueId: issues.id,
@@ -55,9 +87,13 @@ export function roleQueueRows(db: Db, companyId: string, role: string) {
         isNull(issues.hiddenAt),
         isNull(issues.conversationAgentId),
         inArray(issues.status, [...SWARM_CLAIM_QUEUE_ISSUE_STATUSES]),
-        // The task belongs to this role: assigned to an agent of the role, or
-        // unassigned and waiting for the role.
-        or(isNull(issues.assigneeAgentId), eq(agents.role, role)),
+        // The task belongs to this agent/role: assigned to the agent (or, with
+        // no agent given, to an agent of the role), or unassigned and routed
+        // to the role by its label (default: the engineer).
+        or(
+          agentId ? eq(issues.assigneeAgentId, agentId) : eq(agents.role, role),
+          and(isNull(issues.assigneeAgentId), unassignedTaskRoutedToRole(role)),
+        ),
         // Not blocked by an unresolved blocker (the same rule idle-pickup uses).
         sql`not exists (
           select 1
@@ -97,8 +133,9 @@ export async function listRoleQueue(
   db: Db,
   companyId: string,
   role: string,
+  agentId?: string,
 ): Promise<SwarmQueueCandidate[]> {
-  const rows = await roleQueueRows(db, companyId, role);
+  const rows = await roleQueueRows(db, companyId, role, agentId);
   return rows.map((row) => ({
     issueId: row.issueId,
     identifier: row.identifier,
