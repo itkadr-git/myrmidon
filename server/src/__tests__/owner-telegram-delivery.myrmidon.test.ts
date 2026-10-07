@@ -244,6 +244,7 @@ describeEmbeddedPostgres(
       const fixture = await seedFixture();
       const question = {
         kind: "ask_user_questions" as const,
+        resolverPolicy: "human_only" as const,
         continuationPolicy: "wake_assignee" as const,
         payload: {
           version: 1 as const,
@@ -297,6 +298,7 @@ describeEmbeddedPostgres(
         { id: fixture.workIssue.id, companyId: fixture.companyId },
         {
           kind: "request_confirmation" as const,
+          resolverPolicy: "human_only" as const,
           continuationPolicy: "wake_assignee" as const,
           payload: {
             version: 1 as const,
@@ -342,6 +344,7 @@ describeEmbeddedPostgres(
         { id: fixture.workIssue.id, companyId: fixture.companyId },
         {
           kind: "ask_user_questions" as const,
+          resolverPolicy: "human_only" as const,
           continuationPolicy: "wake_assignee" as const,
           payload: {
             version: 1 as const,
@@ -385,6 +388,7 @@ describeEmbeddedPostgres(
         { id: fixture.workIssue.id, companyId: fixture.companyId },
         {
           kind: "ask_user_questions" as const,
+          resolverPolicy: "human_only" as const,
           continuationPolicy: "wake_assignee" as const,
           payload: {
             version: 1 as const,
@@ -407,6 +411,94 @@ describeEmbeddedPostgres(
         interaction.id,
       );
       expect(publications).toEqual([]);
+    });
+
+    // myrmidon(U2): owner decision 03.10 - only cards a human must decide reach
+    // the owner's DM; agent-to-agent acceptance cards stay board-only.
+    function confirmationInput(extra: Record<string, unknown>) {
+      return {
+        kind: "request_confirmation" as const,
+        continuationPolicy: "wake_assignee" as const,
+        payload: {
+          version: 1 as const,
+          prompt: "Accept the hand-off?",
+          acceptLabel: "Accept",
+          rejectLabel: "Reject",
+        },
+        ...extra,
+      };
+    }
+
+    it("does not deliver a not_creator card without an addressee to the owner's DM", async () => {
+      const fixture = await seedFixture();
+      const interaction = await issueThreadInteractionService(db).create(
+        { id: fixture.workIssue.id, companyId: fixture.companyId },
+        confirmationInput({ resolverPolicy: "not_creator" }),
+        { agentId: fixture.agentId },
+      );
+      expect(
+        await publicationsForInteraction(fixture.companyId, interaction.id),
+      ).toEqual([]);
+    });
+
+    it("does not deliver a card addressed to an agent to the owner's DM", async () => {
+      const fixture = await seedFixture();
+      const addresseeId = randomUUID();
+      await db.insert(agents).values({
+        id: addresseeId,
+        companyId: fixture.companyId,
+        name: "Reviewer",
+        role: "engineer",
+        status: "idle",
+        adapterType: "paperclip_runner",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+      const interaction = await issueThreadInteractionService(db).create(
+        { id: fixture.workIssue.id, companyId: fixture.companyId },
+        confirmationInput({
+          resolverPolicy: "human_only",
+          addresseeAgentId: addresseeId,
+        }),
+        { agentId: fixture.agentId },
+      );
+      expect(
+        await publicationsForInteraction(fixture.companyId, interaction.id),
+      ).toEqual([]);
+    });
+
+    it("delivers a human_only card to the owner's DM", async () => {
+      const fixture = await seedFixture();
+      const interaction = await issueThreadInteractionService(db).create(
+        { id: fixture.workIssue.id, companyId: fixture.companyId },
+        confirmationInput({ resolverPolicy: "human_only" }),
+        { agentId: fixture.agentId },
+      );
+      const publications = await publicationsForInteraction(
+        fixture.companyId,
+        interaction.id,
+      );
+      expect(publications).toHaveLength(1);
+      expect(publications[0]!.endpointId).toBe(fixture.endpointId);
+    });
+
+    it("delivers a card addressed to a user to the owner's DM", async () => {
+      const fixture = await seedFixture();
+      const interaction = await issueThreadInteractionService(db).create(
+        { id: fixture.workIssue.id, companyId: fixture.companyId },
+        confirmationInput({
+          resolverPolicy: "not_creator",
+          addresseeUserId: fixture.boardUserId,
+        }),
+        { agentId: fixture.agentId },
+      );
+      const publications = await publicationsForInteraction(
+        fixture.companyId,
+        interaction.id,
+      );
+      expect(publications).toHaveLength(1);
+      expect(publications[0]!.endpointId).toBe(fixture.endpointId);
     });
   },
 );

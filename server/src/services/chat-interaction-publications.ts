@@ -298,7 +298,14 @@ export async function enqueueIssueInteractionChatPublications(
   // the card to the owner's standing Telegram DM conversation with the
   // authoring agent (the X8b bridge) instead of leaving it board-only. The
   // vendor's own bindings, when present, always win; this is additive.
-  if (bindings.length === 0) {
+  // Owner decision 03.10: the owner's DM only receives cards that a human is
+  // meant to decide (human_only policy or an explicit user addressee), never
+  // agent-to-agent acceptance cards (relays, hand-offs, PR acceptance).
+  const ownerShouldDecide =
+    !interaction.addresseeAgentId &&
+    (interaction.effectiveResolverPolicy === "human_only" ||
+      Boolean(interaction.addresseeUserId));
+  if (bindings.length === 0 && ownerShouldDecide) {
     bindings = await telegramOwnerDeliveryBindings(db, {
       companyId: interaction.companyId,
       issueId: interaction.issueId,
