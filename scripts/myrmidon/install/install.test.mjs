@@ -281,4 +281,106 @@ describe("install.sh", () => {
     assert.equal(missing.status, 1);
     assert.match(missing.stderr, /--version needs a value/);
   });
+
+  it("the default profile stands up one PostgreSQL 18 + pgvector with per-service databases and roles", () => {
+    const sb = sandbox();
+    const r = run(sb);
+    assert.equal(r.status, 0, r.stderr);
+    const env = envFile(sb);
+    assert.match(env, /MYRMIDON_DB_PROFILE=internal/);
+    // The shared server is the pgvector project's own build of PostgreSQL 18:
+    // no postgres:17 image survives in the generated stack.
+    assert.match(env, /MYRMIDON_DB_IMAGE=docker\.io\/pgvector\/pgvector:pg18/);
+    assert.match(env, /MYRMIDON_SHARED_SERVICES="litellm langfuse hindsight"/);
+    for (const svc of ["LITELLM", "LANGFUSE", "HINDSIGHT"]) {
+      assert.match(env, new RegExp(`MYRMIDON_${svc}_PASSWORD=[0-9a-f]{48}`), `a role password for ${svc}`);
+    }
+    // Sizing: defaults derived from the total, every value in the env file.
+    assert.match(env, /MYRMIDON_DB_TOTAL_MEMORY_MB=[0-9]+/);
+    assert.match(env, /MYRMIDON_DB_SHARED_BUFFERS=[0-9]+MB/);
+    assert.match(env, /MYRMIDON_DB_EFFECTIVE_CACHE_SIZE=[0-9]+MB/);
+    assert.match(env, /MYRMIDON_DB_MAINTENANCE_WORK_MEM=[0-9]+MB/);
+    assert.match(env, /MYRMIDON_DB_WORK_MEM=[0-9]+MB/);
+    assert.match(env, /MYRMIDON_DB_SHM_SIZE=[0-9]+m/);
+
+    const compose = fs.readFileSync(path.join(sb.opt, "compose.yml"), "utf8");
+    assert.ok(compose.includes("image: ${MYRMIDON_DB_IMAGE"), "the db image is taken from deploy.env");
+    assert.ok(compose.includes("shared_buffers=${MYRMIDON_DB_SHARED_BUFFERS"), "memory parameters are passed to the server");
+    assert.ok(compose.includes("./db-init:/docker-entrypoint-initdb.d:ro"), "the init script is mounted");
+    assert.ok(compose.includes("postgres://") && compose.includes("@db:5432/"), "the board's database lives on the shared server");
+
+    assert.doesNotMatch(compose, /image: postgres:/, "no literal postgres:17 image in the generated compose");
+
+    const init = fs.readFileSync(path.join(sb.opt, "db-init", "01-shared-roles.sh"), "utf8");
+    assert.equal(fs.statSync(path.join(sb.opt, "db-init", "01-shared-roles.sh")).mode & 0o755, 0o755);
+    assert.ok(init.includes('CREATE EXTENSION IF NOT EXISTS vector;"'), "pgvector is enabled in every database");
+    // The script loops over the services listed in deploy.env instead of
+    // baking passwords into a world-readable file: the role/database/owner
+    // statements stay templates, the names come from the env it is handed.
+    assert.ok(init.includes("CREATE ROLE ${svc} LOGIN"), "a login role per service");
+    assert.ok(init.includes("CREATE DATABASE ${svc} OWNER ${svc}"), "a private database per service");
+    assert.match(env, /MYRMIDON_SHARED_SERVICES="litellm langfuse hindsight"/, "the shared services list is persisted");
+    for (const svc of ["litellm", "langfuse", "hindsight"]) {
+      assert.match(env, new RegExp(`MYRMIDON_${svc.toUpperCase()}_PASSWORD=.+`), `a password for ${svc}`);
+    }
+    assert.ok(init.includes("ALTER SYSTEM SET shared_buffers"), "the sizing is persisted in the cluster");
+  });
+
+  it("the memory sizing is taken from the install environment and capped", () => {
+    const sb = sandbox();
+    const r = run(sb, [], { MYRMIDON_DB_TOTAL_MEMORY_MB: "8192" });
+    assert.equal(r.status, 0, r.stderr);
+    const env = envFile(sb);
+    assert.match(env, /MYRMIDON_DB_SHARED_BUFFERS=2048MB/);
+    assert.match(env, /MYRMIDON_DB_EFFECTIVE_CACHE_SIZE=6144MB/);
+    assert.match(env, /MYRMIDON_DB_MAINTENANCE_WORK_MEM=128MB/);
+
+    // A large host stays at the cap unless the operator raises it by hand.
+    const big = sandbox();
+    const rb = run(big, [], { MYRMIDON_DB_TOTAL_MEMORY_MB: "65536" });
+    assert.equal(rb.status, 0, rb.stderr);
+    assert.match(envFile(big), /MYRMIDON_DB_TOTAL_MEMORY_MB=16384/);
+    assert.match(envFile(big), /MYRMIDON_DB_SHARED_BUFFERS=4096MB/);
+  });
+
+  it("the external profile uses the operator's shared server and creates no db container", () => {
+    const url = "postgresql://boardrole:***@10.10.10.9:5432/paperclip";
+    const sb = sandbox();
+    const r = run(sb, ["--database-url", url]);
+    assert.equal(r.status, 0, r.stderr);
+    const env = envFile(sb);
+    assert.match(env, /MYRMIDON_DB_PROFILE=external/);
+    assert.match(env, /MYRMIDON_DATABASE_URL=postgresql:\/\/boardrole/);
+    assert.doesNotMatch(env, /MYRMIDON_LITELLM_PASSWORD/, "no role passwords are generated for someone else's server");
+
+    const compose = fs.readFileSync(path.join(sb.opt, "compose.yml"), "utf8");
+    assert.doesNotMatch(compose, /^  db:$/m, "the compose project grows no db service");
+    assert.doesNotMatch(compose, /pgdata:/, "no local database volume");
+    assert.ok(compose.includes("${MYRMIDON_DATABASE_URL:?"), "the board points at the external server");
+    assert.ok(!fs.existsSync(path.join(sb.opt, "db-init")), "no init script without a local server");
+
+    // A re-run without the flag keeps the profile: it is recorded in deploy.env.
+    const again = run(sb);
+    assert.equal(again.status, 0, again.stderr);
+    assert.match(envFile(sb), /MYRMIDON_DB_PROFILE=external/);
+    assert.doesNotMatch(fs.readFileSync(path.join(sb.opt, "compose.yml"), "utf8"), /^  db:$/m);
+  });
+
+  it("refuses an external database URL that is not a postgres connection string", () => {
+    const sb = sandbox();
+    const r = run(sb, ["--database-url", "http://db.internal/paperclip"]);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /postgres:/);
+  });
+
+  it("--help names the database profile options", () => {
+    const piped = spawnSync("bash", ["-s", "--", "--help"], {
+      cwd: os.tmpdir(),
+      encoding: "utf8",
+      input: fs.readFileSync(INSTALL, "utf8"),
+      env: { ...process.env, MYRMIDON_INSTALL_LANG: "en" },
+    });
+    assert.equal(piped.status, 0, piped.stderr);
+    assert.match(piped.stdout, /--database-url/);
+  });
 });
