@@ -4,7 +4,7 @@ import { instanceSettingsService, logActivity } from "../../../services/index.js
 import { createDbAlertRecoveryIssuePort } from "./issues.js";
 import { alertRecoveryRoutes } from "./routes.js";
 import { createAlertRecoveryService, type AlertRecoveryService } from "./service.js";
-import { createAlertRecoveryStore } from "./store.js";
+import { createDbAlertRecoveryStore } from "./store.js";
 
 /**
  * Entry point of alert recovery (myrmidon 1.6.6 MONITORING, part D).
@@ -53,13 +53,7 @@ export interface AlertRecoveryRuntimeOptions {
 function createRuntime(db: Db, options: AlertRecoveryRuntimeOptions = {}): AlertRecoveryRuntime {
   const env = options.env ?? process.env;
   const settings = instanceSettingsService(db);
-  const store = createAlertRecoveryStore({
-    settings: settings as unknown as {
-      getGeneral(): Promise<unknown>;
-      updateGeneral(patch: Record<string, unknown>): Promise<unknown>;
-    },
-    env,
-  });
+  const store = createDbAlertRecoveryStore(db, env);
   const service = createAlertRecoveryService({
     store,
     issues: createDbAlertRecoveryIssuePort(db),
