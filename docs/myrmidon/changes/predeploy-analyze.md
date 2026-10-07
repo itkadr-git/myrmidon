@@ -1,5 +1,5 @@
 ---
-divergence-section: 1.6.5 — PREDEPLOY-ANALYZE
+divergence-section: Трек 5 — эксплуатация
 ---
 
 ## changelog-en
