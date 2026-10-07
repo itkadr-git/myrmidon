@@ -62,6 +62,23 @@
 // store lives under HERMES_HOME (or the scope root), which neither the board's
 // draft-directory lifecycle nor this image's own clone hygiene ever removes.
 //
+// myrmidon(1.6.5 BOT-DISK-H1b): the wrapper's role changes from "add a
+// reference" to "intercept the clone". `git clone <GitHub repository> [dir]`
+// (https, ssh, scp-like, with or without a token in the URL) no longer clones:
+// it runs `myr-ws open` (key = basename of $MYRMIDON_TASK_WORKSPACE when it is
+// an issue key, else `--scratch <dir name>`), so the copy is a worktree of the
+// bot's shared base and weighs megabytes, not gigabytes. --filter, --depth,
+// --mirror, --bare and the other history/storage options are dropped with one
+// stderr line. The arguments are read by clone-args.js (BOT-DISK-H1a, beside
+// this file). A clone of another host, an unparseable one, a missing myr-ws
+// or clone-args.js, or MYRMIDON_GIT_INTERCEPT=0 runs the path described above
+// (the --reference-if-able store) / the real git unchanged. The exit status of
+// `myr-ws open` (3 = BOT_DISK_QUOTA_EXCEEDED, ...) and its stderr are passed
+// through. The myr-ws binary can be replaced with MYRMIDON_WS_BIN.
+// `git remote add|set-url` and `git config remote.<n>.url|pushurl` with a
+// credential in the URL are rewritten without it (the credential helper
+// answers for the host; a token in .git/config would outlive the run).
+//
 // CJS on purpose, like the other wrappers in /opt/paperclip/bin (no
 // package.json above /opt, so Node loads it as CommonJS).
 
@@ -557,8 +574,153 @@ function collectConfigArgs(argv, cloneAt) {
   return out;
 }
 
+// --- BOT-DISK-H1b: clone interception and remote sanitising ---------------
+
+/** Issue key as `myr-ws open` accepts it (PREFIX-123). */
+const ISSUE_KEY_RE = /^[A-Z][A-Z0-9]*-[0-9]+$/;
+const SCRATCH_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+
+/** The clone-args.js parser (BOT-DISK-H1a) from beside this file, or null when it is not there. */
+function loadCloneArgs() {
+  try {
+    const mod = require(path.join(__dirname, "clone-args.js"));
+    return typeof mod.parseCloneArgs === "function" ? mod.parseCloneArgs : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Index of the subcommand and whether a global option other than `-c` came before it. */
+function subcommandAt(argv) {
+  let i = 0;
+  let otherGlobal = false;
+  while (i < argv.length && argv[i].startsWith("-")) {
+    if (argv[i] !== "-c") otherGlobal = true;
+    i += GLOBAL_WITH_VALUE.has(argv[i]) ? 2 : 1;
+  }
+  return { at: i, command: i < argv.length ? argv[i] : null, otherGlobal };
+}
+
+/** A name `myr-ws open --scratch` accepts, made from the clone's target directory. */
+function scratchNameFor(dir, repo) {
+  const base = path.basename(String(dir || "").replace(/\/+$/, "")) || repo;
+  const clean = base.replace(/[^A-Za-z0-9._-]/g, "_").replace(/\.\.+/g, "_").replace(/^[^A-Za-z0-9]+/, "");
+  return SCRATCH_NAME_RE.test(clean) ? clean : String(repo).replace(/[^A-Za-z0-9._-]/g, "_").replace(/^[^A-Za-z0-9]+/, "") || "clone";
+}
+
+/**
+ * The `myr-ws open` argv for a parsed GitHub clone (parseCloneArgs result), or
+ * null. Pure: the task key comes from `env`.
+ */
+function openArgsFor(parsed, env = process.env) {
+  if (!parsed || parsed.kind !== "github" || !parsed.owner || !parsed.repo) return null;
+  const repo = `${parsed.owner}/${parsed.repo}`;
+  const taskDir = env.MYRMIDON_TASK_WORKSPACE;
+  const key = taskDir ? path.basename(String(taskDir).replace(/\/+$/, "")) : "";
+  if (ISSUE_KEY_RE.test(key)) return ["open", key, repo];
+  return ["open", "--scratch", scratchNameFor(parsed.dir, parsed.repo), repo];
+}
+
+/**
+ * Try to serve `git clone` through `myr-ws open`. Returns true when the
+ * process was ended here (the clone is served or refused), false when the
+ * caller must run the usual path (not a GitHub clone, no parser, no myr-ws).
+ */
+function interceptClone(argv, env = process.env) {
+  if (env.MYRMIDON_GIT_INTERCEPT === "0") return false;
+  const sub = subcommandAt(argv);
+  if (sub.command !== "clone" || sub.otherGlobal) return false;
+  const parse = loadCloneArgs();
+  if (parse === null) return false;
+  const parsed = parse(argv.slice(sub.at + 1));
+  const openArgs = openArgsFor(parsed, env);
+  if (openArgs === null) return false;
+
+  const wsBin = env.MYRMIDON_WS_BIN || "myr-ws";
+  const result = spawnSync(wsBin, openArgs, { stdio: ["ignore", "pipe", "inherit"], encoding: "utf8", env: childEnv() });
+  if (result.error) {
+    if (result.error.code === "ENOENT") {
+      process.stderr.write(`[myrmidon-git] ${wsBin} not found: the clone runs as a plain git clone\n`);
+      return false;
+    }
+    process.stderr.write(`git: cannot run ${wsBin}: ${result.error.message}\n`);
+    process.exit(127);
+  }
+  if (result.signal) {
+    process.kill(process.pid, result.signal);
+    return true;
+  }
+  const status = result.status === null ? 1 : result.status;
+  if (status !== 0) process.exit(status); // myr-ws already said why on stderr (3 = quota)
+  const where = String(result.stdout || "").trim().split("\n").pop() || "";
+  if (parsed.ignoredFlags.length > 0) {
+    process.stderr.write(`[myrmidon-git] ignored for this clone (objects already live in the shared base): ${parsed.ignoredFlags.join(", ")}\n`);
+  }
+  if (parsed.hadUserinfo) {
+    process.stderr.write("[myrmidon-git] the credentials in the repository URL were not used: the credential helper answers for GitHub\n");
+  }
+  process.stderr.write(`Cloning into '${where}'...\n`);
+  process.stderr.write(`[myrmidon-git] \`git clone\` was served by \`myr-ws open ${openArgs.slice(1, -1).join(" ")}\`: work in ${where}\n`);
+  process.exit(0);
+  return true;
+}
+
+const URL_WITH_USERINFO_RE = /^[a-z][a-z0-9+.-]*:\/\/[^/?#\s]*@/i;
+
+/**
+ * `url` without a credential: http(s) loses the whole userinfo (a token, or
+ * user:password); other schemes keep the login and lose only a password. A URL
+ * without a credential comes back unchanged.
+ */
+function stripUserinfo(url) {
+  const m = /^([a-z][a-z0-9+.-]*):\/\/([^/?#]*)([\s\S]*)$/i.exec(url);
+  if (!m) return url;
+  const at = m[2].lastIndexOf("@");
+  if (at < 0) return url;
+  const userinfo = m[2].slice(0, at);
+  const hostport = m[2].slice(at + 1);
+  if (/^https?$/i.test(m[1])) return `${m[1]}://${hostport}${m[3]}`;
+  const colon = userinfo.indexOf(":");
+  return colon < 0 ? url : `${m[1]}://${userinfo.slice(0, colon)}@${hostport}${m[3]}`;
+}
+
+const REMOTE_URL_KEY_RE = /^remote\..+\.(?:url|pushurl)$/i;
+
+/**
+ * argv for `git remote add|set-url ...` and `git config ... remote.<n>.url|pushurl <value>`
+ * with every credential-carrying URL rewritten without it; `{argv, changed}`.
+ * Any other command comes back untouched.
+ */
+function sanitizeRemoteArgs(argv) {
+  const sub = subcommandAt(argv);
+  if (sub.command === null) return { argv, changed: false };
+  let from = -1;
+  if (sub.command === "remote") {
+    const verb = argv.slice(sub.at + 1).find((a) => !a.startsWith("-"));
+    if (verb === "add" || verb === "set-url") from = sub.at + 1;
+  } else if (sub.command === "config") {
+    const k = argv.findIndex((a, i) => i > sub.at && REMOTE_URL_KEY_RE.test(a));
+    if (k >= 0) from = k + 1;
+  }
+  if (from < 0) return { argv, changed: false };
+  let changed = false;
+  const out = argv.map((a, i) => {
+    if (i < from || !URL_WITH_USERINFO_RE.test(a)) return a;
+    const clean = stripUserinfo(a);
+    if (clean !== a) changed = true;
+    return clean;
+  });
+  return { argv: out, changed };
+}
+
 function main() {
-  const argv = process.argv.slice(2);
+  let argv = process.argv.slice(2);
+  if (interceptClone(argv)) return;
+  const sanitized = sanitizeRemoteArgs(argv);
+  if (sanitized.changed) {
+    argv = sanitized.argv;
+    process.stderr.write("[myrmidon-git] a credential in the remote URL was removed (the credential helper answers for the host)\n");
+  }
   let localMirror = null;
   // Decide the bot-local mirror BEFORE running the clone; the injection itself
   // stays in the tested pure function. The board's mirror always wins.
@@ -621,6 +783,10 @@ function main() {
 
 if (require.main === module) main();
 module.exports = {
+  openArgsFor,
+  interceptClone,
+  stripUserinfo,
+  sanitizeRemoteArgs,
   githubRepo,
   isMirror,
   mirrorFor,
