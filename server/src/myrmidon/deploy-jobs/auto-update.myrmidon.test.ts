@@ -130,8 +130,8 @@ function harness(options: { policy?: AutoUpdateSettings; port?: FleetCanaryPort 
 }
 
 function fakePort(verdict: "running" | "healthy" | "failed" = "running") {
-  const startCanary = vi.fn(async () => undefined);
-  const startRest = vi.fn(async () => undefined);
+  const startCanary = vi.fn(async (_input: { jobId: string; digest: string; canary: string[]; reason: string }) => undefined);
+  const startRest = vi.fn(async (_input: { jobId: string; digest: string; rest: string[] }) => undefined);
   const readVerdict = vi.fn(async () => ({ phase: verdict, detail: verdict === "failed" ? "bot-a did not come up" : null }));
   const port: FleetCanaryPort = {
     targets: async () => ["bot-a", "bot-b", "bot-c"],
