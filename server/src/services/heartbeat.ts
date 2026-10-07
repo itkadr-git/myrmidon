@@ -662,6 +662,14 @@ import { jsonTextUuid } from "../myrmidon/db-hot-path/json-uuid.js";
 import { createStaleActiveLeaseSweep } from "../myrmidon/leases-stale-sweep.js";
 // myrmidon(M3): skip idle timer heartbeats
 import { hasOtherActionableWork, skipIdleHeartbeatsEnabled } from "../myrmidon/heartbeat-idle-skip.js";
+// myrmidon(1.2-COST-CACHING): idle-skip metrics + prompt cache by cost data.
+import {
+  fingerprintWakeContext,
+  findReusablePromptAnswer,
+  idleSkipMetricsEnabled,
+  readPromptCacheSettings,
+  recordIdleSkip,
+} from "../myrmidon/cost-caching.js";
 // myrmidon(IDLE-PICKUP): the board wakes an idle agent on its next ready task
 import {
   createIdlePickupSweeper,
@@ -27085,8 +27093,65 @@ export function heartbeatService(
         reason:
           "No assigned todo or in_progress issue requires this agent before timer adapter invocation.",
       });
+      // myrmidon(1.2-COST-CACHING): count the saved model call when the
+      // metrics setting is on; never let metrics break the skip itself.
+      if (idleSkipMetricsEnabled()) {
+        try {
+          recordIdleSkip({ companyId: agent.companyId, agentId });
+        } catch (err) {
+          logger.warn({ err, agentId }, "idle-skip metrics write failed");
+        }
+      }
       await markTimerHeartbeatChecked(agentId, source);
       return null;
+    }
+
+    // myrmidon(1.2-COST-CACHING): a generic timer wake whose context snapshot
+    // is identical to the agent's previous finished run reuses that run's
+    // recorded answer instead of a new adapter invocation — only when the
+    // recorded answer cost at least MYRMIDON_PROMPT_CACHE_MIN_COST (USD).
+    // Cheap answers are always recomputed; wakes with a concrete reason
+    // (issue/comment/task) never reach this branch. The cached wake lands as
+    // a `skipped` row naming the source run, so the audit trail shows where
+    // the reused answer came from.
+    if (genericTimerWake) {
+      const promptCache = readPromptCacheSettings();
+      if (promptCache.enabled) {
+        try {
+          const fingerprint = fingerprintWakeContext(enrichedContextSnapshot);
+          const cached = await findReusablePromptAnswer(db, {
+            agentId,
+            companyId: agent.companyId,
+            fingerprint,
+            minCostUsd: promptCache.minCostUsd,
+          });
+          if (cached) {
+            await writeSkippedHeartbeatRequest("heartbeat.timer.cached_identical_prompt", {
+              reason:
+                "Identical prompt to a previous expensive run; reusing the recorded answer.",
+              reusedRunId: cached.runId,
+              reusedRunCostUsd: cached.costUsd,
+              reusedRunFinishedAt: cached.finishedAt?.toISOString() ?? null,
+              minCostUsd: promptCache.minCostUsd,
+            });
+            logger.info(
+              {
+                companyId: agent.companyId,
+                agentId,
+                reusedRunId: cached.runId,
+                reusedRunCostUsd: cached.costUsd,
+              },
+              "prompt cache hit: identical timer wake reuses the previous answer",
+            );
+            await markTimerHeartbeatChecked(agentId, source);
+            return null;
+          }
+        } catch (err) {
+          // The cache is an optimization; a read failure must never block a
+          // wake — fall through to the normal admission path.
+          logger.warn({ err, agentId }, "prompt cache lookup failed; running normally");
+        }
+      }
     }
 
     if (issueId) {
