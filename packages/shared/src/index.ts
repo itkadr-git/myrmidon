@@ -2887,3 +2887,6 @@ export * from "./myrmidon-foraging.js";
 // myrmidon(1.7-AGENT-EXCHANGE-A): the discussion-room contract (room model,
 // settings with source tracking, request bodies).
 export * from "./myrmidon-agent-exchange.js";
+// myrmidon(1.7-AGENT-EXCHANGE-B): the owner-facing feed of discussion rooms
+// and the «to skill» candidate contract.
+export * from "./myrmidon-agent-exchange-feed.js";

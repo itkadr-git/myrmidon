@@ -27,6 +27,9 @@ import type { BudgetEnforcementSettings } from "../myrmidon-budget-enforcement.j
 // myrmidon(1.7-AGENT-EXCHANGE-A): the discussion-room settings stored in the
 // same general settings row.
 import type { AgentExchangeSettings } from "../myrmidon-agent-exchange.js";
+// myrmidon(1.7-AGENT-EXCHANGE-B): the feed of discussion rooms and the
+// «to skill» switch, stored in the same general settings row.
+import type { AgentExchangeFeedSettings } from "../myrmidon-agent-exchange-feed.js";
 // myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys live in
 // the same general settings row.
 import type { PluginEntitlementKey } from "../myrmidon-plugin-entitlement.js";
@@ -240,6 +243,15 @@ export interface InstanceGeneralSettings {
    * of the same field (packages/shared/src/validators/instance.ts).
    */
   agentExchange?: AgentExchangeSettings;
+  /**
+   * myrmidon(1.7-AGENT-EXCHANGE-B): the feed of the company's discussion
+   * rooms — how many rooms one page shows and whether the «to skill» button
+   * is offered; changed from `GET`/`PATCH
+   * /api/myrmidon/companies/:companyId/agent-exchange/feed/settings`. Kept in
+   * sync with the validator of the same field
+   * (packages/shared/src/validators/instance.ts).
+   */
+  agentExchangeFeed?: AgentExchangeFeedSettings;
   /**
    * myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys, managed
    * from the instance settings page. Absent means "no keys registered". Kept

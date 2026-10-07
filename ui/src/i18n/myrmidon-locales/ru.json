@@ -325,7 +325,8 @@
     "autonomy": "Автономия",
     "castes": "Касты и модели",
     "wipLimit": "Лимит WIP",
-    "reviewRouting": "Маршрутизация ревью"
+    "reviewRouting": "Маршрутизация ревью",
+    "agentExchange": "Обмены агентов"
   },
   "reviewRouting": {
     "title": "Назначение ревьюеров",

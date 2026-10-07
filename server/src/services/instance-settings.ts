@@ -297,6 +297,9 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // survive every general write (they are edited on their own settings
       // panel on Instance → General).
       ...(parsed.data.agentExchange ? { agentExchange: parsed.data.agentExchange } : {}),
+      // myrmidon(1.7-AGENT-EXCHANGE-B): the stored feed settings survive every
+      // general write (they are edited on their own settings panel).
+      ...(parsed.data.agentExchangeFeed ? { agentExchangeFeed: parsed.data.agentExchangeFeed } : {}),
       // myrmidon(REVIEW-ROUTING): the stored review routing settings survive
       // every general write (they are edited on their own settings page).
       ...(parsed.data.reviewRouting ? { reviewRouting: parsed.data.reviewRouting } : {}),

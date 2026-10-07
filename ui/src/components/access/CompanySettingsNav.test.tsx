@@ -147,6 +147,7 @@ describe("CompanySettingsNav", () => {
           { value: "castes", label: "Castes & models" }, // myrmidon(1.6.1 MODEL-PROVIDERS C)
           { value: "caste-directory", label: "Agent castes" }, // myrmidon(1.6.1 CUSTOM-CASTES C)
           { value: "owner-delivery", label: "Owner Telegram delivery" }, // myrmidon(1.6.5-OWNER-DM-FILTER)
+          { value: "agent-exchange", label: "Agent exchanges" }, // myrmidon(1.7-AGENT-EXCHANGE-B)
         ],
       }),
     );
@@ -198,6 +199,7 @@ describe("CompanySettingsNav", () => {
       "castes", // myrmidon(1.6.1 MODEL-PROVIDERS C)
       "caste-directory", // myrmidon(1.6.1 CUSTOM-CASTES C)
       "owner-delivery", // myrmidon(1.6.5-OWNER-DM-FILTER)
+      "agent-exchange", // myrmidon(1.7-AGENT-EXCHANGE-B)
     ]);
 
     await act(async () => {

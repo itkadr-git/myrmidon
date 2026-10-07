@@ -92,6 +92,8 @@ import { StackScreen } from "./components/myrmidon/stack/StackScreen"; // myrmid
 import { AutonomyMatrixScreen } from "./components/myrmidon/autonomy/AutonomyMatrixContainer"; // myrmidon(1.6 AUTONOMY-MATRIX B)
 import { WipLimitScreen } from "./components/myrmidon/wip-limit/WipLimitScreenContainer"; // myrmidon(1.6.1 WIP-LIMIT B)
 import { OwnerDeliveryScreen } from "./components/myrmidon/owner-delivery/OwnerDeliveryScreenContainer"; // myrmidon(1.6.5-OWNER-DM-FILTER)
+// myrmidon(1.7-AGENT-EXCHANGE-B): the owner-facing feed of discussion rooms.
+import { AgentExchangeFeedScreen } from "./components/myrmidon/AgentExchangeFeedScreen"; // myrmidon(1.7-AGENT-EXCHANGE-B)
 import { ReviewRoutingScreen } from "./components/myrmidon/review-routing/ReviewRoutingScreenContainer"; // myrmidon(REVIEW-ROUTING)
 
 import { ModelProvidersScreen } from "./components/myrmidon/model-providers/ModelProvidersContainer"; // myrmidon(1.6.1 MODEL-PROVIDERS C)
@@ -224,6 +226,7 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
       <Route path="company/settings/wip-limit" element={<WipLimitScreen />} /> {/* myrmidon(1.6.1 WIP-LIMIT B) */}
       <Route path="company/settings/owner-delivery" element={<OwnerDeliveryScreen />} /> {/* myrmidon(1.6.5-OWNER-DM-FILTER) */}
       <Route path="company/settings/review-routing" element={<ReviewRoutingScreen />} /> {/* myrmidon(REVIEW-ROUTING) */}
+      <Route path="company/settings/agent-exchange" element={<AgentExchangeFeedScreen />} /> {/* myrmidon(1.7-AGENT-EXCHANGE-B): the feed of the agents' discussion rooms */}
 
       <Route path="company/settings/castes" element={<ModelProvidersScreen />} /> {/* myrmidon(1.6.1 MODEL-PROVIDERS C): the ui2 "Castes and models" section route */}
       <Route path="company/settings/caste-directory" element={<CastesScreen />} /> {/* myrmidon(1.6.1 CUSTOM-CASTES C): the caste directory settings screen route */}
