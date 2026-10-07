@@ -69,7 +69,9 @@ settings-section: BOT-DISK E — host disk usage signal
 ## settings-en
 
 | `general.botDisk.defaultRepo` | 1.6.5-BOT-DISK-H | unset (empty) | Repository `owner/repo` used when a task has neither a project repository nor a pull request: the run's `workspace` field and the desired state of the bot workspaces then point at it; without it such a task works in `/scratch` with a warning | `owner/repo` only (letters, digits, `_ . -`); `""`/`null` in `PATCH /api/myrmidon/bot-disk` clears it |
+| `MYRMIDON_BOT_KEY` | 1.6.5-BOT-DISK-H | written by the board into every bot's `.env` (the bot's agent id) | Not a switch and not an operator setting: the bot's own key (an id, not a secret) that botd signs its disk report with (`botKey`), so the report is accepted under the caller's key; a body naming another bot is refused with 403 | Not set by hand; rewritten from the profile on every apply |
 
 ## settings-ru
 
 | `general.botDisk.defaultRepo` | 1.6.5-BOT-DISK-H | не задано (пусто) | Репозиторий `owner/repo`, который берётся, когда у задачи нет ни репозитория проекта, ни pull request: поле `workspace` прогона и желаемое состояние рабочих копий указывают на него; без него такая задача работает в `/scratch` с предупреждением | Только `owner/repo` (буквы, цифры, `_ . -`); `""`/`null` в `PATCH /api/myrmidon/bot-disk` сбрасывают |
+| `MYRMIDON_BOT_KEY` | 1.6.5-BOT-DISK-H | доска пишет в `.env` каждого бота (id агента бота) | Не переключатель и не настройка оператора: собственный ключ бота (id, не секрет), которым botd подписывает отчёт о диске (`botKey`), поэтому отчёт принимается под ключом вызывающего; тело с чужим ботом отклоняется с 403 | Вручную не задаётся; переписывается из профиля при каждом применении |
