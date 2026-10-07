@@ -11,8 +11,8 @@ import (
 )
 
 const (
-	keyA = "0a1b2c3d-1111-2222-3333-444455556666"
-	keyB = "9f8e7d6c-aaaa-bbbb-cccc-ddddeeeeffff"
+	qKeyA = "0a1b2c3d-1111-2222-3333-444455556666"
+	qKeyB = "9f8e7d6c-aaaa-bbbb-cccc-ddddeeeeffff"
 	root = "/srv/myrmidon-bots"
 
 	stateOn  = "Project quota state on /srv/myrmidon-bots (/dev/sdb1)\n  Accounting: ON\n  Enforcement: ON\n  Inode: #131 (1 blocks, 1 extents)\n"
@@ -72,7 +72,7 @@ func read(t *testing.T, path string) string {
 func TestPut_ValidCallsXfsQuotaWithTheContractArguments(t *testing.T) {
 	q, f := newQuota(t, stateOn)
 	const hard = int64(6442450944)
-	res, err := q.Put(context.Background(), keyA, hard)
+	res, err := q.Put(context.Background(), qKeyA, hard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestPut_ValidCallsXfsQuotaWithTheContractArguments(t *testing.T) {
 	}
 	want := []string{
 		"xfs_quota|-x|-c|state -p|" + root,
-		"xfs_quota|-x|-c|project -s -p " + root + "/" + keyA + " 1000|-c|limit -p bhard=6442450944 bsoft=5153960755 1000|" + root,
+		"xfs_quota|-x|-c|project -s -p " + root + "/" + qKeyA + " 1000|-c|limit -p bhard=6442450944 bsoft=5153960755 1000|" + root,
 	}
 	got := f.journal()
 	if len(got) != len(want) {
@@ -92,10 +92,10 @@ func TestPut_ValidCallsXfsQuotaWithTheContractArguments(t *testing.T) {
 			t.Errorf("call %d: %q, want %q", i, got[i], want[i])
 		}
 	}
-	if s := read(t, q.ProjidFile); s != keyA+":1000\n" {
+	if s := read(t, q.ProjidFile); s != qKeyA+":1000\n" {
 		t.Errorf("projid %q", s)
 	}
-	if s := read(t, q.ProjectsFile); s != "1000:"+root+"/"+keyA+"\n" {
+	if s := read(t, q.ProjectsFile); s != "1000:"+root+"/"+qKeyA+"\n" {
 		t.Errorf("projects %q", s)
 	}
 }
@@ -112,7 +112,7 @@ func TestPut_SoftLimitIsEightTenths(t *testing.T) {
 func TestPut_BoundsAreInclusive(t *testing.T) {
 	for _, n := range []int64{MinQuotaBytes, MaxQuotaBytes} {
 		q, _ := newQuota(t, stateOn)
-		if _, err := q.Put(context.Background(), keyA, n); err != nil {
+		if _, err := q.Put(context.Background(), qKeyA, n); err != nil {
 			t.Errorf("%d: %v", n, err)
 		}
 	}
@@ -121,7 +121,7 @@ func TestPut_BoundsAreInclusive(t *testing.T) {
 func TestPut_OutOfRangeIsBadQuotaAndTouchesNothing(t *testing.T) {
 	for _, n := range []int64{-1, 0, 1, MinQuotaBytes - 1, MaxQuotaBytes + 1} {
 		q, f := newQuota(t, stateOn)
-		_, err := q.Put(context.Background(), keyA, n)
+		_, err := q.Put(context.Background(), qKeyA, n)
 		if !errors.Is(err, ErrBadQuota) {
 			t.Errorf("%d: %v", n, err)
 		}
@@ -135,7 +135,7 @@ func TestPut_OutOfRangeIsBadQuotaAndTouchesNothing(t *testing.T) {
 }
 
 func TestPut_BadKeyIsRefused(t *testing.T) {
-	for _, k := range []string{"", "..", "../etc", keyA + "/..", strings.ToUpper(keyA), "bot-001", keyA + "\n"} {
+	for _, k := range []string{"", "..", "../etc", qKeyA + "/..", strings.ToUpper(qKeyA), "bot-001", qKeyA + "\n"} {
 		q, f := newQuota(t, stateOn)
 		if _, err := q.Put(context.Background(), k, MinQuotaBytes); !errors.Is(err, ErrBadKey) {
 			t.Errorf("%q: %v", k, err)
@@ -149,15 +149,15 @@ func TestPut_BadKeyIsRefused(t *testing.T) {
 func TestPut_RepeatKeepsTheProjectID(t *testing.T) {
 	q, f := newQuota(t, stateOn)
 	ctx := context.Background()
-	a1, err := q.Put(ctx, keyA, MinQuotaBytes)
+	a1, err := q.Put(ctx, qKeyA, MinQuotaBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := q.Put(ctx, keyB, MinQuotaBytes)
+	b, err := q.Put(ctx, qKeyB, MinQuotaBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	a2, err := q.Put(ctx, keyA, 2*MinQuotaBytes)
+	a2, err := q.Put(ctx, qKeyA, 2*MinQuotaBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,12 +186,12 @@ func TestPut_RepeatKeepsTheProjectID(t *testing.T) {
 func TestPut_SameRequestTwiceIsIdempotent(t *testing.T) {
 	q, f := newQuota(t, stateOn)
 	ctx := context.Background()
-	r1, err := q.Put(ctx, keyA, 1<<30)
+	r1, err := q.Put(ctx, qKeyA, 1<<30)
 	if err != nil {
 		t.Fatal(err)
 	}
 	projid, projects := read(t, q.ProjidFile), read(t, q.ProjectsFile)
-	r2, err := q.Put(ctx, keyA, 1<<30)
+	r2, err := q.Put(ctx, qKeyA, 1<<30)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,17 +218,17 @@ func TestPut_ExistingFilesAreKeptAndIDsNotReused(t *testing.T) {
 	if err := os.Chmod(q.ProjidFile, 0o640); err != nil {
 		t.Fatal(err)
 	}
-	res, err := q.Put(context.Background(), keyA, MinQuotaBytes)
+	res, err := q.Put(context.Background(), qKeyA, MinQuotaBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if res.ProjectID != 1701 {
 		t.Errorf("project id %d, want 1701 (above every id in both files)", res.ProjectID)
 	}
-	if got, want := read(t, q.ProjidFile), "# bots\nlegacy:1500\nsomebody:12\n"+keyA+":1701\n"; got != want {
+	if got, want := read(t, q.ProjidFile), "# bots\nlegacy:1500\nsomebody:12\n"+qKeyA+":1701\n"; got != want {
 		t.Errorf("projid %q, want %q", got, want)
 	}
-	if got, want := read(t, q.ProjectsFile), "1500:/srv/legacy\n1700:/srv/other\n1701:"+root+"/"+keyA+"\n"; got != want {
+	if got, want := read(t, q.ProjectsFile), "1500:/srv/legacy\n1700:/srv/other\n1701:"+root+"/"+qKeyA+"\n"; got != want {
 		t.Errorf("projects %q, want %q", got, want)
 	}
 	fi, err := os.Stat(q.ProjidFile)
@@ -242,17 +242,17 @@ func TestPut_ExistingFilesAreKeptAndIDsNotReused(t *testing.T) {
 
 func TestPut_ExistingNameKeepsItsID(t *testing.T) {
 	q, _ := newQuota(t, stateOn)
-	if err := os.WriteFile(q.ProjidFile, []byte("other:2000\n"+keyA+":1234\n"), 0o644); err != nil {
+	if err := os.WriteFile(q.ProjidFile, []byte("other:2000\n"+qKeyA+":1234\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	res, err := q.Put(context.Background(), keyA, MinQuotaBytes)
+	res, err := q.Put(context.Background(), qKeyA, MinQuotaBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if res.ProjectID != 1234 {
 		t.Errorf("project id %d, want 1234", res.ProjectID)
 	}
-	if got := read(t, q.ProjectsFile); got != "1234:"+root+"/"+keyA+"\n" {
+	if got := read(t, q.ProjectsFile); got != "1234:"+root+"/"+qKeyA+"\n" {
 		t.Errorf("projects %q", got)
 	}
 }
@@ -268,7 +268,7 @@ func TestPut_QuotaUnavailable(t *testing.T) {
 		q := NewQuota(root, f)
 		dir := t.TempDir()
 		q.ProjectsFile, q.ProjidFile = filepath.Join(dir, "projects"), filepath.Join(dir, "projid")
-		_, err := q.Put(context.Background(), keyA, MinQuotaBytes)
+		_, err := q.Put(context.Background(), qKeyA, MinQuotaBytes)
 		if !errors.Is(err, ErrQuotaUnavailable) {
 			t.Errorf("%s: %v", name, err)
 		}
@@ -286,7 +286,7 @@ func TestPut_QuotaUnavailable(t *testing.T) {
 func TestPut_SetFailureIsNotAQuotaDecision(t *testing.T) {
 	q, f := newQuota(t, stateOn)
 	f.setErr = errors.New("exit status 1")
-	_, err := q.Put(context.Background(), keyA, MinQuotaBytes)
+	_, err := q.Put(context.Background(), qKeyA, MinQuotaBytes)
 	if err == nil || errors.Is(err, ErrQuotaUnavailable) || errors.Is(err, ErrBadQuota) {
 		t.Errorf("err %v", err)
 	}
@@ -349,7 +349,7 @@ func TestWriteAtomic_NoDirectoryIsAnErrorAndWritesNothing(t *testing.T) {
 func TestPut_FileWriteFailureStopsBeforeXfsQuota(t *testing.T) {
 	q, f := newQuota(t, stateOn)
 	q.ProjidFile = filepath.Join(t.TempDir(), "missing", "projid")
-	if _, err := q.Put(context.Background(), keyA, MinQuotaBytes); err == nil {
+	if _, err := q.Put(context.Background(), qKeyA, MinQuotaBytes); err == nil {
 		t.Fatal("want an error")
 	}
 	if n := len(f.journal()); n != 1 {

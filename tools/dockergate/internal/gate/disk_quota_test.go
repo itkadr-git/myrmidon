@@ -2,7 +2,6 @@ package gate_test
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -27,15 +26,6 @@ func contractFixture(t *testing.T, name string) []byte {
 		t.Fatal(err)
 	}
 	return b
-}
-
-func decodeObject(t *testing.T, b []byte) map[string]any {
-	t.Helper()
-	var m map[string]any
-	if err := json.Unmarshal(b, &m); err != nil {
-		t.Fatalf("not JSON: %q: %v", b, err)
-	}
-	return m
 }
 
 // xfsFake is the Executor: a journal of the calls, and the answer to the state

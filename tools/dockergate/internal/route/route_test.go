@@ -58,6 +58,8 @@ func TestAllow(t *testing.T) {
 		{"A13", "GET", v + "containers/" + nameA + "/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fclone-hygiene.json", Route{ID: A13, BotKey: keyA, Name: nameA}},
 		{"A12", "POST", v + "containers/" + nameANext + "/rename?name=" + nameA, Route{ID: A12, BotKey: keyA, Suffix: SuffixNext, Name: nameANext}},
 		{"A15", "PUT", "/myrmidon/disk/" + keyA + "/quota", Route{ID: A15, BotKey: keyA}},
+		// A14 is outside the Docker API prefix and has no bot.
+		{"A14", "GET", "/myrmidon/disk", Route{ID: A14}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -434,5 +436,55 @@ func TestDiskQuotaRoute(t *testing.T) {
 				t.Fatalf("%s %s: %s, want %s", tc.method, tc.target, err.Code, tc.code)
 			}
 		})
+	}
+}
+
+// A14 is one exact target and GET only: every other method, a query, a trailing
+// slash, a case change, an encoded or dotted path, a longer path and the
+// Docker-prefixed spelling are refused as route_not_allowed.
+func TestDiskRouteClosed(t *testing.T) {
+	notAllowed := []struct{ method, target string }{
+		{"POST", "/myrmidon/disk"},
+		{"PUT", "/myrmidon/disk"},
+		{"DELETE", "/myrmidon/disk"},
+		{"GET", "/myrmidon/disk?x=1"},
+		{"GET", "/myrmidon/disk?"},
+		{"GET", "/myrmidon/disk/"},
+		{"GET", "/myrmidon/Disk"},
+		{"GET", "/myrmidon/DISK"},
+		{"GET", "/myrmidon//disk"},
+		{"GET", "/myrmidon/disk/."},
+		{"GET", "/myrmidon/../myrmidon/disk"},
+		{"GET", "/myrmidon/%64isk"},
+		{"GET", "/myrmidon/disk%2F"},
+		{"GET", "/myrmidon/disk#x"},
+		{"GET", "/myrmidon/disk/" + keyA + "/quota"},
+		{"GET", "/myrmidon/"},
+		{"GET", "/myrmidon/disks"},
+		{"GET", "/myrmidon/anything"},
+	}
+	for _, tc := range notAllowed {
+		got, err := Parse(tc.method, tc.target, images())
+		if err == nil {
+			t.Errorf("%s %s accepted as %+v", tc.method, tc.target, *got)
+			continue
+		}
+		if err.Code != deny.RouteNotAllowed {
+			t.Errorf("%s %s: %s", tc.method, tc.target, err.Code)
+		}
+	}
+	// Under the Docker prefix the disk path is not a route either.
+	for _, target := range []string{"/v1.45/myrmidon/disk", "/v1.45/disk"} {
+		if _, err := Parse("GET", target, images()); err == nil || err.Code != deny.RouteNotAllowed {
+			t.Errorf("GET %s: %v", target, err)
+		}
+	}
+	// Methods outside the four stay method_not_allowed, as for every route.
+	if _, err := Parse("HEAD", "/myrmidon/disk", images()); err == nil || err.Code != deny.MethodNotAllowed {
+		t.Errorf("HEAD: %v", err)
+	}
+	// Close neighbours of the prefix keep their old answer.
+	if _, err := Parse("GET", "/myrmidon", images()); err == nil || err.Code != deny.APIVersion {
+		t.Errorf("/myrmidon: %v", err)
 	}
 }
