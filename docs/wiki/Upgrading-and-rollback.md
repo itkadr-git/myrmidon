@@ -73,6 +73,19 @@ What the deploy does, in order:
    batches of at most 5, each bot only while its agent is paused or idle —
    a run is never interrupted.
 
+The deploy also manages the PostgreSQL server settings (since 1.6.5,
+DB-TUNING): the declarative source lives in the repository
+(`scripts/myrmidon/deploy/db-tuning.sql`), the deploy applies it through
+`DB_TUNE_COMMAND` and then verifies every `DB_TUNE_EXPECTED` pair with
+`SHOW` — a mismatch is a failed deploy, and the previous values (recorded
+before the first managed apply) are returned at once. A rollback returns
+the settings through `DB_TUNE_ROLLBACK_COMMAND` and verifies them against
+the recorded previous values. All four `DB_TUNE_*` settings are optional;
+with an empty `DB_TUNE_COMMAND` the step is skipped and the database
+keeps whatever settings it has. The values, the verification flow and the
+`pg_stat_statements` query for the before/after measurement are in
+[`docs/myrmidon/deploy.md`](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/deploy.md).
+
 ## Release candidates and final releases (since 1.6.5)
 
 A release goes through a trial run before it becomes **Latest** on GitHub:
