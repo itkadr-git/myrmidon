@@ -228,10 +228,11 @@ func parseExtraBind(bind string) (source, target, mode string, ok bool) {
 // These are the only extra mounts that may be read-write, and only as exactly
 // these pairs: a writable bind cannot name another source or another target.
 var PackageCacheMounts = map[string]string{
-	"pnpm":     "/cache/pnpm",
-	"go-mod":   "/cache/go-mod",
-	"go-build": "/cache/go-build",
-	"gradle":   "/cache/gradle",
+	"pnpm":       "/cache/pnpm",
+	"pnpm-store": "/cache/pnpm-store", // 1.6.5-BOT-DISK-H8a: the pnpm store, one per partition
+	"go-mod":     "/cache/go-mod",
+	"go-build":   "/cache/go-build",
+	"gradle":     "/cache/gradle",
 }
 
 // PackageCacheReadOnlyMounts is the read-only part of the shared package
