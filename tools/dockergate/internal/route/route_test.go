@@ -57,6 +57,7 @@ func TestAllow(t *testing.T) {
 		{"A11", "POST", v + "containers/" + nameA + "/restart?t=30", Route{ID: A11, BotKey: keyA, Name: nameA}},
 		{"A13", "GET", v + "containers/" + nameA + "/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fclone-hygiene.json", Route{ID: A13, BotKey: keyA, Name: nameA}},
 		{"A12", "POST", v + "containers/" + nameANext + "/rename?name=" + nameA, Route{ID: A12, BotKey: keyA, Suffix: SuffixNext, Name: nameANext}},
+		{"A15", "PUT", "/myrmidon/disk/" + keyA + "/quota", Route{ID: A15, BotKey: keyA}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -388,5 +389,50 @@ func TestEmptyImagesAllowsNoA1(t *testing.T) {
 	_, err := Parse("GET", "/v1.45/images/"+NameSegment(ref1)+"/json", NewImages(nil))
 	if err == nil || err.Code != deny.RouteNotAllowed {
 		t.Fatalf("A1 with no images: %v", err)
+	}
+}
+
+// A15 is the only route outside the Docker API prefix: PUT of exactly
+// /myrmidon/disk/<botKey>/quota. A key that is not a lowercase UUID, another
+// method, an extra segment or a query is not a route.
+func TestDiskQuotaRoute(t *testing.T) {
+	const p = "/myrmidon/disk/"
+	cases := []struct {
+		name, method, target, code string
+	}{
+		{"GET", "GET", p + keyA + "/quota", deny.RouteNotAllowed},
+		{"POST", "POST", p + keyA + "/quota", deny.RouteNotAllowed},
+		{"DELETE", "DELETE", p + keyA + "/quota", deny.RouteNotAllowed},
+		{"dot dot key", "PUT", p + "../quota", deny.RouteNotAllowed},
+		{"dot dot after key", "PUT", p + keyA + "/../quota", deny.RouteNotAllowed},
+		{"dot dot before key", "PUT", p + "../" + keyA + "/quota", deny.RouteNotAllowed},
+		{"escaped dot dot", "PUT", p + "%2e%2e/quota", deny.RouteNotAllowed},
+		{"escaped slash", "PUT", p + "..%2f" + keyA + "/quota", deny.RouteNotAllowed},
+		{"empty key", "PUT", p + "/quota", deny.RouteNotAllowed},
+		{"no key", "PUT", p + "quota", deny.RouteNotAllowed},
+		{"short key", "PUT", p + "bot-001/quota", deny.RouteNotAllowed},
+		{"uppercase key", "PUT", p + strings.ToUpper(keyA) + "/quota", deny.RouteNotAllowed},
+		{"escaped key", "PUT", p + strings.Replace(keyA, "a", "%61", 1) + "/quota", deny.RouteNotAllowed},
+		{"container name instead of key", "PUT", p + nameA + "/quota", deny.RouteNotAllowed},
+		{"trailing slash", "PUT", p + keyA + "/quota/", deny.RouteNotAllowed},
+		{"query", "PUT", p + keyA + "/quota?x=1", deny.RouteNotAllowed},
+		{"fragment", "PUT", p + keyA + "/quota#x", deny.RouteNotAllowed},
+		{"other tail", "PUT", p + keyA + "/limit", deny.RouteNotAllowed},
+		{"no tail", "PUT", p + keyA, deny.RouteNotAllowed},
+		{"two keys", "PUT", p + keyA + "/" + keyB + "/quota", deny.RouteNotAllowed},
+		{"api prefix before", "PUT", "/v1.45" + p + keyA + "/quota", deny.RouteNotAllowed},
+		{"absolute form", "PUT", "http://docker" + p + keyA + "/quota", deny.TargetForm},
+		{"unknown method", "PATCH", p + keyA + "/quota", deny.MethodNotAllowed},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := Parse(tc.method, tc.target, images())
+			if err == nil {
+				t.Fatalf("%s %s accepted as %+v", tc.method, tc.target, *got)
+			}
+			if err.Code != tc.code {
+				t.Fatalf("%s %s: %s, want %s", tc.method, tc.target, err.Code, tc.code)
+			}
+		})
 	}
 }
