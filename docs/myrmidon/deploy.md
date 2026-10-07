@@ -20,7 +20,10 @@ settings file of an installation lives in a private deploy repository and never 
 - the Myrmidon server runs under docker compose, and the service image is set in a separate
   override file (`COMPOSE_OVERRIDE_FILE`). The script changes only the `image:` line in it;
 - a database dump command (`DUMP_COMMAND`) and, for a rollback with a restore, a restore
-  command (`RESTORE_COMMAND`). Both get the path in the `DUMP_FILE` variable;
+  command (`RESTORE_COMMAND`). Both get the path in the `DUMP_FILE` variable. The board
+  database is pure configuration: either the built-in `db` compose service or a database
+  on a shared PostgreSQL server (`pg_dump`/`pg_restore` by `DATABASE_URL` — see the two
+  profiles in `deploy.env.example`); the scripts hold no container name of their own;
 - in `authenticated` mode, anonymous `/api/health` shows the commit but not the version. A
   board key in a file with mode `0600` at `HEALTH_TOKEN_FILE` is **required**: without it the
   version check at step 7 fails and the deploy counts as failed (by design — the version is

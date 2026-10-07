@@ -176,7 +176,10 @@ if [[ -n "$restore_dump" ]]; then
   fi
   log "3/6 stop $COMPOSE_SERVICE and restore $restore_dump"
   compose stop "$COMPOSE_SERVICE"
-  DUMP_FILE="$restore_dump" bash -c "$RESTORE_COMMAND" || die "restore command failed; server is stopped, image unchanged"
+  # PREDEPLOY-PG-COMPAT: like take_dump, DATABASE_URL reaches the command (see
+  # lib.sh): on a shared server RESTORE_COMMAND restores through it and only
+  # into the database and role it names.
+  DUMP_FILE="$restore_dump" DATABASE_URL="${DATABASE_URL:-}" bash -c "$RESTORE_COMMAND" || die "restore command failed; server is stopped, image unchanged"
 else
   log "3/6 database not restored"
 fi
