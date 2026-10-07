@@ -147,6 +147,7 @@ export interface JudgePort {
 export interface JudgeDeps {
   fetch: typeof fetch;
   apiKey: string;
+  baseUrl: string;
   model: string;
   timeoutMs: number;
   /**

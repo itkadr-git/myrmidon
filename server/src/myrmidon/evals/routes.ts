@@ -168,7 +168,7 @@ export function myrmidonEvalsRoutes(db: Db, deps: Partial<EvalsRoutesDeps> = {})
       service: createEvalsService(db, {
         judge: createJudge({
           fetch: deps.fetch ?? fetch,
-          apiKey: current.apiKey,
+          apiKey: key,
           baseUrl: current.baseUrl!,
           // myrmidon(1.6.5 EVALS-JUDGE-FAMILY): the whole priority list goes
           // into the judge so a gateway error on one candidate falls through
