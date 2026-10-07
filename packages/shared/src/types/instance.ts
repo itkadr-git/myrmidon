@@ -3,6 +3,8 @@ import type { FeedbackDataSharingPreference } from "./feedback.js";
 import type { WorkspaceHygieneLimits } from "../myrmidon-workspace-hygiene.js";
 // myrmidon(C0): the run admission limits stored in instance settings
 import type { StoredRunLimits } from "../myrmidon-runtime-limits.js";
+// myrmidon(RUN-STALL-SETTINGS): the run stall detection settings stored in instance settings
+import type { RunStallValues } from "../myrmidon-run-stall.js";
 import type { HostDiskSettings } from "../myrmidon-host-disk.js";
 // myrmidon(BOT-DISK-A): the bot draft-directory lifecycle stored in instance settings
 import type { StoredBotDiskSettings } from "../myrmidon-bot-disk.js";
@@ -123,6 +125,15 @@ export interface InstanceGeneralSettings {
    * 1.6.5 RUN-ADMISSION).
    */
   runLimits?: StoredRunLimits;
+  /**
+   * myrmidon(RUN-STALL-SETTINGS): the run stall detection settings, changed
+   * from the instance settings page and `GET`/`PATCH /api/myrmidon/run-stall`.
+   * Absent means "use the environment variable, then the default"; the key did
+   * not exist before 1.6.5, so no older row can lack a key the schema demands.
+   * Kept in sync with the validator of the same field
+   * (packages/shared/src/validators/instance.ts).
+   */
+  runStall?: RunStallValues;
   /**
    * myrmidon(PARALLEL-HELPERS): company ceiling/default for parallel helper
    * subagents, changed from the instance settings page and
