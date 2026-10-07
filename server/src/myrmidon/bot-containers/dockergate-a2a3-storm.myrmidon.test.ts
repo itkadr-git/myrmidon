@@ -143,6 +143,15 @@ async function startFakeGate(
       res.end(markerArchive("restart-1", "files-1"));
       return;
     }
+    // myrmidon(BOT-DISK-D/F era driver): templateDrift/create read the image's
+    // runtime contract off the host labels before building a body. The fake
+    // gate answers the inspect with the single-mount contract, matching the
+    // /bot bind in inspectBody.
+    if (req.method === "GET" && /^\/images\/[^/]+\/json$/.test(route)) {
+      return send(200, {
+        Config: { Labels: { "myrmidon.bot-runtime.contract": "2" } },
+      });
+    }
     if (req.method === "POST" && /^\/containers\/[^/]+\/start$/.test(route)) {
       return send(204);
     }
