@@ -123,7 +123,7 @@ function makeSandbox(opts = {}) {
   writeJson(dir, "tag-object.json", { object: { sha: COMMIT } });
   // One CI run for the tag commit; conclusion/status from opts.
   const run = {
-    path: ".github/workflows/myrmidon-ci.yml",
+    path: opts.ciPath ?? ".github/workflows/myrmidon-ci.yml",
     head_branch: opts.headBranch ?? "myr-v1.6.10",
     status: opts.ciStatus ?? "completed",
     conclusion: opts.ciConclusion ?? "success",
@@ -233,6 +233,44 @@ describe("release-freeze.sh (fake gh)", () => {
     const sb = makeSandbox({ headBranch: "main", ciConclusion: "success" });
     const r = runScript(sb, "--check");
     assert.equal(r.status, 0, r.stderr);
+  });
+
+  it("--check accepts a green myrmidon-ci-tag run on the tag (the publish gate's CI)", () => {
+    // myrmidon(FREEZE-CI-TAG): the tag's own CI lives in myrmidon-ci-tag.yml;
+    // a tag never gets a myrmidon-ci.yml run of its own. The freeze must
+    // clear on the same CI the publish gate accepts.
+    const sb = makeSandbox({
+      ciPath: ".github/workflows/myrmidon-ci-tag.yml",
+      ciConclusion: "success",
+    });
+    const r = runScript(sb, "--check");
+    assert.equal(r.status, 0, r.stderr);
+  });
+
+  it("--check stays RED when the only ci-tag-shaped run sits on a main branch (never happens live)", () => {
+    // A myrmidon-ci-tag.yml run with head_branch == main must NOT count:
+    // only the tag's own run is the release CI.
+    const sb = makeSandbox({
+      ciPath: ".github/workflows/myrmidon-ci-tag.yml",
+      headBranch: "main",
+      ciConclusion: "success",
+    });
+    const r = runScript(sb, "--check");
+    assert.equal(r.status, 1, `expected red gate: ${r.stderr}`);
+    assert.match(r.stderr, /RELEASE FREEZE ACTIVE/);
+  });
+
+  it("--set-state closes the freeze issue on a green ci-tag run too", () => {
+    const sb = makeSandbox({
+      ciPath: ".github/workflows/myrmidon-ci-tag.yml",
+      ciConclusion: "success",
+      issues: [{ number: 7, title: "release-freeze: myr-v1.6.10" }],
+    });
+    const r = runScript(sb, "--set-state");
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /freeze=inactive/);
+    const issues = JSON.parse(fs.readFileSync(path.join(sb.dir, "issues.json"), "utf8"));
+    assert.equal(issues.length, 0);
   });
 
   it("--set-state opens exactly one freeze issue while the tag CI is pending; re-run is idempotent", () => {

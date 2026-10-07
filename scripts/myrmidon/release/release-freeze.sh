@@ -99,10 +99,15 @@ newest_release_tag() {
 }
 
 # CI verdict of the tag: success | <conclusion> | in_progress | missing.
-# Same selection rule as publish-github-release.sh: head_branch == the tag,
-# and for myrmidon-ci.yml (no tag trigger) also a main run of the same sha.
+# The tag's own CI is myrmidon-ci-tag.yml («Myrmidon CI (tag)», the workflow
+# the publish gate waits on — publish-github-release.sh); a tag never gets a
+# myrmidon-ci.yml run of its own (no tag trigger there), so a verdict computed
+# from myrmidon-ci.yml alone can only come from a main-branch run of the same
+# commit — which exists only while main still sits exactly on the tag commit.
+# Accept BOTH: the tag's own ci-tag run (head_branch == the tag) or a
+# main-branch myrmidon-ci.yml run of the same sha. myrmidon(FREEZE-CI-TAG)
 tag_ci_verdict() {
-  local tag="$1" sha branches verdict status
+  local tag="$1" sha branches paths verdict status
   sha="$(gh api "repos/$repo/git/ref/tags/$tag" --jq '
       if .object.type == "tag" then .object.sha else .object.sha end' 2>/dev/null)" \
     || { printf 'missing\n'; return; }
@@ -114,15 +119,18 @@ tag_ci_verdict() {
   fi
   [[ -n "$sha" ]] || { printf 'missing\n'; return; }
   branches='((.head_branch == "'"$tag"'") or (.head_branch == "main"))'
+  # ci-tag counts only on the tag branch (a main-branch ci-tag run never
+  # exists); myrmidon-ci.yml counts on the tag (defensive) or on main.
+  paths='((.path == ".github/workflows/myrmidon-ci-tag.yml" and .head_branch == "'"$tag"'") or (.path == ".github/workflows/myrmidon-ci.yml" and '"$branches"'))'
   verdict="$(gh api --paginate "repos/$repo/actions/runs?head_sha=$sha&per_page=100" \
-      --jq '[.workflow_runs[]? | select(.path == ".github/workflows/myrmidon-ci.yml" and '"$branches"')]
+      --jq '[.workflow_runs[]? | select('"$paths"')]
             | ([.[] | select(.status == "completed")] | if length == 0 then "missing"
                else (map(.conclusion) | unique | if length == 1 then .[0] else "mixed" end) end)' 2>/dev/null)" \
     || verdict="missing"
   verdict="${verdict//\"/}"
   if [[ "$verdict" == "missing" ]]; then
     status="$(gh api --paginate "repos/$repo/actions/runs?head_sha=$sha&per_page=100" \
-        --jq '[.workflow_runs[]? | select(.path == ".github/workflows/myrmidon-ci.yml" and '"$branches"')] | .[0].status // "missing"' 2>/dev/null)" \
+        --jq '[.workflow_runs[]? | select('"$paths"')] | .[0].status // "missing"' 2>/dev/null)" \
       || status="missing"
     status="${status//\"/}"
     [[ "$status" == "missing" ]] || { printf 'in_progress\n'; return; }
