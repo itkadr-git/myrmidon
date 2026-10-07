@@ -22,6 +22,13 @@ batch, and only a healthy batch lets the rest follow (new `fleet_canary` phase);
 a failed batch ends the update as `canary_failed` with the fleet left on the
 previous image.
 
+The policy is edited in the current interface (Instance → General, "Product
+updates"): `GET`/`PATCH /api/myrmidon/auto-update` (read — board, write — instance
+admin) and `POST`/`DELETE /api/myrmidon/auto-update/approvals[/:tag]` for
+approving and withdrawing a release. In automatic mode the tick starts an approved
+release inside the window without a click and claims the approval, so it never
+starts twice; the journal says `auto_started` for it.
+
 ## changelog-ru
 
 ### Политика обновления доски: окно обслуживания, режим, канарейка (1.7-AUTO-UPDATE-B)
@@ -40,6 +47,13 @@ previous image.
 волна: сначала переключается доска, затем канареечная доля ботов, и только её
 здоровье пропускает остальных (новая фаза `fleet_canary`); провал доли завершает
 обновление статусом `canary_failed`, парк остаётся на прежнем образе.
+
+Политика правится в текущем интерфейсе (Instance → General, раздел «Product
+updates»): `GET`/`PATCH /api/myrmidon/auto-update` (чтение — board, запись —
+instance admin) и `POST`/`DELETE /api/myrmidon/auto-update/approvals[/:tag]` —
+одобрение и отзыв релиза. В автоматическом режиме тик сам стартует одобренный
+релиз в окне, без нажатия, и помечает одобрение запущенной работой, поэтому
+дважды он его не начнёт; в журнале это `auto_started`.
 
 ## divergence
 

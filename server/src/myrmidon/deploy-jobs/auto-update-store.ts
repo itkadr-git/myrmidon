@@ -16,7 +16,29 @@ const SINGLETON_KEY = "default";
 
 type Runner = Pick<Db, "select">;
 
+/**
+ * The seam the tests use, the same fields the service probes when it resolves
+ * the policy. A fake store is a db-shaped object that carries the policy
+ * itself, so routes and service can be exercised without a database.
+ */
+interface FakeAutoUpdateStore {
+  readAutoUpdate?: () => Promise<AutoUpdateSettings>;
+  mutateAutoUpdate?: <T>(
+    change: (current: AutoUpdateSettings) => { next: AutoUpdateSettings | null; result: T },
+  ) => Promise<{ doc: AutoUpdateSettings; result: T; changed: boolean }>;
+}
+
+function fakeStore(db: unknown): FakeAutoUpdateStore | null {
+  const candidate = db as FakeAutoUpdateStore | null;
+  if (!candidate) return null;
+  return typeof candidate.readAutoUpdate === "function" || typeof candidate.mutateAutoUpdate === "function"
+    ? candidate
+    : null;
+}
+
 export async function readAutoUpdateDocument(db: Runner): Promise<AutoUpdateSettings> {
+  const fake = fakeStore(db);
+  if (fake?.readAutoUpdate) return fake.readAutoUpdate();
   const row = await db
     .select({ general: instanceSettings.general })
     .from(instanceSettings)
@@ -33,6 +55,8 @@ export async function mutateAutoUpdateDocument<T>(
   db: Db,
   change: (current: AutoUpdateSettings) => { next: AutoUpdateSettings | null; result: T },
 ): Promise<{ doc: AutoUpdateSettings; result: T; changed: boolean }> {
+  const fake = fakeStore(db);
+  if (fake?.mutateAutoUpdate) return fake.mutateAutoUpdate(change);
   return db.transaction(async (tx) => {
     await tx
       .insert(instanceSettings)

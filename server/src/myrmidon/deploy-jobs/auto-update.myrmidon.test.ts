@@ -17,6 +17,7 @@ import {
   defaultAutoUpdateSettings,
   windowState,
   type AutoUpdateResolution,
+  type AutoUpdateApproval,
   type AutoUpdateSettings,
   type AutoUpdateWindow,
 } from "./auto-update.js";
@@ -92,11 +93,16 @@ function seed(store: MemoryStore, job: Partial<DeployJob>): DeployJob {
   return full;
 }
 
-function harness(options: { policy?: AutoUpdateSettings; port?: FleetCanaryPort | null } = {}) {
+function harness(
+  options: { policy?: AutoUpdateSettings; port?: FleetCanaryPort | null; probes?: ProbeDeps } = {},
+) {
   const store = new MemoryStore();
   const enter = vi.fn(async () => ({ id: "window-a", state: "entering" }));
   const exit = vi.fn(async () => ({ state: "off" }));
   const status = vi.fn(async () => ({ instance: { id: "window-a", state: "on" } }));
+  // B-3: the claim of an approved release lives in the policy's own row; the
+  // harness owns it here so a test can assert exactly what was claimed.
+  const claimApproval = vi.fn(async (_input: { tag: string; digest: string; jobId: string | null }) => true);
   let current: AutoUpdateSettings = options.policy ?? policy();
 
   const deps: DeployJobServiceDeps = {
@@ -118,10 +124,13 @@ function harness(options: { policy?: AutoUpdateSettings; port?: FleetCanaryPort 
     }),
   };
   if (options.port !== null) deps.fleetCanary = options.port ?? fakePort().port;
+  deps.claimApproval = claimApproval as unknown as DeployJobServiceDeps["claimApproval"];
+  if (options.probes) deps.probes = options.probes;
   const service = deployJobsService(store as unknown as Db, deps);
   return {
     service,
     store,
+    claimApproval,
     maintenance: { enter, exit, status },
     setPolicy(next: AutoUpdateSettings) {
       current = next;
@@ -196,6 +205,99 @@ describe("auto-update: the maintenance window (B-1)", () => {
 
     expect(job.status).not.toBe("waiting_window");
     expect(h.maintenance.enter).toHaveBeenCalled();
+  });
+});
+
+/**
+ * B-3: `auto_release` mode — the scheduler starts a release a human approved,
+ * but only inside the window and only once per approval.
+ */
+describe("auto-update: the update mode (B-3)", () => {
+  const APPROVAL: AutoUpdateApproval = {
+    tag: "myr-v1.7.0",
+    digest: GOOD,
+    version: VERSION,
+    approvedBy: { actorType: "user", actorId: "user-a" },
+    approvedAt: "2026-10-07T08:00:00.000Z",
+    jobId: null,
+  };
+
+  it("starts nothing by itself in manual mode, even with an approval waiting", async () => {
+    const h = harness({ policy: policy({ window: OPEN_DAY, approvals: [APPROVAL] }) });
+
+    await h.service.tick();
+
+    expect(h.store.doc.jobs).toHaveLength(0);
+    expect(h.claimApproval).not.toHaveBeenCalled();
+  });
+
+  it("starts an approved release inside the window without a click", async () => {
+    const h = harness({
+      policy: policy({ mode: "auto_release", window: OPEN_DAY, approvals: [APPROVAL] }),
+    });
+
+    await h.service.tick();
+
+    const jobs = h.store.doc.jobs;
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0].digest).toBe(GOOD);
+    expect(jobs[0].reason).toContain("myr-v1.7.0");
+    expect(jobs[0].status).not.toBe("failed");
+    // Claimed with the id of the job it started, so no later tick can start the
+    // same release a second time.
+    expect(h.claimApproval).toHaveBeenCalledTimes(1);
+    expect(h.claimApproval.mock.calls[0][0]).toMatchObject({ tag: "myr-v1.7.0", digest: GOOD, jobId: jobs[0].id });
+  });
+
+  it("leaves an approved release alone while the window is shut", async () => {
+    const h = harness({
+      policy: policy({ mode: "auto_release", window: shutWindow(), approvals: [APPROVAL] }),
+    });
+
+    await h.service.tick();
+
+    expect(h.store.doc.jobs).toHaveLength(0);
+    expect(h.claimApproval).not.toHaveBeenCalled();
+  });
+
+  it("does not start the same approved release twice", async () => {
+    const h = harness({
+      policy: policy({ mode: "auto_release", window: OPEN_DAY, approvals: [APPROVAL] }),
+    });
+
+    await h.service.tick();
+    const first = h.store.doc.jobs[0];
+    // The release is now claimed: the next tick sees the approval spent.
+    h.setPolicy(policy({ mode: "auto_release", window: OPEN_DAY, approvals: [{ ...APPROVAL, jobId: first.id }] }));
+    await h.service.tick();
+
+    expect(h.store.doc.jobs.filter((job) => job.id !== first.id)).toHaveLength(0);
+    expect(h.claimApproval).toHaveBeenCalledTimes(1);
+  });
+
+  it("spends the approval on a refused image instead of retrying it every tick", async () => {
+    const h = harness({
+      policy: policy({ mode: "auto_release", window: OPEN_DAY, approvals: [APPROVAL] }),
+      probes: probes({
+        fetchJson: async (url: string) => {
+          if (url.startsWith("https://registry-inspect.example.com/")) {
+            return { config: { Labels: { ...CI_LABELS, "org.opencontainers.image.source": "https://github.com/someone/else" } } };
+          }
+          throw new Error(`unexpected url ${url}`);
+        },
+      }),
+    });
+
+    await h.service.tick();
+
+    // The refusal is recorded and the job is retired into history: the host is
+    // untouched and the approval stays spent, so the next tick does not try the
+    // same bad digest again.
+    expect(h.store.doc.jobs).toHaveLength(0);
+    expect(h.store.doc.history).toHaveLength(1);
+    expect(h.store.doc.history[0].status).toBe("failed_verification");
+    expect(h.claimApproval).toHaveBeenCalledTimes(1);
+    expect(h.claimApproval.mock.calls[0][0].jobId).not.toBeNull();
   });
 });
 
