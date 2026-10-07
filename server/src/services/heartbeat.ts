@@ -719,8 +719,8 @@ import {
 // budget service asks for, and the signal-only notice delivery (see
 // budget-enforcement/).
 import { readBudgetEnforcement } from "../myrmidon/budget-enforcement/settings.js";
-import {
 import { guardrailsOnRunOutput } from "../myrmidon/guardrails/run-output.js"; // myrmidon(1.6-GRD)
+import {
   deliverBudgetSignalOnly,
   type BudgetSignalOnlyInput,
   type BudgetSignalOnlyPorts,
