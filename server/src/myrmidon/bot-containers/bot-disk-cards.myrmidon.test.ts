@@ -75,11 +75,20 @@ describe("agent-silent", () => {
     expect(cards[0]!.dedupKey).toBe("bot_disk_lifecycle/agent-silent:bot-001");
     expect(cards[0]!.sourceKind).toBe("bot_disk_lifecycle");
   });
-  it("a stopped container never raises it; a running one with no report ever does", () => {
+  it("a stopped container never raises it; a running one that never reported does not either", () => {
     expect(buildAgentSilentCards(input([bot({ running: false, receivedAtMs: NOW - 5 * HOUR })]))).toHaveLength(0);
-    const cards = buildAgentSilentCards(input([bot({ receivedAtMs: null, report: null })]));
+    expect(buildAgentSilentCards(input([bot({ receivedAtMs: null, report: null })]))).toHaveLength(0);
+  });
+  it("70 running bots with no reports at all raise 0 cards", () => {
+    const bots = Array.from({ length: 70 }, (_, i) =>
+      bot({ botKey: `bot-${String(i + 1).padStart(3, "0")}`, receivedAtMs: null, report: null }),
+    );
+    expect(buildAgentSilentCards(input(bots))).toHaveLength(0);
+  });
+  it("a bot that reported before and went silent carries lastReportAt", () => {
+    const cards = buildAgentSilentCards(input([bot({ receivedAtMs: NOW - 5 * HOUR })]));
     expect(cards).toHaveLength(1);
-    expect(cards[0]!.payload.lastReportAt).toBeNull();
+    expect(cards[0]!.payload.lastReportAt).toBe(new Date(NOW - 5 * HOUR).toISOString());
   });
   it("one card per bot; the dedup key is stable across ticks and goes when a report arrives", () => {
     const a = buildAgentSilentCards(input([bot({ receivedAtMs: NOW - 40 * MIN })]));
