@@ -17,6 +17,8 @@ import { storedBotDiskSettingsSchema } from "../myrmidon-bot-disk.js";
 import { storedBotDiskQuotaSettingsSchema } from "../myrmidon-bot-disk-quota.js";
 // myrmidon(BOT-ROLLOUT): the release bot-image rollout settings stored in the same row.
 import { storedBotImageRolloutSettingsSchema } from "../myrmidon-bot-image-rollout.js";
+// myrmidon(PERF-DIET-K): issue-scoped session-generation thresholds, lenient stored shape
+import { storedSessionGenerationsSettingsSchema } from "../myrmidon-session-generations.js";
 // myrmidon(C0): run admission limits that can be changed while the server runs
 import { storedRunLimitsSchema } from "../myrmidon-runtime-limits.js";
 // myrmidon(PARALLEL-HELPERS): company ceiling/default for parallel helper
@@ -127,6 +129,11 @@ export const instanceGeneralSettingsSchema = z.object({
   // absent means \"use the environment variable, then the default\". Lenient: an
   // invalid value reads as absent (see myrmidon-bot-image-rollout.ts).
   myrmidonBotImageRollout: storedBotImageRolloutSettingsSchema,
+  // myrmidon(PERF-DIET-K): thresholds of the issue-scoped session generations
+  // of a container bot, read at every run dispatch; absent means the plan's
+  // defaults (400 runs / 14 days, the fix on). Lenient: an invalid value reads
+  // as absent (see myrmidon-session-generations.ts).
+  sessions: storedSessionGenerationsSettingsSchema,
   // myrmidon(PARALLEL-HELPERS): company ceiling and default for the "Parallel
   // helpers" block on an agent card, changed from the instance settings page
   // and /api/myrmidon/parallel-helpers; absent means the module defaults apply
