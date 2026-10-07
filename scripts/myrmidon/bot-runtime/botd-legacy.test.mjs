@@ -15,7 +15,7 @@ const lib = (n) => path.join(ROOT, "docker/bot-runtime/botd/lib", n);
 const { classifyAll } = await import(lib("classify.js"));
 const { plan } = await import(lib("rules.js"));
 const archiveMod = await import(lib("archive.js"));
-const { scratchInventory, inRegistry, archiveThenRemove } = await import(lib("legacy.js"));
+const { scratchInventory, inRegistry, archiveThenRemove, findNestedGit, isUsableRepo } = await import(lib("legacy.js"));
 const hasGit = spawnSync("git", ["--version"]).status === 0;
 
 const HOUR = 3600 * 1000;
@@ -135,5 +135,66 @@ describe("archiveThenRemove: legacy path outside the registry", () => {
   it("archiveTree rejects an unsafe key and a missing directory", () => {
     assert.equal(archiveMod.archiveTree(ws, "../evil", { archiveRoot }).ok, false);
     assert.equal(archiveMod.archiveTree(path.join(ws, "nope"), "nope", { archiveRoot }).ok, false);
+  });
+});
+
+describe("archiveThenRemove: a broken nested .git is not a repository", { skip: !hasGit && "git not available" }, () => {
+  const mk = () => {
+    const removed = [];
+    return { removed, remove: (p) => removed.push(p) };
+  };
+  const brokenGit = (dir) => {
+    fs.mkdirSync(path.join(dir, ".git"), { recursive: true }); // hollowed out: no HEAD/objects/refs
+    fs.writeFileSync(path.join(dir, "src.txt"), "work tree file");
+  };
+
+  it("isUsableRepo: hollow .git fails, a real repository passes", () => {
+    const hollow = path.join(ws, "hollow");
+    brokenGit(hollow);
+    assert.equal(isUsableRepo(hollow), false);
+    const real = path.join(ws, "real");
+    fs.mkdirSync(real, { recursive: true });
+    assert.equal(spawnSync("git", ["init", "-q", "-b", "main"], { cwd: real }).status, 0);
+    assert.equal(isUsableRepo(real), true);
+  });
+
+  it("closed task directory with a broken nested .git: archived as files, then removed", () => {
+    const dir = path.join(ws, "OPE-4433");
+    brokenGit(path.join(dir, "repo"));
+    fs.writeFileSync(path.join(dir, "top.txt"), "top");
+    assert.deepEqual(findNestedGit(dir), []);
+    const { removed, remove } = mk();
+    const detail = archiveThenRemove({ path: dir, key: "OPE-4433" }, { archiveMod, isGit: hasDotGit, remove, archiveRoot });
+    assert.equal(detail, "archived, removed");
+    assert.deepEqual(removed, [dir]);
+    const e = archiveMod.readManifest(archiveRoot).archives.find((x) => x.key === "OPE-4433");
+    assert.ok(e.dirTar && !e.bundle);
+    const listing = spawnSync("tar", ["-tf", e.dirTar], { encoding: "utf8" }).stdout;
+    assert.match(listing, /repo\/src\.txt/);
+    assert.match(listing, /top\.txt/);
+    assert.doesNotMatch(listing, /\.git/);
+  });
+
+  it("a broken .git on the directory itself is also plain files", () => {
+    const dir = path.join(ws, "OPE-4434");
+    brokenGit(dir);
+    const { removed, remove } = mk();
+    assert.equal(archiveThenRemove({ path: dir, key: "OPE-4434" }, { archiveMod, isGit: hasDotGit, remove, archiveRoot }), "archived, removed");
+    assert.deepEqual(removed, [dir]);
+    const e = archiveMod.readManifest(archiveRoot).archives.find((x) => x.key === "OPE-4434");
+    assert.match(spawnSync("tar", ["-tf", e.dirTar], { encoding: "utf8" }).stdout, /src\.txt/);
+  });
+
+  it("a real repository whose bundle fails is still not removed", () => {
+    const dir = path.join(ws, "OPE-4435");
+    const repo = path.join(dir, "repo");
+    fs.mkdirSync(repo, { recursive: true });
+    assert.equal(spawnSync("git", ["init", "-q", "-b", "main"], { cwd: repo }).status, 0);
+    fs.writeFileSync(path.join(repo, "f.txt"), "f");
+    const failing = { ...archiveMod, archive: () => ({ ok: false, reason: "bundle create failed: boom" }) };
+    const { removed, remove } = mk();
+    assert.throws(() => archiveThenRemove({ path: dir, key: "OPE-4435" }, { archiveMod: failing, isGit: hasDotGit, remove, archiveRoot }), /archive-incomplete: nested repository repo: bundle create failed: boom, not removed/);
+    assert.deepEqual(removed, []);
+    assert.ok(fs.existsSync(path.join(repo, "f.txt")));
   });
 });

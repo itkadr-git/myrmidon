@@ -48,7 +48,8 @@ describe("nested repositories are seen", () => {
     fs.mkdirSync(path.join(dir, "a/b/c/d/.git"), { recursive: true }); // too deep
     const expected = [path.join(dir, "a/b/c"), path.join(dir, "repo"), path.join(dir, "sub/x")];
     assert.deepEqual(measureTree(dir).nestedGit, expected);
-    assert.deepEqual(findNestedGit(dir), expected);
+    assert.deepEqual(findNestedGit(dir, 3, () => true), expected); // fixture .git dirs are empty: structure only
+    assert.deepEqual(findNestedGit(dir), [], "empty .git directories are not repositories");
   });
 
   it("a directory with only nested repositories counts as git in the inventory", () => {
