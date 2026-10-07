@@ -1940,8 +1940,66 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       // (fill level, free space, growth per hour, biggest consumers) travel
       // in the detail, and the dedup key stays constant while the threshold
       // stays crossed, so a fresh measurement refreshes the row.
+      //
+      // myrmidon(1.6.5-BOT-DISK-H10): when the dockergate measurement of the
+      // bot partition is available it takes precedence over the statfs card:
+      // the thresholds come from `general.botDisk` (85/90/95 by contract C7),
+      // the card counts against the partition physics, and >= the critical
+      // threshold is severity critical. Without dockergate data the statfs
+      // block below runs unchanged ("not measured" — no partition card).
+      const partitionState = hostDiskRuntime(db).partition.current();
+      if (partitionState.alertLevel === "warn" || partitionState.alertLevel === "critical") {
+        const partition = partitionState.partition!;
+        const thresholds = partitionState.settings!;
+        const critical = partitionState.alertLevel === "critical";
+        const dedupKey = `host_disk:partition:${partition.mount}`;
+        add(createItem({
+          companyId,
+          sourceKind: "host_disk_alert",
+          subject: {
+            kind: "agent",
+            id: "host-disk",
+            companyId,
+            title: "Bot partition",
+            identifier: null,
+            status: "alert",
+            href: `/${prefix}/instance`,
+            metadata: { measuredPath: partition.mount, source: "dockergate" },
+          },
+          whyNow: critical
+            ? `Bot partition is ${Math.round(partition.usedPercent)}% full (critical threshold ${thresholds.partitionCriticalPercent}%). myr-ws open refuses new copies.`
+            : `Bot partition is ${Math.round(partition.usedPercent)}% full (threshold ${thresholds.partitionThresholdPercent}%).`,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the host disk panel and free space on the bot partition." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this alert until usage drops and crosses again." },
+          ),
+          inlineResolvable: false,
+          entryRule: "the bot partition fill level crossed the saved threshold",
+          exitRule: "usage drops below the threshold or the row is dismissed",
+          dedupKey,
+          severity: critical ? "critical" : "high",
+          activityAt: toIso(partitionState.evaluatedAt ?? partition.at),
+          createdAt: toIso(partition.at),
+          updatedAt: toIso(partitionState.evaluatedAt ?? partition.at),
+          relatedIssue: null,
+          detail: {
+            kind: "host_disk",
+            usedPercent: Math.round(partition.usedPercent),
+            thresholdPercent: critical
+              ? thresholds.partitionCriticalPercent
+              : thresholds.partitionThresholdPercent,
+            usedGb: Math.round(partition.usedBytes / (1024 * 1024 * 1024)),
+            totalGb: Math.round(partition.totalBytes / (1024 * 1024 * 1024)),
+            freeGb: Math.round(partition.freeBytes / (1024 * 1024 * 1024)),
+            growthBytesPerHour: null,
+            mountPoint: partition.mount,
+            consumers: [],
+            images: [],
+          },
+        }));
+      }
       const hostDisk = hostDiskRuntime(db).sweep.lastResult();
-      if (hostDisk?.overThreshold) {
+      if (hostDisk?.overThreshold && partitionState.alertLevel !== "warn" && partitionState.alertLevel !== "critical") {
         const dedupKey = `host_disk:${hostDisk.measuredPath ?? "unknown"}`;
         add(createItem({
           companyId,
