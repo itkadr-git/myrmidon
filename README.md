@@ -180,7 +180,10 @@ what exists as of 1.6.4 (latest release; 1.6.5-rc.2 is the current release candi
 
 - **Baseline metrics.** Cycle time, time in review, return rate, blocked time,
   runs and LLM cost per task, by project and by role, on the Quality screen —
-  see [CHANGELOG](docs/myrmidon/CHANGELOG.md) (1.6.0).
+  with a comparison against the pinned baseline snapshot (current window,
+  baseline, delta per row) right under the metrics tables
+  ([guide](docs/myrmidon/guides/baseline-comparison.md),
+  [CHANGELOG](docs/myrmidon/CHANGELOG.md), 1.6.0/1.6.5).
 - **Reference-task evals.** An LLM judge scores the pilot role against a
   reference corpus; a regression verdict acts only after a confirmation run
   ([reference-task-evals](docs/myrmidon/guides/reference-task-evals.md)).
