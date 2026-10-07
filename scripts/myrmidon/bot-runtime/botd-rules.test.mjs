@@ -59,7 +59,10 @@ describe("botd rules: class E worktrees (table of section 2.3)", () => {
     ["closing 31 min, unpushed: archive+remove", "closing", 31, "open", true, false, OPS.archiveRemove],
     ["closing 31 min, closed PR, unpushed: archive+remove", "closing", 31, "closed", true, false, OPS.archiveRemove],
     ["closing 31 min, no PR, dirty+unpushed: archive+remove", "closing", 31, "none", false, false, OPS.archiveRemove],
-    ["squash-merge: merged, pushed=false: remove, no archive", "closing", 31, "merged", true, false, OPS.remove],
+    ["merged, clean+pushed: remove", "closing", 31, "merged", true, true, OPS.remove],
+    ["merged, dirty: archive+remove (edits after merge are not delivered)", "closing", 31, "merged", false, true, OPS.archiveRemove],
+    ["merged, unpushed commits after merge: archive+remove", "closing", 31, "merged", true, false, OPS.archiveRemove],
+    ["merged, dirty+unpushed: archive+remove", "closing", 31, "merged", false, false, OPS.archiveRemove],
     ["merged but inside grace: nothing", "closing", 29, "merged", true, false, null],
   ];
   for (const [name, state, minutes, prState, clean, pushed, expected] of rows) {
@@ -105,6 +108,27 @@ describe("botd rules: class E worktrees (table of section 2.3)", () => {
   it("orphan with unpushed work is archived first", () => {
     const old = wt("ZZZ-8", { openedAt: ago(25 * HOUR), pushed: false });
     assert.deepEqual(ops(decide({ worktrees: [old] }, desired(), NOW)), [[OPS.archiveRemove, "/workspace/ZZZ-8"]]);
+  });
+
+  it("merged with null/undefined clean or pushed is unsafe: archive, never remove", () => {
+    const d = desired({ workspaces: [ws("ABC-1", "closing", HOUR, "merged")] });
+    for (const over of [{ clean: null }, { pushed: null }, { clean: undefined }, { pushed: undefined }, { clean: null, pushed: null }]) {
+      const out = decide({ worktrees: [wt("ABC-1", over)] }, d, NOW);
+      assert.deepEqual(ops(out), [[OPS.archiveRemove, "/workspace/ABC-1"]], JSON.stringify(over));
+    }
+    const noFacts = { key: "ABC-1", path: "/workspace/ABC-1", openedAt: ago(2 * HOUR) };
+    assert.deepEqual(ops(decide({ worktrees: [noFacts] }, d, NOW)), [[OPS.archiveRemove, "/workspace/ABC-1"]]);
+  });
+
+  it("merged orphan-less safety: the property sweep never yields plain remove for a dirty/unpushed copy", () => {
+    for (const prState of ["none", "open", "merged", "closed"])
+      for (const clean of [true, false, null, undefined])
+        for (const pushed of [true, false, null, undefined]) {
+          const d = desired({ workspaces: [ws("ABC-1", "closing", HOUR, prState)] });
+          const out = decide({ worktrees: [wt("ABC-1", { clean, pushed })] }, d, NOW);
+          const safe = clean === true && pushed === true;
+          assert.equal(out[0].op, safe ? OPS.remove : OPS.archiveRemove, `${prState} ${clean} ${pushed}`);
+        }
   });
 
   it("unknown cleanliness counts as unsafe (archive first)", () => {
@@ -198,6 +222,7 @@ describe("botd rules: class D bases", () => {
     path: `/git-base/acme/r${n}.git`,
     repo: `acme/r${n}`,
     worktreeCount: 0,
+    localOnlyRefs: 0,
     lastUsedAt: ago(DAY),
     ...over,
   });
@@ -210,6 +235,18 @@ describe("botd rules: class D bases", () => {
   it("a base with a live worktree is never idle-deleted", () => {
     const inv = { bases: [base(1, { lastUsedAt: ago(90 * DAY), worktreeCount: 1 })] };
     assert.deepEqual(decide(inv, desired(), NOW), []);
+  });
+
+  it("a base with local-only branches (not on origin) is never deleted: idle or over the limit", () => {
+    for (const localOnlyRefs of [1, 3, null, undefined]) {
+      const idle = { bases: [base(1, { lastUsedAt: ago(90 * DAY), localOnlyRefs })] };
+      assert.deepEqual(decide(idle, desired(), NOW), [], String(localOnlyRefs));
+    }
+    const bases = Array.from({ length: 9 }, (_, i) =>
+      base(i, { lastUsedAt: ago((i + 1) * DAY), localOnlyRefs: i === 8 ? 2 : 0 }),
+    );
+    // r8 is the oldest but holds local-only work: the next oldest (r7) goes
+    assert.deepEqual(ops(decide({ bases }, desired(), NOW)), [[OPS.deleteBase, "/git-base/acme/r7.git"]]);
   });
 
   it("limit 8: nine bases -> the oldest goes", () => {
@@ -270,6 +307,13 @@ describe("botd rules: safety", () => {
   it("empty or missing inventory yields no actions", () => {
     assert.deepEqual(decide({}, desired(), NOW), []);
     assert.deepEqual(decide(undefined, desired(), NOW), []);
+  });
+
+  it("foreign-shaped inventory (classifier output: items/actions) deletes nothing and does not throw", () => {
+    const d = desired({ workspaces: [ws("ABC-1", "closing", HOUR, "merged")] });
+    const foreign = { items: [{ path: "/workspace/ABC-1", ageSec: 99999 }], actions: [{ op: "remove" }] };
+    assert.deepEqual(decide(foreign, d, NOW), []);
+    assert.deepEqual(decide({ worktrees: "x", scratch: {}, bases: null, archives: 5 }, d, NOW), []);
   });
 
   it("is pure: inputs are not mutated and repeated calls agree", () => {
@@ -337,9 +381,12 @@ describe("botd rules: contract fixtures", () => {
     };
     // ABC-099 closed 26 min before generatedAt: still in grace.
     assert.deepEqual(decide(inv, d, now), []);
-    // 4 minutes later it passes 30 min; it is squash-merged -> remove, ABC-101 untouched.
+    // 4 minutes later it passes 30 min; merged but pushed=false -> archive first, ABC-101 untouched.
     const later = decide(inv, d, now + 4 * MIN);
-    assert.deepEqual(ops(later), [[OPS.remove, "/workspace/ABC-099"]]);
+    assert.deepEqual(ops(later), [[OPS.archiveRemove, "/workspace/ABC-099"]]);
+    // The same copy clean and pushed goes without an archive.
+    inv.worktrees[1].pushed = true;
+    assert.deepEqual(ops(decide(inv, d, now + 4 * MIN)), [[OPS.remove, "/workspace/ABC-099"]]);
   });
 
   it("pressure of the fixture and of disk-state.json use the same level names", () => {

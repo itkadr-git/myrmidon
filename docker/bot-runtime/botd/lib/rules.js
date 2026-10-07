@@ -12,9 +12,14 @@
 //   {
 //     worktrees: [{ key, path, repo?, dirMissing?, clean, pushed, openedAt }],
 //     scratch:   [{ name, path, mtime, isGit, clean, pushed }],
-//     bases:     [{ path, repo, worktreeCount, lastUsedAt }],
+//     bases:     [{ path, repo, worktreeCount, lastUsedAt, localOnlyRefs }],
 //     archives:  [{ path, createdAt, sizeBytes }],
 //   }
+// `localOnlyRefs` = number of refs/heads in the base that are not on origin; a
+// base is deleted only when it is exactly 0 (missing/null = unknown = unsafe).
+// This shape is the MAIN one: any other producer (the H3d classifier #745) maps
+// its output to it with an adapter (toInventory), not the other way round. Input
+// of another shape yields no actions (see arr()).
 // Timestamps are ISO strings or epoch milliseconds. `clean` = no uncommitted
 // or untracked work; `pushed` = every commit of the branch is on origin/*.
 //
@@ -80,6 +85,10 @@ function resolveLimits(desired, settings) {
   };
 }
 
+// Only a real array is a list; anything else (a foreign shape, null) is empty,
+// so a mismatched producer deletes nothing instead of throwing.
+const arr = (v) => (Array.isArray(v) ? v : []);
+
 function pressureLevel(desired) {
   const level = desired?.pressure?.level;
   return level === "soft" || level === "hard" ? level : "none";
@@ -114,7 +123,7 @@ export function plan(inventory, desired, now, settings) {
 
   // --- class E: task worktrees --------------------------------------------
   const activePaths = new Set();
-  for (const wt of inv.worktrees ?? []) {
+  for (const wt of arr(inv.worktrees)) {
     const want = byKey.get(wt.key);
 
     if (want?.state === "active") {
@@ -146,21 +155,19 @@ export function plan(inventory, desired, now, settings) {
 
     if (wt.dirMissing) {
       act(OPS.prune, wt.path, `${tag}-dir-missing`, wt.key);
-    } else if (merged) {
-      // Squash-merge: the PR is merged on the board, so the branch tip is not
-      // on origin/* by hash but the work is delivered — no archive.
-      act(OPS.remove, wt.path, `${tag}-pr-merged`, wt.key);
     } else if (wt.clean === true && wt.pushed === true) {
-      act(OPS.remove, wt.path, `${tag}-clean-pushed`, wt.key);
+      // prState=merged does not relax this: uncommitted edits and commits made
+      // after the merge are not delivered. Only clean AND pushed is removed.
+      act(OPS.remove, wt.path, merged ? `${tag}-pr-merged` : `${tag}-clean-pushed`, wt.key);
     } else {
-      // Unknown (undefined) counts as unsafe: archive first.
+      // false, null or undefined all count as unsafe: archive first.
       act(OPS.archiveRemove, wt.path, `${tag}-unpushed`, wt.key);
     }
   }
 
   // --- class G: scratch ---------------------------------------------------
   const scratchTtl = pressed ? lim.pressureScratchTtlMs : lim.scratchTtlMs;
-  for (const sc of inv.scratch ?? []) {
+  for (const sc of arr(inv.scratch)) {
     if (activePaths.has(sc.path) || activeKeys.has(sc.name)) continue;
     const mtime = toMs(sc.mtime);
     if (mtime === null || nowMs - mtime < scratchTtl) continue;
@@ -172,11 +179,11 @@ export function plan(inventory, desired, now, settings) {
   }
 
   // --- class D: bases -----------------------------------------------------
-  const bases = inv.bases ?? [];
+  const bases = arr(inv.bases);
   const doomedBases = new Set();
   for (const b of bases) {
     const used = toMs(b.lastUsedAt);
-    if ((b.worktreeCount ?? 0) === 0 && used !== null && nowMs - used >= lim.baseIdleMs) {
+    if (b.localOnlyRefs === 0 && (b.worktreeCount ?? 0) === 0 && used !== null && nowMs - used >= lim.baseIdleMs) {
       doomedBases.add(b.path);
       act(OPS.deleteBase, b.path, "base-idle-30d");
     }
@@ -186,7 +193,7 @@ export function plan(inventory, desired, now, settings) {
   let excess = kept.length - lim.baseLimit;
   if (excess > 0) {
     const candidates = kept
-      .filter((b) => (b.worktreeCount ?? 0) === 0)
+      .filter((b) => b.localOnlyRefs === 0 && (b.worktreeCount ?? 0) === 0)
       .sort((a, b) => (toMs(a.lastUsedAt) ?? 0) - (toMs(b.lastUsedAt) ?? 0));
     for (const b of candidates) {
       if (excess <= 0) break;
@@ -196,7 +203,7 @@ export function plan(inventory, desired, now, settings) {
   }
 
   // --- class F: archives --------------------------------------------------
-  const archives = [...(inv.archives ?? [])].sort(
+  const archives = [...arr(inv.archives)].sort(
     (a, b) => (toMs(a.createdAt) ?? 0) - (toMs(b.createdAt) ?? 0), // oldest first
   );
   const archiveMaxAge = pressed ? lim.archivePressureAgeMs : lim.archiveMaxAgeMs;
