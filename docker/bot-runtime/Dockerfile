@@ -950,17 +950,9 @@ COPY --chown=root:root --chmod=0755 pnpm-reflink-check.sh /opt/paperclip/pnpm-re
 # this stage exists to prevent. shared=yes needs filefrag's extent comparison;
 # on a build filesystem without reflink support this stage fails the build,
 # which is the point of the CI gate.
-RUN set -eu; \
-    out="$(PNPM=/opt/pnpm/bin/pnpm ROOTS="/data/hermes /workspace /scratch" STORE_DIR=/workspace/.pnpm-store /opt/paperclip/pnpm-reflink-check.sh)"; \
-    echo "pnpm reflink check: $out"; \
-    [ "$(echo "$out" | wc -l)" -eq 3 ] || { echo "expected one result per clone root, got: $out" >&2; exit 1; }; \
-    echo "$out" | while read -r line; do \
-      case "$line" in \
-        *"shared=yes"*) ;; \
-        *) echo "pnpm must reflink into the store from every clone root, got: $line" >&2; exit 1 ;; \
-      esac; \
-    done; \
-    rm -rf /workspace/.pnpm-store
+# The reflink check runs at container start (entrypoint reflink_self_check) on the
+# real bot volume; a build filesystem (overlayfs on the CI runner) has no reflinks,
+# so a build-time gate here could never pass.
 RUN set -eu; \
     out="$(PNPM=/opt/pnpm/bin/pnpm ROOTS="/data/hermes /workspace /scratch" STORE_DIR=/workspace/.pnpm-store /opt/paperclip/pnpm-hardlink-check.sh)"; \
     echo "pnpm hardlink check: $out"; \
