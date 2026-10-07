@@ -14,20 +14,18 @@ import { fileURLToPath } from "node:url";
 // restore is idempotent, a broken bundle fails with exit code 6 and leaves
 // every working copy untouched).
 //
-// The worktree is created through the `open` interface (lib/open.js, H2b);
-// here `open` is the H2b-shaped fake below (same deps contract as
-// myr-ws-open.test.mjs uses for ensureBase), so the test never touches the
-// network. The archive layout is the contract C1 one plus the minimal
-// manifest.json this command consumes (a manifest schema is a contract gap —
-// flagged in OPE-5342's thread and in the PR).
+// The archive set is discovered by the contract C1 layout
+// (`archive/<KEY>-<ts>.{bundle,patch,untracked.tar}`) — there is no
+// manifest.json in the contract; the repo an archive belongs to comes from
+// the open-copy registry ws-registry.json (C1/C4). The worktree is created
+// through the `open` interface (lib/open.js, H2b); here `open` is the
+// H2b-shaped fake below (same deps contract as myr-ws-open.test.mjs uses for
+// ensureBase), so the test never touches the network.
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const require = createRequire(import.meta.url);
 const ws = require(path.join(ROOT, "docker/bot-runtime/myr-ws/lib/restore.js"));
 const FIXTURES = path.join(ROOT, "docs/myrmidon/bot-disk-contract");
-
-const hasGit = spawnSync("git", ["--version"]).status === 0;
-const hasTar = spawnSync("tar", ["--version"]).status === 0;
 
 // The contract schemas are zod over TypeScript; Node strips the types itself.
 // Without an installed workspace (no zod) the schema checks fall back to the
@@ -117,30 +115,28 @@ function snapshot(copy) {
   return { head, tracked, untracked };
 }
 
-/** Archives the copy the way botd (H3) is contracted to: bundle, patch, untracked.tar + manifest entry. */
+/**
+ * Archives the copy the way botd (H3) is contracted to (C1): bundle + patch +
+ * untracked.tar named `<KEY>-<ts>.*` under <home>/archive, and the registry
+ * keeps the key -> repo entry (C1/C4: the registry is where restore learns
+ * the repository from).
+ */
 function archiveCopy(root, src, ts) {
-  const archiveRoot = path.join(root, "myrmidon", "archive");
+  const home = path.join(root, "myrmidon");
+  const archiveRoot = path.join(home, "archive");
   fs.mkdirSync(archiveRoot, { recursive: true });
   const stem = path.join(archiveRoot, `${KEY}-${ts}`);
   git(src.copy, "bundle", "create", `${stem}.bundle`, BRANCH);
   fs.writeFileSync(`${stem}.patch`, spawnSync("git", ["diff", "HEAD"], { cwd: src.copy, encoding: "utf8" }).stdout);
   const tar = spawnSync("tar", ["-cf", `${stem}.untracked.tar`, "app.js", "scratchpad"], { cwd: src.copy, encoding: "utf8" });
   assert.equal(tar.status, 0, tar.stderr);
-  const manifest = {
-    version: 1,
-    archives: [
-      {
-        key: KEY,
-        repo: REPO,
-        bundle: `${stem}.bundle`,
-        patch: `${stem}.patch`,
-        untrackedTar: `${stem}.untracked.tar`,
-        createdAt: "2026-10-06T15:00:00Z",
-      },
-    ],
-  };
-  fs.writeFileSync(path.join(archiveRoot, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
-  return { bundle: `${stem}.bundle`, patch: `${stem}.patch`, untrackedTar: `${stem}.untracked.tar`, manifest };
+  writeRegistry(home, [{ key: KEY, repo: REPO, path: path.join(root, "workspace", KEY), class: "E", branch: BRANCH, openedAt: "2026-10-06T15:00:00Z" }]);
+  return { bundle: `${stem}.bundle`, patch: `${stem}.patch`, untrackedTar: `${stem}.untracked.tar` };
+}
+
+function writeRegistry(home, entries) {
+  fs.mkdirSync(home, { recursive: true });
+  fs.writeFileSync(path.join(home, "ws-registry.json"), `${JSON.stringify({ version: 1, entries }, null, 2)}\n`);
 }
 
 before(() => {
@@ -162,8 +158,10 @@ beforeEach(() => {
     archiveRoot: path.join(home, "archive"),
     workspaceRoot: path.join(root, "workspace"),
     calls,
-    // Fake of lib/open.js (H2b): worktree of a bare base fetched from a local
-    // "origin", registry entry written — the deps contract of the real open.
+    // Fake of lib/open.js (H2b): a bare class-D base under
+    // <home>/git-base/<owner>/<repo>.git with the standard refspec (so
+    // refs/remotes/origin/* exist), a worktree of it, registry entry
+    // written — the deps contract of the real open.
     async open(request) {
       calls.push(request);
       const base = path.join(home, "git-base", `${request.repo}.git`);
@@ -176,10 +174,7 @@ beforeEach(() => {
       const dir = path.join(root, "workspace", request.key);
       fs.mkdirSync(path.dirname(dir), { recursive: true });
       git(base, "worktree", "add", "-q", "--no-track", "-b", `bot/${request.key}`, dir, "refs/remotes/origin/main");
-      fs.writeFileSync(
-        path.join(home, "ws-registry.json"),
-        `${JSON.stringify({ version: 1, entries: [{ key: request.key, repo: request.repo, path: dir, class: "E", branch: `bot/${request.key}`, openedAt: "2026-10-07T01:00:00Z" }] }, null, 2)}\n`,
-      );
+      writeRegistry(home, [{ key: request.key, repo: request.repo, path: dir, class: "E", branch: `bot/${request.key}`, openedAt: "2026-10-07T01:00:00Z" }]);
       return { ok: true, key: request.key, path: dir, class: "E", repo: request.repo, branch: `bot/${request.key}`, reused: false };
     },
   };
@@ -242,7 +237,7 @@ describe("myr-ws restore — usage", () => {
 });
 
 describe("myr-ws restore — archive selection", () => {
-  it("no manifest -> exit 6, nothing created", async () => {
+  it("no archive directory -> exit 6, nothing created", async () => {
     const r = await run([KEY, "--json"]);
     assert.equal(r.exitCode, 6);
     const e = copyOf(r);
@@ -252,37 +247,37 @@ describe("myr-ws restore — archive selection", () => {
     assert.equal(fs.existsSync(path.join(ctx.workspaceRoot, KEY)), false);
   });
 
-  it("manifest without the key -> exit 6", async () => {
+  it("no bundle for the key -> exit 6", async () => {
     fs.mkdirSync(ctx.archiveRoot, { recursive: true });
-    fs.writeFileSync(path.join(ctx.archiveRoot, "manifest.json"), JSON.stringify({ version: 1, archives: [] }));
+    fs.writeFileSync(path.join(ctx.archiveRoot, "OTHER-7-20261006T150000Z.bundle"), "x");
     const r = await run([KEY, "--json"]);
     assert.equal(r.exitCode, 6);
+    assert.match(copyOf(r).error, /no archive of ABC-101/);
     assert.equal(ctx.calls.length, 0);
   });
 
-  it("bundle path outside the archive root -> exit 6, nothing created", async () => {
-    fs.mkdirSync(ctx.archiveRoot, { recursive: true });
-    fs.writeFileSync(
-      path.join(ctx.archiveRoot, "manifest.json"),
-      JSON.stringify({ version: 1, archives: [{ key: KEY, repo: REPO, bundle: "/etc/passwd", createdAt: "2026-10-06T15:00:00Z" }] }),
-    );
+  it("no registry entry for the key -> exit 6, nothing created", async () => {
+    const src = buildSourceCopy(ctx.root);
+    archiveCopy(ctx.root, src, "20261006T150000Z");
+    fs.rmSync(path.join(ctx.home, "ws-registry.json"));
     const r = await run([KEY, "--json"]);
     assert.equal(r.exitCode, 6);
-    assert.match(copyOf(r).error, /outside/);
+    assert.match(copyOf(r).error, /no registry entry for ABC-101/);
     assert.equal(ctx.calls.length, 0);
+    assert.equal(fs.existsSync(path.join(ctx.workspaceRoot, KEY)), false);
   });
 
-  it("bundle missing on disk -> exit 6", async () => {
-    fs.mkdirSync(ctx.archiveRoot, { recursive: true });
-    const ghost = path.join(ctx.archiveRoot, `${KEY}-20261006T150000Z.bundle`);
-    fs.writeFileSync(
-      path.join(ctx.archiveRoot, "manifest.json"),
-      JSON.stringify({ version: 1, archives: [{ key: KEY, repo: REPO, bundle: ghost, createdAt: "2026-10-06T15:00:00Z" }] }),
-    );
+  it("the newest timestamp wins", async () => {
+    const src = buildSourceCopy(ctx.root);
+    const older = archiveCopy(ctx.root, src, "20261006T150000Z");
+    // an older-looking bundle of the same key, corrupt — it must be ignored
+    fs.writeFileSync(path.join(ctx.archiveRoot, `${KEY}-20261005T090000Z.bundle`), "garbage\n");
+    fs.rmSync(src.copy, { recursive: true, force: true });
+    git(src.base, "worktree", "prune");
+
     const r = await run([KEY, "--json"]);
-    assert.equal(r.exitCode, 6);
-    assert.match(copyOf(r).error, /missing on disk/);
-    assert.equal(ctx.calls.length, 0);
+    assert.equal(r.exitCode, 0, r.stderr);
+    assert.equal(copyOf(r).restoredFrom, older.bundle);
   });
 });
 
@@ -337,6 +332,29 @@ describe("myr-ws restore — happy path and idempotence", () => {
     assert.match(copyOf(r).error, /never overwrites/);
     assert.equal(fs.readFileSync(path.join(occupied, "mine.txt"), "utf8"), "precious\n");
     assert.equal(ctx.calls.length, 0, "open must not be called");
+  });
+
+  it("a bot/<KEY> branch in the base at a different commit is never clobbered (exit 6, nothing touched)", async () => {
+    const src = buildSourceCopy(ctx.root);
+    archiveCopy(ctx.root, src, "20261006T150000Z");
+    // Simulate a branch left in the base by a copy closed without archiving:
+    // the fake open's base gets bot/<KEY> at the origin tip (≠ archive head).
+    const homeBase = path.join(ctx.home, "git-base", `${REPO}.git`);
+    fs.mkdirSync(path.dirname(homeBase), { recursive: true });
+    git(path.dirname(homeBase), "clone", "-q", "--bare", `file://${path.join(ctx.root, "seed")}`, homeBase);
+    git(homeBase, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*");
+    git(homeBase, "fetch", "-q", "origin");
+    const originTip = git(homeBase, "rev-parse", "refs/remotes/origin/main");
+    git(homeBase, "branch", BRANCH, originTip);
+    fs.rmSync(src.copy, { recursive: true, force: true });
+    git(src.base, "worktree", "prune");
+
+    const r = await run([KEY, "--json"]);
+    assert.equal(r.exitCode, 6);
+    assert.match(copyOf(r).error, /already exists in the base/);
+    assert.equal(ctx.calls.length, 0, "open must not be called");
+    assert.equal(fs.existsSync(path.join(ctx.workspaceRoot, KEY)), false);
+    assert.equal(git(homeBase, "rev-parse", `refs/heads/${BRANCH}`), originTip, "branch left untouched");
   });
 });
 
