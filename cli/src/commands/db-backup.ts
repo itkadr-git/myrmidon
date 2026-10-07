@@ -77,6 +77,12 @@ export async function dbBackupCommand(opts: DbBackupOptions): Promise<void> {
       filenamePrefix,
     });
     spinner.stop(`Backup saved: ${formatDatabaseBackupResult(result)}`);
+    // myrmidon(SHARED-PG-BACKUP): the engine reports non-fatal diagnostics
+    // (e.g. a pg_dump client older than a shared PostgreSQL 18 server that
+    // forced the JavaScript fallback); keep them visible in the CLI output.
+    for (const warning of result.warnings ?? []) {
+      p.log.warn(pc.yellow(warning));
+    }
 
     if (opts.json) {
       console.log(
@@ -88,6 +94,9 @@ export async function dbBackupCommand(opts: DbBackupOptions): Promise<void> {
             backupDir,
             retentionDays,
             connectionSource: connection.source,
+            // myrmidon(SHARED-PG-BACKUP): keep diagnostics machine-readable
+            // for scheduled-backup log collectors.
+            ...(result.warnings?.length ? { warnings: result.warnings } : {}),
           },
           null,
           2,
