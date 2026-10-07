@@ -56,6 +56,8 @@ function pruneCloudTenantWriteDebounce(
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
 import { forbidden, unauthorized, unprocessable } from "../errors.js";
+// myrmidon(1.7-ACTIVE-CHANNEL): a session request marks the owner active in the portal.
+import { touchWebActivityBestEffort } from "../myrmidon/owner-active-channel/store.js";
 
 export { isCloudManagedInstance } from "../services/cloud-instance.js";
 
@@ -289,6 +291,10 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
             runId: runIdHeader ?? undefined,
             source: "session",
           };
+          // myrmidon(1.7-ACTIVE-CHANNEL): a portal session request is the
+          // owner's `web` touch. Debounced and fire-and-forget: the request
+          // never waits on it and a failed write never fails the request.
+          touchWebActivityBestEffort(db, userId);
           next();
           return;
         }

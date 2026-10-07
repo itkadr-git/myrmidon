@@ -62,6 +62,9 @@ import {
 // percent of the model window, fallback window, optimizer agent) stored in the
 // same general settings row.
 import { promptBudgetSettingsSchema } from "../myrmidon-prompt-budget.js";
+// myrmidon(1.7-ACTIVE-CHANNEL): the owner active-channel inactivity threshold,
+// stored in the same general settings row.
+import { ownerActiveChannelSettingsSchema } from "../myrmidon-owner-active-channel.js";
 
 // myrmidon(1.6.5 BOT-RUNTIME-TUNING D2): the fallback-signal settings (switch,
 // threshold percent, minimum calls, window and sweep interval) stored in the
@@ -207,6 +210,10 @@ export const instanceGeneralSettingsSchema = z.object({
   // message (on/off and the minimum spacing between edits), changed from
   // /api/myrmidon/telegram-dm-progress; absent means the defaults.
   telegramDmProgress: telegramDmProgressSettingsSchema.optional(),
+  // myrmidon(1.7-ACTIVE-CHANNEL): the owner active-channel inactivity
+  // threshold, changed from /api/myrmidon/owner/active-channel; absent means
+  // "use the environment override, then the default".
+  ownerActiveChannel: ownerActiveChannelSettingsSchema.optional(),
   // myrmidon(MEMORY-UI): agent card Memory tab — service address, optional key
   // secret name and the switch, changed from the instance settings page and
   // /api/myrmidon/agent-memory; absent means "use the environment".

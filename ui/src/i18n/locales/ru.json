@@ -100,7 +100,6 @@
       "badge": "Решений ждёт: {{count}}"
     },
     "owner": "Владелец",
-    "ownerChannel": "Web · сейчас",
     "commander": {
       "aria": "Сказать Полководцу (Ctrl K)",
       "placeholder": "Сказать Полководцу…",
@@ -133,6 +132,13 @@
       "guards": "Ограждения",
       "castes": "Касты и модели",
       "system": "Система"
+    },
+    "shell": {
+      "activeChannel": {
+        "web": "Активен · Веб",
+        "telegram": "Активен · Telegram",
+        "none": "Давно не появлялся"
+      }
     }
   },
   "connectorPanel": {

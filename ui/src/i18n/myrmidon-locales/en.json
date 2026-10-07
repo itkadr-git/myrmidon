@@ -876,6 +876,24 @@
     "loadFailed": "Failed to load the live progress settings.",
     "saveFailed": "Saving the live progress settings failed."
   },
+  "ownerActiveChannel": {
+    "title": "Owner active channel",
+    "description": "Reports and plan answers go to the channel the owner used last: the portal or Telegram. A channel stays active until the owner is silent in it for longer than the threshold. Saving takes effect at the next delivery decision — no server restart.",
+    "currentLabel": "Owner is active in:",
+    "channelWeb": "Portal (Web)",
+    "channelTelegram": "Telegram",
+    "channelNone": "no channel — reports keep their standing rules",
+    "thresholdLabel": "Inactivity threshold, minutes",
+    "thresholdBounds": "{{min}}–{{max}} min",
+    "sourceSettings": "Saved here",
+    "sourceEnv": "Forced by the server environment",
+    "sourceDefault": "Default",
+    "save": "Save threshold",
+    "saving": "Saving...",
+    "loading": "Loading the active-channel settings...",
+    "loadFailed": "Failed to load the active-channel settings.",
+    "saveFailed": "Saving the active-channel settings failed."
+  },
   "evalResults": {
     "title": "Reference-task results",
     "subtitle": "Judge scores per reference task for the chosen run. The badge marks results whose judge comes from the same model family as the evaluated agent.",

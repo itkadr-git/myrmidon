@@ -23,6 +23,7 @@ import { BudgetEnforcementSettingsPanel } from "@/components/myrmidon/BudgetEnfo
 import { AgentExchangeSettingsPanel } from "@/components/myrmidon/AgentExchangeSettingsPanel"; // myrmidon(1.7-AGENT-EXCHANGE-A)
 import { TelegramDmProgressSettingsPanel } from "@/components/myrmidon/TelegramDmProgressSettingsPanel"; // myrmidon(DM-PROGRESS)
 import { DebateSettingsPanel } from "@/components/myrmidon/DebateSettingsPanel"; // myrmidon(1.7-DEBATE-ASYM-A)
+import { OwnerActiveChannelSettingsPanel } from "@/components/myrmidon/OwnerActiveChannelSettingsPanel"; // myrmidon(1.7-ACTIVE-CHANNEL)
 import { HostDiskSettingsPanel } from "@/components/myrmidon/HostDiskSettingsPanel"; // myrmidon(BOT-DISK E)
 import { PromptBudgetSettingsPanel } from "@/components/myrmidon/PromptBudgetSettingsPanel"; // myrmidon(1.6.3 PROMPT-BUDGET B)
 import { BotDiskSettingsPanel } from "@/components/myrmidon/BotDiskSettingsPanel"; // myrmidon(1.6.1-BOT-DISK-B)
@@ -165,6 +166,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       <AgentExchangeSettingsPanel /> {/* myrmidon(1.7-AGENT-EXCHANGE-A) */}
       <TelegramDmProgressSettingsPanel /> {/* myrmidon(DM-PROGRESS) */}
       <DebateSettingsPanel /> {/* myrmidon(1.7-DEBATE-ASYM-A) */}
+      <OwnerActiveChannelSettingsPanel /> {/* myrmidon(1.7-ACTIVE-CHANNEL) */}
       <HostDiskSettingsPanel /> {/* myrmidon(BOT-DISK E) */}
       <PromptBudgetSettingsPanel /> {/* myrmidon(1.6.3 PROMPT-BUDGET B) */}
       <BotDiskSettingsPanel /> {/* myrmidon(1.6.1-BOT-DISK-B) */}

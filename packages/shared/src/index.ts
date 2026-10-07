@@ -2868,6 +2868,10 @@ export * from "./myrmidon-plugin-entitlement.js";
 // status message — storage key, precedence and resolver.
 export * from "./myrmidon-telegram-dm-progress.js";
 
+// myrmidon(1.7-ACTIVE-CHANNEL): the owner's active channel (portal vs
+// Telegram) — activity store contract, threshold settings and resolver.
+export * from "./myrmidon-owner-active-channel.js";
+
 // myrmidon(1.6.1 MODEL-PROVIDERS): provider secret names, defaults and API schemas.
 export * from "./myrmidon-model-providers.js";
 // myrmidon(REVIEW-ROUTING): automatic reviewer routing for tasks that enter

@@ -79,6 +79,6 @@
 
 - Точка вызова: `server/src/services/chat-interaction-publications.ts`
   (метка `myrmidon(U2)`, после вендорского поиска биндингов).
-- Поиск биндингов: `server/src/myrmidon/owner-delivery/telegram-owner-bindings.ts`.
+- Поиск биндингов: `server/src/myrmidon/owner-active-channel/owner-delivery-gate.ts` (с 1.7-ACTIVE-CHANNEL; там же выбор активного канала).
 - Резолюция колбэков: `server/src/myrmidon/owner-delivery/callback-interaction-lookup.ts`.
 - Запись о поведении: [../DIVERGENCE.md](../DIVERGENCE.md), строка U2.

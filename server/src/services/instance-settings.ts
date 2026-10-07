@@ -73,6 +73,9 @@ import { preserveGitHubSharedIdentityGeneralKey } from "../myrmidon/github-share
 import { preserveBudgetProjectionGeneralKey } from "../myrmidon/litellm-budget-sync/settings.js"; // myrmidon(1.7-BUDGET-CONFIG-C)
 // myrmidon(BOT-RUNTIME-TUNING D2): keep the fallback-signal settings across vendor writes of `general`
 import { preserveFallbackSignalGeneralKey } from "../myrmidon/litellm-fallback-signal/settings.js";
+
+// myrmidon(1.7-ACTIVE-CHANNEL): the owner active-channel threshold survives vendor general writes.
+import { preserveOwnerActiveChannelGeneralKey } from "../myrmidon/owner-active-channel/settings.js";
 import { getManagedInstanceConfig, type ManagedInstanceConfig } from "./managed-config.js";
 import { getOperatorSettingDefaults } from "./setting-defaults.js";
 
@@ -330,6 +333,9 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // general settings page. Without this line the normalizer drops the key, so a
       // PATCH would not roundtrip and the run dispatch would never read the row.
       ...(parsed.data.sessions ? { sessions: parsed.data.sessions } : {}),
+      // myrmidon(1.7-ACTIVE-CHANNEL): the stored owner active-channel threshold
+      // survives every general write (edited on its own settings block).
+      ...(parsed.data.ownerActiveChannel ? { ownerActiveChannel: parsed.data.ownerActiveChannel } : {}),
     };
   }
   return {
@@ -693,6 +699,12 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
             ...preserveGitHubSharedIdentityGeneralKey(current.general), // myrmidon(GITHUB-SHARED-IDENTITY)
             ...preserveBudgetProjectionGeneralKey(current.general), // myrmidon(1.7-BUDGET-CONFIG-C)
             ...preserveBotImageRolloutGeneralKey(current.general), // myrmidon(BOT-ROLLOUT)
+
+            ...preserveOwnerActiveChannelGeneralKey(current.general), // myrmidon(1.7-ACTIVE-CHANNEL)
+            // The preserve line above restores the stored value: a patch that carries the key wins.
+            ...(patch.ownerActiveChannel !== undefined
+              ? { ownerActiveChannel: nextGeneral.ownerActiveChannel }
+              : {}),
           },
           updatedAt: now,
         })

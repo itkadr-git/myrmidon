@@ -228,6 +228,8 @@ export {
   myrmidonScopeSettings,
   myrmidonScopeAgentPrefs,
 } from "./myrmidon_bot_scope.js";
+// myrmidon(1.7-ACTIVE-CHANNEL): the owner's last activity per channel (portal / Telegram).
+export { myrmidonOwnerActivity } from "./myrmidon_owner_activity.js";
 export { myrmidonFleetServers } from "./myrmidon_fleet_servers.js"; // myrmidon(SC1): fleet-server registry for the browser console
 // myrmidon(1.6-SWARM): leases of the per-role task queues.
 export { issueClaims } from "./issue_claims.js";
