@@ -1,0 +1,19 @@
+#!/opt/node24/bin/node
+"use strict";
+// myrmidon(1.6.5 BOT-DISK-H2a): myr-ws entry point. The CLI frame and the
+// class-D base live in lib/; see docs/myrmidon/bot-disk-contract (C1, C2).
+
+const path = require("node:path");
+const { run } = require(path.join(__dirname, "lib", "cli.js"));
+
+run(process.argv.slice(2)).then(
+  (r) => {
+    if (r.stdout) process.stdout.write(r.stdout);
+    if (r.stderr) process.stderr.write(r.stderr);
+    process.exitCode = r.exitCode;
+  },
+  (e) => {
+    process.stderr.write(`myr-ws: ${(e && e.message) || e}\n`);
+    process.exitCode = 1;
+  },
+);
