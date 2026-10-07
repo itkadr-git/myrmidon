@@ -458,6 +458,11 @@ describe("execute", () => {
   it.each([
     ["no workspace context", undefined, "ABC-101"],
     ["empty repo url", { repoUrl: "" }, "ABC-101"],
+    ["a gitlab.com repo url", { repoUrl: "https://gitlab.com/acme/widgets.git" }, "ABC-101"],
+    ["a gitlab.com scp repo url", { repoUrl: "git@gitlab.com:acme/widgets.git" }, "ABC-101"],
+    ["a look-alike host github.com.evil.example", { repoUrl: "https://github.com.evil.example/acme/widgets" }, "ABC-101"],
+    ["a look-alike scp host github.com.evil.example", { repoUrl: "git@github.com.evil.example:acme/widgets.git" }, "ABC-101"],
+    ["a plain http github.com url", { repoUrl: "http://github.com/acme/widgets" }, "ABC-101"],
     ["a repo url that is not owner/name", { repoUrl: "https://github.com/acme" }, "ABC-101"],
     ["an issue identifier that is not a board key", { repoUrl: "https://github.com/acme/widgets" }, "not a key"],
   ])("omits the workspace field for %s", async (_label, workspace, identifier) => {

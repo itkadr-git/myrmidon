@@ -442,7 +442,7 @@ function buildGitHubBrokerField(
 // `runWorkspaceFieldSchema` of @paperclipai/shared (this package does not
 // depend on it; execute.test.ts checks the output against the real schema).
 // key: the board identifier of the run's issue; repo: `owner/name` derived
-// from the project workspace's repo URL (https, ssh:// or scp-like GitHub
+// from the project workspace's repo URL (github.com only: https, ssh:// or scp-like
 // form, userinfo/.git stripped); baseRef: the workspace's repoRef when it is a
 // valid git ref. A task without a usable repository or issue key yields
 // undefined — the field is then absent and the bot works in /scratch.
@@ -451,16 +451,22 @@ const WS_REPO_NAME_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const WS_GIT_REF_RE = /^[^\s~^:?*[\]\\]+$/;
 
 function deriveWorkspaceRepoName(repoUrl: string): string | null {
+  // Only github.com is accepted (myr-ws fetches from github.com): any other
+  // host, including look-alikes such as github.com.evil.example, yields null.
   let path: string | null = null;
-  const scp = /^(?:[^@/\s]+@)?[^:/\s]+:(?!\/\/)(.+)$/.exec(repoUrl);
+  const scp = /^(?:[^@/\s]+@)?([^:/\s]+):(?!\/\/)(.+)$/.exec(repoUrl);
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(repoUrl)) {
     try {
-      path = new URL(repoUrl).pathname;
+      const url = new URL(repoUrl);
+      if (url.protocol !== "https:" && url.protocol !== "ssh:") return null;
+      if (url.hostname.toLowerCase() !== "github.com") return null;
+      path = url.pathname;
     } catch {
       return null;
     }
   } else if (scp) {
-    path = scp[1];
+    if (scp[1].toLowerCase() !== "github.com") return null;
+    path = scp[2];
   }
   if (!path) return null;
   const parts = path.replace(/^\/+|\/+$/g, "").replace(/\.git$/i, "").split("/");
