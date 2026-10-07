@@ -22,6 +22,8 @@ import { readConfigFile } from "../config-file.js";
 import { PRODUCT_NAME } from "../myrmidon/product.js";
 // myrmidon(U2): owner-delivery bindings for tasks without their own chat thread.
 import { telegramOwnerDeliveryBindings } from "../myrmidon/owner-delivery/telegram-owner-bindings.js";
+// myrmidon(1.6.5-OWNER-DM-FILTER): human-readable owner-DM card text (U2 branch only).
+import { ownerDeliveryCardText } from "../myrmidon/owner-delivery/owner-card-text.js";
 import { projectSafeChatPublication } from "./chat-publication-projection.js";
 import { safeChatTaskUrl } from "./chat-task-url.js";
 import {
@@ -299,12 +301,20 @@ export async function enqueueIssueInteractionChatPublications(
   // authoring agent (the X8b bridge) instead of leaving it board-only. The
   // vendor's own bindings, when present, always win; this is additive.
   if (bindings.length === 0) {
+    // myrmidon(1.6.5-OWNER-DM-FILTER): the filter lives inside
+    // telegramOwnerDeliveryBindings and consumes the interaction's
+    // vendor-computed audience fields; non-human-addressed cards stay
+    // board-only (bindings stay empty) under the default mode.
     bindings = await telegramOwnerDeliveryBindings(db, {
       companyId: interaction.companyId,
       issueId: interaction.issueId,
       createdByAgentId: interaction.createdByAgentId,
+      effectiveResolverPolicy: interaction.effectiveResolverPolicy,
+      addresseeAgentId: interaction.addresseeAgentId,
+      addresseeUserId: interaction.addresseeUserId,
     });
   }
+  const ownerDeliveryBranch = vendorBindings.length === 0 && bindings.length > 0; // myrmidon(1.6.5-OWNER-DM-FILTER): the card reached the owner DM through the U2 fallback, so its text gets the human-readable prefix below.
   if (bindings.length === 0) return [];
 
   const taskUrl = publicChatInteractionTaskUrl(interaction.issueId);
@@ -397,10 +407,17 @@ export async function enqueueIssueInteractionChatPublications(
                 },
               ]
             : [];
-    const text =
+    // myrmidon(1.6.5-OWNER-DM-FILTER): on the owner-DM branch (U2) the card
+    // speaks to a human owner, so the text gets a short human-readable prefix
+    // built from the interaction's own fields. The vendor text functions stay
+    // untouched — vendor bindings keep the vendor text byte-for-byte.
+    const vendorText =
       interaction.kind === "ask_user_questions"
         ? textForQuestionInteraction(interaction, taskUrl)
         : genericInteractionText(taskUrl);
+    const text = ownerDeliveryBranch
+      ? ownerDeliveryCardText(interaction, vendorText)
+      : vendorText;
     const payload = projectSafeChatPublication({
       classification: "external",
       source: "issue_interaction",

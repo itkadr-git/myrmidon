@@ -4,14 +4,37 @@
 // already enqueues stays untouched; this only adds bindings the vendor cannot
 // know about. See docs/myrmidon/DIVERGENCE.md, track 4 (U2).
 import { and, eq, inArray } from "drizzle-orm";
-import { chatConversations, chatEndpoints, issues } from "@paperclipai/db";
+import { chatConversations, chatEndpoints, instanceSettings, issues } from "@paperclipai/db";
 import type { Db } from "@paperclipai/db";
+import {
+  OWNER_DELIVERY_DEFAULT_MODE,
+  OWNER_DELIVERY_SETTINGS_KEY,
+  normalizeOwnerDeliverySettings,
+  ownerDeliveryAllowsCard,
+  type OwnerDeliveryMode,
+} from "@paperclipai/shared";
 import { telegramConversationUserId } from "../agent-chat-bridge/identity.js";
 
 /** Bindings the owner-delivery extension may hand back to the publication path. */
 export interface OwnerDeliveryBinding {
   conversation: typeof chatConversations.$inferSelect;
   endpoint: typeof chatEndpoints.$inferSelect;
+}
+
+/**
+ * myrmidon(1.6.5-OWNER-DM-FILTER): the stored filter mode of the singleton
+ * instance settings row (instance_settings is a singleton table — no company
+ * scoping on the row itself; the mode applies to every company).
+ */
+async function ownerDeliveryMode(db: OwnerDeliveryDb): Promise<OwnerDeliveryMode> {
+  const row = await db
+    .select({ general: instanceSettings.general })
+    .from(instanceSettings)
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  if (!row) return OWNER_DELIVERY_DEFAULT_MODE;
+  const general = (row.general ?? {}) as Record<string, unknown>;
+  return normalizeOwnerDeliverySettings(general[OWNER_DELIVERY_SETTINGS_KEY]).mode;
 }
 
 type OwnerDeliveryDb = Pick<Db, "select">;
@@ -35,6 +58,11 @@ export async function telegramOwnerDeliveryBindings(
     companyId: string;
     issueId: string;
     createdByAgentId: string | null | undefined;
+    // myrmidon(1.6.5-OWNER-DM-FILTER): the interaction's vendor-computed
+    // audience fields; the filter consumes them as-is (no recomputation).
+    effectiveResolverPolicy?: string | null;
+    addresseeAgentId?: string | null;
+    addresseeUserId?: string | null;
   },
 ): Promise<OwnerDeliveryBinding[]> {
   if (!input.createdByAgentId) return [];
@@ -65,6 +93,27 @@ export async function telegramOwnerDeliveryBindings(
   const ownerUserId =
     issue.responsibleUserId ?? issue.createdByUserId ?? null;
   if (!ownerUserId) return [];
+
+  // myrmidon(1.6.5-OWNER-DM-FILTER): the audience gate. An agent-addressed
+  // card is operational traffic between agents — never an owner decision,
+  // regardless of the resolver policy. Under the default mode the owner's DM
+  // receives only human-addressed cards; "all" restores the old behaviour.
+  const mode = await ownerDeliveryMode(db);
+  const addressedToAgent =
+    input.addresseeAgentId !== null && input.addresseeAgentId !== undefined;
+  if (
+    !ownerDeliveryAllowsCard({
+      mode,
+      effectiveResolverPolicy:
+        addressedToAgent
+          ? "agent_addressee"
+          : (input.effectiveResolverPolicy ?? ""),
+      addresseeUserId: addressedToAgent ? null : input.addresseeUserId,
+      ownerUserId,
+    })
+  ) {
+    return [];
+  }
 
   const rows = await db
     .select({
