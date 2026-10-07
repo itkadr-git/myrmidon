@@ -473,6 +473,31 @@ describe("execute", () => {
     expect("workspace" in body).toBe(false);
   });
 
+  it("falls back to the instance default repository when the project gives none, without a baseRef", async () => {
+    for (const workspace of [undefined, { repoUrl: "" }, { repoUrl: "https://gitlab.com/acme/widgets.git", repoRef: "main" }]) {
+      const ctx = makeCtx(wsBaseConfig);
+      ctx.context.paperclipWake = { issue: { identifier: "ABC-101" } };
+      if (workspace) ctx.context.paperclipWorkspace = workspace;
+      ctx.context.paperclipBotDiskDefaultRepo = "itkadr-git/myrmidon";
+      const body = await runAndReadBody(ctx);
+      expect(body.workspace).toEqual({ key: "ABC-101", repo: "itkadr-git/myrmidon" });
+      expect(runWorkspaceFieldSchema.safeParse(body.workspace).success).toBe(true);
+    }
+  });
+
+  it("prefers the project repository over the default, and ignores an invalid default", async () => {
+    const withBoth = makeCtx(wsBaseConfig);
+    withBoth.context.paperclipWake = { issue: { identifier: "ABC-101" } };
+    withBoth.context.paperclipWorkspace = { repoUrl: "https://github.com/acme/widgets", repoRef: "main" };
+    withBoth.context.paperclipBotDiskDefaultRepo = "itkadr-git/myrmidon";
+    expect((await runAndReadBody(withBoth)).workspace).toEqual(fixture);
+
+    const invalid = makeCtx(wsBaseConfig);
+    invalid.context.paperclipWake = { issue: { identifier: "ABC-101" } };
+    invalid.context.paperclipBotDiskDefaultRepo = "not a repo";
+    expect("workspace" in (await runAndReadBody(invalid))).toBe(false);
+  });
+
   it("drops an invalid baseRef instead of sending a body the gateway would reject", async () => {
     const ctx = makeCtx(wsBaseConfig);
     ctx.context.paperclipWake = { issue: { identifier: "ABC-101" } };

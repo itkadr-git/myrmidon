@@ -23,9 +23,16 @@ assert.ok(variantStart > 0, "Dockerfile must define the node_dist stage of the N
 // The development variant (runtime-dev) is a third final stage. The Node.js
 // variant test must stop before it: the dev stage legitimately runs as root
 // while it installs toolchains, which the Node.js variant must never do.
-const devVariantStart = dockerfile.indexOf("FROM python:3.13-slim AS node24_dist");
-assert.ok(devVariantStart > 0, "Dockerfile must define the node24_dist stage of the development variant");
+// (myrmidon 1.6.5 BOT-DISK-H: the `node24_dist` helper stage now sits before `runtime`,
+// because the workspace mechanism of every variant runs on it; the dev-only helper
+// stages start at `go_dist`.)
+const devVariantStart = dockerfile.indexOf("FROM python:3.13-slim AS go_dist");
+assert.ok(devVariantStart > 0, "Dockerfile must define the go_dist stage of the development variant");
 assert.ok(devVariantStart > variantStart, "the development variant must follow the Node.js variant stages");
+const node24StageStart = dockerfile.indexOf("FROM python:3.13-slim AS node24_dist");
+const runtimeStageStart = dockerfile.indexOf("FROM python:3.13-slim AS runtime\n");
+assert.ok(node24StageStart > 0 && node24StageStart < runtimeStageStart, "Dockerfile must define the node24_dist stage before the runtime stage");
+const node24Stage = dockerfile.slice(node24StageStart, runtimeStageStart);
 const dockerfileInstructions = dockerfile
   .slice(0, variantStart)
   .split("\n")
@@ -90,7 +97,16 @@ describe("docker/bot-runtime/Dockerfile", () => {
     // ends. Every other stage — and the finished dev image — runs as 10001:10001.
     const beforeDevVariant = dockerfile.slice(0, dockerfile.indexOf("Variant `runtime-dev`"));
     assert.ok(beforeDevVariant.length > 0, "expected the runtime/node stages before the development variant");
-    assert.doesNotMatch(beforeDevVariant, /^USER root$/m);
+    // myrmidon(1.6.5 BOT-DISK-H): the base `runtime` stage also switches to root, to install
+    // the workspace mechanism (git wrapper, myr-ws, botd); it must return to the contract
+    // user before it ends. The Node.js variant stage never uses root.
+    const runtimeStage = beforeDevVariant.slice(
+      beforeDevVariant.indexOf("FROM python:3.13-slim AS runtime\n"),
+      beforeDevVariant.indexOf("FROM python:3.13-slim AS node_dist"),
+    );
+    assert.ok(runtimeStage.length > 0, "expected the runtime stage");
+    assert.ok(runtimeStage.lastIndexOf("USER 10001:10001") > runtimeStage.lastIndexOf("USER root"), "the runtime stage must return to the contract user after root");
+    assert.doesNotMatch(beforeDevVariant.slice(beforeDevVariant.indexOf("FROM runtime AS runtime-node")), /^USER root$/m);
     assert.doesNotMatch(dockerfile, /^USER 0(:0)?$/m);
   });
 
@@ -387,8 +403,12 @@ describe("docker/bot-runtime/patches/", () => {
     // those two files together with it. Neither the Node.js variant nor the development
     // variant is a browser, and neither may carry one: the check below reaches both of
     // them, and the main image (checked against `dockerfileInstructions`, which stops at
-    // the first variant stage) still ships no Node at all.
-    assert.doesNotMatch(dockerfileInstructions, /chromium|playwright|agent-browser|nodejs|\bnpm\b|\bnpx\b/i);
+    // the first variant stage) ships no npm and no browser.
+    // The main image carries Node 24 only for the workspace mechanism (/opt/node24, from the
+    // node24_dist helper stage, which is excluded here): no npm, no browser.
+    const mainImageInstructions = dockerfileInstructions.slice(dockerfileInstructions.indexOf("FROM python:3.13-slim AS runtime"));
+    assert.ok(mainImageInstructions.length > 0, "expected the runtime stage in the main image");
+    assert.doesNotMatch(mainImageInstructions, /chromium|playwright|agent-browser|nodejs|\bnpm\b|\bnpx\b/i);
     const variants = dockerfile.slice(variantStart).split("\n").filter((l) => !l.trim().startsWith("#")).join("\n");
     assert.doesNotMatch(variants, /chromium|playwright|agent-browser|puppeteer/i);
   });
@@ -442,7 +462,7 @@ describe("docker/bot-runtime/Dockerfile (development variant)", () => {
   // Everything from the first stage that belongs to the development variant
   // (the helper download stages plus the `runtime-dev` stage itself). Used for
   // cross-stage assertions such as "every download is pinned".
-  const devVariant = dockerfile.slice(dockerfile.indexOf("FROM python:3.13-slim AS node24_dist"));
+  const devVariant = node24Stage + dockerfile.slice(devVariantStart);
   const devInstructions = devVariant.split("\n").filter((l) => !l.trim().startsWith("#")).join("\n");
   // Only the final stage, for assertions about what the finished image is
   // (user, label, PATH, the toolchain check) — the helper stages are throwaway
@@ -625,7 +645,22 @@ describe("myrmidon-bot-image.yml", () => {
   // myrmidon(1.6.5 BOT-DISK-H1c): the real git leaves PATH, the wrapper answers /usr/bin/git.
   describe("real git in libexec (BOT-DISK-H1c)", () => {
     const flat = dockerfile.replace(/\\\n/g, " ");
-    const devStage = flat.slice(flat.indexOf("FROM runtime AS runtime-dev"));
+    // myrmidon(1.6.5 BOT-DISK-H, D9): the mechanism lives in the base `runtime` stage, so
+    // runtime-node and runtime-dev inherit it; the dev stage must not repeat it.
+    const devStage = flat.slice(
+      flat.indexOf("FROM python:3.13-slim AS runtime\n"),
+      flat.indexOf("FROM python:3.13-slim AS node_dist"),
+    );
+    const devOnlyStage = flat.slice(flat.indexOf("FROM runtime AS runtime-dev"));
+
+    it("lives in the base runtime stage only, with node24 and a PATH that reaches botd", () => {
+      assert.match(devStage, /COPY --from=node24_dist --chown=root:root \/opt\/node24 \/opt\/node24/);
+      assert.match(devStage, /^ENV PATH=\/opt\/paperclip\/bin:\$PATH$/m);
+      assert.match(devStage, /sed -i '1s\|\.\*\|#!\/opt\/node24\/bin\/node\|' \/opt\/paperclip\/botd\/botd/);
+      for (const marker of ["dpkg-divert", "COPY --chown=root:root myr-ws/", "COPY --chown=root:root botd/", "git-reference/git", "COPY --from=node24_dist"]) {
+        assert.ok(!devOnlyStage.includes(marker), `${marker} must not be repeated in runtime-dev`);
+      }
+    });
 
     it("moves the Debian git to /opt/paperclip/libexec/git with dpkg-divert and links /usr/bin/git to the wrapper", () => {
       assert.match(devStage, /dpkg-divert --local --rename --divert \/opt\/paperclip\/libexec\/git --add \/usr\/bin\/git/);

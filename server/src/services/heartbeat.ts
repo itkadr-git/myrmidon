@@ -594,6 +594,8 @@ import {
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
 import { extractSkillMentionIds, isUuidLike } from "@paperclipai/shared";
+// myrmidon(1.6.5-BOT-DISK-H4b): general.botDisk.defaultRepo rides the run context.
+import { normalizeStoredBotDiskSettings } from "@paperclipai/shared";
 import { evaluateCodexCredentialReadiness } from "@paperclipai/adapter-codex-local/server";
 import { environmentService } from "./environments.js";
 import { parseExecutionPolicyBootstrapEnv } from "./execution-policy-bootstrap.js";
@@ -22603,6 +22605,17 @@ export function heartbeatService(
         })(),
       };
       context.paperclipWorkspaces = buildRunWorkspaceHints(resolvedWorkspace);
+      // myrmidon(1.6.5-BOT-DISK-H4b): the instance default repository, the gateway
+      // adapter's last-resort source of the run's `workspace.repo` (after the
+      // project workspace). Best effort: a settings read failure leaves it unset.
+      {
+        const defaultRepo = await instanceSettings
+          .getGeneral()
+          .then((general) => normalizeStoredBotDiskSettings((general as unknown as Record<string, unknown>).botDisk).defaultRepo)
+          .catch(() => undefined);
+        if (defaultRepo) context.paperclipBotDiskDefaultRepo = defaultRepo;
+        else delete context.paperclipBotDiskDefaultRepo;
+      }
       // Emit exactly one requested-vs-synced observability line for the referenced-project set. A run
       // with no referenced project stays silent, so this adds no noise to the anchor-only default. The
       // per-drop human warning already rides `runtimeWorkspaceWarnings`; this line carries the counts
