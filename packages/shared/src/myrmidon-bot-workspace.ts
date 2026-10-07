@@ -468,9 +468,47 @@ export const wsBotDiskSettingsSchema = z
     pnpmStoreDir: z.string().min(1).optional(),
     /** How pnpm imports a package into a clone; `clone` = reflink-only. */
     pnpmImportMethod: z.enum(["hardlink", "clone", "clone-or-copy", "copy"]).optional(),
+    /** myrmidon(1.6.5-BOT-DISK-H5c): seconds between two passes of the in-container
+     *  disk daemon (botd). Compiled into the bot profile; absent = the in-image default. */
+    botdIntervalSec: z.number().int().min(30).max(24 * 60 * 60).optional(),
   })
   .passthrough();
 export type WsBotDiskSettings = z.infer<typeof wsBotDiskSettingsSchema>;
+
+/**
+ * myrmidon(1.6.5-BOT-DISK-H5c): the environment variables the profile compiler
+ * writes into the bot's hermes/.env for the BOT-DISK-H mechanics. The values
+ * come from `general.botDisk.*` (C7) with `WS_BOT_DISK_SETTING_DEFAULTS` for a
+ * key the operator never set, so every bot of the instance runs the same
+ * policy and a settings change reaches the bots on the next reconcile pass.
+ *
+ * - `MYRMIDON_WS_*` — the partition-pressure thresholds `myr-ws open` (H2) and
+ *   botd (H3) apply to `disk-state.json` (C1): REFUSE_OPEN is the level above
+ *   which `open` fails with exit 3 (C2), CRITICAL the level at which botd
+ *   reaps without waiting for grace.
+ * - `MYRMIDON_BOTD_*` — botd's own cadence and grace: INTERVAL_SEC between
+ *   passes, GRACE_CLOSING_MINUTES before a `closing` copy is removed,
+ *   SCRATCH_TTL_HOURS the lifetime of a class-G scratch copy.
+ * - `MYRMIDON_BOTD_BOARD_URL`/`MYRMIDON_BOTD_BOARD_KEY_ENV` — where botd reads
+ *   its desired state (C3) and posts its disk report (C4): the same board the
+ *   gateway already points the bot at, and the NAME of the .env variable that
+ *   holds the bot's board key (PAPERCLIP_API_KEY), never the key itself.
+ */
+export const WS_PROFILE_ENV = {
+  partitionThresholdPercent: "MYRMIDON_WS_PARTITION_THRESHOLD_PERCENT",
+  partitionRefuseOpenPercent: "MYRMIDON_WS_PARTITION_REFUSE_OPEN_PERCENT",
+  partitionCriticalPercent: "MYRMIDON_WS_PARTITION_CRITICAL_PERCENT",
+  botdIntervalSec: "MYRMIDON_BOTD_INTERVAL_SEC",
+  graceClosingMinutes: "MYRMIDON_BOTD_GRACE_CLOSING_MINUTES",
+  scratchTtlHours: "MYRMIDON_BOTD_SCRATCH_TTL_HOURS",
+  boardUrl: "MYRMIDON_BOTD_BOARD_URL",
+  boardKeyEnv: "MYRMIDON_BOTD_BOARD_KEY_ENV",
+} as const;
+
+/** The value {@link WS_PROFILE_ENV.boardKeyEnv} always carries: the board key
+ *  the bot already holds for the gateway, so botd authenticates to C3/C4 with
+ *  the same identity. */
+export const WS_BOTD_BOARD_KEY_ENV_VALUE = "PAPERCLIP_API_KEY";
 
 /**
  * Card keys (dedup) of `bot_disk_lifecycle/*` plus the standalone cards this

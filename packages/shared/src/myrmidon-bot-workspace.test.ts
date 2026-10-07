@@ -3,10 +3,12 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { ZodType } from "zod";
+import { botDiskSettingsSchema, resolveBotDiskMechanics } from "./myrmidon-bot-disk.js";
 import {
   MYR_WS_EXIT,
   MYR_WS_QUOTA_ERROR_PREFIX,
   RUN_WORKSPACE_FALLBACK_DIR,
+  WS_BOTD_BOARD_KEY_ENV_VALUE,
   WS_BOT_DISK_SETTING_DEFAULTS,
   WS_CARD_KEYS,
   WS_DISK_REPORT_MAX_ACTIONS,
@@ -15,6 +17,7 @@ import {
   WS_GIT_BASE_FETCH_MIN_INTERVAL_SEC,
   WS_GIT_BASE_LIMIT,
   WS_GIT_BASE_REFSPEC,
+  WS_PROFILE_ENV,
   WS_QUOTA_MAX_BYTES,
   WS_QUOTA_MIN_BYTES,
   runWorkspaceFieldSchema,
@@ -125,5 +128,78 @@ describe("myrmidon(1.6.5-BOT-DISK-H0) contract fixtures", () => {
   it("report caps are the documented ones", () => {
     expect(WS_DISK_REPORT_MAX_BODY_BYTES).toBe(1024 * 1024);
     expect(WS_DISK_REPORT_MAX_ACTIONS).toBe(200);
+  });
+});
+
+// myrmidon(1.6.5-BOT-DISK-H5c): the profile compiler's view of the C7 settings —
+// the names the bots read (WS_PROFILE_ENV) and the resolution of general.botDisk
+// into the mechanics the compiler writes (resolveBotDiskMechanics).
+describe("myrmidon(1.6.5-BOT-DISK-H5c) profile env contract (C7)", () => {
+  it("the profile env names are the pinned contract names", () => {
+    expect(WS_PROFILE_ENV).toEqual({
+      partitionThresholdPercent: "MYRMIDON_WS_PARTITION_THRESHOLD_PERCENT",
+      partitionRefuseOpenPercent: "MYRMIDON_WS_PARTITION_REFUSE_OPEN_PERCENT",
+      partitionCriticalPercent: "MYRMIDON_WS_PARTITION_CRITICAL_PERCENT",
+      botdIntervalSec: "MYRMIDON_BOTD_INTERVAL_SEC",
+      graceClosingMinutes: "MYRMIDON_BOTD_GRACE_CLOSING_MINUTES",
+      scratchTtlHours: "MYRMIDON_BOTD_SCRATCH_TTL_HOURS",
+      boardUrl: "MYRMIDON_BOTD_BOARD_URL",
+      boardKeyEnv: "MYRMIDON_BOTD_BOARD_KEY_ENV",
+    });
+    // botd authenticates with the bot's own board key, referenced by name only.
+    expect(WS_BOTD_BOARD_KEY_ENV_VALUE).toBe("PAPERCLIP_API_KEY");
+  });
+
+  it("the settings schema takes the botd interval beside the C7 keys", () => {
+    const parsed = wsBotDiskSettingsSchema.parse({ botdIntervalSec: 300, graceClosingMinutes: 45 });
+    expect(parsed.botdIntervalSec).toBe(300);
+    expect(wsBotDiskSettingsSchema.safeParse({ botdIntervalSec: 10 }).success).toBe(false);
+  });
+
+  it("resolveBotDiskMechanics fills the C7 defaults and keeps the operator's values", () => {
+    expect(resolveBotDiskMechanics(undefined)).toEqual({
+      graceClosingMinutes: 30,
+      scratchTtlHours: 24,
+      partitionThresholdPercent: 85,
+      partitionRefuseOpenPercent: 90,
+      partitionCriticalPercent: 95,
+    });
+    expect(
+      resolveBotDiskMechanics({
+        graceClosingMinutes: 45,
+        scratchTtlHours: 12,
+        partitionThresholdPercent: 80,
+        partitionRefuseOpenPercent: 88,
+        partitionCriticalPercent: 93,
+        botdIntervalSec: 300,
+        // Neighbouring keys of the same settings row ride along untouched.
+        pnpmStoreDir: "/cache/pnpm-store",
+      }),
+    ).toEqual({
+      graceClosingMinutes: 45,
+      scratchTtlHours: 12,
+      partitionThresholdPercent: 80,
+      partitionRefuseOpenPercent: 88,
+      partitionCriticalPercent: 93,
+      botdIntervalSec: 300,
+    });
+    // Garbage in the row never reaches the profile: invalid values are dropped to the defaults.
+    expect(resolveBotDiskMechanics({ graceClosingMinutes: "soon" }).graceClosingMinutes).toBe(30);
+  });
+
+  it("the contract fixture parses under the storage schema too (same general.botDisk row)", () => {
+    const stored = fixture("botdisk-settings.json") as Record<string, unknown>;
+    // The fixture's pnpmStoreDir is a HOST path (it lives on the shared cache mount);
+    // the storage schema constrains the bot-side path, so the check uses the C7 keys.
+    const { pnpmStoreDir: _hostPath, pnpmImportMethod: _method, ...mechanics } = stored;
+    const parsed = botDiskSettingsSchema.safeParse({ enabled: true, idleTtlMs: 3_600_000, ...mechanics });
+    if (!parsed.success) throw new Error(parsed.error.message);
+    expect(resolveBotDiskMechanics(stored)).toEqual({
+      graceClosingMinutes: 30,
+      scratchTtlHours: 24,
+      partitionThresholdPercent: 85,
+      partitionRefuseOpenPercent: 90,
+      partitionCriticalPercent: 95,
+    });
   });
 });

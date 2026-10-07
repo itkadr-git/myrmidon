@@ -15,7 +15,7 @@
 //   - warnings are reported when they change, not on every tick.
 
 import { isBotBoardGatewayEnabled } from "./board-gateway.js";
-import type { BotLspSettings, ParallelHelpersSettings, ScopeLayout } from "@paperclipai/shared";
+import type { BotLspSettings, BotDiskMechanics, ParallelHelpersSettings, ScopeLayout } from "@paperclipai/shared";
 import {
   assertBotEgressSettings,
   BOT_EGRESS_MODE_ENV,
@@ -45,7 +45,7 @@ import type { BotContainerActivitySink } from "./reconciler.js";
 // myrmidon(PERF-DIET-G): the cache one sweep shares between the bots it compiles.
 import { beginBotProfilePass, type BotProfilePass } from "./profile-pass.js";
 import { cardFleetHost } from "./fleetd-hosts.js"; // myrmidon(1.6.1-BOT-DISK-B)
-import { BOT_SCOPE_GIT_OBJECTS_DIR, BOT_SCOPE_STORE_DIR, packageCacheEnv, pnpmEnv } from "./template.js"; // myrmidon(1.6.1-BOT-DISK-B, BOT-DISK-F, 1.6.5-BOT-DISK-G)
+import { BOT_SCOPE_GIT_OBJECTS_DIR, BOT_SCOPE_STORE_DIR, botdProfileEnv, packageCacheEnv, pnpmEnv } from "./template.js"; // myrmidon(1.6.1-BOT-DISK-B, BOT-DISK-F, 1.6.5-BOT-DISK-G, 1.6.5-BOT-DISK-H5c)
 import type { CompiledProfile } from "./types.js";
 import type { RegulationDelivery } from "../wiki-cortex/delivery.js"; // myrmidon(1.6-WIKI)
 
@@ -179,6 +179,18 @@ export interface BotProfilePorts {
    * tick, with the driver's reader. Optional: absent = isolated.
    */
   scopeLayout?(agentId: string): Promise<ScopeLayout>;
+  /**
+   * myrmidon(1.6.5-BOT-DISK-H5c): the BOT-DISK-H mechanics of C7
+   * (`general.botDisk`), resolved with the contract defaults
+   * (`WS_BOT_DISK_SETTING_DEFAULTS`), compiled into every bot's profile as the
+   * `WS_PROFILE_ENV` variables (template.ts `botdProfileEnv`): the thresholds
+   * `myr-ws open` (H2) and botd (H3) apply, botd's cadence and grace, and the
+   * board address/key-env botd reads its desired state and posts its disk
+   * report against. Read per tick (once per pass), so a settings PATCH reaches
+   * the bots on the next reconcile without a restart — like the pnpm store
+   * settings above. Optional: absent = no BOT-DISK-H variables.
+   */
+  botDiskMechanics?(): Promise<BotDiskMechanics>;
   /**
    * myrmidon(1.6.2-BOT-DISK-C): the clone-lifecycle policy for a bot of `role`, in
    * seconds, written as `MYRMIDON_CLONE_IDLE_TTL_SEC` for the in-container reporter
@@ -393,6 +405,19 @@ export function createBotProfileCompile(
         ? await once(`clone-idle-ttl:${agent.role ?? ""}`, () => ports.cloneIdleTtlSec!(agent.role))
         : undefined;
     if (cloneTtlSec !== undefined) cacheEnv.MYRMIDON_CLONE_IDLE_TTL_SEC = { value: String(cloneTtlSec), secret: false };
+    // myrmidon(1.6.5-BOT-DISK-H5c): the BOT-DISK-H mechanics (C7). The variables
+    // are instance-wide (one resolved settings row per pass), so a fleetd bot gets
+    // them too: the partition lives on the fleetd host, but the policy the bot's
+    // myr-ws/botd apply is the board's. The card's own value never wins, like the
+    // cache variables above. The board address is the one already compiled for the
+    // bot (settings.boardUrl); the key travels as the .env variable NAME only.
+    if (ports.botDiskMechanics) {
+      const mechanics = await once("bot-disk-mechanics", () => ports.botDiskMechanics!());
+      // settings.boardUrl is non-null here: assertBotProfileSettings threw otherwise.
+      for (const [name, value] of Object.entries(botdProfileEnv(mechanics, settings.boardUrl as string))) {
+        cacheEnv[name] = { value, secret: false };
+      }
+    }
     const cacheWarnings = Object.keys(cacheEnv)
       .filter((name) => cardEnv.env[name] !== undefined)
       .map((name) => `.env: "${name}" is set by the shared package cache setting; the card's value was dropped`);
