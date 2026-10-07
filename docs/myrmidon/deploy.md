@@ -798,6 +798,17 @@ reads the `## X.Y.Z` section of the merged changelog, so the tag goes on the
 merge commit of this PR or later. Format of a fragment:
 [changes/README.md](changes/README.md).
 
+**A tag without its changelog section fails CI (RELEASE-CUT-CHANGELOG).**
+Pushing a `myr-vX.Y.Z` tag runs **Myrmidon CI (tag)** (`myrmidon-ci-tag.yml`), whose `checks`
+lane verifies both changelogs with
+`node scripts/myrmidon/release/collect-fragments.mjs --version X.Y.Z --check`:
+a non-empty `## X.Y.Z` section and an empty unreleased heading, in EN and RU
+alike. A tag cut without the release-cut PR (the 1.6.3 incident: the notes
+sat under `## Unreleased` and the publish refused with "release body could
+not be built (missing notes)") goes red here, before the release publish
+starts. `collect-fragments.mjs` itself runs the same check before writing
+anything, so a cut that would not pass CI fails locally instead.
+
 **The GitHub Release is created by CI, not by hand.** Pushing a `myr-vX.Y.Z` tag
 (including `-rc.N`) triggers the **Myrmidon release publish** workflow
 ([myrmidon-release.yml](https://github.com/itkadr-git/myrmidon/blob/main/.github/workflows/myrmidon-release.yml)):

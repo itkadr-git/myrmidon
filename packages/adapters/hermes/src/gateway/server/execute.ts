@@ -110,7 +110,10 @@ const SENSITIVE_KEY_PATTERN =
 const BEARER_TOKEN_PATTERN = /Bearer\s+\S+/gi;
 const HERMES_SESSION_KEY_HEADER_PATTERN = /(X-Hermes-Session-Key\s*[:=]\s*)([^\s,;]+)/gi;
 const PAPERCLIP_SESSION_KEY_PATTERN =
-  /\bpaperclip:(?:company:[A-Za-z0-9-]+:agent:[A-Za-z0-9-]+(?::(?:issue|run):[A-Za-z0-9-]+)?|run:[A-Za-z0-9-]+)\b/gi;
+  // myrmidon(PERF-DIET-K): the optional trailing `:g<N>` is the session
+  // generation suffix of an issue-scoped key (server/src/myrmidon/session-generations
+  // in the board), so a redacted key hides its generation too.
+  /\bpaperclip:(?:company:[A-Za-z0-9-]+:agent:[A-Za-z0-9-]+(?::(?:issue|run):[A-Za-z0-9-]+)?|run:[A-Za-z0-9-]+)(?::g\d+)?\b/gi;
 
 // myrmidon(CONTAINER-GITHUB-WRITE): env names heartbeat.ts writes into
 // runtimeConfig.env (services/heartbeat.ts ~21995-22015) when the run's
@@ -182,6 +185,23 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
+// myrmidon(PERF-DIET-K): the session-key generation the board decided for this
+// run (see server/src/myrmidon/session-generations/ there). The board writes
+// `sessionGeneration` into the run's adapter config only once an issue-scoped
+// session has passed its threshold; a missing value, an unreadable one and the
+// first generation all read as 1, which leaves the session key byte-for-byte
+// the vendor's — the default behaviour is unchanged.
+export function readSessionGeneration(value: unknown): number {
+  const parsed =
+    typeof value === "number"
+      ? value
+      : typeof value === "string"
+        ? Number.parseInt(value.trim(), 10)
+        : Number.NaN;
+  if (!Number.isFinite(parsed) || parsed <= 1) return 1;
+  return Math.floor(parsed);
+}
+
 function normalizeSessionKeyStrategy(value: unknown): SessionKeyStrategy {
   const raw = asString(value, "issue").trim().toLowerCase();
   if (raw === "agent" || raw === "run" || raw === "none") return raw;
@@ -224,6 +244,16 @@ export function resolveSessionKey(input: {
   agentId: string;
   runId: string;
   issueId: string | null;
+  /**
+   * myrmidon(PERF-DIET-K): the issue-scoped session generation. The board's
+   * session-generations module raises it once the session passes its
+   * age/activity threshold, so the whole conversation of one task stays
+   * bounded instead of growing for the task's whole life. Only the issue
+   * strategy carries it: agent-, run- and none-scoped keys keep the vendor's
+   * shape, and generation 1 (the first generation) keeps the key without a
+   * suffix too, so nothing changes until a threshold is actually crossed.
+   */
+  generation?: number | null;
 }): string | null {
   if (input.strategy === "none") return null;
   if (input.strategy === "agent") {
@@ -233,7 +263,12 @@ export function resolveSessionKey(input: {
     return `paperclip:run:${input.runId}`;
   }
   const issuePart = input.issueId ? `issue:${input.issueId}` : `run:${input.runId}`;
-  return `paperclip:company:${input.companyId}:agent:${input.agentId}:${issuePart}`;
+  // myrmidon(PERF-DIET-K): the generation suffix applies to an issue-scoped
+  // key only — the no-issue fallback is this attempt's own run and is never
+  // resumed, so it has no history to bound.
+  const generation = readSessionGeneration(input.generation);
+  const generationPart = input.issueId && generation > 1 ? `:g${generation}` : "";
+  return `paperclip:company:${input.companyId}:agent:${input.agentId}:${issuePart}${generationPart}`;
 }
 
 function stringifyForLog(value: unknown, maxChars = 4_000): string {
@@ -1707,12 +1742,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // `replayed:true` response from Hermes is now only ever a genuine
   // duplicate create for this very attempt; that handling is kept below.
   const idempotencyKey = ctx.runId;
+  // myrmidon(PERF-DIET-K): the board's session generation for this issue (see
+  // server/src/myrmidon/session-generations/); 1 = the vendor's unsuffixed key.
+  const sessionGeneration = readSessionGeneration(ctx.config.sessionGeneration);
   const sessionKey = resolveSessionKey({
     strategy,
     companyId: ctx.agent.companyId,
     agentId: ctx.agent.id,
     runId: idempotencyKey,
     issueId: issueIdFromContext(ctx),
+    generation: sessionGeneration,
   });
   const extraHeaders = parseHeaders(ctx.config.headers);
   // myrmidon(MEMORY-CENTRAL-B): create the client here (no network yet); the
@@ -1818,9 +1857,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       eventReconnectMs: reconnectMs,
       sessionKeyStrategy: strategy,
       hasSessionKey: Boolean(sessionKey),
+      // myrmidon(PERF-DIET-K): only reported once there is something to see —
+      // generation 1 is the ordinary, unsuffixed session.
+      ...(sessionGeneration > 1 ? { sessionGeneration } : {}),
     },
   });
-  await ctx.onLog("stdout", `[hermes-gateway] creating run at ${createRunUrl} (timeout=${timeoutSec}s, session=${strategy})\n`);
+  await ctx.onLog("stdout", `[hermes-gateway] creating run at ${createRunUrl} (timeout=${timeoutSec}s, session=${strategy}${sessionGeneration > 1 ? `, generation=g${sessionGeneration}` : ""})\n`);
   await ctx.onLog("stdout", `[hermes-gateway] request headers (redacted): ${stringifyForLog(redactForLog(runHeaders, [], 0, redactText), 3_000)}\n`);
 
   // myrmidon(G4): opt into signal-based cancellation before any provider

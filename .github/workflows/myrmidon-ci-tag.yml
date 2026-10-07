@@ -397,6 +397,16 @@ jobs:
       - name: Shellcheck deploy scripts
         run: shellcheck --version && shellcheck -x scripts/myrmidon/deploy/*.sh
 
+      - name: Changelog gate (release tag has its version section)
+        if: ${{ !cancelled() }}
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#myr-v}"
+          version="${version%%-rc.*}"
+          node scripts/myrmidon/release/collect-fragments.mjs --version "$version" --check
+
       - name: Script tests (node:test under scripts/myrmidon)
         run: |
           set -euo pipefail
