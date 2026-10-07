@@ -284,3 +284,207 @@ describe("myrmidon(BOT-DISK-C) sweep", () => {
     expect(readBotDiskQuotaSignals(companyId)).toEqual([]);
   });
 });
+
+// --- BOT-DISK-H9c: quota enforcement and physical usage through dockergate ----
+
+describe("myrmidon(BOT-DISK-H9c) sweep with dockergate", () => {
+  const GIB = 1024 * 1024 * 1024;
+  const MBYTES = 1024 * 1024;
+  const agentId = randomUUID();
+  const companyId = randomUUID();
+  let root = "";
+
+  beforeAll(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), "bot-quota-h9c-"));
+  });
+  afterAll(async () => {
+    await fs.rm(root, { recursive: true, force: true });
+    resetBotDiskQuotaSignalsForTests();
+  });
+  afterEach(() => resetBotDiskQuotaSignalsForTests());
+
+  const row = (adapterConfig: Record<string, unknown> = {}): FakeAgentRow => ({
+    id: agentId,
+    companyId,
+    name: "Gate Bot",
+    role: "engineer",
+    adapterType: "hermes_gateway",
+    adapterConfig,
+    updatedAt: new Date(0),
+  });
+  const card = (diskQuotaMb: number) => ({
+    container: { enabled: true, image: "bot:1", memoryMb: 512, cpus: 1, pidsLimit: 100, diskQuotaMb },
+  });
+
+  function disk(over: { quotaEnabled?: boolean; usedBytes?: number; hardBytes?: number; project?: boolean } = {}) {
+    return {
+      partition: { mount: "/srv/x", totalBytes: 100 * GIB, usedBytes: 10 * GIB, freeBytes: 90 * GIB, usedPercent: 10 },
+      projects:
+        over.project === false
+          ? []
+          : [{ botKey: agentId, projectId: 7, usedBytes: over.usedBytes ?? 0, softBytes: 0, hardBytes: over.hardBytes ?? 1000 * MBYTES }],
+      other: { usedBytes: 0 },
+      quotaEnabled: over.quotaEnabled ?? true,
+      at: "2026-10-06T14:08:00Z",
+    };
+  }
+
+  function fakeGate(state: { disk: unknown | Error }) {
+    const puts: { botKey: string; bytes: number }[] = [];
+    let gets = 0;
+    return {
+      puts,
+      gets: () => gets,
+      gate: {
+        getDisk: async () => {
+          gets += 1;
+          if (state.disk instanceof Error) throw state.disk;
+          return state.disk as never;
+        },
+        putQuota: async (botKey: string, bytes: number) => {
+          puts.push({ botKey, bytes });
+          return { ok: true as const, projectId: 7, hardBytes: bytes };
+        },
+      },
+    };
+  }
+
+  const settings = (mb: number | null) => async () => ({ defaultQuotaMb: mb, perCaste: [], perAgent: [] });
+
+  it("a card quota change puts once; unchanged quota puts nothing", async () => {
+    const state = { disk: disk({ hardBytes: 1000 * MBYTES }) as unknown };
+    const { gate, puts } = fakeGate(state);
+    let rows = [row(card(2000))];
+    const make = () =>
+      createBotDiskQuotaSweep({ db: fakeDb(rows), resolveSettings: settings(null), env: {}, gate, remeasureIntervalMs: 0 });
+    const sweep = make();
+    // the card says 2000 MB, the partition holds 1000 MB: one PUT
+    const first = await sweep.sweep();
+    expect(first.quotaPut).toBe(1);
+    expect(puts).toEqual([{ botKey: agentId, bytes: 2000 * MBYTES }]);
+    // same quota again: zero PUTs, even though the (stale) disk answer still says 1000 MB
+    await sweep.sweep();
+    await sweep.sweep();
+    expect(puts).toHaveLength(1);
+    // the card changes: one more PUT
+    rows = [row(card(3000))];
+    await sweep.sweep();
+    expect(puts).toEqual([
+      { botKey: agentId, bytes: 2000 * MBYTES },
+      { botKey: agentId, bytes: 3000 * MBYTES },
+    ]);
+  });
+
+  it("a quota already in force on the partition is not put at all", async () => {
+    const { gate, puts } = fakeGate({ disk: disk({ hardBytes: 1000 * MBYTES }) });
+    const sweep = createBotDiskQuotaSweep({
+      db: fakeDb([row()]),
+      resolveSettings: settings(1000),
+      env: {},
+      gate,
+    });
+    await sweep.sweep();
+    expect(puts).toEqual([]);
+  });
+
+  it("quotaEnabled=false: no PUT, du estimate, signal marked as estimate", async () => {
+    const volumeDir = path.join(root, agentId);
+    await fs.mkdir(volumeDir, { recursive: true });
+    await fs.writeFile(path.join(volumeDir, "fill.bin"), Buffer.alloc(3 * MBYTES));
+    const { gate, puts } = fakeGate({ disk: disk({ quotaEnabled: false, project: false }) });
+    const sweep = createBotDiskQuotaSweep({
+      db: fakeDb([row()]),
+      resolveSettings: settings(2),
+      env: { [BOT_VOLUME_ROOT_ENV]: root },
+      gate,
+      remeasureIntervalMs: 0,
+    });
+    const result = await sweep.sweep();
+    expect(puts).toEqual([]);
+    expect(result.physicalAvailable).toBe(false);
+    const signals = readBotDiskQuotaSignals(companyId);
+    expect(signals).toHaveLength(1);
+    expect(signals[0]).toMatchObject({ overQuota: true, usageBytes: 3 * MBYTES, usageSource: "estimate" });
+    expect(botDiskQuotaWhyNow(signals[0]!)).toContain("estimate");
+    await fs.rm(volumeDir, { recursive: true, force: true });
+  });
+
+  it("signals follow the physical numbers: 79 % none, 80 % approaching, over 100 % exceeded", async () => {
+    // a big du-visible file proves the physical number is what counts
+    const volumeDir = path.join(root, agentId);
+    await fs.mkdir(volumeDir, { recursive: true });
+    await fs.writeFile(path.join(volumeDir, "big.bin"), Buffer.alloc(3 * MBYTES));
+    const state = { disk: disk({ usedBytes: 790 * MBYTES }) as unknown };
+    const { gate } = fakeGate(state);
+    const sweep = createBotDiskQuotaSweep({
+      db: fakeDb([row()]),
+      resolveSettings: settings(1000),
+      env: { [BOT_VOLUME_ROOT_ENV]: root },
+      gate,
+    });
+    await sweep.sweep();
+    expect(readBotDiskQuotaSignals(companyId)).toEqual([]);
+
+    state.disk = disk({ usedBytes: 800 * MBYTES });
+    await sweep.sweep();
+    expect(readBotDiskQuotaSignals(companyId)[0]).toMatchObject({
+      overQuota: false,
+      usageBytes: 800 * MBYTES,
+      usageSource: "physical",
+    });
+
+    state.disk = disk({ usedBytes: 1001 * MBYTES });
+    await sweep.sweep();
+    expect(readBotDiskQuotaSignals(companyId)[0]).toMatchObject({ overQuota: true, usageBytes: 1001 * MBYTES });
+    await fs.rm(volumeDir, { recursive: true, force: true });
+  });
+
+  it("an unreachable dockergate does not fail the tick: estimate usage, no PUT", async () => {
+    const volumeDir = path.join(root, agentId);
+    await fs.mkdir(volumeDir, { recursive: true });
+    await fs.writeFile(path.join(volumeDir, "fill.bin"), Buffer.alloc(3 * MBYTES));
+    const { gate, puts } = fakeGate({ disk: new Error("connect ENOENT") });
+    const sweep = createBotDiskQuotaSweep({
+      db: fakeDb([row()]),
+      resolveSettings: settings(2),
+      env: { [BOT_VOLUME_ROOT_ENV]: root },
+      gate,
+      remeasureIntervalMs: 0,
+    });
+    const result = await sweep.sweep();
+    expect(result.measured).toBe(1);
+    expect(puts).toEqual([]);
+    expect(readBotDiskQuotaSignals(companyId)[0]).toMatchObject({ overQuota: true, usageSource: "estimate" });
+    await fs.rm(volumeDir, { recursive: true, force: true });
+  });
+
+  it("a refused PUT is counted, not thrown, and retried only after the interval", async () => {
+    const state = { disk: disk({ hardBytes: 1000 * MBYTES }) };
+    const failing = {
+      getDisk: async () => state.disk as never,
+      putQuota: async () => {
+        throw new Error("403 quota_unavailable");
+      },
+    };
+    let t = 1_000_000;
+    const sweep = createBotDiskQuotaSweep({
+      db: fakeDb([row()]),
+      resolveSettings: settings(2000),
+      env: {},
+      gate: failing,
+      now: () => new Date(t),
+      remeasureIntervalMs: 60_000,
+    });
+    expect((await sweep.sweep()).quotaPutFailed).toBe(1);
+    expect((await sweep.sweep()).quotaPutFailed).toBe(0); // inside the backoff
+    t += 61_000;
+    expect((await sweep.sweep()).quotaPutFailed).toBe(1);
+  });
+
+  it("the quota is clamped to the contract bounds (a 10 MB quota is put as 64 MiB)", async () => {
+    const { gate, puts } = fakeGate({ disk: disk({ hardBytes: 1000 * MBYTES }) });
+    const sweep = createBotDiskQuotaSweep({ db: fakeDb([row()]), resolveSettings: settings(10), env: {}, gate });
+    await sweep.sweep();
+    expect(puts).toEqual([{ botKey: agentId, bytes: 64 * MBYTES }]);
+  });
+});
