@@ -1,5 +1,5 @@
 ---
-divergence-section: 1.6.5 — BOT-DISK-H3b: правила удаления botd
+divergence-section: 1.6.1 — BOT-DISK B: общий кэш пакетов для контейнеров ботов
 ---
 
 ## changelog-en
