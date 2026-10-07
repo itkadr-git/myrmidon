@@ -23,6 +23,16 @@ on:
     types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review]
   merge_group:
     types: [checks_requested]
+  # Started by myrmidon-pr-autoupdate.yml after it merges main into a PR
+  # branch: a push made with GITHUB_TOKEN does not start pull_request runs, so
+  # the status on the new head would never appear. The run is not a
+  # `synchronize`, so the review-approved label stays: the PR's own code did
+  # not change, only main was merged in.
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number
+        required: true
 
 permissions:
   contents: read
@@ -53,11 +63,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           EVENT: ${{ github.event_name }}
           REPO: ${{ github.repository }}
-          PR: ${{ github.event.pull_request.number }}
+          PR: ${{ github.event.pull_request.number || inputs.pr }}
           ACTION: ${{ github.event.action }}
           SHA: ${{ github.event.merge_group.head_sha || github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
+          if [[ "$EVENT" == "workflow_dispatch" ]]; then
+            SHA="$(gh api "repos/$REPO/pulls/$PR" --jq '.head.sha')"
+          fi
           if [[ "$EVENT" == "merge_group" ]]; then
             # Review is enforced on the PR before it enters the queue. For the
             # queue the job only reports the status on the candidate commit.
