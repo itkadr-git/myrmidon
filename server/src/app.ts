@@ -123,6 +123,7 @@ import { myrmidonBotCanaryRoutes } from "./myrmidon/bot-containers/canary-index.
 import { myrmidonWorkspaceHygieneRoutes } from "./myrmidon/workspace-hygiene/index.js"; // myrmidon(WORKSPACE-HYGIENE)
 // myrmidon(BOT-DISK E): host disk usage threshold and signal
 import { myrmidonHostDiskRoutes } from "./myrmidon/host-disk/index.js"; // myrmidon(BOT-DISK E)
+import { myrmidonAlertRecoveryRoutes } from "./myrmidon/monitoring/alert-recovery/index.js"; // myrmidon(1.6.6-MONITORING-D)
 import { myrmidonBotDiskLifecycleRoutes } from "./myrmidon/bot-containers/bot-disk-routes.js"; // myrmidon(BOT-DISK-A)
 import { myrmidonBotScopeRoutes } from "./myrmidon/bot-containers/scope-wiring.js"; // myrmidon(BOT-DISK-F)
 import { myrmidonBotWorkspacesRoutes } from "./myrmidon/bot-containers/bot-workspaces-routes.js"; // myrmidon(1.6.5-BOT-DISK-H4a)
@@ -165,6 +166,7 @@ import { myrmidonSttRoutes } from "./myrmidon/stt/index.js"; // myrmidon(1.6.1 V
 import { myrmidonGitHubSharedIdentityRoutes } from "./myrmidon/github-shared-identity/index.js"; // myrmidon(GITHUB-SHARED-IDENTITY)
 
 import { createTelegramVoiceSttWiring } from "./myrmidon/telegram-voice-stt-intake/wiring.js"; // myrmidon(1.6.5 VOICE-STT A)
+import { myrmidonVoiceMeetingProtocolRoutes } from "./myrmidon/voice-meeting-protocol/index.js"; // myrmidon(1.6.5 VOICE-STT B)
 import { myrmidonEvalsRoutes } from "./myrmidon/evals/index.js"; // myrmidon(1.6-EVALS)
 import { myrmidonDebateRoutes } from "./myrmidon/debates/index.js"; // myrmidon(1.7-DEBATE-ASYM-A)
 // myrmidon(TRACING-HEALTH): LLM tracing health check (GET /api/myrmidon/tracing/health)
@@ -175,6 +177,8 @@ import { myrmidonWikiCortexRoutes } from "./myrmidon/wiki-cortex/wiring.js";
 import { myrmidonCtoChatRoutes } from "./myrmidon/cto-chat/index.js";
 // myrmidon(1.6-SWARM-CLAIM-B): the lead's supervisor surface over the role queues
 import { myrmidonSwarmSupervisorRoutes } from "./myrmidon/swarm-claim-supervisor/index.js"; // myrmidon(1.6-SWARM-CLAIM-B)
+// myrmidon(TG-NOTIFY-A): the telegramNotify settings core (contract, GET/PATCH, changelog)
+import { myrmidonTelegramNotifyRoutes } from "./myrmidon/telegram-notify/index.js";
 import { instanceSettingsService } from "./services/instance-settings.js";
 import { openApiRoutes } from "./routes/openapi.js";
 import {
@@ -913,13 +917,14 @@ export async function createApp(
   api.use(myrmidonBrowserConsoleRoutes(db)); // myrmidon(BROWSER-CONSOLE)
   api.use(myrmidonLitellmCostsRoutes(db)); // myrmidon(M2-A): gateway-collected costs and model catalog
   api.use(myrmidonLitellmKeysRoutes(db)); // myrmidon(M2-B): per-agent gateway keys and fallback topology
-  api.use(myrmidonModelProviderRoutes(db)); // myrmidon(1.6.1 MODEL-PROVIDERS A): model-provider store and settings API
+  api.use(myrmidonModelProviderRoutes(db)); // myrmidon(1.6.1 MODEL-PROVIDERS A+B): model-provider store, settings API and LiteLLM sync
   api.use(myrmidonAgentExchangeRoutes(db)); // myrmidon(1.7-AGENT-EXCHANGE-A): discussion rooms on issue cards
   api.use(myrmidonBaselineRoutes(db)); // myrmidon(1.6-BASELINE): cycle/review/return/blocked/run/cost metrics
   api.use(myrmidonBotEgressRoutes(db)); // myrmidon(EGRESS-B)
   api.use(myrmidonBotCanaryRoutes(db)); // myrmidon(R5-B)
   api.use(myrmidonWorkspaceHygieneRoutes(db)); // myrmidon(WORKSPACE-HYGIENE)
   api.use(myrmidonHostDiskRoutes(db)); // myrmidon(BOT-DISK E)
+  api.use(myrmidonAlertRecoveryRoutes(db)); // myrmidon(1.6.6-MONITORING-D)
   api.use(myrmidonBotDiskLifecycleRoutes(db)); // myrmidon(BOT-DISK-A)
   api.use(myrmidonBotScopeRoutes(db)); // myrmidon(BOT-DISK-F)
   api.use(myrmidonBotDiskQuotaRoutes(db)); // myrmidon(1.6.1-BOT-DISK-C)
@@ -954,11 +959,13 @@ export async function createApp(
   api.use(myrmidonOcrRoutes(db)); // myrmidon(EXT-CASE-OCR): company OCR MCP endpoint (ocr.pdf)
   api.use(myrmidonSttRoutes(db)); // myrmidon(1.6.1 VOICE-STT A1)
   api.use(myrmidonGitHubSharedIdentityRoutes(db)); // myrmidon(GITHUB-SHARED-IDENTITY): access rules of the shared GitHub authorization
+  api.use(myrmidonVoiceMeetingProtocolRoutes()); // myrmidon(1.6.5 VOICE-STT B): meeting protocol from a labeled transcript
   api.use(myrmidonEvalsRoutes(db)); // myrmidon(1.6-EVALS): reference-task evals (judge runs, scores, verdict)
   api.use(myrmidonDebateRoutes(db)); // myrmidon(1.7-DEBATE-ASYM-A): asymmetric debates (roles, rounds, token ceiling, cost, result document)
   api.use(myrmidonTracingHealthRoutes(db)); // myrmidon(TRACING-HEALTH): LLM tracing health check
   api.use(myrmidonCtoChatRoutes(db)); // myrmidon(1.6-CTO-CHAT-B): board chat planner (owner text -> proposed epic)
   api.use(myrmidonSwarmSupervisorRoutes(db)); // myrmidon(1.6-SWARM-CLAIM-B): supervisor view, rebalance, pilot report
+  api.use(myrmidonTelegramNotifyRoutes(db)); // myrmidon(TG-NOTIFY-A): telegramNotify settings core (GET/PATCH + changelog)
   api.use(ui2LanguageRoutes(db)); // myrmidon(UI2-I18N): per-user UI language preference
   api.use(myrmidonForagingRoutes(db)); // myrmidon(1.6-FORAGE): source registry, findings and the manual sweep
   api.use(myrmidonWikiCortexRoutes(db)); // myrmidon(1.6-WIKI): company regulations (wiki pages, revisions, resolver)
