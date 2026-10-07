@@ -12,17 +12,10 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const L = require("./layout.js");
+const { MyrWsError } = require("./errors.js");
 
 const EXIT = { ok: 0, usage: 2, quotaExceeded: 3, baseLimit: 4, network: 5, notFound: 6, unpushed: 7 };
 const FETCH_STAMP = "myr-ws-fetched";
-
-class MyrWsError extends Error {
-  constructor(exitCode, message) {
-    super(message);
-    this.name = "MyrWsError";
-    this.exitCode = exitCode;
-  }
-}
 
 function gitReal(env) {
   return env[L.ENV.gitReal] || L.DEFAULT_GIT_REAL;

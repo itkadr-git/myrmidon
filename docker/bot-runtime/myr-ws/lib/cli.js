@@ -4,10 +4,23 @@
 // are stubs here ("not implemented", exit 2); their tasks replace the handlers
 // in COMMANDS.
 
-const { MyrWsError, EXIT } = require("./base.js");
+const { EXIT } = require("./base.js");
+const { MyrWsError } = require("./errors.js");
+
+// open lives in its own module (a later task); until it lands the verb stays a stub.
+function loadOpen() {
+  try {
+    const mod = require("./open");
+    const handler = typeof mod === "function" ? mod : mod && mod.open;
+    return typeof handler === "function" ? handler : notImplemented("open");
+  } catch {
+    // module absent (or broken) -> verb stays "not implemented", exit 2
+    return notImplemented("open");
+  }
+}
 
 const COMMANDS = {
-  open: notImplemented("open"),
+  open: loadOpen(),
   list: notImplemented("list"),
   close: notImplemented("close"),
   restore: notImplemented("restore"),
@@ -43,11 +56,11 @@ function parseArgs(argv) {
 }
 
 /**
- * Runs the CLI. Returns { exitCode, stdout, stderr } without touching the
+ * Runs the CLI (async: handlers may return promises). Resolves to { exitCode, stdout, stderr } without touching the
  * process, so tests and the entry point share it. With --json a failure prints
  * the contract error shape { ok:false, error, exitCode } on stdout.
  */
-function run(argv, ctx = {}) {
+async function run(argv, ctx = {}) {
   const commands = ctx.commands || COMMANDS;
   let json = argv.includes("--json");
   try {
@@ -56,11 +69,11 @@ function run(argv, ctx = {}) {
     if (!command || !Object.prototype.hasOwnProperty.call(commands, command)) {
       throw new MyrWsError(EXIT.usage, command ? `unknown command "${command}". ${USAGE}` : USAGE);
     }
-    const result = commands[command]({ positionals, flags, env: ctx.env || process.env });
+    const result = await commands[command]({ positionals, flags, env: ctx.env || process.env });
     const body = { ok: true, ...(result || {}) };
     return { exitCode: EXIT.ok, stdout: json ? `${JSON.stringify(body)}\n` : humanLine(body), stderr: "" };
   } catch (e) {
-    const exitCode = e instanceof MyrWsError ? e.exitCode : 1;
+    const exitCode = e && Number.isInteger(e.exitCode) ? e.exitCode : 1;
     const error = (e && e.message) || String(e);
     if (json) return { exitCode, stdout: `${JSON.stringify({ ok: false, error, exitCode })}\n`, stderr: "" };
     return { exitCode, stdout: "", stderr: `myr-ws: ${error}\n` };

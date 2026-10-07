@@ -278,20 +278,25 @@ describe("myr-ws CLI frame", () => {
     assert.equal(run(["open", "K-1", "--base"]).status, 2);
   });
 
-  it("a handler result prints as ok JSON, an MyrWsError maps to its exit code", () => {
+  it("a handler result prints as ok JSON, any error with exitCode maps to it", async () => {
     const commands = {
       list: () => ({ entries: [] }),
-      open: () => {
+      open: async () => {
         throw new base.MyrWsError(4, "base limit");
       },
+      restore: async () => {
+        throw Object.assign(new Error("own error"), { exitCode: 7 });
+      },
     };
-    const ok = cli.run(["list", "--json"], { commands });
+    const ok = await cli.run(["list", "--json"], { commands });
     assert.equal(ok.exitCode, 0);
     assert.deepEqual(JSON.parse(ok.stdout), { ok: true, entries: [] });
-    const bad = cli.run(["open", "--json"], { commands });
+    const bad = await cli.run(["open", "--json"], { commands });
     assert.equal(bad.exitCode, 4);
     assert.deepEqual(JSON.parse(bad.stdout), { ok: false, error: "base limit", exitCode: 4 });
-    assert.equal(cli.run(["open"], { commands }).stderr, "myr-ws: base limit\n");
+    assert.equal((await cli.run(["open"], { commands })).stderr, "myr-ws: base limit\n");
+    assert.equal((await cli.run(["restore"], { commands })).exitCode, 7);
+    assert.equal(base.MyrWsError, require(path.join(WS_DIR, "lib/errors.js")).MyrWsError);
   });
 
   it("parses --base, --scratch, --force", () => {
