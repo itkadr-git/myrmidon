@@ -118,7 +118,7 @@ describe("db:backup command (SHARED-PG-BACKUP)", () => {
     expect(prompts.log.warn).toHaveBeenCalledWith(
       expect.stringContaining("pg_dump client is PostgreSQL major 17"),
     );
-    const jsonOutput = consoleLogSpy.mock.calls.map((call) => String(call[0])).join("\n");
+    const jsonOutput = consoleLogSpy.mock.calls.map((call: unknown[]) => String(call[0])).join("\n");
     const parsed = JSON.parse(jsonOutput.slice(jsonOutput.indexOf("{"))) as Record<string, unknown>;
     expect(parsed.backupFile).toBe("/backups/paperclip-2026-10-07.sql.gz");
     expect(parsed.warnings).toEqual([expect.stringContaining("major 17")]);
