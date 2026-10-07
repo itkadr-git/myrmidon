@@ -18,6 +18,7 @@ const hasGit = spawnSync("git", ["--version"]).status === 0;
 const {
   classifyAll,
   classifyDir,
+  measureTree,
   parseGitConfig,
   stripUserinfo,
   toInventory,
@@ -169,6 +170,28 @@ describe("classification of fixtures", () => {
     assert.equal(act(run({ now, scratchTtlSec: HOUR }), "fresh").action, "remove");
     const desired = { grace: { closingMinutes: 30, scratchTtlHours: 1, orphanHours: 24 }, workspaces: [] };
     assert.equal(act(run({ now, desired }), "fresh").action, "remove");
+  });
+});
+
+describe("age ignores .git (host fetch/status must not reset the TTL)", () => {
+  it("a rewrite inside .git leaves the newest time unchanged; a change in the working tree moves it", async () => {
+    const dir = path.join(scratch, "aged");
+    mkRepo(dir, REMOTE);
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const before = measureTree(dir).newestMs;
+    await sleep(30);
+    // what `git fetch` does: new files and a fresh FETCH_HEAD in .git
+    fs.mkdirSync(path.join(dir, ".git", "objects", "pack"), { recursive: true });
+    fs.writeFileSync(path.join(dir, ".git", "objects", "pack", "tmp_pack_x"), "x");
+    fs.writeFileSync(path.join(dir, ".git", "FETCH_HEAD"), "abc\n");
+    fs.appendFileSync(path.join(dir, ".git", "config"), "# touched\n");
+    const afterFetch = measureTree(dir);
+    assert.equal(afterFetch.newestMs, before, "fetch in .git must not reset the age");
+    assert.ok(afterFetch.sizeBytes > 0);
+    await sleep(30);
+    fs.writeFileSync(path.join(dir, "file.txt"), "edited\n");
+    assert.ok(measureTree(dir).newestMs > before, "an edit of the working tree moves the age");
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 });
 

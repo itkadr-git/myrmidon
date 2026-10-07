@@ -193,6 +193,28 @@ describe("botd rules: pressure", () => {
   });
 });
 
+describe("botd rules: protectKeys (open tasks the board did not build a workspace for)", () => {
+  const wsDir = (name, over) => ({ name, path: `/workspace/${name}`, mtime: ago(90 * HOUR), isGit: true, clean: null, pushed: null, ...over });
+  const inv = () => ({ scratch: [wsDir("OPE-1"), wsDir("OPE-2"), wsDir("old-clone"), { name: "OPE-3", path: "/scratch/OPE-3", mtime: ago(90 * HOUR), isGit: false }] });
+
+  it("field absent (older board): task-keyed directories under /workspace are never removed", () => {
+    const out = decide(inv(), desired(), NOW);
+    assert.deepEqual(ops(out).map((x) => x[1]).sort(), ["/scratch/OPE-3", "/workspace/old-clone"]);
+  });
+
+  it("field present: listed keys are protected, the rest follows the TTL", () => {
+    const d = { ...desired(), protectKeys: ["OPE-1"] };
+    const out = decide(inv(), d, NOW);
+    assert.deepEqual(ops(out).map((x) => x[1]).sort(), ["/scratch/OPE-3", "/workspace/OPE-2", "/workspace/old-clone"]);
+    assert.ok(out.every((a) => a.op === OPS.archiveRemove || a.op === OPS.remove));
+  });
+
+  it("an empty list protects nothing and lifts the old-board hold", () => {
+    const out = decide(inv(), { ...desired(), protectKeys: [] }, NOW);
+    assert.equal(out.length, 4);
+  });
+});
+
 describe("botd rules: class G scratch", () => {
   const sc = (over) => ({ name: "probe", path: "/scratch/probe", mtime: ago(25 * HOUR), isGit: false, ...over });
 
