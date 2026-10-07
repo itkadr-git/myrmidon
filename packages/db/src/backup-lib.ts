@@ -517,11 +517,17 @@ export class BackupClientVersionError extends Error {
 // myrmidon(SHARED-PG-BACKUP): the major version of a Postgres version string
 // — the server's `SELECT version()` ("PostgreSQL 18.1 ...") or a utility's
 // --version output ("pg_dump (PostgreSQL) 17.6 (Ubuntu 17.6-0.pgdg...)").
-// The major is the first number run of the text; undetermined -> null.
+// The major is the leading number of a real `major.minor` version token;
+// unrelated output (no version shape) -> null.
 export function parsePgMajorVersion(text: string): number | null {
-  const match = /\d+/.exec(text);
+  // myrmidon(SHARED-PG-BACKUP): accept only real version shapes (major.minor
+  // or the longer "18.1 (build)" spellings). A bare `\d+` scan mis-reads the
+  // first digit in any unrelated output as the major — e.g. a stub client
+  // that answers `--version` with its dump body ("SELECT 1;") read as major
+  // 1 and made the compatibility gate throw in CI.
+  const match = /(\d+)(?:\.\d+)+/.exec(text);
   if (!match) return null;
-  const value = Number.parseInt(match[0], 10);
+  const value = Number.parseInt(match[1]!, 10);
   return Number.isFinite(value) && value > 0 ? value : null;
 }
 

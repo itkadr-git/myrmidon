@@ -79,6 +79,10 @@ describe("parsePgMajorVersion (SHARED-PG-BACKUP)", () => {
     ).toBe(17);
     expect(parsePgMajorVersion("pg_dump (PostgreSQL) 18.6")).toBe(18);
     expect(parsePgMajorVersion("not a version")).toBeNull();
+    // CI regression: a stub client answering --version with its dump body
+    // must not be read as major 1 — only real major.minor shapes count.
+    expect(parsePgMajorVersion("SELECT 1;")).toBeNull();
+    expect(parsePgMajorVersion("pg_dump (PostgreSQL) 1")).toBeNull();
   });
 });
 
