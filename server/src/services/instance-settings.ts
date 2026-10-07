@@ -66,7 +66,10 @@ import { preserveSttGeneralKey } from "../myrmidon/stt/store.js";
 // across vendor writes of `general`
 import { preserveBudgetEnforcementGeneralKey } from "../myrmidon/budget-enforcement/settings.js";
 // myrmidon(PLUGIN-ENTITLEMENT C): keep the plugin entitlement keys across vendor writes of `general`
-import { preservePluginEntitlementKeysGeneralKey } from "../myrmidon/plugin-entitlement/store.js";
+import {
+  preservePluginEntitlementKeysGeneralKey,
+  preservePluginEntitlementPublicKeyGeneralKey,
+} from "../myrmidon/plugin-entitlement/store.js";
 // myrmidon(DM-PROGRESS): keep the Telegram DM progress settings across vendor writes of `general`
 import { preserveTelegramDmProgressGeneralKey } from "../myrmidon/telegram-dm-progress/settings.js";
 // myrmidon(1.6.5-TG-LOCALE-C): keep the instance-wide bridge language across vendor writes of `general`
@@ -381,6 +384,9 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       ...(parsed.data.attentionFeedCacheTtlSeconds !== undefined
         ? { attentionFeedCacheTtlSeconds: parsed.data.attentionFeedCacheTtlSeconds }
         : {}),
+      // myrmidon(1.6.3 PLUGIN-ENTITLEMENT A): the stored verification public key
+      // survives every general write (edited on its own settings block).
+      ...(parsed.data.pluginEntitlementPublicKey ? { pluginEntitlementPublicKey: parsed.data.pluginEntitlementPublicKey } : {}),
     };
   }
   return {
@@ -765,6 +771,8 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
               ...preserveSttGeneralKey(current.general), // myrmidon(1.6.1 VOICE-STT A1)
               ...preserveBudgetEnforcementGeneralKey(current.general), // myrmidon(1.7-BUDGET-CONFIG-B)
               ...preservePluginEntitlementKeysGeneralKey(current.general), // myrmidon(PLUGIN-ENTITLEMENT C)
+              ...preservePluginEntitlementPublicKeyGeneralKey(current.general), // myrmidon(1.6.3 PLUGIN-ENTITLEMENT A)
+              ...preserveDebateGeneralKey(current.general), // myrmidon(1.7-DEBATE-ASYM-A)
               ...preserveTelegramDmProgressGeneralKey(current.general), // myrmidon(DM-PROGRESS)
               ...preserveBridgeLanguageGeneralKey(current.general), // myrmidon(1.6.5-TG-LOCALE-C)
               // The preserve line above restores the stored value: a patch that
@@ -800,8 +808,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         // row lock) — mirror the previous fallback and return the read row.
         return rows.length > 0 ? rows : [current];
       });
-      return toInstanceSettings(updated);
-    },
+      return toInstanceSettings(updated);    },
 
     updateExperimental: async (patch: PatchInstanceExperimentalSettings): Promise<InstanceSettings> => {
       // myrmidon(PROCS-Q5): same row, same read-modify-write race as
