@@ -183,6 +183,87 @@ A track writes only into its own section. A row is added in the same PR as the s
 | `MYRMIDON_HOST_DISK_DATA_ROOT` | BOT-DISK E | `/data` | Directory whose filesystem usage is measured: `statfs` of this path reports the disk the board's database, workspaces and container volumes live on | Must exist and be readable by the server process; unreadable — the sweep logs one error per tick and no signal is raised |
 | `MYRMIDON_HOST_DISK_CONSUMER_PATHS` | BOT-DISK E | the data root | Comma-separated directories ranked as «biggest consumers» in the signal: each is walked with a bounded depth/entry/time cap, biggest first | Unset — the data root itself is the one consumer listed |
 
+### Task workspaces, the `myr-ws` CLI and the bot disk report (1.6.5 BOT-DISK-H, contract H0)
+
+Inside the bot container the layout is fixed by the contract
+(`docs/myrmidon/bot-disk-contract/README.md`):
+`<HERMES_HOME>/.myrmidon/` holds `git-base/<owner>/<repo>.git` (bare bases),
+`archive/<KEY>-<ts>.{bundle,patch,untracked.tar}` plus `manifest.json`
+(archives of removed copies with unpushed work), `ws-registry.json` (the open
+copies: `{version:1, entries:[{key, repo?, path, class:'E'|'G', branch?,
+openedAt}]}`) and `disk-state.json` (disk pressure `{quotaPercent,
+partitionPercent, pressure:'none'|'soft'|'hard'}`, written by botd on every
+pass, read by `myr-ws open`; a file older than two botd ticks reads as
+`pressure:"none"`). Task copies are `/workspace/<ISSUE-KEY>` worktrees on
+branch `bot/<KEY>`; scratch copies live at `/scratch/<name>`.
+
+`myr-ws` commands: `open <KEY> [owner/repo] [--base <ref>] [--scratch]`,
+`list`, `close <KEY> [--force]`, `restore <KEY>`, `migrate`; global `--json`
+(`{ok:true, …}` per command, any error `{ok:false, error, exitCode}` with the
+human-readable message on stderr). Exit codes: `0` ok, `2` invalid arguments,
+`3` quota/disk refusal (message starts with `BOT_DISK_QUOTA_EXCEEDED:`), `4`
+repository over the base limit (8), `5` network/fetch, `6` no such
+copy/archive, `7` unpushed work without `--force`. Environment:
+`MYRMIDON_TASK_WORKSPACE` (the opened copy's absolute path, exported into the
+run), `MYRMIDON_WS_BIN` and `MYRMIDON_WS_HOME` (test-only overrides).
+
+The board side is two routes, called with the bot's own `PAPERCLIP_API_KEY`:
+`GET /api/myrmidon/bots/me/workspaces` returns the desired state
+(`{generatedAt, grace:{closingMinutes, scratchTtlHours, orphanHours},
+pressure, workspaces:[{key, repo, state:'active'|'closing', since, prState,
+branch}]}`; on 401/403/503 botd is fail-safe and deletes nothing), and
+`POST /api/myrmidon/bots/me/disk-report` accepts the bot's disk snapshot
+(bases, copies with `clean`/`pushed` and sizes, archives, at most 200 recent
+actions, foreign copies with their sign, self-check results; body ≤ 1 MiB)
+and answers `{ok:true, nextReportSec}` as the next tick's tempo.
+
+dockergate gains two routes: `GET /myrmidon/disk` (partition statfs plus the
+per-project `xfs_quota report -p` parse; without prjquota mounted —
+`projects:[]`, `quotaEnabled:false`) and
+`PUT /myrmidon/disk/<botKey>/quota` with body `{bytes}` (64 MiB…1 TiB) →
+`{ok:true, projectId, hardBytes}`; deny codes `route_not_allowed`,
+`quota_unavailable`, `bad_quota`. The board executes the existing per-bot
+quota setting `general.botDiskQuota` through them.
+
+Bot-facing instruction (to paste into the bot's system prompt or its task
+message, 1.6.5 BOT-DISK-H design §2.2(4)):
+
+> Your task's working copy is opened for you: `git clone <owner>/<repo>`
+> becomes a worktree of a shared base (no own objects, no token in
+> `.git/config`). Never pass `--filter`, `--depth`, `--mirror` or `--bare` —
+> they are ignored. If you see `BOT_DISK_QUOTA_EXCEEDED:`, the bot partition is
+> over quota: stop cloning, commit and push what you have, tell the board, and
+> do not retry in a loop. Work inside the opened copy; the board archives and
+> removes it when the task ends — do not delete `/workspace/<KEY>` yourself.
+
+A `/v1/runs` request may carry `workspace: {key, repo, baseRef?}`: before the
+model starts, the gateway runs `myr-ws open <key> <repo> [--base <baseRef>]
+--json` and the run starts with `MYRMIDON_TASK_WORKSPACE=/workspace/<key>` as
+cwd. Exit codes 3/4/5 do not fail the run silently: it starts in `/scratch`
+with a warning event.
+
+Attention cards (payload always carries `botKey` and `at`):
+`bot_disk_lifecycle/agent-silent` (botd report older than 30 min in a running
+container), `bot_disk_lifecycle/drift` (desired ≠ actual past grace + 15
+min), `bot_disk_lifecycle/foreign` (a copy outside the base: promisor /
+token in URL / no remote / `.trash-*` / full clone), `bot_disk_lifecycle/ws-cli`
+and `bot_disk_lifecycle/reflink` (failed self-checks), `bot_image_stale` (bot
+on a non-current image generation for over 24 h), `bot_disk_archive` (an
+archive was created for the task; gone on restore or expiry).
+
+Instance settings `general.botDisk.*` (changed on Instance → General,
+`PATCH /api/myrmidon/bot-disk`; applied without a restart):
+
+| Key | Default | What it does | Range / special |
+|---|---|---|---|
+| `general.botDisk.graceClosingMinutes` | `30` | Grace period (minutes) between a task turning `closing` in the desired state (terminal / reassigned / PR merged) and botd removing its worktree | 5–1440; out of range — the default. While the partition pressure is `hard` (quota ≥ 100 %) the effective grace is 0 |
+| `general.botDisk.scratchTtlHours` | `24` | Idle TTL (hours, by mtime/ctime) of a scratch copy (class G): past it botd archives it if it holds unpushed commits, then removes it — the one place a timer is legitimate | 1–720; out of range — the default. Under hard partition pressure the effective TTL is 1 hour |
+| `general.botDisk.partitionThresholdPercent` | `85` | Fill level of the bot partition (physical, from dockergate `GET /myrmidon/disk`) at which the instance card `host_disk_alert` is raised with the partition's figures | 50–100; out of range — the default |
+| `general.botDisk.partitionRefuseOpenPercent` | `90` | Fill level of the bot partition at which `myr-ws open` refuses **every** bot with `BOT_DISK_QUOTA_EXCEEDED:` (exit 3) and every botd runs with grace 0 | 50–100; must be ≥ `partitionThresholdPercent`; out of range — the default |
+| `general.botDisk.partitionCriticalPercent` | `95` | Fill level of the bot partition at which the critical instance card is raised and the owner gets a Telegram signal | 50–100; must be ≥ `partitionRefuseOpenPercent`; out of range — the default |
+| `general.botDisk.pnpmStoreDir` | unset (per-bot store in the workspace mount) | Directory of the shared pnpm store; per contract it must sit **on the bot partition** (one store per partition), so a reflink import from it into the bot volumes works (reflink does not cross filesystems) | Unset — previous behaviour. When set, pair it with `pnpmImportMethod: clone` and a working reflink self-check (card `bot_disk_lifecycle/reflink` on failure) |
+| `general.botDisk.pnpmImportMethod` | unset (image default `hardlink`) | pnpm `package-import-method`: `hardlink`, `clone`, `clone-or-copy` or `copy`. `clone` is reflink-only: a failure is loud, never a silent copy; a file edit inside `node_modules` cannot corrupt the store (unlike a hardlink) | Unset — previous behaviour. An unknown value is rejected by the settings schema |
+
 
 ## 1.6.1 — BOT-DISK B: shared package cache for bot containers
 
@@ -877,6 +958,87 @@ sweep inspects, what unblocking does, and the attention-feed card.
 | `MYRMIDON_HOST_DISK_USAGE_THRESHOLD_PERCENT` | BOT-DISK E | `85` | The fill level of the host disk that raises the attention signal. The sweep measures the disk of the server data root (`MYRMIDON_HOST_DISK_DATA_ROOT`) on every scheduler tick, keeps a sample ring for the growth rate per hour, and when usage crosses this level the attention queue gets one row with the numbers and the biggest consumers. The value is the default at FIRST start only; the effective threshold lives in the instance settings (`instance_settings.general.hostDisk`) and changes live on the Instance → General page («Host disk») or through `GET`/`PATCH /api/myrmidon/host-disk` — the sweep re-reads it on every measurement, no restart | A non-integer or a value outside 1–99 — the default (85). A stored row that does not validate is ignored as a whole |
 | `MYRMIDON_HOST_DISK_DATA_ROOT` | BOT-DISK E | `/data` | Directory whose filesystem usage is measured: `statfs` of this path reports the disk the board's database, workspaces and container volumes live on | Must exist and be readable by the server process; unreadable — the sweep logs one error per tick and no signal is raised |
 | `MYRMIDON_HOST_DISK_CONSUMER_PATHS` | BOT-DISK E | the data root | Comma-separated directories ranked as «biggest consumers» in the signal: each is walked with a bounded depth/entry/time cap, biggest first | Unset — the data root itself is the one consumer listed |
+
+### Task workspaces, the `myr-ws` CLI and the bot disk report (1.6.5 BOT-DISK-H, contract H0)
+
+Inside the bot container the layout is fixed by the contract
+(`docs/myrmidon/bot-disk-contract/README.md`):
+`<HERMES_HOME>/.myrmidon/` holds `git-base/<owner>/<repo>.git` (bare bases),
+`archive/<KEY>-<ts>.{bundle,patch,untracked.tar}` plus `manifest.json`
+(archives of removed copies with unpushed work), `ws-registry.json` (the open
+copies: `{version:1, entries:[{key, repo?, path, class:'E'|'G', branch?,
+openedAt}]}`) and `disk-state.json` (disk pressure `{quotaPercent,
+partitionPercent, pressure:'none'|'soft'|'hard'}`, written by botd on every
+pass, read by `myr-ws open`; a file older than two botd ticks reads as
+`pressure:"none"`). Task copies are `/workspace/<ISSUE-KEY>` worktrees on
+branch `bot/<KEY>`; scratch copies live at `/scratch/<name>`.
+
+`myr-ws` commands: `open <KEY> [owner/repo] [--base <ref>] [--scratch]`,
+`list`, `close <KEY> [--force]`, `restore <KEY>`, `migrate`; global `--json`
+(`{ok:true, …}` per command, any error `{ok:false, error, exitCode}` with the
+human-readable message on stderr). Exit codes: `0` ok, `2` invalid arguments,
+`3` quota/disk refusal (message starts with `BOT_DISK_QUOTA_EXCEEDED:`), `4`
+repository over the base limit (8), `5` network/fetch, `6` no such
+copy/archive, `7` unpushed work without `--force`. Environment:
+`MYRMIDON_TASK_WORKSPACE` (the opened copy's absolute path, exported into the
+run), `MYRMIDON_WS_BIN` and `MYRMIDON_WS_HOME` (test-only overrides).
+
+The board side is two routes, called with the bot's own `PAPERCLIP_API_KEY`:
+`GET /api/myrmidon/bots/me/workspaces` returns the desired state
+(`{generatedAt, grace:{closingMinutes, scratchTtlHours, orphanHours},
+pressure, workspaces:[{key, repo, state:'active'|'closing', since, prState,
+branch}]}`; on 401/403/503 botd is fail-safe and deletes nothing), and
+`POST /api/myrmidon/bots/me/disk-report` accepts the bot's disk snapshot
+(bases, copies with `clean`/`pushed` and sizes, archives, at most 200 recent
+actions, foreign copies with their sign, self-check results; body ≤ 1 MiB)
+and answers `{ok:true, nextReportSec}` as the next tick's tempo.
+
+dockergate gains two routes: `GET /myrmidon/disk` (partition statfs plus the
+per-project `xfs_quota report -p` parse; without prjquota mounted —
+`projects:[]`, `quotaEnabled:false`) and
+`PUT /myrmidon/disk/<botKey>/quota` with body `{bytes}` (64 MiB…1 TiB) →
+`{ok:true, projectId, hardBytes}`; deny codes `route_not_allowed`,
+`quota_unavailable`, `bad_quota`. The board executes the existing per-bot
+quota setting `general.botDiskQuota` through them.
+
+Bot-facing instruction (to paste into the bot's system prompt or its task
+message, 1.6.5 BOT-DISK-H design §2.2(4)):
+
+> Your task's working copy is opened for you: `git clone <owner>/<repo>`
+> becomes a worktree of a shared base (no own objects, no token in
+> `.git/config`). Never pass `--filter`, `--depth`, `--mirror` or `--bare` —
+> they are ignored. If you see `BOT_DISK_QUOTA_EXCEEDED:`, the bot partition is
+> over quota: stop cloning, commit and push what you have, tell the board, and
+> do not retry in a loop. Work inside the opened copy; the board archives and
+> removes it when the task ends — do not delete `/workspace/<KEY>` yourself.
+
+A `/v1/runs` request may carry `workspace: {key, repo, baseRef?}`: before the
+model starts, the gateway runs `myr-ws open <key> <repo> [--base <baseRef>]
+--json` and the run starts with `MYRMIDON_TASK_WORKSPACE=/workspace/<key>` as
+cwd. Exit codes 3/4/5 do not fail the run silently: it starts in `/scratch`
+with a warning event.
+
+Attention cards (payload always carries `botKey` and `at`):
+`bot_disk_lifecycle/agent-silent` (botd report older than 30 min in a running
+container), `bot_disk_lifecycle/drift` (desired ≠ actual past grace + 15
+min), `bot_disk_lifecycle/foreign` (a copy outside the base: promisor /
+token in URL / no remote / `.trash-*` / full clone), `bot_disk_lifecycle/ws-cli`
+and `bot_disk_lifecycle/reflink` (failed self-checks), `bot_image_stale` (bot
+on a non-current image generation for over 24 h), `bot_disk_archive` (an
+archive was created for the task; gone on restore or expiry).
+
+Instance settings `general.botDisk.*` (changed on Instance → General,
+`PATCH /api/myrmidon/bot-disk`; applied without a restart):
+
+| Key | Default | What it does | Range / special |
+|---|---|---|---|
+| `general.botDisk.graceClosingMinutes` | `30` | Grace period (minutes) between a task turning `closing` in the desired state (terminal / reassigned / PR merged) and botd removing its worktree | 5–1440; out of range — the default. While the partition pressure is `hard` (quota ≥ 100 %) the effective grace is 0 |
+| `general.botDisk.scratchTtlHours` | `24` | Idle TTL (hours, by mtime/ctime) of a scratch copy (class G): past it botd archives it if it holds unpushed commits, then removes it — the one place a timer is legitimate | 1–720; out of range — the default. Under hard partition pressure the effective TTL is 1 hour |
+| `general.botDisk.partitionThresholdPercent` | `85` | Fill level of the bot partition (physical, from dockergate `GET /myrmidon/disk`) at which the instance card `host_disk_alert` is raised with the partition's figures | 50–100; out of range — the default |
+| `general.botDisk.partitionRefuseOpenPercent` | `90` | Fill level of the bot partition at which `myr-ws open` refuses **every** bot with `BOT_DISK_QUOTA_EXCEEDED:` (exit 3) and every botd runs with grace 0 | 50–100; must be ≥ `partitionThresholdPercent`; out of range — the default |
+| `general.botDisk.partitionCriticalPercent` | `95` | Fill level of the bot partition at which the critical instance card is raised and the owner gets a Telegram signal | 50–100; must be ≥ `partitionRefuseOpenPercent`; out of range — the default |
+| `general.botDisk.pnpmStoreDir` | unset (per-bot store in the workspace mount) | Directory of the shared pnpm store; per contract it must sit **on the bot partition** (one store per partition), so a reflink import from it into the bot volumes works (reflink does not cross filesystems) | Unset — previous behaviour. When set, pair it with `pnpmImportMethod: clone` and a working reflink self-check (card `bot_disk_lifecycle/reflink` on failure) |
+| `general.botDisk.pnpmImportMethod` | unset (image default `hardlink`) | pnpm `package-import-method`: `hardlink`, `clone`, `clone-or-copy` or `copy`. `clone` is reflink-only: a failure is loud, never a silent copy; a file edit inside `node_modules` cannot corrupt the store (unlike a hardlink) | Unset — previous behaviour. An unknown value is rejected by the settings schema |
 
 
 ## 1.6.1 — BOT-DISK B: shared package cache for bot containers
