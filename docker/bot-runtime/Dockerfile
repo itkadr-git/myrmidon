@@ -731,7 +731,7 @@ RUN chmod 0755 /opt/paperclip/bin/git-credential-paperclip /opt/paperclip/bin/gh
 # is exactly where the clones happen. The build-time check below asserts both:
 # without the symlink a bare `git` is the real binary; with a broken shebang it
 # dies with 127 in a PATH the wrapper cannot inject itself into.
-COPY --chown=root:root git-reference/git git-reference/bot-clone-hygiene git-reference/clone-args.js /opt/paperclip/bin/
+COPY --chown=root:root git-reference/git git-reference/bot-clone-hygiene /opt/paperclip/bin/
 RUN chmod 0755 /opt/paperclip/bin/git /opt/paperclip/bin/bot-clone-hygiene \
   && ln -s /opt/paperclip/bin/git /usr/local/bin/git \
   && /opt/node24/bin/node --check /opt/paperclip/bin/git \
