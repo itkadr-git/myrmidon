@@ -326,7 +326,8 @@
     "castes": "Касты и модели",
     "wipLimit": "Лимит WIP",
     "reviewRouting": "Маршрутизация ревью",
-    "corpus": "Корпус"
+    "corpus": "Корпус",
+    "agentExchange": "Обмены агентов"
   },
   "corpus": {
     "title": "Корпус",

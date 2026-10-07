@@ -36,6 +36,9 @@ const items = [
   { value: "owner-delivery", label: "Owner Telegram delivery", href: "/company/settings/owner-delivery" },
   // myrmidon(1.6.6 CORPUS E): the knowledge corpus module screen
   { value: "corpus", label: "Knowledge corpus", href: "/company/settings/corpus" },
+  // myrmidon(1.7-AGENT-EXCHANGE-B): the owner-facing feed of the agents'
+  // discussion rooms, with the «to skill» action
+  { value: "agent-exchange", label: "Agent exchanges", href: "/company/settings/agent-exchange" },
 ] as const;
 
 type CompanySettingsTab = (typeof items)[number]["value"];
@@ -151,6 +154,11 @@ export function getCompanySettingsTab(pathname: string): CompanySettingsTab {
     return "review-routing";
   }
 
+  // myrmidon(1.7-AGENT-EXCHANGE-B): the feed of the agents' discussion rooms
+  if (pathname.includes("/company/settings/agent-exchange")) {
+    return "agent-exchange";
+  }
+
   // myrmidon(1.6.1 MODEL-PROVIDERS C): the Castes and models settings section
   if (pathname.includes("/company/settings/castes")) {
     return "castes";
@@ -189,6 +197,8 @@ const SETTINGS_TAB_LABEL_KEYS: Partial<Record<string, string>> = {
   "review-routing": "settingsNav.reviewRouting",
   // myrmidon(1.6.6 CORPUS E): the knowledge corpus settings tab
   corpus: "settingsNav.corpus",
+  // myrmidon(1.7-AGENT-EXCHANGE-B): the agent exchange feed tab
+  "agent-exchange": "settingsNav.agentExchange",
 };
 
 export function CompanySettingsNav() {

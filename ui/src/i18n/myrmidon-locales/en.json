@@ -326,7 +326,8 @@
     "castes": "Castes & models",
     "wipLimit": "WIP limit",
     "reviewRouting": "Review routing",
-    "corpus": "Knowledge corpus"
+    "corpus": "Knowledge corpus",
+    "agentExchange": "Agent exchanges"
   },
   "corpus": {
     "title": "Knowledge corpus",

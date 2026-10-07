@@ -2918,3 +2918,6 @@ export * from "./myrmidon-agent-exchange.js";
 // myrmidon(CA-A): the channel allowlist contract (OPE-4949) — who may write to
 // the company's bots; shared by the server gate and the board screen.
 export * from "./myrmidon-channel-allowlist.js";
+// myrmidon(1.7-AGENT-EXCHANGE-B): the owner-facing feed of discussion rooms
+// and the «to skill» candidate contract.
+export * from "./myrmidon-agent-exchange-feed.js";
