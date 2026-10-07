@@ -560,11 +560,13 @@ export const GIT_MIRROR_MOUNT = { hostSubdir: "git", containerPath: "/cache/git"
  */
 export const DEFAULT_PNPM_STORE_DIR = "/workspace/.pnpm-store";
 
-/** The import method pnpm is told to use: `hardlink` only tries hard links (no
- *  reflink attempts). pnpm 9 still copies when the kernel refuses a link, so a
- *  broken layout is caught by the container's start-time self-check
- *  (docker/bot-runtime/entrypoint.sh), not by pnpm. */
-export const DEFAULT_PNPM_IMPORT_METHOD = "hardlink";
+/** The import method pnpm is told to use: `reflink` (copy-on-write clones via
+ *  FICLONE; on a CoW filesystem a package's blocks exist once no matter how
+ *  many clones import it). pnpm still copies when the kernel refuses the clone
+ *  (EXDEV across superblocks, EOPNOTSUPP without reflinks), so a broken layout
+ *  is caught by the container's start-time self-check
+ *  (docker/bot-runtime/entrypoint.sh), not by pnpm. myrmidon(BOT-DISK-H8b). */
+export const DEFAULT_PNPM_IMPORT_METHOD = "reflink";
 
 /** Container roots a pnpm store may live under (all inside the single mount). */
 export const PNPM_STORE_ROOTS: readonly string[] = ["/workspace", "/data", "/scratch", BOT_ROOT_MOUNT, BOT_SCOPE_MOUNT];
