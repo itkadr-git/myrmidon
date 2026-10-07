@@ -621,4 +621,53 @@ describe("myrmidon-bot-image.yml", () => {
     assert.match(workflow, /branches: \[main\]/);
     assert.match(workflow, /tags: \["myr-v\*"\]/);
   });
+
+  // myrmidon(1.6.5 BOT-DISK-H1c): the real git leaves PATH, the wrapper answers /usr/bin/git.
+  describe("real git in libexec (BOT-DISK-H1c)", () => {
+    const flat = dockerfile.replace(/\\\n/g, " ");
+    const devStage = flat.slice(flat.indexOf("FROM runtime AS runtime-dev"));
+
+    it("moves the Debian git to /opt/paperclip/libexec/git with dpkg-divert and links /usr/bin/git to the wrapper", () => {
+      assert.match(devStage, /dpkg-divert --local --rename --divert \/opt\/paperclip\/libexec\/git --add \/usr\/bin\/git/);
+      assert.match(devStage, /ln -s \/opt\/paperclip\/bin\/git \/usr\/bin\/git/);
+      assert.match(devStage, /ln -s \/opt\/paperclip\/bin\/git \/usr\/local\/bin\/git/);
+      // The divert runs after the wrapper is installed (otherwise the symlink dangles in between)
+      // and before the final USER switch.
+      assert.ok(devStage.indexOf("COPY --chown=root:root git-reference/git") < devStage.indexOf("dpkg-divert"));
+      assert.ok(devStage.indexOf("dpkg-divert") < devStage.search(/^USER 10001:10001/m));
+    });
+
+    it("keeps libexec out of every ENV PATH, and no PATH directory holds a real git", () => {
+      for (const line of dockerfile.replace(/\\\n/g, " ").split("\n")) {
+        if (/^\s*(ENV|\s)\s*.*\bPATH=/.test(line) && !line.trim().startsWith("#")) {
+          assert.doesNotMatch(line, /\/opt\/paperclip\/libexec/, `libexec on PATH: ${line}`);
+        }
+      }
+      // The build asserts the same on the finished PATH, plus a clean-PATH answer through the wrapper.
+      assert.match(devStage, /libexec must not be on PATH/);
+      assert.match(devStage, /is a real git outside libexec/);
+      assert.match(devStage, /env -i PATH=\/usr\/bin:\/bin git --version/);
+      assert.match(devStage, /env -i PATH=\/usr\/bin:\/bin git ls-remote/);
+    });
+
+    it("installs myr-ws (bin + /usr/local/bin) and botd as executables from bot-disk/, tolerating their absence", () => {
+      assert.match(devStage, /COPY --chown=root:root bot-disk\/ \/tmp\/bot-disk-src\//);
+      assert.match(devStage, /install -m 0755 -o root -g root \/tmp\/bot-disk-src\/myr-ws \/opt\/paperclip\/bin\/myr-ws/);
+      assert.match(devStage, /ln -s \/opt\/paperclip\/bin\/myr-ws \/usr\/local\/bin\/myr-ws/);
+      assert.match(devStage, /\[ -x \/usr\/local\/bin\/myr-ws \]/);
+      assert.match(devStage, /install -m 0755 -o root -g root \/tmp\/bot-disk-src\/botd \/opt\/paperclip\/bin\/botd/);
+      assert.match(devStage, /\[ -x \/opt\/paperclip\/bin\/botd \]/);
+      assert.match(devStage, /if \[ -f \/tmp\/bot-disk-src\/myr-ws \]/);
+      assert.match(devStage, /if \[ -f \/tmp\/bot-disk-src\/botd \]/);
+      assert.ok(fs.existsSync(path.join(IMAGE_DIR, "bot-disk")), "the bot-disk build-context directory must exist so COPY never fails");
+    });
+
+    it("the wrapper's default real git is the libexec path (a wrapper that execs itself would loop)", () => {
+      const wrapper = fs.readFileSync(path.join(IMAGE_DIR, "git-reference/git"), "utf8");
+      assert.match(wrapper, /process\.env\.MYRMIDON_GIT_REAL \|\| "\/opt\/paperclip\/libexec\/git"/);
+      assert.doesNotMatch(wrapper, /MYRMIDON_GIT_REAL \|\| "\/usr\/bin\/git"/);
+      const entry = fs.readFileSync(path.join(IMAGE_DIR, "entrypoint.sh"), "utf8");
+      assert.match(entry, /MYRMIDON_GIT_REAL:-\/opt\/paperclip\/libexec\/git/);
+    });
+  });
 });
