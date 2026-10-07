@@ -2,6 +2,7 @@
 // myr-ws registry (legacy task directories, class G and the foreign class X under
 // /workspace). Pure of botd's closures so they can be tested on fixtures.
 
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -9,12 +10,28 @@ const SKIP_NESTED_DIRS = new Set(["node_modules", ".pnpm-store", ".git"]);
 const NESTED_MAX_DEPTH = 3;
 
 /**
+ * True when `dir` holds a usable git repository: `git rev-parse --git-dir` passes there.
+ * A `.git` that fails it (a hollowed-out directory left by an old cleanup) is not a
+ * repository and carries no git data; its files are plain files of the tree.
+ * @param {string} dir
+ * @param {string} [gitBin]
+ */
+export function isUsableRepo(dir, gitBin = process.env.MYRMIDON_BOTD_GIT || "git") {
+  const r = spawnSync(gitBin, ["-C", dir, "rev-parse", "--git-dir"], {
+    encoding: "utf8",
+    env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_CEILING_DIRECTORIES: path.dirname(path.resolve(dir)), LC_ALL: "C" },
+  });
+  return !r.error && r.status === 0;
+}
+
+/**
  * Repositories below `root` (not `root` itself): directories whose own `.git`
- * (directory or file) sits at most `maxDepth` levels down. Links are not followed and
+ * (directory or file) sits at most `maxDepth` levels down and passes `isRepo`
+ * (a broken `.git` is not a repository). Links are not followed and
  * `node_modules` / `.pnpm-store` / `.git` are not entered.
  * @returns {string[]} absolute paths of the working trees, sorted
  */
-export function findNestedGit(root, maxDepth = NESTED_MAX_DEPTH) {
+export function findNestedGit(root, maxDepth = NESTED_MAX_DEPTH, isRepo = isUsableRepo) {
   const found = [];
   const walk = (dir, depth) => {
     let names;
@@ -23,7 +40,7 @@ export function findNestedGit(root, maxDepth = NESTED_MAX_DEPTH) {
     } catch {
       return;
     }
-    if (depth > 0 && names.some((d) => d.name === ".git")) found.push(dir);
+    if (depth > 0 && names.some((d) => d.name === ".git") && isRepo(dir)) found.push(dir);
     if (depth >= maxDepth) return;
     for (const d of names) {
       if (!d.isDirectory() || d.isSymbolicLink() || SKIP_NESTED_DIRS.has(d.name)) continue;
@@ -80,9 +97,9 @@ export function inRegistry(registryEntries, p) {
  * missing or truncated archive of ANY part leaves the whole directory in place.
  * Parts: each nested repository (key `<KEY>--<relpath>`: bundle + patch + untracked),
  * the directory's own repository, and the rest of the tree as one tar without `.git`
- * (always for a non-git directory, and next to the repositories when it has nested ones).
+ * (a `.git` that is not a repository is neither: its files go into the tree tar; always for a non-git directory, and next to the repositories when it has nested ones).
  * @param {{path:string, key?:string}} a
- * @param {{archiveMod:object|null, isGit:(p:string)=>boolean, remove:(p:string)=>void, archiveRoot?:string, nestedGit?:(p:string)=>string[]}} deps
+ * @param {{archiveMod:object|null, isGit:(p:string)=>boolean, remove:(p:string)=>void, archiveRoot?:string, nestedGit?:(p:string)=>string[], isRepo?:(p:string)=>boolean}} deps
  * @returns {string} detail
  */
 export function archiveThenRemove(a, deps) {
@@ -91,7 +108,7 @@ export function archiveThenRemove(a, deps) {
   const key = a.key || path.basename(a.path);
   const opts = { looseKey: true, ...(archiveRoot ? { archiveRoot } : {}) };
   const nested = (deps.nestedGit ?? findNestedGit)(a.path);
-  const own = isGit(a.path);
+  const own = isGit(a.path) && (deps.isRepo ?? isUsableRepo)(a.path);
   const check = (what, r) => {
     if (!r || r.ok !== true) throw new Error(`archive-incomplete: ${what}: ${String((r && r.reason) || "unknown").slice(0, 300)}, not removed`);
     if (r.entry && r.entry.truncatedUntracked === true) {
