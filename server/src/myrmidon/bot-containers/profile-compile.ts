@@ -414,7 +414,7 @@ export function createBotProfileCompile(
     if (ports.botDiskMechanics) {
       const mechanics = await once("bot-disk-mechanics", () => ports.botDiskMechanics!());
       // settings.boardUrl is non-null here: assertBotProfileSettings threw otherwise.
-      for (const [name, value] of Object.entries(botdProfileEnv(mechanics, settings.boardUrl as string))) {
+      for (const [name, value] of Object.entries(botdProfileEnv(mechanics, settings.boardUrl as string, agent.id))) {
         cacheEnv[name] = { value, secret: false };
       }
     }

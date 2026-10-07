@@ -3,6 +3,7 @@ import { WS_BOTD_BOARD_KEY_ENV_VALUE, WS_BOT_DISK_SETTING_DEFAULTS, WS_PROFILE_E
 import type { BotExtraMount } from "./driver.js";
 import {
   assertBotRuntimeContract,
+  BOT_KEY_ENV,
   botdProfileEnv,
   botVolumeLayout,
   BOT_KEY_PATTERN,
@@ -581,6 +582,13 @@ describe("botdProfileEnv (1.6.5-BOT-DISK-H5c)", () => {
       // The key travels as the NAME of the .env variable holding it — never the value.
       [WS_PROFILE_ENV.boardKeyEnv]: WS_BOTD_BOARD_KEY_ENV_VALUE,
     });
+  });
+
+  it("writes MYRMIDON_BOT_KEY (the agent id, read by botd) only when a bot key is given", () => {
+    const withKey = botdProfileEnv(resolvedDefaults, "http://board:3100", "agent-a");
+    expect(BOT_KEY_ENV).toBe("MYRMIDON_BOT_KEY");
+    expect(withKey[BOT_KEY_ENV]).toBe("agent-a");
+    expect(botdProfileEnv(resolvedDefaults, "http://board:3100")).not.toHaveProperty(BOT_KEY_ENV);
   });
 
   it("writes the operator-set interval only when one is set", () => {

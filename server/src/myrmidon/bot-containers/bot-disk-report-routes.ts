@@ -46,9 +46,11 @@ export function botDiskReportRoutes(options: { nowMs?: () => number } = {}) {
     if (bodyBytes(req) > WS_DISK_REPORT_MAX_BODY_BYTES) {
       throw payloadTooLarge(`Disk report is over ${WS_DISK_REPORT_MAX_BODY_BYTES} bytes`);
     }
-    // botd cannot see its own bot key inside the container; the key the report is
-    // stored under is the caller's, so the body's botKey is taken from the caller.
-    const body = req.body && typeof req.body === "object" ? { ...req.body, botKey } : req.body;
+    // The board writes MYRMIDON_BOT_KEY into the bot's .env, so botd names its own
+    // key. A body without a botKey (an older botd) is stored under the caller's key;
+    // a body that names another bot is still a 403 below.
+    const raw = req.body && typeof req.body === "object" ? (req.body as Record<string, unknown>) : null;
+    const body = raw && raw.botKey === undefined ? { ...raw, botKey } : req.body;
     const parsed = wsDiskReportSchema.safeParse(body);
     if (!parsed.success) throw badRequest("Invalid disk report", parsed.error.issues);
     const report = parsed.data;

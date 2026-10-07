@@ -121,9 +121,10 @@ import { myrmidonBotEgressRoutes } from "./myrmidon/bot-containers/egress-wiring
 import { myrmidonBotCanaryRoutes } from "./myrmidon/bot-containers/canary-index.js"; // myrmidon(R5-B)
 import { myrmidonWorkspaceHygieneRoutes } from "./myrmidon/workspace-hygiene/index.js"; // myrmidon(WORKSPACE-HYGIENE)
 // myrmidon(BOT-DISK E): host disk usage threshold and signal
-import { myrmidonHostDiskRoutes } from "./myrmidon/host-disk/index.js"; // myrmidon(BOT-DISK E)
+import { hostDiskRuntime, myrmidonHostDiskRoutes } from "./myrmidon/host-disk/index.js"; // myrmidon(BOT-DISK E)
 import { myrmidonBotDiskLifecycleRoutes } from "./myrmidon/bot-containers/bot-disk-routes.js"; // myrmidon(BOT-DISK-A)
 import { myrmidonBotScopeRoutes } from "./myrmidon/bot-containers/scope-wiring.js"; // myrmidon(BOT-DISK-F)
+import { botWorkspacePressureFromPartition } from "./myrmidon/bot-containers/bot-workspaces-pressure.js"; // myrmidon(1.6.5-BOT-DISK-H4a)
 import { myrmidonBotWorkspacesRoutes } from "./myrmidon/bot-containers/bot-workspaces-routes.js"; // myrmidon(1.6.5-BOT-DISK-H4a)
 import { myrmidonBotDiskReportRoutes } from "./myrmidon/bot-containers/bot-disk-report-routes.js"; // myrmidon(1.6.5-BOT-DISK-H4b)
 import { myrmidonBotDiskQuotaRoutes } from "./myrmidon/bot-containers/bot-disk-quota-routes.js"; // myrmidon(1.6.1-BOT-DISK-C)
@@ -920,7 +921,10 @@ export async function createApp(
   api.use(myrmidonBotDiskLifecycleRoutes(db)); // myrmidon(BOT-DISK-A)
   api.use(myrmidonBotScopeRoutes(db)); // myrmidon(BOT-DISK-F)
   api.use(myrmidonBotDiskQuotaRoutes(db)); // myrmidon(1.6.1-BOT-DISK-C)
-  api.use(myrmidonBotWorkspacesRoutes(db)); // myrmidon(1.6.5-BOT-DISK-H4a)
+  api.use(myrmidonBotWorkspacesRoutes(db, {
+    // myrmidon(1.6.5-BOT-DISK-H4a): the pressure block comes from the host-disk partition measurement
+    readPressure: async () => botWorkspacePressureFromPartition(hostDiskRuntime(db).partition.current()),
+  }));
   api.use(myrmidonBotDiskReportRoutes()); // myrmidon(1.6.5-BOT-DISK-H4b): botd report + panel reads
   api.use(myrmidonBotImageRolloutRoutes(db)); // myrmidon(BOT-ROLLOUT)
   api.use(swarmClaimApp({

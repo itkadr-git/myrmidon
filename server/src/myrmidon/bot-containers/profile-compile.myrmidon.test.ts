@@ -205,6 +205,8 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
       expect(env).toContain(`${WS_PROFILE_ENV.boardUrl}="http://board.example.com:3100"`);
       expect(env).toContain(`${WS_PROFILE_ENV.boardKeyEnv}="${WS_BOTD_BOARD_KEY_ENV_VALUE}"`);
       expect(env).not.toContain(`${WS_PROFILE_ENV.boardKeyEnv}="fake-paperclip-api-key`);
+      // botd reports under its own key: the agent id, written by the board.
+      expect(env).toContain('MYRMIDON_BOT_KEY="agent-a"');
     });
 
     it("compiles the operator-set values (incl. the botd interval) over the defaults", async () => {
