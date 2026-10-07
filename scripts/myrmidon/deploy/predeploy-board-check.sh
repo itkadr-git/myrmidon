@@ -93,6 +93,7 @@ health_timeout="${MYRMIDON_PREDEPLOY_HEALTH_TIMEOUT_SEC:-${HEALTH_TIMEOUT_SEC}}"
 keep="${MYRMIDON_PREDEPLOY_KEEP:-0}"
 company_id="${BOARD_COMPANY_ID:-}"
 token_file="${MYRMIDON_PREDEPLOY_TOKEN_FILE:-${HEALTH_TOKEN_FILE:-${BOARD_TOKEN_FILE:-}}}"
+master_key_file="${MYRMIDON_PREDEPLOY_MASTER_KEY_FILE:-}"
 api_paths="${MYRMIDON_PREDEPLOY_API_PATHS:-/api/health,/api/companies/:company:/attention,/api/companies/:company:/issues?limit=1,/api/companies/:company:/agents,/api/companies/:company:/dashboard}"
 
 db_ready_command="${MYRMIDON_PREDEPLOY_DB_READY_COMMAND:-}"
@@ -136,6 +137,19 @@ if [[ -n "$token_file" ]]; then
   [[ -r "$token_file" ]] || die "MYRMIDON_PREDEPLOY_TOKEN_FILE is set but is not readable: $token_file (an input of the predeploy check: the token is read when the routes are walked); nothing was changed"
   [[ -s "$token_file" ]] || die "MYRMIDON_PREDEPLOY_TOKEN_FILE is set but is empty: $token_file (an input of the predeploy check: an empty token cannot be sent, so the route walk would only answer 401/403); nothing was changed"
 fi
+# myrmidon(PREDEPLOY-MASTER-KEY): the copy has no /paperclip volume, so without the
+# production master key it creates its own and every stored secret fails with
+# "Secret decryption failed". The key is mounted READ-ONLY, as a single file;
+# its content is never read or printed here.
+board_key_args=()
+if [[ -n "$master_key_file" ]]; then
+  [[ -f "$master_key_file" ]] || die "MYRMIDON_PREDEPLOY_MASTER_KEY_FILE is set but is not a file: $master_key_file (an input of the predeploy check: it is mounted read-only into the throwaway board); nothing was changed"
+  [[ -r "$master_key_file" ]] || die "MYRMIDON_PREDEPLOY_MASTER_KEY_FILE is set but is not readable: $master_key_file (an input of the predeploy check: it is mounted read-only into the throwaway board); nothing was changed"
+  [[ -s "$master_key_file" ]] || die "MYRMIDON_PREDEPLOY_MASTER_KEY_FILE is set but is empty: $master_key_file (an empty key cannot decrypt the copy's secrets); nothing was changed"
+  board_key_args=(-v "$master_key_file:/run/myrmidon-predeploy/master.key:ro" -e "PAPERCLIP_SECRETS_MASTER_KEY_FILE=/run/myrmidon-predeploy/master.key")
+else
+  log "PREDEPLOY-DB-CHECK: WARNING: no MYRMIDON_PREDEPLOY_MASTER_KEY_FILE: the throwaway board creates its own secrets master key, so stored secrets fail with 'Secret decryption failed' on the copy and the check can be red for that reason alone"
+fi
 if [[ -n "$dockergate_digest" && -z "$dockergate_env_file" ]]; then
   log "PREDEPLOY-DB-CHECK: WARNING: no MYRMIDON_PREDEPLOY_DOCKERGATE_ENV_FILE: the throwaway dockergate starts with its image defaults; a config it needs (caller mode, volumeRoot, allowed images) must come from MYRMIDON_PREDEPLOY_DOCKERGATE_ARGS"
 fi
@@ -176,7 +190,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   else
     plan "4. no dockergate digest given: the board is checked without the new dockergate (the release names none)"
   fi
-  plan "5. docker run -d --name $board_ctr --network $network -p 127.0.0.1:$board_port:3100 $board_ref (production DATABASE_URL ignored; the copy's URL is set)"
+  plan "5. docker run -d --name $board_ctr --network $network ${master_key_file:+(production master key file mounted read-only) }-p 127.0.0.1:$board_port:3100 $board_ref (production DATABASE_URL ignored; the copy's URL is set)"
   plan "6. wait for http://127.0.0.1:$board_port/api/health: status ok, version/commit of $board_ref (timeout ${health_timeout}s)"
   plan "7. walk ${api_paths//:company:/$company_id} against the copy"
   plan "8. remove the throwaway stack (network $network, $db_ctr, $dg_ctr, $board_ctr, volume $db_vol)"
@@ -264,7 +278,7 @@ fi
 log "PREDEPLOY-DB-CHECK: 4/6 new board on the copy (port 127.0.0.1:$board_port)"
 # shellcheck disable=SC2086  # the operator's extra docker arguments are word-split on purpose
 docker run -d --name "$board_ctr" --network "$network" \
-  --env-file "$env_file" -p "127.0.0.1:$board_port:3100" $board_args \
+  --env-file "$env_file" -p "127.0.0.1:$board_port:3100" ${board_key_args[@]+"${board_key_args[@]}"} $board_args \
   "$board_ref" >/dev/null || { dump_logs "$db_ctr"; die "cannot start the throwaway board ($board_ref); production was not touched"; }
 
 expect_version="$(image_label "$board_ref" org.opencontainers.image.version)"
