@@ -387,7 +387,7 @@ exec /bin/cp "$@"
     const stub = acceptingCpStub();
     try {
       const store = path.join(bot, "scratch", ".store-from-env-file");
-      fs.appendFileSync(path.join(bot, "hermes", ".env"), `npm_config_store_dir="${store}"\nnpm_config_package_import_method=reflink\n`);
+      fs.appendFileSync(path.join(bot, "hermes", ".env"), `npm_config_store_dir="${store}"\nnpm_config_package_import_method=clone\n`);
       const result = runWithStub({
         MYRMIDON_TEST_STUB_BIN: stub,
         HERMES_HOME: path.join(bot, "hermes"),

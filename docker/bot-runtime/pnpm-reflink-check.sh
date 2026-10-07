@@ -3,7 +3,7 @@
 #
 # myrmidon(BOT-DISK-H8b): proves that pnpm reflink-imports an installed package
 # from its store instead of copying it, from EVERY clone root of a bot. With
-# package-import-method=reflink pnpm runs `cp --reflink` (FICLONE), which needs
+# package-import-method=clone pnpm runs `cp --reflink` (FICLONE), which needs
 # both the store and the project on one copy-on-write filesystem (and one
 # superblock): EXDEV across filesystems, EOPNOTSUPP where the filesystem has no
 # reflinks. pnpm then falls back to copying, silently — THIS script is what
@@ -62,7 +62,7 @@ for root in $roots; do
 
   if ! (
     cd "$work/ws/app"
-    HOME="$work/home" npm_config_store_dir="$store" npm_config_package_import_method=reflink \
+    HOME="$work/home" npm_config_store_dir="$store" npm_config_package_import_method=clone \
       "$PNPM" install --offline --ignore-scripts --no-frozen-lockfile --reporter=silent >/dev/null 2>&1
   ); then
     echo "root=$root install-failed"
