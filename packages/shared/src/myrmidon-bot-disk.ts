@@ -125,9 +125,9 @@ const botRuntimePathSchema = z
 
 /** myrmidon(BOT-DISK-D): where the pnpm store lives and how pnpm imports (see the module comment). */
 export const BOT_DISK_DEFAULT_PNPM_STORE_DIR = "/workspace/.pnpm-store";
-export const BOT_DISK_PNPM_IMPORT_METHODS = ["hardlink", "clone-or-copy", "copy"] as const;
+export const BOT_DISK_PNPM_IMPORT_METHODS = ["hardlink", "reflink", "clone", "clone-or-copy", "copy"] as const;
 export type BotDiskPnpmImportMethod = (typeof BOT_DISK_PNPM_IMPORT_METHODS)[number];
-export const BOT_DISK_DEFAULT_PNPM_IMPORT_METHOD: BotDiskPnpmImportMethod = "hardlink";
+export const BOT_DISK_DEFAULT_PNPM_IMPORT_METHOD: BotDiskPnpmImportMethod = "reflink";
 /** Container roots a store may live under: all inside the bot's single mount. */
 export const BOT_DISK_PNPM_STORE_ROOTS = ["/workspace", "/data", "/scratch", "/bot"] as const;
 

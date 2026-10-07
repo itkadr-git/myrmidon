@@ -21,7 +21,7 @@ import {
   parseCloneReport,
   parseGitRefCheck,
   parseGitStoreState,
-  parseHardlinkCheck,
+  parseReflinkCheck,
   resetCloneHygieneStateForTests,
   type CloneReportEntry,
 } from "./clone-hygiene.js";
@@ -205,30 +205,30 @@ describe("the board-side sweep on a host that does see the volumes", () => {
   });
 });
 
-// myrmidon(BOT-DISK-D): the container-start hard-link self-check rides the clone-hygiene
-// report and becomes an attention signal per failing clone root.
-describe("hard-link self-check in the clone report", () => {
+// myrmidon(BOT-DISK-H8b): the container-start reflink self-check rides the
+// clone-hygiene report and becomes an attention signal per failing clone root.
+describe("reflink self-check in the clone report", () => {
   const now = Date.parse("2026-10-05T12:00:00Z");
-  const reportWith = (hardlinkCheck: unknown) =>
-    JSON.stringify({ version: 1, inspectedAt: "2026-10-05T11:59:00Z", repos: [], ...(hardlinkCheck === undefined ? {} : { hardlinkCheck }) });
+  const reportWith = (reflinkCheck: unknown) =>
+    JSON.stringify({ version: 1, inspectedAt: "2026-10-05T11:59:00Z", repos: [], ...(reflinkCheck === undefined ? {} : { reflinkCheck }) });
   const failing = {
     store: "/workspace/.pnpm-store",
-    importMethod: "hardlink",
+    importMethod: "reflink",
     ok: false,
     roots: [
       { root: "/data/hermes", ok: true, error: null },
-      { root: "/workspace", ok: false, error: "Invalid cross-device link" },
-      { root: "/scratch", ok: false, error: "Invalid cross-device link" },
+      { root: "/workspace", ok: false, error: "cp: failed to clone: Invalid cross-device link" },
+      { root: "/scratch", ok: false, error: "cp: failed to clone: Operation not supported" },
     ],
   };
 
   beforeEach(() => resetCloneHygieneStateForTests());
 
   it("parses the check and tolerates its absence or garbage", () => {
-    expect(parseCloneReport(reportWith(undefined), now)?.hardlinkCheck).toBeNull();
-    expect(parseCloneReport(reportWith("x"), now)?.hardlinkCheck).toBeNull();
-    expect(parseHardlinkCheck({ store: 1, ok: true, roots: [] })).toBeNull();
-    const parsed = parseCloneReport(reportWith(failing), now)?.hardlinkCheck;
+    expect(parseCloneReport(reportWith(undefined), now)?.reflinkCheck).toBeNull();
+    expect(parseCloneReport(reportWith("x"), now)?.reflinkCheck).toBeNull();
+    expect(parseReflinkCheck({ store: 1, ok: true, roots: [] })).toBeNull();
+    const parsed = parseCloneReport(reportWith(failing), now)?.reflinkCheck;
     expect(parsed?.ok).toBe(false);
     expect(parsed?.roots).toHaveLength(3);
   });
@@ -238,9 +238,9 @@ describe("hard-link self-check in the clone report", () => {
     const signals = cloneHygieneSignals();
     expect(signals.map((signal) => signal.path).sort()).toEqual(["/scratch", "/workspace"]);
     for (const signal of signals) {
-      expect(signal.kind).toBe("hardlink");
+      expect(signal.kind).toBe("reflink");
       expect(signal.reason).toContain("/workspace/.pnpm-store");
-      expect(signal.reason).toContain("Invalid cross-device link");
+      expect(signal.reason).toContain("cp: failed to clone");
     }
     // The next report, with the check passing (the bot restarted), clears them.
     const passing = { ...failing, ok: true, roots: failing.roots.map((root) => ({ ...root, ok: true, error: null })) };

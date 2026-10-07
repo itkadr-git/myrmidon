@@ -196,16 +196,23 @@ else
   log "WARNING: no catalog memory provider at ${catalog_dir}/hindsight — a profile with memory.provider=hindsight starts without memory"
 fi
 
-# --- hard-link self-check (dev variant) -------------------------------------
-# myrmidon(BOT-DISK-D): pnpm falls back to copying when it cannot hard-link, which
-# silently turns every clone's node_modules into a full copy (the disk grew ~5 GB/h
-# before the bot tree became one mount). So at every start: make a file in the pnpm
-# store directory and try to hard-link it into each clone root. A failure is logged
-# as an error and written to ${HERMES_HOME}/.myrmidon/hardlink-check.json, which the
-# clone-hygiene reporter passes to the board (the bot-disk status). It never stops
+# --- reflink self-check (BOT-DISK-H8b) ---------------------------------------
+# myrmidon(BOT-DISK-H8): pnpm imports packages into a clone with
+# package-import-method=reflink (cp --reflink), so the store and every clone
+# root must sit on a copy-on-write filesystem. When they do not (EXDEV across
+# superblocks, EOPNOTSUPP on a filesystem without reflinks) pnpm silently falls
+# back to copying, and every clone's node_modules becomes a full copy — the
+# disk grew ~5 GB/h before the bot tree became one mount. So at every start:
+# make a file in the pnpm store directory and try `cp --reflink=always` of it
+# into each clone root, then, where filefrag(1) is available, confirm the copy
+# really shares extents with the store file (a filesystem may accept the ioctl
+# yet materialize a full copy). A failure is logged as an error and written to
+# ${HERMES_HOME}/.myrmidon/reflink-check.json, which the clone-hygiene reporter
+# passes to the board (the bot_disk_lifecycle/reflink card key). It never stops
 # the gateway: a bot with a broken store still works, just wastefully.
 # The store is the one the bot's tools will use: the environment's
-# npm_config_store_dir, overridden by the profile's .env, defaulting to the image's.
+# npm_config_store_dir, overridden by the profile's .env, defaulting to the
+# image's.
 dotenv_value() {
   local file="${HERMES_HOME}/.env" line value
   [ -r "${file}" ] || return 0
@@ -223,19 +230,18 @@ json_escape() {
   printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr -d '\n\r\t'
 }
 
-hardlink_self_check() {
-  local store method roots root probe src dst err ok_all=true entries="" sep="" ok
+reflink_self_check() {
+  local store method roots root probe src dst err ok_all=true entries="" sep="" ok shared
   store="$(dotenv_value npm_config_store_dir)"
   store="${store:-${npm_config_store_dir:-/workspace/.pnpm-store}}"
-  method="$(dotenv_value npm_config_package_import_method)"
-  method="${method:-${npm_config_package_import_method:-hardlink}}"
-  roots="${MYRMIDON_HARDLINK_ROOTS:-/data/hermes /workspace /scratch}"
-  probe=".myrmidon-hardlink-probe.$$"
+  method="reflink"
+  roots="${MYRMIDON_REFLINK_ROOTS:-/data/hermes /workspace /scratch}"
+  probe=".myrmidon-reflink-probe.$$"
   src="${store}/${probe}"
   err=""
   if ! err="$(mkdir -p "${store}" 2>&1 && : > "${src}" 2>&1)"; then
     err="cannot create a file in the pnpm store ${store}: ${err}"
-    log "ERROR: hard-link self-check: ${err}"
+    log "ERROR: reflink self-check: ${err}"
     for root in ${roots}; do
       entries="${entries}${sep}{\"root\":\"$(json_escape "${root}")\",\"ok\":false,\"error\":\"$(json_escape "${err}")\"}"
       sep=","
@@ -245,10 +251,35 @@ hardlink_self_check() {
     for root in ${roots}; do
       dst="${root}/${probe}"
       ok=true
-      if ! err="$(ln "${src}" "${dst}" 2>&1)"; then
+      if ! err="$(cp --reflink=always "${src}" "${dst}" 2>&1)"; then
         ok=false
         ok_all=false
-        log "ERROR: hard-link self-check: cannot hard-link from the pnpm store ${store} into ${root}: ${err} — pnpm would copy every package into every clone there"
+        log "ERROR: reflink self-check: cannot reflink from the pnpm store ${store} into ${root}: ${err} — pnpm would copy every package into every clone there (bot_disk_lifecycle/reflink)"
+      elif command -v filefrag >/dev/null 2>&1; then
+        # A filesystem can accept FICLONE yet materialize a full copy; the only
+        # cheap proof is that the copy shares at least one physical extent with
+        # the store file. An empty source has no extents, so the probe carries
+        # a payload.
+        if [ ! -s "${src}" ]; then printf 'reflink-self-check\n' > "${src}"; cp --reflink=always "${src}" "${dst}" 2>/dev/null || true; fi
+        shared=""
+        local src_phys dst_phys phys
+        src_phys="$(filefrag -v "${src}" 2>/dev/null | sed -n 's/^[[:space:]]*[0-9]*:[[:space:]]*[0-9]*\.\.[0-9]*:[[:space:]]*\([0-9][0-9]*\)\.\..*/\1/p')"
+        dst_phys="$(filefrag -v "${dst}" 2>/dev/null | sed -n 's/^[[:space:]]*[0-9]*:[[:space:]]*[0-9]*\.\.[0-9]*:[[:space:]]*\([0-9][0-9]*\)\.\..*/\1/p')"
+        for phys in ${src_phys}; do
+          case " ${dst_phys} " in *" ${phys} "*) shared="${phys}"; break ;; esac
+        done
+        if [ -z "${src_phys}" ]; then
+          # filefrag gave nothing usable (FS without FIEMAP): the cp itself is
+          # the only available proof, treat it as the answer.
+          err=""
+        elif [ -z "${shared}" ]; then
+          ok=false
+          ok_all=false
+          err="cp --reflink=always succeeded but no shared physical extents (filefrag) — a full copy"
+          log "ERROR: reflink self-check: ${dst} shares no extents with the store — pnpm would copy every package (bot_disk_lifecycle/reflink)"
+        else
+          err=""
+        fi
       else
         err=""
       fi
@@ -259,20 +290,20 @@ hardlink_self_check() {
     rm -f "${src}" 2>/dev/null || true
   fi
   if [ "${ok_all}" = true ]; then
-    log "hard-link self-check ok: store=${store} roots=${roots} importMethod=${method}"
+    log "reflink self-check ok: store=${store} roots=${roots} importMethod=${method}"
   fi
   local out_dir="${HERMES_HOME}/.myrmidon" now
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   if mkdir -p "${out_dir}" 2>/dev/null; then
-    printf '{"version":1,"checkedAt":"%s","store":"%s","importMethod":"%s","ok":%s,"roots":[%s]}\n' \
+    printf '{"version":1,"method":"reflink","checkedAt":"%s","store":"%s","importMethod":"%s","ok":%s,"roots":[%s]}\n' \
       "${now}" "$(json_escape "${store}")" "$(json_escape "${method}")" "${ok_all}" "${entries}" \
-      > "${out_dir}/hardlink-check.json.tmp" 2>/dev/null \
-      && mv -f "${out_dir}/hardlink-check.json.tmp" "${out_dir}/hardlink-check.json" 2>/dev/null \
-      || log "WARNING: cannot write ${out_dir}/hardlink-check.json"
+      > "${out_dir}/reflink-check.json.tmp" 2>/dev/null \
+      && mv -f "${out_dir}/reflink-check.json.tmp" "${out_dir}/reflink-check.json" 2>/dev/null \
+      || log "WARNING: cannot write ${out_dir}/reflink-check.json"
   fi
 }
-if [ "${MYRMIDON_HARDLINK_CHECK:-1}" != "0" ]; then
-  hardlink_self_check || log "WARNING: the hard-link self-check itself failed to run"
+if [ "${MYRMIDON_REFLINK_CHECK:-1}" != "0" ]; then
+  reflink_self_check || log "WARNING: the reflink self-check itself failed to run"
 fi
 
 # --- shared git-object store facts (myrmidon 1.6.5 BOT-DISK-G live check) ---

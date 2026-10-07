@@ -59,8 +59,9 @@ export interface CloneReportEntry {
   error: string | null;
 }
 
-/** myrmidon(BOT-DISK-D): one clone root of the container-start hard-link self-check. */
-export interface HardlinkRootResult {
+/** myrmidon(BOT-DISK-D / BOT-DISK-H8b): one clone root of the container-start
+ *  reflink self-check (formerly the hard-link check). */
+export interface ReflinkRootResult {
   /** Container path of the root: /data/hermes, /workspace or /scratch. */
   root: string;
   ok: boolean;
@@ -68,12 +69,14 @@ export interface HardlinkRootResult {
 }
 
 /** The self-check the entrypoint runs at every start (docker/bot-runtime/entrypoint.sh)
- *  and the reporter passes on: a hard link from the pnpm store into each clone root. */
-export interface HardlinkCheck {
+ *  and the reporter passes on: a reflink (cp --reflink) from the pnpm store
+ *  into each clone root. myrmidon(BOT-DISK-H8b): replaces the BOT-DISK-D
+ *  hard-link check; `method` is "reflink". */
+export interface ReflinkCheck {
   store: string;
   importMethod: string;
   ok: boolean;
-  roots: HardlinkRootResult[];
+  roots: ReflinkRootResult[];
 }
 
 /** myrmidon(1.6.5 BOT-DISK-G): one check of the container-start shared-git-objects self-check. */
@@ -119,19 +122,19 @@ export interface GitStoreState {
 export interface CloneReport {
   inspectedAtMs: number;
   repos: Map<string, CloneReportEntry>;
-  hardlinkCheck: HardlinkCheck | null;
+  reflinkCheck: ReflinkCheck | null;
   gitRefCheck: GitRefCheck | null;
   /** myrmidon(1.6.5 BOT-DISK-G live check): the store's facts, read live by the
    *  reporter on this pass. Additive; null from an older reporter. */
   gitStore: GitStoreState | null;
 }
 
-/** The report's `hardlinkCheck`, or null when absent or malformed. */
-export function parseHardlinkCheck(value: unknown): HardlinkCheck | null {
+/** The report's `reflinkCheck`, or null when absent or malformed. */
+export function parseReflinkCheck(value: unknown): ReflinkCheck | null {
   if (!value || typeof value !== "object") return null;
   const v = value as Record<string, unknown>;
   if (typeof v.store !== "string" || typeof v.ok !== "boolean" || !Array.isArray(v.roots)) return null;
-  const roots: HardlinkRootResult[] = [];
+  const roots: ReflinkRootResult[] = [];
   for (const item of v.roots.slice(0, 20)) {
     if (!item || typeof item !== "object") continue;
     const r = item as Record<string, unknown>;
@@ -235,7 +238,7 @@ export function parseCloneReport(raw: string, nowMs: number): CloneReport | null
   return {
     inspectedAtMs,
     repos,
-    hardlinkCheck: parseHardlinkCheck(obj.hardlinkCheck),
+    reflinkCheck: parseReflinkCheck(obj.reflinkCheck),
     gitRefCheck: parseGitRefCheck(obj.gitRefCheck),
     gitStore: parseGitStoreState(obj.gitStore),
   };
@@ -279,11 +282,11 @@ export function decideCloneFate(entry: CloneReportEntry | undefined, quiet: bool
 
 /** A clone kept with unpushed work, idle longer than the TTL. */
 export interface CloneHygieneSignal {
-  /** `clone`: unpushed work in an idle clone. `hardlink` (BOT-DISK-D): pnpm cannot
-   *  hard-link from its store into `path` (a clone root), so installs there copy.
-   *  `gitref` (1.6.5 BOT-DISK-G): the shared-git-objects self-check failed, so
-   *  task clones on this bot copy the git history again. */
-  kind?: "clone" | "hardlink" | "gitref";
+  /** `clone`: unpushed work in an idle clone. `reflink` (BOT-DISK-H8b): pnpm
+   *  cannot reflink from its store into `path` (a clone root), so installs
+   *  there copy. `gitref` (1.6.5 BOT-DISK-G): the shared-git-objects self-check
+   *  failed, so task clones on this bot copy the git history again. */
+  kind?: "clone" | "reflink" | "gitref";
   botKey: string;
   /** Container path of the clone. */
   path: string;
@@ -323,16 +326,17 @@ export function ingestCloneReport(botKey: string, raw: string, idleTtlMs: number
       observedAtMs: signals.get(key)?.observedAtMs ?? nowMs,
     });
   }
-  // myrmidon(BOT-DISK-D): a clone root the start-time self-check could not hard-link into.
-  for (const failed of report.hardlinkCheck?.roots.filter((root) => !root.ok) ?? []) {
-    const key = `${botKey}:hardlink:${failed.root}`;
+  // myrmidon(BOT-DISK-H8b): a clone root the start-time self-check could not
+  // reflink into (the card key is bot_disk_lifecycle/reflink).
+  for (const failed of report.reflinkCheck?.roots.filter((root) => !root.ok) ?? []) {
+    const key = `${botKey}:reflink:${failed.root}`;
     seen.add(key);
     signals.set(key, {
-      kind: "hardlink",
+      kind: "reflink",
       botKey,
       path: failed.root,
       branch: null,
-      reason: `cannot hard-link from the pnpm store ${report.hardlinkCheck?.store}: ${failed.error ?? "unknown error"}`,
+      reason: `cannot reflink from the pnpm store ${report.reflinkCheck?.store}: ${failed.error ?? "unknown error"}`,
       observedAtMs: signals.get(key)?.observedAtMs ?? nowMs,
     });
   }

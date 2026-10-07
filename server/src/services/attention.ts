@@ -2039,7 +2039,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           if (!agent) continue;
           const at = new Date(signal.observedAtMs).toISOString();
           // myrmidon(1.6.5 BOT-DISK-G): the signal kind names its own dedup family.
-          const signalKind = signal.kind === "hardlink" || signal.kind === "gitref" ? signal.kind : "clone";
+          const signalKind = signal.kind === "reflink" || signal.kind === "gitref" ? signal.kind : "clone";
           add(createItem({
             companyId,
             sourceKind: "bot_disk_lifecycle",
@@ -2054,8 +2054,8 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
               metadata: { clonePath: signal.path, branch: signal.branch },
             },
             whyNow:
-              signal.kind === "hardlink"
-                ? `Hard links do not work in ${signal.path}: ${signal.reason}. pnpm installs there copy every package instead of linking, so the bot's disk fills quickly.`
+              signal.kind === "reflink"
+                ? `Reflinks do not work in ${signal.path}: ${signal.reason}. pnpm installs there copy every package instead of cloning, so the bot's disk fills quickly.`
                 : signal.kind === "gitref"
                   ? `Shared git objects do not work on this bot: ${signal.reason}. New task clones there copy the whole git history again (~0.4 GB each).`
                   : `Clone ${signal.path} has been idle past the lifecycle TTL with ${signal.reason}; it is kept, not removed.`,
@@ -2065,14 +2065,14 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             ),
             inlineResolvable: false,
             entryRule:
-              signal.kind === "hardlink"
-                ? "the bot's start-time hard-link self-check failed for a clone root"
+              signal.kind === "reflink"
+                ? "the bot's start-time reflink self-check failed for a clone root"
                 : signal.kind === "gitref"
                   ? "the bot's start-time shared-git-objects self-check failed"
                   : "a bot clone holds unpushed work and is idle longer than general.botDisk.idleTtlMs",
             exitRule:
-              signal.kind === "hardlink"
-                ? "the bot restarts and the self-check passes (the store is inside the bot's single mount)"
+              signal.kind === "reflink"
+                ? "the bot restarts and the self-check passes (the store and the roots are on one copy-on-write filesystem)"
                 : signal.kind === "gitref"
                   ? "the bot restarts and the self-check passes (the wrapper shadows git and a test reference-clone borrows objects)"
                   : "the work is pushed or discarded, the clone changes again, or it is removed",

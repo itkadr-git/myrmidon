@@ -466,7 +466,7 @@ def build_report(roots):
     return {
         "ttlSeconds": ttl,
         "removed": removed[:200],
-        "hardlinkCheck": read_hardlink_check(),
+        "reflinkCheck": read_reflink_check(),
         "gitRefCheck": read_git_objects_check(),  # myrmidon(1.6.5 BOT-DISK-G)
         # myrmidon(1.6.5 BOT-DISK-G live check): the store's state read live on
         # this pass — the board's acceptance reads it instead of exec-ing in.
@@ -477,11 +477,12 @@ def build_report(roots):
     }
 
 
-def read_hardlink_check():
-    """The container-start hard-link self-check (entrypoint.sh), passed on so the
-    board shows it next to the clones; null when the entrypoint wrote none."""
-    path = os.environ.get("MYRMIDON_HARDLINK_CHECK_FILE") or os.path.join(
-        os.environ.get("HERMES_HOME", "/data/hermes"), ".myrmidon", "hardlink-check.json"
+def read_reflink_check():
+    """The container-start reflink self-check (entrypoint.sh, myrmidon
+    BOT-DISK-H8b), passed on so the board shows it next to the clones; null
+    when the entrypoint wrote none."""
+    path = os.environ.get("MYRMIDON_REFLINK_CHECK_FILE") or os.path.join(
+        os.environ.get("HERMES_HOME", "/data/hermes"), ".myrmidon", "reflink-check.json"
     )
     try:
         with open(path, encoding="utf-8") as handle:
