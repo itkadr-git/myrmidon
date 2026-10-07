@@ -187,6 +187,11 @@ export const instanceGeneralSettingsSchema = z.object({
   // or refuse new runs with the budget reason (hard); changed from
   // /api/myrmidon/budget-enforcement; absent means the default (signal only).
   budgetEnforcement: budgetEnforcementSettingsSchema.optional(),
+  // myrmidon(1.7-DEBATE-ASYM-A): the asymmetric-debates engine settings,
+  // changed from /api/myrmidon/debate. Stored passthrough like the
+  // swarm-claim journal: the debate service re-reads and validates the shape
+  // (cross-family rule included) defensively on every run and PATCH.
+  debate: z.unknown().optional(),
   // myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys, managed
   // from the instance settings page and PATCH /api/myrmidon/plugin-entitlement/keys;
   // absent means "no keys are registered" (no plugin is unlocked).

@@ -60,6 +60,9 @@ import { preserveSttGeneralKey } from "../myrmidon/stt/store.js";
 // myrmidon(1.7-BUDGET-CONFIG-B): keep the stored budget enforcement mode
 // across vendor writes of `general`
 import { preserveBudgetEnforcementGeneralKey } from "../myrmidon/budget-enforcement/settings.js";
+// myrmidon(1.7-DEBATE-ASYM-A): the stored debate engine configuration must
+// survive every vendor general write (it is edited on its own settings panel).
+import { preserveDebateGeneralKey } from "../myrmidon/debates/settings.js";
 // myrmidon(PLUGIN-ENTITLEMENT C): keep the plugin entitlement keys across vendor writes of `general`
 import { preservePluginEntitlementKeysGeneralKey } from "../myrmidon/plugin-entitlement/store.js";
 // myrmidon(DM-PROGRESS): keep the Telegram DM progress settings across vendor writes of `general`
@@ -293,6 +296,10 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // myrmidon(REVIEW-ROUTING): the stored review routing settings survive
       // every general write (they are edited on their own settings page).
       ...(parsed.data.reviewRouting ? { reviewRouting: parsed.data.reviewRouting } : {}),
+      // myrmidon(1.7-DEBATE-ASYM-A): the stored debate engine configuration
+      // survives every general write (it is edited on its own settings panel;
+      // the service validates the shape and the family rule on read).
+      ...(parsed.data.debate !== undefined ? { debate: parsed.data.debate } : {}),
       // myrmidon(PLUGIN-ENTITLEMENT C): the stored plugin entitlement keys
       // survive every general write (edited on their own settings block).
       ...(parsed.data.pluginEntitlementKeys ? { pluginEntitlementKeys: parsed.data.pluginEntitlementKeys } : {}),
@@ -668,6 +675,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
             ...preserveWipLimitGeneralKey(current.general), // myrmidon(1.6.1-WIP-LIMIT-A)
             ...preserveSttGeneralKey(current.general), // myrmidon(1.6.1 VOICE-STT A1)
             ...preserveBudgetEnforcementGeneralKey(current.general), // myrmidon(1.7-BUDGET-CONFIG-B)
+            ...preserveDebateGeneralKey(current.general), // myrmidon(1.7-DEBATE-ASYM-A)
             ...preservePluginEntitlementKeysGeneralKey(current.general), // myrmidon(PLUGIN-ENTITLEMENT C)
             ...preserveTelegramDmProgressGeneralKey(current.general), // myrmidon(DM-PROGRESS)
             ...preserveFallbackSignalGeneralKey(current.general), // myrmidon(BOT-RUNTIME-TUNING D2)
