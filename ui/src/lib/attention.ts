@@ -73,6 +73,9 @@ const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
   bot_disk_lifecycle: { label: "Bot disk" },
   // myrmidon(1.6.1-BOT-DISK-C): label for the per-bot disk quota signal.
   bot_disk_quota: { label: "Bot disk quota" },
+  // myrmidon(1.6.5 BOT-DISK-H4c): labels for the archive and stale-image cards.
+  bot_disk_archive: { label: "Bot disk archive" },
+  bot_image_stale: { label: "Bot image" },
   // myrmidon(REVIEW-ROUTING): label for the review routing source.
   review_routing: { label: "Review routing" },
   // myrmidon(1.6.3 PROMPT-BUDGET B): label for the prompt-budget threshold source.
