@@ -117,14 +117,19 @@ function human(ms: number): string {
   return `${Math.floor(m / 60)} h`;
 }
 
-/** `agent-silent`: a running container whose last report is older than 30 minutes. */
+/**
+ * `agent-silent`: a running container that has sent reports before, and whose
+ * last report is older than 30 minutes. A bot that never reported is not a card
+ * (the disk agent is not rolled out yet).
+ */
 export function buildAgentSilentCards(input: BotDiskCardsInput): BotDiskCard[] {
   const cards: BotDiskCard[] = [];
   for (const bot of input.bots) {
     if (!bot.running) continue;
     const lastMs = bot.receivedAtMs;
-    const ageMs = lastMs === null ? null : input.nowMs - lastMs;
-    if (ageMs !== null && ageMs <= BOT_DISK_AGENT_SILENT_MS) continue;
+    if (lastMs === null) continue;
+    const ageMs = input.nowMs - lastMs;
+    if (ageMs <= BOT_DISK_AGENT_SILENT_MS) continue;
     const at = iso(input.nowMs);
     cards.push({
       sourceKind: "bot_disk_lifecycle",
@@ -134,18 +139,15 @@ export function buildAgentSilentCards(input: BotDiskCardsInput): BotDiskCard[] {
       dedupKey: `${WS_CARD_KEYS.agentSilent}:${bot.botKey}`,
       severity: "medium",
       title: "Bot disk agent is silent",
-      whyNow:
-        ageMs === null
-          ? "The bot is running but its disk agent has never sent a report, so its work copies are not being cleaned up."
-          : `The bot is running but its disk agent last reported ${human(ageMs)} ago (limit 30 min), so its work copies are not being cleaned up.`,
-      entryRule: "the bot container is running and its last disk report is older than 30 minutes (or absent)",
+      whyNow: `The bot is running but its disk agent last reported ${human(ageMs)} ago (limit 30 min), so its work copies are not being cleaned up.`,
+      entryRule: "the bot container is running, it has reported before, and its last disk report is older than 30 minutes",
       exitRule: "the bot sends a fresh disk report or its container stops",
       at,
       payload: {
         botKey: bot.botKey,
         at,
-        lastReportAt: lastMs === null ? null : iso(lastMs),
-        ageMinutes: ageMs === null ? null : minutes(ageMs),
+        lastReportAt: iso(lastMs),
+        ageMinutes: minutes(ageMs),
       },
     });
   }
@@ -187,8 +189,8 @@ export function buildDriftCards(input: BotDiskCardsInput): BotDiskCard[] {
         issueKey: copy.key,
         dedupKey: `${WS_CARD_KEYS.drift}:${bot.botKey}:${copy.key}`,
         severity: "medium",
-        title: `Work copy of closed task ${copy.key} is still on disk`,
-        whyNow: `Task ${copy.key} closed ${human(overMs)} ago; its copy ${copy.path} should have been removed after ${graceMin} min. Reason: ${reason}.`,
+        title: `Work copy of closed task ${redactReportText(copy.key)} is still on disk`,
+        whyNow: `Task ${redactReportText(copy.key)} closed ${human(overMs)} ago; its copy ${redactReportText(copy.path)} should have been removed after ${graceMin} min. Reason: ${reason}.`,
         entryRule: `a work copy of a closed task is alive longer than the grace of ${graceMin} min plus 15 min`,
         exitRule: "the copy is removed or archived by the disk agent, or the task is active again",
         at,
@@ -229,7 +231,7 @@ export function buildForeignCards(input: BotDiskCardsInput): BotDiskCard[] {
         dedupKey: `${WS_CARD_KEYS.foreign}:${bot.botKey}:${p}`,
         severity: sign === "token" ? "high" : "medium",
         title: "Foreign copy on a bot disk",
-        whyNow: `${p} is not a managed work copy (sign: ${sign}). The disk agent archives and removes it after 24 h.`,
+        whyNow: `${redactReportText(p)} is not a managed work copy (sign: ${redactReportText(sign)}). The disk agent archives and removes it after 24 h.`,
         entryRule: "the bot's disk report lists a copy outside the managed layout (class X)",
         exitRule: "the copy is removed or no longer reported",
         at,
@@ -258,8 +260,8 @@ export function buildArchiveCards(input: BotDiskCardsInput): BotDiskCard[] {
         issueKey: a.key,
         dedupKey: `${WS_CARD_KEYS.archive}:${bot.botKey}:${baseName(a.path)}`,
         severity: "low",
-        title: `Unpushed work of ${a.key} was archived`,
-        whyNow: `The copy of ${a.key} held unpushed work and was removed; it is kept as ${baseName(a.path)} (${a.sizeBytes} bytes) until ${iso(expiresMs)}. Restore it with myr-ws restore ${a.key}.`,
+        title: `Unpushed work of ${redactReportText(a.key)} was archived`,
+        whyNow: `The copy of ${redactReportText(a.key)} held unpushed work and was removed; it is kept as ${redactReportText(baseName(a.path))} (${a.sizeBytes} bytes) until ${iso(expiresMs)}. Restore it with myr-ws restore ${redactReportText(a.key)}.`,
         entryRule: "the disk agent archived a copy with unpushed work",
         exitRule: "the archive is restored, or expires after 30 days",
         at,
