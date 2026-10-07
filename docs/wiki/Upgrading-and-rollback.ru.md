@@ -26,7 +26,7 @@ curl -fsSL https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.5-r
 На серверах, которыми управляют руками, путь — скрипт выката, см.
 [Ручной выкат](Manual-deployment.ru). Заметки оператора по каждому выпуску
 живут в
-[`docs/myrmidon/deploy.ru.md`](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/deploy.ru.md),
+[`docs/myrmidon/deploy.md`](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/deploy.ru.md),
 а журнал изменений называет выпуск, в который вошло каждое изменение.
 
 ## Обновление
@@ -72,6 +72,19 @@ scripts/myrmidon/deploy/deploy.sh --config /path/to/deploy.env --release myr-vX.
    (`MYRMIDON_COMPONENT_AUTO_ROLLBACK=1`, по умолчанию). Карточки ботов
    переключаются пачками не больше 5, каждый бот — только пока его агент на
    паузе или простаивает: ни один запуск не прерывается.
+
+Выкат также управляет настройками сервера PostgreSQL (с 1.6.5, DB-TUNING):
+декларативный источник лежит в репозитории
+(`scripts/myrmidon/deploy/db-tuning.sql`), выкат применяет его через
+`DB_TUNE_COMMAND` и затем проверяет каждую пару `DB_TUNE_EXPECTED` через
+`SHOW` — расхождение означает неудачный выкат, и прежние значения
+(записанные до первого управляемого применения) возвращаются сразу. Откат
+возвращает настройки через `DB_TUNE_ROLLBACK_COMMAND` и проверяет их по
+записанным прежним значениям. Все четыре настройки `DB_TUNE_*`
+необязательны; при пустой `DB_TUNE_COMMAND` шаг пропускается, и база
+остаётся с теми настройками, что у неё есть. Значения, порядок проверки и
+запрос `pg_stat_statements` для замера «до/после» — в
+[`docs/myrmidon/deploy.md`](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/deploy.ru.md).
 
 ## Кандидаты и финальные выпуски (с 1.6.5)
 
