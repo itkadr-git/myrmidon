@@ -845,7 +845,7 @@
     "pluginIdLabel": "Plugin ID",
     "pluginIdPlaceholder": "com.example.plugin",
     "keyLabel": "Entitlement key",
-    "keyPlaceholder": "Enter plugin entitlement key",
+    "keyPlaceholder": "PEK1.<payload>.<signature>",
     "expiresAtLabel": "Expires",
     "noKeysMessage": "No plugin entitlement keys registered yet",
     "statusActive": "Active",
@@ -858,7 +858,14 @@
     "removeKeyDescription": "Remove this key? The plugin will stop being entitled if no other valid key remains.",
     "cancel": "Cancel",
     "loading": "Loading plugin entitlement settings...",
-    "saveFailed": "Could not save the key. Try again."
+    "saveFailed": "Could not save the key. Try again.",
+    "publicKeyLabel": "Verification public key",
+    "publicKeyPlaceholder": "-----BEGIN PUBLIC KEY----- (ed25519, PEM); leave empty to clear",
+    "publicKeySourceSettings": "Source: instance settings",
+    "publicKeySourceEnv": "Source: forced by MYRMIDON_PLUGIN_ENTITLEMENT_PUBLIC_KEY",
+    "publicKeySourceNone": "No verification public key configured — no entitlement key can be accepted",
+    "publicKeySaveButton": "Save public key",
+    "publicKeySaveFailed": "Could not save the public key. Try again."
   },
   "telegramDmProgress": {
     "title": "Telegram DM: live progress",
