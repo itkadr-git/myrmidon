@@ -65,6 +65,9 @@ const openView = {
     runMemoryEstimateMb: 1536,
     minFreeHostMemoryMb: 15360,
     maxHostLoadPercentPerCore: 90,
+    // myrmidon(1.6.5 RUN-ADMISSION rc.3): the deciding ceilings.
+    maxHostCpuBusyPercent: 90,
+    maxHostCpuPsiSomeAvg10: null,
   },
   sources: {
     maxConcurrentRuns: "settings",
@@ -73,6 +76,9 @@ const openView = {
     runMemoryEstimateMb: "default",
     minFreeHostMemoryMb: "default",
     maxHostLoadPercentPerCore: "default",
+    // Not RunLimitKeys yet (part B predates the shared-key promotion), so an
+    // older server's sources map has no entries for them — the screen must
+    // fall back to "Default".
   },
   hostLoad: {
     state: "open",
@@ -83,6 +89,11 @@ const openView = {
     backgroundPercentPerCore: 115,
     load15PercentPerCore: 115,
     loadAboveBackgroundPercent: 5,
+    cpuBusyPercent: 62,
+    busyThresholdPercent: 90,
+    psiSomeAvg10: null,
+    psiThresholdPercent: null,
+    source: "cpu-busy",
     reason: null,
     heldSince: null,
   },
@@ -149,6 +160,11 @@ describe("myrmidon(UI2) Ui2RunsSettings screen parity", () => {
         backgroundPercentPerCore: 115,
         load15PercentPerCore: 115,
         loadAboveBackgroundPercent: 5,
+        cpuBusyPercent: 62,
+        busyThresholdPercent: 90,
+        psiSomeAvg10: null,
+        psiThresholdPercent: null,
+        source: "cpu-busy",
         reason: null,
         heldSince: null,
       },
@@ -200,18 +216,26 @@ describe("myrmidon(UI2) Ui2RunsSettings screen parity", () => {
     vi.clearAllMocks();
   });
 
-  it("renders the seven ceilings with their sources from the mocked API", async () => {
+  it("renders the ceilings with their sources from the mocked API", async () => {
     await renderScreen();
 
     expect(mockRuntimeLimitsApi.get).toHaveBeenCalled();
     const inputs = [...container.querySelectorAll("input[id^='ui2-run-limit-']")];
-    expect(inputs.length).toBe(7);
+    expect(inputs.length).toBe(9);
     // myrmidon(1.6.5 RUN-FAIRNESS): the single-agent start share renders at
     // its default 15 while the server does not serve the key yet.
     const share = container.querySelector<HTMLInputElement>("#ui2-run-limit-maxPerAgentStartSharePercent");
     expect(share?.value).toBe("15");
     expect(share?.disabled).toBe(false);
-    // myrmidon(1.6.5 RUN-ADMISSION): the host CPU ceiling is editable here too.
+    // myrmidon(1.6.5 RUN-ADMISSION rc.3): the deciding CPU ceilings are editable
+    // here; the busy ceiling renders at 90, the off PSI ceiling empty/disabled.
+    const busyCeiling = container.querySelector<HTMLInputElement>("#ui2-run-limit-maxHostCpuBusyPercent");
+    expect(busyCeiling?.value).toBe("90");
+    expect(busyCeiling?.disabled).toBe(false);
+    const psiCeiling = container.querySelector<HTMLInputElement>("#ui2-run-limit-maxHostCpuPsiSomeAvg10");
+    expect(psiCeiling?.value).toBe("");
+    expect(psiCeiling?.disabled).toBe(true);
+    // myrmidon(1.6.5 RUN-ADMISSION): the legacy load-average ceiling stays editable.
     const cpuCeiling = container.querySelector<HTMLInputElement>("#ui2-run-limit-maxHostLoadPercentPerCore");
     expect(cpuCeiling?.value).toBe("90");
     expect(cpuCeiling?.disabled).toBe(false);
@@ -315,13 +339,127 @@ describe("myrmidon(UI2) Ui2RunsSettings screen parity", () => {
     expect(mockRuntimeLimitsApi.update).not.toHaveBeenCalled();
   });
 
+  it("myrmidon(1.6.5 RUN-ADMISSION rc.3): the host line leads with the busy percent, the load average is auxiliary", async () => {
+    await renderScreen();
+
+    // The deciding CPU busy label and hint render...
+    const body = container.textContent ?? "";
+    expect(body).toContain("Max host CPU busy (% of all cores)");
+    expect(body).toContain("ABSOLUTE percent of all cores");
+    // ... the legacy ceiling names itself deprecated ...
+    expect(body).toContain("deprecated");
+    // ... and the live line leads with the signal the gate decides on: the busy
+    // percent with its threshold and verdict; the load average is auxiliary.
+    const live = container.querySelector("[data-testid=ui2-run-limit-host-load]")?.textContent ?? "";
+    expect(live).toContain("Host CPU right now: 62 % busy");
+    expect(live).toContain("ceiling 90 % busy is open: new runs start");
+    expect(live).toContain("Auxiliary: load average 120 % of a core (load 19.2 on 16 core(s))");
+    expect(live).toContain("5 % of a core above the host's background floor of 115 %");
+  });
+
+  it("myrmidon(1.6.5 RUN-ADMISSION rc.3): shows the busy-closed verdict with PSI and hides a missing reading", async () => {
+    mockRuntimeLimitsApi.get.mockResolvedValue({
+      ...openView,
+      hostLoad: {
+        ...openView.hostLoad,
+        state: "closed",
+        cpuBusyPercent: 93,
+        psiSomeAvg10: 41,
+        psiThresholdPercent: 40,
+        reason: "host CPU is 93 % busy at or above the 90 % busy ceiling",
+        heldSince: "2026-10-05T17:34:00.000Z",
+      },
+    });
+    await renderScreen();
+    const live = container.querySelector("[data-testid=ui2-run-limit-host-load]")?.textContent ?? "";
+    expect(live).toContain("Host CPU right now: 93 % busy");
+    expect(live).toContain("PSI some avg10 41 % (ceiling 40 %)");
+    expect(live).toContain("ceiling 90 % busy is closed: new runs wait in the queue");
+    expect(live).toContain("(host CPU is 93 % busy");
+    expect(live).toContain("Auxiliary: load average 120 % of a core");
+
+    // A server that sends no reading: no invented numbers.
+    mockRuntimeLimitsApi.get.mockResolvedValue({ ...openView, hostLoad: null });
+    flushSync(() => root?.unmount());
+    root = null;
+    await renderScreen();
+    expect(container.querySelector("[data-testid=ui2-run-limit-host-load]")).toBeNull();
+  });
+
+  it("myrmidon(1.6.5 RUN-ADMISSION rc.3): an unmeasured first window and an unreadable counter render honestly", async () => {
+    mockRuntimeLimitsApi.get.mockResolvedValue({
+      ...openView,
+      hostLoad: { ...openView.hostLoad, cpuBusyPercent: null },
+    });
+    await renderScreen();
+    const pending = container.querySelector("[data-testid=ui2-run-limit-host-load]")?.textContent ?? "";
+    expect(pending).toContain("busy % not measured yet");
+    expect(pending).toContain("ceiling 90 % busy is open");
+
+    mockRuntimeLimitsApi.get.mockResolvedValue({
+      ...openView,
+      hostLoad: { ...openView.hostLoad, state: "unknown", reason: "cannot read /proc/stat" },
+    });
+    flushSync(() => root?.unmount());
+    root = null;
+    await renderScreen();
+    expect(container.querySelector("[data-testid=ui2-run-limit-host-load]")?.textContent).toBe(
+      "The host load cannot be read, so the ceiling is inactive: cannot read /proc/stat",
+    );
+  });
+
+  it("myrmidon(1.6.5 RUN-ADMISSION rc.3): a legacy gate that still decides on load average keeps the old line", async () => {
+    mockRuntimeLimitsApi.get.mockResolvedValue({
+      ...openView,
+      hostLoad: {
+        ...openView.hostLoad,
+        state: "closed",
+        source: "load-average",
+        cpuBusyPercent: null,
+        busyThresholdPercent: null,
+        load1: 35,
+        loadPercentPerCore: 219,
+        loadAboveBackgroundPercent: 104,
+        reason: "host load average 35.00 on 16 core(s) is 219 % of a core",
+      },
+    });
+    await renderScreen();
+    const live = container.querySelector("[data-testid=ui2-run-limit-host-load]")?.textContent ?? "";
+    expect(live).toContain("Host now: 219 % of a core");
+    expect(live).toContain("104 % of a core above the host's background floor of 115 %");
+    expect(live).toContain("ceiling 90 % is closed");
+  });
+
+  it("myrmidon(1.6.5 RUN-ADMISSION rc.3): edits the CPU busy ceiling through the same PATCH api", async () => {
+    await renderScreen();
+
+    const busy = container.querySelector<HTMLInputElement>("#ui2-run-limit-maxHostCpuBusyPercent");
+    expect(busy).not.toBeNull();
+    setNativeValue(busy!, "85");
+    await flushReact();
+
+    const save = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent === "Apply",
+    ) as HTMLButtonElement;
+    expect(save.disabled).toBe(false);
+    save.click();
+    await flushReact();
+    expect(mockRuntimeLimitsApi.update).toHaveBeenCalledWith({ maxHostCpuBusyPercent: 85 });
+  });
+
   it("myrmidon(1.6.5 rc.2): shows the current host load and the background next to the ceiling field", async () => {
+    // rc.3 note: this is the legacy load-average line — mocked with
+    // source: "load-average", the rule a settings row saved before rc.3 decides on.
+    mockRuntimeLimitsApi.get.mockResolvedValue({
+      ...openView,
+      hostLoad: { ...openView.hostLoad, source: "load-average" },
+    });
     await renderScreen();
 
     // The label names what the number is measured against...
     const body = container.textContent ?? "";
     expect(body).toContain("above the host's background");
-    // ... the hint explains it ...
+    // ... the hint explains it (deprecated since rc.3) ...
     expect(body).toContain("Only the load the runs add is counted");
     // ... and the live line carries the reading, the host's own background and
     // the verdict, so an operator sees why the fleet is running or waiting.
@@ -344,6 +482,11 @@ describe("myrmidon(UI2) Ui2RunsSettings screen parity", () => {
         backgroundPercentPerCore: 115,
         load15PercentPerCore: 115,
         loadAboveBackgroundPercent: 104,
+        cpuBusyPercent: null,
+        busyThresholdPercent: null,
+        psiSomeAvg10: null,
+        psiThresholdPercent: null,
+        source: "load-average",
         reason: "host load average 35.00 on 16 core(s) is 219 % of a core, ...",
         heldSince: "2026-10-05T17:34:00.000Z",
       },

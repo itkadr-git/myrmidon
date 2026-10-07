@@ -25,40 +25,54 @@ import { Ui2ErrorState, Ui2SkeletonRows } from "../../../components/ui2StateView
 import { Ui2Page, Ui2Section } from "../../../components/ui2Primitives";
 
 /**
- * myrmidon(1.6.5 RUN-FAIRNESS part 3): the single-agent start share arrives
- * with part 2's shared key (`maxPerAgentStartSharePercent`, 1-100 or off,
- * default 15). This screen is merged before part 2 lands, so the field is
- * carried as a string literal, not a `RunLimitKey` — part 2 promotes it into
- * `RUN_LIMIT_KEYS` and both parts then type-check against the shared name.
+ * myrmidon(1.6.5 RUN-FAIRNESS part 3): the single-agent start share and the
+ * two rc.3 CPU-utilisation ceilings are typed members of `RunLimits` now
+ * (part 2 landed the share, part A of RUN-ADMISSION rc.3 landed the CPU
+ * keys), so no literal stand-ins are needed — `readLimit` below only smooths
+ * over an older server that does not serve a key yet.
  */
 const FAIR_SHARE_KEY = "maxPerAgentStartSharePercent";
 const FAIR_SHARE_DEFAULT = 15;
+const CPU_BUSY_KEY = "maxHostCpuBusyPercent";
+const CPU_PSI_KEY = "maxHostCpuPsiSomeAvg10";
 
-type ScreenLimitKey = RunLimitKey | typeof FAIR_SHARE_KEY;
+type ScreenLimitKey = RunLimitKey | typeof CPU_BUSY_KEY | typeof CPU_PSI_KEY;
 
-const LIMIT_FIELDS: Array<{ key: ScreenLimitKey; labelKey: "ui2.settings.runs.maxConcurrentRuns" | "ui2.settings.runs.maxStartsPerMinute" | "ui2.settings.runs.minFreeMemoryMb" | "ui2.settings.runs.runMemoryEstimateMb" | "ui2.settings.runs.minFreeHostMemoryMb" | "ui2.settings.runs.maxHostLoadPercentPerCore" | "ui2.settings.runs.maxPerAgentStartSharePercent"; canOff: boolean }> = [
+const LIMIT_FIELDS: Array<{ key: ScreenLimitKey; labelKey: "ui2.settings.runs.maxConcurrentRuns" | "ui2.settings.runs.maxStartsPerMinute" | "ui2.settings.runs.minFreeMemoryMb" | "ui2.settings.runs.runMemoryEstimateMb" | "ui2.settings.runs.minFreeHostMemoryMb" | "ui2.settings.runs.maxHostLoadPercentPerCore" | "ui2.settings.runs.maxHostCpuBusyPercent" | "ui2.settings.runs.maxHostCpuPsiSomeAvg10" | "ui2.settings.runs.maxPerAgentStartSharePercent"; canOff: boolean }> = [
   { key: "maxConcurrentRuns", labelKey: "ui2.settings.runs.maxConcurrentRuns", canOff: true },
   { key: "maxStartsPerMinute", labelKey: "ui2.settings.runs.maxStartsPerMinute", canOff: true },
   { key: "minFreeMemoryMb", labelKey: "ui2.settings.runs.minFreeMemoryMb", canOff: true },
   { key: "runMemoryEstimateMb", labelKey: "ui2.settings.runs.runMemoryEstimateMb", canOff: false },
   // myrmidon(1.6.2 RUN-ADMISSION): the host free-memory floor (bot containers live on the host).
   { key: "minFreeHostMemoryMb", labelKey: "ui2.settings.runs.minFreeHostMemoryMb", canOff: true },
-  // myrmidon(1.6.5 RUN-ADMISSION): the host CPU ceiling (load average per core).
+  // myrmidon(1.6.5 RUN-ADMISSION rc.3): the ceilings the gate decides on now —
+  // the measured CPU busy percent and, when the operator sets it, the PSI
+  // cpu pressure. The live host line sits next to the busy field.
+  { key: CPU_BUSY_KEY, labelKey: "ui2.settings.runs.maxHostCpuBusyPercent", canOff: true },
+  { key: CPU_PSI_KEY, labelKey: "ui2.settings.runs.maxHostCpuPsiSomeAvg10", canOff: true },
+  // myrmidon(1.6.5 RUN-ADMISSION): the legacy load-average ceiling —
+  // deprecated since rc.3, kept for settings rows saved before it.
   { key: "maxHostLoadPercentPerCore", labelKey: "ui2.settings.runs.maxHostLoadPercentPerCore", canOff: true },
   // myrmidon(1.6.5 RUN-FAIRNESS): one agent's share of the starts in a 10-minute window.
   { key: FAIR_SHARE_KEY, labelKey: "ui2.settings.runs.maxPerAgentStartSharePercent", canOff: true },
 ];
 
-/** Read a limit from the view: a shared key from `limits`, the fair-share key with its default. */
+/** Read a limit from the view; an older server that does not serve a key yet
+ * (a pre-part-2 server has no fair share, a pre-rc.3 server has no CPU
+ * ceilings) gets the fair share at its built-in default and every other
+ * absent key as off. */
 function readLimit(limits: RunLimits, key: ScreenLimitKey): number | null {
+  const value = (limits as Record<string, unknown>)[key];
+  if (value === undefined) {
+    return key === FAIR_SHARE_KEY ? FAIR_SHARE_DEFAULT : null;
+  }
   if (key === FAIR_SHARE_KEY) {
-    const value = (limits as Record<string, unknown>)[FAIR_SHARE_KEY];
     if (typeof value !== "number" || !Number.isInteger(value)) return FAIR_SHARE_DEFAULT;
     // A share is a percentage; outside 1-100 the served value is ignored.
     if (value < 1 || value > 100) return FAIR_SHARE_DEFAULT;
     return value;
   }
-  return limits[key];
+  return value as number | null;
 }
 
 function sourceLabel(source: RunLimitsSource, t: (key: never) => string): string {
@@ -157,17 +171,74 @@ export function Ui2RunsSettings() {
     draft[FAIR_SHARE_KEY] !== null &&
     draft[FAIR_SHARE_KEY]! > 100;
 
-  // myrmidon(1.6.5 RUN-ADMISSION rc.2): the ceiling is counted above the load
-  // the host carries on its own, so the field gets a line with what the host is
-  // doing right now: the reading, how much of it is the host's own background,
-  // and whether the ceiling is open for a new run. `null` when the server sent
-  // no reading — the panel then shows no number instead of a made-up one.
+  // myrmidon(1.6.5 RUN-ADMISSION rc.3): the gate decides on the measured CPU
+  // utilisation now, so the live line leads with the busy percent (and the
+  // PSI pressure when its ceiling is set), its threshold and the verdict; the
+  // load average follows as the auxiliary reading it has become. A gate that
+  // still decides on the load average (a settings row saved before rc.3)
+  // keeps the rc.2 line. `null` when the server sent no reading — the panel
+  // then shows no number instead of a made-up one.
   const hostLoadLine = ((): string | null => {
     const load = view.hostLoad;
     if (!load) return null;
     if (load.state === "off") return t("ui2.settings.runs.hostLoad.off");
-    if (load.state === "unknown" || load.loadPercentPerCore === null) {
-      return t("ui2.settings.runs.hostLoad.unknown");
+    if (load.state === "unknown") {
+      return load.reason
+        ? t("ui2.settings.runs.hostLoad.unknownReason", { reason: load.reason })
+        : t("ui2.settings.runs.hostLoad.unknown");
+    }
+
+    // The auxiliary tail: the load average the gate used to decide on. Empty
+    // when the server sent no load-average numbers.
+    const auxiliary =
+      load.loadPercentPerCore === null
+        ? ""
+        : ` ${t("ui2.settings.runs.hostLoad.auxLoad", {
+            load: load.loadPercentPerCore,
+            load1: load.load1 ?? "?",
+            cores: load.cores ?? "?",
+            above:
+              load.loadAboveBackgroundPercent === null || load.backgroundPercentPerCore === null
+                ? ""
+                : `, ${t("ui2.settings.runs.hostLoad.above", {
+                    above: load.loadAboveBackgroundPercent,
+                    background: load.backgroundPercentPerCore,
+                  })}`,
+          })}`;
+
+    if (load.source === "cpu-busy") {
+      // rc.3: the measured CPU utilisation decides. The busy reading leads
+      // the line; the PSI reading joins it when the operator set that
+      // ceiling; the verdict names the busy threshold.
+      const now =
+        load.cpuBusyPercent === null
+          ? t("ui2.settings.runs.hostLoad.busyPending")
+          : t("ui2.settings.runs.hostLoad.busyNow", { busy: load.cpuBusyPercent });
+      const psi =
+        load.psiThresholdPercent === null
+          ? ""
+          : load.psiSomeAvg10 === null
+            ? ` ${t("ui2.settings.runs.hostLoad.psiUnknown", { threshold: load.psiThresholdPercent })}`
+            : ` ${t("ui2.settings.runs.hostLoad.psi", {
+                psi: load.psiSomeAvg10,
+                threshold: load.psiThresholdPercent,
+              })}`;
+      const verdict =
+        load.state === "open"
+          ? t("ui2.settings.runs.hostLoad.busyOpen", { threshold: load.busyThresholdPercent ?? "?" })
+          : t("ui2.settings.runs.hostLoad.busyClosed", {
+              threshold: load.busyThresholdPercent ?? "?",
+              reason: load.reason ? ` (${load.reason})` : "",
+            });
+      return `${now}${psi}. ${verdict}.${auxiliary}`;
+    }
+
+    // Legacy rule: a row saved before rc.3 decides on the load average — the
+    // rc.2 line stands, the load average is the deciding signal here.
+    if (load.loadPercentPerCore === null) {
+      return load.reason
+        ? t("ui2.settings.runs.hostLoad.unknownReason", { reason: load.reason })
+        : t("ui2.settings.runs.hostLoad.unknown");
     }
     const now = t("ui2.settings.runs.hostLoad.now", {
       load: load.loadPercentPerCore,
@@ -272,12 +343,22 @@ export function Ui2RunsSettings() {
                   <span className="ui2-run-limit-source text-xs text-muted-foreground">
                     {sourceLabel(source, t)}
                   </span>
-                  {field.key === "maxHostLoadPercentPerCore" && hostLoadLine ? (
+                  {field.key === CPU_BUSY_KEY && hostLoadLine ? (
                     <span
                       data-testid="ui2-run-limit-host-load"
                       className="ui2-run-limit-host-load text-xs text-muted-foreground"
                     >
                       {hostLoadLine}
+                    </span>
+                  ) : null}
+                  {field.key === CPU_BUSY_KEY ? (
+                    <span className="ui2-run-limit-hint max-w-md text-xs text-muted-foreground">
+                      {t("ui2.settings.runs.maxHostCpuBusyPercent.hint")}
+                    </span>
+                  ) : null}
+                  {field.key === CPU_PSI_KEY ? (
+                    <span className="ui2-run-limit-hint max-w-md text-xs text-muted-foreground">
+                      {t("ui2.settings.runs.maxHostCpuPsiSomeAvg10.hint")}
                     </span>
                   ) : null}
                   {field.key === "maxHostLoadPercentPerCore" ? (
