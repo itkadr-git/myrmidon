@@ -136,6 +136,25 @@
       }
     },
     {
+      "id": "10-run-workspace-open",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/10-run-workspace-open.patch",
+      "files": [
+        "gateway/platforms/api_server_runs.py",
+        "tools/environments/local.py",
+        "tools/run_workspace.py"
+      ],
+      "reason": "Bot copies per task (BOT-DISK-H) need every agent process to work inside the task copy, but a hermes gateway has no per-run process to inherit cwd/env from. /v1/runs accepts a workspace body field (contract C6); the run opens the copy via myr-ws open before the model starts and binds it as the session cwd and MYRMIDON_TASK_WORKSPACE for that run only.",
+      "dropCondition": "Upstream ships a per-run workspace/workdir field on /v1/runs with equivalent cwd+env binding, or the board's bot-runtime no longer needs per-task copies.",
+      "offer": null,
+      "offerNote": "Not offered yet: see the note on delta 02 (publisher-scan wrapper pending).",
+      "probe": {
+        "source": "hermes",
+        "path": "gateway/platforms/api_server_runs.py",
+        "upstreamMarker": "workspace.*myr-ws|run-scoped.*workdir"
+      }
+    },
+    {
       "id": "hindsight-reflect-timeout-and-fact-types",
       "kind": "upstream-plugin-gap",
       "files": [

@@ -34,6 +34,19 @@ const TEMPLATE = fs.readFileSync(path.join(ROOT, "server/src/myrmidon/bot-contai
 
 const hasPnpm = spawnSync("pnpm", ["--version"], { encoding: "utf8" }).status === 0;
 const hasFilefrag = spawnSync("sh", ["-c", "command -v filefrag"], { encoding: "utf8" }).status === 0;
+// The install-based cases need a filesystem that does reflinks (XFS/btrfs, like the
+// bot volume) and pnpm with registry access; CI runners (overlay/ext4, tmpfs) have
+// neither, and the container-start self-check covers production.
+const canReflink = (() => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), "reflink-probe-"));
+  try {
+    fs.writeFileSync(path.join(d, "a"), "x");
+    return spawnSync("cp", ["--reflink=always", path.join(d, "a"), path.join(d, "b")]).status === 0;
+  } finally {
+    fs.rmSync(d, { recursive: true, force: true });
+  }
+})();
+const reflinkSkip = canReflink && hasPnpm ? false : "no reflink-capable filesystem or pnpm here; the container-start self-check covers it";
 
 function runCheck(extraEnv = {}) {
   const r = spawnSync("sh", [CHECK], {
@@ -67,7 +80,7 @@ describe("pnpm reflinks", () => {
     assert.equal(spawnSync("sh", ["-n", CHECK]).status, 0);
   });
 
-  it("reflinks from all three clone roots into a store inside the same mount", { skip: !hasPnpm || !hasFilefrag }, (t) => {
+  it("reflinks from all three clone roots into a store inside the same mount", { skip: reflinkSkip }, { skip: !hasPnpm || !hasFilefrag }, (t) => {
     const { tree, roots, store } = botTree();
     try {
       const result = runCheck({ ROOTS: roots.join(" "), STORE_DIR: store });
@@ -90,7 +103,7 @@ describe("pnpm reflinks", () => {
     }
   });
 
-  it("a single default root still works (store beside the project)", { skip: !hasPnpm }, () => {
+  it("a single default root still works (store beside the project)", { skip: reflinkSkip }, { skip: !hasPnpm }, () => {
     const result = runCheck();
     assert.equal(result.status, 0, result.raw);
     assert.equal(result.lines.length, 1);
@@ -108,7 +121,7 @@ describe("pnpm reflinks", () => {
       }
     })();
 
-  it("negative: a store on another superblock is a silent copy that only this check can see", { skip: !hasPnpm || !crossDevice }, (t) => {
+  it("negative: a store on another superblock is a silent copy that only this check can see", { skip: reflinkSkip }, { skip: !hasPnpm || !crossDevice }, (t) => {
     if (!crossDevice) {
       t.skip("one filesystem on this runner: no second superblock to provoke EXDEV");
       return;
