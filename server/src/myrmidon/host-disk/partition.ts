@@ -91,7 +91,7 @@ export function createBotPartitionThresholdRuntime(
   async function resolveThresholds(): Promise<WsBotDiskPartitionSettings> {
     const botDisk = deps.getBotDiskSettings
       ? await deps.getBotDiskSettings()
-      : ((await settingsService!.getGeneral()) as Record<string, unknown>).botDisk;
+      : ((await settingsService!.getGeneral()) as unknown as Record<string, unknown>).botDisk;
     return resolveWsBotDiskPartitionSettings({ stored: botDisk, env }).settings;
   }
 

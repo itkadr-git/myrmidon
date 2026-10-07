@@ -187,7 +187,7 @@ describe("threshold boundaries 84/85/89/90/94/95", () => {
 
 describe("critical notification dedup", () => {
   it("notifies the owner exactly once per crossing of the critical threshold", async () => {
-    const notifyOwner = vi.fn(async () => undefined);
+    const notifyOwner = vi.fn(async (_note: { level: string }) => undefined);
     const rt = runtime({ notifyOwner });
     await rt.updateFromPartition(usage(95));
     expect(notifyOwner).toHaveBeenCalledTimes(1);
@@ -198,7 +198,7 @@ describe("critical notification dedup", () => {
   });
 
   it("a warn crossing sends nothing; the latch re-arms after dropping below the warn threshold", async () => {
-    const notifyOwner = vi.fn(async () => undefined);
+    const notifyOwner = vi.fn(async (_note: { level: string }) => undefined);
     const rt = runtime({ notifyOwner });
     await rt.updateFromPartition(usage(85));
     await rt.updateFromPartition(usage(90));
@@ -227,7 +227,7 @@ describe("critical notification dedup", () => {
 
 describe("no dockergate data: previous behaviour, marked not measured", () => {
   it("markUnmeasured resets the state: no card, pressure none", async () => {
-    const notifyOwner = vi.fn(async () => undefined);
+    const notifyOwner = vi.fn(async (_note: { level: string }) => undefined);
     const rt = runtime({ notifyOwner });
     await rt.updateFromPartition(usage(97));
     expect(rt.current().alertLevel).toBe("critical");
