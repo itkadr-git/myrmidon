@@ -223,12 +223,14 @@ async function restore(request, deps = {}) {
     throw new WsError(EXIT.notFound, `archive bundle of ${key} does not contain ${bundleRef}; cannot restore`);
   }
 
-  // 3. An existing copy is never overwritten.
+  // 3. An existing copy is never overwritten. Idempotence: if the copy
+  //    already holds the archived branch tip, report reused:true regardless
+  //    of worktree cleanliness — the patch/untracked are part of the
+  //    restored state and must not be re-applied.
   if (fs.existsSync(dir)) {
-    if (fs.existsSync(path.join(dir, ".git")) && worktreeClean(git, dir)) {
+    if (fs.existsSync(path.join(dir, ".git"))) {
       const tip = git(dir, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], { allowFail: true });
       if (tip.status === 0 && tip.stdout === heads[bundleRef]) {
-        // Idempotent re-run: the copy already holds the archived state.
         return { ok: true, key, path: dir, branch, restoredFrom: archive.bundle, reused: true };
       }
     }
