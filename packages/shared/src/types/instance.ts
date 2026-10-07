@@ -24,6 +24,9 @@ import type { WipLimitSettings } from "../myrmidon-wip-limit.js";
 import type { ReviewRoutingSettings } from "../myrmidon-review-routing.js";
 import type { ReviewReworkSettings } from "../myrmidon-review-rework.js";
 import type { BudgetEnforcementSettings } from "../myrmidon-budget-enforcement.js";
+// myrmidon(1.7-AGENT-EXCHANGE-A): the discussion-room settings stored in the
+// same general settings row.
+import type { AgentExchangeSettings } from "../myrmidon-agent-exchange.js";
 // myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys live in
 // the same general settings row.
 import type { PluginEntitlementKey } from "../myrmidon-plugin-entitlement.js";
@@ -230,6 +233,14 @@ export interface InstanceGeneralSettings {
    */
   debate?: unknown;
   /**
+   * myrmidon(1.7-AGENT-EXCHANGE-A): the discussion-room settings — master
+   * switch (default off), room size, round cap, per-room token budget and
+   * the response timeout; changed from `GET`/`PATCH
+   * /api/myrmidon/agent-exchange/settings`. Kept in sync with the validator
+   * of the same field (packages/shared/src/validators/instance.ts).
+   */
+  agentExchange?: AgentExchangeSettings;
+  /**
    * myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys, managed
    * from the instance settings page. Absent means "no keys registered". Kept
    * in sync with the validator of the same field
@@ -267,6 +278,14 @@ export interface InstanceGeneralSettings {
    * is off)". Kept in sync with the validator of the same field.
    */
   foraging?: ForagingSettings;
+  /**
+   * myrmidon(1.6.3 PLUGIN-ENTITLEMENT A): the ed25519 verification public key
+   * (PEM) for plugin entitlement tokens, changed from the instance settings
+   * page. Absent means "no verification key" — no entitlement token can
+   * verify, so every gated plugin stays unactivated. Kept in sync with the
+   * validator of the same field (packages/shared/src/validators/instance.ts).
+   */
+  pluginEntitlementPublicKey?: string;
 }
 
 
