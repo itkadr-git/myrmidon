@@ -487,6 +487,78 @@ config check (step 0.55; see
 [Deploy hardening](#deploy-hardening-the-0510-follow-up)): it fails exactly when the real run
 would.
 
+## Applying PostgreSQL settings with the deploy (DB-TUNING)
+
+The PostgreSQL settings from the database audit (OPE-4270) are applied **declaratively by
+the deploy**, never by a manual `ALTER SYSTEM` on the running server. The source of truth is
+in the repository:
+
+- `scripts/myrmidon/deploy/db-tuning.sql` — the audit values, applied by the deploy;
+- `scripts/myrmidon/deploy/db-tuning-rollback.sql` — the reset back to the defaults, applied
+  by `rollback.sh` (and by the failed DB-TUNING step itself).
+
+| Parameter | Value | Scope |
+| --- | --- | --- |
+| `jit` | `off` | server (ALTER SYSTEM) |
+| `work_mem` | `16MB` | server |
+| `wal_compression` | `lz4` | server |
+| `autovacuum_vacuum_scale_factor` | `0.05` | server |
+| `autovacuum_vacuum_scale_factor` | `0.02` | tables `heartbeat_runs`, `agent_wakeup_requests`, `company_secrets` |
+| `autovacuum_analyze_scale_factor` | `0.02` | table `issues` |
+
+Four optional settings wire the step into the deploy (`deploy.env`, documented in
+`scripts/myrmidon/deploy/deploy.env.example`):
+
+- `DB_TUNE_COMMAND` — the shell command that applies `db-tuning.sql` (an empty value skips
+  the whole step):
+  ```
+  DB_TUNE_COMMAND='docker compose --project-directory $COMPOSE_DIR exec -T db psql -U <user> -d <db> -v ON_ERROR_STOP=1 -f - < scripts/myrmidon/deploy/db-tuning.sql'
+  ```
+- `DB_TUNE_SHOW_COMMAND` — a command that receives the parameter name in `DB_TUNE_PARAM`
+  and prints its `SHOW` value:
+  ```
+  DB_TUNE_SHOW_COMMAND='docker compose --project-directory $COMPOSE_DIR exec -T db psql -U <user> -d <db> -tAc "SHOW $DB_TUNE_PARAM"'
+  ```
+- `DB_TUNE_EXPECTED` — the `name=value` pairs (one per line) the deploy verifies through
+  `DB_TUNE_SHOW_COMMAND` after applying:
+  ```
+  DB_TUNE_EXPECTED='jit=off
+  work_mem=16MB
+  wal_compression=lz4
+  autovacuum_vacuum_scale_factor=0.05'
+  ```
+- `DB_TUNE_ROLLBACK_COMMAND` — the command that returns the previous settings (runs
+  `db-tuning-rollback.sql`); called by `rollback.sh` and by the deploy when the DB-TUNING
+  step fails after applying. Empty — the settings rollback is skipped with a warning in the
+  log.
+
+The step runs after the health check (deploy step "7d" of the plan; the dry-run describes it
+like every other step). Before the first apply the deploy records the live `SHOW` values of
+every `DB_TUNE_EXPECTED` parameter into `$STATE_DIR/db-tuning-previous` — that file is what
+the rollback restores to and what `rollback.sh` checks against. A `SHOW` mismatch is
+`DEPLOY FAILED`: maintenance stays on, the rollback command is printed, and the half-applied
+settings are returned immediately if `DB_TUNE_ROLLBACK_COMMAND` is set. `rollback.sh` applies
+`DB_TUNE_ROLLBACK_COMMAND` after the image and health steps and verifies the same parameters
+against the recorded previous values.
+
+To measure the effect before/after a release, pull the top queries' time statistics from
+`pg_stat_statements` (same command shape as above). The view stores only `mean_exec_time`
+and `stddev_exec_time` per statement, so `mean + stddev` is the p95-normal approximation
+(about 84–95 % of executions fall below it):
+
+```
+docker compose --project-directory $COMPOSE_DIR exec -T db psql -U <user> -d <db> -c "
+SELECT round((mean_exec_time + stddev_exec_time)::numeric, 1) AS p95_ms_approx,
+       round(total_exec_time::numeric / nullif(calls, 0), 1) AS mean_ms,
+       calls, rows, round(total_exec_time::numeric / 1000, 0) AS total_s,
+       left(query, 80) AS query
+FROM pg_stat_statements
+ORDER BY total_exec_time DESC LIMIT 20;"
+```
+
+A reset of the counters between the two samples makes the comparison clean:
+`SELECT pg_stat_statements_reset();` (same `exec -T db psql -c` shape, run by the operator).
+
 ## One boot path (systemd unit)
 
 The board container must be started at boot from **the same compose files the
