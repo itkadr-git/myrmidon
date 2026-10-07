@@ -41,7 +41,7 @@ import {
 import { botProfileWiring } from "./profile-ports.js";
 import type { BotContainerActivitySink, BotMaintenancePort } from "./reconciler.js";
 import { botContainerAgentReader, getBotContainerRuntime, setBotContainerRuntime } from "./routes-wiring.js";
-import { readBotCacheLayoutForBot, readSharedBotRuntimePath } from "./bot-disk-service.js"; // myrmidon(1.6.1-BOT-DISK-B, 1.6.2-BOT-DISK-C, 1.6.5-BOT-DISK-H11)
+import { readBotCacheLayoutForBot, readSharedBotRuntimePath, startCloneReportCollection } from "./bot-disk-service.js"; // myrmidon(1.6.1-BOT-DISK-B, 1.6.2-BOT-DISK-C, 1.6.5-BOT-DISK-H11, 1.6.5-DOCKERGATE-A2A3-STORM)
 import { scopeMigrator } from "./scope-migration.js"; // myrmidon(BOT-DISK-F)
 import { readAppliedScopeLayout } from "./scope-wiring.js"; // myrmidon(BOT-DISK-F)
 
@@ -101,6 +101,13 @@ export interface BotContainersStartupPorts {
   registerRuntime(runtime: BotContainerRuntimeDeps | null): void;
   currentRuntime(): BotContainerRuntimeDeps | null;
   startReconciliation: typeof startBotContainerReconciliation;
+  /**
+   * myrmidon(1.6.5-DOCKERGATE-A2A3-STORM): the clone-hygiene collector's own
+   * timer (bot-disk-service.startCloneReportCollection). Optional: a test that
+   * fakes the ports without it starts no collector; the real startup wires the
+   * real one. Its stop is folded into the stop of this run.
+   */
+  startCloneReportCollection?: typeof startCloneReportCollection;
   log: BotContainersLog;
 }
 
@@ -128,6 +135,7 @@ const defaultPorts: BotContainersStartupPorts = {
   registerRuntime: setBotContainerRuntime,
   currentRuntime: getBotContainerRuntime,
   startReconciliation: startBotContainerReconciliation,
+  startCloneReportCollection,
   log: logger,
 };
 
@@ -154,12 +162,17 @@ export function startBotContainers(
   const { runtime, stopSweep } = started;
   ports.registerRuntime(runtime);
   ports.log.info({ intervalMs, network: runtime.network }, "bot container reconciliation started");
+  // myrmidon(1.6.5-DOCKERGATE-A2A3-STORM): the collector needs a registered
+  // runtime (it reads the reports through its driver), so it starts after the
+  // registration and stops with this run.
+  const stopCollector = ports.startCloneReportCollection?.(db, { env }) ?? null;
 
   let stopped = false;
   const stop = () => {
     if (stopped) return;
     stopped = true;
     stopSweep();
+    stopCollector?.();
     // Only clear the registry entry this run put there.
     if (ports.currentRuntime() === runtime) ports.registerRuntime(null);
     if (stopRunning === stop) stopRunning = null;
