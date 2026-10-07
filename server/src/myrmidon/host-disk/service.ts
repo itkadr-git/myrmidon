@@ -1,10 +1,16 @@
 import {
   HOST_DISK_LIMIT_KEYS,
   HOST_DISK_UPDATED_ACTION,
+  WS_BOT_DISK_PARTITION_KEYS,
   mergeHostDiskSettings,
+  mergeWsBotDiskPartitionSettings,
   resolveHostDiskSettings,
+  resolveWsBotDiskPartitionSettings,
+  wsBotDiskPartitionSettingsSchema,
   type HostDiskSettings,
   type HostDiskSettingsPatch,
+  type WsBotDiskPartitionSettings,
+  type WsBotDiskPartitionSettingsPatch,
 } from "@paperclipai/shared";
 import { logger } from "../../middleware/logger.js";
 import type { LogActivityInput } from "../../services/activity-log.js";
@@ -57,12 +63,14 @@ type HostDiskLimitSource = "settings" | "env" | "default";
 
 export interface HostDiskGeneralSettings {
   hostDisk?: unknown;
+  /** myrmidon(1.6.5-BOT-DISK-H10): contract C7 settings row; H10 reads/writes only its three partition keys. */
+  botDisk?: unknown;
 }
 
 export interface HostDiskServiceDeps {
   settings: {
     getGeneral(): Promise<HostDiskGeneralSettings>;
-    updateGeneral(patch: { hostDisk: HostDiskSettings }): Promise<unknown>;
+    updateGeneral(patch: { hostDisk?: HostDiskSettings; botDisk?: unknown }): Promise<unknown>;
   };
   listCompanyIds(): Promise<string[]>;
   logActivity(entry: LogActivityInput): Promise<unknown>;
@@ -71,9 +79,22 @@ export interface HostDiskServiceDeps {
   env?: Record<string, string | undefined>;
 }
 
+/** myrmidon(1.6.5-BOT-DISK-H10): GET/PATCH view of the partition thresholds. */
+export interface BotPartitionThresholdView {
+  thresholds: WsBotDiskPartitionSettings;
+  sources: Record<
+    (typeof WS_BOT_DISK_PARTITION_KEYS)[number],
+    "settings" | "env" | "default"
+  >;
+}
+
 export interface HostDiskService {
   read(): Promise<HostDiskView>;
   update(patch: HostDiskSettingsPatch, actor: HostDiskActor): Promise<HostDiskView>;
+  /** myrmidon(1.6.5-BOT-DISK-H10): partition thresholds in force and where each came from. */
+  readPartition(): Promise<BotPartitionThresholdView>;
+  /** myrmidon(1.6.5-BOT-DISK-H10): store a validated patch into `general.botDisk`, keeping the other contract keys. */
+  updatePartition(patch: WsBotDiskPartitionSettingsPatch, actor: HostDiskActor): Promise<BotPartitionThresholdView>;
 }
 
 let hostDiskTransitionQueue: Promise<void> = Promise.resolve();
@@ -161,6 +182,64 @@ export function hostDiskService(deps: HostDiskServiceDeps): HostDiskService {
           "host disk threshold updated without a restart",
         );
         return read();
+      }),
+
+    // myrmidon(1.6.5-BOT-DISK-H10): the partition thresholds of contract C7.
+    // The stored row is `general.botDisk`; other BOT-DISK-H parts own the
+    // other keys of that row, so an update merges H10's three keys into the
+    // existing object instead of replacing it.
+    readPartition: async () => {
+      const general = await deps.settings.getGeneral();
+      const resolved = resolveWsBotDiskPartitionSettings({ stored: general.botDisk, env });
+      return { thresholds: resolved.settings, sources: resolved.sources };
+    },
+
+    updatePartition: (patch, actor) =>
+      withHostDiskTransition(async () => {
+        const general = await deps.settings.getGeneral();
+        const before = resolveWsBotDiskPartitionSettings({ stored: general.botDisk, env });
+        const next = mergeWsBotDiskPartitionSettings(before.settings, patch);
+        const storedBotDisk =
+          typeof general.botDisk === "object" && general.botDisk !== null
+            ? (general.botDisk as Record<string, unknown>)
+            : {};
+        await deps.settings.updateGeneral({
+          botDisk: { ...storedBotDisk, ...next },
+        });
+
+        const changedKeys = WS_BOT_DISK_PARTITION_KEYS.filter(
+          (key) => before.settings[key] !== next[key],
+        );
+        const companyIds = await deps.listCompanyIds();
+        await Promise.all(
+          companyIds.map((companyId) =>
+            deps.logActivity({
+              companyId,
+              actorType: actor.actorType,
+              actorId: actor.actorId,
+              agentId: actor.agentId,
+              runId: actor.runId,
+              agentApiKeyId: actor.agentApiKeyId,
+              action: "instance.bot_disk_partition.updated",
+              entityType: "instance_settings",
+              entityId: "host-disk-partition",
+              details: { previous: before.settings, next, changedKeys },
+            }),
+          ),
+        );
+
+        logger.info(
+          { thresholds: next, changedKeys, actorType: actor.actorType },
+          "bot partition thresholds updated without a restart",
+        );
+        return {
+          thresholds: next,
+          sources: {
+            partitionThresholdPercent: "settings",
+            partitionRefuseOpenPercent: "settings",
+            partitionCriticalPercent: "settings",
+          },
+        };
       }),
   };
 }
