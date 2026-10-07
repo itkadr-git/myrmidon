@@ -55,6 +55,10 @@ function git(cwd, ...args) {
       PATH: process.env.PATH,
       HOME: tmp,
       GIT_CONFIG_NOSYSTEM: "1",
+      // fork/thread-limited test host (vm-exec): keep pack/index single-threaded
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "pack.threads",
+      GIT_CONFIG_VALUE_0: "1",
       GIT_AUTHOR_NAME: "t",
       GIT_AUTHOR_EMAIL: "t@example.com",
       GIT_COMMITTER_NAME: "t",
@@ -167,6 +171,7 @@ beforeEach(() => {
         fs.mkdirSync(path.dirname(base), { recursive: true });
         git(path.dirname(base), "clone", "-q", "--bare", `file://${path.join(root, "seed")}`, base);
         git(base, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*");
+        git(base, "fetch", "-q", "origin");
       }
       const dir = path.join(root, "workspace", request.key);
       fs.mkdirSync(path.dirname(dir), { recursive: true });
