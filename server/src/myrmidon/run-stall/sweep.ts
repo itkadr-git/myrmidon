@@ -14,6 +14,7 @@ import {
 } from "./constants.js";
 import { classifyRunStall, progressAnchorAt, shouldReturnIssueToTodo, type RunProgressTimestamps } from "./policy.js";
 import { readRunStallSettings, type RunStallSettings } from "./settings.js";
+import type { RunStallValues } from "@paperclipai/shared";
 
 /**
  * One pass over the running runs of the instance: interrupt the ones whose
@@ -250,6 +251,12 @@ export interface RunStallSweep {
   sweep(options?: { now?: Date; force?: boolean }): Promise<RunStallSweepResult>;
   resetForTest(): void;
   settings(): RunStallSettings;
+  /**
+   * myrmidon(RUN-STALL-SETTINGS, 1.6.5): put settings saved from the UI in
+   * force without a restart. Until the first call the env values rule
+   * (`settingsOverride === null`), exactly as before the settings existed.
+   */
+  applySettings(values: RunStallValues): void;
 }
 
 /** The agent row's card as a plain object; anything else reads as an empty card. */
@@ -284,6 +291,13 @@ async function stallExemptAgentIds(
 export function createRunStallSweep(deps: RunStallSweepDeps): RunStallSweep {
   let lastSweepAtMs = 0;
   let inFlight: Promise<RunStallSweepResult> | null = null;
+  // myrmidon(RUN-STALL-SETTINGS): the stored (UI-saved) settings; null means
+  // "read the environment" — the pre-feature behaviour.
+  let settingsOverride: RunStallSettings | null = null;
+
+  function effectiveSettings(): RunStallSettings {
+    return settingsOverride ?? readRunStallSettings(deps.env ?? process.env);
+  }
 
   async function runPass(
     now: Date,
@@ -433,11 +447,20 @@ export function createRunStallSweep(deps: RunStallSweepDeps): RunStallSweep {
 
   return {
     settings() {
-      return readRunStallSettings(deps.env ?? process.env);
+      return effectiveSettings();
+    },
+    applySettings(values: RunStallValues) {
+      settingsOverride = {
+        enabled: values.enabled,
+        thresholdMs: values.thresholdSec * 1000,
+        checkIntervalMs: values.checkIntervalSec * 1000,
+        pageSize: values.pageSize,
+      };
     },
     resetForTest() {
       lastSweepAtMs = 0;
       inFlight = null;
+      settingsOverride = null;
     },
     async sweep(options = {}) {
       // myrmidon(TEAM-LIVENESS-SETTINGS): stored instance settings beat the
