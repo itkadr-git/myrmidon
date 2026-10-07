@@ -370,7 +370,7 @@ describe("myrmidon(1.6.5-BOT-DISK-H8a) pnpm store and import method", () => {
     expect(normalizeStoredBotDiskSettings({ pnpmImportMethod: "reflink" })).toEqual({});
     expect(resolveBotDiskLayout({ pnpmImportMethod: "reflink" } as never).pnpmImportMethod).toBe("clone");
     // A migrated value is what a later write persists.
-    expect(mergeBotDiskSettings(normalizeStoredBotDiskSettings(legacy), { enabled: true })).toMatchObject({
+    expect(mergeBotDiskSettings(normalizeStoredBotDiskSettings(legacy) as Parameters<typeof mergeBotDiskSettings>[0], { enabled: true })).toMatchObject({
       pnpmStoreDir: "/cache/pnpm-store",
       pnpmImportMethod: "clone",
     });
