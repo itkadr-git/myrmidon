@@ -25,6 +25,9 @@ import type { WipLimitSettings } from "../myrmidon-wip-limit.js";
 import type { ReviewRoutingSettings } from "../myrmidon-review-routing.js";
 import type { ReviewReworkSettings } from "../myrmidon-review-rework.js";
 import type { BudgetEnforcementSettings } from "../myrmidon-budget-enforcement.js";
+// myrmidon(1.7-AGENT-EXCHANGE-A): the discussion-room settings stored in the
+// same general settings row.
+import type { AgentExchangeSettings } from "../myrmidon-agent-exchange.js";
 // myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys live in
 // the same general settings row.
 import type { PluginEntitlementKey } from "../myrmidon-plugin-entitlement.js";
@@ -33,6 +36,8 @@ import type { TelegramDmProgressSettings } from "../myrmidon-telegram-dm-progres
 // myrmidon(BOT-RUNTIME-TUNING D2): the fallback-signal settings of the same row.
 import type { StoredFallbackSignalSettings } from "../myrmidon-fallback-signal.js";
 
+// myrmidon(1.6.1-FORAGING-LIMITS-UI)
+import type { ForagingSettings } from "../myrmidon-foraging.js";
 export const DAILY_RETENTION_PRESETS = [3, 7, 14] as const;
 export const WEEKLY_RETENTION_PRESETS = [1, 2, 4] as const;
 export const MONTHLY_RETENTION_PRESETS = [1, 3, 6] as const;
@@ -240,6 +245,23 @@ export interface InstanceGeneralSettings {
    */
   budgetEnforcement?: BudgetEnforcementSettings;
   /**
+   * myrmidon(1.7-DEBATE-ASYM-A): the asymmetric-debates engine settings —
+   * generator/critic/judge roles (cross-family validated), rounds and the
+   * token ceiling; changed from `GET`/`PATCH /api/myrmidon/debate`. Absent
+   * means "use the environment override, then the built-in default". Kept in
+   * sync with the validator of the same field
+   * (packages/shared/src/validators/instance.ts).
+   */
+  debate?: unknown;
+  /**
+   * myrmidon(1.7-AGENT-EXCHANGE-A): the discussion-room settings — master
+   * switch (default off), room size, round cap, per-room token budget and
+   * the response timeout; changed from `GET`/`PATCH
+   * /api/myrmidon/agent-exchange/settings`. Kept in sync with the validator
+   * of the same field (packages/shared/src/validators/instance.ts).
+   */
+  agentExchange?: AgentExchangeSettings;
+  /**
    * myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys, managed
    * from the instance settings page. Absent means "no keys registered". Kept
    * in sync with the validator of the same field
@@ -269,7 +291,24 @@ export interface InstanceGeneralSettings {
    * field (packages/shared/src/validators/instance.ts).
    */
   modelFallbackSignal?: StoredFallbackSignalSettings;
+  /**
+   * myrmidon(1.6.1-FORAGING-LIMITS-UI): the enable switch, pass tuning and
+   * spend limits of the foraging sweep, changed from the "Foraging" block on
+   * Instance → General and `GET`/`PATCH /api/myrmidon/foraging-settings`.
+   * Absent means "use the environment variable, then the default (the sweep
+   * is off)". Kept in sync with the validator of the same field.
+   */
+  foraging?: ForagingSettings;
+  /**
+   * myrmidon(1.6.3 PLUGIN-ENTITLEMENT A): the ed25519 verification public key
+   * (PEM) for plugin entitlement tokens, changed from the instance settings
+   * page. Absent means "no verification key" — no entitlement token can
+   * verify, so every gated plugin stays unactivated. Kept in sync with the
+   * validator of the same field (packages/shared/src/validators/instance.ts).
+   */
+  pluginEntitlementPublicKey?: string;
 }
+
 
 export interface InstanceExperimentalSettings {
   enableEnvironments: boolean;

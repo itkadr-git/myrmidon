@@ -41,6 +41,8 @@ import { reviewReworkSettingsSchema } from "../myrmidon-review-rework.js";
 // myrmidon(1.7-BUDGET-CONFIG-B): the budget enforcement mode stored in the
 // same general settings row.
 import { budgetEnforcementSettingsSchema } from "../myrmidon-budget-enforcement.js";
+// myrmidon(1.7-AGENT-EXCHANGE-A): the discussion-room settings of the same row.
+import { agentExchangeSettingsSchema } from "../myrmidon-agent-exchange.js";
 // myrmidon(MEMORY-UI): the agent memory settings stored in the same row.
 import { agentMemorySettingsSchema } from "../myrmidon-agent-memory.js";
 // myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys stored
@@ -49,6 +51,8 @@ import { pluginEntitlementKeysSchema } from "../myrmidon-plugin-entitlement.js";
 // myrmidon(DM-PROGRESS): live progress steps of the bridged Telegram DM status
 // message, stored in the same general settings row.
 import { telegramDmProgressSettingsSchema } from "../myrmidon-telegram-dm-progress.js";
+// myrmidon(1.6.1-FORAGING-LIMITS-UI)
+import { foragingSettingsSchema } from "../myrmidon-foraging.js";
 // myrmidon(TEAM-LIVENESS-SETTINGS): the knobs of the three automatic team-liveness
 // behaviours, changed from the instance settings page and /api/myrmidon/team-liveness.
 import {
@@ -198,6 +202,16 @@ export const instanceGeneralSettingsSchema = z.object({
   // or refuse new runs with the budget reason (hard); changed from
   // /api/myrmidon/budget-enforcement; absent means the default (signal only).
   budgetEnforcement: budgetEnforcementSettingsSchema.optional(),
+  // myrmidon(1.7-DEBATE-ASYM-A): the asymmetric-debates engine settings,
+  // changed from /api/myrmidon/debate. Stored passthrough like the
+  // swarm-claim journal: the debate service re-reads and validates the shape
+  // (cross-family rule included) defensively on every run and PATCH.
+  debate: z.unknown().optional(),
+  // myrmidon(1.7-AGENT-EXCHANGE-A): the discussion-room settings (enabled,
+  // room size, round cap, per-room token budget, response timeout), changed
+  // from /api/myrmidon/agent-exchange/settings; absent means the defaults
+  // (the room feature is off).
+  agentExchange: agentExchangeSettingsSchema.optional(),
   // myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys, managed
   // from the instance settings page and PATCH /api/myrmidon/plugin-entitlement/keys;
   // absent means "no keys are registered" (no plugin is unlocked).
@@ -220,6 +234,13 @@ export const instanceGeneralSettingsSchema = z.object({
   // environment variable, then the default" (see
   // packages/shared/src/myrmidon-fallback-signal.ts).
   modelFallbackSignal: storedFallbackSignalSettingsSchema.optional(),
+  // myrmidon(1.6.1-FORAGING-LIMITS-UI): the foraging switch and spend limits,
+  // changed from /api/myrmidon/foraging-settings; absent means "use the
+  // environment variable, then the default (the sweep is off)".
+  foraging: foragingSettingsSchema.optional(),
+  // myrmidon(1.6.3 PLUGIN-ENTITLEMENT A): the ed25519 verification public key
+  // (PEM) for entitlement tokens; absent means no token can verify.
+  pluginEntitlementPublicKey: z.string().min(1).max(2000).optional(),
 }).strict();
 
 export const patchInstanceGeneralSettingsSchema = z

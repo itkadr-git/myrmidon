@@ -15,51 +15,15 @@
 // flaky judge degrades the run visibly instead of inventing scores.
 
 import type { EvalRubric, EvalTaskKind } from "./domain.js";
-
-/** Models that belong to the Qwen family (DashScope models) */
-const QWEN_FAMILY_MODELS = [
-  "qwen-plus-free",
-  "qwen-plus",
-  "qwen-max",
-  "qwen-max-free",
-  "qwen-turbo",
-  "qwen-turbo-free",
-  "dashscope/*"
-];
-
-/**
- * Check if two models belong to the same family
- * @param judgeModel - The model used by the judge
- * @param agentModel - The model used by the agent being evaluated
- * @returns true if both models are from the same family, false otherwise
- */
-function isSameModelFamily(judgeModel: string, agentModel?: string): boolean {
-  if (!agentModel) {
-    return false;
-  }
-  
-  // Normalize model names by removing potential prefixes like "dashscope/"
-  const normalizedJudgeModel = judgeModel.replace(/^dashscope\//, "");
-  const normalizedAgentModel = agentModel.replace(/^dashscope\//, "");
-  
-  // Check if both models are in the Qwen family
-  const judgeInQwenFamily = QWEN_FAMILY_MODELS.some(familyModel => 
-    normalizedJudgeModel === familyModel || normalizedJudgeModel.startsWith(`${familyModel}/`) ||
-    familyModel === "dashscope/*" && normalizedJudgeModel.includes("qwen")
-  );
-  const agentInQwenFamily = QWEN_FAMILY_MODELS.some(familyModel => 
-    normalizedAgentModel === familyModel || normalizedAgentModel.startsWith(`${familyModel}/`) ||
-    familyModel === "dashscope/*" && normalizedAgentModel.includes("qwen")
-  );
-  
-  // If both are in Qwen family, return true
-  if (judgeInQwenFamily && agentInQwenFamily) {
-    return true;
-  }
-  
-  // Otherwise, compare the normalized model names directly
-  return normalizedJudgeModel === normalizedAgentModel;
-}
+// myrmidon(1.6.5 EVALS-JUDGE-FAMILY): family detection and candidate ordering
+// live in one module now — the old inline QWEN_FAMILY_MODELS list only knew
+// two families and the bare-substring table matched ids like `dolphin`
+// (`phi`) or any id containing `yi`. `model-family.ts` is token-anchored.
+import {
+  DEFAULT_JUDGE_PRIORITY_MODELS,
+  isSameJudgeFamily,
+  judgeCandidateOrder,
+} from "./model-family.js";
 
 /** Env vars the evals contour reads; mirrors the OCR settings shape. */
 export const EVALS_BASE_URL_ENV = "MYRMIDON_EVALS_BASE_URL";
@@ -78,15 +42,17 @@ export const EVALS_JUDGE_PRIORITY_MODELS_ENV = "MYRMIDON_EVALS_JUDGE_PRIORITY_MO
 export const DEFAULT_EVALS_MODEL = "qwen-plus-free";
 
 /**
- * myrmidon(1.6.3 EVALS-JUDGE-FAMILY): default judge priority list — the
- * head model first, then sensible free DashScope fallbacks. Read on every
- * run, so a change takes effect on the next evaluation without a restart.
+ * myrmidon(1.6.3 EVALS-JUDGE-FAMILY): default judge priority list — every
+ * entry is a model this deployment's gateway is contracted to serve
+ * (`SERVED_FREE_GATEWAY_MODELS` in `model-family.ts`: the free qwen trio
+ * main already ships; the old list mixed paid ids and branch #611 added
+ * unverified ones like `glm-4-flash-free` that no gateway evidence backs).
+ * Read on every run, so a change takes effect on the next evaluation
+ * without a restart. When the operator lists nothing the candidates are
+ * these served models; with no agent family to differ from the judge falls
+ * back to `deps.model`.
  */
-export const DEFAULT_EVALS_JUDGE_PRIORITY_MODELS = [
-  DEFAULT_EVALS_MODEL,
-  "qwen-plus",
-  "qwen-max",
-];
+export const DEFAULT_EVALS_JUDGE_PRIORITY_MODELS: string[] = [...DEFAULT_JUDGE_PRIORITY_MODELS];
 
 /**
  * myrmidon(1.6.3 EVALS-JUDGE-FAMILY): parse the comma-separated
@@ -184,6 +150,12 @@ export interface JudgeDeps {
   baseUrl: string;
   model: string;
   timeoutMs: number;
+  /**
+   * myrmidon(1.6.5 EVALS-JUDGE-FAMILY): ordered judge candidate list (the
+   * priority list). When absent or empty the judge uses `model` only — the
+   * pre-1.6.5 shape, which tests and the offline contour still pass.
+   */
+  judgeModels?: readonly string[];
 }
 
 /** `/v1/chat/completions` unless the address already ends with `/v1`. */
@@ -264,6 +236,14 @@ export function parseJudgeResponse(
 
 export function createJudge(deps: JudgeDeps): JudgePort {
   const url = chatCompletionsUrl(deps.baseUrl);
+  // myrmidon(1.6.5 EVALS-JUDGE-FAMILY): the judge candidate list. When
+  // routes pass the settings priority list the judge falls through it on a
+  // gateway error instead of aborting the run; without a list the judge
+  // runs on the configured model only (the pre-1.6.5 shape the offline
+  // contour and tests still use).
+  const candidates =
+    deps.judgeModels && deps.judgeModels.length > 0 ? [...deps.judgeModels] : [deps.model];
+
   const judgeTask = async (input: {
     taskSlug: string;
     prompt: string;
@@ -272,48 +252,65 @@ export function createJudge(deps: JudgeDeps): JudgePort {
     kind: EvalTaskKind;
     agentModel?: string;
   }): Promise<JudgeTaskResult> => {
-    const judgeModel = deps.model;
-    const isSameFamily = isSameModelFamily(judgeModel, input.agentModel);
-
-    let response: Response;
-    try {
-      response = await deps.fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${deps.apiKey}`,
-        },
-        body: JSON.stringify({
-          model: deps.model,
-          messages: [
-            { role: "system", content: "You are an evaluation judge. Reply with JSON only." },
-            { role: "user", content: buildJudgePrompt(input) },
-          ],
-          temperature: 0,
-        }),
-        signal: AbortSignal.timeout(deps.timeoutMs),
-      });
-    } catch (error) {
-      throw new EvalJudgeError(
-        "judge_unreachable",
-        `the judge gateway call for task "${input.taskSlug}" failed: ${(error as Error).message}`,
-      );
-    }
-    if (!response.ok) {
-      throw new EvalJudgeError(
-        "judge_http_error",
-        `the judge gateway answered ${response.status} for task "${input.taskSlug}"`,
-      );
-    }
-    const body = (await response.json()) as {
+    // Cross-family candidates first, then same-family, then the configured
+    // model as the last candidate (deduped). With no agent model there is
+    // nothing to differ from: the configured model only.
+    const order = judgeCandidateOrder(input.agentModel, candidates, deps.model);
+    let lastError: EvalJudgeError | null = null;
+    for (const judgeModel of order) {
+      const sameFamily = isSameJudgeFamily(judgeModel, input.agentModel);
+      let response: Response;
+      try {
+        response = await deps.fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${deps.apiKey}`,
+          },
+          body: JSON.stringify({
+            model: judgeModel,
+            messages: [
+              { role: "system", content: "You are an evaluation judge. Reply with JSON only." },
+              { role: "user", content: buildJudgePrompt(input) },
+            ],
+            temperature: 0,
+          }),
+          signal: AbortSignal.timeout(deps.timeoutMs),
+        });
+      } catch (error) {
+        // A transport failure for this candidate is not the run's failure:
+        // remember it and try the next judge model.
+        lastError = new EvalJudgeError(
+          "judge_unreachable",
+          `the judge gateway call for task "${input.taskSlug}" on model "${judgeModel}" failed: ${(error as Error).message}`,
+        );
+        continue;
+      }
+      if (!response.ok) {
+        // Same for an HTTP error (rate limit, upstream down, unknown model
+        // id): fall through to the next candidate.
+        lastError = new EvalJudgeError(
+          "judge_http_error",
+          `the judge gateway answered ${response.status} for task "${input.taskSlug}" on model "${judgeModel}"`,
+        );
+        continue;
+      }
+      const body = (await response.json()) as {
       choices?: { message?: { content?: unknown } }[];
-    };
-    const content = body.choices?.[0]?.message?.content;
-    if (typeof content !== "string") {
-      return { taskSlug: input.taskSlug, awarded: {}, parseError: true, raw: null, sameFamily: isSameFamily };
+      };
+      const content = body.choices?.[0]?.message?.content;
+      if (typeof content !== "string") {
+        return { taskSlug: input.taskSlug, awarded: {}, parseError: true, raw: null, sameFamily };
+      }
+      const { awarded, parseError } = parseJudgeResponse(content, input.rubric);
+      return { taskSlug: input.taskSlug, awarded, parseError, raw: content, sameFamily };
     }
-    const { awarded, parseError } = parseJudgeResponse(content, input.rubric);
-    return { taskSlug: input.taskSlug, awarded, parseError, raw: content, sameFamily: isSameFamily };
+    // Every candidate failed — only then does the task error out (before
+    // 1.6.5 the first gateway error aborted the whole run).
+    throw (
+      lastError ??
+      new EvalJudgeError("judge_unreachable", `no judge model configured for task "${input.taskSlug}"`)
+    );
   };
   return { judgeTask };
 }

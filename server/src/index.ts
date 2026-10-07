@@ -130,6 +130,7 @@ import { startRuntimeLimits } from "./myrmidon/runtime-limits/index.js"; // myrm
 import { startBotContainers, stopBotContainers } from "./myrmidon/bot-containers/startup.js"; // myrmidon(W2a)
 import { startLitellmCostSweep, stopLitellmCostSweep } from "./myrmidon/litellm-costs/startup.js"; // myrmidon(M2-A)
 import { startLitellmBudgetSync } from "./myrmidon/litellm-budget-sync/index.js"; // myrmidon(1.7-BUDGET-CONFIG-C)
+import { startLitellmModelReconciliation } from "./myrmidon/litellm-sync/startup-reconciler.js"; // myrmidon(1.6.1 MODEL-PROVIDERS B)
 import { startModelFallbackSignalSweep } from "./myrmidon/litellm-fallback-signal/sweep.js"; // myrmidon(BOT-RUNTIME-TUNING D)
 import { startBaselineSnapshots, stopBaselineSnapshots } from "./myrmidon/baseline/startup.js"; // myrmidon(1.6-BASELINE)
 import { startForagingSweep, stopForagingSweep } from "./myrmidon/foraging/startup.js"; // myrmidon(1.6-FORAGE)
@@ -154,6 +155,7 @@ import { createReviewRoutingScheduler } from "./myrmidon/review-routing/index.js
 import { createReviewReworkScheduler } from "./myrmidon/review-rework/index.js"; // myrmidon(REVIEW-REWORK)
 import { buildWipLimitSweeper } from "./myrmidon/wip-limit/index.js"; // myrmidon(1.6.1-WIP-LIMIT-A)
 import { buildPromptBudgetSweeper } from "./myrmidon/prompt-budget/index.js"; // myrmidon(1.6.3 PROMPT-BUDGET B)
+import { buildMonitoringLinkWatchdog } from "./myrmidon/monitoring/links/index.js"; // myrmidon(1.6.6 MONITORING E)
 import {
   createPendingInteractionWakeSweep,
   readPendingInteractionWakeContextSnapshot,
@@ -1407,6 +1409,34 @@ async function startServerWithDatabaseTeardown(
       }));
     };
   })();
+  // myrmidon(1.6.6 MONITORING E): the periodic "is every linking component
+  // still alive" pass. A link (Zabbix aggregator, Alertmanager webhook,
+  // collector) is its own minimal-rights board key, so this pass reads those
+  // keys and alarms High for the observability role when one is revoked,
+  // expired or has stopped pulsing — the silent death that left the High
+  // aggregator blind for four days. It runs on the heartbeat scheduler tick
+  // behind its own 60s gate; the worst case for a link that went quiet is
+  // staleAfterSec + gate + tick = 480 + 60 + 30 = 570s, inside the 10-minute
+  // budget the issue asks for (asserted in the module's tests).
+  const scheduleMonitoringLinkSweep = (() => {
+    const watchdog = buildMonitoringLinkWatchdog(db as any);
+    return () => {
+      if (heartbeatSchedulerStopped) return;
+      trackHeartbeatSchedulerWork(watchdog.sweep().then((result) => {
+        if (result.alerted > 0 || result.reopened > 0 || result.recovered > 0 || result.failed > 0) {
+          logger.info({
+            inspected: result.inspected,
+            alerted: result.alerted,
+            reopened: result.reopened,
+            recovered: result.recovered,
+            failed: result.failed,
+          }, "Monitoring link sweep completed");
+        }
+      }).catch((err) => {
+        logger.error({ err }, "Monitoring link sweep failed");
+      }));
+    };
+  })();
   // myrmidon(AUTO-RESUME): resumes an agent left in `error` once its 1/5/15 min
   // backoff step is due; the per-agent maintenance gate lives in the sweeper.
   // Runs on the same mutually-exclusive scheduler paths as the other
@@ -1653,6 +1683,7 @@ async function startServerWithDatabaseTeardown(
     startBotContainers(db as any); // myrmidon(W2a): bot container sweep and the card's "Apply now" runtime; a no-op unless MYRMIDON_BOT_CONTAINERS is on
     startLitellmCostSweep(db as any); // myrmidon(M2-A): gateway spend sweep; a no-op unless MYRMIDON_LITELLM_* is set
     startLitellmBudgetSync(db as any); // myrmidon(1.7-BUDGET-CONFIG-C): LiteLLM budget projection; a no-op unless the gateway contour is set and the document enables it
+    startLitellmModelReconciliation(db as any); // myrmidon(1.6.1 MODEL-PROVIDERS B): reconcile LiteLLM models with DB state
     startModelFallbackSignalSweep(db as any); // myrmidon(BOT-RUNTIME-TUNING D): model fallback attention signals; a no-op unless MYRMIDON_MODEL_FALLBACK_ENABLED=1
     startBaselineSnapshots(db as any); // myrmidon(1.6-BASELINE): freeze the 14-day metric window; a no-op unless MYRMIDON_BASELINE_INTERVAL_SEC is set
     startForagingSweep(db as any); // myrmidon(1.6-FORAGE): source comparison sweep; a no-op unless MYRMIDON_FORAGING_ENABLED=1
@@ -1949,6 +1980,7 @@ async function startServerWithDatabaseTeardown(
         scheduleReviewReworkSweep(); // myrmidon(REVIEW-REWORK)
         scheduleWipLimitSweep(); // myrmidon(1.6.1-WIP-LIMIT-A)
         schedulePromptBudgetSweep(); // myrmidon(1.6.3 PROMPT-BUDGET B)
+        scheduleMonitoringLinkSweep(); // myrmidon(1.6.6 MONITORING E)
         scheduleAutoResumeSweep(); // myrmidon(AUTO-RESUME)
 
         if (heartbeatSchedulerStopped) return;
@@ -2153,6 +2185,7 @@ async function startServerWithDatabaseTeardown(
       scheduleStaleBlockSweep(); // myrmidon(STALE-BLOCK)
       scheduleReviewRoutingSweep(); // myrmidon(REVIEW-ROUTING)
       scheduleReviewReworkSweep(); // myrmidon(REVIEW-REWORK)
+      scheduleMonitoringLinkSweep(); // myrmidon(1.6.6 MONITORING E)
       scheduleGitHubConnectionEventPoll();
       scheduleGitHubConnectionContinuitySweep();
     });
