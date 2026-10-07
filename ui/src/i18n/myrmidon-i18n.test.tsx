@@ -53,6 +53,9 @@ const ALLOWED_LATIN = new Set([
   "GitHub",
   // input placeholders stay language-neutral (role codes and URLs)
   "engineer", "https", "example", "com", "changelog",
+  // myrmidon(1.7-AGENT-EXCHANGE-A): pull request / owner/repo are forge
+  // concepts kept untranslated in RU copy, same class as GitHub.
+  "pull", "request", "owner", "repo",
 ]);
 
 function unruledLatinRuns(value: string): string[] {
