@@ -50,6 +50,23 @@
 // store — but the silent version of it kept an empty store invisible for as
 // long as nobody looked at the disk.
 //
+// myrmidon(1.6.5 BOT-DISK-H1b): a GitHub clone is no longer copied by git. The
+// wrapper opens the bot's own copy of the task with the workspace CLI
+// (`myr-ws open`, the interface contract of OPE-5306 C2) and puts the bot into
+// that copy, so one task keeps ONE copy next to the other copies of the same
+// task instead of a fresh full history per `git clone` (the 06.10 incident: the
+// bot disk hit 100 %). The section "a GitHub clone is opened, not copied" below
+// holds the whole rule. A non-GitHub URL, an argv the parse cannot follow and a
+// container without the CLI keep exactly the behaviour described in this
+// paragraph: real git, the --reference-if-able store behind one variable
+// (MYRMIDON_GIT_REFERENCE_MODE=1) or a missing CLI.
+//
+// An http(s) URL that carries userinfo carries a credential
+// (`https://x-access-token:<token>@github.com/...`): the wrapper rewrites such
+// a URL before real git writes it anywhere, so a live token never lands in
+// .git/config, in the trail file or on stderr. `git@github.com:owner/repo` is
+// left alone — that user is a login, not a secret.
+//
 // The mirror directory is derived from the URL only after the owner and the
 // repository name pass the same checks GitHub applies, so no URL can make the
 // wrapper point git at another path. Bot-local mirrors are kept only for a
@@ -257,9 +274,9 @@ function recordStoreEvent({ kind, reason, detail = null, repo = null, url = null
       reason,
       detail,
       repo,
-      url,
+      url: stripUserinfo(url),
       store,
-      argv: process.argv.slice(2),
+      argv: process.argv.slice(2).map((arg) => stripUserinfo(arg)),
       totals,
     };
     fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o755 });
@@ -557,8 +574,331 @@ function collectConfigArgs(argv, cloneAt) {
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// myrmidon(1.6.5 BOT-DISK-H1b): a GitHub clone is OPENED, not copied.
+//
+//   git clone https://github.com/<owner>/<repo>[.git] [dir]
+//     -> myr-ws open <KEY> <owner>/<repo> --json              (KEY = MYRMIDON_TASK_WORKSPACE)
+//     -> myr-ws open <name> <owner>/<repo> --scratch --json   (no task key: a scratch copy)
+//
+// The copy the bot is put into is the ONE copy of this task on the board, kept
+// next to the other copies of the same task — not a fresh full history per
+// `git clone`. The path of the copy is printed on stderr exactly the way a
+// clone prints its target (`Cloning into '<path>'...`), and the CLI's own
+// result (myr-ws-open.json) stays on stdout so a caller can read the copy, its
+// branch and its base. The CLI's exit status is passed through with its stderr
+// (exit 3, the disk quota, must reach the caller as it is).
+//
+// The storage and history options a field clone carries (--filter, --depth,
+// --mirror, --bare, -b/--branch) are IGNORED, each with one line on stderr: the
+// copy comes from the shared base and the bot branches itself, so a promisor
+// pack or a bounded history must never shape a copy the whole task works in.
+//
+// Everything else runs real git with unchanged argv, stdio and status: a
+// non-GitHub URL, an argv this parse cannot follow, a subcommand that is no
+// clone. The binary comes from MYRMIDON_WS_BIN (the image's path by default),
+// the parse from the sibling clone-args.js when it is in the image (H1a) and
+// else from parseCloneArgsFallback below, which returns the same shape. A
+// missing CLI, or MYRMIDON_GIT_REFERENCE_MODE=1, keeps the 1.6.2..1.6.5
+// --reference-if-able path above: a bot must never lose its clones because the
+// CLI is not in its image yet, and an operator needs one variable for a
+// rollback.
+const WS_BIN_ENV = "MYRMIDON_WS_BIN";
+const WS_BIN_DEFAULT = "/usr/local/bin/myr-ws";
+const WS_TASK_WORKSPACE_ENV = "MYRMIDON_TASK_WORKSPACE";
+const WS_REFERENCE_MODE_ENV = "MYRMIDON_GIT_REFERENCE_MODE";
+const WS_WORKSPACE_ROOT = "/workspace";
+const WS_SCRATCH_ROOT = "/scratch";
+/** The issue-key shape of the contract (C1, myrWsIssueKeySchema). */
+const ISSUE_KEY_RE = /^[A-Z][A-Z0-9]*-[0-9]+$/;
+/** Clone options an opened copy ignores: the copy comes from the shared base. */
+const CLONE_IGNORED = new Set(["--filter", "--depth", "--mirror", "--bare", "-b", "--branch"]);
+
+/** The workspace CLI to run: MYRMIDON_WS_BIN overrides the image's path. */
+function myrWsBin(env = process.env) {
+  const bin = (env[WS_BIN_ENV] || "").trim();
+  return bin === "" ? WS_BIN_DEFAULT : bin;
+}
+
+/** True when the CLI can be executed here; a missing one keeps the legacy path. */
+function myrWsUsable(bin = myrWsBin()) {
+  try {
+    fs.accessSync(bin, fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The one-variable rollback of an operator: the 1.6.2..1.6.5 mirror path. */
+function referenceMode(env = process.env) {
+  return (env[WS_REFERENCE_MODE_ENV] || "") === "1";
+}
+
+/**
+ * The issue key of the copy the bot works in, taken from the task workspace the
+ * runner exported. A workspace that is not an issue key (a test directory, an
+ * interactive shell) yields null and the clone becomes a scratch copy.
+ */
+function taskWorkspaceKey(env = process.env) {
+  const dir = (env[WS_TASK_WORKSPACE_ENV] || "").trim().replace(/[/\\]+$/, "");
+  if (dir === "") return null;
+  const key = path.basename(dir).toUpperCase();
+  return ISSUE_KEY_RE.test(key) ? key : null;
+}
+
+/**
+ * userinfo of an http(s) URL is a credential
+ * (`https://x-access-token:<token>@github.com/...`): it belongs to the
+ * credential helper, never to a config file, a trail file or a log line.
+ * `git@github.com:owner/repo` is left alone — that user is a login, not a
+ * secret — and so is every other scheme.
+ */
+function stripUserinfo(url) {
+  if (typeof url !== "string") return url;
+  const m = /^(https?):\/\/([^/@]+)@([^/]+.*)$/i.exec(url);
+  return m === null ? url : `${m[1]}://${m[3]}`;
+}
+
+/** The name of the scratch copy: the target directory the caller named, else the repository. */
+function scratchName(parsed) {
+  const raw = parsed.dir === null || parsed.dir === undefined ? parsed.repo : parsed.dir;
+  const name = path.basename(String(raw).replace(/[/\\]+$/, ""));
+  return name === "" || name === "." || name === ".." ? parsed.repo : name;
+}
+
+/**
+ * The walk over a `git clone` argv that stands in for clone-args.js (H1a) until
+ * that module lands: the repository argument, the target directory, the ignored
+ * storage/history options, and null when real git must run — no repository
+ * argument, more positionals than git accepts, or an argv this walk cannot
+ * follow (an option with a value it does not know, a `--` form it misreads).
+ * Every form of the test set goes through the same code path as H1a's.
+ */
+function parseCloneArgsFallback(argv) {
+  let i = 0;
+  while (i < argv.length && argv[i].startsWith("-")) i += GLOBAL_WITH_VALUE.has(argv[i]) ? 2 : 1;
+  if (argv[i] !== "clone") return null;
+  const positional = [];
+  const ignoredFlags = [];
+  for (let j = i + 1; j < argv.length; j++) {
+    const arg = argv[j];
+    if (arg === "--") {
+      positional.push(...argv.slice(j + 1));
+      break;
+    }
+    if (arg.startsWith("-")) {
+      const name = arg.includes("=") ? arg.slice(0, arg.indexOf("=")) : arg;
+      if (CLONE_IGNORED.has(name)) ignoredFlags.push(name);
+      if (CLONE_WITH_VALUE.has(name) && !arg.includes("=")) j += 1;
+      continue;
+    }
+    positional.push(arg);
+  }
+  if (positional.length === 0 || positional.length > 2) return null;
+  const url = positional[0];
+  const dir = positional.length === 2 ? positional[1] : null;
+  const clean = stripUserinfo(url);
+  const repo = githubRepo(clean);
+  if (repo === null) {
+    return { kind: "foreign", owner: null, repo: null, dir, ignoredFlags: [], hadUserinfo: clean !== url };
+  }
+  const slash = repo.indexOf("/");
+  return {
+    kind: "github",
+    owner: repo.slice(0, slash),
+    repo: repo.slice(slash + 1),
+    dir,
+    ignoredFlags,
+    hadUserinfo: clean !== url,
+  };
+}
+
+/**
+ * clone-args.js of H1a when it is there — required lazily, next to this file,
+ * and never allowed to break a clone: a module that is absent or throws leaves
+ * the fallback in charge. Delete this indirection (and the fallback) once the
+ * module has landed with the rest of BOT-DISK-H.
+ */
+let cloneArgsModule;
+function loadCloneArgs() {
+  if (cloneArgsModule === undefined) {
+    try {
+      cloneArgsModule = require("./clone-args.js");
+    } catch {
+      cloneArgsModule = null;
+    }
+  }
+  return cloneArgsModule;
+}
+
+/** The H1a parse when the module is here, else the fallback with the same shape. */
+function parseClone(argv) {
+  const mod = loadCloneArgs();
+  if (mod !== null) {
+    const fn = mod.parseCloneArgs || mod.parseClone || mod.default;
+    if (typeof fn === "function") {
+      const parsed = fn(argv);
+      return parsed && typeof parsed === "object" ? parsed : null;
+    }
+  }
+  return parseCloneArgsFallback(argv);
+}
+
+/**
+ * The plan of an intercepted clone — the CLI argv, the copy the bot is put
+ * into, the lines explaining what was ignored — or null when this argv is not a
+ * GitHub clone the wrapper takes over (then real git runs, unchanged).
+ */
+function cloneInterceptPlan(argv, env = process.env) {
+  const parsed = parseClone(argv);
+  if (parsed === null || parsed.kind !== "github") return null;
+  if (typeof parsed.owner !== "string" || typeof parsed.repo !== "string" || parsed.owner === "" || parsed.repo === "") return null;
+  const repo = `${parsed.owner}/${parsed.repo}`;
+  const key = taskWorkspaceKey(env);
+  const name = key === null ? scratchName(parsed) : null;
+  const wsArgv =
+    key === null ? ["open", name, repo, "--scratch", "--json"] : ["open", key, repo, "--json"];
+  const target = key === null ? `${WS_SCRATCH_ROOT}/${name}` : `${WS_WORKSPACE_ROOT}/${key}`;
+  const ignored = Array.isArray(parsed.ignoredFlags) ? parsed.ignoredFlags : [];
+  const notices = ignored
+    .filter((flag) => CLONE_IGNORED.has(flag))
+    .map((flag) => `[myrmidon-git] ignoring ${flag}: the copy is opened from the shared base (myr-ws open)\n`);
+  return { bin: myrWsBin(env), argv: wsArgv, key, repo, target, notices, hadUserinfo: parsed.hadUserinfo === true };
+}
+
+/** The open result of the contract (myr-ws-open.json), or null when stdout carries none. */
+function readOpenResult(stdout) {
+  try {
+    const parsed = JSON.parse(String(stdout === null || stdout === undefined ? "" : stdout).trim());
+    if (parsed === null || typeof parsed !== "object") return null;
+    if (parsed.ok !== true || typeof parsed.path !== "string" || parsed.path === "") return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Run `myr-ws open` for the planned clone and put the bot into the copy: the
+ * target path is printed the way a clone prints it, the CLI's stdout stays on
+ * stdout, and its exit status comes back to the caller with its stderr. Null
+ * means the child died on a signal and this process re-raised it.
+ */
+function runMyrWsOpen(plan, spawn = spawnSync) {
+  for (const notice of plan.notices) process.stderr.write(notice);
+  const result = spawn(plan.bin, plan.argv, {
+    stdio: ["ignore", "pipe", "pipe"],
+    encoding: "utf8",
+    env: childEnv(),
+  });
+  if (result.error) {
+    process.stderr.write(`git: cannot run ${plan.bin}: ${result.error.message}\n`);
+    return 127;
+  }
+  const status = result.status === null || result.status === undefined ? 1 : result.status;
+  if (status !== 0) {
+    if (typeof result.stderr === "string" && result.stderr !== "") process.stderr.write(result.stderr);
+    if (result.signal) {
+      process.kill(process.pid, result.signal);
+      return null;
+    }
+    return status;
+  }
+  const opened = readOpenResult(result.stdout);
+  process.stderr.write(`Cloning into '${opened === null ? plan.target : opened.path}'...\n`);
+  if (opened === null) {
+    process.stderr.write(
+      `[myrmidon-git] myr-ws open printed no result this wrapper can read; the copy is expected at ${plan.target}\n`,
+    );
+  }
+  if (typeof result.stdout === "string" && result.stdout !== "") process.stdout.write(result.stdout);
+  return 0;
+}
+
+/** Options of `git remote` that take their value as the NEXT argument. */
+const REMOTE_VALUE_FLAGS = new Set(["-t", "--track", "-m", "--master"]);
+/** Options of `git config` that take their value as the NEXT argument. */
+const CONFIG_VALUE_FLAGS = new Set(["-f", "--file", "--blob", "--type", "-t", "--default", "--comment", "--get-regexp", "--get-urlmatch"]);
+
+/** The index of the first argument that is no option (option values skipped). */
+function firstPositional(argv, from, withValue) {
+  let i = from;
+  while (i < argv.length && argv[i].startsWith("-")) i += withValue.has(argv[i]) ? 2 : 1;
+  return i;
+}
+
+/** The index of the URL argument of `git remote add|set-url` — its last positional — or null. */
+function remoteUrlIndex(argv, from) {
+  const positional = [];
+  for (let i = from; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg.startsWith("-")) {
+      if (REMOTE_VALUE_FLAGS.has(arg)) i += 1;
+      continue;
+    }
+    positional.push(i);
+  }
+  return positional.length >= 2 ? positional[positional.length - 1] : null;
+}
+
+/** `git remote add|set-url <name> <url>` with a credential-carrying URL rewritten. */
+function sanitizeRemoteArgv(argv, at) {
+  const unchanged = { argv, changed: false, url: null };
+  const sub = firstPositional(argv, at + 1, REMOTE_VALUE_FLAGS);
+  if (argv[sub] !== "add" && argv[sub] !== "set-url") return unchanged;
+  const urlAt = remoteUrlIndex(argv, sub + 1);
+  if (urlAt === null) return unchanged;
+  const clean = stripUserinfo(argv[urlAt]);
+  if (clean === argv[urlAt]) return unchanged;
+  const out = argv.slice();
+  out[urlAt] = clean;
+  return { argv: out, changed: true, url: clean };
+}
+
+/** `git config ... remote.<name>.url <value>` with a credential-carrying value rewritten. */
+function sanitizeConfigArgv(argv, at) {
+  const unchanged = { argv, changed: false, url: null };
+  const keyAt = firstPositional(argv, at + 1, CONFIG_VALUE_FLAGS);
+  const key = argv[keyAt];
+  const value = argv[keyAt + 1];
+  if (typeof key !== "string" || !/^remote\.[^.]+\.url$/i.test(key)) return unchanged;
+  if (typeof value !== "string" || value.startsWith("-")) return unchanged; // a read, not a write
+  const clean = stripUserinfo(value);
+  if (clean === value) return unchanged;
+  const out = argv.slice();
+  out[keyAt + 1] = clean;
+  return { argv: out, changed: true, url: clean };
+}
+
+/** The argv real git gets: the remote forms above rewritten, everything else as it was. */
+function sanitizeRemoteArgs(argv) {
+  const at = firstPositional(argv, 0, GLOBAL_WITH_VALUE);
+  if (argv[at] === "remote") return sanitizeRemoteArgv(argv, at);
+  if (argv[at] === "config") return sanitizeConfigArgv(argv, at);
+  return { argv, changed: false, url: null };
+}
+
 function main() {
-  const argv = process.argv.slice(2);
+  const remote = sanitizeRemoteArgs(process.argv.slice(2));
+  if (remote.changed) {
+    process.stderr.write(
+      `[myrmidon-git] the remote URL carried credentials: ${remote.url} is written instead (the credential helper answers for the token)\n`,
+    );
+  }
+  const argv = remote.argv;
+  // A GitHub clone is opened as the bot's copy of the task, not copied by git.
+  const plan = cloneInterceptPlan(argv);
+  if (plan !== null && !referenceMode() && myrWsUsable(plan.bin)) {
+    const status = runMyrWsOpen(plan);
+    if (status !== null) process.exit(status);
+    return;
+  }
+  if (plan !== null) {
+    process.stderr.write(
+      `[myrmidon-git] ${plan.bin} cannot be run here: the clone stays with real git (${plan.repo})\n`,
+    );
+  }
   let localMirror = null;
   // Decide the bot-local mirror BEFORE running the clone; the injection itself
   // stays in the tested pure function. The board's mirror always wins.
@@ -577,7 +917,7 @@ function main() {
       recordStoreEvent({
         kind: "bypass",
         reason: "url",
-        detail: scan.url ?? "no repository argument",
+        detail: stripUserinfo(scan.url) ?? "no repository argument",
         repo: null,
         url: scan.url,
         store: storeRoot,
@@ -636,4 +976,18 @@ module.exports = {
   countLocalMirrors,
   ensureLocalMirror,
   refreshDue,
+  // myrmidon(1.6.5 BOT-DISK-H1b): the clone interception and the remote sanitation.
+  myrWsBin,
+  myrWsUsable,
+  referenceMode,
+  taskWorkspaceKey,
+  stripUserinfo,
+  scratchName,
+  parseCloneArgsFallback,
+  loadCloneArgs,
+  parseClone,
+  cloneInterceptPlan,
+  readOpenResult,
+  runMyrWsOpen,
+  sanitizeRemoteArgs,
 };

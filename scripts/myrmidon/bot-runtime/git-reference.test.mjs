@@ -17,6 +17,25 @@ const WRAPPER_SRC = path.join(ROOT, "docker/bot-runtime/git-reference/git");
 const HYGIENE = path.join(ROOT, "docker/bot-runtime/git-reference/bot-clone-hygiene");
 
 const hasGit = spawnSync("git", ["--version"]).status === 0;
+
+/**
+ * The real git. On the bot host /usr/local/bin/git is a symlink to the myrmidon
+ * wrapper, so `command -v git` hands back the wrapper itself — passing that as
+ * MYRMIDON_GIT_REAL makes the wrapper run itself, which never terminates. These
+ * tests need the binary the wrapper normally answers with.
+ */
+const trueGit = () => {
+  const isWrapper = (candidate) => {
+    try {
+      return fs.readFileSync(candidate).subarray(0, 200).includes("myrmidon");
+    } catch {
+      return false;
+    }
+  };
+  return ["/usr/bin/git", "/bin/git", spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim()].find(
+    (candidate) => candidate && fs.existsSync(candidate) && !isWrapper(candidate),
+  );
+};
 const hasPython = spawnSync("python3", ["--version"]).status === 0;
 
 let tmp;
@@ -237,7 +256,10 @@ describe("git wrapper: end to end with a local mirror", { skip: !hasGit }, () =>
       PATH: process.env.PATH,
       HOME: tmp,
       GIT_CONFIG_NOSYSTEM: "1",
-      MYRMIDON_GIT_REAL: spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim(),
+      MYRMIDON_GIT_REAL: trueGit(),
+      // BOT-DISK-H1b intercepts a GitHub clone only when the CLI is there; pin an
+      // absent one so this test keeps proving the reference store.
+      MYRMIDON_WS_BIN: path.join(tmp, "no-myr-ws"),
       MYRMIDON_GIT_MIRROR_ROOT: mirrorRoot,
     };
     const dest = path.join(tmp, "clone");
@@ -263,7 +285,7 @@ describe("git wrapper: end to end with a local mirror", { skip: !hasGit }, () =>
 // myrmidon(1.6.5 BOT-DISK-G): the bot's OWN mirror, made on the first clone and
 // borrowed by every later one, with no board /cache/git mount anywhere.
 describe("git wrapper: bot-local mirror end to end", { skip: !hasGit }, () => {
-  const realGit = () => spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim();
+  const realGit = () => trueGit();
 
   /** A local "GitHub" origin, reached from the wrapper through insteadOf. */
   function makeOrigin(name) {
@@ -289,6 +311,7 @@ describe("git wrapper: bot-local mirror end to end", { skip: !hasGit }, () => {
         HERMES_HOME: path.join(tmp, "hermes-home"), // where a bypass trail would be written
         GIT_CONFIG_NOSYSTEM: "1",
         MYRMIDON_GIT_REAL: realGit(),
+        MYRMIDON_WS_BIN: path.join(tmp, "no-myr-ws"),
         MYRMIDON_GIT_MIRROR_ROOT: mirrorRoot,
         MYRMIDON_GIT_LOCAL_MIRROR: storeRoot,
       },
@@ -728,5 +751,372 @@ describe("bot-clone-hygiene", { skip: !hasGit || !hasPython }, () => {
     const written = JSON.parse(fs.readFileSync(report([volume], { HERMES_HOME: home }).reportPath, "utf8"));
     assert.equal(written.gitStore.path, store);
     assert.deepEqual(written.gitStore.repos, ["itkadr-git/myrmidon"]);
+  });
+});
+
+// myrmidon(1.6.5 BOT-DISK-H1b): a GitHub clone is OPENED through the workspace
+// CLI (`myr-ws open`, the contract of OPE-5306 C2) instead of being copied by
+// git, and an http(s) remote URL never carries its credential into a config file
+// or into the store trail. Both children are fake: no network, no real copy.
+describe("git wrapper: clone interception (BOT-DISK-H1b)", () => {
+  const DOC = path.join(ROOT, "docs/myrmidon/bot-disk-contract");
+  const openFixture = JSON.parse(fs.readFileSync(path.join(DOC, "myr-ws-open.json"), "utf8"));
+  const errorFixture = JSON.parse(fs.readFileSync(path.join(DOC, "myr-ws-error.json"), "utf8"));
+
+  /** Every form of `git clone` the field carries: all of them must be opened. */
+  const GITHUB_FORMS = [
+    { name: "plain", argv: ["clone", "https://github.com/owner/repo", "dest"] },
+    { name: "dot-git and no target", argv: ["clone", "https://github.com/owner/repo.git"] },
+    { name: "www and a trailing slash", argv: ["--no-pager", "clone", "https://www.github.com/owner/repo/", "dest"] },
+    { name: "token in the URL", argv: ["clone", "https://x-access-token:ghp_secret@github.com/owner/repo.git", "dest"] },
+    { name: "scp-like ssh", argv: ["clone", "git@github.com:owner/repo.git", "dest"] },
+    { name: "ssh:// URL", argv: ["clone", "ssh://git@github.com/owner/repo", "dest"] },
+    { name: "another origin name", argv: ["clone", "-o", "upstream", "https://github.com/owner/repo", "dest"] },
+    { name: "filter= (promisor)", argv: ["clone", "--filter=blob:none", "https://github.com/owner/repo", "dest"], ignored: ["--filter"] },
+    { name: "filter with a value", argv: ["clone", "--filter", "blob:none", "https://github.com/owner/repo", "dest"], ignored: ["--filter"] },
+    { name: "depth with a value", argv: ["clone", "--depth", "1", "https://github.com/owner/repo", "dest"], ignored: ["--depth"] },
+    { name: "depth= and a ref limit", argv: ["clone", "--depth=50", "--no-single-branch", "https://github.com/owner/repo", "dest"], ignored: ["--depth"] },
+    { name: "branch", argv: ["clone", "-b", "main", "https://github.com/owner/repo", "dest"], ignored: ["-b"] },
+    { name: "branch=", argv: ["clone", "--branch=release", "https://github.com/owner/repo", "dest"], ignored: ["--branch"] },
+    { name: "mirror", argv: ["clone", "--mirror", "https://github.com/owner/repo", "dest"], ignored: ["--mirror"] },
+    { name: "bare", argv: ["clone", "--bare", "https://github.com/owner/repo", "dest"], ignored: ["--bare"] },
+  ];
+
+  const escapeRe = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+  /** A tiny executable node script: the two children the wrapper may spawn. */
+  function fakeChild(dir, file, lines) {
+    const bin = path.join(dir, file);
+    fs.writeFileSync(bin, ["#!/usr/bin/env node", ...lines, ""].join("\n"));
+    fs.chmodSync(bin, 0o755);
+    return bin;
+  }
+
+  /** A fake `myr-ws`: it records its argv and answers like the contract's fixture. */
+  function fakeWs(dir, { status = 0, stderr = "", result = null } = {}) {
+    const calls = path.join(dir, "ws-calls.json");
+    const stdout = result === null ? null : `${JSON.stringify(result)}\n`;
+    return {
+      calls,
+      bin: fakeChild(dir, "myr-ws.mjs", [
+        'import fs from "node:fs";',
+        `const calls = ${JSON.stringify(calls)};`,
+        'const seen = fs.existsSync(calls) ? JSON.parse(fs.readFileSync(calls, "utf8")) : [];',
+        "seen.push({ argv: process.argv.slice(2), cwd: process.cwd() });",
+        'fs.writeFileSync(calls, JSON.stringify(seen, null, 2));',
+        ...(stdout === null ? [] : [`process.stdout.write(${JSON.stringify(stdout)});`]),
+        ...(stderr === "" ? [] : [`process.stderr.write(${JSON.stringify(stderr)});`]),
+        `process.exit(${status});`,
+      ]),
+    };
+  }
+
+  /** A fake real git: it records its argv and exits with `status`. */
+  function fakeGit(dir, status = 0) {
+    const calls = path.join(dir, "git-calls.json");
+    return {
+      calls,
+      bin: fakeChild(dir, "real-git.mjs", [
+        'import fs from "node:fs";',
+        `const calls = ${JSON.stringify(calls)};`,
+        'const seen = fs.existsSync(calls) ? JSON.parse(fs.readFileSync(calls, "utf8")) : [];',
+        "seen.push({ argv: process.argv.slice(2) });",
+        'fs.writeFileSync(calls, JSON.stringify(seen, null, 2));',
+        `process.exit(${status});`,
+      ]),
+    };
+  }
+
+  const readCalls = (file) => (fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : []);
+
+  let caseSeq = 0;
+  /** One isolated case directory for the children of a single wrapper run. */
+  function caseDir(name) {
+    caseSeq += 1;
+    const dir = path.join(tmp, "h1b", `${caseSeq}-${name}`);
+    fs.mkdirSync(dir, { recursive: true });
+    return dir;
+  }
+
+  /** The wrapper's own run: this argv, this env, this cwd. */
+  function run(args, env, cwd = tmp) {
+    return spawnSync(process.execPath, [wrapper, ...args], {
+      encoding: "utf8",
+      cwd,
+      env: { PATH: process.env.PATH, HOME: tmp, GIT_CONFIG_NOSYSTEM: "1", ...env },
+    });
+  }
+
+  it("opens each of the 15 clone forms through myr-ws with the key of the task", () => {
+    assert.equal(GITHUB_FORMS.length, 15);
+    for (const form of GITHUB_FORMS) {
+      const dir = caseDir(form.name);
+      const copy = path.join(dir, "copy");
+      const ws = fakeWs(dir, { result: { ...openFixture, path: copy, key: "ABC-101", repo: "owner/repo" } });
+      const git = fakeGit(dir, 0);
+      const out = run(form.argv, {
+        MYRMIDON_WS_BIN: ws.bin,
+        MYRMIDON_GIT_REAL: git.bin,
+        MYRMIDON_TASK_WORKSPACE: "/workspace/ABC-101",
+        MYRMIDON_GIT_LOCAL_MIRROR: path.join(dir, "store"),
+      });
+
+      assert.equal(out.status, 0, `${form.name}: ${out.stderr}`);
+      const called = readCalls(ws.calls);
+      assert.equal(called.length, 1, `${form.name}: myr-ws must run exactly once`);
+      assert.deepEqual(called[0].argv, ["open", "ABC-101", "owner/repo", "--json"], form.name);
+      assert.deepEqual(readCalls(git.calls), [], `${form.name}: real git must not run`);
+      assert.equal(JSON.parse(out.stdout).path, copy, `${form.name}: the open result stays on stdout`);
+      assert.match(out.stderr, new RegExp(`Cloning into '${escapeRe(copy)}'`), form.name);
+      for (const flag of form.ignored || []) {
+        assert.match(out.stderr, new RegExp(`ignoring ${escapeRe(flag)}`), `${form.name}: ${flag} must be reported`);
+      }
+      if ((form.ignored || []).length === 0) assert.doesNotMatch(out.stderr, /ignoring/, form.name);
+      for (const flag of ["--filter", "--depth", "--mirror", "--bare", "--branch", "blob:none"]) {
+        assert.ok(!called[0].argv.includes(flag), `${form.name}: ${flag} must not reach myr-ws`);
+      }
+    }
+  });
+
+  it("opens a scratch copy when the run exported no task workspace", () => {
+    for (const [args, name] of [
+      [["clone", "https://github.com/owner/repo", "dest"], "dest"],
+      [["clone", "https://github.com/owner/repo.git"], "repo"],
+      [["clone", "https://github.com/owner/repo", "/tmp/deep/nested/"], "nested"],
+      [["clone", "--reference-if-able", "/old", "--", "https://github.com/owner/repo", "dest"], "dest"],
+    ]) {
+      const dir = caseDir(`scratch-${name}`);
+      const ws = fakeWs(dir, { result: { ...openFixture, path: path.join(dir, "copy") } });
+      const git = fakeGit(dir, 0);
+      const out = run(args, {
+        MYRMIDON_WS_BIN: ws.bin,
+        MYRMIDON_GIT_REAL: git.bin,
+        MYRMIDON_TASK_WORKSPACE: "",
+        MYRMIDON_GIT_LOCAL_MIRROR: path.join(dir, "store"),
+      });
+      assert.equal(out.status, 0, `${args.join(" ")}: ${out.stderr}`);
+      assert.deepEqual(readCalls(ws.calls)[0].argv, ["open", name, "owner/repo", "--scratch", "--json"], args.join(" "));
+      assert.deepEqual(readCalls(git.calls), [], args.join(" "));
+    }
+  });
+
+  it("leaves a non-GitHub or unparsable command to real git, argv and status unchanged", () => {
+    const CASES = [
+      ["clone", "https://gitlab.com/owner/repo", "dest"],
+      ["clone", "http://github.com/owner/repo", "dest"],
+      ["clone", "https://github.com.evil.example/owner/repo", "dest"],
+      ["clone", "/tmp/local-repo", "dest"],
+      ["clone", "--depth", "1", "https://gitlab.com/owner/repo", "dest"],
+      ["clone"],
+      ["fetch", "--all", "origin"],
+      ["status", "--short"],
+      ["remote", "add", "origin", "git@github.com:owner/repo.git"],
+    ];
+    for (const argv of CASES) {
+      const dir = caseDir("foreign");
+      const ws = fakeWs(dir, { result: { ...openFixture, path: path.join(dir, "copy") } });
+      const git = fakeGit(dir, 7);
+      // No local store: the only call the wrapper may make here is the clone itself.
+      const out = run(argv, {
+        MYRMIDON_WS_BIN: ws.bin,
+        MYRMIDON_GIT_REAL: git.bin,
+        MYRMIDON_TASK_WORKSPACE: "/workspace/ABC-101",
+        HERMES_HOME: path.join(dir, "home"),
+      });
+      const label = argv.join(" ");
+      assert.equal(out.status, 7, `${label}: the real status must pass through`);
+      assert.deepEqual(readCalls(git.calls)[0].argv, argv, `${label}: argv unchanged`);
+      assert.equal(readCalls(git.calls).length, 1, `${label}: exactly one real git call`);
+      assert.deepEqual(readCalls(ws.calls), [], `${label}: myr-ws must not run`);
+    }
+
+    // A GitHub URL this parse cannot follow keeps today's behaviour exactly: the
+    // shared store may take a step of its own first, and then the clone itself
+    // runs with the argv it was given — no myr-ws, no rewritten argv.
+    const dir = caseDir("declined");
+    const repoArgv = ["clone", "https://github.com/owner/repo", "dest", "third-argument"];
+    const ws = fakeWs(dir, { result: { ...openFixture, path: path.join(dir, "copy") } });
+    const git = fakeGit(dir, 7);
+    const declined = run(repoArgv, {
+      MYRMIDON_WS_BIN: ws.bin,
+      MYRMIDON_GIT_REAL: git.bin,
+      MYRMIDON_TASK_WORKSPACE: "/workspace/ABC-101",
+      HERMES_HOME: path.join(dir, "home"),
+    });
+    assert.equal(declined.status, 7);
+    const declinedCalls = readCalls(git.calls);
+    assert.deepEqual(declinedCalls[declinedCalls.length - 1].argv, repoArgv, "the clone itself keeps its argv");
+    assert.deepEqual(readCalls(ws.calls), [], "myr-ws must not run for a clone it cannot follow");
+  });
+
+  it("passes the CLI's exit code and stderr through (exit 3: the disk quota)", () => {
+    const dir = caseDir("quota");
+    const ws = fakeWs(dir, { status: errorFixture.exitCode, stderr: `${errorFixture.error}\n` });
+    const git = fakeGit(dir, 0);
+    const out = run(["clone", "https://github.com/owner/repo", "dest"], {
+      MYRMIDON_WS_BIN: ws.bin,
+      MYRMIDON_GIT_REAL: git.bin,
+      MYRMIDON_TASK_WORKSPACE: "/workspace/ABC-101",
+      MYRMIDON_GIT_LOCAL_MIRROR: path.join(dir, "store"),
+    });
+
+    assert.equal(out.status, errorFixture.exitCode);
+    assert.match(out.stderr, new RegExp(escapeRe(errorFixture.error.slice(0, 40))));
+    assert.doesNotMatch(out.stderr, /Cloning into/);
+    assert.equal(out.stdout.trim(), "");
+    assert.deepEqual(readCalls(git.calls), []);
+  });
+
+  it("writes a remote URL without its credential into the config", { skip: !hasGit }, () => {
+    const dir = caseDir("remote");
+    const repo = path.join(dir, "repo");
+    fs.mkdirSync(repo, { recursive: true });
+    const realGit = trueGit();
+    const env = {
+      PATH: process.env.PATH,
+      HOME: dir,
+      GIT_CONFIG_NOSYSTEM: "1",
+      MYRMIDON_GIT_REAL: realGit,
+      MYRMIDON_WS_BIN: path.join(dir, "no-myr-ws"),
+      HERMES_HOME: path.join(dir, "home"),
+    };
+    const plain = { PATH: process.env.PATH, HOME: dir, GIT_CONFIG_NOSYSTEM: "1" };
+    const init = spawnSync(realGit, ["-C", repo, "init", "-q"], { encoding: "utf8", env: plain });
+    assert.equal(init.status, 0, init.stderr);
+    const value = (key) => spawnSync(realGit, ["-C", repo, "config", "--get", key], { encoding: "utf8", env: plain }).stdout.trim();
+    const runWrapper = (...args) => {
+      const out = run(args, env, repo);
+      assert.equal(out.status, 0, `${args.join(" ")}: ${out.stderr}`);
+      return out;
+    };
+
+    const added = runWrapper("remote", "add", "origin", "https://x-access-token:ghp_secret@github.com/owner/repo.git");
+    assert.match(added.stderr, /carried credentials/);
+    assert.equal(value("remote.origin.url"), "https://github.com/owner/repo.git");
+    assert.doesNotMatch(fs.readFileSync(path.join(repo, ".git", "config"), "utf8"), /ghp_secret/);
+
+    runWrapper("remote", "set-url", "origin", "https://oauth2:tok_two@gitlab.com/owner/repo.git");
+    assert.equal(value("remote.origin.url"), "https://gitlab.com/owner/repo.git");
+
+    runWrapper("config", "remote.origin.url", "https://tok_three@github.com/owner/repo.git");
+    assert.equal(value("remote.origin.url"), "https://github.com/owner/repo.git");
+
+    runWrapper("remote", "add", "ssh-pass", "git@github.com:owner/repo.git"); // a login, not a secret
+    assert.equal(value("remote.ssh-pass.url"), "git@github.com:owner/repo.git");
+
+    const read = runWrapper("remote", "-v");
+    assert.doesNotMatch(read.stdout, /ghp_secret|tok_two|tok_three/);
+  });
+
+  it("keeps the credential out of the store trail", () => {
+    const dir = caseDir("trail");
+    const git = fakeGit(dir, 0);
+    const home = path.join(dir, "home");
+    const out = run(["clone", "https://x-access-token:ghp_secret@gitlab.com/owner/repo.git", "dest"], {
+      MYRMIDON_GIT_REAL: git.bin,
+      MYRMIDON_WS_BIN: path.join(dir, "no-myr-ws"),
+      MYRMIDON_GIT_LOCAL_MIRROR: path.join(dir, "store"),
+      HERMES_HOME: home,
+    });
+
+    assert.equal(out.status, 0, out.stderr);
+    const trail = path.join(home, ".myrmidon", "git-objects-last-error.json");
+    assert.ok(fs.existsSync(trail), "the bypass trail must be written");
+    const text = fs.readFileSync(trail, "utf8");
+    assert.doesNotMatch(text, /ghp_secret/);
+    const record = JSON.parse(text);
+    assert.equal(record.url, "https://gitlab.com/owner/repo.git");
+    assert.equal(record.detail, "https://gitlab.com/owner/repo.git");
+    assert.deepEqual(record.argv, ["clone", "https://gitlab.com/owner/repo.git", "dest"]);
+    assert.doesNotMatch(out.stderr, /ghp_secret/);
+  });
+
+  it("reads the contract's fixtures and the parse shape of the fallback", () => {
+    // The open fixture is what the wrapper must read from the CLI's stdout.
+    assert.equal(openFixture.ok, true);
+    assert.match(openFixture.key, /^[A-Z][A-Z0-9]*-[0-9]+$/);
+    assert.match(openFixture.repo, /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/);
+    assert.ok(["E", "G"].includes(openFixture.class));
+    assert.equal(typeof openFixture.reused, "boolean");
+    assert.equal(lib.readOpenResult(JSON.stringify(openFixture)).key, openFixture.key);
+    assert.equal(lib.readOpenResult(JSON.stringify(errorFixture)), null); // ok:false is no copy
+    assert.equal(lib.readOpenResult("not json"), null);
+    assert.equal(lib.readOpenResult(""), null);
+
+    // The fallback parse (the stand-in for clone-args.js of H1a).
+    assert.equal(lib.loadCloneArgs(), null); // no clone-args.js beside the wrapper copy
+    const parsed = lib.parseClone(["clone", "--depth", "1", "https://github.com/owner/repo.git", "dest"]);
+    assert.deepEqual(
+      { kind: parsed.kind, owner: parsed.owner, repo: parsed.repo, dir: parsed.dir, ignored: parsed.ignoredFlags },
+      { kind: "github", owner: "owner", repo: "repo", dir: "dest", ignored: ["--depth"] },
+    );
+    assert.equal(lib.parseClone(["clone", "https://gitlab.com/owner/repo", "dest"]).kind, "foreign");
+    assert.equal(lib.parseClone(["fetch", "origin"]), null);
+    assert.equal(lib.parseClone(["clone"]), null);
+    assert.equal(lib.parseClone(["clone", "https://github.com/owner/repo", "a", "b"]), null);
+    assert.equal(
+      lib.parseClone(["clone", "--filter", "blob:none", "https://x-access-token:ghp@github.com/owner/repo", "dest"]).hadUserinfo,
+      true,
+    );
+
+    // The key, the scratch name, the plan and the two switches.
+    assert.equal(lib.taskWorkspaceKey({ MYRMIDON_TASK_WORKSPACE: "/workspace/OPE-5347" }), "OPE-5347");
+    assert.equal(lib.taskWorkspaceKey({ MYRMIDON_TASK_WORKSPACE: "/workspace/not-a-key/" }), null);
+    assert.equal(lib.taskWorkspaceKey({}), null);
+    assert.equal(lib.myrWsBin({ MYRMIDON_WS_BIN: "/opt/x/myr-ws" }), "/opt/x/myr-ws");
+    assert.equal(lib.myrWsBin({}), "/usr/local/bin/myr-ws");
+    assert.equal(lib.referenceMode({ MYRMIDON_GIT_REFERENCE_MODE: "1" }), true);
+    assert.equal(lib.referenceMode({}), false);
+    const keyPlan = lib.cloneInterceptPlan(["clone", "https://github.com/owner/repo"], {
+      MYRMIDON_TASK_WORKSPACE: "/workspace/ABC-101",
+      MYRMIDON_WS_BIN: "/opt/x/myr-ws",
+    });
+    assert.deepEqual(keyPlan.argv, ["open", "ABC-101", "owner/repo", "--json"]);
+    assert.equal(keyPlan.bin, "/opt/x/myr-ws");
+    assert.equal(keyPlan.target, "/workspace/ABC-101");
+    const scratchPlan = lib.cloneInterceptPlan(["clone", "https://github.com/owner/repo", "my-copy"], {});
+    assert.deepEqual(scratchPlan.argv, ["open", "my-copy", "owner/repo", "--scratch", "--json"]);
+    assert.equal(scratchPlan.target, "/scratch/my-copy");
+
+    // The remote sanitation: all three write forms, and every read left alone.
+    assert.equal(lib.stripUserinfo("https://x-access-token:ghp_x@github.com/owner/repo.git"), "https://github.com/owner/repo.git");
+    assert.equal(lib.stripUserinfo("ssh://git@github.com/owner/repo.git"), "ssh://git@github.com/owner/repo.git");
+    assert.equal(lib.stripUserinfo("git@github.com:owner/repo.git"), "git@github.com:owner/repo.git");
+    assert.equal(lib.sanitizeRemoteArgs(["remote", "add", "origin", "https://u:p@github.com/o/r.git"]).url, "https://github.com/o/r.git");
+    assert.equal(lib.sanitizeRemoteArgs(["remote", "set-url", "--push", "origin", "https://u:p@github.com/o/r.git"]).changed, true);
+    assert.equal(lib.sanitizeRemoteArgs(["config", "--local", "remote.origin.url", "https://u:p@github.com/o/r"]).changed, true);
+    assert.equal(lib.sanitizeRemoteArgs(["config", "remote.origin.url"]).changed, false);
+    assert.equal(lib.sanitizeRemoteArgs(["config", "--get", "remote.origin.url"]).changed, false);
+    assert.equal(lib.sanitizeRemoteArgs(["remote", "-v"]).changed, false);
+    assert.equal(lib.sanitizeRemoteArgs(["remote", "add", "o", "git@github.com:o/r.git"]).changed, false);
+  });
+
+  it("uses clone-args.js when the module is beside the wrapper", () => {
+    const dir = caseDir("clone-args");
+    const modulePath = path.join(dir, "clone-args.js");
+    const first = path.join(dir, "git-wrapper-1.cjs");
+    fs.copyFileSync(WRAPPER_SRC, first);
+    fs.writeFileSync(modulePath, 'throw new Error("a broken H1a module");\n');
+    const broken = createRequire(import.meta.url)(first);
+    // A module that throws must never break a clone: the fallback answers.
+    assert.equal(broken.loadCloneArgs(), null);
+    assert.equal(broken.parseClone(["fetch", "origin"]), null);
+
+    const second = path.join(dir, "git-wrapper-2.cjs");
+    fs.copyFileSync(WRAPPER_SRC, second);
+    fs.writeFileSync(
+      modulePath,
+      'module.exports = { parseCloneArgs: () => ({ kind: "github", owner: "h1a", repo: "module", dir: null, ignoredFlags: [], hadUserinfo: false, fromH1a: true }) };\n',
+    );
+    const viaModule = createRequire(import.meta.url)(second);
+    const parsed = viaModule.parseClone(["clone", "https://github.com/owner/repo"]);
+    assert.equal(parsed.fromH1a, true, "the module's parse must win when it is there");
+    assert.deepEqual(viaModule.cloneInterceptPlan(["clone", "https://github.com/owner/repo"], {}).argv, [
+      "open",
+      "module",
+      "h1a/module",
+      "--scratch",
+      "--json",
+    ]);
   });
 });
