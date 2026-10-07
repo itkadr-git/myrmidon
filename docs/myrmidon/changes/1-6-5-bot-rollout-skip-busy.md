@@ -58,7 +58,3 @@ settings-section: Bot containers (G-series, the 28.09 "option B" plan)
 ## settings-en
 
 | `MYRMIDON_BOT_IMAGE_ROLLOUT_FORCE_DEFERRED_SEC` | BOT-ROLLOUT-SKIP-BUSY | same as `MYRMIDON_BOT_IMAGE_ROLLOUT_BOT_TIMEOUT_SEC` | How long after the tail-pass deadline the still-deferred bots are applied WITHOUT the status gate: the apply goes through the reconciler's pause-and-apply path — it opens the agent's maintenance window, drains the in-flight run to its end (runs are never interrupted) and recreates the container right after the current turn. `0` disables the force stage (the pre-1.6.5 apply behaviour) | A non-negative integer; anything else is refused at rollout start (fail-closed) |
-
-## settings-ru
-
-| `MYRMIDON_BOT_IMAGE_ROLLOUT_FORCE_DEFERRED_SEC` | BOT-ROLLOUT-SKIP-BUSY | как `MYRMIDON_BOT_IMAGE_ROLLOUT_BOT_TIMEOUT_SEC` | Сколько после дедлайна хвостового прохода оставшиеся отложенные боты применяются БЕЗ статус-гейта: применение идёт собственным путём pause-and-apply реконсайлера — открывает окно обслуживания агента, дренит идущий прогон до конца (прогоны не прерываются) и пересоздаёт контейнер сразу после текущего хода. `0` отключает force-стадию (поведение apply как до 1.6.5) | Неотрицательное целое; иное — отказ при старте раскатки (fail-closed) |
