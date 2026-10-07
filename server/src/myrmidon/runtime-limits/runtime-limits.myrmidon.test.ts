@@ -17,7 +17,6 @@ import {
 } from "./service.js";
 
 const COMPANY_ID = "22222222-2222-4222-8222-222222222222";
-
 const member = {
   type: "board",
   source: "session",
@@ -37,7 +36,15 @@ const agentActor = {
 
 const ENV_ONLY = { MYRMIDON_MAX_CONCURRENT_RUNS: "8" };
 // myrmidon(1.6.2 RUN-ADMISSION): the start ramp and the host floor are on by default.
-const RAMP_AND_HOST = { maxStartsPerMinute: 5, minFreeHostMemoryMb: 15360, maxHostLoadPercentPerCore: 90 };
+// myrmidon(1.6.5 RUN-ADMISSION, rc.3): the busy ceiling joins the default-on
+// set; the PSI ceiling stays off until the operator sets it.
+const RAMP_AND_HOST = {
+  maxStartsPerMinute: 5,
+  minFreeHostMemoryMb: 15360,
+  maxHostLoadPercentPerCore: 90,
+  maxHostCpuBusyPercent: 90,
+  maxHostCpuPsiSomeAvg10: null,
+};
 // myrmidon(1.6.5 RUN-FAIRNESS): the per-agent start share is on by default.
 const SHARE = { maxPerAgentStartSharePercent: 15 };
 
@@ -133,6 +140,13 @@ describe("myrmidon(C0) runtime limits: reading the effective values", () => {
       backgroundPercentPerCore: 115,
       load15PercentPerCore: 115,
       loadAboveBackgroundPercent: 5,
+      // myrmidon(1.6.5 rc.3): the row keeps the legacy decision, so the new
+      // fields report "not consulted".
+      cpuBusyPercent: null,
+      busyThresholdPercent: null,
+      psiSomeAvg10: null,
+      psiThresholdPercent: null,
+      source: "load-average" as const,
       reason: null,
       heldSince: null,
     };
