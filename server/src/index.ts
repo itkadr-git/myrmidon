@@ -153,6 +153,7 @@ import { createReviewRoutingScheduler } from "./myrmidon/review-routing/index.js
 import { createReviewReworkScheduler } from "./myrmidon/review-rework/index.js"; // myrmidon(REVIEW-REWORK)
 import { buildWipLimitSweeper } from "./myrmidon/wip-limit/index.js"; // myrmidon(1.6.1-WIP-LIMIT-A)
 import { buildPromptBudgetSweeper } from "./myrmidon/prompt-budget/index.js"; // myrmidon(1.6.3 PROMPT-BUDGET B)
+import { buildMonitoringLinkWatchdog } from "./myrmidon/monitoring/links/index.js"; // myrmidon(1.6.6 MONITORING E)
 import {
   createPendingInteractionWakeSweep,
   readPendingInteractionWakeContextSnapshot,
@@ -1406,6 +1407,34 @@ async function startServerWithDatabaseTeardown(
       }));
     };
   })();
+  // myrmidon(1.6.6 MONITORING E): the periodic "is every linking component
+  // still alive" pass. A link (Zabbix aggregator, Alertmanager webhook,
+  // collector) is its own minimal-rights board key, so this pass reads those
+  // keys and alarms High for the observability role when one is revoked,
+  // expired or has stopped pulsing — the silent death that left the High
+  // aggregator blind for four days. It runs on the heartbeat scheduler tick
+  // behind its own 60s gate; the worst case for a link that went quiet is
+  // staleAfterSec + gate + tick = 480 + 60 + 30 = 570s, inside the 10-minute
+  // budget the issue asks for (asserted in the module's tests).
+  const scheduleMonitoringLinkSweep = (() => {
+    const watchdog = buildMonitoringLinkWatchdog(db as any);
+    return () => {
+      if (heartbeatSchedulerStopped) return;
+      trackHeartbeatSchedulerWork(watchdog.sweep().then((result) => {
+        if (result.alerted > 0 || result.reopened > 0 || result.recovered > 0 || result.failed > 0) {
+          logger.info({
+            inspected: result.inspected,
+            alerted: result.alerted,
+            reopened: result.reopened,
+            recovered: result.recovered,
+            failed: result.failed,
+          }, "Monitoring link sweep completed");
+        }
+      }).catch((err) => {
+        logger.error({ err }, "Monitoring link sweep failed");
+      }));
+    };
+  })();
   // myrmidon(AUTO-RESUME): resumes an agent left in `error` once its 1/5/15 min
   // backoff step is due; the per-agent maintenance gate lives in the sweeper.
   // Runs on the same mutually-exclusive scheduler paths as the other
@@ -1938,6 +1967,7 @@ async function startServerWithDatabaseTeardown(
         scheduleReviewReworkSweep(); // myrmidon(REVIEW-REWORK)
         scheduleWipLimitSweep(); // myrmidon(1.6.1-WIP-LIMIT-A)
         schedulePromptBudgetSweep(); // myrmidon(1.6.3 PROMPT-BUDGET B)
+        scheduleMonitoringLinkSweep(); // myrmidon(1.6.6 MONITORING E)
         scheduleAutoResumeSweep(); // myrmidon(AUTO-RESUME)
 
         if (heartbeatSchedulerStopped) return;
@@ -2142,6 +2172,7 @@ async function startServerWithDatabaseTeardown(
       scheduleStaleBlockSweep(); // myrmidon(STALE-BLOCK)
       scheduleReviewRoutingSweep(); // myrmidon(REVIEW-ROUTING)
       scheduleReviewReworkSweep(); // myrmidon(REVIEW-REWORK)
+      scheduleMonitoringLinkSweep(); // myrmidon(1.6.6 MONITORING E)
       scheduleGitHubConnectionEventPoll();
       scheduleGitHubConnectionContinuitySweep();
     });
