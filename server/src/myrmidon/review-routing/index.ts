@@ -5,16 +5,19 @@ import type { Db } from "@paperclipai/db";
 import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { isInstanceUnderMaintenance } from "../maintenance/gate.js";
+import { createGitHubPrHeadResolver } from "./github.js";
 import { readReviewRoutingSettings } from "./settings.js";
 import { createReviewRoutingSweep } from "./sweep.js";
 import { createPgReviewRoutingStore } from "./store.js";
 
 export * from "./attention.js";
 export * from "./policy.js";
+export * from "./pr-policy.js";
 export * from "./settings.js";
 export { reviewRoutingRoutes } from "./routes.js";
 export { createReviewRoutingSweep, type ReviewRoutingSweep, type ReviewRoutingSweepResult } from "./sweep.js";
 export { createPgReviewRoutingStore, type ReviewRoutingStore } from "./store.js";
+export { createGitHubPrHeadResolver, type PullRequestHeadResolver } from "./github.js";
 
 type WakeFn = (agentId: string, options: Record<string, unknown>) => Promise<unknown>;
 
@@ -31,6 +34,7 @@ export function createReviewRoutingScheduler(input: {
   const settings = instanceSettingsService(input.db);
   const sweep = createReviewRoutingSweep({
     store: createPgReviewRoutingStore(input.db),
+    prResolver: createGitHubPrHeadResolver({ db: input.db }),
     readSettings: () => readReviewRoutingSettings(settings),
     isUnderMaintenance: () => isInstanceUnderMaintenance(input.db),
     addComment: async (issueId, body, options) => {
@@ -76,7 +80,14 @@ export function createReviewRoutingScheduler(input: {
       sweep
         .sweep()
         .then((result) => {
-          if (result.assigned > 0 || result.reassigned > 0 || result.failed > 0) {
+          if (
+            result.assigned > 0 ||
+            result.reassigned > 0 ||
+            result.failed > 0 ||
+            result.prTasksCreated > 0 ||
+            result.stewardTasksCreated > 0 ||
+            result.prSuperseded > 0
+          ) {
             logger.info(result, "review routing sweep completed");
           }
         })
