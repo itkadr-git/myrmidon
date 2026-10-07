@@ -135,7 +135,10 @@ function ensureBase(repoInput, opts = {}) {
     created = true;
   }
 
-  const stale = now - lastFetchMs(dir) >= refreshSec(env) * 1000;
+  // refresh 0 means "always fetch": the stamp is written after the fetch, so
+  // `now` taken at call start can precede its mtime and the difference go negative.
+  const sec = refreshSec(env);
+  const stale = sec === 0 || now - lastFetchMs(dir) >= sec * 1000;
   let fetched = false;
   if (created || stale) {
     try {
