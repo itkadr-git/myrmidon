@@ -232,6 +232,7 @@ export interface InstanceGeneralSettings {
    * (packages/shared/src/validators/instance.ts).
    */
   debate?: unknown;
+  /**
    * myrmidon(1.7-AGENT-EXCHANGE-A): the discussion-room settings — master
    * switch (default off), room size, round cap, per-room token budget and
    * the response timeout; changed from `GET`/`PATCH
