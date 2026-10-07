@@ -1233,29 +1233,14 @@ settings page; the API is `GET/POST/DELETE /api/myrmidon/plugin-entitlement/keys
 (instance admin). Keys live in `instance_settings.general.pluginEntitlementKeys`
 (`[{ pluginId, key, expiresAt, acceptedAt }]`); accepting or removing a key
 applies without a restart — the loader gate re-reads the row on every
-activation pass. No env override for the key list: which plugins are unlocked is
-a licensing choice, not a deployment knob. Since 1.6.3 (PLUGIN-ENTITLEMENT A)
-the key itself is verified cryptographically: the key is a signed ed25519 token
-(`PEK1.<payload>.<signature>`, payload `{pluginId, instanceId, expiresAt}`) and
-the verification public key is an instance setting
-(`pluginEntitlementPublicKey`), rotatable in the UI without a restart. An
-invalid input answers 400 with a clear message.
+activation pass. No env override: which plugins are unlocked is a licensing
+choice, not a deployment knob. Key verification (cryptographic) arrives with
+the ML1/ML2 API; until then a syntactically valid key for a known plugin id
+is accepted. An invalid input answers 400 with a clear message.
 
 | Variable | Function | Default | What it does | How to disable / special |
 |---|---|---|---|---|
 | `pluginEntitlementKeys` | 1.6.2-PLUGIN-ENTITLEMENT C | absent | The accepted plugin entitlement keys in the instance general settings; absent means "no keys registered" — every entitlement-gated plugin stays inactive | Remove the keys in the UI or via DELETE …/keys/:pluginId; a malformed stored row fails closed to "no keys" |
-
-## 1.6.3 — PLUGIN-ENTITLEMENT A: ed25519 verification of instance plugin keys
-
-Entitlement keys are verified cryptographically since 1.6.3: a key is a signed ed25519 token
-(`PEK1.<payload>.<signature>`, payload `{pluginId, instanceId, expiresAt}`), checked on acceptance
-and re-checked by the loader gate on every activation pass — rotating the verification key
-invalidates previously accepted keys. A rejected key answers 400 with the reason only (bad
-signature, expired, wrong instance, wrong plugin, no verification key configured).
-
-| Variable | Function | Default | What it does | How to disable / special |
-|---|---|---|---|---|
-| `pluginEntitlementPublicKey` | 1.6.3-PLUGIN-ENTITLEMENT A | absent | The ed25519 public key (PEM) used to verify entitlement keys; absent means no token can verify and every entitlement-gated plugin stays inactive (fail closed) | Change it in the "Plugin keys" block of the instance settings page or via `PUT …/public-key`; `GET …/public-key` reports the effective value and whether it comes from the settings row or the env override; the panel shows that source. `MYRMIDON_PLUGIN_ENTITLEMENT_PUBLIC_KEY` (PEM, or base64 of the raw 32-byte key) is a forced override, applied only while the settings row is empty |
 
 ## 1.6.3 — PROMPT-BUDGET C: prompt-budget advice and deep analysis
 
