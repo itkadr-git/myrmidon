@@ -254,6 +254,20 @@ describe("GET /api/myrmidon/bots/me/workspaces", () => {
     expect(repoMap(res2.body)["ABC-4"]).toBeUndefined();
   });
 
+  it("protectKeys lists every open task of the bot, with or without a repository", async () => {
+    const withRepo = issue({ identifier: "ABC-1", projectId: "p1" });
+    const noRepo = issue({ identifier: "ABC-2" });
+    const done = issue({ identifier: "ABC-3", status: "done", completedAt: new Date("2026-10-06T15:00:00Z") });
+    const cancelled = issue({ identifier: "ABC-4", status: "cancelled" });
+    const lost = issue({ identifier: "ABC-5", assigneeAgentId: OTHER_BOT_ID });
+    const { app } = harness({
+      issues: [withRepo, noRepo, done, cancelled, lost],
+      repos: { p1: "https://github.com/acme/widgets.git" },
+    });
+    const res = await request(app(botActor)).get(URL);
+    expect([...res.body.protectKeys].sort()).toEqual(["ABC-1", "ABC-2"]);
+  });
+
   it("skips tasks without a valid issue key", async () => {
     const { app } = harness({ issues: [{ ...issue({ identifier: "ABC-1" }), identifier: null }] });
     const res = await request(app(botActor)).get(URL);

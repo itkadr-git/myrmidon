@@ -172,6 +172,14 @@ export function botWorkspacesService(deps: BotWorkspacesServiceDeps) {
         });
       }
 
+      // Every open task of this bot, repository or not: botd protects their directories.
+      const protectKeys = keyed
+        .filter(
+          (row) =>
+            row.assigneeAgentId === input.agentId && row.status !== "done" && row.status !== "cancelled",
+        )
+        .map((row) => row.identifier as string);
+
       const settings = wsBotDiskSettingsSchema.safeParse(rawSettings);
       const configured = settings.success ? settings.data : {};
       const pressure = (await deps.readPressure?.({ agentId: input.agentId }).catch(() => null)) ?? NO_PRESSURE;
@@ -185,6 +193,7 @@ export function botWorkspacesService(deps: BotWorkspacesServiceDeps) {
         },
         pressure,
         workspaces,
+        protectKeys,
       };
     },
   };

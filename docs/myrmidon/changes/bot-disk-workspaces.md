@@ -209,7 +209,10 @@ from the task's project, then its latest pull request, then
 measured partition (`soft` from `partitionThresholdPercent`, `hard` from
 `partitionRefuseOpenPercent`); botd also reaps pre-mechanism directories (class X)
 under the scratch TTL; and `myr-ws`, `botd` and the git wrapper are part of the
-base `runtime` image stage, so every image variant carries them.
+base `runtime` image stage, so every image variant carries them. The desired
+state also carries `protectKeys: string[]` — the keys of every open task (not
+`done`/`cancelled`) assigned to the bot, repository or not; botd never removes the
+directory of such a task.
 
 ## settings-ru-append
 
@@ -285,7 +288,9 @@ grace + 15 минут), `bot_disk_lifecycle/foreign` (копия вне базы
 `partitionThresholdPercent`, `hard` с `partitionRefuseOpenPercent`); botd убирает
 и каталоги, созданные до механизма (класс X), по TTL scratch-копий; а `myr-ws`,
 `botd` и обёртка git входят в базовую стадию `runtime` образа, так что их несёт
-каждый вариант образа.
+каждый вариант образа. Желаемое состояние несёт и `protectKeys: string[]` —
+ключи всех незакрытых задач (не `done`/`cancelled`), назначенных боту, с
+репозиторием или без; botd не удаляет каталог такой задачи.
 
 ## divergence
 
