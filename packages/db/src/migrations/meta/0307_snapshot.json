@@ -6,7 +6,7 @@
   },
   "dialect": "postgresql",
   "enums": {},
-  "id": "9c1d21e6-d81d-4532-b715-190bd35e9179",
+  "id": "fba15939-73fa-49a5-8935-cd294b7f92e7",
   "policies": {},
   "prevId": "805666b2-412f-4d67-8c84-3564a5120c01",
   "roles": {},
@@ -23307,331 +23307,331 @@
       "uniqueConstraints": {}
     },
     "public.foraging_findings": {
-      "checkConstraints": {},
+      "name": "foraging_findings",
+      "schema": "",
       "columns": {
-        "candidate_ref": {
-          "name": "candidate_ref",
-          "notNull": false,
-          "primaryKey": false,
-          "type": "text"
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
         },
         "company_id": {
           "name": "company_id",
-          "notNull": true,
+          "type": "uuid",
           "primaryKey": false,
-          "type": "uuid"
-        },
-        "created_at": {
-          "default": "now()",
-          "name": "created_at",
-          "notNull": true,
-          "primaryKey": false,
-          "type": "timestamp with time zone"
-        },
-        "detected_at": {
-          "default": "now()",
-          "name": "detected_at",
-          "notNull": true,
-          "primaryKey": false,
-          "type": "timestamp with time zone"
-        },
-        "diff": {
-          "name": "diff",
-          "notNull": true,
-          "primaryKey": false,
-          "type": "jsonb"
-        },
-        "id": {
-          "default": "gen_random_uuid()",
-          "name": "id",
-          "notNull": true,
-          "primaryKey": true,
-          "type": "uuid"
-        },
-        "reason": {
-          "name": "reason",
-          "notNull": false,
-          "primaryKey": false,
-          "type": "text"
-        },
-        "role": {
-          "name": "role",
-          "notNull": true,
-          "primaryKey": false,
-          "type": "text"
-        },
-        "skill_key": {
-          "name": "skill_key",
-          "notNull": true,
-          "primaryKey": false,
-          "type": "text"
+          "notNull": true
         },
         "source_id": {
           "name": "source_id",
-          "notNull": true,
+          "type": "uuid",
           "primaryKey": false,
-          "type": "uuid"
+          "notNull": true
+        },
+        "role": {
+          "name": "role",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
         },
         "status": {
-          "default": "'unverified'",
           "name": "status",
-          "notNull": true,
+          "type": "text",
           "primaryKey": false,
-          "type": "text"
+          "notNull": true,
+          "default": "'unverified'"
         },
         "summary": {
           "name": "summary",
-          "notNull": true,
+          "type": "text",
           "primaryKey": false,
-          "type": "text"
+          "notNull": true
+        },
+        "diff": {
+          "name": "diff",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "skill_key": {
+          "name": "skill_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "candidate_ref": {
+          "name": "candidate_ref",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "reason": {
+          "name": "reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "detected_at": {
+          "name": "detected_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
         }
       },
-      "compositePrimaryKeys": {},
+      "indexes": {
+        "foraging_findings_company_detected_idx": {
+          "name": "foraging_findings_company_detected_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "detected_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "foraging_findings_company_status_idx": {
+          "name": "foraging_findings_company_status_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "foraging_findings_source_idx": {
+          "name": "foraging_findings_source_idx",
+          "columns": [
+            {
+              "expression": "source_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "foraging_findings_company_id_companies_id_fk": {
+          "name": "foraging_findings_company_id_companies_id_fk",
+          "tableFrom": "foraging_findings",
+          "tableTo": "companies",
           "columnsFrom": [
             "company_id"
           ],
           "columnsTo": [
             "id"
           ],
-          "name": "foraging_findings_company_id_companies_id_fk",
           "onDelete": "cascade",
-          "onUpdate": "no action",
-          "tableFrom": "foraging_findings",
-          "tableTo": "companies"
+          "onUpdate": "no action"
         },
         "foraging_findings_source_id_foraging_sources_id_fk": {
+          "name": "foraging_findings_source_id_foraging_sources_id_fk",
+          "tableFrom": "foraging_findings",
+          "tableTo": "foraging_sources",
           "columnsFrom": [
             "source_id"
           ],
           "columnsTo": [
             "id"
           ],
-          "name": "foraging_findings_source_id_foraging_sources_id_fk",
           "onDelete": "cascade",
-          "onUpdate": "no action",
-          "tableFrom": "foraging_findings",
-          "tableTo": "foraging_sources"
-        }
-      },
-      "indexes": {
-        "foraging_findings_company_detected_idx": {
-          "columns": [
-            {
-              "asc": true,
-              "expression": "company_id",
-              "isExpression": false,
-              "nulls": "last"
-            },
-            {
-              "asc": true,
-              "expression": "detected_at",
-              "isExpression": false,
-              "nulls": "last"
-            }
-          ],
-          "concurrently": false,
-          "isUnique": false,
-          "method": "btree",
-          "name": "foraging_findings_company_detected_idx",
-          "with": {}
-        },
-        "foraging_findings_company_status_idx": {
-          "columns": [
-            {
-              "asc": true,
-              "expression": "company_id",
-              "isExpression": false,
-              "nulls": "last"
-            },
-            {
-              "asc": true,
-              "expression": "status",
-              "isExpression": false,
-              "nulls": "last"
-            }
-          ],
-          "concurrently": false,
-          "isUnique": false,
-          "method": "btree",
-          "name": "foraging_findings_company_status_idx",
-          "with": {}
-        },
-        "foraging_findings_source_idx": {
-          "columns": [
-            {
-              "asc": true,
-              "expression": "source_id",
-              "isExpression": false,
-              "nulls": "last"
-            }
-          ],
-          "concurrently": false,
-          "isUnique": false,
-          "method": "btree",
-          "name": "foraging_findings_source_idx",
-          "with": {}
-        }
-      },
-      "isRLSEnabled": false,
-      "name": "foraging_findings",
-      "policies": {},
-      "schema": "",
-      "uniqueConstraints": {}
-    },
-    "public.foraging_sources": {
-      "checkConstraints": {},
-      "columns": {
-        "company_id": {
-          "name": "company_id",
-          "notNull": true,
-          "primaryKey": false,
-          "type": "uuid"
-        },
-        "created_at": {
-          "default": "now()",
-          "name": "created_at",
-          "notNull": true,
-          "primaryKey": false,
-          "type": "timestamp with time zone"
-        },
-        "enabled": {
-          "default": true,
-          "name": "enabled",
-          "notNull": true,
-          "primaryKey": false,
-          "type": "boolean"
-        },
-        "id": {
-          "default": "gen_random_uuid()",
-          "name": "id",
-          "notNull": true,
-          "primaryKey": true,
-          "type": "uuid"
-        },
-        "kind": {
-          "default": "'url'",
-          "name": "kind",
-          "notNull": true,
-          "primaryKey": false,
-          "type": "text"
-        },
-        "last_checked_at": {
-          "name": "last_checked_at",
-          "notNull": false,
-          "primaryKey": false,
-          "type": "timestamp with time zone"
-        },
-        "last_error": {
-          "name": "last_error",
-          "notNull": false,
-          "primaryKey": false,
-          "type": "text"
-        },
-        "last_snapshot": {
-          "name": "last_snapshot",
-          "notNull": false,
-          "primaryKey": false,
-          "type": "jsonb"
-        },
-        "last_snapshot_at": {
-          "name": "last_snapshot_at",
-          "notNull": false,
-          "primaryKey": false,
-          "type": "timestamp with time zone"
-        },
-        "role": {
-          "name": "role",
-          "notNull": true,
-          "primaryKey": false,
-          "type": "text"
-        },
-        "updated_at": {
-          "default": "now()",
-          "name": "updated_at",
-          "notNull": true,
-          "primaryKey": false,
-          "type": "timestamp with time zone"
-        },
-        "url": {
-          "name": "url",
-          "notNull": true,
-          "primaryKey": false,
-          "type": "text"
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.foraging_sources": {
+      "name": "foraging_sources",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "role": {
+          "name": "role",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "url": {
+          "name": "url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'url'"
+        },
+        "enabled": {
+          "name": "enabled",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "last_snapshot": {
+          "name": "last_snapshot",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_snapshot_at": {
+          "name": "last_snapshot_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_checked_at": {
+          "name": "last_checked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_error": {
+          "name": "last_error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "foraging_sources_company_role_url_uq": {
+          "name": "foraging_sources_company_role_url_uq",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "role",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "url",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "foraging_sources_company_role_idx": {
+          "name": "foraging_sources_company_role_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "role",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "foraging_sources_company_id_companies_id_fk": {
+          "name": "foraging_sources_company_id_companies_id_fk",
+          "tableFrom": "foraging_sources",
+          "tableTo": "companies",
           "columnsFrom": [
             "company_id"
           ],
           "columnsTo": [
             "id"
           ],
-          "name": "foraging_sources_company_id_companies_id_fk",
           "onDelete": "cascade",
-          "onUpdate": "no action",
-          "tableFrom": "foraging_sources",
-          "tableTo": "companies"
+          "onUpdate": "no action"
         }
       },
-      "indexes": {
-        "foraging_sources_company_role_idx": {
-          "columns": [
-            {
-              "asc": true,
-              "expression": "company_id",
-              "isExpression": false,
-              "nulls": "last"
-            },
-            {
-              "asc": true,
-              "expression": "role",
-              "isExpression": false,
-              "nulls": "last"
-            }
-          ],
-          "concurrently": false,
-          "isUnique": false,
-          "method": "btree",
-          "name": "foraging_sources_company_role_idx",
-          "with": {}
-        },
-        "foraging_sources_company_role_url_uq": {
-          "columns": [
-            {
-              "asc": true,
-              "expression": "company_id",
-              "isExpression": false,
-              "nulls": "last"
-            },
-            {
-              "asc": true,
-              "expression": "role",
-              "isExpression": false,
-              "nulls": "last"
-            },
-            {
-              "asc": true,
-              "expression": "url",
-              "isExpression": false,
-              "nulls": "last"
-            }
-          ],
-          "concurrently": false,
-          "isUnique": true,
-          "method": "btree",
-          "name": "foraging_sources_company_role_url_uq",
-          "with": {}
-        }
-      },
-      "isRLSEnabled": false,
-      "name": "foraging_sources",
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
       "policies": {},
-      "schema": "",
-      "uniqueConstraints": {}
+      "checkConstraints": {},
+      "isRLSEnabled": false
     },
     "public.goals": {
       "checkConstraints": {},
@@ -51266,8 +51266,8 @@
       "schema": "",
       "uniqueConstraints": {}
     },
-    "public.guardrail_events": {
-      "name": "guardrail_events",
+    "public.foraging_spend_events": {
+      "name": "foraging_spend_events",
       "schema": "",
       "columns": {
         "id": {
@@ -51283,41 +51283,41 @@
           "primaryKey": false,
           "notNull": true
         },
-        "kind": {
-          "name": "kind",
+        "source_id": {
+          "name": "source_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "role": {
+          "name": "role",
           "type": "text",
           "primaryKey": false,
           "notNull": true
         },
-        "surface": {
-          "name": "surface",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "severity": {
-          "name": "severity",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "run_id": {
-          "name": "run_id",
+        "agent_id": {
+          "name": "agent_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": false
         },
-        "issue_id": {
-          "name": "issue_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "snippet": {
-          "name": "snippet",
+        "url": {
+          "name": "url",
           "type": "text",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true
+        },
+        "cost_cents": {
+          "name": "cost_cents",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "outcome": {
+          "name": "outcome",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
         },
         "occurred_at": {
           "name": "occurred_at",
@@ -51325,11 +51325,18 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
         }
       },
       "indexes": {
-        "guardrail_events_company_occurred_idx": {
-          "name": "guardrail_events_company_occurred_idx",
+        "foraging_spend_company_occurred_idx": {
+          "name": "foraging_spend_company_occurred_idx",
           "columns": [
             {
               "expression": "company_id",
@@ -51349,11 +51356,59 @@
           "method": "btree",
           "with": {}
         },
-        "guardrail_events_run_id_idx": {
-          "name": "guardrail_events_run_id_idx",
+        "foraging_spend_company_role_idx": {
+          "name": "foraging_spend_company_role_idx",
           "columns": [
             {
-              "expression": "run_id",
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "role",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "foraging_spend_company_agent_idx": {
+          "name": "foraging_spend_company_agent_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "agent_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "occurred_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "foraging_spend_source_idx": {
+          "name": "foraging_spend_source_idx",
+          "columns": [
+            {
+              "expression": "source_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -51366,9 +51421,9 @@
         }
       },
       "foreignKeys": {
-        "guardrail_events_company_id_companies_id_fk": {
-          "name": "guardrail_events_company_id_companies_id_fk",
-          "tableFrom": "guardrail_events",
+        "foraging_spend_events_company_id_companies_id_fk": {
+          "name": "foraging_spend_events_company_id_companies_id_fk",
+          "tableFrom": "foraging_spend_events",
           "tableTo": "companies",
           "columnsFrom": [
             "company_id"
@@ -51376,20 +51431,20 @@
           "columnsTo": [
             "id"
           ],
-          "onDelete": "no action",
+          "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "guardrail_events_run_id_heartbeat_runs_id_fk": {
-          "name": "guardrail_events_run_id_heartbeat_runs_id_fk",
-          "tableFrom": "guardrail_events",
-          "tableTo": "heartbeat_runs",
+        "foraging_spend_events_source_id_foraging_sources_id_fk": {
+          "name": "foraging_spend_events_source_id_foraging_sources_id_fk",
+          "tableFrom": "foraging_spend_events",
+          "tableTo": "foraging_sources",
           "columnsFrom": [
-            "run_id"
+            "source_id"
           ],
           "columnsTo": [
             "id"
           ],
-          "onDelete": "no action",
+          "onDelete": "cascade",
           "onUpdate": "no action"
         }
       },
