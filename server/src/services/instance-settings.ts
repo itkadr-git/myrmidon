@@ -311,6 +311,10 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // page). Without this line `updateGeneral` normalizes the patch away, so
       // PATCH /api/myrmidon/model-fallback/settings would never roundtrip.
       ...(parsed.data.modelFallbackSignal ? { modelFallbackSignal: parsed.data.modelFallbackSignal } : {}),
+      // myrmidon(PERF-DIET-K): the session-generation thresholds are edited on the
+      // general settings page. Without this line the normalizer drops the key, so a
+      // PATCH would not roundtrip and the run dispatch would never read the row.
+      ...(parsed.data.sessions ? { sessions: parsed.data.sessions } : {}),
     };
   }
   return {

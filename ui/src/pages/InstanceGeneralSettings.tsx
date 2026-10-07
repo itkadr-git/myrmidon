@@ -27,6 +27,7 @@ import { BotDiskSettingsPanel } from "@/components/myrmidon/BotDiskSettingsPanel
 import { BotScopePanel } from "@/components/myrmidon/BotScopePanel"; // myrmidon(BOT-DISK-F)
 import { BotDiskQuotaSettingsPanel } from "@/components/myrmidon/BotDiskQuotaSettingsPanel"; // myrmidon(1.6.1-BOT-DISK-C)
 import { BotImageRolloutSettingsPanel } from "@/components/myrmidon/BotImageRolloutSettingsPanel"; // myrmidon(BOT-ROLLOUT)
+import { SessionGenerationsSettingsPanel } from "@/components/myrmidon/SessionGenerationsSettingsPanel"; // myrmidon(PERF-DIET-K)
 import { AgentMemorySettingsPanel } from "@/components/myrmidon/AgentMemorySettingsPanel"; // myrmidon(MEMORY-UI)
 import { ParallelHelpersSettingsPanel } from "@/components/myrmidon/ParallelHelpersSettingsPanel"; // myrmidon(PARALLEL-HELPERS)
 import { TeamLivenessSettingsPanel } from "@/components/myrmidon/TeamLivenessSettingsPanel"; // myrmidon(TEAM-LIVENESS-SETTINGS)
@@ -165,6 +166,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       <BotScopePanel /> {/* myrmidon(BOT-DISK-F) */}
       <BotDiskQuotaSettingsPanel /> {/* myrmidon(1.6.1-BOT-DISK-C) */}
       <BotImageRolloutSettingsPanel /> {/* myrmidon(BOT-ROLLOUT) */}
+      <SessionGenerationsSettingsPanel /> {/* myrmidon(PERF-DIET-K) */}
       <ParallelHelpersSettingsPanel /> {/* myrmidon(PARALLEL-HELPERS) */}
       <TeamLivenessSettingsPanel /> {/* myrmidon(TEAM-LIVENESS-SETTINGS) */}
       <AgentMemorySettingsPanel /> {/* myrmidon(MEMORY-UI) */}
