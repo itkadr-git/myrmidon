@@ -300,6 +300,10 @@ export function cloneHygieneSignals(): CloneHygieneSignal[] {
 }
 
 /**
+ * @deprecated since 1.6.5 BOT-DISK-H: botd sends the C4 disk report to
+ * `POST /api/myrmidon/bots/me/disk-report` (bot-disk-report-routes.ts). This path
+ * keeps working unchanged for bots that still run the old in-container report.
+ *
  * Replace the signals of one bot with those in its report. `idleTtlMs` is the
  * lifecycle TTL in force; a clone counts as idle when the report's
  * `idleSeconds` exceeds it. Returns false when the text is not a usable report.
