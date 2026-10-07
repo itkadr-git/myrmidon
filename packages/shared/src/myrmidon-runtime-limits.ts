@@ -38,6 +38,21 @@ import { z } from "zod";
  * "no CPU ceiling". myrmidon(1.6.5 RUN-FAIRNESS): the per-agent start share
  * (`maxPerAgentStartSharePercent`) follows the same default-on rule.
  *
+ * myrmidon(1.6.5 RUN-ADMISSION, rc.3): the decision moves from load average
+ * to measured CPU utilisation. `maxHostCpuBusyPercent` caps the non-idle
+ * share of all cores over a short /proc/stat sample window (default 90 on a
+ * fresh environment), and the optional `maxHostCpuPsiSomeAvg10` caps the PSI
+ * cpu pressure (`some avg10` of /proc/pressure/cpu) — the gate closes on
+ * pressure only when the operator set it. Both thresholds are ABSOLUTE
+ * percents of the whole CPU: CPU utilisation already measures real work, so
+ * unlike the load average it needs no background subtraction. Backward
+ * compatibility works the other way round than for the older optional keys:
+ * a row saved before rc.3 leaves both keys ABSENT, and an absent key means
+ * "off" — not the environment, not the default — so the row keeps deciding on
+ * the load average exactly as it did (`maxHostLoadPercentPerCore` survives as
+ * the fallback, deprecated). Only an instance that never saved limits takes
+ * the environment value or the default. See `server/src/myrmidon/run-admission.ts`.
+ *
  * `null` means "this cap is off" — the same meaning an unset, empty, zero,
  * negative or non-numeric environment value has today. A value is a positive
  * integer, so nothing here can turn a cap into "start one run anyway".
@@ -64,8 +79,22 @@ export const RUN_LIMITS_ENV_KEYS = {
   maxHostLoadPercentPerCore: "MYRMIDON_MAX_HOST_LOAD_PERCENT_PER_CORE",
   // myrmidon(1.6.5 RUN-FAIRNESS): the per-agent share of start slots.
   maxPerAgentStartSharePercent: "MYRMIDON_MAX_PER_AGENT_START_SHARE_PERCENT",
+  // myrmidon(1.6.5 RUN-ADMISSION, rc.3): the host CPU busy ceiling (the
+  // non-idle share of all cores measured over a short /proc/stat window) and
+  // the optional PSI cpu ceiling (some avg10 of /proc/pressure/cpu).
+  maxHostCpuBusyPercent: "MYRMIDON_MAX_HOST_CPU_BUSY_PERCENT",
+  maxHostCpuPsiSomeAvg10: "MYRMIDON_MAX_HOST_CPU_PSI_SOME_AVG10",
 } as const;
 
+/**
+ * The keys reported per value in the settings sources and the audit
+ * `changedKeys`. myrmidon(1.6.5 RUN-ADMISSION, rc.3): the two CPU-utilisation
+ * keys live in every schema below but are deliberately NOT in this list yet:
+ * the run-limits panels (ui/**) build exhaustive `Record<RunLimitKey, …>`
+ * maps, and their fields are a separate change (part B). Adding a key here
+ * without that UI breaks its typecheck; the stored row and the API carry the
+ * values regardless.
+ */
 export const RUN_LIMIT_KEYS = [
   "maxConcurrentRuns",
   "maxStartsPerMinute",
@@ -77,6 +106,19 @@ export const RUN_LIMIT_KEYS = [
 ] as const;
 
 export type RunLimitKey = (typeof RUN_LIMIT_KEYS)[number];
+
+/**
+ * Every stored key, including the two rc.3 CPU-utilisation keys that are not
+ * in `RUN_LIMIT_KEYS` yet. The runtime-limits audit records `changedKeys`
+ * over this list, so an operator's busy/PSI change is never silently missing
+ * from the log; the settings-page source map stays on `RunLimitKey` until the
+ * panels show the fields (myrmidon 1.6.5 rc.3, part B).
+ */
+export const RUN_LIMITS_PATCH_KEYS = [
+  ...RUN_LIMIT_KEYS,
+  "maxHostCpuBusyPercent",
+  "maxHostCpuPsiSomeAvg10",
+] as const;
 
 /** Where an effective value came from: stored settings, the environment, or the default. */
 export type RunLimitsSource = "settings" | "env" | "default";
@@ -125,6 +167,18 @@ export const DEFAULT_MAX_HOST_LOAD_PERCENT_PER_CORE = 90;
  */
 export const DEFAULT_MAX_PER_AGENT_START_SHARE_PERCENT = 15;
 
+/**
+ * myrmidon(1.6.5 RUN-ADMISSION, rc.3): the host CPU busy ceiling by default —
+ * the non-idle share of all cores (from the /proc/stat counters over a short
+ * sample window) must stay under 90 % of the whole CPU for a new run to
+ * start. It is an ABSOLUTE reading: CPU utilisation already measures real
+ * work, so the background-floor arithmetic of the load average is not needed.
+ * The default applies to an instance that never saved run limits; a row
+ * saved before rc.3 keeps the load-average rule (its absent key means "off").
+ * `0`/`off` switches the ceiling off like the other default-on caps.
+ */
+export const DEFAULT_MAX_HOST_CPU_BUSY_PERCENT = 90;
+
 /** A cap: a positive integer, or null for "off". */
 const runLimitCapSchema = z.number().int().positive().nullable();
 
@@ -145,6 +199,13 @@ export const runLimitsSchema = z
     minFreeHostMemoryMb: runLimitCapSchema,
     maxHostLoadPercentPerCore: runLimitCapSchema,
     maxPerAgentStartSharePercent: runLimitSharePercentSchema,
+    // myrmidon(1.6.5 RUN-ADMISSION, rc.3): the CPU busy ceiling and the PSI
+    // cpu ceiling. Optional on the canonical shape: a row saved before rc.3
+    // carries neither, and an absent key is "off" — the old load-average rule
+    // decides (see normalizeRunLimits). `null` means the operator switched
+    // that cap off; a number means it decides on the measurement.
+    maxHostCpuBusyPercent: runLimitCapSchema.optional(),
+    maxHostCpuPsiSomeAvg10: runLimitCapSchema.optional(),
   })
   .strict();
 
@@ -159,6 +220,9 @@ export const storedRunLimitsSchema = runLimitsSchema.extend({
   maxHostLoadPercentPerCore: runLimitCapSchema.optional(),
   // myrmidon(1.6.5 RUN-FAIRNESS): a row saved before the start share existed.
   maxPerAgentStartSharePercent: runLimitSharePercentSchema.optional(),
+  // myrmidon(1.6.5 RUN-ADMISSION, rc.3): both CPU-utilisation keys are
+  // optional in the canonical shape already — a row saved before rc.3
+  // carries neither and keeps the load-average rule.
 });
 
 /**
@@ -178,6 +242,10 @@ export const patchRunLimitsSchema = z
     maxHostLoadPercentPerCore: runLimitCapSchema.optional(),
     // myrmidon(1.6.5 RUN-FAIRNESS): the per-agent share of start slots.
     maxPerAgentStartSharePercent: runLimitSharePercentSchema.optional(),
+    // myrmidon(1.6.5 RUN-ADMISSION, rc.3): the CPU busy ceiling and the PSI
+    // cpu ceiling; `null` switches a cap off, absent keeps the effective value.
+    maxHostCpuBusyPercent: runLimitCapSchema.optional(),
+    maxHostCpuPsiSomeAvg10: runLimitCapSchema.optional(),
   })
   .strict();
 
@@ -257,21 +325,45 @@ export function readRunLimitsFromEnv(env: Record<string, string | undefined> = {
       env[RUN_LIMITS_ENV_KEYS.maxPerAgentStartSharePercent],
       DEFAULT_MAX_PER_AGENT_START_SHARE_PERCENT,
     ),
+    // myrmidon(1.6.5 RUN-ADMISSION, rc.3): the CPU busy ceiling — an
+    // instance that never saved run limits decides on real CPU utilisation,
+    // not load average. Default-on like the other caps: `0`/`off` switches it
+    // off, a typo keeps the protection.
+    maxHostCpuBusyPercent: parseDefaultOnRunLimitValue(
+      env[RUN_LIMITS_ENV_KEYS.maxHostCpuBusyPercent],
+      DEFAULT_MAX_HOST_CPU_BUSY_PERCENT,
+    ),
+    // The PSI cpu ceiling is default-off: the gate closes on pressure only
+    // when the operator set a value; unset, empty or non-numeric means off.
+    // `0`/`off` is "off" as well — it is the same result, so the ordinary
+    // parse covers it.
+    maxHostCpuPsiSomeAvg10: parseRunLimitValue(env[RUN_LIMITS_ENV_KEYS.maxHostCpuPsiSomeAvg10]),
   };
 }
 
 /**
  * The stored settings value, or null when the row holds nothing usable. Keys
  * an older row lacks come from `fallback` (the environment or the defaults).
+ *
+ * myrmidon(1.6.5 RUN-ADMISSION, rc.3): the two CPU-utilisation keys are the
+ * exception — a row saved before rc.3 keeps them ABSENT, which the admission
+ * reads as "the old load-average rule decides". Falling them back to the
+ * environment or the default would change the rule under an operator who
+ * already saved their limits, and a saved row must be the whole truth.
  */
 export function normalizeRunLimits(raw: unknown, fallback: RunLimits = readRunLimitsFromEnv({})): RunLimits | null {
   const parsed = storedRunLimitsSchema.safeParse(raw);
   if (!parsed.success) return null;
   return {
     ...parsed.data,
+    // myrmidon(1.6.5 RUN-ADMISSION): a row saved before the host memory floor
+    // or the load ceiling existed keeps the key absent, so the environment or
+    // the built-in default still applies — those protections were never the
+    // operator's choice to remove. The two rc.3 CPU-utilisation keys are the
+    // opposite: absent must stay absent, because only the presence of one of
+    // them switches the decision away from the load-average rule.
     minFreeHostMemoryMb:
       parsed.data.minFreeHostMemoryMb === undefined ? fallback.minFreeHostMemoryMb : parsed.data.minFreeHostMemoryMb,
-    // myrmidon(1.6.5 RUN-ADMISSION): a row saved before the CPU ceiling existed.
     maxHostLoadPercentPerCore:
       parsed.data.maxHostLoadPercentPerCore === undefined
         ? fallback.maxHostLoadPercentPerCore
@@ -331,5 +423,13 @@ export function mergeRunLimits(base: RunLimits, patch: RunLimitsPatch): RunLimit
       patch.maxPerAgentStartSharePercent === undefined
         ? base.maxPerAgentStartSharePercent
         : patch.maxPerAgentStartSharePercent,
+    // myrmidon(1.6.5 RUN-ADMISSION, rc.3): the CPU busy ceiling and the PSI
+    // cpu ceiling. An absent patch key keeps the effective value — including
+    // "absent" for a row saved before rc.3, which keeps deciding on load
+    // average until the operator sets a busy value explicitly.
+    maxHostCpuBusyPercent:
+      patch.maxHostCpuBusyPercent === undefined ? base.maxHostCpuBusyPercent : patch.maxHostCpuBusyPercent,
+    maxHostCpuPsiSomeAvg10:
+      patch.maxHostCpuPsiSomeAvg10 === undefined ? base.maxHostCpuPsiSomeAvg10 : patch.maxHostCpuPsiSomeAvg10,
   };
 }
