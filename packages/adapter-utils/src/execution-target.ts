@@ -5,8 +5,8 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
-import { githubLauncherSource } from "./github-launcher.js";
-import { GITHUB_CREDENTIAL_HELPER_PROGRAM, githubCredentialHelperSource } from "./github-credential-helper.js";
+import { GITHUB_LAUNCHER_PROFILE_FILE_NAMES, githubLauncherProgramFiles } from "./github-launcher.js";
+import { GITHUB_CREDENTIAL_HELPER_PROGRAM } from "./github-credential-helper.js";
 import type { SshRemoteExecutionSpec } from "./ssh.js";
 import {
   prepareCommandManagedRuntime,
@@ -1727,15 +1727,14 @@ export async function prepareGitHubOperationLaunchers(input: {
   // myrmidon(GITHUB-SHARED-IDENTITY): the credential helper is staged next to
   // git/gh and named in the launcher's Git config (useHttpPath), so a
   // non-container run resolves its credential per repository through the
-  // broker — the same path the bot image wires in /etc/gitconfig.
-  const files: Record<string, string> = Object.fromEntries([
-    // Remote launchers live beneath the checkout. Pin their own package scope
-    // so an enclosing project's "type": "module" cannot reinterpret require().
-    ["package.json", '{"type":"commonjs"}\n'],
-    ...["git", "gh"].map((name) => [name, githubLauncherSource()] as const),
-    [GITHUB_CREDENTIAL_HELPER_PROGRAM, githubCredentialHelperSource()] as const,
-    ...[".zshenv", ".zprofile", ".zshrc", ".bash_profile", ".bashrc", ".profile"].map((name) => [name, profile] as const),
-  ]);
+  // broker — the same path the bot image wires in /etc/gitconfig. The program
+  // bodies come from githubLauncherProgramFiles() so this path and the
+  // request-content path a hermes gateway uses (githubLauncherPayload) cannot
+  // drift apart.
+  const files: Record<string, string> = {
+    ...githubLauncherProgramFiles(),
+    ...Object.fromEntries(GITHUB_LAUNCHER_PROFILE_FILE_NAMES.map((name) => [name, profile] as const)),
+  };
   if (remote) {
     const runner = adapterExecutionTargetCommandRunner(remote);
     for (const [program, body] of Object.entries(files)) {
