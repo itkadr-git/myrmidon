@@ -44,6 +44,10 @@ export const ATTENTION_SOURCE_KINDS = [
   // myrmidon(1.6.1-BOT-DISK-C): a bot volume is approaching (>=80%) or over its
   // disk quota; the over-quota state also makes new workspace clones refuse.
   "bot_disk_quota",
+  // myrmidon(1.6.5 BOT-DISK-H4c): unpushed work of a closed task was archived
+  // (shown on the task), and a bot on a non-current image generation.
+  "bot_disk_archive",
+  "bot_image_stale",
 ] as const;
 
 export type AttentionSourceKind = (typeof ATTENTION_SOURCE_KINDS)[number];
