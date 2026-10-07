@@ -2852,6 +2852,10 @@ export * from "./myrmidon-prompt-budget.js"; // myrmidon(1.6.3 PROMPT-BUDGET B)
 export * from "./myrmidon-budget-enforcement.js";
 // myrmidon(MEMORY-UI): the agent memory instance setting (address, optional key secret, switch).
 export * from "./myrmidon-agent-memory.js";
+// myrmidon(1.7-DEBATE-ASYM-A): the shared contract of asymmetric debates —
+// the model-family table, the cross-family role config, the pure debate
+// engine (roles, rounds, token ceiling, cost) and the result-document shape.
+export * from "./myrmidon-debate.js";
 
 // myrmidon(PLUGIN-ENTITLEMENT C): plugin entitlement keys contract.
 export * from "./myrmidon-plugin-entitlement.js";
