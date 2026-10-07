@@ -140,12 +140,12 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
     it("a member of a shared scope instance gets the instance's pnpm store, with or without the shared package cache", async () => {
       const board = fakeBoard({
         scopeLayout: async () => ({ kind: "shared", dirName: "caste-x-engineer" }),
-        pnpmSettings: async () => ({ storeDir: "/workspace/.pnpm-store", importMethod: "hardlink" }),
+        pnpmSettings: async () => ({ storeDir: "/cache/pnpm-store", importMethod: "clone" }),
       });
       const env = fileContent(await createBotProfileCompile(board.ports, { env: INSTANCE_ENV })("agent-a", "agent-a"), "hermes/.env");
       expect(env).toContain('npm_config_store_dir="/bot-scope/.pnpm-store"');
-      expect(env).toContain('npm_config_package_import_method="hardlink"');
-      expect(env).not.toContain("/workspace/.pnpm-store");
+      expect(env).toContain('npm_config_package_import_method="clone"');
+      expect(env).not.toContain("/cache/pnpm-store");
       // myrmidon(1.6.5 BOT-DISK-G): and the instance's shared git object store.
       expect(env).toContain('MYRMIDON_GIT_LOCAL_MIRROR="/bot-scope/.git-objects"');
     });
