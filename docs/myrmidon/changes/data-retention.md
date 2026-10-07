@@ -28,7 +28,9 @@ settings-section: Track 5 — operations
   24 hours (or missing), the pass deletes nothing, writes one
   `data.retention_waiting_for_backup` activity line (at most once per hour)
   and reports `waitingForBackup` in its status; the gate lifts on the next
-  pass once a fresh backup appears.
+  pass once a fresh backup appears. The filename prefix is configurable via
+  `MYRMIDON_DB_BACKUP_FILE_PREFIX` (default `paperclip`) — see
+  [SETTINGS.md](../SETTINGS.md).
 - `GET /api/myrmidon/data-retention` (board-readable) reports the three
   values with their source (`settings` | `default`) and the last pass
   (timestamp, per-table deleted counters, a freed-bytes lower bound, the
@@ -63,7 +65,9 @@ settings-section: Track 5 — operations
   отсутствует), проход ничего не удаляет, пишет одну строку
   `data.retention_waiting_for_backup` в журнал (не чаще раза в час) и
   показывает `waitingForBackup` в статусе; блокировка снимается на следующем
-  проходе, как только появляется свежий бэкап.
+  проходе, как только появляется свежий бэкап. Префикс имени файла
+  настраивается через `MYRMIDON_DB_BACKUP_FILE_PREFIX` (умолчание
+  `paperclip`) — см. [SETTINGS.md](../SETTINGS.md).
 - `GET /api/myrmidon/data-retention` (доступен читателю доски) отдаёт три
   значения с источником (`settings` | `default`) и состояние последнего
   прохода (время, счётчики удалённых строк по таблицам, нижняя оценка
