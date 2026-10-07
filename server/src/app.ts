@@ -125,6 +125,8 @@ import { myrmidonHostDiskRoutes } from "./myrmidon/host-disk/index.js"; // myrmi
 import { myrmidonBotDiskLifecycleRoutes } from "./myrmidon/bot-containers/bot-disk-routes.js"; // myrmidon(BOT-DISK-A)
 import { myrmidonBotScopeRoutes } from "./myrmidon/bot-containers/scope-wiring.js"; // myrmidon(BOT-DISK-F)
 import { myrmidonBotWorkspacesRoutes } from "./myrmidon/bot-containers/bot-workspaces-routes.js"; // myrmidon(1.6.5-BOT-DISK-H4a)
+import { myrmidonBotDiskReportRoutes } from "./myrmidon/bot-containers/bot-disk-report-routes.js"; // myrmidon(1.6.5-BOT-DISK-H4b)
+import { myrmidonBotDiskReadsRoutes } from "./myrmidon/bot-containers/bot-disk-reads-routes.js"; // myrmidon(1.6.5-BOT-DISK-H4d)
 import { myrmidonBotDiskQuotaRoutes } from "./myrmidon/bot-containers/bot-disk-quota-routes.js"; // myrmidon(1.6.1-BOT-DISK-C)
 import { myrmidonBotImageRolloutRoutes } from "./myrmidon/bot-containers/bot-image-rollout-routes.js"; // myrmidon(BOT-ROLLOUT)
 import { myrmidonMetricsApp } from "./myrmidon/monitoring/metrics/index.js"; // myrmidon(1.7-METRICS)
@@ -920,6 +922,8 @@ export async function createApp(
   api.use(myrmidonBotScopeRoutes(db)); // myrmidon(BOT-DISK-F)
   api.use(myrmidonBotDiskQuotaRoutes(db)); // myrmidon(1.6.1-BOT-DISK-C)
   api.use(myrmidonBotWorkspacesRoutes(db)); // myrmidon(1.6.5-BOT-DISK-H4a)
+  api.use(myrmidonBotDiskReportRoutes()); // myrmidon(1.6.5-BOT-DISK-H4b)
+  api.use(myrmidonBotDiskReadsRoutes()); // myrmidon(1.6.5-BOT-DISK-H4d)
   api.use(myrmidonBotImageRolloutRoutes(db)); // myrmidon(BOT-ROLLOUT)
   api.use(swarmClaimApp({
     db,
