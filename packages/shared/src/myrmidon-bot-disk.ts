@@ -322,6 +322,11 @@ const graceClosingMinutesSchema = z.number().int().min(5).max(24 * 60);
 const scratchTtlHoursSchema = z.number().int().min(1).max(24 * 30);
 const partitionPercentSchema = z.number().int().min(50).max(100);
 const botdIntervalSecSchema = z.number().int().min(30).max(24 * 60 * 60);
+// myrmidon(1.6.5-BOT-DISK-H4b): `owner/repo` of the fallback repository for tasks
+// that have neither a project repository nor a pull request. Absent = none.
+const defaultRepoSchema = z
+  .string()
+  .regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/, "defaultRepo must be owner/repo");
 
 /** The canonical shape the service writes. */
 export const botDiskSettingsSchema = z
@@ -345,6 +350,7 @@ export const botDiskSettingsSchema = z
     partitionRefuseOpenPercent: partitionPercentSchema.optional(),
     partitionCriticalPercent: partitionPercentSchema.optional(),
     botdIntervalSec: botdIntervalSecSchema.optional(),
+    defaultRepo: defaultRepoSchema.optional(),
   })
   .strict();
 
@@ -365,6 +371,7 @@ const storedBotDiskObjectSchema = z
     partitionRefuseOpenPercent: partitionPercentSchema.optional().catch(undefined),
     partitionCriticalPercent: partitionPercentSchema.optional().catch(undefined),
     botdIntervalSec: botdIntervalSecSchema.optional().catch(undefined),
+    defaultRepo: defaultRepoSchema.optional().catch(undefined),
   })
   .passthrough();
 
@@ -398,6 +405,8 @@ export const patchBotDiskSettingsSchema = z
     partitionRefuseOpenPercent: z.union([partitionPercentSchema, z.null()]).optional(),
     partitionCriticalPercent: z.union([partitionPercentSchema, z.null()]).optional(),
     botdIntervalSec: z.union([botdIntervalSecSchema, z.null()]).optional(),
+    // myrmidon(1.6.5-BOT-DISK-H4b): a repository sets the fallback, null or "" clears it.
+    defaultRepo: z.union([defaultRepoSchema, z.literal(""), z.null()]).optional(),
   })
   .strict();
 
@@ -454,6 +463,7 @@ export function normalizeStoredBotDiskSettings(raw: unknown): Partial<BotDiskSet
   if (typeof parsed.data.partitionRefuseOpenPercent === "number") out.partitionRefuseOpenPercent = parsed.data.partitionRefuseOpenPercent;
   if (typeof parsed.data.partitionCriticalPercent === "number") out.partitionCriticalPercent = parsed.data.partitionCriticalPercent;
   if (typeof parsed.data.botdIntervalSec === "number") out.botdIntervalSec = parsed.data.botdIntervalSec;
+  if (typeof parsed.data.defaultRepo === "string") out.defaultRepo = parsed.data.defaultRepo;
   return out;
 }
 
@@ -486,6 +496,7 @@ export function resolveBotDiskSettings(options: {
       enabled: enabled[0],
       idleTtlMs: idleTtlMs[0],
       ...(stored.sharedPackageCachePath ? { sharedPackageCachePath: stored.sharedPackageCachePath } : {}),
+      ...(stored.defaultRepo ? { defaultRepo: stored.defaultRepo } : {}),
       ...optionalLayoutKeys(stored),
     },
     sources: { enabled: enabled[1], idleTtlMs: idleTtlMs[1] },
@@ -520,11 +531,14 @@ export function mergeBotDiskSettings(
     patch.sharedPackageCachePath === undefined ? base.sharedPackageCachePath : patch.sharedPackageCachePath || undefined;
   const sharedBotRuntimePath =
     patch.sharedBotRuntimePath === undefined ? base.sharedBotRuntimePath : patch.sharedBotRuntimePath || undefined;
+  const defaultRepo =
+    patch.defaultRepo === undefined ? base.defaultRepo : patch.defaultRepo || undefined;
   return {
     enabled: patch.enabled === undefined ? base.enabled : patch.enabled,
     idleTtlMs: patch.idleTtlMs === undefined ? base.idleTtlMs : patch.idleTtlMs,
     ...(sharedPackageCachePath ? { sharedPackageCachePath } : {}),
     ...(sharedBotRuntimePath ? { sharedBotRuntimePath } : {}),
+    ...(defaultRepo ? { defaultRepo } : {}),
     ...optionalLayoutKeys({
       gitMirrorRepos: pick(patch.gitMirrorRepos, base.gitMirrorRepos),
       gitMirrorRefreshMs: pick(patch.gitMirrorRefreshMs, base.gitMirrorRefreshMs),

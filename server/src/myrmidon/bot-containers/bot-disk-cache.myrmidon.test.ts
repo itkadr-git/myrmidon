@@ -376,3 +376,27 @@ describe("myrmidon(1.6.5-BOT-DISK-H8a) pnpm store and import method", () => {
     });
   });
 });
+
+describe("myrmidon(1.6.5-BOT-DISK-H4b) general.botDisk.defaultRepo", () => {
+  const base = { enabled: true, idleTtlMs: 3_600_000 };
+
+  it("validates owner/repo; empty string and null clear it; default is absent", () => {
+    expect(patchBotDiskSettingsSchema.safeParse({ defaultRepo: "itkadr-git/myrmidon" }).success).toBe(true);
+    expect(patchBotDiskSettingsSchema.safeParse({ defaultRepo: "" }).success).toBe(true);
+    expect(patchBotDiskSettingsSchema.safeParse({ defaultRepo: null }).success).toBe(true);
+    for (const bad of ["myrmidon", "a/b/c", "https://github.com/a/b", "a b/c"]) {
+      expect(patchBotDiskSettingsSchema.safeParse({ defaultRepo: bad }).success, bad).toBe(false);
+    }
+    expect(resolveBotDiskSettings({}).settings.defaultRepo).toBeUndefined();
+  });
+
+  it("merges, survives other patches, and clears", () => {
+    const set = mergeBotDiskSettings(base, { defaultRepo: "itkadr-git/myrmidon" });
+    expect(set).toEqual({ ...base, defaultRepo: "itkadr-git/myrmidon" });
+    expect(mergeBotDiskSettings(set, { enabled: false }).defaultRepo).toBe("itkadr-git/myrmidon");
+    expect(mergeBotDiskSettings(set, { defaultRepo: null })).toEqual(base);
+    expect(mergeBotDiskSettings(set, { defaultRepo: "" })).toEqual(base);
+    expect(resolveBotDiskSettings({ stored: set }).settings.defaultRepo).toBe("itkadr-git/myrmidon");
+    expect(resolveBotDiskSettings({ stored: { defaultRepo: "bad value" } }).settings.defaultRepo).toBeUndefined();
+  });
+});

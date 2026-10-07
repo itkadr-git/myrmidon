@@ -200,6 +200,20 @@ and `bot_disk_lifecycle/reflink` (failed self-checks), `bot_image_stale` (bot
 on a non-current image generation for over 24 h), `bot_disk_archive` (an
 archive was created for the task; gone on restore or expiry).
 
+Since rc.8 (see the fragment `1-6-5-bot-disk-h-rc8-workspace-reach`): the board
+writes `MYRMIDON_BOT_KEY=<bot id>` into the bot's `.env` (an id, not a secret) so
+botd's report is accepted under the caller's key; the repository of a copy comes
+from the task's project, then its latest pull request, then
+`general.botDisk.defaultRepo` (a task with none of them still works in
+`/scratch` with a warning); the `pressure` block of the desired state follows the
+measured partition (`soft` from `partitionThresholdPercent`, `hard` from
+`partitionRefuseOpenPercent`); botd also reaps pre-mechanism directories (class X)
+under the scratch TTL; and `myr-ws`, `botd` and the git wrapper are part of the
+base `runtime` image stage, so every image variant carries them. The desired
+state also carries `protectKeys: string[]` — the keys of every open task (not
+`done`/`cancelled`) assigned to the bot, repository or not; botd never removes the
+directory of such a task.
+
 ## settings-ru-append
 
 <!-- section: BOT-DISK E — host disk usage signal -->
@@ -264,6 +278,19 @@ grace + 15 минут), `bot_disk_lifecycle/foreign` (копия вне базы
 самопроверки), `bot_image_stale` (бот на образе не текущего поколения дольше
 суток), `bot_disk_archive` (для задачи создан архив; исчезает при
 восстановлении или истечении срока).
+
+С rc.8 (фрагмент `1-6-5-bot-disk-h-rc8-workspace-reach`): доска пишет в `.env`
+бота `MYRMIDON_BOT_KEY=<id бота>` (это id, не секрет), поэтому отчёт botd
+принимается под ключом вызывающего; репозиторий копии берётся из проекта задачи,
+затем из её последнего pull request, затем из `general.botDisk.defaultRepo`
+(задача без всего этого по-прежнему работает в `/scratch` с предупреждением);
+блок `pressure` желаемого состояния следует за измеренным разделом (`soft` с
+`partitionThresholdPercent`, `hard` с `partitionRefuseOpenPercent`); botd убирает
+и каталоги, созданные до механизма (класс X), по TTL scratch-копий; а `myr-ws`,
+`botd` и обёртка git входят в базовую стадию `runtime` образа, так что их несёт
+каждый вариант образа. Желаемое состояние несёт и `protectKeys: string[]` —
+ключи всех незакрытых задач (не `done`/`cancelled`), назначенных боту, с
+репозиторием или без; botd не удаляет каталог такой задачи.
 
 ## divergence
 

@@ -5,7 +5,8 @@
 // by reassignment lately (read from the activity log). Pull-request facts are
 // the work products the task-pr-sync keeps current; this service only reads
 // them. The repository is the task's project repository (Repo URL of its
-// workspace) or, failing that, the latest pull request's repository. The
+// workspace) or, failing that, the latest pull request's repository, or,
+// failing that, the instance's `general.botDisk.defaultRepo`. The
 // pressure block comes from the last dockergate snapshot when one is wired in;
 // without it the level is `none`.
 
@@ -21,6 +22,7 @@ import {
   WS_BOT_DISK_SETTING_DEFAULTS,
   WS_TASK_BRANCH_PREFIX,
   myrWsIssueKeySchema,
+  normalizeStoredBotDiskSettings,
   myrWsRepoNameSchema,
   wsBotDiskSettingsSchema,
   type WsDesiredState,
@@ -118,6 +120,11 @@ export function botWorkspacesService(deps: BotWorkspacesServiceDeps) {
         productsByIssue.set(product.issueId, list);
       }
 
+      const rawSettings = await deps.store.readBotDiskSettings();
+      // myrmidon(1.6.5-BOT-DISK-H4b): the fallback repository for tasks without a
+      // project repository and without a pull request.
+      const defaultRepo = normalizeStoredBotDiskSettings(rawSettings).defaultRepo;
+
       const workspaces: WsDesiredWorkspace[] = [];
       for (const row of keyed) {
         const key = row.identifier as string;
@@ -134,10 +141,12 @@ export function botWorkspacesService(deps: BotWorkspacesServiceDeps) {
           },
           prFacts,
         );
-        // Project repository first; otherwise the latest pull request's repository.
+        // Project repository first; otherwise the latest pull request's repository;
+        // otherwise the instance default repository (when one is set).
         const repo =
           repoNameFromUrl(row.projectId ? projectRepos.get(row.projectId) : undefined) ??
-          issueProducts.map(prRepoOf).find((value): value is string => !!value);
+          issueProducts.map(prRepoOf).find((value): value is string => !!value) ??
+          defaultRepo;
 
         let sinceDate: Date;
         if (verdict.state === "active") {
@@ -163,7 +172,15 @@ export function botWorkspacesService(deps: BotWorkspacesServiceDeps) {
         });
       }
 
-      const settings = wsBotDiskSettingsSchema.safeParse(await deps.store.readBotDiskSettings());
+      // Every open task of this bot, repository or not: botd protects their directories.
+      const protectKeys = keyed
+        .filter(
+          (row) =>
+            row.assigneeAgentId === input.agentId && row.status !== "done" && row.status !== "cancelled",
+        )
+        .map((row) => row.identifier as string);
+
+      const settings = wsBotDiskSettingsSchema.safeParse(rawSettings);
       const configured = settings.success ? settings.data : {};
       const pressure = (await deps.readPressure?.({ agentId: input.agentId }).catch(() => null)) ?? NO_PRESSURE;
 
@@ -176,6 +193,7 @@ export function botWorkspacesService(deps: BotWorkspacesServiceDeps) {
         },
         pressure,
         workspaces,
+        protectKeys,
       };
     },
   };

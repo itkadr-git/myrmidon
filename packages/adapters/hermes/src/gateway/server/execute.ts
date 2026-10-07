@@ -446,6 +446,9 @@ function buildGitHubBrokerField(
 // form, userinfo/.git stripped); baseRef: the workspace's repoRef when it is a
 // valid git ref. A task without a usable repository or issue key yields
 // undefined — the field is then absent and the bot works in /scratch.
+// myrmidon(1.6.5-BOT-DISK-H4b): when the project workspace gives no usable
+// repository, `context.paperclipBotDiskDefaultRepo` (the server copies
+// general.botDisk.defaultRepo there, `owner/name`) is the fallback.
 const WS_ISSUE_KEY_RE = /^[A-Z][A-Z0-9]*-[0-9]+$/;
 const WS_REPO_NAME_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const WS_GIT_REF_RE = /^[^\s~^:?*[\]\\]+$/;
@@ -483,9 +486,18 @@ function buildWorkspaceField(
   if (!WS_ISSUE_KEY_RE.test(key)) return undefined;
   const workspace = parseObject(context.paperclipWorkspace);
   const repoUrl = asString(workspace.repoUrl, "").trim();
-  const repo = repoUrl ? deriveWorkspaceRepoName(repoUrl) : null;
+  let repo = repoUrl ? deriveWorkspaceRepoName(repoUrl) : null;
+  let usedDefault = false;
+  if (!repo) {
+    const fallback = asString(context.paperclipBotDiskDefaultRepo, "").trim();
+    if (fallback && WS_REPO_NAME_RE.test(fallback)) {
+      repo = fallback;
+      usedDefault = true;
+    }
+  }
   if (!repo) return undefined;
-  const baseRef = asString(workspace.repoRef, "").trim();
+  // The ref belongs to the project workspace's own repository, not to the fallback one.
+  const baseRef = usedDefault ? "" : asString(workspace.repoRef, "").trim();
   return {
     key,
     repo,
