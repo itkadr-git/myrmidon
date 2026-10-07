@@ -133,7 +133,7 @@ describe("pnpm reflinks", () => {
     assert.match(TEMPLATE, /DEFAULT_PNPM_IMPORT_METHOD = "clone"/);
     const dockerfile = fs.readFileSync(path.join(ROOT, "docker/bot-runtime/Dockerfile"), "utf8");
     assert.match(dockerfile, /npm_config_store_dir=\/workspace\/\.pnpm-store/);
-    assert.match(dockerfile, /npm_config_package_import_method=reflink/);
+    assert.match(dockerfile, /npm_config_package_import_method=clone/);
     assert.match(dockerfile, /ROOTS="\/data\/hermes \/workspace \/scratch"/);
     assert.match(dockerfile, /pnpm-reflink-check\.sh/);
   });

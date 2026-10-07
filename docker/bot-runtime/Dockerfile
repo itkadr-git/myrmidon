@@ -820,7 +820,7 @@ RUN chmod 0755 /opt/paperclip/bin/pnpm /opt/paperclip/bin/tsc /opt/paperclip/bin
 # toolchains write to must live under it:
 #   - the pnpm store defaults to /workspace/.pnpm-store, INSIDE the /bot mount like
 #     every clone root (/data/hermes, /workspace, /scratch), because pnpm imports
-#     node_modules from its store with package-import-method=reflink (cp
+#     node_modules from its store with package-import-method=clone (cp
 #     --reflink, FICLONE) and reflinks cannot cross a superblock (EXDEV) — a
 #     store on /cache would make pnpm copy every package into every clone
 #     (see README.md). pnpm 10 itself still COPIES when the kernel refuses the
@@ -852,7 +852,7 @@ RUN chmod 0755 /opt/paperclip/bin/devbuild
 # /opt/pnpm/bin, /opt/node24/bin and /opt/go/bin — see the COPY block above.
 ENV PATH=/opt/paperclip/bin:/opt/node24/bin:/opt/pnpm/bin:/opt/go/bin:/opt/cargo/bin:/opt/docker-cli/bin:/opt/hermes-src/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     npm_config_store_dir=/workspace/.pnpm-store \
-    npm_config_package_import_method=reflink \
+    npm_config_package_import_method=clone \
     GOTOOLCHAIN=local \
     GOFLAGS=-mod=mod
 

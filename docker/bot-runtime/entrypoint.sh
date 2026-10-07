@@ -198,7 +198,7 @@ fi
 
 # --- reflink self-check (BOT-DISK-H8b) ---------------------------------------
 # myrmidon(BOT-DISK-H8): pnpm imports packages into a clone with
-# package-import-method=reflink (cp --reflink), so the store and every clone
+# package-import-method=clone (cp --reflink), so the store and every clone
 # root must sit on a copy-on-write filesystem. When they do not (EXDEV across
 # superblocks, EOPNOTSUPP on a filesystem without reflinks) pnpm silently falls
 # back to copying, and every clone's node_modules becomes a full copy — the
