@@ -73,3 +73,43 @@ The PR is returned to the author with failed checks on the candidate commit:
 If the queue itself stalls (candidate checks are not starting), first check the
 `merge_group` trigger in `myrmidon-ci.yml` and the `CI result` check name, then the queue
 settings of the `main` branch in repository settings.
+
+## Without a GitHub queue: PR auto-update
+
+**The queue above is not available in this repository.** It belongs to a user account
+(`owner.type=User`), and GitHub rejects the `merge_queue` rule for it (422). The goal stays the
+same: PRs do not go stale and land on top of a fresh `main` without manual work. It is done by
+three parts.
+
+1. **Ruleset `main-protection`**: `strict_required_status_checks_policy=true`. A PR cannot merge
+   until its branch contains the current `main`, so a combination of PRs that were never tested
+   together cannot land.
+2. **Workflow `myrmidon-pr-autoupdate.yml`** (on push to `main`, every 30 minutes, and
+   `workflow_dispatch`; one run at a time, never cancelled). It takes open PRs into `main` with
+   auto-merge on (`gh pr merge --squash --auto`) from this repository (not forks):
+   - behind `main` (`compare` `behind_by > 0`): `PUT /pulls/{n}/update-branch` with
+     `expected_head_sha` (a merge update). At most **one PR per run**, the oldest first: updating
+     all at once would start a CI run for each and every merge would make the rest stale again.
+     The next PR is taken on the next push to `main` (the merge of the first one) or by the
+     30-minute schedule;
+   - in conflict (`mergeable_state=dirty`): not touched. The label `needs-rebase` (created if it
+     does not exist) and one comment with a hidden marker are set; when the conflict is gone, the
+     label is removed and the comment is marked resolved.
+3. **Checks on the new head.** A push made with `GITHUB_TOKEN` does not start `pull_request`
+   workflows (GitHub rule against recursive runs; only `workflow_dispatch` and
+   `repository_dispatch` are exempt). The repository has no PAT or App token (`gh secret list`
+   shows only workflow secrets), and a stored PAT would be a new long-lived credential with write
+   access. So the workflow dispatches the required checks itself after each update:
+   - `myrmidon-ci.yml` on the PR branch (`workflow_dispatch`). It reports `CI result` on the new
+     head under the same name, so the ruleset requirement is met. Note: a manual run is the
+     **full** tier, heavier than the `fast` PR tier;
+   - `myrmidon-hot-files-review.yml` with the PR number (a new `workflow_dispatch` trigger). It
+     posts the `hot-files-review` status on the new head. This is not a `synchronize`, so the
+     `review-approved` label stays: merging `main` in does not change the code the reviewer saw.
+
+   If an update ever has to run with a PAT or an App token instead, replace `github.token` and the
+   two dispatch calls with that token; `pull_request` workflows then start by themselves.
+
+If `update-branch` fails (for example, `main` brought a workflow file change that `GITHUB_TOKEN`
+may not push), the run logs a warning and the summary names the PR; the author or steward updates
+the branch by hand.
