@@ -19,6 +19,11 @@ divergence-section: 1.6.1 — BOT-DISK B: общий кэш пакетов дл�
   remote URL is only ever reported as the flag `token`; the first pass can
   rewrite `remote.origin.url` without userinfo with `git remote set-url` and
   returns the count.
+- `toInventory(items)` adapts the result to the inventory of the deletion rules
+  (`worktrees`, `scratch`, `bases`, `archives`, ISO `mtime`). `clean` and
+  `pushed` stay `null` (git is never run on a bot's repository), which the rules
+  read as "archive before removing". The `action` hints of `classifyAll` are
+  advisory; deletion is decided by the rules only.
 
 ## changelog-ru
 
