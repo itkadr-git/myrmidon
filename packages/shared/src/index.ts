@@ -2804,6 +2804,9 @@ export * from "./myrmidon-bot-workspace.js";
 export * from "./myrmidon-session-generations.js";
 // myrmidon(C0): live run-admission limits shared by the server, the UI and the settings validator.
 export * from "./myrmidon-runtime-limits.js";
+// myrmidon(1.6.5 RUN-PRIORITY A): run queue priority settings (role/issue/release/aging) shared
+// by the server sweeps, the routes and the settings validator.
+export * from "./myrmidon-run-priority.js";
 // myrmidon(PARALLEL-HELPERS): the card -> Hermes `delegation` contract shared by the profile
 // compiler, the agent card and the settings page.
 export * from "./myrmidon-parallel-helpers.js";
