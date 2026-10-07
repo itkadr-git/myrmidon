@@ -845,6 +845,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
               ...nextGeneral,
               ...preserveMaintenanceGeneralKey(current.general), // myrmidon(R3)
               ...preserveDeployJobsGeneralKey(current.general), // myrmidon(R5-A)
+              ...preserveAutoUpdateGeneralKey(current.general), // myrmidon(1.7-AUTO-UPDATE-B)
               ...preserveBrowserConsoleGeneralKey(current.general), // myrmidon(BROWSER-CONSOLE)
               ...preserveStackGeneralKey(current.general), // myrmidon(SUA)
               ...preserveBotCanaryGeneralKey(current.general), // myrmidon(R5-B)
