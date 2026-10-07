@@ -10,6 +10,7 @@ import {
   DEBATE_AGREE_MARKER,
   DEBATE_RESULT_DOCUMENT_KEY,
   defaultDebateSettings,
+  resolveCasteDebateSettings,
   type DebateModelCall,
   type DebateSettings,
   type DebateSettingsResolution,
@@ -48,6 +49,15 @@ function harness(overrides: Partial<DebateServiceDeps> = {}): Harness {
         value
           ? { settings: value, source: "settings", problem: null }
           : { settings: null, source: null, problem: null },
+      // 1.7-DEBATE-ASYM-B: part A's runs carry no caste, so the caste level is
+      // an unimplemented pass-through here — the caste suite covers it.
+      readCasteSettings: async ({ casteKey, instance }) => ({
+        resolution: resolveCasteDebateSettings({ casteKey, override: null, instance }),
+        stored: null,
+        foreign: null,
+      }),
+      writeCasteSettings: async () => {},
+      casteExists: async () => true,
       callModel: async () => async (roleConfig, _system, _user, context) => {
         h.calls.push(`${context.role}:${context.round}`);
         const text =

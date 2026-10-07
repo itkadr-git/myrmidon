@@ -84,8 +84,21 @@ export const DEBATE_SETTINGS_ENV = "MYRMIDON_DEBATE_CONFIG";
 export const DEBATE_RESULT_DOCUMENT_KEY = "debate-result";
 /** Activity-log action of a finished debate. */
 export const DEBATE_COMPLETED_ACTION = "debate.completed";
+/** Activity-log action for a saved (or cleared) per-caste configuration. */
+export const DEBATE_CASTE_SETTINGS_ACTION = "debate.caste_settings.saved";
 /** Cost-event billing code so the BUDGET-CONFIG accounting sees debates. */
 export const DEBATE_BILLING_CODE = "myrmidon-debate";
+
+/**
+ * Where the per-caste overrides live inside the same stored value as the
+ * instance configuration (1.7-DEBATE-ASYM-B): `general.debate.castes.<key>`.
+ * No migration — the stored value already owns the engine config and its
+ * preserve key, and the map is read at run time like everything else here.
+ */
+export const DEBATE_CASTES_KEY = "castes";
+
+/** Cap on a caste's custom role guidance (a prompt, not a document). */
+export const DEBATE_CUSTOM_PROMPT_MAX_LENGTH = 2000;
 
 // ── Stored configuration shape ──────────────────────────────────────────────
 
@@ -114,6 +127,53 @@ export const debateSettingsSchema = z
 
 export type DebateRoleConfig = z.infer<typeof roleConfigSchema>;
 export type DebateSettings = z.infer<typeof debateSettingsSchema>;
+
+/**
+ * The stored value (1.7-DEBATE-ASYM-B): the instance configuration plus the
+ * optional per-caste override map. The three roles are optional here (but all
+ * or nothing) so a value that carries ONLY the per-caste map is valid — a caste
+ * entry can be saved on an instance whose instance-level configuration comes
+ * from the environment or the default, and that must not read as malformed.
+ * `castes` never reaches the engine; an unknown key still fails the parse.
+ */
+export const debateStoredSettingsSchema = z
+  .object({
+    generator: roleConfigSchema.optional(),
+    critic: roleConfigSchema.optional(),
+    judge: roleConfigSchema.optional(),
+    rounds: z.number().int().min(1).max(DEBATE_MAX_ROUNDS_LIMIT).optional(),
+    tokenCeiling: z.number().int().min(1000).max(10_000_000).optional(),
+    [DEBATE_CASTES_KEY]: z.record(z.string(), z.unknown()).optional(),
+  })
+  .strict()
+  .refine((value) => {
+    const present = [value.generator, value.critic, value.judge].filter((role) => role !== undefined).length;
+    return present === 0 || present === 3;
+  }, { message: "the debate configuration needs all three roles (generator, critic, judge) or none of them" });
+
+/**
+ * The per-caste override map out of a raw stored value. Entries are NOT
+ * validated here: one broken caste entry must not take the instance
+ * configuration down — the caste resolver reports it for its own caste only.
+ */
+export function readStoredCastes(raw: unknown): { map: Record<string, unknown>; problem: string | null } {
+  if (raw === null || raw === undefined || raw === "") return { map: {}, problem: null };
+  let json: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      json = JSON.parse(raw);
+    } catch {
+      return { map: {}, problem: "the debate configuration is not valid JSON" };
+    }
+  }
+  if (typeof json !== "object" || json === null || Array.isArray(json)) return { map: {}, problem: null };
+  const bag = (json as Record<string, unknown>)[DEBATE_CASTES_KEY];
+  if (bag === undefined || bag === null) return { map: {}, problem: null };
+  if (typeof bag !== "object" || Array.isArray(bag)) {
+    return { map: {}, problem: `the debate configuration is malformed: ${DEBATE_CASTES_KEY} is not an object` };
+  }
+  return { map: bag as Record<string, unknown>, problem: null };
+}
 
 /**
  * Cross-family validation of a parsed config (the asymmetry rule). Returns the
@@ -160,7 +220,7 @@ export function resolveDebateSettingsValue(raw: unknown, source: DebateSettingsR
       return { settings: null, source, problem: "the debate configuration is not valid JSON" };
     }
   }
-  const parsed = debateSettingsSchema.safeParse(json);
+  const parsed = debateStoredSettingsSchema.safeParse(json);
   if (!parsed.success) {
     return {
       settings: null,
@@ -168,9 +228,25 @@ export function resolveDebateSettingsValue(raw: unknown, source: DebateSettingsR
       problem: `the debate configuration is malformed: ${parsed.error.issues.map((i) => `${i.path.join(".")} ${i.message}`).join("; ")}`,
     };
   }
-  const collision = debateFamilyProblem(parsed.data);
+  // The per-caste bag belongs to the caste resolver, not to the instance
+  // configuration: the effective config is what the engine reads. A value that
+  // carries only the bag (a caste entry saved while the instance configuration
+  // is the env/default one) has no instance config of its own — fall through to
+  // the next level instead of reporting a problem.
+  const { [DEBATE_CASTES_KEY]: _castes, ...stored } = parsed.data as DebateSettings & { castes?: unknown };
+  if (!stored.generator || !stored.critic || !stored.judge) {
+    return { settings: null, source: null, problem: null };
+  }
+  const settings: DebateSettings = {
+    generator: stored.generator,
+    critic: stored.critic,
+    judge: stored.judge,
+    ...(stored.rounds !== undefined ? { rounds: stored.rounds } : {}),
+    ...(stored.tokenCeiling !== undefined ? { tokenCeiling: stored.tokenCeiling } : {}),
+  };
+  const collision = debateFamilyProblem(settings);
   if (collision) return { settings: null, source, problem: collision };
-  return { settings: parsed.data, source, problem: null };
+  return { settings, source, problem: null };
 }
 
 /** The built-in default config (free models, different families, 3 rounds). */
@@ -272,6 +348,34 @@ export function judgeSystemPrompt(): string {
   ].join(" ");
 }
 
+/**
+ * Custom per-role guidance (caste settings, 1.7-DEBATE-ASYM-B). The built-in
+ * pole prompt always comes first and is never replaced.
+ */
+export type DebatePromptOverrides = Partial<Record<DebateRole, string>>;
+
+/** The built-in pole prompt of one role. */
+export function builtinRoleSystemPrompt(role: DebateRole): string {
+  return role === "generator" ? generatorSystemPrompt() : role === "critic" ? criticSystemPrompt() : judgeSystemPrompt();
+}
+
+/**
+ * The system prompt one role argues from: the built-in pole, then the caste's
+ * custom guidance. The pole — and with it the critic's missed-error penalty —
+ * always stays: a caste may narrow where the role looks, it cannot turn the
+ * critic polite or the generator defensive.
+ */
+export function composeRoleSystemPrompt(role: DebateRole, custom?: string | null): string {
+  const base = builtinRoleSystemPrompt(role);
+  const extra = typeof custom === "string" ? custom.trim() : "";
+  if (!extra) return base;
+  return [
+    base,
+    "",
+    `Caste guidance for this role — it narrows where to look, it does not change the pole above: ${extra}`,
+  ].join("\n");
+}
+
 /** One transcript entry. */
 export interface DebateTurn {
   role: DebateRole;
@@ -317,12 +421,21 @@ export interface DebateOutcome {
   /** Family collision report (the caller refuses or warns from this). */
   familyProblem: string | null;
   roles: Record<DebateRole, { model: string; family: string }>;
+  /** The caste the debate ran for, when it ran from a caste's task (part B). */
+  casteKey?: string | null;
+  /** Roles that argued with custom caste guidance. */
+  customPrompts?: DebateRole[];
 }
 
 export interface DebateEngineInput {
   question: string;
   settings: DebateSettings;
   call: DebateModelCall;
+  /**
+   * Custom per-role guidance from the caste settings (1.7-DEBATE-ASYM-B): it
+   * is appended to the built-in pole prompt, never instead of it.
+   */
+  prompts?: DebatePromptOverrides;
 }
 
 /** The cost rule: cents = input/1k*inPrice + output/1k*outPrice, ceil to a cent. */
@@ -419,8 +532,7 @@ export async function runDebate(input: DebateEngineInput): Promise<DebateOutcome
     userPrompt: string,
   ): Promise<DebateTurn | null> {
     const roleConfig = settings[role];
-    const system =
-      role === "generator" ? generatorSystemPrompt() : role === "critic" ? criticSystemPrompt() : judgeSystemPrompt();
+    const system = composeRoleSystemPrompt(role, input.prompts?.[role] ?? null);
     const res = await call(roleConfig, system, userPrompt, { role, round, independent });
     const usage = res.usage;
     const turnTokens = tokensOf(usage);
@@ -589,6 +701,11 @@ export function renderDebateResultDocument(outcome: DebateOutcome): string {
   lines.push("");
   lines.push(`## Roles`);
   lines.push("");
+  if (outcome.casteKey) {
+    const custom = outcome.customPrompts?.length ? ` — custom guidance: ${outcome.customPrompts.join(", ")}` : "";
+    lines.push(`Caste: **${outcome.casteKey}**${custom}`);
+    lines.push("");
+  }
   lines.push("| Role | Model | Family |");
   lines.push("| --- | --- | --- |");
   for (const role of ["generator", "critic", "judge"] as const) {

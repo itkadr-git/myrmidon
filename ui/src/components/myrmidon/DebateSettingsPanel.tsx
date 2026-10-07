@@ -17,6 +17,7 @@ import {
   describeDebateSource,
   type DebateSettingsView,
 } from "./debateApi";
+import { CasteDebateSettingsPanel } from "./CasteDebateSettingsPanel";
 
 const ROLES: Array<{ key: "generator" | "critic" | "judge"; label: string; hint: string }> = [
   {
@@ -203,14 +204,22 @@ export function DebateSettingsPanel() {
   }
 
   return (
-    <DebateSettingsPanelView
-      view={query.data}
-      onSave={(settings) => save.mutate(settings)}
-      onClear={() => clear.mutate()}
-      pending={save.isPending || clear.isPending}
-      // The server refuses a symmetric config with 422 + the exact reason;
-      // show it under the form instead of silently keeping the old value.
-      error={error ?? query.data?.problem ?? null}
-    />
+    <div className="space-y-6">
+      <DebateSettingsPanelView
+        view={query.data}
+        onSave={(settings) => save.mutate(settings)}
+        onClear={() => clear.mutate()}
+        pending={save.isPending || clear.isPending}
+        // The server refuses a symmetric config with 422 + the exact reason;
+        // show it under the form instead of silently keeping the old value.
+        error={error ?? query.data?.problem ?? null}
+      />
+      {/* myrmidon(1.7-DEBATE-ASYM-B): the caste level of the same
+          configuration. It is a sibling of the view — not a part of it — so
+          the view stays free of the query client the caste section needs. */}
+      <div className="border-t border-border pt-4">
+        <CasteDebateSettingsPanel />
+      </div>
+    </div>
   );
 }
