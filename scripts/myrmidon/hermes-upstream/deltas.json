@@ -151,6 +151,25 @@
         "path": "hindsight-integrations/hermes/settings.py",
         "upstreamMarker": "reflect_timeout|reflect_fact_types"
       }
+    },
+    {
+      "id": "10-run-workspace-open",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/10-run-workspace-open.patch",
+      "files": [
+        "gateway/platforms/api_server_runs.py",
+        "tools/environments/local.py",
+        "tools/run_workspace.py"
+      ],
+      "reason": "The board issues task workspaces via myr-ws, but the hermes gateway had no delivery path: /v1/runs now accepts a workspace body field, opens the task copy with myr-ws open before the model starts, binds it as the run cwd and exports MYRMIDON_TASK_WORKSPACE to that run's subprocesses; myr-ws exit codes 3/4/5 fall back to /scratch with a warning run event instead of a silent failure (BOT-DISK-H5b).",
+      "dropCondition": "Upstream ships a workspace-open hook on /v1/runs with equivalent cwd/env delivery and failure signaling.",
+      "offer": null,
+      "offerNote": "Not offered yet: see the note on delta 02 (publisher-scan wrapper pending).",
+      "probe": {
+        "source": "hermes",
+        "path": "gateway/platforms/api_server_runs.py",
+        "upstreamMarker": "workspace|MYRMIDON_TASK_WORKSPACE|myr-ws"
+      }
     }
   ]
 }
