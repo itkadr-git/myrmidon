@@ -35,6 +35,35 @@ memory plugin fork applies:
 
 An operator cannot point the tab at a bank the agent does not use.
 
+## What the plugin writes into the bank
+
+The memory plugin (`packages/plugins/hindsight-paperclip`) does not write one
+entry per ticket comment. An agent's comments wait in run-scoped plugin state,
+and when the run finishes the plugin retains **one consolidated digest per
+bank**: a document headed `Run <runId> digest` listing the run's comments with
+author and ticket, with metadata `kind: "run-digest"`, `runId`, `agentIds`,
+`issueIds` and `commentCount`. Duplicate comment ids collapse; bodies under
+200 characters and board-machinery comments (a milestone heading, a status
+change, a wake notice, a `Review:` verdict) are dropped. In the tab's list
+these digests appear as ordinary entries — one per run, not one per comment.
+
+A comment outside a run — a human's, or an event that carries no run id — is
+retained immediately, as before, because it is new input for whichever run
+picks the ticket up next. A failed retention is a warning in the plugin log;
+a run never fails because of memory.
+
+Automatic retention is switched by the plugin instance configuration field
+`autoRetain` (default on); off means no automatic retention at all, and a
+buffered digest is discarded when the run finishes.
+
+Run-start recall is gated by the plugin instance configuration field
+`recallOnRunStart` (not an environment variable): `new-issue` (the default)
+searches the agent's bank only when the agent has not already searched for
+this ticket, so repeated wakes of one ticket do not repeat the same search;
+`always` recalls on every run start (the previous behaviour); `never` turns
+run-start recall off. An absent or unknown value reads as `new-issue`. The
+`hindsight_recall` tool still searches on demand, regardless of this field.
+
 ## What the tab offers
 
 - **Entry list.** Fifty entries per page, **Newer** / **Older** paging. Each

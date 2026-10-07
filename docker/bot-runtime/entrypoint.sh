@@ -275,6 +275,49 @@ if [ "${MYRMIDON_HARDLINK_CHECK:-1}" != "0" ]; then
   hardlink_self_check || log "WARNING: the hard-link self-check itself failed to run"
 fi
 
+# --- shared git-object store facts (myrmidon 1.6.5 BOT-DISK-G live check) ---
+# The live acceptance of the shared-objects fix needs FACTS, not only pass/fail:
+# how many mirrors the store holds, how large it is and which repositories it
+# carries, so the board can say "the store is not empty" without an exec into
+# the bot. git_store_state emits them as one JSON object whose field names are
+# shared with the reporter's `gitStore` (docker/bot-runtime/git-reference/
+# bot-clone-hygiene) and the board's parser (server/…/clone-hygiene.ts):
+#
+#   {"path":"…","enabled":true,"mirrorCount":1,"totalBytes":1048576,
+#    "repos":["owner/repo"]}
+#
+# A mirror is a directory <store>/<owner>/<repo>.git holding objects/ and HEAD
+# — the test the wrapper's isMirror applies, so a junk directory never counts.
+# `path` is "" and `enabled` false when the store is explicitly off. The count
+# is bounded (MYRMIDON_GIT_STORE_STATE_MAX, default 200 mirrors), totalBytes is
+# the store's allocated size (du -sk, in bytes) and repos lists the mirrors as
+# `owner/repo`. Never fails: a store that cannot be walked answers 0/[].
+git_store_state() {
+  local store="$1" dir rel count=0 repos="" sep="" kib
+  if [ -z "${store}" ]; then
+    printf '{"path":"","enabled":false,"mirrorCount":0,"totalBytes":0,"repos":[]}'
+    return 0
+  fi
+  if [ -d "${store}" ]; then
+    for dir in "${store}"/*/*.git; do
+      [ -d "${dir}/objects" ] && [ -f "${dir}/HEAD" ] || continue
+      [ "${count}" -lt "${MYRMIDON_GIT_STORE_STATE_MAX:-200}" ] || break
+      count=$((count + 1))
+      rel=${dir#"${store}"/}
+      repos="${repos}${sep}\"$(json_escape "${rel%.git}")\""
+      sep=","
+    done
+  fi
+  # Allocated size in bytes, from the same `du -sk` the acceptance script uses —
+  # but 0 for a store holding no mirror: du counts the directory's own block
+  # (4 KiB), and "empty" has to read as 0/[] for the acceptance to be unambiguous.
+  kib="$(du -sk "${store}" 2>/dev/null)"
+  kib="${kib%%[!0-9]*}"
+  [ "${count}" -gt 0 ] || kib=0
+  printf '{"path":"%s","enabled":true,"mirrorCount":%s,"totalBytes":%s,"repos":[%s]}' \
+    "$(json_escape "${store}")" "${count}" "$(( ${kib:-0} * 1024 ))" "${repos}"
+}
+
 # --- shared-git-objects self-check (dev variant) ---------------------------
 # myrmidon(1.6.5 BOT-DISK-G): task clones share one object store through
 # --reference-if-able (the git wrapper, the board's mirror or the bot's own
@@ -289,6 +332,16 @@ fi
 #      bare-mirror it, clone --reference-if-able from the mirror and check the
 #      clone's objects/info/alternates points at it. This is the mechanism the
 #      wrapper relies on; if it fails here, clones copy objects again.
+#   4. a task-shaped clone THROUGH the wrapper (myrmidon 1.6.5 BOT-DISK-G-A):
+#      the argv the field actually uses — `clone --reference-if-able <stale>
+#      --depth 50 <github url>` — must leave a mirror in the store and a clone
+#      borrowing it. Both of those options were opt-outs before, so this check
+#      is what turns "the store is empty again" into a failure instead of a
+#      green report.
+#   5. the store is in use: a bot that already holds GitHub task clones must
+#      have a mirror in the store. On 06.10 every bot of the fleet reported
+#      green while the store stayed empty and every task clone copied a full
+#      history; this check names that state.
 # A failure is logged as an error and written to
 # ${HERMES_HOME}/.myrmidon/git-objects-check.json, which the clone-hygiene
 # reporter passes to the board. It never stops the gateway: a bot with a
@@ -377,16 +430,84 @@ git_objects_self_check() {
   else
     add_check "reference-clone" false "cannot create a scratch under ${HERMES_HOME}"
   fi
+  # 4. a task-shaped clone through the wrapper fills the store and borrows it.
+  local probe_repo="myrmidon-selfcheck/probe"
+  if [ -z "${store}" ]; then
+    add_check "store-fills" true "" # the store is explicitly off; nothing to fill
+  else
+    work="$(mktemp -d "${HERMES_HOME}/.myrmidon/git-selffill.XXXXXX" 2>/dev/null)" || work=""
+    if [ -z "${work}" ]; then
+      add_check "store-fills" false "cannot create a scratch under ${HERMES_HOME}"
+    else
+      err="$(
+        {
+          set -e
+          export GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.com
+          export MYRMIDON_GIT_LOCAL_MIRROR="${store}"
+          origin="${work}/origin"; dest="${work}/clone"
+          mkdir -p "${origin}"
+          "${real_git}" init -q -b main "${origin}"
+          echo one > "${origin}/a.txt"
+          "${real_git}" -C "${origin}" add a.txt
+          "${real_git}" -C "${origin}" commit -q -m one
+          # A stale reference of the same repository, exactly like the
+          # /workspace/<old> a task clone points at in the field.
+          "${real_git}" clone -q --bare "${origin}" "${work}/stale.git"
+          # The argv task clones actually use in the field: a stale reference
+          # (--reference-if-able) plus a bounded history (--depth 50). Neither
+          # may talk the wrapper out of the store; both used to.
+          "${wrapper}" -c "url.file://${origin}.insteadOf=https://github.com/${probe_repo}" \
+            clone -q --reference-if-able "${work}/stale.git" --depth 50 "https://github.com/${probe_repo}" "${dest}"
+          target="$(sed -n '1p' "${dest}/.git/objects/info/alternates" 2>/dev/null)"
+          want="$(cd "${store}/${probe_repo}.git/objects" 2>/dev/null && pwd -P)"
+          [ -n "${target}" ] && [ -n "${want}" ] && [ "${target%/}" = "${want}" ]
+        } 2>&1
+      )"; rc=$?
+      rm -rf "${work}" "${store}/${probe_repo}.git" "${store}/${probe_repo%%/*}" 2>/dev/null || true
+      if [ "${rc}" -ne 0 ]; then
+        add_check "store-fills" false "a task-shaped clone (--reference-if-able + --depth) through the wrapper did not leave a mirror in the store ${store} and borrow it: ${err}"
+      else
+        add_check "store-fills" true ""
+      fi
+    fi
+  fi
+  # 5. the store is in use: GitHub task clones exist, so a mirror must.
+  # Roots and shape follow bot-clone-hygiene (myrmidon BOT-DISK-F/H): clones sit
+  # below a top-level entry of /workspace and /scratch, whatever the depth.
+  local task_roots="${MYRMIDON_TASK_ROOTS:-/workspace:/scratch}" clones=0 mirrors=0 sample="" d
+ 
+  if [ -n "${store}" ] && [ -d "${store}" ]; then
+    mirrors="$(find "${store}" -mindepth 2 -maxdepth 2 -name '*.git' -type d 2>/dev/null | wc -l | tr -d ' ')"
+  fi
+  for g in $(printf '%s' "${task_roots}" | tr ':' ' '); do
+    for d in $(find "${g}" -maxdepth 4 -name .git 2>/dev/null | head -200); do
+      d="${d%/.git}"
+      case "$("${real_git}" -C "${d}" config --get remote.origin.url 2>/dev/null)" in
+        *github.com*)
+          clones=$((clones + 1))
+          [ -n "${sample}" ] || sample="${d}"
+          ;;
+      esac
+    done
+  done
+  if [ "${clones}" -eq 0 ] || [ "${mirrors}" -gt 0 ] || [ -z "${store}" ]; then
+    add_check "store-in-use" true ""
+  else
+    add_check "store-in-use" false "${clones} GitHub task clone(s) on this bot (e.g. ${sample}) but the store ${store} holds no mirror: those clones copied their git history in full. A clone through the wrapper fills the store — see store-fills above for the shape it accepts."
+  fi
   if [ "${ok_all}" = true ]; then
     log "shared-objects self-check ok: store=${store:-off}"
   else
     log "ERROR: shared-objects self-check failed — task clones on this bot copy git history per clone again (see git-objects-check.json)"
   fi
-  local out_dir="${HERMES_HOME}/.myrmidon" now
+  local out_dir="${HERMES_HOME}/.myrmidon" now store_state
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  # myrmidon(1.6.5 BOT-DISK-G live check): the facts of the store at this start,
+  # next to the checks — the reporter passes them on and the board reads them.
+  store_state="$(git_store_state "${store}")"
   if mkdir -p "${out_dir}" 2>/dev/null; then
-    printf '{"version":1,"checkedAt":"%s","store":"%s","ok":%s,"checks":[%s]}\n' \
-      "${now}" "$(json_escape "${store}")" "${ok_all}" "${checks}" \
+    printf '{"version":1,"checkedAt":"%s","store":"%s","ok":%s,"checks":[%s],"storeState":%s}\n' \
+      "${now}" "$(json_escape "${store}")" "${ok_all}" "${checks}" "${store_state}" \
       > "${out_dir}/git-objects-check.json.tmp" 2>/dev/null \
       && mv -f "${out_dir}/git-objects-check.json.tmp" "${out_dir}/git-objects-check.json" 2>/dev/null \
       || log "WARNING: cannot write ${out_dir}/git-objects-check.json"

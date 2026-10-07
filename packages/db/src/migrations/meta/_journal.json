@@ -2115,6 +2115,20 @@
       "when": 1770000000438,
       "tag": "0304_agent_castes",
       "breakpoints": true
+    },
+    {
+      "idx": 305,
+      "version": "7",
+      "when": 1791254886182,
+      "tag": "0305_base_skills",
+      "breakpoints": true
+    },
+    {
+      "idx": 306,
+      "version": "7",
+      "when": 1791312571333,
+      "tag": "0306_audit_indexes_heartbeat_issues",
+      "breakpoints": true
     }
   ]
 }

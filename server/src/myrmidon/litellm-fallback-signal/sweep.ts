@@ -19,8 +19,9 @@
 
 import { and, eq, ne, isNotNull } from "drizzle-orm";
 import { agents, companies, type Db } from "@paperclipai/db";
+import type { ResolvedFallbackSignalSettings } from "@paperclipai/shared";
 import { logger } from "../../middleware/logger.js";
-import { secretService } from "../../services/index.js";
+import { secretService, instanceSettingsService } from "../../services/index.js";
 import {
   botKeyIndex,
   createLitellmGatewayClient,
@@ -37,10 +38,18 @@ import {
   shareTripsSignal,
   readFallbackSignalSettings,
   recordModelFallbackSignals,
+  resetModelFallbackSignals,
+  toFallbackSignalSettings,
   type FallbackCall,
   type FallbackSignalSettings,
   type ModelFallbackAttentionSignal,
 } from "./attention.js";
+import { readResolvedFallbackSignalSettings } from "./settings.js";
+import {
+  buildFallbackStatusRows,
+  recordFallbackStatus,
+  resetFallbackStatus,
+} from "./status.js";
 
 export interface FallbackSweepDeps {
   /** Spend-log read for the window; overridden in tests (mock, no network). */
@@ -91,12 +100,23 @@ export async function sweepModelFallbackSignals(
         if (!agentId) continue;
         calls.push({ agentId, model: entry.model, startTime: entry.startTime });
       }
+      const shares = fallbackShares(calls, modelSetByAgent);
       const signals: ModelFallbackAttentionSignal[] = [];
-      for (const share of fallbackShares(calls, modelSetByAgent)) {
+      for (const share of shares) {
         if (!shareTripsSignal(share, settings)) continue;
         signals.push(fallbackSignalForShare(share, settings, to.toISOString()));
       }
       recordModelFallbackSignals(companyId, signals);
+      // myrmidon(BOT-RUNTIME-TUNING D2): the rows behind the cards, recorded on
+      // every pass — above or below the threshold — so the agent card can show
+      // the live share and go quiet again when the fallback stops.
+      recordFallbackStatus(companyId, {
+        at: to.toISOString(),
+        thresholdPct: settings.thresholdPct,
+        minCalls: settings.minCalls,
+        windowSec: Math.round(settings.windowMs / 1000),
+        rows: buildFallbackStatusRows(shares, settings),
+      });
       signalsTotal += signals.length;
       log.info(
         { companyId, calls: calls.length, signals: signals.length, window: { from: from.toISOString(), to: to.toISOString() } },
@@ -112,16 +132,39 @@ export async function sweepModelFallbackSignals(
 // ---------------------------------------------------------------------------
 // Timer wiring (start/stop; one marked call from server/src/index.ts)
 // ---------------------------------------------------------------------------
+//
+// myrmidon(BOT-RUNTIME-TUNING D2): the timer no longer freezes the settings it
+// read at startup. Every tick resolves the effective settings first — stored
+// instance settings, then environment, then defaults — and the next tick is
+// scheduled with the interval that resolution returns, so an operator changes
+// the threshold or the window from the settings API and the following pass
+// obeys, without a restart of the board.
+//
+// The loop stays armed even with the switch off: the tick reads one settings
+// row, makes no gateway request and records nothing, and clearing both
+// registries on the way out means cards from an earlier window cannot linger
+// after the signal is switched off.
+
+export interface FallbackSweepStartOptions {
+  env?: NodeJS.ProcessEnv;
+  deps?: Partial<FallbackSweepDeps>;
+  /** Effective settings for one tick; tests inject their own row. */
+  readSettings?: () => Promise<ResolvedFallbackSignalSettings>;
+}
 
 export function startModelFallbackSignalSweep(
   db: Db,
-  opts: { env?: NodeJS.ProcessEnv; deps?: Partial<FallbackSweepDeps> } = {},
+  opts: FallbackSweepStartOptions = {},
 ): () => void {
   const env = opts.env ?? process.env;
-  const settings = readFallbackSignalSettings(env);
-  if (!settings.enabled) return () => {};
   const costSettings = readLitellmCostSettings(env);
   const log = opts.deps?.log ?? logger;
+  const settingsService = instanceSettingsService(db);
+  const readSettings =
+    opts.readSettings ?? (() => readResolvedFallbackSignalSettings(settingsService, env));
+  // Delay used when the settings themselves cannot be read; the environment's
+  // own reading is the last known-good period.
+  const fallbackIntervalMs = readFallbackSignalSettings(env).intervalMs;
 
   const deps: FallbackSweepDeps = {
     async listSpendLogs(companyId, window) {
@@ -159,27 +202,42 @@ export function startModelFallbackSignalSweep(
 
   let sweeping = false;
   let stopped = false;
+  let timer: NodeJS.Timeout | null = null;
+
+  const schedule = (delayMs: number) => {
+    timer = setTimeout(() => {
+      void tick();
+    }, delayMs);
+    if (typeof timer.unref === "function") timer.unref();
+  };
+
   const tick = async () => {
     if (sweeping || stopped) return;
     sweeping = true;
+    let delayMs = fallbackIntervalMs;
     try {
-      await sweepModelFallbackSignals(deps, settings);
+      const resolved = await readSettings();
+      const live = toFallbackSignalSettings(resolved.settings);
+      delayMs = live.intervalMs;
+      if (!live.enabled) {
+        resetModelFallbackSignals();
+        resetFallbackStatus();
+        return;
+      }
+      await sweepModelFallbackSignals(deps, live);
     } catch (err) {
       log.error({ err }, "model fallback signal sweep tick failed");
     } finally {
       sweeping = false;
+      if (!stopped) schedule(delayMs);
     }
   };
-  const timer = setInterval(() => {
-    void tick();
-  }, settings.intervalMs);
-  if (typeof timer.unref === "function") timer.unref();
   void tick(); // first pass at startup: the signal exists before anyone opens the desk
 
   const stop = () => {
     if (stopped) return;
     stopped = true;
-    clearInterval(timer);
+    if (timer) clearTimeout(timer);
   };
   return stop;
 }

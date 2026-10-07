@@ -822,3 +822,42 @@ Actions → Myrmidon release publish → Run workflow → the tag name in the `t
 input — the input wins over the branch you dispatch from, so running from
 `main` publishes the typed tag; the publish is idempotent — an existing
 Release is updated, not duplicated.
+
+## Release mode (merge freeze)
+
+Between the release cut and a green CI on the tag, `main` is frozen: merges
+(bots included) wait. The reason is the 1.6.4 incident (04.10): one minute
+after the tag, bots merged #475 plus three more PRs, the tag commit's CI run
+was cancelled as superseded, the autopublish refused, and the release had to
+be published by hand.
+
+**How it works.** The **Myrmidon release publish** workflow (started by the
+`myr-vX.Y.Z` tag push) opens an issue titled `release-freeze: <tag>`; the
+issue being open IS the freeze. The **Release freeze gate** check (workflow
+[myrmidon-release-freeze.yml](https://github.com/itkadr-git/myrmidon/blob/main/.github/workflows/myrmidon-release-freeze.yml))
+fails on every PR into `main` while the freeze is active. As soon as
+`Myrmidon CI` is green on the tag, the same tag workflow closes the issue —
+freeze cleared. The state is derived from GitHub (newest tag + its CI + the
+open freeze issue); there is no file flag in the repo. The logic lives in
+[release-freeze.sh](https://github.com/itkadr-git/myrmidon/blob/main/scripts/myrmidon/release/release-freeze.sh).
+
+**Gate behaviour.**
+
+- Fails (red check) while the newest tag's CI is not green or the freeze
+  issue of that tag is open.
+- A green tag CI clears the freeze immediately, even before the issue-closing
+  step has run (no lag window).
+- A FAILED tag CI is not a merge freeze but a broken release: the merge gate
+  passes, and the release gate refuses the publish.
+- If the repo state cannot be read (no token, API down) the gate fails
+  closed.
+
+**To make the freeze binding,** the operator adds the `freeze` check of the
+**Release freeze gate** workflow to the required status checks of `main`
+(Settings → Branches). Without that it is advisory: red, but an admin can
+still merge.
+
+**Manual control.** The freeze is the issue: manual release = close the
+`release-freeze: <tag>` issue (the gate stays red until the tag CI is green
+anyway); manual freeze = open an issue with that title. Both actions are
+documented in the issue body; the automation never overwrites them.

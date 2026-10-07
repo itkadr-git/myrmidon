@@ -282,6 +282,34 @@ describe("myrmidon(G2) compileHermesProfile — always-set config.yaml fields", 
   });
 });
 
+// myrmidon(MEMORY-CENTRAL-A): the compiler half of the instance switch — with
+// disableLocalMemory on, the bot's Hermes LOCAL memory (the built-in
+// MEMORY.md/USER.md stores) is turned off and durable memory lives only in
+// hindsight; off, the memory block is exactly the pre-feature one.
+describe("myrmidon(MEMORY-CENTRAL-A) compileHermesProfile — local memory off", () => {
+  it("writes memory_enabled/user_profile_enabled false while keeping the hindsight provider", () => {
+    const profile = compileHermesProfile(baseInput({ instanceDefaults: { disableLocalMemory: true } }));
+    const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
+    expect(yaml).toContain(
+      'memory:\n  memory_enabled: false\n  provider: "hindsight"\n  user_profile_enabled: false',
+    );
+  });
+
+  it("does not touch the memory block when the flag is unset or false", () => {
+    for (const instanceDefaults of [{}, { disableLocalMemory: false }]) {
+      const yaml = fileByPath(compileHermesProfile(baseInput({ instanceDefaults })).files, "hermes/config.yaml").content;
+      expect(yaml).toContain('memory:\n  provider: "hindsight"');
+      expect(yaml).not.toContain("memory_enabled");
+    }
+  });
+
+  it("leaves the hindsight config.json rule untouched: mode stays local_external with the flag on", () => {
+    const profile = compileHermesProfile(baseInput({ instanceDefaults: { disableLocalMemory: true } }));
+    const json = JSON.parse(fileByPath(profile.files, "hermes/hindsight/config.json").content);
+    expect(json.mode).toBe("local_external");
+  });
+});
+
 describe("myrmidon(G2) compileHermesProfile — model mapping (repeats the M1 mapping)", () => {
   it("maps model, provider and a valid reasoning effort", () => {
     const profile = compileHermesProfile(
