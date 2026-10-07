@@ -24,6 +24,20 @@ export interface VoiceTranscript {
   durationMs?: number;
   truncated: boolean;
   backend: string;
+  /**
+   * myrmidon(1.6.5 VOICE-STT B): what happened to speaker labels on this
+   * recognition, as the core reported it. The shape is structural on purpose —
+   * the seam stays independent of the core's module.
+   */
+  diarization?: VoiceDiarizationReport;
+}
+
+/** myrmidon(1.6.5 VOICE-STT B): the core's diarization report, structurally. */
+export interface VoiceDiarizationReport {
+  requested: boolean;
+  applied: boolean;
+  speakers: number;
+  reason: string | null;
 }
 
 /** Hard cap on the transcript block, aligned with the upstream comment budget. */
@@ -61,6 +75,21 @@ function renderSegments(
 }
 
 /**
+ * myrmidon(1.6.5 VOICE-STT B): the explicit diarization marker line, or "".
+ *
+ * It renders ONLY when the contour asked the provider for speaker labels and
+ * the answer carried none: the reader (and the bot) then sees that the
+ * recording was not separated into voices, instead of reading an unlabeled
+ * transcript as if a single person had spoken. When diarization was never
+ * requested there is nothing to announce, and an applied one is already
+ * visible in the «Говорящий N» lines.
+ */
+export function diarizationMarker(report: VoiceDiarizationReport | undefined): string {
+  if (!report?.requested || report.applied) return "";
+  return `Говорящие не размечены: ${report.reason ?? "diarization_no_speakers"}`;
+}
+
+/**
  * The transcript as it is appended to the inbound comment body, or null when
  * the recognition produced no usable text (the caller then records a skip).
  */
@@ -71,8 +100,9 @@ export function renderVoiceTranscript(
     ? renderSegments(transcript.segments)
     : "";
   const plain = transcript.text.trim();
+  const marker = diarizationMarker(transcript.diarization);
   if (!plain && !segments) return null;
-  const parts = [plain, segments].filter((part) => part.length > 0);
+  const parts = [plain, segments, marker].filter((part) => part.length > 0);
   const body = parts.join("\n\n");
   if (!body) return null;
   // myrmidon(1.6.1 VOICE-STT B): cap the block, then mark the cut so the bot

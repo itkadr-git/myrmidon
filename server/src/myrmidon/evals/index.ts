@@ -49,7 +49,19 @@ export {
   type JudgePort,
   type JudgeTaskResult,
   type JudgeDeps,
+  DEFAULT_EVALS_JUDGE_PRIORITY_MODELS,
+  parseJudgePriorityModels,
+  EVALS_JUDGE_PRIORITY_MODELS_ENV,
 } from "./judge.js";
+// myrmidon(1.6.5 EVALS-JUDGE-FAMILY): family detection, the verified served
+// model list and the candidate order.
+export {
+  SERVED_FREE_GATEWAY_MODELS,
+  DEFAULT_JUDGE_PRIORITY_MODELS,
+  getModelFamily,
+  isSameJudgeFamily,
+  judgeCandidateOrder,
+} from "./model-family.js";
 export {
   createLangfuseScoreExporter,
   noopScoreExporter,
