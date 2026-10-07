@@ -23,6 +23,7 @@ import {
   WS_TASK_BRANCH_PREFIX,
   myrWsIssueKeySchema,
   normalizeStoredBotDiskSettings,
+  resolveBotDiskSettings,
   myrWsRepoNameSchema,
   wsBotDiskSettingsSchema,
   type WsDesiredState,
@@ -63,6 +64,12 @@ export interface BotWorkspacesStore {
   listIssues(input: { companyId: string; agentId: string; since: Date }): Promise<WorkspaceIssueRow[]>;
   /** Pull-request work products of the tasks, newest first. */
   listPrProducts(input: { issueIds: string[] }): Promise<WorkspacePrProductRow[]>;
+  /**
+   * Keys of done/cancelled tasks the bot holds or held (assigned now, or reassigned
+   * away from it at any time), with no lookback limit. Optional so older stores keep
+   * working: without it `closedKeys` comes from the lookback rows only.
+   */
+  listClosedKeys?(input: { companyId: string; agentId: string }): Promise<string[]>;
   /** Repo URL of the primary project workspace per project id. */
   listProjectRepoUrls(input: { projectIds: string[] }): Promise<Map<string, string>>;
   /** Stored `general.botDisk` (raw), for the grace settings. */
@@ -79,6 +86,8 @@ export interface BotWorkspacesServiceDeps {
   /** Latest dockergate snapshot for the bot; null/absent means no data (level none). */
   readPressure?: (input: BotWorkspacePressureInput) => Promise<BotWorkspacePressure | null>;
   now?: () => Date;
+  /** Environment for the `enabled` default (tests inject it). */
+  env?: Record<string, string | undefined>;
 }
 
 const GITHUB_REPO_RE = /github\.com[/:]([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?(?:[/#?]|$)/i;
@@ -104,6 +113,11 @@ export function botWorkspacesService(deps: BotWorkspacesServiceDeps) {
   const now = deps.now ?? (() => new Date());
 
   return {
+    /** `general.botDisk.enabled` (stored, else env, else default true): false switches the reaping off. */
+    async isEnabled(): Promise<boolean> {
+      const stored = await deps.store.readBotDiskSettings();
+      return resolveBotDiskSettings({ stored, env: deps.env ?? process.env }).settings.enabled;
+    },
     async desiredState(input: { companyId: string; agentId: string }): Promise<WsDesiredState> {
       const at = now();
       const since = new Date(at.getTime() - WS_TERMINAL_LOOKBACK_MS);
@@ -180,6 +194,18 @@ export function botWorkspacesService(deps: BotWorkspacesServiceDeps) {
         )
         .map((row) => row.identifier as string);
 
+      // Board-confirmed closed (done/cancelled) tasks of this bot: the lookback rows plus the
+      // unbounded store query, so a directory of a task closed long ago is still confirmed.
+      const closedSet = new Set<string>(
+        keyed.filter((row) => row.status === "done" || row.status === "cancelled").map((row) => row.identifier as string),
+      );
+      const extraClosed = (await deps.store.listClosedKeys?.({ companyId: input.companyId, agentId: input.agentId })) ?? [];
+      for (const key of extraClosed) {
+        if (myrWsIssueKeySchema.safeParse(key).success) closedSet.add(key);
+      }
+      for (const key of protectKeys) closedSet.delete(key);
+      const closedKeys = [...closedSet].sort();
+
       const settings = wsBotDiskSettingsSchema.safeParse(rawSettings);
       const configured = settings.success ? settings.data : {};
       const pressure = (await deps.readPressure?.({ agentId: input.agentId }).catch(() => null)) ?? NO_PRESSURE;
@@ -190,10 +216,12 @@ export function botWorkspacesService(deps: BotWorkspacesServiceDeps) {
           closingMinutes: configured.graceClosingMinutes ?? WS_BOT_DISK_SETTING_DEFAULTS.graceClosingMinutes,
           scratchTtlHours: configured.scratchTtlHours ?? WS_BOT_DISK_SETTING_DEFAULTS.scratchTtlHours,
           orphanHours: WS_ORPHAN_HOURS,
+          ...(configured.legacyPressureIdleDays !== undefined ? { legacyPressureIdleDays: configured.legacyPressureIdleDays } : {}),
         },
         pressure,
         workspaces,
         protectKeys,
+        closedKeys,
       };
     },
   };
@@ -256,6 +284,31 @@ export function botWorkspacesStore(db: Db): BotWorkspacesStore {
               )
           : [];
       return [...mine, ...lost];
+    },
+
+    async listClosedKeys({ companyId, agentId }) {
+      const reassigned = await db
+        .selectDistinct({ entityId: activityLog.entityId })
+        .from(activityLog)
+        .where(
+          and(
+            eq(activityLog.companyId, companyId),
+            eq(activityLog.entityType, "issue"),
+            eq(activityLog.action, "issue.updated"),
+            sql`${activityLog.details}->'_previous'->>'assigneeAgentId' = ${agentId}`,
+          ),
+        );
+      const reassignedIds = reassigned.map((r) => r.entityId);
+      const held =
+        reassignedIds.length > 0
+          ? or(eq(issues.assigneeAgentId, agentId), inArray(sql`${issues.id}::text`, reassignedIds))
+          : eq(issues.assigneeAgentId, agentId);
+      const rows = await db
+        .select({ identifier: issues.identifier })
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), sql`${issues.status} in ('done', 'cancelled')`, held))
+        .limit(5000);
+      return rows.map((r) => r.identifier).filter((id): id is string => !!id);
     },
 
     async listPrProducts({ issueIds }) {

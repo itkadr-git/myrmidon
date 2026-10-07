@@ -175,6 +175,7 @@ export function readRepoFacts(repo) {
 
 // `.git` is skipped for the age: `git fetch` / `git status` (the host janitor runs them
 // every 30 min) rewrite files in it and would reset every TTL. The working tree decides.
+const NESTED_MAX_DEPTH = 3;
 const SKIP_AGE_DIRS = new Set(["node_modules", ".pnpm-store", ".git"]);
 
 /**
@@ -189,14 +190,15 @@ export function measureTree(root, limit = WALK_ENTRY_LIMIT) {
   let count = 0;
   let truncated = false;
   const seen = new Set();
-  const stack = [{ p: root, skipAge: false }];
+  const nestedGit = [];
+  const stack = [{ p: root, skipAge: false, depth: 0, noNested: false }];
   const touch = (st, skipAge) => {
     if (skipAge) return;
     const t = st.nlink > 1 && !st.isDirectory() ? st.mtimeMs : Math.max(st.mtimeMs, st.ctimeMs);
     if (t > newest) newest = t;
   };
   while (stack.length) {
-    const { p, skipAge } = stack.pop();
+    const { p, skipAge, depth, noNested } = stack.pop();
     let st;
     try {
       st = fs.lstatSync(p);
@@ -215,8 +217,16 @@ export function measureTree(root, limit = WALK_ENTRY_LIMIT) {
       } catch {
         continue;
       }
+      // a repository below the root: its working tree is the directory holding `.git`
+      // (a directory or a file), at most NESTED_MAX_DEPTH levels down, never inside node_modules
+      if (depth > 0 && depth <= NESTED_MAX_DEPTH && !noNested && names.includes(".git")) nestedGit.push(p);
       for (const n of names) {
-        stack.push({ p: path.join(p, n), skipAge: skipAge || SKIP_AGE_DIRS.has(n) });
+        stack.push({
+          p: path.join(p, n),
+          skipAge: skipAge || SKIP_AGE_DIRS.has(n),
+          depth: depth + 1,
+          noNested: noNested || n === "node_modules" || n === ".pnpm-store" || n === ".git",
+        });
       }
     } else if (st.isFile()) {
       if (st.nlink > 1) {
@@ -227,7 +237,7 @@ export function measureTree(root, limit = WALK_ENTRY_LIMIT) {
       size += st.size;
     }
   }
-  return { sizeBytes: truncated ? null : size, newestMs: newest };
+  return { sizeBytes: truncated ? null : size, newestMs: newest, nestedGit: nestedGit.sort() };
 }
 
 // ---------------------------------------------------------------------------
@@ -402,6 +412,7 @@ export function classifyAll(opts = {}) {
         sizeBytes: m.sizeBytes,
         mtimeMs: m.newestMs,
         isGit: c.repo !== null,
+        nestedGit: m.nestedGit,
         inWorkspace: path.dirname(dir) === ctx.workspaceRoot,
       });
       actions.push(decide(dir, c, ageSec, { live, scratchTtlSec, foreignGraceSec, board: desired !== null }));
@@ -496,7 +507,9 @@ export function toInventory(items, opts = {}) {
         name: key,
         path: it.path,
         mtime: iso(it),
-        isGit: it.isGit === true || it.inWorkspace === true,
+        isGit: it.isGit === true || it.inWorkspace === true || (Array.isArray(it.nestedGit) && it.nestedGit.length > 0),
+        nestedGit: Array.isArray(it.nestedGit) ? it.nestedGit : [],
+        sizeBytes: it.sizeBytes ?? null,
         clean: null,
         pushed: null,
       });

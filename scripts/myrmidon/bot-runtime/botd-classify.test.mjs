@@ -147,7 +147,7 @@ describe("classification of fixtures", () => {
     const m = byName(run());
     assert.ok(m["ABC-4"].sizeBytes > 0);
     assert.ok(Number.isInteger(m["ABC-4"].ageSec) && m["ABC-4"].ageSec >= 0);
-    assert.deepEqual(Object.keys(m["ABC-4"]).sort(), ["ageSec", "class", "inWorkspace", "isGit", "mtimeMs", "path", "sign", "sizeBytes"]);
+    assert.deepEqual(Object.keys(m["ABC-4"]).sort(), ["ageSec", "class", "inWorkspace", "isGit", "mtimeMs", "nestedGit", "path", "sign", "sizeBytes"]);
   });
 
   it("scratch: fresh stays, old goes by TTL; the age counts mtime/ctime", () => {
@@ -337,7 +337,7 @@ describe("toInventory: the shape of the rules inventory", () => {
   });
   it("clean/pushed are null (never guessed), mtime is ISO", () => {
     for (const s of inv.scratch) {
-      assert.deepEqual(Object.keys(s).sort(), ["clean", "isGit", "mtime", "name", "path", "pushed"]);
+      assert.deepEqual(Object.keys(s).sort(), ["clean", "isGit", "mtime", "name", "nestedGit", "path", "pushed", "sizeBytes"]);
       assert.equal(s.clean, null);
       assert.equal(s.pushed, null);
       assert.ok(ISO.test(s.mtime));

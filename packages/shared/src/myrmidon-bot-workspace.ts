@@ -240,6 +240,8 @@ export const wsDesiredStateSchema = z.object({
     closingMinutes: z.number().int().positive(),
     scratchTtlHours: z.number().int().positive(),
     orphanHours: z.number().int().positive(),
+    /** myrmidon(1.6.5-BOT-DISK-H, rc.9): idle days before a named directory is archived under hard pressure. Optional: an older board omits it (botd uses 7). */
+    legacyPressureIdleDays: z.number().int().min(1).max(90).optional(),
   }),
   pressure: z.object({
     quotaPercent: z.number().min(0).max(100).nullable(),
@@ -253,6 +255,14 @@ export const wsDesiredStateSchema = z.object({
    * removes the directory of such a task. Optional: an older board omits it.
    */
   protectKeys: z.array(myrWsIssueKeySchema).optional(),
+  /**
+   * myrmidon(1.6.5-BOT-DISK-H, rc.9): keys of tasks the board confirms done or
+   * cancelled that this bot held (assigned now, or reassigned away from it), with
+   * no lookback limit. botd removes a directory named exactly like a task key only
+   * when the key is listed here; otherwise it only reports it. Optional: an older
+   * board omits it, and then such directories are never removed.
+   */
+  closedKeys: z.array(myrWsIssueKeySchema).optional(),
 });
 export type WsDesiredState = z.infer<typeof wsDesiredStateSchema>;
 
@@ -467,6 +477,7 @@ export const wsBotDiskSettingsSchema = z
   .object({
     graceClosingMinutes: z.number().int().min(5).max(24 * 60).optional(),
     scratchTtlHours: z.number().int().min(1).max(24 * 30).optional(),
+    legacyPressureIdleDays: z.number().int().min(1).max(90).optional(),
     partitionThresholdPercent: z.number().int().min(50).max(100).optional(),
     partitionRefuseOpenPercent: z.number().int().min(50).max(100).optional(),
     partitionCriticalPercent: z.number().int().min(50).max(100).optional(),

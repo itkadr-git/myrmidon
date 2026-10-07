@@ -16,6 +16,7 @@ const { createLoop } = await import(path.join(ROOT, "docker/bot-runtime/botd/lib
 const { buildReport, createReporter, validateReport, MAX_ACTIONS } = await import(
   path.join(ROOT, "docker/bot-runtime/botd/lib/report.js")
 );
+const realRules = await import(path.join(ROOT, "docker/bot-runtime/botd/lib/rules.js"));
 const FIXTURES = path.join(ROOT, "docs/myrmidon/bot-disk-contract");
 const fixture = (name) => JSON.parse(fs.readFileSync(path.join(FIXTURES, name), "utf8"));
 
@@ -39,7 +40,7 @@ function fakeBoard(script = []) {
   return { fetchImpl, calls };
 }
 
-function rig({ desired, plan, executor, gatherParts, board = fakeBoard(), settings } = {}) {
+function rig({ desired, plan, rules, inventory, executor, gatherParts, board = fakeBoard(), settings } = {}) {
   const logs = [];
   const states = [];
   const executed = [];
@@ -53,7 +54,7 @@ function rig({ desired, plan, executor, gatherParts, board = fakeBoard(), settin
   const loop = createLoop({
     desired: { poll: async () => desired ?? { ok: true, state: desiredState() } },
     gather: async () => ({
-      inventory: { worktrees: [{ key: "ABC-099", path: closingPath }], scratch: [], bases: [], archives: [] },
+      inventory: inventory ?? { worktrees: [{ key: "ABC-099", path: closingPath }], scratch: [], bases: [], archives: [] },
       parts: gatherParts ?? {
         copies: [{ path: closingPath, class: "E", key: "ABC-099", clean: true, pushed: true, sizeBytes: 1000, ageSec: 3600 }],
         foreign: [],
@@ -62,7 +63,7 @@ function rig({ desired, plan, executor, gatherParts, board = fakeBoard(), settin
         selfChecks: { reflink: true, gitref: true, wsCli: true },
       },
     }),
-    rules: {
+    rules: rules ?? {
       plan: plan ?? (() => ({ actions: [{ op: "remove", path: closingPath, reason: "closing-clean-pushed", key: "ABC-099" }] })),
     },
     executor: executor ?? {
@@ -206,6 +207,92 @@ describe("botd loop: one pass", () => {
   });
 });
 
+describe("botd loop: real rules with the Date clock", () => {
+  it("plans a removal for a stale scratch copy (a Date clock used to give an empty plan)", async () => {
+    const stale = { name: "old-clone", path: "/scratch/old-clone", mtime: new Date(NOW.getTime() - 48 * 3600 * 1000).toISOString(), isGit: false };
+    const r = rig({
+      rules: realRules,
+      inventory: { worktrees: [], scratch: [stale], bases: [], archives: [] },
+      desired: { ok: true, state: desiredState({ workspaces: [] }) },
+    });
+    const out = await r.loop.runOnce();
+    assert.deepEqual(r.executed.map((a) => a.path), ["/scratch/old-clone"]);
+    assert.equal(out.desiredOk, true);
+  });
+});
+
+describe("botd loop: real rules never remove an open task's directory", () => {
+  it("a Date clock plus an open key unknown to protectKeys: nothing is executed", async () => {
+    const dir = { name: "OPE-4954", path: "/workspace/OPE-4954", mtime: new Date(NOW.getTime() - 72 * 3600 * 1000).toISOString(), isGit: true, clean: false, pushed: false };
+    const state = desiredState({ workspaces: [], protectKeys: [], closedKeys: [] });
+    const r = rig({ rules: realRules, inventory: { worktrees: [], scratch: [dir], bases: [], archives: [] }, desired: { ok: true, state } });
+    await r.loop.runOnce();
+    assert.deepEqual(r.executed, []);
+    const closed = rig({
+      rules: realRules,
+      inventory: { worktrees: [], scratch: [dir], bases: [], archives: [] },
+      desired: { ok: true, state: { ...state, closedKeys: ["OPE-4954"] } },
+      executor: { "archive-remove": async (a) => (closedExecuted.push(a), "archived") },
+    });
+    const closedExecuted = [];
+    await closed.loop.runOnce();
+    assert.deepEqual(closedExecuted.map((a) => a.path), ["/workspace/OPE-4954"]);
+  });
+});
+
+describe("botd loop: policy visibility and dry run", () => {
+  const shared = { name: "shared", path: "/workspace/shared", mtime: new Date(NOW.getTime() - 72 * 3600 * 1000).toISOString(), isGit: false, nestedGit: [], sizeBytes: 10 };
+  const stale = { name: "old", path: "/scratch/old", mtime: new Date(NOW.getTime() - 72 * 3600 * 1000).toISOString(), isGit: false, nestedGit: [], sizeBytes: 1 };
+  const inv = { worktrees: [], scratch: [shared, stale], bases: [], archives: [] };
+  const state = () => desiredState({ workspaces: [], protectKeys: [], closedKeys: [] });
+
+  it("a directory the rules only hold appears in the report as a skip, and is not executed", async () => {
+    const r = rig({ rules: realRules, inventory: inv, desired: { ok: true, state: state() } });
+    await r.loop.runOnce();
+    assert.deepEqual(r.executed.map((a) => a.path), ["/scratch/old"]);
+    const skip = r.board.calls[0].body.actions.find((a) => a.path === "/workspace/shared");
+    assert.equal(skip.action, "skip");
+    assert.match(skip.detail, /^non-task/);
+  });
+
+  it("dryRun plans but executes nothing, writes no disk-state and sends no report", async () => {
+    const r = rig({ rules: realRules, inventory: inv, desired: { ok: true, state: state() } });
+    const out = await r.loop.runOnce({ dryRun: true });
+    assert.deepEqual(r.executed, []);
+    assert.deepEqual(r.states, []);
+    assert.equal(r.board.calls.length, 0);
+    assert.deepEqual(out.planned.actions.map((a) => a.path), ["/scratch/old"]);
+    assert.deepEqual(out.planned.held.map((h) => h.kind), ["non-task"]);
+  });
+
+  it("the next tick is the board's nextReportSec, clamped to 10 s..1 h", async () => {
+    for (const [sec, ms] of [[300, 300_000], [1, 10_000], [999999, 3_600_000]]) {
+      const timers = [];
+      const board = fakeBoard([{ status: 200, body: { ok: true, nextReportSec: sec } }]);
+      const r = rig({ board });
+      const loop = createLoop({
+        desired: { poll: async () => ({ ok: true, state: desiredState() }) },
+        gather: async () => ({ inventory: { worktrees: [], scratch: [], bases: [], archives: [] }, parts: { copies: [], foreign: [], bases: [], archives: [], selfChecks: { reflink: true, gitref: true, wsCli: true } } }),
+        rules: { plan: () => ({ actions: [] }) },
+        executor: {},
+        report: { build: buildReport, send: createReporter({ env: { PAPERCLIP_API_URL: "http://board.test", PAPERCLIP_API_KEY: API_KEY }, fetchImpl: board.fetchImpl, sleep: async () => {}, log: () => {} }).send },
+        writeDiskState: async () => {},
+        now: () => NOW,
+        botKey: "bot-001",
+        imageGeneration: "x",
+        setTimer: (fn, ms) => (timers.push(ms), 1),
+        clearTimer: () => {},
+      });
+      void r;
+      loop.start({ on() {}, off() {} });
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      await loop.stop();
+      assert.equal(timers.at(-1), ms, `nextReportSec ${sec}`);
+    }
+  });
+});
+
 describe("botd loop: report delivery", () => {
   it("retries a 503 with backoff and succeeds; nextReportSec only speeds the loop up", async () => {
     const board = fakeBoard([{ status: 503 }, { throw: true }, { status: 200, body: { ok: true, nextReportSec: 20 } }]);
@@ -263,7 +350,7 @@ describe("botd loop: SIGUSR1 and timer", () => {
     await loop.trigger();
     await new Promise((r) => setImmediate(r));
     assert.ok(passes >= 1);
-    assert.equal(timers.at(-1).ms, 60_000); // nextReportSec 300 does not slow the 60 s tick
+    assert.equal(timers.at(-1).ms, 300_000); // the tick is the board's nextReportSec
     const before = passes;
     handlers.get("SIGUSR1")();
     await new Promise((r) => setImmediate(r));
