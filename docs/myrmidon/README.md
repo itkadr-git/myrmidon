@@ -46,6 +46,7 @@ Myrmidon — плоскость управления компаниями из �
 | [DIVERGENCE.md](DIVERGENCE.md) | Реестр наших отличий от вендора |
 | [SETTINGS.md](SETTINGS.md) | Наши настройки (переменные `MYRMIDON_*`) и их значения по умолчанию (русская версия: [SETTINGS.ru.md](SETTINGS.ru.md)) |
 | [ci.md](ci.md) | CI: проверки, сканеры, сборка образа |
+| [merge-queue.md](merge-queue.md) | Очередь слияний GitHub: кандидат проверяется поверх свежего main, роли ревьюера и стюарда (русская версия: [merge-queue.ru.md](merge-queue.ru.md)) |
 | [deploy.md](deploy.md) | Выкат, обновление и откат по отпечатку образа (русская версия: [deploy.ru.md](deploy.ru.md)) |
 | [dockergate.md](dockergate.md) | Allowlist-прокси к Docker-демону для контейнеров агентов (русская версия: [dockergate.ru.md](dockergate.ru.md)) |
 | [egress.md](egress.md) | Правила исходящих обращений во внешние сервисы |
