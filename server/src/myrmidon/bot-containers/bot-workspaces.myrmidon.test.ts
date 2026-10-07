@@ -11,6 +11,7 @@ import request from "supertest";
 import { describe, expect, it } from "vitest";
 import { wsDesiredStateSchema } from "@paperclipai/shared";
 import { errorHandler } from "../../middleware/index.js";
+import { botWorkspacePressureFromPartition } from "./bot-workspaces-pressure.js";
 import { botWorkspacesRoutes } from "./bot-workspaces-routes.js";
 import {
   botWorkspacesService,
@@ -289,5 +290,38 @@ describe("repoNameFromUrl", () => {
     [null, undefined],
   ])("%s -> %s", (url, expected) => {
     expect(repoNameFromUrl(url as string | null)).toBe(expected);
+  });
+});
+
+describe("botWorkspacePressureFromPartition (BOT-DISK-H Д5)", () => {
+  const settings = { partitionThresholdPercent: 85, partitionRefuseOpenPercent: 90, partitionCriticalPercent: 95 };
+  const state = (usedPercent: number) => ({
+    partition: { mount: "/", usedBytes: 0, totalBytes: 0, freeBytes: 0, usedPercent, at: "2026-10-07T08:00:00.000Z" },
+    settings,
+  });
+
+  it.each([
+    [84, "none"],
+    [85, "soft"],
+    [89, "soft"],
+    [90, "hard"],
+    [97, "hard"],
+  ] as const)("at %i%% the level is %s, with no quota percent", (percent, level) => {
+    expect(botWorkspacePressureFromPartition(state(percent))).toEqual({
+      quotaPercent: null,
+      partitionPercent: percent,
+      level,
+    });
+  });
+
+  it("an unmeasured partition is no data", () => {
+    expect(botWorkspacePressureFromPartition({ partition: null, settings: null })).toBeNull();
+  });
+
+  it("89% reaches the desired state as soft", async () => {
+    const res = await request(
+      harness({ pressure: async () => botWorkspacePressureFromPartition(state(89)) }).app(botActor),
+    ).get(URL);
+    expect(res.body.pressure).toEqual({ quotaPercent: null, partitionPercent: 89, level: "soft" });
   });
 });

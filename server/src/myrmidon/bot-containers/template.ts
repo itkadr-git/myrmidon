@@ -641,6 +641,9 @@ export function pnpmEnv(pnpm: { storeDir?: string; importMethod?: string } = {})
   };
 }
 
+/** The .env variable botd reads for the key it reports under (docker/bot-runtime/botd). */
+export const BOT_KEY_ENV = "MYRMIDON_BOT_KEY";
+
 /**
  * myrmidon(1.6.5-BOT-DISK-H5c): the environment of the BOT-DISK-H mechanics
  * (C7) that the profile compiler writes into every bot's hermes/.env. The
@@ -658,7 +661,7 @@ export function pnpmEnv(pnpm: { storeDir?: string; importMethod?: string } = {})
  * already puts it. `botdIntervalSec` is written only when the operator set it
  * — the contract pins no default for it (botd's in-image default, H3).
  */
-export function botdProfileEnv(mechanics: BotDiskMechanics, boardUrl: string): Record<string, string> {
+export function botdProfileEnv(mechanics: BotDiskMechanics, boardUrl: string, botKey?: string): Record<string, string> {
   const env: Record<string, string> = {
     [WS_PROFILE_ENV.partitionThresholdPercent]: String(mechanics.partitionThresholdPercent),
     [WS_PROFILE_ENV.partitionRefuseOpenPercent]: String(mechanics.partitionRefuseOpenPercent),
@@ -668,6 +671,8 @@ export function botdProfileEnv(mechanics: BotDiskMechanics, boardUrl: string): R
     [WS_PROFILE_ENV.boardUrl]: boardUrl,
     [WS_PROFILE_ENV.boardKeyEnv]: WS_BOTD_BOARD_KEY_ENV_VALUE,
   };
+  // botd reports under its own bot key (the agent id, not a secret); the hostname fallback is a container id the board refuses.
+  if (botKey) env[BOT_KEY_ENV] = botKey;
   if (mechanics.botdIntervalSec !== undefined) env[WS_PROFILE_ENV.botdIntervalSec] = String(mechanics.botdIntervalSec);
   return env;
 }
