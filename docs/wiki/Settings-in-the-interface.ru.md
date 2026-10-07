@@ -65,6 +65,16 @@
 ([журнал изменений](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/CHANGELOG.ru.md),
 1.6.5 BACKUP-KEEP-LAST).
 
+Прогоны бэкапа и восстановления не ограничены базовым `statement_timeout`:
+с 1.6.5 каждое соединение, которое открывает бэкап или восстановление,
+ставит сессионный `statement_timeout` в `0` — то есть без лимита —
+(параметр подключения JavaScript-клиента и
+`PGOPTIONS="-c statement_timeout=0"` для процессов pg_dump/psql), поэтому
+длинный `COPY` по большой таблице не обрывается базовым лимитом, заданным
+через `ALTER DATABASE ... SET statement_timeout`. Остальные соединения
+доски сохраняют базовый лимит без изменений
+(1.6.5 BACKUP-STATEMENT-TIMEOUT).
+
 ## Ещё в интерфейсе
 
 - **Порог диска хоста** — Instance → General, «Host disk» (по умолчанию
