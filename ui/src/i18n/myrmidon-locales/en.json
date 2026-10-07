@@ -325,7 +325,8 @@
     "autonomy": "Autonomy",
     "castes": "Castes & models",
     "wipLimit": "WIP limit",
-    "reviewRouting": "Review routing"
+    "reviewRouting": "Review routing",
+    "agentExchange": "Agent exchanges"
   },
   "reviewRouting": {
     "title": "Review routing",

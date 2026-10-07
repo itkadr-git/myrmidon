@@ -34,6 +34,9 @@ const items = [
   { value: "caste-directory", label: "Agent castes", href: "/company/settings/caste-directory" },
   // myrmidon(1.6.5-OWNER-DM-FILTER): owner Telegram delivery mode screen
   { value: "owner-delivery", label: "Owner Telegram delivery", href: "/company/settings/owner-delivery" },
+  // myrmidon(1.7-AGENT-EXCHANGE-B): the owner-facing feed of the agents'
+  // discussion rooms, with the «to skill» action
+  { value: "agent-exchange", label: "Agent exchanges", href: "/company/settings/agent-exchange" },
 ] as const;
 
 type CompanySettingsTab = (typeof items)[number]["value"];
@@ -149,6 +152,11 @@ export function getCompanySettingsTab(pathname: string): CompanySettingsTab {
     return "review-routing";
   }
 
+  // myrmidon(1.7-AGENT-EXCHANGE-B): the feed of the agents' discussion rooms
+  if (pathname.includes("/company/settings/agent-exchange")) {
+    return "agent-exchange";
+  }
+
   // myrmidon(1.6.1 MODEL-PROVIDERS C): the Castes and models settings section
   if (pathname.includes("/company/settings/castes")) {
     return "castes";
@@ -180,6 +188,8 @@ const SETTINGS_TAB_LABEL_KEYS: Partial<Record<string, string>> = {
   castes: "settingsNav.castes",
   "wip-limit": "settingsNav.wipLimit",
   "review-routing": "settingsNav.reviewRouting",
+  // myrmidon(1.7-AGENT-EXCHANGE-B): the agent exchange feed tab
+  "agent-exchange": "settingsNav.agentExchange",
 };
 
 export function CompanySettingsNav() {
