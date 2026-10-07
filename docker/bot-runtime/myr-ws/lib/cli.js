@@ -7,17 +7,34 @@
 const { EXIT } = require("./base.js");
 const { MyrWsError } = require("./errors.js");
 
-// Each verb lives in its own module lib/<verb>.js exporting a handler named
-// after the verb; a verb whose module is absent stays "not implemented" (exit 2).
-function loadVerb(name) {
+// Each verb lives in its own module lib/<verb>.js. A verb module exports its
+// core function; cli.js adapts the parsed command line ({ positionals, flags,
+// env }) to it. Handlers return the body of the --json answer (without "ok")
+// and throw MyrWsError (exitCode) on failure.
+function requireVerb(name) {
   try {
-    const mod = require(`./${name}.js`);
-    const handler = typeof mod === "function" ? mod : mod && mod[name];
-    return typeof handler === "function" ? handler : notImplemented(name);
+    return require(`./${name}.js`);
   } catch (e) {
-    if (e && e.code === "MODULE_NOT_FOUND" && String(e.message).includes(`/${name}.js`)) return notImplemented(name);
+    if (e && e.code === "MODULE_NOT_FOUND" && String(e.message).includes(`/${name}.js`)) return null;
     throw e;
   }
+}
+
+const ADAPTERS = {
+  open: (mod) => ({ positionals, flags, env }) =>
+    mod.open(
+      mod.resolveOpenRequest({ positional: positionals, base: flags.base ?? null, scratch: flags.scratch === true, scratchName: null, json: false }),
+      { env },
+    ),
+  list: (mod) => mod.list,
+  close: (mod) => mod.close,
+  restore: (mod) => ({ positionals, env }) => mod.restore(mod.resolveRestoreRequest({ positional: positionals }), { env }),
+  migrate: (mod) => mod.command,
+};
+
+function loadVerb(name) {
+  const mod = requireVerb(name);
+  return mod ? ADAPTERS[name](mod) : notImplemented(name);
 }
 
 const COMMANDS = {

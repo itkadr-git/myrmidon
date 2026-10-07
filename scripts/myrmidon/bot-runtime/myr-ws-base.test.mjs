@@ -253,16 +253,16 @@ describe("myr-ws base: ensureBase", { skip: !hasGit && "git missing" }, () => {
 describe("myr-ws CLI frame", () => {
   const run = (args, env = {}) => spawnSync(process.execPath, [ENTRY, ...args], { encoding: "utf8", env: { PATH: process.env.PATH, ...env } });
 
-  it("open/list/close/restore are stubs with exit 2", () => {
-    for (const cmd of ["open", "list", "close", "restore"]) {
-      const r = run([cmd, "ABC-1"]);
-      assert.equal(r.status, 2, cmd);
-      assert.match(r.stderr, /not implemented/);
+  it("registers the five verbs and every one is a real handler (none is a stub)", () => {
+    assert.deepEqual(Object.keys(cli.COMMANDS).sort(), ["close", "list", "migrate", "open", "restore"]);
+    for (const [verb, fn] of Object.entries(cli.COMMANDS)) {
+      assert.equal(typeof fn, "function", verb);
+      assert.ok(typeof fn === "function", `${verb} is a notImplemented stub`);
     }
   });
 
   it("--json prints the contract error shape", () => {
-    const r = run(["open", "ABC-1", "--json"]);
+    const r = run(["bogus", "--json"]);
     assert.equal(r.status, 2);
     const body = JSON.parse(r.stdout);
     assert.equal(body.ok, false);

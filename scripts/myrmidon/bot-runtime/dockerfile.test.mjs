@@ -491,7 +491,7 @@ describe("docker/bot-runtime/Dockerfile (development variant)", () => {
       const expected = new RegExp(`(^|\\s)${tool.replace(/\+/g, "\\+")}(\\s|$)`);
       assert.match(aptBlock, expected, `the dev variant must install ${tool}`);
     }
-    assert.match(devStage, /^ARG PNPM_VERSION=9\.15\.4$/m);
+    assert.match(devStage, /^ARG PNPM_VERSION=10\.18\.1$/m);
     assert.match(devVariant, /^ARG NODE24_VERSION=24\.\d+\.\d+$/m);
     assert.match(devVariant, /^ARG GO_VERSION=1\.25\.\d+$/m);
     assert.match(devVariant, /^ARG DOCKER_CLI_VERSION=29\.\d+\.\d+$/m);

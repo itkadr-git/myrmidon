@@ -27,4 +27,4 @@ settings-section: 1.6.1 — BOT-DISK B: shared package cache for bot containers
 
 ## divergence
 
-Нет: наш новый файл и тест, вендорского кода не затрагивают.
+| 1.6.5-BOT-DISK-H1a | Чистый разбор аргументов `git clone` (`clone-args.js`) | Наш новый файл `docker/bot-runtime/git-reference/clone-args.js` и тест; вендорского кода нет | Основа перехвата `git clone` → `myr-ws open` | `clone-args.test.mjs` | Никогда, наше поведение | (этот PR) |
