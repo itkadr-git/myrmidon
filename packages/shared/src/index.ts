@@ -2884,3 +2884,6 @@ export * from "./myrmidon-castes.js";
 // limits of the foraging sweep — shared by the server, the settings page and
 // the settings validator.
 export * from "./myrmidon-foraging.js";
+// myrmidon(1.7-AGENT-EXCHANGE-A): the discussion-room contract (room model,
+// settings with source tracking, request bodies).
+export * from "./myrmidon-agent-exchange.js";

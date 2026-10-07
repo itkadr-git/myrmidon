@@ -7,6 +7,7 @@ import type {
   RuntimeStatusUpdate,
   UsageSummary,
 } from "@paperclipai/adapter-utils";
+import { githubLauncherPayload } from "@paperclipai/adapter-utils/github-launcher";
 import { measureSections } from "@paperclipai/adapter-utils/prompt-meter";
 import {
   asNumber,
@@ -528,6 +529,28 @@ function buildWorkspaceField(
   };
 }
 
+// myrmidon(GITHUB-SHARED-IDENTITY): the managed Git launcher, delivered as
+// request content (NONCONTAINER-GITHUB-LAUNCHER).
+//
+// A hermes gateway run has no execution target on the board's side, so
+// `prepareGitHubOperationLaunchers` (which stages git/gh/the credential helper
+// on a local or SSH target) never reaches it: the gateway may run on another
+// host, or in a container whose image the board cannot write into. The gateway
+// therefore stages the launcher itself, from the bodies this field carries,
+// next to the run's own terminals.
+//
+// Gated on the broker pair above: the launcher resolves credentials through
+// that run's broker capability, so shipping it without one would only stage
+// programs that cannot act (and would keep a static token around). Bodies are
+// constants, so the field is byte-stable per run and does not disturb the
+// Idempotency-Key fingerprint of a replay.
+function buildGitHubLauncherField(
+  broker: { broker_url: string; capability: string } | undefined,
+): { version: number; files: Record<string, string> } | undefined {
+  if (!broker) return undefined;
+  return githubLauncherPayload();
+}
+
 function buildRunBody(
   ctx: AdapterExecutionContext,
   sessionKey: string | null,
@@ -570,6 +593,11 @@ function buildRunBody(
   // derived from the run context only, set after the spread (a card cannot
   // forge it), `undefined` when the task has no repository.
   const workspaceField = buildWorkspaceField(ctx.context);
+  // myrmidon(GITHUB-SHARED-IDENTITY): same forgery rule as github_broker —
+  // set unconditionally after the payloadTemplate spread, so a card's attempt
+  // to inject launcher content is deleted (`undefined` drops the key); only
+  // this builder decides (see buildGitHubLauncherField).
+  const githubLauncher = buildGitHubLauncherField(githubBroker);
   const body: Record<string, unknown> = {
     ...payloadTemplate,
     input,
@@ -580,6 +608,7 @@ function buildRunBody(
     ...(modelOptions ? { model_options: modelOptions } : {}),
     github_broker: githubBroker,
     workspace: workspaceField,
+    github_launcher: githubLauncher,
   };
   // myrmidon(1.6.5 PROMPT-BUDGET A): extend buildInput's per-section
   // breakdown with the sections buildRunBody owns. `instructionsBundle` and

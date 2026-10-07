@@ -256,6 +256,48 @@ describe("myrmidon(M2-B) gateway key transport", () => {
     expect(seen.every((entry) => entry.auth === "Bearer admin-value")).toBe(true);
   });
 
+  it("setKeyAllowedModels updates the allowlist without a key field and maps 404 to false", async () => {
+    const seen: Array<{ path: string; body: Record<string, unknown>; auth: string | undefined }> = [];
+    server = createServer((req, res) => {
+      let raw = "";
+      req.on("data", (chunk) => {
+        raw += chunk;
+      });
+      req.on("end", () => {
+        seen.push({
+          path: req.url ?? "",
+          body: raw ? (JSON.parse(raw) as Record<string, unknown>) : {},
+          auth: req.headers.authorization,
+        });
+        if (req.url === "/key/update") {
+          // Unknown alias on the second call: the gateway answers 404, the
+          // port must report false instead of throwing (rotateKey contract).
+          const unknown = (seen[seen.length - 1]!.body.key_alias as string) === "missing-alias";
+          res.writeHead(unknown ? 404 : 200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ key_alias: seen[seen.length - 1]!.body.key_alias }));
+          return;
+        }
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end("{}");
+      });
+    });
+    await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", () => resolve()));
+    const address = server!.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    const admin = createGatewayKeyAdminPort(`http://127.0.0.1:${port}`, "admin-value");
+
+    const applied = await admin.setKeyAllowedModels!({ alias: "llm-gateway-key-alpha-agent-a", models: ["openai/gpt-4o"] });
+    expect(applied).toBe(true);
+    // The value is NOT rotated: the body names the alias and the allowlist only.
+    expect(seen[0]!.path).toBe("/key/update");
+    expect(seen[0]!.body).toEqual({ key_alias: "llm-gateway-key-alpha-agent-a", models: ["openai/gpt-4o"] }
+    );
+    expect(seen[0]!.auth).toBe("Bearer admin-value");
+
+    const missing = await admin.setKeyAllowedModels!({ alias: "missing-alias", models: [] });
+    expect(missing).toBe(false);
+  });
+
   it("maps a gateway error to a 422 instead of a silent success", async () => {
     server = createServer((_req, res) => {
       res.writeHead(500, { "Content-Type": "application/json" });
