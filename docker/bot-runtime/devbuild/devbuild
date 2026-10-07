@@ -26,6 +26,49 @@
 # cache environment.
 set -euo pipefail
 
+# myrmidon(1.6.5 BOT-DISK-H2g): resolve_git_dir <path> — what kind of git
+# checkout <path> (or the nearest parent) is. A plain clone has a `.git`
+# DIRECTORY; a worktree of a shared bare base has a `.git` FILE reading
+# `gitdir: <base>/worktrees/<name>` (absolute, or relative to the worktree).
+# Prints four tab-free lines: kind (clone|worktree|none), root, gitdir,
+# commondir (the bare base for a worktree, the gitdir itself for a clone).
+# Reads only plain files and directories — never `.git/...` of a worktree as a
+# directory, never git itself (the image wraps git); exit 1 and kind=none when
+# nothing is found or the file is malformed.
+resolve_git_dir() {
+  local dir="${1:?resolve_git_dir: path required}" depth=0 gf line gd cdir
+  dir="$(cd "$dir" 2>/dev/null && pwd -P)" || { printf 'none\n\n\n\n'; return 1; }
+  while [ "$depth" -lt 32 ]; do
+    gf="$dir/.git"
+    if [ -d "$gf" ]; then
+      printf 'clone\n%s\n%s\n%s\n' "$dir" "$gf" "$gf"
+      return 0
+    elif [ -f "$gf" ]; then
+      IFS= read -r line < "$gf" || true
+      case "$line" in "gitdir: "*) gd="${line#gitdir: }" ;; *) printf 'none\n\n\n\n'; return 1 ;; esac
+      case "$gd" in /*) ;; *) gd="$dir/$gd" ;; esac
+      [ -d "$gd" ] || { printf 'none\n\n\n\n'; return 1; }
+      gd="$(cd "$gd" && pwd -P)"
+      cdir="$gd"
+      if [ -f "$gd/commondir" ]; then
+        IFS= read -r line < "$gd/commondir" || true
+        case "$line" in /*) cdir="$line" ;; *) cdir="$gd/$line" ;; esac
+        cdir="$(cd "$cdir" 2>/dev/null && pwd -P)" || { printf 'none\n\n\n\n'; return 1; }
+      fi
+      printf 'worktree\n%s\n%s\n%s\n' "$dir" "$gd" "$cdir"
+      return 0
+    fi
+    [ "$dir" = "/" ] && break
+    dir="$(dirname "$dir")"
+    depth=$((depth + 1))
+  done
+  printf 'none\n\n\n\n'
+  return 1
+}
+
+# Sourced by the test (and nothing else): stop before the transport part.
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then return 0; fi
+
 readonly DEVBUILD_SSH_KEY_PATH="/opt/devbuild-ssh/id_ed25519"
 readonly DEVBUILD_CACHES="/srv/devcache"
 
@@ -138,7 +181,8 @@ rsync -a --delete --info=stats1 \
 # script ship another directory to a shared path — and only plain path
 # characters are accepted.
 hermes_home="${HERMES_HOME:-/data/hermes}"
-local_mirror="${MYRMIDON_GIT_LOCAL_MIRROR:-$(grep -m1 -E '^MYRMIDON_GIT_LOCAL_MIRROR=' "${hermes_home}/.env" 2>/dev/null | cut -d= -f2- | tr -d "\"'")}"
+# (no .env or no such line is normal: grep's status must not kill the script under pipefail)
+local_mirror="${MYRMIDON_GIT_LOCAL_MIRROR:-$({ grep -m1 -E '^MYRMIDON_GIT_LOCAL_MIRROR=' "${hermes_home}/.env" 2>/dev/null || true; } | cut -d= -f2- | tr -d "\"'")}"
 devbuild_git="${DEVBUILD_CACHES}/git"
 declare -A mirror_shipped=()
 map_args=()
@@ -179,6 +223,40 @@ while [ "$#" -ge 3 ]; do
   sed -i "s|^${old}\$|${new}|" "$remote_file"
 done
 REWRITE
+fi
+
+# myrmidon(1.6.5 BOT-DISK-H2g): a task copy may be a git WORKTREE of the bot's
+# bare base (myr-ws open): /workspace/<KEY>/.git is a one-line file naming
+# <base>/worktrees/<name> on THIS container, and the objects live in the base.
+# Ship the base (without other worktrees' admin dirs) plus this worktree's admin
+# dir to a per-bot place in the devcache git directory and repoint both the
+# `.git` file and the admin dir's back-reference (`gitdir`) at the VPS paths.
+# Only bases under the container's myrmidon git-base root with plain path
+# characters are followed.
+git_kind=""; git_root=""; git_dir=""; git_common=""
+if res="$(resolve_git_dir "$WORKSPACE_SRC")"; then
+  { read -r git_kind; read -r git_root; read -r git_dir; read -r git_common; } <<<"$res"
+fi
+if [ "$git_kind" = "worktree" ] && [ "$git_root" = "$(cd "$WORKSPACE_SRC" && pwd -P)" ]; then
+  wt_base_root="${MYRMIDON_GIT_BASE_DIR:-${hermes_home:-${HERMES_HOME:-/data/hermes}}/.myrmidon/git-base}"
+  wt_name="$(basename "$git_dir")"
+  case "$git_common" in "${wt_base_root%/}"/*) ;; *) echo "devbuild: worktree base $git_common is outside $wt_base_root - not shipped" >&2; exit 1 ;; esac
+  case "$git_common$wt_name$bot_name" in *[!A-Za-z0-9._/-]*) echo "devbuild: unsupported characters in the worktree git paths" >&2; exit 1 ;; esac
+  wt_key="$(printf '%s' "$git_common" | sha256sum | cut -c1-16)"
+  remote_base="${DEVBUILD_CACHES}/git-wt/${bot_name}/${wt_key}.git"
+  ssh "${SSH_OPTS[@]}" "$DEVBUILD_USER@$DEVBUILD_HOST" "mkdir -p '$remote_base/worktrees/$wt_name'"
+  rsync -a --info=stats0 --exclude 'worktrees/' \
+    -e "ssh ${SSH_OPTS[*]}" \
+    "$git_common/" "$DEVBUILD_USER@$DEVBUILD_HOST:$remote_base/"
+  rsync -a --delete --info=stats0 \
+    -e "ssh ${SSH_OPTS[*]}" \
+    "$git_dir/" "$DEVBUILD_USER@$DEVBUILD_HOST:$remote_base/worktrees/$wt_name/"
+  ssh "${SSH_OPTS[@]}" "$DEVBUILD_USER@$DEVBUILD_HOST" bash -s -- "$dest_root" "$remote_base" "$wt_name" <<'WTREWRITE'
+set -eu
+dest_root="$1"; base="$2"; name="$3"
+printf 'gitdir: %s/worktrees/%s\n' "$base" "$name" > "$dest_root/.git"
+printf '%s/.git\n' "$dest_root" > "$base/worktrees/$name/gitdir"
+WTREWRITE
 fi
 
 # Run the command remotely, with the shared caches exported and the cwd at
