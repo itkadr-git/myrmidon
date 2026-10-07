@@ -45,6 +45,10 @@ case "$1" in
     echo "0123456789ab"
     exit 0 ;;
   exec)
+    case "$*" in *psql*ANALYZE*)
+      [ -e "$SANDBOX/analyze-fails" ] && { echo "psql: error: analyze failed" >&2; exit 1; }
+      exit 0 ;;
+    esac
     case "$*" in *pg_restore*)
       # myrmidon(PREDEPLOY-NO-ACL): models a dump with GRANTs to production-only
       # roles. Such a dump restores only when pg_restore skips privileges:
@@ -420,6 +424,33 @@ describe("predeploy-board-check.sh (PREDEPLOY-DB-CHECK: the 05.10 incident)", ()
     const { code, out } = full(sb);
     assert.equal(code, 0, out);
     assert.match(calls(sb), /docker exec -i custom-db pg_restore -U custom --no-acl/);
+  });
+
+  it("ANALYZE runs on the copy after the restore and before the board starts (PREDEPLOY-ANALYZE)", () => {
+    const sb = sandbox();
+    const { code, out } = full(sb);
+    assert.equal(code, 0, out);
+    assert.match(out, /analyze: collecting planner statistics/);
+    const c = calls(sb);
+    const restoreAt = c.indexOf("pg_restore");
+    const analyzeAt = c.search(/psql .*-c ANALYZE/);
+    const boardAt = c.indexOf("--name myr-predeploy-board-");
+    assert.ok(restoreAt >= 0 && analyzeAt > restoreAt && boardAt > analyzeAt, c);
+  });
+
+  it("ANALYZE also runs when the restore command is overridden", () => {
+    const sb = sandbox({ extraConfig: "MYRMIDON_PREDEPLOY_RESTORE_COMMAND='docker exec -i custom-db pg_restore -U custom --no-acl < \"$DUMP_FILE\"'\n" });
+    const { code, out } = full(sb);
+    assert.equal(code, 0, out);
+    assert.match(calls(sb), /custom-db pg_restore[\s\S]*psql .*-c ANALYZE/);
+  });
+
+  it("a failed ANALYZE is a warning, not a stop", () => {
+    const sb = sandbox();
+    fs.writeFileSync(path.join(sb.dir, "analyze-fails"), "");
+    const { code, out } = full(sb);
+    assert.equal(code, 0, out);
+    assert.match(out, /WARNING: analyze failed on the copy/);
   });
 
   it("MYRMIDON_PREDEPLOY_KEEP=1 keeps the stack and names it for the operator", () => {
