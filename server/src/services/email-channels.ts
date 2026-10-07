@@ -48,6 +48,9 @@ import { issueService } from "./issues.js";
 import { logActivity } from "./activity-log.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { toolAccessPolicyService } from "./tool-access-policy.js";
+// myrmidon(DB-PERF-C-P4): this service writes profiles, bindings and entries outside the
+// tool-access CRUD, so it drops the company snapshot the same way those CRUD paths do.
+import { invalidateToolPolicyCache } from "../myrmidon/tool-policy-cache/runtime.js";
 import type { heartbeatService } from "./heartbeat.js";
 import type { StorageService } from "../storage/types.js";
 import {
@@ -764,6 +767,8 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
           { companyId, profileId, targetType: "company", targetId: companyId },
         ]);
       });
+      // myrmidon(DB-PERF-C-P4): the new profile, entries and bindings are visible to the next decision.
+      invalidateToolPolicyCache(db, companyId);
       endpoint = await getEndpoint(input.idempotencyKey);
     }
     if (endpoint.status === "archived")

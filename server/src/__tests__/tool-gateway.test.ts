@@ -55,6 +55,9 @@ import {
 import { createToolGatewayService, ToolGatewayHttpError } from "../services/tool-gateway.js";
 import type { ComposioClient } from "../services/composio.js";
 import { secretService } from "../services/secrets.js";
+// myrmidon(DB-PERF-C-P4): the fixtures below write profiles, bindings, entries and policies
+// around the tool-access CRUD, so they drop the company snapshot the way those CRUD paths do.
+import { invalidateToolPolicyCache } from "../myrmidon/tool-policy-cache/runtime.js";
 import { createKvDemoHttpServer, type KvDemoHttpServer } from "../../../packages/kv-demo-mcp-server/src/http.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -162,6 +165,8 @@ async function allowToolsForAgent(db: Db, companyId: string, agentId: string, to
       toolName,
     })));
   }
+  // myrmidon(DB-PERF-C-P4): the fixture writes around the tool-access CRUD.
+  invalidateToolPolicyCache(db, companyId);
   return profile;
 }
 
@@ -182,6 +187,8 @@ async function allowAllToolsForAgent(db: Db, companyId: string, agentId: string)
     targetType: "agent",
     targetId: agentId,
   });
+  // myrmidon(DB-PERF-C-P4): the fixture writes around the tool-access CRUD.
+  invalidateToolPolicyCache(db, companyId);
   return profile;
 }
 
@@ -3308,6 +3315,8 @@ rl.on("line", (line) => {
         description: "Connected MCP writes need review.",
         priority: 10,
       });
+      // myrmidon(DB-PERF-C-P4): the direct insert bypasses the service's own invalidation.
+      invalidateToolPolicyCache(db, company.id);
 
       await gateway.executeTool({
         sessionToken: session.token,
