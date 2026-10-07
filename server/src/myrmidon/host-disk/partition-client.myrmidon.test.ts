@@ -74,6 +74,9 @@ describe("partitionClientFromEnv", () => {
     const fetchSpy = vi.fn();
     vi.stubGlobal("fetch", fetchSpy);
     try {
+      // the raw socket client first: a failure here names its cause
+      const raw = await createSocketClient({ socketPath: sock }).getDisk();
+      expect(raw.partition.usedPercent).toBe(55.1);
       const client = partitionClientFromEnv({ MYRMIDON_BOT_DOCKER_SOCKET: sock });
       expect(client).not.toBeNull();
       const usage = await client!.readPartitionUsage();
@@ -87,7 +90,7 @@ describe("partitionClientFromEnv", () => {
   });
 
   it("only MYRMIDON_DOCKERGATE_URL: the TCP client", async () => {
-    const fetchSpy = vi.fn(async () => new Response(JSON.stringify(fixture), { status: 200 }));
+    const fetchSpy = vi.fn(async (_url: string) => new Response(JSON.stringify(fixture), { status: 200 }));
     vi.stubGlobal("fetch", fetchSpy);
     const client = partitionClientFromEnv({ MYRMIDON_DOCKERGATE_URL: "http://dockergate:3399" });
     expect((await client!.readPartitionUsage())?.usedPercent).toBe(55.1);
