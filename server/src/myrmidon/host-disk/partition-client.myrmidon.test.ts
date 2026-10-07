@@ -9,7 +9,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createDockergateDiskClient as createSocketClient } from "../bot-containers/dockergate-disk-client.js";
+import {
+  createDockergateDiskClient as createSocketClient,
+  dockergateDiskClientFromEnv,
+} from "../bot-containers/dockergate-disk-client.js";
 import { partitionClientFromEnv, partitionClientFromSocketClient } from "./dockergate.js";
 
 const fixture = JSON.parse(
@@ -77,6 +80,9 @@ describe("partitionClientFromEnv", () => {
       // the raw socket client first: a failure here names its cause
       const raw = await createSocketClient({ socketPath: sock }).getDisk();
       expect(raw.partition.usedPercent).toBe(55.1);
+      // the env-built socket client, unwrapped: a failure here names its cause
+      const viaEnv = await dockergateDiskClientFromEnv({ MYRMIDON_BOT_DOCKER_SOCKET: sock }).getDisk();
+      expect(viaEnv.partition.usedPercent).toBe(55.1);
       const client = partitionClientFromEnv({ MYRMIDON_BOT_DOCKER_SOCKET: sock });
       expect(client).not.toBeNull();
       const usage = await client!.readPartitionUsage();
