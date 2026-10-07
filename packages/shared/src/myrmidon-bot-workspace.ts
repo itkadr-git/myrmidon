@@ -247,6 +247,12 @@ export const wsDesiredStateSchema = z.object({
     level: wsDiskPressureLevelSchema,
   }),
   workspaces: z.array(wsDesiredWorkspaceSchema),
+  /**
+   * myrmidon(1.6.5-BOT-DISK-H): keys of ALL open tasks (status not done/cancelled)
+   * assigned to this bot, whether or not they have a repository; botd never
+   * removes the directory of such a task. Optional: an older board omits it.
+   */
+  protectKeys: z.array(myrWsIssueKeySchema).optional(),
 });
 export type WsDesiredState = z.infer<typeof wsDesiredStateSchema>;
 

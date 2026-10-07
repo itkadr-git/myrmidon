@@ -276,6 +276,28 @@ RUN rm -rf /opt/hermes-src/.git \
     /opt/hermes-src/flake.lock \
     /opt/hermes-src/flake.nix
 
+# myrmidon(1.6.5 BOT-DISK-H): Node.js 24 for the workspace mechanism (myr-ws, botd and the
+# git wrapper) that every bot image variant now carries; the dev variant reuses it.
+FROM python:3.13-slim AS node24_dist
+ARG NODE24_VERSION=24.21.0
+ARG NODE24_SHA256=fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6
+
+# The slim base carries neither curl nor xz, and the Node.js tarball is .tar.xz.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    xz-utils \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN set -eu; \
+    curl -fsSL -o /tmp/node.tar.xz "https://nodejs.org/dist/v${NODE24_VERSION}/node-v${NODE24_VERSION}-linux-x64.tar.xz"; \
+    echo "${NODE24_SHA256}  /tmp/node.tar.xz" | sha256sum -c -; \
+    mkdir /opt/node24; \
+    tar -xJf /tmp/node.tar.xz -C /opt/node24 --strip-components=1; \
+    rm -rf /tmp/node.tar.xz /opt/node24/include /opt/node24/share /opt/node24/CHANGELOG.md /opt/node24/README.md; \
+    /opt/node24/bin/node --version | grep -x "v${NODE24_VERSION}"
+
 FROM python:3.13-slim AS runtime
 ARG HERMES_VERSION
 
@@ -392,6 +414,99 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # comment above; ENV cannot reference another ENV set earlier in the same
 # instruction reliably across BuildKit versions, so the literal is repeated here.
 ENV HOME=/data/hermes
+
+# myrmidon(1.6.5 BOT-DISK-H, defect D9): the workspace mechanism — the git wrapper,
+# myr-ws and botd — is part of the BASE runtime stage, so every variant
+# (runtime, runtime-node, runtime-dev) inherits it; it used to live only in
+# runtime-dev. Installing needs root; the stage returns to the contract user below.
+# The wrapper and myr-ws name /opt/node24/bin/node in their shebang; botd's
+# `#!/usr/bin/env node` is pinned to the same interpreter at build time (below), so
+# no `node` appears on the PATH of a variant that did not have one before.
+USER root
+COPY --from=node24_dist --chown=root:root /opt/node24 /opt/node24
+
+# myrmidon(1.6.2 BOT-DISK-C): shared git objects. /opt/paperclip/bin/git shadows
+# /usr/bin/git and adds `--reference-if-able /cache/git/<owner>/<repo>.git` to a
+# `git clone` of a GitHub repository the board mirrors (the read-only /cache/git
+# mount, absent unless the instance setting lists mirrored repositories); every
+# other git invocation runs the real git unchanged, credential helper included.
+# bot-clone-hygiene reports which clones hold unpushed work (the entrypoint
+# runs it in the background); the board's draft-directory lifecycle reads that
+# report before it removes an idle clone. Node/Python scripts under /opt only.
+#
+# myrmidon(1.6.5 BOT-DISK-G): the same wrapper also answers for a bare `git`
+# when a bot terminal rebuilds PATH without /opt/paperclip/bin (the hermes
+# adapter appends only its own directories and the sane /usr and /usr/local
+# elements to the PATH the gateway captured). A /usr/local/bin symlink shadows
+# /usr/bin/git through the *reordered* PATH, and the wrapper's shebang names
+# /opt/node24/bin/node absolutely, so both facts hold in that terminal — which
+# is exactly where the clones happen. The build-time check below asserts both:
+# without the symlink a bare `git` is the real binary; with a broken shebang it
+# dies with 127 in a PATH the wrapper cannot inject itself into.
+COPY --chown=root:root git-reference/git git-reference/bot-clone-hygiene git-reference/clone-args.js /opt/paperclip/bin/
+RUN chmod 0755 /opt/paperclip/bin/git /opt/paperclip/bin/bot-clone-hygiene \
+  && ln -s /opt/paperclip/bin/git /usr/local/bin/git \
+  && /opt/node24/bin/node --check /opt/paperclip/bin/git \
+  && head -1 /opt/paperclip/bin/git | grep -qx "#!/opt/node24/bin/node" \
+  && python3 -m py_compile /opt/paperclip/bin/bot-clone-hygiene \
+  && rm -rf /opt/paperclip/bin/__pycache__
+
+# myrmidon(1.6.5 BOT-DISK-H1c): the real git moves out of PATH. The Debian binary
+# goes to /opt/paperclip/libexec/git (dpkg-divert keeps a later `apt` upgrade of
+# the git package from putting it back), and /usr/bin/git becomes a symlink to the
+# wrapper, so EVERY bare `git` — whatever PATH a bot terminal rebuilds — answers
+# through the wrapper; there is no regular way to reach the real binary but its
+# absolute libexec path (which the ownership and quota layers catch). The wrapper's
+# default REAL_GIT is that libexec path (MYRMIDON_GIT_REAL still overrides it) —
+# without that, the wrapper would exec itself. git finds its helpers
+# (git-upload-pack, git-remote-https, ...) through the compiled-in
+# /usr/lib/git-core, not through the binary's own path, so moving it is safe; the
+# build asserts that with a real `git ls-remote` of a local repository (the
+# git-upload-pack helper) through the wrapper.
+#
+# myr-ws (CLI, H2) and botd (lifecycle agent, H3) are installed whole, as
+# directories (lib/*.js and package.json go with the entry point): myr-ws/ to
+# /opt/paperclip/myr-ws, botd/ to /opt/paperclip/botd. /opt/paperclip/bin/myr-ws
+# and /usr/local/bin/myr-ws (a terminal PATH without /opt/paperclip/bin) are
+# symlinks to /opt/paperclip/myr-ws/myr-ws; /opt/paperclip/bin/botd links to the
+# botd entry point /opt/paperclip/botd/botd. Until that entry point exists in the
+# tree (H3 ships lib/ first) there is no botd link, the image still builds and the
+# entrypoint falls back to bot-clone-hygiene (see entrypoint.sh). The two
+# directories must be in the tree: this change merges after BOT-DISK-H2/H3a.
+COPY --chown=root:root myr-ws/ /opt/paperclip/myr-ws/
+COPY --chown=root:root botd/ /opt/paperclip/botd/
+RUN set -eu; \
+    mkdir -p /opt/paperclip/libexec; \
+    dpkg-divert --local --rename --divert /opt/paperclip/libexec/git --add /usr/bin/git; \
+    ln -s /opt/paperclip/bin/git /usr/bin/git; \
+    chmod 0755 /opt/paperclip/libexec/git; \
+    chmod 0755 /opt/paperclip/myr-ws/myr-ws; \
+    ln -s /opt/paperclip/myr-ws/myr-ws /opt/paperclip/bin/myr-ws; \
+    ln -s /opt/paperclip/myr-ws/myr-ws /usr/local/bin/myr-ws; \
+    [ -x /usr/local/bin/myr-ws ] && [ -x /opt/paperclip/bin/myr-ws ] || { echo "myr-ws is not executable" >&2; exit 1; }; \
+    if [ -f /opt/paperclip/botd/botd ]; then \
+      chmod 0755 /opt/paperclip/botd/botd; \
+      sed -i '1s|.*|#!/opt/node24/bin/node|' /opt/paperclip/botd/botd; \
+      head -1 /opt/paperclip/botd/botd | grep -qx "#!/opt/node24/bin/node" || { echo "botd shebang pin failed" >&2; exit 1; }; \
+      ln -s /opt/paperclip/botd/botd /opt/paperclip/bin/botd; \
+      [ -x /opt/paperclip/bin/botd ] || { echo "botd is not executable" >&2; exit 1; }; \
+    fi; \
+    [ "$(readlink /usr/bin/git)" = "/opt/paperclip/bin/git" ] || { echo "/usr/bin/git must be the wrapper symlink" >&2; exit 1; }; \
+    [ -x /opt/paperclip/libexec/git ] && [ ! -L /opt/paperclip/libexec/git ] || { echo "the real git must sit in libexec as a regular file" >&2; exit 1; }; \
+    for el in $(echo "$PATH" | tr ':' ' '); do \
+      [ "$el" = /opt/paperclip/libexec ] && { echo "libexec must not be on PATH" >&2; exit 1; }; \
+      if [ -e "$el/git" ] && [ "$(readlink -f "$el/git")" != "$(readlink -f /opt/paperclip/bin/git)" ]; then \
+        echo "$el/git is a real git outside libexec" >&2; exit 1; \
+      fi; \
+    done; \
+    out="$(env -i PATH=/usr/bin:/bin git --version)"; \
+    case "$out" in "git version "*) ;; *) echo "git --version through the wrapper failed: $out" >&2; exit 1 ;; esac; \
+    d="$(mktemp -d)"; /opt/paperclip/libexec/git init -q "$d/r"; \
+    env -i PATH=/usr/bin:/bin git ls-remote "$d/r" >/dev/null; \
+    rm -rf "$d"
+
+# /opt/paperclip/bin first on PATH: the entrypoint starts botd by `command -v botd`.
+ENV PATH=/opt/paperclip/bin:$PATH
 
 USER 10001:10001
 # myrmidon(BOT-DISK-F): "/" and not /workspace: for a member of a shared isolation scope /workspace
@@ -534,26 +649,6 @@ RUN node /opt/node-tools/smoke.cjs && npm --version
 # devbuild gateway (/usr/local/bin/devbuild, mounted by part B) is present —
 # installs, typechecks, test runs and compiler builds belong on the build VPS.
 # ---------------------------------------------------------------------------
-FROM python:3.13-slim AS node24_dist
-ARG NODE24_VERSION=24.21.0
-ARG NODE24_SHA256=fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6
-
-# The slim base carries neither curl nor xz, and the Node.js tarball is .tar.xz.
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    curl \
-    xz-utils \
-  && rm -rf /var/lib/apt/lists/*
-
-RUN set -eu; \
-    curl -fsSL -o /tmp/node.tar.xz "https://nodejs.org/dist/v${NODE24_VERSION}/node-v${NODE24_VERSION}-linux-x64.tar.xz"; \
-    echo "${NODE24_SHA256}  /tmp/node.tar.xz" | sha256sum -c -; \
-    mkdir /opt/node24; \
-    tar -xJf /tmp/node.tar.xz -C /opt/node24 --strip-components=1; \
-    rm -rf /tmp/node.tar.xz /opt/node24/include /opt/node24/share /opt/node24/CHANGELOG.md /opt/node24/README.md; \
-    /opt/node24/bin/node --version | grep -x "v${NODE24_VERSION}"
-
 # Go: the repository's dockergate and fleetd tools are Go modules (go 1.25,
 # stdlib only), and CI runs gofmt/go vet/go test over them in their own lanes.
 # The official tarball is pinned by exact version and sha256, like Node.js.
@@ -670,7 +765,6 @@ RUN set -eux; \
     rustup default "${RUST_CHANNEL}"; \
     cargo --version; rustc --version; rustfmt --version
 
-COPY --from=node24_dist --chown=root:root /opt/node24 /opt/node24
 COPY --from=go_dist --chown=root:root /opt/go /opt/go
 COPY --from=docker_cli_dist --chown=root:root /opt/docker-cli /opt/docker-cli
 
@@ -706,84 +800,6 @@ RUN chmod 0755 /opt/paperclip/bin/git-credential-paperclip /opt/paperclip/bin/gh
   && /opt/node24/bin/node --check /opt/paperclip/bin/git-credential-paperclip \
   && /opt/node24/bin/node --check /opt/paperclip/bin/gh \
   && git config --system --list >/dev/null
-
-# myrmidon(1.6.2 BOT-DISK-C): shared git objects. /opt/paperclip/bin/git shadows
-# /usr/bin/git and adds `--reference-if-able /cache/git/<owner>/<repo>.git` to a
-# `git clone` of a GitHub repository the board mirrors (the read-only /cache/git
-# mount, absent unless the instance setting lists mirrored repositories); every
-# other git invocation runs the real git unchanged, credential helper included.
-# bot-clone-hygiene reports which clones hold unpushed work (the entrypoint
-# runs it in the background); the board's draft-directory lifecycle reads that
-# report before it removes an idle clone. Node/Python scripts under /opt only.
-#
-# myrmidon(1.6.5 BOT-DISK-G): the same wrapper also answers for a bare `git`
-# when a bot terminal rebuilds PATH without /opt/paperclip/bin (the hermes
-# adapter appends only its own directories and the sane /usr and /usr/local
-# elements to the PATH the gateway captured). A /usr/local/bin symlink shadows
-# /usr/bin/git through the *reordered* PATH, and the wrapper's shebang names
-# /opt/node24/bin/node absolutely, so both facts hold in that terminal — which
-# is exactly where the clones happen. The build-time check below asserts both:
-# without the symlink a bare `git` is the real binary; with a broken shebang it
-# dies with 127 in a PATH the wrapper cannot inject itself into.
-COPY --chown=root:root git-reference/git git-reference/bot-clone-hygiene git-reference/clone-args.js /opt/paperclip/bin/
-RUN chmod 0755 /opt/paperclip/bin/git /opt/paperclip/bin/bot-clone-hygiene \
-  && ln -s /opt/paperclip/bin/git /usr/local/bin/git \
-  && /opt/node24/bin/node --check /opt/paperclip/bin/git \
-  && head -1 /opt/paperclip/bin/git | grep -qx "#!/opt/node24/bin/node" \
-  && python3 -m py_compile /opt/paperclip/bin/bot-clone-hygiene \
-  && rm -rf /opt/paperclip/bin/__pycache__
-
-# myrmidon(1.6.5 BOT-DISK-H1c): the real git moves out of PATH. The Debian binary
-# goes to /opt/paperclip/libexec/git (dpkg-divert keeps a later `apt` upgrade of
-# the git package from putting it back), and /usr/bin/git becomes a symlink to the
-# wrapper, so EVERY bare `git` — whatever PATH a bot terminal rebuilds — answers
-# through the wrapper; there is no regular way to reach the real binary but its
-# absolute libexec path (which the ownership and quota layers catch). The wrapper's
-# default REAL_GIT is that libexec path (MYRMIDON_GIT_REAL still overrides it) —
-# without that, the wrapper would exec itself. git finds its helpers
-# (git-upload-pack, git-remote-https, ...) through the compiled-in
-# /usr/lib/git-core, not through the binary's own path, so moving it is safe; the
-# build asserts that with a real `git ls-remote` of a local repository (the
-# git-upload-pack helper) through the wrapper.
-#
-# myr-ws (CLI, H2) and botd (lifecycle agent, H3) are installed whole, as
-# directories (lib/*.js and package.json go with the entry point): myr-ws/ to
-# /opt/paperclip/myr-ws, botd/ to /opt/paperclip/botd. /opt/paperclip/bin/myr-ws
-# and /usr/local/bin/myr-ws (a terminal PATH without /opt/paperclip/bin) are
-# symlinks to /opt/paperclip/myr-ws/myr-ws; /opt/paperclip/bin/botd links to the
-# botd entry point /opt/paperclip/botd/botd. Until that entry point exists in the
-# tree (H3 ships lib/ first) there is no botd link, the image still builds and the
-# entrypoint falls back to bot-clone-hygiene (see entrypoint.sh). The two
-# directories must be in the tree: this change merges after BOT-DISK-H2/H3a.
-COPY --chown=root:root myr-ws/ /opt/paperclip/myr-ws/
-COPY --chown=root:root botd/ /opt/paperclip/botd/
-RUN set -eu; \
-    mkdir -p /opt/paperclip/libexec; \
-    dpkg-divert --local --rename --divert /opt/paperclip/libexec/git --add /usr/bin/git; \
-    ln -s /opt/paperclip/bin/git /usr/bin/git; \
-    chmod 0755 /opt/paperclip/libexec/git; \
-    chmod 0755 /opt/paperclip/myr-ws/myr-ws; \
-    ln -s /opt/paperclip/myr-ws/myr-ws /opt/paperclip/bin/myr-ws; \
-    ln -s /opt/paperclip/myr-ws/myr-ws /usr/local/bin/myr-ws; \
-    [ -x /usr/local/bin/myr-ws ] && [ -x /opt/paperclip/bin/myr-ws ] || { echo "myr-ws is not executable" >&2; exit 1; }; \
-    if [ -f /opt/paperclip/botd/botd ]; then \
-      chmod 0755 /opt/paperclip/botd/botd; \
-      ln -s /opt/paperclip/botd/botd /opt/paperclip/bin/botd; \
-      [ -x /opt/paperclip/bin/botd ] || { echo "botd is not executable" >&2; exit 1; }; \
-    fi; \
-    [ "$(readlink /usr/bin/git)" = "/opt/paperclip/bin/git" ] || { echo "/usr/bin/git must be the wrapper symlink" >&2; exit 1; }; \
-    [ -x /opt/paperclip/libexec/git ] && [ ! -L /opt/paperclip/libexec/git ] || { echo "the real git must sit in libexec as a regular file" >&2; exit 1; }; \
-    for el in $(echo "$PATH" | tr ':' ' '); do \
-      [ "$el" = /opt/paperclip/libexec ] && { echo "libexec must not be on PATH" >&2; exit 1; }; \
-      if [ -e "$el/git" ] && [ "$(readlink -f "$el/git")" != "$(readlink -f /opt/paperclip/bin/git)" ]; then \
-        echo "$el/git is a real git outside libexec" >&2; exit 1; \
-      fi; \
-    done; \
-    out="$(env -i PATH=/usr/bin:/bin git --version)"; \
-    case "$out" in "git version "*) ;; *) echo "git --version through the wrapper failed: $out" >&2; exit 1 ;; esac; \
-    d="$(mktemp -d)"; /opt/paperclip/libexec/git init -q "$d/r"; \
-    env -i PATH=/usr/bin:/bin git ls-remote "$d/r" >/dev/null; \
-    rm -rf "$d"
 
 # myrmidon(1.6.1 BUILD-OFFLOAD A): the build-offload wrappers. Heavy
 # repository operations (pnpm install, monorepo tsc, vitest, gradle,

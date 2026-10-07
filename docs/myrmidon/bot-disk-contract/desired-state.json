@@ -27,5 +27,6 @@
       "prState": "merged",
       "branch": "bot/ABC-099"
     }
-  ]
+  ],
+  "protectKeys": ["ABC-101"]
 }
