@@ -46,7 +46,10 @@ export function botDiskReportRoutes(options: { nowMs?: () => number } = {}) {
     if (bodyBytes(req) > WS_DISK_REPORT_MAX_BODY_BYTES) {
       throw payloadTooLarge(`Disk report is over ${WS_DISK_REPORT_MAX_BODY_BYTES} bytes`);
     }
-    const parsed = wsDiskReportSchema.safeParse(req.body);
+    // botd cannot see its own bot key inside the container; the key the report is
+    // stored under is the caller's, so the body's botKey is taken from the caller.
+    const body = req.body && typeof req.body === "object" ? { ...req.body, botKey } : req.body;
+    const parsed = wsDiskReportSchema.safeParse(body);
     if (!parsed.success) throw badRequest("Invalid disk report", parsed.error.issues);
     const report = parsed.data;
     if (report.actions.length > WS_DISK_REPORT_MAX_ACTIONS) {
