@@ -1,0 +1,197 @@
+#!/opt/node24/bin/node
+// myrmidon(1.6.5-BOT-DISK-H3e): botd — the bot disk daemon. Every 60 s (and
+// on SIGUSR1) it runs one pass: inventory → desired state → rules → actions →
+// report → disk-state.json (contract C1–C4, docs/myrmidon/bot-disk-contract).
+// It replaces bot-clone-hygiene; deletion only ever happens through the
+// module seam below, and never when the desired state is unavailable.
+//
+// The sibling BOT-DISK-H modules (H3a desired-state client, H3b rules,
+// H3c archive, H3d classifier, H1/H2 myr-ws) plug in through BOTD_MODULE_DIR:
+// a directory may provide desired.js, rules.js, archive.js, classify.js,
+// inventory.js; each missing module falls back to a fail-safe stub (stub
+// rules decide "skip everything", so a partially wired botd deletes nothing).
+//
+// Environment:
+//   BOTD_HOME             state root (default /data/hermes/.myrmidon)
+//   BOTD_INTERVAL_SEC     tick length (default 60, clamped to >= 5)
+//   BOTD_BOARD_URL        board base URL (default $PAPERCLIP_API_URL)
+//   PAPERCLIP_API_KEY     the bot's key (required for the real client)
+//   BOTD_BOT_KEY          botKey of the report (default: hostname)
+//   BOTD_IMAGE_GENERATION imageGeneration of the report (default "unknown")
+//   BOTD_MODULE_DIR       where the real sibling modules live (optional)
+//   BOTD_ONCE=1           run one pass and exit (smoke/tests)
+"use strict";
+
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { spawn } = require("node:child_process");
+
+const loop = require("./lib/loop.js");
+const report = require("./lib/report.js");
+
+const HOME = process.env.BOTD_HOME || "/data/hermes/.myrmidon";
+const MODULE_DIR = process.env.BOTD_MODULE_DIR || "";
+
+function loadSibling(name) {
+  if (!MODULE_DIR) return null;
+  const file = path.join(MODULE_DIR, `${name}.js`);
+  if (!fs.existsSync(file)) return null;
+  // eslint-disable-next-line security/detect-non-literal-require
+  return require(file);
+}
+
+/** Run `argv` without a shell; resolves {code, stdout, stderr}. */
+function runArgv(argv, opts = {}) {
+  return new Promise((resolve) => {
+    const child = spawn(argv[0], argv.slice(1), { stdio: ["ignore", "pipe", "pipe"], ...opts });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (d) => (stdout += d));
+    child.stderr.on("data", (d) => (stderr += d));
+    child.on("error", (err) => resolve({ code: -1, stdout, stderr: String(err) }));
+    child.on("close", (code) => resolve({ code, stdout, stderr }));
+  });
+}
+
+// --- module seam -----------------------------------------------------------
+
+const desiredModule = loadSibling("desired"); // H3a
+const rulesModule = loadSibling("rules"); // H3b
+const archiveModule = loadSibling("archive"); // H3c
+const classifyModule = loadSibling("classify"); // H3d
+const inventoryModule = loadSibling("inventory"); // H2c wiring
+
+const wsCli = {
+  /** `myr-ws list --json` (H2c); absent myr-ws means "no copies", not a crash. */
+  async list() {
+    if (inventoryModule && inventoryModule.list) return inventoryModule.list();
+    const bin = process.env.MYRMIDON_WS_BIN || "myr-ws";
+    const res = await runArgv([bin, "list", "--json"]);
+    if (res.code !== 0) return { ok: true, entries: [] };
+    try {
+      const parsed = JSON.parse(res.stdout);
+      return parsed && parsed.ok && Array.isArray(parsed.entries) ? parsed : { ok: true, entries: [] };
+    } catch {
+      return { ok: true, entries: [] };
+    }
+  },
+};
+
+const boardClient = {
+  desiredState: () => {
+    if (desiredModule && desiredModule.fetchDesiredState) {
+      return desiredModule.fetchDesiredState(defaultDeps());
+    }
+    return report.fetchDesiredState(defaultDeps());
+  },
+  postReport: (body) => report.postReport({ ...defaultDeps(), body }),
+};
+
+function defaultDeps() {
+  return {
+    boardUrl: (process.env.BOTD_BOARD_URL || process.env.PAPERCLIP_API_URL || "").replace(/\/+$/, ""),
+    apiKey: process.env.PAPERCLIP_API_KEY || "",
+  };
+}
+
+const rules = {
+  decide: (input) =>
+    rulesModule && rulesModule.decide
+      ? rulesModule.decide(input)
+      : // stub until H3b lands: nothing is ever removed by an unwired botd
+        input.inventory.copies.map((copy) => ({
+          copy,
+          action: "skip",
+          reason: "rules module not wired (H3b stub)",
+        })),
+};
+
+const modules = {
+  home: HOME,
+  wsCli,
+  boardClient,
+  rules,
+  remove:
+    archiveModule && archiveModule.remove
+      ? archiveModule.remove
+      : async (target) => loop.removeTree(target),
+  archiveRemove:
+    archiveModule && archiveModule.archiveRemove
+      ? archiveModule.archiveRemove
+      : async () => {
+          throw new Error("archive module not wired (H3c stub)");
+        },
+  prune: async () => {
+    const res = await runArgv(["git", "-C", path.join(HOME, "git-base"), "worktree", "prune"]);
+    if (res.code !== 0) {
+      // a bare git-base root is not a repository — nothing to prune
+      return;
+    }
+  },
+  classify: classifyModule || null,
+  report: {
+    build: async ({ inventory, actions, now }) =>
+      report.buildReport({
+        inventory: {
+          ...inventory,
+          foreign: classifyModule && classifyModule.foreign ? classifyModule.foreign(inventory) : [],
+        },
+        actions,
+        now,
+        selfChecks: { reflink: null, gitref: null, wsCli: null },
+        botKey: process.env.BOTD_BOT_KEY || os.hostname(),
+        imageGeneration: process.env.BOTD_IMAGE_GENERATION || "unknown",
+      }),
+  },
+};
+
+// --- scheduler -------------------------------------------------------------
+
+async function main() {
+  const once = process.env.BOTD_ONCE === "1";
+  const intervalSec = Math.max(5, Number(process.env.BOTD_INTERVAL_SEC || 60));
+
+  let wake = null;
+  const wakeNow = () => {
+    if (wake) wake();
+  };
+  process.on("SIGUSR1", wakeNow);
+
+  fs.mkdirSync(HOME, { recursive: true });
+
+  for (;;) {
+    try {
+      const result = await loop.runPass(modules);
+      const line = `[botd] pass ok=${result.ok} copies=${result.copies} actions=${result.actions.length} report=${result.report.ok ? "ok" : `failed: ${result.report.error || "?"}`}`;
+      process.stdout.write(`${line}\n`);
+    } catch (err) {
+      // a failed pass is retried next tick, never fatal
+      process.stderr.write(`[botd] pass failed: ${err && err.stack ? err.stack : err}\n`);
+    }
+    if (once) {
+      // undici keep-alive sockets would hold the event loop open
+      process.exit(0);
+    }
+    await new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        wake = null;
+        resolve();
+      }, intervalSec * 1000);
+      wake = () => {
+        clearTimeout(timer);
+        wake = null;
+        resolve();
+      };
+    });
+  }
+}
+
+if (require.main === module) {
+  main().catch((err) => {
+    process.stderr.write(`[botd] fatal: ${err && err.stack ? err.stack : err}\n`);
+    process.exit(1);
+  });
+}
+
+module.exports = { main, runArgv };

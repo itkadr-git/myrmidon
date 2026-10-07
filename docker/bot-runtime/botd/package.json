@@ -1,0 +1,5 @@
+{
+  "type": "commonjs",
+  "private": true,
+  "description": "myrmidon(1.6.5-BOT-DISK-H3e): botd runs on the bot image's node outside the workspace type-chain; this scopes the daemon's .js files to CommonJS."
+}
