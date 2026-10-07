@@ -39,6 +39,10 @@ export interface HostDiskSweepDeps {
   maxSamples?: number;
   measureUsage?: typeof readHostDiskUsage;
   measureConsumer?: typeof measureHostDiskConsumer;
+  /** myrmidon(1.6.5-BOT-DISK-H10): dockergate client of the bot partition; null disables the partition measurement. */
+  partitionClient?: import("./dockergate.js").DockergateDiskClient | null;
+  /** myrmidon(1.6.5-BOT-DISK-H10): threshold state the sweep feeds with each measurement. */
+  partitionRuntime?: import("./partition.js").BotPartitionThresholdRuntime | null;
   now?: () => Date;
 }
 
@@ -57,10 +61,24 @@ export function createHostDiskSweep(deps: HostDiskSweepDeps): HostDiskSweep {
   const ring = new HostDiskSampleRing(deps.maxSamples ?? 24);
   let lastResult: HostDiskSweepResult | null = null;
   let consumers: HostDiskConsumerEntry[] = [];
+  const partitionClient = deps.partitionClient ?? null;
+  const partitionRuntime = deps.partitionRuntime ?? null;
 
   async function sweep(): Promise<HostDiskSweepResult> {
     const settings = await deps.resolveSettings();
     const usage = await measureUsage(deps.dataRootPath);
+    // myrmidon(1.6.5-BOT-DISK-H10): the bot partition is measured over
+    // dockergate in parallel with the statfs of the server data root. When
+    // dockergate answers, the card and the desired-state pressure follow the
+    // partition physics; when it does not, the partition state is reset to
+    // "not measured" and the statfs behaviour is exactly what part E shipped.
+    const partitionUsage = partitionClient
+      ? await partitionClient.readPartitionUsage()
+      : null;
+    if (partitionRuntime) {
+      if (partitionUsage) await partitionRuntime.updateFromPartition(partitionUsage);
+      else partitionRuntime.markUnmeasured();
+    }
     if (!usage) {
       const result: HostDiskSweepResult = {
         at: now().toISOString(),
