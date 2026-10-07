@@ -112,6 +112,15 @@ restore_command="${MYRMIDON_PREDEPLOY_RESTORE_COMMAND:-}"
 # shellcheck disable=SC2016  # the quotes are part of the command the operator overrides
 [[ -n "$restore_command" ]] || restore_command='docker exec -i -e PGPASSWORD="$MYR_PREDEPLOY_DB_PASSWORD" "$MYR_PREDEPLOY_DB_CONTAINER" pg_restore -U "$MYR_PREDEPLOY_DB_USER" -d "$MYR_PREDEPLOY_DB_NAME" --no-owner --no-acl < "$DUMP_FILE"'
 
+# myrmidon(PREDEPLOY-ANALYZE): pg_restore loads rows but not planner statistics,
+# so the planner of a fresh copy works on default estimates. The issues list
+# then exceeded the 30 s route budget (rc.8 stopped at 07.10 while the same route answered on
+# production). ANALYZE is a step of its own, after ANY restore command, so an
+# overridden MYRMIDON_PREDEPLOY_RESTORE_COMMAND gets the statistics too.
+analyze_command="${MYRMIDON_PREDEPLOY_ANALYZE_COMMAND:-}"
+# shellcheck disable=SC2016  # the quotes are part of the command the operator overrides
+[[ -n "$analyze_command" ]] || analyze_command='docker exec -e PGPASSWORD="$MYR_PREDEPLOY_DB_PASSWORD" "$MYR_PREDEPLOY_DB_CONTAINER" psql -U "$MYR_PREDEPLOY_DB_USER" -d "$MYR_PREDEPLOY_DB_NAME" -c ANALYZE'
+
 # Fail closed: without these the step would quietly prove nothing.
 [[ -n "$postgres_image" ]] || die "MYRMIDON_PREDEPLOY_POSTGRES_IMAGE is required: the check restores the predeploy dump into its own Postgres (set MYRMIDON_PREDEPLOY_CHECK=0 to deploy without the check); nothing was changed"
 [[ -n "$board_env_file" ]] || die "MYRMIDON_PREDEPLOY_BOARD_ENV_FILE is required: the throwaway board needs the board's own environment (secrets, tokens) to start like the production board; nothing was changed"
@@ -239,6 +248,8 @@ until bash -c "$db_ready_command" >/dev/null 2>&1; do
 done
 log "PREDEPLOY-DB-CHECK: restoring the predeploy dump into the copy"
 bash -c "$restore_command" >/dev/null || { dump_logs "$db_ctr"; die "cannot restore $dump_file into the throwaway database; production was not touched"; }
+log "PREDEPLOY-DB-CHECK: analyze: collecting planner statistics on the copy (a restored dump has none)"
+bash -c "$analyze_command" >/dev/null || { dump_logs "$db_ctr"; log "PREDEPLOY-DB-CHECK: WARNING: analyze failed on the copy: the board runs on default planner estimates and a slow route may be a false alarm"; }
 
 if [[ -n "$dockergate_ref" ]]; then
   log "PREDEPLOY-DB-CHECK: 3/6 new dockergate of this release next to the copy ($dockergate_ref)"
