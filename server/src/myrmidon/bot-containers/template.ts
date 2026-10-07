@@ -10,7 +10,7 @@
 // volume or the driver's reserved bookkeeping paths — only what these functions
 // accept ever reaches the Docker API.
 
-import { isScopeInstanceDirName } from "@paperclipai/shared";
+import { isScopeInstanceDirName, WS_BOTD_BOARD_KEY_ENV_VALUE, WS_PROFILE_ENV, type BotDiskMechanics } from "@paperclipai/shared"; // myrmidon(1.6.5-BOT-DISK-H5c)
 import type { BotContainerSpec, BotExtraMount } from "./driver.js";
 import type { CompiledProfileFile } from "./types.js";
 
@@ -623,6 +623,37 @@ export function pnpmEnv(pnpm: { storeDir?: string; importMethod?: string } = {})
     npm_config_store_dir: pnpm.storeDir ?? DEFAULT_PNPM_STORE_DIR,
     npm_config_package_import_method: pnpm.importMethod ?? DEFAULT_PNPM_IMPORT_METHOD,
   };
+}
+
+/**
+ * myrmidon(1.6.5-BOT-DISK-H5c): the environment of the BOT-DISK-H mechanics
+ * (C7) that the profile compiler writes into every bot's hermes/.env. The
+ * variable NAMES come from the H0 contract (`WS_PROFILE_ENV`), the values from
+ * `general.botDisk.*` with the contract defaults for a key the operator never
+ * set, so `myr-ws` (H2) and botd (H3) on every bot of the instance apply the
+ * same policy — and a settings PATCH reaches the bots on the next reconcile
+ * pass, without a board restart (the port re-reads the settings per tick, like
+ * the pnpm store settings above).
+ *
+ * The board address is the one the gateway already compiled for the bot
+ * (MYRMIDON_BOT_BOARD_URL — the board as the container reaches it), and the
+ * key travels only as the NAME of the .env variable that holds it
+ * (PAPERCLIP_API_KEY): the value itself stays in the one place the driver
+ * already puts it. `botdIntervalSec` is written only when the operator set it
+ * — the contract pins no default for it (botd's in-image default, H3).
+ */
+export function botdProfileEnv(mechanics: BotDiskMechanics, boardUrl: string): Record<string, string> {
+  const env: Record<string, string> = {
+    [WS_PROFILE_ENV.partitionThresholdPercent]: String(mechanics.partitionThresholdPercent),
+    [WS_PROFILE_ENV.partitionRefuseOpenPercent]: String(mechanics.partitionRefuseOpenPercent),
+    [WS_PROFILE_ENV.partitionCriticalPercent]: String(mechanics.partitionCriticalPercent),
+    [WS_PROFILE_ENV.graceClosingMinutes]: String(mechanics.graceClosingMinutes),
+    [WS_PROFILE_ENV.scratchTtlHours]: String(mechanics.scratchTtlHours),
+    [WS_PROFILE_ENV.boardUrl]: boardUrl,
+    [WS_PROFILE_ENV.boardKeyEnv]: WS_BOTD_BOARD_KEY_ENV_VALUE,
+  };
+  if (mechanics.botdIntervalSec !== undefined) env[WS_PROFILE_ENV.botdIntervalSec] = String(mechanics.botdIntervalSec);
+  return env;
 }
 
 /** The one extra bind the driver itself may add (the devbuild ssh key mount).

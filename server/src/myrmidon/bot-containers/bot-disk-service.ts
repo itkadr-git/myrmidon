@@ -22,9 +22,11 @@ import {
   mergeBotDiskSettings,
   resolveBotDiskSettings,
   resolveBotDiskLayout,
+  resolveBotDiskMechanics,
   resolveSharedPackageCachePath,
   resolveSharedBotRuntimePath,
   type BotDiskLayout,
+  type BotDiskMechanics,
   type BotDiskSettings,
   type BotDiskSettingsPatch,
   type ResolvedBotDiskSettings,
@@ -199,6 +201,17 @@ export async function readSharedBotRuntimePath(db: Db): Promise<string | undefin
 export async function readBotDiskLayout(db: Db): Promise<BotDiskLayout> {
   const settings = instanceSettingsService(db) as unknown as { getGeneral(): Promise<{ botDisk?: unknown }> };
   return resolveBotDiskLayout((await settings.getGeneral()).botDisk);
+}
+
+/**
+ * myrmidon(1.6.5-BOT-DISK-H5c): the BOT-DISK-H mechanics (C7) resolved from the
+ * same `general.botDisk` row, read per tick like the layout above — the profile
+ * compiler hands them to the bots (template.ts `botdProfileEnv`), so a settings
+ * PATCH reaches the bots on the next reconcile pass.
+ */
+export async function readBotDiskMechanics(db: Db): Promise<BotDiskMechanics> {
+  const settings = instanceSettingsService(db) as unknown as { getGeneral(): Promise<{ botDisk?: unknown }> };
+  return resolveBotDiskMechanics((await settings.getGeneral()).botDisk);
 }
 
 /**

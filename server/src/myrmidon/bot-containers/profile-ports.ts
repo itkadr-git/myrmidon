@@ -32,7 +32,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { agentApiKeys, agents as agentsTable, companies, companyMemberships, type Db } from "@paperclipai/db";
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
 // myrmidon(PARALLEL-HELPERS): the settings type the parallel-helpers port returns.
-import type { BotLspSettings, ParallelHelpersSettings } from "@paperclipai/shared";
+import type { BotLspSettings, BotDiskMechanics, ParallelHelpersSettings } from "@paperclipai/shared";
 import { getConfiguredSecretProvider } from "../../secrets/configured-provider.js";
 import {
   agentInstructionsService,
@@ -74,7 +74,7 @@ import { loadRegulationWorkspaceFiles } from "../wiki-cortex/delivery.js";
 import { createWikiRegulationService } from "../wiki-cortex/service.js";
 import { createDbRegulationStore } from "../wiki-cortex/store.js";
 import { readAppliedScopeLayout } from "./scope-wiring.js"; // myrmidon(BOT-DISK-F)
-import { readBotDiskLayout, readCloneIdleTtlSecForRole, readSharedPackageCachePathForRole } from "./bot-disk-service.js"; // myrmidon(1.6.1-BOT-DISK-B, 1.6.2-BOT-DISK-C)
+import { readBotDiskLayout, readBotDiskMechanics, readCloneIdleTtlSecForRole, readSharedPackageCachePathForRole } from "./bot-disk-service.js"; // myrmidon(1.6.1-BOT-DISK-B, 1.6.2-BOT-DISK-C, 1.6.5-BOT-DISK-H5c)
 
 export { BOT_AGENT_API_KEY_NAME };
 
@@ -468,6 +468,13 @@ export function createDbBotProfilePorts(db: Db): BotProfilePorts {
     async pnpmSettings(): Promise<{ storeDir: string; importMethod: string }> {
       const layout = await readBotDiskLayout(db);
       return { storeDir: layout.pnpmStoreDir, importMethod: layout.pnpmImportMethod };
+    },
+
+    // myrmidon(1.6.5-BOT-DISK-H5c): the BOT-DISK-H mechanics (C7), read per tick
+    // from the same `general.botDisk` row, so a settings change reaches the bots
+    // on the next reconcile without a restart.
+    async botDiskMechanics(): Promise<BotDiskMechanics> {
+      return readBotDiskMechanics(db);
     },
 
     // myrmidon(BOT-DISK-F): the layout the board keeps this bot on, so a member of a shared

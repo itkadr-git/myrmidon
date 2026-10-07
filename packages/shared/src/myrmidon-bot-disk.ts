@@ -123,9 +123,11 @@ const botRuntimePathSchema = z
     if (problem) ctx.addIssue({ code: "custom", message: `sharedBotRuntimePath ${problem}` });
   });
 
-/** myrmidon(BOT-DISK-D): where the pnpm store lives and how pnpm imports (see the module comment). */
+/** myrmidon(BOT-DISK-D): where the pnpm store lives and how pnpm imports (see the module comment).
+ *  myrmidon(1.6.5-BOT-DISK-H5c): `clone` (reflink-only) joins the methods — the BOT-DISK-H
+ *  contract (C7, `wsBotDiskSettingsSchema`) allows it and the fixture uses it. */
 export const BOT_DISK_DEFAULT_PNPM_STORE_DIR = "/workspace/.pnpm-store";
-export const BOT_DISK_PNPM_IMPORT_METHODS = ["hardlink", "clone-or-copy", "copy"] as const;
+export const BOT_DISK_PNPM_IMPORT_METHODS = ["hardlink", "clone", "clone-or-copy", "copy"] as const;
 export type BotDiskPnpmImportMethod = (typeof BOT_DISK_PNPM_IMPORT_METHODS)[number];
 export const BOT_DISK_DEFAULT_PNPM_IMPORT_METHOD: BotDiskPnpmImportMethod = "hardlink";
 /** Container roots a store may live under: all inside the bot's single mount. */
@@ -216,6 +218,16 @@ const idleTtlMsSchema = z
   .min(BOT_DISK_MIN_IDLE_TTL_MS)
   .max(BOT_DISK_MAX_IDLE_TTL_MS);
 
+// myrmidon(1.6.5-BOT-DISK-H5c): the BOT-DISK-H mechanics settings of C7
+// (`wsBotDiskSettingsSchema` in myrmidon-bot-workspace.ts), stored under the
+// same `general.botDisk` key. The profile compiler resolves them (defaults
+// `WS_BOT_DISK_SETTING_DEFAULTS`) and writes them into every bot's hermes/.env
+// (`WS_PROFILE_ENV`), so `myr-ws` and botd run the same policy everywhere.
+const graceClosingMinutesSchema = z.number().int().min(5).max(24 * 60);
+const scratchTtlHoursSchema = z.number().int().min(1).max(24 * 30);
+const partitionPercentSchema = z.number().int().min(50).max(100);
+const botdIntervalSecSchema = z.number().int().min(30).max(24 * 60 * 60);
+
 /** The canonical shape the service writes. */
 export const botDiskSettingsSchema = z
   .object({
@@ -231,6 +243,13 @@ export const botDiskSettingsSchema = z
     pnpmStoreDir: pnpmStoreDirSchema.optional(),
     pnpmImportMethod: pnpmImportMethodSchema.optional(),
     sharedCacheRoles: sharedCacheRolesSchema.optional(),
+    // myrmidon(1.6.5-BOT-DISK-H5c): the C7 mechanics keys; absent = the C7 defaults.
+    graceClosingMinutes: graceClosingMinutesSchema.optional(),
+    scratchTtlHours: scratchTtlHoursSchema.optional(),
+    partitionThresholdPercent: partitionPercentSchema.optional(),
+    partitionRefuseOpenPercent: partitionPercentSchema.optional(),
+    partitionCriticalPercent: partitionPercentSchema.optional(),
+    botdIntervalSec: botdIntervalSecSchema.optional(),
   })
   .strict();
 
@@ -245,6 +264,12 @@ const storedBotDiskObjectSchema = z
     pnpmStoreDir: pnpmStoreDirSchema.optional().catch(undefined),
     pnpmImportMethod: pnpmImportMethodSchema.optional().catch(undefined),
     sharedCacheRoles: sharedCacheRolesSchema.optional().catch(undefined),
+    graceClosingMinutes: graceClosingMinutesSchema.optional().catch(undefined),
+    scratchTtlHours: scratchTtlHoursSchema.optional().catch(undefined),
+    partitionThresholdPercent: partitionPercentSchema.optional().catch(undefined),
+    partitionRefuseOpenPercent: partitionPercentSchema.optional().catch(undefined),
+    partitionCriticalPercent: partitionPercentSchema.optional().catch(undefined),
+    botdIntervalSec: botdIntervalSecSchema.optional().catch(undefined),
   })
   .passthrough();
 
@@ -270,6 +295,14 @@ export const patchBotDiskSettingsSchema = z
     pnpmImportMethod: z.union([pnpmImportMethodSchema, z.null()]).optional(),
     // null returns the default role list; [] is allowed and means no bot.
     sharedCacheRoles: z.union([sharedCacheRolesSchema, z.null()]).optional(),
+    // myrmidon(1.6.5-BOT-DISK-H5c): the C7 mechanics keys; null returns a key to
+    // its C7 default (WS_BOT_DISK_SETTING_DEFAULTS).
+    graceClosingMinutes: z.union([graceClosingMinutesSchema, z.null()]).optional(),
+    scratchTtlHours: z.union([scratchTtlHoursSchema, z.null()]).optional(),
+    partitionThresholdPercent: z.union([partitionPercentSchema, z.null()]).optional(),
+    partitionRefuseOpenPercent: z.union([partitionPercentSchema, z.null()]).optional(),
+    partitionCriticalPercent: z.union([partitionPercentSchema, z.null()]).optional(),
+    botdIntervalSec: z.union([botdIntervalSecSchema, z.null()]).optional(),
   })
   .strict();
 
@@ -317,6 +350,13 @@ export function normalizeStoredBotDiskSettings(raw: unknown): Partial<BotDiskSet
   if (typeof parsed.data.pnpmStoreDir === "string") out.pnpmStoreDir = parsed.data.pnpmStoreDir;
   if (typeof parsed.data.pnpmImportMethod === "string") out.pnpmImportMethod = parsed.data.pnpmImportMethod;
   if (Array.isArray(parsed.data.sharedCacheRoles)) out.sharedCacheRoles = parsed.data.sharedCacheRoles;
+  // myrmidon(1.6.5-BOT-DISK-H5c): the C7 mechanics keys.
+  if (typeof parsed.data.graceClosingMinutes === "number") out.graceClosingMinutes = parsed.data.graceClosingMinutes;
+  if (typeof parsed.data.scratchTtlHours === "number") out.scratchTtlHours = parsed.data.scratchTtlHours;
+  if (typeof parsed.data.partitionThresholdPercent === "number") out.partitionThresholdPercent = parsed.data.partitionThresholdPercent;
+  if (typeof parsed.data.partitionRefuseOpenPercent === "number") out.partitionRefuseOpenPercent = parsed.data.partitionRefuseOpenPercent;
+  if (typeof parsed.data.partitionCriticalPercent === "number") out.partitionCriticalPercent = parsed.data.partitionCriticalPercent;
+  if (typeof parsed.data.botdIntervalSec === "number") out.botdIntervalSec = parsed.data.botdIntervalSec;
   return out;
 }
 
@@ -395,11 +435,62 @@ export function mergeBotDiskSettings(
       pnpmImportMethod: pick(patch.pnpmImportMethod, base.pnpmImportMethod),
       sharedCacheRoles: pick(patch.sharedCacheRoles, base.sharedCacheRoles),
     }),
+    // myrmidon(1.6.5-BOT-DISK-H5c): the C7 mechanics keys merge like the layout
+    // keys (null clears back to the default), but are not layout: they belong to
+    // the profile the compiler hands the bots, so they ride their own slot.
+    ...optionalMechanicsKeys({
+      graceClosingMinutes: pick(patch.graceClosingMinutes, base.graceClosingMinutes),
+      scratchTtlHours: pick(patch.scratchTtlHours, base.scratchTtlHours),
+      partitionThresholdPercent: pick(patch.partitionThresholdPercent, base.partitionThresholdPercent),
+      partitionRefuseOpenPercent: pick(patch.partitionRefuseOpenPercent, base.partitionRefuseOpenPercent),
+      partitionCriticalPercent: pick(patch.partitionCriticalPercent, base.partitionCriticalPercent),
+      botdIntervalSec: pick(patch.botdIntervalSec, base.botdIntervalSec),
+    }),
+  };
+}
+
+/** The C7 mechanics keys that are set (each absent = its C7 default). */
+function optionalMechanicsKeys(values: Partial<BotDiskSettings>): Partial<BotDiskSettings> {
+  return {
+    ...(values.graceClosingMinutes !== undefined ? { graceClosingMinutes: values.graceClosingMinutes } : {}),
+    ...(values.scratchTtlHours !== undefined ? { scratchTtlHours: values.scratchTtlHours } : {}),
+    ...(values.partitionThresholdPercent !== undefined ? { partitionThresholdPercent: values.partitionThresholdPercent } : {}),
+    ...(values.partitionRefuseOpenPercent !== undefined ? { partitionRefuseOpenPercent: values.partitionRefuseOpenPercent } : {}),
+    ...(values.partitionCriticalPercent !== undefined ? { partitionCriticalPercent: values.partitionCriticalPercent } : {}),
+    ...(values.botdIntervalSec !== undefined ? { botdIntervalSec: values.botdIntervalSec } : {}),
   };
 }
 
 /** The 1.6.2-BOT-DISK-C keys a settings change compares besides the env-backed ones. */
 export const BOT_DISK_LAYOUT_KEYS = ["sharedPackageCachePath", "sharedBotRuntimePath", "gitMirrorRepos", "gitMirrorRefreshMs", "pnpmStoreDir", "pnpmImportMethod", "sharedCacheRoles"] as const;
+
+/**
+ * myrmidon(1.6.5-BOT-DISK-H5c): the stored C7 mechanics keys, resolved with the
+ * contract defaults (`WS_BOT_DISK_SETTING_DEFAULTS` of the H0 contract), as the
+ * profile compiler hands them to the bots (`WS_PROFILE_ENV`). `botdIntervalSec`
+ * has no contract default — absent stays undefined and the in-image default of
+ * botd applies (H3).
+ */
+export interface BotDiskMechanics {
+  graceClosingMinutes: number;
+  scratchTtlHours: number;
+  partitionThresholdPercent: number;
+  partitionRefuseOpenPercent: number;
+  partitionCriticalPercent: number;
+  botdIntervalSec?: number;
+}
+
+export function resolveBotDiskMechanics(stored: unknown): BotDiskMechanics {
+  const values = normalizeStoredBotDiskSettings(stored);
+  return {
+    graceClosingMinutes: values.graceClosingMinutes ?? 30,
+    scratchTtlHours: values.scratchTtlHours ?? 24,
+    partitionThresholdPercent: values.partitionThresholdPercent ?? 85,
+    partitionRefuseOpenPercent: values.partitionRefuseOpenPercent ?? 90,
+    partitionCriticalPercent: values.partitionCriticalPercent ?? 95,
+    ...(values.botdIntervalSec !== undefined ? { botdIntervalSec: values.botdIntervalSec } : {}),
+  };
+}
 
 /**
  * myrmidon(1.6.2-BOT-DISK-C): the shared-cache layout in force, with the
