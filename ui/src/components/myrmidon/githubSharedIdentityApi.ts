@@ -59,9 +59,6 @@ export interface GitHubAppEntry {
   appId: string;
   privateKeySecretId: string;
   installationId: string | null;
-  // myrmidon(GITHUB-APP-MANIFEST): the App's GitHub slug, set by the manifest
-  // flow; null for a manually registered App.
-  slug?: string | null;
   roles: string[];
   agentIds: string[];
   allowedRepos: string[];
