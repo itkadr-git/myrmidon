@@ -10,9 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { i18n, useTranslation } from "@/i18n";
 import {
-  describeAdmissionDenials,
   describeHostLoad,
-  describeMemorySnapshot,
   describeQueueSnapshot,
   describeRunLimitSource,
   runtimeLimitsApi,
@@ -21,17 +19,20 @@ import {
 } from "./runtimeLimitsApi";
 
 /**
- * myrmidon(1.6.5 RUN-FAIRNESS part 3): the single-agent start share arrives
- * with part 2's shared key (`maxPerAgentStartSharePercent`, 1..100 or off,
- * default 15). This panel is merged before part 2 lands, so the field is
- * carried as a string literal, not a `RunLimitKey` — part 2 promotes it into
- * `RUN_LIMIT_KEYS` and both parts then type-check against the shared name.
+ * myrmidon(1.6.5 RUN-ADMISSION rc.3, part B): the two CPU-utilisation
+ * ceilings joined `RunLimits` with part A but were left out of
+ * `RUN_LIMIT_KEYS`, so they are not `RunLimitKey`s yet — same situation the
+ * fair-share field had before part 2. The panel carries them as string
+ * literals and reads their values from the typed `limits` object; their
+ * source label falls back to "default" (a source map for them arrives with
+ * the shared key promotion).
  */
-const FAIR_SHARE_KEY = "maxPerAgentStartSharePercent";
+const CPU_BUSY_KEY = "maxHostCpuBusyPercent";
+const CPU_PSI_KEY = "maxHostCpuPsiSomeAvg10";
 
-type PanelLimitKey = RunLimitKey | typeof FAIR_SHARE_KEY;
+type PanelLimitKey = RunLimitKey | typeof CPU_BUSY_KEY | typeof CPU_PSI_KEY;
 
-/** The field ids/draft keys of the panel (the shared keys plus the fair-share literal). */
+/** The field ids/draft keys of the panel (the shared keys plus the rc.3 CPU ceiling literals). */
 export type { PanelLimitKey };
 
 /** Labels are resolved at call time, not at import, so a language switch applies. */
@@ -127,21 +128,26 @@ export function parseRunLimitsDraft(draft: Record<PanelLimitKey, string>): Draft
       runMemoryEstimateMb: estimate,
       minFreeHostMemoryMb: parsed.minFreeHostMemoryMb,
       maxHostLoadPercentPerCore: parsed.maxHostLoadPercentPerCore,
-      // myrmidon(1.6.5 RUN-FAIRNESS): not yet a key of RunLimitsPatch — part 2
-      // adds it to the shared schema; the PATCH body already carries it.
-      [FAIR_SHARE_KEY]: parsed[FAIR_SHARE_KEY],
+      maxPerAgentStartSharePercent: parsed.maxPerAgentStartSharePercent,
+      // myrmidon(1.6.5 RUN-ADMISSION rc.3): the two CPU-utilisation ceilings —
+      // `patchRunLimitsSchema` accepts both.
+      maxHostCpuBusyPercent: parsed.maxHostCpuBusyPercent,
+      maxHostCpuPsiSomeAvg10: parsed.maxHostCpuPsiSomeAvg10,
     },
     errors,
   };
 }
 
-/** Read a limit from the view: a shared key from `limits`, the fair-share key with its default. */
+/** Read a limit from the view: every key now comes from the typed `limits` object. */
 function readLimit(limits: RunLimits, key: PanelLimitKey): number | null {
-  if (key === FAIR_SHARE_KEY) {
-    const value = (limits as Record<string, unknown>)[FAIR_SHARE_KEY];
-    return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 100 ? value : 15;
+  const value = limits[key] as number | null | undefined;
+  if (value === undefined) {
+    // An older server that does not serve the key yet (a pre-part-2 server
+    // has no fair share, a pre-rc.3 server has no CPU ceilings): the fair
+    // share shows its built-in default, every other absent key shows as off.
+    return key === "maxPerAgentStartSharePercent" ? 15 : null;
   }
-  return limits[key];
+  return value;
 }
 
 function toDraft(limits: RunLimits): Record<PanelLimitKey, string> {
@@ -176,14 +182,6 @@ export function RuntimeLimitsSettingsPanelView({
   // myrmidon(1.6.5 RUN-FAIRNESS): the queue snapshot — admitted runs against
   // the ceiling, the queue length, and the head of the queue.
   const queueLine = describeQueueSnapshot(view?.queue);
-  // myrmidon(1.6.5 C0-ui): the memory snapshot — the host's available memory
-  // and the server container's cgroup usage, next to the queue line.
-  const memoryLine = describeMemorySnapshot(view?.memory);
-  // myrmidon(1.6.5 F-09 B): the admission's refusal counter — how often the
-  // sweep left a queued run waiting on a global/host ceiling, by reason and
-  // with the time of the last one. `null` when the server sends no counter, so
-  // the block is simply absent on an older server.
-  const denialsLine = describeAdmissionDenials(view?.admissionDenials);
 
   return (
     <section className="space-y-4" data-testid="myrmidon-runtime-limits">
@@ -229,7 +227,7 @@ export function RuntimeLimitsSettingsPanelView({
                   </span>
                 ) : null}
               </div>
-              {key === "maxHostLoadPercentPerCore" && hostLoadLine ? (
+              {key === "maxHostCpuBusyPercent" && hostLoadLine ? (
                 <p data-testid="runtime-limit-host-load" className="text-xs text-muted-foreground">
                   {hostLoadLine}
                 </p>
@@ -245,27 +243,6 @@ export function RuntimeLimitsSettingsPanelView({
               className="text-xs text-muted-foreground md:col-span-2"
             >
               {queueLine}
-            </p>
-          ) : null}
-          {/* myrmidon(1.6.5 C0-ui): the memory snapshot — the host's memory and
-              the server container's cgroup usage, next to the queue line. */}
-          {memoryLine ? (
-            <p
-              data-testid="runtime-limit-memory"
-              className="text-xs text-muted-foreground md:col-span-2"
-            >
-              {memoryLine}
-            </p>
-          ) : null}
-          {/* myrmidon(1.6.5 F-09 B): the admission's refusal counter — why the
-              sweep left queued runs waiting, by reason, and when it last did.
-              Absent when the server sends no counter (an older server). */}
-          {denialsLine ? (
-            <p
-              data-testid="runtime-limit-admission-denials"
-              className="text-xs text-muted-foreground md:col-span-2"
-            >
-              {denialsLine}
             </p>
           ) : null}
           <div className="md:col-span-2">
