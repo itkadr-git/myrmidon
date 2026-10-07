@@ -34,6 +34,7 @@ import type { PluginEntitlementKey } from "../myrmidon-plugin-entitlement.js";
 import type { TelegramDmProgressSettings } from "../myrmidon-telegram-dm-progress.js";
 // myrmidon(BOT-RUNTIME-TUNING D2): the fallback-signal settings of the same row.
 import type { StoredFallbackSignalSettings } from "../myrmidon-fallback-signal.js";
+import type { ForagingIdleGateSettings } from "../myrmidon-foraging-idle-gate.js";
 
 // myrmidon(1.6.1-FORAGING-LIMITS-UI)
 import type { ForagingSettings } from "../myrmidon-foraging.js";
@@ -278,6 +279,8 @@ export interface InstanceGeneralSettings {
    * is off)". Kept in sync with the validator of the same field.
    */
   foraging?: ForagingSettings;
+  // myrmidon(1.6.3-FORAGING-IDLE-GATE): the stored idle-gate toggle.
+  foragingIdleGate?: ForagingIdleGateSettings;
 }
 
 
