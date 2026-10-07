@@ -83,6 +83,9 @@ type Options struct {
 	// Disk sets the project quotas of the disk routes (A15). Nil is the real
 	// xfs_quota on the volume root of the configuration.
 	Disk DiskQuota
+	// DiskHost is how GET /myrmidon/disk (A14) looks at the host: statfs, the
+	// quota command and the project table. Zero fields mean the real host.
+	DiskHost disk.Deps
 }
 
 // DiskQuota is what the disk routes need of the quota code (disk.Quota).
@@ -99,6 +102,7 @@ type Gate struct {
 	stats   *Stats
 	now     func() time.Time
 	lstat   policy.LstatFunc
+	disk    disk.Deps
 	started time.Time
 
 	st atomic.Pointer[runtime]
@@ -150,6 +154,7 @@ func New(opt Options) (*Gate, error) {
 		opt:      opt,
 		now:      opt.Now,
 		lstat:    opt.Lstat,
+		disk:     opt.DiskHost,
 		started:  opt.Now(),
 		log:      NewLogger(opt.Log, opt.Now),
 		stats:    newStats(),
