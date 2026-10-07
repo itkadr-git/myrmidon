@@ -6,8 +6,11 @@
 // Pins:
 //   - an agent allowed by an App entry gets an installation token minted on
 //     the board (JWT signed with the App key, verified here) for the ONE
-//     target repository with contents/pull_requests write and metadata read;
-//     the commit identity is the agent's;
+//     target repository with exactly the permissions stored on the entry
+//     (default: contents/pull_requests write, metadata read); the commit
+//     identity is the agent's;
+//   - the permission list is per entry: widened (e.g. Workflows write) the
+//     broker requests exactly that; changing it re-mints (cache keyed by it);
 //   - identities are chosen per target repository: product A → App A,
 //     product B → App B, matched by neither → absent, matched by both →
 //     error (no key read, no token);
@@ -62,10 +65,12 @@ import {
   defaultGitHubSharedIdentitySettings,
   githubAppsFor,
   isRepositoryAllowed,
+  normalizeGitHubAppPermissions,
   normalizeGitHubRepository,
   type GitHubAppEntry,
   type GitHubSharedIdentitySettings,
 } from "../myrmidon/github-shared-identity/settings.js";
+import { DEFAULT_GITHUB_APP_PERMISSIONS, githubAppTokenPermissionsFor } from "../myrmidon/github-shared-identity/app-token.js";
 
 const DEDICATED_TOKEN = "test-dedicated-token-not-a-secret";
 
@@ -150,7 +155,7 @@ describe("GitHub App identity: pure policy", () => {
   it("picks App entries by the agent and the target repository", () => {
     const agent = { id: "11111111-1111-4111-8111-111111111111", role: "engineer" };
     const entry = (id: string, patch: Partial<GitHubAppEntry>): GitHubAppEntry => ({
-      id, name: id, appId: "1", privateKeySecretId: id, installationId: null, roles: [], agentIds: [], allowedRepos: [], ...patch,
+      id, name: id, appId: "1", privateKeySecretId: id, installationId: null, roles: [], agentIds: [], allowedRepos: [], permissions: { ...DEFAULT_GITHUB_APP_PERMISSIONS }, ...patch,
     });
     const settings: GitHubSharedIdentitySettings = {
       ...defaultGitHubSharedIdentitySettings(),
@@ -167,6 +172,29 @@ describe("GitHub App identity: pure policy", () => {
     expect(ids("owner-a/overlap")).toEqual(["a", "b"]);
     expect(ids("owner-a/repo-a", { id: "22222222-2222-4222-8222-222222222222", role: "designer" })).toEqual([]);
     expect(ids(null)).toEqual([]);
+  });
+
+  it("normalizes the permission list and maps it to the token request", () => {
+    // Absent keys fall back to the historical fixed set.
+    expect(normalizeGitHubAppPermissions(undefined)).toEqual({
+      actions: "none", checks: "none", contents: "write", deployments: "none",
+      environments: "none", issues: "none", pull_requests: "write", workflows: "none",
+    });
+    expect(normalizeGitHubAppPermissions({ workflows: "write", issues: "read" })).toEqual({
+      actions: "none", checks: "none", contents: "write", deployments: "none",
+      environments: "none", issues: "read", pull_requests: "write", workflows: "write",
+    });
+    // The token request carries exactly the non-none keys plus metadata read.
+    expect(githubAppTokenPermissionsFor()).toEqual({ metadata: "read", contents: "write", pull_requests: "write" });
+    expect(githubAppTokenPermissionsFor({ contents: "read", workflows: "write" })).toEqual({
+      metadata: "read", contents: "read", pull_requests: "write", workflows: "write",
+    });
+    // A stored level outside the allow-list (tampered document) is dropped, never requested.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(githubAppTokenPermissionsFor({ contents: "admin" as any, workflows: "read" as any }))
+      .toEqual({ metadata: "read", pull_requests: "write" });
+    // Pull-only entry: no contents at all beyond metadata.
+    expect(githubAppTokenPermissionsFor({ contents: "none", pull_requests: "none" })).toEqual({ metadata: "read" });
   });
 
   it("derives the agent's commit identity", () => {
@@ -264,6 +292,7 @@ const support = await getEmbeddedPostgresTestSupport();
       roles: ["engineer"],
       agentIds: [],
       allowedRepos: ["owner-a/*"],
+      permissions: { ...DEFAULT_GITHUB_APP_PERMISSIONS },
       ...patch,
     };
   }
@@ -443,6 +472,40 @@ const support = await getEmbeddedPostgresTestSupport();
       .toMatchObject({ status: "absent", env: {} });
   });
 
+  it("requests exactly the entry's permission list and re-mints when it is widened", async () => {
+    const input = await seed();
+    const secretId = await registerApp(input, { appId: "101", key: KEY_A, installationId: "5001", tokenPrefix: "tok-a", repos: ["owner-a/repo-a"] });
+    const app = entry(secretId, { installationId: "5001" });
+    await writeGitHubSharedIdentitySettings(db, input.companyId, rules([app]));
+    expect((await resolveGitHubOperationCredentials(db, { ...input, repository: "owner-a/repo-a" })).env.GH_TOKEN)
+      .toBe("tok-a-repo-a");
+    expect(github.calls[github.calls.length - 1]!.body!.permissions).toEqual({
+      metadata: "read", contents: "write", pull_requests: "write",
+    });
+
+    // Widen the entry: Workflows write, Issues read. The permission set is
+    // part of the cache key — the next operation re-mints instead of reusing
+    // the narrower token.
+    github.calls = [];
+    await writeGitHubSharedIdentitySettings(
+      db,
+      input.companyId,
+      rules([{ ...app, permissions: { ...DEFAULT_GITHUB_APP_PERMISSIONS, workflows: "write", issues: "read" } }]),
+    );
+    const widened = await resolveGitHubOperationCredentials(db, { ...input, repository: "owner-a/repo-a" });
+    expect(widened).toMatchObject({ status: "available", source: "app" });
+    const mintCall = github.calls.find((call) => call.method === "POST" && /access_tokens$/.test(new URL(call.url).pathname));
+    expect(mintCall!.body).toEqual({
+      repositories: ["repo-a"],
+      permissions: { metadata: "read", contents: "write", pull_requests: "write", issues: "read", workflows: "write" },
+    });
+    // The issuance audit carries the permission list, never the token.
+    const activity = await db.select().from(activityLog).where(eq(activityLog.companyId, input.companyId));
+    const issued = activity.filter((row) => row.action === "myrmidon.github_app.issued");
+    expect(issued).toHaveLength(2);
+    expect(issued[1]!.details).toMatchObject({ permissions: { workflows: "write", issues: "read" } });
+  });
+
   it("lets a dedicated per-agent grant win over an App", async () => {
     const input = await seed();
     const secretId = await registerApp(input, { appId: "101", key: KEY_A, installationId: "5001", tokenPrefix: "tok-a", repos: ["owner-a/repo-a"] });
@@ -533,6 +596,7 @@ const support = await getEmbeddedPostgresTestSupport();
           roles: ["engineer", "engineer"],
           agentIds: [input.agentId],
           allowedRepos: ["owner-a/repo-a", "OWNER-A/repo-a", "owner-a/service-*"],
+          permissions: { workflows: "write", issues: "read" },
         }],
         commitEmailDomain: "Example.com",
       };
@@ -541,7 +605,13 @@ const support = await getEmbeddedPostgresTestSupport();
       const expected = {
         version: 1,
         enabled: true,
-        apps: [{ ...body.apps[0], roles: ["engineer"], allowedRepos: ["owner-a/repo-a", "owner-a/service-*"] }],
+        apps: [{
+          ...body.apps[0],
+          roles: ["engineer"],
+          allowedRepos: ["owner-a/repo-a", "owner-a/service-*"],
+          // Partial list normalized to complete: the defaults fill the rest.
+          permissions: normalizeGitHubAppPermissions({ workflows: "write", issues: "read" }),
+        }],
         commitEmailDomain: "example.com",
       };
       expect(saved.body.settings).toEqual(expected);
@@ -570,6 +640,11 @@ const support = await getEmbeddedPostgresTestSupport();
       expect((await request(server(operator)).put(path).send(withApp({ appId: "not-a-number" }))).status).toBe(400);
       expect((await request(server(operator)).put(path).send(withApp({ privateKey: KEY_A.privatePem }))).status).toBe(400);
       expect((await request(server(operator)).put(path).send({ ...base, apps: [app, app] })).status).toBe(400);
+      // Permission list: only allow-listed keys, only GitHub's token levels.
+      expect((await request(server(operator)).put(path).send(withApp({ permissions: { contents: "admin" } }))).status).toBe(400);
+      expect((await request(server(operator)).put(path).send(withApp({ permissions: { workflows: "read" } }))).status).toBe(400);
+      expect((await request(server(operator)).put(path).send(withApp({ permissions: { secrets: "write" } }))).status).toBe(400);
+      expect((await request(server(operator)).put(path).send(withApp({ permissions: { administration: "write" } }))).status).toBe(400);
 
       const member = { type: "board", source: "session", userId: "user-without-permission", isInstanceAdmin: false, companyIds: [input.companyId] };
       expect((await request(server(member)).put(path).send(base)).status).toBe(403);
@@ -577,6 +652,11 @@ const support = await getEmbeddedPostgresTestSupport();
       expect((await request(server(agentActor)).get(path)).status).toBe(403);
       expect((await request(server(agentActor)).put(path).send(base)).status).toBe(403);
       expect((await request(server(operator)).get(path)).body.settings).toEqual(defaultGitHubSharedIdentitySettings());
+
+      // A widened permission list saves; GET returns it normalized to complete.
+      const widened = await request(server(operator)).put(path).send(withApp({ permissions: { workflows: "write" } }));
+      expect(widened.status).toBe(200);
+      expect(widened.body.settings.apps[0].permissions).toEqual(normalizeGitHubAppPermissions({ workflows: "write" }));
     });
   });
 });
