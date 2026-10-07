@@ -351,7 +351,7 @@ git_objects_self_check() {
   local store checks="" ok_all=true err sep=""
   local wrapper="${MYRMIDON_GIT_WRAPPER:-/opt/paperclip/bin/git}"
   local shadow="${MYRMIDON_GIT_SHADOW:-/usr/local/bin/git}"
-  local real_git="${MYRMIDON_GIT_REAL:-/usr/bin/git}"
+  local real_git="${MYRMIDON_GIT_REAL:-/opt/paperclip/libexec/git}"
   if [ -n "${MYRMIDON_GIT_LOCAL_MIRROR+x}" ]; then
     store="${MYRMIDON_GIT_LOCAL_MIRROR}"
   else
@@ -517,14 +517,20 @@ if [ "${MYRMIDON_GIT_OBJECTS_CHECK:-1}" != "0" ]; then
   git_objects_self_check || log "WARNING: the shared-objects self-check itself failed to run"
 fi
 
-# --- clone hygiene report (dev variant) -----------------------------------
-# myrmidon(1.6.2 BOT-DISK-C): the board's draft-directory lifecycle removes an
-# idle git clone only when this container says it holds nothing unpushed. The
-# reporter only reads the clones and writes ${HERMES_HOME}/.myrmidon/clone-hygiene.json;
-# it exists in the dev variant only, so the base image skips this.
-if command -v bot-clone-hygiene >/dev/null 2>&1; then
+# --- bot disk lifecycle agent (dev variant) --------------------------------
+# myrmidon(1.6.5 BOT-DISK-H1c): botd (BOT-DISK-H3) replaces bot-clone-hygiene: it
+# reports the bot's workspaces to the board and runs the workspace lifecycle. Until
+# H3 ships the binary, the image has no botd and the old reporter runs instead
+# (myrmidon 1.6.2 BOT-DISK-C: the board's draft-directory lifecycle removes an idle
+# git clone only when this container says it holds nothing unpushed; the reporter
+# only reads the clones and writes ${HERMES_HOME}/.myrmidon/clone-hygiene.json).
+# Both exist in the dev variant only, so the base image starts neither.
+if command -v botd >/dev/null 2>&1; then
+  botd >/dev/null &
+  log "botd started (pid $!)"
+elif command -v bot-clone-hygiene >/dev/null 2>&1; then
   bot-clone-hygiene --interval "${MYRMIDON_CLONE_HYGIENE_INTERVAL_SEC:-900}" >/dev/null &
-  log "clone hygiene reporter started (pid $!)"
+  log "clone hygiene reporter started (pid $!) — no botd in this image"
 fi
 
 # --replace: a previous instance's lock (from a hard container restart) does
