@@ -102,6 +102,7 @@ import { instanceSettingsRoutes } from "./routes/instance-settings.js";
 import { myrmidonMaintenanceRoutes } from "./myrmidon/maintenance/index.js"; // myrmidon(R3)
 import { myrmidonDeployJobsRoutes } from "./myrmidon/deploy-jobs/index.js"; // myrmidon(R5-A)
 import { myrmidonRuntimeLimitsRoutes } from "./myrmidon/runtime-limits/index.js"; // myrmidon(C0)
+import { myrmidonRunStallRoutes } from "./myrmidon/run-stall/index.js"; // myrmidon(RUN-STALL-SETTINGS)
 import { myrmidonBudgetEnforcementRoutes } from "./myrmidon/budget-enforcement/index.js"; // myrmidon(1.7-BUDGET-CONFIG-B)
 import { myrmidonTelegramDmProgressRoutes } from "./myrmidon/telegram-dm-progress/index.js"; // myrmidon(DM-PROGRESS)
 import { myrmidonChannelSettingsRoutes } from "./myrmidon/channel-settings/index.js"; // myrmidon(1.7-SETTINGS-TO-UI)
@@ -897,6 +898,7 @@ export async function createApp(
   api.use(myrmidonMaintenanceRoutes(db)); // myrmidon(R3)
   api.use(myrmidonDeployJobsRoutes(db)); // myrmidon(R5-A)
   api.use(myrmidonRuntimeLimitsRoutes(db)); // myrmidon(C0)
+  api.use(myrmidonRunStallRoutes(db)); // myrmidon(RUN-STALL-SETTINGS)
   api.use(myrmidonBudgetEnforcementRoutes(db)); // myrmidon(1.7-BUDGET-CONFIG-B)
   api.use(myrmidonTelegramDmProgressRoutes(db)); // myrmidon(DM-PROGRESS): live progress steps of the Telegram DM status
   api.use(myrmidonChannelSettingsRoutes(db)); // myrmidon(1.7-SETTINGS-TO-UI): GET/PATCH /api/myrmidon/channel-settings
