@@ -116,6 +116,8 @@ func (rs *reqState) handle() *deny.Error {
 	rs.key = rt.BotKey
 	if rt.ID == route.A1 {
 		rs.target = rt.ImageRef
+	} else if rt.ID == route.A14 {
+		rs.target = route.DiskTarget
 	} else {
 		rs.target = rt.Name
 	}
@@ -170,6 +172,8 @@ func (rs *reqState) handle() *deny.Error {
 		return rs.a11(ctx, st, rt, bs)
 	case route.A12:
 		return rs.a12(ctx, st, rt, bs)
+	case route.A14:
+		return rs.a14(ctx, st)
 	}
 	return deny.New(deny.RouteNotAllowed)
 }

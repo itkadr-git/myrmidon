@@ -21,6 +21,7 @@ import (
 
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/config"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/deny"
+	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/disk"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/limit"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/peer"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/policy"
@@ -79,6 +80,9 @@ type Options struct {
 	// Lstat is how the volume root is looked at; tests replace it.
 	Lstat policy.LstatFunc
 	Now   func() time.Time
+	// Disk is how GET /myrmidon/disk (A14) looks at the host: statfs, the quota
+	// command and the project table. Zero fields mean the real host.
+	Disk disk.Deps
 }
 
 // Gate is the dockergate server.
@@ -90,6 +94,7 @@ type Gate struct {
 	stats   *Stats
 	now     func() time.Time
 	lstat   policy.LstatFunc
+	disk    disk.Deps
 	started time.Time
 
 	st atomic.Pointer[runtime]
@@ -138,6 +143,7 @@ func New(opt Options) (*Gate, error) {
 		opt:      opt,
 		now:      opt.Now,
 		lstat:    opt.Lstat,
+		disk:     opt.Disk,
 		started:  opt.Now(),
 		log:      NewLogger(opt.Log, opt.Now),
 		stats:    newStats(),

@@ -127,6 +127,12 @@
    "suffixes": [
     ""
    ]
+  },
+  {
+   "id": "A14",
+   "method": "GET",
+   "template": "myrmidon/disk",
+   "noPrefix": true
   }
  ]
 }
