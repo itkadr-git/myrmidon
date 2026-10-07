@@ -193,6 +193,21 @@ function runWithStub(env) {
   }
 }
 
+/**
+ * A `cp` stub that ACCEPTS --reflink=always (it copies): the success path of the
+ * self-check must be provable on runners whose temporary directory has no
+ * reflinks (tmpfs, ext4). The real FICLONE is proven by pnpm-reflink.test.mjs
+ * and the image build check, which skip with a reason where it cannot run.
+ */
+function acceptingCpStub() {
+  const stub = fs.mkdtempSync(path.join(os.tmpdir(), "myrmidon-cp-ok-"));
+  fs.writeFileSync(path.join(stub, "cp"), `#!/bin/sh
+for a in "$@"; do shift; [ "$a" = "--reflink=always" ] || set -- "$@" "$a"; done
+exec /bin/cp "$@"
+`, { mode: 0o755 });
+  return stub;
+}
+
 /** A /bot-like tree (one directory) with the three clone roots, plus a /data of links. */
 function botLayout() {
   const tree = fs.mkdtempSync(path.join(os.tmpdir(), "myrmidon-bot-layout-"));
@@ -229,10 +244,12 @@ describe("docker/bot-runtime/entrypoint.sh bot tree layout and reflink self-chec
 
   it("self-check passes when the store and every clone root share one mount, and reports it", () => {
     const { tree, bot, data } = botLayout();
+    const stub = acceptingCpStub();
     try {
       const store = path.join(bot, "workspace", ".pnpm-store");
       const roots = ["hermes", "workspace", "scratch"].map((name) => path.join(bot, name));
       const result = runWithStub({
+        MYRMIDON_TEST_STUB_BIN: stub,
         HERMES_HOME: path.join(bot, "hermes"),
         MYRMIDON_BOT_ROOT: bot,
         MYRMIDON_DATA_DIR: data,
@@ -367,10 +384,12 @@ exec /bin/cp "$@"
 
   it("the store the check uses is the profile's .env value when it overrides the environment", () => {
     const { tree, bot, data } = botLayout();
+    const stub = acceptingCpStub();
     try {
       const store = path.join(bot, "scratch", ".store-from-env-file");
       fs.appendFileSync(path.join(bot, "hermes", ".env"), `npm_config_store_dir="${store}"\nnpm_config_package_import_method=reflink\n`);
       const result = runWithStub({
+        MYRMIDON_TEST_STUB_BIN: stub,
         HERMES_HOME: path.join(bot, "hermes"),
         MYRMIDON_BOT_ROOT: bot,
         MYRMIDON_DATA_DIR: data,
@@ -732,10 +751,12 @@ describe("docker/bot-runtime/entrypoint.sh shared scope member", () => {
 
   it("reflinks work from the instance store into the member's clone roots AND into another member's", () => {
     const { tree, scope, data } = scopeLayout();
+    const stub = acceptingCpStub();
     try {
       const store = path.join(scope, ".pnpm-store");
       const other = path.join(scope, "bot-b", "workspace");
       const result = runWithStub({
+        MYRMIDON_TEST_STUB_BIN: stub,
         HERMES_HOME: path.join(data, "hermes"),
         MYRMIDON_BOT_SCOPE_DIR: scope,
         MYRMIDON_BOT_SCOPE_SUBDIR: "bot-a",
