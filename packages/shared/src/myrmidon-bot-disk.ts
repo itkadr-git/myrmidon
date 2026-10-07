@@ -387,7 +387,7 @@ export const patchBotDiskSettingsSchema = z
     gitMirrorRepos: z.union([gitMirrorReposSchema, z.null()]).optional(),
     gitMirrorRefreshMs: z.union([gitMirrorRefreshMsSchema, z.null()]).optional(),
     pnpmStoreDir: z.union([pnpmStoreDirSchema, z.null()]).optional(),
-    pnpmImportMethod: z.union([pnpmImportMethodSchema, z.null()]).optional(),
+    pnpmImportMethod: pnpmImportMethodSchema.nullable().optional(),
     // null returns the default role list; [] is allowed and means no bot.
     sharedCacheRoles: z.union([sharedCacheRolesSchema, z.null()]).optional(),
     // myrmidon(1.6.5-BOT-DISK-H5c): the C7 mechanics keys; null returns a key to
