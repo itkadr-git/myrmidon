@@ -1,303 +1,238 @@
-// myrmidon(1.6.5-BOT-DISK-H3e): one botd pass — inventory, desired state,
-// rules, action execution, disk-state write and the board report (contract C4,
-// docs/myrmidon/bot-disk-contract). CommonJS: the bot runtime runs the daemon
-// with the image's /opt/node24 node, outside the workspace type-chain.
-"use strict";
+// myrmidon(1.6.5-BOT-DISK-H3e): the main loop of botd — one pass per tick
+// (60 s by default, an extra pass on SIGUSR1):
+//   inventory (#745 toReportParts/toInventory) → desired (#740
+//   createDesiredClient().getLast) → rules.plan (#742, inventory
+//   {worktrees, scratch, bases, archives}) → execution of the plan actions
+//   (a single failed action is skipped and lands in the report, it does not
+//   stop the rest) → disk-state.json (from the board reply) → the disk
+//   report (C4) with a retry.
+// The modules of the siblings are plugged in by contract; fakes are
+// supported for the tests and every dependency is injectable. Nothing is
+// deleted when desired.ok=false.
+//
+// ESM, like every module of docker/bot-runtime/botd (package.json
+// {"type":"module"}).
 
-const fs = require("node:fs");
-const os = require("node:os");
-const path = require("node:path");
+import fs from "node:fs";
+import path from "node:path";
+import { buildReport, postReport } from "./report.js";
 
-/** Remove `dir` recursively without following a symbolic link at the top. */
-function removeTree(dir) {
-  const st = fs.lstatSync(dir);
-  if (st.isSymbolicLink()) {
-    throw new Error(`refusing to remove a symbolic link: ${dir}`);
-  }
-  fs.rmSync(dir, { recursive: true, force: true });
+export const DEFAULT_INTERVAL_MS = 60_000;
+export const REPORT_RETRY_DELAY_MS = 30_000;
+const MIN_INTERVAL_MS = 1_000;
+const MAX_INTERVAL_MS = 15 * 60_000;
+
+function errorMessage(err) {
+  if (!err) return "unknown error";
+  const msg = err && err.message ? String(err.message) : String(err);
+  return msg.slice(0, 500);
 }
 
-/** An empty registry when the file is absent; a broken file is an error, not a wipe. */
-function loadRegistry(home) {
-  const file = path.join(home, "ws-registry.json");
-  let raw;
-  try {
-    raw = fs.readFileSync(file, "utf8");
-  } catch {
-    return { version: 1, entries: [] };
-  }
-  const parsed = JSON.parse(raw);
-  if (parsed && parsed.version === 1 && Array.isArray(parsed.entries)) {
-    return parsed;
-  }
-  throw new Error(`ws-registry.json has an unknown shape`);
-}
-
-/** Allocated size of `dir` in bytes (`du -sb` semantics, lstat-based). */
-function duBytes(dir) {
-  let total = 0;
-  const stack = [dir];
-  let visited = 0;
-  while (stack.length > 0) {
-    const current = stack.pop();
-    let st;
-    try {
-      st = fs.lstatSync(current);
-    } catch {
-      continue;
-    }
-    visited += 1;
-    if (visited > 1_000_000) return null;
-    if (st.isSymbolicLink()) continue;
-    total += st.blocks ? st.blocks * 512 : st.size;
-    if (st.isDirectory()) {
-      let names;
-      try {
-        names = fs.readdirSync(current);
-      } catch {
-        continue;
-      }
-      for (const name of names) stack.push(path.join(current, name));
-    }
-  }
-  return total;
+function iso(date) {
+  return date.toISOString().replace(/\.\d+Z$/, "Z");
 }
 
 /**
- * Class-D bases as the report lists them: `<git-base>/<owner>/<repo>.git`
- * directories holding HEAD. lastFetchAt comes from FETCH_HEAD's mtime.
+ * Executes one plan action; a failure is returned, never thrown.
+ * Action shape from rules.plan (#742): { op, path, reason, key? }.
  */
-function listBases(home) {
-  const root = path.join(home, "git-base");
-  const bases = [];
-  let owners;
+export async function executeAction(action, { deps, roots }) {
+  const startedAt = Date.now();
   try {
-    owners = fs.readdirSync(root).sort();
-  } catch {
-    return bases;
-  }
-  for (const owner of owners) {
-    const ownerDir = path.join(root, owner);
-    let names;
-    try {
-      if (!fs.statSync(ownerDir).isDirectory()) continue;
-      names = fs.readdirSync(ownerDir).sort();
-    } catch {
-      continue;
-    }
-    for (const name of names) {
-      if (!name.endsWith(".git")) continue;
-      const basePath = path.join(ownerDir, name);
-      try {
-        if (!fs.statSync(basePath).isDirectory()) continue;
-        if (!fs.existsSync(path.join(basePath, "HEAD"))) continue;
-      } catch {
-        continue;
+    let freedBytes = 0;
+    switch (action.op) {
+      case "remove": {
+        const executor = deps.removeWorktree || ((p) => fs.promises.rm(p, { recursive: true, force: true }));
+        const result = (await executor(action.path, action.key, action)) || {};
+        freedBytes = result.freedBytes ?? 0;
+        break;
       }
-      let lastFetchAt = null;
-      try {
-        const st = fs.statSync(path.join(basePath, "FETCH_HEAD"));
-        lastFetchAt = st.mtime.toISOString().replace(/\.\d+Z$/, "Z");
-      } catch {
-        /* never fetched or mtime unreadable */
+      case "archive-remove": {
+        if (!deps.archiveRemove) throw new Error("archiveRemove dependency missing");
+        const result = (await deps.archiveRemove(action.path, action.key, action)) || {};
+        freedBytes = result.freedBytes ?? 0;
+        break;
       }
-      bases.push({
-        repo: `${owner}/${name.slice(0, -".git".length)}`,
-        path: basePath,
-        sizeBytes: duBytes(basePath),
-        lastFetchAt,
-      });
+      case "prune": {
+        if (!deps.prune) throw new Error("prune dependency missing");
+        const result = (await deps.prune(action.path, action.key, action)) || {};
+        freedBytes = result.freedBytes ?? 0;
+        break;
+      }
+      case "delete-base": {
+        if (!deps.deleteBase) throw new Error("deleteBase dependency missing");
+        const result = (await deps.deleteBase(action.path, action)) || {};
+        freedBytes = result.freedBytes ?? 0;
+        break;
+      }
+      case "delete-archive": {
+        if (!deps.deleteArchive) throw new Error("deleteArchive dependency missing");
+        const result = (await deps.deleteArchive(action.path, action)) || {};
+        freedBytes = result.freedBytes ?? 0;
+        break;
+      }
+      default:
+        throw new Error(`unknown op: ${action.op}`);
     }
+    return {
+      at: iso(new Date(startedAt)),
+      action: action.op === "archive-remove" ? "archive" : action.op,
+      path: action.path,
+      result: "ok",
+      reason: action.reason || "",
+    };
+  } catch (err) {
+    return {
+      at: iso(new Date(startedAt)),
+      action: action.op === "archive-remove" ? "archive" : action.op,
+      path: action.path,
+      result: "error",
+      reason: errorMessage(err),
+    };
   }
-  return bases;
 }
 
-/** Class-F archives under `<home>/archive` (files of one bundle-set count once). */
-function listArchives(home) {
-  const root = path.join(home, "archive");
-  const archives = [];
-  let names;
-  try {
-    names = fs.readdirSync(root).sort();
-  } catch {
-    return archives;
+/** The single-pass dependency bundle the tests and the entrypoint can override. */
+export function defaultDeps(overrides = {}) {
+  const deps = {
+    classify: null, // the #745 module: { classifyAll, toReportParts, toInventory }
+    desiredClient: null, // the #740 client ({start, getLast, stop}) or a plain {ok, state?}
+    rules: null, // the #742 module: { plan } — rules-shape inventory in, actions out
+    removeWorktree: null, // (path, key, action) => {freedBytes?} — #745 remove or fs.rm
+    archiveRemove: null, // (path, key, action) => {archivePath?}
+    prune: null, // (path, key, action) => {}
+    deleteBase: null, // (path, action) => {freedBytes?}
+    deleteArchive: null, // (path, action) => {freedBytes?}
+    fetchImpl: null,
+    now: () => new Date(),
+    ...overrides,
+  };
+  if (!deps.classify) {
+    deps.classify = {
+      classifyAll: async () => ({ items: [], bases: [], archives: [] }),
+      toReportParts: () => ({ copies: [], foreign: [] }),
+      toInventory: () => ({ worktrees: [], scratch: [], bases: [], archives: [] }),
+    };
   }
-  for (const name of names) {
-    if (name === "manifest.json" || name.startsWith(".")) continue;
-    const file = path.join(root, name);
-    let st;
-    try {
-      st = fs.statSync(file);
-    } catch {
-      continue;
+  if (!deps.rules) deps.rules = { plan: () => ({ actions: [], pressure: "none", blockOpen: false }) };
+  return deps;
+}
+
+function desiredResolution(desiredClient) {
+  if (desiredClient && typeof desiredClient.getLast === "function") return desiredClient.getLast();
+  return desiredClient || { ok: false, reason: "desired client missing" };
+}
+
+/** The full tick, exactly once. Returns the report body and its delivery. */
+export async function runPass(config, deps) {
+  const startedAt = deps.now();
+  const classifyItems = await deps.classify.classifyAll({
+    roots: config.roots.scanRoots || [config.roots.worktreesRoot, config.roots.scratchRoot].filter(Boolean),
+    gitBaseDir: config.roots.basesRoot,
+    now: startedAt.getTime(),
+  });
+  const reportParts = deps.classify.toReportParts(classifyItems.items || [], classifyItems.actions || []);
+  const rulesInventory = deps.classify.toInventory(classifyItems.items || [], { now: startedAt.getTime() });
+
+  const desired = desiredResolution(deps.desiredClient);
+  const actions = [];
+  let plan = { actions: [], pressure: "none", blockOpen: false };
+  if (desired.ok) {
+    plan = deps.rules.plan(rulesInventory, desired.state, startedAt);
+    for (const action of plan.actions) {
+      // A single failed action is skipped with its reason recorded — it does
+      // not stop the remaining actions of the pass.
+      actions.push(await executeAction(action, { deps, roots: config.roots }));
     }
-    if (!st.isFile()) continue;
-    // <KEY>-<ts>.bundle — the companion .patch/.untracked.tar belong to it.
-    const m = /^([A-Za-z0-9-]+?)-\d{8}T\d{6}Z\.(bundle|patch|untracked\.tar)$/.exec(name);
-    if (!m || m[2] !== "bundle") continue;
-    archives.push({
-      key: m[1],
-      path: file,
-      sizeBytes: st.size,
-      createdAt: st.mtime.toISOString().replace(/\.\d+Z$/, "Z"),
+  } else {
+    actions.push({
+      at: iso(startedAt),
+      action: "skip",
+      path: "desired",
+      result: "error",
+      reason: `desired.ok=false: ${desired.reason || "unknown"}`,
     });
   }
-  return archives;
-}
-
-/**
- * One action of the plan. `reason` makes a skipped action self-explanatory in
- * the report; `archive: true` routes a removal through the archive module.
- */
-function buildActions(decisions, now) {
-  const actions = [];
-  for (const d of decisions) {
-    if (d.action === "remove") {
-      actions.push({ type: "remove", key: d.copy.key, path: d.copy.path });
-    } else if (d.action === "archive-remove") {
-      actions.push({ type: "archive-remove", key: d.copy.key, path: d.copy.path });
-    } else if (d.action === "prune") {
-      actions.push({ type: "prune", key: d.copy.key, path: d.copy.path });
-    } else {
-      actions.push({
-        type: "skip",
-        key: d.copy.key,
-        path: d.copy.path,
-        reason: d.reason || "kept by rules",
-      });
+  const report = buildReport({
+    inventory: {
+      bases: classifyItems.bases || [],
+      copies: reportParts.copies,
+      archives: classifyItems.archives || [],
+      foreign: reportParts.foreign,
+    },
+    actions,
+    now: deps.now(),
+    selfChecks: config.selfChecks,
+    botKey: config.identity.botKey,
+    imageGeneration: config.identity.imageGeneration,
+  });
+  const posted = await postReport({
+    boardUrl: config.board.url,
+    apiKey: config.board.apiKey,
+    fetchImpl: deps.fetchImpl,
+    body: report,
+    retryDelayMs: config.reportRetryDelayMs ?? REPORT_RETRY_DELAY_MS,
+  });
+  let nextIntervalMs = null;
+  if (posted.ok) {
+    const statePath = path.join(config.stateDir, "disk-state.json");
+    fs.mkdirSync(config.stateDir, { recursive: true });
+    fs.writeFileSync(statePath, `${JSON.stringify({ ok: true, at: report.at, report })}\n`);
+    const next = Number(posted.nextReportSec);
+    if (Number.isFinite(next) && next > 0) {
+      nextIntervalMs = Math.min(MAX_INTERVAL_MS, Math.max(MIN_INTERVAL_MS, next * 1000));
     }
   }
-  return actions;
+  return { report, actions, plan, posted, nextIntervalMs };
 }
 
 /**
- * Executes the plan; a failing action never stops the rest — its error lands
- * in the report row. Actions run without shell interpolation (spawn-style
- * argv into the injected runner).
+ * The daemon supervisor: a tick every `intervalMs` (the board's
+ * nextReportSec can move it), an extra tick on SIGUSR1, SIGTERM/SIGINT for
+ * a clean stop.
  */
-async function executeActions(plan, modules) {
-  const at = new Date().toISOString().replace(/\.\d+Z$/, "Z");
-  return Promise.all(
-    plan.map(async (item) => {
-      const base = { at, path: item.path };
-      try {
-        if (item.type === "remove") {
-          await modules.remove(item.path);
-          return { ...base, action: "remove", result: "ok" };
-        }
-        if (item.type === "archive-remove") {
-          const out = await modules.archiveRemove(item.path, item.key);
-          const row = { ...base, action: "archive", result: "ok" };
-          if (out && out.archivePath) row.detail = out.archivePath;
-          return row;
-        }
-        if (item.type === "prune") {
-          await modules.prune();
-          return { ...base, action: "remove", result: "ok", detail: "worktree prune" };
-        }
-        return { ...base, action: "skip", result: "skipped", detail: item.reason };
-      } catch (err) {
-        const message = err && err.message ? err.message : String(err);
-        return { ...base, action: item.type === "skip" ? "skip" : item.type === "archive-remove" ? "archive" : "remove", result: "error", detail: message.slice(0, 500) };
-      }
-    }),
-  );
-}
-
-/** The report `actions` slice: at most the last 200 rows (contract C4). */
-function capActions(rows, limit = 200) {
-  return rows.slice(-limit);
-}
-
-/**
- * Runs one botd pass. Everything outside the pure flow arrives through
- * `modules` — a sibling BOT-DISK-H module or a test fake; the loop itself
- * never shells out and never decides deletion policy beyond wiring:
- *
- *   inventory (wsCli.list + bases + archives)
- *   → desired (boardClient.desiredState)
- *   → rules.decide (pure rules module)
- *   → execute (remove / archive-remove / prune; one failure skips one action)
- *   → report.build + boardClient.postReport (retry handled by report.js)
- *   → write disk-state.json from the pressure the desired state carried.
- *
- * A pass without `desired.ok` deletes nothing (fail-safe) but still reports
- * and refreshes disk-state when the previous state file is known-good.
- */
-async function runPass(modules, env = {}) {
-  const home = modules.home;
-  const now = env.now ? new Date(env.now) : new Date();
-
-  const registry = loadRegistry(home);
-  const listed = await modules.wsCli.list();
-  const copies = listed && Array.isArray(listed.entries) ? listed.entries : [];
-  const bases = listBases(home);
-  const archives = listArchives(home);
-
-  const inventory = { copies, registryEntries: registry.entries, bases, archives };
-
-  const desired = await modules.boardClient.desiredState();
-
-  let decisions = [];
-  if (desired.ok) {
-    decisions = modules.rules.decide({ inventory, desired: desired.state, now });
-  } else {
-    decisions = inventory.copies.map((copy) => ({
-      copy,
-      action: "skip",
-      reason: `desired state unavailable (${desired.error || "board error"}); fail-safe keeps everything`,
-    }));
-  }
-
-  const plan = buildActions(decisions, now);
-  const actionRows = capActions(await executeActions(plan, modules));
-
-  const reportBody = await modules.report.build({
-    inventory,
-    actions: actionRows,
-    now,
-    desired,
-  });
-  const reportResult = await modules.boardClient.postReport(reportBody);
-
-  // disk-state.json mirrors the pressure of the desired state; on a board
-  // failure the last known file stays (fail-safe), only its writer is botd.
-  if (desired.ok) {
-    const pressure = desired.state.pressure || {};
-    const diskState = {
-      version: 1,
-      quotaPercent: pressure.quotaPercent ?? null,
-      partitionPercent: pressure.partitionPercent ?? 0,
-      pressure: pressure.level || "none",
-      updatedAt: now.toISOString().replace(/\.\d+Z$/, "Z"),
-    };
-    writeJsonAtomic(path.join(home, "disk-state.json"), diskState);
-  }
-
-  return {
-    ok: desired.ok,
-    desiredError: desired.ok ? null : desired.error || "board error",
-    copies: copies.length,
-    actions: actionRows,
-    report: reportResult,
+export async function runDaemon(config, deps) {
+  let running = true;
+  let wake = null;
+  let tick = Promise.resolve();
+  const requestTick = () => {
+    if (wake) wake();
   };
+  const stop = () => {
+    running = false;
+    requestTick();
+  };
+  process.on("SIGUSR1", requestTick);
+  process.on("SIGTERM", stop);
+  process.on("SIGINT", stop);
+  try {
+    let intervalMs = config.intervalMs || DEFAULT_INTERVAL_MS;
+    while (running) {
+      const pass = runPass(config, deps).catch((err) => {
+        process.stderr.write(`botd pass failed: ${errorMessage(err)}\n`);
+        return null;
+      });
+      tick = pass;
+      await pass;
+      const waited = new Promise((resolve) => {
+        const timer = setTimeout(() => {
+          wake = null;
+          resolve();
+        }, intervalMs);
+        timer.unref();
+        wake = () => {
+          clearTimeout(timer);
+          wake = null;
+          resolve();
+        };
+      });
+      const result = await tick;
+      if (result && result.nextIntervalMs) intervalMs = result.nextIntervalMs;
+      await waited;
+    }
+  } finally {
+    process.removeListener("SIGUSR1", requestTick);
+    process.removeListener("SIGTERM", stop);
+    process.removeListener("SIGINT", stop);
+  }
 }
-
-function writeJsonAtomic(file, value) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = `${file}.tmp-${process.pid}`;
-  fs.writeFileSync(tmp, `${JSON.stringify(value)}\n`, "utf8");
-  fs.renameSync(tmp, file);
-}
-
-module.exports = {
-  runPass,
-  buildActions,
-  executeActions,
-  loadRegistry,
-  listBases,
-  listArchives,
-  duBytes,
-  removeTree,
-  writeJsonAtomic,
-};

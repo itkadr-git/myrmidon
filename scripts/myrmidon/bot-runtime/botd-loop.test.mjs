@@ -4,7 +4,6 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { createRequire } from "node:module";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -14,19 +13,25 @@ import { fileURLToPath } from "node:url";
 // desired state (desired.ok=false) removes nothing and the report carries
 // the reason; the report passes the C4 schema; disk-state.json is written;
 // one failing action never stops the others.
+//
+// The loop is wired by contract to the sibling modules:
+//   classify (#745) — classifyAll / toReportParts / toInventory,
+//   desired (#740) — createDesiredClient().getLast,
+//   rules (#742) — plan(inventory, desired, now).
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const BOTD_DIR = path.join(ROOT, "docker/bot-runtime/botd");
 const CONTRACT_DIR = path.join(ROOT, "docs/myrmidon/bot-disk-contract");
 
-const loop = createRequire(import.meta.url)(path.join(BOTD_DIR, "lib/loop.js"));
-const report = createRequire(import.meta.url)(path.join(BOTD_DIR, "lib/report.js"));
+const loop = await import(path.join(BOTD_DIR, "lib/loop.js"));
+const report = await import(path.join(BOTD_DIR, "lib/report.js"));
 
 /** The C4 body must satisfy the strict zod schema of the H0 contract package. */
 let wsDiskReportSchema = null;
 try {
   // server/node_modules carries zod + @paperclipai/shared after pnpm install;
   // missing deps (bare checkout) degrade to the hand check below
+  const { createRequire } = await import("node:module");
   const requireShared = createRequire(path.join(ROOT, "server/package.json"));
   ({ wsDiskReportSchema } = requireShared("@paperclipai/shared/myrmidon-bot-workspace"));
 } catch {
@@ -97,35 +102,70 @@ const DESIRED_OK = {
   ],
 };
 
-function fakeModules(home, boardUrl, { rulesDecide, extra } = {}) {
+/** Fake sibling modules wired to the loop by contract. */
+function fakeModules({ classifyAll, plan, removeWorktree, archiveRemove, prune, deleteBase, deleteArchive }) {
   return {
-    home,
-    wsCli: {
-      async list() {
-        return {
-          ok: true,
-          entries: [
-            { key: "ABC-101", path: "/workspace/ABC-101", class: "E", repo: "acme/widgets", branch: "bot/ABC-101", openedAt: "2026-10-07T00:30:00Z", clean: true, pushed: true },
-            { key: "ABC-099", path: "/workspace/ABC-099", class: "E", repo: "acme/widgets", branch: "bot/ABC-099", openedAt: "2026-10-06T20:00:00Z", clean: true, pushed: true },
-          ],
-        };
-      },
+    classify: {
+      classifyAll: classifyAll || (() => ({ items: [], bases: [], archives: [] })),
+      toReportParts: (items, actions = []) => ({
+        copies: items.map((it) => ({
+          path: it.path,
+          class: it.class,
+          key: path.basename(it.path),
+          clean: null,
+          pushed: null,
+          sizeBytes: it.sizeBytes ?? null,
+          ageSec: it.ageSec ?? 0,
+          ...(it.class === "X" ? { reason: `foreign (${it.sign})` } : {}),
+        })),
+        foreign: items.filter((it) => it.class === "X").map((it) => ({ path: it.path, sign: it.sign })),
+      }),
+      toInventory: (items) => ({
+        worktrees: items.filter((it) => it.class === "E").map((it) => ({
+          key: path.basename(it.path),
+          path: it.path,
+          dirMissing: false,
+          clean: null,
+          pushed: null,
+          openedAt: new Date().toISOString(),
+        })),
+        scratch: items.filter((it) => it.class === "G" || it.class === "X").map((it) => ({
+          name: path.basename(it.path),
+          path: it.path,
+          mtime: new Date().toISOString(),
+          isGit: false,
+          clean: null,
+          pushed: null,
+        })),
+        bases: [],
+        archives: [],
+      }),
     },
-    boardClient: {
-      desiredState: () => report.fetchDesiredState({ boardUrl, apiKey: "test", fetchImpl: globalThis.fetch }),
-      postReport: (body) => report.postReport({ boardUrl, apiKey: "test", fetchImpl: globalThis.fetch, body, retryDelayMs: 0 }),
+    desiredClient: null, // set per test
+    rules: { plan: plan || (() => ({ actions: [], pressure: "none", blockOpen: false })) },
+    removeWorktree: removeWorktree || null,
+    archiveRemove: archiveRemove || null,
+    prune: prune || null,
+    deleteBase: deleteBase || null,
+    deleteArchive: deleteArchive || null,
+  };
+}
+
+function makeConfig(home, boardUrl) {
+  return {
+    board: { url: boardUrl, apiKey: "test" },
+    identity: { botKey: "bot-001", imageGeneration: "myr-v1.6.5-rc.5" },
+    roots: {
+      worktreesRoot: path.join(home, "worktrees"),
+      scratchRoot: path.join(home, "scratch"),
+      basesRoot: path.join(home, "bases"),
+      archivesRoot: path.join(home, "archives"),
+      scanRoots: [path.join(home, "worktrees"), path.join(home, "scratch")],
     },
-    rules: {
-      decide: rulesDecide,
-    },
-    remove: async () => {},
-    archiveRemove: async () => ({ archivePath: "/data/hermes/.myrmidon/archive/ABC-099-20261007T010000Z.bundle" }),
-    prune: async () => {},
-    report: {
-      build: async ({ inventory, actions, now }) =>
-        report.buildReport({ inventory, actions, now, botKey: "bot-001", imageGeneration: "myr-v1.6.5-rc.5" }),
-    },
-    ...extra,
+    stateDir: home,
+    intervalMs: 60_000,
+    reportRetryDelayMs: 0,
+    selfChecks: { reflink: true, gitref: true, wsCli: null },
   };
 }
 
@@ -134,19 +174,34 @@ describe("botd main loop (H3e)", () => {
     const home = makeHome(t);
     const board = await fakeBoard(t, { desired: { state: DESIRED_OK } });
     const removed = [];
-    const modules = fakeModules(home, board.url, {
-      rulesDecide: ({ inventory, desired }) =>
-        inventory.copies.map((copy) => {
-          const want = desired.workspaces.find((w) => w.key === copy.key);
-          if (want && want.state === "closing") return { copy, action: "remove" };
-          return { copy, action: "keep", reason: "active" };
-        }),
-      extra: { remove: async (p) => removed.push(p) },
+    const modules = fakeModules({
+      classifyAll: () => ({
+        items: [
+          { path: "/workspace/ABC-101", class: "E", sizeBytes: 100, ageSec: 3600 },
+          { path: "/workspace/ABC-099", class: "E", sizeBytes: 200, ageSec: 7200 },
+        ],
+        bases: [],
+        archives: [],
+      }),
+      plan: (inventory, desired, now) => ({
+        actions: inventory.worktrees
+          .filter((wt) => {
+            const want = desired.workspaces.find((w) => w.key === wt.key);
+            return want && want.state === "closing";
+          })
+          .map((wt) => ({ op: "remove", path: wt.path, reason: "closing", key: wt.key })),
+        pressure: "none",
+        blockOpen: false,
+      }),
+      removeWorktree: async (p) => { removed.push(p); return { freedBytes: 200 }; },
     });
+    modules.desiredClient = { getLast: () => ({ ok: true, state: DESIRED_OK }) };
 
-    const result = await loop.runPass(modules, { now: new Date("2026-10-07T01:05:00Z") });
+    const config = makeConfig(home, board.url);
+    const deps = loop.defaultDeps(modules);
+    const result = await loop.runPass(config, deps);
 
-    assert.equal(result.ok, true);
+    assert.equal(result.posted.ok, true);
     assert.deepEqual(removed, ["/workspace/ABC-099"]);
     assert.equal(board.received.length, 1);
     const body = board.received[0];
@@ -155,62 +210,76 @@ describe("botd main loop (H3e)", () => {
     assert.ok(removeRow, "the removal must land in actions");
     assert.equal(removeRow.action, "remove");
     assert.equal(removeRow.result, "ok");
-    const skipRow = body.actions.find((a) => a.path === "/workspace/ABC-101");
-    assert.equal(skipRow.result, "skipped");
 
     const diskState = JSON.parse(fs.readFileSync(path.join(home, "disk-state.json"), "utf8"));
-    assert.deepEqual(diskState, {
-      version: 1,
-      quotaPercent: 41.2,
-      partitionPercent: 55.0,
-      pressure: "none",
-      updatedAt: "2026-10-07T01:05:00Z",
-    });
+    assert.equal(diskState.ok, true);
+    assert.equal(body.schema, 1);
   });
 
   it("desired.ok=false removes nothing and the report carries the reason", async (t) => {
     const home = makeHome(t);
     const board = await fakeBoard(t, { desired: { errorStatus: 503 } });
     const removed = [];
-    const modules = fakeModules(home, board.url, {
-      rulesDecide: () => {
-        throw new Error("rules must not run without a desired state");
-      },
-      extra: { remove: async (p) => removed.push(p) },
+    const modules = fakeModules({
+      classifyAll: () => ({
+        items: [{ path: "/workspace/ABC-101", class: "E", sizeBytes: 100, ageSec: 3600 }],
+        bases: [],
+        archives: [],
+      }),
+      plan: () => { throw new Error("rules must not run without a desired state"); },
+      removeWorktree: async (p) => { removed.push(p); },
     });
+    modules.desiredClient = { getLast: () => ({ ok: false, reason: "HTTP 503" }) };
 
-    const result = await loop.runPass(modules, { now: new Date("2026-10-07T01:05:00Z") });
+    const config = makeConfig(home, board.url);
+    const deps = loop.defaultDeps(modules);
+    const result = await loop.runPass(config, deps);
 
-    assert.equal(result.ok, false);
+    assert.equal(result.posted.ok, true); // report still delivered
     assert.deepEqual(removed, []);
-    assert.equal(fs.existsSync(path.join(home, "disk-state.json")), false, "no disk-state write without a desired state");
     const body = board.received[0];
     assertC4Shape(body);
-    assert.equal(body.actions.length, 2);
-    for (const row of body.actions) {
-      assert.equal(row.result, "skipped");
-      assert.match(row.detail, /desired state unavailable/);
-    }
+    assert.equal(body.actions.length, 1);
+    assert.equal(body.actions[0].result, "error");
+    assert.match(body.actions[0].reason, /desired\.ok=false/);
   });
 
   it("a failing action does not stop the rest", async (t) => {
     const home = makeHome(t);
     const board = await fakeBoard(t, { desired: { state: DESIRED_OK } });
-    const modules = fakeModules(home, board.url, {
-      rulesDecide: ({ inventory }) => inventory.copies.map((copy) => ({ copy, action: "remove" })),
-      extra: {
-        remove: async (p) => {
-          if (p === "/workspace/ABC-101") throw new Error("simulated removal failure");
-        },
+    const removed = [];
+    const modules = fakeModules({
+      classifyAll: () => ({
+        items: [
+          { path: "/workspace/ABC-101", class: "E", sizeBytes: 100, ageSec: 3600 },
+          { path: "/workspace/ABC-099", class: "E", sizeBytes: 200, ageSec: 7200 },
+        ],
+        bases: [],
+        archives: [],
+      }),
+      plan: (inventory) => ({
+        actions: inventory.worktrees.map((wt) => ({ op: "remove", path: wt.path, reason: "test", key: wt.key })),
+        pressure: "none",
+        blockOpen: false,
+      }),
+      removeWorktree: async (p) => {
+        if (p === "/workspace/ABC-101") throw new Error("simulated removal failure");
+        removed.push(p);
       },
     });
+    modules.desiredClient = { getLast: () => ({ ok: true, state: DESIRED_OK }) };
 
-    const result = await loop.runPass(modules);
+    const config = makeConfig(home, board.url);
+    const deps = loop.defaultDeps(modules);
+    const result = await loop.runPass(config, deps);
+
+    assert.equal(result.posted.ok, true);
+    assert.deepEqual(removed, ["/workspace/ABC-099"]);
     const body = board.received[0];
     const failed = body.actions.find((a) => a.path === "/workspace/ABC-101");
     const fine = body.actions.find((a) => a.path === "/workspace/ABC-099");
     assert.equal(failed.result, "error");
-    assert.match(failed.detail, /simulated removal failure/);
+    assert.match(failed.reason, /simulated removal failure/);
     assert.equal(fine.result, "ok");
     assert.equal(result.actions.length, 2);
   });
@@ -219,18 +288,37 @@ describe("botd main loop (H3e)", () => {
     const home = makeHome(t);
     const board = await fakeBoard(t, { desired: { state: DESIRED_OK } });
     const archived = [];
-    const modules = fakeModules(home, board.url, {
-      rulesDecide: ({ inventory }) =>
-        inventory.copies.map((copy) => ({ copy, action: copy.key === "ABC-099" ? "archive-remove" : "keep" })),
-      extra: {
-        archiveRemove: async (p, key) => {
-          archived.push([p, key]);
-          return { archivePath: "/data/hermes/.myrmidon/archive/ABC-099-20261007T010000Z.bundle" };
-        },
+    const modules = fakeModules({
+      classifyAll: () => ({
+        items: [
+          { path: "/workspace/ABC-101", class: "E", sizeBytes: 100, ageSec: 3600 },
+          { path: "/workspace/ABC-099", class: "E", sizeBytes: 200, ageSec: 7200 },
+        ],
+        bases: [],
+        archives: [],
+      }),
+      plan: (inventory) => ({
+        actions: inventory.worktrees.map((wt) => ({
+          op: wt.key === "ABC-099" ? "archive-remove" : "remove",
+          path: wt.path,
+          reason: "test",
+          key: wt.key,
+        })),
+        pressure: "none",
+        blockOpen: false,
+      }),
+      removeWorktree: async () => {},
+      archiveRemove: async (p, key) => {
+        archived.push([p, key]);
+        return { archivePath: "/data/hermes/.myrmidon/archive/ABC-099-20261007T010000Z.bundle" };
       },
     });
+    modules.desiredClient = { getLast: () => ({ ok: true, state: DESIRED_OK }) };
 
-    await loop.runPass(modules);
+    const config = makeConfig(home, board.url);
+    const deps = loop.defaultDeps(modules);
+    await loop.runPass(config, deps);
+
     assert.deepEqual(archived, [["/workspace/ABC-099", "ABC-099"]]);
     const row = board.received[0].actions.find((a) => a.path === "/workspace/ABC-099");
     assert.equal(row.action, "archive");
@@ -241,30 +329,31 @@ describe("botd main loop (H3e)", () => {
     const home = makeHome(t);
     const board = await fakeBoard(t, { desired: { state: DESIRED_OK } });
     const many = Array.from({ length: 250 }, (_, i) => ({
-      key: `ABC-${i}`,
       path: `/workspace/ABC-${i}`,
       class: "G",
-      openedAt: "2026-10-07T00:00:00Z",
-      clean: null,
-      pushed: null,
+      sizeBytes: 100,
+      ageSec: 3600,
     }));
-    const modules = fakeModules(home, board.url, {
-      rulesDecide: ({ inventory }) => inventory.copies.map((copy) => ({ copy, action: "skip", reason: "cap test" })),
+    const modules = fakeModules({
+      classifyAll: () => ({ items: many, bases: [], archives: [] }),
+      plan: (inventory) => ({
+        actions: inventory.scratch.map((s) => ({ op: "remove", path: s.path, reason: "cap test", key: s.name })),
+        pressure: "none",
+        blockOpen: false,
+      }),
+      removeWorktree: async () => {},
     });
-    modules.wsCli.list = async () => ({ ok: true, entries: many });
+    modules.desiredClient = { getLast: () => ({ ok: true, state: DESIRED_OK }) };
 
-    await loop.runPass(modules);
+    const config = makeConfig(home, board.url);
+    const deps = loop.defaultDeps(modules);
+    await loop.runPass(config, deps);
     assert.equal(board.received[0].actions.length, 200);
   });
 
   it("report retries a 5xx once and succeeds", async (t) => {
     const home = makeHome(t);
     let calls = 0;
-    const board = await fakeBoard(t, {
-      desired: { state: DESIRED_OK },
-      onReport: () => {},
-    });
-    // wrap: first POST fails with 500
     const server = http.createServer((req, res) => {
       if (req.method === "POST") {
         calls += 1;
@@ -285,13 +374,18 @@ describe("botd main loop (H3e)", () => {
     t.after(() => server.close());
     const url = `http://127.0.0.1:${server.address().port}`;
 
-    const modules = fakeModules(home, url, {
-      rulesDecide: ({ inventory }) => inventory.copies.map((copy) => ({ copy, action: "skip", reason: "retry test" })),
+    const modules = fakeModules({
+      classifyAll: () => ({ items: [], bases: [], archives: [] }),
+      plan: () => ({ actions: [], pressure: "none", blockOpen: false }),
     });
-    const result = await loop.runPass(modules);
+    modules.desiredClient = { getLast: () => ({ ok: true, state: DESIRED_OK }) };
+
+    const config = makeConfig(home, url);
+    const deps = loop.defaultDeps(modules);
+    const result = await loop.runPass(config, deps);
     assert.equal(calls, 2);
-    assert.equal(result.report.ok, true);
-    assert.equal(result.report.nextReportSec, 60);
+    assert.equal(result.posted.ok, true);
+    assert.equal(result.posted.nextReportSec, 60);
   });
 
   it("the shipped C4 fixture passes the shape check and report cap", () => {
@@ -317,30 +411,20 @@ describe("botd entrypoint", () => {
     await new Promise((r) => server.listen(0, "127.0.0.1", r));
     t.after(() => server.close());
 
-    const moduleDir = fs.mkdtempSync(path.join(os.tmpdir(), "botd-modules-"));
-    t.after(() => fs.rmSync(moduleDir, { recursive: true, force: true }));
-    // stub myr-ws on PATH: answers `list --json` with two copies
-    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "botd-bin-"));
-    t.after(() => fs.rmSync(binDir, { recursive: true, force: true }));
-    fs.writeFileSync(
-      path.join(binDir, "myr-ws"),
-      "#!/bin/sh\nprintf '%s' '{\"ok\":true,\"entries\":[{\"key\":\"ABC-101\",\"path\":\"/workspace/ABC-101\",\"class\":\"E\",\"openedAt\":\"2026-10-07T00:30:00Z\",\"clean\":true,\"pushed\":true}]}'\n",
-    );
-    fs.chmodSync(path.join(binDir, "myr-ws"), 0o755);
-
     // spawnSync deadlocks with a fetch-using child on node 24 (libuv);
     // async spawn is what the runtime uses for the daemon anyway
     const proc = await new Promise((resolve) => {
       const child = spawn(process.execPath, [path.join(BOTD_DIR, "botd")], {
         env: {
           ...process.env,
-          PATH: `${binDir}:${process.env.PATH}`,
           BOTD_ONCE: "1",
-          BOTD_HOME: home,
-          BOTD_BOARD_URL: `http://127.0.0.1:${server.address().port}`,
+          BOTD_STATE_DIR: home,
+          BOTD_WORKTREES_ROOT: path.join(home, "worktrees"),
+          BOTD_SCRATCH_ROOT: path.join(home, "scratch"),
+          PAPERCLIP_API_URL: `http://127.0.0.1:${server.address().port}`,
           PAPERCLIP_API_KEY: "test",
-          BOTD_BOT_KEY: "bot-001",
-          BOTD_IMAGE_GENERATION: "myr-v1.6.5-rc.5",
+          PAPERCLIP_BOT_KEY: "bot-001",
+          PAPERCLIP_IMAGE_GENERATION: "myr-v1.6.5-rc.5",
         },
         stdio: ["ignore", "pipe", "pipe"],
       });
@@ -355,10 +439,9 @@ describe("botd entrypoint", () => {
       });
     });
     assert.equal(proc.status, 0, `botd exit ${proc.status}/${proc.signal}: ${proc.stderr.slice(0, 500)}`);
-    assert.match(proc.stdout, /\[botd\] pass ok=true/);
+    assert.match(proc.stdout, /botd single pass done/);
+    assert.match(proc.stdout, /reportOk":true/);
     const diskState = JSON.parse(fs.readFileSync(path.join(home, "disk-state.json"), "utf8"));
-    assert.equal(diskState.pressure, "none");
-    // stub rules: nothing removed, everything skipped
-    assert.match(proc.stdout, /actions=1/);
+    assert.equal(diskState.ok, true);
   });
 });

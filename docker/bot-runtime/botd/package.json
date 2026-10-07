@@ -1,5 +1,5 @@
 {
-  "type": "commonjs",
+  "type": "module",
   "private": true,
-  "description": "myrmidon(1.6.5-BOT-DISK-H3e): botd runs on the bot image's node outside the workspace type-chain; this scopes the daemon's .js files to CommonJS."
+  "description": "myrmidon(1.6.5-BOT-DISK-H3e): botd modules are ESM (operator stitching, 07.10). The entrypoint runs with no args under the image entrypoint (PR #743 symlink /opt/paperclip/bin/botd) and wires the sibling ESM modules desired.js (#740), rules.js (#742), classify.js (#745)."
 }

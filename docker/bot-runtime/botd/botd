@@ -1,197 +1,152 @@
-#!/opt/node24/bin/node
-// myrmidon(1.6.5-BOT-DISK-H3e): botd — the bot disk daemon. Every 60 s (and
-// on SIGUSR1) it runs one pass: inventory → desired state → rules → actions →
-// report → disk-state.json (contract C1–C4, docs/myrmidon/bot-disk-contract).
-// It replaces bot-clone-hygiene; deletion only ever happens through the
-// module seam below, and never when the desired state is unavailable.
+#!/usr/bin/env node
+// myrmidon(1.6.5-BOT-DISK-H3e): the executable entrypoint of the botd daemon.
+// Runs with no arguments: the image entrypoint (PR #743) symlinks
+// /opt/paperclip/bin/botd here and starts `botd` bare; anything else falls
+// back to bot-clone-hygiene.
 //
-// The sibling BOT-DISK-H modules (H3a desired-state client, H3b rules,
-// H3c archive, H3d classifier, H1/H2 myr-ws) plug in through BOTD_MODULE_DIR:
-// a directory may provide desired.js, rules.js, archive.js, classify.js,
-// inventory.js; each missing module falls back to a fail-safe stub (stub
-// rules decide "skip everything", so a partially wired botd deletes nothing).
+// ESM (package.json {"type":"module"}). The sibling modules are wired by
+// contract: lib/classify.js (#745, classifyAll/toReportParts/toInventory),
+// lib/rules.js (#742, plan; inventory {worktrees, scratch, bases, archives}),
+// lib/desired.js (#740, createDesiredClient().start/getLast). A missing
+// sibling means "delete nothing": desired fails closed to ok=false and the
+// C4 report still goes out with the reason — the inventory is best-effort
+// so the board sees the disk even when a module is absent.
 //
-// Environment:
-//   BOTD_HOME             state root (default /data/hermes/.myrmidon)
-//   BOTD_INTERVAL_SEC     tick length (default 60, clamped to >= 5)
-//   BOTD_BOARD_URL        board base URL (default $PAPERCLIP_API_URL)
-//   PAPERCLIP_API_KEY     the bot's key (required for the real client)
-//   BOTD_BOT_KEY          botKey of the report (default: hostname)
-//   BOTD_IMAGE_GENERATION imageGeneration of the report (default "unknown")
-//   BOTD_MODULE_DIR       where the real sibling modules live (optional)
-//   BOTD_ONCE=1           run one pass and exit (smoke/tests)
-"use strict";
+// Env (set by the entrypoint, PR #743):
+//   PAPERCLIP_API_URL / PAPERCLIP_BASE_URL — the board base URL (required)
+//   PAPERCLIP_API_KEY                      — the bot API token (required)
+//   PAPERCLIP_BOT_KEY                      — the bot key for the report (required)
+//   PAPERCLIP_IMAGE_GENERATION             — the image generation (required)
+//   BOTD_ONCE=1                            — a single pass (smoke tests)
+//   BOTD_INTERVAL_MS                       — the tick period (default 60_000)
+//   BOTD_WORKTREES_ROOT / _SCRATCH_ROOT / _BASES_ROOT / _ARCHIVES_ROOT / _STATE_DIR
+//                                          — path overrides (tests)
+//
+// Logs: JSON lines to stdout; exit code 2 on a config error, 1 on a failed
+// pass in BOTD_ONCE, 0 otherwise.
 
-const fs = require("node:fs");
-const os = require("node:os");
-const path = require("node:path");
-const { spawn } = require("node:child_process");
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { runPass, runDaemon, defaultDeps, DEFAULT_INTERVAL_MS, REPORT_RETRY_DELAY_MS } from "./lib/loop.js";
 
-const loop = require("./lib/loop.js");
-const report = require("./lib/report.js");
+const HERE = path.dirname(fileURLToPath(import.meta.url));
 
-const HOME = process.env.BOTD_HOME || "/data/hermes/.myrmidon";
-const MODULE_DIR = process.env.BOTD_MODULE_DIR || "";
+function log(level, msg, extra) {
+  process.stdout.write(`${JSON.stringify({ ts: new Date().toISOString(), level, msg, ...(extra || {}) })}\n`);
+}
+const info = (msg, extra) => log("info", msg, extra);
+const warn = (msg, extra) => log("warn", msg, extra);
+const error = (msg, extra) => log("error", msg, extra);
 
-function loadSibling(name) {
-  if (!MODULE_DIR) return null;
-  const file = path.join(MODULE_DIR, `${name}.js`);
-  if (!fs.existsSync(file)) return null;
-  // eslint-disable-next-line security/detect-non-literal-require
-  return require(file);
+function readEnv() {
+  const env = process.env;
+  const missing = [];
+  const boardUrl = env.PAPERCLIP_API_URL || env.PAPERCLIP_BASE_URL || "";
+  if (!boardUrl) missing.push("PAPERCLIP_API_URL");
+  const apiKey = env.PAPERCLIP_API_KEY || "";
+  if (!apiKey) missing.push("PAPERCLIP_API_KEY");
+  const botKey = env.PAPERCLIP_BOT_KEY || env.BOTD_BOT_KEY || "";
+  if (!botKey) missing.push("PAPERCLIP_BOT_KEY");
+  const imageGeneration = env.PAPERCLIP_IMAGE_GENERATION || env.BOTD_IMAGE_GENERATION || "";
+  if (!imageGeneration) missing.push("PAPERCLIP_IMAGE_GENERATION");
+  return { boardUrl, apiKey, botKey, imageGeneration, missing };
 }
 
-/** Run `argv` without a shell; resolves {code, stdout, stderr}. */
-function runArgv(argv, opts = {}) {
-  return new Promise((resolve) => {
-    const child = spawn(argv[0], argv.slice(1), { stdio: ["ignore", "pipe", "pipe"], ...opts });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (d) => (stdout += d));
-    child.stderr.on("data", (d) => (stderr += d));
-    child.on("error", (err) => resolve({ code: -1, stdout, stderr: String(err) }));
-    child.on("close", (code) => resolve({ code, stdout, stderr }));
-  });
-}
-
-// --- module seam -----------------------------------------------------------
-
-const desiredModule = loadSibling("desired"); // H3a
-const rulesModule = loadSibling("rules"); // H3b
-const archiveModule = loadSibling("archive"); // H3c
-const classifyModule = loadSibling("classify"); // H3d
-const inventoryModule = loadSibling("inventory"); // H2c wiring
-
-const wsCli = {
-  /** `myr-ws list --json` (H2c); absent myr-ws means "no copies", not a crash. */
-  async list() {
-    if (inventoryModule && inventoryModule.list) return inventoryModule.list();
-    const bin = process.env.MYRMIDON_WS_BIN || "myr-ws";
-    const res = await runArgv([bin, "list", "--json"]);
-    if (res.code !== 0) return { ok: true, entries: [] };
-    try {
-      const parsed = JSON.parse(res.stdout);
-      return parsed && parsed.ok && Array.isArray(parsed.entries) ? parsed : { ok: true, entries: [] };
-    } catch {
-      return { ok: true, entries: [] };
-    }
-  },
-};
-
-const boardClient = {
-  desiredState: () => {
-    if (desiredModule && desiredModule.fetchDesiredState) {
-      return desiredModule.fetchDesiredState(defaultDeps());
-    }
-    return report.fetchDesiredState(defaultDeps());
-  },
-  postReport: (body) => report.postReport({ ...defaultDeps(), body }),
-};
-
-function defaultDeps() {
-  return {
-    boardUrl: (process.env.BOTD_BOARD_URL || process.env.PAPERCLIP_API_URL || "").replace(/\/+$/, ""),
-    apiKey: process.env.PAPERCLIP_API_KEY || "",
-  };
-}
-
-const rules = {
-  decide: (input) =>
-    rulesModule && rulesModule.decide
-      ? rulesModule.decide(input)
-      : // stub until H3b lands: nothing is ever removed by an unwired botd
-        input.inventory.copies.map((copy) => ({
-          copy,
-          action: "skip",
-          reason: "rules module not wired (H3b stub)",
-        })),
-};
-
-const modules = {
-  home: HOME,
-  wsCli,
-  boardClient,
-  rules,
-  remove:
-    archiveModule && archiveModule.remove
-      ? archiveModule.remove
-      : async (target) => loop.removeTree(target),
-  archiveRemove:
-    archiveModule && archiveModule.archiveRemove
-      ? archiveModule.archiveRemove
-      : async () => {
-          throw new Error("archive module not wired (H3c stub)");
-        },
-  prune: async () => {
-    const res = await runArgv(["git", "-C", path.join(HOME, "git-base"), "worktree", "prune"]);
-    if (res.code !== 0) {
-      // a bare git-base root is not a repository — nothing to prune
-      return;
-    }
-  },
-  classify: classifyModule || null,
-  report: {
-    build: async ({ inventory, actions, now }) =>
-      report.buildReport({
-        inventory: {
-          ...inventory,
-          foreign: classifyModule && classifyModule.foreign ? classifyModule.foreign(inventory) : [],
-        },
-        actions,
-        now,
-        selfChecks: { reflink: null, gitref: null, wsCli: null },
-        botKey: process.env.BOTD_BOT_KEY || os.hostname(),
-        imageGeneration: process.env.BOTD_IMAGE_GENERATION || "unknown",
-      }),
-  },
-};
-
-// --- scheduler -------------------------------------------------------------
-
-async function main() {
-  const once = process.env.BOTD_ONCE === "1";
-  const intervalSec = Math.max(5, Number(process.env.BOTD_INTERVAL_SEC || 60));
-
-  let wake = null;
-  const wakeNow = () => {
-    if (wake) wake();
-  };
-  process.on("SIGUSR1", wakeNow);
-
-  fs.mkdirSync(HOME, { recursive: true });
-
-  for (;;) {
-    try {
-      const result = await loop.runPass(modules);
-      const line = `[botd] pass ok=${result.ok} copies=${result.copies} actions=${result.actions.length} report=${result.report.ok ? "ok" : `failed: ${result.report.error || "?"}`}`;
-      process.stdout.write(`${line}\n`);
-    } catch (err) {
-      // a failed pass is retried next tick, never fatal
-      process.stderr.write(`[botd] pass failed: ${err && err.stack ? err.stack : err}\n`);
-    }
-    if (once) {
-      // undici keep-alive sockets would hold the event loop open
-      process.exit(0);
-    }
-    await new Promise((resolve) => {
-      const timer = setTimeout(() => {
-        wake = null;
-        resolve();
-      }, intervalSec * 1000);
-      wake = () => {
-        clearTimeout(timer);
-        wake = null;
-        resolve();
-      };
-    });
+async function tryImport(name) {
+  try {
+    return await import(`./lib/${name}.js`);
+  } catch (err) {
+    warn(`sibling module lib/${name}.js unavailable — degraded mode`, { error: String(err && err.message ? err.message : err) });
+    return null;
   }
 }
 
-if (require.main === module) {
-  main().catch((err) => {
-    process.stderr.write(`[botd] fatal: ${err && err.stack ? err.stack : err}\n`);
-    process.exit(1);
-  });
+async function buildDeps(env) {
+  const classify = await tryImport("classify");
+  const rules = await tryImport("rules");
+  const desired = await tryImport("desired");
+
+  let desiredClient = { ok: false, reason: "lib/desired.js unavailable (#740 not merged)" };
+  if (desired && typeof desired.createDesiredClient === "function") {
+    desiredClient = desired.createDesiredClient({
+      env: { ...process.env, PAPERCLIP_API_URL: env.boardUrl, PAPERCLIP_API_KEY: env.apiKey },
+      fetchImpl: globalThis.fetch,
+      log: (line) => info(line),
+    });
+    if (typeof desiredClient.start === "function") desiredClient.start();
+  }
+
+  const removeWorktree = classify && typeof classify.remove === "function"
+    ? async (targetPath, key, action) => classify.remove({ path: targetPath, class: action.class, kind: "worktree" })
+    : null;
+
+  return { classify, rules, desiredClient, removeWorktree, archiveRemove: null, prune: null, deleteBase: null, deleteArchive: null };
 }
 
-module.exports = { main, runArgv };
+function detectSelfChecks() {
+  const checks = { reflink: null, gitref: null, wsCli: null };
+  try {
+    fs.accessSync("/usr/bin/cp");
+    checks.reflink = true;
+  } catch {
+    checks.reflink = false;
+  }
+  try {
+    fs.accessSync("/usr/bin/git");
+    checks.gitref = true;
+  } catch {
+    checks.gitref = false;
+  }
+  return checks;
+}
+
+async function main() {
+  const env = readEnv();
+  if (env.missing.length > 0) {
+    error("botd: missing required configuration", { missing: env.missing });
+    process.exit(2);
+  }
+  const intervalMs = Number(process.env.BOTD_INTERVAL_MS || DEFAULT_INTERVAL_MS);
+  const once = process.env.BOTD_ONCE === "1";
+  const config = {
+    board: { url: env.boardUrl.replace(/\/+$/, ""), apiKey: env.apiKey },
+    identity: { botKey: env.botKey, imageGeneration: env.imageGeneration },
+    roots: {
+      worktreesRoot: process.env.BOTD_WORKTREES_ROOT || "/srv/dev",
+      scratchRoot: process.env.BOTD_SCRATCH_ROOT || "/srv/dev/.scratch",
+      basesRoot: process.env.BOTD_BASES_ROOT || "/srv/git-mirror",
+      archivesRoot: process.env.BOTD_ARCHIVES_ROOT || "/srv/dev/.archives",
+      scanRoots: [process.env.BOTD_WORKTREES_ROOT || "/srv/dev", process.env.BOTD_SCRATCH_ROOT || "/srv/dev/.scratch"],
+    },
+    stateDir: process.env.BOTD_STATE_DIR || "/var/lib/paperclip/botd",
+    intervalMs,
+    reportRetryDelayMs: Number(process.env.BOTD_REPORT_RETRY_DELAY_MS || REPORT_RETRY_DELAY_MS),
+  };
+  info("botd starting", {
+    intervalMs,
+    once,
+    boardUrl: config.board.url,
+    worktreesRoot: config.roots.worktreesRoot,
+    stateDir: config.stateDir,
+  });
+  const wired = await buildDeps(env);
+  config.selfChecks = detectSelfChecks();
+  const deps = defaultDeps(wired);
+  if (once) {
+    const result = await runPass(config, deps);
+    info("botd single pass done", {
+      actions: result.actions.length,
+      reportOk: result.posted.ok,
+      attempts: result.posted.attempts,
+    });
+    process.exit(result.posted.ok ? 0 : 1);
+  }
+  await runDaemon(config, deps);
+  info("botd stopped");
+}
+
+main().catch((err) => {
+  error("botd fatal", { error: String(err && err.stack ? err.stack : err) });
+  process.exit(1);
+});
