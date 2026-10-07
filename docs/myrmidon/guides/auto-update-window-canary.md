@@ -69,6 +69,15 @@ still never deploys the fleet without a first-class approval (autonomy matrix:
 production is a human decision). An approval is not a blanket permission for
 arbitrary updates: it names the release it was given for.
 
+The `auto_release` start happens on the scheduler's tick, which runs only when no
+deploy is active and only inside the window; the approval is claimed before the
+job is created (the claim names the job), so a second tick or a restart cannot
+start the same release twice. A deploy the scheduler started says so in the
+journal (`auto_started`, with the release tag and the window state). An approval
+whose deploy is still running cannot be withdrawn — abort the job; once the job is
+terminal (finished, refused) the approval may be withdrawn and the release
+approved again, for example with a corrected digest.
+
 ## 3. The fleet canary
 
 The board switch itself is atomic — the board is one container — so the canary
@@ -137,11 +146,34 @@ the two acceptance criteria of the ticket:
 instance whose settings row carries no policy (or a test double standing in for it)
 resolves to the defaults, the same as a row that was never written.
 
+`auto-update-routes.myrmidon.test.ts` covers the screen's API (permissions, the
+reported sources, the window state, validation, approving and withdrawing) and
+`ui/src/components/myrmidon/AutoUpdateSettingsPanel.myrmidon.test.tsx` the panel
+itself.
+
+## The screen and the routes
+
+The policy is edited in the current interface, on Instance → General, in the
+"Product updates" section — no 2.0 screens (they wait for OPE-3923) and no
+restart: the scheduler reads the policy on every tick.
+
+| Route | Who | What |
+| --- | --- | --- |
+| `GET /api/myrmidon/auto-update` | board | the stored row, the policy in force, the source of every knob, the window right now and what the scheduler would start with the approvals it has |
+| `PATCH /api/myrmidon/auto-update` | instance admin | `mode`, `window`, `canary`; one audit row per company |
+| `POST /api/myrmidon/auto-update/approvals` | instance admin | approve a release (`tag`, `digest`, optional `version`); the digest must be a real `sha256:…` |
+| `DELETE /api/myrmidon/auto-update/approvals/:tag` | instance admin | withdraw an approval whose deploy is not running |
+
+Every write lands in the activity journal (`myrmidon.auto_update.*`). An agent key
+is refused on every route; a board member may read the policy — the window and the
+mode decide when everybody's agents pause for an update — but only an instance
+admin changes it. The screen shows what the scheduler executes, including a value
+the environment forces: it says so instead of pretending the edit took effect.
+
 ## Not in this part
 
-The settings screen (the `GET/PATCH /api/myrmidon/auto-update` routes and the panel
-in the current interface) and the concrete `FleetCanaryPort` implementation over
-the bot rollout are the next step of part B; the scheduler side, the store
-(`readAutoUpdateDocument` / `mutateAutoUpdateDocument`, key preservation) and the
-port seam are in place, so both are additive. Custom UI only — no 2.0 screens until
-OPE-3923 lands.
+The concrete `FleetCanaryPort` implementation over the bot rollout is the next
+step; the scheduler side, the store (`readAutoUpdateDocument` /
+`mutateAutoUpdateDocument`, key preservation) and the port seam are in place, so it
+is additive. On an instance without a fleet port the canary phase records "no fleet
+canary on this instance" and the update finishes as before.

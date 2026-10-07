@@ -67,6 +67,7 @@ import { readDeployJobsSettings, type DeployJobsSettings } from "./settings.js";
 // override is folded in by resolveAutoUpdateSettings, which also reports the
 // source of each value.
 import {
+  autoUpdateStart,
   canaryPlan,
   canaryVerdict,
   resolveAutoUpdateSettings,
@@ -76,7 +77,7 @@ import {
   defaultAutoUpdateSettings,
   type CanaryPhase,
 } from "./auto-update.js";
-import { readAutoUpdateDocument } from "./auto-update-store.js";
+import { mutateAutoUpdateDocument, readAutoUpdateDocument } from "./auto-update-store.js";
 
 /** Storage the service talks to: the instance_settings row (or a test double). */
 export interface DeployJobStore {
@@ -119,6 +120,32 @@ function readPolicy(dbArg: Db): Promise<AutoUpdateSettings> {
   if (typeof fake === "function") return fake();
   if (fakeStore(dbArg)) return Promise.resolve(defaultAutoUpdateSettings());
   return readAutoUpdateDocument(dbArg);
+}
+
+/**
+ * B-3 (1.7-AUTO-UPDATE-B): claim (jobId != null) or release (jobId == null) an
+ * approval in the policy's own row. The read-modify-write and the decision both
+ * run under the row lock, so two ticks (or a restart racing them) cannot both
+ * win the same approval.
+ */
+async function claimApprovalInStore(db: Db, input: { tag: string; digest: string; jobId: string | null }): Promise<boolean> {
+  const { result } = await mutateAutoUpdateDocument(db, (current) => {
+    const approval = current.approvals.find((a) => a.tag === input.tag && a.digest === input.digest);
+    if (!approval) return { next: null, result: false };
+    if (input.jobId === null) {
+      if (approval.jobId === null) return { next: null, result: false };
+      return {
+        next: { ...current, approvals: current.approvals.map((a) => (a === approval ? { ...a, jobId: null } : a)) },
+        result: true,
+      };
+    }
+    if (approval.jobId !== null) return { next: null, result: false };
+    return {
+      next: { ...current, approvals: current.approvals.map((a) => (a === approval ? { ...a, jobId: input.jobId } : a)) },
+      result: true,
+    };
+  });
+  return result;
 }
 import { mutateDeployJobDocument, readDeployJobDocument } from "./store.js";
 import { verifyImage, type ProbeDeps } from "./registry.js";
@@ -189,6 +216,14 @@ export interface DeployJobServiceDeps {
   autoUpdatePolicy?: () => Promise<AutoUpdateResolution>;
   /** The fleet canary port; absent when the instance has no fleet rollout. */
   fleetCanary?: FleetCanaryPort;
+  /**
+   * B-3 (1.7-AUTO-UPDATE-B): mark an approved release as started (or release
+   * the mark when the start did not happen), so `auto_release` starts exactly
+   * one job per approval. Returns true when this caller won the claim. The
+   * default writes the approval back into the policy's own row
+   * (instance_settings.general.myrmidonAutoUpdate) under its row lock.
+   */
+  claimApproval?: (input: { tag: string; digest: string; jobId: string | null }) => Promise<boolean>;
 }
 
 export class DeployJobError extends Error {
@@ -218,6 +253,48 @@ export function deployJobsService(db: Db, deps: DeployJobServiceDeps) {
   // interface is the source of truth and env is only a forced override.
   const readStoredAutoUpdate = deps.readAutoUpdate ?? (() => readPolicy(db));
   const resolvePolicy = deps.autoUpdatePolicy ?? (async () => resolveAutoUpdateSettings(await readStoredAutoUpdate()));
+  const claimApproval = deps.claimApproval ?? ((input) => claimApprovalInStore(db, input));
+
+  /**
+   * B-3 (1.7-AUTO-UPDATE-B): `auto_release` mode starts a deploy by itself, but
+   * only for a release a human approved in the interface and only inside the
+   * window. The approval is claimed before anything else happens, so a second
+   * tick (or a restart) cannot start the same release twice.
+   *
+   * A job the scheduler started is kept even when the image is refused: the
+   * approval stays spent, so a bad digest cannot be retried on every tick. The
+   * way back is the operator's: withdraw the tag on the screen (allowed once
+   * the job is terminal) and approve the fixed digest. Only a start that threw
+   * — a conflict with a job that appeared meanwhile, a store error — gives the
+   * approval back, because nothing was created at all.
+   */
+  async function startApprovedRelease(at: Date): Promise<DeployJobView | null> {
+    if (!settings.enabled) return null;
+    const policy = await resolvePolicy();
+    const decision = autoUpdateStart({ settings: policy.settings, now: at });
+    const candidate = decision.candidate;
+    if (!decision.allowed || !candidate) return null;
+    const claim = { tag: candidate.tag, digest: candidate.digest };
+    const jobId = randomUUID();
+    if (!(await claimApproval({ ...claim, jobId }))) return null;
+    let started: DeployJobView;
+    try {
+      started = await create(
+        { reference: candidate.digest, reason: `approved release ${candidate.tag} (auto mode, ${decision.window.reason})` },
+        candidate.approvedBy,
+        { id: jobId },
+      );
+    } catch (err) {
+      // Nothing was created: give the approval back rather than spending it.
+      await claimApproval({ ...claim, jobId: null }).catch(() => undefined);
+      logger.warn({ err, tag: candidate.tag }, "the approved release could not be started by the scheduler");
+      return null;
+    }
+    // The job exists without a click: say why, in the same trail the click path
+    // writes (the interface shows it next to the job).
+    await auditFor(started, "auto_started", candidate.approvedBy, { tag: candidate.tag, window: decision.window.reason });
+    return started;
+  }
 
   /**
    * B-1 (1.7-AUTO-UPDATE-B): a verified job whose maintenance window is shut
@@ -383,7 +460,7 @@ export function deployJobsService(db: Db, deps: DeployJobServiceDeps) {
   }
 
   /** Create a job and start verification. */
-  async function create(input: { reference: string; reason?: string }, actor: { actorType: string; actorId: string }): Promise<DeployJobView> {
+  async function create(input: { reference: string; reason?: string }, actor: { actorType: string; actorId: string }, opts: { id?: string } = {}): Promise<DeployJobView> {
     if (!settings.enabled) {
       throw new DeployJobError(503, "deploys from the interface are not enabled on this instance (MYRMIDON_DEPLOY_ENABLED)");
     }
@@ -399,7 +476,7 @@ export function deployJobsService(db: Db, deps: DeployJobServiceDeps) {
         throw err;
       }
       const job = newDeployJob({
-        id: randomUUID(),
+        id: opts.id ?? randomUUID(),
         companyId: "", // filled below from the first company; instance-level feature
         digest,
         reason: (input.reason ?? `deploy ${DEPLOY_IMAGE_REPOSITORY}@${digest.slice(0, 19)}`).slice(0, 500),
@@ -530,8 +607,19 @@ export function deployJobsService(db: Db, deps: DeployJobServiceDeps) {
   async function tick(): Promise<void> {
     const doc = await store.read();
     const job = doc.jobs.find((j) => isDeployJobActive(j.status));
-    if (!job) return;
     const at = now();
+    if (!job) {
+      // B-3 (1.7-AUTO-UPDATE-B): nothing is running, so this is the moment
+      // `auto_release` may pick up a release a human approved. In `manual` mode
+      // nothing starts without a click. A failed attempt stays on the approval
+      // and is retried by the next tick.
+      try {
+        await startApprovedRelease(at);
+      } catch (err) {
+        logger.error({ err }, "failed to start the approved release");
+      }
+      return;
+    }
 
     // A step stuck too long aborts the job: the interface must not leave a
     // half-open window forever (MYRMIDON_DEPLOY_STEP_TIMEOUT_SEC per status).
