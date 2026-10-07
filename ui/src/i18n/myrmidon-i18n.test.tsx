@@ -53,6 +53,8 @@ const ALLOWED_LATIN = new Set([
   "GitHub",
   // input placeholders stay language-neutral (role codes and URLs)
   "engineer", "https", "example", "com", "changelog",
+  // reviewRouting UI strings (product workflow terms)
+  "pull", "request", "owner", "repo",
 ]);
 
 function unruledLatinRuns(value: string): string[] {
