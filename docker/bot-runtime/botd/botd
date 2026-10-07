@@ -18,6 +18,29 @@ const path = require("node:path");
 const os = require("node:os");
 const { execFile } = require("node:child_process");
 
+// The board writes the bot's API key and URL (and the botd settings) into the hermes
+// .env, not into the container env botd inherits from the entrypoint: load the keys
+// botd needs from it when they are not already set. Values are never logged.
+function loadHermesEnv(file) {
+  let text;
+  try {
+    text = fs.readFileSync(file, "utf8");
+  } catch {
+    return;
+  }
+  for (const line of text.split("\n")) {
+    const m = /^\s*(?:export\s+)?([A-Z][A-Z0-9_]*)\s*=\s*(.*)$/.exec(line);
+    if (!m) continue;
+    const [, key, raw] = m;
+    if (!/^(PAPERCLIP_API_KEY|PAPERCLIP_API_URL|MYRMIDON_[A-Z0-9_]+)$/.test(key)) continue;
+    if (process.env[key] !== undefined && process.env[key] !== "") continue;
+    let value = raw.trim();
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) value = value.slice(1, -1);
+    process.env[key] = value;
+  }
+}
+loadHermesEnv(process.env.MYRMIDON_BOTD_ENV_FILE || path.join(process.env.HERMES_HOME || "/data/hermes", ".env"));
+
 const HOME = process.env.MYRMIDON_WS_HOME || "/data/hermes/.myrmidon";
 const DISK_STATE_PATH = path.join(HOME, "disk-state.json");
 const REGISTRY_PATH = path.join(HOME, "ws-registry.json");
