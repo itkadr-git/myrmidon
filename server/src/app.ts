@@ -123,6 +123,7 @@ import { myrmidonBotCanaryRoutes } from "./myrmidon/bot-containers/canary-index.
 import { myrmidonWorkspaceHygieneRoutes } from "./myrmidon/workspace-hygiene/index.js"; // myrmidon(WORKSPACE-HYGIENE)
 // myrmidon(BOT-DISK E): host disk usage threshold and signal
 import { myrmidonHostDiskRoutes } from "./myrmidon/host-disk/index.js"; // myrmidon(BOT-DISK E)
+import { myrmidonAlertRecoveryRoutes } from "./myrmidon/monitoring/alert-recovery/index.js"; // myrmidon(1.6.6-MONITORING-D)
 import { myrmidonBotDiskLifecycleRoutes } from "./myrmidon/bot-containers/bot-disk-routes.js"; // myrmidon(BOT-DISK-A)
 import { myrmidonBotScopeRoutes } from "./myrmidon/bot-containers/scope-wiring.js"; // myrmidon(BOT-DISK-F)
 import { myrmidonBotWorkspacesRoutes } from "./myrmidon/bot-containers/bot-workspaces-routes.js"; // myrmidon(1.6.5-BOT-DISK-H4a)
@@ -922,6 +923,7 @@ export async function createApp(
   api.use(myrmidonBotCanaryRoutes(db)); // myrmidon(R5-B)
   api.use(myrmidonWorkspaceHygieneRoutes(db)); // myrmidon(WORKSPACE-HYGIENE)
   api.use(myrmidonHostDiskRoutes(db)); // myrmidon(BOT-DISK E)
+  api.use(myrmidonAlertRecoveryRoutes(db)); // myrmidon(1.6.6-MONITORING-D)
   api.use(myrmidonBotDiskLifecycleRoutes(db)); // myrmidon(BOT-DISK-A)
   api.use(myrmidonBotScopeRoutes(db)); // myrmidon(BOT-DISK-F)
   api.use(myrmidonBotDiskQuotaRoutes(db)); // myrmidon(1.6.1-BOT-DISK-C)

@@ -144,6 +144,7 @@ import { createWorkspaceHygieneScheduler } from "./myrmidon/workspace-hygiene/in
 import { createBotDiskQuotaScheduler } from "./myrmidon/bot-containers/bot-disk-quota-runtime.js"; // myrmidon(1.6.1-BOT-DISK-C)
 // myrmidon(BOT-DISK E): measures the host disk and signals when it crosses the threshold
 import { createHostDiskScheduler } from "./myrmidon/host-disk/index.js"; // myrmidon(BOT-DISK E)
+import { createAlertRecoveryScheduler } from "./myrmidon/monitoring/alert-recovery/index.js"; // myrmidon(1.6.6-MONITORING-D)
 import { createRunStallSweepFromHeartbeat } from "./myrmidon/run-stall/index.js"; // myrmidon(RUN-STALL)
 // myrmidon(HERMES-RUN-REATTACH): reattach live gateway runs after a board restart
 import { sweepGatewayRunReattach, GATEWAY_REATTACH_SWEEP_INTERVAL_MS } from "./myrmidon/gateway-run-reattach.js";
@@ -1596,6 +1597,15 @@ async function startServerWithDatabaseTeardown(
       track: trackHeartbeatSchedulerWork,
     });
 
+    // myrmidon(1.6.6-MONITORING-D): every tick, close the tasks of the alerts
+    // that have stayed resolved for the hold and drop the records that have
+    // outlived the recurrence window (GET/PATCH /api/myrmidon/monitoring/alert-recovery).
+    // A new alarm opens the task through the alert intake of the monitoring part.
+    const scheduleAlertRecoverySweep = createAlertRecoveryScheduler({
+      db: db as any,
+      track: trackHeartbeatSchedulerWork,
+    });
+
     // The restart-safe cleanup backstop for adapter login sessions. The
     // in-process five-minute timer stays the primary control. This reaper runs
     // on startup and on the scheduler interval. It deletes the login sandbox for
@@ -1959,6 +1969,7 @@ async function startServerWithDatabaseTeardown(
         scheduleWorkspaceHygieneSweep(); // myrmidon(WORKSPACE-HYGIENE)
         scheduleBotDiskQuotaSweep(); // myrmidon(1.6.1-BOT-DISK-C)
         scheduleHostDiskSweep(); // myrmidon(BOT-DISK E)
+        scheduleAlertRecoverySweep(); // myrmidon(1.6.6-MONITORING-D)
         scheduleAdapterLoginReaperSweep();
         scheduleSetupTokenReaperSweep();
         scheduleEnvironmentLeaseCleanupSweep();
