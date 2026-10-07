@@ -451,6 +451,31 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(skippedStaleVersion).toBeNull();
     expect(skippedAheadVersion).toBeNull();
 
+    // The two admitted wakes start real runs that the service loop executes.
+    // Let every run finish here: one still in flight when this test returns
+    // calls the adapter mock while the next test asserts it was never called.
+    let settledPolls = 0;
+    for (let attempt = 0; attempt < 40 && settledPolls < 2; attempt += 1) {
+      const rows = await db
+        .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.companyId, companyId));
+      if (
+        rows.length < 2 ||
+        rows.some((row) => row.status === "queued" || row.status === "running")
+      ) {
+        settledPolls = 0;
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        continue;
+      }
+      for (const row of rows) {
+        await heartbeat.waitForRunExecutionDrain(row.id, { timeoutMs: 10_000 });
+      }
+      settledPolls += 1;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    expect(settledPolls).toBeGreaterThanOrEqual(2);
+
     const receipts = await db
       .select({ payload: agentWakeupRequests.payload, reason: agentWakeupRequests.reason })
       .from(agentWakeupRequests);
@@ -469,7 +494,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       expectedStatusVersion: 9,
       actualStatusVersion: 3,
     });
-  });
+  }, 30_000);
 
   it.each([
     { runtimeMode: "native", status: "done", reassigned: false },
