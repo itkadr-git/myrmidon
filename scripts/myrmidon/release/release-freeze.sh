@@ -13,9 +13,10 @@
 #   - otherwise take the NEWEST myr-v*.*.* tag by semantic version
 #     (the cut that started the current release window);
 #   - freeze is ACTIVE while that tag has no successful "Myrmidon CI" run
-#     (matched by head_branch == the tag, or — because myrmidon-ci.yml has no
-#     tag trigger — a green main-branch run of the SAME commit, the same rule
-#     publish-github-release.sh uses);
+#     (matched by head_branch == the tag via myrmidon-ci-tag.yml, which runs
+#     the full pipeline on the tag itself; as a fallback for older tags also
+#     a green main-branch run of the SAME commit under myrmidon-ci.yml, which
+#     has no tag trigger — the same rule publish-github-release.sh uses);
 #   - freeze CLEARS as soon as that CI run is green. A release the publish
 #     gate would accept (its CI gate is the exact same check) unblocks main.
 #
@@ -99,10 +100,12 @@ newest_release_tag() {
 }
 
 # CI verdict of the tag: success | <conclusion> | in_progress | missing.
-# Same selection rule as publish-github-release.sh: head_branch == the tag,
-# and for myrmidon-ci.yml (no tag trigger) also a main run of the same sha.
+# Same selection rule as publish-github-release.sh: myrmidon-ci-tag.yml runs
+# the full pipeline on the tag itself (head_branch == the tag). Fallback for
+# tags cut before the tag workflow existed: myrmidon-ci.yml has no tag
+# trigger, so accept a run of the same sha with head_branch == main.
 tag_ci_verdict() {
-  local tag="$1" sha branches verdict status
+  local tag="$1" sha verdict status
   sha="$(gh api "repos/$repo/git/ref/tags/$tag" --jq '
       if .object.type == "tag" then .object.sha else .object.sha end' 2>/dev/null)" \
     || { printf 'missing\n'; return; }
@@ -113,16 +116,18 @@ tag_ci_verdict() {
     sha="$(gh api "repos/$repo/git/tags/$sha" --jq '.object.sha' 2>/dev/null || true)"
   fi
   [[ -n "$sha" ]] || { printf 'missing\n'; return; }
-  branches='((.head_branch == "'"$tag"'") or (.head_branch == "main"))'
+  # (tag workflow on the tag) OR (main workflow on main at the same sha).
+  local sel
+  sel='((.path == ".github/workflows/myrmidon-ci-tag.yml" and .head_branch == "'"$tag"'") or (.path == ".github/workflows/myrmidon-ci.yml" and .head_branch == "main"))'
   verdict="$(gh api --paginate "repos/$repo/actions/runs?head_sha=$sha&per_page=100" \
-      --jq '[.workflow_runs[]? | select(.path == ".github/workflows/myrmidon-ci.yml" and '"$branches"')]
+      --jq '[.workflow_runs[]? | select('"$sel"')]
             | ([.[] | select(.status == "completed")] | if length == 0 then "missing"
                else (map(.conclusion) | unique | if length == 1 then .[0] else "mixed" end) end)' 2>/dev/null)" \
     || verdict="missing"
   verdict="${verdict//\"/}"
   if [[ "$verdict" == "missing" ]]; then
     status="$(gh api --paginate "repos/$repo/actions/runs?head_sha=$sha&per_page=100" \
-        --jq '[.workflow_runs[]? | select(.path == ".github/workflows/myrmidon-ci.yml" and '"$branches"')] | .[0].status // "missing"' 2>/dev/null)" \
+        --jq '[.workflow_runs[]? | select('"$sel"')] | .[0].status // "missing"' 2>/dev/null)" \
       || status="missing"
     status="${status//\"/}"
     [[ "$status" == "missing" ]] || { printf 'in_progress\n'; return; }
