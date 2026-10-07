@@ -13,7 +13,7 @@ import (
 const (
 	qKeyA = "0a1b2c3d-1111-2222-3333-444455556666"
 	qKeyB = "9f8e7d6c-aaaa-bbbb-cccc-ddddeeeeffff"
-	root = "/srv/myrmidon-bots"
+	root  = "/srv/myrmidon-bots"
 
 	stateOn  = "Project quota state on /srv/myrmidon-bots (/dev/sdb1)\n  Accounting: ON\n  Enforcement: ON\n  Inode: #131 (1 blocks, 1 extents)\n"
 	stateOff = "Project quota state on /srv/myrmidon-bots (/dev/sdb1)\n  Accounting: OFF\n  Enforcement: OFF\n"
