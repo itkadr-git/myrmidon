@@ -1,29 +1,31 @@
 "use strict";
 // myrmidon(1.6.5 BOT-DISK-H2a): the shared CLI frame of `myr-ws` — command
-// parsing, exit codes (contract C2) and --json output. open/list/close/restore
-// are stubs here ("not implemented", exit 2); their tasks replace the handlers
+// parsing, exit codes (contract C2) and --json output. open/list/close/restore/
+// migrate are stubs here ("not implemented", exit 2); their tasks replace the handlers
 // in COMMANDS.
 
 const { EXIT } = require("./base.js");
 const { MyrWsError } = require("./errors.js");
 
-// open lives in its own module (a later task); until it lands the verb stays a stub.
-function loadOpen() {
+// Each verb lives in its own module lib/<verb>.js exporting a handler named
+// after the verb; a verb whose module is absent stays "not implemented" (exit 2).
+function loadVerb(name) {
   try {
-    const mod = require("./open");
-    const handler = typeof mod === "function" ? mod : mod && mod.open;
-    return typeof handler === "function" ? handler : notImplemented("open");
-  } catch {
-    // module absent (or broken) -> verb stays "not implemented", exit 2
-    return notImplemented("open");
+    const mod = require(`./${name}.js`);
+    const handler = typeof mod === "function" ? mod : mod && mod[name];
+    return typeof handler === "function" ? handler : notImplemented(name);
+  } catch (e) {
+    if (e && e.code === "MODULE_NOT_FOUND" && String(e.message).includes(`/${name}.js`)) return notImplemented(name);
+    throw e;
   }
 }
 
 const COMMANDS = {
-  open: loadOpen(),
-  list: notImplemented("list"),
-  close: notImplemented("close"),
-  restore: notImplemented("restore"),
+  open: loadVerb("open"),
+  list: loadVerb("list"),
+  close: loadVerb("close"),
+  restore: loadVerb("restore"),
+  migrate: loadVerb("migrate"),
 };
 
 function notImplemented(name) {
@@ -48,7 +50,7 @@ function parseArgs(argv) {
       const v = argv[++i];
       if (v === undefined || v.startsWith("--")) throw new MyrWsError(EXIT.usage, "--base needs a ref");
       flags.base = v;
-    } else if (a.startsWith("--")) throw new MyrWsError(EXIT.usage, `unknown option ${a}`);
+    } else if (a.startsWith("--")) throw new MyrWsError(EXIT.usage, `unknown argument ${a}`);
     else positionals.push(a);
   }
   const [command, ...rest] = positionals;
@@ -64,14 +66,16 @@ async function run(argv, ctx = {}) {
   const commands = ctx.commands || COMMANDS;
   let json = argv.includes("--json");
   try {
+    if (argv[0] === "help" || argv.includes("--help") || argv.includes("-h")) return { exitCode: EXIT.ok, stdout: `${USAGE}\n`, stderr: "" };
     const { command, positionals, flags } = parseArgs(argv);
     json = flags.json;
     if (!command || !Object.prototype.hasOwnProperty.call(commands, command)) {
       throw new MyrWsError(EXIT.usage, command ? `unknown command "${command}". ${USAGE}` : USAGE);
     }
     const result = await commands[command]({ positionals, flags, env: ctx.env || process.env });
-    const body = { ok: true, ...(result || {}) };
-    return { exitCode: EXIT.ok, stdout: json ? `${JSON.stringify(body)}\n` : humanLine(body), stderr: "" };
+    const { human, ...rest } = result || {};
+    const body = { ok: true, ...rest };
+    return { exitCode: EXIT.ok, stdout: json ? `${JSON.stringify(body)}\n` : humanLine(body, human), stderr: "" };
   } catch (e) {
     const exitCode = e && Number.isInteger(e.exitCode) ? e.exitCode : 1;
     const error = (e && e.message) || String(e);
@@ -80,7 +84,8 @@ async function run(argv, ctx = {}) {
   }
 }
 
-function humanLine(body) {
+function humanLine(body, human) {
+  if (typeof human === "string") return human;
   return body.path ? `${body.path}\n` : "ok\n";
 }
 
