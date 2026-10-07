@@ -354,7 +354,7 @@ describe("myrmidon(BOT-DISK-H9c) sweep with dockergate", () => {
   it("a card quota change puts once; unchanged quota puts nothing", async () => {
     const state = { disk: disk({ hardBytes: 1000 * MBYTES }) as unknown };
     const { gate, puts } = fakeGate(state);
-    let rows = [row(card(2000))];
+    const rows = [row(card(2000))];
     const make = () =>
       createBotDiskQuotaSweep({ db: fakeDb(rows), resolveSettings: settings(null), env: {}, gate, remeasureIntervalMs: 0 });
     const sweep = make();
@@ -367,7 +367,8 @@ describe("myrmidon(BOT-DISK-H9c) sweep with dockergate", () => {
     await sweep.sweep();
     expect(puts).toHaveLength(1);
     // the card changes: one more PUT
-    rows = [row(card(3000))];
+    // fakeDb holds this very array, so the card change is made in place
+    rows[0] = row(card(3000));
     await sweep.sweep();
     expect(puts).toEqual([
       { botKey: agentId, bytes: 2000 * MBYTES },
