@@ -20,12 +20,20 @@ const {
   classifyDir,
   parseGitConfig,
   stripUserinfo,
+  toInventory,
   toReportParts,
   urlHasUserinfo,
 } = await import(path.join(ROOT, "docker/bot-runtime/botd/lib/classify.js"));
 
-// The contract schemas are TypeScript; Node strips the types on import.
-const contract = await import(path.join(ROOT, "packages/shared/src/myrmidon-bot-workspace.ts"));
+// The contract schemas are TypeScript and need zod. Where zod is not installed
+// (this test runs without a package install) the contract checks are skipped.
+let contract = null;
+try {
+  contract = await import(path.join(ROOT, "packages/shared/src/myrmidon-bot-workspace.ts"));
+} catch {
+  contract = null;
+}
+const noContract = contract === null && "contract schemas unavailable (zod not installed)";
 
 const SECRET = "zz-fixture-secret-0f3a9c";
 const HOUR = 3600;
@@ -138,7 +146,7 @@ describe("classification of fixtures", () => {
     const m = byName(run());
     assert.ok(m["ABC-4"].sizeBytes > 0);
     assert.ok(Number.isInteger(m["ABC-4"].ageSec) && m["ABC-4"].ageSec >= 0);
-    assert.deepEqual(Object.keys(m["ABC-4"]).sort(), ["ageSec", "class", "path", "sign", "sizeBytes"]);
+    assert.deepEqual(Object.keys(m["ABC-4"]).sort(), ["ageSec", "class", "inWorkspace", "isGit", "mtimeMs", "path", "sign", "sizeBytes"]);
   });
 
   it("scratch: fresh stays, old goes by TTL; the age counts mtime/ctime", () => {
@@ -243,7 +251,7 @@ describe("the token never leaves", { skip: !hasGit && "git not available" }, () 
   });
 });
 
-describe("conforms to the contract", () => {
+describe("conforms to the contract", { skip: noContract }, () => {
   it("the report parts pass wsReportCopySchema / wsReportForeignSchema", () => {
     const res = run({ now: Date.now() + 25 * HOUR * 1000 });
     const { copies, foreign } = toReportParts(res.items, res.actions);
@@ -272,5 +280,51 @@ describe("conforms to the contract", () => {
   it("classifyDir on a missing directory does not throw", () => {
     const c = classifyDir(path.join(tmp, "nope"), { workspaceRoot: ws, registry: [], gitBaseDir: base });
     assert.equal(c.class, "G");
+  });
+});
+
+describe("classifyAll without workspaceRoot", () => {
+  it("does not throw (default root /workspace)", () => {
+    const res = classifyAll({ roots: [scratch], gitBaseDir: base });
+    assert.ok(res.items.length > 0);
+    assert.ok(res.items.every((i) => i.class === "G")); // nothing of scratch is directly under /workspace
+  });
+  it("works with no options at all", () => {
+    const res = classifyAll();
+    assert.ok(Array.isArray(res.items) && Array.isArray(res.actions));
+  });
+});
+
+describe("toInventory: the shape of the rules inventory", () => {
+  const now = Date.now() + 25 * HOUR * 1000;
+  const inv = toInventory(run({ now }).items, { now });
+  const ISO = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/;
+
+  it("has the four lists; bases and archives are empty", () => {
+    assert.deepEqual(Object.keys(inv).sort(), ["archives", "bases", "scratch", "worktrees"]);
+    assert.deepEqual([inv.bases, inv.archives], [[], []]);
+  });
+  it("class E goes to worktrees, the rest to scratch", () => {
+    assert.deepEqual(inv.worktrees.map((w) => w.key).sort(), ["ABC-5", "ABC-6"]);
+    assert.equal(inv.scratch.length, 8);
+    for (const w of inv.worktrees) {
+      assert.deepEqual(Object.keys(w).sort(), ["clean", "dirMissing", "key", "openedAt", "path", "pushed"]);
+      assert.ok(ISO.test(w.openedAt));
+    }
+  });
+  it("clean/pushed are null (never guessed), mtime is ISO", () => {
+    for (const s of inv.scratch) {
+      assert.deepEqual(Object.keys(s).sort(), ["clean", "isGit", "mtime", "name", "path", "pushed"]);
+      assert.equal(s.clean, null);
+      assert.equal(s.pushed, null);
+      assert.ok(ISO.test(s.mtime));
+    }
+  });
+  it("a directory of the task root without .git is archived too (isGit true); plain scratch is not", () => {
+    const by = Object.fromEntries(inv.scratch.map((s) => [s.name, s]));
+    assert.equal(by["ABC-4"].isGit, true);
+    assert.equal(by[".trash-x"].isGit, true); // in the task root: safe side
+    assert.equal(by.plain.isGit, false);
+    assert.equal(by.old.isGit, true);
   });
 });

@@ -369,7 +369,7 @@ export function classifyAll(opts = {}) {
   const scratchTtlSec = opts.scratchTtlSec ?? (grace.scratchTtlHours ? grace.scratchTtlHours * 3600 : DEFAULT_SCRATCH_TTL_SEC);
   const foreignGraceSec = opts.foreignGraceSec ?? (grace.orphanHours ? grace.orphanHours * 3600 : DEFAULT_FOREIGN_GRACE_SEC);
   const ctx = {
-    workspaceRoot: path.resolve(opts.workspaceRoot ?? WORKSPACE_ROOT),
+    workspaceRoot: path.resolve(opts.workspaceRoot ?? WORKSPACE_ROOT_NAME),
     registry: opts.registry ?? [],
     gitBaseDir: path.resolve(opts.gitBaseDir ?? DEFAULT_GIT_BASE_DIR),
   };
@@ -392,13 +392,26 @@ export function classifyAll(opts = {}) {
 
       const m = measureTree(dir);
       const ageSec = Math.max(0, Math.floor((now - m.newestMs) / 1000));
-      items.push({ path: dir, class: c.class, sign: c.sign, ageSec, sizeBytes: m.sizeBytes });
+      items.push({
+        path: dir,
+        class: c.class,
+        sign: c.sign,
+        ageSec,
+        sizeBytes: m.sizeBytes,
+        mtimeMs: m.newestMs,
+        isGit: c.repo !== null,
+        inWorkspace: path.dirname(dir) === ctx.workspaceRoot,
+      });
       actions.push(decide(dir, c, ageSec, { live, scratchTtlSec, foreignGraceSec, board: desired !== null }));
     }
   }
   return { items, actions, fixedUrls, fixFailed };
 }
 
+// ADVISORY ONLY. These per-item hints (card, hold) exist for the foreign card
+// and the report; the decision to delete belongs to the rules (rules.js, H3b),
+// fed through toInventory(). The executor must act on the rules' actions, never
+// on `action: "remove"` from here.
 function decide(dir, c, ageSec, p) {
   const archive = c.repo !== null;
   if (c.class === "E") return { path: dir, action: "keep", card: false, archive: false, reason: "task copy" };
@@ -445,4 +458,47 @@ export function toReportParts(items, actions = []) {
   });
   const foreign = items.filter((it) => it.class === "X").map((it) => ({ path: it.path, sign: it.sign }));
   return { copies, foreign };
+}
+
+/**
+ * Adapter to the inventory of the deletion rules (rules.js, H3b):
+ * `{ worktrees, scratch, bases, archives }`.
+ *
+ *  - class E -> `worktrees` (key = directory name);
+ *  - class G and X -> `scratch` (the rules apply the TTL; the X card is
+ *    raised by classifyAll's own actions, not by the rules);
+ *  - `clean` / `pushed` are NOT computed (reading them needs git on a bot's
+ *    repository, which this module never runs) and stay null: the rules treat
+ *    null as "unsafe", so a repository is archived before it is removed;
+ *  - `isGit` is true for a repository and for ANY directory in the task-copy
+ *    root (a task directory without `.git` may hold work: archive it too);
+ *  - `bases` / `archives` are not seen by the classifier: empty arrays.
+ *
+ * @param {object[]} items  `classifyAll(...).items`
+ * @param {{ now?: number }} [opts]  only used when an item has no `mtimeMs`
+ */
+export function toInventory(items, opts = {}) {
+  const now = opts.now ?? Date.now();
+  const iso = (it) => {
+    const ms = Number.isFinite(it.mtimeMs) ? it.mtimeMs : now - (it.ageSec ?? 0) * 1000;
+    return new Date(ms).toISOString();
+  };
+  const worktrees = [];
+  const scratch = [];
+  for (const it of items ?? []) {
+    const key = path.basename(it.path);
+    if (it.class === "E") {
+      worktrees.push({ key, path: it.path, dirMissing: false, clean: null, pushed: null, openedAt: iso(it) });
+    } else {
+      scratch.push({
+        name: key,
+        path: it.path,
+        mtime: iso(it),
+        isGit: it.isGit === true || it.inWorkspace === true,
+        clean: null,
+        pushed: null,
+      });
+    }
+  }
+  return { worktrees, scratch, bases: [], archives: [] };
 }
