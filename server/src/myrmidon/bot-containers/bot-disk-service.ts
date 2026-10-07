@@ -273,7 +273,7 @@ export function startCloneReportCollection(
     inFlight = (async () => {
       const general = await instanceSettingsService(db).getGeneral();
       const lifecycle = await resolveBotDiskLifecycleConfig({ getGeneral: async () => general });
-      await collectCloneReports(lifecycle.idleTtlMs, () => readContainerBotKeys(db), (botKey, fn) => lock.run(botKey, fn));
+      await collectCloneReports(lifecycle.idleTtlMs, () => readContainerBotKeys(db), undefined, (botKey, fn) => lock.run(botKey, fn));
     })()
       .catch((err) => logger.warn({ err }, "clone hygiene report collection failed"))
       .finally(() => {
