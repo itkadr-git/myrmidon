@@ -111,7 +111,7 @@ function writeRegistry(entries) {
 }
 
 function runCli(args, env = {}) {
-  return spawnSync(CLI, args, {
+  return spawnSync(process.execPath, [CLI, ...args], {
     encoding: "utf8",
     env: {
       ...process.env,
