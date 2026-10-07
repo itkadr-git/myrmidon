@@ -1164,27 +1164,6 @@ source is shown on the screen).
 |---|---|---|---|---|
 | `MYRMIDON_BUDGET_ENFORCEMENT_MODE` | 1.7-BUDGET-CONFIG-B | unset (`signal_only`) | The enforcement mode while nothing is stored in `instance_settings.general.budgetEnforcement`: `signal_only` — the incident is created and the owner is signalled, but the scope is not paused and runs start; `soft` — pause plus the owner card (raising the budget resumes); `hard` — new runs of the over-limit scope are refused with the budget reason | Any other value (or unset) — the default `signal_only`; once a value is saved from the settings page, the environment stops mattering. The signals themselves additionally honor `MYRMIDON_BUDGET_SIGNAL_MODE=off`. Full guide: [guides/budget-enforcement.md](guides/budget-enforcement.md) |
 
-## 1.7 — AGENT-EXCHANGE-A: discussion rooms on issue cards
-
-A discussion room on an issue card: 2–4 agents on different models answer
-independently, rounds are capped, a per-room token budget stops the room, the
-owner holds the stop valve, and the finisher's summary lands as an issue
-document with the cost. The room rules are a live instance setting — change
-them on Instance → General or via `GET`/`PATCH
-/api/myrmidon/agent-exchange/settings` (GET is board, PATCH is
-instance-admin) with no restart; the next room open applies them. The
-environment variables are the forced override for an instance that never
-saved the settings (precedence: stored settings → env → default; the
-effective source of every key is shown on the screen).
-
-| Variable | Function | Default | What it does | How to disable / special |
-|---|---|---|---|---|
-| `MYRMIDON_AGENT_EXCHANGE_ENABLED` | 1.7-AGENT-EXCHANGE-A | unset (`false`) | The master switch of discussion rooms while nothing is stored in `instance_settings.general.agentExchange`: rooms open only when `true` (otherwise `403 feature_disabled`) | Any other value (or unset) — rooms off; once saved from the settings page, the environment stops mattering. Full guide: [guides/agent-exchange.md](guides/agent-exchange.md) |
-| `MYRMIDON_AGENT_EXCHANGE_MAX_PARTICIPANTS` | 1.7-AGENT-EXCHANGE-A | unset (`4`) | The largest roster a room may open with (2–4) | Out of range or unreadable — the default |
-| `MYRMIDON_AGENT_EXCHANGE_MAX_ROUNDS` | 1.7-AGENT-EXCHANGE-A | unset (`3`) | The rounds allowed after the independent first round (0–8) | Out of range or unreadable — the default |
-| `MYRMIDON_AGENT_EXCHANGE_TOKEN_BUDGET` | 1.7-AGENT-EXCHANGE-A | unset (`120000`) | The per-room token budget; spending it stops the room with `stopReason = "budget"` | Out of range or unreadable — the default |
-| `MYRMIDON_AGENT_EXCHANGE_RESPONSE_TIMEOUT_MS` | 1.7-AGENT-EXCHANGE-A | unset (`90000`) | The per-participant call timeout; a miss marks the grid cell `error` and the room goes on | Out of range or unreadable — the default |
-
 ## 1.6.2 — BOT-LSP-DEFAULTS: bot language servers by role
 
 Settings of `server/src/myrmidon/bot-lsp/` and the profile compiler's `lsp` block

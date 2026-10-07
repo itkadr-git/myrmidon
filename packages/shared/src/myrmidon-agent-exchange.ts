@@ -262,7 +262,12 @@ export function resolveAgentExchangeSettings(input: {
   stored: unknown;
   env?: Record<string, string | undefined>;
 }): ResolvedAgentExchangeSettings {
-  const env = input.env ?? process.env;
+  // The shared package compiles without node types, so the environment is
+  // read through globalThis (undefined in the browser — the caller passes env
+  // explicitly where it matters).
+  const env =
+    input.env ??
+    ((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {});
   const stored = normalizeAgentExchangeSettings(input.stored);
 
   const settings: AgentExchangeSettings = { ...DEFAULT_AGENT_EXCHANGE_SETTINGS };
