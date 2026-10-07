@@ -123,7 +123,7 @@ export function createLoop(deps) {
     } else {
       let actions = [];
       try {
-        const planned = deps.rules.plan(g.inventory, desired.state, startedAt, deps.settings);
+        const planned = deps.rules.plan(g.inventory, desired.state, startedAt.getTime(), deps.settings);
         actions = Array.isArray(planned?.actions) ? planned.actions : [];
       } catch (err) {
         log(`botd loop: rules failed: ${errMessage(err)}`);

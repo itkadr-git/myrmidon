@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 // repositories only.
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
-const { decide, plan, OPS } = await import(path.join(ROOT, "docker/bot-runtime/botd/lib/rules.js"));
+const { decide, plan, toMs, OPS } = await import(path.join(ROOT, "docker/bot-runtime/botd/lib/rules.js"));
 const FIXTURES = path.join(ROOT, "docs/myrmidon/bot-disk-contract");
 const fixture = (name) => JSON.parse(fs.readFileSync(path.join(FIXTURES, name), "utf8"));
 
@@ -419,5 +419,21 @@ describe("botd rules: contract fixtures", () => {
     const s = fixture("botdisk-settings.json");
     const d = desired({ workspaces: [ws("ABC-1", "closing", 31 * MIN)] });
     assert.equal(decide({ worktrees: [wt("ABC-1")] }, d, NOW, s).length, 1);
+  });
+});
+
+describe("botd rules: toMs", () => {
+  it("understands a Date, epoch ms and an ISO string; rejects the rest", () => {
+    assert.equal(toMs(new Date(NOW)), NOW);
+    assert.equal(toMs(NOW), NOW);
+    assert.equal(toMs("2026-10-06T15:00:00Z"), NOW);
+    assert.equal(toMs(new Date("nope")), null);
+    assert.equal(toMs(undefined), null);
+    assert.equal(toMs({}), null);
+  });
+
+  it("plan() with a Date clock is not empty on a stale scratch copy", () => {
+    const inv = { scratch: [{ name: "x", path: "/scratch/x", mtime: ago(48 * HOUR), isGit: false }] };
+    assert.deepEqual(ops(plan(inv, desired(), new Date(NOW)).actions), [[OPS.remove, "/scratch/x"]]);
   });
 });

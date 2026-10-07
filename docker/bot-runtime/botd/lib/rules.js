@@ -51,7 +51,13 @@ export const RULE_DEFAULTS = Object.freeze({
   archiveCapBytes: 2 * 1024 * 1024 * 1024,
 });
 
-function toMs(value) {
+// Accepts epoch ms, an ISO string or a Date (the loop's clock is a Date; a Date
+// used to map to null and made plan() return an empty plan silently).
+export function toMs(value) {
+  if (value instanceof Date) {
+    const ms = value.getTime();
+    return Number.isFinite(ms) ? ms : null;
+  }
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string") {
     const ms = Date.parse(value);

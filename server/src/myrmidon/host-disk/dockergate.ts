@@ -2,6 +2,11 @@ import {
   wsDiskApiResponseSchema,
   type WsDiskApiResponse,
 } from "@paperclipai/shared";
+import {
+  BOT_DOCKER_SOCKET_ENV_NAME,
+  createDockergateDiskClient as   dockergateDiskClientFromEnv,
+  type DockergateDiskClient as DockergateSocketClient,
+} from "../bot-containers/dockergate-disk-client.js";
 
 /**
  * Client of the dockergate bot-partition API (myrmidon 1.6.5 BOT-DISK-H10,
@@ -105,4 +110,49 @@ export function dockergateBaseUrl(
 ): string | null {
   const raw = env[DOCKERGATE_URL_ENV]?.trim();
   return raw ? raw : null;
+}
+
+/**
+ * Maps the C5 answer of the socket client onto the sweep's usage shape.
+ * `partition.usedPercent` is already a 0..100 percent (dockergate rounds it to
+ * one decimal), so it is passed through unchanged. Any failure (gate down,
+ * deny, contract drift) is "not measured" (null), never a throw into the sweep.
+ */
+export function partitionClientFromSocketClient(
+  gate: Pick<DockergateSocketClient, "getDisk">,
+): DockergateDiskClient {
+  return {
+    async readPartitionUsage(): Promise<BotPartitionUsage | null> {
+      try {
+        const data = await gate.getDisk();
+        return {
+          mount: data.partition.mount,
+          usedBytes: data.partition.usedBytes,
+          totalBytes: data.partition.totalBytes,
+          freeBytes: data.partition.freeBytes,
+          usedPercent: data.partition.usedPercent,
+          at: data.at,
+        };
+      } catch {
+        return null;
+      }
+    },
+  };
+}
+
+/**
+ * The partition client of this process. dockergate listens on a unix socket
+ * on the production host (MYRMIDON_BOT_DOCKER_SOCKET, the same one the docker
+ * driver and /bot-disk/physical use), so a configured socket wins; the TCP
+ * client is built only when MYRMIDON_DOCKERGATE_URL is set. Neither: null
+ * (the previous "not measured" behaviour).
+ */
+export function partitionClientFromEnv(
+  env: Record<string, string | undefined> = process.env,
+): DockergateDiskClient | null {
+  if (env[BOT_DOCKER_SOCKET_ENV_NAME]?.trim()) {
+    return partitionClientFromSocketClient(dockergateDiskClientFromEnv(env));
+  }
+  const baseUrl = dockergateBaseUrl(env);
+  return baseUrl ? createDockergateDiskClient({ baseUrl }) : null;
 }

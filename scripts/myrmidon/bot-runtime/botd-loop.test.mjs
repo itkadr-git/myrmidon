@@ -16,6 +16,7 @@ const { createLoop } = await import(path.join(ROOT, "docker/bot-runtime/botd/lib
 const { buildReport, createReporter, validateReport, MAX_ACTIONS } = await import(
   path.join(ROOT, "docker/bot-runtime/botd/lib/report.js")
 );
+const realRules = await import(path.join(ROOT, "docker/bot-runtime/botd/lib/rules.js"));
 const FIXTURES = path.join(ROOT, "docs/myrmidon/bot-disk-contract");
 const fixture = (name) => JSON.parse(fs.readFileSync(path.join(FIXTURES, name), "utf8"));
 
@@ -39,7 +40,7 @@ function fakeBoard(script = []) {
   return { fetchImpl, calls };
 }
 
-function rig({ desired, plan, executor, gatherParts, board = fakeBoard(), settings } = {}) {
+function rig({ desired, plan, rules, inventory, executor, gatherParts, board = fakeBoard(), settings } = {}) {
   const logs = [];
   const states = [];
   const executed = [];
@@ -53,7 +54,7 @@ function rig({ desired, plan, executor, gatherParts, board = fakeBoard(), settin
   const loop = createLoop({
     desired: { poll: async () => desired ?? { ok: true, state: desiredState() } },
     gather: async () => ({
-      inventory: { worktrees: [{ key: "ABC-099", path: closingPath }], scratch: [], bases: [], archives: [] },
+      inventory: inventory ?? { worktrees: [{ key: "ABC-099", path: closingPath }], scratch: [], bases: [], archives: [] },
       parts: gatherParts ?? {
         copies: [{ path: closingPath, class: "E", key: "ABC-099", clean: true, pushed: true, sizeBytes: 1000, ageSec: 3600 }],
         foreign: [],
@@ -62,7 +63,7 @@ function rig({ desired, plan, executor, gatherParts, board = fakeBoard(), settin
         selfChecks: { reflink: true, gitref: true, wsCli: true },
       },
     }),
-    rules: {
+    rules: rules ?? {
       plan: plan ?? (() => ({ actions: [{ op: "remove", path: closingPath, reason: "closing-clean-pushed", key: "ABC-099" }] })),
     },
     executor: executor ?? {
@@ -203,6 +204,20 @@ describe("botd loop: one pass", () => {
     assert.deepEqual(r.executed, []);
     assert.equal(out.sent.ok, true);
     assert.match(r.board.calls[0].body.actions[0].detail, /rules failed/);
+  });
+});
+
+describe("botd loop: real rules with the Date clock", () => {
+  it("plans a removal for a stale scratch copy (a Date clock used to give an empty plan)", async () => {
+    const stale = { name: "old-clone", path: "/scratch/old-clone", mtime: new Date(NOW.getTime() - 48 * 3600 * 1000).toISOString(), isGit: false };
+    const r = rig({
+      rules: realRules,
+      inventory: { worktrees: [], scratch: [stale], bases: [], archives: [] },
+      desired: { ok: true, state: desiredState({ workspaces: [] }) },
+    });
+    const out = await r.loop.runOnce();
+    assert.deepEqual(r.executed.map((a) => a.path), ["/scratch/old-clone"]);
+    assert.equal(out.desiredOk, true);
   });
 });
 

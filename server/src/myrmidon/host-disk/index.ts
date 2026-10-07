@@ -6,7 +6,7 @@ import { hostDiskRoutes } from "./routes.js";
 import { hostDiskService, type HostDiskService } from "./service.js";
 import { createHostDiskSweep, type HostDiskSweep } from "./sweep.js";
 import { type HostDiskSweepResult } from "./state.js";
-import { createDockergateDiskClient, dockergateBaseUrl } from "./dockergate.js";
+import { partitionClientFromEnv } from "./dockergate.js";
 import { botPartitionThresholdRuntime } from "./partition.js";
 import { createOwnerTelegramNotifier } from "./owner-notify.js";
 
@@ -30,7 +30,13 @@ export { createHostDiskSweep } from "./sweep.js";
 export type { HostDiskSweep } from "./sweep.js";
 export { readHostDiskUsage, measureHostDiskConsumer } from "./measure.js";
 export type { HostDiskSweepResult } from "./state.js";
-export { createDockergateDiskClient, dockergateBaseUrl, DOCKERGATE_URL_ENV } from "./dockergate.js";
+export {
+  createDockergateDiskClient,
+  dockergateBaseUrl,
+  partitionClientFromEnv,
+  partitionClientFromSocketClient,
+  DOCKERGATE_URL_ENV,
+} from "./dockergate.js";
 export type { BotPartitionUsage, DockergateDiskClient } from "./dockergate.js";
 export { botPartitionThresholdRuntime, resetBotPartitionThresholdRuntime } from "./partition.js";
 export type { BotPartitionThresholdRuntime, BotPartitionThresholdState } from "./partition.js";
@@ -74,13 +80,11 @@ function createRuntime(db: Db, options: HostDiskRuntimeOptions = {}): HostDiskRu
   const settingsPort = settings as unknown as {
     getGeneral(): Promise<{ hostDisk?: unknown }>;
   };
-  // myrmidon(1.6.5-BOT-DISK-H10): the bot-partition measurement. Without a
-  // configured dockergate URL the client stays null and the sweep behaves
-  // exactly as part E shipped it.
-  const partitionClient = (() => {
-    const baseUrl = dockergateBaseUrl(env);
-    return baseUrl ? createDockergateDiskClient({ baseUrl }) : null;
-  })();
+  // myrmidon(1.6.5-BOT-DISK-H10): the bot-partition measurement. dockergate is
+  // reached over its unix socket when MYRMIDON_BOT_DOCKER_SOCKET is set (the
+  // production wiring), over TCP only when MYRMIDON_DOCKERGATE_URL is set;
+  // with neither the client stays null and the sweep behaves as part E shipped it.
+  const partitionClient = partitionClientFromEnv(env);
   const partitionRuntime = botPartitionThresholdRuntime(db, {
     notifyOwner: createOwnerTelegramNotifier(db, {
       listCompanyIds: () => settings.listCompanyIds(),

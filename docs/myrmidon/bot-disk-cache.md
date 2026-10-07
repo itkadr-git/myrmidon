@@ -53,12 +53,14 @@ Turning the cache off works the same way in reverse.
 
 ## Operator steps
 
-1. Create the four subdirectories and give them to the bot user (uid and gid
+1. Create the subdirectories (`pnpm-store` included: it is mounted read-write at
+   `/cache/pnpm-store`, and when it is a bind of another directory, as on the
+   production host, the SOURCE directory is the one to give away) and give them to the bot user (uid and gid
    10001 in the bot image); Docker would otherwise create a missing one as root
    and the bot could not write to it:
 
    ```sh
-   install -d -o 10001 -g 10001 /srv/package-cache/{pnpm,go-mod,go-build,gradle}
+   install -d -o 10001 -g 10001 /srv/package-cache/{pnpm,pnpm-store,go-mod,go-build,gradle}
    ```
 
 2. Set the same directory as `packageCacheRoot` in the dockergate configuration
