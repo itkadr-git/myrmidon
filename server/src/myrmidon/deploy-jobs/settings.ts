@@ -57,6 +57,16 @@ export interface DeployJobsSettings {
    * stand is the risk the plan calls out.
    */
   autoUpdate: boolean;
+  /**
+   * 1.7-AUTO-UPDATE-B: how long a job may wait for the maintenance window
+   * before it is aborted. The generic step timeout does not apply to a job
+   * waiting for a window (the window may be a week away), so the wait has its
+   * own budget — an instance whose window never opens must not hold the deploy
+   * slot forever.
+   */
+  windowWaitTimeoutMs: number;
+  /** 1.7-AUTO-UPDATE-B: budget of the fleet canary phase (the batch is watched, then the rest). */
+  canaryTimeoutMs: number;
 }
 
 function readHeaders(env: NodeJS.ProcessEnv, name: string): Record<string, string> | null {
@@ -88,5 +98,7 @@ export function readDeployJobsSettings(env: NodeJS.ProcessEnv = process.env): De
     registryInspectUrl: env.MYRMIDON_DEPLOY_REGISTRY_INSPECT_URL?.trim() || null,
     autoRollback: readBool(env, "MYRMIDON_DEPLOY_AUTO_ROLLBACK", true),
     autoUpdate: readBool(env, "MYRMIDON_DEPLOY_AUTO_UPDATE", false),
+    windowWaitTimeoutMs: readInt(env, "MYRMIDON_DEPLOY_WINDOW_WAIT_TIMEOUT_SEC", 604_800, 60, 2_592_000) * 1000,
+    canaryTimeoutMs: readInt(env, "MYRMIDON_DEPLOY_CANARY_TIMEOUT_SEC", 3600, 60, 86_400) * 1000,
   };
 }
