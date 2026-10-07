@@ -122,6 +122,36 @@ analyze_command="${MYRMIDON_PREDEPLOY_ANALYZE_COMMAND:-}"
 # shellcheck disable=SC2016  # the quotes are part of the command the operator overrides
 [[ -n "$analyze_command" ]] || analyze_command='docker exec -e PGPASSWORD="$MYR_PREDEPLOY_DB_PASSWORD" "$MYR_PREDEPLOY_DB_CONTAINER" psql -U "$MYR_PREDEPLOY_DB_USER" -d "$MYR_PREDEPLOY_DB_NAME" -c ANALYZE'
 
+# myrmidon(PREDEPLOY-PG-COMPAT): the board's database may live on a SHARED
+# PostgreSQL server (the 1.6.5 decision: PostgreSQL 18, its own database and
+# role; the same server serves other products), so the throwaway copy must
+# match the server the production dump came from. Two comparisons, both made
+# before the restore (the check refuses BEFORE the window either way):
+#   * the major version: the pg_dump version recorded in the dump's own
+#     archive header (pg_restore --list prints it as `; Dumped by pg_dump
+#     version …`, older clients as `; Saved in: …`) must equal the copy's
+#     server major — an older copy cannot read a newer dump and is refused; a
+#     newer copy is warned about, never refused, because the 1.6.5 migration
+#     deploy dumps the OLD server and restores into the new PostgreSQL 18;
+#   * the extensions: every extension the dump restores (the TOC lines pg_restore
+#     --list prints as `170; 3079 12350 EXTENSION - vector owner`, from
+#     _printTocEntry's `%d; %u %u %s %s %s %s`) must be available in the copy
+#     (SELECT extname FROM pg_available_extensions) — the board restores and
+#     reads with them (vector since migration 0051, fuzzystrmatch since 0080)
+#     and a plain postgres image does not carry pgvector, which is why the
+#     deploy example defaults the copy to pgvector/pgvector:pg18. After the
+#     restore the same names must be live in pg_extension. A dump whose
+#     client recorded no extension entries (an old pg_dump) is checked by
+#     the board schema's own CREATE EXTENSION statements instead, with a
+#     warning that the TOC gave nothing to compare.
+# MYRMIDON_PREDEPLOY_PG_COMPAT=off skips the comparison for a deliberate
+# mismatch; the reason is still logged.
+pg_compat="${MYRMIDON_PREDEPLOY_PG_COMPAT:-check}"
+case "$pg_compat" in
+  check|off) ;;
+  *) die "MYRMIDON_PREDEPLOY_PG_COMPAT must be 'check' or 'off' (got: $pg_compat); nothing was changed" ;;
+esac
+
 # Fail closed: without these the step would quietly prove nothing.
 [[ -n "$postgres_image" ]] || die "MYRMIDON_PREDEPLOY_POSTGRES_IMAGE is required: the check restores the predeploy dump into its own Postgres (set MYRMIDON_PREDEPLOY_CHECK=0 to deploy without the check); nothing was changed"
 [[ -n "$board_env_file" ]] || die "MYRMIDON_PREDEPLOY_BOARD_ENV_FILE is required: the throwaway board needs the board's own environment (secrets, tokens) to start like the production board; nothing was changed"
@@ -184,7 +214,8 @@ if [[ "$DRY_RUN" == "1" ]]; then
   plan "0. read the predeploy dump $dump_file ($(wc -c <"$dump_file" | tr -d ' ') bytes) as the production snapshot (read-only)"
   plan "1. docker network create $network (no bot container, no production dockergate on it)"
   plan "2. docker run -d --name $db_ctr --network $network -v $db_vol:/var/lib/postgresql/data $postgres_image (database $db_name, user $db_user, generated password)"
-  plan "3. wait for the copy to accept connections, then restore the dump into it"
+  plan "3. wait for the copy to accept connections, then check the copy against the dump (PREDEPLOY-PG-COMPAT, MYRMIDON_PREDEPLOY_PG_COMPAT=$pg_compat): the pg_dump major recorded in the dump header must equal the copy's server major, and every extension the dump restores must be available in the copy image"
+  plan "3.1 restore the dump into the copy"
   if [[ -n "$dockergate_ref" ]]; then
     plan "4. docker run -d --name $dg_ctr --network $network $dockergate_ref (the NEW dockergate of this release)"
   else
@@ -260,8 +291,94 @@ until bash -c "$db_ready_command" >/dev/null 2>&1; do
   fi
   sleep "$POLL_INTERVAL_SEC"
 done
+
+# --- PREDEPLOY-PG-COMPAT: the copy must match the server the dump came from ---
+# Everything here reads the COPY (docker exec on $db_ctr) and the dump that is
+# already on disk; production is not involved. A refusal stops deploy.sh
+# before the window, exactly like every other failure of this check.
+dump_toc=""
+dump_major=""
+dump_exts=""
+copy_major=""
+available_exts=""
+if [[ "$pg_compat" == "off" ]]; then
+  log "PREDEPLOY-PG-COMPAT: disabled (MYRMIDON_PREDEPLOY_PG_COMPAT=off): the copy is NOT compared with the dump's server major or extensions"
+else
+  # The dump's own TOC (pg_restore --list, no connection): the server the dump
+  # came from and every extension it will restore. The header prints them as
+  # `; Dumped from database version: 18.0` (the production server) and
+  # `; Dumped by pg_dump version: 18.0` (the client that wrote it); the
+  # server line wins, the client line is the fallback for old dumps without
+  # it. Extension entries are
+  # `<dumpId>; <tableoid> <oid> EXTENSION <schema> <name> <owner>`. A plain-SQL
+  # dump is not an archive: pg_restore --list fails, the TOC stays empty and
+  # the `-- Dumped … version …` comments and CREATE EXTENSION lines of
+  # the text dump are read from the file itself instead.
+  dump_toc="$(docker exec -i "$db_ctr" pg_restore --list <"$dump_file" 2>/dev/null || true)"
+  dump_major="$(sed -n 's/^; *Dumped from database version: *\([0-9][0-9]*\)[.0-9]*/\1/p' <<<"$dump_toc" | head -n1)"
+  [[ -n "$dump_major" ]] || dump_major="$(sed -n 's/^; *Dumped by pg_dump version: *\([0-9][0-9]*\)[.0-9]*/\1/p' <<<"$dump_toc" | head -n1)"
+  [[ -n "$dump_major" ]] || dump_major="$(grep -m1 -oE '^-- Dumped from database version [0-9]+' "$dump_file" 2>/dev/null | grep -oE '[0-9]+$' || true)"
+  [[ -n "$dump_major" ]] || dump_major="$(grep -m1 -oE '^-- Dumped by pg_dump version [0-9]+' "$dump_file" 2>/dev/null | grep -oE '[0-9]+$' || true)"
+  dump_exts="$(sed -n 's/^[0-9][0-9]*;[[:space:]]*[0-9][0-9]*[[:space:]]*[0-9][0-9]*[[:space:]]*EXTENSION[[:space:]]*[^[:space:]]*[[:space:]]*\([^[:space:]]*\).*/\1/p' <<<"$dump_toc" | sort -u)"
+  if [[ -z "$dump_exts" && -z "$dump_toc" ]]; then
+    dump_exts="$( { grep -oiE 'CREATE EXTENSION (IF NOT EXISTS )?[a-z0-9_]+' "$dump_file" 2>/dev/null || true; } | awk '{print $NF}' | sort -u)"
+  fi
+  copy_major="$(docker exec -e "PGPASSWORD=$db_password" "$db_ctr" psql -U "$db_user" -d "$db_name" -Atc 'SHOW server_version' 2>/dev/null | sed -n 's/^\([0-9][0-9]*\).*/\1/p' | head -n1 || true)"
+  if [[ -n "$dump_major" && -n "$copy_major" ]]; then
+    if ((copy_major < dump_major)); then
+      die "PREDEPLOY-PG-COMPAT: the production dump was written by pg_dump $dump_major, the copy runs $copy_major ($postgres_image): pg_restore cannot read a newer dump. Point MYRMIDON_PREDEPLOY_POSTGRES_IMAGE at the production server's major (shared PostgreSQL 18 -> pgvector/pgvector:pg18); nothing was restored"
+    fi
+    if ((copy_major > dump_major)); then
+      # The migration window: the 1.6.5 deploy moves the board from the built-in
+      # postgres container to the shared PostgreSQL 18 — the dump still comes
+      # from the OLD server while the copy already runs 18, and restoring an
+      # older-major dump into a newer server is exactly the upgrade path. Once
+      # production answers through DATABASE_URL, the majors match again; until
+      # then a newer copy is a loud warning, not a refusal.
+      log "PREDEPLOY-PG-COMPAT: WARNING: the copy runs $copy_major but the dump came from $dump_major — acceptable only while the board migrates onto the newer server; after the migration the production dump must come from the same major as MYRMIDON_PREDEPLOY_POSTGRES_IMAGE"
+    else
+      log "PREDEPLOY-PG-COMPAT: the copy is Postgres $copy_major, the same major the production dump came from"
+    fi
+  else
+    log "PREDEPLOY-PG-COMPAT: WARNING: the dump's or the copy's server major could not be read (dump: '${dump_major:-<none>}', copy: '${copy_major:-<none>}'); the version comparison is skipped — an incompatible copy will still fail the restore"
+  fi
+  if [[ -n "$dump_exts" ]]; then
+    available_exts="$(docker exec -e "PGPASSWORD=$db_password" "$db_ctr" psql -U "$db_user" -d "$db_name" -Atc 'SELECT extname FROM pg_available_extensions' 2>/dev/null || true)"
+    missing=()
+    for want in $dump_exts; do
+      [[ -n "$available_exts" && -n "$want" ]] || continue
+      grep -qxF "$want" <<<"$available_exts" || missing+=("$want")
+    done
+    if ((${#missing[@]} > 0)); then
+      die "PREDEPLOY-PG-COMPAT: the production dump restores extension(s) ${missing[*]}, the copy image ($postgres_image) does not provide them: use a Postgres image with those extensions (pgvector/pgvector:pg18 for the shared PostgreSQL 18 server — the board needs vector since migration 0051); nothing was restored"
+    elif [[ -z "$available_exts" ]]; then
+      log "PREDEPLOY-PG-COMPAT: WARNING: the copy's extension list could not be read; the dump needs ${dump_exts//$'\n'/ }; the restore itself fails if an extension is missing"
+    else
+      log "PREDEPLOY-PG-COMPAT: the copy provides every extension the dump restores (${dump_exts//$'\n'/ })"
+    fi
+  else
+    log "PREDEPLOY-PG-COMPAT: the dump records no extensions (an old pg_dump client or a plain dump without CREATE EXTENSION); nothing to compare"
+  fi
+fi
+
 log "PREDEPLOY-DB-CHECK: restoring the predeploy dump into the copy"
 bash -c "$restore_command" >/dev/null || { dump_logs "$db_ctr"; die "cannot restore $dump_file into the throwaway database; production was not touched"; }
+if [[ "$pg_compat" == "check" && -n "$dump_exts" ]]; then
+  # After the restore the required extensions must be LIVE, not only
+  # available: pg_restore runs CREATE EXTENSION, so an absent row means the
+  # copy was not restored the way the dump describes production.
+  live_exts="$(docker exec -e "PGPASSWORD=$db_password" "$db_ctr" psql -U "$db_user" -d "$db_name" -Atc 'SELECT extname FROM pg_extension' 2>/dev/null || true)"
+  not_live=()
+  for want in $dump_exts; do
+    [[ -n "$want" ]] || continue
+    grep -qxF "$want" <<<"$live_exts" || not_live+=("$want")
+  done
+  if ((${#not_live[@]} > 0)); then
+    dump_logs "$db_ctr"
+    die "PREDEPLOY-PG-COMPAT: the dump restores extension(s) ${not_live[*]} but they are not installed in the copy after the restore (SELECT extname FROM pg_extension): the copy does not hold the production data the way production does; production was not touched"
+  fi
+  log "PREDEPLOY-PG-COMPAT: the copy has the dump's extensions installed (${dump_exts//$'\n'/ })"
+fi
 log "PREDEPLOY-DB-CHECK: analyze: collecting planner statistics on the copy (a restored dump has none)"
 bash -c "$analyze_command" >/dev/null || { dump_logs "$db_ctr"; log "PREDEPLOY-DB-CHECK: WARNING: analyze failed on the copy: the board runs on default planner estimates and a slow route may be a false alarm"; }
 

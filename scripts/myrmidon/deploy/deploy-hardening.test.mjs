@@ -628,6 +628,77 @@ describe("A1 / failure 3: one source of truth per component image", () => {
   });
 });
 
+// SHARED-PG (the 1.6.5 decision: the board's database may live on a SHARED
+// PostgreSQL 18 server, its own database and role). The deploy scripts must
+// not know where the board's database lives: DUMP_COMMAND / RESTORE_COMMAND are
+// configuration, and take_dump and rollback.sh --restore-dump pass DATABASE_URL
+// into the command's environment so a shared-server command
+// (`pg_dump "$DATABASE_URL"`, `pg_restore -d "$DATABASE_URL" --no-owner
+// --no-acl`) can connect. These tests run the real deploy.sh and rollback.sh
+// against such a config in the hardening sandbox (fake binaries only).
+describe("SHARED-PG: dump and restore follow the config, DATABASE_URL reaches it", () => {
+  // No credentials in the string: the test proves the value reaches the
+  // command untouched; a real deployment puts its own URI in the env file.
+  const SHARED_URL = "postgresql://board-role@shared-postgres.example:5432/boarddb?sslmode=require";
+  // A shared-server dump command: records what it was given, writes a valid dump.
+  const SHARED_DUMP =
+    'echo "DATABASE_URL=$DATABASE_URL DUMP_FILE=$DUMP_FILE" >> "$SANDBOX/dump-call.log"; printf PGDMP > "$DUMP_FILE"; head -c 2048 /dev/zero >> "$DUMP_FILE"';
+
+  it("a dry run with a shared-server config passes and plans the configured dump", () => {
+    const sb = sandbox({
+      extraConfig: [`DUMP_COMMAND='${SHARED_DUMP}'`, `DATABASE_URL=${SHARED_URL}`],
+    });
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--dry-run"]);
+    assert.equal(code, 0, out);
+    assert.match(out, /3\. dump database with DUMP_COMMAND/);
+    assert.ok(!fs.existsSync(path.join(sb.dir, "dump-call.log")), "a dry run does not dump");
+  });
+
+  it("the real deploy passes DATABASE_URL to a shared-server DUMP_COMMAND", () => {
+    const sb = sandbox({
+      extraConfig: [`DUMP_COMMAND='${SHARED_DUMP}'`, `DATABASE_URL=${SHARED_URL}`],
+    });
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.equal(code, 0, out);
+    // the command ran through bash -c and saw the board's connection string
+    const line = read(path.join(sb.dir, "dump-call.log"));
+    assert.ok(line, "the configured shared-server dump command ran");
+    assert.match(line, new RegExp(`DATABASE_URL=${SHARED_URL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} `));
+    assert.match(line, /DUMP_FILE=\S*dumps\/myrmidon-\S+\.dump/);
+    // a shared-server dump needs no container: nothing named `db` was exec'd
+    assert.doesNotMatch(calls(sb), /exec -T db/);
+  });
+
+  it("the built-in container default keeps working (no DATABASE_URL in the config)", () => {
+    const sb = sandbox();
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.equal(code, 0, out);
+    // the default DUMP_COMMAND of this harness writes the dump without a
+    // database connection; an unset DATABASE_URL must not break anything.
+    const dumps = path.join(sb.dir, "dumps");
+    assert.ok(fs.readdirSync(dumps).length === 1, "one dump was taken");
+  });
+
+  it("rollback --restore-dump passes DATABASE_URL to a shared-server RESTORE_COMMAND", () => {
+    const sb = sandbox({
+      extraConfig: [
+        `RESTORE_COMMAND='echo "DATABASE_URL=$DATABASE_URL DUMP_FILE=$DUMP_FILE" >> "$SANDBOX/restore-call.log"'`,
+        `DATABASE_URL=${SHARED_URL}`,
+      ],
+    });
+    const dump = path.join(sb.dir, "pre-shared.dump");
+    fs.writeFileSync(dump, "PGDMP-not-empty");
+    const { code, out } = run(sb, "rollback.sh", ["--to-image", `${CI_IMAGE}@${NEW}`, "--restore-dump", dump, "--yes-restore-database"]);
+    assert.equal(code, 0, out);
+    const line = read(path.join(sb.dir, "restore-call.log"));
+    assert.ok(line, "the configured shared-server restore command ran");
+    assert.match(line, new RegExp(`DATABASE_URL=${SHARED_URL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} `));
+    assert.match(line, new RegExp(`DUMP_FILE=${dump.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(\\s*$|$)`));
+    // the restore goes through the command only: no container exec, no psql
+    assert.doesNotMatch(calls(sb), /pg_restore|exec -T db/);
+  });
+});
+
 describe("A4 / failure 2: dockergate is proven by its log, not by a ping the host cannot make", () => {
   const SOCKET_PROBE = "--unix-socket /run/myrmidon-dockergate/engine.sock http://localhost/_ping";
 
