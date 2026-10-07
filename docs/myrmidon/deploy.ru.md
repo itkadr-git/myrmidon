@@ -740,6 +740,16 @@ Digest доска проверяет сама — реестр и GitHub. Есл
 журнала, поэтому тег ставится на коммит слияния этого PR или позже. Формат
 фрагмента: [changes/README.md](changes/README.md).
 
+**Тег без раздела версии в журнале красит CI (RELEASE-CUT-CHANGELOG).** Прогон
+**Myrmidon CI (tag)** на теге `myr-vX.Y.Z` проверяет оба журнала командой
+`node scripts/myrmidon/release/collect-fragments.mjs --version X.Y.Z --check`:
+непустой раздел `## X.Y.Z` и пустой заголовок без выпуска, в EN и RU одинаково.
+Тег, поставленный без PR нарезки (инцидент 1.6.3: заметки остались под
+`## Unreleased`, и публикация отказала с «release body could not be built
+(missing notes)»), краснеет здесь — до старта публикации релиза. Сам
+`collect-fragments.mjs` гоняет ту же проверку до записи файлов, поэтому нарезка,
+которая не прошла бы CI, падает ещё локально.
+
 **GitHub Release создаёт CI, а не человек.** Пуш тега `myr-vX.Y.Z` (включая
 `-rc.N`) запускает
 workflow **Myrmidon release publish**
