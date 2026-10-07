@@ -20,12 +20,13 @@ import {
   compareContainsFix,
   countBehind,
   extractReleaseNotes,
+  githubJsonPort,
   normaliseVersion,
   readReleaseList,
   type StackFetchJson,
   type StackHttpResponse,
 } from "./releases.js";
-import { readStackCheckIntervalSec } from "./settings.js";
+import { readStackCheckIntervalSec, readStackGithubToken } from "./settings.js";
 import { seedStackDocument, type StackDocument, type StackLocalState } from "./domain.js";
 import { readStackDocument, writeStackDocument } from "./store.js";
 import { stackRegistryRoutes } from "./routes.js";
@@ -105,6 +106,57 @@ describe("stack release check helpers", () => {
     expect(readStackCheckIntervalSec({ MYRMIDON_STACK_CHECK_INTERVAL_SEC: "abc" } as NodeJS.ProcessEnv)).toBe(0);
     expect(readStackCheckIntervalSec({ MYRMIDON_STACK_CHECK_INTERVAL_SEC: "10" } as NodeJS.ProcessEnv)).toBe(60);
     expect(readStackCheckIntervalSec({ MYRMIDON_STACK_CHECK_INTERVAL_SEC: "86400" } as NodeJS.ProcessEnv)).toBe(86400);
+  });
+
+  it("reads the stack GitHub token: unset or blank is null, surrounding spaces are trimmed", () => {
+    expect(readStackGithubToken({} as NodeJS.ProcessEnv)).toBeNull();
+    expect(readStackGithubToken({ MYRMIDON_STACK_GITHUB_TOKEN: "" } as NodeJS.ProcessEnv)).toBeNull();
+    expect(readStackGithubToken({ MYRMIDON_STACK_GITHUB_TOKEN: "   " } as NodeJS.ProcessEnv)).toBeNull();
+    expect(readStackGithubToken({ MYRMIDON_STACK_GITHUB_TOKEN: "  test-token  " } as NodeJS.ProcessEnv)).toBe("test-token");
+  });
+
+  it("sends no authorization header when the JSON port has no token (anonymous mode unchanged)", async () => {
+    const realFetch = globalThis.fetch;
+    const seen: Array<{ url: string; headers: Record<string, string> }> = [];
+    globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+      seen.push({ url: String(url), headers: (init?.headers ?? {}) as Record<string, string> });
+      return new Response("[]", { status: 200 });
+    }) as typeof globalThis.fetch;
+    try {
+      const port = githubJsonPort();
+      const res = await port("https://api.github.com/repos/foo/bar/releases?per_page=30");
+      expect(res.status).toBe(200);
+      expect(seen).toHaveLength(1);
+      expect(seen[0]!.headers.authorization).toBeUndefined();
+      expect(seen[0]!.headers.accept).toBe("application/vnd.github+json");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("sends the Bearer token on every request the port makes (releases and compare share one port)", async () => {
+    const realFetch = globalThis.fetch;
+    const seen: Array<{ url: string; headers: Record<string, string> }> = [];
+    globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+      seen.push({ url: String(url), headers: (init?.headers ?? {}) as Record<string, string> });
+      return new Response("{}", { status: 200 });
+    }) as typeof globalThis.fetch;
+    try {
+      const port = githubJsonPort({ token: "  test-token  " });
+      await port("https://api.github.com/repos/foo/bar/releases?per_page=30");
+      await port("https://api.github.com/repos/foo/bar/compare/v1...main");
+      expect(seen).toHaveLength(2);
+      for (const call of seen) {
+        expect(call.headers.authorization).toBe("Bearer test-token");
+      }
+      // a blank token must not turn into an empty authorization header
+      const blank = githubJsonPort({ token: "   " });
+      seen.length = 0;
+      await blank("https://api.github.com/repos/foo/bar/tags");
+      expect(seen[0]!.headers.authorization).toBeUndefined();
+    } finally {
+      globalThis.fetch = realFetch;
+    }
   });
 });
 
