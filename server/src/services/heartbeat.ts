@@ -3782,6 +3782,7 @@ interface WakeupOptions {
   issueStateGuard?: {
     statuses: string[];
     assigneeAgentId: string;
+    statusVersion?: number;
   };
   /** Keep causally distinct external chat continuations out of an existing run. */
   allowRunCoalescing?: boolean;
@@ -10355,6 +10356,15 @@ export function heartbeatService(
     }
     const deliveryPayload = response ? { ...payload } : withQueuedCommentIdsInWakePayload(payload, commentIds);
     delete deliveryPayload.queuedCommentInterrupt;
+    // myrmidon(1.6.6-UPSTREAM-HANDOFF-B): the vendor sets the guard version only
+    // at its own enqueue sites; the board's delivery records the version it saw.
+    // This delivery may wait behind a running turn and be admitted much later,
+    // so a wake that arrives after a later handoff (or a fresh blocked
+    // decision) is dropped by the guard instead of starting a turn for the
+    // state it no longer describes.
+    const [guardedDeliveryIssue] = await db.select({ statusVersion: issues.statusVersion }).from(issues).where(and(
+      eq(issues.companyId, companyId), eq(issues.id, issueId),
+    )).limit(1);
     await enqueueWakeup(wake.agentId, {
       source: "on_demand", triggerDetail: "manual", reason: "issue_commented",
       // myrmidon(UPSTREAM-13539): interaction deliveries carry the original wake context, not comment ids.
@@ -10366,7 +10376,11 @@ export function heartbeatService(
           }, commentIds),
       requestedByActorType: "user", requestedByActorId: actorId,
       ...(interrupted ? { queuedCommentInterruptId: queueId } : { queuedCommentRequestId: queueId }),
-      issueStateGuard: { assigneeAgentId: wake.agentId, statuses: ["todo", "in_progress", "in_review", "blocked"] },
+      issueStateGuard: {
+        assigneeAgentId: wake.agentId,
+        statuses: ["todo", "in_progress", "in_review", "blocked"],
+        ...(guardedDeliveryIssue ? { statusVersion: guardedDeliveryIssue.statusVersion } : {}),
+      },
       idempotencyKey: `queued-comment-${interrupted ? "interrupt" : "delivery"}:${queueId}`,
     }, queueId);
   }
@@ -27238,6 +27252,7 @@ export function heartbeatService(
               conversationUserId: issues.conversationUserId,
               conversationState: issues.conversationState,
               status: issues.status,
+              statusVersion: issues.statusVersion,
               projectId: issues.projectId,
               projectWorkspaceId: issues.projectWorkspaceId,
               executionWorkspaceId: issues.executionWorkspaceId,
@@ -27486,7 +27501,8 @@ export function heartbeatService(
           if (
             issueStateGuard &&
             (!issueStateGuard.statuses.includes(issue.status) ||
-              issue.assigneeAgentId !== issueStateGuard.assigneeAgentId)
+              issue.assigneeAgentId !== issueStateGuard.assigneeAgentId ||
+              (issueStateGuard.statusVersion !== undefined && issue.statusVersion !== issueStateGuard.statusVersion))
           ) {
             await tx.insert(agentWakeupRequests).values({
               ...durableReceiptFields,
@@ -27505,6 +27521,10 @@ export function heartbeatService(
                   actualStatus: issue.status,
                   expectedAssigneeAgentId: issueStateGuard.assigneeAgentId,
                   actualAssigneeAgentId: issue.assigneeAgentId,
+                  // myrmidon(1.6.6-UPSTREAM-HANDOFF-B): the vendor journal names only
+                  // the status and the assignee; a version-only mismatch needs the version.
+                  expectedStatusVersion: issueStateGuard.statusVersion ?? null,
+                  actualStatusVersion: issue.statusVersion,
                 },
               },
               status: "skipped",
