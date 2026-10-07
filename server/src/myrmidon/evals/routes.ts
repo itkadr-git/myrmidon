@@ -168,12 +168,15 @@ export function myrmidonEvalsRoutes(db: Db, deps: Partial<EvalsRoutesDeps> = {})
       service: createEvalsService(db, {
         judge: createJudge({
           fetch: deps.fetch ?? fetch,
-          apiKey: key,
+          apiKey: current.apiKey,
           baseUrl: current.baseUrl!,
-          // myrmidon(1.6.3 EVALS-JUDGE-FAMILY): the judge model is the head
-          // of the priority list; the list is re-read on every call, so a
-          // change takes effect on the next run without a restart.
+          // myrmidon(1.6.5 EVALS-JUDGE-FAMILY): the whole priority list goes
+          // into the judge so a gateway error on one candidate falls through
+          // to the next instead of aborting the run; the head is still the
+          // recorded model. The list is re-read on every call, so a change
+          // takes effect on the next run without a restart.
           model: current.judgeModels[0] ?? current.model,
+          judgeModels: current.judgeModels,
           timeoutMs: current.timeoutMs,
         }),
         exporter,
