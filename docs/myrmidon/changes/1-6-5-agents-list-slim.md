@@ -2,36 +2,22 @@
 ---
 
 ## changelog-en
+### The company agent list ships without adapter_config (PERF-DIET G2)
 
-### The company agent list ships without adapter_config; the config stays one request away (PERF-DIET G2)
-
-- `GET /api/companies/:companyId/agents` no longer returns `adapterConfig`. The
-  heavy, secret-bearing column (environment bindings, secret and API-access
-  references) is not read from the database at all for this response: the list
-  now selects the narrow projection and extracts the model in SQL
-  (`adapter_config->>'model'`) into a new `adapterModel` field.
-- The full configuration stays available exactly as before through
-  `GET /agents/:id` (detail), `GET /agents/:id/configuration` and
-  `GET /companies/:companyId/agent-configurations`; access rules
-  (`filterAgentsForActor`, the restricted view) and spend hydration are
-  unchanged. An actor without `agent_config:read` keeps the old disclosure:
-  the restricted list view blanks `runtimeConfig` and `adapterModel` instead of
-  blanking `adapterConfig`.
+- `GET /api/companies/:companyId/agents` no longer returns `adapterConfig`:
+  the heavy, secret-bearing column is not read at all for this response —
+  the list selects a narrow projection and extracts the model in SQL into a
+  new `adapterModel` field. The full configuration stays available through
+  `GET /agents/:id`, `GET /agents/:id/configuration` and
+  `GET /companies/:companyId/agent-configurations`; access rules and spend
+  hydration are unchanged.
 - The board UI follows: the agents list renders its model column from
-  `adapterModel`; the new-issue dialog and the issue properties pane read the
-  selected assignee's configuration on demand (only for a `paperclip_runner`
-  provider or the required-user-secret warning); the secret-access section of
-  Settings → Secrets reads the configuration endpoint for the whole company.
-- The `paperclipai secrets migrate-inline-env` CLI command follows too: it reads
-  `GET /companies/:companyId/agent-configurations`, because the slim list no
-  longer carries the inline env bindings that command migrates.
-- The bot-image rollout (`scripts/myrmidon/deploy/bot-image-rollout.sh`) follows
-  on the same footing: bot cards — the `container` block included — are read from
-  `GET /companies/:companyId/agent-configurations`, so the enrollment limits in
-  `bots[]` and the card's current image still come from the board after the list
-  went slim. Its fake-board test serves a list row with no `adapterConfig` at all,
-  which pins the rollout to the configurations endpoint.
-
+  `adapterModel`; the new-issue dialog and the properties pane read the
+  assignee's configuration on demand; Settings → Secrets reads the
+  configuration endpoint.
+- `paperclipai secrets migrate-inline-env` and the bot-image rollout follow
+  on the same footing (the rollout reads bot cards from the
+  agent-configurations endpoint; its fake-board test pins this).
 ## changelog-ru
 
 ### Список агентов компании отдаётся без adapter_config; конфиг — одним запросом рядом (PERF-DIET G2)

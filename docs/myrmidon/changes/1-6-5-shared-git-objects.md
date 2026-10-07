@@ -3,76 +3,22 @@ settings-section: BOT-DISK E — host disk usage signal
 ---
 
 ## changelog-en
-
 ### Task clones share one git object store per bot and per scope (1.6.5 BOT-DISK-G)
 
-- The bot volume grew ~4 GB/h: every task clone copied the whole git history
-  (~0.4 GB each) even with the board's `/cache/git` mirrors, because a bot
-  terminal rebuilds PATH without `/opt/paperclip/bin`, where the 1.6.2 wrapper
-  stood — a bare `git clone` ran the real git, and the wrapper itself died with
-  127 outside the image PATH (`#!/usr/bin/env node`). The dev image now shadows
-  git with a `/usr/local/bin/git` symlink (an element every rebuilt PATH keeps)
-  and runs the wrapper with an absolute interpreter.
-- The wrapper keeps a bare mirror per repository inside the bot's own mount —
-  `${MYRMIDON_GIT_LOCAL_MIRROR:-<HERMES_HOME>/.myrmidon/git-objects}`, or the
-  shared store `/bot-scope/.git-objects` the profile compiler gives to members
-  of an isolation-scope instance (issue #574 scope: objects then live once per
-  scope, not per bot) — and makes every clone after the first borrow its
-  objects with `--reference-if-able`. The first clone of a repository pays one
-  full fetch; later clones store only their working tree and their own
-  commits. The mirrors never prune objects a clone may still borrow
-  (`gc.pruneExpire=never`, `gc.auto=0`), the refresh is throttled behind a
-  lock, the board's mirror still wins when mounted, and every failure falls
-  back to a plain clone. The store lives in the bot's hermes home (or the
-  scope root), so no clone lifecycle ever reaps it.
-- The entrypoint runs a shared-objects self-check at every start, by the hard-link
-  self-check's pattern: the shadow answers, the wrapper runs, the store is
-  writable, and a real offline `--reference-if-able` round trip borrows
-  objects. The result rides the clone-hygiene report (`gitRefCheck`); a failed
-  check raises a `bot_disk_lifecycle` attention card per bot, gone at the next
-  clean start.
-- On the fleet the store stayed empty next to live GitHub task clones. The task
-  clones on a bot name another local clone in their `objects/info/alternates`
-  file, and only `--reference` (or `--shared`) writes that entry: the clone runs
-  with `--reference <neighbour clone>`, and the wrapper read `--reference` as
-  the clone's own storage decision, so it stepped aside — in silence, without a
-  mirror and without a trace. Reproduced with the old wrapper: a
-  `git clone --reference <neighbour> https://github.com/<owner>/<repo> <dir>`
-  leaves the store empty and prints no line. The opt-outs are now only the
-  options that pick the storage of the clone's own objects (`--dissociate`,
-  `--shared`, `--local`, `--mirror`, `--filter`); a clone that names
-  `--reference`/`--reference-if-able`/`--no-local`, a bounded clone (`--depth`,
-  `--shallow-since`, `--shallow-exclude`) and a non-GitHub clone keep the store's
-  mirror as one more alternate. The field command line through both wrappers:
-  the old one leaves the store empty, the new one leaves
-  `<store>/<owner>/<repo>.git` and an `alternates` entry.
-- A clone the store does not serve is no longer silent: the wrapper prints one
-  `[myrmidon-git]` line on stderr and writes
-  `<HERMES_HOME>/.myrmidon/git-objects-last-error.json` (kind, reason, detail,
-  the command line, one counter per kind). The clone still never fails because
-  of the store.
-- The start-time check gained two steps: `store-fills` runs the task clone's own
-  command line (a bounded clone that also names a stale `--reference-if-able`)
-  through the wrapper and requires a mirror in the store plus an alternates
-  entry, and `store-in-use` fails when GitHub task clones exist below
-  `/workspace` or `/scratch` and the store holds no mirror. The silent fleet
-  state now raises the `gitref` card.
-- `devbuild` follows the alternates: a borrowed mirror is synced once to the
-  build host's `/srv/devcache/git` and the synced clone's `objects/info/alternates`
-  is repointed at it, so git commands in a remote build keep working against
-  reference-cloned task workspaces.
-- Measured on this repository (full history, `myrmidon@29ae84e5`): a fresh
-  clone without a store: 414 MB / 25.5 s, `.git` 144 MB; with the bot store
-  mirrored: 272 MB / 1.1 s, `.git` 2 MB (the working tree of 270 MB is
-  unchanged); the store itself 145 MB once per bot/scope. Each further clone
-  of the same repository adds ~270 MB, not ~414 MB, and borrows the same
-  history; before the fix every clone re-downloaded and re-stored ~144 MB of
-  shared objects.
-- Disable switches: `MYRMIDON_GIT_LOCAL_MIRROR=""` (no bot store),
-  `MYRMIDON_GIT_LOCAL_MIRROR_REFRESH_SEC=0` (never refetch),
-  `MYRMIDON_GIT_OBJECTS_CHECK=0` (skip the start-time check). See
-  [bot-disk-cache.md](bot-disk-cache.md).
-
+- Bot task clones copied the whole git history each (~0.4 GB; the volume grew
+  ~4 GB/h): a bot terminal rebuilds PATH without the 1.6.2 git wrapper. The
+  image now shadows git with `/usr/local/bin/git` and runs the wrapper with an
+  absolute interpreter.
+- The wrapper keeps one bare mirror per repository in the bot store (or the
+  shared `/bot-scope/.git-objects` of an isolation scope); later clones borrow
+  it with `--reference-if-able`. Measured here: first clone 414 MB / 144 MB
+  `.git`, later clones 272 MB / 2 MB `.git`. Mirrors never prune objects a
+  clone borrows; every failure falls back to a plain clone.
+- An unserved clone prints one `[myrmidon-git]` line and records the reason;
+  the start-time self-check runs a real reference round trip and raises an
+  attention card on failure.
+- Switches: `MYRMIDON_GIT_LOCAL_MIRROR=""`, `MYRMIDON_GIT_LOCAL_MIRROR_REFRESH_SEC=0`,
+  `MYRMIDON_GIT_OBJECTS_CHECK=0`. See [bot-disk-cache.md](bot-disk-cache.md).
 ## changelog-ru
 
 ### Клоны задач делят одно хранилище объектов git на бота и на область (1.6.5 BOT-DISK-G)

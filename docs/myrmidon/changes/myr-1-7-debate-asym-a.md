@@ -5,36 +5,25 @@ settings-section: Track 5 — operations
 
 ## changelog-en
 
-### Asymmetric debates engine (DEBATE-ASYM A)
-
-- The board runs a structured disagreement about a task question between
-  models of different families: a generator (constructive pole), a critic
-  (adversarial pole, told it is penalized for a missed error), and a judge
-  outside the dispute (a third family). The first answers are independent —
-  neither debater sees the other's before the exchange starts. At most three
-  rounds; the exchange stops early when the critic writes the `[AGREE]`
-  marker, or when the total token ceiling is reached (a call that crosses the
-  ceiling is recorded but not charged). The result — positions, the judge's
-  verdict and the cost per role — lands on the task as a `debate-result`
-  document, and the spend is written as task-level cost events, so the budget
-  enforcement (BUDGET-CONFIG) sees it.
-- The role configuration is live: `GET`/`PATCH /api/myrmidon/debate/settings`
-  and Instance → General → "Asymmetric debates" (board reads, instance admin
-  writes, the source of the value shown). A symmetric configuration (both
-  debaters from one family, or the judge sharing a debater's family) is
-  refused with the exact reason; `MYRMIDON_DEBATE_CONFIG` is the forced
-  environment override only while nothing is saved.
-- Start a debate for a task: `POST /api/myrmidon/companies/:companyId/debates/
-  issues/:issueId/run`. The board runs it directly; an agent caller is gated
-  on the `spend_above_threshold` class of the autonomy matrix (a debate
-  spends gateway calls) — forbidden answers 403, approval_required answers 403
-  with the approval code. Models default to free ones: qwen generator, glm
-  critic, deepseek judge. The gateway contour falls back to the evals one
-  (`MYRMIDON_EVALS_BASE_URL` / `MYRMIDON_EVALS_KEY_SECRET`) when the debate
-  variables are unset.
-- Model families come from one extensible table (the same rules
-  EVALS-JUDGE-FAMILY introduced), so the cross-family check answers
-  "which family is this model" identically in both contours.
+- The board runs a structured disagreement between models of different
+  families: a generator (constructive pole), a critic (adversarial pole, told
+  it is penalized for a missed error), and a judge outside the dispute (a
+  third family). First answers are independent; at most three rounds, ending
+  early on the critic's `[AGREE]` marker or the token ceiling. The result —
+  positions, verdict, cost per role — lands on the task as a
+  `debate-result` document and is written as task-level cost events, so
+  BUDGET-CONFIG enforcement sees the spend.
+- Live role configuration: `GET`/`PATCH /api/myrmidon/debate/settings` and
+  Instance → General → "Asymmetric debates"; a symmetric configuration
+  (same family among debaters or judge) is refused with the exact reason.
+  `MYRMIDON_DEBATE_CONFIG` is the forced environment override only while
+  nothing is saved.
+- `POST .../debates/issues/:issueId/run` starts a debate: the board runs it
+  directly, an agent caller is gated on the autonomy matrix
+  `spend_above_threshold` class. Models default to free ones (qwen/glm/
+  deepseek); the gateway contour falls back to the evals contour when the
+  debate variables are unset. Model families share the single extensible
+  table introduced by EVALS-JUDGE-FAMILY.
 
 ## changelog-ru
 

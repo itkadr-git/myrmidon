@@ -1,29 +1,15 @@
 ## changelog-en
-
 ### Team liveness: the stand scenario that lets the watchdog be switched off (TEAM-LIVENESS-STAND)
 
-`scripts/myrmidon/team-liveness/stand-recovery.ts` rehearses the situation the
-whole epic exists for: the gateway dies mid-run, and the team comes back by
-itself. It carries no liveness logic of its own — every decision is taken by the
-product passes (RUN-STALL by progress, AUTO-RESUME, IDLE-PICKUP) built exactly as
-the server builds them; the runner seeds the situation, SIGKILLs the process,
-steps the clock and reads the database back.
-
-The verdict names three legs: the run is settled, the task is not left waiting
-(it left `in_progress` and has a wake or a live run), the agent is not stuck in
-`error` — all inside a budget (10 minutes by default), and the exit code carries
-the result. `rehearse` is self-contained (throwaway embedded database, a real
-gateway process) and writes the knobs through the instance settings API, so it
-also shows a saved value taking effect without a restart. `watch` is read-only
-against the live board database, for the real kill on the stand.
-
-Runbook: [guides/team-liveness-stand-scenario.md](../guides/team-liveness-stand-scenario.md).
-
-Note on the budget: the default stall threshold (20 min) is longer than the
-10-minute budget, so a silent run is only noticed later. The rehearsal sets the
-threshold below the budget through the settings area; a kill that takes the run
-terminal immediately does not involve the threshold at all.
-
+- `scripts/myrmidon/team-liveness/stand-recovery.ts` rehearses the situation
+  the epic exists for — the gateway dies mid-run and the team recovers by
+  itself — with no liveness logic of its own: every decision is taken by the
+  real product passes (STALL by progress, AUTO-RESUME, IDLE-PICKUP), the
+  runner only seeds the state, SIGKILLs the process, steps the clock and
+  reads the database back. The verdict names three legs the review checks:
+  the run is settled, the task is not left waiting (it left `in_progress` and
+  has a wake or a live run), and the agent's next action is admitted. The
+  stand gives the watchdog switch-off its acceptance test.
 ## changelog-ru
 
 ### Команда жива: стенд-сценарий, после которого сторож можно выключать (TEAM-LIVENESS-STAND)

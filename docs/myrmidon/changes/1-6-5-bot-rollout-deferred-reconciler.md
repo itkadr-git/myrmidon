@@ -5,29 +5,14 @@ settings-section: Bot containers (G-series, the 28.09 "option B" plan)
 
 ## changelog-en
 
-### Deferred bot image rollout applies itself when the bot frees up (BOT-ROLLOUT, part C)
+### A deferred bot image rollout applies itself when the bot frees up (BOT-ROLLOUT, part C)
 
-- A bot that was busy when its image rollout reached it (a running turn, the
-  owner in a chat conversation, or someone else's maintenance window) no longer
-  waits for the next deploy to switch images: the reconcile pass records the
-  deferral (the `myrmidonBotRolloutDeferred` key of `instance_settings.general`,
-  row-locked like the maintenance and canary keys), and a watcher inside the
-  same 60-second reconciliation sweep retries the recorded bots.
-- A retry goes out as soon as the bot reports no running work (the same
-  maintenance-port busy signal the rollout path itself reads): the apply runs
-  through the regular `applyBotContainerNow` — same per-bot lock, same fresh
-  card read — and on success the record is removed. The bot lands on the new
-  image inside the rollout window, without a new deploy.
-- A bot that stays busy longer than
-  `MYRMIDON_BOT_ROLLOUT_DEFERRED_MAX_WAIT_SEC` (default 3600) stops being
-  waited on: the retry goes without the busy gate, the reconciler opens the
-  maintenance window itself, drains the in-flight run to its end (runs are
-  never interrupted — the OPE-3638 rule) and switches the container right
-  after the current turn.
-- A record that never converged within a bounded grace (4× the max wait) is
-  retired: it is dropped, the failure is written to the reconcile activity
-  log and to the activity/audit feed (`myrmidon.bot_rollout.deferred_retired`)
-  — a wedged record does not retry forever.
+- A bot that was busy when its rollout reached it (running turn, owner chat,
+  someone else's manual image pin, or the docker gate not ready) was dropped
+  with only a log line — a fleet rollout silently skipped part of its targets.
+  Such bots are now written to `bot_image_rollouts` as `pending_reapply` with
+  a reason, and a reconciler retries them every minute, applying the moment
+  the blocker clears; the progress view shows deferred bots with their reason.
 
 ## changelog-ru
 

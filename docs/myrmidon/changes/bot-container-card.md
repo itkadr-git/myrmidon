@@ -3,43 +3,23 @@ divergence-section: 1.6.1 — BOT-DISK B: общий кэш пакетов дл�
 ---
 
 ## changelog-en
-
 ### Container bot cards are complete, and the image rollout names every bot (1.6.4-BOT-CONTAINER-CARD)
 
-- Migration `0299_bot_container_card_complete`: every agent whose card has an
-  `adapterConfig.container` block gets `enabled: true` when it is absent and the
-  product defaults for any missing limit (`memoryMb` 2048, `cpus` 1, `pidsLimit`
-  512 — the card form's defaults; one set for every bot image family). Values
-  already on the card win, including `enabled: false`. Before it, such cards were
-  refused at apply (`container.enabled is not true`, then `container.memoryMb must
-  be a positive number`) and skipped by the release bot-image rollout.
-- Saving a `hermes_gateway` card with a `container` block that has no `enabled`,
-  or is enabled without positive `memoryMb`/`cpus`/`pidsLimit`, is refused with
-  422 and a message naming the missing fields and the defaults. In the card the
-  Container section shows the fields of such a legacy block and says what is
-  missing; turning it on fills the limits.
-- The bot-container status API (`GET /api/myrmidon/agents/:id/bot-container/status`)
-  carries `imageTracking`: `tracks_release`, `pinned` (with the pinned image) or
-  `not_applicable` (with the reason); the card shows it. The bot-image rollout
-  (`bot-image-rollout.sh`) reports every container bot in one of these categories:
-  it logs and journals each pinned and not applicable bot, prints the count of
-  each, and writes `pinnedBots` / `notApplicableBots` and `notApplicable` into its
-  summary. Its card PATCH now sends the whole `container` block with the new image
-  (the board merges `adapterConfig` one level deep, so an image-only patch dropped
-  `enabled` and the limits).
-- Clone-hygiene reports are collected per bot: the sweep takes the bots from the
-  agent cards and asks the runtime about each by name (inspect, then the report
-  read). The earlier container listing (`GET /containers/json`) is on dockergate's
-  closed list and answered 403 on every sweep, so no report was ever collected. The
-  driver's `list` now takes the bot keys.
-- dockergate gets one narrow read-only route, A13: `GET .../myrmidon-bot-<K>/archive?path=<clone-hygiene report>`
-  (one fixed file of the main container, like the applied-state marker A3); the
-  report read was refused too. No other route changed.
-- Contract test board <-> dockergate: every Docker API path in the board driver's
-  request sites must be allowed by the route table
-  (`tools/dockergate/contract/allowed-routes.json`, kept equal to the Go
-  route parser by a Go test); it fails on a container listing.
-
+- Migration `0299_bot_container_card_complete`: cards with a `container` block
+  get `enabled: true` and the product defaults for missing limits (`memoryMb`
+  2048, `cpus` 1, `pidsLimit` 512); values already on the card win. Such cards
+  were refused at apply and skipped by the bot-image rollout before.
+- Saving an incomplete `container` block is refused 422 naming the fields; the
+  card UI shows and fills what is missing.
+- The bot-container status API carries `imageTracking`
+  (`tracks_release` / `pinned` / `not_applicable`); the rollout reports every
+  bot in one of these categories and its card PATCH sends the whole
+  `container` block (an image-only patch dropped the limits).
+- Clone-hygiene reports are collected per bot by name (the old container
+  listing was on dockergate's closed list and answered 403); dockergate gained
+  the narrow read-only archive route A3 for the report file.
+- Contract test: every Docker API path in the board driver must be in the
+  gate's allowed-routes table.
 ## changelog-ru
 
 ### Карточки контейнерных ботов полные, а раскатка образа называет каждого бота (1.6.4-BOT-CONTAINER-CARD)
