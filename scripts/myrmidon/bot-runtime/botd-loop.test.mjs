@@ -221,6 +221,25 @@ describe("botd loop: real rules with the Date clock", () => {
   });
 });
 
+describe("botd loop: real rules never remove an open task's directory", () => {
+  it("a Date clock plus an open key unknown to protectKeys: nothing is executed", async () => {
+    const dir = { name: "OPE-4954", path: "/workspace/OPE-4954", mtime: new Date(NOW.getTime() - 72 * 3600 * 1000).toISOString(), isGit: true, clean: false, pushed: false };
+    const state = desiredState({ workspaces: [], protectKeys: [], closedKeys: [] });
+    const r = rig({ rules: realRules, inventory: { worktrees: [], scratch: [dir], bases: [], archives: [] }, desired: { ok: true, state } });
+    await r.loop.runOnce();
+    assert.deepEqual(r.executed, []);
+    const closed = rig({
+      rules: realRules,
+      inventory: { worktrees: [], scratch: [dir], bases: [], archives: [] },
+      desired: { ok: true, state: { ...state, closedKeys: ["OPE-4954"] } },
+      executor: { "archive-remove": async (a) => (closedExecuted.push(a), "archived") },
+    });
+    const closedExecuted = [];
+    await closed.loop.runOnce();
+    assert.deepEqual(closedExecuted.map((a) => a.path), ["/workspace/OPE-4954"]);
+  });
+});
+
 describe("botd loop: report delivery", () => {
   it("retries a 503 with backoff and succeeds; nextReportSec only speeds the loop up", async () => {
     const board = fakeBoard([{ status: 503 }, { throw: true }, { status: 200, body: { ok: true, nextReportSec: 20 } }]);

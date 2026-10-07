@@ -19,6 +19,7 @@ settings-section: 1.6.1 — BOT-DISK B: shared package cache for bot containers
   (`MYRMIDON_BOT_DOCKER_SOCKET`); the TCP client is built only when
   `MYRMIDON_DOCKERGATE_URL` is set and no socket is configured. A failing gate is
   still "not measured", never an error in the sweep.
+- botd now removes a directory named exactly like a task key under `/workspace` only when the board lists the key in the new `closedKeys` of the desired state (done/cancelled tasks the bot holds or held, no lookback limit); an open task that moved to review and is no longer assigned to the bot is only reported. Names that are not a key and `/scratch` follow the TTL as before.
 - Operator note: `/cache/pnpm-store` is mounted read-write; the host source
   directory must belong to uid/gid 10001 (documented in the shared package cache
   steps).
@@ -38,6 +39,7 @@ settings-section: 1.6.1 — BOT-DISK B: shared package cache for bot containers
   (`MYRMIDON_BOT_DOCKER_SOCKET`); TCP-клиент строится, только если задан
   `MYRMIDON_DOCKERGATE_URL` и сокет не задан. Недоступный шлюз — по-прежнему
   «не измерено», а не ошибка свипа.
+- botd теперь удаляет каталог под `/workspace`, названный в точности как ключ задачи, только если доска перечислила ключ в новом поле `closedKeys` желаемого состояния (done/cancelled задачи бота, без ограничения по давности); открытая задача, ушедшая на ревью и уже не назначенная боту, только попадает в отчёт. Имена не-ключи и `/scratch` — по TTL, как раньше.
 - Для оператора: `/cache/pnpm-store` монтируется на запись; исходный каталог на хосте
   должен принадлежать uid/gid 10001 (описано в шагах общего кэша пакетов).
 

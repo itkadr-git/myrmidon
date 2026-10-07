@@ -253,6 +253,14 @@ export const wsDesiredStateSchema = z.object({
    * removes the directory of such a task. Optional: an older board omits it.
    */
   protectKeys: z.array(myrWsIssueKeySchema).optional(),
+  /**
+   * myrmidon(1.6.5-BOT-DISK-H, rc.9): keys of tasks the board confirms done or
+   * cancelled that this bot held (assigned now, or reassigned away from it), with
+   * no lookback limit. botd removes a directory named exactly like a task key only
+   * when the key is listed here; otherwise it only reports it. Optional: an older
+   * board omits it, and then such directories are never removed.
+   */
+  closedKeys: z.array(myrWsIssueKeySchema).optional(),
 });
 export type WsDesiredState = z.infer<typeof wsDesiredStateSchema>;
 

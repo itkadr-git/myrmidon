@@ -202,16 +202,16 @@ describe("botd rules: protectKeys (open tasks the board did not build a workspac
     assert.deepEqual(ops(out).map((x) => x[1]).sort(), ["/scratch/OPE-3", "/workspace/old-clone"]);
   });
 
-  it("field present: listed keys are protected, the rest follows the TTL", () => {
-    const d = { ...desired(), protectKeys: ["OPE-1"] };
+  it("field present, closedKeys absent: task-keyed directories are still never removed", () => {
+    const out = decide(inv(), { ...desired(), protectKeys: ["OPE-1"] }, NOW);
+    assert.deepEqual(ops(out).map((x) => x[1]).sort(), ["/scratch/OPE-3", "/workspace/old-clone"]);
+  });
+
+  it("protected keys are kept even when listed as closed; other closed keys follow the TTL", () => {
+    const d = { ...desired(), protectKeys: ["OPE-1"], closedKeys: ["OPE-1", "OPE-2"] };
     const out = decide(inv(), d, NOW);
     assert.deepEqual(ops(out).map((x) => x[1]).sort(), ["/scratch/OPE-3", "/workspace/OPE-2", "/workspace/old-clone"]);
     assert.ok(out.every((a) => a.op === OPS.archiveRemove || a.op === OPS.remove));
-  });
-
-  it("an empty list protects nothing and lifts the old-board hold", () => {
-    const out = decide(inv(), { ...desired(), protectKeys: [] }, NOW);
-    assert.equal(out.length, 4);
   });
 });
 
@@ -435,5 +435,46 @@ describe("botd rules: toMs", () => {
   it("plan() with a Date clock is not empty on a stale scratch copy", () => {
     const inv = { scratch: [{ name: "x", path: "/scratch/x", mtime: ago(48 * HOUR), isGit: false }] };
     assert.deepEqual(ops(plan(inv, desired(), new Date(NOW)).actions), [[OPS.remove, "/scratch/x"]]);
+  });
+});
+
+describe("botd rules: task-keyed directories under /workspace need a board-confirmed closure", () => {
+  const dir = (name, over = {}) => ({ name, path: `/workspace/${name}`, mtime: ago(48 * HOUR), isGit: true, clean: false, pushed: false, ...over });
+  const withClosed = (closedKeys, extra = {}) => ({ ...desired(), protectKeys: [], closedKeys, ...extra });
+
+  it("open key that is not assigned to the bot (absent from closedKeys and protectKeys): no action", () => {
+    assert.deepEqual(decide({ scratch: [dir("OPE-4954")] }, withClosed([]), NOW), []);
+    assert.deepEqual(decide({ scratch: [dir("OPE-4954")] }, withClosed(["OPE-1"]), NOW), []);
+  });
+
+  it("an older board without closedKeys: no action", () => {
+    const d = { ...desired(), protectKeys: [] };
+    assert.deepEqual(decide({ scratch: [dir("OPE-4954")] }, d, NOW), []);
+  });
+
+  it("closed key older than the TTL: archive-remove when unpushed, remove when clean+pushed", () => {
+    assert.deepEqual(ops(decide({ scratch: [dir("OPE-4954")] }, withClosed(["OPE-4954"]), NOW)), [[OPS.archiveRemove, "/workspace/OPE-4954"]]);
+    assert.deepEqual(
+      ops(decide({ scratch: [dir("OPE-4954", { clean: true, pushed: true })] }, withClosed(["OPE-4954"]), NOW)),
+      [[OPS.remove, "/workspace/OPE-4954"]],
+    );
+  });
+
+  it("closed key inside the TTL, or in protectKeys: no action", () => {
+    assert.deepEqual(decide({ scratch: [dir("OPE-4954", { mtime: ago(HOUR) })] }, withClosed(["OPE-4954"]), NOW), []);
+    assert.deepEqual(decide({ scratch: [dir("OPE-4954")] }, withClosed(["OPE-4954"], { protectKeys: ["OPE-4954"] }), NOW), []);
+  });
+
+  it("a non-key name older than the TTL: remove; a name that only starts with a key is not a key", () => {
+    const d = withClosed(["OPE-4915"]);
+    assert.deepEqual(
+      ops(decide({ scratch: [dir("OPE-4915-stale-rootowned", { isGit: false })] }, d, NOW)),
+      [[OPS.remove, "/workspace/OPE-4915-stale-rootowned"]],
+    );
+  });
+
+  it("/scratch keeps the plain TTL, key-like name or not", () => {
+    const sc = { name: "OPE-4954", path: "/scratch/OPE-4954", mtime: ago(48 * HOUR), isGit: false };
+    assert.deepEqual(ops(decide({ scratch: [sc] }, withClosed([]), NOW)), [[OPS.remove, "/scratch/OPE-4954"]]);
   });
 });

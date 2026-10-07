@@ -178,14 +178,18 @@ export function plan(inventory, desired, now, settings) {
   // --- class G: scratch ---------------------------------------------------
   // `desired.protectKeys` (optional, board): keys of open tasks assigned to the bot. The board
   // may not build a workspace for them (no repo), so `workspaces` alone cannot protect them.
-  // Without the field (an older board) a task-keyed directory under /workspace is never
-  // removed: only reported.
+  // `desired.closedKeys` (optional, board): keys of tasks the board confirms done/cancelled
+  // (for this bot, with no lookback limit). A directory under /workspace named exactly like a
+  // task key is removed ONLY when its key is in closedKeys: a task that moved to review is open
+  // but no longer assigned to this bot, so protectKeys does not cover it. Without the field
+  // (an older board) such a directory is never removed: only reported.
   const protectKeys = Array.isArray(desired.protectKeys) ? new Set(desired.protectKeys) : null;
+  const closedKeys = Array.isArray(desired.closedKeys) ? new Set(desired.closedKeys) : null;
   const scratchTtl = pressed ? lim.pressureScratchTtlMs : lim.scratchTtlMs;
   for (const sc of arr(inv.scratch)) {
     if (activePaths.has(sc.path) || activeKeys.has(sc.name)) continue;
     if (protectKeys !== null && protectKeys.has(sc.name)) continue;
-    if (protectKeys === null && isTaskKeyedWorkspaceDir(sc)) continue;
+    if (isTaskKeyedWorkspaceDir(sc) && !(closedKeys !== null && closedKeys.has(sc.name))) continue;
     const mtime = toMs(sc.mtime);
     if (mtime === null || nowMs - mtime < scratchTtl) continue;
     if (sc.isGit && !(sc.clean === true && sc.pushed === true)) {

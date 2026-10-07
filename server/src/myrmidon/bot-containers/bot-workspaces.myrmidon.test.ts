@@ -61,6 +61,7 @@ function harness(data: {
   issues?: WorkspaceIssueRow[];
   products?: WorkspacePrProductRow[];
   repos?: Record<string, string>;
+  closedKeys?: string[];
   settings?: unknown;
   pressure?: Parameters<typeof botWorkspacesService>[0]["readPressure"];
 }) {
@@ -72,6 +73,7 @@ function harness(data: {
     ),
     listProjectRepoUrls: async () => (calls.listProjectRepoUrls++, new Map(Object.entries(data.repos ?? {}))),
     readBotDiskSettings: async () => data.settings ?? {},
+    ...(data.closedKeys ? { listClosedKeys: async () => data.closedKeys! } : {}),
   };
   const service = botWorkspacesService({ store, now: () => NOW, readPressure: data.pressure });
   const app = (actor: unknown) => {
@@ -266,6 +268,21 @@ describe("GET /api/myrmidon/bots/me/workspaces", () => {
     });
     const res = await request(app(botActor)).get(URL);
     expect([...res.body.protectKeys].sort()).toEqual(["ABC-1", "ABC-2"]);
+  });
+
+  it("closedKeys: done/cancelled tasks (lookback rows and the unbounded query), never an open or reassigned-open one", async () => {
+    const done = issue({ identifier: "ABC-3", status: "done", completedAt: new Date("2026-10-06T15:00:00Z") });
+    const cancelled = issue({ identifier: "ABC-4", status: "cancelled" });
+    const open = issue({ identifier: "ABC-1" });
+    const inReviewElsewhere = issue({ identifier: "ABC-5", status: "in_review", assigneeAgentId: OTHER_BOT_ID });
+    const { app } = harness({
+      issues: [done, cancelled, open, inReviewElsewhere],
+      closedKeys: ["ABC-9", "not a key"],
+    });
+    const res = await request(app(botActor)).get(URL);
+    expect(res.body.closedKeys).toEqual(["ABC-3", "ABC-4", "ABC-9"]);
+    expect(res.body.closedKeys).not.toContain("ABC-5");
+    expect(res.body.closedKeys).not.toContain("ABC-1");
   });
 
   it("skips tasks without a valid issue key", async () => {

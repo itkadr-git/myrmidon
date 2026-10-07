@@ -55,6 +55,9 @@ export function parseDesiredState(body) {
   if (body.protectKeys !== undefined && !(Array.isArray(body.protectKeys) && body.protectKeys.every((k) => typeof k === "string"))) {
     return bad("protectKeys is not an array of strings");
   }
+  if (body.closedKeys !== undefined && !(Array.isArray(body.closedKeys) && body.closedKeys.every((k) => typeof k === "string"))) {
+    return bad("closedKeys is not an array of strings");
+  }
   return { ok: true, value: body };
 }
 
