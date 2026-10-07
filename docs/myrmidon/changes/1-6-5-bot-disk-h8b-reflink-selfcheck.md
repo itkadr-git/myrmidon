@@ -35,3 +35,7 @@ settings-section: 1.6.1 — BOT-DISK B: shared package cache for bot containers
   с хранилищем (`filefrag`). Хранилище на другом суперблоке — тихая копия;
   негативный тест это ловит, а где раннер не может создать вторую ФС — тест
   пропускается с причиной.
+
+## divergence
+
+| 1.6.5-BOT-DISK-H8b | Самопроверка reflink при старте контейнера бота вместо проверки жёстких ссылок (`reflink-check.json`, `method: "reflink"`, ключ карточки `bot_disk_lifecycle/reflink`) и проверка `pnpm-reflink-check.sh` в сборке образа | Наши файлы: `docker/bot-runtime/entrypoint.sh`, `docker/bot-runtime/pnpm-reflink-check.sh`, `docker/bot-runtime/Dockerfile`, `docker/bot-runtime/git-reference/bot-clone-hygiene`, `packages/shared/src/myrmidon-bot-disk.ts`, `server/src/myrmidon/bot-containers/{template,clone-hygiene}.ts`, `server/src/services/attention.ts` и тесты. Маркеров вендора нет: все файлы наши | Жёсткие ссылки на узле с общим хранилищем pnpm заменены reflink (BOT-DISK-H8a); тихая копия вместо reflink на другом суперблоке съедает диск. Требование тикета OPE-5366 | `entrypoint.test.mjs` (отказ `cp` EXDEV/EOPNOTSUPP — ERROR и `ok:false`; успех — `ok:true`; формат отчёта), `pnpm-reflink.test.mjs` (три корня; негатив: хранилище на другом суперблоке; пропуск с причиной) | Никогда, наше поведение. Снятие: вернуть `hardlink_self_check` и `pnpm-hardlink-check.sh` | (этот PR) |
