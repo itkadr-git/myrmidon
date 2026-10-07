@@ -4,8 +4,8 @@
     {
       "id": "skill:skills/paperclip/SKILL.md:10",
       "kind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/SKILL.md#L10:paperclip-skill",
-      "heading": "Paperclip Skill",
+      "sourceAnchor": "skills/paperclip/SKILL.md#L10:myrmidon-skill",
+      "heading": "Myrmidon Skill",
       "primaryDisposition": "optional_agent_tool",
       "semanticOperation": "scoped_discovery",
       "expectedMockState": "operation_result"

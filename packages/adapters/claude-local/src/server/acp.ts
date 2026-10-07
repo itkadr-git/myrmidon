@@ -67,6 +67,8 @@ export interface ClaudeEngineSelection {
   explicit: boolean;
   unavailableReason?: string;
 }
+// myrmidon(B1c): product name in user-facing texts; see shared myrmidon-product.
+import { PRODUCT_NAME } from "@paperclipai/adapter-utils";
 
 type ClaudeEngineResolutionInput =
   Pick<AdapterExecutionContext, "config"> &
@@ -620,7 +622,7 @@ export async function probeClaudeAcpSandboxLogin(input: {
       trustedEnv: process.env,
     });
     if (!built.command) {
-      return [buildAcpLoginProbeUnavailableCheck("Claude is not installed on the Paperclip host.")];
+      return [buildAcpLoginProbeUnavailableCheck(`Claude is not installed on the ${PRODUCT_NAME} host.`)];
     }
     command = built.command;
     env = built.env;
@@ -715,7 +717,7 @@ export async function testClaudeAcpEnvironment(
       code: "claude_acp_remote_target",
       level: "info",
       message: "Claude ACP will run against the remote execution environment.",
-      hint: "Remote ACP requires a bidirectional process target such as SSH or Paperclip's sandbox process-session bridge.",
+      hint: `Remote ACP requires a bidirectional process target such as SSH or ${PRODUCT_NAME}'s sandbox process-session bridge.`,
     });
   }
 

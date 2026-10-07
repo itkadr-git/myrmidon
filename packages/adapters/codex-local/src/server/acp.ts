@@ -59,6 +59,8 @@ export interface CodexEngineSelection {
   explicit: boolean;
   unavailableReason?: string;
 }
+// myrmidon(B1c): product name in user-facing texts; see shared myrmidon-product.
+import { PRODUCT_NAME } from "@paperclipai/adapter-utils";
 
 type CodexEngineResolutionInput =
   Pick<AdapterExecutionContext, "config"> &
@@ -497,7 +499,7 @@ export async function testCodexAcpEnvironment(
       code: "codex_acp_remote_target",
       level: "info",
       message: "Codex ACP will run against the remote execution environment.",
-      hint: "Remote ACP requires a bidirectional process target such as SSH or Paperclip's sandbox process-session bridge.",
+      hint: `Remote ACP requires a bidirectional process target such as SSH or ${PRODUCT_NAME}'s sandbox process-session bridge.`,
     });
   }
 
@@ -588,8 +590,8 @@ export async function testCodexAcpEnvironment(
       checks.push({
         code: "codex_acp_credentials_missing",
         level: "warn",
-        message: "No Codex ACP credentials visible to the Paperclip server were detected.",
-        hint: "Set OPENAI_API_KEY in the agent adapter env, set it in the Paperclip server environment, or run `codex login` for the same OS user that runs the Paperclip server before starting a Codex ACP agent. A `/login` in a separate Codex/chat session does not authenticate the server.",
+        message: `No Codex ACP credentials visible to the ${PRODUCT_NAME} server were detected.`,
+        hint: `Set OPENAI_API_KEY in the agent adapter env, set it in the ${PRODUCT_NAME} server environment, or run \`codex login\` for the same OS user that runs the ${PRODUCT_NAME} server before starting a Codex ACP agent. A \`/login\` in a separate Codex/chat session does not authenticate the server.`,
       });
     }
   } else if (targetIsSandbox) {
