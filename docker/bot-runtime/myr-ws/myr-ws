@@ -1,0 +1,31 @@
+#!/opt/node24/bin/node
+// myrmidon(1.6.5 BOT-DISK-H2c): `myr-ws` command dispatcher. H2c ships the
+// `list` command and the inventory library; `open`/`close`/`restore`/`migrate`
+// land with their own H2 tasks (H2a/H2b/H2d/H2e/H2f) and plug into this
+// dispatcher. The shebang names the image's node absolutely for the same
+// reason the git wrapper does (docker/bot-runtime/git-reference/git): a bot
+// terminal that rebuilds PATH must still run this binary.
+
+import { runList } from "./lib/list.js";
+
+const argv = process.argv.slice(2);
+const command = argv[0];
+
+const KNOWN_UNIMPLEMENTED = new Set(["open", "close", "restore", "migrate"]);
+
+if (!command || command === "help" || command === "--help" || command === "-h") {
+  process.stderr.write("usage: myr-ws <open|list|close|restore|migrate> [args] [--json]\n");
+  process.exit(command === "help" || command === "--help" || command === "-h" ? 0 : 2);
+}
+
+if (command === "list") {
+  process.exit(runList(argv.slice(1)));
+}
+
+if (KNOWN_UNIMPLEMENTED.has(command)) {
+  process.stderr.write(`myr-ws ${command}: not implemented in this build (lands with its own BOT-DISK-H2 task)\n`);
+  process.exit(2);
+}
+
+process.stderr.write(`myr-ws: unknown command: ${command}\n`);
+process.exit(2);
