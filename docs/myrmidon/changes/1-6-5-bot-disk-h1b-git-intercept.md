@@ -35,4 +35,4 @@ settings-section: 1.6.1 — BOT-DISK B: shared package cache for bot containers
 
 ## divergence
 
-Нет: наши файлы (обёртка git, тесты, Dockerfile образа ботов), вендорского кода не затрагивают.
+| 1-6-5-bot-disk-h1b-git-intercept | Новая часть BOT-DISK-H | Нет: наши файлы (обёртка git, тесты, Dockerfile образа ботов), вендорского кода не затрагивают. | Требование тикета BOT-DISK-H | Тесты части (scripts/myrmidon/bot-runtime) | Никогда, наше поведение | (этот PR) |

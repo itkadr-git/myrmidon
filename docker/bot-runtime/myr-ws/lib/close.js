@@ -13,22 +13,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
-// The shared error type lives in lib/errors.js (BOT-DISK-H2a). This module is
-// built against the contract and must load before that file is merged, so it
-// falls back to an identical class; once errors.js exists the shared one wins.
-let MyrWsError;
-try {
-  ({ MyrWsError } = require("./errors.js"));
-} catch (e) {
-  if (e && e.code !== "MODULE_NOT_FOUND") throw e;
-  MyrWsError = class MyrWsError extends Error {
-    constructor(exitCode, message) {
-      super(message);
-      this.name = "MyrWsError";
-      this.exitCode = exitCode;
-    }
-  };
-}
+const { MyrWsError } = require("./errors.js");
 
 // Mirrors of the contract (C1/C2); the test compares them with the shared file.
 const EXIT = { ok: 0, usage: 2, quotaExceeded: 3, baseLimit: 4, network: 5, notFound: 6, unpushed: 7 };

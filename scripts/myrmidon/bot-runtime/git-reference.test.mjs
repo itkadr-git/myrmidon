@@ -632,19 +632,19 @@ describe("bot-clone-hygiene", { skip: !hasGit || !hasPython }, () => {
     const outside = path.join(base, "outside");
     fs.mkdirSync(outside);
     fs.symlinkSync(outside, path.join(real, "escape"));
-    const check = path.join(base, "hardlink-check.json");
+    const check = path.join(base, "reflink-check.json");
     fs.writeFileSync(
       check,
-      JSON.stringify({ version: 1, ok: false, store: "/workspace/.pnpm-store", importMethod: "hardlink", roots: [{ root: "/scratch", ok: false, error: "Invalid cross-device link" }] }),
+      JSON.stringify({ version: 1, ok: false, store: "/workspace/.pnpm-store", importMethod: "reflink", roots: [{ root: "/scratch", ok: false, error: "Invalid cross-device link" }] }),
     );
     await new Promise((resolve) => setTimeout(resolve, 2200));
-    const r = report([linkRoot], { MYRMIDON_CLONE_IDLE_TTL_SEC: "1", MYRMIDON_HARDLINK_CHECK_FILE: check });
+    const r = report([linkRoot], { MYRMIDON_CLONE_IDLE_TTL_SEC: "1", MYRMIDON_REFLINK_CHECK_FILE: check });
     assert.ok(!fs.existsSync(path.join(real, "plain")), "plain idle directory under a linked root is removed");
     assert.ok(fs.existsSync(outside), "a link below the root is never followed");
     assert.ok(r.removed.includes(path.join(linkRoot, "plain")));
     const written = JSON.parse(fs.readFileSync(r.reportPath, "utf8"));
-    assert.equal(written.hardlinkCheck.ok, false);
-    assert.equal(written.hardlinkCheck.roots[0].root, "/scratch");
+    assert.equal(written.reflinkCheck.ok, false);
+    assert.equal(written.reflinkCheck.roots[0].root, "/scratch");
   });
 
   // myrmidon(1.6.5 BOT-DISK-G): the shared-git-objects self-check rides the report too.
