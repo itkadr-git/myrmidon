@@ -2789,6 +2789,10 @@ export * from "./myrmidon-isolation-scope.js";
 // shared by the server, the board UI and the settings validator.
 export * from "./myrmidon-bot-disk-quota.js";
 export * from "./myrmidon-bot-image-rollout.js"; // myrmidon(BOT-ROLLOUT)
+// myrmidon(1.6.5-BOT-DISK-H0): the interface contract of the bot-disk project — directory
+// layout, myr-ws CLI, desired-state and disk-report payloads, dockergate disk routes, the
+// /v1/runs workspace field and the botDisk settings keys. All BOT-DISK-H tasks code against it.
+export * from "./myrmidon-bot-workspace.js";
 // myrmidon(C0): live run-admission limits shared by the server, the UI and the settings validator.
 export * from "./myrmidon-runtime-limits.js";
 // myrmidon(PARALLEL-HELPERS): the card -> Hermes `delegation` contract shared by the profile
