@@ -155,6 +155,11 @@ async function startFakeGate(
     if (req.method === "POST" && /^\/containers\/[^/]+\/start$/.test(route)) {
       return send(204);
     }
+    // The drift expectation reads the image's runtime contract (requireBotImage):
+    // the fake containers use the single /bot bind, contract "2".
+    if (req.method === "GET" && /^\/images\/[^/]+\/json$/.test(route)) {
+      return send(200, { Config: { Labels: { "myrmidon.bot-runtime.contract": "2" } } });
+    }
     return send(404, { message: `fake gate: no such route ${req.method} ${route}` });
   });
   await new Promise<void>((resolve) => server.listen(socketPath, resolve));
