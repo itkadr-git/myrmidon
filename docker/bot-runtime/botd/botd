@@ -1,0 +1,288 @@
+#!/usr/bin/env node
+"use strict";
+// myrmidon(1.6.5-BOT-DISK-H3e): botd entry point (CommonJS, started by the bot
+// runtime entrypoint). The main loop is lib/loop.js, the report lib/report.js; the
+// other modules are loaded by their contract interfaces and replaced by inert
+// stand-ins while they are absent from the image:
+//   lib/desired.js  (H3a)  createDesiredClient().poll()
+//   lib/rules.js    (H3b)  plan(inventory, desired, now, settings)
+//   lib/classify.js (H3d)  classifyAll(), toReportParts()
+//   lib/archive.js  (H3c)  optional: archive(path, key) before a scratch removal
+// Without desired.js nothing is ever removed (fail-safe), only reported.
+//
+// Usage: botd            loop every 60 s (+SIGUSR1)
+//        botd --once     one pass, then exit
+
+const fs = require("node:fs");
+const path = require("node:path");
+const os = require("node:os");
+const { execFile } = require("node:child_process");
+
+const HOME = process.env.MYRMIDON_WS_HOME || "/data/hermes/.myrmidon";
+const DISK_STATE_PATH = path.join(HOME, "disk-state.json");
+const REGISTRY_PATH = path.join(HOME, "ws-registry.json");
+const BASE_DIR = path.join(HOME, "git-base");
+const ARCHIVE_DIR = path.join(HOME, "archive");
+const SCRATCH_ROOTS = ["/scratch", "/data/hermes/cache/scratch"];
+const WS_BIN = process.env.MYRMIDON_WS_BIN || "myr-ws";
+const GIT_BIN = process.env.MYRMIDON_BOTD_GIT || "git";
+
+const log = (line) => process.stderr.write(`${new Date().toISOString()} ${line}\n`);
+
+function tryImport(name) {
+  const file = path.join(__dirname, "lib", name);
+  if (!fs.existsSync(file)) return Promise.resolve(null);
+  return import(file).catch((err) => {
+    log(`botd: ${name} failed to load: ${String(err && err.message).slice(0, 200)}`);
+    return null;
+  });
+}
+
+function run(bin, args, timeoutMs = 120_000) {
+  return new Promise((resolve) => {
+    execFile(bin, args, { timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 }, (err, stdout) => {
+      resolve({ code: err ? (typeof err.code === "number" ? err.code : 1) : 0, stdout: String(stdout || "") });
+    });
+  });
+}
+
+/** `myr-ws <args> --json`: parsed stdout; throws with the CLI's own error text on a failure. */
+async function ws(args) {
+  const r = await run(WS_BIN, [...args, "--json"]);
+  let json = null;
+  try {
+    json = JSON.parse(r.stdout);
+  } catch {
+    /* handled below */
+  }
+  if (r.code !== 0 || !json || json.ok !== true) {
+    throw new Error(`myr-ws ${args[0]} exit ${r.code}${json && json.error ? `: ${String(json.error).slice(0, 300)}` : ""}`);
+  }
+  return json;
+}
+
+function inside(root, p) {
+  const rel = path.relative(root, p);
+  return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
+}
+
+/** Removes `p` only when it is a real (non-link) entry strictly inside one of the roots. */
+function guardedRemove(p, roots) {
+  const abs = path.resolve(p);
+  if (!roots.some((r) => inside(path.resolve(r), abs))) throw new Error("path is outside the allowed roots");
+  if (fs.lstatSync(abs).isSymbolicLink()) throw new Error("refusing to remove a symlink");
+  fs.rmSync(abs, { recursive: true, force: true });
+}
+
+function readJson(file, fallback) {
+  try {
+    return JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {
+    return fallback;
+  }
+}
+
+function writeDiskState(state) {
+  fs.mkdirSync(HOME, { recursive: true });
+  const tmp = `${DISK_STATE_PATH}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o644 });
+  fs.renameSync(tmp, DISK_STATE_PATH);
+}
+
+function listBases() {
+  const out = [];
+  let owners = [];
+  try {
+    owners = fs.readdirSync(BASE_DIR);
+  } catch {
+    return out;
+  }
+  for (const owner of owners) {
+    let repos = [];
+    try {
+      repos = fs.readdirSync(path.join(BASE_DIR, owner));
+    } catch {
+      continue;
+    }
+    for (const r of repos) {
+      if (!r.endsWith(".git")) continue;
+      const p = path.join(BASE_DIR, owner, r);
+      let st;
+      try {
+        st = fs.statSync(p);
+      } catch {
+        continue;
+      }
+      let lastFetch = null;
+      try {
+        lastFetch = fs.statSync(path.join(p, "FETCH_HEAD")).mtime;
+      } catch {
+        /* never fetched */
+      }
+      out.push({ repo: `${owner}/${r.slice(0, -4)}`, path: p, mtime: st.mtime, lastFetch });
+    }
+  }
+  return out;
+}
+
+function listArchives() {
+  const out = [];
+  let names = [];
+  try {
+    names = fs.readdirSync(ARCHIVE_DIR);
+  } catch {
+    return out;
+  }
+  for (const n of names) {
+    if (!n.endsWith(".bundle")) continue;
+    const p = path.join(ARCHIVE_DIR, n);
+    try {
+      const st = fs.statSync(p);
+      const m = /^(.+)-\d{8}T\d{6}Z\.bundle$/.exec(n);
+      out.push({ key: m ? m[1] : n, path: p, sizeBytes: st.size, createdAt: st.mtime });
+    } catch {
+      /* gone */
+    }
+  }
+  return out;
+}
+
+async function main() {
+  const [desiredMod, rulesMod, classifyMod, archiveMod, loopMod, reportMod] = await Promise.all([
+    tryImport("desired.js"),
+    tryImport("rules.js"),
+    tryImport("classify.js"),
+    tryImport("archive.js"),
+    import(path.join(__dirname, "lib", "loop.js")),
+    import(path.join(__dirname, "lib", "report.js")),
+  ]);
+
+  const desiredClient = desiredMod ? desiredMod.createDesiredClient({ log }) : null;
+  const desired = {
+    poll: () => (desiredClient ? desiredClient.poll() : Promise.resolve({ ok: false, reason: "desired module is not in this image" })),
+  };
+  const rules = {
+    plan: (inv, state, now, settings) => (rulesMod ? rulesMod.plan(inv, state, now, settings) : { actions: [] }),
+  };
+  const reporter = reportMod.createReporter({ log });
+
+  async function gather(state) {
+    const registry = (readJson(REGISTRY_PATH, { entries: [] }).entries) || [];
+    const bases = listBases();
+    const archives = listArchives();
+    let wsOk = null;
+    let entries = [];
+    try {
+      entries = (await ws(["list"])).entries || [];
+      wsOk = true;
+    } catch (err) {
+      wsOk = false;
+      log(`botd: ${String(err.message).slice(0, 200)}`);
+    }
+    let classified = { items: [], actions: [] };
+    let parts = { copies: [], foreign: [] };
+    if (classifyMod) {
+      classified = classifyMod.classifyAll({ registry, desired: state, now: Date.now() });
+      parts = classifyMod.toReportParts(classified.items, classified.actions);
+    }
+    const ageOf = new Map(classified.items.map((it) => [it.path, it.ageSec]));
+    const nowMs = Date.now();
+    const inventory = {
+      worktrees: entries
+        .filter((e) => e.class === "E")
+        .map((e) => ({
+          key: e.key,
+          path: e.path,
+          repo: e.repo,
+          dirMissing: !fs.existsSync(e.path),
+          clean: e.clean,
+          pushed: e.pushed,
+          openedAt: e.openedAt,
+        })),
+      scratch: [
+        ...entries.filter((e) => e.class === "G").map((e) => ({ name: e.key, path: e.path, mtime: e.openedAt, isGit: e.clean !== null, clean: e.clean, pushed: e.pushed })),
+        ...classified.items
+          .filter((it) => it.class === "G" && !entries.some((e) => e.path === it.path))
+          .map((it) => ({ name: path.basename(it.path), path: it.path, mtime: nowMs - (ageOf.get(it.path) || 0) * 1000, isGit: fs.existsSync(path.join(it.path, ".git")), clean: null, pushed: null })),
+      ],
+      bases: bases.map((b) => ({
+        path: b.path,
+        repo: b.repo,
+        worktreeCount: entries.filter((e) => e.class === "E" && e.repo === b.repo).length,
+        lastUsedAt: (b.lastFetch || b.mtime).toISOString(),
+      })),
+      archives: archives.map((a) => ({ path: a.path, createdAt: a.createdAt.toISOString(), sizeBytes: a.sizeBytes })),
+    };
+    parts.bases = bases.map((b) => ({ repo: b.repo, path: b.path, sizeBytes: null, lastFetchAt: b.lastFetch ? b.lastFetch.toISOString().replace(/\.\d{3}Z$/, "Z") : null }));
+    parts.archives = archives.map((a) => ({ key: a.key, path: a.path, sizeBytes: a.sizeBytes, createdAt: a.createdAt.toISOString().replace(/\.\d{3}Z$/, "Z") }));
+    parts.selfChecks = { reflink: null, gitref: null, wsCli: wsOk };
+    return { inventory, parts };
+  }
+
+  const isWorkspace = (p) => inside("/workspace", path.resolve(p));
+  const executor = {
+    // E: the CLI owns worktree removal and the archive; G: files under a scratch root
+    remove: async (a) => {
+      if (isWorkspace(a.path)) {
+        const force = /pr-merged/.test(a.reason || "");
+        const r = await ws(["close", a.key, ...(force ? ["--force"] : [])]);
+        return r.archived ? `archived to ${r.archivePath || "archive"}` : "closed";
+      }
+      guardedRemove(a.path, SCRATCH_ROOTS);
+      return "removed";
+    },
+    "archive-remove": async (a) => {
+      if (isWorkspace(a.path)) {
+        const r = await ws(["close", a.key, "--force"]);
+        return r.archived ? `archived to ${r.archivePath || "archive"}` : "closed";
+      }
+      if (!archiveMod || typeof archiveMod.archive !== "function") {
+        throw new Error("archive module is not in this image: not removed");
+      }
+      await archiveMod.archive(a.path, a.key);
+      guardedRemove(a.path, SCRATCH_ROOTS);
+      return "archived, removed";
+    },
+    prune: async () => {
+      for (const b of listBases()) await run(GIT_BIN, ["--git-dir", b.path, "worktree", "prune"]);
+      return "worktree prune";
+    },
+    "delete-base": async (a) => {
+      guardedRemove(a.path, [BASE_DIR]);
+      return "removed";
+    },
+    "delete-archive": async (a) => {
+      guardedRemove(a.path, [ARCHIVE_DIR]);
+      return "removed";
+    },
+  };
+
+  const loop = loopMod.createLoop({
+    desired,
+    rules,
+    gather,
+    executor,
+    report: { build: reportMod.buildReport, send: reporter.send },
+    writeDiskState,
+    log,
+    botKey: process.env.MYRMIDON_BOT_KEY || process.env.MYRMIDON_BOT_SCOPE_SUBDIR || os.hostname(),
+    imageGeneration: process.env.MYRMIDON_IMAGE_GENERATION || process.env.MYRMIDON_IMAGE_TAG || "unknown",
+  });
+
+  if (process.argv.includes("--once")) {
+    const r = await loop.runOnce();
+    log(`botd: pass done, desired ${r.desiredOk ? "ok" : "unavailable"}, actions ${r.executed.length}, report ${r.sent.ok ? "sent" : `not sent (${r.sent.reason})`}`);
+    return;
+  }
+  loop.start(process);
+  const bye = () => {
+    void loop.stop().finally(() => process.exit(0));
+  };
+  process.on("SIGTERM", bye);
+  process.on("SIGINT", bye);
+}
+
+main().catch((err) => {
+  log(`botd: fatal: ${String(err && err.message).slice(0, 300)}`);
+  process.exit(1);
+});
