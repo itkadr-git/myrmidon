@@ -1,6 +1,6 @@
 ---
-divergence-section: 1.6.5 — BOT-DISK H: порог раздела ботов по физике
-settings-section: 1.6.5 — BOT-DISK-H10: bot partition thresholds
+divergence-section: 1.6.1 — BOT-DISK B: общий кэш пакетов для контейнеров ботов
+settings-section: 1.6.1 — BOT-DISK B: shared package cache for bot containers
 ---
 
 ## changelog-en
