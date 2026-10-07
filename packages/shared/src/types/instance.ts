@@ -21,6 +21,7 @@ import type { AgentMemorySettings } from "../myrmidon-agent-memory.js";
 import type { WipLimitSettings } from "../myrmidon-wip-limit.js";
 // myrmidon(REVIEW-ROUTING): automatic reviewer routing settings of the same row.
 import type { ReviewRoutingSettings } from "../myrmidon-review-routing.js";
+import type { OwnerDeliverySettings } from "../myrmidon-owner-delivery.js";
 import type { ReviewReworkSettings } from "../myrmidon-review-rework.js";
 import type { BudgetEnforcementSettings } from "../myrmidon-budget-enforcement.js";
 // myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys live in
@@ -177,6 +178,12 @@ export interface InstanceGeneralSettings {
    * Absent means the defaults.
    */
   reviewRouting?: ReviewRoutingSettings;
+  /**
+   * myrmidon(1.6.5-OWNER-DM-FILTER): owner-DM Telegram delivery mode, changed
+   * from `GET`/`PATCH /api/myrmidon/owner-delivery`. Absent means
+   * `owner_decisions_only`.
+   */
+  ownerDelivery?: OwnerDeliverySettings;
   /**
    * myrmidon(REVIEW-REWORK): the review-return loop — a RETURN verdict opens
    * the rework task and the review waits blocked until the PR head moves,

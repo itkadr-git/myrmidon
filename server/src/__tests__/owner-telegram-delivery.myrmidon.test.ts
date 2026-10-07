@@ -25,7 +25,10 @@ import {
   toolConnections,
 } from "@paperclipai/db";
 import type { ChatProvider } from "@paperclipai/shared";
+// myrmidon(1.6.5-OWNER-DM-FILTER)
+import { OWNER_DELIVERY_SETTINGS_KEY } from "@paperclipai/shared";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 import { telegramConversationUserId } from "../myrmidon/agent-chat-bridge/identity.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -245,6 +248,9 @@ describeEmbeddedPostgres(
       const question = {
         kind: "ask_user_questions" as const,
         continuationPolicy: "wake_assignee" as const,
+        // myrmidon(1.6.5-OWNER-DM-FILTER): a human-decision card, so it passes
+        // the owner-DM filter in the default mode.
+        resolverPolicy: "human_only" as const,
         payload: {
           version: 1 as const,
           questions: [
@@ -298,6 +304,9 @@ describeEmbeddedPostgres(
         {
           kind: "request_confirmation" as const,
           continuationPolicy: "wake_assignee" as const,
+          // myrmidon(1.6.5-OWNER-DM-FILTER): a human-decision card, so it
+          // passes the owner-DM filter in the default mode.
+          resolverPolicy: "human_only" as const,
           payload: {
             version: 1 as const,
             prompt: "Proceed with the deploy?",
@@ -407,6 +416,241 @@ describeEmbeddedPostgres(
         interaction.id,
       );
       expect(publications).toEqual([]);
+    });
+
+    // myrmidon(1.6.5-OWNER-DM-FILTER): the owner-DM audience filter matrix.
+    // The filter consumes the interaction's vendor-computed audience fields:
+    // a card reaches the owner's DM only when it is addressed to a human
+    // (effectiveResolverPolicy "human_only", or addresseeUserId = the task
+    // owner). Agent-addressed and purely operational cards stay board-only.
+    describe("owner-DM audience filter (1.6.5)", () => {
+      /** Read the stored card text of the single publication for an interaction. */
+      async function publicationText(
+        companyId: string,
+        interactionId: string,
+      ): Promise<string | null> {
+        const rows = await publicationsForInteraction(companyId, interactionId);
+        if (rows.length === 0) return null;
+        const payload = rows[0]!.payload as { text?: string };
+        return payload.text ?? null;
+      }
+
+      async function createCard(
+        fixture: Awaited<ReturnType<typeof seedFixture>>,
+        input: {
+          resolverPolicy?: "anyone" | "not_creator" | "human_only";
+          addresseeAgentId?: string;
+          addresseeUserId?: string;
+        } = {},
+      ) {
+        return issueThreadInteractionService(db).create(
+          { id: fixture.workIssue.id, companyId: fixture.companyId },
+          {
+            kind: "request_confirmation" as const,
+            continuationPolicy: "wake_assignee" as const,
+            ...(input.resolverPolicy
+              ? { resolverPolicy: input.resolverPolicy }
+              : {}),
+            ...(input.addresseeAgentId
+              ? { addresseeAgentId: input.addresseeAgentId }
+              : {}),
+            ...(input.addresseeUserId
+              ? { addresseeUserId: input.addresseeUserId }
+              : {}),
+            payload: {
+              version: 1 as const,
+              prompt: "Proceed with the deploy?",
+              acceptLabel: "Accept",
+              rejectLabel: "Reject",
+              allowDeclineReason: true,
+            },
+          },
+          { agentId: fixture.agentId },
+        );
+      }
+
+      it("delivers a human_only card with no addressee to the owner's DM", async () => {
+        const fixture = await seedFixture();
+        const interaction = await createCard(fixture, {
+          resolverPolicy: "human_only",
+        });
+        const publications = await publicationsForInteraction(
+          fixture.companyId,
+          interaction.id,
+        );
+        expect(publications).toHaveLength(1);
+        expect(publications[0]!.endpointId).toBe(fixture.endpointId);
+      });
+
+      it("delivers a card addressed to the task owner to the owner's DM", async () => {
+        const fixture = await seedFixture();
+        const interaction = await createCard(fixture, {
+          resolverPolicy: "not_creator",
+          addresseeUserId: fixture.boardUserId,
+        });
+        const publications = await publicationsForInteraction(
+          fixture.companyId,
+          interaction.id,
+        );
+        expect(publications).toHaveLength(1);
+        expect(publications[0]!.endpointId).toBe(fixture.endpointId);
+      });
+
+      it("keeps a card addressed to a different board user board-only", async () => {
+        const fixture = await seedFixture();
+        const otherUserId = randomUUID();
+        await db
+          .insert(authUsers)
+          .values({
+            id: otherUserId,
+            name: "Other User",
+            email: `other-${otherUserId.slice(0, 8)}@example.com`,
+            emailVerified: true,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .onConflictDoNothing();
+        await db.insert(companyMemberships).values({
+          companyId: fixture.companyId,
+          principalType: "user",
+          principalId: otherUserId,
+          role: "member",
+          status: "active",
+        });
+
+        const interaction = await createCard(fixture, {
+          resolverPolicy: "not_creator",
+          addresseeUserId: otherUserId,
+        });
+        const publications = await publicationsForInteraction(
+          fixture.companyId,
+          interaction.id,
+        );
+        expect(publications).toEqual([]);
+      });
+
+      it("keeps an agent-addressed card board-only", async () => {
+        const fixture = await seedFixture();
+        const otherAgentId = randomUUID();
+        await db.insert(agents).values({
+          id: otherAgentId,
+          companyId: fixture.companyId,
+          name: "Agent B",
+          role: "engineer",
+          status: "idle",
+          adapterType: "paperclip_runner",
+          adapterConfig: {},
+          runtimeConfig: {},
+          permissions: {},
+        });
+
+        const interaction = await createCard(fixture, {
+          resolverPolicy: "not_creator",
+          addresseeAgentId: otherAgentId,
+        });
+        const publications = await publicationsForInteraction(
+          fixture.companyId,
+          interaction.id,
+        );
+        expect(publications).toEqual([]);
+      });
+
+      it("keeps an operational card (no human addressee) board-only", async () => {
+        const fixture = await seedFixture();
+        for (const resolverPolicy of ["anyone", "not_creator"] as const) {
+          const interaction = await createCard(fixture, { resolverPolicy });
+          const publications = await publicationsForInteraction(
+            fixture.companyId,
+            interaction.id,
+          );
+          expect(publications).toEqual([]);
+        }
+      });
+
+      it('mode "all" restores the pre-filter behaviour for operational cards', async () => {
+        const fixture = await seedFixture();
+        await instanceSettingsService(db).updateGeneral({
+          [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "all" },
+        });
+
+        const interaction = await createCard(fixture, {
+          resolverPolicy: "anyone",
+        });
+        const publications = await publicationsForInteraction(
+          fixture.companyId,
+          interaction.id,
+        );
+        expect(publications).toHaveLength(1);
+        expect(publications[0]!.endpointId).toBe(fixture.endpointId);
+
+        await instanceSettingsService(db).updateGeneral({
+          [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "owner_decisions_only" },
+        });
+      });
+
+      it("keeps vendor bindings (chat-bound task) byte-for-byte on the vendor path", async () => {
+        const fixture = await seedFixture();
+        // Bind the work task to its own chat thread: the vendor binding path
+        // wins and the owner-DM filter never runs.
+        const resourceId = randomUUID();
+        await db.insert(chatEndpointResources).values({
+          id: resourceId,
+          companyId: fixture.companyId,
+          endpointId: fixture.endpointId,
+          type: "group",
+          providerResourceId: `telegram-group-${randomUUID()}`,
+          label: "Team group",
+          enabled: true,
+          availability: "available",
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+        await db.insert(chatConversations).values({
+          companyId: fixture.companyId,
+          endpointId: fixture.endpointId,
+          resourceId,
+          issueId: fixture.workIssue.id,
+          externalConversationId: `telegram-group-${fixture.companyId.slice(0, 8)}`,
+          externalThreadId: `telegram-group-${fixture.companyId.slice(0, 8)}:thread`,
+          sessionGeneration: 1,
+          externalLabel: "Team group",
+          isDirectMessage: false,
+          state: "active",
+          lastActivityAt: new Date(),
+        });
+
+        const interaction = await createCard(fixture, {
+          resolverPolicy: "anyone",
+        });
+        const publications = await publicationsForInteraction(
+          fixture.companyId,
+          interaction.id,
+        );
+        expect(publications).toHaveLength(1);
+        expect(publications[0]!.endpointId).toBe(fixture.endpointId);
+        const text = await publicationText(fixture.companyId, interaction.id);
+        expect(text).not.toBeNull();
+        // Vendor text is the generic vendor card body — no owner prefix.
+        expect(text!.startsWith("Нужно ваше решение")).toBe(false);
+        expect(text).toContain("This task needs an authorized response");
+      });
+
+      it("prefixes the owner-DM card text human-readably, without internal tokens", async () => {
+        const fixture = await seedFixture();
+        const interaction = await createCard(fixture, {
+          resolverPolicy: "human_only",
+        });
+        const text = await publicationText(fixture.companyId, interaction.id);
+        expect(text).not.toBeNull();
+        expect(text!.startsWith("Нужно ваше решение")).toBe(true);
+        expect(text).toContain("Proceed with the deploy?");
+        // Guard: no uuids, run ids or commit-sha-like tokens in the owner text.
+        expect(text).not.toMatch(
+          /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i,
+        );
+        expect(text).not.toMatch(/\b[0-9a-f]{7,40}\b/);
+        expect(text).not.toMatch(/run[_ -]?id/i);
+      });
     });
   },
 );
