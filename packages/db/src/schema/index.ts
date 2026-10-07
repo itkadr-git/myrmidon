@@ -263,3 +263,13 @@ export {
 } from "./model_providers.js";
 // myrmidon(CUSTOM-CASTES): the company caste (agent role) directory.
 export { agentCastes } from "./agent_castes.js";
+
+// myrmidon(1.7-BUDGET-CONFIG A): spend limits per hierarchy level, their change
+// journal, and the level/period/mode types.
+export {
+  budgetLimits,
+  budgetLimitChanges,
+  type BudgetLimitLevel,
+  type BudgetLimitPeriod,
+  type BudgetLimitMode,
+} from "./myrmidon_budget_limits.js";
