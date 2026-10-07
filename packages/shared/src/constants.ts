@@ -1667,6 +1667,7 @@ export const PLUGIN_JOB_STATUSES = [
   "active",
   "paused",
   "failed",
+  "running",
 ] as const;
 export type PluginJobStatus = (typeof PLUGIN_JOB_STATUSES)[number];
 
