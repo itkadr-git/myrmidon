@@ -170,6 +170,25 @@
         "path": "gateway/platforms/api_server_runs.py",
         "upstreamMarker": "workspace|MYRMIDON_TASK_WORKSPACE|myr-ws"
       }
+    },
+    {
+      "id": "11-run-scoped-github-launcher",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/11-run-scoped-github-launcher.patch",
+      "files": [
+        "gateway/platforms/api_server_runs.py",
+        "tools/environments/local.py",
+        "tools/github_launcher_context.py"
+      ],
+      "reason": "Part A stages the managed Git launcher (the git/gh wrappers plus git-credential-paperclip) on a local or SSH execution target, but an agent that starts through the hermes_gateway adapter has no execution target on the board side, so the staged directory never existed where its runs happen and it kept pushing with a static token. /v1/runs now accepts a github_launcher body field, stages the bodies in the gateway's own temp root under the run id, and binds PAPERCLIP_GITHUB_LAUNCHER_DIR/PATH/ZDOTDIR/BASH_ENV/GH_CONFIG_DIR for that run's children only; the credential the staged programs resolve still comes from the run's github_broker capability.",
+      "dropCondition": "Upstream ships a per-run launcher/credential-helper delivery field on /v1/runs with equivalent concurrency isolation.",
+      "offer": null,
+      "offerNote": "Not offered yet: see the note on delta 02 (publisher-scan wrapper pending).",
+      "probe": {
+        "source": "hermes",
+        "path": "gateway/platforms/api_server_runs.py",
+        "upstreamMarker": "github_launcher|run-scoped.*launcher"
+      }
     }
   ]
 }
