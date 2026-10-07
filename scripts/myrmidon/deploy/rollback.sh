@@ -19,6 +19,16 @@
 # RESTORE_COMMAND with DUMP_FILE set while the server service is stopped.
 # Maintenance stays on until the old image passes the health check.
 #
+# DB-TUNING (OPE-5009): after the image rolled back and passed health, the
+# rollback also returns the PostgreSQL settings the deploy applied: it runs
+# DB_TUNE_ROLLBACK_COMMAND (the declarative reset in
+# scripts/myrmidon/deploy/db-tuning-rollback.sql) and verifies every
+# DB_TUNE_EXPECTED parameter with SHOW against the value recorded before the
+# first managed deploy ($STATE_DIR/db-tuning-previous). A failed reset or a
+# mismatch fails the rollback with maintenance on its tail (like the other
+# failed steps); an empty DB_TUNE_ROLLBACK_COMMAND skips the step with a
+# WARNING — the database keeps the tuned settings.
+#
 # ROLLBACK-WITHOUT-BOARD: the rollback does NOT require the board API to enter
 # (or leave) the maintenance window. A rollback usually runs BECAUSE the board
 # is down; demanding an admission gate from a dead board would keep the fleet on
@@ -143,20 +153,25 @@ if [[ "$DRY_RUN" == "1" ]]; then
   fi
   plan "4. set image in $OVERRIDE_PATH from ${current_ref:-<none>} to $ref; docker compose up -d --no-deps $COMPOSE_SERVICE"
   plan "5. verify $HEALTH_URL against the image labels"
-  plan "6. leave maintenance (api mode: only when the board API answers; otherwise recorded as pending)"
+  if [[ -n "$DB_TUNE_ROLLBACK_COMMAND" ]]; then
+    plan "6. DB-TUNING: return the PostgreSQL settings to the values recorded before the deploy applied db-tuning.sql (scripts/myrmidon/deploy/db-tuning-rollback.sql is the declarative reset); verify every DB_TUNE_EXPECTED parameter against its recorded previous value through DB_TUNE_SHOW_COMMAND"
+  else
+    plan "6. DB-TUNING: settings rollback skipped (DB_TUNE_ROLLBACK_COMMAND is empty): the database keeps the settings the deploy applied"
+  fi
+  plan "7. leave maintenance (api mode: only when the board API answers; otherwise recorded as pending)"
   exit 0
 fi
 
 if [[ "$rollback_local" == "1" ]]; then
-  log "1/6 use local image $ref (no pull)"
+  log "1/7 use local image $ref (no pull)"
 else
-  log "1/6 pull $ref"
+  log "1/7 pull $ref"
   docker pull --quiet "$ref" >/dev/null || die "cannot pull $ref"
 fi
 [[ -n "$expect_version" ]] || expect_version="$(image_label "$ref" org.opencontainers.image.version)"
 [[ -n "$expect_commit" ]] || expect_commit="$(image_label "$ref" org.opencontainers.image.revision)"
 
-log "2/6 enter maintenance"
+log "2/7 enter maintenance"
 # ROLLBACK-WITHOUT-BOARD (the 05.10 lesson): a rollback is often needed BECAUSE
 # the board is down, so entering the maintenance window must not require the
 # board API to answer. A failed enter is reported and the rollback continues:
@@ -174,17 +189,17 @@ if [[ -n "$restore_dump" ]]; then
     read -r answer || answer=""
     [[ "$answer" == "RESTORE" ]] || die "database restore not confirmed; nothing changed"
   fi
-  log "3/6 stop $COMPOSE_SERVICE and restore $restore_dump"
+  log "3/7 stop $COMPOSE_SERVICE and restore $restore_dump"
   compose stop "$COMPOSE_SERVICE"
   # PREDEPLOY-PG-COMPAT: like take_dump, DATABASE_URL reaches the command (see
   # lib.sh): on a shared server RESTORE_COMMAND restores through it and only
   # into the database and role it names.
   DUMP_FILE="$restore_dump" DATABASE_URL="${DATABASE_URL:-}" bash -c "$RESTORE_COMMAND" || die "restore command failed; server is stopped, image unchanged"
 else
-  log "3/6 database not restored"
+  log "3/7 database not restored"
 fi
 
-log "4/6 switch image to $ref"
+log "4/7 switch image to $ref"
 write_override_ref "$ref"
 compose up -d --no-deps "$COMPOSE_SERVICE"
 record_history rollback "$ref"
@@ -195,13 +210,36 @@ if [[ -n "$current_ref" && "$current_ref" != "$ref" ]]; then
   printf '%s\n' "$current_ref" >"$PREVIOUS_IMAGE_FILE"
 fi
 
-log "5/6 verify health"
+log "5/7 verify health"
 "$MYR_SCRIPT_DIR/verify-health.sh" --url "$HEALTH_URL" --timeout "$HEALTH_TIMEOUT_SEC" \
   --expect-version "$expect_version" --expect-commit "$expect_commit" \
   ${HEALTH_TOKEN_FILE:+--token-file "$HEALTH_TOKEN_FILE"} --interval "$POLL_INTERVAL_SEC" \
   || die "ROLLBACK FAILED health check; maintenance stays on. Inspect: docker compose logs $COMPOSE_SERVICE"
 
-log "6/6 leave maintenance"
+# DB-TUNING (OPE-5009): the image rolled back, so the PostgreSQL settings the
+# deploy applied roll back with it — declaratively, from
+# scripts/myrmidon/deploy/db-tuning-rollback.sql (never a manual ALTER SYSTEM).
+# The SHOW check compares every DB_TUNE_EXPECTED parameter against the value
+# recorded before the first managed deploy ($STATE_DIR/db-tuning-previous):
+# the rollback must return exactly those. A mismatch or a failed reset command
+# does NOT stop the emergency path with a dead maintenance gate: it fails the
+# rollback loudly (maintenance stays on, the operator decides), like every
+# other failed step here.
+log "6/7 rollback DB settings"
+if [[ -n "$DB_TUNE_ROLLBACK_COMMAND" ]]; then
+  if ! db_tune_rollback; then
+    die "ROLLBACK FAILED: DB_TUNE_ROLLBACK_COMMAND failed; the database settings may keep the tuned values; maintenance stays on"
+  fi
+  if ! db_tune_verify "rollback" "$(db_tune_previous_expected)"; then
+    die "ROLLBACK FAILED: the DB-TUNING SHOW check does not match the previous values (see the MISMATCH lines above); maintenance stays on"
+  fi
+elif [[ -n "$DB_TUNE_COMMAND" || -n "$DB_TUNE_EXPECTED" ]]; then
+  # the deploy applies/verifies settings but there is no rollback command —
+  # warn loudly: the database keeps the tuned values after this rollback
+  db_tune_rollback
+fi
+
+log "7/7 leave maintenance"
 # ROLLBACK-WITHOUT-BOARD: the exit cannot be required from a board that was down
 # when the rollback started (the old image it rolled back to is healthy and
 # serving; the window is only `leaving` at worst). Reported, not fatal.
