@@ -18,12 +18,12 @@
 
 import type { Db } from "@paperclipai/db";
 import {
-  RUN_LIMIT_KEYS,
+  RUN_LIMITS_PATCH_KEYS,
   mergeRunLimits,
   resolveRunLimits,
-  type ResolvedRunLimits,
   type RunLimits,
   type RunLimitsPatch,
+  type ResolvedRunLimits,
 } from "@paperclipai/shared";
 import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService, logActivity } from "../../services/index.js";
@@ -179,7 +179,9 @@ export function runtimeLimitsService(
         const general = await deps.settings.getGeneral();
         const before = resolveRunLimits({ stored: general.runLimits, env });
         const next = mergeRunLimits(before.limits, patch);
-        const changedKeys = RUN_LIMIT_KEYS.filter((key) => before.limits[key] !== next[key]);
+        const changedKeys = RUN_LIMITS_PATCH_KEYS.filter(
+          (key) => (before.limits[key] ?? null) !== (next[key] ?? null),
+        );
 
         await deps.settings.updateGeneral({ runLimits: next });
 
