@@ -9,6 +9,7 @@
 // interface the two parts agreed on.
 
 import { and, asc, eq, inArray, isNull, lt, notInArray, or, sql } from "drizzle-orm";
+import { isUniqueViolation } from "../../db-errors.js";
 import { issueClaims, issues, type Db } from "@paperclipai/db";
 import type { SwarmClaimLease } from "@paperclipai/shared";
 
@@ -186,7 +187,15 @@ export async function insertClaim(
       heartbeatAt: input.heartbeatAt,
       expiresAt: input.expiresAt,
     })
-    .returning();
+    .returning()
+    // 1.6.5 (OPE-5401 ч.A): the pre-check above is advisory — two processes can pass it
+    // in the same window. The partial unique index `issue_claims_issue_active_uq`
+    // (issue_id WHERE released_at IS NULL) is the real gate, and 23505 is the losing side
+    // of the race, not a failure: same null = «занято» as the pre-check returns.
+    .catch((err: unknown) => {
+      if (isUniqueViolation(err)) return [];
+      throw err;
+    });
   const row = inserted[0];
   return row ? toLease(row) : null;
 }

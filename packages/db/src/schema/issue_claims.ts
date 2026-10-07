@@ -20,7 +20,8 @@
 // Additive only: one new table and its indexes; no vendor table is touched and
 // no data is rewritten.
 
-import { pgTable, uuid, text, timestamp, index } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import { pgTable, uniqueIndex, uuid, text, timestamp, index } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
 import { issues } from "./issues.js";
@@ -57,6 +58,14 @@ export const issueClaims = pgTable(
   (table) => ({
     // The one lookup every path makes: the live claim of one task.
     issueLiveIdx: index("issue_claims_issue_live_idx").on(table.issueId, table.releasedAt),
+    // myrmidon(1.6.5 SWARM-CLAIM-UNIQUE-INDEX): at most one live claim per issue, enforced
+    // by the database. The read-before-insert guard in the claim store is a
+    // race; this index is the atomic version of the same rule. A losing
+    // concurrent insert raises SQLSTATE 23505 and the store maps it to its
+    // existing "task taken" result (see server/src/myrmidon/swarm-claim/store.ts).
+    issueActiveUq: uniqueIndex("issue_claims_issue_active_uq")
+      .on(table.issueId)
+      .where(sql`${table.releasedAt} is null`),
     // The agent's active-task count against the per-agent ceiling.
     agentLiveIdx: index("issue_claims_company_agent_live_idx").on(
       table.companyId,
