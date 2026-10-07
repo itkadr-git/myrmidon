@@ -9,6 +9,15 @@
 // failing that, the instance's `general.botDisk.defaultRepo`. The
 // pressure block comes from the last dockergate snapshot when one is wired in;
 // without it the level is `none`.
+//
+// myrmidon(1.6.5-BOT-DISK-H LOAD): BOT-DISK-H polls this document about 30 times
+// a minute across the fleet. The per-bot result — and the `enabled` settings read
+// the route does in front of it — is cached in process memory for
+// WS_DESIRED_STATE_TTL_MS (300 s, the same window as the report cadence the bot
+// is told to honor), so one bot costs the board at most one store pass per
+// window. The 5-minute slack is contract-safe: `closing` stays valid for 14
+// days, and a woken bot gets SIGUSR1 from its run anyway. No event
+// invalidation: TTL is enough.
 
 import { and, desc, eq, gt, inArray, ne, or, sql } from "drizzle-orm";
 import {
@@ -37,6 +46,14 @@ import { prStateOf, workspaceStateOf, type WorkspacePrFact } from "./workspace-s
 export const WS_TERMINAL_LOOKBACK_MS = 14 * 24 * 60 * 60 * 1000;
 /** Orphan grace (copies of tasks absent from the list) in hours; contract `grace.orphanHours`. */
 export const WS_ORPHAN_HOURS = 24;
+/**
+ * myrmidon(1.6.5-BOT-DISK-H LOAD): how long one bot's built desired state (and the
+ * `enabled` read in front of it) is reused from process memory. 300 s matches the
+ * `nextReportSec` the bot is told to honor, so a bot costs the store at most one
+ * pass per window instead of ~30 board queries a minute. A rejected build is not
+ * cached; the next request retries.
+ */
+export const WS_DESIRED_STATE_TTL_MS = 300 * 1000;
 
 export interface WorkspaceIssueRow {
   id: string;
@@ -88,6 +105,8 @@ export interface BotWorkspacesServiceDeps {
   now?: () => Date;
   /** Environment for the `enabled` default (tests inject it). */
   env?: Record<string, string | undefined>;
+  /** Override the desired-state cache window (tests); default `WS_DESIRED_STATE_TTL_MS`. */
+  desiredStateTtlMs?: number;
 }
 
 const GITHUB_REPO_RE = /github\.com[/:]([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?(?:[/#?]|$)/i;
@@ -111,8 +130,9 @@ const NO_PRESSURE: BotWorkspacePressure = { quotaPercent: null, partitionPercent
 
 export function botWorkspacesService(deps: BotWorkspacesServiceDeps) {
   const now = deps.now ?? (() => new Date());
+  const ttlMs = deps.desiredStateTtlMs ?? WS_DESIRED_STATE_TTL_MS;
 
-  return {
+  const core = {
     /** `general.botDisk.enabled` (stored, else env, else default true): false switches the reaping off. */
     async isEnabled(): Promise<boolean> {
       const stored = await deps.store.readBotDiskSettings();
@@ -223,6 +243,51 @@ export function botWorkspacesService(deps: BotWorkspacesServiceDeps) {
         protectKeys,
         closedKeys,
       };
+    },
+  };
+
+  // myrmidon(1.6.5-BOT-DISK-H LOAD): per-bot desired-state cache in process
+  // memory. The key is the bot (companyId + agentId), so different bots never
+  // share an entry. The in-flight promise is cached too, so concurrent pollers
+  // of one bot collapse into a single store pass. Only a successful build is
+  // kept for the window: a rejection drops the entry and the next request
+  // retries. The route still serializes the answer through wsDesiredStateSchema,
+  // so a cached value is contract-checked on every reply. No event invalidation
+  // by design: the 5-minute slack is contract-safe (closing holds 14 days; a
+  // woken bot gets SIGUSR1 from its run anyway).
+  const desiredCache = new Map<string, { expiresAtMs: number; promise: Promise<WsDesiredState> }>();
+  // The `enabled` gate reads the same settings row the build reads; one
+  // instance-scoped entry keeps the per-request front-gate cheap as well.
+  let enabledCache: { expiresAtMs: number; promise: Promise<boolean> } | null = null;
+
+  return {
+    async isEnabled(): Promise<boolean> {
+      const e = now().getTime();
+      if (enabledCache && enabledCache.expiresAtMs > e) return enabledCache.promise;
+      const entry: { expiresAtMs: number; promise: Promise<boolean> } = {
+        expiresAtMs: e + ttlMs,
+        promise: core.isEnabled().catch((err) => {
+          if (enabledCache === entry) enabledCache = null;
+          throw err;
+        }),
+      };
+      enabledCache = entry;
+      return entry.promise;
+    },
+    async desiredState(input: { companyId: string; agentId: string }): Promise<WsDesiredState> {
+      const key = `${input.companyId}:${input.agentId}`;
+      const e = now().getTime();
+      const hit = desiredCache.get(key);
+      if (hit && hit.expiresAtMs > e) return hit.promise;
+      const entry: { expiresAtMs: number; promise: Promise<WsDesiredState> } = {
+        expiresAtMs: e + ttlMs,
+        promise: core.desiredState(input).catch((err) => {
+          if (desiredCache.get(key) === entry) desiredCache.delete(key);
+          throw err;
+        }),
+      };
+      desiredCache.set(key, entry);
+      return entry.promise;
     },
   };
 }

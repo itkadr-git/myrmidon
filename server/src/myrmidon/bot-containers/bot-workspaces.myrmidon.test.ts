@@ -14,6 +14,7 @@ import { errorHandler } from "../../middleware/index.js";
 import { botWorkspacePressureFromPartition } from "./bot-workspaces-pressure.js";
 import { botWorkspacesRoutes } from "./bot-workspaces-routes.js";
 import {
+  WS_DESIRED_STATE_TTL_MS,
   botWorkspacesService,
   repoNameFromUrl,
   type BotWorkspacesStore,
@@ -64,6 +65,8 @@ function harness(data: {
   closedKeys?: string[];
   settings?: unknown;
   pressure?: Parameters<typeof botWorkspacesService>[0]["readPressure"];
+  now?: () => Date;
+  desiredStateTtlMs?: number;
 }) {
   const calls = { listIssues: 0, listPrProducts: 0, listProjectRepoUrls: 0 };
   const store: BotWorkspacesStore = {
@@ -75,7 +78,12 @@ function harness(data: {
     readBotDiskSettings: async () => data.settings ?? {},
     ...(data.closedKeys ? { listClosedKeys: async () => data.closedKeys! } : {}),
   };
-  const service = botWorkspacesService({ store, now: () => NOW, readPressure: data.pressure });
+  const service = botWorkspacesService({
+    store,
+    now: data.now ?? (() => NOW),
+    readPressure: data.pressure,
+    ...(data.desiredStateTtlMs !== undefined ? { desiredStateTtlMs: data.desiredStateTtlMs } : {}),
+  });
   const app = (actor: unknown) => {
     const a = express();
     a.use((req, _res, next) => {
@@ -86,7 +94,7 @@ function harness(data: {
     a.use(errorHandler);
     return a;
   };
-  return { app, calls };
+  return { app, calls, store };
 }
 
 const fixture = (name: string) =>
@@ -348,6 +356,122 @@ describe("GET /api/myrmidon/bots/me/workspaces", () => {
     expect(Object.keys(res.body).sort()).toEqual(Object.keys(fx).sort());
     expect(Object.keys(res.body.workspaces[0]).sort()).toEqual(Object.keys(fx.workspaces[0]).sort());
     expect(wsDesiredStateSchema.safeParse(fx).success).toBe(true);
+  });
+});
+
+describe("desired-state cache (1.6.5-BOT-DISK-H LOAD)", () => {
+  // A mutable clock: the cache expiry follows `now`, so tests advance it past the TTL.
+  const clock = () => {
+    const state = { ms: NOW.getTime() };
+    return { now: () => new Date(state.ms), advance: (deltaMs: number) => (state.ms += deltaMs), state };
+  };
+
+  it("the second request of one bot inside the TTL answers from the cache without touching the store", async () => {
+    const c = clock();
+    const h = harness({
+      issues: [issue({ identifier: "ABC-1" })],
+      now: c.now,
+    });
+    const app = h.app(botActor);
+    const first = await request(app).get(URL);
+    expect(first.status).toBe(200);
+    c.advance(60_000); // well inside the 300 s window
+    const second = await request(app).get(URL);
+    expect(second.status).toBe(200);
+    expect(h.calls.listIssues).toBe(1);
+    expect(h.calls.listPrProducts).toBe(1);
+    // The cached answer is byte-identical, generatedAt included, and still passes the contract schema.
+    expect(second.body).toEqual(first.body);
+    expect(wsDesiredStateSchema.safeParse(second.body).success).toBe(true);
+  });
+
+  it("after the TTL the store is asked again", async () => {
+    const c = clock();
+    const h = harness({ issues: [issue({ identifier: "ABC-1" })], now: c.now });
+    const app = h.app(botActor);
+    await request(app).get(URL);
+    expect(h.calls.listIssues).toBe(1);
+    c.advance(301_000); // just past WS_DESIRED_STATE_TTL_MS
+    const res = await request(app).get(URL);
+    expect(res.status).toBe(200);
+    expect(h.calls.listIssues).toBe(2);
+    // The rebuilt document carries the advanced clock as generatedAt — proof it is a fresh build, not the cached one.
+    expect(Date.parse(res.body.generatedAt)).toBe(c.state.ms);
+  });
+
+  it("different bots do not share the cache entry", async () => {
+    const h = harness({ issues: [issue({ identifier: "ABC-1", assigneeAgentId: BOT_ID })] });
+    const asBot = h.app(botActor);
+    const asOther = h.app({ ...botActor, agentId: OTHER_BOT_ID });
+    const a = await request(asBot).get(URL);
+    const b = await request(asOther).get(URL);
+    // ABC-1 belongs to BOT_ID: active for it, closing (reassigned) for the other bot.
+    expect(a.body.workspaces[0]).toMatchObject({ key: "ABC-1", state: "active" });
+    expect(b.body.workspaces[0]).toMatchObject({ key: "ABC-1", state: "closing" });
+    expect(h.calls.listIssues).toBe(2);
+    // Each bot is then served from its own entry.
+    await request(asBot).get(URL);
+    await request(asOther).get(URL);
+    expect(h.calls.listIssues).toBe(2);
+  });
+
+  it("concurrent requests of one bot collapse into a single store pass", async () => {
+    const h = harness({ issues: [issue({ identifier: "ABC-1" })] });
+    const app = h.app(botActor);
+    const [a, b] = await Promise.all([request(app).get(URL), request(app).get(URL)]);
+    expect(a.status).toBe(200);
+    expect(b.status).toBe(200);
+    expect(h.calls.listIssues).toBe(1);
+  });
+
+  it("a failed build is not cached: the next request retries the store", async () => {
+    const c = clock();
+    let fail = true;
+    const calls = { listIssues: 0 };
+    const store: BotWorkspacesStore = {
+      listIssues: async () => {
+        calls.listIssues++;
+        if (fail) throw new Error("db down");
+        return [issue({ identifier: "ABC-1" })];
+      },
+      listPrProducts: async () => [],
+      listProjectRepoUrls: async () => new Map(),
+      readBotDiskSettings: async () => ({}),
+    };
+    const service = botWorkspacesService({ store, now: c.now });
+    await expect(service.desiredState({ companyId: COMPANY_ID, agentId: BOT_ID })).rejects.toThrow("db down");
+    fail = false;
+    const state = await service.desiredState({ companyId: COMPANY_ID, agentId: BOT_ID });
+    expect(state.workspaces.map((w) => w.key)).toEqual(["ABC-1"]);
+    expect(calls.listIssues).toBe(2);
+    // Inside the TTL the retry result is now cached.
+    await service.desiredState({ companyId: COMPANY_ID, agentId: BOT_ID });
+    expect(calls.listIssues).toBe(2);
+  });
+
+  it("the isEnabled gate is cached with the same window", async () => {
+    const c = clock();
+    let reads = 0;
+    const base = harness({ issues: [] });
+    const store: BotWorkspacesStore = {
+      ...base.store,
+      readBotDiskSettings: async () => {
+        reads++;
+        return {};
+      },
+    };
+    const service = botWorkspacesService({ store, now: c.now });
+    expect(await service.isEnabled()).toBe(true);
+    c.advance(10_000);
+    expect(await service.isEnabled()).toBe(true);
+    expect(reads).toBe(1);
+    c.advance(300_000);
+    expect(await service.isEnabled()).toBe(true);
+    expect(reads).toBe(2);
+  });
+
+  it("the default TTL is 300 s (nextReportSec)", () => {
+    expect(WS_DESIRED_STATE_TTL_MS).toBe(300_000);
   });
 });
 
