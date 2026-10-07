@@ -273,6 +273,43 @@ describe("predeploy-board-check.sh (PREDEPLOY-DB-CHECK: the 05.10 incident)", ()
     assert.match(tokenRun.out, /refused the configured credentials \(HTTP 403\)/);
   });
 
+  it("mounts only the production master key file read-only into the copy's board; without it a WARNING", () => {
+    const withKey = sandbox();
+    const keyFile = path.join(withKey.dir, "master.key");
+    const secretValue = "super-secret-key-material-0123456789";
+    fs.writeFileSync(keyFile, `${secretValue}\n`);
+    fs.appendFileSync(withKey.config, `MYRMIDON_PREDEPLOY_MASTER_KEY_FILE=${keyFile}\n`);
+    const keyRun = full(withKey);
+    assert.equal(keyRun.code, 0, keyRun.out);
+    const log = calls(withKey);
+    const boardRun = log.split("\n").find((l) => l.startsWith("docker run -d --name myr-predeploy-board-"));
+    assert.ok(boardRun, log);
+    assert.ok(boardRun.includes(`-v ${keyFile}:/run/myrmidon-predeploy/master.key:ro`), boardRun);
+    assert.ok(boardRun.includes("-e PAPERCLIP_SECRETS_MASTER_KEY_FILE=/run/myrmidon-predeploy/master.key"), boardRun);
+    assert.doesNotMatch(keyRun.out, /no MYRMIDON_PREDEPLOY_MASTER_KEY_FILE/);
+    // the key material is never printed or passed on a command line
+    assert.ok(!keyRun.out.includes(secretValue));
+    assert.ok(!log.includes(secretValue));
+    // no other docker run gets the key
+    for (const l of log.split("\n")) {
+      if (l.startsWith("docker run") && !l.includes("myr-predeploy-board-")) assert.ok(!l.includes("master.key"), l);
+    }
+
+    const without = sandbox();
+    const noKeyRun = full(without);
+    assert.equal(noKeyRun.code, 0, noKeyRun.out);
+    assert.match(noKeyRun.out, /WARNING: no MYRMIDON_PREDEPLOY_MASTER_KEY_FILE/);
+    assert.doesNotMatch(calls(without), /PAPERCLIP_SECRETS_MASTER_KEY_FILE/);
+
+    // set but unusable: stops before the first docker call
+    const missing = sandbox();
+    fs.appendFileSync(missing.config, `MYRMIDON_PREDEPLOY_MASTER_KEY_FILE=${path.join(missing.dir, "absent.key")}\n`);
+    const missingRun = full(missing);
+    assert.notEqual(missingRun.code, 0, missingRun.out);
+    assert.match(missingRun.out, /MYRMIDON_PREDEPLOY_MASTER_KEY_FILE is set but is not a file/);
+    assert.doesNotMatch(calls(missing), /docker /);
+  });
+
   it("a token file that is set but unusable stops the check before the first docker call", () => {
     // The token stays optional (without it a 401/403 is a warning), but a file
     // that IS configured is an input of this step: a missing, unreadable or

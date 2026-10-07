@@ -1786,12 +1786,19 @@ async function startServerWithDatabaseTeardown(
           );
         }
 
-        const taskWatchdogsReconciled = await heartbeat.reconcileTaskWatchdogs();
-        if (taskWatchdogsReconciled.triggered > 0) {
-          logger.warn(
-            { ...taskWatchdogsReconciled },
-            "startup task-watchdog reconciliation triggered watchdog work",
-          );
+        // myrmidon(STARTUP-WATCHDOG-PAUSED): watchdog reconciliation is best
+        // effort at startup; an error here (e.g. a paused watchdog agent) must
+        // not stop the board from starting.
+        try {
+          const taskWatchdogsReconciled = await heartbeat.reconcileTaskWatchdogs();
+          if (taskWatchdogsReconciled.triggered > 0) {
+            logger.warn(
+              { ...taskWatchdogsReconciled },
+              "startup task-watchdog reconciliation triggered watchdog work",
+            );
+          }
+        } catch (err) {
+          logger.warn({ err }, "startup task-watchdog reconciliation failed; continuing startup");
         }
 
         const scanned = await heartbeat.scanSilentActiveRuns();
