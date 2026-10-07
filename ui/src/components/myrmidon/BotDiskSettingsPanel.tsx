@@ -11,6 +11,11 @@
 // 1.6.5-BOT-DISK-H11: it also edits the shared bot runtime directory, whose
 // bin, lazy-packages and lsp subdirectories every bot mounts read-only, so the
 // runtime lives on the host once instead of once per bot.
+//
+// 1.6.5-BOT-DISK-H4d: the panel also shows the bot partition physically
+// (dockergate, contract C5) and, per bot, quota/used, copies E/G/X, archives,
+// the age of the botd report and the image generation, with the copies
+// themselves (contract C4 reports).
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Package } from "lucide-react";
@@ -18,9 +23,163 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { useTranslation } from "@/i18n";
 import { botDiskApi, botDiskQueryKey } from "./botDiskApi";
+import {
+  BOT_DISK_REPORT_STALE_MS,
+  botDiskLifecycleApi,
+  botDiskPhysicalQueryKey,
+  botDiskReportsQueryKey,
+  type BotDiskReportView,
+} from "./botDiskLifecycleApi";
+import { describeCopyState, formatBotDiskAge, formatBotDiskBytes } from "./BotDiskWorkspaceRow";
 
-export function BotDiskSettingsPanel() {
+type Translate = (key: string, options?: Record<string, unknown>) => string;
+
+function BotDiskLifecycleSection({ now, taskStatuses }: { now?: number; taskStatuses?: Record<string, string> }) {
+  const { t } = useTranslation() as { t: Translate };
+  const physical = useQuery({ queryKey: botDiskPhysicalQueryKey, queryFn: botDiskLifecycleApi.getPhysical, retry: false });
+  const reportsQuery = useQuery({ queryKey: botDiskReportsQueryKey, queryFn: botDiskLifecycleApi.getReports, retry: false });
+  const clock = now ?? Date.now();
+
+  const partition = physical.data?.partition;
+  const projects = Array.isArray(physical.data?.projects) ? physical.data.projects : [];
+  const reports: BotDiskReportView[] = Array.isArray(reportsQuery.data?.reports) ? reportsQuery.data.reports : [];
+  const loading = physical.isPending || reportsQuery.isPending;
+  const botKeys = Array.from(new Set([...projects.map((p) => p.botKey), ...reports.map((r) => r.botKey)])).sort();
+
+  return (
+    <div className="space-y-3" data-testid="bot-disk-lifecycle">
+      <h3 className="text-sm font-medium">{t("botDisk.title")}</h3>
+      {loading ? (
+        <p className="text-xs text-muted-foreground" data-testid="bot-disk-lifecycle-loading">
+          {t("botDisk.loading")}
+        </p>
+      ) : !partition && botKeys.length === 0 ? (
+        <p className="text-xs text-muted-foreground" data-testid="bot-disk-lifecycle-empty">
+          {t("botDisk.noData")}
+        </p>
+      ) : (
+        <>
+          {partition && (
+            <div className="space-y-1 text-xs" data-testid="bot-disk-partition">
+              <p>
+                <span className="font-medium">{t("botDisk.partition")}</span> {partition.mount}:{" "}
+                {t("botDisk.partitionUsed", {
+                  used: formatBotDiskBytes(partition.usedBytes),
+                  total: formatBotDiskBytes(partition.totalBytes),
+                  percent: partition.usedPercent,
+                  free: formatBotDiskBytes(partition.freeBytes),
+                })}
+              </p>
+              {physical.data?.other && (
+                <p className="text-muted-foreground">
+                  {t("botDisk.otherUsed", { size: formatBotDiskBytes(physical.data.other.usedBytes) })}
+                </p>
+              )}
+              {physical.data?.quotaEnabled === false && (
+                <p className="text-muted-foreground">{t("botDisk.quotaOff")}</p>
+              )}
+            </div>
+          )}
+          <table className="w-full text-left text-xs" data-testid="bot-disk-bots">
+            <thead>
+              <tr className="text-muted-foreground">
+                <th className="pr-2 font-normal">{t("botDisk.colBot")}</th>
+                <th className="pr-2 font-normal">{t("botDisk.colQuota")}</th>
+                <th className="pr-2 font-normal">{t("botDisk.colCopies")}</th>
+                <th className="pr-2 font-normal">{t("botDisk.colArchives")}</th>
+                <th className="pr-2 font-normal">{t("botDisk.colReport")}</th>
+                <th className="font-normal">{t("botDisk.colImage")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {botKeys.map((botKey) => {
+                const project = projects.find((p) => p.botKey === botKey);
+                const report = reports.find((r) => r.botKey === botKey);
+                const copies = report?.copies ?? [];
+                const count = (cls: "E" | "G" | "X") => copies.filter((c) => c.class === cls).length;
+                const reportedAt = report ? Date.parse(report.at) : NaN;
+                const ageMs = Number.isFinite(reportedAt) ? Math.max(0, clock - reportedAt) : null;
+                const stale = ageMs !== null && ageMs > BOT_DISK_REPORT_STALE_MS;
+                const percent = project && project.hardBytes > 0 ? Math.round((project.usedBytes / project.hardBytes) * 100) : null;
+                const failed = Object.entries(report?.selfChecks ?? {})
+                  .filter(([, value]) => value === false)
+                  .map(([name]) => name);
+                return (
+                  <tr key={botKey} className="align-top" data-testid={`bot-disk-bot-${botKey}`}>
+                    <td className="pr-2 font-medium">{botKey}</td>
+                    <td className="pr-2" data-testid="bot-disk-quota-cell">
+                      {project
+                        ? `${formatBotDiskBytes(project.usedBytes)} / ${formatBotDiskBytes(project.hardBytes)}${percent === null ? "" : ` (${percent}%)`}`
+                        : t("botDisk.noQuota")}
+                    </td>
+                    <td className="pr-2" data-testid="bot-disk-copies-cell">
+                      {report?.copies ? `${count("E")}/${count("G")}/${count("X")}` : "—"}
+                    </td>
+                    <td className="pr-2">{report?.archives ? report.archives.length : "—"}</td>
+                    <td className="pr-2" data-testid="bot-disk-report-cell" data-stale={stale ? "true" : "false"}>
+                      {ageMs === null ? (
+                        t("botDisk.noReport")
+                      ) : (
+                        <span className={stale ? "text-amber-600" : undefined}>
+                          {t("botDisk.reportAge", { age: formatBotDiskAge(ageMs / 1000, t) })}
+                          {stale ? ` — ${t("botDisk.reportStale", { minutes: BOT_DISK_REPORT_STALE_MS / 60000 })}` : ""}
+                        </span>
+                      )}
+                      {failed.length > 0 && (
+                        <span className="block text-red-600">{t("botDisk.selfChecksFailed", { checks: failed.join(", ") })}</span>
+                      )}
+                    </td>
+                    <td>{report?.imageGeneration ?? "—"}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {reports
+            .filter((report) => (report.copies ?? []).length > 0)
+            .map((report) => (
+              <div key={report.botKey} className="space-y-1" data-testid={`bot-disk-copies-${report.botKey}`}>
+                <p className="text-xs font-medium">{t("botDisk.copiesHeading", { bot: report.botKey })}</p>
+                <table className="w-full text-left text-xs">
+                  <thead>
+                    <tr className="text-muted-foreground">
+                      <th className="pr-2 font-normal">{t("botDisk.colKey")}</th>
+                      <th className="pr-2 font-normal">{t("botDisk.colStatus")}</th>
+                      <th className="pr-2 font-normal">{t("botDisk.colBranch")}</th>
+                      <th className="pr-2 font-normal">{t("botDisk.colState")}</th>
+                      <th className="font-normal">{t("botDisk.colAge")}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(report.copies ?? []).map((copy) => (
+                      <tr key={copy.path} data-testid="bot-disk-copy">
+                        <td className="pr-2">
+                          {copy.key ?? copy.path} <span className="text-muted-foreground">({t("botDisk.copyClass", { cls: copy.class })})</span>
+                        </td>
+                        <td className="pr-2">{(copy.key && taskStatuses?.[copy.key]) || "—"}</td>
+                        <td className="pr-2">{copy.branch ?? "—"}</td>
+                        <td className="pr-2">{describeCopyState(copy.clean, copy.pushed, t)}</td>
+                        <td>{formatBotDiskAge(copy.ageSec, t)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ))}
+        </>
+      )}
+    </div>
+  );
+}
+
+/**
+ * `taskStatuses` (task key -> status) fills the "task status" column of a copy;
+ * the report itself carries no status (contract C4), so the caller that knows
+ * the tasks supplies it, and an unknown key shows a dash.
+ */
+export function BotDiskSettingsPanel({ now, taskStatuses }: { now?: number; taskStatuses?: Record<string, string> } = {}) {
   const queryClient = useQueryClient();
   const { data: view } = useQuery({ queryKey: botDiskQueryKey, queryFn: botDiskApi.get });
   const [draft, setDraft] = useState<string | null>(null);
@@ -273,6 +432,7 @@ export function BotDiskSettingsPanel() {
         </p>
         {storeError && <p className="text-xs text-red-600">{storeError}</p>}
       </div>
+      <BotDiskLifecycleSection now={now} taskStatuses={taskStatuses} />
     </section>
   );
 }
