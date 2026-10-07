@@ -78,6 +78,7 @@ beforeEach(() => {
   fs.mkdirSync(home, { recursive: true });
   const calls = [];
   ctx = {
+    env: { ...process.env, MYRMIDON_GIT_REAL: "git" },
     home,
     workspaceRoot: path.join(root, "workspace"),
     scratchRoot: path.join(root, "scratch"),
@@ -356,7 +357,7 @@ describe("myr-ws open — errors from ensureBase pass through with their code", 
     for (const code of [4, 5]) {
       const r = await run(["ABC-301", REPO, "--json"], {
         ensureBase() {
-          throw new ws.WsError(code, `base failure ${code}`);
+          throw new ws.MyrWsError(code, `base failure ${code}`);
         },
       });
       assert.equal(r.exitCode, code);

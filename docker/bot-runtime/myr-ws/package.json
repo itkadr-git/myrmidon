@@ -1,3 +1,5 @@
 {
+  "name": "myr-ws",
+  "private": true,
   "type": "commonjs"
 }

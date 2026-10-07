@@ -17,6 +17,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
+const { MyrWsError } = require("./errors.js");
 
 // --- contract constants (C1/C2); a drift here is caught by the unit test ---
 const EXIT = { ok: 0, usage: 2, quotaExceeded: 3, baseLimit: 4, network: 5, notFound: 6, unpushed: 7 };
@@ -25,6 +26,8 @@ const DEFAULT_HOME = "/data/hermes/.myrmidon";
 const WORKSPACE_ROOT = "/workspace";
 const SCRATCH_ROOT = "/scratch";
 const TASK_BRANCH_PREFIX = "bot/";
+// Same default as lib/layout.js DEFAULT_GIT_REAL (H2a): the real git, not the myr-ws wrapper on PATH.
+const DEFAULT_GIT_REAL = "/opt/paperclip/libexec/git";
 const ENV = { home: "MYRMIDON_WS_HOME", gitReal: "MYRMIDON_GIT_REAL" };
 // botd rewrites disk-state.json every pass (60 s); "older than two ticks" is stale.
 const DISK_STATE_STALE_SEC = 120;
@@ -35,16 +38,8 @@ const SCRATCH_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 const REPO_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const BASE_REF_RE = /^[^\s~^:?*[\]\\]+$/;
 
-class WsError extends Error {
-  constructor(exitCode, message) {
-    super(message);
-    this.name = "WsError";
-    this.exitCode = exitCode;
-  }
-}
-
 function usage(message) {
-  return new WsError(EXIT.usage, message);
+  return new MyrWsError(EXIT.usage, message);
 }
 
 // --- arguments ---------------------------------------------------------
@@ -123,10 +118,10 @@ function readRegistry(ctx) {
   try {
     parsed = JSON.parse(raw);
   } catch {
-    throw new WsError(EXIT.usage, `${registryPath(ctx)} is not valid JSON; refusing to overwrite it`);
+    throw new MyrWsError(EXIT.usage, `${registryPath(ctx)} is not valid JSON; refusing to overwrite it`);
   }
   if (!parsed || parsed.version !== 1 || !Array.isArray(parsed.entries)) {
-    throw new WsError(EXIT.usage, `${registryPath(ctx)} has an unknown format; refusing to overwrite it`);
+    throw new MyrWsError(EXIT.usage, `${registryPath(ctx)} has an unknown format; refusing to overwrite it`);
   }
   return parsed;
 }
@@ -159,7 +154,7 @@ function withRegistryLock(ctx, fn) {
       } catch {
         /* raced with the owner */
       }
-      if (Date.now() > deadline) throw new WsError(EXIT.usage, "ws-registry.json is locked by another myr-ws");
+      if (Date.now() > deadline) throw new MyrWsError(EXIT.usage, "ws-registry.json is locked by another myr-ws");
       sleepMs(50);
     }
   }
@@ -217,13 +212,13 @@ function quotaRefusal(ctx, state, reg) {
       .map(({ e, size }) => `${e.key} ${e.path} ${humanBytes(size)}`)
       .join("; ")}.`;
   }
-  return new WsError(EXIT.quotaExceeded, msg);
+  return new MyrWsError(EXIT.quotaExceeded, msg);
 }
 
 // --- git -------------------------------------------------------------------
 
 function makeGit(ctx) {
-  const bin = ctx.env[ENV.gitReal] || "git";
+  const bin = ctx.env[ENV.gitReal] || DEFAULT_GIT_REAL;
   return function git(cwd, args, { allowFail = false } = {}) {
     const r = spawnSync(bin, args, {
       cwd,
@@ -231,9 +226,9 @@ function makeGit(ctx) {
       env: { ...ctx.env, GIT_TERMINAL_PROMPT: "0" },
       maxBuffer: 16 * 1024 * 1024,
     });
-    if (r.error) throw new WsError(EXIT.network, `cannot run git: ${r.error.message}`);
+    if (r.error) throw new MyrWsError(EXIT.network, `cannot run git: ${r.error.message}`);
     if (r.status !== 0 && !allowFail) {
-      throw new WsError(EXIT.network, `git ${args.slice(0, 2).join(" ")} failed: ${(r.stderr || r.stdout || "").trim().slice(0, 500)}`);
+      throw new MyrWsError(EXIT.network, `git ${args.slice(0, 2).join(" ")} failed: ${(r.stderr || r.stdout || "").trim().slice(0, 500)}`);
     }
     return { status: r.status, stdout: (r.stdout || "").trim(), stderr: (r.stderr || "").trim() };
   };
@@ -284,11 +279,11 @@ async function loadBase(ctx, repo) {
   const ensureBase = ctx.ensureBase || require("./base").ensureBase;
   const res = await ensureBase(repo, { home: ctx.home, env: ctx.env });
   const basePath = typeof res === "string" ? res : res && (res.path || res.basePath);
-  if (!basePath) throw new WsError(EXIT.network, "ensureBase returned no base path");
+  if (!basePath) throw new MyrWsError(EXIT.network, "ensureBase returned no base path");
   return basePath;
 }
 
-/** Create or reuse a copy. Returns the myrWsOpenResult object; throws WsError. */
+/** Create or reuse a copy. Returns the myrWsOpenResult object; throws MyrWsError. */
 async function open(request, deps = {}) {
   const ctx = makeCtx(deps);
   const { key, repo, scratch } = request;
@@ -402,7 +397,7 @@ async function runOpen(argv, deps = {}) {
     const result = await open(resolveOpenRequest(args), deps);
     return { exitCode: EXIT.ok, stdout: json ? `${JSON.stringify(result)}\n` : `${result.path}\n`, stderr: "" };
   } catch (e) {
-    if (!(e instanceof WsError) && typeof e.exitCode !== "number") throw e;
+    if (!(e instanceof MyrWsError) && typeof e.exitCode !== "number") throw e;
     const exitCode = e.exitCode;
     return {
       exitCode,
@@ -415,7 +410,7 @@ async function runOpen(argv, deps = {}) {
 module.exports = {
   EXIT,
   QUOTA_PREFIX,
-  WsError,
+  MyrWsError,
   parseOpenArgs,
   resolveOpenRequest,
   readRegistry,
