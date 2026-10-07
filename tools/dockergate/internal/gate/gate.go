@@ -21,6 +21,7 @@ import (
 
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/config"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/deny"
+	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/disk"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/limit"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/peer"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/policy"
@@ -79,6 +80,9 @@ type Options struct {
 	// Lstat is how the volume root is looked at; tests replace it.
 	Lstat policy.LstatFunc
 	Now   func() time.Time
+	// Quota is the applier of the disk quota of a bot (A15, contract C5). Nil:
+	// the host itself, with the volume root of the configuration.
+	Quota *disk.Applier
 }
 
 // Gate is the dockergate server.
@@ -90,6 +94,7 @@ type Gate struct {
 	stats   *Stats
 	now     func() time.Time
 	lstat   policy.LstatFunc
+	quota   *disk.Applier
 	started time.Time
 
 	st atomic.Pointer[runtime]
@@ -132,12 +137,16 @@ func New(opt Options) (*Gate, error) {
 	if opt.Lstat == nil {
 		opt.Lstat = policy.OSLstat
 	}
+	if opt.Quota == nil {
+		opt.Quota = disk.New(opt.Cfg.VolumeRoot)
+	}
 	cfg := opt.Cfg
 	lim := cfg.Limits
 	g := &Gate{
 		opt:      opt,
 		now:      opt.Now,
 		lstat:    opt.Lstat,
+		quota:    opt.Quota,
 		started:  opt.Now(),
 		log:      NewLogger(opt.Log, opt.Now),
 		stats:    newStats(),

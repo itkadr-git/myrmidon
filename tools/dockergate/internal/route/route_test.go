@@ -57,6 +57,8 @@ func TestAllow(t *testing.T) {
 		{"A11", "POST", v + "containers/" + nameA + "/restart?t=30", Route{ID: A11, BotKey: keyA, Name: nameA}},
 		{"A13", "GET", v + "containers/" + nameA + "/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fclone-hygiene.json", Route{ID: A13, BotKey: keyA, Name: nameA}},
 		{"A12", "POST", v + "containers/" + nameANext + "/rename?name=" + nameA, Route{ID: A12, BotKey: keyA, Suffix: SuffixNext, Name: nameANext}},
+		{"A15", "PUT", v + "myrmidon/disk/" + keyA + "/quota", Route{ID: A15, BotKey: keyA}},
+		{"A15 other bot", "PUT", v + "myrmidon/disk/" + keyB + "/quota", Route{ID: A15, BotKey: keyB}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -237,6 +239,32 @@ func TestDenyTable(t *testing.T) {
 		{"A12 no name", "POST", c + nameANext + "/rename", deny.RouteNotAllowed},
 		{"A12 extra query", "POST", c + nameANext + "/rename?name=" + nameA + "&x=1", deny.RouteNotAllowed},
 		{"A12 other bot from", "POST", c + nameB + ".next/rename?name=" + nameA, deny.RouteNotAllowed},
+
+		// A15: the quota of a bot. The key is checked before anything else: a
+		// key with "..", with a wrong shape or with another method never
+		// reaches the handler.
+		{"A15 GET", "GET", v + "myrmidon/disk/" + keyA + "/quota", deny.RouteNotAllowed},
+		{"A15 POST", "POST", v + "myrmidon/disk/" + keyA + "/quota", deny.RouteNotAllowed},
+		{"A15 DELETE", "DELETE", v + "myrmidon/disk/" + keyA + "/quota", deny.RouteNotAllowed},
+		{"A15 dot dot key", "PUT", v + "myrmidon/disk/../quota", deny.RouteNotAllowed},
+		{"A15 encoded dot dot key", "PUT", v + "myrmidon/disk/%2e%2e/quota", deny.RouteNotAllowed},
+		{"A15 traversal past the key", "PUT", v + "myrmidon/disk/" + keyA + "/../quota", deny.RouteNotAllowed},
+		{"A15 traversal to etc", "PUT", v + "myrmidon/disk/..%2F..%2Fetc/quota", deny.RouteNotAllowed},
+		{"A15 uppercase key", "PUT", v + "myrmidon/disk/" + strings.ToUpper(keyA) + "/quota", deny.RouteNotAllowed},
+		{"A15 short key", "PUT", v + "myrmidon/disk/" + keyA[:35] + "/quota", deny.RouteNotAllowed},
+		{"A15 long key", "PUT", v + "myrmidon/disk/" + keyA + "0/quota", deny.RouteNotAllowed},
+		{"A15 underscored key", "PUT", v + "myrmidon/disk/" + strings.ReplaceAll(keyA, "-", "_") + "/quota", deny.RouteNotAllowed},
+		{"A15 random key", "PUT", v + "myrmidon/disk/bot-001/quota", deny.RouteNotAllowed},
+		{"A15 empty key", "PUT", v + "myrmidon/disk//quota", deny.RouteNotAllowed},
+		{"A15 no tail", "PUT", v + "myrmidon/disk/" + keyA, deny.RouteNotAllowed},
+		{"A15 other tail", "PUT", v + "myrmidon/disk/" + keyA + "/quotas", deny.RouteNotAllowed},
+		{"A15 tail without key", "PUT", v + "myrmidon/disk/quota", deny.RouteNotAllowed},
+		{"A15 trailing slash", "PUT", v + "myrmidon/disk/" + keyA + "/quota/", deny.RouteNotAllowed},
+		{"A15 extra segment", "PUT", v + "myrmidon/disk/" + keyA + "/quota/x", deny.RouteNotAllowed},
+		{"A15 query", "PUT", v + "myrmidon/disk/" + keyA + "/quota?bytes=1", deny.RouteNotAllowed},
+		{"A15 space", "PUT", v + "myrmidon/disk/" + keyA + "/quota ", deny.RouteNotAllowed},
+		{"A15 uppercase disk", "PUT", v + "myrmidon/Disk/" + keyA + "/quota", deny.RouteNotAllowed},
+		{"A15 no version", "PUT", "/myrmidon/disk/" + keyA + "/quota", deny.APIVersion},
 
 		// raw-target vectors: no decoding, no normalisation
 		{"encoded letter in name", "GET", c + "%6Dyrmidon-bot-" + keyA + "/json", deny.RouteNotAllowed},

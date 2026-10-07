@@ -5,10 +5,13 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/config"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/deny"
+	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/disk"
+	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/jsonx"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/policy"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/route"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/upstream"
@@ -497,6 +500,70 @@ func (rs *reqState) a11(ctx context.Context, st *runtime, rt *route.Route, bs *b
 	}
 	rs.respond(ans)
 	return nil
+}
+
+// a15: the disk quota of one bot (BOT-DISK-H9b, contract C5). Nothing of the
+// daemon is involved: the body names the limit, the applier of the host carries
+// it into the filesystem, and the answer is the C5 body. The bot is locked, so a
+// quota cannot land under a delete of the same bot.
+func (rs *reqState) a15(ctx context.Context, st *runtime, rt *route.Route, bs *botState) *deny.Error {
+	body, derr := rs.readBody(st.cfg.Limits.MaxJSONBody, jsonType, deny.JSONSyntax)
+	if derr != nil {
+		return derr
+	}
+	bytes, derr := parseQuotaBody(body)
+	if derr != nil {
+		return derr
+	}
+	unlock, derr := rs.g.lockBot(ctx, bs)
+	if derr != nil {
+		return derr
+	}
+	defer unlock()
+
+	res, derr := rs.g.quota.Apply(ctx, rt.BotKey, bytes)
+	if derr != nil {
+		return derr
+	}
+	rs.respond(&answer{status: http.StatusOK, ctype: jsonType, body: quotaAnswer(res)})
+	return nil
+}
+
+// parseQuotaBody is the body of A15: one member, "bytes", an integer inside the
+// bounds of the contract. A value outside them is bad_quota (C5), which is a
+// denial of its own — a body that is well formed but not allowed.
+func parseQuotaBody(body []byte) (int64, *deny.Error) {
+	v, derr := jsonx.Parse(body)
+	if derr != nil {
+		return 0, derr
+	}
+	if v.Kind != jsonx.KindObject {
+		return 0, deny.FieldOnly(deny.JSONType, "body")
+	}
+	var val *jsonx.Value
+	for _, m := range v.Members {
+		if m.Key != "bytes" {
+			return 0, deny.FieldOnly(deny.JSONUnknownKey, m.Key)
+		}
+		val = m.Val
+	}
+	if val == nil {
+		return 0, deny.FieldOnly(deny.JSONSyntax, "bytes")
+	}
+	if val.Kind != jsonx.KindInt {
+		return 0, deny.FieldOnly(deny.JSONType, "bytes")
+	}
+	if val.N < disk.MinBytes || val.N > disk.MaxBytes {
+		return 0, deny.Field(deny.BadQuota, "bytes", []byte(strconv.FormatInt(val.N, 10)))
+	}
+	return val.N, nil
+}
+
+// quotaAnswer is the body of the C5 answer: the project Id of the bot, whose
+// stability is what the caller stores, and the limit that was applied.
+func quotaAnswer(res disk.Result) []byte {
+	return []byte(`{"ok":true,"projectId":` + strconv.FormatUint(uint64(res.ProjectID), 10) +
+		`,"hardBytes":` + strconv.FormatInt(res.HardBytes, 10) + `}`)
 }
 
 // a12: the rename of .next to the main name, once the main container is gone.

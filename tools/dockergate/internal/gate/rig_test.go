@@ -21,6 +21,7 @@ import (
 
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/config"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/deny"
+	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/disk"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/fakedocker"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/fixture"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/gate"
@@ -29,8 +30,9 @@ import (
 )
 
 // The rig: a real gate on a real unix socket, in front of the fake daemon.
-// Only what the kernel would tell (the peer credentials) and what the host
-// would tell (lstat of the volume root, /proc) is replaced.
+// Only what the kernel would tell (the peer credentials), what the host would
+// tell (lstat of the volume root, /proc) and what the disk of the host would
+// answer (xfs_quota, /etc/projects, /etc/projid, /proc/mounts) is replaced.
 
 // Canaries that must never leave the gate: the fake daemon puts them into the
 // inspect answers, the tests put them into requests. The bind list is not among
@@ -186,6 +188,37 @@ type rigOptions struct {
 	log       io.Writer
 }
 
+// quotaCall is one command that the gate asked the host to run for the quota of
+// a bot. The tests of A15 read the journal instead of running anything.
+type quotaCall struct {
+	Name string
+	Args []string
+}
+
+// quotaJournal is a disk.Executor that records the commands and answers what the
+// test told it to: the host of a real deployment is xfs_quota.
+type quotaJournal struct {
+	mu    sync.Mutex
+	calls []quotaCall
+	err   error
+}
+
+func (j *quotaJournal) Run(_ context.Context, name string, args ...string) ([]byte, error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.calls = append(j.calls, quotaCall{Name: name, Args: append([]string(nil), args...)})
+	if j.err != nil {
+		return []byte("xfs_quota: cannot set project quota"), j.err
+	}
+	return nil, nil
+}
+
+func (j *quotaJournal) recorded() []quotaCall {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return append([]quotaCall(nil), j.calls...)
+}
+
 type rigOpt func(*rigOptions)
 
 func withConfig(f func(*config.Config)) rigOpt {
@@ -218,6 +251,15 @@ type rig struct {
 	mu    sync.Mutex
 	cred  peer.Cred
 	files map[string]fsEntry
+
+	// The disk of the host: a journal of commands, the two files of the
+	// mapping and the mount table, all of them inside the rig directory.
+	qj     *quotaJournal
+	q      *disk.Applier
+	qdir   string
+	qproj  string
+	qproid string
+	qmount string
 }
 
 func (r *rig) credFn(net.Conn) (peer.Cred, error) {
@@ -293,6 +335,24 @@ func newRig(t *testing.T, opts ...rigOpt) *rig {
 		cred:  peer.Cred{PID: 4242, UID: 1000, GID: 1000},
 		files: map[string]fsEntry{},
 	}
+	// The disk of the host: the journal, the two files of the mapping and the
+	// mount table, all inside the directory of the rig, so that no test can
+	// touch /etc/projects or a real filesystem.
+	r.qdir = filepath.Join(dir, "quota")
+	if err := os.Mkdir(r.qdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r.qj = &quotaJournal{}
+	r.qproj = filepath.Join(r.qdir, "projects")
+	r.qproid = filepath.Join(r.qdir, "projid")
+	r.qmount = filepath.Join(r.qdir, "mounts")
+	r.q = &disk.Applier{
+		Exec:       r.qj,
+		VolumeRoot: cfg.VolumeRoot,
+		Files:      disk.Projects{ProjectsFile: r.qproj, ProjidFile: r.qproid},
+		MountsFile: r.qmount,
+	}
+	r.setPrjQuota(true)
 	if o.container {
 		r.proc = newFakeProc()
 		cfg.Caller = &config.Caller{
@@ -321,7 +381,7 @@ func newRig(t *testing.T, opts ...rigOpt) *rig {
 
 	gopt := gate.Options{
 		Cfg: cfg, ConfigHash: "test", Version: "test", Log: r.log,
-		Cred: r.credFn, Lstat: r.lstat,
+		Cred: r.credFn, Lstat: r.lstat, Quota: r.q,
 	}
 	if r.proc != nil {
 		gopt.Proc = r.proc
@@ -384,6 +444,52 @@ func newRig(t *testing.T, opts ...rigOpt) *rig {
 }
 
 // --- names and seeds ---------------------------------------------------------------
+
+// quotaTarget is the route of the quota of this bot (A15).
+func (r *rig) quotaTarget() string { return "/v1.45/myrmidon/disk/" + r.m.BotKey + "/quota" }
+
+// setPrjQuota writes the mount table that the applier reads: prjquota on is the
+// partition that carries the project quota of the bots, off is the host where
+// the route can only answer quota_unavailable.
+func (r *rig) setPrjQuota(on bool) {
+	r.t.Helper()
+	opts := "rw"
+	if on {
+		opts = "rw,prjquota"
+	}
+	body := "sysfs /sys sysfs rw,nosuid,nodev,noexec,relatime 0 0\n" +
+		"/dev/sdb1 " + r.cfg.VolumeRoot + " xfs " + opts + " 0 0\n"
+	if err := os.WriteFile(r.qmount, []byte(body), 0o644); err != nil {
+		r.t.Fatal(err)
+	}
+}
+
+// quotaCalls is what the gate asked the host to run, in order.
+func (r *rig) quotaCalls() []quotaCall { return r.qj.recorded() }
+
+// quotaCommand is the single command that the applier runs, as one string.
+func (r *rig) quotaCommand() string {
+	calls := r.quotaCalls()
+	if len(calls) != 1 {
+		r.t.Fatalf("xfs_quota ran %d times, want 1: %+v", len(calls), calls)
+	}
+	return calls[0].Name + " " + strings.Join(calls[0].Args, " ")
+}
+
+// quotaFile reads one of the two files of the mapping; an absent file is empty.
+func (r *rig) quotaFile(path string) string {
+	b, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return ""
+	}
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	return string(b)
+}
+
+func (r *rig) projectsFile() string { return r.quotaFile(r.qproj) }
+func (r *rig) projidFile() string   { return r.quotaFile(r.qproid) }
 
 func (r *rig) key() string { return r.m.BotKey }
 

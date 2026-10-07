@@ -17,6 +17,10 @@ const APIPrefix = "/v1.45/"
 // NamePrefix is the prefix of every container name of a bot.
 const NamePrefix = "myrmidon-bot-"
 
+// diskPrefix is the head of the quota target of a bot (A15):
+// "/v1.45/" + diskPrefix + "<botKey>" + "/quota".
+const diskPrefix = "myrmidon/disk/"
+
 // Suffix is the role suffix of a container name.
 type Suffix string
 
@@ -41,6 +45,10 @@ const (
 	A11 = "A11"
 	A12 = "A12"
 	A13 = "A13"
+	// A15 is the quota of one bot (BOT-DISK-H9b, contract C5). Its sibling A14
+	// (GET /myrmidon/disk, BOT-DISK-H9a) is a route of another engineer; until
+	// it lands, a request for it is route_not_allowed like any other.
+	A15 = "A15"
 )
 
 // Mount paths that a tar upload (A5) may target, keyed by the raw query value.
@@ -229,6 +237,18 @@ func Parse(method, target string, images Images) (*Route, *deny.Error) {
 
 	const containers = "containers/"
 	if !strings.HasPrefix(rest, containers) {
+		// A15: myrmidon/disk/<botKey>/quota. The daemon is not addressed by it
+		// (dockergate applies the limit of the host itself), and the key is
+		// checked as a lowercase uuid BEFORE the handler is reached, so a key
+		// with ".." or with a wrong shape can never become a path of a
+		// filesystem: it is route_not_allowed, like any other target.
+		if key, ok := strings.CutPrefix(rest, diskPrefix); ok {
+			key, ok = strings.CutSuffix(key, "/quota")
+			if !ok || method != "PUT" || !IsBotKey(key) {
+				return nil, notAllowed()
+			}
+			return &Route{ID: A15, Method: method, BotKey: key}, nil
+		}
 		return nil, notAllowed()
 	}
 	rest = rest[len(containers):]
