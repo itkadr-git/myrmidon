@@ -738,29 +738,31 @@ RUN chmod 0755 /opt/paperclip/bin/git /opt/paperclip/bin/bot-clone-hygiene \
 # build asserts that with a real `git ls-remote` of a local repository (the
 # git-upload-pack helper) through the wrapper.
 #
-# myr-ws (CLI, H2) and botd (lifecycle agent, H3) are installed from the build
-# context directory bot-disk/ (bot-disk/myr-ws, bot-disk/botd) into
-# /opt/paperclip/bin, plus /usr/local/bin/myr-ws for a terminal PATH without
-# /opt/paperclip/bin. Until those parts merge the directory holds only .gitkeep:
-# the image then builds without them and the entrypoint falls back to
-# bot-clone-hygiene (see entrypoint.sh). Nothing here may fail the build when
-# they are absent, and nothing here may skip them once they are present.
-COPY --chown=root:root bot-disk/ /tmp/bot-disk-src/
+# myr-ws (CLI, H2) and botd (lifecycle agent, H3) are installed whole, as
+# directories (lib/*.js and package.json go with the entry point): myr-ws/ to
+# /opt/paperclip/myr-ws, botd/ to /opt/paperclip/botd. /opt/paperclip/bin/myr-ws
+# and /usr/local/bin/myr-ws (a terminal PATH without /opt/paperclip/bin) are
+# symlinks to /opt/paperclip/myr-ws/myr-ws; /opt/paperclip/bin/botd links to the
+# botd entry point /opt/paperclip/botd/botd. Until that entry point exists in the
+# tree (H3 ships lib/ first) there is no botd link, the image still builds and the
+# entrypoint falls back to bot-clone-hygiene (see entrypoint.sh). The two
+# directories must be in the tree: this change merges after BOT-DISK-H2/H3a.
+COPY --chown=root:root myr-ws/ /opt/paperclip/myr-ws/
+COPY --chown=root:root botd/ /opt/paperclip/botd/
 RUN set -eu; \
     mkdir -p /opt/paperclip/libexec; \
     dpkg-divert --local --rename --divert /opt/paperclip/libexec/git --add /usr/bin/git; \
     ln -s /opt/paperclip/bin/git /usr/bin/git; \
     chmod 0755 /opt/paperclip/libexec/git; \
-    if [ -f /tmp/bot-disk-src/myr-ws ]; then \
-      install -m 0755 -o root -g root /tmp/bot-disk-src/myr-ws /opt/paperclip/bin/myr-ws; \
-      ln -s /opt/paperclip/bin/myr-ws /usr/local/bin/myr-ws; \
-      [ -x /usr/local/bin/myr-ws ] || { echo "myr-ws is not executable" >&2; exit 1; }; \
-    fi; \
-    if [ -f /tmp/bot-disk-src/botd ]; then \
-      install -m 0755 -o root -g root /tmp/bot-disk-src/botd /opt/paperclip/bin/botd; \
+    chmod 0755 /opt/paperclip/myr-ws/myr-ws; \
+    ln -s /opt/paperclip/myr-ws/myr-ws /opt/paperclip/bin/myr-ws; \
+    ln -s /opt/paperclip/myr-ws/myr-ws /usr/local/bin/myr-ws; \
+    [ -x /usr/local/bin/myr-ws ] && [ -x /opt/paperclip/bin/myr-ws ] || { echo "myr-ws is not executable" >&2; exit 1; }; \
+    if [ -f /opt/paperclip/botd/botd ]; then \
+      chmod 0755 /opt/paperclip/botd/botd; \
+      ln -s /opt/paperclip/botd/botd /opt/paperclip/bin/botd; \
       [ -x /opt/paperclip/bin/botd ] || { echo "botd is not executable" >&2; exit 1; }; \
     fi; \
-    rm -rf /tmp/bot-disk-src; \
     [ "$(readlink /usr/bin/git)" = "/opt/paperclip/bin/git" ] || { echo "/usr/bin/git must be the wrapper symlink" >&2; exit 1; }; \
     [ -x /opt/paperclip/libexec/git ] && [ ! -L /opt/paperclip/libexec/git ] || { echo "the real git must sit in libexec as a regular file" >&2; exit 1; }; \
     for el in $(echo "$PATH" | tr ':' ' '); do \
