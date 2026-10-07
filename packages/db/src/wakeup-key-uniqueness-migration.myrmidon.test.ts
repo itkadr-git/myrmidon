@@ -29,7 +29,7 @@ async function migrationStatements(): Promise<string[]> {
   const migrationSql = await readFile(
     fileURLToPath(
       new URL(
-        "./migrations/0307_wakeup_key_partial_unique_indexes.sql",
+        "./migrations/0308_wakeup_key_partial_unique_indexes.sql",
         import.meta.url,
       ),
     ),
@@ -43,7 +43,7 @@ async function migrationStatements(): Promise<string[]> {
 
 d("wake key partial unique indexes migration", () => {
   it("repairs the duplicates a seeded board already holds, then refuses the next one", async () => {
-    const dbh = await startEmbeddedPostgresTestDatabase("pap0307-wake-keys-");
+    const dbh = await startEmbeddedPostgresTestDatabase("pap0308-wake-keys-");
     cleanups.push(() => dbh.cleanup());
     const sql = postgres(dbh.connectionString, { max: 1, onnotice: () => {} });
     cleanups.push(async () => {
