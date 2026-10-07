@@ -265,7 +265,7 @@ describe("myrmidon(1.6.2-BOT-DISK-C) git mirror and pnpm store settings", () => 
       gitMirrorRepos: ["bad name"],
       gitMirrorRefreshMs: 5,
       pnpmStoreDir: "/cache/pnpm/store",
-      pnpmImportMethod: "reflink",
+      pnpmImportMethod: "no-such-method",
     });
     expect(values).toEqual({ enabled: false });
   });

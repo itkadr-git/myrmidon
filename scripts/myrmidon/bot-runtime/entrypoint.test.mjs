@@ -168,10 +168,11 @@ describe("docker/bot-runtime/entrypoint.sh bot root traversal (BOT-ROOT-TRAVERSE
   });
 });
 
-// myrmidon(BOT-DISK-D): the bot's tree is ONE mount; the entrypoint links /data/<x> into it
-// when the image has not, and proves at every start that a hard link from the pnpm store
-// works into each clone root. The success path execs hermes (absent here), so the tests
-// look at what was written before the exec, with a stub hermes on PATH.
+// myrmidon(BOT-DISK-D / BOT-DISK-H8b): the bot's tree is ONE mount; the entrypoint links
+// /data/<x> into it when the image has not, and proves at every start that a reflink
+// (cp --reflink=always) from the pnpm store works into each clone root. The success
+// path execs hermes (absent here), so the tests look at what was written before the
+// exec, with a stub hermes on PATH.
 function stubHermes() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "myrmidon-stub-bin-"));
   fs.writeFileSync(path.join(dir, "hermes"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
@@ -182,7 +183,7 @@ function runWithStub(env) {
   const bin = stubHermes();
   try {
     return spawnSync("bash", [ENTRYPOINT], {
-      env: { PATH: `${bin}:${process.env.PATH}`, HOME: process.env.HOME, ...env },
+      env: { PATH: `${env.MYRMIDON_TEST_STUB_BIN ? `${env.MYRMIDON_TEST_STUB_BIN}:` : ""}${bin}:${process.env.PATH}`, HOME: process.env.HOME, ...env },
       encoding: "utf8",
       timeout: 20_000,
       cwd: env.MYRMIDON_TEST_CWD,
@@ -190,6 +191,21 @@ function runWithStub(env) {
   } finally {
     fs.rmSync(bin, { recursive: true, force: true });
   }
+}
+
+/**
+ * A `cp` stub that ACCEPTS --reflink=always (it copies): the success path of the
+ * self-check must be provable on runners whose temporary directory has no
+ * reflinks (tmpfs, ext4). The real FICLONE is proven by pnpm-reflink.test.mjs
+ * and the image build check, which skip with a reason where it cannot run.
+ */
+function acceptingCpStub() {
+  const stub = fs.mkdtempSync(path.join(os.tmpdir(), "myrmidon-cp-ok-"));
+  fs.writeFileSync(path.join(stub, "cp"), `#!/bin/sh
+for a in "$@"; do shift; [ "$a" = "--reflink=always" ] || set -- "$@" "$a"; done
+exec /bin/cp "$@"
+`, { mode: 0o755 });
+  return stub;
 }
 
 /** A /bot-like tree (one directory) with the three clone roots, plus a /data of links. */
@@ -203,7 +219,7 @@ function botLayout() {
   return { tree, bot, data };
 }
 
-describe("docker/bot-runtime/entrypoint.sh bot tree layout and hard-link self-check", () => {
+describe("docker/bot-runtime/entrypoint.sh bot tree layout and reflink self-check", () => {
   it("links /data/<x> into the single mount when they are missing, and leaves existing entries alone", () => {
     const { tree, bot, data } = botLayout();
     try {
@@ -212,7 +228,7 @@ describe("docker/bot-runtime/entrypoint.sh bot tree layout and hard-link self-ch
         HERMES_HOME: path.join(bot, "hermes"),
         MYRMIDON_BOT_ROOT: bot,
         MYRMIDON_DATA_DIR: data,
-        MYRMIDON_HARDLINK_CHECK: "0",
+        MYRMIDON_REFLINK_CHECK: "0",
         MYRMIDON_GIT_OBJECTS_CHECK: "0",
         MYRMIDON_TEST_CWD: path.join(bot, "workspace"),
       });
@@ -228,6 +244,53 @@ describe("docker/bot-runtime/entrypoint.sh bot tree layout and hard-link self-ch
 
   it("self-check passes when the store and every clone root share one mount, and reports it", () => {
     const { tree, bot, data } = botLayout();
+    const stub = acceptingCpStub();
+    try {
+      const store = path.join(bot, "workspace", ".pnpm-store");
+      const roots = ["hermes", "workspace", "scratch"].map((name) => path.join(bot, name));
+      const result = runWithStub({
+        MYRMIDON_TEST_STUB_BIN: stub,
+        HERMES_HOME: path.join(bot, "hermes"),
+        MYRMIDON_BOT_ROOT: bot,
+        MYRMIDON_DATA_DIR: data,
+        npm_config_store_dir: store,
+        MYRMIDON_REFLINK_ROOTS: roots.join(" "),
+        MYRMIDON_TEST_CWD: path.join(bot, "workspace"),
+        MYRMIDON_GIT_OBJECTS_CHECK: "0",
+      });
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stderr, /reflink self-check ok/);
+      assert.doesNotMatch(result.stderr, /ERROR: reflink/);
+      const report = JSON.parse(fs.readFileSync(path.join(bot, "hermes", ".myrmidon", "reflink-check.json"), "utf8"));
+      assert.equal(report.ok, true);
+      assert.equal(report.method, "reflink");
+      assert.equal(report.store, store);
+      assert.equal(report.importMethod, "reflink");
+      assert.deepEqual(report.roots.map((r) => r.root), roots);
+      assert.ok(report.roots.every((r) => r.ok && r.error === null));
+      // The probe files are gone.
+      for (const dir of [store, ...roots]) {
+        assert.deepEqual(fs.readdirSync(dir).filter((n) => n.startsWith(".myrmidon-reflink-probe")), []);
+      }
+    } finally {
+      fs.rmSync(tree, { recursive: true, force: true });
+    }
+  });
+
+  it("self-check with a fake `cp` that refuses the reflink logs ERROR and reports ok:false (EXDEV/EOPNOTSUPP)", () => {
+    const { tree, bot, data } = botLayout();
+    // A `cp` stub that fails exactly like `cp --reflink=always` across
+    // superblocks (EXDEV) or without reflink support (EOPNOTSUPP) — it refuses
+    // whenever --reflink=always is among its arguments.
+    const stub = fs.mkdtempSync(path.join(os.tmpdir(), "myrmidon-cp-stub-"));
+    fs.writeFileSync(path.join(stub, "cp"), `#!/bin/sh
+for a in "$@"; do
+  case "$a" in
+    --reflink=always) echo "cp: failed to clone '$2': Operation not supported" >&2; exit 1 ;;
+  esac
+done
+exec /bin/cp "$@"
+`, { mode: 0o755 });
     try {
       const store = path.join(bot, "workspace", ".pnpm-store");
       const roots = ["hermes", "workspace", "scratch"].map((name) => path.join(bot, name));
@@ -236,29 +299,26 @@ describe("docker/bot-runtime/entrypoint.sh bot tree layout and hard-link self-ch
         MYRMIDON_BOT_ROOT: bot,
         MYRMIDON_DATA_DIR: data,
         npm_config_store_dir: store,
-        MYRMIDON_HARDLINK_ROOTS: roots.join(" "),
+        MYRMIDON_REFLINK_ROOTS: roots.join(" "),
         MYRMIDON_TEST_CWD: path.join(bot, "workspace"),
         MYRMIDON_GIT_OBJECTS_CHECK: "0",
+        MYRMIDON_TEST_STUB_BIN: stub,
       });
-      assert.equal(result.status, 0, result.stderr);
-      assert.match(result.stderr, /hard-link self-check ok/);
-      assert.doesNotMatch(result.stderr, /ERROR: hard-link/);
-      const report = JSON.parse(fs.readFileSync(path.join(bot, "hermes", ".myrmidon", "hardlink-check.json"), "utf8"));
-      assert.equal(report.ok, true);
-      assert.equal(report.store, store);
-      assert.equal(report.importMethod, "hardlink");
-      assert.deepEqual(report.roots.map((r) => r.root), roots);
-      assert.ok(report.roots.every((r) => r.ok && r.error === null));
-      // The probe files are gone.
-      for (const dir of [store, ...roots]) {
-        assert.deepEqual(fs.readdirSync(dir).filter((n) => n.startsWith(".myrmidon-hardlink-probe")), []);
+      assert.equal(result.status, 0, "a failed check never stops the gateway");
+      for (const root of roots) {
+        assert.match(result.stderr, new RegExp(`ERROR: reflink self-check: cannot reflink from the pnpm store .* into ${root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
       }
+      const report = JSON.parse(fs.readFileSync(path.join(bot, "hermes", ".myrmidon", "reflink-check.json"), "utf8"));
+      assert.equal(report.ok, false);
+      assert.equal(report.method, "reflink");
+      assert.ok(report.roots.every((r) => r.ok === false && /Operation not supported/.test(r.error)));
     } finally {
       fs.rmSync(tree, { recursive: true, force: true });
+      fs.rmSync(stub, { recursive: true, force: true });
     }
   });
 
-  it("self-check logs a clear error and reports the root when the store is on another mount", () => {
+  it("self-check logs a clear error and reports the root when the store is on another superblock", { skip: false }, (t) => {
     const shm = "/dev/shm";
     let crossDevice = false;
     try {
@@ -267,7 +327,10 @@ describe("docker/bot-runtime/entrypoint.sh bot tree layout and hard-link self-ch
     } catch {
       crossDevice = false;
     }
-    if (!crossDevice) return; // one filesystem here: no EXDEV to provoke
+    if (!crossDevice) {
+      t.skip("one filesystem on this runner: no second superblock to provoke EXDEV");
+      return;
+    }
     const { tree, bot, data } = botLayout();
     const store = fs.mkdtempSync(path.join(shm, "myrmidon-store-"));
     try {
@@ -277,17 +340,17 @@ describe("docker/bot-runtime/entrypoint.sh bot tree layout and hard-link self-ch
         MYRMIDON_BOT_ROOT: bot,
         MYRMIDON_DATA_DIR: data,
         npm_config_store_dir: store,
-        MYRMIDON_HARDLINK_ROOTS: roots.join(" "),
+        MYRMIDON_REFLINK_ROOTS: roots.join(" "),
         MYRMIDON_TEST_CWD: path.join(bot, "workspace"),
         MYRMIDON_GIT_OBJECTS_CHECK: "0",
       });
       assert.equal(result.status, 0, "a failed check never stops the gateway");
       for (const root of roots) {
-        assert.match(result.stderr, new RegExp(`ERROR: hard-link self-check: cannot hard-link from the pnpm store ${store.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} into ${root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+        assert.match(result.stderr, new RegExp(`ERROR: reflink self-check: cannot reflink from the pnpm store ${store.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} into ${root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
       }
-      const report = JSON.parse(fs.readFileSync(path.join(bot, "hermes", ".myrmidon", "hardlink-check.json"), "utf8"));
+      const report = JSON.parse(fs.readFileSync(path.join(bot, "hermes", ".myrmidon", "reflink-check.json"), "utf8"));
       assert.equal(report.ok, false);
-      assert.ok(report.roots.every((r) => r.ok === false && /cross-device|Invalid cross-device/i.test(r.error)));
+      assert.ok(report.roots.every((r) => r.ok === false && /cross-device|Invalid cross-device|not supported/i.test(r.error)));
     } finally {
       fs.rmSync(tree, { recursive: true, force: true });
       fs.rmSync(store, { recursive: true, force: true });
@@ -305,13 +368,13 @@ describe("docker/bot-runtime/entrypoint.sh bot tree layout and hard-link self-ch
         MYRMIDON_BOT_ROOT: bot,
         MYRMIDON_DATA_DIR: data,
         npm_config_store_dir: path.join(blocker, "store"),
-        MYRMIDON_HARDLINK_ROOTS: roots.join(" "),
+        MYRMIDON_REFLINK_ROOTS: roots.join(" "),
         MYRMIDON_TEST_CWD: path.join(bot, "workspace"),
         MYRMIDON_GIT_OBJECTS_CHECK: "0",
       });
       assert.equal(result.status, 0, result.stderr);
-      assert.match(result.stderr, /ERROR: hard-link self-check: cannot create a file in the pnpm store/);
-      const report = JSON.parse(fs.readFileSync(path.join(bot, "hermes", ".myrmidon", "hardlink-check.json"), "utf8"));
+      assert.match(result.stderr, /ERROR: reflink self-check: cannot create a file in the pnpm store/);
+      const report = JSON.parse(fs.readFileSync(path.join(bot, "hermes", ".myrmidon", "reflink-check.json"), "utf8"));
       assert.equal(report.ok, false);
       assert.equal(report.roots.length, 2);
     } finally {
@@ -321,20 +384,22 @@ describe("docker/bot-runtime/entrypoint.sh bot tree layout and hard-link self-ch
 
   it("the store the check uses is the profile's .env value when it overrides the environment", () => {
     const { tree, bot, data } = botLayout();
+    const stub = acceptingCpStub();
     try {
       const store = path.join(bot, "scratch", ".store-from-env-file");
-      fs.appendFileSync(path.join(bot, "hermes", ".env"), `npm_config_store_dir="${store}"\nnpm_config_package_import_method=hardlink\n`);
+      fs.appendFileSync(path.join(bot, "hermes", ".env"), `npm_config_store_dir="${store}"\nnpm_config_package_import_method=reflink\n`);
       const result = runWithStub({
+        MYRMIDON_TEST_STUB_BIN: stub,
         HERMES_HOME: path.join(bot, "hermes"),
         MYRMIDON_BOT_ROOT: bot,
         MYRMIDON_DATA_DIR: data,
         npm_config_store_dir: "/nonexistent/should-not-be-used",
-        MYRMIDON_HARDLINK_ROOTS: path.join(bot, "workspace"),
+        MYRMIDON_REFLINK_ROOTS: path.join(bot, "workspace"),
         MYRMIDON_TEST_CWD: path.join(bot, "workspace"),
         MYRMIDON_GIT_OBJECTS_CHECK: "0",
       });
       assert.equal(result.status, 0, result.stderr);
-      const report = JSON.parse(fs.readFileSync(path.join(bot, "hermes", ".myrmidon", "hardlink-check.json"), "utf8"));
+      const report = JSON.parse(fs.readFileSync(path.join(bot, "hermes", ".myrmidon", "reflink-check.json"), "utf8"));
       assert.equal(report.store, store);
       assert.equal(report.ok, true);
     } finally {
@@ -408,7 +473,7 @@ describe("docker/bot-runtime/entrypoint.sh shared-git-objects self-check", () =>
         HERMES_HOME: path.join(bot, "hermes"),
         MYRMIDON_BOT_ROOT: bot,
         MYRMIDON_DATA_DIR: data,
-        MYRMIDON_HARDLINK_CHECK: "0",
+        MYRMIDON_REFLINK_CHECK: "0",
         MYRMIDON_GIT_WRAPPER: stub.wrapper,
         MYRMIDON_GIT_SHADOW: stub.shadow,
         MYRMIDON_GIT_REAL: realGit(),
@@ -438,7 +503,7 @@ describe("docker/bot-runtime/entrypoint.sh shared-git-objects self-check", () =>
         HERMES_HOME: path.join(bot, "hermes"),
         MYRMIDON_BOT_ROOT: bot,
         MYRMIDON_DATA_DIR: data,
-        MYRMIDON_HARDLINK_CHECK: "0",
+        MYRMIDON_REFLINK_CHECK: "0",
         MYRMIDON_GIT_WRAPPER: stub.wrapper,
         MYRMIDON_GIT_SHADOW: path.join(stub.dir, "no-shadow", "git"),
         MYRMIDON_GIT_REAL: realGit(),
@@ -464,7 +529,7 @@ describe("docker/bot-runtime/entrypoint.sh shared-git-objects self-check", () =>
         HERMES_HOME: path.join(bot, "hermes"),
         MYRMIDON_BOT_ROOT: bot,
         MYRMIDON_DATA_DIR: data,
-        MYRMIDON_HARDLINK_CHECK: "0",
+        MYRMIDON_REFLINK_CHECK: "0",
         MYRMIDON_GIT_WRAPPER: path.join(tree, "no-such-wrapper"),
         MYRMIDON_TEST_CWD: path.join(bot, "workspace"),
       });
@@ -484,7 +549,7 @@ describe("docker/bot-runtime/entrypoint.sh shared-git-objects self-check", () =>
         HERMES_HOME: path.join(bot, "hermes"),
         MYRMIDON_BOT_ROOT: bot,
         MYRMIDON_DATA_DIR: data,
-        MYRMIDON_HARDLINK_CHECK: "0",
+        MYRMIDON_REFLINK_CHECK: "0",
         MYRMIDON_GIT_WRAPPER: stub.wrapper,
         MYRMIDON_GIT_SHADOW: stub.shadow,
         MYRMIDON_GIT_REAL: realGit(),
@@ -513,7 +578,7 @@ describe("docker/bot-runtime/entrypoint.sh shared-git-objects self-check", () =>
         HERMES_HOME: path.join(bot, "hermes"),
         MYRMIDON_BOT_ROOT: bot,
         MYRMIDON_DATA_DIR: data,
-        MYRMIDON_HARDLINK_CHECK: "0",
+        MYRMIDON_REFLINK_CHECK: "0",
         MYRMIDON_GIT_WRAPPER: stub.wrapper,
         MYRMIDON_GIT_SHADOW: stub.shadow,
         MYRMIDON_GIT_REAL: realGit(),
@@ -549,7 +614,7 @@ describe("docker/bot-runtime/entrypoint.sh shared-git-objects self-check", () =>
         HERMES_HOME: path.join(bot, "hermes"),
         MYRMIDON_BOT_ROOT: bot,
         MYRMIDON_DATA_DIR: data,
-        MYRMIDON_HARDLINK_CHECK: "0",
+        MYRMIDON_REFLINK_CHECK: "0",
         MYRMIDON_GIT_WRAPPER: stub.wrapper,
         MYRMIDON_GIT_SHADOW: stub.shadow,
         MYRMIDON_GIT_REAL: realGit(),
@@ -586,7 +651,7 @@ describe("docker/bot-runtime/entrypoint.sh shared-git-objects self-check", () =>
         HERMES_HOME: path.join(bot, "hermes"),
         MYRMIDON_BOT_ROOT: bot,
         MYRMIDON_DATA_DIR: data,
-        MYRMIDON_HARDLINK_CHECK: "0",
+        MYRMIDON_REFLINK_CHECK: "0",
         MYRMIDON_GIT_WRAPPER: stub.wrapper,
         MYRMIDON_GIT_SHADOW: stub.shadow,
         MYRMIDON_GIT_REAL: realGit(),
@@ -625,7 +690,7 @@ describe("docker/bot-runtime/entrypoint.sh shared-git-objects self-check", () =>
         HERMES_HOME: path.join(bot, "hermes"),
         MYRMIDON_BOT_ROOT: bot,
         MYRMIDON_DATA_DIR: data,
-        MYRMIDON_HARDLINK_CHECK: "0",
+        MYRMIDON_REFLINK_CHECK: "0",
         MYRMIDON_GIT_WRAPPER: stub.wrapper,
         MYRMIDON_GIT_SHADOW: stub.shadow,
         MYRMIDON_GIT_REAL: realGit(),
@@ -667,7 +732,7 @@ describe("docker/bot-runtime/entrypoint.sh shared scope member", () => {
         MYRMIDON_BOT_SCOPE_DIR: scope,
         MYRMIDON_BOT_SCOPE_SUBDIR: "bot-a",
         MYRMIDON_DATA_DIR: data,
-        MYRMIDON_HARDLINK_CHECK: "0",
+        MYRMIDON_REFLINK_CHECK: "0",
         MYRMIDON_GIT_OBJECTS_CHECK: "0",
         MYRMIDON_TEST_CWD: tree,
         MYRMIDON_WORKSPACE_DIR: path.join(data, "workspace"),
@@ -684,25 +749,27 @@ describe("docker/bot-runtime/entrypoint.sh shared scope member", () => {
     }
   });
 
-  it("hard links work from the instance store into the member's clone roots AND into another member's", () => {
+  it("reflinks work from the instance store into the member's clone roots AND into another member's", () => {
     const { tree, scope, data } = scopeLayout();
+    const stub = acceptingCpStub();
     try {
       const store = path.join(scope, ".pnpm-store");
       const other = path.join(scope, "bot-b", "workspace");
       const result = runWithStub({
+        MYRMIDON_TEST_STUB_BIN: stub,
         HERMES_HOME: path.join(data, "hermes"),
         MYRMIDON_BOT_SCOPE_DIR: scope,
         MYRMIDON_BOT_SCOPE_SUBDIR: "bot-a",
         MYRMIDON_DATA_DIR: data,
         npm_config_store_dir: store,
-        MYRMIDON_HARDLINK_ROOTS: [path.join(data, "hermes"), path.join(data, "workspace"), path.join(data, "scratch"), other].join(" "),
+        MYRMIDON_REFLINK_ROOTS: [path.join(data, "hermes"), path.join(data, "workspace"), path.join(data, "scratch"), other].join(" "),
         MYRMIDON_GIT_OBJECTS_CHECK: "0",
         MYRMIDON_TEST_CWD: tree,
         MYRMIDON_WORKSPACE_DIR: path.join(data, "workspace"),
       });
       assert.equal(result.status, 0, result.stderr);
-      assert.match(result.stderr, /hard-link self-check ok/);
-      const report = JSON.parse(fs.readFileSync(path.join(scope, "bot-a", "hermes", ".myrmidon", "hardlink-check.json"), "utf8"));
+      assert.match(result.stderr, /reflink self-check ok/);
+      const report = JSON.parse(fs.readFileSync(path.join(scope, "bot-a", "hermes", ".myrmidon", "reflink-check.json"), "utf8"));
       assert.equal(report.ok, true);
       assert.equal(report.store, store);
       assert.equal(report.roots.length, 4);
@@ -714,7 +781,7 @@ describe("docker/bot-runtime/entrypoint.sh shared scope member", () => {
   it("fails fast when the instance directory is not mounted or the subdirectory is missing", () => {
     const { tree, scope, data } = scopeLayout();
     try {
-      const base = { HERMES_HOME: path.join(data, "hermes"), MYRMIDON_DATA_DIR: data, MYRMIDON_HARDLINK_CHECK: "0",
+      const base = { HERMES_HOME: path.join(data, "hermes"), MYRMIDON_DATA_DIR: data, MYRMIDON_REFLINK_CHECK: "0",
         MYRMIDON_GIT_OBJECTS_CHECK: "0", API_SERVER_KEY: "k".repeat(32) };
       const missing = run({ ...base, MYRMIDON_BOT_SCOPE_DIR: path.join(tree, "nowhere"), MYRMIDON_BOT_SCOPE_SUBDIR: "bot-a" });
       assert.notEqual(missing.status, 0);
