@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 // repositories only.
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
-const { decide, plan, toMs, OPS } = await import(path.join(ROOT, "docker/bot-runtime/botd/lib/rules.js"));
+const { decide, plan, toMs, taskKeyOf, OPS } = await import(path.join(ROOT, "docker/bot-runtime/botd/lib/rules.js"));
 const FIXTURES = path.join(ROOT, "docs/myrmidon/bot-disk-contract");
 const fixture = (name) => JSON.parse(fs.readFileSync(path.join(FIXTURES, name), "utf8"));
 
@@ -193,28 +193,6 @@ describe("botd rules: pressure", () => {
   });
 });
 
-describe("botd rules: protectKeys (open tasks the board did not build a workspace for)", () => {
-  const wsDir = (name, over) => ({ name, path: `/workspace/${name}`, mtime: ago(90 * HOUR), isGit: true, clean: null, pushed: null, ...over });
-  const inv = () => ({ scratch: [wsDir("OPE-1"), wsDir("OPE-2"), wsDir("old-clone"), { name: "OPE-3", path: "/scratch/OPE-3", mtime: ago(90 * HOUR), isGit: false }] });
-
-  it("field absent (older board): task-keyed directories under /workspace are never removed", () => {
-    const out = decide(inv(), desired(), NOW);
-    assert.deepEqual(ops(out).map((x) => x[1]).sort(), ["/scratch/OPE-3", "/workspace/old-clone"]);
-  });
-
-  it("field present, closedKeys absent: task-keyed directories are still never removed", () => {
-    const out = decide(inv(), { ...desired(), protectKeys: ["OPE-1"] }, NOW);
-    assert.deepEqual(ops(out).map((x) => x[1]).sort(), ["/scratch/OPE-3", "/workspace/old-clone"]);
-  });
-
-  it("protected keys are kept even when listed as closed; other closed keys follow the TTL", () => {
-    const d = { ...desired(), protectKeys: ["OPE-1"], closedKeys: ["OPE-1", "OPE-2"] };
-    const out = decide(inv(), d, NOW);
-    assert.deepEqual(ops(out).map((x) => x[1]).sort(), ["/scratch/OPE-3", "/workspace/OPE-2", "/workspace/old-clone"]);
-    assert.ok(out.every((a) => a.op === OPS.archiveRemove || a.op === OPS.remove));
-  });
-});
-
 describe("botd rules: class G scratch", () => {
   const sc = (over) => ({ name: "probe", path: "/scratch/probe", mtime: ago(25 * HOUR), isGit: false, ...over });
 
@@ -385,7 +363,7 @@ describe("botd rules: safety", () => {
 describe("botd rules: contract fixtures", () => {
   it("desired-state.json has the C3 shape and drives the function", () => {
     const d = fixture("desired-state.json");
-    assert.deepEqual(Object.keys(d).sort(), ["generatedAt", "grace", "pressure", "protectKeys", "workspaces"]);
+    assert.deepEqual(Object.keys(d).sort(), ["closedKeys", "generatedAt", "grace", "pressure", "protectKeys", "workspaces"]);
     assert.deepEqual(Object.keys(d.grace).sort(), ["closingMinutes", "orphanHours", "scratchTtlHours"]);
     assert.ok(["none", "soft", "hard"].includes(d.pressure.level));
     for (const w of d.workspaces) {
@@ -438,43 +416,124 @@ describe("botd rules: toMs", () => {
   });
 });
 
-describe("botd rules: task-keyed directories under /workspace need a board-confirmed closure", () => {
-  const dir = (name, over = {}) => ({ name, path: `/workspace/${name}`, mtime: ago(48 * HOUR), isGit: true, clean: false, pushed: false, ...over });
-  const withClosed = (closedKeys, extra = {}) => ({ ...desired(), protectKeys: [], closedKeys, ...extra });
+describe("botd rules: taskKeyOf", () => {
+  it("normalizes case, prefixes and tails to PREFIX-N", () => {
+    for (const [name, key] of [
+      ["OPE-3873", "OPE-3873"],
+      ["ope-3873", "OPE-3873"],
+      ["ope3282v2", "OPE-3282"],
+      ["scratch-ope3213", "OPE-3213"],
+      [".trash-OPE-4331", "OPE-4331"],
+      ["OPE-4915-stale-rootowned", "OPE-4915"],
+      ["ABC-099", "ABC-099"],
+    ]) assert.equal(taskKeyOf(name), key, name);
+    for (const name of ["shared", "tmp", "work", "srv-dev", "OPE-board-db-audit", "foot-measure", "", null]) {
+      assert.equal(taskKeyOf(name), null, String(name));
+    }
+  });
+});
 
-  it("open key that is not assigned to the bot (absent from closedKeys and protectKeys): no action", () => {
-    assert.deepEqual(decide({ scratch: [dir("OPE-4954")] }, withClosed([]), NOW), []);
-    assert.deepEqual(decide({ scratch: [dir("OPE-4954")] }, withClosed(["OPE-1"]), NOW), []);
+describe("botd rules: directories under /workspace by the board's word (policy table, section 2)", () => {
+  const dir = (name, over = {}) => ({ name, path: `/workspace/${name}`, mtime: ago(48 * HOUR), isGit: true, clean: null, pushed: null, nestedGit: [], sizeBytes: 5 * GIB, ...over });
+  const d = (over = {}) => ({ ...desired({ level: over.level ?? "none" }), protectKeys: [], closedKeys: [], ...over });
+  const run = (sc, desiredState) => plan({ scratch: [sc] }, desiredState, NOW);
+
+  it("open task of THIS bot (protectKeys): kept, reported legacy-open, in any case and spelling", () => {
+    for (const name of ["OPE-3873", "ope-3873", "ope3873v2"]) {
+      const out = run(dir(name), d({ protectKeys: ["OPE-3873"], closedKeys: ["OPE-3873"] }));
+      assert.deepEqual(out.actions, [], name);
+      assert.deepEqual(out.held.map((h) => h.kind), ["legacy-open"], name);
+    }
+    assert.deepEqual(run(dir("OPE-3873"), d({ protectKeys: ["OPE-3873"], level: "hard" })).actions, []);
   });
 
-  it("an older board without closedKeys: no action", () => {
-    const d = { ...desired(), protectKeys: [] };
-    assert.deepEqual(decide({ scratch: [dir("OPE-4954")] }, d, NOW), []);
+  it("open task at ANOTHER bot (listed by the board, not closed): kept and reported, whatever the age", () => {
+    const state = d({ workspaces: [ws("OPE-4954", "closing", 2 * DAY, "open")] });
+    const out = run(dir("OPE-4954", { mtime: ago(90 * DAY) }), state);
+    assert.deepEqual(out.actions, []);
+    assert.deepEqual(out.held.map((h) => h.kind), ["legacy-open-elsewhere"]);
   });
 
-  it("closed key older than the TTL: archive-remove when unpushed, remove when clean+pushed", () => {
-    assert.deepEqual(ops(decide({ scratch: [dir("OPE-4954")] }, withClosed(["OPE-4954"]), NOW)), [[OPS.archiveRemove, "/workspace/OPE-4954"]]);
-    assert.deepEqual(
-      ops(decide({ scratch: [dir("OPE-4954", { clean: true, pushed: true })] }, withClosed(["OPE-4954"]), NOW)),
-      [[OPS.remove, "/workspace/OPE-4954"]],
-    );
+  it("open task elsewhere under HARD pressure: archived only after the idle days", () => {
+    const state = d({ level: "hard", workspaces: [ws("OPE-4954", "closing", 2 * DAY, "open")] });
+    assert.deepEqual(run(dir("OPE-4954", { mtime: ago(3 * DAY) }), state).actions, []);
+    assert.deepEqual(ops(run(dir("OPE-4954", { mtime: ago(8 * DAY) }), state).actions), [[OPS.archiveRemove, "/workspace/OPE-4954"]]);
   });
 
-  it("closed key inside the TTL, or in protectKeys: no action", () => {
-    assert.deepEqual(decide({ scratch: [dir("OPE-4954", { mtime: ago(HOUR) })] }, withClosed(["OPE-4954"]), NOW), []);
-    assert.deepEqual(decide({ scratch: [dir("OPE-4954")] }, withClosed(["OPE-4954"], { protectKeys: ["OPE-4954"] }), NOW), []);
+  it("closed task (closedKeys): archive-remove, also for case/suffix variants, a nested repository, a clean+pushed one", () => {
+    for (const name of ["OPE-4954", "ope-4954", "ope4954v2", "scratch-ope4954", "OPE-4954-stale-rootowned"]) {
+      const out = run(dir(name), d({ closedKeys: ["OPE-4954"] }));
+      assert.deepEqual(ops(out.actions), [[OPS.archiveRemove, `/workspace/${name}`]], name);
+    }
+    const nested = dir("OPE-4954", { isGit: true, nestedGit: ["/workspace/OPE-4954/repo"], clean: true, pushed: true });
+    assert.equal(run(nested, d({ closedKeys: ["OPE-4954"] })).actions[0].op, OPS.archiveRemove);
   });
 
-  it("a non-key name older than the TTL: remove; a name that only starts with a key is not a key", () => {
-    const d = withClosed(["OPE-4915"]);
-    assert.deepEqual(
-      ops(decide({ scratch: [dir("OPE-4915-stale-rootowned", { isGit: false })] }, d, NOW)),
-      [[OPS.remove, "/workspace/OPE-4915-stale-rootowned"]],
-    );
+  it("closed task inside the grace is left; under pressure the grace is 0", () => {
+    const fresh = dir("OPE-4954", { mtime: ago(10 * MIN) });
+    assert.deepEqual(run(fresh, d({ closedKeys: ["OPE-4954"] })).actions, []);
+    assert.equal(run(fresh, d({ closedKeys: ["OPE-4954"], level: "soft" })).actions.length, 1);
   });
 
-  it("/scratch keeps the plain TTL, key-like name or not", () => {
-    const sc = { name: "OPE-4954", path: "/scratch/OPE-4954", mtime: ago(48 * HOUR), isGit: false };
-    assert.deepEqual(ops(decide({ scratch: [sc] }, withClosed([]), NOW)), [[OPS.remove, "/scratch/OPE-4954"]]);
+  it("a key the board does not know (nobody's list): kept, reported unknown-key", () => {
+    const out = run(dir("ope-4022"), d({ closedKeys: ["OPE-1"], protectKeys: ["OPE-2"] }));
+    assert.deepEqual(out.actions, []);
+    assert.deepEqual(out.held.map((h) => h.kind), ["unknown-key"]);
+  });
+
+  it("an older board without closedKeys: nothing under /workspace is removed", () => {
+    const old = { ...desired(), protectKeys: [] };
+    assert.deepEqual(run(dir("OPE-4954"), old).actions, []);
+  });
+
+  it("no task behind the name (shared, tmp, work, srv-dev): reported, nothing removed at none/soft", () => {
+    for (const name of ["shared", "tmp", "work", "srv-dev"]) {
+      for (const level of ["none", "soft"]) {
+        const out = run(dir(name, { nestedGit: name === "srv-dev" ? ["/workspace/srv-dev/a", "/workspace/srv-dev/b"] : [] }), d({ level }));
+        assert.deepEqual(out.actions, [], `${name} ${level}`);
+        assert.deepEqual(out.held.map((h) => h.kind), ["non-task"], `${name} ${level}`);
+      }
+    }
+  });
+
+  it("no task: hard pressure archives an idle srv-dev after 7 days, never shared", () => {
+    const hard = d({ level: "hard" });
+    const srv = dir("srv-dev", { mtime: ago(8 * DAY), nestedGit: ["/workspace/srv-dev/a"] });
+    assert.deepEqual(ops(run(srv, hard).actions), [[OPS.archiveRemove, "/workspace/srv-dev"]]);
+    assert.deepEqual(run({ ...srv, mtime: ago(2 * DAY) }, hard).actions, []);
+    assert.deepEqual(run(dir("shared", { mtime: ago(90 * DAY) }), hard).actions, []);
+  });
+
+  it("legacyPressureIdleDays from desired.grace overrides the 7 days", () => {
+    const hard = d({ level: "hard", grace: { legacyPressureIdleDays: 2 } });
+    assert.equal(run(dir("srv-dev", { mtime: ago(3 * DAY) }), hard).actions.length, 1);
+  });
+
+  it("no task, empty or regenerable: removed once idle, no archive", () => {
+    const empty = dir("OPE-board-db-audit", { sizeBytes: 0, isGit: false });
+    assert.deepEqual(ops(run(empty, d()).actions), [[OPS.remove, "/workspace/OPE-board-db-audit"]]);
+    const nm = dir("node_modules", { isGit: false });
+    assert.deepEqual(ops(run(nm, d()).actions), [[OPS.remove, "/workspace/node_modules"]]);
+    assert.deepEqual(run({ ...empty, mtime: ago(HOUR) }, d()).actions, []);
+  });
+
+  it("the copy of an active task is never touched, by path or by normalized key", () => {
+    const state = d({ workspaces: [ws("OPE-7", "active", HOUR, "open")], closedKeys: ["OPE-7"] });
+    assert.deepEqual(run(dir("ope-7"), state).actions, []);
+  });
+});
+
+describe("botd rules: /scratch keeps the TTL", () => {
+  const sc = (over = {}) => ({ name: "probe", path: "/scratch/probe", mtime: ago(48 * HOUR), isGit: false, nestedGit: [], ...over });
+  it("a key-like name in /scratch is judged by the TTL, not by the board", () => {
+    assert.deepEqual(ops(plan({ scratch: [sc({ name: "OPE-4954", path: "/scratch/OPE-4954" })] }, { ...desired(), protectKeys: [], closedKeys: [] }, NOW).actions), [[OPS.remove, "/scratch/OPE-4954"]]);
+  });
+  it("git or nested repositories with unknown state are archived, not just removed", () => {
+    assert.equal(plan({ scratch: [sc({ isGit: true })] }, desired(), NOW).actions[0].op, OPS.archiveRemove);
+    assert.equal(plan({ scratch: [sc({ nestedGit: ["/scratch/probe/x"] })] }, desired(), NOW).actions[0].op, OPS.archiveRemove);
+  });
+  it("a non-git tree over 1 MiB is archived as a tar; a small one is removed", () => {
+    assert.equal(plan({ scratch: [sc({ sizeBytes: 5 * 1024 * 1024 })] }, desired(), NOW).actions[0].op, OPS.archiveRemove);
+    assert.equal(plan({ scratch: [sc({ sizeBytes: 100 })] }, desired(), NOW).actions[0].op, OPS.remove);
   });
 });

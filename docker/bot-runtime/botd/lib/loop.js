@@ -22,8 +22,11 @@
 //  * the loop never throws out of `runOnce`: a broken pass is logged and the next
 //    one starts on time.
 
-const DEFAULT_INTERVAL_MS = 60_000;
+const DEFAULT_INTERVAL_MS = 300_000;
 const MIN_DELAY_MS = 10_000;
+const MAX_DELAY_MS = 3_600_000;
+// Directories the rules only reported (open elsewhere, unknown key, no task) are listed in the report as skips.
+const MAX_HELD_IN_REPORT = 40;
 
 // contract C4 `actions[].action` for each rules op
 const REPORT_ACTION = Object.freeze({
@@ -90,10 +93,16 @@ export function createLoop(deps) {
     }
   }
 
-  /** One full pass. Never throws. Returns `{ desiredOk, executed, report, sent }`. */
-  async function runOnce() {
+  /**
+   * One full pass. Never throws. Returns `{ desiredOk, executed, report, sent }`.
+   * `{ dryRun: true }` (botd --once --plan): inventory and plan only, nothing is executed,
+   * disk-state.json is not written and no report is sent; `planned` and `held` are returned.
+   */
+  async function runOnce(opts = {}) {
+    const dryRun = opts.dryRun === true;
     const startedAt = now();
     const results = [];
+    let plannedOut = null;
     let desired;
     try {
       desired = await deps.desired.poll();
@@ -122,9 +131,12 @@ export function createLoop(deps) {
       });
     } else {
       let actions = [];
+      let held = [];
       try {
         const planned = deps.rules.plan(g.inventory, desired.state, startedAt.getTime(), deps.settings);
         actions = Array.isArray(planned?.actions) ? planned.actions : [];
+        held = Array.isArray(planned?.held) ? planned.held : [];
+        plannedOut = { actions, held, pressure: planned?.pressure ?? "none" };
       } catch (err) {
         log(`botd loop: rules failed: ${errMessage(err)}`);
         results.push({
@@ -135,9 +147,20 @@ export function createLoop(deps) {
           detail: `nothing removed, rules failed: ${errMessage(err)}`.slice(0, 500),
         });
       }
-      for (const action of actions) await execute(action, results);
-      if (results.some((r) => r.result === "ok")) g = await gatherSafe(desired.state); // the report shows the disk after the pass
+      for (const h of held.slice(0, MAX_HELD_IN_REPORT)) {
+        results.push({
+          at: startedAt.toISOString(),
+          action: "skip",
+          path: h.path,
+          result: "skipped",
+          detail: `${h.kind}${h.key ? ` ${h.key}` : ""}: kept, reported only`.slice(0, 500),
+        });
+      }
+      if (!dryRun) for (const action of actions) await execute(action, results);
+      if (!dryRun && results.some((r) => r.result === "ok")) g = await gatherSafe(desired.state); // the report shows the disk after the pass
     }
+
+    if (dryRun) return { desiredOk, executed: [], planned: plannedOut, results, report: null, sent: { ok: false, reason: "dry run" } };
 
     if (desiredOk && typeof deps.writeDiskState === "function") {
       const p = desired.state.pressure ?? {};
@@ -173,7 +196,9 @@ export function createLoop(deps) {
       sent = { ok: false, reason: errMessage(err) };
       log(`botd loop: report failed: ${sent.reason}`);
     }
-    nextDelayMs = sent.ok ? Math.max(MIN_DELAY_MS, Math.min(intervalMs, sent.nextReportSec * 1000)) : intervalMs;
+    nextDelayMs = sent.ok && Number.isFinite(sent.nextReportSec)
+      ? Math.max(MIN_DELAY_MS, Math.min(MAX_DELAY_MS, sent.nextReportSec * 1000))
+      : intervalMs;
     return { desiredOk, executed: results, report, sent };
   }
 

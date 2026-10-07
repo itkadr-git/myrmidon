@@ -240,6 +240,8 @@ export const wsDesiredStateSchema = z.object({
     closingMinutes: z.number().int().positive(),
     scratchTtlHours: z.number().int().positive(),
     orphanHours: z.number().int().positive(),
+    /** myrmidon(1.6.5-BOT-DISK-H, rc.9): idle days before a named directory is archived under hard pressure. Optional: an older board omits it (botd uses 7). */
+    legacyPressureIdleDays: z.number().int().min(1).max(90).optional(),
   }),
   pressure: z.object({
     quotaPercent: z.number().min(0).max(100).nullable(),
@@ -475,6 +477,7 @@ export const wsBotDiskSettingsSchema = z
   .object({
     graceClosingMinutes: z.number().int().min(5).max(24 * 60).optional(),
     scratchTtlHours: z.number().int().min(1).max(24 * 30).optional(),
+    legacyPressureIdleDays: z.number().int().min(1).max(90).optional(),
     partitionThresholdPercent: z.number().int().min(50).max(100).optional(),
     partitionRefuseOpenPercent: z.number().int().min(50).max(100).optional(),
     partitionCriticalPercent: z.number().int().min(50).max(100).optional(),

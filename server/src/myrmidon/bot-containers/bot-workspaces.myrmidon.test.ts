@@ -285,6 +285,21 @@ describe("GET /api/myrmidon/bots/me/workspaces", () => {
     expect(res.body.closedKeys).not.toContain("ABC-1");
   });
 
+  it("enabled=false switches the mechanism off: 503, so botd deletes nothing", async () => {
+    const off = harness({ issues: [issue({ identifier: "ABC-1" })], settings: { enabled: false } });
+    const res = await request(off.app(botActor)).get(URL);
+    expect(res.status).toBe(503);
+    const on = harness({ issues: [issue({ identifier: "ABC-1" })], settings: { enabled: true } });
+    expect((await request(on.app(botActor)).get(URL)).status).toBe(200);
+  });
+
+  it("legacyPressureIdleDays from the settings rides in grace; absent otherwise", async () => {
+    const set = harness({ issues: [], settings: { legacyPressureIdleDays: 3 } });
+    expect((await request(set.app(botActor)).get(URL)).body.grace.legacyPressureIdleDays).toBe(3);
+    const unset = harness({ issues: [] });
+    expect((await request(unset.app(botActor)).get(URL)).body.grace.legacyPressureIdleDays).toBeUndefined();
+  });
+
   it("skips tasks without a valid issue key", async () => {
     const { app } = harness({ issues: [{ ...issue({ identifier: "ABC-1" }), identifier: null }] });
     const res = await request(app(botActor)).get(URL);

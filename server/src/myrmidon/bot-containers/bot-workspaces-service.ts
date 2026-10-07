@@ -23,6 +23,7 @@ import {
   WS_TASK_BRANCH_PREFIX,
   myrWsIssueKeySchema,
   normalizeStoredBotDiskSettings,
+  resolveBotDiskSettings,
   myrWsRepoNameSchema,
   wsBotDiskSettingsSchema,
   type WsDesiredState,
@@ -85,6 +86,8 @@ export interface BotWorkspacesServiceDeps {
   /** Latest dockergate snapshot for the bot; null/absent means no data (level none). */
   readPressure?: (input: BotWorkspacePressureInput) => Promise<BotWorkspacePressure | null>;
   now?: () => Date;
+  /** Environment for the `enabled` default (tests inject it). */
+  env?: Record<string, string | undefined>;
 }
 
 const GITHUB_REPO_RE = /github\.com[/:]([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?(?:[/#?]|$)/i;
@@ -110,6 +113,11 @@ export function botWorkspacesService(deps: BotWorkspacesServiceDeps) {
   const now = deps.now ?? (() => new Date());
 
   return {
+    /** `general.botDisk.enabled` (stored, else env, else default true): false switches the reaping off. */
+    async isEnabled(): Promise<boolean> {
+      const stored = await deps.store.readBotDiskSettings();
+      return resolveBotDiskSettings({ stored, env: deps.env ?? process.env }).settings.enabled;
+    },
     async desiredState(input: { companyId: string; agentId: string }): Promise<WsDesiredState> {
       const at = now();
       const since = new Date(at.getTime() - WS_TERMINAL_LOOKBACK_MS);
@@ -208,6 +216,7 @@ export function botWorkspacesService(deps: BotWorkspacesServiceDeps) {
           closingMinutes: configured.graceClosingMinutes ?? WS_BOT_DISK_SETTING_DEFAULTS.graceClosingMinutes,
           scratchTtlHours: configured.scratchTtlHours ?? WS_BOT_DISK_SETTING_DEFAULTS.scratchTtlHours,
           orphanHours: WS_ORPHAN_HOURS,
+          ...(configured.legacyPressureIdleDays !== undefined ? { legacyPressureIdleDays: configured.legacyPressureIdleDays } : {}),
         },
         pressure,
         workspaces,

@@ -35,6 +35,9 @@ export function parseDesiredState(body) {
   for (const k of ["closingMinutes", "scratchTtlHours", "orphanHours"]) {
     if (!isPosInt(grace[k])) return bad(`grace.${k} is not a positive integer`);
   }
+  if (grace.legacyPressureIdleDays !== undefined && !(isPosInt(grace.legacyPressureIdleDays) && grace.legacyPressureIdleDays <= 90)) {
+    return bad("grace.legacyPressureIdleDays is not 1..90");
+  }
   const pressure = body.pressure;
   if (!isObj(pressure)) return bad("pressure is missing");
   if (pressure.quotaPercent !== null && !isPercent(pressure.quotaPercent)) return bad("pressure.quotaPercent out of range");

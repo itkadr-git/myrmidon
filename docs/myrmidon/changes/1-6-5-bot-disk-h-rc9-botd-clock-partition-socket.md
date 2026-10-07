@@ -19,7 +19,29 @@ settings-section: 1.6.1 — BOT-DISK B: shared package cache for bot containers
   (`MYRMIDON_BOT_DOCKER_SOCKET`); the TCP client is built only when
   `MYRMIDON_DOCKERGATE_URL` is set and no socket is configured. A failing gate is
   still "not measured", never an error in the sweep.
-- botd now removes a directory named exactly like a task key under `/workspace` only when the board lists the key in the new `closedKeys` of the desired state (done/cancelled tasks the bot holds or held, no lookback limit); an open task that moved to review and is no longer assigned to the bot is only reported. Names that are not a key and `/scratch` follow the TTL as before.
+- Deletion policy under `/workspace` is decided by the board's word about a task key, not by a
+  timer. The directory name is normalized to a key (`ope3282v2`, `scratch-ope3213`,
+  `.trash-OPE-4331`, `OPE-4915-stale-rootowned` -> `OPE-3282`, ...) and, in this order: the copy of
+  an active task is never touched; a key in `protectKeys` (open, assigned to the bot) is kept and
+  reported as `legacy-open`; a key in the new `closedKeys` (done/cancelled, no lookback limit) is
+  archived and removed after the closing grace; a key the board lists elsewhere (reassigned, in
+  review) is kept and reported `legacy-open-elsewhere`; a key-like name the board does not know is
+  reported `unknown-key`; a name that is no task (`shared`, `tmp`, `work`, `srv-dev`) is reported
+  `non-task`, and removed only when empty or regenerable. Under hard pressure the last three are
+  archived after `legacyPressureIdleDays` (default 7; setting `general.botDisk.legacyPressureIdleDays`,
+  also in `grace`), except `shared`. A timer applies to `/scratch` only. Without `closedKeys` (an older
+  board) nothing under `/workspace` is removed.
+- Nested repositories (a `.git` up to three levels below the directory) are seen by the classifier
+  and archived one by one (`<KEY>--<relpath>`: bundle, patch, untracked files) before the
+  directory is removed, next to a tar of the rest of the tree. A failed, missing or truncated archive
+  of any part keeps the whole directory (`archive-incomplete`).
+- The botd tick is the board's `nextReportSec` (300 s), clamped to 10 s..1 h. Directories that are
+  only held are listed in the report as skipped actions (`legacy-open`, `legacy-open-elsewhere`,
+  `unknown-key`, `non-task`).
+- `botd --once --plan` is a dry run: it prints the inventory plan as JSON, executes nothing,
+  writes no `disk-state.json` and sends no report.
+- `general.botDisk.enabled=false` makes `GET /api/myrmidon/bots/me/workspaces` answer 503, which botd
+  reads as "no desired state": nothing is removed.
 - Operator note: `/cache/pnpm-store` is mounted read-write; the host source
   directory must belong to uid/gid 10001 (documented in the shared package cache
   steps).
@@ -39,10 +61,31 @@ settings-section: 1.6.1 — BOT-DISK B: shared package cache for bot containers
   (`MYRMIDON_BOT_DOCKER_SOCKET`); TCP-клиент строится, только если задан
   `MYRMIDON_DOCKERGATE_URL` и сокет не задан. Недоступный шлюз — по-прежнему
   «не измерено», а не ошибка свипа.
-- botd теперь удаляет каталог под `/workspace`, названный в точности как ключ задачи, только если доска перечислила ключ в новом поле `closedKeys` желаемого состояния (done/cancelled задачи бота, без ограничения по давности); открытая задача, ушедшая на ревью и уже не назначенная боту, только попадает в отчёт. Имена не-ключи и `/scratch` — по TTL, как раньше.
+- Удаление под `/workspace` решает слово доски о ключе задачи, а не таймер. Имя каталога
+  приводится к ключу (`ope3282v2`, `scratch-ope3213`, `.trash-OPE-4331`,
+  `OPE-4915-stale-rootowned` -> `OPE-3282`, ...) и по порядку: копия активной задачи не
+  трогается; ключ в `protectKeys` (открыта, назначена боту) — остаётся, в отчёте `legacy-open`;
+  ключ в новом `closedKeys` (done/cancelled, без ограничения по давности) — архив и удаление после
+  grace; ключ, который доска знает в другом месте (переназначена, на ревью) — остаётся,
+  `legacy-open-elsewhere`; похожее на ключ имя, которого доска не знает, — `unknown-key`; имя без
+  задачи (`shared`, `tmp`, `work`, `srv-dev`) — `non-task`, удаляется только если пусто или
+  регенерируемо. Под жёстким давлением последние три архивируются после `legacyPressureIdleDays`
+  (по умолчанию 7; настройка `general.botDisk.legacyPressureIdleDays`, приходит и в `grace`), кроме
+  `shared`. Таймер действует только в `/scratch`. Без `closedKeys` (старая доска) под `/workspace`
+  ничего не удаляется.
+- Вложенные репозитории (`.git` до трёх уровней вглубь) видит классификатор, и перед удалением
+  каталога каждый архивируется отдельно (`<KEY>--<relpath>`: bundle, patch, неотслеживаемые файлы)
+  вместе с tar остального дерева. Сбой, отсутствие или усечение архива любой части оставляет весь
+  каталог на месте (`archive-incomplete`).
+- Тик botd — `nextReportSec` доски (300 с) в пределах 10 с..1 ч. Каталоги, которые только
+  удерживаются, перечислены в отчёте как пропущенные действия.
+- `botd --once --plan` — сухой прогон: печатает план в JSON, ничего не исполняет, не пишет
+  `disk-state.json` и не шлёт отчёт.
+- `general.botDisk.enabled=false` — доска отвечает 503 на `GET /api/myrmidon/bots/me/workspaces`,
+  botd читает это как «нет желаемого состояния» и ничего не удаляет.
 - Для оператора: `/cache/pnpm-store` монтируется на запись; исходный каталог на хосте
   должен принадлежать uid/gid 10001 (описано в шагах общего кэша пакетов).
 
 ## divergence
 
-| 1.6.5-BOT-DISK-H-rc9 | botd передаёт правилам миллисекунды, а правила понимают `Date`; свип диска хоста берёт клиента dockergate по unix-сокету (`MYRMIDON_BOT_DOCKER_SOCKET`), TCP — только при заданном `MYRMIDON_DOCKERGATE_URL` | Наши файлы: `docker/bot-runtime/botd/lib/{loop,rules}.js`, `server/src/myrmidon/host-disk/{dockergate,index}.ts` и тесты. Маркеров вендора нет: все файлы наши | botd ничего не удалял (часы Date), давление раздела всегда 0/none (нет TCP-адреса dockergate на боевом хосте) | `botd-loop.test.mjs`, `botd-rules.test.mjs` (Date-часы, реальные правила), `partition-client.myrmidon.test.ts` (выбор клиента, юнит-сокет, соответствие процентов) | Никогда, наше поведение | (этот PR) |
+| 1.6.5-BOT-DISK-H-rc9 | botd передаёт правилам миллисекунды, а правила понимают `Date`; свип диска хоста берёт клиента dockergate по unix-сокету (`MYRMIDON_BOT_DOCKER_SOCKET`), TCP — только при заданном `MYRMIDON_DOCKERGATE_URL` | Наши файлы: `docker/bot-runtime/botd/lib/{loop,rules}.js`, `docker/bot-runtime/botd/{botd,lib/*}`, `server/src/myrmidon/host-disk/{dockergate,index}.ts`, `server/src/myrmidon/bot-containers/bot-workspaces-{service,routes}.ts`, `packages/shared/src/myrmidon-bot-{disk,workspace}.ts` и тесты. Маркеров вендора нет: все файлы наши | botd ничего не удалял (часы Date), давление раздела всегда 0/none (нет TCP-адреса dockergate на боевом хосте) | `botd-loop.test.mjs`, `botd-rules.test.mjs` (Date-часы, реальные правила), `partition-client.myrmidon.test.ts` (выбор клиента, юнит-сокет, соответствие процентов) | Никогда, наше поведение | (этот PR) |
