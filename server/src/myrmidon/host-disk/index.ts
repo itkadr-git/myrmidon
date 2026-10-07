@@ -6,6 +6,9 @@ import { hostDiskRoutes } from "./routes.js";
 import { hostDiskService, type HostDiskService } from "./service.js";
 import { createHostDiskSweep, type HostDiskSweep } from "./sweep.js";
 import { type HostDiskSweepResult } from "./state.js";
+import { createDockergateDiskClient, dockergateBaseUrl } from "./dockergate.js";
+import { botPartitionThresholdRuntime } from "./partition.js";
+import { createOwnerTelegramNotifier } from "./owner-notify.js";
 
 /**
  * Entry point of the host disk signal (myrmidon BOT-DISK, part E).
@@ -27,10 +30,16 @@ export { createHostDiskSweep } from "./sweep.js";
 export type { HostDiskSweep } from "./sweep.js";
 export { readHostDiskUsage, measureHostDiskConsumer } from "./measure.js";
 export type { HostDiskSweepResult } from "./state.js";
+export { createDockergateDiskClient, dockergateBaseUrl, DOCKERGATE_URL_ENV } from "./dockergate.js";
+export type { BotPartitionUsage, DockergateDiskClient } from "./dockergate.js";
+export { botPartitionThresholdRuntime, resetBotPartitionThresholdRuntime } from "./partition.js";
+export type { BotPartitionThresholdRuntime, BotPartitionThresholdState } from "./partition.js";
 
 export interface HostDiskRuntime {
   sweep: HostDiskSweep;
   service: HostDiskService;
+  /** myrmidon(1.6.5-BOT-DISK-H10): bot-partition threshold state (attention feed and desired state read it). */
+  partition: import("./partition.js").BotPartitionThresholdRuntime;
   /** Run one sweep and hand the work to the scheduler's tracker. */
   run(track: (work: Promise<unknown>) => void): void;
 }
@@ -65,6 +74,19 @@ function createRuntime(db: Db, options: HostDiskRuntimeOptions = {}): HostDiskRu
   const settingsPort = settings as unknown as {
     getGeneral(): Promise<{ hostDisk?: unknown }>;
   };
+  // myrmidon(1.6.5-BOT-DISK-H10): the bot-partition measurement. Without a
+  // configured dockergate URL the client stays null and the sweep behaves
+  // exactly as part E shipped it.
+  const partitionClient = (() => {
+    const baseUrl = dockergateBaseUrl(env);
+    return baseUrl ? createDockergateDiskClient({ baseUrl }) : null;
+  })();
+  const partitionRuntime = botPartitionThresholdRuntime(db, {
+    notifyOwner: createOwnerTelegramNotifier(db, {
+      listCompanyIds: () => settings.listCompanyIds(),
+    }),
+    env,
+  });
   const sweep = createHostDiskSweep({
     dataRootPath: hostDiskDataRoot(env),
     consumerPaths: hostDiskConsumerPaths(env),
@@ -72,6 +94,8 @@ function createRuntime(db: Db, options: HostDiskRuntimeOptions = {}): HostDiskRu
     logActivity: (entry) => logActivity(db, entry),
     lastSignalAt: store.lastSignalAt,
     logger,
+    partitionClient,
+    partitionRuntime,
   });
   const service = hostDiskService({
     settings: settings as unknown as {
@@ -87,6 +111,7 @@ function createRuntime(db: Db, options: HostDiskRuntimeOptions = {}): HostDiskRu
   return {
     sweep,
     service,
+    partition: partitionRuntime,
     run: (track) => {
       track(
         sweep.sweep().catch((err) => {
