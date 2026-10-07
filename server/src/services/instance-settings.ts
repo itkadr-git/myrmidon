@@ -311,6 +311,10 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // page). Without this line `updateGeneral` normalizes the patch away, so
       // PATCH /api/myrmidon/model-fallback/settings would never roundtrip.
       ...(parsed.data.modelFallbackSignal ? { modelFallbackSignal: parsed.data.modelFallbackSignal } : {}),
+      // myrmidon(PAUSE-GUARD): the stored forgotten-pause guard settings
+      // survive every general write (they are edited on their own settings
+      // panel).
+      ...(parsed.data.pauseGuard ? { pauseGuard: parsed.data.pauseGuard } : {}),
     };
   }
   return {

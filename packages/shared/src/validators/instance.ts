@@ -40,6 +40,9 @@ import { reviewReworkSettingsSchema } from "../myrmidon-review-rework.js";
 import { budgetEnforcementSettingsSchema } from "../myrmidon-budget-enforcement.js";
 // myrmidon(MEMORY-UI): the agent memory settings stored in the same row.
 import { agentMemorySettingsSchema } from "../myrmidon-agent-memory.js";
+// myrmidon(PAUSE-GUARD): the forgotten-pause guard settings stored in the same
+// general settings row (the sweep reads them through this schema).
+import { storedPauseGuardSettingsSchema } from "../myrmidon-pause-guard.js";
 // myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys stored
 // in the same general settings row.
 import { pluginEntitlementKeysSchema } from "../myrmidon-plugin-entitlement.js";
@@ -162,6 +165,12 @@ export const instanceGeneralSettingsSchema = z.object({
   // task; review blocked until the PR head moves), changed from
   // /api/myrmidon/review-rework; absent means the defaults (the fix is on).
   reviewRework: reviewReworkSettingsSchema.optional(),
+  // myrmidon(PAUSE-GUARD): the forgotten-pause guard (enabled, threshold,
+  // interval, allowlist, per-pass ceiling), changed from
+  // /api/myrmidon/pause-guard; absent means "use the environment variable, then
+  // the defaults" (see packages/shared/src/myrmidon-pause-guard.ts). Lenient
+  // shape: a row saved before a key existed still parses.
+  pauseGuard: storedPauseGuardSettingsSchema.optional(),
   // myrmidon(REVIEW-REWORK): the change journal of the loop settings, kept by
   // the settings service under `general.reviewReworkJournal` and read by
   // GET /api/myrmidon/review-rework. Stored passthrough, like swarmClaimJournal.
