@@ -142,6 +142,9 @@ import { toolAccessPolicyService } from "./tool-access-policy.js";
 import { agentToolPermissionAllows } from "@paperclipai/shared";
 import { loadAgentToolPermissions } from "../myrmidon/agent-tool-permissions.js";
 import { commitToolActionReview } from "./tool-action-review.js";
+// myrmidon(1.6-AUTONOMY): a held autonomy action is decided by our executor.
+import { isAutonomyToolName } from "../myrmidon/autonomy/action-execution.js";
+import { decideHeldAutonomyAction } from "../myrmidon/autonomy/action-decision.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import {
   createToolRuntimeSupervisor,
@@ -9559,6 +9562,28 @@ export function createToolGatewayService(
           "Tool invocation not found",
           "invocation_not_found",
         );
+      }
+      // myrmidon(1.6-AUTONOMY): a held autonomy action is not a gateway tool —
+      // no connection, no catalog entry and no signed arguments — so the
+      // conveyor below cannot carry it (it would refuse to verify it and cancel
+      // the request). Decide it through the autonomy executor, which replays it
+      // exactly once; the recovery sweep reaches the same branch.
+      if (isAutonomyToolName(invocation.toolName)) {
+        const decided = await decideHeldAutonomyAction({
+          db,
+          companyId: input.companyId,
+          actionRequestId: input.actionRequestId,
+          decision: "approved",
+          actor: { userId: input.actor.userId ?? null, agentId: null },
+        });
+        if (decided.kind === "decided") {
+          const [settledAutonomy] = await db
+            .select()
+            .from(toolActionRequests)
+            .where(eq(toolActionRequests.id, input.actionRequestId))
+            .limit(1);
+          return actionRequestResolution(settledAutonomy ?? actionRequest);
+        }
       }
       if (input.issueId !== undefined || input.interactionId !== undefined) {
         if (

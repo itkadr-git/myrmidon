@@ -230,6 +230,18 @@ vi.mock("../services/instance-settings.js", () => ({
   }),
 }));
 
+// myrmidon(1.6-AUTONOMY): pause/resume consult the autonomy gate before they act.
+// This suite is about cross-tenant authorization, so the gate is stubbed as
+// "allowed" to keep the routes hermetic; the matrix and its holding are covered
+// by src/myrmidon/autonomy/*.myrmidon.test.ts and src/routes/agents.myrmidon.test.ts.
+vi.mock("../myrmidon/autonomy/gate.js", () => ({
+  dbAutonomyGate: () => ({
+    decide: vi.fn(async () => ({ verdict: "allowed", role: null, actionClass: "pause_wake_agents" })),
+    assertAllowed: vi.fn(async () => undefined),
+    holdOrAssert: vi.fn(async () => ({ verdict: "allowed", held: false })),
+  }),
+}));
+
 let routeModules:
   | Promise<[
     typeof import("../middleware/index.js"),
