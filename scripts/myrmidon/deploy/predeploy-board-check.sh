@@ -310,6 +310,33 @@ dump_major=""
 dump_exts=""
 copy_major=""
 available_exts=""
+copy_version_reason=""
+copy_exts_reason=""
+# myrmidon(PREDEPLOY-PG-COMPAT): one psql query against the copy. The rc.11/rc.12
+# deploys (08.10) showed the old inline probes proving nothing twice over: a
+# failed `docker exec ... 2>/dev/null || true` left no trace (the extension list
+# WARNING never said why), and a single failed connection right after the
+# readiness wait — auth against a role the restore has not created yet, or the
+# server still reloading — was enough to lose the whole list. The answer goes
+# to the probe's output file, the psql error text to its error file; a failing
+# query is retried three times POLL_INTERVAL apart, and the caller that still
+# gets nothing names the captured error in its WARNING instead of /dev/null.
+pg_probe_out="$STATE_DIR/predeploy-pg-probe.out"
+pg_probe_err="$STATE_DIR/predeploy-pg-probe.err"
+copy_probe() {
+  local query="$1" attempt rc
+  : >"$pg_probe_err"
+  for attempt in 1 2 3; do
+    rc=0
+    docker exec -e "PGPASSWORD=$db_password" "$db_ctr" psql -U "$db_user" -d "$db_name" -Atc "$query" \
+        >"$pg_probe_out" 2>>"$pg_probe_err" || rc=$?
+    if [[ "$rc" -eq 0 ]]; then return 0; fi
+    if [[ "$attempt" -lt 3 ]]; then sleep "$POLL_INTERVAL_SEC"; fi
+  done
+  [[ -s "$pg_probe_err" ]] || printf 'psql exited with code %s and printed no error\n' "$rc" >"$pg_probe_err"
+  return 1
+}
+probe_reason() { head -c 300 "$pg_probe_err" | tr '\n' ' '; }
 if [[ "$pg_compat" == "off" ]]; then
   log "PREDEPLOY-PG-COMPAT: disabled (MYRMIDON_PREDEPLOY_PG_COMPAT=off): the copy is NOT compared with the dump's server major or extensions"
 else
@@ -318,21 +345,36 @@ else
   # `; Dumped from database version: 18.0` (the production server) and
   # `; Dumped by pg_dump version: 18.0` (the client that wrote it); the
   # server line wins, the client line is the fallback for old dumps without
-  # it. Extension entries are
+  # it. A Debian/PGDG server reports its version with the package tail —
+  # `18 (Debian 18.6-1.pgdg12+2)` — so the parsers below keep ONLY the leading
+  # major digits and drop everything after them (the rc.11/rc.12 deploys lost
+  # the comparison exactly there: an unanchored sed left the whole tail in
+  # `dump_major` and `((copy_major < dump_major))` died with a bash syntax
+  # error, silently skipping the check). Extension entries are
   # `<dumpId>; <tableoid> <oid> EXTENSION <schema> <name> <owner>`. A plain-SQL
   # dump is not an archive: pg_restore --list fails, the TOC stays empty and
   # the `-- Dumped … version …` comments and CREATE EXTENSION lines of
   # the text dump are read from the file itself instead.
   dump_toc="$(docker exec -i "$db_ctr" pg_restore --list <"$dump_file" 2>/dev/null || true)"
-  dump_major="$(sed -n 's/^; *Dumped from database version: *\([0-9][0-9]*\)[.0-9]*/\1/p' <<<"$dump_toc" | head -n1)"
-  [[ -n "$dump_major" ]] || dump_major="$(sed -n 's/^; *Dumped by pg_dump version: *\([0-9][0-9]*\)[.0-9]*/\1/p' <<<"$dump_toc" | head -n1)"
+  # `major_digits` keeps the leading digits of a version string and drops the
+  # package tail: a Debian/PGDG server reports `18 (Debian 18.6-1.pgdg12+2)`
+  # and an Ubuntu one `17.2 (Ubuntu 17.2-1.pgdg22.04+1)`; the raw text must
+  # never reach an arithmetic comparison.
+  major_digits() { sed -n 's/^\([0-9][0-9]*\).*/\1/p' <<<"$1" | head -n1; }
+  dump_major="$(major_digits "$(sed -n 's/^; *Dumped from database version: *\(.*\)/\1/p' <<<"$dump_toc" | head -n1)")"
+  [[ -n "$dump_major" ]] || dump_major="$(major_digits "$(sed -n 's/^; *Dumped by pg_dump version: *\(.*\)/\1/p' <<<"$dump_toc" | head -n1)")"
   [[ -n "$dump_major" ]] || dump_major="$(grep -m1 -oE '^-- Dumped from database version [0-9]+' "$dump_file" 2>/dev/null | grep -oE '[0-9]+$' || true)"
   [[ -n "$dump_major" ]] || dump_major="$(grep -m1 -oE '^-- Dumped by pg_dump version [0-9]+' "$dump_file" 2>/dev/null | grep -oE '[0-9]+$' || true)"
   dump_exts="$(sed -n 's/^[0-9][0-9]*;[[:space:]]*[0-9][0-9]*[[:space:]]*[0-9][0-9]*[[:space:]]*EXTENSION[[:space:]]*[^[:space:]]*[[:space:]]*\([^[:space:]]*\).*/\1/p' <<<"$dump_toc" | sort -u)"
   if [[ -z "$dump_exts" && -z "$dump_toc" ]]; then
     dump_exts="$( { grep -oiE 'CREATE EXTENSION (IF NOT EXISTS )?[a-z0-9_]+' "$dump_file" 2>/dev/null || true; } | awk '{print $NF}' | sort -u)"
   fi
-  copy_major="$(docker exec -e "PGPASSWORD=$db_password" "$db_ctr" psql -U "$db_user" -d "$db_name" -Atc 'SHOW server_version' 2>/dev/null | sed -n 's/^\([0-9][0-9]*\).*/\1/p' | head -n1 || true)"
+  copy_major=""
+  if copy_probe 'SHOW server_version'; then
+    copy_major="$(major_digits "$(head -n1 "$pg_probe_out")")"
+  else
+    copy_version_reason="$(probe_reason)"
+  fi
   if [[ -n "$dump_major" && -n "$copy_major" ]]; then
     if ((copy_major < dump_major)); then
       die "PREDEPLOY-PG-COMPAT: the production dump was written by pg_dump $dump_major, the copy runs $copy_major ($postgres_image): pg_restore cannot read a newer dump. Point MYRMIDON_PREDEPLOY_POSTGRES_IMAGE at the production server's major (shared PostgreSQL 18 -> pgvector/pgvector:pg18); nothing was restored"
@@ -349,10 +391,15 @@ else
       log "PREDEPLOY-PG-COMPAT: the copy is Postgres $copy_major, the same major the production dump came from"
     fi
   else
-    log "PREDEPLOY-PG-COMPAT: WARNING: the dump's or the copy's server major could not be read (dump: '${dump_major:-<none>}', copy: '${copy_major:-<none>}'); the version comparison is skipped — an incompatible copy will still fail the restore"
+    log "PREDEPLOY-PG-COMPAT: WARNING: the dump's or the copy's server major could not be read (dump: '${dump_major:-<none>}', copy: '${copy_major:-<none>}${copy_version_reason:+; copy probe error: $copy_version_reason}'); the version comparison is skipped — an incompatible copy will still fail the restore"
   fi
   if [[ -n "$dump_exts" ]]; then
-    available_exts="$(docker exec -e "PGPASSWORD=$db_password" "$db_ctr" psql -U "$db_user" -d "$db_name" -Atc 'SELECT extname FROM pg_available_extensions' 2>/dev/null || true)"
+    available_exts=""
+    if copy_probe 'SELECT extname FROM pg_available_extensions'; then
+      available_exts="$(cat "$pg_probe_out")"
+    else
+      copy_exts_reason="$(probe_reason)"
+    fi
     missing=()
     for want in $dump_exts; do
       [[ -n "$available_exts" && -n "$want" ]] || continue
@@ -361,7 +408,7 @@ else
     if ((${#missing[@]} > 0)); then
       die "PREDEPLOY-PG-COMPAT: the production dump restores extension(s) ${missing[*]}, the copy image ($postgres_image) does not provide them: use a Postgres image with those extensions (pgvector/pgvector:pg18 for the shared PostgreSQL 18 server — the board needs vector since migration 0051); nothing was restored"
     elif [[ -z "$available_exts" ]]; then
-      log "PREDEPLOY-PG-COMPAT: WARNING: the copy's extension list could not be read; the dump needs ${dump_exts//$'\n'/ }; the restore itself fails if an extension is missing"
+      log "PREDEPLOY-PG-COMPAT: WARNING: the copy's extension list could not be read${copy_exts_reason:+ (psql probe failed: $copy_exts_reason)}; the dump needs ${dump_exts//$'\n'/ }; the restore itself fails if an extension is missing"
     else
       log "PREDEPLOY-PG-COMPAT: the copy provides every extension the dump restores (${dump_exts//$'\n'/ })"
     fi
