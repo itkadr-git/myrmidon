@@ -60,7 +60,7 @@ import {
   type DeployJobDocument,
   type DeployJobStatus,
 } from "./domain.js";
-import { readDeployJobsSettings, type DeployJobsSettings } from "./settings.js";
+import { resolveDeployJobsSettings, type DeployJobsSettings } from "./settings.js"; // myrmidon(1.7, OPE-4101): live behavior settings
 
 /** Storage the service talks to: the instance_settings row (or a test double). */
 export interface DeployJobStore {
@@ -126,6 +126,7 @@ export interface DeployJobServiceDeps {
   /** Health facts of the running server, as /api/health reports them. */
   readHealth: () => Promise<{ version: string | null; commit: string | null } | null>;
   now?: () => Date;
+  /** Static settings override for tests; production resolves them live per call. */
   settings?: DeployJobsSettings;
   probes?: ProbeDeps;
   logActivity?: typeof logActivity;
@@ -152,7 +153,9 @@ export function toView(job: DeployJob): DeployJobView {
 export function deployJobsService(db: Db, deps: DeployJobServiceDeps) {
   const store = resolveStore(db);
   const now = deps.now ?? (() => new Date());
-  const settings = deps.settings ?? readDeployJobsSettings();
+  // myrmidon(1.7, OPE-4101): behavior keys resolve live on every use so a UI
+  // change applies without a restart; `deps.settings` stays the test override.
+  const settings = (): DeployJobsSettings => deps.settings ?? resolveDeployJobsSettings();
   const audit = deps.logActivity ?? ((dbArg, entry) => logActivity(dbArg, entry));
 
   async function findActiveJob(): Promise<DeployJob | null> {
@@ -204,7 +207,7 @@ export function deployJobsService(db: Db, deps: DeployJobServiceDeps) {
 
   /** Create a job and start verification. */
   async function create(input: { reference: string; reason?: string }, actor: { actorType: string; actorId: string }): Promise<DeployJobView> {
-    if (!settings.enabled) {
+    if (!settings().enabled) {
       throw new DeployJobError(503, "deploys from the interface are not enabled on this instance (MYRMIDON_DEPLOY_ENABLED)");
     }
     const problem = digestProblem(input.reference ?? "");
@@ -356,8 +359,8 @@ export function deployJobsService(db: Db, deps: DeployJobServiceDeps) {
     // A step stuck too long aborts the job: the interface must not leave a
     // half-open window forever (MYRMIDON_DEPLOY_STEP_TIMEOUT_SEC per status).
     const lastStep = job.steps[job.steps.length - 1];
-    if (lastStep && at.getTime() - Date.parse(job.updatedAt) > settings.stepTimeoutMs) {
-      await failJob(job.id, "aborted", `step ${job.status} exceeded the timeout (${Math.round(settings.stepTimeoutMs / 1000)}s)`);
+    if (lastStep && at.getTime() - Date.parse(job.updatedAt) > settings().stepTimeoutMs) {
+      await failJob(job.id, "aborted", `step ${job.status} exceeded the timeout (${Math.round(settings().stepTimeoutMs / 1000)}s)`);
       return;
     }
 
@@ -430,7 +433,7 @@ export function deployJobsService(db: Db, deps: DeployJobServiceDeps) {
           const detail = healthy
             ? `new image healthy: version ${health?.version ?? "<none>"}, commit ${health?.commit?.slice(0, 12) ?? "<none>"}`
             : `host reported health-ok but /api/health disagrees: got version ${health?.version ?? "<none>"}, commit ${health?.commit?.slice(0, 12) ?? "<none>"}`;
-          if (!healthy && settings.autoRollback) {
+          if (!healthy && settings().autoRollback) {
             // R5-C: a failed health check with the automatic rollback on is
             // not terminal — the host executor rolls the image back next.
             await startAutoRollback(job, detail, report);
@@ -441,7 +444,7 @@ export function deployJobsService(db: Db, deps: DeployJobServiceDeps) {
         }
         if (report.phase === "health-failed" || report.phase === "error") {
           const detail = `host executor failed: ${report.phase}${report.detail ? ` — ${report.detail}` : ""}`;
-          if (settings.autoRollback) {
+          if (settings().autoRollback) {
             // R5-C: same trigger — the new image is running but not healthy,
             // roll back to the locally remembered previous one.
             await startAutoRollback(job, detail, report);
@@ -464,7 +467,7 @@ export function deployJobsService(db: Db, deps: DeployJobServiceDeps) {
         }
         if (report.phase === "rolled-back") {
           const detail = `rolled back to the previous image${report.detail ? ` (${report.detail})` : ""}`;
-          if (!settings.autoRollback) {
+          if (!settings().autoRollback) {
             // Desync: the host rolled back with the board switch off. The
             // deploy still failed its health check — record it as such.
             await finish(job.id, "failed_health", `${detail}: the host executor rolled back with the board switch off`, report);
