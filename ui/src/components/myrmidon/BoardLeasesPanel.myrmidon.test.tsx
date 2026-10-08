@@ -236,7 +236,8 @@ describe("leader lease block", () => {
     const { queryClient } = await renderPanel();
     const queries = queryClient.getQueryCache().findAll({ queryKey: boardLeasesQueryKey });
     expect(queries).toHaveLength(1);
-    expect(queries[0]?.options.refetchInterval).toBe(10_000);
+    const options = queries[0]?.options as { refetchInterval?: number } | undefined;
+    expect(options?.refetchInterval).toBe(10_000);
     expect(BOARD_LEASES_REFETCH_MS).toBe(10_000);
     expect(vi.mocked(boardLeasesApi.get)).toHaveBeenCalledTimes(1);
   });
