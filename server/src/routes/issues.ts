@@ -14183,10 +14183,14 @@ export function issueRoutes(
       // the old bot may archive-delete the reopened directory, the new bot
       // would not protect its new task for the rest of the 300 s window. Drop
       // both bots' entries here so the next poll rebuilds from the store.
-      if (changes.status || Object.hasOwn(changes, "assigneeAgentId")) {
+      if (
+        Object.hasOwn(issueChanges, "status") ||
+        Object.hasOwn(issueChanges, "assigneeAgentId")
+      ) {
         invalidateDesiredStateForIssueChange({
           companyId: issue.companyId,
-          previousAssigneeAgentId: previous.assigneeAgentId,
+          previousAssigneeAgentId:
+            (previous.assigneeAgentId as string | null | undefined) ?? null,
           nextAssigneeAgentId: issue.assigneeAgentId,
         });
       }
