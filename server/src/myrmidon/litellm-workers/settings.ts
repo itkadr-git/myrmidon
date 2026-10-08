@@ -100,14 +100,17 @@ export function drizzleLitellmWorkersStore(db: Db): LitellmWorkersStore {
         const { next, result } = change(before);
         const document: LitellmWorkersDocument = { ...next, updatedAt: new Date().toISOString() };
         companies[companyId] = document;
-        const general = mergeGeneral(row?.general, companies);
+        const general = mergeGeneral(row?.general, companies) as Record<string, unknown>;
         if (row) {
           await tx.update(instanceSettings).set({ general }).where(eq(instanceSettings.id, row.id));
         } else {
           await tx
             .insert(instanceSettings)
             .values({ singletonKey: LITELLM_WORKERS_SINGLETON_KEY, general })
-            .onConflictDoUpdate({ target: [instanceSettings.singletonKey], set: { general } });
+            .onConflictDoUpdate({
+              target: [instanceSettings.singletonKey],
+              set: { general },
+            });
         }
         return { doc: next, result };
       });
