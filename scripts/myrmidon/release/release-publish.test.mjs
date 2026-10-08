@@ -13,7 +13,9 @@ import {
   componentDigest,
   componentDigests,
   extractChangelogSection,
+  fitNotesSection,
   previousMinorPatch,
+  RELEASE_BODY_MAX_CHARS,
 } from "./release-body.mjs";
 
 // RELEASE-PUBLISH (the 02.10 gap): integration tests of the automatic GitHub
@@ -971,5 +973,27 @@ describe("release manifest (release-components.json)", () => {
     assert.equal(manifest.version, "1.6.0");
     assert.deepEqual(Object.keys(manifest.components).sort(), ["board", "dockergate", "fleetd", "hermes"]);
     assert.match(manifest.components.dockergate.digest, /^sha256:/);
+  });
+});
+
+describe("release body: GitHub size limit (rc.11: 161 814 bytes, HTTP 422)", () => {
+  const rows = ["| board | ghcr.io/itkadr-git/myrmidon@sha256:" + "a".repeat(64) + " |"];
+  it("a body over the limit is cut at a line boundary and points at the full changelog", () => {
+    const section = Array.from({ length: 5000 }, (_, i) => `- change ${i} ${"x".repeat(40)}`).join("\n");
+    const body = buildBody({ version: "1.6.5-rc.11", previous: "1.6.4", section, digestRows: rows });
+    assert.ok(body.length <= RELEASE_BODY_MAX_CHARS, `body ${body.length} > ${RELEASE_BODY_MAX_CHARS}`);
+    assert.match(body, /Full notes: \[docs\/myrmidon\/CHANGELOG\.md, section 1\.6\.5\]\(https:\/\/github\.com\/itkadr-git\/myrmidon\/blob\/myr-v1\.6\.5-rc\.11\/docs\/myrmidon\/CHANGELOG\.md\)/);
+    assert.match(body, /## Component images \(digests\)/);
+    assert.ok(body.includes(rows[0]), "the digest table is never cut");
+    assert.match(body, /- change 0 x+\n/);
+  });
+  it("a body under the limit is unchanged", () => {
+    const body = buildBody({ version: "1.6.5", previous: "1.6.4", section: "- one change", digestRows: rows });
+    assert.ok(body.includes("- one change"));
+    assert.ok(!body.includes("Full notes"));
+  });
+  it("fitNotesSection never returns more than the budget", () => {
+    const out = fitNotesSection("a\n".repeat(1000), 300, { version: "1.6.5", notes: "1.6.5" });
+    assert.ok(out.length <= 300, String(out.length));
   });
 });

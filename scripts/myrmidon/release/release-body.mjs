@@ -152,6 +152,24 @@ export function buildManifest({ version, digests }) {
   return { schema: 1, version, tag: `myr-v${version}`, components };
 }
 
+/**
+ * GitHub refuses a release body longer than 125 000 characters (HTTP 422
+ * "body is too long"); the 1.6.5 notes grew past it over eleven release
+ * candidates. The body keeps a margin under that limit: when the notes do not
+ * fit, they are cut at a line boundary and end with a pointer at the full
+ * section of docs/myrmidon/CHANGELOG.md on the same tag.
+ */
+export const RELEASE_BODY_MAX_CHARS = 120000;
+
+/** The notes section cut at a line boundary to `budget` characters, with a pointer at the full changelog. */
+export function fitNotesSection(section, budget, { version, notes }) {
+  if (section.length <= budget) return section;
+  const pointer = `\n\n> The notes above are shortened to fit GitHub's release size limit. Full notes: [docs/myrmidon/CHANGELOG.md, section ${notes}](https://github.com/itkadr-git/myrmidon/blob/myr-v${version}/docs/myrmidon/CHANGELOG.md).`;
+  const room = Math.max(0, budget - pointer.length);
+  const cut = section.lastIndexOf("\n", room);
+  return section.slice(0, cut > 0 ? cut : room).trimEnd() + pointer;
+}
+
 /** The complete release body: deploy line, notes, digest table, cross-check. */
 export function buildBody({ version, notesVersion = null, previous, section, digestRows }) {
   const anchor = previous
@@ -169,11 +187,19 @@ export function buildBody({ version, notesVersion = null, previous, section, dig
         "",
       ]
     : [];
+  const frame = buildFrame({ version, previous, anchor, replaces, rcLine, digestRows });
+  const fitted = fitNotesSection(section, RELEASE_BODY_MAX_CHARS - frame.length, { version, notes });
+  return frame.replace(NOTES_SLOT, fitted);
+}
+
+const NOTES_SLOT = "\u0000NOTES\u0000";
+
+function buildFrame({ version, previous, anchor, replaces, rcLine, digestRows }) {
   return [
     ...rcLine,
     `Myrmidon ${version} replaces ${replaces}. Deploy the board, the release component images (dockergate, fleetd) and the bot images from this tag together (one deploy: \`deploy.sh --release <tag>\`); see [docs/myrmidon/deploy.md](docs/myrmidon/deploy.md)${anchor}.`,
     "",
-    section,
+    NOTES_SLOT,
     "",
     "## Component images (digests)",
     "",
