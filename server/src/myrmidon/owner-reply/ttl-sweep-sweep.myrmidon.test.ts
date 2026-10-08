@@ -57,14 +57,15 @@ describeEmbeddedPostgres("owner card TTL sweep (embedded PG)", () => {
   function makeSweep(wakeups: unknown[][] = []) {
     const wakeup = vi.fn(async (agentId: string, options: Record<string, unknown>) => {
       wakeups.push([agentId, options]);
-      await db.insert(agentWakeupRequests).values({
+      const values = [{
         agentId,
         reason: String(options.reason),
         idempotencyKey: (options.idempotencyKey as string | null) ?? null,
         source: "automation",
         triggerDetail: "system",
         payload: options.payload ?? null,
-      });
+      }] as const;
+      await db.insert(agentWakeupRequests).values(values as any);
       return null;
     });
     const deps: OwnerCardTtlSweepDeps = { db, wakeup };
@@ -80,7 +81,7 @@ describeEmbeddedPostgres("owner card TTL sweep (embedded PG)", () => {
   }
 
   async function insertCard(overrides: Record<string, unknown> = {}) {
-    const [row] = await db.insert(issueThreadInteractions).values({
+    const values = {
       companyId: COMPANY,
       issueId: ISSUE,
       kind: "request_confirmation",
@@ -92,7 +93,8 @@ describeEmbeddedPostgres("owner card TTL sweep (embedded PG)", () => {
       createdAt: OLD,
       updatedAt: OLD,
       ...overrides,
-    }).returning({ id: issueThreadInteractions.id });
+    };
+    const [row] = await db.insert(issueThreadInteractions).values(values as any).returning({ id: issueThreadInteractions.id });
     return row.id;
   }
 

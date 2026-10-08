@@ -42,6 +42,7 @@ import {
   OWNER_MESSAGE_COMMENT_REASON,
   OWNER_MESSAGE_INTERACTION_LABEL,
   isOwnerDecisionAudience,
+  type IssueCommentMetadata,
   type IssueThreadInteractionPayload,
 } from "@paperclipai/shared";
 import { logger } from "../../middleware/logger.js";
@@ -363,7 +364,7 @@ async function expireOwnerCard(
     .set({
       status: "expired",
       result: { version: 1, outcome: "expired", reason: "interaction_expired" },
-      payload: payload as IssueThreadInteractionPayload,
+      payload: payload as unknown as IssueThreadInteractionPayload,
       resolvedAt: now,
       updatedAt: now,
     })
@@ -436,14 +437,14 @@ async function postSweepComment(
       sections: [{
         title: "Owner card TTL",
         rows: [
-          { kind: "text", text: `Interaction:${row.id}` },
+          { type: "text", text: `Interaction:${row.id}` },
           ...(payload.delivery && typeof payload.delivery === "object" ? [
-            { kind: "keyValue" as const, key: "sentTo", value: String((payload.delivery as Record<string, unknown>).sentTo ?? "") },
-            { kind: "keyValue" as const, key: "sentAt", value: String((payload.delivery as Record<string, unknown>).sentAt ?? "") },
+            { type: "key_value", label: "sentTo", value: String((payload.delivery as Record<string, unknown>).sentTo ?? "") },
+            { type: "key_value", label: "sentAt", value: String((payload.delivery as Record<string, unknown>).sentAt ?? "") },
           ] : []),
         ],
       }],
-    },
+    } satisfies IssueCommentMetadata,
   });
   await db
     .update(issues)
