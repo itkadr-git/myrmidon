@@ -283,6 +283,15 @@ export interface InstanceGeneralSettings {
    */
   budgetEnforcement?: BudgetEnforcementSettings;
   /**
+   * myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): the pass journal — the last
+   * passes of every company, newest first, each with the counters of the pass
+   * and the roles it skipped with their reason. Written by the foraging pass,
+   * read by GET /api/myrmidon/companies/:id/foraging/passes. Kept in sync with
+   * the validator of the same field (packages/shared/src/validators/instance.ts)
+   * and with the reader in packages/shared/src/myrmidon-foraging-pass-journal.ts.
+   */
+  foragingPassJournal?: unknown[];
+  /**
    * myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys, managed
    * from the instance settings page. Absent means "no keys registered". Kept
    * in sync with the validator of the same field

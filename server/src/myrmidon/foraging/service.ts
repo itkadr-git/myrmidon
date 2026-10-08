@@ -15,6 +15,17 @@
 //      is a normal outcome: the sources after the stop are untouched and the
 //      next pass starts with them.
 //
+// myrmidon(1.6.3-FORAGING-IDLE-GATE): learning only when idle. Before a
+// source is read, the pass checks that the source's ROLE is idle: the role's
+// queue (tasks with no assignee, the swarm-claim queue semantics) is empty
+// AND at least one agent of the role has no `todo`/`in_progress` task. A busy
+// role is skipped with the reason `queue_not_empty` or `no_idle_agent` (per
+// role, in the result and the journal); the pass CONTINUES with the other
+// roles' sources — the gate filters sources per role inside one pass, it
+// never aborts the sweep. The toggle is re-read on every pass (see
+// idle-gate-settings.ts), so a settings-page change reaches the next pass
+// without a restart.
+//
 // 1.6.1 (FORAGING-LIMITS-UI): the pass now also
 //   - resolves its settings on every run (the wiring passes a resolver, so a
 //     change made in the interface applies with the next pass, no restart);
@@ -28,17 +39,6 @@
 //   - runs the auto-off check (owner's 29.09 addition): when the BASELINE
 //     cost-per-task mean is above the configured threshold, learning switches
 //     itself off (one settings write) and raises a signal.
-//
-// myrmidon(1.6.3-FORAGING-IDLE-GATE): learning only when idle. Before a
-// source is read, the pass checks that the source's ROLE is idle: the role's
-// queue (tasks with no assignee, the swarm-claim queue semantics) is empty
-// AND at least one agent of the role has no `todo`/`in_progress` task. A busy
-// role is skipped with the reason `queue_not_empty` or `no_idle_agent` (per
-// role, in the result and the journal); the pass CONTINUES with the other
-// roles' sources — the gate filters sources per role inside one pass, it
-// never aborts the sweep. The toggle is re-read on every pass (see
-// idle-gate-settings.ts), so a settings-page change reaches the next pass
-// without a restart.
 //
 // Failures are per source: one unreachable host writes `last_error` on its row
 // and the pass continues with the next source. Nothing here throws at the pass
@@ -73,6 +73,9 @@ import {
 import type { ForagingSettings } from "@paperclipai/shared";
 import type { ForagingStore } from "./store.js";
 import { readForagingIdleGate, type ForagingIdleGateServiceDeps } from "./idle-gate-settings.js";
+// myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): the pass journal of this pass.
+import type { ForagingPassJournalService } from "./pass-journal.js";
+import type { ForagingPassSkip } from "@paperclipai/shared";
 
 export interface ForagingReaderResult {
   /** The raw text of the source; the pass normalizes it. */
@@ -84,6 +87,16 @@ export interface ForagingReaderResult {
 /** Reads one source. The only network boundary of the pass; injected in tests. */
 export interface ForagingReader {
   read(source: ForagingSourceRef, signal: AbortSignal): Promise<ForagingReaderResult>;
+}
+
+/** The per-role idle check the pass runs for the gate (injected in tests). */
+export interface ForagingIdleCheck {
+  /**
+   * `queue_not_empty` — the role's queue (unassigned open tasks) is not
+   * empty; `no_idle_agent` — no agent of the role is free of todo/in_progress
+   * work; null — the role is idle, the pass may read its sources.
+   */
+  roleIdleReason(companyId: string, role: string): Promise<"queue_not_empty" | "no_idle_agent" | null>;
 }
 
 /** What the service needs to write one finance event (the Costs line). */
@@ -109,32 +122,28 @@ export type ForagingSettingsResolver = () => Promise<{
   settings: ForagingSettings;
 }>;
 
-/** The per-role idle check the pass runs for the gate (injected in tests). */
-export interface ForagingIdleCheck {
-  /**
-   * `queue_not_empty` — the role's queue (unassigned open tasks) is not
-   * empty; `no_idle_agent` — no agent of the role is free of todo/in_progress
-   * work; null — the role is idle, the pass may read its sources.
-   */
-  roleIdleReason(companyId: string, role: string): Promise<"queue_not_empty" | "no_idle_agent" | null>;
-}
-
 export interface ForagingServiceDeps {
   store: ForagingStore;
   reader: ForagingReader;
   candidatePort: ForagingCandidatePort;
-  /** The settings resolver — live: called on every pass and budget read. */
-  resolveSettings: ForagingSettingsResolver;
-  /** The finance port: one training_charge line per pass. Optional in tests. */
-  finance?: ForagingFinancePort;
-  /** The BASELINE cost-per-task probe for the auto-off rule. Optional. */
-  baselineCost?: ForagingBaselineCostPort;
   /** The database, for the default per-role idle check. Optional. */
   db?: Db;
   /** The idle-gate toggle, read on EVERY pass; absent means the gate is not applied. */
   idleGate?: Pick<ForagingIdleGateServiceDeps, "getGeneral" | "env">;
   /** The per-role idle check; defaults to the swarm-queue/agent SQL check. */
   idleCheck?: ForagingIdleCheck;
+  /**
+   * myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): the pass journal. Every pass
+   * appends itself to it, so the "Foraging" page can show what a pass read and
+   * which roles it skipped with which reason. Absent = passes are not recorded.
+   */
+  journal?: Pick<ForagingPassJournalService, "record">;
+  /** The settings resolver — live: called on every pass and budget read. */
+  resolveSettings: ForagingSettingsResolver;
+  /** The finance port: one training_charge line per pass. Optional in tests. */
+  finance?: ForagingFinancePort;
+  /** The BASELINE cost-per-task probe for the auto-off rule. Optional. */
+  baselineCost?: ForagingBaselineCostPort;
   now?: () => Date;
   log?: Pick<typeof logger, "info" | "warn" | "error">;
 }
@@ -233,17 +242,50 @@ export function createForagingService(deps: ForagingServiceDeps): ForagingServic
       const result = emptyResult();
       // myrmidon(1.6.3-FORAGING-IDLE-GATE): the toggle is read on EVERY pass, so
       // a settings-page change reaches the next pass without a restart (the
-      // environment variable stays the forced override). A read failure fails
-      // OPEN: a broken settings read must not stop learning.
+      // environment variable stays the forced override). With no toggle wired
+      // (or no idle check to run) the gate is not applied at all. An unreadable
+      // settings row reads as "nothing stored" inside readForagingIdleGate, so
+      // the default (on) applies and the screen shows the source "default";
+      // the catch below only guards a throwing resolver.
       let gateEnabled = false;
       if (deps.idleGate && idleCheck) {
         try {
           gateEnabled = (await readForagingIdleGate(deps.idleGate)).enabled;
         } catch (err) {
-          log.warn({ err, companyId }, "foraging: idle gate read failed, the gate stays off this pass");
+          log.warn({ err, companyId }, "foraging: idle gate resolve failed, the gate stays off this pass");
           gateEnabled = false;
         }
       }
+
+      // myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): the pass state and the
+      // journal writer live above the source listing, because a pass that
+      // cannot list its sources is still a pass the history must show.
+      const state: ForagingBudgetState = { spentCents: 0 };
+      const checkedRoles = new Map<string, "queue_not_empty" | "no_idle_agent" | null>();
+      // Every role this pass left alone, so the pass history names the roles,
+      // not just a single reason.
+      const skipped: ForagingPassSkip[] = [];
+      /**
+       * Writes the pass into the journal. Called on EVERY exit of the pass —
+       * a pass that stopped early is exactly the pass an operator needs to see
+       * in the history. Best effort: a journal failure never fails a pass.
+       */
+      const recordPass = async () => {
+        if (!deps.journal) return;
+        try {
+          await deps.journal.record(companyId, {
+            sourcesRead: result.sourcesRead,
+            findings: result.findings,
+            candidates: result.candidates,
+            errors: result.errors,
+            stoppedByBudget: result.stoppedByBudget,
+            skippedReason: result.skippedReason ?? skipped[0]?.reason ?? null,
+            skipped,
+          });
+        } catch (err) {
+          log.warn({ err, companyId }, "foraging: could not record the pass in the journal");
+        }
+      };
 
       const startedAt = now();
       const resolved = await deps.resolveSettings();
@@ -281,6 +323,7 @@ export function createForagingService(deps: ForagingServiceDeps): ForagingServic
               "foraging: auto-off by the cost-per-task threshold",
             );
             result.stoppedByBudget = true;
+            await recordPass();
             return result;
           }
         } catch (err) {
@@ -293,11 +336,9 @@ export function createForagingService(deps: ForagingServiceDeps): ForagingServic
         sources = await store.enabledSources(companyId);
       } catch (err) {
         log.error({ err, companyId }, "foraging: could not list sources");
+        await recordPass();
         return result;
       }
-
-      const state: ForagingBudgetState = { spentCents: 0 };
-      const checkedRoles = new Map<string, "queue_not_empty" | "no_idle_agent" | null>();
 
       // The spend windows are read once per pass; the per-read decisions add
       // this pass's own spend on top (the rows are written as the pass goes).
@@ -329,33 +370,6 @@ export function createForagingService(deps: ForagingServiceDeps): ForagingServic
           log.info({ companyId, sourceId: source.id }, "foraging: pass stopped by the budget");
           break;
         }
-        // myrmidon(1.6.3-FORAGING-IDLE-GATE): learning only when the role is
-        // idle — one check per role per pass, cached in `checkedRoles`. A busy
-        // role's sources are skipped with the reason in the result and the
-        // journal; the pass CONTINUES with the other roles' sources.
-        if (gateEnabled && idleCheck) {
-          if (!checkedRoles.has(source.role)) {
-            try {
-              checkedRoles.set(source.role, await idleCheck.roleIdleReason(companyId, source.role));
-            } catch (err) {
-              log.warn(
-                { err, companyId, role: source.role },
-                "foraging: idle check failed, reading the role anyway",
-              );
-              checkedRoles.set(source.role, null);
-            }
-          }
-          const idleReason = checkedRoles.get(source.role);
-          if (idleReason) {
-            result.skippedReason = idleReason;
-            log.info(
-              { companyId, sourceId: source.id, role: source.role, reason: idleReason },
-              "foraging: the role is busy, skipping its sources this pass",
-            );
-            continue;
-          }
-        }
-
         const plannedCents = estimateCostCents(512 * 1024);
         const roleSpentCents = (windows.byRole.get(source.role) ?? 0) + (passRoleSpend.get(source.role) ?? 0);
         const limitDecision = decideForagingLimits({
@@ -375,6 +389,32 @@ export function createForagingService(deps: ForagingServiceDeps): ForagingServic
             "foraging: pass stopped by a spend limit",
           );
           break;
+        }
+
+        // myrmidon(1.6.3-FORAGING-IDLE-GATE): per-role idle check inside the
+        // pass. A busy role is skipped (the reason goes to the result and the
+        // journal); the pass CONTINUES with the other roles' sources.
+        if (gateEnabled && idleCheck) {
+          if (!checkedRoles.has(source.role)) {
+            try {
+              checkedRoles.set(source.role, await idleCheck.roleIdleReason(companyId, source.role));
+            } catch (err) {
+              log.warn({ err, companyId, role: source.role }, "foraging: idle check failed, reading anyway");
+              checkedRoles.set(source.role, null);
+            }
+          }
+          const reason = checkedRoles.get(source.role);
+          if (reason !== null && reason !== undefined) {
+            result.skippedReason = reason;
+            if (!skipped.some((entry) => entry.role === source.role)) {
+              skipped.push({ role: source.role, reason });
+            }
+            log.info(
+              { companyId, role: source.role, sourceId: source.id, reason },
+              "foraging: role is busy, skipping its sources this pass",
+            );
+            continue;
+          }
         }
 
         const controller = new AbortController();
@@ -484,6 +524,7 @@ export function createForagingService(deps: ForagingServiceDeps): ForagingServic
         }
       }
 
+      await recordPass();
       // 1.6.1: the signal. A pass stopped by a limit raises one attention card
       // (soft mode asks the owner); a pass that ran without a stop clears it.
       if (stoppedReason !== null) {

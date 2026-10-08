@@ -242,6 +242,13 @@ export const instanceGeneralSettingsSchema = z.object({
   // myrmidon(1.6.1-BOT-DISK-D): shared mount settings changed from the instance
   // settings API; absent means "the shared mount is disabled" (deny by default).
   sharedMount: sharedMountSettingsSchema.optional(),
+  // myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): the pass journal — the last
+  // passes of every company (what each read, and which roles were skipped why),
+  // kept by the foraging pass under `general.foragingPassJournal` and read by
+  // GET /api/myrmidon/companies/:id/foraging/passes. Stored passthrough, never
+  // validated here beyond being a list-shaped value the service re-reads
+  // defensively.
+  foragingPassJournal: z.array(z.unknown()).optional(),
   // myrmidon(1.6.5 BOT-RUNTIME-TUNING D2): the fallback-signal settings, changed
   // from /api/myrmidon/model-fallback/settings; absent means "use the
   // environment variable, then the default" (see
