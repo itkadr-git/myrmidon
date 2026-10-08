@@ -699,6 +699,10 @@ import {
   type PriorityScoredRun,
 } from "../myrmidon/run-priority/scoring.js";
 import { runPriorityWeight, type RunPrioritySettings } from "@paperclipai/shared";
+// myrmidon(PERF-DIET-K): issue-scoped session generations for the container
+// Hermes gateway — one task's session key gains a `:g<N>` once it passes its
+// age/activity threshold, so the task's Hermes state stays bounded
+import { resolveHeartbeatSessionGeneration } from "../myrmidon/session-generations/index.js";
 // myrmidon(S2-hostcred): a run never inherits the host's GitHub credentials
 import {
   filterHostGitHubCredentialEnv,
@@ -22972,6 +22976,59 @@ export function heartbeatService(
         delete context.paperclipSessionHandoffMarkdown;
         delete context.paperclipSessionRotationReason;
         delete context.paperclipPreviousSessionId;
+      }
+
+      // myrmidon(PERF-DIET-K): issue-scoped session generations for the
+      // container Hermes gateway — see server/src/myrmidon/session-generations/.
+      // The gateway adapter resumes one Hermes session per task key for the
+      // task's whole life; once that session passes its age or activity
+      // threshold the board moves the task to the next generation, whose key
+      // ends in `:g<N>`, and Hermes starts an empty session for it. Null (any
+      // other adapter, any other strategy, no issue, or the feature off) leaves
+      // the run exactly as the vendor built it, and generation 1 carries no
+      // suffix at all, so nothing changes until a threshold is crossed.
+      const runSessionGeneration = await resolveHeartbeatSessionGeneration({
+        db,
+        adapterType: agent.adapterType,
+        sessionKeyStrategy: readNonEmptyString(runtimeConfig.sessionKeyStrategy),
+        companyId: agent.companyId,
+        agentId: agent.id,
+        issueId,
+        continuationSummary: continuationSummary?.body ?? null,
+      });
+      if (runSessionGeneration) {
+        runtimeConfig = {
+          ...runtimeConfig,
+          sessionGeneration: runSessionGeneration.generation,
+        };
+        if (runSessionGeneration.rotate) {
+          // Carry the vendor handoff shape into the new generation: the wake
+          // already brings the task's continuation summary, and this note names
+          // the generation change and the previous session's last run.
+          context.paperclipSessionHandoffMarkdown = context.paperclipSessionHandoffMarkdown
+            ? `${context.paperclipSessionHandoffMarkdown}\n\n${runSessionGeneration.handoffMarkdown}`
+            : runSessionGeneration.handoffMarkdown;
+          context.paperclipSessionRotationReason = runSessionGeneration.reason;
+          context.paperclipPreviousSessionId = runSessionGeneration.previousSessionKey;
+          runtimeWorkspaceWarnings.push(
+            `Starting session generation g${runSessionGeneration.generation} because ${runSessionGeneration.reason}.`,
+          );
+          logger.info(
+            {
+              agentId: agent.id,
+              issueId,
+              generation: runSessionGeneration.generation,
+              messages: runSessionGeneration.messages,
+              ageDays: runSessionGeneration.ageDays,
+              reason: runSessionGeneration.reason,
+            },
+            "session generation rotated",
+          );
+        } else if (runSessionGeneration.generation > 1) {
+          runtimeWorkspaceWarnings.push(
+            `Continuing session generation g${runSessionGeneration.generation} (${runSessionGeneration.messages} messages).`,
+          );
+        }
       }
 
       if (managedAiRuntime) {

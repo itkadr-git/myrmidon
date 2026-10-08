@@ -341,6 +341,10 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // myrmidon(DB-PERF-C-P4): the stored tool gateway policy cache TTL
       // survives every general write (it is edited on its own settings route).
       ...(parsed.data.toolPolicyCache ? { toolPolicyCache: parsed.data.toolPolicyCache } : {}),
+      // myrmidon(PERF-DIET-K): the session-generation thresholds are edited on the
+      // general settings page. Without this line the normalizer drops the key, so a
+      // PATCH would not roundtrip and the run dispatch would never read the row.
+      ...(parsed.data.sessions ? { sessions: parsed.data.sessions } : {}),
     };
   }
   return {
