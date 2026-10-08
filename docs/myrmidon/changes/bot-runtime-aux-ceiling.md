@@ -4,53 +4,20 @@ settings-section: Bot containers (G-series, the 28.09 "option B" plan)
 ---
 
 ## changelog-en
-
 ### Auxiliary calls of a bot have a cheap ceiling, never a paid fallback (1.6.5 BOT-RUNTIME-TUNING-AUX-CEILING)
 
-- Profile cards now have a company-level fallback ceiling for auxiliary calls:
-  `MYRMIDON_BOT_AUX_FALLBACK_MODELS` (a list of gateway model aliases, instance
-  setting). The profile compiler writes it as
+- The instance setting `MYRMIDON_BOT_AUX_FALLBACK_MODELS` (a list of gateway
+  model aliases) is written by the profile compiler as
   `auxiliary.title_generation.fallback_chain` and
   `auxiliary.compression.fallback_chain` in the bot's `hermes/config.yaml`.
-- Hermes walks an auxiliary task's `fallback_chain` before the main chain — the
-  card's `models.fallbacks` and then the gateway's own LiteLLM ladder — so an
-  auxiliary call whose own model refuses the request is served by another model
-  of the same cheap class instead of climbing into a paid model. This is the
-  fact of 02.10: the session title generator (`auxiliary.title_generation`) ran
-  on the main provider with `response_format: json_schema`; the model rejected
-  the schema, and the LiteLLM fallback chain served the title from a paid model.
-- The entry route is resolved per profile: the card's own provider when it names
-  one, otherwise the instance gateway endpoint with `base_url` and `key_env`
-  spelled out (Hermes resolves a fallback entry on its own and inherits neither
-  from the task's `model`). An entry that repeats the task's own model is
-  dropped — it is not a fallback — and when no route can be resolved the chain
-  is dropped with a compile warning while the auxiliary model itself is still
-  written. The ceiling never covers `auxiliary.vision`: those entries must be
-  vision-capable models, a class the list cannot vouch for.
-- Dropping `response_format: json_schema` where a model does not implement it
-  needs no Myrmidon change: Hermes keeps a per-route memo of rejected
-  structured-output types (plus the provider profiles' declared unsupported
-  formats) and drops the field before the first request, and the title
-  generator falls back from strict JSON to a loose scan and then to first-line
-  prose. What was missing was the routing: an auxiliary call now has its own
-  cheap ceiling instead of the main chain.
-- Example — a bot whose card pins no models, company defaults
-  `MYRMIDON_BOT_AUX_TITLE_MODEL=myr-cheap-chat`,
-  `MYRMIDON_BOT_AUX_FALLBACK_MODELS=myr-cheap-chat,myr-cheap-long`,
-  `MYRMIDON_BOT_LLM_BASE_URL=https://llm.example.com/v1`,
-  `MYRMIDON_BOT_LLM_API_KEY_ENV=MYRMIDON_BOT_LLM_API_KEY`:
-
-  ```yaml
-  auxiliary:
-    title_generation:
-      fallback_chain:
-      - base_url: "https://llm.example.com/v1"
-        key_env: "MYRMIDON_BOT_LLM_API_KEY"
-        model: "myr-cheap-long"
-        provider: "custom"
-      model: "myr-cheap-chat"
-  ```
-
+- Hermes walks that chain before the main chain and the gateway ladder, so a
+  refused auxiliary request is served by another cheap model instead of
+  climbing into a paid one (02.10: a rejected `json_schema` in title
+  generation was served from a paid model). Dropping unsupported
+  `response_format` needs no change — Hermes keeps a per-route memo.
+- Each entry resolves its own base URL and key env; an entry repeating the
+  task's model is dropped; an unresolvable route drops the chain with a
+  compile warning. The ceiling never covers `auxiliary.vision`.
 ## changelog-ru
 
 ### У вспомогательных вызовов бота появился дешёвый потолок, платного фолбэка больше нет (1.6.5 BOT-RUNTIME-TUNING-AUX-CEILING)

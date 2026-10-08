@@ -6,28 +6,26 @@ divergence-section: 1.6.1 — BOT-DISK B: общий кэш пакетов дл�
 
 ### One mount per bot container, hard-linked node_modules (BOT-DISK-D)
 
-- A bot container now has **one** bind for its writable data: `<volume root>/<bot key>`
-  at `/bot`, with `hermes/`, `workspace/` and `scratch/` inside it. `/data/hermes`,
-  `/workspace` and `/scratch` are links the image makes into it. link(2) cannot cross a
-  mount point even on one ext4 filesystem, so with three separate binds (and the pnpm
-  store on a fourth) every `pnpm install` silently copied each package into each clone
-  and a bot's disk grew by about 5 GB per hour. The host layout is unchanged; helper
-  containers keep their three narrow binds; dockergate accepts the single-bind bot body
-  (deploy dockergate and the board together, as in ONE-DEPLOY).
-- The pnpm store lives inside that mount (`/workspace/.pnpm-store` by default) and pnpm
-  runs with `package-import-method=hardlink`. Note: pnpm 9 still copies silently when the
-  kernel refuses a link, whatever the method, so the guard is the start-time self-check
-  below, not pnpm. `/cache/pnpm` stays a download (metadata) cache only. Settings
-  `general.botDisk.pnpmStoreDir` and `pnpmImportMethod` replace `pnpmStore`
-  (`workspace`/`shared`); they apply on the next reconcile pass without a restart
-  (Instance → General).
-- Every container start checks that a hard link from the store into `/data/hermes`,
-  `/workspace` and `/scratch` works; a failure is logged and shown on the board as an
-  attention card (source `bot_disk_lifecycle`) via the clone-hygiene report. The image
-  build checks all three roots, and the repository test runs the same script.
-- Migration of running bots (pause, recreate with the new mount, verify, resume) is in
-  [bot-disk-cache.md](../bot-disk-cache.md#migrating-running-bots-to-the-single-mount).
-  Removed: the former `pnpmStore` key (a stored value is ignored) and its `shared` mode.
+- A bot container has one bind for its writable data: `<volume root>/<bot key>`
+  at `/bot`, with `hermes/`, `workspace/` and `scratch/` inside; `/data/hermes`,
+  `/workspace` and `/scratch` are links made by the image. link(2) cannot cross a
+  mount point, so with three binds (and the pnpm store on a fourth) every `pnpm
+  install` silently copied each package into each clone and a bot's disk grew
+  ~5 GB per hour. The host layout is unchanged; helper containers keep their
+  three narrow binds; dockergate accepts the single-bind body (deploy dockergate
+  and the board together, as in ONE-DEPLOY).
+- The pnpm store lives inside the mount (`/workspace/.pnpm-store`) and pnpm runs
+  with `package-import-method=hardlink`. pnpm 9 still copies silently when the
+  kernel refuses a link, so the guard is the start-time self-check, not pnpm.
+  `/cache/pnpm` stays a download cache only. Settings `general.botDisk.pnpmStoreDir`
+  and `pnpmImportMethod` replace `pnpmStore` (`workspace`/`shared`), applied on
+  the next reconcile pass (Instance -> General).
+- Every container start checks that a hard link from the store into
+  `/data/hermes`, `/workspace` and `/scratch` works; a failure is logged and
+  shown as an attention card (`bot_disk_lifecycle`) via the clone-hygiene report.
+  The image build checks all three roots and the repository test runs the script.
+- Migrating running bots: [bot-disk-cache.md](../bot-disk-cache.md#migrating-running-bots-to-the-single-mount).
+  Removed: the `pnpmStore` key (a stored value is ignored) and its `shared` mode.
 
 ## changelog-ru
 

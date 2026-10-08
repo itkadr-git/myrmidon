@@ -4,32 +4,25 @@
 
 The bot container reconciler compiles a profile for every bot on every sweep
 (once a minute), and most of what it read is company- or instance-scoped: the
-skill lifecycle delivery of the company, the runtime skill catalogue and its
-files, and the instance settings (compression defaults, helper ceiling,
-language-server policy, shared package cache, pnpm store, clone TTL). All of it
-was read again for every bot, so a fleet of N bots paid N times a minute.
+company's skill lifecycle delivery, the runtime skill catalogue and files, and
+the instance settings (compression defaults, helper ceiling, language-server
+policy, shared package cache, pnpm store, clone TTL). A fleet of N bots paid N
+reads a minute.
 
-- A sweep now shares one pass: the first bot of a tick reads those values and
-  every other bot of the same tick gets what it read. The pass is dropped at the
-  end of the sweep — a settings or skill change still reaches the bots within
-  one reconcile interval, exactly as before, and nothing is cached between
-  ticks. A skill carried by several bots is also read from disk once per pass.
-- `pnpmSettings` was read twice per bot inside one compile (once for the
-  package-cache variables, once for the scope instance's store path); it is now
-  read once per pass.
-- The agent card behind a profile is read as a single row by id instead of the
-  board's own `getById`, which also hydrates the whole company and the agent's
-  month spend — three queries where the profile needs the columns. Name
-  normalization and the cost view are for the agents list, not for a container
-  profile.
-- The card's "Apply now" and the canary wave reconcile one bot: they pass no
-  shared pass and behave as before. The reconciler log, the interfaces and the
-  UI are unchanged.
+- A sweep now shares one pass: the first bot of a tick reads those values, the
+  others get the same. The pass is dropped at the end of the sweep, so a settings
+  or skill change still reaches the bots within one reconcile interval and
+  nothing is cached between ticks. A skill carried by several bots is read from
+  disk once per pass.
+- `pnpmSettings` was read twice per bot per compile; now once per pass.
+- The agent card behind a profile is read as one row by id instead of `getById`,
+  which also hydrates the company and the agent's month spend.
+- "Apply now" and the canary wave reconcile one bot with no shared pass and
+  behave as before. Reconciler log, interfaces and UI are unchanged.
 
-Measured with counting fakes over a sweep of three bots: 21 instance-scoped
-port calls before, 6 after (one per reader; six of the "before" are the doubled
-pnpm read); the skill catalogue 3 -> 1, the lifecycle's company-wide reads
-3 -> 1, a skill directory carried by two bots 2 -> 1, and the card read 3 rows
+Measured over a sweep of three bots with counting fakes: 21 instance-scoped port
+calls before, 6 after; skill catalogue 3 -> 1, lifecycle company-wide reads
+3 -> 1, a skill directory carried by two bots 2 -> 1, the card read 3 rows
 instead of 3 x 3 queries.
 
 ## changelog-ru

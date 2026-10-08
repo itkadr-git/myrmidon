@@ -3,44 +3,20 @@ settings-section: BOT-DISK E — host disk usage signal
 ---
 
 ## changelog-en
-
 ### The shared git object store shows its facts, and one command accepts it on a live bot (1.6.5 BOT-DISK-G, part B)
 
-- The 1.6.5 shared store could not be accepted: on 06.10 the store on the bot
-  host was empty, every clone copied the whole history and the bots' section sat
-  at 95 %, yet neither the board nor the lead could see the store's state. The
-  only channel that carried it (the attention feed) is board-only and answers an
-  agent key with 403, and the check itself needed an `ssh` into a bot.
-- The start-time self-check now records the store's actual state beside its four
-  checks: `storeState` in `git-objects-check.json` — `path`, `enabled`,
-  `mirrorCount`, `totalBytes` and `repos[]` (owner/repo, only directories that
-  pass the wrapper's mirror test, bounded by `MYRMIDON_GIT_STORE_STATE_MAX`,
-  default 200). An absent store is reported as `enabled: true, mirrorCount: 0`,
-  not as a failure of the check itself.
-- The same facts ride the hygiene report: the in-container reporter adds
-  `gitStore` (the same field names) to the clone-hygiene report, and the board
-  parses both — `clone-hygiene.ts` gained `parseGitStoreState`, the report's
-  `gitStore` and the self-check's `storeState`. An older image carries none,
-  which reads as `null`, never as an error.
-- `GET /api/myrmidon/agents/:id/bot-container/git-store` answers the store's
-  facts to a reader with an agent key — the facts, the start-time snapshot and,
-  in `note`, why a field is missing (flag off, no bot key, no report yet, a
-  report from an older image, an unreadable report). It reads the report file
-  only: no exec into the bot. It is the one bot-container route that is not
-  board-only, behind the same agent-key and company boundary as the status
-  route; the board's attention feed keeps its own rules.
+- The start-time self-check records the store's state (`storeState` in
+  `git-objects-check.json`: path, enabled, mirrorCount, totalBytes, bounded
+  `repos[]`), the same facts ride the clone-hygiene report, and the board
+  parses both; an older image reads as `null`, never as an error.
+- `GET /api/myrmidon/agents/:id/bot-container/git-store` answers the facts to
+  an agent key — the one bot-container route that is not board-only. It reads
+  the report file only: no exec into the bot.
 - Acceptance is one command on the board host:
-  `scripts/myrmidon/deploy/git-objects-live-acceptance.sh --bot <container>`
-  (`--list` shows the candidates). It clones a repository twice inside one live
-  bot and checks the criteria from the fix's own ticket: the store is not empty
-  (a mirror is there and the store is at least `--min-store-mb`, default
-  100 MiB; the myrmidon store measured ~145 MB) and the second clone borrows
-  from it (`.git/objects/info/alternates` names the store, `.git` at most
-  `--max-clone-git-mb`, default 20 MiB, and under a quarter of the first
-  clone). It prints `PASS`/`FAIL` per criterion, exits 0/1/2, and removes its
-  scratch directory afterwards (`--keep` leaves it). This is the manual fallback
-  for the window before the image carrying the two facts above is on the host.
-
+  `scripts/myrmidon/deploy/git-objects-live-acceptance.sh --bot <container>` —
+  it clones twice inside one live bot and checks that the store holds a mirror
+  (≥100 MiB default) and the second clone borrows from it (alternates entry,
+  ≤20 MiB `.git`); prints PASS/FAIL per criterion.
 ## changelog-ru
 
 ### Общее хранилище объектов git показывает своё состояние, и одна команда принимает его на живом боте (1.6.5 BOT-DISK-G, часть B)
