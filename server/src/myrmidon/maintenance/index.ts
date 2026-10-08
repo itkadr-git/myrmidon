@@ -16,6 +16,7 @@ import { maintenanceService, type MaintenanceHeartbeatPort } from "./service.js"
 import { readZabbixSettings, zabbixMaintenanceHooks } from "./zabbix.js";
 import { readMaintenanceSettings } from "./settings.js";
 import { runBotDiskSweep } from "../bot-containers/bot-disk-service.js"; // myrmidon(BOT-DISK-A)
+import { runDatastoreCareRetentionTick } from "../datastore-care/index.js"; // myrmidon(1.6.5-DBC1)
 
 export {
   isAgentUnderMaintenance,
@@ -93,6 +94,10 @@ export async function startMaintenanceMode(db: Db): Promise<() => void> {
     void runBotDiskSweep(db).catch((err) =>
       logger.error({ err }, "bot disk lifecycle sweep failed"),
     );
+    // myrmidon(1.6.5-DBC1): datastore-care retention (run-context compaction);
+    // the pass is gated on the maintenance window, the settings and the backup
+    // precondition, and joins a pass already running.
+    runDatastoreCareRetentionTick(db);
   }, readMaintenanceSettings().tickMs);
   timer.unref?.();
   void service.tick().catch((err) => logger.error({ err }, "maintenance tick failed"));
@@ -100,6 +105,8 @@ export async function startMaintenanceMode(db: Db): Promise<() => void> {
   void runBotDiskSweep(db).catch((err) =>
     logger.error({ err }, "bot disk lifecycle sweep failed"),
   );
+  // myrmidon(1.6.5-DBC1): initial datastore-care retention pass.
+  runDatastoreCareRetentionTick(db);
   return () => clearInterval(timer);
 }
 

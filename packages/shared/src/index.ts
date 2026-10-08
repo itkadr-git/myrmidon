@@ -2838,6 +2838,9 @@ export * from "./myrmidon-litellm-sync.js";
 // myrmidon(1.6-SWARM): per-role task queues with leased claims — the shared
 // contract of the core queue, the supervisor view and the pilot settings.
 export * from "./myrmidon-swarm-claim.js";
+// myrmidon(1.6.5-DBC1): the datastore-care retention settings contract
+// (general.datastoreCare.retention) and the activity action names.
+export * from "./myrmidon-datastore-care.js";
 // myrmidon(BOT-RUNTIME-TUNING D2): the settings contract of the model fallback
 // signal (stored instance settings over environment over defaults).
 export * from "./myrmidon-fallback-signal.js";
