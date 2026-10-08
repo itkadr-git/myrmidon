@@ -34,6 +34,8 @@ const view: RuntimeLimitsView = {
     runMemoryEstimateMb: 300,
     minFreeHostMemoryMb: 15360,
     maxHostLoadPercentPerCore: 90,
+    // myrmidon(1.6.5 RUN-FAIRNESS part 2): the key is in the shared RunLimits type now.
+    maxPerAgentStartSharePercent: 15,
   },
   sources: {
     maxConcurrentRuns: "env",

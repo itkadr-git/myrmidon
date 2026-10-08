@@ -93,6 +93,14 @@ function createMemoryStore(rows: Array<Partial<ForagingSourceRow> & { id: string
         source.lastError = patch.lastError;
       }
     },
+    // 1.6.1: the spend ledger stubs the pass writes through.
+    async insertSpendEvent() {},
+    async spendWindows() {
+      return { dayCents: 0, monthCents: 0, byRole: new Map<string, number>(), byAgent: new Map<string, number>() };
+    },
+    async spendBreakdown() {
+      return [];
+    },
     async insertFinding(input: ForagingFindingInsert) {
       const finding: ForagingFindingRow = { ...input, id: `finding-${findings.length + 1}` };
       findings.push(finding);
@@ -139,6 +147,24 @@ const EMPTY_PORT: ForagingCandidatePort = {
   },
 };
 
+// 1.6.1: the resolved settings the pass reads (env-only views).
+const NO_LIMITS_SETTINGS = {
+  enabled: true,
+  intervalSec: 3600,
+  minHostIntervalSec: 60,
+  passBudgetCents: null,
+  dailyBudgetCents: null,
+  monthlyBudgetCents: null,
+  roleBudgetCents: null,
+  agentBudgetCents: null,
+  enforcement: "hard",
+  autoOffCostPerTaskCents: null,
+} as const;
+
+const PASS_BUDGET_1_SETTINGS = { ...NO_LIMITS_SETTINGS, passBudgetCents: 1 } as const;
+
+const DEFAULTS_SETTINGS = { ...NO_LIMITS_SETTINGS, passBudgetCents: 50 } as const;
+
 /** An idle check whose answers the test scripts per role. */
 function scriptedIdleCheck(reasonsByRole: Record<string, "queue_not_empty" | "no_idle_agent" | null>): ForagingIdleCheck & {
   setRole(role: string, reason: "queue_not_empty" | "no_idle_agent" | null): void;
@@ -171,7 +197,12 @@ function fakeGeneralStore(start: Record<string, unknown> = {}) {
 
 function baseDeps(overrides: Partial<Parameters<typeof createForagingService>[0]> = {}) {
   return {
-    settings: { budget: { maxCostCents: 0, enabled: false } },
+    resolveSettings: async () => ({
+      enabled: true,
+      intervalMs: 3_600_000,
+      budget: { maxCostCents: 0, enabled: false },
+      settings: { ...NO_LIMITS_SETTINGS },
+    }),
     db: {} as Parameters<typeof createForagingService>[0]["db"],
     ...overrides,
   };
@@ -370,6 +401,14 @@ describe("myrmidon(1.6.3-FORAGING-IDLE-GATE) sweep pass (regression, no gate)", 
       store,
       reader: fakeReader({ "https://example.com/a": "one\ntwo\n" }),
       candidatePort: EMPTY_PORT,
+      // 1.6.1: the service resolves its settings on every pass now; the test
+      // wires the same env-only view the old `settings` field carried.
+      resolveSettings: async () => ({
+        enabled: true,
+        intervalMs: 3_600_000,
+        budget: { maxCostCents: 0, enabled: false },
+        settings: { ...NO_LIMITS_SETTINGS },
+      }),
     });
     const result = await service.runPass("company-a");
     expect(result.sourcesRead).toBe(1);
@@ -386,6 +425,14 @@ describe("myrmidon(1.6.3-FORAGING-IDLE-GATE) sweep pass (regression, no gate)", 
       store,
       reader: fakeReader({ "https://example.com/feed": "one\ntwo\nthree\n" }),
       candidatePort: EMPTY_PORT,
+      // 1.6.1: the service resolves its settings on every pass now; the test
+      // wires the same env-only view the old `settings` field carried.
+      resolveSettings: async () => ({
+        enabled: true,
+        intervalMs: 3_600_000,
+        budget: { maxCostCents: 0, enabled: false },
+        settings: { ...NO_LIMITS_SETTINGS },
+      }),
     });
     const result = await service.runPass("company-a");
     expect(result.findings).toBe(1);
@@ -404,6 +451,14 @@ describe("myrmidon(1.6.3-FORAGING-IDLE-GATE) sweep pass (regression, no gate)", 
       store,
       reader: fakeReader({ "https://example.com/feed": "one\ntwo" }),
       candidatePort: EMPTY_PORT,
+      // 1.6.1: the service resolves its settings on every pass now; the test
+      // wires the same env-only view the old `settings` field carried.
+      resolveSettings: async () => ({
+        enabled: true,
+        intervalMs: 3_600_000,
+        budget: { maxCostCents: 0, enabled: false },
+        settings: { ...NO_LIMITS_SETTINGS },
+      }),
     });
     const result = await service.runPass("company-a");
     expect(result.findings).toBe(0);
@@ -423,6 +478,12 @@ describe("myrmidon(1.6.3-FORAGING-IDLE-GATE) sweep pass (regression, no gate)", 
       store,
       reader: fakeReader({ "https://example.com/feed": "one\ntwo" }),
       candidatePort: port,
+      resolveSettings: async () => ({
+        enabled: true,
+        intervalMs: 3_600_000,
+        budget: { maxCostCents: 0, enabled: false },
+        settings: { ...NO_LIMITS_SETTINGS },
+      }),
     });
     const result = await service.runPass("company-a");
     expect(createFindingCandidate).toHaveBeenCalledTimes(1);
@@ -448,6 +509,12 @@ describe("myrmidon(1.6.3-FORAGING-IDLE-GATE) sweep pass (regression, no gate)", 
       store,
       reader: fakeReader({ "https://example.com/feed": "one\ntwo" }),
       candidatePort: port,
+      resolveSettings: async () => ({
+        enabled: true,
+        intervalMs: 3_600_000,
+        budget: { maxCostCents: 0, enabled: false },
+        settings: { ...NO_LIMITS_SETTINGS },
+      }),
     });
     await service.runPass("company-a");
     expect(store.findings[0].status).toBe("rejected");
@@ -460,10 +527,16 @@ describe("myrmidon(1.6.3-FORAGING-IDLE-GATE) sweep pass (regression, no gate)", 
     ]);
     const read = vi.fn(async (source: { url: string }) => ({ text: "x", bytes: 1024 }));
     const service = createForagingService({
-      ...baseDeps({ settings: { budget: { maxCostCents: 1, enabled: true } } }),
+      ...baseDeps(),
       store,
       reader: { read },
       candidatePort: EMPTY_PORT,
+      resolveSettings: async () => ({
+        enabled: true,
+        intervalMs: 3_600_000,
+        budget: { maxCostCents: 1, enabled: true },
+        settings: { ...PASS_BUDGET_1_SETTINGS },
+      }),
     });
     const result = await service.runPass("company-a");
     expect(result.stoppedByBudget).toBe(true);
@@ -487,6 +560,14 @@ describe("myrmidon(1.6.3-FORAGING-IDLE-GATE) sweep pass (regression, no gate)", 
         },
       },
       candidatePort: EMPTY_PORT,
+      // 1.6.1: the service resolves its settings on every pass now; the test
+      // wires the same env-only view the old `settings` field carried.
+      resolveSettings: async () => ({
+        enabled: true,
+        intervalMs: 3_600_000,
+        budget: { maxCostCents: 0, enabled: false },
+        settings: { ...NO_LIMITS_SETTINGS },
+      }),
     });
     const result = await service.runPass("company-a");
     expect(result.errors).toBe(1);
@@ -503,6 +584,14 @@ describe("myrmidon(1.6.3-FORAGING-IDLE-GATE) sweep pass (regression, no gate)", 
       store,
       reader: fakeReader({ "https://example.com/off": "x" }),
       candidatePort: EMPTY_PORT,
+      // 1.6.1: the service resolves its settings on every pass now; the test
+      // wires the same env-only view the old `settings` field carried.
+      resolveSettings: async () => ({
+        enabled: true,
+        intervalMs: 3_600_000,
+        budget: { maxCostCents: 0, enabled: false },
+        settings: { ...NO_LIMITS_SETTINGS },
+      }),
     });
     const result = await service.runPass("company-a");
     expect(result.sourcesRead).toBe(0);
@@ -511,10 +600,16 @@ describe("myrmidon(1.6.3-FORAGING-IDLE-GATE) sweep pass (regression, no gate)", 
   it("reports the budget state for the screen", async () => {
     const store = createMemoryStore([{ id: "s1", role: "a", url: "https://example.com/" }]);
     const service = createForagingService({
-      ...baseDeps({ settings: { budget: { maxCostCents: 50, enabled: true } } }),
+      ...baseDeps(),
       store,
       reader: fakeReader({}),
       candidatePort: EMPTY_PORT,
+      resolveSettings: async () => ({
+        enabled: true,
+        intervalMs: 3_600_000,
+        budget: { maxCostCents: 50, enabled: true },
+        settings: { ...DEFAULTS_SETTINGS },
+      }),
     });
     const state = await service.budgetState("company-a");
     expect(state.maxCostCents).toBe(50);

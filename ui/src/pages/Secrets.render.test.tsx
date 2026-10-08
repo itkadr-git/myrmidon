@@ -58,6 +58,8 @@ const mockSecretsApi = vi.hoisted(() => ({
 
 const mockAgentsApi = vi.hoisted(() => ({
   list: vi.fn(),
+  // myrmidon(PERF-DIET-G): the agent-access section reads configurations
+  listConfigurations: vi.fn(),
   get: vi.fn(),
   update: vi.fn(),
 }));
@@ -1451,7 +1453,7 @@ describe("Secrets page layout", () => {
         env: { OPENAI_API_KEY: { type: "secret_ref", secretId: "secret-openai" } },
       },
     };
-    mockAgentsApi.list.mockResolvedValue([coder, reviewer]);
+    mockAgentsApi.listConfigurations.mockResolvedValue([coder, reviewer]);
     mockAgentsApi.get.mockImplementation(async (id: string) =>
       id === "agent-coder" ? coder : reviewer,
     );

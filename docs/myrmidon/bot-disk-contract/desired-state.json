@@ -1,0 +1,31 @@
+{
+  "generatedAt": "2026-10-06T14:06:00Z",
+  "grace": {
+    "closingMinutes": 30,
+    "scratchTtlHours": 24,
+    "orphanHours": 24
+  },
+  "pressure": {
+    "quotaPercent": 41.2,
+    "partitionPercent": 55.0,
+    "level": "none"
+  },
+  "workspaces": [
+    {
+      "key": "ABC-101",
+      "repo": "acme/widgets",
+      "state": "active",
+      "since": "2026-10-06T14:00:00Z",
+      "prState": "open",
+      "branch": "bot/ABC-101"
+    },
+    {
+      "key": "ABC-099",
+      "repo": "acme/widgets",
+      "state": "closing",
+      "since": "2026-10-06T13:40:00Z",
+      "prState": "merged",
+      "branch": "bot/ABC-099"
+    }
+  ]
+}

@@ -37,3 +37,6 @@ export {
   type TelegramNotifyDigestSettings,
   type TelegramNotifyEscalationsSettings,
 } from "./settings.js";
+// myrmidon(TG-NOTIFY-A): the owner settings routes (GET/PATCH + changelog).
+export { myrmidonTelegramNotifyRoutes, telegramNotifyRoutes, type TelegramNotifyRoutesDeps } from "./routes.js";
+export { preserveTelegramNotifySettingsGeneralKey } from "./settings-store.js";

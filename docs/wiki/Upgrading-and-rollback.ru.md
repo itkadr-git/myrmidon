@@ -8,22 +8,25 @@
 ещё раз:
 
 ```sh
-curl -fsSL https://github.com/itkadr-git/myrmidon/releases/latest/download/install.sh | sudo bash
+curl -fsSL https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.5-rc.5/install.sh | sudo bash
 ```
 
-Установщик находит последний выпуск, **снимает копию базы данных до любых
-изменений**, переключается на новый выпуск и ждёт ответа доски. Если новая
-доска не поднялась, установщик **сам возвращается на прежний выпуск**, а
-копия базы остаётся. Конкретный выпуск: `install.sh --version myr-vX.Y.Z`.
-Предрелизы (RC) однострочная команда не ставит: она всегда идёт за последним
-**стабильным** выпуском, а RC ставится только по его точному тегу.
+Пока выпуск 1.6.5 не стал финальным, команда ставит текущего кандидата:
+установщик приложен к выпускам начиная с 1.6.5, и постоянная ссылка
+`releases/latest/download/install.sh` пока отдаёт 404 — она заработает вместе
+с финальным выпуском. Установщик находит выпуск, **снимает копию базы данных
+до любых изменений**, переключается на новый выпуск и ждёт ответа доски. Если
+новая доска не поднялась, установщик **сам возвращается на прежний выпуск**,
+а копия базы остаётся. Конкретный выпуск: `install.sh --version myr-vX.Y.Z`.
+Когда короткая ссылка `latest` заработает, она по-прежнему ведёт только на
+последний **стабильный** выпуск, а RC ставится только по точному тегу.
 
 ## Обновление через deploy.sh (ручной поток)
 
 На серверах, которыми управляют руками, путь — скрипт выката, см.
 [Ручной выкат](Manual-deployment.ru). Заметки оператора по каждому выпуску
 живут в
-[`docs/myrmidon/deploy.ru.md`](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/deploy.ru.md),
+[`docs/myrmidon/deploy.md`](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/deploy.ru.md),
 а журнал изменений называет выпуск, в который вошло каждое изменение.
 
 ## Обновление
@@ -39,7 +42,7 @@ scripts/myrmidon/deploy/deploy.sh --config /path/to/deploy.env --digest sha256:<
 ```
 
 или, для опубликованного выпуска, с резолвом digest из манифеста релиза
-(`release-components.json`, загружается asset'ом релиза):
+(`release-components.json`, загружается вложением выпуска):
 
 ```sh
 scripts/myrmidon/deploy/deploy.sh --config /path/to/deploy.env --release myr-vX.Y.Z
@@ -69,6 +72,19 @@ scripts/myrmidon/deploy/deploy.sh --config /path/to/deploy.env --release myr-vX.
    (`MYRMIDON_COMPONENT_AUTO_ROLLBACK=1`, по умолчанию). Карточки ботов
    переключаются пачками не больше 5, каждый бот — только пока его агент на
    паузе или простаивает: ни один запуск не прерывается.
+
+Выкат также управляет настройками сервера PostgreSQL (с 1.6.5, DB-TUNING):
+декларативный источник лежит в репозитории
+(`scripts/myrmidon/deploy/db-tuning.sql`), выкат применяет его через
+`DB_TUNE_COMMAND` и затем проверяет каждую пару `DB_TUNE_EXPECTED` через
+`SHOW` — расхождение означает неудачный выкат, и прежние значения
+(записанные до первого управляемого применения) возвращаются сразу. Откат
+возвращает настройки через `DB_TUNE_ROLLBACK_COMMAND` и проверяет их по
+записанным прежним значениям. Все четыре настройки `DB_TUNE_*`
+необязательны; при пустой `DB_TUNE_COMMAND` шаг пропускается, и база
+остаётся с теми настройками, что у неё есть. Значения, порядок проверки и
+запрос `pg_stat_statements` для замера «до/после» — в
+[`docs/myrmidon/deploy.md`](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/deploy.ru.md).
 
 ## Кандидаты и финальные выпуски (с 1.6.5)
 

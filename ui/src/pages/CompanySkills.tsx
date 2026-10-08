@@ -43,6 +43,8 @@ import {
   SkillPolicyDenialNotice,
   useSkillPolicyDenial,
 } from "@/components/skill-studio/SkillPolicySurfaces";
+// myrmidon(1.6.5 BASE-SKILLS): the company base-skills panel of the Skills screen.
+import { CompanyBaseSkillsPanel } from "@/components/skill-studio/CompanyBaseSkillsPanel";
 import {
   Dialog,
   DialogContent,
@@ -5479,6 +5481,13 @@ export function CompanySkills() {
                 <TabsTrigger value="bundled">Bundled</TabsTrigger>
               </TabsList>
             </Tabs>
+          </div>
+        ) : null}
+        {/* myrmidon(1.6.5 BASE-SKILLS): the company base-skills registry — the
+            skills every agent gets automatically, and who still misses one. */}
+        {selectedCompanyId ? (
+          <div className="px-4 pt-4">
+            <CompanyBaseSkillsPanel companyId={selectedCompanyId} />
           </div>
         ) : null}
         <DiscoveryGrid

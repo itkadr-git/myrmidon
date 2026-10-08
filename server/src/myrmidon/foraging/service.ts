@@ -26,6 +26,20 @@
 // idle-gate-settings.ts), so a settings-page change reaches the next pass
 // without a restart.
 //
+// 1.6.1 (FORAGING-LIMITS-UI): the pass now also
+//   - resolves its settings on every run (the wiring passes a resolver, so a
+//     change made in the interface applies with the next pass, no restart);
+//   - records every read's cost into the spend ledger (`foraging_spend_events`),
+//     which the daily/monthly/role/agent limits and the Costs view read;
+//   - checks those limits before each read; a crossed limit stops the pass the
+//     same normal way and raises one attention signal (soft mode asks the
+//     owner);
+//   - writes one `training_charge` finance event per pass, so the learning
+//     spend shows as its own line in Costs, by role and source url;
+//   - runs the auto-off check (owner's 29.09 addition): when the BASELINE
+//     cost-per-task mean is above the configured threshold, learning switches
+//     itself off (one settings write) and raises a signal.
+//
 // Failures are per source: one unreachable host writes `last_error` on its row
 // and the pass continues with the next source. Nothing here throws at the pass
 // level, so a broken source never stops the sweep.
@@ -46,6 +60,17 @@ import {
   type ForagingSweepResult,
   type ForagingSourceRef,
 } from "./domain.js";
+import {
+  clearForagingLimitSignal,
+  decideForagingLimits,
+  foragingAutoOffSignal,
+  foragingLimitSignal,
+  recordForagingAutoOffSignal,
+  recordForagingLimitSignal,
+  utcDayStart,
+  utcMonthStart,
+} from "./limits.js";
+import type { ForagingSettings } from "@paperclipai/shared";
 import type { ForagingStore } from "./store.js";
 import { readForagingIdleGate, type ForagingIdleGateServiceDeps } from "./idle-gate-settings.js";
 // myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): the pass journal of this pass.
@@ -74,13 +99,33 @@ export interface ForagingIdleCheck {
   roleIdleReason(companyId: string, role: string): Promise<"queue_not_empty" | "no_idle_agent" | null>;
 }
 
+/** What the service needs to write one finance event (the Costs line). */
+export interface ForagingFinancePort {
+  /** Record one training_charge debit; failures are logged, never thrown. */
+  recordTrainingCharge(input: {
+    companyId: string;
+    agentId: string | null;
+    amountCents: number;
+    description: string;
+    occurredAt: Date;
+  }): Promise<void>;
+}
+
+/** The auto-off check: the BASELINE cost-per-task mean, in cents (null = unknown). */
+export type ForagingBaselineCostPort = (companyId: string) => Promise<{ meanCostPerTaskCents: number | null }>;
+
+/** Reads the current effective settings (instance row → env → default). */
+export type ForagingSettingsResolver = () => Promise<{
+  enabled: boolean;
+  intervalMs: number;
+  budget: { maxCostCents: number; enabled: boolean };
+  settings: ForagingSettings;
+}>;
+
 export interface ForagingServiceDeps {
   store: ForagingStore;
   reader: ForagingReader;
   candidatePort: ForagingCandidatePort;
-  settings: {
-    budget: { maxCostCents: number; enabled: boolean };
-  };
   db: Db;
   /** The idle-gate toggle, read on EVERY pass; absent = the default (on). */
   idleGate?: Pick<ForagingIdleGateServiceDeps, "getGeneral" | "env">;
@@ -92,6 +137,12 @@ export interface ForagingServiceDeps {
    * which roles it skipped with which reason. Absent = passes are not recorded.
    */
   journal?: Pick<ForagingPassJournalService, "record">;
+  /** The settings resolver — live: called on every pass and budget read. */
+  resolveSettings: ForagingSettingsResolver;
+  /** The finance port: one training_charge line per pass. Optional in tests. */
+  finance?: ForagingFinancePort;
+  /** The BASELINE cost-per-task probe for the auto-off rule. Optional. */
+  baselineCost?: ForagingBaselineCostPort;
   now?: () => Date;
   log?: Pick<typeof logger, "info" | "warn" | "error">;
 }
@@ -99,13 +150,16 @@ export interface ForagingServiceDeps {
 export interface ForagingService {
   /** One comparison pass over one company. Never throws. */
   runPass(companyId: string): Promise<ForagingSweepResult>;
-  /** The budget state of the current UTC month for the screen. */
-  budgetState(companyId: string): Promise<{ spentCents: number; maxCostCents: number; enabled: boolean }>;
-}
-
-/** The UTC month window the pass spends against. */
-function currentUtcMonthStart(now: Date): Date {
-  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0, 0));
+  /** The budget state of the current UTC day and month for the screen. */
+  budgetState(companyId: string): Promise<{
+    spentCents: number;
+    dayCents: number;
+    monthCents: number;
+    maxCostCents: number;
+    enabled: boolean;
+    dailyBudgetCents: number | null;
+    monthlyBudgetCents: number | null;
+  }>;
 }
 
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
@@ -156,7 +210,6 @@ export function createForagingService(deps: ForagingServiceDeps): ForagingServic
   const store = deps.store;
   const now = deps.now ?? (() => new Date());
   const log = deps.log ?? logger;
-  const budget = deps.settings.budget;
   const idleCheck = deps.idleCheck ?? createDbForagingIdleCheck(deps.db);
 
   const emptyResult = (): ForagingSweepResult => ({
@@ -170,15 +223,18 @@ export function createForagingService(deps: ForagingServiceDeps): ForagingServic
 
   return {
     async budgetState(companyId) {
+      const { settings } = await deps.resolveSettings();
       const nowDate = now();
-      const monthFindings = await store.monthFindingCount(companyId, currentUtcMonthStart(nowDate));
-      // The stored finding count is the observable trace of past passes; the
-      // ceiling stays the configured one, so the screen can show how close the
-      // company is to the limit between passes.
-      const spentCents = deps.settings.budget.enabled
-        ? Math.min(monthFindings * estimateCostCents(1024), deps.settings.budget.maxCostCents)
-        : 0;
-      return { spentCents, maxCostCents: budget.maxCostCents, enabled: budget.enabled };
+      const windows = await store.spendWindows(companyId, utcDayStart(nowDate), utcMonthStart(nowDate));
+      return {
+        spentCents: windows.monthCents,
+        dayCents: windows.dayCents,
+        monthCents: windows.monthCents,
+        maxCostCents: settings.passBudgetCents ?? 0,
+        enabled: settings.passBudgetCents !== null,
+        dailyBudgetCents: settings.dailyBudgetCents,
+        monthlyBudgetCents: settings.monthlyBudgetCents,
+      };
     },
 
     async runPass(companyId) {
@@ -225,6 +281,49 @@ export function createForagingService(deps: ForagingServiceDeps): ForagingServic
       };
 
       const startedAt = now();
+      const resolved = await deps.resolveSettings();
+      const settings = resolved.settings;
+
+      // The auto-off rule (owner's 29.09 addition): the check runs before the
+      // pass; when it trips, the pass does not start and the settings row is
+      // switched off by the caller-facing wiring (the service only signals,
+      // it cannot write instance settings).
+      if (
+        settings.autoOffCostPerTaskCents !== null &&
+        settings.enabled &&
+        deps.baselineCost
+      ) {
+        try {
+          const baseline = await deps.baselineCost(companyId);
+          if (
+            baseline.meanCostPerTaskCents !== null &&
+            baseline.meanCostPerTaskCents > settings.autoOffCostPerTaskCents
+          ) {
+            recordForagingAutoOffSignal(
+              foragingAutoOffSignal({
+                companyId,
+                meanCents: baseline.meanCostPerTaskCents,
+                thresholdCents: settings.autoOffCostPerTaskCents,
+                activityAt: startedAt.toISOString(),
+              }),
+            );
+            log.warn(
+              {
+                companyId,
+                meanCents: baseline.meanCostPerTaskCents,
+                thresholdCents: settings.autoOffCostPerTaskCents,
+              },
+              "foraging: auto-off by the cost-per-task threshold",
+            );
+            result.stoppedByBudget = true;
+            await recordPass();
+            return result;
+          }
+        } catch (err) {
+          log.warn({ err, companyId }, "foraging: baseline cost check failed");
+        }
+      }
+
       let sources: ForagingSourceRef[];
       try {
         sources = await store.enabledSources(companyId);
@@ -234,13 +333,54 @@ export function createForagingService(deps: ForagingServiceDeps): ForagingServic
         return result;
       }
 
+      // The spend windows are read once per pass; the per-read decisions add
+      // this pass's own spend on top (the rows are written as the pass goes).
+      const windows = await store
+        .spendWindows(companyId, utcDayStart(startedAt), utcMonthStart(startedAt))
+        .catch((err) => {
+          log.warn({ err, companyId }, "foraging: spend window read failed");
+          return { dayCents: 0, monthCents: 0, byRole: new Map<string, number>(), byAgent: new Map<string, number>() };
+        });
+      let dayCents = windows.dayCents;
+      let monthCents = windows.monthCents;
+      const passRoleSpend = new Map<string, number>();
+
+      let stoppedReason: string | null = null;
+
+      const passBudget = {
+        maxCostCents: settings.passBudgetCents ?? 0,
+        enabled: settings.passBudgetCents !== null,
+      };
+
       for (const source of sources) {
-        // The byte size is unknown before the read; budget the read by the
-        // accepted answer cap, then settle the real cost after it. A source
-        // that would exceed the ceiling is not read at all.
-        if (budget.enabled && state.spentCents >= budget.maxCostCents) {
+        // The pass budget is checked BEFORE the read (the 1.6 rule): a pass
+        // already at its ceiling reads nothing further. The spend limits and
+        // the windows are checked against the planned read cost; the real
+        // cost settles after the read.
+        if (passBudget.enabled && state.spentCents >= passBudget.maxCostCents) {
           result.stoppedByBudget = true;
+          stoppedReason = `the per-pass budget of ${settings.passBudgetCents}c was reached`;
           log.info({ companyId, sourceId: source.id }, "foraging: pass stopped by the budget");
+          break;
+        }
+        const plannedCents = estimateCostCents(512 * 1024);
+        const roleSpentCents = (windows.byRole.get(source.role) ?? 0) + (passRoleSpend.get(source.role) ?? 0);
+        const limitDecision = decideForagingLimits({
+          settings,
+          spend: { dayCents, monthCents },
+          role: source.role,
+          roleSpentCents,
+          agentId: null,
+          agentSpentCents: 0,
+          estimateCents: plannedCents,
+        });
+        if (!limitDecision.allowed) {
+          result.stoppedByBudget = true;
+          stoppedReason = limitDecision.reason;
+          log.info(
+            { companyId, sourceId: source.id, reason: limitDecision.reason },
+            "foraging: pass stopped by a spend limit",
+          );
           break;
         }
 
@@ -283,15 +423,36 @@ export function createForagingService(deps: ForagingServiceDeps): ForagingServic
         }
 
         const costCents = estimateCostCents(read.bytes);
-        const decision = decideForagingBudget(budget, state, costCents);
+        const decision = decideForagingBudget(passBudget, state, costCents);
         if (!decision.allowed) {
           result.stoppedByBudget = true;
+          stoppedReason = `the per-pass budget of ${settings.passBudgetCents}c was reached`;
           log.info({ companyId, sourceId: source.id }, "foraging: pass stopped by the budget");
           break;
         }
         state.spentCents = decision.spentCents;
         result.spentCents = state.spentCents;
         result.sourcesRead += 1;
+        dayCents += costCents;
+        monthCents += costCents;
+        passRoleSpend.set(source.role, (passRoleSpend.get(source.role) ?? 0) + costCents);
+
+        // 1.6.1: every read lands in the spend ledger; the write is
+        // best-effort — a ledger failure must not break the pass.
+        try {
+          await store.insertSpendEvent({
+            companyId,
+            sourceId: source.id,
+            role: source.role,
+            agentId: null,
+            url: source.url,
+            costCents,
+            outcome: "unchanged",
+            occurredAt: now(),
+          });
+        } catch (err) {
+          log.warn({ err, companyId, sourceId: source.id }, "foraging: spend ledger write failed");
+        }
 
         const current = normalizeSnapshot(read.text);
         let candidateRef: string | null = null;
@@ -357,6 +518,37 @@ export function createForagingService(deps: ForagingServiceDeps): ForagingServic
       }
 
       await recordPass();
+      // 1.6.1: the signal. A pass stopped by a limit raises one attention card
+      // (soft mode asks the owner); a pass that ran without a stop clears it.
+      if (stoppedReason !== null) {
+        recordForagingLimitSignal(
+          foragingLimitSignal({
+            companyId,
+            reason: stoppedReason,
+            enforcement: settings.enforcement,
+            activityAt: startedAt.toISOString(),
+          }),
+        );
+      } else {
+        clearForagingLimitSignal(companyId);
+      }
+
+      // 1.6.1: one finance event per pass — the learning spend shows as its
+      // own "Training" line in Costs. Best-effort, never breaks the pass.
+      if (result.spentCents > 0 && deps.finance) {
+        try {
+          await deps.finance.recordTrainingCharge({
+            companyId,
+            agentId: null,
+            amountCents: result.spentCents,
+            description: "Foraging learning pass",
+            occurredAt: now(),
+          });
+        } catch (err) {
+          log.warn({ err, companyId }, "foraging: training charge finance write failed");
+        }
+      }
+
       log.info(
         {
           companyId,
