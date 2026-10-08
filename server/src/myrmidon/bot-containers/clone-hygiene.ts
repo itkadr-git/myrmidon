@@ -99,6 +99,31 @@ export interface GitRefCheck {
   storeState: GitStoreState | null;
 }
 
+/** myrmidon(1.6.5-BOT-DISK-UV-B board side): one probe root of the
+ *  container-start uv cache self-check (docker/bot-runtime/entrypoint.sh). */
+export interface UvCacheRootResult {
+  /** Container path of the probed root: /data/hermes, /workspace or /scratch. */
+  root: string;
+  ok: boolean;
+  error: string | null;
+}
+
+/** The uv cache self-check the entrypoint runs at every start and the reporter
+ *  passes on: the configured cache directory holds a file of the bot's uid and
+ *  a file inside it links (reflink for `clone`, hardlink otherwise) into every
+ *  clone root. Fields as the entrypoint writes them
+ *  (version/method/checkedAt/cache/ok/roots[]). */
+export interface UvCacheCheck {
+  /** UV_LINK_MODE the entrypoint probed with (clone is the image default). */
+  method: string;
+  /** ISO timestamp of the check at the bot's start; informational only. */
+  checkedAt: string | null;
+  /** The cache directory the probe ran against (the bot's UV_CACHE_DIR). */
+  cache: string;
+  ok: boolean;
+  roots: UvCacheRootResult[];
+}
+
 /** myrmidon(1.6.5 BOT-DISK-G live check): the facts of a bot's shared git-object
  *  store — how many mirrors it holds, how large it is and which repositories.
  *  The reporter reads them live into the report's `gitStore`
@@ -124,6 +149,10 @@ export interface CloneReport {
   repos: Map<string, CloneReportEntry>;
   reflinkCheck: ReflinkCheck | null;
   gitRefCheck: GitRefCheck | null;
+  /** myrmidon(1.6.5-BOT-DISK-UV-B board side): the container-start uv cache
+   *  self-check, passed on by the reporter. Additive; null on an older
+   *  reporter or image. */
+  uvCacheCheck: UvCacheCheck | null;
   /** myrmidon(1.6.5 BOT-DISK-G live check): the store's facts, read live by the
    *  reporter on this pass. Additive; null from an older reporter. */
   gitStore: GitStoreState | null;
@@ -166,6 +195,29 @@ export function parseGitRefCheck(value: unknown): GitRefCheck | null {
     ok: v.ok,
     checks,
     storeState: parseGitStoreState(v.storeState),
+  };
+}
+
+/** The report's `uvCacheCheck` (myrmidon 1.6.5-BOT-DISK-UV-B board side), or
+ *  null when absent or malformed — an older reporter or image simply carries
+ *  none, which is not an error. */
+export function parseUvCacheCheck(value: unknown): UvCacheCheck | null {
+  if (!value || typeof value !== "object") return null;
+  const v = value as Record<string, unknown>;
+  if (typeof v.cache !== "string" || typeof v.ok !== "boolean" || !Array.isArray(v.roots)) return null;
+  const roots: UvCacheRootResult[] = [];
+  for (const item of v.roots.slice(0, 20)) {
+    if (!item || typeof item !== "object") continue;
+    const r = item as Record<string, unknown>;
+    if (typeof r.root !== "string" || typeof r.ok !== "boolean") continue;
+    roots.push({ root: r.root.slice(0, 200), ok: r.ok, error: typeof r.error === "string" ? r.error.slice(0, 500) : null });
+  }
+  return {
+    method: typeof v.method === "string" ? v.method.slice(0, 40) : "unknown",
+    checkedAt: typeof v.checkedAt === "string" ? v.checkedAt.slice(0, 40) : null,
+    cache: v.cache.slice(0, 500),
+    ok: v.ok,
+    roots,
   };
 }
 
@@ -240,6 +292,7 @@ export function parseCloneReport(raw: string, nowMs: number): CloneReport | null
     repos,
     reflinkCheck: parseReflinkCheck(obj.reflinkCheck),
     gitRefCheck: parseGitRefCheck(obj.gitRefCheck),
+    uvCacheCheck: parseUvCacheCheck(obj.uvCacheCheck),
     gitStore: parseGitStoreState(obj.gitStore),
   };
 }
@@ -285,8 +338,10 @@ export interface CloneHygieneSignal {
   /** `clone`: unpushed work in an idle clone. `reflink` (BOT-DISK-H8b): pnpm
    *  cannot reflink from its store into `path` (a clone root), so installs
    *  there copy. `gitref` (1.6.5 BOT-DISK-G): the shared-git-objects self-check
-   *  failed, so task clones on this bot copy the git history again. */
-  kind?: "clone" | "reflink" | "gitref";
+   *  failed, so task clones on this bot copy the git history again.
+   *  `uvcache` (1.6.5-BOT-DISK-UV-B board side): the uv cache self-check
+   *  failed, so uv installs on this bot fetch into a per-run cache. */
+  kind?: "clone" | "reflink" | "gitref" | "uvcache";
   botKey: string;
   /** Container path of the clone. */
   path: string;
@@ -355,6 +410,21 @@ export function ingestCloneReport(botKey: string, raw: string, idleTtlMs: number
       path: report.gitRefCheck?.store ?? "",
       branch: null,
       reason: `shared git objects check ${failed.check} failed: ${failed.error ?? "unknown error"}`,
+      observedAtMs: signals.get(key)?.observedAtMs ?? nowMs,
+    });
+  }
+  // myrmidon(1.6.5-BOT-DISK-UV-B board side): a uv cache self-check that
+  // failed at the bot's last start. One signal per failed probe root, keyed by
+  // the root; the board aggregates them into one fleet card.
+  for (const failed of report.uvCacheCheck?.roots.filter((root) => !root.ok) ?? []) {
+    const key = `${botKey}:uvcache:${failed.root}`;
+    seen.add(key);
+    signals.set(key, {
+      kind: "uvcache",
+      botKey,
+      path: failed.root,
+      branch: null,
+      reason: `uv cache check of ${failed.root} against ${report.uvCacheCheck?.cache ?? "the configured cache"} failed: ${failed.error ?? "unknown error"}`,
       observedAtMs: signals.get(key)?.observedAtMs ?? nowMs,
     });
   }
