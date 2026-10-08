@@ -2,20 +2,25 @@ import postgres from "postgres";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { installPgvectorIntoEmbeddedCluster } from "../test-pgvector.js";
 import { createPostgresSearchIndex, type SqlExecutor } from "./hybrid-search-index.js";
 import { CORPUS_EMBEDDING_DIMENSIONS, l2Normalize, toPgVectorLiteral } from "./vector.js";
 
-// Hybrid search needs PostgreSQL with the `vector` and `pg_trgm` extensions, which the product
-// database image does not carry yet (installer and compose still run plain `postgres:17-alpine`).
-// The suite therefore runs against an external stand named by `CORPUS_TEST_PGVECTOR_DSN` and skips
-// itself loudly, with the reason, when the variable is unset — CI runs the rest of the package and
-// the vector part is exercised on a stand:
+// Hybrid search needs PostgreSQL with the `vector` and `pg_trgm` extensions. The suite looks for a
+// database to run against in two steps and skips itself loudly, with the reason, when neither is
+// available:
+//
+//   1. `CORPUS_TEST_PGVECTOR_DSN` — an external stand that allows `CREATE EXTENSION`.
+//   2. the embedded PostgreSQL 18 cluster of `@paperclipai/db`, with pgvector staged into it by the
+//      package's own shim (`installPgvectorIntoEmbeddedCluster`) — the same pair the store/queue
+//      suite uses. The shim caches the Debian pgvector package and reports why it cannot stage the
+//      extension (foreign host, no network, no `ar`/`tar`), and the suite skips on that reason.
+//
+// Everything the suite needs is created and dropped in its own probe tables, so a shared stand
+// keeps its own data. `CORPUS_SEARCH_PERF_CHUNKS` scales the synthetic corpus up to the acceptance
+// size (10^5) for the latency measurement:
 //
 //   CORPUS_TEST_PGVECTOR_DSN=postgres://… pnpm --filter @paperclipai/corpus exec vitest run
-//
-// The stand must allow `CREATE EXTENSION`; everything else is created and dropped by this file in
-// its own probe tables, so a shared stand keeps its own data. `CORPUS_SEARCH_PERF_CHUNKS` scales
-// the synthetic corpus up to the acceptance size (10^5) for the latency measurement.
 
 const DSN_ENV = "CORPUS_TEST_PGVECTOR_DSN";
 // Text search configuration of the stand column and of the query; kept in one place so the seeded
@@ -52,13 +57,67 @@ function standTarget(connection: string): string {
   }
 }
 
-if (DSN === undefined || DSN === "") {
+/** A database the suite can run against, plus the way to give it back. */
+type SearchStand = {
+  readonly dsn: string;
+  /** Safe to log: no credentials, no host secrets. */
+  readonly label: string;
+  release(): Promise<void>;
+};
+
+/** Why the suite has no database, when it has none; printed once and kept for the skip line. */
+let skipReason: string | undefined;
+
+/**
+ * External stand first (`CORPUS_TEST_PGVECTOR_DSN`), then the embedded cluster with pgvector staged
+ * into it by the package shim. Returns `null` when neither is usable, and every failure path stays
+ * a skip rather than an error: the neighbouring suites gate on the very same shim, so a host that
+ * cannot stage pgvector must not turn the package red.
+ */
+async function resolveSearchStand(): Promise<SearchStand | null> {
+  if (DSN !== undefined && DSN !== "") {
+    return {
+      dsn: DSN,
+      label: `the external stand at ${standTarget(DSN)}`,
+      release: async () => {},
+    };
+  }
+
+  try {
+    const embedded = await import("@paperclipai/db");
+    const support = await embedded.getEmbeddedPostgresTestSupport();
+    if (!support.supported) {
+      skipReason = support.reason ?? "the embedded PostgreSQL test cluster is not supported here";
+      return null;
+    }
+
+    const staged = await installPgvectorIntoEmbeddedCluster();
+    if (!staged.ok) {
+      skipReason = `pgvector could not be staged into the embedded cluster: ${staged.reason}`;
+      return null;
+    }
+
+    const database = await embedded.startEmbeddedPostgresTestDatabase("corpus-search-test-");
+    return {
+      dsn: database.connectionString,
+      label: "the embedded PostgreSQL 18 test cluster",
+      release: () => database.cleanup(),
+    };
+  } catch (error) {
+    skipReason = `the embedded PostgreSQL test cluster could not be started: ${String(error)}`;
+    return null;
+  }
+}
+
+const stand = await resolveSearchStand();
+
+if (stand === null) {
   console.warn(
-    `[corpus] hybrid search integration suite SKIPPED: ${DSN_ENV} is not set, so no stand with the ` +
-      `vector and pg_trgm extensions is named. The unit suite still covers the SQL and the fusion.`,
+    `[corpus] hybrid search integration suite SKIPPED: ${skipReason ?? `${DSN_ENV} names no stand`}. ` +
+      `The unit suite still covers the SQL and the fusion.`,
   );
 } else {
-  console.log(`[corpus] hybrid search integration suite runs against ${standTarget(DSN)}`);
+  console.log(`[corpus] hybrid search integration suite runs against ${stand.label}`);
 }
 
 type PgClient = ReturnType<typeof postgres>;
@@ -221,9 +280,11 @@ async function seedStand(client: PgClient): Promise<StandChunk[]> {
   return chunks;
 }
 
-const suite = describe.skipIf(DSN === undefined || DSN === "");
+const suite = describe.skipIf(stand === null);
 
-suite("hybrid search over an external postgres stand with pgvector", () => {
+suite("hybrid search over postgres with the vector extension", () => {
+  // `describe.skipIf` above keeps this body off the no-stand path.
+  const target = stand as SearchStand;
   let client: PgClient;
   let executor: SqlExecutor;
   let index: ReturnType<typeof createPostgresSearchIndex>;
@@ -231,7 +292,7 @@ suite("hybrid search over an external postgres stand with pgvector", () => {
   let recorded: RecordedQuery[];
 
   beforeAll(async () => {
-    client = postgres(DSN as string, { max: 4 });
+    client = postgres(target.dsn, { max: 4 });
     await client.unsafe(`create extension if not exists vector`);
     await client.unsafe(`create extension if not exists pg_trgm`);
     chunks = await seedStand(client);
@@ -244,6 +305,7 @@ suite("hybrid search over an external postgres stand with pgvector", () => {
     await client.unsafe(`drop table if exists ${schema.chunksTable} cascade`);
     await client.unsafe(`drop table if exists ${schema.documentsTable} cascade`);
     await client.end();
+    await target.release();
   });
 
   it("returns the top-k with score, chunk and document for a text query", async () => {

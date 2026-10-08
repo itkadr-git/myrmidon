@@ -32,9 +32,11 @@
 - Tests: fusion, vector helpers, chunker boundaries and `chunk_id` idempotency, the ingestion
   pipeline against the `Embedder` port, both parser surfaces against a mock HTTP server (bytes
   and source-URI submissions, retries, a refused and a failed job, an unreachable service), and
-  an integration test for the search path that runs against a pgvector stand when
-  `CORPUS_TEST_PGVECTOR_DSN` is set and skips with a printed reason otherwise. The search SQL
-  itself is unit-tested through a recording SQL executor, so the ordinary run needs no database.
+  an integration test for the search path that takes its database from the first source that works —
+  the stand named by `CORPUS_TEST_PGVECTOR_DSN`, else the embedded PostgreSQL 18 cluster with
+  pgvector staged into it by the package shim — and skips with a printed reason when neither is
+  usable. The search SQL itself is unit-tested through a recording SQL executor, so the ordinary
+  run needs no database.
 - This is the code half of the corpus step; wiring the module to routes, settings and the UI
   follows in the later parts of CORPUS-2.0.
 
@@ -73,8 +75,9 @@
 - Тесты: слияние RRF, векторные помощники, границы окон чанкера и идемпотентность `chunk_id`,
   конвейер загрузки против порта `Embedder`, обе поверхности клиента разбора против
   мок-сервера (передача байтов и ссылки, повторы, отказ и провал джобы, недоступный сервис) и
-  интеграционный тест поиска на стенде pgvector, который включается переменной
-  `CORPUS_TEST_PGVECTOR_DSN`, а без неё пропускается с печатью причины. Сам SQL поиска покрыт
-  юнит-тестами через записывающий исполнитель и базы не требует.
+  интеграционный тест поиска, который берёт базу из первого доступного источника — стенда,
+  названного `CORPUS_TEST_PGVECTOR_DSN`, иначе встроенного кластера PostgreSQL 18 с pgvector,
+  установленным шимом пакета, — а если недоступно ни то ни другое, пропускается с печатью
+  причины. Сам SQL поиска покрыт юнит-тестами через записывающий исполнитель и базы не требует.
 - Это кодовая половина шага корпуса; подключение модуля к маршрутам, настройкам и интерфейсу —
   в следующих частях CORPUS-2.0.
