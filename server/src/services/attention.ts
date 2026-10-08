@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNotNull, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lt, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -24,8 +24,10 @@ import {
   issues,
   joinRequests,
   documents,
+  principalPermissionGrants,
   projects,
   projectWorkspaces,
+  secretAccessEvents,
 } from "@paperclipai/db";
 import { deriveProjectUrlKey, botDiskQuotaWhyNow } from "@paperclipai/shared";
 import type {
@@ -3138,6 +3140,119 @@ async function buildAttentionFeedSnapshot(
             images: [],
           },
         }));
+      }
+
+      // myrmidon(1.6.5-F-23): off-run secret reads and soon-expiring
+      // secrets:read_off_run grants surface as advisory items. The reads item
+      // counts the last 24h of secret_access_events with details.offRun=true;
+      // the per-agent expiry item appears three days before a grant expires.
+      // Both are computed at feed read time, so no extra periodic sweep runs.
+      {
+        const offRunReadRows = await db
+          .select({ count: sql<number>`count(*)` })
+          .from(secretAccessEvents)
+          .where(and(
+            eq(secretAccessEvents.companyId, companyId),
+            sql`${secretAccessEvents.createdAt} >= ${new Date(now - 24 * 60 * 60 * 1000)}`,
+            sql`${secretAccessEvents.details} ->> 'offRun' = 'true'`,
+          ));
+        const offRunReadCount = Number(offRunReadRows[0]?.count ?? 0);
+        if (offRunReadCount > 0) {
+          add(createItem({
+            companyId,
+            sourceKind: "secret_off_run_reads",
+            subject: {
+              kind: "company",
+              id: companyId,
+              companyId,
+              title: "Off-run secret reads",
+              identifier: null,
+              status: null,
+              href: `/${prefix}/settings/secrets`,
+              metadata: { reads24h: offRunReadCount },
+            },
+            whyNow: `${offRunReadCount} secret read${offRunReadCount === 1 ? "" : "s"} outside an active run in the last 24h.`,
+            decisionVerbs: decisionVerbs(
+              { id: "inspect", label: "Inspect", description: "Open the company secrets page and review the audit trail." },
+              { id: "dismiss", label: "Dismiss", description: "Dismiss this signal for today." },
+            ),
+            inlineResolvable: true,
+            entryRule: "at least one secret read with details.offRun=true in the last 24h.",
+            exitRule: "no off-run reads in the trailing 24h, or the row is dismissed.",
+            dedupKey: `secret-off-run-reads:${companyId}:${new Date(now).toISOString().slice(0, 10)}`,
+            severity: "medium",
+            activityAt: toIso(new Date(now)),
+            createdAt: toIso(new Date(now)),
+            updatedAt: toIso(new Date(now)),
+            relatedIssue: null,
+            detail: {
+              kind: "generic",
+              summaryExcerpt: "Agents with the secrets:read_off_run grant read their own secret metadata outside an active run.",
+              images: [],
+            },
+          }));
+        }
+      }
+
+      {
+        const expiringGrants = await db
+          .select({
+            principalId: principalPermissionGrants.principalId,
+            expiresAt: principalPermissionGrants.expiresAt,
+          })
+          .from(principalPermissionGrants)
+          .where(and(
+            eq(principalPermissionGrants.companyId, companyId),
+            eq(principalPermissionGrants.principalType, "agent"),
+            eq(principalPermissionGrants.permissionKey, "secrets:read_off_run"),
+            gt(principalPermissionGrants.expiresAt, new Date(now)),
+            lt(principalPermissionGrants.expiresAt, new Date(now + 3 * 24 * 60 * 60 * 1000)),
+          ));
+        if (expiringGrants.length > 0) {
+          const expiringAgentIds = expiringGrants.map((grant) => grant.principalId);
+          const expiringAgents = await db
+            .select({ id: agents.id, name: agents.name })
+            .from(agents)
+            .where(inArray(agents.id, expiringAgentIds));
+          const expiringNameById = new Map(expiringAgents.map((agent) => [agent.id, agent.name]));
+          for (const grant of expiringGrants) {
+            if (!grant.expiresAt) continue;
+            const agentName = expiringNameById.get(grant.principalId) ?? grant.principalId;
+            add(createItem({
+              companyId,
+              sourceKind: "secret_off_run_grant_expiring",
+              subject: {
+                kind: "agent",
+                id: grant.principalId,
+                companyId,
+                title: `Off-run secret grant expiring: ${agentName}`,
+                identifier: null,
+                status: null,
+                href: `/${prefix}/agents/${grant.principalId}`,
+                metadata: { expiresAt: grant.expiresAt.toISOString() },
+              },
+              whyNow: `The secrets:read_off_run grant for ${agentName} expires ${grant.expiresAt.toISOString().slice(0, 10)}.`,
+              decisionVerbs: decisionVerbs(
+                { id: "inspect", label: "Inspect", description: "Open the agent card and renew or revoke the grant." },
+                { id: "dismiss", label: "Dismiss", description: "Dismiss this expiry warning." },
+              ),
+              inlineResolvable: true,
+              entryRule: "a secrets:read_off_run grant expires within three days.",
+              exitRule: "the grant is renewed, revoked, or expired; or the row is dismissed.",
+              dedupKey: `secret-off-run-grant-expiring:${grant.principalId}:${grant.expiresAt.toISOString().slice(0, 10)}`,
+              severity: "medium",
+              activityAt: toIso(new Date(now)),
+              createdAt: toIso(new Date(now)),
+              updatedAt: toIso(new Date(now)),
+              relatedIssue: null,
+              detail: {
+                kind: "generic",
+                summaryExcerpt: "The off-run self-secret read grant is about to expire; renew it from the agent card if the role still needs it.",
+                images: [],
+              },
+            }));
+          }
+        }
       }
 
       const deduped = new Map<string, AttentionItem>();

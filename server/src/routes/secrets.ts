@@ -18,6 +18,7 @@ import {
 import { validate } from "../middleware/validate.js";
 import { assertBoard, assertBoardOrAgent, assertCompanyAccess, getAccessibleResource } from "./authz.js";
 import { logActivity, secretService } from "../services/index.js";
+import { authorizationService } from "../services/authorization.js";
 import { createSecretProposalsService } from "../services/secret-proposals.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
 import { forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
@@ -138,6 +139,43 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
       keyScope: req.actor.keyScope ?? null,
       heartbeatRunId: req.actor.runId,
       responsibleUserId: req.actor.onBehalfOfUserId ?? null,
+    };
+  }
+
+  // myrmidon(1.6.5-F-23): an agent without an active run (administrative role
+  // acting from an operator CLI/session) may read its own secret metadata when
+  // every guard holds: own agent key (never automation/service keys), an active
+  // board-issued secrets:read_off_run grant, and only the /agents/me/secrets
+  // scope. Without the grant the historical 403 text is preserved.
+  async function agentSecretContextOffRun(req: Parameters<typeof assertBoard>[0]) {
+    if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.companyId || req.actor.runId) return null;
+    const keyScopeKind = req.actor.keyScope?.kind ?? "standard";
+    if (req.actor.source !== "agent_key" || keyScopeKind !== "standard") {
+      throw forbidden("Run-bound agent authentication required");
+    }
+    const authorization = authorizationService(db);
+    const decision = await authorization.decidePrincipalGrant({
+      companyId: req.actor.companyId,
+      principalType: "agent",
+      principalId: req.actor.agentId,
+      action: "secrets:read",
+      permissionKey: "secrets:read_off_run",
+    });
+    if (!decision.allowed) {
+      throw forbidden("Run-bound agent authentication required");
+    }
+    const forwarded = req.headers["x-forwarded-for"];
+    const remoteAddress = (typeof forwarded === "string" ? forwarded.split(",")[0]?.trim() : undefined)
+      ?? req.socket?.remoteAddress
+      ?? null;
+    return {
+      companyId: req.actor.companyId,
+      agentId: req.actor.agentId,
+      actorSource: "agent_key" as const,
+      keyId: req.actor.keyId ?? null,
+      keyScope: req.actor.keyScope ?? null,
+      responsibleUserId: req.actor.onBehalfOfUserId ?? null,
+      remoteAddress,
     };
   }
 
@@ -312,6 +350,31 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
   });
 
   router.get("/agents/me/secrets", async (req, res) => {
+    // myrmidon(1.6.5-F-23): an agent without an active run may read its own
+    // secret metadata when it authenticates with its own agent key and holds
+    // an active secrets:read_off_run grant; that path is audited with
+    // details.offRun = true. Run-bound requests keep the historical path.
+    const offRunContext = await agentSecretContextOffRun(req);
+    if (offRunContext) {
+      const secrets = await svc.listAgentSecretAccessOffRun(offRunContext.companyId, offRunContext);
+      await logActivity(db, {
+        companyId: offRunContext.companyId,
+        actorType: "agent",
+        actorId: offRunContext.agentId,
+        action: "secret.access.listed",
+        entityType: "agent",
+        entityId: offRunContext.agentId,
+        agentId: offRunContext.agentId,
+        details: { count: secrets.length, offRun: true },
+      });
+      res.json({
+        secrets: secrets.map(({ secretId, bindingId: _bindingId, configPath: _configPath, ...secret }) => ({
+          ...secret,
+          secretRef: secretId,
+        })),
+      });
+      return;
+    }
     const context = agentSecretContext(req);
     const secrets = await svc.listAgentSecretAccess(context.companyId, context);
     await logActivity(db, {

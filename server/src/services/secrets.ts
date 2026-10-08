@@ -1857,6 +1857,98 @@ export function secretService(db: Db | DbTransaction) {
     }).sort((left, right) => left.key.localeCompare(right.key));
   }
 
+  // myrmidon(1.6.5-F-23): metadata listing for an agent acting without an
+  // active run (administrative role from an operator session). The route layer
+  // has already verified the active secrets:read_off_run grant; this function
+  // reads the direct agent-target bindings only (no run manifest), and every
+  // call writes a secret_access_events row with details.offRun = true.
+  async function listAgentSecretAccessOffRun(
+    companyId: string,
+    context: {
+      agentId: string;
+      actorSource: "agent_jwt" | "agent_key";
+      keyId?: string | null;
+      keyScope?: AgentApiKeyScope | null;
+      responsibleUserId?: string | null;
+      remoteAddress?: string | null;
+    },
+  ): Promise<AgentSecretAccessEntry[]> {
+    const bindings = await db.select().from(companySecretBindings).where(and(
+      eq(companySecretBindings.companyId, companyId),
+      eq(companySecretBindings.targetType, "agent"),
+      eq(companySecretBindings.targetId, context.agentId),
+      or(
+        like(companySecretBindings.configPath, "env.%"),
+        like(companySecretBindings.configPath, `${AGENT_ACCESS_CONFIG_PATH_PREFIX}%`),
+      ),
+    ));
+    const secrets = bindings.length === 0 ? [] : await db
+      .select()
+      .from(companySecrets)
+      .where(and(
+        eq(companySecrets.companyId, companyId),
+        eq(companySecrets.scope, "company"),
+        eq(companySecrets.status, "active"),
+        inArray(companySecrets.id, [...new Set(bindings.map((binding) => binding.secretId))]),
+      ));
+    const secretsById = new Map(secrets.map((secret) => [secret.id, secret]));
+    const bindingsBySecret = new Map<string, typeof bindings>();
+    for (const binding of bindings) {
+      const current = bindingsBySecret.get(binding.secretId) ?? [];
+      current.push(binding);
+      bindingsBySecret.set(binding.secretId, current);
+    }
+    const entries = [...bindingsBySecret.entries()].flatMap(([secretId, secretBindings]) => {
+      const secret = secretsById.get(secretId);
+      if (!secret) return [];
+      const accessBinding = secretBindings.find((binding) => binding.configPath.startsWith(AGENT_ACCESS_CONFIG_PATH_PREFIX));
+      const selectedBinding = accessBinding ?? secretBindings[0];
+      const hasEnv = secretBindings.some((binding) => binding.configPath.startsWith("env."));
+      const hasApi = Boolean(accessBinding);
+      const versionSelector: SecretVersionSelector = selectedBinding.versionSelector === "latest"
+        ? "latest"
+        : Number(selectedBinding.versionSelector);
+      const delivery: AgentSecretAccessEntry["delivery"] = hasEnv && hasApi ? "both" : hasEnv ? "env" : "api";
+      return [{
+        secretId,
+        bindingId: selectedBinding.id,
+        configPath: selectedBinding.configPath,
+        key: secret.key,
+        name: secret.name,
+        description: secret.description ?? null,
+        delivery,
+        projectionClass: (selectedBinding.projectionClass ?? "unclassified") as SecretProjectionClass,
+        latestVersion: secret.latestVersion,
+        versionSelector,
+        resolvedVersion: versionSelector === "latest" ? secret.latestVersion : versionSelector,
+      }];
+    }).sort((left, right) => left.key.localeCompare(right.key));
+
+    await db.insert(secretAccessEvents).values({
+      companyId,
+      secretId: null,
+      secretScope: "company",
+      version: null,
+      provider: "local_encrypted",
+      responsibleUserId: context.responsibleUserId ?? null,
+      actorType: "agent",
+      actorId: context.agentId,
+      consumerType: "agent",
+      consumerId: context.agentId,
+      configPath: null,
+      heartbeatRunId: null,
+      outcome: "success",
+      details: {
+        offRun: true,
+        keyId: context.keyId ?? null,
+        remoteAddress: context.remoteAddress ?? null,
+        listedSecretCount: entries.length,
+      },
+    });
+
+    return entries;
+  }
+
   async function resolveSecretVersion(
     companyId: string,
     secretId: string,
@@ -4533,6 +4625,7 @@ export function secretService(db: Db | DbTransaction) {
     resolveSecretVersion,
     resolveSecretValueForAgentAccess,
     listAgentSecretAccess,
+    listAgentSecretAccessOffRun,
     resolveSecretValueForEphemeralAccess,
     resolveSecretValueForSandboxCleanup,
     resolveSecretValueForDeviceLoginCheck,
