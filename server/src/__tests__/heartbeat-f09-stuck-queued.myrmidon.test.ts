@@ -34,17 +34,21 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import {
+  readRunPriorityFromEnv,
+  type RunPrioritySettings,
+} from "@paperclipai/shared";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { runningProcesses } from "../adapters/index.ts";
 import {
   applyRunAdmissionLimits,
+  currentRunAdmissionLimits,
   resetSharedRunAdmissionForTests,
   type RunAdmissionLimits,
 } from "../myrmidon/run-admission.js";
 import {
   applyRunPrioritySettings,
   resetRunPriorityForTests,
-  readRunPriorityFromEnv,
 } from "../myrmidon/run-priority/state.js";
 
 const mockAdapterExecute = vi.hoisted(() =>
