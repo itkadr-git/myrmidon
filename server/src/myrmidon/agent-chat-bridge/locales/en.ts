@@ -118,11 +118,30 @@ export const bridgeTextEn = {
 
   // myrmidon(X9c): /agents, /to and /who — which agent of the company this
   // chat addresses. Agent names and aliases are data, not prose.
+  // myrmidon(1.6.5 OPE-6318 part A) adds the group titles of /agents, the
+  // live-status words and the grouped line template.
   "agents.header": "The company's agents:",
   "agents.noAliases": "—",
   "agents.currentSuffix": "current addressee",
   "agents.none": "This company has no agents available for addressing.",
   "agents.hint": "Choose the default addressee: /to <alias>. /to without an argument resets the choice.",
+  // Group titles used when the agent card carries no `telegramGroup` of its
+  // own (the name prefix decides the group — see ../grouping.ts).
+  "agents.group.infra": "Infrastructure / Myrmidon",
+  "agents.group.bbq": "bbq",
+  "agents.group.work": "work",
+  "agents.group.other": "Other",
+  // "{group}" is already the visible group title, built-in or from the card.
+  "agents.groupHeader": "{group}:",
+  "agents.groupHeaderPaused": "{group} (on pause: {count}):",
+  // Live statuses of a card line (agents.status).
+  "agents.status.idle": "idle",
+  "agents.status.running": "running",
+  "agents.status.paused": "on pause",
+  "agents.status.unknown": "unknown status",
+  // One agent line: name, one-line role (agents.title), status, aliases.
+  "agents.line": "• {name} — {role} · {status} ({aliases})",
+  "agents.lineNoRole": "• {name} · {status} ({aliases})",
   "to.unsetLine": "No default addressee set: {agent} replies.",
   "to.cleared": "Addressee choice reset. The chat's default agent replies from now on.",
   "to.alreadySet": "The addressee is already {agent} ({aliases}).",
