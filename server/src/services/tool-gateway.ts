@@ -1,6 +1,7 @@
 import { runIdentityContexts } from "@paperclipai/db";
 import { captureRunIdentity } from "./run-identity.js";
 import { resolveManagedGitHubIdentitySelection } from "./git-credentials.js";
+import { emitToolPolicyChanged } from "./tool-policy-cache-events.js";
 import { logger } from "../middleware/logger.js";
 // myrmidon(P9): a failing tool must not take its whole connection down
 import {
@@ -84,6 +85,7 @@ import {
   toolStdioCommandTemplates,
 } from "@paperclipai/db";
 import type { ToolRunContext } from "@paperclipai/plugin-sdk";
+import { loadToolPolicySnapshot } from "./tool-policy-snapshot.js";
 import type {
   CreateToolMcpGateway,
   CreateToolMcpGatewayToken,
@@ -338,6 +340,8 @@ export interface ToolGatewaySession {
 }
 
 export type ToolGatewayRuntimeSlot = ToolRuntimeSlotView;
+
+export { loadToolPolicySnapshot } from "./tool-policy-snapshot.js";
 
 export class ToolGatewayHttpError extends Error {
   constructor(
@@ -1130,6 +1134,51 @@ export function createToolGatewayService(
       }
     }
     return policyService.decide(input);
+  }
+
+  // OPE-4129: the policy snapshot is loaded once per tools/list request via
+  // loadToolPolicySnapshot (3 queries) and reused for every tool decision in
+  // that request. No cross-request cache: policy mutations that bypass the
+  // service layer (direct db inserts in tests/ops) would otherwise serve
+  // stale decisions until TTL expiry. The event channel (tool-policy-cache-
+  // events) is kept for future opt-in cross-request caching and is covered by
+  // the perf test's invalidation case.
+
+  /**
+   * Makes a tool access decision using a pre-loaded policy snapshot
+   */
+  async function decideToolAccessWithCache(
+    input: ToolAccessDecisionInput,
+    cachedData: {
+      profiles: Array<typeof toolProfiles.$inferSelect>;
+      profileBindings: Array<typeof toolProfileBindings.$inferSelect>;
+      policies: Array<typeof toolPolicies.$inferSelect>;
+    },
+  ): Promise<ToolAccessDecision> {
+    // S6 agent permission check must run on the cached path as well
+    // (OPE-4129 review fix): without it the agent's tool list restriction is
+    // bypassed when the policy cache is warm (agent-tool-permissions test).
+    const agentId = input.actor.agentId;
+    if (agentId) {
+      const permissions = await loadAgentToolPermissions(db, input.companyId, agentId);
+      if (
+        !agentToolPermissionAllows(permissions, {
+          toolName: input.request.toolName,
+          catalogEntryId: input.request.catalogEntryId ?? null,
+          connectionId: input.request.connectionId ?? null,
+        })
+      ) {
+        return {
+          decision: "deny",
+          allowed: false,
+          reasonCode: "deny_agent_permission",
+          explanation: "Tool access denied by the agent's tool permissions.",
+          effectiveProfileIds: [],
+          matchedPolicyIds: [],
+        };
+      }
+    }
+    return policyService.decideWithCachedData(input, cachedData.policies, cachedData.profileBindings, cachedData.profiles);
   }
   const secrets = secretService(db);
   // Authentication produces a new session object for every operation. Keep
@@ -2839,11 +2888,14 @@ export function createToolGatewayService(
     const tools = (await connectedMcpToolsForCompany(session.companyId)).filter(
       isOnDemandRemoteTool,
     );
+    // One snapshot per search call (3 queries), reused for all decisions.
+    const snapshot = await loadToolPolicySnapshot(db, session.companyId);
     const decisions = await Promise.all(
       tools.map(async (tool) => ({
         tool,
-        decision: await decideToolAccess(
+        decision: await decideToolAccessWithCache(
           policyInputForTool({ session, tool }),
+          snapshot,
         ),
       })),
     );
@@ -2917,10 +2969,20 @@ export function createToolGatewayService(
         (tool.providerType !== "paperclip_self" &&
           tool.providerType !== "paperclip_plugin"),
     );
+    // OPE-4129 review fix: load the company policy snapshot once per
+    // listToolsForContext call (3 queries) and reuse it for every tool
+    // decision. A cross-request TTL cache is intentionally NOT used here:
+    // tests (and external processes) can insert policy rows directly via the
+    // db without emitting an event, and a stale cross-request cache broke the
+    // require_approval acceptance test. The event-based cross-process cache
+    // remains available through getCachedPolicyData for future opt-in use.
+    const snapshot = await loadToolPolicySnapshot(db, session.companyId);
+
     const decisions = await Promise.all(
       tools.map(async (tool) => {
-        const decision = await decideToolAccess(
+        const decision = await decideToolAccessWithCache(
           policyInputForTool({ session, tool }),
+          snapshot,
         );
         return { tool, decision };
       }),
@@ -8615,6 +8677,7 @@ export function createToolGatewayService(
           createdByUserId: input.actor?.userId ?? null,
         })
         .onConflictDoNothing();
+      emitToolPolicyChanged();
       await writeAudit({
         session: {
           id: `gateway:${gateway.id}`,
@@ -8773,6 +8836,7 @@ export function createToolGatewayService(
           })
           .onConflictDoNothing();
       }
+      emitToolPolicyChanged();
       return getGatewayWithTokens(input.companyId, updated.id);
     },
 
