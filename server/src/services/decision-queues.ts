@@ -294,6 +294,12 @@ async function sourceIssueId(
     case "host_disk_alert": {
       return { exists: true, issueId: null };
     }
+    // myrmidon(1.6.5-PAUSE-GUARD): the leftover-pauses signal subject is the
+    // company itself (one card per company), so existence is always true while
+    // the board runs — the sweep computes the signal, nothing is stored.
+    case "pause_guard": {
+      return { exists: true, issueId: null };
+    }
     // myrmidon(BOT-RUNTIME-TUNING D): the fallback alert's source id is the
     // agent id — the card's subject — so existence is the agent row.
     case "model_fallback_alert": {
