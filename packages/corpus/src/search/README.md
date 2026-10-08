@@ -72,4 +72,13 @@ to the wiring, not to this package.
   available the whole suite skips with a printed reason, so a host that cannot stage pgvector (no
   `ar`/`tar`, no network, foreign platform) stays green while the vector path is exercised where it
   can be. The suite needs `postgres` as a devDependency (the driver of the stand client,
-  `packages/db` uses the same one).
+  `packages/db` uses the same one). The tables it creates are described by
+  [probe-schema.ts](probe-schema.ts), whose `content_tsv` is written explicitly (the product column
+  is generated from `content`) and whose `status` carries `ready` — the column the search scope
+  filters on.
+- [probe-schema.myrmidon.test.ts](probe-schema.myrmidon.test.ts) — a database-free guard for the
+  pair above. The integration suite can only fail where PostgreSQL exists, so a probe table that
+  drifts from the query surface would first show up as a red CI lane; this check takes the SQL the
+  index really emits (a recording executor) and asserts every `c.<column>` / `d.<column>` reference
+  exists in the probe schema, that the DDL creates each declared column, and that the seeded text
+  and the query share one text search configuration.
