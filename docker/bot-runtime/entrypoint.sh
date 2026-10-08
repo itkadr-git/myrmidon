@@ -230,6 +230,29 @@ json_escape() {
   printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr -d '\n\r\t'
 }
 
+# One physical identity of a path for comparisons, both sides the same way.
+# realpath(1) is in both coreutils and busybox (the image's two flavours);
+# where it is absent, fall back to `cd <dir> && pwd -P` for directories and
+# dir-part + basename for anything else — never a bare `readlink -f`, which
+# busybox resolves differently. A missing path answers "" (the caller treats
+# that as "cannot normalise", not as equality with anything).
+physical_path() {
+  local p="$1"
+  if command -v realpath >/dev/null 2>&1; then
+    realpath "${p}" 2>/dev/null
+    return
+  fi
+  if [ -d "${p}" ]; then
+    (cd "${p}" 2>/dev/null && pwd -P)
+    return
+  fi
+  local d b
+  d="$(dirname "${p}" 2>/dev/null)" || return 1
+  b="$(basename "${p}" 2>/dev/null)" || return 1
+  d="$(cd "${d}" 2>/dev/null && pwd -P)" || return 1
+  printf '%s/%s\n' "${d}" "${b}"
+}
+
 reflink_self_check() {
   local store method roots root probe src dst err ok_all=true entries="" sep="" ok shared
   store="$(dotenv_value npm_config_store_dir)"
@@ -339,6 +362,39 @@ uv_cache_self_check() {
   # 1. the cache itself must hold files created by this bot's user.
   if ! err="$(mkdir -p "${cache}" 2>&1 && : > "${cache}/${probe}" 2>&1)"; then
     err="cannot create a file in the uv cache ${cache}: ${err}"
+    # myrmidon(1.6.5 BOT-SELFCHECK-DIAG): the raw mkdir/touch error alone
+    # cannot tell apart the three field causes of this failure — the bind is
+    # absent and the read-only rootfs refused mkdir, the bind exists but is
+    # mounted read-only, or the bind is rw but the source directory belongs
+    # to another uid (root:root 0755 — a write probe fails with Permission
+    # denied while the mount is rw). Name the facts the on-call reads:
+    # whether the directory exists, whether it is a mountpoint (mountpoint -q,
+    # with a device-number comparison against the parent as the fallback for
+    # a mountpoint-less busybox), its mode/owner and this process's ids.
+    local diag="" d_parent d_dev p_dev d_stat
+    if [ -d "${cache}" ]; then
+      d_stat="$(stat -c '%a %u:%g' "${cache}" 2>/dev/null || echo '?')"
+      diag="directory exists (mode/owner ${d_stat}); process uid:gid $(id -u 2>/dev/null):$(id -g 2>/dev/null)"
+      if command -v mountpoint >/dev/null 2>&1; then
+        if mountpoint -q "${cache}" 2>/dev/null; then
+          diag="${diag}; ${cache} is a mountpoint"
+        else
+          diag="${diag}; ${cache} is not a mountpoint"
+        fi
+      else
+        d_dev="$(stat -c %d "${cache}" 2>/dev/null || echo '?')"
+        d_parent="$(dirname "${cache}")"
+        p_dev="$(stat -c %d "${d_parent}" 2>/dev/null || echo '?')"
+        if [ "${d_dev}" != "?" ] && [ "${p_dev}" != "?" ] && [ "${d_dev}" != "${p_dev}" ]; then
+          diag="${diag}; ${cache} is on its own filesystem (a mount)"
+        else
+          diag="${diag}; ${cache} shares its parent's filesystem"
+        fi
+      fi
+    else
+      diag="directory does not exist and cannot be created (the root filesystem is read-only and no writable bind covers ${cache})"
+    fi
+    err="${err} [${diag}]"
     log "ERROR: uv cache self-check: ${err} — uv would re-download and copy every package (bot_disk_lifecycle/uv-cache)"
     for root in ${roots}; do
       entries="${entries}${sep}{\"root\":\"$(json_escape "${root}")\",\"ok\":false,\"error\":\"$(json_escape "${err}")\"}"
@@ -570,6 +626,9 @@ git_objects_self_check() {
   mkdir -p "${HERMES_HOME}/.myrmidon" 2>/dev/null || true
   work="$(mktemp -d "${HERMES_HOME}/.myrmidon/git-selfcheck.XXXXXX" 2>/dev/null)" || rc=1
   if [ "${rc}" -eq 0 ]; then
+    # actual/expected are filled by the round trip for the failure report;
+    # they are empty when the trip never got that far.
+    local rc_actual="" rc_want=""
     err="$(
       {
         set -e
@@ -587,14 +646,24 @@ git_objects_self_check() {
         # local-path URL through unchanged anyway.
         "${real_git}" clone -q --reference-if-able "${mirror}" "${origin}" "${dest}"
         target="$(sed -n '1p' "${dest}/.git/objects/info/alternates")"
-        # git records the realpath; HERMES_HOME itself may be a link into the bot's mount.
-        want="$(cd "${mirror}/objects" 2>/dev/null && pwd -P)"
-        [ -n "${target}" ] && [ "${target%/}" = "${want}" ]
+        # git records the realpath; HERMES_HOME itself may be a link into the
+        # bot's mount. Compare BOTH sides normalised the same way
+        # (physical_path): a symlinked scratch made the textual comparison
+        # fail on a healthy chain.
+        target="$(physical_path "${target}")"
+        want="$(physical_path "${mirror}/objects")"
+        # for the failure report outside this subshell:
+        printf 'actual=%s\nwant=%s\n' "${target}" "${want}" > "${work}/.diag"
+        [ -n "${target}" ] && [ "${target%/}" = "${want%/}" ]
       } 2>&1
     )"; rc=$?
+    if [ -f "${work}/.diag" ]; then
+      rc_actual="$(sed -n 's/^actual=//p' "${work}/.diag")"
+      rc_want="$(sed -n 's/^want=//p' "${work}/.diag")"
+    fi
     rm -rf "${work}" 2>/dev/null || true
     if [ "${rc}" -ne 0 ]; then
-      add_check "reference-clone" false "a test clone with --reference-if-able did not borrow the mirror's objects: ${err}"
+      add_check "reference-clone" false "a test clone with --reference-if-able did not borrow the mirror's objects: ${err} [actual=${rc_actual:-none}; expected=${rc_want:-none}]"
     else
       add_check "reference-clone" true ""
     fi
@@ -630,13 +699,21 @@ git_objects_self_check() {
           "${wrapper}" -c "url.file://${origin}.insteadOf=https://github.com/${probe_repo}" \
             clone -q --reference-if-able "${work}/stale.git" --depth 50 "https://github.com/${probe_repo}" "${dest}"
           target="$(sed -n '1p' "${dest}/.git/objects/info/alternates" 2>/dev/null)"
-          want="$(cd "${store}/${probe_repo}.git/objects" 2>/dev/null && pwd -P)"
-          [ -n "${target}" ] && [ -n "${want}" ] && [ "${target%/}" = "${want}" ]
+          want="$(physical_path "${store}/${probe_repo}.git/objects")"
+          target="$(physical_path "${target}")"
+          # for the failure report outside this subshell:
+          printf 'actual=%s\nwant=%s\n' "${target}" "${want}" > "${work}/.diag"
+          [ -n "${target}" ] && [ -n "${want}" ] && [ "${target%/}" = "${want%/}" ]
         } 2>&1
       )"; rc=$?
+      local sf_actual="" sf_want=""
+      if [ -f "${work}/.diag" ]; then
+        sf_actual="$(sed -n 's/^actual=//p' "${work}/.diag")"
+        sf_want="$(sed -n 's/^want=//p' "${work}/.diag")"
+      fi
       rm -rf "${work}" "${store}/${probe_repo}.git" "${store}/${probe_repo%%/*}" 2>/dev/null || true
       if [ "${rc}" -ne 0 ]; then
-        add_check "store-fills" false "a task-shaped clone (--reference-if-able + --depth) through the wrapper did not leave a mirror in the store ${store} and borrow it: ${err}"
+        add_check "store-fills" false "a task-shaped clone (--reference-if-able + --depth) through the wrapper did not leave a mirror in the store ${store} and borrow it: ${err} [actual=${sf_actual:-none}; expected=${sf_want:-none}]"
       else
         add_check "store-fills" true ""
       fi
@@ -645,13 +722,21 @@ git_objects_self_check() {
   # 5. the store is in use: GitHub task clones exist, so a mirror must.
   # Roots and shape follow bot-clone-hygiene (myrmidon BOT-DISK-F/H): clones sit
   # below a top-level entry of /workspace and /scratch, whatever the depth.
-  local task_roots="${MYRMIDON_TASK_ROOTS:-/workspace:/scratch}" clones=0 mirrors=0 sample="" d
- 
+  # myrmidon(1.6.5 BOT-SELFCHECK-DIAG): a task root may itself be a symlink
+  # into the bot's one mount — walk its physical path (find would otherwise
+  # not follow it) while reporting the logical root the operator knows. On
+  # failure the message carries the counts and the facts, not just "failed".
+  local task_roots="${MYRMIDON_TASK_ROOTS:-/workspace:/scratch}" clones=0 mirrors=0 sample="" d g g_phys walked_roots="" wsep=""
+
   if [ -n "${store}" ] && [ -d "${store}" ]; then
     mirrors="$(find "${store}" -mindepth 2 -maxdepth 2 -name '*.git' -type d 2>/dev/null | wc -l | tr -d ' ')"
   fi
   for g in $(printf '%s' "${task_roots}" | tr ':' ' '); do
-    for d in $(find "${g}" -maxdepth 4 -name .git 2>/dev/null | head -200); do
+    g_phys="$(physical_path "${g}")"
+    [ -n "${g_phys}" ] || g_phys="${g}"
+    walked_roots="${walked_roots}${wsep}${g} -> ${g_phys}"
+    wsep=", "
+    for d in $(find -H "${g_phys}" -maxdepth 4 -name .git 2>/dev/null | head -200); do
       d="${d%/.git}"
       case "$("${real_git}" -C "${d}" config --get remote.origin.url 2>/dev/null)" in
         *github.com*)
@@ -664,7 +749,7 @@ git_objects_self_check() {
   if [ "${clones}" -eq 0 ] || [ "${mirrors}" -gt 0 ] || [ -z "${store}" ]; then
     add_check "store-in-use" true ""
   else
-    add_check "store-in-use" false "${clones} GitHub task clone(s) on this bot (e.g. ${sample}) but the store ${store} holds no mirror: those clones copied their git history in full. A clone through the wrapper fills the store — see store-fills above for the shape it accepts."
+    add_check "store-in-use" false "${clones} GitHub task clone(s) on this bot (e.g. ${sample}) but the store ${store} holds no mirror (mirrors=${mirrors}, roots walked: ${walked_roots}): those clones copied their git history in full. A clone through the wrapper fills the store — see store-fills above for the shape it accepts."
   fi
   if [ "${ok_all}" = true ]; then
     log "shared-objects self-check ok: store=${store:-off}"
