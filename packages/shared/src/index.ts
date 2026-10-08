@@ -2913,3 +2913,7 @@ export * from "./myrmidon-tool-policy-cache.js";
 // myrmidon(1.6.3-FORAGING-IDLE-GATE): the shared contract of the foraging
 // idle gate — the toggle, its storage key and the resolver with sources.
 export * from "./myrmidon-foraging-idle-gate.js";
+// myrmidon(1.6.6 LITELLM-WORKERS A): the shared contract of the LiteLLM worker
+// count — the stored per-company target, the ceilings the container's shape
+// imposes and the gunicorn signal arithmetic behind a resize.
+export * from "./myrmidon-litellm-workers.js";
