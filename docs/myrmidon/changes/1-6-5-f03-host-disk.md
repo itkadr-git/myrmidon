@@ -1,3 +1,7 @@
+---
+settings-section: BOT-DISK E — host disk usage signal
+---
+
 ## changelog-en
 
 ### The host-disk sweep measures the real mounted path and stops spamming when it cannot (1.6.5 F-03)
