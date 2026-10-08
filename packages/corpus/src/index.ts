@@ -13,7 +13,7 @@ export { PostgresCorpusStore } from "./postgres/store.js";
 export { PostgresWorkQueue } from "./postgres/queue.js";
 export { PostgresCorpusSettingsStore } from "./postgres/settings.js";
 export { LocalBlobStore } from "./local/blob-store.js";
-export { createPostgresSearchIndex } from "./search/hybrid-search-index.js";
+export { createPostgresSearchIndex, CorpusVectorSearchUnavailableError } from "./search/hybrid-search-index.js";
 export { chunkDocumentText } from "./chunking/chunker.js";
 export { createDocumentIngestionPipeline } from "./ingest/embedding-pipeline.js";
 export { createDocumentParserClient } from "./parser/document-parser-client.js";

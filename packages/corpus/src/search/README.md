@@ -16,6 +16,17 @@ search, merged by reciprocal rank fusion.
 - A `dataset` column on the chunks table: every query filters by company and dataset, so a
   search never crosses datasets.
 
+## Clusters without pgvector
+
+The package's migrations split the corpus objects in two on purpose: the full-text objects (the
+generated `tsvector` column, the trigram GIN index) are always created, while the vector objects
+(the `vector` extension, the `embedding` column, its HNSW index) are created only where pgvector is
+available. On a cluster migrated without them, `search()` with an `embedding` fails with
+`CorpusVectorSearchUnavailableError` — a module error that says which migration is missing and keeps
+the driver error as `pgError` — instead of leaking an "undefined column" or "undefined object" from
+the driver. A search without an `embedding` runs only the full-text leg and keeps working, so a
+deployment without pgvector can still search by text.
+
 ## Query shape
 
 One `search()` call runs three statements inside one transaction:

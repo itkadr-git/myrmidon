@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { createPostgresSearchIndex, escapeLikePattern, type SqlExecutor } from "./hybrid-search-index.js";
+import { CorpusVectorSearchUnavailableError, createPostgresSearchIndex, escapeLikePattern, type SqlExecutor } from "./hybrid-search-index.js";
 import { CORPUS_EMBEDDING_DIMENSIONS } from "./vector.js";
 
 const companyId = "aaaaaaaa-0000-0000-0000-000000000001";
@@ -64,6 +64,28 @@ function embedding(): number[] {
 const documents = [
   { id: documentId, dataset_id: datasetId, title: "Contract", source_uri: "file://contract.pdf" },
 ];
+
+/** A cluster migrated without pgvector: every call to the vector leg fails with a driver code. */
+function createPgvectorMissingSql(
+  code: string,
+  message: string,
+  rows: { fullText?: ChunkRow[]; documents?: unknown[] } = {},
+): { sql: SqlExecutor; calls: string[] } {
+  const calls: string[] = [];
+  const executor: SqlExecutor = {
+    query: async <Row extends Record<string, unknown>>(text: string): Promise<Row[]> => {
+      calls.push(text);
+      if (/set local hnsw\.ef_search/i.test(text) || /<=>/.test(text)) {
+        throw Object.assign(new Error(message), { code });
+      }
+      if (/ts_rank/.test(text)) return (rows.fullText ?? []) as unknown as Row[];
+      if (/select d\.id/.test(text)) return (rows.documents ?? []) as unknown as Row[];
+      return [];
+    },
+    withTransaction: (callback) => callback(executor),
+  };
+  return { sql: executor, calls };
+}
 
 describe("hybrid search index", () => {
   it("runs both rankings inside one transaction with ef_search set to the pilot value", async () => {
@@ -221,6 +243,48 @@ describe("hybrid search index", () => {
     await expect(
       index.search({ companyId, datasetId, text: "x", embedding: embedding(), limit: 0 }),
     ).rejects.toThrow(RangeError);
+  });
+
+  it("reports a cluster without pgvector as the module's own error, keeping the driver error", async () => {
+    const driverError = { code: "42703" };
+    const { sql } = createPgvectorMissingSql("42703", 'column "embedding" does not exist');
+    const index = createPostgresSearchIndex({ sql });
+
+    const error = await index
+      .search({ companyId, datasetId, text: "contract", embedding: embedding() })
+      .then(() => null, (thrown: unknown) => thrown);
+
+    expect(error).toBeInstanceOf(CorpusVectorSearchUnavailableError);
+    expect((error as CorpusVectorSearchUnavailableError).code).toBe("corpus_vector_search_unavailable");
+    expect((error as Error).message).toMatch(/0310_corpus_pgvector/);
+    expect((error as Error).message).toMatch(/full text search is available/);
+    expect((error as CorpusVectorSearchUnavailableError).pgError).toMatchObject(driverError);
+  });
+
+  it("keeps full text search working on a cluster without pgvector", async () => {
+    const { sql, calls } = createPgvectorMissingSql("42704", "unrecognized configuration parameter", {
+      fullText: [chunkRow("a", 0, 0.3)],
+      documents,
+    });
+    const index = createPostgresSearchIndex({ sql });
+
+    const hits = await index.search({ companyId, datasetId, text: "contract" });
+
+    expect(hits.map((hit) => hit.chunkId)).toEqual(["a"]);
+    expect(hits[0].fusion).toEqual({ vectorRank: null, fullTextRank: 1 });
+    expect(calls.some((call) => /<=>|hnsw\.ef_search/i.test(call))).toBe(false);
+  });
+
+  it("does not dress an unrelated database failure as a pgvector problem", async () => {
+    const { sql } = createPgvectorMissingSql("40P01", "deadlock detected while ranking chunks");
+    const index = createPostgresSearchIndex({ sql });
+
+    const error = await index
+      .search({ companyId, datasetId, text: "contract", embedding: embedding() })
+      .then(() => null, (thrown: unknown) => thrown);
+
+    expect(error).not.toBeInstanceOf(CorpusVectorSearchUnavailableError);
+    expect((error as Error).message).toMatch(/deadlock/);
   });
 
   it("refuses schema names and settings that are not valid identifiers", () => {

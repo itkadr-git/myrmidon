@@ -11,6 +11,13 @@
 //
 // The module talks to the database through `SqlExecutor` instead of a driver, so the query shape is
 // testable without a database and the module does not pick a driver for the product.
+//
+// pgvector availability: the full text ranking needs only the objects of migration 0309 (the
+// generated `fts` column and the trigram GIN index). The vector ranking needs the objects of
+// migration 0310 — the `vector` extension, the `corpus_chunks.embedding` column and its HNSW index —
+// which that migration creates only on a cluster where pgvector is available. On a cluster without
+// them, a search with an embedding fails with `CorpusVectorSearchUnavailableError` instead of a raw
+// driver error; a search without an embedding keeps working, because the vector leg is not run.
 
 import type { CorpusSearchQuery, SearchIndex } from "../ports.js";
 import { reciprocalRankFusion, type FusionParameters, DEFAULT_FUSION_PARAMETERS } from "./rrf.js";
@@ -117,6 +124,41 @@ function hasText(text: string | undefined): boolean {
   return typeof text === "string" && text.trim().length > 0;
 }
 
+/**
+ * Raised when a search asks for the vector ranking on a database that was migrated without
+ * pgvector: migration 0310 creates the `embedding` column and its HNSW index only where the
+ * extension is available, so semantic search is simply not part of such a cluster. Callers can
+ * catch this and fall back to full text search instead of reporting a raw driver failure.
+ */
+export class CorpusVectorSearchUnavailableError extends Error {
+  readonly code = "corpus_vector_search_unavailable";
+  /** The driver error that showed the vector objects are missing. */
+  readonly pgError: unknown;
+
+  constructor(pgError: unknown) {
+    super(
+      "semantic search needs the pgvector objects of migration 0310_corpus_pgvector.sql " +
+        "(the corpus_chunks.embedding column and its HNSW index); this database was migrated " +
+        "without pgvector, so only full text search is available",
+    );
+    this.name = "CorpusVectorSearchUnavailableError";
+    this.pgError = pgError;
+  }
+}
+
+/**
+ * Driver error codes that mean "this cluster has no pgvector objects": undefined column (the
+ * embedding column is absent), undefined function or operator (`<=>` is absent), and undefined
+ * object (the `hnsw.ef_search` setting is absent). The codes are only interpreted for the vector
+ * leg, so an unrelated failure keeps its own error.
+ */
+const MISSING_PGVECTOR_CODES: ReadonlySet<string> = new Set(["42703", "42883", "42704"]);
+
+function isMissingPgvectorObjects(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null | undefined)?.code;
+  return typeof code === "string" && MISSING_PGVECTOR_CODES.has(code);
+}
+
 export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): PostgresSearchIndex {
   const schema = options.schema ?? DEFAULT_SEARCH_INDEX_SCHEMA;
   const fusion = options.fusion ?? DEFAULT_FUSION_PARAMETERS;
@@ -193,13 +235,20 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
         let vectorRows: ChunkRow[] = [];
         let fullTextRows: ChunkRow[] = [];
         if (embeddingLiteral !== null) {
-          await transaction.query(efSearchSql);
-          vectorRows = await transaction.query<ChunkRow>(vectorSql, [
-            embeddingLiteral,
-            query.companyId,
-            datasetId,
-            kCandidates,
-          ]);
+          try {
+            await transaction.query(efSearchSql);
+            vectorRows = await transaction.query<ChunkRow>(vectorSql, [
+              embeddingLiteral,
+              query.companyId,
+              datasetId,
+              kCandidates,
+            ]);
+          } catch (error) {
+            // A cluster migrated without pgvector has neither the embedding column nor the HNSW
+            // setting; report that as the module's own error instead of a driver detail.
+            if (isMissingPgvectorObjects(error)) throw new CorpusVectorSearchUnavailableError(error);
+            throw error;
+          }
         }
         if (useFullText) {
           fullTextRows = await transaction.query<ChunkRow>(fullTextSql, [

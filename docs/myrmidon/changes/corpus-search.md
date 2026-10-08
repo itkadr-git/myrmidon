@@ -9,6 +9,12 @@
   and dataset and merged by reciprocal rank fusion (`k0 = 60`, `k_candidates = 100`). Every
   hit carries `score`, `chunk`, `document` and both source ranks; the fused order is
   deterministic. Dataset and `ready` filtering join `corpus_documents`, where part A put them.
+- Clusters without pgvector stay usable rather than broken: the package migrations create the
+  full-text objects everywhere but the vector objects (the `embedding` column, its HNSW index)
+  only where the extension exists, so a search that carries an embedding there fails with the
+  module's own `CorpusVectorSearchUnavailableError` — naming the missing migration and keeping
+  the driver error as `pgError` — while a search without an embedding still answers from the
+  full-text ranking. A raw "undefined column" from the driver no longer reaches the worker.
 - Document ingestion behind the ports of part A: the sliding-window chunker (300–1500
   characters, 150 characters of overlap, boundaries on line breaks, configurable), batch
   embedding through the module `Embedder` port, and one atomic `replaceDocumentChunks` call at
@@ -42,6 +48,12 @@
   `k_candidates = 100`). Каждая находка несёт `score`, `chunk`, `document` и оба исходных
   ранга; порядок после слияния детерминирован. Фильтр по датасету и по статусу `ready` идёт
   через соединение с `corpus_documents` — там, где их разместила часть A.
+- Кластер без pgvector остаётся рабочим, а не сломанным: миграции пакета создают
+  полнотекстовые объекты везде, а векторные (колонка `embedding` и её индекс HNSW) — только там,
+  где есть расширение, поэтому поиск с эмбеддингом на таком кластере падает собственной ошибкой
+  модуля `CorpusVectorSearchUnavailableError` — в ней названа недостающая миграция, а ошибка
+  драйвера сохранена в `pgError` — тогда как поиск без эмбеддинга по-прежнему отвечает
+  полнотекстовым ранжированием. Сырое «undefined column» от драйвера до воркера больше не доходит.
 - Конвейер загрузки документов собран за портами части A: чанкинг скользящим окном
   (300–1500 знаков, перекрытие 150, границы по переводам строк, конфигурируемо),
   батч-эмбеддинг через порт `Embedder` и один атомарный вызов `replaceDocumentChunks` в
