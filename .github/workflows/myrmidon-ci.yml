@@ -595,6 +595,13 @@ jobs:
           "$RUNNER_TEMP/gitleaks" git --no-banner --redact --verbose \
             --config .gitleaks.toml --log-opts="$BASE..$HEAD" .
 
+      - name: AI signatures (commit messages, author, committer)
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        env:
+          BASE: ${{ steps.range.outputs.base }}
+          HEAD: ${{ steps.range.outputs.head }}
+        run: node scripts/myrmidon/ai-signature-scan.mjs --commits "$BASE..$HEAD"
+
       - name: Internal addresses (private networks)
         if: ${{ !cancelled() }}
         env:
