@@ -118,6 +118,12 @@ import {
   isMarkdownAttachmentContent,
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
+  // myrmidon(F16): the agent issue-list defaults (compact by default,
+  // limit 200/500, description omitted in compact) from the shared contract.
+  ISSUE_LIST_AGENT_DEFAULT_LIMIT,
+  ISSUE_LIST_AGENT_FULL_VIEW_MAX_LIMIT,
+  ISSUE_LIST_AGENT_MAX_LIMIT,
+  issueListAgentDefaultsEnabled,
   type CompactIssue,
   type CompanySearchExtractQuery,
   type CompanySearchExtractResponse,
@@ -3015,7 +3021,14 @@ class AutoApprovalIssueMissingError extends Error {
   }
 }
 
-function toCompactIssue(issue: any): CompactIssue {
+function toCompactIssue(
+  issue: any,
+  // myrmidon(F16): true for an agent actor with the agent defaults on — the
+  // compact row then omits `description` (the field that makes the bare agent
+  // list response megabyte-sized).
+  opts?: { omitDescription?: boolean },
+): CompactIssue {
+  const omitDescription = opts?.omitDescription === true;
   return {
     id: issue.id,
     companyId: issue.companyId,
@@ -3024,7 +3037,9 @@ function toCompactIssue(issue: any): CompactIssue {
     goalId: issue.goalId,
     parentId: issue.parentId,
     title: issue.title,
-    description: issue.description,
+    // myrmidon(F16): the agent compact row omits `description` — the agent
+    // fetches the body of the one issue it needs via the detail endpoint.
+    ...(omitDescription ? {} : { description: issue.description }),
     status: issue.status,
     workMode: issue.workMode,
     priority: issue.priority,
@@ -8004,9 +8019,20 @@ export function issueRoutes(
       rawLimit !== undefined && /^\d+$/.test(rawLimit)
         ? Number.parseInt(rawLimit, 10)
         : null;
+    // myrmidon(F16): agent actors get the defect-fix defaults (compact view,
+    // limit 200, max 500, description omitted in compact) behind the instance
+    // setting `issuesListAgentDefaults`; absent means ON, `{enabled: false}`
+    // restores the pre-feature behaviour byte-for-byte.
+    const agentDefaultsEnabled =
+      req.actor.type === "agent" &&
+      issueListAgentDefaultsEnabled(
+        (await instanceSettings.getGeneral()).issuesListAgentDefaults,
+      );
     const limit =
       parsedLimit === null
-        ? ISSUE_LIST_DEFAULT_LIMIT
+        ? agentDefaultsEnabled
+          ? ISSUE_LIST_AGENT_DEFAULT_LIMIT
+          : ISSUE_LIST_DEFAULT_LIMIT
         : clampIssueListLimit(parsedLimit);
     const rawOffset = req.query.offset as string | undefined;
     const parsedOffset =
@@ -8017,7 +8043,12 @@ export function issueRoutes(
     const sortField = req.query.sortField as string | undefined;
     const sortDir = req.query.sortDir as string | undefined;
     const view = req.query.view as string | undefined;
-    const compactView = view === "compact";
+    // myrmidon(F16): with the agent defaults on, a bare agent request is the
+    // compact view; the full view stays reachable through an explicit
+    // `view=full` with an explicit `limit <= 100`.
+    const compactView = agentDefaultsEnabled
+      ? view === undefined || view === "compact"
+      : view === "compact";
     const hasPlanDocument = parseOptionalBooleanQuery(
       req.query.hasPlanDocument,
     );
@@ -8070,8 +8101,27 @@ export function issueRoutes(
         .json({ error: "attention must be 'blocked' when provided" });
       return;
     }
-    if (view !== undefined && view !== "compact") {
+    // myrmidon(F16): an agent with the defaults on may also pass `view=full`,
+    // and only then — the full response stays small by the limit gate below.
+    if (
+      view !== undefined &&
+      view !== "compact" &&
+      !(agentDefaultsEnabled && view === "full")
+    ) {
       res.status(400).json({ error: "view must be 'compact' when provided" });
+      return;
+    }
+    // myrmidon(F16): an agent's `view=full` is capped at an explicit
+    // `limit <= 100`; without `limit` the agent default (200) already exceeds
+    // the cap, so the request is refused with the pagination hint.
+    if (
+      agentDefaultsEnabled &&
+      view === "full" &&
+      (parsedLimit === null || parsedLimit > ISSUE_LIST_AGENT_FULL_VIEW_MAX_LIMIT)
+    ) {
+      res.status(400).json({
+        error: `view=full for agent actors requires an explicit limit up to ${ISSUE_LIST_AGENT_FULL_VIEW_MAX_LIMIT}; for larger windows paginate the default compact view with offset or afterId`,
+      });
       return;
     }
     if (
@@ -8082,6 +8132,15 @@ export function issueRoutes(
     ) {
       res.status(400).json({
         error: `limit must be a positive integer up to ${ISSUE_LIST_MAX_LIMIT}`,
+      });
+      return;
+    }
+    // myrmidon(F16): an agent's explicit limit above the agent maximum is a
+    // 400 (not a silent clamp) with the pagination hint — a bot should page
+    // through the list instead of fetching it whole.
+    if (agentDefaultsEnabled && parsedLimit !== null && parsedLimit > ISSUE_LIST_AGENT_MAX_LIMIT) {
+      res.status(400).json({
+        error: `limit must be a positive integer up to ${ISSUE_LIST_AGENT_MAX_LIMIT} for agent actors; paginate with offset or afterId for larger windows`,
       });
       return;
     }
@@ -8203,6 +8262,10 @@ export function issueRoutes(
       normalizedQuery: {
         ...listFilters,
         view: compactView ? "compact" : undefined,
+        // myrmidon(F16): the settings toggle changes the response body at an
+        // identical query (description present or omitted, default limit
+        // 500 or 200) — the cache key must not mix the two bodies.
+        issuesListAgentDefaultsEnabled: agentDefaultsEnabled || undefined,
       },
     });
     const coordinated = await coordinateIssueListGet({
@@ -8239,11 +8302,16 @@ export function issueRoutes(
             }),
           );
           const compactResult = result.map((issue) =>
-            toCompactIssue({
-              ...issue,
-              activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
-              successfulRunHandoff: handoffStates.get(issue.id) ?? null,
-            }),
+            toCompactIssue(
+              {
+                ...issue,
+                activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
+                successfulRunHandoff: handoffStates.get(issue.id) ?? null,
+              },
+              // myrmidon(F16): the agent compact row omits `description` —
+              // the ETag below is computed from this already-trimmed body.
+              { omitDescription: agentDefaultsEnabled },
+            ),
           );
           return {
             kind: "compact",
