@@ -1024,9 +1024,9 @@ payload only.
 
 No environment variables and no new settings documents: this part wires the
 consumers of the company caste directory (the directory itself is part A).
-Both consumers read the directory (part A's `agent_castes` table, see
-[guides/custom-castes.md](guides/custom-castes.md)) through an injectable port;
-a role with no directory entry behaves exactly as in the pre-directory release.
+Both consumers read the directory through an injectable port, so until part A
+lands the port is absent and every behavior below is a no-op that matches the
+pre-directory release exactly.
 
 Agent role validation (`packages/shared/src/validators/agent.ts`,
 `server/src/services/agents.ts`): the `role` field of the agent create/update
@@ -1054,7 +1054,7 @@ explicit grants, and the cloud-connector caste grants are untouched.
 
 | Variable | Function | Default | What it does | How to disable / special |
 |---|---|---|---|---|
-| — | 1.6.1-CUSTOM-CASTES-B | — | This part adds no tunables of its own; the directory rows (`swarmEligible`, `maxActiveTasks`) come from part A's store, the swarm globals stay under `MYRMIDON_SWARM_*` | A role with no directory entry is unaffected; nothing to disable |
+| — | 1.6.1-CUSTOM-CASTES-B | — | This part adds no tunables of its own; the directory rows (`swarmEligible`, `maxActiveTasks`) come from part A's store, the swarm globals stay under `MYRMIDON_SWARM_*` | Until part A's directory is wired the consumers are no-ops; nothing to disable |
 
 ## 1.6.1 — WIP-LIMIT: per-agent work-in-progress limit
 
