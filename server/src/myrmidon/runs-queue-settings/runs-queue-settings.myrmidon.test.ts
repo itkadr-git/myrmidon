@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   RUNS_QUEUE_SETTING_KEYS,
 } from "@paperclipai/shared/myrmidon-runs-queue-settings";
@@ -110,5 +112,19 @@ describe("runs-queue-settings live readers", () => {
     expect(liveRunStallSettings(env).thresholdSec).toBe(91);
     const env2 = { MYRMIDON_RUN_STALL_THRESHOLD_SEC: "10" } as NodeJS.ProcessEnv;
     expect(liveRunStallSettings(env2).thresholdSec).toBe(60);
+  });
+
+  it("UI panel keys are a subset of the registry keys", () => {
+    const panelPath = resolve(
+      __dirname,
+      "../../../ui/src/components/myrmidon/RunsQueueSettingsPanel.tsx",
+    );
+    const panelSource = readFileSync(panelPath, "utf8");
+    const panelKeys = [...panelSource.matchAll(/"(runsQueue\.[a-zA-Z.]+)"/g)]
+      .map((m) => m[1])
+      .filter((k) => !k.endsWith("."));
+    const registrySet = new Set(RUNS_QUEUE_SETTING_KEYS);
+    const missing = panelKeys.filter((k) => !registrySet.has(k));
+    expect(missing).toEqual([]);
   });
 });

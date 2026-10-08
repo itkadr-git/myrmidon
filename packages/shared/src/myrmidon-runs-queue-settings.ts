@@ -8,8 +8,9 @@
 // Composition follows ia-v2 §10.7 (OPE-3923): the rows marked "⟶ UI". Sweep
 // intervals and page sizes that §10.7 keeps as deployment values
 // (RUN_STALL_SWEEP_INTERVAL_SEC / PAGE_SIZE, TASK_PR_SYNC_POLL_SEC /
-// BATCH_MAX, CONTINUATION_HISTORY_LIMIT, IDLE_PICKUP wake budget/batch, …)
-// stay env-only and are NOT registered here.
+// BATCH_MAX, IDLE_PICKUP wake budget/batch, …) stay env-only and are NOT
+// registered here. CONTINUATION_HISTORY_LIMIT is registered because §10.7
+// marks it "⟶ UI".
 //
 // UI grouping (§10.16 recommendation): the keys whose `uiGroup` is "main" sit
 // in the tab's main switch block; everything else lives under the collapsible
