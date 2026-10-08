@@ -56,6 +56,8 @@ import { preserveTelegramNotifyGeneralKey } from "../myrmidon/telegram-notify/pr
 // myrmidon(1.6.1-WIP-LIMIT-A): keep the stored WIP limits across vendor writes of `general`
 import { preserveWipLimitGeneralKey } from "../myrmidon/wip-limit/settings.js";
 import { preserveOwnerDeliveryGeneralKey } from "../myrmidon/owner-delivery/settings.js"; // myrmidon(1.6.5-OWNER-DM-FILTER)
+// myrmidon(1.6.5-DB-RETENTION): keep the stored retention settings and sweep state across vendor writes of `general`
+import { preserveDataRetentionGeneralKey } from "../myrmidon/data-retention/settings.js";
 // myrmidon(1.6.1 VOICE-STT A1): keep the per-company STT runtime settings across vendor writes of `general`
 import { preserveSttGeneralKey } from "../myrmidon/stt/store.js";
 // myrmidon(1.7-BUDGET-CONFIG-B): keep the stored budget enforcement mode
@@ -252,6 +254,9 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       ...(parsed.data.runLimits ? { runLimits: parsed.data.runLimits } : {}),
       // myrmidon(BOT-DISK E): the stored host disk threshold survives every general write
       ...(parsed.data.hostDisk ? { hostDisk: parsed.data.hostDisk } : {}),
+      // myrmidon(1.6.5-DB-RETENTION): the stored retention settings (and the
+      // sweep state under `lastRun`) survive every general write
+      ...(parsed.data.dataRetention ? { dataRetention: parsed.data.dataRetention } : {}),
       // myrmidon(BOT-DISK-A): the stored bot draft-directory lifecycle survives every general write
       ...(parsed.data.botDisk ? { botDisk: parsed.data.botDisk } : {}),
       // myrmidon(1.6.1-BOT-DISK-C): the stored per-bot disk quota survives every general write
@@ -670,6 +675,11 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
             ...preserveOwnerDeliveryGeneralKey(current.general), // myrmidon(1.6.5-OWNER-DM-FILTER)
             // The preserve line above restores the stored value: a patch that carries the key wins.
             ...(patch.ownerDelivery !== undefined ? { ownerDelivery: nextGeneral.ownerDelivery } : {}), // myrmidon(1.6.5-OWNER-DM-FILTER)
+            ...preserveDataRetentionGeneralKey(current.general), // myrmidon(1.6.5-DB-RETENTION)
+            // myrmidon(1.6.5-DB-RETENTION): the preserve line above restores
+            // the stored value; a patch that carries the key (settings update
+            // or the sweep's lastRun write) wins.
+            ...(patch.dataRetention !== undefined ? { dataRetention: nextGeneral.dataRetention } : {}),
             ...preserveSttGeneralKey(current.general), // myrmidon(1.6.1 VOICE-STT A1)
             ...preserveBudgetEnforcementGeneralKey(current.general), // myrmidon(1.7-BUDGET-CONFIG-B)
             ...preservePluginEntitlementKeysGeneralKey(current.general), // myrmidon(PLUGIN-ENTITLEMENT C)
