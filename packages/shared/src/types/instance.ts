@@ -4,6 +4,8 @@ import type { WorkspaceHygieneLimits } from "../myrmidon-workspace-hygiene.js";
 // myrmidon(C0): the run admission limits stored in instance settings
 import type { StoredRunLimits } from "../myrmidon-runtime-limits.js";
 import type { HostDiskSettings } from "../myrmidon-host-disk.js";
+// myrmidon(1.6.5-DBC1): the datastore-care block type (see validators/instance.ts)
+import type { DatastoreCareRetentionSettings } from "../myrmidon-datastore-care.js";
 // myrmidon(BOT-DISK-A): the bot draft-directory lifecycle stored in instance settings
 import type { StoredBotDiskSettings } from "../myrmidon-bot-disk.js";
 // myrmidon(1.6.1-BOT-DISK-C): per-bot disk quota of its own general settings key.
@@ -93,6 +95,14 @@ export interface InstanceGeneralSettings {
    * same field (packages/shared/src/validators/instance.ts).
    */
   hostDisk?: HostDiskSettings;
+  /**
+   * myrmidon(1.6.5-DBC1): the datastore-care block (the retention sub-block
+   * with `heartbeatRunContextDays`), changed from
+   * `GET`/`PATCH /api/myrmidon/datastore-care`. Absent means "use the
+   * environment variable, then the default (7)"; kept in sync with the
+   * validator of the same field (packages/shared/src/validators/instance.ts).
+   */
+  datastoreCare?: { retention?: DatastoreCareRetentionSettings };
   /**
    * myrmidon(BOT-DISK-A): the bot draft-directory lifecycle, changed from
    * `GET`/`PATCH /api/myrmidon/bot-disk`. Absent means "use the environment

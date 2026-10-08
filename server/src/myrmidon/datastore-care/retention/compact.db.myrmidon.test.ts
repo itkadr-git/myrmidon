@@ -14,7 +14,7 @@ import { eq } from "drizzle-orm";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
-} from "../../__tests__/helpers/embedded-postgres.js";
+} from "../../../__tests__/helpers/embedded-postgres.js";
 import {
   compactContextPass,
   CONTEXT_COMPACT_BATCH_SIZE,

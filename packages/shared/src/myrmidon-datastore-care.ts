@@ -44,6 +44,12 @@ export const datastoreCareSettingsSchema = z
 
 export type DatastoreCareRetentionSettings = {
   heartbeatRunContextDays: number | undefined;
+  /**
+   * The persisted state of the last compaction pass, written by the sweep
+   * (see server/src/myrmidon/datastore-care/retention/settings.ts). Not a
+   * user setting; carries `lastRun` because the block is a passthrough.
+   */
+  lastRun?: DatastoreCareRetentionLastRun;
 };
 
 export function normalizeDatastoreCareRetention(
