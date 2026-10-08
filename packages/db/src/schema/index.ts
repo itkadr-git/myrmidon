@@ -255,3 +255,6 @@ export { agentCastes } from "./agent_castes.js";
 // myrmidon(DBC-4): datastore care — hourly snapshots and audit reports of the
 // board's own PostgreSQL (server/src/myrmidon/datastore-care/).
 export { datastoreSnapshots, datastoreAuditReports } from "./datastore_care.js";
+
+// myrmidon(1.6-GRD): flag-only guardrail events (secrets/pii detected on run output).
+export { guardrailEvents } from "./guardrail_events.js";
