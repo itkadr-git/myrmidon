@@ -15,7 +15,8 @@ import {
   findDatastoreTarget,
   implicitDatastoreTargets,
   prettyBytes,
-  type DatastoreSnapshotPayload,
+  toStoredSnapshotPayload,
+  type DatastoreCollectedSnapshot,
   type DatastoreTarget,
 } from "./domain.js";
 import {
@@ -99,7 +100,7 @@ export interface DatastoreAuditReportResult {
 export interface DatastoreCareServiceDeps {
   store: DatastoreCareStore;
   /** Full collection of a target (heavy: sizes, TOAST, indexes, top queries). */
-  collect: (target: DatastoreTarget, now: Date) => Promise<DatastoreSnapshotPayload>;
+  collect: (target: DatastoreTarget, now: Date) => Promise<DatastoreCollectedSnapshot>;
   /** Cheap live probe used by the list endpoint. */
   probe: (target: DatastoreTarget) => Promise<DatastoreTargetProbe>;
   now: () => Date;
@@ -231,7 +232,8 @@ export function createDatastoreCareService(deps: DatastoreCareServiceDeps): Data
         toastBytes: payload.toastBytes,
         indexBytes: payload.indexBytes,
         serverVersion: payload.serverVersion,
-        payload,
+        // Aggregates only: the per-index list never reaches the snapshot table.
+        payload: toStoredSnapshotPayload(payload),
       });
       return { snapshot, target };
     },
@@ -257,7 +259,8 @@ export function createDatastoreCareService(deps: DatastoreCareServiceDeps): Data
         toastBytes: payload.toastBytes,
         indexBytes: payload.indexBytes,
         serverVersion: payload.serverVersion,
-        payload,
+        // Aggregates only: the per-index list never reaches the snapshot table.
+        payload: toStoredSnapshotPayload(payload),
       });
 
       const criteria = evaluateCriteria(payload, previousRecord?.payload ?? null);
@@ -268,6 +271,7 @@ export function createDatastoreCareService(deps: DatastoreCareServiceDeps): Data
         trigger,
         snapshotId: snapshot.id,
         payload,
+        indexes: payload.indexes,
         criteria,
         summary,
       });

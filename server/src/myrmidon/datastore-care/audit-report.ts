@@ -11,6 +11,7 @@
 
 import {
   prettyBytes,
+  type DatastoreIndexMetric,
   type DatastoreSnapshotPayload,
   type DatastoreTarget,
   type DatastoreTopQueryMetric,
@@ -198,19 +199,21 @@ export function evaluateCriteria(
     detail: null,
   });
 
-  // 7. Unused indexes: share and absolute size.
-  const unused = payload.indexes.filter((index) => index.scans === 0);
-  const unusedBytes = unused.reduce((sum, index) => sum + index.bytes, 0);
-  const unusedShare = payload.indexCount > 0 ? (unused.length / payload.indexCount) * 100 : 0;
+  // 7. Unused indexes: share and absolute size. The snapshot keeps the counts
+  //    and not the index list (see DatastoreSnapshotPayload), so the criterion
+  //    reads them like any other stored number.
+  const unusedCount = payload.unusedIndexCount;
+  const unusedBytes = payload.unusedIndexBytes;
+  const unusedShare = payload.indexCount > 0 ? (unusedCount / payload.indexCount) * 100 : 0;
   const unusedBytesLimit = 512 * 1024 * 1024;
   criteria.push({
     id: "unused-indexes",
     title: "Неиспользуемые индексы",
     threshold: "≤ 20 % записей и ≤ 512 МиБ",
-    value: `${unused.length} из ${payload.indexCount} (${percent(unusedShare, 1)}), ${prettyBytes(unusedBytes)}`,
+    value: `${unusedCount} из ${payload.indexCount} (${percent(unusedShare, 1)}), ${prettyBytes(unusedBytes)}`,
     verdict: unusedShare > 20 || unusedBytes > unusedBytesLimit ? "warn" : "ok",
     source: "pg_stat_user_indexes: idx_scan = 0",
-    detail: unused.length > 0 ? `крупнейший: ${unused[0]?.index ?? "—"}` : null,
+    detail: unusedCount > 0 ? `крупнейший: ${payload.largestUnusedIndex ?? "—"}` : null,
   });
 
   // 8. Invalid (broken) indexes — a failing index is a correctness problem.
@@ -433,6 +436,12 @@ export interface AuditReportInput {
   trigger: string;
   snapshotId: string | null;
   payload: DatastoreSnapshotPayload;
+  /**
+   * The index list of the live collection, printed as a table in the export.
+   * Optional: the stored snapshot keeps aggregates only, so an export rebuilt
+   * from stored data prints the totals without the per-index rows.
+   */
+  indexes?: DatastoreIndexMetric[];
   criteria: AuditCriterion[];
   summary: AuditSummary;
 }
@@ -514,18 +523,24 @@ export function buildAuditReportMarkdown(input: AuditReportInput): string {
   lines.push("");
   lines.push("## Индексы");
   lines.push("");
-  const unusedIndexes = payload.indexes.filter((index) => index.scans === 0);
-  const unusedBytes = unusedIndexes.reduce((sum, index) => sum + index.bytes, 0);
+  // The snapshot keeps index aggregates only, so the table below comes from the
+  // live collection handed in as `input.indexes` — report-time data, not part of
+  // the 90-day snapshot series.
+  const indexList = input.indexes ?? [];
   lines.push(
-    `- Всего индексов: ${payload.indexCount}; неиспользуемых (idx_scan = 0): ${unusedIndexes.length} на ${prettyBytes(unusedBytes)}; некорректных: ${payload.invalidIndexCount}`,
+    `- Всего индексов: ${payload.indexCount}; неиспользуемых (idx_scan = 0): ${payload.unusedIndexCount} на ${prettyBytes(payload.unusedIndexBytes)}; некорректных: ${payload.invalidIndexCount}`,
   );
   lines.push("");
-  lines.push("| Индекс | Таблица | Размер | Сканов |");
-  lines.push("| --- | --- | --- | --- |");
-  for (const index of payload.indexes.slice(0, 15)) {
-    lines.push(
-      `| ${escapeCell(index.index)} | ${escapeCell(index.table)} | ${prettyBytes(index.bytes)} | ${index.scans} |`,
-    );
+  if (indexList.length === 0) {
+    lines.push("Список индексов в отчёт не передан — только агрегаты.");
+  } else {
+    lines.push("| Индекс | Таблица | Размер | Сканов |");
+    lines.push("| --- | --- | --- | --- |");
+    for (const index of indexList.slice(0, 15)) {
+      lines.push(
+        `| ${escapeCell(index.index)} | ${escapeCell(index.table)} | ${prettyBytes(index.bytes)} | ${index.scans} |`,
+      );
+    }
   }
 
   lines.push("");

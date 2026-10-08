@@ -13,7 +13,7 @@
 import { describe, expect, it } from "vitest";
 
 import { BOARD_TARGET, prettyBytes } from "./domain.js";
-import type { DatastoreSnapshotPayload } from "./domain.js";
+import type { DatastoreCollectedSnapshot, DatastoreSnapshotPayload } from "./domain.js";
 import {
   buildAuditReportMarkdown,
   evaluateCriteria,
@@ -21,8 +21,8 @@ import {
   topQueriesShare,
 } from "./audit-report.js";
 
-function payload(overrides: Partial<DatastoreSnapshotPayload> = {}): DatastoreSnapshotPayload {
-  const base: DatastoreSnapshotPayload = {
+function payload(overrides: Partial<DatastoreCollectedSnapshot> = {}): DatastoreCollectedSnapshot {
+  const base: DatastoreCollectedSnapshot = {
     key: "board",
     engine: "postgres",
     connectionRef: "board-primary",
@@ -60,6 +60,9 @@ function payload(overrides: Partial<DatastoreSnapshotPayload> = {}): DatastoreSn
     ],
     indexCount: 2,
     invalidIndexCount: 0,
+    unusedIndexCount: 1,
+    unusedIndexBytes: 5_242_880,
+    largestUnusedIndex: "issues_legacy_idx",
     topQueries: [
       {
         queryId: "1234567",
@@ -172,6 +175,9 @@ describe("myrmidon(DBC-4) audit criteria", () => {
         },
       ],
       indexCount: 10,
+      unusedIndexCount: 1,
+      unusedIndexBytes: 600 * 1024 * 1024,
+      largestUnusedIndex: "a",
       indexes: [
         { index: "a", table: "issues", bytes: 600 * 1024 * 1024, scans: 0 },
         ...Array.from({ length: 9 }, (_, index) => ({
@@ -334,6 +340,7 @@ describe("myrmidon(DBC-4) audit markdown", () => {
       trigger: "manual",
       snapshotId: "11111111-2222-3333-4444-555555555555",
       payload: snapshot,
+      indexes: snapshot.indexes,
       criteria,
       summary: summarizeCriteria(criteria, snapshot),
     });
@@ -387,6 +394,7 @@ describe("myrmidon(DBC-4) audit markdown", () => {
       trigger: "hourly",
       snapshotId: null,
       payload: snapshot,
+      indexes: snapshot.indexes,
       criteria,
       summary: summarizeCriteria(criteria, snapshot),
     });

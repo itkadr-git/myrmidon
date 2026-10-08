@@ -11,7 +11,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { BOARD_CONNECTION_REF, BOARD_TARGET } from "../domain.js";
+import { BOARD_CONNECTION_REF, BOARD_TARGET, toStoredSnapshotPayload } from "../domain.js";
 import {
   collectPostgresSnapshot,
   type BackupFileEntry,
@@ -164,6 +164,11 @@ describe("myrmidon(DBC-4) postgres collector", () => {
 
     expect(payload.indexCount).toBe(2);
     expect(payload.invalidIndexCount).toBe(0);
+    // Index aggregates: these, and not the per-index list, are what a stored
+    // snapshot carries.
+    expect(payload.unusedIndexCount).toBe(1);
+    expect(payload.unusedIndexBytes).toBe(5_242_880);
+    expect(payload.largestUnusedIndex).toBe("issues_legacy_idx");
     expect(payload.indexes[0]).toEqual({
       index: "issues_company_idx",
       table: "issues",
@@ -415,5 +420,56 @@ describe("myrmidon(DBC-4) postgres collector", () => {
     // The limit travels to the database; the port answers what it has.
     expect(payload.tables).toHaveLength(2);
     expect(payload.tablesBytes).toBeGreaterThan(0);
+  });
+
+  it("stores index aggregates, not the ~1040-row index list", async () => {
+    // The board carries ~1040 indexes. Repeated in every hourly snapshot over
+    // the 90-day retention that was ~200 MB per target for numbers nobody reads
+    // hourly, so the stored payload keeps aggregates (operator review 08.10,
+    // item 3) while the report keeps using the list from the collection.
+    const manyIndexes: DatastoreRow[] = Array.from({ length: 1040 }, (_, index) => ({
+      index_name: `board_idx_${index}`,
+      table_name: "issues",
+      bytes: "8000000",
+      scans: index % 4 === 0 ? "0" : "17",
+    }));
+    const { port } = scriptedPort([
+      IDENTITY,
+      TABLES,
+      manyIndexes,
+      [{ invalid: "0" }],
+      [
+        { name: "pg_stat_statements", version: "1.11" },
+        { name: "plpgsql", version: "1.0" },
+      ],
+      TOP_QUERY,
+      [{ total_ms: "10000" }],
+      SETTINGS,
+      STATS,
+    ]);
+
+    const collected = await collectPostgresSnapshot(
+      {
+        target: BOARD_TARGET,
+        now: NOW,
+        topQueries: 25,
+        backupDir: "/srv/backups/board",
+        optionalMetrics: true,
+      },
+      { connection: port, readBackupDir: async () => backupFiles() },
+    );
+
+    expect(collected.indexCount).toBe(1040);
+    expect(collected.unusedIndexCount).toBe(260);
+
+    const stored = toStoredSnapshotPayload(collected);
+    expect(stored).not.toHaveProperty("indexes");
+    expect(stored.unusedIndexCount).toBe(260);
+    expect(stored.unusedIndexBytes).toBe(260 * 8_000_000);
+    expect(stored.largestUnusedIndex).toBe("board_idx_0");
+    // The row that reaches jsonb stays a few kB instead of megabytes.
+    expect(JSON.stringify(stored).length).toBeLessThan(20_000);
+    // The list itself is still there for the report and the export.
+    expect(collected.indexes).toHaveLength(1040);
   });
 });

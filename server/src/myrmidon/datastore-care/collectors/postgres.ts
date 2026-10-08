@@ -21,10 +21,10 @@ import type { Db } from "@paperclipai/db";
 
 import type {
   DatastoreBackupMetric,
+  DatastoreCollectedSnapshot,
   DatastoreIndexMetric,
   DatastoreOptionalMetrics,
   DatastoreSettingMetric,
-  DatastoreSnapshotPayload,
   DatastoreTableMetric,
   DatastoreTarget,
   DatastoreTopQueryMetric,
@@ -293,7 +293,7 @@ async function collectOptional(
 export async function collectPostgresSnapshot(
   input: PostgresCollectionInput,
   ports: PostgresCollectorPorts,
-): Promise<DatastoreSnapshotPayload> {
+): Promise<DatastoreCollectedSnapshot> {
   const { target, now } = input;
   const warnings: string[] = [];
   const port = ports.connection;
@@ -478,6 +478,13 @@ export async function collectPostgresSnapshot(
   const maxConnections =
     toNumber(settings.find((setting) => setting.name === "max_connections")?.value, 100) || 100;
 
+  // Index aggregates for the stored snapshot; the list itself stays in memory
+  // for the report and is dropped by `toStoredSnapshotPayload`.
+  const unusedIndexes = indexes.filter((index) => index.scans === 0);
+  const unusedIndexBytes = unusedIndexes.reduce((sum, index) => sum + index.bytes, 0);
+  // Rows arrive ordered by size DESC, so the first unused one is the largest.
+  const largestUnusedIndex = unusedIndexes[0]?.index ?? null;
+
   const backup = await collectBackup(input.backupDir, now, readDir, warnings);
   const optional = await collectOptional(port, extensions, input.optionalMetrics, warnings);
 
@@ -497,6 +504,9 @@ export async function collectPostgresSnapshot(
     indexes,
     indexCount: indexes.length,
     invalidIndexCount,
+    unusedIndexCount: unusedIndexes.length,
+    unusedIndexBytes,
+    largestUnusedIndex,
     topQueries,
     topQueriesTotalMs,
     statStatementsAvailable: hasStatStatements,
