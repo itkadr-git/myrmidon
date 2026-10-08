@@ -63,6 +63,7 @@ import {
 // percent of the model window, fallback window, optimizer agent) stored in the
 // same general settings row.
 import { promptBudgetSettingsSchema } from "../myrmidon-prompt-budget.js";
+import { budgetLimitsSettingsSchema } from "../myrmidon-budget-limits.js";
 
 // myrmidon(1.6.5 BOT-RUNTIME-TUNING D2): the fallback-signal settings (switch,
 // threshold percent, minimum calls, window and sweep interval) stored in the
@@ -222,6 +223,10 @@ export const instanceGeneralSettingsSchema = z.object({
   // environment variable, then the default" (see
   // packages/shared/src/myrmidon-fallback-signal.ts).
   modelFallbackSignal: storedFallbackSignalSettingsSchema.optional(),
+  // myrmidon(1.7-BUDGET-CONFIG A): the global "signal only" flag of the
+  // per-level spend limits, changed from PATCH …/budget-limits/signal-only;
+  // absent means the default (signal only ON — limits never stop work).
+  budgetLimits: budgetLimitsSettingsSchema.optional(),
 }).strict();
 
 export const patchInstanceGeneralSettingsSchema = z
