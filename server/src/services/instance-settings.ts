@@ -77,9 +77,7 @@ import { preserveTelegramDmProgressGeneralKey } from "../myrmidon/telegram-dm-pr
 import { preserveGitHubSharedIdentityGeneralKey } from "../myrmidon/github-shared-identity/store.js";
 import { preserveBudgetProjectionGeneralKey } from "../myrmidon/litellm-budget-sync/settings.js"; // myrmidon(1.7-BUDGET-CONFIG-C)
 // myrmidon(BOT-RUNTIME-TUNING D2): keep the fallback-signal settings across vendor writes of `general`
-import { preserveFallbackSignalGeneralKey } from "../myrmidon/litellm-fallback-signal/settings.js";// myrmidon(1.6.3-FORAGING-IDLE-GATE): keep the stored foraging idle gate
-// across vendor writes of `general`
-import { preserveForagingIdleGateGeneralKey } from "../myrmidon/foraging/idle-gate-settings.js";
+import { preserveFallbackSignalGeneralKey } from "../myrmidon/litellm-fallback-signal/settings.js";
 import { getManagedInstanceConfig, type ManagedInstanceConfig } from "./managed-config.js";
 import { getOperatorSettingDefaults } from "./setting-defaults.js";
 
@@ -708,7 +706,6 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
             ...preserveGitHubSharedIdentityGeneralKey(current.general), // myrmidon(GITHUB-SHARED-IDENTITY)
             ...preserveBudgetProjectionGeneralKey(current.general), // myrmidon(1.7-BUDGET-CONFIG-C)
             ...preserveBotImageRolloutGeneralKey(current.general), // myrmidon(BOT-ROLLOUT)
-            ...preserveForagingIdleGateGeneralKey(current.general), // myrmidon(1.6.3-FORAGING-IDLE-GATE)
           },
           updatedAt: now,
         })

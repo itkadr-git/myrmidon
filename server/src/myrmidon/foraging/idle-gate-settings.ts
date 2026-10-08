@@ -90,12 +90,9 @@ async function foragingIdleGateServiceRead(
   });
 }
 
-/** Keep the stored toggle across every vendor general write (same shape as WIP-LIMIT). */
-export function preserveForagingIdleGateGeneralKey(storedGeneral: unknown): Record<string, unknown> {
-  if (typeof storedGeneral !== "object" || storedGeneral === null) return {};
-  const value = (storedGeneral as Record<string, unknown>)[FORAGING_IDLE_GATE_SETTINGS_KEY];
-  return value === undefined ? {} : { [FORAGING_IDLE_GATE_SETTINGS_KEY]: value };
-}
+// No preserve-helper on purpose: normalizeGeneralSettings carries
+// `foragingIdleGate` through every general write, and a preserve line spread
+// after the normalized patch would restore the OLD stored value over a PATCH.
 
 export function foragingIdleGateService(
   db: Db,

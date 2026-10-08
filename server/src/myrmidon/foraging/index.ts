@@ -54,7 +54,6 @@ export {
   FORAGING_IDLE_GATE_ENABLED_ENV,
   FORAGING_IDLE_GATE_SETTINGS_KEY,
   foragingIdleGateService,
-  preserveForagingIdleGateGeneralKey,
   readForagingIdleGate,
 } from "./idle-gate-settings.js";
 export { foragingIdleGateRoutes } from "./idle-gate-routes.js";
