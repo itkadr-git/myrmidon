@@ -157,6 +157,7 @@ import { myrmidonPromptBudgetAdviceRoutes } from "./myrmidon/prompt-budget-advic
 import { myrmidonMonitoringLinkRoutes } from "./myrmidon/monitoring/links/index.js"; // myrmidon(1.6.6 MONITORING E)
 import { myrmidonCloudConnectorRoutes } from "./myrmidon/cloud-connector/index.js"; // myrmidon(CLOUD-CONNECTOR)
 import { myrmidonBoardProcessRegistryRoutes } from "./myrmidon/process-registry/index.js"; // myrmidon(1.6.6 PROCS-0.1)
+import { myrmidonGoogleAiConnectorRoutes } from "./myrmidon/google-ai-connector/index.js"; // myrmidon(GOOGLE-AI-CONNECT-UI)
 import { myrmidonAutonomyRoutes } from "./myrmidon/autonomy/index.js"; // myrmidon(1.6-AUTONOMY)
 // myrmidon(1.6-TG-PROACTIVITY-E): head-bot proactivity gate/bundling sweep
 import { sweepTelegramNotifyProactivity } from "./myrmidon/telegram-notify/sweep.js";
@@ -970,6 +971,7 @@ export async function createApp(
   api.use(agentInstructionsRevisionsRoutes(db)); // myrmidon(H2)
   api.use(myrmidonFleetConsoleRoutes(db)); // myrmidon(SC1)
   api.use(myrmidonCloudConnectorRoutes(db)); // myrmidon(CLOUD-CONNECTOR)
+  api.use(myrmidonGoogleAiConnectorRoutes(db)); // myrmidon(GOOGLE-AI-CONNECT-UI): Google AI Pro subscription panel, grants, trial, health sweep
   api.use(myrmidonPromptBudgetAdviceRoutes(db)); // myrmidon(1.6.3 PROMPT-BUDGET C): prompt-budget advice and deep analysis
   api.use(myrmidonMonitoringLinkRoutes(db)); // myrmidon(1.6.6 MONITORING E): link liveness feed and the link pulse endpoint
   api.use(myrmidonPromptBudgetRoutes(db)); // myrmidon(1.6.3 PROMPT-BUDGET B): prompt-budget threshold settings and status

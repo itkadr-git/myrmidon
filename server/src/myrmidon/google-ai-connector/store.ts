@@ -35,6 +35,12 @@ export function emptyGoogleAiConnectorDocument(): GoogleAiConnectorDocument {
   return { version: 1, connections: [], grants: [], journal: [] };
 }
 
+/** Newest first, bounded — the journal is a window, not an archive. */
+export function appendGaiJournal(document: GoogleAiConnectorDocument, entry: GaiJournalEntry): GoogleAiConnectorDocument {
+  const journal = [entry, ...document.journal].slice(0, JOURNAL_LIMIT);
+  return { ...document, journal };
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }

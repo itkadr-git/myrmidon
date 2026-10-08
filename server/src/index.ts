@@ -144,6 +144,7 @@ import { startStackCheckSweep } from "./myrmidon/stack-registry/index.js"; // my
 // myrmidon(1.6.1-TG-NOTIFY-B): daily digest and escalation jobs over the owner Telegram notify settings (all off by default)
 import { startTelegramNotifyJobs } from "./myrmidon/telegram-notify/index.js";
 import { startTgNotifySweep, dbErrorChannelSettingsSource } from "./myrmidon/telegram-notify/index.js"; // myrmidon(1.6-TG-NOTIFY-C)
+import { startGoogleAiSweepWithNotify } from "./myrmidon/google-ai-connector/sweep-wiring.js"; // myrmidon(GOOGLE-AI-CONNECT-UI)
 import { interactionContinuationOutboxService } from "./myrmidon/interaction-continuation-outbox.js"; // myrmidon(O1)
 import { createWorkspaceHygieneScheduler } from "./myrmidon/workspace-hygiene/index.js"; // myrmidon(WORKSPACE-HYGIENE)
 import { createBotDiskQuotaScheduler } from "./myrmidon/bot-containers/bot-disk-quota-runtime.js"; // myrmidon(1.6.1-BOT-DISK-C)
@@ -1766,6 +1767,7 @@ async function startServerWithDatabaseTeardown(
           logger.warn({ err: error, phase }, "board process registry tick failed"),
       });
     }
+    startGoogleAiSweepWithNotify(db as any); // myrmidon(GOOGLE-AI-CONNECT-UI): bridge health poll + stale question to the owner's Telegram channel; a no-op while no company has a connection
     const heartbeatSchedulingSuppression = await heartbeat.resolveSchedulingSuppression();
 
     // Reap orphaned runs before timer ticks start so wakeups cannot coalesce

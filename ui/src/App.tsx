@@ -88,6 +88,7 @@ import { Secrets } from "./pages/Secrets";
 import { AccessHubPage } from "./components/myrmidon/access-hub/AccessHubPage";
 import { BrowsersSettingsPage } from "./components/myrmidon/browsers/BrowsersSettingsPage"; // myrmidon(BROWSER-CONSOLE)
 import { CloudsSettingsPage } from "./components/myrmidon/clouds/CloudsSettingsPage"; // myrmidon(CLOUD-CONNECTOR)
+import { GoogleAiSettingsPage } from "./components/myrmidon/google-ai/GoogleAiSettingsPage"; // myrmidon(GOOGLE-AI-CONNECT-UI)
 import { StackScreen } from "./components/myrmidon/stack/StackScreen"; // myrmidon(SUC)
 import { AutonomyMatrixScreen } from "./components/myrmidon/autonomy/AutonomyMatrixContainer"; // myrmidon(1.6 AUTONOMY-MATRIX B)
 import { WipLimitScreen } from "./components/myrmidon/wip-limit/WipLimitScreenContainer"; // myrmidon(1.6.1 WIP-LIMIT B)
@@ -230,6 +231,7 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
       <Route path="company/settings/castes" element={<ModelProvidersScreen />} /> {/* myrmidon(1.6.1 MODEL-PROVIDERS C): the ui2 "Castes and models" section route */}
       <Route path="company/settings/caste-directory" element={<CastesScreen />} /> {/* myrmidon(1.6.1 CUSTOM-CASTES C): the caste directory settings screen route */}
       <Route path="company/settings/clouds" element={<CloudsSettingsPage />} /> {/* myrmidon(CLOUD-CONNECTOR) */}
+      <Route path="company/settings/google-ai" element={<GoogleAiSettingsPage />} /> {/* myrmidon(GOOGLE-AI-CONNECT-UI) */}
       <Route path="company/settings/tools" element={<LegacyToolsSettingsRedirect />} />
       <Route path="company/settings/tools/:tab" element={<LegacyToolsSettingsRedirect />} />
       <Route path="tools" element={<LegacyToolsRedirect />} />
