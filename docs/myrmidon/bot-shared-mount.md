@@ -17,7 +17,7 @@ The shared mount feature is configured at the instance level through the instanc
 Individual bots can be granted access to the shared directory through the bot configuration. Access is granted based on the instance settings and the bot's ID being in the allowlist.
 
 ## Usage
-When the shared mount feature is enabled and a bot has access, a shared directory will be mounted at `/shared` in the bot's container. Files placed in this directory by one bot will be visible to other bots that have access to the shared directory.
+When the shared mount feature is enabled and a bot has access, a shared directory will be mounted at `/shared` in the bot's container. The mount is read-write when `writable` is true and read-only otherwise. It is part of the container's create body, so a change of the setting reaches an existing bot through the normal template-drift recreate (maintenance window), not instantly. Files placed in this directory by one bot will be visible to other bots that have access to the shared directory.
 
 ## Migration
-When the feature is first enabled, existing hardlink copies from bots will be migrated to the shared directory to preserve data.
+When a container with the shared mount is created, files left in the bot's old `shared` directory are moved into the shared directory. The move never deletes anything: a file whose name already exists in the shared directory, or whose move fails, stays where it was, and the old directory is removed only when it ended up empty.

@@ -21,7 +21,8 @@ export interface SharedMountSettings {
 export const sharedMountSettingsSchema = z
   .object({
     enabled: z.boolean(),
-    hostPath: z.string().min(1).optional(),
+    // a plain absolute path: it ends up in a "source:target:mode" bind string
+    hostPath: z.string().regex(/^\/[^:,\0]*$/, "must be an absolute path without ':' or ','").optional(),
     writable: z.boolean().optional(),
     allowedBots: z.array(z.string().min(1)).optional(),
   })

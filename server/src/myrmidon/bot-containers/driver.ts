@@ -30,6 +30,14 @@ export interface BotExtraMount {
 
 /** Desired shape of a bot's container. Immutable for the life of the container:
  *  a change is a template drift (`templateDrift`), applied by `recreate`. */
+/** The instance-wide shared directory a bot may get at `/shared`. */
+export interface BotSharedMount {
+  /** Host directory; absent means `<volumeRoot>/shared` of the driver. */
+  hostPath?: string;
+  /** Mounted read-write when true, read-only otherwise. */
+  writable: boolean;
+}
+
 export interface BotContainerSpec {
   /** [a-z0-9-], validated by the driver. Also the container's name and its DNS name
    *  on the bot network (`myrmidon-bot-<botKey>`). */
@@ -46,8 +54,9 @@ export interface BotContainerSpec {
    *  are checked against MYRMIDON_BOT_MOUNT_SOURCES when the create body is
    *  built; a mount outside that list is refused, not silently dropped. */
   extraMounts?: readonly BotExtraMount[];
-  /** Whether this bot should have access to the shared directory */
-  hasSharedMountAccess?: boolean;
+  /** myrmidon(1.6.1-BOT-DISK-D): bind the instance-wide shared directory at
+   *  `/shared`. Absent = no shared mount. `hostPath` absent = `<volumeRoot>/shared`. */
+  sharedMount?: BotSharedMount;
   /** Extra, non-authoritative labels (e.g. a project grouping). The driver's own
    *  identification labels (see template.ts BOT_LABEL_KEYS) always win on
    *  conflict and cannot be overridden through this field. */

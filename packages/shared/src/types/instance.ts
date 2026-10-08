@@ -80,7 +80,7 @@ export interface InstanceGeneralSettings {
   feedbackDataSharingPreference: FeedbackDataSharingPreference;
   backupRetention: BackupRetentionPolicy;
   /**
-   * Execution policy. Absent/"any" = unrestricted; "kubernetes" forces the
+   * Execution policy. Absent/`"any"` = unrestricted; `"kubernetes"` forces the
    * Kubernetes sandbox provider and denies local/ssh execution.
    */
   executionMode?: InstanceExecutionMode;
@@ -175,8 +175,8 @@ export interface InstanceGeneralSettings {
   swarmClaim?: SwarmClaimSettings;
   /**
    * myrmidon(1.6.1-BOT-DISK-D): shared mount settings for bots, changed from
-   * the instance settings page. Controls whether bots can access a shared directory
-   * and what permissions they have. Absent means "shared mount is disabled".
+   * the instance settings API. Controls whether bots get a common directory at
+   * `/shared` and whether it is writable. Absent means "shared mount is disabled".
    */
   sharedMount?: SharedMountSettings;
   /**

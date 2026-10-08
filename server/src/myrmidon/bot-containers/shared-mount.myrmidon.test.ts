@@ -1,364 +1,216 @@
-import fs from "fs/promises";
-import os from "os";
-import path from "path";
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_SHARED_MOUNT_SETTINGS,
-  getEffectiveSharedMountSettings,
-  isBotAllowedSharedAccess,
-  getSharedMountHostPath,
   ensureSharedDirectory,
+  getEffectiveSharedMountSettings,
+  getSharedMountHostPath,
+  isBotAllowedSharedAccess,
   migrateHardlinkCopies,
   prepareBotSharedMount,
+  resolveBotSharedMount,
+  resolveSpecSharedMount,
 } from "./shared-mount.js";
-import type { SharedMountSettings } from "@paperclipai/shared";
+import { botContainerSpec, readBotContainerAgentConfig } from "./agent-config.js";
+import { buildBinds, withSharedMount, BotContainerTemplateError } from "./template.js";
+import { buildCreateContainerRequestBody, type DockerDriverConfig } from "./docker-driver.js";
 
-describe("shared-mount", () => {
+const VALID_CONTAINER = {
+  enabled: true,
+  image: "myrmidon-hermes:1.1.0",
+  memoryMb: 1536,
+  cpus: 1,
+  pidsLimit: 256,
+};
+
+const DRIVER_CONFIG: Pick<DockerDriverConfig, "volumeRoot" | "network" | "allowlist" | "mountSources" | "devbuild"> = {
+  volumeRoot: "/srv/myrmidon/bots",
+  network: "myrmidon-bots",
+  allowlist: ["myrmidon-hermes:*"],
+  mountSources: [],
+  devbuild: { host: null, user: "", base: "" },
+};
+
+describe("shared-mount rules", () => {
+  it("merges settings over the defaults", () => {
+    expect(getEffectiveSharedMountSettings(undefined)).toEqual(DEFAULT_SHARED_MOUNT_SETTINGS);
+    expect(getEffectiveSharedMountSettings({ enabled: true, writable: true })).toEqual({
+      ...DEFAULT_SHARED_MOUNT_SETTINGS,
+      enabled: true,
+      writable: true,
+    });
+  });
+
+  it("allows nobody when disabled, everybody on an empty allowlist, listed bots otherwise", () => {
+    const base = { ...DEFAULT_SHARED_MOUNT_SETTINGS, enabled: true };
+    expect(isBotAllowedSharedAccess("a", { ...base, enabled: false })).toBe(false);
+    expect(isBotAllowedSharedAccess("a", base)).toBe(true);
+    expect(isBotAllowedSharedAccess("a", { ...base, allowedBots: ["a", "b"] })).toBe(true);
+    expect(isBotAllowedSharedAccess("c", { ...base, allowedBots: ["a", "b"] })).toBe(false);
+  });
+
+  it("takes the host path from the setting, else from the volume root", () => {
+    expect(getSharedMountHostPath({ hostPath: "/custom/shared" }, "/vol")).toBe("/custom/shared");
+    expect(getSharedMountHostPath({}, "/vol")).toBe("/vol/shared");
+  });
+
+  it("resolves the mount of one bot: off by default, allowlist per agent id, writable flag", () => {
+    expect(resolveBotSharedMount("a", undefined)).toBeUndefined();
+    expect(resolveBotSharedMount("a", { enabled: false })).toBeUndefined();
+    expect(resolveBotSharedMount("a", { enabled: true })).toEqual({ writable: false });
+    expect(resolveBotSharedMount("a", { enabled: true, writable: true, hostPath: "/s" })).toEqual({
+      hostPath: "/s",
+      writable: true,
+    });
+    expect(resolveBotSharedMount("a", { enabled: true, allowedBots: ["a"] })).toEqual({ writable: false });
+    expect(resolveBotSharedMount("b", { enabled: true, allowedBots: ["a"] })).toBeUndefined();
+    expect(resolveBotSharedMount(undefined, { enabled: true, allowedBots: ["a"] })).toBeUndefined();
+  });
+
+  it("fills the driver's volume root into the default host path", () => {
+    expect(resolveSpecSharedMount({ sharedMount: { writable: true } }, "/vol")).toEqual({
+      hostPath: "/vol/shared",
+      writable: true,
+    });
+    expect(resolveSpecSharedMount({}, "/vol")).toBeUndefined();
+  });
+});
+
+describe("shared mount reaches the container create body", () => {
+  it("readBotContainerAgentConfig carries the mount only for an allowed bot, spec keeps it", () => {
+    const settings = { enabled: true, writable: true, allowedBots: ["agent-a"] };
+    const allowed = readBotContainerAgentConfig("hermes_gateway", { container: VALID_CONTAINER }, settings, "agent-a");
+    expect(allowed.ok && allowed.config.sharedMount).toEqual({ writable: true });
+    const denied = readBotContainerAgentConfig("hermes_gateway", { container: VALID_CONTAINER }, settings, "agent-b");
+    expect(denied.ok && "sharedMount" in denied.config).toBe(false);
+    const plain = readBotContainerAgentConfig("hermes_gateway", { container: VALID_CONTAINER });
+    expect(plain.ok && "sharedMount" in plain.config).toBe(false);
+    if (!allowed.ok) throw new Error("unreachable");
+    expect(botContainerSpec("agent-a", allowed.config, "myrmidon-bots").sharedMount).toEqual({ writable: true });
+  });
+
+  it("binds /shared last, read-write or read-only according to the setting", () => {
+    const rw = buildBinds("/vol", "agent-a", { sharedMount: { hostPath: "/vol/shared", writable: true } });
+    expect(rw[rw.length - 1]).toBe("/vol/shared:/shared:rw");
+    const ro = buildBinds("/vol", "agent-a", { sharedMount: { hostPath: "/vol/shared", writable: false } });
+    expect(ro[ro.length - 1]).toBe("/vol/shared:/shared:ro");
+    expect(buildBinds("/vol", "agent-a").some((bind) => bind.includes(":/shared"))).toBe(false);
+  });
+
+  it("the create body of a bot with a shared mount has the /shared bind; without it, none", () => {
+    const spec = {
+      botKey: "agent-a",
+      image: "myrmidon-hermes:1.1.0",
+      memoryMb: 1536,
+      cpus: 1,
+      pidsLimit: 256,
+      network: "myrmidon-bots",
+    };
+    const withMount = buildCreateContainerRequestBody({ ...spec, sharedMount: { writable: false } }, DRIVER_CONFIG);
+    expect(withMount.HostConfig.Binds).toContain("/srv/myrmidon/bots/shared:/shared:ro");
+    const custom = buildCreateContainerRequestBody(
+      { ...spec, sharedMount: { hostPath: "/srv/team-shared", writable: true } },
+      DRIVER_CONFIG,
+    );
+    expect(custom.HostConfig.Binds).toContain("/srv/team-shared:/shared:rw");
+    const without = buildCreateContainerRequestBody(spec, DRIVER_CONFIG);
+    expect(without.HostConfig.Binds.some((bind) => bind.includes(":/shared"))).toBe(false);
+  });
+
+  it("refuses a host path that could smuggle bind options or is not a plain absolute path", () => {
+    for (const hostPath of ["/srv/a:rw,bind-propagation=shared", "relative/dir", "/srv/../etc", "/srv/a,b"]) {
+      expect(() => withSharedMount([], { hostPath, writable: false })).toThrow(BotContainerTemplateError);
+    }
+  });
+});
+
+describe("host side: directory and migration never lose data", () => {
   let tempDir: string;
-  let botVolumePath: string;
+  let botVolume: string;
+  let sharedHost: string;
 
   beforeEach(async () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "shared-mount-test-"));
-    botVolumePath = path.join(tempDir, "bot-volume");
-    await fs.mkdir(botVolumePath, { recursive: true });
+    botVolume = path.join(tempDir, "bot-volume");
+    sharedHost = path.join(tempDir, "shared");
+    await fs.mkdir(botVolume, { recursive: true });
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
-  describe("getEffectiveSharedMountSettings", () => {
-    it("should return default settings when no settings provided", () => {
-      const result = getEffectiveSharedMountSettings(undefined);
-      expect(result).toEqual(DEFAULT_SHARED_MOUNT_SETTINGS);
-    });
-
-    it("should merge provided settings with defaults", () => {
-      const partialSettings: Partial<SharedMountSettings> = {
-        enabled: true,
-        writable: true,
-      };
-      const result = getEffectiveSharedMountSettings(partialSettings);
-      expect(result).toEqual({
-        ...DEFAULT_SHARED_MOUNT_SETTINGS,
-        enabled: true,
-        writable: true,
-      });
-    });
-
-    it("should handle allowedBots correctly", () => {
-      const partialSettings: Partial<SharedMountSettings> = {
-        enabled: true,
-        allowedBots: ["bot1", "bot2"],
-      };
-      const result = getEffectiveSharedMountSettings(partialSettings);
-      expect(result).toEqual({
-        ...DEFAULT_SHARED_MOUNT_SETTINGS,
-        enabled: true,
-        allowedBots: ["bot1", "bot2"],
-      });
-    });
+  it("creates a missing shared directory and leaves an existing one untouched", async () => {
+    await ensureSharedDirectory(sharedHost, true);
+    expect((await fs.stat(sharedHost)).isDirectory()).toBe(true);
+    await fs.chmod(sharedHost, 0o700);
+    await ensureSharedDirectory(sharedHost, true);
+    expect((await fs.stat(sharedHost)).mode & 0o777).toBe(0o700);
   });
 
-  describe("isBotAllowedSharedAccess", () => {
-    it("should return false if shared mount is not enabled", () => {
-      const settings = { ...DEFAULT_SHARED_MOUNT_SETTINGS, enabled: false };
-      expect(isBotAllowedSharedAccess("bot1", settings)).toBe(false);
-    });
-
-    it("should return true if no allowlist is specified", () => {
-      const settings = { ...DEFAULT_SHARED_MOUNT_SETTINGS, enabled: true, allowedBots: [] };
-      expect(isBotAllowedSharedAccess("bot1", settings)).toBe(true);
-    });
-
-    it("should return true if bot is in allowlist", () => {
-      const settings = {
-        ...DEFAULT_SHARED_MOUNT_SETTINGS,
-        enabled: true,
-        allowedBots: ["bot1", "bot2"],
-      };
-      expect(isBotAllowedSharedAccess("bot1", settings)).toBe(true);
-    });
-
-    it("should return false if bot is not in allowlist", () => {
-      const settings = {
-        ...DEFAULT_SHARED_MOUNT_SETTINGS,
-        enabled: true,
-        allowedBots: ["bot2", "bot3"],
-      };
-      expect(isBotAllowedSharedAccess("bot1", settings)).toBe(false);
-    });
+  it("moves old files into the shared directory and removes the emptied old directory", async () => {
+    const old = path.join(botVolume, "shared");
+    await fs.mkdir(old);
+    await fs.writeFile(path.join(old, "a.txt"), "A");
+    await fs.mkdir(sharedHost);
+    const result = await migrateHardlinkCopies(botVolume, sharedHost);
+    expect(result).toEqual({ moved: ["a.txt"], kept: [] });
+    expect(await fs.readFile(path.join(sharedHost, "a.txt"), "utf8")).toBe("A");
+    await expect(fs.lstat(old)).rejects.toThrow();
   });
 
-  describe("getSharedMountHostPath", () => {
-    it("should use provided hostPath if specified", () => {
-      const settings = {
-        ...DEFAULT_SHARED_MOUNT_SETTINGS,
-        enabled: true,
-        hostPath: "/custom/shared/path",
-      };
-      const result = getSharedMountHostPath(settings);
-      expect(result).toBe("/custom/shared/path");
-    });
-
-    it("should use default path with MYRMIDON_BOT_VOLUME_ROOT env var", async () => {
-      const originalEnv = process.env.MYRMIDON_BOT_VOLUME_ROOT;
-      process.env.MYRMIDON_BOT_VOLUME_ROOT = "/custom/volume";
-      
-      try {
-        const settings = { ...DEFAULT_SHARED_MOUNT_SETTINGS, enabled: true };
-        const result = getSharedMountHostPath(settings);
-        expect(result).toBe("/custom/volume/shared");
-      } finally {
-        process.env.MYRMIDON_BOT_VOLUME_ROOT = originalEnv;
-      }
-    });
-
-    it("should use default path if no env var is set", () => {
-      const originalEnv = process.env.MYRMIDON_BOT_VOLUME_ROOT;
-      delete process.env.MYRMIDON_BOT_VOLUME_ROOT;
-      
-      try {
-        const settings = { ...DEFAULT_SHARED_MOUNT_SETTINGS, enabled: true };
-        const result = getSharedMountHostPath(settings);
-        expect(result).toBe("/var/lib/myrmidon-bots/shared");
-      } finally {
-        process.env.MYRMIDON_BOT_VOLUME_ROOT = originalEnv;
-      }
-    });
+  it("keeps a file whose name is already taken, and does not delete the old directory", async () => {
+    const old = path.join(botVolume, "shared");
+    await fs.mkdir(old);
+    await fs.writeFile(path.join(old, "clash.txt"), "mine");
+    await fs.writeFile(path.join(old, "free.txt"), "free");
+    await fs.mkdir(sharedHost);
+    await fs.writeFile(path.join(sharedHost, "clash.txt"), "theirs");
+    const result = await migrateHardlinkCopies(botVolume, sharedHost);
+    expect(result.moved).toEqual(["free.txt"]);
+    expect(result.kept).toEqual(["clash.txt"]);
+    // nothing was lost: the clashing file survives in the old place, the target is untouched
+    expect(await fs.readFile(path.join(old, "clash.txt"), "utf8")).toBe("mine");
+    expect(await fs.readFile(path.join(sharedHost, "clash.txt"), "utf8")).toBe("theirs");
   });
 
-  describe("ensureSharedDirectory", () => {
-    it("should not create directory if shared mount is not enabled", async () => {
-      const settings = { ...DEFAULT_SHARED_MOUNT_SETTINGS, enabled: false };
-      await expect(ensureSharedDirectory(settings)).resolves.not.toThrow();
-      
-      // Verify directory was not created
-      const sharedPath = getSharedMountHostPath(settings);
-      await expect(fs.access(sharedPath)).rejects.toThrow();
+  it("keeps everything when a rename fails (no rm of the unmoved files)", async () => {
+    const old = path.join(botVolume, "shared");
+    await fs.mkdir(old);
+    await fs.writeFile(path.join(old, "stuck.txt"), "data");
+    await fs.mkdir(sharedHost);
+    const realRename = fs.rename;
+    vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+      if (String(from).endsWith("stuck.txt")) throw Object.assign(new Error("EXDEV"), { code: "EXDEV" });
+      return realRename(from, to);
     });
-
-    it("should create directory with correct permissions if writable", async () => {
-      const settings = {
-        ...DEFAULT_SHARED_MOUNT_SETTINGS,
-        enabled: true,
-        writable: true,
-        hostPath: path.join(tempDir, "shared"),
-      };
-      
-      await ensureSharedDirectory(settings);
-      
-      const stats = await fs.stat(settings.hostPath!);
-      expect(stats.isDirectory()).toBe(true);
-      // Mode 0o770 in decimal is 496, but may vary depending on umask
-      // We'll check if it's a directory and accessible
-      await expect(fs.access(settings.hostPath!, fs.constants.R_OK | fs.constants.W_OK)).resolves.not.toThrow();
-    });
-
-    it("should create directory with correct permissions if read-only", async () => {
-      const settings = {
-        ...DEFAULT_SHARED_MOUNT_SETTINGS,
-        enabled: true,
-        writable: false,
-        hostPath: path.join(tempDir, "shared-ro"),
-      };
-      
-      await ensureSharedDirectory(settings);
-      
-      const stats = await fs.stat(settings.hostPath!);
-      expect(stats.isDirectory()).toBe(true);
-      // Mode 0o750 in decimal is 488, but may vary depending on umask
-      // We'll check if it's a directory and readable
-      await expect(fs.access(settings.hostPath!, fs.constants.R_OK)).resolves.not.toThrow();
-    });
+    const result = await migrateHardlinkCopies(botVolume, sharedHost);
+    expect(result.kept).toEqual(["stuck.txt"]);
+    expect(await fs.readFile(path.join(old, "stuck.txt"), "utf8")).toBe("data");
   });
 
-  describe("migrateHardlinkCopies", () => {
-    it("should not migrate if shared mount is not enabled", async () => {
-      const settings = { ...DEFAULT_SHARED_MOUNT_SETTINGS, enabled: false };
-      await expect(migrateHardlinkCopies("bot1", botVolumePath, settings)).resolves.not.toThrow();
-    });
-
-    it("should not migrate if bot has no shared directory", async () => {
-      const settings = {
-        ...DEFAULT_SHARED_MOUNT_SETTINGS,
-        enabled: true,
-        hostPath: path.join(tempDir, "shared"),
-      };
-      
-      await expect(migrateHardlinkCopies("bot1", botVolumePath, settings)).resolves.not.toThrow();
-    });
-
-    it("should migrate existing files to shared directory", async () => {
-      const sharedPath = path.join(tempDir, "shared");
-      const botSharedPath = path.join(botVolumePath, "shared");
-      
-      // Create bot's old shared directory with some files
-      await fs.mkdir(botSharedPath, { recursive: true });
-      await fs.writeFile(path.join(botSharedPath, "file1.txt"), "content1");
-      await fs.writeFile(path.join(botSharedPath, "file2.txt"), "content2");
-      
-      const settings = {
-        ...DEFAULT_SHARED_MOUNT_SETTINGS,
-        enabled: true,
-        hostPath: sharedPath,
-      };
-      
-      await migrateHardlinkCopies("bot1", botVolumePath, settings);
-      
-      // Verify the shared directory was created and files were moved
-      await expect(fs.access(sharedPath)).resolves.not.toThrow();
-      await expect(fs.access(path.join(sharedPath, "file1.txt"))).resolves.not.toThrow();
-      await expect(fs.access(path.join(sharedPath, "file2.txt"))).resolves.not.toThrow();
-      
-      // Verify the bot's shared directory is now a symlink
-      const botSharedStat = await fs.lstat(botSharedPath);
-      expect(botSharedStat.isSymbolicLink()).toBe(true);
-    });
-
-    it("should handle empty bot shared directory", async () => {
-      const sharedPath = path.join(tempDir, "shared");
-      const botSharedPath = path.join(botVolumePath, "shared");
-      
-      // Create empty bot shared directory
-      await fs.mkdir(botSharedPath, { recursive: true });
-      
-      const settings = {
-        ...DEFAULT_SHARED_MOUNT_SETTINGS,
-        enabled: true,
-        hostPath: sharedPath,
-      };
-      
-      await migrateHardlinkCopies("bot1", botVolumePath, settings);
-      
-      // Verify the shared directory was created
-      await expect(fs.access(sharedPath)).resolves.not.toThrow();
-      
-      // Verify the bot's shared directory is now a symlink
-      const botSharedStat = await fs.lstat(botSharedPath);
-      expect(botSharedStat.isSymbolicLink()).toBe(true);
-    });
+  it("does not touch a symlink named shared and creates no symlink", async () => {
+    const elsewhere = path.join(tempDir, "elsewhere");
+    await fs.mkdir(elsewhere);
+    await fs.writeFile(path.join(elsewhere, "keep.txt"), "x");
+    await fs.symlink(elsewhere, path.join(botVolume, "shared"), "dir");
+    const result = await migrateHardlinkCopies(botVolume, sharedHost);
+    expect(result).toEqual({ moved: [], kept: [] });
+    expect(await fs.readFile(path.join(elsewhere, "keep.txt"), "utf8")).toBe("x");
+    // a bot without an old directory gets none made for it
+    const other = path.join(tempDir, "other-bot");
+    await fs.mkdir(other);
+    await prepareBotSharedMount(other, { hostPath: sharedHost, writable: false });
+    await expect(fs.lstat(path.join(other, "shared"))).rejects.toThrow();
   });
 
-  describe("prepareBotSharedMount", () => {
-    it("should return undefined mountPath if shared mount is not enabled", async () => {
-      const settings = { ...DEFAULT_SHARED_MOUNT_SETTINGS, enabled: false };
-      const result = await prepareBotSharedMount("bot1", botVolumePath, settings);
-      expect(result).toEqual({ mountPath: undefined, readOnly: true });
-    });
-
-    it("should return undefined mountPath if bot is not allowed", async () => {
-      const settings = {
-        ...DEFAULT_SHARED_MOUNT_SETTINGS,
-        enabled: true,
-        allowedBots: ["bot2", "bot3"],
-      };
-      const result = await prepareBotSharedMount("bot1", botVolumePath, settings);
-      expect(result).toEqual({ mountPath: undefined, readOnly: true });
-    });
-
-    it("should create and return mount path for allowed bot", async () => {
-      const sharedPath = path.join(tempDir, "shared");
-      const botSharedPath = path.join(botVolumePath, "shared");
-      
-      const settings = {
-        ...DEFAULT_SHARED_MOUNT_SETTINGS,
-        enabled: true,
-        writable: true,
-        hostPath: sharedPath,
-      };
-      
-      const result = await prepareBotSharedMount("bot1", botVolumePath, settings);
-      
-      expect(result.mountPath).toBe(botSharedPath);
-      expect(result.readOnly).toBe(false);
-      
-      // Verify the symlink was created
-      const botSharedStat = await fs.lstat(botSharedPath);
-      expect(botSharedStat.isSymbolicLink()).toBe(true);
-    });
-
-    it("should return readOnly true when writable is false", async () => {
-      const sharedPath = path.join(tempDir, "shared");
-      const botSharedPath = path.join(botVolumePath, "shared");
-      
-      const settings = {
-        ...DEFAULT_SHARED_MOUNT_SETTINGS,
-        enabled: true,
-        writable: false,
-        hostPath: sharedPath,
-      };
-      
-      const result = await prepareBotSharedMount("bot1", botVolumePath, settings);
-      
-      expect(result.mountPath).toBe(botSharedPath);
-      expect(result.readOnly).toBe(true);
-      
-      // Verify the symlink was created
-      const botSharedStat = await fs.lstat(botSharedPath);
-      expect(botSharedStat.isSymbolicLink()).toBe(true);
-    });
-  });
-
-  describe("integration test for shared access between bots", () => {
-    it("verifies that file placed in shared by bot A is visible to bot B", async () => {
-      // This test verifies the core requirement: file placed in shared by bot A is visible to bot B
-      // We simulate this with two different bot volumes accessing the same shared directory
-      
-      const sharedSettings = {
-        ...DEFAULT_SHARED_MOUNT_SETTINGS,
-        enabled: true,
-        writable: true,
-        allowedBots: ["botA", "botB"],
-        hostPath: path.join(tempDir, "shared"),
-      };
-      
-      // Both bots have access to the same shared directory
-      expect(isBotAllowedSharedAccess("botA", sharedSettings)).toBe(true);
-      expect(isBotAllowedSharedAccess("botB", sharedSettings)).toBe(true);
-      
-      // Create botA's volume
-      const botAVolumePath = path.join(tempDir, "botA-volume");
-      await fs.mkdir(botAVolumePath, { recursive: true });
-      
-      // Create botB's volume
-      const botBVolumePath = path.join(tempDir, "botB-volume");
-      await fs.mkdir(botBVolumePath, { recursive: true });
-      
-      // Prepare shared mount for botA
-      const botAResult = await prepareBotSharedMount("botA", botAVolumePath, sharedSettings);
-      expect(botAResult.mountPath).toBeDefined();
-      
-      // Prepare shared mount for botB
-      const botBResult = await prepareBotSharedMount("botB", botBVolumePath, sharedSettings);
-      expect(botBResult.mountPath).toBeDefined();
-      
-      // Both bots should be mounting to the same shared directory
-      expect(botAResult.mountPath).toBe(path.join(botAVolumePath, "shared"));
-      expect(botBResult.mountPath).toBe(path.join(botBVolumePath, "shared"));
-      
-      // The underlying shared directory is the same
-      const sharedPath = getSharedMountHostPath(sharedSettings);
-      expect(sharedPath).toBe(path.join(tempDir, "shared"));
-      
-      // Create a file in the shared directory (simulating botA placing a file)
-      const sharedFilePath = path.join(sharedPath, "test-file.txt");
-      await fs.writeFile(sharedFilePath, "Hello from bot A");
-      
-      // Verify the file exists in the shared directory
-      expect(await fs.access(sharedFilePath).then(() => true).catch(() => false)).toBe(true);
-      
-      // The file placed by botA should be accessible through botB's mount as well
-      // This verifies that the shared directory is truly shared between bots
-      const botBSharedPath = path.join(botBVolumePath, "shared");
-      const botBFilePath = path.join(botBSharedPath, "test-file.txt");
-
-      // Read the file through botB's perspective
-      const content = await fs.readFile(botBFilePath, "utf8");
-      expect(content).toBe("Hello from bot A");
-
-      // This demonstrates that a file placed by botA is visible to botB
-      expect(content).toContain("Hello from bot A");
-    });
+  it("prepareBotSharedMount never throws: a bad path comes back as a warning", async () => {
+    const blocker = path.join(tempDir, "file");
+    await fs.writeFile(blocker, "x");
+    const result = await prepareBotSharedMount(botVolume, { hostPath: path.join(blocker, "sub"), writable: false });
+    expect(result.warnings.length).toBeGreaterThan(0);
   });
 });

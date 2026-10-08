@@ -6,9 +6,10 @@
 // the same reason server/src/myrmidon/maintenance/index.ts has no direct test file
 // of its own: everything testable in it is pushed down into domain.ts/service.ts.
 
-import type { BotContainerSpec, BotExtraMount } from "./driver.js";
+import type { BotContainerSpec, BotExtraMount, BotSharedMount } from "./driver.js";
 import { BOT_KEY_PATTERN } from "./template.js";
 import type { SharedMountSettings } from "@paperclipai/shared";
+import { resolveBotSharedMount } from "./shared-mount.js";
 
 export const BOT_CONTAINERS_ENV = "MYRMIDON_BOT_CONTAINERS";
 
@@ -111,8 +112,9 @@ export interface BotContainerAgentConfig {
    *  sources directory, templates, common tools). Their sources are checked
    *  against MYRMIDON_BOT_MOUNT_SOURCES when the container template is built. */
   extraMounts: BotExtraMount[];
-  /** Whether this bot should have access to the shared directory */
-  hasSharedMountAccess: boolean;
+  /** myrmidon(1.6.1-BOT-DISK-D): the shared directory this bot gets at `/shared`;
+   *  absent when the instance setting is off or the bot is not allowlisted. */
+  sharedMount?: BotSharedMount;
 }
 
 export type BotContainerAgentConfigResult =
@@ -128,10 +130,22 @@ export type BotContainerAgentConfigResult =
 export const CONTAINER_GROUP_UNSUPPORTED_REASON =
   "container.group (a container shared by several agents) is not supported yet: it needs one spec, one profile and a maintenance window over every member agent, which this reconciler does not provide";
 
+/**
+ * Reads `adapterConfig.container` off an agent's card. Only `hermes_gateway`
+ * agents are eligible (containers-plan-senior-2026-09-28.md's G3 scope); anything
+ * else, or a missing/incomplete/`enabled !== true` block, is reported as
+ * not-applicable rather than thrown — a malformed card must not take a sweep of
+ * other agents down. A card asking for a shared `group` container is refused the
+ * same way (see CONTAINER_GROUP_UNSUPPORTED_REASON).
+ *
+ * myrmidon(1.6.1-BOT-DISK-D): `sharedMountSettings` (the instance's
+ * `general.sharedMount`) and the agent id decide whether the bot also gets the
+ * shared directory; without them the answer is "no shared mount".
+ */
 export function readBotContainerAgentConfig(
   adapterType: string,
   adapterConfig: Record<string, unknown>,
-  instanceSharedMountSettings?: SharedMountSettings,
+  sharedMountSettings?: SharedMountSettings,
   agentId?: string,
 ): BotContainerAgentConfigResult {
   if (adapterType !== HERMES_GATEWAY_ADAPTER_TYPE) {
@@ -163,17 +177,7 @@ export function readBotContainerAgentConfig(
   // myrmidon(1.6.1-BOT-DISK-C): an optional per-bot disk quota on the card.
   const diskQuotaMb =
     typeof c.diskQuotaMb === "number" && Number.isInteger(c.diskQuotaMb) && c.diskQuotaMb > 0 ? c.diskQuotaMb : undefined;
-  // Read shared mount access: only when the instance enables it and the bot is
-  // allowlisted (an empty/absent allowlist means "every bot", matching
-  // isBotAllowedSharedAccess in shared-mount.ts).
-  const hasSharedMountAccess = instanceSharedMountSettings
-    ? instanceSharedMountSettings.enabled && (
-        !instanceSharedMountSettings.allowedBots ||
-        instanceSharedMountSettings.allowedBots.length === 0 ||
-        (agentId !== undefined && instanceSharedMountSettings.allowedBots.includes(agentId))
-      )
-    : false;
-
+  const sharedMount = resolveBotSharedMount(agentId, sharedMountSettings);
   return {
     ok: true,
     config: {
@@ -182,9 +186,8 @@ export function readBotContainerAgentConfig(
       cpus,
       pidsLimit,
       extraMounts: extraMounts.mounts,
-      // myrmidon(1.6.1-BOT-DISK-C): the optional per-bot quota stays on the card.
       ...(diskQuotaMb !== undefined ? { diskQuotaMb } : {}),
-      hasSharedMountAccess,
+      ...(sharedMount ? { sharedMount } : {}),
     },
   };
 }
@@ -245,6 +248,6 @@ export function botContainerSpec(botKey: string, config: BotContainerAgentConfig
     pidsLimit: config.pidsLimit,
     network,
     extraMounts: config.extraMounts,
-    hasSharedMountAccess: config.hasSharedMountAccess,
+    ...(config.sharedMount ? { sharedMount: config.sharedMount } : {}),
   };
 }

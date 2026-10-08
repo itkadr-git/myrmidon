@@ -431,9 +431,10 @@ export function buildBinds(
     scope?: BotScopeMount;
     /** The bind layout the image's runtime contract declares (legacy = three binds, single = one /bot bind). */
     volumeLayout?: BotVolumeLayout;
-    /** myrmidon(1.6.1-BOT-DISK-D): the host shared directory, bind-mounted
-     *  read-write at `/shared` for bots with shared mount access. */
-    sharedMountPath?: string;
+    /** myrmidon(1.6.1-BOT-DISK-D): the host shared directory bound at `/shared`
+     *  for a bot with shared mount access; `writable` picks rw or ro. Appended
+     *  LAST (after the runtime binds) through {@link withSharedMount}. */
+    sharedMount?: { hostPath: string; writable: boolean };
   } = {},
 ): string[] {
   validateBotKey(botKey);
@@ -492,7 +493,7 @@ export function buildBinds(
       binds.push(`${runtime}/${mount.hostSubdir}:${botTreeRealPath(mount.containerPath, botKey, extra)}:ro`);
     }
   }
-  return binds;
+  return withSharedMount(binds, extra.sharedMount);
 }
 
 /**
@@ -650,14 +651,30 @@ function validateDriverMount(mount: BotExtraMount, allowedSources: readonly stri
   return `${mount.source}:${mount.containerPath}:ro`;
 }
 
-/** myrmidon(1.6.1-BOT-DISK-D): add the shared mount bind (host path → /shared,
- *  read-write) when a shared mount path is provided for this bot. */
-export function withSharedMount(binds: string[], sharedMountPath?: string): string[] {
-  if (!sharedMountPath) {
-    return binds;
+/** myrmidon(1.6.1-BOT-DISK-D): add the shared mount bind (host path -> `/shared`,
+ *  read-write or read-only) when a shared mount is given for this bot. The host
+ *  path is checked like every other host path of a bind: a plain absolute
+ *  directory, and no ":" or "," (a colon would smuggle bind options into the
+ *  "source:target:mode" string). */
+export function withSharedMount(
+  binds: string[],
+  sharedMount?: { hostPath: string; writable: boolean },
+): string[] {
+  if (!sharedMount) return binds;
+  const reason = unsafeAbsolutePathReason(sharedMount.hostPath);
+  if (reason) {
+    throw new BotContainerTemplateError(`shared mount host path ${JSON.stringify(sharedMount.hostPath)} ${reason}`);
   }
-  return [...binds, `${sharedMountPath}:/shared:rw`];
+  if (sharedMount.hostPath.includes(":") || sharedMount.hostPath.includes(",")) {
+    throw new BotContainerTemplateError(
+      `shared mount host path ${JSON.stringify(sharedMount.hostPath)} contains ":" or ","`,
+    );
+  }
+  return [...binds, `${sharedMount.hostPath}:${SHARED_MOUNT_CONTAINER_PATH}:${sharedMount.writable ? "rw" : "ro"}`];
 }
+
+/** Where the shared directory appears inside a bot container. */
+export const SHARED_MOUNT_CONTAINER_PATH = "/shared";
 
 /** Mount points and paths the driver itself owns inside every bot container: an
  *  extra mount may neither take one of them over nor shadow a path under them
