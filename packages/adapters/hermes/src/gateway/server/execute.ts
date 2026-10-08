@@ -1314,9 +1314,29 @@ function extractSessionId(value: unknown): string | null {
   return nonEmpty(record?.session_id) ?? nonEmpty(record?.sessionId) ?? nonEmpty(asRecord(record?.data)?.session_id);
 }
 
+// myrmidon(F06-MODEL-TELEMETRY): a payload that echoes the run journal's own
+// sentinel back ("unknown") is not naming a model, so it falls through to the
+// next source exactly like an absent field does.
+function nonEmptyModel(value: unknown): string | null {
+  const text = nonEmpty(value);
+  return text !== null && text.toLowerCase() !== "unknown" ? text : null;
+}
+
+// myrmidon(F06-MODEL-TELEMETRY): the terminal payload of the gateway does not
+// always carry the model, so most runs landed in heartbeat_runs.usageJson.model
+// as "unknown". Sources, in order: the `model` the gateway reports (top level,
+// then inside `usage`), then the LiteLLM route name `model_group` (the name
+// LiteLLM writes into its own spend log — top level, then inside `usage`); the
+// caller supplies the run's configured model as the final fallback.
 function extractModel(value: unknown): string | null {
   const record = asRecord(value);
-  return nonEmpty(record?.model) ?? nonEmpty(asRecord(record?.usage)?.model);
+  const usage = asRecord(record?.usage);
+  return (
+    nonEmptyModel(record?.model) ??
+    nonEmptyModel(usage?.model) ??
+    nonEmptyModel(record?.model_group) ??
+    nonEmptyModel(usage?.model_group)
+  );
 }
 
 function extractErrorMessage(value: unknown): string | null {
@@ -1359,6 +1379,12 @@ export function mapFinalResultForTest(input: {
    * into heartbeat_runs.usageJson.promptBreakdown. Optional so existing test
    * callers that exercise only the result mapping keep their shape. */
   promptBreakdown?: PromptBreakdown;
+  /** myrmidon(F06-MODEL-TELEMETRY): the model the run was configured with
+   * (ctx.config.model). Used only as the last resort when the terminal payload
+   * names no model, so usageJson.model stops reading "unknown" for runs whose
+   * gateway answer omits it. Optional so existing test callers that exercise
+   * only the result mapping keep their shape. */
+  configuredModel?: string | null;
 }): AdapterExecutionResult {
   const redactText = input.redactText ?? sanitizeSensitiveText;
   const payload = input.terminal.payload ?? {};
@@ -1401,7 +1427,9 @@ export function mapFinalResultForTest(input: {
     signal: mapped.signal,
     timedOut: false,
     provider: "hermes_gateway",
-    model: extractModel(payload),
+    // myrmidon(F06-MODEL-TELEMETRY): payload first, configured model last —
+    // see extractModel().
+    model: extractModel(payload) ?? nonEmptyModel(input.configuredModel),
     ...(input.promptBreakdown ? { promptBreakdown: input.promptBreakdown } : {}),
     ...(mapped.errorCode ? { errorCode: mapped.errorCode } : {}),
     ...(errorMessage ? { errorMessage } : {}),
@@ -2350,6 +2378,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     strategy,
     redactText,
     promptBreakdown,
+    // myrmidon(F06-MODEL-TELEMETRY): the run's own model from the agent card,
+    // used when the gateway's terminal payload names none.
+    configuredModel: nonEmpty(ctx.config.model),
   });
   // myrmidon(MEMORY-CENTRAL-B): remember this turn in the central store once
   // the run reached a terminal outcome (whatever it was — a failed turn's
