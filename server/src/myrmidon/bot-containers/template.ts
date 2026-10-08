@@ -582,6 +582,36 @@ export const PNPM_STORE_ROOTS: readonly string[] = [
   BOT_SCOPE_MOUNT,
 ];
 
+/**
+ * myrmidon(1.6.5-BOT-DISK-UV-A): where uv keeps its package cache by default
+ * (settings `uvCacheDir`; the image's `UV_CACHE_DIR` is the same value): ONE
+ * cache per partition, the host directory `<sharedPackageCachePath>/uv` bound
+ * read-write at `/cache/uv` into every bot of `sharedCacheRoles` (see
+ * {@link PACKAGE_CACHE_MOUNTS}). Like the pnpm store it must be on the same
+ * partition as the bot volumes: a reflink only works inside one filesystem,
+ * and the instance setting is validated for that (packages/shared
+ * myrmidon-bot-disk.ts).
+ */
+export const DEFAULT_UV_CACHE_DIR = "/cache/uv";
+
+/** The link mode uv is told to use: `clone` — a reflink on a CoW filesystem.
+ *  uv's own fallback (clone -> hardlink -> copy, with a warning in the bot's
+ *  log) is acceptable here, so a refused reflink does not fail the install.
+ *  `symlink` is refused by the settings validation: environments linked into
+ *  the shared cache break bot isolation (packages/shared myrmidon-bot-disk.ts). */
+export const DEFAULT_UV_LINK_MODE = "clone";
+
+/** Container roots the uv cache may live under: the shared cache mount, and the
+ *  bot's own tree (a cache per bot; the settings validation warns about it). */
+export const UV_CACHE_ROOTS: readonly string[] = [
+  DEFAULT_UV_CACHE_DIR,
+  "/workspace",
+  "/data",
+  "/scratch",
+  BOT_ROOT_MOUNT,
+  BOT_SCOPE_MOUNT,
+];
+
 /** Where the shared package cache appears inside a bot container. Outside the
  *  three volumes and /tmp, so dockergate's reserved-target rule holds. */
 export const PACKAGE_CACHE_CONTAINER_ROOT = "/cache";
@@ -609,6 +639,8 @@ export const PACKAGE_CACHE_MOUNTS: readonly PackageCacheMount[] = [
   { hostSubdir: "pnpm", containerPath: "/cache/pnpm", envName: "npm_config_cache_dir" },
   // myrmidon(1.6.5-BOT-DISK-H8a): the pnpm STORE, one per partition (DEFAULT_PNPM_STORE_DIR).
   { hostSubdir: "pnpm-store", containerPath: DEFAULT_PNPM_STORE_DIR, envName: "npm_config_store_dir" },
+  // myrmidon(1.6.5-BOT-DISK-UV-A): the uv cache, one per partition (DEFAULT_UV_CACHE_DIR).
+  { hostSubdir: "uv", containerPath: DEFAULT_UV_CACHE_DIR, envName: "UV_CACHE_DIR" },
   { hostSubdir: "go-mod", containerPath: "/cache/go-mod", envName: "GOMODCACHE" },
   { hostSubdir: "go-build", containerPath: "/cache/go-build", envName: "GOCACHE" },
   { hostSubdir: "gradle", containerPath: "/cache/gradle", envName: "GRADLE_USER_HOME" },
@@ -628,9 +660,10 @@ export const PACKAGE_CACHE_MOUNTS: readonly PackageCacheMount[] = [
  */
 export function packageCacheEnv(
   pnpm: { storeDir?: string; importMethod?: string } = {},
+  uv: { cacheDir?: string; linkMode?: string } = {},
 ): Record<string, string> {
   const env = Object.fromEntries(PACKAGE_CACHE_MOUNTS.map((mount) => [mount.envName, mount.containerPath]));
-  return { ...env, ...pnpmEnv(pnpm) };
+  return { ...env, ...pnpmEnv(pnpm), ...uvEnv(uv) };
 }
 
 /** Just the pnpm variables (see {@link packageCacheEnv}). */
@@ -638,6 +671,19 @@ export function pnpmEnv(pnpm: { storeDir?: string; importMethod?: string } = {})
   return {
     npm_config_store_dir: pnpm.storeDir ?? DEFAULT_PNPM_STORE_DIR,
     npm_config_package_import_method: pnpm.importMethod ?? DEFAULT_PNPM_IMPORT_METHOD,
+  };
+}
+
+/** Just the uv variables (see {@link packageCacheEnv}).
+ *  myrmidon(1.6.5-BOT-DISK-UV-A): `UV_CACHE_DIR` is absolute — uv hardlinking
+ *  through the shared `/cache/uv` mount crosses a device boundary, so the mount
+ *  and the variable must name the same path; `UV_LINK_MODE` defaults to `clone`
+ *  (reflink on a CoW filesystem; uv falls back clone->hardlink->copy itself).
+ *  `symlink` never gets here — the settings validation refuses it. */
+export function uvEnv(uv: { cacheDir?: string; linkMode?: string } = {}): Record<string, string> {
+  return {
+    UV_CACHE_DIR: uv.cacheDir ?? DEFAULT_UV_CACHE_DIR,
+    UV_LINK_MODE: uv.linkMode ?? DEFAULT_UV_LINK_MODE,
   };
 }
 

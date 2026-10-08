@@ -161,6 +161,33 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
       }
     });
 
+    it("myrmidon(1.6.5-BOT-DISK-UV-A): a configured cache compiles the uv pair into hermes/.env", async () => {
+      const board = fakeBoard({
+        sharedPackageCachePath: async () => "/srv/cache",
+        uvSettings: async () => ({ cacheDir: "/cache/uv", linkMode: "clone" }),
+      });
+      const compiled = await createBotProfileCompile(board.ports, { env: INSTANCE_ENV })("agent-a", "agent-a");
+      const env = fileContent(compiled, "hermes/.env");
+      expect(env).toContain('UV_CACHE_DIR="/cache/uv"');
+      expect(env).toContain('UV_LINK_MODE="clone"');
+      // The board's value wins over the card's, with a warning, like the cache variables.
+      const cardBoard = fakeBoard({
+        sharedPackageCachePath: async () => "/srv/cache",
+        resolveCardEnv: async () => ({ env: { UV_CACHE_DIR: { value: "/elsewhere", secret: false } }, warnings: [] }),
+      });
+      const reported: string[][] = [];
+      const cardCompiled = await createBotProfileCompile(cardBoard.ports, {
+        env: INSTANCE_ENV,
+        onWarnings: (_botKey, list) => {
+          reported.push([...list]);
+        },
+      })("agent-a", "agent-a");
+      const cardEnv = fileContent(cardCompiled, "hermes/.env");
+      expect(cardEnv).toContain('UV_CACHE_DIR="/cache/uv"');
+      expect(cardEnv).not.toContain("/elsewhere");
+      expect(reported.flat().some((warning) => warning.includes('"UV_CACHE_DIR"') && warning.includes("card's value was dropped"))).toBe(true);
+    });
+
     it("changing the applied layout changes the restart hash, so the container restarts onto it", async () => {
       const isolated = await createBotProfileCompile(fakeBoard({ scopeLayout: async () => ({ kind: "isolated" }) }).ports, { env: INSTANCE_ENV })("agent-a", "agent-a");
       const shared = await createBotProfileCompile(
@@ -1242,6 +1269,11 @@ describe("myrmidon(PERF-DIET-G) createBotProfileCompile — one read per pass", 
         calls.push("pnpmSettings");
         return { storeDir: "/cache/pnpm/store", importMethod: "hardlink" };
       },
+      // myrmidon(1.6.5-BOT-DISK-UV-A): the uv pair is read per tick from the same row.
+      async uvSettings() {
+        calls.push("uvSettings");
+        return { cacheDir: "/cache/uv", linkMode: "clone" };
+      },
       async cloneIdleTtlSec() {
         calls.push("cloneIdleTtlSec");
         return 600;
@@ -1272,6 +1304,8 @@ describe("myrmidon(PERF-DIET-G) createBotProfileCompile — one read per pass", 
     // (the scope instance's store path). On the code path this replaces, the same
     // three bots paid six of these.
     expect(board.count("pnpmSettings")).toBe(3);
+    // myrmidon(1.6.5-BOT-DISK-UV-A): the uv pair is cached the same way.
+    expect(board.count("uvSettings")).toBe(3);
     // The applied scope is the bot's own and is never shared.
     expect(board.count("scopeLayout")).toBe(3);
     expect(board.calls.filter((call) => call.startsWith("loadAgent:"))).toHaveLength(3);
@@ -1292,6 +1326,8 @@ describe("myrmidon(PERF-DIET-G) createBotProfileCompile — one read per pass", 
       "sharedPackageCachePath",
       "cloneIdleTtlSec",
       "pnpmSettings",
+      // myrmidon(1.6.5-BOT-DISK-UV-A): the uv pair shares the pass cache, like pnpm.
+      "uvSettings",
     ]) {
       expect(board.count(name), name).toBe(1);
     }

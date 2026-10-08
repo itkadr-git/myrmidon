@@ -10,7 +10,13 @@ import {
   botDiskPnpmStoreDirProblem,
   botDiskPnpmStoreDirWarning,
   botDiskPnpmWarnings,
+  // myrmidon(1.6.5-BOT-DISK-UV-A): the uv analog of the pnpm validators.
+  botDiskUvCacheDirProblem,
+  botDiskUvCacheDirWarning,
+  botDiskUvLinkModeProblem,
+  botDiskUvWarnings,
   migrateBotDiskPnpm,
+  migrateBotDiskUv,
   botRoleGetsSharedCache,
   gitMirrorRepoProblem,
   mergeBotDiskSettings,
@@ -27,10 +33,15 @@ import {
   buildHelperBinds,
   DEFAULT_PNPM_IMPORT_METHOD,
   DEFAULT_PNPM_STORE_DIR,
+  // myrmidon(1.6.5-BOT-DISK-UV-A): the uv half of the template's cache layout.
+  DEFAULT_UV_CACHE_DIR,
+  DEFAULT_UV_LINK_MODE,
   GIT_MIRROR_MOUNT,
   packageCacheEnv,
   PACKAGE_CACHE_MOUNTS,
   PNPM_STORE_ROOTS,
+  UV_CACHE_ROOTS,
+  uvEnv,
 } from "./template.js";
 
 const volumeRoot = "/srv/bots";
@@ -73,6 +84,7 @@ describe("myrmidon(1.6.1-BOT-DISK-B) buildBinds with the shared package cache", 
       "/srv/docs:/docs:ro",
       `${cache}/pnpm:/cache/pnpm:rw`,
       `${cache}/pnpm-store:/cache/pnpm-store:rw`,
+      `${cache}/uv:/cache/uv:rw`, // myrmidon(1.6.5-BOT-DISK-UV-A)
       `${cache}/go-mod:/cache/go-mod:rw`,
       `${cache}/go-build:/cache/go-build:rw`,
       `${cache}/gradle:/cache/gradle:rw`,
@@ -108,10 +120,16 @@ describe("myrmidon(1.6.1-BOT-DISK-B) buildBinds with the shared package cache", 
       GRADLE_USER_HOME: "/cache/gradle",
       npm_config_store_dir: "/cache/pnpm-store",
       npm_config_package_import_method: "clone",
+      // myrmidon(1.6.5-BOT-DISK-UV-A): the uv cache, one per partition, clone by default.
+      UV_CACHE_DIR: "/cache/uv",
+      UV_LINK_MODE: "clone",
     });
     expect(DEFAULT_PNPM_STORE_DIR).toBe("/cache/pnpm-store");
     expect(DEFAULT_PNPM_IMPORT_METHOD).toBe("clone");
     expect(PNPM_STORE_ROOTS).toContain("/cache/pnpm-store");
+    expect(DEFAULT_UV_CACHE_DIR).toBe("/cache/uv");
+    expect(DEFAULT_UV_LINK_MODE).toBe("clone");
+    expect(UV_CACHE_ROOTS).toContain("/cache/uv");
     expect(PACKAGE_CACHE_MOUNTS.map((mount) => mount.hostSubdir)).not.toContain("pip");
   });
 
@@ -139,13 +157,14 @@ describe("myrmidon(1.6.1-BOT-DISK-B) buildBinds with the shared package cache", 
     expect(binds.slice(1)).toEqual([
       `${cache}/pnpm:/cache/pnpm:rw`,
       `${cache}/pnpm-store:/cache/pnpm-store:rw`,
+      `${cache}/uv:/cache/uv:rw`, // myrmidon(1.6.5-BOT-DISK-UV-A)
       `${cache}/go-mod:/cache/go-mod:rw`,
       `${cache}/go-build:/cache/go-build:rw`,
       `${cache}/gradle:/cache/gradle:rw`,
       `${cache}/git:/cache/git:ro`,
     ]);
     expect(buildBinds(volumeRoot, botKey, { gitMirror: true })).toHaveLength(1);
-    expect(buildBinds(volumeRoot, botKey, { sharedPackageCachePath: cache })).toHaveLength(6);
+    expect(buildBinds(volumeRoot, botKey, { sharedPackageCachePath: cache })).toHaveLength(7);
     expect(GIT_MIRROR_MOUNT.containerPath).toBe("/cache/git");
   });
 });
@@ -238,6 +257,9 @@ describe("myrmidon(1.6.2-BOT-DISK-C) git mirror and pnpm store settings", () => 
       gitMirrorRefreshMs: 15 * 60 * 1000,
       pnpmStoreDir: "/cache/pnpm-store",
       pnpmImportMethod: "clone",
+      // myrmidon(1.6.5-BOT-DISK-UV-A): the uv pair is part of the layout.
+      uvCacheDir: "/cache/uv",
+      uvLinkMode: "clone",
       sharedCacheRoles: ["engineer", "reviewer", "devops", "release", "qa"],
     });
     const layout = resolveBotDiskLayout({
@@ -374,6 +396,77 @@ describe("myrmidon(1.6.5-BOT-DISK-H8a) pnpm store and import method", () => {
       pnpmStoreDir: "/cache/pnpm-store",
       pnpmImportMethod: "clone",
     });
+  });
+});
+
+// myrmidon(1.6.5-BOT-DISK-UV-A): the uv cache, the same mechanics as the pnpm
+// store above: one shared mount per partition, validated settings, and nothing
+// to migrate — uv keys are new, an old row simply has none.
+describe("myrmidon(1.6.5-BOT-DISK-UV-A) uv cache and link mode", () => {
+  it("defaults: the shared /cache/uv mount, clone (reflink) import", () => {
+    expect(resolveBotDiskLayout({ sharedPackageCachePath: cache })).toMatchObject({
+      uvCacheDir: "/cache/uv",
+      uvLinkMode: "clone",
+    });
+    expect(packageCacheEnv({}, { cacheDir: "/data/.uv-cache", linkMode: "copy" })).toMatchObject({
+      UV_CACHE_DIR: "/data/.uv-cache",
+      UV_LINK_MODE: "copy",
+    });
+    expect(uvEnv()).toEqual({ UV_CACHE_DIR: "/cache/uv", UV_LINK_MODE: "clone" });
+  });
+
+  it("binds <cache>/uv read-write and names the same path in the env", () => {
+    const binds = buildBinds(volumeRoot, botKey, { sharedPackageCachePath: cache });
+    expect(binds).toContain(`${cache}/uv:/cache/uv:rw`);
+    const mount = PACKAGE_CACHE_MOUNTS.find((m) => m.hostSubdir === "uv");
+    expect(mount?.containerPath).toBe(packageCacheEnv().UV_CACHE_DIR);
+    expect(buildBinds(volumeRoot, botKey).join()).not.toContain("/cache/uv");
+  });
+
+  it("accepts clone, hardlink and copy, and refuses symlink with a message that says why", () => {
+    for (const ok of ["clone", "hardlink", "copy"]) {
+      expect(botDiskUvLinkModeProblem(ok), ok).toBeNull();
+      expect(patchBotDiskSettingsSchema.safeParse({ uvLinkMode: ok }).success, ok).toBe(true);
+    }
+    // Unlike pnpm, `hardlink` is a documented uv value and stays allowed (uv
+    // itself fails across a device boundary with a clear error); there is no
+    // clone-or-copy analogue — uv's own fallback logs a warning in the bot.
+    expect(botDiskUvLinkModeProblem("reflink")).toMatch(/must be one of/);
+    const refused = botDiskUvLinkModeProblem("symlink");
+    expect(refused).toMatch(/symlink is not allowed.*isolation/);
+    const parsed = patchBotDiskSettingsSchema.safeParse({ uvLinkMode: "symlink" });
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) expect(parsed.error.issues.map((i) => i.message).join("\n")).toMatch(/uvLinkMode symlink is not allowed/);
+  });
+
+  it("warns, does not refuse, a cache inside the bot's own tree; any other path is refused", () => {
+    expect(botDiskUvCacheDirProblem("/workspace/.uv-cache")).toBeNull();
+    expect(patchBotDiskSettingsSchema.safeParse({ uvCacheDir: "/workspace/.uv-cache" }).success).toBe(true);
+    expect(botDiskUvCacheDirWarning("/workspace/.uv-cache")).toMatch(/cache per bot.*\/cache\/uv/);
+    expect(botDiskUvCacheDirWarning("/scratch/uv")).not.toBeNull();
+    expect(botDiskUvCacheDirWarning("/cache/uv")).toBeNull();
+    expect(botDiskUvCacheDirWarning("/srv/elsewhere")).toBeNull(); // refused, not warned
+    expect(botDiskUvCacheDirProblem("/srv/elsewhere")).toMatch(/must be \/cache\/uv.*bot's own tree/);
+    expect(patchBotDiskSettingsSchema.safeParse({ uvCacheDir: "/srv/elsewhere" }).success).toBe(false);
+    expect(botDiskUvWarnings({ uvCacheDir: "/workspace/.uv-cache", uvLinkMode: "clone" })).toHaveLength(1);
+    expect(botDiskUvWarnings({})).toEqual([]);
+    expect(botDiskUvWarnings(undefined)).toEqual([]);
+    // The warning does not change the value in force.
+    expect(resolveBotDiskLayout({ uvCacheDir: "/workspace/.uv-cache" }).uvCacheDir).toBe("/workspace/.uv-cache");
+  });
+
+  it("smoke: nothing to migrate — an old row has no uv keys, a valid pair round-trips", () => {
+    expect(migrateBotDiskUv({})).toEqual({ uvCacheDir: undefined, uvLinkMode: undefined, notes: [] });
+    expect(normalizeStoredBotDiskSettings({ enabled: true })).not.toHaveProperty("uvCacheDir");
+    expect(resolveBotDiskLayout({})).toMatchObject({ uvCacheDir: "/cache/uv", uvLinkMode: "clone" });
+    // An unknown stored method or a refused path is dropped to the default, never kept.
+    expect(normalizeStoredBotDiskSettings({ uvLinkMode: "symlink" })).toEqual({});
+    expect(normalizeStoredBotDiskSettings({ uvCacheDir: "/srv/elsewhere" })).toEqual({});
+    expect(resolveBotDiskLayout({ uvLinkMode: "symlink" } as never).uvLinkMode).toBe("clone");
+    // Patch accepts, merge keeps, null restores the default.
+    const base = { enabled: true, idleTtlMs: 3_600_000, uvCacheDir: "/data/.uv-cache", uvLinkMode: "copy" as const };
+    expect(mergeBotDiskSettings(base, { uvLinkMode: null })).toEqual({ enabled: true, idleTtlMs: 3_600_000, uvCacheDir: "/data/.uv-cache" });
+    expect(mergeBotDiskSettings({ enabled: true, idleTtlMs: 3_600_000 }, { uvCacheDir: "/cache/uv" })).toMatchObject({ uvCacheDir: "/cache/uv" });
   });
 });
 

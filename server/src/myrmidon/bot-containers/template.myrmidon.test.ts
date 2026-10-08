@@ -132,10 +132,11 @@ describe("buildBinds", () => {
           : ["/srv/bots/agent-a:/bot"],
       );
       const full = buildBinds("/srv/bots", "agent-a", { mounts, allowedSources: ["/srv/shared/sources"], sharedPackageCachePath: "/srv/cache", gitMirror: true, volumeLayout });
-      expect(full.slice(-7)).toEqual([
+      expect(full.slice(-8)).toEqual([
         "/srv/shared/sources:/srv/shared/sources:ro",
         "/srv/cache/pnpm:/cache/pnpm:rw",
         "/srv/cache/pnpm-store:/cache/pnpm-store:rw",
+        "/srv/cache/uv:/cache/uv:rw", // myrmidon(1.6.5-BOT-DISK-UV-A)
         "/srv/cache/go-mod:/cache/go-mod:rw",
         "/srv/cache/go-build:/cache/go-build:rw",
         "/srv/cache/gradle:/cache/gradle:rw",
@@ -492,6 +493,7 @@ describe("buildBinds: the shared bot runtime (1.6.5-BOT-DISK-H11)", () => {
       "/srv/bots/agent-a:/bot",
       "/srv/cache/pnpm:/cache/pnpm:rw",
       "/srv/cache/pnpm-store:/cache/pnpm-store:rw",
+      "/srv/cache/uv:/cache/uv:rw", // myrmidon(1.6.5-BOT-DISK-UV-A)
       "/srv/cache/go-mod:/cache/go-mod:rw",
       "/srv/cache/go-build:/cache/go-build:rw",
       "/srv/cache/gradle:/cache/gradle:rw",
