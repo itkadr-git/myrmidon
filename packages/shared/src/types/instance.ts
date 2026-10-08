@@ -31,12 +31,12 @@ import type { BudgetEnforcementSettings } from "../myrmidon-budget-enforcement.j
 import type { PluginEntitlementKey } from "../myrmidon-plugin-entitlement.js";
 // myrmidon(DM-PROGRESS): live progress steps of the bridged Telegram DM status message.
 import type { TelegramDmProgressSettings } from "../myrmidon-telegram-dm-progress.js";
+import type { ForagingIdleGateSettings } from "../myrmidon-foraging-idle-gate.js";
 // myrmidon(BOT-RUNTIME-TUNING D2): the fallback-signal settings of the same row.
 import type { StoredFallbackSignalSettings } from "../myrmidon-fallback-signal.js";
 // myrmidon(1.6.5-PAUSE-GUARD): the forgotten-operator-pause guard of the same
 // general settings row.
 import type { StoredPauseGuardSettings } from "../myrmidon-pause-guard.js";
-import type { ForagingIdleGateSettings } from "../myrmidon-foraging-idle-gate.js";
 
 // myrmidon(1.6.1-FORAGING-LIMITS-UI)
 import type { ForagingSettings } from "../myrmidon-foraging.js";
@@ -240,6 +240,15 @@ export interface InstanceGeneralSettings {
    * (packages/shared/src/validators/instance.ts).
    */
   budgetEnforcement?: BudgetEnforcementSettings;
+  /**
+   * myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): the pass journal — the last
+   * passes of every company, newest first, each with the counters of the pass
+   * and the roles it skipped with their reason. Written by the foraging pass,
+   * read by GET /api/myrmidon/companies/:id/foraging/passes. Kept in sync with
+   * the validator of the same field (packages/shared/src/validators/instance.ts)
+   * and with the reader in packages/shared/src/myrmidon-foraging-pass-journal.ts.
+   */
+  foragingPassJournal?: unknown[];
   /**
    * myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys, managed
    * from the instance settings page. Absent means "no keys registered". Kept

@@ -529,6 +529,39 @@
       "passInterval": "Pass interval: {{minutes}} min",
       "sameHostPause": "Same-host pause: {{seconds}} s"
     },
+    "idleGate": {
+      "title": "Idle only",
+      "description": "A pass reads a role's sources only while the role is idle: its queue holds no unassigned open task and one of its agents is free. Working tasks always come first.",
+      "label": "Run passes only while the role is idle",
+      "value": "Now: {{value}}",
+      "source": "Value from: {{source}}",
+      "on": "on",
+      "off": "off",
+      "unknown": "value not read",
+      "nextPass": "The rule is read on every pass, so a switch applies to the next pass — no restart.",
+      "saveFailed": "Could not save the setting: {{message}}",
+      "sources": {
+        "settings": "the interface",
+        "env": "the environment",
+        "default": "the default"
+      },
+      "reasons": {
+        "queue_not_empty": "the role's queue is not empty",
+        "no_idle_agent": "no free agent of the role"
+      }
+    },
+    "passes": {
+      "title": "Pass history",
+      "description": "The last passes of this company: what each pass read, and which roles it left alone, with the reason.",
+      "empty": "No passes recorded yet. A pass lands here as soon as one runs.",
+      "when": "Pass",
+      "read": "Sources read",
+      "findings": "Findings",
+      "skipped": "Skipped",
+      "notSkipped": "nothing skipped",
+      "skip": "{{role}} — {{reason}}",
+      "stoppedByBudget": "stopped by the budget"
+    },
     "sources": {
       "title": "Sources",
       "description": "One row per approved source; a role may have several.",

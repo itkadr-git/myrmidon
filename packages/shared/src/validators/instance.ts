@@ -220,6 +220,18 @@ export const instanceGeneralSettingsSchema = z.object({
   // /api/myrmidon/companies/:id/prompt-budget/settings; absent means the
   // defaults (warn 70, crit 90, enabled, 200k fallback window).
   promptBudget: promptBudgetSettingsSchema.optional(),
+  // myrmidon(1.6.3-FORAGING-IDLE-GATE): whether foraging runs only when the
+  // role is idle (empty queue + a free agent), changed from
+  // /api/myrmidon/foraging/idle-gate; absent means the environment variable,
+  // then the default (on).
+  foragingIdleGate: foragingIdleGateSettingsSchema.optional(),
+  // myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): the pass journal — the last
+  // passes of every company (what each read, and which roles were skipped why),
+  // kept by the foraging pass under `general.foragingPassJournal` and read by
+  // GET /api/myrmidon/companies/:id/foraging/passes. Stored passthrough, never
+  // validated here beyond being a list-shaped value the service re-reads
+  // defensively.
+  foragingPassJournal: z.array(z.unknown()).optional(),
   // myrmidon(1.6.5 BOT-RUNTIME-TUNING D2): the fallback-signal settings, changed
   // from /api/myrmidon/model-fallback/settings; absent means "use the
   // environment variable, then the default" (see
@@ -229,11 +241,6 @@ export const instanceGeneralSettingsSchema = z.object({
   // changed from /api/myrmidon/foraging-settings; absent means "use the
   // environment variable, then the default (the sweep is off)".
   foraging: foragingSettingsSchema.optional(),
-  // myrmidon(1.6.3-FORAGING-IDLE-GATE): whether foraging runs only when the
-  // role is idle (empty queue + a free agent), changed from
-  // /api/myrmidon/foraging/idle-gate; absent means the environment variable,
-  // then the default (on).
-  foragingIdleGate: foragingIdleGateSettingsSchema.optional(),
 }).strict();
 
 export const patchInstanceGeneralSettingsSchema = z
