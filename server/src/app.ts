@@ -124,6 +124,7 @@ import { myrmidonBotCanaryRoutes } from "./myrmidon/bot-containers/canary-index.
 import { myrmidonWorkspaceHygieneRoutes } from "./myrmidon/workspace-hygiene/index.js"; // myrmidon(WORKSPACE-HYGIENE)
 // myrmidon(BOT-DISK E): host disk usage threshold and signal
 import { myrmidonHostDiskRoutes } from "./myrmidon/host-disk/index.js"; // myrmidon(BOT-DISK E)
+import { myrmidonAttentionFeedRoutes } from "./myrmidon/attention-feed/index.js"; // myrmidon(1.6.6 SETTINGS-UI C-4)
 import { myrmidonAlertRecoveryRoutes } from "./myrmidon/monitoring/alert-recovery/index.js"; // myrmidon(1.6.6-MONITORING-D)
 import { myrmidonBotDiskLifecycleRoutes } from "./myrmidon/bot-containers/bot-disk-routes.js"; // myrmidon(BOT-DISK-A)
 // myrmidon(1.6.6-SETTINGS-UI-B): the read side of the lifecycle screen (the C5
@@ -930,6 +931,7 @@ export async function createApp(
   api.use(myrmidonBotCanaryRoutes(db)); // myrmidon(R5-B)
   api.use(myrmidonWorkspaceHygieneRoutes(db)); // myrmidon(WORKSPACE-HYGIENE)
   api.use(myrmidonHostDiskRoutes(db)); // myrmidon(BOT-DISK E)
+  api.use(myrmidonAttentionFeedRoutes(db)); // myrmidon(1.6.6 SETTINGS-UI C-4): attention-feed windows (failed-run horizon, feed cache TTL)
   api.use(myrmidonAlertRecoveryRoutes(db)); // myrmidon(1.6.6-MONITORING-D)
   api.use(myrmidonBotDiskLifecycleRoutes(db)); // myrmidon(BOT-DISK-A)
   api.use(myrmidonBotDiskPhysicalRoutes(db)); // myrmidon(1.6.6-SETTINGS-UI-B): C5 relay + C4 reports for the lifecycle screen
