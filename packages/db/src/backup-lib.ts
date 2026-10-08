@@ -40,6 +40,12 @@ export type RunDatabaseBackupResult = {
   backupFile: string;
   sizeBytes: number;
   prunedCount: number;
+  /**
+   * myrmidon(SHARED-PG-BACKUP): non-fatal diagnostics of the run, e.g. the
+   * pg_dump client major-version mismatch that made an "auto" engine fall
+   * back to the JavaScript dump path. Absent when the run was clean.
+   */
+  warnings?: string[];
 };
 
 export type RunDatabaseRestoreOptions = {
@@ -490,12 +496,96 @@ function backupPgOptions(): string {
   return inherited ? `${inherited} -c statement_timeout=0` : "-c statement_timeout=0";
 }
 
+/**
+ * myrmidon(SHARED-PG-BACKUP): the configured `pg_dump` client is older than
+ * the database server's major version. pg_dump refuses to dump a newer
+ * server ("server version X is newer than client version Y"), so a dump with
+ * such a client dies mid-run with an unclear utility error. The engine
+ * detects the mismatch before spawning the real dump: engine "pg_dump" fails
+ * loudly with this error and the fix, engine "auto" warns and falls back to
+ * the JavaScript dump path, which speaks SQL through postgres.js and works
+ * against any server the board can connect to (a shared PostgreSQL 18 with
+ * the host's older client tools included).
+ */
+export class BackupClientVersionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "BackupClientVersionError";
+  }
+}
+
+// myrmidon(SHARED-PG-BACKUP): the major version of a Postgres version string
+// — the server's `SELECT version()` ("PostgreSQL 18.1 ...") or a utility's
+// --version output ("pg_dump (PostgreSQL) 17.6 (Ubuntu 17.6-0.pgdg...)").
+// The major is the leading number of a real `major.minor` version token;
+// unrelated output (no version shape) -> null.
+export function parsePgMajorVersion(text: string): number | null {
+  // myrmidon(SHARED-PG-BACKUP): accept only real version shapes (major.minor
+  // or the longer "18.1 (build)" spellings). A bare `\d+` scan mis-reads the
+  // first digit in any unrelated output as the major — e.g. a stub client
+  // that answers `--version` with its dump body ("SELECT 1;") read as major
+  // 1 and made the compatibility gate throw in CI.
+  const match = /(\d+)(?:\.\d+)+/.exec(text);
+  if (!match) return null;
+  const value = Number.parseInt(match[1]!, 10);
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+// myrmidon(SHARED-PG-BACKUP): the dump client binary used for the pg_dump
+// path: the host's client by default, PAPERCLIP_PG_DUMP_PATH points at a
+// client of the server's major version or newer when the host ships an older
+// one (a shared PostgreSQL 18 server with pg_dump 17 tools on the host).
+function pgDumpBinPath(): string {
+  return process.env.PAPERCLIP_PG_DUMP_PATH?.trim() || "pg_dump";
+}
+
+/**
+ * myrmidon(SHARED-PG-BACKUP): diagnose the dump client before the real dump.
+ * Asks `pgDumpBin --version` and compares the majors. Returns a fix message
+ * only when both versions are known and the client is older than the server;
+ * `null` means "run the dump" — including the cases the utility cannot be
+ * asked (missing binary, no output, exit != 0): those keep the pre-existing
+ * behavior, the dump spawn fails on its own and engine "auto" falls back to
+ * JavaScript exactly as before.
+ */
+export async function diagnosePgDumpClient(
+  pgDumpBin: string,
+  serverMajor: number,
+): Promise<string | null> {
+  const versionOutput = await new Promise<string | null>((resolve) => {
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(pgDumpBin, ["--version"], { stdio: ["ignore", "pipe", "ignore"] });
+    } catch {
+      resolve(null);
+      return;
+    }
+    let out = "";
+    child.stdout?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk) => {
+      out = (out + chunk).slice(0, 1024);
+    });
+    child.once("error", () => resolve(null));
+    // "close" (not "exit") fires after the stdio streams have flushed; a fast
+    // child can emit "exit" while `out` is still empty.
+    child.once("close", (code) => resolve(code === 0 && out.trim() ? out : null));
+  });
+  if (versionOutput === null) return null;
+  const clientMajor = parsePgMajorVersion(versionOutput);
+  if (clientMajor === null || clientMajor >= serverMajor) return null;
+  return (
+    `the pg_dump client is PostgreSQL major ${clientMajor} but the database server is major ` +
+    `${serverMajor}: pg_dump refuses to dump a newer server. Install a client of the server's ` +
+    `major or newer (PostgreSQL ${serverMajor}+) or point PAPERCLIP_PG_DUMP_PATH at one`
+  );
+}
+
 async function runPgDumpBackup(opts: {
   connectionString: string;
   backupFile: string;
   connectTimeout: number;
 }): Promise<void> {
-  const pgDumpBin = process.env.PAPERCLIP_PG_DUMP_PATH || "pg_dump";
+  const pgDumpBin = pgDumpBinPath();
   const child = spawn(
     pgDumpBin,
     [
@@ -726,6 +816,12 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
   mkdirSync(opts.backupDir, { recursive: true });
   const sqlFile = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}.sql`);
   const backupFile = `${sqlFile}.gz`;
+  // myrmidon(SHARED-PG-BACKUP): non-fatal diagnostics collected during the
+  // run (client major-version fallback); surfaced on the result so the
+  // scheduler log and the CLI show why the engine was downgraded.
+  const backupWarnings: string[] = [];
+  const warningsOnResult = (): Pick<RunDatabaseBackupResult, "warnings"> =>
+    backupWarnings.length > 0 ? { warnings: [...backupWarnings] } : {};
   // myrmidon(OPE-4832): mutable because an engine-auto fallback onto the
   // JavaScript path reopens a fresh writer after the pg_dump path aborted the
   // original one (abort closes the handle and deletes the .sql).
@@ -735,6 +831,17 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     if (backupEngine === "pg_dump" || (backupEngine === "auto" && canUsePgDump)) {
       await sql`SELECT 1`;
       try {
+        // myrmidon(SHARED-PG-BACKUP): check the dump client against the
+        // server BEFORE spawning the real dump. libpq refuses to dump a
+        // newer server, so a pg_dump older than the shared PostgreSQL 18
+        // must not die mid-spawn with an unclear utility error: explicit
+        // engine fails with BackupClientVersionError, engine "auto" warns
+        // and falls back to the JavaScript path below.
+        const serverVersionRows = await sql<{ version: string }[]>`SELECT version()`;
+        const serverMajor = parsePgMajorVersion(String(serverVersionRows[0]?.version ?? ""));
+        const clientIssue =
+          serverMajor === null ? null : await diagnosePgDumpClient(pgDumpBinPath(), serverMajor);
+        if (clientIssue) throw new BackupClientVersionError(clientIssue);
         await closeSql();
         await runPgDumpBackup({
           connectionString: opts.connectionString,
@@ -765,6 +872,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
           backupFile,
           sizeBytes,
           prunedCount,
+          ...warningsOnResult(),
         };
       } catch (error) {
         if (existsSync(backupFile)) {
@@ -781,6 +889,15 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         }
         if (backupEngine === "pg_dump") {
           throw error;
+        }
+        // myrmidon(SHARED-PG-BACKUP): a diagnosed client/server major-version
+        // mismatch is reported as a warning on the result — the JavaScript
+        // fallback below produces the dump the older client could not. The
+        // gate throws before closeSql() ran, so close the probe connection
+        // first: the reassignment below would otherwise leak the old pool.
+        if (error instanceof BackupClientVersionError) {
+          backupWarnings.push(error.message);
+          await closeSql();
         }
         effectiveBackupEngine = "javascript";
         // myrmidon(OPE-4832): the aborted-on-success pg_dump path may have
@@ -1271,6 +1388,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       backupFile,
       sizeBytes,
       prunedCount,
+      ...warningsOnResult(),
     };
   } catch (error) {
     await writer.abort();
@@ -1327,5 +1445,8 @@ export async function runDatabaseRestore(opts: RunDatabaseRestoreOptions): Promi
 export function formatDatabaseBackupResult(result: RunDatabaseBackupResult): string {
   const size = formatBackupSize(result.sizeBytes);
   const pruned = result.prunedCount > 0 ? `; pruned ${result.prunedCount} old backup(s)` : "";
-  return `${result.backupFile} (${size}${pruned})`;
+  // myrmidon(SHARED-PG-BACKUP): non-fatal diagnostics (e.g. the pg_dump
+  // client major-version fallback) belong in every consumer's log line.
+  const warnings = (result.warnings ?? []).map((warning) => `; warning: ${warning}`).join("");
+  return `${result.backupFile} (${size}${pruned}${warnings})`;
 }
