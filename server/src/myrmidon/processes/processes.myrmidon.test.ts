@@ -5,7 +5,7 @@
 // the properties it must not lose are: the row is stored before the value is
 // applied, every company gets one journal record, and the mode the row claims
 // never hides the mode the build runs.
-import { describe, it } from "node:test";
+import { describe, it } from "vitest";
 import assert from "node:assert/strict";
 import type { LogActivityInput } from "../../services/activity-log.js";
 import {
@@ -81,7 +81,10 @@ describe("processes settings service (PROCS-1.1)", () => {
 
     assert.equal(view.settings.apiCount, 2);
     assert.equal(view.sources.apiCount, "settings");
-    assert.equal(view.sources.mode, "default");
+    // The row is stored as a whole, the way `runLimits` stores it, so every key
+    // it now holds is reported as saved — the mode this patch left alone is
+    // written at the value in force and no longer counts as the default.
+    assert.equal(view.sources.mode, "settings");
     assert.equal((h.stored() as ProcessesSettings).apiCount, 2);
 
     assert.equal(h.activity.length, 2);

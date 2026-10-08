@@ -2,7 +2,7 @@
 // of `instance_settings.general.processes` — the defaults are today's behaviour,
 // the enum values stay in step between the schema and the exported lists, and a
 // stored `split` is never reported as if it were running.
-import { describe, it } from "node:test";
+import { describe, it } from "vitest";
 import assert from "node:assert/strict";
 import {
   DEFAULT_PROCESSES_SETTINGS,

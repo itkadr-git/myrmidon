@@ -133,6 +133,17 @@ export function parseProcessesModeEnv(raw: string | null | undefined): Processes
 }
 
 /**
+ * The ambient environment without naming `process`: the shared sources are
+ * compiled by packages that do not pull in `@types/node` (the plugin-authoring
+ * smoke example typechecks this file), so the lookup goes through `globalThis`
+ * and answers an empty record where there is no process at all.
+ */
+function ambientProcessEnv(): Record<string, string | undefined> {
+  const ambient = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process;
+  return ambient?.env ?? {};
+}
+
+/**
  * The settings in force and how each one got there: a saved row beats the
  * built-in default, and `PAPERCLIP_PROCESS_MODE` beats both and is reported as
  * `env`, so the settings page can show a mode the operator cannot change from
@@ -140,7 +151,7 @@ export function parseProcessesModeEnv(raw: string | null | undefined): Processes
  */
 export function resolveProcessesSettings(
   stored?: unknown,
-  env: Record<string, string | undefined> = process.env,
+  env?: Record<string, string | undefined>,
 ): ResolvedProcessesSettings {
   const parsed = processesSettingsSchema.partial().safeParse(stored ?? {});
   const saved = (parsed.success ? parsed.data : {}) as Record<string, unknown>;
@@ -149,7 +160,7 @@ export function resolveProcessesSettings(
   for (const key of PROCESSES_SETTING_KEYS) {
     sources[key] = saved[key] === undefined ? "default" : "settings";
   }
-  const forced = parseProcessesModeEnv(env[PROCESSES_MODE_ENV]);
+  const forced = parseProcessesModeEnv((env ?? ambientProcessEnv())[PROCESSES_MODE_ENV]);
   if (forced) {
     settings.mode = forced;
     sources.mode = "env";
