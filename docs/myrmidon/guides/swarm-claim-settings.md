@@ -36,6 +36,44 @@ variables are **forced overrides**: a variable set in the process environment
 beats the stored value for its key only (see [SETTINGS.md](../SETTINGS.md)).
 Unset a variable to give control back to the UI.
 
+## The idle-wake pass
+
+The sweep has a third pass, after the release and free passes: the
+**idle wake**. On every tick it looks at each pair of "role with a ready
+queue + free agents of that role" and wakes the missing number of agents —
+each wake is bound to the top task of the queue (critical first when P0
+preemption is on, otherwise oldest first). Before this pass, a role with
+ready tasks but no expiring lease could sit idle until someone woke an agent
+by hand.
+
+An agent counts as free when it has no live claim, is under its active-task
+ceiling, is not paused or in error, and has no live run. Roles outside the
+pilot set and `swarmEligible: false` castes are never woken; a caste's own
+task ceiling overrides the global one for its agents. The pass is bounded in
+two ways:
+
+- at most `MYRMIDON_SWARM_IDLE_WAKE_BATCH` wakes per role per pass (default
+  `5`, clamped to 1–25) — a bulk task import cannot burst the whole fleet
+  awake at once;
+- every wake goes through the ordinary admission (`enqueueWakeup`), so pause,
+  maintenance and the host memory/CPU floors still apply — while a floor is
+  closed the pass wakes nobody and logs the reason (at most one line per five
+  minutes).
+
+The wakes carry the reason `swarm_claim_queue`; the actual claim is written
+when the woken run checks out. An agent that wakes with an assignment but no
+claim may also take the top task of its role's queue itself through
+`POST /api/myrmidon/companies/{companyId}/swarm-claim/claim` (the self-claim
+fallback shipped with the agent skill).
+
+How to watch it: the Swarm supervisor screen (route /swarm-claim) totals
+include
+**freeAgentsWithQueue** — free agents of a role whose queue is not empty. A
+healthy pilot keeps that number at 0; a value that stays above 0 means the
+pass cannot wake (agents paused, ceilings reached, an admission floor closed)
+or cannot claim (a gate on the claim side), and the queue is waiting on the
+operator.
+
 ## Turning the queues on for one role
 
 The acceptance flow: set *Enable role queues* on, put `engineer` into *Pilot

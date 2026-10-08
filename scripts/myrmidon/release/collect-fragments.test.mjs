@@ -419,4 +419,69 @@ describe("collect", () => {
     // A failed collect leaves the tree untouched.
     assert.ok(fs.existsSync(path.join(dir, "docs/myrmidon/changes/feat-a.md")));
   });
+
+  it("CLI: --check passes on a tag commit with the version section in both languages", () => {
+    const dir = fullTree();
+    collect(dir, { version: "1.7.0" });
+    const out = execFileSync("node", [SCRIPT, "--version", "1.7.0", "--check", "--root", dir], {
+      encoding: "utf8",
+    });
+    assert.match(out, /release changelog check ok: 1\.7\.0/);
+  });
+
+  it("CLI: --check refuses a tag commit without the version section (the 1.6.3 incident)", () => {
+    // Both changelogs still carry the release notes under the unreleased
+    // heading — the state of the myr-v1.6.3 tag.
+    const dir = sandbox({
+      "docs/myrmidon/CHANGELOG.md": CHANGELOG_EN,
+      "docs/myrmidon/CHANGELOG.ru.md": CHANGELOG_RU,
+    });
+    const res = spawnSync("node", [SCRIPT, "--version", "1.7.0", "--check", "--root", dir], {
+      encoding: "utf8",
+    });
+    assert.equal(res.status, 1);
+    // The unreleased section still holds the notes: the exact failure the
+    // 1.6.3 publish hit one step later.
+    assert.match(res.stderr, /"## Unreleased" is not empty/);
+  });
+
+  it("CLI: --check refuses a tag commit whose unreleased section was left non-empty", () => {
+    const dir = fullTree();
+    collect(dir, { version: "1.7.0" });
+    fs.writeFileSync(
+      path.join(dir, "docs/myrmidon/CHANGELOG.ru.md"),
+      fs
+        .readFileSync(path.join(dir, "docs/myrmidon/CHANGELOG.ru.md"), "utf8")
+        .replace("## Без выпуска\n", "## Без выпуска\n\n### Забытая запись\n\n- Строка.\n"),
+    );
+    const res = spawnSync("node", [SCRIPT, "--version", "1.7.0", "--check", "--root", dir], {
+      encoding: "utf8",
+    });
+    assert.equal(res.status, 1);
+    assert.match(res.stderr, /"## Без выпуска" is not empty/);
+  });
+
+  it("CLI: --check refuses a missing version section even with an empty unreleased one", () => {
+    const dir = sandbox({
+      "docs/myrmidon/CHANGELOG.md": "## Unreleased\n\n## 1.6.2\n\n- Shipped.\n",
+      "docs/myrmidon/CHANGELOG.ru.md": "## Без выпуска\n\n## 1.6.2\n\n- Вышло.\n",
+    });
+    const res = spawnSync("node", [SCRIPT, "--version", "1.7.0", "--check", "--root", dir], {
+      encoding: "utf8",
+    });
+    assert.equal(res.status, 1);
+    assert.match(res.stderr, /no "## 1\.7\.0" section/);
+  });
+
+  it("CLI: --check refuses an empty version section", () => {
+    const dir = sandbox({
+      "docs/myrmidon/CHANGELOG.md": "## Unreleased\n\n## 1.7.0\n\n## 1.6.2\n\n- Shipped.\n",
+      "docs/myrmidon/CHANGELOG.ru.md": "## Без выпуска\n\n## 1.7.0\n\n- Заметка.\n",
+    });
+    const res = spawnSync("node", [SCRIPT, "--version", "1.7.0", "--check", "--root", dir], {
+      encoding: "utf8",
+    });
+    assert.equal(res.status, 1);
+    assert.match(res.stderr, /"## 1\.7\.0" is empty/);
+  });
 });

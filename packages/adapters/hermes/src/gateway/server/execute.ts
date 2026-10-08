@@ -7,6 +7,7 @@ import type {
   RuntimeStatusUpdate,
   UsageSummary,
 } from "@paperclipai/adapter-utils";
+import { githubLauncherPayload } from "@paperclipai/adapter-utils/github-launcher";
 import { measureSections } from "@paperclipai/adapter-utils/prompt-meter";
 import {
   asNumber,
@@ -110,7 +111,10 @@ const SENSITIVE_KEY_PATTERN =
 const BEARER_TOKEN_PATTERN = /Bearer\s+\S+/gi;
 const HERMES_SESSION_KEY_HEADER_PATTERN = /(X-Hermes-Session-Key\s*[:=]\s*)([^\s,;]+)/gi;
 const PAPERCLIP_SESSION_KEY_PATTERN =
-  /\bpaperclip:(?:company:[A-Za-z0-9-]+:agent:[A-Za-z0-9-]+(?::(?:issue|run):[A-Za-z0-9-]+)?|run:[A-Za-z0-9-]+)\b/gi;
+  // myrmidon(PERF-DIET-K): the optional trailing `:g<N>` is the session
+  // generation suffix of an issue-scoped key (server/src/myrmidon/session-generations
+  // in the board), so a redacted key hides its generation too.
+  /\bpaperclip:(?:company:[A-Za-z0-9-]+:agent:[A-Za-z0-9-]+(?::(?:issue|run):[A-Za-z0-9-]+)?|run:[A-Za-z0-9-]+)(?::g\d+)?\b/gi;
 
 // myrmidon(CONTAINER-GITHUB-WRITE): env names heartbeat.ts writes into
 // runtimeConfig.env (services/heartbeat.ts ~21995-22015) when the run's
@@ -182,6 +186,23 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
+// myrmidon(PERF-DIET-K): the session-key generation the board decided for this
+// run (see server/src/myrmidon/session-generations/ there). The board writes
+// `sessionGeneration` into the run's adapter config only once an issue-scoped
+// session has passed its threshold; a missing value, an unreadable one and the
+// first generation all read as 1, which leaves the session key byte-for-byte
+// the vendor's — the default behaviour is unchanged.
+export function readSessionGeneration(value: unknown): number {
+  const parsed =
+    typeof value === "number"
+      ? value
+      : typeof value === "string"
+        ? Number.parseInt(value.trim(), 10)
+        : Number.NaN;
+  if (!Number.isFinite(parsed) || parsed <= 1) return 1;
+  return Math.floor(parsed);
+}
+
 function normalizeSessionKeyStrategy(value: unknown): SessionKeyStrategy {
   const raw = asString(value, "issue").trim().toLowerCase();
   if (raw === "agent" || raw === "run" || raw === "none") return raw;
@@ -224,6 +245,16 @@ export function resolveSessionKey(input: {
   agentId: string;
   runId: string;
   issueId: string | null;
+  /**
+   * myrmidon(PERF-DIET-K): the issue-scoped session generation. The board's
+   * session-generations module raises it once the session passes its
+   * age/activity threshold, so the whole conversation of one task stays
+   * bounded instead of growing for the task's whole life. Only the issue
+   * strategy carries it: agent-, run- and none-scoped keys keep the vendor's
+   * shape, and generation 1 (the first generation) keeps the key without a
+   * suffix too, so nothing changes until a threshold is actually crossed.
+   */
+  generation?: number | null;
 }): string | null {
   if (input.strategy === "none") return null;
   if (input.strategy === "agent") {
@@ -233,7 +264,12 @@ export function resolveSessionKey(input: {
     return `paperclip:run:${input.runId}`;
   }
   const issuePart = input.issueId ? `issue:${input.issueId}` : `run:${input.runId}`;
-  return `paperclip:company:${input.companyId}:agent:${input.agentId}:${issuePart}`;
+  // myrmidon(PERF-DIET-K): the generation suffix applies to an issue-scoped
+  // key only — the no-issue fallback is this attempt's own run and is never
+  // resumed, so it has no history to bound.
+  const generation = readSessionGeneration(input.generation);
+  const generationPart = input.issueId && generation > 1 ? `:g${generation}` : "";
+  return `paperclip:company:${input.companyId}:agent:${input.agentId}:${issuePart}${generationPart}`;
 }
 
 function stringifyForLog(value: unknown, maxChars = 4_000): string {
@@ -436,6 +472,85 @@ function buildGitHubBrokerField(
   return { broker_url: brokerUrl, capability };
 }
 
+// myrmidon(1.6.5 BOT-DISK-H5a, contract C6): the `workspace` field of a
+// /v1/runs request — `{key, repo, baseRef}` — from which the gateway runs
+// `myr-ws open` before the model starts. The shapes mirror
+// `runWorkspaceFieldSchema` of @paperclipai/shared (this package does not
+// depend on it; execute.test.ts checks the output against the real schema).
+// key: the board identifier of the run's issue; repo: `owner/name` derived
+// from the project workspace's repo URL (github.com only: https, ssh:// or scp-like
+// form, userinfo/.git stripped); baseRef: the workspace's repoRef when it is a
+// valid git ref. A task without a usable repository or issue key yields
+// undefined — the field is then absent and the bot works in /scratch.
+const WS_ISSUE_KEY_RE = /^[A-Z][A-Z0-9]*-[0-9]+$/;
+const WS_REPO_NAME_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+const WS_GIT_REF_RE = /^[^\s~^:?*[\]\\]+$/;
+
+function deriveWorkspaceRepoName(repoUrl: string): string | null {
+  // Only github.com is accepted (myr-ws fetches from github.com): any other
+  // host, including look-alikes such as github.com.evil.example, yields null.
+  let path: string | null = null;
+  const scp = /^(?:[^@/\s]+@)?([^:/\s]+):(?!\/\/)(.+)$/.exec(repoUrl);
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(repoUrl)) {
+    try {
+      const url = new URL(repoUrl);
+      if (url.protocol !== "https:" && url.protocol !== "ssh:") return null;
+      if (url.hostname.toLowerCase() !== "github.com") return null;
+      path = url.pathname;
+    } catch {
+      return null;
+    }
+  } else if (scp) {
+    if (scp[1].toLowerCase() !== "github.com") return null;
+    path = scp[2];
+  }
+  if (!path) return null;
+  const parts = path.replace(/^\/+|\/+$/g, "").replace(/\.git$/i, "").split("/");
+  if (parts.length !== 2) return null;
+  const name = parts.join("/");
+  return WS_REPO_NAME_RE.test(name) ? name : null;
+}
+
+function buildWorkspaceField(
+  context: Record<string, unknown>,
+): { key: string; repo: string; baseRef?: string } | undefined {
+  const wake = parseObject(context.paperclipWake);
+  const key = asString(parseObject(wake.issue).identifier, "").trim();
+  if (!WS_ISSUE_KEY_RE.test(key)) return undefined;
+  const workspace = parseObject(context.paperclipWorkspace);
+  const repoUrl = asString(workspace.repoUrl, "").trim();
+  const repo = repoUrl ? deriveWorkspaceRepoName(repoUrl) : null;
+  if (!repo) return undefined;
+  const baseRef = asString(workspace.repoRef, "").trim();
+  return {
+    key,
+    repo,
+    ...(baseRef && baseRef.length <= 200 && WS_GIT_REF_RE.test(baseRef) ? { baseRef } : {}),
+  };
+}
+
+// myrmidon(GITHUB-SHARED-IDENTITY): the managed Git launcher, delivered as
+// request content (NONCONTAINER-GITHUB-LAUNCHER).
+//
+// A hermes gateway run has no execution target on the board's side, so
+// `prepareGitHubOperationLaunchers` (which stages git/gh/the credential helper
+// on a local or SSH target) never reaches it: the gateway may run on another
+// host, or in a container whose image the board cannot write into. The gateway
+// therefore stages the launcher itself, from the bodies this field carries,
+// next to the run's own terminals.
+//
+// Gated on the broker pair above: the launcher resolves credentials through
+// that run's broker capability, so shipping it without one would only stage
+// programs that cannot act (and would keep a static token around). Bodies are
+// constants, so the field is byte-stable per run and does not disturb the
+// Idempotency-Key fingerprint of a replay.
+function buildGitHubLauncherField(
+  broker: { broker_url: string; capability: string } | undefined,
+): { version: number; files: Record<string, string> } | undefined {
+  if (!broker) return undefined;
+  return githubLauncherPayload();
+}
+
 function buildRunBody(
   ctx: AdapterExecutionContext,
   sessionKey: string | null,
@@ -474,6 +589,15 @@ function buildRunBody(
   // an absent pair leaves the body without the field entirely (see
   // buildGitHubBrokerField).
   const githubBroker = buildGitHubBrokerField(ctx.config);
+  // myrmidon(1.6.5 BOT-DISK-H5a): same discipline for the `workspace` field —
+  // derived from the run context only, set after the spread (a card cannot
+  // forge it), `undefined` when the task has no repository.
+  const workspaceField = buildWorkspaceField(ctx.context);
+  // myrmidon(GITHUB-SHARED-IDENTITY): same forgery rule as github_broker —
+  // set unconditionally after the payloadTemplate spread, so a card's attempt
+  // to inject launcher content is deleted (`undefined` drops the key); only
+  // this builder decides (see buildGitHubLauncherField).
+  const githubLauncher = buildGitHubLauncherField(githubBroker);
   const body: Record<string, unknown> = {
     ...payloadTemplate,
     input,
@@ -483,6 +607,8 @@ function buildRunBody(
     ...(provider ? { provider } : {}),
     ...(modelOptions ? { model_options: modelOptions } : {}),
     github_broker: githubBroker,
+    workspace: workspaceField,
+    github_launcher: githubLauncher,
   };
   // myrmidon(1.6.5 PROMPT-BUDGET A): extend buildInput's per-section
   // breakdown with the sections buildRunBody owns. `instructionsBundle` and
@@ -1645,12 +1771,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // `replayed:true` response from Hermes is now only ever a genuine
   // duplicate create for this very attempt; that handling is kept below.
   const idempotencyKey = ctx.runId;
+  // myrmidon(PERF-DIET-K): the board's session generation for this issue (see
+  // server/src/myrmidon/session-generations/); 1 = the vendor's unsuffixed key.
+  const sessionGeneration = readSessionGeneration(ctx.config.sessionGeneration);
   const sessionKey = resolveSessionKey({
     strategy,
     companyId: ctx.agent.companyId,
     agentId: ctx.agent.id,
     runId: idempotencyKey,
     issueId: issueIdFromContext(ctx),
+    generation: sessionGeneration,
   });
   const extraHeaders = parseHeaders(ctx.config.headers);
   // myrmidon(MEMORY-CENTRAL-B): create the client here (no network yet); the
@@ -1756,9 +1886,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       eventReconnectMs: reconnectMs,
       sessionKeyStrategy: strategy,
       hasSessionKey: Boolean(sessionKey),
+      // myrmidon(PERF-DIET-K): only reported once there is something to see —
+      // generation 1 is the ordinary, unsuffixed session.
+      ...(sessionGeneration > 1 ? { sessionGeneration } : {}),
     },
   });
-  await ctx.onLog("stdout", `[hermes-gateway] creating run at ${createRunUrl} (timeout=${timeoutSec}s, session=${strategy})\n`);
+  await ctx.onLog("stdout", `[hermes-gateway] creating run at ${createRunUrl} (timeout=${timeoutSec}s, session=${strategy}${sessionGeneration > 1 ? `, generation=g${sessionGeneration}` : ""})\n`);
   await ctx.onLog("stdout", `[hermes-gateway] request headers (redacted): ${stringifyForLog(redactForLog(runHeaders, [], 0, redactText), 3_000)}\n`);
 
   // myrmidon(G4): opt into signal-based cancellation before any provider
