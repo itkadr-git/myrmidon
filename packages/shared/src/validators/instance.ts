@@ -63,6 +63,8 @@ import {
 // percent of the model window, fallback window, optimizer agent) stored in the
 // same general settings row.
 import { promptBudgetSettingsSchema } from "../myrmidon-prompt-budget.js";
+// myrmidon(1.6.1-BOT-DISK-D): shared mount settings stored in the same general settings row
+import { sharedMountSettingsSchema } from "../myrmidon-shared-mount.js";
 
 // myrmidon(1.6.5 BOT-RUNTIME-TUNING D2): the fallback-signal settings (switch,
 // threshold percent, minimum calls, window and sweep interval) stored in the
@@ -217,6 +219,9 @@ export const instanceGeneralSettingsSchema = z.object({
   // /api/myrmidon/companies/:id/prompt-budget/settings; absent means the
   // defaults (warn 70, crit 90, enabled, 200k fallback window).
   promptBudget: promptBudgetSettingsSchema.optional(),
+  // myrmidon(1.6.1-BOT-DISK-D): shared mount settings changed from the instance
+  // settings API; absent means "the shared mount is disabled" (deny by default).
+  sharedMount: sharedMountSettingsSchema.optional(),
   // myrmidon(1.6.5 BOT-RUNTIME-TUNING D2): the fallback-signal settings, changed
   // from /api/myrmidon/model-fallback/settings; absent means "use the
   // environment variable, then the default" (see

@@ -2834,6 +2834,9 @@ export * from "./myrmidon-litellm-sync.js";
 // myrmidon(1.6-SWARM): per-role task queues with leased claims — the shared
 // contract of the core queue, the supervisor view and the pilot settings.
 export * from "./myrmidon-swarm-claim.js";
+// myrmidon(1.6.1-BOT-DISK-D): shared mount settings contract shared by the
+// bot-container server side and the instance settings validator.
+export * from "./myrmidon-shared-mount.js";
 // myrmidon(BOT-RUNTIME-TUNING D2): the settings contract of the model fallback
 // signal (stored instance settings over environment over defaults).
 export * from "./myrmidon-fallback-signal.js";

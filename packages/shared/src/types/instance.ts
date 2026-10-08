@@ -31,6 +31,8 @@ import type { BudgetEnforcementSettings } from "../myrmidon-budget-enforcement.j
 import type { PluginEntitlementKey } from "../myrmidon-plugin-entitlement.js";
 // myrmidon(DM-PROGRESS): live progress steps of the bridged Telegram DM status message.
 import type { TelegramDmProgressSettings } from "../myrmidon-telegram-dm-progress.js";
+// myrmidon(1.6.1-BOT-DISK-D): shared mount settings stored in instance settings
+import type { SharedMountSettings } from "../myrmidon-shared-mount.js";
 // myrmidon(BOT-RUNTIME-TUNING D2): the fallback-signal settings of the same row.
 import type { StoredFallbackSignalSettings } from "../myrmidon-fallback-signal.js";
 // myrmidon(1.6.5-PAUSE-GUARD): the forgotten-operator-pause guard of the same
@@ -169,6 +171,12 @@ export interface InstanceGeneralSettings {
    * validator of the same field (packages/shared/src/validators/instance.ts).
    */
   swarmClaim?: SwarmClaimSettings;
+  /**
+   * myrmidon(1.6.1-BOT-DISK-D): shared mount settings for bots, changed from
+   * the instance settings API. Controls whether bots get a common directory at
+   * `/shared` and whether it is writable. Absent means "shared mount is disabled".
+   */
+  sharedMount?: SharedMountSettings;
   /**
    * myrmidon(1.6.1 SWARM-SETTINGS-UI): the change journal of the swarm-claim
    * pilot settings — who changed what, and when, newest first. Written by the
