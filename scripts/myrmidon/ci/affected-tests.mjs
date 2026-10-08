@@ -211,11 +211,12 @@ function finish() {
 // ---------------------------------------------------------------- commands
 
 function planCommand(args) {
-  const opts = { base: null, head: "HEAD", forceFull: false, out: null };
+  const opts = { base: null, head: "HEAD", forceFull: false, releaseFast: false, out: null };
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--base") opts.base = args[++i];
     else if (args[i] === "--head") opts.head = args[++i];
     else if (args[i] === "--force-full") opts.forceFull = true;
+    else if (args[i] === "--release-fast") opts.releaseFast = true;
     else if (args[i] === "--out") opts.out = args[++i];
     else throw new Error(`unknown argument ${args[i]}`);
   }
@@ -225,11 +226,16 @@ function planCommand(args) {
   } else {
     const changed = git(["diff", "--name-only", "--no-renames", `${opts.base}...${opts.head}`]).split("\n").filter(Boolean);
     plan = { ...classifyChanges(changed, { forceFull: opts.forceFull }), changed };
+    // Release branches (rel/*): PRs touching shared foundations run only the
+    // tests their change touches; the release branch itself gets one full run
+    // before the release tag (manual run or the `full-ci` label).
+    const releaseFast = opts.releaseFast && !opts.forceFull && plan.tier === "full";
+    if (releaseFast) plan = { tier: "fast", reasons: [`release branch PR: affected tests only (was full: ${plan.reasons.slice(0, 3).join("; ")})`], changed };
     if (plan.tier === "fast") {
       const packages = workspacePackages();
       const selection = selectTests(changed, packages, repoTestFiles(packages));
       const tooMany = selection.files.filter((entry) => entry.files.length > MAX_FAST_FILES_PER_PACKAGE);
-      if (tooMany.length > 0) {
+      if (tooMany.length > 0 && !releaseFast) {
         plan = {
           tier: "full",
           reasons: tooMany.map((e) => `${e.files.length} ${e.package} test files import the change (limit ${MAX_FAST_FILES_PER_PACKAGE})`),
