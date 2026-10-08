@@ -173,9 +173,16 @@ scripts/myrmidon/deploy/deploy.sh --config deploy.env --release myr-v1.6.2
   **paused or idle**; a busy bot is retried within `MYRMIDON_BOT_IMAGE_ROLLOUT_BOT_TIMEOUT_SEC`
   and otherwise keeps its old image (the periodic sweep applies it later), so no run is
   interrupted. Every batch and failure is logged and journalled
-  (`$STATE_DIR/bot-image-rollout.log`), with a summary in
-  `$STATE_DIR/bot-image-rollout-summary.json`. The superseded bot images leave `images[]`
-  only after every bot moved. Bot-card failures end the deploy as DEGRADED. There is no board
+ (`$STATE_DIR/bot-image-rollout.log`), with a summary in
+ `$STATE_DIR/bot-image-rollout-summary.json`. Applying an image is asynchronous: a bot that
+ accepts the apply answers 202 with an `applyId`, and the script polls
+ `GET /api/myrmidon/bot-container/apply/:applyId` every
+ `MYRMIDON_BOT_IMAGE_ROLLOUT_APPLY_POLL_SEC` (default 4 s) until the job reports
+ `succeeded` or `failed`, for at most `MYRMIDON_BOT_IMAGE_ROLLOUT_APPLY_WAIT_SEC` (default
+ 300 s). A success is then confirmed with `GET /api/myrmidon/bot-container/status`; a
+ timeout counts the bot as deferred (exit 2) instead of applied, and the plain synchronous
+ apply response is still accepted. The superseded bot images leave `images[]`
+ only after every bot moved. Bot-card failures end the deploy as DEGRADED. There is no board
   setting for a default bot image to update.
 
 ### Release candidates and the `latest` marker (RC-VERSIONS)
