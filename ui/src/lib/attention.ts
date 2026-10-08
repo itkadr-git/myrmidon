@@ -86,6 +86,9 @@ const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
   foraging_limit: { label: "Learning limit" },
   // myrmidon(OPE-6011): label for the execution hold source.
   execution_hold: { label: "Execution hold" },
+  // myrmidon(1.6.5-F-23): labels for the off-run secret read sources.
+  secret_off_run_reads: { label: "Off-run secret reads" },
+  secret_off_run_grant_expiring: { label: "Off-run secret grant expiring" },
 };
 
 export function sourceMeta(kind: AttentionSourceKind): SourceMeta {

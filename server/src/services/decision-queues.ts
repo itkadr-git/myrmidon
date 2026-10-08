@@ -368,6 +368,11 @@ async function sourceIssueId(
     case "foraging_limit": {
       return { exists: sourceId === `foraging:${companyId}`, issueId: null };
     }
+    // myrmidon(1.6.5-F-23): advisory signals only — no backing issue.
+    case "secret_off_run_reads":
+    case "secret_off_run_grant_expiring": {
+      return { exists: true, issueId: null };
+    }
   }
 }
 

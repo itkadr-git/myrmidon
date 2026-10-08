@@ -2226,7 +2226,7 @@ export function ConfigurationTab({
               by the same operator permission as the board admin toggle */}
           <AgentOffRunSecretsSection
             granted={Boolean(agent.access?.grants?.some((grant) => grant.permissionKey === "secrets:read_off_run" && (!grant.expiresAt || new Date(grant.expiresAt) > new Date())))}
-            expiresAt={agent.access?.grants?.find((grant) => grant.permissionKey === "secrets:read_off_run")?.expiresAt ?? null}
+            expiresAt={(() => { const grant = agent.access?.grants?.find((g) => g.permissionKey === "secrets:read_off_run"); const raw = grant?.expiresAt; return raw ? new Date(raw).toISOString() : null; })()}
             pending={updatePermissions.isPending}
             canManage={operatorCanManageBoardAdmins}
             base={{ canCreateAgents, canCreateSkills, canAssignTasks }}

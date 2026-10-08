@@ -80,7 +80,10 @@ export type AttentionSubjectKind =
   // myrmidon(SUB): a component of the tracked stack registry.
   | "stack_component"
   // myrmidon(1.6.1-FORAGING-LIMITS-UI): the learning sweep of the company.
-  | "foraging_sweep";
+  | "foraging_sweep"
+  // myrmidon(1.6.5-F-23): a company-scope signal with no narrower subject
+  // (e.g. the 24h counter of off-run secret reads).
+  | "company";
 
 export type AttentionSeverity = "critical" | "high" | "medium" | "low";
 
