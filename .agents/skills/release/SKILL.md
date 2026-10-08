@@ -122,6 +122,39 @@ If the GitHub release workflow will run the publish, it can rerun this gate. Sti
 
 For PRs that touch release logic, the repo also runs a canary release dry-run in CI. That is a release-specific guard, not a substitute for the standard gate.
 
+## Step 3b — Database audit and optimization (required before every final tag)
+
+<!-- myrmidon(DB-AUDIT-STEP): owner rule of 08.10.2026 — audit and optimize
+     the database before every final (non-`-rc`) release tag. -->
+
+A final tag (no `-rc` suffix) publishes only with an accepted database audit.
+Release candidates do not need one. Without a merged report for the target
+version, the final tag does not publish. See the "Database audit" section of
+`doc/RELEASE-CHECKLIST.md` for the full checklist. Summary:
+
+1. Against the live board database: reset `pg_stat_statements` counters, run
+   the board under normal load, then take the "before" slice — the top 20
+   queries by `total_exec_time` (`calls`, `rows`, `mean_exec_time`,
+   `mean_exec_time + stddev_exec_time` as the p95 approximation). The exact
+   psql command lives in `docs/myrmidon/deploy.md`.
+2. Take the sizes slice: the 20 largest tables with table size, TOAST size
+   and index size. Take `EXPLAIN (ANALYZE, BUFFERS)` plans for the worst
+   queries.
+3. Test each candidate fix on a copy of the live database and measure the
+   same queries before and after there. Ship every accepted positive fix as a
+   migration in the release; keep rejected fixes in the report with the reason.
+4. Write the report to `docs/myrmidon/releases/<version>-db-audit.md` and
+   merge it before the final tag. Required content: the "before" and "after"
+   top-query tables, the table / TOAST / index sizes, every adopted change
+   (migration file, index name, server parameter) and its measured
+   before/after effect, and the audit-derived server parameters (they land in
+   `scripts/myrmidon/deploy/db-tuning.sql`).
+5. Treat the optimization as accepted only when the "after" slice, measured on
+   the live database, shows the audited queries improved. Otherwise iterate
+   before the tag.
+
+If the report for the target version is missing, stop and report the blocker.
+
 ## Step 4 — Validate the Canary
 
 The normal canary path is automatic from `master` via:
