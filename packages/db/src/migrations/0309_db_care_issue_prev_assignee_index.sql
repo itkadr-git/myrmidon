@@ -1,0 +1,18 @@
+-- myrmidon(DB-CARE): the attention feed resolves, for one agent, the issues
+-- whose assignee *left* that agent. It reads the activity log by company, by
+-- the previous assignee carried in the audit row payload
+-- (details->'_previous'->>'assigneeAgentId') and by created_at — the
+-- repository rows are filtered with entity_type = 'issue' and
+-- action = 'issue.updated', so the index is partial on that pair.
+--
+-- The predicate was created by hand on the production board database on
+-- 07-08.10.2026 during the datastore audit (the statement matches
+-- pg_get_indexdef verbatim), and this forward migration persists it as a
+-- managed object: on production it is a no-op (CREATE INDEX IF NOT EXISTS),
+-- on a fresh installation it builds the same index.
+--
+-- activity_log is bucketed "large" by check-migration-safety.ts, so a plain
+-- CREATE INDEX would be reported; a migration cannot use CONCURRENTLY because
+-- it runs inside a transaction, and the index is created once, forward-only.
+-- paperclip:migration-safety-ignore large-create-index-not-concurrently: Drizzle migrations run transactionally, so CONCURRENTLY is unavailable because this forward-only index is required for the attention feed's previous-assignee lookup.
+CREATE INDEX IF NOT EXISTS "activity_log_issue_prev_assignee_idx" ON "activity_log" USING btree ("company_id",((details -> '_previous' ->> 'assigneeAgentId')),"created_at") WHERE "entity_type" = 'issue' and "action" = 'issue.updated';

@@ -201,5 +201,48 @@ export const heartbeatRuns = pgTable(
       sql`(${table.contextSnapshot} ->> 'issueId')`,
       table.status,
     ),
+    // myrmidon(DB-CARE): the attention feed lists the runs of one agent inside a
+    // created_at window and projects the issue and task ids out of the snapshot.
+    // The agent-keyed index above orders by created_at but keeps neither
+    // projection, so the feed fell back to a wider scan. Persisted from the
+    // production database, see migration 0310_db_care_audit_indexes.
+    attentionFeedIdx: index("heartbeat_runs_attention_feed_idx").on(
+      table.companyId,
+      table.agentId,
+      table.createdAt,
+      sql`(${table.contextSnapshot} ->> 'issueId')`,
+      sql`(${table.contextSnapshot} ->> 'taskId')`,
+    ),
+    // myrmidon(DB-CARE): wake admission resolves the runs bound to one board
+    // issue straight from context_snapshot->'paperclipIssue'->>'id', and the
+    // index is partial on the rows that carry the key. Persisted from the
+    // production database, see migration 0310_db_care_audit_indexes.
+    ctxPaperclipIssueIdIdx: index("heartbeat_runs_ctx_paperclip_issue_id_idx")
+      .on(
+        table.companyId,
+        sql`((${table.contextSnapshot} -> 'paperclipIssue') ->> 'id')`,
+      )
+      .where(sql`${table.contextSnapshot} ? 'paperclipIssue'`),
+    // myrmidon(DB-CARE): the stuck-run sweeper scans the runs by updated_at,
+    // which no other index serves. Persisted from the production database, see
+    // migration 0310_db_care_audit_indexes.
+    updatedAtIdx: index("heartbeat_runs_updated_at_idx").on(table.updatedAt),
+    // myrmidon(DB-CARE / DBC-2): migration 0302_heartbeat_runs_company_issue_
+    // coalesce_created_index already created this index before the Drizzle
+    // declaration knew about it, so `pg_indexes` carried an object the schema
+    // never named. The production copy was made by hand during OPE-4106 (three
+    // columns - created_at DESC without id DESC); the managed definition below is
+    // the four-column one that migration 0302 declared. Migration 0312 repeats
+    // the CREATE so the statement chain and a fresh installation agree; on
+    // production it is a no-op because the index name already exists. Aligning
+    // the production copy with the four-column form is an operator rebuild
+    // (DROP INDEX + CREATE INDEX CONCURRENTLY) and is recorded in
+    // docs/myrmidon/changes/db-care-coalesce-index-declaration.md.
+    companyIssueCoalesceCreatedIdx: index("heartbeat_runs_company_issue_coalesce_created_idx").on(
+      table.companyId,
+      sql`(coalesce(${table.nativeIssueId}::text, ${table.contextSnapshot} ->> 'issueId'))`,
+      table.createdAt.desc(),
+      table.id.desc(),
+    ),
   }),
 );

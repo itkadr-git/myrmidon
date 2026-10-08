@@ -1,0 +1,30 @@
+-- myrmidon(DB-CARE / DBC-2): the datastore audit of 07-08.10.2026 compared the
+-- production `pg_indexes` list with the Drizzle declaration and found this
+-- object on the board database with no declaration in src/schema. It is not a
+-- new index: migration
+-- 0302_heartbeat_runs_company_issue_coalesce_created_index.sql already created
+-- it, but the schema never named it, so the audit could not line the two
+-- inventories up and `db:generate` could not see the object at all. The
+-- declaration in packages/db/src/schema/heartbeat_runs.ts
+-- (HeartbeatRuns.companyIssueCoalesceCreatedIdx, label myrmidon(DB-CARE)) and
+-- this statement close that gap: the schema now names every index the audit
+-- found on the table.
+--
+-- The statement repeats the one from migration 0302 verbatim and stays
+-- idempotent: on every installation that has already applied 0302 the index
+-- exists, so IF NOT EXISTS makes this a no-op; only a fresh installation that
+-- somehow reaches this migration first would build it here, and it builds the
+-- same four-column form. Drizzle migrations run transactionally, so CONCURRENTLY
+-- is unavailable; the same trade-off as in 0302 applies and the lock window is
+-- zero where the index already exists.
+--
+-- One divergence stays open and is deliberately not fixed here: the production
+-- copy of this index was created by the operator by hand during OPE-4106 with
+-- three columns - the trailing `id DESC` of the managed four-column definition is
+-- missing - because migration 0302 found the name already taken and its IF NOT
+-- EXISTS left the manual index in place. Rebuilding it on production is an
+-- operator action (DROP INDEX + CREATE INDEX CONCURRENTLY) and is recorded in
+-- docs/myrmidon/changes/db-care-coalesce-index-declaration.md; this migration
+-- must not attempt it, because dropping an index of a live table from the
+-- migration chain would take exactly the lock the index exists to avoid.
+CREATE INDEX IF NOT EXISTS "heartbeat_runs_company_issue_coalesce_created_idx" ON "heartbeat_runs" USING btree ("company_id", (coalesce("native_issue_id"::text, "context_snapshot" ->> 'issueId')), "created_at" DESC, "id" DESC);
