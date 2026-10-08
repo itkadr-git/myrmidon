@@ -8,7 +8,7 @@ import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
 import { errorHandler } from "../../middleware/index.js";
 import { browserConsoleRoutes } from "./routes.js";
-import type { BrowserConsoleService } from "./service.js";
+import { BrowserConsoleError, type BrowserConsoleService } from "./service.js";
 
 const COMPANY_ID = "22222222-2222-4222-8222-222222222222";
 
@@ -55,6 +55,12 @@ function serviceMock(overrides: Partial<BrowserConsoleService> = {}): BrowserCon
     clearSiteData: vi.fn(async () => {
       calls.clear += 1;
     }),
+    consoleToken: vi.fn(async () => ({
+      screenSessionId: "session-a",
+      token: "blob",
+      consoleUrl: "https://guac.invalid/#/?data=blob",
+      expiresAt: new Date(Date.now() + 300_000).toISOString(),
+    })),
     journal: vi.fn(async () => [
       { sessionId: "session-a", browserId: "browser-a", userId: "user-owner", openedAt: 0, endedAt: 5 * 60_000, durationMs: 5 * 60_000, closedBy: "done" as const },
     ]),
@@ -154,5 +160,40 @@ describe("myrmidon(BROWSER-CONSOLE) routes: authorization", () => {
     const server = app(owner, service);
     await request(server).post(`/api/myrmidon/browsers/browser-a/screen/heartbeat${query}`).send({ activity: "yes" }).expect(400);
     await request(server).post(`/api/myrmidon/browsers/browser-a/screen/heartbeat${query}`).send({}).expect(200);
+  });
+});
+
+describe("myrmidon(BROWSER-CONSOLE) routes: part-B console token", () => {
+  const tokenPath = `/api/myrmidon/browsers/browser-a/screen/console-token${query}`;
+
+  it("anonymous, agent and member are refused; the owner gets the issued URL", async () => {
+    const service = serviceMock();
+    await request(app(anonymous, service)).post(tokenPath).send({}).expect(401);
+    await request(app(agentActor, service)).post(tokenPath).send({}).expect(403);
+    await request(app(member, service)).post(tokenPath).send({}).expect(403);
+    const issued = await request(app(owner, service)).post(tokenPath).send({}).expect(200);
+    expect(issued.body).toMatchObject({ screenSessionId: "session-a", token: "blob", consoleUrl: "https://guac.invalid/#/?data=blob" });
+    expect(issued.body.expiresAt).toBeTypeOf("string");
+    expect(service.consoleToken).toHaveBeenCalledWith({ browserId: "browser-a", userId: "user-owner", companyId: COMPANY_ID });
+  });
+
+  it("no open session: 409 with the stable code in details", async () => {
+    const service = serviceMock({
+      consoleToken: vi.fn(async () => {
+        throw new BrowserConsoleError(409, "Open the screen before requesting a console token", "screen_session_required");
+      }) as unknown as BrowserConsoleService["consoleToken"],
+    });
+    const res = await request(app(owner, service)).post(tokenPath).send({}).expect(409);
+    expect(res.body).toMatchObject({ code: "screen_session_required" });
+  });
+
+  it("unconfigured console: 503 console_not_configured", async () => {
+    const service = serviceMock({
+      consoleToken: vi.fn(async () => {
+        throw new BrowserConsoleError(503, "The instance has no VNC target configured", "console_not_configured");
+      }) as unknown as BrowserConsoleService["consoleToken"],
+    });
+    const res = await request(app(owner, service)).post(tokenPath).send({}).expect(503);
+    expect(res.body).toMatchObject({ code: "console_not_configured" });
   });
 });

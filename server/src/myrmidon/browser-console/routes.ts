@@ -21,8 +21,13 @@ import type { BrowserConsoleService, BrowserConsoleError } from "./service.js";
 
 function toHttpError(err: unknown): unknown {
   const status = (err as { status?: unknown } | null)?.status;
-  if (typeof status === "number" && [400, 403, 404, 409, 423, 502].includes(status)) {
-    return new HttpError(status as 400 | 403 | 404 | 409 | 423, (err as Error).message);
+  if (typeof status === "number" && [400, 403, 404, 409, 423, 502, 503].includes(status)) {
+    const code = (err as { code?: unknown } | null)?.code;
+    return new HttpError(
+      status as 400 | 403 | 404 | 409 | 423 | 502 | 503,
+      (err as Error).message,
+      typeof code === "string" ? { code } : undefined,
+    );
   }
   return err;
 }
@@ -136,6 +141,27 @@ export function browserConsoleRoutes(deps: { service: BrowserConsoleService }) {
     try {
       await service.done(req.params.id as string, userId);
       res.json({ done: true });
+    } catch (err) {
+      throw toHttpError(err);
+    }
+  });
+
+  // Part B: the signed Guacamole auth-JSON for the live screen. Owner of the
+  // open session only; binds to the existing session, never creates one.
+  router.post("/myrmidon/browsers/:id/screen/console-token", async (req, res) => {
+    const userId = assertBrowserOwner(req, companyIdOf(req));
+    try {
+      const issued = await service.consoleToken({
+        browserId: req.params.id as string,
+        userId,
+        companyId: companyIdOf(req),
+      });
+      res.json({
+        screenSessionId: issued.screenSessionId,
+        token: issued.token,
+        consoleUrl: issued.consoleUrl,
+        expiresAt: issued.expiresAt,
+      });
     } catch (err) {
       throw toHttpError(err);
     }
