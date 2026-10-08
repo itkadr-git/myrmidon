@@ -1,5 +1,8 @@
 // myrmidon(P6): broker candidate walk embedded into the launcher
-import { githubBrokerCandidatesLauncherSource } from "./myrmidon-github-broker.js";
+// myrmidon(GITHUB-SHARED-IDENTITY): plus the target-repository resolution a
+// non-container run needs to name the repository to the broker.
+import { githubBrokerCandidatesLauncherSource, githubBrokerRepositoryLauncherSource } from "./myrmidon-github-broker.js";
+import { GITHUB_CREDENTIAL_HELPER_PROGRAM, githubCredentialHelperSource } from "./github-credential-helper.js";
 
 /** Standalone source is staged unchanged on local, SSH, and sandbox runtimes. No secrets in files. */
 export function githubLauncherSource(): string {
@@ -21,6 +24,7 @@ if (!['git', 'gh'].includes(program) || !executable) {
   process.exit(127);
 }
 ${githubBrokerCandidatesLauncherSource()}
+${githubBrokerRepositoryLauncherSource()}
 async function main() {
   let env = { ...process.env };
   const diagnostic = (code) => process.stderr.write('Paperclip: GitHub ' + code + '; continuing without managed credentials.\n');
@@ -40,25 +44,45 @@ async function main() {
     for (const key of Object.keys(env)) {
       if (/^(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRISE_TOKEN|PAPERCLIP_GIT_TOKEN|GIT_AUTHOR_.*|GIT_COMMITTER_.*|GIT_CONFIG_.*|GIT_ASKPASS|SSH_ASKPASS|SSH_AUTH_SOCK|GIT_SSH.*)$/.test(key)) delete env[key];
     }
+    // myrmidon(GITHUB-SHARED-IDENTITY): the same Git config the bot image
+    // installs at /etc/gitconfig — the leading empty helper clears ambient
+    // helpers, and the URL-scoped one, with useHttpPath, makes git hand the
+    // staged helper the repository path of the operation so the broker can
+    // mint a GitHub App token for exactly that repository.
+    const credentialHelper = path.join(directory, '${GITHUB_CREDENTIAL_HELPER_PROGRAM}');
+    const gitConfig = [
+      ['credential.helper', ''],
+      ['credential.https://github.com.helper', credentialHelper],
+      ['credential.https://www.github.com.helper', credentialHelper],
+      ['credential.https://github.com.useHttpPath', 'true'],
+      ['credential.https://www.github.com.useHttpPath', 'true'],
+      ['url.https://github.com/.insteadOf', 'git@github.com:'],
+      ['url.https://github.com/.insteadOf', 'ssh://git@github.com/'],
+      ['core.askPass', ''],
+      // The inherited identity was deleted above. Empty identity env values
+      // override even explicit repository/command config and break local commits.
+      // Require configured identity instead of guessing the OS user's details.
+      ['user.useConfigOnly', 'true'],
+    ];
     Object.assign(env, {
       GH_CONFIG_DIR: configDirectory, SSH_AUTH_SOCK: '',
       GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
       GIT_TERMINAL_PROMPT: '0',
-      // The inherited identity was deleted above. Empty identity env values
-      // override even explicit repository/command config and break local commits.
-      // Require configured identity instead of guessing the OS user's details.
-      GIT_CONFIG_COUNT: '5', GIT_CONFIG_KEY_0: 'credential.helper', GIT_CONFIG_VALUE_0: '',
-      GIT_CONFIG_KEY_1: 'url.https://github.com/.insteadOf', GIT_CONFIG_VALUE_1: 'git@github.com:',
-      GIT_CONFIG_KEY_2: 'url.https://github.com/.insteadOf', GIT_CONFIG_VALUE_2: 'ssh://git@github.com/',
-      GIT_CONFIG_KEY_3: 'core.askPass', GIT_CONFIG_VALUE_3: '',
-      GIT_CONFIG_KEY_4: 'user.useConfigOnly', GIT_CONFIG_VALUE_4: 'true',
+      GIT_CONFIG_COUNT: String(gitConfig.length),
+    });
+    gitConfig.forEach(([key, value], index) => {
+      env['GIT_CONFIG_KEY_' + index] = key;
+      env['GIT_CONFIG_VALUE_' + index] = value;
     });
     // myrmidon(P6): walk up to six broker candidates instead of one URL.
+    // myrmidon(GITHUB-SHARED-IDENTITY): and name the repository this command
+    // targets, so an App identity serves it.
     const brokerBaseUrls = paperclipBrokerCandidateUrls(env);
     try {
     let response;
     if (brokerBaseUrls.length > 0 && env.PAPERCLIP_GITHUB_BROKER_TOKEN) {
-      const brokerAttempt = await paperclipRequestBrokerCredentials(env, brokerBaseUrls);
+      const repository = paperclipTargetRepository(program, process.argv.slice(2), env, originalPath);
+      const brokerAttempt = await paperclipRequestBrokerCredentials(env, brokerBaseUrls, undefined, repository);
       response = brokerAttempt.response;
       if (!response || !response.ok) {
         if (brokerAttempt.tried.length > 0) process.stderr.write('Paperclip: GitHub broker candidates tried: ' + brokerAttempt.tried.join(', ') + '.\n');
@@ -73,8 +97,12 @@ async function main() {
         process.stderr.write('Paperclip: GitHub access unavailable: ' + reason + '. Continuing without GitHub credentials.\n');
       }
       if (result.status === 'available' && configReady) {
+        // The Git configuration above is the launcher's own: only the token,
+        // the terminal-prompt switch and the commit identity are taken from the
+        // broker, so a broker-supplied credential helper can never replace the
+        // staged one that names the repository.
         for (const [key, value] of Object.entries(result.env || {})) {
-          if (/^(GH_TOKEN|GITHUB_TOKEN|PAPERCLIP_GIT_TOKEN|GIT_TERMINAL_PROMPT|GIT_AUTHOR_(NAME|EMAIL)|GIT_COMMITTER_(NAME|EMAIL)|GIT_CONFIG_COUNT|GIT_CONFIG_(KEY|VALUE)_\d+)$/.test(key) && typeof value === 'string') env[key] = value;
+          if (/^(GH_TOKEN|GITHUB_TOKEN|PAPERCLIP_GIT_TOKEN|GIT_TERMINAL_PROMPT|GIT_AUTHOR_(NAME|EMAIL)|GIT_COMMITTER_(NAME|EMAIL))$/.test(key) && typeof value === 'string') env[key] = value;
         }
       }
       }
@@ -96,6 +124,63 @@ async function main() {
 }
 main().catch(() => { process.stderr.write('Paperclip: GitHub launcher_setup_failed.\n'); process.exitCode = 1; });
 `;
+}
+
+// myrmidon(GITHUB-SHARED-IDENTITY): the launcher file set a consumer without an
+// execution target materializes itself (NONCONTAINER-GITHUB-LAUNCHER).
+//
+// `prepareGitHubOperationLaunchers` stages these programs on a local/SSH
+// execution target, which a hermes gateway run does not have: the gateway may
+// run on another host (or in a container whose image the board cannot write
+// into), so the adapter ships the bodies with the run request and the gateway
+// writes them next to that run's terminals. The same programs the image
+// installs are staged, from the same source here — no second copy to drift.
+//
+// Bodies are token-free constants, so a replayed request carries byte-identical
+// content and its Idempotency-Key fingerprint stays stable.
+export const GITHUB_LAUNCHER_PAYLOAD_VERSION = 1;
+/** Login-shell profiles that re-prepend the staged directory after /etc/profile reorders PATH. */
+export const GITHUB_LAUNCHER_PROFILE_FILE_NAMES = [
+  ".zshenv", ".zprofile", ".zshrc", ".bash_profile", ".bashrc", ".profile",
+] as const;
+/** Program files staged by both delivery paths, in staging order. */
+export const GITHUB_LAUNCHER_PROGRAM_FILE_NAMES = ["package.json", "git", "gh", GITHUB_CREDENTIAL_HELPER_PROGRAM] as const;
+
+function launcherProgramBody(name: string): string {
+  switch (name) {
+    case "package.json":
+      return '{"type":"commonjs"}\n';
+    case GITHUB_CREDENTIAL_HELPER_PROGRAM:
+      return githubCredentialHelperSource();
+    default:
+      return githubLauncherSource();
+  }
+}
+
+/**
+ * The program bodies, keyed by staged file name.
+ *
+ * `package.json` pins the staged directory's own module scope so an enclosing
+ * project's `"type": "module"` cannot reinterpret `require()`.
+ */
+export function githubLauncherProgramFiles(): Record<string, string> {
+  // Built from the shared name list: the payload a gateway stages and the files
+  // a local/SSH target stages must be the same set, and this keeps them so.
+  return Object.fromEntries(GITHUB_LAUNCHER_PROGRAM_FILE_NAMES.map((name) => [name, launcherProgramBody(name)] as const));
+}
+
+/**
+ * The launcher as request content for a hermes gateway run's `github_launcher`
+ * body field: `{version, files}`. The gateway validates it, writes the files
+ * under a per-run directory of its own, and puts that directory first on the
+ * PATH of that run's terminals — the delivery path
+ * `prepareGitHubOperationLaunchers` provides for an execution target.
+ *
+ * The login-shell profiles are built by the gateway, not shipped: their PATH
+ * must name the directory the gateway itself chose.
+ */
+export function githubLauncherPayload(): { version: number; files: Record<string, string> } {
+  return { version: GITHUB_LAUNCHER_PAYLOAD_VERSION, files: githubLauncherProgramFiles() };
 }
 
 /** Override inherited credentials even when adapters merge the host environment later. */

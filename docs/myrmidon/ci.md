@@ -56,6 +56,32 @@ Job `report main status` после полного прогона на `main`:
 
 Кто сломал — видно по коммиту; чинит трек, чей PR это внёс (правила — CONVENTIONS).
 
+### CI на теге релиза (TAG-CI, инцидент 1.6.4)
+
+Workflow [`myrmidon-ci-tag.yml`](../../.github/workflows/myrmidon-ci-tag.yml) — **Myrmidon
+CI (tag)**: полный уровень `myrmidon-ci.yml` (без разбиения на уровни) на каждый пуш
+релизного тега `myr-vX.Y.Z` (включая `-rc.N`) и вручную (`workflow_dispatch` с обязательным
+параметром `tag`). 05.10 тег `myr-v1.6.4` был поставлен, и через минуту боты смержили 4 PR в
+`main`: пуш в `main` отменил прогон CI коммита тега (`myrmidon-ci.yml` группирует по
+`github.ref` — тот же sha, та же группа, `cancel-in-progress: true`), автопубликация
+отказалась работать, CI тега пришлось перезапускать вручную (workflow_dispatch
+run 37277281522), а релиз публиковать руками.
+
+Отличия от `myrmidon-ci.yml`:
+
+- **своя concurrency-группа** `myrmidon-ci-tag-<тег>` с `cancel-in-progress: false` — пуш в
+  `main` его больше не отменяет;
+- **публикация берёт зелень только отсюда**: `publish-github-release.sh` ждёт завершённый
+  успешный прогон именно на теге (`head_branch == тег`); зелёный прогон того же коммита на
+  `main` публикацию больше не удовлетворяет;
+- **отменённый прогон тега — отказ публикации** с явным сообщением и указанием запасного
+  пути (Actions → Myrmidon CI (tag) → Run workflow → ввести тег), а не ожидание до таймаута;
+- без job `plan`/`tests (affected)`/`report main status` (на теге всегда полный уровень,
+  issue о красном main на теге не нужен).
+
+Пара job-состава держится в синхроне с `myrmidon-ci.yml`; за этим следит тест
+`release-publish.test.mjs` (блок «the tag CI is a separate un-cancellable run»).
+
 ### Полный прогон на PR вручную
 
 - поставить на PR метку **`full-ci`** и запушить в ветку (или перезапустить прогон,
@@ -76,7 +102,7 @@ Job `report main status` после полного прогона на `main`:
 | `tests (server 1/5)` … `(server 5/5)`, `tests (serialized 1/5)` … `(5/5)`, `tests (workspaces-a 1/2)`, `(2/2)`, `tests (workspaces-b)` | full | Весь `pnpm test:run`, разбиение как у вендора |
 | `tests (other packages)` | full | Пакеты, которые `pnpm test:run` не запускает (ниже) |
 | `tests (runner)` | full | `pnpm --filter @paperclipai/paperclip-runner check:all`, как отдельная проверка раннера у вендора |
-| `checks` | все | Шаги: `shellcheck` скриптов выката; `node --test` по `scripts/myrmidon/**/*.test.mjs` (сюда входит сторож CHANGE-FRAGMENTS — ниже); секреты (gitleaks); внутренние адреса (частные сети и запрещённые шаблоны); лицензии зависимостей; совместимость плагинов. Каждый шаг выполняется, даже если предыдущий упал: в журнале видно все сбои сразу |
+| `checks` | все | Шаги: `shellcheck` скриптов выката; в `myrmidon-ci-tag.yml` (тег `myr-vX.Y.Z`) — гейт журнала релиза (RELEASE-CUT-CHANGELOG: `collect-fragments.mjs --version X.Y.Z --check`, непустой раздел версии и пустой «без выпуска» в обоих CHANGELOG, без него тег красный — инцидент 1.6.3); `node --test` по `scripts/myrmidon/**/*.test.mjs` (сюда входят сторож CHANGE-FRAGMENTS — ниже — и сторож полос тестов `test-lane-coverage.test.mjs`: каждый серверный тест ровно в одной полосе, OPE-4472); секреты (gitleaks); внутренние адреса (частные сети и запрещённые шаблоны); лицензии зависимостей; совместимость плагинов. Каждый шаг выполняется, даже если предыдущий упал: в журнале видно все сбои сразу |
 | **`CI result`** | все | Сводная: зелёная, если `plan` прошёл и каждая проверка прошла или не требовалась уровнем |
 
 ### Сторож фрагментов изменений (CHANGE-FRAGMENTS)

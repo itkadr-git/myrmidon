@@ -85,6 +85,15 @@ import {
   staleBlockSignalSeverity,
   staleBlockSignalWhyNow,
 } from "../myrmidon/stale-block/attention.js";
+// myrmidon(OPE-6011): the held-task card (a settled execution-reconciliation
+// hold silently skipping every wake of the task's assignee).
+import {
+  listExecutionHoldCards,
+  executionHoldSignalDedupKey,
+  executionHoldSignalDetail,
+  executionHoldSignalSeverity,
+  executionHoldSignalWhyNow,
+} from "../myrmidon/execution-hold/attention.js";
 // myrmidon(REVIEW-ROUTING): the cards of a task in review with no reviewer, or
 // a review without a verdict for too long.
 import {
@@ -101,6 +110,18 @@ import {
   WIP_LIMIT_SETTINGS_KEY,
   normalizeWipLimitSettings,
 } from "@paperclipai/shared";
+// myrmidon(1.6.3 PROMPT-BUDGET B): the prompt-budget threshold cards.
+import { buildPromptBudgetAttentionCards } from "../myrmidon/prompt-budget/attention.js";
+import { buildPromptBudgetStatus } from "../myrmidon/prompt-budget/status.js";
+import {
+  PROMPT_BUDGET_SETTINGS_KEY,
+  normalizePromptBudgetSettings,
+} from "@paperclipai/shared";
+// myrmidon(1.6.1-FORAGING-LIMITS-UI): the learning-spend operator signals.
+import {
+  readForagingAutoOffSignal,
+  readForagingLimitSignal,
+} from "../myrmidon/foraging/limits.js";
 // myrmidon(1.7-BUDGET-CONFIG-B): the enforcement mode shown on the budget card.
 import { resolveBudgetEnforcement } from "@paperclipai/shared";
 
@@ -142,6 +163,8 @@ const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   "wip_limit",
   // myrmidon(REVIEW-ROUTING): no reviewer available, or a review overdue.
   "review_routing",
+  // myrmidon(OPE-6011): a held task's silent-wake notice.
+  "execution_hold",
 ];
 
 const SEVERITY_RANK: Record<AttentionSeverity, number> = {
@@ -179,6 +202,13 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   // are refused), so it ranks above the advisory notices, next to the lifecycle
   // events of the same disk it shares.
   bot_disk_quota: 17,
+  // myrmidon(1.6.5 PROMPT-BUDGET B): an over-threshold prompt is a capacity
+  // warning on one agent — advice, ranked with the other workload notices.
+  prompt_budget_alert: 18,
+  foraging_limit: 13,
+  // myrmidon(OPE-6011): a held task blocks all of its wakes — ranked with the
+  // other machine-recovery stops, just below a recovery action itself.
+  execution_hold: 1,
 };
 
 const PENDING_INTERACTION_STATUSES = ["pending"] as const;
@@ -2340,6 +2370,63 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         }));
       }
 
+      // myrmidon(OPE-6011): one card per task whose wakes a settled
+      // execution-reconciliation hold is blocking — the hold that until now
+      // left the task silently refusing every wake. Computed live from the
+      // same data the dispatcher reads, so the card exists exactly while the
+      // hold blocks and disappears once it is superseded (an explicit wake,
+      // a recovery resolution, or the Confirm verb below). Confirm posts to
+      // /issues/:id/execution-hold/confirm-continue: the person attests the
+      // failed run left no external action, the hold is superseded and the
+      // assignee is woken explicitly.
+      for (const card of await listExecutionHoldCards(db, companyId)) {
+        add(createItem({
+          companyId,
+          sourceKind: "execution_hold",
+          subject: {
+            kind: "issue",
+            id: card.issueId,
+            companyId,
+            title: card.issueTitle ?? "Task",
+            identifier: card.issueIdentifier,
+            status: card.issueStatus,
+            href: card.issueIdentifier ? `/${prefix}/issues/${card.issueIdentifier}` : null,
+            metadata: {
+              recoveryActionId: card.actionId,
+              cause: card.cause,
+              failedRunId: card.failedRunId,
+            },
+          },
+          whyNow: executionHoldSignalWhyNow(card),
+          decisionVerbs: decisionVerbs(
+            {
+              id: "confirm_continue",
+              label: "Confirm: no external actions — continue",
+              description:
+                "Attest that the failed run performed no external action, lift the hold, and wake the assignee.",
+            },
+            { id: "inspect", label: "Inspect", description: "Open the task and check the failed run." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this notice (the hold stays). " },
+          ),
+          inlineResolvable: false,
+          entryRule:
+            "a settled execution-reconciliation hold (replay=blocked) is the issue's newest effective blocker and the issue has an assignee",
+          exitRule:
+            "the hold is superseded (explicit wake, recovery resolution, or the Confirm verb), or the issue loses its assignee.",
+          dedupKey: executionHoldSignalDedupKey(card),
+          severity: executionHoldSignalSeverity(),
+          activityAt: card.activityAt,
+          createdAt: card.activityAt,
+          updatedAt: card.activityAt,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: excerpt(executionHoldSignalDetail(card)),
+            images: [],
+          },
+        }));
+      }
+
       // myrmidon(TRACING-HEALTH): the "LLM tracing" non-ok state raises ONE
       // card on the operator desk, deduped by state — the parent ticket's
       // rule is "signal to the operator role, never the owner", and the
@@ -2548,6 +2635,58 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           },
         }));
       }
+      // myrmidon(1.6.3 PROMPT-BUDGET B): an agent whose last run's prompt
+      // crossed the warn/crit threshold (percent of the model window) raises
+      // one card. The feed recomputes on every list, so the card lives exactly
+      // as long as the last run is over the threshold — a newer run under the
+      // threshold removes it, a re-grade warn ↔ crit updates it in place (one
+      // dedup key per agent). The detail carries the top-3 prompt parts, the
+      // window and the crossed threshold. A disabled feature emits nothing.
+      const promptBudgetSettings = normalizePromptBudgetSettings(
+        wipSettingsRow?.general?.[PROMPT_BUDGET_SETTINGS_KEY],
+      );
+      if (promptBudgetSettings.enabled) {
+        const promptBudgetStatuses = await buildPromptBudgetStatus(
+          db,
+          companyId,
+          promptBudgetSettings,
+        );
+        for (const card of buildPromptBudgetAttentionCards(promptBudgetStatuses, wipAgentNameById)) {
+          add(createItem({
+            companyId,
+            sourceKind: "prompt_budget_alert",
+            subject: {
+              kind: "agent",
+              id: card.agentId,
+              companyId,
+              title: card.title,
+              identifier: null,
+              status: null,
+              href: `/${prefix}/agents/${card.agentId}`,
+              metadata: card.metadata,
+            },
+            whyNow: card.whyNow,
+            decisionVerbs: decisionVerbs(
+              { id: "inspect", label: "Inspect", description: "Open the agent card and check the prompt breakdown of the last run." },
+              { id: "dismiss", label: "Dismiss", description: "Dismiss this signal until a newer run crosses a threshold again." },
+            ),
+            inlineResolvable: false,
+            entryRule: "the agent's last run prompt share of the model window is over the warn or crit threshold.",
+            exitRule: "a newer run is back under the warn threshold, or the row is dismissed.",
+            dedupKey: card.dedupKey,
+            severity: card.severity,
+            activityAt: toIso(new Date(now)),
+            createdAt: toIso(new Date(now)),
+            updatedAt: toIso(new Date(now)),
+            relatedIssue: null,
+            detail: {
+              kind: "generic",
+              summaryExcerpt: card.summaryExcerpt,
+              images: [],
+            },
+          }));
+        }
+      }
       // myrmidon(BOT-RUNTIME-TUNING D): the periodic fallback sweep records
       // one signal per agent whose gateway calls were served by a model
       // outside its card above the configured share; the feed just turns the
@@ -2591,6 +2730,52 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           detail: {
             kind: "generic",
             summaryExcerpt: excerpt(fallback.summaryExcerpt),
+            images: [],
+          },
+        }));
+      }
+
+      // myrmidon(1.6.1-FORAGING-LIMITS-UI): the learning sweep hit a spend
+      // limit, or the cost-per-task threshold switched it off. The signal is
+      // recorded by the pass itself (foraging/limits.ts) into the process-level
+      // registry; the feed computes the card on the fly, the same shape the
+      // stale-block and tracing-health signals use. The limit card disappears
+      // when a pass runs without a stop; the auto-off card stays until an
+      // operator re-enables learning.
+      for (const foragingSignal of [
+        readForagingLimitSignal(companyId),
+        readForagingAutoOffSignal(companyId),
+      ]) {
+        if (!foragingSignal) continue;
+        add(createItem({
+          companyId,
+          sourceKind: "foraging_limit",
+          subject: {
+            kind: "foraging_sweep",
+            id: `foraging:${companyId}`,
+            companyId,
+            title: "Learning (foraging)",
+            identifier: null,
+            status: null,
+            href: `/${prefix}/foraging`,
+            metadata: { dedupKey: foragingSignal.dedupKey },
+          },
+          whyNow: foragingSignal.whyNow,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the Foraging page and the learning limits." },
+          ),
+          inlineResolvable: true,
+          entryRule: "a foraging pass stopped on a spend limit, or the cost-per-task threshold switched learning off",
+          exitRule: "the next pass runs without a stop (limit card), learning is re-enabled, or the row is dismissed.",
+          dedupKey: foragingSignal.dedupKey,
+          severity: foragingSignal.severity,
+          activityAt: foragingSignal.activityAt,
+          createdAt: foragingSignal.activityAt,
+          updatedAt: foragingSignal.activityAt,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: excerpt(foragingSignal.whyNow),
             images: [],
           },
         }));

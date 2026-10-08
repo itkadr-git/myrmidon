@@ -44,6 +44,7 @@
 import { createHash } from "node:crypto";
 
 import type { ParallelHelpersCard, ResolvedParallelHelpers } from "@paperclipai/shared";
+import { effortForModel } from "../effort-policy/effort-policy.js";
 import type { CompiledProfile, CompiledProfileFile } from "./types.js";
 import { writeYamlDocument, type YamlMapping, type YamlNode } from "./deterministic-yaml.js";
 
@@ -316,6 +317,16 @@ export interface HermesProfileInstanceDefaults {
   compression?: HermesProfileCompressionDefaults;
   sessionsRetentionDays?: number;
   /**
+   * myrmidon(MEMORY-CENTRAL-A): instance-wide switch (MYRMIDON_BOT_LOCAL_MEMORY_OFF)
+   * that turns the bot's Hermes LOCAL memory off: `memory.memory_enabled: false`
+   * and `memory.user_profile_enabled: false` are written into config.yaml (the
+   * vendor flags behind the built-in MEMORY.md/USER.md stores) so durable memory
+   * lives only in hindsight (`memory.provider: hindsight` is unchanged either
+   * way). Unset or false — the memory block is emitted exactly as before, byte
+   * for byte, so flipping the setting off restores the previous restartHash.
+   */
+  disableLocalMemory?: boolean;
+  /**
    * myrmidon(BOT-RUNTIME-TUNING-B): explicit context window per model alias
    * (gateway model name -> tokens). The card's own
    * `adapterConfig.models.contextLength` wins for the card's model; this map
@@ -398,7 +409,6 @@ export interface CompileHermesProfileResult {
 // Constants
 // ---------------------------------------------------------------------------
 
-const HERMES_REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 const HINDSIGHT_RECALL_BUDGETS = ["low", "mid", "high"];
 const HINDSIGHT_MODES: readonly HermesProfileHindsightMode[] = ["local_external", "cloud", "local_embedded"];
 /** The fleet's only supported mode — see {@link HermesProfileHindsightSettings.mode}. */
@@ -497,15 +507,27 @@ function resolveLlmApiKeyEnv(llm: HermesProfileLlmSettings, warnings: string[]):
   return apiKeyEnv;
 }
 
-function buildReasoningEffort(effort: string | undefined, warnings: string[]): string | undefined {
-  const trimmed = nonEmpty(effort);
-  if (!trimmed) return undefined;
-  const lowered = trimmed.toLowerCase();
-  if (!HERMES_REASONING_EFFORTS.includes(lowered)) {
-    warnings.push(`agent.reasoning_effort: "${trimmed}" is not a Hermes effort level; dropped`);
+/**
+ * myrmidon(BOT-TUNING-C): the card effort compiles through the shared effort
+ * policy — an empty field resolves to the model's safe default (never the
+ * Hermes-global "medium" a GLM model rejects), and a value outside the
+ * model's accepted list is dropped with a warning. Hermes omits
+ * reasoning_effort only when no value resolves at all.
+ */
+function buildReasoningEffort(
+  model: string | undefined,
+  effort: string | undefined,
+  warnings: string[],
+): string | undefined {
+  const resolved = effortForModel(model, effort);
+  if (resolved.source === undefined || resolved.value === undefined) return undefined;
+  if (resolved.source === "invalid") {
+    warnings.push(
+      `agent.reasoning_effort: "${effort?.trim()}" is not accepted by model "${model ?? ""}" (accepted: ${resolved.efforts.join(", ")}); dropped`,
+    );
     return undefined;
   }
-  return lowered;
+  return resolved.value;
 }
 
 function buildToolsets(toolsets: string | undefined): string[] | undefined {
@@ -919,7 +941,7 @@ function buildConfigYaml(input: HermesProfileInput, warnings: string[]): string 
 
   const root: YamlMapping = {
     agent: {
-      reasoning_effort: buildReasoningEffort(adapterConfig.effort, warnings),
+      reasoning_effort: buildReasoningEffort(adapterConfig.model, adapterConfig.effort, warnings),
       // myrmidon(PARALLEL-HELPERS): "helpers off" removes delegate_task from the
       // agent's tool surface. Omitted entirely when helpers are on (or the card
       // predates the field), so no unrelated toolset is ever disabled.
@@ -956,7 +978,18 @@ function buildConfigYaml(input: HermesProfileInput, warnings: string[]): string 
     ),
     gateway: { api_server: { max_concurrent_runs: input.maxConcurrentRuns } },
     mcp_servers: buildMcpServers(input.mcpServers, warnings),
-    memory: { provider: "hindsight" },
+    // myrmidon(MEMORY-CENTRAL-A): with the instance switch on, the bot's Hermes
+    // LOCAL memory is turned off and durable memory lives only in hindsight.
+    // The vendor contract for the built-in file stores (MEMORY.md/USER.md) is
+    // memory.memory_enabled / memory.user_profile_enabled (tools/memory_tool.py
+    // get_builtin_memory_store_flags, read by agent_init); the external provider
+    // key memory.provider stays "hindsight" either way — it is a separate
+    // mechanism and is NOT disabled by these flags. Off (the default), the block
+    // is exactly the pre-feature one, byte for byte, so flipping the setting off
+    // restores the previous restartHash.
+    memory: input.instanceDefaults.disableLocalMemory
+      ? { provider: "hindsight", memory_enabled: false, user_profile_enabled: false }
+      : { provider: "hindsight" },
     model: {
       default: nonEmpty(adapterConfig.model),
       provider: nonEmpty(adapterConfig.provider),

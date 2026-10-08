@@ -5,6 +5,7 @@
 import type { SshRemoteExecutionSpec } from "./ssh.js";
 import type { AdapterExecutionTarget } from "./execution-target.js";
 import type { RuntimeStatusSink } from "./runtime-progress.js";
+import type { PromptBreakdown } from "./prompt-meter.js";
 import type { ExecutionContinuationEnvelope, NativeFinalizationResult } from "@paperclipai/shared";
 
 export interface AdapterAgent {
@@ -34,6 +35,14 @@ export interface UsageSummary {
   outputTokens: number;
   cachedInputTokens?: number;
 }
+
+/**
+ * myrmidon(1.6.5 PROMPT-BUDGET A): per-section prompt-token breakdown of a
+ * run's assembled prompt, estimated by the adapter when it builds the
+ * request. Canonical definition lives in ./prompt-meter.js; re-exported here
+ * so adapters can take it from the package root.
+ */
+export type { PromptBreakdown } from "./prompt-meter.js";
 
 export type AdapterBillingType =
   | "api"
@@ -68,6 +77,7 @@ export interface AdapterRuntimeServiceReport {
 
 export type AdapterExecutionErrorFamily =
   | "transient_upstream"
+  | "permanent_config_error"
   | "provider_quota"
   | "model_refusal"
   | "refresh_token_reused"
@@ -91,6 +101,13 @@ export interface AdapterExecutionResult {
   retryNotBefore?: string | null;
   errorMeta?: Record<string, unknown>;
   usage?: UsageSummary;
+  /**
+   * myrmidon(1.6.5 PROMPT-BUDGET A): prompt-token breakdown of the request
+   * the adapter assembled for this run, measured at build time. The server
+   * copies it into `heartbeat_runs.usageJson.promptBreakdown`. Estimated
+   * (chars/4 heuristic), not provider-reported.
+   */
+  promptBreakdown?: PromptBreakdown;
   /**
    * How `usage` totals are scoped. "per_run" means the tokens cover only this
    * execution; "session_cumulative" means they are running totals for the

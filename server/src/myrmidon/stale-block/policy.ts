@@ -48,6 +48,14 @@ export function judgeStaleBlockReason(
     return { kind: "live" };
   }
   if (reason.kind === "event") {
+    // myrmidon(HUMAN-REVIEW-WAIT): an event reason without a key names no gate
+    // the sweep can read, so the unknown-facts rule above applies: only an
+    // explicit `false` from the wiring kills the block. A key-less event reason
+    // used to read as `event_cleared` and the sweep returned the task to
+    // `in_progress` minutes after a deliberate wait (a human-only review on a board, 05.10,
+    // where the executor's `blocked` with `reasonRef kind=event` was rolled
+    // back and the liveness mechanism then demanded a disposition).
+    if (reason.eventKey === null) return { kind: "live" };
     if (!facts.eventStillSet) return { kind: "dead", why: "event_cleared" };
     return { kind: "live" };
   }

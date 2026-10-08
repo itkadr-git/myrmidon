@@ -1,4 +1,6 @@
 import { listOpenRouterModels } from "../services/openrouter-models.js";
+// myrmidon(B1c): product name in user-facing runner errors; see product.ts.
+import { PRODUCT_NAME } from "../myrmidon/product.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings } from "../services/ai-connection-runtime.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE, AI_CONNECTION_CAPABILITIES, aiConnectionBindingSchema, type AiConnectionBinding } from "@paperclipai/shared";
 import { toolConnections } from "@paperclipai/db";
@@ -10,6 +12,8 @@ import { applyConnectorSkills, resolveConnectorAssignments, annotateConnectorSki
 import { getExecutionBlocker } from "../services/execution-blocker.js";
 import { paperclipRunnerTransitionConfig, normalizeLegacyRunnerProvider, isPaperclipRunnerProvider } from "@paperclipai/adapter-utils";
 import { executionProjectionForRun, executionProjectionsForRuns } from "../services/execution-projection.js";
+// myrmidon(RUN-SNAPSHOT-DEDUP): a run response carries one continuation copy.
+import { withoutDuplicateExecutionContinuation } from "../services/run-continuation-snapshot.js";
 import { Router, type NextFunction, type Request, type Response } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { readFile, rm } from "node:fs/promises";
@@ -57,6 +61,8 @@ import {
   submitBrowserCodeRequestSchema,
   toAccountHandle,
   type AgentAdapterType,
+  // myrmidon(PERF-DIET-G): the slim list row returned by GET /companies/:id/agents
+  type AgentListItem,
 } from "@paperclipai/shared";
 import { dbAutonomyGate } from "../myrmidon/autonomy/gate.js";
 import {
@@ -69,6 +75,12 @@ import {
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
 import { trackAgentCreated } from "@paperclipai/shared/telemetry";
+// myrmidon(1.6.5 BASE-SKILLS): the union helper keeps company base skills in
+// every agent's selection when the board edits that agent's own skills.
+import {
+  unionCompanyBaseSkillEntries,
+} from "../services/company-base-skill-keys.js";
+import { readCompanyBaseSkillKeysPort } from "../services/company-base-skill-keys-port.js";
 import { validate } from "../middleware/validate.js";
 import { agentInstructionsBundleMode } from "../services/agent-instructions.js";
 import {
@@ -1178,7 +1190,11 @@ export function agentRoutes(
     return false;
   }
 
-  async function filterAgentsForActor<T extends Record<string, unknown>>(
+  // myrmidon(PERF-DIET-G): the row shape is generic on purpose. The slim list
+  // projection (AgentListItem) is an interface without an index signature, so it
+  // does not satisfy a `Record<string, unknown>` constraint — this filter only
+  // reads the identity fields, which both shapes carry.
+  async function filterAgentsForActor<T extends { id?: unknown; companyId?: unknown }>(
     req: Request,
     rows: T[],
     fallbackCompanyId?: string,
@@ -2209,7 +2225,8 @@ export function agentRoutes(
       const experimental = await instanceSettings.getExperimental();
       if (experimental.enableNativeRunner !== true) {
         throw unprocessable(
-          "Paperclip Runner is experimental and disabled on this instance.",
+          // myrmidon(B1c): visible rollout error names our product part.
+          `${PRODUCT_NAME} Runner is experimental and disabled on this instance.`,
           { code: "paperclip_runner_rollout_disabled" },
         );
       }
@@ -2270,7 +2287,7 @@ export function agentRoutes(
     const defaults = paperclipRunnerTransitionConfig(input.previousAdapterType, input.previousAdapterConfig.model, input.nextAdapterConfig.provider);
     if (!["claude_local", "codex_local", "opencode_local"].includes(input.previousAdapterType)
       && !isPaperclipRunnerProvider(input.nextAdapterConfig.provider)) {
-      throw unprocessable("Select a Paperclip Runner provider before converting this agent.");
+      throw unprocessable(`Select a ${PRODUCT_NAME} Runner provider before converting this agent.`);
     }
     const next = { ...defaults, ...input.nextAdapterConfig };
     if (!asNonEmptyString(next.model)) next.model = defaults.model;
@@ -3158,18 +3175,26 @@ export function agentRoutes(
       (entry, index, entries) => entries.findIndex((candidate) => candidate.key === entry.key) === index,
     );
 
-    const desiredSkillEntries = mergeDesiredSkillEntries(
-      currentSkillEntries,
-      requestedSkillEntries,
-      mode,
-    ).filter(
-      (entry) => !isConnectorSkill(entry.key) && (adapterType !== "paperclip_runner"
-        || entry.key.trim().toLowerCase() !== PAPERCLIP_OPERATIONAL_SKILL_KEY),
+    const baseSkillKeys = await readCompanyBaseSkillKeysPort(db, companyId);
+    const desiredSkillEntries = unionCompanyBaseSkillEntries(
+      baseSkillKeys,
+      mergeDesiredSkillEntries(
+        currentSkillEntries,
+        requestedSkillEntries,
+        mode,
+      ).filter(
+        (entry) => !isConnectorSkill(entry.key) && (adapterType !== "paperclip_runner"
+          || entry.key.trim().toLowerCase() !== PAPERCLIP_OPERATIONAL_SKILL_KEY),
+      ),
     );
     const desiredSkills = desiredSkillEntries.map((entry) => entry.key);
     const resolvedKeys = new Set([
       ...resolvedCurrentSkillEntries.map((entry) => entry.key),
       ...resolvedRequestedSkillEntries.map((entry) => entry.key),
+      // myrmidon(1.6.5 BASE-SKILLS): the base list holds library keys only, so
+      // they stay materialized for the runtime even when this edit did not name
+      // them. Stale keys keep the old behaviour — persisted, not delivered.
+      ...baseSkillKeys,
     ]);
     // Runtime materialization + version selection only ever consider final
     // assignments that resolve to the company library; stale keys remain
@@ -3195,6 +3220,18 @@ export function agentRoutes(
       ...agent,
       adapterConfig: {},
       runtimeConfig: {},
+    };
+  }
+
+  // myrmidon(PERF-DIET-G): the restricted view of a slim list row. The row
+  // carries no adapterConfig, so blanking the runtime config and the
+  // config-derived model preserves exactly the disclosure the pre-slim list
+  // made to an actor without agent_config:read.
+  function redactAgentListItemForRestrictedView(agent: AgentListItem): AgentListItem {
+    return {
+      ...agent,
+      runtimeConfig: {},
+      adapterModel: null,
     };
   }
 
@@ -3326,7 +3363,7 @@ export function agentRoutes(
       return;
     }
     if (type === "paperclip_runner" && provider && !isPaperclipRunnerProvider(provider)) {
-      throw unprocessable("Unknown Paperclip Runner provider");
+      throw unprocessable(`Unknown ${PRODUCT_NAME} Runner provider`);
     }
     const modelAdapterType = type === "paperclip_runner"
       ? provider === "acpx" || provider === "claude_managed" ? "claude_local"
@@ -4088,13 +4125,18 @@ export function agentRoutes(
       });
       return;
     }
-    const result = await filterAgentsForActor(req, await svc.list(companyId));
+    const result = await filterAgentsForActor(req, await svc.listSummaries(companyId));
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
+    // myrmidon(PERF-DIET-G): the list is a slim projection. It carries no
+    // adapterConfig (so no per-row env redaction is needed any more) and the
+    // model column travels as the SQL-computed `adapterModel`; the full
+    // configuration stays behind GET /agents/:id/configuration and
+    // GET /companies/:id/agent-configurations.
     if (canReadConfigs) {
-      res.json(result.map((agent) => redactAgentRowForResponse(agent)));
+      res.json(result);
       return;
     }
-    res.json(result.map((agent) => redactForRestrictedAgentView(agent)));
+    res.json(result.map((agent) => redactAgentListItemForRestrictedView(agent)));
   });
 
   router.get("/instance/scheduler-heartbeats", async (req, res) => {
@@ -5695,6 +5737,10 @@ export function agentRoutes(
     if (!existing) {
       return;
     }
+    // myrmidon(1.6.2): an agent acting on another agent is subject to the autonomy matrix
+    if (req.actor.type === "agent" && req.actor.agentId !== id) {
+      await dbAutonomyGate(db).assertAllowed(req, "pause_wake_agents");
+    }
     await assertCanPauseAgent(req, existing);
     const agent = await svc.pause(id);
     if (!agent) {
@@ -5737,6 +5783,10 @@ export function agentRoutes(
     const existing = await getAccessibleAgent(req, res, id);
     if (!existing) {
       return;
+    }
+    // myrmidon(1.6.2): an agent acting on another agent is subject to the autonomy matrix
+    if (req.actor.type === "agent" && req.actor.agentId !== id) {
+      await dbAutonomyGate(db).assertAllowed(req, "pause_wake_agents");
     }
     await assertCanResumeAgent(req, existing);
     if (existing.orgChainHealth?.status === "invalid_org_chain") {
@@ -6059,6 +6109,10 @@ export function agentRoutes(
       }
     } else {
       await assertBoardCanWakeAgent(req, agent);
+    }
+    // myrmidon(1.6.2): an agent acting on another agent is subject to the autonomy matrix
+    if (req.actor.type === "agent" && req.actor.agentId !== id) {
+      await dbAutonomyGate(db).assertAllowed(req, "pause_wake_agents");
     }
     if (req.body.debug?.providerTrace === "raw") {
       assertInstanceAdmin(req);
@@ -7051,18 +7105,37 @@ export function agentRoutes(
     })))));
   });
 
-  router.get("/heartbeat-runs/:runId", async (req, res) => {
+  function readHeartbeatRunId(req: Request): string {
     const runId = req.params.runId as string;
+    // isUuidLike accepts surrounding whitespace, but PostgreSQL UUID inputs do not.
+    if (runId !== runId.trim() || !isUuidLike(runId)) {
+      throw badRequest("Invalid heartbeat run ID");
+    }
+    return runId;
+  }
+
+  router.get("/heartbeat-runs/:runId", async (req, res) => {
+    const runId = readHeartbeatRunId(req);
     const run = await getAccessibleResource(req, res, heartbeat.getRun(runId), "Heartbeat run not found");
     if (!run) return;
     if (!(await assertRunTelemetryReadAllowed(req, res, run.companyId))) return;
     const retryExhaustedReason = await heartbeat.getRetryExhaustedReason(runId);
     const decoratedRun = heartbeat.decorateActiveRunStatus(run);
+    // myrmidon(RUN-SNAPSHOT-DEDUP): a run snapshot written before the
+    // single-copy change still holds the continuation twice. The response keeps
+    // the canonical `executionContinuation` and drops a byte-identical nested
+    // copy; a payload that differs from it is left untouched.
+    const singleContinuationRun = {
+      ...decoratedRun,
+      contextSnapshot: withoutDuplicateExecutionContinuation(
+        decoratedRun.contextSnapshot,
+      ),
+    };
     res.json(await runRedactions.redactForRun(
       run.companyId,
       run.id,
       redactCurrentUserValue(
-        { ...decoratedRun, execution: await executionProjectionForRun(db, run.companyId, run.id), identityHistory: await listRunIdentityContexts(db, run.companyId, run.id), retryExhaustedReason, outputSilence: await heartbeat.buildRunOutputSilence(run) },
+        { ...singleContinuationRun, execution: await executionProjectionForRun(db, run.companyId, run.id), identityHistory: await listRunIdentityContexts(db, run.companyId, run.id), retryExhaustedReason, outputSilence: await heartbeat.buildRunOutputSilence(run) },
         await getCurrentUserRedactionOptions(),
       ),
     ));
@@ -7070,7 +7143,7 @@ export function agentRoutes(
 
   router.post("/heartbeat-runs/:runId/cancel", async (req, res) => {
     assertBoard(req);
-    const runId = req.params.runId as string;
+    const runId = readHeartbeatRunId(req);
     const existing = await getAccessibleResource(req, res, heartbeat.getRun(runId), "Heartbeat run not found");
     if (!existing) return;
     // Stamp the cancellation as operator-initiated (this route is board-only).
@@ -7102,7 +7175,7 @@ export function agentRoutes(
     "/heartbeat-runs/:runId/runtime-requests/:requestId/resolve",
     async (req, res) => {
       assertBoard(req);
-      const runId = req.params.runId as string;
+      const runId = readHeartbeatRunId(req);
       const requestId = req.params.requestId as string;
       const existing = await getAccessibleResource(
         req,
@@ -7307,7 +7380,7 @@ export function agentRoutes(
   );
 
   router.post("/heartbeat-runs/:runId/watchdog-decisions", async (req, res) => {
-    const runId = req.params.runId as string;
+    const runId = readHeartbeatRunId(req);
     const existing = await getAccessibleResource(req, res, heartbeat.getRun(runId), "Heartbeat run not found");
     if (!existing) return;
     const decision = typeof req.body?.decision === "string" ? req.body.decision : "";
@@ -7340,7 +7413,7 @@ export function agentRoutes(
 
   router.get("/heartbeat-runs/:runId/provider-trace", async (req, res) => {
     assertInstanceAdmin(req);
-    const runId = req.params.runId as string;
+    const runId = readHeartbeatRunId(req);
     const run = await getAccessibleResource(
       req,
       res,
@@ -7369,7 +7442,7 @@ export function agentRoutes(
     "/heartbeat-runs/:runId/provider-trace/reproject-workspace-diffs",
     async (req, res) => {
       assertBoard(req);
-      const runId = req.params.runId as string;
+      const runId = readHeartbeatRunId(req);
       const run = await getAccessibleResource(
         req,
         res,
@@ -7428,7 +7501,7 @@ export function agentRoutes(
     "/heartbeat-runs/:runId/provider-trace/frames/:frameId/reveal",
     async (req, res) => {
       assertInstanceAdmin(req);
-      const runId = req.params.runId as string;
+      const runId = readHeartbeatRunId(req);
       const frameId = Number(req.params.frameId);
       if (!Number.isSafeInteger(frameId) || frameId < 1) {
         throw badRequest("Invalid provider trace frame id");
@@ -7468,7 +7541,7 @@ export function agentRoutes(
     "/heartbeat-runs/:runId/provider-trace/download",
     async (req, res) => {
       assertInstanceAdmin(req);
-      const runId = req.params.runId as string;
+      const runId = readHeartbeatRunId(req);
       const run = await getAccessibleResource(
         req,
         res,
@@ -7503,7 +7576,7 @@ export function agentRoutes(
 
   router.delete("/heartbeat-runs/:runId/provider-trace", async (req, res) => {
     assertInstanceAdmin(req);
-    const runId = req.params.runId as string;
+    const runId = readHeartbeatRunId(req);
     const run = await getAccessibleResource(
       req,
       res,
@@ -7526,7 +7599,7 @@ export function agentRoutes(
   });
 
   router.get("/heartbeat-runs/:runId/events", async (req, res) => {
-    const runId = req.params.runId as string;
+    const runId = readHeartbeatRunId(req);
     const run = await getAccessibleResource(req, res, heartbeat.getRun(runId), "Heartbeat run not found");
     if (!run) return;
     if (!(await assertRunTelemetryReadAllowed(req, res, run.companyId))) return;
@@ -7545,7 +7618,7 @@ export function agentRoutes(
   });
 
   router.get("/heartbeat-runs/:runId/log", async (req, res) => {
-    const runId = req.params.runId as string;
+    const runId = readHeartbeatRunId(req);
     const run = await getAccessibleResource(req, res, heartbeat.getRunLogAccess(runId), "Heartbeat run not found");
     if (!run) return;
     if (!(await assertRunTelemetryReadAllowed(req, res, run.companyId))) return;
@@ -7562,7 +7635,7 @@ export function agentRoutes(
   });
 
   router.get("/heartbeat-runs/:runId/workspace-operations", async (req, res) => {
-    const runId = req.params.runId as string;
+    const runId = readHeartbeatRunId(req);
     const run = await getAccessibleResource(req, res, heartbeat.getRun(runId), "Heartbeat run not found");
     if (!run) return;
     if (!(await assertRunTelemetryReadAllowed(req, res, run.companyId))) return;

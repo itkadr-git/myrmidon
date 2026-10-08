@@ -5,12 +5,14 @@ import type { BotContainerDriver, BotContainerSpec, BotContainerStatus } from ".
 import {
   BOT_CONTAINER_ACTOR,
   applyBotContainerNow,
+  beginBotProfilePass,
   botMaintenancePortFromService,
   resetBotContainerApplyFreshnessForTests,
   startBotContainerReconciliation,
   type BotContainerAgent,
   type BotContainerRuntimeDeps,
   type BotMaintenanceServiceSlice,
+  type BotProfilePass,
 } from "./index.js";
 
 const ENABLED = { [BOT_CONTAINERS_ENV]: "1" };
@@ -639,5 +641,72 @@ describe("applyBotContainerNow: the pass reconciles the card read at pass time",
     const outcome = await applyBotContainerNow(agent(), deps(driver, { readAgent: async () => null }), { env: ENABLED });
     expect(outcome).toEqual({ kind: "not_applicable", reason: "agent agent-a no longer exists" });
     expect(calls).toEqual([]);
+  });
+});
+
+// myrmidon(PERF-DIET-G): the sweep compiles every bot of one tick through ONE
+// shared pass — the company- and instance-scoped reads behind the profiles are
+// paid once per sweep instead of once per bot.
+describe("myrmidon(PERF-DIET-G): the sweep shares one pass between its bots", () => {
+  it("begins one pass, hands the same object to every bot of the tick, and ends it", async () => {
+    const begins: BotProfilePass[] = [];
+    const ends: BotProfilePass[] = [];
+    const seen: Array<BotProfilePass | undefined> = [];
+    const driver = minimalDriver();
+    const runtime = deps(driver, {
+      compile: async (_agentId, botKey, pass) => {
+        seen.push(pass);
+        return { botKey, files: [], restartHash: "r", filesHash: "f" };
+      },
+      beginProfilePass: () => {
+        const pass = beginBotProfilePass();
+        begins.push(pass);
+        return pass;
+      },
+      endProfilePass: (pass) => {
+        ends.push(pass);
+        pass.end();
+      },
+    });
+    const bots = ["agent-a", "agent-b", "agent-c"].map((agentId) => agent({ agentId }));
+    const stop = startBotContainerReconciliation(async () => bots, runtime, { env: ENABLED });
+    try {
+      await vi.waitFor(() => expect(seen.length).toBe(3));
+      await flush();
+
+      expect(begins).toHaveLength(1);
+      expect(ends).toHaveLength(1);
+      expect(ends[0]).toBe(begins[0]);
+      expect(seen.every((pass) => pass === begins[0])).toBe(true);
+      // Ended with the sweep: nothing survives into the next tick, so the next
+      // sweep reads live settings and skills.
+      expect(begins[0]?.ended).toBe(true);
+    } finally {
+      stop();
+    }
+  });
+
+  it("needs no pass at all when the wiring supplies none, and a manual pass compiles without one", async () => {
+    const seen: Array<BotProfilePass | undefined> = [];
+    const compile = async (_agentId: string, botKey: string, pass?: BotProfilePass) => {
+      seen.push(pass);
+      return { botKey, files: [], restartHash: "r", filesHash: "f" };
+    };
+    const runtime = deps(minimalDriver(), { compile });
+
+    // A runtime without the pair sweeps exactly as it did before.
+    const stop = startBotContainerReconciliation(async () => [agent()], runtime, { env: ENABLED });
+    try {
+      await vi.waitFor(() => expect(seen.length).toBe(1));
+      expect(seen[0]).toBeUndefined();
+    } finally {
+      stop();
+    }
+
+    // The card's "Apply now": one bot, so there is nothing to share.
+    resetBotContainerApplyFreshnessForTests();
+    seen.length = 0;
+    await applyBotContainerNow(agent(), runtime, { env: ENABLED, force: true });
+    expect(seen).toEqual([undefined]);
   });
 });

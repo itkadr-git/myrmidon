@@ -97,8 +97,13 @@ function sshErrorNote(action: string, err: unknown): string {
   if (killed || code === "ETIMEDOUT") {
     return `ssh ${action} timed out`;
   }
-  const message = err instanceof Error ? err.message : String(err);
-  return `ssh ${action} failed: ${message}`;
+  // SECURITY: node:child_process puts the full argv (user@host, the admin
+  // key file path, the whole remote command) into err.message, and the note
+  // travels into the API response and the persistent Activity journal. A
+  // failed deploy must never echo any of that: exit code and signal status
+  // are enough for a human. err.message is never included.
+  const exitedWith = typeof code === "number" ? ` (exit ${code})` : "";
+  return `ssh ${action} failed${exitedWith}`;
 }
 
 /** One ssh invocation with the admin key file lifecycle: create 0600 → run →
@@ -318,10 +323,25 @@ export function createSshDeployPort(
     return { body: read.stdout };
   }
 
+  /** Is the stored public key a parseable ssh public key (<type> <body>)?
+   * A missing or garbage public half must not be laid out as a line that
+   * authorizes nothing but still reports "deployed". */
+  function publicKeyIsParseable(publicKey: string | null | undefined): boolean {
+    if (!publicKey) return false;
+    const parts = publicKey.trim().split(/\s+/);
+    if (parts.length < 2) return false;
+    const [type, body] = parts;
+    if (!/^(ssh-(rsa|dss|ed25519)|ecdsa-sha2-\S+|sk-(ssh|ecdsa)-\S+)$/.test(type)) return false;
+    return /^[A-Za-z0-9+/=]+$/.test(body);
+  }
+
   return {
     deploy: async (input) => {
       const bad = prevalidate(input);
       if (bad) return { outcome: "not_deployed", note: `invalid ${bad}` };
+      if (!publicKeyIsParseable(input.publicKey)) {
+        return { outcome: "not_deployed", note: "the secret has no parseable public key half" };
+      }
       const adminKey = await keySource.adminKey();
       const loaded = await loadBody(input, adminKey);
       if ("note" in loaded) return { outcome: "not_deployed", note: loaded.note };
@@ -356,6 +376,9 @@ export function createSshDeployPort(
     dryRun: async (input) => {
       const bad = prevalidate(input);
       if (bad) return { outcome: "not_deployed", note: `invalid ${bad}` };
+      if (!publicKeyIsParseable(input.publicKey)) {
+        return { outcome: "not_deployed", note: "the secret has no parseable public key half" };
+      }
       const adminKey = await keySource.adminKey();
       const loaded = await loadBody(input, adminKey);
       if ("note" in loaded) return { outcome: "not_deployed", note: loaded.note };
