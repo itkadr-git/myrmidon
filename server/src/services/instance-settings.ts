@@ -53,6 +53,7 @@ import { preserveAccessHubHostsGeneralKey } from "../myrmidon/access-hub/host-re
 import { preserveAutonomyGeneralKey } from "../myrmidon/autonomy/store.js";
 // myrmidon(1.6-TG-PROACTIVITY-E, 1.6.1-TG-NOTIFY-B): keep the telegram-notify state across vendor writes of `general`
 import { preserveTelegramNotifyGeneralKey } from "../myrmidon/telegram-notify/proactivity-policy.js";
+import { preserveTelegramNotifySettingsGeneralKey } from "../myrmidon/telegram-notify/settings-store.js";
 // myrmidon(1.6.1-WIP-LIMIT-A): keep the stored WIP limits across vendor writes of `general`
 import { preserveWipLimitGeneralKey } from "../myrmidon/wip-limit/settings.js";
 import { preserveOwnerDeliveryGeneralKey } from "../myrmidon/owner-delivery/settings.js"; // myrmidon(1.6.5-OWNER-DM-FILTER)
@@ -680,6 +681,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
             ...preserveCloudConnectorGeneralKey(current.general), // myrmidon(CLOUD-CONNECTOR)
             ...preserveAutonomyGeneralKey(current.general), // myrmidon(1.6-AUTONOMY)
             ...preserveTelegramNotifyGeneralKey(current.general), // myrmidon(1.6-TG-PROACTIVITY-E)
+            ...preserveTelegramNotifySettingsGeneralKey(current.general), // myrmidon(TG-NOTIFY-A)
             ...preserveWipLimitGeneralKey(current.general), // myrmidon(1.6.1-WIP-LIMIT-A)
             ...preserveOwnerDeliveryGeneralKey(current.general), // myrmidon(1.6.5-OWNER-DM-FILTER)
             // The preserve line above restores the stored value: a patch that carries the key wins.

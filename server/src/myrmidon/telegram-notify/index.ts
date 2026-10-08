@@ -42,3 +42,6 @@ export {
 export * from "./errors.js";
 export * from "./errors-settings.js";
 export * from "./errors-sweep.js";
+// myrmidon(TG-NOTIFY-A): the owner settings routes (GET/PATCH + changelog).
+export { myrmidonTelegramNotifyRoutes, telegramNotifyRoutes, type TelegramNotifyRoutesDeps } from "./routes.js";
+export { preserveTelegramNotifySettingsGeneralKey } from "./settings-store.js";
