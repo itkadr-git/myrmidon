@@ -41,6 +41,9 @@ import {
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { effectivePullRequestState, readPullRequestMetadata } from "../task-pr-sync/policy.js";
 import { prStateOf, workspaceStateOf, type WorkspacePrFact } from "./workspace-state.js";
+// myrmidon(1.6.5-BOT-DISK-H4a-INVALIDATE): drop the per-bot cache entries on
+// the board event (status or assignee change), not only on TTL.
+import { registerDesiredStateDropper } from "./bot-workspaces-invalidation.js";
 
 /** Terminal tasks stay in the list this long so botd can see and remove their copy. */
 export const WS_TERMINAL_LOOKBACK_MS = 14 * 24 * 60 * 60 * 1000;
@@ -252,28 +255,22 @@ export function botWorkspacesService(deps: BotWorkspacesServiceDeps) {
   // of one bot collapse into a single store pass. Only a successful build is
   // kept for the window: a rejection drops the entry and the next request
   // retries. The route still serializes the answer through wsDesiredStateSchema,
-  // so a cached value is contract-checked on every reply. No event invalidation
-  // by design: the 5-minute slack is contract-safe (closing holds 14 days; a
-  // woken bot gets SIGUSR1 from its run anyway).
+  // so a cached value is contract-checked on every reply.
+  // myrmidon(1.6.5-BOT-DISK-H4a-INVALIDATE): TTL alone is not enough — a
+  // reopened task must return to `protectKeys` at once (botd would otherwise
+  // archive-delete the directory mid-work), and a reassignment must move the
+  // key between bots. The issue route publishes the event through the
+  // process-local registry and every service drops the affected entries.
   const desiredCache = new Map<string, { expiresAtMs: number; promise: Promise<WsDesiredState> }>();
-  // The `enabled` gate reads the same settings row the build reads; one
-  // instance-scoped entry keeps the per-request front-gate cheap as well.
-  let enabledCache: { expiresAtMs: number; promise: Promise<boolean> } | null = null;
+  // myrmidon(1.6.5-BOT-DISK-H4a-INVALIDATE): the cache is dropped on the board
+  // event, not only by TTL. The registry is a process-local fan-out: the issue
+  // route publishes, every constructed service drops its own entries.
+  registerDesiredStateDropper(({ companyId, agentId }) => {
+    desiredCache.delete(`${companyId}:${agentId}`);
+  });
 
   return {
-    async isEnabled(): Promise<boolean> {
-      const e = now().getTime();
-      if (enabledCache && enabledCache.expiresAtMs > e) return enabledCache.promise;
-      const entry: { expiresAtMs: number; promise: Promise<boolean> } = {
-        expiresAtMs: e + ttlMs,
-        promise: core.isEnabled().catch((err) => {
-          if (enabledCache === entry) enabledCache = null;
-          throw err;
-        }),
-      };
-      enabledCache = entry;
-      return entry.promise;
-    },
+    isEnabled: core.isEnabled,
     async desiredState(input: { companyId: string; agentId: string }): Promise<WsDesiredState> {
       const key = `${input.companyId}:${input.agentId}`;
       const e = now().getTime();

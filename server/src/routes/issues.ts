@@ -159,6 +159,9 @@ import { isUniqueViolation } from "../db-errors.js";
 import type { StorageService } from "../storage/types.js";
 import { validate, validateIssueMutationBody } from "../middleware/validate.js";
 import * as serviceIndex from "../services/index.js";
+// myrmidon(1.6.5-BOT-DISK-H4a-INVALIDATE): drop the desired-state cache on
+// status/assignee changes so a reopened or reassigned task is not stale.
+import { invalidateDesiredStateForIssueChange } from "../myrmidon/bot-containers/bot-workspaces-invalidation.js";
 import {
   accessService,
   agentService,
@@ -14174,6 +14177,19 @@ export function issueRoutes(
             ),
           },
         });
+
+      // myrmidon(1.6.5-BOT-DISK-H4a-INVALIDATE): a status or assignee change
+      // makes every cached desired-state that still holds this task dangerous:
+      // the old bot may archive-delete the reopened directory, the new bot
+      // would not protect its new task for the rest of the 300 s window. Drop
+      // both bots' entries here so the next poll rebuilds from the store.
+      if (changes.status || Object.hasOwn(changes, "assigneeAgentId")) {
+        invalidateDesiredStateForIssueChange({
+          companyId: issue.companyId,
+          previousAssigneeAgentId: previous.assigneeAgentId,
+          nextAssigneeAgentId: issue.assigneeAgentId,
+        });
+      }
 
       if (
         existing.status === "in_progress" &&

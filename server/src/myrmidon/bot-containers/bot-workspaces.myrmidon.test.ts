@@ -21,6 +21,7 @@ import {
   type WorkspaceIssueRow,
   type WorkspacePrProductRow,
 } from "./bot-workspaces-service.js";
+import { invalidateDesiredStateForIssueChange } from "./bot-workspaces-invalidation.js";
 import { prStateOf, workspaceStateOf } from "./workspace-state.js";
 
 const COMPANY_ID = "22222222-2222-4222-8222-222222222222";
@@ -449,29 +450,90 @@ describe("desired-state cache (1.6.5-BOT-DISK-H LOAD)", () => {
     expect(calls.listIssues).toBe(2);
   });
 
-  it("the isEnabled gate is cached with the same window", async () => {
-    const c = clock();
-    let reads = 0;
-    const base = harness({ issues: [] });
+  it("the isEnabled gate is not cached: turning the mechanism off acts immediately", async () => {
+    let enabled = true;
     const store: BotWorkspacesStore = {
-      ...base.store,
-      readBotDiskSettings: async () => {
-        reads++;
-        return {};
-      },
+      ...harness({ issues: [] }).store,
+      readBotDiskSettings: async () => ({ enabled }),
     };
-    const service = botWorkspacesService({ store, now: c.now });
+    const service = botWorkspacesService({ store });
     expect(await service.isEnabled()).toBe(true);
-    c.advance(10_000);
-    expect(await service.isEnabled()).toBe(true);
-    expect(reads).toBe(1);
-    c.advance(300_000);
-    expect(await service.isEnabled()).toBe(true);
-    expect(reads).toBe(2);
+    enabled = false;
+    expect(await service.isEnabled()).toBe(false);
   });
 
   it("the default TTL is 300 s (nextReportSec)", () => {
     expect(WS_DESIRED_STATE_TTL_MS).toBe(300_000);
+  });
+});
+
+describe("desired-state cache invalidation (1.6.5-BOT-DISK-H4a-INVALIDATE)", () => {
+  // A mutable clock: the cache expiry follows `now`, so tests advance it inside the window.
+  const clock = () => {
+    const state = { ms: NOW.getTime() };
+    return { now: () => new Date(state.ms), advance: (deltaMs: number) => (state.ms += deltaMs) };
+  };
+
+  it("a status change drops both bots' entries: a reopened task is back in protectKeys at once", async () => {
+    const c = clock();
+    // The task was closed: the bot's cached answer holds it in closedKeys.
+    const closed = issue({ identifier: "ABC-1", status: "done", completedAt: new Date("2026-10-06T13:00:00Z") });
+    const data = { issues: [closed] };
+    const h = harness({ issues: data.issues, closedKeys: ["ABC-1"], now: c.now });
+    const app = h.app(botActor);
+
+    const before = await request(app).get(URL);
+    expect(before.body.closedKeys).toContain("ABC-1");
+    expect(before.body.protectKeys).not.toContain("ABC-1");
+    expect(h.calls.listIssues).toBe(1);
+
+    // Inside the cache window the task is reopened and the route publishes the event.
+    c.advance(60_000);
+    data.issues[0] = { ...closed, status: "in_progress", completedAt: null };
+    invalidateDesiredStateForIssueChange({
+      companyId: COMPANY_ID,
+      previousAssigneeAgentId: BOT_ID,
+      nextAssigneeAgentId: BOT_ID,
+    });
+
+    const after = await request(app).get(URL);
+    expect(after.status).toBe(200);
+    expect(h.calls.listIssues).toBe(2); // store was asked again, the cached answer was not served
+    expect(after.body.protectKeys).toContain("ABC-1");
+    expect(after.body.closedKeys).not.toContain("ABC-1");
+    expect(after.body.workspaces[0]).toMatchObject({ key: "ABC-1", state: "active" });
+  });
+
+  it("an assignee change drops the old and the new bot's entries inside the window", async () => {
+    const c = clock();
+    const task = issue({ identifier: "ABC-2", assigneeAgentId: BOT_ID });
+    const data = { issues: [task] };
+    const h = harness({ issues: data.issues, now: c.now });
+    const asOld = h.app(botActor);
+    const asNew = h.app({ ...botActor, agentId: OTHER_BOT_ID });
+
+    // Both bots hold a cached answer inside the window.
+    const oldFirst = await request(asOld).get(URL);
+    expect(oldFirst.body.protectKeys).toContain("ABC-2");
+    const newFirst = await request(asNew).get(URL);
+    expect(newFirst.body.protectKeys).not.toContain("ABC-2");
+    expect(h.calls.listIssues).toBe(2);
+
+    // The task moves from the old bot to the new one; the route publishes the event.
+    c.advance(60_000);
+    data.issues[0] = { ...task, assigneeAgentId: OTHER_BOT_ID };
+    invalidateDesiredStateForIssueChange({
+      companyId: COMPANY_ID,
+      previousAssigneeAgentId: BOT_ID,
+      nextAssigneeAgentId: OTHER_BOT_ID,
+    });
+
+    // The new bot protects the task at once; the old bot sees it closing.
+    const newAfter = await request(asNew).get(URL);
+    expect(newAfter.body.protectKeys).toContain("ABC-2");
+    const oldAfter = await request(asOld).get(URL);
+    expect(oldAfter.body.workspaces[0]).toMatchObject({ key: "ABC-2", state: "closing" });
+    expect(h.calls.listIssues).toBe(4); // both bots rebuilt from the store
   });
 });
 
