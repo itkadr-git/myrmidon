@@ -437,10 +437,10 @@ async function postSweepComment(
       sections: [{
         title: "Owner card TTL",
         rows: [
-          { type: "text", text: `Interaction:${row.id}` },
+          { type: "text" as const, text: `Interaction:${row.id}` },
           ...(payload.delivery && typeof payload.delivery === "object" ? [
-            { type: "key_value", label: "sentTo", value: String((payload.delivery as Record<string, unknown>).sentTo ?? "") },
-            { type: "key_value", label: "sentAt", value: String((payload.delivery as Record<string, unknown>).sentAt ?? "") },
+            { type: "key_value" as const, label: "sentTo", value: String((payload.delivery as Record<string, unknown>).sentTo ?? "") },
+            { type: "key_value" as const, label: "sentAt", value: String((payload.delivery as Record<string, unknown>).sentAt ?? "") },
           ] : []),
         ],
       }],
