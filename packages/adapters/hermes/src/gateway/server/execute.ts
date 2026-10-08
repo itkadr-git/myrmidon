@@ -10,6 +10,12 @@ import type {
 import { measureSections } from "@paperclipai/adapter-utils/prompt-meter";
 import { classifyInputOverflow } from "@paperclipai/adapter-utils/input-overflow";
 import {
+  INPUT_LIMIT_CONFIG_KEY,
+  decideInputLimit,
+  readInputLimitHint,
+  trimTextToChars,
+} from "@paperclipai/adapter-utils/input-limit";
+import {
   asNumber,
   asString,
   parseObject,
@@ -1850,6 +1856,31 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       await ctx.onLog(
         "stderr",
         `[hermes-gateway] central history: read failed (${redactErrorMessage(err, redactText)}); continuing without restored turns\n`,
+      );
+    }
+  }
+  // myrmidon(OPE-6168): the model input limit, checked before the request is
+  // sent. The board puts the limit of the agent's model (catalog or override)
+  // into config.inputLimit; a request over its budget is trimmed here (head and
+  // tail of the input kept, the cut named in the middle) instead of being sent
+  // to a provider that rejects it. Whether the session itself still has room
+  // is the board's decision (it starts a fresh session generation).
+  const inputLimitHint = readInputLimitHint(ctx.config[INPUT_LIMIT_CONFIG_KEY]);
+  if (inputLimitHint) {
+    const requestBody = body.body;
+    const inputText = typeof requestBody.input === "string" ? requestBody.input : "";
+    const instructionsText = typeof requestBody.instructions === "string" ? requestBody.instructions : "";
+    const decision = decideInputLimit({
+      hint: inputLimitHint,
+      instructionsChars: instructionsText.length,
+      inputChars: inputText.length,
+    });
+    if (decision.action === "trim") {
+      const trimmed = trimTextToChars(inputText, decision.targetInputChars);
+      requestBody.input = trimmed.text;
+      await ctx.onLog(
+        "stdout",
+        `[hermes-gateway] input limit: the request (${decision.promptChars} chars) exceeds the budget of ${decision.budgetChars} chars for model ${inputLimitHint.model ?? "(unknown)"}; trimmed ${trimmed.removedChars} chars from the input before sending\n`,
       );
     }
   }
