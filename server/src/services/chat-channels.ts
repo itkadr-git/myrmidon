@@ -263,6 +263,9 @@ import { listInteractionForCallback } from "../myrmidon/owner-delivery/callback-
 // myrmidon(1.6.5-F21-AUTOCLOSE): the owner's own message in a task's chat
 // closes that task's single open owner decision, without an agent run.
 import { autoCloseOwnerDecisionOnOwnerComment } from "../myrmidon/owner-delivery/owner-autoclose.js";
+// myrmidon(1.6.5-F21-A): the wording→decision mapping that writer uses. Same
+// parse as the task-comment hook, so «2) да» means option 2 in either place.
+import { classifyOwnerReplyText } from "../myrmidon/owner-reply/owner-reply-classifier.js";
 import {
   authorizeNativeChatReviewPresentation,
   NativeChatReviewPresentationContentionError,
@@ -17083,7 +17086,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           replyText: comment.body ?? "",
           commentCreatedAt: comment.createdAt,
           commentSourceTrust: comment.sourceTrust ?? null,
-          deps: { heartbeat: options.heartbeat },
+          // myrmidon(1.6.5-F21-A): read the words with the owner-reply parser
+          // (numbers, letters, the card's recommended option) instead of the
+          // writer's built-in free-text fallback.
+          deps: { heartbeat: options.heartbeat, classifyReply: classifyOwnerReplyText },
         });
       }
       // myrmidon(X8b): resume a paused bridged conversation on a literal
