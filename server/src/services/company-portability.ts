@@ -111,6 +111,7 @@ import {
 } from "./native-runtime/provider-profile.js";
 import { managedAgentProfileService } from "./managed-agent-profiles.js";
 import { remoteAgentProfileService } from "./remote-agent-profiles.js";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const EXPORT_READ_CONCURRENCY = 8;
 const EXPORT_ISSUE_READ_CONCURRENCY = 2;
@@ -3554,7 +3555,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
   const secrets = secretService(db);
   const documentsSvc = documentService(db);
   const workProductsSvc = workProductService(db);
-  const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
+  const strictSecretsMode = readProductEnv("SECRETS_STRICT_MODE") === "true";
   const defaultSecretProvider = getConfiguredSecretProvider();
 
   async function applyImportedAgentPermissionGrants(

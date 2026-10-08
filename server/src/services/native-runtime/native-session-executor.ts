@@ -166,6 +166,7 @@ import {
   type NativeControllerIdentity,
   type NativeRestartRecoveryClaim,
 } from "./native-restart-recovery.js";
+import { deleteProductEnv, readProductEnv, readProductEnvFrom, writeProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 type ActiveNativeSession = {
   session: NativeSession;
@@ -506,7 +507,7 @@ export function buildNativeProviderEnvironment(
   );
   const environment = { ...inherited, ...configured };
   if (assignedWorkspaceCwd?.trim()) {
-    environment.PAPERCLIP_WORKSPACE_CWD = assignedWorkspaceCwd;
+    writeProductEnv(environment, "WORKSPACE_CWD", assignedWorkspaceCwd); // myrmidon(REBRAND-C)
   }
   return environment;
 }
@@ -1443,7 +1444,7 @@ function legacyCompanyNativeSessionScopeKey(
 
 function runnerdStateBase(): string {
   return (
-    process.env.PAPERCLIP_RUNNER_STATE_DIR ??
+    readProductEnv("RUNNER_STATE_DIR") ??
     resolve(
       resolvePaperclipInstanceRoot(),
       "runtime",
@@ -11465,7 +11466,7 @@ async function createRunnerdBackendWithinSessionClaim(
   // This authority bit is derived only from the selected execution target.
   // Never let an agent, environment binding, or host variable disable the
   // Codex sandbox for a local runner by supplying the same key.
-  delete effectiveRunnerEnvironmentBase.PAPERCLIP_RUNNER_EXTERNAL_SANDBOX;
+  deleteProductEnv(effectiveRunnerEnvironmentBase, "RUNNER_EXTERNAL_SANDBOX");
   const effectiveRunnerEnvironment: NodeJS.ProcessEnv = remoteRuntimeRoot
     ? {
         ...effectiveRunnerEnvironmentBase,
