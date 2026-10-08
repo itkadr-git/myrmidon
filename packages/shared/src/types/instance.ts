@@ -202,7 +202,6 @@ export interface InstanceGeneralSettings {
    */
   reviewReworkJournal?: unknown[];
   /**
-  /**
    * myrmidon(1.6.5-PAUSE-GUARD): the forgotten-pause guard — the board lifts an
    * agent the OPERATOR paused by hand once it has been paused longer than the
    * threshold (system pauses are never touched) — changed from
