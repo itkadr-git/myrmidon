@@ -127,6 +127,7 @@ import { myrmidonWorkspaceHygieneRoutes } from "./myrmidon/workspace-hygiene/ind
 // myrmidon(BOT-DISK E): host disk usage threshold and signal
 import { hostDiskRuntime, myrmidonHostDiskRoutes } from "./myrmidon/host-disk/index.js"; // myrmidon(BOT-DISK E)
 import { myrmidonDatastoreCareRoutes } from "./myrmidon/datastore-care/index.js"; // myrmidon(DBC-4)
+import { myrmidonDataRetentionRoutes } from "./myrmidon/data-retention/index.js"; // myrmidon(1.6.5-DB-RETENTION)
 import { myrmidonBotDiskLifecycleRoutes } from "./myrmidon/bot-containers/bot-disk-routes.js"; // myrmidon(BOT-DISK-A)
 import { myrmidonBotScopeRoutes } from "./myrmidon/bot-containers/scope-wiring.js"; // myrmidon(BOT-DISK-F)
 import { botWorkspacePressureFromPartition } from "./myrmidon/bot-containers/bot-workspaces-pressure.js"; // myrmidon(1.6.5-BOT-DISK-H4a)
@@ -933,6 +934,7 @@ export async function createApp(
   api.use(myrmidonWorkspaceHygieneRoutes(db)); // myrmidon(WORKSPACE-HYGIENE)
   api.use(myrmidonHostDiskRoutes(db)); // myrmidon(BOT-DISK E)
   api.use(myrmidonDatastoreCareRoutes(db)); // myrmidon(DBC-4): GET/POST /api/myrmidon/datastores*, audit reports and their .md export
+  api.use(myrmidonDataRetentionRoutes(db)); // myrmidon(1.6.5-DB-RETENTION)
   api.use(myrmidonBotDiskLifecycleRoutes(db)); // myrmidon(BOT-DISK-A)
   api.use(myrmidonBotScopeRoutes(db)); // myrmidon(BOT-DISK-F)
   api.use(myrmidonBudgetLimitsRoutes(db)); // myrmidon(1.7-BUDGET-CONFIG A): per-level spend limits, journal and usage
