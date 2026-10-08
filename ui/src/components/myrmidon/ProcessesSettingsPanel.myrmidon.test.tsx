@@ -85,7 +85,9 @@ describe("ProcessesSettingsPanel", () => {
       "Single (one process does everything)",
     );
     expect(container.querySelector('[data-testid="myrmidon-processes-notice"]')).toBeNull();
-    expect(container.textContent ?? "").toContain("Saved here");
+    // Nothing was saved on this instance, so the panel must say so instead of
+    // showing a value as if it came from the board.
+    expect(container.textContent ?? "").toContain("Source: Default");
   });
 
   it("explains a saved split that this build cannot run yet", async () => {
@@ -105,6 +107,9 @@ describe("ProcessesSettingsPanel", () => {
     expect(container.querySelector('[data-testid="myrmidon-processes-effective"]')?.textContent).toContain(
       "Single (one process does everything)",
     );
+    // The saved mode is named as saved, so the operator can tell the stored
+    // value apart from the mode in force.
+    expect(container.textContent ?? "").toContain("Source: Saved here");
   });
 
   it("sends the mode as a patch when the operator changes it", async () => {
