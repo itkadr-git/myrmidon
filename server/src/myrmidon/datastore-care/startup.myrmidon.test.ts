@@ -171,7 +171,11 @@ describe("myrmidon(DBC-4) datastore-care job", () => {
 
   it("schedules one pass per interval and stops on stop()", async () => {
     vi.useFakeTimers();
-    const { job, captured } = harness();
+    // A fresh snapshot keeps the startup catch-up out of this test: it measures
+    // the interval, and the catch-up has its own tests below.
+    const { job, captured } = harness({
+      latest: snapshotRecord("recent", new Date(NOW.getTime() - 60_000)),
+    });
 
     job.start();
     expect(job.intervalMs).toBe(3_600_000);
