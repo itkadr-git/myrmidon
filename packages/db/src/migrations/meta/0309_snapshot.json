@@ -52159,12 +52159,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "embedding": {
-          "name": "embedding",
-          "type": "vector(1024)",
-          "primaryKey": false,
-          "notNull": false
-        },
         "token_count": {
           "name": "token_count",
           "type": "integer",

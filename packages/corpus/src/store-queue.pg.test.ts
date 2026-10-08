@@ -72,9 +72,11 @@ d("corpus store/queue on embedded Postgres", () => {
   }
 
   it("migrates a clean database and is re-runnable (additive idempotency)", async () => {
-    // The harness applied every migration including 0309_corpus_module once;
-    // re-applying the corpus DDL (all statements carry IF NOT EXISTS) must not
-    // error — this proves additive idempotency.
+    // The harness applied every migration: 0309 created the corpus tables
+    // without touching pgvector (OPE-6233), and 0310 added the pgvector
+    // extension, the embedding column and the HNSW index (this test DB has
+    // pgvector installed via test-pgvector). All corpus DDL carries
+    // IF NOT EXISTS, so re-applying it must not error — additive idempotency.
     const db = createDb(testDb.connectionString);
     const ddl = rowsOf<{ n: number }>(
       await db.execute(rawSql`
@@ -83,6 +85,25 @@ d("corpus store/queue on embedded Postgres", () => {
       `),
     );
     expect(ddl[0]!.n).toBe(2);
+
+    const vectorColumns = rowsOf<{ n: number }>(
+      await db.execute(rawSql`
+        select count(*)::int as n
+        from information_schema.columns
+        where table_schema = 'public' and table_name = 'corpus_chunks' and column_name = 'embedding'
+      `),
+    );
+    expect(vectorColumns[0]!.n).toBe(1);
+
+    const vectorIndexes = rowsOf<{ n: number }>(
+      await db.execute(rawSql`
+        select count(*)::int as n
+        from pg_catalog.pg_indexes
+        where schemaname = 'public' and tablename = 'corpus_chunks'
+          and indexname = 'corpus_chunks_embedding_hnsw_idx'
+      `),
+    );
+    expect(vectorIndexes[0]!.n).toBe(1);
 
     const tables = rowsOf<{ table_name: string }>(
       await db.execute(rawSql`

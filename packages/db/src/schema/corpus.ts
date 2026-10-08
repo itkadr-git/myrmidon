@@ -1,5 +1,8 @@
 // myrmidon(CORPUS-A): corpus knowledge module tables (datasets, documents,
-// chunks with pgvector HNSW + FTS, parse job queue, per-company settings).
+// chunks with FTS, parse job queue, per-company settings). pgvector-dependent
+// objects (the embedding vector(1024) column and its HNSW index) are applied
+// by migration 0310 — not 0309 — so embedded-Postgres CI runners without
+// pgvector can boot (OPE-6233).
 import {
   pgTable,
   uuid,

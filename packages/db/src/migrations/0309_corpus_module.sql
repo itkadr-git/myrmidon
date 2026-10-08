@@ -1,8 +1,14 @@
 -- myrmidon(CORPUS-A): corpus knowledge module tables — datasets, documents,
--- chunks (pgvector HNSW + generated tsvector FTS + trigram GIN), the parse job
--- queue (idempotent on document+parser version) and per-company settings.
+-- chunks (generated tsvector FTS + trigram GIN), the parse job queue
+-- (idempotent on document+parser version) and per-company settings.
 -- Additive only: new tables and indexes, no changes to existing tables.
-CREATE EXTENSION IF NOT EXISTS vector;--> statement-breakpoint
+--
+-- NOTE (OPE-6233): this migration intentionally does NOT touch pgvector.
+-- `CREATE EXTENSION vector`, the `corpus_chunks.embedding vector(1024)` column
+-- and the HNSW index live in 0310_corpus_pgvector.sql, which raises an
+-- explicit error on clusters without pgvector. Hosted CI runners start
+-- embedded PostgreSQL without pgvector and must be able to apply this
+-- migration; production runs the pgvector-enabled image and applies 0310.
 CREATE EXTENSION IF NOT EXISTS pg_trgm;--> statement-breakpoint
 CREATE TABLE IF NOT EXISTS "corpus_datasets" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
@@ -41,7 +47,6 @@ CREATE TABLE IF NOT EXISTS "corpus_chunks" (
 	"document_id" uuid NOT NULL,
 	"chunk_index" integer NOT NULL,
 	"content" text NOT NULL,
-	"embedding" vector(1024),
 	"token_count" integer,
 	"metadata" jsonb DEFAULT '{}'::jsonb NOT NULL,
 	"fts" tsvector GENERATED ALWAYS AS (to_tsvector('english', "content")) STORED,
@@ -87,7 +92,6 @@ CREATE INDEX IF NOT EXISTS "corpus_chunks_document_idx" ON "corpus_chunks" USING
 CREATE INDEX IF NOT EXISTS "corpus_chunks_company_document_idx" ON "corpus_chunks" USING btree ("company_id","document_id");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "corpus_chunks_content_trgm_idx" ON "corpus_chunks" USING gin ("content" gin_trgm_ops);--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "corpus_chunks_fts_idx" ON "corpus_chunks" USING gin ("fts");--> statement-breakpoint
-CREATE INDEX IF NOT EXISTS "corpus_chunks_embedding_hnsw_idx" ON "corpus_chunks" USING hnsw ("embedding" vector_cosine_ops) WITH (m = 16, ef_construction = 64);--> statement-breakpoint
 CREATE UNIQUE INDEX IF NOT EXISTS "corpus_parse_jobs_document_parser_uq" ON "corpus_parse_jobs" USING btree ("document_id","parser_version");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "corpus_parse_jobs_claim_idx" ON "corpus_parse_jobs" USING btree ("status","next_attempt_at");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "corpus_parse_jobs_company_idx" ON "corpus_parse_jobs" USING btree ("company_id");--> statement-breakpoint
