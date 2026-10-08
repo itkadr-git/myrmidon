@@ -177,8 +177,32 @@ describe("continuation message character budget (DB-CARE DBC-3)", () => {
     ).toBe(true);
   });
 
-  it("does nothing when the character budget is disabled", () => {
-    const input = envelope({ messages: Array.from({ length: 50 }, (_, i) => message(`m${i}`, { body: body(2_000) })) });
-    expect(limitExecutionContinuationHistory(input, 30, 0)).toBe(input);
+  it("keeps the bodies untouched when the character budget is disabled", () => {
+    const messages = Array.from({ length: 6 }, (_, i) => message(`m${i}`, { body: body(2_000) }));
+    const input = envelope({ messages });
+
+    // 0 disables the character budget: no body becomes a reference, and with
+    // the entry cap out of reach as well the envelope comes back unchanged.
+    const budgetOff = limitExecutionContinuationHistory(input, 10, 0, 120);
+    expect(budgetOff).toBe(input);
+    expect(budgetOff.historyCharTruncation).toBeUndefined();
+
+    // The entry cap keeps running on its own and still leaves every body alone.
+    const entryCapped = limitExecutionContinuationHistory(
+      envelope({
+        messages: Array.from({ length: 50 }, (_, i) => message(`m${i}`, { body: body(2_000) })),
+      }),
+      30,
+      0,
+      120,
+    );
+    expect(entryCapped.messages).toHaveLength(30);
+    expect(
+      entryCapped.messages.every(
+        (entry) => entry.bodyOmitted !== true && entry.body.length === 2_000,
+      ),
+    ).toBe(true);
+    expect(entryCapped.historyCharTruncation).toBeUndefined();
+    expect(entryCapped.historyTruncation?.messages?.kept).toBe(30);
   });
 });
