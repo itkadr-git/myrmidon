@@ -17,10 +17,10 @@ import {
   issueThreadInteractions,
   issues,
 } from "@paperclipai/db";
-import {
-  describeEmbeddedPostgres,
-  useEmbeddedPostgres,
-} from "../../__tests__/helpers/route-test-harness.js";
+import { getEmbeddedPostgresTestSupport, useEmbeddedPostgres } from "../../__tests__/helpers/route-test-harness.js";
+
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 import {
   createOwnerCardTtlSweep,
   OWNER_CARD_EXPIRED_WAKE_IDEMPOTENCY_PREFIX,
