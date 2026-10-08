@@ -982,14 +982,20 @@ describeEmbeddedPostgres("attention service", () => {
     ]);
 
     // Assert the database result itself: JavaScript feed deduplication used to
-    // hide the thousands of full run contexts already loaded into memory.
+    // hide the thousands of full run contexts already loaded into memory. The
+    // ids now come from the thin columns with a context_snapshot coalesce
+    // fallback (these rows carry no thin columns — the historical shape).
     const rows = await listAttentionExhaustedRuns(db, companyId);
     expect(rows).toHaveLength(2);
     expect(rows.find((row) => row.id === failedId)).toMatchObject({
       exhaustionMessage: "Bounded retry exhausted receipt 2500",
-      contextSnapshot: { issueId, taskId: null },
+      runIssueId: issueId,
+      runTaskId: null,
     });
-    expect(rows.find((row) => row.id === timedOutId)?.contextSnapshot).toEqual({ issueId: null, taskId });
+    expect(rows.find((row) => row.id === timedOutId)).toMatchObject({
+      runIssueId: null,
+      runTaskId: taskId,
+    });
     expect(Buffer.byteLength(JSON.stringify(rows))).toBeLessThan(4096);
 
     const feed = await attentionService(db).list(companyId, {

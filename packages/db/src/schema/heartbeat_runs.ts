@@ -94,6 +94,19 @@ export const heartbeatRuns = pgTable(
     lastUsefulActionAt: timestamp("last_useful_action_at", { withTimezone: true }),
     nextAction: text("next_action"),
     contextSnapshot: jsonb("context_snapshot").$type<Record<string, unknown>>(),
+    // Thin projections of context_snapshot for hot list/feed queries; see
+    // run-context-columns.ts. New writes fill them; readers coalesce back to
+    // the snapshot for historical rows so the jsonb never gets detoasted for
+    // a row that already carries the column.
+    contextIssueId: text("context_issue_id"),
+    contextTaskId: text("context_task_id"),
+    contextTaskKey: text("context_task_key"),
+    contextCommentId: text("context_comment_id"),
+    contextWakeCommentId: text("context_wake_comment_id"),
+    contextWakeReason: text("context_wake_reason"),
+    contextWakeSource: text("context_wake_source"),
+    contextWakeTriggerDetail: text("context_wake_trigger_detail"),
+    contextRunSummary: text("context_run_summary"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

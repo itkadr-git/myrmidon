@@ -45,3 +45,13 @@ export { loadWithoutEmbeddedPostgresExitHooks } from "./embedded-postgres-lifecy
 export { issueRelations } from "./schema/issue_relations.js";
 export { issueReferenceMentions } from "./schema/issue_reference_mentions.js";
 export * from "./schema/index.js";
+export {
+  runContextPersistenceFields,
+  runContextWritePatch,
+  readRunContextColumnValues,
+  heartbeatRunListContextColumnProjections,
+  attentionRunIssueTaskColumns,
+  HEARTBEAT_RUN_CONTEXT_SUMMARY_MAX_CHARS,
+  RUN_CONTEXT_CONTINUATION_KEY,
+  type HeartbeatRunContextColumnValues,
+} from "./run-context-columns.js";

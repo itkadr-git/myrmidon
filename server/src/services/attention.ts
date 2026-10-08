@@ -1783,7 +1783,9 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       }
 
       const failedRows = await listAttentionExhaustedRuns(db, companyId);
-      const failedIssueIds = failedRows.map((row) => readRunIssueId(row.contextSnapshot));
+      const failedIssueIds = failedRows.map((row) =>
+        readRunIssueId({ issueId: row.runIssueId, taskId: row.runTaskId }),
+      );
       const [failedIssueMap, failedImageMap, newerRunKeys] = await Promise.all([
         issueSummaryMap(
           db,
@@ -1801,8 +1803,8 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           ? db.execute(sql<{ run_id: string }>`
               select k.run_id from (values ${sql.join(
                 failedRows.map((row) => {
-                  const issueId = row.contextSnapshot?.issueId;
-                  const taskId = row.contextSnapshot?.taskId;
+                  const issueId = row.runIssueId;
+                  const taskId = row.runTaskId;
                   return sql`(${row.id}::uuid, ${row.agentId}::uuid, ${typeof issueId === "string" && issueId.length > 0 ? issueId : null}::text, ${typeof taskId === "string" && taskId.length > 0 ? taskId : null}::text, ${row.createdAt.toISOString()}::timestamptz)`;
                 }),
                 sql`, `,
@@ -1840,7 +1842,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       for (const run of failedRows) {
         if (suppressedRunIds.has(run.id)) continue;
 
-        const issueId = readRunIssueId(run.contextSnapshot);
+        const issueId = readRunIssueId({ issueId: run.runIssueId, taskId: run.runTaskId });
         const issue = issueId ? failedIssueMap.get(issueId) ?? null : null;
         const dedupKey = `run:${run.id}`;
         add(createItem({
