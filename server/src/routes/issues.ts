@@ -3021,20 +3021,7 @@ class AutoApprovalIssueMissingError extends Error {
   }
 }
 
-// myrmidon(F16): compact row with `description` optionally omitted — the
-// agent-defaults list strips the megabyte-sized field from agent responses.
-export type CompactIssueMaybeNoDescription = Omit<CompactIssue, "description"> & {
-  description?: Issue["description"];
-};
-
-function toCompactIssue(
-  issue: any,
-  // myrmidon(F16): true for an agent actor with the agent defaults on — the
-  // compact row then omits `description` (the field that makes the bare agent
-  // list response megabyte-sized).
-  opts?: { omitDescription?: boolean },
-): CompactIssueMaybeNoDescription {
-  const omitDescription = opts?.omitDescription === true;
+function toCompactIssue(issue: any): CompactIssue {
   return {
     id: issue.id,
     companyId: issue.companyId,
@@ -3043,9 +3030,7 @@ function toCompactIssue(
     goalId: issue.goalId,
     parentId: issue.parentId,
     title: issue.title,
-    // myrmidon(F16): the agent compact row omits `description` — the agent
-    // fetches the body of the one issue it needs via the detail endpoint.
-    ...(omitDescription ? {} : { description: issue.description }),
+    description: issue.description,
     status: issue.status,
     workMode: issue.workMode,
     priority: issue.priority,
@@ -3104,7 +3089,7 @@ function toCompactIssue(
   };
 }
 
-function compactIssueListEtag(issues: CompactIssueMaybeNoDescription[]): string {
+function compactIssueListEtag(issues: CompactIssue[]): string {
   const hash = createHash("sha256")
     .update(JSON.stringify(issues))
     .digest("base64url");
@@ -8307,18 +8292,24 @@ export function issueRoutes(
               else recoveryActionByIssue.delete(issue.id);
             }),
           );
-          const compactResult = result.map((issue) =>
-            toCompactIssue(
-              {
-                ...issue,
-                activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
-                successfulRunHandoff: handoffStates.get(issue.id) ?? null,
-              },
-              // myrmidon(F16): the agent compact row omits `description` —
-              // the ETag below is computed from this already-trimmed body.
-              { omitDescription: agentDefaultsEnabled },
-            ),
+          let compactResult = result.map((issue) =>
+            toCompactIssue({
+              ...issue,
+              activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
+              successfulRunHandoff: handoffStates.get(issue.id) ?? null,
+            }),
           );
+          // myrmidon(F16): the agent compact row omits `description` — the
+          // field that makes the bare agent list response megabyte-sized;
+          // the agent fetches the body via the detail endpoint. The ETag is
+          // computed from this already-trimmed body (and the trim flag is in
+          // the request key), so agent/board bodies never share an ETag.
+          if (agentDefaultsEnabled) {
+            compactResult = compactResult.map((row) => {
+              const { description: _omitted, ...trimmed } = row;
+              return trimmed as CompactIssue;
+            });
+          }
           return {
             kind: "compact",
             body: compactResult,
