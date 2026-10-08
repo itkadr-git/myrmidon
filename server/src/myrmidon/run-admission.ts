@@ -326,6 +326,37 @@ export function readCgroupFreeMemoryBytes(
   return limit.known ? limit.freeBytes : null;
 }
 
+/**
+ * myrmidon(1.6.5 C0-ui): the cgroup memory of this process as three numbers —
+ * the limit, the effective usage (current minus the reclaimable inactive page
+ * cache) and the free headroom — or null when there is no cgroup v2 limit to
+ * read (cgroup v1, `memory.max` is "max", a file is unreadable). The load
+ * screen reports these; the admission's memory guard decides on the same
+ * `freeBytes` rule.
+ */
+export function readCgroupMemoryUsageBytes(
+  root = "/sys/fs/cgroup",
+  readFile: (path: string) => string = (path) => readFileSync(path, "utf8"),
+): { limitBytes: number; usedBytes: number; freeBytes: number } | null {
+  let maxRaw: string;
+  let currentRaw: string;
+  let statRaw: string;
+  try {
+    maxRaw = readFile(`${root}/memory.max`).trim();
+    currentRaw = readFile(`${root}/memory.current`).trim();
+    statRaw = readFile(`${root}/memory.stat`);
+  } catch {
+    return null;
+  }
+  if (maxRaw === "max") return null;
+  const limitBytes = Number(maxRaw);
+  const current = Number(currentRaw);
+  if (!Number.isFinite(limitBytes) || !Number.isFinite(current)) return null;
+  const inactive = Number(/^inactive_file (\d+)$/m.exec(statRaw)?.[1] ?? 0);
+  const usedBytes = Math.max(0, current - inactive);
+  return { limitBytes, usedBytes, freeBytes: limitBytes - usedBytes };
+}
+
 /** myrmidon(1.6.2 RUN-ADMISSION): the host's memory, or why it cannot be read. */
 export type HostMemoryReading =
   | { known: true; availableBytes: number; totalBytes: number }
@@ -624,6 +655,26 @@ export interface HostMemoryGate {
   heldSince: Date | null;
 }
 
+/**
+ * myrmidon(1.6.5 C0-ui): the memory the run-load screen is about — the host's
+ * memory and the server container's own cgroup usage. Read with the same
+ * primitives `reserve` gates on, so the screen and the admission never
+ * disagree. `container` is null when the process is not in a cgroup v2 with
+ * a limit or the files cannot be read — the screen shows nothing rather than
+ * a number it made up. The snapshot does not decide admission.
+ */
+export interface RunMemorySnapshot {
+  host: {
+    availableMb: number;
+    totalMb: number;
+  } | null;
+  container: {
+    limitMb: number;
+    usedMb: number;
+    freeMb: number;
+  } | null;
+}
+
 /** myrmidon(1.6.5 RUN-ADMISSION): the host CPU ceiling as the admission sees it now. */
 export interface HostCpuGate {
   /** `off`: no ceiling set; `unknown`: load unreadable (ceiling inactive); `open`/`closed`. */
@@ -741,6 +792,13 @@ export interface RunAdmission {
    * does not pile wakes onto a saturated host.
    */
   hostCpuGate(): HostCpuGate;
+  /**
+   * myrmidon(1.6.5 C0-ui): the host memory and the server container's own
+   * cgroup usage as the admission reads them, for the run-load screen. Reads
+   * the same files `reserve` gates on; takes no slot. `container` is null
+   * when there is no cgroup v2 limit to read.
+   */
+  memorySnapshot(): RunMemorySnapshot;
 }
 
 export function createRunAdmission(options: {
@@ -1218,6 +1276,30 @@ export function createRunAdmission(options: {
       const at = now();
       prune(at);
       return evaluateHostCpuGate(at);
+    },
+    // myrmidon(1.6.5 C0-ui): the memory the run-load screen is about — the
+    // host's memory and the server container's own cgroup usage, read with
+    // the same probes `reserve` gates on (`hostMemory` for the host floor,
+    // `freeMemoryBytes` for the container budget; the usage split for the
+    // screen comes from the same cgroup files). A side that cannot be read
+    // is null rather than an invented number; the snapshot decides nothing.
+    memorySnapshot(): RunMemorySnapshot {
+      const reading = hostMemory();
+      const host = reading.known
+        ? {
+            availableMb: Math.floor(reading.availableBytes / MB),
+            totalMb: Math.floor(reading.totalBytes / MB),
+          }
+        : null;
+      const usage = readCgroupMemoryUsageBytes();
+      const container: RunMemorySnapshot["container"] = usage
+        ? {
+            limitMb: Math.floor(usage.limitBytes / MB),
+            usedMb: Math.floor(usage.usedBytes / MB),
+            freeMb: Math.floor(usage.freeBytes / MB),
+          }
+        : null;
+      return { host, container };
     },
   };
 }
