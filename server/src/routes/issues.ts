@@ -6,6 +6,7 @@ import { getExecutionBlocker } from "../services/execution-blocker.js";
 // myrmidon(L2): clears a closed "do not replay" hold on plain resolve;
 // see docs/myrmidon/DIVERGENCE.md "L2".
 import { clearSettledReplayBlock } from "../myrmidon/settled-holds/clear.js";
+import { supersedeExplicitWakeSettledHold } from "../myrmidon/settled-holds/supersede-explicit-wake.js";
 // myrmidon(HOLD-READY): a board unblock (out of blocked, or a reassignment)
 // clears the issue's settled replay hold and re-plans its parked wakes.
 import {
@@ -16,7 +17,7 @@ import {
   replanParkedWakesAfterUnblock,
   type HumanUnblockResult,
 } from "../myrmidon/settled-holds/human-unblock.js";
-import { extractIssueReferenceIdentifiers, requiresExecutionReconciliation } from "@paperclipai/shared";
+import { extractIssueReferenceIdentifiers, requiresExecutionReconciliation, EXECUTION_RECONCILIATION_CAUSES } from "@paperclipai/shared";
 import {
   validateExecutionReconciliation,
   markExecutionReconciliation,
@@ -9740,6 +9741,179 @@ export function issueRoutes(
           activeRecoveryAction: null,
         },
         recoveryAction: result.recoveryAction,
+      });
+    },
+  );
+
+  // myrmidon(OPE-6011): the explicit-exit route for a settled
+  // execution-reconciliation hold ("execution_reconciliation_required"). A
+  // person (or the task's own assignee) attests the failed run performed no
+  // external action, the blocking "do not replay" record is superseded, and
+  // the assignee is woken explicitly so the held task can resume. Called
+  // from the attention feed's execution_hold card and from the task's own
+  // hold banner; see server/src/myrmidon/execution-hold/attention.ts.
+  router.post(
+    "/issues/:id/execution-hold/confirm-continue",
+    async (req, res) => {
+      const id = req.params.id as string;
+      const existing = await getAccessibleResource(
+        req,
+        res,
+        svc.getById(id),
+        "Issue not found",
+      );
+      if (!existing) return;
+      if (!(await assertIssueReadAllowed(req, res, existing))) return;
+      if (
+        await assertLowTrustControlPlaneDenied(
+          req,
+          res,
+          existing.companyId,
+          existing,
+        )
+      )
+        return;
+
+      const actor = getActorInfo(req);
+      // A person (the operator or the task's owner) is always allowed. An
+      // agent may confirm only for the task assigned to it — the agent is
+      // attesting about *its own* failed run, never about another agent's.
+      if (req.actor.type === "agent") {
+        if (!req.actor.agentId || existing.assigneeAgentId !== req.actor.agentId) {
+          throw forbidden("Only the assignee can confirm an execution hold for this task", {
+            issueId: existing.id,
+            assigneeAgentId: existing.assigneeAgentId,
+            actorAgentId: req.actor.agentId ?? null,
+            source: "execution_hold_confirm_continue",
+            securityPrinciples: [
+              "Least Privilege",
+              "Complete Mediation",
+              "Secure Defaults",
+            ],
+          });
+        }
+      }
+
+      const result = await db.transaction(async (tx) => {
+        const lockedIssue = await tx
+          .select()
+          .from(issueRows)
+          .where(
+            and(
+              eq(issueRows.companyId, existing.companyId),
+              eq(issueRows.id, existing.id),
+            ),
+          )
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        if (!lockedIssue) throw notFound("Issue not found");
+
+        // Newest effective settled blocker — the same record
+        // execution-blocker.ts's non-explicit read would hold on.
+        const [blocker] = await tx
+          .select()
+          .from(issueRecoveryActions)
+          .where(
+            and(
+              eq(issueRecoveryActions.companyId, lockedIssue.companyId),
+              eq(issueRecoveryActions.sourceIssueId, lockedIssue.id),
+              inArray(issueRecoveryActions.cause, [...EXECUTION_RECONCILIATION_CAUSES]),
+              inArray(issueRecoveryActions.status, ["resolved", "cancelled"]),
+            ),
+          )
+          .orderBy(desc(issueRecoveryActions.updatedAt), desc(issueRecoveryActions.id))
+          .limit(1);
+        const blockerRecovery = blocker
+          ? ((blocker.evidence.automaticRecovery ?? null) as Record<string, unknown> | null)
+          : null;
+        if (!blocker || blockerRecovery?.replay !== "blocked") {
+          throw notFound("No execution hold on this task", {
+            issueId: lockedIssue.id,
+          });
+        }
+
+        const supersededAction = await supersedeExplicitWakeSettledHold({
+          db: tx as unknown as Db,
+          issueId: lockedIssue.id,
+          companyId: lockedIssue.companyId,
+          successorRunId: null,
+          requestedByActorType: req.actor.type === "agent" ? "agent" : "user",
+          requestedByActorId: actor.actorId,
+        });
+        if (!supersededAction) {
+          throw conflict("The failed run has not released its execution claim yet; the hold cannot be confirmed", {
+            issueId: lockedIssue.id,
+          });
+        }
+
+        const postCommitActivityPublications: ActivityPublication[] = [];
+        // The row was just updated inside this same transaction by the
+        // supersede above; the activity must see the final row, so write it
+        // after the supersede's own write (drizzle serialises them).
+        await logActivity(
+          tx as unknown as Db,
+          {
+            companyId: lockedIssue.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "issue.execution_hold_confirmed",
+            entityType: "issue",
+            entityId: lockedIssue.id,
+            details: {
+              recoveryActionId: blocker.id,
+              cause: blocker.cause,
+              supersededCount: supersededAction.supersededCount,
+            },
+          },
+          postCommitActivityPublications,
+        );
+        return { issue: lockedIssue, blocker, supersededAction, postCommitActivityPublications };
+      });
+
+      for (const publication of result.postCommitActivityPublications)
+        publishActivity(publication);
+
+      // Wake the assignee explicitly — an on_demand/manual wake with the
+      // confirming person as the requester IS an explicit wake per
+      // wake-classification, so it bypasses any (already-superseded) hold and
+      // starts the run now.
+      if (result.issue.assigneeAgentId) {
+        try {
+          await heartbeat.wakeup(result.issue.assigneeAgentId, {
+            source: "on_demand",
+            triggerDetail: "manual",
+            reason: "issue_execution_hold_confirmed",
+            payload: {
+              issueId: result.issue.id,
+              recoveryActionId: result.blocker.id,
+            },
+            contextSnapshot: {
+              issueId: result.issue.id,
+              taskId: result.issue.id,
+              wakeReason: "issue_execution_hold_confirmed",
+            },
+            requestedByActorType: req.actor.type === "agent" ? "agent" : "user",
+            requestedByActorId: actor.actorId,
+          });
+        } catch (err) {
+          logger.warn(
+            {
+              err,
+              issueId: result.issue.id,
+              agentId: result.issue.assigneeAgentId,
+            },
+            "failed to wake agent after execution hold confirmation",
+          );
+        }
+      }
+
+      res.json({
+        issueId: result.issue.id,
+        recoveryActionId: result.blocker.id,
+        supersededCount: result.supersededAction.supersededCount,
+        assigneeWoken: result.issue.assigneeAgentId != null,
       });
     },
   );
