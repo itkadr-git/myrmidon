@@ -2091,12 +2091,17 @@ describe("native provider bootstrap environment", () => {
       buildNativeProviderEnvironment(
         {
           PAPERCLIP_WORKSPACE_CWD: "/untrusted/configured-workspace",
+          MYRMIDON_WORKSPACE_CWD: "/untrusted/configured-workspace",
         },
         { HOME: "/Users/runner" },
         "/Users/runner/.paperclip/instances/default/workspaces/agent-1",
       ),
     ).toEqual({
       HOME: "/Users/runner",
+      // myrmidon(REBRAND-C): the server-assigned value is written under both names
+      // (writeProductEnv) so the new name and the one-release alias resolve identically.
+      MYRMIDON_WORKSPACE_CWD:
+        "/Users/runner/.paperclip/instances/default/workspaces/agent-1",
       PAPERCLIP_WORKSPACE_CWD:
         "/Users/runner/.paperclip/instances/default/workspaces/agent-1",
     });

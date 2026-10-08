@@ -32,6 +32,7 @@ import { logger } from "../middleware/logger.js";
 import { decideAgentSelfConfigUpdate } from "../myrmidon/agent-self-update.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { grantsForHumanRole, normalizeHumanRole } from "./company-member-roles.js";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export type AuthorizationActor =
   {
@@ -482,8 +483,8 @@ type ResponsibleUserActorWithMemo = AuthorizationActor & {
 };
 
 export function responsibleUserAuthzShadowMode() {
-  const mode = process.env.PAPERCLIP_RESPONSIBLE_USER_AUTHZ_MODE?.trim().toLowerCase();
-  const shadow = process.env.PAPERCLIP_RESPONSIBLE_USER_AUTHZ_SHADOW?.trim().toLowerCase();
+  const mode = readProductEnv("RESPONSIBLE_USER_AUTHZ_MODE")?.trim().toLowerCase();
+  const shadow = readProductEnv("RESPONSIBLE_USER_AUTHZ_SHADOW")?.trim().toLowerCase();
   return mode === "shadow" || shadow === "1" || shadow === "true" || shadow === "yes";
 }
 

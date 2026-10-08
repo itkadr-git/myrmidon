@@ -4,6 +4,7 @@ import { existsSync, realpathSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { parseBuildCommit, readBuildCommit } from "./build-commit.js";
 import { parseBuildVersion, readBuildVersion } from "./build-version.js";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 type PackageJson = {
   version?: string;
@@ -22,7 +23,7 @@ const GIT_DESCRIBE_RE =
   /^v(?<publicVersion>\d+\.\d+\.\d+)-(?<commitsSinceTag>\d+)-g(?<sha>[0-9a-f]{7,40})(?<dirty>-dirty)?$/i;
 
 function defaultDebugLog(fields: Record<string, unknown>, message: string): void {
-  if (process.env.PAPERCLIP_DEBUG_VERSION_RESOLUTION !== "1") return;
+  if (readProductEnv("DEBUG_VERSION_RESOLUTION") !== "1") return;
 
   console.debug(message, fields);
 }

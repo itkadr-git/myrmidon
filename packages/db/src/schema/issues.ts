@@ -88,6 +88,12 @@ export const issues = pgTable(
     hiddenAt: timestamp("hidden_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    // myrmidon(DB-PERF-P7): denormalized "last activity" of an issue —
+    // greatest(updated_at, newest comment, newest activity_log row outside the
+    // local-inbox actions). Kept current by the triggers of migration 0307;
+    // the issue list orders and reports by this column instead of running two
+    // correlated MAX subqueries per candidate row.
+    lastActivityAt: timestamp("last_activity_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
     conversationIdentityIdx: uniqueIndex("issues_conversation_identity_idx").on(table.companyId, table.conversationAgentId, table.conversationUserId),
@@ -121,6 +127,8 @@ export const issues = pgTable(
     executionWorkspaceIdx: index("issues_company_execution_workspace_idx").on(table.companyId, table.executionWorkspaceId),
     dueMonitorIdx: index("issues_company_monitor_due_idx").on(table.companyId, table.monitorNextCheckAt),
     companyUpdatedIdx: index("issues_company_updated_idx").on(table.companyId, table.updatedAt),
+    // myrmidon(DB-PERF-P7): the issue list sorts by company and last activity.
+    companyLastActivityIdx: index("issues_company_last_activity_at_idx").on(table.companyId, table.lastActivityAt),
     companyCreatedIdx: index("issues_company_created_idx").on(table.companyId, table.createdAt),
     openNormalizedTitleCreatedIdx: index("issues_open_normalized_title_created_idx")
       .on(
@@ -146,6 +154,15 @@ export const issues = pgTable(
     identifierIdx: uniqueIndex("issues_identifier_idx").on(table.identifier),
     titleSearchIdx: index("issues_title_search_idx").using("gin", table.title.op("gin_trgm_ops")),
     identifierSearchIdx: index("issues_identifier_search_idx").using("gin", table.identifier.op("gin_trgm_ops")),
+    // myrmidon(PERF-DIET-P): company search matches `coalesce(identifier, '')`
+    // ILIKE '%…%' in its artifact branches (server/src/services/company-search.ts,
+    // company-artifacts.ts). The coalesce wrapper prevents the planner from using
+    // the plain-column trgm index above; this expression index matches the emitted
+    // expression exactly.
+    coalescedIdentifierSearchIdx: index("issues_coalesced_identifier_search_idx").using(
+      "gin",
+      sql`(coalesce(${table.identifier}, '')) gin_trgm_ops`,
+    ),
     descriptionSearchIdx: index("issues_description_search_idx").using("gin", table.description.op("gin_trgm_ops")),
     openRoutineExecutionIdx: uniqueIndex("issues_open_routine_execution_uq")
       .on(table.companyId, table.originKind, table.originId, table.originFingerprint)

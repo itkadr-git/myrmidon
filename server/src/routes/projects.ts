@@ -44,6 +44,7 @@ import { appendWithCap } from "../adapters/utils.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { environmentService } from "../services/environments.js";
 import { secretService } from "../services/secrets.js";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const WORKSPACE_CONTROL_OUTPUT_MAX_CHARS = 256 * 1024;
 const SHARED_WORKSPACE_STOP_AND_RESTART_ACTIONS = new Set(["stop", "restart"]);
@@ -72,7 +73,7 @@ export function projectRoutes(db: Db) {
   const externalObjectsSvc = externalObjectService(db, {
     enabled: async () => (await instanceSettings.getExperimental()).enableExternalObjects === true,
   });
-  const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
+  const strictSecretsMode = readProductEnv("SECRETS_STRICT_MODE") === "true";
   const environmentsSvc = environmentService(db);
 
   /**

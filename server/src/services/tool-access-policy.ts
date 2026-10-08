@@ -44,6 +44,18 @@ import type {
 } from "@paperclipai/shared";
 import { toolPolicyConditionsSchema } from "@paperclipai/shared";
 import { badRequest, conflict, notFound, unprocessable } from "../errors.js";
+// myrmidon(DB-PERF-C-P4): the policy, profile, binding and profile-entry reads of the
+// access decision go through the TTL cache below; the same module invalidates a
+// company's snapshot after every commit that changes one of those tables.
+import {
+  invalidateToolPolicyCache,
+  readToolPolicySnapshot,
+} from "../myrmidon/tool-policy-cache/runtime.js";
+import {
+  selectEntriesForProfiles,
+  selectProfilesByIds,
+  type ToolPolicySnapshot,
+} from "../myrmidon/tool-policy-cache/snapshot.js";
 import {
   effectiveToolProfileBindings,
   profileIdsInBindingOrder,
@@ -695,7 +707,7 @@ export function toolAccessPolicyService(db: Db) {
       throw badRequest("policyIds must not contain duplicates");
     }
 
-    return db.transaction(async (tx) => {
+    const ordered = await db.transaction(async (tx) => {
       const rows = await tx
         .update(toolPolicies)
         .set({ updatedAt: sql`${toolPolicies.updatedAt}` })
@@ -733,6 +745,9 @@ export function toolAccessPolicyService(db: Db) {
       emitToolPolicyChanged();
       return result;
     });
+    // myrmidon(DB-PERF-C-P4): the priorities changed; drop the company snapshot after the commit.
+    invalidateToolPolicyCache(db, companyId);
+    return ordered;
   }
 
   async function duplicatePolicy(input: {
@@ -775,6 +790,9 @@ export function toolAccessPolicyService(db: Db) {
       })
       .returning();
     emitToolPolicyChanged();
+    // myrmidon(DB-PERF-C-P4): the company gained a policy row (disabled, but the snapshot
+    // must not keep serving the previous set); drop it after the commit.
+    invalidateToolPolicyCache(db, input.companyId);
     return policy;
   }
 
@@ -804,6 +822,8 @@ export function toolAccessPolicyService(db: Db) {
       })
       .returning();
     emitToolPolicyChanged();
+    // myrmidon(DB-PERF-C-P4): a new policy changes the decision set; drop the company snapshot.
+    invalidateToolPolicyCache(db, companyId);
     return policy;
   }
 
@@ -834,6 +854,8 @@ export function toolAccessPolicyService(db: Db) {
       .where(eq(toolPolicies.id, existing.id))
       .returning();
     emitToolPolicyChanged();
+    // myrmidon(DB-PERF-C-P4): the stored policy changed; drop the company snapshot.
+    invalidateToolPolicyCache(db, input.companyId);
     return policy;
   }
 
@@ -844,6 +866,8 @@ export function toolAccessPolicyService(db: Db) {
       .where(eq(toolPolicies.id, existing.id))
       .returning();
     emitToolPolicyChanged();
+    // myrmidon(DB-PERF-C-P4): the policy is gone; drop the company snapshot.
+    invalidateToolPolicyCache(db, input.companyId);
     return deleted;
   }
 
@@ -1013,15 +1037,23 @@ export function toolAccessPolicyService(db: Db) {
     };
   }
 
-  async function effectiveProfiles(ctx: ToolAccessContext) {
-    const bindings = await db.select().from(toolProfileBindings).where(eq(toolProfileBindings.companyId, ctx.companyId));
+  async function effectiveProfiles(ctx: ToolAccessContext, snapshot: ToolPolicySnapshot | null) {
+    // myrmidon(DB-PERF-C-P4): bindings, profiles and entries come from the company
+    // snapshot of the TTL cache. `null` means the cache is switched off
+    // (`ttlMs: 0`): the original queries run unchanged, statement for statement,
+    // and the in-memory selections below are skipped.
+    const bindings = snapshot
+      ? snapshot.bindings
+      : await db.select().from(toolProfileBindings).where(eq(toolProfileBindings.companyId, ctx.companyId));
     const matchingBindings = bindings.filter((binding) => targetMatches(binding, ctx));
     if (matchingBindings.length === 0) return { profiles: [], entries: [] as Array<typeof toolProfileEntries.$inferSelect> };
     const candidateProfileIds = profileIdsInBindingOrder(matchingBindings);
-    const candidateProfiles = await db.select().from(toolProfiles).where(and(
-      eq(toolProfiles.companyId, ctx.companyId),
-      inArray(toolProfiles.id, candidateProfileIds),
-    ));
+    const candidateProfiles = snapshot
+      ? selectProfilesByIds(snapshot.profiles, candidateProfileIds)
+      : await db.select().from(toolProfiles).where(and(
+        eq(toolProfiles.companyId, ctx.companyId),
+        inArray(toolProfiles.id, candidateProfileIds),
+      ));
     const [gateway] = ctx.gatewayId
       ? await db
           .select({ defaultProfileMode: toolMcpGateways.defaultProfileMode })
@@ -1044,9 +1076,11 @@ export function toolAccessPolicyService(db: Db) {
       .map((profileId) => profilesById.get(profileId) ?? null)
       .filter((profile): profile is typeof toolProfiles.$inferSelect => Boolean(profile && profile.status === "active"));
     const activeProfileIds = activeProfiles.map((profile) => profile.id);
-    const entries = activeProfileIds.length > 0
-      ? await db.select().from(toolProfileEntries).where(and(eq(toolProfileEntries.companyId, ctx.companyId), inArray(toolProfileEntries.profileId, activeProfileIds)))
-      : [];
+    const entries = snapshot
+      ? selectEntriesForProfiles(snapshot.entries, activeProfileIds)
+      : activeProfileIds.length > 0
+        ? await db.select().from(toolProfileEntries).where(and(eq(toolProfileEntries.companyId, ctx.companyId), inArray(toolProfileEntries.profileId, activeProfileIds)))
+        : [];
     return { profiles: activeProfiles, entries };
   }
 
@@ -1143,6 +1177,10 @@ export function toolAccessPolicyService(db: Db) {
       .update(toolPolicies)
       .set({ config: { ...config, trustRule: nextRule }, updatedAt: now })
       .where(eq(toolPolicies.id, policy.id));
+    // myrmidon(DB-PERF-C-P4): the hit counter lives in the policy row, so the company
+    // snapshot holds a stale config from here on; drop it after the commit. The
+    // counters, audit events and grants below stay direct reads and writes.
+    invalidateToolPolicyCache(db, ctx.companyId);
     await db.insert(toolAccessAuditEvents).values({
       companyId: ctx.companyId,
       connectionId: ctx.connectionId,
@@ -1190,9 +1228,13 @@ export function toolAccessPolicyService(db: Db) {
     const loaded = await loadContext(input);
     if (!loaded.ok) return loaded.decision;
     const { ctx, redaction } = loaded;
-    const profileState = await effectiveProfiles(ctx);
+    // myrmidon(DB-PERF-C-P4): one cache read per decision serves both the profile
+    // state and the enabled policies; a null snapshot means the cache is off and
+    // both fall back to the statements they used before the cache existed.
+    const policySnapshot = await readToolPolicySnapshot(db, ctx.companyId);
+    const profileState = await effectiveProfiles(ctx, policySnapshot);
     const effectiveProfileIds = profileState.profiles.map((profile) => profile.id);
-    const policies = await db.select().from(toolPolicies).where(and(eq(toolPolicies.companyId, ctx.companyId), eq(toolPolicies.enabled, true))).orderBy(asc(toolPolicies.priority), asc(toolPolicies.createdAt));
+    const policies = policySnapshot?.policies ?? (await db.select().from(toolPolicies).where(and(eq(toolPolicies.companyId, ctx.companyId), eq(toolPolicies.enabled, true))).orderBy(asc(toolPolicies.priority), asc(toolPolicies.createdAt)));
     for (const policy of policies) {
       const conditions = policyConditions(policy);
       if (conditions && selectorMatches(policy.selectors, ctx)) {
@@ -1743,6 +1785,9 @@ export function toolAccessPolicyService(db: Db) {
       updatedAt: now,
     }).returning();
 
+    // myrmidon(DB-PERF-C-P4): a new trust rule is an enabled policy; drop the company snapshot.
+    invalidateToolPolicyCache(db, input.companyId);
+
     await db.insert(toolAccessAuditEvents).values({
       companyId: input.companyId,
       connectionId: invocation.connectionId,
@@ -1830,6 +1875,9 @@ export function toolAccessPolicyService(db: Db) {
       })
       .where(eq(toolPolicies.id, existing.id))
       .returning();
+    // myrmidon(DB-PERF-C-P4): the rule is revoked (disabled) and its config changed;
+    // drop the company snapshot after the commit.
+    invalidateToolPolicyCache(db, input.companyId);
     await db.insert(toolAccessAuditEvents).values({
       companyId: input.companyId,
       actorType: input.actor?.agentId ? "agent" : input.actor?.userId ? "user" : "system",

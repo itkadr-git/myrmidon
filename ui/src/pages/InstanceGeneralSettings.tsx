@@ -21,20 +21,26 @@ import { MaintenanceSettingsPanel } from "@/components/myrmidon/MaintenanceSetti
 import { RuntimeLimitsSettingsPanel } from "@/components/myrmidon/RuntimeLimitsSettingsPanel"; // myrmidon(C0)
 // myrmidon(PAUSE-GUARD): the forgotten-pause guard, next to the run limits
 import { PauseGuardSettingsPanel } from "@/components/myrmidon/PauseGuardSettingsPanel";
+import { RunQueuePrioritySettingsPanel } from "@/components/myrmidon/RunQueuePrioritySettingsPanel"; // myrmidon(1.6.5 RUN-PRIORITY B)
+import { RunStallSettingsPanel } from "@/components/myrmidon/RunStallSettingsPanel"; // myrmidon(RUN-STALL-SETTINGS)
 import { BudgetEnforcementSettingsPanel } from "@/components/myrmidon/BudgetEnforcementSettingsPanel"; // myrmidon(1.7-BUDGET-CONFIG-B)
 import { TelegramDmProgressSettingsPanel } from "@/components/myrmidon/TelegramDmProgressSettingsPanel"; // myrmidon(DM-PROGRESS)
 import { HostDiskSettingsPanel } from "@/components/myrmidon/HostDiskSettingsPanel"; // myrmidon(BOT-DISK E)
 import { PromptBudgetSettingsPanel } from "@/components/myrmidon/PromptBudgetSettingsPanel"; // myrmidon(1.6.3 PROMPT-BUDGET B)
+import { DataRetentionSettingsPanel } from "@/components/myrmidon/DataRetentionSettingsPanel"; // myrmidon(1.6.5-DB-RETENTION)
 import { BotDiskSettingsPanel } from "@/components/myrmidon/BotDiskSettingsPanel"; // myrmidon(1.6.1-BOT-DISK-B)
 import { BotScopePanel } from "@/components/myrmidon/BotScopePanel"; // myrmidon(BOT-DISK-F)
 import { BotDiskQuotaSettingsPanel } from "@/components/myrmidon/BotDiskQuotaSettingsPanel"; // myrmidon(1.6.1-BOT-DISK-C)
 import { BotImageRolloutSettingsPanel } from "@/components/myrmidon/BotImageRolloutSettingsPanel"; // myrmidon(BOT-ROLLOUT)
+import { SessionGenerationsSettingsPanel } from "@/components/myrmidon/SessionGenerationsSettingsPanel"; // myrmidon(PERF-DIET-K)
 import { AgentMemorySettingsPanel } from "@/components/myrmidon/AgentMemorySettingsPanel"; // myrmidon(MEMORY-UI)
 import { ParallelHelpersSettingsPanel } from "@/components/myrmidon/ParallelHelpersSettingsPanel"; // myrmidon(PARALLEL-HELPERS)
 import { TeamLivenessSettingsPanel } from "@/components/myrmidon/TeamLivenessSettingsPanel"; // myrmidon(TEAM-LIVENESS-SETTINGS)
+import { ToolPolicyCacheSettingsPanel } from "@/components/myrmidon/ToolPolicyCacheSettingsPanel"; // myrmidon(DB-PERF-C-P4)
 import { BotLspSettingsPanel } from "@/components/myrmidon/BotLspSettingsPanel"; // myrmidon(BOT-LSP-DEFAULTS)
 import { SwarmClaimSettingsPanel } from "@/components/myrmidon/SwarmClaimSettingsPanel"; // myrmidon(1.6.1 SWARM-SETTINGS-UI)
 import { ReviewReworkSettingsPanel } from "@/components/myrmidon/ReviewReworkSettingsPanel"; // myrmidon(REVIEW-REWORK)
+import { ForagingSettingsPanel } from "@/components/myrmidon/ForagingSettingsPanel"; // myrmidon(1.6.1-FORAGING-LIMITS-UI)
 import { AboutSettingsPanel } from "@/components/myrmidon/AboutSettingsPanel"; // myrmidon(ABOUT)
 import { DeployJobsPanel } from "@/components/myrmidon/DeployJobsPanel"; // myrmidon(R5-A)
 import { PluginEntitlementSettings } from "@/components/myrmidon/PluginEntitlementSettingsPanel"; // myrmidon(PLUGIN-ENTITLEMENT C)
@@ -160,20 +166,26 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       <MaintenanceSettingsPanel /> {/* myrmidon(R3) */}
       <RuntimeLimitsSettingsPanel /> {/* myrmidon(C0) */}
       <PauseGuardSettingsPanel /> {/* myrmidon(PAUSE-GUARD) */}
+      <RunQueuePrioritySettingsPanel /> {/* myrmidon(1.6.5 RUN-PRIORITY B) */}
+      <RunStallSettingsPanel /> {/* myrmidon(RUN-STALL-SETTINGS) */}
       <BudgetEnforcementSettingsPanel /> {/* myrmidon(1.7-BUDGET-CONFIG-B) */}
       <TelegramDmProgressSettingsPanel /> {/* myrmidon(DM-PROGRESS) */}
       <HostDiskSettingsPanel /> {/* myrmidon(BOT-DISK E) */}
       <PromptBudgetSettingsPanel /> {/* myrmidon(1.6.3 PROMPT-BUDGET B) */}
+      <DataRetentionSettingsPanel /> {/* myrmidon(1.6.5-DB-RETENTION) */}
       <BotDiskSettingsPanel /> {/* myrmidon(1.6.1-BOT-DISK-B) */}
       <BotScopePanel /> {/* myrmidon(BOT-DISK-F) */}
       <BotDiskQuotaSettingsPanel /> {/* myrmidon(1.6.1-BOT-DISK-C) */}
       <BotImageRolloutSettingsPanel /> {/* myrmidon(BOT-ROLLOUT) */}
+      <SessionGenerationsSettingsPanel /> {/* myrmidon(PERF-DIET-K) */}
       <ParallelHelpersSettingsPanel /> {/* myrmidon(PARALLEL-HELPERS) */}
       <TeamLivenessSettingsPanel /> {/* myrmidon(TEAM-LIVENESS-SETTINGS) */}
+      <ToolPolicyCacheSettingsPanel /> {/* myrmidon(DB-PERF-C-P4) */}
       <AgentMemorySettingsPanel /> {/* myrmidon(MEMORY-UI) */}
       <BotLspSettingsPanel /> {/* myrmidon(BOT-LSP-DEFAULTS) */}
       <SwarmClaimSettingsPanel /> {/* myrmidon(1.6.1 SWARM-SETTINGS-UI) */}
       <ReviewReworkSettingsPanel /> {/* myrmidon(REVIEW-REWORK) */}
+      <ForagingSettingsPanel /> {/* myrmidon(1.6.1-FORAGING-LIMITS-UI) */}
       <DeployJobsPanel /> {/* myrmidon(R5-A) */}
       <PluginEntitlementSettings /> {/* myrmidon(PLUGIN-ENTITLEMENT C) */}
 

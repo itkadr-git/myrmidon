@@ -103,6 +103,7 @@ import {
   type IssueWorkModeChange,
 } from "../lib/issue-timeline-events";
 import { Button } from "@/components/ui/button";
+import { RunQueueWaitLine } from "./myrmidon/RunQueueWaitLine"; // myrmidon(1.6.5 RUN-PRIORITY B)
 import { InlineBanner } from "@/components/InlineBanner";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -2140,6 +2141,9 @@ function IssueChatUserMessage({
               </Button>
             ) : null}
           </div>
+        ) : null}
+        {queued ? (
+          <RunQueueWaitLine runId={queueTargetRunId} metadata={custom} />
         ) : null}
         {deleted ? (
           <div className="text-sm italic text-muted-foreground">

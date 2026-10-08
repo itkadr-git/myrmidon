@@ -2159,10 +2159,73 @@
       "breakpoints": true
     },
     {
+      "idx": 311,
+      "version": "7",
+      "when": 1791433900000,
+      "tag": "0311_guardrail_events",
+      "breakpoints": true
+    },
+    {
+      "idx": 312,
+      "version": "7",
+      "when": 1791433990019,
+      "tag": "0312_budget_limits",
+      "breakpoints": true
+    },
+    {
       "idx": 313,
       "version": "7",
       "when": 1791434000000,
       "tag": "0313_run_context_columns",
+      "breakpoints": true
+    },
+    {
+      "idx": 314,
+      "version": "7",
+      "when": 1791434100000,
+      "tag": "0314_search_coalesce_trgm_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 315,
+      "version": "7",
+      "when": 1791434200000,
+      "tag": "0315_foraging_spend",
+      "breakpoints": true
+    },
+    {
+      "idx": 330,
+      "version": "7",
+      "when": 1791500330000,
+      "tag": "0330_heartbeat_run_continuations",
+      "breakpoints": true
+    },
+    {
+      "idx": 355,
+      "version": "7",
+      "when": 1791500340000,
+      "tag": "0355_issues_last_activity_at",
+      "breakpoints": true
+    },
+    {
+      "idx": 360,
+      "version": "7",
+      "when": 1791500360000,
+      "tag": "0360_issue_claims_active_unique",
+      "breakpoints": true
+    },
+    {
+      "idx": 361,
+      "version": "7",
+      "when": 1791500361000,
+      "tag": "0361_bot_apply_jobs",
+      "breakpoints": true
+    },
+    {
+      "idx": 380,
+      "version": "7",
+      "when": 1791500380000,
+      "tag": "0380_remove_execution_continuation_duplication",
       "breakpoints": true
     }
   ]

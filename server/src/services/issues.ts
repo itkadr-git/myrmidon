@@ -1854,12 +1854,6 @@ type IssueReadStat = {
   issueId: string;
   myLastReadAt: Date | null;
 };
-type IssueLastActivityStat = {
-  issueId: string;
-  latestCommentAt: Date | null;
-  latestLogAt: Date | null;
-};
-
 function serializeAcceptedPlanDecomposition(
   decomposition: IssuePlanDecompositionRow,
 ): AcceptedPlanDecomposition {
@@ -2888,50 +2882,14 @@ function myLastTouchAtExpr(companyId: string, userId: string) {
   `;
 }
 
-const ISSUE_LOCAL_INBOX_ACTIVITY_ACTIONS = [
-  "issue.read_marked",
-  "issue.read_unmarked",
-  "issue.inbox_archived",
-  "issue.inbox_unarchived",
-] as const;
-
-function issueLatestCommentAtExpr(companyId: string) {
-  return sql<Date | null>`
-    (
-      SELECT MAX(${issueComments.createdAt})
-      FROM ${issueComments}
-      WHERE ${issueComments.issueId} = ${issues.id}
-        AND ${issueComments.companyId} = ${companyId}
-    )
-  `;
-}
-
-function issueLatestLogAtExpr(companyId: string) {
-  return sql<Date | null>`
-    (
-      SELECT MAX(${activityLog.createdAt})
-      FROM ${activityLog}
-      WHERE ${activityLog.companyId} = ${companyId}
-        AND ${activityLog.entityType} = 'issue'
-        AND ${activityLog.entityId} = ${issues.id}::text
-        AND ${activityLog.action} NOT IN (${sql.join(
-          ISSUE_LOCAL_INBOX_ACTIVITY_ACTIONS.map((action) => sql`${action}`),
-          sql`, `,
-        )})
-    )
-  `;
-}
-
-function issueCanonicalLastActivityAtExpr(companyId: string) {
-  const latestCommentAt = issueLatestCommentAtExpr(companyId);
-  const latestLogAt = issueLatestLogAtExpr(companyId);
-  return sql<Date>`
-    GREATEST(
-      ${issues.updatedAt},
-      COALESCE(${latestCommentAt}, to_timestamp(0)),
-      COALESCE(${latestLogAt}, to_timestamp(0))
-    )
-  `;
+// myrmidon(DB-PERF-P7): the canonical "last activity" of an issue is
+// greatest(updated_at, newest comment, newest activity_log row outside the
+// local-inbox actions). It is denormalized into issues.last_activity_at and kept
+// current by the triggers of migration 0307, so ordering and reporting read one
+// column instead of two correlated MAX subqueries per candidate row (the cost
+// that dominated GET /issues before this column existed).
+function issueCanonicalLastActivityAtExpr() {
+  return sql<Date>`${issues.lastActivityAt}`;
 }
 
 function unreadForUserCondition(companyId: string, userId: string) {
@@ -3083,22 +3041,6 @@ export function deriveIssueUserContext(
   };
 }
 
-function latestIssueActivityAt(
-  ...values: Array<Date | string | null | undefined>
-): Date | null {
-  const normalized = values
-    .map((value) => {
-      if (!value) return null;
-      if (value instanceof Date)
-        return Number.isNaN(value.getTime()) ? null : value;
-      const parsed = new Date(value);
-      return Number.isNaN(parsed.getTime()) ? null : parsed;
-    })
-    .filter((value): value is Date => value instanceof Date)
-    .sort((a, b) => b.getTime() - a.getTime());
-  return normalized[0] ?? null;
-}
-
 type InboxArchiveAttributionRow = {
   issueId: string;
   archivedAt: Date;
@@ -3163,7 +3105,7 @@ function issueListOrderBy(
   },
 ) {
   if (sortField === "id") return [sortDir === "desc" ? desc(issues.id) : asc(issues.id)];
-  const canonicalLastActivityAt = issueCanonicalLastActivityAtExpr(companyId);
+  const canonicalLastActivityAt = issueCanonicalLastActivityAtExpr();
   if (sortField === "updated") {
     const activityOrder =
       sortDir === "asc"
@@ -4898,6 +4840,9 @@ const issueListSelect = {
   hiddenAt: issues.hiddenAt,
   createdAt: issues.createdAt,
   updatedAt: issues.updatedAt,
+  // myrmidon(DB-PERF-P7): the list response reads the denormalized column
+  // instead of aggregating comments and activity rows for every returned page.
+  lastActivityAt: issues.lastActivityAt,
 };
 
 function withActiveRuns(
@@ -4980,73 +4925,6 @@ async function userReadStatsForIssues(
   return stats;
 }
 
-async function lastActivityStatsForIssues(
-  dbOrTx: any,
-  companyId: string,
-  issueIds: string[],
-): Promise<IssueLastActivityStat[]> {
-  const byIssueId = new Map<string, IssueLastActivityStat>();
-  for (const issueIdChunk of chunkList(
-    issueIds,
-    ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE,
-  )) {
-    const [commentRows, logRows] = await Promise.all([
-      dbOrTx
-        .select({
-          issueId: issueComments.issueId,
-          latestCommentAt: sql<Date | null>`MAX(${issueComments.createdAt})`,
-        })
-        .from(issueComments)
-        .where(
-          and(
-            eq(issueComments.companyId, companyId),
-            inArray(issueComments.issueId, issueIdChunk),
-          ),
-        )
-        .groupBy(issueComments.issueId),
-      dbOrTx
-        .select({
-          issueId: activityLog.entityId,
-          latestLogAt: sql<Date | null>`MAX(${activityLog.createdAt})`,
-        })
-        .from(activityLog)
-        .where(
-          and(
-            eq(activityLog.companyId, companyId),
-            eq(activityLog.entityType, "issue"),
-            inArray(activityLog.entityId, issueIdChunk),
-            sql`${activityLog.action} NOT IN (${sql.join(
-              ISSUE_LOCAL_INBOX_ACTIVITY_ACTIONS.map(
-                (action) => sql`${action}`,
-              ),
-              sql`, `,
-            )})`,
-          ),
-        )
-        .groupBy(activityLog.entityId),
-    ]);
-
-    for (const row of commentRows) {
-      byIssueId.set(row.issueId, {
-        issueId: row.issueId,
-        latestCommentAt: row.latestCommentAt,
-        latestLogAt: null,
-      });
-    }
-    for (const row of logRows) {
-      const existing = byIssueId.get(row.issueId);
-      if (existing) existing.latestLogAt = row.latestLogAt;
-      else {
-        byIssueId.set(row.issueId, {
-          issueId: row.issueId,
-          latestCommentAt: null,
-          latestLogAt: row.latestLogAt,
-        });
-      }
-    }
-  }
-  return [...byIssueId.values()];
-}
 
 async function blockedByMapForIssues(
   dbOrTx: any,
@@ -6324,7 +6202,7 @@ async function listBlockedInboxIssues(
       .from(issues)
       .where(and(...conditions))
       .orderBy(
-        desc(issueCanonicalLastActivityAtExpr(companyId)),
+        desc(issueCanonicalLastActivityAtExpr()),
         desc(issues.updatedAt),
         desc(issues.id),
       )
@@ -6348,7 +6226,6 @@ async function listBlockedInboxIssues(
   const [
     statsRows,
     readRows,
-    lastActivityRows,
     blockedByMap,
     blockerAttentionByIssueId,
     reviewAttentionByIssueId,
@@ -6361,7 +6238,6 @@ async function listBlockedInboxIssues(
     contextUserId
       ? userReadStatsForIssues(dbOrTx, companyId, contextUserId, issueIds)
       : Promise.resolve([]),
-    lastActivityStatsForIssues(dbOrTx, companyId, issueIds),
     blockedByMapForIssues(dbOrTx, companyId, issueIds),
     listIssueBlockerAttentionMap(dbOrTx, companyId, withRuns),
     listIssueReviewAttentionMap(dbOrTx, companyId, withRuns),
@@ -6399,9 +6275,6 @@ async function listBlockedInboxIssues(
   const readByIssueId = new Map(
     readRows.map((row) => [row.issueId, row.myLastReadAt]),
   );
-  const lastActivityByIssueId = new Map(
-    lastActivityRows.map((row) => [row.issueId, row]),
-  );
 
   const enriched = withRuns
     .flatMap((row) => {
@@ -6416,13 +6289,7 @@ async function listBlockedInboxIssues(
       )
         return [];
 
-      const activity = lastActivityByIssueId.get(row.id);
-      const lastActivityAt =
-        latestIssueActivityAt(
-          row.updatedAt,
-          activity?.latestCommentAt ?? null,
-          activity?.latestLogAt ?? null,
-        ) ?? row.updatedAt;
+      const lastActivityAt = row.lastActivityAt;
       return [
         {
           ...row,
@@ -8024,7 +7891,6 @@ export function issueService(db: Db) {
       const [
         statsRows,
         readRows,
-        lastActivityRows,
         archiveRows,
         blockedByMap,
         liveDescendantCountByIssueId,
@@ -8035,7 +7901,6 @@ export function issueService(db: Db) {
         contextUserId
           ? userReadStatsForIssues(db, companyId, contextUserId, issueIds)
           : Promise.resolve([]),
-        lastActivityStatsForIssues(db, companyId, issueIds),
         contextUserId
           ? inboxArchiveRowsForIssues(db, companyId, contextUserId, issueIds)
           : Promise.resolve([]),
@@ -8048,9 +7913,6 @@ export function issueService(db: Db) {
       ]);
       const statsByIssueId = new Map(
         statsRows.map((row) => [row.issueId, row]),
-      );
-      const lastActivityByIssueId = new Map(
-        lastActivityRows.map((row) => [row.issueId, row]),
       );
       const archiveByIssueId = new Map(
         archiveRows.map((row) => [row.issueId, row]),
@@ -8069,13 +7931,7 @@ export function issueService(db: Db) {
 
       if (!contextUserId) {
         return withRuns.map((row) => {
-          const activity = lastActivityByIssueId.get(row.id);
-          const lastActivityAt =
-            latestIssueActivityAt(
-              row.updatedAt,
-              activity?.latestCommentAt ?? null,
-              activity?.latestLogAt ?? null,
-            ) ?? row.updatedAt;
+          const lastActivityAt = row.lastActivityAt;
           return {
             ...row,
             ...(includeBlockedBy
@@ -8108,13 +7964,7 @@ export function issueService(db: Db) {
       );
 
       return withRuns.map((row) => {
-        const activity = lastActivityByIssueId.get(row.id);
-        const lastActivityAt =
-          latestIssueActivityAt(
-            row.updatedAt,
-            activity?.latestCommentAt ?? null,
-            activity?.latestLogAt ?? null,
-          ) ?? row.updatedAt;
+        const lastActivityAt = row.lastActivityAt;
         return {
           ...row,
           ...activeInboxArchiveFields(
@@ -8338,20 +8188,21 @@ export function issueService(db: Db) {
     },
 
     getActiveInboxArchiveFields: async (
-      issue: Pick<IssueRow, "id" | "companyId" | "updatedAt">,
+      issue: Pick<
+        IssueRow,
+        "id" | "companyId" | "updatedAt" | "lastActivityAt"
+      >,
       userId: string,
     ) => {
-      const [[activity], [archive]] = await Promise.all([
-        lastActivityStatsForIssues(db, issue.companyId, [issue.id]),
-        inboxArchiveRowsForIssues(db, issue.companyId, userId, [issue.id]),
-      ]);
-      const lastActivityAt =
-        latestIssueActivityAt(
-          issue.updatedAt,
-          activity?.latestCommentAt ?? null,
-          activity?.latestLogAt ?? null,
-        ) ?? issue.updatedAt;
-      return activeInboxArchiveFields(archive, lastActivityAt);
+      const [archive] = await inboxArchiveRowsForIssues(
+        db,
+        issue.companyId,
+        userId,
+        [issue.id],
+      );
+      // myrmidon(DB-PERF-P7): the archive is only active while it is newer than
+      // the denormalized last activity of the issue.
+      return activeInboxArchiveFields(archive, issue.lastActivityAt);
     },
 
     /**

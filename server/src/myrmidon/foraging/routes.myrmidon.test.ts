@@ -6,6 +6,7 @@ import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
 import { errorHandler } from "../../middleware/index.js";
+import type { ResolvedForagingSettings } from "@paperclipai/shared";
 import { foragingRoutes } from "./routes.js";
 import type { ForagingService } from "./service.js";
 import type { ForagingFindingRow, ForagingSourceRow, ForagingStore } from "./store.js";
@@ -54,6 +55,16 @@ function fakeStore(): ForagingStore {
     markFindingCandidate: vi.fn(async () => {}),
     monthFindingCount: vi.fn(async () => 3),
     listCompanyIds: vi.fn(async () => ["company-a"]),
+    insertSpendEvent: vi.fn(async () => {}),
+    spendWindows: vi.fn(async () => ({
+      dayCents: 0,
+      monthCents: 0,
+      byRole: new Map<string, number>(),
+      byAgent: new Map<string, number>(),
+    })),
+    spendBreakdown: vi.fn(async () => [
+      { role: "engineer", url: "https://example.com/changelog", costCents: 2, reads: 1, lastOccurredAt: null },
+    ]),
   };
 }
 
@@ -66,12 +77,24 @@ const service: ForagingService = {
     stoppedByBudget: false,
     errors: 0,
   })),
-  budgetState: vi.fn(async () => ({ spentCents: 4, maxCostCents: 50, enabled: true })),
+  budgetState: vi.fn(async () => ({
+    spentCents: 4,
+    dayCents: 4,
+    monthCents: 4,
+    maxCostCents: 50,
+    enabled: true,
+    dailyBudgetCents: null,
+    monthlyBudgetCents: null,
+  })),
 };
 
 // assertCompanyAccess requires a session board actor to list the company in
 // `companyIds` (only `source: "local_implicit"` bypasses it); same shape as
 // the access-hub routes test fixture.
+// myrmidon(1.6.3-FORAGING-IDLE-GATE): the board actor carries companyIds the
+// way the real auth layer does (authz requires it for `source: "session"`,
+// see server/src/routes/authz.ts assertCompanyAccess) — the previous session
+// actor without companyIds was rejected with 403.
 const boardActor = { type: "board", userId: "user-1", source: "session", companyIds: ["company-a"] };
 const agentActor = { type: "agent", agentId: "agent-a", companyId: "company-a", source: "agent_key" };
 
@@ -141,5 +164,105 @@ describe("myrmidon(1.6-FORAGE) routes", () => {
   it("answers 503 on a manual pass while the sweep is switched off", async () => {
     const res = await request(appFor(boardActor, fakeStore(), { enabled: false })).post(`${base}/sweep`).expect(503);
     expect(res.body).toMatchObject({ enabled: false });
+  });
+});
+
+describe("myrmidon(1.6.1-FORAGING-LIMITS-UI) settings routes", () => {
+  const settingsService = {
+    read: vi.fn(async (): Promise<ResolvedForagingSettings> => ({
+      settings: {
+        enabled: true,
+        intervalSec: 3600,
+        minHostIntervalSec: 60,
+        passBudgetCents: 50,
+        dailyBudgetCents: 100,
+        monthlyBudgetCents: null,
+        roleBudgetCents: null,
+        agentBudgetCents: null,
+        enforcement: "hard",
+        autoOffCostPerTaskCents: null,
+      },
+      sources: {
+        enabled: "settings",
+        intervalSec: "default",
+        minHostIntervalSec: "default",
+        passBudgetCents: "settings",
+        dailyBudgetCents: "settings",
+        monthlyBudgetCents: "default",
+        roleBudgetCents: "default",
+        agentBudgetCents: "default",
+        enforcement: "default",
+        autoOffCostPerTaskCents: "default",
+      },
+    })),
+    update: vi.fn(async () => ({}) as ResolvedForagingSettings),
+  };
+
+  function settingsApp(actor: unknown) {
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      (req as unknown as { actor: unknown }).actor = actor;
+      next();
+    });
+    app.use(
+      "/api",
+      foragingRoutes({ db: {} as Db, store: fakeStore(), service, settingsService, env: {} }),
+    );
+    app.use(errorHandler);
+    return app;
+  }
+
+  it("reads the settings for a board actor", async () => {
+    const orgBoardActor = { type: "board", userId: "user-1", source: "session", companyIds: ["company-a"] };
+    const res = await request(settingsApp(orgBoardActor)).get("/api/myrmidon/foraging-settings").expect(200);
+    expect(res.body.settings).toMatchObject({ enabled: true, dailyBudgetCents: 100 });
+    expect(res.body.sources).toMatchObject({ enabled: "settings" });
+  });
+
+  it("refuses a read from a plain company agent", async () => {
+    const res = await request(settingsApp(agentActor)).get("/api/myrmidon/foraging-settings").expect(403);
+    expect(JSON.stringify(res.body)).toMatch(/Board/i);
+  });
+
+  it("saves a patch for an instance admin", async () => {
+    const adminActor = { type: "board", userId: "user-1", source: "session", isInstanceAdmin: true };
+    const res = await request(settingsApp(adminActor))
+      .patch("/api/myrmidon/foraging-settings")
+      .send({ dailyBudgetCents: 150 })
+      .expect(200);
+    expect(settingsService.update).toHaveBeenCalledWith(
+      expect.objectContaining({ dailyBudgetCents: 150 }),
+      expect.objectContaining({ actorType: "user" }),
+    );
+  });
+
+  it("refuses a write from a non-admin board member", async () => {
+    const res = await request(settingsApp(boardActor))
+      .patch("/api/myrmidon/foraging-settings")
+      .send({ dailyBudgetCents: 150 })
+      .expect(403);
+    expect(JSON.stringify(res.body)).toMatch(/admin/i);
+  });
+});
+
+describe("myrmidon(1.6.1-FORAGING-LIMITS-UI) spend route", () => {
+  it("answers the breakdown for a company member", async () => {
+    const res = await request(appFor(agentActor)).get(`${base}/spend`).expect(200);
+    expect(res.body).toMatchObject({
+      days: 30,
+      totalCents: 2,
+      rows: [{ role: "engineer", url: "https://example.com/changelog", costCents: 2 }],
+    });
+  });
+
+  it("clamps the days window to 90", async () => {
+    const orgBoardActor = { type: "board", userId: "user-1", source: "session", companyIds: ["company-a"] };
+    const res = await request(appFor(orgBoardActor)).get(`${base}/spend?days=365`).expect(200);
+    expect(res.body.days).toBe(90);
+  });
+
+  it("refuses an agent of another company", async () => {
+    await request(appFor({ ...agentActor, companyId: "company-b" })).get(`${base}/spend`).expect(403);
   });
 });

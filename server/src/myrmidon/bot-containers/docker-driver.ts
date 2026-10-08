@@ -67,6 +67,8 @@ import {
 import type { BotContainerDriver, BotContainerSpec, BotContainerStatus, TemplateDriftField, TemplateDriftReport } from "./driver.js";
 import { ISOLATED_LAYOUT, type ScopeLayout } from "@paperclipai/shared";
 import type { CompiledProfile } from "./types.js";
+import { logger } from "../../middleware/logger.js";
+import { prepareBotSharedMount, resolveSpecSharedMount } from "./shared-mount.js"; // myrmidon(1.6.1-BOT-DISK-D)
 import {
   assertBotRuntimeContract,
   botVolumeLayout,
@@ -379,6 +381,8 @@ export function buildCreateContainerRequestBody(
         driverMount: keyMount,
         scope,
         volumeLayout,
+        // myrmidon(1.6.1-BOT-DISK-D): the shared directory, bound at /shared.
+        sharedMount: resolveSpecSharedMount(spec, config.volumeRoot),
       }),
       Privileged: false,
     },
@@ -1259,6 +1263,19 @@ export function dockerBotContainerDriver(
     }
   }
 
+  /** myrmidon(1.6.1-BOT-DISK-D): best-effort host side of the shared mount (the
+   *  directory, and the move of an old per-bot "shared" copy into it). Never
+   *  throws: Docker creates a missing bind source itself, and a failed migration
+   *  leaves the bot's files where they are. */
+  async function prepareSharedMountForBot(spec: BotContainerSpec): Promise<void> {
+    const mount = resolveSpecSharedMount(spec, config.volumeRoot);
+    if (!mount) return;
+    const result = await prepareBotSharedMount(`${config.volumeRoot}/${spec.botKey}`, mount);
+    for (const warning of result.warnings) {
+      logger.warn({ botKey: spec.botKey, warning }, "bot shared mount: preparation warning");
+    }
+  }
+
   async function prepareVolumes(botKey: string, image: string, layout: ScopeLayout = ISOLATED_LAYOUT): Promise<void> {
     await runHelper(botKey, {
       image,
@@ -1391,6 +1408,7 @@ export function dockerBotContainerDriver(
     const body = await createBody(spec, layout, volumeLayout);
     await removeByName(replacementContainerNameFor(spec.botKey)); // stale, from an interrupted recreate
     await prepareVolumes(spec.botKey, spec.image, layout);
+    await prepareSharedMountForBot(spec);
     await createNamed(containerNameFor(spec.botKey), body);
   }
 
@@ -1422,6 +1440,7 @@ export function dockerBotContainerDriver(
     // the bot untouched. The new layout's directories exist, empty, by then; the migration
     // renames the old ones onto them.
     await prepareVolumes(spec.botKey, spec.image, layout);
+    await prepareSharedMountForBot(spec);
     await createNamed(replacement, body);
     if (moves) {
       // Pause: the old container stops first so nothing writes while its directories move.

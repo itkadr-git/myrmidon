@@ -150,7 +150,7 @@ function buildKimiRuntimeEnv(env: Record<string, string>): Record<string, string
 
 function renderPaperclipEnvNote(env: Record<string, string>): string {
   const paperclipKeys = Object.keys(env)
-    .filter((key) => key.startsWith("PAPERCLIP_"))
+    .filter((key) => key.startsWith("PAPERCLIP_") || key.startsWith("MYRMIDON_")) // myrmidon(REBRAND-C)
     .sort();
   if (paperclipKeys.length === 0) return "";
   return [

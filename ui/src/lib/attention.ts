@@ -82,6 +82,8 @@ const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
   prompt_budget_alert: { label: "Prompt budget" },
   // myrmidon(1.6.5-PAUSE-GUARD): label for the leftover-operator-pauses source.
   pause_guard: { label: "Forgotten pauses" },
+  // myrmidon(1.6.1-FORAGING-LIMITS-UI): label for the learning-spend source.
+  foraging_limit: { label: "Learning limit" },
   // myrmidon(OPE-6011): label for the execution hold source.
   execution_hold: { label: "Execution hold" },
 };
@@ -152,6 +154,7 @@ export function attentionKind(item: AttentionItem): AttentionKind {
     case "recovery_action":
     case "budget_alert":
     case "host_disk_alert":
+    case "foraging_limit":
       return "blocking";
     case "approval":
     case "issue_thread_interaction":

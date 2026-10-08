@@ -1,5 +1,19 @@
 import { AGENT_CHAT_DIRECTIVE, conversationReplay, isConversation, isConversationExecutionWake, isWaitingConversation, prepareConversationTurn, settleConversationTurn } from "./agent-conversations.js";
 // myrmidon(B1): product name in the notice/prompt text below; see product.ts.
+import { INPUT_LIMIT_CONFIG_KEY } from "@paperclipai/adapter-utils/input-limit";
+import {
+  INPUT_LIMIT_EVENT_KEY,
+  INPUT_LIMIT_FRESH_SESSION_ACTION,
+  planInputLimit,
+} from "../myrmidon/input-limit/input-limit.js";
+import {
+  buildInputOverflowAttentionComment,
+  countConsecutiveInputOverflowFailures,
+  countInputOverflowFailures,
+  decideInputOverflowAction,
+  detectInputOverflowRun,
+  readInputOverflowMaxFailures,
+} from "../myrmidon/input-overflow-guard.js";
 import { PRODUCT_NAME, productPossessive, productSaid } from "../myrmidon/product.js";
 import { PROCESS_IDENTITY_RECORDED, recordNativeLocalProcessStop } from "./native-local-process-stop.js";
 import { hasAcknowledgedNativeStopIntent, isAcknowledgedNativeStop, acknowledgedNativeStopExecutionHasStopped } from "./acknowledged-native-stop.js";
@@ -46,10 +60,15 @@ import {
 } from "./adapter-execution-control.js";
 import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
 import { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
+import { readProductEnv, readProductEnvFrom } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 export { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
 // myrmidon(RUN-SNAPSHOT-DEDUP): the single-copy continuation invariant.
-import { wakePayloadForDispatch } from "./run-continuation-snapshot.js";
+import {
+  persistRunContinuation,
+  runContextForPersistence,
+  wakePayloadForDispatch,
+} from "./run-continuation-snapshot.js";
 import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
 import { PROJECT_REPOSITORIES_DIR, readGitWorkspaceSnapshot } from "@paperclipai/adapter-utils/git-workspace-sync";
 import { isWorkspaceGitScanError, WorkspaceGitScanError, WORKSPACE_GIT_SCAN_ERROR_CODES } from "./workspace-git-operation-scheduler.js";
@@ -663,6 +682,14 @@ import { jsonTextUuid } from "../myrmidon/db-hot-path/json-uuid.js";
 import { createStaleActiveLeaseSweep } from "../myrmidon/leases-stale-sweep.js";
 // myrmidon(M3): skip idle timer heartbeats
 import { hasOtherActionableWork, skipIdleHeartbeatsEnabled } from "../myrmidon/heartbeat-idle-skip.js";
+// myrmidon(1.2-COST-CACHING): idle-skip metrics + prompt cache by cost data.
+import {
+  fingerprintWakeContext,
+  findReusablePromptAnswer,
+  idleSkipMetricsEnabled,
+  readPromptCacheSettings,
+  recordIdleSkip,
+} from "../myrmidon/cost-caching.js";
 // myrmidon(IDLE-PICKUP): the board wakes an idle agent on its next ready task
 import {
   createIdlePickupSweeper,
@@ -696,6 +723,10 @@ import {
   type PriorityScoredRun,
 } from "../myrmidon/run-priority/scoring.js";
 import { runPriorityWeight, type RunPrioritySettings } from "@paperclipai/shared";
+// myrmidon(PERF-DIET-K): issue-scoped session generations for the container
+// Hermes gateway — one task's session key gains a `:g<N>` once it passes its
+// age/activity threshold, so the task's Hermes state stays bounded
+import { resolveHeartbeatSessionGeneration } from "../myrmidon/session-generations/index.js";
 // myrmidon(S2-hostcred): a run never inherits the host's GitHub credentials
 import {
   filterHostGitHubCredentialEnv,
@@ -735,6 +766,7 @@ import {
 // budget service asks for, and the signal-only notice delivery (see
 // budget-enforcement/).
 import { readBudgetEnforcement } from "../myrmidon/budget-enforcement/settings.js";
+import { guardrailsOnRunOutput } from "../myrmidon/guardrails/run-output.js"; // myrmidon(1.6-GRD)
 import {
   deliverBudgetSignalOnly,
   type BudgetSignalOnlyInput,
@@ -4565,7 +4597,7 @@ type ManagedMcpGatewayRunConfig = {
 };
 
 function configuredPaperclipApiBaseUrl(): string | null {
-  const configured = readNonEmptyString(process.env.PAPERCLIP_API_URL);
+  const configured = readNonEmptyString(readProductEnv("API_URL"));
   return configured
     ? configured.replace(/\/+$/, "").replace(/\/api$/, "")
     : null;
@@ -5423,6 +5455,17 @@ export function shouldResetTaskSessionForWake(
   if (contextSnapshot?.forceFreshSession === true) return true;
 
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
+  // myrmidon(OPE-6168): upstream #15487 — an automatic transient retry must not inherit the failed
+  // attempt's transcript (the failed turn's prompt is re-sent into the same
+  // session and the history grows on every retry). The one exception is the
+  // codex ladder's explicit same-session first step.
+  if (
+    wakeReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON &&
+    readNonEmptyString(contextSnapshot?.codexTransientFallbackMode) !==
+      "same_session"
+  ) {
+    return true;
+  }
   if (
     wakeReason === "issue_assigned" ||
     wakeReason === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON ||
@@ -5526,6 +5569,15 @@ export function describeSessionResetReason(
 
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   if (wakeReason === "issue_assigned") return "wake reason is issue_assigned";
+  // myrmidon(OPE-6168): paired with the transient_failure_retry branch of
+  // shouldResetTaskSessionForWake (upstream #15487).
+  if (
+    wakeReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON &&
+    readNonEmptyString(contextSnapshot?.codexTransientFallbackMode) !==
+      "same_session"
+  ) {
+    return "wake reason is transient_failure_retry (retry starts a fresh session)";
+  }
   if (wakeReason === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON) {
     return `wake reason is ${EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON}`;
   }
@@ -9258,14 +9310,14 @@ export function resolveHeartbeatSchedulingSuppression(
     "worktree_instance" | "database_restore_in_progress" | "task_drain" | null;
 } {
   if (
-    isTruthyRuntimeEnvValue(env.PAPERCLIP_IN_WORKTREE) &&
+    isTruthyRuntimeEnvValue(readProductEnvFrom(env, "IN_WORKTREE")) &&
     !overrides.allowWorktreeRunExecution
   ) {
     return { suppressed: true, reason: "worktree_instance" };
   }
   if (
-    isTruthyRuntimeEnvValue(env.PAPERCLIP_DATABASE_RESTORE_IN_PROGRESS) ||
-    isTruthyRuntimeEnvValue(env.PAPERCLIP_RESTORE_IN_PROGRESS)
+    isTruthyRuntimeEnvValue(readProductEnvFrom(env, "DATABASE_RESTORE_IN_PROGRESS")) ||
+    isTruthyRuntimeEnvValue(readProductEnvFrom(env, "RESTORE_IN_PROGRESS"))
   ) {
     return { suppressed: true, reason: "database_restore_in_progress" };
   }
@@ -9288,7 +9340,7 @@ export function heartbeatService(
   });
   const runtimeEnv = options.runtimeEnv ?? process.env;
   const inWorktreeRuntime = isTruthyRuntimeEnvValue(
-    runtimeEnv.PAPERCLIP_IN_WORKTREE,
+    readProductEnvFrom(runtimeEnv, "IN_WORKTREE"),
   );
   // Preview worktree instances suppress the run engine by default. Users can lift
   // that per-worktree via the `enableWorktreeRunExecution` experimental setting
@@ -9318,7 +9370,7 @@ export function heartbeatService(
     try {
       const activation = resolveWorktreeRunExecutionActivation(
         await instanceSettings.getExperimental(),
-        runtimeEnv.PAPERCLIP_INSTANCE_ID?.trim() || null,
+        readProductEnvFrom(runtimeEnv, "INSTANCE_ID")?.trim() || null,
       );
       const cutoff = activation.armed ? new Date(activation.cutoff) : null;
       cachedWorktreeRunExecutionOverride = {
@@ -15099,6 +15151,81 @@ export function heartbeatService(
     };
   }
 
+  // myrmidon(OPE-6168): a provider input-length rejection is deterministic.
+  // Drop the saved task session so the next attempt starts fresh, and after N
+  // consecutive identical failures on one issue stop and raise an attention
+  // item with the facts instead of looping at scheduler cadence.
+  async function handleInputOverflowFailure(
+    run: typeof heartbeatRuns.$inferSelect,
+    agent: typeof agents.$inferSelect,
+  ) {
+    const match = detectInputOverflowRun(run);
+    if (!match) return null;
+    const context = parseObject(run.contextSnapshot);
+    const issueId = readNonEmptyString(context.issueId);
+    const taskKey = deriveTaskKey(context, null);
+    const resultJson = parseObject(run.resultJson);
+    if (readNonEmptyString(resultJson.errorFamily) !== "input_overflow") {
+      await db
+        .update(heartbeatRuns)
+        .set({ resultJson: { ...resultJson, errorFamily: "input_overflow" } })
+        .where(eq(heartbeatRuns.id, run.id));
+    }
+    if (taskKey) {
+      await clearTaskSessions(run.companyId, agent.id, { taskKey });
+    }
+    if (!issueId) return { action: "fresh_session" as const };
+
+    const previous = await countConsecutiveInputOverflowFailures(db, {
+      companyId: run.companyId,
+      agentId: agent.id,
+      issueId,
+      excludeRunId: run.id,
+    });
+    const decision = decideInputOverflowAction(
+      previous + 1,
+      readInputOverflowMaxFailures(),
+    );
+    await appendRunEvent(run, {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "warn",
+      message:
+        decision.action === "stop"
+          ? `Provider rejected the input as too long ${decision.consecutive} times in a row; automatic retries stopped`
+          : "Provider rejected the input as too long; the next attempt starts a fresh session",
+      payload: { inputOverflow: { ...match, ...decision } },
+    });
+    if (decision.action !== "stop") return decision;
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId)))
+      .then((rows) => rows[0] ?? null);
+    if (
+      !issue ||
+      (issue.status !== "todo" &&
+        issue.status !== "in_progress" &&
+        issue.status !== "in_review")
+    ) {
+      return decision;
+    }
+    await recovery.escalateStrandedAssignedIssue({
+      issue,
+      previousStatus: issue.status,
+      latestRun: run,
+      comment: buildInputOverflowAttentionComment({
+        match,
+        consecutive: decision.consecutive,
+        max: decision.max,
+        runId: run.id,
+        errorExcerpt: run.error ? run.error.slice(0, 300) : null,
+      }),
+    });
+    return decision;
+  }
+
   async function scheduleBoundedRetryForRun(
     run: typeof heartbeatRuns.$inferSelect,
     agent: typeof agents.$inferSelect,
@@ -18752,7 +18879,7 @@ export function heartbeatService(
         : await dispatchNativeSessionResumptions({
             db,
             runnerInstanceId:
-              runtimeEnv.PAPERCLIP_INSTANCE_ID?.trim() || "paperclip-heartbeat",
+              readProductEnvFrom(runtimeEnv, "INSTANCE_ID")?.trim() || "paperclip-heartbeat",
             now,
             runIds: [...claimableNativeRunIds],
             dispatch: (claim) => {
@@ -20213,7 +20340,7 @@ export function heartbeatService(
         await dispatchNativeSessionResumptions({
           db,
           runnerInstanceId:
-            runtimeEnv.PAPERCLIP_INSTANCE_ID?.trim() || "paperclip-heartbeat",
+            readProductEnvFrom(runtimeEnv, "INSTANCE_ID")?.trim() || "paperclip-heartbeat",
           runIds: [runId],
           dispatch: (claim) => {
             const execution = executeRun(claim.runId, {
@@ -21025,6 +21152,28 @@ export function heartbeatService(
             })
           : null;
       context.executionContinuation = executionContinuation;
+      // myrmidon(DB-CARE DBC-3): the envelope is stored once, in
+      // heartbeat_run_continuations. Every snapshot write below persists
+      // runContextForPersistence(context), which drops the top-level copy, so
+      // heartbeat_runs.context_snapshot stops carrying the task history.
+      if (executionContinuation) {
+        await persistRunContinuation(db, {
+          companyId: agent.companyId,
+          agentId: agent.id,
+          issueId: issueRef?.id ?? null,
+          runId: run.id,
+          previousContextRunId: taskSession?.lastRunId ?? null,
+          envelope: executionContinuation,
+          // References to the wake payload (run, comments, interaction) instead
+          // of a second copy of it.
+          wakeLinks: {
+            runId: run.id,
+            originCommentIds: executionContinuation.originCommentIds,
+            sourceRunId: executionContinuation.trigger.sourceRunId,
+            interactionId: executionContinuation.trigger.interactionId,
+          },
+        });
+      }
       const paperclipWakePayload = await buildPaperclipWakePayload({
         db,
         companyId: agent.companyId,
@@ -22422,7 +22571,9 @@ export function heartbeatService(
         await db
           .update(heartbeatRuns)
           .set({
+            // thin columns derive from the full context; the stored snapshot drops the envelope
             ...runContextPersistenceFields(context),
+            contextSnapshot: runContextForPersistence(context),
             updatedAt: new Date(),
           })
           .where(eq(heartbeatRuns.id, run.id));
@@ -22693,7 +22844,7 @@ export function heartbeatService(
         // whether GitHub is configured or a credential can be acquired.
         networkAccess:
           trustPreset.kind === "standard" &&
-          process.env.PAPERCLIP_RUNNER_NETWORK_ACCESS !== "disabled",
+          readProductEnv("RUNNER_NETWORK_ACCESS") !== "disabled",
       });
       // myrmidon(S2-hostcred): belt to the decision above — even a host-mode
       // probe or an upstream binding leaves no host credential name in the run
@@ -22759,7 +22910,9 @@ export function heartbeatService(
       await db
         .update(heartbeatRuns)
         .set({
+          // thin columns derive from the full context; the stored snapshot drops the envelope
           ...runContextPersistenceFields(context),
+          contextSnapshot: runContextForPersistence(context),
           updatedAt: new Date(),
         })
         .where(eq(heartbeatRuns.id, run.id));
@@ -22944,6 +23097,144 @@ export function heartbeatService(
         delete context.paperclipPreviousSessionId;
       }
 
+      // myrmidon(PERF-DIET-K): issue-scoped session generations for the
+      // container Hermes gateway — see server/src/myrmidon/session-generations/.
+      // The gateway adapter resumes one Hermes session per task key for the
+      // task's whole life; once that session passes its age or activity
+      // threshold the board moves the task to the next generation, whose key
+      // ends in `:g<N>`, and Hermes starts an empty session for it. Null (any
+      // other adapter, any other strategy, no issue, or the feature off) leaves
+      // the run exactly as the vendor built it, and generation 1 carries no
+      // suffix at all, so nothing changes until a threshold is crossed.
+      const runSessionGeneration = await resolveHeartbeatSessionGeneration({
+        db,
+        adapterType: agent.adapterType,
+        sessionKeyStrategy: readNonEmptyString(runtimeConfig.sessionKeyStrategy),
+        companyId: agent.companyId,
+        agentId: agent.id,
+        issueId,
+        continuationSummary: continuationSummary?.body ?? null,
+      });
+      if (runSessionGeneration) {
+        runtimeConfig = {
+          ...runtimeConfig,
+          sessionGeneration: runSessionGeneration.generation,
+        };
+        if (runSessionGeneration.rotate) {
+          // Carry the vendor handoff shape into the new generation: the wake
+          // already brings the task's continuation summary, and this note names
+          // the generation change and the previous session's last run.
+          context.paperclipSessionHandoffMarkdown = context.paperclipSessionHandoffMarkdown
+            ? `${context.paperclipSessionHandoffMarkdown}\n\n${runSessionGeneration.handoffMarkdown}`
+            : runSessionGeneration.handoffMarkdown;
+          context.paperclipSessionRotationReason = runSessionGeneration.reason;
+          context.paperclipPreviousSessionId = runSessionGeneration.previousSessionKey;
+          runtimeWorkspaceWarnings.push(
+            `Starting session generation g${runSessionGeneration.generation} because ${runSessionGeneration.reason}.`,
+          );
+          logger.info(
+            {
+              agentId: agent.id,
+              issueId,
+              generation: runSessionGeneration.generation,
+              messages: runSessionGeneration.messages,
+              ageDays: runSessionGeneration.ageDays,
+              reason: runSessionGeneration.reason,
+            },
+            "session generation rotated",
+          );
+        } else if (runSessionGeneration.generation > 1) {
+          runtimeWorkspaceWarnings.push(
+            `Continuing session generation g${runSessionGeneration.generation} (${runSessionGeneration.messages} messages).`,
+          );
+        }
+      }
+
+      // myrmidon(OPE-6168): adapters that keep a provider-side session keyed by
+      // issue (hermes_gateway) start a new generation after an input-overflow
+      // failure: generation 1 is the unsuffixed key, each overflow adds one.
+      const inputOverflowFailures = issueId
+        ? await countInputOverflowFailures(db, {
+            companyId: agent.companyId,
+            agentId: agent.id,
+            issueId,
+          }).catch(() => 0)
+        : 0;
+      if (inputOverflowFailures > 0) {
+        runtimeConfig = {
+          ...runtimeConfig,
+          // Stacked on top of the PERF-DIET-K generation above (integration of
+          // #921 + #903): every recorded overflow moves the key one generation on.
+          sessionGeneration: Math.max(Number(runtimeConfig.sessionGeneration) || 1, 1) + inputOverflowFailures,
+        };
+      }
+
+      // myrmidon(OPE-6168): check the model input limit before the run is sent.
+      // The limit comes from the model catalog (or an agent override) and rides
+      // the adapter config so the adapter trims a request that alone exceeds
+      // it; when the task's session already holds so many prompts that the next
+      // one would not fit, the run starts a fresh session instead of sending
+      // into the full one. The decision is recorded as a lifecycle event, which
+      // is what keeps later runs on the new session generation.
+      try {
+        const inputLimitPlan = await planInputLimit(db, {
+          companyId: agent.companyId,
+          agentId: agent.id,
+          issueId: issueId ?? null,
+          runId: run.id,
+          adapterConfig: runtimeConfig,
+          overflowFailures: inputOverflowFailures,
+        });
+        if (inputLimitPlan.hint) {
+          runtimeConfig = {
+            ...runtimeConfig,
+            [INPUT_LIMIT_CONFIG_KEY]: inputLimitPlan.hint,
+          };
+        }
+        // Stacked on top of the PERF-DIET-K generation and the overflow bumps
+        // applied above (integration of #921 + #903 + #950): the plan's
+        // generation is 1 + overflow failures + recorded fresh-session resets
+        // (+1 for this run's reset), so the part that is the pre-check's own
+        // (resets) is added to the generation already on the config. A max()
+        // here would swallow the reset whenever the PERF-DIET-K base is
+        // already ahead; adding keeps the key strictly moving on.
+        const inputLimitBumps = Math.max(
+          inputLimitPlan.generation - 1 - inputOverflowFailures,
+          0,
+        );
+        if (inputLimitBumps > 0) {
+          runtimeConfig = {
+            ...runtimeConfig,
+            sessionGeneration: Math.max(Number(runtimeConfig.sessionGeneration) || 1, 1) + inputLimitBumps,
+          };
+        }
+        if (inputLimitPlan.decision.reset) {
+          runtimeSessionIdForAdapter = null;
+          runtimeSessionParamsForAdapter = null;
+          previousSessionDisplayId = null;
+          runtimeWorkspaceWarnings.push(
+            "Starting a fresh session because the session would exceed the model input limit.",
+          );
+          await appendRunEvent(run, {
+            eventType: "lifecycle",
+            stream: "system",
+            level: "warn",
+            message: `Session holds about ${inputLimitPlan.decision.sessionTokens} prompt tokens and the next prompt would bring it to ${inputLimitPlan.decision.expectedTokens}, over the ${inputLimitPlan.decision.budgetTokens}-token budget of the model input limit; starting a fresh session`,
+            payload: {
+              [INPUT_LIMIT_EVENT_KEY]: {
+                action: INPUT_LIMIT_FRESH_SESSION_ACTION,
+                sessionTokens: inputLimitPlan.decision.sessionTokens,
+                expectedTokens: inputLimitPlan.decision.expectedTokens,
+                budgetTokens: inputLimitPlan.decision.budgetTokens,
+                generation: inputLimitPlan.generation,
+              },
+            },
+          });
+        }
+      } catch (err) {
+        logger.warn({ err, runId: run.id }, "failed to apply the model input-limit pre-check");
+      }
+
       if (managedAiRuntime) {
         sessionConfigMetadata.aiCredentialIdentity = managedAiRuntime.identity;
         if (taskSessionDecodedParams?.paperclipAiCredentialIdentity !== managedAiRuntime.identity) {
@@ -23058,7 +23349,9 @@ export function heartbeatService(
             startedAt,
             sessionIdBefore:
               runtimeForAdapter.sessionDisplayId ?? runtimeForAdapter.sessionId,
+            // thin columns derive from the full context; the stored snapshot drops the envelope
             ...runContextPersistenceFields(context),
+            contextSnapshot: runContextForPersistence(context),
             updatedAt: new Date(),
           })
           .where(eq(heartbeatRuns.id, run.id))
@@ -23283,7 +23576,9 @@ export function heartbeatService(
           await db
             .update(heartbeatRuns)
             .set({
+              // thin columns derive from the full context; the stored snapshot drops the envelope
               ...runContextPersistenceFields(context),
+              contextSnapshot: runContextForPersistence(context),
               updatedAt: new Date(),
             })
             .where(eq(heartbeatRuns.id, run.id));
@@ -24410,7 +24705,7 @@ export function heartbeatService(
             > = null;
             if (
               executionTarget?.kind === "remote" &&
-              adapterEnv.PAPERCLIP_GITHUB_BROKER_TOKEN
+              readProductEnvFrom(adapterEnv, "GITHUB_BROKER_TOKEN")
             ) {
               try {
                 nativeGitHubBridge =
@@ -24424,8 +24719,8 @@ export function heartbeatService(
                       run.id,
                     ),
                     adapterKey: "native-github",
-                    hostApiToken: adapterEnv.PAPERCLIP_GITHUB_BROKER_TOKEN,
-                    hostApiUrl: adapterEnv.PAPERCLIP_GITHUB_BROKER_URL,
+                    hostApiToken: readProductEnvFrom(adapterEnv, "GITHUB_BROKER_TOKEN"),
+                    hostApiUrl: readProductEnvFrom(adapterEnv, "GITHUB_BROKER_URL"),
                     onLog,
                   });
               } catch {
@@ -24524,21 +24819,21 @@ export function heartbeatService(
                         nativeRuntimeResolution,
                       ),
                       runnerPublicUrl:
-                        runtimeEnv.PAPERCLIP_RUNNER_PUBLIC_URL?.trim() || null,
+                        readProductEnvFrom(runtimeEnv, "RUNNER_PUBLIC_URL")?.trim() || null,
                       runnerCaBundlePath:
-                        runtimeEnv.PAPERCLIP_RUNNER_CA_BUNDLE_PATH?.trim() ||
+                        readProductEnvFrom(runtimeEnv, "RUNNER_CA_BUNDLE_PATH")?.trim() ||
                         null,
                       runnerRemoteBinaryPath:
-                        runtimeEnv.PAPERCLIP_RUNNER_REMOTE_BINARY_PATH?.trim() ||
+                        readProductEnvFrom(runtimeEnv, "RUNNER_REMOTE_BINARY_PATH")?.trim() ||
                         null,
                       runnerRemoteCodexPath:
-                        runtimeEnv.PAPERCLIP_RUNNER_REMOTE_CODEX_PATH?.trim() ||
+                        readProductEnvFrom(runtimeEnv, "RUNNER_REMOTE_CODEX_PATH")?.trim() ||
                         null,
                       runnerRemoteCodexNpmSpec:
-                        runtimeEnv.PAPERCLIP_RUNNER_REMOTE_CODEX_NPM_SPEC?.trim() ||
+                        readProductEnvFrom(runtimeEnv, "RUNNER_REMOTE_CODEX_NPM_SPEC")?.trim() ||
                         null,
                       runnerRemoteProviderPackPath:
-                        runtimeEnv.PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH?.trim() ||
+                        readProductEnvFrom(runtimeEnv, "RUNNER_REMOTE_PROVIDER_PACK_PATH")?.trim() ||
                         null,
                       enqueueWakeup,
                       onSpawn: async (meta) => {
@@ -25018,7 +25313,9 @@ export function heartbeatService(
           await db
             .update(heartbeatRuns)
             .set({
+              // thin columns derive from the full context; the stored snapshot drops the envelope
               ...runContextPersistenceFields(context),
+              contextSnapshot: runContextForPersistence(context),
               updatedAt: new Date(),
             })
             .where(eq(heartbeatRuns.id, run.id));
@@ -25420,6 +25717,16 @@ export function heartbeatService(
               presentationDecision.commentAction === "create" &&
               resolved.text
             ) {
+              // myrmidon(1.6-GRD): flag-only output scan of the final run text
+              // before it becomes the visible issue comment; never blocks,
+              // never masks here — the event journal records the hits.
+              await guardrailsOnRunOutput({
+                db,
+                companyId: livenessRun.companyId,
+                runId: livenessRun.id,
+                issueId,
+                text: resolved.text,
+              }).catch(() => null);
               // The presentation resolver exposes only the final assistant
               // surface selected from completed final messages or accepted
               // semantic results. For an exactly bound external-chat run,
@@ -25501,6 +25808,14 @@ export function heartbeatService(
               "stderr",
               `[paperclip] Failed to resolve run presentation: ${err instanceof Error ? err.message : String(err)}\n`,
             );
+          }
+          if (outcome === "failed") {
+            await handleInputOverflowFailure(livenessRun, agent).catch((err) => {
+              logger.warn(
+                { err, runId: livenessRun.id },
+                "failed to apply input-overflow guard",
+              );
+            });
           }
           if (outcome === "failed" && isMaxTurnExhaustionRun(livenessRun)) {
             const policy = parseMaxTurnContinuationPolicy(agent);
@@ -26649,6 +26964,21 @@ export function heartbeatService(
     });
     let issueId =
       readNonEmptyString(enrichedContextSnapshot.issueId) ?? issueIdFromPayload;
+    // myrmidon(N4-WAKE-ISSUE-CONTEXT): a wake that names its task only in the
+    // resolved context (contextSnapshot.issueId) must also carry the
+    // identifier in the payload consumers read first: the agent's wake
+    // payload is built from the payload, not from the snapshot, so a wake
+    // whose only issueId lives in contextSnapshot arrives at the agent
+    // without its task context. Mirror the resolved id back into the payload
+    // here, after enrichment, so every downstream read (wake payload renderer,
+    // coalescing key, execution-blocker check) sees the same issueId.
+    if (
+      issueId &&
+      !readNonEmptyString(payload?.["issueId"]) &&
+      !readNonEmptyString(payload?.["taskId"])
+    ) {
+      payload = { ...payload, issueId };
+    }
     if (executionReconciliationWake && !issueId) return null;
 
     let agent = await getAgent(agentId);
@@ -27086,8 +27416,65 @@ export function heartbeatService(
         reason:
           "No assigned todo or in_progress issue requires this agent before timer adapter invocation.",
       });
+      // myrmidon(1.2-COST-CACHING): count the saved model call when the
+      // metrics setting is on; never let metrics break the skip itself.
+      if (idleSkipMetricsEnabled()) {
+        try {
+          recordIdleSkip({ companyId: agent.companyId, agentId });
+        } catch (err) {
+          logger.warn({ err, agentId }, "idle-skip metrics write failed");
+        }
+      }
       await markTimerHeartbeatChecked(agentId, source);
       return null;
+    }
+
+    // myrmidon(1.2-COST-CACHING): a generic timer wake whose context snapshot
+    // is identical to the agent's previous finished run reuses that run's
+    // recorded answer instead of a new adapter invocation — only when the
+    // recorded answer cost at least MYRMIDON_PROMPT_CACHE_MIN_COST (USD).
+    // Cheap answers are always recomputed; wakes with a concrete reason
+    // (issue/comment/task) never reach this branch. The cached wake lands as
+    // a `skipped` row naming the source run, so the audit trail shows where
+    // the reused answer came from.
+    if (genericTimerWake) {
+      const promptCache = readPromptCacheSettings();
+      if (promptCache.enabled) {
+        try {
+          const fingerprint = fingerprintWakeContext(enrichedContextSnapshot);
+          const cached = await findReusablePromptAnswer(db, {
+            agentId,
+            companyId: agent.companyId,
+            fingerprint,
+            minCostUsd: promptCache.minCostUsd,
+          });
+          if (cached) {
+            await writeSkippedHeartbeatRequest("heartbeat.timer.cached_identical_prompt", {
+              reason:
+                "Identical prompt to a previous expensive run; reusing the recorded answer.",
+              reusedRunId: cached.runId,
+              reusedRunCostUsd: cached.costUsd,
+              reusedRunFinishedAt: cached.finishedAt?.toISOString() ?? null,
+              minCostUsd: promptCache.minCostUsd,
+            });
+            logger.info(
+              {
+                companyId: agent.companyId,
+                agentId,
+                reusedRunId: cached.runId,
+                reusedRunCostUsd: cached.costUsd,
+              },
+              "prompt cache hit: identical timer wake reuses the previous answer",
+            );
+            await markTimerHeartbeatChecked(agentId, source);
+            return null;
+          }
+        } catch (err) {
+          // The cache is an optimization; a read failure must never block a
+          // wake — fall through to the normal admission path.
+          logger.warn({ err, agentId }, "prompt cache lookup failed; running normally");
+        }
+      }
     }
 
     if (issueId) {
