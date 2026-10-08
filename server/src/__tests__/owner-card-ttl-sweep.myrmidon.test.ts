@@ -41,12 +41,12 @@ const OLD = new Date(NOW.getTime() - TTL_MS - 3_600_000); // 73 h old — past t
 const FRESH = new Date(NOW.getTime() - 60_000); // 1 min old — inside the TTL
 
 describeEmbeddedPostgres("owner card TTL sweep (embedded PG)", () => {
-  const { db } = useEmbeddedPostgres("owner-card-ttl");
+  const pg = useEmbeddedPostgres("owner-card-ttl");
 
   beforeEach(async () => {
-    await db.insert(companies).values({ id: COMPANY, name: "Acme" });
-    await db.insert(agents).values({ id: AUTHOR_AGENT, companyId: COMPANY, name: "agent-a" });
-    await db.insert(issues).values({
+    await pg.db.insert(companies).values({ id: COMPANY, name: "Acme" });
+    await pg.db.insert(agents).values({ id: AUTHOR_AGENT, companyId: COMPANY, name: "agent-a" });
+    await pg.db.insert(issues).values({
       id: ISSUE,
       companyId: COMPANY,
       title: "Owner card issue",
@@ -66,10 +66,10 @@ describeEmbeddedPostgres("owner card TTL sweep (embedded PG)", () => {
         triggerDetail: "system",
         payload: options.payload ?? null,
       }] as const;
-      await db.insert(agentWakeupRequests).values(values as any);
+      await pg.db.insert(agentWakeupRequests).values(values as any);
       return null;
     });
-    const deps: OwnerCardTtlSweepDeps = { db, wakeup };
+    const deps: OwnerCardTtlSweepDeps = { db: pg.db, wakeup };
     return {
       wakeup,
       sweep: createOwnerCardTtlSweep(deps),
@@ -95,7 +95,7 @@ describeEmbeddedPostgres("owner card TTL sweep (embedded PG)", () => {
       updatedAt: OLD,
       ...overrides,
     };
-    const [row] = await db.insert(issueThreadInteractions).values(values as any).returning({ id: issueThreadInteractions.id });
+    const [row] = await pg.db.insert(issueThreadInteractions).values(values as any).returning({ id: issueThreadInteractions.id });
     return row.id;
   }
 
