@@ -197,7 +197,7 @@ dg_ctr="myr-predeploy-dockergate-$suffix"
 board_ctr="myr-predeploy-board-$suffix"
 # DEPLOY-HYGIENE (OPE-5107): the copy's data lives in a NAMED volume of this
 # run, removed by the same trap that removes the containers. An anonymous
-# volume (-v /var/lib/postgresql/data) survives `docker rm -f` and stays on
+# volume (the image's declared data VOLUME) survives `docker rm -f` and stays on
 # the disk forever — the 3.4/3.6 GB orphans of 05.10 and rc.3.
 db_vol="${MYRMIDON_PREDEPLOY_DB_VOLUME:-myr-predeploy-dbvol-$suffix}"
 board_ref="$MYRMIDON_IMAGE@$board_digest"
@@ -213,7 +213,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   log "dry run: nothing will be changed. Predeploy check plan:"
   plan "0. read the predeploy dump $dump_file ($(wc -c <"$dump_file" | tr -d ' ') bytes) as the production snapshot (read-only)"
   plan "1. docker network create $network (no bot container, no production dockergate on it)"
-  plan "2. docker run -d --name $db_ctr --network $network -v $db_vol:/var/lib/postgresql/data $postgres_image (database $db_name, user $db_user, generated password)"
+  plan "2. docker run -d --name $db_ctr --network $network -v $db_vol:<the image's data VOLUME> $postgres_image (database $db_name, user $db_user, generated password)"
   plan "3. wait for the copy to accept connections, then check the copy against the dump (PREDEPLOY-PG-COMPAT, MYRMIDON_PREDEPLOY_PG_COMPAT=$pg_compat): the pg_dump major recorded in the dump header must equal the copy's server major, and every extension the dump restores must be available in the copy image"
   plan "3.1 restore the dump into the copy"
   if [[ -n "$dockergate_ref" ]]; then
@@ -277,9 +277,18 @@ export MYR_PREDEPLOY_DB_PASSWORD="$db_password"
 export DUMP_FILE="$dump_file"
 
 log "PREDEPLOY-DB-CHECK: 2/6 copy of the production database ($postgres_image)"
+# The named volume goes exactly where the image declares its data VOLUME:
+# postgres 17 and older declare /var/lib/postgresql/data, postgres 18+ declare
+# /var/lib/postgresql and refuse to start on a mount at .../data. Mounting
+# anywhere else would leave an anonymous volume behind (OPE-5107).
+image_ref="${postgres_image%% *}"
+docker image inspect "$image_ref" >/dev/null 2>&1 || docker pull -q "$image_ref" >/dev/null \
+  || die "cannot pull the copy's Postgres image ($image_ref); production was not touched"
+db_mount="$(docker image inspect -f '{{range $k, $v := .Config.Volumes}}{{$k}}{{"\n"}}{{end}}' "$image_ref" | grep -m1 '^/var/lib/postgresql' || true)"
+db_mount="${db_mount:-/var/lib/postgresql/data}"
 # shellcheck disable=SC2086  # the operator's extra docker arguments are word-split on purpose
 docker run -d --name "$db_ctr" --network "$network" \
-  -v "$db_vol:/var/lib/postgresql/data" \
+  -v "$db_vol:$db_mount" \
   -e POSTGRES_DB="$db_name" -e POSTGRES_USER="$db_user" -e POSTGRES_PASSWORD="$db_password" \
   $postgres_image >/dev/null || die "cannot start the throwaway Postgres ($postgres_image); production was not touched"
 
