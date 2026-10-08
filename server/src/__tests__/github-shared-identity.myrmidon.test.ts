@@ -150,7 +150,7 @@ describe("GitHub App identity: pure policy", () => {
   it("picks App entries by the agent and the target repository", () => {
     const agent = { id: "11111111-1111-4111-8111-111111111111", role: "engineer" };
     const entry = (id: string, patch: Partial<GitHubAppEntry>): GitHubAppEntry => ({
-      id, name: id, appId: "1", privateKeySecretId: id, installationId: null, roles: [], agentIds: [], allowedRepos: [], ...patch,
+      id, name: id, appId: "1", privateKeySecretId: id, installationId: null, slug: null, roles: [], agentIds: [], allowedRepos: [], ...patch,
     });
     const settings: GitHubSharedIdentitySettings = {
       ...defaultGitHubSharedIdentitySettings(),
@@ -261,6 +261,7 @@ const support = await getEmbeddedPostgresTestSupport();
       appId: "101",
       privateKeySecretId: secretId,
       installationId: null,
+      slug: null,
       roles: ["engineer"],
       agentIds: [],
       allowedRepos: ["owner-a/*"],
@@ -541,7 +542,9 @@ const support = await getEmbeddedPostgresTestSupport();
       const expected = {
         version: 1,
         enabled: true,
-        apps: [{ ...body.apps[0], roles: ["engineer"], allowedRepos: ["owner-a/repo-a", "owner-a/service-*"] }],
+        // myrmidon(GITHUB-APP-MANIFEST): the manifest flow's slug defaults to
+        // null on the manual path.
+        apps: [{ ...body.apps[0], slug: null, roles: ["engineer"], allowedRepos: ["owner-a/repo-a", "owner-a/service-*"] }],
         commitEmailDomain: "example.com",
       };
       expect(saved.body.settings).toEqual(expected);

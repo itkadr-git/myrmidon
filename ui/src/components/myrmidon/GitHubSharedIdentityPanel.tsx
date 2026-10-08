@@ -114,8 +114,14 @@ export function clearManifestCallbackQuery(): void {
 }
 
 /** myrmidon(GITHUB-APP-MANIFEST): POST the manifest to github.com — the
- * official way GitHub accepts a manifest (a POST form, not a JSON call). */
-export function submitManifestForm(manifestUrl: string, manifest: Record<string, unknown>): void {
+ * official way GitHub accepts a manifest (a POST form, not a JSON call).
+ * The anti-CSRF `state` travels as its own form field; GitHub echoes it back
+ * on the callback redirect, where the server validates it. */
+export function submitManifestForm(
+  manifestUrl: string,
+  manifest: Record<string, unknown>,
+  state: string,
+): void {
   const form = document.createElement("form");
   form.method = "POST";
   form.action = manifestUrl;
@@ -124,6 +130,11 @@ export function submitManifestForm(manifestUrl: string, manifest: Record<string,
   input.name = "manifest";
   input.value = JSON.stringify(manifest);
   form.appendChild(input);
+  const stateInput = document.createElement("input");
+  stateInput.type = "hidden";
+  stateInput.name = "state";
+  stateInput.value = state;
+  form.appendChild(stateInput);
   document.body.appendChild(form);
   form.submit();
 }
@@ -547,7 +558,7 @@ export function GitHubSharedIdentityPanel() {
       ),
     onSuccess: (response) => {
       setManifestError(null);
-      submitManifestForm(response.manifestUrl, response.manifest);
+      submitManifestForm(response.manifestUrl, response.manifest, response.state);
     },
   });
 
