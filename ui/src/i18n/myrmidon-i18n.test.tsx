@@ -56,6 +56,11 @@ const ALLOWED_LATIN = new Set([
   // myrmidon(1.7-AGENT-EXCHANGE-A): pull request / owner/repo are forge
   // concepts kept untranslated in RU copy, same class as GitHub.
   "pull", "request", "owner", "repo",
+  // myrmidon(GOOGLE-AI-CONNECT-UI): vendor/product names and the cookie-export
+  // placeholder keys are language-neutral data in RU copy, same class as GitHub.
+  "Google", "Gemini", "Pro", "Firefox", "cookies",
+  "gemini", "google",
+  "name", "value", "domain", "path",
 ]);
 
 function unruledLatinRuns(value: string): string[] {
