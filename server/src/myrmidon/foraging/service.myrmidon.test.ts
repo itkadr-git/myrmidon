@@ -354,7 +354,7 @@ describe("myrmidon(1.6.3-FORAGING-IDLE-GATE) gate in the sweep pass", () => {
     expect(result.sourcesRead).toBe(1);
   });
 
-  it("a failed settings read fails off: the pass keeps reading and warns", async () => {
+  it("an unreadable settings row reads as \"nothing stored\", so the default (on) applies", async () => {
     const store = createMemoryStore([{ id: "s1", role: "engineer", url: "https://example.com/a" }]);
     const service = createForagingService({
       ...baseDeps(),
@@ -368,9 +368,14 @@ describe("myrmidon(1.6.3-FORAGING-IDLE-GATE) gate in the sweep pass", () => {
       },
       idleCheck: scriptedIdleCheck({ engineer: "queue_not_empty" }),
     });
+    // readForagingIdleGate treats a failed read as "the row holds nothing"
+    // (the documented fail-open of the resolver, idle-gate-settings.ts) and
+    // the default is ON, so the busy role is still skipped — the resolved
+    // value reports its source as "default" to the screen, which is what
+    // makes the fallback visible instead of silent.
     const result = await service.runPass("company-a");
-    expect(result.skippedReason).toBeUndefined();
-    expect(result.sourcesRead).toBe(1);
+    expect(result.skippedReason).toBe("queue_not_empty");
+    expect(result.sourcesRead).toBe(0);
   });
 
   it("the idle check runs once per role per pass, not once per source", async () => {

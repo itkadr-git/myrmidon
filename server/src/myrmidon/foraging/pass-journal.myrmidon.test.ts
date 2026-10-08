@@ -149,6 +149,16 @@ function passStore(rows: Array<{ id: string; role: string; snapshot?: string[] |
     async enabledSources() {
       return sources;
     },
+    // 1.6.1: the pass reads the spend windows on every pass (the limits view).
+    async spendWindows() {
+      return {
+        dayCents: 0,
+        monthCents: 0,
+        byRole: new Map<string, number>(),
+        byAgent: new Map<string, number>(),
+      };
+    },
+    async insertSpendEvent() {},
     async saveSnapshot() {},
     async saveRead() {},
     async insertFinding(input: { summary: string }) {
@@ -201,6 +211,9 @@ describe("myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half) the pass records itself", 
       db: {} as never,
       log: silentLog,
       journal: { record },
+      // The toggle is wired and holds nothing: the resolver answers with the
+      // default (on), which is the case these recorded skips come from.
+      idleGate: { getGeneral: async () => ({}), env: {} },
       idleCheck: scriptedIdleCheck({ engineer: "queue_not_empty", researcher: "no_idle_agent" }),
     });
 
@@ -236,6 +249,7 @@ describe("myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half) the pass records itself", 
       db: {} as never,
       log: silentLog,
       journal: { record },
+      idleGate: { getGeneral: async () => ({}), env: {} },
       idleCheck: scriptedIdleCheck({}),
     });
 
@@ -294,6 +308,7 @@ describe("myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half) the pass records itself", 
       db: {} as never,
       log: silentLog,
       journal: { record },
+      idleGate: { getGeneral: async () => ({}), env: {} },
       idleCheck: scriptedIdleCheck({}),
     });
 
