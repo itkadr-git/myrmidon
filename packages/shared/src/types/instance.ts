@@ -23,6 +23,8 @@ import type { SwarmClaimSettings } from "../myrmidon-swarm-claim.js";
 // myrmidon(1.6.1-WIP-LIMIT-A): per-agent WIP limits of the same general settings row.
 import type { AgentMemorySettings } from "../myrmidon-agent-memory.js";
 import type { WipLimitSettings } from "../myrmidon-wip-limit.js";
+// myrmidon(1.6.5-DB-RETENTION): the stored retention settings shape
+import type { DataRetentionSettings, DataRetentionLastRun } from "../myrmidon-data-retention.js";
 // myrmidon(REVIEW-ROUTING): automatic reviewer routing settings of the same row.
 import type { ReviewRoutingSettings } from "../myrmidon-review-routing.js";
 import type { OwnerDeliverySettings } from "../myrmidon-owner-delivery.js";
@@ -107,7 +109,16 @@ export interface InstanceGeneralSettings {
    * environment variable, then the default (7)"; kept in sync with the
    * validator of the same field (packages/shared/src/validators/instance.ts).
    */
-  datastoreCare?: { retention?: DatastoreCareRetentionSettings };
+  // myrmidon(1.6.5-DB-RETENTION): the same retention object also carries the
+  // row-deletion day limits and the sweep state (`lastRun`) of the data-retention
+  // module (GET/PATCH /api/myrmidon/data-retention); the compaction pass state
+  // sits beside it under `contextLastRun`.
+  datastoreCare?: {
+    retention?: DatastoreCareRetentionSettings &
+      Partial<DataRetentionSettings> & {
+        lastRun?: DataRetentionLastRun | Record<string, unknown>;
+      };
+  };
   /**
    * myrmidon(BOT-DISK-A): the bot draft-directory lifecycle, changed from
    * `GET`/`PATCH /api/myrmidon/bot-disk`. Absent means "use the environment
