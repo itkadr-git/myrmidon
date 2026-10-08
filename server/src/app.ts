@@ -179,6 +179,8 @@ import { myrmidonWikiCortexRoutes } from "./myrmidon/wiki-cortex/wiring.js";
 import { myrmidonCtoChatRoutes } from "./myrmidon/cto-chat/index.js";
 // myrmidon(1.6-SWARM-CLAIM-B): the lead's supervisor surface over the role queues
 import { myrmidonSwarmSupervisorRoutes } from "./myrmidon/swarm-claim-supervisor/index.js"; // myrmidon(1.6-SWARM-CLAIM-B)
+// myrmidon(TG-NOTIFY-A): the telegramNotify settings core (contract, GET/PATCH, changelog)
+import { myrmidonTelegramNotifyRoutes } from "./myrmidon/telegram-notify/index.js";
 import { instanceSettingsService } from "./services/instance-settings.js";
 import { openApiRoutes } from "./routes/openapi.js";
 import {
@@ -968,6 +970,7 @@ export async function createApp(
   api.use(myrmidonTracingHealthRoutes(db)); // myrmidon(TRACING-HEALTH): LLM tracing health check
   api.use(myrmidonCtoChatRoutes(db)); // myrmidon(1.6-CTO-CHAT-B): board chat planner (owner text -> proposed epic)
   api.use(myrmidonSwarmSupervisorRoutes(db)); // myrmidon(1.6-SWARM-CLAIM-B): supervisor view, rebalance, pilot report
+  api.use(myrmidonTelegramNotifyRoutes(db)); // myrmidon(TG-NOTIFY-A): telegramNotify settings core (GET/PATCH + changelog)
   api.use(ui2LanguageRoutes(db)); // myrmidon(UI2-I18N): per-user UI language preference
   api.use(myrmidonForagingRoutes(db)); // myrmidon(1.6-FORAGE): source registry, findings and the manual sweep
   api.use(myrmidonWikiCortexRoutes(db)); // myrmidon(1.6-WIKI): company regulations (wiki pages, revisions, resolver)
