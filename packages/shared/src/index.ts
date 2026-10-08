@@ -2787,6 +2787,10 @@ export * from "./myrmidon-workspace-hygiene.js";
 // myrmidon(BOT-DISK E): host disk usage threshold, samples and growth shared by the server, the
 // UI and the settings validator.
 export * from "./myrmidon-host-disk.js";
+// myrmidon(1.6.6 MONITORING D): the alert-recovery contract — the owner task of an alert
+// (runbook steps and document link) and the sustained-resolution auto-close, shared by the
+// server, the settings validator and the board UI.
+export * from "./myrmidon-alert-recovery.js";
 // myrmidon(BOT-DISK-A): bot draft-directory lifecycle settings shared by the server and the settings validator.
 export * from "./myrmidon-bot-disk.js";
 // myrmidon(BOT-DISK-F): isolation scope resolver and bot-disk scope layout shared by the server and the UI.
@@ -2857,6 +2861,11 @@ export * from "./myrmidon-prompt-budget.js"; // myrmidon(1.6.3 PROMPT-BUDGET B)
 // myrmidon(1.7-BUDGET-CONFIG-B): the shared contract of budget enforcement —
 // the global mode (signal_only / soft / hard), its storage key and resolver.
 export * from "./myrmidon-budget-enforcement.js";
+
+// myrmidon(1.7, SETTINGS-TO-UI A): the generic behavior-settings registry and
+// precedence resolver shared by the server core, the settings validator and the
+// UI panels of parts B–E.
+export * from "./myrmidon-behavior-settings.js";
 // myrmidon(MEMORY-UI): the agent memory instance setting (address, optional key secret, switch).
 export * from "./myrmidon-agent-memory.js";
 // myrmidon(1.7-DEBATE-ASYM-A): the shared contract of asymmetric debates —
