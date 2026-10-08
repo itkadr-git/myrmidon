@@ -1,0 +1,23 @@
+-- myrmidon(DB-CARE / DBC-2): the datastore audit of 07-08.10.2026 found this
+-- index on the production board database with no declaration in src/schema and
+-- no migration behind it, and the planner does use it: the audit read 903
+-- scans on it against zero on the partial
+-- heartbeat_runs_ctx_paperclip_issue_id_idx sibling. The scans are the
+-- per-issue run lookups that resolve the snapshot id
+-- (server/src/services/run-secret-redaction.ts, valuesForIssue reads
+-- context_snapshot -> 'paperclipIssue' ->> 'id' under the company), and the
+-- created_at DESC tail orders the "latest run of that issue" reads on top of
+-- that predicate.
+--
+-- The statement matches pg_get_indexdef for the hand-made index verbatim, so it
+-- is a no-op on production (CREATE INDEX IF NOT EXISTS leaves the existing
+-- index untouched) and a fresh installation builds the same three-column form,
+-- which keeps `pg_indexes` aligned with the Drizzle declaration in
+-- packages/db/src/schema/heartbeat_runs.ts (label myrmidon(DB-CARE)).
+--
+-- heartbeat_runs is not bucketed "large" by check-migration-safety.ts, so a
+-- plain CREATE INDEX is sufficient; Drizzle migrations run transactionally, so
+-- CONCURRENTLY is unavailable, and the lock window on production is zero
+-- because the index already exists there and fresh instances build empty
+-- tables.
+CREATE INDEX IF NOT EXISTS "heartbeat_runs_company_ctx_paperclip_issue_created_idx" ON "heartbeat_runs" USING btree ("company_id",(("context_snapshot" -> 'paperclipIssue') ->> 'id'),"created_at" DESC);

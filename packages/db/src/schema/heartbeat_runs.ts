@@ -167,6 +167,19 @@ export const heartbeatRuns = pgTable(
       sql`(${table.contextSnapshot} ->> 'taskKey')`,
       table.createdAt.desc(),
     ),
+    // myrmidon(DB-CARE): the production board database carries this index by
+    // hand (datastore audit, 07-08.10.2026) and the planner uses it — 903 scans
+    // against zero on the partial ctx_paperclip_issue_id sibling. It serves the
+    // per-issue run lookups that resolve the snapshot's paperclipIssue id
+    // (server/src/services/run-secret-redaction.ts, valuesForIssue), and its
+    // created_at DESC tail orders the "latest run of that issue" reads.
+    // Declared here so pg_indexes matches the schema; the forward migration is
+    // a no-op on production.
+    companyCtxPaperclipIssueCreatedIdx: index("heartbeat_runs_company_ctx_paperclip_issue_created_idx").on(
+      table.companyId,
+      sql`(${table.contextSnapshot} -> 'paperclipIssue' ->> 'id')`,
+      table.createdAt.desc(),
+    ),
     // myrmidon(HEARTBEAT-POLL): driver index for the run-ownership probe
     // (server/src/services/conversation-continuation.ts,
     // getConversationOwnershipBlocker). That probe asks one question on every

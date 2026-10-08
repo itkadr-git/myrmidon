@@ -2171,6 +2171,13 @@
       "when": 1791500403000,
       "tag": "0312_db_care_coalesce_index_declaration",
       "breakpoints": true
+    },
+    {
+      "idx": 313,
+      "version": "7",
+      "when": 1791500404000,
+      "tag": "0313_db_care_heartbeat_runs_ctx_paperclip_issue_created",
+      "breakpoints": true
     }
   ]
 }
