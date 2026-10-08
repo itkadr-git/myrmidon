@@ -76,11 +76,3 @@ divergence-section: 1.6 — очереди задач по ролям с leased 
 ## divergence
 
 | SWARM-CLAIM-UNIQUE-INDEX | Частичный уникальный индекс `issue_claims_issue_active_uq` на вендорской таблице `issue_claims` (миграция 0360: сначала дедуп живых дублей — самый ранний клейм на задачу остаётся, остальные освобождаются с `release_reason = 'migration_dedup_0360'`, затем `CREATE UNIQUE INDEX ... (issue_id) WHERE released_at IS NULL`). В вендорном пути захвата `claimForCheckout` (hook в `server/src/services/heartbeat.ts` → `insertClaim`) вставка обёрнута в `.catch`: 23505 (в т.ч. завёрнутый drizzle в `error.cause`) трактуется как «занято» — `null`, тот же контракт, что у предпроверки; прочие ошибки пробрасываются | `packages/db/src/schema/issue_claims.ts` (объявление `uniqueIndex(...).where(sql\`released_at is null\`)`, метка `myrmidon(SWARM-CLAIM-UNIQUE-INDEX)`), миграция `0360_issue_claims_active_unique.sql` + meta (journal 360, снапшот 0360), `server/src/myrmidon/swarm-claim/store.ts` (`.catch(isUniqueViolation → null)` в `insertClaim`, импорт `isUniqueViolation` из `../../db-errors.js`) | Гонка swarm claim при нескольких процессах доски (OPE-5394 ч.4): предпроверка SELECT+INSERT допускала двух победителей на одну задачу; 1.6.5 (OPE-5401 ч.A) требует закрывать гонку на базе, 23505 наружу — это 500 вместо «занято» | `packages/db/src/issue-claims-active-unique-migration.myrmidon.test.ts` (дедуп, форма индекса, 23505 на второй живой вставке, идемпотентность повторного применения, статика journal/snapshot) + `server/src/myrmidon/swarm-claim/claim-race.myrmidon.test.ts` (два параллельных claim — ровно один успех, второй null; маппинг 23505; не-уникальные ошибки идут наружу) | Никогда, наше поведение; индекс односторонний (CONVENTIONS §8), таблица наша (1.6-SWARM-A). Снять: только вместе с удалением модуля swarm-claim | (этот PR) |
-
-## config-changes
-
-none
-
-## security-surface
-
-none
