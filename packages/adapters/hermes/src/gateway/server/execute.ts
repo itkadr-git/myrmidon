@@ -9,6 +9,7 @@ import type {
 } from "@paperclipai/adapter-utils";
 import { githubLauncherPayload } from "@paperclipai/adapter-utils/github-launcher";
 import { measureSections } from "@paperclipai/adapter-utils/prompt-meter";
+import { classifyInputOverflow } from "@paperclipai/adapter-utils/input-overflow";
 import {
   asNumber,
   asString,
@@ -258,13 +259,11 @@ export function resolveSessionKey(input: {
   runId: string;
   issueId: string | null;
   /**
-   * myrmidon(PERF-DIET-K): the issue-scoped session generation. The board's
-   * session-generations module raises it once the session passes its
-   * age/activity threshold, so the whole conversation of one task stays
-   * bounded instead of growing for the task's whole life. Only the issue
-   * strategy carries it: agent-, run- and none-scoped keys keep the vendor's
-   * shape, and generation 1 (the first generation) keeps the key without a
-   * suffix too, so nothing changes until a threshold is actually crossed.
+   * myrmidon(PERF-DIET-K): the issue-scoped session generation. The board
+   * raises it once the session passes its age/activity threshold (and, since
+   * OPE-6168, after a provider input-overflow failure), so a task's
+   * conversation stays bounded. Only the issue strategy carries it; generation
+   * 1 keeps the key without a suffix, so nothing changes until it is crossed.
    */
   generation?: number | null;
 }): string | null {
@@ -1387,7 +1386,10 @@ export function mapFinalResultForTest(input: {
             .toLowerCase()
             .includes(HERMES_GATEWAY_KEY_NOT_ALLOWED_SIGNATURE)
         ? "permanent_config_error"
-        : null;
+        : mapped.errorCode === "hermes_gateway_run_failed" &&
+            classifyInputOverflow(errorMessage)
+          ? "input_overflow"
+          : null;
   return {
     exitCode: mapped.exitCode,
     signal: mapped.signal,
@@ -1808,7 +1810,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     agentId: ctx.agent.id,
     runId: idempotencyKey,
     issueId: issueIdFromContext(ctx),
-    generation: sessionGeneration,
+    generation: readSessionGeneration(ctx.config.sessionGeneration),
   });
   const extraHeaders = parseHeaders(ctx.config.headers);
   // myrmidon(MEMORY-CENTRAL-B): create the client here (no network yet); the
