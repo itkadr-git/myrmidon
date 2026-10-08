@@ -6,7 +6,7 @@ settings-section: Track 2 — wake and run core
 
 ### Flag-only guardrail detectors for run output (1.6-GRD, part A)
 
-- New `guardrail_events` journal (migration 0320) plus a board-only read route:
+- New `guardrail_events` journal (migration 0311) plus a board-only read route:
   the secret/pii detectors fire on run output and record a flag-only event.
   The stored snippet has every detected secret/PII fragment replaced by a
   `[REDACTED:<subtype>]` placeholder (also in the activity log), is at most
@@ -19,7 +19,7 @@ settings-section: Track 2 — wake and run core
 
 ### Детекторы guardrails на выводе прогонов, только флаг (1.6-GRD, часть A)
 
-- Новый журнал `guardrail_events` (миграция 0320) и read-route только для
+- Новый журнал `guardrail_events` (миграция 0311) и read-route только для
   оператора: детекторы secret/pii срабатывают на вывод прогона и пишут
   flag-only событие. В сниппете (и в журнале активности) каждый найденный
   секрет/ПДн заменён на `[REDACTED:<подтип>]`, длина до 200 символов, не более
