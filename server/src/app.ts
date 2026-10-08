@@ -137,6 +137,7 @@ import { myrmidonBotWorkspacesRoutes } from "./myrmidon/bot-containers/bot-works
 import { myrmidonBotDiskQuotaRoutes } from "./myrmidon/bot-containers/bot-disk-quota-routes.js"; // myrmidon(1.6.1-BOT-DISK-C)
 import { myrmidonBotImageRolloutRoutes } from "./myrmidon/bot-containers/bot-image-rollout-routes.js"; // myrmidon(BOT-ROLLOUT)
 import { myrmidonMetricsApp } from "./myrmidon/monitoring/metrics/index.js"; // myrmidon(1.7-METRICS)
+import { boardLoadApp, boardLoadRequestMiddleware } from "./myrmidon/monitoring/board-load/index.js"; // myrmidon(1.6.6 PROCS-0.3A)
 import { swarmClaimApp } from "./myrmidon/swarm-claim/index.js"; // myrmidon(1.6-SWARM)
 // myrmidon(EMERGENCY-STOP): immediate stop of the runs a draining pause left running
 import { myrmidonEmergencyStopRoutes } from "./myrmidon/emergency-stop.js";
@@ -747,6 +748,10 @@ export async function createApp(
 
   // Mount API routes
   const api = Router();
+  // myrmidon(1.6.6 PROCS-0.3A): tags every /api request with the http_route
+  // lane and journals it on finish. First on purpose — a request rejected by a
+  // guard below is load the board really served, so it is measured too.
+  api.use(boardLoadRequestMiddleware());
   api.use(boardMutationGuard());
   api.use(
     "/health",
@@ -910,6 +915,7 @@ export async function createApp(
   api.use(inboxDismissalRoutes(db));
   api.use(instanceSettingsRoutes(db));
   api.use(myrmidonMaintenanceRoutes(db)); // myrmidon(R3)
+  api.use(boardLoadApp(db)); // myrmidon(1.6.6 PROCS-0.3A): lanes, api-load p95, pg_stat_statements, cpu-profile
   api.use(myrmidonDeployJobsRoutes(db)); // myrmidon(R5-A)
   api.use(myrmidonRuntimeLimitsRoutes(db)); // myrmidon(C0)
   api.use(myrmidonCorpusRoutes(db, { ports: resolveCorpusPorts })); // myrmidon(1.6.6 CORPUS-2.0 ч.C): corpus datasets/documents/search + module settings
