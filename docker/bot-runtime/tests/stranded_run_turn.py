@@ -50,8 +50,8 @@ def main(argv):
 
     def seed(sid, rows):
         db.create_session(sid, "api_server")
-        for role, content in rows:
-            db.append_message(sid, role, content)
+        for role, content, *extra in rows:
+            db.append_message(sid, role, content, **(extra[0] if extra else {}))
         return SimpleNamespace(_session_db=db, session_id=sid)
 
     def history(sid):
@@ -69,10 +69,12 @@ def main(argv):
     check("stranded rows soft-deleted in the store", roles("s1") == ["user", "assistant"])
 
     # 2. Failed attempts that left tool scaffolding behind them are superseded too.
-    agent = seed("s2", [("user", prompt(1)), ("assistant", ""), ("tool", "out")])
+    agent = seed("s2", [
+        ("user", prompt(1)),
+        ("assistant", "", {"tool_calls": [{"id": "c1", "type": "function", "function": {"name": "t", "arguments": "{}"}}]}),
+        ("tool", "out", {"tool_call_id": "c1"}),
+    ])
     hist = history("s2")
-    hist[1]["tool_calls"] = [{"id": "c1", "type": "function", "function": {"name": "t", "arguments": "{}"}}]
-    hist[2]["tool_call_id"] = "c1"
     n = replace_stranded_run_turn(hist, prompt(2), agent)
     check("tool scaffolding of the failed attempt is dropped", n >= 1 and hist == [])
     check("store has no stranded prompt left", [m for m in history("s2") if m["role"] == "user"] == [])
