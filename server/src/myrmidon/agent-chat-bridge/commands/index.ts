@@ -45,9 +45,14 @@ import {
   resolveChooserSelection,
   sourceLabelFor,
   turnInProgressText,
+  unavailableChoiceText,
+  type ChatModelCatalogReader,
   type ChatModelChooser,
 } from "./models.js";
-import { applyChatAdapterOverride } from "./overrides.js";
+import { applyChatAdapterOverride, type ApplyChatAdapterOverrideInput, type ChatAdapterOverrideApplyDeps, type ChatAdapterOverrideBotApply } from "./overrides.js";
+// myrmidon(F06-A): a gateway agent's `/model` choices live behind the gateway,
+// not on its card — this is the read bound to that agent.
+import { createGatewayModelCatalogReader } from "../gateway-model-catalog.js";
 import { handlePlanCommand, isCompanyOwner } from "./plan.js";
 import { buildChatStatusReply } from "./status.js";
 import { stopBridgedChatRuns } from "./stop.js";
@@ -75,6 +80,14 @@ export interface BridgedCommandInput {
     reason: string,
     options: { errorCode?: string; resultJson?: Record<string, unknown> },
   ) => Promise<unknown>;
+  /**
+   * myrmidon(F06-A): test seams for the gateway command surface — the profile
+   * apply of `/model` and `/think` on a gateway agent, and its model catalog.
+   * Production leaves both unset: the apply goes through the bot-containers
+   * runtime, and the catalog through this agent's own gateway key.
+   */
+  botContainerApply?: ChatAdapterOverrideApplyDeps;
+  readGatewayModelCatalog?: ChatModelCatalogReader | null;
 }
 
 export type BridgedCommandResult =
@@ -268,6 +281,67 @@ export async function runBridgedDirectMessageCommand(
   }
 }
 
+/**
+ * myrmidon(F06-A): the gateway model catalog for this chat's agent — the test
+ * seam when one was given, else the real per-key read
+ * (gateway-model-catalog.ts). Built per command, so the read happens only when
+ * a chooser actually asks for it.
+ */
+function gatewayCatalogReader(
+  input: BridgedCommandInput,
+  agent: BridgedCommandContext["agent"],
+): ChatModelCatalogReader {
+  if (input.readGatewayModelCatalog) return input.readGatewayModelCatalog;
+  return createGatewayModelCatalogReader({
+    db: input.db,
+    companyId: input.companyId,
+    agentId: agent.id,
+    agentSlug: agent.name,
+  });
+}
+
+/**
+ * myrmidon(F06-A): what to tell the person about the profile apply that
+ * followed their choice. A gateway agent runs a bot container, which is only
+ * as current as the last apply — so a success is worth one line, and a failure
+ * (with the rollback it caused) must never pass silently.
+ */
+function botApplyNotice(
+  botApply: ChatAdapterOverrideBotApply | undefined,
+  locale: BridgeLocale,
+): string | null {
+  if (!botApply) return null;
+  if (botApply.kind === "not_applicable") {
+    return t(locale, "chooser.applyNotApplied", { reason: botApply.reason ?? botApply.kind });
+  }
+  if (botApply.kind !== "error") return t(locale, "chooser.applyNextTurn");
+  const failure = t(locale, "chooser.applyFailed", { reason: botApply.reason ?? botApply.kind });
+  return botApply.rolledBack ? `${failure}\n${t(locale, "chooser.applyRolledBack")}` : failure;
+}
+
+/** myrmidon(F06-A): the model this chat's effort would apply to (chat override
+ *  first, then the card) — the effort policy check needs it. */
+function effectiveChatModel(context: BridgedCommandContext): string | null {
+  return describeEffectiveChatValue(
+    readOverrideAdapterConfig(context.issue.assigneeAdapterOverrides),
+    context.agent.adapterConfig,
+    "model",
+  ).value;
+}
+
+/** myrmidon(F06-A): the apply half of a chooser write, in one place, so no
+ *  call site can quietly skip applying the profile of a gateway agent. */
+function chatOverrideApplyInput(
+  input: BridgedCommandInput,
+  context: BridgedCommandContext,
+): Pick<ApplyChatAdapterOverrideInput, "adapterType" | "adapterConfig" | "botApply"> {
+  return {
+    adapterType: context.agent.adapterType,
+    adapterConfig: context.agent.adapterConfig,
+    botApply: input.botContainerApply,
+  };
+}
+
 async function handleNewCommand(
   input: BridgedCommandInput,
   context: BridgedCommandContext,
@@ -288,13 +362,15 @@ async function handleNewCommand(
     // start, not to whatever is currently running; no need to wait for it.
     checkTurnInProgress: false,
     locale,
+    // myrmidon(F06-A): a gateway agent's choices come from the gateway catalog.
+    catalog: gatewayCatalogReader(input, context.agent),
   });
   if (resolution.kind === "error") {
     return { kind: "reply", command: "new", text: resolution.text };
   }
 
   const value = resolution.kind === "default" ? null : resolution.candidate.id;
-  await applyChatAdapterOverride({
+  const overrideResult = await applyChatAdapterOverride({
     db: input.db,
     companyId: input.companyId,
     conversationAgentId: input.agentId,
@@ -306,6 +382,7 @@ async function handleNewCommand(
     // start regardless of what is currently running — same reasoning as
     // `checkTurnInProgress: false` above.
     refuseIfTurnInProgress: false,
+    ...chatOverrideApplyInput(input, context),
   });
   const modelLabel =
     resolution.kind === "default"
@@ -315,10 +392,13 @@ async function handleNewCommand(
             t(locale, "source.adapterDefault"),
         })
       : resolution.candidate.id;
+  const applyNotice = botApplyNotice(overrideResult.botApply, locale);
   return {
     kind: "message",
     body: "/new",
-    notice: t(locale, "new.withModel.notice", { model: modelLabel }),
+    notice:
+      t(locale, "new.withModel.notice", { model: modelLabel }) +
+      (applyNotice ? `\n${applyNotice}` : ""),
   };
 }
 
@@ -334,12 +414,22 @@ async function handleChooserCommand(
   const statusLabel = t(locale, chooser.statusLabelKey);
 
   if (!trimmed) {
-    const availability = await checkChooserAvailability(chooser, context.agent);
+    // myrmidon(F06-A): a gateway agent's choices come from the gateway catalog.
+    const availability = await checkChooserAvailability(
+      chooser,
+      context.agent,
+      gatewayCatalogReader(input, context.agent),
+    );
     if (!availability.available) {
       return {
         kind: "reply",
         command: chooser.commandName,
-        text: t(locale, chooser.unavailableTextKey),
+        text: unavailableChoiceText(
+          chooser,
+          context.agent,
+          locale,
+          availability.reasonKey ?? "chooser.reason.unsupportedAdapter",
+        ),
       };
     }
     const effective = describeEffectiveChatValue(
@@ -362,6 +452,9 @@ async function handleChooserCommand(
         "\n" +
         formatChatChoiceList(availability.candidates) +
         "\n" +
+        // myrmidon(F06-A): the per-key read failed and this is the whole
+        // gateway catalog — the person has to know the list is a superset.
+        (availability.wholeCatalog ? `${t(locale, "chooser.catalogWhole")}\n` : "") +
         t(locale, "chooser.usage", { command: chooser.commandName }),
     };
   }
@@ -373,6 +466,10 @@ async function handleChooserCommand(
     turnInProgress: context.turnInProgress,
     checkTurnInProgress: true,
     locale,
+    // myrmidon(F06-A): the gateway catalog for the list, and the model this
+    // chat would run for /think's effort policy check.
+    catalog: gatewayCatalogReader(input, context.agent),
+    effectiveModel: effectiveChatModel(context),
   });
   if (resolution.kind === "error") {
     return { kind: "reply", command: chooser.commandName, text: resolution.text };
@@ -391,21 +488,24 @@ async function handleChooserCommand(
       // can start in the gap between resolveChooserSelection's read above and
       // this write.
       refuseIfTurnInProgress: true,
+      ...chatOverrideApplyInput(input, context),
     });
     if (!overrideResult.applied) {
       return { kind: "reply", command: chooser.commandName, text: turnInProgressText(locale) };
     }
+    const applyNotice = botApplyNotice(overrideResult.botApply, locale);
     return {
       kind: "reply",
       command: chooser.commandName,
-      text: t(locale, "chooser.defaultApplied", {
-        label: statusLabel,
-        agentDefault: t(locale, "chooser.agentDefaultParen", {
-          value:
-            describeCardValue(context.agent.adapterConfig, chooser.adapterConfigKey) ??
-            t(locale, "source.adapterDefault"),
-        }),
-      }),
+      text:
+        t(locale, "chooser.defaultApplied", {
+          label: statusLabel,
+          agentDefault: t(locale, "chooser.agentDefaultParen", {
+            value:
+              describeCardValue(context.agent.adapterConfig, chooser.adapterConfigKey) ??
+              t(locale, "source.adapterDefault"),
+          }),
+        }) + (applyNotice ? `\n${applyNotice}` : ""),
     };
   }
 
@@ -418,14 +518,18 @@ async function handleChooserCommand(
     key: chooser.adapterConfigKey,
     value: resolution.candidate.id,
     refuseIfTurnInProgress: true,
+    ...chatOverrideApplyInput(input, context),
   });
   if (!overrideResult.applied) {
     return { kind: "reply", command: chooser.commandName, text: turnInProgressText(locale) };
   }
+  const applyNotice = botApplyNotice(overrideResult.botApply, locale);
   return {
     kind: "reply",
     command: chooser.commandName,
-    text: t(locale, "chooser.set", { label: statusLabel, value: resolution.candidate.id }),
+    text:
+      t(locale, "chooser.set", { label: statusLabel, value: resolution.candidate.id }) +
+      (applyNotice ? `\n${applyNotice}` : ""),
   };
 }
 

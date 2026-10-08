@@ -4,6 +4,12 @@
 // resets the provider session; the replay that follows needs the session
 // gone, exactly like /new's own reset in agent-conversations.ts).
 
+// myrmidon(F06-A): a gateway agent runs a bot container, and its model/effort
+// come from the agent profile (profile-compiler.ts writes them into the
+// container's config.yaml). Writing the chat override alone would leave the
+// running container on the old profile, so a gateway write is followed by an
+// apply without a restart — and rolled back if that apply fails.
+
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentTaskSessions, issues } from "@paperclipai/db";
@@ -12,8 +18,14 @@ import {
   publishActivity,
   type ActivityPublication,
 } from "../../../services/activity-log.js";
+import { applyBotContainerNow, type ApplyBotContainerOutcome, type BotContainerAgent } from "../../bot-containers/index.js";
+import { getBotContainerRuntime } from "../../bot-containers/routes-wiring.js";
 import { isBridgedCommandTurnInProgress } from "./context.js";
-import { isRecord } from "./models.js";
+import { GATEWAY_ADAPTER_TYPES, isRecord } from "./models.js";
+
+/** myrmidon(F06-A): reported when no bot-containers runtime is wired in this
+ *  process (the feature is off) — an unapplied write, not a failure. */
+const NO_RUNTIME_REASON = "the bot-containers runtime is not available in this process";
 
 export interface ApplyChatAdapterOverrideInput {
   db: Db;
@@ -35,6 +47,72 @@ export interface ApplyChatAdapterOverrideInput {
    * the time this write happens.
    */
   refuseIfTurnInProgress: boolean;
+  /**
+   * myrmidon(F06-A): the agent's adapter type. A gateway adapter gets its
+   * written value applied to the container profile (`botApply` below); every
+   * other adapter just gets the override, exactly as before.
+   */
+  adapterType?: string;
+  /**
+   * myrmidon(F06-A): the agent card's adapterConfig, handed to the apply — a
+   * runtime without its own agent read (see botContainerAgentReader) falls back
+   * to it.
+   */
+  adapterConfig?: Record<string, unknown>;
+  /** myrmidon(F06-A): the profile-apply hook, see ChatAdapterOverrideApplyDeps. */
+  botApply?: ChatAdapterOverrideApplyDeps;
+}
+
+/**
+ * myrmidon(F06-A): how a written override is made to take effect on a gateway
+ * agent's bot container. Production reads the bot-containers runtime and
+ * applies the agent profile now (the same call the access-hub rotation makes,
+ * `force: true`); tests inject an outcome, or null for "no runtime".
+ */
+export interface ChatAdapterOverrideApplyDeps {
+  /** null = there is no runtime to apply to: the outcome is not_applicable and
+   *  the written value stays for the container's own next pass. */
+  apply: (agent: BotContainerAgent) => Promise<ApplyBotContainerOutcome | null>;
+}
+
+/** myrmidon(F06-A): the profile-apply outcome as the caller reports it. */
+export interface ChatAdapterOverrideBotApply {
+  kind: ApplyBotContainerOutcome["kind"];
+  reason: string | null;
+  /** True when the write was put back after a failed apply. */
+  rolledBack: boolean;
+}
+
+export interface ChatAdapterOverrideResult {
+  applied: boolean;
+  /** myrmidon(F06-A): set when a gateway agent's profile was applied — or could
+   *  not be. Absent for every other adapter. */
+  botApply?: ChatAdapterOverrideBotApply;
+}
+
+/** myrmidon(F06-A): the production hook — the profile apply through the
+ *  bot-containers wiring. */
+function defaultBotContainerApply(): ChatAdapterOverrideApplyDeps["apply"] {
+  return async (agent) => {
+    const runtime = getBotContainerRuntime();
+    if (!runtime) return null;
+    return applyBotContainerNow(agent, runtime, { force: true });
+  };
+}
+
+/** myrmidon(F06-A): the value this chat had for `key` before the write (null = unset). */
+function readOverrideValue(adapterConfig: Record<string, unknown>, key: "model" | "effort"): string | null {
+  const value = adapterConfig[key];
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+/** myrmidon(F06-A): the human-readable reason of an apply outcome — the
+ *  reconcile kinds carry `message` when they fail, the not-applicable kind
+ *  carries `reason`. */
+function outcomeReason(outcome: ApplyBotContainerOutcome): string | null {
+  if ("reason" in outcome && typeof outcome.reason === "string") return outcome.reason;
+  if ("message" in outcome && typeof outcome.message === "string") return outcome.message;
+  return null;
 }
 
 /**
@@ -49,9 +127,10 @@ export interface ApplyChatAdapterOverrideInput {
  */
 export async function applyChatAdapterOverride(
   input: ApplyChatAdapterOverrideInput,
-): Promise<{ applied: boolean }> {
+): Promise<ChatAdapterOverrideResult> {
   let publication: ActivityPublication | null = null;
   let applied = false;
+  let previousValue: string | null = null;
   await input.db.transaction(async (tx) => {
     const [issue] = await tx
       .select({
@@ -79,6 +158,7 @@ export async function applyChatAdapterOverride(
     const adapterConfig: Record<string, unknown> = {
       ...(isRecord(overrides.adapterConfig) ? overrides.adapterConfig : {}),
     };
+    previousValue = readOverrideValue(adapterConfig, input.key);
     if (input.value === null) {
       delete adapterConfig[input.key];
     } else {
@@ -130,5 +210,90 @@ export async function applyChatAdapterOverride(
     applied = true;
   });
   if (publication) publishActivity(publication);
-  return { applied };
+  if (!applied) return { applied: false };
+  if (!GATEWAY_ADAPTER_TYPES.includes(input.adapterType ?? "")) return { applied: true };
+
+  // myrmidon(F06-A): the value is in the chat's override, but a gateway agent
+  // runs a bot container off its compiled profile — apply that profile now so
+  // the change needs no restart. A failed apply is not silently kept: the
+  // override goes back to what it was, and the caller reports both.
+  const apply = input.botApply?.apply ?? defaultBotContainerApply();
+  let outcome: ApplyBotContainerOutcome | null = null;
+  try {
+    outcome = await apply({
+      agentId: input.conversationAgentId,
+      adapterType: input.adapterType ?? "",
+      adapterConfig: input.adapterConfig ?? {},
+    });
+  } catch (error) {
+    outcome = { kind: "error", message: error instanceof Error ? error.message : String(error) };
+  }
+
+  if (outcome === null) {
+    return { applied: true, botApply: { kind: "not_applicable", reason: NO_RUNTIME_REASON, rolledBack: false } };
+  }
+  const reason = outcomeReason(outcome);
+  if (outcome.kind !== "error") {
+    return { applied: true, botApply: { kind: outcome.kind, reason, rolledBack: false } };
+  }
+  const rolledBack = await restoreChatAdapterOverrideKey({
+    db: input.db,
+    companyId: input.companyId,
+    issueId: input.issueId,
+    key: input.key,
+    value: previousValue,
+  });
+  return { applied: true, botApply: { kind: "error", reason, rolledBack } };
+}
+
+/**
+ * myrmidon(F06-A): puts this chat's `key` back to `value` (null = the key is
+ * dropped) after a failed profile apply, in its own transaction — the write
+ * itself already committed, so the undo cannot be part of it. The provider
+ * session that write dropped stays dropped: the next reply starts a fresh
+ * session with the same replayed history, so this costs a session, not
+ * correctness.
+ */
+async function restoreChatAdapterOverrideKey(input: {
+  db: Db;
+  companyId: string;
+  issueId: string;
+  key: "model" | "effort";
+  value: string | null;
+}): Promise<boolean> {
+  return input.db.transaction(async (tx) => {
+    const [issue] = await tx
+      .select({ assigneeAdapterOverrides: issues.assigneeAdapterOverrides })
+      .from(issues)
+      .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId)))
+      .for("update");
+    if (!issue) return false;
+
+    const overrides: Record<string, unknown> = isRecord(issue.assigneeAdapterOverrides)
+      ? issue.assigneeAdapterOverrides
+      : {};
+    const adapterConfig: Record<string, unknown> = {
+      ...(isRecord(overrides.adapterConfig) ? overrides.adapterConfig : {}),
+    };
+    if (input.value === null) {
+      delete adapterConfig[input.key];
+    } else {
+      adapterConfig[input.key] = input.value;
+    }
+    const nextOverrides: Record<string, unknown> = { ...overrides };
+    if (Object.keys(adapterConfig).length > 0) {
+      nextOverrides.adapterConfig = adapterConfig;
+    } else {
+      delete nextOverrides.adapterConfig;
+    }
+
+    await tx
+      .update(issues)
+      .set({
+        assigneeAdapterOverrides: Object.keys(nextOverrides).length > 0 ? nextOverrides : null,
+        updatedAt: new Date(),
+      })
+      .where(eq(issues.id, input.issueId));
+    return true;
+  });
 }

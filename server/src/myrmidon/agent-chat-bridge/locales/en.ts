@@ -61,8 +61,8 @@ export const bridgeTextEn = {
   // /model and /think
   "model.statusLabel": "Model",
   "reasoning.statusLabel": "Reasoning",
-  "model.unavailable": "Changing the model is unavailable for this agent.",
-  "reasoning.unavailable": "Changing the reasoning effort is unavailable for this agent.",
+  "model.unavailable": "Changing the model is unavailable for adapter {adapterType}: {reason}",
+  "reasoning.unavailable": "Changing the reasoning effort is unavailable for adapter {adapterType}: {reason}",
   "model.unknownNoun": "model",
   "reasoning.unknownNoun": "reasoning effort",
   "chooser.effective": "{label}: {value} ({source}).",
@@ -72,6 +72,21 @@ export const bridgeTextEn = {
   "chooser.defaultApplied": "{label} for this chat: {agentDefault}.",
   "chooser.set": "{label} for this chat: {value}. The next reply starts a new model session with this chat's recent history.",
   "chooser.unknownError": "Unknown {noun} “{value}”.\n{list}",
+  // myrmidon(F06-A): a gateway agent's own model list, the profile apply that
+  // makes a chat's choice reach its running container, and the reason a
+  // chooser is unavailable (rendered into model./reasoning.unavailable).
+  "chooser.catalogWhole":
+    "The whole gateway catalog is listed — this agent's own model list could not be read.",
+  "chooser.effortNotAllowed": "Reasoning effort “{value}” is not accepted by model {model}; allowed: {list}.",
+  "chooser.applyNextTurn":
+    "The agent profile is applied without a restart; the change takes effect from the next reply.",
+  "chooser.applyFailed":
+    "The change was written for this chat, but the agent profile could not be applied: {reason}",
+  "chooser.applyNotApplied":
+    "The agent is not running the new profile yet ({reason}); the change takes effect when its profile is applied next.",
+  "chooser.applyRolledBack": "The previous value was restored.",
+  "chooser.reason.unsupportedAdapter": "this adapter does not support changing it from the chat",
+  "chooser.reason.noCandidates": "no choices could be read for this chat",
 
   // /stop
   "stop.unavailable": "Stopping is unavailable right now.",

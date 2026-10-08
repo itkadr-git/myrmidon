@@ -60,8 +60,8 @@ export const bridgeTextRu: Record<BridgeTextKey, string> = {
   // /model and /think
   "model.statusLabel": "Модель",
   "reasoning.statusLabel": "Рассуждения",
-  "model.unavailable": "Смена модели недоступна для этого агента.",
-  "reasoning.unavailable": "Смена глубины рассуждений недоступна для этого агента.",
+  "model.unavailable": "Смена модели недоступна для адаптера {adapterType}: {reason}",
+  "reasoning.unavailable": "Смена глубины рассуждений недоступна для адаптера {adapterType}: {reason}",
   "model.unknownNoun": "Неизвестная модель",
   "reasoning.unknownNoun": "Неизвестная глубина рассуждений",
   "chooser.effective": "{label}: {value} ({source}).",
@@ -71,6 +71,20 @@ export const bridgeTextRu: Record<BridgeTextKey, string> = {
   "chooser.defaultApplied": "{label} для этого чата: {agentDefault}.",
   "chooser.set": "{label} для этого чата: {value}. Следующий ответ начнёт новую сессию модели с недавней историей этого чата.",
   "chooser.unknownError": "{noun} «{value}».\n{list}",
+  // myrmidon(F06-A): см. en.ts — список моделей агента, применение профиля и
+  // причина недоступности команды.
+  "chooser.catalogWhole":
+    "Показан весь каталог шлюза — собственный список моделей агента прочитать не удалось.",
+  "chooser.effortNotAllowed": "Глубина рассуждений «{value}» не поддерживается моделью {model}; допустимо: {list}.",
+  "chooser.applyNextTurn":
+    "Профиль агента применён без перезапуска: изменение вступит в силу со следующего ответа.",
+  "chooser.applyFailed":
+    "Изменение записано для этого чата, но применить профиль агента не удалось: {reason}",
+  "chooser.applyNotApplied":
+    "Агент пока работает на прежнем профиле ({reason}); изменение вступит в силу при следующем применении профиля.",
+  "chooser.applyRolledBack": "Прежнее значение возвращено.",
+  "chooser.reason.unsupportedAdapter": "этот адаптер не поддерживает смену из чата",
+  "chooser.reason.noCandidates": "не удалось прочитать варианты для этого чата",
 
   // /stop
   "stop.unavailable": "Сейчас остановка недоступна.",
