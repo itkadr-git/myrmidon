@@ -20,6 +20,8 @@ import {
   BOT_DISK_SETTING_KEYS,
   BOT_DISK_UPDATED_ACTION,
   botDiskPnpmWarnings,
+  // myrmidon(1.6.5-BOT-DISK-UV-A): the uv warnings, logged like the pnpm ones.
+  botDiskUvWarnings,
   mergeBotDiskSettings,
   resolveBotDiskSettings,
   resolveBotDiskLayout,
@@ -203,6 +205,7 @@ export async function readBotDiskLayout(db: Db): Promise<BotDiskLayout> {
   const settings = instanceSettingsService(db) as unknown as { getGeneral(): Promise<{ botDisk?: unknown }> };
   const stored = (await settings.getGeneral()).botDisk;
   warnPnpmSettings(stored);
+  warnUvSettings(stored);
   return resolveBotDiskLayout(stored);
 }
 
@@ -218,6 +221,21 @@ function warnPnpmSettings(stored: unknown): void {
   for (const warning of botDiskPnpmWarnings(stored)) {
     if (loggedPnpmWarnings.has(warning)) continue;
     loggedPnpmWarnings.add(warning);
+    logger.warn({ setting: "general.botDisk" }, warning);
+  }
+}
+
+/**
+ * myrmidon(1.6.5-BOT-DISK-UV-A): a uv cache inside the bot's own tree is a
+ * cache per bot — logged once per text like the pnpm warnings above, never
+ * dropped silently.
+ */
+const loggedUvWarnings = new Set<string>();
+
+function warnUvSettings(stored: unknown): void {
+  for (const warning of botDiskUvWarnings(stored)) {
+    if (loggedUvWarnings.has(warning)) continue;
+    loggedUvWarnings.add(warning);
     logger.warn({ setting: "general.botDisk" }, warning);
   }
 }

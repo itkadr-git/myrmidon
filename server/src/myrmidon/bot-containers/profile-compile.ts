@@ -171,6 +171,13 @@ export interface BotProfilePorts {
    */
   pnpmSettings?(): Promise<{ storeDir: string; importMethod: string }>;
   /**
+   * myrmidon(1.6.5-BOT-DISK-UV-A): where uv keeps its cache and how it moves a
+   * cached package into an environment (`general.botDisk.uvCacheDir` and
+   * `uvLinkMode`; defaults: the shared `/cache/uv` mount and `clone`, see
+   * template.ts packageCacheEnv). Read per tick. Optional: absent = the defaults.
+   */
+  uvSettings?(): Promise<{ cacheDir: string; linkMode: string }>;
+  /**
    * myrmidon(BOT-DISK-F): the layout the board keeps this bot's container on (the
    * applied isolation scope). A member of a shared scope instance gets the
    * instance's own pnpm store (`/bot-scope/.pnpm-store`) whatever the instance
@@ -378,9 +385,14 @@ export function createBotProfileCompile(
     const pnpm = sharedPackageCachePath && ports.pnpmSettings
       ? await once("pnpm-settings", () => ports.pnpmSettings!())
       : undefined;
+    // myrmidon(1.6.5-BOT-DISK-UV-A): the uv cache directory and link mode, read
+    // per tick from the same row, like the pnpm pair above.
+    const uv = sharedPackageCachePath && ports.uvSettings
+      ? await once("uv-settings", () => ports.uvSettings!())
+      : undefined;
     const cacheEnv: Record<string, HermesProfileEnvEntry> =
       sharedPackageCachePath && cardFleetHost(agent.adapterConfig) === null
-        ? Object.fromEntries(Object.entries(packageCacheEnv({ storeDir: pnpm?.storeDir, importMethod: pnpm?.importMethod })).map(([name, value]) => [name, { value, secret: false }]))
+        ? Object.fromEntries(Object.entries(packageCacheEnv({ storeDir: pnpm?.storeDir, importMethod: pnpm?.importMethod }, { cacheDir: uv?.cacheDir, linkMode: uv?.linkMode })).map(([name, value]) => [name, { value, secret: false }]))
         : {};
     if (ports.scopeLayout && cardFleetHost(agent.adapterConfig) === null) {
       // myrmidon(BOT-DISK-F): the scope layout itself is per bot (its own applied

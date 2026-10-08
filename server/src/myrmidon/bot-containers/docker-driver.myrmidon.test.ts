@@ -92,9 +92,10 @@ describe("buildCreateContainerRequestBody", () => {
   it("adds the read-only git mirror bind after the writable cache binds (1.6.2-BOT-DISK-C)", () => {
     const withMirror = buildCreateContainerRequestBody(spec(), CONFIG, "/srv/package-cache", true);
     const binds = withMirror.HostConfig.Binds;
-    expect(binds.slice(-6)).toEqual([
+    expect(binds.slice(-7)).toEqual([
       "/srv/package-cache/pnpm:/cache/pnpm:rw",
       "/srv/package-cache/pnpm-store:/cache/pnpm-store:rw",
+      "/srv/package-cache/uv:/cache/uv:rw", // myrmidon(1.6.5-BOT-DISK-UV-A)
       "/srv/package-cache/go-mod:/cache/go-mod:rw",
       "/srv/package-cache/go-build:/cache/go-build:rw",
       "/srv/package-cache/gradle:/cache/gradle:rw",
