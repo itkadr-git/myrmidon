@@ -53,6 +53,14 @@
 Очереди по ролям (SWARM-CLAIM)**
 ([swarm-claim-settings](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/swarm-claim-settings.ru.md)).
 
+## Касты агентов (справочник ролей компании)
+
+**Настройки компании → Agent castes** — собственный справочник ролей агентов
+компании. Он начинается с двенадцати встроенных каст, а дальше владелец может
+создавать, править и удалять касты; роль в карточке агента — это ключ из
+этого справочника, и изменения видны рою сразу, без перезапуска
+([custom-castes](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/custom-castes.ru.md)).
+
 ## Бэкапы
 
 Политика хранения бэкапов БД живёт в общих настройках инстанса
