@@ -204,7 +204,10 @@ describeEmbeddedPostgres("myrmidon(1.6-GRD): run-output embedding integration", 
       now: FIXED_NOW,
     });
     expect(await db.select().from(guardrailEvents).where(eq(guardrailEvents.companyId, ownCompany!.id))).toHaveLength(1);
-    // run deletion (agent removal path) must not fail on the FK; the event survives with a null run
+    // run deletion (agent removal path) must not fail on the guardrail FK; the event
+    // survives with a null run. The run's activity-log lines go first, as the agent
+    // removal service does (activity_log.run_id references the run too).
+    await db.delete(activityLog).where(eq(activityLog.runId, ownRun!.id));
     await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, ownRun!.id));
     const afterRun = await db.select().from(guardrailEvents).where(eq(guardrailEvents.companyId, ownCompany!.id));
     expect(afterRun).toHaveLength(1);
