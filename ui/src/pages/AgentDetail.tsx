@@ -37,6 +37,7 @@ import {
   boardAdminDeniedExplanation,
   canManageBoardAdmins,
 } from "../components/myrmidon/AgentBoardAdminSection"; // myrmidon(ADMIN-AGENT)
+import { AgentOffRunSecretsSection } from "../components/myrmidon/AgentOffRunSecretsSection"; // myrmidon(1.6.5-F-23)
 import { useAdapterCapabilities } from "@/adapters/use-adapter-capabilities";
 import { redactCommandText as redactCommandSecretText } from "@paperclipai/adapter-utils";
 import { MarkdownEditor } from "../components/MarkdownEditor";
@@ -2220,6 +2221,16 @@ export function ConfigurationTab({
                 onError: (error: unknown) => setBoardAdminError(boardAdminDeniedExplanation(error)),
               });
             }}
+          />
+          {/* myrmidon(1.6.5-F-23): off-run self-secret read grant toggle, gated
+              by the same operator permission as the board admin toggle */}
+          <AgentOffRunSecretsSection
+            granted={Boolean(agent.access?.grants?.some((grant) => grant.permissionKey === "secrets:read_off_run" && (!grant.expiresAt || new Date(grant.expiresAt) > new Date())))}
+            expiresAt={agent.access?.grants?.find((grant) => grant.permissionKey === "secrets:read_off_run")?.expiresAt ?? null}
+            pending={updatePermissions.isPending}
+            canManage={operatorCanManageBoardAdmins}
+            base={{ canCreateAgents, canCreateSkills, canAssignTasks }}
+            onSave={(update) => updatePermissions.mutate(update)}
           />
           {/* myrmidon(S6): per-agent tool and connection permission */}
           <AgentToolAccessSection
