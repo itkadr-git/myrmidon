@@ -5,8 +5,15 @@
 //   GET  /api/myrmidon/agents/:id/bot-container/status
 //   GET  /api/myrmidon/agents/:id/bot-container/git-store
 //   POST /api/myrmidon/agents/:id/bot-container/apply
+//   GET  /api/myrmidon/agents/:id/bot-container/apply/:applyId
 //
-// All three are gated behind MYRMIDON_BOT_CONTAINERS (off by default): while it is off,
+// The apply is asynchronous (myrmidon(1.6.5 ASYNC-BOT-APPLY)): POST queues a
+// job in bot_apply_jobs, answers 202 with the apply id in under a second, and
+// the reconcile pass runs in the background of this same process; the status
+// route reads the job row (database only, no runtime call), so the outcome —
+// including the failure text — is visible even if this process dies next.
+//
+// All routes are gated behind MYRMIDON_BOT_CONTAINERS (off by default): while it is off,
 // status still answers (so the card can say so) but reports `enabled: false` and
 // never touches the container runtime, and apply is refused with 409. Board
 // actors only — an agent never changes its own card or restarts its own gateway
@@ -35,6 +42,8 @@ import {
   readBotContainerAgentConfig,
 } from "./agent-config.js";
 import type { ApplyBotContainerOptions, ApplyBotContainerOutcome, BotContainerAgent, BotContainerRuntimeDeps } from "./index.js";
+import type { BotApplyJobStore } from "./apply-jobs.js";
+import type { BotApplyJobStatus } from "@paperclipai/db";
 import {
   APPLIED_LIMIT_PENDING_NOTE,
   compareGatewayConcurrency,
@@ -81,6 +90,12 @@ export interface BotContainerRoutesDeps {
     runtime: BotContainerRuntimeDeps,
     opts: ApplyBotContainerOptions,
   ): Promise<ApplyBotContainerOutcome>;
+  /**
+   * myrmidon(1.6.5 ASYNC-BOT-APPLY): the bot_apply_jobs journal. Required: the
+   * apply route answers 202 only after the job row is durable, and the status
+   * route reads the outcome only from this store.
+   */
+  applyJobs: Pick<BotApplyJobStore, "acquireLiveJob" | "markRunning" | "markSucceeded" | "markFailed" | "getJob">;
   /**
    * myrmidon(CONCURRENCY-SYNC): when this agent's most recent run failed with
    * GATEWAY_RATE_LIMITED_ERROR_CODE, at or after `sinceIso` — or null. Read only for
@@ -136,6 +151,24 @@ export interface BotContainerStatusResponse {
 }
 
 export type BotContainerApplyResponse = { outcome: Exclude<ApplyBotContainerOutcome, { kind: "not_applicable" }> };
+
+/**
+ * myrmidon(1.6.5 ASYNC-BOT-APPLY): the 202 body of the apply POST — the id the
+ * status route takes, plus the status the job already has (pending for a new
+ * job; a live pending/running status when the POST reused one).
+ */
+export interface BotApplyAcceptedResponse {
+  applyId: string;
+  status: BotApplyJobStatus;
+}
+
+/** The GET status body: the job row, database-only. */
+export interface BotApplyStatusResponse {
+  status: BotApplyJobStatus;
+  error: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+}
 
 /**
  * myrmidon(1.6.5 BOT-DISK-G live check): the facts of one bot's shared git-object
@@ -288,6 +321,62 @@ export function botContainerRoutes(deps: BotContainerRoutesDeps) {
     res.json(body);
   });
 
+  /**
+   * The background pass of one apply job. Every path ends in a journal write:
+   * the pass's own error outcome lands in `error`, an exception thrown by the
+   * reconciler or by the journal itself is caught here and recorded — nothing
+   * escapes this function as an unhandled rejection, and nothing is lost.
+   */
+  async function runApplyJob(
+    jobId: string,
+    agent: BotContainerRouteAgent,
+    runtime: BotContainerRuntimeDeps,
+    env: NodeJS.ProcessEnv,
+    applyDeps: BotContainerRoutesDeps,
+  ): Promise<void> {
+    try {
+      await applyDeps.applyJobs.markRunning(jobId);
+      const outcome = await applyDeps.applyNow(
+        { agentId: agent.id, adapterType: agent.adapterType, adapterConfig: agent.adapterConfig },
+        runtime,
+        // myrmidon(1.6.5 ASYNC-BOT-APPLY): the button asks for a pass NOW; the freshness
+        // reuse of the sweep/canary paths must not answer it with "recent_pass".
+        { env, force: true },
+      );
+      if (outcome.kind === "error") {
+        await applyDeps.applyJobs.markFailed(jobId, clip(outcome.message));
+        return;
+      }
+      if (outcome.kind === "not_applicable") {
+        // The card stopped being applicable between the POST check and the
+        // pass (edited away, agent gone). That is a failure the presser needs
+        // to see, not a silent success.
+        await applyDeps.applyJobs.markFailed(jobId, clip(outcome.reason));
+        return;
+      }
+      await applyDeps.applyJobs.markSucceeded(jobId);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      try {
+        await applyDeps.applyJobs.markFailed(jobId, clip(message));
+      } catch (journalErr) {
+        // The journal itself is unreachable: log with the original cause, the
+        // one thing left to do — the rejection still must not escape.
+        logger.error({ err: journalErr, jobId, applyError: message }, "bot apply job failed AND its journal write failed");
+      }
+    }
+  }
+
+  /**
+   * myrmidon(1.6.5 ASYNC-BOT-APPLY): "Apply now" is queued, not awaited. The
+   * cheap validations (flag, runtime, saved-card applicability) stay inline —
+   * they answer exactly as the synchronous route did — then one row lands in
+   * bot_apply_jobs and the answer is 202 + applyId in well under a second. The
+   * reconcile pass itself runs in the background of this process; its outcome
+   * (including the error text) is written to the job row and read back through
+   * the status route below. A live job for the same bot is returned as-is, so
+   * a double click queues one pass, not two.
+   */
   router.post("/myrmidon/agents/:id/bot-container/apply", async (req, res) => {
     assertBoard(req);
     const agent = await loadAgent(req);
@@ -306,25 +395,47 @@ export function botContainerRoutes(deps: BotContainerRoutesDeps) {
       });
       return;
     }
-    const outcome = await deps.applyNow(
-      { agentId: agent.id, adapterType: agent.adapterType, adapterConfig: agent.adapterConfig },
-      runtime,
-      // myrmidon(OPE-4789): the button asks for a pass NOW; the freshness
-      // reuse of the sweep/canary paths must not answer it with "recent_pass".
-      { env, force: true },
-    );
-    if (outcome.kind === "not_applicable") {
-      throw conflict(clip(outcome.reason), { code: "bot_container_not_applicable" });
+    // Applicability is a property of the SAVED card and is readable without
+    // touching the runtime — the same read applyBotContainerNow starts with:
+    // refuse a card that cannot apply with the same 409 as the synchronous
+    // route did, instead of journaling a job that is known to fail.
+    const parsed = readBotContainerAgentConfig(agent.adapterType, agent.adapterConfig);
+    if (!parsed.ok) {
+      throw conflict(clip(parsed.reason), { code: "bot_container_not_applicable" });
     }
-    if (outcome.kind === "error") {
-      // reconcileBot already wrote the failure to the activity sink; the person
-      // pressing the button needs to see why it did not apply.
-      // `error` is what the UI's request client turns into the exception message.
-      const message = clip(outcome.message);
-      res.status(502).json({ error: message, outcome: { kind: "error", message } });
-      return;
+    const job = await deps.applyJobs.acquireLiveJob({
+      companyId: agent.companyId,
+      botId: agent.id,
+      requestedBy: req.actor.userId ?? null,
+    });
+    if (job.created) {
+      // Fire-and-forget, but never unhandled: runApplyJob catches everything
+      // and records the outcome on the job row; this catch only logs a failure
+      // of its own error handling (the journal being unreachable twice over).
+      runApplyJob(job.id, agent, runtime, env, deps).catch((err) => {
+        logger.error({ err, jobId: job.id }, "bot apply job background task failed outside its own error handling");
+      });
     }
-    res.json({ outcome } satisfies BotContainerApplyResponse);
+    res.status(202).json({ applyId: job.id, status: job.status } satisfies BotApplyAcceptedResponse);
+  });
+
+  /**
+   * myrmidon(1.6.5 ASYNC-BOT-APPLY): the outcome of one apply job, read from
+   * the database only (no runtime call), so it answers while a pass is still
+   * running and stays readable after the process moved on. Board actor only,
+   * like the POST; the job is looked up under the agent's company boundary.
+   */
+  router.get("/myrmidon/agents/:id/bot-container/apply/:applyId", async (req, res) => {
+    assertBoard(req);
+    const agent = await loadAgent(req);
+    const job = await deps.applyJobs.getJob({ botId: agent.id, jobId: req.params.applyId as string });
+    if (!job) throw notFound("Apply job not found");
+    res.json({
+      status: job.status,
+      error: job.error,
+      startedAt: job.startedAt ? job.startedAt.toISOString() : null,
+      finishedAt: job.finishedAt ? job.finishedAt.toISOString() : null,
+    } satisfies BotApplyStatusResponse);
   });
 
   /**

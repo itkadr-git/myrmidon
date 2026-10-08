@@ -255,3 +255,6 @@ export { agentCastes } from "./agent_castes.js";
 // myrmidon(DBC-4): datastore care — hourly snapshots and audit reports of the
 // board's own PostgreSQL (server/src/myrmidon/datastore-care/).
 export { datastoreSnapshots, datastoreAuditReports } from "./datastore_care.js";
+// myrmidon(1.6.5 ASYNC-BOT-APPLY): the "Apply now" journal — one row per apply
+// request, its background pass and its final outcome (including the error).
+export { botApplyJobs, BOT_APPLY_JOB_STATUSES, type BotApplyJobStatus } from "./bot_apply_jobs.js";
