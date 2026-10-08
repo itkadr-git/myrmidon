@@ -267,6 +267,17 @@ export interface InstanceGeneralSettings {
    * field (packages/shared/src/validators/instance.ts).
    */
   modelFallbackSignal?: StoredFallbackSignalSettings;
+  /**
+   * myrmidon(ATTENTION-WINDOW-CACHE): how far back (days, 1-365) unresolved
+   * failed/timed-out runs may enter the attention feed; absent means the
+   * default (7). Kept in sync with the validator of the same field.
+   */
+  attentionFailedRunHorizonDays?: number;
+  /**
+   * myrmidon(ATTENTION-WINDOW-CACHE): TTL in seconds (0-300) of the in-process
+   * attention-feed cache; 0 disables it, absent means the default (45).
+   */
+  attentionFeedCacheTtlSeconds?: number;
 }
 
 export interface InstanceExperimentalSettings {

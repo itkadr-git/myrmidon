@@ -200,6 +200,14 @@ export const instanceGeneralSettingsSchema = z.object({
   // or refuse new runs with the budget reason (hard); changed from
   // /api/myrmidon/budget-enforcement; absent means the default (signal only).
   budgetEnforcement: budgetEnforcementSettingsSchema.optional(),
+  // how far back unresolved failed/timed-out runs may enter the
+  // attention feed (default 7 days); written from the instance settings page,
+  // read by server/src/services/attention.ts. Absent means the default.
+  attentionFailedRunHorizonDays: z.number().int().min(1).max(365).optional(),
+  // TTL in seconds of the in-process attention-feed cache
+  // (default 45 s; 0 disables). Stale-by-TTL writes (dismiss and friends) stay
+  // invisible until the entry expires — see the comment in attention.ts.
+  attentionFeedCacheTtlSeconds: z.number().int().min(0).max(300).optional(),
   // myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys, managed
   // from the instance settings page and PATCH /api/myrmidon/plugin-entitlement/keys;
   // absent means "no keys are registered" (no plugin is unlocked).
