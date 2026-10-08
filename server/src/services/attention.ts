@@ -232,6 +232,11 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   // myrmidon(OPE-6011): a held task blocks all of its wakes — ranked with the
   // other machine-recovery stops, just below a recovery action itself.
   execution_hold: 1,
+  // myrmidon(1.6.5-F-23): off-run secret reads are a deliberate surface
+  // extension — visible as advice, never a stop; ranked with the other
+  // advisory notices.
+  secret_off_run_reads: 18,
+  secret_off_run_grant_expiring: 18,
 };
 
 const PENDING_INTERACTION_STATUSES = ["pending"] as const;

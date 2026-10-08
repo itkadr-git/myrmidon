@@ -58,6 +58,11 @@ export const ATTENTION_SOURCE_KINDS = [
   // execution-reconciliation hold ("execution_reconciliation_required") until
   // a person confirms the failed run left no external action.
   "execution_hold",
+  // myrmidon(1.6.5-F-23): agents read their own secret metadata outside an
+  // active run (grant secrets:read_off_run); the item counts the reads of the
+  // last 24h, and a per-agent variant warns three days before a grant expires.
+  "secret_off_run_reads",
+  "secret_off_run_grant_expiring",
 ] as const;
 
 export type AttentionSourceKind = (typeof ATTENTION_SOURCE_KINDS)[number];
