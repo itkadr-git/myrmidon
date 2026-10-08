@@ -34,7 +34,7 @@ function findConfigFileFromAncestors(startDir: string): string | null {
 
 export function resolveConfigPath(overridePath?: string): string {
   if (overridePath) return path.resolve(overridePath);
-  if (readProductEnv("CONFIG")) return path.resolve(readProductEnv("CONFIG"));
+  if (readProductEnv("CONFIG")) return path.resolve(readProductEnv("CONFIG")!);
   return findConfigFileFromAncestors(process.cwd()) ?? resolveDefaultConfigPath(resolvePaperclipInstanceId());
 }
 

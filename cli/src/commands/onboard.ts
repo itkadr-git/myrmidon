@@ -223,7 +223,7 @@ function quickstartDefaultsFromEnv(opts?: { preferTrustedLocal?: boolean }): {
   );
   const authBaseUrlMode = authBaseUrlModeFromEnv ?? (authPublicBaseUrl ? "explicit" : "auto");
   const allowedHostnamesFromEnv = readProductEnv("ALLOWED_HOSTNAMES")
-    ? readProductEnv("ALLOWED_HOSTNAMES")
+    ? readProductEnv("ALLOWED_HOSTNAMES")!
       .split(",")
       .map((value) => value.trim().toLowerCase())
       .filter((value) => value.length > 0)
