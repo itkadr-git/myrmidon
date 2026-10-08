@@ -132,7 +132,7 @@ export async function compactCompanyBatch(
       SELECT id, pg_column_size(context_snapshot) AS size_before
       FROM heartbeat_runs
       WHERE company_id = ${input.companyId}
-        AND created_at < ${input.cutoff}
+        AND created_at < ${input.cutoff}::timestamptz
         AND status NOT IN (${liveStatusesSql})
         AND (${holdsKeySql})
       ORDER BY created_at
@@ -142,7 +142,7 @@ export async function compactCompanyBatch(
       UPDATE heartbeat_runs hr
       SET context_snapshot =
           (hr.context_snapshot${stripKeysSql})
-          || jsonb_build_object(${CONTEXT_COMPACTED_AT_KEY}, ${input.compactedAt})
+          || jsonb_build_object(${CONTEXT_COMPACTED_AT_KEY}::text, ${input.compactedAt}::text)
       FROM picked p
       WHERE hr.id = p.id
       RETURNING (p.size_before - pg_column_size(hr.context_snapshot)) AS saved_bytes
