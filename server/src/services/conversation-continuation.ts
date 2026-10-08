@@ -123,18 +123,7 @@ export async function getConversationOwnershipBlocker(db: Db, companyId: string,
     processGroupId: heartbeatRuns.processGroupId,
     processStartedAt: heartbeatRuns.processStartedAt,
     activeLease,
-  // Оптимизированный запрос: выбираем только необходимые поля, исключая тяжелые JSON колонки
-    id: heartbeatRuns.id,
-    agentId: heartbeatRuns.agentId,
-    processPid: heartbeatRuns.processPid,
-    processGroupId: heartbeatRuns.processGroupId,
-    processStartedAt: heartbeatRuns.processStartedAt,
-    createdAt: heartbeatRuns.createdAt,
-    status: heartbeatRuns.status,
-    runtimeMode: heartbeatRuns.runtimeMode,
-    activeLease: activeLease,
   }).from(heartbeatRuns)
-  const candidates = await db.select({ run: heartbeatRuns, activeLease }).from(heartbeatRuns)
     .where(and(
       eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.runtimeMode, "legacy"),
       conversationRunPredicate(),
