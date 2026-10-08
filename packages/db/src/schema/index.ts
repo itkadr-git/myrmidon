@@ -271,3 +271,6 @@ export {
   type BudgetLimitPeriod,
   type BudgetLimitMode,
 } from "./myrmidon_budget_limits.js";
+// myrmidon(1.6.5 ASYNC-BOT-APPLY): the "Apply now" journal — one row per apply
+// request, its background pass and its final outcome (including the error).
+export { botApplyJobs, BOT_APPLY_JOB_STATUSES, type BotApplyJobStatus } from "./bot_apply_jobs.js";

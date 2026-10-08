@@ -17,6 +17,7 @@ import { forbidden } from "../../errors.js";
 import { accessService } from "../../services/index.js";
 import { authorizationDeniedDetails } from "../../services/authorization.js";
 import { applyBotContainerNow, type BotContainerAgent, type BotContainerRuntimeDeps } from "./index.js";
+import { drizzleBotApplyJobStore } from "./apply-jobs.js";
 import { GATEWAY_RATE_LIMITED_ERROR_CODE } from "./concurrency-sync.js";
 import { botContainerRoutes } from "./routes.js";
 
@@ -115,5 +116,8 @@ export function myrmidonBotContainerRoutes(db: Db) {
     },
     getRuntime: getBotContainerRuntime,
     applyNow: applyBotContainerNow,
+    // myrmidon(1.6.5 ASYNC-BOT-APPLY): the bot_apply_jobs journal behind the
+    // async apply — the same db handle the agent lookup uses.
+    applyJobs: drizzleBotApplyJobStore(db),
   });
 }

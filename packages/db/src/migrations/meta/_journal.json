@@ -2213,6 +2213,13 @@
       "when": 1791500360000,
       "tag": "0360_issue_claims_active_unique",
       "breakpoints": true
+    },
+    {
+      "idx": 361,
+      "version": "7",
+      "when": 1791500361000,
+      "tag": "0361_bot_apply_jobs",
+      "breakpoints": true
     }
   ]
 }
