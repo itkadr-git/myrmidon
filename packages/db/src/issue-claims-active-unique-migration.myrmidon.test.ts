@@ -55,8 +55,9 @@ describeEmbeddedPostgres("issue_claims active-claim unique migration", () => {
     const cleanIssue = randomUUID();
     const keeperClaim = randomUUID();
     const staleClaim = randomUUID();
-    const tieLeft = randomUUID();
-    const tieRight = randomUUID();
+    // The migration breaks a claimed_at tie by the smaller id, so the "keeper" must be the
+    // smaller uuid; random ids made this test flaky (50%) by letting tieRight win.
+    const [tieLeft, tieRight] = [randomUUID(), randomUUID()].sort();
     const cleanClaim = randomUUID();
 
     await sql`

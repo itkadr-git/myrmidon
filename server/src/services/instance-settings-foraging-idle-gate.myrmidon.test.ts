@@ -18,11 +18,26 @@ import { instanceSettingsService } from "./instance-settings.js";
  * captured, and a row that reflects the writes, so a test can walk a sequence
  * of saves.
  */
+// updateGeneral reads the row through select().from().where().limit(1).for("update")
+// inside db.transaction (myrmidon PROCS-Q5); one Promise with chainable no-ops covers
+// both the plain and the locking read.
+function stubRows<T>(values: T[]) {
+  const p = Promise.resolve(values) as Promise<T[]> & {
+    limit(_n?: number): Promise<T[]>;
+    for(_mode?: string): Promise<T[]>;
+  };
+  p.limit = () => p;
+  p.for = () => p;
+  return p;
+}
+
 function stubDb(row: Record<string, unknown>) {
   const persistedSets: Array<Record<string, unknown>> = [];
   let state = { ...row };
   const db = {
-    select: () => ({ from: () => ({ where: () => Promise.resolve([state]) }) }),
+    // No isolation in this stub: the transaction callback gets the same object back.
+    transaction: (fn: (tx: unknown) => Promise<unknown>) => fn(db),
+    select: () => ({ from: () => ({ where: () => stubRows([state]) }) }),
     insert: () => {
       throw new Error("unexpected insert in test");
     },

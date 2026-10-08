@@ -18,7 +18,18 @@ function stubDb() {
     updatedAt: new Date("2026-06-20T00:00:00.000Z"),
   };
   const db = {
-    select: () => ({ from: () => ({ where: () => Promise.resolve([row]) }) }),
+    // updateGeneral runs inside db.transaction and reads with .limit(1).for("update") (PROCS-Q5).
+    transaction: (fn: (tx: unknown) => Promise<unknown>) => fn(db),
+    select: () => ({
+      from: () => ({
+        where: () => {
+          const rows = Promise.resolve([row]) as Promise<unknown[]> & { limit: () => unknown; for: () => unknown };
+          rows.limit = () => rows;
+          rows.for = () => rows;
+          return rows;
+        },
+      }),
+    }),
     insert: () => {
       throw new Error("unexpected insert in test");
     },
