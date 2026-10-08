@@ -4604,4 +4604,76 @@ describeEmbeddedPostgres("secretService", () => {
       }),
     ).rejects.toThrow(/active member|secrets:read|forbidden/i);
   });
+
+  // myrmidon(1.6.5-F-23): off-run self-secret listing writes an auditable
+  // secret_access_events row with the structured details JSONB.
+  it("listAgentSecretAccessOffRun returns own secrets and writes an off-run audit event", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `off-run-secret-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "secret-value",
+    });
+    const agentId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Off Run Agent",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      status: "idle",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(companySecretBindings).values({
+      companyId,
+      secretId: secret.id,
+      targetType: "agent",
+      targetId: agentId,
+      configPath: "env.MY_OFF_RUN_KEY",
+      versionSelector: "latest",
+      required: true,
+      projectionClass: "unclassified",
+    });
+    // svc.create records its own audit rows; drop them so only the off-run
+    // listing event remains.
+    await db.delete(secretAccessEvents);
+
+    const listed = await svc.listAgentSecretAccessOffRun(companyId, {
+      agentId,
+      actorSource: "agent_key",
+      keyId: "key-123",
+      remoteAddress: "127.0.0.1",
+    });
+
+    expect(listed).toHaveLength(1);
+    expect(listed[0]).toMatchObject({
+      secretId: secret.id,
+      configPath: "env.MY_OFF_RUN_KEY",
+      key: expect.stringMatching(/^off_run_secret_/),
+    });
+
+    const events = await db
+      .select()
+      .from(secretAccessEvents)
+      .where(eq(secretAccessEvents.companyId, companyId));
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      companyId,
+      actorType: "agent",
+      actorId: agentId,
+      consumerType: "agent",
+      consumerId: agentId,
+      outcome: "success",
+    });
+    expect(events[0]?.details).toMatchObject({
+      offRun: true,
+      access: "agent_self_metadata",
+      keyId: "key-123",
+      remoteAddress: "127.0.0.1",
+      listedSecretCount: 1,
+    });
+  });
 });

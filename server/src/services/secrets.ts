@@ -1940,6 +1940,7 @@ export function secretService(db: Db | DbTransaction) {
       outcome: "success",
       details: {
         offRun: true,
+        access: "agent_self_metadata",
         keyId: context.keyId ?? null,
         remoteAddress: context.remoteAddress ?? null,
         listedSecretCount: entries.length,

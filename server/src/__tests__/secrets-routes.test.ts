@@ -39,7 +39,11 @@ const mockSecretService = vi.hoisted(() => ({
   listBindingReferences: vi.fn(),
   listAccessEvents: vi.fn(),
   listAgentSecretAccess: vi.fn(),
+  listAgentSecretAccessOffRun: vi.fn(),
   resolveSecretValueForAgentAccess: vi.fn(),
+}));
+const mockAuthorizationService = vi.hoisted(() => ({
+  decidePrincipalGrant: vi.fn(),
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockAccessService = vi.hoisted(() => ({
@@ -54,6 +58,10 @@ vi.mock("../services/index.js", () => ({
 
 vi.mock("../services/access.js", () => ({
   accessService: () => mockAccessService,
+}));
+
+vi.mock("../services/authorization.js", () => ({
+  authorizationService: () => mockAuthorizationService,
 }));
 
 function createApp(actor: Record<string, unknown> = {
@@ -85,6 +93,12 @@ describe("secret routes", () => {
       allowed: true,
       reason: "allow_standard_agent",
       explanation: "Allowed by test policy",
+    });
+    mockAuthorizationService.decidePrincipalGrant.mockReset();
+    mockAuthorizationService.decidePrincipalGrant.mockResolvedValue({
+      allowed: false,
+      reason: "deny_missing_grant",
+      explanation: "Missing permission: secrets:read_off_run.",
     });
   });
 
@@ -1135,6 +1149,117 @@ describe("secret routes", () => {
       })).get("/api/companies/company-1/secrets/catalog");
 
       expect(res.status).toBe(403);
+    });
+  });
+
+  // myrmidon(1.6.5-F-23): off-run self-secret reads via GET /agents/me/secrets
+  describe("off-run agent secret reads", () => {
+    const offRunAgent = {
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "44444444-4444-4444-8444-444444444444",
+      source: "agent_key",
+      keyScope: { kind: "standard" },
+    };
+
+    it("allows an off-run agent with an active grant to list its own secrets", async () => {
+      mockAuthorizationService.decidePrincipalGrant.mockResolvedValue({
+        allowed: true,
+        reason: "allow_explicit_grant",
+        explanation: "Allowed by explicit grant secrets:read_off_run.",
+      });
+      mockSecretService.listAgentSecretAccessOffRun.mockResolvedValue([{
+        secretId: "11111111-1111-4111-8111-111111111111",
+        bindingId: "22222222-2222-4222-8222-222222222222",
+        configPath: "env.OPENAI_API_KEY",
+        key: "openai_api_key",
+        name: "OpenAI API key",
+        description: "Used for model access",
+        delivery: "env",
+        projectionClass: "unclassified",
+        latestVersion: 3,
+        versionSelector: "latest",
+        resolvedVersion: 3,
+      }]);
+
+      const res = await request(createApp(offRunAgent)).get("/api/agents/me/secrets");
+
+      expect(res.status).toBe(200);
+      expect(res.body.secrets).toHaveLength(1);
+      expect(res.body.secrets[0]).toMatchObject({
+        secretRef: "11111111-1111-4111-8111-111111111111",
+        key: "openai_api_key",
+      });
+      expect(res.body.secrets[0]).not.toHaveProperty("secretId");
+      expect(mockAuthorizationService.decidePrincipalGrant).toHaveBeenCalledWith(expect.objectContaining({
+        permissionKey: "secrets:read_off_run",
+        principalType: "agent",
+        principalId: offRunAgent.agentId,
+      }));
+      expect(mockSecretService.listAgentSecretAccessOffRun).toHaveBeenCalledWith(
+        offRunAgent.companyId,
+        expect.objectContaining({
+          agentId: offRunAgent.agentId,
+          actorSource: "agent_key",
+        }),
+      );
+      expect(mockLogActivity).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: "secret.access.listed",
+          details: expect.objectContaining({ offRun: true }),
+        }),
+      );
+    });
+
+    it("rejects an off-run agent without the grant with the historical 403 text", async () => {
+      const res = await request(createApp(offRunAgent)).get("/api/agents/me/secrets");
+
+      expect(res.status).toBe(403);
+      expect(res.body).toEqual({ error: "Run-bound agent authentication required" });
+      expect(mockSecretService.listAgentSecretAccessOffRun).not.toHaveBeenCalled();
+    });
+
+    it("rejects an off-run agent with an automation key even when the grant is active", async () => {
+      mockAuthorizationService.decidePrincipalGrant.mockResolvedValue({
+        allowed: true,
+        reason: "allow_explicit_grant",
+        explanation: "Allowed by explicit grant secrets:read_off_run.",
+      });
+
+      const res = await request(createApp({
+        ...offRunAgent,
+        keyScope: { kind: "automation" },
+      })).get("/api/agents/me/secrets");
+
+      expect(res.status).toBe(403);
+      expect(res.body).toEqual({ error: "Run-bound agent authentication required" });
+      expect(mockSecretService.listAgentSecretAccessOffRun).not.toHaveBeenCalled();
+    });
+
+    it("does not allow an off-run agent with the grant to read company secrets", async () => {
+      mockAuthorizationService.decidePrincipalGrant.mockResolvedValue({
+        allowed: true,
+        reason: "allow_explicit_grant",
+        explanation: "Allowed by explicit grant secrets:read_off_run.",
+      });
+
+      const res = await request(createApp(offRunAgent)).get("/api/companies/company-1/secrets");
+
+      expect(res.status).toBe(403);
+    });
+
+    it("keeps the run-bound path for agents with a runId", async () => {
+      mockSecretService.listAgentSecretAccess.mockResolvedValue([]);
+
+      const res = await request(createApp({
+        ...offRunAgent,
+        runId: "55555555-5555-4555-8555-555555555555",
+      })).get("/api/agents/me/secrets");
+
+      expect(res.status).toBe(200);
+      expect(mockSecretService.listAgentSecretAccess).toHaveBeenCalled();
+      expect(mockSecretService.listAgentSecretAccessOffRun).not.toHaveBeenCalled();
     });
   });
 });
