@@ -4,7 +4,7 @@
 // `instance_settings.general[OWNER_DELIVERY_SETTINGS_KEY]`.
 //
 // The stored value is the single truth; an absent or malformed row means the
-// default mode "owner_decisions_only". Same contract as wip-limit/settings.ts.
+// default mode, which is "via_bot" since myrmidon(1.6.5-OWNER-VIA-BOT): instances that never stored the key switch to it, an explicitly saved `owner_decisions_only`/`all` keeps its mode. Same contract as wip-limit/settings.ts.
 
 import {
   OWNER_DELIVERY_SETTINGS_KEY,

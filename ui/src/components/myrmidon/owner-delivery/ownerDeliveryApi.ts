@@ -3,9 +3,9 @@
 // Telegram direct messages.
 //
 // The frozen route contract (server side of the feature, part A):
-//   GET   /api/myrmidon/owner-delivery -> { mode: "owner_decisions_only" | "all" }
+//   GET   /api/myrmidon/owner-delivery -> { mode: "via_bot" | "owner_decisions_only" | "all" }
 //   PATCH /api/myrmidon/owner-delivery    { mode }   (instance admin)
-// With nothing stored the server answers `owner_decisions_only`, and this
+// With nothing stored the server answers `via_bot`, and this
 // module mirrors that default for a body that is missing or malformed so a
 // half-written setting never renders an empty screen.
 //
@@ -15,17 +15,17 @@
 import { api } from "@/api/client";
 
 /** Which cards reach the owner's Telegram direct messages. */
-export type OwnerDeliveryMode = "owner_decisions_only" | "all";
+export type OwnerDeliveryMode = "via_bot" | "owner_decisions_only" | "all";
 
 export interface OwnerDeliverySettings {
   mode: OwnerDeliveryMode;
 }
 
 /** The mode the server reports when no setting is stored. */
-export const OWNER_DELIVERY_DEFAULT_MODE: OwnerDeliveryMode = "owner_decisions_only";
+export const OWNER_DELIVERY_DEFAULT_MODE: OwnerDeliveryMode = "via_bot";
 
 export function isOwnerDeliveryMode(value: unknown): value is OwnerDeliveryMode {
-  return value === "owner_decisions_only" || value === "all";
+  return value === "via_bot" || value === "owner_decisions_only" || value === "all";
 }
 
 /** Reads a settings body off the wire; anything unexpected falls back to the

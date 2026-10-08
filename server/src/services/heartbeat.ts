@@ -703,6 +703,11 @@ import {
   buildCrossChannelContext,
   buildMentionedChatContext,
 } from "../myrmidon/agent-chat-bridge/cross-channel.js";
+// myrmidon(1.6.5-OWNER-VIA-BOT): the owner dialogue block of a run prompt (explain a decision / owner's DM answer)
+import {
+  appendOwnerViaBotBlock,
+  buildOwnerViaBotPromptBlock,
+} from "../myrmidon/owner-delivery/owner-message.js";
 
 // myrmidon(M3): owner signal on a budget hard-stop (see budget-signal.ts)
 import {
@@ -20991,14 +20996,27 @@ export function heartbeatService(
         });
         if (x9MentionChat) taskMarkdown += `\n\n${x9MentionChat}`;
       }
-      const taskMarkdownCompact = appendCrossChannelDelta(
+      // myrmidon(1.6.5-OWNER-VIA-BOT): the owner dialogue of the via_bot mode — the
+      // instruction to explain an open owner decision in a DM, or the note that the
+      // owner's DM message may answer one (both empty outside those two cases).
+      const ownerViaBotBlock = issueId
+        ? await buildOwnerViaBotPromptBlock(db, {
+            companyId: agent.companyId,
+            agentId: agent.id,
+            issue: issueContext,
+            ownerExplainInteractionId: readNonEmptyString(context.ownerExplainInteractionId),
+            wakeCommentId,
+          })
+        : "";
+      if (ownerViaBotBlock) taskMarkdown = appendOwnerViaBotBlock(taskMarkdown ?? "", ownerViaBotBlock);
+      const taskMarkdownCompact = appendOwnerViaBotBlock(appendCrossChannelDelta(
         buildPaperclipTaskMarkdown({
           ...taskMarkdownInput,
           taskPlan,
           includeDescription: false,
         }) ?? "", // myrmidon(X8d): buildPaperclipTaskMarkdown can return null; appendCrossChannelDelta requires string
         x8CrossChannel,
-      ); // myrmidon(X8d)
+      ), ownerViaBotBlock); // myrmidon(X8d), myrmidon(1.6.5-OWNER-VIA-BOT)
       if (issueRef) {
         context.paperclipIssue = {
           id: issueRef.id,

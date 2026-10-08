@@ -26,7 +26,7 @@ export interface OwnerDeliveryBinding {
  * instance settings row (instance_settings is a singleton table — no company
  * scoping on the row itself; the mode applies to every company).
  */
-async function ownerDeliveryMode(db: OwnerDeliveryDb): Promise<OwnerDeliveryMode> {
+export async function readOwnerDeliveryMode(db: OwnerDeliveryDb): Promise<OwnerDeliveryMode> {
   const row = await db
     .select({ general: instanceSettings.general })
     .from(instanceSettings)
@@ -37,7 +37,7 @@ async function ownerDeliveryMode(db: OwnerDeliveryDb): Promise<OwnerDeliveryMode
   return normalizeOwnerDeliverySettings(general[OWNER_DELIVERY_SETTINGS_KEY]).mode;
 }
 
-type OwnerDeliveryDb = Pick<Db, "select">;
+export type OwnerDeliveryDb = Pick<Db, "select">;
 
 /**
  * myrmidon(U2): find the standing Telegram DM conversation (X8b) between the
@@ -98,7 +98,7 @@ export async function telegramOwnerDeliveryBindings(
   // card is operational traffic between agents — never an owner decision,
   // regardless of the resolver policy. Under the default mode the owner's DM
   // receives only human-addressed cards; "all" restores the old behaviour.
-  const mode = await ownerDeliveryMode(db);
+  const mode = await readOwnerDeliveryMode(db);
   const addressedToAgent =
     input.addresseeAgentId !== null && input.addresseeAgentId !== undefined;
   if (
@@ -115,6 +115,24 @@ export async function telegramOwnerDeliveryBindings(
     return [];
   }
 
+  return findOwnerDmBindings(db, {
+    companyId: input.companyId,
+    ownerUserId,
+    agentId: createdByAgentId,
+  });
+}
+
+/**
+ * myrmidon(1.6.5-OWNER-VIA-BOT): the standing Telegram DM conversation between
+ * one agent and one board user — the lookup half of the U2 rules above, shared
+ * with the owner-message tool (which writes into the same conversation).
+ */
+export async function findOwnerDmBindings(
+  db: OwnerDeliveryDb,
+  input: { companyId: string; ownerUserId: string; agentId: string },
+): Promise<OwnerDeliveryBinding[]> {
+  const createdByAgentId = input.agentId;
+  const ownerUserId = input.ownerUserId;
   const rows = await db
     .select({
       conversation: chatConversations,

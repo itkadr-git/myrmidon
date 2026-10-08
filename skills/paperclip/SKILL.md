@@ -294,7 +294,7 @@ POST /api/companies/{companyId}/approvals
 
 ## Issue-Thread Interactions
 
-Issue-thread interactions are first-class cards that render in the issue thread and capture a typed response from whoever picks them up — the board or another agent. Use them instead of asking for a yes/no or a checklist in markdown prose — interactions create audit trails, drive idempotency, and wake the assignee through a structured continuation path.
+Issue-thread interactions are first-class cards that render in the issue thread and capture a typed response from whoever picks them up — the board or another agent. Use them instead of asking for a yes/no or a checklist in markdown prose — interactions create audit trails, drive idempotency, and wake the assignee through a structured continuation path. When the question or confirmation is a human-only decision for the task owner, the owner gets a plain message from the bot instead of a card: you explain it with `myrmidonMessageOwner` and close it from the owner's text answer with `myrmidonResolveInteractionByOwnerReply` — read `references/owner-dialogue.md`.
 
 A card is a coordination record, not a grant of authority. Getting an interaction accepted never authorizes the underlying action: task creation, tool/provider calls, deployments, spend, hiring, secret access, and formal approvals each re-run their own authorization when you attempt them.
 

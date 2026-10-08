@@ -11,12 +11,16 @@
 // The stored value is a single object under
 // `instance_settings.general[OWNER_DELIVERY_SETTINGS_KEY]`:
 //
-//   { mode: "owner_decisions_only" | "all" }
+//   { mode: "via_bot" | "owner_decisions_only" | "all" }
 //
-// "owner_decisions_only" (the default when the key is absent) publishes to the
-// owner DM only when the interaction is addressed to a human; "all" restores
-// the pre-filter behaviour (every card goes to the owner DM). The same shape
-// is the payload of GET/PATCH /api/myrmidon/owner-delivery.
+// "via_bot" (the default when the key is absent, 1.6.5-OWNER-VIA-BOT) never
+// publishes a card with buttons to the owner DM: the interaction's author is
+// woken to write the owner a plain message that explains the decision, and the
+// owner's free-text answer closes the interaction. "owner_decisions_only"
+// publishes the card to the owner DM only when the interaction is addressed to
+// a human; "all" restores the pre-filter behaviour (every card goes to the
+// owner DM). The same shape is the payload of GET/PATCH
+// /api/myrmidon/owner-delivery.
 
 import { z } from "zod";
 
@@ -24,12 +28,11 @@ import { z } from "zod";
 export const OWNER_DELIVERY_SETTINGS_KEY = "ownerDelivery";
 
 /** The delivery-filter mode. */
-export const OWNER_DELIVERY_MODES = ["owner_decisions_only", "all"] as const;
+export const OWNER_DELIVERY_MODES = ["via_bot", "owner_decisions_only", "all"] as const;
 export type OwnerDeliveryMode = (typeof OWNER_DELIVERY_MODES)[number];
 
 /** The mode that applies when nothing is stored yet. */
-export const OWNER_DELIVERY_DEFAULT_MODE: OwnerDeliveryMode =
-  "owner_decisions_only";
+export const OWNER_DELIVERY_DEFAULT_MODE: OwnerDeliveryMode = "via_bot";
 
 /**
  * The stored/API shape of the owner-delivery filter settings.
@@ -42,22 +45,21 @@ export const ownerDeliverySettingsSchema = z
 export type OwnerDeliverySettings = z.infer<typeof ownerDeliverySettingsSchema>;
 
 /**
- * The filter decision for one card on the owner-DM branch: `true` when the
- * card may be delivered to the owner's DM under `mode`.
- *
- * A card is addressed to a human when the interaction's effective resolver
- * policy is `human_only`, or when its `addresseeUserId` names the task owner
- * (responsibleUserId ?? createdByUserId). Agent-addressed and purely
- * operational cards (`anyone`/`not_creator` without a human addressee) are
- * board-only under "owner_decisions_only".
+ * The audience class "owner decision" (1.6.5-OWNER-VIA-BOT): the interaction
+ * waits for the human owner of the task. It is true when the interaction's
+ * effective resolver policy is `human_only`, or when its `addresseeUserId`
+ * names the task owner (responsibleUserId ?? createdByUserId); an interaction
+ * addressed to an agent is never an owner decision.
  */
-export function ownerDeliveryAllowsCard(input: {
-  mode: OwnerDeliveryMode;
+export function isOwnerDecisionAudience(input: {
   effectiveResolverPolicy: string | null | undefined;
+  addresseeAgentId?: string | null | undefined;
   addresseeUserId: string | null | undefined;
   ownerUserId: string | null | undefined;
 }): boolean {
-  if (input.mode === "all") return true;
+  if (input.addresseeAgentId !== null && input.addresseeAgentId !== undefined) {
+    return false;
+  }
   if (input.effectiveResolverPolicy === "human_only") return true;
   return (
     input.ownerUserId != null &&
@@ -65,6 +67,77 @@ export function ownerDeliveryAllowsCard(input: {
     input.addresseeUserId === input.ownerUserId
   );
 }
+
+/**
+ * The filter decision for one card on the owner-DM branch: `true` when the
+ * card may be delivered to the owner's DM under `mode`.
+ *
+ * A card is addressed to a human when the interaction's effective resolver
+ * policy is `human_only`, or when its `addresseeUserId` names the task owner
+ * (responsibleUserId ?? createdByUserId). Agent-addressed and purely
+ * operational cards (`anyone`/`not_creator` without a human addressee) are
+ * board-only under "owner_decisions_only". Under "via_bot" no card reaches
+ * the owner DM at all: the owner is told by a message from the bot instead.
+ */
+export function ownerDeliveryAllowsCard(input: {
+  mode: OwnerDeliveryMode;
+  effectiveResolverPolicy: string | null | undefined;
+  addresseeUserId: string | null | undefined;
+  ownerUserId: string | null | undefined;
+}): boolean {
+  if (input.mode === "via_bot") return false;
+  if (input.mode === "all") return true;
+  return isOwnerDecisionAudience({
+    effectiveResolverPolicy: input.effectiveResolverPolicy,
+    addresseeUserId: input.addresseeUserId,
+    ownerUserId: input.ownerUserId,
+  });
+}
+
+/**
+ * The reason string stamped on the metadata of an issue comment that the
+ * owner-message tool wrote into the owner's standing DM conversation. The
+ * comment's metadata rows labelled OWNER_MESSAGE_INTERACTION_LABEL carry the
+ * ids of the interactions the message explains: that is the binding "the
+ * owner's next text answer is about interaction X".
+ */
+export const OWNER_MESSAGE_COMMENT_REASON = "myrmidon_owner_message";
+/** The metadata row label that names one explained interaction id. */
+export const OWNER_MESSAGE_INTERACTION_LABEL = "Interaction";
+
+/** Maximum number of characters of one owner message. */
+export const OWNER_MESSAGE_MAX_CHARS = 3500;
+
+/**
+ * POST /api/myrmidon/owner-message — an agent writes the owner one DM that
+ * explains one or more of its own open owner decisions.
+ */
+export const ownerMessageRequestSchema = z
+  .object({
+    interactionIds: z.array(z.string().uuid()).min(1).max(20),
+    text: z.string().trim().min(1).max(OWNER_MESSAGE_MAX_CHARS),
+  })
+  .strict();
+export type OwnerMessageRequest = z.infer<typeof ownerMessageRequestSchema>;
+
+/** The actions the owner's text answer may close an interaction with. */
+export const OWNER_REPLY_RESOLUTION_ACTIONS = ["accept", "reject", "respond"] as const;
+export type OwnerReplyResolutionAction = (typeof OWNER_REPLY_RESOLUTION_ACTIONS)[number];
+
+/**
+ * POST /api/myrmidon/owner-message/resolve — the agent closes an interaction on
+ * the owner's behalf from the owner's explicit text answer. `body` is the body
+ * of the matching interaction route (accept / reject / respond).
+ */
+export const ownerReplyResolutionSchema = z
+  .object({
+    interactionId: z.string().uuid(),
+    ownerReplyCommentId: z.string().uuid(),
+    action: z.enum(OWNER_REPLY_RESOLUTION_ACTIONS),
+    body: z.record(z.string(), z.unknown()).optional(),
+  })
+  .strict();
+export type OwnerReplyResolution = z.infer<typeof ownerReplyResolutionSchema>;
 
 /**
  * Coerce an unknown stored value (from instance_settings.general) into the
