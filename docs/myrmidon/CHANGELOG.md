@@ -507,16 +507,6 @@ version file to edit. Base Paperclip version is in the image label
 ## 1.6.1
 
 ### Role queues as instance settings (SWARM-SETTINGS-UI)
-### Agent pause by grant (ADMIN-AGENT D)
-
-- `POST /agents/:id/pause` now authorizes agent actors through the same
-  direct-grant ladder as resume: an agent holding `agents:configure` may
-  pause an agent of its company, while `agents:suggest-changes` and
-  ungranted peers stay denied. Board actors keep the previous semantics
-  unchanged, and the pause activity entry now records the real acting
-  principal (agent, run, API key) instead of a board placeholder.
-  Drain-vs-cancel semantics are untouched.
-
 
 - The pilot of the per-role task queues is set in the interface, without a
   restart: the "Role queues (SWARM-CLAIM)" section of Instance → General
