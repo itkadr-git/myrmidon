@@ -64,7 +64,7 @@ import {
   parseRetryAfterMs,
   type RateLimiter,
 } from "./dockergate-pacing.js"; // myrmidon(1.6.5-DOCKERGATE-A2A3-STORM)
-import type { BotContainerDriver, BotContainerSpec, BotContainerStatus, TemplateDriftField, TemplateDriftReport } from "./driver.js";
+import type { BotContainerDriver, BotContainerSpec, BotContainerStatus, BotSkillDirectory, TemplateDriftField, TemplateDriftReport } from "./driver.js";
 import { ISOLATED_LAYOUT, type ScopeLayout } from "@paperclipai/shared";
 import type { CompiledProfile } from "./types.js";
 import { logger } from "../../middleware/logger.js";
@@ -108,7 +108,7 @@ import {
   validateBotKey,
   type DevbuildSettings,
 } from "./template.js";
-import { buildUstarArchive, parseUstarArchive, type UstarEntry } from "./ustar.js";
+import { buildUstarArchive, parseUstarArchive, type UstarEntry, type UstarReadEntry } from "./ustar.js";
 
 export const BOT_DOCKER_SOCKET_ENV = "MYRMIDON_BOT_DOCKER_SOCKET";
 export const DEFAULT_BOT_DOCKER_SOCKET = "/var/run/docker.sock";
@@ -918,6 +918,82 @@ export function botStateFromInspect(info: Pick<DockerInspect, "State">): "runnin
   return info.State.Health?.Status === "unhealthy" ? "unhealthy" : "running";
 }
 
+// ---------------------------------------------------------------------------
+// myrmidon(1.6.5-BOT-SKILL-BACKIMPORT): hermes/skills/ archive -> skill
+// directories. Pure (the archive is already read), so the shape rules are
+// tested without a Docker socket.
+// ---------------------------------------------------------------------------
+
+/** Same ceilings the compiler applies to a skill it reads off disk
+ *  (profile-skills.ts): the back-import never carries more into the catalog
+ *  than the compiler would carry back out. */
+export const BOT_SKILLS_MAX_SKILLS = 100;
+export const BOT_SKILLS_MAX_FILES_PER_SKILL = 200;
+export const BOT_SKILLS_MAX_FILE_BYTES = 512 * 1024;
+/** Directories a bot's own tooling drops into a skill and the catalog must
+ *  not pick up (same list as profile-skills.ts SKILL_SKIPPED_DIRECTORIES). */
+const BOT_SKILLS_SKIPPED_DIRECTORIES = new Set([".git", "node_modules"]);
+
+function isSafeSkillSegment(segment: string): boolean {
+  return segment.length > 0 && segment !== "." && segment !== "..";
+}
+
+/**
+ * Groups the entries of a `GET /containers/{id}/archive` tar of a bot's
+ * hermes/skills directory into skill directories. The archive's paths are
+ * relative to the requested directory: `skills/<name>/<file>` (Docker tars a
+ * directory under its own base name). An entry whose path does not fit that
+ * shape (a file directly at the root, an unsafe segment, a skipped directory)
+ * is dropped, never partially imported; a skill over the file ceiling or with
+ * an oversized/binary file is dropped whole, like the compiler drops a skill
+ * it cannot read completely.
+ */
+export function skillDirectoriesFromArchive(entries: readonly UstarReadEntry[]): BotSkillDirectory[] {
+  const bySkill = new Map<string, Array<{ path: string; content: string }>>();
+  const dropped = new Set<string>();
+  for (const entry of entries) {
+    if (entry.type !== "file") continue;
+    const segments = entry.path.split("/").filter((segment) => segment.length > 0);
+    // `skills/<name>/<file…>` — anything shallower is not a skill file.
+    if (segments.length < 3 || segments[0] !== "skills") continue;
+    const name = segments[1]!;
+    if (dropped.has(name)) continue;
+    const relative = segments.slice(2);
+    if (![name, ...relative].every(isSafeSkillSegment)) {
+      dropped.add(name);
+      bySkill.delete(name);
+      continue;
+    }
+    if (relative.some((segment) => BOT_SKILLS_SKIPPED_DIRECTORIES.has(segment))) continue;
+    if (entry.content.length > BOT_SKILLS_MAX_FILE_BYTES) {
+      dropped.add(name);
+      bySkill.delete(name);
+      continue;
+    }
+    const content = entry.content.toString("utf8");
+    if (content.includes("\0")) {
+      dropped.add(name);
+      bySkill.delete(name);
+      continue;
+    }
+    const files = bySkill.get(name) ?? [];
+    if (files.length >= BOT_SKILLS_MAX_FILES_PER_SKILL) {
+      dropped.add(name);
+      bySkill.delete(name);
+      continue;
+    }
+    files.push({ path: relative.join("/"), content });
+    bySkill.set(name, files);
+  }
+  return [...bySkill.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .slice(0, BOT_SKILLS_MAX_SKILLS)
+    .map(([name, files]) => ({
+      name,
+      files: files.sort((a, b) => a.path.localeCompare(b.path)),
+    }));
+}
+
 /** Docker's multiplexed log stream (no TTY): 8-byte frame headers. */
 export function demuxDockerLogs(buf: Buffer): string {
   const chunks: Buffer[] = [];
@@ -1361,6 +1437,37 @@ export function dockerBotContainerDriver(
     }
   }
 
+  /**
+   * myrmidon(1.6.5-BOT-SKILL-BACKIMPORT, OPE-6401): the bot's own skills
+   * (hermes/skills/ — the container's ~/.hermes/skills) as (directory name,
+   * files), for the reconcile pass's back-import into the company catalog.
+   * The board's own delivery (hermes/skills-board/) is NOT part of the
+   * result: it is the profile's managed directory, and reading it back would
+   * re-import the catalog's own copy. Works on a live container (the Docker
+   * archive API does not need exec); a stopped or missing container yields
+   * null. Never throws: a read failure is an empty pass, not a failed
+   * reconcile.
+   */
+  async function readBotSkills(botKey: string): Promise<BotSkillDirectory[] | null> {
+    const name = containerNameFor(botKey);
+    try {
+      const info = await inspectByName(name);
+      if (!info) return null;
+      if (botStateFromInspect(info) !== "running") return null;
+      const root = botRealRootFromBinds(info.HostConfig?.Binds, botKey);
+      const res = await requestWithRateLimitRetry({
+        method: "GET",
+        path: `/containers/${nameSegment(name)}/archive?path=${encodeURIComponent(`${root}/hermes/skills`)}`,
+      });
+      // 404: the bot has no skills directory at all (never created one) — a
+      // valid empty answer, not a read failure.
+      if (res.status === 404) return [];
+      if (res.status >= 400) return null;
+      return skillDirectoriesFromArchive(parseUstarArchive(res.body));
+    } catch {
+      return null;
+    }
+  }
   async function status(botKey: string): Promise<BotContainerStatus> {
     const name = containerNameFor(botKey);
     const info = await inspectByName(name);
@@ -1555,5 +1662,5 @@ export function dockerBotContainerDriver(
     await stopByName(containerNameFor(botKey));
   }
 
-  return { status, list, listRunning, templateDrift, statusWithDrift, create, recreate, writeProfile, start, restart, stop, readCloneReport };
+  return { status, list, listRunning, templateDrift, statusWithDrift, create, recreate, writeProfile, start, restart, stop, readCloneReport, readBotSkills };
 }

@@ -387,6 +387,111 @@ describe("reconcileBot", () => {
     });
   });
 
+  describe("bot skill back-import (1.6.5-BOT-SKILL-BACKIMPORT, OPE-6401)", () => {
+    const botSkill = {
+      name: "deploy",
+      files: [{ path: "SKILL.md", content: "---\nname: deploy\n---\n\nBody.\n" }],
+    };
+    function backimportPorts() {
+      const created: string[] = [];
+      return {
+        created,
+        ports: {
+          readSkillByKey: async () => null,
+          createSkill: async (_companyId: string, input: { slug: string }) => {
+            created.push(input.slug);
+            return { id: `skill-${input.slug}`, versionId: "v-1" };
+          },
+          updateSkill: async () => ({ versionId: "v-2", changed: true }),
+        },
+      };
+    }
+
+    it("flag off (default): the driver's skill read is never called — the pass is exactly the previous behavior", async () => {
+      const applied = profile();
+      const driver = fakeDriver({ botKey: "agent-a", state: "running", ...hashesOf(applied) });
+      const backimport = backimportPorts();
+      const outcome = await run(driver, fakeMaintenance([0]), {
+        backimport: { companyId: "co-1", ports: backimport.ports },
+        env: {},
+      });
+      expect(outcome).toEqual({ kind: "unchanged" });
+      expect(driver.calls).toEqual(["status", "templateDrift"]);
+      expect(backimport.created).toEqual([]);
+    });
+
+    it("flag on, unchanged pass: the bot's own skills land in the company catalog", async () => {
+      const applied = profile();
+      const driver = fakeDriver({ botKey: "agent-a", state: "running", ...hashesOf(applied) });
+      driver.readBotSkills = async () => [botSkill];
+      const backimport = backimportPorts();
+      const activity = fakeActivity();
+      const outcome = await run(driver, fakeMaintenance([0]), {
+        activity,
+        backimport: { companyId: "co-1", ports: backimport.ports },
+        env: { MYRMIDON_BOT_SKILL_BACKIMPORT: "1" },
+      });
+      expect(outcome).toEqual({ kind: "unchanged" });
+      expect(backimport.created).toEqual(["deploy"]);
+      const details = detailsOf(activity, "bot skills back-imported into the company catalog");
+      expect(details.created).toBe(1);
+    });
+
+    it("flag on but no catalog ports wired: nothing happens", async () => {
+      const applied = profile();
+      const driver = fakeDriver({ botKey: "agent-a", state: "running", ...hashesOf(applied) });
+      const outcome = await run(driver, fakeMaintenance([0]), {
+        env: { MYRMIDON_BOT_SKILL_BACKIMPORT: "1" },
+      });
+      expect(outcome).toEqual({ kind: "unchanged" });
+      expect(driver.calls).toEqual(["status", "templateDrift"]);
+    });
+
+    it("a failed import is recorded but does not fail the pass", async () => {
+      const applied = profile();
+      const driver = fakeDriver({ botKey: "agent-a", state: "running", ...hashesOf(applied) });
+      driver.readBotSkills = async () => [botSkill];
+      const activity = fakeActivity();
+      const outcome = await run(driver, fakeMaintenance([0]), {
+        activity,
+        backimport: {
+          companyId: "co-1",
+          ports: {
+            readSkillByKey: async () => null,
+            createSkill: async () => {
+              throw new Error("catalog write exploded");
+            },
+            updateSkill: async () => ({ versionId: null, changed: false }),
+          },
+        },
+        env: { MYRMIDON_BOT_SKILL_BACKIMPORT: "1" },
+      });
+      expect(outcome).toEqual({ kind: "unchanged" });
+      expect(
+        activity.entries.some((entry) => entry.message === "bot skills back-imported into the company catalog"),
+      ).toBe(true);
+    });
+
+    it("back-import runs after the container restart of an apply pass, not instead of it", async () => {
+      const driver = fakeDriver({ botKey: "agent-a", state: "running", restartHash: "restart-old", filesHash: "files-1" });
+      const order: string[] = [];
+      driver.readBotSkills = async () => {
+        order.push("readBotSkills");
+        return [botSkill];
+      };
+      const backimport = backimportPorts();
+      const outcome = await run(driver, fakeMaintenance([0]), {
+        compile: async () => profile({ restartHash: "restart-new" }),
+        backimport: { companyId: "co-1", ports: backimport.ports },
+        env: { MYRMIDON_BOT_SKILL_BACKIMPORT: "1" },
+      });
+      expect(outcome).toEqual({ kind: "applied_restart" });
+      expect(driver.calls).toEqual(["status", "templateDrift", "writeProfile", "restart"]);
+      expect(order).toEqual(["readBotSkills"]);
+      expect(backimport.created).toEqual(["deploy"]);
+    });
+  });
+
   describe("unhealthy (Docker's own health check gave up)", () => {
     it("is restarted only inside a drained maintenance window, never directly", async () => {
       const applied = profile();

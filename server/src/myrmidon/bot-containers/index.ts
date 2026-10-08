@@ -36,6 +36,8 @@ import type { BotContainerAgentConfig } from "./agent-config.js";
 import type { SharedMountSettings } from "@paperclipai/shared";
 import { botKeyLock, type BotKeyLock } from "./bot-key-lock.js";
 import type { BotContainerDriver } from "./driver.js";
+import { isBotSkillBackimportEnabled } from "./skill-backimport.js";
+import { createDbBotSkillBackimportPorts } from "./skill-backimport-ports.js";
 import {
   reconcileBot,
   type BotContainerActivitySink,
@@ -184,6 +186,13 @@ export interface BotContainerRuntimeDeps {
    *  recorded in the activity log and does not fail the sweep: the facade keeps
    *  serving the previous registry. */
   exportMediaAcl?: () => Promise<{ bots: number; failedResolves: number; changed: boolean } | null>;
+  /**
+   * myrmidon(1.6.5-BOT-SKILL-BACKIMPORT, OPE-6401): the company of an agent,
+   * for the back-import of the bot's own skills into the company catalog.
+   * Present with `db` at startup; the per-bot pass builds the catalog ports
+   * from the pair (db, companyId). Absent = no back-import, exactly as before.
+   */
+  backimportCompanyIdOf?: (agentId: string) => Promise<string | null>;
 }
 
 export type ApplyBotContainerOutcome = ReconcileOutcome | { kind: "not_applicable"; reason: string };
@@ -269,6 +278,19 @@ export async function applyBotContainerNow(
       driver: deps.driver,
       maintenance: deps.maintenance,
       activity: deps.activity,
+      // myrmidon(1.6.5-BOT-SKILL-BACKIMPORT, OPE-6401): the catalog ports are
+      // built per pass, bound to the agent's company; the flag itself is read
+      // inside the reconciler (off = nothing here is touched). An agent whose
+      // company is unreadable gets no back-import this pass rather than a
+      // wrong-scope import.
+      ...(deps.db && deps.backimportCompanyIdOf && isBotSkillBackimportEnabled()
+        ? await (async () => {
+            const companyId = await deps.backimportCompanyIdOf!(agent.agentId);
+            return companyId
+              ? { backimport: { companyId, ports: createDbBotSkillBackimportPorts(deps.db!) } }
+              : {};
+          })()
+        : {}),
     });
     if (passCountsForFreshness(outcome)) lastPassStartedAtMs.set(botKey, passStartedAt);
     else lastPassStartedAtMs.delete(botKey);
