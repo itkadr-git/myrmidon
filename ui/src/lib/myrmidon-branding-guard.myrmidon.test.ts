@@ -5,14 +5,14 @@
 // "Myrmidon" instead, and checks that the shipped page/manifest advertise the
 // new name and that no paperclip artwork (loading glyph, login-screen ASCII
 // sprites, export-README links to the vendor site) is rendered any more.
-// The allowlist is deliberately narrow: only the vendor's real external
-// products/services (Paperclip Cloud, Paperclip Labs, Paperclip EE /
-// Enterprise), wire-protocol identifiers (X-Paperclip-* headers, PAPERCLIP_*
-// env vars, @paperclipai/* packages, the lucide-react "Paperclip" attachment
-// icon), the MIT attribution line and the legacy "Paperclip ..." recovery-notice
-// sentences that old stored comments still carry (matchers and variants only).
-// Product parts we own and show to a human ("Myrmidon Runner", "Myrmidon
-// Computer", "Myrmidon-managed") are NOT exempt. See docs/myrmidon/CONVENTIONS.md #8/#9.
+// The allowlist is deliberately narrow: only wire-protocol identifiers
+// (X-Paperclip-* headers, PAPERCLIP_* env vars, @paperclipai/* packages, the
+// lucide-react "Paperclip" attachment icon), the MIT attribution line and the
+// legacy "Paperclip ..." recovery-notice sentences that old stored comments
+// still carry (matchers and variants only). myrmidon(DB1): DEBRAND 1.6.6-a
+// removed the vendor-product exceptions ("Paperclip Cloud"/"Labs"/"EE"/
+// "Enterprise") from visible UI copy — those surfaces now say Myrmidon, so the
+// words are no longer exempt. See docs/myrmidon/CONVENTIONS.md #8/#9.
 import { describe, expect, it } from "vitest";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
@@ -24,9 +24,10 @@ const APP_DEFINITIONS_DIR = path.join(REPO_ROOT, "packages", "shared", "src", "a
 
 // Match-level exemptions: the vendor's real external products. Everything else
 // that reads "Paperclip" as a word in a user-visible string is a violation,
-// including "Paperclip Runner", "Paperclip Computer" and "Paperclip-managed" —
-// those name parts of our own product and read "Myrmidon ..." instead.
-const WORD_PATTERN = /\bPaperclip\b(?!\s+Cloud|-Cloud|\s+Labs|\s+EE\b|\s+Enterprise)/;
+// including "Paperclip Runner", "Paperclip Computer", "Paperclip-managed" and
+// (since myrmidon(DB1)) "Paperclip Cloud"/"Labs"/"EE"/"Enterprise" — those
+// name parts of our own product and read "Myrmidon ..." instead.
+const WORD_PATTERN = /\bPaperclip\b/; // myrmidon(DB1): DEBRAND 1.6.6-a removed the Cloud/Labs/EE/Enterprise exceptions
 
 // Line-level exemptions are limited to text that cannot be renamed at all.
 const LINE_ALLOW_SUBSTR = [
