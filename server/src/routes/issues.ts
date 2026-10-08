@@ -16142,20 +16142,37 @@ export function issueRoutes(
       // myrmidon(1.6.5-OWNER-VIA-BOT): an owner decision raised by an agent is
       // not shown to the owner as a card; its author is woken on this task to
       // explain it to the owner in a direct message (no-op outside via_bot).
-      void scheduleOwnerExplainWake(db, {
+      // The creation response tells the author it can explain the decision now,
+      // in this very run; the deferred wake then finds it already explained.
+      const ownerExplainOutcome = await scheduleOwnerExplainWake(db, {
         companyId: issue.companyId,
         issueId: issue.id,
         interaction,
         wakeup: (agentId, options) => heartbeat.wakeup(agentId, options),
         requestedBy: { actorType: actor.actorType, actorId: actor.actorId },
-      }).catch((err) =>
+      }).catch((err) => {
         logger.warn(
           { err, issueId: issue.id, interactionId: interaction.id },
           "failed to wake the author to explain an owner decision",
-        ),
-      );
+        );
+        return null;
+      });
 
-      res.status(201).json(interaction);
+      res.status(201).json(
+        ownerExplainOutcome === "woken"
+          ? {
+              ...interaction,
+              ownerExplain: {
+                required: true,
+                tool: "myrmidonMessageOwner",
+                interactionIds: [interaction.id],
+                instruction:
+                  "Explain this decision to the owner now with one message via myrmidonMessageOwner " +
+                  `(interactionIds: ["${interaction.id}"]). If you do it in this run, the follow-up wake does nothing.`,
+              },
+            }
+          : interaction,
+      );
     },
   );
 
