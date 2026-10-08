@@ -498,7 +498,9 @@ describeEmbeddedPostgres("telegram-notify errors channel (TG-NOTIFY-C)", () => {
       settings: settingsSource,
       feed: feedFromDb(),
     });
-    expect(result.checked).toBeGreaterThanOrEqual(2);
+    // rel's attention feed derives one error card from this setup (main derives
+    // two: the agent_error_alert card is not built there), so require at least one.
+    expect(result.checked).toBeGreaterThanOrEqual(1);
     expect(result.sent).toBe(result.checked);
     const rows = await db
       .select()
