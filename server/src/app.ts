@@ -102,6 +102,8 @@ import { instanceSettingsRoutes } from "./routes/instance-settings.js";
 import { myrmidonMaintenanceRoutes } from "./myrmidon/maintenance/index.js"; // myrmidon(R3)
 import { myrmidonDeployJobsRoutes } from "./myrmidon/deploy-jobs/index.js"; // myrmidon(R5-A)
 import { myrmidonRuntimeLimitsRoutes } from "./myrmidon/runtime-limits/index.js"; // myrmidon(C0)
+// myrmidon(PAUSE-GUARD): GET/PATCH the forgotten-pause guard settings
+import { myrmidonPauseGuardRoutes } from "./myrmidon/pause-guard/index.js";
 import { myrmidonBudgetEnforcementRoutes } from "./myrmidon/budget-enforcement/index.js"; // myrmidon(1.7-BUDGET-CONFIG-B)
 import { myrmidonBehaviorSettingsRoutes } from "./myrmidon/behavior-settings/index.js"; // myrmidon(SETTINGS-CORE)
 import { myrmidonTelegramDmProgressRoutes } from "./myrmidon/telegram-dm-progress/index.js"; // myrmidon(DM-PROGRESS)
@@ -906,6 +908,7 @@ export async function createApp(
   api.use(myrmidonMaintenanceRoutes(db)); // myrmidon(R3)
   api.use(myrmidonDeployJobsRoutes(db)); // myrmidon(R5-A)
   api.use(myrmidonRuntimeLimitsRoutes(db)); // myrmidon(C0)
+  api.use(myrmidonPauseGuardRoutes(db)); // myrmidon(PAUSE-GUARD)
   api.use(myrmidonBudgetEnforcementRoutes(db)); // myrmidon(1.7-BUDGET-CONFIG-B)
   api.use(myrmidonBehaviorSettingsRoutes(db)); // myrmidon(SETTINGS-CORE): unified behavior settings, UI→env→default without restart
   api.use(myrmidonTelegramDmProgressRoutes(db)); // myrmidon(DM-PROGRESS): live progress steps of the Telegram DM status

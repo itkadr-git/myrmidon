@@ -35,6 +35,9 @@ import type { PluginEntitlementKey } from "../myrmidon-plugin-entitlement.js";
 import type { TelegramDmProgressSettings } from "../myrmidon-telegram-dm-progress.js";
 // myrmidon(BOT-RUNTIME-TUNING D2): the fallback-signal settings of the same row.
 import type { StoredFallbackSignalSettings } from "../myrmidon-fallback-signal.js";
+// myrmidon(1.6.5-PAUSE-GUARD): the forgotten-operator-pause guard of the same
+// general settings row.
+import type { StoredPauseGuardSettings } from "../myrmidon-pause-guard.js";
 
 // myrmidon(1.6.1-FORAGING-LIMITS-UI)
 import type { ForagingSettings } from "../myrmidon-foraging.js";
@@ -206,6 +209,15 @@ export interface InstanceGeneralSettings {
    * `swarmClaimJournal`.
    */
   reviewReworkJournal?: unknown[];
+  /**
+   * myrmidon(1.6.5-PAUSE-GUARD): the forgotten-pause guard — the board lifts an
+   * agent the OPERATOR paused by hand once it has been paused longer than the
+   * threshold (system pauses are never touched) — changed from
+   * `GET`/`PATCH /api/myrmidon/pause-guard`. Absent means "use the environment
+   * variable, then the default (on, 20 minutes)"; kept in sync with the
+   * validator of the same field (packages/shared/src/validators/instance.ts).
+   */
+  pauseGuard?: StoredPauseGuardSettings;
   /**
    * myrmidon(1.6.6 MONITORING D): the alert-recovery knobs — `holdMinutes`
    * (how long an alert must stay resolved before its task closes by itself)

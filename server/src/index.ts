@@ -127,6 +127,8 @@ import { flushInFlightRunLogMirrors } from "./services/run-log-store.js";
 import { startMaintenanceMode } from "./myrmidon/maintenance/index.js"; // myrmidon(R3)
 import { startDeployJobs } from "./myrmidon/deploy-jobs/index.js"; // myrmidon(R5-A)
 import { startRuntimeLimits } from "./myrmidon/runtime-limits/index.js"; // myrmidon(C0)
+// myrmidon(PAUSE-GUARD): resumes operator pauses left older than a threshold
+import { createPauseGuardSweepFromHeartbeat } from "./myrmidon/pause-guard/index.js";
 import { startBehaviorSettings } from "./myrmidon/behavior-settings/index.js"; // myrmidon(SETTINGS-CORE)
 import { startBotContainers, stopBotContainers } from "./myrmidon/bot-containers/startup.js"; // myrmidon(W2a)
 import { startLitellmCostSweep, stopLitellmCostSweep } from "./myrmidon/litellm-costs/startup.js"; // myrmidon(M2-A)
@@ -1216,6 +1218,16 @@ async function startServerWithDatabaseTeardown(
         issues: issueService(db as any),
       })
     : null;
+  // myrmidon(PAUSE-GUARD): the forgotten-pause guard. An agent the operator
+  // paused and left paused longer than the threshold is resumed through the
+  // same wake chain the resume route uses; system pauses (budget, archive,
+  // import) are never touched and names on the allowlist are skipped. The
+  // sweep rate-limits itself to its configured interval (10 minutes by
+  // default) and to at most `maxResumesPerPass` resumes per pass, so it rides
+  // this reconciliation queue without holding it.
+  const pauseGuardSweep = heartbeat
+    ? createPauseGuardSweepFromHeartbeat({ db: db as any, heartbeat })
+    : null;
   const executionControlSweeps = [
     ["finalization", () => reconcileAbandonedExecutionControl(db)],
     ["replacement", () => heartbeat ? reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession: run => verifyStoppedNativeSessionForReplacement(db, run) }) : undefined],
@@ -1224,6 +1236,8 @@ async function startServerWithDatabaseTeardown(
     ["automatic_disposition", () => settleUnrecoverableExecutions(db)],
     ["local_ai_login_cleanup", () => localAiLoginService(db).reapExpired()],
     ["run_stall", () => runStallSweep?.sweep()],
+    // myrmidon(PAUSE-GUARD): lifts operator pauses left older than the threshold
+    ["pause_guard", () => pauseGuardSweep?.sweep()],
   ] as const;
   const sweepExecutionControl = () => {
     if (heartbeatSchedulerStopped) return;

@@ -2808,6 +2808,9 @@ export * from "./myrmidon-bot-workspace.js";
 export * from "./myrmidon-session-generations.js";
 // myrmidon(C0): live run-admission limits shared by the server, the UI and the settings validator.
 export * from "./myrmidon-runtime-limits.js";
+// myrmidon(PAUSE-GUARD): the forgotten-pause guard settings, resolution and the value bounds
+// shared by the server, the board UI and the settings validator.
+export * from "./myrmidon-pause-guard.js";
 // myrmidon(PARALLEL-HELPERS): the card -> Hermes `delegation` contract shared by the profile
 // compiler, the agent card and the settings page.
 export * from "./myrmidon-parallel-helpers.js";

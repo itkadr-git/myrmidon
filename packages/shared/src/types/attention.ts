@@ -39,6 +39,9 @@ export const ATTENTION_SOURCE_KINDS = [
   // myrmidon(REVIEW-ROUTING): a task in review has no reviewer available, or
   // its review has had no verdict for longer than the configured hours.
   "review_routing",
+  // myrmidon(PAUSE-GUARD): a pass resumed its ceiling's worth of forgotten
+  // operator pauses and left the rest for the following passes.
+  "pause_guard",
   // myrmidon(BOT-DISK-A): bot disk lifecycle events.
   "bot_disk_lifecycle",
   // myrmidon(1.6.1-BOT-DISK-C): a bot volume is approaching (>=80%) or over its
