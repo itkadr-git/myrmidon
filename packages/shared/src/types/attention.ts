@@ -318,6 +318,12 @@ export interface AttentionItem {
 
 export interface AttentionFeed {
   companyId: string;
+  /**
+   * ISO timestamp of the snapshot this feed was built from. A read served from
+   * a cached snapshot keeps that snapshot's build time, so the value can trail
+   * the response by up to the attention feed cache windows — it is not the
+   * request time.
+   */
   generatedAt: string;
   totalCount: number;
   /**
