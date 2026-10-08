@@ -563,6 +563,8 @@ describeEmbeddedPostgres("tool gateway service", () => {
     await expect(call(30)).rejects.toMatchObject({ status: 403 });
     expect(calls).toBe(2);
     await db.delete(toolPolicies).where(eq(toolPolicies.id, deny.id));
+    // myrmidon(DB-PERF-C-P4): removing the denial directly also bypasses the service's invalidation.
+    invalidateToolPolicyCache(db, company.id);
     await db.update(toolCatalogEntries).set({ versionHash: "changed-definition" }).where(eq(toolCatalogEntries.id, catalogEntry.id));
     await expect(call(40)).rejects.toMatchObject({ reasonCode: "approval_required" });
     expect(calls).toBe(2);
