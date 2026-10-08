@@ -641,79 +641,112 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
     },
 
     updateGeneral: async (patch: PatchInstanceGeneralSettings): Promise<InstanceSettings> => {
-      const current = await getOrCreateRow();
-      const storedGeneral = normalizeGeneralSettings(current.general);
-      // A full-GET echo carries the overlaid operator value for a field the
-      // user never chose; stripping it keeps the overlay strictly read-time,
-      // so changing or unsetting the variable later still takes effect.
-      const nextGeneral = stripOperatorGeneralEchoes(
-        storedGeneral,
-        normalizeGeneralSettings({ ...storedGeneral, ...patch }),
-        operatorDefaults,
-      );
-      const now = new Date();
-      const [updated] = await db
-        .update(instanceSettings)
-        .set({
-          // myrmidon(R3): keep maintenance mode state; myrmidon(R5-A): keep deploy job state; myrmidon(R5-B): keep bot canary state; myrmidon(SUA): keep stack registry cache; myrmidon(SEC1): keep the access-hub host registry
-          // myrmidon(BROWSER-CONSOLE): same for the browser console sessions/journal key
-          general: {
-            ...nextGeneral,
-            ...preserveMaintenanceGeneralKey(current.general), // myrmidon(R3)
-            ...preserveDeployJobsGeneralKey(current.general), // myrmidon(R5-A)
-            ...preserveBrowserConsoleGeneralKey(current.general), // myrmidon(BROWSER-CONSOLE)
-            ...preserveStackGeneralKey(current.general), // myrmidon(SUA)
-            ...preserveBotCanaryGeneralKey(current.general), // myrmidon(R5-B)
-            ...preserveBotRolloutDeferredGeneralKey(current.general), // myrmidon(BOT-ROLLOUT)
-            ...preserveAccessHubHostsGeneralKey(current.general), // myrmidon(SEC1)
-            ...preserveCloudConnectorGeneralKey(current.general), // myrmidon(CLOUD-CONNECTOR)
-            ...preserveAutonomyGeneralKey(current.general), // myrmidon(1.6-AUTONOMY)
-            ...preserveTelegramNotifyGeneralKey(current.general), // myrmidon(1.6-TG-PROACTIVITY-E)
-            ...preserveWipLimitGeneralKey(current.general), // myrmidon(1.6.1-WIP-LIMIT-A)
-            ...preserveOwnerDeliveryGeneralKey(current.general), // myrmidon(1.6.5-OWNER-DM-FILTER)
-            // The preserve line above restores the stored value: a patch that carries the key wins.
-            ...(patch.ownerDelivery !== undefined ? { ownerDelivery: nextGeneral.ownerDelivery } : {}), // myrmidon(1.6.5-OWNER-DM-FILTER)
-            ...preserveSttGeneralKey(current.general), // myrmidon(1.6.1 VOICE-STT A1)
-            ...preserveBudgetEnforcementGeneralKey(current.general), // myrmidon(1.7-BUDGET-CONFIG-B)
-            ...preservePluginEntitlementKeysGeneralKey(current.general), // myrmidon(PLUGIN-ENTITLEMENT C)
-            ...preserveTelegramDmProgressGeneralKey(current.general), // myrmidon(DM-PROGRESS)
-            ...preserveFallbackSignalGeneralKey(current.general), // myrmidon(BOT-RUNTIME-TUNING D2)
-            // The preserve line above restores the old stored value: a patch
-            // that carries the key must win, the same rule as DM-PROGRESS.
-            ...(patch.modelFallbackSignal !== undefined ? { modelFallbackSignal: nextGeneral.modelFallbackSignal } : {}),
-            // The preserve line above restores the stored value: a patch that carries the key wins.
-            ...(patch.telegramDmProgress !== undefined ? { telegramDmProgress: nextGeneral.telegramDmProgress } : {}),
-            ...preserveGitHubSharedIdentityGeneralKey(current.general), // myrmidon(GITHUB-SHARED-IDENTITY)
-            ...preserveBudgetProjectionGeneralKey(current.general), // myrmidon(1.7-BUDGET-CONFIG-C)
-            ...preserveBotImageRolloutGeneralKey(current.general), // myrmidon(BOT-ROLLOUT)
-          },
-          updatedAt: now,
-        })
-        .where(eq(instanceSettings.id, current.id))
-        .returning();
-      return toInstanceSettings(updated ?? current);
+      // myrmidon(PROCS-Q5): the whole read-modify-write of the general document
+      // (row read + normalize + strip + the preserve* merge + the update below)
+      // must not interleave with a concurrent PATCH — otherwise the later
+      // commit writes a merge of a stale read and the earlier edit is lost.
+      // The lock comes first, before `getOrCreateRow`, so two first-writers
+      // cannot deadlock on the singleton insert (the on-conflict upsert still
+      // runs under our own lock); `FOR UPDATE` serializes concurrent PATCHes
+      // on the row, so each one re-reads the committed state of the previous.
+      const [updated] = await db.transaction(async (tx: InstanceSettingsTransaction) => {
+        await tx
+          .select({ id: instanceSettings.id })
+          .from(instanceSettings)
+          .where(eq(instanceSettings.singletonKey, DEFAULT_SINGLETON_KEY))
+          .limit(1)
+          .for("update");
+        const current = await getOrCreateRow(tx);
+        const storedGeneral = normalizeGeneralSettings(current.general);
+        // A full-GET echo carries the overlaid operator value for a field the
+        // user never chose; stripping it keeps the overlay strictly read-time,
+        // so changing or unsetting the variable later still takes effect.
+        const nextGeneral = stripOperatorGeneralEchoes(
+          storedGeneral,
+          normalizeGeneralSettings({ ...storedGeneral, ...patch }),
+          operatorDefaults,
+        );
+        const now = new Date();
+        const rows = await tx
+          .update(instanceSettings)
+          .set({
+            // myrmidon(R3): keep maintenance mode state; myrmidon(R5-A): keep deploy job state; myrmidon(R5-B): keep bot canary state; myrmidon(SUA): keep stack registry cache; myrmidon(SEC1): keep the access-hub host registry
+            // myrmidon(BROWSER-CONSOLE): same for the browser console sessions/journal key
+            general: {
+              ...nextGeneral,
+              ...preserveMaintenanceGeneralKey(current.general), // myrmidon(R3)
+              ...preserveDeployJobsGeneralKey(current.general), // myrmidon(R5-A)
+              ...preserveBrowserConsoleGeneralKey(current.general), // myrmidon(BROWSER-CONSOLE)
+              ...preserveStackGeneralKey(current.general), // myrmidon(SUA)
+              ...preserveBotCanaryGeneralKey(current.general), // myrmidon(R5-B)
+              ...preserveBotRolloutDeferredGeneralKey(current.general), // myrmidon(BOT-ROLLOUT)
+              ...preserveAccessHubHostsGeneralKey(current.general), // myrmidon(SEC1)
+              ...preserveCloudConnectorGeneralKey(current.general), // myrmidon(CLOUD-CONNECTOR)
+              ...preserveAutonomyGeneralKey(current.general), // myrmidon(1.6-AUTONOMY)
+              ...preserveTelegramNotifyGeneralKey(current.general), // myrmidon(1.6-TG-PROACTIVITY-E)
+              ...preserveWipLimitGeneralKey(current.general), // myrmidon(1.6.1-WIP-LIMIT-A)
+              ...preserveOwnerDeliveryGeneralKey(current.general), // myrmidon(1.6.5-OWNER-DM-FILTER)
+              // The preserve line above restores the stored value: a patch that carries the key wins.
+              ...(patch.ownerDelivery !== undefined ? { ownerDelivery: nextGeneral.ownerDelivery } : {}), // myrmidon(1.6.5-OWNER-DM-FILTER)
+              ...preserveSttGeneralKey(current.general), // myrmidon(1.6.1 VOICE-STT A1)
+              ...preserveBudgetEnforcementGeneralKey(current.general), // myrmidon(1.7-BUDGET-CONFIG-B)
+              ...preservePluginEntitlementKeysGeneralKey(current.general), // myrmidon(PLUGIN-ENTITLEMENT C)
+              ...preserveTelegramDmProgressGeneralKey(current.general), // myrmidon(DM-PROGRESS)
+              ...preserveFallbackSignalGeneralKey(current.general), // myrmidon(BOT-RUNTIME-TUNING D2)
+              // The preserve line above restores the old stored value: a patch
+              // that carries the key must win, the same rule as DM-PROGRESS.
+              ...(patch.modelFallbackSignal !== undefined ? { modelFallbackSignal: nextGeneral.modelFallbackSignal } : {}),
+              // The preserve line above restores the stored value: a patch that carries the key wins.
+              ...(patch.telegramDmProgress !== undefined ? { telegramDmProgress: nextGeneral.telegramDmProgress } : {}),
+              ...preserveGitHubSharedIdentityGeneralKey(current.general), // myrmidon(GITHUB-SHARED-IDENTITY)
+              ...preserveBudgetProjectionGeneralKey(current.general), // myrmidon(1.7-BUDGET-CONFIG-C)
+              ...preserveBotImageRolloutGeneralKey(current.general), // myrmidon(BOT-ROLLOUT)
+            },
+            updatedAt: now,
+          })
+          .where(eq(instanceSettings.id, current.id))
+          .returning();
+        // `updated` is empty only if the row vanished (it cannot under our own
+        // row lock) — mirror the previous fallback and return the read row.
+        return rows.length > 0 ? rows : [current];
+      });
+      return toInstanceSettings(updated);
     },
 
     updateExperimental: async (patch: PatchInstanceExperimentalSettings): Promise<InstanceSettings> => {
-      const current = await getOrCreateRow();
-      // Guarded Cloud flags stay absent from the row unless chosen, so the
-      // read-time catalog default keeps applying (see stripCloudCatalogDefaultEchoes).
-      const nextExperimental = stripCloudCatalogDefaultEchoes(
-        current.experimental,
-        patch,
-        applyExperimentalSettingsPatch(current.experimental, patch, options),
-        managedConfig,
-      );
-      const now = new Date();
-      const [updated] = await db
-        .update(instanceSettings)
-        .set({
-          experimental: { ...nextExperimental },
-          updatedAt: now,
-        })
-        .where(eq(instanceSettings.id, current.id))
-        .returning();
-      return toInstanceSettings(updated ?? current);
+      // myrmidon(PROCS-Q5): same row, same read-modify-write race as
+      // `updateGeneral` above — the two documents share the singleton row, so
+      // the lock covers both PATCH paths: an experimental write must serialize
+      // against a concurrent general write the same way (order of application
+      // = order of commits, design 4.5).
+      const [updated] = await db.transaction(async (tx: InstanceSettingsTransaction) => {
+        await tx
+          .select({ id: instanceSettings.id })
+          .from(instanceSettings)
+          .where(eq(instanceSettings.singletonKey, DEFAULT_SINGLETON_KEY))
+          .limit(1)
+          .for("update");
+        const current = await getOrCreateRow(tx);
+        // Guarded Cloud flags stay absent from the row unless chosen, so the
+        // read-time catalog default keeps applying (see stripCloudCatalogDefaultEchoes).
+        const nextExperimental = stripCloudCatalogDefaultEchoes(
+          current.experimental,
+          patch,
+          applyExperimentalSettingsPatch(current.experimental, patch, options),
+          managedConfig,
+        );
+        const now = new Date();
+        const rows = await tx
+          .update(instanceSettings)
+          .set({
+            experimental: { ...nextExperimental },
+            updatedAt: now,
+          })
+          .where(eq(instanceSettings.id, current.id))
+          .returning();
+        return rows.length > 0 ? rows : [current];
+      });
+      return toInstanceSettings(updated);
     },
 
     listCompanyIds: async (): Promise<string[]> =>
