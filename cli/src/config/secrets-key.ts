@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { PaperclipConfig } from "./schema.js";
 import { resolveRuntimeLikePath } from "../utils/path-resolver.js";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export type EnsureSecretsKeyResult =
   | { status: "created"; path: string }
@@ -18,12 +19,12 @@ export function ensureLocalSecretsKeyFile(
     return { status: "skipped_provider", path: null };
   }
 
-  const envMasterKey = process.env.PAPERCLIP_SECRETS_MASTER_KEY;
+  const envMasterKey = readProductEnv("SECRETS_MASTER_KEY");
   if (envMasterKey && envMasterKey.trim().length > 0) {
     return { status: "skipped_env", path: null };
   }
 
-  const keyFileOverride = process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
+  const keyFileOverride = readProductEnv("SECRETS_MASTER_KEY_FILE");
   const configuredPath =
     keyFileOverride && keyFileOverride.trim().length > 0
       ? keyFileOverride.trim()

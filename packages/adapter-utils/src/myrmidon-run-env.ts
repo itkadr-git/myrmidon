@@ -214,7 +214,7 @@ export function filterMyrmidonInheritedEnv(
     const env: NodeJS.ProcessEnv = { ...processEnv };
     delete env.PAPERCLIPAI_CMD;
     for (const key of Object.keys(env)) {
-      if (!key.startsWith("PAPERCLIP_")) continue;
+      if (!(key.startsWith("PAPERCLIP_") || key.startsWith("MYRMIDON_"))) continue; // myrmidon(REBRAND-C)
       if (MYRMIDON_RUN_ENV_VENDOR_RUNTIME_KEYS.includes(key)) continue;
       delete env[key];
     }

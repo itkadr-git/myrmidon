@@ -18,7 +18,8 @@ const ORIGINAL_CWD = process.cwd();
 // otherwise rewrite the machine's real config/env files.
 beforeEach(() => {
   for (const key of Object.keys(process.env)) {
-    if (key.startsWith("PAPERCLIP_")) {
+    // myrmidon(REBRAND-C): strip both spellings of the product namespace.
+    if (key.startsWith("PAPERCLIP_") || key.startsWith("MYRMIDON_")) {
       delete process.env[key];
     }
   }
@@ -486,6 +487,13 @@ describe("worktree config repair", () => {
 
     const activateWorktree = (worktreeRoot: string, name: string) => {
       process.chdir(worktreeRoot);
+      // myrmidon(REBRAND-C): a previous repair writes MYRMIDON_* leftovers;
+      // clearing them emulates a fresh process with an old-style env.
+      for (const key of Object.keys(process.env)) {
+        if (key.startsWith("MYRMIDON_")) {
+          delete process.env[key];
+        }
+      }
       process.env.PAPERCLIP_IN_WORKTREE = "true";
       process.env.PAPERCLIP_WORKTREE_NAME = name;
       process.env.PAPERCLIP_WORKTREES_DIR = isolatedHome;

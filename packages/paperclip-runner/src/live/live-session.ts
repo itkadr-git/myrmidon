@@ -1381,7 +1381,7 @@ export class CapabilityLiveSession {
       process: this.#processEvidence === null ? null : structuredClone(this.#processEvidence),
       networkEvidence: {
         realPaperclipRequests: 0,
-        childPaperclipEnvironmentKeys: childKeys.filter((key) => key.startsWith("PAPERCLIP_")),
+        childPaperclipEnvironmentKeys: childKeys.filter((key) => key.startsWith("PAPERCLIP_") || key.startsWith("MYRMIDON_")) // myrmidon(REBRAND-C),
       },
       attempts: structuredClone(this.#attempts),
       currentAttemptId: this.#currentAttemptId,

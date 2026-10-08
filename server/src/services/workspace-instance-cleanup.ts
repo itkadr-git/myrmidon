@@ -9,6 +9,7 @@ import { promisify } from "node:util";
 import { parse as parseEnvContents } from "dotenv";
 import { expandHomePrefix } from "../home-paths.js";
 import type { WorkspaceOperationRecorder } from "./workspace-operations.js";
+import { readProductEnv, readProductEnvFrom } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const execFileAsync = promisify(execFile);
 const INSTANCE_ID_RE = /^[A-Za-z0-9_-]+$/;
@@ -200,8 +201,8 @@ function resolveConfiguredInstanceRoot(pointer: WorktreeInstancePointer, expecte
   | { instanceRoot: string; instanceId: string }
   | { warning: string; instanceRoot: string | null; refusalReason: string | null } {
   const env = parseEnvContents(pointer.envContents);
-  const configuredHome = env.PAPERCLIP_HOME?.trim();
-  const instanceId = env.PAPERCLIP_INSTANCE_ID?.trim();
+  const configuredHome = readProductEnvFrom(env, "HOME")?.trim();
+  const instanceId = readProductEnvFrom(env, "INSTANCE_ID")?.trim();
   if (!configuredHome || !instanceId) {
     return { warning: "", instanceRoot: null, refusalReason: null };
   }
@@ -236,7 +237,7 @@ function resolveManagedInstancesDir(worktreesDir?: string): string {
   const managedWorktreesDir = path.resolve(
     expandHomePrefix(
       worktreesDir?.trim()
-      || process.env.PAPERCLIP_WORKTREES_DIR?.trim()
+      || readProductEnv("WORKTREES_DIR")?.trim()
       || path.join(os.homedir(), ".paperclip-worktrees"),
     ),
   );
