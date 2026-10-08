@@ -125,8 +125,13 @@ import { myrmidonBotCanaryRoutes } from "./myrmidon/bot-containers/canary-index.
 import { myrmidonWorkspaceHygieneRoutes } from "./myrmidon/workspace-hygiene/index.js"; // myrmidon(WORKSPACE-HYGIENE)
 // myrmidon(BOT-DISK E): host disk usage threshold and signal
 import { myrmidonHostDiskRoutes } from "./myrmidon/host-disk/index.js"; // myrmidon(BOT-DISK E)
+import { myrmidonAttentionFeedRoutes } from "./myrmidon/attention-feed/index.js"; // myrmidon(1.6.6 SETTINGS-UI C-4)
 import { myrmidonAlertRecoveryRoutes } from "./myrmidon/monitoring/alert-recovery/index.js"; // myrmidon(1.6.6-MONITORING-D)
 import { myrmidonBotDiskLifecycleRoutes } from "./myrmidon/bot-containers/bot-disk-routes.js"; // myrmidon(BOT-DISK-A)
+// myrmidon(1.6.6-SETTINGS-UI-B): the read side of the lifecycle screen (the C5
+// relay + the stored C4 reports) and the bot-side C4 report POST.
+import { myrmidonBotDiskPhysicalRoutes } from "./myrmidon/bot-containers/bot-disk-physical-routes.js";
+import { myrmidonBotDiskReportRoutes } from "./myrmidon/bot-containers/bot-disk-report-routes.js";
 import { myrmidonBotScopeRoutes } from "./myrmidon/bot-containers/scope-wiring.js"; // myrmidon(BOT-DISK-F)
 import { myrmidonBotWorkspacesRoutes } from "./myrmidon/bot-containers/bot-workspaces-routes.js"; // myrmidon(1.6.5-BOT-DISK-H4a)
 import { myrmidonBotDiskQuotaRoutes } from "./myrmidon/bot-containers/bot-disk-quota-routes.js"; // myrmidon(1.6.1-BOT-DISK-C)
@@ -928,8 +933,11 @@ export async function createApp(
   api.use(myrmidonBotCanaryRoutes(db)); // myrmidon(R5-B)
   api.use(myrmidonWorkspaceHygieneRoutes(db)); // myrmidon(WORKSPACE-HYGIENE)
   api.use(myrmidonHostDiskRoutes(db)); // myrmidon(BOT-DISK E)
+  api.use(myrmidonAttentionFeedRoutes(db)); // myrmidon(1.6.6 SETTINGS-UI C-4): attention-feed windows (failed-run horizon, feed cache TTL)
   api.use(myrmidonAlertRecoveryRoutes(db)); // myrmidon(1.6.6-MONITORING-D)
   api.use(myrmidonBotDiskLifecycleRoutes(db)); // myrmidon(BOT-DISK-A)
+  api.use(myrmidonBotDiskPhysicalRoutes(db)); // myrmidon(1.6.6-SETTINGS-UI-B): C5 relay + C4 reports for the lifecycle screen
+  api.use(myrmidonBotDiskReportRoutes()); // myrmidon(1.6.6-SETTINGS-UI-B): C4 POST /myrmidon/bots/me/disk-report (was unmounted)
   api.use(myrmidonBotScopeRoutes(db)); // myrmidon(BOT-DISK-F)
   api.use(myrmidonBotDiskQuotaRoutes(db)); // myrmidon(1.6.1-BOT-DISK-C)
   api.use(myrmidonBotWorkspacesRoutes(db)); // myrmidon(1.6.5-BOT-DISK-H4a)

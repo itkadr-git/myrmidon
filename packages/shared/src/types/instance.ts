@@ -99,6 +99,16 @@ export interface InstanceGeneralSettings {
    */
   hostDisk?: HostDiskSettings;
   /**
+   * myrmidon(1.6.6 SETTINGS-UI C-4): the attention-feed windows — how far back
+   * (days, 1–365) an unresolved failed/timed-out run may enter the feed, and
+   * the TTL (seconds, 0–300; 0 disables) of the per-company feed snapshot.
+   * Changed from `GET`/`PATCH /api/myrmidon/attention-feed`; absent means the
+   * default (7 days, 45 s). Kept in sync with the validator of the same fields
+   * (packages/shared/src/validators/instance.ts).
+   */
+  attentionFailedRunHorizonDays?: number;
+  attentionFeedCacheTtlSeconds?: number;
+  /**
    * myrmidon(BOT-DISK-A): the bot draft-directory lifecycle, changed from
    * `GET`/`PATCH /api/myrmidon/bot-disk`. Absent means "use the environment
    * variable, then the default"; kept in sync with the validator of the same

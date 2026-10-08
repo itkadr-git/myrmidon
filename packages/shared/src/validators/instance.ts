@@ -249,6 +249,13 @@ export const instanceGeneralSettingsSchema = z.object({
   // myrmidon(1.6.3 PLUGIN-ENTITLEMENT A): the ed25519 verification public key
   // (PEM) for entitlement tokens; absent means no token can verify.
   pluginEntitlementPublicKey: z.string().min(1).max(2000).optional(),
+  // myrmidon(1.6.6 SETTINGS-UI C-4): the attention-feed windows, changed from
+  // GET/PATCH /api/myrmidon/attention-feed; both are read by
+  // server/src/services/attention.ts on the next feed build, so a PATCH needs
+  // no restart. Absent means the default (7 days, 45 s) — see
+  // packages/shared/src/myrmidon-attention-feed.ts.
+  attentionFailedRunHorizonDays: z.number().int().min(1).max(365).optional(),
+  attentionFeedCacheTtlSeconds: z.number().int().min(0).max(300).optional(),
 }).strict();
 
 export const patchInstanceGeneralSettingsSchema = z
