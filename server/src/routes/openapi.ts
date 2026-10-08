@@ -4038,6 +4038,16 @@ registry.registerPath({
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
+// myrmidon(execution-hold): the explicit exit from execution_reconciliation_required
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/execution-hold/confirm-continue",
+  tags: ["issues"],
+  summary: "Confirm the failed run made no external action and continue the task",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
 registry.registerPath({
   method: "post",
   path: "/api/issues/{id}/read",

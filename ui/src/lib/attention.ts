@@ -82,6 +82,8 @@ const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
   prompt_budget_alert: { label: "Prompt budget" },
   // myrmidon(1.6.5-PAUSE-GUARD): label for the leftover-operator-pauses source.
   pause_guard: { label: "Forgotten pauses" },
+  // myrmidon(OPE-6011): label for the execution hold source.
+  execution_hold: { label: "Execution hold" },
 };
 
 export function sourceMeta(kind: AttentionSourceKind): SourceMeta {

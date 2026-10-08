@@ -51,6 +51,10 @@ export const ATTENTION_SOURCE_KINDS = [
   // (shown on the task), and a bot on a non-current image generation.
   "bot_disk_archive",
   "bot_image_stale",
+  // myrmidon(OPE-6011): a task's wakes are held by a settled
+  // execution-reconciliation hold ("execution_reconciliation_required") until
+  // a person confirms the failed run left no external action.
+  "execution_hold",
 ] as const;
 
 export type AttentionSourceKind = (typeof ATTENTION_SOURCE_KINDS)[number];
