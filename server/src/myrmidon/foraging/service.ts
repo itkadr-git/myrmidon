@@ -243,15 +243,16 @@ export function createForagingService(deps: ForagingServiceDeps): ForagingServic
       // myrmidon(1.6.3-FORAGING-IDLE-GATE): the toggle is read on EVERY pass, so
       // a settings-page change reaches the next pass without a restart (the
       // environment variable stays the forced override). With no toggle wired
-      // (or no idle check to run) the gate is not applied at all, and a failed
-      // read fails OFF with a warning: a broken settings read must never skip
-      // learning nobody asked to skip.
+      // (or no idle check to run) the gate is not applied at all. An unreadable
+      // settings row reads as "nothing stored" inside readForagingIdleGate, so
+      // the default (on) applies and the screen shows the source "default";
+      // the catch below only guards a throwing resolver.
       let gateEnabled = false;
       if (deps.idleGate && idleCheck) {
         try {
           gateEnabled = (await readForagingIdleGate(deps.idleGate)).enabled;
         } catch (err) {
-          log.warn({ err, companyId }, "foraging: idle gate read failed, the gate stays off this pass");
+          log.warn({ err, companyId }, "foraging: idle gate resolve failed, the gate stays off this pass");
           gateEnabled = false;
         }
       }
