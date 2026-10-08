@@ -3021,13 +3021,19 @@ class AutoApprovalIssueMissingError extends Error {
   }
 }
 
+// myrmidon(F16): compact row with `description` optionally omitted — the
+// agent-defaults list strips the megabyte-sized field from agent responses.
+export type CompactIssueMaybeNoDescription = Omit<CompactIssue, "description"> & {
+  description?: Issue["description"];
+};
+
 function toCompactIssue(
   issue: any,
   // myrmidon(F16): true for an agent actor with the agent defaults on — the
   // compact row then omits `description` (the field that makes the bare agent
   // list response megabyte-sized).
   opts?: { omitDescription?: boolean },
-): CompactIssue {
+): CompactIssueMaybeNoDescription {
   const omitDescription = opts?.omitDescription === true;
   return {
     id: issue.id,
@@ -3098,7 +3104,7 @@ function toCompactIssue(
   };
 }
 
-function compactIssueListEtag(issues: CompactIssue[]): string {
+function compactIssueListEtag(issues: CompactIssueMaybeNoDescription[]): string {
   const hash = createHash("sha256")
     .update(JSON.stringify(issues))
     .digest("base64url");
