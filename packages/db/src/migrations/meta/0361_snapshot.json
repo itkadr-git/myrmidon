@@ -8,7 +8,7 @@
   "enums": {},
   "id": "68429b28-af3b-5f56-88ad-e756d0117985",
   "policies": {},
-  "prevId": "b3e7f95f-0659-5107-8f90-e9b998a14647",
+  "prevId": "b3d5a01a-b2dd-505b-abfe-de23a5f395f1",
   "roles": {},
   "schemas": {},
   "sequences": {
@@ -26712,6 +26712,22 @@
           "isUnique": false,
           "method": "btree",
           "name": "issue_claims_expires_idx",
+          "with": {}
+        },
+        "issue_claims_issue_active_uq": {
+          "columns": [
+            {
+              "asc": true,
+              "expression": "issue_id",
+              "isExpression": false,
+              "nulls": "last"
+            }
+          ],
+          "concurrently": false,
+          "isUnique": true,
+          "method": "btree",
+          "name": "issue_claims_issue_active_uq",
+          "where": "\"issue_claims\".\"released_at\" is null",
           "with": {}
         },
         "issue_claims_issue_live_idx": {
