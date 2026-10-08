@@ -435,7 +435,7 @@ describe("FolderControls", () => {
   });
 
   it("persists AllUnfiledBanner dismissal across mounts", () => {
-    const storageKey = "paperclip:test-folder-nudge";
+    const storageKey = "myrmidon:test-folder-nudge";
     window.localStorage.removeItem(storageKey);
     const onCreateFolder = vi.fn();
     root = createRoot(container);

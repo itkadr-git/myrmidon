@@ -13,7 +13,7 @@ import {
 } from "./composer-draft";
 
 describe("task draft upload receipts", () => {
-  const key = "paperclip:issue-comment-draft:task-one";
+  const key = "myrmidon:issue-comment-draft:task-one";
   const id = "9af8228f-0be7-45ae-a104-6fbe0af6f1d3";
   const receipt = {
     attachmentId: id,

@@ -48,13 +48,13 @@ describe("agent chat navigation and session markers", () => {
     recordAgentChatVisit("b", "user1", "agent3");
     recordAgentChatVisit("a", "user2", "agent4");
     expect(
-      JSON.parse(localStorage.getItem("paperclip.recentAgentChats:a:user1")!),
+      JSON.parse(localStorage.getItem("myrmidon.recentAgentChats:a:user1")!),
     ).toEqual(["agent1", "agent2"]);
     expect(
-      JSON.parse(localStorage.getItem("paperclip.recentAgentChats:b:user1")!),
+      JSON.parse(localStorage.getItem("myrmidon.recentAgentChats:b:user1")!),
     ).toEqual(["agent3"]);
     expect(
-      JSON.parse(localStorage.getItem("paperclip.recentAgentChats:a:user2")!),
+      JSON.parse(localStorage.getItem("myrmidon.recentAgentChats:a:user2")!),
     ).toEqual(["agent4"]);
   });
   it("removes legacy plaintext retry records", () => {
