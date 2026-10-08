@@ -162,7 +162,7 @@ export function datastoreCareJob(): DatastoreCareJob | null {
 // tick, which runs under the maintenance gate; one runtime per server
 // process, created lazily and shared, so concurrent ticks join the pass
 // already running. The pass state persists in
-// `instance_settings.general.datastoreCare.retention.lastRun`, so a restart
+// `instance_settings.general.datastoreCare.retention.contextLastRun`, so a restart
 // keeps the counters and the backup-gate flag.
 
 export {

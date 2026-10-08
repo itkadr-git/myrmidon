@@ -6,7 +6,7 @@
 // the environment variable PAPERCLIP_HEARTBEAT_RUN_CONTEXT_RETENTION_DAYS
 // applies, then the default (7 days). The sweep re-reads the value at the top
 // of every pass, so a settings change needs no restart. The pass state rides
-// the same block under `lastRun`, the same shape the data-retention module
+// the same block under `contextLastRun`, the same shape the data-retention module
 // uses, so the panel reads one cheap settings object.
 
 import {
@@ -91,10 +91,10 @@ export async function readRetentionLastRun(
 ): Promise<DatastoreCareRetentionLastRun> {
   const general = (await settings.getGeneral()) as unknown as Record<string, unknown>;
   const stored = storedCareRetention(general);
-  return stored ? normalizeDatastoreCareRetentionLastRun(stored.lastRun) : normalizeDatastoreCareRetentionLastRun(undefined);
+  return stored ? normalizeDatastoreCareRetentionLastRun(stored.contextLastRun) : normalizeDatastoreCareRetentionLastRun(undefined);
 }
 
-/** Write a partial patch; the pass state (`lastRun`) under the block survives. */
+/** Write a partial patch; the pass state (`contextLastRun`) under the block survives. */
 export async function writeRetentionSettings(
   settings: DatastoreCareSettingsService,
   patch: DatastoreCareRetentionPatch,
@@ -119,7 +119,7 @@ export async function writeRetentionSettings(
   return patch;
 }
 
-/** Persist the pass state under `lastRun`, keeping the stored day values. */
+/** Persist the pass state under `contextLastRun`, keeping the stored day values. */
 export async function writeRetentionLastRun(
   settings: DatastoreCareSettingsService,
   lastRun: DatastoreCareRetentionLastRun,
@@ -129,7 +129,7 @@ export async function writeRetentionLastRun(
   const care = general[DATASTORE_CARE_SETTINGS_KEY];
   const careBlock: Record<string, unknown> =
     typeof care === "object" && care !== null ? { ...(care as Record<string, unknown>) } : {};
-  careBlock[DATASTORE_CARE_RETENTION_KEY] = { ...(stored ?? {}), lastRun: { ...lastRun } };
+  careBlock[DATASTORE_CARE_RETENTION_KEY] = { ...(stored ?? {}), contextLastRun: { ...lastRun } };
   const lastRunPatch: PatchInstanceGeneralSettings = { datastoreCare: careBlock as never };
   await settings.updateGeneral(lastRunPatch);
 }

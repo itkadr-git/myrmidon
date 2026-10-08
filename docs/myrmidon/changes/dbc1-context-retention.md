@@ -30,7 +30,7 @@ settings-section: Track 5 — operations
 - Each pass writes one `datastore.retention_applied` activity line per
   company that had work, carrying `compactedRows` and `freedBytes` (the exact
   `pg_column_size` delta of the rewritten snapshots), and persists its state
-  in `general.datastoreCare.retention.lastRun`, so the counters survive
+  in `general.datastoreCare.retention.contextLastRun`, so the counters survive
   restarts.
 - `GET /api/myrmidon/datastore-care` (board-readable) reports the resolved
   window with its source (`settings` | `env` | `default`) and the last pass;
@@ -68,7 +68,7 @@ settings-section: Track 5 — operations
 - Каждый проход с работой пишет по строке `datastore.retention_applied` в
   `activity_log` на компанию с числом `compactedRows` и `freedBytes` (точный
   дельта `pg_column_size` перезаписанных снапшотов) и сохраняет состояние в
-  `general.datastoreCare.retention.lastRun` — счётчики переживают перезапуск.
+  `general.datastoreCare.retention.contextLastRun` — счётчики переживают перезапуск.
 - `GET /api/myrmidon/datastore-care` (читает любая доска) показывает срок с
   источником (`settings` | `env` | `default`) и последний проход;
   `PATCH /api/myrmidon/datastore-care` (админ инстанса) меняет срок — свип

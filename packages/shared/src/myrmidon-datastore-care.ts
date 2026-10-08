@@ -45,7 +45,7 @@ export const datastoreCareSettingsSchema = z
 /**
  * Inferred straight from the zod schema (house pattern, like HostDiskSettings):
  * the `.passthrough()` index signature is what lets this block survive the
- * `lastRun` pass-state field the sweep persists under it (see
+ * `contextLastRun` pass-state field the sweep persists under it (see
  * server/src/myrmidon/datastore-care/retention/settings.ts) and keeps
  * InstanceGeneralSettings assignable from the parsed defaults.
  */

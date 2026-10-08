@@ -21,7 +21,7 @@
 // When the pass compacts rows it writes one
 // `datastore.retention_applied` activity line per company carrying the
 // compacted row count and the freed bytes, and persists the pass state under
-// `general.datastoreCare.retention.lastRun`, so the panel and a restart see
+// `general.datastoreCare.retention.contextLastRun`, so the panel and a restart see
 // the same numbers.
 
 import { logger } from "../../../middleware/logger.js";
