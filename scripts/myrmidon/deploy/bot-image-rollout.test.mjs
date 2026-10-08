@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -95,8 +95,23 @@ case "$*" in
   *companies/*/issues*)
     # The post-deploy fleet check: no blocked issues in the deploy window.
     echo '{"issues": []}'; exit 0 ;;
-  *companies/*/agents*)
+  *companies/*/agent-configurations*)
+    # The card config of every agent, adapterConfig (container block) included.
     cat "$SANDBOX/agents.json"; exit 0 ;;
+  *companies/*/agents*)
+    # The narrow company agents list: no adapterConfig (myrmidon(PERF-DIET-G)).
+    # The rollout must not read the container block from here.
+    # A test may override an agent's status mid-run: $SANDBOX/status-<id>
+    # holds the status to report from the next call on (the busy->idle flip).
+    tmp="$SANDBOX/agents.status.json"
+    cp "$SANDBOX/agents.json" "$tmp"
+    for f in "$SANDBOX"/status-*; do
+      [ -e "$f" ] || continue
+      sid="\${f##*/status-}"
+      sval="$(cat "$f")"
+      jq --arg id "$sid" --arg s "$sval" 'map(if .id == $id then .status = $s else . end)' "$tmp" > "$tmp.new" && mv "$tmp.new" "$tmp"
+    done
+    jq '[.[] | {id, adapterType, status}]' "$tmp"; exit 0 ;;
   *api/agents/*)
     case " $* " in
       *" -X PATCH "*)
@@ -334,6 +349,9 @@ function sandbox({
       "MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_RELOAD_TIMEOUT_SEC=2",
       `DOCKERGATE_LOGS_COMMAND='cat "$SANDBOX/dg.log"'`,
       `MYRMIDON_BOT_IMAGE_ROLLOUT_BOT_TIMEOUT_SEC=3`,
+      // OPE-5098: the force stage is OFF in the default sandbox so the tests
+      // of the status gate stay deterministic; the force-stage test opts in.
+      `MYRMIDON_BOT_IMAGE_ROLLOUT_FORCE_DEFERRED_SEC=0`,
       "MYR_DOCKERGATE_HEALTH_URL=http://127.0.0.1:3100/dockergate/health",
       "MYR_FLEETD_HEALTH_URL=http://127.0.0.1:3100/fleetd/health",
       // The components are not part of this sandbox compose project; the
@@ -663,6 +681,89 @@ describe("bot-image-rollout.sh: tracking vs pinned cards, batches, paused or idl
     assert.deepEqual([summary(sb).switched, summary(sb).deferred], [2, 1]);
     // its old image stays allowed until it moves
     assert.ok(dockergateConfig(sb).images.includes(`${BOT}@${OLD_DEV}`));
+  });
+
+  it("a busy bot does NOT hold its batch: it moves to the tail and the batch ends immediately", () => {
+    const sb = sandbox({
+      agents: [
+        { id: uuid(1), image: `${BOT}@${OLD_DEV}`, status: "running" },
+        { id: uuid(2), image: `${BOT}@${OLD_DEV}`, status: "idle" },
+      ],
+    });
+    const { code, out } = run(sb, "bot-image-rollout.sh", ARGS);
+    assert.equal(code, 0, out);
+    // The busy bot was deferred and never got a PATCH/apply (force stage is
+    // off in this sandbox): only the status GETs touched it.
+    assert.doesNotMatch(calls(sb), new RegExp(`-X PATCH.*agents/${uuid(1)}`));
+    assert.doesNotMatch(calls(sb), new RegExp(`agents/${uuid(1)}/bot-container/apply`));
+    // The free bot was switched immediately
+    assert.equal(cardImage(sb, uuid(2)), `${BOT}@${HERMES}`);
+    // The batch finished at once: one switched, the busy one in the tail.
+    assert.match(out, /batch 1\/1 done: 1 switched, 0 failed, 1 deferred/);
+    // The tail pass retried it until the deadline and left it on the old image.
+    assert.equal(cardImage(sb, uuid(1)), `${BOT}@${OLD_DEV}`);
+    assert.match(out, /tail pass: 1 deferred bot/);
+    assert.match(out, /tail pass done: 1 bot\(s\) still deferred/);
+    // The final report names the bot with the reason.
+    assert.match(out, /final: 1 bot\(s\) not on the release image/);
+    assert.match(out, new RegExp(`${uuid(1)}: agent status 'running'`));
+    // The summary lists the deferred bot with its reason.
+    const sum = summary(sb);
+    assert.equal(sum.deferred, 1);
+    assert.ok(Array.isArray(sum.deferredBots), "summary has deferredBots array");
+    assert.equal(sum.deferredBots[0].id, uuid(1));
+    assert.match(sum.deferredBots[0].reason, /status 'running'/);
+  });
+
+  it("a deferred bot switches in the tail pass once it frees up, in the same run", async () => {
+    const sb = sandbox({
+      agents: [
+        { id: uuid(1), image: `${BOT}@${OLD_DEV}`, status: "running" },
+        { id: uuid(2), image: `${BOT}@${OLD_DEV}`, status: "idle" },
+      ],
+    });
+    // Run the script in the background and flip the busy bot's status to idle
+    // while the tail pass polls: the SAME run switches it.
+    const bash = process.env.PATH.split(":").map((d) => path.join(d, "bash")).find((f) => fs.existsSync(f));
+    const child = spawn(bash, [path.join(HERE, "bot-image-rollout.sh"), "--config", sb.config, ...ARGS], {
+      env: { ...process.env, PATH: `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir },
+    });
+    let out = "";
+    child.stdout.on("data", (d) => (out += d));
+    child.stderr.on("data", (d) => (out += d));
+    // The batch phase takes a moment (image resolution, dockergate edit); flip
+    // the status a little after the start, inside the tail-pass window
+    // (MYRMIDON_BOT_IMAGE_ROLLOUT_BOT_TIMEOUT_SEC=3, POLL_INTERVAL_SEC=1).
+    setTimeout(() => {
+      fs.writeFileSync(path.join(sb.dir, `status-${uuid(1)}`), "idle\n");
+    }, 800);
+    const code = await new Promise((resolve) => child.on("close", resolve));
+    assert.equal(code, 0, out);
+    // The busy bot was switched by the tail pass of this run.
+    assert.equal(cardImage(sb, uuid(1)), `${BOT}@${HERMES}`);
+    assert.equal(cardImage(sb, uuid(2)), `${BOT}@${HERMES}`);
+    assert.match(out, /tail pass done: all deferred bots switched/);
+    const sum = summary(sb);
+    assert.equal(sum.switched, 2);
+    assert.equal(sum.deferred, 0);
+    assert.deepEqual(sum.deferredBots, []);
+  });
+
+  it("the force stage applies a still-deferred bot without the status gate", () => {
+    const sb = sandbox({
+      agents: [
+        { id: uuid(1), image: `${BOT}@${OLD_DEV}`, status: "running" },
+        { id: uuid(2), image: `${BOT}@${OLD_DEV}`, status: "idle" },
+      ],
+    });
+    fs.appendFileSync(sb.config, "MYRMIDON_BOT_IMAGE_ROLLOUT_FORCE_DEFERRED_SEC=2\n");
+    const { code, out } = run(sb, "bot-image-rollout.sh", ARGS);
+    assert.equal(code, 0, out);
+    // The force stage ran and applied the busy bot (PATCH + apply went through).
+    assert.match(out, /force stage: 1 deferred bot/);
+    assert.match(calls(sb), new RegExp(`-X PATCH.*agents/${uuid(1)}`));
+    assert.match(calls(sb), new RegExp(`agents/${uuid(1)}/bot-container/apply`));
+    assert.equal(cardImage(sb, uuid(1)), `${BOT}@${HERMES}`);
   });
 
   it("the config phase edits dockergate's images[] and does not touch a card", () => {

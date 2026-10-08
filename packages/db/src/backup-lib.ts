@@ -462,6 +462,35 @@ async function waitForChildExit(child: ReturnType<typeof spawn>, label: string):
   }
 }
 
+// myrmidon(OPE-4996): shared option set for every backup/restore postgres.js
+// client. `connection.statement_timeout` is sent as a startup-packet
+// parameter, so it lands on the session and wins over a database-level
+// `ALTER DATABASE … SET statement_timeout`; without it a database-wide limit
+// aborts the long COPY/SELECT statements of a dump with PostgresError 57014.
+// The value must be the STRING "0": postgres.js@3.4.9 builds the startup
+// packet with `.filter(([, v]) => v)` (connection.js `StartupMessage`), which
+// drops falsy values — the number 0 would be silently discarded and the
+// database default would survive.
+function backupClientOptions(connectTimeout: number): {
+  max: 1;
+  connect_timeout: number;
+  connection: { statement_timeout: number };
+} {
+  return {
+    max: 1,
+    connect_timeout: connectTimeout,
+    connection: { statement_timeout: "0" as unknown as number },
+  };
+}
+
+// myrmidon(OPE-4996): libpq clients (pg_dump, psql) honour the database-level
+// default too, so both child-process env blocks must carry the same session
+// override; an inherited PGOPTIONS is kept and the override appended to it.
+function backupPgOptions(): string {
+  const inherited = process.env.PGOPTIONS?.trim();
+  return inherited ? `${inherited} -c statement_timeout=0` : "-c statement_timeout=0";
+}
+
 async function runPgDumpBackup(opts: {
   connectionString: string;
   backupFile: string;
@@ -483,6 +512,9 @@ async function runPgDumpBackup(opts: {
       env: {
         ...process.env,
         PGCONNECT_TIMEOUT: String(opts.connectTimeout),
+        // myrmidon(OPE-4996): keep pg_dump's session free of the
+        // database-level statement_timeout so the long COPY statements survive.
+        PGOPTIONS: backupPgOptions(),
       },
     },
   );
@@ -512,6 +544,9 @@ async function restoreWithPsql(opts: RunDatabaseRestoreOptions, connectTimeout: 
       env: {
         ...process.env,
         PGCONNECT_TIMEOUT: String(connectTimeout),
+        // myrmidon(OPE-4996): restore replays the same long COPY statements,
+        // so psql must not inherit the database-level statement_timeout.
+        PGOPTIONS: backupPgOptions(),
       },
     },
   );
@@ -682,7 +717,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
   const canUsePgDump = !hasBackupTransforms(opts);
   const excludedTableNames = normalizeTableNameSet(opts.excludeTables);
   const nullifiedColumnsByTable = normalizeNullifyColumnMap(opts.nullifyColumns);
-  let sql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
+  let sql = postgres(opts.connectionString, backupClientOptions(connectTimeout));
   let sqlClosed = false;
   const closeSql = async () => {
     if (sqlClosed) return;
@@ -758,7 +793,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         // backup file").
         await writer.abort();
         writer = createBufferedTextFileWriter(sqlFile);
-        sql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
+        sql = postgres(opts.connectionString, backupClientOptions(connectTimeout));
         sqlClosed = false;
       }
     }
@@ -1124,7 +1159,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       if (effectiveBackupEngine !== "javascript" && nullifiedColumns.size === 0) {
         emit(`COPY ${qualifiedTableName} (${colNames}) FROM stdin;`);
         await writer.writeRaw("\n");
-        const copySql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
+        const copySql = postgres(opts.connectionString, backupClientOptions(connectTimeout));
         try {
           const copyStream = await copySql
             .unsafe(`COPY ${qualifiedTableName} (${colNames}) TO STDOUT`)
@@ -1267,7 +1302,7 @@ export async function runDatabaseRestore(opts: RunDatabaseRestoreOptions): Promi
     }
   }
 
-  const sql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
+  const sql = postgres(opts.connectionString, backupClientOptions(connectTimeout));
 
   try {
     await sql`SELECT 1`;

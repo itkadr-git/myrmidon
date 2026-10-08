@@ -2,10 +2,9 @@
 
 > Russian version: [SETTINGS.ru.md](SETTINGS.ru.md)
 
-Our settings are environment variables `MYRMIDON_<AREA>_<NAME>`. Since 1.7 the vendor
-`PAPERCLIP_*` variables are read as deprecated aliases of the `MYRMIDON_*` names (one
-release, one-time warning); see the name mapping section below and
-[guides/env-names-alias.md](guides/env-names-alias.md).
+Our settings are environment variables `MYRMIDON_<AREA>_<NAME>`. Vendor `PAPERCLIP_*`
+variables remain as they are and are not described here, except where we change their
+meaning or default value.
 
 **Default values:**
 
@@ -91,6 +90,7 @@ A track writes only into its own section. A row is added in the same PR as the s
 | `MYRMIDON_CHAT_CROSS_CHANNEL_TOTAL_CHARS` | X8d | `4000` | Total character limit on the quote block; the oldest lines are dropped first, the skipped counter is a `(k earlier messages not shown)` line | Non-numeric or negative — the default |
 | `MYRMIDON_CHAT_CROSS_CHANNEL_LOOKBACK_HOURS` | X8d | `168` (a week) | How old adjacent-conversation messages are still quoted | Non-numeric or negative — the default |
 | `MYRMIDON_CHAT_RECONCILE_INTERVAL_MS` | D1 | unset | Minimum interval between run-milestone sweep runs (`enqueueChatRunMilestones`); replaces the standard coalescing-trigger interval (100 ms) rather than adding to it. The publication sweep (delivering messages to the provider) is untouched — it keeps its usual pace | Unset, `0`, negative or non-numeric — today's pace (the fix of the D1 queries themselves is always on, this is not a defect switch). Set (e.g. `15000`) if after D1 the milestone sweep is still noticeable in load when chats are idle |
+| `MYRMIDON_CHAT_RECONCILE_FALLBACK_INTERVAL_MS` | 1.6.3 | `30000` | How often the full chat reconciliation pass (provider runtimes, deliveries, webhook recovery, Slack syncs) runs when no publication or milestone event wakes it; publication and milestone lanes are woken by commit events directly, and one full pass still runs at startup. Replaces the former once-per-second timer | Unset, `0`, negative or non-numeric — 30 seconds. Lower it if deliveries or provider recovery feel slow after the change |
 | `MYRMIDON_TELEGRAM_VOICE_STT` | 1.6.1 VOICE-STT B | off | Transcribe an inbound Telegram voice/audio message at intake: the bytes are prefetched (bounded, 20 MB, 45 s), recognized through the shared STT core (part A1) and the transcript is written into the task comment next to the kept attachment — the bot reads it as user input on the same wakeup. Speaker segments render as «Говорящий N [mm:ss]: …». An STT failure is a skip: the comment keeps the vendor body, the redacted `stt_skipped` code lands in the comment metadata, and the delivery is unaffected | Any value other than `1`/`true`/`yes`/`on` — the vendor path byte for byte: no byte prefetch, zero calls to the transcription core. Read per delivery, no restart. Until the STT core is wired (part A1 merged and connected), an enabled setting records `stt_unconfigured` skips |
 
 ## Track 5 — operations
@@ -133,6 +133,7 @@ A track writes only into its own section. A row is added in the same PR as the s
 | `MYRMIDON_BOT_IMAGE_ROLLOUT` | BOT-IMAGE-ROLLOUT | `1` (on) | The bot runtime images (hermes, hermes-dev, hermes-node) of the same release roll out with the board (deploy.sh step 9.5, `bot-image-rollout.sh`): digests resolved from the same release, pulled, added to dockergate's `images` (config re-read by SIGHUP), the fleet enrolled in `bots[]`, the bot cards switched one at a time (canary first, a running run is never interrupted — a deferred bot retries), the superseded images removed after the fleet moved, every switch journalled | `0` — the manual path (the deploy warns: that is the 03.10 split by choice) |
 | `MYRMIDON_BOT_IMAGE_ROLLOUT_CANARY` | BOT-IMAGE-ROLLOUT | unset | Agent id switched first, before the rest of the fleet (canary) | Unset — plain order |
 | `MYRMIDON_BOT_IMAGE_ROLLOUT_BOT_TIMEOUT_SEC` | BOT-IMAGE-ROLLOUT | `900` | How long one deferred bot is retried (it keeps its old image; the periodic sweep applies the release image later) | From 10 to 86400 |
+| `MYRMIDON_BOT_IMAGE_ROLLOUT_FORCE_DEFERRED_SEC` | BOT-IMAGE-ROLLOUT | same as `MYRMIDON_BOT_IMAGE_ROLLOUT_BOT_TIMEOUT_SEC` | How long after the tail-pass deadline the still-deferred bots are applied WITHOUT the status gate (the reconciler opens the maintenance window and drains the in-flight run to its end — a run is never interrupted). `0` disables the force stage | From 0 to 86400 |
 | `MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_CONFIG` | BOT-IMAGE-ROLLOUT | unset | Path of the dockergate `config.json` this rollout edits (`images[]`, `bots[]`): structural jq edits, verified by `dockergate check-config` when the command below is set | Unset — the rollout refuses (fail-closed): the images and enrollment are its job |
 | `MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_CHECK_CONFIG_COMMAND` | BOT-IMAGE-ROLLOUT | unset | Command run after each config edit with `MYR_BOT_CFG_FILE` naming the edited file, e.g. `docker exec dockergate /dockergate check-config --config "$MYR_BOT_CFG_FILE"` | Unset — a warning: the edits are not verified by the real binary |
 | `MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_SIGNAL_COMMAND` | BOT-IMAGE-ROLLOUT | unset | How dockergate is told to re-read its config (SIGHUP), e.g. `docker exec dockergate kill -HUP 1` | Unset — a warning: the file changed but dockergate keeps the old config until reloaded |
@@ -763,11 +764,50 @@ sources need a token. Findings are recorded `unverified` until the skill lifecyc
 them as candidates; `POST …/foraging/sweep` (board only) runs one pass by hand.
 
 
+## 1.6 — TG-NOTIFY-SETTINGS: what the board sends the owner in Telegram (part A, the settings core)
+
+The company-level telegramNotify settings of `server/src/myrmidon/telegram-notify/` (the
+TG-NOTIFY-SETTINGS epic, part A). This core only stores and serves the contract;
+the parts that actually send (digest, errors, inbound, escalations, proactivity)
+consume it. No environment variables: the settings are runtime-changeable per
+company through the API.
+
+- Storage: the `myrmidonTelegramNotifySettings` key of `instance_settings.general`, keyed by
+  companyId (no migration, the vendor settings service keeps the key across its writes).
+- API: `GET /api/myrmidon/telegram-notify` (company access) answers the full document —
+  every field of every section always present; `PATCH /api/myrmidon/telegram-notify`
+  (board only) applies a partial update, and every changed field is recorded in the
+  changelog (actor, field path, from/to values, 200 entries kept).
+- Defaults: every section OFF. With the defaults the owner receives only the replies to
+  their own messages and the U2 decision cards; nothing else is sent to Telegram until
+  a section is turned on.
+- Sections: `digest` (time "HH:MM", chatId, topicId, sections list), `errors`
+  (minSeverity warn|error|fatal, maxPerHour, chatId, topicId), `inbound`
+  (requireMention), `escalations` (hours, channel dm|topic|none, chatId, topicId),
+  `proactivity` (mode only_on_owner_request|rarely|normal, rarelyMaxPerDay). The
+  proactivity per-agent override lives in `agents.metadata` under the same `"mode"`
+  key (company level is the default for all agents).
+- Contract: `packages/shared/src/myrmidon-telegram-notify.ts` (types and zod
+  validators); the contract is fixed — later changes only add fields, names do not
+  change.
+
 ## 1.6 — PARALLEL-HELPERS (delegated helper agents)
 
 | Variable | Function | Default | What it does | How to disable / special |
 |---|---|---|---|---|
 | `MYRMIDON_BOT_HELPER_MODEL` | PARALLEL-HELPERS | unset (helpers inherit the parent agent's model) | Model that delegated helper children run on when neither the agent card nor the stored `parallelHelpers` instance settings name one. Read from the agent card's environment when the bot profile is built. A deployment value: no model name is baked into the product | Empty/unset — the child uses the parent agent's model (Hermes' own behavior for an unset `delegation.model`) |
+
+Instance settings (`instance_settings.general.parallelHelpers`, the "Parallel
+helpers" card in Instance → General, instance-admin only): `maxPerAgent` is the
+company ceiling agent cards are clamped to, `defaultMaxPerAgent` (default 2)
+is what a card inherits when it says nothing, `buildSlots`/`hostMemoryMb`
+feed the capacity hint. **There is no built-in upper limit on the ceiling
+(HELPERS-NO-CAP, 1.6.1): the number the owner saves is the limit.** A saved
+ceiling above 50 shows a host-load warning on the settings page ("values this
+high put a real load on the host — make sure this is intended, not a typo");
+it is never clamped or rejected. The module applies its own defaults
+(`maxPerAgent` unset → 10, `defaultMaxPerAgent` unset → 2) only while the row
+says nothing.
 
 ## 1.6.1 — TG-NOTIFY-SETTINGS part F: the board UI for the Telegram notification settings
 
@@ -1117,182 +1157,6 @@ duration limit) live under `instance_settings.general.myrmidonSttCompanies[compa
 managed through `GET`/`PATCH /api/myrmidon/companies/:companyId/voice-stt` (GET is
 company access, PATCH is board only). The environment values are the defaults the
 overrides start from; a stored `enabled: true` cannot resurrect a path whose contour
-
-## Name mapping PAPERCLIP_* → MYRMIDON_*
-
-Since 1.7 the product reads its environment variables as `MYRMIDON_<NAME>`;
-the vendor `PAPERCLIP_<NAME>` spelling works for one release as an alias with a
-one-time deprecation warning in the log (see
-[guides/env-names-alias.md](guides/env-names-alias.md)). When both names are
-set, `MYRMIDON_*` wins. The mapping of every variable the product reads:
-
-| Old name | New name |
-|---|---|
-| `PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST` | `MYRMIDON_ACPX_PROVIDER_PACKAGE_MANIFEST` |
-| `PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT` | `MYRMIDON_ACPX_PROVIDER_PACKAGE_ROOT` |
-| `PAPERCLIP_ADAPTER_MODELS` | `MYRMIDON_ADAPTER_MODELS` |
-| `PAPERCLIP_AGENT_JWT_AUDIENCE` | `MYRMIDON_AGENT_JWT_AUDIENCE` |
-| `PAPERCLIP_AGENT_JWT_DISABLE_LEGACY_FALLBACK` | `MYRMIDON_AGENT_JWT_DISABLE_LEGACY_FALLBACK` |
-| `PAPERCLIP_AGENT_JWT_ISSUER` | `MYRMIDON_AGENT_JWT_ISSUER` |
-| `PAPERCLIP_AGENT_JWT_SECRET` | `MYRMIDON_AGENT_JWT_SECRET` |
-| `PAPERCLIP_AGENT_JWT_TTL_SECONDS` | `MYRMIDON_AGENT_JWT_TTL_SECONDS` |
-| `PAPERCLIP_ALLOWED_ATTACHMENT_TYPES` | `MYRMIDON_ALLOWED_ATTACHMENT_TYPES` |
-| `PAPERCLIP_ALLOWED_HOSTNAMES` | `MYRMIDON_ALLOWED_HOSTNAMES` |
-| `PAPERCLIP_ANNOUNCEMENTS_ENABLED` | `MYRMIDON_ANNOUNCEMENTS_ENABLED` |
-| `PAPERCLIP_ANNOUNCEMENTS_FEED_URL` | `MYRMIDON_ANNOUNCEMENTS_FEED_URL` |
-| `PAPERCLIP_API_BRIDGE_MODE` | `MYRMIDON_API_BRIDGE_MODE` |
-| `PAPERCLIP_API_KEY` | `MYRMIDON_API_KEY` |
-| `PAPERCLIP_API_URL` | `MYRMIDON_API_URL` |
-| `PAPERCLIP_ATTACHMENT_MAX_BYTES` | `MYRMIDON_ATTACHMENT_MAX_BYTES` |
-| `PAPERCLIP_AUTH_BASE_URL_MODE` | `MYRMIDON_AUTH_BASE_URL_MODE` |
-| `PAPERCLIP_AUTH_DISABLE_SIGN_UP` | `MYRMIDON_AUTH_DISABLE_SIGN_UP` |
-| `PAPERCLIP_AUTH_PUBLIC_BASE_URL` | `MYRMIDON_AUTH_PUBLIC_BASE_URL` |
-| `PAPERCLIP_AUTH_RATE_LIMIT_ENABLED` | `MYRMIDON_AUTH_RATE_LIMIT_ENABLED` |
-| `PAPERCLIP_AUTH_STORE` | `MYRMIDON_AUTH_STORE` |
-| `PAPERCLIP_BIND` | `MYRMIDON_BIND` |
-| `PAPERCLIP_BIND_HOST` | `MYRMIDON_BIND_HOST` |
-| `PAPERCLIP_BRIDGE_HOST` | `MYRMIDON_BRIDGE_HOST` |
-| `PAPERCLIP_BRIDGE_MAX_BODY_BYTES` | `MYRMIDON_BRIDGE_MAX_BODY_BYTES` |
-| `PAPERCLIP_BRIDGE_MAX_QUEUE_DEPTH` | `MYRMIDON_BRIDGE_MAX_QUEUE_DEPTH` |
-| `PAPERCLIP_BRIDGE_NONCE` | `MYRMIDON_BRIDGE_NONCE` |
-| `PAPERCLIP_BRIDGE_POLL_INTERVAL_MS` | `MYRMIDON_BRIDGE_POLL_INTERVAL_MS` |
-| `PAPERCLIP_BRIDGE_PORT` | `MYRMIDON_BRIDGE_PORT` |
-| `PAPERCLIP_BRIDGE_QUEUE_DIR` | `MYRMIDON_BRIDGE_QUEUE_DIR` |
-| `PAPERCLIP_BRIDGE_RESPONSE_TIMEOUT_MS` | `MYRMIDON_BRIDGE_RESPONSE_TIMEOUT_MS` |
-| `PAPERCLIP_BRIDGE_TOKEN` | `MYRMIDON_BRIDGE_TOKEN` |
-| `PAPERCLIP_BUILD_COMMIT` | `MYRMIDON_BUILD_COMMIT` |
-| `PAPERCLIP_BUILD_VERSION` | `MYRMIDON_BUILD_VERSION` |
-| `PAPERCLIP_CHAT_WEBHOOK_PUBLIC_URL` | `MYRMIDON_CHAT_WEBHOOK_PUBLIC_URL` |
-| `PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN` | `MYRMIDON_CLOUD_TENANT_SERVER_TOKEN` |
-| `PAPERCLIP_CODEX_PROVIDERS` | `MYRMIDON_CODEX_PROVIDERS` |
-| `PAPERCLIP_COMPANY_ID` | `MYRMIDON_COMPANY_ID` |
-| `PAPERCLIP_CONFIG` | `MYRMIDON_CONFIG` |
-| `PAPERCLIP_CONTEXT` | `MYRMIDON_CONTEXT` |
-| `PAPERCLIP_DB_BACKUP_ALERT_FILE` | `MYRMIDON_DB_BACKUP_ALERT_FILE` |
-| `PAPERCLIP_DB_BACKUP_DIR` | `MYRMIDON_DB_BACKUP_DIR` |
-| `PAPERCLIP_DB_BACKUP_ENABLED` | `MYRMIDON_DB_BACKUP_ENABLED` |
-| `PAPERCLIP_DB_BACKUP_INTERVAL_MINUTES` | `MYRMIDON_DB_BACKUP_INTERVAL_MINUTES` |
-| `PAPERCLIP_DB_BACKUP_MAX_AGE_HOURS` | `MYRMIDON_DB_BACKUP_MAX_AGE_HOURS` |
-| `PAPERCLIP_DB_BACKUP_RETENTION_DAYS` | `MYRMIDON_DB_BACKUP_RETENTION_DAYS` |
-| `PAPERCLIP_DEBUG_VERSION_RESOLUTION` | `MYRMIDON_DEBUG_VERSION_RESOLUTION` |
-| `PAPERCLIP_DECISIONS_OPEN_CAP` | `MYRMIDON_DECISIONS_OPEN_CAP` |
-| `PAPERCLIP_DECISIONS_RECOVERY_GRACE_MS` | `MYRMIDON_DECISIONS_RECOVERY_GRACE_MS` |
-| `PAPERCLIP_DECISIONS_SWEEP_BATCH_SIZE` | `MYRMIDON_DECISIONS_SWEEP_BATCH_SIZE` |
-| `PAPERCLIP_DECISION_SIGNING_SECRET` | `MYRMIDON_DECISION_SIGNING_SECRET` |
-| `PAPERCLIP_DEPLOYMENT_EXPOSURE` | `MYRMIDON_DEPLOYMENT_EXPOSURE` |
-| `PAPERCLIP_DEPLOYMENT_ID` | `MYRMIDON_DEPLOYMENT_ID` |
-| `PAPERCLIP_DEPLOYMENT_MODE` | `MYRMIDON_DEPLOYMENT_MODE` |
-| `PAPERCLIP_DEV_SERVER_STATUS_TOKEN` | `MYRMIDON_DEV_SERVER_STATUS_TOKEN` |
-| `PAPERCLIP_EMBEDDED_POSTGRES_PORT` | `MYRMIDON_EMBEDDED_POSTGRES_PORT` |
-| `PAPERCLIP_EMBEDDED_POSTGRES_VERBOSE` | `MYRMIDON_EMBEDDED_POSTGRES_VERBOSE` |
-| `PAPERCLIP_ENABLE_COMPANY_DELETION` | `MYRMIDON_ENABLE_COMPANY_DELETION` |
-| `PAPERCLIP_ENABLE_DARWIN_SSH_ENV_LAB` | `MYRMIDON_ENABLE_DARWIN_SSH_ENV_LAB` |
-| `PAPERCLIP_FEEDBACK_EXPORT_BACKEND_TOKEN` | `MYRMIDON_FEEDBACK_EXPORT_BACKEND_TOKEN` |
-| `PAPERCLIP_FEEDBACK_EXPORT_BACKEND_URL` | `MYRMIDON_FEEDBACK_EXPORT_BACKEND_URL` |
-| `PAPERCLIP_HOME` | `MYRMIDON_HOME` |
-| `PAPERCLIP_IMPORT_ZIP_MAX_BYTES` | `MYRMIDON_IMPORT_ZIP_MAX_BYTES` |
-| `PAPERCLIP_INSTANCE_ID` | `MYRMIDON_INSTANCE_ID` |
-| `PAPERCLIP_IN_WORKTREE` | `MYRMIDON_IN_WORKTREE` |
-| `PAPERCLIP_LISTEN_HOST` | `MYRMIDON_LISTEN_HOST` |
-| `PAPERCLIP_LISTEN_PORT` | `MYRMIDON_LISTEN_PORT` |
-| `PAPERCLIP_LOG_LEVEL` | `MYRMIDON_LOG_LEVEL` |
-| `PAPERCLIP_MANAGED_RUNTIME_EXPOSURE` | `MYRMIDON_MANAGED_RUNTIME_EXPOSURE` |
-| `PAPERCLIP_MANAGED_RUNTIME_HTTPS` | `MYRMIDON_MANAGED_RUNTIME_HTTPS` |
-| `PAPERCLIP_MANAGED_RUNTIME_PUBLIC_URL` | `MYRMIDON_MANAGED_RUNTIME_PUBLIC_URL` |
-| `PAPERCLIP_MCP_GATEWAY_AUTH_FAILURE_LIMIT` | `MYRMIDON_MCP_GATEWAY_AUTH_FAILURE_LIMIT` |
-| `PAPERCLIP_MCP_GATEWAY_AUTH_FAILURE_WINDOW_MS` | `MYRMIDON_MCP_GATEWAY_AUTH_FAILURE_WINDOW_MS` |
-| `PAPERCLIP_MCP_GATEWAY_REQUEST_LIMIT` | `MYRMIDON_MCP_GATEWAY_REQUEST_LIMIT` |
-| `PAPERCLIP_MCP_GATEWAY_REQUEST_WINDOW_MS` | `MYRMIDON_MCP_GATEWAY_REQUEST_WINDOW_MS` |
-| `PAPERCLIP_MCP_GATEWAY_SESSION_SETUP_LIMIT` | `MYRMIDON_MCP_GATEWAY_SESSION_SETUP_LIMIT` |
-| `PAPERCLIP_MCP_GATEWAY_SESSION_SETUP_WINDOW_MS` | `MYRMIDON_MCP_GATEWAY_SESSION_SETUP_WINDOW_MS` |
-| `PAPERCLIP_MCP_GATEWAY_TOKEN_REQUEST_LIMIT` | `MYRMIDON_MCP_GATEWAY_TOKEN_REQUEST_LIMIT` |
-| `PAPERCLIP_MCP_GATEWAY_TOKEN_REQUEST_WINDOW_MS` | `MYRMIDON_MCP_GATEWAY_TOKEN_REQUEST_WINDOW_MS` |
-| `PAPERCLIP_MIGRATION_AUTO_APPLY` | `MYRMIDON_MIGRATION_AUTO_APPLY` |
-| `PAPERCLIP_MIGRATION_PROMPT` | `MYRMIDON_MIGRATION_PROMPT` |
-| `PAPERCLIP_NATIVE_RUNTIME_CONTEXT_PATH` | `MYRMIDON_NATIVE_RUNTIME_CONTEXT_PATH` |
-| `PAPERCLIP_NORMALIZED_SESSION_ID` | `MYRMIDON_NORMALIZED_SESSION_ID` |
-| `PAPERCLIP_NO_BROWSER` | `MYRMIDON_NO_BROWSER` |
-| `PAPERCLIP_ONBOARDING_SEED_ADAPTER_TYPE` | `MYRMIDON_ONBOARDING_SEED_ADAPTER_TYPE` |
-| `PAPERCLIP_OPENCODE_COMMAND` | `MYRMIDON_OPENCODE_COMMAND` |
-| `PAPERCLIP_OPENCODE_PERMISSION_MODE` | `MYRMIDON_OPENCODE_PERMISSION_MODE` |
-| `PAPERCLIP_OPENCODE_PRINT_LOGS` | `MYRMIDON_OPENCODE_PRINT_LOGS` |
-| `PAPERCLIP_OPENCODE_PROVIDERS` | `MYRMIDON_OPENCODE_PROVIDERS` |
-| `PAPERCLIP_OPENCODE_RUNTIME_DIR` | `MYRMIDON_OPENCODE_RUNTIME_DIR` |
-| `PAPERCLIP_OPENCODE_SMALL_MODEL` | `MYRMIDON_OPENCODE_SMALL_MODEL` |
-| `PAPERCLIP_OPENCODE_STORAGE_DIR` | `MYRMIDON_OPENCODE_STORAGE_DIR` |
-| `PAPERCLIP_OPEN_ON_LISTEN` | `MYRMIDON_OPEN_ON_LISTEN` |
-| `PAPERCLIP_PAGES_API_URL` | `MYRMIDON_PAGES_API_URL` |
-| `PAPERCLIP_PG_DUMP_PATH` | `MYRMIDON_PG_DUMP_PATH` |
-| `PAPERCLIP_PI_COMMAND` | `MYRMIDON_PI_COMMAND` |
-| `PAPERCLIP_PI_PROVIDERS` | `MYRMIDON_PI_PROVIDERS` |
-| `PAPERCLIP_PROCESS_SESSION_COMMAND_B64` | `MYRMIDON_PROCESS_SESSION_COMMAND_B64` |
-| `PAPERCLIP_PROCESS_SESSION_DIR` | `MYRMIDON_PROCESS_SESSION_DIR` |
-| `PAPERCLIP_PROCESS_SESSION_STDIN_MAX_RETRIES` | `MYRMIDON_PROCESS_SESSION_STDIN_MAX_RETRIES` |
-| `PAPERCLIP_PROCESS_SESSION_TERMINATE_GRACE_MS` | `MYRMIDON_PROCESS_SESSION_TERMINATE_GRACE_MS` |
-| `PAPERCLIP_PROJECT_WORKSPACE_ID` | `MYRMIDON_PROJECT_WORKSPACE_ID` |
-| `PAPERCLIP_PSQL_PATH` | `MYRMIDON_PSQL_PATH` |
-| `PAPERCLIP_PUBLIC_URL` | `MYRMIDON_PUBLIC_URL` |
-| `PAPERCLIP_RESPONSIBLE_USER_AUTHZ_MODE` | `MYRMIDON_RESPONSIBLE_USER_AUTHZ_MODE` |
-| `PAPERCLIP_RESPONSIBLE_USER_AUTHZ_SHADOW` | `MYRMIDON_RESPONSIBLE_USER_AUTHZ_SHADOW` |
-| `PAPERCLIP_RUNNER_BINARY` | `MYRMIDON_RUNNER_BINARY` |
-| `PAPERCLIP_RUNNER_INSTANCE_ID` | `MYRMIDON_RUNNER_INSTANCE_ID` |
-| `PAPERCLIP_RUNNER_NETWORK_ACCESS` | `MYRMIDON_RUNNER_NETWORK_ACCESS` |
-| `PAPERCLIP_RUNNER_STATE_DIR` | `MYRMIDON_RUNNER_STATE_DIR` |
-| `PAPERCLIP_RUNTIME_API_URL` | `MYRMIDON_RUNTIME_API_URL` |
-| `PAPERCLIP_RUNTIME_TOOLS_TOKEN` | `MYRMIDON_RUNTIME_TOOLS_TOKEN` |
-| `PAPERCLIP_RUN_ID` | `MYRMIDON_RUN_ID` |
-| `PAPERCLIP_RUN_SCRATCH_DIR` | `MYRMIDON_RUN_SCRATCH_DIR` |
-| `PAPERCLIP_SECRETS_AWS_DELETE_RECOVERY_DAYS` | `MYRMIDON_SECRETS_AWS_DELETE_RECOVERY_DAYS` |
-| `PAPERCLIP_SECRETS_AWS_DEPLOYMENT_ID` | `MYRMIDON_SECRETS_AWS_DEPLOYMENT_ID` |
-| `PAPERCLIP_SECRETS_AWS_ENDPOINT` | `MYRMIDON_SECRETS_AWS_ENDPOINT` |
-| `PAPERCLIP_SECRETS_AWS_ENVIRONMENT` | `MYRMIDON_SECRETS_AWS_ENVIRONMENT` |
-| `PAPERCLIP_SECRETS_AWS_KMS_KEY_ID` | `MYRMIDON_SECRETS_AWS_KMS_KEY_ID` |
-| `PAPERCLIP_SECRETS_AWS_PREFIX` | `MYRMIDON_SECRETS_AWS_PREFIX` |
-| `PAPERCLIP_SECRETS_AWS_PROVIDER_OWNER` | `MYRMIDON_SECRETS_AWS_PROVIDER_OWNER` |
-| `PAPERCLIP_SECRETS_AWS_REGION` | `MYRMIDON_SECRETS_AWS_REGION` |
-| `PAPERCLIP_SECRETS_MASTER_KEY` | `MYRMIDON_SECRETS_MASTER_KEY` |
-| `PAPERCLIP_SECRETS_MASTER_KEY_FILE` | `MYRMIDON_SECRETS_MASTER_KEY_FILE` |
-| `PAPERCLIP_SECRETS_PROVIDER` | `MYRMIDON_SECRETS_PROVIDER` |
-| `PAPERCLIP_SECRETS_STRICT_MODE` | `MYRMIDON_SECRETS_STRICT_MODE` |
-| `PAPERCLIP_SEED_EXPECTED_COMPANY_ID` | `MYRMIDON_SEED_EXPECTED_COMPANY_ID` |
-| `PAPERCLIP_SERVER_HOST` | `MYRMIDON_SERVER_HOST` |
-| `PAPERCLIP_SERVER_PORT` | `MYRMIDON_SERVER_PORT` |
-| `PAPERCLIP_SERVICE_MANAGED` | `MYRMIDON_SERVICE_MANAGED` |
-| `PAPERCLIP_SHIM_PATH` | `MYRMIDON_SHIM_PATH` |
-| `PAPERCLIP_STORAGE_LOCAL_DIR` | `MYRMIDON_STORAGE_LOCAL_DIR` |
-| `PAPERCLIP_STORAGE_PROVIDER` | `MYRMIDON_STORAGE_PROVIDER` |
-| `PAPERCLIP_STORAGE_S3_BUCKET` | `MYRMIDON_STORAGE_S3_BUCKET` |
-| `PAPERCLIP_STORAGE_S3_ENDPOINT` | `MYRMIDON_STORAGE_S3_ENDPOINT` |
-| `PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE` | `MYRMIDON_STORAGE_S3_FORCE_PATH_STYLE` |
-| `PAPERCLIP_STORAGE_S3_PREFIX` | `MYRMIDON_STORAGE_S3_PREFIX` |
-| `PAPERCLIP_STORAGE_S3_REGION` | `MYRMIDON_STORAGE_S3_REGION` |
-| `PAPERCLIP_TAILNET_BIND_HOST` | `MYRMIDON_TAILNET_BIND_HOST` |
-| `PAPERCLIP_TAILSCALE_BROKER_SOCKET` | `MYRMIDON_TAILSCALE_BROKER_SOCKET` |
-| `PAPERCLIP_TAILSCALE_DNS_NAME` | `MYRMIDON_TAILSCALE_DNS_NAME` |
-| `PAPERCLIP_TASK_ID` | `MYRMIDON_TASK_ID` |
-| `PAPERCLIP_TEAMS_CATALOG_DEFAULT_ADAPTER_TYPE` | `MYRMIDON_TEAMS_CATALOG_DEFAULT_ADAPTER_TYPE` |
-| `PAPERCLIP_TEAMS_CATALOG_DIR` | `MYRMIDON_TEAMS_CATALOG_DIR` |
-| `PAPERCLIP_TELEMETRY_BACKEND_TOKEN` | `MYRMIDON_TELEMETRY_BACKEND_TOKEN` |
-| `PAPERCLIP_TELEMETRY_BACKEND_URL` | `MYRMIDON_TELEMETRY_BACKEND_URL` |
-| `PAPERCLIP_TELEMETRY_DISABLED` | `MYRMIDON_TELEMETRY_DISABLED` |
-| `PAPERCLIP_TELEMETRY_ENDPOINT` | `MYRMIDON_TELEMETRY_ENDPOINT` |
-| `PAPERCLIP_TEST_CONNECTION_DELIVERY_HOLD` | `MYRMIDON_TEST_CONNECTION_DELIVERY_HOLD` |
-| `PAPERCLIP_TEST_POSTGRES_RESERVED_PORTS` | `MYRMIDON_TEST_POSTGRES_RESERVED_PORTS` |
-| `PAPERCLIP_TOKEN_BROKER_ALLOWED_HOSTS` | `MYRMIDON_TOKEN_BROKER_ALLOWED_HOSTS` |
-| `PAPERCLIP_TOOL_ACTION_SIGNING_SECRET` | `MYRMIDON_TOOL_ACTION_SIGNING_SECRET` |
-| `PAPERCLIP_TOOL_OAUTH_CLIENT_ID` | `MYRMIDON_TOOL_OAUTH_CLIENT_ID` |
-| `PAPERCLIP_TOOL_OAUTH_CLIENT_SECRET` | `MYRMIDON_TOOL_OAUTH_CLIENT_SECRET` |
-| `PAPERCLIP_TOOL_RUNTIME_TRUSTED_HOST` | `MYRMIDON_TOOL_RUNTIME_TRUSTED_HOST` |
-| `PAPERCLIP_TRUSTED_MCP_RUNTIME_HOST` | `MYRMIDON_TRUSTED_MCP_RUNTIME_HOST` |
-| `PAPERCLIP_UI_DEV_MIDDLEWARE` | `MYRMIDON_UI_DEV_MIDDLEWARE` |
-| `PAPERCLIP_UPDATE_CHECK` | `MYRMIDON_UPDATE_CHECK` |
-| `PAPERCLIP_UPDATE_CHECK_URL` | `MYRMIDON_UPDATE_CHECK_URL` |
-| `PAPERCLIP_VITE_CACHE_DIR` | `MYRMIDON_VITE_CACHE_DIR` |
-| `PAPERCLIP_VITE_HMR_PROTOCOL` | `MYRMIDON_VITE_HMR_PROTOCOL` |
-| `PAPERCLIP_WORKSPACE_BASE_CWD` | `MYRMIDON_WORKSPACE_BASE_CWD` |
-| `PAPERCLIP_WORKSPACE_REAPER_COOLDOWN_DAYS` | `MYRMIDON_WORKSPACE_REAPER_COOLDOWN_DAYS` |
-| `PAPERCLIP_WORKTREES_DIR` | `MYRMIDON_WORKTREES_DIR` |
-| `PAPERCLIP_WORKTREE_START_POINT` | `MYRMIDON_WORKTREE_START_POINT` |
 (address, key secret, model) is unnamed.
 
 The PATCH accepts only `enabled`, `backend`, `model`, `language`, `diarization` and
@@ -1384,6 +1248,7 @@ What the last run's prompt was made of — which part dominates it and what to d
 on the agent card (Overview). The advice is computed on request from the recorded breakdown; a
 "Deep analysis" button files a task for a cheap-model optimizer agent, which drafts instruction
 edits as a comment on that task. Nothing is scheduled and nothing is changed automatically.
+Operator guide: [guides/prompt-budget-advice.md](guides/prompt-budget-advice.md).
 
 The static thresholds are code constants of
 `server/src/myrmidon/prompt-budget-advice/advice.ts`, not settings: a part is worth a recommendation
@@ -1399,3 +1264,11 @@ is configured or usable.
 | Field | Default | What it does | Bounds / special |
 |---|---|---|---|
 | `promptBudget.optimizerAgentId` | absent | Agent that receives the deep-analysis task filed by the "Deep analysis" button | A uuid of another agent of the same company; absent, blank or not a uuid answers the deep POST with 422. An additive field of the `promptBudget` area owned by the thresholds part (`instance_settings.general.promptBudget`); no environment variable |
+
+## 1.6.4 — AUTONOMY-DELETE: matrix enforcement tests and route mapping
+
+Unit tests for the `delete` action-class enforcement on agent-accessible DELETE routes
+(`server/src/routes/issues.autonomy.myrmidon.test.ts` — gate level, no DB: forbidden role gets
+403 `autonomy_forbidden` and the handler never runs; allowed and board calls pass), plus the
+route-to-guard mapping in `docs/myrmidon/guides/delete-route-mapping.md`. See the guide
+`docs/myrmidon/guides/autonomy-delete-enforcement.md` (+ `.ru.md`) for operator docs.

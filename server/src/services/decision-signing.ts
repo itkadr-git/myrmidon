@@ -3,6 +3,8 @@ import { chmodSync, linkSync, lstatSync, mkdirSync, readFileSync, type Stats, un
 import path from "node:path";
 import { resolveDefaultSecretsKeyFilePath } from "../home-paths.js";
 import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+// myrmidon(B1c): product name in user-facing texts; see product.ts.
+import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
 
 const VERSION = "decision-spec-v1";
 const MIN_SECRET_LENGTH = 32;
@@ -16,7 +18,7 @@ function assertOwnedByCurrentUser(stats: Stats, description: string) {
 
   const currentUserId = process.getuid?.();
   if (currentUserId !== undefined && stats.uid !== currentUserId) {
-    throw new Error(`${description} must be owned by the Paperclip process user`);
+    throw new Error(`${description} must be owned by the ${PN} process user`);
   }
 }
 

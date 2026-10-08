@@ -651,6 +651,25 @@ export function classifyAdapterFailureForRecovery(
   if (latestRun.errorCode === "adapter_engine_unavailable") {
     return { kind: "configuration_incomplete" };
   }
+  // myrmidon(PERF-DIET-I): a 403 "key not allowed to access model" from the
+  // LiteLLM gateway is a permanent key/model configuration problem, never a
+  // transient condition — retrying re-issues the same 403. The new adapter
+  // family marks it explicitly; the text match catches historical runs and
+  // other adapters whose 403 arrived without the field. This branch runs
+  // before the error-code gate because gateway failures persist the
+  // "hermes_gateway_run_failed" code, which the gate below excludes.
+  const permanentConfigResultJson = parseObject(latestRun.resultJson);
+  const permanentConfigErrorText = [
+    latestRun.error ?? "",
+    JSON.stringify(permanentConfigResultJson),
+  ].join("\n");
+  if (
+    readNonEmptyString(permanentConfigResultJson.errorFamily) ===
+      "permanent_config_error" ||
+    /key not allowed to access model/i.test(permanentConfigErrorText)
+  ) {
+    return { kind: "configuration_incomplete" };
+  }
   if (
     latestRun.errorCode !== "adapter_failed" &&
     latestRun.errorCode !== "provider_quota" &&

@@ -12,7 +12,9 @@ import {
   resolveHotRestartIntentPath,
   resolveLegacyHotRestartIntentPath,
   writeHotRestartIntent,
+  writeHotRestartShutdownSnapshot,
 } from "./hot-restart.js";
+import { legacyControllerBootId } from "./legacy-controller-lease.js";
 
 const originalInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
 
@@ -531,5 +533,66 @@ describe("hot-restart path compatibility", () => {
         }],
       },
     })).toEqual(["missing-run"]);
+  });
+
+  // myrmidon(T1.6, design BOARD-PROCESSES §4.3): the departing process writes
+  // its legacy controller boot id into the shutdown snapshot, and the parse
+  // keeps it, so the successor's startup reattach pass can adopt the
+  // predecessor's gateway runs without waiting out the 60s lease.
+  it("shutdown snapshot carries the departing controller boot id through the round trip", async () => {
+    await withTempHome(async (homeDir) => {
+      const intent = await writeHotRestartIntent({
+        homeDir,
+        previousServerPid: 301,
+        previousServerStartedAt: "2026-10-06T01:00:00.000Z",
+        requestedAt: new Date("2026-10-06T02:00:00.000Z"),
+      });
+      await writeHotRestartShutdownSnapshot({
+        intent,
+        signal: "SIGTERM",
+        activeRuns: [],
+        capturedAt: new Date("2026-10-06T02:00:01.000Z"),
+        homeDir,
+      });
+
+      const reread = await readHotRestartIntent(homeDir);
+      expect(reread?.shutdownSnapshot?.previousControllerBootId).toBe(legacyControllerBootId);
+    });
+  });
+
+  it("parse keeps a well-formed previousControllerBootId and drops a malformed one", () => {
+    const base = {
+      version: 1,
+      requestedAt: "2026-10-06T02:00:00.000Z",
+      previousServerPid: 301,
+      previousServerVersion: "old",
+      drainRequired: false,
+      requestedByRunId: null,
+      preflightActiveRunIds: [],
+    };
+    const withBootId = parseHotRestartIntent({
+      ...base,
+      shutdownSnapshot: {
+        capturedAt: "2026-10-06T02:00:01.000Z",
+        signal: "SIGTERM",
+        activeRuns: [],
+        previousControllerBootId: "9f13e7d1-3d80-4d76-a68d-9e1c92a5a9ab",
+      },
+    });
+    expect(withBootId?.shutdownSnapshot?.previousControllerBootId).toBe(
+      "9f13e7d1-3d80-4d76-a68d-9e1c92a5a9ab",
+    );
+
+    const withGarbage = parseHotRestartIntent({
+      ...base,
+      shutdownSnapshot: {
+        capturedAt: "2026-10-06T02:00:01.000Z",
+        signal: "SIGTERM",
+        activeRuns: [],
+        previousControllerBootId: 42,
+      },
+    });
+    expect(withGarbage?.shutdownSnapshot).toBeDefined();
+    expect(withGarbage?.shutdownSnapshot?.previousControllerBootId).toBeUndefined();
   });
 });

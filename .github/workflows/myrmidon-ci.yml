@@ -10,9 +10,17 @@ name: Myrmidon CI
 #          shared foundations (lockfile, db, shared, runner, CI...): every lane.
 # A red full run on main opens (or updates) an issue labelled `main-red`.
 # Everything runs on GitHub-hosted runners without secrets. See docs/myrmidon/ci.md.
+#
+# Merge queue: the `merge_group` event re-runs the same checks on a candidate
+# commit built on top of the fresh main, so two PRs that are green separately
+# cannot land a broken combination. The plan compares the candidate with its
+# base, so the tier matches the tier of the PR inside the group.
+# See docs/myrmidon/merge-queue.md.
 
 on:
   pull_request:
+  merge_group:
+    types: [checks_requested]
   push:
     branches: [main]
   workflow_dispatch:
@@ -22,9 +30,11 @@ permissions:
 
 concurrency:
   # Superseded runs are cancelled on PRs and on main alike; a cancelled run
-  # reports no `CI result`, so it can never look green.
+  # reports no `CI result`, so it can never look green. A cancelled
+  # merge_group run evicts the group from the queue, so queue runs are never
+  # cancelled.
   group: myrmidon-ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
 
 env:
   NPM_CONFIG_AUDIT: "false"
@@ -72,14 +82,22 @@ jobs:
         id: plan
         env:
           EVENT: ${{ github.event_name }}
-          BASE: ${{ github.event.pull_request.base.sha }}
-          HEAD: ${{ github.event.pull_request.head.sha }}
-          FULL_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'full-ci') }}
+          BASE: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event.pull_request.head.sha }}
+          FULL_LABEL: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'full-ci') }}
         run: |
           set -euo pipefail
           args=(plan --out "$RUNNER_TEMP/plan.json")
-          if [ "$EVENT" = "pull_request" ]; then
-            args+=(--base "$BASE" --head "$HEAD")
+          # A merge-group candidate is a merge commit over its base: the same
+          # base..head diff the PR was checked with, on top of the fresh main.
+          if [ "$EVENT" = "pull_request" ] || [ "$EVENT" = "merge_group" ]; then
+            if [ -n "$BASE" ] && git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+              args+=(--base "$BASE" --head "$HEAD")
+            else
+              # Fail safe: without a comparable base the plan cannot pick a
+              # tier, so run every lane.
+              echo "::warning::base commit $BASE not found; forcing the full tier"
+            fi
             if [ "$FULL_LABEL" = "true" ]; then args+=(--force-full); fi
           fi
           node scripts/myrmidon/ci/affected-tests.mjs "${args[@]}"
@@ -524,6 +542,8 @@ jobs:
           EVENT: ${{ github.event_name }}
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          MG_BASE: ${{ github.event.merge_group.base_sha }}
+          MG_HEAD: ${{ github.event.merge_group.head_sha }}
           HEAD_REF: ${{ github.head_ref }}
           PUSH_BEFORE: ${{ github.event.before }}
         run: |
@@ -533,6 +553,10 @@ jobs:
             base="$PR_BASE"; head="$PR_HEAD"
             # Vendor release sync brings vendor test fixtures with sample addresses.
             case "$HEAD_REF" in sync/*) skip_tests="--skip-tests" ;; esac
+          elif [ "$EVENT" = "merge_group" ] && [ -n "$MG_BASE" ] \
+            && git cat-file -e "$MG_BASE^{commit}" 2>/dev/null; then
+            # The candidate commit and its base are both in the fetched tree.
+            base="$MG_BASE"; head="$MG_HEAD"
           elif [ -n "${PUSH_BEFORE:-}" ] && [ "$PUSH_BEFORE" != "0000000000000000000000000000000000000000" ] \
             && git cat-file -e "$PUSH_BEFORE^{commit}" 2>/dev/null; then
             base="$PUSH_BEFORE"; head="$GITHUB_SHA"

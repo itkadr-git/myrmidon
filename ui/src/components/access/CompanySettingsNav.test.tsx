@@ -146,6 +146,7 @@ describe("CompanySettingsNav", () => {
 
           { value: "castes", label: "Castes & models" }, // myrmidon(1.6.1 MODEL-PROVIDERS C)
           { value: "caste-directory", label: "Agent castes" }, // myrmidon(1.6.1 CUSTOM-CASTES C)
+          { value: "owner-delivery", label: "Owner Telegram delivery" }, // myrmidon(1.6.5-OWNER-DM-FILTER)
         ],
       }),
     );
@@ -196,6 +197,7 @@ describe("CompanySettingsNav", () => {
 
       "castes", // myrmidon(1.6.1 MODEL-PROVIDERS C)
       "caste-directory", // myrmidon(1.6.1 CUSTOM-CASTES C)
+      "owner-delivery", // myrmidon(1.6.5-OWNER-DM-FILTER)
     ]);
 
     await act(async () => {

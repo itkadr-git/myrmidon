@@ -451,3 +451,90 @@ describe("botVolumeLayout (volume layout pinned by the image contract)", () => {
     expect(declaredBotRuntimeContract("img", { [BOT_RUNTIME_CONTRACT_LABEL]: "2" })).toBe("2");
   });
 });
+
+// myrmidon(1.6.5-BOT-DISK-H11): the shared bot runtime (the design's class C)
+// and operator data directories inside the bot's own volume (class J).
+describe("buildBinds: the shared bot runtime (1.6.5-BOT-DISK-H11)", () => {
+  const runtime = "/srv/bot-runtime";
+  const pairs = [
+    `${runtime}/bin:/bot/hermes/bin:ro`,
+    `${runtime}/lazy-packages:/bot/hermes/lazy-packages:ro`,
+    `${runtime}/lsp:/bot/hermes/lsp:ro`,
+  ];
+
+  it("adds the three runtime binds read-only, at the real path inside the bot's own mount", () => {
+    expect(buildBinds("/srv/myrmidon/bots", "agent-a", { sharedBotRuntimePath: runtime })).toEqual([
+      "/srv/myrmidon/bots/agent-a:/bot",
+      ...pairs,
+    ]);
+  });
+
+  it("keeps the cache binds and then the runtime binds, last", () => {
+    expect(buildBinds("/srv/bots", "agent-a", { sharedPackageCachePath: "/srv/cache", sharedBotRuntimePath: runtime })).toEqual([
+      "/srv/bots/agent-a:/bot",
+      "/srv/cache/pnpm:/cache/pnpm:rw",
+      "/srv/cache/go-mod:/cache/go-mod:rw",
+      "/srv/cache/go-build:/cache/go-build:rw",
+      "/srv/cache/gradle:/cache/gradle:rw",
+      ...pairs,
+    ]);
+  });
+
+  it("binds them at the volume itself under the legacy layout (contract \"1\" images)", () => {
+    expect(buildBinds("/srv/bots", "agent-a", { sharedBotRuntimePath: runtime, volumeLayout: "legacy" }).slice(-3)).toEqual([
+      `${runtime}/bin:/data/hermes/bin:ro`,
+      `${runtime}/lazy-packages:/data/hermes/lazy-packages:ro`,
+      `${runtime}/lsp:/data/hermes/lsp:ro`,
+    ]);
+  });
+
+  it("binds them into the member directory of a shared scope instance (BOT-DISK-F)", () => {
+    const scope = { scopeRoot: "/srv/bots/.scopes", dirName: "caste-7" };
+    expect(buildBinds("/srv/bots", "agent-a", { sharedBotRuntimePath: runtime, scope }).slice(-3)).toEqual([
+      `${runtime}/bin:/bot-scope/agent-a/hermes/bin:ro`,
+      `${runtime}/lazy-packages:/bot-scope/agent-a/hermes/lazy-packages:ro`,
+      `${runtime}/lsp:/bot-scope/agent-a/hermes/lsp:ro`,
+    ]);
+  });
+
+  it("stays off unless the operator set the path", () => {
+    expect(buildBinds("/srv/bots", "agent-a")).toEqual(["/srv/bots/agent-a:/bot"]);
+  });
+
+  it("refuses a path that is not an absolute host directory", () => {
+    for (const bad of ["srv/runtime", "/srv/runtime/", "/srv//runtime"]) {
+      expect(() => buildBinds("/srv/bots", "agent-a", { sharedBotRuntimePath: bad })).toThrow(BotContainerTemplateError);
+    }
+  });
+
+  it("still refuses a mount point that would take over a runtime path", () => {
+    const mounts = [{ source: "/srv/media", containerPath: "/data/hermes/bin", readOnly: true } as const];
+    expect(() => buildBinds("/srv/bots", "agent-a", { mounts, allowedSources: ["/srv/media"] })).toThrow(
+      BotContainerTemplateError,
+    );
+  });
+});
+
+describe("buildBinds: owner data inside the bot's own volume (1.6.5-BOT-DISK-H11, class J)", () => {
+  const mounts = [{ source: "/srv/media", containerPath: "/data/hermes/media/site", readOnly: true } as const];
+
+  it("binds an owner-data mount at the real path inside the bot's own mount", () => {
+    expect(buildBinds("/srv/bots", "agent-a", { mounts, allowedSources: ["/srv/media"] })).toEqual([
+      "/srv/bots/agent-a:/bot",
+      "/srv/media:/bot/hermes/media/site:ro",
+    ]);
+  });
+
+  it("keeps its container path under the legacy layout", () => {
+    expect(
+      buildBinds("/srv/bots", "agent-a", { mounts, allowedSources: ["/srv/media"], volumeLayout: "legacy" }).slice(-1),
+    ).toEqual(["/srv/media:/data/hermes/media/site:ro"]);
+  });
+
+  it("refuses a mount point under a runtime path of the bot's own tree", () => {
+    const taken = [{ source: "/srv/media", containerPath: "/data/hermes/lsp/site", readOnly: true } as const];
+    expect(() => buildBinds("/srv/bots", "agent-a", { mounts: taken, allowedSources: ["/srv/media"] })).toThrow(
+      BotContainerTemplateError,
+    );
+  });
+});

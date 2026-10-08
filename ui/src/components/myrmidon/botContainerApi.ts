@@ -37,6 +37,11 @@ export interface BotContainerStatus {
   containerError: string | null;
   /** Tracks the release / pinned (with the image) / not applicable (with why). Absent on an older server. */
   imageTracking?: BotImageTracking;
+  /** myrmidon(BOT-ROLLOUT): the release rollout verdict — on the release image, or why
+   *  not (busy / no release image configured / pinned / not applicable). Absent on an
+   *  older server. targetImage is null: the rollout resolves the exact release image
+   *  from the registry at deploy time, so the server has none to report. */
+  imageRollout?: { onReleaseImage: boolean; targetImage: string | null; reason: string | null };
   /** runtimeConfig.heartbeat.maxConcurrentRuns, normalized by the server. */
   boardMaxConcurrentRuns: number;
   /** Board value against the applied one; null when there is nothing to compare. */

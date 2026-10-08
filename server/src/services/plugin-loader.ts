@@ -53,9 +53,12 @@ import { pluginDatabaseService } from "./plugin-database.js";
 // myrmidon(PLUGIN-ENTITLEMENT C): activation gate — a manifest that opts in
 // stays unactivated until a valid key is accepted in the instance settings.
 import { instanceSettingsService } from "./instance-settings.js";
-import { readPluginEntitlementKeys } from "../myrmidon/plugin-entitlement/store.js";
+import { readPluginEntitlementKeys, readPluginEntitlementPublicKey } from "../myrmidon/plugin-entitlement/store.js";
+import { resolvePaperclipInstanceId } from "../home-paths.js";
 import { resolvePluginActivation } from "./plugin-entitlement-enforcement.js";
 import { resolveBundledCatalogRoot } from "./bundled-plugins.js";
+// myrmidon(B1c): product name in user-facing texts; see product.ts.
+import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -1290,7 +1293,7 @@ export function pluginLoader(
         ? formatLocalPluginManualBuildHint(resolvedPackagePath, pkgJson)
         : "";
       throw new Error(
-        `Package ${resolvedPackageName} at ${resolvedPackagePath} does not appear to be a Paperclip plugin (no manifest found).${manualBuildHint}`,
+        `Package ${resolvedPackageName} at ${resolvedPackagePath} does not appear to be a ${PN} plugin (no manifest found).${manualBuildHint}`,
       );
     }
 
@@ -1382,7 +1385,7 @@ export function pluginLoader(
   ): Promise<PluginRecord> {
     const manifest = await loadManifestFromPackageRoot(packageRoot);
     if (!manifest) {
-      throw new Error(`Plugin package ${plugin.packageName} no longer exposes a Paperclip manifest`);
+      throw new Error(`Plugin package ${plugin.packageName} no longer exposes a ${PN} manifest`);
     }
     if (manifest.id !== plugin.pluginKey) {
       throw new Error(
@@ -2259,8 +2262,13 @@ export function pluginLoader(
       // "not ready", not an error: the loader retries it on the next pass.
       // ------------------------------------------------------------------
       if (manifest.requiresEntitlement === true) {
-        const entitlementKeys = await readPluginEntitlementKeys(instanceSettingsService(db));
-        const activation = resolvePluginActivation(manifest, entitlementKeys);
+        const entitlementSettings = instanceSettingsService(db);
+        const entitlementKeys = await readPluginEntitlementKeys(entitlementSettings);
+        const verificationPublicKey = await readPluginEntitlementPublicKey(entitlementSettings);
+        const activation = resolvePluginActivation(manifest, entitlementKeys, {
+          publicKeyPem: verificationPublicKey,
+          instanceId: resolvePaperclipInstanceId(),
+        });
         if (!activation.activate) {
           log.info(
             { pluginId, pluginKey, reason: activation.reason },

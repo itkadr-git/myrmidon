@@ -99,6 +99,17 @@ describe("judgeStaleBlockReason", () => {
     expect(judgeStaleBlockReason(event, { blockerStatus: null, eventStillSet: true, now: NOW }))
       .toEqual({ kind: "live" });
   });
+
+  it("myrmidon(HUMAN-REVIEW-WAIT): a key-less event reason is an unknown fact — live", () => {
+    // The sweep must not roll back a deliberate wait it cannot read. A
+    // `reasonRef kind=event` written without a key names no gate the pass can
+    // check; treating the missing `eventStillSet` read as `false` used to kill
+    // the block and return the task to in_progress within minutes of the wait
+    // (a human-only review on a board, 05.10).
+    const keyless = reason({ kind: "event", issueId: null, eventKey: null });
+    expect(judgeStaleBlockReason(keyless, { blockerStatus: null, eventStillSet: false, now: NOW }))
+      .toEqual({ kind: "live" });
+  });
 });
 
 describe("collectStaleBlockReasons", () => {

@@ -3,8 +3,9 @@
 // One instance setting, `general.botDisk`: the draft-directory lifecycle
 // (part A) and the shared package cache path of development bots (part B).
 // GET reports the values in force; PATCH (instance admins only) changes them
-// without restarting the server. This client edits the cache path and the
-// mirrored repositories (1.6.2-BOT-DISK-C).
+// without restarting the server. This client edits the cache path, the
+// mirrored repositories (1.6.2-BOT-DISK-C) and the shared bot runtime
+// (1.6.5-BOT-DISK-H11).
 import { api } from "@/api/client";
 
 export interface BotDiskView {
@@ -21,6 +22,12 @@ export interface BotDiskView {
     pnpmStoreDir?: string;
     /** Absent: hardlink. */
     pnpmImportMethod?: "hardlink" | "clone-or-copy" | "copy";
+    /**
+     * The host directory of the shared bot runtime (1.6.5-BOT-DISK-H11):
+     * every bot on the default host mounts its bin, lazy-packages and lsp
+     * read-only over its own runtime paths. Absent: one copy per bot.
+     */
+    sharedBotRuntimePath?: string;
   };
   sources: Record<"enabled" | "idleTtlMs", "settings" | "env" | "default">;
 }
@@ -32,6 +39,9 @@ export const botDiskApi = {
   /** null turns the shared package cache off. */
   setSharedPackageCachePath: (path: string | null) =>
     api.patch<BotDiskView>("/myrmidon/bot-disk", { sharedPackageCachePath: path }),
+  /** null turns the shared bot runtime off (every bot keeps its own copy). */
+  setSharedBotRuntimePath: (path: string | null) =>
+    api.patch<BotDiskView>("/myrmidon/bot-disk", { sharedBotRuntimePath: path }),
   /** [] (or null) turns the git mirrors off. */
   setGitMirrorRepos: (repos: string[] | null) =>
     api.patch<BotDiskView>("/myrmidon/bot-disk", { gitMirrorRepos: repos }),

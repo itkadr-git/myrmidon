@@ -5,6 +5,8 @@ import { callProjectTool, projectToolDefinitions } from "../services/project-too
 import { assertCompanyAccess } from "./authz.js";
 import { forbidden } from "../errors.js";
 import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+// myrmidon(B1c): product name in user-facing texts; see product.ts.
+import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
 
 /** Mounted after actor middleware; connection-scoped tokens cannot authenticate here. */
 export function projectToolRoutes(db: Db) {
@@ -22,7 +24,7 @@ export function projectToolRoutes(db: Db) {
     try {
       if (!definitions.some(tool => tool.name === params?.name)) throw forbidden("Tool is unavailable in this mode");
       const apiUrl = readProductEnv("API_URL");
-      if (!apiUrl) throw new Error("Paperclip API origin is unavailable");
+      if (!apiUrl) throw new Error(`${PN} API origin is unavailable`);
       const result = await callProjectTool({
         name: params.name, arguments: params.arguments ?? {}, apiUrl,
         token: req.header("authorization")!.replace(/^Bearer\s+/i, ""),

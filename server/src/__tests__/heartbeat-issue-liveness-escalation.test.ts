@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -432,6 +432,104 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
       ]),
     });
   });
+
+  it("keeps a human_only review quiet: a full hour of wake cycles never arms a review-path wake for the executor", async () => {
+    // myrmidon(HUMAN-REVIEW-WAIT) acceptance: a delivered issue
+    // waiting on a person must produce zero executor wakes over an hour of
+    // ~5-minute wake/finish cycles (a delivered deck stuck in owner review),
+    // while a pathless control issue keeps its normal bounded recovery.
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issuePrefix = `R${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Human Wait Co",
+      issuePrefix,
+      defaultResponsibleUserId: "responsible-user",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Waiting Agent",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+    const humanWaitIssueId = randomUUID();
+    const pathlessIssueId = randomUUID();
+    await Promise.all([
+      db.insert(issues).values({
+        id: humanWaitIssueId,
+        companyId,
+        title: "Deck with the owner",
+        status: "in_review",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        responsibleUserId: "responsible-user",
+        reviewPolicy: "human_only",
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      }),
+      db.insert(issues).values({
+        id: pathlessIssueId,
+        companyId,
+        title: "Pathless review",
+        status: "in_review",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        responsibleUserId: "responsible-user",
+        issueNumber: 2,
+        identifier: `${issuePrefix}-2`,
+      }),
+    ]);
+
+    const heartbeat = heartbeatService(db);
+    const attention = await issueService(db)
+      .listReviewAttention(companyId, [
+        { id: humanWaitIssueId, companyId, status: "in_review" },
+        { id: pathlessIssueId, companyId, status: "in_review" },
+      ]);
+    const humanWait = attention.get(humanWaitIssueId)!;
+    expect(humanWait.state).toBe("covered");
+    expect(humanWait.paths.some((path) => path.kind === "human_reviewer")).toBe(true);
+    expect(attention.get(pathlessIssueId)!.state).toBe("stalled");
+
+    // Twelve completed wake/finish turns on the human-wait issue — one every
+    // five minutes for an hour. Each finished run goes through the same
+    // post-finalization review-path disposition a real run does; before the
+    // fix, every one of them armed a fresh issue_review_path_lost wake because
+    // the fingerprint was the just-finished run id.
+    for (let cycle = 0; cycle < 12; cycle += 1) {
+      const run = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: { issueId: humanWaitIssueId, commentId: randomUUID() },
+        requestedByActorType: "user",
+        requestedByActorId: "responsible-user",
+        contextSnapshot: {
+          issueId: humanWaitIssueId,
+          taskId: humanWaitIssueId,
+          wakeReason: "issue_commented",
+        },
+      });
+      expect(run).not.toBeNull();
+      await heartbeat.drainActiveRunExecutions();
+    }
+
+    const wakeReasons = await db
+      .select({ reason: agentWakeupRequests.reason })
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.companyId, companyId),
+        inArray(agentWakeupRequests.reason, ["issue_review_path_lost", "finish_successful_run_handoff"]),
+      ));
+    expect(wakeReasons).toHaveLength(0);
+  }, 120_000);
 
   it("keeps resolved dependency wake reconciliation active", async () => {
     const { companyId, agentId, blockedIssueId, blockerIssueId } =

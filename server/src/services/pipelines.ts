@@ -57,6 +57,8 @@ import {
   summarizePipelineCaseOutputsForContext,
 } from "./pipeline-case-outputs.js";
 import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+// myrmidon(B1c): product name in user-facing texts; see product.ts.
+import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
 
 const DEFAULT_LEASE_MS = 15 * 60 * 1000;
 const MAX_LEASE_MS = 24 * 60 * 60 * 1000;
@@ -2355,8 +2357,8 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
       }, null, 2),
       "```",
       "",
-      `Paperclip creates each ${input.config.pieceNoun} in "${targetPipeline.name}" at "${targetStage.name}", sets parentCaseId and requestKey, and copies inherited fields automatically.`,
-      input.config.advanceTo ? `After the call succeeds, Paperclip moves this item to "${input.config.advanceTo}".` : null,
+      `${PN} creates each ${input.config.pieceNoun} in "${targetPipeline.name}" at "${targetStage.name}", sets parentCaseId and requestKey, and copies inherited fields automatically.`,
+      input.config.advanceTo ? `After the call succeeds, ${PN} moves this item to "${input.config.advanceTo}".` : null,
       "",
       "Target item fields:",
       "",

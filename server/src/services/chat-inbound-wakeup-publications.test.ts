@@ -61,6 +61,7 @@ function fixture() {
     requestedByActorId: "owner",
     idempotencyKey: trusted.idempotencyKey,
     coalescedCount: 0,
+    resurrectionCount: 0,
     requestedAt: new Date(),
     claimedAt: null,
     finishedAt: null,
