@@ -173,7 +173,7 @@ function listArchives() {
 }
 
 async function main() {
-  const [desiredMod, rulesMod, classifyMod, archiveMod, loopMod, reportMod, legacyMod] = await Promise.all([
+  const [desiredMod, rulesMod, classifyMod, archiveMod, loopMod, reportMod, legacyMod, runsMod] = await Promise.all([
     tryImport("desired.js"),
     tryImport("rules.js"),
     tryImport("classify.js"),
@@ -181,7 +181,9 @@ async function main() {
     import(path.join(__dirname, "lib", "loop.js")),
     import(path.join(__dirname, "lib", "report.js")),
     import(path.join(__dirname, "lib", "legacy.js")),
+    import(path.join(__dirname, "lib", "runs.js")),
   ]);
+  const runProbe = runsMod.createRunProbe({ proc: process });
 
   const desiredClient = desiredMod ? desiredMod.createDesiredClient({ log }) : null;
   const desired = {
@@ -233,6 +235,8 @@ async function main() {
         lastUsedAt: (b.lastFetch || b.mtime).toISOString(),
       })),
       archives: archives.map((a) => ({ path: a.path, createdAt: a.createdAt.toISOString(), sizeBytes: a.sizeBytes })),
+      // a run going now: directories with unsaved git work are kept under it (rules.js)
+      run: runProbe.probe(),
     };
     parts.bases = bases.map((b) => ({ repo: b.repo, path: b.path, sizeBytes: null, lastFetchAt: b.lastFetch ? b.lastFetch.toISOString().replace(/\.\d{3}Z$/, "Z") : null }));
     parts.archives = archives.map((a) => ({ key: a.key, path: a.path, sizeBytes: a.sizeBytes, createdAt: a.createdAt.toISOString().replace(/\.\d{3}Z$/, "Z") }));

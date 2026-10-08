@@ -202,7 +202,7 @@ describe("botd rules: class G scratch", () => {
   });
 
   it("git scratch with unpushed work: archive first", () => {
-    const out = decide({ scratch: [sc({ isGit: true, clean: false, pushed: false })] }, desired(), NOW);
+    const out = decide({ scratch: [sc({ isGit: true, clean: false, pushed: false })], run: { live: false } }, desired(), NOW);
     assert.deepEqual(ops(out), [[OPS.archiveRemove, "/scratch/probe"]]);
   });
 
@@ -436,7 +436,7 @@ describe("botd rules: taskKeyOf", () => {
 describe("botd rules: directories under /workspace by the board's word (policy table, section 2)", () => {
   const dir = (name, over = {}) => ({ name, path: `/workspace/${name}`, mtime: ago(48 * HOUR), isGit: true, clean: null, pushed: null, nestedGit: [], sizeBytes: 5 * GIB, ...over });
   const d = (over = {}) => ({ ...desired({ level: over.level ?? "none" }), protectKeys: [], closedKeys: [], ...over });
-  const run = (sc, desiredState) => plan({ scratch: [sc] }, desiredState, NOW);
+  const run = (sc, desiredState) => plan({ scratch: [sc], run: { live: false } }, desiredState, NOW);
 
   it("open task of THIS bot (protectKeys): kept, reported legacy-open, in any case and spelling", () => {
     for (const name of ["OPE-3873", "ope-3873", "ope3873v2"]) {
@@ -529,11 +529,93 @@ describe("botd rules: /scratch keeps the TTL", () => {
     assert.deepEqual(ops(plan({ scratch: [sc({ name: "OPE-4954", path: "/scratch/OPE-4954" })] }, { ...desired(), protectKeys: [], closedKeys: [] }, NOW).actions), [[OPS.remove, "/scratch/OPE-4954"]]);
   });
   it("git or nested repositories with unknown state are archived, not just removed", () => {
-    assert.equal(plan({ scratch: [sc({ isGit: true })] }, desired(), NOW).actions[0].op, OPS.archiveRemove);
-    assert.equal(plan({ scratch: [sc({ nestedGit: ["/scratch/probe/x"] })] }, desired(), NOW).actions[0].op, OPS.archiveRemove);
+    const idle = { run: { live: false } };
+    assert.equal(plan({ scratch: [sc({ isGit: true })], ...idle }, desired(), NOW).actions[0].op, OPS.archiveRemove);
+    assert.equal(plan({ scratch: [sc({ nestedGit: ["/scratch/probe/x"] })], ...idle }, desired(), NOW).actions[0].op, OPS.archiveRemove);
   });
   it("a non-git tree over 1 MiB is archived as a tar; a small one is removed", () => {
     assert.equal(plan({ scratch: [sc({ sizeBytes: 5 * 1024 * 1024 })] }, desired(), NOW).actions[0].op, OPS.archiveRemove);
     assert.equal(plan({ scratch: [sc({ sizeBytes: 100 })] }, desired(), NOW).actions[0].op, OPS.remove);
+  });
+});
+
+// myrmidon(1.6.5 BOT-DISK-H3f): a repository with unsaved work is never reaped under a bot run.
+describe("botd rules: unsafe git is kept while a run is live (or unknown)", () => {
+  const git = (over = {}) => ({ name: "repo", path: "/scratch/repo", mtime: ago(2 * HOUR), isGit: true, clean: false, pushed: false, nestedGit: [], ...over });
+  const go = (sc, level, run) => plan({ scratch: [sc], ...(run === undefined ? {} : { run }) }, desired({ level }), NOW);
+  const LIVE = { live: true };
+  const IDLE = { live: false };
+
+  it("live run, dirty git in /scratch, soft: intact and reported", () => {
+    const out = go(git(), "soft", LIVE);
+    assert.deepEqual(out.actions, []);
+    assert.deepEqual(out.held, [{ path: "/scratch/repo", kind: "unsafe-git-live-run" }]);
+  });
+
+  it("live run, dirty git in /scratch, hard: intact, even idle for 25 h", () => {
+    for (const mtime of [ago(2 * HOUR), ago(25 * HOUR), ago(90 * DAY)]) {
+      const out = go(git({ mtime }), "hard", LIVE);
+      assert.deepEqual(out.actions, []);
+      assert.deepEqual(out.held.map((h) => h.kind), ["unsafe-git-live-run"]);
+    }
+  });
+
+  it("an active task on the board counts as a live run", () => {
+    const d = desired({ workspaces: [ws("ABC-1", "active", HOUR, "open")], level: "hard" });
+    const out = plan({ scratch: [git({ mtime: ago(90 * DAY) })], run: IDLE }, d, NOW);
+    assert.deepEqual(out.actions, []);
+    assert.deepEqual(out.held.map((h) => h.kind), ["unsafe-git-live-run"]);
+  });
+
+  it("no run, soft, idle 2 h: intact (pressure does not shorten the term)", () => {
+    assert.deepEqual(go(git(), "soft", IDLE).actions, []);
+    assert.deepEqual(go(git(), "hard", IDLE).actions, []);
+    assert.deepEqual(go(git({ mtime: ago(23 * HOUR) }), "hard", IDLE).actions, []);
+  });
+
+  it("no run, hard, idle 25 h: archive-remove", () => {
+    assert.deepEqual(ops(go(git({ mtime: ago(25 * HOUR) }), "hard", IDLE).actions), [[OPS.archiveRemove, "/scratch/repo"]]);
+  });
+
+  it("no run, soft or none, idle 25 h: the 24 h term applies, archive-remove", () => {
+    for (const level of ["none", "soft"]) {
+      assert.deepEqual(ops(go(git({ mtime: ago(25 * HOUR) }), level, IDLE).actions), [[OPS.archiveRemove, "/scratch/repo"]]);
+    }
+  });
+
+  it("the term follows scratchTtlHours from the board", () => {
+    const d = desired({ level: "hard", grace: { scratchTtlHours: 48 } });
+    assert.deepEqual(plan({ scratch: [git({ mtime: ago(25 * HOUR) })], run: IDLE }, d, NOW).actions, []);
+  });
+
+  it("clean+pushed git, no run, soft, idle 2 h: the old behaviour (removed on the pressure TTL)", () => {
+    assert.deepEqual(ops(go(git({ clean: true, pushed: true }), "soft", IDLE).actions), [[OPS.remove, "/scratch/repo"]]);
+    assert.deepEqual(go(git({ clean: true, pushed: true }), "none", IDLE).actions, []);
+  });
+
+  it("run state unknown (null, missing, foreign shape): intact, fail-closed", () => {
+    for (const run of [{ live: null }, undefined, {}, "yes"]) {
+      for (const level of ["none", "soft", "hard"]) {
+        const out = go(git({ mtime: ago(90 * DAY) }), level, run);
+        assert.deepEqual(out.actions, [], `${JSON.stringify(run)} ${level}`);
+        assert.deepEqual(out.held.map((h) => h.kind), ["unsafe-git-run-unknown"]);
+      }
+    }
+  });
+
+  it("nested repositories are covered the same way", () => {
+    const sc = git({ isGit: false, nestedGit: ["/scratch/repo/x"], mtime: ago(25 * HOUR) });
+    assert.deepEqual(go(sc, "hard", LIVE).actions, []);
+    assert.deepEqual(ops(go(sc, "hard", IDLE).actions), [[OPS.archiveRemove, "/scratch/repo"]]);
+  });
+
+  it("/workspace non-task git under hard pressure: kept while live, archived when idle", () => {
+    const d = { ...desired({ level: "hard" }), protectKeys: [], closedKeys: [] };
+    const dir = { name: "work", path: "/workspace/work", mtime: ago(8 * DAY), isGit: true, clean: false, pushed: false, nestedGit: [], sizeBytes: 5 * GIB };
+    const live = plan({ scratch: [dir], run: LIVE }, d, NOW);
+    assert.deepEqual(live.actions, []);
+    assert.deepEqual(live.held.map((h) => h.kind), ["unsafe-git-live-run", "non-task"]);
+    assert.deepEqual(plan({ scratch: [dir] }, d, NOW).actions, []);
+    assert.deepEqual(ops(plan({ scratch: [dir], run: IDLE }, d, NOW).actions), [[OPS.archiveRemove, "/workspace/work"]]);
   });
 });

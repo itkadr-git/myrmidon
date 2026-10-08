@@ -14,6 +14,7 @@
 //     scratch:   [{ name, path, mtime, isGit, clean, pushed }],
 //     bases:     [{ path, repo, worktreeCount, lastUsedAt, localOnlyRefs }],
 //     archives:  [{ path, createdAt, sizeBytes }],
+//     run:       { live: true | false | null },   // is a bot run going now (see runState)
 //   }
 // `localOnlyRefs` = number of refs/heads in the base that are not on origin; a
 // base is deleted only when it is exactly 0 (missing/null = unknown = unsafe).
@@ -117,6 +118,20 @@ export function taskKeyOf(name) {
   return m ? `${m[1].toUpperCase()}-${m[2]}` : null;
 }
 
+// Is the bot running now? 'live' = yes, 'idle' = known to be none, 'unknown' =
+// nobody could tell. An active task on the board is always 'live'. Otherwise the
+// verdict is the producer's `inventory.run.live` (true / false); anything else
+// (missing, null, a foreign shape) is 'unknown'. Callers treat 'unknown' like
+// 'live' for work that cannot be recovered: fail-closed.
+function runState(inv, activeKeys) {
+  if (activeKeys.size > 0) return "live";
+  const live = inv?.run?.live;
+  if (live === true) return "live";
+  if (live === false) return "idle";
+  return "unknown";
+}
+const heldKind = (state) => (state === "live" ? "unsafe-git-live-run" : "unsafe-git-run-unknown");
+
 const isWorkspaceDir = (sc) => typeof sc.path === "string" && sc.path.startsWith("/workspace/");
 // Directories that are never work: removable without an archive once idle (R4).
 const REGENERABLE_NAMES = new Set(["node_modules", ".pnpm-store", ".venv", "__pycache__", "dist", ".cache", "target"]);
@@ -218,6 +233,7 @@ export function plan(inventory, desired, now, settings) {
   const listedKeys = new Set([...byKey.keys(), ...protectKeys, ...(closedKeys ?? [])]);
   const held = [];
   const hold = (sc, kind, key) => held.push(key === undefined ? { path: sc.path, kind } : { path: sc.path, kind, key });
+  const run = runState(inv, activeKeys);
   const scratchTtl = pressed ? lim.pressureScratchTtlMs : lim.scratchTtlMs;
   for (const sc of arr(inv.scratch)) {
     if (activePaths.has(sc.path) || activeKeys.has(sc.name)) continue;
@@ -225,11 +241,16 @@ export function plan(inventory, desired, now, settings) {
     const idle = mtime === null ? null : nowMs - mtime;
     const unsafe = !(sc.clean === true && sc.pushed === true);
     const hasNested = Array.isArray(sc.nestedGit) && sc.nestedGit.length > 0;
+    // Uncommitted or unpushed git work: never lost to a timer while a run may be using it.
+    const unsafeGit = (sc.isGit || hasNested) && unsafe;
 
     if (isWorkspaceDir(sc)) {
       const key = taskKeyOf(sc.name);
       if (key !== null && activeKeys.has(key)) continue;
       const underPressure = pressure === "hard" && idle !== null && idle >= lim.legacyPressureIdleMs;
+      const runGuard = unsafeGit && run !== "idle";
+      const pressureReap = underPressure && !runGuard;
+      if (underPressure && runGuard) hold(sc, heldKind(run));
       if (key !== null && protectKeys.has(key)) {
         hold(sc, "legacy-open", key);
         continue;
@@ -242,7 +263,7 @@ export function plan(inventory, desired, now, settings) {
       }
       if (key !== null && listedKeys.has(key)) {
         hold(sc, "legacy-open-elsewhere", key);
-        if (underPressure) act(OPS.archiveRemove, sc.path, "legacy-open-elsewhere-pressure-idle", key);
+        if (pressureReap) act(OPS.archiveRemove, sc.path, "legacy-open-elsewhere-pressure-idle", key);
         continue;
       }
       if (key !== null) {
@@ -256,16 +277,25 @@ export function plan(inventory, desired, now, settings) {
         continue;
       }
       hold(sc, "non-task");
-      if (underPressure && !NEVER_REAP_NAMES.has(sc.name)) act(OPS.archiveRemove, sc.path, "non-task-pressure-idle");
+      if (pressureReap && !NEVER_REAP_NAMES.has(sc.name)) act(OPS.archiveRemove, sc.path, "non-task-pressure-idle");
       continue;
     }
 
-    // /scratch (and the scratch roots under the hermes volume): the plain TTL
+    // /scratch (and the scratch roots under the hermes volume): the plain TTL.
+    // Unsafe git work is the exception: pressure does not shorten its term (always
+    // the full scratchTtlHours) and a live or unknown run keeps it (reported as held).
+    if (unsafeGit) {
+      if (run !== "idle") {
+        hold(sc, heldKind(run));
+        continue;
+      }
+      if (idle === null || idle < lim.scratchTtlMs) continue;
+      act(OPS.archiveRemove, sc.path, "scratch-ttl-unpushed", sc.name);
+      continue;
+    }
     if (idle === null || idle < scratchTtl) continue;
     const big = typeof sc.sizeBytes === "number" && sc.sizeBytes > MIB;
-    if ((sc.isGit || hasNested) && unsafe) {
-      act(OPS.archiveRemove, sc.path, "scratch-ttl-unpushed", sc.name);
-    } else if (!sc.isGit && (hasNested || big)) {
+    if (!sc.isGit && (hasNested || big)) {
       act(OPS.archiveRemove, sc.path, "scratch-ttl-data", sc.name);
     } else {
       act(OPS.remove, sc.path, "scratch-ttl", sc.name);
