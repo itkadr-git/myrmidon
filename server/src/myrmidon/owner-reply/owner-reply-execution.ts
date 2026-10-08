@@ -28,7 +28,10 @@ import {
   issues,
   type Db,
 } from "@paperclipai/db";
-import { type OwnerDeliveryMode } from "@paperclipai/shared";
+import {
+  type IssueCommentMetadata,
+  type OwnerDeliveryMode,
+} from "@paperclipai/shared";
 import { redactSensitiveText } from "../../redaction.js";
 import { logActivity } from "../../services/activity-log.js";
 import {
@@ -84,6 +87,26 @@ export function createOwnerReplyDeps(db: Db): OwnerReplyDeps {
       .limit(1)
       .then((rows) => rows[0] ?? null);
 
+  /**
+   * The note's durable mark, in the shape this table takes: the reason plus one
+   * key/value row per call-site mark, so a note never needs a wider column type
+   * than the one the comments table already declares.
+   */
+  const noteMetadata = (marks: Record<string, unknown>): IssueCommentMetadata => ({
+    version: 1,
+    authorizationReason: OWNER_REPLY_NOTE_REASON,
+    sections: [
+      {
+        title: OWNER_REPLY_NOTE_REASON,
+        rows: Object.entries(marks).map(([label, value]) => ({
+          type: "key_value" as const,
+          label,
+          value: Array.isArray(value) ? value.join(", ") : String(value),
+        })),
+      },
+    ],
+  });
+
   const noteComment = async (input: {
     companyId: string;
     issueId: string;
@@ -96,12 +119,13 @@ export function createOwnerReplyDeps(db: Db): OwnerReplyDeps {
     const [comment] = await db
       .insert(issueComments)
       .values({
+        companyId: input.companyId,
         issueId: input.issueId,
         authorAgentId: input.agentId,
         authorType: input.agentId ? "agent" : "system",
         createdByRunId: input.runId,
         body: redactSensitiveText(input.body).trim(),
-        metadata: { authorizationReason: OWNER_REPLY_NOTE_REASON, ...input.metadata },
+        metadata: noteMetadata(input.metadata),
         createdAt: now,
         updatedAt: now,
       })
@@ -283,7 +307,7 @@ export function createOwnerReplyDeps(db: Db): OwnerReplyDeps {
         actor as Parameters<InteractionService["rejectInteraction"]>[3],
         mutationOptions,
       );
-      status = String(rejected.interaction.status ?? "rejected");
+      status = String(rejected.status ?? "rejected");
     } else {
       const answered = await interactionSvc.answerQuestions(
         issue,
@@ -292,7 +316,7 @@ export function createOwnerReplyDeps(db: Db): OwnerReplyDeps {
         actor as Parameters<InteractionService["answerQuestions"]>[3],
         mutationOptions,
       );
-      status = String(answered.interaction.status ?? "answered");
+      status = String(answered.status ?? "answered");
     }
 
     await logActivity(db, {
