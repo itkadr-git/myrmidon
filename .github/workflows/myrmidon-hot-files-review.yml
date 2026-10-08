@@ -60,13 +60,12 @@ jobs:
           fi
           echo "Затронуты ключевые файлы:"; echo "$touched"
           if [[ "$ACTION" == "synchronize" ]]; then
-            # myrmidon-pr-autoupdate merges main into the branch; its approved
-            # pull_request run is a `synchronize` too, but the PR's own code
-            # did not change, so the label stays (merge commit made by
-            # github-actions[bot] through the update-branch API).
+            # myrmidon-pr-autoupdate merges main into the branch through the
+            # update-branch API (merge commit by a GitHub App, committer web-flow).
+            # That `synchronize` leaves the PR's own code unchanged, so the label stays.
             head="$(gh api "repos/$REPO/commits/$SHA" --jq '[(.parents|length),.author.login,.committer.login,(.commit.message|split("\n")[0])]|@tsv')"
-            if [[ "$head" =~ ^2$'\t'github-actions\[bot\]$'\t'web-flow$'\t'Merge\ branch\ \'main\'\ into\  ]]; then
-              echo "Head — слияние main от myrmidon-pr-autoupdate: метка review-approved остаётся."
+            if [[ "$head" =~ ^2$'\t'[^$'\t']+\[bot\]$'\t'web-flow$'\t'Merge\ branch\ \'main\'\ into\  ]]; then
+              echo "Head — слияние main (update-branch, бот): метка review-approved остаётся."
             else
               gh api -X DELETE "repos/$REPO/issues/$PR/labels/review-approved" >/dev/null 2>&1 || true
               echo "Новый push после ревью — метка review-approved снята, нужно повторное ревью."
