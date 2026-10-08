@@ -40,6 +40,16 @@ class MediaError(RuntimeError):
     pass
 
 
+class MediaNotConnectedError(MediaError):
+    """The bot has no working media token: media is not connected. This is a
+    configuration state, not a runtime failure — the caller should report
+    «медиа не подключено» instead of retrying (the old behaviour hammered the
+    facade with tokenless requests that all came back HTTP 401)."""
+    def __init__(self, message: str = "media not connected: MEDIA_TOOLS_TOKEN is not set"):
+        super().__init__(message)
+        self.connected = False
+
+
 def _headers():
     h = {"Content-Type": "application/json",
          "Accept": "application/json, text/event-stream",
@@ -50,6 +60,8 @@ def _headers():
 
 
 def _rpc(method, params=None, timeout=180):
+    if not TOKEN:
+        raise MediaNotConnectedError()
     body = {"jsonrpc": "2.0", "id": 1, "method": method}
     if params is not None:
         body["params"] = params
@@ -59,6 +71,9 @@ def _rpc(method, params=None, timeout=180):
         with urllib.request.urlopen(req, timeout=timeout) as r:
             raw = r.read().decode()
     except urllib.error.HTTPError as e:
+        if e.code == 401:
+            raise MediaNotConnectedError(
+                "media not connected: the media service rejected the token (HTTP 401)") from None
         raise MediaError("media-mcp HTTP %d: %s" % (e.code, e.read().decode()[:300])) from None
     data = None
     if raw.startswith("event:") or raw.startswith("data:"):
@@ -92,6 +107,8 @@ def _call(name, args, timeout=180):
 
 def upload(path: str, name: str | None = None) -> dict:
     """Large file -> file_id (REST PUT /v1/files?name=...). Returns file metadata."""
+    if not TOKEN:
+        raise MediaNotConnectedError()
     name = name or os.path.basename(path)
     req = urllib.request.Request("%s/v1/files?name=%s" % (DEFAULT_URL, urllib.parse.quote(name)),
                                  method="PUT", data=open(path, "rb").read(),
@@ -100,6 +117,9 @@ def upload(path: str, name: str | None = None) -> dict:
         with urllib.request.urlopen(req, timeout=600) as r:
             return json.loads(r.read().decode())
     except urllib.error.HTTPError as e:
+        if e.code == 401:
+            raise MediaNotConnectedError(
+                "media not connected: the media service rejected the token (HTTP 401)") from None
         raise MediaError("upload HTTP %d: %s" % (e.code, e.read().decode()[:300])) from None
 
 
@@ -112,9 +132,17 @@ def file_put(path: str, name: str | None = None) -> dict:
 
 
 def download(file_id: str, path: str) -> str:
+    if not TOKEN:
+        raise MediaNotConnectedError()
     req = urllib.request.Request(DEFAULT_URL + "/v1/files/" + file_id, headers=_headers())
-    with urllib.request.urlopen(req, timeout=600) as r:
-        data = r.read()
+    try:
+        with urllib.request.urlopen(req, timeout=600) as r:
+            data = r.read()
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            raise MediaNotConnectedError(
+                "media not connected: the media service rejected the token (HTTP 401)") from None
+        raise MediaError("download HTTP %d: %s" % (e.code, e.read().decode()[:300])) from None
     with open(path, "wb") as fh:
         fh.write(data)
     return path

@@ -87,6 +87,8 @@ import { readModelFallbackSignals } from "../myrmidon/litellm-fallback-signal/at
 // myrmidon(1.6.5-F-18): an empty gateway model catalog raises one card per
 // company — the accounting key is misconfigured, not a quiet window.
 import { readEmptyCatalogSignal } from "../myrmidon/litellm-costs/attention.js";
+// myrmidon(1.6.5-F11-A): the «media not connected» signals the profile compile records.
+import { readMediaMcpSignals } from "../myrmidon/bot-containers/media-mcp.js";
 // myrmidon(1.6.1-BOT-DISK-C): the disk quota sweep records one signal per bot
 // volume at/over its quota; the feed turns the registry into cards.
 import { buildBotDiskCards, readBotDiskReports } from "../myrmidon/bot-containers/bot-disk-cards.js"; // myrmidon(1.6.5 BOT-DISK-H4c)
@@ -174,6 +176,8 @@ const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   "agent_error_alert",
   "stack_update",
   "model_fallback_alert",
+  // myrmidon(1.6.5-F11-A): one card per bot without an issued media token.
+  "bot_media_mcp",
   // myrmidon(STALE-BLOCK): one card per block the watchdog lifted.
   "stale_block",
   "host_disk_alert",
@@ -3288,6 +3292,7 @@ async function buildAttentionFeedSnapshot(
         }));
       }
 
+<<<<<<< HEAD
       // myrmidon(1.6.5-F-18): the spend sweep completed but the gateway's
       // model catalog answered 0 models — the accounting key is almost
       // certainly restricted (no default models), and every feature reading
@@ -3327,6 +3332,48 @@ async function buildAttentionFeedSnapshot(
           detail: {
             kind: "generic",
             summaryExcerpt: excerpt(emptyCatalogSignal.summary),
+            images: [],
+          },
+        }));
+      }
+
+      // myrmidon(1.6.5-F11-A): one card per bot whose profile carries no media
+      // MCP block because no media token is issued. The compile pass records the
+      // signals (bot-containers/media-mcp.ts); the card clears when the pass
+      // after a token issue compiles the block in.
+      for (const media of readMediaMcpSignals(companyId)) {
+        add(createItem({
+          companyId,
+          sourceKind: "bot_media_mcp",
+          subject: {
+            kind: "agent",
+            id: media.agentId,
+            companyId,
+            title: media.title,
+            identifier: null,
+            status: null,
+            href: `/${prefix}/agents/${media.agentId}`,
+            metadata: {
+              botKey: media.botKey,
+            },
+          },
+          whyNow: media.whyNow,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the agent card and the media connection." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this media notice." },
+          ),
+          inlineResolvable: true,
+          entryRule: "the bot's profile compile found no issued media token.",
+          exitRule: "a token is issued and the next compile pass includes the media block, or the row is dismissed.",
+          dedupKey: media.dedupKey,
+          severity: media.severity,
+          activityAt: media.activityAt,
+          createdAt: media.activityAt,
+          updatedAt: media.activityAt,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: excerpt(media.summaryExcerpt),
             images: [],
           },
         }));

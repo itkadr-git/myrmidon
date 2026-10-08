@@ -26,6 +26,7 @@ import {
   type BotProfilePorts,
 } from "./profile-compile.js";
 import { BOT_EGRESS_MODE_ENV, BOT_EGRESS_PROXY_ENV } from "./egress.js";
+import { readMediaMcpSignals, resetMediaMcpSignals } from "./media-mcp.js";
 import { WS_BOTD_BOARD_KEY_ENV_VALUE, WS_BOT_DISK_SETTING_DEFAULTS, WS_PROFILE_ENV } from "@paperclipai/shared";
 import { classifyProfileChange, type CompiledProfile } from "./types.js";
 
@@ -614,6 +615,103 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
       const first = await compile("agent-a", "agent-a");
       const second = await compile("agent-a", "agent-a");
       expect(second.restartHash).toBe(first.restartHash);
+    });
+  });
+
+  describe("media MCP block (OPE-6377, 1.6.5-F11-A)", () => {
+    it("adds the media server when a token is issued, never printing the token", async () => {
+      const board = fakeBoard({
+        async ensureMediaToken(_agent, botKey) {
+          return `fake-media-token-${botKey}`;
+        },
+      });
+      const profile = await createBotProfileCompile(board.ports, { env: INSTANCE_ENV })("agent-a", "agent-a");
+      const config = fileContent(profile, "hermes/config.yaml");
+      expect(config).toContain("media:");
+      expect(config).toContain("http://media-mcp:8080/mcp");
+      expect(config).toContain("Bearer ${MYRMIDON_MCP_TOKEN_MEDIA}");
+      expect(config).not.toContain("fake-media-token-");
+      const env = fileContent(profile, "hermes/.env");
+      expect(env).toContain('MEDIA_TOOLS_TOKEN="fake-media-token-agent-a"');
+      expect(env).toContain("MEDIA_TOOLS_URL=");
+      expect(env).toContain('MYRMIDON_MCP_TOKEN_MEDIA="fake-media-token-agent-a"');
+    });
+
+    it("honors MYRMIDON_MEDIA_MCP_URL when set", async () => {
+      const board = fakeBoard({
+        async ensureMediaToken() {
+          return "fake-media-token-1";
+        },
+      });
+      const profile = await createBotProfileCompile(board.ports, {
+        env: { ...INSTANCE_ENV, MYRMIDON_MEDIA_MCP_URL: "http://media-mcp.example:8080/mcp" },
+      })("agent-a", "agent-a");
+      expect(fileContent(profile, "hermes/config.yaml")).toContain("http://media-mcp.example:8080/mcp");
+    });
+
+    it("without a token there is no media block and no media env, with a «media not connected» warning", async () => {
+      const board = fakeBoard({
+        async ensureMediaToken() {
+          return null;
+        },
+      });
+      const reported: string[][] = [];
+      const profile = await createBotProfileCompile(board.ports, {
+        env: INSTANCE_ENV,
+        onWarnings: (_botKey, warnings) => {
+          reported.push([...warnings]);
+        },
+      })("agent-a", "agent-a");
+      const config = fileContent(profile, "hermes/config.yaml");
+      expect(config).not.toContain("media:");
+      expect(config).not.toContain("media-mcp");
+      const env = fileContent(profile, "hermes/.env");
+      expect(env).not.toContain("MEDIA_TOOLS_TOKEN");
+      expect(env).not.toContain("MYRMIDON_MCP_TOKEN_MEDIA");
+      expect(reported.flat().some((warning) => warning.includes("media") && warning.includes("not connected"))).toBe(true);
+    });
+
+    it("records one «media not connected» signal per pass when the token is missing", async () => {
+      const board = fakeBoard({
+        async ensureMediaToken() {
+          return null;
+        },
+      });
+      const compile = createBotProfileCompile(board.ports, { env: INSTANCE_ENV });
+      const pass = compile.beginPass();
+      await compile("agent-a", "agent-a");
+      compile.endPass(pass);
+      const signals = readMediaMcpSignals("company-1");
+      expect(signals).toHaveLength(1);
+      expect(signals[0].agentId).toBe("agent-a");
+      expect(signals[0].botKey).toBe("agent-a");
+      expect(signals[0].whyNow).toContain("media");
+      resetMediaMcpSignals();
+    });
+
+    it("a bot whose token is issued inside the pass leaves no signal", async () => {
+      const board = fakeBoard({
+        async ensureMediaToken() {
+          return "fake-media-token-1";
+        },
+      });
+      const compile = createBotProfileCompile(board.ports, { env: INSTANCE_ENV });
+      const pass = compile.beginPass();
+      await compile("agent-a", "agent-a");
+      compile.endPass(pass);
+      expect(readMediaMcpSignals("company-1")).toEqual([]);
+      resetMediaMcpSignals();
+    });
+
+    it("no ensureMediaToken port at all: no media block, no signal (the instance does not issue media tokens)", async () => {
+      const board = fakeBoard();
+      const compile = createBotProfileCompile(board.ports, { env: INSTANCE_ENV });
+      const pass = compile.beginPass();
+      const profile = await compile("agent-a", "agent-a");
+      compile.endPass(pass);
+      expect(fileContent(profile, "hermes/config.yaml")).not.toContain("media:");
+      expect(readMediaMcpSignals("company-1")).toEqual([]);
+      resetMediaMcpSignals();
     });
   });
 
