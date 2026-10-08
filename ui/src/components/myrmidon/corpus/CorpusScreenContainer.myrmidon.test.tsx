@@ -182,7 +182,7 @@ describe("myrmidon(1.6.6 CORPUS E) corpus screen wiring", () => {
   });
 
   it("presents the screen as unavailable when the server half is absent", async () => {
-    corpusApi.getSettings.mockRejectedValue(new ApiError("module off", 503));
+    corpusApi.getSettings.mockRejectedValue(new ApiError("module off", 503, null));
     await render();
     await settle();
 
@@ -314,7 +314,7 @@ describe("myrmidon(1.6.6 CORPUS E) corpus screen wiring", () => {
   });
 
   it("surfaces a failing search without dropping the screen", async () => {
-    corpusApi.search.mockRejectedValue(new ApiError("search index down", 500));
+    corpusApi.search.mockRejectedValue(new ApiError("search index down", 500, null));
     await render();
     await settle();
 
@@ -327,7 +327,7 @@ describe("myrmidon(1.6.6 CORPUS E) corpus screen wiring", () => {
   });
 
   it("surfaces a failing settings read that is not a missing module", async () => {
-    corpusApi.getSettings.mockRejectedValue(new ApiError("database down", 500));
+    corpusApi.getSettings.mockRejectedValue(new ApiError("database down", 500, null));
     await render();
     await settle();
 
