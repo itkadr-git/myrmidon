@@ -13,6 +13,21 @@ export const bridgeTextEn = {
   "menu.stop": "Stop the current reply",
   "menu.status": "Show model, session and current reply",
   "menu.plan": "Turn a message into an epic plan (company owner only)",
+  "menu.accept": "Accept a suggested plan card (company owner only)",
+  "menu.reject": "Reject a suggested plan card (company owner only)",
+
+  // /accept and /reject (1.6.3-CTO-CHAT-B)
+  "accept.noId": "Specify the card id: /accept <id> — the id of the plan card from the bot reply.",
+  "accept.notPlanOrProcessed": "This card is not a task proposal or has already been processed.",
+  "accept.ok": "✅ Plan accepted.\n\nEpic: {epicLink}\nTasks created: {count}",
+  "accept.error": "Failed to accept the card: {message}",
+  "accept.notOwner": "The /accept command is available to the company owner only.",
+  "reject.notOwner": "The /reject command is available to the company owner only.",
+  "reject.noId": "Specify the card id: /reject <id> — the id of the plan card from the bot reply.",
+  "reject.alreadyProcessed": "This card has already been processed.",
+  "reject.notPlan": "This card is not a task proposal; /reject applies only to plans.",
+  "reject.ok": "❌ Plan rejected. No tasks created.",
+  "reject.error": "Failed to reject the card: {message}",
   // myrmidon(X9c): /agents, /to, /who — addressing the company's agents.
   "menu.agents": "Show the company's agents and their aliases",
   "menu.to": "Choose the default addressee (/to <alias>; no argument resets)",

@@ -12,6 +12,21 @@ export const bridgeTextRu: Record<BridgeTextKey, string> = {
   "menu.stop": "Остановить текущий ответ",
   "menu.status": "Показать модель, сессию и текущий ответ",
   "menu.plan": "Превратить сообщение в план эпика (только владелец компании)",
+  "menu.accept": "Принять карточку плана (только владелец компании)",
+  "menu.reject": "Отклонить карточку плана (только владелец компании)",
+
+  // /accept and /reject (1.6.3-CTO-CHAT-B)
+  "accept.noId": "Укажите ID карточки: /accept <id> — ID карточки с планом из ответа бота.",
+  "accept.notPlanOrProcessed": "Эта карточка не является предложением задач или уже обработана.",
+  "accept.ok": "✅ План принят.\n\nЭпик: {epicLink}\nСоздано задач: {count}",
+  "accept.error": "Не удалось принять карточку: {message}",
+  "accept.notOwner": "Команда /accept доступна только владельцу компании.",
+  "reject.notOwner": "Команда /reject доступна только владельцу компании.",
+  "reject.noId": "Укажите ID карточки: /reject <id> — ID карточки с планом из ответа бота.",
+  "reject.alreadyProcessed": "Эта карточка уже обработана.",
+  "reject.notPlan": "Эта карточка не является предложением задач; /reject применим только к планам.",
+  "reject.ok": "❌ План отклонён. Задачи не созданы.",
+  "reject.error": "Не удалось отклонить карточку: {message}",
   // myrmidon(X9c): /agents, /to, /who — addressing the company's agents.
   "menu.agents": "Показать агентов компании и их алиасы",
   "menu.to": "Выбрать адресата по умолчанию (/to <алиас>; без аргумента — сброс)",
