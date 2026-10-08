@@ -429,6 +429,16 @@ load_config() {
   : "${MYRMIDON_DEPLOY_MIN_FREE_GB:=15}"
   : "${MYRMIDON_DEPLOY_IMAGE_KEEP:=1}"
   : "${MYRMIDON_DEPLOY_IMAGE_REPOS:=$MYRMIDON_IMAGE,ghcr.io/itkadr-git/myrmidon-dockergate,ghcr.io/itkadr-git/myrmidon-fleetd,ghcr.io/itkadr-git/myrmidon-hermes,ghcr.io/itkadr-git/myrmidon-hermes-dev,ghcr.io/itkadr-git/myrmidon-hermes-node}"
+  # DB-TUNING (OPE-5009): the PostgreSQL settings from the database audit
+  # (OPE-4270) are applied DECLARATIVELY by the deploy — the values live in
+  # scripts/myrmidon/deploy/db-tuning.sql, the reset in db-tuning-rollback.sql,
+  # and deploy.sh/rollback.sh are the only things that run them (never a
+  # manual ALTER SYSTEM on the server). All four settings are optional: an
+  # empty one skips its step. Read by deploy.sh/rollback.sh, not by the server.
+  : "${DB_TUNE_COMMAND:=}"
+  : "${DB_TUNE_SHOW_COMMAND:=}"
+  : "${DB_TUNE_EXPECTED:=}"
+  : "${DB_TUNE_ROLLBACK_COMMAND:=}"
   : "${SYSTEMD_UNIT_NAME:=paperclip.service}"
   : "${SYSTEMD_UNIT_DIR:=/etc/systemd/system}"
   : "${SYSTEMD_UNIT_INSTALL:=}"
@@ -808,6 +818,128 @@ take_dump() {
 record_history() {
   mkdir -p "$STATE_DIR"
   printf '%s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" >>"$HISTORY_FILE"
+}
+
+# --- DB-TUNING (OPE-5009): the PostgreSQL settings of the audit, declaratively
+# The settings from the database audit (OPE-4270: jit, work_mem, wal_compression,
+# autovacuum scale factors) are applied by the DEPLOY from a source that lives in
+# this repository (scripts/myrmidon/deploy/db-tuning.sql, reset:
+# db-tuning-rollback.sql) — never by a manual ALTER SYSTEM on the server. Four
+# optional settings (see deploy.env.example; empty skips its step):
+#   DB_TUNE_COMMAND          shell command applying the settings (runs the SQL)
+#   DB_TUNE_SHOW_COMMAND     shell command that must print the SHOW value of
+#                            the parameter named in DB_TUNE_PARAM (exported)
+#   DB_TUNE_EXPECTED         `name=value` pairs, one per line; deploy compares
+#                            each SHOW against the expected value; rollback
+#                            compares them against PREVIOUS values it recorded
+#   DB_TUNE_ROLLBACK_COMMAND shell command returning to the previous settings
+# db_tune_apply: runs DB_TUNE_COMMAND (the apply step); an empty command logs
+# the skip and returns 0 — an installation that does not manage its settings
+# still deploys.
+# db_tune_rollback: runs DB_TUNE_ROLLBACK_COMMAND (returns to the previous
+# settings); an empty command logs a WARNING and skips.
+# db_tune_verify <label>: checks every DB_TUNE_EXPECTED pair through
+# DB_TUNE_SHOW_COMMAND; 1 on the first mismatch (the caller decides what a
+# failure costs). With DB_TUNE_EXPECTED or DB_TUNE_SHOW_COMMAND empty the
+# verification is skipped with a log line, like every other empty setting.
+# The two declarative SQL files are exported to the commands as
+# DB_TUNING_SQL / DB_TUNING_ROLLBACK_SQL (paths inside this repository), so a
+# config never has to hard-code where the scripts live.
+# db_tune_record_previous: captures the current SHOW of every DB_TUNE_EXPECTED
+# parameter into $STATE_DIR/db-tuning-previous BEFORE the settings are applied,
+# so a later rollback.sh checks against what the server actually had. It runs
+# once per parameter: a value already recorded (the first managed deploy) is
+# the true pre-tuning value and re-reading it later would record the tuned one.
+db_tune_apply() {
+  if [[ -z "$DB_TUNE_COMMAND" ]]; then
+    log "DB-TUNING: apply skipped (DB_TUNE_COMMAND is empty; the PostgreSQL settings of the audit are not managed by this deploy)"
+    return 0
+  fi
+  log "DB-TUNING: applying the settings from $MYR_SCRIPT_DIR/db-tuning.sql"
+  DB_TUNING_SQL="$MYR_SCRIPT_DIR/db-tuning.sql" DB_TUNING_ROLLBACK_SQL="$MYR_SCRIPT_DIR/db-tuning-rollback.sql" \
+    bash -c "$DB_TUNE_COMMAND"
+}
+
+db_tune_rollback() {
+  if [[ -z "$DB_TUNE_ROLLBACK_COMMAND" ]]; then
+    log "WARNING: DB-TUNING: rollback skipped (DB_TUNE_ROLLBACK_COMMAND is empty): the database keeps the settings the deploy applied"
+    return 0
+  fi
+  log "DB-TUNING: rolling the settings back from $MYR_SCRIPT_DIR/db-tuning-rollback.sql"
+  DB_TUNING_SQL="$MYR_SCRIPT_DIR/db-tuning.sql" DB_TUNING_ROLLBACK_SQL="$MYR_SCRIPT_DIR/db-tuning-rollback.sql" \
+    bash -c "$DB_TUNE_ROLLBACK_COMMAND"
+}
+
+# The rollback SHOW expectations: DB_TUNE_EXPECTED pairs rewritten against the
+# previous values recorded before the last apply ($STATE_DIR/db-tuning-previous),
+# for every parameter recorded there; a parameter with no recorded previous
+# value keeps its new expectation (nothing was known to reset it).
+db_tune_previous_expected() {
+  local file="$STATE_DIR/db-tuning-previous"
+  [[ -f "$file" ]] || { printf '%s\n' "$DB_TUNE_EXPECTED"; return; }
+  local line name prev
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    name="${line%%=*}"
+    prev="$(sed -n "s/^$name=//p" "$file" | tail -n1)"
+    if [[ -n "$prev" ]]; then
+      printf '%s=%s\n' "$name" "$prev"
+    else
+      printf '%s\n' "$line"
+    fi
+  done <<<"$DB_TUNE_EXPECTED"
+}
+
+db_tune_record_previous() {
+  [[ -n "$DB_TUNE_COMMAND" && -n "$DB_TUNE_SHOW_COMMAND" && -n "$DB_TUNE_EXPECTED" ]] || return 0
+  local line name prev prev_file content_changed=0
+  prev_file="$STATE_DIR/db-tuning-previous"
+  mkdir -p "$STATE_DIR"
+  [[ -f "$prev_file" ]] || : >"$prev_file"
+  while IFS= read -r line; do
+    [[ "$line" == *=* ]] || continue
+    name="${line%%=*}"
+    # A value already recorded (first managed deploy) stays: it is the true
+    # pre-tuning value; reading SHOW again after a tuned deploy would record
+    # the tuned one as "previous".
+    grep -q "^$name=" "$prev_file" && continue
+    prev="$(DB_TUNE_PARAM="$name" bash -c "$DB_TUNE_SHOW_COMMAND" 2>/dev/null | tr -d '\r' | tail -n1 || true)"
+    if [[ -n "$prev" ]]; then
+      printf '%s=%s\n' "$name" "$prev" >>"$prev_file"
+      content_changed=1
+    fi
+  done <<<"$DB_TUNE_EXPECTED"
+  if ((content_changed)); then
+    log "DB-TUNING: previous values recorded to $prev_file"
+  fi
+}
+
+db_tune_verify() {
+  local label="$1"
+  local expected="${2-$DB_TUNE_EXPECTED}"
+  if [[ -z "$expected" ]]; then
+    log "DB-TUNING: SHOW verification skipped (no expectations given)"
+    return 0
+  fi
+  if [[ -z "$DB_TUNE_SHOW_COMMAND" ]]; then
+    log "DB-TUNING: SHOW verification skipped (DB_TUNE_SHOW_COMMAND is empty): the settings were applied but not verified"
+    return 0
+  fi
+  local line name want got rc=0
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    [[ "$line" == *=* ]] || { log "DB-TUNING: bad expected-settings line '$line' (expected name=value)"; return 1; }
+    name="${line%%=*}"
+    want="${line#*=}"
+    got="$(DB_TUNE_PARAM="$name" bash -c "$DB_TUNE_SHOW_COMMAND" 2>/dev/null | tr -d '\r' | tail -n1 || true)"
+    if [[ "$got" == "$want" ]]; then
+      log "DB-TUNING: $label $name = $got (as expected)"
+    else
+      log "DB-TUNING: $label $name = '${got:-<empty>}', expected '$want' — MISMATCH"
+      rc=1
+    fi
+  done <<<"$expected"
+  return $rc
 }
 
 # --- TRACING-HEALTH: one source of truth for the tracing callbacks -----------
