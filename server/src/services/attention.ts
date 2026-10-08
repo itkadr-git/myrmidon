@@ -114,6 +114,13 @@ import {
   reviewRoutingSignalTitle,
   reviewRoutingSignalWhyNow,
 } from "../myrmidon/review-routing/attention.js";
+// myrmidon(1.6.5-F21-B): the owner decision cards waiting on the owner.
+import {
+  summarizeOwnerPendingCards,
+  ownerCardsAttentionDedupKey,
+  ownerCardsAttentionTitle,
+  ownerCardsAttentionWhyNow,
+} from "../myrmidon/owner-reply/attention.js";
 // myrmidon(1.6.1-WIP-LIMIT-A): the WIP limit cards and the settings read.
 import { buildWipLimitAttentionCards } from "../myrmidon/wip-limit/attention.js";
 import { buildWipLimitStatus } from "../myrmidon/wip-limit/status.js";
@@ -182,6 +189,8 @@ const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   "pause_guard",
   // myrmidon(OPE-6011): a held task's silent-wake notice.
   "execution_hold",
+  // myrmidon(1.6.5-F21-B): owner decision cards waiting on the owner.
+  "owner_pending_card",
 ];
 
 const SEVERITY_RANK: Record<AttentionSeverity, number> = {
@@ -232,6 +241,9 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   // myrmidon(OPE-6011): a held task blocks all of its wakes — ranked with the
   // other machine-recovery stops, just below a recovery action itself.
   execution_hold: 1,
+  // myrmidon(1.6.5-F21-B): unanswered owner cards stall delivery; a card with
+  // some stale ones ranks with the stalled-review notices.
+  owner_pending_card: 16,
 };
 
 const PENDING_INTERACTION_STATUSES = ["pending"] as const;
@@ -2728,6 +2740,53 @@ async function buildAttentionFeedSnapshot(
           detail: {
             kind: "generic",
             summaryExcerpt: excerpt(executionHoldSignalDetail(card)),
+            images: [],
+          },
+        }));
+      }
+
+      // myrmidon(1.6.5-F21-B): ONE company-level card while owner decision
+      // cards wait on the owner — «карточек владельца pending: N (старше
+      // 3 дней: M)». Computed live from issue_thread_interactions (the same
+      // population the TTL sweep closes), so the card exists exactly while at
+      // least one owner card is pending and disappears when the last one is
+      // answered, resolved by silence, or expired.
+      const ownerCardsSummary = await summarizeOwnerPendingCards(db, companyId);
+      if (ownerCardsSummary) {
+        const ownerCardsTitle = ownerCardsAttentionTitle(ownerCardsSummary);
+        add(createItem({
+          companyId,
+          sourceKind: "owner_pending_card",
+          subject: {
+            kind: "interaction",
+            id: `owner_pending_cards:${companyId}`,
+            companyId,
+            title: ownerCardsTitle,
+            identifier: null,
+            status: "pending",
+            href: `/${prefix}/inbox`,
+            metadata: {
+              pending: ownerCardsSummary.pending,
+              stale: ownerCardsSummary.stale,
+            },
+          },
+          whyNow: ownerCardsAttentionWhyNow(ownerCardsSummary),
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the decision inbox and answer the owner cards." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this notice (the cards stay pending)." },
+          ),
+          inlineResolvable: true,
+          entryRule: "at least one owner request_confirmation card is pending.",
+          exitRule: "the last pending owner card is answered, resolved by silence, or expired by the TTL sweep.",
+          dedupKey: ownerCardsAttentionDedupKey(companyId),
+          severity: ownerCardsSummary.stale > 0 ? "high" : "medium",
+          activityAt: ownerCardsSummary.oldestCreatedAt,
+          createdAt: ownerCardsSummary.oldestCreatedAt,
+          updatedAt: ownerCardsSummary.oldestCreatedAt,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: excerpt(ownerCardsTitle),
             images: [],
           },
         }));
