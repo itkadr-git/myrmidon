@@ -2,33 +2,26 @@
 
 ### Deploy hygiene: the deploy no longer fills the disk it deploys from (OPE-5107)
 
-On 06.10 the root filesystem of the deploy host went from 86 % to 92 % in the
-hour one rc.3 deploy took. Three leaks summed to it: the predeploy database copy
-kept its Postgres data in an anonymous volume that `docker rm -f` never removes
-(3.4 GB from the 05.10 check, 3.6 GB more from rc.3), component images of past
-releases were never deleted (four board generations at ~7.3 GB each plus three
-to four bot image generations, about 33 GB), and the deploy pulled new images
-without checking the disk could hold them.
+On 06.10 the deploy host's root filesystem went from 86 % to 92 % in the hour of
+one rc.3 deploy: the predeploy database copy kept its Postgres data in an
+anonymous volume `docker rm -f` never removes (3.4 GB + 3.6 GB orphaned), images
+of past releases were never deleted (~33 GB), and the deploy pulled new images
+without checking the free space.
 
-- PREDEPLOY-DB-CHECK: the copy's data lives in a named volume of the run
-  (`myr-predeploy-dbvol-<digest8>-<pid>`) removed by the same EXIT trap as the
-  containers (success, failure, interrupt). `MYRMIDON_PREDEPLOY_KEEP=1` keeps
-  the volume with the stack and prints its name.
-- Disk precheck: before the first image pull and the dump, deploy.sh (and a
-  standalone bot-image-rollout.sh or rollout-component.sh run) checks the free
-  space of the filesystem holding /var/lib/docker. Below
-  `MYRMIDON_DEPLOY_MIN_FREE_GB` (default 15 GiB) the deploy stops before
-  anything changed and names the requirement, the current value and the cleanup
-  candidates (`docker system df`); 0 switches the check off; a dry run prints
-  the check instead of refusing.
-- Image retention: after a successful deploy (bot-image-rollout.sh: after the
-  bots moved) local images of the deploy's component repositories older than
-  `MYRMIDON_DEPLOY_IMAGE_KEEP` previous releases are removed by creation date
-  (default 1: the current release plus the one before it for rollback; 0 =
-  cleanup off). Repositories: `MYRMIDON_DEPLOY_IMAGE_REPOS` (default: board,
-  dockergate, fleetd and the three bot images). An image used by any container,
-  running or stopped, is never removed. A cleanup failure is a warning, never a
-  failed deploy.
+- PREDEPLOY-DB-CHECK: the copy's data lives in a named volume
+  (`myr-predeploy-dbvol-<digest8>-<pid>`) removed by the run's EXIT trap on
+  success, failure and interrupt. `MYRMIDON_PREDEPLOY_KEEP=1` keeps it and
+  prints its name.
+- Disk precheck before the first pull and the dump (deploy.sh, standalone
+  bot-image-rollout.sh / rollout-component.sh): free space of the filesystem
+  holding /var/lib/docker must reach `MYRMIDON_DEPLOY_MIN_FREE_GB` (default 15
+  GiB, 0 = off), otherwise the deploy stops before anything changed and names
+  the cleanup candidates (`docker system df`). A dry run prints the check.
+- Image retention after a successful deploy: local images of
+  `MYRMIDON_DEPLOY_IMAGE_REPOS` (board, dockergate, fleetd, three bot images)
+  older than `MYRMIDON_DEPLOY_IMAGE_KEEP` previous releases (default 1; 0 = off)
+  are removed. An image used by any container is never removed; a cleanup
+  failure is a warning, not a failed deploy.
 
 ## changelog-ru
 

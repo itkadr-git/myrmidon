@@ -7,23 +7,20 @@ settings-section: Bot containers (G-series, the 28.09 "option B" plan)
 
 ### Deferred bot image rollout applies itself when the bot frees up (BOT-ROLLOUT, part C)
 
-- A bot that was busy when its image rollout reached it (a running turn, the
-  owner in a chat conversation, or someone else's maintenance window) no longer
-  waits for the next deploy: the reconcile pass records the deferral in the
-  `myrmidonBotRolloutDeferred` key of `instance_settings.general` (row-locked,
-  like the maintenance and canary keys), and a watcher in the same 60-second
-  reconciliation sweep retries the recorded bots.
-- A retry goes out as soon as the bot reports no running work (the maintenance-port
-  busy signal the rollout path reads); it runs through the regular
-  `applyBotContainerNow` (same per-bot lock, fresh card read) and the record
-  is removed on success.
+- A bot busy when its image rollout arrived (running turn, owner in chat, or
+  someone else's maintenance window) no longer waits for the next deploy: the
+  reconcile pass records the deferral in the `myrmidonBotRolloutDeferred` key of
+  `instance_settings.general` (row-locked like the maintenance and canary keys)
+  and a watcher in the same 60-second sweep retries the recorded bots.
+- A retry goes out once the bot reports no running work, through the regular
+  `applyBotContainerNow` (same per-bot lock, fresh card read); on success the
+  record is removed.
 - A bot busy longer than `MYRMIDON_BOT_ROLLOUT_DEFERRED_MAX_WAIT_SEC` (default
-  3600) is no longer waited on: the retry skips the busy gate, the reconciler
-  opens the maintenance window, drains the in-flight run to its end (runs are
-  never interrupted, OPE-3638) and switches the container after the current turn.
-- A record that did not converge within 4x the max wait is retired: dropped,
-  logged in the reconcile activity log and the audit feed
-  (`myrmidon.bot_rollout.deferred_retired`).
+  3600) is retried without the busy gate: the reconciler opens the maintenance
+  window, drains the in-flight run (runs are never interrupted, OPE-3638) and
+  switches the container after the current turn.
+- A record not converged within 4x the max wait is retired: dropped and logged
+  to the reconcile log and the audit feed (`myrmidon.bot_rollout.deferred_retired`).
 
 ## changelog-ru
 

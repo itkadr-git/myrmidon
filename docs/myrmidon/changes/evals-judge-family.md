@@ -6,11 +6,23 @@ settings-section: 1.6 — EVALS-A (reference tasks and the LLM judge)
 
 ### Cross-family judge for reference-task scoring (EVALS-JUDGE-FAMILY)
 
-- The judge of an eval run is now picked from a model **family different from the evaluated agent's** model. `server/src/myrmidon/evals/model-family.ts` maps model ids to families (qwen, gpt, claude, glm, deepseek, kimi, gemini, llama, mistral, yi, phi, o1, o3 …; the table is extensible in code). Matching is token-anchored: a substring counts only at a token boundary (`deepyida` is not yi, `chaos` is not o3, `mystique`/`dolphin` are not phi).
-- A prioritized judge list (UI setting / env forced override) is scanned top-down; the first entry whose family differs from the agent model family judges the run. Default list: the free models this deployment's gateway actually serves (`qwen-plus-free, qwen-max-free, qwen-turbo-free` — `SERVED_FREE_GATEWAY_MODELS`, the same trio `DEFAULT_EVALS_MODEL` verifies); a paid model judges only when the operator explicitly lists it.
-- A gateway failure of the selected judge no longer aborts the run: the next candidate is tried, and when every priority candidate fails, the configured `MYRMIDON_EVALS_MODEL` gets a last chance. The run fails only if the whole chain fails; the last error is then re-thrown.
-- When no cross-family candidate exists, the run is still scored and every task carries `sameFamily: true` in the result plus a server-log warning — the owner sees that the judge rated "its own". The same flag marks tasks judged on the last-chance configured model.
-- The evaluated agent model and the judging model are reported per task; the agent model is resolved at run time from the subject role (`subjectModelFor`), so no schema change is needed.
+- The judge of an eval run comes from a model family different from the
+  evaluated agent's. `server/src/myrmidon/evals/model-family.ts` maps model ids to
+  families (qwen, gpt, claude, glm, deepseek, kimi, gemini, llama, mistral, yi,
+  phi, o1, o3 and more; extensible in code). Matching is token-anchored
+  (`deepyida` is not yi, `chaos` is not o3, `mystique`/`dolphin` are not phi).
+- A prioritized judge list (UI setting / env forced override) is scanned
+  top-down; the first entry of a different family judges. Default list: the free
+  models the gateway serves (`qwen-plus-free, qwen-max-free, qwen-turbo-free`,
+  `SERVED_FREE_GATEWAY_MODELS`, the trio `DEFAULT_EVALS_MODEL` verifies); a paid
+  model judges only when the operator lists it.
+- A gateway failure of the selected judge no longer aborts the run: the next
+  candidate is tried, then `MYRMIDON_EVALS_MODEL` gets a last chance; the run
+  fails only if the whole chain fails, rethrowing the last error.
+- With no cross-family candidate the run is still scored and every task carries
+  `sameFamily: true` plus a server-log warning (also set for tasks judged on the
+  last-chance model). The agent and judging models are reported per task; the
+  agent model is resolved at run time (`subjectModelFor`), no schema change.
 - Guides: [evals-judge-family-selection.md](../guides/evals-judge-family-selection.md) / [RU](../guides/evals-judge-family-selection.ru.md).
 
 ## changelog-ru
