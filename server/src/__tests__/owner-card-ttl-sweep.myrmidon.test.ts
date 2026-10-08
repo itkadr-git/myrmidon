@@ -18,7 +18,7 @@ import {
   issues,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport } from "@paperclipai/db";
-import { useEmbeddedPostgres } from "../../__tests__/helpers/route-test-harness.js";
+import { useEmbeddedPostgres } from "./helpers/route-test-harness.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -27,7 +27,7 @@ import {
   OWNER_CARD_EXPIRED_WAKE_IDEMPOTENCY_PREFIX,
   OWNER_CARD_EXPIRED_WAKE_REASON,
   type OwnerCardTtlSweepDeps,
-} from "./ttl-sweep.js";
+} from "../myrmidon/owner-reply/ttl-sweep.js";
 
 const COMPANY = "cccccccc-0000-4000-8000-000000000001";
 const AUTHOR_AGENT = "aaaaaaaa-0000-4000-8000-000000000001";
