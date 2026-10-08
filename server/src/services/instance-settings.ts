@@ -320,6 +320,8 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // this line the vendor write path silently drops the key and the settings
       // could only ever come from the environment.
       ...(parsed.data.teamLiveness ? { teamLiveness: parsed.data.teamLiveness } : {}),
+      // myrmidon(1.6.1-BOT-DISK-D): the stored shared mount settings survive every general write
+      ...(parsed.data.sharedMount ? { sharedMount: parsed.data.sharedMount } : {}),
       // myrmidon(BOT-RUNTIME-TUNING D2): the stored fallback-signal settings
       // survive every general write (they are edited on their own settings
       // page). Without this line `updateGeneral` normalizes the patch away, so
