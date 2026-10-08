@@ -1,0 +1,383 @@
+From ff224cf4107874518d646f0c1a0f01a472ecc07e Mon Sep 17 00:00:00 2001
+From: itkadr-git <itkadr-git@users.noreply.github.com>
+Date: Tue, 6 Oct 2026 23:31:04 +0000
+Subject: [PATCH] ci(myrmidon): enable merge_group checks for merge queue
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+main went red twice on 06.10 by stitching PRs that were each green on
+their own: between a green PR head and the merge, main moved. Teach the
+CI and the review gate about the GitHub merge queue so every candidate
+commit is re-checked on top of fresh main before it lands.
+
+- myrmidon-ci.yml: add the merge_group (checks_requested) trigger; plan
+  and tests-affected diff merge_group.base_sha..head_sha so the tier and
+  the affected tests match the PR inside the group; never auto-cancel a
+  queue run (a cancelled run would evict the group from the queue);
+  ci-result keeps the same names, so main-protection is satisfied on the
+  candidate.
+- myrmidon-hot-files-review.yml: fire on merge_group but only report
+  hot-files-review as success on the candidate commit — review is
+  enforced on the PR, the queue must not wait on it.
+- docs/myrmidon/merge-queue.md + .ru.md: how the queue works, what CI
+  does on a queue event, the reviewer (review-approved) and steward
+  (gh pr merge --auto) roles, and what to do when a PR drops out.
+- change fragment docs/myrmidon/changes/1-6-5-merge-queue-workflows.md,
+- docs index row in docs/myrmidon/README.md.
+
+Co-Authored-By: Paperclip <noreply@paperclip.ing>
+---
+ .github/workflows/myrmidon-ci.yml             | 38 ++++++++--
+ .../workflows/myrmidon-hot-files-review.yml   | 17 ++++-
+ docs/myrmidon/README.md                       |  1 +
+ .../changes/1-6-5-merge-queue-workflows.md    | 33 ++++++++
+ docs/myrmidon/merge-queue.md                  | 75 +++++++++++++++++++
+ docs/myrmidon/merge-queue.ru.md               | 73 ++++++++++++++++++
+ 6 files changed, 229 insertions(+), 8 deletions(-)
+ create mode 100644 docs/myrmidon/changes/1-6-5-merge-queue-workflows.md
+ create mode 100644 docs/myrmidon/merge-queue.md
+ create mode 100644 docs/myrmidon/merge-queue.ru.md
+
+diff --git a/.github/workflows/myrmidon-ci.yml b/.github/workflows/myrmidon-ci.yml
+index 8a931c1a2..6fd70918b 100644
+--- a/.github/workflows/myrmidon-ci.yml
++++ b/.github/workflows/myrmidon-ci.yml
+@@ -10,9 +10,17 @@ name: Myrmidon CI
+ #          shared foundations (lockfile, db, shared, runner, CI...): every lane.
+ # A red full run on main opens (or updates) an issue labelled `main-red`.
+ # Everything runs on GitHub-hosted runners without secrets. See docs/myrmidon/ci.md.
++#
++# Merge queue: the `merge_group` event re-runs the same checks on a candidate
++# commit built on top of the fresh main, so two PRs that are green separately
++# cannot land a broken combination. The plan compares the candidate with its
++# base, so the tier matches the tier of the PR inside the group.
++# See docs/myrmidon/merge-queue.md.
+ 
+ on:
+   pull_request:
++  merge_group:
++    types: [checks_requested]
+   push:
+     branches: [main]
+   workflow_dispatch:
+@@ -22,9 +30,11 @@ permissions:
+ 
+ concurrency:
+   # Superseded runs are cancelled on PRs and on main alike; a cancelled run
+-  # reports no `CI result`, so it can never look green.
++  # reports no `CI result`, so it can never look green. A cancelled
++  # merge_group run evicts the group from the queue, so queue runs are never
++  # cancelled.
+   group: myrmidon-ci-${{ github.event.pull_request.number || github.ref }}
+-  cancel-in-progress: true
++  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
+ 
+ env:
+   NPM_CONFIG_AUDIT: "false"
+@@ -72,14 +82,22 @@ jobs:
+         id: plan
+         env:
+           EVENT: ${{ github.event_name }}
+-          BASE: ${{ github.event.pull_request.base.sha }}
+-          HEAD: ${{ github.event.pull_request.head.sha }}
+-          FULL_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'full-ci') }}
++          BASE: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
++          HEAD: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event.pull_request.head.sha }}
++          FULL_LABEL: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'full-ci') }}
+         run: |
+           set -euo pipefail
+           args=(plan --out "$RUNNER_TEMP/plan.json")
+-          if [ "$EVENT" = "pull_request" ]; then
+-            args+=(--base "$BASE" --head "$HEAD")
++          # A merge-group candidate is a merge commit over its base: the same
++          # base..head diff the PR was checked with, on top of the fresh main.
++          if [ "$EVENT" = "pull_request" ] || [ "$EVENT" = "merge_group" ]; then
++            if [ -n "$BASE" ] && git cat-file -e "$BASE^{commit}" 2>/dev/null; then
++              args+=(--base "$BASE" --head "$HEAD")
++            else
++              # Fail safe: without a comparable base the plan cannot pick a
++              # tier, so run every lane.
++              echo "::warning::base commit $BASE not found; forcing the full tier"
++            fi
+             if [ "$FULL_LABEL" = "true" ]; then args+=(--force-full); fi
+           fi
+           node scripts/myrmidon/ci/affected-tests.mjs "${args[@]}"
+@@ -524,6 +542,8 @@ jobs:
+           EVENT: ${{ github.event_name }}
+           PR_BASE: ${{ github.event.pull_request.base.sha }}
+           PR_HEAD: ${{ github.event.pull_request.head.sha }}
++          MG_BASE: ${{ github.event.merge_group.base_sha }}
++          MG_HEAD: ${{ github.event.merge_group.head_sha }}
+           HEAD_REF: ${{ github.head_ref }}
+           PUSH_BEFORE: ${{ github.event.before }}
+         run: |
+@@ -533,6 +553,10 @@ jobs:
+             base="$PR_BASE"; head="$PR_HEAD"
+             # Vendor release sync brings vendor test fixtures with sample addresses.
+             case "$HEAD_REF" in sync/*) skip_tests="--skip-tests" ;; esac
++          elif [ "$EVENT" = "merge_group" ] && [ -n "$MG_BASE" ] \
++            && git cat-file -e "$MG_BASE^{commit}" 2>/dev/null; then
++            # The candidate commit and its base are both in the fetched tree.
++            base="$MG_BASE"; head="$MG_HEAD"
+           elif [ -n "${PUSH_BEFORE:-}" ] && [ "$PUSH_BEFORE" != "0000000000000000000000000000000000000000" ] \
+             && git cat-file -e "$PUSH_BEFORE^{commit}" 2>/dev/null; then
+             base="$PUSH_BEFORE"; head="$GITHUB_SHA"
+diff --git a/.github/workflows/myrmidon-hot-files-review.yml b/.github/workflows/myrmidon-hot-files-review.yml
+index 24d04357a..f473f7bd2 100644
+--- a/.github/workflows/myrmidon-hot-files-review.yml
++++ b/.github/workflows/myrmidon-hot-files-review.yml
+@@ -12,10 +12,17 @@ name: Myrmidon hot files review
+ #   - pending  - hot files touched, review-approved label not present yet;
+ #   - success  - the label is present, or no hot files touched.
+ # The job itself always ends green.
++#
++# Merge queue: the queue checks the candidate commit, not the PR. Review is
++# enforced on the PR, so for a `merge_group` event the job only reports the
++# `hot-files-review` status as success on the candidate and leaves the queue
++# moving. See docs/myrmidon/merge-queue.md.
+ 
+ on:
+   pull_request:
+     types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review]
++  merge_group:
++    types: [checks_requested]
+ 
+ permissions:
+   contents: read
+@@ -44,12 +51,20 @@ jobs:
+       - name: Check hot files and review label
+         env:
+           GH_TOKEN: ${{ github.token }}
++          EVENT: ${{ github.event_name }}
+           REPO: ${{ github.repository }}
+           PR: ${{ github.event.pull_request.number }}
+           ACTION: ${{ github.event.action }}
+-          SHA: ${{ github.event.pull_request.head.sha }}
++          SHA: ${{ github.event.merge_group.head_sha || github.event.pull_request.head.sha }}
+         run: |
+           set -euo pipefail
++          if [[ "$EVENT" == "merge_group" ]]; then
++            # Review is enforced on the PR before it enters the queue. For the
++            # queue the job only reports the status on the candidate commit.
++            echo "Событие merge_group: очередь проверяет кандидатный коммит; ревью обеспечено на PR."
++            gh api -X POST "repos/$REPO/statuses/$SHA" -f state='success' -f context='hot-files-review' -f description='merge queue: review enforced on the PR' >/dev/null
++            exit 0
++          fi
+           files="$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[].filename')"
+           hot='^(server/src/services/heartbeat\.ts|server/src/services/execution-continuation\.ts|server/src/services/legacy-execution-recovery\.ts|server/src/services/tool-gateway\.ts|server/src/routes/tool-gateway\.ts|server/src/services/redaction\.ts|server/src/services/native-runtime/runtime-context\.ts|server/src/services/issues\.ts|server/src/routes/issues\.ts|server/src/services/chat-channels\.ts|packages/adapters/hermes/.*|packages/db/.*|scripts/myrmidon/deploy/.*|server/src/myrmidon/bot-containers/(docker-driver|template|ustar|routes)\.ts|server/src/myrmidon/agent-self-update\.ts|tools/dockergate/.*|docker/dockergate/.*|scripts/myrmidon/dockergate/.*|Dockerfile|\.github/workflows/.*)$'
+           touched="$(grep -E "$hot" <<<"$files" || true)"
+diff --git a/docs/myrmidon/README.md b/docs/myrmidon/README.md
+index 342b58776..a7676a5ab 100644
+--- a/docs/myrmidon/README.md
++++ b/docs/myrmidon/README.md
+@@ -46,6 +46,7 @@ Myrmidon — плоскость управления компаниями из 
+ | [DIVERGENCE.md](DIVERGENCE.md) | Реестр наших отличий от вендора |
+ | [SETTINGS.md](SETTINGS.md) | Наши настройки (переменные `MYRMIDON_*`) и их значения по умолчанию (русская версия: [SETTINGS.ru.md](SETTINGS.ru.md)) |
+ | [ci.md](ci.md) | CI: проверки, сканеры, сборка образа |
++| [merge-queue.md](merge-queue.md) | Очередь слияний GitHub: кандидат проверяется поверх свежего main, роли ревьюера и стюарда (русская версия: [merge-queue.ru.md](merge-queue.ru.md)) |
+ | [deploy.md](deploy.md) | Выкат, обновление и откат по отпечатку образа (русская версия: [deploy.ru.md](deploy.ru.md)) |
+ | [dockergate.md](dockergate.md) | Allowlist-прокси к Docker-демону для контейнеров агентов (русская версия: [dockergate.ru.md](dockergate.ru.md)) |
+ | [egress.md](egress.md) | Правила исходящих обращений во внешние сервисы |
+diff --git a/docs/myrmidon/changes/1-6-5-merge-queue-workflows.md b/docs/myrmidon/changes/1-6-5-merge-queue-workflows.md
+new file mode 100644
+index 000000000..48dcfa50a
+--- /dev/null
++++ b/docs/myrmidon/changes/1-6-5-merge-queue-workflows.md
+@@ -0,0 +1,33 @@
++## changelog-en
++
++### Merge queue: CI checks the candidate commit on top of fresh main (MERGE-QUEUE)
++
++- `.github/workflows/myrmidon-ci.yml` and `myrmidon-hot-files-review.yml` gained the
++  `merge_group: types: [checks_requested]` trigger. `plan` and `tests-affected` diff
++  `merge_group.base_sha..head_sha` — the PR's own diff on top of the fresh main — so
++  `plan`, `typecheck`, `build`, `tests-affected` and `ci-result` run on the queue candidate
++  exactly as they do on the PR, and the `main-protection` ruleset requirements hold.
++- A `merge_group` CI run is never auto-cancelled (`cancel-in-progress` off for that event):
++  a cancelled run would evict the group from the queue.
++- For `merge_group`, `hot-files-review` only reports success on the candidate: review is
++  enforced on the PR via the `review-approved` label, the queue must not block on it.
++- New guide `docs/myrmidon/merge-queue.md` (en; [русский](merge-queue.ru.md)): the queue
++  process, reviewer/steward roles, `gh pr merge --auto`, what to do when a PR leaves the
++  queue; the guide is listed in `docs/myrmidon/README.md`.
++
++## changelog-ru
++
++### Очередь слияний: CI проверяет кандидата поверх свежего main (MERGE-QUEUE)
++
++- В `.github/workflows/myrmidon-ci.yml` и `myrmidon-hot-files-review.yml` добавлен триггер
++  `merge_group: types: [checks_requested]`. `plan` и `tests-affected` считают diff
++  `merge_group.base_sha..head_sha` — diff PR поверх свежего main, — поэтому `plan`,
++  `typecheck`, `build`, `tests-affected` и `ci-result` идут на кандидате очереди так же,
++  как на PR, и требования ruleset `main-protection` выполняются.
++- Прогон CI на `merge_group` не отменяется автоматически (`cancel-in-progress` выключен для
++  этого события): отменённый прогон выкидывает группу из очереди.
++- На `merge_group` джоб `hot-files-review` только выставляет success на кандидате: ревью
++  обеспечивается на PR меткой `review-approved`, очередь блокировать нечем.
++- Добавлено руководство `docs/myrmidon/merge-queue.md` (en; [русский](merge-queue.ru.md)):
++  процесс очереди, роли ревьюера и стюарда, `gh pr merge --auto`, действия при выпадении PR
++  из очереди; руководство добавлено в `docs/myrmidon/README.md`.
+diff --git a/docs/myrmidon/merge-queue.md b/docs/myrmidon/merge-queue.md
+new file mode 100644
+index 000000000..023f0589a
+--- /dev/null
++++ b/docs/myrmidon/merge-queue.md
+@@ -0,0 +1,75 @@
++# Merge queue
++
++> Russian version: [merge-queue.ru.md](merge-queue.ru.md)
++
++GitHub merge queue for `main`. It exists because on 06.10 `main` went red twice by stitching
++together PRs that were each green on their own: between
++"CI passed on the PR" and "merge into `main`", `main` moved. The queue closes that window
++(task OPE-5500).
++
++## How it works
++
++`main-protection` keeps requiring on the PR head: `CI result` and `hot-files-review`. A PR head
++green alone is not enough to enter the queue — the same checks are re-run on the **candidate
++commit**: `main` plus all PRs queued ahead of yours. Only when the candidate is green does
++GitHub push it to `main` — and immediately starts checking the next group with your commit
++already in `main`. Merges are therefore serial, and `main` stays green.
++
++The queue is configured in the repository settings (branch `main`, merge method **merge
++commit**; queue rules are the owner's call under Settings → Merge queue). The queue itself
++orders PRs and builds candidate commits; what it pushes to `main` is an ordinary merge
++commit, so `main` history stays fit for the usual parsing (`git log main`) — no release gate
++depends on every `main` commit having exactly one parent.
++
++## What CI does on a queue event
++
++- `myrmidon-ci.yml` has a `merge_group: types: [checks_requested]` trigger. The `plan` step for
++  a merge-group event diffs `merge_group.base_sha..head_sha` — the same diff the PR was checked
++  with, on top of the fresh `main`; tier and test selection work as for a PR. The checks that
++  run are the same as on a PR (`plan`, `typecheck`, `build`, `tests-affected`, `ci-result`),
++  under the same job names, so the `main-protection` ruleset requirements are met on the
++  candidate. If an earlier group lands while your checks are running, GitHub re-requests
++  checks on a new candidate — the same code, a new base.
++- A `merge_group` CI run is **never auto-cancelled**: the concurrency group is fixed for the
++  event (`myrmidon-ci-refs/heads/gh-readonly-queue/main/pr-<n>-<sha>`, one per entry — unlike
++  pull events, merge_group does not expose `github.run_id` in a concurrency group) and
++  `cancel-in-progress` is off. A cancelled queue run removes the group from the queue, so
++  the cancellation itself would be a loss; the PR head and the previous candidate still get
++  cancelled as usual.
++- `myrmidon-hot-files-review.yml` also fires on `merge_group`, but review is enforced on the
++  PR: the job just reports `hot-files-review` as success on the candidate commit and exits, so
++  the gate does not hold up the queue.
++
++## Process: reviewer and steward
++
++1. The **reviewer** (adm-dev-review or the maintainer) reads the diff, checks that the test
++   fails without the change, and sets the `review-approved` label on the PR (for hot files this
++   is what turns `hot-files-review` green — see [CONVENTIONS.md](CONVENTIONS.md), section 6).
++   A new push removes the label and review starts over.
++2. The **steward** (the role that merges) sends an approved PR with green CI on its head into
++   the queue:
++
++   ```bash
++   gh pr merge --auto --merge <PR>
++   ```
++
++   `--auto` enqueues rather than merging immediately; GitHub itself picks the moment and builds
++   the candidate.
++3. GitHub re-checks the candidate against the fresh `main`. Green — the PR is merged into `main`
++   and closed. Not green — the PR leaves the queue and returns to `open`.
++
++## If a PR leaves the queue
++
++The PR is returned to the author with failed checks on the candidate commit:
++
++1. Open the failed `CI result` / run of the `merge_group` event and look at the lane that fell
++   (the format is the same as PR CI — see [ci.md](ci.md)).
++2. Reproduce locally: rebase the branch onto the current `main` and run the affected lanes.
++   A collision between two neighbouring PRs is not a "flaky test": whoever entered the queue
++   later fixes the conflict.
++3. Push the fix, wait for PR CI to go green, re-set the `review-approved` label (the push
++   removes it), and the steward re-enqueues with `gh pr merge --auto --merge` again.
++
++If the queue itself stalls (candidate checks are not starting), first check the
++`merge_group` trigger in `myrmidon-ci.yml` and the `CI result` check name, then the queue
++settings of the `main` branch in repository settings.
+diff --git a/docs/myrmidon/merge-queue.ru.md b/docs/myrmidon/merge-queue.ru.md
+new file mode 100644
+index 000000000..8bd5630ad
+--- /dev/null
++++ b/docs/myrmidon/merge-queue.ru.md
+@@ -0,0 +1,73 @@
++# Очередь слияний
++
++> English version: [merge-queue.md](merge-queue.md)
++
++GitHub merge queue для `main`. Она появилась потому, что 06.10 `main` дважды краснел от сшивки
++PR, зелёных по отдельности: между «CI зелёный на PR» и «слияние в `main`» `main` уезжал вперёд.
++Очередь закрывает это окно (задача OPE-5500).
++
++## Как это работает
++
++`main-protection` по-прежнему требует на голове PR: `CI result` и `hot-files-review`. Зелёной
++головы PR мало для входа в очередь — те же проверки перезапускаются на **кандидатском
++коммите**: `main` плюс все PR, стоящие в очереди раньше твоего. Только зелёный кандидат
++GitHub пушит в `main` — и тут же начинает проверять следующую группу уже с твоим коммитом
++в составе `main`. Слияния идут последовательно, и `main` остаётся зелёным.
++
++Очередь настраивается в настройках репозитория (ветка `main`, способ слияния — **merge
++commit**; правила очереди задаёт владелец в разделе Settings → Merge queue). Очередь ставит
++PR в порядок сама и собирает кандидатские коммиты; в `main` она пишет обычные merge-коммиты,
++поэтому история `main` остаётся пригодной для штатного разбора (`git log main`) — ни один
++гейт выпуска не завязан на то, что у каждого коммита `main` ровно один родитель.
++
++## Что делает CI на событии очереди
++
++- В `myrmidon-ci.yml` есть триггер `merge_group: types: [checks_requested]`. Шаг `plan` на
++  событии merge-group считает diff `merge_group.base_sha..head_sha` — тот же diff, что
++  проверялся на PR, но поверх свежего `main`; ярус и подбор тестов работают как для PR.
++  Проверки на кандидате те же, что на PR (`plan`, `typecheck`, `build`, `tests-affected`,
++  `ci-result`), и имена проверок — те же имена джобов, поэтому требования ruleset
++  `main-protection` выполняются на кандидате. Если до завершения проверок в `main` влилась
++  предыдущая группа, GitHub перезапрашивает проверки на новом кандидате — тот же код, новая
++  база.
++- Прогон CI на `merge_group` **не отменяется автоматически**: группа конкурентности для него
++  фиксирована (`myrmidon-ci-refs/heads/gh-readonly-queue/main/pr-<n>-<sha>`, по одной на
++  запись — у события merge_group, в отличие от pull, `github.run_id` в группе конкурентности
++  недоступен) и `cancel-in-progress` выключен. Отменённый прогон очереди выкидывает группу
++  из очереди, так что отмена сама была бы потерей; голова PR и предыдущий кандидат всё равно
++  отменяются штатно.
++- `myrmidon-hot-files-review.yml` тоже срабатывает на `merge_group`, но ревью обеспечивается
++  на PR: джоб просто выставляет коммит-статус `hot-files-review` = success на кандидатский
++  коммит и выходит, чтобы гейт не тормозил очередь.
++
++## Процесс: ревьюер и стюард
++
++1. **Ревьюер** (adm-dev-review или мейнтейнер) читает diff, проверяет, что тест падает без
++   изменения, и ставит PR метку `review-approved` (для hot-файлов именно она зелёнит
++   `hot-files-review` — см. [CONVENTIONS.md](CONVENTIONS.md), раздел 6). Новый пуш снимает
++   метку, ревью начинается заново.
++2. **Стюард** (роль, которая мержит) отправляет одобренный PR с зелёным CI на голове в
++   очередь:
++
++   ```bash
++   gh pr merge --auto --merge <PR>
++   ```
++
++   `--auto` ставит в очередь, а не мержит сразу; момент и кандидата подбирает GitHub.
++3. GitHub перепроверяет кандидата поверх свежего `main`. Зелёный — PR смержен в `main` и
++   закрыт. Красный — PR выпадает из очереди и возвращается в состояние `open`.
++
++## Если PR выпал из очереди
++
++PR возвращается автору с упавшими проверками на кандидате:
++
++1. Открыть упавший `CI result` / прогон события `merge_group` и посмотреть, какая ланка
++   легла (формат тот же, что у PR CI — см. [ci.md](ci.md)).
++2. Воспроизвести локально: ребейзнуть ветку на текущий `main` и прогнать затронутые ланки.
++   Столкновение двух соседних PR — не «флейк»: чинит тот, кто вошёл в очередь позже.
++3. Запушить фикс, дождаться зелёного CI на PR, перевставить метку `review-approved`
++   (пуш снимает её), и стюард снова ставит PR в очередь: `gh pr merge --auto --merge`.
++
++Если очередь встала (проверки кандидатов не стартуют) — сначала проверить триггер
++`merge_group` в `myrmidon-ci.yml` и имя проверки `CI result`, затем настройки очереди ветки
++`main` в настройках репозитория.
+-- 
+2.47.3
+

@@ -166,6 +166,7 @@ import {
 // myrmidon(1.6.1 VOICE-STT B): inbound transcription of Telegram voice/audio.
 import {
   transcribeTelegramVoiceIntake,
+  type TelegramVoiceSttCompanyGate,
   type TelegramVoiceTranscriber,
 } from "../myrmidon/telegram-voice-stt-intake/index.js";
 import { normalizeTelegramRichMessage } from "./chat-telegram-rich-intake.js";
@@ -382,7 +383,8 @@ import {
   createOmissionTracker,
   telegramAttachmentOmissionNotice,
 } from "../myrmidon/chat-attachment-omission.js";
-import { TELEGRAM_DM_COMMANDS } from "../myrmidon/agent-chat-bridge/commands/index.js";
+import { TELEGRAM_DM_COMMANDS, telegramDmCommandsForLocale } from "../myrmidon/agent-chat-bridge/commands/index.js";
+import { telegramDmMenuLocale } from "../myrmidon/agent-chat-bridge/locales/index.js";
 // myrmidon(CHAT-HOLD): no silent queue in a bridged Telegram chat.
 import {
   chatNoticeLanguage,
@@ -1574,6 +1576,12 @@ export interface ChatChannelServiceOptions {
   // merged; tests pass a mock. Null (or unset) keeps the vendor intake path
   // byte for byte — no byte prefetch, no transcription call.
   telegramVoiceTranscriber?: TelegramVoiceTranscriber | null;
+  // myrmidon(1.6.5 VOICE-STT A): the per-company switch of the same feature,
+  // read per voice turn. Production wires it from the stored settings
+  // (`createTelegramVoiceSttWiring`), so the board's settings screen turns the
+  // feature on without a restart; unset (tests, other callers) keeps the
+  // environment master switch as the only gate.
+  telegramVoiceSttCompanyEnabled?: TelegramVoiceSttCompanyGate | null;
 }
 
 interface CredentialMutationLeaseGuard {
@@ -4448,11 +4456,15 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           if (telegramDmConversationsConfigured()) {
             await credentialLease.assertOwned();
             if (telegramDmConversationsEnabled(record.endpoint.id)) {
+              // myrmidon(1.7-TG-LOCALE): the menu renders in the instance
+              // locale that holds when this action runs (env force, else the
+              // English default) — same once-per-version rule as the
+              // bridge-enabled state; the version hashes the canonical list.
               await telegramMaintenanceRequest(
                 credentials.botToken,
                 "setMyCommands",
                 {
-                  commands: TELEGRAM_DM_COMMANDS,
+                  commands: telegramDmCommandsForLocale(telegramDmMenuLocale()),
                   scope: { type: "all_private_chats" },
                 },
               );
@@ -16501,6 +16513,14 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             voiceAttachments: voiceSttAttachmentInput,
             env: process.env,
             transcriber: options.telegramVoiceTranscriber ?? null,
+            // myrmidon(1.6.5 VOICE-STT A): the company's own switch, resolved
+            // per voice turn (only here, never for other providers or media),
+            // so a settings change applies to the next message — no restart.
+            // Without the hook the environment master switch stays the only
+            // gate, exactly as before this part.
+            companyEnabled: options.telegramVoiceSttCompanyEnabled
+              ? await options.telegramVoiceSttCompanyEnabled(endpoint.companyId)
+              : null,
           })
         : null;
       const voiceSttBody = voiceSttOutcome?.body ?? null;
@@ -17062,6 +17082,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           issueId: issue.id,
           deliveryId: activeDelivery.id,
           principalId: principalResolution.principal.id,
+          // myrmidon(1.7-TG-LOCALE): the linked user decides the migration
+          // notice's language.
+          boardUserId: principalResolution.userId!,
           notice: x8Notice,
           migratedFromIssueId: x8Dm.migratedFromIssueId,
         });

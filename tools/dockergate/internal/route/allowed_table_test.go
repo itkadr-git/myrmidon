@@ -27,6 +27,9 @@ var allowedTable = []allowedEntry{
 	{ID: A1, Method: "GET", Template: "images/{image}/json"},
 	{ID: A2, Method: "GET", Template: "containers/{name}/json", Suffixes: []string{""}},
 	{ID: A3, Method: "GET", Template: "containers/{name}/archive?" + markerQuery, Suffixes: []string{""}},
+	// The LEGACY-layout marker and report (contract "1" images): the board reads
+	// them through the /data/hermes bind instead of /bot (route.Legacy*).
+	{ID: A3, Method: "GET", Template: "containers/{name}/archive?" + LegacyMarkerQuery, Suffixes: []string{""}},
 	{ID: A4, Method: "POST", Template: "containers/create?name={name}", Suffixes: []string{"", ".next", ".helper"}},
 	{ID: A5, Method: "PUT", Template: "containers/{name}/archive?path={mount}&noOverwriteDirNonDir=true", Suffixes: []string{".helper"}, Mounts: []string{"%2Fdata%2Fhermes", "%2Fworkspace", "%2Fscratch"}},
 	{ID: A6, Method: "POST", Template: "containers/{name}/start", Suffixes: []string{"", ".helper"}},
@@ -37,6 +40,7 @@ var allowedTable = []allowedEntry{
 	{ID: A11, Method: "POST", Template: "containers/{name}/restart?t=30", Suffixes: []string{""}},
 	{ID: A12, Method: "POST", Template: "containers/{name}/rename?name={mainName}", Suffixes: []string{".next"}},
 	{ID: A13, Method: "GET", Template: "containers/{name}/archive?" + cloneReportQuery, Suffixes: []string{""}},
+	{ID: A13, Method: "GET", Template: "containers/{name}/archive?" + LegacyCloneReportQuery, Suffixes: []string{""}},
 }
 
 const fixtureRelPath = "../../contract/allowed-routes.json"

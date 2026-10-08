@@ -4661,6 +4661,9 @@ async function listIssueReviewAttentionMap(
       executionState: issue.executionState,
       monitorNextCheckAt: issue.monitorNextCheckAt,
       monitorAttemptCount: issue.monitorAttemptCount,
+      // myrmidon(HUMAN-REVIEW-WAIT): the human-review-wait facts.
+      reviewPolicy: issue.reviewPolicy,
+      responsibleUserId: issue.responsibleUserId,
     })),
     relations: [],
     agents: agentRows,
@@ -4686,6 +4689,12 @@ async function listIssueReviewAttentionMap(
   const userIds = new Set<string>();
   for (const issue of reviewIssues) {
     if (issue.assigneeUserId) userIds.add(issue.assigneeUserId);
+    // myrmidon(HUMAN-REVIEW-WAIT): the human-only wait names its waiting person
+    // so the attention feed can show who the review is really waiting on.
+    if (issue.reviewPolicy === "human_only") {
+      if (issue.responsibleUserId) userIds.add(issue.responsibleUserId);
+      if (issue.createdByUserId) userIds.add(issue.createdByUserId);
+    }
     const participant = parseObject(issue.executionState).currentParticipant;
     if (
       participant &&
@@ -5765,6 +5774,9 @@ async function listIssueBlockedInboxAttentionMap(
       executionState: issue.executionState,
       monitorNextCheckAt: issue.monitorNextCheckAt,
       monitorAttemptCount: issue.monitorAttemptCount,
+      // myrmidon(HUMAN-REVIEW-WAIT): the human-review-wait facts.
+      reviewPolicy: issue.reviewPolicy,
+      responsibleUserId: issue.responsibleUserId,
     })),
     relations: graphRelations,
     agents: companyAgents,

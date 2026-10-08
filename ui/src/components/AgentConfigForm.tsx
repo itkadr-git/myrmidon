@@ -7,6 +7,7 @@ import type { AdapterConfigSection } from "../adapters/types";
 import { useConfigSchema } from "../adapters/schema-config-fields";
 import { schemaFieldSection } from "../adapters/config-sections";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useOptionalToastActions } from "@/context/ToastContext";
 import type {
   Agent,
   AdapterAuthSessionPrompt,
@@ -85,11 +86,14 @@ import { AgentCardModelsFields, CardEffortPicker } from "./myrmidon/AgentCardMod
 import { defaultEffortForModel, effortsForModel } from "../lib/card-effort-policy";
 // myrmidon(W2b): bot container settings on the agent card
 import { AgentCardContainerFields } from "./myrmidon/AgentCardContainerFields";
-// myrmidon(GITHUB-IDENTITIES-C): the GitHub accounts a bot may act as, on its card
-import { AgentCardGitHubIdentitiesFields } from "./myrmidon/AgentCardGitHubIdentitiesFields";
 // myrmidon(PARALLEL-HELPERS): parallel helper subagents on the agent card
 import { AgentCardParallelHelpersFields } from "./myrmidon/AgentCardParallelHelpersFields";
+import { AgentCardTeamLivenessFields } from "./myrmidon/AgentCardTeamLivenessFields"; // myrmidon(TEAM-LIVENESS-SETTINGS)
 import { parallelHelpersApi, parallelHelpersQueryKey } from "./myrmidon/parallelHelpersApi";
+import {
+  teamLivenessApi,
+  teamLivenessQueryKey,
+} from "./myrmidon/teamLivenessApi"; // myrmidon(TEAM-LIVENESS-SETTINGS)
 import { AgentCardLspFields } from "./myrmidon/AgentCardLspFields"; // myrmidon(BOT-LSP-DEFAULTS)
 import { botLspApi, botLspQueryKey } from "./myrmidon/botLspApi"; // myrmidon(BOT-LSP-DEFAULTS)
 import { AgentCardEgressFields } from "./myrmidon/AgentCardEgressFields"; // myrmidon(EGRESS-B)
@@ -367,6 +371,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const canConfigureProviderTrace = props.canConfigureProviderTrace === true;
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
+  // myrmidon(MODEL-SWITCH-SESSION): the board's own toast channel (the ui package has no
+  // third-party toast dependency). Optional so the form still renders when it
+  // is mounted outside a ToastProvider.
+  const toastActions = useOptionalToastActions();
   const environmentVariablesEditorRef = useRef<EnvironmentVariablesEditorHandle | null>(null);
 
   // myrmidon(1.6.1 CUSTOM-CASTES C): the role select options come from the
@@ -629,6 +637,15 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const { data: parallelHelpersSettings } = useQuery({
     queryKey: parallelHelpersQueryKey,
     queryFn: () => parallelHelpersApi.get(),
+    enabled: !isCreate && adapterType === "hermes_gateway",
+    retry: false,
+  });
+  // myrmidon(TEAM-LIVENESS-SETTINGS): the instance values of the three automatic
+  // behaviours, shown next to each card switch so "follow the instance" has a
+  // visible meaning. A viewer without access sees nothing and the hint says so.
+  const { data: teamLivenessSettings } = useQuery({
+    queryKey: teamLivenessQueryKey,
+    queryFn: () => teamLivenessApi.get(),
     enabled: !isCreate && adapterType === "hermes_gateway",
     retry: false,
   });
@@ -1794,13 +1811,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               onChange={(next) => mark("adapterConfig", "container", next)}
             />
           )}
-          {/* myrmidon(GITHUB-IDENTITIES-C): the GitHub accounts the bot may act as.
-              Read-only: the list is written through the API and the secrets it names. */}
-          {!isCreate && adapterType === "hermes_gateway" && (
-            <AgentCardGitHubIdentitiesFields
-              value={eff("adapterConfig", "githubIdentities", config.githubIdentities)}
-            />
-          )}
           {/* myrmidon(EGRESS-B): the bot's project and its own egress list */}
           {!isCreate && adapterType === "hermes_gateway" && (
             <AgentCardEgressFields agentId={props.agent.id} />
@@ -1829,6 +1839,17 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               )}
             />
           )}
+          {/* myrmidon(TEAM-LIVENESS-SETTINGS): the three automatic behaviours on
+              the agent card. A switch set to "follow the instance settings" is
+              simply absent from the card; the company-wide numbers stay on the
+              instance settings page. */}
+          {!isCreate && adapterType === "hermes_gateway" && (
+            <AgentCardTeamLivenessFields
+              value={eff("adapterConfig", "teamLiveness", config.teamLiveness)}
+              onChange={(next) => mark("adapterConfig", "teamLiveness", next)}
+              settings={teamLivenessSettings?.settings ?? null}
+            />
+          )}
           {/* myrmidon(BOT-LSP-DEFAULTS): the agent's language-server mode; empty
               follows the role policy from the instance settings. */}
           {!isCreate && adapterType === "hermes_gateway" && (
@@ -1848,6 +1869,25 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   const clearUnsupportedEffort = adapterType === "codex_local"
                     && Boolean(currentThinkingEffort)
                     && !supportedEfforts.some((option) => option.value === currentThinkingEffort);
+
+                  // myrmidon(MODEL-SWITCH-SESSION): a model switch keeps the saved session.
+                  // If the new model has a smaller context window, the next
+                  // heartbeat can overflow it. The picker list carries no
+                  // per-model window (AdapterModel is id/label/pricing only), so
+                  // the warning names the switch itself instead of a token count
+                  // the ui does not have.
+                  if (!isCreate && v && v !== currentModelId) {
+                    const previousModelLabel =
+                      models.find((model: AdapterModel) => model.id === currentModelId)?.label ?? currentModelId;
+                    const nextModelLabel = models.find((model: AdapterModel) => model.id === v)?.label ?? v;
+                    toastActions?.pushToast({
+                      tone: "warn",
+                      dedupeKey: `model-switch-context-window:${props.agent.id}:${v}`,
+                      title: "Model changed: the saved session is kept",
+                      body: `Switching ${previousModelLabel} → ${nextModelLabel} keeps this agent's saved session. If ${nextModelLabel} has a smaller context window, the next run can fail with a context-window error; Myrmidon then clears the session automatically and the run continues in a fresh one.`,
+                    });
+                  }
+
                   if (isCreate) {
                     set!({
                       model: v,

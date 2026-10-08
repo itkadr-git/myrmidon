@@ -45,7 +45,17 @@ case "$1" in
     echo "0123456789ab"
     exit 0 ;;
   exec)
-    case "$*" in *pg_restore*) [ -e "$SANDBOX/restore-fails" ] && exit 1 ;; esac
+    case "$*" in *pg_restore*)
+      # myrmidon(PREDEPLOY-NO-ACL): models a dump with GRANTs to production-only
+      # roles. Such a dump restores only when pg_restore skips privileges:
+      # without --no-acl the restore aborts on the missing role, exactly like
+      # the real pg_restore on "GRANT ... TO backup_ro" when backup_ro is absent.
+      if [ -e "$SANDBOX/grant-to-missing-role" ] && ! printf '%s' "$*" | grep -q -- '--no-acl'; then
+        echo 'pg_restore: error: could not execute query: ERROR: role "backup_ro" does not exist' >&2
+        exit 1
+      fi
+      [ -e "$SANDBOX/restore-fails" ] && exit 1 ;;
+    esac
     exit 0 ;;
   logs)
     name=""
@@ -53,6 +63,9 @@ case "$1" in
     if [ -n "$name" ] && [ -f "$SANDBOX/logs-$name" ]; then cat "$SANDBOX/logs-$name"; else echo "container $name: no such logs"; fi
     exit 0 ;;
   rm)
+    exit 0 ;;
+  volume)
+    # DEPLOY-HYGIENE: the copy's named volume must be removed by the trap
     exit 0 ;;
   image)
     case "$*" in
@@ -175,6 +188,11 @@ describe("predeploy-board-check.sh (PREDEPLOY-DB-CHECK: the 05.10 incident)", ()
     assert.match(log, new RegExp(`curl .*http://127\\.0\\.0\\.1:13110/api/companies/${COMPANY}/issues\\?limit=1`));
     assert.match(out, /board ok on the copy/);
     assert.match(out, /passed: .* comes up ok on a copy of the production database/);
+    // DEPLOY-HYGIENE (OPE-5107): the copy's data lives in a NAMED volume of
+    // this run (an anonymous one survives `docker rm -f` and stays on the
+    // disk), mounted into the throwaway Postgres and removed with the stack
+    assert.match(log, /docker run -d --name myr-predeploy-db-[^ ]+ --network myr-predeploy-[^ ]+ -v myr-predeploy-dbvol-bbbbbbbb-\d+:\/var\/lib\/postgresql\/data/);
+    assert.match(log, /docker volume rm -f myr-predeploy-dbvol-bbbbbbbb-\d+/);
     // everything was removed again
     assert.match(log, /docker rm -f myr-predeploy-board-[^ ]+ myr-predeploy-dockergate-[^ ]+ myr-predeploy-db-/);
     assert.match(log, /docker network rm myr-predeploy-/);
@@ -210,6 +228,10 @@ describe("predeploy-board-check.sh (PREDEPLOY-DB-CHECK: the 05.10 incident)", ()
     // the container logs are the operator's evidence, and the stack is removed
     assert.match(out, /logs of myr-predeploy-board-/);
     assert.match(calls(sb), /docker rm -f myr-predeploy-board-/);
+    // DEPLOY-HYGIENE: a FAILED check removes the copy's volume too (the trap
+    // runs on every exit) — the 3.4/3.6 GB orphans of 05.10 and rc.3 were
+    // exactly failed/successful checks whose volume survived
+    assert.match(calls(sb), /docker volume rm -f myr-predeploy-dbvol-/);
   });
 
   it("a 5xx from the attention list fails the check (the data path 1.6.3 broke)", () => {
@@ -363,11 +385,51 @@ describe("predeploy-board-check.sh (PREDEPLOY-DB-CHECK: the 05.10 incident)", ()
     assert.doesNotMatch(calls(sb), /--name myr-predeploy-board-/);
   });
 
+  it("a dump with GRANTs to production-only roles restores on the default command (OPE-4875)", () => {
+    // The production dump carries grants to roles that exist only on the
+    // production server (backup_ro, ...). The throwaway Postgres does not have
+    // them: without --no-acl pg_restore aborts on the missing role and the
+    // check dies before the board is ever started. The default must skip the
+    // privileges and restore the data.
+    const sb = sandbox();
+    fs.writeFileSync(path.join(sb.dir, "grant-to-missing-role"), "");
+    const { code, out } = full(sb);
+    assert.equal(code, 0, out);
+    assert.match(calls(sb), /pg_restore .*--no-owner --no-acl/);
+    assert.doesNotMatch(out, /role "backup_ro" does not exist/);
+    assert.match(out, /board ok on the copy/);
+    assert.match(out, /passed: .* comes up ok on a copy of the production database/);
+  });
+
+  it("the old default (--no-owner without --no-acl) fails on such a dump: the fake models the real abort", () => {
+    // Proof the previous test is not vacuous: an operator override that keeps
+    // the pre-OPE-4875 flags hits exactly the production failure the incident
+    // comment describes, and the check stops before the window.
+    const sb = sandbox({
+      extraConfig: 'MYRMIDON_PREDEPLOY_RESTORE_COMMAND=\'docker exec -i -e PGPASSWORD="$MYR_PREDEPLOY_DB_PASSWORD" "$MYR_PREDEPLOY_DB_CONTAINER" pg_restore -U "$MYR_PREDEPLOY_DB_USER" -d "$MYR_PREDEPLOY_DB_NAME" --no-owner < "$DUMP_FILE"\'\n',
+    });
+    fs.writeFileSync(path.join(sb.dir, "grant-to-missing-role"), "");
+    const { code, out } = full(sb);
+    assert.notEqual(code, 0, out);
+    assert.match(out, /cannot restore .* into the throwaway database/);
+    assert.doesNotMatch(calls(sb), /--name myr-predeploy-board-/);
+  });
+
+  it("an operator override of the restore command is used as given", () => {
+    const sb = sandbox({ extraConfig: "MYRMIDON_PREDEPLOY_RESTORE_COMMAND='docker exec -i custom-db pg_restore -U custom --no-acl < \"$DUMP_FILE\"'\n" });
+    const { code, out } = full(sb);
+    assert.equal(code, 0, out);
+    assert.match(calls(sb), /docker exec -i custom-db pg_restore -U custom --no-acl/);
+  });
+
   it("MYRMIDON_PREDEPLOY_KEEP=1 keeps the stack and names it for the operator", () => {
     const sb = sandbox({ extraConfig: "MYRMIDON_PREDEPLOY_KEEP=1\n" });
     const { code, out } = full(sb, "--dockergate-digest", DG);
     assert.equal(code, 0, out);
     assert.match(out, /keeping the throwaway stack/);
+    // DEPLOY-HYGIENE: the kept stack INCLUDES the volume, and its name is printed
+    assert.match(out, /volume=myr-predeploy-dbvol-/);
     assert.doesNotMatch(calls(sb), /docker rm -f/);
+    assert.doesNotMatch(calls(sb), /docker volume rm/);
   });
 });

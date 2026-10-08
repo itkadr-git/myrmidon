@@ -35,10 +35,40 @@ export interface RuntimeLimitsHostLoad {
   heldSince: string | null;
 }
 
+// myrmidon(1.6.5 RUN-FAIRNESS part 3): the queue snapshot the runtime-limits
+// endpoint reports next to the resolved limits — how many runs are admitted,
+// the ceiling they are counted against, and the head of the waiting queue.
+// `null` when the server sent no snapshot (an older server, an early
+// request), so the panels show nothing rather than a number they made up.
+export interface RuntimeLimitsQueueSnapshot {
+  active: number;
+  limit: number | null;
+  queued: number;
+  oldestQueuedAt: string | null;
+  oldestQueuedAgentId: string | null;
+}
+
 export interface RuntimeLimitsView {
   limits: RunLimits;
   sources: Record<RunLimitKey, RunLimitsSource>;
   hostLoad: RuntimeLimitsHostLoad | null;
+  queue: RuntimeLimitsQueueSnapshot | null;
+  /**
+   * myrmidon(1.6.5 C0-ui): the live memory snapshot — the host's available
+   * memory and the server container's cgroup usage. `null` when the server
+   * does not serve it yet or cannot read it.
+   */
+  memory?: RuntimeLimitsMemorySnapshot | null;
+}
+
+/**
+ * myrmidon(1.6.5 C0-ui): the memory snapshot the GET view ships — the host's
+ * memory and the server container's cgroup usage. Each side is null when the
+ * server cannot read it.
+ */
+export interface RuntimeLimitsMemorySnapshot {
+  host: { availableMb: number; totalMb: number } | null;
+  container: { limitMb: number; usedMb: number; freeMb: number } | null;
 }
 
 export const runtimeLimitsQueryKey = ["myrmidon", "runtime-limits"] as const;
@@ -56,6 +86,98 @@ export function describeRunLimitSource(source: RunLimitsSource): string {
       return "From the server environment";
     default:
       return "Default";
+  }
+}
+
+/**
+ * myrmidon(1.6.5 RUN-FAIRNESS part 3): one line for the settings page — how
+ * many runs are in flight against the concurrency ceiling, how many wait in
+ * the queue, and since when the oldest one waits (with its agent when the
+ * server names it). `null` when the server sent no snapshot, so the panel
+ * shows nothing rather than a number it made up.
+ */
+export function describeQueueSnapshot(
+  queue: RuntimeLimitsQueueSnapshot | null | undefined,
+  now: Date = new Date(),
+): string | null {
+  if (!queue) return null;
+  const limit = queue.limit === null ? "no concurrency ceiling" : `at most ${queue.limit}`;
+  const head = `Runs in flight: ${queue.active} of ${limit}.`;
+  if (queue.queued === 0) return `${head} The queue is empty.`;
+  const oldest = queue.oldestQueuedAt ? formatQueueSince(queue.oldestQueuedAt, now) : "an unknown time";
+  const agent = queue.oldestQueuedAgentId ? ` (agent ${queue.oldestQueuedAgentId})` : "";
+  return `${head} In the queue: ${queue.queued}; the oldest waits since ${oldest}${agent}.`;
+}
+
+function formatQueueSince(iso: string, now: Date): string {
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return "an unknown time";
+  const clock = at.toISOString().slice(11, 19);
+  const waitedMs = now.getTime() - at.getTime();
+  const waitedMin = Math.max(0, Math.floor(waitedMs / 60_000));
+  return waitedMin >= 1 ? `${clock} UTC (${waitedMin} min ago)` : `${clock} UTC`;
+}
+
+/**
+ * myrmidon(1.6.5 C0-ui): one line for the load screen — the host's available
+ * memory against its total and the server container's cgroup usage against
+ * its limit, the numbers the admission's memory floors decide on. A side the
+ * server cannot read is simply not mentioned; `null` when the server sent no
+ * snapshot at all, so the panel shows nothing rather than a number it made up.
+ */
+export function describeMemorySnapshot(
+  memory: RuntimeLimitsMemorySnapshot | null | undefined,
+): string | null {
+  if (!memory || (!memory.host && !memory.container)) return null;
+  const parts: string[] = [];
+  if (memory.host) {
+    parts.push(
+      `Host memory: ${memory.host.availableMb.toLocaleString("en-US")} MB available of ${memory.host.totalMb.toLocaleString("en-US")} MB.`,
+    );
+  }
+  if (memory.container) {
+    parts.push(
+      `Server container: ${memory.container.usedMb.toLocaleString("en-US")} MB used of ${memory.container.limitMb.toLocaleString("en-US")} MB (${memory.container.freeMb.toLocaleString("en-US")} MB free).`,
+    );
+  }
+  return parts.join(" ");
+}
+
+/**
+ * myrmidon(1.6.5 RUN-FAIRNESS part 3): the reasons a queued run can be
+ * waiting (`contextSnapshot.waitReason` on the run), with the human-readable
+ * English label the settings panels show next to the waiting run.
+ */
+export const RUN_WAIT_REASONS = [
+  "global_cap",
+  "start_ramp",
+  "memory",
+  "host_memory",
+  "host_cpu",
+  "agent_fair_share",
+  "agent_concurrency",
+] as const;
+
+export type RunWaitReason = (typeof RUN_WAIT_REASONS)[number];
+
+export function describeRunWaitReason(reason: string | null | undefined): string | null {
+  switch (reason) {
+    case "global_cap":
+      return "the concurrency ceiling is full";
+    case "start_ramp":
+      return "the start ramp paces new starts";
+    case "memory":
+      return "the server keeps its free-memory floor";
+    case "host_memory":
+      return "the host free-memory floor is closed";
+    case "host_cpu":
+      return "the host CPU ceiling is closed";
+    case "agent_fair_share":
+      return "another agent's turn comes first (fair share)";
+    case "agent_concurrency":
+      return "the agent's own concurrency limit is full";
+    default:
+      return null;
   }
 }
 

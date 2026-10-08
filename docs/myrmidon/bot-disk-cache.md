@@ -1,4 +1,4 @@
-# Shared package cache and git objects for bot containers (1.6.1-BOT-DISK-B, 1.6.2-BOT-DISK-C, BOT-DISK-D, BOT-DISK-F)
+# Shared package cache and git objects for bot containers (1.6.1-BOT-DISK-B, 1.6.2-BOT-DISK-C, BOT-DISK-D, BOT-DISK-F, 1.6.5 BOT-DISK-G)
 
 Development bots download the same pnpm packages, Go modules and Gradle
 dependencies again and again, each into its own volume. With the shared package
@@ -75,6 +75,71 @@ A package cache keeps downloads once, but a development bot also holds several
 full clones of the same repositories under `/workspace`, each with its own
 object database and its own `node_modules`. Three parts remove that.
 
+### One object store per bot and per scope (1.6.5 BOT-DISK-G)
+
+A bot terminal rebuilds `PATH` without `/opt/paperclip/bin`, where the wrapper
+above stood, so a bare `git clone` in a bot terminal ran the real git, and the
+wrapper itself could not start there (its shebang named `node` through the
+environment). The image now also shadows git with a symlink
+`/usr/local/bin/git` — an element every rebuilt `PATH` keeps — and the
+wrapper's shebang names the Node interpreter by its absolute path, so the
+wrapper answers and runs in a bot terminal.
+
+When the clone URL names a GitHub repository, the wrapper first tries the
+board's mirror (above); when the board has no mirror for it, it keeps a bare
+mirror of its own inside the bot's (or the scope's) mount and makes every
+clone after the first borrow its objects with `--reference-if-able`:
+
+- **Per bot:** `${MYRMIDON_GIT_LOCAL_MIRROR:-<HERMES_HOME>/.myrmidon/git-objects}`
+  (inside the bot's single mount, so no lifecycle ever reaps it).
+- **Per scope:** a member of a shared isolation scope gets
+  `MYRMIDON_GIT_LOCAL_MIRROR=/bot-scope/.git-objects` from the profile
+  compiler, so all members of the scope instance keep ONE store.
+
+The first clone of a repository pays one full fetch into the store; later
+clones store only their working tree and their own commits. A store mirror is
+refreshed at most once per `MYRMIDON_GIT_LOCAL_MIRROR_REFRESH_SEC` (default
+900; `0` never refetches) and the store keeps mirrors for at most
+`MYRMIDON_GIT_LOCAL_MIRROR_MAX` repositories (default 8); past that a clone of
+a new repository runs the real git unchanged. A mirror never prunes an object
+a clone may still borrow (`gc.pruneExpire=never`, automatic gc off), the
+board's mirror still wins when it is mounted, and every failure falls back to
+a plain clone.
+
+At every start the entrypoint runs a self-check of the whole chain: the
+`/usr/local/bin/git` shadow answers, the wrapper runs, the store is writable,
+and a real offline clone with `--reference-if-able` borrows objects. Two further
+steps watch the store itself: `store-fills` runs the command line a task clone
+uses (a bounded clone that also names a stale `--reference-if-able`) through the
+wrapper and requires a mirror in the store plus an alternates entry, and
+`store-in-use` fails when GitHub task clones exist below `/workspace` or
+`/scratch` and the store holds no mirror — the state that a silent bypass
+leaves behind. The result is written to
+`<HERMES_HOME>/.myrmidon/git-objects-check.json` and rides the clone-hygiene
+report as `gitRefCheck` (checks `usr-local-shadow`, `wrapper-runs`,
+`store-writable`, `reference-clone`, `store-fills`, `store-in-use`). A failed
+check raises an attention card (source `bot_disk_lifecycle`, kind `gitref`) that
+names the check and the store path; the card goes away when the bot restarts and
+the self-check passes. `MYRMIDON_GIT_OBJECTS_CHECK=0` skips the self-check.
+
+A clone that borrows from the store names a path of this container in its
+`objects/info/alternates`, which does not exist on the build host — `devbuild`
+therefore follows the alternates: each borrowed mirror is synced once to the
+build host under `/srv/devcache/git`, and the synced copy's
+`objects/info/alternates` is repointed at it, so git commands in a remote
+build keep working against reference-cloned task workspaces.
+
+Switches (bot-side environment or the profile's `.env`):
+`MYRMIDON_GIT_LOCAL_MIRROR=""` turns the store off (every clone copies
+objects; the board's `/cache/git` mirror still applies when set);
+`MYRMIDON_GIT_LOCAL_MIRROR_REFRESH_SEC=0` never refetches the store;
+`MYRMIDON_GIT_OBJECTS_CHECK=0` skips the start-time self-check.
+
+Measured on this repository (full history): a fresh clone without a store is
+414 MB in 25.5 s with a 144 MB `.git`; with the store mirrored it is 272 MB in
+1.1 s with a 2 MB `.git` (the working tree of 270 MB is unchanged), and the
+store itself is 145 MB once per bot or scope.
+
 ### Shared git objects
 
 The board keeps one bare mirror per repository you list in
@@ -102,10 +167,17 @@ scp-like GitHub forms, which `/etc/gitconfig` already rewrites to https) it adds
 the container, so the clone's `objects/info/alternates` points at the mirror and
 the clone stores only what the mirror lacks: the bot's own commits and whatever
 arrived upstream since the last refresh. Nothing else changes: other
-subcommands, other hosts, repositories without a mirror, and clones that already
-choose their storage (`--reference`, `--dissociate`, `--shared`, `--local`,
-`--mirror`, `--depth`, `--filter`) run the real git with the same arguments,
-environment, streams and exit status. The credential helper
+subcommands, other hosts, repositories without a mirror, and clones that pick the
+storage of their own objects (`--dissociate`, `--shared`, `--local`, `--mirror`,
+`--filter`) run the real git with the same arguments, environment, streams and
+exit status. A bounded clone (`--depth`, `--shallow-since`, `--shallow-exclude`),
+a clone that names `--reference`/`--reference-if-able`/`--no-local` and a
+non-GitHub clone do run through the store: the wrapper adds its mirror as one
+more alternate and the clone still gets the history it asked for. A clone the
+store does not serve is not silent: the wrapper prints one `[myrmidon-git]` line
+on stderr and writes `<HERMES_HOME>/.myrmidon/git-objects-last-error.json`
+(kind, reason, detail, the command line, one counter per kind). The clone itself
+still runs and still exits with the status of the real git. The credential helper
 (`git-credential-paperclip`, installed in `/etc/gitconfig`) belongs to the real
 git and is unaffected: a clone from the mirror still fetches the missing objects
 through it. A bot that wants a self-contained clone runs `git repack -a -d` in

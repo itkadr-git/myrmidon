@@ -18,13 +18,13 @@
 // next rules (metadata only — the document holds no secret values).
 
 import { Router } from "express";
-import type { z } from "zod";
+import { z } from "zod";
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import { agents, companySecrets, type Db } from "@paperclipai/db";
 import { logActivity } from "../../services/activity-log.js";
 import { assertActorCompanyPermission, assertBoard, assertCompanyAccess, getActorInfo } from "../../routes/authz.js";
 import { validate } from "../../middleware/validate.js";
-import { unprocessable } from "../../errors.js";
+import { unprocessable, notFound } from "../../errors.js";
 import {
   githubSharedIdentitySettingsInputSchema,
   toStoredGitHubSharedIdentitySettings,
@@ -32,6 +32,33 @@ import {
 } from "./settings.js";
 import { readGitHubSharedIdentitySettings, writeGitHubSharedIdentitySettings } from "./store.js";
 import { vendorGitHubConnectorEnabled } from "./vendor-connector.js";
+// myrmidon(GITHUB-APP-MANIFEST): one-click GitHub App registration (manifest flow)
+import {
+  AppManifestError,
+  buildGitHubAppManifest,
+  completeGitHubAppManifest,
+  consumeGitHubAppManifestState,
+  gitHubAppInstallUrl,
+  issueGitHubAppManifestState,
+  settingsRedirectUrl,
+} from "./app-manifest.js";
+
+// myrmidon(GITHUB-APP-MANIFEST): input of POST .../app-manifest/begin. The
+// owner rule (login alphabet) mirrors the repo owner regex of settings.ts.
+const GITHUB_OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+const githubAppManifestBeginSchema = z
+  .object({
+    ownerKind: z.enum(["user", "org"]),
+    orgLogin: z.string().trim().regex(GITHUB_OWNER, "Not a GitHub organization name").optional(),
+    name: z.string().trim().min(1).max(100),
+    description: z.string().trim().min(1).max(1000).optional(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.ownerKind === "org" && !value.orgLogin) {
+      ctx.addIssue({ code: "custom", path: ["orgLogin"], message: "orgLogin is required for an organization app" });
+    }
+  });
 
 export {
   GITHUB_SHARED_IDENTITY_GENERAL_KEY,
@@ -47,7 +74,16 @@ export {
 } from "./settings.js";
 export { readGitHubSharedIdentitySettings, preserveGitHubSharedIdentityGeneralKey } from "./store.js";
 export { resolveGitHubAppCredential, type GitHubAppResolution } from "./resolve.js";
-export { GITHUB_APP_TOKEN_PERMISSIONS, mintGitHubAppInstallationToken } from "./app-token.js";
+export {
+  GITHUB_APP_TOKEN_PERMISSION_KEYS,
+  DEFAULT_GITHUB_APP_PERMISSIONS,
+  githubAppTokenPermissionsFor,
+  type GitHubAppPermissionKey,
+  type GitHubAppPermissionLevel,
+  type GitHubAppPermissions,
+  mintGitHubAppInstallationToken,
+} from "./app-token.js";
+export { normalizeGitHubAppPermissions } from "./settings.js";
 export { vendorGitHubConnectorEnabled, GITHUB_VENDOR_CONNECTOR_ENV } from "./vendor-connector.js";
 
 async function assertReferencesBelongToCompany(db: Db, companyId: string, settings: GitHubSharedIdentitySettings) {
@@ -105,6 +141,81 @@ export function myrmidonGitHubSharedIdentityRoutes(db: Db) {
     assertBoard(req);
     assertCompanyAccess(req, companyId);
     res.json(await view(companyId));
+  });
+
+  // myrmidon(GITHUB-APP-MANIFEST): one-click GitHub App registration — start.
+  // Returns the GitHub form URL, the manifest JSON the UI auto-submits and
+  // the unguessable anti-CSRF `state` GitHub echoes back on the callback
+  // redirect; the state is bound to this company and this actor and is valid
+  // once for a few minutes.
+  router.post(
+    `${base}/app-manifest/begin`,
+    validate(githubAppManifestBeginSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertBoard(req);
+      await assertActorCompanyPermission(req, db, companyId, "tools:manage_connections");
+      const input = req.body as z.output<typeof githubAppManifestBeginSchema>;
+      try {
+        const built = buildGitHubAppManifest({ companyId, ...input });
+        res.json({ ...built, state: issueGitHubAppManifestState(companyId, getActorInfo(req)) });
+      } catch (error) {
+        if (error instanceof AppManifestError) throw unprocessable(error.message);
+        throw error;
+      }
+    },
+  );
+
+  // myrmidon(GITHUB-APP-MANIFEST): the browser redirect back from GitHub with
+  // the one-time manifest code. Always a 302 to the company settings — with
+  // `github_app_created=1` on success or `github_app_error=<short message>`
+  // on failure; the App key is vaulted before any response and never leaves
+  // the server. A code without the `state` `begin` issued for this company
+  // and actor — missing, expired, used, or issued elsewhere — is refused
+  // before GitHub is called: the callback must never convert a code a
+  // third party could deliver to this URL.
+  router.get(`${base}/app-manifest/callback`, async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertBoard(req);
+    await assertActorCompanyPermission(req, db, companyId, "tools:manage_connections");
+    const actor = getActorInfo(req);
+    const state = typeof req.query.state === "string" ? req.query.state.trim() : "";
+    if (!consumeGitHubAppManifestState({ companyId, actor, state })) {
+      res.redirect(settingsRedirectUrl(companyId, { ok: false, message: "The app registration did not start from this session (or expired); start over." }));
+      return;
+    }
+    const code = typeof req.query.code === "string" ? req.query.code.trim() : "";
+    if (!code) {
+      res.redirect(settingsRedirectUrl(companyId, { ok: false, message: "GitHub returned no manifest code; start over." }));
+      return;
+    }
+    try {
+      await completeGitHubAppManifest(db, { companyId, code, actor: getActorInfo(req) });
+    } catch (error) {
+      const message =
+        error instanceof AppManifestError
+          ? error.message
+          : "The app could not be registered; try again or register it manually.";
+      res.redirect(settingsRedirectUrl(companyId, { ok: false, message }));
+      return;
+    }
+    res.redirect(settingsRedirectUrl(companyId, { ok: true }));
+  });
+
+  // myrmidon(GITHUB-APP-MANIFEST): the "Install on GitHub" URL of a stored
+  // App entry; the UI navigates there and the user comes back by themselves.
+  router.get(`${base}/apps/:entryId/install`, async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertBoard(req);
+    await assertActorCompanyPermission(req, db, companyId, "tools:manage_connections");
+    const settings = await readGitHubSharedIdentitySettings(db, companyId);
+    const entry = settings.apps.find((app) => app.id === (req.params.entryId as string));
+    if (!entry) throw notFound("GitHub App entry not found");
+    const installUrl = gitHubAppInstallUrl(entry);
+    if (!installUrl) {
+      throw unprocessable("This entry has no GitHub app slug; it was registered manually — open the app's page on GitHub to install it.");
+    }
+    res.json({ installUrl });
   });
 
   router.put(base, validate(githubSharedIdentitySettingsInputSchema), async (req, res) => {

@@ -48,8 +48,14 @@ const ALLOWED_LATIN = new Set([
   "LAN", "VPN", "SSH", "API", "JSON",
   "CEO", "CTO", "CMO", "CFO", "DevOps", "QA", "PM",
   "markdown", "English", "ID", "Swarm",
+  // myrmidon(GITHUB-APP-MANIFEST): the manifest flow names the forge the App
+  // is created on — a product name, same class as Myrmidon/Paperclip.
+  "GitHub",
   // input placeholders stay language-neutral (role codes and URLs)
   "engineer", "https", "example", "com", "changelog",
+  // myrmidon(1.7-AGENT-EXCHANGE-A): pull request / owner/repo are forge
+  // concepts kept untranslated in RU copy, same class as GitHub.
+  "pull", "request", "owner", "repo",
 ]);
 
 function unruledLatinRuns(value: string): string[] {

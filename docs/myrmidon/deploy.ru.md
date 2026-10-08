@@ -259,6 +259,23 @@ scripts/myrmidon/deploy/deploy.sh --config deploy.env --release myr-v1.6.2
 - **Отказ читаем.** Вывод `dockergate check-config` (stdout и stderr) пишется в журнал построчно
   при любом отказе — в предполёте, в раскатке ботов и в раскатке компонента.
 
+### Обновление с 1.6.4 до 1.6.5
+
+Что меняется для операторов:
+
+- **Вендорские бэкапы конфига в томах ботов вычищает доска.** Вендорский CLI
+  Hermes сохраняет снимок `config.yaml` каждого бота в
+  `hermes/backups/config/` при каждой успешной загрузке конфига, и отключить
+  это нельзя. Собранный `config.yaml` значения секрета не содержит (только
+  ссылку `${VAR}`; значение живёт в `hermes/.env`, режим `0600`), но копия из
+  бэкапа может содержать уже разрешённое значение, и тогда оно попадает в
+  резервную копию тома бота на хосте. С версии 1.6.5 apply-скрипт каждой
+  пересборки профиля удаляет `hermes/backups` шагом «по возможности», так
+  что копии исчезают при первой пересборке профиля каждого бота после
+  обновления. Ручных шагов нет: если том бота попал в резервную копию хоста,
+  снятую до обновления, считайте, что старые копии внутри такой резервной
+  копии могут содержать ключ бота к шлюзу LLM.
+
 ### Обновление с 1.5.0 до 1.6.0
 
 Что меняется для операторов:
@@ -454,6 +471,76 @@ scripts/myrmidon/deploy/deploy.sh --config /path/to/deploy.env --digest sha256:<
 проверка образа (шаг 0), загрузочный юнит, compose-проект, компоненты, проверка конфига dockergate
 (шаг 0.55; см. [Усиление выката](#усиление-выката-итоги-0510)). Он падает ровно
 тогда, когда упал бы настоящий прогон.
+
+## Настройки PostgreSQL выкатом (DB-TUNING)
+
+Настройки PostgreSQL из аудита базы (OPE-4270) применяются **декларативно конфигурацией
+выката**, а не ручным `ALTER SYSTEM` на живой сервере. Источник значений — в репозитории:
+
+- `scripts/myrmidon/deploy/db-tuning.sql` — значения из аудита, применяет выкат;
+- `scripts/myrmidon/deploy/db-tuning-rollback.sql` — сброс к прежним значениям по умолчанию,
+  применяет `rollback.sh` (и сам упавший шаг DB-TUNING).
+
+| Параметр | Значение | Область |
+| --- | --- | --- |
+| `jit` | `off` | сервер (ALTER SYSTEM) |
+| `work_mem` | `16MB` | сервер |
+| `wal_compression` | `lz4` | сервер |
+| `autovacuum_vacuum_scale_factor` | `0.05` | сервер |
+| `autovacuum_vacuum_scale_factor` | `0.02` | таблицы `heartbeat_runs`, `agent_wakeup_requests`, `company_secrets` |
+| `autovacuum_analyze_scale_factor` | `0.02` | таблица `issues` |
+
+Четыре необязательные настройки подключают шаг к выкату (`deploy.env`, задокументированы в
+`scripts/myrmidon/deploy/deploy.env.example`):
+
+- `DB_TUNE_COMMAND` — shell-команда, применяющая `db-tuning.sql` (пустое значение пропускает
+  весь шаг):
+  ```
+  DB_TUNE_COMMAND='docker compose --project-directory $COMPOSE_DIR exec -T db psql -U <user> -d <db> -v ON_ERROR_STOP=1 -f - < scripts/myrmidon/deploy/db-tuning.sql'
+  ```
+- `DB_TUNE_SHOW_COMMAND` — команда, получающая имя параметра в `DB_TUNE_PARAM` и печатающая
+  его значение `SHOW`:
+  ```
+  DB_TUNE_SHOW_COMMAND='docker compose --project-directory $COMPOSE_DIR exec -T db psql -U <user> -d <db> -tAc "SHOW $DB_TUNE_PARAM"'
+  ```
+- `DB_TUNE_EXPECTED` — пары `имя=значение` (по одной на строку), которые выкат проверяет
+  через `DB_TUNE_SHOW_COMMAND` после применения:
+  ```
+  DB_TUNE_EXPECTED='jit=off
+  work_mem=16MB
+  wal_compression=lz4
+  autovacuum_vacuum_scale_factor=0.05'
+  ```
+- `DB_TUNE_ROLLBACK_COMMAND` — команда возврата прежних настроек (выполняет
+  `db-tuning-rollback.sql`); вызывается `rollback.sh` и самим выкатом, если шаг DB-TUNING
+  упал после применения. Пустая — откат настроек пропускается с предупреждением в лог.
+
+Шаг идёт после проверки health (в плане — шаг «7d»; dry-run описывает его как остальные).
+Перед первым применением выкат записывает живые значения `SHOW` каждой пары из
+`DB_TUNE_EXPECTED` в `$STATE_DIR/db-tuning-previous` — именно в них откат возвращает базу и
+против них проверяет их `rollback.sh`. Расхождение `SHOW` — это `DEPLOY FAILED`: обслуживание
+остаётся включённым, в выводе печатается команда отката, а наполовину применённые настройки
+сразу возвращаются, если задан `DB_TUNE_ROLLBACK_COMMAND`. `rollback.sh` применяет
+`DB_TUNE_ROLLBACK_COMMAND` после шагов возврата образа и health и проверяет те же параметры
+по записанным прежним значениям.
+
+Для замера эффекта до/после релиза снимается статистика времени топ-запросов из
+`pg_stat_statements` (та же форма команды, что выше). Представление хранит по запросу только
+`mean_exec_time` и `stddev_exec_time`, поэтому `mean + stddev` — это нормальная оценка p95
+(примерно 84–95 % исполнений ниже неё):
+
+```
+docker compose --project-directory $COMPOSE_DIR exec -T db psql -U <user> -d <db> -c "
+SELECT round((mean_exec_time + stddev_exec_time)::numeric, 1) AS p95_ms_approx,
+       round(total_exec_time::numeric / nullif(calls, 0), 1) AS mean_ms,
+       calls, rows, round(total_exec_time::numeric / 1000, 0) AS total_s,
+       left(query, 80) AS query
+FROM pg_stat_statements
+ORDER BY total_exec_time DESC LIMIT 20;"
+```
+
+Сброс счётчиков между двумя снимками делает сравнение чистым:
+`SELECT pg_stat_statements_reset();` (та же форма `exec -T db psql -c`, выполняет оператор).
 
 ## Один путь загрузки (systemd-юнит)
 
@@ -723,19 +810,76 @@ Digest доска проверяет сама — реестр и GitHub. Есл
 журнала, поэтому тег ставится на коммит слияния этого PR или позже. Формат
 фрагмента: [changes/README.md](changes/README.md).
 
-**GitHub Release создаёт CI, а не человек.** Пуш тега `myr-vX.Y.Z` запускает
+**Тег без раздела версии в журнале красит CI (RELEASE-CUT-CHANGELOG).** Прогон
+**Myrmidon CI (tag)** на теге `myr-vX.Y.Z` проверяет оба журнала командой
+`node scripts/myrmidon/release/collect-fragments.mjs --version X.Y.Z --check`:
+непустой раздел `## X.Y.Z` и пустой заголовок без выпуска, в EN и RU одинаково.
+Тег, поставленный без PR нарезки (инцидент 1.6.3: заметки остались под
+`## Unreleased`, и публикация отказала с «release body could not be built
+(missing notes)»), краснеет здесь — до старта публикации релиза. Сам
+`collect-fragments.mjs` гоняет ту же проверку до записи файлов, поэтому нарезка,
+которая не прошла бы CI, падает ещё локально.
+
+**GitHub Release создаёт CI, а не человек.** Пуш тега `myr-vX.Y.Z` (включая
+`-rc.N`) запускает
 workflow **Myrmidon release publish**
 ([myrmidon-release.yml](https://github.com/itkadr-git/myrmidon/blob/main/.github/workflows/myrmidon-release.yml)):
-он дожидается успешных прогонов `Myrmidon CI` и workflow образов этого тега —
+он дожидается успешных прогонов **Myrmidon CI (tag)**
+([myrmidon-ci-tag.yml](https://github.com/itkadr-git/myrmidon/blob/main/.github/workflows/myrmidon-ci-tag.yml)
+— полный уровень CI отдельным неотменяемым прогоном на теге; появился после
+инцидента 1.6.4, где пуш в `main` отменил CI коммита тега через общую
+concurrency-группу) и workflow образов этого тега —
 гейт подбирает прогоны по тегу, а не по коммиту (коммит релиза обычно уже в
 `main`, и его main-прогоны собирают образы `main`/`sha-`, а не тег версии;
 именно эта путаница сорвала публикацию 1.6.1), так что публикация ждёт до
 ~40 минут, пока собираются теговые образы, — затем создаёт Release (Latest)
 с секцией `## X.Y.Z` из
 [CHANGELOG.md](CHANGELOG.md) и дайджестами образов компонентов, и помечает
-предыдущий выпуск «(superseded)». При упавшем CI Release не создаётся.
+предыдущий выпуск «(superseded)». При упавшем или отменённом прогоне тега
+Release не создаётся (отменённый прогон CI тега отказывает публикации с явным
+сообщением — перезапуск: Actions → Myrmidon CI (tag) → Run workflow → имя
+тега). Зелёный прогон того же коммита на `main` гейт больше не
+удовлетворяет: единственный источник «зелени» — прогон самого тега.
 Повторный запуск (например, после починки упавшего гейта или чтобы обновить
 текст): Actions → Myrmidon release publish → Run workflow → имя тега в поле
 `tag` — введённый тег приоритетнее ветки, из которой запускаете, поэтому
 запуск из `main` публикует указанный тег; публикация идемпотентна —
 существующий Release обновляется, а не дублируется.
+
+## Режим «выпуск» (freeze слияний)
+
+От нарезки релиза до зелёного CI на теге `main` замораживается: слияния
+(включая ботов) ждут. Причина — инцидент 1.6.4 (04.10): через минуту после
+тега боты влили #475 и ещё три PR, прогон CI на коммите тега отменился как
+устаревший, автопубликация отказала, релиз публиковали вручную.
+
+**Как устроено.** Workflow **Myrmidon release publish** (запускается пушем
+тега `myr-vX.Y.Z`) открывает задачу `release-freeze: <тег>`; задача в
+открытом состоянии и есть freeze. Проверка **Release freeze gate** (workflow
+[myrmidon-release-freeze.yml](https://github.com/itkadr-git/myrmidon/blob/main/.github/workflows/myrmidon-release-freeze.yml))
+красная на каждом PR в `main`, пока freeze активен. Как только `Myrmidon CI`
+на теге позеленел, тот же tag-workflow закрывает задачу — freeze снят.
+Состояние выводится из GitHub (новейший тег + его CI + открытая
+freeze-задача), файла-флага в репо нет; логика —
+[release-freeze.sh](https://github.com/itkadr-git/myrmidon/blob/main/scripts/myrmidon/release/release-freeze.sh).
+
+**Поведение гейта.**
+
+- Падает (красный check), пока CI новейшего тега не зелёный или открыта
+  freeze-задача этого тега.
+- Зелёный CI тега снимает freeze немедленно, даже если шаг закрытия задачи
+  ещё не отработал (лага нет).
+- Упавший CI тега — это не freeze, а сломанный релиз: гейт слияний
+  пропускает, а публикацию отказывает release-гейт.
+- Не может прочитать состояние репозитория (нет токена, API упал) — падает
+  (fail-closed).
+
+**Чтобы freeze был обязательным,** оператор добавляет check `freeze`
+workflow **Release freeze gate** в required checks ветки `main` (Settings →
+Branches). Без этого он совещательный: красный, но администратор может
+смержить.
+
+**Ручное управление.** Freeze — это задача: ручное снятие = закрыть задачу
+`release-freeze: <тег>` (но гейт останется красным, пока CI тега не
+зелёный), ручная установка = открыть задачу с таким заголовком. Оба действия
+документированы в теле задачи; автоматика их не перезаписывает.

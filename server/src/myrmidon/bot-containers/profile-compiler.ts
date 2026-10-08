@@ -44,6 +44,7 @@
 import { createHash } from "node:crypto";
 
 import type { ParallelHelpersCard, ResolvedParallelHelpers } from "@paperclipai/shared";
+import { effortForModel } from "../effort-policy/effort-policy.js";
 import type { CompiledProfile, CompiledProfileFile } from "./types.js";
 import { writeYamlDocument, type YamlMapping, type YamlNode } from "./deterministic-yaml.js";
 
@@ -72,6 +73,20 @@ export interface HermesProfileAdapterConfig {
      * instance-wide alias map (HermesProfileInstanceDefaults.modelContextLengths).
      */
     contextLength?: number;
+    /**
+     * myrmidon(BOT-RUNTIME-TUNING-A): the card's own absolute compression
+     * threshold in tokens, written to `compression.threshold_tokens` (Hermes
+     * compresses at the LOWER of the ratio threshold and this count). Wins
+     * over the instance default
+     * ({@link HermesProfileCompressionDefaults.thresholdTokens}); a card that
+     * says nothing keeps that default, so the fleet's 100k cap stays in force.
+     * Range 10_000..2_000_000; an explicit value outside it is dropped with a
+     * warning and never replaced by a different number (the same rule
+     * {@link buildModelContextLength} applies to the card's context window).
+     * There is no "off" value here: turning the cap off is a company-level
+     * decision (MYRMIDON_BOT_COMPRESSION_THRESHOLD_TOKENS=0).
+     */
+    compressionThresholdTokens?: number;
     /**
      * myrmidon(BOT-RUNTIME-TUNING-B): model for `auxiliary.title_generation.model`
      * (a gateway model alias); the instance default
@@ -266,8 +281,14 @@ export interface HermesProfileCompressionDefaults {
    * for a large-window model the 0.5 ratio fires far above 256K). Written to
    * `compression.threshold_tokens` whenever set and in 10_000..2_000_000;
    * outside the range it is dropped with a warning, never thrown. Unset —
-   * nothing is written and Hermes applies its own 256K default: the default
-   * value is the instance's decision (an env default), not this compiler's.
+   * nothing is written and Hermes applies its own 256K default: this compiler
+   * still adds no default of its own; the value comes from the instance's
+   * settings, and the company default is 100_000
+   * (profile-input.ts `BOT_DEFAULT_COMPRESSION_THRESHOLD_TOKENS`, applied when
+   * MYRMIDON_BOT_COMPRESSION_THRESHOLD_TOKENS is unset).
+   *
+   * myrmidon(BOT-RUNTIME-TUNING-A): the agent card's own
+   * `adapterConfig.models.compressionThresholdTokens` wins over this value.
    */
   thresholdTokens?: number;
 }
@@ -295,6 +316,16 @@ export interface HermesProfileAuxiliaryDefaults {
 export interface HermesProfileInstanceDefaults {
   compression?: HermesProfileCompressionDefaults;
   sessionsRetentionDays?: number;
+  /**
+   * myrmidon(MEMORY-CENTRAL-A): instance-wide switch (MYRMIDON_BOT_LOCAL_MEMORY_OFF)
+   * that turns the bot's Hermes LOCAL memory off: `memory.memory_enabled: false`
+   * and `memory.user_profile_enabled: false` are written into config.yaml (the
+   * vendor flags behind the built-in MEMORY.md/USER.md stores) so durable memory
+   * lives only in hindsight (`memory.provider: hindsight` is unchanged either
+   * way). Unset or false — the memory block is emitted exactly as before, byte
+   * for byte, so flipping the setting off restores the previous restartHash.
+   */
+  disableLocalMemory?: boolean;
   /**
    * myrmidon(BOT-RUNTIME-TUNING-B): explicit context window per model alias
    * (gateway model name -> tokens). The card's own
@@ -378,7 +409,6 @@ export interface CompileHermesProfileResult {
 // Constants
 // ---------------------------------------------------------------------------
 
-const HERMES_REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 const HINDSIGHT_RECALL_BUDGETS = ["low", "mid", "high"];
 const HINDSIGHT_MODES: readonly HermesProfileHindsightMode[] = ["local_external", "cloud", "local_embedded"];
 /** The fleet's only supported mode — see {@link HermesProfileHindsightSettings.mode}. */
@@ -477,15 +507,27 @@ function resolveLlmApiKeyEnv(llm: HermesProfileLlmSettings, warnings: string[]):
   return apiKeyEnv;
 }
 
-function buildReasoningEffort(effort: string | undefined, warnings: string[]): string | undefined {
-  const trimmed = nonEmpty(effort);
-  if (!trimmed) return undefined;
-  const lowered = trimmed.toLowerCase();
-  if (!HERMES_REASONING_EFFORTS.includes(lowered)) {
-    warnings.push(`agent.reasoning_effort: "${trimmed}" is not a Hermes effort level; dropped`);
+/**
+ * myrmidon(BOT-TUNING-C): the card effort compiles through the shared effort
+ * policy — an empty field resolves to the model's safe default (never the
+ * Hermes-global "medium" a GLM model rejects), and a value outside the
+ * model's accepted list is dropped with a warning. Hermes omits
+ * reasoning_effort only when no value resolves at all.
+ */
+function buildReasoningEffort(
+  model: string | undefined,
+  effort: string | undefined,
+  warnings: string[],
+): string | undefined {
+  const resolved = effortForModel(model, effort);
+  if (resolved.source === undefined || resolved.value === undefined) return undefined;
+  if (resolved.source === "invalid") {
+    warnings.push(
+      `agent.reasoning_effort: "${effort?.trim()}" is not accepted by model "${model ?? ""}" (accepted: ${resolved.efforts.join(", ")}); dropped`,
+    );
     return undefined;
   }
-  return lowered;
+  return resolved.value;
 }
 
 function buildToolsets(toolsets: string | undefined): string[] | undefined {
@@ -745,30 +787,40 @@ function warnUnplacedVoiceModels(
 
 function buildCompression(
   defaults: HermesProfileCompressionDefaults | undefined,
+  cardThresholdTokens: number | undefined,
   warnings: string[],
 ): YamlMapping | undefined {
-  if (!defaults) return undefined;
+  // myrmidon(BOT-RUNTIME-TUNING-A): the card may carry the absolute cap on its
+  // own, without any instance-level compression block at all.
+  if (!defaults && cardThresholdTokens === undefined) return undefined;
   // myrmidon(BOT-RUNTIME-TUNING-B): absolute token cap. Set means the instance
   // chose it; unset means "let Hermes default" (256K). Out of range — drop
   // with a warning, never fail the compile: a bot profile is still usable.
-  let thresholdTokens = defaults.thresholdTokens;
+  // myrmidon(BOT-RUNTIME-TUNING-A): the card's own value wins over the
+  // instance default. An explicit card value that does not validate is
+  // DROPPED, not replaced by the instance's number — the compiler never
+  // substitutes a different cap for one the card stated (the same rule
+  // buildModelContextLength follows for the card's context window).
+  const fromCard = cardThresholdTokens !== undefined;
+  let thresholdTokens = fromCard ? cardThresholdTokens : defaults?.thresholdTokens;
   if (thresholdTokens !== undefined) {
+    const origin = fromCard ? "the card" : "the instance default";
     if (!Number.isFinite(thresholdTokens) || thresholdTokens <= 0) {
       warnings.push(
-        `compression.threshold_tokens: "${thresholdTokens}" is not a positive number; dropped (Hermes applies its own default)`,
+        `compression.threshold_tokens: "${thresholdTokens}" from ${origin} is not a positive number; dropped (Hermes applies its own default)`,
       );
       thresholdTokens = undefined;
     } else if (!Number.isInteger(thresholdTokens) || thresholdTokens < COMPRESSION_THRESHOLD_TOKENS_MIN || thresholdTokens > COMPRESSION_THRESHOLD_TOKENS_MAX) {
       warnings.push(
-        `compression.threshold_tokens: ${thresholdTokens} is outside the supported range ${COMPRESSION_THRESHOLD_TOKENS_MIN}..${COMPRESSION_THRESHOLD_TOKENS_MAX}; dropped`,
+        `compression.threshold_tokens: ${thresholdTokens} from ${origin} is outside the supported range ${COMPRESSION_THRESHOLD_TOKENS_MIN}..${COMPRESSION_THRESHOLD_TOKENS_MAX}; dropped`,
       );
       thresholdTokens = undefined;
     }
   }
   const mapping: YamlMapping = {
-    enabled: defaults.enabled,
-    threshold: defaults.threshold,
-    target_ratio: defaults.targetRatio,
+    enabled: defaults?.enabled,
+    threshold: defaults?.threshold,
+    target_ratio: defaults?.targetRatio,
     // myrmidon(BOT-RUNTIME-TUNING-B): absolute token cap, see above.
     threshold_tokens: thresholdTokens,
   };
@@ -889,7 +941,7 @@ function buildConfigYaml(input: HermesProfileInput, warnings: string[]): string 
 
   const root: YamlMapping = {
     agent: {
-      reasoning_effort: buildReasoningEffort(adapterConfig.effort, warnings),
+      reasoning_effort: buildReasoningEffort(adapterConfig.model, adapterConfig.effort, warnings),
       // myrmidon(PARALLEL-HELPERS): "helpers off" removes delegate_task from the
       // agent's tool surface. Omitted entirely when helpers are on (or the card
       // predates the field), so no unrelated toolset is ever disabled.
@@ -907,7 +959,12 @@ function buildConfigYaml(input: HermesProfileInput, warnings: string[]): string 
       auxCeiling,
       warnings,
     ),
-    compression: buildCompression(input.instanceDefaults.compression, warnings),
+    compression: buildCompression(
+      input.instanceDefaults.compression,
+      // myrmidon(BOT-RUNTIME-TUNING-A): the card's own absolute cap, if it has one.
+      adapterConfig.models?.compressionThresholdTokens,
+      warnings,
+    ),
     // myrmidon(BOT-LSP): language server protocol settings
     lsp: lspConfig,
     // myrmidon(PARALLEL-HELPERS): delegate_task's own limits and child model.
@@ -921,7 +978,18 @@ function buildConfigYaml(input: HermesProfileInput, warnings: string[]): string 
     ),
     gateway: { api_server: { max_concurrent_runs: input.maxConcurrentRuns } },
     mcp_servers: buildMcpServers(input.mcpServers, warnings),
-    memory: { provider: "hindsight" },
+    // myrmidon(MEMORY-CENTRAL-A): with the instance switch on, the bot's Hermes
+    // LOCAL memory is turned off and durable memory lives only in hindsight.
+    // The vendor contract for the built-in file stores (MEMORY.md/USER.md) is
+    // memory.memory_enabled / memory.user_profile_enabled (tools/memory_tool.py
+    // get_builtin_memory_store_flags, read by agent_init); the external provider
+    // key memory.provider stays "hindsight" either way — it is a separate
+    // mechanism and is NOT disabled by these flags. Off (the default), the block
+    // is exactly the pre-feature one, byte for byte, so flipping the setting off
+    // restores the previous restartHash.
+    memory: input.instanceDefaults.disableLocalMemory
+      ? { provider: "hindsight", memory_enabled: false, user_profile_enabled: false }
+      : { provider: "hindsight" },
     model: {
       default: nonEmpty(adapterConfig.model),
       provider: nonEmpty(adapterConfig.provider),

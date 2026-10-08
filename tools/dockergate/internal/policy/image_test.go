@@ -42,7 +42,7 @@ func TestRedTeam_RT1_3_ImagePath(t *testing.T) {
 		detail string
 	}{
 		{"no contract label", func(i *policy.ImageInfo) { delete(i.Labels, policy.RuntimeContractLabel) }, "contract_label"},
-		{"contract label 2", func(i *policy.ImageInfo) { i.Labels[policy.RuntimeContractLabel] = "2" }, "contract_label"},
+		{"contract label 3", func(i *policy.ImageInfo) { i.Labels[policy.RuntimeContractLabel] = "3" }, "contract_label"},
 		{"contract label empty", func(i *policy.ImageInfo) { i.Labels[policy.RuntimeContractLabel] = "" }, "contract_label"},
 		{"contract label true", func(i *policy.ImageInfo) { i.Labels[policy.RuntimeContractLabel] = "true" }, "contract_label"},
 		{"nil labels", func(i *policy.ImageInfo) { i.Labels = nil }, "contract_label"},

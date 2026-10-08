@@ -194,6 +194,12 @@ export interface BotVolumeMount {
  */
 export const BOT_ROOT_MOUNT = "/bot";
 
+/** Where a LEGACY-layout (contract "1") image mounts its hermes volume, and the
+ *  root {@link botRealRootFromBinds} answers for such a container: hermes is
+ *  mounted directly at /data/hermes, so `${root}/hermes` resolves there. */
+const HERMES_MOUNT_PATH = "/data/hermes";
+export const LEGACY_BOT_REAL_ROOT = "/data";
+
 /**
  * myrmidon(BOT-DISK-F): the mount of a member of a SHARED isolation-scope
  * instance. Instead of `<volumeRoot>/<botKey>:/bot` the container gets ONE bind,
@@ -259,6 +265,62 @@ export const BOT_VOLUME_MOUNTS: readonly BotVolumeMount[] = [
   { hostSuffix: "scratch", containerPath: "/scratch" },
 ];
 
+/** myrmidon(1.6.5-BOT-DISK-H11): the bot's hermes volume, i.e. HERMES_HOME in
+ *  the container. The shared read-only mounts of this part are the only mounts
+ *  that reach INSIDE a volume, and every one of them is expressed as a path
+ *  under this root. */
+export const BOT_HERMES_VOLUME_PATH = BOT_VOLUME_MOUNTS[0].containerPath;
+
+/**
+ * myrmidon(1.6.5-BOT-DISK-H11): the bot runtime directories the whole instance
+ * can share, one host copy instead of one copy per bot. On the production fleet
+ * `bin` + `lazy-packages` + `lsp` are 5–7 GiB per bot (epic BOT-DISK-H, part
+ * H11), and every bot of the instance runs the same ones.
+ *
+ * The host source is `settings.botDisk.sharedBotRuntimePath` (the driver adds
+ * the binds from it, `readSharedBotRuntimePath`), READ-ONLY, and the mount
+ * points are the paths the bot already reads its runtime from. A card never
+ * mounts these itself, and it may not take one of the mount points over
+ * ({@link validateExtraMounts}): a bot that needs a different runtime is a
+ * different image, not a different mount.
+ */
+export interface BotRuntimeMount {
+  /** Subdirectory of the configured shared runtime path on the host. */
+  hostSubdir: string;
+  /** The path the bot sees, i.e. the mount point inside the bot's own tree. */
+  containerPath: string;
+}
+
+export const BOT_RUNTIME_MOUNTS: readonly BotRuntimeMount[] = [
+  { hostSubdir: "bin", containerPath: `${BOT_HERMES_VOLUME_PATH}/bin` },
+  { hostSubdir: "lazy-packages", containerPath: `${BOT_HERMES_VOLUME_PATH}/lazy-packages` },
+  { hostSubdir: "lsp", containerPath: `${BOT_HERMES_VOLUME_PATH}/lsp` },
+];
+
+/**
+ * myrmidon(1.6.5-BOT-DISK-H11): the subtrees of a bot's hermes volume whose
+ * CONTENT is operator data that must live once on the host rather than once per
+ * bot (epic BOT-DISK-H, class J — e.g. the 24 copies of the owner's
+ * `bbq-workspace`, 9.7 GiB per bot's quota).
+ *
+ * A card may mount a host directory READ-ONLY at a path inside one of these
+ * roots; everywhere else inside a volume stays reserved, because the bot (and
+ * the profile compiler) owns those paths. The mount point the driver hands to
+ * Docker is the REAL path inside the bot's single mount — see
+ * {@link botTreeRealPath} for why the container-visible path is not usable
+ * there.
+ */
+export const BOT_OWNER_DATA_CONTAINER_ROOTS: readonly string[] = [
+  `${BOT_HERMES_VOLUME_PATH}/.hermes/shared`,
+  `${BOT_HERMES_VOLUME_PATH}/media`,
+  `${BOT_HERMES_VOLUME_PATH}/work`,
+];
+
+/** Whether `path` is one of {@link BOT_OWNER_DATA_CONTAINER_ROOTS} or under one. */
+export function isOwnerDataContainerPath(path: string): boolean {
+  return BOT_OWNER_DATA_CONTAINER_ROOTS.some((root) => path === root || path.startsWith(`${root}/`));
+}
+
 /**
  * The three narrow binds of a HELPER container (prepare-volumes, apply-profile).
  * A helper only chowns and renames files and never needs a hard link, so it keeps
@@ -297,10 +359,22 @@ export function buildHelperBinds(
   return binds;
 }
 
-/** The bot's real hermes directory inside its container, from the binds the container was created with. */
+/**
+ * The bot's real root inside its container, from the binds the container was
+ * created with: the parent directory of `hermes` under which
+ * `${root}/hermes/.myrmidon/...` is readable. A single-layout bot has its whole
+ * tree at {@link BOT_ROOT_MOUNT}; a member of a shared scope instance at
+ * `${BOT_SCOPE_MOUNT}/<botKey>`; a LEGACY-layout bot (contract "1", the three
+ * separate binds) has hermes mounted directly at `/data/hermes`, so its root
+ * is `/data`. The answer keys off the container's own binds — never off the
+ * board's current template — because the marker and the clone report live where
+ * the running container's image reads them.
+ */
 export function botRealRootFromBinds(binds: readonly string[] | undefined, botKey: string): string {
-  const shared = (binds ?? []).some((bind) => bind.endsWith(`:${BOT_SCOPE_MOUNT}`));
-  return shared ? `${BOT_SCOPE_MOUNT}/${botKey}` : BOT_ROOT_MOUNT;
+  const list = binds ?? [];
+  if (list.some((bind) => bind.endsWith(`:${BOT_SCOPE_MOUNT}`))) return `${BOT_SCOPE_MOUNT}/${botKey}`;
+  if (list.some((bind) => bind.endsWith(`:${HERMES_MOUNT_PATH}`))) return LEGACY_BOT_REAL_ROOT;
+  return BOT_ROOT_MOUNT;
 }
 
 /** The shared scope instance directory name a container's binds name, or null for an isolated one. */
@@ -329,7 +403,12 @@ export function scopeDirNameFromBinds(binds: readonly string[] | undefined, scop
  *  its container path is exactly the reserved DEVBUILD_SSH_CONTAINER_PATH (so it
  *  cannot go through validateExtraMounts, which rejects reserved paths for card
  *  mounts on purpose), but its source is held to the same
- *  MYRMIDON_BOT_MOUNT_SOURCES check as any card mount. */
+ *  MYRMIDON_BOT_MOUNT_SOURCES check as any card mount.
+ *  `volumeLayout` (default "single") is the bind layout the bot's image contract
+ *  pins — "legacy" puts the three separate binds first, "single" its one
+ *  directory at {@link BOT_ROOT_MOUNT}; everything after them (extras, driver
+ *  mount, cache) is identical under both (template.ts botVolumeLayout). A shared
+ *  `scope` is only ever single layout. */
 export function buildBinds(
   volumeRoot: string,
   botKey: string,
@@ -337,6 +416,10 @@ export function buildBinds(
     mounts?: readonly BotExtraMount[];
     allowedSources?: readonly string[];
     sharedPackageCachePath?: string;
+    /** myrmidon(1.6.5-BOT-DISK-H11): the host directory whose
+     *  {@link BOT_RUNTIME_MOUNTS} subdirectories are mounted read-only over the
+     *  bot's own runtime paths. Absent: every bot keeps its own copy. */
+    sharedBotRuntimePath?: string;
     /** myrmidon(1.6.2-BOT-DISK-C): also bind `<cache>/git` read-only at
      *  `/cache/git` (the board's git mirrors). Ignored without a cache path. */
     gitMirror?: boolean;
@@ -346,6 +429,8 @@ export function buildBinds(
     driverMount?: BotExtraMount | null;
     /** myrmidon(BOT-DISK-F): a member of a shared scope instance binds the instance directory instead of its own. */
     scope?: BotScopeMount;
+    /** The bind layout the image's runtime contract declares (legacy = three binds, single = one /bot bind). */
+    volumeLayout?: BotVolumeLayout;
   } = {},
 ): string[] {
   validateBotKey(botKey);
@@ -353,11 +438,23 @@ export function buildBinds(
   validateExtraMounts(mounts, extra.allowedSources ?? []);
   const driverBind = extra.driverMount ? [validateDriverMount(extra.driverMount, extra.allowedSources ?? [])] : [];
   if (extra.scope) assertScopeMount(extra.scope);
+  const legacy = extra.volumeLayout === "legacy" && !extra.scope;
   const binds = [
-    extra.scope ? `${extra.scope.scopeRoot}/${extra.scope.dirName}:${BOT_SCOPE_MOUNT}` : `${volumeRoot}/${botKey}:${BOT_ROOT_MOUNT}`,
-    ...mounts.map((mount) => `${mount.source}:${mount.containerPath}:ro`),
+    legacy
+      ? BOT_VOLUME_MOUNTS.map((mount) => `${volumeRoot}/${botKey}/${mount.hostSuffix}:${mount.containerPath}`)
+      : [extra.scope ? `${extra.scope.scopeRoot}/${extra.scope.dirName}:${BOT_SCOPE_MOUNT}` : `${volumeRoot}/${botKey}:${BOT_ROOT_MOUNT}`],
+    ...mounts.map((mount) =>
+      // myrmidon(1.6.5-BOT-DISK-H11): a mount inside the bot's own tree is bound
+      // at its real path (botTreeRealPath) — the only extra mounts that do not
+      // land outside the volumes.
+      `${mount.source}:${
+        isOwnerDataContainerPath(mount.containerPath)
+          ? botTreeRealPath(mount.containerPath, botKey, extra)
+          : mount.containerPath
+      }:ro`,
+    ),
     ...driverBind,
-  ];
+  ].flat();
   const cache = extra.sharedPackageCachePath;
   if (cache) {
     const reason = unsafeAbsolutePathReason(cache);
@@ -378,7 +475,66 @@ export function buildBinds(
       binds.push(`${cache}/${GIT_MIRROR_MOUNT.hostSubdir}:${GIT_MIRROR_MOUNT.containerPath}:ro`);
     }
   }
+  // myrmidon(1.6.5-BOT-DISK-H11): the shared bot runtime, last, so the order of
+  // a body is fixed: the fixed bind, the card's own read-only mounts, the
+  // driver's own mount, the shared package cache, then the runtime. Nothing
+  // else may take these mount points over (validateExtraMounts).
+  const runtime = extra.sharedBotRuntimePath;
+  if (runtime) {
+    const reason = unsafeAbsolutePathReason(runtime);
+    if (reason) {
+      throw new BotContainerTemplateError(`shared bot runtime path ${JSON.stringify(runtime)} ${reason}`);
+    }
+    for (const mount of BOT_RUNTIME_MOUNTS) {
+      binds.push(`${runtime}/${mount.hostSubdir}:${botTreeRealPath(mount.containerPath, botKey, extra)}:ro`);
+    }
+  }
   return binds;
+}
+
+/**
+ * myrmidon(1.6.5-BOT-DISK-H11): the real container path of `containerPath` — a
+ * path the bot sees under its hermes volume — to use as a BIND TARGET.
+ *
+ * Every shared read-only mount of this part lands INSIDE the bot's hermes
+ * volume, and that volume is not a mount of its own any more: BOT-DISK-D made
+ * the bot's whole tree ONE mount ({@link BOT_ROOT_MOUNT}, or the instance
+ * directory of a shared scope instance for a member of BOT-DISK-F), and the
+ * image exposes `/data/hermes` as a LINK — shipped by the image, remade at
+ * container start (entrypoint.sh) when it is missing. A bind destination is
+ * resolved by the runtime BEFORE the entrypoint runs, so naming the link path
+ * would make the runtime create a real directory where the link belongs (the
+ * entrypoint then could not replace it, and a shared-scope member, whose /data
+ * is an empty tmpfs, would never see its tree at /data at all). Naming the real
+ * path under the bot's own mount lands the mount where the bot reads it, in all
+ * three layouts:
+ *
+ * - a legacy-layout image (three binds, contract "1") mounts the volume itself,
+ *   so its container path is already real;
+ * - a single-layout bot (the default) sees its own directory at
+ *   {@link BOT_ROOT_MOUNT}: `/data/hermes/bin` -> `/bot/hermes/bin`;
+ * - a member of a shared scope instance sees the instance directory at
+ *   {@link BOT_SCOPE_MOUNT} and its own subdirectory in it named by its bot key
+ *   (the same name the driver passes as MYRMIDON_BOT_SCOPE_SUBDIR).
+ */
+export function botTreeRealPath(
+  containerPath: string,
+  botKey: string,
+  extra: { scope?: BotScopeMount; volumeLayout?: BotVolumeLayout } = {},
+): string {
+  if (containerPath !== BOT_HERMES_VOLUME_PATH && !containerPath.startsWith(`${BOT_HERMES_VOLUME_PATH}/`)) {
+    throw new BotContainerTemplateError(
+      `shared read-only mount path ${JSON.stringify(containerPath)} is not inside ${BOT_HERMES_VOLUME_PATH}`,
+    );
+  }
+  const rest = containerPath.slice(BOT_HERMES_VOLUME_PATH.length);
+  // The bot's hermes volume is one subdirectory of its own tree (BOT-DISK-D
+  // made the whole tree one mount), so the in-tree path is the tree root plus
+  // that subdirectory plus the remainder of the volume path.
+  const inTree = BOT_HERMES_REAL_PATH.slice(BOT_ROOT_MOUNT.length);
+  if (extra.scope) return `${BOT_SCOPE_MOUNT}/${botKey}${inTree}${rest}`;
+  if (extra.volumeLayout === "legacy") return containerPath;
+  return `${BOT_HERMES_REAL_PATH}${rest}`;
 }
 
 /**
@@ -561,9 +717,14 @@ export function validateExtraMounts(mounts: readonly BotExtraMount[], allowedSou
     const clashes = RESERVED_CONTAINER_PATHS.some(
       (reserved) => mount.containerPath === reserved || mount.containerPath.startsWith(`${reserved}/`),
     );
-    if (clashes || taken.has(mount.containerPath)) {
+    // myrmidon(1.6.5-BOT-DISK-H11): inside a volume exactly the owner-data
+    // roots may be taken over (class J of the epic design): the operator mounts
+    // one host directory that used to be copied into every bot. Everything else
+    // inside a volume stays reserved.
+    if ((clashes && !isOwnerDataContainerPath(mount.containerPath)) || taken.has(mount.containerPath)) {
       throw new BotContainerTemplateError(
-        `${where} path ${JSON.stringify(mount.containerPath)} is reserved by the driver or used twice`,
+        `${where} path ${JSON.stringify(mount.containerPath)} is reserved by the driver or used twice (inside a volume only ` +
+          `${BOT_OWNER_DATA_CONTAINER_ROOTS.join(", ")} may be taken over)`,
       );
     }
     taken.add(mount.containerPath);
@@ -620,30 +781,65 @@ export const BOT_LABEL_KEYS = {
  * created and started, and then crash-loop under its restart policy on every
  * pass.
  *
- * Contract "1":
+ * Both contracts say the same about the process:
  *  - the gateway runs as uid:gid 10001:10001 with HERMES_HOME=/data/hermes and
- *    /workspace as its working directory: the driver mounts exactly
- *    /data/hermes, /workspace and /scratch, owned by 10001, mode 0700;
+ *    /workspace as its working directory;
  *  - every secret the gateway needs, API_SERVER_KEY included, is read from
  *    $HERMES_HOME/.env (dotenv `KEY="value"` lines, read as data and never
  *    executed by a shell). The driver never puts a secret in the container's
  *    environment, where `docker inspect` shows it, so the image must not
  *    require one there;
- *  - it writes nothing outside those three mounts, /tmp (a tmpfs) and volumes
+ *  - it writes nothing outside its bot tree, /tmp (a tmpfs) and volumes
  *    the image declares itself: the driver runs it with a read-only root
  *    filesystem;
  *  - /bin/sh with find, mv (with -T), mkdir -p, rm, chmod, chown and dirname:
  *    the driver's helper containers run its scripts with the image's own shell.
+ *
+ * They differ in ONE thing, the volume layout the driver must mount (this is
+ * the versioning the 1.6.5-rc.1 rollout defect was missing: the layout changed
+ * under contract "1" without changing it, and the board recreated 1.6.4
+ * containers with the new one-mount template — the old image then found its
+ * $HERMES_HOME an empty anonymous volume and crash-looped on
+ * "API_SERVER_KEY is required"):
+ *
+ * Contract "1" — the LEGACY layout ("legacy"): three separate binds,
+ *    `<volumeRoot>/<botKey>/{hermes,workspace,scratch}` mounted at
+ *    /data/hermes, /workspace and /scratch, owned by 10001, mode 0700. An
+ *    image built for this contract resolves HERMES_HOME through the real
+ *    mount, so the one-mount layout would leave it writing into an anonymous
+ *    volume. Old release images (1.6.4) keep working under a newer board:
+ *    their containers are recreated under the layout they were built for.
+ * Contract "2" — the SINGLE-mount layout ("single", BOT-DISK-D): the bot's
+ *    whole writable tree, `<volumeRoot>/<botKey>`, is ONE bind at
+ *    {@link BOT_ROOT_MOUNT} (`/bot`); /data/hermes, /workspace and /scratch
+ *    are links made by the image into it, so hard links (pnpm's node_modules
+ *    into its store) work within the tree. A member of a shared isolation
+ *    scope ({@link BOT_RUNTIME_SCOPE_LABEL}, BOT-DISK-F) is only ever single
+ *    layout: it binds the instance directory at {@link BOT_SCOPE_MOUNT}.
+ *
+ * Transition rule: images built between the layout change and this versioning
+ * carry contract "1" AND the scope label (BOT-DISK-F shipped with the single
+ * mount): the scope label is the only thing that tells them apart from a
+ * three-volume release image, so a contract "1" image that declares it is
+ * handled as single layout. A contract "1" image without it gets the legacy
+ * binds — the three host directories it mounts are the same ones /bot holds,
+ * so even a BOT-DISK-D-era image boots under them (its /data links are
+ * shadowed by the mounts), and a profile apply needs no /bot at all.
  */
 export const BOT_RUNTIME_CONTRACT_LABEL = "myrmidon.bot-runtime.contract";
-export const SUPPORTED_BOT_RUNTIME_CONTRACTS: readonly string[] = ["1"];
+export const LEGACY_BOT_RUNTIME_CONTRACT = "1";
+export const SINGLE_BOT_RUNTIME_CONTRACT = "2";
+export const SUPPORTED_BOT_RUNTIME_CONTRACTS: readonly string[] = [LEGACY_BOT_RUNTIME_CONTRACT, SINGLE_BOT_RUNTIME_CONTRACT];
 
-/** Throws unless the image labels (`Config.Labels` of `GET /images/{name}/json`,
- *  which Docker returns as null for an image without labels) declare a
- *  supported bot runtime contract. */
-export function assertBotRuntimeContract(image: string, labels: Record<string, string> | null | undefined): void {
+/** The volume layout an image's contract pins the driver to (see above). */
+export type BotVolumeLayout = "legacy" | "single";
+
+/** The contract an image declares, or a clear refusal. Never returns an
+ *  unsupported value: an image without the label or with a contract this
+ *  driver does not know is refused before anything is created. */
+export function declaredBotRuntimeContract(image: string, labels: Record<string, string> | null | undefined): string {
   const declared = labels?.[BOT_RUNTIME_CONTRACT_LABEL];
-  if (declared !== undefined && SUPPORTED_BOT_RUNTIME_CONTRACTS.includes(declared)) return;
+  if (declared !== undefined && SUPPORTED_BOT_RUNTIME_CONTRACTS.includes(declared)) return declared;
   const wanted = SUPPORTED_BOT_RUNTIME_CONTRACTS.map((version) => `${BOT_RUNTIME_CONTRACT_LABEL}=${version}`).join(" or ");
   throw new BotContainerTemplateError(
     declared === undefined
@@ -651,6 +847,23 @@ export function assertBotRuntimeContract(image: string, labels: Record<string, s
           "nothing is created from an image not known to take API_SERVER_KEY from $HERMES_HOME/.env"
       : `image "${image}" declares bot runtime contract "${declared}", this driver supports only ${wanted}`,
   );
+}
+
+/** The volume layout the driver must mount for an image: contract "2" is the
+ *  single mount; contract "1" is the legacy three-volume layout, except for
+ *  images that also declare the scope label, which are BOT-DISK-D/F builds
+ *  from before the layout was versioned and take the single mount (see the
+ *  contract docstring). Throws on an image without a supported contract. */
+export function botVolumeLayout(image: string, labels: Record<string, string> | null | undefined): BotVolumeLayout {
+  if (declaredBotRuntimeContract(image, labels) === SINGLE_BOT_RUNTIME_CONTRACT) return "single";
+  return labels?.[BOT_RUNTIME_SCOPE_LABEL] === "1" ? "single" : "legacy";
+}
+
+/** Throws unless the image labels (`Config.Labels` of `GET /images/{name}/json`,
+ *  which Docker returns as null for an image without labels) declare a
+ *  supported bot runtime contract. */
+export function assertBotRuntimeContract(image: string, labels: Record<string, string> | null | undefined): void {
+  declaredBotRuntimeContract(image, labels);
 }
 
 /**

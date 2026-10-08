@@ -12,10 +12,17 @@ name: Myrmidon hot files review
 #   - pending  - hot files touched, review-approved label not present yet;
 #   - success  - the label is present, or no hot files touched.
 # The job itself always ends green.
+#
+# Merge queue: the queue checks the candidate commit, not the PR. Review is
+# enforced on the PR, so for a `merge_group` event the job only reports the
+# `hot-files-review` status as success on the candidate and leaves the queue
+# moving. See docs/myrmidon/merge-queue.md.
 
 on:
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review]
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
@@ -25,17 +32,39 @@ permissions:
 jobs:
   hot-files-review:
     name: hot files review
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
     steps:
+      - name: Ensure gh and jq (self-hosted runners may lack them)
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="$RUNNER_TEMP/tools-bin"; mkdir -p "$bin"
+          if ! command -v jq >/dev/null; then
+            curl -fsSL -o "$bin/jq" https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-amd64
+            chmod +x "$bin/jq"
+          fi
+          if ! command -v gh >/dev/null; then
+            curl -fsSL https://github.com/cli/cli/releases/download/v2.62.0/gh_2.62.0_linux_amd64.tar.gz | tar -xz -C "$RUNNER_TEMP"
+            cp "$RUNNER_TEMP/gh_2.62.0_linux_amd64/bin/gh" "$bin/gh"
+          fi
+          echo "$bin" >> "$GITHUB_PATH"
       - name: Check hot files and review label
         env:
           GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
           ACTION: ${{ github.event.action }}
-          SHA: ${{ github.event.pull_request.head.sha }}
+          SHA: ${{ github.event.merge_group.head_sha || github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
+          if [[ "$EVENT" == "merge_group" ]]; then
+            # Review is enforced on the PR before it enters the queue. For the
+            # queue the job only reports the status on the candidate commit.
+            echo "Событие merge_group: очередь проверяет кандидатный коммит; ревью обеспечено на PR."
+            gh api -X POST "repos/$REPO/statuses/$SHA" -f state='success' -f context='hot-files-review' -f description='merge queue: review enforced on the PR' >/dev/null
+            exit 0
+          fi
           files="$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[].filename')"
           hot='^(server/src/services/heartbeat\.ts|server/src/services/execution-continuation\.ts|server/src/services/legacy-execution-recovery\.ts|server/src/services/tool-gateway\.ts|server/src/routes/tool-gateway\.ts|server/src/services/redaction\.ts|server/src/services/native-runtime/runtime-context\.ts|server/src/services/issues\.ts|server/src/routes/issues\.ts|server/src/services/chat-channels\.ts|packages/adapters/hermes/.*|packages/db/.*|scripts/myrmidon/deploy/.*|server/src/myrmidon/bot-containers/(docker-driver|template|ustar|routes)\.ts|server/src/myrmidon/agent-self-update\.ts|tools/dockergate/.*|docker/dockergate/.*|scripts/myrmidon/dockergate/.*|Dockerfile|\.github/workflows/.*)$'
           touched="$(grep -E "$hot" <<<"$files" || true)"
@@ -46,8 +75,16 @@ jobs:
           fi
           echo "Затронуты ключевые файлы:"; echo "$touched"
           if [[ "$ACTION" == "synchronize" ]]; then
-            gh api -X DELETE "repos/$REPO/issues/$PR/labels/review-approved" >/dev/null 2>&1 || true
-            echo "Новый push после ревью — метка review-approved снята, нужно повторное ревью."
+            # myrmidon-pr-autoupdate merges main into the branch through the
+            # update-branch API (merge commit by a GitHub App, committer web-flow).
+            # That `synchronize` leaves the PR's own code unchanged, so the label stays.
+            head="$(gh api "repos/$REPO/commits/$SHA" --jq '[(.parents|length),.author.login,.committer.login,(.commit.message|split("\n")[0])]|@tsv')"
+            if [[ "$head" =~ ^2$'\t'[^$'\t']+\[bot\]$'\t'web-flow$'\t'Merge\ branch\ \'main\'\ into\  ]]; then
+              echo "Head — слияние main (update-branch, бот): метка review-approved остаётся."
+            else
+              gh api -X DELETE "repos/$REPO/issues/$PR/labels/review-approved" >/dev/null 2>&1 || true
+              echo "Новый push после ревью — метка review-approved снята, нужно повторное ревью."
+            fi
           fi
           labels="$(gh api "repos/$REPO/issues/$PR/labels" --jq '.[].name')"
           if grep -qx 'review-approved' <<<"$labels"; then

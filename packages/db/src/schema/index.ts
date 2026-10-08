@@ -192,6 +192,8 @@ export {
 } from "./company_skills.js";
 // myrmidon(1.6-SKILL-LIFE): additive skill lifecycle tables.
 export { companySkillLifecycle, companySkillLifecycleEvents } from "./company_skill_lifecycle.js";
+// myrmidon(1.6.5 BASE-SKILLS): the company-level registry of mandatory skills.
+export { companyBaseSkills } from "./company_base_skills.js";
 export { plugins } from "./plugins.js";
 export { pluginConfig } from "./plugin_config.js";
 export { pluginCompanySettings } from "./plugin_company_settings.js";
@@ -229,9 +231,20 @@ export {
 export { myrmidonFleetServers } from "./myrmidon_fleet_servers.js"; // myrmidon(SC1): fleet-server registry for the browser console
 // myrmidon(1.6-SWARM): leases of the per-role task queues.
 export { issueClaims } from "./issue_claims.js";
+// myrmidon(1.7-AGENT-EXCHANGE-A): discussion rooms on issue cards and the round grid of answers.
+export {
+  agentExchangeRooms,
+  agentExchangeMessages,
+  type AgentExchangeRoomRow,
+  type NewAgentExchangeRoomRow,
+  type AgentExchangeMessageRow,
+  type NewAgentExchangeMessageRow,
+} from "./agent_exchange_rooms.js";
 
 // myrmidon(1.6-FORAGE): source registry and findings log of FORAGING.
 export { foragingSources, foragingFindings, type ForagingSourceKind, type ForagingFindingStatus } from "./myrmidon_foraging.js";
+// myrmidon(1.6.1-FORAGING-LIMITS-UI): the spend ledger the learning limits read.
+export { foragingSpendEvents, type ForagingSpendOutcome } from "./myrmidon_foraging_spend.js";
 // myrmidon(1.6-WIKI): regulations as wiki pages — statuses, revisions and rollback.
 export {
   myrmidonWikiRegulations,
@@ -248,3 +261,13 @@ export {
   MODEL_PROVIDER_TYPES,
   type ModelProviderType,
 } from "./model_providers.js";
+// myrmidon(CUSTOM-CASTES): the company caste (agent role) directory.
+export { agentCastes } from "./agent_castes.js";
+// myrmidon(CORPUS-A): corpus knowledge module tables.
+export {
+  corpusDatasets,
+  corpusDocuments,
+  corpusChunks,
+  corpusParseJobs,
+  corpusSettings,
+} from "./corpus.js";

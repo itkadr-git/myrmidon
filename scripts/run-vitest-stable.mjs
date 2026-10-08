@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,11 +18,12 @@ const serializedShardDurations = loadShardDurations(
 );
 const serverRoot = path.join(repoRoot, "server");
 const serverSrcDir = path.join(repoRoot, "server", "src");
-const serverTestsDir = path.join(repoRoot, "server", "src", "__tests__");
+const serverScriptsDir = path.join(repoRoot, "server", "scripts");
 const nonServerProjects = [
   "@paperclipai/shared",
   "@paperclipai/skills-catalog",
   "@paperclipai/db",
+  "@paperclipai/corpus",
   "@paperclipai/adapter-utils",
   "@paperclipai/adapter-claude-local",
   "@paperclipai/adapter-codex-local",
@@ -84,6 +85,13 @@ const serializedServerVitestArgs = [
 const sourceOnlyVitestArgs = ["--exclude", "**/dist/**"];
 
 function walk(dir) {
+  // Truncated checkouts and synthetic fixture trees may lack one of the
+  // collected roots (for example server/scripts); treat a missing directory
+  // as an empty set instead of failing the whole selection (vitest-chat-shards
+  // builds a minimal server/src/__tests__ tree).
+  if (!existsSync(dir)) {
+    return [];
+  }
   const entries = readdirSync(dir);
   const files = [];
   for (const entry of entries) {
@@ -100,10 +108,6 @@ function walk(dir) {
 
 function toRepoPath(file) {
   return path.relative(repoRoot, file).split(path.sep).join("/");
-}
-
-function toServerPath(file) {
-  return path.relative(serverRoot, file).split(path.sep).join("/");
 }
 
 function isRouteOrAuthzTest(file) {
@@ -152,6 +156,7 @@ function parseCliOptions(argv) {
   let shardCount = null;
   let group = null;
   let dryRun = false;
+  let check = false;
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -194,6 +199,11 @@ function parseCliOptions(argv) {
 
     if (arg === "--dry-run") {
       dryRun = true;
+      continue;
+    }
+
+    if (arg === "--check") {
+      check = true;
       continue;
     }
 
@@ -250,6 +260,7 @@ function parseCliOptions(argv) {
       shardCount: shardCount ?? 1,
       group: null,
       dryRun,
+      check,
     };
   }
 
@@ -259,6 +270,7 @@ function parseCliOptions(argv) {
     shardCount,
     group,
     dryRun,
+    check,
   };
 }
 
@@ -435,13 +447,25 @@ function runSerializedSuites(routeTests, shardIndex, shardCount) {
   }
 }
 
-const routeTests = walk(serverTestsDir)
-  .filter((file) => isRouteOrAuthzTest(toRepoPath(file)))
-  .map((file) => ({
-    repoPath: toRepoPath(file),
-    serverPath: toServerPath(file),
-  }))
-  .sort((a, b) => a.repoPath.localeCompare(b.repoPath));
+// Every server test file vitest can collect: `src/**/*.test.ts` and
+// `scripts/**/*.test.mjs` (see server/vitest.config.ts). The route/authz
+// serialized lane and the general-server lane partition THIS set, so no file
+// can silently fall between the two. The route/authz exclusion pattern applies
+// to the whole `server/src` tree, not just `src/__tests__`: suites like
+// `server/src/myrmidon/*/routes.myrmidon.test.ts` live outside `__tests__` and
+// must still land in the serialized lane (OPE-4472 — they used to run in no
+// lane at all).
+const serverTestFiles = [
+  ...walk(serverSrcDir).map((file) => toRepoPath(file)).filter((repoPath) => repoPath.endsWith(".test.ts")),
+  ...walk(serverScriptsDir).map((file) => toRepoPath(file)).filter((repoPath) => repoPath.endsWith(".test.mjs")),
+].sort((a, b) => a.localeCompare(b));
+
+const routeTests = serverTestFiles
+  .filter((repoPath) => isRouteOrAuthzTest(repoPath))
+  .map((repoPath) => ({
+    repoPath,
+    serverPath: path.relative(serverRoot, path.join(repoRoot, repoPath)).split(path.sep).join("/"),
+  }));
 
 // Every server test file that the general-server group is responsible for,
 // i.e. the whole server project minus the route/authz suites that run in the
@@ -450,13 +474,50 @@ const routeTests = walk(serverTestsDir)
 // config pins maxWorkers to 1, so the only way to parallelize is across jobs.
 // Suites are partitioned by recorded duration (scripts/general-server-shard.mjs)
 // rather than round-robin, so one slow suite cluster can't stretch a single shard.
-const generalServerTestFiles = walk(serverSrcDir)
-  .map((file) => toRepoPath(file))
-  .filter((repoPath) => repoPath.endsWith(".test.ts"))
-  .filter((repoPath) => !isRouteOrAuthzTest(repoPath))
-  .sort((a, b) => a.localeCompare(b));
+const generalServerTestFiles = serverTestFiles
+  .filter((repoPath) => !isRouteOrAuthzTest(repoPath));
+
+// Hard invariant: the two selectors must partition the collected server suite
+// set exactly — every file in one lane, none in both, none orphaned. A future
+// edit that makes the exclusion pattern and the lane selectors disagree would
+// otherwise silently drop suites from CI again (the OPE-4472 incident: route/
+// authz suites outside src/__tests__ matched the general-server exclusion but
+// were never picked up by the serialized lane).
+{
+  const serialized = new Set(routeTests.map((routeTest) => routeTest.repoPath));
+  const general = new Set(generalServerTestFiles);
+  const orphans = serverTestFiles.filter(
+    (repoPath) => !serialized.has(repoPath) && !general.has(repoPath),
+  );
+  const doubleCounts = serverTestFiles.filter(
+    (repoPath) => serialized.has(repoPath) && general.has(repoPath),
+  );
+  if (orphans.length > 0 || doubleCounts.length > 0) {
+    const lines = [];
+    if (orphans.length > 0) {
+      lines.push(`in no lane (${orphans.length}):`, ...orphans.map((file) => `  ${file}`));
+    }
+    if (doubleCounts.length > 0) {
+      lines.push(`in more than one lane (${doubleCounts.length}):`, ...doubleCounts.map((file) => `  ${file}`));
+    }
+    fail(`Server test lane partition is not exact:\n${lines.join("\n")}`);
+  }
+}
 
 const options = parseCliOptions(process.argv.slice(2));
+
+// CI lane-coverage gate (OPE-4472): `--check` exits 0 after the invariant
+// block above proves every collected server suite lands in exactly one lane.
+// Failing here means a test file exists that no lane would run.
+if (options.check) {
+  console.log(
+    `[test:check] ${serverTestFiles.length} collected server suites: ` +
+      `${routeTests.length} serialized (route/authz), ${generalServerTestFiles.length} general-server; ` +
+      `partition is exact`,
+  );
+  process.exit(0);
+}
+
 if (options.dryRun) {
   const serializedSuites =
     options.mode === serializedModeName

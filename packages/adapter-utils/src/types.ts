@@ -5,6 +5,7 @@
 import type { SshRemoteExecutionSpec } from "./ssh.js";
 import type { AdapterExecutionTarget } from "./execution-target.js";
 import type { RuntimeStatusSink } from "./runtime-progress.js";
+import type { PromptBreakdown } from "./prompt-meter.js";
 import type { ExecutionContinuationEnvelope, NativeFinalizationResult } from "@paperclipai/shared";
 
 export interface AdapterAgent {
@@ -34,6 +35,14 @@ export interface UsageSummary {
   outputTokens: number;
   cachedInputTokens?: number;
 }
+
+/**
+ * myrmidon(1.6.5 PROMPT-BUDGET A): per-section prompt-token breakdown of a
+ * run's assembled prompt, estimated by the adapter when it builds the
+ * request. Canonical definition lives in ./prompt-meter.js; re-exported here
+ * so adapters can take it from the package root.
+ */
+export type { PromptBreakdown } from "./prompt-meter.js";
 
 export type AdapterBillingType =
   | "api"
@@ -68,6 +77,7 @@ export interface AdapterRuntimeServiceReport {
 
 export type AdapterExecutionErrorFamily =
   | "transient_upstream"
+  | "permanent_config_error"
   | "provider_quota"
   | "model_refusal"
   | "refresh_token_reused"
@@ -91,6 +101,13 @@ export interface AdapterExecutionResult {
   retryNotBefore?: string | null;
   errorMeta?: Record<string, unknown>;
   usage?: UsageSummary;
+  /**
+   * myrmidon(1.6.5 PROMPT-BUDGET A): prompt-token breakdown of the request
+   * the adapter assembled for this run, measured at build time. The server
+   * copies it into `heartbeat_runs.usageJson.promptBreakdown`. Estimated
+   * (chars/4 heuristic), not provider-reported.
+   */
+  promptBreakdown?: PromptBreakdown;
   /**
    * How `usage` totals are scoped. "per_run" means the tokens cover only this
    * execution; "session_cumulative" means they are running totals for the
@@ -232,6 +249,15 @@ export interface AdapterExecutionContext {
    */
   onDispatch?: () => void;
   onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
+  /**
+   * myrmidon(HERMES-RUN-REATTACH): remote adapters report the provider-side run
+   * id as soon as the provider admits the run (immediately after the create
+   * response), not only in the final result. The host persists it on the
+   * heartbeat run row, so a server restart can reattach to the provider run
+   * instead of losing it. Optional and additive: adapters that never call it
+   * behave exactly as before.
+   */
+  onExternalRunId?: (externalRunId: string) => Promise<void>;
   authToken?: string;
   /**
    * The injected OpenTelemetry startup trace context (tracer + root
@@ -459,6 +485,18 @@ export interface ServerAdapterModule {
   syncSkills?: (ctx: AdapterSkillContext, desiredSkills: string[]) => Promise<AdapterSkillSnapshot>;
   sessionCodec?: AdapterSessionCodec;
   sessionManagement?: import("./session-compaction.js").AdapterSessionManagement;
+  /**
+   * myrmidon(HERMES-RUN-REATTACH): board-side stop for a remote run the board
+   * is not actively supervising (no live adapter execution). The heartbeat
+   * cancellation path calls it with the run's persisted external run id so a
+   * remote slot (e.g. the hermes gateway's max_concurrent_runs) frees
+   * immediately instead of waiting out the remote side's own timeout sweep.
+   */
+  stopGatewayRunForBoard?: (input: {
+    baseUrl: string;
+    apiKey: string;
+    gatewayRunId: string;
+  }) => Promise<{ stopped: boolean }>;
   supportsLocalAgentJwt?: boolean;
   /** How this adapter receives Paperclip's run-scoped control tools. */
   runtimeToolDelivery?: AdapterRuntimeToolDelivery;

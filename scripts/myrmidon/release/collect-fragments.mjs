@@ -5,6 +5,15 @@
 // `myr-vX.Y.Z` tag.
 //
 //   node scripts/myrmidon/release/collect-fragments.mjs --version X.Y.Z [--root <dir>] [--dry-run]
+//   node scripts/myrmidon/release/collect-fragments.mjs --version X.Y.Z --check
+//
+// `--check` (RELEASE-CUT-CHANGELOG, OPE-4569) is the CI gate of a release
+// tag: it reads both changelogs as they are and demands a non-empty
+// `## X.Y.Z` section and an empty unreleased one in each. A tag commit
+// without the section fails the check, so the tag publishes no red image
+// and the release publish never meets a body it cannot build (the
+// myr-v1.6.3 incident: the tag carried no `## 1.6.3` and the publish
+// refused with "release body could not be built (missing notes)").
 //
 // What it does, per fragment file docs/myrmidon/changes/<slug>.md:
 //   ## changelog-en   -> a "###" section under "## X.Y.Z" in CHANGELOG.md
@@ -16,7 +25,10 @@
 //   ## settings-en    -> table rows appended to SETTINGS.md, section
 //                        `settings-section`
 //   ## settings-ru    -> table rows appended to SETTINGS.ru.md, same section
-//                        name (the RU file reuses the EN section headings)
+//                        name; when the RU file carries the Russian variant of
+//                        the heading instead of the EN one, the section is
+//                        resolved by its key (version + feature id tokens, see
+//                        `sectionKey`)
 // Then every consumed fragment file is deleted.
 //
 // Fragment format (docs/myrmidon/changes/README.md):
@@ -256,6 +268,65 @@ export function parseFragment(text, fileName = "<fragment>") {
   return { meta, sections: out, edits };
 }
 
+/**
+ * Language-independent key of a registry section heading: the leading release
+ * version (if any) plus the all-caps Latin feature-id tokens (`BOT-DISK`,
+ * `P12`, `EXTCASE-B`, `WAKE-GUARD`), joined. Track headings key on the track
+ * number (`track:5`). Single-letter part markers (`B` in `BOT-DISK B`) are
+ * noise and are dropped, so EN `... BOT-DISK B: shared package cache ...` and
+ * RU `... BOT-DISK B: общий кэш ...` share the key. Used to pair the heading
+ * named by a fragment's `settings-section` with the translated variant of the
+ * same section in the RU document.
+ */
+export function sectionKey(heading) {
+  const h = String(heading).trim();
+  const track = /^(?:Track|Трек)\s*(\d+)\b/i.exec(h);
+  if (track) return `track:${track[1]}`;
+  const version = /^(\d+\.\d+(?:\.\d+)?)\s+[—-]\s+/.exec(h);
+  const body = version ? h.slice(version[0].length) : h;
+  const runs = (body.match(/[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*/g) || []).filter(
+    (t) => t.length >= 2,
+  );
+  if (runs.length === 0) return null;
+  return `${version ? version[1] : ""}|${runs.join("|")}`;
+}
+
+/**
+ * Resolves the heading of a section inside `docText`. The exact heading wins;
+ * otherwise the section whose `sectionKey` matches is returned (the RU settings
+ * document carries Russian variants of the EN headings that fragments name).
+ * Ambiguous or missing key matches return the heading unchanged so
+ * foldTableRows fails with its usual list of available sections.
+ */
+export function resolveSectionHeading(docText, heading) {
+  const lines = docText.split("\n");
+  const wanted = `## ${heading}`;
+  if (lines.some((l) => l.trim() === wanted)) return heading;
+  const key = sectionKey(heading);
+  if (key === null) return heading;
+  const candidates = lines
+    .filter((l) => /^## /.test(l))
+    .map((l) => l.slice(3).trim())
+    .filter((h) => sectionKey(h) === key);
+  if (candidates.length === 1) return candidates[0];
+  if (candidates.length === 0 && key.includes("|")) {
+    // Relaxed match: version + first feature-id token (RU headings sometimes
+    // carry fewer capitalised tokens than their EN twin, e.g. an EN heading
+    // mentions «part B, UI» while the RU one is a short translation).
+    const prefix = key.split("|").slice(0, 2).join("|");
+    const relaxed = lines
+      .filter((l) => /^## /.test(l))
+      .map((l) => l.slice(3).trim())
+      .filter((h) => {
+        const k = sectionKey(h);
+        return k !== null && (k === prefix || k.startsWith(`${prefix}|`));
+      });
+    const seen = new Set(relaxed);
+    if (seen.size === 1) return [...seen][0];
+  }
+  return heading;
+}
+
 /** Lists fragment files of the changes directory (README.md is not one). */
 export function listFragments(root) {
   const dir = path.join(root, FRAGMENTS_DIR);
@@ -311,6 +382,51 @@ export function foldChangelog(docText, { version, unreleasedHeading, blocks }) {
     ...lines.slice(end),
   ];
   return next.join("\n").replace(/\n{3,}/g, "\n\n");
+}
+
+/**
+ * The publish gate of the release cut (OPE-4569, RELEASE-CUT-CHANGELOG):
+ * after the fold, both changelogs must carry a non-empty `## <version>`
+ * section and an empty `## <unreleasedHeading>`. A tag cut without this
+ * publishes nothing — on 05.10 the `myr-v1.6.3` tag carried no `## 1.6.3`
+ * section and the release publish refused with "release body could not be
+ * built (missing notes)".
+ * Throws naming the exact defect.
+ */
+export function assertChangelogVersion(docText, { version, unreleasedHeading, fileName = "<doc>" } = {}) {
+  const lines = docText.split("\n");
+  const unreleased = lines.findIndex((l) => l.trim() === `## ${unreleasedHeading}`);
+  if (unreleased === -1) {
+    throw new Error(`${fileName}: no "## ${unreleasedHeading}" section — the release cut must leave an empty one on top`);
+  }
+  let unreleasedEnd = lines.length;
+  for (let i = unreleased + 1; i < lines.length; i += 1) {
+    if (/^## /.test(lines[i])) {
+      unreleasedEnd = i;
+      break;
+    }
+  }
+  if (lines.slice(unreleased + 1, unreleasedEnd).join("\n").trim()) {
+    throw new Error(
+      `${fileName}: "## ${unreleasedHeading}" is not empty — leftover entries never reach the release body; move them under "## ${version}" or drop them`,
+    );
+  }
+  const start = lines.findIndex((l) => l.trim() === `## ${version}`);
+  if (start === -1) {
+    throw new Error(
+      `${fileName}: no "## ${version}" section — the release cut must rename the collected entries before the tag`,
+    );
+  }
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i += 1) {
+    if (/^## /.test(lines[i])) {
+      end = i;
+      break;
+    }
+  }
+  if (!lines.slice(start + 1, end).join("\n").trim()) {
+    throw new Error(`${fileName}: "## ${version}" is empty — a release without notes is a defect`);
+  }
 }
 
 /**
@@ -563,13 +679,16 @@ export function collect(root, { version, dryRun = false, log = () => {} } = {}) 
         edits.set(rel, foldReplaceRows(read(rel), { rows: e.body, section: e.directives.section ?? null, occurrence: e.directives.occurrence ? Number(e.directives.occurrence) : null }, { fileName: f.name }));
       }
     }
-    // 2. rows appended to the section named in the front matter
+    // 2. rows appended to the section named in the front matter; the RU settings
+    //    document carries Russian variants of the EN headings, so its heading is
+    //    resolved by language-independent key (see `sectionKey`)
     for (const f of fragments) {
       if (!f.sections[doc]) continue;
+      const target = doc === "settings-ru" ? resolveSectionHeading(read(rel), f.meta[sectionKey[doc]]) : f.meta[sectionKey[doc]];
       edits.set(
         rel,
         foldTableRows(read(rel), {
-          sectionHeading: f.meta[sectionKey[doc]],
+          sectionHeading: target,
           rows: f.sections[doc],
         }, { fileName: f.name }),
       );
@@ -602,6 +721,19 @@ export function collect(root, { version, dryRun = false, log = () => {} } = {}) 
 
   result.changed = [...edits.keys()];
   result.deleted = version === null ? [] : fragments.map((f) => f.file);
+  // The publish gate of the release cut: the collected changelogs must carry
+  // the non-empty version section and an empty unreleased one. Checked BEFORE
+  // anything is written, so a failed cut leaves the working tree untouched.
+  // (RELEASE-CUT-CHANGELOG; guarded to a real cut - preview mode has no version.)
+  if (version !== null) {
+    for (const [rel, heading] of [
+      ["docs/myrmidon/CHANGELOG.md", "Unreleased"],
+      ["docs/myrmidon/CHANGELOG.ru.md", "Без выпуска"],
+    ]) {
+      if (!edits.has(rel)) continue;
+      assertChangelogVersion(edits.get(rel), { version, unreleasedHeading: heading, fileName: rel });
+    }
+  }
   for (const [rel, text] of edits) {
     log(`update ${rel}`);
     if (!dryRun) fs.writeFileSync(path.join(root, rel), text);
@@ -615,7 +747,7 @@ export function collect(root, { version, dryRun = false, log = () => {} } = {}) 
 }
 
 function main(argv) {
-  const args = { root: process.cwd(), dryRun: false, version: null };
+  const args = { root: process.cwd(), dryRun: false, check: false, version: null };
   for (let i = 0; i < argv.length; i += 1) {
     switch (argv[i]) {
       case "--version":
@@ -627,16 +759,38 @@ function main(argv) {
       case "--dry-run":
         args.dryRun = true;
         break;
+      case "--check":
+        args.check = true;
+        break;
       default:
         console.error(`unknown argument: ${argv[i]}`);
         return 2;
     }
   }
   if (!args.version || !/^\d+\.\d+\.\d+$/.test(args.version)) {
-    console.error("usage: collect-fragments.mjs --version X.Y.Z [--root <dir>] [--dry-run]");
+    console.error("usage: collect-fragments.mjs --version X.Y.Z [--root <dir>] [--dry-run|--check]");
     return 2;
   }
   try {
+    if (args.check) {
+      // RELEASE-CUT-CHANGELOG: the CI tag gate. Reads the changelogs as they
+      // are (no fold, no writes) and demands the non-empty `## X.Y.Z` section
+      // and an empty unreleased one in both languages. On a release tag this
+      // is the check that keeps the tag from being cut without notes
+      // (the myr-v1.6.3 incident, OPE-4569).
+      for (const [rel, heading] of [
+        ["docs/myrmidon/CHANGELOG.md", "Unreleased"],
+        ["docs/myrmidon/CHANGELOG.ru.md", "Без выпуска"],
+      ]) {
+        assertChangelogVersion(fs.readFileSync(path.join(args.root, rel), "utf8"), {
+          version: args.version,
+          unreleasedHeading: heading,
+          fileName: rel,
+        });
+      }
+      console.log(`release changelog check ok: ${args.version} has its section in both changelogs`);
+      return 0;
+    }
     const result = collect(args.root, {
       version: args.version,
       dryRun: args.dryRun,

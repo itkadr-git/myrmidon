@@ -32,6 +32,11 @@ import { readStaleBlockSignals } from "../../stale-block/attention.js";
 import {
   readSwarmClaimAttentionSignals,
 } from "./swarm-signals.js";
+import {
+  resolveProcessMetricsSource,
+  type ProcessMetricsSample,
+  type ProcessMetricsSource,
+} from "./process-metrics.js";
 
 /** Content type of the Prometheus text exposition format, version 0.0.4. */
 export const METRICS_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8";
@@ -68,6 +73,13 @@ export const METRIC_FAMILIES = [
   "myrmidon_agent_error_signals",
   "myrmidon_llm_cost_cents_total",
   "myrmidon_scrape_errors",
+  // myrmidon(1.6.5-PROCS-Q3): the process families — the loop delay, the
+  // memory of this process, and the live-event flow (design §1, этап 0).
+  "myrmidon_board_event_loop_lag_seconds",
+  "myrmidon_board_process_rss_bytes",
+  "myrmidon_board_heap_bytes",
+  "myrmidon_board_live_events_total",
+  "myrmidon_board_live_event_bytes_total",
 ] as const;
 
 export type MetricFamily = (typeof METRIC_FAMILIES)[number];
@@ -76,7 +88,8 @@ export type MetricFamily = (typeof METRIC_FAMILIES)[number];
 // Scrape snapshot
 // ---------------------------------------------------------------------------
 
-export interface MetricsSnapshot {
+/** The per-family values one scrape reads (the selfcheck probe shares them). */
+export interface MetricsSnapshotFields {
   /** Live (running) runs right now. */
   runsActive: number;
   /** Queued runs waiting for admission right now. */
@@ -98,6 +111,16 @@ export interface MetricsSnapshot {
   agentErrorSignals: number;
   /** Cost spend collected by litellm-costs inside the error window, in cents. */
   llmCostCentsWindow: number;
+  /**
+   * myrmidon(1.6.5-PROCS-Q3): the process half, read from the in-process
+   * source (no DB). null renders HELP/TYPE with no samples — the families
+   * exist even before the first event of a kind was published.
+   */
+  process?: ProcessMetricsSample | null;
+}
+
+/** The fields plus the scrape bookkeeping rendered into the exposition text. */
+export interface MetricsSnapshot extends MetricsSnapshotFields {
   /** Non-fatal collection errors of this scrape (already logged upstream). */
   scrapeErrors: number;
   /** When the snapshot was taken. */
@@ -116,6 +139,12 @@ export interface MetricsCollectorDeps {
   errorWindowSec: number;
   /** Latency window in seconds. */
   latencyWindowSec: number;
+  /**
+   * myrmidon(1.6.5-PROCS-Q3): where the process half comes from. Production
+   * reads the in-process observers; tests inject fakes. Absent → the
+   * production default (no fake needed for the DB families).
+   */
+  processMetrics?: ProcessMetricsSource | null;
 }
 
 /** Reads the run counters — one grouped query, whole instance. */
@@ -147,7 +176,7 @@ async function readRunCounters(db: Db): Promise<{
 async function readRunDurations(
   db: Db,
   windowStart: Date,
-): Promise<{ p50: number | null; p95: number | null }> {
+): Promise<{ p50: number | null; p95: number | null; samples: number }> {
   const rows = await db
     .select({
       seconds: sql<number>`extract(epoch from (${heartbeatRuns.finishedAt} - ${heartbeatRuns.startedAt}))`,
@@ -165,8 +194,8 @@ async function readRunDurations(
   const durations = rows
     .map((row) => Number(row.seconds))
     .filter((value) => Number.isFinite(value) && value >= 0);
-  if (durations.length === 0) return { p50: null, p95: null };
-  return { p50: percentile(durations, 0.5), p95: percentile(durations, 0.95) };
+  if (durations.length === 0) return { p50: null, p95: null, samples: 0 };
+  return { p50: percentile(durations, 0.5), p95: percentile(durations, 0.95), samples: durations.length };
 }
 
 /** Linear-interpolated percentile of an ascending-sorted sample. */
@@ -244,27 +273,81 @@ async function readCostWindow(db: Db, windowStart: Date): Promise<number> {
 
 /** One scrape: every family is collected, and one family's failure never kills the rest. */
 export async function collectMetricsSnapshot(deps: MetricsCollectorDeps): Promise<MetricsSnapshot> {
+  const collected = await collectMetricsParts(deps);
+  return {
+    ...collected.fields,
+    scrapeErrors: collected.errors.length,
+    collectedAt: collected.now.toISOString(),
+  };
+}
+
+/** Per-family outcome of one scrape, shared by the snapshot and the selfcheck probe. */
+export interface MetricsCollectedParts {
+  fields: MetricsSnapshotFields;
+  /** Family names whose read failed (empty on a clean scrape). */
+  errors: string[];
+  /** The clock value the scrape used. */
+  now: Date;
+  /** Latency sample sizes behind the p50/p95 pair. */
+  latencySamples: number;
+}
+
+/**
+ * Collects one snapshot's worth of fields family by family. A family that
+ * throws falls back to its zero/empty value and lands in `errors`: one broken
+ * read never kills the scrape, and the failure is visible upstream as
+ * `myrmidon_scrape_errors` — the alerting half maps that counter to a task
+ * for the owning role.
+ */
+export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<MetricsCollectedParts> {
   const now = deps.now();
   const errorWindowStart = new Date(now.getTime() - deps.errorWindowSec * 1000);
   const latencyWindowStart = new Date(now.getTime() - deps.latencyWindowSec * 1000);
 
-  let scrapeErrors = 0;
-  async function guarded<T>(read: () => Promise<T>, fallback: T): Promise<T> {
+  const errors: string[] = [];
+  async function guarded<T>(family: string, read: () => Promise<T>, fallback: T): Promise<T> {
     try {
       return await read();
     } catch {
-      scrapeErrors += 1;
+      errors.push(family);
       return fallback;
     }
   }
 
-  const runCounters = await guarded(() => readRunCounters(deps.db), { active: 0, queued: 0, failedTotal: 0 });
-  const durations = await guarded(() => readRunDurations(deps.db, latencyWindowStart), { p50: null, p95: null });
-  const roleQueues = await guarded(() => readRoleQueues(deps.db), [] as Array<{ role: string; status: string; count: number }>);
-  const claimCounters = await guarded(() => readClaimCounters(deps.db, now), { active: 0, total: 0 });
-  const errorSignals = await guarded(() => readAgentErrorSignals(deps.db), 0);
-  const costWindow = await guarded(() => readCostWindow(deps.db, errorWindowStart), 0);
+  // The run counters answer three families with one grouped query; a failure
+  // names all three in the selfcheck output.
+  const runCounters = await guarded(
+    "myrmidon_runs_active|myrmidon_runs_queued|myrmidon_runs_failed_total",
+    () => readRunCounters(deps.db),
+    { active: 0, queued: 0, failedTotal: 0 },
+  );
+  const durations = await guarded(
+    "myrmidon_run_duration_seconds",
+    () => readRunDurations(deps.db, latencyWindowStart),
+    { p50: null, p95: null, samples: 0 },
+  );
+  const roleQueues = await guarded(
+    "myrmidon_role_queue_tasks",
+    () => readRoleQueues(deps.db),
+    [] as Array<{ role: string; status: string; count: number }>,
+  );
+  const claimCounters = await guarded(
+    "myrmidon_swarm_claims_active|myrmidon_swarm_claims_total",
+    () => readClaimCounters(deps.db, now),
+    { active: 0, total: 0 },
+  );
+  const errorSignals = await guarded(
+    "myrmidon_agent_error_signals",
+    () => readAgentErrorSignals(deps.db),
+    0,
+  );
+  const costWindow = await guarded(
+    "myrmidon_llm_cost_cents_total",
+    () => readCostWindow(deps.db, errorWindowStart),
+    0,
+  );
   const failedWindow = await guarded(
+    "myrmidon_runs_failed_window",
     () =>
       deps.db
         .select({ total: count() })
@@ -273,21 +356,75 @@ export async function collectMetricsSnapshot(deps: MetricsCollectorDeps): Promis
         .then((rows) => Number(rows[0]?.total ?? 0)),
     0,
   );
+  // myrmidon(1.6.5-PROCS-Q3): the process half rides the same guarded
+  // scrape: a throwing source zeroes it (HELP/TYPE render without samples)
+  // and names the five families, never kills the scrape.
+  const processSample = await guarded(
+    "myrmidon_board_event_loop_lag_seconds|myrmidon_board_process_rss_bytes|myrmidon_board_heap_bytes|myrmidon_board_live_events_total|myrmidon_board_live_event_bytes_total",
+    () => Promise.resolve().then(resolveProcessMetricsSource(deps.processMetrics)),
+    null as ProcessMetricsSample | null,
+  );
 
   return {
-    runsActive: runCounters.active,
-    runsQueued: runCounters.queued,
-    runsFailedTotal: runCounters.failedTotal,
-    runsFailedWindow: failedWindow,
-    runDurationSecondsP50: durations.p50,
-    runDurationSecondsP95: durations.p95,
-    roleQueueTasks: roleQueues,
-    swarmClaimsActive: claimCounters.active,
-    swarmClaimsTotal: claimCounters.total,
-    agentErrorSignals: errorSignals,
-    llmCostCentsWindow: costWindow,
-    scrapeErrors,
-    collectedAt: now.toISOString(),
+    fields: {
+      runsActive: runCounters.active,
+      runsQueued: runCounters.queued,
+      runsFailedTotal: runCounters.failedTotal,
+      runsFailedWindow: failedWindow,
+      runDurationSecondsP50: durations.p50,
+      runDurationSecondsP95: durations.p95,
+      roleQueueTasks: roleQueues,
+      swarmClaimsActive: claimCounters.active,
+      swarmClaimsTotal: claimCounters.total,
+      agentErrorSignals: errorSignals,
+      llmCostCentsWindow: costWindow,
+      process: processSample,
+    },
+    errors,
+    now,
+    latencySamples: durations.samples,
+  };
+}
+
+/**
+ * The self-check probe (myrmidon 1.6.6 annex): one scrape of every family,
+ * summarised without any secret or metric value. Answers whether the whole
+ * chain the board owns works: DB reads for each family and the exposition
+ * render of the collected snapshot. `families_failed` names the families
+ * whose read threw — the same per-family failures the scrape counter
+ * exposes to the monitoring stack, from which the alerting half opens a
+ * task for the owning role.
+ */
+export interface MetricsSelfCheck {
+  ok: boolean;
+  families_ok: number;
+  families_failed: string[];
+  scrape_ms: number;
+  /** When the probe ran. */
+  checked_at: string;
+}
+
+export async function runMetricsSelfCheck(deps: MetricsCollectorDeps): Promise<MetricsSelfCheck> {
+  const startedAt = Date.now();
+  const collected = await collectMetricsParts(deps);
+  // The render is part of the probe: a family that collects but cannot be
+  // rendered would hand the scraper a broken response.
+  try {
+    renderMetricsText({
+      ...collected.fields,
+      scrapeErrors: collected.errors.length,
+      collectedAt: collected.now.toISOString(),
+    });
+  } catch {
+    collected.errors.push("exposition_render");
+  }
+  const failed = new Set(collected.errors.flatMap((entry) => entry.split("|")));
+  return {
+    ok: failed.size === 0,
+    families_ok: METRIC_FAMILIES.filter((family) => !failed.has(family)).length,
+    families_failed: [...failed].sort(),
+    scrape_ms: Date.now() - startedAt,
+    checked_at: collected.now.toISOString(),
   };
 }
 
@@ -439,6 +576,71 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       "Metric families that failed to collect during this scrape.",
       "gauge",
       [`myrmidon_scrape_errors ${formatSampleValue(snapshot.scrapeErrors)}`],
+    ),
+  );
+
+  // myrmidon(1.6.5-PROCS-Q3): the process families. An absent/failed process
+  // read renders HELP/TYPE with no samples — the scrape still answers.
+  const proc = snapshot.process ?? null;
+  blocks.push(
+    familyBlock(
+      "myrmidon_board_event_loop_lag_seconds",
+      "Event loop delay of the board process (p50/p99/max) since the previous scrape.",
+      "summary",
+      proc && proc.eventLoop
+        ? [
+            `myrmidon_board_event_loop_lag_seconds{quantile="0.5"} ${formatSampleValue(proc.eventLoop.p50Seconds)}`,
+            `myrmidon_board_event_loop_lag_seconds{quantile="0.99"} ${formatSampleValue(proc.eventLoop.p99Seconds)}`,
+            `myrmidon_board_event_loop_lag_seconds{quantile="1"} ${formatSampleValue(proc.eventLoop.maxSeconds)}`,
+          ]
+        : [],
+    ),
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_board_process_rss_bytes",
+      "Resident set size of the board process.",
+      "gauge",
+      proc ? [`myrmidon_board_process_rss_bytes ${formatSampleValue(proc.memory.rssBytes)}`] : [],
+    ),
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_board_heap_bytes",
+      "V8 heap of the board process by kind label (used / total).",
+      "gauge",
+      proc
+        ? [
+            `myrmidon_board_heap_bytes{kind="used"} ${formatSampleValue(proc.memory.heapUsedBytes)}`,
+            `myrmidon_board_heap_bytes{kind="total"} ${formatSampleValue(proc.memory.heapTotalBytes)}`,
+          ]
+        : [],
+    ),
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_board_live_events_total",
+      "Live events published by kind, cumulative since boot.",
+      "counter",
+      proc
+        ? proc.liveEvents.map(
+            (row) =>
+              `myrmidon_board_live_events_total{kind="${escapeLabelValue(row.type)}"} ${formatSampleValue(row.count)}`,
+          )
+        : [],
+    ),
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_board_live_event_bytes_total",
+      "Serialized payload bytes of published live events by kind, cumulative since boot.",
+      "counter",
+      proc
+        ? proc.liveEvents.map(
+            (row) =>
+              `myrmidon_board_live_event_bytes_total{kind="${escapeLabelValue(row.type)}"} ${formatSampleValue(row.bytes)}`,
+          )
+        : [],
     ),
   );
 
