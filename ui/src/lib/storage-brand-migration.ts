@@ -20,6 +20,7 @@ const LEGACY_PAPERCLIP_STORAGE_KEYS = [
   "paperclip.quality",
   "paperclip.usage",
   "paperclip.tasks.create",
+  "paperclip-onboarding-state",
   "paperclip.onboarding-state",
   // localStorage — colon style (dynamic suffixes: plugins, collections, drafts)
   "paperclip:plugin-issues-view",
@@ -189,6 +190,7 @@ function isLegacyStorageKey(key: string): boolean {
   return (
     key.startsWith("paperclip.") ||
     key.startsWith("paperclip:") ||
+    key.startsWith("paperclip-") ||
     key.includes(":paperclip:")
   );
 }

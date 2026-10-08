@@ -16,7 +16,10 @@ interface ThemeContextValue {
   toggleTheme: () => void;
 }
 
-const THEME_STORAGE_KEY = "paperclip.theme";
+// DEBRAND (OPE-5806): new key; legacy `paperclip.theme` is migrated lazily by
+// the inline script in index.html before first render (and by the startup sweep).
+// myrmidon(DB3)
+const THEME_STORAGE_KEY = "myrmidon.theme";
 const DARK_THEME_COLOR = "#18181b";
 const LIGHT_THEME_COLOR = "#ffffff";
 const ThemeContext = createContext<ThemeContextValue | undefined>(undefined);
