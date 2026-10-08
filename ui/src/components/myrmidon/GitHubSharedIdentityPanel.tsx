@@ -1,10 +1,13 @@
 // Self-hosted GitHub App identities (myrmidon GITHUB-SHARED-IDENTITY):
 // "authorize once for the whole server". One entry per GitHub App
 // installation: the App id, the company secret holding its private key, the
-// optional installation id, the agents (roles and/or agents) and the
-// repositories it serves. The board mints single-repository installation
-// tokens itself; a repository matched by two entries is refused. Commits stay
-// authored by the agent. Saving applies at the next operation — no restart.
+// optional installation id, the agents (roles and/or agents), the
+// repositories it serves and the permission list (contents, pull requests,
+// workflows, issues…; default contents + pull requests write) the broker
+// requests verbatim on every token. The board mints single-repository
+// installation tokens itself; a repository matched by two entries is refused.
+// Commits stay authored by the agent. Saving applies at the next operation —
+// no restart.
 //
 // myrmidon(GITHUB-APP-MANIFEST): the one-click creation path. "Create GitHub
 // App" asks the server for a manifest, then POSTs it to github.com (the
@@ -29,6 +32,12 @@ import {
   githubSharedIdentityQueryKey,
   splitList,
   type BeginAppManifestBody,
+  GITHUB_APP_PERMISSION_KEYS,
+  DEFAULT_GITHUB_APP_PERMISSIONS,
+  githubAppPermissionLabel,
+  githubAppPermissionLevelsFor,
+  type GitHubAppPermissionLevel,
+  type GitHubAppPermissions,
   type GitHubSharedIdentityPut,
   type GitHubSharedIdentityView,
 } from "./githubSharedIdentityApi";
@@ -42,6 +51,7 @@ type AppDraft = {
   roles: string;
   agentIds: string[];
   allowedRepos: string;
+  permissions: GitHubAppPermissions;
   /** myrmidon(GITHUB-APP-MANIFEST): slug of a manifest-created App; not part
    * of the PUT body (the server owns it), kept in the draft only for render. */
   slug?: string | null;
@@ -62,6 +72,7 @@ function draftFrom(view: GitHubSharedIdentityView): Draft {
       roles: app.roles.join(", "),
       agentIds: app.agentIds,
       allowedRepos: app.allowedRepos.join("\n"),
+      permissions: { ...DEFAULT_GITHUB_APP_PERMISSIONS, ...(app.permissions ?? {}) },
       slug: app.slug ?? null,
     })),
   };
@@ -81,6 +92,7 @@ export function bodyFromDraft(draft: Draft): GitHubSharedIdentityPut {
       roles: splitList(app.roles),
       agentIds: app.agentIds,
       allowedRepos: splitList(app.allowedRepos),
+      permissions: { ...app.permissions },
     })),
   };
 }
@@ -231,8 +243,9 @@ export function GitHubSharedIdentityPanelView({
         <p className="max-w-2xl text-sm text-muted-foreground">
           Authorize GitHub once for the whole server with your own GitHub App: register one App per account or
           organization, install it on that product’s repositories, store its private key as a company secret and add it
-          here. The board mints short-lived tokens for one repository at a time (contents and pull requests read/write,
-          metadata read). Each operation gets the App whose repositories match its target; a repository matched by two
+          here. The board mints short-lived tokens for one repository at a time with exactly the permissions listed on
+          the entry (by default contents and pull requests write; Workflows can be allowed where the App registration
+          permits it). Each operation gets the App whose repositories match its target; a repository matched by two
           Apps is refused. Commits stay authored by the agent. Saving applies to the next operation — no restart.
         </p>
         {view ? (
@@ -340,6 +353,38 @@ export function GitHubSharedIdentityPanelView({
                     ))}
                   </div>
                 </fieldset>
+                <fieldset
+                  className="grid gap-1 text-sm"
+                  data-testid={`github-app-permissions-${index}`}
+                >
+                  <legend>Token permissions (the broker requests exactly these)</legend>
+                  <p className="text-xs text-muted-foreground">
+                    None: never requested; the token can only do what is set here. Workflows lets agents edit
+                    .github/workflows/* where the App registration allows it.
+                  </p>
+                  <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                    {GITHUB_APP_PERMISSION_KEYS.map((key) => (
+                      <label key={key} className="grid gap-1 text-sm">
+                        {githubAppPermissionLabel(key)}
+                        <select
+                          aria-label={`Permissions of ${label}: ${key}`}
+                          value={app.permissions[key]}
+                          onChange={(event) =>
+                            updateApp(app.id, {
+                              permissions: { ...app.permissions, [key]: event.target.value as GitHubAppPermissionLevel },
+                            })
+                          }
+                        >
+                          {githubAppPermissionLevelsFor(key).map((level) => (
+                            <option key={level} value={level}>
+                              {level}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    ))}
+                  </div>
+                </fieldset>
                 <div className="space-y-1">
                   <div className="flex items-center gap-2">
                     <Button
@@ -382,7 +427,7 @@ export function GitHubSharedIdentityPanelView({
                   ...current,
                   apps: [
                     ...current.apps,
-                    { id: newId(), name: "", appId: "", privateKeySecretId: "", installationId: "", roles: "", agentIds: [], allowedRepos: "" },
+                    { id: newId(), name: "", appId: "", privateKeySecretId: "", installationId: "", roles: "", agentIds: [], allowedRepos: "", permissions: { ...DEFAULT_GITHUB_APP_PERMISSIONS } },
                   ],
                 }))
               }

@@ -74,7 +74,16 @@ export {
 } from "./settings.js";
 export { readGitHubSharedIdentitySettings, preserveGitHubSharedIdentityGeneralKey } from "./store.js";
 export { resolveGitHubAppCredential, type GitHubAppResolution } from "./resolve.js";
-export { GITHUB_APP_TOKEN_PERMISSIONS, mintGitHubAppInstallationToken } from "./app-token.js";
+export {
+  GITHUB_APP_TOKEN_PERMISSION_KEYS,
+  DEFAULT_GITHUB_APP_PERMISSIONS,
+  githubAppTokenPermissionsFor,
+  type GitHubAppPermissionKey,
+  type GitHubAppPermissionLevel,
+  type GitHubAppPermissions,
+  mintGitHubAppInstallationToken,
+} from "./app-token.js";
+export { normalizeGitHubAppPermissions } from "./settings.js";
 export { vendorGitHubConnectorEnabled, GITHUB_VENDOR_CONNECTOR_ENV } from "./vendor-connector.js";
 
 async function assertReferencesBelongToCompany(db: Db, companyId: string, settings: GitHubSharedIdentitySettings) {
