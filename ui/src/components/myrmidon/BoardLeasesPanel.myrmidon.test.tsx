@@ -40,7 +40,9 @@ function mount(node: ReactElement, queryClient: QueryClient): HTMLDivElement {
   document.body.appendChild(container);
   const root = createRoot(container);
   roots.push(root);
-  root.render(<QueryClientProvider client={queryClient}>{node}</QueryClientProvider>);
+  act(() => {
+    root.render(<QueryClientProvider client={queryClient}>{node}</QueryClientProvider>);
+  });
   return container;
 }
 
