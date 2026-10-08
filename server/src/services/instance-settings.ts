@@ -309,6 +309,9 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       ...(parsed.data.telegramDmProgress ? { telegramDmProgress: parsed.data.telegramDmProgress } : {}),
       // myrmidon(MEMORY-UI): the stored agent memory settings survive every general write
       ...(parsed.data.agentMemory ? { agentMemory: parsed.data.agentMemory } : {}),
+      // myrmidon(1.6.1-FORAGING-LIMITS-UI): the stored foraging settings survive
+      // every general write (edited on their own settings page).
+      ...(parsed.data.foraging ? { foraging: parsed.data.foraging } : {}),
       // myrmidon(TEAM-LIVENESS-SETTINGS): the stored team-liveness knobs survive
       // every general write (they are edited on their own settings page). Without
       // this line the vendor write path silently drops the key and the settings

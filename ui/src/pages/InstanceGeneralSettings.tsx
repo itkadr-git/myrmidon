@@ -35,6 +35,7 @@ import { TeamLivenessSettingsPanel } from "@/components/myrmidon/TeamLivenessSet
 import { BotLspSettingsPanel } from "@/components/myrmidon/BotLspSettingsPanel"; // myrmidon(BOT-LSP-DEFAULTS)
 import { SwarmClaimSettingsPanel } from "@/components/myrmidon/SwarmClaimSettingsPanel"; // myrmidon(1.6.1 SWARM-SETTINGS-UI)
 import { ReviewReworkSettingsPanel } from "@/components/myrmidon/ReviewReworkSettingsPanel"; // myrmidon(REVIEW-REWORK)
+import { ForagingSettingsPanel } from "@/components/myrmidon/ForagingSettingsPanel"; // myrmidon(1.6.1-FORAGING-LIMITS-UI)
 import { AboutSettingsPanel } from "@/components/myrmidon/AboutSettingsPanel"; // myrmidon(ABOUT)
 import { DeployJobsPanel } from "@/components/myrmidon/DeployJobsPanel"; // myrmidon(R5-A)
 import { PluginEntitlementSettings } from "@/components/myrmidon/PluginEntitlementSettingsPanel"; // myrmidon(PLUGIN-ENTITLEMENT C)
@@ -174,6 +175,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       <BotLspSettingsPanel /> {/* myrmidon(BOT-LSP-DEFAULTS) */}
       <SwarmClaimSettingsPanel /> {/* myrmidon(1.6.1 SWARM-SETTINGS-UI) */}
       <ReviewReworkSettingsPanel /> {/* myrmidon(REVIEW-REWORK) */}
+      <ForagingSettingsPanel /> {/* myrmidon(1.6.1-FORAGING-LIMITS-UI) */}
       <DeployJobsPanel /> {/* myrmidon(R5-A) */}
       <PluginEntitlementSettings /> {/* myrmidon(PLUGIN-ENTITLEMENT C) */}
 

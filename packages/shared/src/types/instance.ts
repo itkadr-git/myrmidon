@@ -38,6 +38,8 @@ import type { StoredFallbackSignalSettings } from "../myrmidon-fallback-signal.j
 import type { StoredPauseGuardSettings } from "../myrmidon-pause-guard.js";
 import type { BudgetLimitsSettings } from "../myrmidon-budget-limits.js";
 
+// myrmidon(1.6.1-FORAGING-LIMITS-UI)
+import type { ForagingSettings } from "../myrmidon-foraging.js";
 export const DAILY_RETENTION_PRESETS = [3, 7, 14] as const;
 export const WEEKLY_RETENTION_PRESETS = [1, 2, 4] as const;
 export const MONTHLY_RETENTION_PRESETS = [1, 3, 6] as const;
@@ -276,7 +278,16 @@ export interface InstanceGeneralSettings {
    * validator of the same field (packages/shared/src/validators/instance.ts).
    */
   budgetLimits?: BudgetLimitsSettings;
+  /**
+   * myrmidon(1.6.1-FORAGING-LIMITS-UI): the enable switch, pass tuning and
+   * spend limits of the foraging sweep, changed from the "Foraging" block on
+   * Instance → General and `GET`/`PATCH /api/myrmidon/foraging-settings`.
+   * Absent means "use the environment variable, then the default (the sweep
+   * is off)". Kept in sync with the validator of the same field.
+   */
+  foraging?: ForagingSettings;
 }
+
 
 export interface InstanceExperimentalSettings {
   enableEnvironments: boolean;
