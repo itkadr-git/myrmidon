@@ -6,12 +6,15 @@ One command brings a clean server to a working Myrmidon board. Copy it onto
 the server and run it — the installer does the rest itself:
 
 ```sh
-curl -fsSL https://github.com/itkadr-git/myrmidon/releases/latest/download/install.sh | sudo bash
+curl -fsSL https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.5-rc.5/install.sh | sudo bash
 ```
 
-That link always serves the installer of the latest release. The command
-needs an internet connection and `curl` (on a bare Ubuntu or Debian,
-`sudo apt-get install -y curl` adds it).
+Until the 1.6.5 final ships, the one-line command installs the current
+release candidate — the installer reaches the release assets only from
+1.6.5 onwards, so the permanent
+`releases/latest/download/install.sh` link answers 404 for now and returns
+with the final. The command needs an internet connection and `curl` (on a
+bare Ubuntu or Debian, `sudo apt-get install -y curl` adds it).
 
 ## What the installer does, step by step
 
@@ -20,9 +23,11 @@ needs an internet connection and `curl` (on a bare Ubuntu or Debian,
    missing — it stops there rather than failing halfway.
 2. **Installs Docker** and the compose plugin, if they are not there yet
    (from the official Docker repository).
-3. **Picks the latest release** and downloads exactly its files — the same
-   ones that passed the release checks. A release stays byte-identical
-   forever, so tomorrow's install of the same version matches today's.
+3. **Picks the release named in the command** (the current release candidate
+   for now, the latest stable release once 1.6.5 ships) and downloads exactly
+   its files — the same ones that passed the release checks. A release stays
+   byte-identical forever, so tomorrow's install of the same version matches
+   today's.
 4. **Creates all secrets** (the database password and the board's internal
    keys) and writes the configuration into `/opt/myrmidon`. Nothing to fill
    in by hand; the secrets file is readable only by root.
@@ -72,7 +77,7 @@ last lines of its log are printed right there.
 To use an option with the one-line form, download the script first:
 
 ```sh
-curl -fsSL -O https://github.com/itkadr-git/myrmidon/releases/latest/download/install.sh
+curl -fsSL -O https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.5-rc.5/install.sh
 sudo bash install.sh --version myr-vX.Y.Z
 ```
 

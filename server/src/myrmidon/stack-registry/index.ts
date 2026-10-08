@@ -46,7 +46,13 @@ export {
 export { readStackDocument, writeStackDocument, preserveStackGeneralKey } from "./store.js";
 export { stackRegistryRoutes, myrmidonStackRegistryRoutes, type StackRegistryRouteOptions } from "./routes.js";
 export { checkStackReleases, startStackCheckSweep, STACK_CHECK_PER_PAGE, type StackCheckOptions } from "./check.js";
-export { STACK_CHECK_INTERVAL_ENV, STACK_CHECK_MIN_INTERVAL_SEC, readStackCheckIntervalSec } from "./settings.js";
+export {
+  STACK_CHECK_INTERVAL_ENV,
+  STACK_CHECK_MIN_INTERVAL_SEC,
+  readStackCheckIntervalSec,
+  STACK_GITHUB_TOKEN_ENV,
+  readStackGithubToken,
+} from "./settings.js";
 export {
   buildStackAttentionCards,
   stackComponentNeedsAttention,

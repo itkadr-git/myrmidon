@@ -1475,3 +1475,212 @@ describe("verify-health.sh", () => {
     assert.match(result.stderr, /token-file/);
   });
 });
+
+// DB-TUNING (OPE-5009): the PostgreSQL settings of the audit (OPE-4270) reach
+// the server ONLY through the deploy — the declarative source is
+// scripts/myrmidon/deploy/db-tuning.sql, applied by deploy.sh (step 7d) via
+// DB_TUNE_COMMAND and verified pair-by-pair through DB_TUNE_SHOW_COMMAND;
+// rollback.sh returns the settings via DB_TUNE_ROLLBACK_COMMAND and checks
+// SHOW against the values recorded before the first managed deploy. A fake
+// `psql` in the sandbox plays the database: it logs every call, applies the
+// SQL to an "auto.conf" file, and answers SHOW from what is applied.
+describe("DB-TUNING: deploy applies and verifies the settings (OPE-5009)", () => {
+  // The fake psql: -f - reads the SQL on stdin (apply/reset), -tAc "SHOW x"
+  // answers the current value of x. Values land in $SANDBOX/pg-settings:
+  // a line per GUC, written by the apply and cleared by the reset.
+  const FAKE_PSQL = `#!/usr/bin/env bash
+echo "psql $*" >> "$SANDBOX/calls.log"
+SET_FILE="$SANDBOX/pg-settings"
+args=("$@")
+mode="" sql=""
+for ((i = 0; i < $#; i++)); do
+  case "\${args[i]}" in
+    -tAc|-c) mode="show"; sql="\${args[i+1]}"; break ;;
+    -f) mode="apply"
+      if [ "\${args[i+1]}" = "-" ]; then sql="$(cat)"; else sql="$(cat "\${args[i+1]}")"; fi
+      break ;;
+  esac
+done
+case "$mode" in
+  show)
+    name="\${sql#SHOW }"
+    grep -m1 "^$name=" "$SET_FILE" 2>/dev/null | sed "s/^$name=//" ;;
+  apply)
+    while read -r n v; do
+      [ -n "$n" ] || continue
+      grep -v "^$n=" "$SET_FILE" > "$SET_FILE.tmp" 2>/dev/null || true
+      printf '%s=%s\\n' "$n" "$v" >> "$SET_FILE.tmp"
+      mv "$SET_FILE.tmp" "$SET_FILE"
+    done < <(grep -E '^ALTER SYSTEM SET' <<<"$sql" | sed -E "s/^ALTER SYSTEM SET ([a-z_]+) = '?([^';]+)'?;\\$/\\1 \\2/")
+    # a RESET restores the compiled default: jit=on, work_mem=4MB,
+    # wal_compression=off, autovacuum_vacuum_scale_factor=0.2
+    while read -r n; do
+      [ -n "$n" ] || continue
+      grep -v "^$n=" "$SET_FILE" > "$SET_FILE.tmp" 2>/dev/null || true
+      case "$n" in
+        jit) echo "jit=on" ;;
+        work_mem) echo "work_mem=4MB" ;;
+        wal_compression) echo "wal_compression=off" ;;
+        autovacuum_vacuum_scale_factor) echo "autovacuum_vacuum_scale_factor=0.2" ;;
+      esac >> "$SET_FILE.tmp"
+      mv "$SET_FILE.tmp" "$SET_FILE"
+    done < <(grep -E '^ALTER SYSTEM RESET' <<<"$sql" | sed -E "s/^ALTER SYSTEM RESET ([a-z_]+);\\$/\\1/") ;;
+esac
+exit 0
+`;
+
+  // The psql form of the four DB_TUNE_* settings, pointing at the fake. The
+  // real production example uses `docker compose exec db psql` — the fake
+  // binary stands for both psql and the container.
+  function tuneConfig(expected) {
+    return [
+      `DB_TUNE_COMMAND='psql -U example -d example -v ON_ERROR_STOP=1 -f - < "$DB_TUNING_SQL"'`,
+      `DB_TUNE_SHOW_COMMAND='psql -U example -d example -tAc "SHOW $DB_TUNE_PARAM"'`,
+      `DB_TUNE_ROLLBACK_COMMAND='psql -U example -d example -v ON_ERROR_STOP=1 -f - < "$DB_TUNING_ROLLBACK_SQL"'`,
+      `DB_TUNE_EXPECTED='${expected}'`,
+      "",
+    ].join("\n");
+  }
+
+  function tuneSandbox(expected, { initialSettings = "jit=on\nwork_mem=4MB\nwal_compression=off\nautovacuum_vacuum_scale_factor=0.2\n" } = {}) {
+    const sb = sandbox();
+    fs.writeFileSync(path.join(sb.bin, "psql"), FAKE_PSQL, { mode: 0o755 });
+    fs.writeFileSync(path.join(sb.dir, "pg-settings"), initialSettings);
+    fs.appendFileSync(sb.config, tuneConfig(expected));
+    return sb;
+  }
+
+  it("step is skipped when DB_TUNE_COMMAND is empty (plain sandbox config)", () => {
+    const sb = sandbox();
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.equal(code, 0, out);
+    assert.match(out, /7d\/8 apply\+verify DB settings/);
+    assert.match(out, /DB-TUNING: apply skipped \(DB_TUNE_COMMAND is empty/);
+    assert.doesNotMatch(calls(sb), /psql -U example -d example -v ON_ERROR_STOP=1 -f -/);
+  });
+
+  it("applies db-tuning.sql and a matching SHOW passes the deploy", () => {
+    // The SHOW spellings of the four GUC settings from the audit.
+    const sb = tuneSandbox("jit=off\nwork_mem=16MB\nwal_compression=lz4\nautovacuum_vacuum_scale_factor=0.05");
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.equal(code, 0, out);
+    // the declarative source was piped to psql (DB_TUNING_SQL resolved to the
+    // repo file), and every parameter was verified through SHOW
+    assert.match(calls(sb), /psql .* -f -/);
+    assert.match(out, /DB-TUNING: deploy jit = off \(as expected\)/);
+    assert.match(out, /DB-TUNING: deploy work_mem = 16MB \(as expected\)/);
+    assert.match(out, /DB-TUNING: deploy wal_compression = lz4 \(as expected\)/);
+    assert.match(out, /DB-TUNING: deploy autovacuum_vacuum_scale_factor = 0\.05 \(as expected\)/);
+    // the previous values were recorded BEFORE the first apply
+    assert.equal(
+      read(path.join(sb.dir, "state/db-tuning-previous")),
+      "jit=on\nwork_mem=4MB\nwal_compression=off\nautovacuum_vacuum_scale_factor=0.2\n",
+    );
+  });
+
+  it("a SHOW mismatch fails the deploy, maintenance stays, settings roll back", () => {
+    const sb = tuneSandbox("jit=off\nwork_mem=16MB\nwal_compression=lz4\nautovacuum_vacuum_scale_factor=0.05");
+    // A SHOW command that lies about ONE parameter (wal_compression answers
+    // the old default although the apply really set lz4) — the mismatch case.
+    fs.appendFileSync(
+      sb.config,
+      'DB_TUNE_SHOW_COMMAND=\'if [ "$DB_TUNE_PARAM" = wal_compression ]; then echo off; else psql -U example -d example -tAc "SHOW $DB_TUNE_PARAM"; fi\'\n',
+    );
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.notEqual(code, 0);
+    assert.match(out, /DEPLOY FAILED.*DB-TUNING SHOW check does not match/);
+    assert.match(out, /wal_compression = 'off', expected 'lz4' — MISMATCH/);
+    // the failure shape of the health step: maintenance stays on, the rollback
+    // command is printed, and the half-applied settings were returned
+    assert.match(out, /Maintenance stays on\./);
+    assert.match(out, /rollback\.sh --config/);
+    assert.match(out, /returning the database to the previous settings \(DB_TUNE_ROLLBACK_COMMAND\)/);
+    assert.match(calls(sb), /psql .* -f -/); // the rollback reset ran (DB_TUNE_ROLLBACK_COMMAND)
+    // the last maintenance line is an ENTER (maintenance on), not an exit
+    const m = read(sb.dir + "/maintenance.log").trim().split("\n");
+    assert.equal(m[m.length - 1], "enter");
+  });
+
+  it("rollback.sh applies DB_TUNE_ROLLBACK_COMMAND and verifies the previous values", () => {
+    const sb = tuneSandbox("jit=off\nwork_mem=16MB\nwal_compression=lz4\nautovacuum_vacuum_scale_factor=0.05");
+    // A managed deploy first: the settings go in and the previous values are
+    // recorded.
+    assert.equal(run(sb, "deploy.sh", ["--digest", NEW]).code, 0);
+    assert.match(read(path.join(sb.dir, "pg-settings")), /^jit=off$/m);
+    // The emergency rollback: image back + settings back, verified against
+    // what the server had before the first managed deploy.
+    const { code, out } = run(sb, "rollback.sh", []);
+    assert.equal(code, 0, out);
+    assert.match(out, /6\/7 rollback DB settings/);
+    assert.match(out, /DB-TUNING: rolling the settings back/);
+    assert.match(out, /DB-TUNING: rollback jit = on \(as expected\)/);
+    assert.match(out, /DB-TUNING: rollback work_mem = 4MB \(as expected\)/);
+    assert.match(out, /DB-TUNING: rollback wal_compression = off \(as expected\)/);
+    assert.match(out, /DB-TUNING: rollback autovacuum_vacuum_scale_factor = 0\.2 \(as expected\)/);
+    // the settings really returned
+    assert.match(read(path.join(sb.dir, "pg-settings")), /^jit=on$/m);
+    assert.match(read(path.join(sb.dir, "pg-settings")), /^wal_compression=off$/m);
+  });
+
+  it("empty DB_TUNE_ROLLBACK_COMMAND: the rollback logs a warning and keeps the settings", () => {
+    const sb = tuneSandbox("jit=off\nwork_mem=16MB\nwal_compression=lz4\nautovacuum_vacuum_scale_factor=0.05");
+    assert.equal(run(sb, "deploy.sh", ["--digest", NEW]).code, 0);
+    fs.appendFileSync(sb.config, "DB_TUNE_ROLLBACK_COMMAND=\n");
+    const { code, out } = run(sb, "rollback.sh", []);
+    assert.equal(code, 0, out);
+    assert.match(out, /WARNING: DB-TUNING: rollback skipped \(DB_TUNE_ROLLBACK_COMMAND is empty/);
+    // the database keeps the tuned settings
+    assert.match(read(path.join(sb.dir, "pg-settings")), /^jit=off$/m);
+  });
+
+  it("dry-run describes the DB-TUNING step both ways", () => {
+    const on = tuneSandbox("jit=off\nwork_mem=16MB");
+    const planned = run(on, "deploy.sh", ["--digest", NEW, "--dry-run"]);
+    assert.equal(planned.code, 0, planned.out);
+    assert.match(planned.out, /7d\. DB-TUNING: apply the PostgreSQL settings/);
+    const off = sandbox();
+    const skipped = run(off, "deploy.sh", ["--digest", NEW, "--dry-run"]);
+    assert.equal(skipped.code, 0, skipped.out);
+    assert.match(skipped.out, /7d\. DB-TUNING: skipped \(DB_TUNE_COMMAND is empty\)/);
+  });
+
+  it("the declarative source carries the settings of the audit and the table names of the schema", () => {
+    // A contract on the SQL itself: the values the audit asked for, the
+    // per-table options with the real drizzle table names, and a rollback that
+    // resets exactly what the apply sets.
+    const apply = fs.readFileSync(path.join(HERE, "db-tuning.sql"), "utf8");
+    const reset = fs.readFileSync(path.join(HERE, "db-tuning-rollback.sql"), "utf8");
+    for (const stmt of [
+      "ALTER SYSTEM SET jit = off;",
+      "ALTER SYSTEM SET work_mem = '16MB';",
+      "ALTER SYSTEM SET wal_compression = 'lz4';",
+      "ALTER SYSTEM SET autovacuum_vacuum_scale_factor = 0.05;",
+      "ALTER TABLE heartbeat_runs SET (autovacuum_vacuum_scale_factor = 0.02);",
+      "ALTER TABLE agent_wakeup_requests SET (autovacuum_vacuum_scale_factor = 0.02);",
+      "ALTER TABLE company_secrets SET (autovacuum_vacuum_scale_factor = 0.02);",
+      "ALTER TABLE issues SET (autovacuum_analyze_scale_factor = 0.02);",
+      "SELECT pg_reload_conf();",
+    ]) {
+      assert.ok(apply.includes(stmt), `db-tuning.sql must carry: ${stmt}`);
+    }
+    for (const stmt of [
+      "ALTER SYSTEM RESET jit;",
+      "ALTER SYSTEM RESET work_mem;",
+      "ALTER SYSTEM RESET wal_compression;",
+      "ALTER SYSTEM RESET autovacuum_vacuum_scale_factor;",
+      "ALTER TABLE heartbeat_runs RESET (autovacuum_vacuum_scale_factor);",
+      "ALTER TABLE agent_wakeup_requests RESET (autovacuum_vacuum_scale_factor);",
+      "ALTER TABLE company_secrets RESET (autovacuum_vacuum_scale_factor);",
+      "ALTER TABLE issues RESET (autovacuum_analyze_scale_factor);",
+      "SELECT pg_reload_conf();",
+    ]) {
+      assert.ok(reset.includes(stmt), `db-tuning-rollback.sql must carry: ${stmt}`);
+    }
+    // the table names must match the drizzle schema
+    const schemaDir = path.join(HERE, "..", "..", "..", "packages", "db", "src", "schema");
+    for (const table of ["heartbeat_runs", "agent_wakeup_requests", "company_secrets", "issues"]) {
+      assert.match(apply, new RegExp(`ALTER TABLE ${table} `));
+      assert.match(fs.readFileSync(path.join(schemaDir, `${table}.ts`), "utf8"), new RegExp(`pgTable\\(\\s*\\n?\\s*"${table}"`));
+    }
+  });
+});

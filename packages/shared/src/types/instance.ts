@@ -6,12 +6,14 @@ import type { StoredRunLimits } from "../myrmidon-runtime-limits.js";
 // myrmidon(RUN-STALL-SETTINGS): the run stall detection settings stored in instance settings
 import type { RunStallValues } from "../myrmidon-run-stall.js";
 import type { HostDiskSettings } from "../myrmidon-host-disk.js";
+import type { AlertRecoverySettings } from "../myrmidon-alert-recovery.js";
 // myrmidon(BOT-DISK-A): the bot draft-directory lifecycle stored in instance settings
 import type { StoredBotDiskSettings } from "../myrmidon-bot-disk.js";
 // myrmidon(1.6.1-BOT-DISK-C): per-bot disk quota of its own general settings key.
 import type { StoredBotDiskQuotaSettings } from "../myrmidon-bot-disk-quota.js";
 // myrmidon(BOT-ROLLOUT): the release bot-image rollout settings of the same row.
 import type { BotImageRolloutSettings } from "../myrmidon-bot-image-rollout.js";
+import type { StoredSessionGenerationsSettings } from "../myrmidon-session-generations.js";
 // myrmidon(PARALLEL-HELPERS): the helper ceiling/default stored in instance settings
 import type { ParallelHelpersSettings } from "../myrmidon-parallel-helpers.js";
 import type { BotLspSettings } from "../myrmidon-bot-lsp.js";
@@ -25,6 +27,9 @@ import type { WipLimitSettings } from "../myrmidon-wip-limit.js";
 import type { ReviewRoutingSettings } from "../myrmidon-review-routing.js";
 import type { ReviewReworkSettings } from "../myrmidon-review-rework.js";
 import type { BudgetEnforcementSettings } from "../myrmidon-budget-enforcement.js";
+// myrmidon(1.7-AGENT-EXCHANGE-A): the discussion-room settings stored in the
+// same general settings row.
+import type { AgentExchangeSettings } from "../myrmidon-agent-exchange.js";
 // myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys live in
 // the same general settings row.
 import type { PluginEntitlementKey } from "../myrmidon-plugin-entitlement.js";
@@ -33,6 +38,8 @@ import type { TelegramDmProgressSettings } from "../myrmidon-telegram-dm-progres
 // myrmidon(BOT-RUNTIME-TUNING D2): the fallback-signal settings of the same row.
 import type { StoredFallbackSignalSettings } from "../myrmidon-fallback-signal.js";
 
+// myrmidon(1.6.1-FORAGING-LIMITS-UI)
+import type { ForagingSettings } from "../myrmidon-foraging.js";
 export const DAILY_RETENTION_PRESETS = [3, 7, 14] as const;
 export const WEEKLY_RETENTION_PRESETS = [1, 2, 4] as const;
 export const MONTHLY_RETENTION_PRESETS = [1, 3, 6] as const;
@@ -115,6 +122,14 @@ export interface InstanceGeneralSettings {
    * (packages/shared/src/validators/instance.ts).
    */
   myrmidonBotImageRollout?: BotImageRolloutSettings;
+  /**
+   * myrmidon(PERF-DIET-K): thresholds of the issue-scoped session generations
+   * of a container bot (`maxMessages` runs and `maxDays` age, plus `enabled`).
+   * Read at every run dispatch. Absent means the plan's defaults (400 / 14, the
+   * fix on); kept in sync with the validator of the same field
+   * (packages/shared/src/validators/instance.ts).
+   */
+  sessions?: StoredSessionGenerationsSettings;
   /**
    * myrmidon(C0): run admission limits changed from the instance settings page
    * and `GET`/`PATCH /api/myrmidon/runtime-limits`. Absent means "use the
@@ -203,6 +218,26 @@ export interface InstanceGeneralSettings {
    */
   reviewReworkJournal?: unknown[];
   /**
+   * myrmidon(1.6.6 MONITORING D): the alert-recovery knobs — `holdMinutes`
+   * (how long an alert must stay resolved before its task closes by itself)
+   * and `recurrenceWindowMinutes` (how long a repeat of the same alert still
+   * belongs to the same task), plus the per-trigger owner-role overrides;
+   * changed from `GET`/`PATCH /api/myrmidon/monitoring/alert-recovery`. Absent
+   * means "use the environment variable, then the default (10 and 60 minutes)".
+   * Kept in sync with the validator of the same field
+   * (packages/shared/src/validators/instance.ts).
+   */
+  alertRecovery?: AlertRecoverySettings;
+  /**
+   * myrmidon(1.6.6 MONITORING D): the runtime journal of alert → task records —
+   * the task of each alert identity, the runbook it was opened with and how
+   * long the alert has been resolved, newest last. Written by the
+   * alert-recovery service on every alert event, read by
+   * `GET /api/myrmidon/monitoring/alert-recovery`. Stored passthrough, like
+   * `swarmClaimJournal`: a broken row is dropped on read, never trusted.
+   */
+  alertRecoveryJournal?: unknown[];
+  /**
    * myrmidon(1.7-SETTINGS-TO-UI): the channel settings document — the Telegram
    * bridge switches, the chat limits and the cross-channel numbers, changed from
    * `GET`/`PATCH /api/myrmidon/channel-settings`. An absent (or partial) document
@@ -220,6 +255,23 @@ export interface InstanceGeneralSettings {
    * (packages/shared/src/validators/instance.ts).
    */
   budgetEnforcement?: BudgetEnforcementSettings;
+  /**
+   * myrmidon(1.7-DEBATE-ASYM-A): the asymmetric-debates engine settings —
+   * generator/critic/judge roles (cross-family validated), rounds and the
+   * token ceiling; changed from `GET`/`PATCH /api/myrmidon/debate`. Absent
+   * means "use the environment override, then the built-in default". Kept in
+   * sync with the validator of the same field
+   * (packages/shared/src/validators/instance.ts).
+   */
+  debate?: unknown;
+  /**
+   * myrmidon(1.7-AGENT-EXCHANGE-A): the discussion-room settings — master
+   * switch (default off), room size, round cap, per-room token budget and
+   * the response timeout; changed from `GET`/`PATCH
+   * /api/myrmidon/agent-exchange/settings`. Kept in sync with the validator
+   * of the same field (packages/shared/src/validators/instance.ts).
+   */
+  agentExchange?: AgentExchangeSettings;
   /**
    * myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys, managed
    * from the instance settings page. Absent means "no keys registered". Kept
@@ -250,7 +302,24 @@ export interface InstanceGeneralSettings {
    * field (packages/shared/src/validators/instance.ts).
    */
   modelFallbackSignal?: StoredFallbackSignalSettings;
+  /**
+   * myrmidon(1.6.1-FORAGING-LIMITS-UI): the enable switch, pass tuning and
+   * spend limits of the foraging sweep, changed from the "Foraging" block on
+   * Instance → General and `GET`/`PATCH /api/myrmidon/foraging-settings`.
+   * Absent means "use the environment variable, then the default (the sweep
+   * is off)". Kept in sync with the validator of the same field.
+   */
+  foraging?: ForagingSettings;
+  /**
+   * myrmidon(1.6.3 PLUGIN-ENTITLEMENT A): the ed25519 verification public key
+   * (PEM) for plugin entitlement tokens, changed from the instance settings
+   * page. Absent means "no verification key" — no entitlement token can
+   * verify, so every gated plugin stays unactivated. Kept in sync with the
+   * validator of the same field (packages/shared/src/validators/instance.ts).
+   */
+  pluginEntitlementPublicKey?: string;
 }
+
 
 export interface InstanceExperimentalSettings {
   enableEnvironments: boolean;
