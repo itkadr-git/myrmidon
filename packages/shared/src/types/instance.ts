@@ -138,6 +138,7 @@ export interface InstanceGeneralSettings {
    * means "use the environment variable, then the default".
    */
   runPriority?: StoredRunPriority;
+  /**
    * myrmidon(RUN-STALL-SETTINGS): the run stall detection settings, changed
    * from the instance settings page and `GET`/`PATCH /api/myrmidon/run-stall`.
    * Absent means "use the environment variable, then the default"; the key did
