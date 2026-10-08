@@ -32,6 +32,12 @@ const boardKeyActor = (scope: any) => ({
   boardKeyScope: scope,
 });
 
+// A real company id is a GUID (the scope schema validates it as one), so the
+// link cases use one; the paths carry the same id because a link key's scope
+// company and the company it acts in must agree (authz enforces the match,
+// pinned in board-key-tenant-confinement.test.ts).
+const LINK_COMPANY = "11111111-1111-4111-8111-111111111111";
+
 describe("boardKeyScopeMiddleware (myrmidon ROLE-SCOPED-TOKENS)", () => {
   it("lets non-board-key actors through untouched", async () => {
     const app = appFor({ type: "board", userId: "user-1", source: "session" });
@@ -105,5 +111,63 @@ describe("boardKeyScopeMiddleware (myrmidon ROLE-SCOPED-TOKENS)", () => {
     expect(invite.status).toBe(403);
     const claim = await request(app).post("/api/board-claim/token-x/claim");
     expect(claim.status).toBe(403);
+  });
+
+  // myrmidon(1.6.6 MONITORING E): a linking component's key is the narrowest
+  // board key there is. It may file and update a task and say "I am alive";
+  // everything an operator key could do stays out of reach.
+  it("monitoring_link key can file a task, update it and pulse", async () => {
+    const app = appFor(boardKeyActor({ kind: "monitoring_link", linkKey: "zabbix-aggregator", companyId: LINK_COMPANY }));
+    const create = await request(app).post(`/api/companies/${LINK_COMPANY}/issues`);
+    expect(create.status).toBe(200);
+    const update = await request(app).patch("/api/issues/5");
+    expect(update.status).toBe(200);
+    const pulse = await request(app).post(`/api/myrmidon/companies/${LINK_COMPANY}/monitoring/links/pulse`);
+    expect(pulse.status).toBe(200);
+  });
+
+  it("monitoring_link key cannot reach the operator surface", async () => {
+    const app = appFor(
+      boardKeyActor({ kind: "monitoring_link", linkKey: "zabbix-aggregator", companyId: LINK_COMPANY }),
+    );
+    const agent = await request(app).post("/api/companies/1/agents");
+    expect(agent.status).toBe(403);
+    const secret = await request(app).post("/api/secrets/1/rotate");
+    expect(secret.status).toBe(403);
+    const invite = await request(app).post("/api/companies/1/invites");
+    expect(invite.status).toBe(403);
+    const maintenance = await request(app).post("/api/health/maintenance");
+    expect(maintenance.status).toBe(403);
+    const plugin = await request(app).post("/api/plugins/install");
+    expect(plugin.status).toBe(403);
+    // Even on its own subject: a link files tasks, it does not delete them.
+    const remove = await request(app).delete("/api/issues/5");
+    expect(remove.status).toBe(403);
+  });
+
+  it("monitoring_link key reads stay on the liveness surface", async () => {
+    const app = appFor(boardKeyActor({ kind: "monitoring_link", linkKey: "alertmanager-webhook", companyId: LINK_COMPANY }));
+    const links = await request(app).get(`/api/myrmidon/companies/${LINK_COMPANY}/monitoring/links`);
+    expect(links.status).toBe(200);
+    const issues = await request(app).get(`/api/companies/${LINK_COMPANY}/issues`);
+    expect(issues.status).toBe(200);
+    // Company, agent and secret listings are operator knowledge, not link
+    // knowledge: a leaked link key must not become a reconnaissance tool.
+    const companies = await request(app).get("/api/companies");
+    expect(companies.status).toBe(403);
+    const agents = await request(app).get("/api/companies/1/agents");
+    expect(agents.status).toBe(403);
+    const secrets = await request(app).get("/api/secrets");
+    expect(secrets.status).toBe(403);
+  });
+
+  it("a link key with a malformed stored scope degrades to read_only, not full", async () => {
+    // The store hands back whatever JSON is in the column; a link scope that
+    // lost its linkKey must not be readable as an operator key.
+    const app = appFor(boardKeyActor({ kind: "monitoring_link" }));
+    const create = await request(app).post("/api/companies/1/issues");
+    expect(create.status).toBe(403);
+    const read = await request(app).get("/api/companies/1/issues");
+    expect(read.status).toBe(200);
   });
 });

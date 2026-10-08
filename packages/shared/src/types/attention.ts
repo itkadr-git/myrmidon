@@ -47,6 +47,9 @@ export const ATTENTION_SOURCE_KINDS = [
   // myrmidon(1.6.1-BOT-DISK-C): a bot volume is approaching (>=80%) or over its
   // disk quota; the over-quota state also makes new workspace clones refuse.
   "bot_disk_quota",
+  // myrmidon(1.6.1-FORAGING-LIMITS-UI): the learning sweep hit a spend limit
+  // (or the cost-per-task threshold switched it off); the owner decides.
+  "foraging_limit",
 ] as const;
 
 export type AttentionSourceKind = (typeof ATTENTION_SOURCE_KINDS)[number];
@@ -62,7 +65,9 @@ export type AttentionSubjectKind =
   | "budget_incident"
   | "agent"
   // myrmidon(SUB): a component of the tracked stack registry.
-  | "stack_component";
+  | "stack_component"
+  // myrmidon(1.6.1-FORAGING-LIMITS-UI): the learning sweep of the company.
+  | "foraging_sweep";
 
 export type AttentionSeverity = "critical" | "high" | "medium" | "low";
 

@@ -354,6 +354,14 @@ async function sourceIssueId(
         .then((rows) => rows[0] ?? null);
       return { exists: Boolean(row), issueId: null, agentId: row?.id ?? null };
     }
+    // myrmidon(1.6.1-FORAGING-LIMITS-UI): the learning-limit card is computed
+    // from the process-level signal registry and its subject id is the stable
+    // company-scoped key the feed emits (`foraging:<companyId>`), not a stored
+    // row. Existence is that key — dismissals and verdicts then resolve the
+    // same company's card.
+    case "foraging_limit": {
+      return { exists: sourceId === `foraging:${companyId}`, issueId: null };
+    }
   }
 }
 

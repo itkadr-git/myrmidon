@@ -12,6 +12,12 @@
 //
 // The settings live in `instance_settings.general.reviewRouting` and are read
 // on every sweep pass, so a change applies without a restart.
+//
+// 1.6.5 extends the same contract with the PR lane: the sweep also watches
+// open pull requests and routes a review task the moment a PR head turns green
+// without a review verdict, and a merge-steward task when the current head is
+// approved. The `prWatch` block holds its settings; every field is additive —
+// the pre-existing exports, fields, and defaults above stay byte-identical.
 
 import { z } from "zod";
 
@@ -27,6 +33,160 @@ export const MAX_REVIEW_ROUTING_MAX_LOAD_PER_REVIEWER = 100;
 /** Hours without a verdict before the review is signalled and reassigned; 0 = never. */
 export const DEFAULT_REVIEW_ROUTING_REASSIGN_AFTER_HOURS = 24;
 export const MAX_REVIEW_ROUTING_REASSIGN_AFTER_HOURS = 24 * 90;
+
+/** PR-watch defaults: the lane mirrors the board task it replaced, off only on request. */
+export const DEFAULT_REVIEW_ROUTING_PR_WATCH_ENABLED = true;
+export const DEFAULT_REVIEW_ROUTING_PR_REPOSITORIES: readonly string[] = [];
+export const MAX_REVIEW_ROUTING_PR_REPOSITORIES = 20;
+export const MAX_REVIEW_ROUTING_PR_REPOSITORY_LENGTH = 200;
+/** A reviewer holding this many OPEN pr-review tasks is skipped by the PR lane. */
+export const DEFAULT_REVIEW_ROUTING_PR_MAX_OPEN_REVIEWS_PER_REVIEWER = 3;
+export const MAX_REVIEW_ROUTING_PR_MAX_OPEN_REVIEWS_PER_REVIEWER = 100;
+/** Review/steward tasks the PR lane may create for one company per pass. */
+export const DEFAULT_REVIEW_ROUTING_PR_MAX_NEW_ASSIGNMENTS_PER_PASS = 5;
+export const MAX_REVIEW_ROUTING_PR_MAX_NEW_ASSIGNMENTS_PER_PASS = 50;
+/** Seconds between GitHub repo polls of the PR lane (the task lane keeps its own tick). */
+export const DEFAULT_REVIEW_ROUTING_PR_POLL_INTERVAL_SEC = 60;
+export const MIN_REVIEW_ROUTING_PR_POLL_INTERVAL_SEC = 15;
+export const MAX_REVIEW_ROUTING_PR_POLL_INTERVAL_SEC = 3600;
+export const DEFAULT_REVIEW_ROUTING_PR_STEWARD_ENABLED = true;
+/** Caste keys whose agents get merge-steward tasks. */
+export const DEFAULT_REVIEW_ROUTING_PR_STEWARD_ROLES: readonly string[] = ["devops"];
+/** Open merge tasks per steward before the PR lane skips them. */
+export const DEFAULT_REVIEW_ROUTING_PR_MAX_MERGES_PER_STEWARD = 3;
+export const MAX_REVIEW_ROUTING_PR_MAX_MERGES_PER_STEWARD = 50;
+
+/** `owner/repo` shape, GitHub-lean: one slash, non-empty slug-safe segments. */
+export const GITHUB_REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+
+export function isReviewRoutingRepositoryEntry(value: string): boolean {
+  return (
+    value.length > 0 &&
+    value.length <= MAX_REVIEW_ROUTING_PR_REPOSITORY_LENGTH &&
+    GITHUB_REPOSITORY_PATTERN.test(value)
+  );
+}
+
+const reviewRoutingRepositoryListSchema = z
+  .array(z.string().trim().min(1).max(MAX_REVIEW_ROUTING_PR_REPOSITORY_LENGTH).refine(isReviewRoutingRepositoryEntry, {
+    message: "Expected an \"owner/repo\" GitHub repository entry",
+  }))
+  .max(MAX_REVIEW_ROUTING_PR_REPOSITORIES);
+
+const reviewRoutingStewardSchema = z
+  .object({
+    enabled: z.boolean().default(DEFAULT_REVIEW_ROUTING_PR_STEWARD_ENABLED),
+    roles: z.array(z.string().trim().min(1).max(64)).max(50).default([...DEFAULT_REVIEW_ROUTING_PR_STEWARD_ROLES]),
+    maxMergesPerSteward: z
+      .number()
+      .int()
+      .min(1)
+      .max(MAX_REVIEW_ROUTING_PR_MAX_MERGES_PER_STEWARD)
+      .default(DEFAULT_REVIEW_ROUTING_PR_MAX_MERGES_PER_STEWARD),
+  })
+  .strict();
+
+export const reviewRoutingPrWatchSchema = z
+  .object({
+    enabled: z.boolean().default(DEFAULT_REVIEW_ROUTING_PR_WATCH_ENABLED),
+    repositories: reviewRoutingRepositoryListSchema.default([...DEFAULT_REVIEW_ROUTING_PR_REPOSITORIES]),
+    maxOpenReviewsPerReviewer: z
+      .number()
+      .int()
+      .min(1)
+      .max(MAX_REVIEW_ROUTING_PR_MAX_OPEN_REVIEWS_PER_REVIEWER)
+      .default(DEFAULT_REVIEW_ROUTING_PR_MAX_OPEN_REVIEWS_PER_REVIEWER),
+    maxNewAssignmentsPerPass: z
+      .number()
+      .int()
+      .min(1)
+      .max(MAX_REVIEW_ROUTING_PR_MAX_NEW_ASSIGNMENTS_PER_PASS)
+      .default(DEFAULT_REVIEW_ROUTING_PR_MAX_NEW_ASSIGNMENTS_PER_PASS),
+    pollIntervalSec: z
+      .number()
+      .int()
+      .min(MIN_REVIEW_ROUTING_PR_POLL_INTERVAL_SEC)
+      .max(MAX_REVIEW_ROUTING_PR_POLL_INTERVAL_SEC)
+      .default(DEFAULT_REVIEW_ROUTING_PR_POLL_INTERVAL_SEC),
+    // zod v4 `.default({})` would hand back the literal `{}` without filling
+    // the nested defaults — normalize an absent block through the schema.
+    steward: z.preprocess((value: unknown) => value ?? {}, reviewRoutingStewardSchema),
+  })
+  .strict();
+
+export type ReviewRoutingPrWatchSteward = z.infer<typeof reviewRoutingStewardSchema>;
+export type ReviewRoutingPrWatch = z.infer<typeof reviewRoutingPrWatchSchema>;
+
+/**
+ * The PR-watch half of the settings: absent or malformed means the defaults.
+ * Degradation is per field — a malformed `steward` keeps a valid
+ * `pollIntervalSec`, and a malformed `prWatch` never blanks the outer block's
+ * sibling keys (the outer object normalizes this value as a whole).
+ */
+function parseOr<T>(schema: z.ZodType<T>, fallback: T, value: unknown): T {
+  const parsed = schema.safeParse(value);
+  return parsed.success ? parsed.data : fallback;
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+export function normalizeReviewRoutingPrWatchSteward(raw: unknown): ReviewRoutingPrWatchSteward {
+  const record = asRecord(raw);
+  return {
+    enabled: parseOr(z.boolean(), DEFAULT_REVIEW_ROUTING_PR_STEWARD_ENABLED, record.enabled),
+    roles: [
+      ...new Set(
+        parseOr(
+          z.array(z.string().trim().min(1).max(64)).max(50),
+          [...DEFAULT_REVIEW_ROUTING_PR_STEWARD_ROLES],
+          record.roles,
+        ),
+      ),
+    ],
+    maxMergesPerSteward: parseOr(
+      z.number().int().min(1).max(MAX_REVIEW_ROUTING_PR_MAX_MERGES_PER_STEWARD),
+      DEFAULT_REVIEW_ROUTING_PR_MAX_MERGES_PER_STEWARD,
+      record.maxMergesPerSteward,
+    ),
+  };
+}
+
+export function normalizeReviewRoutingPrWatch(raw: unknown): ReviewRoutingPrWatch {
+  const record = asRecord(raw);
+  return {
+    enabled: parseOr(z.boolean(), DEFAULT_REVIEW_ROUTING_PR_WATCH_ENABLED, record.enabled),
+    repositories: [
+      ...new Set(parseOr(reviewRoutingRepositoryListSchema, [...DEFAULT_REVIEW_ROUTING_PR_REPOSITORIES], record.repositories)),
+    ],
+    maxOpenReviewsPerReviewer: parseOr(
+      z.number().int().min(1).max(MAX_REVIEW_ROUTING_PR_MAX_OPEN_REVIEWS_PER_REVIEWER),
+      DEFAULT_REVIEW_ROUTING_PR_MAX_OPEN_REVIEWS_PER_REVIEWER,
+      record.maxOpenReviewsPerReviewer,
+    ),
+    maxNewAssignmentsPerPass: parseOr(
+      z.number().int().min(1).max(MAX_REVIEW_ROUTING_PR_MAX_NEW_ASSIGNMENTS_PER_PASS),
+      DEFAULT_REVIEW_ROUTING_PR_MAX_NEW_ASSIGNMENTS_PER_PASS,
+      record.maxNewAssignmentsPerPass,
+    ),
+    pollIntervalSec: parseOr(
+      z.number().int().min(MIN_REVIEW_ROUTING_PR_POLL_INTERVAL_SEC).max(MAX_REVIEW_ROUTING_PR_POLL_INTERVAL_SEC),
+      DEFAULT_REVIEW_ROUTING_PR_POLL_INTERVAL_SEC,
+      record.pollIntervalSec,
+    ),
+    steward: normalizeReviewRoutingPrWatchSteward(record.steward),
+  };
+}
+
+const reviewRoutingPrWatchField = z.preprocess(
+  // Always normalize: absent, malformed, or partial — the prWatch defaults are
+  // the schema's own defaults, never a literal `{}` passing through a default.
+  (value: unknown) => normalizeReviewRoutingPrWatch(value),
+  reviewRoutingPrWatchSchema,
+);
 
 export const reviewRoutingSettingsSchema = z
   .object({
@@ -47,6 +207,7 @@ export const reviewRoutingSettingsSchema = z
       .min(0)
       .max(MAX_REVIEW_ROUTING_REASSIGN_AFTER_HOURS)
       .default(DEFAULT_REVIEW_ROUTING_REASSIGN_AFTER_HOURS),
+    prWatch: reviewRoutingPrWatchField,
   })
   .strict();
 
@@ -65,3 +226,12 @@ export function normalizeReviewRoutingSettings(raw: unknown): ReviewRoutingSetti
 /** Activity actions the routing writes (one per event, on the issue). */
 export const REVIEW_ROUTING_ASSIGNED_ACTION = "issue.review_routing.assigned";
 export const REVIEW_ROUTING_REASSIGNED_ACTION = "issue.review_routing.reassigned";
+/** The PR lane created a review task for a green, verdict-less PR head. */
+export const REVIEW_ROUTING_PR_TASK_CREATED_ACTION = "issue.review_routing.pr_task_created";
+/** The PR lane created a merge-steward task for an approved green PR head. */
+export const REVIEW_ROUTING_STEWARD_TASK_CREATED_ACTION = "issue.review_routing.steward_task_created";
+
+/** Work-product metadata keys the PR lane stamps on the task it creates. */
+export const REVIEW_ROUTING_PR_HEAD_SHA_METADATA_KEY = "prRoutingHeadSha";
+export const REVIEW_ROUTING_PR_KIND_METADATA_KEY = "prRoutingKind";
+export type ReviewRoutingPrRoutingKind = "review" | "merge";

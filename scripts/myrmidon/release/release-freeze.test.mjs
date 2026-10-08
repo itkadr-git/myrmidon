@@ -121,9 +121,12 @@ function makeSandbox(opts = {}) {
     object: { type: "tag", sha: TAG_OBJECT },
   });
   writeJson(dir, "tag-object.json", { object: { sha: COMMIT } });
-  // One CI run for the tag commit; conclusion/status from opts.
+  // One CI run for the tag commit; conclusion/status from opts. Default:
+  // the tag workflow (myrmidon-ci-tag.yml) on the tag head_branch — the
+  // selection the gate must see (regression of the 1.6.5-rc.6 freeze:
+  // filtering on myrmidon-ci.yml only leaves the verdict "missing" forever).
   const run = {
-    path: ".github/workflows/myrmidon-ci.yml",
+    path: opts.runPath ?? ".github/workflows/myrmidon-ci-tag.yml",
     head_branch: opts.headBranch ?? "myr-v1.6.10",
     status: opts.ciStatus ?? "completed",
     conclusion: opts.ciConclusion ?? "success",
@@ -222,6 +225,43 @@ describe("release-freeze.sh (fake gh)", () => {
     assert.match(r.stderr, /RELEASE FREEZE ACTIVE/);
   });
 
+  it("--check accepts a green TAG-workflow run (myrmidon-ci-tag.yml on the tag)", () => {
+    // Regression test: the tag workflow runs the full pipeline on the tag
+    // itself; a gate that filters on myrmidon-ci.yml only never sees it and
+    // the verdict stays "missing" forever (freeze stuck ACTIVE).
+    const sb = makeSandbox({
+      runPath: ".github/workflows/myrmidon-ci-tag.yml",
+      headBranch: "myr-v1.6.10",
+      ciConclusion: "success",
+    });
+    const r = runScript(sb, "--check");
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stderr, /merges open/);
+  });
+
+  it("--check accepts a green MAIN-workflow run of the tag commit (fallback for tags without a tag-CI run)", () => {
+    const sb = makeSandbox({
+      runPath: ".github/workflows/myrmidon-ci.yml",
+      headBranch: "main",
+      ciConclusion: "success",
+    });
+    const r = runScript(sb, "--check");
+    assert.equal(r.status, 0, r.stderr);
+  });
+
+  it("--check stays RED when the tag workflow runs on a DIFFERENT branch name (path/head_branch must pair)", () => {
+    // A myrmidon-ci-tag.yml run whose head_branch is not the newest tag must
+    // not clear the freeze: the pairing guard keeps verdict "missing".
+    const sb = makeSandbox({
+      runPath: ".github/workflows/myrmidon-ci-tag.yml",
+      headBranch: "myr-v1.6.9", // not the newest tag (1.6.10)
+      ciConclusion: "success",
+    });
+    const r = runScript(sb, "--check");
+    assert.equal(r.status, 1, `expected red gate: ${r.stderr}`);
+    assert.match(r.stderr, /RELEASE FREEZE ACTIVE/);
+  });
+
   it("--check is GREEN once the tag CI succeeded (freeze cleared)", () => {
     const sb = makeSandbox({ ciConclusion: "success" });
     const r = runScript(sb, "--check");
@@ -229,8 +269,12 @@ describe("release-freeze.sh (fake gh)", () => {
     assert.match(r.stderr, /merges open/);
   });
 
-  it("--check accepts a green MAIN-branch run of the tag commit (myrmidon-ci has no tag trigger)", () => {
-    const sb = makeSandbox({ headBranch: "main", ciConclusion: "success" });
+  it("--check accepts a green MAIN-branch run of the tag commit (legacy fallback; pairing keeps it valid)", () => {
+    const sb = makeSandbox({
+      runPath: ".github/workflows/myrmidon-ci.yml",
+      headBranch: "main",
+      ciConclusion: "success",
+    });
     const r = runScript(sb, "--check");
     assert.equal(r.status, 0, r.stderr);
   });
