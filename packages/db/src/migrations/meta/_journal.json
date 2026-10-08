@@ -2150,6 +2150,13 @@
       "when": 1791426748696,
       "tag": "0309_db_care_lz4_compression",
       "breakpoints": true
+    },
+    {
+      "idx": 310,
+      "version": "7",
+      "when": 1791426900000,
+      "tag": "0310_datastore_care",
+      "breakpoints": true
     }
   ]
 }

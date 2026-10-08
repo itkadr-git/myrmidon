@@ -146,6 +146,7 @@ import { createWorkspaceHygieneScheduler } from "./myrmidon/workspace-hygiene/in
 import { createBotDiskQuotaScheduler } from "./myrmidon/bot-containers/bot-disk-quota-runtime.js"; // myrmidon(1.6.1-BOT-DISK-C)
 // myrmidon(BOT-DISK E): measures the host disk and signals when it crosses the threshold
 import { createHostDiskScheduler } from "./myrmidon/host-disk/index.js"; // myrmidon(BOT-DISK E)
+import { startDatastoreCare, stopDatastoreCare } from "./myrmidon/datastore-care/index.js"; // myrmidon(DBC-4)
 import { createRunStallSweepFromHeartbeat } from "./myrmidon/run-stall/index.js"; // myrmidon(RUN-STALL)
 // myrmidon(HERMES-RUN-REATTACH): reattach live gateway runs after a board restart
 import { sweepGatewayRunReattach } from "./myrmidon/gateway-run-reattach.js";
@@ -1656,6 +1657,7 @@ async function startServerWithDatabaseTeardown(
     startLitellmModelReconciliation(db as any); // myrmidon(1.6.1 MODEL-PROVIDERS B): reconcile LiteLLM models with DB state
     startModelFallbackSignalSweep(db as any); // myrmidon(BOT-RUNTIME-TUNING D): model fallback attention signals; a no-op unless MYRMIDON_MODEL_FALLBACK_ENABLED=1
     startBaselineSnapshots(db as any); // myrmidon(1.6-BASELINE): freeze the 14-day metric window; a no-op unless MYRMIDON_BASELINE_INTERVAL_SEC is set
+    startDatastoreCare(db as any); // myrmidon(DBC-4): hourly snapshots of the board's database plus their 90-day retention; a no-op unless MYRMIDON_DATASTORE_CARE_ENABLED=0
     startForagingSweep(db as any); // myrmidon(1.6-FORAGE): source comparison sweep; a no-op unless MYRMIDON_FORAGING_ENABLED=1
     startTracingAttentionSweep(db as any); // myrmidon(TRACING-HEALTH): keep the "LLM tracing" operator signal fresh; a no-op unless the tracing settings are on
     startBotCanary(db as any); // myrmidon(R5-B): resume an open bot image rollout; a no-op unless MYRMIDON_BOT_CANARY is on
@@ -2243,6 +2245,7 @@ async function startServerWithDatabaseTeardown(
     stopBotContainers(); // myrmidon(W2a)
     stopLitellmCostSweep(); // myrmidon(M2-A)
     stopBaselineSnapshots(); // myrmidon(1.6-BASELINE)
+    stopDatastoreCare(); // myrmidon(DBC-4)
     stopForagingSweep(); // myrmidon(1.6-FORAGE)
     stopTracingAttentionSweep(); // myrmidon(TRACING-HEALTH)
     stopBotCanary(); // myrmidon(R5-B)
