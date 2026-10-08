@@ -280,6 +280,7 @@ describe("botd loop: policy visibility and dry run", () => {
         now: () => NOW,
         botKey: "bot-001",
         imageGeneration: "x",
+        jitter: () => 0, // the pacing tests below cover the jitter itself
         setTimer: (fn, ms) => (timers.push(ms), 1),
         clearTimer: () => {},
       });
@@ -290,6 +291,150 @@ describe("botd loop: policy visibility and dry run", () => {
       await loop.stop();
       assert.equal(timers.at(-1), ms, `nextReportSec ${sec}`);
     }
+  });
+});
+
+describe("botd loop: tick pacing (BOT-DISK-H LOAD)", () => {
+  /** A loop with fake timers, an injectable board answer script and jitter. */
+  function paceRig({ intervalMs, send, desired = async () => ({ ok: true, state: desiredState() }), jitter = () => 0 } = {}) {
+    const timers = [];
+    const loop = createLoop({
+      intervalMs,
+      jitter,
+      desired: { poll: desired },
+      gather: async () => ({ inventory: { worktrees: [], scratch: [], bases: [], archives: [] }, parts: { copies: [], foreign: [], bases: [], archives: [], selfChecks: { reflink: true, gitref: true, wsCli: true } } }),
+      rules: { plan: () => ({ actions: [] }) },
+      executor: {},
+      report: { build: buildReport, send },
+      writeDiskState: async () => {},
+      now: () => NOW,
+      botKey: "bot-001",
+      imageGeneration: "x",
+      setTimer: (fn, ms) => (timers.push(ms), 1),
+      clearTimer: () => {},
+    });
+    return { loop, timers };
+  }
+
+  it("a 60 s interval does not clamp the board's 300 s cadence: the next tick is 300000, not 60000", async () => {
+    let calls = 0;
+    const { loop, timers } = paceRig({
+      intervalMs: 60_000,
+      send: async () => ((calls += 1), { ok: true, nextReportSec: 300 }),
+    });
+    await loop.runOnce();
+    assert.equal(timers.length, 0); // runOnce does not schedule; the loop does
+    assert.equal(loop.getLastDelayMs(), 300_000);
+    loop.start({ on() {}, off() {} }); // schedules with lastDelayMs after the pass
+    await new Promise((r) => setImmediate(r));
+    assert.equal(timers.at(-1), 300_000);
+  });
+
+  it("a series of failed passes backs off 60 s -> 120 s -> 240 s ... to the 3600 s cap", async () => {
+    const { loop } = paceRig({
+      intervalMs: 60_000,
+      send: async () => ({ ok: false, reason: "HTTP 500" }),
+    });
+    const seen = [];
+    for (let i = 0; i < 10; i += 1) {
+      await loop.runOnce();
+      seen.push(loop.getLastDelayMs());
+    }
+    assert.deepEqual(seen.slice(0, 6), [60_000, 120_000, 240_000, 480_000, 960_000, 1_920_000]);
+    assert.ok(seen.slice(6).every((ms) => ms === 3_600_000), `cap: ${seen}`);
+  });
+
+  it("a failed desired poll counts as a failed pass too, even when the report was sent", async () => {
+    const { loop } = paceRig({
+      intervalMs: 60_000,
+      desired: async () => ({ ok: false, reason: "HTTP 503" }),
+      send: async () => ({ ok: true, nextReportSec: 300 }),
+    });
+    await loop.runOnce();
+    assert.equal(loop.getLastDelayMs(), 300_000); // exponential 60 s, floored by the known cadence 300 s
+    await loop.runOnce();
+    assert.equal(loop.getLastDelayMs(), 300_000);
+    await loop.runOnce(); // 60 * 2^2 = 240 s < cadence -> still floored
+    assert.equal(loop.getLastDelayMs(), 300_000);
+    await loop.runOnce(); // 480 s > cadence
+    assert.equal(loop.getLastDelayMs(), 480_000);
+  });
+
+  it("the first success resets the backoff: the tick returns to nextReportSec", async () => {
+    let failing = true;
+    const { loop } = paceRig({
+      intervalMs: 60_000,
+      send: async () => (failing ? { ok: false, reason: "HTTP 500" } : { ok: true, nextReportSec: 300 }),
+    });
+    await loop.runOnce();
+    await loop.runOnce();
+    assert.equal(loop.getLastDelayMs(), 120_000);
+    failing = false;
+    await loop.runOnce();
+    assert.equal(loop.getLastDelayMs(), 300_000);
+  });
+
+  it("jitter: failures spread +/-10 %; the success pause only stretches, never below nextReportSec", async () => {
+    const failRig = paceRig({ intervalMs: 100_000, send: async () => ({ ok: false, reason: "down" }), jitter: () => -1 });
+    await failRig.loop.runOnce();
+    assert.equal(failRig.loop.getLastDelayMs(), 90_000); // 100 s * (1 - 10 %)
+    const failUp = paceRig({ intervalMs: 100_000, send: async () => ({ ok: false, reason: "down" }), jitter: () => 1 });
+    await failUp.loop.runOnce();
+    assert.equal(failUp.loop.getLastDelayMs(), 110_000);
+
+    const succ = paceRig({ intervalMs: 60_000, send: async () => ({ ok: true, nextReportSec: 300 }), jitter: () => -1 });
+    await succ.loop.runOnce();
+    assert.equal(succ.loop.getLastDelayMs(), 300_000); // -1 jitter on the success path must NOT go below the cadence
+    const succUp = paceRig({ intervalMs: 60_000, send: async () => ({ ok: true, nextReportSec: 300 }), jitter: () => 1 });
+    await succUp.loop.runOnce();
+    assert.equal(succUp.loop.getLastDelayMs(), 330_000);
+
+    // the default (Math.random) jitter keeps every success delay within [cadence, cadence*1.1]
+    for (let i = 0; i < 50; i += 1) {
+      const rnd = paceRig({ intervalMs: 60_000, send: async () => ({ ok: true, nextReportSec: 300 }) });
+      await rnd.loop.runOnce();
+      const ms = rnd.loop.getLastDelayMs();
+      assert.ok(ms >= 300_000 && ms <= 330_000, `jitter out of range: ${ms}`);
+    }
+  });
+
+  it("SIGUSR1 wakes the loop immediately even during a long backoff pause", async () => {
+    let passes = 0;
+    const handlers = new Map();
+    let cleared = 0;
+    const loop = createLoop({
+      intervalMs: 60_000,
+      jitter: () => 0,
+      desired: { poll: async () => ((passes += 1), { ok: false, reason: "down" }) },
+      gather: async () => ({ inventory: {}, parts: {} }),
+      rules: { plan: () => ({ actions: [] }) },
+      report: { build: buildReport, send: async () => ({ ok: false, reason: "down" }) },
+      now: () => NOW,
+      botKey: "bot-001",
+      imageGeneration: "g",
+      setTimer: (fn, ms) => ({ fn, ms }),
+      clearTimer: () => (cleared += 1),
+    });
+    loop.start({ on: (n, f) => handlers.set(n, f), off: (n) => handlers.delete(n) });
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(passes, 1); // started immediately, now paused on the backoff schedule
+    handlers.get("SIGUSR1")();
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(passes, 2, "the signal is not bound by the pause");
+    assert.ok(cleared >= 1, "the pending backoff timer was cancelled by the wake-up");
+    await loop.stop();
+  });
+
+  it("intervalMs is only the initial value before the first accepted report", async () => {
+    const { loop } = paceRig({ intervalMs: 90_000, send: async () => ({ ok: true, nextReportSec: 300 }) });
+    // before any pass the first schedule uses intervalMs; after it, the cadence
+    loop.start({ on() {}, off() {} });
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(loop.getLastDelayMs(), 300_000);
+    await loop.stop();
   });
 });
 
@@ -332,13 +477,14 @@ describe("botd loop: SIGUSR1 and timer", () => {
     const proc = { on: (n, f) => handlers.set(n, f), off: (n) => handlers.delete(n) };
     const timers = [];
     const loop = createLoop({
-      desired: { poll: async () => ((passes += 1), { ok: false, reason: "down" }) },
+      desired: { poll: async () => ((passes += 1), { ok: true, state: desiredState() }) },
       gather: async () => ({ inventory: {}, parts: {} }),
       rules: { plan: () => ({ actions: [] }) },
       report: { build: buildReport, send: async () => ({ ok: true, nextReportSec: 300 }) },
       now: () => NOW,
       botKey: "bot-001",
       imageGeneration: "g",
+      jitter: () => 0,
       setTimer: (fn, ms) => {
         const t = { fn, ms };
         timers.push(t);
@@ -390,8 +536,8 @@ describe("botd report: contract", () => {
 });
 
 describe("botd entry", () => {
+  const entry = path.join(ROOT, "docker/bot-runtime/botd/botd");
   it("is CommonJS with a shebang, executable-intent, and parses", async () => {
-    const entry = path.join(ROOT, "docker/bot-runtime/botd/botd");
     const text = fs.readFileSync(entry, "utf8");
     assert.match(text, /^#!\/usr\/bin\/env node\n"use strict";/);
     assert.ok(!/^\s*import\s/m.test(text), "entry must not use static ESM imports");
@@ -404,5 +550,11 @@ describe("botd entry", () => {
     } finally {
       fs.rmSync(tmp, { force: true });
     }
+  });
+
+  it("wires the desired client through poll() only — its start() timer never runs next to the loop (BOT-DISK-H LOAD)", async () => {
+    const text = fs.readFileSync(entry, "utf8");
+    assert.ok(/desiredClient\s*\?\s*desiredClient\.poll\(\)/.test(text), "the entry must poll desired-state via the loop");
+    assert.ok(!/desiredClient\.start\(/.test(text), "the entry must not start the client's own 60 s timer");
   });
 });

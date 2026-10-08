@@ -1,6 +1,16 @@
 // myrmidon(1.6.5-BOT-DISK-H3e): botd main loop. One pass = desired state ->
 // inventory -> rules.plan -> execution -> disk-state.json -> disk report.
 //
+// Tick pacing (BOT-DISK-H LOAD): the board's report answer { ok, nextReportSec }
+// is the cadence of the whole pass — desired-state is polled and the disk report
+// is sent no more often than once per nextReportSec. `intervalMs` is only the
+// bootstrap delay until the first accepted answer; a failed pass backs off
+// exponentially (intervalMs * 2^k, floor MIN_DELAY_MS, cap MAX_DELAY_MS) with ±10 % jitter so
+// a fleet that lost the board does not retry in lockstep. A successful pass
+// pauses for nextReportSec * 1000 with 0..+10 % jitter — never shorter, so the
+// "not more often than nextReportSec" guarantee holds even under jitter.
+// SIGUSR1 is an immediate wake-up and is not bound by the pacing.
+//
 // Every module is injected (`deps`), so the pass is testable with fakes and the
 // real modules (desired H3a, rules H3b, archive H3c, classify H3d) plug in by
 // their interfaces from the bot-disk contract:
@@ -20,11 +30,13 @@
 //  * an action that throws is reported as `error` and the pass goes on;
 //  * an op with no executor is `skipped`, never guessed;
 //  * the loop never throws out of `runOnce`: a broken pass is logged and the next
-//    one starts on time.
+//    one starts on the backed-off schedule.
 
 const DEFAULT_INTERVAL_MS = 300_000;
 const MIN_DELAY_MS = 10_000;
 const MAX_DELAY_MS = 3_600_000;
+const EXP_STRETCH = 6; // intervalMs * 2^EXP_STRETCH already exceeds MAX_DELAY_MS at every legal intervalMs
+const JITTER_RATIO = 0.1; // ±10 % (success pauses jitter 0..+10 % — never below the board's cadence)
 // Directories the rules only reported (open elsewhere, unknown key, no task) are listed in the report as skips.
 const MAX_HELD_IN_REPORT = 40;
 
@@ -41,7 +53,8 @@ const errMessage = (err) => String(err && err.message ? err.message : err).repla
 
 /**
  * @param {object} deps  see the header; `now` (() => Date), `log`, `settings`,
- *   `botKey`, `imageGeneration`, `intervalMs`, `setTimer`/`clearTimer` are optional.
+ *   `botKey`, `imageGeneration`, `intervalMs` (the initial and backoff base value)
+ *   are optional. `setTimer`/`clearTimer`/`jitter` are optional and injected by the tests.
  */
 export function createLoop(deps) {
   const now = deps.now ?? (() => new Date());
@@ -50,15 +63,45 @@ export function createLoop(deps) {
   const executor = deps.executor ?? {};
   const setTimer = deps.setTimer ?? setTimeout;
   const clearTimer = deps.clearTimer ?? clearTimeout;
+  // `jitter` returns a number in [-1, 1]; the tests inject 0 for determinism.
+  const jitter = deps.jitter ?? (() => Math.random() * 2 - 1);
+  const jittered = (delayMs) => Math.round(delayMs * (1 + JITTER_RATIO * jitter()));
+  const clamp = (delayMs) => Math.min(MAX_DELAY_MS, Math.max(MIN_DELAY_MS, delayMs));
 
   let running = null;
   let rerun = false;
   let timer = null;
   let onSignal = null;
   let stopped = true;
-  let nextDelayMs = intervalMs;
+  let failedStreak = 0;
+  // the board's nextReportSec after the first accepted report; null until then
+  let nextReportSec = null;
+  let lastDelayMs = clamp(intervalMs);
 
   const emptyGather = { inventory: { worktrees: [], scratch: [], bases: [], archives: [] }, parts: {} };
+
+  /**
+   * Delay until the next tick, in ms (after `tick`, before the next schedule).
+   * Success: the board's nextReportSec, floored/capped, stretched by 0..+10 %
+   * jitter — one-sided, so a pass never starts sooner than the board's cadence.
+   * Failure (desired poll or report send): exponential backoff intervalMs * 2^k
+   * over the consecutive failed passes, ±10 % jitter, floor MIN_DELAY_MS, cap
+   * MAX_DELAY_MS; a known nextReportSec still floors the wait, so neither path
+   * polls desired-state or sends a disk report more often than the cadence.
+   */
+  function computeDelayMs() {
+    const cadenceMs = nextReportSec != null ? clamp(nextReportSec * 1000) : null;
+    if (failedStreak > 0) {
+      const k = Math.min(failedStreak - 1, EXP_STRETCH);
+      const base = clamp(jittered(Math.min(MAX_DELAY_MS, intervalMs * 2 ** k)));
+      return Math.min(MAX_DELAY_MS, cadenceMs == null ? base : Math.max(base, cadenceMs));
+    }
+    if (cadenceMs != null) {
+      const up = 1 + JITTER_RATIO * Math.max(0, jitter()); // never below the cadence
+      return clamp(Math.round(cadenceMs * up));
+    }
+    return clamp(intervalMs);
+  }
 
   async function gatherSafe(desiredState) {
     try {
@@ -196,9 +239,14 @@ export function createLoop(deps) {
       sent = { ok: false, reason: errMessage(err) };
       log(`botd loop: report failed: ${sent.reason}`);
     }
-    nextDelayMs = sent.ok && Number.isFinite(sent.nextReportSec)
-      ? Math.max(MIN_DELAY_MS, Math.min(MAX_DELAY_MS, sent.nextReportSec * 1000))
-      : intervalMs;
+    if (sent.ok && Number.isFinite(sent.nextReportSec) && sent.nextReportSec > 0) {
+      nextReportSec = sent.nextReportSec;
+    }
+    // a pass is good only when the desired state arrived AND the board accepted
+    // the report; either failure backs the schedule off (the board is in trouble)
+    if (desiredOk && sent.ok) failedStreak = 0;
+    else failedStreak += 1;
+    lastDelayMs = computeDelayMs();
     return { desiredOk, executed: results, report, sent };
   }
 
@@ -232,14 +280,18 @@ export function createLoop(deps) {
       timer = null;
       await trigger();
       schedule();
-    }, nextDelayMs);
+    }, lastDelayMs);
   }
 
-  /** Runs now, then every interval, and on SIGUSR1 (a run woke the bot). */
+  /** Runs now, then on the computed delay, and on SIGUSR1 (a run woke the bot). */
   function start(proc = process) {
     if (!stopped) return;
     stopped = false;
+    failedStreak = 0;
+    nextReportSec = null;
+    lastDelayMs = clamp(intervalMs);
     onSignal = () => {
+      // immediate wake-up: the pause never holds a pass a run asked for
       if (timer) clearTimer(timer);
       timer = null;
       void trigger().finally(schedule);
@@ -258,5 +310,5 @@ export function createLoop(deps) {
     return running ?? Promise.resolve();
   }
 
-  return { runOnce, trigger, start, stop };
+  return { runOnce, trigger, start, stop, getLastDelayMs: () => lastDelayMs };
 }
