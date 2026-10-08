@@ -8,7 +8,7 @@ Myrmidon — система управления командой ИИ-аген�
 [Paperclip](https://github.com/paperclipai/paperclip) (лицензия MIT
 сохраняется).
 
-English versions of the pages carry no suffix, e.g. [Home](Home).
+Английские версии страниц идут без суффикса, например [Home](Home).
 
 ## Продукт
 
@@ -64,6 +64,6 @@ English versions of the pages carry no suffix, e.g. [Home](Home).
 
 Эти страницы ведутся в репозитории в `docs/wiki/` и синхронизируются сюда
 автоматически при каждом слиянии в `main` и на каждом выпуске. Каждое
-утверждение здесь находится в
+утверждение здесь опирается на
 [`docs/myrmidon/`](https://github.com/itkadr-git/myrmidon/tree/main/docs/myrmidon)
-— документации продукта, журнале изменений и руководствах оператора.
+— документацию продукта, журнал изменений и руководства оператора.

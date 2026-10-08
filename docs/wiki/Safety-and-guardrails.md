@@ -21,9 +21,11 @@ Enforced seams include:
   revision. `forbidden` refuses with 403 `autonomy_forbidden`;
   `approval_required` holds the change for an approval; denied requests
   never rewrite instructions or create revisions.
-- **Pause / resume / wake** (`pause_wake_agents`, 1.6.4): the three agent
-  lifecycle routes check the matrix before acting.
-- **Delete** (`delete`, 1.6.4): DELETE endpoints check the matrix and refuse
+- **Pause / resume / wake** (`pause_wake_agents`): the three agent
+  lifecycle routes check the matrix before acting. Enforced on the main
+  development line; not part of the 1.6.5 release line (backport pending in
+  [#910](https://github.com/itkadr-git/myrmidon/pull/910)).
+- **Delete** (`delete`, 1.6.2): DELETE endpoints check the matrix and refuse
   roles whose `delete` cell is `forbidden`.
 
 Board administrators are not subject to the matrix.
