@@ -40,6 +40,10 @@ import { ReviewReworkSettingsPanel } from "@/components/myrmidon/ReviewReworkSet
 import { ForagingSettingsPanel } from "@/components/myrmidon/ForagingSettingsPanel"; // myrmidon(1.6.1-FORAGING-LIMITS-UI)
 import { AboutSettingsPanel } from "@/components/myrmidon/AboutSettingsPanel"; // myrmidon(ABOUT)
 import { DeployJobsPanel } from "@/components/myrmidon/DeployJobsPanel"; // myrmidon(R5-A)
+// myrmidon(1.6.6 PROCS-1.7 B): the leader-lease block of the "Процессы" panel.
+// PROCS-0.1 (OPE-6416) owns that panel; until it lands this block is mounted
+// here, and moving it inside the panel is one import plus one line.
+import { BoardLeasesPanel } from "@/components/myrmidon/BoardLeasesPanel";
 import { PluginEntitlementSettings } from "@/components/myrmidon/PluginEntitlementSettingsPanel"; // myrmidon(PLUGIN-ENTITLEMENT C)
 import { PRODUCT_NAME, UPSTREAM_ATTRIBUTION } from "@/lib/myrmidon-product"; // myrmidon(B1a)
 import { useTranslation } from "@/i18n"; // myrmidon(UI-RU)
@@ -182,6 +186,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       <ReviewReworkSettingsPanel /> {/* myrmidon(REVIEW-REWORK) */}
       <ForagingSettingsPanel /> {/* myrmidon(1.6.1-FORAGING-LIMITS-UI) */}
       <DeployJobsPanel /> {/* myrmidon(R5-A) */}
+      <BoardLeasesPanel /> {/* myrmidon(1.6.6 PROCS-1.7 B) */}
       <PluginEntitlementSettings /> {/* myrmidon(PLUGIN-ENTITLEMENT C) */}
 
       {showDeploymentStatus && (
