@@ -1,5 +1,11 @@
 import { AGENT_CHAT_DIRECTIVE, conversationReplay, isConversation, isConversationExecutionWake, isWaitingConversation, prepareConversationTurn, settleConversationTurn } from "./agent-conversations.js";
 // myrmidon(B1): product name in the notice/prompt text below; see product.ts.
+import { INPUT_LIMIT_CONFIG_KEY } from "@paperclipai/adapter-utils/input-limit";
+import {
+  INPUT_LIMIT_EVENT_KEY,
+  INPUT_LIMIT_FRESH_SESSION_ACTION,
+  planInputLimit,
+} from "../myrmidon/input-limit/input-limit.js";
 import {
   buildInputOverflowAttentionComment,
   countConsecutiveInputOverflowFailures,
@@ -23161,6 +23167,72 @@ export function heartbeatService(
           // #921 + #903): every recorded overflow moves the key one generation on.
           sessionGeneration: Math.max(Number(runtimeConfig.sessionGeneration) || 1, 1) + inputOverflowFailures,
         };
+      }
+
+      // myrmidon(OPE-6168): check the model input limit before the run is sent.
+      // The limit comes from the model catalog (or an agent override) and rides
+      // the adapter config so the adapter trims a request that alone exceeds
+      // it; when the task's session already holds so many prompts that the next
+      // one would not fit, the run starts a fresh session instead of sending
+      // into the full one. The decision is recorded as a lifecycle event, which
+      // is what keeps later runs on the new session generation.
+      try {
+        const inputLimitPlan = await planInputLimit(db, {
+          companyId: agent.companyId,
+          agentId: agent.id,
+          issueId: issueId ?? null,
+          runId: run.id,
+          adapterConfig: runtimeConfig,
+          overflowFailures: inputOverflowFailures,
+        });
+        if (inputLimitPlan.hint) {
+          runtimeConfig = {
+            ...runtimeConfig,
+            [INPUT_LIMIT_CONFIG_KEY]: inputLimitPlan.hint,
+          };
+        }
+        // Stacked on top of the PERF-DIET-K generation and the overflow bumps
+        // applied above (integration of #921 + #903 + #950): the plan's
+        // generation is 1 + overflow failures + recorded fresh-session resets
+        // (+1 for this run's reset), so the part that is the pre-check's own
+        // (resets) is added to the generation already on the config. A max()
+        // here would swallow the reset whenever the PERF-DIET-K base is
+        // already ahead; adding keeps the key strictly moving on.
+        const inputLimitBumps = Math.max(
+          inputLimitPlan.generation - 1 - inputOverflowFailures,
+          0,
+        );
+        if (inputLimitBumps > 0) {
+          runtimeConfig = {
+            ...runtimeConfig,
+            sessionGeneration: Math.max(Number(runtimeConfig.sessionGeneration) || 1, 1) + inputLimitBumps,
+          };
+        }
+        if (inputLimitPlan.decision.reset) {
+          runtimeSessionIdForAdapter = null;
+          runtimeSessionParamsForAdapter = null;
+          previousSessionDisplayId = null;
+          runtimeWorkspaceWarnings.push(
+            "Starting a fresh session because the session would exceed the model input limit.",
+          );
+          await appendRunEvent(run, {
+            eventType: "lifecycle",
+            stream: "system",
+            level: "warn",
+            message: `Session holds about ${inputLimitPlan.decision.sessionTokens} prompt tokens and the next prompt would bring it to ${inputLimitPlan.decision.expectedTokens}, over the ${inputLimitPlan.decision.budgetTokens}-token budget of the model input limit; starting a fresh session`,
+            payload: {
+              [INPUT_LIMIT_EVENT_KEY]: {
+                action: INPUT_LIMIT_FRESH_SESSION_ACTION,
+                sessionTokens: inputLimitPlan.decision.sessionTokens,
+                expectedTokens: inputLimitPlan.decision.expectedTokens,
+                budgetTokens: inputLimitPlan.decision.budgetTokens,
+                generation: inputLimitPlan.generation,
+              },
+            },
+          });
+        }
+      } catch (err) {
+        logger.warn({ err, runId: run.id }, "failed to apply the model input-limit pre-check");
       }
 
       if (managedAiRuntime) {
