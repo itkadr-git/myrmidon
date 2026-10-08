@@ -49,9 +49,9 @@ const SELF_KEYS: Record<string, string> = {
 };
 
 function badgeClass(tone: "ok" | "warn" | "muted"): string {
-  if (tone === "ok") return "rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-[11px]";
-  if (tone === "warn") return "rounded-full border border-destructive/40 bg-destructive/5 px-2 py-0.5 text-[11px]";
-  return "rounded-full border px-2 py-0.5 text-[11px] text-muted-foreground";
+  if (tone === "ok") return "rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-xs";
+  if (tone === "warn") return "rounded-full border border-destructive/40 bg-destructive/5 px-2 py-0.5 text-xs";
+  return "rounded-full border px-2 py-0.5 text-xs text-muted-foreground";
 }
 
 function Cell({ label, value }: { label: string; value: string }) {
