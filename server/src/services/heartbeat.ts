@@ -152,6 +152,7 @@ import {
   documentRevisions,
   environmentLeases,
   issueDocuments,
+  issueLabels,
   executionWorkspaces,
   heartbeatRunEvents,
   heartbeatRuns,
@@ -164,6 +165,7 @@ import {
   issueThreadInteractions,
   issues,
   issueWorkProducts,
+  labels,
   nativeRunFinalizations,
   projects,
   projectWorkspaces,
@@ -178,6 +180,8 @@ import {
   toolProfileEntries,
   toolProfiles,
   workspaceOperations,
+  runContextPersistenceFields,
+  heartbeatRunListContextColumnProjections,
 } from "@paperclipai/db";
 import { conflict, HttpError, notFound } from "../errors.js";
 import {
@@ -686,6 +690,15 @@ import {
   sharedRunAdmission,
   type RunAdmissionDenialReason,
 } from "../myrmidon/run-admission.js";
+// myrmidon(1.6.5 RUN-PRIORITY A): queued runs start by role/issue/release
+// weight with aging; the settings live-refresh per pass (runtime-limits pattern).
+import { currentRunPrioritySettings } from "../myrmidon/run-priority/state.js";
+import {
+  compareRunsByPriority,
+  runMatchesCurrentRelease,
+  type PriorityScoredRun,
+} from "../myrmidon/run-priority/scoring.js";
+import { runPriorityWeight, type RunPrioritySettings } from "@paperclipai/shared";
 // myrmidon(S2-hostcred): a run never inherits the host's GitHub credentials
 import {
   filterHostGitHubCredentialEnv,
@@ -3480,36 +3493,10 @@ const heartbeatRunSummaryListColumns = {
   resultJson: sql<Record<string, unknown> | null>`NULL`.as("resultJson"),
 } as const;
 
-const heartbeatRunListContextColumns = {
-  contextIssueId: sql<
-    string | null
-  >`${heartbeatRuns.contextSnapshot} ->> 'issueId'`.as("contextIssueId"),
-  contextTaskId: sql<
-    string | null
-  >`${heartbeatRuns.contextSnapshot} ->> 'taskId'`.as("contextTaskId"),
-  contextTaskKey: sql<
-    string | null
-  >`${heartbeatRuns.contextSnapshot} ->> 'taskKey'`.as("contextTaskKey"),
-  contextCommentId: sql<
-    string | null
-  >`${heartbeatRuns.contextSnapshot} ->> 'commentId'`.as("contextCommentId"),
-  contextWakeCommentId: sql<
-    string | null
-  >`${heartbeatRuns.contextSnapshot} ->> 'wakeCommentId'`.as(
-    "contextWakeCommentId",
-  ),
-  contextWakeReason: sql<
-    string | null
-  >`${heartbeatRuns.contextSnapshot} ->> 'wakeReason'`.as("contextWakeReason"),
-  contextWakeSource: sql<
-    string | null
-  >`${heartbeatRuns.contextSnapshot} ->> 'wakeSource'`.as("contextWakeSource"),
-  contextWakeTriggerDetail: sql<
-    string | null
-  >`${heartbeatRuns.contextSnapshot} ->> 'wakeTriggerDetail'`.as(
-    "contextWakeTriggerDetail",
-  ),
-} as const;
+// Thin-column projections with a snapshot coalesce fallback for historical
+// rows; see packages/db/src/run-context-columns.ts. OPE-5007 П2: the run list
+// must not detoast context_snapshot for rows that already carry the columns.
+const heartbeatRunListContextColumns = heartbeatRunListContextColumnProjections;
 
 const heartbeatRunListResultColumns = {
   resultSummary: sql<
@@ -13974,7 +13961,7 @@ export function heartbeatService(
           triggerDetail: "system",
           status: "queued",
           wakeupRequestId: wakeupRequest.id,
-          contextSnapshot: retryContextSnapshot,
+          ...runContextPersistenceFields(retryContextSnapshot),
           responsibleUserId,
           sessionIdBefore: sessionBefore,
           retryOfRunId: run.id,
@@ -15771,7 +15758,7 @@ export function heartbeatService(
             triggerDetail: "system",
             status: "scheduled_retry",
             wakeupRequestId: wakeupRequest.id,
-            contextSnapshot: retryContextSnapshot,
+            ...runContextPersistenceFields(retryContextSnapshot),
             ...(hasConversationContinuationPolicy(run.resultJson)
               ? { resultJson: { conversationContinuation: CONVERSATION_CONTINUATION_POLICY } } : {}),
             responsibleUserId,
@@ -16401,7 +16388,7 @@ export function heartbeatService(
         .update(heartbeatRuns)
         .set({
           scheduledRetryAt: now,
-          contextSnapshot,
+          ...runContextPersistenceFields(contextSnapshot),
           updatedAt: now,
         })
         .where(
@@ -17513,9 +17500,11 @@ export function heartbeatService(
                     ...legacyControllerClaim(run.runtimeMode),
                   responsibleUserId,
                   startedAt: lockedRun.startedAt ?? claimedAt,
-                  contextSnapshot: withQueuedCommentIdsInRunContext(
-                    lockedRun.contextSnapshot,
-                    liveIds,
+                  ...runContextPersistenceFields(
+                    withQueuedCommentIdsInRunContext(
+                      lockedRun.contextSnapshot,
+                      liveIds,
+                    ),
                   ),
                   updatedAt: claimedAt,
                 })
@@ -19209,6 +19198,144 @@ export function heartbeatService(
     return { reaped: reaped.length, runIds: reaped };
   }
 
+  // myrmidon(1.6.5 RUN-PRIORITY A): attach the queue keys (role, issue
+  // priority, current-release membership) to queued runs. Lookups are batched
+  // per sweep pass — one query per table, not per run — and
+  // `currentRunPrioritySettings()` is read fresh on every pass, so a changed
+  // weight reaches the queue without a restart (the runtime-limits pattern).
+  // The scores never touch `contextSnapshot`: `writeQueuedRunWaitReason`
+  // rewrites it per pass, and a stored score would go stale.
+  async function decorateQueuedRunKeys<T extends {
+    id: string;
+    agentId: string;
+    createdAt: Date;
+    contextSnapshot: unknown;
+  }>(runs: readonly T[], settings: RunPrioritySettings): Promise<Array<T & PriorityScoredRun>> {
+    if (runs.length === 0) return [];
+    const roleByAgent = new Map<string, string | null>();
+    const roleRows = await db
+      .select({ id: agents.id, role: agents.role })
+      .from(agents)
+      .where(inArray(agents.id, [...new Set(runs.map((run) => run.agentId))]));
+    for (const row of roleRows) roleByAgent.set(row.id, row.role);
+
+    const issueIds = [
+      ...new Set(
+        runs
+          .map((run) => readNonEmptyString(parseObject(run.contextSnapshot).issueId))
+          .filter((issueId): issueId is string => Boolean(issueId)),
+      ),
+    ];
+    type IssueKey = { priority: string; labels: string[]; branchName: string | null };
+    const issueByKey = new Map<string, IssueKey>();
+    if (issueIds.length > 0) {
+      const issueRows = await db
+        .select({
+          id: issues.id,
+          priority: issues.priority,
+          executionWorkspaceId: issues.executionWorkspaceId,
+        })
+        .from(issues)
+        .where(inArray(issues.id, issueIds));
+      const labelRows = await db
+        .select({ issueId: issueLabels.issueId, name: labels.name })
+        .from(issueLabels)
+        .innerJoin(labels, eq(labels.id, issueLabels.labelId))
+        .where(inArray(issueLabels.issueId, issueIds));
+      const workspaceIds = [
+        ...new Set(
+          issueRows
+            .map((row) => row.executionWorkspaceId)
+            .filter((id): id is string => Boolean(id)),
+        ),
+      ];
+      const branchRows = workspaceIds.length
+        ? await db
+            .select({ id: executionWorkspaces.id, branchName: executionWorkspaces.branchName })
+            .from(executionWorkspaces)
+            .where(inArray(executionWorkspaces.id, workspaceIds))
+        : [];
+      const branchById = new Map(branchRows.map((row) => [row.id, row.branchName]));
+      const labelsByIssue = new Map<string, string[]>();
+      for (const row of labelRows) {
+        const list = labelsByIssue.get(row.issueId) ?? [];
+        list.push(row.name);
+        labelsByIssue.set(row.issueId, list);
+      }
+      for (const row of issueRows) {
+        issueByKey.set(row.id, {
+          priority: row.priority,
+          labels: labelsByIssue.get(row.id) ?? [],
+          branchName: row.executionWorkspaceId
+            ? branchById.get(row.executionWorkspaceId) ?? null
+            : null,
+        });
+      }
+    }
+
+    return runs.map((run) => {
+      const context = parseObject(run.contextSnapshot);
+      const issueId = readNonEmptyString(context.issueId);
+      const issue = issueId ? issueByKey.get(issueId) ?? null : null;
+      return {
+        ...run,
+        role: roleByAgent.get(run.agentId) ?? null,
+        hasIssue: Boolean(issue),
+        issuePriority: issue?.priority ?? null,
+        releaseMatched: runMatchesCurrentRelease(settings.currentRelease, [
+          ...(issue?.labels ?? []),
+          issue?.branchName ?? null,
+          readNonEmptyString(context.branchName) ?? null,
+        ]),
+        createdAtMs: run.createdAt.getTime(),
+      };
+    });
+  }
+
+  // myrmidon(1.6.5 RUN-PRIORITY A): the global sweep's agent order. Each
+  // agent is represented by its best-weighted queued run (highest effective
+  // weight, then the oldest such run); agents then visit in weight-desc /
+  // run-age-asc / id order. With every weight equal this is the fairness
+  // order `orderAgentIdsByOldestQueuedRun` produced, so an instance that
+  // never configured priority behaves exactly as before.
+  function orderAgentsByTopRunPriority<T extends PriorityScoredRun & { agentId: string }>(
+    runs: readonly T[],
+    settings: RunPrioritySettings,
+    nowMs: number = Date.now(),
+  ): string[] {
+    const topByAgent = new Map<string, { run: T; weight: number }>();
+    for (const run of runs) {
+      const weight = runPriorityWeight(
+        {
+          role: run.role,
+          hasIssue: run.hasIssue,
+          issuePriority: run.issuePriority,
+          releaseMatched: run.releaseMatched,
+          createdAtMs: run.createdAtMs,
+        },
+        settings,
+        nowMs,
+      );
+      const current = topByAgent.get(run.agentId);
+      if (
+        !current ||
+        weight > current.weight ||
+        (weight === current.weight && run.createdAtMs < current.run.createdAtMs)
+      ) {
+        topByAgent.set(run.agentId, { run, weight });
+      }
+    }
+    return [...topByAgent]
+      .sort((a, b) => {
+        if (a[1].weight !== b[1].weight) return b[1].weight - a[1].weight;
+        if (a[1].run.createdAtMs !== b[1].run.createdAtMs) {
+          return a[1].run.createdAtMs - b[1].run.createdAtMs;
+        }
+        return a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0;
+      })
+      .map(([agentId]) => agentId);
+  }
+
   // myrmidon(1.6.5 RUN-FAIRNESS): why a run stays queued. Written onto the
   // run itself (`contextSnapshot.waitReason`) whenever a sweep pass leaves it
   // queued because of an admission gate; removed by the claim that starts it.
@@ -19360,8 +19487,16 @@ export function heartbeatService(
 
     // myrmidon(1.6.5 RUN-FAIRNESS): the fair-share gate reads the age of each
     // agent's oldest queued run, so the queue read selects it with the agent.
+    // myrmidon(1.6.5 RUN-PRIORITY A): id and contextSnapshot come along — the
+    // priority decorator resolves the queue keys from them (one batched query
+    // per table, not per run).
     const queuedRuns = await db
-      .select({ agentId: heartbeatRuns.agentId, createdAt: heartbeatRuns.createdAt })
+      .select({
+        id: heartbeatRuns.id,
+        agentId: heartbeatRuns.agentId,
+        createdAt: heartbeatRuns.createdAt,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
       .from(heartbeatRuns)
       .innerJoin(companies, eq(companies.id, heartbeatRuns.companyId))
       .where(
@@ -19374,12 +19509,22 @@ export function heartbeatService(
       // myrmidon: oldest waiting run first, so capped admission stays fair
       .orderBy(asc(heartbeatRuns.createdAt));
 
-    // myrmidon: keep the admission count honest against the database
+    // myrmidon(1.6.5 RUN-FAIRNESS): keep the admission count honest against
+    // the database
     const [{ running }] = await db
       .select({ running: sql<number>`count(*)` })
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.status, "running"));
     sharedRunAdmission().syncRunning(Number(running ?? 0));
+
+    // myrmidon(1.6.5 RUN-PRIORITY A): the in-force weights are read fresh on
+    // every pass (the runtime-limits pattern) — a saved change reaches the
+    // queue without restarting the process. Switched off, the pass runs its
+    // pre-feature fairness order with no extra queries.
+    const prioritySettings = currentRunPrioritySettings();
+    const keyedQueuedRuns = prioritySettings.enabled
+      ? await decorateQueuedRunKeys(queuedRuns, prioritySettings)
+      : [];
 
     // myrmidon(1.6.5 RUN-FAIRNESS): the sweep visits the agents by the age of
     // each agent's OLDEST queued run, so a freed global slot goes to the
@@ -19392,7 +19537,15 @@ export function heartbeatService(
         firstQueuedRunAtByAgent.set(run.agentId, run.createdAt);
       }
     }
-    const agentIds = orderAgentIdsByOldestQueuedRun([...firstQueuedRunAtByAgent]);
+    // myrmidon(1.6.5 RUN-PRIORITY A): with priority on, agents are visited by
+    // their BEST-weighted queued run (weight desc, then the age of that run,
+    // then id), so at a closed admission the review/release/current-release
+    // queue starts first; aging is inside the weight, so a run past the
+    // starvation limit pulls its agent to the front. Equal weights keep the
+    // fairness order's oldest-first tie-break.
+    const agentIds = prioritySettings.enabled
+      ? orderAgentsByTopRunPriority(keyedQueuedRuns, prioritySettings)
+      : orderAgentIdsByOldestQueuedRun([...firstQueuedRunAtByAgent]);
     for (const agentId of agentIds) {
       // myrmidon: one agent's failure (e.g. a duplicate routine issue on claim)
       // must not stop the sweep for every agent queued after it
@@ -19891,6 +20044,17 @@ export function heartbeatService(
             : sql`false`,
         );
       const issueById = new Map(issueRows.map((row) => [row.id, row]));
+      // myrmidon(1.6.5 RUN-PRIORITY A): inside each readiness rank the runs
+      // now sort by the effective weight (role + issue priority + release
+      // bonus + aging) with a createdAt tie-break. The readiness rank stays
+      // first: a run whose dependencies are not ready must not start ahead of
+      // a ready one because of its weights.
+      const prioritySettings = currentRunPrioritySettings();
+      const keyedById = prioritySettings.enabled
+        ? new Map(
+            (await decorateQueuedRunKeys(queuedRuns, prioritySettings)).map((run) => [run.id, run]),
+          )
+        : null;
       const companyAgents = await listCompanyAgentOrgRows(agent.companyId);
       const prioritizedRuns = [...queuedRuns].sort((left, right) => {
         const leftIssueId = readNonEmptyString(
@@ -19928,6 +20092,23 @@ export function heartbeatService(
             : 3
           : 2;
         if (leftRank !== rightRank) return leftRank - rightRank;
+        // myrmidon(1.6.5 RUN-PRIORITY A): the effective weight subsumes the
+        // old `issueRunPriorityRank` step (issue priority is one of its keys)
+        // and adds the role, current-release and aging dimensions; with the
+        // feature off the old comparator runs untouched.
+        if (keyedById) {
+          return compareRunsByPriority(
+            keyedById.get(left.id)!,
+            keyedById.get(right.id)!,
+            prioritySettings,
+            Date.now(),
+            // equal weight (one agent = one role): issue priority first,
+            // then createdAt inside compareRunsByPriority
+            (leftRun, rightRun) =>
+              issueRunPriorityRank(leftRun.issuePriority) -
+              issueRunPriorityRank(rightRun.issuePriority),
+          );
+        }
         const leftPriorityRank = issueRunPriorityRank(leftIssue?.priority);
         const rightPriorityRank = issueRunPriorityRank(rightIssue?.priority);
         if (leftPriorityRank !== rightPriorityRank)
@@ -20312,7 +20493,7 @@ export function heartbeatService(
       run = { ...run, contextSnapshot: preparedConversation.context };
       if (preparedConversation.reset) {
         const contextSnapshot = { ...preparedConversation.context, conversationReset: true };
-        await setRunStatus(run.id, "succeeded", { finishedAt: new Date(), contextSnapshot, resultJson: { conversationReset: true }, issueCommentStatus: "not_applicable" });
+        await setRunStatus(run.id, "succeeded", { finishedAt: new Date(), ...runContextPersistenceFields(contextSnapshot), resultJson: { conversationReset: true }, issueCommentStatus: "not_applicable" });
         await setWakeupStatus(run.wakeupRequestId, "completed", { finishedAt: new Date() });
         const resetRun = (await getRun(run.id))!;
         await settleConversationTurn(db, resetRun);
@@ -22266,6 +22447,8 @@ export function heartbeatService(
         await db
           .update(heartbeatRuns)
           .set({
+            // thin columns derive from the full context; the stored snapshot drops the envelope
+            ...runContextPersistenceFields(context),
             contextSnapshot: runContextForPersistence(context),
             updatedAt: new Date(),
           })
@@ -22603,6 +22786,8 @@ export function heartbeatService(
       await db
         .update(heartbeatRuns)
         .set({
+          // thin columns derive from the full context; the stored snapshot drops the envelope
+          ...runContextPersistenceFields(context),
           contextSnapshot: runContextForPersistence(context),
           updatedAt: new Date(),
         })
@@ -22902,6 +23087,8 @@ export function heartbeatService(
             startedAt,
             sessionIdBefore:
               runtimeForAdapter.sessionDisplayId ?? runtimeForAdapter.sessionId,
+            // thin columns derive from the full context; the stored snapshot drops the envelope
+            ...runContextPersistenceFields(context),
             contextSnapshot: runContextForPersistence(context),
             updatedAt: new Date(),
           })
@@ -23127,6 +23314,8 @@ export function heartbeatService(
           await db
             .update(heartbeatRuns)
             .set({
+              // thin columns derive from the full context; the stored snapshot drops the envelope
+              ...runContextPersistenceFields(context),
               contextSnapshot: runContextForPersistence(context),
               updatedAt: new Date(),
             })
@@ -24862,6 +25051,8 @@ export function heartbeatService(
           await db
             .update(heartbeatRuns)
             .set({
+              // thin columns derive from the full context; the stored snapshot drops the envelope
+              ...runContextPersistenceFields(context),
               contextSnapshot: runContextForPersistence(context),
               updatedAt: new Date(),
             })
@@ -28460,12 +28651,14 @@ export function heartbeatService(
               retryOfRunId: failedChatRetry
                 ? durableRequest!.failedRunRetry!.failedRunId
                 : opts.failedRunId ?? automaticParentRunId,
-              contextSnapshot: adoptedComments.length
-                ? withQueuedCommentIdsInRunContext(
-                    enrichedContextSnapshot,
-                    adoptedCommentIds,
-                  )
-                : enrichedContextSnapshot,
+              ...runContextPersistenceFields(
+                adoptedComments.length
+                  ? withQueuedCommentIdsInRunContext(
+                      enrichedContextSnapshot,
+                      adoptedCommentIds,
+                    )
+                  : enrichedContextSnapshot,
+              ),
               sessionIdBefore: explicitContinuation ? null : sessionBefore,
               continuationAttempt,
               ...(reconciledSourceRunId
@@ -28634,7 +28827,7 @@ export function heartbeatService(
       const mergedRun = await db
         .update(heartbeatRuns)
         .set({
-          contextSnapshot: mergedContextSnapshot,
+          ...runContextPersistenceFields(mergedContextSnapshot),
           updatedAt: new Date(),
         })
         .where(eq(heartbeatRuns.id, coalescedTargetRun.id))
@@ -28735,7 +28928,7 @@ export function heartbeatService(
           status: "queued",
           responsibleUserId: await resolveQueuedResponsibleUserId(),
           wakeupRequestId: wakeupRequest.id,
-          contextSnapshot: enrichedContextSnapshot,
+          ...runContextPersistenceFields(enrichedContextSnapshot),
           sessionIdBefore: sessionBefore,
           continuationAttempt,
         })

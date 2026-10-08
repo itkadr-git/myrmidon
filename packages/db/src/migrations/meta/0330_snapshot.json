@@ -8,7 +8,7 @@
   "enums": {},
   "id": "0148a4f2-7fc6-491b-b110-3e12c4ab5f71",
   "policies": {},
-  "prevId": "d173b546-489b-4350-b6b3-0b2ba830e153",
+  "prevId": "b3e7f95f-0659-5107-8f90-e9b998a14647",
   "roles": {},
   "schemas": {},
   "sequences": {
@@ -24922,6 +24922,60 @@
           "notNull": false,
           "primaryKey": false,
           "type": "uuid"
+        },
+        "context_issue_id": {
+          "name": "context_issue_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "context_task_id": {
+          "name": "context_task_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "context_task_key": {
+          "name": "context_task_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "context_comment_id": {
+          "name": "context_comment_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "context_wake_comment_id": {
+          "name": "context_wake_comment_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "context_wake_reason": {
+          "name": "context_wake_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "context_wake_source": {
+          "name": "context_wake_source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "context_wake_trigger_detail": {
+          "name": "context_wake_trigger_detail",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "context_run_summary": {
+          "name": "context_run_summary",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "compositePrimaryKeys": {},

@@ -4,6 +4,7 @@ import { currentConversationCommentCondition } from "../../../services/agent-con
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
 import { and, asc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { runContextPersistenceFields } from "@paperclipai/db";
 import { extractIssueReferenceIdentifiers } from "@paperclipai/shared";
 import {
   activityLog,
@@ -453,7 +454,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
           retryOfRunId: input.authorizedFailedChatRetry
             ? readNonEmptyString(input.contextSnapshot.retryOfRunId)
             : null,
-          contextSnapshot: input.contextSnapshot,
+          ...runContextPersistenceFields(input.contextSnapshot),
           responsibleUserId: input.responsibleUserId,
           sessionIdBefore: input.sessionBefore,
           continuationAttempt: readContinuationAttempt(input.contextSnapshot.livenessContinuationAttempt),
@@ -606,7 +607,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
           triggerDetail: "system",
           status: "queued",
           wakeupRequestId: wakeupRequest.id,
-          contextSnapshot: withRecoveryContext(
+          ...runContextPersistenceFields(withRecoveryContext(
             {
               issueId: issue.id,
               taskId: issue.id,
@@ -620,7 +621,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
                 "The previous reviewer run ended while this execution-review stage was still pending. Submit the review decision now, or mark the issue blocked with the exact unblock action.",
             },
             "normal_model",
-          ),
+          )),
           sessionIdBefore: sessionBefore,
           retryOfRunId: finishingRun.id,
           updatedAt: now,
@@ -683,7 +684,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
           triggerDetail: "system",
           status: "queued",
           wakeupRequestId: wakeupRequest.id,
-          contextSnapshot,
+          ...runContextPersistenceFields(contextSnapshot),
           responsibleUserId,
           sessionIdBefore: sessionBefore,
           retryOfRunId: finishingRun.id,
@@ -914,7 +915,7 @@ export function createWakeAdmissionWriter(): WakeAdmissionWriter {
       const now = new Date();
       const mergedRun = await tx
         .update(heartbeatRuns)
-        .set({ contextSnapshot: input.mergedContextSnapshot, updatedAt: now })
+        .set({ ...runContextPersistenceFields(input.mergedContextSnapshot), updatedAt: now })
         .where(
           and(
             eq(heartbeatRuns.id, input.activeExecutionRunId),

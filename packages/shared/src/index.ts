@@ -2802,6 +2802,9 @@ export * from "./myrmidon-runtime-limits.js";
 // myrmidon(PAUSE-GUARD): the forgotten-pause guard settings, resolution and the value bounds
 // shared by the server, the board UI and the settings validator.
 export * from "./myrmidon-pause-guard.js";
+// myrmidon(1.6.5 RUN-PRIORITY A): run queue priority settings (role/issue/release/aging) shared
+// by the server sweeps, the routes and the settings validator.
+export * from "./myrmidon-run-priority.js";
 // myrmidon(PARALLEL-HELPERS): the card -> Hermes `delegation` contract shared by the profile
 // compiler, the agent card and the settings page.
 export * from "./myrmidon-parallel-helpers.js";
