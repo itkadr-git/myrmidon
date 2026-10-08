@@ -258,6 +258,40 @@ node "$here/release-body.mjs" "${body_args[@]}" "$version" > release-body.md \
   || die "release body could not be built for $version (missing notes or component digests)"
 log "release body built ($(wc -c < release-body.md) bytes)"
 
+# ------------------------------------------ 3b. the vendor-share metric -------
+# VENDOR-SHARE-METRIC (1.6.5): the share of files inherited from the vendor base
+# and its delta to the previous release ride in the notes as the
+# `## Vendor-derived files` section (see guides/vendor-share-release-metric.md).
+# Advisory only: when the share cannot be computed the section reads
+# «не посчитано» and the publish continues — the metric must never break a
+# release (OPE-4152 acceptance). The previous release's own notes carry the
+# line, so no second checkout is needed; --previous-body is fed from them via
+# gh. MYRMIDON_RELEASE_VENDOR_SHARE_STATE (JSON share summary) and
+# MYRMIDON_RELEASE_PREVIOUS_BODY (a body file) are the offline seams for tests,
+# next to MYRMIDON_RELEASE_REGISTRY_STATE above.
+vendor_prev_version="$(node "$here/release-body.mjs" --previous "$base_version" 2>/dev/null || true)"
+vendor_prev_tag=""
+[[ -n "$vendor_prev_version" ]] && vendor_prev_tag="myr-v$vendor_prev_version"
+notes_vendor_section() {
+  printf '\n## Vendor-derived files\n\n%s\n' "$1"
+}
+vendor_prev_body="${MYRMIDON_RELEASE_PREVIOUS_BODY:-}"
+if [[ -z "$vendor_prev_body" && -n "$vendor_prev_tag" ]]; then
+  vendor_prev_body="$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/vendor-share-prev.XXXXXX.md")"
+  gh release view "$vendor_prev_tag" --repo "$repo" --json body --jq '.body' \
+    > "$vendor_prev_body" 2>/dev/null || true
+fi
+vendor_args=()
+[[ -n "$vendor_prev_tag" ]] && vendor_args+=(--previous-tag "$vendor_prev_tag")
+[[ -n "$vendor_prev_body" ]] && vendor_args+=(--previous-body "$vendor_prev_body")
+if vendor_line="$(node "$here/vendor-share-notes.mjs" "${vendor_args[@]}")"; then
+  log "vendor-share section: $vendor_line"
+else
+  vendor_line="не посчитано (the vendor-share metric failed; the release continues)"
+  log "vendor-share metric not computed — the notes say «не посчитано»"
+fi
+notes_vendor_section "$vendor_line" >> release-body.md
+
 # -------------------------------------------------------- 4. publish --------
 # RC-VERSIONS: a publish NEVER touches the `latest` marker — that is the
 # explicit promote step (promote-latest.sh) after the release proved itself
