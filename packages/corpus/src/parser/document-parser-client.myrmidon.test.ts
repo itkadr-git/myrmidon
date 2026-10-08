@@ -109,7 +109,7 @@ describe("document parser client", () => {
       documentId: submission.documentId,
       fileName: "dogovor.pdf",
       mimeType: "application/pdf",
-      contentBase64: Buffer.from(submission.content).toString("base64"),
+      contentBase64: Buffer.from(submission.content ?? new Uint8Array()).toString("base64"),
     });
     expect(typeof body.submissionId).toBe("string");
   });

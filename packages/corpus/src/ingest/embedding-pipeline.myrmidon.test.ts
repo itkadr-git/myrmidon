@@ -90,7 +90,9 @@ describe("document ingestion pipeline", () => {
         startOffset: expected[index].startOffset,
         endOffset: expected[index].endOffset,
       });
-      const norm = Math.sqrt(record.embedding.reduce((sum, value) => sum + value * value, 0));
+      const embedding = record.embedding ?? [];
+      expect(embedding.length).toBeGreaterThan(0);
+      const norm = Math.sqrt(embedding.reduce((sum, value) => sum + value * value, 0));
       expect(norm).toBeCloseTo(1, 10);
     });
   });
@@ -102,7 +104,9 @@ describe("document ingestion pipeline", () => {
 
     await pipeline.ingest({ companyId, datasetId, documentId, text: documentText() }, { embedder, writer });
 
-    const norm = Math.sqrt(batches[0][0].embedding.reduce((sum, value) => sum + value * value, 0));
+    const firstEmbedding = batches[0][0].embedding ?? [];
+    expect(firstEmbedding.length).toBeGreaterThan(0);
+    const norm = Math.sqrt(firstEmbedding.reduce((sum, value) => sum + value * value, 0));
     expect(norm).toBeGreaterThan(1.5);
   });
 

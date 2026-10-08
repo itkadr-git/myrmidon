@@ -172,10 +172,12 @@ function executorFromClient(client: PgClient, onQuery?: (query: RecordedQuery) =
       const rows = await client.unsafe(text, values as Parameters<PgClient["unsafe"]>[1]);
       return rows as unknown as Row[];
     },
-    withTransaction: <T>(run: (transaction: SqlExecutor) => Promise<T>) =>
-      client.begin(async (transaction: unknown) =>
+    withTransaction: async <T>(run: (transaction: SqlExecutor) => Promise<T>): Promise<T> => {
+      const result: unknown = await client.begin(async (transaction: unknown) =>
         run(executorFromClient(transaction as PgClient, onQuery)),
-      ),
+      );
+      return result as T;
+    },
   };
 }
 
@@ -293,7 +295,7 @@ suite("hybrid search over postgres with the vector extension", () => {
     const hits = await index.search({
       companyId: COMPANY_ID,
       datasetId: DATASET_ID,
-      queryText: "unique marker number 3",
+      text: "unique marker number 3",
       embedding: chunks[7].vector,
       limit: 5,
     });
@@ -314,7 +316,7 @@ suite("hybrid search over postgres with the vector extension", () => {
     const hits = await index.search({
       companyId: COMPANY_ID,
       datasetId: DATASET_ID,
-      queryText: chunkContent(0),
+      text: chunkContent(0),
       embedding: chunks[0].vector,
       limit: 10,
     });
@@ -335,7 +337,7 @@ suite("hybrid search over postgres with the vector extension", () => {
       const exact = await index.search({
         companyId: COMPANY_ID,
         datasetId: DATASET_ID,
-        queryText: "corpus text",
+        text: "corpus text",
         embedding: source.vector,
         limit: 5,
       });
@@ -345,7 +347,7 @@ suite("hybrid search over postgres with the vector extension", () => {
       const noisyResult = await index.search({
         companyId: COMPANY_ID,
         datasetId: DATASET_ID,
-        queryText: "corpus text",
+        text: "corpus text",
         embedding: noisy,
         limit: 5,
       });
@@ -369,7 +371,7 @@ suite("hybrid search over postgres with the vector extension", () => {
       await index.search({
         companyId: COMPANY_ID,
         datasetId: DATASET_ID,
-        queryText: "corpus text",
+        text: "corpus text",
         embedding: chunks[position].vector,
         limit: 5,
       });
@@ -390,7 +392,7 @@ suite("hybrid search over postgres with the vector extension", () => {
     await index.search({
       companyId: COMPANY_ID,
       datasetId: DATASET_ID,
-      queryText: "unique marker number 3",
+      text: "unique marker number 3",
       embedding: chunks[7].vector,
       limit: 5,
     });
