@@ -11,6 +11,7 @@ import { shapeWithoutDefaults } from "./partial.js";
 // myrmidon(WORKSPACE-HYGIENE): workspace disk quotas that can be changed while the server runs
 import { workspaceHygieneLimitsSchema } from "../myrmidon-workspace-hygiene.js";
 import { hostDiskSettingsSchema } from "../myrmidon-host-disk.js";
+import { alertRecoverySettingsSchema } from "../myrmidon-alert-recovery.js";
 // myrmidon(BOT-DISK-A): bot draft-directory lifecycle settings, lenient stored shape
 import { storedBotDiskSettingsSchema } from "../myrmidon-bot-disk.js";
 // myrmidon(1.6.1-BOT-DISK-C): the per-bot disk quota stored in the same general settings row.
@@ -178,6 +179,18 @@ export const instanceGeneralSettingsSchema = z.object({
   // the settings service under `general.reviewReworkJournal` and read by
   // GET /api/myrmidon/review-rework. Stored passthrough, like swarmClaimJournal.
   reviewReworkJournal: z.array(z.unknown()).optional(),
+  // myrmidon(1.6.6 MONITORING D): the alert-recovery knobs — how long an alert
+  // must stay resolved before its task closes by itself, and how long a repeat
+  // of the same alert still belongs to the same task; changed from
+  // /api/myrmidon/monitoring/alert-recovery; absent means "use the environment
+  // variable, then the default (10 and 60 minutes)".
+  alertRecovery: alertRecoverySettingsSchema.optional(),
+  // myrmidon(1.6.6 MONITORING D): the runtime journal of alert -> task records
+  // (the task of each alert identity, its runbook and how long the alert has
+  // been resolved), kept by the alert-recovery service under
+  // `general.alertRecoveryJournal`. Stored passthrough, like swarmClaimJournal:
+  // the service re-reads it defensively and drops a broken row.
+  alertRecoveryJournal: z.array(z.unknown()).optional(),
   // myrmidon(1.7-SETTINGS-TO-UI): the channel settings document (the Telegram
   // bridge switches, the chat limits, the cross-channel numbers), changed from
   // /api/myrmidon/channel-settings; absent means "use the environment variable,

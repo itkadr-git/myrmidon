@@ -61,6 +61,8 @@ import { preserveSttGeneralKey } from "../myrmidon/stt/store.js";
 // myrmidon(1.7-BUDGET-CONFIG-B): keep the stored budget enforcement mode
 // across vendor writes of `general`
 import { preserveBudgetEnforcementGeneralKey } from "../myrmidon/budget-enforcement/settings.js";
+// myrmidon(SETTINGS-CORE): keep the stored behavior settings across vendor writes of `general`
+import { preserveBehaviorSettingsGeneralKeys } from "../myrmidon/behavior-settings/store.js";
 // myrmidon(1.7-DEBATE-ASYM-A): the stored debate engine configuration must
 // survive every vendor general write (it is edited on its own settings panel).
 import { preserveDebateGeneralKey } from "../myrmidon/debates/settings.js";
@@ -688,6 +690,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
             ...preserveWipLimitGeneralKey(current.general), // myrmidon(1.6.1-WIP-LIMIT-A)
             ...preserveSttGeneralKey(current.general), // myrmidon(1.6.1 VOICE-STT A1)
             ...preserveBudgetEnforcementGeneralKey(current.general), // myrmidon(1.7-BUDGET-CONFIG-B)
+            ...preserveBehaviorSettingsGeneralKeys(current.general), // myrmidon(SETTINGS-CORE)
             ...preserveDebateGeneralKey(current.general), // myrmidon(1.7-DEBATE-ASYM-A)
             ...preservePluginEntitlementKeysGeneralKey(current.general), // myrmidon(PLUGIN-ENTITLEMENT C)
             ...preservePluginEntitlementPublicKeyGeneralKey(current.general), // myrmidon(1.6.3 PLUGIN-ENTITLEMENT A)
