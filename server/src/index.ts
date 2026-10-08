@@ -127,9 +127,11 @@ import { flushInFlightRunLogMirrors } from "./services/run-log-store.js";
 import { startMaintenanceMode } from "./myrmidon/maintenance/index.js"; // myrmidon(R3)
 import { startDeployJobs } from "./myrmidon/deploy-jobs/index.js"; // myrmidon(R5-A)
 import { startRuntimeLimits } from "./myrmidon/runtime-limits/index.js"; // myrmidon(C0)
+import { startBehaviorSettings } from "./myrmidon/behavior-settings/index.js"; // myrmidon(SETTINGS-CORE)
 import { startBotContainers, stopBotContainers } from "./myrmidon/bot-containers/startup.js"; // myrmidon(W2a)
 import { startLitellmCostSweep, stopLitellmCostSweep } from "./myrmidon/litellm-costs/startup.js"; // myrmidon(M2-A)
 import { startLitellmBudgetSync } from "./myrmidon/litellm-budget-sync/index.js"; // myrmidon(1.7-BUDGET-CONFIG-C)
+import { startLitellmModelReconciliation } from "./myrmidon/litellm-sync/startup-reconciler.js"; // myrmidon(1.6.1 MODEL-PROVIDERS B)
 import { startModelFallbackSignalSweep } from "./myrmidon/litellm-fallback-signal/sweep.js"; // myrmidon(BOT-RUNTIME-TUNING D)
 import { startBaselineSnapshots, stopBaselineSnapshots } from "./myrmidon/baseline/startup.js"; // myrmidon(1.6-BASELINE)
 import { startForagingSweep, stopForagingSweep } from "./myrmidon/foraging/startup.js"; // myrmidon(1.6-FORAGE)
@@ -143,6 +145,7 @@ import { createWorkspaceHygieneScheduler } from "./myrmidon/workspace-hygiene/in
 import { createBotDiskQuotaScheduler } from "./myrmidon/bot-containers/bot-disk-quota-runtime.js"; // myrmidon(1.6.1-BOT-DISK-C)
 // myrmidon(BOT-DISK E): measures the host disk and signals when it crosses the threshold
 import { createHostDiskScheduler } from "./myrmidon/host-disk/index.js"; // myrmidon(BOT-DISK E)
+import { createAlertRecoveryScheduler } from "./myrmidon/monitoring/alert-recovery/index.js"; // myrmidon(1.6.6-MONITORING-D)
 import { createRunStallSweepFromHeartbeat } from "./myrmidon/run-stall/index.js"; // myrmidon(RUN-STALL)
 // myrmidon(HERMES-RUN-REATTACH): reattach live gateway runs after a board restart
 import { sweepGatewayRunReattach, GATEWAY_REATTACH_SWEEP_INTERVAL_MS } from "./myrmidon/gateway-run-reattach.js";
@@ -1595,6 +1598,15 @@ async function startServerWithDatabaseTeardown(
       track: trackHeartbeatSchedulerWork,
     });
 
+    // myrmidon(1.6.6-MONITORING-D): every tick, close the tasks of the alerts
+    // that have stayed resolved for the hold and drop the records that have
+    // outlived the recurrence window (GET/PATCH /api/myrmidon/monitoring/alert-recovery).
+    // A new alarm opens the task through the alert intake of the monitoring part.
+    const scheduleAlertRecoverySweep = createAlertRecoveryScheduler({
+      db: db as any,
+      track: trackHeartbeatSchedulerWork,
+    });
+
     // The restart-safe cleanup backstop for adapter login sessions. The
     // in-process five-minute timer stays the primary control. This reaper runs
     // on startup and on the scheduler interval. It deletes the login sandbox for
@@ -1667,11 +1679,13 @@ async function startServerWithDatabaseTeardown(
       "worktree run-execution cutoff state",
     );
     await startRuntimeLimits(db as any); // myrmidon(C0): stored run admission limits in force before the scheduler starts runs
+    await startBehaviorSettings(db as any); // myrmidon(SETTINGS-CORE): stored behavior settings in force without a restart
     await startMaintenanceMode(db as any); // myrmidon(R3): load open maintenance windows before startup recovery starts runs
     startDeployJobs(db as any); // myrmidon(R5-A): resume an interface deploy job; no-op unless MYRMIDON_DEPLOY_ENABLED
     startBotContainers(db as any); // myrmidon(W2a): bot container sweep and the card's "Apply now" runtime; a no-op unless MYRMIDON_BOT_CONTAINERS is on
     startLitellmCostSweep(db as any); // myrmidon(M2-A): gateway spend sweep; a no-op unless MYRMIDON_LITELLM_* is set
     startLitellmBudgetSync(db as any); // myrmidon(1.7-BUDGET-CONFIG-C): LiteLLM budget projection; a no-op unless the gateway contour is set and the document enables it
+    startLitellmModelReconciliation(db as any); // myrmidon(1.6.1 MODEL-PROVIDERS B): reconcile LiteLLM models with DB state
     startModelFallbackSignalSweep(db as any); // myrmidon(BOT-RUNTIME-TUNING D): model fallback attention signals; a no-op unless MYRMIDON_MODEL_FALLBACK_ENABLED=1
     startBaselineSnapshots(db as any); // myrmidon(1.6-BASELINE): freeze the 14-day metric window; a no-op unless MYRMIDON_BASELINE_INTERVAL_SEC is set
     startForagingSweep(db as any); // myrmidon(1.6-FORAGE): source comparison sweep; a no-op unless MYRMIDON_FORAGING_ENABLED=1
@@ -1957,6 +1971,7 @@ async function startServerWithDatabaseTeardown(
         scheduleWorkspaceHygieneSweep(); // myrmidon(WORKSPACE-HYGIENE)
         scheduleBotDiskQuotaSweep(); // myrmidon(1.6.1-BOT-DISK-C)
         scheduleHostDiskSweep(); // myrmidon(BOT-DISK E)
+        scheduleAlertRecoverySweep(); // myrmidon(1.6.6-MONITORING-D)
         scheduleAdapterLoginReaperSweep();
         scheduleSetupTokenReaperSweep();
         scheduleEnvironmentLeaseCleanupSweep();
