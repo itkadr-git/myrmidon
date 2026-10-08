@@ -9,6 +9,7 @@ import {
 import { feedbackDataSharingPreferenceSchema } from "./feedback.js";
 import { shapeWithoutDefaults } from "./partial.js";
 // myrmidon(WORKSPACE-HYGIENE): workspace disk quotas that can be changed while the server runs
+import { processesSettingsSchema } from "../myrmidon-processes.js";
 import { workspaceHygieneLimitsSchema } from "../myrmidon-workspace-hygiene.js";
 import { hostDiskSettingsSchema } from "../myrmidon-host-disk.js";
 import { alertRecoverySettingsSchema } from "../myrmidon-alert-recovery.js";
@@ -116,6 +117,9 @@ export const instanceGeneralSettingsSchema = z.object({
   // myrmidon(1.6.5 RUN-ADMISSION): the shape also tolerates a row saved
   // before `maxHostLoadPercentPerCore` existed.
   runLimits: storedRunLimitsSchema.optional(),
+  // myrmidon(PROCS-1.1): the board's process settings (mode, api count, lease,
+  // event bus, admission store, proxy) survive every general write.
+  processes: processesSettingsSchema.optional(),
   // myrmidon(BOT-DISK E): the host disk usage threshold, changed from
   // /api/myrmidon/host-disk; absent means "use the environment variable, then
   // the default (85)".

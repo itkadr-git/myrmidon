@@ -3,6 +3,8 @@ import type { FeedbackDataSharingPreference } from "./feedback.js";
 import type { WorkspaceHygieneLimits } from "../myrmidon-workspace-hygiene.js";
 // myrmidon(C0): the run admission limits stored in instance settings
 import type { StoredRunLimits } from "../myrmidon-runtime-limits.js";
+// myrmidon(PROCS-1.1): the board's process settings, see myrmidon-processes.ts.
+import type { ProcessesSettings } from "../myrmidon-processes.js";
 import type { HostDiskSettings } from "../myrmidon-host-disk.js";
 import type { AlertRecoverySettings } from "../myrmidon-alert-recovery.js";
 // myrmidon(BOT-DISK-A): the bot draft-directory lifecycle stored in instance settings
@@ -138,6 +140,9 @@ export interface InstanceGeneralSettings {
    * 1.6.5 RUN-ADMISSION).
    */
   runLimits?: StoredRunLimits;
+  // myrmidon(PROCS-1.1): the board's process settings (design OPE-5394 §7.2),
+  // stored under the same key the instance-settings validator carries.
+  processes?: ProcessesSettings;
   /**
    * myrmidon(PARALLEL-HELPERS): company ceiling/default for parallel helper
    * subagents, changed from the instance settings page and
