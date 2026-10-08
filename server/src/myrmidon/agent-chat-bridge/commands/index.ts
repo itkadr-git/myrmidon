@@ -26,6 +26,14 @@ import type { Db } from "@paperclipai/db";
 import { loadBridgedCommandContext, type BridgedCommandContext } from "./context.js";
 import { t, resolveBridgeLocale, type BridgeLocale } from "../locales/index.js";
 import { buildHelpText } from "./help.js";
+// myrmidon(X9c): /agents, /to, /who — the X9a/X9b addressing surface as chat
+// commands; sticky default routing state lives in agents.ts.
+import {
+  buildAgentsReplyText,
+  buildWhoReplyText,
+  handleToCommand,
+  readStickyAgentId,
+} from "./agents.js";
 import {
   MODEL_CHOOSER,
   THINK_CHOOSER,
@@ -94,6 +102,11 @@ export function telegramDmCommandsForLocale(locale: BridgeLocale): readonly Brid
     { command: "plan", description: t(locale, "menu.plan") },
     { command: "accept", description: t(locale, "menu.accept") },
     { command: "reject", description: t(locale, "menu.reject") },
+    // myrmidon(X9c): addressing commands — which agent of the company this
+    // chat talks to (X9a/X9b made any company agent addressable).
+    { command: "agents", description: t(locale, "menu.agents") },
+    { command: "to", description: t(locale, "menu.to") },
+    { command: "who", description: t(locale, "menu.who") },
   ];
 }
 
@@ -196,6 +209,44 @@ export async function runBridgedDirectMessageCommand(
       return handleAcceptCommand(input, context, parsed.args, locale);
     case "reject":
       return handleRejectCommand(input, context, parsed.args, locale);
+    // myrmidon(X9c): addressing commands. They run on the context X8b
+    // already authorized (the sender's own bridged Telegram conversation,
+    // identity links included), and every DB read in agents.ts is scoped to
+    // input.companyId — only same-company agents can ever be listed,
+    // resolved or made sticky. The sticky default routes the chat's plain
+    // turns until the next /to (see agents.ts); addressed @<alias> turns
+    // (X9b) are unaffected.
+    case "agents": {
+      const text = await buildAgentsReplyText(input.db, {
+        companyId: input.companyId,
+        conversationAgentId: input.agentId,
+        stickyAgentId: readStickyAgentId(context.issue.assigneeAdapterOverrides),
+        locale,
+      });
+      return { kind: "reply", command: "agents", text };
+    }
+    case "to": {
+      const result = await handleToCommand({
+        db: input.db,
+        companyId: input.companyId,
+        conversationAgentId: input.agentId,
+        issueId: input.conversationIssueId,
+        boardUserId: input.boardUserId,
+        args: parsed.args,
+        stickyAgentId: readStickyAgentId(context.issue.assigneeAdapterOverrides),
+        locale,
+      });
+      return { kind: "reply", command: "to", text: result.text };
+    }
+    case "who": {
+      const text = await buildWhoReplyText(input.db, {
+        companyId: input.companyId,
+        conversationAgentId: input.agentId,
+        stickyAgentId: readStickyAgentId(context.issue.assigneeAdapterOverrides),
+        locale,
+      });
+      return { kind: "reply", command: "who", text };
+    }
     case "close":
       return { kind: "reply", command: "close", text: t(locale, "close.reply") };
     case "task":

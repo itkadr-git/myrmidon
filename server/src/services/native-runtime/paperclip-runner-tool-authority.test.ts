@@ -246,7 +246,7 @@ describe("PaperclipRunnerToolAuthority", () => {
         JSON.stringify(authority.definitions()),
       ).find((tool: { name: string }) => tool.name === "request_human_input");
       expect(advertised.description).toContain(
-        "current Paperclip task bound to this run",
+        "current Myrmidon task bound to this run",
       );
       expect(advertised.description).toContain(
         "interactionKind 'questions' with payload.questions",

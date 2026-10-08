@@ -20,6 +20,11 @@ export interface DashscopeTranscribeInput {
   bytes: Uint8Array;
   mimeType: string;
   language: "auto" | "ru";
+  /**
+   * myrmidon(1.6.5 VOICE-STT B): ask the model on the gateway for speaker
+   * labels. Absent/false keeps the request byte for byte what it was.
+   */
+  diarization?: boolean;
 }
 
 export interface DashscopeTranscriptionResult {
@@ -53,6 +58,24 @@ function secondsToMs(value: unknown): number | null {
   return null;
 }
 
+/**
+ * myrmidon(1.6.5 VOICE-STT B): the speaker label of one segment, whatever the
+ * diarizing model called the field. A gateway in front of several providers
+ * answers with `speaker` (OpenAI style), `speaker_id` or `speaker_label`
+ * (DashScope style); all three are read, and none is invented.
+ */
+function readSpeakerLabel(record: {
+  speaker?: unknown;
+  speaker_id?: unknown;
+  speaker_label?: unknown;
+}): string | undefined {
+  for (const candidate of [record.speaker, record.speaker_id, record.speaker_label]) {
+    if (typeof candidate === "number" && Number.isInteger(candidate)) return String(candidate);
+    if (typeof candidate === "string" && candidate.trim() !== "") return candidate.trim();
+  }
+  return undefined;
+}
+
 /** Segments from an OpenAI-style transcription answer (`segments` with `start`/`end` in seconds). */
 function readSegments(payload: unknown): Array<{ speaker?: string; startMs: number; endMs: number; text: string }> | undefined {
   const segments = (payload as { segments?: unknown } | null)?.segments;
@@ -60,7 +83,14 @@ function readSegments(payload: unknown): Array<{ speaker?: string; startMs: numb
   const parsed: Array<{ speaker?: string; startMs: number; endMs: number; text: string }> = [];
   for (const segment of segments) {
     if (typeof segment !== "object" || segment === null) continue;
-    const record = segment as { start?: unknown; end?: unknown; text?: unknown; speaker?: unknown };
+    const record = segment as {
+      start?: unknown;
+      end?: unknown;
+      text?: unknown;
+      speaker?: unknown;
+      speaker_id?: unknown;
+      speaker_label?: unknown;
+    };
     const startMs = secondsToMs(record.start);
     const endMs = secondsToMs(record.end);
     if (startMs === null || endMs === null || typeof record.text !== "string") continue;
@@ -69,10 +99,9 @@ function readSegments(payload: unknown): Array<{ speaker?: string; startMs: numb
       endMs,
       text: record.text,
     };
-    if (typeof record.speaker === "string" && record.speaker.trim() !== "") entry.speaker = record.speaker.trim();
-    else if (typeof record.speaker === "number" && Number.isInteger(record.speaker)) {
-      entry.speaker = String(record.speaker);
-    }
+    // myrmidon(1.6.5 VOICE-STT B): every provider spelling of a speaker label.
+    const speaker = readSpeakerLabel(record);
+    if (speaker !== undefined) entry.speaker = speaker;
     parsed.push(entry);
   }
   return parsed.length > 0 ? parsed : undefined;
@@ -94,6 +123,15 @@ export async function dashscopeTranscribe(
   form.append("file", new Blob([view], { type: input.mimeType }), "audio.ogg");
   form.append("model", deps.model);
   if (input.language !== "auto") form.append("language", input.language);
+  if (input.diarization) {
+    // myrmidon(1.6.5 VOICE-STT B): the diarization switch of the
+    // DashScope-compatible transcription API, sent only when the contour asks
+    // for it. A gateway that does not pass the field on, or a model that
+    // cannot separate voices, ignores it — the answer then carries no speaker
+    // labels, and the service reports the explicit `diarization_no_speakers`
+    // marker instead of presenting a multi-voice recording as one voice.
+    form.append("diarization_enabled", "true");
+  }
   // A prompt-free request; no response format is forced — the plain text and
   // the verbose JSON shape are both handled below.
 

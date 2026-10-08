@@ -2063,7 +2063,7 @@ describeEmbeddedPostgres(
           },
         });
         expect(String(payload.message ?? "")).toContain(
-          "## Paperclip Wake Payload",
+          "## Myrmidon Wake Payload",
         );
         expectNoCanary(payload, fixture.canaries.raw);
         gateway.releaseFirstWait();
