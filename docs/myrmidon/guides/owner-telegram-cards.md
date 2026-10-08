@@ -113,10 +113,11 @@ answers it with ordinary text in the same Telegram chat.
   already-explained question is refused while the owner has not answered.
 - The owner's text answer arrives in the same chat marked as a reply to the
   open decision. The agent then closes the card on the board in the owner's
-  name (`POST /api/myrmidon/owner-message/resolve`) — and only when the
-  owner's own message in that chat, written after the explanation, is named.
-  An unclear or partial answer closes nothing: the agent asks one short
-  clarifying question in the chat and waits.
+  name (`POST /api/myrmidon/owner-message/resolve`) — and only by pointing to
+  the id of the owner's own message in that chat, written after the
+  explanation (`ownerReplyCommentId`). An unclear or partial answer closes
+  nothing: the agent asks one short clarifying question in the chat and
+  waits.
 - The card stays on the board as the record of the decision. Confirmations
   that authorize a tool action, a secret or a connection are never closed
   from a chat reply; they stay explicit decisions on the board.
