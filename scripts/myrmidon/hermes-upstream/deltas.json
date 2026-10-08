@@ -189,6 +189,24 @@
         "path": "gateway/platforms/api_server_runs.py",
         "upstreamMarker": "github_launcher|run-scoped.*launcher"
       }
+    },
+    {
+      "id": "12-stranded-run-turn-replace",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/12-stranded-run-turn-replace.patch",
+      "files": [
+        "agent/session_persistence.py",
+        "gateway/platforms/api_server_runs.py"
+      ],
+      "reason": "A turn persists its user row before the first model call, so a failed run leaves its prompt as the unanswered tail of the session. The board re-dispatches a fresh, not byte-identical prompt for the same session and every retry added another user row; the live-replay merge then sent them all as one user message (43 rows of about 220 KB became a single 9.6 MB message) that the provider rejected again and again. A /v1/runs run now supersedes the stranded tail prompts that share its prompt's head (soft-delete through SessionDB.rewind_user_turn, dropped from the history in place).",
+      "dropCondition": "Upstream replaces or adopts an unanswered tail prompt on /v1/runs retries whose text is not identical.",
+      "offer": null,
+      "offerNote": "Not offered yet: see the note on delta 02 (publisher-scan wrapper pending).",
+      "probe": {
+        "source": "hermes",
+        "path": "gateway/platforms/api_server_runs.py",
+        "upstreamMarker": "stranded|supersed|replace_unanswered"
+      }
     }
   ]
 }
