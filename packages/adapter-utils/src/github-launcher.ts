@@ -2,7 +2,7 @@
 // myrmidon(GITHUB-SHARED-IDENTITY): plus the target-repository resolution a
 // non-container run needs to name the repository to the broker.
 import { githubBrokerCandidatesLauncherSource, githubBrokerRepositoryLauncherSource } from "./myrmidon-github-broker.js";
-import { GITHUB_CREDENTIAL_HELPER_PROGRAM } from "./github-credential-helper.js";
+import { GITHUB_CREDENTIAL_HELPER_PROGRAM, githubCredentialHelperSource } from "./github-credential-helper.js";
 
 /** Standalone source is staged unchanged on local, SSH, and sandbox runtimes. No secrets in files. */
 export function githubLauncherSource(): string {
@@ -124,6 +124,63 @@ async function main() {
 }
 main().catch(() => { process.stderr.write('Paperclip: GitHub launcher_setup_failed.\n'); process.exitCode = 1; });
 `;
+}
+
+// myrmidon(GITHUB-SHARED-IDENTITY): the launcher file set a consumer without an
+// execution target materializes itself (NONCONTAINER-GITHUB-LAUNCHER).
+//
+// `prepareGitHubOperationLaunchers` stages these programs on a local/SSH
+// execution target, which a hermes gateway run does not have: the gateway may
+// run on another host (or in a container whose image the board cannot write
+// into), so the adapter ships the bodies with the run request and the gateway
+// writes them next to that run's terminals. The same programs the image
+// installs are staged, from the same source here — no second copy to drift.
+//
+// Bodies are token-free constants, so a replayed request carries byte-identical
+// content and its Idempotency-Key fingerprint stays stable.
+export const GITHUB_LAUNCHER_PAYLOAD_VERSION = 1;
+/** Login-shell profiles that re-prepend the staged directory after /etc/profile reorders PATH. */
+export const GITHUB_LAUNCHER_PROFILE_FILE_NAMES = [
+  ".zshenv", ".zprofile", ".zshrc", ".bash_profile", ".bashrc", ".profile",
+] as const;
+/** Program files staged by both delivery paths, in staging order. */
+export const GITHUB_LAUNCHER_PROGRAM_FILE_NAMES = ["package.json", "git", "gh", GITHUB_CREDENTIAL_HELPER_PROGRAM] as const;
+
+function launcherProgramBody(name: string): string {
+  switch (name) {
+    case "package.json":
+      return '{"type":"commonjs"}\n';
+    case GITHUB_CREDENTIAL_HELPER_PROGRAM:
+      return githubCredentialHelperSource();
+    default:
+      return githubLauncherSource();
+  }
+}
+
+/**
+ * The program bodies, keyed by staged file name.
+ *
+ * `package.json` pins the staged directory's own module scope so an enclosing
+ * project's `"type": "module"` cannot reinterpret `require()`.
+ */
+export function githubLauncherProgramFiles(): Record<string, string> {
+  // Built from the shared name list: the payload a gateway stages and the files
+  // a local/SSH target stages must be the same set, and this keeps them so.
+  return Object.fromEntries(GITHUB_LAUNCHER_PROGRAM_FILE_NAMES.map((name) => [name, launcherProgramBody(name)] as const));
+}
+
+/**
+ * The launcher as request content for a hermes gateway run's `github_launcher`
+ * body field: `{version, files}`. The gateway validates it, writes the files
+ * under a per-run directory of its own, and puts that directory first on the
+ * PATH of that run's terminals — the delivery path
+ * `prepareGitHubOperationLaunchers` provides for an execution target.
+ *
+ * The login-shell profiles are built by the gateway, not shipped: their PATH
+ * must name the directory the gateway itself chose.
+ */
+export function githubLauncherPayload(): { version: number; files: Record<string, string> } {
+  return { version: GITHUB_LAUNCHER_PAYLOAD_VERSION, files: githubLauncherProgramFiles() };
 }
 
 /** Override inherited credentials even when adapters merge the host environment later. */

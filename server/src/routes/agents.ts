@@ -5737,6 +5737,10 @@ export function agentRoutes(
     if (!existing) {
       return;
     }
+    // myrmidon(1.6.2): an agent acting on another agent is subject to the autonomy matrix
+    if (req.actor.type === "agent" && req.actor.agentId !== id) {
+      await dbAutonomyGate(db).assertAllowed(req, "pause_wake_agents");
+    }
     await assertCanPauseAgent(req, existing);
     const agent = await svc.pause(id);
     if (!agent) {
@@ -5779,6 +5783,10 @@ export function agentRoutes(
     const existing = await getAccessibleAgent(req, res, id);
     if (!existing) {
       return;
+    }
+    // myrmidon(1.6.2): an agent acting on another agent is subject to the autonomy matrix
+    if (req.actor.type === "agent" && req.actor.agentId !== id) {
+      await dbAutonomyGate(db).assertAllowed(req, "pause_wake_agents");
     }
     await assertCanResumeAgent(req, existing);
     if (existing.orgChainHealth?.status === "invalid_org_chain") {
@@ -6101,6 +6109,10 @@ export function agentRoutes(
       }
     } else {
       await assertBoardCanWakeAgent(req, agent);
+    }
+    // myrmidon(1.6.2): an agent acting on another agent is subject to the autonomy matrix
+    if (req.actor.type === "agent" && req.actor.agentId !== id) {
+      await dbAutonomyGate(db).assertAllowed(req, "pause_wake_agents");
     }
     if (req.body.debug?.providerTrace === "raw") {
       assertInstanceAdmin(req);

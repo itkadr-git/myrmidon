@@ -279,6 +279,106 @@ describe("credential helper execution (real git, no network)", () => {
   });
 });
 
+describe("credential helper is escape-free (myrmidon OPE-3678/OPE-5618 regression)", () => {
+  // The broker exports this helper through GIT_CONFIG_VALUE_* env vars and `-c` argv. Any
+  // transport hop that doubles a backslash turns printf's escape into the literal
+  // backslash-plus-n two-character sequence, and git then reads the password as part of the
+  // username — the exact live failure `could not read Password for 'https://***@github.com'`
+  // with `%5Cn` inside the username (OPE-3678, observation p.3, 06.10). The helper answers
+  // with two echo calls and zero backslashes, so there is nothing for any layer to double.
+  // These tests pin both the shape (escape-free) and the behavior (two clean credential
+  // lines through a real sh -c, exactly how git invokes a `!` helper).
+  const FAKE_TOKEN = "ghs_FAKEt0kenFORtestsONLY00000000000000";
+
+  function helperFromConfigArgs(configArgs: string[]): string {
+    const entry = configArgs.find((arg) => arg.startsWith("credential.https://github.com.helper="));
+    expect(entry).toBeDefined();
+    return entry!.slice("credential.https://github.com.helper=".length);
+  }
+
+  function helperFromEnv(env: Record<string, string>): string {
+    const keyIndex = Object.entries(env).find(
+      ([key, value]) => key.startsWith("GIT_CONFIG_KEY_") && value === "credential.https://github.com.helper",
+    );
+    expect(keyIndex).toBeDefined();
+    return env[keyIndex![0].replace("_KEY_", "_VALUE_")];
+  }
+
+  function buildInvocation() {
+    return buildGitAuthInvocation({ token: FAKE_TOKEN, source: "company_secret", secretName: "GITHUB_TOKEN" });
+  }
+
+  // git runs `!`-prefixed helpers as `sh -c "<value without the leading !> <action>"`,
+  // feeding the credential description on stdin. Replicate that invocation exactly.
+  function runHelper(helper: string, stdin: string, action = "get"): Promise<{ code: number | null; stdout: string; stderr: string }> {
+    return new Promise((resolve, reject) => {
+      const child = spawn("sh", ["-c", `${helper.slice(1)} ${action}`], {
+        env: { ...process.env, [GIT_CREDENTIAL_TOKEN_ENV_KEY]: FAKE_TOKEN },
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (chunk) => { stdout += String(chunk); });
+      child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+      child.on("error", reject);
+      child.on("close", (code) => resolve({ code, stdout, stderr }));
+      child.stdin.write(stdin);
+      child.stdin.end();
+    });
+  }
+
+  it("ships no backslash and no printf escape in the helper value (env path equals configArgs path)", () => {
+    const invocation = buildInvocation();
+    const fromArgs = helperFromConfigArgs(invocation.configArgs);
+    const fromEnv = helperFromEnv(invocation.env);
+    expect(fromEnv).toBe(fromArgs);
+    expect(fromArgs).not.toContain("\\");
+    expect(fromArgs).not.toContain("printf");
+    expect(fromArgs).toContain("echo username=x-access-token");
+    expect(fromArgs).toContain('echo "password=$PAPERCLIP_GIT_TOKEN"');
+  });
+
+  it("prints username and password as exactly two clean lines through a real sh -c", async () => {
+    const helper = helperFromConfigArgs(buildInvocation().configArgs);
+    const result = await runHelper(helper, "protocol=https\nhost=github.com\n\n");
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe("");
+    const lines = result.stdout.split("\n");
+    // Exactly two credential lines plus the trailing empty element after the final newline.
+    expect(lines).toEqual(["username=x-access-token", `password=${FAKE_TOKEN}`, ""]);
+  });
+
+  it("keeps the GIT_CONFIG_VALUE_* transport path free of doubled escapes end-to-end", async () => {
+    // Simulate the broker hop: the env map is JSON-serialized and reloaded exactly as
+    // POST /runtime-tools/github/credentials delivers it, then applied via GIT_CONFIG_*.
+    const invocation = buildInvocation();
+    const roundTrip = JSON.parse(JSON.stringify(invocation.env)) as Record<string, string>;
+    const helper = helperFromEnv(roundTrip);
+    expect(helper).not.toContain("\\");
+    const result = await runHelper(helper, "protocol=https\nhost=www.github.com\n\n");
+    expect(result.stdout).toBe(`username=x-access-token\npassword=${FAKE_TOKEN}\n`);
+  });
+
+  it("prints nothing for another host (helper-level gate, no git involved)", async () => {
+    const helper = helperFromConfigArgs(buildInvocation().configArgs);
+    const result = await runHelper(helper, "protocol=https\nhost=evil.example\n\n");
+    expect(result.code).toBe(0);
+    expect(result.stdout).toBe("");
+    expect(result.stdout).not.toContain(FAKE_TOKEN);
+  });
+
+  it("prints nothing for plain http and answers nothing on store/erase", async () => {
+    const helper = helperFromConfigArgs(buildInvocation().configArgs);
+    const http = await runHelper(helper, "protocol=http\nhost=github.com\n\n");
+    expect(http.stdout).toBe("");
+    for (const action of ["store", "erase"]) {
+      const drained = await runHelper(helper, "protocol=https\nhost=github.com\n\n", action);
+      expect(drained.code).toBe(0);
+      expect(drained.stdout).toBe("");
+    }
+  });
+});
+
 describe("scrubGitCredentialText", () => {
   it("masks URL userinfo", () => {
     expect(scrubGitCredentialText("https://x-access-token:ghp_secret@github.com/a/b.git")).toBe(

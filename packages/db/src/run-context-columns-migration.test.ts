@@ -1,4 +1,4 @@
-// OPE-5007 П2: the 0308 run-context-columns migration — backfill over
+// OPE-5007 П2: the 0309 run-context-columns migration — backfill over
 // historical rows, idempotency, and the thin-column read shape.
 import { readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
@@ -10,7 +10,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./test-embedded-postgres.js";
 
-const MIGRATION_FILE = "0308_run_context_columns.sql";
+const MIGRATION_FILE = "0309_run_context_columns.sql";
 const cleanups: Array<() => Promise<void>> = [];
 const support = await getEmbeddedPostgresTestSupport();
 const d = support.supported ? describe : describe.skip;

@@ -21,17 +21,26 @@ repository of each operation**, so the two never mix.
 
 - **Registration.** The operator creates a GitHub App under the account or
   organization that owns the repositories (Settings → Developer settings →
-  GitHub Apps → New GitHub App), with only these repository permissions:
-  **Contents: Read and write, Pull requests: Read and write, Metadata: Read**.
-  No Secrets, no Administration, no Workflows; webhooks off. Then installs it
-  on that product's repositories only and generates a private key (PEM).
+  GitHub Apps → New GitHub App), with only the repository permissions the
+  agents need: **Contents: Read and write, Pull requests: Read and write,
+  Metadata: Read**, plus **Workflows: Read and write** when agents should be
+  able to edit `.github/workflows/*`. No Secrets, no Administration; webhooks
+  off. Then installs it on that product's repositories only and generates a
+  private key (PEM). The token never requests more than the entry's
+  permission list allows, but a permission GitHub refuses to grant an App
+  (Workflows is not enabled on the registration) means every token minted
+  with it fails — so widen the App first, then the entry.
 - **Storage.** The private key goes into a company secret (Settings → Secrets).
   Company settings → **Shared GitHub authorization** lists the Apps: name,
   App id, the key secret (secret picker), the installation id (optional —
   found per repository with `GET /repos/{owner}/{repo}/installation` when
-  empty), the agents (roles and/or individual agents) and the allowed
+  empty), the agents (roles and/or individual agents), the allowed
   repositories (`owner/repo` or `owner/<pattern with *>`; the owner is always
-  literal). API: `GET`/`PUT /api/myrmidon/companies/:companyId/github-shared-identity`.
+  literal) and the **permission list** — per key (`actions`, `checks`,
+  `contents`, `deployments`, `environments`, `issues`, `pull_requests`,
+  `workflows`) one of `none` / `read` / `write`; default: contents and pull
+  requests `write`, everything else `none` — exactly the historical fixed
+  set. API: `GET`/`PUT /api/myrmidon/companies/:companyId/github-shared-identity`.
   Stored in `instance_settings.general.myrmidonGithubSharedIdentity`; read on
   every broker request — no restart.
 - **Issuance.** For an operation on `owner/repo` the broker takes the App
@@ -39,11 +48,14 @@ repository of each operation**, so the two never mix.
   - none → no App identity (`absent`, as before);
   - one → the board signs a 9-minute JWT with the App key and calls
     `POST /app/installations/{id}/access_tokens` with
-    `repositories: [repo]` and `permissions: {contents: write,
-    pull_requests: write, metadata: read}`. The token works for that one
-    repository and nothing else, whatever the App registration allows, and
-    expires within an hour (reused from memory until five minutes before
-    expiry);
+    `repositories: [repo]` and `permissions` set to exactly the entry's
+    list (every key not `none`, plus `metadata: read`, which GitHub grants
+    to every installation token anyway). The token works for that one
+    repository and nothing beyond its permission list, whatever the App
+    registration allows, and expires within an hour (reused from memory
+    until five minutes before expiry; the permission list is part of the
+    cache key, so widening an entry re-mints instead of reusing the
+    narrower token);
   - two or more → an error (`More than one GitHub App identity matches
     repository …`), no key read, no token. Narrow the patterns so each
     repository belongs to one App.
@@ -71,21 +83,30 @@ deliberately uses the vendor service. The settings screen shows the state.
 
 ## Operator steps
 
-1. **Per account or organization, register an App** with the three
-   permissions above, install it on that product's repositories only, and
-   generate a private key.
+1. **Per account or organization, register an App** with the permissions
+   above (Workflows only if this product's agents should edit CI), install it
+   on that product's repositories only, and generate a private key.
 2. **Store the key** as a company secret (paste the PEM).
-3. **Add the App** in Company settings → Shared GitHub authorization: name,
+3. **Add the App** in Company settings → Shared GitHub authorization: ***
    App id, key secret, optionally the installation id, the repositories
-   (`owner-a/*`), the roles (`engineer`) and/or individual agents. Enable
+   (`owner-a/*`), the roles (`engineer`) and/or individual agents, and the
+   token permissions (default: Contents and Pull requests `write`). Enable
    and save. Repeat for the next product's App.
-4. **Check** in an agent's run: `git ls-remote https://github.com/<owner>/<repo>`
+4. **To let agents edit CI** (`.github/workflows/*`): first widen the App
+   itself — on GitHub: the App's settings → "Repository permissions" →
+   **Workflows: Read and write** → save; on an existing installation accept
+   the updated permissions (GitHub prompts the installing account to review
+   and approve the change). Then, per App entry in Shared GitHub
+   authorization, set **Workflows** to `write` and save — the next operation
+   requests it, no restart. Keep the entry narrower than the App when only
+   some products should edit CI.
+5. **Check** in an agent's run: `git ls-remote https://github.com/<owner>/<repo>`
    and a push to a scratch branch. The run identity record
    (`run_identity_contexts.github`) shows `available / app / <App name> /
    <owner/repo>`; the activity log shows `myrmidon.github_app.issued`. A
    repository of the other product goes through the other App; a repository
    listed for neither stays `absent`.
-5. **Remove the vendor App** from the GitHub account's installed apps if it
+6. **Remove the vendor App** from the GitHub account's installed apps if it
    was installed earlier.
 
 ## Where the token goes in a bot container
