@@ -97,6 +97,9 @@ const MILESTONE_RUN_STATUSES = sql.raw(
  * only when the probe holds, so the gate never materialises the queue it
  * asks about.
  */
+// Raw `sql` templates bypass drizzle's column mappers, and the postgres-js
+// driver cannot serialise a `Date` parameter, so timestamps are always bound as
+// ISO strings with an explicit cast (the same shape as idle-pickup.ts).
 async function probe(db: WorkGateDb, condition: SQL): Promise<boolean> {
   const rows = (await db.execute(
     sql`select 1 as probe where ${condition} limit 1`,
@@ -136,7 +139,7 @@ export function publicationWorkProbe(options: WorkGateOptions = {}): SQL {
       where ${chatPublications.state} in ${PUBLICATION_DUE_STATES}
         and (
           ${chatPublications.nextAttemptAt} is null
-          or ${chatPublications.nextAttemptAt} <= ${now}
+          or ${chatPublications.nextAttemptAt} <= ${now.toISOString()}::timestamptz
         )${companyScope(chatPublications.companyId, company)}
     )
     or exists (
@@ -280,7 +283,7 @@ export function milestoneWorkProbe(input: {
           where ${heartbeatRuns.companyId} = ${chatConversations.companyId}
             and ${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${chatConversations.issueId}::text
             and ${heartbeatRuns.status} in ${MILESTONE_RUN_STATUSES}
-            and ${heartbeatRuns.updatedAt} > ${input.since}
+            and ${heartbeatRuns.updatedAt} > ${input.since.toISOString()}::timestamptz
         )${companyScope(chatConversations.companyId, company)}
     )
   )`;
