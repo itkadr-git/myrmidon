@@ -56,6 +56,7 @@ import {
   pipelineCaseOutputsService,
   summarizePipelineCaseOutputsForContext,
 } from "./pipeline-case-outputs.js";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const DEFAULT_LEASE_MS = 15 * 60 * 1000;
 const MAX_LEASE_MS = 24 * 60 * 60 * 1000;
@@ -3720,7 +3721,7 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
       const normalizedEnv = input.env === null
         ? null
         : await secretsSvc.normalizeEnvBindingsForPersistence(input.companyId, input.env, {
-            strictMode: process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true",
+            strictMode: readProductEnv("SECRETS_STRICT_MODE") === "true",
             fieldPath: "env",
           }) as Record<string, EnvBinding>;
       const actorPatch = routineActorPatch(input.actor);

@@ -4,6 +4,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_TELEGRAM_NOTIFY_PROACTIVITY_MODE,
+  MAX_TELEGRAM_NOTIFY_PROACTIVITY_RARELY_PER_DAY,
   TELEGRAM_DIGEST_SECTIONS,
   TELEGRAM_ESCALATION_CHANNELS,
   TELEGRAM_PROACTIVITY_MODES,
@@ -17,6 +18,7 @@ import {
   telegramNotifyProactivitySchema,
   telegramNotifySettingsPatchSchema,
   telegramNotifySettingsSchema,
+  telegramProactivitySettingsSchema,
 } from "./myrmidon-telegram-notify.js";
 
 const FULL_DEFAULTS = {
@@ -98,9 +100,19 @@ describe("myrmidon(OPE-3789): document parsing", () => {
       digest: { time: "25:99", sections: ["nonsense", "blocked"] },
       errors: { minSeverity: "info", maxPerHour: -1 },
       escalations: { hours: 0, channel: "sms" },
+      // rarelyMaxPerDay out of the single 1–50 contract range (0 and 51) also
+      // falls back to the default of 3 — the parser matches the merged validator.
       proactivity: { mode: "always", rarelyMaxPerDay: 1.5 },
       changelog: [{ actor: "", field: "digest.enabled" }],
     });
+    const outOfRange = parseTelegramNotifyDocument({
+      proactivity: { mode: "rarely", rarelyMaxPerDay: 51 },
+    });
+    expect(outOfRange.settings.proactivity.rarelyMaxPerDay).toBe(3);
+    const zero = parseTelegramNotifyDocument({
+      proactivity: { mode: "rarely", rarelyMaxPerDay: 0 },
+    });
+    expect(zero.settings.proactivity.rarelyMaxPerDay).toBe(3);
     expect(parsed.settings.digest.time).toBe("09:00");
     // "nonsense" is dropped; the valid "blocked" is kept — per-value filtering, not all-or-nothing.
     expect(parsed.settings.digest.sections).toEqual(["blocked"]);
@@ -159,6 +171,10 @@ describe("myrmidon(OPE-3789): the PATCH body schema", () => {
     expect(telegramNotifySettingsPatchSchema.safeParse({ escalations: { hours: 0 } }).success).toBe(false);
     expect(telegramNotifySettingsPatchSchema.safeParse({ proactivity: { mode: "always" } }).success).toBe(false);
     expect(telegramNotifySettingsPatchSchema.safeParse({ proactivity: { rarelyMaxPerDay: -1 } }).success).toBe(false);
+    // The single rarelyMaxPerDay range is 1–50 (the merged contract, pull 397).
+    expect(telegramNotifySettingsPatchSchema.safeParse({ proactivity: { rarelyMaxPerDay: 0 } }).success).toBe(false);
+    expect(telegramNotifySettingsPatchSchema.safeParse({ proactivity: { rarelyMaxPerDay: 51 } }).success).toBe(false);
+    expect(telegramNotifySettingsPatchSchema.safeParse({ proactivity: { rarelyMaxPerDay: 1001 } }).success).toBe(false);
   });
 
   it("accepts every documented enum value", () => {
@@ -175,6 +191,29 @@ describe("myrmidon(OPE-3789): the PATCH body schema", () => {
 const AGENT_ID = "11111111-1111-4111-8111-111111111111";
 
 describe("telegram notify proactivity contract", () => {
+  it("the two schema definitions agree on the single 1–50 rarelyMaxPerDay range", () => {
+    // The part-A settings schema and the part-E policy schema must accept the
+    // same values: 1 and 50 pass both, 0 and 51 fail both. The ceiling
+    // constant and the schema literal must stay equal (both 50).
+    expect(MAX_TELEGRAM_NOTIFY_PROACTIVITY_RARELY_PER_DAY).toBe(50);
+    for (const value of [1, 50]) {
+      expect(
+        telegramProactivitySettingsSchema.safeParse({ mode: "rarely", rarelyMaxPerDay: value }).success,
+      ).toBe(true);
+      expect(
+        telegramNotifyProactivitySchema.safeParse({ mode: "rarely", rarelyMaxPerDay: value }).success,
+      ).toBe(true);
+    }
+    for (const value of [0, 51, 1001]) {
+      expect(
+        telegramProactivitySettingsSchema.safeParse({ mode: "rarely", rarelyMaxPerDay: value }).success,
+      ).toBe(false);
+      expect(
+        telegramNotifyProactivitySchema.safeParse({ mode: "rarely", rarelyMaxPerDay: value }).success,
+      ).toBe(false);
+    }
+  });
+
   it("defaults to the quiet mode and the contract defaults everywhere", () => {
     const defaults = defaultTelegramNotifySettings();
     expect(defaults.proactivity.mode).toBe("only_on_owner_request");

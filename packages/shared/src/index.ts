@@ -2766,6 +2766,7 @@ export {
 } from "./runtime-exposure/loopback-bind.js";
 export { ACCOUNT_HANDLE_MAX_LENGTH, toAccountHandle } from "./account-handle.js";
 export type { ExecutionContinuationEnvelope } from "./types/execution-continuation.js";
+export type { ExecutionContinuationWakeLinks } from "./types/execution-continuation.js";
 export type { ExecutionProjection, ExecutionReconciliation, ExecutionBlocker } from "./types/execution-projection.js";
 
 export { EXECUTION_RECONCILIATION_CAUSES, requiresExecutionReconciliation } from "./types/execution-projection.js";
@@ -2785,6 +2786,10 @@ export * from "./myrmidon-host-disk.js";
 export * from "./myrmidon-bot-disk.js";
 // myrmidon(BOT-DISK-F): isolation scope resolver and bot-disk scope layout shared by the server and the UI.
 export * from "./myrmidon-isolation-scope.js";
+
+// myrmidon(1.7-BUDGET-CONFIG A): the shared contract of the per-level spend
+// limits — schemas, level semantics, signal-only resolution, window math.
+export * from "./myrmidon-budget-limits.js";
 // myrmidon(1.6.1-BOT-DISK-C): per-bot disk quota settings, resolution and the rejection contract
 // shared by the server, the board UI and the settings validator.
 export * from "./myrmidon-bot-disk-quota.js";
@@ -2796,6 +2801,9 @@ export * from "./myrmidon-bot-workspace.js";
 // myrmidon(1.6.5-BOT-DISK-H10): bot-partition thresholds (85/90/95), their resolution and the
 // pressure/alert level derivations shared by the server sweep, the desired-state route and the UI.
 export * from "./myrmidon-bot-disk-partition.js";
+// myrmidon(PERF-DIET-K): issue-scoped session-generation thresholds shared by the server and the
+// settings validator.
+export * from "./myrmidon-session-generations.js";
 // myrmidon(C0): live run-admission limits shared by the server, the UI and the settings validator.
 export * from "./myrmidon-runtime-limits.js";
 // myrmidon(PAUSE-GUARD): the forgotten-pause guard settings, resolution and the value bounds
@@ -2804,6 +2812,9 @@ export * from "./myrmidon-pause-guard.js";
 // myrmidon(1.6.5 RUN-PRIORITY A): run queue priority settings (role/issue/release/aging) shared
 // by the server sweeps, the routes and the settings validator.
 export * from "./myrmidon-run-priority.js";
+// myrmidon(RUN-STALL-SETTINGS): live run-stall detection settings shared by the server, the UI
+// and the settings validator.
+export * from "./myrmidon-run-stall.js";
 // myrmidon(PARALLEL-HELPERS): the card -> Hermes `delegation` contract shared by the profile
 // compiler, the agent card and the settings page.
 export * from "./myrmidon-parallel-helpers.js";
@@ -2837,6 +2848,9 @@ export * from "./myrmidon-swarm-claim.js";
 // myrmidon(1.6.5-DBC1): the datastore-care retention settings contract
 // (general.datastoreCare.retention) and the activity action names.
 export * from "./myrmidon-datastore-care.js";
+// myrmidon(1.6.1-BOT-DISK-D): shared mount settings contract shared by the
+// bot-container server side and the instance settings validator.
+export * from "./myrmidon-shared-mount.js";
 // myrmidon(BOT-RUNTIME-TUNING D2): the settings contract of the model fallback
 // signal (stored instance settings over environment over defaults).
 export * from "./myrmidon-fallback-signal.js";
@@ -2857,11 +2871,17 @@ export * from "./myrmidon-prompt-budget.js"; // myrmidon(1.6.3 PROMPT-BUDGET B)
 // myrmidon(1.6.5-OWNER-DM-FILTER): the owner-DM delivery filter — the settings
 // shape (mode), the storage key and the card-audience decision.
 export * from "./myrmidon-owner-delivery.js";
+// myrmidon(1.6.5-DB-RETENTION): the shared contract of the database retention
+// sweep — the settings shape, the sweep-state view and the normalizers.
+export * from "./myrmidon-data-retention.js";
 // myrmidon(1.7-BUDGET-CONFIG-B): the shared contract of budget enforcement —
 // the global mode (signal_only / soft / hard), its storage key and resolver.
 export * from "./myrmidon-budget-enforcement.js";
 // myrmidon(MEMORY-UI): the agent memory instance setting (address, optional key secret, switch).
 export * from "./myrmidon-agent-memory.js";
+// myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): the shared contract of the
+// foraging pass journal (what each pass read, and which roles it skipped why).
+export * from "./myrmidon-foraging-pass-journal.js";
 
 // myrmidon(PLUGIN-ENTITLEMENT C): plugin entitlement keys contract.
 export * from "./myrmidon-plugin-entitlement.js";
@@ -2882,3 +2902,14 @@ export * from "./myrmidon-review-rework.js";
 export * from "./myrmidon-budget-projection.js"; // myrmidon(1.7-BUDGET-CONFIG-C)
 // myrmidon(CUSTOM-CASTES): the company caste directory contract (view, POST/PATCH/DELETE bodies, seed).
 export * from "./myrmidon-castes.js";
+// myrmidon(1.6.1-FORAGING-LIMITS-UI): the enable switch, pass tuning and spend
+// limits of the foraging sweep — shared by the server, the settings page and
+// the settings validator.
+export * from "./myrmidon-foraging.js";
+// myrmidon(DB-PERF-C-P4): the TTL of the tool gateway policy cache — the
+// instance setting, its bounds and the lenient reader shared by the settings
+// route and the cache itself.
+export * from "./myrmidon-tool-policy-cache.js";
+// myrmidon(1.6.3-FORAGING-IDLE-GATE): the shared contract of the foraging
+// idle gate — the toggle, its storage key and the resolver with sources.
+export * from "./myrmidon-foraging-idle-gate.js";

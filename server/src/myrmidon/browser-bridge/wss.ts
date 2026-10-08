@@ -32,6 +32,7 @@ import {
   type BrowserBridgeCapability,
   type BrowserBridgeMethod,
 } from "@paperclipai/shared";
+import type { BridgeExtensionRegistry } from "./extensions.js";
 import { logger } from "../../middleware/logger.js";
 import { connectionEntry, type BrowserBridgeActor, type BrowserBridgeJournalEntry } from "./journal.js";
 import {
@@ -80,7 +81,7 @@ interface PendingAction {
 }
 
 /** One connected extension, with the request/response bookkeeping of its socket. */
-class BridgeSocketSession implements BridgeSession {
+export class BridgeSocketSession implements BridgeSession {
   capabilities: BrowserBridgeCapability[] = [];
   extVersion = "";
   private readonly pending = new Map<string | number, PendingAction>();
@@ -94,6 +95,7 @@ class BridgeSocketSession implements BridgeSession {
     readonly companyId: string,
     readonly connectedAt: number,
     private readonly onClosed: (session: BridgeSocketSession, reason: string) => void,
+    private readonly extensions?: BridgeExtensionRegistry,
   ) {}
 
   get helloDone(): boolean {
@@ -107,7 +109,7 @@ class BridgeSocketSession implements BridgeSession {
   }
 
   /** Send one request and wait for the matching answer, up to `timeoutMs`. */
-  request(method: BrowserBridgeMethod, params: unknown, timeoutMs: number): Promise<unknown> {
+  request(method: string, params: unknown, timeoutMs: number): Promise<unknown> {
     if (this.closed || this.socket.readyState !== WebSocket.OPEN) {
       return Promise.reject(new BrowserBridgeError(BROWSER_BRIDGE_ERROR_CODES.deviceOffline, "device is not connected"));
     }
@@ -158,6 +160,19 @@ class BridgeSocketSession implements BridgeSession {
     }
     if (parsed.request.method === BRIDGE_HELLO_METHOD && !this.helloSettled) {
       onHello(this, parsed.request.id, parsed.request.params);
+      return;
+    }
+    // Extension request types (`ext.*`) registered by a connector are served
+    // once the device said hello; everything else is refused as unknown.
+    const extension = this.helloSettled
+      ? this.extensions?.handle(parsed.request.method, { companyId: this.companyId, deviceId: this.deviceId }, parsed.request.params)
+      : undefined;
+    if (extension) {
+      const requestId = parsed.request.id;
+      void extension.then((outcome) => {
+        if (outcome.ok) this.answer(requestId, outcome.result ?? null);
+        else this.answerError(requestId, outcome.code, outcome.message);
+      });
       return;
     }
     // The gateway serves nothing else in the client->server direction; a second
@@ -302,6 +317,8 @@ export interface BrowserBridgeWssOptions {
   /** Journal transport-level events (connections) to the company's activity log. */
   logActivity(entry: BrowserBridgeJournalEntry): Promise<unknown>;
   sessions: InMemoryBridgeSessionRegistry;
+  /** Connector-registered request types served on the same sessions (optional). */
+  extensions?: BridgeExtensionRegistry;
   now?: () => number;
 }
 
@@ -341,7 +358,7 @@ export function setupBrowserBridgeWebSocketServer(
           }),
         )
         .catch((err) => logger.warn({ err, deviceId: current.deviceId }, "bridge close journal failed"));
-    });
+    }, options.extensions);
 
     const answerHello = (current: BridgeSocketSession, id: string | number, params: unknown) => {
       const parsed = bridgeHelloParamsSchema.safeParse(params);

@@ -42,6 +42,7 @@ import {
   removeHotRestartIntent,
   writeHotRestartIntent,
 } from "../services/hot-restart.js";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 function shouldExposeFullHealthDetails(
   actorType: "none" | "board" | "agent" | null | undefined,
@@ -63,7 +64,7 @@ function matchesSharedToken(expectedToken: string | undefined | null, providedTo
 }
 
 function hasDevServerStatusToken(providedToken: string | undefined) {
-  return matchesSharedToken(process.env.PAPERCLIP_DEV_SERVER_STATUS_TOKEN, providedToken);
+  return matchesSharedToken(readProductEnv("DEV_SERVER_STATUS_TOKEN"), providedToken);
 }
 
 /**

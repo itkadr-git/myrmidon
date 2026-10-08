@@ -21,6 +21,7 @@ import {
   REQUIRED_WIKI_DIRECTORIES,
   REQUIRED_WIKI_FILES,
 } from "../templates.js";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export const DEFAULT_WIKI_ID = "default";
 export const DEFAULT_SPACE_SLUG = "default";
@@ -378,6 +379,11 @@ type WritePageInput = {
   sourceRefs?: unknown;
   operationId?: string | null;
   writer?: "agent_tool" | "board_ui" | "plugin_internal";
+  /**
+   * Explicit opt-in to write a blank (empty or whitespace-only) page. Blank writes are
+   * rejected by default so a request that merely omits its body can never truncate a page.
+   */
+  allowEmpty?: boolean;
 };
 
 type FileQueryAnswerInput = {
@@ -1839,11 +1845,23 @@ async function upsertPageMetadata(ctx: PluginContext, input: {
   return { title, pageType, backlinks, hash, revisionId };
 }
 
+function assertPageContentsPresent(path: string, contents: unknown, allowEmpty: boolean | undefined) {
+  if (typeof contents !== "string") {
+    throw new Error(`contents is required to write ${path}; refusing to treat a missing body as an empty page`);
+  }
+  if (contents.trim().length === 0 && allowEmpty !== true) {
+    throw new Error(
+      `Refusing to write empty contents to ${path}: a blank write would erase the page. Pass allowEmpty: true only to blank it on purpose.`,
+    );
+  }
+}
+
 export async function writeWikiPage(ctx: PluginContext, input: WritePageInput) {
   const wikiId = normalizeWikiId(input.wikiId);
   const space = await resolveSpace(ctx, { companyId: input.companyId, wikiId, spaceSlug: input.spaceSlug });
   const path = assertPagePath(input.path);
   assertPageWriteAllowed(path, input.writer);
+  assertPageContentsPresent(path, input.contents, input.allowEmpty);
   const current = await readCurrentWithHash(ctx, input.companyId, path, space);
   assertExpectedHash(input.expectedHash, current.hash, path);
   await ctx.localFolders.writeTextAtomic(input.companyId, WIKI_ROOT_FOLDER_KEY, spaceRelativePath(space, path), input.contents);
@@ -3316,8 +3334,8 @@ async function autoApplyEnabled(ctx: PluginContext, companyId: string, requested
 }
 
 export function getDistillationAutoApplyRestriction(): DistillationAutoApplyRestriction {
-  const rawMode = process.env.PAPERCLIP_DEPLOYMENT_MODE;
-  const rawExposure = process.env.PAPERCLIP_DEPLOYMENT_EXPOSURE;
+  const rawMode = readProductEnv("DEPLOYMENT_MODE");
+  const rawExposure = readProductEnv("DEPLOYMENT_EXPOSURE");
   const deploymentMode =
     rawMode === "local_trusted" || rawMode === "authenticated" ? rawMode : null;
   const deploymentExposure =
@@ -3987,6 +4005,11 @@ export async function fileQueryAnswerAsPage(ctx: PluginContext, input: FileQuery
   const wikiId = normalizeWikiId(input.wikiId);
   const space = await resolveSpace(ctx, { companyId: input.companyId, wikiId, spaceSlug: input.spaceSlug });
   const path = assertPagePath(input.path);
+  if (!stringField(input.contents) && !stringField(input.answer)) {
+    // Validate before creating the hidden operation issue: a request without a body must not
+    // synthesize a title-only placeholder page over an existing page.
+    throw new Error(`file-as-page requires contents or answer to file ${path}; refusing to write a placeholder page`);
+  }
   const title = stringField(input.title) ?? inferTitle(path, input.contents ?? input.answer ?? "");
   const answer = stringField(input.answer);
   const contents = stringField(input.contents) ?? [

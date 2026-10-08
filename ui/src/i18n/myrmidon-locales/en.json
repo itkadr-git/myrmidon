@@ -343,7 +343,30 @@
     "hoursHint": "Hours in review without a verdict before the task is signalled and moved to another reviewer. 0 — never.",
     "hoursInvalid": "Enter a whole number from 0 to 2160.",
     "save": "Save review routing",
-    "saving": "Saving..."
+    "saving": "Saving...",
+    "prWatchTitle": "Pull request events",
+    "prWatchIntro": "A green pull request gets a review task from an event instead of a standing split task, so reviews stop blocking each other.",
+    "prWatchEnabledLabel": "Create review tasks for green pull requests",
+    "prRepositoriesLabel": "Repositories",
+    "prRepositoriesHint": "One entry per line as owner/repo. Leave empty to watch every repository the board sees.",
+    "prRepositoriesInvalid": "Each entry must look like owner/repo.",
+    "prMaxOpenLabel": "Max open reviews per reviewer",
+    "prMaxOpenHint": "A reviewer already holding this many open pull-request reviews is not picked.",
+    "prMaxOpenInvalid": "Enter a whole number from 1 to 100.",
+    "prMaxNewLabel": "Max new assignments per pass",
+    "prMaxNewHint": "Review tasks one polling pass assigns at most.",
+    "prMaxNewInvalid": "Enter a whole number from 1 to 50.",
+    "prPollIntervalLabel": "Poll interval, seconds",
+    "prPollIntervalHint": "How often the board checks pull requests for a review.",
+    "prPollIntervalInvalid": "Enter a whole number from 15 to 3600.",
+    "stewardTitle": "Merge steward",
+    "stewardIntro": "The steward merges a pull request whose review passed, so an approved review does not wait for a person.",
+    "stewardEnabledLabel": "Enable the merge steward",
+    "stewardRolesLabel": "Steward roles",
+    "stewardRolesHint": "Caste keys of the agents that may merge, separated by commas.",
+    "stewardMaxMergesLabel": "Max merges per steward",
+    "stewardMaxMergesHint": "Merges one steward performs in one pass.",
+    "stewardMaxMergesInvalid": "Enter a whole number from 1 to 50."
   },
   "quality": {
     "title": "Quality",
@@ -528,6 +551,39 @@
       "spentThisMonth": "Spent this month: {{value}}",
       "passInterval": "Pass interval: {{minutes}} min",
       "sameHostPause": "Same-host pause: {{seconds}} s"
+    },
+    "idleGate": {
+      "title": "Idle only",
+      "description": "A pass reads a role's sources only while the role is idle: its queue holds no unassigned open task and one of its agents is free. Working tasks always come first.",
+      "label": "Run passes only while the role is idle",
+      "value": "Now: {{value}}",
+      "source": "Value from: {{source}}",
+      "on": "on",
+      "off": "off",
+      "unknown": "value not read",
+      "nextPass": "The rule is read on every pass, so a switch applies to the next pass — no restart.",
+      "saveFailed": "Could not save the setting: {{message}}",
+      "sources": {
+        "settings": "the interface",
+        "env": "the environment",
+        "default": "the default"
+      },
+      "reasons": {
+        "queue_not_empty": "the role's queue is not empty",
+        "no_idle_agent": "no free agent of the role"
+      }
+    },
+    "passes": {
+      "title": "Pass history",
+      "description": "The last passes of this company: what each pass read, and which roles it left alone, with the reason.",
+      "empty": "No passes recorded yet. A pass lands here as soon as one runs.",
+      "when": "Pass",
+      "read": "Sources read",
+      "findings": "Findings",
+      "skipped": "Skipped",
+      "notSkipped": "nothing skipped",
+      "skip": "{{role}} — {{reason}}",
+      "stoppedByBudget": "stopped by the budget"
     },
     "sources": {
       "title": "Sources",
@@ -910,5 +966,63 @@
     "ageHours": "{{count}} h",
     "ageDays": "{{count}} d",
     "ageSeconds": "{{count}} s"
+  },
+  "runQueue": {
+    "priorityTitle": "Run queue priority",
+    "priorityDescription": "When the admission ceilings are closed, queued runs start in priority order: review, release and current-release work first. Weights apply on the next admission pass — saving needs no server restart.",
+    "notServed": "This server does not expose queue priority settings yet (the feature arrives with a release update); nothing here is saved.",
+    "loading": "Loading the queue priority settings...",
+    "role": {
+      "review": "Review weight",
+      "release": "Release weight",
+      "lead": "Lead weight",
+      "engineer": "Engineer weight",
+      "docs": "Docs weight"
+    },
+    "weightOff": "off",
+    "source": {
+      "settings": "Saved here",
+      "env": "From the server environment"
+    },
+    "currentRelease": "Current release",
+    "currentReleaseOff": "off",
+    "currentReleaseHint": "Release tag or string tasks are matched against (label or branch marker); leave it empty for no release bonus.",
+    "currentReleaseBonus": "Current-release bonus",
+    "currentReleaseBonusHint": "Weight added on top of the role weight for tasks of the current release.",
+    "agingMax": "Aging cap",
+    "agingMaxHint": "Maximum weight the aging can add on top of the base weight.",
+    "save": "Save queue priority",
+    "saving": "Saving...",
+    "loadFailed": "Failed to load the queue priority settings.",
+    "saveFailed": "Saving the queue priority settings failed.",
+    "error": {
+      "wholeNumber": "Enter a whole number of 0 or more",
+      "range": "Enter a whole number from 0 to {{max}}"
+    },
+    "position": {
+      "of": "Queue position {{position}} of {{total}}",
+      "only": "Queue position {{position}}"
+    },
+    "waiting": "waiting: {{reason}}",
+    "waitReason": {
+      "global_cap": "the concurrency ceiling is full",
+      "start_ramp": "the start ramp paces new starts",
+      "memory": "the server keeps its free-memory floor",
+      "host_memory": "the host free-memory floor is closed",
+      "host_cpu": "the host CPU ceiling is closed",
+      "agent_fair_share": "another agent's turn comes first (fair share)",
+      "agent_concurrency": "the agent's own concurrency limit is full",
+      "priority": "higher-priority runs are ahead"
+    },
+    "enabled": "Priority ordering on",
+    "enabledHint": "Off: queued runs start oldest first, as before the feature.",
+    "defaultRoleWeight": "Weight of other roles",
+    "defaultRoleWeightHint": "Weight of a role without its own entry above.",
+    "agingStepMinutes": "Aging step (minutes)",
+    "agingStepMinutesHint": "A waiting run gains weight after every full step of this many minutes; 0 turns aging off.",
+    "agingStepWeight": "Aging step weight",
+    "agingStepWeightHint": "Weight gained per full aging step.",
+    "starvationLimit": "Starvation limit (minutes)",
+    "starvationLimitHint": "A run waiting this long starts with the top weight; 0 turns the limit off."
   }
 }

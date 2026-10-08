@@ -25,6 +25,7 @@ import type {
   AdapterSkillEntry,
   AdapterSkillSnapshot,
 } from "./types.js";
+import { readProductEnv, readProductEnvFrom, writeProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export function buildRuntimeToolsEnv(
   access: AdapterRuntimeToolAccess | null | undefined,
@@ -159,7 +160,8 @@ const REDACTED_LOG_VALUE = "***REDACTED***";
 // Paperclip per run (identity, wake, workspace, API access). Adapter/user
 // config env must never override them.
 export function isPaperclipRuntimeEnvKey(key: string): boolean {
-  return key.startsWith("PAPERCLIP_");
+  // myrmidon(REBRAND-C): MYRMIDON_* joins the reserved runtime namespace.
+  return key.startsWith("PAPERCLIP_") || key.startsWith("MYRMIDON_");
 }
 
 // PAPERCLIP_API_KEY is never accepted from adapter/user config env: the
@@ -193,7 +195,7 @@ export function resolvePaperclipInstanceRootForAdapter(
   } = {},
 ): string {
   const env = input.env ?? process.env;
-  const homeRaw = input.homeDir?.trim() || env.PAPERCLIP_HOME?.trim();
+  const homeRaw = input.homeDir?.trim() || readProductEnvFrom(env, "HOME")?.trim();
   const homeDir = path.resolve(
     homeRaw
       ? expandHomePrefix(homeRaw)
@@ -201,7 +203,7 @@ export function resolvePaperclipInstanceRootForAdapter(
   );
   const instanceId =
     input.instanceId?.trim() ||
-    env.PAPERCLIP_INSTANCE_ID?.trim() ||
+    readProductEnvFrom(env, "INSTANCE_ID")?.trim() ||
     DEFAULT_PAPERCLIP_INSTANCE_ID;
   if (!PATH_SEGMENT_RE.test(instanceId))
     throw new Error(`Invalid PAPERCLIP_INSTANCE_ID '${instanceId}'.`);
@@ -3112,18 +3114,18 @@ export function buildPaperclipEnv(agent: {
     PAPERCLIP_COMPANY_ID: agent.companyId,
   };
   const runtimeHost = resolveHostForUrl(
-    process.env.PAPERCLIP_LISTEN_HOST ?? process.env.HOST ?? "localhost",
+    readProductEnv("LISTEN_HOST") ?? process.env.HOST ?? "localhost",
   );
   const runtimePort =
-    process.env.PAPERCLIP_LISTEN_PORT ?? process.env.PORT ?? "3100";
+    readProductEnv("LISTEN_PORT") ?? process.env.PORT ?? "3100";
   // An explicit PAPERCLIP_API_URL override must win over the URL derived from
   // authPublicBaseUrl: the derived URL can be unreachable from inside the
   // runtime container (e.g. when the public base URL is VPN/tailnet-only).
   const apiUrl =
-    process.env.PAPERCLIP_API_URL ??
-    process.env.PAPERCLIP_RUNTIME_API_URL ??
+    readProductEnv("API_URL") ??
+    readProductEnv("RUNTIME_API_URL") ??
     `http://${runtimeHost}:${runtimePort}`;
-  vars.PAPERCLIP_API_URL = apiUrl;
+  writeProductEnv(vars, "API_URL", apiUrl); // myrmidon(REBRAND-C)
   return vars;
 }
 
@@ -3398,7 +3400,7 @@ export function sanitizeInheritedPaperclipEnv(
   const env: NodeJS.ProcessEnv = { ...baseEnv };
   delete env.PAPERCLIPAI_CMD;
   for (const key of Object.keys(env)) {
-    if (!key.startsWith("PAPERCLIP_")) continue;
+    if (!(key.startsWith("PAPERCLIP_") || key.startsWith("MYRMIDON_"))) continue; // myrmidon(REBRAND-C)
     if (key === "PAPERCLIP_RUNTIME_API_URL") continue;
     if (key === "PAPERCLIP_LISTEN_HOST") continue;
     if (key === "PAPERCLIP_LISTEN_PORT") continue;

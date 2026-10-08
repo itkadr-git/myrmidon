@@ -6,6 +6,7 @@ import { readConfig, resolveConfigPath } from "../config/store.js";
 import { resolvePaperclipInstanceId, resolvePaperclipInstanceRoot } from "../config/home.js";
 import { detectServiceManager, type ServiceManager, type ServiceStatus } from "../services/service-manager.js";
 import { buildLocalHealthUrl } from "../utils/health-url.js";
+import { readProductEnv, writeProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 type CommonOptions = { instance?: string; json?: boolean };
 type HealthResult = { ok: boolean; serverVersion: string | null; error?: string };
@@ -24,7 +25,7 @@ async function resolveManager(opts: CommonOptions): Promise<ServiceManager | nul
 }
 
 function healthUrl(instanceId: string): string {
-  process.env.PAPERCLIP_INSTANCE_ID = instanceId;
+  writeProductEnv(process.env, "INSTANCE_ID", instanceId); // myrmidon(REBRAND-C)
   const config = readConfig(resolveConfigPath());
   return buildLocalHealthUrl(config?.server.host, config?.server.port ?? 3100);
 }
@@ -129,7 +130,7 @@ async function writeHotRestartIntent(status: ServiceStatus, instanceId: string, 
     previousServerPid: status.pid,
     previousServerVersion: health.serverVersion,
     drainRequired,
-    requestedByRunId: process.env.PAPERCLIP_RUN_ID?.trim() || null,
+    requestedByRunId: readProductEnv("RUN_ID")?.trim() || null,
   }, null, 2)}\n`, "utf8");
   return { requestedAt };
 }

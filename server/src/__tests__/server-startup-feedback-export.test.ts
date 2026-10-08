@@ -342,6 +342,14 @@ vi.mock("../services/index.js", () => ({
   reconcilePersistedRuntimeServicesOnStartup: vi.fn(async () => ({ reconciled: 0 })),
   resolveHeartbeatSchedulingSuppression: resolveHeartbeatSchedulingSuppressionMock,
   routineService: routineServiceFactoryMock,
+  // myrmidon(1.6.1-FORAGING-LIMITS-UI): the foraging wiring pulls the secret
+  // service at startup to resolve the learning reader key. The test company
+  // has no saved key, so the lookup finds nothing — same shape as the real
+  // service returning null for an unknown secret name.
+  secretService: vi.fn(() => ({
+    getByName: vi.fn(async () => null),
+    resolveSecretValue: vi.fn(async () => null),
+  })),
   statusCardService: vi.fn(() => ({})),
   toolAccessService: vi.fn(() => ({
     sweepConnectionHealth: vi.fn(async () => ({
@@ -806,6 +814,15 @@ describe("startServer authenticated auth origin setup", () => {
   });
 });
 
+// myrmidon(REBRAND-C): startServer writes each of these under BOTH names (MYRMIDON_* and
+// PAPERCLIP_*), and readProductEnv gives MYRMIDON_* precedence, so a test that clears only
+// the PAPERCLIP_* spelling would inherit the previous test's MYRMIDON_* value.
+function clearMyrmidonStartupEnv() {
+  for (const name of ["API_URL", "RUNTIME_API_URL", "RUNTIME_API_CANDIDATES_JSON", "LISTEN_HOST", "LISTEN_PORT"]) {
+    delete process.env[`MYRMIDON_${name}`];
+  }
+}
+
 describe("startServer PAPERCLIP_API_URL handling", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -813,9 +830,11 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
     loadConfigMock.mockReturnValue(buildTestConfig());
     process.env.BETTER_AUTH_SECRET = "test-secret";
     delete process.env.PAPERCLIP_API_URL;
+    clearMyrmidonStartupEnv();
   });
 
   afterEach(() => {
+    clearMyrmidonStartupEnv();
     if (ORIGINAL_PAPERCLIP_API_URL === undefined) delete process.env.PAPERCLIP_API_URL;
     else process.env.PAPERCLIP_API_URL = ORIGINAL_PAPERCLIP_API_URL;
 

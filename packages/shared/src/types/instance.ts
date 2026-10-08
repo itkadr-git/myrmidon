@@ -5,6 +5,8 @@ import type { WorkspaceHygieneLimits } from "../myrmidon-workspace-hygiene.js";
 import type { StoredRunLimits } from "../myrmidon-runtime-limits.js";
 // myrmidon(1.6.5 RUN-PRIORITY A): the stored run queue priority shape.
 import type { StoredRunPriority } from "../myrmidon-run-priority.js";
+// myrmidon(RUN-STALL-SETTINGS): the run stall detection settings stored in instance settings
+import type { RunStallValues } from "../myrmidon-run-stall.js";
 import type { HostDiskSettings } from "../myrmidon-host-disk.js";
 // myrmidon(1.6.5-DBC1): the datastore-care block type (see validators/instance.ts)
 import type { DatastoreCareRetentionSettings } from "../myrmidon-datastore-care.js";
@@ -14,6 +16,7 @@ import type { StoredBotDiskSettings } from "../myrmidon-bot-disk.js";
 import type { StoredBotDiskQuotaSettings } from "../myrmidon-bot-disk-quota.js";
 // myrmidon(BOT-ROLLOUT): the release bot-image rollout settings of the same row.
 import type { BotImageRolloutSettings } from "../myrmidon-bot-image-rollout.js";
+import type { StoredSessionGenerationsSettings } from "../myrmidon-session-generations.js";
 // myrmidon(PARALLEL-HELPERS): the helper ceiling/default stored in instance settings
 import type { ParallelHelpersSettings } from "../myrmidon-parallel-helpers.js";
 import type { BotLspSettings } from "../myrmidon-bot-lsp.js";
@@ -23,6 +26,8 @@ import type { SwarmClaimSettings } from "../myrmidon-swarm-claim.js";
 // myrmidon(1.6.1-WIP-LIMIT-A): per-agent WIP limits of the same general settings row.
 import type { AgentMemorySettings } from "../myrmidon-agent-memory.js";
 import type { WipLimitSettings } from "../myrmidon-wip-limit.js";
+// myrmidon(1.6.5-DB-RETENTION): the stored retention settings shape
+import type { DataRetentionSettings, DataRetentionLastRun } from "../myrmidon-data-retention.js";
 // myrmidon(REVIEW-ROUTING): automatic reviewer routing settings of the same row.
 import type { ReviewRoutingSettings } from "../myrmidon-review-routing.js";
 import type { OwnerDeliverySettings } from "../myrmidon-owner-delivery.js";
@@ -33,12 +38,21 @@ import type { BudgetEnforcementSettings } from "../myrmidon-budget-enforcement.j
 import type { PluginEntitlementKey } from "../myrmidon-plugin-entitlement.js";
 // myrmidon(DM-PROGRESS): live progress steps of the bridged Telegram DM status message.
 import type { TelegramDmProgressSettings } from "../myrmidon-telegram-dm-progress.js";
+// myrmidon(1.6.1-BOT-DISK-D): shared mount settings stored in instance settings
+import type { SharedMountSettings } from "../myrmidon-shared-mount.js";
 // myrmidon(BOT-RUNTIME-TUNING D2): the fallback-signal settings of the same row.
 import type { StoredFallbackSignalSettings } from "../myrmidon-fallback-signal.js";
 // myrmidon(1.6.5-PAUSE-GUARD): the forgotten-operator-pause guard of the same
 // general settings row.
 import type { StoredPauseGuardSettings } from "../myrmidon-pause-guard.js";
+import type { BudgetLimitsSettings } from "../myrmidon-budget-limits.js";
+// myrmidon(DB-PERF-C-P4): the TTL of the tool gateway policy cache lives in the
+// same general settings row.
+import type { ToolPolicyCacheSettings } from "../myrmidon-tool-policy-cache.js";
+import type { ForagingIdleGateSettings } from "../myrmidon-foraging-idle-gate.js";
 
+// myrmidon(1.6.1-FORAGING-LIMITS-UI)
+import type { ForagingSettings } from "../myrmidon-foraging.js";
 export const DAILY_RETENTION_PRESETS = [3, 7, 14] as const;
 export const WEEKLY_RETENTION_PRESETS = [1, 2, 4] as const;
 export const MONTHLY_RETENTION_PRESETS = [1, 3, 6] as const;
@@ -104,7 +118,16 @@ export interface InstanceGeneralSettings {
    * environment variable, then the default (7)"; kept in sync with the
    * validator of the same field (packages/shared/src/validators/instance.ts).
    */
-  datastoreCare?: { retention?: DatastoreCareRetentionSettings };
+  // myrmidon(1.6.5-DB-RETENTION): the same retention object also carries the
+  // row-deletion day limits and the sweep state (`lastRun`) of the data-retention
+  // module (GET/PATCH /api/myrmidon/data-retention); the compaction pass state
+  // sits beside it under `contextLastRun`.
+  datastoreCare?: {
+    retention?: DatastoreCareRetentionSettings &
+      Partial<DataRetentionSettings> & {
+        lastRun?: DataRetentionLastRun | Record<string, unknown>;
+      };
+  };
   /**
    * myrmidon(BOT-DISK-A): the bot draft-directory lifecycle, changed from
    * `GET`/`PATCH /api/myrmidon/bot-disk`. Absent means "use the environment
@@ -130,6 +153,14 @@ export interface InstanceGeneralSettings {
    */
   myrmidonBotImageRollout?: BotImageRolloutSettings;
   /**
+   * myrmidon(PERF-DIET-K): thresholds of the issue-scoped session generations
+   * of a container bot (`maxMessages` runs and `maxDays` age, plus `enabled`).
+   * Read at every run dispatch. Absent means the plan's defaults (400 / 14, the
+   * fix on); kept in sync with the validator of the same field
+   * (packages/shared/src/validators/instance.ts).
+   */
+  sessions?: StoredSessionGenerationsSettings;
+  /**
    * myrmidon(C0): run admission limits changed from the instance settings page
    * and `GET`/`PATCH /api/myrmidon/runtime-limits`. Absent means "use the
    * environment variable, then the default"; kept in sync with the validator of
@@ -146,6 +177,15 @@ export interface InstanceGeneralSettings {
    * means "use the environment variable, then the default".
    */
   runPriority?: StoredRunPriority;
+  /**
+   * myrmidon(RUN-STALL-SETTINGS): the run stall detection settings, changed
+   * from the instance settings page and `GET`/`PATCH /api/myrmidon/run-stall`.
+   * Absent means "use the environment variable, then the default"; the key did
+   * not exist before 1.6.5, so no older row can lack a key the schema demands.
+   * Kept in sync with the validator of the same field
+   * (packages/shared/src/validators/instance.ts).
+   */
+  runStall?: RunStallValues;
   /**
    * myrmidon(PARALLEL-HELPERS): company ceiling/default for parallel helper
    * subagents, changed from the instance settings page and
@@ -179,6 +219,12 @@ export interface InstanceGeneralSettings {
    * validator of the same field (packages/shared/src/validators/instance.ts).
    */
   swarmClaim?: SwarmClaimSettings;
+  /**
+   * myrmidon(1.6.1-BOT-DISK-D): shared mount settings for bots, changed from
+   * the instance settings API. Controls whether bots get a common directory at
+   * `/shared` and whether it is writable. Absent means "shared mount is disabled".
+   */
+  sharedMount?: SharedMountSettings;
   /**
    * myrmidon(1.6.1 SWARM-SETTINGS-UI): the change journal of the swarm-claim
    * pilot settings — who changed what, and when, newest first. Written by the
@@ -248,6 +294,15 @@ export interface InstanceGeneralSettings {
    */
   budgetEnforcement?: BudgetEnforcementSettings;
   /**
+   * myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): the pass journal — the last
+   * passes of every company, newest first, each with the counters of the pass
+   * and the roles it skipped with their reason. Written by the foraging pass,
+   * read by GET /api/myrmidon/companies/:id/foraging/passes. Kept in sync with
+   * the validator of the same field (packages/shared/src/validators/instance.ts)
+   * and with the reader in packages/shared/src/myrmidon-foraging-pass-journal.ts.
+   */
+  foragingPassJournal?: unknown[];
+  /**
    * myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys, managed
    * from the instance settings page. Absent means "no keys registered". Kept
    * in sync with the validator of the same field
@@ -277,7 +332,45 @@ export interface InstanceGeneralSettings {
    * field (packages/shared/src/validators/instance.ts).
    */
   modelFallbackSignal?: StoredFallbackSignalSettings;
+  /**
+   * myrmidon(1.7-BUDGET-CONFIG A): the global "signal only" flag of the
+   * per-level spend limits, changed from `PATCH
+   * /api/myrmidon/companies/:id/budget-limits/signal-only`. Absent means the
+   * default (signal only ON — limits never stop work). Kept in sync with the
+   * validator of the same field (packages/shared/src/validators/instance.ts).
+   */
+  budgetLimits?: BudgetLimitsSettings;
+  /**
+   * myrmidon(1.6.1-FORAGING-LIMITS-UI): the enable switch, pass tuning and
+   * spend limits of the foraging sweep, changed from the "Foraging" block on
+   * Instance → General and `GET`/`PATCH /api/myrmidon/foraging-settings`.
+   * Absent means "use the environment variable, then the default (the sweep
+   * is off)". Kept in sync with the validator of the same field.
+   */
+  foraging?: ForagingSettings;
+  /**
+   * myrmidon(DB-PERF-C-P4): TTL of the in-process cache behind the tool
+   * gateway's policy, profile, binding and profile-entry reads; changed from
+   * `GET`/`PATCH /api/myrmidon/tool-policy-cache`. Absent means the default
+   * (30 s), `0` switches the cache off. Kept in sync with the validator of the
+   * same field (packages/shared/src/validators/instance.ts).
+   */
+  toolPolicyCache?: ToolPolicyCacheSettings;
+  // myrmidon(1.6.3-FORAGING-IDLE-GATE): the stored idle-gate toggle.
+  foragingIdleGate?: ForagingIdleGateSettings;
+  /**
+   * myrmidon(ATTENTION-WINDOW-CACHE): how far back (days, 1-365) unresolved
+   * failed/timed-out runs may enter the attention feed; absent means the
+   * default (7). Kept in sync with the validator of the same field.
+   */
+  attentionFailedRunHorizonDays?: number;
+  /**
+   * myrmidon(ATTENTION-WINDOW-CACHE): TTL in seconds (0-300) of the in-process
+   * attention-feed cache; 0 disables it, absent means the default (45).
+   */
+  attentionFeedCacheTtlSeconds?: number;
 }
+
 
 export interface InstanceExperimentalSettings {
   enableEnvironments: boolean;

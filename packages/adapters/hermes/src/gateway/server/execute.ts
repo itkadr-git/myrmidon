@@ -7,7 +7,15 @@ import type {
   RuntimeStatusUpdate,
   UsageSummary,
 } from "@paperclipai/adapter-utils";
+import { githubLauncherPayload } from "@paperclipai/adapter-utils/github-launcher";
 import { measureSections } from "@paperclipai/adapter-utils/prompt-meter";
+import { classifyInputOverflow } from "@paperclipai/adapter-utils/input-overflow";
+import {
+  INPUT_LIMIT_CONFIG_KEY,
+  decideInputLimit,
+  readInputLimitHint,
+  trimTextToChars,
+} from "@paperclipai/adapter-utils/input-limit";
 import {
   asNumber,
   asString,
@@ -28,6 +36,13 @@ import {
   STOP_GRACE_MS,
   STOP_REQUEST_TIMEOUT_MS,
 } from "../shared/constants.js";
+// myrmidon(N4-RUN-LIVENESS): event-based run liveness behind
+// MYRMIDON_RUN_LIVENESS_EVENTS (default off); see run-liveness-events.ts.
+import {
+  installRunLivenessWatch,
+  resolveRunLivenessEvents,
+  touchRunLiveness,
+} from "./run-liveness-events.js";
 import {
   allowsInsecureRemoteHttp,
   isRemotePlainHttp,
@@ -93,6 +108,11 @@ type ExecutionState = {
    * (message.delta only — see RUNTIME_PROGRESS_DELTA_THROTTLE_MS), or null
    * before the first one. */
   lastRuntimeProgressAt: number | null;
+  /** myrmidon(N4-RUN-LIVENESS): Date.now() of the newest gateway event
+   * (handleEvent stamps every SSE frame); the liveness watch reads it.
+   * Initialized at run creation, so a run whose stream never connects still
+   * stalls after its full timeoutSec. */
+  lastEventAtMs: number;
 };
 
 type TextRedactor = (value: string) => string;
@@ -110,7 +130,10 @@ const SENSITIVE_KEY_PATTERN =
 const BEARER_TOKEN_PATTERN = /Bearer\s+\S+/gi;
 const HERMES_SESSION_KEY_HEADER_PATTERN = /(X-Hermes-Session-Key\s*[:=]\s*)([^\s,;]+)/gi;
 const PAPERCLIP_SESSION_KEY_PATTERN =
-  /\bpaperclip:(?:company:[A-Za-z0-9-]+:agent:[A-Za-z0-9-]+(?::(?:issue|run):[A-Za-z0-9-]+)?|run:[A-Za-z0-9-]+)\b/gi;
+  // myrmidon(PERF-DIET-K): the optional trailing `:g<N>` is the session
+  // generation suffix of an issue-scoped key (server/src/myrmidon/session-generations
+  // in the board), so a redacted key hides its generation too.
+  /\bpaperclip:(?:company:[A-Za-z0-9-]+:agent:[A-Za-z0-9-]+(?::(?:issue|run):[A-Za-z0-9-]+)?|run:[A-Za-z0-9-]+)(?::g\d+)?\b/gi;
 
 // myrmidon(CONTAINER-GITHUB-WRITE): env names heartbeat.ts writes into
 // runtimeConfig.env (services/heartbeat.ts ~21995-22015) when the run's
@@ -182,6 +205,23 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
+// myrmidon(PERF-DIET-K): the session-key generation the board decided for this
+// run (see server/src/myrmidon/session-generations/ there). The board writes
+// `sessionGeneration` into the run's adapter config only once an issue-scoped
+// session has passed its threshold; a missing value, an unreadable one and the
+// first generation all read as 1, which leaves the session key byte-for-byte
+// the vendor's — the default behaviour is unchanged.
+export function readSessionGeneration(value: unknown): number {
+  const parsed =
+    typeof value === "number"
+      ? value
+      : typeof value === "string"
+        ? Number.parseInt(value.trim(), 10)
+        : Number.NaN;
+  if (!Number.isFinite(parsed) || parsed <= 1) return 1;
+  return Math.floor(parsed);
+}
+
 function normalizeSessionKeyStrategy(value: unknown): SessionKeyStrategy {
   const raw = asString(value, "issue").trim().toLowerCase();
   if (raw === "agent" || raw === "run" || raw === "none") return raw;
@@ -224,6 +264,14 @@ export function resolveSessionKey(input: {
   agentId: string;
   runId: string;
   issueId: string | null;
+  /**
+   * myrmidon(PERF-DIET-K): the issue-scoped session generation. The board
+   * raises it once the session passes its age/activity threshold (and, since
+   * OPE-6168, after a provider input-overflow failure), so a task's
+   * conversation stays bounded. Only the issue strategy carries it; generation
+   * 1 keeps the key without a suffix, so nothing changes until it is crossed.
+   */
+  generation?: number | null;
 }): string | null {
   if (input.strategy === "none") return null;
   if (input.strategy === "agent") {
@@ -233,7 +281,12 @@ export function resolveSessionKey(input: {
     return `paperclip:run:${input.runId}`;
   }
   const issuePart = input.issueId ? `issue:${input.issueId}` : `run:${input.runId}`;
-  return `paperclip:company:${input.companyId}:agent:${input.agentId}:${issuePart}`;
+  // myrmidon(PERF-DIET-K): the generation suffix applies to an issue-scoped
+  // key only — the no-issue fallback is this attempt's own run and is never
+  // resumed, so it has no history to bound.
+  const generation = readSessionGeneration(input.generation);
+  const generationPart = input.issueId && generation > 1 ? `:g${generation}` : "";
+  return `paperclip:company:${input.companyId}:agent:${input.agentId}:${issuePart}${generationPart}`;
 }
 
 function stringifyForLog(value: unknown, maxChars = 4_000): string {
@@ -505,6 +558,28 @@ function buildWorkspaceField(
   };
 }
 
+// myrmidon(GITHUB-SHARED-IDENTITY): the managed Git launcher, delivered as
+// request content (NONCONTAINER-GITHUB-LAUNCHER).
+//
+// A hermes gateway run has no execution target on the board's side, so
+// `prepareGitHubOperationLaunchers` (which stages git/gh/the credential helper
+// on a local or SSH target) never reaches it: the gateway may run on another
+// host, or in a container whose image the board cannot write into. The gateway
+// therefore stages the launcher itself, from the bodies this field carries,
+// next to the run's own terminals.
+//
+// Gated on the broker pair above: the launcher resolves credentials through
+// that run's broker capability, so shipping it without one would only stage
+// programs that cannot act (and would keep a static token around). Bodies are
+// constants, so the field is byte-stable per run and does not disturb the
+// Idempotency-Key fingerprint of a replay.
+function buildGitHubLauncherField(
+  broker: { broker_url: string; capability: string } | undefined,
+): { version: number; files: Record<string, string> } | undefined {
+  if (!broker) return undefined;
+  return githubLauncherPayload();
+}
+
 function buildRunBody(
   ctx: AdapterExecutionContext,
   sessionKey: string | null,
@@ -547,6 +622,11 @@ function buildRunBody(
   // derived from the run context only, set after the spread (a card cannot
   // forge it), `undefined` when the task has no repository.
   const workspaceField = buildWorkspaceField(ctx.context);
+  // myrmidon(GITHUB-SHARED-IDENTITY): same forgery rule as github_broker —
+  // set unconditionally after the payloadTemplate spread, so a card's attempt
+  // to inject launcher content is deleted (`undefined` drops the key); only
+  // this builder decides (see buildGitHubLauncherField).
+  const githubLauncher = buildGitHubLauncherField(githubBroker);
   const body: Record<string, unknown> = {
     ...payloadTemplate,
     input,
@@ -557,6 +637,7 @@ function buildRunBody(
     ...(modelOptions ? { model_options: modelOptions } : {}),
     github_broker: githubBroker,
     workspace: workspaceField,
+    github_launcher: githubLauncher,
   };
   // myrmidon(1.6.5 PROMPT-BUDGET A): extend buildInput's per-section
   // breakdown with the sections buildRunBody owns. `instructionsBundle` and
@@ -710,6 +791,7 @@ function createExecutionState(runId: string): ExecutionState {
     deltaLineBuffer: "",
     toolPreviews: new Map(),
     lastRuntimeProgressAt: null,
+    lastEventAtMs: Date.now(),
   };
 }
 
@@ -1017,6 +1099,9 @@ async function handleEvent(input: {
   const record = asRecord(parsed);
   const eventName = eventNameFromData(parsed, frame.event);
   state.lastEventName = eventName;
+  // myrmidon(N4-RUN-LIVENESS): every gateway event is proof of life; the
+  // liveness watch (when enabled) reads this stamp instead of the wall clock.
+  touchRunLiveness(state);
 
   if (debugEvents) {
     // myrmidon(G4): raw event JSON is now opt-in (adapterConfig.debugEvents);
@@ -1307,7 +1392,10 @@ export function mapFinalResultForTest(input: {
             .toLowerCase()
             .includes(HERMES_GATEWAY_KEY_NOT_ALLOWED_SIGNATURE)
         ? "permanent_config_error"
-        : null;
+        : mapped.errorCode === "hermes_gateway_run_failed" &&
+            classifyInputOverflow(errorMessage)
+          ? "input_overflow"
+          : null;
   return {
     exitCode: mapped.exitCode,
     signal: mapped.signal,
@@ -1719,12 +1807,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // `replayed:true` response from Hermes is now only ever a genuine
   // duplicate create for this very attempt; that handling is kept below.
   const idempotencyKey = ctx.runId;
+  // myrmidon(PERF-DIET-K): the board's session generation for this issue (see
+  // server/src/myrmidon/session-generations/); 1 = the vendor's unsuffixed key.
+  const sessionGeneration = readSessionGeneration(ctx.config.sessionGeneration);
   const sessionKey = resolveSessionKey({
     strategy,
     companyId: ctx.agent.companyId,
     agentId: ctx.agent.id,
     runId: idempotencyKey,
     issueId: issueIdFromContext(ctx),
+    generation: readSessionGeneration(ctx.config.sessionGeneration),
   });
   const extraHeaders = parseHeaders(ctx.config.headers);
   // myrmidon(MEMORY-CENTRAL-B): create the client here (no network yet); the
@@ -1818,6 +1910,31 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
     }
   }
+  // myrmidon(OPE-6168): the model input limit, checked before the request is
+  // sent. The board puts the limit of the agent's model (catalog or override)
+  // into config.inputLimit; a request over its budget is trimmed here (head and
+  // tail of the input kept, the cut named in the middle) instead of being sent
+  // to a provider that rejects it. Whether the session itself still has room
+  // is the board's decision (it starts a fresh session generation).
+  const inputLimitHint = readInputLimitHint(ctx.config[INPUT_LIMIT_CONFIG_KEY]);
+  if (inputLimitHint) {
+    const requestBody = body.body;
+    const inputText = typeof requestBody.input === "string" ? requestBody.input : "";
+    const instructionsText = typeof requestBody.instructions === "string" ? requestBody.instructions : "";
+    const decision = decideInputLimit({
+      hint: inputLimitHint,
+      instructionsChars: instructionsText.length,
+      inputChars: inputText.length,
+    });
+    if (decision.action === "trim") {
+      const trimmed = trimTextToChars(inputText, decision.targetInputChars);
+      requestBody.input = trimmed.text;
+      await ctx.onLog(
+        "stdout",
+        `[hermes-gateway] input limit: the request (${decision.promptChars} chars) exceeds the budget of ${decision.budgetChars} chars for model ${inputLimitHint.model ?? "(unknown)"}; trimmed ${trimmed.removedChars} chars from the input before sending\n`,
+      );
+    }
+  }
   const createRunUrl = apiUrl(baseUrl, "/v1/runs");
 
   await ctx.onMeta?.({
@@ -1830,9 +1947,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       eventReconnectMs: reconnectMs,
       sessionKeyStrategy: strategy,
       hasSessionKey: Boolean(sessionKey),
+      // myrmidon(PERF-DIET-K): only reported once there is something to see —
+      // generation 1 is the ordinary, unsuffixed session.
+      ...(sessionGeneration > 1 ? { sessionGeneration } : {}),
     },
   });
-  await ctx.onLog("stdout", `[hermes-gateway] creating run at ${createRunUrl} (timeout=${timeoutSec}s, session=${strategy})\n`);
+  await ctx.onLog("stdout", `[hermes-gateway] creating run at ${createRunUrl} (timeout=${timeoutSec}s, session=${strategy}${sessionGeneration > 1 ? `, generation=g${sessionGeneration}` : ""})\n`);
   await ctx.onLog("stdout", `[hermes-gateway] request headers (redacted): ${stringifyForLog(redactForLog(runHeaders, [], 0, redactText), 3_000)}\n`);
 
   // myrmidon(G4): opt into signal-based cancellation before any provider
@@ -2082,10 +2202,30 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }).catch(() => undefined);
 
   let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
+  let disposeLivenessWatch: (() => void) | null = null;
+  // myrmidon(N4-RUN-LIVENESS): with MYRMIDON_RUN_LIVENESS_EVENTS (or the
+  // card's livenessEvents) on, the fixed wall-clock timer is replaced by a
+  // silence watch — a run that keeps emitting gateway events past its
+  // timeoutSec is alive and is left alone; only a run whose event stream has
+  // been silent for the whole budget is reported timed out. Off (default) —
+  // the vendor's fixed timer below, unchanged.
+  const livenessByEvents = timeoutMs > 0 && resolveRunLivenessEvents(ctx.config.livenessEvents);
+  let fireTimeout: () => void = () => undefined;
   const timeoutPromise = new Promise<"timeout">((resolve) => {
     if (timeoutMs <= 0) return;
+    if (livenessByEvents) {
+      fireTimeout = () => resolve("timeout");
+      return;
+    }
     timeoutTimer = setTimeout(() => resolve("timeout"), timeoutMs);
   });
+  if (livenessByEvents) {
+    disposeLivenessWatch = installRunLivenessWatch({
+      state,
+      timeoutMs,
+      onStalled: fireTimeout,
+    });
+  }
   // myrmidon(G4): operator cancellation — see gateway-parity-gap.md #22.
   const cancelPromise = new Promise<"cancelled">((resolve) => {
     if (!ctx.signal) return;
@@ -2098,6 +2238,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const outcome = await Promise.race([state.terminalPromise, timeoutPromise, cancelPromise]);
   if (timeoutTimer) clearTimeout(timeoutTimer);
+  // myrmidon(N4-RUN-LIVENESS): the silence watch reschedules itself; without
+  // the disposer its next tick would outlive a finished/cancelled run.
+  disposeLivenessWatch?.();
   controller.abort();
   // myrmidon(G4): handleEvent's SSE terminal branch already flushes the
   // trailing partial delta line, but pollStatus's terminal branch (the

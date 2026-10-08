@@ -136,25 +136,6 @@
       }
     },
     {
-      "id": "10-run-workspace-open",
-      "kind": "patch",
-      "patch": "docker/bot-runtime/patches/10-run-workspace-open.patch",
-      "files": [
-        "gateway/platforms/api_server_runs.py",
-        "tools/environments/local.py",
-        "tools/run_workspace.py"
-      ],
-      "reason": "Bot copies per task (BOT-DISK-H) need every agent process to work inside the task copy, but a hermes gateway has no per-run process to inherit cwd/env from. /v1/runs accepts a workspace body field (contract C6); the run opens the copy via myr-ws open before the model starts and binds it as the session cwd and MYRMIDON_TASK_WORKSPACE for that run only.",
-      "dropCondition": "Upstream ships a per-run workspace/workdir field on /v1/runs with equivalent cwd+env binding, or the board's bot-runtime no longer needs per-task copies.",
-      "offer": null,
-      "offerNote": "Not offered yet: see the note on delta 02 (publisher-scan wrapper pending).",
-      "probe": {
-        "source": "hermes",
-        "path": "gateway/platforms/api_server_runs.py",
-        "upstreamMarker": "workspace.*myr-ws|run-scoped.*workdir"
-      }
-    },
-    {
       "id": "hindsight-reflect-timeout-and-fact-types",
       "kind": "upstream-plugin-gap",
       "files": [
@@ -169,6 +150,62 @@
         "source": "hindsight-plugin",
         "path": "hindsight-integrations/hermes/settings.py",
         "upstreamMarker": "reflect_timeout|reflect_fact_types"
+      }
+    },
+    {
+      "id": "10-run-workspace-open",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/10-run-workspace-open.patch",
+      "files": [
+        "gateway/platforms/api_server_runs.py",
+        "tools/environments/local.py",
+        "tools/run_workspace.py"
+      ],
+      "reason": "The board issues task workspaces via myr-ws, but the hermes gateway had no delivery path: /v1/runs now accepts a workspace body field, opens the task copy with myr-ws open before the model starts, binds it as the run cwd and exports MYRMIDON_TASK_WORKSPACE to that run's subprocesses; myr-ws exit codes 3/4/5 fall back to /scratch with a warning run event instead of a silent failure (BOT-DISK-H5b).",
+      "dropCondition": "Upstream ships a workspace-open hook on /v1/runs with equivalent cwd/env delivery and failure signaling.",
+      "offer": null,
+      "offerNote": "Not offered yet: see the note on delta 02 (publisher-scan wrapper pending).",
+      "probe": {
+        "source": "hermes",
+        "path": "gateway/platforms/api_server_runs.py",
+        "upstreamMarker": "workspace|MYRMIDON_TASK_WORKSPACE|myr-ws"
+      }
+    },
+    {
+      "id": "11-run-scoped-github-launcher",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/11-run-scoped-github-launcher.patch",
+      "files": [
+        "gateway/platforms/api_server_runs.py",
+        "tools/environments/local.py",
+        "tools/github_launcher_context.py"
+      ],
+      "reason": "Part A stages the managed Git launcher (the git/gh wrappers plus git-credential-paperclip) on a local or SSH execution target, but an agent that starts through the hermes_gateway adapter has no execution target on the board side, so the staged directory never existed where its runs happen and it kept pushing with a static token. /v1/runs now accepts a github_launcher body field, stages the bodies in the gateway's own temp root under the run id, and binds PAPERCLIP_GITHUB_LAUNCHER_DIR/PATH/ZDOTDIR/BASH_ENV/GH_CONFIG_DIR for that run's children only; the credential the staged programs resolve still comes from the run's github_broker capability.",
+      "dropCondition": "Upstream ships a per-run launcher/credential-helper delivery field on /v1/runs with equivalent concurrency isolation.",
+      "offer": null,
+      "offerNote": "Not offered yet: see the note on delta 02 (publisher-scan wrapper pending).",
+      "probe": {
+        "source": "hermes",
+        "path": "gateway/platforms/api_server_runs.py",
+        "upstreamMarker": "github_launcher|run-scoped.*launcher"
+      }
+    },
+    {
+      "id": "12-stranded-run-turn-replace",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/12-stranded-run-turn-replace.patch",
+      "files": [
+        "agent/session_persistence.py",
+        "gateway/platforms/api_server_runs.py"
+      ],
+      "reason": "A turn persists its user row before the first model call, so a failed run leaves its prompt as the unanswered tail of the session. The board re-dispatches a fresh, not byte-identical prompt for the same session and every retry added another user row; the live-replay merge then sent them all as one user message (43 rows of about 220 KB became a single 9.6 MB message) that the provider rejected again and again. A /v1/runs run now supersedes the stranded tail prompts that share its prompt's head (soft-delete through SessionDB.rewind_user_turn, dropped from the history in place).",
+      "dropCondition": "Upstream replaces or adopts an unanswered tail prompt on /v1/runs retries whose text is not identical.",
+      "offer": null,
+      "offerNote": "Not offered yet: see the note on delta 02 (publisher-scan wrapper pending).",
+      "probe": {
+        "source": "hermes",
+        "path": "gateway/platforms/api_server_runs.py",
+        "upstreamMarker": "stranded|supersed|replace_unanswered"
       }
     }
   ]

@@ -11,6 +11,7 @@ import {
   redactSensitive,
   stripSecretBearingUrlParts,
 } from "./redact-sensitive.js";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const sharedOpts = {
   translateTime: "SYS:HH:MM:ss",
@@ -21,12 +22,12 @@ const sharedOpts = {
 const isProduction = process.env.NODE_ENV === "production";
 export const logger = isProduction
   ? pino({
-      level: process.env.PAPERCLIP_LOG_LEVEL?.trim() || "info",
+      level: readProductEnv("LOG_LEVEL")?.trim() || "info",
       redact: [...HTTP_LOG_REDACT_PATHS],
     })
   : pino(
       {
-        level: process.env.PAPERCLIP_LOG_LEVEL?.trim() || "debug",
+        level: readProductEnv("LOG_LEVEL")?.trim() || "debug",
         redact: [...HTTP_LOG_REDACT_PATHS],
       },
       pino.transport({

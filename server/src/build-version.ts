@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 type ReadTextFile = (path: string) => string;
 
@@ -30,7 +31,7 @@ export function readBuildVersion(
 ): string | null {
   const environmentVersion = parseBuildVersion(
     opts.environmentVersion === undefined
-      ? process.env.PAPERCLIP_BUILD_VERSION
+      ? readProductEnv("BUILD_VERSION")
       : opts.environmentVersion,
   );
   if (environmentVersion) return environmentVersion;
