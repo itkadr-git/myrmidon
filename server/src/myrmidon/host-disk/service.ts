@@ -49,6 +49,12 @@ export interface HostDiskStatusView {
   overThreshold: boolean;
   lastSweepAt: string | null;
   lastSignalAt: string | null;
+  /** myrmidon(1.6.5 F-03): `measured` / `unmeasured`; null until the first sweep finishes. */
+  state: "measured" | "unmeasured" | null;
+  /** myrmidon(1.6.5 F-03): why the sweep is unmeasured (missing path hint), null when measured. */
+  error: string | null;
+  /** myrmidon(1.6.5 F-03): per-path usage of the data root and every measured consumer path. */
+  measurements: Array<{ path: string; usedPercent: number; usedGb: number; totalGb: number; freeGb: number }>;
 }
 
 export interface HostDiskView {
@@ -141,6 +147,15 @@ export function hostDiskService(deps: HostDiskServiceDeps): HostDiskService {
         overThreshold: sweep?.overThreshold ?? false,
         lastSweepAt: sweep?.at ?? null,
         lastSignalAt: lastSignalAt ? lastSignalAt.toISOString() : null,
+        state: sweep?.state ?? null,
+        error: sweep?.error ?? null,
+        measurements: (sweep?.measurements ?? []).map((m) => ({
+          path: m.path,
+          usedPercent: m.usedPercent,
+          usedGb: Math.round(m.usedBytes / (1024 * 1024 * 1024)),
+          totalGb: Math.round(m.totalBytes / (1024 * 1024 * 1024)),
+          freeGb: Math.round(m.freeBytes / (1024 * 1024 * 1024)),
+        })),
       },
     };
   }
