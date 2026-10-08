@@ -30,8 +30,8 @@ describe("parseCookiePaste", () => {
 
   it("accepts a name-to-value map and ignores extra keys", () => {
     const raw = JSON.stringify({
-      __Secure-1PSID: SECRET_VALUE,
-      __Secure-1PSIDTS: "ts",
+      "__Secure-1PSID": SECRET_VALUE,
+      "__Secure-1PSIDTS": "ts",
       other: "ignored",
     });
     const parsed = parseCookiePaste(raw);
