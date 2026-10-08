@@ -2166,13 +2166,6 @@
       "breakpoints": true
     },
     {
-      "idx": 321,
-      "version": "7",
-      "when": 1791500202000,
-      "tag": "0321_search_coalesce_trgm_indexes",
-      "breakpoints": true
-    },
-    {
       "idx": 314,
       "version": "7",
       "when": 1791434100000,
