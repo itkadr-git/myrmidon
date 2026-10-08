@@ -137,8 +137,8 @@ export function runInLane<T>(lane: BoardLane, work: () => T): T {
   const finish = () => recordLaneExecution(lane, performance.now() - started);
   try {
     const result = laneStorage.run(lane, work);
-    if (result !== null && typeof result === "object" && typeof (result as PromiseLike<unknown>).then === "function") {
-      return (result as Promise<unknown>).then(
+    if (result !== null && typeof result === "object" && typeof (result as unknown as PromiseLike<unknown>).then === "function") {
+      return (result as unknown as Promise<unknown>).then(
         (value) => {
           finish();
           return value;

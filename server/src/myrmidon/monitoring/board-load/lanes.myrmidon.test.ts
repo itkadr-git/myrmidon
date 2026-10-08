@@ -34,14 +34,17 @@ describe("board load lanes", () => {
     resetLaneCounters();
   });
 
-  it("names exactly the lanes the design lists", () => {
+  it("names exactly the lanes the design lists, residue last", () => {
     expect([...BOARD_LANES]).toEqual([
       "http_route",
       "heartbeat_tick",
-      "chat_reconcile",
       "execution_control",
+      "chat_reconcile",
       "bot_reconcile",
       "run_supervision",
+      // The residue, not a lane the board schedules: work outside every lane
+      // is reported here instead of being spread over the lanes.
+      "untagged",
     ]);
   });
 
@@ -162,8 +165,12 @@ describe("board load lanes", () => {
     expect(resolveLaneMetricsSource({ read: () => fake })()).toEqual(fake);
   });
 
-  it("counts an untagged statement nowhere and never as a lane", () => {
+  it("counts a statement issued outside every lane as the residue, never as a named lane", () => {
     recordLaneDbQuery(null);
-    expect(readLaneSample().reduce((total, row) => total + row.dbQueries, 0)).toBe(0);
+    const sample = readLaneSample();
+    // §1 П2: work outside every lane is reported as `untagged` instead of being
+    // spread over the lanes, so the lane totals still add up to the process.
+    expect(sample.find((row) => row.lane === "untagged")?.dbQueries).toBe(1);
+    expect(sample.filter((row) => row.lane !== "untagged").every((row) => row.dbQueries === 0)).toBe(true);
   });
 });

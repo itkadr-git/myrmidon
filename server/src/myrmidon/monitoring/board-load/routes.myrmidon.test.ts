@@ -5,13 +5,16 @@
 // are visible through the board itself, the p95 summary is a window over the
 // journal, the pg_stat_statements report answers correctly when the extension
 // is absent (it is part B's job to install it, not this endpoint's), the
-// cpu-profile capture is off by default, is admin-only, refuses a second
+// cpu-profile capture is armed only on request and can be taken off without a
+// restart (`MYRMIDON_CPU_PROFILE_ENABLED=false`), is admin-only, refuses a second
 // concurrent capture, and hands the file over as an attachment — all without
 // a restart and without touching the default behaviour of the board.
 
 import express from "express";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
+import { HttpError } from "../../../errors.js";
+import { errorHandler } from "../../../middleware/index.js";
 import {
   API_LOAD_MAX_WINDOW_SEC,
   boardLoadRoutes,
@@ -26,7 +29,12 @@ const NOW = new Date("2026-10-08T12:00:00.000Z");
 const FINISHED_AT = "2026-10-08T12:00:30.000Z";
 const PROFILE_JSON = JSON.stringify({ nodes: [], startTime: 1, endTime: 2 });
 
-const DENIED = () => Object.assign(new Error("denied"), { status: 401 });
+// The real guards throw an HttpError; the seam below stands in for them and the
+// app maps it through the board's own error handler, exactly as the mounted
+// router does in production (app.ts installs the same one).
+const DENIED = () => {
+  throw new HttpError(401, "denied");
+};
 
 function fakeRuntime(overrides: Record<string, unknown> = {}): CpuProfileRuntime {
   return {
@@ -59,6 +67,7 @@ function appWith(overrides: Partial<BoardLoadRoutesDeps> = {}) {
       ...overrides,
     }),
   );
+  app.use(errorHandler);
   return app;
 }
 
@@ -167,7 +176,10 @@ describe("board load routes", () => {
   it("leaves the profiler off unless the operator asks for it", async () => {
     const status = await request(appWith({ env: {} })).get("/api/myrmidon/board-load/cpu-profile");
     expect(status.status).toBe(200);
-    expect(status.body.enabled).toBe(false);
+    // Unset is the deployment default: the endpoint answers and nothing is
+    // armed until an operator asks for a capture.
+    expect(status.body.enabled).toBe(true);
+    expect(status.body.status.running).toBe(false);
 
     const off = await request(appWith({ env: { [CPU_PROFILE_ENABLED_ENV]: "false" } }))
       .post("/api/myrmidon/board-load/cpu-profile")

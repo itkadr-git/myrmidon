@@ -13,6 +13,7 @@
 // it. The one process-wide object is the runtime below — created lazily, so a
 // test that imports this module creates nothing.
 
+import type { RequestHandler } from "express";
 import type { PgStatStatementsDbPort } from "./pg-stat-statements.js";
 import { boardRequestLoadMiddleware, createRequestLog, type RequestLog } from "./request-load.js";
 import { createCpuProfileRuntime, type CpuProfileRuntime } from "./cpu-profile.js";
@@ -62,7 +63,7 @@ export function boardLoadRuntime(): BoardLoadRuntime {
  * journaled exactly like any other, so the summary shows the load the board
  * really served.
  */
-export function boardLoadRequestMiddleware() {
+export function boardLoadRequestMiddleware(): RequestHandler {
   return boardRequestLoadMiddleware(boardLoadRuntime().requestLog);
 }
 

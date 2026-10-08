@@ -136,7 +136,7 @@ describe("api load journal", () => {
     expect(reachedNext).toBe(true);
     const rows = log.read({ windowMs: 60_000, now: Date.now() });
     expect(rows).toHaveLength(1);
-    expect(rows[0]?.route).toBe("/runs/:id/events");
+    expect(rows[0]?.route).toBe("/api/runs/:id/events");
     expect(rows[0]?.count).toBe(1);
     expect(rows[0]?.errorCount).toBe(1);
     const lane = readLaneSample().find((row) => row.lane === "http_route");
