@@ -34,6 +34,8 @@ const items = [
   { value: "caste-directory", label: "Agent castes", href: "/company/settings/caste-directory" },
   // myrmidon(1.6.5-OWNER-DM-FILTER): owner Telegram delivery mode screen
   { value: "owner-delivery", label: "Owner Telegram delivery", href: "/company/settings/owner-delivery" },
+  // myrmidon(1.6.6 CORPUS E): the knowledge corpus module screen
+  { value: "corpus", label: "Knowledge corpus", href: "/company/settings/corpus" },
 ] as const;
 
 type CompanySettingsTab = (typeof items)[number]["value"];
@@ -154,6 +156,11 @@ export function getCompanySettingsTab(pathname: string): CompanySettingsTab {
     return "castes";
   }
 
+  // myrmidon(1.6.6 CORPUS E): the knowledge corpus settings section
+  if (pathname.includes("/company/settings/corpus")) {
+    return "corpus";
+  }
+
   return "general";
 }
 
@@ -180,6 +187,8 @@ const SETTINGS_TAB_LABEL_KEYS: Partial<Record<string, string>> = {
   castes: "settingsNav.castes",
   "wip-limit": "settingsNav.wipLimit",
   "review-routing": "settingsNav.reviewRouting",
+  // myrmidon(1.6.6 CORPUS E): the knowledge corpus settings tab
+  corpus: "settingsNav.corpus",
 };
 
 export function CompanySettingsNav() {
