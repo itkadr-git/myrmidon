@@ -42,15 +42,16 @@ export const datastoreCareSettingsSchema = z
   })
   .passthrough();
 
-export type DatastoreCareRetentionSettings = {
-  heartbeatRunContextDays: number | undefined;
-  /**
-   * The persisted state of the last compaction pass, written by the sweep
-   * (see server/src/myrmidon/datastore-care/retention/settings.ts). Not a
-   * user setting; carries `lastRun` because the block is a passthrough.
-   */
-  lastRun?: DatastoreCareRetentionLastRun;
-};
+/**
+ * Inferred straight from the zod schema (house pattern, like HostDiskSettings):
+ * the `.passthrough()` index signature is what lets this block survive the
+ * `lastRun` pass-state field the sweep persists under it (see
+ * server/src/myrmidon/datastore-care/retention/settings.ts) and keeps
+ * InstanceGeneralSettings assignable from the parsed defaults.
+ */
+export type DatastoreCareRetentionSettings = z.infer<
+  typeof datastoreCareRetentionSettingsSchema
+>;
 
 export function normalizeDatastoreCareRetention(
   value: unknown,
