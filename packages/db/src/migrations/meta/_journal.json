@@ -2136,6 +2136,20 @@
       "when": 1791424100000,
       "tag": "0307_db_care_issue_prev_assignee_index",
       "breakpoints": true
+    },
+    {
+      "idx": 308,
+      "version": "7",
+      "when": 1791426688696,
+      "tag": "0308_db_care_audit_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 309,
+      "version": "7",
+      "when": 1791426748696,
+      "tag": "0309_db_care_lz4_compression",
+      "breakpoints": true
     }
   ]
 }

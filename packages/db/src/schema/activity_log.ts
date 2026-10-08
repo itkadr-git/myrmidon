@@ -45,5 +45,14 @@ export const activityLog = pgTable(
         table.createdAt,
       )
       .where(sql`${table.entityType} = 'issue' and ${table.action} = 'issue.updated'`),
+    // myrmidon(DB-CARE): the issue activity view reads the audit rows of one
+    // issue (company + entity_id) newest-first and skips the read/inbox marker
+    // actions, so the index is partial on "not a marker". Persisted from the
+    // production database, see migration 0308_db_care_audit_indexes.
+    issueLastActivityIdx: index("activity_log_issue_last_activity_idx")
+      .on(table.companyId, table.entityId, table.createdAt.desc())
+      .where(
+        sql`${table.entityType} = 'issue' and ${table.action} <> ALL (ARRAY['issue.read_marked', 'issue.read_unmarked', 'issue.inbox_archived', 'issue.inbox_unarchived'])`,
+      ),
   }),
 );

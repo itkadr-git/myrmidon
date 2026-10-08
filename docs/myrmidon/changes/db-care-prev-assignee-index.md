@@ -26,8 +26,8 @@ divergence-section: Трек 2 — ядро побудок и прогонов
   `db:generate` stays clean and the schema tells the same story as production's
   `pg_indexes`.
 - The remaining production objects of the same audit (five more indexes and the
-  `lz4` column compression) board as follow-up commits of DBC-2 once the design
-  document's section 10 rows carrying their exact definitions are available.
+  `lz4` column compression) land with the same pull request as migrations `0308`
+  and `0309` — see `docs/myrmidon/changes/db-care-audit-indexes-lz4.md`.
 
 ## changelog-ru
 
@@ -52,8 +52,8 @@ divergence-section: Трек 2 — ядро побудок и прогонов
   метка `myrmidon(DB-CARE)`), `0307_snapshot.json` его фиксирует: `db:generate`
   не даёт диффа, а схема рассказывает ту же историю, что боевой `pg_indexes`.
 - Остальные объекты того же аудита (ещё пять индексов и сжатие колонок `lz4`)
-  лягут отдельными коммитами DBC-2, когда будут доступны строки раздела 10
-  проектного документа с их точными определениями.
+  ложатся тем же пул-реквестом миграциями `0308` и `0309` — см.
+  `docs/myrmidon/changes/db-care-audit-indexes-lz4.md`.
 
 ## divergence
 
