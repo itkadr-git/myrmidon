@@ -121,6 +121,11 @@ vi.mock("../telemetry.js", () => ({
   getTelemetryClient: vi.fn(() => ({ track: vi.fn() })),
 }));
 
+// myrmidon(UPSTREAM-13539): stub the queue projection so the fake DB stays comment-only.
+vi.mock("../myrmidon/upstream-steer/queued-interaction-response.js", () => ({
+  hasQueuedInteractionResponse: vi.fn(async () => false),
+}));
+
 vi.mock("../services/access.js", () => ({
   accessService: () => mockAccessService,
 }));

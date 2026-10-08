@@ -54,6 +54,8 @@ const ALLOWED_LATIN = new Set([
   // input placeholders stay language-neutral (role codes and URLs)
   "engineer", "https", "example", "com", "changelog",
   // reviewRouting UI strings (product workflow terms)
+  // myrmidon(1.7-AGENT-EXCHANGE-A): pull request / owner/repo are forge
+  // concepts kept untranslated in RU copy, same class as GitHub.
   "pull", "request", "owner", "repo",
 ]);
 

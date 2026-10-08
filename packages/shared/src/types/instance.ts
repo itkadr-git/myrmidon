@@ -4,6 +4,7 @@ import type { WorkspaceHygieneLimits } from "../myrmidon-workspace-hygiene.js";
 // myrmidon(C0): the run admission limits stored in instance settings
 import type { StoredRunLimits } from "../myrmidon-runtime-limits.js";
 import type { HostDiskSettings } from "../myrmidon-host-disk.js";
+import type { AlertRecoverySettings } from "../myrmidon-alert-recovery.js";
 // myrmidon(BOT-DISK-A): the bot draft-directory lifecycle stored in instance settings
 import type { StoredBotDiskSettings } from "../myrmidon-bot-disk.js";
 // myrmidon(1.6.1-BOT-DISK-C): per-bot disk quota of its own general settings key.
@@ -24,6 +25,9 @@ import type { WipLimitSettings } from "../myrmidon-wip-limit.js";
 import type { ReviewRoutingSettings } from "../myrmidon-review-routing.js";
 import type { ReviewReworkSettings } from "../myrmidon-review-rework.js";
 import type { BudgetEnforcementSettings } from "../myrmidon-budget-enforcement.js";
+// myrmidon(1.7-AGENT-EXCHANGE-A): the discussion-room settings stored in the
+// same general settings row.
+import type { AgentExchangeSettings } from "../myrmidon-agent-exchange.js";
 // myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys live in
 // the same general settings row.
 import type { PluginEntitlementKey } from "../myrmidon-plugin-entitlement.js";
@@ -203,6 +207,26 @@ export interface InstanceGeneralSettings {
    */
   reviewReworkJournal?: unknown[];
   /**
+   * myrmidon(1.6.6 MONITORING D): the alert-recovery knobs — `holdMinutes`
+   * (how long an alert must stay resolved before its task closes by itself)
+   * and `recurrenceWindowMinutes` (how long a repeat of the same alert still
+   * belongs to the same task), plus the per-trigger owner-role overrides;
+   * changed from `GET`/`PATCH /api/myrmidon/monitoring/alert-recovery`. Absent
+   * means "use the environment variable, then the default (10 and 60 minutes)".
+   * Kept in sync with the validator of the same field
+   * (packages/shared/src/validators/instance.ts).
+   */
+  alertRecovery?: AlertRecoverySettings;
+  /**
+   * myrmidon(1.6.6 MONITORING D): the runtime journal of alert → task records —
+   * the task of each alert identity, the runbook it was opened with and how
+   * long the alert has been resolved, newest last. Written by the
+   * alert-recovery service on every alert event, read by
+   * `GET /api/myrmidon/monitoring/alert-recovery`. Stored passthrough, like
+   * `swarmClaimJournal`: a broken row is dropped on read, never trusted.
+   */
+  alertRecoveryJournal?: unknown[];
+  /**
    * myrmidon(1.7-SETTINGS-TO-UI): the channel settings document — the Telegram
    * bridge switches, the chat limits and the cross-channel numbers, changed from
    * `GET`/`PATCH /api/myrmidon/channel-settings`. An absent (or partial) document
@@ -229,6 +253,14 @@ export interface InstanceGeneralSettings {
    * (packages/shared/src/validators/instance.ts).
    */
   debate?: unknown;
+  /**
+   * myrmidon(1.7-AGENT-EXCHANGE-A): the discussion-room settings — master
+   * switch (default off), room size, round cap, per-room token budget and
+   * the response timeout; changed from `GET`/`PATCH
+   * /api/myrmidon/agent-exchange/settings`. Kept in sync with the validator
+   * of the same field (packages/shared/src/validators/instance.ts).
+   */
+  agentExchange?: AgentExchangeSettings;
   /**
    * myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys, managed
    * from the instance settings page. Absent means "no keys registered". Kept
@@ -267,6 +299,14 @@ export interface InstanceGeneralSettings {
    * is off)". Kept in sync with the validator of the same field.
    */
   foraging?: ForagingSettings;
+  /**
+   * myrmidon(1.6.3 PLUGIN-ENTITLEMENT A): the ed25519 verification public key
+   * (PEM) for plugin entitlement tokens, changed from the instance settings
+   * page. Absent means "no verification key" — no entitlement token can
+   * verify, so every gated plugin stays unactivated. Kept in sync with the
+   * validator of the same field (packages/shared/src/validators/instance.ts).
+   */
+  pluginEntitlementPublicKey?: string;
 }
 
 

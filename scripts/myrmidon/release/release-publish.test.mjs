@@ -999,3 +999,62 @@ describe("release manifest (release-components.json)", () => {
     assert.match(manifest.components.dockergate.digest, /^sha256:/);
   });
 });
+
+// VENDOR-SHARE-METRIC (1.6.5): the publisher appends the vendor-derived share
+// and its delta to the previous release to the notes. The current share comes
+// from MYRMIDON_RELEASE_VENDOR_SHARE_STATE (the offline seam next to
+// MYRMIDON_RELEASE_REGISTRY_STATE) and the previous numbers from
+// MYRMIDON_RELEASE_PREVIOUS_BODY (the previous release's own notes). A metric
+// failure must never break a publish: the section then reads «не посчитано»
+// and the release still goes out (OPE-4152 acceptance).
+describe("publish-github-release.sh: the vendor-derived share in the notes", () => {
+  const writeShareState = (sb, { inherited, totalFiles }) => {
+    const file = path.join(sb.dir, "vendor-share-state.json");
+    fs.writeFileSync(file, JSON.stringify({
+      summary: { inherited, totalFiles, share: inherited / totalFiles },
+    }));
+    return file;
+  };
+
+  it("appends the share and the delta to the previous release", () => {
+    const sb = sandbox({ runs: GREEN_RUNS });
+    const previousBody = path.join(sb.dir, "previous-body.md");
+    fs.writeFileSync(previousBody, "Vendor-derived files: 6116 of 6812 (89.78%)\n");
+    const { code, out } = runScript(sb, "myr-v1.6.0", { extraEnv: {
+      MYRMIDON_RELEASE_VENDOR_SHARE_STATE: writeShareState(sb, { inherited: 6123, totalFiles: 6812 }),
+      MYRMIDON_RELEASE_PREVIOUS_BODY: previousBody,
+    } });
+    assert.equal(code, 0, out);
+    assert.match(out, /vendor-share section: Vendor-derived files: 6123 of 6812 \(89\.89%\)/);
+    const log = mutations(sb);
+    assert.match(log, /create tag=myr-v1\.6\.0/);
+    assert.match(log, /## Vendor-derived files/);
+    assert.match(log, /Vendor-derived files: 6123 of 6812 \(89\.89%\), Δ to myr-v1\.5\.0: \+0\.10 pp \(\+7 files\)/);
+    // the metric is additive: the CHANGELOG section is still in the body
+    assert.match(log, /New thing A\./);
+  });
+
+  it("says 'нет данных' when the previous release carries no share line", () => {
+    const sb = sandbox({ runs: GREEN_RUNS });
+    const previousBody = path.join(sb.dir, "previous-body.md");
+    fs.writeFileSync(previousBody, "## What's changed\n\n- nothing about vendor files\n");
+    const { code, out } = runScript(sb, "myr-v1.6.0", { extraEnv: {
+      MYRMIDON_RELEASE_VENDOR_SHARE_STATE: writeShareState(sb, { inherited: 6123, totalFiles: 6812 }),
+      MYRMIDON_RELEASE_PREVIOUS_BODY: previousBody,
+    } });
+    assert.equal(code, 0, out);
+    assert.match(mutations(sb), /Δ to myr-v1\.5\.0: нет данных \(no vendor-share line in that release\)/);
+  });
+
+  it("publishes «не посчитано» instead of failing when the share cannot be computed", () => {
+    const sb = sandbox({ runs: GREEN_RUNS });
+    const { code, out } = runScript(sb, "myr-v1.6.0", { extraEnv: {
+      MYRMIDON_RELEASE_VENDOR_SHARE_STATE: path.join(sb.dir, "absent.json"),
+    } });
+    assert.equal(code, 0, "a metric failure never breaks the publish");
+    assert.match(out, /vendor-share metric not computed/);
+    const log = mutations(sb);
+    assert.match(log, /create tag=myr-v1\.6\.0/);
+    assert.match(log, /## Vendor-derived files\s*\n\s*не посчитано/);
+  });
+});
