@@ -259,6 +259,9 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // myrmidon(1.6.5 RUN-PRIORITY A): the stored run queue priority settings
       // survive every general write (they are edited on their own route).
       ...(parsed.data.runPriority ? { runPriority: parsed.data.runPriority } : {}),
+      // myrmidon(RUN-STALL-SETTINGS): the stored run stall detection settings
+      // survive every general write
+      ...(parsed.data.runStall ? { runStall: parsed.data.runStall } : {}),
       // myrmidon(BOT-DISK E): the stored host disk threshold survives every general write
       ...(parsed.data.hostDisk ? { hostDisk: parsed.data.hostDisk } : {}),
       // myrmidon(BOT-DISK-A): the stored bot draft-directory lifecycle survives every general write

@@ -152,7 +152,7 @@ import { createHostDiskScheduler } from "./myrmidon/host-disk/index.js"; // myrm
 import { startDatastoreCare, stopDatastoreCare } from "./myrmidon/datastore-care/index.js"; // myrmidon(DBC-4)
 // myrmidon(1.6.5-DB-RETENTION): sweeps runs and logs past their retention
 import { createDataRetentionScheduler } from "./myrmidon/data-retention/index.js"; // myrmidon(1.6.5-DB-RETENTION)
-import { createRunStallSweepFromHeartbeat } from "./myrmidon/run-stall/index.js"; // myrmidon(RUN-STALL)
+import { createRunStallSweepFromHeartbeat, registerRunStallSweep, startRunStall } from "./myrmidon/run-stall/index.js"; // myrmidon(RUN-STALL)
 // myrmidon(HERMES-RUN-REATTACH): reattach live gateway runs after a board restart
 import { sweepGatewayRunReattach } from "./myrmidon/gateway-run-reattach.js";
 import { createTaskPrSyncScheduler } from "./myrmidon/task-pr-sync/index.js"; // myrmidon(TASK-PR-SYNC)
@@ -1226,6 +1226,15 @@ async function startServerWithDatabaseTeardown(
   const pauseGuardSweep = heartbeat
     ? createPauseGuardSweepFromHeartbeat({ db: db as any, heartbeat })
     : null;
+  // myrmidon(RUN-STALL-SETTINGS, 1.6.5): settings saved from the UI apply to
+  // this sweep instance without a restart; the stored row is applied right
+  // after registration, before the first scheduler tick.
+  registerRunStallSweep(runStallSweep);
+  if (runStallSweep) {
+    void startRunStall(db as any).catch((err) =>
+      logger.error({ err }, "failed to apply the stored run stall settings at startup"),
+    );
+  }
   const executionControlSweeps = [
     ["finalization", () => reconcileAbandonedExecutionControl(db)],
     ["replacement", () => heartbeat ? reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession: run => verifyStoppedNativeSessionForReplacement(db, run) }) : undefined],

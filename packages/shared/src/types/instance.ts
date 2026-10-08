@@ -5,6 +5,8 @@ import type { WorkspaceHygieneLimits } from "../myrmidon-workspace-hygiene.js";
 import type { StoredRunLimits } from "../myrmidon-runtime-limits.js";
 // myrmidon(1.6.5 RUN-PRIORITY A): the stored run queue priority shape.
 import type { StoredRunPriority } from "../myrmidon-run-priority.js";
+// myrmidon(RUN-STALL-SETTINGS): the run stall detection settings stored in instance settings
+import type { RunStallValues } from "../myrmidon-run-stall.js";
 import type { HostDiskSettings } from "../myrmidon-host-disk.js";
 // myrmidon(1.6.5-DBC1): the datastore-care block type (see validators/instance.ts)
 import type { DatastoreCareRetentionSettings } from "../myrmidon-datastore-care.js";
@@ -175,6 +177,15 @@ export interface InstanceGeneralSettings {
    * means "use the environment variable, then the default".
    */
   runPriority?: StoredRunPriority;
+  /**
+   * myrmidon(RUN-STALL-SETTINGS): the run stall detection settings, changed
+   * from the instance settings page and `GET`/`PATCH /api/myrmidon/run-stall`.
+   * Absent means "use the environment variable, then the default"; the key did
+   * not exist before 1.6.5, so no older row can lack a key the schema demands.
+   * Kept in sync with the validator of the same field
+   * (packages/shared/src/validators/instance.ts).
+   */
+  runStall?: RunStallValues;
   /**
    * myrmidon(PARALLEL-HELPERS): company ceiling/default for parallel helper
    * subagents, changed from the instance settings page and
