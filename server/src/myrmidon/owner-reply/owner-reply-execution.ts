@@ -56,6 +56,9 @@ export const OWNER_REPLY_ANSWER_KEY_FIELD = "ownerReplyAnswerKey";
 
 type InteractionService = ReturnType<typeof issueThreadInteractionService>;
 type InteractionIssueArg = Parameters<InteractionService["acceptInteraction"]>[0];
+/** The same ref the resolution services take, plus the assignee the outbox
+ * needs to decide whether the card's resolution wakes an agent. */
+type IssueForResolution = InteractionIssueArg & { assigneeAgentId: string | null };
 type AcceptBody = Parameters<InteractionService["acceptInteraction"]>[2];
 type RejectBody = Parameters<InteractionService["rejectInteraction"]>[2];
 type RespondBody = Parameters<InteractionService["answerQuestions"]>[2];
@@ -66,9 +69,16 @@ type RespondBody = Parameters<InteractionService["answerQuestions"]>[2];
 export function createOwnerReplyDeps(db: Db): OwnerReplyDeps {
   const interactionSvc = issueThreadInteractionService(db);
 
-  const loadIssue = async (card: PendingOwnerCard): Promise<InteractionIssueArg | null> =>
+  const loadIssue = async (card: PendingOwnerCard): Promise<IssueForResolution | null> =>
     db
-      .select()
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        projectId: issues.projectId,
+        goalId: issues.goalId,
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+      })
       .from(issues)
       .where(and(eq(issues.companyId, card.companyId), eq(issues.id, card.issueId)))
       .limit(1)
@@ -86,7 +96,6 @@ export function createOwnerReplyDeps(db: Db): OwnerReplyDeps {
     const [comment] = await db
       .insert(issueComments)
       .values({
-        companyId: input.companyId,
         issueId: input.issueId,
         authorAgentId: input.agentId,
         authorType: input.agentId ? "agent" : "system",
@@ -265,7 +274,7 @@ export function createOwnerReplyDeps(db: Db): OwnerReplyDeps {
         actor as Parameters<InteractionService["acceptInteraction"]>[3],
         mutationOptions,
       );
-      status = String(accepted?.status ?? "accepted");
+      status = String(accepted.interaction.status ?? "accepted");
     } else if (input.action === "reject") {
       const rejected = await interactionSvc.rejectInteraction(
         issue,
@@ -274,7 +283,7 @@ export function createOwnerReplyDeps(db: Db): OwnerReplyDeps {
         actor as Parameters<InteractionService["rejectInteraction"]>[3],
         mutationOptions,
       );
-      status = String(rejected?.status ?? "rejected");
+      status = String(rejected.interaction.status ?? "rejected");
     } else {
       const answered = await interactionSvc.answerQuestions(
         issue,
@@ -283,7 +292,7 @@ export function createOwnerReplyDeps(db: Db): OwnerReplyDeps {
         actor as Parameters<InteractionService["answerQuestions"]>[3],
         mutationOptions,
       );
-      status = String(answered?.status ?? "answered");
+      status = String(answered.interaction.status ?? "answered");
     }
 
     await logActivity(db, {
