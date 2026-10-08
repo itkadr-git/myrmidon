@@ -5,6 +5,8 @@ settings-section: Track 5 — operations
 
 ## changelog-en
 
+### Asymmetric debates engine (DEBATE-ASYM A)
+
 - The board runs a structured disagreement between models of different
   families: a generator (constructive pole), a critic (adversarial pole, told
   it is penalized for a missed error), and a judge outside the dispute (a
@@ -20,9 +22,11 @@ settings-section: Track 5 — operations
   nothing is saved.
 - `POST .../debates/issues/:issueId/run` starts a debate: the board runs it
   directly, an agent caller is gated on the autonomy matrix
-  `spend_above_threshold` class. Models default to free ones (qwen/glm/
-  deepseek); the gateway contour falls back to the evals contour when the
-  debate variables are unset. Model families share the single extensible
+  `spend_above_threshold` class (forbidden answers 403, approval_required
+  answers 403 with the approval code). Models default to free ones (qwen/glm/
+  deepseek); the gateway contour falls back to the evals one
+  (`MYRMIDON_EVALS_BASE_URL` / `MYRMIDON_EVALS_KEY_SECRET`) when the debate
+  variables are unset. Model families share the single extensible
   table introduced by EVALS-JUDGE-FAMILY.
 
 ## changelog-ru

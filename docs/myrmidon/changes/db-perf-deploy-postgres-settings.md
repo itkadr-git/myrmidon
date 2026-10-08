@@ -4,6 +4,8 @@ settings-section: Track 5 — operations
 
 ## changelog-en
 
+### DB-TUNING: the PostgreSQL settings of the database audit are applied declaratively by the deploy (deploy.sh / rollback.sh)
+
 - `db-tuning.sql` / `db-tuning-rollback.sql` — the OPE-4270 audit settings
   live in the repository (`jit=off`, `work_mem=16MB`, `wal_compression=lz4`,
   per-table autovacuum scale factors, `pg_reload_conf()`); the rollback file

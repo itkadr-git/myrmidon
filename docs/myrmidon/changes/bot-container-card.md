@@ -17,7 +17,7 @@ divergence-section: 1.6.1 — BOT-DISK B: общий кэш пакетов дл�
   `container` block (an image-only patch dropped the limits).
 - Clone-hygiene reports are collected per bot by name (the old container
   listing was on dockergate's closed list and answered 403); dockergate gained
-  the narrow read-only archive route A3 for the report file.
+  the narrow read-only archive route A13 for the report file (one fixed file of the main container).
 - Contract test: every Docker API path in the board driver must be in the
   gate's allowed-routes table.
 ## changelog-ru

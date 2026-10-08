@@ -14,9 +14,19 @@ settings-section: BOT-DISK E — host disk usage signal
   it with `--reference-if-able`. Measured here: first clone 414 MB / 144 MB
   `.git`, later clones 272 MB / 2 MB `.git`. Mirrors never prune objects a
   clone borrows; every failure falls back to a plain clone.
-- An unserved clone prints one `[myrmidon-git]` line and records the reason;
-  the start-time self-check runs a real reference round trip and raises an
-  attention card on failure.
+- The store used to stay empty next to live task clones: those clones run with
+  `--reference <neighbour clone>`, the wrapper read that as the clone's own
+  storage decision and stepped aside silently. Now only options that pick the
+  storage of the clone's own objects opt out (`--dissociate`, `--shared`,
+  `--local`, `--mirror`, `--filter`); clones naming `--reference`,
+  `--reference-if-able` or `--no-local`, bounded clones (`--depth`,
+  `--shallow-since`, `--shallow-exclude`) and non-GitHub clones keep the
+  store's mirror as an extra alternate. `devbuild` follows the alternates.
+- A clone the store does not serve is no longer silent: one `[myrmidon-git]`
+  line on stderr plus `<HERMES_HOME>/.myrmidon/git-objects-last-error.json`.
+  The start-time self-check (reported as `gitRefCheck`) runs a real offline
+  reference round trip, plus `store-fills` and `store-in-use`; a failure raises
+  an attention card (`gitref`, `bot_disk_lifecycle`).
 - Switches: `MYRMIDON_GIT_LOCAL_MIRROR=""`, `MYRMIDON_GIT_LOCAL_MIRROR_REFRESH_SEC=0`,
   `MYRMIDON_GIT_OBJECTS_CHECK=0`. See [bot-disk-cache.md](bot-disk-cache.md).
 ## changelog-ru

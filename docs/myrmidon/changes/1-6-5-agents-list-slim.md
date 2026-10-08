@@ -10,7 +10,8 @@
   new `adapterModel` field. The full configuration stays available through
   `GET /agents/:id`, `GET /agents/:id/configuration` and
   `GET /companies/:companyId/agent-configurations`; access rules and spend
-  hydration are unchanged.
+  hydration are unchanged; an actor without `agent_config:read` gets the
+  restricted list view with `runtimeConfig` and `adapterModel` blanked.
 - The board UI follows: the agents list renders its model column from
   `adapterModel`; the new-issue dialog and the properties pane read the
   assignee's configuration on demand; Settings → Secrets reads the

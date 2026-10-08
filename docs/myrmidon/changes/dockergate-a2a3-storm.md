@@ -9,9 +9,12 @@
   inspected each bot twice; the post-apply health wait polled every second;
   a 429 failed the pass only to hammer the gate on the next tick.
 - The collector moved to its own timer (`MYRMIDON_CLONE_REPORT_INTERVAL_SEC`,
-  default 300 s — reports are valid 24 h), reconcile reuses one inspect,
-  health waits back off, and a 429 now defers the pass instead of retrying
-  into the wall.
+  default 300 s — reports are valid 24 h), reconcile
+  probes status and drift from one inspect (2 gate requests per bot per pass
+  instead of 3), the health wait polls every 5 s (was 1 s), and the gate client
+  has a token bucket (`MYRMIDON_DOCKERGATE_MAX_RPS`, default 20/s across all
+  loops) and a 429 retry with exponential backoff and jitter, honouring
+  `Retry-After`, up to 5 retries.
 ## changelog-ru
 
 ### Доска больше не штурмует dockergate; выкат флота укладывается в лимит гейта (1.6.5-DOCKERGATE-A2A3-STORM)
