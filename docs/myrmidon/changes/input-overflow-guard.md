@@ -1,3 +1,8 @@
+---
+divergence-section: Трек 2 — ядро побудок и прогонов
+settings-section: Track 2 — wake and run core
+---
+
 ## changelog-en
 
 ### Input-overflow guard and fresh session on automatic retries (1.6.5-INPUT-OVERFLOW, OPE-6168)
