@@ -933,7 +933,7 @@ export interface PluginJobRecord {
   /** Cron expression for the schedule. */
   schedule: string;
   /** Current job status. */
-  status: "active" | "paused" | "failed";
+  status: "active" | "paused" | "failed" | "running";
   /** Last time the job was executed. */
   lastRunAt: Date | null;
   /** Next scheduled execution time. */
