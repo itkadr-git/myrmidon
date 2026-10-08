@@ -1,5 +1,13 @@
 import { AGENT_CHAT_DIRECTIVE, conversationReplay, isConversation, isConversationExecutionWake, isWaitingConversation, prepareConversationTurn, settleConversationTurn } from "./agent-conversations.js";
 // myrmidon(B1): product name in the notice/prompt text below; see product.ts.
+import {
+  buildInputOverflowAttentionComment,
+  countConsecutiveInputOverflowFailures,
+  countInputOverflowFailures,
+  decideInputOverflowAction,
+  detectInputOverflowRun,
+  readInputOverflowMaxFailures,
+} from "../myrmidon/input-overflow-guard.js";
 import { PRODUCT_NAME, productPossessive, productSaid } from "../myrmidon/product.js";
 import { PROCESS_IDENTITY_RECORDED, recordNativeLocalProcessStop } from "./native-local-process-stop.js";
 import { hasAcknowledgedNativeStopIntent, isAcknowledgedNativeStop, acknowledgedNativeStopExecutionHasStopped } from "./acknowledged-native-stop.js";
@@ -5422,6 +5430,17 @@ export function shouldResetTaskSessionForWake(
   if (contextSnapshot?.forceFreshSession === true) return true;
 
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
+  // myrmidon(OPE-6168): upstream #15487 — an automatic transient retry must not inherit the failed
+  // attempt's transcript (the failed turn's prompt is re-sent into the same
+  // session and the history grows on every retry). The one exception is the
+  // codex ladder's explicit same-session first step.
+  if (
+    wakeReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON &&
+    readNonEmptyString(contextSnapshot?.codexTransientFallbackMode) !==
+      "same_session"
+  ) {
+    return true;
+  }
   if (
     wakeReason === "issue_assigned" ||
     wakeReason === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON ||
@@ -15098,6 +15117,81 @@ export function heartbeatService(
     };
   }
 
+  // myrmidon(OPE-6168): a provider input-length rejection is deterministic.
+  // Drop the saved task session so the next attempt starts fresh, and after N
+  // consecutive identical failures on one issue stop and raise an attention
+  // item with the facts instead of looping at scheduler cadence.
+  async function handleInputOverflowFailure(
+    run: typeof heartbeatRuns.$inferSelect,
+    agent: typeof agents.$inferSelect,
+  ) {
+    const match = detectInputOverflowRun(run);
+    if (!match) return null;
+    const context = parseObject(run.contextSnapshot);
+    const issueId = readNonEmptyString(context.issueId);
+    const taskKey = deriveTaskKey(context, null);
+    const resultJson = parseObject(run.resultJson);
+    if (readNonEmptyString(resultJson.errorFamily) !== "input_overflow") {
+      await db
+        .update(heartbeatRuns)
+        .set({ resultJson: { ...resultJson, errorFamily: "input_overflow" } })
+        .where(eq(heartbeatRuns.id, run.id));
+    }
+    if (taskKey) {
+      await clearTaskSessions(run.companyId, agent.id, { taskKey });
+    }
+    if (!issueId) return { action: "fresh_session" as const };
+
+    const previous = await countConsecutiveInputOverflowFailures(db, {
+      companyId: run.companyId,
+      agentId: agent.id,
+      issueId,
+      excludeRunId: run.id,
+    });
+    const decision = decideInputOverflowAction(
+      previous + 1,
+      readInputOverflowMaxFailures(),
+    );
+    await appendRunEvent(run, {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "warn",
+      message:
+        decision.action === "stop"
+          ? `Provider rejected the input as too long ${decision.consecutive} times in a row; automatic retries stopped`
+          : "Provider rejected the input as too long; the next attempt starts a fresh session",
+      payload: { inputOverflow: { ...match, ...decision } },
+    });
+    if (decision.action !== "stop") return decision;
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId)))
+      .then((rows) => rows[0] ?? null);
+    if (
+      !issue ||
+      (issue.status !== "todo" &&
+        issue.status !== "in_progress" &&
+        issue.status !== "in_review")
+    ) {
+      return decision;
+    }
+    await recovery.escalateStrandedAssignedIssue({
+      issue,
+      previousStatus: issue.status,
+      latestRun: run,
+      comment: buildInputOverflowAttentionComment({
+        match,
+        consecutive: decision.consecutive,
+        max: decision.max,
+        runId: run.id,
+        errorExcerpt: run.error ? run.error.slice(0, 300) : null,
+      }),
+    });
+    return decision;
+  }
+
   async function scheduleBoundedRetryForRun(
     run: typeof heartbeatRuns.$inferSelect,
     agent: typeof agents.$inferSelect,
@@ -22943,6 +23037,21 @@ export function heartbeatService(
         delete context.paperclipPreviousSessionId;
       }
 
+      // myrmidon(OPE-6168): adapters that keep a provider-side session keyed by
+      // issue (hermes_gateway) start a new one after an input-overflow failure.
+      const inputOverflowGeneration = issueId
+        ? await countInputOverflowFailures(db, {
+            companyId: agent.companyId,
+            agentId: agent.id,
+            issueId,
+          }).catch(() => 0)
+        : 0;
+      if (inputOverflowGeneration > 0) {
+        context.sessionGeneration = inputOverflowGeneration;
+      } else {
+        delete context.sessionGeneration;
+      }
+
       if (managedAiRuntime) {
         sessionConfigMetadata.aiCredentialIdentity = managedAiRuntime.identity;
         if (taskSessionDecodedParams?.paperclipAiCredentialIdentity !== managedAiRuntime.identity) {
@@ -25500,6 +25609,14 @@ export function heartbeatService(
               "stderr",
               `[paperclip] Failed to resolve run presentation: ${err instanceof Error ? err.message : String(err)}\n`,
             );
+          }
+          if (outcome === "failed") {
+            await handleInputOverflowFailure(livenessRun, agent).catch((err) => {
+              logger.warn(
+                { err, runId: livenessRun.id },
+                "failed to apply input-overflow guard",
+              );
+            });
           }
           if (outcome === "failed" && isMaxTurnExhaustionRun(livenessRun)) {
             const policy = parseMaxTurnContinuationPolicy(agent);
