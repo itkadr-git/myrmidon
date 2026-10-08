@@ -88,8 +88,15 @@ describe("db-care coalesce index declaration (static checks)", () => {
     const entry = journal.entries.find((e) => e.idx === 312);
     expect(entry?.tag).toBe(MIGRATION_TAG);
     expect(entry?.when).toBeGreaterThan(PREVIOUS_MIGRATION_WHEN);
-    // The declaration is the end of the DB-CARE batch: it follows the lz4 entry.
-    expect(journal.entries.at(-1)?.tag).toBe(MIGRATION_TAG);
+    // The declaration closes the DB-CARE batch: it sits directly after the lz4
+    // entry. Assert the predecessor relation, not the journal tail — the tail
+    // grows with every later migration (0313 declared the next DB-CARE index on
+    // heartbeat_runs and appended after this entry), so a tail pin reports a
+    // false alarm instead of a missing registration.
+    const position = journal.entries.findIndex((e) => e.idx === 312);
+    expect(position).toBeGreaterThan(0);
+    expect(journal.entries[position - 1]?.idx).toBe(311);
+    expect(journal.entries[position - 1]?.tag).toBe("0311_db_care_lz4_compression");
 
     const snapshot = JSON.parse(
       await readFile(fileURLToPath(new URL(SNAPSHOT_FILE, import.meta.url)), "utf8"),
