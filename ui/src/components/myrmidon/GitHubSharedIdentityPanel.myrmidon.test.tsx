@@ -105,7 +105,10 @@ async function waitForButton(text: string, attempts = 50): Promise<HTMLButtonEle
   for (let i = 0; i < attempts; i++) {
     const found = [...container.querySelectorAll("button")].find((el) => el.textContent?.includes(text));
     if (found) return found as HTMLButtonElement;
-    await act(async () => Promise.resolve());
+    // A macrotask, not a microtask: react-query delivers a resolved query to
+    // the component through a setTimeout(0) batch, so microtask ticks alone
+    // never let the data (and the buttons that depend on it) arrive.
+    await act(async () => new Promise<void>((resolve) => setTimeout(resolve, 0)));
   }
   throw new Error(`button not found: ${text}`);
 }

@@ -217,7 +217,7 @@ export function consumeGitHubAppManifestState(input: {
 }
 
 /** The fields of a conversions answer the flow uses — the key by value, never by copy. */
-type Conversion = { appId: string; slug: string; name: string; privateKey: string };
+type Conversion = { appId: string; slug: string; name: string; privateKey: string; permissions: GitHubAppPermissions };
 
 /** One-time manifest code -> the created App. GitHub's answer body never leaves this function. */
 async function convertManifestCode(code: string, fetchImpl: typeof fetch): Promise<Conversion> {
