@@ -29,6 +29,14 @@ import {
 } from "@paperclipai/shared";
 
 export const AUTONOMY_GENERAL_KEY = "myrmidonAutonomyMatrix";
+// myrmidon(1.6-AUTONOMY-GW): the configurable tool -> action-class mapping.
+export const AUTONOMY_TOOL_MAPPING_GENERAL_KEY = "myrmidonAutonomyToolMapping";
+
+function preserveKey(storedGeneral: unknown, key: string): Record<string, unknown> {
+  if (typeof storedGeneral !== "object" || storedGeneral === null) return {};
+  const value = (storedGeneral as Record<string, unknown>)[key];
+  return value === undefined ? {} : { [key]: value };
+}
 
 const SINGLETON_KEY = "default";
 /** How many regulation revisions per regulation are kept in the document. */
@@ -149,14 +157,31 @@ export function parseAutonomyDocument(raw: unknown): AutonomyDocument {
   const regulations = Array.isArray(raw.regulations)
     ? raw.regulations.map(parseRegulation).filter((entry): entry is AutonomyRegulation => entry !== null)
     : [];
-  return { version: 1, matrix: { version, rules, defaults }, regulations };
+  const document: AutonomyDocument = { version: 1, matrix: { version, rules, defaults }, regulations };
+
+  // Migration: the factory default for deploy changed from allowed to
+  // approval_required. If a stored document still has deploy: allowed and
+  // no explicit rule overrides it, lift the default so existing installs
+  // do not silently keep the old permissive behaviour.
+  if (document.matrix.defaults.deploy === "allowed") {
+    const hasDeployRule = document.matrix.rules.some((r) => r.actionClass === "deploy");
+    if (!hasDeployRule) {
+      document.matrix.defaults.deploy = "approval_required";
+    }
+  }
+
+  return document;
 }
 
 /** Keep our key across vendor writes of instance_settings.general. */
 export function preserveAutonomyGeneralKey(storedGeneral: unknown): Record<string, unknown> {
-  if (typeof storedGeneral !== "object" || storedGeneral === null) return {};
-  const value = (storedGeneral as Record<string, unknown>)[AUTONOMY_GENERAL_KEY];
-  return value === undefined ? {} : { [AUTONOMY_GENERAL_KEY]: value };
+  return preserveKey(storedGeneral, AUTONOMY_GENERAL_KEY);
+}
+
+// myrmidon(1.6-AUTONOMY-GW): keep the tool -> action-class mapping across
+// vendor writes of `general` (same pattern as the matrix key above).
+export function preserveAutonomyToolMappingGeneralKey(storedGeneral: unknown): Record<string, unknown> {
+  return preserveKey(storedGeneral, AUTONOMY_TOOL_MAPPING_GENERAL_KEY);
 }
 
 /** The persistence seam: production uses the instance-settings row, tests use memory. */
