@@ -6,6 +6,7 @@ export default defineConfig({
       "packages/shared",
       "packages/skills-catalog",
       "packages/db",
+      "packages/corpus",
       "packages/adapter-utils",
       "packages/adapters/claude-local",
       "packages/adapters/codex-local",
