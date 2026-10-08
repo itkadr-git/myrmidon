@@ -1,5 +1,6 @@
 ---
 divergence-section: Трек 5 — эксплуатация
+settings-section: Track 5 — operations
 ---
 
 ## changelog-en
@@ -70,12 +71,8 @@ divergence-section: Трек 5 — эксплуатация
 
 ## settings-en
 
-- `MYRMIDON_MEDIA_MCP_URL` — URL of the media MCP sidecar the bots' profiles
-  point at. Default `http://media-mcp:8080/mcp`. Set it on the board instance
-  when the sidecar runs under a different name or port.
+| `MYRMIDON_MEDIA_MCP_URL` | 1.6.5-F11-A | `http://media-mcp:8080/mcp` | URL of the media MCP sidecar the bots' profiles point at | Set it on the board instance when the sidecar runs under a different name or port |
 
 ## settings-ru
 
-- `MYRMIDON_MEDIA_MCP_URL` — URL медиа-сайдкара MCP, на который ссылаются
-  профили ботов. По умолчанию `http://media-mcp:8080/mcp`. Задаётся на
-  инстансе доски, если сайдкар запущен под другим именем или портом.
+| `MYRMIDON_MEDIA_MCP_URL` | 1.6.5-F11-A | `http://media-mcp:8080/mcp` | URL медиа-сайдкара MCP, на который ссылаются профили ботов | Задаётся на инстансе доски, если сайдкар запущен под другим именем или портом |

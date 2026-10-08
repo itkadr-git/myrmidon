@@ -64,6 +64,8 @@ const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
   stack_update: { label: "Stack update" },
   // myrmidon(BOT-RUNTIME-TUNING D): label for the model fallback signal source.
   model_fallback_alert: { label: "Model fallback" },
+  // myrmidon(1.6.5-F11-A): label for the «media not connected» source.
+  bot_media_mcp: { label: "Media not connected" },
   // myrmidon(STALE-BLOCK): label for the lifted-stale-block source.
   stale_block: { label: "Stale block lifted" },
   host_disk_alert: { label: "Host disk" },
