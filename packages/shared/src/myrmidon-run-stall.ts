@@ -48,6 +48,18 @@ export const RUN_STALL_KEYS = ["enabled", "thresholdSec", "checkIntervalSec", "p
 
 export type RunStallKey = (typeof RUN_STALL_KEYS)[number];
 
+/**
+ * Single source of truth (operator decision, RUN-STALL-SETTINGS review):
+ * whether the stall sweep runs and its threshold belong to the team-liveness
+ * settings (`runStallEnabled`, `runStallThresholdSec` at /api/myrmidon/team-liveness).
+ * The run-stall panel shows them read-only; only the check interval and the
+ * page size are edited here, and a PATCH naming the first two answers 409.
+ */
+export const RUN_STALL_TEAM_LIVENESS_KEYS = ["enabled", "thresholdSec"] as const;
+export type RunStallTeamLivenessKey = (typeof RUN_STALL_TEAM_LIVENESS_KEYS)[number];
+export const RUN_STALL_TEAM_LIVENESS_PATH = "/api/myrmidon/team-liveness";
+export const RUN_STALL_MANAGED_ELSEWHERE_CODE = "run_stall_managed_by_team_liveness";
+
 /** Where an effective value came from: stored settings, the environment, or the default. */
 export type RunStallSource = "settings" | "env" | "default";
 
