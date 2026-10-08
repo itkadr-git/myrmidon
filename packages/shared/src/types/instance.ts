@@ -211,6 +211,7 @@ export interface InstanceGeneralSettings {
    * validator of the same field (packages/shared/src/validators/instance.ts).
    */
   pauseGuard?: StoredPauseGuardSettings;
+  /**
    * myrmidon(1.7-SETTINGS-TO-UI): the channel settings document — the Telegram
    * bridge switches, the chat limits and the cross-channel numbers, changed from
    * `GET`/`PATCH /api/myrmidon/channel-settings`. An absent (or partial) document
