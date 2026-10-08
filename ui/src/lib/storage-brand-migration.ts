@@ -37,6 +37,28 @@ const LEGACY_PAPERCLIP_STORAGE_KEYS = [
   ":paperclip:selectedProject",
   ":paperclip:selectedCompany",
   ":paperclip:workspaceSelectorOpen",
+  // Dynamic-prefix keys (runtime suffixes); the sweep migrates them by
+  // concrete prefix, listed here so the migration surface cannot drift.
+  // myrmidon(DB3)
+  "paperclip.recentTasks:",
+  "paperclip.recentAgentChats:",
+  "paperclip.connector-enrollment-access:",
+  "paperclip.announcement-dismissals.v1:",
+  "paperclip.boardChat.draft.",
+  "paperclip:issue-document-folds:",
+  "paperclip:task-input:",
+  "paperclip:board-send:v1:",
+  "paperclip:agent-chat-pending:",
+  "paperclip:shared-poll:",
+  "paperclip:task-collection:v",
+  "paperclip:task-side-panel:v",
+  "paperclip:cases:",
+  "paperclip:skills-folder-nudge:",
+  "paperclip:execution-workspace-tab:",
+  "paperclip:pipeline-item-conversation-draft:",
+  "paperclip:project-tab:",
+  "paperclip:routines-folder-nudge:",
+  "paperclip:test-call:",
   // sessionStorage
   "paperclip.onboarding-active",
 ] as const;

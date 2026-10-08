@@ -1242,7 +1242,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
         ? `source=${slug}&stage=setup&cloud_connector=enrolled`
         : `source=${slug}`;
       if (enrollmentReturn) {
-        window.sessionStorage.setItem(`paperclip.connector-enrollment-access:${slug}`, JSON.stringify({
+        window.sessionStorage.setItem(`myrmidon.connector-enrollment-access:${slug}`, JSON.stringify({
           companyId: "company-1", grantKind: "user", installChoice: "all", agentIds: [],
         }));
       }

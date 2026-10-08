@@ -469,11 +469,11 @@ function sanitizeCompanyId(companyId: string): string {
 }
 
 export function sharedPollingLeaseKey(companyId: string): string {
-  return `paperclip:shared-poll:${sanitizeCompanyId(companyId)}:leader`;
+  return `myrmidon:shared-poll:${sanitizeCompanyId(companyId)}:leader`;
 }
 
 export function sharedPollingChannelName(companyId: string): string {
-  return `paperclip:shared-poll:${sanitizeCompanyId(companyId)}`;
+  return `myrmidon:shared-poll:${sanitizeCompanyId(companyId)}`;
 }
 
 export function getSharedPollingTabId(): string {
@@ -506,7 +506,7 @@ function getBrowserVisible(): boolean {
 function createBrowserLeaseStore(companyId: string): LeaseStore | null {
   if (typeof localStorage === "undefined") return null;
   try {
-    const probeKey = `paperclip:shared-poll:${sanitizeCompanyId(companyId)}:probe`;
+    const probeKey = `myrmidon:shared-poll:${sanitizeCompanyId(companyId)}:probe`;
     localStorage.setItem(probeKey, "1");
     localStorage.removeItem(probeKey);
   } catch {

@@ -46,7 +46,7 @@ export function taskCollectionPreferencesStorageKey({
   companyId,
   collectionKey,
 }: Pick<TaskCollectionPreferenceLocation, "companyId" | "collectionKey">): string {
-  return `paperclip:task-collection:v${TASK_COLLECTION_PREFERENCES_VERSION}:${encodeURIComponent(companyId)}:${encodeURIComponent(collectionKey)}`;
+  return `myrmidon:task-collection:v${TASK_COLLECTION_PREFERENCES_VERSION}:${encodeURIComponent(companyId)}:${encodeURIComponent(collectionKey)}`;
 }
 
 function isCurrentEnvelope<TViewState, TColumn extends string>(

@@ -227,7 +227,7 @@ export function AgentChatPrototype({
   }, [contextInitiallyOpen, setPanelVisible]);
   useLayoutEffect(() => {
     const originalFetch = window.fetch;
-    const recentKey = `paperclip.recentAgentChats:${issue.companyId}:user-board`;
+    const recentKey = `myrmidon.recentAgentChats:${issue.companyId}:user-board`;
     const previousRecents = localStorage.getItem(recentKey);
     if (entryScenario) localStorage.setItem(recentKey, "[]");
     const chats = new Map<

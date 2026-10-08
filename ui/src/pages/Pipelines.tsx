@@ -3314,7 +3314,7 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
                   currentUserId={currentUserId}
                   userLabelMap={userLabelMap}
                   userProfileMap={userProfileMap}
-                  draftKey={`paperclip:pipeline-item-conversation-draft:${activeConversationIssue.id}`}
+                  draftKey={`myrmidon:pipeline-item-conversation-draft:${activeConversationIssue.id}`}
                   autoScrollToLatestOnInitialLoad={false}
                   enableReassign
                   reassignOptions={commentReassignOptions}

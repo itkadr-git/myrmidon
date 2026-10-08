@@ -59,7 +59,7 @@ describe("agent chat navigation and session markers", () => {
   });
   it("removes legacy plaintext retry records", () => {
     const scope = "company:user:agent";
-    const key = `paperclip:agent-chat-pending:${scope}`;
+    const key = `myrmidon:agent-chat-pending:${scope}`;
     localStorage.setItem(key, JSON.stringify([{ body: "private text", id: "old" }]));
     clearLegacyChatMessageRequests(scope);
     expect(localStorage.getItem(key)).toBeNull();
