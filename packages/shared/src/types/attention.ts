@@ -33,6 +33,20 @@ export const ATTENTION_SOURCE_KINDS = [
   // + in_review) is over its resolved WIP limit, or a lead holds a
   // implementation task (lead limit = 0).
   "wip_limit",
+  // myrmidon(1.6.3 PROMPT-BUDGET B): an agent's last run prompt crossed the
+  // warn/crit threshold (percent of the model window) of the live settings.
+  "prompt_budget_alert",
+  // myrmidon(REVIEW-ROUTING): a task in review has no reviewer available, or
+  // its review has had no verdict for longer than the configured hours.
+  "review_routing",
+  // myrmidon(BOT-DISK-A): bot disk lifecycle events.
+  "bot_disk_lifecycle",
+  // myrmidon(1.6.1-BOT-DISK-C): a bot volume is approaching (>=80%) or over its
+  // disk quota; the over-quota state also makes new workspace clones refuse.
+  "bot_disk_quota",
+  // myrmidon(1.6.1-FORAGING-LIMITS-UI): the learning sweep hit a spend limit
+  // (or the cost-per-task threshold switched it off); the owner decides.
+  "foraging_limit",
 ] as const;
 
 export type AttentionSourceKind = (typeof ATTENTION_SOURCE_KINDS)[number];
@@ -48,7 +62,9 @@ export type AttentionSubjectKind =
   | "budget_incident"
   | "agent"
   // myrmidon(SUB): a component of the tracked stack registry.
-  | "stack_component";
+  | "stack_component"
+  // myrmidon(1.6.1-FORAGING-LIMITS-UI): the learning sweep of the company.
+  | "foraging_sweep";
 
 export type AttentionSeverity = "critical" | "high" | "medium" | "low";
 

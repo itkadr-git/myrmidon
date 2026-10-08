@@ -112,6 +112,8 @@ import {
   type GitHubConnectorProfileId,
   type GoogleWorkspaceConnectorProfileId,
 } from "@paperclipai/shared";
+// myrmidon(B1c): product name in user-facing gateway texts; see product.ts.
+import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
 import type {
   AgentToolDescriptor,
   PluginToolDispatcher,
@@ -955,9 +957,9 @@ const BUILTIN_TOOLS: ToolGatewayDescriptor[] = [
   },
   {
     name: "paperclip-self:list_my_issues",
-    displayName: "List my Paperclip issues",
+    displayName: `List my ${PN} issues`,
     description:
-      "Paperclip self-MCP read fixture that lists the authenticated agent's current issues.",
+      `${PN} self-MCP read fixture that lists the authenticated agent's current issues.`,
     parametersSchema: {
       type: "object",
       properties: { limit: { type: "number" } },
@@ -971,7 +973,7 @@ const BUILTIN_TOOLS: ToolGatewayDescriptor[] = [
     name: "paperclip-self:get_issue_context",
     displayName: "Get issue context",
     description:
-      "Paperclip self-MCP read fixture that returns scoped issue context and plan document metadata.",
+      `${PN} self-MCP read fixture that returns scoped issue context and plan document metadata.`,
     parametersSchema: {
       type: "object",
       properties: { issueId: { type: "string" } },
@@ -1015,7 +1017,7 @@ const VIRTUAL_SEARCH_TOOLS: ToolGatewayDescriptor = {
   name: "search_tools",
   displayName: "Search available tools",
   description:
-    "Search the tools available through this Paperclip gateway without loading every target tool into the tool list.",
+    `Search the tools available through this ${PN} gateway without loading every target tool into the tool list.`,
   parametersSchema: {
     type: "object",
     properties: {
@@ -1033,7 +1035,7 @@ const VIRTUAL_RUN_TOOL: ToolGatewayDescriptor = {
   name: "run_tool",
   displayName: "Run a selected tool",
   description:
-    "Run a target tool by name after Paperclip applies the target tool's profile, policy, approval, and rate-limit checks.",
+    `Run a target tool by name after ${PN} applies the target tool's profile, policy, approval, and rate-limit checks.`,
   parametersSchema: {
     type: "object",
     properties: {
@@ -3089,7 +3091,7 @@ export function createToolGatewayService(
       if (!session.agentId) {
         throw new ToolGatewayHttpError(
           403,
-          "Paperclip self tools require an agent-scoped gateway session",
+          `${PN} self tools require an agent-scoped gateway session`,
           "agent_context_required",
         );
       }
@@ -3122,7 +3124,7 @@ export function createToolGatewayService(
       if (!session.agentId) {
         throw new ToolGatewayHttpError(
           403,
-          "Paperclip self tools require an agent-scoped gateway session",
+          `${PN} self tools require an agent-scoped gateway session`,
           "agent_context_required",
         );
       }
@@ -4376,7 +4378,7 @@ export function createToolGatewayService(
       detailsMarkdown:
         grantKind === "organization"
           ? "Vercel Connect reports that the shared organization identity needs authorization."
-          : "This run needs your personal authorization. Paperclip will not use another user's identity.",
+          : `This run needs your personal authorization. ${PN} will not use another user's identity.`,
       target: {
         type: "custom" as const,
         key: `connection:${connection.uid}:user:${userId}`,
@@ -5805,7 +5807,7 @@ export function createToolGatewayService(
         status: "awaiting_approval",
         errorCode: "elicitation_required",
         errorMessage:
-          "Remote MCP tool requested elicitation; Paperclip created an issue interaction for the response.",
+          `Remote MCP tool requested elicitation; ${PN} created an issue interaction for the response.`,
         updatedAt: now,
       })
       .where(eq(toolInvocations.id, input.invocationId));
@@ -6545,7 +6547,7 @@ export function createToolGatewayService(
             },
           },
         },
-        notes: ["Use the full Paperclip origin before the endpoint path."],
+        notes: [`Use the full ${PN} origin before the endpoint path.`],
       },
       {
         client: "claude_desktop",
@@ -6605,7 +6607,7 @@ export function createToolGatewayService(
             },
           },
         },
-        notes: ["Use the full Paperclip origin before the endpoint path."],
+        notes: [`Use the full ${PN} origin before the endpoint path.`],
       },
     ];
   }

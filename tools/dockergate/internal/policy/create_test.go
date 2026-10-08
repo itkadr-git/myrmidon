@@ -207,25 +207,47 @@ func TestRedTeam_RT1_6_Network(t *testing.T) {
 func TestBotBindsMismatch(t *testing.T) {
 	m := fixture.Load(t)
 	k, root := m.BotKey, m.VolumeRoot
-	hermes := root + "/" + k + "/hermes:/data/hermes"
-	work := root + "/" + k + "/workspace:/workspace"
-	scratch := root + "/" + k + "/scratch:/scratch"
+	bot := root + "/" + k + ":/bot"
 	runMutations(t, "bot-plain", "", []mutation{
-		{"host root", `"` + hermes + `"`, `"/:/data/hermes"`, false, deny.BindsMismatch},
-		{"etc", `"` + hermes + `"`, `"/etc:/data/hermes"`, false, deny.BindsMismatch},
-		{"docker socket", `"` + scratch + `"`, `"/var/run/docker.sock:/scratch"`, false, deny.BindsMismatch},
-		{"fourth bind", `"` + scratch + `"]`, `"` + scratch + `","/var/run/docker.sock:/var/run/docker.sock"]`, false, deny.BindsMismatch},
-		{"read-only flag", `"` + work + `"`, `"` + work + `:ro"`, false, deny.BindsMismatch},
-		{"another bot", `"` + hermes + `"`, `"` + root + "/" + otherKey + `/hermes:/data/hermes"`, false, deny.BindsMismatch},
-		{"another root", `"` + hermes + `"`, `"/srv/other/` + k + `/hermes:/data/hermes"`, false, deny.BindsMismatch},
-		{"traversal", `"` + hermes + `"`, `"` + root + "/" + k + `/../x/hermes:/data/hermes"`, false, deny.BindsMismatch},
-		{"trailing slash", `"` + hermes + `"`, `"` + hermes + `/"`, false, deny.BindsMismatch},
-		{"swapped order", `"` + hermes + `","` + work + `"`, `"` + work + `","` + hermes + `"`, false, deny.BindsMismatch},
-		{"one bind missing", `,"` + scratch + `"`, ``, false, deny.BindsMismatch},
-		{"no binds", `"Binds":["` + hermes + `","` + work + `","` + scratch + `"]`, `"Binds":[]`, false, deny.BindsMismatch},
-		{"binds as string", `"Binds":["` + hermes + `","` + work + `","` + scratch + `"]`, `"Binds":"x"`, false, deny.JSONType},
-		{"bind is a number", `"` + scratch + `"`, `1`, false, deny.JSONType},
+		{"host root", `"` + bot + `"`, `"/:/bot"`, false, deny.BindsMismatch},
+		{"etc", `"` + bot + `"`, `"/etc:/bot"`, false, deny.BindsMismatch},
+		{"docker socket", `"` + bot + `"`, `"/var/run/docker.sock:/bot"`, false, deny.BindsMismatch},
+		{"fourth bind", `"` + bot + `"]`, `"` + bot + `","/var/run/docker.sock:/var/run/docker.sock"]`, false, deny.BindsMismatch},
+		{"read-only flag", `"` + bot + `"`, `"` + bot + `:ro"`, false, deny.BindsMismatch},
+		{"another bot", `"` + bot + `"`, `"` + root + "/" + otherKey + `:/bot"`, false, deny.BindsMismatch},
+		{"another root", `"` + bot + `"`, `"/srv/other/` + k + `:/bot"`, false, deny.BindsMismatch},
+		{"traversal", `"` + bot + `"`, `"` + root + "/" + k + `/../x:/bot"`, false, deny.BindsMismatch},
+		{"trailing slash", `"` + bot + `"`, `"` + root + "/" + k + `/:/bot"`, false, deny.BindsMismatch},
+		{"wrong mount point", `"` + bot + `"`, `"` + root + "/" + k + `:/data"`, false, deny.BindsMismatch},
+		{"a sub-directory of the bot instead of the bot", `"` + bot + `"`, `"` + root + "/" + k + `/workspace:/bot"`, false, deny.BindsMismatch},
+		{"three narrow binds out of order", `"` + bot + `"`, `"` + root + "/" + k + `/hermes:/data/hermes","` + root + "/" + k + `/scratch:/scratch","` + root + "/" + k + `/workspace:/workspace"`, false, deny.BindsMismatch},
+		{"the legacy binds with a foreign source", `"` + bot + `"`, `"` + root + "/" + k + `/hermes:/data/hermes","/srv/other/` + k + `/workspace:/workspace","` + root + "/" + k + `/scratch:/scratch"`, false, deny.BindsMismatch},
+		{"only two of the three legacy binds", `"` + bot + `"`, `"` + root + "/" + k + `/hermes:/data/hermes","` + root + "/" + k + `/workspace:/workspace"`, false, deny.BindsMismatch},
+		{"no binds", `"Binds":["` + bot + `"]`, `"Binds":[]`, false, deny.BindsMismatch},
+		{"binds as string", `"Binds":["` + bot + `"]`, `"Binds":"x"`, false, deny.JSONType},
+		{"bind is a number", `"` + bot + `"`, `1`, false, deny.JSONType},
 	})
+}
+
+// The bot form has exactly ONE bind (hard links need one mount); the recorded
+// body carries it and the canonical rebuild reproduces it.
+func TestBotBindIsTheSingleMount(t *testing.T) {
+	m := fixture.Load(t)
+	want := []string{m.VolumeRoot + "/" + m.BotKey + ":/bot"}
+	if got := []string{policy.BotBind(m.VolumeRoot, m.BotKey)}; got[0] != want[0] {
+		t.Fatalf("BotBind = %q, want %q", got[0], want[0])
+	}
+	_, body := m.FindBody(t, "bot-plain", "")
+	c, err := policy.ParseCreate(body, createRoute(t, "myrmidon-bot-"+m.BotKey), env(m))
+	if err != nil {
+		t.Fatalf("denied: %s", err.Code)
+	}
+	if !strings.Contains(string(c.Body), `"Binds":["`+want[0]+`"]`) {
+		t.Fatalf("the canonical bot body does not carry exactly the single bind: %s", c.Body)
+	}
+	if strings.Contains(string(c.Body), ":/data/hermes") || strings.Contains(string(c.Body), ":/workspace") {
+		t.Fatal("a bot body must not carry the helper's narrow binds")
+	}
 }
 
 // The bot's extra read-only mounts: the three fixed binds stay first and in
@@ -233,7 +255,7 @@ func TestBotBindsMismatch(t *testing.T) {
 func TestBotExtraMounts(t *testing.T) {
 	m := fixture.Load(t)
 	k, root := m.BotKey, m.VolumeRoot
-	scratch := root + "/" + k + "/scratch:/scratch"
+	scratch := root + "/" + k + ":/bot"
 	tail := `"` + scratch + `"]`
 	shared := "/srv/shared/sources"
 
@@ -288,7 +310,7 @@ func TestBotExtraMounts(t *testing.T) {
 	})
 
 	t.Run("an extra mount over a reserved path is denied", func(t *testing.T) {
-		for _, target := range []string{"/workspace", "/workspace/shared", "/data/hermes", "/scratch", "/tmp", "/tmp/x", "relative", "/", "/x/../y"} {
+		for _, target := range []string{"/bot", "/bot/x", "/data", "/data/x", "/workspace", "/workspace/shared", "/data/hermes", "/scratch", "/tmp", "/tmp/x", "relative", "/", "/x/../y"} {
 			body := bodyWith(t, shared+":"+target+":ro")
 			c, err := policy.ParseCreate(body, createRoute(t, "myrmidon-bot-"+k), withEnv(shared))
 			wantDeny(t, c, err, deny.BindsMismatch)
@@ -318,11 +340,131 @@ func TestBotExtraMounts(t *testing.T) {
 	})
 }
 
+// The shared package cache: read-write binds, accepted only as the fixed
+// subdirectory/mount-point pairs under the configured packageCacheRoot.
+func TestBotPackageCacheMounts(t *testing.T) {
+	m := fixture.Load(t)
+	k := m.BotKey
+	scratch := m.VolumeRoot + "/" + k + ":/bot"
+	tail := `"` + scratch + `"]`
+	cache := "/srv/package-cache"
+
+	withRoot := func(root string, sources ...string) *policy.Env {
+		e := env(m)
+		e.PackageCacheRoot = root
+		e.MountSources = sources
+		return e
+	}
+	bodyWith := func(t *testing.T, binds ...string) []byte {
+		t.Helper()
+		_, body := m.FindBody(t, "bot-plain", "")
+		return replace(t, body, tail, `"`+scratch+`","`+strings.Join(binds, `","`)+`"]`)
+	}
+	all := []string{
+		cache + "/pnpm:/cache/pnpm:rw",
+		cache + "/go-mod:/cache/go-mod:rw",
+		cache + "/go-build:/cache/go-build:rw",
+		cache + "/gradle:/cache/gradle:rw",
+	}
+
+	t.Run("every cache pair under the root is accepted and kept canonical", func(t *testing.T) {
+		body := bodyWith(t, all...)
+		c, err := policy.ParseCreate(body, createRoute(t, "myrmidon-bot-"+k), withRoot(cache))
+		if err != nil {
+			t.Fatalf("denied: %s (field %q, detail %q)", err.Code, err.Field, err.Detail)
+		}
+		if string(c.Body) != string(body) {
+			t.Fatal("the canonical body differs from the request")
+		}
+	})
+
+	t.Run("cache binds next to a read-only card mount", func(t *testing.T) {
+		shared := "/srv/shared/sources"
+		body := bodyWith(t, append([]string{shared + ":/docs:ro"}, all...)...)
+		if _, err := policy.ParseCreate(body, createRoute(t, "myrmidon-bot-"+k), withRoot(cache, shared)); err != nil {
+			t.Fatalf("denied: %s (field %q, detail %q)", err.Code, err.Field, err.Detail)
+		}
+	})
+
+	t.Run("without a packageCacheRoot a cache bind is denied", func(t *testing.T) {
+		c, err := policy.ParseCreate(bodyWith(t, all[0]), createRoute(t, "myrmidon-bot-"+k), withRoot(""))
+		wantDeny(t, c, err, deny.MountSourceNotAllowed)
+	})
+
+	t.Run("a cache bind under another root is denied", func(t *testing.T) {
+		c, err := policy.ParseCreate(bodyWith(t, "/srv/elsewhere/pnpm:/cache/pnpm:rw"), createRoute(t, "myrmidon-bot-"+k), withRoot(cache))
+		wantDeny(t, c, err, deny.MountSourceNotAllowed)
+	})
+
+	t.Run("a cache subdirectory at another mount point is denied", func(t *testing.T) {
+		for _, bind := range []string{
+			cache + "/pnpm:/cache/gradle:rw",
+			cache + "/pnpm:/opt/tools:rw",
+			cache + "/pip:/cache/pip:rw",
+			cache + ":/cache:rw",
+			cache + "/pnpm/../..:/cache/pnpm:rw",
+		} {
+			c, err := policy.ParseCreate(bodyWith(t, bind), createRoute(t, "myrmidon-bot-"+k), withRoot(cache))
+			wantDeny(t, c, err, deny.MountSourceNotAllowed)
+		}
+	})
+
+	t.Run("a writable bind of an allowlisted source is still denied", func(t *testing.T) {
+		shared := "/srv/shared/sources"
+		c, err := policy.ParseCreate(bodyWith(t, shared+":"+shared+":rw"), createRoute(t, "myrmidon-bot-"+k), withRoot(cache, shared))
+		wantDeny(t, c, err, deny.MountSourceNotAllowed)
+	})
+
+	t.Run("the same cache pair twice is denied", func(t *testing.T) {
+		c, err := policy.ParseCreate(bodyWith(t, all[0], all[0]), createRoute(t, "myrmidon-bot-"+k), withRoot(cache))
+		wantDeny(t, c, err, deny.BindsMismatch)
+	})
+
+	// myrmidon(1.6.2-BOT-DISK-C): the git mirrors, read-only only.
+	gitMirror := cache + "/git:/cache/git:ro"
+
+	t.Run("the read-only git mirror pair under the root is accepted", func(t *testing.T) {
+		body := bodyWith(t, append(append([]string{}, all...), gitMirror)...)
+		c, err := policy.ParseCreate(body, createRoute(t, "myrmidon-bot-"+k), withRoot(cache))
+		if err != nil {
+			t.Fatalf("denied: %s (field %q, detail %q)", err.Code, err.Field, err.Detail)
+		}
+		if string(c.Body) != string(body) {
+			t.Fatal("the canonical body differs from the request")
+		}
+	})
+
+	t.Run("a writable git mirror bind is denied", func(t *testing.T) {
+		c, err := policy.ParseCreate(bodyWith(t, cache+"/git:/cache/git:rw"), createRoute(t, "myrmidon-bot-"+k), withRoot(cache))
+		wantDeny(t, c, err, deny.MountSourceNotAllowed)
+	})
+
+	t.Run("a git mirror bind without a root, under another root or at another target is denied", func(t *testing.T) {
+		cases := []struct {
+			bind string
+			root string
+		}{
+			{gitMirror, ""},
+			{"/srv/elsewhere/git:/cache/git:ro", cache},
+			{cache + "/git:/cache/pnpm:ro", cache},
+			{cache + "/git:/opt/git:ro", cache},
+			{cache + "/pnpm:/cache/git:ro", cache},
+			{cache + ":/cache:ro", cache},
+		}
+		for _, tc := range cases {
+			c, err := policy.ParseCreate(bodyWith(t, tc.bind), createRoute(t, "myrmidon-bot-"+k), withRoot(tc.root))
+			wantDeny(t, c, err, deny.MountSourceNotAllowed)
+		}
+	})
+
+}
+
 // RT1_5: the body is read strictly, and unknown fields are refused, whatever
-// they are.
+// they are. Env is a known key of the bot form (BUILD-OFFLOAD C); its own
+// red-team cases are in TestBotEnvMutations.
 func TestRedTeam_RT1_5_UnknownKeys(t *testing.T) {
 	top := []string{
-		`"Env":["A=B"]`, `"Cmd":["sh"]`, `"Entrypoint":["sh"]`, `"User":"0"`, `"Volumes":{"/x":{}}`,
+		`"Cmd":["sh"]`, `"Entrypoint":["sh"]`, `"User":"0"`, `"Volumes":{"/x":{}}`,
 		`"ExposedPorts":{"80/tcp":{}}`, `"WorkingDir":"/"`, `"Hostname":"h"`, `"Domainname":"d"`,
 		`"MacAddress":"aa:bb:cc:dd:ee:ff"`, `"StopSignal":"SIGKILL"`, `"Healthcheck":{}`,
 		`"NetworkingConfig":{}`, `"AttachStdin":true`, `"Tty":true`, `"OpenStdin":true`, `"OnBuild":[]`,
@@ -503,10 +645,14 @@ func TestHelperBodyMutations(t *testing.T) {
 		{"user as number", `"User":"0:0"`, `"User":0`, false, deny.JSONType},
 		{"script: recursive chown", `chown 10001:10001`, `chown -R 10001:10001`, false, deny.ScriptMismatch},
 		{"script: chmod 777", `chmod 0700`, `chmod 0777`, false, deny.ScriptMismatch},
+		// myrmidon(BOT-ROOT-TRAVERSE): the root's traversal chmod is fixed text too —
+		// a widened mode or a recursive flag is a mismatch, not a "same shape".
+		{"script: root chmod 777", `chmod 0711 bot`, `chmod 0777 bot`, false, deny.ScriptMismatch},
+		{"script: root chmod recursive", `chmod 0711 bot`, `chmod -R 0711 bot`, false, deny.ScriptMismatch},
 		{"script: another target", `data/hermes workspace scratch`, `data/hermes workspace scratch /`, false, deny.ScriptMismatch},
 		{"script: no -u", `set -eu`, `set -e`, false, deny.ScriptMismatch},
-		{"script: appended command", `done"`, `done; id"`, false, deny.ScriptMismatch},
-		{"script: empty", `"set -eu\ncd \"$1\"\nfor d in data/hermes workspace scratch; do\n  chmod 0700 \"$d\"\n  chown 10001:10001 \"$d\"\ndone"`, `""`, false, deny.ScriptMismatch},
+		{"script: appended command", `chmod 0711 bot"`, `chmod 0711 bot; id"`, false, deny.ScriptMismatch},
+		{"script: empty", `"set -eu\ncd \"$1\"\nfor d in data/hermes workspace scratch; do\n  chmod 0700 \"$d\"\n  chown 10001:10001 \"$d\"\ndone\nchmod 0711 bot"`, `""`, false, deny.ScriptMismatch},
 		{"entrypoint changed", `"Entrypoint":["/bin/sh","-c"]`, `"Entrypoint":["/bin/sh"]`, false, deny.JSONValue},
 		{"entrypoint bash", `"Entrypoint":["/bin/sh","-c"]`, `"Entrypoint":["/bin/bash","-c"]`, false, deny.JSONValue},
 		{"cmd argument 1", `"myrmidon-helper"`, `"other"`, false, deny.JSONValue},
@@ -605,4 +751,109 @@ func TestQuoteMatchesJSONStringify(t *testing.T) {
 			t.Errorf("Quote(%q) = %s, want %s", in, got, want)
 		}
 	}
+}
+
+// myrmidon(1.6.5-BOT-DISK-H11): the shared bot runtime (class C) and an
+// operator data directory inside the bot's own tree (class J).
+func TestBotSharedRuntimeMounts(t *testing.T) {
+	m := fixture.Load(t)
+	k := m.BotKey
+	scratch := m.VolumeRoot + "/" + k + ":/bot"
+	tail := `"` + scratch + `"]`
+	runtime := "/srv/bot-runtime"
+
+	withRoot := func(root string, sources ...string) *policy.Env {
+		e := env(m)
+		e.BotRuntimeRoot = root
+		e.MountSources = sources
+		return e
+	}
+	bodyWith := func(t *testing.T, binds ...string) []byte {
+		t.Helper()
+		_, body := m.FindBody(t, "bot-plain", "")
+		return replace(t, body, tail, `"`+scratch+`","`+strings.Join(binds, `","`)+`"]`)
+	}
+	all := []string{
+		runtime + "/bin:/bot/hermes/bin:ro",
+		runtime + "/lazy-packages:/bot/hermes/lazy-packages:ro",
+		runtime + "/lsp:/bot/hermes/lsp:ro",
+	}
+
+	t.Run("the three runtime pairs under the root are accepted and kept canonical", func(t *testing.T) {
+		body := bodyWith(t, all...)
+		c, err := policy.ParseCreate(body, createRoute(t, "myrmidon-bot-"+k), withRoot(runtime))
+		if err != nil {
+			t.Fatalf("denied: %s (field %q, detail %q)", err.Code, err.Field, err.Detail)
+		}
+		if string(c.Body) != string(body) {
+			t.Fatal("the canonical body differs from the request")
+		}
+	})
+
+	t.Run("next to the package cache binds and a card mount", func(t *testing.T) {
+		cache := "/srv/package-cache"
+		shared := "/srv/media"
+		body := bodyWith(
+			t,
+			shared+":/bot/hermes/media/site:ro",
+			cache+"/pnpm:/cache/pnpm:rw",
+			all[0], all[1], all[2],
+		)
+		e := withRoot(runtime, shared)
+		e.PackageCacheRoot = cache
+		if _, err := policy.ParseCreate(body, createRoute(t, "myrmidon-bot-"+k), e); err != nil {
+			t.Fatalf("denied: %s (field %q, detail %q)", err.Code, err.Field, err.Detail)
+		}
+	})
+
+	t.Run("without a botRuntimeRoot the runtime binds are denied", func(t *testing.T) {
+		for _, bind := range all {
+			c, err := policy.ParseCreate(bodyWith(t, bind), createRoute(t, "myrmidon-bot-"+k), withRoot(""))
+			wantDeny(t, c, err, deny.MountSourceNotAllowed)
+		}
+	})
+
+	t.Run("a pair outside the root, in another subdirectory or writable is denied", func(t *testing.T) {
+		for _, bind := range []string{
+			"/srv/elsewhere/bin:/bot/hermes/bin:ro",
+			runtime + "/sub/lsp:/bot/hermes/lsp:ro",
+			runtime + "/bin:/bot/hermes/bin:rw",
+		} {
+			c, err := policy.ParseCreate(bodyWith(t, bind), createRoute(t, "myrmidon-bot-"+k), withRoot(runtime))
+			wantDeny(t, c, err, deny.MountSourceNotAllowed)
+		}
+	})
+
+	t.Run("a runtime pair at the wrong mount point or at the path the bot sees is denied", func(t *testing.T) {
+		// The source of a runtime pair is never an exact env.MountSources entry
+		// (the whole root is not a mount source), so a pair whose target is not
+		// the one path it may be bound at is refused as mount_source_not_allowed,
+		// exactly like a malformed package-cache pair.
+		for _, bind := range []string{
+			runtime + "/bin:/bot/hermes/lsp:ro",
+			runtime + "/bin:/data/hermes/bin:ro",
+			runtime + "/lsp:/bot/hermes/lsp/site:ro",
+		} {
+			c, err := policy.ParseCreate(bodyWith(t, bind), createRoute(t, "myrmidon-bot-"+k), withRoot(runtime))
+			wantDeny(t, c, err, deny.MountSourceNotAllowed)
+		}
+	})
+
+	t.Run("an allowlisted source mounted inside the bot's own tree is accepted (class J)", func(t *testing.T) {
+		shared := "/srv/media"
+		for _, target := range []string{"/bot/hermes/media/site", "/bot/hermes/work", "/bot/hermes/.hermes/shared/x"} {
+			body := bodyWith(t, shared+":"+target+":ro")
+			if _, err := policy.ParseCreate(body, createRoute(t, "myrmidon-bot-"+k), withRoot(runtime, shared)); err != nil {
+				t.Fatalf("denied for %s: %s (field %q, detail %q)", target, err.Code, err.Field, err.Detail)
+			}
+		}
+	})
+
+	t.Run("an allowlisted source at a path outside the owner-data roots is denied", func(t *testing.T) {
+		shared := "/srv/media"
+		for _, target := range []string{"/bot/hermes/bin", "/bot/hermes/lsp/x", "/bot/hermes/other", "/bot"} {
+			c, err := policy.ParseCreate(bodyWith(t, shared+":"+target+":ro"), createRoute(t, "myrmidon-bot-"+k), withRoot(runtime, shared))
+			wantDeny(t, c, err, deny.BindsMismatch)
+		}
+	})
 }

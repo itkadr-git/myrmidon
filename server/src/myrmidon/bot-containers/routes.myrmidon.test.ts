@@ -14,7 +14,18 @@ import { BOT_IMAGE_ALLOWLIST_ENV } from "./docker-driver.js";
 import type { BotContainerDriver, BotContainerStatus } from "./driver.js";
 import { applyBotContainerNow, type BotContainerRuntimeDeps } from "./index.js";
 import { createBotKeyLock } from "./bot-key-lock.js";
-import { botContainerRoutes, type BotContainerRouteAgent, type BotContainerRoutesDeps } from "./routes.js";
+import {
+  botContainerRoutes,
+  GIT_STORE_NOTE_FLAG_OFF,
+  GIT_STORE_NOTE_NO_READER,
+  GIT_STORE_NOTE_NO_REPORT,
+  GIT_STORE_NOTE_NO_RUNTIME,
+  GIT_STORE_NOTE_NOT_A_BOT,
+  GIT_STORE_NOTE_NO_STORE_FACTS,
+  GIT_STORE_NOTE_READ_FAILED,
+  type BotContainerRouteAgent,
+  type BotContainerRoutesDeps,
+} from "./routes.js";
 
 const AGENT_ID = "11111111-1111-4111-8111-111111111111";
 const COMPANY_ID = "22222222-2222-4222-8222-222222222222";
@@ -161,6 +172,16 @@ describe("myrmidon(W2b) bot container routes: status", () => {
       imageAllowed: true,
       container: { state: "running", image: "bot-image:1.1.0" },
       containerError: null,
+      imageTracking: {
+        category: "pinned",
+        image: "bot-image:1.1.0",
+        reason: expect.stringContaining("not a digest of a bot image repository"),
+      },
+      imageRollout: {
+        onReleaseImage: false,
+        targetImage: null,
+        reason: expect.stringContaining("pinned"),
+      },
       boardMaxConcurrentRuns: AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
       gatewayConcurrency: {
         board: AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
@@ -173,6 +194,63 @@ describe("myrmidon(W2b) bot container routes: status", () => {
     });
     // No profile hashes leave the server.
     expect(JSON.stringify(res.body)).not.toContain("restartHash");
+  });
+
+  it("says whether the release rollout follows, skips or cannot apply to the bot", async () => {
+    const digest = `ghcr.io/example/myrmidon-hermes@sha256:${"a".repeat(64)}`;
+    const ask = async (agent: BotContainerRouteAgent) =>
+      (await request(app(member, { agent })).get(statusUrl).expect(200)).body.imageTracking;
+    expect(await ask(card({ ...ENABLED_CARD, image: digest }))).toEqual({ category: "tracks_release", image: digest });
+    expect(await ask(card({ ...ENABLED_CARD, image: "other/thing@sha256:" + "b".repeat(64) }))).toMatchObject({
+      category: "pinned",
+      image: "other/thing@sha256:" + "b".repeat(64),
+    });
+    // the legacy shape: image only
+    expect(await ask(card({ image: digest }))).toEqual({
+      category: "not_applicable",
+      image: null,
+      reason: "adapterConfig.container.enabled is not true",
+    });
+    expect(await ask(card(undefined))).toMatchObject({ category: "not_applicable", reason: "adapterConfig.container is not set" });
+    expect(await ask(card(ENABLED_CARD, { adapterType: "hermes_local" }))).toMatchObject({ category: "not_applicable" });
+  });
+
+  it("myrmidon(BOT-ROLLOUT): imageRollout names why a bot is not on the release image", async () => {
+    const digest = `ghcr.io/example/myrmidon-hermes@sha256:${"a".repeat(64)}`;
+    const ask = async (agent: BotContainerRouteAgent, env: Record<string, string> = {}) =>
+      (await request(app(member, { agent, env: { ...ENABLED_ENV, ...env } })).get(statusUrl).expect(200)).body.imageRollout;
+    // tracking + busy (the rollout switches only idle/paused): switches when freed
+    expect(await ask(card({ ...ENABLED_CARD, image: digest }, { status: "running" }))).toEqual({
+      onReleaseImage: false,
+      targetImage: null,
+      reason: "agent busy (status running): переключится при освобождении",
+    });
+    // an unknown status is busy (fail-closed, as the rollout treats it)
+    expect(await ask(card({ ...ENABLED_CARD, image: digest }))).toMatchObject({
+      onReleaseImage: false,
+      reason: expect.stringContaining("agent busy (status unknown)"),
+    });
+    // tracking + idle but no release image is known to the instance
+    expect(await ask(card({ ...ENABLED_CARD, image: digest }, { status: "idle" }))).toEqual({
+      onReleaseImage: false,
+      targetImage: null,
+      reason: "no release image configured",
+    });
+    // tracking + idle + a release image known: on it (waiting for the next rollout pass)
+    expect(
+      await ask(card({ ...ENABLED_CARD, image: digest }, { status: "paused" }), {
+        MYRMIDON_BOT_RELEASE_IMAGE: digest,
+      }),
+    ).toEqual({ onReleaseImage: true, targetImage: null, reason: null });
+    // pinned and not applicable keep their reasons
+    expect(await ask(card({ ...ENABLED_CARD, image: "other/thing:1" }, { status: "idle" }))).toMatchObject({
+      onReleaseImage: false,
+      reason: expect.stringContaining("pinned"),
+    });
+    expect(await ask(card(undefined, { status: "idle" }))).toMatchObject({
+      onReleaseImage: false,
+      reason: expect.stringContaining("not_applicable: adapterConfig.container is not set"),
+    });
   });
 
   it("flags an image outside the allowlist", async () => {
@@ -416,5 +494,95 @@ describe("myrmidon(W2b) bot container routes: apply", () => {
     });
     const res = await request(app(member, { getRuntime: () => runtime(driver) })).post(applyUrl).expect(502);
     expect(res.body.outcome.message.length).toBeLessThanOrEqual(501);
+  });
+});
+
+// myrmidon(1.6.5 BOT-DISK-G live check, OPE-5281 ч.B): the shared git-object
+// store's FACTS for a reader with an AGENT key. The lead has no board-user
+// channel and the board's attention feed answers an agent key with 403, so this
+// is the one bot-container route that is not assertBoard.
+describe("myrmidon(1.6.5) bot container routes: shared git-object store facts", () => {
+  const gitStoreUrl = `/api/myrmidon/agents/${AGENT_ID}/bot-container/git-store`;
+  const reportWith = (extra: Record<string, unknown> = {}) =>
+    JSON.stringify({ version: 1, inspectedAt: new Date().toISOString(), repos: [], ...extra });
+  const facts = {
+    path: "/data/hermes/.myrmidon/git-objects",
+    enabled: true,
+    mirrorCount: 1,
+    totalBytes: 152 * 1024 * 1024,
+    repos: ["itkadr-git/myrmidon"],
+  };
+  const snapshot = { version: 1, ok: true, store: facts.path, checks: [], storeState: facts };
+
+  it("lets an agent key of the same company read the facts", async () => {
+    const driver = fakeDriver({ readCloneReport: async () => reportWith({ gitStore: facts }) });
+    const res = await request(app(agentActor, { getRuntime: () => runtime(driver) })).get(gitStoreUrl).expect(200);
+    expect(res.body.gitStore).toEqual(facts);
+    expect(res.body.note).toBeNull();
+    expect(res.body.reportAgeMs).toBeGreaterThanOrEqual(0);
+    expect(res.body.inspectedAtMs).not.toBeNull();
+  });
+
+  it("keeps the company boundary: another company's agent learns nothing", async () => {
+    const driver = fakeDriver({ readCloneReport: async () => reportWith({ gitStore: facts }) });
+    const foreign = { ...agentActor, companyId: "other-company" };
+    await request(app(foreign, { getRuntime: () => runtime(driver) })).get(gitStoreUrl).expect(404);
+  });
+
+  it("falls back to the container-start snapshot, and says a report without facts is one", async () => {
+    const fromSnapshot = await request(app(member, { getRuntime: () => runtime(fakeDriver({ readCloneReport: async () => reportWith({ gitRefCheck: snapshot }) })) }))
+      .get(gitStoreUrl)
+      .expect(200);
+    expect(fromSnapshot.body.gitStore).toBeNull();
+    expect(fromSnapshot.body.gitRefCheck?.storeState).toEqual(facts);
+    expect(fromSnapshot.body.note).toBeNull();
+
+    const older = await request(app(member, { getRuntime: () => runtime(fakeDriver({ readCloneReport: async () => reportWith({ gitRefCheck: { ...snapshot, storeState: undefined } }) })) }))
+      .get(gitStoreUrl)
+      .expect(200);
+    expect(older.body.note).toBe(GIT_STORE_NOTE_NO_STORE_FACTS);
+  });
+
+  it("answers the reason, never an error, when the container has no report yet", async () => {
+    const driver = fakeDriver({
+      readCloneReport: async () => null,
+      status: async (botKey) => ({ botKey, state: "missing" }),
+    });
+    const res = await request(app(member, { getRuntime: () => runtime(driver) })).get(gitStoreUrl).expect(200);
+    expect(res.body.note).toBe(GIT_STORE_NOTE_NO_REPORT);
+    expect(res.body.containerState).toBe("missing");
+    expect(res.body.gitStore).toBeNull();
+  });
+
+  it("names a driver without a reader, and a read that fails", async () => {
+    const noReader = await request(app(member, { getRuntime: () => runtime(fakeDriver()) })).get(gitStoreUrl).expect(200);
+    expect(noReader.body.note).toBe(GIT_STORE_NOTE_NO_READER);
+
+    const driver = fakeDriver({
+      readCloneReport: async () => {
+        throw new Error("docker is gone");
+      },
+    });
+    const failing = await request(app(member, { getRuntime: () => runtime(driver) })).get(gitStoreUrl).expect(200);
+    expect(failing.body.note).toBe(GIT_STORE_NOTE_READ_FAILED);
+    expect(failing.body.gitStore).toBeNull();
+  });
+
+  it("never asks the runtime when the flag is off, and names the other refusals", async () => {
+    const readCloneReport = vi.fn(async () => reportWith({ gitStore: facts }));
+    const off = await request(app(member, { env: { [BOT_IMAGE_ALLOWLIST_ENV]: "bot-image:*" }, getRuntime: () => runtime(fakeDriver({ readCloneReport })) }))
+      .get(gitStoreUrl)
+      .expect(200);
+    expect(off.body.enabled).toBe(false);
+    expect(off.body.note).toBe(GIT_STORE_NOTE_FLAG_OFF);
+    expect(readCloneReport).not.toHaveBeenCalled();
+
+    const noRuntime = await request(app(member, {})).get(gitStoreUrl).expect(200);
+    expect(noRuntime.body.note).toBe(GIT_STORE_NOTE_NO_RUNTIME);
+
+    const notABot = await request(app(member, { agent: card(ENABLED_CARD, { adapterType: "hermes_local" }), getRuntime: () => runtime(fakeDriver()) }))
+      .get(gitStoreUrl)
+      .expect(200);
+    expect(notABot.body.note).toBe(GIT_STORE_NOTE_NOT_A_BOT);
   });
 });

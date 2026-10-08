@@ -1,0 +1,289 @@
+diff --git a/gateway/platforms/api_server_runs.py b/gateway/platforms/api_server_runs.py
+index cadf8bf..0e71549 100644
+--- a/gateway/platforms/api_server_runs.py
++++ b/gateway/platforms/api_server_runs.py
+@@ -459,6 +459,10 @@ class _RunLaunch:
+     # (see set_github_broker_vars) for the whole turn so tool subprocesses of
+     # THIS run — and only this run — can resolve managed GitHub credentials.
+     github_broker: Optional[Dict[str, str]] = None
++    # myrmidon(BOT-DISK-H5b): optional ``workspace`` body field (bot-disk contract C6):
++    # ``{"key", "repo", "baseRef?"}`` — validated in _handle_runs; _run_agent_sync opens
++    # the task copy via ``myr-ws open`` before the model starts.
++    workspace: Optional[Dict[str, str]] = None
+ 
+     @property
+     def approval_session_key(self) -> str:
+@@ -603,6 +607,19 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
+     } if isinstance(github_broker, dict) else None
+     if github_broker and not (github_broker["broker_url"] and github_broker["capability"]):
+         github_broker = None
++    # myrmidon(BOT-DISK-H5b): optional ``workspace`` body field (bot-disk contract C6).
++    # Validated here so the idempotency fingerprint covers exactly what the run will do;
++    # the open itself happens in _run_agent_sync, just before the model starts. A
++    # malformed field is a 400 (the board adapter emits it machine-generated), never a
++    # silently ignored run in the wrong directory.
++    workspace_field = body.get("workspace") if isinstance(body, dict) else None
++    if workspace_field is not None:
++        from tools.run_workspace import _validate_workspace_field
++        try:
++            workspace_field = _validate_workspace_field(workspace_field)
++        except ValueError as exc:
++            return _json_error(_openai_error, f"Invalid 'workspace' field: {exc}",
++                               code="invalid_workspace", status=400)
+ 
+     idempotency_key = request.headers.get("Idempotency-Key", "").strip()
+     if len(idempotency_key) > 255 or any(ord(ch) < 33 or ord(ch) > 126 for ch in idempotency_key):
+@@ -709,7 +726,9 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
+         browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get(),
+         turn_author=turn_author,
+         # myrmidon(G1): run-scoped GitHub broker capability (CONTAINER-GITHUB-WRITE).
+-        github_broker=github_broker)
++        github_broker=github_broker,
++        # myrmidon(BOT-DISK-H5b): task workspace to open via myr-ws before the model starts.
++        workspace=workspace_field)
+     self._activate_admitted_request()
+     # A canonical Bot Chat that a Desktop holds live is that Desktop's to run: executing here would
+     # be a second writer beside its lease (#114959). The owner's mailbox takes the turn and its
+@@ -778,6 +797,26 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
+             # tools/environments/local.py then strips them for this run's spawns.
+             if run.github_broker:
+                 resets.append(set_github_broker_vars(run.github_broker))
++            # myrmidon(BOT-DISK-H5b): the request named a task workspace — open (or reuse)
++            # the copy BEFORE the model starts (bot-disk contract C6). On success the
++            # run's cwd is the copy (bound as the session cwd, so the prompt builder,
++            # context discovery and every tool agree) and its terminal children see
++            # MYRMIDON_TASK_WORKSPACE via the local env bridge. Exit codes 3/4/5 fall
++            # back to /scratch with a run warning event instead of failing the turn;
++            # anything else raises and fails the run loudly.
++            if run.workspace is not None:
++                from agent.runtime_cwd import reset_session_cwd, set_session_cwd
++                from tools.run_workspace import (
++                    open_task_workspace, reset_run_task_workspace, set_run_task_workspace)
++                opened = open_task_workspace(run.workspace)
++                resets.append((set_run_task_workspace(opened["path"], fallback=opened["fallback"]),
++                               reset_run_task_workspace))
++                resets.append((set_session_cwd(opened["path"]), reset_session_cwd))
++                if opened["fallback"]:
++                    run.put_event(_run_event(
++                        run.run_id, "run.workspace_fallback",
++                        key=run.workspace.get("key", ""), path=opened["path"],
++                        exit_code=opened["exit_code"], warning=opened["error"]))
+             # chat_id carries the raw session id like _run_agent() does; without it
+             # tools.async_delegation sees no HERMES_SESSION_CHAT_ID and forces delegations sync.
+             session_tokens = self._bind_api_server_session(
+diff --git a/tools/environments/local.py b/tools/environments/local.py
+index 48607c0..9f32846 100644
+--- a/tools/environments/local.py
++++ b/tools/environments/local.py
+@@ -244,9 +244,9 @@ def _inject_session_context_env(env: dict) -> None:
+     # child env by an earlier surface must never serve a different run.
+     try:
+         from tools.github_broker_context import github_broker_bound, github_broker_env
++        bound = github_broker_bound()
+     except Exception:
+-        return
+-    bound = github_broker_bound()
++        bound = False
+     if bound:
+         env.update(github_broker_env())
+         # A broker capability is present, so managed GitHub credentials are in
+@@ -261,6 +261,20 @@ def _inject_session_context_env(env: dict) -> None:
+     else:
+         env.pop("PAPERCLIP_GITHUB_BROKER_URL", None)
+         env.pop("PAPERCLIP_GITHUB_BROKER_TOKEN", None)
++    # myrmidon(BOT-DISK-H5b): bridge the run's task workspace (bound by
++    # gateway/platforms/api_server_runs.py after ``myr-ws open``, bot-disk
++    # contract C6) into this run's child processes as MYRMIDON_TASK_WORKSPACE.
++    # A run WITHOUT a workspace gets the name STRIPPED — a value left in the
++    # child env by an earlier surface must never serve a different run.
++    try:
++        from tools.run_workspace import run_task_workspace_env, task_workspace_env_name
++        ws_env = run_task_workspace_env()
++    except Exception:
++        ws_env = None
++    if ws_env:
++        env.update(ws_env)
++    elif ws_env is not None:
++        env.pop(task_workspace_env_name(), None)
+ 
+ 
+ def _filter_secret_env(
+diff --git a/tools/run_workspace.py b/tools/run_workspace.py
+new file mode 100644
+index 0000000..360e518
+--- /dev/null
++++ b/tools/run_workspace.py
+@@ -0,0 +1,173 @@
++"""Run-scoped task workspace resolution via ``myr-ws open`` (myrmidon BOT-DISK-H5b).
++
++The board's hermes_gateway adapter may attach a ``workspace`` field to a
++``/v1/runs`` request (contract C6 of the bot-disk contract): a task key, an
++``owner/repo`` pair and an optional base ref. Before the model starts, the
++gateway then opens (or reuses) the task copy through the image's ``myr-ws``
++CLI::
++
++    myr-ws open <key> <repo> [--base <baseRef>] --json
++
++On success the run's cwd is the opened copy (``/workspace/<key>``) and its
++terminal children see ``MYRMIDON_TASK_WORKSPACE`` pointing at it. Exit codes
++3/4/5 (quota refusal, base limit, network) never fail the run: it starts in
++the fallback directory ``/scratch`` instead and the run stream carries a
++warning event — a silent failure would send the agent's edits to the wrong
++directory. A request without the field behaves exactly as before.
++
++Concurrency: the resolved path lives in a ContextVar bound in
++``_run_agent_sync`` (the run's executor thread), never in the process env —
++a gateway process serves many concurrent runs that share ``os.environ``.
++``tools/environments/local.py`` bridges the bound value into child-process
++envs at spawn time, so each run's children see only their own path.
++
++The binary is overridable for tests through ``MYRMIDON_WS_BIN``; the runner
++module is otherwise a thin, dependency-free subprocess wrapper so the
++build-time behaviour test can exercise it with a fake ``myr-ws`` script.
++"""
++
++from __future__ import annotations
++
++import json
++import logging
++import os
++import shutil
++import subprocess
++from contextvars import ContextVar, Token
++from typing import Any, Dict, Optional
++
++logger = logging.getLogger(__name__)
++
++# Contract C6 (packages/shared/src/myrmidon-bot-workspace.ts in the board repo):
++# exit codes 3/4/5 fall back to RUN_WORKSPACE_FALLBACK_DIR with a warning
++# event; any other code (and timeouts, missing binary, bad output) fails the
++# run loudly — those mean a broken CLI or a broken call, not disk pressure.
++RUN_WORKSPACE_FALLBACK_DIR = "/scratch"
++MYR_WS_OPEN_TIMEOUT_SEC = 120
++_FALLBACK_EXIT_CODES = (3, 4, 5)
++_TASK_WORKSPACE_ENV = "MYRMIDON_TASK_WORKSPACE"
++
++# (path, is_fallback) for the current run context, or None when the request
++# carried no ``workspace`` field (today's behaviour).
++_TASK_WORKSPACE: ContextVar = ContextVar("MYRMIDON_RUN_TASK_WORKSPACE", default=None)
++
++
++def set_run_task_workspace(path: str, *, fallback: bool) -> Token:
++    """Bind the resolved workspace path for the current run context."""
++    return _TASK_WORKSPACE.set((path, bool(fallback)))
++
++
++def reset_run_task_workspace(token: Token) -> None:
++    _TASK_WORKSPACE.reset(token)
++
++
++def run_task_workspace_env() -> Dict[str, str]:
++    """The child-process env fragment for the bound workspace, or ``{}``."""
++    bound = _TASK_WORKSPACE.get()
++    if bound is None:
++        return {}
++    return {_TASK_WORKSPACE_ENV: bound[0]}
++
++
++def run_task_workspace_path() -> Optional[str]:
++    """The bound workspace path (or fallback dir), or None when unbound."""
++    bound = _TASK_WORKSPACE.get()
++    return None if bound is None else bound[0]
++
++
++def task_workspace_env_name() -> str:
++    return _TASK_WORKSPACE_ENV
++
++
++def _validate_workspace_field(field: Any) -> Dict[str, str]:
++    """Shape-check the ``workspace`` body field (C6 ``runWorkspaceFieldSchema``).
++
++    Mirrors the zod schema: ``key`` an issue key (``PREFIX-123``), ``repo``
++    ``owner/name``, optional ``baseRef`` a plausible git ref. Raises
++    ValueError on any mismatch — the field is machine-generated by the board,
++    so a malformed one means an adapter bug, not user input to be lenient
++    about.
++    """
++    import re
++
++    if not isinstance(field, dict):
++        raise ValueError("workspace must be an object with key/repo[/baseRef]")
++    key = field.get("key")
++    repo = field.get("repo")
++    base_ref = field.get("baseRef")
++    if not (isinstance(key, str) and re.fullmatch(r"[A-Z][A-Z0-9]*-[0-9]+", key)):
++        raise ValueError("workspace.key must look like PREFIX-123")
++    if not (isinstance(repo, str) and re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo)):
++        raise ValueError("workspace.repo must be owner/name")
++    if base_ref is not None:
++        if not (isinstance(base_ref, str) and 0 < len(base_ref) <= 200
++                and re.fullmatch(r"[^\s~^:?*\[\\]+", base_ref)):
++            raise ValueError("workspace.baseRef is not a valid git ref")
++        base_ref = base_ref.strip()
++        if not base_ref:
++            raise ValueError("workspace.baseRef is not a valid git ref")
++    out = {"key": key, "repo": repo}
++    if base_ref:
++        out["baseRef"] = base_ref
++    return out
++
++
++def _myr_ws_bin() -> str:
++    return os.environ.get("MYRMIDON_WS_BIN") or "myr-ws"
++
++
++def open_task_workspace(field: Dict[str, Any]) -> Dict[str, Any]:
++    """Run ``myr-ws open`` for a validated workspace field.
++
++    Returns ``{"path": <dir>, "fallback": bool, "exit_code": int,
++    "error": str}``. ``fallback`` is True for contract exit codes 3/4/5:
++    ``path`` is then the fallback dir and the caller must surface ``error``
++    as a run warning. Raises RuntimeError for every other failure shape
++    (non-fallback exit code, timeout, missing binary, undecodable output):
++    those are operator-visible breakage, not disk pressure.
++    """
++    ws = _validate_workspace_field(field)
++    argv = [_myr_ws_bin(), "open", ws["key"], ws["repo"]]
++    if ws.get("baseRef"):
++        argv += ["--base", ws["baseRef"]]
++    argv.append("--json")
++    binary = argv[0]
++    if shutil.which(binary) is None and not os.path.isfile(binary):
++        # No CLI in this image at all: the field cannot be honoured. Contract
++        # treats that like the refusal family — fall back with a warning
++        # rather than fail every run on a host where myr-ws is absent.
++        return {
++            "path": RUN_WORKSPACE_FALLBACK_DIR, "fallback": True, "exit_code": 3,
++            "error": f"myr-ws binary not found ({binary}); running in {RUN_WORKSPACE_FALLBACK_DIR}",
++        }
++    try:
++        proc = subprocess.run(
++            argv, capture_output=True, text=True, timeout=MYR_WS_OPEN_TIMEOUT_SEC)
++    except subprocess.TimeoutExpired:
++        raise RuntimeError(
++            f"myr-ws open timed out after {MYR_WS_OPEN_TIMEOUT_SEC}s for {ws['key']}")
++    stdout = (proc.stdout or "").strip()
++    parsed: Dict[str, Any] = {}
++    if stdout:
++        try:
++            parsed = json.loads(stdout.splitlines()[-1])
++        except (ValueError, IndexError):
++            parsed = {}
++    if proc.returncode == 0:
++        path = parsed.get("path") if isinstance(parsed, dict) else None
++        if not (isinstance(path, str) and path):
++            raise RuntimeError(
++                f"myr-ws open {ws['key']} exited 0 without a JSON path: {stdout[:200]!r}")
++        return {"path": path, "fallback": False, "exit_code": 0, "error": ""}
++    error_text = ""
++    if isinstance(parsed, dict) and parsed.get("ok") is False:
++        error_text = str(parsed.get("error") or "")
++    if not error_text:
++        error_text = (proc.stderr or "").strip() or f"myr-ws open exited {proc.returncode}"
++    if proc.returncode in _FALLBACK_EXIT_CODES:
++        return {
++            "path": RUN_WORKSPACE_FALLBACK_DIR, "fallback": True,
++            "exit_code": proc.returncode, "error": error_text,
++        }
++    raise RuntimeError(
++        f"myr-ws open {ws['key']} failed (exit {proc.returncode}): {error_text[:300]}")

@@ -1,7 +1,7 @@
 import { Command } from "commander";
 import pc from "picocolors";
 import type {
-  Agent,
+  AgentConfigurationSummary,
   AgentEnvConfig,
   CompanyPortabilityEnvInput,
   CompanyPortabilityExportPreviewResult,
@@ -144,7 +144,10 @@ export function buildInlineMigrationSecretName(agentId: string, key: string): st
 }
 
 export function collectInlineSecretMigrationCandidates(
-  agents: Agent[],
+  // myrmidon(PERF-DIET-G): the configuration projection, not the company list —
+  // the list no longer carries adapterConfig. Both come from the same company,
+  // and this reader only needs id, name and adapterConfig.
+  agents: AgentConfigurationSummary[],
   existingSecrets: CompanySecret[],
 ): InlineSecretMigrationCandidate[] {
   const secretByName = new Map(existingSecrets.map((secret) => [secret.name, secret]));
@@ -283,7 +286,10 @@ function asStringArray(value: unknown): string[] {
 async function migrateInlineEnv(opts: SecretMigrateInlineEnvOptions): Promise<void> {
   const ctx = resolveCommandContext(opts, { requireCompany: true });
   const companyId = ctx.companyId!;
-  const agents = (await ctx.api.get<Agent[]>(apiPath`/api/companies/${companyId}/agents`)) ?? [];
+  // myrmidon(PERF-DIET-G): read the configuration projection. GET /companies/:id/agents
+  // is a slim list now and no longer carries adapterConfig, so this command would
+  // otherwise see no inline env bindings at all.
+  const agents = (await ctx.api.get<AgentConfigurationSummary[]>(apiPath`/api/companies/${companyId}/agent-configurations`)) ?? [];
   const secrets = (await ctx.api.get<CompanySecret[]>(apiPath`/api/companies/${companyId}/secrets`)) ?? [];
   const candidates = collectInlineSecretMigrationCandidates(agents, secrets);
 

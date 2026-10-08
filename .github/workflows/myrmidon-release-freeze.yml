@@ -1,0 +1,44 @@
+name: Release freeze gate
+
+# RELEASE-FREEZE (the 1.6.4 incident, 04.10): between the release cut and a
+# green Myrmidon CI on the release tag, merges into main are frozen — bots
+# merging #475 + three more PRs one minute after the 1.6.4 tag cancelled the
+# tag's CI run and the autopublish refused. This workflow is the merge gate;
+# the freeze STATE (an open issue titled "release-freeze: <tag>") is created
+# and cleared by the freeze job added to myrmidon-release.yml (the tag
+# workflow) — see scripts/myrmidon/release/release-freeze.sh.
+#
+# The gate is fail-closed: any lookup error (no token, API failure) counts as
+# "freeze active", so a broken gate blocks merges instead of waving them
+# through during a release window. Operator: to make the freeze binding, add
+# this check ("freeze" of "Release freeze gate") to the required status
+# checks of main; without that it is advisory only (red, but mergeable by
+# admins).
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  issues: read
+
+jobs:
+  freeze:
+    name: freeze
+    if: ${{ github.repository == 'itkadr-git/myrmidon' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Fail while the release freeze is active
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          ./scripts/myrmidon/release/release-freeze.sh --check

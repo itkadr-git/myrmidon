@@ -81,6 +81,46 @@ func TestParseAcceptsMountSources(t *testing.T) {
 	}
 }
 
+func TestParseAcceptsPackageCacheRoot(t *testing.T) {
+	s := replace(t, goodJSON, `"network"`, `"packageCacheRoot": "/srv/package-cache", "network"`)
+	if got := mustParse(t, s).PackageCacheRoot; got != "/srv/package-cache" {
+		t.Fatalf("packageCacheRoot: %q", got)
+	}
+	// Absent means "no cache mount is allowed".
+	if got := mustParse(t, goodJSON).PackageCacheRoot; got != "" {
+		t.Fatalf("a config without packageCacheRoot must allow no cache mount, got %q", got)
+	}
+}
+
+func TestScopeRootAndInstances(t *testing.T) {
+	// Missing: the default sits under volumeRoot, where no bot key can collide with it.
+	if got := mustParse(t, goodJSON).EffectiveScopeRoot(); got != "/srv/myrmidon-bots/.scopes" {
+		t.Fatalf("default scope root %q", got)
+	}
+	s := replace(t, goodJSON, `"network"`, `"scopeRoot": "/srv/scopes", "network"`)
+	s = replace(t, s, `"maxPids": 1024}`, `"maxPids": 1024, "scopeInstances": ["caste-c0-engineer", "group-123"]}`)
+	c := mustParse(t, s)
+	if c.EffectiveScopeRoot() != "/srv/scopes" || len(c.Bots[0].ScopeInstances) != 2 {
+		t.Fatalf("scope config not read: %+v", c)
+	}
+	for name, bad := range map[string]string{
+		"relative scope root":          replace(t, goodJSON, `"network"`, `"scopeRoot": "srv/scopes", "network"`),
+		"scope root is the volumeRoot": replace(t, goodJSON, `"network"`, `"scopeRoot": "/srv/myrmidon-bots", "network"`),
+		"scope root holds volumeRoot":  replace(t, goodJSON, `"network"`, `"scopeRoot": "/srv", "network"`),
+		"scope root with ..":           replace(t, goodJSON, `"network"`, `"scopeRoot": "/srv/../x", "network"`),
+		"trailing slash":               replace(t, goodJSON, `"network"`, `"scopeRoot": "/srv/scopes/", "network"`),
+		"overlaps the package cache":   replace(t, replace(t, goodJSON, `"network"`, `"scopeRoot": "/srv/cache/s", "network"`), `"network"`, `"packageCacheRoot": "/srv/cache", "network"`),
+		"instance with a slash":        replace(t, goodJSON, `"maxPids": 1024}`, `"maxPids": 1024, "scopeInstances": ["caste-a/b"]}`),
+		"instance with .. ":            replace(t, goodJSON, `"maxPids": 1024}`, `"maxPids": 1024, "scopeInstances": ["caste-.."]}`),
+		"instance of no kind":          replace(t, goodJSON, `"maxPids": 1024}`, `"maxPids": 1024, "scopeInstances": ["engineer"]}`),
+		"duplicate instance":           replace(t, goodJSON, `"maxPids": 1024}`, `"maxPids": 1024, "scopeInstances": ["caste-a", "caste-a"]}`),
+	} {
+		if _, _, err := config.Parse([]byte(bad)); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
 func TestParseUIDMode(t *testing.T) {
 	s := replace(t, goodJSON, `"argv": ["node", "server.js"]`, `"argv": ["node"], "mode": "uid"`)
 	s = replace(t, s, "/srv/myrmidon-bots", "/tmp/ci-bots")
@@ -198,6 +238,24 @@ func TestParseRefuses(t *testing.T) {
 			return replace(t, goodJSON, `"network"`, `"mountSources": ["/srv/shared", "/srv/shared"], "network"`)
 		}},
 		{"mount source is not a string", func(t *testing.T) string { return replace(t, goodJSON, `"network"`, `"mountSources": [42], "network"`) }},
+		{"relative packageCacheRoot", func(t *testing.T) string {
+			return replace(t, goodJSON, `"network"`, `"packageCacheRoot": "srv/cache", "network"`)
+		}},
+		{"packageCacheRoot with ..", func(t *testing.T) string {
+			return replace(t, goodJSON, `"network"`, `"packageCacheRoot": "/srv/../etc", "network"`)
+		}},
+		{"packageCacheRoot with a trailing slash", func(t *testing.T) string {
+			return replace(t, goodJSON, `"network"`, `"packageCacheRoot": "/srv/cache/", "network"`)
+		}},
+		{"packageCacheRoot is the root", func(t *testing.T) string {
+			return replace(t, goodJSON, `"network"`, `"packageCacheRoot": "/", "network"`)
+		}},
+		{"packageCacheRoot inside volumeRoot", func(t *testing.T) string {
+			return replace(t, goodJSON, `"network"`, `"packageCacheRoot": "/srv/myrmidon-bots/cache", "network"`)
+		}},
+		{"packageCacheRoot is volumeRoot", func(t *testing.T) string {
+			return replace(t, goodJSON, `"network"`, `"packageCacheRoot": "/srv/myrmidon-bots", "network"`)
+		}},
 		{"network with a slash", func(t *testing.T) string { return replace(t, goodJSON, `bots-net`, `bots/net`) }},
 		{"empty network", func(t *testing.T) string { return replace(t, goodJSON, `"bots-net"`, `""`) }},
 		{"empty images", func(t *testing.T) string {
@@ -312,5 +370,32 @@ func TestLoad(t *testing.T) {
 func TestSec(t *testing.T) {
 	if config.Sec(2) != 2*time.Second || config.Sec(0.5) != 500*time.Millisecond {
 		t.Fatal("Sec")
+	}
+}
+
+// myrmidon(1.6.5-BOT-DISK-H11): the shared bot runtime root.
+func TestBotRuntimeRoot(t *testing.T) {
+	s := replace(t, goodJSON, `"network"`, `"botRuntimeRoot": "/srv/bot-runtime", "network"`)
+	if got := mustParse(t, s).BotRuntimeRoot; got != "/srv/bot-runtime" {
+		t.Fatalf("botRuntimeRoot: %q", got)
+	}
+	// Absent means "no shared runtime": every bot keeps its own bin, lazy-packages and lsp.
+	if got := mustParse(t, goodJSON).BotRuntimeRoot; got != "" {
+		t.Fatalf("a config without botRuntimeRoot must allow no runtime mount, got %q", got)
+	}
+	for name, body := range map[string]string{
+		"relative botRuntimeRoot":              replace(t, goodJSON, `"network"`, `"botRuntimeRoot": "srv/runtime", "network"`),
+		"botRuntimeRoot with ..":               replace(t, goodJSON, `"network"`, `"botRuntimeRoot": "/srv/../etc", "network"`),
+		"botRuntimeRoot with a trailing slash": replace(t, goodJSON, `"network"`, `"botRuntimeRoot": "/srv/runtime/", "network"`),
+		"botRuntimeRoot is the root":           replace(t, goodJSON, `"network"`, `"botRuntimeRoot": "/", "network"`),
+		"botRuntimeRoot inside volumeRoot":     replace(t, goodJSON, `"network"`, `"botRuntimeRoot": "/srv/myrmidon-bots/x", "network"`),
+		"botRuntimeRoot is volumeRoot":         replace(t, goodJSON, `"network"`, `"botRuntimeRoot": "/srv/myrmidon-bots", "network"`),
+		"botRuntimeRoot holds volumeRoot":      replace(t, goodJSON, `"network"`, `"botRuntimeRoot": "/srv", "network"`),
+		"scope root overlaps botRuntimeRoot": replace(t, replace(t, goodJSON, `"network"`, `"scopeRoot": "/srv/runtime/s", "network"`),
+			`"network"`, `"botRuntimeRoot": "/srv/runtime", "network"`),
+	} {
+		if _, _, err := config.Parse([]byte(body)); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
 	}
 }

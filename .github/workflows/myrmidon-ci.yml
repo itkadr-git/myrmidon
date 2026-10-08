@@ -10,9 +10,17 @@ name: Myrmidon CI
 #          shared foundations (lockfile, db, shared, runner, CI...): every lane.
 # A red full run on main opens (or updates) an issue labelled `main-red`.
 # Everything runs on GitHub-hosted runners without secrets. See docs/myrmidon/ci.md.
+#
+# Merge queue: the `merge_group` event re-runs the same checks on a candidate
+# commit built on top of the fresh main, so two PRs that are green separately
+# cannot land a broken combination. The plan compares the candidate with its
+# base, so the tier matches the tier of the PR inside the group.
+# See docs/myrmidon/merge-queue.md.
 
 on:
   pull_request:
+  merge_group:
+    types: [checks_requested]
   push:
     branches: [main]
   workflow_dispatch:
@@ -22,9 +30,11 @@ permissions:
 
 concurrency:
   # Superseded runs are cancelled on PRs and on main alike; a cancelled run
-  # reports no `CI result`, so it can never look green.
+  # reports no `CI result`, so it can never look green. A cancelled
+  # merge_group run evicts the group from the queue, so queue runs are never
+  # cancelled.
   group: myrmidon-ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
 
 env:
   NPM_CONFIG_AUDIT: "false"
@@ -34,7 +44,7 @@ env:
 jobs:
   plan:
     name: plan
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 10
     outputs:
       tier: ${{ steps.plan.outputs.tier }}
@@ -72,14 +82,22 @@ jobs:
         id: plan
         env:
           EVENT: ${{ github.event_name }}
-          BASE: ${{ github.event.pull_request.base.sha }}
-          HEAD: ${{ github.event.pull_request.head.sha }}
-          FULL_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'full-ci') }}
+          BASE: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event.pull_request.head.sha }}
+          FULL_LABEL: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'full-ci') }}
         run: |
           set -euo pipefail
           args=(plan --out "$RUNNER_TEMP/plan.json")
-          if [ "$EVENT" = "pull_request" ]; then
-            args+=(--base "$BASE" --head "$HEAD")
+          # A merge-group candidate is a merge commit over its base: the same
+          # base..head diff the PR was checked with, on top of the fresh main.
+          if [ "$EVENT" = "pull_request" ] || [ "$EVENT" = "merge_group" ]; then
+            if [ -n "$BASE" ] && git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+              args+=(--base "$BASE" --head "$HEAD")
+            else
+              # Fail safe: without a comparable base the plan cannot pick a
+              # tier, so run every lane.
+              echo "::warning::base commit $BASE not found; forcing the full tier"
+            fi
             if [ "$FULL_LABEL" = "true" ]; then args+=(--force-full); fi
           fi
           node scripts/myrmidon/ci/affected-tests.mjs "${args[@]}"
@@ -95,7 +113,7 @@ jobs:
     name: typecheck
     needs: plan
     if: ${{ needs.plan.outputs.tier == 'fast' || needs.plan.outputs.tier == 'full' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_TYPECHECK || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 30
     steps:
       - name: Checkout repository
@@ -129,7 +147,15 @@ jobs:
       - name: Select pinned Rust toolchain
         if: ${{ needs.plan.outputs.tier == 'full' }}
         working-directory: packages/paperclip-runner
-        run: rustup show active-toolchain || rustup toolchain install
+        run: |
+          set -euo pipefail
+          if ! command -v rustup >/dev/null 2>&1; then
+            echo '::notice title=Rust toolchain::rustup is missing on this runner; bootstrapping via rustup.rs'
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          rustup show active-toolchain || rustup toolchain install
 
       - name: Cache Rust dependencies
         if: ${{ needs.plan.outputs.tier == 'full' }}
@@ -160,7 +186,7 @@ jobs:
     name: build
     needs: plan
     if: ${{ needs.plan.outputs.tier == 'fast' || needs.plan.outputs.tier == 'full' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_BUILD || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 40
     env:
       NODE_OPTIONS: --max-old-space-size=4096
@@ -196,7 +222,15 @@ jobs:
       - name: Select pinned Rust toolchain
         if: ${{ needs.plan.outputs.tier == 'full' }}
         working-directory: packages/paperclip-runner
-        run: rustup show active-toolchain || rustup toolchain install
+        run: |
+          set -euo pipefail
+          if ! command -v rustup >/dev/null 2>&1; then
+            echo '::notice title=Rust toolchain::rustup is missing on this runner; bootstrapping via rustup.rs'
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          rustup show active-toolchain || rustup toolchain install
 
       - name: Cache Rust dependencies
         if: ${{ needs.plan.outputs.tier == 'full' }}
@@ -230,7 +264,7 @@ jobs:
     name: tests (affected)
     needs: plan
     if: ${{ needs.plan.outputs.tier == 'fast' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 30
     steps:
       - name: Checkout repository
@@ -280,7 +314,7 @@ jobs:
     name: tests (${{ matrix.label }})
     needs: plan
     if: ${{ needs.plan.outputs.tier == 'full' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_TESTS || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -356,7 +390,7 @@ jobs:
     name: tests (other packages)
     needs: plan
     if: ${{ needs.plan.outputs.tier == 'full' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_TESTS_OTHER || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 20
     steps:
       - name: Checkout repository
@@ -402,7 +436,7 @@ jobs:
     name: tests (runner)
     needs: plan
     if: ${{ needs.plan.outputs.tier == 'full' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_TESTS_RUNNER || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 40
     steps:
       - name: Checkout repository
@@ -436,7 +470,15 @@ jobs:
       - name: Select pinned Rust toolchain
         if: ${{ needs.plan.outputs.tier == 'full' }}
         working-directory: packages/paperclip-runner
-        run: rustup show active-toolchain || rustup toolchain install
+        run: |
+          set -euo pipefail
+          if ! command -v rustup >/dev/null 2>&1; then
+            echo '::notice title=Rust toolchain::rustup is missing on this runner; bootstrapping via rustup.rs'
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          rustup show active-toolchain || rustup toolchain install
 
       - name: Cache Rust dependencies
         if: ${{ needs.plan.outputs.tier == 'full' }}
@@ -459,7 +501,7 @@ jobs:
     # gitleaks, the internal-address scan, dependency licenses and plugin
     # compatibility. Every step runs even if an earlier one failed.
     name: checks
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 20
     env:
       GITLEAKS_VERSION: 8.30.1
@@ -500,6 +542,8 @@ jobs:
           EVENT: ${{ github.event_name }}
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          MG_BASE: ${{ github.event.merge_group.base_sha }}
+          MG_HEAD: ${{ github.event.merge_group.head_sha }}
           HEAD_REF: ${{ github.head_ref }}
           PUSH_BEFORE: ${{ github.event.before }}
         run: |
@@ -509,6 +553,10 @@ jobs:
             base="$PR_BASE"; head="$PR_HEAD"
             # Vendor release sync brings vendor test fixtures with sample addresses.
             case "$HEAD_REF" in sync/*) skip_tests="--skip-tests" ;; esac
+          elif [ "$EVENT" = "merge_group" ] && [ -n "$MG_BASE" ] \
+            && git cat-file -e "$MG_BASE^{commit}" 2>/dev/null; then
+            # The candidate commit and its base are both in the fetched tree.
+            base="$MG_BASE"; head="$MG_HEAD"
           elif [ -n "${PUSH_BEFORE:-}" ] && [ "$PUSH_BEFORE" != "0000000000000000000000000000000000000000" ] \
             && git cat-file -e "$PUSH_BEFORE^{commit}" 2>/dev/null; then
             base="$PUSH_BEFORE"; head="$GITHUB_SHA"
@@ -596,7 +644,7 @@ jobs:
     # image the fleetd image workflow builds from. The image itself is built
     # by myrmidon-fleetd.yml. See docs/myrmidon/fleetd-vmexec.md.
     name: fleetd
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 20
     env:
       GO_IMAGE: golang:1.25-bookworm@sha256:3b4a11519ad929d1e1d261a12cff056f0c85b735253d7d861346b9c6f8b36437
@@ -633,7 +681,7 @@ jobs:
     # minutes and a red dockergate must not merge. The image itself is built by
     # myrmidon-dockergate.yml. See docs/myrmidon/dockergate.md.
     name: dockergate
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 20
     env:
       GO_IMAGE: golang:1.25-bookworm@sha256:3b4a11519ad929d1e1d261a12cff056f0c85b735253d7d861346b9c6f8b36437
@@ -707,9 +755,23 @@ jobs:
     name: CI result
     if: ${{ !cancelled() }}
     needs: [plan, typecheck, build, tests-affected, tests, tests-other, tests-runner, checks, dockergate, fleetd]
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 5
     steps:
+      - name: Ensure gh and jq (self-hosted runners may lack them)
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="$RUNNER_TEMP/tools-bin"; mkdir -p "$bin"
+          if ! command -v jq >/dev/null; then
+            curl -fsSL -o "$bin/jq" https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-amd64
+            chmod +x "$bin/jq"
+          fi
+          if ! command -v gh >/dev/null; then
+            curl -fsSL https://github.com/cli/cli/releases/download/v2.62.0/gh_2.62.0_linux_amd64.tar.gz | tar -xz -C "$RUNNER_TEMP"
+            cp "$RUNNER_TEMP/gh_2.62.0_linux_amd64/bin/gh" "$bin/gh"
+          fi
+          echo "$bin" >> "$GITHUB_PATH"
       - name: Check lane results
         env:
           RESULTS: ${{ toJSON(needs) }}
@@ -728,7 +790,7 @@ jobs:
     name: report main status
     needs: [ci-result]
     if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 5
     permissions:
       actions: read

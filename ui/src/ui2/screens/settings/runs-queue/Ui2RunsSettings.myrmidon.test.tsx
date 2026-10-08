@@ -19,9 +19,24 @@ const mockRuntimeLimitsApi = vi.hoisted(() => ({
   update: vi.fn(),
 }));
 
+const mockHeartbeatsApi = vi.hoisted(() => ({
+  liveRunsForCompany: vi.fn(),
+}));
+
 vi.mock("@/components/myrmidon/runtimeLimitsApi", () => ({
   runtimeLimitsApi: mockRuntimeLimitsApi,
   runtimeLimitsQueryKey: ["myrmidon", "runtime-limits"],
+}));
+
+// myrmidon(1.6.5 RUN-FAIRNESS): the screen reads the wait reason of the
+// queue head from the existing live-runs endpoint — mocked here, no real API.
+vi.mock("@/api/heartbeats", () => ({
+  heartbeatsApi: mockHeartbeatsApi,
+}));
+
+// The screen reads the selected company for the live-runs query.
+vi.mock("@/context/CompanyContext", () => ({
+  useCompany: () => ({ selectedCompanyId: "company-1" }),
 }));
 
 async function flushReact() {
@@ -37,6 +52,50 @@ function setNativeValue(input: HTMLInputElement, value: string) {
   setter?.call(input, value);
   input.dispatchEvent(new window.Event("input", { bubbles: true }));
 }
+
+/**
+ * myrmidon(1.6.5 rc.2): the GET view the screen renders, including the live
+ * host CPU reading it shows next to the ceiling field.
+ */
+const openView = {
+  limits: {
+    maxConcurrentRuns: 24,
+    maxStartsPerMinute: 12,
+    minFreeMemoryMb: null,
+    runMemoryEstimateMb: 1536,
+    minFreeHostMemoryMb: 15360,
+    maxHostLoadPercentPerCore: 90,
+  },
+  sources: {
+    maxConcurrentRuns: "settings",
+    maxStartsPerMinute: "settings",
+    minFreeMemoryMb: "env",
+    runMemoryEstimateMb: "default",
+    minFreeHostMemoryMb: "default",
+    maxHostLoadPercentPerCore: "default",
+  },
+  hostLoad: {
+    state: "open",
+    thresholdPercent: 90,
+    load1: 19.2,
+    cores: 16,
+    loadPercentPerCore: 120,
+    backgroundPercentPerCore: 115,
+    load15PercentPerCore: 115,
+    loadAboveBackgroundPercent: 5,
+    reason: null,
+    heldSince: null,
+  },
+  // myrmidon(1.6.5 RUN-FAIRNESS): the queue snapshot — a full ceiling and a
+  // waiting queue with a named head.
+  queue: {
+    active: 50,
+    limit: 51,
+    queued: 3,
+    oldestQueuedAt: "2026-10-06T08:00:00.000Z",
+    oldestQueuedAgentId: "agent-1",
+  },
+};
 
 describe("myrmidon(UI2) Ui2RunsSettings screen parity", () => {
   let container: HTMLDivElement;
@@ -61,34 +120,75 @@ describe("myrmidon(UI2) Ui2RunsSettings screen parity", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    mockRuntimeLimitsApi.get.mockResolvedValue({
-      limits: {
-        maxConcurrentRuns: 24,
-        maxStartsPerMinute: 12,
-        minFreeMemoryMb: null,
-        runMemoryEstimateMb: 1536,
-      },
-      sources: {
-        maxConcurrentRuns: "settings",
-        maxStartsPerMinute: "settings",
-        minFreeMemoryMb: "env",
-        runMemoryEstimateMb: "default",
-      },
-    });
+    mockRuntimeLimitsApi.get.mockResolvedValue(openView);
     mockRuntimeLimitsApi.update.mockImplementation(async (_patch) => ({
       limits: {
         maxConcurrentRuns: 16,
         maxStartsPerMinute: 12,
         minFreeMemoryMb: null,
         runMemoryEstimateMb: 1536,
+        minFreeHostMemoryMb: 15360,
+        maxHostLoadPercentPerCore: 90,
       },
       sources: {
         maxConcurrentRuns: "settings",
         maxStartsPerMinute: "settings",
         minFreeMemoryMb: "env",
         runMemoryEstimateMb: "default",
+        minFreeHostMemoryMb: "default",
+        maxHostLoadPercentPerCore: "default",
+      },
+      // myrmidon(1.6.5 rc.2): the live host CPU reading the screen shows next
+      // to the ceiling field.
+      hostLoad: {
+        state: "open",
+        thresholdPercent: 90,
+        load1: 19.2,
+        cores: 16,
+        loadPercentPerCore: 120,
+        backgroundPercentPerCore: 115,
+        load15PercentPerCore: 115,
+        loadAboveBackgroundPercent: 5,
+        reason: null,
+        heldSince: null,
+      },
+      queue: {
+        active: 10,
+        limit: 51,
+        queued: 0,
+        oldestQueuedAt: null,
+        oldestQueuedAgentId: null,
       },
     }));
+    // myrmidon(1.6.5 RUN-FAIRNESS): the live-runs list of the company — one
+    // running, one queued with a wait reason (the oldest queued = the head).
+    mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([
+      {
+        id: "run-1",
+        status: "running",
+        createdAt: "2026-10-06T09:00:00.000Z",
+        agentId: "agent-2",
+        agentName: "Runner",
+        adapterType: "claude",
+        invocationSource: "assignment",
+        triggerDetail: null,
+        startedAt: "2026-10-06T09:00:01.000Z",
+        finishedAt: null,
+      },
+      {
+        id: "run-2",
+        status: "queued",
+        createdAt: "2026-10-06T08:00:00.000Z",
+        agentId: "agent-1",
+        agentName: "Waiting",
+        adapterType: "claude",
+        invocationSource: "assignment",
+        triggerDetail: null,
+        startedAt: null,
+        finishedAt: null,
+        contextSnapshot: { waitReason: "agent_fair_share" },
+      },
+    ]);
   });
 
   afterEach(() => {
@@ -100,12 +200,25 @@ describe("myrmidon(UI2) Ui2RunsSettings screen parity", () => {
     vi.clearAllMocks();
   });
 
-  it("renders the four ceilings with their sources from the mocked API", async () => {
+  it("renders the seven ceilings with their sources from the mocked API", async () => {
     await renderScreen();
 
     expect(mockRuntimeLimitsApi.get).toHaveBeenCalled();
     const inputs = [...container.querySelectorAll("input[id^='ui2-run-limit-']")];
-    expect(inputs.length).toBe(4);
+    expect(inputs.length).toBe(7);
+    // myrmidon(1.6.5 RUN-FAIRNESS): the single-agent start share renders at
+    // its default 15 while the server does not serve the key yet.
+    const share = container.querySelector<HTMLInputElement>("#ui2-run-limit-maxPerAgentStartSharePercent");
+    expect(share?.value).toBe("15");
+    expect(share?.disabled).toBe(false);
+    // myrmidon(1.6.5 RUN-ADMISSION): the host CPU ceiling is editable here too.
+    const cpuCeiling = container.querySelector<HTMLInputElement>("#ui2-run-limit-maxHostLoadPercentPerCore");
+    expect(cpuCeiling?.value).toBe("90");
+    expect(cpuCeiling?.disabled).toBe(false);
+    // myrmidon(1.6.2 RUN-ADMISSION): the host free-memory floor is editable here too.
+    const hostFloor = container.querySelector<HTMLInputElement>("#ui2-run-limit-minFreeHostMemoryMb");
+    expect(hostFloor?.value).toBe("15360");
+    expect(hostFloor?.disabled).toBe(false);
     const concurrent = container.querySelector<HTMLInputElement>("#ui2-run-limit-maxConcurrentRuns");
     expect(concurrent?.value).toBe("24");
     // minFreeMemoryMb is null (off): its input renders empty and disabled.
@@ -116,6 +229,137 @@ describe("myrmidon(UI2) Ui2RunsSettings screen parity", () => {
     const body = container.textContent ?? "";
     expect(body).toContain("Saved here");
     expect(body).toContain("From the server environment");
+  });
+
+  it("myrmidon(1.6.5 RUN-FAIRNESS): shows the queue snapshot and the wait reason of the queue head", async () => {
+    await renderScreen();
+
+    const line = container.querySelector("[data-testid=ui2-run-queue]")?.textContent ?? "";
+    expect(line).toContain("Runs in flight: 50 of at most 51.");
+    expect(line).toContain("In the queue: 3");
+    expect(line).toContain("the oldest waits since 08:00:00 UTC");
+    expect(line).toContain("(agent agent-1)");
+    // The oldest queued run carries waitReason=agent_fair_share — human-readable.
+    const reason = container.querySelector("[data-testid=ui2-run-queue-wait-reason]")?.textContent ?? "";
+    expect(reason).toContain("The oldest waits: another agent's turn comes first (fair share).");
+  });
+
+  it("myrmidon(1.6.5 RUN-FAIRNESS): an empty queue shows no wait reason; a missing snapshot shows no block", async () => {
+    mockRuntimeLimitsApi.get.mockResolvedValue({
+      ...openView,
+      queue: { active: 10, limit: 51, queued: 0, oldestQueuedAt: null, oldestQueuedAgentId: null },
+    });
+    await renderScreen();
+    expect(container.querySelector("[data-testid=ui2-run-queue]")?.textContent).toBe(
+      "Runs in flight: 10 of at most 51. The queue is empty.",
+    );
+    expect(container.querySelector("[data-testid=ui2-run-queue-wait-reason]")).toBeNull();
+
+    mockRuntimeLimitsApi.get.mockResolvedValue({ ...openView, queue: null });
+    flushSync(() => root?.unmount());
+    root = null;
+    await renderScreen();
+    expect(container.querySelector("[data-testid=ui2-run-queue]")).toBeNull();
+  });
+
+  it("myrmidon(1.6.5 RUN-FAIRNESS): the queue block and the fair-share field are localized (ru)", async () => {
+    root = createRoot(container);
+    flushSync(() => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <Ui2I18nProvider initialLocale="ru">
+            <Ui2RunsSettings />
+          </Ui2I18nProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const body = container.textContent ?? "";
+    expect(body).toContain("Доля стартов одного агента, % за 10 мин");
+    const line = container.querySelector("[data-testid=ui2-run-queue]")?.textContent ?? "";
+    expect(line).toContain("В работе: 50 из не более 51.");
+    expect(line).toContain("В очереди: 3");
+    expect(line).toContain("самый старый ждёт с 08:00:00 UTC");
+    expect(line).toContain("(агент agent-1)");
+    const reason = container.querySelector("[data-testid=ui2-run-queue-wait-reason]")?.textContent ?? "";
+    expect(reason).toContain("Самый старый ждёт: очередь другого агента раньше (справедливая доля).");
+  });
+
+  it("myrmidon(1.6.5 RUN-FAIRNESS): edits the fair share and a share over 100 keeps Apply disabled", async () => {
+    await renderScreen();
+
+    const share = container.querySelector<HTMLInputElement>("#ui2-run-limit-maxPerAgentStartSharePercent");
+    expect(share).not.toBeNull();
+    setNativeValue(share!, "30");
+    await flushReact();
+    expect(container.querySelector("[data-testid=ui2-run-limit-fair-share-error]")).toBeNull();
+
+    const save = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent === "Apply",
+    ) as HTMLButtonElement;
+    expect(save.disabled).toBe(false);
+    save.click();
+    await flushReact();
+    expect(mockRuntimeLimitsApi.update).toHaveBeenCalledWith({ maxPerAgentStartSharePercent: 30 });
+
+    mockRuntimeLimitsApi.update.mockClear();
+    setNativeValue(share!, "150");
+    await flushReact();
+    expect(
+      container.querySelector("[data-testid=ui2-run-limit-fair-share-error]")?.textContent,
+    ).toContain("1 to 100");
+    expect(save.disabled).toBe(true);
+    save.click();
+    await flushReact();
+    expect(mockRuntimeLimitsApi.update).not.toHaveBeenCalled();
+  });
+
+  it("myrmidon(1.6.5 rc.2): shows the current host load and the background next to the ceiling field", async () => {
+    await renderScreen();
+
+    // The label names what the number is measured against...
+    const body = container.textContent ?? "";
+    expect(body).toContain("above the host's background");
+    // ... the hint explains it ...
+    expect(body).toContain("Only the load the runs add is counted");
+    // ... and the live line carries the reading, the host's own background and
+    // the verdict, so an operator sees why the fleet is running or waiting.
+    const live = container.querySelector("[data-testid=ui2-run-limit-host-load]")?.textContent ?? "";
+    expect(live).toContain("Host now: 120 % of a core");
+    expect(live).toContain("load 19.2 on 16 core(s)");
+    expect(live).toContain("5 % of a core above the host's background floor of 115 %");
+    expect(live).toContain("ceiling 90 % is open");
+  });
+
+  it("myrmidon(1.6.5 rc.2): shows the closed verdict and hides a missing reading", async () => {
+    mockRuntimeLimitsApi.get.mockResolvedValue({
+      ...openView,
+      hostLoad: {
+        state: "closed",
+        thresholdPercent: 90,
+        load1: 35,
+        cores: 16,
+        loadPercentPerCore: 219,
+        backgroundPercentPerCore: 115,
+        load15PercentPerCore: 115,
+        loadAboveBackgroundPercent: 104,
+        reason: "host load average 35.00 on 16 core(s) is 219 % of a core, ...",
+        heldSince: "2026-10-05T17:34:00.000Z",
+      },
+    });
+    await renderScreen();
+    const live = container.querySelector("[data-testid=ui2-run-limit-host-load]")?.textContent ?? "";
+    expect(live).toContain("219 % of a core");
+    expect(live).toContain("104 % of a core above the host's background floor of 115 %");
+    expect(live).toContain("ceiling 90 % is closed");
+
+    // A server that sends no reading: no invented numbers.
+    mockRuntimeLimitsApi.get.mockResolvedValue({ ...openView, hostLoad: null });
+    flushSync(() => root?.unmount());
+    root = null;
+    await renderScreen();
+    expect(container.querySelector("[data-testid=ui2-run-limit-host-load]")).toBeNull();
   });
 
   it("applies only the changed limit through the same PATCH api", async () => {

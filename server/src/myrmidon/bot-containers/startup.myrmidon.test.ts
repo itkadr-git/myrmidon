@@ -29,6 +29,7 @@ const DRIVER_CONFIG: DockerDriverConfig = {
   network: "test-bots-net",
   allowlist: [],
   mountSources: [],
+  devbuild: { host: null, user: "", base: "" },
 };
 
 function driver(): BotContainerDriver {
@@ -149,7 +150,7 @@ describe("startBotContainers with the flag on", () => {
     try {
       // Read the G3 settings from the same env, then build the driver over them.
       expect(h.spies.readDriverConfig).toHaveBeenCalledWith(ENABLED);
-      expect(h.spies.createDriver).toHaveBeenCalledWith(DRIVER_CONFIG);
+      expect(h.spies.createDriver).toHaveBeenCalledWith(DRIVER_CONFIG, DB);
       expect(h.spies.profileWiring).toHaveBeenCalledWith(DB, { activity: h.sink, env: ENABLED });
       expect(h.spies.maintenancePort).toHaveBeenCalledWith(DB);
       expect(h.spies.listAgents).toHaveBeenCalledWith(DB);
@@ -163,7 +164,10 @@ describe("startBotContainers with the flag on", () => {
         syncCard: h.syncCard,
         maintenance: h.maintenance,
         activity: h.sink,
+        db: DB,
         readAgent: expect.any(Function),
+        rolloutAudit: expect.any(Function),
+        rolloutCompanyIdOf: expect.any(Function),
         network: DRIVER_CONFIG.network,
       });
       expect(opts).toEqual({ intervalMs: 60_000, env: ENABLED });

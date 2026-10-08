@@ -4661,6 +4661,9 @@ async function listIssueReviewAttentionMap(
       executionState: issue.executionState,
       monitorNextCheckAt: issue.monitorNextCheckAt,
       monitorAttemptCount: issue.monitorAttemptCount,
+      // myrmidon(HUMAN-REVIEW-WAIT): the human-review-wait facts.
+      reviewPolicy: issue.reviewPolicy,
+      responsibleUserId: issue.responsibleUserId,
     })),
     relations: [],
     agents: agentRows,
@@ -4686,6 +4689,12 @@ async function listIssueReviewAttentionMap(
   const userIds = new Set<string>();
   for (const issue of reviewIssues) {
     if (issue.assigneeUserId) userIds.add(issue.assigneeUserId);
+    // myrmidon(HUMAN-REVIEW-WAIT): the human-only wait names its waiting person
+    // so the attention feed can show who the review is really waiting on.
+    if (issue.reviewPolicy === "human_only") {
+      if (issue.responsibleUserId) userIds.add(issue.responsibleUserId);
+      if (issue.createdByUserId) userIds.add(issue.createdByUserId);
+    }
     const participant = parseObject(issue.executionState).currentParticipant;
     if (
       participant &&
@@ -5765,6 +5774,9 @@ async function listIssueBlockedInboxAttentionMap(
       executionState: issue.executionState,
       monitorNextCheckAt: issue.monitorNextCheckAt,
       monitorAttemptCount: issue.monitorAttemptCount,
+      // myrmidon(HUMAN-REVIEW-WAIT): the human-review-wait facts.
+      reviewPolicy: issue.reviewPolicy,
+      responsibleUserId: issue.responsibleUserId,
     })),
     relations: graphRelations,
     agents: companyAgents,
@@ -13283,6 +13295,12 @@ export function issueService(db: Db) {
       postCommitActivityPublications?: ActivityPublication[],
       postCommitActions?: IssuePostCommitAction[],
     ) => ReturnType<typeof service.update>;
+    cancelDeferredExecutionsForAgentOnReassignment: (
+      agentId: string,
+      issueId: string,
+      companyId: string,
+      dbOrTx?: any,
+    ) => Promise<number>;
   };
   const serviceApi = service as IssueServiceApi;
 
@@ -13304,6 +13322,28 @@ export function issueService(db: Db) {
       postCommitActivityPublications,
       postCommitActions,
     );
+  };
+
+
+  // Cancel deferred executions for old assignee when issue is reassigned
+  serviceApi.cancelDeferredExecutionsForAgentOnReassignment = async (agentId, issueId, companyId, dbOrTx = db) => {
+    const result = await dbOrTx
+      .update(agentWakeupRequests)
+      .set({
+        status: 'cancelled',
+        error: sql`'Cancelled due to issue reassignment from agent ' || ${agentId} || ' for issue ' || ${issueId}`
+      })
+      .where(and(
+        eq(agentWakeupRequests.agentId, agentId),
+        eq(agentWakeupRequests.status, 'deferred_issue_execution'),
+        eq(agentWakeupRequests.companyId, companyId),
+        sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`
+      ))
+      .returning({ id: agentWakeupRequests.id });
+
+    console.log(`Cancelled ${result.length} deferred executions for agent ${agentId} on issue reassignment for issue ${issueId}`);
+    
+    return result.length;
   };
 
   return serviceApi;

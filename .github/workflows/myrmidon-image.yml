@@ -41,7 +41,7 @@ jobs:
         id: version
         run: |
           set -euo pipefail
-          # myrmidon(R4): Myrmidon — свой продукт со своей версией (semver, теги myr-vX.Y.Z,
+          # myrmidon(R4): Myrmidon — свой продукт со своей версией (semver, теги myr-vX.Y.Z и релиз-кандидаты myr-vX.Y.Z-rc.N,
           # решение владельца 28.09.2026). Версия Paperclip, взятого за основу, — только метка
           # base.paperclip-version, в номер продукта не входит.
           git fetch --force --tags --quiet origin
@@ -49,8 +49,8 @@ jobs:
           vendor_version="${vendor_tag#v}"
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             tag="${GITHUB_REF#refs/tags/}"
-            if [[ ! "$tag" =~ ^myr-v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
-              echo "::error::release tag must look like myr-v<major>.<minor>.<patch>, got $tag"
+            if [[ ! "$tag" =~ ^myr-v([0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?)$ ]]; then
+              echo "::error::release tag must look like myr-v<major>.<minor>.<patch> or myr-v<major>.<minor>.<patch>-rc.<N>, got $tag"
               exit 1
             fi
             expected_version="${BASH_REMATCH[1]}"
@@ -58,11 +58,12 @@ jobs:
           else
             # Between releases: <last release>+<commits>.git.<sha>; before the first release 0.0.0.
             if describe="$(git describe --tags --long --abbrev=7 --match 'myr-v*' HEAD 2>/dev/null)" \
-              && [[ "$describe" =~ ^myr-v([0-9]+\.[0-9]+\.[0-9]+)-([0-9]+)-g([0-9a-f]+)$ ]]; then
-              if [[ "${BASH_REMATCH[2]}" == "0" ]]; then
+              && [[ "$describe" =~ ^myr-v([0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?)-([0-9]+)-g([0-9a-f]+)$ ]]; then
+              # BASH_REMATCH: 1 = X.Y.Z[-rc.N], 2 = -rc.N (or empty), 3 = commits since the tag, 4 = sha.
+              if [[ "${BASH_REMATCH[3]}" == "0" ]]; then
                 expected_version="${BASH_REMATCH[1]}"
               else
-                expected_version="${BASH_REMATCH[1]}+${BASH_REMATCH[2]}.git.${BASH_REMATCH[3]}"
+                expected_version="${BASH_REMATCH[1]}+${BASH_REMATCH[3]}.git.${BASH_REMATCH[4]}"
               fi
             else
               expected_version="0.0.0+$(git rev-list --count HEAD).git.$(git rev-parse --short=7 HEAD)"

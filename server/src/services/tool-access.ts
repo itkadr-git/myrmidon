@@ -144,6 +144,8 @@ import type {
   VercelConnectCredentialReference,
   VercelConnectGrantReference,
 } from "@paperclipai/shared";
+// myrmidon(B1c): product name in user-facing connector texts; see product.ts.
+import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
 import {
   CLASS3_STATIC_LEASE_ALLOWLIST,
   GITHUB_CONNECTOR_PROFILES,
@@ -183,6 +185,8 @@ import {
   unprocessable,
 } from "../errors.js";
 import { isUniqueViolation } from "../db-errors.js";
+// myrmidon(GITHUB-SHARED-IDENTITY): instance-wide switch of the vendor cloud GitHub connector
+import { assertVendorGitHubConnectorAllowed } from "../myrmidon/github-shared-identity/vendor-connector.js";
 import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
 import {
@@ -342,18 +346,18 @@ const OAUTH_PROVIDER_ERROR_MESSAGES: Record<string, string> = {
     "The authorization server needs consent to be granted. Try connecting again.",
   interaction_required:
     "The authorization server needs to be signed in to interactively. Try connecting again.",
-  invalid_client: "The authorization server rejected Paperclip's OAuth client.",
+  invalid_client: `The authorization server rejected ${PN}'s OAuth client.`,
   invalid_client_metadata:
-    "The authorization server rejected Paperclip's client registration details.",
+    `The authorization server rejected ${PN}'s client registration details.`,
   invalid_grant:
     "The authorization server rejected the authorization code or refresh token.",
   invalid_redirect_uri:
-    "The authorization server rejected Paperclip's callback URL.",
+    `The authorization server rejected ${PN}'s callback URL.`,
   invalid_request:
     "The authorization server rejected the request as malformed.",
   invalid_scope: "The authorization server rejected the requested permissions.",
   invalid_software_statement:
-    "The authorization server rejected Paperclip's client registration details.",
+    `The authorization server rejected ${PN}'s client registration details.`,
   login_required:
     "The authorization server needs to be signed in to. Try connecting again.",
   server_error:
@@ -361,13 +365,13 @@ const OAUTH_PROVIDER_ERROR_MESSAGES: Record<string, string> = {
   temporarily_unavailable:
     "The authorization server is temporarily unavailable. Try again shortly.",
   unapproved_software_statement:
-    "The authorization server rejected Paperclip's client registration details.",
+    `The authorization server rejected ${PN}'s client registration details.`,
   unauthorized_client:
-    "The authorization server refused to authorize Paperclip's OAuth client.",
+    `The authorization server refused to authorize ${PN}'s OAuth client.`,
   unsupported_grant_type:
-    "The authorization server does not support the grant Paperclip uses.",
+    `The authorization server does not support the grant ${PN} uses.`,
   unsupported_response_type:
-    "The authorization server does not support the sign-in flow Paperclip uses.",
+    `The authorization server does not support the sign-in flow ${PN} uses.`,
 };
 
 /**
@@ -468,7 +472,7 @@ export function oauthClientIdMetadataDocument(input: {
 }): Record<string, unknown> {
   return {
     client_id: input.clientId,
-    client_name: `Paperclip (${new URL(input.redirectUri).host})`,
+    client_name: `${PN} (${new URL(input.redirectUri).host})`,
     client_uri: new URL("/", input.clientId).toString(),
     redirect_uris: [input.redirectUri],
     grant_types: ["authorization_code", "refresh_token"],
@@ -736,7 +740,7 @@ const APPROVED_STDIO_TEMPLATES: Record<
   }
 > = {
   "paperclip.echo-calculator-time": {
-    name: "Paperclip Echo / Calculator / Time fixture",
+    name: `${PN} Echo / Calculator / Time fixture`,
     tools: [
       {
         name: "echo",
@@ -777,7 +781,7 @@ const APPROVED_STDIO_TEMPLATES: Record<
     ],
   },
   "paperclip.synthetic-todo-kv": {
-    name: "Paperclip Synthetic Todo / KV fixture",
+    name: `${PN} Synthetic Todo / KV fixture`,
     tools: [
       {
         name: "list_items",
@@ -942,15 +946,15 @@ const TOOL_EXAMPLES: ToolExampleDefinition[] = [
     description:
       "Installs a deterministic local MCP fixture and grants only its read-only catalog entries.",
     applicationKey: "paperclip.examples.safe-read-only-todo-kv",
-    applicationName: "Paperclip example: Safe read-only Todo / KV",
+    applicationName: `${PN} example: Safe read-only Todo / KV`,
     applicationDescription:
       "Deterministic MCP fixture for first-run tool governance checks.",
-    connectionName: "Paperclip example: Safe read-only Todo / KV",
+    connectionName: `${PN} example: Safe read-only Todo / KV`,
     templateId: "paperclip.synthetic-todo-kv",
     profileKey: "paperclip.examples.safe-read-only-todo-kv.profile",
     profileName: "Example safe read-only tools",
     profileDescription:
-      "Allows only the read-only tools from the Paperclip Todo / KV example fixture.",
+      `Allows only the read-only tools from the ${PN} Todo / KV example fixture.`,
   },
 ];
 
@@ -2472,7 +2476,7 @@ export async function loadGitHubTokenRepositories(
         headers: {
           ...headers,
           accept: "application/vnd.github+json",
-          "user-agent": "Paperclip",
+          "user-agent": `${PN}/1.0`,
           "x-github-api-version": "2022-11-28",
         },
         signal: AbortSignal.timeout(15_000),
@@ -2543,7 +2547,7 @@ export async function loadGitHubGrantMetadata(
       headers: {
         accept: "application/vnd.github+json",
         authorization: `Bearer ${accessToken}`,
-        "user-agent": "Paperclip",
+        "user-agent": `${PN}/1.0`,
         "x-github-api-version": "2022-11-28",
       },
       signal: AbortSignal.timeout(15_000),
@@ -2668,7 +2672,7 @@ export async function loadGitHubGrantMetadata(
       ? `https://github.com/apps/${resolvedAppSlug}/installations/new`
       : "https://github.com/settings/installations";
     throw unprocessable(
-      "GitHub access is required. Install Paperclip and grant at least one repository before refreshing access.",
+      `GitHub access is required. Install ${PN} and grant at least one repository before refreshing access.`,
       {
         code: "github_installation_required",
         installationUrl,
@@ -4481,7 +4485,7 @@ export function toolAccessService(
         description:
           "Tool gateway calls are timing out or being runtime-deferred at an elevated rate.",
         firstResponderAction:
-          "Check upstream MCP health, Paperclip runtime capacity, and recent gateway audit failures before retrying workloads.",
+          `Check upstream MCP health, ${PN} runtime capacity, and recent gateway audit failures before retrying workloads.`,
         runbookSection,
       }),
       runtimeAlert({
@@ -9859,7 +9863,7 @@ export function toolAccessService(
 
     const host = new URL(input.redirectUri).host;
     const requestedMetadata = {
-      client_name: `Paperclip (${host})`,
+      client_name: `${PN} (${host})`,
       redirect_uris: [input.redirectUri],
       grant_types: [
         "authorization_code",
@@ -12531,7 +12535,7 @@ export function toolAccessService(
       const integration = vercelConnectIntegrationStatus();
       if (!integration.enabled || !integration.configured || !vercelConnect) {
         throw unprocessable(
-          "Vercel Connect setup is not available on this Paperclip instance",
+          `Vercel Connect setup is not available on this ${PN} instance`,
           {
             code: "vercel_connect_unavailable",
           },
@@ -12609,7 +12613,7 @@ export function toolAccessService(
           .limit(1);
         if (connectorInUse) {
           throw conflict(
-            "App-subject Vercel connectors are dedicated to one Paperclip connection. Create or attach a separate connector in Vercel.",
+            `App-subject Vercel connectors are dedicated to one ${PN} connection. Create or attach a separate connector in Vercel.`,
             {
               code: "vercel_connect_app_connector_in_use",
             },
@@ -12668,6 +12672,8 @@ export function toolAccessService(
       const profile = managedConnectorProfile(connectorProfile);
       if (!profile)
         throw badRequest("This app has an invalid managed connector profile");
+      // myrmidon(GITHUB-SHARED-IDENTITY): the vendor cloud GitHub connector is off unless enabled instance-wide
+      assertVendorGitHubConnectorAllowed(profile.id);
       config.oauth = {
         strategy: method.oauthStrategy,
         provider: profile.provider,
@@ -12994,7 +13000,7 @@ export function toolAccessService(
         }
         if (!applicationRow) {
           throw conflict(
-            "Paperclip could not allocate a unique connection name",
+            `${PN} could not allocate a unique connection name`,
             {
               code: "tool_access_name_allocation_exhausted",
             },
@@ -14182,7 +14188,7 @@ export function toolAccessService(
       throw conflict("Archived app connections cannot be reconnected");
     if (connection.credentialSource === "vercel_connect") {
       throw conflict(
-        "Manage this connector in Vercel Connect, then run a Paperclip health check to verify it.",
+        `Manage this connector in Vercel Connect, then run a ${PN} health check to verify it.`,
         {
           code: "vercel_connect_managed_externally",
           manageUrl: vercelConnectIntegrationStatus().manageUrl,
@@ -14545,11 +14551,13 @@ export function toolAccessService(
       const managedProfile = managedConnectorProfile(connectorProfile);
       if (!managedProfile)
         throw badRequest("This app has an invalid managed connector profile");
+      // myrmidon(GITHUB-SHARED-IDENTITY): the vendor cloud GitHub connector is off unless enabled instance-wide
+      assertVendorGitHubConnectorAllowed(managedProfile.id);
       const providerName = galleryEntry?.name ?? "Google Workspace";
       const cloudConnector = currentCloudConnector();
       if (!cloudConnector) {
         throw unprocessable(
-          `${providerName} connections through Paperclip are not available on this instance yet`,
+          `${providerName} connections through ${PN} are not available on this instance yet`,
           {
             code: "paperclip_cloud_connector_unavailable",
           },
@@ -15221,7 +15229,7 @@ export function toolAccessService(
     const cloudConnector = currentCloudConnector();
     if (!cloudConnector) {
       throw unprocessable(
-        `${providerName} connections through Paperclip are not available on this instance yet`,
+        `${providerName} connections through ${PN} are not available on this instance yet`,
         {
           code: "paperclip_cloud_connector_unavailable",
         },
@@ -15241,6 +15249,8 @@ export function toolAccessService(
     const connectorProfile = method.connectorProfile;
     const profile = managedConnectorProfile(connectorProfile);
     if (!profile) throw badRequest("Managed connector profile is invalid");
+    // myrmidon(GITHUB-SHARED-IDENTITY): the vendor cloud GitHub connector is off unless enabled instance-wide
+    assertVendorGitHubConnectorAllowed(profile.id);
     const connectorSubject = subjectAgentId
       ? `agent:${subjectAgentId}`
       : subjectUserId!;
@@ -20490,7 +20500,7 @@ export function toolAccessService(
             .sort()
             .map((key) => {
               warnings.push(
-                `Header ${key} will be stored as a Paperclip secret before activation.`,
+                `Header ${key} will be stored as a ${PN} secret before activation.`,
               );
               return {
                 configPath: `headers.${key}`,
@@ -20513,7 +20523,7 @@ export function toolAccessService(
         }
         if (typeof server.command === "string") {
           warnings.push(
-            "Imported stdio commands stay draft-only unless mapped to an approved Paperclip template.",
+            `Imported stdio commands stay draft-only unless mapped to an approved ${PN} template.`,
           );
           return {
             name,

@@ -4393,8 +4393,11 @@ function AgentAccessSection({
   const referenceName = reference.kind === "company" ? reference.secret.name : reference.definition.name;
 
   const agentsQuery = useQuery({
-    queryKey: queryKeys.agents.list(companyId),
-    queryFn: () => agentsApi.list(companyId),
+    // myrmidon(PERF-DIET-G): this section reads the env/access bindings of every
+    // agent, so it takes the dedicated configuration read instead of the slim
+    // company list (which no longer ships adapterConfig).
+    queryKey: queryKeys.agents.configurations(companyId),
+    queryFn: () => agentsApi.listConfigurations(companyId),
     staleTime: 30_000,
   });
   const agents = useMemo(
@@ -4405,7 +4408,7 @@ function AgentAccessSection({
     () =>
       agents
         .map((agent) => {
-          const adapterConfig = (agent.adapterConfig as Record<string, unknown> | null) ?? null;
+          const adapterConfig = agent.adapterConfig as Record<string, unknown> | null;
           return {
             agent,
             envKeys: envKeysReferencingSecret(adapterConfig?.env, reference),
@@ -4435,6 +4438,8 @@ function AgentAccessSection({
 
   function invalidateAfterChange(agentId: string) {
     queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) });
+    // myrmidon(PERF-DIET-G): this section renders from the configuration read.
+    queryClient.invalidateQueries({ queryKey: queryKeys.agents.configurations(companyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentId) });
     if (reference.kind === "company") {
       queryClient.invalidateQueries({ queryKey: queryKeys.secrets.usage(reference.secret.id) });

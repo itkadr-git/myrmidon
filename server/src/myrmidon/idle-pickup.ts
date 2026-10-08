@@ -1,6 +1,11 @@
-import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { agentWakeupRequests, agents, companies, heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
+// myrmidon(TEAM-LIVENESS-SETTINGS): the instance settings (and the per-agent card
+// switch) this pass obeys, so an operator can change the throttle and the wake
+// budget without restarting the server — a restart drops every run in flight.
+import { resolveAgentTeamLiveness, type ResolvedTeamLiveness } from "@paperclipai/shared";
+import { issueHasNoExecutionHold, wakeNotParkedOnExecutionHold } from "./settled-holds/ready-predicate.js";
 
 /**
  * Idle pickup (IDLE-PICKUP, Myrmidon 1.3).
@@ -37,6 +42,8 @@ import { logger } from "../middleware/logger.js";
 export const IDLE_PICKUP_INTERVAL_SEC_ENV = "MYRMIDON_IDLE_PICKUP_INTERVAL_SEC";
 export const IDLE_PICKUP_ENABLED_ENV = "MYRMIDON_IDLE_PICKUP_ENABLED";
 export const IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS_ENV = "MYRMIDON_IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS";
+export const IDLE_PICKUP_WAKE_BUDGET_PER_MIN_ENV = "MYRMIDON_IDLE_PICKUP_WAKE_BUDGET_PER_MIN";
+export const IDLE_PICKUP_WAKE_BATCH_ENV = "MYRMIDON_IDLE_PICKUP_WAKE_BATCH";
 export const IDLE_WAKE_REASON = "idle_pickup";
 export const IDLE_WAKE_IDEMPOTENCY_PREFIX = "idle_pickup";
 
@@ -45,6 +52,25 @@ export const DEFAULT_IDLE_PICKUP_INTERVAL_SEC = 30;
 export const MIN_IDLE_PICKUP_INTERVAL_SEC = 5;
 /** Default: an issue whose own run succeeded this recently is left to the handoff/recovery paths. */
 export const DEFAULT_IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS = 15 * 60 * 1000;
+
+/**
+ * Company-wide wake budget: at most this many idle-pickup wakes for one company
+ * inside one minute. A board with twenty idle agents must not start twenty runs
+ * at once: the 28.09 OOM came from exactly that burst, and every wake is a full
+ * LLM session. The budget is per company, so one busy company never starves
+ * another.
+ */
+export const DEFAULT_IDLE_PICKUP_WAKE_BUDGET_PER_MIN = 5;
+export const MAX_IDLE_PICKUP_WAKE_BUDGET_PER_MIN = 60;
+/**
+ * How many of the minute's wakes one sweep pass may emit for one company: the
+ * wakes go out in batches instead of one burst, and the rest wait for the next
+ * pass. Clamped to the minute budget (a batch larger than the budget would only
+ * spend the whole window at once).
+ */
+export const DEFAULT_IDLE_PICKUP_WAKE_BATCH = 5;
+/** Window the company budget is counted over. */
+export const IDLE_PICKUP_WAKE_WINDOW_MS = 60_000;
 
 const WAKEABLE_ISSUE_STATUSES = ["todo", "in_progress"] as const;
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
@@ -83,6 +109,120 @@ export function readIdlePickupRecentSuccessWindowMs(env: NodeJS.ProcessEnv = pro
   return value;
 }
 
+/** Bounded non-negative integer reader shared by the two budget knobs. */
+function readBoundedInt(
+  env: NodeJS.ProcessEnv,
+  name: string,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  const raw = env[name]?.trim();
+  if (!raw || !/^\d+$/.test(raw)) return fallback;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < min || value > max) return fallback;
+  return value;
+}
+
+export interface IdleWakeBudgetSettings {
+  /** Company-wide ceiling of idle-pickup wakes inside one minute. */
+  perMinute: number;
+  /** Ceiling of wakes one pass may emit for one company. */
+  batch: number;
+}
+
+/**
+ * How many wakes the board may emit for one company. The default is the ticket's
+ * own number (at most five a minute); the batch never exceeds the minute budget,
+ * so a batch knob above the budget is silently the budget instead of a way to
+ * spend the whole window in one pass.
+ */
+export function readIdleWakeBudgetSettings(env: NodeJS.ProcessEnv = process.env): IdleWakeBudgetSettings {
+  const perMinute = readBoundedInt(
+    env,
+    IDLE_PICKUP_WAKE_BUDGET_PER_MIN_ENV,
+    DEFAULT_IDLE_PICKUP_WAKE_BUDGET_PER_MIN,
+    1,
+    MAX_IDLE_PICKUP_WAKE_BUDGET_PER_MIN,
+  );
+  const batch = readBoundedInt(
+    env,
+    IDLE_PICKUP_WAKE_BATCH_ENV,
+    DEFAULT_IDLE_PICKUP_WAKE_BATCH,
+    1,
+    MAX_IDLE_PICKUP_WAKE_BUDGET_PER_MIN,
+  );
+  return { perMinute, batch: Math.min(perMinute, batch) };
+}
+
+/**
+ * The company-wide wake budget itself. One instance is shared by every path that
+ * emits an idle-pickup wake (the periodic sweeper and the release-path pickup),
+ * so "at most five a minute for one company" holds across both instead of per
+ * path.
+ *
+ * The window is process-local and rolls on its own: the board runs one scheduler
+ * process, a restart only ever resets the counter towards allowing more wakes,
+ * and a denied wake is never lost — the candidate is re-evaluated on the next
+ * pass, inside the next window.
+ */
+export interface IdleWakeBudget {
+  /** Takes one wake allowance for the company; false when this minute is spent. */
+  tryConsume(companyId: string): boolean;
+  /** Allowances the company still has inside the current window. */
+  remaining(companyId: string): number;
+  /**
+   * myrmidon(TEAM-LIVENESS-SETTINGS): the numbers the instance settings page puts
+   * in force. The behaviour modules read the settings row asynchronously once per
+   * pass (or once per release), and the budget is synchronous, so the caller hands
+   * the resolved pair over instead of the budget reading a row per wake. Without
+   * a call the budget keeps the reader it was created with (the environment).
+   */
+  configure(settings: IdleWakeBudgetSettings): void;
+  /** Drops every window (tests only). */
+  resetForTest(): void;
+}
+
+export function createIdleWakeBudget(
+  readSettings: () => IdleWakeBudgetSettings = () => readIdleWakeBudgetSettings(),
+  nowMs: () => number = () => Date.now(),
+): IdleWakeBudget {
+  const windows = new Map<string, { startedAtMs: number; used: number }>();
+  // myrmidon(TEAM-LIVENESS-SETTINGS): the resolved pair, once a caller has one.
+  let configured: IdleWakeBudgetSettings | null = null;
+  const current = () => configured ?? readSettings();
+  function currentWindow(companyId: string) {
+    const at = nowMs();
+    const existing = windows.get(companyId);
+    if (!existing || at - existing.startedAtMs >= IDLE_PICKUP_WAKE_WINDOW_MS) {
+      const fresh = { startedAtMs: at, used: 0 };
+      windows.set(companyId, fresh);
+      return fresh;
+    }
+    return existing;
+  }
+  return {
+    remaining(companyId) {
+      const { perMinute } = current();
+      return Math.max(0, perMinute - currentWindow(companyId).used);
+    },
+    tryConsume(companyId) {
+      const { perMinute } = current();
+      const window = currentWindow(companyId);
+      if (window.used >= perMinute) return false;
+      window.used += 1;
+      return true;
+    },
+    configure(settings) {
+      configured = settings;
+    },
+    resetForTest() {
+      windows.clear();
+      configured = null;
+    },
+  };
+}
+
 export interface IdlePickupIssueCandidate {
   id: string;
   identifier: string | null;
@@ -105,6 +245,12 @@ export interface IdlePickupDeps {
       contextSnapshot?: Record<string, unknown>;
     },
   ) => Promise<unknown>;
+  /**
+   * Company-wide wake budget (IDLE-WAKE-BUDGET). One instance is shared by the
+   * periodic sweeper and the release-path pickup, so the ceiling holds for the
+   * pair. Absent (unit tests that predate it) means unbudgeted.
+   */
+  budget?: IdleWakeBudget;
   /** Optional activity log for observability; absent in unit tests. */
   logActivity?: (input: {
     companyId: string;
@@ -129,6 +275,12 @@ export interface IdlePickupResult {
   suppressed: number;
   /** Candidates that reached the loop after the SQL prefilter (blocked issues and containers are excluded there). */
   considered: number;
+  /**
+   * Ready issues left alone because the company's wake budget for this minute
+   * was spent. The candidate is not lost: the next window (and the next pass)
+   * picks it up again.
+   */
+  budgetSkipped: number;
   issueIds: string[];
 }
 
@@ -137,6 +289,7 @@ const IDLE_PICKUP_RESULT_ZERO: Omit<IdlePickupResult, "issueIds"> = {
   alreadyActive: 0,
   suppressed: 0,
   considered: 0,
+  budgetSkipped: 0,
 };
 
 /** A fresh zero result; a bare spread of IDLE_PICKUP_RESULT_ZERO would share the issueIds array across calls. */
@@ -178,8 +331,8 @@ function issuePriorityRank(priority: string | null | undefined): number {
 /**
  * SQL prefilter for one agent's idle-pickup candidates: assigned
  * `todo`/`in_progress`, visible, agent-assigned (not user-assigned), not a
- * chat conversation, no unresolved `blocks` relation, no open child issue.
- * The remaining checks (live run, queued wake) need per-issue lookups and
+ * chat conversation, no unresolved `blocks` relation, no open child issue,
+ * no execution hold (HOLD-READY). The remaining checks (live run, queued wake) need per-issue lookups and
  * run in the loop in `idlePickupForAgent`.
  */
 function idlePickupCandidateRows(db: Db, companyId: string, agentId: string) {
@@ -240,6 +393,13 @@ function idlePickupCandidateRows(db: Db, companyId: string, agentId: string) {
             and decomp.source_issue_id = ${issues.id}
             and decomp.status = 'in_flight'
         )`,
+        // myrmidon(HOLD-READY): not held by an execution hold. The wake
+        // admission parks every automatic wake of such an issue
+        // (`deferred_issue_execution` + `executionWait`), so reporting it as
+        // ready only produced a parked wake and hid the real reason. A board
+        // unblock clears a settled hold (settled-holds/human-unblock.ts), and
+        // the issue comes back here on the next pass.
+        issueHasNoExecutionHold(db),
       ),
     )
     .orderBy(asc(issues.createdAt))
@@ -256,11 +416,33 @@ function idlePickupCandidateRows(db: Db, companyId: string, agentId: string) {
 export async function idlePickupForAgent(
   deps: IdlePickupDeps,
   agent: { id: string; companyId: string },
-  options: { excludeIssueId?: string | null } = {},
+  options: {
+    excludeIssueId?: string | null;
+    /**
+     * myrmidon(TEAM-LIVENESS-SETTINGS): the caller's own decision for this agent
+     * — the instance switch AND the agent card switch, already resolved. The
+     * release path (heartbeat.ts) has the card at hand, so it does not make this
+     * function read the settings row once per agent; the periodic sweep resolves
+     * the pair once per pass and skips before it gets here. `undefined` keeps the
+     * pre-settings behaviour: the environment decides.
+     */
+    behaviorEnabled?: boolean;
+  } = {},
 ): Promise<IdlePickupResult> {
   const env = deps.env ?? process.env;
-  if (!readIdlePickupEnabled(env)) return emptyIdlePickupResult();
+  // The caller's decision is the resolved pair (stored settings beat the
+  // environment); only a caller that has none falls back to the environment.
+  if (options.behaviorEnabled !== undefined) {
+    if (!options.behaviorEnabled) return emptyIdlePickupResult();
+  } else if (!readIdlePickupEnabled(env)) {
+    return emptyIdlePickupResult();
+  }
 
+  // Succeeded runs matter only inside the recent-success window (see below), so
+  // read just those: an unbounded read pulled every succeeded run of the agent
+  // with its full context snapshot on every pickup pass (thousands of rows).
+  const recentSuccessWindowMs = readIdlePickupRecentSuccessWindowMs(env);
+  const recentSuccessCutoff = new Date(Date.now() - recentSuccessWindowMs);
   const [candidates, liveRuns] = await Promise.all([
     idlePickupCandidateRows(deps.db, agent.companyId, agent.id),
     deps.db
@@ -276,10 +458,15 @@ export async function idlePickupForAgent(
         and(
           eq(heartbeatRuns.companyId, agent.companyId),
           eq(heartbeatRuns.agentId, agent.id),
-          inArray(heartbeatRuns.status, [
-            ...LIVE_HEARTBEAT_RUN_STATUSES,
-            "succeeded",
-          ]),
+          recentSuccessWindowMs > 0
+            ? or(
+                inArray(heartbeatRuns.status, [...LIVE_HEARTBEAT_RUN_STATUSES]),
+                and(
+                  eq(heartbeatRuns.status, "succeeded"),
+                  sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) >= ${recentSuccessCutoff.toISOString()}::timestamptz`,
+                ),
+              )
+            : inArray(heartbeatRuns.status, [...LIVE_HEARTBEAT_RUN_STATUSES]),
         ),
       ),
   ]);
@@ -299,7 +486,6 @@ export async function idlePickupForAgent(
   // step for exactly that shape (a disposition is missing, and those paths send
   // the instructive wake). Waking it again here only races them — and in tests
   // it turns one background run into a chain that leaks into the next suite.
-  const recentSuccessWindowMs = readIdlePickupRecentSuccessWindowMs(env);
   const recentlySucceededIssueIds = new Set(
     liveRuns
       .filter((run) => run.status === "succeeded")
@@ -345,9 +531,19 @@ export async function idlePickupForAgent(
     // A wake already covers this issue in any non-terminal status (queued,
     // deferred_issue_execution, claimed — not only "queued"): the admission
     // path owns it; a second wake would only coalesce into the first anyway.
+    // A wake parked on an execution hold does not count (see hasCoveringWake).
     if (await hasCoveringWake(deps.db, agent, candidate.id)) {
       result.alreadyActive += 1;
       continue;
+    }
+    // myrmidon(IDLE-WAKE-BUDGET): the company-wide ceiling. The candidate above
+    // passed every gate, so this is the moment a wake costs a full LLM session;
+    // when the minute's budget is spent the pass stops here instead of scanning
+    // the agent's remaining tasks. Nothing is dropped: the next window allows
+    // again and the next pass re-reads the same candidate.
+    if (deps.budget && !deps.budget.tryConsume(agent.companyId)) {
+      result.budgetSkipped += 1;
+      break;
     }
 
     const idempotencyKey = `${IDLE_WAKE_IDEMPOTENCY_PREFIX}:${candidate.id}`;
@@ -404,7 +600,14 @@ export async function idlePickupForAgent(
   return result;
 }
 
-/** A wake already covers this issue in any non-terminal status (queued/deferred/claimed). */
+/**
+ * A wake already covers this issue in any non-terminal status (queued/deferred/claimed).
+ *
+ * myrmidon(HOLD-READY): except a deferred wake parked on an execution hold
+ * (`payload.executionWait`). That wake is not in flight — it waits for a person
+ * to lift the hold — so counting it as cover kept the issue out of every pass
+ * for good once the hold was gone (the parked wake outlives the hold).
+ */
 async function hasCoveringWake(
   db: Db,
   agent: { id: string; companyId: string },
@@ -423,6 +626,7 @@ async function hasCoveringWake(
           "claimed",
         ]),
         sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+        wakeNotParkedOnExecutionHold(),
       ),
     )
     .limit(1)
@@ -485,8 +689,18 @@ export async function findTopReadyIssueForAgent(
  * caller can skip ticks inside the interval.
  */
 export interface IdlePickupSweeper {
-  sweep(now?: Date): Promise<{ agentsChecked: number } & IdlePickupResult>;
+  sweep(now?: Date): Promise<IdlePickupSweepResult>;
   resetForTest(): void;
+}
+
+export interface IdlePickupSweepResult extends IdlePickupResult {
+  agentsChecked: number;
+  /**
+   * Agents left for a later pass because their company had already received
+   * this pass's batch (MYRMIDON_IDLE_PICKUP_WAKE_BATCH). The batch is what makes
+   * the minute's wakes arrive in batches instead of one burst.
+   */
+  skippedOverBatch: number;
 }
 
 export interface IdlePickupSweeperDeps extends IdlePickupDeps {
@@ -500,6 +714,18 @@ export interface IdlePickupSweeperDeps extends IdlePickupDeps {
   }) => Promise<boolean>;
   /** Maintenance-mode gate (myrmidon R3): agents in a window are not woken. */
   isAgentUnderMaintenance: (agentId: string) => Promise<boolean>;
+  /**
+   * myrmidon(TEAM-LIVENESS-SETTINGS): the effective knobs, read once per pass so
+   * a save on the instance settings page takes effect on the next pass without a
+   * restart. Absent (unit tests that predate the settings area) means the
+   * environment variables decide, exactly as before.
+   */
+  readLiveness?: () => Promise<ResolvedTeamLiveness>;
+}
+
+/** The agent row's card as a plain object; anything else reads as an empty card. */
+function readAgentCard(raw: unknown): Record<string, unknown> {
+  return raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
 }
 
 export function createIdlePickupSweeper(deps: IdlePickupSweeperDeps): IdlePickupSweeper {
@@ -507,15 +733,32 @@ export function createIdlePickupSweeper(deps: IdlePickupSweeperDeps): IdlePickup
   return {
     resetForTest() {
       lastSweepAtMs = 0;
+      deps.budget?.resetForTest();
     },
     async sweep(now = new Date()) {
       const env = deps.env ?? process.env;
-      const intervalMs = readIdlePickupIntervalSec(env) * 1000;
-      if (!readIdlePickupEnabled(env)) return { agentsChecked: 0, ...emptyIdlePickupResult() };
+      // myrmidon(TEAM-LIVENESS-SETTINGS): the stored instance settings win over
+      // the environment; the reader already resolved that precedence per key.
+      // Without a reader this module keeps reading the environment itself.
+      const liveness = deps.readLiveness ? (await deps.readLiveness()).settings : null;
+      const intervalMs =
+        (liveness ? liveness.idlePickupIntervalSec : readIdlePickupIntervalSec(env)) * 1000;
+      const enabled = liveness ? liveness.idlePickupEnabled : readIdlePickupEnabled(env);
+      if (!enabled) {
+        return { agentsChecked: 0, skippedOverBatch: 0, ...emptyIdlePickupResult() };
+      }
       if (now.getTime() - lastSweepAtMs < intervalMs) {
-        return { agentsChecked: 0, ...emptyIdlePickupResult() };
+        return { agentsChecked: 0, skippedOverBatch: 0, ...emptyIdlePickupResult() };
       }
       lastSweepAtMs = now.getTime();
+      const envWake = readIdleWakeBudgetSettings(env);
+      // A pass never spends more of the minute than the minute holds, whichever
+      // layer set the two numbers.
+      const perMinute = liveness ? liveness.idlePickupWakeBudgetPerMin : envWake.perMinute;
+      const batch = Math.min(liveness ? liveness.idlePickupWakeBatch : envWake.batch, perMinute);
+      // The release path spends the same budget object; handing it the resolved
+      // pair keeps both paths on the numbers the operator saved.
+      deps.budget?.configure({ perMinute, batch });
 
       const rows = await deps.db
         .select({
@@ -524,25 +767,51 @@ export function createIdlePickupSweeper(deps: IdlePickupSweeperDeps): IdlePickup
           name: agents.name,
           reportsTo: agents.reportsTo,
           status: agents.status,
+          adapterConfig: agents.adapterConfig,
         })
         .from(agents)
         .innerJoin(companies, eq(companies.id, agents.companyId))
         .where(eq(companies.status, "active"));
 
       const totals: IdlePickupResult = emptyIdlePickupResult();
+      const wakesPerCompany = new Map<string, number>();
       let agentsChecked = 0;
+      let skippedOverBatch = 0;
       for (const agent of rows) {
+        // myrmidon(TEAM-LIVENESS-SETTINGS): this agent's own switch. A card that
+        // turned the behaviour off is never woken by this pass; an absent switch
+        // means the instance value applies.
+        if (liveness && !resolveAgentTeamLiveness(readAgentCard(agent.adapterConfig), liveness).idlePickupEnabled) {
+          continue;
+        }
         // Invokability covers pause, termination and a broken reporting
         // chain; the maintenance gate covers the maintenance window. A wake
         // for a paused agent would be skipped by enqueueWakeup anyway, but
         // skipping earlier keeps the sweep off the admission path.
         if (!(await deps.isAgentInvokable(agent))) continue;
         if (await deps.isAgentUnderMaintenance(agent.id)) continue;
+        // myrmidon(IDLE-WAKE-BUDGET): the batch cap. A company that already got
+        // its batch this pass waits for the next one, so its minute allowance
+        // arrives spread over passes; other companies in the same pass are not
+        // delayed by it.
+        if ((wakesPerCompany.get(agent.companyId) ?? 0) >= batch) {
+          skippedOverBatch += 1;
+          continue;
+        }
         agentsChecked += 1;
-        const perAgent = await idlePickupForAgent(deps, agent);
+        const perAgent = await idlePickupForAgent(deps, agent, {
+          // The pass already decided with the resolved settings; handing the
+          // decision over keeps the environment from vetoing a stored "on".
+          behaviorEnabled: liveness ? true : undefined,
+        });
+        wakesPerCompany.set(
+          agent.companyId,
+          (wakesPerCompany.get(agent.companyId) ?? 0) + perAgent.woken,
+        );
         totals.woken += perAgent.woken;
         totals.alreadyActive += perAgent.alreadyActive;
         totals.suppressed += perAgent.suppressed;
+        totals.budgetSkipped += perAgent.budgetSkipped;
         totals.issueIds.push(...perAgent.issueIds);
       }
       if (totals.woken > 0) {
@@ -551,7 +820,7 @@ export function createIdlePickupSweeper(deps: IdlePickupSweeperDeps): IdlePickup
           "idle pickup woke ready assigned issues",
         );
       }
-      return { agentsChecked, ...totals };
+      return { agentsChecked, skippedOverBatch, ...totals };
     },
   };
 }

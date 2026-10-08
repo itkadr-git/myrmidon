@@ -27,6 +27,7 @@ import {
   SWARM_CLAIM_REASON_CASTE_EXCLUDED,
   SWARM_CLAIM_WAKE_IDEMPOTENCY_PREFIX,
   SWARM_CLAIM_WAKE_REASON,
+  isSwarmClaimEnabledFor,
   resolveSwarmClaimSettings,
   type CompanyCastesReader,
   type SwarmClaimLease,
@@ -135,6 +136,18 @@ export async function claimNextTaskForAgent(
     .limit(1);
   const agent = agentRow[0];
   if (!agent) return { claim: null, reason: "queue_empty" };
+  // 1.6.1 (SWARM-SETTINGS-UI): the pilot set. The master switch may be on
+  // while this company or role is deliberately outside the pilot — then the
+  // claim path answers the same "disabled" the off switch does, so an agent
+  // outside the pilot keeps vendor behavior exactly.
+  if (
+    !isSwarmClaimEnabledFor(settings, {
+      companyId: input.companyId,
+      role: agent.role,
+    })
+  ) {
+    return { claim: null, reason: "disabled" };
+  }
 
   // myrmidon(1.6.1 CUSTOM-CASTES B): the caste gate. An agent whose caste is
   // marked `swarmEligible=false` in the company directory never participates
@@ -155,7 +168,7 @@ export async function claimNextTaskForAgent(
     : settings;
 
   const [candidates, agentClaims, companyClaims] = await Promise.all([
-    listRoleQueue(ports.db, input.companyId, agent.role),
+    listRoleQueue(ports.db, input.companyId, agent.role, input.agentId),
     listAgentLiveClaims(ports.db, input.companyId, input.agentId),
     // The live claims of the whole company restrict the queue: a task another
     // agent holds is not in anyone's queue until its lease runs out.

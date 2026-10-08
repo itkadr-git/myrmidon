@@ -32,59 +32,66 @@ node packages/mcp-server/dist/stdio.js
 
 ## Tool Surface
 
-Run-scoped connection tools:
+Since 1.7 all board tools are published under `myrmidon*` names. Each old
+`paperclip*` name stays callable as a deprecated alias (marked in the tool
+description) for exactly one release; update agent skills to the new names.
+See [docs/myrmidon/guides/mcp-tool-names.md](../../docs/myrmidon/guides/mcp-tool-names.md).
+
+Run-scoped connection tools (names unchanged):
 
 - `connections_search`
 - `connection_request`
 
 Read tools:
 
-- `paperclipMe`
-- `paperclipInboxLite`
-- `paperclipListAgents`
-- `paperclipGetAgent`
-- `paperclipListIssues`
-- `paperclipGetIssue`
-- `paperclipGetHeartbeatContext`
-- `paperclipListComments`
-- `paperclipGetComment`
-- `paperclipListIssueApprovals`
-- `paperclipListDocuments`
-- `paperclipGetDocument`
-- `paperclipListDocumentRevisions`
-- `paperclipListProjects`
-- `paperclipGetProject`
-- `paperclipGetIssueWorkspaceRuntime`
-- `paperclipWaitForIssueWorkspaceService`
-- `paperclipListGoals`
-- `paperclipGetGoal`
-- `paperclipListApprovals`
-- `paperclipGetApproval`
-- `paperclipGetApprovalIssues`
-- `paperclipListApprovalComments`
+- `myrmidonMe`
+- `myrmidonInboxLite`
+- `myrmidonListAgents`
+- `myrmidonListSkills`
+- `myrmidonGetAgent`
+- `myrmidonListIssues`
+- `myrmidonGetIssue`
+- `myrmidonGetHeartbeatContext`
+- `myrmidonListComments`
+- `myrmidonGetComment`
+- `myrmidonListIssueApprovals`
+- `myrmidonListDocuments`
+- `myrmidonGetDocument`
+- `myrmidonListDocumentRevisions`
+- `myrmidonListProjects`
+- `myrmidonGetProject`
+- `myrmidonGetIssueWorkspaceRuntime`
+- `myrmidonWaitForIssueWorkspaceService`
+- `myrmidonListGoals`
+- `myrmidonGetGoal`
+- `myrmidonListApprovals`
+- `myrmidonGetApproval`
+- `myrmidonGetApprovalIssues`
+- `myrmidonListApprovalComments`
 
 Write tools:
 
-- `paperclipCreateIssue`
-- `paperclipUpdateIssue`
-- `paperclipCheckoutIssue`
-- `paperclipReleaseIssue`
-- `paperclipAddComment`
-- `paperclipSuggestTasks`
-- `paperclipAskUserQuestions`
-- `paperclipRequestConfirmation`
-- `paperclipUpsertIssueDocument`
-- `paperclipRestoreIssueDocumentRevision`
-- `paperclipControlIssueWorkspaceServices`
-- `paperclipCreateApproval`
-- `paperclipLinkIssueApproval`
-- `paperclipUnlinkIssueApproval`
-- `paperclipApprovalDecision`
-- `paperclipAddApprovalComment`
+- `myrmidonCreateIssue`
+- `myrmidonUpdateIssue`
+- `myrmidonCheckoutIssue`
+- `myrmidonReleaseIssue`
+- `myrmidonAddComment`
+- `myrmidonSuggestTasks`
+- `myrmidonAskUserQuestions`
+- `myrmidonRequestConfirmation`
+- `myrmidonRequestCheckboxConfirmation`
+- `myrmidonUpsertIssueDocument`
+- `myrmidonRestoreIssueDocumentRevision`
+- `myrmidonControlIssueWorkspaceServices`
+- `myrmidonCreateApproval`
+- `myrmidonLinkIssueApproval`
+- `myrmidonUnlinkIssueApproval`
+- `myrmidonApprovalDecision`
+- `myrmidonAddApprovalComment`
 
 Escape hatch:
 
-- `paperclipApiRequest`
+- `myrmidonApiRequest`
 
-`paperclipApiRequest` is limited to paths under `/api` and JSON bodies. It is
+`myrmidonApiRequest` is limited to paths under `/api` and JSON bodies. It is
 meant for endpoints that do not yet have a dedicated MCP tool.

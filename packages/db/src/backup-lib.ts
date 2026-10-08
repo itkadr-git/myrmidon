@@ -11,6 +11,12 @@ export type BackupRetentionPolicy = {
   dailyDays: number;
   weeklyWeeks: number;
   monthlyMonths: number;
+  // myrmidon(BACKUP-KEEP-LAST): "keep only the last verified backup" mode;
+  // when true, tiered pruning is skipped and all previous <prefix>-* files are
+  // deleted after the new dump passes verification. Kept as a local copy of the
+  // shared type (packages/shared/src/types/instance.ts): the db package does not
+  // depend on @paperclipai/shared, so the flag is mirrored here instead.
+  keepLastOnly?: boolean;
 };
 
 export type RunDatabaseBackupOptions = {
@@ -73,6 +79,111 @@ const BACKUP_BREAKPOINT_DETECT_BYTES = 64 * 1024;
 
 const STATEMENT_BREAKPOINT = "-- paperclip statement breakpoint 69f6f3f1-42fd-46a6-bf17-d1d85f8f3900";
 
+// myrmidon(BACKUP-KEEP-LAST): tail window scanned for the dump completion
+// marker when verifying a freshly written dump. Kept in the same spirit as
+// BACKUP_BREAKPOINT_DETECT_BYTES — the check streams the file and holds only
+// this many bytes of its tail.
+const BACKUP_VERIFY_TAIL_BYTES = 64 * 1024;
+
+// myrmidon(BACKUP-KEEP-LAST / OPE-4832): each dump engine closes its output
+// with its own completion marker. The JavaScript logical dump ends its
+// transaction with "COMMIT;"; `pg_dump --format=plain` never prints a closing
+// COMMIT; in that position — the last COMMIT; belongs to the final data
+// section and can sit far above the tail window, and the utility instead ends
+// a successful dump with the trailer comment
+// "-- PostgreSQL database dump complete" (printed as the very last content
+// line, followed only by "--"). A tail carrying neither marker means the dump
+// was truncated or is not a dump at all.
+const BACKUP_COMPLETION_MARKERS = ["COMMIT;", "-- PostgreSQL database dump complete"];
+
+/**
+ * myrmidon(OPE-4832): a freshly written dump failed keep-last verification.
+ * The engine `auto` must NOT retry such a run on JavaScript: verification is
+ * raised after the pg_dump path already aborted its writer, so a fallback
+ * would write into a closed file and mask the real error (and a dump the
+ * utility itself reports as broken is exactly the case where "previous
+ * backups kept, run failed loudly" is the documented contract).
+ */
+export class BackupVerificationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "BackupVerificationError";
+  }
+}
+
+// myrmidon(BACKUP-KEEP-LAST): unfinished `.sql` leftovers older than this are
+// treated as orphans of interrupted runs and pruned before the retention pass.
+// 1 hour is safely longer than any in-flight dump writes to its own `.sql`
+// (the live writer keeps the mtime fresh, and the cutoff is strictly past).
+const BACKUP_ORPHAN_SQL_MAX_AGE_MS = 60 * 60 * 1000;
+
+/**
+ * myrmidon(BACKUP-KEEP-LAST): stream-verify a freshly written backup file.
+ * `.gz` files are gunzipped chunk by chunk (a corrupt stream fails here); the
+ * decompressed text — or the plain `.sql` text — must carry one of the engine
+ * dump completion markers (`BACKUP_COMPLETION_MARKERS`) in its tail. Only a
+ * small tail buffer is retained, so multi-GB dumps verify without
+ * materializing the whole file.
+ */
+export async function verifyBackupFile(path: string): Promise<{ ok: boolean; reason?: string }> {
+  const raw = createReadStream(path);
+  const stream = path.endsWith(".gz") ? raw.pipe(createGunzip()) : raw;
+  stream.setEncoding("utf8");
+  let tail = "";
+  let gunzipError: unknown = null;
+
+  try {
+    for await (const chunk of stream) {
+      tail += typeof chunk === "string" ? chunk : String(chunk);
+      if (Buffer.byteLength(tail, "utf8") > BACKUP_VERIFY_TAIL_BYTES) {
+        tail = Buffer.from(tail, "utf8").subarray(-BACKUP_VERIFY_TAIL_BYTES).toString("utf8");
+      }
+    }
+  } catch (error) {
+    gunzipError = error;
+  } finally {
+    stream.destroy();
+    raw.destroy();
+  }
+
+  if (gunzipError) {
+    const message = gunzipError instanceof Error ? gunzipError.message : String(gunzipError);
+    return { ok: false, reason: `failed to decompress: ${message}` };
+  }
+  if (!BACKUP_COMPLETION_MARKERS.some((marker) => tail.includes(marker))) {
+    return {
+      ok: false,
+      reason: "missing dump completion marker (COMMIT; or the pg_dump trailer) in the dump tail",
+    };
+  }
+  return { ok: true };
+}
+
+/**
+ * myrmidon(BACKUP-KEEP-LAST): delete every `<prefix>-*.sql(.gz)` backup in the
+ * directory except `keepFile` (the just-verified new dump). Returns the number
+ * of deleted files.
+ */
+function deleteAllBackupsExcept(backupDir: string, filenamePrefix: string, keepFile: string): number {
+  if (!existsSync(backupDir)) return 0;
+  const keepResolved = resolve(keepFile);
+  let deleted = 0;
+  for (const name of readdirSync(backupDir)) {
+    if (!name.startsWith(`${filenamePrefix}-`)) continue;
+    if (!name.endsWith(".sql") && !name.endsWith(".sql.gz")) continue;
+    const fullPath = resolve(backupDir, name);
+    if (fullPath === keepResolved) continue;
+    try {
+      unlinkSync(fullPath);
+      deleted += 1;
+    } catch {
+      // A file that cannot be removed is left in place; keep-last is
+      // best-effort about the count but never touches the new dump.
+    }
+  }
+  return deleted;
+}
+
 function sanitizeRestoreErrorMessage(error: unknown): string {
   if (error && typeof error === "object") {
     const record = error as Record<string, unknown>;
@@ -114,6 +225,35 @@ function monthlyRetentionCutoff(nowMs: number, monthlyMonths: number): number {
 }
 
 /**
+ * myrmidon(BACKUP-KEEP-LAST): first pass of every pruning mode — remove
+ * orphaned, never-finished plain `.sql` leftovers from interrupted runs (the
+ * file is written plain, then gzipped; a crash leaves the `.sql` behind).
+ * Only files with an mtime strictly older than the cutoff count — a live
+ * run's own in-progress `.sql` stays untouched, and these orphans count into
+ * prunedCount in BOTH retention modes (tiered and keep-last).
+ */
+function pruneOrphanedSqlLeftovers(backupDir: string, filenamePrefix: string): number {
+  if (!existsSync(backupDir)) return 0;
+  const now = Date.now();
+  let prunedCount = 0;
+  for (const name of readdirSync(backupDir)) {
+    if (!name.startsWith(`${filenamePrefix}-`)) continue;
+    if (!name.endsWith(".sql") || name.endsWith(".sql.gz")) continue;
+    const fullPath = resolve(backupDir, name);
+    try {
+      const stat = statSync(fullPath);
+      if (stat.mtimeMs < now - BACKUP_ORPHAN_SQL_MAX_AGE_MS) {
+        unlinkSync(fullPath);
+        prunedCount += 1;
+      }
+    } catch {
+      // Raced deletion or unreadable entry — not an orphan we must force out.
+    }
+  }
+  return prunedCount;
+}
+
+/**
  * Tiered backup pruning:
  * - Daily tier: keep ALL backups from the last `dailyDays` days
  * - Weekly tier: keep the NEWEST backup per calendar week for `weeklyWeeks` weeks
@@ -124,6 +264,10 @@ function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, fi
   if (!existsSync(backupDir)) return 0;
 
   const now = Date.now();
+
+  // myrmidon(BACKUP-KEEP-LAST): orphaned `.sql` leftovers go first.
+  const prunedCount = pruneOrphanedSqlLeftovers(backupDir, filenamePrefix);
+
   const dailyCutoff = now - Math.max(1, retention.dailyDays) * 24 * 60 * 60 * 1000;
   const weeklyCutoff = now - Math.max(1, retention.weeklyWeeks) * 7 * 24 * 60 * 60 * 1000;
   const monthlyCutoff = monthlyRetentionCutoff(now, retention.monthlyMonths);
@@ -182,7 +326,7 @@ function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, fi
     unlinkSync(filePath);
   }
 
-  return toDelete.length;
+  return prunedCount + toDelete.length;
 }
 
 function formatBackupSize(sizeBytes: number): string {
@@ -317,6 +461,35 @@ async function waitForChildExit(child: ReturnType<typeof spawn>, label: string):
   }
 }
 
+// myrmidon(OPE-4996): shared option set for every backup/restore postgres.js
+// client. `connection.statement_timeout` is sent as a startup-packet
+// parameter, so it lands on the session and wins over a database-level
+// `ALTER DATABASE … SET statement_timeout`; without it a database-wide limit
+// aborts the long COPY/SELECT statements of a dump with PostgresError 57014.
+// The value must be the STRING "0": postgres.js@3.4.9 builds the startup
+// packet with `.filter(([, v]) => v)` (connection.js `StartupMessage`), which
+// drops falsy values — the number 0 would be silently discarded and the
+// database default would survive.
+function backupClientOptions(connectTimeout: number): {
+  max: 1;
+  connect_timeout: number;
+  connection: { statement_timeout: number };
+} {
+  return {
+    max: 1,
+    connect_timeout: connectTimeout,
+    connection: { statement_timeout: "0" as unknown as number },
+  };
+}
+
+// myrmidon(OPE-4996): libpq clients (pg_dump, psql) honour the database-level
+// default too, so both child-process env blocks must carry the same session
+// override; an inherited PGOPTIONS is kept and the override appended to it.
+function backupPgOptions(): string {
+  const inherited = process.env.PGOPTIONS?.trim();
+  return inherited ? `${inherited} -c statement_timeout=0` : "-c statement_timeout=0";
+}
+
 async function runPgDumpBackup(opts: {
   connectionString: string;
   backupFile: string;
@@ -338,6 +511,9 @@ async function runPgDumpBackup(opts: {
       env: {
         ...process.env,
         PGCONNECT_TIMEOUT: String(opts.connectTimeout),
+        // myrmidon(OPE-4996): keep pg_dump's session free of the
+        // database-level statement_timeout so the long COPY statements survive.
+        PGOPTIONS: backupPgOptions(),
       },
     },
   );
@@ -367,6 +543,9 @@ async function restoreWithPsql(opts: RunDatabaseRestoreOptions, connectTimeout: 
       env: {
         ...process.env,
         PGCONNECT_TIMEOUT: String(connectTimeout),
+        // myrmidon(OPE-4996): restore replays the same long COPY statements,
+        // so psql must not inherit the database-level statement_timeout.
+        PGOPTIONS: backupPgOptions(),
       },
     },
   );
@@ -529,11 +708,15 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
   const retention = opts.retention;
   const connectTimeout = Math.max(1, Math.trunc(opts.connectTimeoutSeconds ?? 5));
   const backupEngine = opts.backupEngine ?? "auto";
+  // myrmidon(BACKUP-KEEP-LAST): "keep only the last verified backup" mode
+  // skips the tier presets and, after the new dump passes verification,
+  // deletes every other <prefix>-* file in the backup directory.
+  const keepLastOnly = retention.keepLastOnly === true;
   let effectiveBackupEngine = backupEngine;
   const canUsePgDump = !hasBackupTransforms(opts);
   const excludedTableNames = normalizeTableNameSet(opts.excludeTables);
   const nullifiedColumnsByTable = normalizeNullifyColumnMap(opts.nullifyColumns);
-  let sql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
+  let sql = postgres(opts.connectionString, backupClientOptions(connectTimeout));
   let sqlClosed = false;
   const closeSql = async () => {
     if (sqlClosed) return;
@@ -543,7 +726,10 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
   mkdirSync(opts.backupDir, { recursive: true });
   const sqlFile = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}.sql`);
   const backupFile = `${sqlFile}.gz`;
-  const writer = createBufferedTextFileWriter(sqlFile);
+  // myrmidon(OPE-4832): mutable because an engine-auto fallback onto the
+  // JavaScript path reopens a fresh writer after the pg_dump path aborted the
+  // original one (abort closes the handle and deletes the .sql).
+  let writer = createBufferedTextFileWriter(sqlFile);
 
   try {
     if (backupEngine === "pg_dump" || (backupEngine === "auto" && canUsePgDump)) {
@@ -556,8 +742,25 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
           connectTimeout,
         });
         await writer.abort();
+        // myrmidon(BACKUP-KEEP-LAST): verify before any deletion — a corrupt
+        // new dump is dropped and older backups are kept, the run fails loudly.
+        if (keepLastOnly) {
+          const verification = await verifyBackupFile(backupFile);
+          if (!verification.ok) {
+            try { unlinkSync(backupFile); } catch { /* ignore */ }
+            throw new BackupVerificationError(
+              `Backup verification failed for ${basename(backupFile)}: ${verification.reason}; previous backups were kept`,
+            );
+          }
+        }
         const sizeBytes = statSync(backupFile).size;
-        const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
+        // myrmidon(BACKUP-KEEP-LAST): keep-last replaces tiered pruning, but
+        // the orphan cleanup is mode-independent and runs first in both modes,
+        // its removals counting into prunedCount.
+        const prunedCount = keepLastOnly
+          ? pruneOrphanedSqlLeftovers(opts.backupDir, filenamePrefix)
+            + deleteAllBackupsExcept(opts.backupDir, filenamePrefix, backupFile)
+          : pruneOldBackups(opts.backupDir, retention, filenamePrefix);
         return {
           backupFile,
           sizeBytes,
@@ -567,11 +770,29 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         if (existsSync(backupFile)) {
           try { unlinkSync(backupFile); } catch { /* ignore */ }
         }
+        // myrmidon(OPE-4832): a verification failure means pg_dump ran to
+        // completion and its output failed the integrity check. The contract
+        // is "fail loudly, keep the previous backups" — do NOT fall back to
+        // JavaScript here: the writer this path would emit into was already
+        // aborted above, so a fallback only crashes with "Cannot write to
+        // closed backup file" and masks the real reason.
+        if (error instanceof BackupVerificationError) {
+          throw error;
+        }
         if (backupEngine === "pg_dump") {
           throw error;
         }
         effectiveBackupEngine = "javascript";
-        sql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
+        // myrmidon(OPE-4832): the aborted-on-success pg_dump path may have
+        // already closed and deleted the plain .sql writer above; when the
+        // child itself failed, the original writer is still open. `abort()`
+        // is idempotent, so run it first and then reopen a fresh writer on
+        // the same path — the JavaScript path below emits through `writer`
+        // and must never see a closed handle ("Cannot write to closed
+        // backup file").
+        await writer.abort();
+        writer = createBufferedTextFileWriter(sqlFile);
+        sql = postgres(opts.connectionString, backupClientOptions(connectTimeout));
         sqlClosed = false;
       }
     }
@@ -937,7 +1158,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       if (effectiveBackupEngine !== "javascript" && nullifiedColumns.size === 0) {
         emit(`COPY ${qualifiedTableName} (${colNames}) FROM stdin;`);
         await writer.writeRaw("\n");
-        const copySql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
+        const copySql = postgres(opts.connectionString, backupClientOptions(connectTimeout));
         try {
           const copyStream = await copySql
             .unsafe(`COPY ${qualifiedTableName} (${colNames}) TO STDOUT`)
@@ -1026,8 +1247,25 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     await pipeline(sqlReadStream, createGzip(), gzWriteStream);
     unlinkSync(sqlFile);
 
+    // myrmidon(BACKUP-KEEP-LAST): verify before any deletion — a corrupt
+    // new dump is dropped and older backups are kept, the run fails loudly.
+    if (keepLastOnly) {
+      const verification = await verifyBackupFile(backupFile);
+      if (!verification.ok) {
+        try { unlinkSync(backupFile); } catch { /* ignore */ }
+        throw new BackupVerificationError(
+          `Backup verification failed for ${basename(backupFile)}: ${verification.reason}; previous backups were kept`,
+        );
+      }
+    }
     const sizeBytes = statSync(backupFile).size;
-    const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
+    // myrmidon(BACKUP-KEEP-LAST): keep-last replaces tiered pruning, but the
+    // orphan cleanup is mode-independent and runs first in both modes, its
+    // removals counting into prunedCount.
+    const prunedCount = keepLastOnly
+      ? pruneOrphanedSqlLeftovers(opts.backupDir, filenamePrefix)
+        + deleteAllBackupsExcept(opts.backupDir, filenamePrefix, backupFile)
+      : pruneOldBackups(opts.backupDir, retention, filenamePrefix);
 
     return {
       backupFile,
@@ -1063,7 +1301,7 @@ export async function runDatabaseRestore(opts: RunDatabaseRestoreOptions): Promi
     }
   }
 
-  const sql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
+  const sql = postgres(opts.connectionString, backupClientOptions(connectTimeout));
 
   try {
     await sql`SELECT 1`;

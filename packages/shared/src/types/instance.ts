@@ -2,16 +2,42 @@ import type { FeedbackDataSharingPreference } from "./feedback.js";
 // myrmidon(WORKSPACE-HYGIENE): the workspace quotas stored in instance settings
 import type { WorkspaceHygieneLimits } from "../myrmidon-workspace-hygiene.js";
 // myrmidon(C0): the run admission limits stored in instance settings
-import type { RunLimits } from "../myrmidon-runtime-limits.js";
+import type { StoredRunLimits } from "../myrmidon-runtime-limits.js";
 import type { HostDiskSettings } from "../myrmidon-host-disk.js";
+import type { AlertRecoverySettings } from "../myrmidon-alert-recovery.js";
+// myrmidon(BOT-DISK-A): the bot draft-directory lifecycle stored in instance settings
+import type { StoredBotDiskSettings } from "../myrmidon-bot-disk.js";
+// myrmidon(1.6.1-BOT-DISK-C): per-bot disk quota of its own general settings key.
+import type { StoredBotDiskQuotaSettings } from "../myrmidon-bot-disk-quota.js";
+// myrmidon(BOT-ROLLOUT): the release bot-image rollout settings of the same row.
+import type { BotImageRolloutSettings } from "../myrmidon-bot-image-rollout.js";
+import type { StoredSessionGenerationsSettings } from "../myrmidon-session-generations.js";
 // myrmidon(PARALLEL-HELPERS): the helper ceiling/default stored in instance settings
 import type { ParallelHelpersSettings } from "../myrmidon-parallel-helpers.js";
+import type { BotLspSettings } from "../myrmidon-bot-lsp.js";
 // myrmidon(EXTCASE-B): the browser-bridge allowlist stored in instance settings
 import type { BrowserBridgeSettings } from "../myrmidon-browser-bridge.js";
 import type { SwarmClaimSettings } from "../myrmidon-swarm-claim.js";
 // myrmidon(1.6.1-WIP-LIMIT-A): per-agent WIP limits of the same general settings row.
+import type { AgentMemorySettings } from "../myrmidon-agent-memory.js";
 import type { WipLimitSettings } from "../myrmidon-wip-limit.js";
+// myrmidon(REVIEW-ROUTING): automatic reviewer routing settings of the same row.
+import type { ReviewRoutingSettings } from "../myrmidon-review-routing.js";
+import type { ReviewReworkSettings } from "../myrmidon-review-rework.js";
+import type { BudgetEnforcementSettings } from "../myrmidon-budget-enforcement.js";
+// myrmidon(1.7-AGENT-EXCHANGE-A): the discussion-room settings stored in the
+// same general settings row.
+import type { AgentExchangeSettings } from "../myrmidon-agent-exchange.js";
+// myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys live in
+// the same general settings row.
+import type { PluginEntitlementKey } from "../myrmidon-plugin-entitlement.js";
+// myrmidon(DM-PROGRESS): live progress steps of the bridged Telegram DM status message.
+import type { TelegramDmProgressSettings } from "../myrmidon-telegram-dm-progress.js";
+// myrmidon(BOT-RUNTIME-TUNING D2): the fallback-signal settings of the same row.
+import type { StoredFallbackSignalSettings } from "../myrmidon-fallback-signal.js";
 
+// myrmidon(1.6.1-FORAGING-LIMITS-UI)
+import type { ForagingSettings } from "../myrmidon-foraging.js";
 export const DAILY_RETENTION_PRESETS = [3, 7, 14] as const;
 export const WEEKLY_RETENTION_PRESETS = [1, 2, 4] as const;
 export const MONTHLY_RETENTION_PRESETS = [1, 3, 6] as const;
@@ -19,6 +45,12 @@ export interface BackupRetentionPolicy {
   dailyDays: (typeof DAILY_RETENTION_PRESETS)[number];
   weeklyWeeks: (typeof WEEKLY_RETENTION_PRESETS)[number];
   monthlyMonths: (typeof MONTHLY_RETENTION_PRESETS)[number];
+  /**
+   * myrmidon(BACKUP-KEEP-LAST): when true, after a successfully created and
+   * verified dump all previous `<prefix>-*` backup files are deleted and the
+   * tier presets above are ignored. Absent/false keeps tiered retention.
+   */
+  keepLastOnly?: boolean;
 }
 
 export const DEFAULT_BACKUP_RETENTION: BackupRetentionPolicy = {
@@ -65,12 +97,47 @@ export interface InstanceGeneralSettings {
    */
   hostDisk?: HostDiskSettings;
   /**
+   * myrmidon(BOT-DISK-A): the bot draft-directory lifecycle, changed from
+   * `GET`/`PATCH /api/myrmidon/bot-disk`. Absent means "use the environment
+   * variable, then the default"; kept in sync with the validator of the same
+   * field (packages/shared/src/validators/instance.ts).
+   */
+  botDisk?: StoredBotDiskSettings;
+  /**
+   * myrmidon(1.6.1-BOT-DISK-C): per-bot disk quota (company default, per-caste
+   * and per-agent overrides), changed from `GET`/`PATCH /api/myrmidon/bot-disk-quota`.
+   * Its own key, not a sub-key of `botDisk`: part A's PATCH rewrites the whole
+   * `botDisk` object. Absent means "no quota" (enforcement off); kept in sync
+   * with the validator of the same field (packages/shared/src/validators/instance.ts).
+   */
+  botDiskQuota?: StoredBotDiskQuotaSettings;
+  /**
+   * myrmidon(BOT-ROLLOUT): the release bot-image rollout settings (busy-wait
+   * timeout, batch size, soft pause after a busy bot), changed from
+   * `GET`/`PATCH /api/myrmidon/bot-image-rollout`. Absent means \"use the
+   * environment variable, then the default\"; the env value stays the upper
+   * bound of each knob. Kept in sync with the validator of the same field
+   * (packages/shared/src/validators/instance.ts).
+   */
+  myrmidonBotImageRollout?: BotImageRolloutSettings;
+  /**
+   * myrmidon(PERF-DIET-K): thresholds of the issue-scoped session generations
+   * of a container bot (`maxMessages` runs and `maxDays` age, plus `enabled`).
+   * Read at every run dispatch. Absent means the plan's defaults (400 / 14, the
+   * fix on); kept in sync with the validator of the same field
+   * (packages/shared/src/validators/instance.ts).
+   */
+  sessions?: StoredSessionGenerationsSettings;
+  /**
    * myrmidon(C0): run admission limits changed from the instance settings page
    * and `GET`/`PATCH /api/myrmidon/runtime-limits`. Absent means "use the
    * environment variable, then the default"; kept in sync with the validator of
-   * the same field (packages/shared/src/validators/instance.ts).
+   * the same field (packages/shared/src/validators/instance.ts). A row saved
+   * before 1.6.2 lacks `minFreeHostMemoryMb` (myrmidon 1.6.2 RUN-ADMISSION),
+   * a row saved before 1.6.5 lacks `maxHostLoadPercentPerCore` (myrmidon
+   * 1.6.5 RUN-ADMISSION).
    */
-  runLimits?: RunLimits;
+  runLimits?: StoredRunLimits;
   /**
    * myrmidon(PARALLEL-HELPERS): company ceiling/default for parallel helper
    * subagents, changed from the instance settings page and
@@ -80,6 +147,15 @@ export interface InstanceGeneralSettings {
    * validator of the same field.
    */
   parallelHelpers?: ParallelHelpersSettings;
+  /**
+   * myrmidon(BOT-LSP-DEFAULTS): which roles write code and which language-server
+   * mode coding and non-coding bots run with, changed from the instance settings
+   * page and `GET`/`PATCH /api/myrmidon/bot-lsp`. Absent means "use the module
+   * defaults" (coding roles limited, every other role off — see
+   * packages/shared/src/myrmidon-bot-lsp.ts); kept in sync with the validator of
+   * the same field.
+   */
+  botLsp?: BotLspSettings;
   /**
    * myrmidon(EXTCASE-B): browser-bridge allowlist (the tender-platform domains
    * the gateway and the extension both accept), changed from the bridge panel.
@@ -96,13 +172,143 @@ export interface InstanceGeneralSettings {
    */
   swarmClaim?: SwarmClaimSettings;
   /**
+   * myrmidon(1.6.1 SWARM-SETTINGS-UI): the change journal of the swarm-claim
+   * pilot settings — who changed what, and when, newest first. Written by the
+   * swarm-claim settings service on every PATCH, read by
+   * GET /api/myrmidon/swarm-claim. Kept in sync with the validator of the
+   * same field (packages/shared/src/validators/instance.ts).
+   */
+  swarmClaimJournal?: unknown[];
+  /**
    * myrmidon(1.6.1-WIP-LIMIT-A): per-agent WIP limits, changed from
    * `GET`/`PUT /api/myrmidon/companies/:companyId/wip-limit/settings`. Absent
    * means "count only, never signal". Kept in sync with the validator of the
    * same field (packages/shared/src/validators/instance.ts).
    */
   wipLimit?: WipLimitSettings;
+  /**
+   * myrmidon(REVIEW-ROUTING): automatic reviewer routing, changed from
+   * `GET`/`PUT /api/myrmidon/companies/:companyId/review-routing/settings`.
+   * Absent means the defaults.
+   */
+  reviewRouting?: ReviewRoutingSettings;
+  /**
+   * myrmidon(REVIEW-REWORK): the review-return loop — a RETURN verdict opens
+   * the rework task and the review waits blocked until the PR head moves,
+   * changed from `GET`/`PATCH /api/myrmidon/review-rework`. Absent means the
+   * defaults (the fix is on); kept in sync with the validator of the same
+   * field (packages/shared/src/validators/instance.ts).
+   */
+  reviewRework?: ReviewReworkSettings;
+  /**
+   * myrmidon(REVIEW-REWORK): the change journal of the loop settings (who
+   * changed what, and when), newest first. Stored passthrough, like
+   * `swarmClaimJournal`.
+   */
+  reviewReworkJournal?: unknown[];
+  /**
+   * myrmidon(1.6.6 MONITORING D): the alert-recovery knobs — `holdMinutes`
+   * (how long an alert must stay resolved before its task closes by itself)
+   * and `recurrenceWindowMinutes` (how long a repeat of the same alert still
+   * belongs to the same task), plus the per-trigger owner-role overrides;
+   * changed from `GET`/`PATCH /api/myrmidon/monitoring/alert-recovery`. Absent
+   * means "use the environment variable, then the default (10 and 60 minutes)".
+   * Kept in sync with the validator of the same field
+   * (packages/shared/src/validators/instance.ts).
+   */
+  alertRecovery?: AlertRecoverySettings;
+  /**
+   * myrmidon(1.6.6 MONITORING D): the runtime journal of alert → task records —
+   * the task of each alert identity, the runbook it was opened with and how
+   * long the alert has been resolved, newest last. Written by the
+   * alert-recovery service on every alert event, read by
+   * `GET /api/myrmidon/monitoring/alert-recovery`. Stored passthrough, like
+   * `swarmClaimJournal`: a broken row is dropped on read, never trusted.
+   */
+  alertRecoveryJournal?: unknown[];
+  /**
+   * myrmidon(1.7-SETTINGS-TO-UI): the channel settings document — the Telegram
+   * bridge switches, the chat limits and the cross-channel numbers, changed from
+   * `GET`/`PATCH /api/myrmidon/channel-settings`. An absent (or partial) document
+   * means "use the environment variable, then the default" for every key; the
+   * resolver in server/src/myrmidon/channel-settings/settings.ts normalizes it,
+   * so the stored value is read back defensively. Kept in sync with the
+   * validator of the same field (packages/shared/src/validators/instance.ts).
+   */
+  channelSettings?: unknown;
+  /**
+   * myrmidon(1.7-BUDGET-CONFIG-B): what a crossed budget limit does —
+   * signal only (default), pause with an owner card (soft), or refuse new
+   * runs (hard); changed from `GET`/`PATCH /api/myrmidon/budget-enforcement`.
+   * Kept in sync with the validator of the same field
+   * (packages/shared/src/validators/instance.ts).
+   */
+  budgetEnforcement?: BudgetEnforcementSettings;
+  /**
+   * myrmidon(1.7-DEBATE-ASYM-A): the asymmetric-debates engine settings —
+   * generator/critic/judge roles (cross-family validated), rounds and the
+   * token ceiling; changed from `GET`/`PATCH /api/myrmidon/debate`. Absent
+   * means "use the environment override, then the built-in default". Kept in
+   * sync with the validator of the same field
+   * (packages/shared/src/validators/instance.ts).
+   */
+  debate?: unknown;
+  /**
+   * myrmidon(1.7-AGENT-EXCHANGE-A): the discussion-room settings — master
+   * switch (default off), room size, round cap, per-room token budget and
+   * the response timeout; changed from `GET`/`PATCH
+   * /api/myrmidon/agent-exchange/settings`. Kept in sync with the validator
+   * of the same field (packages/shared/src/validators/instance.ts).
+   */
+  agentExchange?: AgentExchangeSettings;
+  /**
+   * myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys, managed
+   * from the instance settings page. Absent means "no keys registered". Kept
+   * in sync with the validator of the same field
+   * (packages/shared/src/validators/instance.ts).
+   */
+  pluginEntitlementKeys?: PluginEntitlementKey[];
+  /**
+   * myrmidon(DM-PROGRESS): live progress steps in the bridged Telegram DM
+   * status message — on/off and the minimum spacing between edits; changed
+   * from `GET`/`PATCH /api/myrmidon/telegram-dm-progress`. Kept in sync with
+   * the validator of the same field (packages/shared/src/validators/instance.ts).
+   */
+  telegramDmProgress?: TelegramDmProgressSettings;
+  /**
+   * myrmidon(MEMORY-UI): agent memory service address, optional key secret name
+   * and switch, changed from the instance settings page. Absent means "use the
+   * environment". Kept in sync with the validator of the same field.
+   */
+  agentMemory?: AgentMemorySettings;
+  /**
+   * myrmidon(BOT-RUNTIME-TUNING D2): the model fallback signal — threshold,
+   * window, minimum calls and sweep period, changed from
+   * `GET`/`PATCH /api/myrmidon/model-fallback/settings`. Absent means "use the
+   * environment variable (MYRMIDON_MODEL_FALLBACK_*), then the default" per
+   * key; the resolver in packages/shared/src/myrmidon-fallback-signal.ts
+   * normalizes the stored row. Kept in sync with the validator of the same
+   * field (packages/shared/src/validators/instance.ts).
+   */
+  modelFallbackSignal?: StoredFallbackSignalSettings;
+  /**
+   * myrmidon(1.6.1-FORAGING-LIMITS-UI): the enable switch, pass tuning and
+   * spend limits of the foraging sweep, changed from the "Foraging" block on
+   * Instance → General and `GET`/`PATCH /api/myrmidon/foraging-settings`.
+   * Absent means "use the environment variable, then the default (the sweep
+   * is off)". Kept in sync with the validator of the same field.
+   */
+  foraging?: ForagingSettings;
+  /**
+   * myrmidon(1.6.3 PLUGIN-ENTITLEMENT A): the ed25519 verification public key
+   * (PEM) for plugin entitlement tokens, changed from the instance settings
+   * page. Absent means "no verification key" — no entitlement token can
+   * verify, so every gated plugin stays unactivated. Kept in sync with the
+   * validator of the same field (packages/shared/src/validators/instance.ts).
+   */
+  pluginEntitlementPublicKey?: string;
 }
+
 
 export interface InstanceExperimentalSettings {
   enableEnvironments: boolean;

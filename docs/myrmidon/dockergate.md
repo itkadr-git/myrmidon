@@ -19,7 +19,10 @@ board; the board gets the dockergate socket (`MYRMIDON_BOT_DOCKER_SOCKET`, see
 
 Extra read-only bot mounts (shared directories) are described in
 [bot-extra-mounts.md](bot-extra-mounts.md); on the dockergate side the
-`mountSources` key allows them.
+`mountSources` key allows them. The shared package cache
+([bot-disk-cache.md](bot-disk-cache.md)) is the one writable exception; the
+`packageCacheRoot` key allows it, and the same key allows the board's git mirrors
+(`<packageCacheRoot>/git` → `/cache/git`) as a read-only bind only.
 
 ## How it is enforced
 
@@ -43,7 +46,10 @@ Extra read-only bot mounts (shared directories) are described in
 4. **Bot consistency.** The `botKey` comes from the container name; the label, volumes,
    network and helper script must match it. Extra volumes beyond the three bot volumes are
    allowed only as read-only binds whose source is named in full in `mountSources` and
-   whose mount point is free; a helper gets no extra volume. Memory, CPU and
+   whose mount point is free, plus the shared package cache: read-write binds accepted
+   only as the fixed pairs `<packageCacheRoot>/{pnpm,go-mod,go-build,gradle}` →
+   `/cache/{pnpm,go-mod,go-build,gradle}`, and the git mirrors as the one read-only pair
+   `<packageCacheRoot>/git` → `/cache/git`; a helper gets no extra volume. Memory, CPU and
    process-count limits may not exceed what `bots[]` records.
 5. **State.** Before a call, dockergate inspects the container itself and checks the
    preconditions (the bot label, status, the presence of `.next`).
@@ -71,6 +77,7 @@ Extra read-only bot mounts (shared directories) are described in
 | A10 | `POST .../myrmidon-bot-<K>/stop?t=30` | stop (only inside a recreate) |
 | A11 | `POST .../myrmidon-bot-<K>/restart?t=30` | restart (rate-limited) |
 | A12 | `POST .../myrmidon-bot-<K>.next/rename?name=myrmidon-bot-<K>` | finish the recreate |
+| A13 | `GET .../myrmidon-bot-<K>/archive?path=<clone-hygiene report>` | read the bot's clone-hygiene report (one fixed file, like A3) |
 
 `K` is a lowercase UUID. Any other path (including `exec`, `attach`, `commit`, `build`,
 `images/create`, `volumes`, `networks`, `info`, `events`, `system`, `swarm`) gets 403
@@ -98,16 +105,19 @@ A JSON file. An unknown key at any level, or a missing required key, prevents st
 | `upstream` | absolute path of the daemon socket |
 | `apiVersion` | `1.45` only |
 | `caller` | required. `container` (the board container name), `containerLabels`, `uid`, `gid`, `argv`, `maxStartDelayTicks`, `mode` (`container-main-process` by default, `uid` for CI only) |
-| `volumeRoot` | the host directory of bot volumes; a bot's volumes are `<root>/<botKey>/{hermes,workspace,scratch}` |
-| `mountSources` | host directories a bot may mount in addition, read-only only (an empty or missing list allows none). Every extra bind in a create body must start with one of these paths in full, carry the `ro` suffix and use a mount point outside `/data/hermes`, `/workspace`, `/scratch`, `/tmp`; otherwise `mount_source_not_allowed` or `binds_mismatch`. The list is also applied on `SIGHUP` |
+| `volumeRoot` | the host directory of bot volumes; a bot's volumes are `<root>/<botKey>/{hermes,workspace,scratch}`; the bot container gets ONE bind, `<root>/<botKey>:/bot` (hard links cannot cross mounts, BOT-DISK-D), while the helper containers keep three narrow binds of the same directories; `/bot` and `/data` are reserved container paths |
+| `mountSources` | host directories a bot may mount in addition, read-only only (an empty or missing list allows none). Every extra bind in a create body must start with one of these paths in full, carry the `ro` suffix and use a mount point outside `/workspace`, `/scratch` and `/tmp` — the three owner-data subtrees of `/data/hermes` are the only exception and are accepted at their real path inside the bot's own mount (1.6.5-BOT-DISK-H11, see [bot-extra-mounts.md](bot-extra-mounts.md#a-mount-point-inside-the-bots-own-volume-165-bot-disk-h-class-j)); otherwise `mount_source_not_allowed` or `binds_mismatch`. The list is also applied on `SIGHUP` |
+| `packageCacheRoot` | the host directory of the shared package cache, the same path as the board's instance setting (see [bot-disk-cache.md](bot-disk-cache.md)). Under it, and only there, a bot may mount the fixed subdirectories `pnpm`, `go-mod`, `go-build`, `gradle` read-write at `/cache/pnpm`, `/cache/go-mod`, `/cache/go-build`, `/cache/gradle`; any other writable bind is `mount_source_not_allowed`. The subdirectory `git` is accepted only as a **read-only** bind at `/cache/git` (the board's bare git mirrors, 1.6.2-BOT-DISK-C); `git` with `rw`, or at another mount point, is refused the same way. An absolute directory without `..`, `//` or a trailing `/`, outside `volumeRoot`. Empty or missing (the default) allows no cache bind. Applied on `SIGHUP` |
+| `botRuntimeRoot` | the host directory of the shared bot runtime (1.6.5-BOT-DISK-H11; the board's instance setting `general.botDisk.sharedBotRuntimePath`, see [bot-extra-mounts.md](bot-extra-mounts.md#the-shared-bot-runtime-165-bot-disk-h-class-c)). Under it, and only there, a bot may mount the fixed subdirectories `bin`, `lazy-packages` and `lsp` as **read-only** binds at the path the driver really uses inside the bot's own mount (`/bot/hermes/…`, `/bot-scope/<botKey>/hermes/…`, `/data/hermes/…`); another root, another subdirectory, another mount point or `rw` is `mount_source_not_allowed`. An absolute directory without `..`, `//` or a trailing `/`, outside `volumeRoot`, not overlapping `scopeRoot` or `packageCacheRoot`, not a parent of either. Empty or missing (the default) allows no runtime bind. Applied on `SIGHUP` |
+| `scopeRoot` | the host directory of shared isolation-scope instances (BOT-DISK-F, see [bot-disk-cache.md](bot-disk-cache.md#isolation-scope-who-shares-a-disk)): one subdirectory `<kind>-<id>` per instance. A bot may bind only an instance listed in its own `bots[].scopeInstances`. An absolute directory without `..`, `//` or a trailing `/`, not `volumeRoot` and not a parent of it, not overlapping `packageCacheRoot`. Empty or missing (the default): `<volumeRoot>/.scopes` (a bot key can never begin with `.`, so it cannot collide with a bot directory). Applied on `SIGHUP` |
 | `network` | the single bot network |
 | `images` | a non-empty list of images, by digest only (`name@sha256:...`); a tag is not allowed |
-| `bots[]` | a bot record: `botKey`, `maxMemoryMb`, `maxCpus`, `maxPids` |
+| `bots[]` | a bot record: `botKey`, `maxMemoryMb`, `maxCpus`, `maxPids`, and optionally `scopeInstances`: the shared scope instance directory names (`<kind>-<id>`, kind one of `group`, `caste`, `subtree`, `project`, `catalog`, `company`) this bot is a member of and may bind. Empty or missing: the bot is never a member of a shared instance |
 | `limits` | limits and timeouts: header and body sizes, read and upstream timeouts, connection and in-flight call counts, the global rate, the per-process refusal rate, per-bot window rates (`createPerWindow`, `startPerWindow`, `restartPerWindow`, `stopPerWindow`, `putArchivePerWindow`, `rateWindowSec`). A missing key takes the default |
 | `statsFile` | absolute path of the counters file |
 
-`SIGHUP` re-reads the file; only `bots`, `images`, `network`, `volumeRoot` and
-`mountSources` are applied. An
+`SIGHUP` re-reads the file; only `bots`, `images`, `network`, `volumeRoot`,
+`mountSources`, `packageCacheRoot`, `botRuntimeRoot` and `scopeRoot` are applied. An
 invalid file, or one that changes anything else, is rejected and the running configuration
 stays.
 
@@ -152,8 +162,52 @@ signals: `denyPeer` or `resolveDecoys` growing, denials beyond the expected ones
    process-count caps.
 3. If a bot needs extra read-only volumes, add their sources to `mountSources` (also a
    structural edit); a source that is not named there never reaches the daemon.
+   If the instance uses the shared package cache, set `packageCacheRoot` to the same
+   directory as the board's setting (also a structural edit).
 4. Check: `dockergate check-config --config <file>`.
 5. Send `SIGHUP` to the dockergate process.
+
+## Members of a shared isolation scope (BOT-DISK-F)
+
+By default a bot binds its own directory (`<volumeRoot>/<botKey>:/bot`). The owner may
+set a scope instance (a group, a caste, a reporting subtree, a project, a catalog team or
+the whole company) to *shared root*; its members then bind ONE directory, the instance's,
+instead: `<scopeRoot>/<instance>:/bot-scope`. Inside it live one pnpm store and a
+subdirectory per member (`<botKey>/{hermes,workspace,scratch}`), so a hard link works within
+a bot and across the members. dockergate accepts exactly this, for exactly the bots enrolled
+for the instance, and nothing broader:
+
+- **Bot body.** Besides the isolated body, a body with the extra top-level key
+  `"Env":["MYRMIDON_BOT_SCOPE_SUBDIR=<botKey>"]` (the only `Env` ever accepted; anything else
+  stays `json_unknown_key`), the tmpfs `{"/tmp":"","/data":"uid=10001,gid=10001,mode=0755,size=1m"}`
+  (the member's `/data` holds only links into its own subdirectory, made by the entrypoint)
+  and **one** bind `<scopeRoot>/<instance>:/bot-scope` with no suffix. The instance name is
+  read from the bind and must be listed in the bot's `scopeInstances`; the bind is rebuilt
+  byte for byte, so a sibling instance, the scope root itself, a `..` name or a `:ro`/`:rw`
+  suffix is `mount_source_not_allowed` or `binds_mismatch`. A card's extra mounts and the
+  cache binds follow as before; `/bot-scope` and `/scope` are reserved container paths.
+- **Helpers.** Their three narrow binds move inside the member's own subdirectory
+  (`<scopeRoot>/<instance>/<botKey>/{hermes,workspace,scratch}`). The prepare helper of a
+  member also binds the instance directory at `/scope` and runs its own constant script
+  (`PrepareScriptShared`: the same loop with `scope` added), which hands the instance
+  directory to the bot's uid so the container can create the pnpm store in it. The script
+  must match the layout of the binds (`script_mismatch` otherwise).
+- **Host invariants** (`CheckScopeDir`, on every create naming an instance): `scopeRoot`
+  exists as a directory owned by root, not a link, no group/other write; the instance
+  directory and the member's subdirectory, when they exist, are directories, not links,
+  owned by root or uid 10001, no group/other write; `hermes`, `workspace`, `scratch` under
+  the member's subdirectory as for an isolated bot. Violations are `volume_root_invariant`
+  (`scope.root`, `scope.instance`, `scope.K`, `scope.<dir>`).
+- **Marker.** The applied-profile marker of a member is read at
+  `/bot-scope/<botKey>/hermes/.myrmidon/applied.json` (A3); only its own key's path is
+  accepted.
+
+To enrol a member: add the instance directory name to the bot's `bots[].scopeInstances`
+(a structural edit) and send `SIGHUP` **before** the owner applies the scope change on the
+board; the bot's recreate is refused (`mount_source_not_allowed`) until then. The board
+shows each agent's directory name in Instance settings, Disk isolation. Contract fixtures
+(`contract/testdata/scope/`, `scripts/prepare-shared.sh`) come from the same driver code as
+the isolated ones.
 
 ## Deploy and rollback
 

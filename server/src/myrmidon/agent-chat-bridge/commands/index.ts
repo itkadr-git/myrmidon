@@ -11,29 +11,44 @@
  * PR (X8c) keeps those signatures and replaces the body with the full
  * command set. X8b calls it.
  *
- * myrmidon(X8-texts): every reply in this module is read by a person in the
- * bridged Telegram DM, so the prose is Russian (the pilot chat language) and
- * the command descriptions are the ones Telegram shows in its command menu.
- * Command names, model ids, reasoning levels and the `/model default` keyword
- * stay as they are — they are input, not prose.
+ * myrmidon(1.7-TG-LOCALE): every reply in this module is read by a person in
+ * the bridged Telegram DM, so the prose renders from the locale catalogs
+ * (../locales) in the linked board user's language — English is the default,
+ * Russian is the pilot chat's language and the language a user gets after
+ * selecting it on the board's Settings → Language screen (read per message,
+ * no restart). The instance-wide `MYRMIDON_TELEGRAM_DM_LANGUAGE` env forces
+ * one language for every chat, including the Telegram command menu. Command
+ * names, model ids, reasoning levels and the `/model default` keyword stay as
+ * they are — they are input, not prose.
  */
 
 import type { Db } from "@paperclipai/db";
-import { CHAT_NOT_AVAILABLE_TEXT, loadBridgedCommandContext, type BridgedCommandContext } from "./context.js";
+import { loadBridgedCommandContext, type BridgedCommandContext } from "./context.js";
+import { t, resolveBridgeLocale, type BridgeLocale } from "../locales/index.js";
 import { buildHelpText } from "./help.js";
+// myrmidon(X9c): /agents, /to, /who — the X9a/X9b addressing surface as chat
+// commands; sticky default routing state lives in agents.ts.
+import {
+  buildAgentsReplyText,
+  buildWhoReplyText,
+  handleToCommand,
+  readStickyAgentId,
+} from "./agents.js";
 import {
   MODEL_CHOOSER,
   THINK_CHOOSER,
-  TURN_IN_PROGRESS_TEXT,
   checkChooserAvailability,
   describeCardValue,
   describeEffectiveChatValue,
   formatChatChoiceList,
   readOverrideAdapterConfig,
   resolveChooserSelection,
+  sourceLabelFor,
+  turnInProgressText,
   type ChatModelChooser,
 } from "./models.js";
 import { applyChatAdapterOverride } from "./overrides.js";
+import { handlePlanCommand } from "./plan.js";
 import { buildChatStatusReply } from "./status.js";
 import { stopBridgedChatRuns } from "./stop.js";
 
@@ -69,14 +84,38 @@ export interface BridgedCommandSpec {
   description: string;
 }
 
-export const TELEGRAM_DM_COMMANDS: readonly BridgedCommandSpec[] = [
-  { command: "help", description: "Показать команды" },
-  { command: "new", description: "Начать новую сессию (необязательно: /new <модель>)" },
-  { command: "model", description: "Показать или сменить модель для этого чата" },
-  { command: "think", description: "Показать или задать глубину рассуждений" },
-  { command: "stop", description: "Остановить текущий ответ" },
-  { command: "status", description: "Показать модель, сессию и текущий ответ" },
-];
+/**
+ * The bridged DM's command menu rendered in one locale. Telegram shows one
+ * menu per bot (X8e registers it for `all_private_chats`), so registration
+ * follows the instance-level decision (the env force, else the English
+ * default); the person's own language applies to every reply of the chat.
+ */
+export function telegramDmCommandsForLocale(locale: BridgeLocale): readonly BridgedCommandSpec[] {
+  return [
+    { command: "help", description: t(locale, "menu.help") },
+    { command: "new", description: t(locale, "menu.new") },
+    { command: "model", description: t(locale, "menu.model") },
+    { command: "think", description: t(locale, "menu.think") },
+    { command: "stop", description: t(locale, "menu.stop") },
+    { command: "status", description: t(locale, "menu.status") },
+    { command: "plan", description: t(locale, "menu.plan") },
+    // myrmidon(X9c): addressing commands — which agent of the company this
+    // chat talks to (X9a/X9b made any company agent addressable).
+    { command: "agents", description: t(locale, "menu.agents") },
+    { command: "to", description: t(locale, "menu.to") },
+    { command: "who", description: t(locale, "menu.who") },
+  ];
+}
+
+/**
+ * The X8 contract's canonical command list, in the catalog's base language.
+ * Tests and the copy-version hash compare against this list; the actual
+ * registration applies the menu for the locale that holds when it runs
+ * (same once-per-version rule as the bridge-enabled state — see DIVERGENCE
+ * B1: a state that can flip back and forth is not baked into the version).
+ */
+export const TELEGRAM_DM_COMMANDS: readonly BridgedCommandSpec[] =
+  telegramDmCommandsForLocale("en");
 
 /**
  * myrmidon(X8c): `/start`, `/commands` and `/reset` are not part of the X8
@@ -122,6 +161,10 @@ export async function runBridgedDirectMessageCommand(
   if (!parsed) return null;
   const name = COMMAND_ALIASES[parsed.name] ?? parsed.name;
 
+  // myrmidon(1.7-TG-LOCALE): the sender's language decides every reply of
+  // this turn; resolved once so all branches answer in the same language.
+  const locale = await resolveBridgeLocale(input.db, input.boardUserId);
+
   const context = await loadBridgedCommandContext(input.db, {
     companyId: input.companyId,
     agentId: input.agentId,
@@ -133,26 +176,74 @@ export async function runBridgedDirectMessageCommand(
     // (`control:x8-${command}:${deliveryId}`, required to match `[a-z-]+`).
     // `name` is chat input at this point (COMMAND_ALIASES only rewrites
     // known names), so a fixed literal is used here instead of it.
-    return { kind: "reply", command: "not-available", text: CHAT_NOT_AVAILABLE_TEXT };
+    return { kind: "reply", command: "not-available", text: t(locale, "chat.notAvailable") };
   }
 
   switch (name) {
     case "help":
-      return { kind: "reply", command: "help", text: buildHelpText(context.agent.name, TELEGRAM_DM_COMMANDS) };
+      return {
+        kind: "reply",
+        command: "help",
+        text: buildHelpText(context.agent.name, telegramDmCommandsForLocale(locale), locale),
+      };
     case "new":
-      return handleNewCommand(input, context, parsed.args);
+      return handleNewCommand(input, context, parsed.args, locale);
     case "model":
-      return handleChooserCommand(input, context, MODEL_CHOOSER, parsed.args);
+      return handleChooserCommand(input, context, MODEL_CHOOSER, parsed.args, locale);
     case "think":
-      return handleChooserCommand(input, context, THINK_CHOOSER, parsed.args);
+      return handleChooserCommand(input, context, THINK_CHOOSER, parsed.args, locale);
     case "stop":
-      return handleStopCommand(input);
+      return handleStopCommand(input, locale);
     case "status":
-      return handleStatusCommand(input, context);
+      return handleStatusCommand(input, context, locale);
+    case "plan":
+      // myrmidon(1.6-CTO-CHAT-B): everything planner-shaped (settings read
+      // per call, the company key, the plan id, the card) lives in
+      // `./plan.ts`, which delegates to the cto-chat telegram entry — no
+      // parallel secret-resolution path here.
+      return handlePlanCommand(input, parsed.args);
+    // myrmidon(X9c): addressing commands. They run on the context X8b
+    // already authorized (the sender's own bridged Telegram conversation,
+    // identity links included), and every DB read in agents.ts is scoped to
+    // input.companyId — only same-company agents can ever be listed,
+    // resolved or made sticky. The sticky default routes the chat's plain
+    // turns until the next /to (see agents.ts); addressed @<alias> turns
+    // (X9b) are unaffected.
+    case "agents": {
+      const text = await buildAgentsReplyText(input.db, {
+        companyId: input.companyId,
+        conversationAgentId: input.agentId,
+        stickyAgentId: readStickyAgentId(context.issue.assigneeAdapterOverrides),
+        locale,
+      });
+      return { kind: "reply", command: "agents", text };
+    }
+    case "to": {
+      const result = await handleToCommand({
+        db: input.db,
+        companyId: input.companyId,
+        conversationAgentId: input.agentId,
+        issueId: input.conversationIssueId,
+        boardUserId: input.boardUserId,
+        args: parsed.args,
+        stickyAgentId: readStickyAgentId(context.issue.assigneeAdapterOverrides),
+        locale,
+      });
+      return { kind: "reply", command: "to", text: result.text };
+    }
+    case "who": {
+      const text = await buildWhoReplyText(input.db, {
+        companyId: input.companyId,
+        conversationAgentId: input.agentId,
+        stickyAgentId: readStickyAgentId(context.issue.assigneeAdapterOverrides),
+        locale,
+      });
+      return { kind: "reply", command: "who", text };
+    }
     case "close":
-      return { kind: "reply", command: "close", text: "Этот чат не закрывается. Чтобы начать заново, отправьте /new." };
+      return { kind: "reply", command: "close", text: t(locale, "close.reply") };
     case "task":
-      return { kind: "reply", command: "task", text: "В личном чате просто напишите свой запрос." };
+      return { kind: "reply", command: "task", text: t(locale, "task.reply") };
     default:
       // myrmidon(X8c): same reasoning as the not-available branch above —
       // `name` is unvalidated chat input here, so `command` gets a fixed
@@ -161,7 +252,9 @@ export async function runBridgedDirectMessageCommand(
       return {
         kind: "reply",
         command: "unknown",
-        text: `Неизвестная команда /${truncateForDisplay(parsed.name, MAX_DISPLAYED_COMMAND_NAME_LENGTH)}. Список команд — /help.`,
+        text: t(locale, "unknown.command", {
+          name: truncateForDisplay(parsed.name, MAX_DISPLAYED_COMMAND_NAME_LENGTH),
+        }),
       };
   }
 }
@@ -170,10 +263,11 @@ async function handleNewCommand(
   input: BridgedCommandInput,
   context: BridgedCommandContext,
   args: string,
+  locale: BridgeLocale,
 ): Promise<BridgedCommandResult> {
   const modelArg = args.trim();
   if (!modelArg) {
-    return { kind: "message", body: "/new", notice: "Новая сессия начата. История остаётся на доске." };
+    return { kind: "message", body: "/new", notice: t(locale, "new.notice") };
   }
 
   const resolution = await resolveChooserSelection({
@@ -184,6 +278,7 @@ async function handleNewCommand(
     // A model chosen with /new applies to the fresh session /new is about to
     // start, not to whatever is currently running; no need to wait for it.
     checkTurnInProgress: false,
+    locale,
   });
   if (resolution.kind === "error") {
     return { kind: "reply", command: "new", text: resolution.text };
@@ -205,12 +300,16 @@ async function handleNewCommand(
   });
   const modelLabel =
     resolution.kind === "default"
-      ? `по умолчанию у агента (${describeCardValue(context.agent.adapterConfig, MODEL_CHOOSER.adapterConfigKey)})`
+      ? t(locale, "chooser.agentDefaultParen", {
+          value:
+            describeCardValue(context.agent.adapterConfig, MODEL_CHOOSER.adapterConfigKey) ??
+            t(locale, "source.adapterDefault"),
+        })
       : resolution.candidate.id;
   return {
     kind: "message",
     body: "/new",
-    notice: `Новая сессия начата с моделью ${modelLabel}. История остаётся на доске.`,
+    notice: t(locale, "new.withModel.notice", { model: modelLabel }),
   };
 }
 
@@ -219,9 +318,11 @@ async function handleChooserCommand(
   context: BridgedCommandContext,
   chooser: ChatModelChooser,
   args: string,
+  locale: BridgeLocale,
 ): Promise<BridgedCommandResult> {
   const overrideAdapterConfig = readOverrideAdapterConfig(context.issue.assigneeAdapterOverrides);
   const trimmed = args.trim();
+  const statusLabel = t(locale, chooser.statusLabelKey);
 
   if (!trimmed) {
     const availability = await checkChooserAvailability(chooser, context.agent);
@@ -229,7 +330,7 @@ async function handleChooserCommand(
       return {
         kind: "reply",
         command: chooser.commandName,
-        text: chooser.unavailableText,
+        text: t(locale, chooser.unavailableTextKey),
       };
     }
     const effective = describeEffectiveChatValue(
@@ -237,13 +338,22 @@ async function handleChooserCommand(
       context.agent.adapterConfig,
       chooser.adapterConfigKey,
     );
+    const sourceText = sourceLabelFor(effective.source, locale);
     return {
       kind: "reply",
       command: chooser.commandName,
       text:
-        `${chooser.statusLabel}: ${effective.value} (${effective.source}).\n` +
-        `Доступно:\n${formatChatChoiceList(availability.candidates)}\n` +
-        `Укажите /${chooser.commandName} <имя или номер> либо /${chooser.commandName} default.`,
+        t(locale, "chooser.effective", {
+          label: statusLabel,
+          value: effective.value ?? sourceText,
+          source: sourceText,
+        }) +
+        "\n" +
+        t(locale, "chooser.availableHeader") +
+        "\n" +
+        formatChatChoiceList(availability.candidates) +
+        "\n" +
+        t(locale, "chooser.usage", { command: chooser.commandName }),
     };
   }
 
@@ -253,6 +363,7 @@ async function handleChooserCommand(
     arg: trimmed,
     turnInProgress: context.turnInProgress,
     checkTurnInProgress: true,
+    locale,
   });
   if (resolution.kind === "error") {
     return { kind: "reply", command: chooser.commandName, text: resolution.text };
@@ -273,12 +384,19 @@ async function handleChooserCommand(
       refuseIfTurnInProgress: true,
     });
     if (!overrideResult.applied) {
-      return { kind: "reply", command: chooser.commandName, text: TURN_IN_PROGRESS_TEXT };
+      return { kind: "reply", command: chooser.commandName, text: turnInProgressText(locale) };
     }
     return {
       kind: "reply",
       command: chooser.commandName,
-      text: `${chooser.statusLabel} для этого чата: по умолчанию у агента (${describeCardValue(context.agent.adapterConfig, chooser.adapterConfigKey)}).`,
+      text: t(locale, "chooser.defaultApplied", {
+        label: statusLabel,
+        agentDefault: t(locale, "chooser.agentDefaultParen", {
+          value:
+            describeCardValue(context.agent.adapterConfig, chooser.adapterConfigKey) ??
+            t(locale, "source.adapterDefault"),
+        }),
+      }),
     };
   }
 
@@ -293,18 +411,19 @@ async function handleChooserCommand(
     refuseIfTurnInProgress: true,
   });
   if (!overrideResult.applied) {
-    return { kind: "reply", command: chooser.commandName, text: TURN_IN_PROGRESS_TEXT };
+    return { kind: "reply", command: chooser.commandName, text: turnInProgressText(locale) };
   }
   return {
     kind: "reply",
     command: chooser.commandName,
-    text:
-      `${chooser.statusLabel} для этого чата: ${resolution.candidate.id}. ` +
-      "Следующий ответ начнёт новую сессию модели с недавней историей этого чата.",
+    text: t(locale, "chooser.set", { label: statusLabel, value: resolution.candidate.id }),
   };
 }
 
-async function handleStopCommand(input: BridgedCommandInput): Promise<BridgedCommandResult> {
+async function handleStopCommand(
+  input: BridgedCommandInput,
+  locale: BridgeLocale,
+): Promise<BridgedCommandResult> {
   const result = await stopBridgedChatRuns({
     db: input.db,
     companyId: input.companyId,
@@ -314,16 +433,17 @@ async function handleStopCommand(input: BridgedCommandInput): Promise<BridgedCom
     cancelRun: input.cancelRun,
   });
   const text = result.failed
-    ? "Сейчас остановка недоступна."
+    ? t(locale, "stop.unavailable")
     : result.stopped > 0
-      ? "Останавливаю текущий ответ."
-      : "Сейчас ничего не выполняется.";
+      ? t(locale, "stop.stopping")
+      : t(locale, "stop.idle");
   return { kind: "reply", command: "stop", text };
 }
 
 async function handleStatusCommand(
   input: BridgedCommandInput,
   context: BridgedCommandContext,
+  locale: BridgeLocale,
 ): Promise<BridgedCommandResult> {
   const text = await buildChatStatusReply({
     db: input.db,
@@ -332,6 +452,7 @@ async function handleStatusCommand(
     boardUserId: input.boardUserId,
     publicBaseUrl: input.publicBaseUrl,
     context,
+    locale,
   });
   return { kind: "reply", command: "status", text };
 }

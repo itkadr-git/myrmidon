@@ -1,0 +1,265 @@
+#!/usr/bin/env bash
+# devbuild: run a build/test command for the current repository workspace on
+# the shared build VPS, instead of inside this CPU- and memory-limited bot
+# container.
+#
+# What it does:
+#   1. rsync /workspace/ (including .git, excluding node_modules and other
+#      generated heaviness) to $DEVBUILD_BASE/<bot>/<repo>/ on the VPS;
+#   2. ssh there, export the shared cache environment
+#      (/srv/devcache: pnpm store, Go modules/build, Gradle) and run the
+#      command at the repo root;
+#   3. return the command's output and exit code unchanged.
+#
+# Connection parameters come ONLY from the environment (never baked into
+# images or tests, so the address stays out of source control):
+#   DEVBUILD_HOST  - VPS host name or address
+#   DEVBUILD_USER  - ssh user on the VPS
+#   DEVBUILD_BASE  - base directory on the VPS (e.g. /srv/devbuild)
+#
+# The ssh key is expected at /opt/devbuild-ssh/id_ed25519 (mounted by the
+# runtime template, see part C of BUILD-OFFLOAD). If the env vars are unset,
+# print a pointer to the devbuild skill and exit 1.
+#
+# Resource limits for the remote command are NOT imposed here — they are the
+# fleet operator's business (part D). This script is only transport plus the
+# cache environment.
+set -euo pipefail
+
+# myrmidon(1.6.5 BOT-DISK-H2g): resolve_git_dir <path> — what kind of git
+# checkout <path> (or the nearest parent) is. A plain clone has a `.git`
+# DIRECTORY; a worktree of a shared bare base has a `.git` FILE reading
+# `gitdir: <base>/worktrees/<name>` (absolute, or relative to the worktree).
+# Prints four tab-free lines: kind (clone|worktree|none), root, gitdir,
+# commondir (the bare base for a worktree, the gitdir itself for a clone).
+# Reads only plain files and directories — never `.git/...` of a worktree as a
+# directory, never git itself (the image wraps git); exit 1 and kind=none when
+# nothing is found or the file is malformed.
+resolve_git_dir() {
+  local dir="${1:?resolve_git_dir: path required}" depth=0 gf line gd cdir
+  dir="$(cd "$dir" 2>/dev/null && pwd -P)" || { printf 'none\n\n\n\n'; return 1; }
+  while [ "$depth" -lt 32 ]; do
+    gf="$dir/.git"
+    if [ -d "$gf" ]; then
+      printf 'clone\n%s\n%s\n%s\n' "$dir" "$gf" "$gf"
+      return 0
+    elif [ -f "$gf" ]; then
+      IFS= read -r line < "$gf" || true
+      case "$line" in "gitdir: "*) gd="${line#gitdir: }" ;; *) printf 'none\n\n\n\n'; return 1 ;; esac
+      case "$gd" in /*) ;; *) gd="$dir/$gd" ;; esac
+      [ -d "$gd" ] || { printf 'none\n\n\n\n'; return 1; }
+      gd="$(cd "$gd" && pwd -P)"
+      cdir="$gd"
+      if [ -f "$gd/commondir" ]; then
+        IFS= read -r line < "$gd/commondir" || true
+        case "$line" in /*) cdir="$line" ;; *) cdir="$gd/$line" ;; esac
+        cdir="$(cd "$cdir" 2>/dev/null && pwd -P)" || { printf 'none\n\n\n\n'; return 1; }
+      fi
+      printf 'worktree\n%s\n%s\n%s\n' "$dir" "$gd" "$cdir"
+      return 0
+    fi
+    [ "$dir" = "/" ] && break
+    dir="$(dirname "$dir")"
+    depth=$((depth + 1))
+  done
+  printf 'none\n\n\n\n'
+  return 1
+}
+
+# Sourced by the test (and nothing else): stop before the transport part.
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then return 0; fi
+
+readonly DEVBUILD_SSH_KEY_PATH="/opt/devbuild-ssh/id_ed25519"
+readonly DEVBUILD_CACHES="/srv/devcache"
+
+usage() {
+  cat <<'USAGE'
+devbuild - run a build/test command on the shared build VPS
+
+Usage:
+  devbuild <command>
+  devbuild 'pnpm install && pnpm -r typecheck'
+  devbuild --help
+
+Syncs /workspace to the VPS first (rsync, .git included, node_modules
+excluded), then runs <command> inside the synced repo with the shared
+package caches (/srv/devcache) exported. The command's stdout/stderr and
+exit code are passed through.
+
+Required environment:
+  DEVBUILD_HOST   VPS host or address (e.g. from the fleet operator)
+  DEVBUILD_USER   ssh user on the VPS
+  DEVBUILD_BASE   base directory on the VPS (e.g. /srv/devbuild)
+
+Optional environment:
+  DEVBUILD_SSH_KEY    overrides the key path (default: /opt/devbuild-ssh/id_ed25519)
+  DEVBUILD_WORKSPACE  local workspace to sync (default: /workspace)
+
+See the devbuild skill (skills/devbuild/SKILL.md) for examples, caches and
+typical failures.
+USAGE
+}
+
+if [ "${1-}" = "--help" ] || [ "${1-}" = "-h" ]; then
+  usage
+  exit 0
+fi
+
+if [ "$#" -lt 1 ] || [ -z "${1-}" ]; then
+  usage >&2
+  echo "devbuild: no command given - pass it as a single quoted argument" >&2
+  exit 1
+fi
+command_to_run="$1"
+
+if [ -z "${DEVBUILD_HOST:-}" ] || [ -z "${DEVBUILD_USER:-}" ] || [ -z "${DEVBUILD_BASE:-}" ]; then
+  echo "devbuild: build/test runs happen on the build VPS, not in this container." >&2
+  echo "devbuild: DEVBUILD_HOST / DEVBUILD_USER / DEVBUILD_BASE are not set - see the" >&2
+  echo "devbuild: devbuild skill (skills/devbuild/SKILL.md) for the connection env." >&2
+  exit 1
+fi
+
+SSH_KEY="${DEVBUILD_SSH_KEY:-$DEVBUILD_SSH_KEY_PATH}"
+WORKSPACE_SRC="${DEVBUILD_WORKSPACE:-/workspace}"
+
+if [ ! -d "$WORKSPACE_SRC" ]; then
+  echo "devbuild: workspace directory $WORKSPACE_SRC does not exist" >&2
+  exit 1
+fi
+if [ ! -r "$SSH_KEY" ]; then
+  echo "devbuild: ssh key $SSH_KEY is missing or not readable - see the devbuild skill" >&2
+  exit 1
+fi
+
+# ssh refuses group/world-readable private keys; tighten if the mount allows.
+chmod 0600 "$SSH_KEY" 2>/dev/null || true
+
+command -v rsync >/dev/null 2>&1 || {
+  echo "devbuild: rsync is not installed in this image" >&2
+  exit 1
+}
+
+# Per-bot, per-repo destination: <base>/<bot>/<repo>/
+bot_name="${DEVBUILD_BOT_NAME:-$(id -un)}"
+repo_name="$(basename "$WORKSPACE_SRC")"
+[ -n "$repo_name" ] || repo_name="workspace"
+dest_root="${DEVBUILD_BASE%/}/$bot_name/$repo_name"
+
+SSH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new
+  -o UserKnownHostsFile="${DEVBUILD_KNOWN_HOSTS:-$HOME/.ssh/known_hosts}"
+  -o ConnectTimeout=15 -i "$SSH_KEY")
+
+# Prepare the destination and the shared cache directories (created on the
+# first run, reused by every bot afterwards). Paths are expanded locally on
+# purpose: $DEVBUILD_BASE is trusted operator env, single-quoted on the remote
+# side, and every value is validated to contain no quotes/spaces below.
+ssh "${SSH_OPTS[@]}" "$DEVBUILD_USER@$DEVBUILD_HOST" \
+  "mkdir -p '$dest_root' '$DEVBUILD_CACHES/pnpm' '$DEVBUILD_CACHES/go-mod' '$DEVBUILD_CACHES/go-build' '$DEVBUILD_CACHES/gradle'"
+
+
+# Sync the workspace. --delete keeps the VPS copy an exact mirror; .git is
+# included (commits are made from the container), node_modules and other
+# regenerable heaviness excluded to keep transfers small.
+rsync -a --delete --info=stats1 \
+  --exclude 'node_modules/' \
+  --exclude '.pnpm-store/' \
+  --exclude 'dist/' \
+  --exclude '.cache/' \
+  --exclude 'target/' \
+  --exclude '.tmp/' \
+  -e "ssh ${SSH_OPTS[*]}" \
+  "$WORKSPACE_SRC/" "$DEVBUILD_USER@$DEVBUILD_HOST:$dest_root/"
+
+# myrmidon(1.6.5 BOT-DISK-G): a task clone may borrow its objects from a shared
+# git store (git-reference/git --reference-if-able), and its
+# .git/objects/info/alternates then names a path on THIS container that does not
+# exist on the build host — every git command in the synced copy would fail on
+# missing objects. Sync each borrowed mirror into the shared devcache git
+# directory (one copy per host, keyed by the container path it borrows from)
+# and repoint the remote alternates file at it. Only lines inside the known
+# store roots are followed — a crafted alternates file must not make this
+# script ship another directory to a shared path — and only plain path
+# characters are accepted.
+hermes_home="${HERMES_HOME:-/data/hermes}"
+# (no .env or no such line is normal: grep's status must not kill the script under pipefail)
+local_mirror="${MYRMIDON_GIT_LOCAL_MIRROR:-$({ grep -m1 -E '^MYRMIDON_GIT_LOCAL_MIRROR=' "${hermes_home}/.env" 2>/dev/null || true; } | cut -d= -f2- | tr -d "\"'")}"
+devbuild_git="${DEVBUILD_CACHES}/git"
+declare -A mirror_shipped=()
+map_args=()
+for root in "${local_mirror:-${hermes_home}/.myrmidon/git-objects}" "/cache/git"; do
+  [ -n "$root" ] || continue
+  case "$root" in */) root="${root%/}";; esac
+  while IFS= read -r alt_file; do
+    while IFS= read -r alt_line; do
+      case "$alt_line" in "$root"/*) ;; *) continue ;; esac
+      case "$alt_line" in *[!A-Za-z0-9._/-]*) continue ;; esac
+      src_mirror="${alt_line%/objects}"
+      [ -d "$src_mirror" ] || continue
+      key="$(printf '%s' "$alt_line" | sha256sum | cut -c1-16)"
+      map_args+=("$alt_file" "$alt_line" "${devbuild_git}/${key}.git/objects")
+      if [ -z "${mirror_shipped[$key]:-}" ]; then
+        mirror_shipped[$key]=1
+        ssh "${SSH_OPTS[@]}" "$DEVBUILD_USER@$DEVBUILD_HOST" \
+          "mkdir -p '${devbuild_git}/${key}.git'"
+        rsync -a --info=stats0 \
+          -e "ssh ${SSH_OPTS[*]}" \
+          "$src_mirror/" "$DEVBUILD_USER@$DEVBUILD_HOST:${devbuild_git}/${key}.git/"
+      fi
+    done < "$alt_file"
+  done < <(find "$WORKSPACE_SRC" -maxdepth 6 \( -name node_modules -o -name .pnpm-store \) -prune -o -type f -path '*/objects/info/alternates' -print 2>/dev/null)
+done
+if [ "${#map_args[@]}" -gt 0 ]; then
+  # Rewrite the alternates files on the VPS copy. Arguments are the LOCAL
+  # alternates paths (their WORKSPACE_SRC prefix maps to dest_root), the old
+  # line and the new line; both paths passed the plain-character filter above,
+  # so the sed pattern is safe with the | delimiter.
+  ssh "${SSH_OPTS[@]}" "$DEVBUILD_USER@$DEVBUILD_HOST" bash -s -- "$dest_root" "$WORKSPACE_SRC" "${map_args[@]}" <<'REWRITE'
+set -eu
+dest_root="$1"; ws_src="$2"; shift 2
+while [ "$#" -ge 3 ]; do
+  local_file="$1"; old="$2"; new="$3"; shift 3
+  remote_file="${dest_root}/${local_file#"$ws_src"/}"
+  [ -f "$remote_file" ] || continue
+  sed -i "s|^${old}\$|${new}|" "$remote_file"
+done
+REWRITE
+fi
+
+# myrmidon(1.6.5 BOT-DISK-H2g): a task copy may be a git WORKTREE of the bot's
+# bare base (myr-ws open): /workspace/<KEY>/.git is a one-line file naming
+# <base>/worktrees/<name> on THIS container, and the objects live in the base.
+# Ship the base (without other worktrees' admin dirs) plus this worktree's admin
+# dir to a per-bot place in the devcache git directory and repoint both the
+# `.git` file and the admin dir's back-reference (`gitdir`) at the VPS paths.
+# Only bases under the container's myrmidon git-base root with plain path
+# characters are followed.
+git_kind=""; git_root=""; git_dir=""; git_common=""
+if res="$(resolve_git_dir "$WORKSPACE_SRC")"; then
+  { read -r git_kind; read -r git_root; read -r git_dir; read -r git_common; } <<<"$res"
+fi
+if [ "$git_kind" = "worktree" ] && [ "$git_root" = "$(cd "$WORKSPACE_SRC" && pwd -P)" ]; then
+  wt_base_root="${MYRMIDON_GIT_BASE_DIR:-${hermes_home:-${HERMES_HOME:-/data/hermes}}/.myrmidon/git-base}"
+  wt_name="$(basename "$git_dir")"
+  case "$git_common" in "${wt_base_root%/}"/*) ;; *) echo "devbuild: worktree base $git_common is outside $wt_base_root - not shipped" >&2; exit 1 ;; esac
+  case "$git_common$wt_name$bot_name" in *[!A-Za-z0-9._/-]*) echo "devbuild: unsupported characters in the worktree git paths" >&2; exit 1 ;; esac
+  wt_key="$(printf '%s' "$git_common" | sha256sum | cut -c1-16)"
+  remote_base="${DEVBUILD_CACHES}/git-wt/${bot_name}/${wt_key}.git"
+  ssh "${SSH_OPTS[@]}" "$DEVBUILD_USER@$DEVBUILD_HOST" "mkdir -p '$remote_base/worktrees/$wt_name'"
+  rsync -a --info=stats0 --exclude 'worktrees/' \
+    -e "ssh ${SSH_OPTS[*]}" \
+    "$git_common/" "$DEVBUILD_USER@$DEVBUILD_HOST:$remote_base/"
+  rsync -a --delete --info=stats0 \
+    -e "ssh ${SSH_OPTS[*]}" \
+    "$git_dir/" "$DEVBUILD_USER@$DEVBUILD_HOST:$remote_base/worktrees/$wt_name/"
+  ssh "${SSH_OPTS[@]}" "$DEVBUILD_USER@$DEVBUILD_HOST" bash -s -- "$dest_root" "$remote_base" "$wt_name" <<'WTREWRITE'
+set -eu
+dest_root="$1"; base="$2"; name="$3"
+printf 'gitdir: %s/worktrees/%s\n' "$base" "$name" > "$dest_root/.git"
+printf '%s/.git\n' "$dest_root" > "$base/worktrees/$name/gitdir"
+WTREWRITE
+fi
+
+# Run the command remotely, with the shared caches exported and the cwd at
+# the repo root. ssh propagates the remote command's exit status as its own.
+ssh "${SSH_OPTS[@]}" "$DEVBUILD_USER@$DEVBUILD_HOST" \
+  "cd '$dest_root' && export npm_config_store_dir='$DEVBUILD_CACHES/pnpm' GOMODCACHE='$DEVBUILD_CACHES/go-mod' GOCACHE='$DEVBUILD_CACHES/go-build' GRADLE_USER_HOME='$DEVBUILD_CACHES/gradle' && $command_to_run"
