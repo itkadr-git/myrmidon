@@ -325,6 +325,9 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // survive every general write (they are edited on their own settings
       // panel).
       ...(parsed.data.pauseGuard ? { pauseGuard: parsed.data.pauseGuard } : {}),
+      // myrmidon(1.6.3-FORAGING-IDLE-GATE): the stored foraging idle gate
+      // toggle survives every general write (it is edited on its own page).
+      ...(parsed.data.foragingIdleGate ? { foragingIdleGate: parsed.data.foragingIdleGate } : {}),
     };
   }
   return {

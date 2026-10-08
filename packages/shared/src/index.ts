@@ -2883,3 +2883,6 @@ export * from "./myrmidon-castes.js";
 // limits of the foraging sweep — shared by the server, the settings page and
 // the settings validator.
 export * from "./myrmidon-foraging.js";
+// myrmidon(1.6.3-FORAGING-IDLE-GATE): the shared contract of the foraging
+// idle gate — the toggle, its storage key and the resolver with sources.
+export * from "./myrmidon-foraging-idle-gate.js";
