@@ -14,7 +14,7 @@
   expression cannot use the plain-column index, so the planner sequentially
   scanned `documents` — the table whose `latest_body` column is the heavy one —
   and `issues`.
-- Migration `packages/db/src/migrations/0321_search_coalesce_trgm_indexes.sql`
+- Migration `packages/db/src/migrations/0314_search_coalesce_trgm_indexes.sql`
   adds one expression index per emitted shape,
   `gin ((coalesce(col, '')) gin_trgm_ops)`. It also repeats
   `CREATE EXTENSION IF NOT EXISTS pg_trgm` (idempotent; vendor migration
@@ -53,7 +53,7 @@
   обёртке не может воспользоваться поколочным индексом, поэтому планировщик
   читал `documents` целиком — таблицу, где лежит тяжёлая колонка `latest_body`, —
   и `issues` целиком.
-- Миграция `packages/db/src/migrations/0321_search_coalesce_trgm_indexes.sql`
+- Миграция `packages/db/src/migrations/0314_search_coalesce_trgm_indexes.sql`
   добавляет по одному индексному выражению на каждую фактически отправляемую
   формы: `gin ((coalesce(col, '')) gin_trgm_ops)`. Она также повторяет
   `CREATE EXTENSION IF NOT EXISTS pg_trgm` (идемпотентно; расширение уже

@@ -14,7 +14,7 @@
 // A wrapped expression cannot use the plain-column index, so the planner falls
 // back to a sequential scan of documents (the table that carries the heavy
 // latest_body column) and of issues. Migration
-// 0321_search_coalesce_trgm_indexes.sql adds one expression index per emitted
+// 0314_search_coalesce_trgm_indexes.sql adds one expression index per emitted
 // shape. This suite proves the coverage, and fails if a later change drops an
 // index or changes the emitted expression away from the indexed one:
 //
@@ -269,7 +269,7 @@ d("text search index coverage", () => {
   // the oracle silently created one index instead of two.
   it("ships every migration statement uncommented and at column 0", () => {
     const file = readFileSync(
-      new URL("../../../packages/db/src/migrations/0321_search_coalesce_trgm_indexes.sql", import.meta.url),
+      new URL("../../../packages/db/src/migrations/0314_search_coalesce_trgm_indexes.sql", import.meta.url),
       "utf8",
     );
     const lines = file.split("\n");
