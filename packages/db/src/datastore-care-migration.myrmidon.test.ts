@@ -143,8 +143,12 @@ describe("datastore care migration (static checks)", () => {
 
     const snapshotsTable = snapshot.tables["public.datastore_snapshots"];
     const reportsTable = snapshot.tables["public.datastore_audit_reports"];
-    expect(Object.keys(snapshotsTable.columns)).toEqual(SNAPSHOT_COLUMNS);
-    expect(Object.keys(reportsTable.columns)).toEqual(REPORT_COLUMNS);
+    // The snapshot keeps columns as a keyed object, so drizzle-kit writes them
+    // in alphabetical order rather than in the order of the schema. The
+    // positional order is pinned by the drizzle comparison and the SQL above;
+    // here the two sets only have to match.
+    expect([...Object.keys(snapshotsTable.columns)].sort()).toEqual([...SNAPSHOT_COLUMNS].sort());
+    expect([...Object.keys(reportsTable.columns)].sort()).toEqual([...REPORT_COLUMNS].sort());
     expect(snapshotsTable.columns.size_bytes.type).toBe("bigint");
     expect(snapshotsTable.columns.payload.type).toBe("jsonb");
     expect(snapshotsTable.columns.captured_at.type).toBe("timestamp with time zone");

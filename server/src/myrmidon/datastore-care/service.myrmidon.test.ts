@@ -296,7 +296,10 @@ describe("myrmidon(DBC-4) datastore-care service", () => {
     expect(result.report.topQueries).toHaveLength(1);
     expect(result.report.markdown).toContain("# Аудит базы доски — цель `board`");
     expect(result.report.markdown).toContain("SELECT * FROM issues WHERE company_id = $1");
-    expect(result.summary.worst).toBe("warn");
+    // The live-collection sample is healthy: the settings it does not carry
+    // (growth history, autovacuum_*, wal_compression, shared_buffers) come back
+    // as `unknown`, never as `ok`, and the worst verdict is `ok`.
+    expect(result.summary).toMatchObject({ ok: 12, warn: 0, fail: 0, unknown: 5, worst: "ok" });
     // The collection behind the report is stored, so the hourly series has no gap.
     expect(snapshots).toHaveLength(1);
 

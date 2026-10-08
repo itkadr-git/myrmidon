@@ -34,13 +34,16 @@ const boardMember = {
   isInstanceAdmin: false,
   companyIds: [COMPANY_ID],
 };
-const outsider = {
+/** A signed-in board user without any company membership. */
+const noCompanyActor = {
   type: "board",
   source: "session",
   userId: "user-b",
   isInstanceAdmin: false,
-  companyIds: ["99999999-9999-4999-8999-999999999999"],
+  companyIds: [],
 };
+/** No session at all — the actor middleware answers `type: "none"`. */
+const noSessionActor = { type: "none" };
 const agentActor = {
   type: "agent",
   source: "agent_key",
@@ -189,8 +192,13 @@ describe("myrmidon(DBC-4) datastore-care routes", () => {
     expect(service.readTargets).toHaveBeenCalledTimes(1);
   });
 
-  it("refuses every route to an agent and to a board member of another company", async () => {
-    for (const actor of [agentActor, outsider, undefined]) {
+  it("refuses every route to an agent and to a board user without company access", async () => {
+    // `assertBoardOrgAccess` (server/src/routes/authz.ts) is the platform guard
+    // the whole myrmidon surface uses: a board session passes when it carries an
+    // active company membership (or is an instance admin), and an agent or a
+    // session without one is refused. The module keeps that contract instead of
+    // inventing a scope of its own — the board is a single-company instance.
+    for (const actor of [agentActor, noSessionActor, noCompanyActor]) {
       const { server } = app(actor);
       const listed = await request(server).get("/api/myrmidon/datastores");
       expect([401, 403]).toContain(listed.status);

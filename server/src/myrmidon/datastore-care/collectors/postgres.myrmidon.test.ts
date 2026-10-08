@@ -256,8 +256,11 @@ describe("myrmidon(DBC-4) postgres collector", () => {
     expect(payload.topQueriesTotalMs).toBe(0);
     expect(payload.databaseBytes).toBe(1_073_741_824);
     expect(payload.warnings.join("\n")).toContain("pg_stat_statements is not installed");
-    // An empty backup directory is not a failure either, it is a fact.
-    expect(payload.backup.available).toBe(true);
+    // An empty backup directory is not a failure either, it is a fact: no
+    // warning, `fileCount` 0, and a note that names what is missing. `available`
+    // reports the backup file itself (the criterion fails on the empty age), so
+    // it is false here — the same shape the report reads for "no backup".
+    expect(payload.backup.available).toBe(false);
     expect(payload.backup.fileCount).toBe(0);
     expect(payload.backup.note).toContain("no backup found");
   });

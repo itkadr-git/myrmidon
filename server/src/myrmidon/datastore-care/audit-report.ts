@@ -460,11 +460,13 @@ export function buildAuditReportMarkdown(input: AuditReportInput): string {
   lines.push("");
   lines.push("## Критерии (раздел 6)");
   lines.push("");
-  lines.push("| # | Критерий | Порог | Значение | Итог | Источник |");
-  lines.push("| --- | --- | --- | --- | --- | --- |");
+  // The id is the key the API and the release gate read (`.criteria[].id`), so
+  // the exported file can be diffed against the JSON without matching titles.
+  lines.push("| # | id | Критерий | Порог | Значение | Итог | Источник |");
+  lines.push("| --- | --- | --- | --- | --- | --- | --- |");
   criteria.forEach((criterion, index) => {
     lines.push(
-      `| ${index + 1} | ${escapeCell(criterion.title)} | ${escapeCell(criterion.threshold)} | ${escapeCell(criterion.value)} | ${VERDICT_LABEL[criterion.verdict]} | ${escapeCell(criterion.source)} |`,
+      `| ${index + 1} | ${escapeCell(criterion.id)} | ${escapeCell(criterion.title)} | ${escapeCell(criterion.threshold)} | ${escapeCell(criterion.value)} | ${VERDICT_LABEL[criterion.verdict]} | ${escapeCell(criterion.source)} |`,
     );
   });
   const withDetail = criteria.filter((criterion) => criterion.detail);

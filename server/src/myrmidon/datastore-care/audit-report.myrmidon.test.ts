@@ -125,7 +125,8 @@ describe("myrmidon(DBC-4) audit criteria", () => {
     expect(criterion(criteria, "db-size").verdict).toBe("ok");
     expect(criterion(criteria, "db-size").value).toBe(prettyBytes(1_073_741_824));
     expect(criterion(criteria, "cache-hit").verdict).toBe("ok");
-    expect(criterion(criteria, "cache-hit").value).toBe("99.900 %");
+    // 990_000 of 991_000 block reads served from the cache = 99.899 %.
+    expect(criterion(criteria, "cache-hit").value).toBe("99.899 %");
     expect(criterion(criteria, "top-queries-share").verdict).toBe("ok");
     expect(criterion(criteria, "top-queries-share").value).toBe("75.0 %");
     expect(criterion(criteria, "stat-statements").verdict).toBe("ok");
@@ -146,7 +147,9 @@ describe("myrmidon(DBC-4) audit criteria", () => {
     expect(criterion(criteria, "unused-indexes").value).toContain("1 из 2 (50.0 %)");
 
     const summary = summarizeCriteria(criteria, payload());
-    expect(summary).toMatchObject({ ok: 16, warn: 1, fail: 0, unknown: 0, worst: "warn" });
+    // 15 ok, the unused index warns, and the sample carries no history for the
+    // 24 h growth rule — that one is `unknown`, not `ok`.
+    expect(summary).toMatchObject({ ok: 15, warn: 1, fail: 0, unknown: 1, worst: "warn" });
     expect(summary.databasePretty).toBe(prettyBytes(1_073_741_824));
     expect(summary.topQueries).toBe(1);
     expect(summary.statStatementsAvailable).toBe(true);
@@ -228,11 +231,13 @@ describe("myrmidon(DBC-4) audit criteria", () => {
 
     const summary = summarizeCriteria(criteria, unhealthy);
     expect(summary.worst).toBe("fail");
-    expect(summary.fail).toBe(1);
+    // Two hard failures: the invalid index and the 51 h old backup.
+    expect(summary.fail).toBe(2);
     // pg_stat_statements is present in the sample, so exactly one criterion is
     // still healthy.
     expect(summary.ok).toBe(1);
     expect(summary.unknown).toBe(1);
+    expect(summary.warn).toBe(13);
   });
 
   it("fails the backup criterion when there is no backup at all", () => {
@@ -337,6 +342,10 @@ describe("myrmidon(DBC-4) audit markdown", () => {
     expect(markdown).toContain("- Сформирован: 2026-10-08T05:00:01.000Z (запрос: manual)");
     expect(markdown).toContain("11111111-2222-3333-4444-555555555555");
     expect(markdown).toContain("## Критерии (раздел 6)");
+    // The id is the key the API and the gate read, so it is a column of its own
+    // in the exported table.
+    expect(markdown).toContain("| # | id | Критерий | Порог | Значение | Итог | Источник |");
+    expect(markdown).toContain("| 1 | db-size |");
     expect(markdown).toContain("## Топ-1 запросов (pg_stat_statements)");
     expect(markdown).toContain("SELECT * FROM issues WHERE company_id = $1");
     expect(markdown).toContain("## Как проверить вручную");
