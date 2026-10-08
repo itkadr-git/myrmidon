@@ -903,7 +903,7 @@ POST /api/companies/{companyId}/approvals
 
 Ask only when missing input materially blocks the request. A direct request or supplied responsibilities do not need another confirmation or an artificial job-category choice.
 
-Use `ask_user_questions` for a short question card. Each question requires `id`, `prompt`, `selectionMode`, and at least one option with `id` and `label`. Do not send `question`/`type: "text"` or an empty options array. Set `resolverPolicy: "human_only"` when the answer must come from the user.
+Use `ask_user_questions` for a short question card. Each question requires `id`, `prompt`, `selectionMode`, and at least one option with `id` and `label`. Do not send `question`/`type: "text"` or an empty options array. Set `resolverPolicy: "human_only"` when the answer must come from the user. For a human-only question to the task owner the owner receives a message from the bot instead of the card (instance mode `via_bot`): see `references/owner-dialogue.md` (`POST /api/myrmidon/owner-message`, `POST /api/myrmidon/owner-message/resolve`).
 
 ```json
 POST /api/issues/{issueId}/interactions

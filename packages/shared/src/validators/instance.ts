@@ -159,7 +159,7 @@ export const instanceGeneralSettingsSchema = z.object({
   wipLimit: wipLimitSettingsSchema.optional(),
   // myrmidon(1.6.5-OWNER-DM-FILTER): the owner-DM delivery filter mode,
   // changed from /api/myrmidon/owner-delivery; absent means the default
-  // "owner_decisions_only" (human-addressed cards only).
+  // "via_bot" (1.6.5-OWNER-VIA-BOT: no card, the author's message instead).
   ownerDelivery: ownerDeliverySettingsSchema.optional(),
   // myrmidon(REVIEW-ROUTING): automatic reviewer routing, changed from
   // /api/myrmidon/companies/:id/review-routing/settings; absent means the defaults.

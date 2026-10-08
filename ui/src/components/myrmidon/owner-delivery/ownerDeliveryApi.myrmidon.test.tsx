@@ -37,7 +37,7 @@ describe("myrmidon(1.6.5-OWNER-DM-FILTER) owner delivery api", () => {
     });
   });
 
-  it("falls back to owner_decisions_only for an empty or malformed body", async () => {
+  it("falls back to the default mode (via_bot) for an empty or malformed body", async () => {
     const expected = { mode: OWNER_DELIVERY_DEFAULT_MODE };
     for (const body of [{}, null, undefined, { mode: "nonsense" }, "all"]) {
       apiMock.get.mockResolvedValue(body);
@@ -47,9 +47,10 @@ describe("myrmidon(1.6.5-OWNER-DM-FILTER) owner delivery api", () => {
 
   it("normalizes a stored mode it understands", () => {
     expect(normalizeOwnerDeliverySettings({ mode: "all" })).toEqual({ mode: "all" });
+    expect(normalizeOwnerDeliverySettings({ mode: "via_bot" })).toEqual({ mode: "via_bot" });
     expect(normalizeOwnerDeliverySettings({ mode: "owner_decisions_only" })).toEqual({
       mode: "owner_decisions_only",
     });
-    expect(OWNER_DELIVERY_DEFAULT_MODE).toBe("owner_decisions_only");
+    expect(OWNER_DELIVERY_DEFAULT_MODE).toBe("via_bot");
   });
 });

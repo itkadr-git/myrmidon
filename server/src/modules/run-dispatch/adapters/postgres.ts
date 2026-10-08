@@ -35,7 +35,7 @@ import {
 import { parseIssueExecutionState } from "../../../services/issue-execution-policy.js";
 import { decideQueuedRunStaleness, decideScheduledRetryGate } from "../domain/policy.js";
 // myrmidon(P2): pending interaction addressee wake
-import { isPendingInteractionAddresseeWake } from "../myrmidon-pending-interaction-wake.js";
+import { isOwnerExplainWake, isPendingInteractionAddresseeWake } from "../myrmidon-pending-interaction-wake.js";
 import type {
   QueuedRunFacts,
   ReviewParticipantFacts,
@@ -503,12 +503,17 @@ export function createPostgresRunDispatchAdapter(
       ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
     );
     // myrmidon(P2): a pending interaction wakes its addressee, who may not be the assignee
-    const pendingInteractionAddresseeWake = await isPendingInteractionAddresseeWake(dbOrTx, {
+    // myrmidon(1.6.5-OWNER-VIA-BOT): the wake that asks the AUTHOR of an owner decision to explain it
+    // to the owner gets the same bypass: the author is not the addressee and not always the assignee
+    const ownerWakeFacts = {
       companyId: input.companyId,
       issueId,
       agentId: input.agentId,
       contextSnapshot: context,
-    });
+    };
+    const pendingInteractionAddresseeWake =
+      (await isPendingInteractionAddresseeWake(dbOrTx, ownerWakeFacts)) ||
+      (await isOwnerExplainWake(dbOrTx, ownerWakeFacts));
     const resumeIntent = context.resumeIntent === true || context.followUpRequested === true;
     const wakeReason = readNonEmptyString(context.wakeReason);
     const retryReason =
