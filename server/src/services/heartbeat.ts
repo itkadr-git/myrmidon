@@ -19508,12 +19508,8 @@ export function heartbeatService(
       const n = Number(envStale);
       if (Number.isFinite(n) && n > 0) staleAfterSec = n;
     }
-    const general = await db
-      .select({ general: instanceSettings.general })
-      .from(instanceSettings)
-      .limit(1)
-      .catch(() => [] as { general: Record<string, unknown> }[]);
-    const g = general[0]?.general ?? {};
+    const general = await instanceSettings.getGeneral().catch(() => ({}) as Record<string, unknown>);
+    const g = (general ?? {}) as Record<string, unknown>;
     explainAfterSec = clampNumber(g.queuedRunExplainAfterSec, 10, 86400) ?? explainAfterSec;
     staleAfterSec = clampNumber(g.queuedRunStaleAfterSec, 60, 604800) ?? staleAfterSec;
     return { explainAfterMs: explainAfterSec * 1000, staleAfterMs: staleAfterSec * 1000 };
@@ -19643,10 +19639,16 @@ export function heartbeatService(
   // recovery — the run must not wake again.
   async function cancelQueuedRunsAsNotStartable(runIds: ReadonlyArray<string>): Promise<void> {
     for (const runId of runIds) {
+      const run = await db.query.heartbeatRuns.findFirst({
+        where: eq(heartbeatRuns.id, runId),
+        columns: { id: true, companyId: true },
+      });
+      if (!run) continue;
       await runDispatch.cancelStaleQueuedRun({
-        companyId: undefined, // resolved from the run row
+        companyId: run.companyId,
         runId,
         expectedStatus: "queued",
+        now: new Date(),
         suppressImmediateRecovery: true,
       });
     }

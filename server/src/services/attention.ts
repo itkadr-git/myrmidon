@@ -250,6 +250,9 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   // myrmidon(OPE-6011): a held task blocks all of its wakes — ranked with the
   // other machine-recovery stops, just below a recovery action itself.
   execution_hold: 1,
+  // myrmidon(1.6.5 F-09): a queue stall is a workload notice — advice, ranked
+  // with the other capacity signals.
+  queue_stall: 14,
 };
 
 const PENDING_INTERACTION_STATUSES = ["pending"] as const;
@@ -2939,7 +2942,8 @@ async function buildAttentionFeedSnapshot(
             agentId: heartbeatRuns.agentId,
             agentName: agents.name,
             companyId: heartbeatRuns.companyId,
-            issueId: heartbeatRuns.issueId,
+            nativeIssueId: heartbeatRuns.nativeIssueId,
+            contextIssueId: heartbeatRuns.contextIssueId,
             issueIdentifier: issues.identifier,
             issueTitle: issues.title,
             createdAt: heartbeatRuns.createdAt,
@@ -2947,7 +2951,7 @@ async function buildAttentionFeedSnapshot(
           })
           .from(heartbeatRuns)
           .leftJoin(agents, eq(agents.id, heartbeatRuns.agentId))
-          .leftJoin(issues, eq(issues.id, heartbeatRuns.issueId))
+          .leftJoin(issues, eq(issues.id, heartbeatRuns.nativeIssueId))
           .where(
             and(
               eq(heartbeatRuns.companyId, companyId),
@@ -2957,12 +2961,13 @@ async function buildAttentionFeedSnapshot(
             ),
           );
         for (const row of stallRows) {
+          const issueId = row.nativeIssueId ?? row.contextIssueId ?? null;
           const signal: QueueStallSignal = {
             runId: row.runId,
             companyId: row.companyId,
             agentId: row.agentId,
             agentName: row.agentName ?? null,
-            issueId: row.issueId ?? null,
+            issueId,
             issueIdentifier: row.issueIdentifier ?? null,
             issueTitle: row.issueTitle ?? null,
             since: row.createdAt.toISOString(),
@@ -2986,7 +2991,10 @@ async function buildAttentionFeedSnapshot(
                   kind: "agent",
                   id: signal.agentId,
                   companyId,
-                  name: signal.agentName ?? "Agent",
+                  title: signal.agentName ?? "Agent",
+                  identifier: null,
+                  status: null,
+                  href: null,
                   metadata: { runId: signal.runId },
                 },
             whyNow: queueStallSignalWhyNow(signal),
@@ -2999,9 +3007,9 @@ async function buildAttentionFeedSnapshot(
             exitRule: "the run is claimed, cancelled, or gets a waitReason written by the sweep.",
             dedupKey: queueStallSignalDedupKey(signal),
             severity: queueStallSignalSeverity(),
-            activityAt: row.createdAt,
-            createdAt: row.createdAt,
-            updatedAt: row.createdAt,
+            activityAt: row.createdAt.toISOString(),
+            createdAt: row.createdAt.toISOString(),
+            updatedAt: row.createdAt.toISOString(),
             relatedIssue: null,
             detail: {
               kind: "generic",

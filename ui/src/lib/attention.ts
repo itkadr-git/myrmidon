@@ -88,6 +88,9 @@ const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
   execution_hold: { label: "Execution hold" },
   // myrmidon(1.6.5-F-18): label for the empty gateway model catalog signal.
   empty_model_catalog: { label: "Model catalog" },
+  // myrmidon(1.6.5 F-09): label for the queue_stall source — a queued run
+  // older than the stall threshold without a waitReason.
+  queue_stall: { label: "Queue stall" },
 };
 
 export function sourceMeta(kind: AttentionSourceKind): SourceMeta {
