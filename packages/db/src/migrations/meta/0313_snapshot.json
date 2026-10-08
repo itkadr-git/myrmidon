@@ -8,7 +8,7 @@
   "enums": {},
   "id": "b3e7f95f-0659-5107-8f90-e9b998a14647",
   "policies": {},
-  "prevId": "d9024f3b-9699-4b58-bb7b-31a0e50cae49",
+  "prevId": "d173b546-489b-4350-b6b3-0b2ba830e153",
   "roles": {},
   "schemas": {},
   "sequences": {
@@ -15486,6 +15486,198 @@
       },
       "isRLSEnabled": false,
       "name": "cost_events",
+      "policies": {},
+      "schema": "",
+      "uniqueConstraints": {}
+    },
+    "public.datastore_audit_reports": {
+      "checkConstraints": {},
+      "columns": {
+        "created_at": {
+          "default": "now()",
+          "name": "created_at",
+          "notNull": true,
+          "primaryKey": false,
+          "type": "timestamp with time zone"
+        },
+        "criteria": {
+          "name": "criteria",
+          "notNull": true,
+          "primaryKey": false,
+          "type": "jsonb"
+        },
+        "datastore_key": {
+          "name": "datastore_key",
+          "notNull": true,
+          "primaryKey": false,
+          "type": "text"
+        },
+        "generated_at": {
+          "name": "generated_at",
+          "notNull": true,
+          "primaryKey": false,
+          "type": "timestamp with time zone"
+        },
+        "id": {
+          "default": "gen_random_uuid()",
+          "name": "id",
+          "notNull": true,
+          "primaryKey": true,
+          "type": "uuid"
+        },
+        "markdown": {
+          "name": "markdown",
+          "notNull": true,
+          "primaryKey": false,
+          "type": "text"
+        },
+        "snapshot_id": {
+          "name": "snapshot_id",
+          "notNull": false,
+          "primaryKey": false,
+          "type": "uuid"
+        },
+        "summary": {
+          "name": "summary",
+          "notNull": true,
+          "primaryKey": false,
+          "type": "jsonb"
+        },
+        "top_queries": {
+          "name": "top_queries",
+          "notNull": true,
+          "primaryKey": false,
+          "type": "jsonb"
+        },
+        "trigger": {
+          "default": "'manual'",
+          "name": "trigger",
+          "notNull": true,
+          "primaryKey": false,
+          "type": "text"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "foreignKeys": {},
+      "indexes": {
+        "datastore_audit_reports_key_generated_idx": {
+          "columns": [
+            {
+              "asc": true,
+              "expression": "datastore_key",
+              "isExpression": false,
+              "nulls": "last"
+            },
+            {
+              "asc": true,
+              "expression": "generated_at",
+              "isExpression": false,
+              "nulls": "last"
+            }
+          ],
+          "concurrently": false,
+          "isUnique": false,
+          "method": "btree",
+          "name": "datastore_audit_reports_key_generated_idx",
+          "with": {}
+        }
+      },
+      "isRLSEnabled": false,
+      "name": "datastore_audit_reports",
+      "policies": {},
+      "schema": "",
+      "uniqueConstraints": {}
+    },
+    "public.datastore_snapshots": {
+      "checkConstraints": {},
+      "columns": {
+        "captured_at": {
+          "name": "captured_at",
+          "notNull": true,
+          "primaryKey": false,
+          "type": "timestamp with time zone"
+        },
+        "created_at": {
+          "default": "now()",
+          "name": "created_at",
+          "notNull": true,
+          "primaryKey": false,
+          "type": "timestamp with time zone"
+        },
+        "datastore_key": {
+          "name": "datastore_key",
+          "notNull": true,
+          "primaryKey": false,
+          "type": "text"
+        },
+        "id": {
+          "default": "gen_random_uuid()",
+          "name": "id",
+          "notNull": true,
+          "primaryKey": true,
+          "type": "uuid"
+        },
+        "index_bytes": {
+          "default": 0,
+          "name": "index_bytes",
+          "notNull": true,
+          "primaryKey": false,
+          "type": "bigint"
+        },
+        "payload": {
+          "name": "payload",
+          "notNull": true,
+          "primaryKey": false,
+          "type": "jsonb"
+        },
+        "server_version": {
+          "default": "''",
+          "name": "server_version",
+          "notNull": true,
+          "primaryKey": false,
+          "type": "text"
+        },
+        "size_bytes": {
+          "name": "size_bytes",
+          "notNull": true,
+          "primaryKey": false,
+          "type": "bigint"
+        },
+        "toast_bytes": {
+          "default": 0,
+          "name": "toast_bytes",
+          "notNull": true,
+          "primaryKey": false,
+          "type": "bigint"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "foreignKeys": {},
+      "indexes": {
+        "datastore_snapshots_key_captured_idx": {
+          "columns": [
+            {
+              "asc": true,
+              "expression": "datastore_key",
+              "isExpression": false,
+              "nulls": "last"
+            },
+            {
+              "asc": true,
+              "expression": "captured_at",
+              "isExpression": false,
+              "nulls": "last"
+            }
+          ],
+          "concurrently": false,
+          "isUnique": false,
+          "method": "btree",
+          "name": "datastore_snapshots_key_captured_idx",
+          "with": {}
+        }
+      },
+      "isRLSEnabled": false,
+      "name": "datastore_snapshots",
       "policies": {},
       "schema": "",
       "uniqueConstraints": {}
@@ -51464,198 +51656,6 @@
       },
       "isRLSEnabled": false,
       "name": "workspace_runtime_services",
-      "policies": {},
-      "schema": "",
-      "uniqueConstraints": {}
-    },
-    "public.datastore_snapshots": {
-      "checkConstraints": {},
-      "columns": {
-        "captured_at": {
-          "name": "captured_at",
-          "notNull": true,
-          "primaryKey": false,
-          "type": "timestamp with time zone"
-        },
-        "created_at": {
-          "default": "now()",
-          "name": "created_at",
-          "notNull": true,
-          "primaryKey": false,
-          "type": "timestamp with time zone"
-        },
-        "datastore_key": {
-          "name": "datastore_key",
-          "notNull": true,
-          "primaryKey": false,
-          "type": "text"
-        },
-        "id": {
-          "default": "gen_random_uuid()",
-          "name": "id",
-          "notNull": true,
-          "primaryKey": true,
-          "type": "uuid"
-        },
-        "index_bytes": {
-          "default": 0,
-          "name": "index_bytes",
-          "notNull": true,
-          "primaryKey": false,
-          "type": "bigint"
-        },
-        "payload": {
-          "name": "payload",
-          "notNull": true,
-          "primaryKey": false,
-          "type": "jsonb"
-        },
-        "server_version": {
-          "default": "''",
-          "name": "server_version",
-          "notNull": true,
-          "primaryKey": false,
-          "type": "text"
-        },
-        "size_bytes": {
-          "name": "size_bytes",
-          "notNull": true,
-          "primaryKey": false,
-          "type": "bigint"
-        },
-        "toast_bytes": {
-          "default": 0,
-          "name": "toast_bytes",
-          "notNull": true,
-          "primaryKey": false,
-          "type": "bigint"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "foreignKeys": {},
-      "indexes": {
-        "datastore_snapshots_key_captured_idx": {
-          "columns": [
-            {
-              "asc": true,
-              "expression": "datastore_key",
-              "isExpression": false,
-              "nulls": "last"
-            },
-            {
-              "asc": true,
-              "expression": "captured_at",
-              "isExpression": false,
-              "nulls": "last"
-            }
-          ],
-          "concurrently": false,
-          "isUnique": false,
-          "method": "btree",
-          "name": "datastore_snapshots_key_captured_idx",
-          "with": {}
-        }
-      },
-      "isRLSEnabled": false,
-      "name": "datastore_snapshots",
-      "policies": {},
-      "schema": "",
-      "uniqueConstraints": {}
-    },
-    "public.datastore_audit_reports": {
-      "checkConstraints": {},
-      "columns": {
-        "created_at": {
-          "default": "now()",
-          "name": "created_at",
-          "notNull": true,
-          "primaryKey": false,
-          "type": "timestamp with time zone"
-        },
-        "criteria": {
-          "name": "criteria",
-          "notNull": true,
-          "primaryKey": false,
-          "type": "jsonb"
-        },
-        "datastore_key": {
-          "name": "datastore_key",
-          "notNull": true,
-          "primaryKey": false,
-          "type": "text"
-        },
-        "generated_at": {
-          "name": "generated_at",
-          "notNull": true,
-          "primaryKey": false,
-          "type": "timestamp with time zone"
-        },
-        "id": {
-          "default": "gen_random_uuid()",
-          "name": "id",
-          "notNull": true,
-          "primaryKey": true,
-          "type": "uuid"
-        },
-        "markdown": {
-          "name": "markdown",
-          "notNull": true,
-          "primaryKey": false,
-          "type": "text"
-        },
-        "snapshot_id": {
-          "name": "snapshot_id",
-          "notNull": false,
-          "primaryKey": false,
-          "type": "uuid"
-        },
-        "summary": {
-          "name": "summary",
-          "notNull": true,
-          "primaryKey": false,
-          "type": "jsonb"
-        },
-        "top_queries": {
-          "name": "top_queries",
-          "notNull": true,
-          "primaryKey": false,
-          "type": "jsonb"
-        },
-        "trigger": {
-          "default": "'manual'",
-          "name": "trigger",
-          "notNull": true,
-          "primaryKey": false,
-          "type": "text"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "foreignKeys": {},
-      "indexes": {
-        "datastore_audit_reports_key_generated_idx": {
-          "columns": [
-            {
-              "asc": true,
-              "expression": "datastore_key",
-              "isExpression": false,
-              "nulls": "last"
-            },
-            {
-              "asc": true,
-              "expression": "generated_at",
-              "isExpression": false,
-              "nulls": "last"
-            }
-          ],
-          "concurrently": false,
-          "isUnique": false,
-          "method": "btree",
-          "name": "datastore_audit_reports_key_generated_idx",
-          "with": {}
-        }
-      },
-      "isRLSEnabled": false,
-      "name": "datastore_audit_reports",
       "policies": {},
       "schema": "",
       "uniqueConstraints": {}
