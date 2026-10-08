@@ -84,12 +84,13 @@ GET /api/myrmidon/companies/:id/foraging/passes?limit=   (company access)
 ```
 
 The journal lives under `instance_settings.general.foragingPassJournal`
-(newest first, capped at 50 entries for the instance; a pass of one company
-never drops the history of another). Every pass appends itself — including a
+(newest first, capped at 50 entries PER COMPANY; a pass of one company never
+drops the history of another). Every pass appends itself — including a
 pass that could not list its sources — and a failed journal write never
-fails a pass. The reader is defensive: an unreadable entry loses that entry,
-not the history. The journal is a view; the audit trail of a change stays in
-the activity log.
+fails a pass. The read-modify-write of the row is serialized, so two passes
+recording at the same time both land. The reader is defensive: an unreadable
+entry loses that entry, not the history. The journal is a view; the audit
+trail of a change stays in the activity log.
 
 ## Where the code lives
 

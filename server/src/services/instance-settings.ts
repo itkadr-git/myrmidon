@@ -336,9 +336,6 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // this line the vendor write path silently drops the key and the settings
       // could only ever come from the environment.
       ...(parsed.data.teamLiveness ? { teamLiveness: parsed.data.teamLiveness } : {}),
-      // myrmidon(1.6.3-FORAGING-IDLE-GATE): the stored foraging idle gate
-      // toggle survives every general write (it is edited on its own page).
-      ...(parsed.data.foragingIdleGate ? { foragingIdleGate: parsed.data.foragingIdleGate } : {}),
       // myrmidon(BOT-RUNTIME-TUNING D2): the stored fallback-signal settings
       // survive every general write (they are edited on their own settings
       // page). Without this line `updateGeneral` normalizes the patch away, so
@@ -717,6 +714,12 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
             ...preserveBudgetProjectionGeneralKey(current.general), // myrmidon(1.7-BUDGET-CONFIG-C)
             ...preserveBotImageRolloutGeneralKey(current.general), // myrmidon(BOT-ROLLOUT)
             ...preserveForagingIdleGateGeneralKey(current.general), // myrmidon(1.6.3-FORAGING-IDLE-GATE)
+            // The preserve line above restores the stored value: a patch that
+            // carries the key must win, the same rule as DM-PROGRESS. Without
+            // this line the second flip of the switch on the "Foraging" page
+            // persists the row and is immediately overwritten by the stored
+            // value, so the toggle looks like it rolls back.
+            ...(patch.foragingIdleGate !== undefined ? { foragingIdleGate: nextGeneral.foragingIdleGate } : {}),
           },
           updatedAt: now,
         })

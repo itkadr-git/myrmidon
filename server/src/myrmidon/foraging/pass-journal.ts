@@ -30,6 +30,28 @@ import { instanceSettingsService } from "../../services/instance-settings.js";
 
 export { FORAGING_PASS_JOURNAL_KEY, FORAGING_PASS_JOURNAL_LIMIT };
 
+/**
+ * The journal is a read-modify-write on ONE settings row: two passes that
+ * interleave would each read the same list and the later write would drop the
+ * other's entry. The chain lives at module level, not in the service, because
+ * the wiring builds a journal service per call site (the sweep and the routes)
+ * and they all write the same row.
+ */
+const journalWrites = new Map<string, Promise<unknown>>();
+
+function serializeJournalWrite<T>(key: string, run: () => Promise<T>): Promise<T> {
+  const previous = journalWrites.get(key) ?? Promise.resolve();
+  const next = previous.then(run, run);
+  journalWrites.set(
+    key,
+    next.then(
+      () => undefined,
+      () => undefined,
+    ),
+  );
+  return next;
+}
+
 /** What a finished pass reports; the journal stamps the time and the company. */
 export interface ForagingPassSummary {
   sourcesRead: number;
@@ -95,13 +117,17 @@ export function foragingPassJournalService(
         skipped: pass.skipped,
       };
       try {
-        const general = await deps.getGeneral();
-        const next = appendForagingPassJournal(
-          general?.[FORAGING_PASS_JOURNAL_KEY],
-          entry,
-          FORAGING_PASS_JOURNAL_LIMIT,
-        );
-        await deps.updateGeneral({ foragingPassJournal: next });
+        // Serialized: the read-modify-write of the row must not lose the entry
+        // of a pass that is recording itself at the same time.
+        await serializeJournalWrite(FORAGING_PASS_JOURNAL_KEY, async () => {
+          const general = await deps.getGeneral();
+          const next = appendForagingPassJournal(
+            general?.[FORAGING_PASS_JOURNAL_KEY],
+            entry,
+            FORAGING_PASS_JOURNAL_LIMIT,
+          );
+          await deps.updateGeneral({ foragingPassJournal: next });
+        });
       } catch {
         // The pass already happened; the history is a convenience view.
       }

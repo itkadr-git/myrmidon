@@ -68,9 +68,29 @@ describe("myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half) pass journal service", () 
     expect(read[0]?.skipped[0]).toEqual({ role: "engineer", reason: "no_idle_agent" });
     // Another company's history stays empty.
     expect(await service.read("company-b")).toEqual([]);
+        });
+
+  it("serializes the read-modify-write, so two passes recording at once both land", async () => {
+    // Two journal services over the same row, the way the wiring has them
+    // (the sweep and the routes). Without the write chain both read the same
+    // empty journal and the slower write drops the other pass.
+    const { deps, state } = fakeGeneralStore();
+    const slowDeps: ForagingPassJournalServiceDeps = {
+      ...deps,
+      getGeneral: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        return state.general;
+      },
+    };
+    const first = foragingPassJournalService(null as never, slowDeps);
+    const second = foragingPassJournalService(null as never, { ...slowDeps });
+
+    await Promise.all([first.record("company-a", summary), second.record("company-a", summary)]);
+
+    expect(state.general[FORAGING_PASS_JOURNAL_KEY]).toHaveLength(2);
   });
 
-  it("keeps a pass that read nothing, so the history shows the skip", async () => {
+        it("keeps a pass that read nothing, so the history shows the skip", async () => {
     const { deps } = fakeGeneralStore();
     const service = foragingPassJournalService(null as never, deps);
     await service.record("company-a", {

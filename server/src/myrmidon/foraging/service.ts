@@ -126,8 +126,9 @@ export interface ForagingServiceDeps {
   store: ForagingStore;
   reader: ForagingReader;
   candidatePort: ForagingCandidatePort;
-  db: Db;
-  /** The idle-gate toggle, read on EVERY pass; absent = the default (on). */
+  /** The database, for the default per-role idle check. Optional. */
+  db?: Db;
+  /** The idle-gate toggle, read on EVERY pass; absent means the gate is not applied. */
   idleGate?: Pick<ForagingIdleGateServiceDeps, "getGeneral" | "env">;
   /** The per-role idle check; defaults to the swarm-queue/agent SQL check. */
   idleCheck?: ForagingIdleCheck;
@@ -210,7 +211,7 @@ export function createForagingService(deps: ForagingServiceDeps): ForagingServic
   const store = deps.store;
   const now = deps.now ?? (() => new Date());
   const log = deps.log ?? logger;
-  const idleCheck = deps.idleCheck ?? createDbForagingIdleCheck(deps.db);
+  const idleCheck = deps.idleCheck ?? (deps.db ? createDbForagingIdleCheck(deps.db) : null);
 
   const emptyResult = (): ForagingSweepResult => ({
     sourcesRead: 0,
@@ -239,14 +240,19 @@ export function createForagingService(deps: ForagingServiceDeps): ForagingServic
 
     async runPass(companyId) {
       const result = emptyResult();
-      // The gate toggle is read on EVERY pass: a settings-page change reaches
-      // the next pass without a restart (env stays the forced override).
-      let gateEnabled = true;
-      if (deps.idleGate) {
+      // myrmidon(1.6.3-FORAGING-IDLE-GATE): the toggle is read on EVERY pass, so
+      // a settings-page change reaches the next pass without a restart (the
+      // environment variable stays the forced override). With no toggle wired
+      // (or no idle check to run) the gate is not applied at all, and a failed
+      // read fails OFF with a warning: a broken settings read must never skip
+      // learning nobody asked to skip.
+      let gateEnabled = false;
+      if (deps.idleGate && idleCheck) {
         try {
           gateEnabled = (await readForagingIdleGate(deps.idleGate)).enabled;
-        } catch {
-          gateEnabled = true;
+        } catch (err) {
+          log.warn({ err, companyId }, "foraging: idle gate read failed, the gate stays off this pass");
+          gateEnabled = false;
         }
       }
 
@@ -387,7 +393,7 @@ export function createForagingService(deps: ForagingServiceDeps): ForagingServic
         // myrmidon(1.6.3-FORAGING-IDLE-GATE): per-role idle check inside the
         // pass. A busy role is skipped (the reason goes to the result and the
         // journal); the pass CONTINUES with the other roles' sources.
-        if (gateEnabled) {
+        if (gateEnabled && idleCheck) {
           if (!checkedRoles.has(source.role)) {
             try {
               checkedRoles.set(source.role, await idleCheck.roleIdleReason(companyId, source.role));

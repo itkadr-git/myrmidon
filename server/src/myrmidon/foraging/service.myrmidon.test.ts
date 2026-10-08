@@ -337,6 +337,42 @@ describe("myrmidon(1.6.3-FORAGING-IDLE-GATE) gate in the sweep pass", () => {
     expect(result.sourcesRead).toBe(0);
   });
 
+  it("without the toggle wiring the gate is not applied, so the pass keeps reading", async () => {
+    const store = createMemoryStore([{ id: "s1", role: "engineer", url: "https://example.com/a" }]);
+    const service = createForagingService({
+      ...baseDeps(),
+      store,
+      reader: fakeReader({ "https://example.com/a": "x" }),
+      candidatePort: EMPTY_PORT,
+      idleCheck: scriptedIdleCheck({ engineer: "queue_not_empty" }),
+    });
+    // No toggle wired (an embedder without the settings row): the gate is not
+    // applied at all — the pre-gate behaviour, and the reason the initial
+    // `gateEnabled` is false.
+    const result = await service.runPass("company-a");
+    expect(result.skippedReason).toBeUndefined();
+    expect(result.sourcesRead).toBe(1);
+  });
+
+  it("a failed settings read fails off: the pass keeps reading and warns", async () => {
+    const store = createMemoryStore([{ id: "s1", role: "engineer", url: "https://example.com/a" }]);
+    const service = createForagingService({
+      ...baseDeps(),
+      store,
+      reader: fakeReader({ "https://example.com/a": "x" }),
+      candidatePort: EMPTY_PORT,
+      idleGate: {
+        getGeneral: async () => {
+          throw new Error("the settings row is unreadable");
+        },
+      },
+      idleCheck: scriptedIdleCheck({ engineer: "queue_not_empty" }),
+    });
+    const result = await service.runPass("company-a");
+    expect(result.skippedReason).toBeUndefined();
+    expect(result.sourcesRead).toBe(1);
+  });
+
   it("the idle check runs once per role per pass, not once per source", async () => {
     const store = createMemoryStore([
       { id: "s1", role: "engineer", url: "https://example.com/a" },

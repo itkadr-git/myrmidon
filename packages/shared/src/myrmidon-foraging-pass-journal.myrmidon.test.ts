@@ -42,6 +42,25 @@ describe("myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half) pass journal", () => {
     expect(read.some((item) => item.at === "2026-10-04T10:01:00.000Z")).toBe(false);
   });
 
+  it("caps per company: a busy company does not push another company out of the row", () => {
+    let stored: unknown = [];
+    // An older pass of another company, then far more passes than the cap for
+    // the busy one: an instance-wide cap would evict company-b entirely.
+    stored = appendForagingPassJournal(stored, entry({ companyId: "company-b", at: "2026-10-04T09:00:00.000Z" }));
+    for (let index = 1; index <= FORAGING_PASS_JOURNAL_LIMIT + 5; index += 1) {
+      stored = appendForagingPassJournal(
+        stored,
+        entry({ companyId: "company-a", at: `2026-10-04T10:${String(index).padStart(2, "0")}:00.000Z` }),
+      );
+    }
+    expect(readForagingPassJournal(stored, { companyId: "company-a" })).toHaveLength(FORAGING_PASS_JOURNAL_LIMIT);
+    expect(readForagingPassJournal(stored, { companyId: "company-b" })).toEqual([
+      expect.objectContaining({ companyId: "company-b", at: "2026-10-04T09:00:00.000Z" }),
+    ]);
+    // The row carries the company's cap plus the untouched pass of the other one.
+    expect((stored as unknown[]).length).toBe(FORAGING_PASS_JOURNAL_LIMIT + 1);
+  });
+
   it("records the skipped roles and their reasons", () => {
     const stored = appendForagingPassJournal([], entry({
       skippedReason: "no_idle_agent",

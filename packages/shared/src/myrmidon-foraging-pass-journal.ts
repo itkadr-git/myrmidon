@@ -21,7 +21,7 @@ export type ForagingSkipReason = "queue_not_empty" | "no_idle_agent";
 /** Stored-settings key of the pass journal inside `general`. */
 export const FORAGING_PASS_JOURNAL_KEY = "foragingPassJournal";
 
-/** Entries kept in the journal; older ones fall off the end. */
+/** Entries kept PER COMPANY; older passes of that company fall off the end. */
 export const FORAGING_PASS_JOURNAL_LIMIT = 50;
 
 /** Roles a pass left alone, and why. */
@@ -111,16 +111,28 @@ export function readForagingPassJournal(
 }
 
 /**
- * Puts one pass at the head of the journal and drops the tail beyond the cap.
- * `otherCompanies` keeps the passes of the other companies untouched: the
- * stored list is instance-wide, and recording a pass of one company must not
- * forget the history of another.
+ * Puts one pass at the head of the journal and drops the tail beyond the cap
+ * OF THAT COMPANY. The cap is per company on purpose: the stored list is
+ * instance-wide, and an instance-wide cap would let the busiest company eat
+ * the whole row — recording a pass of one company must never forget the
+ * history of another. The new entry counts against its own company's cap, so
+ * one company keeps `limit` passes, not `limit + 1`.
  */
 export function appendForagingPassJournal(
   stored: unknown,
   entry: ForagingPassJournalEntry,
   limit = FORAGING_PASS_JOURNAL_LIMIT,
 ): ForagingPassJournalEntry[] {
+  const cap = Math.max(1, limit);
   const all = readForagingPassJournal(stored, { limit: Number.MAX_SAFE_INTEGER });
-  return [entry, ...all].slice(0, Math.max(1, limit));
+  const kept: ForagingPassJournalEntry[] = [];
+  let mine = 1;
+  for (const item of all) {
+    if (item.companyId === entry.companyId) {
+      if (mine >= cap) continue;
+      mine += 1;
+    }
+    kept.push(item);
+  }
+  return [entry, ...kept];
 }
