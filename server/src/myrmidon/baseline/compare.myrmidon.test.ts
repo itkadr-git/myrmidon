@@ -1,191 +1,179 @@
-import { describe, it, expect, beforeEach } from 'vitest';
-import { compareWithBaseline } from './service.js';
-import type { BaselineMetricsResponse } from './service.js';
-import type { BaselineGroupMetrics } from './metrics.js';
+// myrmidon(1.6.2-BASELINE-C): the compare endpoint contract. Differences are
+// per key of byProject/byRole — never a weighted blend over the two pools
+// (every task would be counted twice) — and every expected number below is
+// pinned, so the double-count, the hard-coded reviewTimeP90 and the
+// zero-baseline-as-0% behaviours fail loudly if they come back.
 
-// Mock data for testing
-const mockGroupMetrics: BaselineGroupMetrics = {
-  key: 'test-project',
-  tasksCompleted: 20,
-  cycleTimeHours: {
-    mean: 100000,
-    median: 95000,
-    p90: 120000,
-  },
-  timeInReviewHours: {
-    mean: 20000,
-    median: 18000,
-  },
-  returnRate: {
-    enteredReview: 100,
-    returned: 15,
-    rate: 0.15,
-  },
-  blockedHours: {
-    total: 5,
-    mean: 3600,
-    topCauses: [],
-  },
-  runsPerTask: {
-    total: 60,
-    mean: 3,
-  },
-  costPerTask: {
-    totalCents: 50000,
-    meanCents: 2500,
-  },
-};
+import { describe, it, expect } from "vitest";
+import express from "express";
+import request from "supertest";
+import { compareWithBaseline } from "./service.js";
+import type { BaselineMetricsResponse } from "./service.js";
+import type { BaselineGroupMetrics } from "./metrics.js";
+import { baselineRoutes } from "./routes.js";
+import type { Db } from "@paperclipai/db";
 
-const mockCurrentMetrics: BaselineMetricsResponse = {
-  window: { from: '2023-09-19T08:28:00.000Z', to: '2023-10-03T08:28:00.000Z' },
-  generatedAt: new Date().toISOString(),
-  source: { statusLog: 'activity_log', costs: 'litellm_cost_events' as const },
-  byProject: [mockGroupMetrics],
-  byRole: [mockGroupMetrics],
-};
+const WINDOW = { from: "2026-09-01T00:00:00.000Z", to: "2026-09-15T00:00:00.000Z" };
+const SOURCE = { statusLog: "activity_log", costs: "litellm_cost_events" as const };
 
-const mockBaselineMetrics: BaselineMetricsResponse = {
-  window: { from: '2023-09-05T08:28:00.000Z', to: '2023-09-19T08:28:00.000Z' },
-  generatedAt: new Date(Date.now() - 86400000).toISOString(), // Yesterday
-  source: { statusLog: 'activity_log', costs: 'litellm_cost_events' as const },
-  byProject: [{ ...mockGroupMetrics, cycleTimeHours: { ...mockGroupMetrics.cycleTimeHours, mean: 80000 } }],
-  byRole: [{ ...mockGroupMetrics, cycleTimeHours: { ...mockGroupMetrics.cycleTimeHours, mean: 80000 } }],
-};
+function group(key: string | null, over: Partial<BaselineGroupMetrics> = {}): BaselineGroupMetrics {
+  return {
+    key,
+    tasksCompleted: 20,
+    cycleTimeHours: { mean: 100, median: 95, p90: 120 },
+    timeInReviewHours: { mean: 20, median: 18 },
+    returnRate: { enteredReview: 100, returned: 15, rate: 0.15 },
+    blockedHours: { total: 10, mean: 2, topCauses: [] },
+    runsPerTask: { total: 60, mean: 3 },
+    costPerTask: { totalCents: 50000, meanCents: 2500 },
+    ...over,
+  };
+}
 
-describe('Baseline Comparison Service', () => {
-  describe('compareWithBaseline', () => {
-    it('should calculate differences correctly when baseline exists', () => {
-      const result = compareWithBaseline(mockCurrentMetrics, mockBaselineMetrics);
+function report(
+  byProject: BaselineGroupMetrics[],
+  byRole: BaselineGroupMetrics[],
+  generatedAt = "2026-09-15T00:00:00.000Z",
+): BaselineMetricsResponse {
+  return { window: WINDOW, generatedAt, source: SOURCE, byProject, byRole };
+}
 
-      expect(result).toHaveProperty('current');
-      expect(result).toHaveProperty('baseline');
-      expect(result).toHaveProperty('differences');
+describe("myrmidon(1.6.2-BASELINE-C) compareWithBaseline", () => {
+  it("computes per-key differences with exact numbers, one count per task", () => {
+    // The same 20 tasks appear under project "p1" and role "engineer".
+    // The old aggregateMetrics pooled byProject+byRole and reported
+    // tasksCompleted = 40; per-key diffing must report 20.
+    const current = report(
+      [group("p1"), group("p2", { tasksCompleted: 5 })],
+      [group("engineer")],
+    );
+    const baseline = report(
+      [group("p1", { tasksCompleted: 10, cycleTimeHours: { mean: 80, median: 70, p90: 100 } })],
+      [group("engineer", { tasksCompleted: 10, costPerTask: { totalCents: 20000, meanCents: 2000 } })],
+      "2026-09-01T00:00:00.000Z",
+    );
 
-      // Check that current and baseline data are preserved
-      expect(result.current).toEqual(mockCurrentMetrics);
-      expect(result.baseline).toEqual(mockBaselineMetrics);
+    const result = compareWithBaseline(current, baseline);
 
-      // Check that differences are calculated properly
-      expect(result.differences).toHaveProperty('cycleTimeMean');
-      expect(result.differences).toHaveProperty('returnRate');
-      expect(result.differences).toHaveProperty('costPerTask');
+    expect(result.current).toEqual(current);
+    expect(result.baseline).toEqual(baseline);
+    expect(result.differences).not.toBeNull();
 
-      // All difference values should be objects with absolute and percentage values (except where baseline is null)
-      if (result.differences.cycleTimeMean) {
-        expect(typeof result.differences.cycleTimeMean.absolute).toBe('number');
-        expect(typeof result.differences.cycleTimeMean.percentage).toBe('number');
-      }
-      if (result.differences.returnRate) {
-        expect(typeof result.differences.returnRate.absolute).toBe('number');
-        expect(typeof result.differences.returnRate.percentage).toBe('number');
-      }
+    const p1 = result.differences!.byProject["p1"]!;
+    expect(p1.tasksCompleted).toEqual({ absolute: 10, percentage: 100 });
+    expect(p1.cycleTimeMean).toEqual({ absolute: 20, percentage: 25 });
+    expect(p1.cycleTimeMedian).toEqual({ absolute: 25, percentage: expect.closeTo(35.714, 3) });
+    expect(p1.cycleTimeP90).toEqual({ absolute: 20, percentage: 20 });
+    expect(p1.reviewTimeMean).toEqual({ absolute: 0, percentage: 0 });
+    expect(p1.returnRate).toEqual({ absolute: 0, percentage: 0 });
+    expect(p1.blockedTotal).toEqual({ absolute: 0, percentage: 0 });
+    expect(p1.runsPerTask).toEqual({ absolute: 0, percentage: 0 });
+    expect(p1.costPerTask).toEqual({ absolute: 0, percentage: 0 });
+
+    const engineer = result.differences!.byRole["engineer"]!;
+    expect(engineer.tasksCompleted).toEqual({ absolute: 10, percentage: 100 });
+    expect(engineer.costPerTask).toEqual({ absolute: 500, percentage: 25 });
+
+    // p2 exists only on the current side: nothing to compare it against.
+    expect(result.differences!.byProject["p2"]).toBeUndefined();
+  });
+
+  it("diffs a null project key under the '' record key", () => {
+    const current = report([group(null)], []);
+    const baseline = report([group(null, { tasksCompleted: 4 })], []);
+    const result = compareWithBaseline(current, baseline);
+    expect(result.differences!.byProject[""]!.tasksCompleted).toEqual({ absolute: 16, percentage: 400 });
+  });
+
+  it("keeps the absolute change and reports percentage null when the baseline value is 0", () => {
+    // Return rate 0 -> 0.15 is a real regression; the old code reported 0%.
+    const current = report([group("p1")], []);
+    const baseline = report([
+      group("p1", {
+        returnRate: { enteredReview: 10, returned: 0, rate: 0 },
+        blockedHours: { total: 0, mean: 0, topCauses: [] },
+      }),
+    ], [], "2026-09-01T00:00:00.000Z");
+    const result = compareWithBaseline(current, baseline);
+    const p1 = result.differences!.byProject["p1"]!;
+    expect(p1.returnRate).toEqual({ absolute: 0.15, percentage: null });
+    expect(p1.blockedTotal).toEqual({ absolute: 10, percentage: null });
+  });
+
+  it("has no reviewTimeP90 difference — the contract has no p90 for review time", () => {
+    const current = report([group("p1")], []);
+    const baseline = report([group("p1")], []);
+    const result = compareWithBaseline(current, baseline);
+    const p1 = result.differences!.byProject["p1"]!;
+    expect("reviewTimeP90" in p1).toBe(false);
+    expect(p1).not.toHaveProperty("reviewTimeP90");
+  });
+
+  it("handles an empty window (no groups on either side)", () => {
+    const result = compareWithBaseline(report([], []), report([], []));
+    expect(result.differences).toEqual({ byProject: {}, byRole: {} });
+  });
+
+  it("returns differences: null when there is no baseline snapshot", () => {
+    const result = compareWithBaseline(report([group("p1")], []), null);
+    expect(result.current.byProject).toHaveLength(1);
+    expect(result.baseline).toBeNull();
+    expect(result.differences).toBeNull();
+  });
+});
+
+describe("myrmidon(1.6.2-BASELINE-C) compare route", () => {
+  const COMPANY = "11111111-1111-4111-8111-111111111111";
+  const board = { type: "board", source: "session", userId: "user-a", isInstanceAdmin: true, companyIds: [COMPANY] };
+
+  function app(getBaselineSnapshot: (db: Db, companyId: string) => Promise<BaselineMetricsResponse | null>) {
+    const server = express();
+    server.use(express.json());
+    server.use((req, _res, next) => {
+      (req as unknown as { actor: unknown }).actor = board;
+      next();
+    });
+    server.use(
+      "/api",
+      baselineRoutes({} as Db, {
+        now: () => new Date("2026-09-15T00:00:00Z"),
+        compute: async () => report([group("p1")], [group("engineer")]),
+        getBaselineSnapshot,
+      }),
+    );
+    return server;
+  }
+
+  it("answers per-key differences using the overridden snapshot dep", async () => {
+    const snapshot = report(
+      [group("p1", { tasksCompleted: 10 })],
+      [group("engineer", { tasksCompleted: 10 })],
+      "2026-09-01T00:00:00.000Z",
+    );
+    let snapshotCompany: string | null = null;
+    const server = app(async (_db, companyId) => {
+      snapshotCompany = companyId;
+      return snapshot;
     });
 
-    it('should return baseline: null when no baseline snapshot is provided', () => {
-      const result = compareWithBaseline(mockCurrentMetrics, null);
+    const response = await request(server)
+      .get(`/api/myrmidon/companies/${COMPANY}/baseline/compare`)
+      .query({ from: "2026-09-01T00:00:00Z", to: "2026-09-15T00:00:00Z" });
 
-      expect(result).toHaveProperty('current');
-      expect(result).toHaveProperty('baseline');
-      expect(result).toHaveProperty('differences');
+    expect(response.status).toBe(200);
+    expect(snapshotCompany).toBe(COMPANY);
+    expect(response.body.differences.byProject.p1.tasksCompleted).toEqual({ absolute: 10, percentage: 100 });
+    expect(response.body.differences.byRole.engineer.tasksCompleted).toEqual({ absolute: 10, percentage: 100 });
+    expect(response.body.differences.byProject.p1.reviewTimeP90).toBeUndefined();
+  });
 
-      expect(result.current).toEqual(mockCurrentMetrics);
-      expect(result.baseline).toBeNull();
-
-      // When there's no baseline, all differences should be null
-      Object.values(result.differences).forEach(diff => {
-        expect(diff).toBeNull();
-      });
-    });
-
-    it('should handle edge cases in difference calculation', () => {
-      // Test with zero values to ensure no division by zero
-      const metricsWithZero = {
-        ...mockCurrentMetrics,
-        byProject: [{
-          ...mockGroupMetrics,
-          costPerTask: { ...mockGroupMetrics.costPerTask, meanCents: 0 },
-          returnRate: { ...mockGroupMetrics.returnRate, rate: 0 },
-        }],
-        byRole: [{
-          ...mockGroupMetrics,
-          costPerTask: { ...mockGroupMetrics.costPerTask, meanCents: 0 },
-          returnRate: { ...mockGroupMetrics.returnRate, rate: 0 },
-        }],
-      };
-
-      const result = compareWithBaseline(metricsWithZero, mockBaselineMetrics);
-
-      // Should handle zero values gracefully
-      expect(result.differences.costPerTask).toBeDefined();
-      expect(result.differences.returnRate).toBeDefined();
-    });
-
-    it('should correctly calculate positive and negative differences', () => {
-      // Create a baseline with lower values (better performance)
-      const betterBaseline: BaselineMetricsResponse = {
-        ...mockBaselineMetrics,
-        byProject: [{
-          ...mockGroupMetrics,
-          cycleTimeHours: { ...mockGroupMetrics.cycleTimeHours, mean: 80000 }, // Better (lower) cycle time
-          returnRate: { ...mockGroupMetrics.returnRate, rate: 0.10 },         // Better (lower) return rate
-          costPerTask: { ...mockGroupMetrics.costPerTask, meanCents: 2000 },  // Better (lower) cost
-        }],
-        byRole: [{
-          ...mockGroupMetrics,
-          cycleTimeHours: { ...mockGroupMetrics.cycleTimeHours, mean: 80000 }, // Better (lower) cycle time
-          returnRate: { ...mockGroupMetrics.returnRate, rate: 0.10 },         // Better (lower) return rate
-          costPerTask: { ...mockGroupMetrics.costPerTask, meanCents: 2000 },  // Better (lower) cost
-        }],
-      };
-
-      const result = compareWithBaseline(mockCurrentMetrics, betterBaseline);
-
-      // When current is worse than baseline, differences should show negative impact
-      if (result.differences.cycleTimeMean) {
-        expect(result.differences.cycleTimeMean.absolute).toBeGreaterThan(0);
-        expect(result.differences.cycleTimeMean.percentage).toBeGreaterThan(0);
-      }
-      if (result.differences.returnRate) {
-        expect(result.differences.returnRate.absolute).toBeGreaterThan(0);
-        expect(result.differences.returnRate.percentage).toBeGreaterThan(0);
-      }
-      if (result.differences.costPerTask) {
-        expect(result.differences.costPerTask.absolute).toBeGreaterThan(0);
-        expect(result.differences.costPerTask.percentage).toBeGreaterThan(0);
-      }
-
-      // Now test with better current metrics
-      const worseBaseline: BaselineMetricsResponse = {
-        ...mockBaselineMetrics,
-        byProject: [{
-          ...mockGroupMetrics,
-          cycleTimeHours: { ...mockGroupMetrics.cycleTimeHours, mean: 120000 }, // Worse (higher) cycle time
-          returnRate: { ...mockGroupMetrics.returnRate, rate: 0.20 },           // Worse (higher) return rate
-          costPerTask: { ...mockGroupMetrics.costPerTask, meanCents: 3000 },    // Worse (higher) cost
-        }],
-        byRole: [{
-          ...mockGroupMetrics,
-          cycleTimeHours: { ...mockGroupMetrics.cycleTimeHours, mean: 120000 }, // Worse (higher) cycle time
-          returnRate: { ...mockGroupMetrics.returnRate, rate: 0.20 },           // Worse (higher) return rate
-          costPerTask: { ...mockGroupMetrics.costPerTask, meanCents: 3000 },    // Worse (higher) cost
-        }],
-      };
-
-      const result2 = compareWithBaseline(mockCurrentMetrics, worseBaseline);
-
-      // When current is better than baseline, differences should show improvement
-      if (result2.differences.cycleTimeMean) {
-        expect(result2.differences.cycleTimeMean.absolute).toBeLessThan(0);
-        expect(result2.differences.cycleTimeMean.percentage).toBeLessThan(0);
-      }
-      if (result2.differences.returnRate) {
-        expect(result2.differences.returnRate.absolute).toBeLessThan(0);
-        expect(result2.differences.returnRate.percentage).toBeLessThan(0);
-      }
-      if (result2.differences.costPerTask) {
-        expect(result2.differences.costPerTask.absolute).toBeLessThan(0);
-        expect(result2.differences.costPerTask.percentage).toBeLessThan(0);
-      }
-    });
+  it("answers differences: null when no snapshot exists", async () => {
+    const server = app(async () => null);
+    const response = await request(server)
+      .get(`/api/myrmidon/companies/${COMPANY}/baseline/compare`)
+      .query({ from: "2026-09-01T00:00:00Z", to: "2026-09-15T00:00:00Z" });
+    expect(response.status).toBe(200);
+    expect(response.body.baseline).toBeNull();
+    expect(response.body.differences).toBeNull();
   });
 });
