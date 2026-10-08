@@ -93,6 +93,20 @@ A track writes only into its own section. A row is added in the same PR as the s
 | `MYRMIDON_CHAT_RECONCILE_FALLBACK_INTERVAL_MS` | 1.6.3 | `30000` | How often the full chat reconciliation pass (provider runtimes, deliveries, webhook recovery, Slack syncs) runs when no publication or milestone event wakes it; publication and milestone lanes are woken by commit events directly, and one full pass still runs at startup. Replaces the former once-per-second timer | Unset, `0`, negative or non-numeric — 30 seconds. Lower it if deliveries or provider recovery feel slow after the change |
 | `MYRMIDON_TELEGRAM_VOICE_STT` | 1.6.1 VOICE-STT B | off | Transcribe an inbound Telegram voice/audio message at intake: the bytes are prefetched (bounded, 20 MB, 45 s), recognized through the shared STT core (part A1) and the transcript is written into the task comment next to the kept attachment — the bot reads it as user input on the same wakeup. Speaker segments render as «Говорящий N [mm:ss]: …». An STT failure is a skip: the comment keeps the vendor body, the redacted `stt_skipped` code lands in the comment metadata, and the delivery is unaffected | Any value other than `1`/`true`/`yes`/`on` — the vendor path byte for byte: no byte prefetch, zero calls to the transcription core. Read per delivery, no restart. Until the STT core is wired (part A1 merged and connected), an enabled setting records `stt_unconfigured` skips |
 
+The fallback delivery of decision cards to the task owner's Telegram DM (U2,
+see [guides/owner-telegram-cards.md](guides/owner-telegram-cards.md)) has no
+environment variable of its own; its mode is an instance setting,
+`instance_settings.general.ownerDelivery`, read with
+`GET /api/myrmidon/owner-delivery` and changed with
+`PATCH /api/myrmidon/owner-delivery` (`{ "mode": "owner_decisions_only" }` or
+`{ "mode": "all" }`, instance administrator; Company settings → Owner
+Telegram delivery shows the same switch). The default
+`owner_decisions_only` delivers only cards addressed to a human (resolver
+policy `human_only`, or the task owner as the addressee user); agent-addressed
+and purely operational cards stay board-only. `all` restores the pre-filter
+behaviour — every card an agent raises is mirrored. Read at delivery time, no
+restart.
+
 ## Track 5 — operations
 
 | Variable | Function | Default | What it does | How to disable / special |
