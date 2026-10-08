@@ -68,7 +68,7 @@ function isTruthyEnv(value: string | undefined): boolean {
 
 export function resolveBoardAuthStorePath(overridePath?: string): string {
   if (overridePath?.trim()) return path.resolve(overridePath.trim());
-  if (readProductEnv("AUTH_STORE")?.trim()) return path.resolve(readProductEnv("AUTH_STORE").trim());
+  if (readProductEnv("AUTH_STORE")?.trim()) return path.resolve(readProductEnv("AUTH_STORE")!.trim());
   return resolveDefaultCliAuthPath();
 }
 

@@ -44,7 +44,7 @@ function findContextFileFromAncestors(startDir: string): string | null {
 
 export function resolveContextPath(overridePath?: string): string {
   if (overridePath) return path.resolve(overridePath);
-  if (readProductEnv("CONTEXT")) return path.resolve(readProductEnv("CONTEXT"));
+  if (readProductEnv("CONTEXT")) return path.resolve(readProductEnv("CONTEXT")!);
   return findContextFileFromAncestors(process.cwd()) ?? resolveDefaultContextPath();
 }
 
