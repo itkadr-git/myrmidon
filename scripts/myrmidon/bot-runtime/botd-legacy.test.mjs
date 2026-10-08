@@ -65,14 +65,17 @@ describe("gather: class X and legacy G enter the inventory", () => {
     const { items } = classified();
     const sc = scratchInventory([], items, Date.now(), hasDotGit);
     const later = Date.now() + 25 * HOUR;
-    const acts = plan({ worktrees: [], scratch: sc, bases: [], archives: [] }, desired(), later).actions;
+    const idle = { live: false };
+    const acts = plan({ worktrees: [], scratch: sc, bases: [], archives: [], run: idle }, desired(), later).actions;
     const a1 = acts.find((a) => a.path.endsWith("OPE-1"));
     assert.equal(a1.op, "archive-remove");
     assert.equal(plan({ worktrees: [], scratch: sc, bases: [], archives: [] }, desired(), Date.now()).actions.length, 0);
     const live = desired([{ key: "OPE-1", state: "active" }]);
     const protectedActs = plan({ worktrees: [], scratch: sc, bases: [], archives: [] }, live, later).actions;
     assert.equal(protectedActs.find((a) => a.path.endsWith("OPE-1")), undefined);
-    assert.ok(protectedActs.find((a) => a.path.endsWith("OPE-2")));
+    // an active task on the board is a live run: the other unsaved git copy is kept too, and reported
+    assert.equal(protectedActs.find((a) => a.path.endsWith("OPE-2")), undefined);
+    assert.ok(plan({ worktrees: [], scratch: sc, bases: [], archives: [] }, live, later).held.some((h) => h.kind === "unsafe-git-live-run" && h.path.endsWith("OPE-2")));
   });
 });
 
