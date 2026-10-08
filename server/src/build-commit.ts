@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 type ReadTextFile = (path: string) => string;
 
@@ -22,7 +23,7 @@ export function readBuildCommit(
 ): string | null {
   const environmentCommit = parseBuildCommit(
     opts.environmentCommit === undefined
-      ? process.env.PAPERCLIP_BUILD_COMMIT
+      ? readProductEnv("BUILD_COMMIT")
       : opts.environmentCommit,
   );
   if (environmentCommit) return environmentCommit;

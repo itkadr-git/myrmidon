@@ -27,6 +27,7 @@ import type {
 } from "./sandbox-managed-runtime.js";
 import type { GitWorkspaceSnapshot } from "./git-workspace-sync.js";
 import type { DirectorySnapshot } from "./workspace-restore-merge.js";
+import { readProductEnv, readProductEnvFrom, writeProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 export { resolveReferencedSourceIgnore } from "./sandbox-managed-runtime.js";
 export type {
   AdditionalSourceStagingFailure,
@@ -430,15 +431,15 @@ function resolveHostForUrl(rawHost: string): string {
 
 function resolveDefaultPaperclipApiUrl(): string {
   const runtimeHost = resolveHostForUrl(
-    process.env.PAPERCLIP_LISTEN_HOST ?? process.env.HOST ?? "localhost",
+    readProductEnv("LISTEN_HOST") ?? process.env.HOST ?? "localhost",
   );
   // 3100 matches the default Paperclip dev server port when the runtime does not provide one.
-  const runtimePort = process.env.PAPERCLIP_LISTEN_PORT ?? process.env.PORT ?? "3100";
+  const runtimePort = readProductEnv("LISTEN_PORT") ?? process.env.PORT ?? "3100";
   return `http://${runtimeHost}:${runtimePort}`;
 }
 
 function isBridgeDebugEnabled(env: NodeJS.ProcessEnv): boolean {
-  const value = env.PAPERCLIP_BRIDGE_DEBUG?.trim().toLowerCase();
+  const value = readProductEnvFrom(env, "BRIDGE_DEBUG")?.trim().toLowerCase();
   return value === "1" || value === "true" || value === "yes";
 }
 
@@ -1689,8 +1690,8 @@ printf '\0PAPERCLIP_GIT_CONTEXT_END\0'
       else if (key === "PAPERCLIP_RUNNER_NETWORK_ROOT") networkRoots.push(value);
       else discovered[key] = value;
     }
-    discovered.PAPERCLIP_GIT_METADATA_ROOTS = JSON.stringify([...new Set(roots)]);
-    discovered.PAPERCLIP_RUNNER_NETWORK_ROOTS = JSON.stringify([...new Set(networkRoots)]);
+    writeProductEnv(discovered, "GIT_METADATA_ROOTS", JSON.stringify([...new Set(roots)])); // myrmidon(REBRAND-C)
+    writeProductEnv(discovered, "RUNNER_NETWORK_ROOTS", JSON.stringify([...new Set(networkRoots)])); // myrmidon(REBRAND-C)
   } else {
     const result = await promisify(execFile)(process.execPath, args, { cwd: input.cwd, timeout: 15_000, maxBuffer: 1024 * 1024 });
     try { discovered = JSON.parse(result.stdout.split("\0")[1] ?? ""); }
@@ -1698,9 +1699,9 @@ printf '\0PAPERCLIP_GIT_CONTEXT_END\0'
   }
   // Controller-derived roots and mode must not be replaced by agent bindings.
   return { ...discovered, ...input.env,
-    ...(input.hostCredentials ? { PAPERCLIP_GITHUB_HOST_HOME: discovered.PAPERCLIP_GITHUB_HOST_HOME } : {}),
-    PAPERCLIP_GIT_METADATA_ROOTS: discovered.PAPERCLIP_GIT_METADATA_ROOTS ?? "[]",
-    PAPERCLIP_RUNNER_NETWORK_ROOTS: discovered.PAPERCLIP_RUNNER_NETWORK_ROOTS ?? "[]",
+    ...(input.hostCredentials ? { PAPERCLIP_GITHUB_HOST_HOME: readProductEnvFrom(discovered, "GITHUB_HOST_HOME") } : {}),
+    PAPERCLIP_GIT_METADATA_ROOTS: readProductEnvFrom(discovered, "GIT_METADATA_ROOTS") ?? "[]",
+    PAPERCLIP_RUNNER_NETWORK_ROOTS: readProductEnvFrom(discovered, "RUNNER_NETWORK_ROOTS") ?? "[]",
     PAPERCLIP_GITHUB_AUTH_MODE: input.hostCredentials ? "host" : "managed",
     PAPERCLIP_RUNNER_NETWORK_ACCESS: input.networkAccess ? "enabled" : "disabled",
   };
@@ -2053,7 +2054,7 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
   // the existing path; upload larger envelopes in bounded chunks instead.
   const commandEnv: Record<string, string> = {};
   if (commandPayload.length <= 64 * 1024) {
-    commandEnv.PAPERCLIP_PROCESS_SESSION_COMMAND_B64 = commandPayload;
+    writeProductEnv(commandEnv, "PROCESS_SESSION_COMMAND_B64", commandPayload); // myrmidon(REBRAND-C)
   } else {
     const payloadPath = path.posix.join(sessionDir, "command.b64");
     const runPayloadSetup = async (script: string) => {
@@ -2640,7 +2641,7 @@ const PROCESS_SESSION_STDIN_POLL_TAIL = `child.stdin.on("error", () => {});
 // and write an error event, so a lost message fails loud, and let later files
 // run.
 const stdinMaxParseRetries = (() => {
-  const raw = Number.parseInt(process.env.PAPERCLIP_PROCESS_SESSION_STDIN_MAX_RETRIES || "", 10);
+  const raw = Number.parseInt(readProductEnv("PROCESS_SESSION_STDIN_MAX_RETRIES") || "", 10);
   return Number.isFinite(raw) && raw > 0 ? raw : 100;
 })();
 const stdinParseRetries = new Map();
@@ -2658,7 +2659,7 @@ let stdinGapRetries = 0;
 // call sends. A test can override it through the environment, so a stubborn
 // child does not force a slow test.
 const terminateGraceMs = (() => {
-  const raw = Number.parseInt(process.env.PAPERCLIP_PROCESS_SESSION_TERMINATE_GRACE_MS || "", 10);
+  const raw = Number.parseInt(readProductEnv("PROCESS_SESSION_TERMINATE_GRACE_MS") || "", 10);
   return Number.isFinite(raw) && raw > 0 ? raw : 3000;
 })();
 
@@ -3073,7 +3074,7 @@ void pollStdin().catch((error) => void writeEvent({ type: "error", message: erro
 const PROCESS_SESSION_READ_COMMAND = `
 let config;
 try {
-  let commandPayload = process.env.PAPERCLIP_PROCESS_SESSION_COMMAND_B64;
+  let commandPayload = readProductEnv("PROCESS_SESSION_COMMAND_B64");
   if (!commandPayload) {
     const payloadPath = path.posix.join(sessionDir, "command.b64");
     const handle = await fs.open(payloadPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
@@ -3108,7 +3109,15 @@ function getProcessSessionRemoteStreamSource(): string {
 import { promises as fs, constants as fsConstants } from "node:fs";
 import path from "node:path";
 
-const sessionDir = process.env.PAPERCLIP_PROCESS_SESSION_DIR;
+// myrmidon(REBRAND-C): MYRMIDON_* name with the PAPERCLIP_* alias, inline
+// because this generated wrapper is zero-dependency.
+const readProductEnv = (name) => {
+  const canonical = process.env["MYRMIDON_" + name];
+  if (canonical !== undefined && canonical !== "") return canonical;
+  return process.env["PAPERCLIP_" + name];
+};
+
+const sessionDir = readProductEnv("PROCESS_SESSION_DIR");
 if (!sessionDir) throw new Error("Missing process session bridge env.");
 
 const stdinDir = path.posix.join(sessionDir, "stdin");
@@ -3151,8 +3160,8 @@ ${PROCESS_SESSION_READ_COMMAND}
 // session dir and the command payload. Scrub both keys before they reach the
 // spawned child, so the child never inherits a path to its own control files.
 const childEnv = { ...process.env, ...(config.env || {}) };
-delete childEnv.PAPERCLIP_PROCESS_SESSION_DIR;
-delete childEnv.PAPERCLIP_PROCESS_SESSION_COMMAND_B64;
+delete childEnv["MYRMIDON_PROCESS_SESSION_DIR"]; delete childEnv["PAPERCLIP_PROCESS_SESSION_DIR"]; // myrmidon(REBRAND-C)
+delete childEnv["MYRMIDON_PROCESS_SESSION_COMMAND_B64"]; delete childEnv["PAPERCLIP_PROCESS_SESSION_COMMAND_B64"]; // myrmidon(REBRAND-C)
 
 // I1: exactly one child process per emitted wrapper. Do not add a second
 // tracked child handle.
@@ -3191,7 +3200,15 @@ function getProcessSessionRemoteEventFileSource(): string {
 import { promises as fs, constants as fsConstants } from "node:fs";
 import path from "node:path";
 
-const sessionDir = process.env.PAPERCLIP_PROCESS_SESSION_DIR;
+// myrmidon(REBRAND-C): MYRMIDON_* name with the PAPERCLIP_* alias, inline
+// because this generated wrapper is zero-dependency.
+const readProductEnv = (name) => {
+  const canonical = process.env["MYRMIDON_" + name];
+  if (canonical !== undefined && canonical !== "") return canonical;
+  return process.env["PAPERCLIP_" + name];
+};
+
+const sessionDir = readProductEnv("PROCESS_SESSION_DIR");
 if (!sessionDir) throw new Error("Missing process session bridge env.");
 
 const stdinDir = path.posix.join(sessionDir, "stdin");
@@ -3242,8 +3259,8 @@ ${PROCESS_SESSION_READ_COMMAND}
 // session dir and the command payload. Scrub both keys before they reach the
 // spawned child, so the child never inherits a path to its own control files.
 const childEnv = { ...process.env, ...(config.env || {}) };
-delete childEnv.PAPERCLIP_PROCESS_SESSION_DIR;
-delete childEnv.PAPERCLIP_PROCESS_SESSION_COMMAND_B64;
+delete childEnv["MYRMIDON_PROCESS_SESSION_DIR"]; delete childEnv["PAPERCLIP_PROCESS_SESSION_DIR"]; // myrmidon(REBRAND-C)
+delete childEnv["MYRMIDON_PROCESS_SESSION_COMMAND_B64"]; delete childEnv["PAPERCLIP_PROCESS_SESSION_COMMAND_B64"]; // myrmidon(REBRAND-C)
 
 // I1: exactly one child process per emitted wrapper. Do not add a second
 // tracked child handle.
@@ -4304,7 +4321,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
   const queueDir = path.posix.join(bridgeRuntimeDir, "queue");
   const assetRemoteDir = path.posix.join(bridgeRuntimeDir, "server");
   const bridgeToken = createSandboxCallbackBridgeToken();
-  const configuredAttachmentBytes = Number(process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES);
+  const configuredAttachmentBytes = Number(readProductEnv("ATTACHMENT_MAX_BYTES"));
   // A larger upload limit needs multipart headroom. A smaller attachment limit
   // remains enforced by the API and must not shrink unrelated JSON responses.
   const defaultBodyBytes = Number.isSafeInteger(configuredAttachmentBytes) && configuredAttachmentBytes > 0

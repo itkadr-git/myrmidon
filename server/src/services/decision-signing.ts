@@ -2,6 +2,7 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, linkSync, lstatSync, mkdirSync, readFileSync, type Stats, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { resolveDefaultSecretsKeyFilePath } from "../home-paths.js";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const VERSION = "decision-spec-v1";
 const MIN_SECRET_LENGTH = 32;
@@ -121,7 +122,7 @@ function loadOrCreateGeneratedSecret(): string {
 }
 
 export function resolveDecisionSigningSecret(): string {
-  const fromEnv = process.env.PAPERCLIP_DECISION_SIGNING_SECRET?.trim();
+  const fromEnv = readProductEnv("DECISION_SIGNING_SECRET")?.trim();
   if (fromEnv) {
     if (fromEnv.length < MIN_SECRET_LENGTH) {
       throw new Error(

@@ -13,6 +13,7 @@ import {
   type IssuePostCommitAction,
 } from "./issues.js";
 import { decisionRetentionService, hashAttentionArchiveManifest } from "./decision-retention.js";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 type Snapshot = { status: string; assigneeAgentId: string | null; assigneeUserId: string | null; updatedAt: string;
   descendantCount?: number; descendantIds?: string[]; childCount?: number; attentionArchive?: unknown };
@@ -211,7 +212,7 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
       }
     }
     const open = await dbOrTx.select({ value: count() }).from(decisions).where(and(eq(decisions.companyId, input.companyId), eq(decisions.originAgentId, input.agentId), eq(decisions.status, "open")));
-    const cap = Number(process.env.PAPERCLIP_DECISIONS_OPEN_CAP ?? 50);
+    const cap = Number(readProductEnv("DECISIONS_OPEN_CAP") ?? 50);
     if (Number(open[0]?.value ?? 0) >= cap) throw tooManyRequests("Open decision cap reached");
     const expiresAt = input.expiresAt ?? new Date(Date.now() + 7 * DAY);
     if (expiresAt.getTime() <= Date.now() || expiresAt.getTime() > Date.now() + 30 * DAY) throw unprocessable("expiresAt must be within 30 days");
@@ -719,11 +720,11 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
   }
 
   async function sweepExpired(now = new Date()) {
-    const configuredBatchSize = Number(process.env.PAPERCLIP_DECISIONS_SWEEP_BATCH_SIZE ?? 100);
+    const configuredBatchSize = Number(readProductEnv("DECISIONS_SWEEP_BATCH_SIZE") ?? 100);
     const batchSize = Number.isFinite(configuredBatchSize)
       ? Math.max(1, Math.trunc(configuredBatchSize))
       : 100;
-    const configuredRecoveryGraceMs = Number(process.env.PAPERCLIP_DECISIONS_RECOVERY_GRACE_MS ?? 60_000);
+    const configuredRecoveryGraceMs = Number(readProductEnv("DECISIONS_RECOVERY_GRACE_MS") ?? 60_000);
     const recoveryGraceMs = Number.isFinite(configuredRecoveryGraceMs) && configuredRecoveryGraceMs >= 0
       ? configuredRecoveryGraceMs
       : 60_000;

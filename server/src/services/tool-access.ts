@@ -201,6 +201,7 @@ import {
   guardedRemoteHttpFetch,
   type GuardedRemoteHttpFetchOptions,
 } from "./remote-http-fetch.js";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 import {
   REMOTE_URL_SECRET_CONFIG_PATH,
   remoteUrlCredentialMatchesPublicUrl,
@@ -3300,12 +3301,12 @@ export function toolAccessService(
   }
 
   function tokenBrokerAllowedPrivateHosts(): Set<string> {
-    const configured = (process.env.PAPERCLIP_TOKEN_BROKER_ALLOWED_HOSTS ?? "")
+    const configured = (readProductEnv("TOKEN_BROKER_ALLOWED_HOSTS") ?? "")
       .split(/[,\s]+/)
       .map(normalizeTokenBrokerAllowedHost)
       .filter((host): host is string => host !== null);
     const pagesApiHost = normalizeTokenBrokerAllowedHost(
-      process.env.PAPERCLIP_PAGES_API_URL ?? "",
+      readProductEnv("PAGES_API_URL") ?? "",
     );
     if (pagesApiHost) configured.push(pagesApiHost);
     return new Set(configured);
@@ -3389,8 +3390,8 @@ export function toolAccessService(
    */
   function firstPartyOrigins(candidate?: string | null): string[] {
     const configured =
-      process.env.PAPERCLIP_PUBLIC_URL?.trim() ||
-      process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL?.trim() ||
+      readProductEnv("PUBLIC_URL")?.trim() ||
+      readProductEnv("AUTH_PUBLIC_BASE_URL")?.trim() ||
       process.env.BETTER_AUTH_URL?.trim() ||
       process.env.BETTER_AUTH_BASE_URL?.trim() ||
       null;
@@ -3465,8 +3466,8 @@ export function toolAccessService(
   function trustedRuntimeHost() {
     return (
       options.trustedLocalStdioRuntimeHost ??
-      process.env.PAPERCLIP_TRUSTED_MCP_RUNTIME_HOST ??
-      process.env.PAPERCLIP_TOOL_RUNTIME_TRUSTED_HOST ??
+      readProductEnv("TRUSTED_MCP_RUNTIME_HOST") ??
+      readProductEnv("TOOL_RUNTIME_TRUSTED_HOST") ??
       null
     );
   }
@@ -4222,7 +4223,7 @@ export function toolAccessService(
       readConfigString(config, "tokenExchangeUrl") ??
       readConfigString(config, "pagesTokenExchangeUrl");
     if (url) return url;
-    const pagesApiBase = process.env.PAPERCLIP_PAGES_API_URL?.trim();
+    const pagesApiBase = readProductEnv("PAGES_API_URL")?.trim();
     if (isPages && pagesApiBase)
       return new URL(
         "/v1/tokens/exchange",
@@ -8741,11 +8742,11 @@ export function toolAccessService(
       clientSecretEnv,
       clientId:
         process.env[clientIdEnv] ??
-        process.env.PAPERCLIP_TOOL_OAUTH_CLIENT_ID ??
+        readProductEnv("TOOL_OAUTH_CLIENT_ID") ??
         null,
       clientSecret:
         process.env[clientSecretEnv] ??
-        process.env.PAPERCLIP_TOOL_OAUTH_CLIENT_SECRET ??
+        readProductEnv("TOOL_OAUTH_CLIENT_SECRET") ??
         null,
     };
   }

@@ -14,6 +14,7 @@ import type {
   StoredSecretVersionMaterial,
 } from "./types.js";
 import { SecretProviderClientError } from "./types.js";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const AWS_SECRETS_MANAGER_SCHEME = "aws_secrets_manager_v1";
 const DEFAULT_PREFIX = "paperclip";
@@ -293,7 +294,7 @@ function readProviderVaultConfig(input: SecretProviderVaultRuntimeConfig): AwsSe
   if (!region) {
     throw unprocessable("AWS Secrets Manager provider vault requires non-secret config: region");
   }
-  const recoveryWindowRaw = process.env.PAPERCLIP_SECRETS_AWS_DELETE_RECOVERY_DAYS?.trim();
+  const recoveryWindowRaw = readProductEnv("SECRETS_AWS_DELETE_RECOVERY_DAYS")?.trim();
   const recoveryWindow = recoveryWindowRaw ? Number(recoveryWindowRaw) : DEFAULT_DELETE_RECOVERY_WINDOW_DAYS;
   if (!Number.isFinite(recoveryWindow) || recoveryWindow < 7 || recoveryWindow > 30) {
     throw unprocessable(
@@ -304,7 +305,7 @@ function readProviderVaultConfig(input: SecretProviderVaultRuntimeConfig): AwsSe
   return {
     region,
     endpoint:
-      process.env.PAPERCLIP_SECRETS_AWS_ENDPOINT?.trim() ||
+      readProductEnv("SECRETS_AWS_ENDPOINT")?.trim() ||
       `https://secretsmanager.${region}.amazonaws.com`,
     deploymentId: sanitizePathSegment(
       asOptionalNonEmptyString(input.config.namespace) ?? input.id,
@@ -325,12 +326,12 @@ function readProviderVaultConfig(input: SecretProviderVaultRuntimeConfig): AwsSe
 
 function getAwsConfigReadiness() {
   const region = (
-    process.env.PAPERCLIP_SECRETS_AWS_REGION ??
+    readProductEnv("SECRETS_AWS_REGION") ??
     process.env.AWS_REGION ??
     process.env.AWS_DEFAULT_REGION
   )?.trim();
-  const deploymentId = process.env.PAPERCLIP_SECRETS_AWS_DEPLOYMENT_ID?.trim();
-  const kmsKeyId = process.env.PAPERCLIP_SECRETS_AWS_KMS_KEY_ID?.trim();
+  const deploymentId = readProductEnv("SECRETS_AWS_DEPLOYMENT_ID")?.trim();
+  const kmsKeyId = readProductEnv("SECRETS_AWS_KMS_KEY_ID")?.trim();
   const missingConfig: string[] = [];
 
   if (!region) {
@@ -376,11 +377,11 @@ function describeDetectedAwsCredentialSources() {
 function loadAwsSecretsManagerConfig(): AwsSecretsManagerConfig {
   const readiness = getAwsConfigReadiness();
   const region =
-    process.env.PAPERCLIP_SECRETS_AWS_REGION?.trim() ||
+    readProductEnv("SECRETS_AWS_REGION")?.trim() ||
     process.env.AWS_REGION?.trim() ||
     process.env.AWS_DEFAULT_REGION?.trim();
-  const deploymentId = process.env.PAPERCLIP_SECRETS_AWS_DEPLOYMENT_ID?.trim();
-  const kmsKeyId = process.env.PAPERCLIP_SECRETS_AWS_KMS_KEY_ID?.trim();
+  const deploymentId = readProductEnv("SECRETS_AWS_DEPLOYMENT_ID")?.trim();
+  const kmsKeyId = readProductEnv("SECRETS_AWS_KMS_KEY_ID")?.trim();
 
   if (readiness.missingConfig.length > 0) {
     throw unprocessable(
@@ -403,7 +404,7 @@ function loadAwsSecretsManagerConfig(): AwsSecretsManagerConfig {
     );
   }
 
-  const recoveryWindowRaw = process.env.PAPERCLIP_SECRETS_AWS_DELETE_RECOVERY_DAYS?.trim();
+  const recoveryWindowRaw = readProductEnv("SECRETS_AWS_DELETE_RECOVERY_DAYS")?.trim();
   const recoveryWindow = recoveryWindowRaw ? Number(recoveryWindowRaw) : DEFAULT_DELETE_RECOVERY_WINDOW_DAYS;
   if (!Number.isFinite(recoveryWindow) || recoveryWindow < 7 || recoveryWindow > 30) {
     throw unprocessable(
@@ -414,17 +415,17 @@ function loadAwsSecretsManagerConfig(): AwsSecretsManagerConfig {
   return {
     region,
     endpoint:
-      process.env.PAPERCLIP_SECRETS_AWS_ENDPOINT?.trim() ||
+      readProductEnv("SECRETS_AWS_ENDPOINT")?.trim() ||
       `https://secretsmanager.${region}.amazonaws.com`,
     deploymentId,
-    prefix: sanitizePathSegment(process.env.PAPERCLIP_SECRETS_AWS_PREFIX?.trim() || DEFAULT_PREFIX),
+    prefix: sanitizePathSegment(readProductEnv("SECRETS_AWS_PREFIX")?.trim() || DEFAULT_PREFIX),
     kmsKeyId,
     environmentTag:
-      process.env.PAPERCLIP_SECRETS_AWS_ENVIRONMENT?.trim() ||
+      readProductEnv("SECRETS_AWS_ENVIRONMENT")?.trim() ||
       process.env.NODE_ENV?.trim() ||
       "unknown",
     providerOwnerTag:
-      process.env.PAPERCLIP_SECRETS_AWS_PROVIDER_OWNER?.trim() || DEFAULT_OWNER_TAG,
+      readProductEnv("SECRETS_AWS_PROVIDER_OWNER")?.trim() || DEFAULT_OWNER_TAG,
     deleteRecoveryWindowDays: recoveryWindow,
   };
 }

@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 type PreparedPiRuntimeConfig = {
   env: Record<string, string>;
@@ -109,7 +110,7 @@ export async function preparePiRuntimeConfig(input: {
 }): Promise<PreparedPiRuntimeConfig> {
   const resolveEnv = (name: string): string | undefined => input.env[name] ?? process.env[name];
   const { providers, warning } = parseProviderConfig(
-    input.env.PAPERCLIP_PI_PROVIDERS ?? process.env.PAPERCLIP_PI_PROVIDERS,
+    input.env.PAPERCLIP_PI_PROVIDERS ?? readProductEnv("PI_PROVIDERS"),
     resolveEnv,
   );
   if (!providers) {

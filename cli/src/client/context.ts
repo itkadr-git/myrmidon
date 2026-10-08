@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { resolveDefaultContextPath } from "../config/home.js";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const DEFAULT_CONTEXT_BASENAME = "context.json";
 const DEFAULT_PROFILE = "default";
@@ -43,7 +44,7 @@ function findContextFileFromAncestors(startDir: string): string | null {
 
 export function resolveContextPath(overridePath?: string): string {
   if (overridePath) return path.resolve(overridePath);
-  if (process.env.PAPERCLIP_CONTEXT) return path.resolve(process.env.PAPERCLIP_CONTEXT);
+  if (readProductEnv("CONTEXT")) return path.resolve(readProductEnv("CONTEXT"));
   return findContextFileFromAncestors(process.cwd()) ?? resolveDefaultContextPath();
 }
 

@@ -45,6 +45,7 @@ import {
 } from "./adapter-execution-control.js";
 import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
 import { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
+import { readProductEnv, readProductEnvFrom } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 export { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
 // myrmidon(RUN-SNAPSHOT-DEDUP): the single-copy continuation invariant.
@@ -4564,7 +4565,7 @@ type ManagedMcpGatewayRunConfig = {
 };
 
 function configuredPaperclipApiBaseUrl(): string | null {
-  const configured = readNonEmptyString(process.env.PAPERCLIP_API_URL);
+  const configured = readNonEmptyString(readProductEnv("API_URL"));
   return configured
     ? configured.replace(/\/+$/, "").replace(/\/api$/, "")
     : null;
@@ -9257,14 +9258,14 @@ export function resolveHeartbeatSchedulingSuppression(
     "worktree_instance" | "database_restore_in_progress" | "task_drain" | null;
 } {
   if (
-    isTruthyRuntimeEnvValue(env.PAPERCLIP_IN_WORKTREE) &&
+    isTruthyRuntimeEnvValue(readProductEnvFrom(env, "IN_WORKTREE")) &&
     !overrides.allowWorktreeRunExecution
   ) {
     return { suppressed: true, reason: "worktree_instance" };
   }
   if (
-    isTruthyRuntimeEnvValue(env.PAPERCLIP_DATABASE_RESTORE_IN_PROGRESS) ||
-    isTruthyRuntimeEnvValue(env.PAPERCLIP_RESTORE_IN_PROGRESS)
+    isTruthyRuntimeEnvValue(readProductEnvFrom(env, "DATABASE_RESTORE_IN_PROGRESS")) ||
+    isTruthyRuntimeEnvValue(readProductEnvFrom(env, "RESTORE_IN_PROGRESS"))
   ) {
     return { suppressed: true, reason: "database_restore_in_progress" };
   }
@@ -9287,7 +9288,7 @@ export function heartbeatService(
   });
   const runtimeEnv = options.runtimeEnv ?? process.env;
   const inWorktreeRuntime = isTruthyRuntimeEnvValue(
-    runtimeEnv.PAPERCLIP_IN_WORKTREE,
+    readProductEnvFrom(runtimeEnv, "IN_WORKTREE"),
   );
   // Preview worktree instances suppress the run engine by default. Users can lift
   // that per-worktree via the `enableWorktreeRunExecution` experimental setting
@@ -9317,7 +9318,7 @@ export function heartbeatService(
     try {
       const activation = resolveWorktreeRunExecutionActivation(
         await instanceSettings.getExperimental(),
-        runtimeEnv.PAPERCLIP_INSTANCE_ID?.trim() || null,
+        readProductEnvFrom(runtimeEnv, "INSTANCE_ID")?.trim() || null,
       );
       const cutoff = activation.armed ? new Date(activation.cutoff) : null;
       cachedWorktreeRunExecutionOverride = {
@@ -18751,7 +18752,7 @@ export function heartbeatService(
         : await dispatchNativeSessionResumptions({
             db,
             runnerInstanceId:
-              runtimeEnv.PAPERCLIP_INSTANCE_ID?.trim() || "paperclip-heartbeat",
+              readProductEnvFrom(runtimeEnv, "INSTANCE_ID")?.trim() || "paperclip-heartbeat",
             now,
             runIds: [...claimableNativeRunIds],
             dispatch: (claim) => {
@@ -20212,7 +20213,7 @@ export function heartbeatService(
         await dispatchNativeSessionResumptions({
           db,
           runnerInstanceId:
-            runtimeEnv.PAPERCLIP_INSTANCE_ID?.trim() || "paperclip-heartbeat",
+            readProductEnvFrom(runtimeEnv, "INSTANCE_ID")?.trim() || "paperclip-heartbeat",
           runIds: [runId],
           dispatch: (claim) => {
             const execution = executeRun(claim.runId, {
@@ -22692,7 +22693,7 @@ export function heartbeatService(
         // whether GitHub is configured or a credential can be acquired.
         networkAccess:
           trustPreset.kind === "standard" &&
-          process.env.PAPERCLIP_RUNNER_NETWORK_ACCESS !== "disabled",
+          readProductEnv("RUNNER_NETWORK_ACCESS") !== "disabled",
       });
       // myrmidon(S2-hostcred): belt to the decision above — even a host-mode
       // probe or an upstream binding leaves no host credential name in the run
@@ -24409,7 +24410,7 @@ export function heartbeatService(
             > = null;
             if (
               executionTarget?.kind === "remote" &&
-              adapterEnv.PAPERCLIP_GITHUB_BROKER_TOKEN
+              readProductEnvFrom(adapterEnv, "GITHUB_BROKER_TOKEN")
             ) {
               try {
                 nativeGitHubBridge =
@@ -24423,8 +24424,8 @@ export function heartbeatService(
                       run.id,
                     ),
                     adapterKey: "native-github",
-                    hostApiToken: adapterEnv.PAPERCLIP_GITHUB_BROKER_TOKEN,
-                    hostApiUrl: adapterEnv.PAPERCLIP_GITHUB_BROKER_URL,
+                    hostApiToken: readProductEnvFrom(adapterEnv, "GITHUB_BROKER_TOKEN"),
+                    hostApiUrl: readProductEnvFrom(adapterEnv, "GITHUB_BROKER_URL"),
                     onLog,
                   });
               } catch {
@@ -24523,21 +24524,21 @@ export function heartbeatService(
                         nativeRuntimeResolution,
                       ),
                       runnerPublicUrl:
-                        runtimeEnv.PAPERCLIP_RUNNER_PUBLIC_URL?.trim() || null,
+                        readProductEnvFrom(runtimeEnv, "RUNNER_PUBLIC_URL")?.trim() || null,
                       runnerCaBundlePath:
-                        runtimeEnv.PAPERCLIP_RUNNER_CA_BUNDLE_PATH?.trim() ||
+                        readProductEnvFrom(runtimeEnv, "RUNNER_CA_BUNDLE_PATH")?.trim() ||
                         null,
                       runnerRemoteBinaryPath:
-                        runtimeEnv.PAPERCLIP_RUNNER_REMOTE_BINARY_PATH?.trim() ||
+                        readProductEnvFrom(runtimeEnv, "RUNNER_REMOTE_BINARY_PATH")?.trim() ||
                         null,
                       runnerRemoteCodexPath:
-                        runtimeEnv.PAPERCLIP_RUNNER_REMOTE_CODEX_PATH?.trim() ||
+                        readProductEnvFrom(runtimeEnv, "RUNNER_REMOTE_CODEX_PATH")?.trim() ||
                         null,
                       runnerRemoteCodexNpmSpec:
-                        runtimeEnv.PAPERCLIP_RUNNER_REMOTE_CODEX_NPM_SPEC?.trim() ||
+                        readProductEnvFrom(runtimeEnv, "RUNNER_REMOTE_CODEX_NPM_SPEC")?.trim() ||
                         null,
                       runnerRemoteProviderPackPath:
-                        runtimeEnv.PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH?.trim() ||
+                        readProductEnvFrom(runtimeEnv, "RUNNER_REMOTE_PROVIDER_PACK_PATH")?.trim() ||
                         null,
                       enqueueWakeup,
                       onSpawn: async (meta) => {
