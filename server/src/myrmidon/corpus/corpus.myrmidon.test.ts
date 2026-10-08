@@ -671,13 +671,21 @@ describe("corpus settings: the instance block drives the module", () => {
     expect(resolved.sources.maxParseAttempts).toBe("env");
   });
 
-  it("refuses the settings page to a caller who is not on the board", async () => {
+  it("keeps the settings page away from callers who are not on the board", async () => {
     const h = corpusHarness();
     const anonymous = await request(h.app({ type: "none" })).get(settingsPath);
-    const stranger = await request(h.app(strangerActor)).get(settingsPath);
+    // The block is an instance card, so it reads like the runtime-limits one:
+    // any board member may look at it, and the settings page has to work while
+    // the module is off — otherwise nobody could ever switch it on.
+    const strangerRead = await request(h.app(strangerActor)).get(settingsPath);
+    const strangerWrite = await request(h.app(strangerActor)).patch(settingsPath).send({ enabled: true });
 
     expect([401, 403]).toContain(anonymous.status);
-    expect([401, 403]).toContain(stranger.status);
+    expect(strangerRead.status).toBe(200);
+    expect(strangerRead.body.settings.enabled).toBe(false);
+    // …but writing it stays with the instance admin.
+    expect(strangerWrite.status).toBe(403);
+    expect(h.calls.updateGeneral).toBe(0);
   });
 });
 

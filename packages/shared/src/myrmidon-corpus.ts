@@ -56,7 +56,7 @@ export type CorpusSettingSources = Record<CorpusSettingsKey, CorpusSettingSource
  * the settings page never has to guess whether an operator cleared a field or
  * never touched it.
  */
-export interface CorpusSettings {
+export type CorpusSettings = {
   /** Master switch of the module. Off: routes answer 503, the sweep is a no-op. */
   enabled: boolean;
   /** Base URL of the document-parse service (PDF/scan → text over HTTP). */
@@ -79,7 +79,7 @@ export interface CorpusSettings {
   maxParseAttempts: number;
   /** Default number of hits a search returns when the request asks for none. */
   searchTopK: number;
-}
+};
 
 /** Environment variables behind the same keys (CONVENTIONS.md §8: env = default). */
 export const CORPUS_SETTINGS_ENV: Record<CorpusSettingsKey, string> = {

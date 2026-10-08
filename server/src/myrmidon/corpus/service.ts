@@ -345,11 +345,12 @@ export function corpusService(db: Db, overrides: Partial<CorpusServiceDeps> = {}
     updateDataset: async (companyId, datasetId, patch, _actor) => {
       const { ports } = await requirePorts();
       await requireDataset(ports, companyId, datasetId);
-      const updated = await ports.store.updateDataset(companyId, datasetId, {
-        name: patch.name?.trim(),
-        description:
-          patch.description === undefined ? undefined : patch.description?.trim() || null,
-      });
+      const next: { name?: string; description?: string | null } = {};
+      if (patch.name !== undefined) next.name = patch.name.trim();
+      if (patch.description !== undefined) next.description = patch.description?.trim() || null;
+      // Only the keys the caller sent: a spread-style store would otherwise
+      // wipe the stored description with an explicit `undefined`.
+      const updated = await ports.store.updateDataset(companyId, datasetId, next);
       if (!updated) throw notFound("dataset");
       return toDataset(updated);
     },
