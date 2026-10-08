@@ -25,7 +25,10 @@ available. On a cluster migrated without them, `search()` with an `embedding` fa
 `CorpusVectorSearchUnavailableError` — a module error that says which migration is missing and keeps
 the driver error as `pgError` — instead of leaking an "undefined column" or "undefined object" from
 the driver. A search without an `embedding` runs only the full-text leg and keeps working, so a
-deployment without pgvector can still search by text.
+deployment without pgvector can still search by text. Fresh installations ship the extension — the
+installer runs on the `pgvector/pgvector` image and enables `vector` before the board starts — and
+the production cluster carries it too, so this path is for installs that are upgraded in place from
+an older image; the guard turns a missing extension into a named error instead of a broken worker.
 
 ## Query shape
 
@@ -58,8 +61,8 @@ to the wiring, not to this package.
   with a recording `SqlExecutor`: statements, bound values, fusion order, escaping,
   validation.
 - [hybrid-search-index.integration.myrmidon.test.ts](hybrid-search-index.integration.myrmidon.test.ts)
-  — runs against an external stand named by `CORPUS_TEST_PGVECTOR_DSN` (the product image has no
-  `vector` extension yet): creates the probe extensions, tables and indexes, seeds a synthetic
+  — runs against an external stand named by `CORPUS_TEST_PGVECTOR_DSN` (an ordinary CI job has no
+  pgvector database of its own): creates the probe extensions, tables and indexes, seeds a synthetic
   corpus, and asserts the top-k contract, the dataset filter and recall@5 of hybrid retrieval on
   exact and noisy query vectors. It also measures p95 latency — `CORPUS_SEARCH_PERF_CHUNKS=100000`
   scales the synthetic set to the acceptance size (10^5 chunks) — and prints the `EXPLAIN (ANALYZE,

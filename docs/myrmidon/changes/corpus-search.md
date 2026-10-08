@@ -14,7 +14,9 @@
   only where the extension exists, so a search that carries an embedding there fails with the
   module's own `CorpusVectorSearchUnavailableError` — naming the missing migration and keeping
   the driver error as `pgError` — while a search without an embedding still answers from the
-  full-text ranking. A raw "undefined column" from the driver no longer reaches the worker.
+  full-text ranking. A raw "undefined column" from the driver no longer reaches the worker. Fresh
+  installations and the production cluster already carry the extension, so this path covers installs
+  that are upgraded in place.
 - Document ingestion behind the ports of part A: the sliding-window chunker (300–1500
   characters, 150 characters of overlap, boundaries on line breaks, configurable), batch
   embedding through the module `Embedder` port, and one atomic `replaceDocumentChunks` call at
@@ -54,6 +56,8 @@
   модуля `CorpusVectorSearchUnavailableError` — в ней названа недостающая миграция, а ошибка
   драйвера сохранена в `pgError` — тогда как поиск без эмбеддинга по-прежнему отвечает
   полнотекстовым ранжированием. Сырое «undefined column» от драйвера до воркера больше не доходит.
+  Свежие установки и боевой кластер расширение уже несут, так что этот путь — для установок,
+  обновлённых на месте.
 - Конвейер загрузки документов собран за портами части A: чанкинг скользящим окном
   (300–1500 знаков, перекрытие 150, границы по переводам строк, конфигурируемо),
   батч-эмбеддинг через порт `Embedder` и один атомарный вызов `replaceDocumentChunks` в
