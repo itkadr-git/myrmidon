@@ -1,4 +1,5 @@
 import type { ExecutionContinuationEnvelope } from "@paperclipai/shared";
+import { liveRunPipelineSettings } from "./runs-queue-settings/live.js";
 
 /**
  * Bounded continuation history (P3).
@@ -43,13 +44,10 @@ export type LimitedExecutionContinuationEnvelope = ExecutionContinuationEnvelope
   truncationNotice?: string;
 };
 
-/** Returns the configured limit; 0 disables the limit. Invalid values fall back to the default. */
+/** Configured limit; 0 disables the limit. OPE-4096: resolves live (UI value
+ * → env forced override → default 30); an explicit env value always wins. */
 export function readContinuationHistoryLimit(env: NodeJS.ProcessEnv = process.env): number {
-  const raw = env[CONTINUATION_HISTORY_LIMIT_ENV]?.trim();
-  if (!raw) return DEFAULT_CONTINUATION_HISTORY_LIMIT;
-  if (!/^\d+$/.test(raw)) return DEFAULT_CONTINUATION_HISTORY_LIMIT;
-  const value = Number(raw);
-  return Number.isSafeInteger(value) ? value : DEFAULT_CONTINUATION_HISTORY_LIMIT;
+  return liveRunPipelineSettings(env).continuationHistoryLimit;
 }
 
 function isUserRequest(message: Message): boolean {

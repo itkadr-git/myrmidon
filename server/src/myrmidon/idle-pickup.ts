@@ -6,6 +6,7 @@ import { logger } from "../middleware/logger.js";
 // budget without restarting the server — a restart drops every run in flight.
 import { resolveAgentTeamLiveness, type ResolvedTeamLiveness } from "@paperclipai/shared";
 import { issueHasNoExecutionHold, wakeNotParkedOnExecutionHold } from "./settled-holds/ready-predicate.js";
+import { liveIdlePickupSettings, liveIdleWakeBudget } from "./runs-queue-settings/live.js";
 
 /**
  * Idle pickup (IDLE-PICKUP, Myrmidon 1.3).
@@ -75,38 +76,30 @@ export const IDLE_PICKUP_WAKE_WINDOW_MS = 60_000;
 const WAKEABLE_ISSUE_STATUSES = ["todo", "in_progress"] as const;
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 
-/** Interval in seconds; invalid or too-small values fall back to the default. */
+/** Interval in seconds. OPE-4096: resolves live (UI value → env forced override
+ * → default 30 s); an explicit env value always wins. */
 export function readIdlePickupIntervalSec(env: NodeJS.ProcessEnv = process.env): number {
-  const raw = env[IDLE_PICKUP_INTERVAL_SEC_ENV]?.trim();
-  if (!raw) return DEFAULT_IDLE_PICKUP_INTERVAL_SEC;
-  if (!/^\d+$/.test(raw)) return DEFAULT_IDLE_PICKUP_INTERVAL_SEC;
-  const value = Number(raw);
-  if (!Number.isSafeInteger(value) || value <= 0) return DEFAULT_IDLE_PICKUP_INTERVAL_SEC;
-  return Math.max(MIN_IDLE_PICKUP_INTERVAL_SEC, value);
+  return liveIdlePickupSettings(env).intervalSec;
 }
 
 /**
  * The feature ships enabled (a defect fix per CONVENTIONS.md §8): an unset or
  * unrecognized value keeps it on. Only an explicit off value disables it.
+ * OPE-4096: resolves live (UI value → env forced override → default on).
  */
 export function readIdlePickupEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  const raw = env[IDLE_PICKUP_ENABLED_ENV]?.trim().toLowerCase();
-  return raw !== "0" && raw !== "false" && raw !== "off" && raw !== "no";
+  return liveIdlePickupSettings(env).enabled;
 }
 
 /**
  * Window in ms during which a successful run on an issue suppresses an
  * idle-pickup wake for that same issue (the successful-run-handoff and
  * stranded-recovery paths own the next step there). `0` disables the
- * suppression; invalid values fall back to the default.
+ * suppression. OPE-4096: resolves live (UI value → env forced override →
+ * default 15 min); an explicit env value always wins.
  */
 export function readIdlePickupRecentSuccessWindowMs(env: NodeJS.ProcessEnv = process.env): number {
-  const raw = env[IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS_ENV]?.trim();
-  if (!raw) return DEFAULT_IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS;
-  if (!/^\d+$/.test(raw)) return DEFAULT_IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS;
-  const value = Number(raw);
-  if (!Number.isSafeInteger(value)) return DEFAULT_IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS;
-  return value;
+  return liveIdlePickupSettings(env).recentSuccessWindowMs;
 }
 
 /** Bounded non-negative integer reader shared by the two budget knobs. */

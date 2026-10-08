@@ -4,6 +4,8 @@
 // explicit off value disables it. The threshold is a deployment value, so the
 // default is the neutral 20 minutes the operator's own watchdog script used.
 
+import { liveRunStallSettings } from "../runs-queue-settings/live.js";
+
 function readInt(
   env: NodeJS.ProcessEnv,
   name: string,
@@ -53,24 +55,21 @@ export interface RunStallSettings {
 /**
  * Master switch. Unset or an unrecognized value keeps the fix on: a typo must
  * not silently extinguish it (`MYRMIDON_IDLE_PICKUP_ENABLED` follows the same
- * rule).
+ * rule). OPE-4096: resolves live (UI value → env forced override → default on).
  */
 export function readRunStallEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  const raw = env[RUN_STALL_ENABLED_ENV]?.trim().toLowerCase();
-  return raw !== "0" && raw !== "false" && raw !== "off" && raw !== "no";
+  return liveRunStallSettings(env).enabled;
 }
 
 export function readRunStallSettings(env: NodeJS.ProcessEnv = process.env): RunStallSettings {
+  // OPE-4096: enabled + threshold resolve live (UI value → env forced override
+  // → default) so a settings-page save applies without a restart; an explicit
+  // env value always wins. Check interval and page size stay env-only per
+  // ia-v2 §10.7 («env (интервал/страница остаются env)»).
+  const live = liveRunStallSettings(env);
   return {
-    enabled: readRunStallEnabled(env),
-    thresholdMs:
-      readInt(
-        env,
-        RUN_STALL_THRESHOLD_SEC_ENV,
-        DEFAULT_RUN_STALL_THRESHOLD_SEC,
-        MIN_RUN_STALL_THRESHOLD_SEC,
-        MAX_RUN_STALL_THRESHOLD_SEC,
-      ) * 1000,
+    enabled: live.enabled,
+    thresholdMs: live.thresholdSec * 1000,
     checkIntervalMs:
       readInt(
         env,

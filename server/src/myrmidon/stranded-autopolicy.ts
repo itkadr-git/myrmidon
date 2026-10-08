@@ -61,7 +61,7 @@ import { applyIssueExecutionPolicyTransition } from "../services/issue-execution
 // myrmidon(B1): the two texts below that people and agents read name the
 // product through product.ts, like the rest of the server-generated text.
 import { productPossessive } from "./product.js";
-
+import { liveStrandedSettings } from "./runs-queue-settings/live.js";
 export const STRANDED_AUTO_POLICY_CAUSES = [
   "stranded_assigned_issue",
   "successful_run_missing_state",
@@ -101,24 +101,19 @@ export const STRANDED_AUTO_POLICY_RETRIES_PER_DAY_ENV = "MYRMIDON_STRANDED_AUTO_
 export const STRANDED_AUTO_POLICY_DEFAULT_RETRIES_PER_DAY = 2;
 export const STRANDED_AUTO_POLICY_ENABLED_ENV = "MYRMIDON_STRANDED_AUTOPOLICY_ENABLED";
 
-/** Retries allowed per rolling 24h window; invalid or unset falls back to the default. */
+/** Retries allowed per rolling 24h window. OPE-4096: resolves live (UI value
+ * → env forced override → default); an explicit env value always wins. */
 export function readStrandedAutoRetriesPerDay(env: NodeJS.ProcessEnv = process.env): number {
-  const raw = env[STRANDED_AUTO_POLICY_RETRIES_PER_DAY_ENV]?.trim();
-  if (!raw) return STRANDED_AUTO_POLICY_DEFAULT_RETRIES_PER_DAY;
-  if (!/^\d+$/.test(raw)) return STRANDED_AUTO_POLICY_DEFAULT_RETRIES_PER_DAY;
-  const parsed = Number(raw);
-  return Number.isSafeInteger(parsed) ? parsed : STRANDED_AUTO_POLICY_DEFAULT_RETRIES_PER_DAY;
+  return liveStrandedSettings(env).autoRetriesPerDay;
 }
 
 /**
- * Full kill switch: `false` (or `0`) restores 100% vendor board escalation
- * regardless of `MYRMIDON_STRANDED_AUTO_RETRIES_PER_DAY` or any agent's
- * configured manager. Defaults to enabled; unset or unrecognized values are
- * treated as enabled so a typo cannot silently disable the fix.
+ * Full kill switch. OPE-4096: resolves live (UI value → env forced override →
+ * default enabled); an explicit env value always wins, so `false`/`0` still
+ * restores 100% vendor board escalation.
  */
 export function readStrandedAutoPolicyEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  const raw = env[STRANDED_AUTO_POLICY_ENABLED_ENV]?.trim().toLowerCase();
-  return raw !== "false" && raw !== "0";
+  return liveStrandedSettings(env).enabled;
 }
 
 export type StrandedAutoPolicyDecision =

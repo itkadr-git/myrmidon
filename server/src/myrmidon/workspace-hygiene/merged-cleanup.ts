@@ -22,6 +22,8 @@
  * guarded archive statement. Neither cooldown, short or long, relaxes it.
  */
 
+import { liveWorkspaceHygieneSettings } from "../runs-queue-settings/live.js";
+
 export const MERGED_WORKSPACE_COOLDOWN_ENV = "MYRMIDON_WORKSPACE_MERGED_COOLDOWN_MS";
 export const STUCK_WORKSPACE_SIGNAL_AFTER_ENV = "MYRMIDON_WORKSPACE_STUCK_SIGNAL_AFTER_MS";
 
@@ -78,14 +80,16 @@ export function readDurationMsFromEnv(
   return Number.isSafeInteger(value) ? value : fallbackMs;
 }
 
-/** Merged-copy cooldown in milliseconds; invalid values fall back to 30 minutes. */
+/** Merged-copy cooldown in milliseconds. OPE-4096: resolves live (UI value →
+ * env forced override → default 30 min); an explicit env value always wins. */
 export function readMergedWorkspaceCooldownMs(env: NodeJS.ProcessEnv = process.env): number {
-  return readDurationMsFromEnv(env[MERGED_WORKSPACE_COOLDOWN_ENV], DEFAULT_MERGED_WORKSPACE_COOLDOWN_MS);
+  return liveWorkspaceHygieneSettings(env).mergedCooldownMs;
 }
 
-/** Stuck-copy signal threshold in milliseconds; invalid values fall back to 24 hours. */
+/** Stuck-copy signal threshold in milliseconds. OPE-4096: resolves live (UI
+ * value → env forced override → default 24 h); an explicit env value wins. */
 export function readStuckWorkspaceSignalAfterMs(env: NodeJS.ProcessEnv = process.env): number {
-  return readDurationMsFromEnv(env[STUCK_WORKSPACE_SIGNAL_AFTER_ENV], DEFAULT_STUCK_WORKSPACE_SIGNAL_AFTER_MS);
+  return liveWorkspaceHygieneSettings(env).stuckSignalAfterMs;
 }
 
 /** Read the time of the last stuck-copy signal; null when absent or invalid. */
