@@ -2806,6 +2806,9 @@ export * from "./myrmidon-bot-image-rollout.js"; // myrmidon(BOT-ROLLOUT)
 // layout, myr-ws CLI, desired-state and disk-report payloads, dockergate disk routes, the
 // /v1/runs workspace field and the botDisk settings keys. All BOT-DISK-H tasks code against it.
 export * from "./myrmidon-bot-workspace.js";
+// myrmidon(PROCS-1.1): the board's process settings — the key, its values and its defaults,
+// shared by the server, the instance-settings validator and the settings page (design OPE-5394 §7.2).
+export * from "./myrmidon-processes.js";
 // myrmidon(PERF-DIET-K): issue-scoped session-generation thresholds shared by the server and the
 // settings validator.
 export * from "./myrmidon-session-generations.js";

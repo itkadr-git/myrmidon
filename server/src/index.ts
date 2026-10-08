@@ -58,6 +58,11 @@ import { getOperatorSettingDefaults } from "./services/setting-defaults.js";
 import { setupEnvironmentCustomImageTerminalWebSocketServer } from "./realtime/environment-custom-image-terminal-ws.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import { startBrowserBridge } from "./myrmidon/browser-bridge/index.js"; // myrmidon(EXTCASE-B)
+import {
+  PROCESS_ROLE_ENV,
+  processRole,
+  type ProcessRoleProfile,
+} from "./services/process-role.js"; // myrmidon(PROCS-1.1)
 import { setupRunnerPrpWebSocketServer } from "./realtime/runner-prp-ws.js";
 import { cloudActorHeaderSourceFromHeaders, resolveCloudTenantActor } from "./middleware/auth.js";
 import {
@@ -127,6 +132,7 @@ import { flushInFlightRunLogMirrors } from "./services/run-log-store.js";
 import { startMaintenanceMode } from "./myrmidon/maintenance/index.js"; // myrmidon(R3)
 import { startDeployJobs } from "./myrmidon/deploy-jobs/index.js"; // myrmidon(R5-A)
 import { startRuntimeLimits } from "./myrmidon/runtime-limits/index.js"; // myrmidon(C0)
+import { startProcessesSettings } from "./myrmidon/processes/index.js"; // myrmidon(PROCS-1.1)
 import { startBehaviorSettings } from "./myrmidon/behavior-settings/index.js"; // myrmidon(SETTINGS-CORE)
 import { startBotContainers, stopBotContainers } from "./myrmidon/bot-containers/startup.js"; // myrmidon(W2a)
 import { startLitellmCostSweep, stopLitellmCostSweep } from "./myrmidon/litellm-costs/startup.js"; // myrmidon(M2-A)
@@ -265,6 +271,28 @@ async function startServerWithDatabaseTeardown(
   await sentryReady;
   ensureDecisionSigningSecret();
   let config = loadConfig();
+
+  // myrmidon(PROCS-1.1): the one switch point for what this process is. Every
+  // gate on background work below reads this profile; the role is resolved once
+  // per process and never changes while it runs. An unknown value keeps the
+  // unchanged `all` behavior and is reported instead of silently inventing a
+  // role.
+  const processRoleProfile: ProcessRoleProfile = processRole();
+  if (processRoleProfile.invalidValue) {
+    logger.warn(
+      {
+        env: PROCESS_ROLE_ENV,
+        value: processRoleProfile.rawValue,
+        fallback: processRoleProfile.role,
+      },
+      "myrmidon(PROCS-1.1): unknown process role — falling back to the unchanged 'all' role",
+    );
+  } else if (processRoleProfile.source === "env") {
+    logger.info(
+      { role: processRoleProfile.role },
+      `myrmidon(PROCS-1.1): process role '${processRoleProfile.role}' set by ${PROCESS_ROLE_ENV}`,
+    );
+  }
   initTelemetry({ enabled: config.telemetryEnabled });
   if (process.env.PAPERCLIP_SECRETS_PROVIDER === undefined) {
     process.env.PAPERCLIP_SECRETS_PROVIDER = config.secretsProvider;
@@ -367,6 +395,36 @@ async function startServerWithDatabaseTeardown(
     return "applied (pending migrations)";
   }
   
+  /**
+   * myrmidon(PROCS-1.1): the counterpart of {@link ensureMigrations} for a
+   * process that does not own the schema — an api process waits until the
+   * worker has applied the migrations instead of applying (or refusing) them
+   * itself. The wait is bounded and fails loud: a board that never gets its
+   * schema must not serve requests against a stale one.
+   */
+  const MIGRATION_WAIT_TIMEOUT_MS = 120_000;
+  const MIGRATION_WAIT_POLL_MS = 1_000;
+  async function awaitMigrationsApplied(connectionString: string): Promise<MigrationSummary> {
+    const deadline = Date.now() + MIGRATION_WAIT_TIMEOUT_MS;
+    let state = await inspectMigrations(connectionString);
+    while (state.status !== "upToDate") {
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `PostgreSQL migrations are still not applied after ${Math.round(MIGRATION_WAIT_TIMEOUT_MS / 1000)}s. ` +
+            `PAPERCLIP_PROCESS_ROLE=api waits for the migration-owning process (worker/all); ` +
+            `start it, or run pnpm db:migrate.`,
+        );
+      }
+      logger.info(
+        { status: state.status, reason: "reason" in state ? state.reason : undefined },
+        "myrmidon(PROCS-1.1): waiting for the migration-owning process to finish migrations",
+      );
+      await new Promise((resolve) => setTimeout(resolve, MIGRATION_WAIT_POLL_MS));
+      state = await inspectMigrations(connectionString);
+    }
+    return "already applied";
+  }
+
   function isPostgresConnectionString(connectionString: string): boolean {
     try {
       const parsed = new URL(connectionString);
@@ -472,7 +530,12 @@ async function startServerWithDatabaseTeardown(
   assertCloudDatabaseContract();
   if (config.databaseUrl) {
     const migrationUrl = config.databaseMigrationUrl ?? config.databaseUrl;
-    migrationSummary = await ensureMigrations(migrationUrl, "PostgreSQL");
+    // myrmidon(PROCS-1.1): only the role that owns background work applies
+    // migrations; an api process waits for them instead of racing its worker
+    // sibling over the same schema change.
+    migrationSummary = processRoleProfile.migrations === "await"
+      ? await awaitMigrationsApplied(migrationUrl)
+      : await ensureMigrations(migrationUrl, "PostgreSQL");
   
     db = createDb(config.databaseUrl);
     pluginMigrationDb = config.databaseMigrationUrl ? createDb(config.databaseMigrationUrl) : db;
@@ -730,11 +793,19 @@ async function startServerWithDatabaseTeardown(
     }
   }
 
-  const requestedListenPort = config.port;
-  const listenPort = await detectPort({
-    port: requestedListenPort,
-    hostname: config.host,
-  });
+  // myrmidon(PROCS-1.1): the role decides the primary bind. The api role shares
+  // 0.0.0.0:3100 with its siblings through `reusePort`, so a busy port is
+  // expected there and must NOT make detect-port hand out the next free one —
+  // that is exactly how N api processes drift onto different ports.
+  const roleListen = processRoleProfile.listen;
+  const primaryListenHost = roleListen.host ?? config.host;
+  const requestedListenPort = roleListen.port ?? config.port;
+  const listenPort = roleListen.reusePort
+    ? requestedListenPort
+    : await detectPort({
+        port: requestedListenPort,
+        hostname: primaryListenHost,
+      });
   if (config.authBaseUrlMode === "explicit" && config.authPublicBaseUrl) {
     config.authPublicBaseUrl = rewriteLoopbackUrlPort(config.authPublicBaseUrl, listenPort);
   }
@@ -925,7 +996,12 @@ async function startServerWithDatabaseTeardown(
     }
   };
   const pluginWorkerManager = createPluginWorkerManager();
-  const heartbeat = config.heartbeatSchedulerEnabled
+  // myrmidon(PROCS-1.1): an api process never claims or executes runs, so it
+  // builds no heartbeat service at all. That single gate covers the whole
+  // `if (heartbeat)` block below — startup recovery, every sweep, the scheduler
+  // interval and the plugin workers — which is what the api-role timer test
+  // asserts.
+  const heartbeat = config.heartbeatSchedulerEnabled && processRoleProfile.executesRuns
     ? heartbeatService(db as any, { pluginWorkerManager })
     : null;
   const decisionServiceOptions = {
@@ -935,9 +1011,19 @@ async function startServerWithDatabaseTeardown(
   // document parsed fail-closed above (`plugins.autoInstall`). Absent env means
   // self-hosted: createApp falls back to its built-in kubernetes-only default.
   const managedPluginAutoInstall = managedConfig?.plugins.autoInstall ?? null;
+  // myrmidon(PROCS-1.1): the stored process settings are read once the schema
+  // is in place and before anything is served. Both roles read them: a stored
+  // `split` is reported as not in effect (no supervisor yet) instead of being
+  // applied half-way, and the emergency escape PAPERCLIP_PROCESS_MODE=single
+  // wins over the stored row.
+  await startProcessesSettings(db as any);
   const app = await createApp(db as any, {
     uiMode,
     serverPort: listenPort,
+    // myrmidon(PROCS-1.1): an api process serves the board surface and nothing
+    // periodic — the workers, exports, spools and plugin jobs stay with the
+    // background role.
+    backgroundWork: processRoleProfile.runsBackground,
     storageService,
     feedbackExportService: feedback,
     databaseBackupService: {
@@ -1049,15 +1135,49 @@ async function startServerWithDatabaseTeardown(
       rejectListen(err);
     };
     server.once("error", onError);
-    server.listen(listenPort, config.host, () => {
+    const onBound = () => {
       server.off("error", onError);
       logger.info(
-        `Server listener bound on ${config.host}:${listenPort}; startup recovery in progress`,
+        `Server listener bound on ${primaryListenHost}:${listenPort}${roleListen.reusePort ? " (reusePort)" : ""}; startup recovery in progress`,
       );
       resolveListen();
-    });
+    };
+    // myrmidon(PROCS-1.1): a reusable-port listener joins its siblings on the
+    // same port instead of taking the next free one.
+    if (roleListen.reusePort) {
+      server.listen({ port: listenPort, host: primaryListenHost, reusePort: true }, onBound);
+    } else {
+      server.listen(listenPort, primaryListenHost, onBound);
+    }
   });
   startupListenerBound = true;
+
+  /**
+   * myrmidon(PROCS-1.1): the worker's internal listener. In a split deployment
+   * the api processes reach the board through this loopback bind, which is never
+   * exposed (a single-process `all` deployment opens none).
+   */
+  async function openWorkerLoopbackListener(): Promise<ReturnType<typeof createServer> | null> {
+    const spec = processRoleProfile.loopbackListen;
+    if (!spec) return null;
+    const listener = createServer(app as unknown as Parameters<typeof createServer>[0]);
+    await new Promise<void>((resolveLoopback, rejectLoopback) => {
+      const onError = (err: Error) => {
+        listener.off("error", onError);
+        rejectLoopback(err);
+      };
+      listener.once("error", onError);
+      listener.listen(spec.port, spec.host, () => {
+        listener.off("error", onError);
+        logger.info(
+          `myrmidon(PROCS-1.1): worker internal listener bound on ${spec.host}:${spec.port}`,
+        );
+        resolveLoopback();
+      });
+    });
+    return listener;
+  }
+  const workerLoopbackServer = await openWorkerLoopbackListener();
 
   try {
     const result = await workspaceOperationService(db as any)
@@ -1250,9 +1370,14 @@ async function startServerWithDatabaseTeardown(
         .finally(() => { executionControlSweepsInFlight.delete(queue); }));
     }
   };
-  const executionControlInterval = setInterval(sweepExecutionControl, EXECUTION_RECONCILIATION_INTERVAL_MS);
-  executionControlInterval.unref?.();
-  sweepExecutionControl();
+  // myrmidon(PROCS-1.1): execution-control reconciliation is background work.
+  const executionControlInterval = processRoleProfile.runsBackground
+    ? setInterval(sweepExecutionControl, EXECUTION_RECONCILIATION_INTERVAL_MS)
+    : null;
+  executionControlInterval?.unref?.();
+  // myrmidon(PROCS-1.1): the startup pass of the same sweeps is background work
+  // too — an api process must not reconcile or settle executions at boot.
+  if (processRoleProfile.runsBackground) sweepExecutionControl();
   const startHeartbeatSchedulerInterval = (callback: () => void) => {
     heartbeatSchedulerInterval = setInterval(callback, config.heartbeatSchedulerIntervalMs);
     heartbeatSchedulerInterval?.unref?.();
@@ -2237,7 +2362,10 @@ async function startServerWithDatabaseTeardown(
         logger.error({ err }, "heartbeat scheduler tick failed");
       }));
     });
-  } else {
+  } else if (processRoleProfile.runsBackground) {
+    // myrmidon(PROCS-1.1): the sweeps in this branch belong to the background
+    // role — an api process whose heartbeat is disabled schedules none of them,
+    // its worker sibling owns the orphan-sandbox cleanup and the rest.
     // The heartbeat scheduler is disabled, but the orphan-sandbox cleanup sweep
     // is still required. A failed acquire can leak a paid provider sandbox, so
     // this path retries the teardown at startup and on the interval, exactly as
@@ -2266,7 +2394,7 @@ async function startServerWithDatabaseTeardown(
       "Database backup catch-up disabled: expected 'none' or '<IANA zone> HH:MM-HH:MM'",
     );
   }
-  if (config.databaseBackupEnabled) {
+  if (config.databaseBackupEnabled && processRoleProfile.runsBackups) {
     const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
 
     logger.info(
@@ -2291,7 +2419,7 @@ async function startServerWithDatabaseTeardown(
   const { waitForExternalAdapters } = await import("./adapters/registry.js");
   await waitForExternalAdapters();
   // myrmidon(P11): catch up a missed backup slot and anchor the cadence to the newest dump
-  if (config.databaseBackupEnabled && backupCatchUp.enabled) {
+  if (config.databaseBackupEnabled && backupCatchUp.enabled && processRoleProfile.runsBackups) {
     startBackupCatchUp({
       settings: backupCatchUp,
       backupDir: config.databaseBackupDir,
@@ -2371,7 +2499,10 @@ async function startServerWithDatabaseTeardown(
   ) => {
     await systemdNotify(["--stopping", `--status=Stopping after ${signal}`]);
     heartbeatSchedulerStopped = true;
-    clearInterval(executionControlInterval);
+    if (executionControlInterval) clearInterval(executionControlInterval);
+    // myrmidon(PROCS-1.1): the worker's internal listener is a second server,
+    // so it needs its own close.
+    workerLoopbackServer?.close();
     stopBotContainers(); // myrmidon(W2a)
     stopLitellmCostSweep(); // myrmidon(M2-A)
     stopBoardProcessRegistry(); // myrmidon(1.6.6 PROCS-0.1)
