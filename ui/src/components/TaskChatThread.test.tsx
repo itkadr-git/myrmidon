@@ -514,7 +514,7 @@ describe("TaskChatThread runtime transcript selection", () => {
     expect(nativeRuns.map((run) => run.id)).toEqual(["native-run"]);
   });
 
-  it("uses runner-only controls only for an actual native Paperclip Runner run", () => {
+  it("uses runner-only controls only for an actual native Myrmidon Runner run", () => {
     nativeTranscriptState.transcriptByRun.set("native-run", [
       {
         kind: "assistant",
@@ -2955,7 +2955,7 @@ describe("TaskChatThread queued message actions", () => {
   });
 });
 
-describe("TaskChatThread Paperclip Runner queue", () => {
+describe("TaskChatThread Myrmidon Runner queue", () => {
   const queuedComment = {
     id: "queued-prp-1",
     companyId: "company-1",
