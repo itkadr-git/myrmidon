@@ -684,12 +684,6 @@ import {
   sharedRunAdmission,
   type RunAdmissionDenialReason,
 } from "../myrmidon/run-admission.js";
-<<<<<<< ours
-=======
-// myrmidon(PERF-DIET-K): issue-scoped session generations for the container
-// Hermes gateway — one task's session key gains a `:g<N>` once it passes its
-// age/activity threshold, so the task's Hermes state stays bounded
-import { resolveHeartbeatSessionGeneration } from "../myrmidon/session-generations/index.js";
 // myrmidon(1.6.5 RUN-PRIORITY A): queued runs start by role/issue/release
 // weight with aging; the settings live-refresh per pass (runtime-limits pattern).
 import { currentRunPrioritySettings } from "../myrmidon/run-priority/state.js";
@@ -699,7 +693,6 @@ import {
   type PriorityScoredRun,
 } from "../myrmidon/run-priority/scoring.js";
 import { runPriorityWeight, type RunPrioritySettings } from "@paperclipai/shared";
->>>>>>> theirs
 // myrmidon(S2-hostcred): a run never inherits the host's GitHub credentials
 import {
   filterHostGitHubCredentialEnv,
