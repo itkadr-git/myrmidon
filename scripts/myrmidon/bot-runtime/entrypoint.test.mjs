@@ -521,6 +521,66 @@ exec /bin/cp "$@"
     }
   });
 
+  it("an unwritable cache directory names the owner/uid/mount facts, not just the raw errno", () => {
+    const { tree, bot, data } = botLayout();
+    try {
+      const cache = path.join(bot, "workspace", ".uv-cache-locked");
+      fs.mkdirSync(cache, { recursive: true });
+      fs.chmodSync(cache, 0o555); // present, writable by nobody — the field's root-owned 0755 shape
+      const roots = [path.join(bot, "workspace")];
+      const result = runWithStub({
+        HERMES_HOME: path.join(bot, "hermes"),
+        MYRMIDON_BOT_ROOT: bot,
+        MYRMIDON_DATA_DIR: data,
+        UV_CACHE_DIR: cache,
+        MYRMIDON_UV_CHECK_ROOTS: roots.join(" "),
+        MYRMIDON_REFLINK_CHECK: "0",
+        MYRMIDON_TEST_CWD: path.join(bot, "workspace"),
+        MYRMIDON_GIT_OBJECTS_CHECK: "0",
+      });
+      assert.equal(result.status, 0, "a failed check never stops the gateway");
+      assert.match(result.stderr, /ERROR: uv cache self-check: cannot create a file in the uv cache/);
+      const report = JSON.parse(fs.readFileSync(path.join(bot, "hermes", ".myrmidon", "uv-cache-check.json"), "utf8"));
+      assert.equal(report.ok, false);
+      const error = report.roots[0].error;
+      // The three-way distinction the on-call reads: exists / mountpoint / owner+ids.
+      assert.match(error, /directory exists \(mode\/owner 555 \d+:\d+\)/, error);
+      assert.match(error, new RegExp(`process uid:gid ${process.getuid()}:${process.getgid()}`), error);
+      assert.match(error, /is a mountpoint|is not a mountpoint/, error);
+    } finally {
+      fs.chmodSync(path.join(bot, "workspace", ".uv-cache-locked"), 0o755);
+      fs.rmSync(tree, { recursive: true, force: true });
+    }
+  });
+
+  it("a cache under a read-only parent names the missing-bind cause", () => {
+    const { tree, bot, data } = botLayout();
+    try {
+      const ro = path.join(bot, "workspace", "ro-root");
+      fs.mkdirSync(ro, { recursive: true });
+      fs.chmodSync(ro, 0o555); // closest a non-root runner gets to the ro rootfs shape
+      const roots = [path.join(bot, "workspace")];
+      const result = runWithStub({
+        HERMES_HOME: path.join(bot, "hermes"),
+        MYRMIDON_BOT_ROOT: bot,
+        MYRMIDON_DATA_DIR: data,
+        UV_CACHE_DIR: path.join(ro, "uv"),
+        MYRMIDON_UV_CHECK_ROOTS: roots.join(" "),
+        MYRMIDON_REFLINK_CHECK: "0",
+        MYRMIDON_TEST_CWD: path.join(bot, "workspace"),
+        MYRMIDON_GIT_OBJECTS_CHECK: "0",
+      });
+      assert.equal(result.status, 0, "a failed check never stops the gateway");
+      const report = JSON.parse(fs.readFileSync(path.join(bot, "hermes", ".myrmidon", "uv-cache-check.json"), "utf8"));
+      assert.equal(report.ok, false);
+      const error = report.roots[0].error;
+      assert.match(error, /directory does not exist and cannot be created \(the root filesystem is read-only and no writable bind covers/, error);
+    } finally {
+      fs.chmodSync(path.join(bot, "workspace", "ro-root"), 0o755);
+      fs.rmSync(tree, { recursive: true, force: true });
+    }
+  });
+
   it("hardlink mode probes by inode: ln between roots on one filesystem passes", () => {
     const { tree, bot, data } = botLayout();
     try {
@@ -841,6 +901,83 @@ describe("docker/bot-runtime/entrypoint.sh shared-git-objects self-check", () =>
       assert.equal(report.checks.find((c) => c.check === "store-in-use").ok, true);
       // A live clone that is not a GitHub one is not the store's business.
       assert.deepEqual(findMirrors(bot), ["owner/repo.git"]);
+    } finally {
+      fs.rmSync(tree, { recursive: true, force: true });
+      fs.rmSync(stub.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("a symlinked HERMES_HOME still passes the realpath comparisons of reference-clone and store-fills", () => {
+    // myrmidon(1.6.5 BOT-SELFCHECK-DIAG): the incident shape — HERMES_HOME is a
+    // symlink into the bot's one mount, git records the physical path in
+    // objects/info/alternates, and a textual `pwd -P`-vs-alternates comparison
+    // failed on a healthy chain. Both sides are normalised now.
+    const { tree, bot, data } = botLayout();
+    const stub = realWrapperStub();
+    const linkHome = path.join(tree, "linked-home");
+    fs.symlinkSync(path.join(bot, "hermes"), linkHome);
+    try {
+      const result = runWithStub({
+        HERMES_HOME: linkHome,
+        MYRMIDON_BOT_ROOT: bot,
+        MYRMIDON_DATA_DIR: data,
+        MYRMIDON_REFLINK_CHECK: "0",
+        MYRMIDON_UV_CHECK: "0",
+        MYRMIDON_GIT_WRAPPER: stub.wrapper,
+        MYRMIDON_GIT_SHADOW: stub.shadow,
+        MYRMIDON_GIT_REAL: realGit(),
+        MYRMIDON_TASK_ROOTS: path.join(bot, "workspace"),
+        MYRMIDON_TEST_CWD: path.join(bot, "workspace"),
+      });
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stderr, /shared-objects self-check ok/);
+      const report = JSON.parse(fs.readFileSync(path.join(linkHome, ".myrmidon", "git-objects-check.json"), "utf8"));
+      assert.equal(report.ok, true);
+      assert.equal(report.checks.find((c) => c.check === "reference-clone").ok, true);
+      assert.equal(report.checks.find((c) => c.check === "store-fills").ok, true);
+    } finally {
+      fs.rmSync(tree, { recursive: true, force: true });
+      fs.rmSync(stub.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("store-in-use follows a symlinked task root and names the counts on failure", () => {
+    // The clone sits one level deeper than the old /workspace/<T>/repo shape,
+    // under a root the operator gave as a symlink: find must follow it and the
+    // failure message must carry clones/mirrors/sample, not just "failed".
+    const { tree, bot, data } = botLayout();
+    const stub = realWrapperStub();
+    const realRoot = path.join(tree, "real-tasks");
+    fs.mkdirSync(realRoot, { recursive: true });
+    const linkRoot = path.join(tree, "tasks-link");
+    fs.symlinkSync(realRoot, linkRoot);
+    try {
+      const clone = path.join(realRoot, "TASK-9", "deep", "repo");
+      fs.mkdirSync(clone, { recursive: true });
+      for (const args of [["init", "-q", "-b", "main"], ["remote", "add", "origin", "https://github.com/owner/repo.git"]]) {
+        const init = spawnSync(realGit(), args, { cwd: clone, encoding: "utf8" });
+        assert.equal(init.status, 0, `git ${args.join(" ")}: ${init.stderr}`);
+      }
+      const result = runWithStub({
+        HERMES_HOME: path.join(bot, "hermes"),
+        MYRMIDON_BOT_ROOT: bot,
+        MYRMIDON_DATA_DIR: data,
+        MYRMIDON_REFLINK_CHECK: "0",
+        MYRMIDON_UV_CHECK: "0",
+        MYRMIDON_GIT_WRAPPER: stub.wrapper,
+        MYRMIDON_GIT_SHADOW: stub.shadow,
+        MYRMIDON_GIT_REAL: realGit(),
+        MYRMIDON_TASK_ROOTS: linkRoot,
+        MYRMIDON_TEST_CWD: path.join(bot, "workspace"),
+      });
+      assert.equal(result.status, 0, "a failed check never stops the gateway");
+      const report = JSON.parse(fs.readFileSync(path.join(bot, "hermes", ".myrmidon", "git-objects-check.json"), "utf8"));
+      const inUse = report.checks.find((c) => c.check === "store-in-use");
+      assert.equal(inUse.ok, false, "the clone under the symlinked root is found");
+      assert.match(inUse.error, /1 GitHub task clone\(s\)/, inUse.error);
+      assert.match(inUse.error, /mirrors=0/, inUse.error);
+      assert.match(inUse.error, /roots walked: .* -> /, inUse.error);
+      assert.match(inUse.error, /TASK-9/, inUse.error);
     } finally {
       fs.rmSync(tree, { recursive: true, force: true });
       fs.rmSync(stub.dir, { recursive: true, force: true });
