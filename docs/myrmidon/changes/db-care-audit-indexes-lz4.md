@@ -27,10 +27,17 @@ divergence-section: Трек 2 — ядро побудок и прогонов
 - Migration `packages/db/src/migrations/0309_db_care_lz4_compression.sql` sets
   the compression method `lz4` on the three largest varlena columns of
   `heartbeat_runs` (`context_snapshot`, `result_json`, `stdout_excerpt`). The
-  statement is a catalog-only change: a short `ACCESS EXCLUSIVE` lock, no row
-  rewrite, and the rows already stored keep their method until they are
-  rewritten. On production the three columns already carry `l`, so the
-  statements are no-ops there.
+  statement is catalog-only: a short `ACCESS EXCLUSIVE` lock, no row rewrite, and
+  the rows already stored keep their method until they are rewritten. On
+  production the three columns already carry `l`, so the statement is a no-op
+  there.
+- That migration is one procedural block on purpose. PostgreSQL has no catalog
+  view of the available compression methods, and a build configured without
+  `--with-lz4` rejects the statement (the project's own embedded-Postgres test
+  harness is such a build). A plain statement would stop the whole migration
+  chain on those installations for a storage tuning that is not a correctness
+  requirement. The block applies `lz4` where the build offers it and otherwise
+  keeps the current method and writes a notice to the deploy log.
 - The Drizzle schema declares the five indexes
   (`packages/db/src/schema/activity_log.ts`, `heartbeat_runs.ts`,
   `issue_comments.ts`, label `myrmidon(DB-CARE)`), and the `0308`/`0309`
@@ -70,7 +77,14 @@ divergence-section: Трек 2 — ядро побудок и прогонов
   (`context_snapshot`, `result_json`, `stdout_excerpt`). Оператор меняет только
   каталог: короткий `ACCESS EXCLUSIVE`, без перезаписи строк; уже записанные
   строки живут со своим методом, пока их не перепишут. На бою эти три колонки
-  уже `l`, то есть операторы там — no-op.
+  уже `l`, то есть оператор там — no-op.
+- Эта миграция — один процедурный блок намеренно. Каталог PostgreSQL не
+  показывает доступные методы сжатия, а сборка без `--with-lz4` такой оператор
+  отвергает (ровно такой сборкой является встроенный тестовый PostgreSQL
+  проекта). Простой оператор останавливал бы на таких инсталляциях всю цепочку
+  миграций ради настройки хранения, которая не является требованием корректности.
+  Блок ставит `lz4` там, где сборка его умеет, иначе оставляет текущий метод и
+  пишет notice в журнал выката.
 - Схема Drizzle объявляет эти пять индексов
   (`packages/db/src/schema/activity_log.ts`, `heartbeat_runs.ts`,
   `issue_comments.ts`, метка `myrmidon(DB-CARE)`), снапшоты `0308`/`0309` их

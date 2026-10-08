@@ -135,12 +135,19 @@ describe("db-care audit indexes and lz4 migration (static checks)", () => {
       "utf8",
     );
     const statements = statementsOf(migrationSql);
-    expect(statements).toHaveLength(COMPRESSED_COLUMNS.length);
+    // One procedural block: PostgreSQL has no catalog view of the available
+    // compression methods, so the block tries lz4 and keeps the current method
+    // on a build without --with-lz4 instead of stopping the migration chain.
+    expect(statements).toHaveLength(1);
+    const statement = statements[0] ?? "";
+    expect(statement.startsWith("DO $$")).toBe(true);
     for (const column of COMPRESSED_COLUMNS) {
-      expect(statements).toContain(
+      expect(statement).toContain(
         `ALTER TABLE "heartbeat_runs" ALTER COLUMN "${column}" SET COMPRESSION lz4;`,
       );
     }
+    expect(statement).toContain("EXCEPTION WHEN feature_not_supported THEN");
+    expect(statement).toContain("RAISE NOTICE");
     expect(migrationSql).not.toContain("DROP");
     expect(migrationSql).not.toContain("UPDATE");
   });
@@ -282,13 +289,23 @@ d("db-care audit indexes and lz4 migration (embedded postgres)", () => {
     }
   }, 240_000);
 
-  it("sets the lz4 compression method on the three heartbeat_runs columns", async () => {
+  it("sets the lz4 compression method on the three heartbeat_runs columns when the server supports it", async () => {
     const dbh = await startEmbeddedPostgresTestDatabase("db-care-lz4-");
     cleanups.push(() => dbh.cleanup());
     const sql = postgres(dbh.connectionString, { max: 1 });
     cleanups.push(async () => {
       await sql.end();
     });
+
+    // The migration keeps the current method on a build without --with-lz4, so
+    // the assertion has to know what the server can offer. SET LOCAL validates
+    // the method name and rolls back with the transaction.
+    const lz4Supported = await sql
+      .begin(async (tx) => {
+        await tx.unsafe("SET LOCAL default_toast_compression = 'lz4'");
+        return true;
+      })
+      .catch(() => false);
 
     const rows = await sql`
       SELECT a.attname, a.attcompression
@@ -301,7 +318,9 @@ d("db-care audit indexes and lz4 migration (embedded postgres)", () => {
     expect(rows).toHaveLength(COMPRESSED_COLUMNS.length);
     for (const row of rows) {
       // attcompression: 'l' is lz4, 'p' is pglz and '' is the server default.
-      expect(String(row.attcompression), `${String(row.attname)} compression`).toBe("l");
+      expect(String(row.attcompression), `${String(row.attname)} compression`).toBe(
+        lz4Supported ? "l" : "",
+      );
     }
   }, 240_000);
 });
