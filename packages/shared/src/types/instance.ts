@@ -36,6 +36,7 @@ import type { StoredFallbackSignalSettings } from "../myrmidon-fallback-signal.j
 // myrmidon(1.6.5-PAUSE-GUARD): the forgotten-operator-pause guard of the same
 // general settings row.
 import type { StoredPauseGuardSettings } from "../myrmidon-pause-guard.js";
+import type { BudgetLimitsSettings } from "../myrmidon-budget-limits.js";
 
 export const DAILY_RETENTION_PRESETS = [3, 7, 14] as const;
 export const WEEKLY_RETENTION_PRESETS = [1, 2, 4] as const;
@@ -267,6 +268,14 @@ export interface InstanceGeneralSettings {
    * field (packages/shared/src/validators/instance.ts).
    */
   modelFallbackSignal?: StoredFallbackSignalSettings;
+  /**
+   * myrmidon(1.7-BUDGET-CONFIG A): the global "signal only" flag of the
+   * per-level spend limits, changed from `PATCH
+   * /api/myrmidon/companies/:id/budget-limits/signal-only`. Absent means the
+   * default (signal only ON — limits never stop work). Kept in sync with the
+   * validator of the same field (packages/shared/src/validators/instance.ts).
+   */
+  budgetLimits?: BudgetLimitsSettings;
 }
 
 export interface InstanceExperimentalSettings {
