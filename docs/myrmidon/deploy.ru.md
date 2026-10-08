@@ -472,6 +472,76 @@ scripts/myrmidon/deploy/deploy.sh --config /path/to/deploy.env --digest sha256:<
 (шаг 0.55; см. [Усиление выката](#усиление-выката-итоги-0510)). Он падает ровно
 тогда, когда упал бы настоящий прогон.
 
+## Настройки PostgreSQL выкатом (DB-TUNING)
+
+Настройки PostgreSQL из аудита базы (OPE-4270) применяются **декларативно конфигурацией
+выката**, а не ручным `ALTER SYSTEM` на живой сервере. Источник значений — в репозитории:
+
+- `scripts/myrmidon/deploy/db-tuning.sql` — значения из аудита, применяет выкат;
+- `scripts/myrmidon/deploy/db-tuning-rollback.sql` — сброс к прежним значениям по умолчанию,
+  применяет `rollback.sh` (и сам упавший шаг DB-TUNING).
+
+| Параметр | Значение | Область |
+| --- | --- | --- |
+| `jit` | `off` | сервер (ALTER SYSTEM) |
+| `work_mem` | `16MB` | сервер |
+| `wal_compression` | `lz4` | сервер |
+| `autovacuum_vacuum_scale_factor` | `0.05` | сервер |
+| `autovacuum_vacuum_scale_factor` | `0.02` | таблицы `heartbeat_runs`, `agent_wakeup_requests`, `company_secrets` |
+| `autovacuum_analyze_scale_factor` | `0.02` | таблица `issues` |
+
+Четыре необязательные настройки подключают шаг к выкату (`deploy.env`, задокументированы в
+`scripts/myrmidon/deploy/deploy.env.example`):
+
+- `DB_TUNE_COMMAND` — shell-команда, применяющая `db-tuning.sql` (пустое значение пропускает
+  весь шаг):
+  ```
+  DB_TUNE_COMMAND='docker compose --project-directory $COMPOSE_DIR exec -T db psql -U <user> -d <db> -v ON_ERROR_STOP=1 -f - < scripts/myrmidon/deploy/db-tuning.sql'
+  ```
+- `DB_TUNE_SHOW_COMMAND` — команда, получающая имя параметра в `DB_TUNE_PARAM` и печатающая
+  его значение `SHOW`:
+  ```
+  DB_TUNE_SHOW_COMMAND='docker compose --project-directory $COMPOSE_DIR exec -T db psql -U <user> -d <db> -tAc "SHOW $DB_TUNE_PARAM"'
+  ```
+- `DB_TUNE_EXPECTED` — пары `имя=значение` (по одной на строку), которые выкат проверяет
+  через `DB_TUNE_SHOW_COMMAND` после применения:
+  ```
+  DB_TUNE_EXPECTED='jit=off
+  work_mem=16MB
+  wal_compression=lz4
+  autovacuum_vacuum_scale_factor=0.05'
+  ```
+- `DB_TUNE_ROLLBACK_COMMAND` — команда возврата прежних настроек (выполняет
+  `db-tuning-rollback.sql`); вызывается `rollback.sh` и самим выкатом, если шаг DB-TUNING
+  упал после применения. Пустая — откат настроек пропускается с предупреждением в лог.
+
+Шаг идёт после проверки health (в плане — шаг «7d»; dry-run описывает его как остальные).
+Перед первым применением выкат записывает живые значения `SHOW` каждой пары из
+`DB_TUNE_EXPECTED` в `$STATE_DIR/db-tuning-previous` — именно в них откат возвращает базу и
+против них проверяет их `rollback.sh`. Расхождение `SHOW` — это `DEPLOY FAILED`: обслуживание
+остаётся включённым, в выводе печатается команда отката, а наполовину применённые настройки
+сразу возвращаются, если задан `DB_TUNE_ROLLBACK_COMMAND`. `rollback.sh` применяет
+`DB_TUNE_ROLLBACK_COMMAND` после шагов возврата образа и health и проверяет те же параметры
+по записанным прежним значениям.
+
+Для замера эффекта до/после релиза снимается статистика времени топ-запросов из
+`pg_stat_statements` (та же форма команды, что выше). Представление хранит по запросу только
+`mean_exec_time` и `stddev_exec_time`, поэтому `mean + stddev` — это нормальная оценка p95
+(примерно 84–95 % исполнений ниже неё):
+
+```
+docker compose --project-directory $COMPOSE_DIR exec -T db psql -U <user> -d <db> -c "
+SELECT round((mean_exec_time + stddev_exec_time)::numeric, 1) AS p95_ms_approx,
+       round(total_exec_time::numeric / nullif(calls, 0), 1) AS mean_ms,
+       calls, rows, round(total_exec_time::numeric / 1000, 0) AS total_s,
+       left(query, 80) AS query
+FROM pg_stat_statements
+ORDER BY total_exec_time DESC LIMIT 20;"
+```
+
+Сброс счётчиков между двумя снимками делает сравнение чистым:
+`SELECT pg_stat_statements_reset();` (та же форма `exec -T db psql -c`, выполняет оператор).
+
 ## Один путь загрузки (systemd-юнит)
 
 Контейнер борда при загрузке машины должен стартовать **из тех же compose-файлов,
