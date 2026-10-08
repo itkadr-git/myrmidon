@@ -1272,7 +1272,3 @@ Unit tests for the `delete` action-class enforcement on agent-accessible DELETE 
 403 `autonomy_forbidden` and the handler never runs; allowed and board calls pass), plus the
 route-to-guard mapping in `docs/myrmidon/guides/delete-route-mapping.md`. See the guide
 `docs/myrmidon/guides/autonomy-delete-enforcement.md` (+ `.ru.md`) for operator docs.
-| `MYRMIDON_ALERTS_WEBHOOK_TOKEN_REF` | 1.6.6-ALERTS | unset | Reference to the webhook token of the monitoring alerts endpoint (`POST /api/myrmidon/monitoring/alerts/webhook`): `env:<NAME>` (variable) or `file:<PATH>` (a file, e.g. a Docker secret). The value is compared in memory and never logged or returned | Unset — the webhook answers 503, no alerts are accepted |
-| `MYRMIDON_ALERTS_COMPANY_ID` | 1.6.6-ALERTS | unset | Company id whose board receives the monitoring alert issues; the settings read falls back to it when no `companyId` query is given | Unset — the webhook answers 503 |
-| `MYRMIDON_ALERTS_SWEEP_INTERVAL_SEC` | 1.6.6-ALERTS | `3600` | Interval of the dedup registry sweep that drops closed alert entries | `0` disables the sweep; clamped to 86400 |
-| `MYRMIDON_ALERTS_RETENTION_DAYS` | 1.6.6-ALERTS | `14` | Age of the last registry update after which a closed entry is dropped | Clamped to 365 |
