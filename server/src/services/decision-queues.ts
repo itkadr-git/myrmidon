@@ -307,6 +307,8 @@ async function sourceIssueId(
     // registry; the source id is the task the sweep unblocked.
     // myrmidon(REVIEW-ROUTING): the review routing signal is also about one task.
     case "review_routing":
+    // myrmidon(OPE-6011): the held-task card's subject is the held task.
+    case "execution_hold":
     case "stale_block": {
       const row = await db
         .select({ id: issues.id })
@@ -347,6 +349,14 @@ async function sourceIssueId(
         .where(and(eq(agents.companyId, companyId), eq(agents.id, sourceId)))
         .then((rows) => rows[0] ?? null);
       return { exists: Boolean(row), issueId: null, agentId: row?.id ?? null };
+    }
+    // myrmidon(1.6.1-FORAGING-LIMITS-UI): the learning-limit card is computed
+    // from the process-level signal registry and its subject id is the stable
+    // company-scoped key the feed emits (`foraging:<companyId>`), not a stored
+    // row. Existence is that key — dismissals and verdicts then resolve the
+    // same company's card.
+    case "foraging_limit": {
+      return { exists: sourceId === `foraging:${companyId}`, issueId: null };
     }
   }
 }

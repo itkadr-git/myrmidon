@@ -140,7 +140,7 @@ flowchart LR
 
 Релизные заметки — в [docs/myrmidon/CHANGELOG.ru.md](docs/myrmidon/CHANGELOG.ru.md)
 (английская версия: [CHANGELOG.md](docs/myrmidon/CHANGELOG.md)). Главное на
-версии 1.6.4 (последний выпуск; 1.6.5-rc.2 — текущий кандидат в выпуски):
+версии 1.6.4 (последний выпуск; 1.6.5-rc.11 — текущий кандидат в выпуски):
 
 ### Работа и агенты
 
@@ -156,6 +156,10 @@ flowchart LR
   ([wip-limit](docs/myrmidon/guides/wip-limit.ru.md)). Сторож мёртвых блоков
   снимает блок, чьи причины все умерли, и называет причину в системном
   комментарии ([stale-block](docs/myrmidon/guides/stale-block.ru.md)).
+  Советник бюджета промпта на карточке агента называет раздутую часть
+  промпта последнего прогона и конкретное действие, а одна кнопка ставит
+  задачу глубокого разбора на дешёвой модели
+  ([prompt-budget-advice](docs/myrmidon/guides/prompt-budget-advice.ru.md)).
 - **Агенты в изолированных контейнерах.** Каждый агент работает в
   Docker-контейнере, который создаёт и ведёт доска: свой образ, лимиты
   CPU/памяти/PID, свой ключ LLM-шлюза и свои инструменты — секреты сервера в
@@ -184,7 +188,10 @@ flowchart LR
 
 - **Базовые метрики.** Время цикла, время на проверке, доля возвратов, время в
   блоке, прогоны и стоимость задачи — по проектам и по ролям, на экране
-  Quality — см. [журнал изменений](docs/myrmidon/CHANGELOG.ru.md) (1.6.0).
+  Quality — со сравнением с закреплённым снимком базовой линии (текущее окно,
+  базовая линия и дельта по строке) прямо под таблицами метрик
+  ([гайд](docs/myrmidon/guides/baseline-comparison.ru.md),
+  [журнал изменений](docs/myrmidon/CHANGELOG.ru.md), 1.6.0/1.6.5).
 - **Эталонные задачи.** LLM-судья оценивает пилотную роль по корпусу
   эталонов; вердикт о регрессе действует только после подтверждающего
   прогона
@@ -278,7 +285,7 @@ flowchart LR
 [CHANGELOG.ru.md](docs/myrmidon/CHANGELOG.ru.md) и [страница
 выпусков](https://github.com/itkadr-git/myrmidon/releases) — последний:
 [1.6.4](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.4);
-[1.6.5-rc.2](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.5-rc.2)
+[1.6.5-rc.11](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.5-rc.11)
 — текущий кандидат в выпуски.
 
 - **1.6.3 — один выкат для всех компонентов.** `deploy.sh --release`

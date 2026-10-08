@@ -43,6 +43,21 @@ export interface ForagingBudgetView {
   spentCents: number;
   minHostIntervalMs: number;
   intervalMs: number;
+  /** myrmidon(1.6.1-FORAGING-LIMITS-UI): the window spend and the ceilings. */
+  dayCents?: number;
+  monthCents?: number;
+  dailyBudgetCents?: number | null;
+  monthlyBudgetCents?: number | null;
+}
+
+// myrmidon(1.6.1-FORAGING-LIMITS-UI): the spend breakdown of the Costs view.
+
+export interface ForagingSpendRow {
+  role: string;
+  url: string;
+  costCents: number;
+  reads: number;
+  lastOccurredAt: string | null;
 }
 
 export interface ForagingSourceInput {
@@ -58,6 +73,11 @@ const base = (companyId: string) =>
 export const foragingApi = {
   sources: (companyId: string) =>
     api.get<{ sources: ForagingSource[]; enabled: boolean }>(`${base(companyId)}/sources`),
+  // myrmidon(1.6.1-FORAGING-LIMITS-UI): the spend the limits and Costs read.
+  spend: (companyId: string, days = 30) =>
+    api.get<{ rows: ForagingSpendRow[]; totalCents: number; days: number }>(
+      `${base(companyId)}/spend?days=${days}`,
+    ),
   saveSource: (companyId: string, input: ForagingSourceInput) =>
     api.put<ForagingSource>(`${base(companyId)}/sources`, input),
   removeSource: (companyId: string, sourceId: string) =>
@@ -73,6 +93,7 @@ export const foragingApi = {
 export const foragingSourcesKey = (companyId: string) => ["foraging", "sources", companyId] as const;
 export const foragingFindingsKey = (companyId: string) => ["foraging", "findings", companyId] as const;
 export const foragingBudgetKey = (companyId: string) => ["foraging", "budget", companyId] as const;
+export const foragingSpendKey = (companyId: string) => ["foraging", "spend", companyId] as const;
 
 /** A short label for a finding's state, used by the table. */
 export function findingStatusLabel(status: ForagingFindingStatus): string {

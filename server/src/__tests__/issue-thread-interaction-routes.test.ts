@@ -1038,6 +1038,112 @@ describe.sequential("issue thread interaction routes", () => {
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(ASSIGNEE_AGENT_ID, expect.anything());
   });
 
+  // myrmidon(OPE-6241): automation runs carry a service account in
+  // responsibleUserId while the agent key is issued to a human; withdrawing
+  // the actor's own card must not depend on that match.
+  it("allows the creator agent to withdraw from an automation run with a service responsible user", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId: CREATED_AGENT_ID,
+      companyId: "company-1",
+      runId: RUN_1,
+      onBehalfOfUserId: "user-human-owner",
+      onBehalfOfMemberships: [
+        { companyId: "company-1", status: "active", membershipRole: "member" },
+      ],
+    });
+    mockRunAttribution.value = {
+      runId: RUN_1,
+      companyId: "company-1",
+      agentId: CREATED_AGENT_ID,
+      responsibleUserId: "svc-automation-runner",
+    };
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-withdraw/withdraw")
+      .send({});
+    expect(res.status).toBe(200);
+    expect(mockInteractionService.withdrawInteraction).toHaveBeenCalled();
+  });
+
+  it("allows the assignee agent to withdraw from an automation run with a service responsible user", async () => {
+    mockIssueService.getById.mockResolvedValueOnce(createIssue({ status: "todo" }));
+    const app = await createApp({
+      type: "agent",
+      agentId: ASSIGNEE_AGENT_ID,
+      companyId: "company-1",
+      runId: RUN_2,
+      onBehalfOfUserId: "user-human-owner",
+      onBehalfOfMemberships: [
+        { companyId: "company-1", status: "active", membershipRole: "member" },
+      ],
+    });
+    mockRunAttribution.value = {
+      runId: RUN_2,
+      companyId: "company-1",
+      agentId: ASSIGNEE_AGENT_ID,
+      responsibleUserId: "svc-automation-runner",
+    };
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-withdraw/withdraw")
+      .send({});
+    expect(res.status).toBe(200);
+    expect(mockInteractionService.withdrawInteraction).toHaveBeenCalled();
+  });
+
+  it("rejects withdrawal by an unrelated agent from an automation run with a service responsible user", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId: UNRELATED_AGENT_ID,
+      companyId: "company-1",
+      runId: RUN_3,
+      onBehalfOfUserId: "user-human-owner",
+      onBehalfOfMemberships: [
+        { companyId: "company-1", status: "active", membershipRole: "member" },
+      ],
+    });
+    mockRunAttribution.value = {
+      runId: RUN_3,
+      companyId: "company-1",
+      agentId: UNRELATED_AGENT_ID,
+      responsibleUserId: "svc-automation-runner",
+    };
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-withdraw/withdraw")
+      .send({});
+    // The strict attribution gate (422) fires before the creator/assignee
+    // authorization (403) for a non-creator non-assignee agent; either way
+    // the withdrawal is denied.
+    expect([403, 422]).toContain(res.status);
+    expect(mockInteractionService.withdrawInteraction).not.toHaveBeenCalled();
+  });
+
+  // myrmidon(OPE-6241): the responsible-user relaxation is scoped to the
+  // withdraw route; accept keeps the strict attribution gate.
+  it("still rejects accept from an automation run with a service responsible user", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId: ASSIGNEE_AGENT_ID,
+      companyId: "company-1",
+      runId: RUN_2,
+      onBehalfOfUserId: "user-human-owner",
+      onBehalfOfMemberships: [
+        { companyId: "company-1", status: "active", membershipRole: "member" },
+      ],
+    });
+    mockRunAttribution.value = {
+      runId: RUN_2,
+      companyId: "company-1",
+      agentId: ASSIGNEE_AGENT_ID,
+      responsibleUserId: "svc-automation-runner",
+    };
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-withdraw/accept")
+      .send({ reason: "looks fine" });
+    expect(res.status).toBe(422);
+    expect(res.body).toMatchObject({ code: "interaction_run_attribution_required" });
+    expect(mockInteractionService.acceptInteraction).not.toHaveBeenCalled();
+  });
+
   it("allows the assignee agent to withdraw without waking itself", async () => {
     mockIssueService.getById.mockResolvedValueOnce(createIssue({ status: "todo" }));
     const app = await createApp({ type: "agent", agentId: ASSIGNEE_AGENT_ID, companyId: "company-1", runId: RUN_2 });

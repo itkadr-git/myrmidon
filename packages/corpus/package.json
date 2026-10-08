@@ -1,0 +1,39 @@
+{
+  "name": "@paperclipai/corpus",
+  "version": "0.1.0",
+  "description": "Knowledge corpus module: ports, domain model and PostgreSQL implementations (vector + FTS retrieval core).",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "publishConfig": {
+    "access": "public",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      }
+    },
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@paperclipai/db": "workspace:*",
+    "drizzle-orm": "^0.45.2"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "postgres": "^3.4.9",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11"
+  }
+}
