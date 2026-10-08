@@ -2801,6 +2801,9 @@ export * from "./myrmidon-bot-workspace.js";
 // myrmidon(1.6.5-BOT-DISK-H10): bot-partition thresholds (85/90/95), their resolution and the
 // pressure/alert level derivations shared by the server sweep, the desired-state route and the UI.
 export * from "./myrmidon-bot-disk-partition.js";
+// myrmidon(PERF-DIET-K): issue-scoped session-generation thresholds shared by the server and the
+// settings validator.
+export * from "./myrmidon-session-generations.js";
 // myrmidon(C0): live run-admission limits shared by the server, the UI and the settings validator.
 export * from "./myrmidon-runtime-limits.js";
 // myrmidon(PAUSE-GUARD): the forgotten-pause guard settings, resolution and the value bounds
