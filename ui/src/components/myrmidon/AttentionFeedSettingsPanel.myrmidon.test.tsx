@@ -54,7 +54,11 @@ function button(container: HTMLDivElement, testId: string): HTMLButtonElement {
 }
 
 async function ready(container: HTMLDivElement) {
-  await waitFor(() => field(container, "attention-feed-horizon-input").value === "7");
+  await waitFor(() => field(container, "attention-feed-horizon-input")?.value === "7");
+}
+
+function waitForField(container: HTMLDivElement, testId: string, value: string) {
+  return waitFor(() => field(container, testId)?.value === value);
 }
 
 describe("AttentionFeedSettingsPanel", () => {
@@ -85,7 +89,7 @@ describe("AttentionFeedSettingsPanel", () => {
       sources: { failedRunHorizonDays: "settings", feedCacheTtlSeconds: "settings" },
     } as never);
     const container = renderPanel();
-    await waitFor(() => field(container, "attention-feed-horizon-input").value === "14");
+    await waitForField(container, "attention-feed-horizon-input", "14");
     expect(container.querySelector('[data-testid="attention-feed-horizon-source"]')?.textContent)
       .toBe("Saved");
     expect(container.querySelector('[data-testid="attention-feed-cache-ttl-source"]')?.textContent)
@@ -107,7 +111,7 @@ describe("AttentionFeedSettingsPanel", () => {
     });
     await waitFor(() => update.mock.calls.length > 0);
     expect(update).toHaveBeenCalledWith({ failedRunHorizonDays: 14 });
-    expect(container.querySelector('[data-testid="attention-feed-saved"]')).not.toBeNull();
+    await waitFor(() => Boolean(container.querySelector('[data-testid="attention-feed-saved"]')));
   });
 
   it("saves both windows when both were changed", async () => {
@@ -149,6 +153,9 @@ describe("AttentionFeedSettingsPanel", () => {
       .toContain("Enter a whole number between 1 and 365");
 
     await act(async () => {
+      setInputValue(field(container, "attention-feed-horizon-input"), "7");
+    });
+    await act(async () => {
       setInputValue(field(container, "attention-feed-cache-ttl-input"), "1.5");
     });
     await act(async () => {
@@ -171,7 +178,7 @@ describe("AttentionFeedSettingsPanel", () => {
     } as never);
     vi.spyOn(attentionFeedApiModule.attentionFeedApi, "update").mockImplementation(update as never);
     const container = renderPanel();
-    await waitFor(() => field(container, "attention-feed-horizon-input").value === "200");
+    await waitForField(container, "attention-feed-horizon-input", "200");
 
     await act(async () => {
       button(container, "attention-feed-reset").click();
