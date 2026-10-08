@@ -361,7 +361,7 @@ export function googleAiConnectorService(deps: GoogleAiConnectorServiceDeps): Go
           actorKind: "agent",
           action: call.kind,
           ok: result.ok,
-          detail: result.ok ? (outcome.kind === "job" ? `job ${outcome.jobId}` : "ok") : (result.error ?? "refused"),
+          detail: result.ok ? (outcome.ok && outcome.kind === "job" ? `job ${outcome.jobId}` : "ok") : (result.error ?? "refused"),
         })),
         result: null,
       }));
