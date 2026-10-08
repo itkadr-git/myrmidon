@@ -97,6 +97,10 @@ export function createTelegramVoiceSttWiringFromRuntime(
           durationMs: result.durationMs,
           truncated: result.truncated,
           backend: result.backend,
+          // myrmidon(1.6.5 VOICE-STT B): the core's diarization report travels
+          // with the transcript, so the comment body can carry the explicit
+          // marker instead of presenting an unlabeled transcript as one voice.
+          diarization: result.diarization,
         };
       },
     },
