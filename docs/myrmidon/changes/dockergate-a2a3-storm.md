@@ -1,35 +1,20 @@
 ## changelog-en
-
 ### The board no longer storms dockergate; a fleet rollout fits the gate's limit (1.6.5-DOCKERGATE-A2A3-STORM)
 
-- On 05.10 (1.6.5-rc.1) the board sent 5 395 allowed A2/A3 requests to
-  dockergate in three minutes (~30/s against the gate's global bucket of 50/s,
-  plus 394 `rate_limited` refusals) and a five-bot rollout batch took 6–10
-  minutes with most applies failing on 429. The storm had four stacked causes,
-  all fixed: the clone-hygiene report collector ran on the maintenance tick
-  (5 s by design, `MYRMIDON_MAINTENANCE_TICK_SEC`) and asked every bot every
-  tick (inspect + marker read, 74 bots ≈ 30 req/s); the reconcile pass asked
-  each bot twice (`status` inspect, then `templateDrift`'s second inspect);
-  the post-apply health wait polled every second; and a 429 simply failed the
-  pass, only to be hammered again on the next tick.
-- The collector moved onto its own timer (`MYRMIDON_CLONE_REPORT_INTERVAL_SEC`,
-  default 300 s — a report is valid for 24 h) and reads each bot under the
-  per-bot lock, so a report read and a rollout of the same bot never run side
-  by side. The reconcile pass now probes status and template drift from a
-  single inspect (`statusWithDrift`): 2 gate requests per bot per pass instead
-  of 3, which puts the planned 74-bot sweep at ~2.5 req/s. The health wait
-  polls every 5 s (was 1 s) within the same timeout. The dockergate client
-  gained a token bucket (`MYRMIDON_DOCKERGATE_MAX_RPS`, default 20/s across all
-  loops) and a 429 retry: exponential backoff with full jitter, a server
-  `Retry-After` honoured when present, up to 5 retries before the pass reports
-  the refusal as before.
-- Meter (new test `server/src/myrmidon/bot-containers/dockergate-a2a3-storm.myrmidon.test.ts`,
-  a counting fake gate): requests per bot per sweep pass 3 → 2; inspects in a
-  30 s health wait 31 → ≤8; the collector 29.6 req/s → 0.5 req/s at default
-  settings; a full 74-bot rollout fits its request budget into under 2 minutes
-  of paced traffic at 20 req/s with the retry budget absorbed client-side, so
-  the gate's own buckets see less than half their rate.
-
+- On 05.10 (rc.1) the board sent 5 395 allowed A2/A3 requests to dockergate
+  in three minutes (~30/s against the gate's global 50/s bucket, 394 429
+  refusals); a five-bot rollout batch took 6–10 minutes with most applies
+  failing on 429. Four stacked causes fixed: the clone-hygiene report
+  collector asked every bot every 5 s maintenance tick; the reconcile pass
+  inspected each bot twice; the post-apply health wait polled every second;
+  a 429 failed the pass only to hammer the gate on the next tick.
+- The collector moved to its own timer (`MYRMIDON_CLONE_REPORT_INTERVAL_SEC`,
+  default 300 s — reports are valid 24 h), reconcile
+  probes status and drift from one inspect (2 gate requests per bot per pass
+  instead of 3), the health wait polls every 5 s (was 1 s), and the gate client
+  has a token bucket (`MYRMIDON_DOCKERGATE_MAX_RPS`, default 20/s across all
+  loops) and a 429 retry with exponential backoff and jitter, honouring
+  `Retry-After`, up to 5 retries.
 ## changelog-ru
 
 ### Доска больше не штурмует dockergate; выкат флота укладывается в лимит гейта (1.6.5-DOCKERGATE-A2A3-STORM)

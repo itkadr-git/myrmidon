@@ -4,41 +4,23 @@ settings-section: Track 2 — wake and run core
 ---
 
 ## changelog-en
-
 ### Keep only the last verified database backup (1.6.5 BACKUP-KEEP-LAST)
 
-- The instance backup-retention policy grows an optional `keepLastOnly` flag
-  (`instance_settings.general.backupRetention.keepLastOnly`, default off).
-  When it is on, a database backup run ignores the daily/weekly/monthly tier
-  presets: after the new `<prefix>-<timestamp>.sql.gz` dump is written, it is
-  stream-verified (full gunzip pass plus a check that the decompressed tail
-  carries a dump completion marker — the closing `COMMIT;` of the JavaScript
-  logical dump or the `-- PostgreSQL database dump complete` trailer that
-  `pg_dump --format=plain` ends with — OPE-4832) and only then every previous
-  `<prefix>-*` backup file in the backup directory is deleted. Verification
-  never materializes the dump — it holds a 64 KiB tail buffer, so multi-GB
-  backups verify in streaming mode.
-- A new dump that fails verification is deleted on the spot, all previous
-  backups are kept untouched, and the run reports a failure with the reason —
-  the mode can never trade a good old backup for a bad new one.
-- Both backup engines honor the mode: the pg_dump path and the JavaScript
-  logical-dump path verify and prune identically. A verification failure is
-  never retried on the other engine (it is reported as `BackupVerificationError`
-  and fails the run loudly); a JavaScript fallback after a genuine pg_dump
-  child failure opens a fresh dump writer instead of emitting into the
-  aborted one (OPE-4832).
-- Independent of the mode, the pruning pass now first removes orphaned
-  unfinished plain `.sql` files older than one hour — leftovers of interrupted
-  runs (a dump is written as `.sql`, then gzipped; a crash strands the
-  `.sql`). The live run's own in-progress `.sql` is never touched (the cutoff
-  is strictly older than one hour and the writer keeps its mtime fresh), and
-  removed orphans count into the run's `prunedCount`.
-- The setting is additive: settings payloads written before 1.6.5 parse
-  unchanged, and an absent flag keeps the previous tiered behavior. The UI
-  toggle ships separately (part B); the server contract is
-  `{"backupRetention": {"dailyDays": 3, "weeklyWeeks": 1, "monthlyMonths": 1, "keepLastOnly": true}}`
-  on `PATCH /api/instance/settings/general`.
-
+- `instance_settings.general.backupRetention.keepLastOnly` (default off): when
+  on, a backup run ignores the tier presets — after the new dump is written it
+  is stream-verified (full gunzip pass plus a dump-completion marker in the
+  decompressed tail, holding only a 64 KiB buffer) and only then every
+  previous `<prefix>-*` backup is deleted.
+- A new dump failing verification is deleted on the spot, all previous backups
+  kept: the mode can never trade a good old backup for a bad new one. Both
+  engines (pg_dump and the JavaScript logical dump) verify and prune
+  identically; a verification failure is never retried on the other engine.
+- Independent of the mode, pruning first removes orphaned unfinished `.sql`
+  files older than one hour (leftovers of interrupted runs); the live run's
+  own writer is never touched.
+- Additive: payloads written before 1.6.5 parse unchanged. The UI toggle ships
+  separately; server contract `keepLastOnly` on
+  `PATCH /api/instance/settings/general`.
 ## changelog-ru
 
 ### Режим «хранить только последний проверенный бэкап БД» (1.6.5 BACKUP-KEEP-LAST)
