@@ -34,6 +34,10 @@ export const FORAGING_BUDGET_CENTS_ENV = "MYRMIDON_FORAGING_BUDGET_CENTS";
 export const FORAGING_INTERVAL_SEC_ENV = "MYRMIDON_FORAGING_INTERVAL_SEC";
 export const FORAGING_KEY_SECRET_ENV = "MYRMIDON_FORAGING_KEY_SECRET";
 export const FORAGING_MIN_HOST_INTERVAL_SEC_ENV = "MYRMIDON_FORAGING_MIN_HOST_INTERVAL_SEC";
+// myrmidon(1.6.3-FORAGING-IDLE-GATE): the idle-gate toggle moved to
+// instance_settings.general.foragingIdleGate (read on every pass); the env
+// MYRMIDON_FORAGING_IDLE_GATE_ENABLED stays the forced override — the
+// contract lives in @paperclipai/shared (myrmidon-foraging-idle-gate.ts).
 
 /** Activity action written for every foraging settings change. */
 export const FORAGING_SETTINGS_UPDATED_ACTION = "instance.foraging.updated";
