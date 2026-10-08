@@ -215,7 +215,9 @@ flowchart LR
   ([telegram-dm-status](docs/myrmidon/guides/telegram-dm-status.ru.md)).
 - **Любой агент из одной Telegram-лички.** Мостовая личка адресует любого
   агента компании `@`-упоминанием или командами `/agents`, `/to` и `/who`
-  ([telegram-multi-agent](docs/myrmidon/guides/telegram-multi-agent.ru.md)).
+  ([telegram-multi-agent](docs/myrmidon/guides/telegram-multi-agent.ru.md)), а
+  команды `/model` и `/think` выбирают модель и глубину рассуждений этого чата
+  ([telegram-model-think](docs/myrmidon/guides/telegram-model-think.ru.md)).
 - **Чат с Полководцем.** Владелец пишет один запрос свободным текстом и
   получает предложенный эпик с дочерними задачами, согласовываемый карточкой
   ([cto-chat-planner](docs/myrmidon/guides/cto-chat-planner.ru.md)); экран
