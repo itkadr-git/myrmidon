@@ -307,6 +307,8 @@ async function sourceIssueId(
     // registry; the source id is the task the sweep unblocked.
     // myrmidon(REVIEW-ROUTING): the review routing signal is also about one task.
     case "review_routing":
+    // myrmidon(1.6.5 BOT-DISK-H4c): the archive card sits on the task.
+    case "bot_disk_archive":
     case "stale_block": {
       const row = await db
         .select({ id: issues.id })
@@ -338,6 +340,8 @@ async function sourceIssueId(
     // the company; existence is the live agent row (the signal is computed by
     // the sweep, not stored, so there is nothing else to check).
     case "bot_disk_quota":
+    // myrmidon(1.6.5 BOT-DISK-H4c): the stale-image card sits on the bot's agent row.
+    case "bot_image_stale":
     // myrmidon(1.6.5 PROMPT-BUDGET B): the signal subject is an agent of the
     // company; existence is the live agent row (the status feed is computed,
     // not stored, so there is nothing else to check).
