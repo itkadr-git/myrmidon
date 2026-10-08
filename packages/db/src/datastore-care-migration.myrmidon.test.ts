@@ -119,8 +119,8 @@ describe("datastore care migration (static checks)", () => {
     expect(entry).toBeTruthy();
     expect(entry!.idx).toBeGreaterThan(300);
     expect(entry!.when).toBeGreaterThan(1791206402990);
-    // The migration is the newest one in the journal.
-    expect(journal.entries[journal.entries.length - 1]!.tag).toBe("0310_datastore_care");
+    // Later migrations may follow it; none may sort before it.
+    expect(journal.entries[journal.entries.length - 1]!.idx).toBeGreaterThanOrEqual(entry!.idx);
 
     const snapshot = JSON.parse(
       await readFile(fileURLToPath(new URL(SNAPSHOT_FILE, import.meta.url)), "utf8"),
