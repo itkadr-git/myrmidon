@@ -1,6 +1,11 @@
+---
+divergence-section: Трек 2 — ядро побудок и прогонов
+settings-section: Track 2 — wake and run core
+---
+
 ## changelog-en
 
-### Owner decision-card TTL, silence resolution and pending-card attention (1.6.5-F21-B)
+### Owner decision cards now expire on a TTL and close themselves (1.6.5-F21-B)
 
 - `server/src/myrmidon/owner-reply/ttl-sweep.ts` — a scheduler-tick sweep:
   a pending owner `request_confirmation` card older than
@@ -46,34 +51,18 @@
   закрываются первым проходом, ровно одна побудка, резолв по молчанию, страж
   класса money, гонка закрытия с ответом).
 
-## divergence-new
+## divergence
 
-<!-- after: <последний блок> -->
-
-### 1.6.5 — F21-B: TTL карточек владельца, expired-проход и наблюдаемость
-
-| ID | Что меняем | Файлы | Зачем | Тесты | Когда снимать | Ссылка |
-|---|---|---|---|---|---|---|
 | 1.6.5-F21-B | Ожидающая карточка владельца (`request_confirmation`, адресат-владелец по `isOwnerDecisionAudience`) старше TTL закрывается проходом подметания: `silenceMeansRecommended` вне защищённых классов резолвится по рекомендованной опции, остальное — `expired` с системным комментарием и одной побудкой автора `interaction_expired` (лимитер — ключ `agentWakeupRequests`). Delivery-метаданные карточки пишутся в её payload при закрытии. Наблюдаемость: карточка ленты внимания «карточек владельца pending: N (старше 3 дней: M)», вычисляемая на лету | Вендор (маркер `myrmidon(1.6.5-F21-B)`): `packages/shared/src/types/attention.ts` (одна строка sourceKind), `server/src/services/attention.ts` (импорт, sourceKind и ранг, блок-генератор), `server/src/services/decision-queues.ts` (один кейс источника), `server/src/index.ts` (импорт, построение, две строки вызова в тиках); + `server/src/myrmidon/owner-reply/{index,settings,ttl-sweep,attention}.ts` | F-21: старые карточки владельца без ответа висели вечно (часть A даёт закрытие ответом, часть B — по TTL) | `server/src/myrmidon/owner-reply/ttl-sweep.myrmidon.test.ts`, `server/src/myrmidon/owner-reply/ttl-sweep-sweep.myrmidon.test.ts` | Когда вендор научится TTL и резолву по молчанию для карточек владельца: удалить куски с маркером `myrmidon(1.6.5-F21-B)`, модуль `owner-reply` (общий с частью A — координировать) и тесты | (этот PR) |
 
-## settings-en-new
+## settings-en
 
-<!-- after: <последний блок> -->
+| `MYRMIDON_OWNER_CARD_TTL_MS` | 1.6.5-F21-B | `259200000` (72 h) | how long an owner `request_confirmation` card may stay unanswered before the TTL sweep closes it (resolve-by-silence or expire) | set to a very large value to effectively disable the expiry |
+| `MYRMIDON_OWNER_CARD_SWEEP_INTERVAL_SEC` | 1.6.5-F21-B | `300` | how often the owner-card TTL sweep pass runs on the heartbeat scheduler tick | set to a very large value to effectively pause the sweep |
+| `MYRMIDON_OWNER_CARD_SWEEP_WAKE_BUDGET` | 1.6.5-F21-B | `20` | the most author wakes one pass may send; the rest wait for the next pass | set to `0` to expire silently without waking authors |
 
-### 1.6.5 — F21-B: the owner decision-card TTL and the pending-cards attention card
+## settings-ru
 
-- `MYRMIDON_OWNER_CARD_TTL_MS` (default `259200000` = 72 h): how long an owner
-  `request_confirmation` card may stay unanswered before the TTL sweep closes
-  it. A card with `payload.silenceMeansRecommended: true` whose
-  `payload.decisionClass` is missing or outside `money` / `external_world` /
-  `deploy` is resolved by its recommended option
-  (`payload.recommendedOption`, `accept` by default); every other overdue
-  card is expired, the task gets the "expired without an answer" comment, and
-  the card author is woken once with the reason `interaction_expired`.
-- `MYRMIDON_OWNER_CARD_SWEEP_INTERVAL_SEC` (default `300`): how often the
-  sweep pass runs on the heartbeat scheduler tick.
-- `MYRMIDON_OWNER_CARD_SWEEP_WAKE_BUDGET` (default `20`): the most author
-  wakes one pass may send; the rest wait for the next pass.
-- The attention feed shows «owner cards pending: N (older than 3 days: M)»
-  while at least one owner card is pending; the card is computed live and
-  needs no migration.
+| `MYRMIDON_OWNER_CARD_TTL_MS` | 1.6.5-F21-B | `259200000` (72 ч) | сколько карточка `request_confirmation` владельца может оставаться без ответа до закрытия sweep'ом (резолв по молчанию или просрочка) | поставить очень большое значение, чтобы фактически выключить просрочку |
+| `MYRMIDON_OWNER_CARD_SWEEP_INTERVAL_SEC` | 1.6.5-F21-B | `300` | как часто запускается TTL-sweep карточек владельца на тике планировщика | поставить очень большое значение, чтобы фактически приостановить sweep |
+| `MYRMIDON_OWNER_CARD_SWEEP_WAKE_BUDGET` | 1.6.5-F21-B | `20` | сколько побудок авторов максимум может сделать один проход sweep'а | поставить `0`, чтобы просрочивать без побудок авторов |

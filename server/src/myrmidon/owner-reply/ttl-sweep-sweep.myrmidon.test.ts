@@ -58,7 +58,6 @@ describeEmbeddedPostgres("owner card TTL sweep (embedded PG)", () => {
     const wakeup = vi.fn(async (agentId: string, options: Record<string, unknown>) => {
       wakeups.push([agentId, options]);
       await db.insert(agentWakeupRequests).values({
-        companyId: COMPANY,
         agentId,
         reason: String(options.reason),
         idempotencyKey: (options.idempotencyKey as string | null) ?? null,
@@ -81,9 +80,7 @@ describeEmbeddedPostgres("owner card TTL sweep (embedded PG)", () => {
   }
 
   async function insertCard(overrides: Record<string, unknown> = {}) {
-    const id = randomUUID();
-    await db.insert(issueThreadInteractions).values({
-      id,
+    const [row] = await db.insert(issueThreadInteractions).values({
       companyId: COMPANY,
       issueId: ISSUE,
       kind: "request_confirmation",
@@ -95,8 +92,8 @@ describeEmbeddedPostgres("owner card TTL sweep (embedded PG)", () => {
       createdAt: OLD,
       updatedAt: OLD,
       ...overrides,
-    });
-    return id;
+    }).returning({ id: issueThreadInteractions.id });
+    return row.id;
   }
 
   async function readCard(id: string) {
@@ -130,7 +127,7 @@ describeEmbeddedPostgres("owner card TTL sweep (embedded PG)", () => {
       (row) =>
         row.metadata &&
         typeof row.metadata === "object" &&
-        (row.metadata as Record<string, unknown>).reason === reason,
+        (row.metadata as unknown as Record<string, unknown>).authorizationReason === reason,
     );
   }
 
@@ -155,7 +152,7 @@ describeEmbeddedPostgres("owner card TTL sweep (embedded PG)", () => {
       const card = await readCard(id);
       expect(card.status).toBe("expired");
       expect(card.result).toMatchObject({ outcome: "expired", reason: "interaction_expired" });
-      const payload = card.payload as Record<string, unknown>;
+      const payload = card.payload as unknown as Record<string, unknown>;
       expect(payload.delivery).toMatchObject({
         sentTo: OWNER_USER,
         sentAt: OLD.toISOString(),

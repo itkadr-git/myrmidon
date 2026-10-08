@@ -42,6 +42,7 @@ import {
   OWNER_MESSAGE_COMMENT_REASON,
   OWNER_MESSAGE_INTERACTION_LABEL,
   isOwnerDecisionAudience,
+  type IssueThreadInteractionPayload,
 } from "@paperclipai/shared";
 import { logger } from "../../middleware/logger.js";
 import { logActivity } from "../../services/activity-log.js";
@@ -362,7 +363,7 @@ async function expireOwnerCard(
     .set({
       status: "expired",
       result: { version: 1, outcome: "expired", reason: "interaction_expired" },
-      payload,
+      payload: payload as IssueThreadInteractionPayload,
       resolvedAt: now,
       updatedAt: now,
     })
@@ -397,7 +398,7 @@ async function resolveByRecommendedOption(
   try {
     if (recommendedOption === "reject") {
       const resolved = await service.rejectInteraction(issue, row.id, {}, actor);
-      return { status: resolved.interaction.status };
+      return { status: resolved.status };
     }
     const resolved = await service.acceptInteraction(issue, row.id, {}, actor);
     return { status: resolved.interaction.status };
@@ -426,14 +427,22 @@ async function postSweepComment(
   payload: Record<string, unknown>,
 ): Promise<void> {
   await db.insert(issueComments).values({
-    companyId: row.companyId,
     issueId: row.issueId,
     authorType: "system",
     body,
     metadata: {
-      reason: "myrmidon_owner_card_ttl",
-      labels: [`Interaction:${row.id}`],
-      ownerCardDelivery: payload.delivery ?? null,
+      version: 1,
+      authorizationReason: "myrmidon_owner_card_ttl",
+      sections: [{
+        title: "Owner card TTL",
+        rows: [
+          { kind: "text", text: `Interaction:${row.id}` },
+          ...(payload.delivery && typeof payload.delivery === "object" ? [
+            { kind: "keyValue" as const, key: "sentTo", value: String((payload.delivery as Record<string, unknown>).sentTo ?? "") },
+            { kind: "keyValue" as const, key: "sentAt", value: String((payload.delivery as Record<string, unknown>).sentAt ?? "") },
+          ] : []),
+        ],
+      }],
     },
   });
   await db
