@@ -2865,6 +2865,12 @@ export * from "./myrmidon-budget-enforcement.js";
 export * from "./myrmidon-behavior-settings.js";
 // myrmidon(MEMORY-UI): the agent memory instance setting (address, optional key secret, switch).
 export * from "./myrmidon-agent-memory.js";
+// myrmidon(1.6.3-FORAGING-IDLE-GATE): the shared contract of the foraging
+// idle gate — the toggle, its storage key and the resolver with sources.
+export * from "./myrmidon-foraging-idle-gate.js";
+// myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): the shared contract of the
+// foraging pass journal (what each pass read, and which roles it skipped why).
+export * from "./myrmidon-foraging-pass-journal.js";
 // myrmidon(1.7-DEBATE-ASYM-A): the shared contract of asymmetric debates —
 // the model-family table, the cross-family role config, the pure debate
 // engine (roles, rounds, token ceiling, cost) and the result-document shape.
@@ -2896,6 +2902,3 @@ export * from "./myrmidon-foraging.js";
 // myrmidon(1.7-AGENT-EXCHANGE-A): the discussion-room contract (room model,
 // settings with source tracking, request bodies).
 export * from "./myrmidon-agent-exchange.js";
-// myrmidon(1.6.3-FORAGING-IDLE-GATE): the shared contract of the foraging
-// idle gate — the toggle, its storage key and the resolver with sources.
-export * from "./myrmidon-foraging-idle-gate.js";
