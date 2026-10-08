@@ -2804,6 +2804,9 @@ export * from "./myrmidon-pause-guard.js";
 // myrmidon(1.6.5 RUN-PRIORITY A): run queue priority settings (role/issue/release/aging) shared
 // by the server sweeps, the routes and the settings validator.
 export * from "./myrmidon-run-priority.js";
+// myrmidon(RUN-STALL-SETTINGS): live run-stall detection settings shared by the server, the UI
+// and the settings validator.
+export * from "./myrmidon-run-stall.js";
 // myrmidon(PARALLEL-HELPERS): the card -> Hermes `delegation` contract shared by the profile
 // compiler, the agent card and the settings page.
 export * from "./myrmidon-parallel-helpers.js";

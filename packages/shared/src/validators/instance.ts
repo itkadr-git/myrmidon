@@ -21,6 +21,8 @@ import { storedBotImageRolloutSettingsSchema } from "../myrmidon-bot-image-rollo
 import { storedRunLimitsSchema } from "../myrmidon-runtime-limits.js";
 // myrmidon(1.6.5 RUN-PRIORITY A): the stored run queue priority shape (role/issue/release/aging).
 import { storedRunPrioritySchema } from "../myrmidon-run-priority.js";
+// myrmidon(RUN-STALL-SETTINGS): the run stall detection settings stored in instance settings
+import { runStallSettingsSchema } from "../myrmidon-run-stall.js";
 // myrmidon(PARALLEL-HELPERS): company ceiling/default for parallel helper
 // subagents, changed from the instance settings page and /api/myrmidon/parallel-helpers.
 import { parallelHelpersSettingsSchema, patchParallelHelpersSettingsSchema } from "../myrmidon-parallel-helpers.js";
@@ -121,6 +123,13 @@ export const instanceGeneralSettingsSchema = z.object({
   // variable, then the default". Lenient: like the runtime-limits row, a row
   // saved before a key existed still parses.
   runPriority: storedRunPrioritySchema.optional(),
+  // myrmidon(RUN-STALL-SETTINGS): the run stall detection settings, changed
+  // from the instance settings page and /api/myrmidon/run-stall; absent means
+  // "use the environment variable, then the default" (see
+  // packages/shared/src/myrmidon-run-stall.ts). Canonical: every key present,
+  // numbers whole and in range, so a strict miss here cannot hide behind an
+  // older row — the key did not exist before 1.6.5.
+  runStall: runStallSettingsSchema.optional(),
   // myrmidon(BOT-DISK E): the host disk usage threshold, changed from
   // /api/myrmidon/host-disk; absent means "use the environment variable, then
   // the default (85)".
