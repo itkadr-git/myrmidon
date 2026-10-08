@@ -34,6 +34,14 @@ const boardMember = {
   isInstanceAdmin: false,
   companyIds: [COMPANY_ID],
 };
+/** The guard of this module: instance administrator (operator review 08.10). */
+const instanceAdmin = {
+  type: "board",
+  source: "session",
+  userId: "user-admin",
+  isInstanceAdmin: true,
+  companyIds: [COMPANY_ID],
+};
 /** A signed-in board user without any company membership. */
 const noCompanyActor = {
   type: "board",
@@ -173,7 +181,7 @@ function app(
 
 describe("myrmidon(DBC-4) datastore-care routes", () => {
   it("answers the board target with the size the probe measured", async () => {
-    const { server, service } = app(boardMember);
+    const { server, service } = app(instanceAdmin);
 
     const response = await request(server).get("/api/myrmidon/datastores");
 
@@ -192,13 +200,12 @@ describe("myrmidon(DBC-4) datastore-care routes", () => {
     expect(service.readTargets).toHaveBeenCalledTimes(1);
   });
 
-  it("refuses every route to an agent and to a board user without company access", async () => {
-    // `assertBoardOrgAccess` (server/src/routes/authz.ts) is the platform guard
-    // the whole myrmidon surface uses: a board session passes when it carries an
-    // active company membership (or is an instance admin), and an agent or a
-    // session without one is refused. The module keeps that contract instead of
-    // inventing a scope of its own — the board is a single-company instance.
-    for (const actor of [agentActor, noSessionActor, noCompanyActor]) {
+  it("refuses every route to an agent, to a board member and to a session without access", async () => {
+    // `assertInstanceAdmin` (server/src/routes/authz.ts) is the guard: the module
+    // reports instance-level measurements (database size, catalog contents,
+    // server parameters), so a plain board member of a company has nothing to
+    // read here (operator review 08.10, item 2).
+    for (const actor of [agentActor, noSessionActor, noCompanyActor, boardMember]) {
       const { server } = app(actor);
       const listed = await request(server).get("/api/myrmidon/datastores");
       expect([401, 403]).toContain(listed.status);
@@ -209,7 +216,7 @@ describe("myrmidon(DBC-4) datastore-care routes", () => {
   });
 
   it("serves the snapshots of a target and the report list without the markdown body", async () => {
-    const { server } = app(boardMember);
+    const { server } = app(instanceAdmin);
 
     const snapshots = await request(server).get("/api/myrmidon/datastores/board/snapshots?limit=5");
     expect(snapshots.status).toBe(200);
@@ -222,7 +229,7 @@ describe("myrmidon(DBC-4) datastore-care routes", () => {
   });
 
   it("creates a report on demand and points at its export", async () => {
-    const { server, service } = app(boardMember);
+    const { server, service } = app(instanceAdmin);
 
     const response = await request(server).post("/api/myrmidon/datastores/board/audit-reports");
 
@@ -236,7 +243,7 @@ describe("myrmidon(DBC-4) datastore-care routes", () => {
   });
 
   it("exports the report as a markdown attachment", async () => {
-    const { server } = app(boardMember);
+    const { server } = app(instanceAdmin);
 
     const response = await request(server).get(`/api/myrmidon/audit-reports/${REPORT_ID}/export`);
 
@@ -250,8 +257,10 @@ describe("myrmidon(DBC-4) datastore-care routes", () => {
   });
 
   it("answers 404 for an unknown target and an unknown report", async () => {
+    // `assertInstanceAdmin` guards the routes, so the 404 path is only reachable
+    // past the guard — the actor must be the instance admin here.
     const { server } = app(
-      boardMember,
+      instanceAdmin,
       {
         service: fakeService({
           listSnapshots: async () => {
@@ -274,7 +283,7 @@ describe("myrmidon(DBC-4) datastore-care routes", () => {
   });
 
   it("stays readable and refuses writes while the module is switched off", async () => {
-    const { server, service } = app(boardMember, { enabled: false });
+    const { server, service } = app(instanceAdmin, { enabled: false });
 
     const listed = await request(server).get("/api/myrmidon/datastores");
     expect(listed.status).toBe(200);
