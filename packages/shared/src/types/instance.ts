@@ -192,7 +192,7 @@ export interface InstanceGeneralSettings {
    * myrmidon(1.6.5-DB-RETENTION): retention of runs and logs in whole days
    * per table group (0 = keep forever), changed from
    * `GET`/`PATCH /api/myrmidon/data-retention`. Absent means the built-in
-   * defaults (90/90/90). The sweep's own state rides the same object under
+   * defaults (90/0/180). The sweep's own state rides the same object under
    * `lastRun`; kept in sync with the validator of the same field
    * (packages/shared/src/validators/instance.ts).
    */

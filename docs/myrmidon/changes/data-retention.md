@@ -7,11 +7,12 @@ settings-section: Track 5 — operations
 
 ### Retention of runs and logs: settings, sweep and backup gate (1.6.5 DB-RETENTION, server core)
 
-- Finished heartbeat runs, activity-log rows and access-audit rows now age
-  out on a schedule. Three new instance settings —
+- Finished heartbeat runs and access-audit rows now age out on a schedule
+  (the activity log is the audit trail and is kept forever by default —
+  `activityLogDays: 0` — until the instance admin opts into a limit). Three new instance settings —
   `instance_settings.general.dataRetention.heartbeatRunsDays`,
   `...activityLogDays` and `...accessAuditDays` — set the retention per table
-  group in whole days (default 90/90/90; `0` keeps the group forever). The
+  group in whole days (defaults: runs 90, activity log 0 = kept forever — it is the audit trail, access audit 180; `0` keeps the group forever). The
   stored value is the single truth; an absent row applies the defaults.
 - A retention sweep runs one pass per scheduler tick, deleting in batches of
   5000 rows (at most 100 batches per table per pass, under a 60 s statement
@@ -43,11 +44,12 @@ settings-section: Track 5 — operations
 
 ### Сроки хранения прогонов и журналов: настройки, sweep и backup-gate (1.6.5 DB-RETENTION, серверное ядро)
 
-- Завершённые heartbeat-прогоны, строки журнала активности и записи аудита
-  доступа теперь устаревают по расписанию. Три новые настройки инстанса —
+- Завершённые heartbeat-прогоны и записи аудита доступа теперь устаревают
+  по расписанию (журнал активности — это аудит-трейл, по умолчанию хранится
+  вечно: `activityLogDays: 0` — пока админ инстанса не задаст срок). Три новые настройки инстанса —
   `instance_settings.general.dataRetention.heartbeatRunsDays`,
   `...activityLogDays` и `...accessAuditDays` — задают срок хранения по
-  группам таблиц в целых днях (по умолчанию 90/90/90; `0` — хранить вечно).
+  группам таблиц в целых днях (умолчания: прогоны 90, журнал активности 0 = хранится вечно — это аудит-трейл, аудит доступа 180; `0` — хранить вечно).
   Сохранённое значение — единственный источник истины; при отсутствии записи
   действуют умолчания.
 - Sweep делает один проход за тик планировщика, удаляя пачками по 5000 строк
@@ -78,7 +80,7 @@ settings-section: Track 5 — operations
 
 ## divergence
 
-| 1.6.5-DB-RETENTION | Сроки хранения прогонов и журналов: настройки `instance_settings.general.dataRetention` (heartbeatRunsDays/activityLogDays/accessAuditDays, умолчание 90/90/90, 0 = хранить вечно), sweep с батчами 5000 и `statement_timeout` 60 с, backup-gate (нет свежего `<prefix>-*.sql.gz` за 24 ч — удалений нет, тротлированная строка `data.retention_waiting_for_backup`), статус в `dataRetention.lastRun`, маршруты GET/PATCH `/api/myrmidon/data-retention`. Удаление прогона чистит его `heartbeat_run_events` и обнуляет ссылки `heartbeat_run_id`/`origin_run_id`/`last_run_id` в финансовых и decision-таблицах (FK без каскада) | `server/src/app.ts`, `server/src/index.ts`, `server/src/services/instance-settings.ts`, `packages/shared/src/index.ts`, `packages/shared/src/types/instance.ts`, `packages/shared/src/validators/instance.ts` (все правки помечены `myrmidon(1.6.5-DB-RETENTION)`); новые файлы `server/src/myrmidon/data-retention/*`, `packages/shared/src/myrmidon-data-retention.ts` | Зонтик 1.6.5 (DB-PERF): база доски разрастается, нужен настраиваемый срок хранения прогонов и журналов с защитой свежим бэкапом | `server/src/myrmidon/data-retention/sweep.myrmidon.test.ts`, `server/src/myrmidon/data-retention/service.myrmidon.test.ts` | Никогда, наше поведение: сроки хранения живут в настройках инстанса; если вендор получит свою ретенцию прогонов — удалить куски `myrmidon(1.6.5-DB-RETENTION)` и переписать тесты на поведение вендора | (этот PR) |
+| 1.6.5-DB-RETENTION | Сроки хранения прогонов и журналов: настройки `instance_settings.general.dataRetention` (heartbeatRunsDays/activityLogDays/accessAuditDays, умолчания 90/0/180 — журнал активности по умолчанию не удаляется, 0 = хранить вечно), sweep с батчами 5000 и `statement_timeout` 60 с, backup-gate (нет свежего `<prefix>-*.sql.gz` за 24 ч — удалений нет, тротлированная строка `data.retention_waiting_for_backup`), статус в `dataRetention.lastRun`, маршруты GET/PATCH `/api/myrmidon/data-retention`. Удаление прогона чистит его `heartbeat_run_events` и обнуляет ссылки `heartbeat_run_id`/`origin_run_id`/`last_run_id` в финансовых и decision-таблицах (FK без каскада); строки `activity_log` прогона не удаляются — ссылка `run_id` обнуляется | `server/src/app.ts`, `server/src/index.ts`, `server/src/services/instance-settings.ts`, `packages/shared/src/index.ts`, `packages/shared/src/types/instance.ts`, `packages/shared/src/validators/instance.ts` (все правки помечены `myrmidon(1.6.5-DB-RETENTION)`); новые файлы `server/src/myrmidon/data-retention/*`, `packages/shared/src/myrmidon-data-retention.ts` | Зонтик 1.6.5 (DB-PERF): база доски разрастается, нужен настраиваемый срок хранения прогонов и журналов с защитой свежим бэкапом | `server/src/myrmidon/data-retention/sweep.myrmidon.test.ts`, `server/src/myrmidon/data-retention/service.myrmidon.test.ts` | Никогда, наше поведение: сроки хранения живут в настройках инстанса; если вендор получит свою ретенцию прогонов — удалить куски `myrmidon(1.6.5-DB-RETENTION)` и переписать тесты на поведение вендора | (этот PR) |
 
 ## settings-en
 

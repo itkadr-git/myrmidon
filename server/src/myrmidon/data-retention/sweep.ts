@@ -38,19 +38,23 @@
 //       action)
 //     - native_run_results (NOT NULL run_id, composite
 //       run_contract_owner_fk into heartbeat_runs, no action)
-//     - activity_log rows of the doomed runs (run_id has no cascade and
-//       no set-null; the surviving runs' trail stays complete — the
-//       activity group skips them)
 //     - decisions (origin_run_id is NOT NULL, no action — a null UPDATE
 //       would raise 23502; decision_target_issues and
 //       decision_effect_executions cascade with the decision, and
 //       bundle_id on the surviving decisions is ON DELETE SET NULL)
 //     - decision_bundles (same NOT NULL origin_run_id)
 //
+//   activity_log rows of the doomed runs are never deleted: the activity
+//   log is the audit trail and is kept regardless of the run's fate. The
+//   FK has no action, so the reference is cleared (run_id is nullable)
+//   instead of the row going with the run.
+//
 //   NULL before the delete (nullable column, no action in the schema):
 //     - cost_events.heartbeat_run_id, finance_events.heartbeat_run_id,
 //       agent_task_sessions.last_run_id,
-//       document_annotation_comments.created_by_run_id
+//       document_annotation_comments.created_by_run_id,
+//       activity_log.run_id (the activity rows themselves are never
+//       deleted — the log is the audit trail and outlives the run)
 //     - the five run columns of the decision-queue family, one per table:
 //       decision_queues.created_by_run_id,
 //       decision_queue_items.added_by_run_id, decision_triage.set_by_run_id,
@@ -75,7 +79,9 @@
 //
 //   - `activity` (activityLogDays): activity_log rows older than the cutoff,
 //     except rows whose runId points at a run that survives — the audit
-//     trail of a kept run stays complete.
+//     trail of a kept run stays complete. The default is 0 (keep forever):
+//     the activity log is the audit trail and is not aged out unless the
+//     instance admin opts in.
 //   - `access` (accessAuditDays): tool_access_audit_events and
 //     secret_access_events rows older than the cutoff (no dependencies).
 //
@@ -309,12 +315,12 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
           UPDATE document_annotation_comments dac SET created_by_run_id = NULL
           WHERE dac.created_by_run_id IN (SELECT id FROM doomed)
         ),
-        -- the audit trail goes with the run: activity_log.run_id has no
-        -- cascade and no set-null, so the doomed run's activity rows are
-        -- deleted here regardless of the activity retention (the surviving
-        -- runs' trail stays complete — the activity group skips them)
-        del_run_activity AS (
-          DELETE FROM activity_log al WHERE al.run_id IN (SELECT id FROM doomed)
+        -- the audit trail outlives the run: activity_log rows are never
+        -- deleted (activityLogDays defaults to 0 = keep forever), so the
+        -- reference is cleared instead of the row going with the run
+        null_run_activity AS (
+          UPDATE activity_log al SET run_id = NULL
+          WHERE al.run_id IN (SELECT id FROM doomed)
         ),
         del_events AS (
           DELETE FROM heartbeat_run_events e WHERE e.run_id IN (SELECT id FROM doomed)

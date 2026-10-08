@@ -89,8 +89,8 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) data retention routes", (
     expect(res.status).toBe(200);
     expect(res.body.settings).toEqual({
       heartbeatRunsDays: 90,
-      activityLogDays: 90,
-      accessAuditDays: 90,
+      activityLogDays: 0,
+      accessAuditDays: 180,
     });
     expect(res.body.sources).toEqual({
       heartbeatRunsDays: "default",
@@ -118,16 +118,16 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) data retention routes", (
     expect(res.status).toBe(200);
     expect(res.body.settings).toEqual({
       heartbeatRunsDays: 30,
-      activityLogDays: 90,
-      accessAuditDays: 90,
+      activityLogDays: 0,
+      accessAuditDays: 180,
     });
     expect(res.body.sources.heartbeatRunsDays).toBe("settings");
 
     const stored = await instanceSettingsService(db).getGeneral();
     expect((stored as Record<string, any>).dataRetention).toMatchObject({
       heartbeatRunsDays: 30,
-      activityLogDays: 90,
-      accessAuditDays: 90,
+      activityLogDays: 0,
+      accessAuditDays: 180,
     });
 
     const logRows = await db.select().from(activityLog);
