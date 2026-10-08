@@ -10,11 +10,11 @@
 //   GET  /api/myrmidon/audit-reports/:reportId          — one report (JSON)
 //   GET  /api/myrmidon/audit-reports/:reportId/export   — the .md export
 //
-// Every route is a board read: the module measures the board's database, it
-// never writes to it, and it has no rules and no actions to authorise. That is
-// why the whole surface is board-org access rather than instance-admin — the
-// operator who presses the audit button in the board UI must be able to read
-// what it produced.
+// Every route is instance-admin only (operator review 08.10, item 2). The
+// module measures the instance's own database — sizes, catalog contents,
+// server parameters — so its numbers are instance-level and a board member of
+// a company has no reason to read them. `assertInstanceAdmin` is the platform
+// guard for that: an instance administrator passes, everybody else is refused.
 //
 // The kill switch (`MYRMIDON_DATASTORE_CARE_ENABLED=0`) follows the house rule
 // of myrmidon flags: reads stay readable and report `enabled: false`, writes
@@ -23,7 +23,7 @@
 
 import { Router, type Response } from "express";
 
-import { assertBoardOrgAccess } from "../../routes/authz.js";
+import { assertInstanceAdmin } from "../../routes/authz.js";
 import { isDatastoreCareEnabled } from "./settings.js";
 import { UnknownDatastoreError, type DatastoreCareService } from "./service.js";
 
@@ -62,7 +62,7 @@ export function datastoreCareRoutes(options: DatastoreCareRoutesOptions) {
   };
 
   router.get("/myrmidon/datastores", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertInstanceAdmin(req);
     if (!isDatastoreCareEnabled(env)) {
       res.json({ enabled: false, targets: [], settings: null });
       return;
@@ -71,7 +71,7 @@ export function datastoreCareRoutes(options: DatastoreCareRoutesOptions) {
   });
 
   router.get("/myrmidon/datastores/:key/snapshots", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertInstanceAdmin(req);
     if (!isDatastoreCareEnabled(env)) {
       res.json({ enabled: false, snapshots: [] });
       return;
@@ -85,7 +85,7 @@ export function datastoreCareRoutes(options: DatastoreCareRoutesOptions) {
   });
 
   router.post("/myrmidon/datastores/:key/snapshots", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertInstanceAdmin(req);
     if (!isDatastoreCareEnabled(env)) {
       refuseDisabled(res);
       return;
@@ -99,7 +99,7 @@ export function datastoreCareRoutes(options: DatastoreCareRoutesOptions) {
   });
 
   router.get("/myrmidon/datastores/:key/audit-reports", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertInstanceAdmin(req);
     if (!isDatastoreCareEnabled(env)) {
       res.json({ enabled: false, reports: [] });
       return;
@@ -115,7 +115,7 @@ export function datastoreCareRoutes(options: DatastoreCareRoutesOptions) {
   });
 
   router.post("/myrmidon/datastores/:key/audit-reports", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertInstanceAdmin(req);
     if (!isDatastoreCareEnabled(env)) {
       refuseDisabled(res);
       return;
@@ -135,7 +135,7 @@ export function datastoreCareRoutes(options: DatastoreCareRoutesOptions) {
   });
 
   router.get("/myrmidon/audit-reports/:reportId", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertInstanceAdmin(req);
     if (!isDatastoreCareEnabled(env)) {
       refuseDisabled(res);
       return;
@@ -149,7 +149,7 @@ export function datastoreCareRoutes(options: DatastoreCareRoutesOptions) {
   });
 
   router.get("/myrmidon/audit-reports/:reportId/export", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertInstanceAdmin(req);
     if (!isDatastoreCareEnabled(env)) {
       refuseDisabled(res);
       return;
