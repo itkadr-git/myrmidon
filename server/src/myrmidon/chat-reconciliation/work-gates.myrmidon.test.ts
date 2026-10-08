@@ -200,8 +200,11 @@ describe("run-milestone gate watermark", () => {
     await expect(gates.hasMilestoneWork()).resolves.toBe(false);
     expect(h.statements).toHaveLength(1);
     expect(h.rendered()[0]).toContain(`"heartbeat_runs"."updated_at" > $1`);
-    const param = h.params()[0]![0] as Date;
-    expect(param.getTime()).toBe(passStartedAt.getTime());
+    // The watermark binds as an ISO string with an explicit timestamptz cast:
+    // a bound Date would serialize as untyped text and the driver rejects it.
+    expect(h.rendered()[0]).toContain(`::timestamptz`);
+    const param = h.params()[0]![0] as string;
+    expect(new Date(param).getTime()).toBe(passStartedAt.getTime());
   });
 
   it("does not advance the watermark on a pass that inserted rows", async () => {
@@ -218,8 +221,9 @@ describe("run-milestone gate watermark", () => {
     gates.noteMilestonePassCompleted(emptyPassStart, 0);
     gates.noteMilestonePassCompleted(productivePassStart, 7);
     await gates.hasMilestoneWork();
-    const param = h.params()[0]![0] as Date;
-    expect(param.getTime()).toBe(emptyPassStart.getTime());
+    expect(h.rendered()[0]).toContain(`::timestamptz`);
+    const param = h.params()[0]![0] as string;
+    expect(new Date(param).getTime()).toBe(emptyPassStart.getTime());
   });
 
   it("reopens for one full pass per safety window", async () => {
