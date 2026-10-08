@@ -78,6 +78,8 @@ function firstNonEmptyLine(text: string): string {
       .find(Boolean) ?? ""
   );
 }
+// myrmidon(B1c): product name in user-facing texts; see shared myrmidon-product.
+import { PRODUCT_NAME } from "@paperclipai/adapter-utils";
 
 function parseModelProvider(model: string | null): string | null {
   if (!model) return null;
@@ -548,7 +550,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (runtimeSessionId && !canResumeSession) {
       const staleSessionCwdNote =
         savedSessionCwd !== null && !sessionHeaderCwdMatches
-          ? ` Pi stored cwd "${savedSessionCwd}" in the session header, so Paperclip will start a fresh session for "${effectiveExecutionCwd}".`
+          ? ` Pi stored cwd "${savedSessionCwd}" in the session header, so ${PRODUCT_NAME} will start a fresh session for "${effectiveExecutionCwd}".`
           : "";
       await onLog(
         "stdout",

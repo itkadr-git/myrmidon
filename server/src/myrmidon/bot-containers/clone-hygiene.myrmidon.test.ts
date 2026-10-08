@@ -20,6 +20,7 @@ import {
   noteVolumeRoot,
   parseCloneReport,
   parseGitRefCheck,
+  parseGitStoreState,
   parseHardlinkCheck,
   resetCloneHygieneStateForTests,
   type CloneReportEntry,
@@ -298,5 +299,62 @@ describe("shared-git-objects self-check in the clone report", () => {
     const passing = { ...failing, ok: true, checks: failing.checks.map((c) => ({ ...c, ok: true, error: null })) };
     ingestCloneReport("bot-a", reportWith(passing), 3_600_000, now);
     expect(cloneHygieneSignals()).toEqual([]);
+  });
+});
+
+// myrmidon(1.6.5 BOT-DISK-G live check, OPE-5281 ч.B): the store's FACTS — how
+// many mirrors, how large, which repositories — ride the same report, and the
+// start-time self-check carries the same shape as `storeState`, so the board can
+// tell the empty store of 06.10 from a working one without an exec into the bot.
+describe("shared git-object store facts in the clone report", () => {
+  const now = Date.parse("2026-10-06T12:00:00Z");
+  const reportWith = (extra: Record<string, unknown>) =>
+    JSON.stringify({ version: 1, inspectedAt: "2026-10-06T11:59:00Z", repos: [], ...extra });
+  const facts = {
+    path: "/data/hermes/.myrmidon/git-objects",
+    enabled: true,
+    mirrorCount: 2,
+    totalBytes: 152 * 1024 * 1024,
+    repos: ["itkadr-git/myrmidon", "itkadr-git/ops-tools"],
+  };
+
+  it("reads the store facts of the report and of the self-check snapshot", () => {
+    expect(parseCloneReport(reportWith({ gitStore: facts }), now)?.gitStore).toEqual(facts);
+    const check = parseGitRefCheck({ ok: true, store: facts.path, checks: [], storeState: facts });
+    expect(check?.storeState).toEqual(facts);
+    // An older self-check simply carries none, which is not an error.
+    expect(parseGitRefCheck({ ok: true, store: facts.path, checks: [] })?.storeState).toBeNull();
+  });
+
+  it("tolerates an older report, garbage and the documented off state", () => {
+    expect(parseCloneReport(reportWith({}), now)?.gitStore).toBeNull();
+    expect(parseCloneReport(reportWith({ gitStore: "x" }), now)?.gitStore).toBeNull();
+    expect(parseGitStoreState(null)).toBeNull();
+    expect(parseGitStoreState("x")).toBeNull();
+    expect(parseGitStoreState({ enabled: true })).toBeNull(); // mirrorCount and totalBytes are required
+    expect(parseGitStoreState({ enabled: "yes", mirrorCount: 0, totalBytes: 0 })).toBeNull();
+    expect(parseGitStoreState({ enabled: true, mirrorCount: -1, totalBytes: 0 })).toBeNull();
+    expect(parseGitStoreState({ enabled: true, mirrorCount: 1.5, totalBytes: 0 })).toBeNull();
+    expect(parseGitStoreState({ enabled: true, mirrorCount: 1, totalBytes: Number.NaN })).toBeNull();
+    // An explicitly off store is a fact, not an error: `enabled: false`, path "".
+    const off = { path: "", enabled: false, mirrorCount: 0, totalBytes: 0, repos: [] };
+    expect(parseGitStoreState(off)).toEqual(off);
+  });
+
+  it("drops garbage from a ragged report instead of crashing", () => {
+    const parsed = parseGitStoreState({
+      enabled: true,
+      mirrorCount: 1,
+      totalBytes: 1024.7,
+      path: "x".repeat(600),
+      repos: [42, "", "itkadr-git/myrmidon", ...Array.from({ length: 600 }, (_value, index) => `owner/repo${index}`)],
+    })!;
+    expect(parsed.totalBytes).toBe(1024);
+    expect(parsed.path).toHaveLength(500);
+    // The cap is applied to the raw list (500 entries), and the two junk ones in
+    // it (42, "") are dropped on the way out.
+    expect(parsed.repos).toHaveLength(498);
+    expect(parsed.repos).toContain("itkadr-git/myrmidon");
+    expect(parsed.repos).not.toContain(42);
   });
 });

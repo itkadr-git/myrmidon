@@ -40,11 +40,21 @@ const baseAgent = {
   updatedAt: new Date("2026-03-19T00:00:00.000Z"),
 };
 
+// myrmidon(PERF-DIET-G): the row shape GET /companies/:companyId/agents serves —
+// every agent column except adapter_config, plus the SQL-computed model.
+const baseAgentListItem = {
+  ...baseAgent,
+  adapterModel: "claude-sonnet-4-5",
+} as Record<string, unknown>;
+delete baseAgentListItem.adapterConfig;
+
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
   getConfigRevision: vi.fn(),
   listConfigRevisions: vi.fn(),
   list: vi.fn(),
+  // myrmidon(PERF-DIET-G): the slim reader the company list route uses
+  listSummaries: vi.fn(),
   create: vi.fn(),
   activatePendingApproval: vi.fn(),
   terminate: vi.fn(),
@@ -298,6 +308,7 @@ describe.sequential("agent permission routes", () => {
     mockAgentService.getConfigRevision.mockReset();
     mockAgentService.listConfigRevisions.mockReset();
     mockAgentService.list.mockReset();
+    mockAgentService.listSummaries.mockReset();
     mockAgentService.create.mockReset();
     mockAgentService.activatePendingApproval.mockReset();
     mockAgentService.terminate.mockReset();
@@ -345,6 +356,7 @@ describe.sequential("agent permission routes", () => {
     mockAgentService.getConfigRevision.mockResolvedValue(null);
     mockAgentService.listConfigRevisions.mockResolvedValue([]);
     mockAgentService.list.mockResolvedValue([baseAgent]);
+    mockAgentService.listSummaries.mockResolvedValue([baseAgentListItem]);
     mockAgentService.getChainOfCommand.mockResolvedValue([]);
     mockAgentService.resolveByReference.mockResolvedValue({ ambiguous: false, agent: baseAgent });
     mockAgentService.create.mockResolvedValue(baseAgent);
@@ -484,26 +496,14 @@ describe.sequential("agent permission routes", () => {
     expect(res.body.permissions).toMatchObject({ trustPreset: LOW_TRUST_REVIEW_PRESET });
   }, 20_000);
 
-  // TEC-7032 reported the leak against the company agent-list endpoint, which
-  // serialises rows directly instead of going through buildAgentDetail.
-  it("redacts env values in board GET /api/companies/:companyId/agents responses", async () => {
+  // myrmidon(PERF-DIET-G): the company list route serves the slim projection —
+  // TEC-7032 reported the env leak against this endpoint, and the row no longer
+  // carries adapterConfig at all, so the leak is impossible by construction.
+  // The model the list column shows travels as the precomputed `adapterModel`.
+  it("serves GET /api/companies/:companyId/agents without adapterConfig and with adapterModel", async () => {
     const plaintextValue = "listed-value-must-not-leak";
-    mockAgentService.list.mockResolvedValue([
-      {
-        ...baseAgent,
-        adapterConfig: {
-          command: "pnpm agent:run",
-          env: {
-            LEGACY_VALUE: plaintextValue,
-            PLAIN_VALUE: { type: "plain", value: plaintextValue },
-            SECRET_REFERENCE: {
-              type: "secret_ref",
-              secretId: "55555555-5555-4555-8555-555555555555",
-              version: "latest",
-            },
-          },
-        },
-      },
+    mockAgentService.listSummaries.mockResolvedValue([
+      { ...baseAgentListItem, envLeakGuard: plaintextValue },
     ]);
 
     const app = await createApp({
@@ -519,20 +519,19 @@ describe.sequential("agent permission routes", () => {
     );
 
     expect(res.status).toBe(200);
+    expect(mockAgentService.listSummaries).toHaveBeenCalledWith(companyId);
+    expect(mockAgentService.list).not.toHaveBeenCalled();
     expect(res.body).toHaveLength(1);
-    expect(res.body[0].adapterConfig).toMatchObject({
-      command: "pnpm agent:run",
-      env: {
-        LEGACY_VALUE: { type: "plain", value: "***REDACTED***" },
-        PLAIN_VALUE: { type: "plain", value: "***REDACTED***" },
-        SECRET_REFERENCE: {
-          type: "secret_ref",
-          secretId: "55555555-5555-4555-8555-555555555555",
-          version: "latest",
-        },
-      },
+    expect(Object.prototype.hasOwnProperty.call(res.body[0], "adapterConfig")).toBe(false);
+    expect(res.body[0]).toMatchObject({
+      id: agentId,
+      name: "Builder",
+      status: "idle",
+      adapterModel: "claude-sonnet-4-5",
     });
-    expect(JSON.stringify(res.body)).not.toContain(plaintextValue);
+    // The route serves the rows the slim reader returned, unredacted: there is
+    // no config left to redact.
+    expect(JSON.stringify(res.body)).not.toContain("***REDACTED***");
   }, 20_000);
 
   // Mutation routes echo the stored row back, so they leak the same values the
@@ -651,7 +650,7 @@ describe.sequential("agent permission routes", () => {
     expect(JSON.stringify(updateCallArgs?.adapterConfig ?? {})).not.toContain("***REDACTED***");
   }, 20_000);
 
-  it("redacts company agent list for authenticated company members without agent admin permission", async () => {
+  it("serves the slim company agent list to an authenticated company member without agent admin permission", async () => {
     mockAccessService.canUser.mockResolvedValue(false);
     mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
       allowed: input.action === "agent:read",
@@ -673,10 +672,43 @@ describe.sequential("agent permission routes", () => {
     expect(res.body).toEqual([
       expect.objectContaining({
         id: agentId,
-        adapterConfig: {},
+        adapterModel: "claude-sonnet-4-5",
+      }),
+    ]);
+    // myrmidon(PERF-DIET-G): the slim row never carries adapterConfig, not even
+    // blanked.
+    expect(Object.prototype.hasOwnProperty.call(res.body[0], "adapterConfig")).toBe(false);
+  });
+
+  // myrmidon(PERF-DIET-G): an actor without agent_config:read keeps the old
+  // disclosure — the config-derived fields are blanked instead of adapterConfig.
+  it("blanks the config-derived list fields for an agent actor without agent_config:read", async () => {
+    mockAccessService.canUser.mockResolvedValue(false);
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
+      allowed: input.action === "agent:read",
+      reason: input.action === "agent:read" ? "allow_test_read" : "deny_missing_grant",
+      explanation: input.action === "agent:read" ? "Allowed by test read grant." : "Missing test grant.",
+    }));
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/companies/${companyId}/agents`));
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([
+      expect.objectContaining({
+        id: agentId,
+        adapterModel: null,
         runtimeConfig: {},
       }),
     ]);
+    expect(Object.prototype.hasOwnProperty.call(res.body[0], "adapterConfig")).toBe(false);
   });
 
   it("blocks agent updates for authenticated company members without agent admin permission", async () => {
@@ -1133,6 +1165,7 @@ describe.sequential("agent permission routes", () => {
     expect(res.status).toBe(400);
     expect(res.body.error).toContain("urlKey");
     expect(mockAgentService.list).not.toHaveBeenCalled();
+    expect(mockAgentService.listSummaries).not.toHaveBeenCalled();
   });
 
   it("normalizes direct agent creation to disable timer heartbeats by default", async () => {
