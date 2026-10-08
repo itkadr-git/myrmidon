@@ -2143,6 +2143,13 @@
       "when": 1791500200000,
       "tag": "0308_agent_exchange_rooms",
       "breakpoints": true
+    },
+    {
+      "version": "7",
+      "idx": 309,
+      "when": 1791381262448,
+      "tag": "0309_bot_apply_jobs",
+      "breakpoints": true
     }
   ]
 }
