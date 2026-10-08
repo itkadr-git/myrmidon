@@ -814,4 +814,243 @@ describeEmbeddedPostgres("owner decisions via the bot (1.6.5)", () => {
       await expect(resolve(good.id)).resolves.toMatchObject({ ownerUserId: fixture.boardUserId });
     });
   });
+
+  describe("who the owner is (1.6.5-OWNER-FALLBACK)", () => {
+    async function insertBoardUser(companyId: string, membershipRole: string | null) {
+      const userId = randomUUID();
+      await db.insert(authUsers).values({
+        id: userId,
+        name: "Board User",
+        email: `user-${userId.slice(0, 8)}@example.com`,
+        emailVerified: true,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      await db.insert(companyMemberships).values({
+        companyId,
+        principalType: "user",
+        principalId: userId,
+        status: "active",
+        membershipRole,
+      });
+      return userId;
+    }
+
+    /** A standing Telegram DM of `userId` with the fixture's agent, on the fixture's endpoint. */
+    async function addDm(fixture: Fixture, userId: string) {
+      const resourceId = randomUUID();
+      await db.insert(chatEndpointResources).values({
+        id: resourceId,
+        companyId: fixture.companyId,
+        endpointId: fixture.endpointId,
+        type: "direct_message",
+        providerResourceId: `telegram-dm-${randomUUID()}`,
+        label: "Telegram DM",
+        enabled: true,
+        availability: "available",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      const [dmIssue] = await db
+        .insert(issues)
+        .values({
+          companyId: fixture.companyId,
+          title: "Telegram chat with Bridget (second)",
+          assigneeAgentId: fixture.agentId,
+          conversationAgentId: fixture.agentId,
+          conversationUserId: telegramConversationUserId(userId),
+          conversationState: "waiting",
+          status: "in_review",
+          createdByUserId: userId,
+        })
+        .returning();
+      const [conversation] = await db
+        .insert(chatConversations)
+        .values({
+          companyId: fixture.companyId,
+          endpointId: fixture.endpointId,
+          resourceId,
+          issueId: dmIssue!.id,
+          externalConversationId: `telegram-dm-${randomUUID()}`,
+          externalThreadId: `telegram-dm-${randomUUID()}:thread`,
+          sessionGeneration: 1,
+          externalLabel: "Telegram DM",
+          isDirectMessage: true,
+          state: "active",
+          lastActivityAt: new Date(),
+        })
+        .returning();
+      return { dmIssue: dmIssue!, conversation: conversation! };
+    }
+
+    async function makeOwner(fixture: Fixture) {
+      await db
+        .update(companyMemberships)
+        .set({ membershipRole: "owner" })
+        .where(
+          and(
+            eq(companyMemberships.companyId, fixture.companyId),
+            eq(companyMemberships.principalId, fixture.boardUserId),
+          ),
+        );
+    }
+
+    async function taskOf(
+      fixture: Fixture,
+      values: { responsibleUserId?: string | null; createdByUserId?: string | null; createdByAgentId?: string | null },
+    ) {
+      const [row] = await db
+        .insert(issues)
+        .values({
+          companyId: fixture.companyId,
+          title: "Task from the board",
+          status: "in_progress",
+          assigneeAgentId: fixture.agentId,
+          ...values,
+        })
+        .returning();
+      return row!;
+    }
+
+    function cardOn(
+      fixture: Fixture,
+      issue: { id: string },
+      extra: { resolverPolicy?: "human_only" | "anyone"; addresseeUserId?: string } = {},
+    ) {
+      return issueThreadInteractionService(db).create(
+        { id: issue.id, companyId: fixture.companyId },
+        {
+          kind: "request_confirmation" as const,
+          continuationPolicy: "wake_assignee" as const,
+          resolverPolicy: extra.resolverPolicy ?? ("human_only" as const),
+          ...(extra.addresseeUserId ? { addresseeUserId: extra.addresseeUserId } : {}),
+          payload: {
+            version: 1 as const,
+            prompt: "Proceed?",
+            acceptLabel: "Accept",
+            rejectLabel: "Reject",
+            allowDeclineReason: true,
+          },
+        },
+        { agentId: fixture.agentId },
+      );
+    }
+
+    async function wakeFor(fixture: Fixture, issue: { id: string }, interaction: Awaited<ReturnType<typeof cardOn>>) {
+      const wakeup = vi.fn(async () => undefined);
+      const outcome = await scheduleOwnerExplainWake(db, {
+        companyId: fixture.companyId,
+        issueId: issue.id,
+        interaction,
+        wakeup,
+        requestedBy: { actorType: "agent", actorId: fixture.agentId },
+      });
+      return { outcome, wakeup };
+    }
+
+    it("a task created by an agent with no responsible user goes to the company owner with a DM", async () => {
+      const fixture = await seed();
+      await makeOwner(fixture);
+      const task = await taskOf(fixture, { createdByAgentId: fixture.strangerId });
+      const card = await cardOn(fixture, task);
+
+      const { outcome, wakeup } = await wakeFor(fixture, task, card);
+      expect(outcome).toBe("woken");
+      expect(wakeup).toHaveBeenCalledTimes(1);
+
+      // The message, the owner's answer and the closing guard all name the same owner.
+      await sendOwnerMessage(db, {
+        companyId: fixture.companyId,
+        agentId: fixture.agentId,
+        runId: fixture.runId,
+        interactionIds: [card.id],
+        text: "Please confirm: proceed with the change? I recommend yes.",
+      });
+      const answer = await insertOwnerAnswer(fixture);
+      await expect(
+        authorizeOwnerReplyResolution(db, {
+          companyId: fixture.companyId,
+          agentId: fixture.agentId,
+          runId: fixture.runId,
+          resolution: { interactionId: card.id, ownerReplyCommentId: answer.id, action: "accept" },
+        }),
+      ).resolves.toMatchObject({ ownerUserId: fixture.boardUserId, issueId: task.id });
+    });
+
+    it("a responsible user without a DM falls back to the company owner", async () => {
+      const fixture = await seed();
+      await makeOwner(fixture);
+      const noDmUser = await insertBoardUser(fixture.companyId, "operator");
+      const task = await taskOf(fixture, { responsibleUserId: noDmUser, createdByUserId: noDmUser });
+      const card = await cardOn(fixture, task);
+
+      const { outcome } = await wakeFor(fixture, task, card);
+      expect(outcome).toBe("woken");
+
+      await sendOwnerMessage(db, {
+        companyId: fixture.companyId,
+        agentId: fixture.agentId,
+        runId: fixture.runId,
+        interactionIds: [card.id],
+        text: "Please confirm: proceed with the change? I recommend yes.",
+      });
+      const publications = await ownerMessagePublications(fixture);
+      expect(publications).toHaveLength(1);
+      expect(publications[0]!.conversationId).toBe(fixture.conversation.id);
+
+      // The answer of the person without a DM does not close it; the owner's does.
+      const answer = await insertOwnerAnswer(fixture);
+      await expect(
+        authorizeOwnerReplyResolution(db, {
+          companyId: fixture.companyId,
+          agentId: fixture.agentId,
+          runId: fixture.runId,
+          resolution: { interactionId: card.id, ownerReplyCommentId: answer.id, action: "accept" },
+        }),
+      ).resolves.toMatchObject({ ownerUserId: fixture.boardUserId });
+    });
+
+    it("a question addressed to a specific person goes to that person", async () => {
+      const fixture = await seed();
+      await makeOwner(fixture);
+      const addresseeUserId = await insertBoardUser(fixture.companyId, "operator");
+      const addresseeDm = await addDm(fixture, addresseeUserId);
+      const task = await taskOf(fixture, { createdByAgentId: fixture.strangerId });
+      const card = await cardOn(fixture, task, { resolverPolicy: "anyone", addresseeUserId });
+
+      const { outcome } = await wakeFor(fixture, task, card);
+      expect(outcome).toBe("woken");
+
+      await sendOwnerMessage(db, {
+        companyId: fixture.companyId,
+        agentId: fixture.agentId,
+        runId: fixture.runId,
+        interactionIds: [card.id],
+        text: "Please confirm: proceed with the change? I recommend yes.",
+      });
+      const toAddressee = await db
+        .select()
+        .from(chatPublications)
+        .where(
+          and(
+            eq(chatPublications.companyId, fixture.companyId),
+            eq(chatPublications.issueId, addresseeDm.dmIssue.id),
+          ),
+        );
+      expect(toAddressee).toHaveLength(1);
+      expect(await ownerMessagePublications(fixture)).toEqual([]);
+    });
+
+    it("stays on the board when nobody has a DM with the author", async () => {
+      const fixture = await seed();
+      // The company owner exists but has no DM with the author: board only.
+      const noDmUser = await insertBoardUser(fixture.companyId, "owner");
+      const task = await taskOf(fixture, { responsibleUserId: noDmUser });
+      const card = await cardOn(fixture, task);
+
+      const { outcome, wakeup } = await wakeFor(fixture, task, card);
+      expect(outcome).toBe("skipped_no_owner_dm");
+      expect(wakeup).not.toHaveBeenCalled();
+    });
+  });
 });
