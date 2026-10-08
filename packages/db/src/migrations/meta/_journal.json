@@ -2206,6 +2206,13 @@
       "when": 1791500340000,
       "tag": "0355_issues_last_activity_at",
       "breakpoints": true
+    },
+    {
+      "idx": 360,
+      "version": "7",
+      "when": 1791500360000,
+      "tag": "0360_issue_claims_active_unique",
+      "breakpoints": true
     }
   ]
 }
