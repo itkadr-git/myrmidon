@@ -120,4 +120,54 @@ describe("myrmidon(1.6.3-FORAGING-IDLE-GATE) the idle-gate toggle through update
     // one save is one write of the row.
     expect(persistedSets).toHaveLength(1);
   });
+
+  // OPE-6406: the review defect — PATCHing one setting must not change the
+  // stored values of its neighbours. The switch edit of the Foraging page and
+  // the general settings PATCH go through the same `updateGeneral`, so this is
+  // the one contract that keeps every other settings key safe.
+  it("PATCH of one setting keeps every neighbouring key stored in the row", async () => {
+    const neighbour = {
+      censorUsernameInLogs: true,
+      runStall: { warnAfterMinutes: 7 },
+      foraging: { enabled: false, dailySpendLimitUsd: 5 },
+      pauseGuard: { enabled: true },
+      datastoreCare: { contextRetentionDays: 14 },
+    };
+    const { db, persistedSets } = stubDb(settingsRow({ ...neighbour }));
+
+    // An unrelated PATCH — the shape the general settings page sends.
+    await instanceSettingsService(db, { runtimeEnv: {} }).updateGeneral({
+      keyboardShortcuts: true,
+    });
+
+    const general = persistedSets.at(-1)?.general as Record<string, unknown>;
+    expect(general.keyboardShortcuts).toBe(true);
+    for (const [key, value] of Object.entries(neighbour)) {
+      expect(general[key], `neighbouring key "${key}" must survive`).toEqual(value);
+    }
+  });
+
+  it("an idle-gate toggle write keeps every neighbouring key stored in the row", async () => {
+    const neighbour = {
+      censorUsernameInLogs: true,
+      runStall: { warnAfterMinutes: 7 },
+      foraging: { enabled: false, dailySpendLimitUsd: 5 },
+      datastoreCare: { contextRetentionDays: 14 },
+    };
+    const { db, persistedSets } = stubDb(
+      settingsRow({ ...neighbour, foragingIdleGate: { enabled: true }, foragingPassJournal: [JOURNAL_ENTRY] }),
+    );
+
+    // The Foraging page switch — one key in the patch.
+    await instanceSettingsService(db, { runtimeEnv: {} }).updateGeneral({
+      foragingIdleGate: { enabled: false },
+    });
+
+    const general = persistedSets.at(-1)?.general as Record<string, unknown>;
+    expect(general.foragingIdleGate).toEqual({ enabled: false });
+    expect(general.foragingPassJournal).toEqual([JOURNAL_ENTRY]);
+    for (const [key, value] of Object.entries(neighbour)) {
+      expect(general[key], `neighbouring key "${key}" must survive the toggle write`).toEqual(value);
+    }
+  });
 });
