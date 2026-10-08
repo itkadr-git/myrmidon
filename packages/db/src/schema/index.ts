@@ -234,6 +234,8 @@ export { issueClaims } from "./issue_claims.js";
 
 // myrmidon(1.6-FORAGE): source registry and findings log of FORAGING.
 export { foragingSources, foragingFindings, type ForagingSourceKind, type ForagingFindingStatus } from "./myrmidon_foraging.js";
+// myrmidon(1.6.1-FORAGING-LIMITS-UI): the spend ledger the learning limits read.
+export { foragingSpendEvents, type ForagingSpendOutcome } from "./myrmidon_foraging_spend.js";
 // myrmidon(1.6-WIKI): regulations as wiki pages — statuses, revisions and rollback.
 export {
   myrmidonWikiRegulations,
