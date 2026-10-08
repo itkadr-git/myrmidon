@@ -2553,7 +2553,9 @@ export function pluginRoutes(
     }
 
     const rawStatus = req.query.status as string | undefined;
-    const validStatuses = ["active", "paused", "failed"];
+    // `running` is the transient CAS capture state (OPE-5401 ч.B): readable
+    // for operators, never settable through this route.
+    const validStatuses = ["active", "paused", "failed", "running"];
     if (rawStatus !== undefined && !validStatuses.includes(rawStatus)) {
       res.status(400).json({
         error: `Invalid status '${rawStatus}'. Must be one of: ${validStatuses.join(", ")}`,
