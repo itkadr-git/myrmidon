@@ -29,10 +29,25 @@
 //     cost-per-task mean is above the configured threshold, learning switches
 //     itself off (one settings write) and raises a signal.
 //
+// myrmidon(1.6.3-FORAGING-IDLE-GATE): learning only when idle. Before a
+// source is read, the pass checks that the source's ROLE is idle: the role's
+// queue (tasks with no assignee, the swarm-claim queue semantics) is empty
+// AND at least one agent of the role has no `todo`/`in_progress` task. A busy
+// role is skipped with the reason `queue_not_empty` or `no_idle_agent` (per
+// role, in the result and the journal); the pass CONTINUES with the other
+// roles' sources — the gate filters sources per role inside one pass, it
+// never aborts the sweep. The toggle is re-read on every pass (see
+// idle-gate-settings.ts), so a settings-page change reaches the next pass
+// without a restart.
+//
 // Failures are per source: one unreachable host writes `last_error` on its row
 // and the pass continues with the next source. Nothing here throws at the pass
 // level, so a broken source never stops the sweep.
 
+import { and, eq, inArray } from "drizzle-orm";
+import { heartbeatRuns, type Db } from "@paperclipai/db";
+import { liveClaimCountsByAgent } from "../swarm-claim/idle-queue.js";
+import { listAgentsOfRole, listRoleQueue } from "../swarm-claim/queue.js";
 import { logger } from "../../middleware/logger.js";
 import {
   buildSourceResult,
@@ -57,6 +72,7 @@ import {
 } from "./limits.js";
 import type { ForagingSettings } from "@paperclipai/shared";
 import type { ForagingStore } from "./store.js";
+import { readForagingIdleGate, type ForagingIdleGateServiceDeps } from "./idle-gate-settings.js";
 
 export interface ForagingReaderResult {
   /** The raw text of the source; the pass normalizes it. */
@@ -93,6 +109,16 @@ export type ForagingSettingsResolver = () => Promise<{
   settings: ForagingSettings;
 }>;
 
+/** The per-role idle check the pass runs for the gate (injected in tests). */
+export interface ForagingIdleCheck {
+  /**
+   * `queue_not_empty` — the role's queue (unassigned open tasks) is not
+   * empty; `no_idle_agent` — no agent of the role is free of todo/in_progress
+   * work; null — the role is idle, the pass may read its sources.
+   */
+  roleIdleReason(companyId: string, role: string): Promise<"queue_not_empty" | "no_idle_agent" | null>;
+}
+
 export interface ForagingServiceDeps {
   store: ForagingStore;
   reader: ForagingReader;
@@ -103,6 +129,12 @@ export interface ForagingServiceDeps {
   finance?: ForagingFinancePort;
   /** The BASELINE cost-per-task probe for the auto-off rule. Optional. */
   baselineCost?: ForagingBaselineCostPort;
+  /** The database, for the default per-role idle check. Optional. */
+  db?: Db;
+  /** The idle-gate toggle, read on EVERY pass; absent means the gate is not applied. */
+  idleGate?: Pick<ForagingIdleGateServiceDeps, "getGeneral" | "env">;
+  /** The per-role idle check; defaults to the swarm-queue/agent SQL check. */
+  idleCheck?: ForagingIdleCheck;
   now?: () => Date;
   log?: Pick<typeof logger, "info" | "warn" | "error">;
 }
@@ -122,10 +154,55 @@ export interface ForagingService {
   }>;
 }
 
+const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
+
+/**
+ * The real idle check against the database, built on the swarm-claim reads so
+ * "queue" and "free agent" mean exactly what they mean for the idle wake:
+ *
+ *  - the role's queue is `listRoleQueue` (todo tasks of the role or unassigned,
+ *    with the readiness filters: not blocked, not a container, not mid
+ *    decomposition, not held);
+ *  - a free agent of the role is not paused or in error, has no live
+ *    heartbeat run and no live claim (`liveClaimCountsByAgent`).
+ */
+export function createDbForagingIdleCheck(db: Db): ForagingIdleCheck {
+  return {
+    async roleIdleReason(companyId, role) {
+      const queue = await listRoleQueue(db, companyId, role);
+      if (queue.length > 0) return "queue_not_empty";
+
+      const [roleAgents, claims, liveRunRows] = await Promise.all([
+        listAgentsOfRole(db, companyId, role),
+        liveClaimCountsByAgent(db, companyId),
+        db
+          .select({ agentId: heartbeatRuns.agentId })
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, companyId),
+              inArray(heartbeatRuns.status, [...LIVE_HEARTBEAT_RUN_STATUSES]),
+            ),
+          ),
+      ]);
+      const liveRuns = new Set(liveRunRows.map((row: { agentId: string }) => row.agentId));
+      const free = roleAgents.some(
+        (agent) =>
+          agent.status !== "paused" &&
+          agent.status !== "error" &&
+          !liveRuns.has(agent.id) &&
+          (claims.get(agent.id) ?? 0) === 0,
+      );
+      return free ? null : "no_idle_agent";
+    },
+  };
+}
+
 export function createForagingService(deps: ForagingServiceDeps): ForagingService {
   const store = deps.store;
   const now = deps.now ?? (() => new Date());
   const log = deps.log ?? logger;
+  const idleCheck = deps.idleCheck ?? (deps.db ? createDbForagingIdleCheck(deps.db) : null);
 
   const emptyResult = (): ForagingSweepResult => ({
     sourcesRead: 0,
@@ -154,6 +231,20 @@ export function createForagingService(deps: ForagingServiceDeps): ForagingServic
 
     async runPass(companyId) {
       const result = emptyResult();
+      // myrmidon(1.6.3-FORAGING-IDLE-GATE): the toggle is read on EVERY pass, so
+      // a settings-page change reaches the next pass without a restart (the
+      // environment variable stays the forced override). A read failure fails
+      // OPEN: a broken settings read must not stop learning.
+      let gateEnabled = false;
+      if (deps.idleGate && idleCheck) {
+        try {
+          gateEnabled = (await readForagingIdleGate(deps.idleGate)).enabled;
+        } catch (err) {
+          log.warn({ err, companyId }, "foraging: idle gate read failed, the gate stays off this pass");
+          gateEnabled = false;
+        }
+      }
+
       const startedAt = now();
       const resolved = await deps.resolveSettings();
       const settings = resolved.settings;
@@ -204,7 +295,9 @@ export function createForagingService(deps: ForagingServiceDeps): ForagingServic
         log.error({ err, companyId }, "foraging: could not list sources");
         return result;
       }
+
       const state: ForagingBudgetState = { spentCents: 0 };
+      const checkedRoles = new Map<string, "queue_not_empty" | "no_idle_agent" | null>();
 
       // The spend windows are read once per pass; the per-read decisions add
       // this pass's own spend on top (the rows are written as the pass goes).
@@ -236,6 +329,33 @@ export function createForagingService(deps: ForagingServiceDeps): ForagingServic
           log.info({ companyId, sourceId: source.id }, "foraging: pass stopped by the budget");
           break;
         }
+        // myrmidon(1.6.3-FORAGING-IDLE-GATE): learning only when the role is
+        // idle — one check per role per pass, cached in `checkedRoles`. A busy
+        // role's sources are skipped with the reason in the result and the
+        // journal; the pass CONTINUES with the other roles' sources.
+        if (gateEnabled && idleCheck) {
+          if (!checkedRoles.has(source.role)) {
+            try {
+              checkedRoles.set(source.role, await idleCheck.roleIdleReason(companyId, source.role));
+            } catch (err) {
+              log.warn(
+                { err, companyId, role: source.role },
+                "foraging: idle check failed, reading the role anyway",
+              );
+              checkedRoles.set(source.role, null);
+            }
+          }
+          const idleReason = checkedRoles.get(source.role);
+          if (idleReason) {
+            result.skippedReason = idleReason;
+            log.info(
+              { companyId, sourceId: source.id, role: source.role, reason: idleReason },
+              "foraging: the role is busy, skipping its sources this pass",
+            );
+            continue;
+          }
+        }
+
         const plannedCents = estimateCostCents(512 * 1024);
         const roleSpentCents = (windows.byRole.get(source.role) ?? 0) + (passRoleSpend.get(source.role) ?? 0);
         const limitDecision = decideForagingLimits({
@@ -404,6 +524,7 @@ export function createForagingService(deps: ForagingServiceDeps): ForagingServic
           spentCents: result.spentCents,
           stoppedByBudget: result.stoppedByBudget,
           errors: result.errors,
+          skippedReason: result.skippedReason,
         },
         "foraging pass done",
       );

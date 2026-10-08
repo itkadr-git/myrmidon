@@ -335,6 +335,9 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // general settings page. Without this line the normalizer drops the key, so a
       // PATCH would not roundtrip and the run dispatch would never read the row.
       ...(parsed.data.sessions ? { sessions: parsed.data.sessions } : {}),
+      // myrmidon(1.6.3-FORAGING-IDLE-GATE): the stored foraging idle gate
+      // toggle survives every general write (it is edited on its own page).
+      ...(parsed.data.foragingIdleGate ? { foragingIdleGate: parsed.data.foragingIdleGate } : {}),
       // myrmidon(1.6.3 PLUGIN-ENTITLEMENT A): the stored verification public key
       // survives every general write (edited on its own settings block).
       ...(parsed.data.pluginEntitlementPublicKey ? { pluginEntitlementPublicKey: parsed.data.pluginEntitlementPublicKey } : {}),

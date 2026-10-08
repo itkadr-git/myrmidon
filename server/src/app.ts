@@ -153,7 +153,7 @@ import { myrmidonAutonomyRoutes } from "./myrmidon/autonomy/index.js"; // myrmid
 import { sweepTelegramNotifyProactivity } from "./myrmidon/telegram-notify/sweep.js";
 import { accessHubRoutes } from "./myrmidon/access-hub/routes.js"; // myrmidon(SEC1)
 import { ui2LanguageRoutes } from "./myrmidon/ui2-language/routes.js"; // myrmidon(UI2-I18N)
-import { myrmidonForagingRoutes } from "./myrmidon/foraging/index.js"; // myrmidon(1.6-FORAGE)
+import { myrmidonForagingRoutes, myrmidonForagingIdleGateRoutes } from "./myrmidon/foraging/index.js"; // myrmidon(1.6-FORAGE)
 import { myrmidonAgentMemoryRoutes, myrmidonAgentMemorySettingsRoutes } from "./myrmidon/agent-memory/index.js"; // myrmidon(MEMORY-UI)
 // myrmidon(1.6-SKILL-LIFE): company skill lifecycle (candidate/verified/deprecated, rollback)
 import { myrmidonSkillLifecycleRoutes } from "./myrmidon/skill-lifecycle/index.js";
@@ -970,6 +970,7 @@ export async function createApp(
   api.use(myrmidonTelegramNotifyRoutes(db)); // myrmidon(TG-NOTIFY-A): telegramNotify settings core (GET/PATCH + changelog)
   api.use(ui2LanguageRoutes(db)); // myrmidon(UI2-I18N): per-user UI language preference
   api.use(myrmidonForagingRoutes(db)); // myrmidon(1.6-FORAGE): source registry, findings and the manual sweep
+  api.use(myrmidonForagingIdleGateRoutes(db)); // myrmidon(1.6.3-FORAGING-IDLE-GATE): the idle-gate toggle
   api.use(myrmidonWikiCortexRoutes(db)); // myrmidon(1.6-WIKI): company regulations (wiki pages, revisions, resolver)
   if (opts.databaseBackupService) {
     api.use(instanceDatabaseBackupRoutes(opts.databaseBackupService));

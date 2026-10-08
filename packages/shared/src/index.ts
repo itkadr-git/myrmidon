@@ -2896,3 +2896,6 @@ export * from "./myrmidon-foraging.js";
 // myrmidon(1.7-AGENT-EXCHANGE-A): the discussion-room contract (room model,
 // settings with source tracking, request bodies).
 export * from "./myrmidon-agent-exchange.js";
+// myrmidon(1.6.3-FORAGING-IDLE-GATE): the shared contract of the foraging
+// idle gate — the toggle, its storage key and the resolver with sources.
+export * from "./myrmidon-foraging-idle-gate.js";
