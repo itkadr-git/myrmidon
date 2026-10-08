@@ -48,7 +48,11 @@ import { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-
 export { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
 // myrmidon(RUN-SNAPSHOT-DEDUP): the single-copy continuation invariant.
-import { wakePayloadForDispatch } from "./run-continuation-snapshot.js";
+import {
+  persistRunContinuation,
+  runContextForPersistence,
+  wakePayloadForDispatch,
+} from "./run-continuation-snapshot.js";
 import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
 import { PROJECT_REPOSITORIES_DIR, readGitWorkspaceSnapshot } from "@paperclipai/adapter-utils/git-workspace-sync";
 import { isWorkspaceGitScanError, WorkspaceGitScanError, WORKSPACE_GIT_SCAN_ERROR_CODES } from "./workspace-git-operation-scheduler.js";
@@ -20843,6 +20847,28 @@ export function heartbeatService(
             })
           : null;
       context.executionContinuation = executionContinuation;
+      // myrmidon(DB-CARE DBC-3): the envelope is stored once, in
+      // heartbeat_run_continuations. Every snapshot write below persists
+      // runContextForPersistence(context), which drops the top-level copy, so
+      // heartbeat_runs.context_snapshot stops carrying the task history.
+      if (executionContinuation) {
+        await persistRunContinuation(db, {
+          companyId: agent.companyId,
+          agentId: agent.id,
+          issueId: issueRef?.id ?? null,
+          runId: run.id,
+          previousContextRunId: taskSession?.lastRunId ?? null,
+          envelope: executionContinuation,
+          // References to the wake payload (run, comments, interaction) instead
+          // of a second copy of it.
+          wakeLinks: {
+            runId: run.id,
+            originCommentIds: executionContinuation.originCommentIds,
+            sourceRunId: executionContinuation.trigger.sourceRunId,
+            interactionId: executionContinuation.trigger.interactionId,
+          },
+        });
+      }
       const paperclipWakePayload = await buildPaperclipWakePayload({
         db,
         companyId: agent.companyId,
@@ -22240,7 +22266,7 @@ export function heartbeatService(
         await db
           .update(heartbeatRuns)
           .set({
-            contextSnapshot: context,
+            contextSnapshot: runContextForPersistence(context),
             updatedAt: new Date(),
           })
           .where(eq(heartbeatRuns.id, run.id));
@@ -22577,7 +22603,7 @@ export function heartbeatService(
       await db
         .update(heartbeatRuns)
         .set({
-          contextSnapshot: context,
+          contextSnapshot: runContextForPersistence(context),
           updatedAt: new Date(),
         })
         .where(eq(heartbeatRuns.id, run.id));
@@ -22876,7 +22902,7 @@ export function heartbeatService(
             startedAt,
             sessionIdBefore:
               runtimeForAdapter.sessionDisplayId ?? runtimeForAdapter.sessionId,
-            contextSnapshot: context,
+            contextSnapshot: runContextForPersistence(context),
             updatedAt: new Date(),
           })
           .where(eq(heartbeatRuns.id, run.id))
@@ -23101,7 +23127,7 @@ export function heartbeatService(
           await db
             .update(heartbeatRuns)
             .set({
-              contextSnapshot: context,
+              contextSnapshot: runContextForPersistence(context),
               updatedAt: new Date(),
             })
             .where(eq(heartbeatRuns.id, run.id));
@@ -24836,7 +24862,7 @@ export function heartbeatService(
           await db
             .update(heartbeatRuns)
             .set({
-              contextSnapshot: context,
+              contextSnapshot: runContextForPersistence(context),
               updatedAt: new Date(),
             })
             .where(eq(heartbeatRuns.id, run.id));

@@ -116,3 +116,69 @@ describe("limitExecutionContinuationHistory", () => {
     expect(limitExecutionContinuationHistory(input, 0)).toBe(input);
   });
 });
+
+// myrmidon(DB-CARE DBC-3): the entry cap alone does not bound the payload.
+describe("continuation message character budget (DB-CARE DBC-3)", () => {
+  const body = (chars: number) => "x".repeat(chars);
+  const storedChars = (messages: Message[]) =>
+    messages.reduce((total, entry) => total + JSON.stringify(entry).length, 0);
+
+  it("turns the oldest bodies into references to fit the budget", () => {
+    const messages = Array.from({ length: 6 }, (_, i) => message(`m${i}`, { body: body(1_000) }));
+    const result = limitExecutionContinuationHistory(envelope({ messages }), 10, 4_000, 8_000);
+
+    expect(result.historyCharTruncation?.beforeChars).toBeGreaterThan(4_000);
+    expect(storedChars(result.messages)).toBeLessThanOrEqual(4_000);
+    const references = result.messages.filter((entry) => entry.bodyOmitted === true);
+    expect(references.length).toBeGreaterThan(0);
+    expect(references.every((entry) => entry.body === "")).toBe(true);
+    expect(result.historyCharTruncation?.bodiesReplaced).toBe(references.length);
+    expect(result.messages.at(-1)?.bodyOmitted).toBeUndefined();
+    // The reference keeps identity and freshness, so the delta still recognizes it.
+    expect(references[0]?.id).toBe(messages[0]?.id);
+    expect(references[0]?.updatedAt).toBe(messages[0]?.updatedAt);
+    expect(result.truncationNotice).toContain("character continuation budget");
+  });
+
+  it("keeps the bodies that carry direction and drops only referenced messages", () => {
+    const messages = Array.from({ length: 5 }, (_, i) => message(`m${i}`, { body: body(1_000) }));
+    messages[0] = message("m0", { authorType: "user", authorId: "user-a", body: body(1_000) });
+    const result = limitExecutionContinuationHistory(envelope({ messages }), 10, 1_500, 8_000);
+
+    const pinned = result.messages.find((entry) => entry.id === "m0");
+    expect(pinned).toBeDefined();
+    expect(pinned?.bodyOmitted).toBeUndefined();
+    expect(pinned?.body).toBe(body(1_000));
+    expect(result.historyCharTruncation?.messagesDropped).toBeGreaterThan(0);
+    expect(ids(result.messages)).not.toContain("m1");
+  });
+
+  it("shortens a pinned body instead of dropping the direction", () => {
+    const messages = [message("m0", { authorType: "user", authorId: "user-a", body: body(1_000) })];
+    const result = limitExecutionContinuationHistory(envelope({ messages }), 10, 300, 120);
+
+    const pinned = result.messages.find((entry) => entry.id === "m0");
+    expect(pinned).toBeDefined();
+    expect(pinned?.bodyOmitted).toBeUndefined();
+    expect(pinned?.body).toContain("continuation cap:");
+    expect(result.historyCharTruncation?.bodiesTruncated).toBe(1);
+  });
+
+  it("caps the resume delta bodies the same way, deterministically", () => {
+    const messages = Array.from({ length: 4 }, (_, i) => message(`m${i}`, { body: body(1_000) }));
+    const input = envelope({ messages, resumeDelta: { baseRunId: "run-a", messages } });
+    const first = limitExecutionContinuationHistory(input, 10, 2_500, 8_000);
+    const second = limitExecutionContinuationHistory(input, 10, 2_500, 8_000);
+
+    expect(first.resumeDelta?.messages).toEqual(second.resumeDelta?.messages);
+    expect(storedChars(first.messages)).toBeLessThanOrEqual(2_500);
+    expect(
+      (first.resumeDelta?.messages ?? []).some((entry) => entry.bodyOmitted === true),
+    ).toBe(true);
+  });
+
+  it("does nothing when the character budget is disabled", () => {
+    const input = envelope({ messages: Array.from({ length: 50 }, (_, i) => message(`m${i}`, { body: body(2_000) })) });
+    expect(limitExecutionContinuationHistory(input, 30, 0)).toBe(input);
+  });
+});
