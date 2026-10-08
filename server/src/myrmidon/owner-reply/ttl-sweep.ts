@@ -428,6 +428,7 @@ async function postSweepComment(
   payload: Record<string, unknown>,
 ): Promise<void> {
   await db.insert(issueComments).values([{
+    companyId: row.companyId,
     issueId: row.issueId,
     authorType: "system",
     body,
