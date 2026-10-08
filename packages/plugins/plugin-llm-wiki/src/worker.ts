@@ -319,7 +319,10 @@ const plugin = definePlugin({
         wikiId: stringField(params.wikiId),
         spaceSlug: stringField(params.spaceSlug),
         path: stringField(params.path) ?? "",
-        contents: typeof params.contents === "string" ? params.contents : "",
+        // A missing/non-string body must stay missing so writeWikiPage rejects it instead of
+        // truncating the page to an empty file.
+        contents: params.contents as string,
+        allowEmpty: params.allowEmpty === true,
         expectedHash: stringField(params.expectedHash),
         summary: stringField(params.summary),
         sourceRefs: params.sourceRefs,
