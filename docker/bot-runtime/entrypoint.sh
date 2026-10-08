@@ -306,6 +306,146 @@ if [ "${MYRMIDON_REFLINK_CHECK:-1}" != "0" ]; then
   reflink_self_check || log "WARNING: the reflink self-check itself failed to run"
 fi
 
+# --- uv cache self-check (myrmidon 1.6.5 BOT-DISK-UV-B) ------------------------
+# myrmidon(BOT-DISK-UV): since part A the bots with the shared package cache
+# point UV_CACHE_DIR at ONE uv cache per partition (<sharedPackageCachePath>/uv,
+# bound at /cache/uv). uv materialises installed packages into the venv either
+# by hardlinking from that cache (UV_LINK_MODE=hardlink) or by copying/cloning
+# (UV_LINK_MODE=clone). Both only save disk when the cache really reaches the
+# bot's roots: hardlinks cannot cross the bind mount (EXDEV — uv then copies
+# every wheel into every venv), and clone is a reflink that degrades to a full
+# copy the same silent way the pnpm store did (H8b). So at every start:
+# prove the cache directory is usable, then from a file inside it probe every
+# clone root — `cp --reflink=always` where the link mode wants reflinks
+# (confirmed via filefrag extents where available), `ln` compared by inode
+# (stat -c %i) where the link mode wants hardlinks. The result goes to
+# ${HERMES_HOME}/.myrmidon/uv-cache-check.json, shaped like reflink-check.json
+# (version, method, checkedAt, cache, ok, roots[]). A failure logs an ERROR and
+# never stops the gateway: a bot with a useless uv cache works, just
+# wastefully (the same logic as the pnpm self-check above). The cache is the
+# one the bot's tools will use: the environment's UV_CACHE_DIR, overridden by
+# the profile's .env (part A writes it there), defaulting to the image's
+# /cache/uv; the link mode is UV_LINK_MODE, default clone (what part A pins).
+uv_cache_self_check() {
+  local cache mode roots root probe src srcroot out_dir now ok_all=true entries="" sep="" err srcroot_ok=""
+  cache="$(dotenv_value UV_CACHE_DIR)"
+  cache="${cache:-${UV_CACHE_DIR:-/cache/uv}}"
+  mode="$(dotenv_value UV_LINK_MODE)"
+  mode="${mode:-${UV_LINK_MODE:-clone}}"
+  roots="${MYRMIDON_UV_CHECK_ROOTS:-/data/hermes /workspace /scratch}"
+  probe=".myrmidon-uv-probe.$$"
+  srcroot=""
+  err=""
+  # 1. the cache itself must hold files created by this bot's user.
+  if ! err="$(mkdir -p "${cache}" 2>&1 && : > "${cache}/${probe}" 2>&1)"; then
+    err="cannot create a file in the uv cache ${cache}: ${err}"
+    log "ERROR: uv cache self-check: ${err} — uv would re-download and copy every package (bot_disk_lifecycle/uv-cache)"
+    for root in ${roots}; do
+      entries="${entries}${sep}{\"root\":\"$(json_escape "${root}")\",\"ok\":false,\"error\":\"$(json_escape "${err}")\"}"
+      sep=","
+    done
+    ok_all=false
+  else
+    rm -f "${cache}/${probe}" 2>/dev/null || true
+    # 2. one root where creating a file in the cache directory actually lands:
+    # usually the cache itself; when a deeper subpath of it is a separate mount
+    # (e.g. /cache/uv/archives on its own partition) the first root that holds
+    # the probe is the honest source for step 3.
+    for root in "${cache}" ${roots}; do
+      if [ -d "${root}" ] && err="$(mkdir -p "${root}" 2>&1 && printf 'uv-self-check\n' > "${root}/${probe}" 2>&1)"; then
+        srcroot="${root}"
+        break
+      fi
+    done
+    if [ -z "${srcroot}" ]; then
+      err="no writable place to stage a probe file near ${cache}"
+      log "ERROR: uv cache self-check: ${err} — nothing to measure (bot_disk_lifecycle/uv-cache)"
+      for root in ${roots}; do
+        entries="${entries}${sep}{\"root\":\"$(json_escape "${root}")\",\"ok\":false,\"error\":\"$(json_escape "${err}")\"}"
+        sep=","
+      done
+      ok_all=false
+    else
+      src="${srcroot}/${probe}"
+      case "${mode}" in
+        hardlink)
+          # uv links installed files out of the cache; a hardlink only saves
+          # disk when both sides are the same inode — the same filesystem.
+          local src_inode dst_inode
+          src_inode="$(stat -c %i "${src}" 2>/dev/null || true)"
+          for root in ${roots}; do
+            dst="${root}/${probe}"
+            ok=true
+            if ! err="$(ln "${src}" "${dst}" 2>&1)"; then
+              ok=false
+              ok_all=false
+              log "ERROR: uv cache self-check: cannot hardlink from ${srcroot} into ${root}: ${err} — uv would copy every package into the venv there (bot_disk_lifecycle/uv-cache)"
+            else
+              dst_inode="$(stat -c %i "${dst}" 2>/dev/null || true)"
+              if [ -z "${src_inode}" ] || [ "${src_inode}" != "${dst_inode}" ]; then
+                ok=false
+                ok_all=false
+                err="hardlink created but inodes differ (stat) — the link crossed filesystems"
+                log "ERROR: uv cache self-check: the hardlink in ${root} is not the cache inode — uv would copy every package there (bot_disk_lifecycle/uv-cache)"
+              fi
+              rm -f "${dst}" 2>/dev/null || true
+            fi
+            entries="${entries}${sep}{\"root\":\"$(json_escape "${root}")\",\"ok\":${ok},\"error\":$( [ "${ok}" = true ] && printf 'null' || printf '"%s"' "$(json_escape "${err}")" )}"
+            sep=","
+          done
+          ;;
+        *)
+          # clone (the default): uv copies with reflink where the filesystem
+          # supports it; the proof is the H8b proof — cp --reflink=always plus
+          # shared physical extents where filefrag can see them.
+          local shared src_phys dst_phys phys
+          for root in ${roots}; do
+            dst="${root}/${probe}"
+            ok=true
+            if ! err="$(cp --reflink=always "${src}" "${dst}" 2>&1)"; then
+              ok=false
+              ok_all=false
+              log "ERROR: uv cache self-check: cannot reflink from ${srcroot} into ${root}: ${err} — uv would fully copy every package into the venv there (bot_disk_lifecycle/uv-cache)"
+            elif command -v filefrag >/dev/null 2>&1; then
+              shared=""
+              src_phys="$(filefrag -v "${src}" 2>/dev/null | sed -n 's/^[[:space:]]*[0-9]*:[[:space:]]*[0-9]*\.\.[0-9]*:[[:space:]]*\([0-9][0-9]*\)\.\..*/\1/p')"
+              dst_phys="$(filefrag -v "${dst}" 2>/dev/null | sed -n 's/^[[:space:]]*[0-9]*:[[:space:]]*[0-9]*\.\.[0-9]*:[[:space:]]*\([0-9][0-9]*\)\.\..*/\1/p')"
+              for phys in ${src_phys}; do
+                case " ${dst_phys} " in *" ${phys} "*) shared="${phys}"; break ;; esac
+              done
+              if [ -n "${src_phys}" ] && [ -z "${shared}" ]; then
+                ok=false
+                ok_all=false
+                err="cp --reflink=always succeeded but no shared physical extents (filefrag) — a full copy"
+                log "ERROR: uv cache self-check: ${dst} shares no extents with ${srcroot} — uv would fully copy every package there (bot_disk_lifecycle/uv-cache)"
+              fi
+            fi
+            rm -f "${dst}" 2>/dev/null || true
+            entries="${entries}${sep}{\"root\":\"$(json_escape "${root}")\",\"ok\":${ok},\"error\":$( [ "${ok}" = true ] && printf 'null' || printf '"%s"' "$(json_escape "${err}")" )}"
+            sep=","
+          done
+          ;;
+      esac
+      rm -f "${src}" 2>/dev/null || true
+    fi
+  fi
+  if [ "${ok_all}" = true ]; then
+    log "uv cache self-check ok: cache=${cache} roots=${roots} linkMode=${mode}"
+  fi
+  out_dir="${HERMES_HOME}/.myrmidon"
+  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  if mkdir -p "${out_dir}" 2>/dev/null; then
+    printf '{"version":1,"method":"%s","checkedAt":"%s","cache":"%s","ok":%s,"roots":[%s]}\n' \
+      "$(json_escape "${mode}")" "${now}" "$(json_escape "${cache}")" "${ok_all}" "${entries}" \
+      > "${out_dir}/uv-cache-check.json.tmp" 2>/dev/null \
+      && mv -f "${out_dir}/uv-cache-check.json.tmp" "${out_dir}/uv-cache-check.json" 2>/dev/null \
+      || log "WARNING: cannot write ${out_dir}/uv-cache-check.json"
+  fi
+}
+if [ "${MYRMIDON_UV_CHECK:-1}" != "0" ]; then
+  uv_cache_self_check || log "WARNING: the uv cache self-check itself failed to run"
+fi
+
 # --- shared git-object store facts (myrmidon 1.6.5 BOT-DISK-G live check) ---
 # The live acceptance of the shared-objects fix needs FACTS, not only pass/fail:
 # how many mirrors the store holds, how large it is and which repositories it

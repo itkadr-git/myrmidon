@@ -10,12 +10,13 @@ read-write and the downloads are kept once.
 Every bot container has exactly **one** bind for its own data (the bot's whole
 directory under the volume root, mounted at `/bot`; see
 [The bot's single mount](#the-bots-single-mount)). When the instance setting is
-set, the local driver adds four more binds to every bot container on the default
+set, the local driver adds five more binds to every bot container on the default
 host, after the card's extra mounts:
 
 | Host directory | Mount point in the bot | Variable written to `hermes/.env` |
 |---|---|---|
 | `<cache>/pnpm` | `/cache/pnpm` | `npm_config_cache_dir` (a download cache only; the pnpm **store** is never here, see [Hard-linked node_modules](#hard-linked-node_modules)) |
+| `<cache>/uv` | `/cache/uv` | `UV_CACHE_DIR` (one shared uv cache per partition; the link mode `UV_LINK_MODE` defaults to `clone`, see [Shared uv cache](#shared-uv-cache)) |
 | `<cache>/go-mod` | `/cache/go-mod` | `GOMODCACHE` |
 | `<cache>/go-build` | `/cache/go-build` | `GOCACHE` |
 | `<cache>/gradle` | `/cache/gradle` | `GRADLE_USER_HOME` |
@@ -53,14 +54,15 @@ Turning the cache off works the same way in reverse.
 
 ## Operator steps
 
-1. Create the subdirectories (`pnpm-store` included: it is mounted read-write at
-   `/cache/pnpm-store`, and when it is a bind of another directory, as on the
+1. Create the subdirectories (`pnpm-store` and `uv` included: each is mounted
+   read-write at `/cache/pnpm-store` and `/cache/uv`, and when one is a bind of
+   another directory, as on the
    production host, the SOURCE directory is the one to give away) and give them to the bot user (uid and gid
    10001 in the bot image); Docker would otherwise create a missing one as root
    and the bot could not write to it:
 
    ```sh
-   install -d -o 10001 -g 10001 /srv/package-cache/{pnpm,pnpm-store,go-mod,go-build,gradle}
+   install -d -o 10001 -g 10001 /srv/package-cache/{pnpm,pnpm-store,uv,go-mod,go-build,gradle}
    ```
 
 2. Set the same directory as `packageCacheRoot` in the dockergate configuration
@@ -214,7 +216,7 @@ made by the image, not mounts:
 
 The host layout is unchanged (`<root>/<key>/{hermes,workspace,scratch}`), so
 nothing on disk moves. The read-only and shared cache mounts stay separate binds
-(`/cache/pnpm`, `/cache/go-mod`, `/cache/go-build`, `/cache/gradle`, `/cache/git`).
+(`/cache/pnpm`, `/cache/uv`, `/cache/go-mod`, `/cache/go-build`, `/cache/gradle`, `/cache/git`).
 The profile, the applied-state marker and the clone-hygiene report are read and
 written at their real paths under `/bot/hermes`. The helper containers that
 prepare the volumes and lay the profile down keep their three narrow binds: they
@@ -271,6 +273,44 @@ build runs it as uid 10001 against the image's own pnpm for `/data/hermes`,
 `scripts/myrmidon/bot-runtime/pnpm-hardlink.test.mjs` runs it in CI, including the
 negative case of a store on another mount, which shows up as a copy (link count 1)
 although the install succeeds.
+
+### Shared uv cache
+
+Python tooling (uv) shares one cache per partition the same way pnpm shares its
+store: `<sharedPackageCachePath>/uv`, bound read-write at `/cache/uv`, written
+into `hermes/.env` as `UV_CACHE_DIR` by the profile compiler (settings
+`uvCacheDir`/`uvLinkMode`, defaults `/cache/uv` and `clone`).
+
+- **Link mode**: `UV_LINK_MODE=clone` is the default — a reflink of each cached
+  wheel into the bot's virtualenv, which on the bot partition (XFS/CoW) shares
+  extents instead of blocks. `hardlink` is a documented uv value but cannot
+  cross the bind mount, so it fails with `EXDEV` and uv falls back to copying;
+  `copy` is the explicit opt-out. `symlink` is refused by the settings API:
+  site-packages behind symlinks in the shared cache break bot isolation.
+- **Owner**: the directory must belong to the bot user — operator step
+  `install -d -o 10001 <sharedPackageCachePath>/uv` (see Operator steps; the
+  same subdirectory list).
+- A cache path inside the bot's own tree (`/workspace`, `/data`, `/scratch`,
+  `/bot`) is accepted with a warning: it is a per-bot cache and counts against
+  the bot's quota. Any other path is refused — reflink works only inside one
+  filesystem.
+
+**Start-time self-check.** At every container start the entrypoint creates a
+probe file in the uv cache and probes each clone root (`/data/hermes`,
+`/workspace`, `/scratch`): with `clone`/`copy` it copies the probe with
+`cp --reflink=always` and, where `filefrag` exists, confirms shared physical
+extents; with `hardlink` it hard-links the probe and compares inodes
+(`stat -c %i`) — there the hard link is the success case and a reflink proof
+would measure the opposite. The result goes to
+`${HERMES_HOME}/.myrmidon/uv-cache-check.json` (the reflink-check.json shape:
+`version`, `method` = the link mode, `checkedAt`, `cache`, `ok`, `roots[]`). A
+refusal or a silent full copy logs `ERROR: uv cache self-check: ...` and names
+the `bot_disk_lifecycle/uv-cache` attention key; the check never stops the
+gateway — a bot with a useless cache works, just wastefully. `MYRMIDON_UV_CHECK`
+(bot `hermes/.env` first, then the process environment; default `1`) and
+`MYRMIDON_UV_CHECK_ROOTS` tune it. `scripts/myrmidon/bot-runtime/entrypoint.test.mjs`
+covers ok, EXDEV/EOPNOTSUPP refusal, the hardlink inode path, an empty cache and
+a broken cache directory.
 
 ### Migrating running bots to the single mount
 
@@ -483,6 +523,8 @@ its default:
 | `gitMirrorRefreshMs` | `900000` (15 min) | How often each mirror is fetched, 1 min to 24 h |
 | `pnpmStoreDir` | `/workspace/.pnpm-store` | The pnpm store, a path under `/workspace`, `/data`, `/scratch` or `/bot` (above) |
 | `pnpmImportMethod` | `hardlink` | `hardlink`, `clone-or-copy` or `copy` (above) |
+| `uvCacheDir` | `/cache/uv` | The shared uv cache; a path under `<sharedPackageCachePath>` by contract, a bot-tree path with a warning (Shared uv cache above) |
+| `uvLinkMode` | `clone` | `UV_LINK_MODE`: `clone`, `hardlink` or `copy`; `symlink` is refused (Shared uv cache above) |
 | `sharedCacheRoles` | `engineer`, `reviewer`, `devops`, `release`, `qa` | Roles whose bots get the cache and mirror mounts; other bots get none and are not recreated when the cache is enabled |
 | `idleTtlMs`, `enabled` | 6 h, on | The draft lifecycle of BOT-DISK A, which the clone hygiene follows |
 
