@@ -30,6 +30,7 @@ import { botLspSettingsSchema } from "../myrmidon-bot-lsp.js";
 // myrmidon(EXTCASE-B): the browser-bridge allowlist stored in the same general settings row
 import { browserBridgeSettingsSchema } from "../myrmidon-browser-bridge.js";
 import { swarmClaimSettingsSchema } from "../myrmidon-swarm-claim.js";
+import { datastoreCareSettingsSchema } from "../myrmidon-datastore-care.js"; // myrmidon(1.6.5-DBC1)
 // myrmidon(1.6.1-WIP-LIMIT-A): the per-agent WIP limit settings stored in the
 // same general settings row.
 import { wipLimitSettingsSchema } from "../myrmidon-wip-limit.js";
@@ -125,6 +126,11 @@ export const instanceGeneralSettingsSchema = z.object({
   // /api/myrmidon/host-disk; absent means "use the environment variable, then
   // the default (85)".
   hostDisk: hostDiskSettingsSchema.optional(),
+  // myrmidon(1.6.5-DBC1): the datastore-care block (the retention sub-block
+  // with the run-context compaction window), changed from
+  // /api/myrmidon/datastore-care; absent means "use the environment
+  // variable, then the default" (see packages/shared/src/myrmidon-datastore-care.ts).
+  datastoreCare: datastoreCareSettingsSchema.optional(),
   // myrmidon(BOT-DISK-A): the bot draft-directory lifecycle (enabled, idle TTL),
   // changed from /api/myrmidon/bot-disk; absent means "use the environment
   // variable, then the default". Lenient: a row without the key, with unknown
