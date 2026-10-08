@@ -63,11 +63,11 @@ beforeEach(async () => {
   profileB = path.join(sharedHome, ".hermes", "profiles", "agent-b");
   await fs.mkdir(sharedHome, { recursive: true });
   runtimeSkills = [];
-  for (const name of ["myrmidon", "skill-a", "skill-b"]) {
+  for (const name of ["paperclip", "skill-a", "skill-b"]) {
     const source = path.join(root, "runtime-skills", name);
     await writeSkill(source, name, `managed ${name}`);
-    // The operational "myrmidon" skill is always required; the rest are optional.
-    const key = name === "myrmidon" ? "paperclipai/paperclip/myrmidon" : `company-a/${name}`;
+    // The operational "paperclip" skill is always required; the rest are optional.
+    const key = name === "paperclip" ? "paperclipai/paperclip/paperclip" : `company-a/${name}`;
     runtimeSkills.push({ key, runtimeName: name, source });
   }
 });
@@ -82,8 +82,8 @@ describe("Hermes skills in per-agent profiles", () => {
     await reconcileHermesPaperclipSkills(agentConfig(profileA, ["company-a/skill-a"]));
     await reconcileHermesPaperclipSkills(agentConfig(profileB, ["company-a/skill-b"]));
 
-    expect(await linkNames(path.join(profileA, "skills"))).toEqual(["myrmidon", "skill-a"]);
-    expect(await linkNames(path.join(profileB, "skills"))).toEqual(["myrmidon", "skill-b"]);
+    expect(await linkNames(path.join(profileA, "skills"))).toEqual(["paperclip", "skill-a"]);
+    expect(await linkNames(path.join(profileB, "skills"))).toEqual(["paperclip", "skill-b"]);
     expect(await linkNames(path.join(sharedHome, ".hermes", "skills"))).toEqual([]);
   });
 
@@ -92,7 +92,7 @@ describe("Hermes skills in per-agent profiles", () => {
     await reconcileHermesPaperclipSkills(agentConfig(profileB, ["company-a/skill-b"]));
     await reconcileHermesPaperclipSkills(agentConfig(profileA, ["company-a/skill-a"]));
 
-    expect(await linkNames(path.join(profileB, "skills"))).toEqual(["myrmidon", "skill-b"]);
+    expect(await linkNames(path.join(profileB, "skills"))).toEqual(["paperclip", "skill-b"]);
     expect(await fs.realpath(path.join(profileB, "skills", "skill-b"))).toBe(
       await fs.realpath(runtimeSkills[2]!.source),
     );
@@ -102,7 +102,7 @@ describe("Hermes skills in per-agent profiles", () => {
     await reconcileHermesPaperclipSkills(agentConfig(profileA, ["company-a/skill-a"]));
     await reconcileHermesPaperclipSkills(agentConfig(profileA, []));
 
-    expect(await linkNames(path.join(profileA, "skills"))).toEqual(["myrmidon"]);
+    expect(await linkNames(path.join(profileA, "skills"))).toEqual(["paperclip"]);
   });
 
   it("lists skills from the agent's profile", async () => {
@@ -127,7 +127,7 @@ describe("Hermes skills in per-agent profiles", () => {
     await reconcileHermesPaperclipSkills(agentConfig(null, ["company-a/skill-a"]));
 
     expect(await linkNames(path.join(sharedHome, ".hermes", "skills"))).toEqual([
-      "myrmidon",
+      "paperclip",
       "skill-a",
     ]);
   });
@@ -135,8 +135,8 @@ describe("Hermes skills in per-agent profiles", () => {
 
 describe("a real directory where a managed skill belongs", () => {
   it("moves the profile's copy aside, links the managed skill and starts the run", async () => {
-    const occupied = path.join(profileA, "skills", "myrmidon");
-    await writeSkill(occupied, "myrmidon", "local copy");
+    const occupied = path.join(profileA, "skills", "paperclip");
+    await writeSkill(occupied, "paperclip", "local copy");
     await fs.writeFile(path.join(occupied, "notes.txt"), "keep me\n", "utf8");
     const onLog = vi.fn(async () => undefined);
 
@@ -168,12 +168,12 @@ describe("a real directory where a managed skill belongs", () => {
 
     const backups = await fs.readdir(path.join(profileA, "skills.pre-myrmidon"));
     expect(backups).toHaveLength(1);
-    expect(backups[0]).toMatch(/^myrmidon\.pre-myrmidon-\d{8}$/);
+    expect(backups[0]).toMatch(/^paperclip\.pre-myrmidon-\d{8}$/);
     const backup = path.join(profileA, "skills.pre-myrmidon", backups[0]!);
     expect(await fs.readFile(path.join(backup, "notes.txt"), "utf8")).toBe("keep me\n");
     // Hermes finds skills by SKILL.md anywhere under skills/, so the backup must
-    // not stay there as a second "myrmidon" skill.
-    expect(await fs.readdir(path.join(profileA, "skills"))).toEqual(["myrmidon"]);
+    // not stay there as a second "paperclip" skill.
+    expect(await fs.readdir(path.join(profileA, "skills"))).toEqual(["paperclip"]);
 
     const lines = onLog.mock.calls
       .map((call) => String((call as unknown[])[1]))
@@ -183,11 +183,11 @@ describe("a real directory where a managed skill belongs", () => {
   });
 
   it("keeps an earlier backup and never overwrites it", async () => {
-    const occupied = path.join(profileA, "skills", "myrmidon");
-    await writeSkill(occupied, "myrmidon", "first copy");
+    const occupied = path.join(profileA, "skills", "paperclip");
+    await writeSkill(occupied, "paperclip", "first copy");
     await reconcileHermesPaperclipSkills(agentConfig(profileA, []));
     await fs.unlink(occupied);
-    await writeSkill(occupied, "myrmidon", "second copy");
+    await writeSkill(occupied, "paperclip", "second copy");
     await reconcileHermesPaperclipSkills(agentConfig(profileA, []));
 
     const backups = (await fs.readdir(path.join(profileA, "skills.pre-myrmidon"))).sort();
@@ -202,15 +202,15 @@ describe("a real directory where a managed skill belongs", () => {
   });
 
   it("still refuses a live symlink owned by another installation", async () => {
-    const foreign = path.join(root, "external-skills", "myrmidon");
-    await writeSkill(foreign, "myrmidon", "foreign");
+    const foreign = path.join(root, "external-skills", "paperclip");
+    await writeSkill(foreign, "paperclip", "foreign");
     await fs.mkdir(path.join(profileA, "skills"), { recursive: true });
-    await fs.symlink(foreign, path.join(profileA, "skills", "myrmidon"));
+    await fs.symlink(foreign, path.join(profileA, "skills", "paperclip"));
 
     await expect(
       reconcileHermesPaperclipSkills(agentConfig(profileA, [])),
     ).rejects.toThrow("occupied by another installation");
-    expect(await fs.realpath(path.join(profileA, "skills", "myrmidon"))).toBe(
+    expect(await fs.realpath(path.join(profileA, "skills", "paperclip"))).toBe(
       await fs.realpath(foreign),
     );
   });
@@ -254,12 +254,8 @@ async function executeRun(config: Record<string, unknown>, onLog = vi.fn(async (
   } as never);
 }
 
-// The run-log sink used by reconcile takes one line; the execute adapter sink
-// takes (level, line). Collect every string argument so both shapes are read.
 function loggedLines(onLog: ReturnType<typeof vi.fn>): string[] {
-  return onLog.mock.calls.flatMap((call: unknown) =>
-    (call as unknown[]).map((argument) => String(argument)),
-  );
+  return onLog.mock.calls.map((call: unknown) => String((call as unknown[])[1]));
 }
 
 function stderrLines(onLog: ReturnType<typeof vi.fn>): string {
@@ -300,7 +296,7 @@ describe("a skill is only delivered when the link proves it", () => {
     ).rejects.toThrow(/files are unavailable/);
 
     expect(stderrLines(onLog)).toContain("company-a/skill-a");
-    expect(await linkNames(path.join(profileA, "skills"))).toEqual(["myrmidon"]);
+    expect(await linkNames(path.join(profileA, "skills"))).toEqual(["paperclip"]);
     expect(serverUtils.runChildProcess).not.toHaveBeenCalled();
   });
 
@@ -334,12 +330,12 @@ describe("parallel runs that share one HOME", () => {
       reconcileHermesPaperclipSkills(vendorConfig),
     ]);
 
-    expect(profileAResult).toEqual(["paperclipai/paperclip/myrmidon", "company-a/skill-a"]);
-    expect(profileBResult).toEqual(["paperclipai/paperclip/myrmidon", "company-a/skill-b"]);
-    expect(await linkNames(path.join(profileA, "skills"))).toEqual(["myrmidon", "skill-a"]);
-    expect(await linkNames(path.join(profileB, "skills"))).toEqual(["myrmidon", "skill-b"]);
+    expect(profileAResult).toEqual(["paperclipai/paperclip/paperclip", "company-a/skill-a"]);
+    expect(profileBResult).toEqual(["paperclipai/paperclip/paperclip", "company-a/skill-b"]);
+    expect(await linkNames(path.join(profileA, "skills"))).toEqual(["paperclip", "skill-a"]);
+    expect(await linkNames(path.join(profileB, "skills"))).toEqual(["paperclip", "skill-b"]);
     expect(await linkNames(path.join(sharedHome, ".hermes", "skills"))).toEqual([
-      "myrmidon",
+      "paperclip",
       "skill-b",
     ]);
     expect(await fs.realpath(path.join(profileA, "skills", "skill-a"))).toBe(
@@ -351,8 +347,8 @@ describe("parallel runs that share one HOME", () => {
 
     // A later vendor-scope run still leaves both profiles alone.
     await reconcileHermesPaperclipSkills(vendorConfig);
-    expect(await linkNames(path.join(profileA, "skills"))).toEqual(["myrmidon", "skill-a"]);
-    expect(await linkNames(path.join(profileB, "skills"))).toEqual(["myrmidon", "skill-b"]);
+    expect(await linkNames(path.join(profileA, "skills"))).toEqual(["paperclip", "skill-a"]);
+    expect(await linkNames(path.join(profileB, "skills"))).toEqual(["paperclip", "skill-b"]);
   });
 });
 
@@ -392,7 +388,7 @@ describe("links an earlier rollout left in a profile", () => {
 
     const target = path.join(profileA, "skills", "skill-a");
     expect(await fs.realpath(target)).toBe(await fs.realpath(runtimeSkills[1]!.source));
-    expect(await fs.readdir(path.join(profileA, "skills"))).toEqual(["myrmidon", "skill-a"]);
+    expect(await fs.readdir(path.join(profileA, "skills"))).toEqual(["skill-a"]);
 
     const backups = await fs.readdir(path.join(profileA, "skills.pre-myrmidon"));
     expect(backups).toHaveLength(1);
