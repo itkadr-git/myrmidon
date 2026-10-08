@@ -26695,6 +26695,21 @@ export function heartbeatService(
     });
     let issueId =
       readNonEmptyString(enrichedContextSnapshot.issueId) ?? issueIdFromPayload;
+    // myrmidon(N4-WAKE-ISSUE-CONTEXT): a wake that names its task only in the
+    // resolved context (contextSnapshot.issueId) must also carry the
+    // identifier in the payload consumers read first: the agent's wake
+    // payload is built from the payload, not from the snapshot, so a wake
+    // whose only issueId lives in contextSnapshot arrives at the agent
+    // without its task context. Mirror the resolved id back into the payload
+    // here, after enrichment, so every downstream read (wake payload renderer,
+    // coalescing key, execution-blocker check) sees the same issueId.
+    if (
+      issueId &&
+      !readNonEmptyString(payload?.["issueId"]) &&
+      !readNonEmptyString(payload?.["taskId"])
+    ) {
+      payload = { ...payload, issueId };
+    }
     if (executionReconciliationWake && !issueId) return null;
 
     let agent = await getAgent(agentId);
