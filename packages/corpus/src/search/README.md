@@ -47,10 +47,12 @@ to the wiring, not to this package.
   with a recording `SqlExecutor`: statements, bound values, fusion order, escaping,
   validation.
 - [hybrid-search-index.integration.myrmidon.test.ts](hybrid-search-index.integration.myrmidon.test.ts)
-  — runs against the embedded PostgreSQL stand (the same harness `packages/db` uses): creates
-  the extensions, tables and indexes, seeds a synthetic corpus, and asserts the top-k
-  contract, the dataset filter and recall@5 of hybrid retrieval on exact and noisy query
-  vectors. It also measures p95 latency; `CORPUS_SEARCH_PERF_CHUNKS=100000` scales the
-  synthetic set to the acceptance size (10^5 chunks) for the measurement in the PR report.
-  Without the `vector` extension the file skips with a printed reason, so it does not fail on
-  a machine whose stand has no pgvector.
+  — runs against an external stand named by `CORPUS_TEST_PGVECTOR_DSN` (the product image has no
+  `vector` extension yet): creates the probe extensions, tables and indexes, seeds a synthetic
+  corpus, and asserts the top-k contract, the dataset filter and recall@5 of hybrid retrieval on
+  exact and noisy query vectors. It also measures p95 latency — `CORPUS_SEARCH_PERF_CHUNKS=100000`
+  scales the synthetic set to the acceptance size (10^5 chunks) — and prints the `EXPLAIN (ANALYZE,
+  BUFFERS)` plan of both rankings as the product emits them, for the PR report. Without the
+  variable the whole suite skips with a printed reason, so CI (no pgvector) stays green while the
+  vector path is exercised on a stand. The suite needs `postgres` as a devDependency (the driver of
+  the stand client, `packages/db` uses the same one).

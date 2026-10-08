@@ -173,7 +173,7 @@ describe("document parser client", () => {
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
     expect(outcome.result.pages.map((page) => page.pageNumber)).toEqual([1, 2]);
-    expect(outcome.result.text).toBe("first page\\n\\nsecond page");
+    expect(outcome.result.text).toBe("first page\n\nsecond page");
   });
 
   it("retries a service that answers 503 and succeeds on the next attempt", async () => {
