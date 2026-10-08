@@ -186,7 +186,9 @@ describe("channel connector hub", () => {
 
     const outbound = await hub.outbound({ publication: PUBLICATION, transport });
     expect(outbound.decision).toBe("passthrough");
-    expect(outbound.provider).toBeNull();
+    // The hub routes by the endpoint it read, so the provider stays known even
+    // when the vendor path keeps the publication.
+    expect(outbound.provider).toBe("slack");
     expect(outbound.failure).toBeNull();
 
     const started = await hub.lifecycle.start({ endpoint: SLACK_ENDPOINT });

@@ -26,6 +26,14 @@ import {
 const ENDPOINT_ID = "11111111-1111-4111-8111-111111111111";
 const COMPANY_ID = "22222222-2222-4222-8222-222222222222";
 
+/** Members of the contract that carry data rather than a method. */
+const DATA_MEMBERS = new Set([
+  "media.fileLimitBytes",
+  "media.captionLimit",
+  "media.accepts",
+  "settings.keys",
+]);
+
 const context: ChannelConnectorContext = {
   companyId: COMPANY_ID,
   store: { readEndpoint: async () => null },
@@ -125,11 +133,11 @@ describe("channel connector contract", () => {
     const connector = fixtureConnector();
 
     for (const [area, members] of Object.entries(CHANNEL_CONNECTOR_AREAS)) {
-      if (area === "media" || area === "provider") {
-        continue;
-      }
       const target = connector[area as ChannelConnectorArea] as Record<string, unknown>;
       for (const member of members) {
+        if (DATA_MEMBERS.has(`${area}.${member}`)) {
+          continue;
+        }
         expect(typeof target[member], `${area}.${member}`).toBe("function");
       }
     }

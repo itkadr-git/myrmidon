@@ -48,6 +48,9 @@ export interface ChannelConnectorFailure {
  *  provider without a connector — carries none. */
 export interface ChannelHubOutcome<T> {
   readonly decision: ChannelHubDecision;
+  /** The provider the hub routed by. It stays known on the vendor path of a
+   *  provider without a connector and is null only when the hub could not read
+   *  the endpoint at all. */
   readonly provider: ChatProviderName | null;
   readonly result: T | null;
   readonly failure: ChannelConnectorFailure | null;
