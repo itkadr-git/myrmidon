@@ -338,6 +338,10 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // myrmidon(1.6.3-FORAGING-IDLE-GATE): the stored foraging idle gate
       // toggle survives every general write (it is edited on its own page).
       ...(parsed.data.foragingIdleGate ? { foragingIdleGate: parsed.data.foragingIdleGate } : {}),
+      // myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): the stored foraging pass
+      // journal survives every general write (the pass appends to it on each
+      // pass, and the "Foraging" page reads it back).
+      ...(parsed.data.foragingPassJournal ? { foragingPassJournal: parsed.data.foragingPassJournal } : {}),
       // myrmidon(1.6.3 PLUGIN-ENTITLEMENT A): the stored verification public key
       // survives every general write (edited on its own settings block).
       ...(parsed.data.pluginEntitlementPublicKey ? { pluginEntitlementPublicKey: parsed.data.pluginEntitlementPublicKey } : {}),
