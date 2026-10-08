@@ -3064,3 +3064,70 @@ describe("prompt breakdown (myrmidon 1.6.5 PROMPT-BUDGET A)", () => {
     }
   });
 });
+
+describe("model input limit (OPE-6168)", () => {
+  function completedFetchMock() {
+    return vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-hermes-1", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(
+          sseStream(
+            [
+              "event: run.completed",
+              'data: {"status":"completed","output":"done","session_id":"session-1"}',
+              "",
+            ].join("\n"),
+          ),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      return new Response(JSON.stringify({ status: "completed", output: "done" }), { status: 200 });
+    });
+  }
+
+  async function sentBody(config: Record<string, unknown>, taskMarkdown: string) {
+    const fetchMock = completedFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 5, ...config });
+    ctx.context = { ...ctx.context, paperclipTaskMarkdown: taskMarkdown };
+    const result = await execute(ctx);
+    const calls = fetchMock.mock.calls as Array<[RequestInfo | URL, RequestInit?]>;
+    const createCall = calls.find(([input]) => String(input).endsWith("/v1/runs"));
+    return { result, ctx, body: JSON.parse(String((createCall?.[1] as RequestInit).body)) as Record<string, string> };
+  }
+
+  it("trims a request over the model input budget before sending it", async () => {
+    const huge = `# Task\n\n${"Work on the thing. ".repeat(10_000)}END-OF-TASK`;
+    const { result, ctx, body } = await sentBody(
+      { inputLimit: { model: "m", source: "catalog", maxInputTokens: 4_000, charsPerToken: 3, safety: 0.9 } },
+      huge,
+    );
+    expect(result.exitCode).toBe(0);
+    // budget = 4000 * 3 * 0.9 = 10 800 chars for instructions + input together
+    expect(body.input.length + body.instructions.length).toBeLessThanOrEqual(10_800);
+    expect(body.input).toContain("You are Hermes, an AI agent employee");
+    expect(body.input).toContain("characters omitted");
+    const logs = (ctx.onLog as ReturnType<typeof vi.fn>).mock.calls.map((call) => String(call[1])).join("");
+    expect(logs).toContain("input limit:");
+  });
+
+  it("sends a request that fits the budget unchanged", async () => {
+    const small = "# Task\n\nShort brief.";
+    const { body } = await sentBody(
+      { inputLimit: { model: "m", source: "catalog", maxInputTokens: 1_000_000 } },
+      small,
+    );
+    expect(body.input).toContain("Short brief.");
+    expect(body.input).not.toContain("characters omitted");
+  });
+
+  it("does nothing without a limit in the config", async () => {
+    const huge = `# Task\n\n${"Work on the thing. ".repeat(10_000)}END-OF-TASK`;
+    const { body } = await sentBody({}, huge);
+    expect(body.input).toContain("END-OF-TASK");
+    expect(body.input).not.toContain("characters omitted");
+  });
+});

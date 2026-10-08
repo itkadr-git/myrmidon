@@ -32,8 +32,10 @@ re-ran the issue every 3–5 minutes with the same outcome and no attention item
    compact the session (run detail → reset task session), shorten the context
    or change the model, then wake the agent.
 
-Not in this change: the model-catalog input limit checked before sending
-(planned for 1.6.6) and idempotent turn recording inside the Hermes gateway.
+The model-catalog input limit checked before sending is described in
+[input-limit-precheck.md](input-limit-precheck.md); the idempotent turn
+recording inside the Hermes gateway is bot-runtime patch
+`11-stranded-run-turn-replace.patch`.
 
 Upstream #13891 (no duplicate wake context in the environment) is already
 present (backport in P3, together with the bounded continuation history).
