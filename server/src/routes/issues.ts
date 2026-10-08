@@ -356,6 +356,12 @@ import { assertRunHasTaskSourceContext } from "../myrmidon/issue-checkout-guard.
 import { resolveIssueWriteAssigneeRunLock } from "../myrmidon/issue-write-run-lock.js";
 // myrmidon(1.6.5-OWNER-VIA-BOT): wake the author of an owner decision to explain it in a DM
 import { scheduleOwnerExplainWake } from "../myrmidon/owner-delivery/owner-message.js";
+// myrmidon(1.6.5-F21-A): the owner's own comment on a task closes the freshest
+// pending owner card of that task, without an agent run in between.
+import {
+  createOwnerReplyDeps,
+  handleOwnerTextReply,
+} from "../myrmidon/owner-reply/index.js";
 import {
   crossIssueInfluenceLimitError,
   crossIssueInfluenceRunContextError,
@@ -18306,6 +18312,32 @@ export function issueRoutes(
         actor,
         source: "issue.comment",
       });
+      // myrmidon(1.6.5-F21-A): owner words close the owner's card.
+      //
+      // A board user answering on the task is the web half of "the owner's own
+      // words are the decision". The handler selects the freshest pending owner
+      // card of this task (created before this comment), resolves it through the
+      // ordinary resolution services with the owner attributed as the resolver,
+      // and asks which card when several are open. It is a no-op in every owner
+      // delivery mode but via_bot, and it never throws: a defect keeps the card
+      // pending instead of failing the comment the owner just wrote.
+      const taskOwnerUserId =
+        currentIssue.responsibleUserId ?? currentIssue.createdByUserId ?? null;
+      if (
+        req.actor.type === "board" &&
+        req.actor.userId &&
+        taskOwnerUserId !== null &&
+        req.actor.userId === taskOwnerUserId
+      ) {
+        await handleOwnerTextReply(createOwnerReplyDeps(db), {
+          companyId: currentIssue.companyId,
+          ownerUserId: req.actor.userId,
+          text: comment.body,
+          issueId: currentIssue.id,
+          replyCommentId: comment.id,
+          sourceRef: `comment:${comment.id}`,
+        });
+      }
       let lostReviewPathRef: string | null = null;
       if (
         currentIssue.status === "in_review" &&
