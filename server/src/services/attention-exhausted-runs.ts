@@ -28,12 +28,10 @@ export function listAttentionExhaustedRuns(db: Db, companyId: string) {
       status: heartbeatRuns.status,
       error: heartbeatRuns.error,
       errorCode: heartbeatRuns.errorCode,
-      // Preserve JSON types and issueId/taskId fallback semantics without
-      // transferring prompts, transcripts, or the rest of the run context.
-      contextSnapshot: sql<Record<string, unknown>>`jsonb_build_object(
-        'issueId', ${heartbeatRuns.contextSnapshot} -> 'issueId',
-        'taskId', ${heartbeatRuns.contextSnapshot} -> 'taskId'
-      )`,
+      // Thin columns with a snapshot coalesce for historical rows (OPE-5007 П2):
+      // the feed needs the two ids only and must not detoast the run context.
+      runIssueId: sql<string | null>`coalesce(${heartbeatRuns.contextIssueId}, ${heartbeatRuns.contextSnapshot} ->> 'issueId')`,
+      runTaskId: sql<string | null>`coalesce(${heartbeatRuns.contextTaskId}, ${heartbeatRuns.contextSnapshot} ->> 'taskId')`,
       createdAt: heartbeatRuns.createdAt,
       updatedAt: heartbeatRuns.updatedAt,
       finishedAt: heartbeatRuns.finishedAt,
