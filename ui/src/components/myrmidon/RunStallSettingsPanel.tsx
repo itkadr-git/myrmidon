@@ -5,19 +5,24 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlarmClock } from "lucide-react";
-import type { RunStallKey, RunStallPatch, RunStallValues } from "@paperclipai/shared";
+import type { RunStallKey, RunStallValues } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ToggleSwitch } from "@/components/ui/toggle-switch";
-import { describeRunStallSource, runStallApi, runStallQueryKey, type RunStallView } from "./runStallApi";
+import {
+  describeRunStallSource,
+  runStallApi,
+  runStallQueryKey,
+  type RunStallEditablePatch,
+  type RunStallView,
+} from "./runStallApi";
 
-const NUMBER_FIELDS: Array<{ key: Exclude<RunStallKey, "enabled">; label: string; hint: string }> = [
-  {
-    key: "thresholdSec",
-    label: "Silence threshold, seconds",
-    hint: "A running run whose recorded progress (output, run events, useful actions) has not moved for this long is interrupted as stalled: its task goes back to todo and the assignee is woken. From 60 to 86400 (24 h); default 1200 (20 min).",
-  },
+/** The team-liveness section of this page (same screen), where `enabled` and the threshold live. */
+export const TEAM_LIVENESS_ANCHOR = "#team-liveness-settings";
+
+type NumberKey = Extract<RunStallKey, "checkIntervalSec" | "pageSize">;
+
+const NUMBER_FIELDS: Array<{ key: NumberKey; label: string; hint: string }> = [
   {
     key: "checkIntervalSec",
     label: "Sweep interval, seconds",
@@ -30,15 +35,13 @@ const NUMBER_FIELDS: Array<{ key: Exclude<RunStallKey, "enabled">; label: string
   },
 ];
 
-type NumberKey = Exclude<RunStallKey, "enabled">;
-
 interface DraftParse {
-  patch: RunStallPatch | null;
+  patch: RunStallEditablePatch | null;
   errors: Partial<Record<NumberKey, string>>;
 }
 
-/** Every numeric field must be a positive whole number; the switch is a boolean. */
-export function parseRunStallDraft(draft: Record<NumberKey, string>, enabled: boolean): DraftParse {
+/** Every editable field must be a positive whole number. */
+export function parseRunStallDraft(draft: Record<NumberKey, string>): DraftParse {
   const errors: Partial<Record<NumberKey, string>> = {};
   const parsed = {} as Record<NumberKey, number>;
   for (const { key } of NUMBER_FIELDS) {
@@ -53,8 +56,6 @@ export function parseRunStallDraft(draft: Record<NumberKey, string>, enabled: bo
   if (Object.keys(errors).length > 0) return { patch: null, errors };
   return {
     patch: {
-      enabled,
-      thresholdSec: parsed.thresholdSec,
       checkIntervalSec: parsed.checkIntervalSec,
       pageSize: parsed.pageSize,
     },
@@ -64,7 +65,6 @@ export function parseRunStallDraft(draft: Record<NumberKey, string>, enabled: bo
 
 function toDraft(settings: RunStallValues): Record<NumberKey, string> {
   return {
-    thresholdSec: String(settings.thresholdSec),
     checkIntervalSec: String(settings.checkIntervalSec),
     pageSize: String(settings.pageSize),
   };
@@ -77,16 +77,14 @@ export function RunStallSettingsPanelView({
   error,
 }: {
   view: RunStallView | null | undefined;
-  onSave: (patch: RunStallPatch) => void;
+  onSave: (patch: RunStallEditablePatch) => void;
   pending: boolean;
   error: string | null;
 }) {
   const [draft, setDraft] = useState<Record<NumberKey, string> | null>(null);
-  const [enabledDraft, setEnabledDraft] = useState<boolean | null>(null);
   const current = draft ?? (view ? toDraft(view.settings) : null);
-  const enabled = enabledDraft ?? view?.settings.enabled ?? true;
   const { patch, errors } = current
-    ? parseRunStallDraft(current, enabled)
+    ? parseRunStallDraft(current)
     : { patch: null, errors: {} as Partial<Record<NumberKey, string>> };
 
   return (
@@ -99,7 +97,12 @@ export function RunStallSettingsPanelView({
         <p className="max-w-2xl text-sm text-muted-foreground">
           The sweep that interrupts a running run whose own recorded progress stopped advancing: the task goes back to
           todo and the assignee is woken. A run working for hours with fresh progress is never touched — this is not a
-          duration limit. Saving takes effect immediately, without a restart.
+          duration limit. Saving takes effect immediately, without a restart. Whether the sweep runs and its silence
+          threshold are set in the{" "}
+          <a href={TEAM_LIVENESS_ANCHOR} className="underline" data-testid="run-stall-team-liveness-link">
+            Team liveness settings
+          </a>{" "}
+          (one source of truth for all three liveness passes); they are shown here read-only.
         </p>
       </div>
 
@@ -111,17 +114,24 @@ export function RunStallSettingsPanelView({
 
       {view ? (
         <div className="grid gap-3 md:grid-cols-2">
-          <div className="flex items-center gap-3 md:col-span-2">
-            <ToggleSwitch
-              checked={enabled}
-              onCheckedChange={setEnabledDraft}
-              aria-label="Run stall detection enabled"
-              data-testid="run-stall-enabled"
-            />
-            <span className="text-sm">Interrupt stalled runs</span>
-            <span className="text-xs text-muted-foreground" data-testid="run-stall-source-enabled">
-              {describeRunStallSource(view.sources.enabled)}
-            </span>
+          <div className="space-y-1 md:col-span-2" data-testid="run-stall-managed">
+            <div className="text-sm">
+              <span className="text-muted-foreground">Interrupt stalled runs: </span>
+              <span data-testid="run-stall-enabled-value">{view.settings.enabled ? "on" : "off"}</span>
+              <span className="ml-2 text-xs text-muted-foreground" data-testid="run-stall-source-enabled">
+                {describeRunStallSource(view.sources.enabled)}
+              </span>
+            </div>
+            <div className="text-sm">
+              <span className="text-muted-foreground">Silence threshold: </span>
+              <span data-testid="run-stall-threshold-value">{view.settings.thresholdSec} s</span>
+              <span className="ml-2 text-xs text-muted-foreground" data-testid="run-stall-source-thresholdSec">
+                {describeRunStallSource(view.sources.thresholdSec)}
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Read-only here: change them in the Team liveness settings (runStallEnabled, runStallThresholdSec).
+            </p>
           </div>
           {NUMBER_FIELDS.map(({ key, label, hint }) => (
             <div key={key} className="space-y-1">

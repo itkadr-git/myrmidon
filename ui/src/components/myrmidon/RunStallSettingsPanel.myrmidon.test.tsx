@@ -62,39 +62,46 @@ function saveButton(): HTMLButtonElement {
 }
 
 describe("myrmidon(RUN-STALL-SETTINGS) run stall panel", () => {
-  it("shows the effective values with where each one came from", () => {
+  it("shows the interval and page size as editable fields with their source", () => {
     render(view);
-    expect(field("thresholdSec").value).toBe("1200");
     expect(field("checkIntervalSec").value).toBe("60");
     expect(field("pageSize").value).toBe("50");
-    expect(container.querySelector("[data-testid=run-stall-source-thresholdSec]")?.textContent).toBe(
-      "From the server environment",
-    );
     expect(container.querySelector("[data-testid=run-stall-source-pageSize]")?.textContent).toBe("Default");
   });
 
-  it("saves all four values", () => {
+  it("shows enabled and the threshold read-only, with a link to the team-liveness settings", () => {
+    render(view);
+    expect(field("thresholdSec")).toBeNull();
+    expect(container.querySelector("[data-testid=run-stall-enabled]")).toBeNull();
+    expect(container.querySelector("[data-testid=run-stall-enabled-value]")?.textContent).toBe("on");
+    expect(container.querySelector("[data-testid=run-stall-threshold-value]")?.textContent).toBe("1200 s");
+    expect(container.querySelector("[data-testid=run-stall-source-thresholdSec]")?.textContent).toBe(
+      "From the server environment",
+    );
+    const link = container.querySelector("[data-testid=run-stall-team-liveness-link]") as HTMLAnchorElement;
+    expect(link.getAttribute("href")).toBe("#team-liveness-settings");
+  });
+
+  it("saves only the interval and the page size", () => {
     const onSave = render(view);
-    type("thresholdSec", "300");
+    type("checkIntervalSec", "30");
     flushSync(() => saveButton().dispatchEvent(new MouseEvent("click", { bubbles: true })));
-    expect(onSave).toHaveBeenCalledWith({ enabled: true, thresholdSec: 300, checkIntervalSec: 60, pageSize: 50 });
+    expect(onSave).toHaveBeenCalledWith({ checkIntervalSec: 30, pageSize: 50 });
   });
 
   it("blocks saving a value that is not a positive whole number", () => {
     const onSave = render(view);
-    type("thresholdSec", "1.5");
+    type("pageSize", "1.5");
     expect(saveButton().disabled).toBe(true);
-    expect(container.querySelector("[data-testid=run-stall-error-thresholdSec]")?.textContent).toContain(
-      "whole number",
-    );
+    expect(container.querySelector("[data-testid=run-stall-error-pageSize]")?.textContent).toContain("whole number");
     flushSync(() => saveButton().dispatchEvent(new MouseEvent("click", { bubbles: true })));
     expect(onSave).not.toHaveBeenCalled();
   });
 
-  it("the draft parser mirrors the server bounds shape: a patch of all four keys", () => {
-    const parsed = parseRunStallDraft({ thresholdSec: "60", checkIntervalSec: "15", pageSize: "200" }, false);
+  it("the draft parser builds a patch of the two editable keys only", () => {
+    const parsed = parseRunStallDraft({ checkIntervalSec: "15", pageSize: "200" });
     expect(parsed.errors).toEqual({});
-    expect(parsed.patch).toEqual({ enabled: false, thresholdSec: 60, checkIntervalSec: 15, pageSize: 200 });
-    expect(parseRunStallDraft({ thresholdSec: "", checkIntervalSec: "15", pageSize: "200" }, true).patch).toBeNull();
+    expect(parsed.patch).toEqual({ checkIntervalSec: 15, pageSize: 200 });
+    expect(parseRunStallDraft({ checkIntervalSec: "", pageSize: "200" }).patch).toBeNull();
   });
 });
