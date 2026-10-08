@@ -135,6 +135,7 @@ import { startLitellmBudgetSync } from "./myrmidon/litellm-budget-sync/index.js"
 import { startLitellmModelReconciliation } from "./myrmidon/litellm-sync/startup-reconciler.js"; // myrmidon(1.6.1 MODEL-PROVIDERS B)
 import { startModelFallbackSignalSweep } from "./myrmidon/litellm-fallback-signal/sweep.js"; // myrmidon(BOT-RUNTIME-TUNING D)
 import { startBaselineSnapshots, stopBaselineSnapshots } from "./myrmidon/baseline/startup.js"; // myrmidon(1.6-BASELINE)
+import { startRunContextColumnsBackfill } from "./services/run-context-columns-backfill.js"; // OPE-5007 П2
 import { startForagingSweep, stopForagingSweep } from "./myrmidon/foraging/startup.js"; // myrmidon(1.6-FORAGE)
 import { startTracingAttentionSweep, stopTracingAttentionSweep } from "./myrmidon/tracing-health/attention-sweep.js"; // myrmidon(TRACING-HEALTH)
 import { startBotCanary, stopBotCanary } from "./myrmidon/bot-containers/canary-index.js"; // myrmidon(R5-B)
@@ -1183,6 +1184,7 @@ async function startServerWithDatabaseTeardown(
   }>) | null = null;
   let heartbeatSchedulerStopped = false;
   let heartbeatSchedulerInterval: ReturnType<typeof setInterval> | null = null;
+  let runContextColumnsBackfill: { stop(): void } | null = null; // OPE-5007 П2
   const heartbeatSchedulerInFlight = new Set<Promise<void>>();
   const trackHeartbeatSchedulerWork = (work: Promise<unknown>) => {
     let tracked: Promise<void>;
@@ -1653,6 +1655,7 @@ async function startServerWithDatabaseTeardown(
     await startMaintenanceMode(db as any); // myrmidon(R3): load open maintenance windows before startup recovery starts runs
     startDeployJobs(db as any); // myrmidon(R5-A): resume an interface deploy job; no-op unless MYRMIDON_DEPLOY_ENABLED
     startBotContainers(db as any); // myrmidon(W2a): bot container sweep and the card's "Apply now" runtime; a no-op unless MYRMIDON_BOT_CONTAINERS is on
+    runContextColumnsBackfill = startRunContextColumnsBackfill(db as any, logger); // OPE-5007 П2: batched, per-batch-commit fill of the thin run-context columns (the migration only adds them)
     startLitellmCostSweep(db as any); // myrmidon(M2-A): gateway spend sweep; a no-op unless MYRMIDON_LITELLM_* is set
     startLitellmBudgetSync(db as any); // myrmidon(1.7-BUDGET-CONFIG-C): LiteLLM budget projection; a no-op unless the gateway contour is set and the document enables it
     startLitellmModelReconciliation(db as any); // myrmidon(1.6.1 MODEL-PROVIDERS B): reconcile LiteLLM models with DB state
@@ -2244,6 +2247,7 @@ async function startServerWithDatabaseTeardown(
     await systemdNotify(["--stopping", `--status=Stopping after ${signal}`]);
     heartbeatSchedulerStopped = true;
     clearInterval(executionControlInterval);
+    runContextColumnsBackfill?.stop(); // OPE-5007 П2
     stopBotContainers(); // myrmidon(W2a)
     stopLitellmCostSweep(); // myrmidon(M2-A)
     stopBaselineSnapshots(); // myrmidon(1.6-BASELINE)
