@@ -244,6 +244,12 @@ import {
   getChatReconcileFallbackIntervalMs,
   createReconcileInterval,
 } from "./myrmidon/chat-reconciliation/reconcile-interval.js";
+// myrmidon(DB-PERF-C-P5): cheap per-lane work gates for the chat
+// reconciliation coordinator. See docs/myrmidon/DIVERGENCE.md.
+import {
+  createChatReconciliationWorkGates,
+  type ChatReconciliationWorkGates,
+} from "./myrmidon/chat-reconciliation/work-gates.js";
 import {
   createCoalescedAsyncTrigger,
   isChatPublicationCommitSignal,
@@ -377,7 +383,11 @@ type ChatReconciliationLane =
   | "run milestones"
   | "publications"
   | "Slack file receipts"
-  | "Slack session status";
+  | "Slack session status"
+  // myrmidon(DB-PERF-C-P5): the Telegram-notify proactivity sweep used to run
+  // inside the publications lane; it is a producer for that lane's queue, so
+  // it keeps its own cadence while the publication flush is gated.
+  | "telegram notify proactivity";
 
 /**
  * Provider recovery can wait on slow external I/O. Keep each existing durable
@@ -400,16 +410,58 @@ export function createChatReconciliationCoordinator(input: {
   // own default spacing. See chatReconcileMinimumSpacingMs's doc comment and
   // docs/myrmidon/SETTINGS.md.
   milestoneMinimumSpacingMs?: number;
+  // myrmidon(DB-PERF-C-P5): one cheap "is there work" gate per durable lane.
+  // A lane whose gate answers "no work" is skipped for that tick instead of
+  // running its queries (see server/src/myrmidon/chat-reconciliation/
+  // work-gates.ts). Absent gates keep today's behaviour: every lane runs on
+  // every tick.
+  workGates?: ChatReconciliationWorkGates;
+  // myrmidon(DB-PERF-C-P5): the Telegram-notify proactivity sweep is a
+  // producer for the publication queue and used to sit in front of the
+  // publication flush inside its lane. It moves to its own lane so gating the
+  // flush cannot stall it; without this input nothing changes.
+  sweepTelegramNotifyProactivity?: () => Promise<unknown>;
 }) {
   let stopped = false;
   const inFlight = new Map<ChatReconciliationLane, Promise<void>>();
+  // myrmidon(DB-PERF-C-P5): notifyPublications() is a live "a publication was
+  // just committed" signal. It must reach the lanes even when their gate
+  // answers "no work", otherwise the committed publication would wait for the
+  // next tick that happens to have other work. Each flag buys exactly one
+  // forced pass and is consumed by that pass.
+  let publicationForced = false;
+  let milestoneForced = false;
   const publicationReconciliation = createCoalescedAsyncTrigger({
-    run: input.flushPublications,
+    run: async () => {
+      if (
+        !publicationForced &&
+        input.workGates &&
+        !(await input.workGates.hasPublicationWork())
+      )
+        return;
+      publicationForced = false;
+      await input.flushPublications();
+      // myrmidon(DB-PERF-C-P5): a completed pass postpones the lane's forced
+      // safety pass. The gate's own probe only covers the durable publication
+      // outbox; the notice producers inside the lane need this window.
+      input.workGates?.notePublicationPassCompleted(new Date());
+    },
     onError: (error) => input.onError("publications", error),
   });
   const milestoneReconciliation = createCoalescedAsyncTrigger({
     run: async () => {
+      if (
+        !milestoneForced &&
+        input.workGates &&
+        !(await input.workGates.hasMilestoneWork())
+      )
+        return;
+      milestoneForced = false;
+      // The milestone watermark reads the moment the pass began, so a run
+      // updated while the pass ran is still a candidate for the next probe.
+      const startedAt = new Date();
       const inserted = await input.projectRunMilestones();
+      input.workGates?.noteMilestonePassCompleted(startedAt, inserted);
       // Existing final/question publications never wait on this optional
       // projection. Newly committed milestones get a bounded dispatch wake;
       // an empty/contended pass does not create a self-sustaining loop.
@@ -432,11 +484,33 @@ export function createChatReconciliationCoordinator(input: {
       });
     inFlight.set(lane, pending);
   };
+  // myrmidon(DB-PERF-C-P5): the gate runs inside the lane's single-flight
+  // slot, so a lane that is still working on the previous tick is not
+  // double-checked, and a skipped lane costs one gate statement and nothing
+  // else. No gate means the lane runs exactly as before.
+  const startGated = (
+    lane: ChatReconciliationLane,
+    gate: (() => Promise<boolean>) | undefined,
+    task: () => Promise<unknown>,
+  ) => {
+    if (!gate) {
+      start(lane, task);
+      return;
+    }
+    start(lane, async () => {
+      if (!(await gate())) return;
+      await task();
+    });
+  };
   return {
     reconcile() {
       if (stopped) return;
       start("provider runtimes", input.reconcileProviderRuntimes);
-      start("deliveries", input.processPendingDeliveries);
+      startGated(
+        "deliveries",
+        input.workGates?.hasDeliveryWork,
+        input.processPendingDeliveries,
+      );
       if (input.processFailedGitHubWebhookDeliveries) {
         start(
           "GitHub webhook recovery",
@@ -445,10 +519,28 @@ export function createChatReconciliationCoordinator(input: {
       }
       milestoneReconciliation.poll();
       publicationReconciliation.poll();
-      start("Slack file receipts", input.processPendingSlackFileUploadReceipts);
-      start("Slack session status", input.processPendingSlackSessionSyncs);
+      startGated(
+        "Slack file receipts",
+        input.workGates?.hasSlackFileReceiptWork,
+        input.processPendingSlackFileUploadReceipts,
+      );
+      startGated(
+        "Slack session status",
+        input.workGates?.hasSlackSessionSyncWork,
+        input.processPendingSlackSessionSyncs,
+      );
+      if (input.sweepTelegramNotifyProactivity) {
+        start(
+          "telegram notify proactivity",
+          input.sweepTelegramNotifyProactivity,
+        );
+      }
     },
     notifyPublications() {
+      // myrmidon(DB-PERF-C-P5): a commit signal bypasses both gates for one
+      // pass; see the flags' doc comment above.
+      milestoneForced = true;
+      publicationForced = true;
       milestoneReconciliation.notify();
       publicationReconciliation.notify();
     },
@@ -1353,7 +1445,10 @@ export async function createApp(
     void flushPendingFeedbackExports();
   }
   emailChannels.start();
-  const flushChatPublications = async () => {
+  // myrmidon(DB-PERF-C-P5): the Telegram-notify proactivity sweep is a
+  // producer for the publication queue and keeps its own lane; only the
+  // durable publication flush is gated (see work-gates.ts).
+  const runTelegramNotifyProactivitySweep = async () => {
     // myrmidon(1.6-TG-PROACTIVITY-E): bundle U2 cards past the window and
     // drain rarely queues into the durable outbox before the lane runs, so
     // the vendor's own delivery path carries them (no new provider client).
@@ -1362,8 +1457,15 @@ export async function createApp(
     } catch (err) {
       logger.error({ err }, "telegram-notify proactivity sweep failed");
     }
+  };
+  const flushChatPublications = async () => {
     await chatChannels.schedulePendingPublications();
   };
+  // myrmidon(DB-PERF-C-P5): one gate per durable lane; each is one cheap
+  // `select 1 ... limit 1` on an existing index.
+  const chatReconciliationWorkGates = createChatReconciliationWorkGates({
+    db,
+  });
   const chatReconciliation = createChatReconciliationCoordinator({
     reconcileProviderRuntimes: () => chatChannels.reconcileProviderRuntimes(),
     processPendingDeliveries: () => chatChannels.processPendingDeliveries(),
@@ -1378,6 +1480,8 @@ export async function createApp(
       chatChannels.processPendingSlackFileUploadReceipts(),
     processPendingSlackSessionSyncs: () =>
       chatChannels.processPendingSlackSessionSyncs(),
+    sweepTelegramNotifyProactivity: runTelegramNotifyProactivitySweep,
+    workGates: chatReconciliationWorkGates,
     onError: (lane, err) => {
       logger.error({ err, lane }, `Failed to reconcile chat ${lane}`);
     },
