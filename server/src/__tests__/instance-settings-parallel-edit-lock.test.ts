@@ -9,11 +9,29 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 
-vi.hoisted(() => {
+// myrmidon(PROCS-Q5): vitest forks reuse workers across files in a shard
+// (isolate resets modules, not process env), so these assignments must be
+// reverted after this file: the settings service reads PAPERCLIP_HOME /
+// PAPERCLIP_INSTANCE_ID at import time, and a leaked value shifts other
+// files' behavior (e.g. heartbeat-workspace-branch-containment derives
+// worktree containment from the same env).
+const hoistedEnv = vi.hoisted(() => {
+  const keys = ["PAPERCLIP_HOME", "PAPERCLIP_INSTANCE_ID", "PAPERCLIP_LOG_DIR", "PAPERCLIP_IN_WORKTREE"] as const;
+  const backup: Record<(typeof keys)[number], string | undefined> = {} as Record<(typeof keys)[number], string | undefined>;
+  for (const key of keys) backup[key] = process.env[key];
   process.env.PAPERCLIP_HOME = "/tmp/paperclip-test-home";
   process.env.PAPERCLIP_INSTANCE_ID = "vitest";
   process.env.PAPERCLIP_LOG_DIR = "/tmp/paperclip-test-home/logs";
   process.env.PAPERCLIP_IN_WORKTREE = "false";
+  return { keys, backup };
+});
+
+afterAll(() => {
+  for (const key of hoistedEnv.keys) {
+    const value = hoistedEnv.backup[key];
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
 });
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
