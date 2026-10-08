@@ -179,16 +179,8 @@ board_patch_json() {
     "$BOARD_API_URL$path" 2>/dev/null || return 1
 }
 
-board_post_json() {
-  local path="$1" body="$2"
-  local -a auth=()
-  mapfile -t auth < <(auth_args)
-  curl -fsS --max-time 180 -X POST -H 'Content-Type: application/json' "${auth[@]}" --data "$body" \
-    "$BOARD_API_URL$path" 2>/dev/null || return 1
-}
-
-# Same POST, but prints "<http-status>\n<body>" and always returns 0 so the
-# caller can classify a refusal (409 = the bot cannot apply right now).
+# POSTs JSON with curl and prints "<http-status>\n<body>"; always returns 0 so
+# the caller can classify a refusal (409 = the bot cannot apply right now).
 board_post_json_status() {
   local path="$1" body="$2" out
   local -a auth=()
