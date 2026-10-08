@@ -51,6 +51,14 @@ interval, P0 preemption) are edited live in **Instance → General → Role
 queues (SWARM-CLAIM)**
 ([swarm-claim-settings](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/swarm-claim-settings.md)).
 
+## Agent castes (the company role directory)
+
+**Company Settings → Agent castes** — the company's own directory of agent
+roles. It starts from the twelve built-in castes and the owner can create,
+edit, and delete castes; the role on the agent card is a key from this
+directory, and changes are visible to the swarm at once, without a restart
+([custom-castes](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/custom-castes.md)).
+
 ## Backups
 
 The database backup retention policy lives in the general instance settings

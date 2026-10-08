@@ -6,33 +6,30 @@ divergence-section: Трек 5 — эксплуатация
 
 ### Review-return loop: a RETURN verdict opens the rework task itself (REVIEW-REWORK)
 
-- A review verdict that returns a pull request used to hang: no rework task
-  appeared, the review stayed in `todo`, and the reviewer was woken every
-  10–30 minutes on an unchanged lane (OPE-4417 waited 7 hours on PR #484 like
-  this; OPE-4360 kept a todo card on an already-merged PR). Now a sweeper
-  (every 60 s, per company) reads the verdict — a `VERDICT …#<N>: RETURN`
-  marker on the review task, or the PR's aggregate GitHub `CHANGES_REQUESTED`
-  decision, the newest word wins — and:
-  1. opens a rework task (a child of the review, linked to the verdict's
-     comment and head sha) with the executor chosen down the ladder: the
-     review's return assignee (the PR's author) → the assignee of the task the
-     PR delivers → the instance fallback setting → nobody, which leaves the
-     task in the role queue for SWARM-CLAIM; the executor is woken;
-  2. moves the review task to `blocked` pointing at the rework, so the
-     reviewer stops being woken while the work is out;
-  3. when the PR head moves past the recorded baseline, lifts the block back
-     to `todo`, records a `HEAD-ACK <pr>: <sha>` line (which retires the
-     verdict signal) and wakes the reviewer with the new head;
+- A review verdict that returned a pull request used to hang: no rework task, the
+  review stayed in `todo`, and the reviewer was woken every 10-30 minutes on an
+  unchanged lane (OPE-4417 waited 7 hours on PR #484; OPE-4360 kept a todo card
+  on an already-merged PR). A sweeper (every 60 s, per company) now reads the
+  verdict (a `VERDICT ...#<N>: RETURN` marker on the review task, or the PR's
+  GitHub `CHANGES_REQUESTED` decision; the newest word wins) and:
+  1. opens a rework task (child of the review, linked to the verdict comment and
+     head sha) for the executor chosen down the ladder: the review's return
+     assignee (PR author) -> assignee of the task the PR delivers -> instance
+     fallback setting -> nobody (role queue for SWARM-CLAIM); the executor is
+     woken;
+  2. moves the review to `blocked` pointing at the rework, so the reviewer stops
+     being woken;
+  3. when the PR head moves past the baseline, lifts the block to `todo`, records
+     a `HEAD-ACK <pr>: <sha>` line (retiring the verdict signal) and wakes the
+     reviewer with the new head;
   4. closes the review (`done`) when every linked PR is merged or closed, and
-     reopens the same rework task — never a duplicate — when a newer RETURN
-     lands on a settled one.
-- Instance → General gains a "Review-return loop (REVIEW-REWORK)" section: the
-  master switch and the fallback executor, `GET`/`PATCH
-  /api/myrmidon/review-rework`, stored in `instance_settings.general.reviewRework`
-  with a change journal; the sweep re-reads the row every pass, so a change
-  applies without a restart. Off restores the old behaviour exactly.
+     reopens the same rework task (never a duplicate) when a newer RETURN lands.
+- Instance -> General gains "Review-return loop (REVIEW-REWORK)": master switch
+  and fallback executor, `GET`/`PATCH /api/myrmidon/review-rework`, stored in
+  `instance_settings.general.reviewRework` with a change journal; applied without
+  a restart. Off restores the old behaviour exactly.
 - An unresolvable PR (no token, GitHub outage) moves nothing: the loop never
-  invents a merge, a head move, or a verdict.
+  invents a merge, head move or verdict.
 
 ## changelog-ru
 
