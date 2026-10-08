@@ -271,3 +271,5 @@ export {
   corpusParseJobs,
   corpusSettings,
 } from "./corpus.js";
+// myrmidon(1.6.6-CORPUS-SHADOW A): shadow log of the corpus-module comparison.
+export { corpusShadowLog } from "./corpus_shadow_log.js";
