@@ -194,6 +194,29 @@ describe("compareRunsByPriority", () => {
     expect(sortByRunPriority([twin2, twin1], base, NOW).map((r) => r.id)).toEqual(["t1", "t2"]);
   });
 
+  it("keeps the issue priority order inside one strong role (lead): high before low, then FIFO", () => {
+    // lead role weight (80) covers every issue weight up to high (80), within one aging step, so the
+    // weights alone tie; the per-agent tie-break must keep high ahead of low.
+    const rank = (priority: string | null) =>
+      ["critical", "high", "medium", "low"].indexOf(priority ?? "") === -1
+        ? 4
+        : ["critical", "high", "medium", "low"].indexOf(priority ?? "");
+    const tieBreak = (l: PriorityScoredRun, r: PriorityScoredRun) =>
+      rank(l.issuePriority) - rank(r.issuePriority);
+    const lowOld = scored("low-old", "lead", "low", 9);
+    const highNew = scored("high-new", "lead", "high", 2);
+    const noneOld = scored("none-old", "lead", "none", 8);
+    const mediumNew = scored("medium-new", "lead", "medium", 1);
+    const order = [lowOld, highNew, noneOld, mediumNew]
+      .sort((a, b) => compareRunsByPriority(a, b, base, NOW, tieBreak))
+      .map((run) => run.id);
+    expect(order).toEqual(["high-new", "medium-new", "low-old", "none-old"]);
+    // same priority: createdAt FIFO
+    const a = scored("a", "lead", "high", 5);
+    const b = scored("b", "lead", "high", 3);
+    expect(compareRunsByPriority(a, b, base, NOW, tieBreak)).toBeLessThan(0);
+  });
+
   it("lifts the current-release run above its plain role weight", () => {
     const plainEngineer = scored("e1", "engineer", "medium", 0);
     const releaseEngineer = scored("e2", "engineer", "medium", 0, true);

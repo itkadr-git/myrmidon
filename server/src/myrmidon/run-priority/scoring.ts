@@ -32,6 +32,10 @@ export interface PriorityScoredRun {
 
 /**
  * Compare two queued runs by priority: higher effective weight first, then
+ * the optional `tieBreak` (the caller's issue-priority order: the weight is
+ * max(role, issue priority), so within one agent, whose role is the same for
+ * every run, high/medium/low issues of a strong role all weigh the same and
+ * only this step keeps a high issue ahead of a low one), then
  * the older createdAt (the pre-feature FIFO order), then id for determinism.
  * When the feature is switched off every weight is 0 and this degenerates to
  * the createdAt FIFO.
@@ -41,6 +45,7 @@ export function compareRunsByPriority(
   right: PriorityScoredRun,
   settings: RunPrioritySettings,
   nowMs: number = Date.now(),
+  tieBreak?: (left: PriorityScoredRun, right: PriorityScoredRun) => number,
 ): number {
   const leftWeight = runPriorityWeight(
     {
@@ -65,6 +70,10 @@ export function compareRunsByPriority(
     nowMs,
   );
   if (leftWeight !== rightWeight) return rightWeight - leftWeight;
+  if (tieBreak) {
+    const tie = tieBreak(left, right);
+    if (tie !== 0) return tie;
+  }
   if (left.createdAtMs !== right.createdAtMs) return left.createdAtMs - right.createdAtMs;
   return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
 }

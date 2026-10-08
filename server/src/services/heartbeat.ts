@@ -20133,6 +20133,12 @@ export function heartbeatService(
             keyedById.get(left.id)!,
             keyedById.get(right.id)!,
             prioritySettings,
+            Date.now(),
+            // equal weight (one agent = one role): issue priority first,
+            // then createdAt inside compareRunsByPriority
+            (leftRun, rightRun) =>
+              issueRunPriorityRank(leftRun.issuePriority) -
+              issueRunPriorityRank(rightRun.issuePriority),
           );
         }
         const leftPriorityRank = issueRunPriorityRank(leftIssue?.priority);

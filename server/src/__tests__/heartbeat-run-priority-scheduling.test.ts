@@ -396,6 +396,43 @@ describeEmbeddedPostgres("heartbeat run-priority queued run selection", () => {
     expect(stillQueued?.status).toBe("queued");
   }, 30_000);
 
+  it("per-agent sweep keeps issue priority order inside a lead agent: the high run starts before the older low run", async () => {
+    // lead role = 80, high issue = 80, low issue = 40: the weights tie, so the
+    // issue-priority rank (then createdAt) must decide.
+    applyRunPrioritySettings(defaultSettings());
+    pinAdmission({ maxConcurrentRuns: 0 });
+
+    const { companyId, agentId } = await seedCompanyAndAgent({
+      name: "SoloLead",
+      role: "lead",
+    });
+    const lowIssueId = await seedIssue(companyId, {
+      title: "Old low work",
+      priority: "low",
+      assigneeAgentId: agentId,
+    });
+    const highIssueId = await seedIssue(companyId, {
+      title: "Newer high work",
+      priority: "high",
+      assigneeAgentId: agentId,
+    });
+
+    const lowRun = await wakeAndQueue(agentId, lowIssueId);
+    const highRun = await wakeAndQueue(agentId, highIssueId);
+    // Same aging step (< 10 min), the low run is the older one.
+    await backdateRun(lowRun.id, 4);
+    await backdateRun(highRun.id, 2);
+
+    pinAdmission({ maxConcurrentRuns: 1 });
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+
+    const startedHigh = await runRow(highRun.id);
+    const stillQueued = await runRow(lowRun.id);
+    expect(startedHigh?.status).not.toBe("queued");
+    expect(stillQueued?.status).toBe("queued");
+  }, 30_000);
+
   it("a weights change through the settings service reorders the next sweep without a restart", async () => {
     pinAdmission({ maxConcurrentRuns: 0 });
     applyRunPrioritySettings(defaultSettings());
