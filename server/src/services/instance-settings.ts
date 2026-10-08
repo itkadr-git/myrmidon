@@ -56,8 +56,6 @@ import { preserveTelegramNotifyGeneralKey } from "../myrmidon/telegram-notify/pr
 // myrmidon(1.6.1-WIP-LIMIT-A): keep the stored WIP limits across vendor writes of `general`
 import { preserveWipLimitGeneralKey } from "../myrmidon/wip-limit/settings.js";
 import { preserveOwnerDeliveryGeneralKey } from "../myrmidon/owner-delivery/settings.js"; // myrmidon(1.6.5-OWNER-DM-FILTER)
-// myrmidon(1.6.5-DB-RETENTION): keep the stored retention settings and sweep state across vendor writes of `general`
-import { preserveDataRetentionGeneralKey } from "../myrmidon/data-retention/settings.js";
 // myrmidon(1.6.1 VOICE-STT A1): keep the per-company STT runtime settings across vendor writes of `general`
 import { preserveSttGeneralKey } from "../myrmidon/stt/store.js";
 // myrmidon(1.7-BUDGET-CONFIG-B): keep the stored budget enforcement mode
@@ -72,6 +70,8 @@ import { preserveGitHubSharedIdentityGeneralKey } from "../myrmidon/github-share
 import { preserveBudgetProjectionGeneralKey } from "../myrmidon/litellm-budget-sync/settings.js"; // myrmidon(1.7-BUDGET-CONFIG-C)
 // myrmidon(BOT-RUNTIME-TUNING D2): keep the fallback-signal settings across vendor writes of `general`
 import { preserveFallbackSignalGeneralKey } from "../myrmidon/litellm-fallback-signal/settings.js";
+// myrmidon(1.6.5-DBC1): keep the datastore-care block across vendor writes of `general`
+import { preserveDatastoreCareGeneralKey } from "../myrmidon/datastore-care/retention/settings.js";
 import { getManagedInstanceConfig, type ManagedInstanceConfig } from "./managed-config.js";
 import { getOperatorSettingDefaults } from "./setting-defaults.js";
 
@@ -254,10 +254,6 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       ...(parsed.data.runLimits ? { runLimits: parsed.data.runLimits } : {}),
       // myrmidon(BOT-DISK E): the stored host disk threshold survives every general write
       ...(parsed.data.hostDisk ? { hostDisk: parsed.data.hostDisk } : {}),
-      // myrmidon(1.6.5-DB-RETENTION): the stored datastore-care object (the
-      // retention settings under `retention` and the sweep state under
-      // `retention.lastRun`) survives every general write
-      ...(parsed.data.datastoreCare ? { datastoreCare: parsed.data.datastoreCare } : {}),
       // myrmidon(BOT-DISK-A): the stored bot draft-directory lifecycle survives every general write
       ...(parsed.data.botDisk ? { botDisk: parsed.data.botDisk } : {}),
       // myrmidon(1.6.1-BOT-DISK-C): the stored per-bot disk quota survives every general write
@@ -325,6 +321,11 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // survive every general write (they are edited on their own settings
       // panel).
       ...(parsed.data.pauseGuard ? { pauseGuard: parsed.data.pauseGuard } : {}),
+      // myrmidon(1.6.5-DBC1): the stored datastore-care block survives every
+      // general write (it is edited on its own settings page). Without this
+      // line `updateGeneral` normalizes the patch away and PATCH
+      // /api/myrmidon/datastore-care would never roundtrip.
+      ...(parsed.data.datastoreCare ? { datastoreCare: parsed.data.datastoreCare } : {}),
     };
   }
   return {
@@ -676,11 +677,6 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
             ...preserveOwnerDeliveryGeneralKey(current.general), // myrmidon(1.6.5-OWNER-DM-FILTER)
             // The preserve line above restores the stored value: a patch that carries the key wins.
             ...(patch.ownerDelivery !== undefined ? { ownerDelivery: nextGeneral.ownerDelivery } : {}), // myrmidon(1.6.5-OWNER-DM-FILTER)
-            ...preserveDataRetentionGeneralKey(current.general), // myrmidon(1.6.5-DB-RETENTION)
-            // myrmidon(1.6.5-DB-RETENTION): the preserve line above restores
-            // the stored value; a patch that carries the key (settings update
-            // or the sweep's lastRun write) wins.
-            ...(patch.datastoreCare !== undefined ? { datastoreCare: nextGeneral.datastoreCare } : {}),
             ...preserveSttGeneralKey(current.general), // myrmidon(1.6.1 VOICE-STT A1)
             ...preserveBudgetEnforcementGeneralKey(current.general), // myrmidon(1.7-BUDGET-CONFIG-B)
             ...preservePluginEntitlementKeysGeneralKey(current.general), // myrmidon(PLUGIN-ENTITLEMENT C)
@@ -694,6 +690,10 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
             ...preserveGitHubSharedIdentityGeneralKey(current.general), // myrmidon(GITHUB-SHARED-IDENTITY)
             ...preserveBudgetProjectionGeneralKey(current.general), // myrmidon(1.7-BUDGET-CONFIG-C)
             ...preserveBotImageRolloutGeneralKey(current.general), // myrmidon(BOT-ROLLOUT)
+            ...preserveDatastoreCareGeneralKey(current.general), // myrmidon(1.6.5-DBC1)
+            // The preserve line above restores the stored value: a patch that
+            // carries the key must win, the same rule as ownerDelivery.
+            ...(patch.datastoreCare !== undefined ? { datastoreCare: nextGeneral.datastoreCare } : {}), // myrmidon(1.6.5-DBC1)
           },
           updatedAt: now,
         })

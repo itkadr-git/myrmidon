@@ -4,6 +4,8 @@ import type { WorkspaceHygieneLimits } from "../myrmidon-workspace-hygiene.js";
 // myrmidon(C0): the run admission limits stored in instance settings
 import type { StoredRunLimits } from "../myrmidon-runtime-limits.js";
 import type { HostDiskSettings } from "../myrmidon-host-disk.js";
+// myrmidon(1.6.5-DBC1): the datastore-care block type (see validators/instance.ts)
+import type { DatastoreCareRetentionSettings } from "../myrmidon-datastore-care.js";
 // myrmidon(BOT-DISK-A): the bot draft-directory lifecycle stored in instance settings
 import type { StoredBotDiskSettings } from "../myrmidon-bot-disk.js";
 // myrmidon(1.6.1-BOT-DISK-C): per-bot disk quota of its own general settings key.
@@ -96,6 +98,23 @@ export interface InstanceGeneralSettings {
    */
   hostDisk?: HostDiskSettings;
   /**
+   * myrmidon(1.6.5-DBC1): the datastore-care block (the retention sub-block
+   * with `heartbeatRunContextDays`), changed from
+   * `GET`/`PATCH /api/myrmidon/datastore-care`. Absent means "use the
+   * environment variable, then the default (7)"; kept in sync with the
+   * validator of the same field (packages/shared/src/validators/instance.ts).
+   */
+  // myrmidon(1.6.5-DB-RETENTION): the same retention object also carries the
+  // row-deletion day limits and the sweep state (`lastRun`) of the data-retention
+  // module (GET/PATCH /api/myrmidon/data-retention); the compaction pass state
+  // sits beside it under `contextLastRun`.
+  datastoreCare?: {
+    retention?: DatastoreCareRetentionSettings &
+      Partial<DataRetentionSettings> & {
+        lastRun?: DataRetentionLastRun | Record<string, unknown>;
+      };
+  };
+  /**
    * myrmidon(BOT-DISK-A): the bot draft-directory lifecycle, changed from
    * `GET`/`PATCH /api/myrmidon/bot-disk`. Absent means "use the environment
    * variable, then the default"; kept in sync with the validator of the same
@@ -177,21 +196,6 @@ export interface InstanceGeneralSettings {
    * same field (packages/shared/src/validators/instance.ts).
    */
   wipLimit?: WipLimitSettings;
-  /**
-   * myrmidon(1.6.5-DB-RETENTION): the datastore-care settings of the
-   * instance — one object per the project §3.6 "Хранение" panel. The
-   * retention of runs and logs lives under `retention` (whole days per
-   * table group, 0 = keep forever), changed from
-   * `GET`/`PATCH /api/myrmidon/data-retention`. Absent means the built-in
-   * defaults (90/0/180). The sweep's own state rides the retention object
-   * under `lastRun`; kept in sync with the validator of the same field
-   * (packages/shared/src/validators/instance.ts).
-   */
-  datastoreCare?: {
-    retention?: DataRetentionSettings & {
-      lastRun?: DataRetentionLastRun | Record<string, unknown>;
-    };
-  };
   /**
    * myrmidon(REVIEW-ROUTING): automatic reviewer routing, changed from
    * `GET`/`PUT /api/myrmidon/companies/:companyId/review-routing/settings`.

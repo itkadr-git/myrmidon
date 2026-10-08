@@ -1,5 +1,3 @@
-// server/src/myrmidon/datastore-care/index.ts
-//
 // myrmidon(DBC-4): wiring of the datastore-care module.
 //
 // The board's own PostgreSQL is reached through the connection the board
@@ -27,6 +25,11 @@ import {
 } from "./service.js";
 import { datastoreCareRoutes } from "./routes.js";
 import { createDatastoreCareJob, type DatastoreCareJob } from "./startup.js";
+// myrmidon(1.6.5-DBC1): retention runtime (same module index, distinct names).
+import {
+  createDatastoreCareRetentionRuntime,
+  type DatastoreCareRetentionRuntime,
+} from "./retention/service.js";
 
 /** The runtime of the module: what the routes, the job and the tests share. */
 export interface DatastoreCareRuntime {
@@ -151,4 +154,60 @@ export function stopDatastoreCare(): void {
 /** The job in force, for the shutdown path and the tests. */
 export function datastoreCareJob(): DatastoreCareJob | null {
   return job;
+}
+
+// myrmidon(1.6.5-DBC1): the retention wiring lives in the same module index.
+//
+// The maintenance module calls `startDatastoreCareRetention` from its sweep
+// tick, which runs under the maintenance gate; one runtime per server
+// process, created lazily and shared, so concurrent ticks join the pass
+// already running. The pass state persists in
+// `instance_settings.general.datastoreCare.retention.contextLastRun`, so a restart
+// keeps the counters and the backup-gate flag.
+
+export {
+  readRetentionSettings,
+  readRetentionLastRun,
+  writeRetentionSettings,
+  writeRetentionLastRun,
+  preserveDatastoreCareGeneralKey,
+  resolveRetentionSettings,
+  HEARTBEAT_RUN_CONTEXT_RETENTION_DAYS_ENV,
+} from "./retention/settings.js";
+export {
+  checkBackupGate,
+  resolveBackupDir,
+  resolveBackupFilePrefix,
+} from "./retention/backup-gate.js";
+export {
+  compactContextPass,
+  compactContextSnapshot,
+  CONTEXT_COMPACT_KEYS,
+  CONTEXT_COMPACT_BATCH_SIZE,
+} from "./retention/compact.js";
+export { datastoreCareRetentionRoutes } from "./retention/routes.js";
+export type { DatastoreCareRetentionRuntime } from "./retention/service.js";
+
+let runtime: DatastoreCareRetentionRuntime | null = null;
+let runtimeDb: Db | null = null;
+
+function getRuntime(db: Db): DatastoreCareRetentionRuntime {
+  if (!runtime || runtimeDb !== db) {
+    runtime = createDatastoreCareRetentionRuntime(db);
+    runtimeDb = db;
+  }
+  return runtime;
+}
+
+/**
+ * The sweep-tick entry: called once per maintenance tick, cheap when idle
+ * (the pass is gated on the maintenance window, the settings, and the backup
+ * precondition). Never throws — a failed pass logs and waits for the tick.
+ */
+export function runDatastoreCareRetentionTick(db: Db): void {
+  void getRuntime(db)
+    .runOnce()
+    .catch(() => {
+      // The runtime already logs pass failures; the tick must not reject.
+    });
 }

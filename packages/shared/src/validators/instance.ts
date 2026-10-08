@@ -28,14 +28,12 @@ import { botLspSettingsSchema } from "../myrmidon-bot-lsp.js";
 // myrmidon(EXTCASE-B): the browser-bridge allowlist stored in the same general settings row
 import { browserBridgeSettingsSchema } from "../myrmidon-browser-bridge.js";
 import { swarmClaimSettingsSchema } from "../myrmidon-swarm-claim.js";
+import { datastoreCareSettingsSchema } from "../myrmidon-datastore-care.js"; // myrmidon(1.6.5-DBC1)
 // myrmidon(1.6.1-WIP-LIMIT-A): the per-agent WIP limit settings stored in the
 // same general settings row.
 import { wipLimitSettingsSchema } from "../myrmidon-wip-limit.js";
 // myrmidon(1.6.5-OWNER-DM-FILTER)
 import { ownerDeliverySettingsSchema } from "../myrmidon-owner-delivery.js";
-// myrmidon(1.6.5-DB-RETENTION): the retention sweep settings stored in the
-// same general settings row (the `lastRun` sub-key rides along passthrough).
-import { dataRetentionSettingsSchema } from "../myrmidon-data-retention.js";
 // myrmidon(REVIEW-ROUTING): the automatic reviewer routing settings stored in the same row.
 import { reviewRoutingSettingsSchema } from "../myrmidon-review-routing.js";
 // myrmidon(REVIEW-REWORK): the review-return loop settings stored in the same row.
@@ -121,6 +119,11 @@ export const instanceGeneralSettingsSchema = z.object({
   // /api/myrmidon/host-disk; absent means "use the environment variable, then
   // the default (85)".
   hostDisk: hostDiskSettingsSchema.optional(),
+  // myrmidon(1.6.5-DBC1): the datastore-care block (the retention sub-block
+  // with the run-context compaction window), changed from
+  // /api/myrmidon/datastore-care; absent means "use the environment
+  // variable, then the default" (see packages/shared/src/myrmidon-datastore-care.ts).
+  datastoreCare: datastoreCareSettingsSchema.optional(),
   // myrmidon(BOT-DISK-A): the bot draft-directory lifecycle (enabled, idle TTL),
   // changed from /api/myrmidon/bot-disk; absent means "use the environment
   // variable, then the default". Lenient: a row without the key, with unknown
@@ -167,21 +170,6 @@ export const instanceGeneralSettingsSchema = z.object({
   // changed from /api/myrmidon/owner-delivery; absent means the default
   // "via_bot" (1.6.5-OWNER-VIA-BOT: no card, the author's message instead).
   ownerDelivery: ownerDeliverySettingsSchema.optional(),
-  // myrmidon(1.6.5-DB-RETENTION): the datastore-care settings object of the
-  // project §3.6 "Хранение" panel; the retention of runs and logs lives under
-  // `retention` (whole days per table group, 0 = keep forever), changed from
-  // /api/myrmidon/data-retention; absent means the built-in defaults
-  // (90/0/180). `lastRun` is the sweep's own state: carried through, never
-  // required (re-validated on read by the feature module). Passthrough on
-  // purpose: sibling datastore-care features add their own sub-keys here.
-  datastoreCare: z
-    .object({
-      retention: dataRetentionSettingsSchema
-        .extend({ lastRun: z.record(z.string(), z.unknown()).optional() })
-        .optional(),
-    })
-    .catchall(z.unknown())
-    .optional(),
   // myrmidon(REVIEW-ROUTING): automatic reviewer routing, changed from
   // /api/myrmidon/companies/:id/review-routing/settings; absent means the defaults.
   reviewRouting: reviewRoutingSettingsSchema.optional(),

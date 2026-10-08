@@ -141,6 +141,29 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) data retention routes", (
     expect(updates[0]?.companyId).toBe(companyId);
   });
 
+  it("PATCH keeps the sibling DBC-1 keys stored in the same retention object", async () => {
+    const companyId = await seedCompany();
+    const settings = instanceSettingsService(db);
+    await settings.updateGeneral({
+      datastoreCare: {
+        retention: {
+          heartbeatRunContextDays: 14,
+          contextLastRun: { lastRunAt: "2026-10-08T00:00:00.000Z" },
+        },
+      },
+    } as never);
+    const res = await request(app(board(companyId, true)))
+      .patch(URL)
+      .send({ accessAuditDays: 365 });
+    expect(res.status).toBe(200);
+    const care = ((await settings.getGeneral()) as Record<string, any>).datastoreCare;
+    expect(care?.retention).toMatchObject({
+      accessAuditDays: 365,
+      heartbeatRunContextDays: 14,
+      contextLastRun: { lastRunAt: "2026-10-08T00:00:00.000Z" },
+    });
+  });
+
   it("PATCH rejects non-integer, negative and unknown values", async () => {
     const companyId = await seedCompany();
     const scoped = app(board(companyId, true));

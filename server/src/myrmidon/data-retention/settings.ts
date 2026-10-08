@@ -105,15 +105,9 @@ export async function writeDataRetentionSettings(
     activityLogDays: patch.activityLogDays ?? current.activityLogDays,
     accessAuditDays: patch.accessAuditDays ?? current.accessAuditDays,
   };
-  const lastRun = stored?.lastRun;
-  const storedLastRun =
-    typeof lastRun === "object" && lastRun !== null
-      ? (lastRun as Record<string, unknown>)
-      : undefined;
-  const value = storedLastRun
-    ? { ...next, lastRun: storedLastRun }
-    : { ...next };
-  await writeRetention(settings, value);
+  // merge over the stored object: `lastRun` and the sibling DBC-1 keys
+  // (`heartbeatRunContextDays`, `contextLastRun`) are not ours to drop
+  await writeRetention(settings, { ...(stored ?? {}), ...next });
   return next;
 }
 
@@ -129,6 +123,7 @@ export async function writeDataRetentionLastRun(
   const stored = storedDataRetention(general);
   const current = normalizeDataRetentionSettings(stored);
   await writeRetention(settings, {
+    ...(stored ?? {}),
     ...current,
     lastRun: { ...lastRun } as Record<string, unknown>,
   });
