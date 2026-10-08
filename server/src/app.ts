@@ -128,6 +128,9 @@ import { myrmidonAlertRecoveryRoutes } from "./myrmidon/monitoring/alert-recover
 import { myrmidonBotDiskLifecycleRoutes } from "./myrmidon/bot-containers/bot-disk-routes.js"; // myrmidon(BOT-DISK-A)
 import { myrmidonBotScopeRoutes } from "./myrmidon/bot-containers/scope-wiring.js"; // myrmidon(BOT-DISK-F)
 import { myrmidonBotWorkspacesRoutes } from "./myrmidon/bot-containers/bot-workspaces-routes.js"; // myrmidon(1.6.5-BOT-DISK-H4a)
+
+// myrmidon(1.7-BUDGET-CONFIG A): per-level spend limits, journal and usage
+import { myrmidonBudgetLimitsRoutes } from "./myrmidon/budget-limits/index.js";
 import { myrmidonBotDiskQuotaRoutes } from "./myrmidon/bot-containers/bot-disk-quota-routes.js"; // myrmidon(1.6.1-BOT-DISK-C)
 import { myrmidonBotImageRolloutRoutes } from "./myrmidon/bot-containers/bot-image-rollout-routes.js"; // myrmidon(BOT-ROLLOUT)
 import { myrmidonMetricsApp } from "./myrmidon/monitoring/metrics/index.js"; // myrmidon(1.7-METRICS)
@@ -930,6 +933,7 @@ export async function createApp(
   api.use(myrmidonAlertRecoveryRoutes(db)); // myrmidon(1.6.6-MONITORING-D)
   api.use(myrmidonBotDiskLifecycleRoutes(db)); // myrmidon(BOT-DISK-A)
   api.use(myrmidonBotScopeRoutes(db)); // myrmidon(BOT-DISK-F)
+  api.use(myrmidonBudgetLimitsRoutes(db)); // myrmidon(1.7-BUDGET-CONFIG A): per-level spend limits, journal and usage
   api.use(myrmidonBotDiskQuotaRoutes(db)); // myrmidon(1.6.1-BOT-DISK-C)
   api.use(myrmidonBotWorkspacesRoutes(db)); // myrmidon(1.6.5-BOT-DISK-H4a)
   api.use(myrmidonBotImageRolloutRoutes(db)); // myrmidon(BOT-ROLLOUT)

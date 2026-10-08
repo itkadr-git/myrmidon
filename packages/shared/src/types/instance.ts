@@ -35,6 +35,7 @@ import type { PluginEntitlementKey } from "../myrmidon-plugin-entitlement.js";
 import type { TelegramDmProgressSettings } from "../myrmidon-telegram-dm-progress.js";
 // myrmidon(BOT-RUNTIME-TUNING D2): the fallback-signal settings of the same row.
 import type { StoredFallbackSignalSettings } from "../myrmidon-fallback-signal.js";
+import type { BudgetLimitsSettings } from "../myrmidon-budget-limits.js";
 
 // myrmidon(1.6.1-FORAGING-LIMITS-UI)
 import type { ForagingSettings } from "../myrmidon-foraging.js";
@@ -307,6 +308,14 @@ export interface InstanceGeneralSettings {
    * validator of the same field (packages/shared/src/validators/instance.ts).
    */
   pluginEntitlementPublicKey?: string;
+  /**
+   * myrmidon(1.7-BUDGET-CONFIG A): the global "signal only" flag of the
+   * per-level spend limits, changed from `PATCH
+   * /api/myrmidon/companies/:id/budget-limits/signal-only`. Absent means the
+   * default (signal only ON — limits never stop work). Kept in sync with the
+   * validator of the same field (packages/shared/src/validators/instance.ts).
+   */
+  budgetLimits?: BudgetLimitsSettings;
 }
 
 

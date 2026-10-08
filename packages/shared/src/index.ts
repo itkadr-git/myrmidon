@@ -2795,6 +2795,10 @@ export * from "./myrmidon-alert-recovery.js";
 export * from "./myrmidon-bot-disk.js";
 // myrmidon(BOT-DISK-F): isolation scope resolver and bot-disk scope layout shared by the server and the UI.
 export * from "./myrmidon-isolation-scope.js";
+
+// myrmidon(1.7-BUDGET-CONFIG A): the shared contract of the per-level spend
+// limits — schemas, level semantics, signal-only resolution, window math.
+export * from "./myrmidon-budget-limits.js";
 // myrmidon(1.6.1-BOT-DISK-C): per-bot disk quota settings, resolution and the rejection contract
 // shared by the server, the board UI and the settings validator.
 export * from "./myrmidon-bot-disk-quota.js";
