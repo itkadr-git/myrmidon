@@ -158,6 +158,14 @@ import { createReviewReworkScheduler } from "./myrmidon/review-rework/index.js";
 import { buildWipLimitSweeper } from "./myrmidon/wip-limit/index.js"; // myrmidon(1.6.1-WIP-LIMIT-A)
 import { buildPromptBudgetSweeper } from "./myrmidon/prompt-budget/index.js"; // myrmidon(1.6.3 PROMPT-BUDGET B)
 import { buildMonitoringLinkWatchdog } from "./myrmidon/monitoring/links/index.js"; // myrmidon(1.6.6 MONITORING E)
+// myrmidon(1.6.6 CORPUS-2.0 ч.C): the corpus parse worker — one pass per gate,
+// a no-op while the module is off or its ports (parts A/B) are not wired.
+import {
+  CORPUS_PARSE_SWEEP_INTERVAL_MS,
+  corpusService,
+  createCorpusParseWorker,
+  resolveCorpusPorts,
+} from "./myrmidon/corpus/index.js";
 import {
   createPendingInteractionWakeSweep,
   readPendingInteractionWakeContextSnapshot,
@@ -1411,6 +1419,38 @@ async function startServerWithDatabaseTeardown(
       }));
     };
   })();
+  // myrmidon(1.6.6 CORPUS-2.0 ч.C): the corpus parse worker — it turns an
+  // uploaded document (bytes in the BlobStore, a row in the queue) into indexed
+  // chunks, and it is the only part of the module that costs anything while
+  // idle. One pass per CORPUS_PARSE_SWEEP_INTERVAL_MS on the heartbeat tick; the
+  // module switch is re-read on every pass, so the settings page applies without
+  // a restart. While the module is off — or while its ports (parts A/B of
+  // OPE-6165) are not wired into this build — the pass returns immediately and
+  // no port, connection or table is touched.
+  const scheduleCorpusParseSweep = (() => {
+    const service = corpusService(db as any, { ports: resolveCorpusPorts });
+    const worker = createCorpusParseWorker({
+      ports: resolveCorpusPorts,
+      resolveSettings: async () => {
+        const view = await service.readSettings();
+        return { settings: view.settings, enabled: view.enabled };
+      },
+    });
+    let lastPassAt = 0;
+    return () => {
+      if (heartbeatSchedulerStopped) return;
+      const now = Date.now();
+      if (lastPassAt !== 0 && now - lastPassAt < CORPUS_PARSE_SWEEP_INTERVAL_MS) return;
+      lastPassAt = now;
+      trackHeartbeatSchedulerWork(worker.sweep().then((result) => {
+        if (result.parsed > 0 || result.failed > 0 || result.requeued > 0) {
+          logger.info(result, "Corpus parse sweep completed");
+        }
+      }).catch((err) => {
+        logger.error({ err }, "Corpus parse sweep failed");
+      }));
+    };
+  })();
   // myrmidon(1.6.6 MONITORING E): the periodic "is every linking component
   // still alive" pass. A link (Zabbix aggregator, Alertmanager webhook,
   // collector) is its own minimal-rights board key, so this pass reads those
@@ -1985,6 +2025,7 @@ async function startServerWithDatabaseTeardown(
         scheduleWipLimitSweep(); // myrmidon(1.6.1-WIP-LIMIT-A)
         schedulePromptBudgetSweep(); // myrmidon(1.6.3 PROMPT-BUDGET B)
         scheduleMonitoringLinkSweep(); // myrmidon(1.6.6 MONITORING E)
+        scheduleCorpusParseSweep(); // myrmidon(1.6.6 CORPUS-2.0 ч.C)
         scheduleAutoResumeSweep(); // myrmidon(AUTO-RESUME)
 
         if (heartbeatSchedulerStopped) return;
@@ -2190,6 +2231,7 @@ async function startServerWithDatabaseTeardown(
       scheduleReviewRoutingSweep(); // myrmidon(REVIEW-ROUTING)
       scheduleReviewReworkSweep(); // myrmidon(REVIEW-REWORK)
       scheduleMonitoringLinkSweep(); // myrmidon(1.6.6 MONITORING E)
+      scheduleCorpusParseSweep(); // myrmidon(1.6.6 CORPUS-2.0 ч.C)
       scheduleGitHubConnectionEventPoll();
       scheduleGitHubConnectionContinuitySweep();
     });

@@ -22,6 +22,9 @@ import { storedBotImageRolloutSettingsSchema } from "../myrmidon-bot-image-rollo
 import { storedSessionGenerationsSettingsSchema } from "../myrmidon-session-generations.js";
 // myrmidon(C0): run admission limits that can be changed while the server runs
 import { storedRunLimitsSchema } from "../myrmidon-runtime-limits.js";
+// myrmidon(1.6.6 CORPUS-2.0 ч.C): the corpus module settings (module switch, parse
+// service base URL, embedder, limits), lenient stored shape.
+import { storedCorpusSettingsSchema } from "../myrmidon-corpus.js";
 // myrmidon(PARALLEL-HELPERS): company ceiling/default for parallel helper
 // subagents, changed from the instance settings page and /api/myrmidon/parallel-helpers.
 import { parallelHelpersSettingsSchema, patchParallelHelpersSettingsSchema } from "../myrmidon-parallel-helpers.js";
@@ -116,6 +119,11 @@ export const instanceGeneralSettingsSchema = z.object({
   // myrmidon(1.6.5 RUN-ADMISSION): the shape also tolerates a row saved
   // before `maxHostLoadPercentPerCore` existed.
   runLimits: storedRunLimitsSchema.optional(),
+  // myrmidon(1.6.6 CORPUS-2.0 ч.C): the knowledge-corpus module settings,
+  // changed from /api/myrmidon/corpus/settings; absent means "use the
+  // environment variable, then the default (off)". Lenient: a row with unknown
+  // keys or with an invalid value still parses (see myrmidon-corpus.ts).
+  corpus: storedCorpusSettingsSchema.optional(),
   // myrmidon(BOT-DISK E): the host disk usage threshold, changed from
   // /api/myrmidon/host-disk; absent means "use the environment variable, then
   // the default (85)".
