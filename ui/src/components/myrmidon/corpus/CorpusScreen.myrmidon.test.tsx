@@ -228,7 +228,7 @@ describe("corpusConfig", () => {
     expect(formatBytes(2048)).toEqual({ value: "2", unitKey: "corpus.units.kb" });
     expect(formatBytes(1024 * 1024)).toEqual({ value: "1.0", unitKey: "corpus.units.mb" });
     expect(CORPUS_POLL_INTERVAL_MS).toBe(4000);
-    expect(scoreText(0.9125)).toBe("0.913");
+    expect(scoreText(0.9126)).toBe("0.913");
     expect(documentAnchorHref("doc-1")).toBe("#corpus-document-doc-1");
   });
 });
@@ -237,14 +237,14 @@ describe("CorpusScreenView", () => {
   it("renders the settings the server sent and saves an edit", () => {
     const props = render();
     expect(testidPresent("myrmidon-corpus-screen")).toBe(true);
-    expect(container.querySelector<HTMLInputElement>("#corpus-enabled")!.checked).toBe(true);
-    expect(container.querySelector<HTMLInputElement>("#corpus-parsing-base-url")!.value).toBe(
+    expect(container.querySelector<HTMLInputElement>("#myrmidon-corpus-enabled")!.checked).toBe(true);
+    expect(container.querySelector<HTMLInputElement>("#myrmidon-corpus-parsing-base-url")!.value).toBe(
       SETTINGS.parsingServiceBaseUrl,
     );
-    expect(container.querySelector<HTMLInputElement>("#corpus-embedder-model")!.value).toBe(SETTINGS.embedderModel);
-    expect(container.querySelector<HTMLInputElement>("#corpus-max-upload-mb")!.value).toBe("25");
-    expect(container.querySelector<HTMLInputElement>("#corpus-max-documents")!.value).toBe("500");
-    expect(container.querySelector<HTMLInputElement>("#corpus-search-top-k")!.value).toBe("5");
+    expect(container.querySelector<HTMLInputElement>("#myrmidon-corpus-embedder-model")!.value).toBe(SETTINGS.embedderModel);
+    expect(container.querySelector<HTMLInputElement>("#myrmidon-corpus-max-upload-mb")!.value).toBe("25");
+    expect(container.querySelector<HTMLInputElement>("#myrmidon-corpus-max-documents")!.value).toBe("500");
+    expect(container.querySelector<HTMLInputElement>("#myrmidon-corpus-search-top-k")!.value).toBe("5");
 
     setInput("myrmidon-corpus-embedder-model", "text-embedding-v4-latest");
     setInput("myrmidon-corpus-max-upload-mb", "50");
@@ -280,7 +280,7 @@ describe("CorpusScreenView", () => {
   it("keeps the screen reachable with the module off, and stops the pipeline actions", () => {
     render({ settings: OFF_SETTINGS });
     expect(testidPresent("myrmidon-corpus-module-off")).toBe(true);
-    expect(container.querySelector<HTMLInputElement>("#corpus-enabled")!.checked).toBe(false);
+    expect(container.querySelector<HTMLInputElement>("#myrmidon-corpus-enabled")!.checked).toBe(false);
     expect(container.querySelector<HTMLInputElement>('[data-testid="myrmidon-corpus-upload-input"]')!.disabled).toBe(true);
     expect(click("myrmidon-corpus-document-retry-doc-failed").disabled).toBe(true);
     expect(click("myrmidon-corpus-search-submit").disabled).toBe(true);

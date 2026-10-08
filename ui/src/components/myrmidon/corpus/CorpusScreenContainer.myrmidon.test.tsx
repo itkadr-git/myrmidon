@@ -123,11 +123,23 @@ async function render() {
   });
 }
 
-async function settle(times = 6) {
-  for (let index = 0; index < times; index += 1) {
+/**
+ * Lets every asynchronous stage finish. Resolving react-query, the effect that
+ * opens the first dataset and React's own scheduler each need a turn of the
+ * event loop, not just a microtask, so the loop flushes macrotasks and stops
+ * once the rendered screen stops changing.
+ */
+async function settle() {
+  let previous = "";
+  let stable = 0;
+  for (let round = 0; round < 80; round += 1) {
     await act(async () => {
-      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
     });
+    const html = container.innerHTML;
+    stable = html === previous ? stable + 1 : 0;
+    previous = html;
+    if (round + 1 >= 12 && stable >= 3) break;
   }
 }
 
