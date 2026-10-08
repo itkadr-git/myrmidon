@@ -157,7 +157,7 @@ describeEmbeddedPostgres("execution hold: mention wake and confirm-continue (OPE
       req.actor = actor as never;
       next();
     });
-    app.use("/api", issueRoutes(db));
+    app.use("/api", issueRoutes(db, {} as never));
     app.use(errorHandler);
     return app;
   }

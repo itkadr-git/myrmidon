@@ -9799,9 +9799,16 @@ export function issueRoutes(
         const supersededAction = await supersedeExplicitWakeSettledHold({
           db: tx as unknown as Db,
           issueId: lockedIssue.id,
-          supersededBy: `${req.actor.type === "agent" ? "agent" : "user"}:${actor.actorId}`,
-          commentId: null,
+          companyId: lockedIssue.companyId,
+          successorRunId: null,
+          requestedByActorType: req.actor.type === "agent" ? "agent" : "user",
+          requestedByActorId: actor.actorId,
         });
+        if (!supersededAction) {
+          throw conflict("The failed run has not released its execution claim yet; the hold cannot be confirmed", {
+            issueId: lockedIssue.id,
+          });
+        }
 
         const postCommitActivityPublications: ActivityPublication[] = [];
         // The row was just updated inside this same transaction by the
