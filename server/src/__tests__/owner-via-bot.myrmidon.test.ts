@@ -1122,6 +1122,19 @@ describeEmbeddedPostgres("owner decisions via the bot (1.6.5)", () => {
       ).toBe("");
     });
 
+    it("a question addressed to a person without a DM does not go to the company owner", async () => {
+      const fixture = await seed();
+      await makeOwner(fixture);
+      const addresseeUserId = await insertBoardUser(fixture.companyId, "operator");
+      const task = await taskOf(fixture, { responsibleUserId: fixture.boardUserId });
+      const card = await cardOn(fixture, task, { resolverPolicy: "anyone", addresseeUserId });
+
+      const { outcome, wakeup } = await wakeFor(fixture, task, card);
+      expect(outcome).toBe("skipped_no_owner_dm");
+      expect(wakeup).not.toHaveBeenCalled();
+      expect(await ownerMessagePublications(fixture)).toEqual([]);
+    });
+
     it("stays on the board when nobody has a DM with the author", async () => {
       const fixture = await seed();
       // The company owner exists but has no DM with the author: board only.

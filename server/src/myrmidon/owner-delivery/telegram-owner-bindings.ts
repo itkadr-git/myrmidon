@@ -139,7 +139,7 @@ export async function telegramOwnerDeliveryBindings(
  * the delivery-binding lookup above and, through the former, the reply
  * authorization. Candidates in order: the interaction's human addressee, the
  * task's responsible user, the task's creator, then the active owner(s) of the
- * company. The first candidate who has a live Telegram DM with `agentId` wins;
+ * company. An addressed question tries only its addressee (no DM: null). The first candidate who has a live Telegram DM with `agentId` wins;
  * a candidate without one (an operator service account, a user who never
  * opened the bot) is skipped. Returns null when nobody qualifies — the
  * decision then stays on the board.
@@ -166,7 +166,10 @@ export async function resolveOwnerDecisionRecipient(
     });
     return bindings.length > 0 ? { ownerUserId: userId, bindings } : null;
   };
-  for (const userId of [input.addresseeUserId, input.responsibleUserId, input.createdByUserId]) {
+  // A question addressed to a specific person goes to that person or stays on
+  // the board: the fallback chain below is only for questions without addressee.
+  if (input.addresseeUserId) return attempt(input.addresseeUserId);
+  for (const userId of [input.responsibleUserId, input.createdByUserId]) {
     const found = await attempt(userId);
     if (found) return found;
   }
