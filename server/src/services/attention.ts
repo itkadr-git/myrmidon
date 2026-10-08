@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNotNull, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, lte, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -108,6 +108,15 @@ import {
   executionHoldSignalSeverity,
   executionHoldSignalWhyNow,
 } from "../myrmidon/execution-hold/attention.js";
+// myrmidon(1.6.5 F-09): the queued-run-without-reason card.
+import {
+  queueStallSignalDedupKey,
+  queueStallSignalDetail,
+  queueStallSignalSeverity,
+  queueStallSignalTitle,
+  queueStallSignalWhyNow,
+  type QueueStallSignal,
+} from "../myrmidon/stuck-queued/attention.js";
 // myrmidon(REVIEW-ROUTING): the cards of a task in review with no reviewer, or
 // a review without a verdict for too long.
 import {
@@ -1260,6 +1269,9 @@ const ATTENTION_SETTINGS_READ_TTL_MS = 5_000;
 type AttentionRuntimeSettings = {
   failedRunHorizonDays: number;
   feedCacheTtlMs: number;
+  // myrmidon(1.6.5 F-09): a queued run without waitReason older than this
+  // threshold raises a queue_stall card.
+  queueStallAfterSec: number;
 };
 
 type AttentionBuildOptions = {
@@ -1310,6 +1322,12 @@ async function readAttentionRuntimeSettings(
     feedCacheTtlMs:
       (clampNumber(general.attentionFeedCacheTtlSeconds, 0, 300)
         ?? ATTENTION_FEED_CACHE_TTL_DEFAULT_MS / 1000) * 1000,
+    // myrmidon(1.6.5 F-09): env MYRMIDON_QUEUED_RUN_STALE_AFTER_SEC as the
+    // default; instance_settings.general.queuedRunStaleAfterSec overrides.
+    queueStallAfterSec:
+      clampNumber(general.queuedRunStaleAfterSec, 60, 604800)
+      ?? clampNumber(process.env.MYRMIDON_QUEUED_RUN_STALE_AFTER_SEC, 60, 604800)
+      ?? 3600,
   };
   attentionSettingsCache.set(db, { readAtMs: readAt, settings });
   return settings;
@@ -2907,6 +2925,91 @@ async function buildAttentionFeedSnapshot(
             images: [],
           },
         }));
+      }
+
+      // myrmidon(1.6.5 F-09): a queued run older than the stall threshold
+      // without a waitReason — the sweep should have explained it, so the
+      // card asks a person to look.
+      {
+        const staleAfterMs = (await readAttentionRuntimeSettings(db)).queueStallAfterSec * 1000;
+        const stallCutoff = new Date(Date.now() - staleAfterMs);
+        const stallRows = await db
+          .select({
+            runId: heartbeatRuns.id,
+            agentId: heartbeatRuns.agentId,
+            agentName: agents.name,
+            companyId: heartbeatRuns.companyId,
+            issueId: heartbeatRuns.issueId,
+            issueIdentifier: issues.identifier,
+            issueTitle: issues.title,
+            createdAt: heartbeatRuns.createdAt,
+            contextSnapshot: heartbeatRuns.contextSnapshot,
+          })
+          .from(heartbeatRuns)
+          .leftJoin(agents, eq(agents.id, heartbeatRuns.agentId))
+          .leftJoin(issues, eq(issues.id, heartbeatRuns.issueId))
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, companyId),
+              eq(heartbeatRuns.status, "queued"),
+              lte(heartbeatRuns.createdAt, stallCutoff),
+              sql`(${heartbeatRuns.contextSnapshot} ->> 'waitReason') IS NULL`,
+            ),
+          );
+        for (const row of stallRows) {
+          const signal: QueueStallSignal = {
+            runId: row.runId,
+            companyId: row.companyId,
+            agentId: row.agentId,
+            agentName: row.agentName ?? null,
+            issueId: row.issueId ?? null,
+            issueIdentifier: row.issueIdentifier ?? null,
+            issueTitle: row.issueTitle ?? null,
+            since: row.createdAt.toISOString(),
+            queuedSec: Math.max(0, Math.round((Date.now() - row.createdAt.getTime()) / 1000)),
+          };
+          add(createItem({
+            companyId,
+            sourceKind: "queue_stall",
+            subject: signal.issueId
+              ? {
+                  kind: "issue",
+                  id: signal.issueId,
+                  companyId,
+                  title: signal.issueTitle ?? "Task",
+                  identifier: signal.issueIdentifier,
+                  status: null,
+                  href: signal.issueIdentifier ? `/${prefix}/issues/${signal.issueIdentifier}` : null,
+                  metadata: { runId: signal.runId, agentId: signal.agentId },
+                }
+              : {
+                  kind: "agent",
+                  id: signal.agentId,
+                  companyId,
+                  name: signal.agentName ?? "Agent",
+                  metadata: { runId: signal.runId },
+                },
+            whyNow: queueStallSignalWhyNow(signal),
+            decisionVerbs: decisionVerbs(
+              { id: "inspect", label: "Inspect", description: "Open the run and check why it has no waitReason." },
+              { id: "dismiss", label: "Dismiss", description: "Dismiss this notice (the run stays queued)." },
+            ),
+            inlineResolvable: false,
+            entryRule: `a queued run is older than ${Math.round(staleAfterMs / 1000)} s and its contextSnapshot carries no waitReason`,
+            exitRule: "the run is claimed, cancelled, or gets a waitReason written by the sweep.",
+            dedupKey: queueStallSignalDedupKey(signal),
+            severity: queueStallSignalSeverity(),
+            activityAt: row.createdAt,
+            createdAt: row.createdAt,
+            updatedAt: row.createdAt,
+            relatedIssue: null,
+            detail: {
+              kind: "generic",
+              summaryExcerpt: excerpt(queueStallSignalDetail(signal)),
+              images: [],
+            },
+          }));
+        }
       }
 
       // myrmidon(TRACING-HEALTH): the "LLM tracing" non-ok state raises ONE

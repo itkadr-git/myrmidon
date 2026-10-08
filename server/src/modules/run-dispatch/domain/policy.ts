@@ -95,6 +95,8 @@ export type ScheduledRetryFacts = {
   issueAssigneeAgentId: string | null;
   issueExecutionRunId: string | null;
   issueCheckoutRunId?: string | null;
+  /** myrmidon(1.6.5 F-09): a hidden issue is not startable. */
+  issueHiddenAt?: Date | null;
 
   isNonAssigneeWorkspaceBusyRetry: boolean;
   reviewParticipant: ReviewParticipantFacts;
@@ -117,7 +119,11 @@ export type QueuedRunStalenessErrorCode =
   | "issue_execution_lock_changed"
   | "issue_blocked"
   | "issue_review_participant_changed"
-  | "issue_continuation_waiting_on_review";
+  | "issue_continuation_waiting_on_review"
+  // myrmidon(1.6.5 F-09): a queued run whose task was moved back to backlog
+  // has no executor — it is cancelled with this code instead of waiting
+  // silently in the queue until the global stale sweep picks it up.
+  | "issue_backlog_not_startable";
 
 export type StalenessDecision =
   | { stale: false }
@@ -141,6 +147,8 @@ export type QueuedRunFacts = {
   issueAssigneeAgentId: string | null;
   issueExecutionRunId: string | null;
   issueCheckoutRunId?: string | null;
+  /** myrmidon(1.6.5 F-09): a hidden issue is not startable. */
+  issueHiddenAt?: Date | null;
 
   isResolvedInteractionContinuation: boolean;
   /** A connection resolution or tool refresh can resume an agent waiting in review. */
@@ -631,6 +639,25 @@ export function decideQueuedRunStaleness(
       errorCode: "issue_terminal_status",
       reason: `Cancelled because issue reached terminal status (${facts.issueStatus}) before the queued run could start`,
       details: { issueId: facts.issueId, currentStatus: facts.issueStatus },
+    };
+  }
+  // myrmidon(1.6.5 F-09): a task in backlog or a hidden task is not
+  // startable — the queued run is cancelled with its own code instead of
+  // sitting in the queue without a reason. Wakes that carry a comment bypass
+  // (wakeCommentIdPresent) or a resume intent still reach the agent, since a
+  // person asked for it explicitly; the bypass list matches the
+  // terminal-status bypass above.
+  if (
+    (facts.issueStatus === "backlog" || facts.issueHiddenAt != null) &&
+    !facts.resumeIntent &&
+    !facts.wakeCommentIdPresent &&
+    facts.isPendingInteractionAddresseeWake !== true
+  ) {
+    return {
+      stale: true,
+      errorCode: "issue_backlog_not_startable",
+      reason: `Cancelled because issue is not startable (status: ${facts.issueStatus}${facts.issueHiddenAt != null ? ", hidden" : ""}) before the queued run could start`,
+      details: { issueId: facts.issueId, currentStatus: facts.issueStatus, hidden: facts.issueHiddenAt != null },
     };
   }
   if (statusOutcome === "not_in_progress") {

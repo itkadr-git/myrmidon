@@ -766,6 +766,19 @@ export interface RunAdmission {
    */
   lastDenialReason(): RunAdmissionDenialReason | null;
   /**
+   * myrmidon(1.6.5 F-09): in-memory admission-denial counters, for the
+   * queue/limits route to report. `total` is the number of denials since
+   * startup; `byReason` breaks it down by gate; `lastReason`/`lastAt` name the
+   * most recent denial. Counters reset on restart (the state lives in the
+   * singleton).
+   */
+  admissionDenials(): {
+    total: number;
+    byReason: Record<string, number>;
+    lastReason: RunAdmissionDenialReason | null;
+    lastAt: number | null;
+  };
+  /**
    * myrmidon(1.6.5 RUN-FAIRNESS): the starts of the sliding 10-minute window
    * by agent, for the fair-share rule of the queued-run sweep. Counts only
    * starts that asked to be counted (`reserve(wanted, { agentId })`).
@@ -846,6 +859,11 @@ export function createRunAdmission(options: {
   // myrmidon(1.6.5 RUN-FAIRNESS): the gate that closed the last limited
   // reservation; read by `lastDenialReason`.
   let lastDenial: RunAdmissionDenialReason | null = null;
+  // myrmidon(1.6.5 F-09): in-memory counter of admission denials by reason,
+  // for the queue/limits route to report. `lastAt` is the wall-clock time of
+  // the most recent denial (any reason).
+  const denialCounts = new Map<RunAdmissionDenialReason, number>();
+  let denialLastAt: number | null = null;
   // myrmidon(1.6.2): the current continuous hold by the host floor.
   // myrmidon(1.6.5): both holds run through the same gate-hold machine.
   const hostMemoryHold = createGateHold(HOST_MEMORY_HOLD_CONTINUITY_MS);
@@ -1202,6 +1220,10 @@ export function createRunAdmission(options: {
       allowed = Math.max(0, allowed);
       lastLimited = allowed < wanted;
       lastDenial = lastLimited ? denial : null;
+      if (lastLimited && denial) {
+        denialCounts.set(denial, (denialCounts.get(denial) ?? 0) + 1);
+        denialLastAt = now();
+      }
       active += allowed;
       for (let i = 0; i < allowed; i += 1) {
         starts.push(at);
@@ -1228,6 +1250,20 @@ export function createRunAdmission(options: {
     },
     lastDenialReason() {
       return lastDenial;
+    },
+    admissionDenials() {
+      let total = 0;
+      const byReason: Record<string, number> = {};
+      for (const [reason, count] of denialCounts) {
+        byReason[reason] = count;
+        total += count;
+      }
+      return {
+        total,
+        byReason,
+        lastReason: lastDenial,
+        lastAt: denialLastAt,
+      };
     },
     agentStartShare(at) {
       const when = at ?? now();
