@@ -17,7 +17,8 @@ import {
   issueThreadInteractions,
   issues,
 } from "@paperclipai/db";
-import { getEmbeddedPostgresTestSupport, useEmbeddedPostgres } from "../../__tests__/helpers/route-test-harness.js";
+import { getEmbeddedPostgresTestSupport } from "@paperclipai/db";
+import { useEmbeddedPostgres } from "../../__tests__/helpers/route-test-harness.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
