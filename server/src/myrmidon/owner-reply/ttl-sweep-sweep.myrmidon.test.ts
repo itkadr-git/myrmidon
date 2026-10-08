@@ -7,7 +7,7 @@
 
 import { randomUUID } from "node:crypto";
 import { eq, and, desc } from "drizzle-orm";
-import { beforeEach, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agentWakeupRequests,
