@@ -24,6 +24,12 @@ settings-section: Track 2 — wake and run core
   writes the report of the section-6 criteria as it stands at that moment and
   `GET .../audit-reports/:id/export` returns it as the `db-audit.md` markdown
   (the top-25 queries and every criterion with its measured value).
+- The routes are instance-admin only (`assertInstanceAdmin`): the numbers are
+  the instance's own — database size, catalog contents, server parameters — so
+  a board member of a company has nothing to read there. A snapshot keeps the
+  indexes as aggregates (total, unused and their bytes, the largest unused, the
+  invalid count) and not as the full list of ~1040 rows: kept hourly over the
+  90-day retention that list alone would add ~200 MB per target.
 - The collector is parameterised by connection and by `dbId`
   (`pg_database.oid`) from its first day, so DBC-5 only adds targets to the
   same code; the board target is implicit. pgvector and full-text-search
@@ -65,6 +71,12 @@ settings-section: Track 2 — wake and run core
   критериям раздела 6 на текущий момент, `GET .../audit-reports/:id/export`
   отдаёт его как markdown `db-audit.md` (топ-25 запросов и каждый критерий с
   измеренным значением).
+- Маршруты — только для администратора инстанса (`assertInstanceAdmin`): числа
+  принадлежат самому инстансу (размер базы, содержимое каталога, параметры
+  сервера), читать их участнику компании незачем. Снимок хранит индексы
+  агрегатами (всего, неиспользуемых и их байты, крупнейший неиспользуемый,
+  число некорректных), а не полным списком ~1040 записей: в ежечасной
+  серии за 90 дней один этот список добавил бы ~200 МБ на цель.
 - Коллектор с первого дня параметризован подключением и `dbId`
   (`pg_database.oid`), поэтому DBC-5 только добавляет цели в тот же код; цель
   `board` — implicit. Метрики pgvector и полнотекстового поиска появляются

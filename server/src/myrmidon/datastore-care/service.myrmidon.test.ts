@@ -12,7 +12,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import type { DatastoreSnapshotPayload } from "./domain.js";
+import type { DatastoreCollectedSnapshot } from "./domain.js";
 import { readDatastoreCareSettings } from "./settings.js";
 import {
   createDatastoreCareService,
@@ -33,7 +33,7 @@ const NOW = new Date("2026-10-08T05:00:00.000Z");
 
 /** A payload with the fields the service reads; the deep shape is tested in
  *  audit-report.myrmidon.test.ts and collectors/postgres.myrmidon.test.ts. */
-function samplePayload(overrides: Partial<DatastoreSnapshotPayload> = {}): DatastoreSnapshotPayload {
+function samplePayload(overrides: Partial<DatastoreCollectedSnapshot> = {}): DatastoreCollectedSnapshot {
   return {
     key: "board",
     engine: "postgres",
@@ -60,6 +60,9 @@ function samplePayload(overrides: Partial<DatastoreSnapshotPayload> = {}): Datas
     indexes: [{ index: "issues_company_idx", table: "issues", bytes: 10_485_760, scans: 4200 }],
     indexCount: 1,
     invalidIndexCount: 0,
+    unusedIndexCount: 0,
+    unusedIndexBytes: 0,
+    largestUnusedIndex: null,
     topQueries: [
       {
         queryId: "1234567",
@@ -276,6 +279,11 @@ describe("myrmidon(DBC-4) datastore-care service", () => {
     const second = await service.captureSnapshot("BOARD");
     expect(collected).toBe(2);
     expect(first.snapshot.sizeBytes).toBe(1_200_000_000);
+    // The row written to `datastore_snapshots` keeps the index aggregates and
+    // never the per-index list (operator review 08.10, item 3).
+    expect(first.snapshot.payload).not.toHaveProperty("indexes");
+    expect(first.snapshot.payload.indexCount).toBe(1);
+    expect(first.snapshot.payload.unusedIndexCount).toBe(0);
     expect(second.target.key).toBe("board");
 
     const listed = await service.listSnapshots("board", 10);
