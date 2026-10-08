@@ -18,9 +18,10 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./test-embedded-postgres.js";
 
-const MIGRATION_FILE = "./migrations/0310_datastore_care.sql";
-const SNAPSHOT_FILE = "./migrations/meta/0310_snapshot.json";
-const PREVIOUS_SNAPSHOT_FILE = "./migrations/meta/0309_snapshot.json";
+const MIGRATION_NUMBER = 311;
+const MIGRATION_TAG = "0311_datastore_care";
+const MIGRATION_FILE = `./migrations/${MIGRATION_TAG}.sql`;
+const SNAPSHOT_FILE = `./migrations/meta/0311_snapshot.json`;
 
 const SNAPSHOT_COLUMNS = [
   "id",
@@ -115,12 +116,18 @@ describe("datastore care migration (static checks)", () => {
         "utf8",
       ),
     ) as { entries: Array<{ idx: number; tag: string; when: number; breakpoints: boolean }> };
-    const entry = journal.entries.find((item) => item.tag === "0310_datastore_care");
+    const entry = journal.entries.find((item) => item.tag === MIGRATION_TAG);
     expect(entry).toBeTruthy();
-    expect(entry!.idx).toBeGreaterThan(300);
+    expect(entry!.idx).toBe(MIGRATION_NUMBER);
     expect(entry!.when).toBeGreaterThan(1791206402990);
-    // The migration is the newest one in the journal.
-    expect(journal.entries[journal.entries.length - 1]!.tag).toBe("0310_datastore_care");
+    // The journal is ascending by idx. It is NOT "newest wins": the train lands
+    // other migrations after this one (0313_run_context_columns is already in
+    // `rel`), and asserting that this migration was the last entry turned the
+    // test red the moment a later one merged.
+    expect(journal.entries.map((item) => item.idx)).toEqual(
+      [...journal.entries.map((item) => item.idx)].sort((left, right) => left - right),
+    );
+    expect(journal.entries.filter((item) => item.tag === MIGRATION_TAG)).toHaveLength(1);
 
     const snapshot = JSON.parse(
       await readFile(fileURLToPath(new URL(SNAPSHOT_FILE, import.meta.url)), "utf8"),
@@ -135,11 +142,27 @@ describe("datastore care migration (static checks)", () => {
         }
       >;
     };
-    const previous = JSON.parse(
-      await readFile(fileURLToPath(new URL(PREVIOUS_SNAPSHOT_FILE, import.meta.url)), "utf8"),
-    ) as { id: string };
-    expect(snapshot.prevId).toBe(previous.id);
-    expect(snapshot.id).not.toBe(previous.id);
+    // `prevId` has to name an existing snapshot of a lower number, and it is not
+    // always the immediately preceding one: rebases and renumbering reuse the
+    // ancestor the author generated from (in `rel` right now both 0310 and 0313
+    // hang off the 0309 snapshot). So the window is the three highest numbers
+    // below this migration instead of a single hard-coded file.
+    const ancestors = [...new Set(journal.entries.map((item) => item.idx))]
+      .filter((idx) => idx < MIGRATION_NUMBER)
+      .sort((left, right) => left - right)
+      .slice(-3)
+      .map((idx) => journal.entries.find((item) => item.idx === idx)!);
+    const ancestorIds = await Promise.all(
+      ancestors.map(async (item) => {
+        const file = fileURLToPath(
+          new URL(`./migrations/meta/${item.tag.slice(0, 4)}_snapshot.json`, import.meta.url),
+        );
+        return (JSON.parse(await readFile(file, "utf8")) as { id: string }).id;
+      }),
+    );
+    expect(ancestorIds).toContain(snapshot.prevId);
+    expect(snapshot.id).not.toBe(snapshot.prevId);
+    expect(snapshot.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
 
     const snapshotsTable = snapshot.tables["public.datastore_snapshots"];
     const reportsTable = snapshot.tables["public.datastore_audit_reports"];

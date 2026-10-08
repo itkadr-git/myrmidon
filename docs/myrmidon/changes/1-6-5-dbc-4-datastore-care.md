@@ -15,7 +15,7 @@ settings-section: Track 2 — wake and run core
   snapshots and audit reports for 90 days of its own.
 - Two myrmidon-owned tables, `datastore_snapshots` and
   `datastore_audit_reports` (migration
-  `packages/db/src/migrations/0310_datastore_care.sql`, additive only), plus
+  `packages/db/src/migrations/0311_datastore_care.sql`, additive only), plus
   the granularity the module reports on: per-table bytes, transitions and the
   growth between neighbouring snapshots.
 - `GET /api/myrmidon/datastores` answers the targets with their live size and
@@ -62,7 +62,7 @@ settings-section: Track 2 — wake and run core
   давность последней резервной копии, — и хранит снимки и отчёты аудита свои
   сроком 90 дней.
 - Две myrmidon-таблицы `datastore_snapshots` и `datastore_audit_reports`
-  (миграция `packages/db/src/migrations/0310_datastore_care.sql`, только
+  (миграция `packages/db/src/migrations/0311_datastore_care.sql`, только
   добавление) и гранулярность, которой модуль отчитывается: байты по
   таблицам, переходы и рост между соседними снимками.
 - `GET /api/myrmidon/datastores` отдаёт цели с живым размером и последним
@@ -97,7 +97,7 @@ settings-section: Track 2 — wake and run core
 
 ## divergence
 
-| DBC-4 | Модуль `datastore-care` и две собственные таблицы доски (`datastore_snapshots`, `datastore_audit_reports`, срок 90 дней) + гейт релиза `db-audit-gate.sh` в режиме предупреждения для 1.6.5 | `server/src/myrmidon/datastore-care/` (domain, settings, store, collectors/postgres, audit-report, service, routes, startup, index), `packages/db/src/schema/datastore_care.ts` + миграция `0310_datastore_care.sql` и мета, `server/src/app.ts`, `server/src/index.ts`, `scripts/myrmidon/release/db-audit-gate.sh`, `docs/myrmidon/releases/1.6.5-db-audit.md` (канонический отчёт аудита), `releases/1.6.5/db-audit.md` (точка входа на него) | Решение владельца 08.10: оптимизация хранилищ — функция доски, аудит БД обязателен перед финальным релизом; числа аудита 04.10 (таблица `heartbeat_runs` 1,17 ГБ, четыре горячих предиката без индекса) | `server/src/myrmidon/datastore-care/*.myrmidon.test.ts` (settings — умолчания, collectors/postgres — разбор снимка на скриптовом порту, audit-report — критерии и markdown, service — сбор и retention, routes — HTTP и доступы), `scripts/myrmidon/release/db-audit-gate.test.mjs` (режимы warn/block, устаревание, ввод), `packages/db/src/datastore-care-migration.myrmidon.test.ts` (статика файла/журнала/снапшота + применение на embedded Postgres), `releases/1.6.5/db-audit.md` | Когда вендор отдаст свои снимки и отчёты аудита базы — снять модуль и его таблицы (миграция односторонняя, CONVENTIONS §8); гейт переводится в `--mode block` со следующего релиза | (этот PR) |
+| DBC-4 | Модуль `datastore-care` и две собственные таблицы доски (`datastore_snapshots`, `datastore_audit_reports`, срок 90 дней) + гейт релиза `db-audit-gate.sh` в режиме предупреждения для 1.6.5 | `server/src/myrmidon/datastore-care/` (domain, settings, store, collectors/postgres, audit-report, service, routes, startup, index), `packages/db/src/schema/datastore_care.ts` + миграция `0311_datastore_care.sql` и мета, `server/src/app.ts`, `server/src/index.ts`, `scripts/myrmidon/release/db-audit-gate.sh`, `docs/myrmidon/releases/1.6.5-db-audit.md` (канонический отчёт аудита), `releases/1.6.5/db-audit.md` (точка входа на него) | Решение владельца 08.10: оптимизация хранилищ — функция доски, аудит БД обязателен перед финальным релизом; числа аудита 04.10 (таблица `heartbeat_runs` 1,17 ГБ, четыре горячих предиката без индекса) | `server/src/myrmidon/datastore-care/*.myrmidon.test.ts` (settings — умолчания, collectors/postgres — разбор снимка на скриптовом порту, audit-report — критерии и markdown, service — сбор и retention, routes — HTTP и доступы), `scripts/myrmidon/release/db-audit-gate.test.mjs` (режимы warn/block, устаревание, ввод), `packages/db/src/datastore-care-migration.myrmidon.test.ts` (статика файла/журнала/снапшота + применение на embedded Postgres), `releases/1.6.5/db-audit.md` | Когда вендор отдаст свои снимки и отчёты аудита базы — снять модуль и его таблицы (миграция односторонняя, CONVENTIONS §8); гейт переводится в `--mode block` со следующего релиза | (этот PR) |
 
 ## settings-en
 
