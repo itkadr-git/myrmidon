@@ -18,8 +18,7 @@ import {
   linkIssueApprovalSchema,
 } from "@paperclipai/shared";
 import { PaperclipApiClient } from "./client.js";
-import { formatErrorResponse, formatTextResponse } from "./format.js";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { formatErrorResponse, formatTextResponse } from "./format.js"; import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C): kept on this line so the capability anchors in tools.ts do not shift
 
 export interface ToolDefinition {
   name: string;
