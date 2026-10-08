@@ -74,6 +74,8 @@ import { preserveFallbackSignalGeneralKey } from "../myrmidon/litellm-fallback-s
 import { preserveBudgetLimitsGeneralKey } from "../myrmidon/budget-limits/settings.js";
 // myrmidon(1.6.5-DBC1): keep the datastore-care block across vendor writes of `general`
 import { preserveDatastoreCareGeneralKey } from "../myrmidon/datastore-care/retention/settings.js";
+// myrmidon(DB-PERF-C-P4): keep the tool gateway policy cache TTL across vendor writes of `general`
+import { preserveToolPolicyCacheGeneralKey } from "../myrmidon/tool-policy-cache/settings.js";
 import { getManagedInstanceConfig, type ManagedInstanceConfig } from "./managed-config.js";
 import { getOperatorSettingDefaults } from "./setting-defaults.js";
 
@@ -336,6 +338,9 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // line `updateGeneral` normalizes the patch away and PATCH
       // /api/myrmidon/datastore-care would never roundtrip.
       ...(parsed.data.datastoreCare ? { datastoreCare: parsed.data.datastoreCare } : {}),
+      // myrmidon(DB-PERF-C-P4): the stored tool gateway policy cache TTL
+      // survives every general write (it is edited on its own settings route).
+      ...(parsed.data.toolPolicyCache ? { toolPolicyCache: parsed.data.toolPolicyCache } : {}),
     };
   }
   return {
@@ -716,6 +721,12 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
               ...preserveGitHubSharedIdentityGeneralKey(current.general), // myrmidon(GITHUB-SHARED-IDENTITY)
               ...preserveBudgetProjectionGeneralKey(current.general), // myrmidon(1.7-BUDGET-CONFIG-C)
               ...preserveBotImageRolloutGeneralKey(current.general), // myrmidon(BOT-ROLLOUT)
+              ...preserveToolPolicyCacheGeneralKey(current.general), // myrmidon(DB-PERF-C-P4)
+              // myrmidon(DB-PERF-C-P4): a patch that carries the key wins over the restored value.
+              ...(patch.toolPolicyCache !== undefined ? { toolPolicyCache: nextGeneral.toolPolicyCache } : {}),
+              ...preserveToolPolicyCacheGeneralKey(current.general), // myrmidon(DB-PERF-C-P4)
+              // myrmidon(DB-PERF-C-P4): a patch that carries the key wins over the restored value.
+              ...(patch.toolPolicyCache !== undefined ? { toolPolicyCache: nextGeneral.toolPolicyCache } : {}),
               ...preserveBudgetLimitsGeneralKey(current.general), // myrmidon(1.7-BUDGET-CONFIG A)
               ...preserveDatastoreCareGeneralKey(current.general), // myrmidon(1.6.5-DBC1)
               // The preserve line above restores the stored value: a patch that
