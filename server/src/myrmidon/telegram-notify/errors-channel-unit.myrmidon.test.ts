@@ -111,6 +111,19 @@ describe("HourlyRateLimiter", () => {
     const limiter = new HourlyRateLimiter(now);
     expect(limiter.admit("company-a", 0)).toBe(false);
   });
+
+  it("hasRoom does not charge; consume does", () => {
+    clock = base;
+    const limiter = new HourlyRateLimiter(now);
+    for (let i = 0; i < 5; i += 1) expect(limiter.hasRoom("company-a", 2)).toBe(true);
+    limiter.consume("company-a");
+    expect(limiter.hasRoom("company-a", 2)).toBe(true);
+    limiter.consume("company-a");
+    expect(limiter.hasRoom("company-a", 2)).toBe(false);
+    clock = base + HOUR + 1;
+    expect(limiter.hasRoom("company-a", 2)).toBe(true);
+    expect(limiter.hasRoom("company-a", 0)).toBe(false);
+  });
 });
 
 describe("errorChannelCardText", () => {
@@ -158,18 +171,5 @@ describe("errorChannelPublicationKey", () => {
     expect(errorChannelPublicationKey({ companyId: "c1", dedupKey: "agent_error:a1" })).toBe(
       "notify:errors:c1:agent_error:a1",
     );
-  });
-
-  it("hasRoom does not charge; consume does", () => {
-    clock = base;
-    const limiter = new HourlyRateLimiter(now);
-    for (let i = 0; i < 5; i += 1) expect(limiter.hasRoom("company-a", 2)).toBe(true);
-    limiter.consume("company-a");
-    expect(limiter.hasRoom("company-a", 2)).toBe(true);
-    limiter.consume("company-a");
-    expect(limiter.hasRoom("company-a", 2)).toBe(false);
-    clock = base + HOUR + 1;
-    expect(limiter.hasRoom("company-a", 2)).toBe(true);
-    expect(limiter.hasRoom("company-a", 0)).toBe(false);
   });
 });
