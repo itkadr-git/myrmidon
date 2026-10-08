@@ -2129,6 +2129,13 @@
       "when": 1791312571333,
       "tag": "0306_audit_indexes_heartbeat_issues",
       "breakpoints": true
+    },
+    {
+      "idx": 307,
+      "version": "7",
+      "when": 1791424100000,
+      "tag": "0307_db_care_issue_prev_assignee_index",
+      "breakpoints": true
     }
   ]
 }

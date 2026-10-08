@@ -1,4 +1,5 @@
 import { pgTable, uuid, text, timestamp, jsonb, index } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
@@ -33,5 +34,16 @@ export const activityLog = pgTable(
     ),
     runIdIdx: index("activity_log_run_id_idx").on(table.runId),
     entityIdx: index("activity_log_entity_type_id_idx").on(table.entityType, table.entityId),
+    // myrmidon(DB-CARE): the attention feed resolves the issues whose assignee
+    // left one agent by reading the audit rows' previous-assignee payload
+    // (server/src/services/attention.ts, details->'_previous'). Persisted from
+    // the production database, see migration 0307_db_care_issue_prev_assignee_index.
+    issuePrevAssigneeIdx: index("activity_log_issue_prev_assignee_idx")
+      .on(
+        table.companyId,
+        sql`((${table.details} -> '_previous' ->> 'assigneeAgentId'))`,
+        table.createdAt,
+      )
+      .where(sql`${table.entityType} = 'issue' and ${table.action} = 'issue.updated'`),
   }),
 );
