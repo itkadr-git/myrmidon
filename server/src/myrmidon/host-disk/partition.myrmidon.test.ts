@@ -246,7 +246,7 @@ describe("no dockergate data: previous behaviour, marked not measured", () => {
       resolveSettings: async () => ({ usageThresholdPercent: 85 }),
       logActivity,
       lastSignalAt: async () => null,
-      logger: { error: vi.fn(), info: vi.fn() },
+      logger: { error: vi.fn(), info: vi.fn(), debug: vi.fn() },
       measureUsage: async () => ({
         path: "/srv/data",
         usedBytes: 90,
@@ -271,7 +271,7 @@ describe("no dockergate data: previous behaviour, marked not measured", () => {
       resolveSettings: async () => ({ usageThresholdPercent: 99 }),
       logActivity: vi.fn(async () => undefined),
       lastSignalAt: async () => null,
-      logger: { error: vi.fn(), info: vi.fn() },
+      logger: { error: vi.fn(), info: vi.fn(), debug: vi.fn() },
       measureUsage: async () => ({
         path: "/srv/data",
         usedBytes: 10,
@@ -296,7 +296,7 @@ describe("no dockergate data: previous behaviour, marked not measured", () => {
       resolveSettings: async () => ({ usageThresholdPercent: 99 }),
       logActivity: vi.fn(async () => undefined),
       lastSignalAt: async () => null,
-      logger: { error: vi.fn(), info: vi.fn() },
+      logger: { error: vi.fn(), info: vi.fn(), debug: vi.fn() },
       measureUsage: async () => ({
         path: "/srv/data",
         usedBytes: 10,
