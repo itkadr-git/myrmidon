@@ -84,7 +84,7 @@ import { getTrustPreset } from "../lib/trust-policy-ui";
 import { ReusableExecutionWorkspaceSelect } from "./ReusableExecutionWorkspaceSelect";
 import { codexReasoningEffortOptions } from "../lib/codex-reasoning-effort";
 
-const DRAFT_KEY = "paperclip:issue-draft";
+const DRAFT_KEY = "myrmidon:issue-draft";
 const DEBOUNCE_MS = 800;
 
 type VisualViewportLayout = {

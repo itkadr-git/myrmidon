@@ -543,7 +543,7 @@ export function AgentChatPrototype({
       if (entryScenario) {
         if (previousRecents === null) localStorage.removeItem(recentKey);
         else localStorage.setItem(recentKey, previousRecents);
-        window.dispatchEvent(new Event("paperclip:recent-agent-chats"));
+        window.dispatchEvent(new Event("myrmidon:recent-agent-chats"));
       }
       queryClient.clear();
     };

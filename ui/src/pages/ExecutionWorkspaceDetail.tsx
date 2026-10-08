@@ -583,7 +583,7 @@ function ExecutionWorkspaceIssuesList({
       projects={projectOptions}
       liveIssueIds={liveIssueIds}
       projectId={project?.id}
-      viewStateKey="paperclip:execution-workspace-issues-view"
+      viewStateKey="myrmidon:execution-workspace-issues-view"
       baseCreateIssueDefaults={createIssueDefaults}
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
     />

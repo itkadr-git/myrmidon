@@ -469,7 +469,7 @@ describe("Inbox toolbar", () => {
 
   it("keeps archive hover actions and swipe targets on every unread non-task Mine row", async () => {
     routerMock.location.pathname = "/inbox/mine";
-    localStorage.setItem("paperclip:inbox:group-by", "none");
+    localStorage.setItem("myrmidon:inbox:group-by", "none");
     apiMocks.approvalsList.mockResolvedValue([createApproval()]);
     apiMocks.heartbeatRunsList.mockResolvedValue([createFailedRun()]);
     apiMocks.joinRequestsList.mockResolvedValue([createJoinRequest()]);
@@ -522,7 +522,7 @@ describe("Inbox toolbar", () => {
 
   it("restores folded and unfolded sub-tasks across remounts", async () => {
     routerMock.location.pathname = "/inbox/mine";
-    const storageKey = "paperclip:inbox:collapsed-parents:company-1";
+    const storageKey = "myrmidon:inbox:collapsed-parents:company-1";
     localStorage.removeItem(storageKey);
 
     const parent = createIssue({
@@ -672,7 +672,7 @@ describe("Inbox toolbar", () => {
 
   it("explains that live-run filtering is different from active task statuses", async () => {
     routerMock.location.pathname = "/inbox/mine";
-    localStorage.setItem("paperclip:inbox:filters:company-1", JSON.stringify({
+    localStorage.setItem("myrmidon:inbox:filters:company-1", JSON.stringify({
       allCategoryFilter: "everything",
       allApprovalFilter: "all",
       issueFilters: { liveOnly: true },
@@ -780,7 +780,7 @@ describe("Inbox toolbar", () => {
 
   it("shows the resolved isolated workspace name in canonical task metadata", async () => {
     routerMock.location.pathname = "/inbox/mine";
-    localStorage.setItem("paperclip:inbox:issue-columns", JSON.stringify(["status", "id", "workspace", "updated"]));
+    localStorage.setItem("myrmidon:inbox:issue-columns", JSON.stringify(["status", "id", "workspace", "updated"]));
     apiMocks.experimentalSettings.mockResolvedValue({ enableIsolatedWorkspaces: true });
     apiMocks.executionWorkspaceSummaries.mockResolvedValue([{
       id: "execution-workspace-1",

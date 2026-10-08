@@ -80,7 +80,7 @@ const DEFAULT_FOLDER_RAIL_WIDTH = 288;
 const MIN_FOLDER_RAIL_WIDTH = 224;
 const MAX_FOLDER_RAIL_WIDTH = 400;
 const FOLDER_RAIL_WIDTH_STEP = 16;
-const FOLDER_RAIL_STORAGE_KEY = "paperclip.skills.folderRail.width";
+const FOLDER_RAIL_STORAGE_KEY = "myrmidon.skills.folderRail.width";
 
 function clampFolderRailWidth(width: number) {
   return Math.min(MAX_FOLDER_RAIL_WIDTH, Math.max(MIN_FOLDER_RAIL_WIDTH, width));

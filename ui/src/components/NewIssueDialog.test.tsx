@@ -1457,7 +1457,7 @@ describe("NewIssueDialog", () => {
       enableIsolatedWorkspaces: false,
     });
     localStorage.setItem(
-      "paperclip:issue-draft",
+      "myrmidon:issue-draft",
       JSON.stringify({
         title: "Watched task",
         description: "",

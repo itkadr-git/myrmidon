@@ -461,7 +461,7 @@ export function BoardChat() {
     if (!container) return;
 
     try {
-      const saved = sessionStorage.getItem("paperclip.boardChat.scrollTop");
+      const saved = sessionStorage.getItem("myrmidon.boardChat.scrollTop");
       if (saved != null) {
         const parsed = Number(saved);
         if (Number.isFinite(parsed)) {
@@ -512,7 +512,7 @@ export function BoardChat() {
         rafId = null;
         try {
           sessionStorage.setItem(
-            "paperclip.boardChat.scrollTop",
+            "myrmidon.boardChat.scrollTop",
             String(container.scrollTop),
           );
         } catch { /* sessionStorage unavailable */ }

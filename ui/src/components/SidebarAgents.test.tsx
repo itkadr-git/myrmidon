@@ -493,7 +493,7 @@ describe("SidebarAgents", () => {
   });
 
   it("keeps top mode in stored org-aware order", async () => {
-    localStorage.setItem("paperclip.agentOrder:company-1:user-1", JSON.stringify(["agent-b", "agent-a", "agent-c"]));
+    localStorage.setItem("myrmidon.agentOrder:company-1:user-1", JSON.stringify(["agent-b", "agent-a", "agent-c"]));
     mockAgentsApi.list.mockResolvedValue([
       makeAgent({ id: "agent-a", name: "Alpha", urlKey: "alpha" }),
       makeAgent({ id: "agent-b", name: "Bravo", urlKey: "bravo" }),
@@ -541,7 +541,7 @@ describe("SidebarAgents", () => {
     await chooseSortMode("Alphabetical");
 
     expect(agentLinkLabels(container)).toEqual(["Alpha", "Bravo", "Charlie"]);
-    expect(localStorage.getItem("paperclip.agentSortMode:company-1:user-1")).toBe("alphabetical");
+    expect(localStorage.getItem("myrmidon.agentSortMode:company-1:user-1")).toBe("alphabetical");
   });
 
   it("sorts recent agents by heartbeat, updated time, and created time descending", async () => {

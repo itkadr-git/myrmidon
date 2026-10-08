@@ -480,7 +480,7 @@ describe("SkillStudio landing", () => {
   });
 
   it("renders recently-visited and recently-updated sections, gating avatars to humans", async () => {
-    localStorage.setItem("paperclip:recent-studio-skills", JSON.stringify(["visited-1"]));
+    localStorage.setItem("myrmidon:recent-studio-skills", JSON.stringify(["visited-1"]));
     mockCompanySkillsApi.list.mockResolvedValue([
       makeListItem({
         id: "visited-1",

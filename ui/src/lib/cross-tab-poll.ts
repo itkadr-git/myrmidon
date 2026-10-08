@@ -462,7 +462,7 @@ const DEFAULT_COORDINATOR_TICK_MS = 1_000;
 const DEFAULT_PUBLISH_DEBOUNCE_MS = 1_000;
 const MAX_COORDINATOR_CACHE_ENTRIES = 32;
 const COORDINATOR_CACHE_TTL_MS = 5 * 60_000;
-const TAB_ID_STORAGE_KEY = "paperclip:shared-poll:tab-id";
+const TAB_ID_STORAGE_KEY = "myrmidon:shared-poll:tab-id";
 
 function sanitizeCompanyId(companyId: string): string {
   return encodeURIComponent(companyId);

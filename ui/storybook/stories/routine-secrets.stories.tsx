@@ -20,7 +20,7 @@ import { storybookCompanies, storybookSecrets } from "../fixtures/paperclipData"
 const COMPANY_ID = "company-storybook";
 
 if (typeof window !== "undefined") {
-  window.localStorage.setItem("paperclip.selectedCompanyId", COMPANY_ID);
+  window.localStorage.setItem("myrmidon.selectedCompanyId", COMPANY_ID);
 }
 
 function StorybookRoutineFixtures({

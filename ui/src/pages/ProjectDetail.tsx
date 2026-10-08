@@ -244,7 +244,7 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
       projects={projects}
       liveIssueIds={liveIssueIds}
       projectId={projectId}
-      viewStateKey="paperclip:project-issues-view"
+      viewStateKey="myrmidon:project-issues-view"
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
     />
   );
@@ -315,7 +315,7 @@ function ProjectPluginOperationsList({
       projects={projects}
       liveIssueIds={liveIssueIds}
       projectId={projectId}
-      viewStateKey={`paperclip:project-plugin-operations-view:${pluginKey}`}
+      viewStateKey={`myrmidon:project-plugin-operations-view:${pluginKey}`}
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
     />
   );

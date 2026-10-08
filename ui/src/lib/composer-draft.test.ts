@@ -40,7 +40,7 @@ describe("task draft upload receipts", () => {
   });
   it("keeps chat drafts and pending submission fences within the current tab", () => {
     sessionStorage.clear();
-    const chatKey = "paperclip:agent-chat-draft:company:user:agent";
+    const chatKey = "myrmidon:agent-chat-draft:company:user:agent";
     saveDraft(chatKey, "My chat draft");
     saveDraftSubmission(chatKey, { attemptId: id, reviewed: false });
     expect(loadDraft(chatKey)).toBe("My chat draft");
