@@ -22,6 +22,11 @@ settings-section: Track 5 — operations
   `GET .../bot-container/status` shows the container running on the release
   image, otherwise it is deferred and retried. The old synchronous answer
   (`outcome.kind`) is still understood.
+- A POST `apply` refused with 409 (`bot_container_not_applicable`: the agent
+  went running between the status read and the apply) is deferred, not failed.
+- A failed or deferred bot never interrupts the run: the loop reaches every
+  remaining bot, the end-of-run line is `WARNING` when bots stayed deferred
+  and `DEGRADED` only when at least one actually failed.
 
 ## changelog-ru
 
@@ -41,6 +46,12 @@ settings-section: Track 5 — operations
   `GET .../bot-container/status` показывает работающий контейнер на образе
   релиза, иначе он отложен и повторяется. Старый синхронный ответ
   (`outcome.kind`) по-прежнему поддерживается.
+- Отказ POST `apply` с кодом 409 (`bot_container_not_applicable`: агент стал
+  running между чтением статуса и применением) классифицируется как «отложен»,
+  а не как «провален».
+- Провал или откладывание одного бота не прерывает прогон: цикл доходит до
+  каждого следующего бота, итоговая строка — `WARNING`, если есть отложенные,
+  и `DEGRADED`, только если хотя бы один реально провален.
 
 ## divergence
 
