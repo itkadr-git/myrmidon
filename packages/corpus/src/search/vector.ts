@@ -5,7 +5,10 @@
 // here keep the three rules in one place: the vector has the right size, its numbers are
 // finite, and it is normalized before it is written or queried.
 
-export const CORPUS_EMBEDDING_DIMENSIONS = 1024;
+import { CORPUS_EMBEDDING_DIMENSIONS } from "../domain.js";
+
+/** Re-exported so the search package has one entry point for the width the schema stores. */
+export { CORPUS_EMBEDDING_DIMENSIONS };
 
 export type EmbeddingVectorErrorCode = "empty" | "dimension" | "value";
 

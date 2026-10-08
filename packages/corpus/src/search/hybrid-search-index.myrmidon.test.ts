@@ -15,21 +15,23 @@ interface RecordedCall {
 interface ChunkRow {
   id: string;
   company_id: string;
-  dataset_id: string;
   document_id: string;
-  ordinal: number;
+  chunk_index: number;
   content: string;
+  token_count: number | null;
+  metadata: Record<string, unknown>;
   score: number;
 }
 
-function chunkRow(id: string, ordinal: number, score: number): ChunkRow {
+function chunkRow(id: string, chunkIndex: number, score: number): ChunkRow {
   return {
     id,
     company_id: companyId,
-    dataset_id: datasetId,
     document_id: documentId,
-    ordinal,
+    chunk_index: chunkIndex,
     content: `chunk ${id}`,
+    token_count: 12,
+    metadata: { pageNumber: chunkIndex + 1 },
     score,
   };
 }
@@ -68,7 +70,7 @@ describe("hybrid search index", () => {
     const { sql, calls } = createRecordingSql({ vector: [chunkRow("a", 0, 0.9)], fullText: [chunkRow("a", 0, 0.4)] });
     const index = createPostgresSearchIndex({ sql });
 
-    await index.search({ companyId, datasetId, queryText: "supply agreement", embedding: embedding() });
+    await index.search({ companyId, datasetId, text: "supply agreement", embedding: embedding() });
 
     const settings = calls.filter((call) => /set local hnsw\.ef_search/i.test(call.text));
     expect(settings).toHaveLength(1);
@@ -78,11 +80,15 @@ describe("hybrid search index", () => {
     expect(vectorCall).toBeDefined();
     expect(textCall).toBeDefined();
     expect(vectorCall?.text).toContain('from "corpus_chunks" c');
+    expect(vectorCall?.text).toContain('join "corpus_documents" d on d.id = c.document_id and d.company_id = c.company_id');
     expect(vectorCall?.text).toContain("c.company_id = $2::uuid");
-    expect(vectorCall?.text).toContain("c.dataset_id = $3::uuid");
+    expect(vectorCall?.text).toContain("($3::uuid is null or d.dataset_id = $3::uuid)");
+    expect(vectorCall?.text).toContain("d.status = 'ready'");
     expect(vectorCall?.values).toEqual([expect.stringContaining("["), companyId, datasetId, 100]);
+    expect(textCall?.text).toContain('c."fts"');
     expect(textCall?.text).toContain("plainto_tsquery($5::regconfig, $1)");
-    expect(textCall?.values).toEqual(["supply agreement", companyId, datasetId, "%supply agreement%", "russian", 100]);
+    expect(textCall?.text).toContain('c."content" ilike $4');
+    expect(textCall?.values).toEqual(["supply agreement", companyId, datasetId, "%supply agreement%", "english", 100]);
   });
 
   it("merges the rankings with RRF and returns score, chunk and document", async () => {
@@ -93,17 +99,25 @@ describe("hybrid search index", () => {
     });
     const index = createPostgresSearchIndex({ sql });
 
-    const hits = await index.search({ companyId, datasetId, queryText: "contract", embedding: embedding(), limit: 2 });
+    const hits = await index.search({ companyId, datasetId, text: "contract", embedding: embedding(), limit: 2 });
 
-    expect(hits.map((hit) => hit.chunk.id)).toEqual(["a", "b"]);
+    expect(hits.map((hit) => hit.chunkId)).toEqual(["a", "b"]);
     expect(hits[0].score).toBeCloseTo(1 / 61 + 1 / 62, 12);
+    expect(hits[0]).toMatchObject({
+      chunkId: "a",
+      documentId,
+      datasetId,
+      content: "chunk a",
+    });
     expect(hits[0].chunk).toEqual({
       id: "a",
       companyId,
       datasetId,
       documentId,
-      ordinal: 0,
+      chunkIndex: 0,
       content: "chunk a",
+      tokenCount: 12,
+      metadata: { pageNumber: 1 },
     });
     expect(hits[0].document).toEqual({
       id: documentId,
@@ -111,6 +125,7 @@ describe("hybrid search index", () => {
       title: "Contract",
       sourceUri: "file://contract.pdf",
     });
+    expect(hits[0].metadata).toEqual({ pageNumber: 1 });
     expect(hits[0].fusion).toEqual({ vectorRank: 1, fullTextRank: 2 });
     expect(hits[1].fusion).toEqual({ vectorRank: 2, fullTextRank: 1 });
   });
@@ -123,9 +138,9 @@ describe("hybrid search index", () => {
     });
     const index = createPostgresSearchIndex({ sql });
 
-    const hits = await index.search({ companyId, datasetId, queryText: "x", embedding: embedding(), limit: 1 });
+    const hits = await index.search({ companyId, datasetId, text: "x", embedding: embedding(), limit: 1 });
 
-    expect(hits.map((hit) => hit.chunk.id)).toEqual(["a"]);
+    expect(hits.map((hit) => hit.chunkId)).toEqual(["a"]);
     const vectorCall = calls.find((call) => /<=>/.test(call.text));
     expect(vectorCall?.values[3]).toBe(100);
     const textCall = calls.find((call) => /ts_rank/.test(call.text));
@@ -135,28 +150,65 @@ describe("hybrid search index", () => {
   it("honours a kCandidates above the default limit", async () => {
     const { sql, calls } = createRecordingSql({ vector: [], fullText: [], documents: [] });
     const index = createPostgresSearchIndex({ sql, fusion: { k0: 60, kCandidates: 250 } });
-    await index.search({ companyId, datasetId, queryText: "x", embedding: embedding(), limit: 10 });
+    await index.search({ companyId, datasetId, text: "x", embedding: embedding(), limit: 10 });
     expect(calls.find((call) => /<=>/.test(call.text))?.values[3]).toBe(250);
+  });
+
+  it("searches the whole company when no dataset is given", async () => {
+    const { sql, calls } = createRecordingSql({ vector: [chunkRow("a", 0, 1)], fullText: [], documents });
+    const index = createPostgresSearchIndex({ sql });
+
+    const hits = await index.search({ companyId, text: "contract", embedding: embedding() });
+
+    expect(hits.map((hit) => hit.chunkId)).toEqual(["a"]);
+    expect(calls.find((call) => /<=>/.test(call.text))?.values[2]).toBeNull();
+    expect(calls.find((call) => /ts_rank/.test(call.text))?.values[2]).toBeNull();
+  });
+
+  it("runs only the full text ranking when the query carries no embedding", async () => {
+    const { sql, calls } = createRecordingSql({ vector: [], fullText: [chunkRow("a", 0, 0.3)], documents });
+    const index = createPostgresSearchIndex({ sql });
+
+    const hits = await index.search({ companyId, datasetId, text: "contract" });
+
+    expect(hits.map((hit) => hit.chunkId)).toEqual(["a"]);
+    expect(hits[0].fusion).toEqual({ vectorRank: null, fullTextRank: 1 });
+    expect(calls.some((call) => /<=>/.test(call.text))).toBe(false);
+    expect(calls.some((call) => /set local hnsw\.ef_search/i.test(call.text))).toBe(false);
+  });
+
+  it("returns nothing without touching the database when the text is blank and no embedding is given", async () => {
+    const { sql, calls } = createRecordingSql({ vector: [], fullText: [] });
+    const index = createPostgresSearchIndex({ sql });
+
+    expect(await index.search({ companyId, datasetId, text: "   " })).toEqual([]);
+    expect(calls).toHaveLength(0);
   });
 
   it("returns nothing and skips the document query when both rankings are empty", async () => {
     const { sql, calls } = createRecordingSql({ vector: [], fullText: [] });
     const index = createPostgresSearchIndex({ sql });
-    expect(await index.search({ companyId, datasetId, queryText: "missing", embedding: embedding() })).toEqual([]);
+    expect(await index.search({ companyId, datasetId, text: "missing", embedding: embedding() })).toEqual([]);
     expect(calls.some((call) => /select d\.id/.test(call.text))).toBe(false);
   });
 
   it("skips candidates whose document row is missing", async () => {
     const { sql } = createRecordingSql({ vector: [chunkRow("a", 0, 1)], fullText: [], documents: [] });
     const index = createPostgresSearchIndex({ sql });
-    expect(await index.search({ companyId, datasetId, queryText: "x", embedding: embedding() })).toEqual([]);
+    expect(await index.search({ companyId, datasetId, text: "x", embedding: embedding() })).toEqual([]);
+  });
+
+  it("keeps chunks as rows, so removing a document has nothing to invalidate", async () => {
+    const { sql } = createRecordingSql({ vector: [], fullText: [] });
+    const index = createPostgresSearchIndex({ sql });
+    await expect(index.removeDocument(companyId, documentId)).resolves.toBeUndefined();
   });
 
   it("escapes wildcards of the trigram fallback pattern", async () => {
     expect(escapeLikePattern("100%_done\\")).toBe("100\\%\\_done\\\\");
     const { sql, calls } = createRecordingSql({ vector: [], fullText: [] });
     const index = createPostgresSearchIndex({ sql });
-    await index.search({ companyId, datasetId, queryText: "50% off", embedding: embedding() });
+    await index.search({ companyId, datasetId, text: "50% off", embedding: embedding() });
     expect(calls.find((call) => /ts_rank/.test(call.text))?.values[3]).toBe("%50\\% off%");
   });
 
@@ -164,10 +216,10 @@ describe("hybrid search index", () => {
     const { sql } = createRecordingSql({ vector: [], fullText: [] });
     const index = createPostgresSearchIndex({ sql });
     await expect(
-      index.search({ companyId, datasetId, queryText: "x", embedding: [1, 2, 3] }),
+      index.search({ companyId, datasetId, text: "x", embedding: [1, 2, 3] }),
     ).rejects.toThrow(/1024/);
     await expect(
-      index.search({ companyId, datasetId, queryText: "x", embedding: embedding(), limit: 0 }),
+      index.search({ companyId, datasetId, text: "x", embedding: embedding(), limit: 0 }),
     ).rejects.toThrow(RangeError);
   });
 
@@ -177,6 +229,6 @@ describe("hybrid search index", () => {
       RangeError,
     );
     expect(() => createPostgresSearchIndex({ sql, efSearch: 0 })).toThrow(RangeError);
-    expect(() => createPostgresSearchIndex({ sql, ftsLanguage: "russian'--" })).toThrow(RangeError);
+    expect(() => createPostgresSearchIndex({ sql, ftsLanguage: "english'--" })).toThrow(RangeError);
   });
 });

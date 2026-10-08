@@ -1,28 +1,36 @@
-// myrmidon(CORPUS-2.0): the PostgreSQL implementation of the hybrid search index.
+// myrmidon(CORPUS-2.0): the PostgreSQL implementation of the hybrid SearchIndex port.
 //
-// One search runs two rankings over `corpus_chunks`, both filtered by company and dataset:
-//   * vector: `embedding <=> $query` (cosine, HNSW index), with `hnsw.ef_search` set for the
-//     transaction, because the pilot measured its recall with ef_search = 64;
-//   * full text: `content_tsv @@ plainto_tsquery(...)` (GIN) plus an `ILIKE` fallback that the
-//     trigram GIN index serves, ordered by `ts_rank` and then by trigram similarity.
+// One search runs up to two rankings over `corpus_chunks`, both scoped by company and by dataset
+// (the dataset lives on `corpus_documents`, and only chunks of `ready` documents are searchable):
+//   * vector: `embedding <=> $query` (cosine over the HNSW index), with `hnsw.ef_search` set for
+//     the transaction, because the pilot measured its recall with ef_search = 64;
+//   * full text: `fts @@ plainto_tsquery(...)` (the GIN index over the generated tsvector) plus an
+//     `ILIKE` fallback that the trigram GIN index serves.
 // The two rankings are merged with RRF (k0 = 60, k_candidates = 100) and the top-k hits are
 // returned with their chunk and document rows.
 //
-// The module talks to the database through `SqlExecutor` instead of a driver, so the query
-// shape is testable without a database and the module does not pick a driver for the product.
+// The module talks to the database through `SqlExecutor` instead of a driver, so the query shape is
+// testable without a database and the module does not pick a driver for the product.
 
+import type { CorpusSearchQuery, SearchIndex } from "../ports.js";
 import { reciprocalRankFusion, type FusionParameters, DEFAULT_FUSION_PARAMETERS } from "./rrf.js";
 import {
   DEFAULT_EF_SEARCH,
   DEFAULT_SEARCH_LIMIT,
   MAX_SEARCH_LIMIT,
-  type CorpusSearchChunk,
-  type CorpusSearchDocument,
-  type CorpusSearchHit,
-  type CorpusSearchIndex,
-  type CorpusSearchRequest,
+  type CorpusSearchChunkRef,
+  type CorpusSearchDocumentRef,
+  type CorpusSearchHitDetail,
 } from "./types.js";
 import { assertEmbeddingVector, toPgVectorLiteral } from "./vector.js";
+
+/**
+ * The index as this implementation returns it: every method of the `SearchIndex` port, with hits
+ * that also carry the chunk and document rows they came from.
+ */
+export interface PostgresSearchIndex extends SearchIndex {
+  search(query: CorpusSearchQuery): Promise<CorpusSearchHitDetail[]>;
+}
 
 export interface SqlExecutor {
   query<Row extends Record<string, unknown> = Record<string, unknown>>(
@@ -46,7 +54,8 @@ export const DEFAULT_SEARCH_INDEX_SCHEMA: SearchIndexSchema = {
   chunksTable: "corpus_chunks",
   documentsTable: "corpus_documents",
   contentColumn: "content",
-  fullTextColumn: "content_tsv",
+  // The generated tsvector column of the corpus migration (generated from `content`).
+  fullTextColumn: "fts",
   embeddingColumn: "embedding",
 };
 
@@ -56,17 +65,21 @@ export interface PostgresSearchIndexOptions {
   readonly fusion?: FusionParameters;
   /** `hnsw.ef_search` of the vector ranking; the pilot value is 64. */
   readonly efSearch?: number;
-  /** Text search configuration of `plainto_tsquery`, e.g. `russian` or `simple`. */
+  /**
+   * Text search configuration of `plainto_tsquery`. It must be the configuration the generated
+   * `fts` column was built with — the corpus migration uses `english`.
+   */
   readonly ftsLanguage?: string;
 }
 
 interface ChunkRow extends Record<string, unknown> {
   id: string;
   company_id: string;
-  dataset_id: string;
   document_id: string;
-  ordinal: number;
+  chunk_index: number;
   content: string;
+  token_count: number | null;
+  metadata: Record<string, unknown> | null;
 }
 
 interface DocumentRow extends Record<string, unknown> {
@@ -99,12 +112,17 @@ function clampLimit(limit: number | undefined): number {
   return Math.min(limit, MAX_SEARCH_LIMIT);
 }
 
-export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): CorpusSearchIndex {
+/** A query text of whitespace only cannot rank anything, so the full-text leg is skipped. */
+function hasText(text: string | undefined): boolean {
+  return typeof text === "string" && text.trim().length > 0;
+}
+
+export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): PostgresSearchIndex {
   const schema = options.schema ?? DEFAULT_SEARCH_INDEX_SCHEMA;
   const fusion = options.fusion ?? DEFAULT_FUSION_PARAMETERS;
   const efSearch = options.efSearch ?? DEFAULT_EF_SEARCH;
   if (!Number.isInteger(efSearch) || efSearch < 1) throw new RangeError("ef_search must be a positive integer");
-  const language = sqlLanguage(options.ftsLanguage ?? "russian");
+  const language = sqlLanguage(options.ftsLanguage ?? "english");
 
   const chunks = sqlIdentifier(schema.chunksTable, "chunks table");
   const documents = sqlIdentifier(schema.documentsTable, "documents table");
@@ -112,23 +130,36 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
   const fullText = sqlIdentifier(schema.fullTextColumn, "full text column");
   const embedding = sqlIdentifier(schema.embeddingColumn, "embedding column");
 
-  const vectorSql = [
-    `select c.id, c.company_id, c.dataset_id, c.document_id, c.ordinal, c.${content} as content,`,
-    `       1 - (c.${embedding} <=> $1::vector) as score`,
+  // `$3` is the optional dataset: `$3::uuid is null` keeps one statement for both a dataset-scoped
+  // and a company-wide search.
+  const scope = [
     `  from ${chunks} c`,
+    `  join ${documents} d on d.id = c.document_id and d.company_id = c.company_id`,
     ` where c.company_id = $2::uuid`,
-    `   and c.dataset_id = $3::uuid`,
+    `   and ($3::uuid is null or d.dataset_id = $3::uuid)`,
+    `   and d.status = 'ready'`,
+  ].join("\n");
+
+  const chunkColumns = [
+    `       c.id, c.company_id, c.document_id, c.chunk_index, c.${content} as content,`,
+    `       c.token_count, c.metadata,`,
+  ].join("\n");
+
+  const vectorSql = [
+    `select`,
+    chunkColumns,
+    `       1 - (c.${embedding} <=> $1::vector) as score`,
+    scope,
     `   and c.${embedding} is not null`,
     ` order by c.${embedding} <=> $1::vector`,
     ` limit $4`,
   ].join("\n");
 
   const fullTextSql = [
-    `select c.id, c.company_id, c.dataset_id, c.document_id, c.ordinal, c.${content} as content,`,
+    `select`,
+    chunkColumns,
     `       ts_rank(c.${fullText}, plainto_tsquery($5::regconfig, $1)) as score`,
-    `  from ${chunks} c`,
-    ` where c.company_id = $2::uuid`,
-    `   and c.dataset_id = $3::uuid`,
+    scope,
     `   and (c.${fullText} @@ plainto_tsquery($5::regconfig, $1) or c.${content} ilike $4)`,
     ` order by ts_rank(c.${fullText}, plainto_tsquery($5::regconfig, $1)) desc,`,
     `          similarity(c.${content}, $1) desc`,
@@ -145,30 +176,41 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
   const efSearchSql = `set local hnsw.ef_search = ${efSearch}`;
 
   return {
-    async search(request: CorpusSearchRequest): Promise<CorpusSearchHit[]> {
-      const limit = clampLimit(request.limit);
-      const embeddingLiteral = toPgVectorLiteral(
-        assertEmbeddingVector(request.embedding),
-      );
+    async search(query: CorpusSearchQuery) {
+      const limit = clampLimit(query.limit);
+      const datasetId = query.datasetId ?? null;
+      const hasEmbedding = query.embedding !== undefined;
+      const useFullText = hasText(query.text);
+      if (!hasEmbedding && !useFullText) return [];
+
       const kCandidates = Math.max(limit, fusion.kCandidates);
-      const likePattern = `%${escapeLikePattern(request.queryText)}%`;
+      const likePattern = `%${escapeLikePattern(useFullText ? query.text.trim() : "")}%`;
+      const embeddingLiteral = hasEmbedding
+        ? toPgVectorLiteral(assertEmbeddingVector(query.embedding ?? []))
+        : null;
 
       const { vectorRows, fullTextRows } = await options.sql.withTransaction(async (transaction) => {
-        await transaction.query(efSearchSql);
-        const vectorRows = await transaction.query<ChunkRow>(vectorSql, [
-          embeddingLiteral,
-          request.companyId,
-          request.datasetId,
-          kCandidates,
-        ]);
-        const fullTextRows = await transaction.query<ChunkRow>(fullTextSql, [
-          request.queryText,
-          request.companyId,
-          request.datasetId,
-          likePattern,
-          language,
-          kCandidates,
-        ]);
+        let vectorRows: ChunkRow[] = [];
+        let fullTextRows: ChunkRow[] = [];
+        if (embeddingLiteral !== null) {
+          await transaction.query(efSearchSql);
+          vectorRows = await transaction.query<ChunkRow>(vectorSql, [
+            embeddingLiteral,
+            query.companyId,
+            datasetId,
+            kCandidates,
+          ]);
+        }
+        if (useFullText) {
+          fullTextRows = await transaction.query<ChunkRow>(fullTextSql, [
+            query.text.trim(),
+            query.companyId,
+            datasetId,
+            likePattern,
+            language,
+            kCandidates,
+          ]);
+        }
         return { vectorRows, fullTextRows };
       });
 
@@ -187,40 +229,53 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
 
       const documentIds = [...new Set([...chunksById.values()].map((row) => row.document_id))];
       const documentRows = documentIds.length
-        ? await options.sql.query<DocumentRow>(documentsSql, [request.companyId, documentIds])
+        ? await options.sql.query<DocumentRow>(documentsSql, [query.companyId, documentIds])
         : [];
       const documentsById = new Map(documentRows.map((row) => [row.id, row]));
 
-      const hits: CorpusSearchHit[] = [];
+      const hits: CorpusSearchHitDetail[] = [];
       for (const candidate of fused) {
         const row = chunksById.get(candidate.id);
         if (!row) continue;
         const document = documentsById.get(row.document_id);
         if (!document) continue;
         hits.push({
+          chunkId: row.id,
+          documentId: row.document_id,
+          datasetId: document.dataset_id,
+          content: row.content,
           score: candidate.score,
-          chunk: toChunk(row),
-          document: toDocument(document),
+          metadata: row.metadata ?? {},
+          chunk: toChunkRef(row, document.dataset_id),
+          document: toDocumentRef(document),
           fusion: { vectorRank: candidate.vectorRank, fullTextRank: candidate.fullTextRank },
         });
       }
       return hits;
     },
+
+    /**
+     * Chunks are rows, not a side index: `corpus_chunks` cascades on document delete and the
+     * generated tsvector and the HNSW structure follow the rows, so there is nothing to invalidate.
+     */
+    async removeDocument(): Promise<void> {},
   };
 }
 
-function toChunk(row: ChunkRow): CorpusSearchChunk {
+function toChunkRef(row: ChunkRow, datasetId: string): CorpusSearchChunkRef {
   return {
     id: row.id,
     companyId: row.company_id,
-    datasetId: row.dataset_id,
+    datasetId,
     documentId: row.document_id,
-    ordinal: Number(row.ordinal),
+    chunkIndex: Number(row.chunk_index),
     content: row.content,
+    tokenCount: row.token_count === null ? null : Number(row.token_count),
+    metadata: row.metadata ?? {},
   };
 }
 
-function toDocument(row: DocumentRow): CorpusSearchDocument {
+function toDocumentRef(row: DocumentRow): CorpusSearchDocumentRef {
   return {
     id: row.id,
     datasetId: row.dataset_id,
