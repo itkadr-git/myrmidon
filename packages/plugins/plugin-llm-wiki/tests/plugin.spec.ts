@@ -3746,4 +3746,95 @@ Duplicate headings receive stable suffixes.
     expect(harness.dbExecutes.some((execute) => execute.sql.includes("wiki_page_revisions"))).toBe(true);
     expect(harness.dbExecutes.some((execute) => execute.sql.includes("filed_outputs"))).toBe(true);
   });
+  describe("blank-write protection", () => {
+    const PATH = "wiki/infra/servers/vm-core.md";
+    const ORIGINAL = "# vm-core\n\nReal content.\n";
+
+    function blankWriteHarness() {
+      const harness = createTestHarness({ manifest });
+      harness.seed({ agents: [wikiMaintainerAgent()] });
+      const files = new Map<string, string>([[PATH, ORIGINAL]]);
+      harness.ctx.localFolders.readText = async (_companyId, _folderKey, relativePath) => {
+        const value = files.get(relativePath);
+        if (value == null) throw new Error("missing");
+        return value;
+      };
+      harness.ctx.localFolders.writeTextAtomic = async (_companyId, _folderKey, relativePath, contents) => {
+        files.set(relativePath, contents);
+        return harness.ctx.localFolders.status(COMPANY_ID, "wiki-root");
+      };
+      return { harness, files };
+    }
+
+    it("write-page without a body does not truncate an existing page", async () => {
+      const { harness, files } = blankWriteHarness();
+      await plugin.definition.setup(harness.ctx);
+
+      await expect(harness.performAction("write-page", {
+        companyId: COMPANY_ID,
+        wikiId: "default",
+        path: PATH,
+      })).rejects.toThrow("contents is required");
+
+      expect(files.get(PATH)).toBe(ORIGINAL);
+      expect(harness.dbExecutes.some((execute) => execute.sql.includes("wiki_page_revisions"))).toBe(false);
+    });
+
+    it("rejects empty and whitespace-only bodies through the action and the agent tools", async () => {
+      const { harness, files } = blankWriteHarness();
+      await plugin.definition.setup(harness.ctx);
+
+      for (const contents of ["", "  \n\t\n"]) {
+        await expect(harness.performAction("write-page", {
+          companyId: COMPANY_ID,
+          wikiId: "default",
+          path: PATH,
+          contents,
+        })).rejects.toThrow("Refusing to write empty contents");
+        await expect(harness.executeTool("wiki_write_page", {
+          companyId: COMPANY_ID,
+          wikiId: "default",
+          path: PATH,
+          contents,
+        })).rejects.toThrow();
+      }
+
+      expect(files.get(PATH)).toBe(ORIGINAL);
+      expect(harness.dbExecutes.some((execute) => execute.sql.includes("wiki_page_revisions"))).toBe(false);
+    });
+
+    it("blanks a page only when allowEmpty is passed explicitly", async () => {
+      const { harness, files } = blankWriteHarness();
+      await plugin.definition.setup(harness.ctx);
+
+      await harness.performAction("write-page", {
+        companyId: COMPANY_ID,
+        wikiId: "default",
+        path: PATH,
+        contents: "",
+        allowEmpty: true,
+      });
+
+      expect(files.get(PATH)).toBe("");
+    });
+
+    it("file-as-page without contents or answer does not write a placeholder or open an operation", async () => {
+      const { harness, files } = blankWriteHarness();
+      await plugin.definition.setup(harness.ctx);
+
+      await expect(harness.performAction("file-as-page", {
+        companyId: COMPANY_ID,
+        wikiId: "default",
+        path: PATH,
+      })).rejects.toThrow("file-as-page requires contents or answer");
+
+      expect(files.get(PATH)).toBe(ORIGINAL);
+      expect(harness.dbExecutes.some((execute) => execute.sql.includes("wiki_operations"))).toBe(false);
+      const operations = await harness.ctx.issues.list({
+        companyId: COMPANY_ID,
+        originKindPrefix: String(OPERATION_ORIGIN_KIND),
+      });
+      expect(operations).toHaveLength(0);
+    });
+  });
 });
