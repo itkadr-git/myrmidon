@@ -32,13 +32,6 @@ export interface HermesSkillsHome {
    * name, so a backup left there would collide with the managed skill.
    */
   backupRoot: string | null;
-  /**
-   * myrmidon(H1): the shared vendor-scope skills directory
-   * (`<HOME>/.hermes/skills`) Hermes falls back to without HERMES_HOME. A
-   * profile link that resolves into it is a leftover of the early rollout: the
-   * profile pointed at the one shared copy instead of the managed source.
-   */
-  vendorSkillsHome: string;
 }
 
 /**
@@ -51,13 +44,11 @@ export function resolveHermesSkillsHome(config: Record<string, unknown>): Hermes
   const home = configuredHome ? path.resolve(configuredHome) : os.homedir();
   const hermesHome = asString(env.HERMES_HOME);
   if (!hermesHome) {
-    const vendorSkillsHome = path.join(home, ".hermes", "skills");
     return {
-      skillsHome: vendorSkillsHome,
+      skillsHome: path.join(home, ".hermes", "skills"),
       locationLabel: "~/.hermes/skills",
       profileScoped: false,
       backupRoot: null,
-      vendorSkillsHome,
     };
   }
   const expanded =
@@ -72,7 +63,6 @@ export function resolveHermesSkillsHome(config: Record<string, unknown>): Hermes
     locationLabel: "$HERMES_HOME/skills",
     profileScoped: true,
     backupRoot: path.join(profileRoot, SKILL_BACKUP_DIR),
-    vendorSkillsHome: path.join(home, ".hermes", "skills"),
   };
 }
 
@@ -107,51 +97,4 @@ export async function moveOccupiedSkillTargetAside(
     return name;
   }
   throw new Error(`Cannot move the existing "${path.basename(target)}" skill aside: too many backups.`);
-}
-
-/**
- * myrmidon(H1): true when a skill link's destination lives inside the shared
- * vendor skills home. Such a link was made by hand during the early rollout —
- * it points at the one shared copy of the skill instead of the managed source —
- * so reconcile relinks it to the managed source it belongs to.
- */
-export function pointsIntoVendorSkillsHome(
-  destination: string,
-  vendorSkillsHome: string,
-): boolean {
-  const resolvedDestination = path.resolve(destination);
-  const resolvedVendor = path.resolve(vendorSkillsHome);
-  return (
-    resolvedDestination === resolvedVendor ||
-    resolvedDestination.startsWith(`${resolvedVendor}${path.sep}`)
-  );
-}
-
-/**
- * myrmidon(H1): moves a symlink whose destination is gone — it can never
- * deliver a skill — to `<backupRoot>/<name>.pre-myrmidon-<YYYYMMDD>` (with a
- * numeric suffix when that name is taken) so the managed link can take its
- * place. The old link is kept as evidence; nothing is deleted. Returns the
- * backup's base name, or null when the target is absent or is not a symlink
- * (a real directory is left to moveOccupiedSkillTargetAside).
- */
-export async function moveSkillTargetLinkAside(
-  target: string,
-  backupRoot: string,
-  now: Date = new Date(),
-): Promise<string | null> {
-  const existing = await fs.lstat(target).catch(() => null);
-  if (!existing || !existing.isSymbolicLink()) return null;
-  await fs.mkdir(backupRoot, { recursive: true });
-  const base = `${path.basename(target)}.pre-myrmidon-${backupStamp(now)}`;
-  for (let attempt = 1; attempt <= 100; attempt += 1) {
-    const name = attempt === 1 ? base : `${base}-${attempt}`;
-    const destination = path.join(backupRoot, name);
-    if (await fs.lstat(destination).catch(() => null)) continue;
-    await fs.rename(target, destination);
-    return name;
-  }
-  throw new Error(
-    `Cannot move the existing "${path.basename(target)}" skill link aside: too many backups.`,
-  );
 }
