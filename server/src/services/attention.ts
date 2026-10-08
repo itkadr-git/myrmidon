@@ -50,12 +50,6 @@ import type {
 } from "@paperclipai/shared";
 import { badRequest } from "../errors.js";
 import { listAttentionExhaustedRuns } from "./attention-exhausted-runs.js";
-import { buildPromptBudgetAttentionCards } from "../myrmidon/prompt-budget/attention.js";
-import { buildPromptBudgetStatus } from "../myrmidon/prompt-budget/status.js";
-import {
-  PROMPT_BUDGET_SETTINGS_KEY,
-  normalizePromptBudgetSettings,
-} from "@paperclipai/shared";
 import { budgetService } from "./budgets.js";
 import { hostDiskRuntime } from "../myrmidon/host-disk/index.js"; // myrmidon(BOT-DISK E)
 import { cloneHygieneSignals, lifecycleNotEffective } from "../myrmidon/bot-containers/clone-hygiene.js"; // myrmidon(1.6.2-BOT-DISK-C)
