@@ -78,6 +78,13 @@ export type ResolveRecoveryActionResponse = {
   recoveryAction: IssueRecoveryAction;
 };
 
+export type ConfirmExecutionHoldResponse = {
+  issueId: string;
+  recoveryActionId: string;
+  supersededCount: number;
+  assigneeWoken: boolean;
+};
+
 export type IssueListFilters = {
   attention?: "blocked";
   status?: string;
@@ -284,6 +291,14 @@ export const issuesApi = {
     api.post<ResolveRecoveryActionResponse>(
       `/issues/${id}/recovery-actions/resolve`,
       data,
+    ),
+  // myrmidon(OPE-6011): attest that a held task's failed run performed no
+  // external action, lift the settled execution-reconciliation hold, and wake
+  // the assignee — the explicit exit from "execution_reconciliation_required".
+  confirmExecutionHold: (id: string) =>
+    api.post<ConfirmExecutionHoldResponse>(
+      `/issues/${id}/execution-hold/confirm-continue`,
+      {},
     ),
   previewTreeControl: (id: string, data: PreviewIssueTreeControl) =>
     api.post<IssueTreeControlPreview>(

@@ -263,3 +263,11 @@ export {
 } from "./model_providers.js";
 // myrmidon(CUSTOM-CASTES): the company caste (agent role) directory.
 export { agentCastes } from "./agent_castes.js";
+// myrmidon(CORPUS-A): corpus knowledge module tables.
+export {
+  corpusDatasets,
+  corpusDocuments,
+  corpusChunks,
+  corpusParseJobs,
+  corpusSettings,
+} from "./corpus.js";
