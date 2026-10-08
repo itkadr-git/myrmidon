@@ -133,6 +133,7 @@ A track writes only into its own section. A row is added in the same PR as the s
 | `MYRMIDON_BOT_IMAGE_ROLLOUT` | BOT-IMAGE-ROLLOUT | `1` (on) | The bot runtime images (hermes, hermes-dev, hermes-node) of the same release roll out with the board (deploy.sh step 9.5, `bot-image-rollout.sh`): digests resolved from the same release, pulled, added to dockergate's `images` (config re-read by SIGHUP), the fleet enrolled in `bots[]`, the bot cards switched one at a time (canary first, a running run is never interrupted — a deferred bot retries), the superseded images removed after the fleet moved, every switch journalled | `0` — the manual path (the deploy warns: that is the 03.10 split by choice) |
 | `MYRMIDON_BOT_IMAGE_ROLLOUT_CANARY` | BOT-IMAGE-ROLLOUT | unset | Agent id switched first, before the rest of the fleet (canary) | Unset — plain order |
 | `MYRMIDON_BOT_IMAGE_ROLLOUT_BOT_TIMEOUT_SEC` | BOT-IMAGE-ROLLOUT | `900` | How long one deferred bot is retried (it keeps its old image; the periodic sweep applies the release image later) | From 10 to 86400 |
+| `MYRMIDON_BOT_IMAGE_ROLLOUT_FORCE_DEFERRED_SEC` | BOT-IMAGE-ROLLOUT | same as `MYRMIDON_BOT_IMAGE_ROLLOUT_BOT_TIMEOUT_SEC` | How long after the tail-pass deadline the still-deferred bots are applied WITHOUT the status gate (the reconciler opens the maintenance window and drains the in-flight run to its end — a run is never interrupted). `0` disables the force stage | From 0 to 86400 |
 | `MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_CONFIG` | BOT-IMAGE-ROLLOUT | unset | Path of the dockergate `config.json` this rollout edits (`images[]`, `bots[]`): structural jq edits, verified by `dockergate check-config` when the command below is set | Unset — the rollout refuses (fail-closed): the images and enrollment are its job |
 | `MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_CHECK_CONFIG_COMMAND` | BOT-IMAGE-ROLLOUT | unset | Command run after each config edit with `MYR_BOT_CFG_FILE` naming the edited file, e.g. `docker exec dockergate /dockergate check-config --config "$MYR_BOT_CFG_FILE"` | Unset — a warning: the edits are not verified by the real binary |
 | `MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_SIGNAL_COMMAND` | BOT-IMAGE-ROLLOUT | unset | How dockergate is told to re-read its config (SIGHUP), e.g. `docker exec dockergate kill -HUP 1` | Unset — a warning: the file changed but dockergate keeps the old config until reloaded |
@@ -763,6 +764,33 @@ sources need a token. Findings are recorded `unverified` until the skill lifecyc
 them as candidates; `POST …/foraging/sweep` (board only) runs one pass by hand.
 
 
+## 1.6 — TG-NOTIFY-SETTINGS: what the board sends the owner in Telegram (part A, the settings core)
+
+The company-level telegramNotify settings of `server/src/myrmidon/telegram-notify/` (the
+TG-NOTIFY-SETTINGS epic, part A). This core only stores and serves the contract;
+the parts that actually send (digest, errors, inbound, escalations, proactivity)
+consume it. No environment variables: the settings are runtime-changeable per
+company through the API.
+
+- Storage: the `myrmidonTelegramNotifySettings` key of `instance_settings.general`, keyed by
+  companyId (no migration, the vendor settings service keeps the key across its writes).
+- API: `GET /api/myrmidon/telegram-notify` (company access) answers the full document —
+  every field of every section always present; `PATCH /api/myrmidon/telegram-notify`
+  (board only) applies a partial update, and every changed field is recorded in the
+  changelog (actor, field path, from/to values, 200 entries kept).
+- Defaults: every section OFF. With the defaults the owner receives only the replies to
+  their own messages and the U2 decision cards; nothing else is sent to Telegram until
+  a section is turned on.
+- Sections: `digest` (time "HH:MM", chatId, topicId, sections list), `errors`
+  (minSeverity warn|error|fatal, maxPerHour, chatId, topicId), `inbound`
+  (requireMention), `escalations` (hours, channel dm|topic|none, chatId, topicId),
+  `proactivity` (mode only_on_owner_request|rarely|normal, rarelyMaxPerDay). The
+  proactivity per-agent override lives in `agents.metadata` under the same `"mode"`
+  key (company level is the default for all agents).
+- Contract: `packages/shared/src/myrmidon-telegram-notify.ts` (types and zod
+  validators); the contract is fixed — later changes only add fields, names do not
+  change.
+
 ## 1.6 — PARALLEL-HELPERS (delegated helper agents)
 
 | Variable | Function | Default | What it does | How to disable / special |
@@ -1220,6 +1248,7 @@ What the last run's prompt was made of — which part dominates it and what to d
 on the agent card (Overview). The advice is computed on request from the recorded breakdown; a
 "Deep analysis" button files a task for a cheap-model optimizer agent, which drafts instruction
 edits as a comment on that task. Nothing is scheduled and nothing is changed automatically.
+Operator guide: [guides/prompt-budget-advice.md](guides/prompt-budget-advice.md).
 
 The static thresholds are code constants of
 `server/src/myrmidon/prompt-budget-advice/advice.ts`, not settings: a part is worth a recommendation

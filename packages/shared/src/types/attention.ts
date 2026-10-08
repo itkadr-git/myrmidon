@@ -48,6 +48,9 @@ export const ATTENTION_SOURCE_KINDS = [
   // (shown on the task), and a bot on a non-current image generation.
   "bot_disk_archive",
   "bot_image_stale",
+  // myrmidon(1.6.1-FORAGING-LIMITS-UI): the learning sweep hit a spend limit
+  // (or the cost-per-task threshold switched it off); the owner decides.
+  "foraging_limit",
 ] as const;
 
 export type AttentionSourceKind = (typeof ATTENTION_SOURCE_KINDS)[number];
@@ -63,7 +66,9 @@ export type AttentionSubjectKind =
   | "budget_incident"
   | "agent"
   // myrmidon(SUB): a component of the tracked stack registry.
-  | "stack_component";
+  | "stack_component"
+  // myrmidon(1.6.1-FORAGING-LIMITS-UI): the learning sweep of the company.
+  | "foraging_sweep";
 
 export type AttentionSeverity = "critical" | "high" | "medium" | "low";
 

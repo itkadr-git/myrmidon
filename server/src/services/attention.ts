@@ -109,6 +109,11 @@ import {
   PROMPT_BUDGET_SETTINGS_KEY,
   normalizePromptBudgetSettings,
 } from "@paperclipai/shared";
+// myrmidon(1.6.1-FORAGING-LIMITS-UI): the learning-spend operator signals.
+import {
+  readForagingAutoOffSignal,
+  readForagingLimitSignal,
+} from "../myrmidon/foraging/limits.js";
 // myrmidon(1.7-BUDGET-CONFIG-B): the enforcement mode shown on the budget card.
 import { resolveBudgetEnforcement } from "@paperclipai/shared";
 
@@ -196,6 +201,7 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   // myrmidon(1.6.5 BOT-DISK-H4c): both are advice, ranked last.
   bot_disk_archive: 19,
   bot_image_stale: 20,
+  foraging_limit: 13,
 };
 
 const PENDING_INTERACTION_STATUSES = ["pending"] as const;
@@ -2743,6 +2749,52 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           detail: {
             kind: "generic",
             summaryExcerpt: excerpt(fallback.summaryExcerpt),
+            images: [],
+          },
+        }));
+      }
+
+      // myrmidon(1.6.1-FORAGING-LIMITS-UI): the learning sweep hit a spend
+      // limit, or the cost-per-task threshold switched it off. The signal is
+      // recorded by the pass itself (foraging/limits.ts) into the process-level
+      // registry; the feed computes the card on the fly, the same shape the
+      // stale-block and tracing-health signals use. The limit card disappears
+      // when a pass runs without a stop; the auto-off card stays until an
+      // operator re-enables learning.
+      for (const foragingSignal of [
+        readForagingLimitSignal(companyId),
+        readForagingAutoOffSignal(companyId),
+      ]) {
+        if (!foragingSignal) continue;
+        add(createItem({
+          companyId,
+          sourceKind: "foraging_limit",
+          subject: {
+            kind: "foraging_sweep",
+            id: `foraging:${companyId}`,
+            companyId,
+            title: "Learning (foraging)",
+            identifier: null,
+            status: null,
+            href: `/${prefix}/foraging`,
+            metadata: { dedupKey: foragingSignal.dedupKey },
+          },
+          whyNow: foragingSignal.whyNow,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the Foraging page and the learning limits." },
+          ),
+          inlineResolvable: true,
+          entryRule: "a foraging pass stopped on a spend limit, or the cost-per-task threshold switched learning off",
+          exitRule: "the next pass runs without a stop (limit card), learning is re-enabled, or the row is dismissed.",
+          dedupKey: foragingSignal.dedupKey,
+          severity: foragingSignal.severity,
+          activityAt: foragingSignal.activityAt,
+          createdAt: foragingSignal.activityAt,
+          updatedAt: foragingSignal.activityAt,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: excerpt(foragingSignal.whyNow),
             images: [],
           },
         }));

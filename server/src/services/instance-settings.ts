@@ -53,6 +53,7 @@ import { preserveAccessHubHostsGeneralKey } from "../myrmidon/access-hub/host-re
 import { preserveAutonomyGeneralKey } from "../myrmidon/autonomy/store.js";
 // myrmidon(1.6-TG-PROACTIVITY-E, 1.6.1-TG-NOTIFY-B): keep the telegram-notify state across vendor writes of `general`
 import { preserveTelegramNotifyGeneralKey } from "../myrmidon/telegram-notify/proactivity-policy.js";
+import { preserveTelegramNotifySettingsGeneralKey } from "../myrmidon/telegram-notify/settings-store.js";
 // myrmidon(1.6.1-WIP-LIMIT-A): keep the stored WIP limits across vendor writes of `general`
 import { preserveWipLimitGeneralKey } from "../myrmidon/wip-limit/settings.js";
 // myrmidon(1.6.1 VOICE-STT A1): keep the per-company STT runtime settings across vendor writes of `general`
@@ -60,8 +61,16 @@ import { preserveSttGeneralKey } from "../myrmidon/stt/store.js";
 // myrmidon(1.7-BUDGET-CONFIG-B): keep the stored budget enforcement mode
 // across vendor writes of `general`
 import { preserveBudgetEnforcementGeneralKey } from "../myrmidon/budget-enforcement/settings.js";
+// myrmidon(SETTINGS-CORE): keep the stored behavior settings across vendor writes of `general`
+import { preserveBehaviorSettingsGeneralKeys } from "../myrmidon/behavior-settings/store.js";
+// myrmidon(1.7-DEBATE-ASYM-A): the stored debate engine configuration must
+// survive every vendor general write (it is edited on its own settings panel).
+import { preserveDebateGeneralKey } from "../myrmidon/debates/settings.js";
 // myrmidon(PLUGIN-ENTITLEMENT C): keep the plugin entitlement keys across vendor writes of `general`
-import { preservePluginEntitlementKeysGeneralKey } from "../myrmidon/plugin-entitlement/store.js";
+import {
+  preservePluginEntitlementKeysGeneralKey,
+  preservePluginEntitlementPublicKeyGeneralKey,
+} from "../myrmidon/plugin-entitlement/store.js";
 // myrmidon(DM-PROGRESS): keep the Telegram DM progress settings across vendor writes of `general`
 import { preserveTelegramDmProgressGeneralKey } from "../myrmidon/telegram-dm-progress/settings.js";
 // myrmidon(GITHUB-SHARED-IDENTITY): keep the per-company shared GitHub access rules across vendor writes of `general`
@@ -290,9 +299,17 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // myrmidon(1.7-BUDGET-CONFIG-B): the stored budget enforcement mode
       // survives every general write (it is edited on its own settings page).
       ...(parsed.data.budgetEnforcement ? { budgetEnforcement: parsed.data.budgetEnforcement } : {}),
+      // myrmidon(1.7-AGENT-EXCHANGE-A): the stored discussion-room settings
+      // survive every general write (they are edited on their own settings
+      // panel on Instance → General).
+      ...(parsed.data.agentExchange ? { agentExchange: parsed.data.agentExchange } : {}),
       // myrmidon(REVIEW-ROUTING): the stored review routing settings survive
       // every general write (they are edited on their own settings page).
       ...(parsed.data.reviewRouting ? { reviewRouting: parsed.data.reviewRouting } : {}),
+      // myrmidon(1.7-DEBATE-ASYM-A): the stored debate engine configuration
+      // survives every general write (it is edited on its own settings panel;
+      // the service validates the shape and the family rule on read).
+      ...(parsed.data.debate !== undefined ? { debate: parsed.data.debate } : {}),
       // myrmidon(PLUGIN-ENTITLEMENT C): the stored plugin entitlement keys
       // survive every general write (edited on their own settings block).
       ...(parsed.data.pluginEntitlementKeys ? { pluginEntitlementKeys: parsed.data.pluginEntitlementKeys } : {}),
@@ -301,6 +318,9 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       ...(parsed.data.telegramDmProgress ? { telegramDmProgress: parsed.data.telegramDmProgress } : {}),
       // myrmidon(MEMORY-UI): the stored agent memory settings survive every general write
       ...(parsed.data.agentMemory ? { agentMemory: parsed.data.agentMemory } : {}),
+      // myrmidon(1.6.1-FORAGING-LIMITS-UI): the stored foraging settings survive
+      // every general write (edited on their own settings page).
+      ...(parsed.data.foraging ? { foraging: parsed.data.foraging } : {}),
       // myrmidon(TEAM-LIVENESS-SETTINGS): the stored team-liveness knobs survive
       // every general write (they are edited on their own settings page). Without
       // this line the vendor write path silently drops the key and the settings
@@ -311,6 +331,13 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // page). Without this line `updateGeneral` normalizes the patch away, so
       // PATCH /api/myrmidon/model-fallback/settings would never roundtrip.
       ...(parsed.data.modelFallbackSignal ? { modelFallbackSignal: parsed.data.modelFallbackSignal } : {}),
+      // myrmidon(PERF-DIET-K): the session-generation thresholds are edited on the
+      // general settings page. Without this line the normalizer drops the key, so a
+      // PATCH would not roundtrip and the run dispatch would never read the row.
+      ...(parsed.data.sessions ? { sessions: parsed.data.sessions } : {}),
+      // myrmidon(1.6.3 PLUGIN-ENTITLEMENT A): the stored verification public key
+      // survives every general write (edited on its own settings block).
+      ...(parsed.data.pluginEntitlementPublicKey ? { pluginEntitlementPublicKey: parsed.data.pluginEntitlementPublicKey } : {}),
     };
   }
   return {
@@ -658,10 +685,14 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
             ...preserveCloudConnectorGeneralKey(current.general), // myrmidon(CLOUD-CONNECTOR)
             ...preserveAutonomyGeneralKey(current.general), // myrmidon(1.6-AUTONOMY)
             ...preserveTelegramNotifyGeneralKey(current.general), // myrmidon(1.6-TG-PROACTIVITY-E)
+            ...preserveTelegramNotifySettingsGeneralKey(current.general), // myrmidon(TG-NOTIFY-A)
             ...preserveWipLimitGeneralKey(current.general), // myrmidon(1.6.1-WIP-LIMIT-A)
             ...preserveSttGeneralKey(current.general), // myrmidon(1.6.1 VOICE-STT A1)
             ...preserveBudgetEnforcementGeneralKey(current.general), // myrmidon(1.7-BUDGET-CONFIG-B)
+            ...preserveBehaviorSettingsGeneralKeys(current.general), // myrmidon(SETTINGS-CORE)
+            ...preserveDebateGeneralKey(current.general), // myrmidon(1.7-DEBATE-ASYM-A)
             ...preservePluginEntitlementKeysGeneralKey(current.general), // myrmidon(PLUGIN-ENTITLEMENT C)
+            ...preservePluginEntitlementPublicKeyGeneralKey(current.general), // myrmidon(1.6.3 PLUGIN-ENTITLEMENT A)
             ...preserveTelegramDmProgressGeneralKey(current.general), // myrmidon(DM-PROGRESS)
             ...preserveFallbackSignalGeneralKey(current.general), // myrmidon(BOT-RUNTIME-TUNING D2)
             // The preserve line above restores the old stored value: a patch

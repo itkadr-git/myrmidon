@@ -1,4 +1,6 @@
 import { listOpenRouterModels } from "../services/openrouter-models.js";
+// myrmidon(B1c): product name in user-facing runner errors; see product.ts.
+import { PRODUCT_NAME } from "../myrmidon/product.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings } from "../services/ai-connection-runtime.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE, AI_CONNECTION_CAPABILITIES, aiConnectionBindingSchema, type AiConnectionBinding } from "@paperclipai/shared";
 import { toolConnections } from "@paperclipai/db";
@@ -2223,7 +2225,8 @@ export function agentRoutes(
       const experimental = await instanceSettings.getExperimental();
       if (experimental.enableNativeRunner !== true) {
         throw unprocessable(
-          "Paperclip Runner is experimental and disabled on this instance.",
+          // myrmidon(B1c): visible rollout error names our product part.
+          `${PRODUCT_NAME} Runner is experimental and disabled on this instance.`,
           { code: "paperclip_runner_rollout_disabled" },
         );
       }
@@ -2284,7 +2287,7 @@ export function agentRoutes(
     const defaults = paperclipRunnerTransitionConfig(input.previousAdapterType, input.previousAdapterConfig.model, input.nextAdapterConfig.provider);
     if (!["claude_local", "codex_local", "opencode_local"].includes(input.previousAdapterType)
       && !isPaperclipRunnerProvider(input.nextAdapterConfig.provider)) {
-      throw unprocessable("Select a Paperclip Runner provider before converting this agent.");
+      throw unprocessable(`Select a ${PRODUCT_NAME} Runner provider before converting this agent.`);
     }
     const next = { ...defaults, ...input.nextAdapterConfig };
     if (!asNonEmptyString(next.model)) next.model = defaults.model;
@@ -3360,7 +3363,7 @@ export function agentRoutes(
       return;
     }
     if (type === "paperclip_runner" && provider && !isPaperclipRunnerProvider(provider)) {
-      throw unprocessable("Unknown Paperclip Runner provider");
+      throw unprocessable(`Unknown ${PRODUCT_NAME} Runner provider`);
     }
     const modelAdapterType = type === "paperclip_runner"
       ? provider === "acpx" || provider === "claude_managed" ? "claude_local"
@@ -5734,6 +5737,10 @@ export function agentRoutes(
     if (!existing) {
       return;
     }
+    // myrmidon(1.6.2): an agent acting on another agent is subject to the autonomy matrix
+    if (req.actor.type === "agent" && req.actor.agentId !== id) {
+      await dbAutonomyGate(db).assertAllowed(req, "pause_wake_agents");
+    }
     await assertCanPauseAgent(req, existing);
     const agent = await svc.pause(id);
     if (!agent) {
@@ -5776,6 +5783,10 @@ export function agentRoutes(
     const existing = await getAccessibleAgent(req, res, id);
     if (!existing) {
       return;
+    }
+    // myrmidon(1.6.2): an agent acting on another agent is subject to the autonomy matrix
+    if (req.actor.type === "agent" && req.actor.agentId !== id) {
+      await dbAutonomyGate(db).assertAllowed(req, "pause_wake_agents");
     }
     await assertCanResumeAgent(req, existing);
     if (existing.orgChainHealth?.status === "invalid_org_chain") {
@@ -6098,6 +6109,10 @@ export function agentRoutes(
       }
     } else {
       await assertBoardCanWakeAgent(req, agent);
+    }
+    // myrmidon(1.6.2): an agent acting on another agent is subject to the autonomy matrix
+    if (req.actor.type === "agent" && req.actor.agentId !== id) {
+      await dbAutonomyGate(db).assertAllowed(req, "pause_wake_agents");
     }
     if (req.body.debug?.providerTrace === "raw") {
       assertInstanceAdmin(req);

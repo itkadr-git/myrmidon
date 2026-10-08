@@ -1,3 +1,5 @@
+// myrmidon(B1c): product name constant, see myrmidon-product.ts.
+export { PRODUCT_NAME } from "./myrmidon-product.js";
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
 export {
   RUNNER_GOAL_MAX_OBJECTIVE_CHARS,
@@ -2330,7 +2332,10 @@ export {
   resolveCliAuthChallengeSchema,
   createBoardApiKeySchema,
   BOARD_API_KEY_SCOPE_KINDS,
+  BOARD_API_KEY_ROLE_SCOPE_KINDS,
   boardApiKeyScopeSchema,
+  monitoringLinkScopeSchema,
+  isMonitoringLinkScope,
   normalizeBoardApiKeyScope,
   currentUserProfileSchema,
   authSessionSchema,
@@ -2343,6 +2348,7 @@ export {
   updateUserCompanyAccessSchema,
   type BoardApiKeyScope,
   type BoardApiKeyScopeKind,
+  type MonitoringLinkScope,
   type CreateCostEvent,
   type CreateFinanceEvent,
   type UpdateBudget,
@@ -2781,6 +2787,10 @@ export * from "./myrmidon-workspace-hygiene.js";
 // myrmidon(BOT-DISK E): host disk usage threshold, samples and growth shared by the server, the
 // UI and the settings validator.
 export * from "./myrmidon-host-disk.js";
+// myrmidon(1.6.6 MONITORING D): the alert-recovery contract — the owner task of an alert
+// (runbook steps and document link) and the sustained-resolution auto-close, shared by the
+// server, the settings validator and the board UI.
+export * from "./myrmidon-alert-recovery.js";
 // myrmidon(BOT-DISK-A): bot draft-directory lifecycle settings shared by the server and the settings validator.
 export * from "./myrmidon-bot-disk.js";
 // myrmidon(BOT-DISK-F): isolation scope resolver and bot-disk scope layout shared by the server and the UI.
@@ -2793,6 +2803,9 @@ export * from "./myrmidon-bot-image-rollout.js"; // myrmidon(BOT-ROLLOUT)
 // layout, myr-ws CLI, desired-state and disk-report payloads, dockergate disk routes, the
 // /v1/runs workspace field and the botDisk settings keys. All BOT-DISK-H tasks code against it.
 export * from "./myrmidon-bot-workspace.js";
+// myrmidon(PERF-DIET-K): issue-scoped session-generation thresholds shared by the server and the
+// settings validator.
+export * from "./myrmidon-session-generations.js";
 // myrmidon(C0): live run-admission limits shared by the server, the UI and the settings validator.
 export * from "./myrmidon-runtime-limits.js";
 // myrmidon(PARALLEL-HELPERS): the card -> Hermes `delegation` contract shared by the profile
@@ -2845,8 +2858,17 @@ export * from "./myrmidon-prompt-budget.js"; // myrmidon(1.6.3 PROMPT-BUDGET B)
 // myrmidon(1.7-BUDGET-CONFIG-B): the shared contract of budget enforcement —
 // the global mode (signal_only / soft / hard), its storage key and resolver.
 export * from "./myrmidon-budget-enforcement.js";
+
+// myrmidon(1.7, SETTINGS-TO-UI A): the generic behavior-settings registry and
+// precedence resolver shared by the server core, the settings validator and the
+// UI panels of parts B–E.
+export * from "./myrmidon-behavior-settings.js";
 // myrmidon(MEMORY-UI): the agent memory instance setting (address, optional key secret, switch).
 export * from "./myrmidon-agent-memory.js";
+// myrmidon(1.7-DEBATE-ASYM-A): the shared contract of asymmetric debates —
+// the model-family table, the cross-family role config, the pure debate
+// engine (roles, rounds, token ceiling, cost) and the result-document shape.
+export * from "./myrmidon-debate.js";
 
 // myrmidon(PLUGIN-ENTITLEMENT C): plugin entitlement keys contract.
 export * from "./myrmidon-plugin-entitlement.js";
@@ -2867,3 +2889,10 @@ export * from "./myrmidon-review-rework.js";
 export * from "./myrmidon-budget-projection.js"; // myrmidon(1.7-BUDGET-CONFIG-C)
 // myrmidon(CUSTOM-CASTES): the company caste directory contract (view, POST/PATCH/DELETE bodies, seed).
 export * from "./myrmidon-castes.js";
+// myrmidon(1.6.1-FORAGING-LIMITS-UI): the enable switch, pass tuning and spend
+// limits of the foraging sweep — shared by the server, the settings page and
+// the settings validator.
+export * from "./myrmidon-foraging.js";
+// myrmidon(1.7-AGENT-EXCHANGE-A): the discussion-room contract (room model,
+// settings with source tracking, request bodies).
+export * from "./myrmidon-agent-exchange.js";
