@@ -76,7 +76,7 @@ describe("OpenCode local skill injection", () => {
     });
     expect(result.exitCode).toBe(0);
     expect(prompt).toContain(directive);
-    expect(prompt).toContain(custom ? "Custom agent instruction." : "Continue your Paperclip conversation");
+    expect(prompt).toContain(custom ? "Custom agent instruction." : "Continue your Myrmidon conversation");
     expect(prompt).not.toContain("Execution contract:");
     expect(prompt).not.toContain("Create child issues");
   });

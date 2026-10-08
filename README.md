@@ -152,7 +152,10 @@ what exists as of 1.6.4 (latest release; 1.6.5-rc.2 is the current release candi
   on every agent row, and flagged in the attention feed when over
   ([wip-limit](docs/myrmidon/guides/wip-limit.md)). A stale-block watchdog
   lifts blocks whose every reason is dead and says why in a system comment
-  ([stale-block](docs/myrmidon/guides/stale-block.md)).
+  ([stale-block](docs/myrmidon/guides/stale-block.md)). A prompt-budget
+  advisor on the agent card names the bloated part of the last run's prompt
+  and the concrete fix, and one button files a cheap-model deep-analysis
+  task ([prompt-budget-advice](docs/myrmidon/guides/prompt-budget-advice.md)).
 - **Agents in isolated containers.** Each agent runs in a Docker container the
   board creates and maintains: its own image, CPU/memory/PID limits, its own
   LLM gateway key and its own tools — no server secrets reach a run
@@ -177,7 +180,10 @@ what exists as of 1.6.4 (latest release; 1.6.5-rc.2 is the current release candi
 
 - **Baseline metrics.** Cycle time, time in review, return rate, blocked time,
   runs and LLM cost per task, by project and by role, on the Quality screen —
-  see [CHANGELOG](docs/myrmidon/CHANGELOG.md) (1.6.0).
+  with a comparison against the pinned baseline snapshot (current window,
+  baseline, delta per row) right under the metrics tables
+  ([guide](docs/myrmidon/guides/baseline-comparison.md),
+  [CHANGELOG](docs/myrmidon/CHANGELOG.md), 1.6.0/1.6.5).
 - **Reference-task evals.** An LLM judge scores the pilot role against a
   reference corpus; a regression verdict acts only after a confirmation run
   ([reference-task-evals](docs/myrmidon/guides/reference-task-evals.md)).

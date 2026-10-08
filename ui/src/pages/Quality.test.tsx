@@ -7,7 +7,12 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Quality, rowKeyLabel, topCausesLine } from "./Quality";
-import type { BaselineComparisonResult, BaselineMetricRow, BaselineMetricsReport } from "@/api/baseline";
+import type {
+  BaselineComparisonResult,
+  BaselineGroupDifferences,
+  BaselineMetricRow,
+  BaselineMetricsReport,
+} from "@/api/baseline";
 
 const metricsMock = vi.hoisted(() => vi.fn());
 const compareMock = vi.hoisted(() => vi.fn());
@@ -111,23 +116,31 @@ function baselineSnapshot(): BaselineMetricsReport {
   });
 }
 
+// myrmidon(1.6.5-BASELINE-COMPARE-FIX): `differences` is per-key — a group
+// appears only when the key exists on both sides. The compare block renders
+// rows it matches itself, so this fixture mirrors the report rows' keys
+// ("project-a" on both sides, "engineer" under byRole).
+const groupDelta = (): BaselineGroupDifferences => ({
+  tasksCompleted: { absolute: 2, percentage: 50 },
+  cycleTimeMean: { absolute: -20.5, percentage: -50 },
+  cycleTimeMedian: { absolute: -18.25, percentage: -50 },
+  cycleTimeP90: { absolute: -40.75, percentage: -50 },
+  reviewTimeMean: { absolute: -4.5, percentage: -50 },
+  reviewTimeMedian: { absolute: -3.25, percentage: -50 },
+  returnRate: { absolute: -0.25, percentage: -50 },
+  blockedTotal: { absolute: -6.25, percentage: -50 },
+  blockedMean: { absolute: -1.04, percentage: -50 },
+  runsPerTask: { absolute: 1, percentage: 33.3 },
+  costPerTask: { absolute: -208, percentage: -50 },
+});
+
 function comparison(overrides: Partial<BaselineComparisonResult> = {}): BaselineComparisonResult {
   return {
     current: report(),
     baseline: baselineSnapshot(),
     differences: {
-      cycleTimeMean: { absolute: -20.5, percentage: -50 },
-      cycleTimeMedian: null,
-      cycleTimeP90: null,
-      reviewTimeMean: { absolute: -4.5, percentage: -50 },
-      reviewTimeMedian: null,
-      reviewTimeP90: null,
-      returnRate: { absolute: -0.25, percentage: -50 },
-      blockedTotal: null,
-      blockedMean: null,
-      runsPerTask: null,
-      costPerTask: { absolute: -208, percentage: -50 },
-      tasksCompleted: { absolute: 2, percentage: 50 },
+      byProject: { "project-a": groupDelta() },
+      byRole: { engineer: groupDelta() },
     },
     ...overrides,
   };

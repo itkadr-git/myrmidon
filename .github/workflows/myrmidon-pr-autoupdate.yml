@@ -1,0 +1,156 @@
+name: Myrmidon PR autoupdate
+
+# GitHub merge queue is not available here: the repository belongs to a user
+# account, and the merge_queue rule is rejected for such repositories. This
+# workflow does the useful part of the queue instead: when `main` moves, it
+# brings the open PRs that have auto-merge enabled up to date, one PR per run
+# (oldest first), so they merge on top of a fresh `main` without manual work.
+#
+# - BEHIND PR (auto-merge on): `PUT /pulls/{n}/update-branch` (merge update).
+# - PR in conflict: left alone; label `needs-rebase` and one marker comment
+#   tell the author to rebase.
+#
+# A push made with GITHUB_TOKEN does not start `pull_request` workflows (a
+# GitHub rule that prevents recursive runs; `workflow_dispatch` and
+# `repository_dispatch` are the documented exceptions). The repository has no
+# PAT or App token, so after each update this workflow dispatches the two
+# required checks on the new head by hand: `myrmidon-ci.yml` on the PR branch
+# and `myrmidon-hot-files-review.yml` for the PR. Both report the same
+# check names the ruleset requires. See docs/myrmidon/merge-queue.md,
+# section "Without a GitHub queue: PR auto-update".
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: "*/30 * * * *"
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+  issues: write
+
+concurrency:
+  # Runs queue one after another; a run that is waiting is never cancelled
+  # by a newer one (GitHub keeps only one pending run per group, which is
+  # enough: a run looks at all PRs).
+  group: myrmidon-pr-autoupdate
+  cancel-in-progress: false
+
+jobs:
+  autoupdate:
+    name: Update auto-merge PRs
+    runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    timeout-minutes: 15
+    steps:
+      - name: Ensure gh and jq (self-hosted runners may lack them)
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="$RUNNER_TEMP/tools-bin"; mkdir -p "$bin"
+          if ! command -v jq >/dev/null; then
+            curl -fsSL -o "$bin/jq" https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-amd64
+            chmod +x "$bin/jq"
+          fi
+          if ! command -v gh >/dev/null; then
+            curl -fsSL https://github.com/cli/cli/releases/download/v2.62.0/gh_2.62.0_linux_amd64.tar.gz | tar -xz -C "$RUNNER_TEMP"
+            cp "$RUNNER_TEMP/gh_2.62.0_linux_amd64/bin/gh" "$bin/gh"
+          fi
+          echo "$bin" >> "$GITHUB_PATH"
+
+      - name: Update PRs with auto-merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          MAX_UPDATES: "1"
+        run: |
+          set -euo pipefail
+          marker='<!-- myrmidon-needs-rebase -->'
+          summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
+          updated=0
+
+          # The label may not exist yet; 422 means it does.
+          gh api -X POST "repos/$REPO/labels" -f name='needs-rebase' -f color='B60205' \
+            -f description='Conflicts with main: rebase needed (set by myrmidon-pr-autoupdate)' >/dev/null 2>&1 || true
+
+          prs="$(gh pr list -R "$REPO" --base main --state open --limit 200 \
+            --json number,isCrossRepository,autoMergeRequest)"
+          numbers="$(jq -r '[.[] | select(.autoMergeRequest != null and (.isCrossRepository | not))] | sort_by(.number) | .[].number' <<<"$prs")"
+          echo "### PR autoupdate" >> "$summary"
+          if [[ -z "$numbers" ]]; then
+            echo "No open PRs with auto-merge." | tee -a "$summary"
+            exit 0
+          fi
+
+          for n in $numbers; do
+            # `mergeable` is computed lazily; wait until it is not null.
+            pr=""
+            for _ in 1 2 3 4 5 6; do
+              pr="$(gh api "repos/$REPO/pulls/$n")"
+              [[ "$(jq -r '.mergeable' <<<"$pr")" != "null" ]] && break
+              sleep 5
+            done
+            sha="$(jq -r '.head.sha' <<<"$pr")"
+            branch="$(jq -r '.head.ref' <<<"$pr")"
+            mstate="$(jq -r '.mergeable_state' <<<"$pr")"
+            behind="$(gh api "repos/$REPO/compare/main...$sha" --jq '.behind_by')"
+            echo "PR #$n: mergeable_state=$mstate behind_by=$behind"
+
+            cid="$(gh api --paginate "repos/$REPO/issues/$n/comments" \
+              --jq ".[] | select(.body | contains(\"$marker\")) | .id" | head -n1 || true)"
+
+            if [[ "$mstate" == "dirty" ]]; then
+              body="$marker"$'\n'"This PR conflicts with \`main\` (checked on \`${sha:0:12}\`). Auto-update skipped it. Rebase the branch on \`main\` and resolve the conflicts; the label \`needs-rebase\` is removed automatically afterwards."
+              gh api -X POST "repos/$REPO/issues/$n/labels" -f 'labels[]=needs-rebase' >/dev/null
+              if [[ -z "$cid" ]]; then
+                gh api -X POST "repos/$REPO/issues/$n/comments" -f body="$body" >/dev/null
+              elif [[ "$(gh api "repos/$REPO/issues/comments/$cid" --jq .body)" != "$body" ]]; then
+                gh api -X PATCH "repos/$REPO/issues/comments/$cid" -f body="$body" >/dev/null
+              fi
+              echo "- #$n: conflict, label needs-rebase set, not touched" >> "$summary"
+              continue
+            fi
+
+            # No conflict any more: clear the label and mark the comment resolved.
+            if gh api "repos/$REPO/issues/$n/labels" --jq '.[].name' | grep -qx 'needs-rebase'; then
+              gh api -X DELETE "repos/$REPO/issues/$n/labels/needs-rebase" >/dev/null 2>&1 || true
+              if [[ -n "$cid" ]]; then
+                gh api -X PATCH "repos/$REPO/issues/comments/$cid" \
+                  -f body="$marker"$'\n'"Conflict with \`main\` is resolved; label \`needs-rebase\` removed." >/dev/null
+              fi
+            fi
+
+            if [[ "$behind" -eq 0 ]]; then
+              echo "- #$n: up to date" >> "$summary"
+              continue
+            fi
+            if [[ "$updated" -ge "$MAX_UPDATES" ]]; then
+              echo "- #$n: behind by $behind, waits for the next run (limit $MAX_UPDATES per run)" >> "$summary"
+              continue
+            fi
+
+            if ! gh api -X PUT "repos/$REPO/pulls/$n/update-branch" -f expected_head_sha="$sha" >/dev/null; then
+              echo "::warning::update-branch failed for PR #$n"
+              echo "- #$n: behind by $behind, update-branch FAILED" >> "$summary"
+              continue
+            fi
+            updated=$((updated + 1))
+
+            # Wait for the new head, then start the required checks by hand.
+            newsha="$sha"
+            for _ in $(seq 1 20); do
+              newsha="$(gh api "repos/$REPO/pulls/$n" --jq '.head.sha')"
+              [[ "$newsha" != "$sha" ]] && break
+              sleep 3
+            done
+            if [[ "$newsha" == "$sha" ]]; then
+              echo "::warning::PR #$n head did not change after update-branch"
+              echo "- #$n: update-branch accepted, head unchanged after 60 s" >> "$summary"
+              continue
+            fi
+            gh workflow run myrmidon-ci.yml -R "$REPO" --ref "$branch"
+            gh workflow run myrmidon-hot-files-review.yml -R "$REPO" --ref main -f pr="$n"
+            echo "- #$n: updated ${sha:0:12} -> ${newsha:0:12}; CI and hot-files-review dispatched" | tee -a "$summary"
+          done

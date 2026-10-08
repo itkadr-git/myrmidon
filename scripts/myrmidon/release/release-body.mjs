@@ -152,6 +152,9 @@ export function buildManifest({ version, digests }) {
   return { schema: 1, version, tag: `myr-v${version}`, components };
 }
 
+/** GitHub rejects a release body over 125000 characters (422). */
+export const GITHUB_RELEASE_BODY_LIMIT = 125000;
+
 /** The complete release body: deploy line, notes, digest table, cross-check. */
 export function buildBody({ version, notesVersion = null, previous, section, digestRows }) {
   const anchor = previous
@@ -252,7 +255,9 @@ async function main() {
   if (manifestOut) {
     fs.writeFileSync(manifestOut, `${JSON.stringify(buildManifest({ version, digests }), null, 2)}\n`);
   }
-  process.stdout.write(buildBody({ version, notesVersion: notes, previous, section, digestRows: rows }));
+  process.stdout.write(
+    enforceBodyLimit(buildBody({ version, notesVersion: notes, previous, section, digestRows: rows }), version),
+  );
 }
 
 if (process.argv[1] && process.argv[1].endsWith("release-body.mjs")) {
@@ -267,4 +272,23 @@ function rcNotesFromFragments(root = ".") {
     if (body && body.trim()) blocks.push(body.trim());
   }
   return blocks.length ? blocks.join("\n\n") : null;
+}
+
+// BODY-LIMIT (the 1.6.5-rc.6 publish failure): an rc body collects EVERY
+// pending change fragment, so a long release window overruns GitHub's
+// 125000-character release-body limit and `gh release create` dies with
+// HTTP 422 after every gate already passed. Refuse BEFORE the publish with
+// the byte count, so the release engineer trims the fragment notes instead
+// of debugging a bare 422 at the end of a 20-minute CI run.
+function enforceBodyLimit(body, version) {
+  const chars = body.length;
+  if (chars > GITHUB_RELEASE_BODY_LIMIT) {
+    console.error(
+      `release body for ${version} is ${chars} characters — GitHub rejects bodies over ` +
+        `${GITHUB_RELEASE_BODY_LIMIT} (HTTP 422 "body is too long"). Trim the pending change ` +
+        `fragment notes (docs/myrmidon/changes/*) or fold them into the CHANGELOG section first.`,
+    );
+    process.exit(1);
+  }
+  return body;
 }

@@ -19,6 +19,8 @@ const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 function asString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
+// myrmidon(B1c): product name in user-facing texts; see shared myrmidon-product.
+import { PRODUCT_NAME } from "@paperclipai/adapter-utils";
 
 export function resolveCursorSkillsHome(config: Record<string, unknown>) {
   const env =
@@ -44,7 +46,7 @@ async function buildCursorSkillSnapshot(config: Record<string, unknown>): Promis
     locationLabel: "~/.cursor/skills",
     missingDetail: "Configured but not currently linked into the Cursor skills home.",
     externalConflictDetail: "Skill name is occupied by an external installation.",
-    externalDetail: "Installed outside Paperclip management.",
+    externalDetail: `Installed outside ${PRODUCT_NAME} management.`,
   });
 }
 
