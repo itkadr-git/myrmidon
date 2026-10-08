@@ -5,7 +5,7 @@
 // GET reports the retention settings with their per-key source
 // ("settings" | "default") and the persisted state of the last sweep pass.
 // Any authenticated board member may read it. PATCH writes
-// `instance_settings.general.dataRetention` and is instance-admin only, the
+// `instance_settings.general.datastoreCare.retention` and is instance-admin only, the
 // same rule the rest of the instance settings follow; the sweep re-reads the
 // settings at the top of every pass, so the change applies without a restart.
 

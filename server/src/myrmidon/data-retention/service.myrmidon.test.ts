@@ -124,11 +124,16 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) data retention routes", (
     expect(res.body.sources.heartbeatRunsDays).toBe("settings");
 
     const stored = await instanceSettingsService(db).getGeneral();
-    expect((stored as Record<string, any>).dataRetention).toMatchObject({
+    // the settings live under general.datastoreCare.retention (the project
+    // §3.6 "Хранение" panel key — OPE-5939/DBC-1); the pre-review
+    // general.dataRetention key is gone
+    const care = (stored as Record<string, any>).datastoreCare;
+    expect(care?.retention).toMatchObject({
       heartbeatRunsDays: 30,
       activityLogDays: 0,
       accessAuditDays: 180,
     });
+    expect((stored as Record<string, any>).dataRetention).toBeUndefined();
 
     const logRows = await db.select().from(activityLog);
     const updates = logRows.filter((row) => row.action === DATA_RETENTION_UPDATED_ACTION);

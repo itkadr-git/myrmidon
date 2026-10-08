@@ -189,15 +189,19 @@ export interface InstanceGeneralSettings {
    */
   wipLimit?: WipLimitSettings;
   /**
-   * myrmidon(1.6.5-DB-RETENTION): retention of runs and logs in whole days
-   * per table group (0 = keep forever), changed from
-   * `GET`/`PATCH /api/myrmidon/data-retention`. Absent means the built-in
+   * myrmidon(1.6.5-DB-RETENTION): the datastore-care settings of the
+   * instance — one object per the project §3.6 "Хранение" panel. The
+   * retention of runs and logs lives under `retention` (whole days per table
+   * group, 0 = keep forever), changed from
+   * `GET`/`PATCH /api/myrmidon/data-retention`; absent means the built-in
    * defaults (90/0/180). The sweep's own state rides the same object under
-   * `lastRun`; kept in sync with the validator of the same field
+   * `retention.lastRun`; kept in sync with the validator of the same field
    * (packages/shared/src/validators/instance.ts).
    */
-  dataRetention?: DataRetentionSettings & {
-    lastRun?: DataRetentionLastRun | Record<string, unknown>;
+  datastoreCare?: {
+    retention?: DataRetentionSettings & {
+      lastRun?: DataRetentionLastRun | Record<string, unknown>;
+    };
   };
   /**
    * myrmidon(REVIEW-ROUTING): automatic reviewer routing, changed from

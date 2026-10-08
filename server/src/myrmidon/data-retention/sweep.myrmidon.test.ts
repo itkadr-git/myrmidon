@@ -175,6 +175,7 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
     const settings = instanceSettingsService(db);
     const backupDir = makeBackupDir(options.freshBackup);
     const waitingLogs: Array<Record<string, unknown>> = [];
+    const throttledLogs: Array<Record<string, unknown>> = [];
     const sweep = createDataRetentionSweep({
       db,
       resolveSettings: () => readDataRetentionSettings(settings),
@@ -188,8 +189,14 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
       logWaitingForBackup: async (details) => {
         waitingLogs.push(details);
       },
+      logThrottled: async (details) => {
+        throttledLogs.push(details);
+      },
+      // Every test runs its passes back to back; a throttle-free sweep is
+      // the pre-review behavior the rest of the suite pins.
+      minPassIntervalMs: 0,
     });
-    return { sweep, waitingLogs, backupDir };
+    return { sweep, waitingLogs, throttledLogs, backupDir };
   }
 
   async function runCount(runId: string): Promise<number> {
@@ -211,7 +218,7 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
     return issueId;
   }
 
-  it("FK safety: a run that originates decisions/bundles goes with them, no NOT NULL violation", async () => {
+  it("FK safety: a run that originates decisions/bundles is never deleted (operator review dbcare-review-20261008)", async () => {
     const { companyId, agentId } = await seedCompany();
     const issueId = await seedIssue({ companyId, title: "decided work" });
     const doomedRun = await seedRun({ companyId, agentId, status: "succeeded", ageDays: 100 });
@@ -264,21 +271,22 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
     const { sweep } = makeSweep({ freshBackup: true });
     const result = await sweep.sweep();
 
-    // doomedRun is old and unreferenced → 1 run
-    expect(result.perTable.runs.deleted).toBe(1);
-    expect(await runCount(doomedRun)).toBe(0);
-    // the NOT NULL origin rows went with the run, no 23502
-    expect(await db.select({ id: decisionBundles.id }).from(decisionBundles)).toHaveLength(0);
-    expect(await db.select({ id: decisions.id }).from(decisions)).toHaveLength(1);
+    // doomedRun is old but decision-referenced → the whole run survives
+    expect(result.perTable.runs.deleted).toBe(0);
+    expect(await runCount(doomedRun)).toBe(1);
+    // the decisions and the bundle are untouched; the young run's decision
+    // keeps its bundle link
+    expect(await db.select({ id: decisionBundles.id }).from(decisionBundles)).toHaveLength(1);
+    expect(await db.select({ id: decisions.id }).from(decisions)).toHaveLength(2);
     const surviving = await db
       .select({ id: decisions.id, bundleId: decisions.bundleId })
       .from(decisions)
       .where(eq(decisions.id, survivingDecisionId));
-    expect(surviving).toEqual([{ id: survivingDecisionId, bundleId: null }]);
+    expect(surviving).toEqual([{ id: survivingDecisionId, bundleId }]);
     expect(await runCount(youngKeptRun)).toBe(1);
   });
 
-  it("FK safety: the composite-FK native chain (results → assessments → decisions → effects → finalizations) goes with the run", async () => {
+  it("FK safety: a run with the native completion chain is never deleted (operator review dbcare-review-20261008)", async () => {
     const { companyId, agentId } = await seedCompany();
     const issueId = await seedIssue({ companyId, title: "native work" });
     const doomedRun = await seedRun({ companyId, agentId, status: "succeeded", ageDays: 100 });
@@ -372,13 +380,14 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
     const { sweep } = makeSweep({ freshBackup: true });
     const result = await sweep.sweep();
 
-    expect(result.perTable.runs.deleted).toBe(1);
-    expect(await runCount(doomedRun)).toBe(0);
-    expect(await db.select({ id: nativeRunFinalizations.runId }).from(nativeRunFinalizations)).toHaveLength(0);
-    expect(await db.select({ id: statusDecisionEffects.id }).from(statusDecisionEffects)).toHaveLength(0);
-    expect(await db.select({ id: statusDecisions.id }).from(statusDecisions)).toHaveLength(0);
-    expect(await db.select({ id: workAssessments.id }).from(workAssessments)).toHaveLength(0);
-    expect(await db.select({ id: nativeRunResults.id }).from(nativeRunResults)).toHaveLength(0);
+    // the native chain records outlive the run: nothing is deleted
+    expect(result.perTable.runs.deleted).toBe(0);
+    expect(await runCount(doomedRun)).toBe(1);
+    expect(await db.select({ id: nativeRunFinalizations.runId }).from(nativeRunFinalizations)).toHaveLength(1);
+    expect(await db.select({ id: statusDecisionEffects.id }).from(statusDecisionEffects)).toHaveLength(1);
+    expect(await db.select({ id: statusDecisions.id }).from(statusDecisions)).toHaveLength(1);
+    expect(await db.select({ id: workAssessments.id }).from(workAssessments)).toHaveLength(1);
+    expect(await db.select({ id: nativeRunResults.id }).from(nativeRunResults)).toHaveLength(1);
     // the contract has no run FK and survives
     expect(await db.select({ id: completionContracts.id }).from(completionContracts)).toHaveLength(1);
   });
@@ -777,6 +786,9 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
     const blockedState = await readDataRetentionLastRun(instanceSettingsService(db));
     expect(blockedState.waitingForBackup).toBe(true);
     expect(blockedState.backupCheckedAt).not.toBeNull();
+    // a pass that did no work does not stamp lastRunAt (operator review
+    // dbcare-review-20261008: the state is written on actual work only)
+    expect(blockedState.lastRunAt).toBeNull();
 
     // a fresh backup appears — the next pass deletes
     const file = path.join(backupDir, "paperclip-2026-01-02T00-00-00.sql.gz");
@@ -802,8 +814,17 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
       },
     });
 
-    // a vendor-style general write (no dataRetention key in the patch) keeps the row
+    // a vendor-style general write (no datastoreCare key in the patch) keeps
+    // the row
     await settings.updateGeneral({ censorUsernameInLogs: true });
+
+    // the stored object sits under general.datastoreCare.retention (the
+    // project §3.6 "Хранение" panel key — OPE-5939/DBC-1)
+    const general = (await settings.getGeneral()) as unknown as Record<string, unknown>;
+    const care = general.datastoreCare as Record<string, unknown>;
+    expect(typeof care).toBe("object");
+    expect(care.retention).toMatchObject({ activityLogDays: 30 });
+    expect(general.dataRetention).toBeUndefined();
 
     expect(await readDataRetentionSettings(settings)).toEqual({
       heartbeatRunsDays: 90,
@@ -817,5 +838,59 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
 
     // the waiting-for-backup throttle anchor is a plain activity query away
     expect(DATA_RETENTION_WAITING_FOR_BACKUP_ACTION).toBe("data.retention_waiting_for_backup");
+  });
+
+  it("runs at most one pass per 10 minutes: an immediate tick is a no-op (operator review dbcare-review-20261008)", async () => {
+    const { companyId, agentId } = await seedCompany();
+    const settings = instanceSettingsService(db);
+    const backupDir = makeBackupDir(true);
+    let passes = 0;
+    const sweep = createDataRetentionSweep({
+      db,
+      resolveSettings: () => readDataRetentionSettings(settings),
+      readLastRun: () => readDataRetentionLastRun(settings),
+      writeLastRun: (lastRun) => writeDataRetentionLastRun(settings, lastRun),
+      checkBackup: async () => {
+        passes += 1;
+        return { fresh: true, checkedAt: new Date() };
+      },
+      logWaitingForBackup: async () => undefined,
+      logThrottled: async () => undefined,
+    });
+    void backupDir;
+
+    await seedRun({ companyId, agentId, status: "succeeded", ageDays: 100 });
+    const first = await sweep.sweep();
+    expect(first.perTable.runs.deleted).toBe(1);
+    expect(passes).toBe(1);
+
+    // the 30 s scheduler tick inside the 10-minute window is a no-op: no
+    // pass, no database work, no state write
+    const second = await sweep.sweep();
+    expect(second.perTable.runs.deleted).toBe(0);
+    expect(passes).toBe(1);
+  });
+
+  it("an idle pass does not write the state: lastRun stamps actual work only (operator review dbcare-review-20261008)", async () => {
+    const { companyId, agentId } = await seedCompany();
+    const settings = instanceSettingsService(db);
+    const { sweep } = makeSweep({ freshBackup: true });
+
+    // nothing to delete — the pass runs but touches nothing
+    const idle = await sweep.sweep();
+    expect(idle.perTable.runs.deleted).toBe(0);
+    expect(idle.perTable.activity.deleted).toBe(0);
+    expect(idle.perTable.access.deleted).toBe(0);
+    const idleState = await readDataRetentionLastRun(settings);
+    expect(idleState.lastRunAt).toBeNull();
+    expect(idleState.waitingForBackup).toBe(false);
+
+    // actual work stamps the state
+    await seedRun({ companyId, agentId, status: "succeeded", ageDays: 100 });
+    const worked = await sweep.sweep();
+    expect(worked.perTable.runs.deleted).toBe(1);
+    const workedState = await readDataRetentionLastRun(settings);
+    expect(workedState.lastRunAt).not.toBeNull();
+    expect(workedState.perTable.runs.deletedTotal).toBe(1);
   });
 });

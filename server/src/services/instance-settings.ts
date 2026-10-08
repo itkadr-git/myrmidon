@@ -262,9 +262,10 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       ...(parsed.data.runLimits ? { runLimits: parsed.data.runLimits } : {}),
       // myrmidon(BOT-DISK E): the stored host disk threshold survives every general write
       ...(parsed.data.hostDisk ? { hostDisk: parsed.data.hostDisk } : {}),
-      // myrmidon(1.6.5-DB-RETENTION): the stored retention settings (and the
-      // sweep state under `lastRun`) survive every general write
-      ...(parsed.data.dataRetention ? { dataRetention: parsed.data.dataRetention } : {}),
+      // myrmidon(1.6.5-DB-RETENTION): the stored datastore-care object (the
+      // retention settings under `retention` and the sweep state under
+      // `retention.lastRun`) survives every general write
+      ...(parsed.data.datastoreCare ? { datastoreCare: parsed.data.datastoreCare } : {}),
       // myrmidon(BOT-DISK-A): the stored bot draft-directory lifecycle survives every general write
       ...(parsed.data.botDisk ? { botDisk: parsed.data.botDisk } : {}),
       // myrmidon(1.6.1-BOT-DISK-C): the stored per-bot disk quota survives every general write
@@ -696,7 +697,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
             // myrmidon(1.6.5-DB-RETENTION): the preserve line above restores
             // the stored value; a patch that carries the key (settings update
             // or the sweep's lastRun write) wins.
-            ...(patch.dataRetention !== undefined ? { dataRetention: nextGeneral.dataRetention } : {}),
+            ...(patch.datastoreCare !== undefined ? { datastoreCare: nextGeneral.datastoreCare } : {}),
             ...preserveSttGeneralKey(current.general), // myrmidon(1.6.1 VOICE-STT A1)
             ...preserveBudgetEnforcementGeneralKey(current.general), // myrmidon(1.7-BUDGET-CONFIG-B)
             ...preserveBehaviorSettingsGeneralKeys(current.general), // myrmidon(SETTINGS-CORE)

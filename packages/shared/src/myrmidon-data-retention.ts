@@ -3,7 +3,8 @@
 // myrmidon(1.6.5-DB-RETENTION): the shared contract of the database retention
 // sweep (part P1 — the server core: settings, sweep, backup gate).
 //
-// One object is stored in `instance_settings.general.dataRetention`:
+// One object is stored in
+// `instance_settings.general.datastoreCare.retention`:
 //
 //   - `heartbeatRunsDays` — how long finished heartbeat runs (and their run
 //     events) are kept (default 90);
@@ -26,8 +27,13 @@
 
 import { z } from "zod";
 
-/** The `instance_settings.general` key this feature stores its settings under. */
-export const DATA_RETENTION_SETTINGS_KEY = "dataRetention";
+/** The `instance_settings.general.datastoreCare` sub-key this feature stores
+ * its settings under: `general.datastoreCare.retention` (the project §3.6
+ * "Хранение" panel, one datastore-care object for every DB-care feature —
+ * OPE-5939/DBC-1). */
+export const DATA_RETENTION_SETTINGS_KEY = "datastoreCare";
+/** The sub-key inside `datastoreCare` the retention sweep owns. */
+export const DATA_RETENTION_SETTINGS_SUBKEY = "retention";
 
 /** Built-in default for heartbeat runs and their run events: three months. */
 export const DATA_RETENTION_DEFAULT_DAYS = 90;
@@ -49,7 +55,7 @@ export type DataRetentionSettingKey = (typeof DATA_RETENTION_SETTING_KEYS)[numbe
 /** Where the effective value came from: the stored row, or the built-in default. */
 export type DataRetentionSource = "settings" | "default";
 
-/** The canonical stored shape of `instance_settings.general.dataRetention`. */
+/** The canonical stored shape of `instance_settings.general.datastoreCare.retention`. */
 export const dataRetentionSettingsSchema = z
   .object({
     heartbeatRunsDays: retentionDaysSchema,
@@ -140,7 +146,7 @@ export interface DataRetentionTableStatus {
   lastFreedBytes: number;
 }
 
-/** The persisted sweep state (`instance_settings.general.dataRetention.lastRun`). */
+/** The persisted sweep state (`instance_settings.general.datastoreCare.retention.lastRun`). */
 export interface DataRetentionLastRun {
   lastRunAt: string | null;
   waitingForBackup: boolean;
@@ -206,3 +212,9 @@ export const DATA_RETENTION_UPDATED_ACTION = "instance.data_retention.updated";
  * the backup gate holds: no fresh verified backup, so no deletes this pass.
  */
 export const DATA_RETENTION_WAITING_FOR_BACKUP_ACTION = "data.retention_waiting_for_backup";
+
+/** The `data.retention_sweep_throttled` activity action — one line per group
+ * whose batch hit the statement timeout (operator review
+ * dbcare-review-20261008: the timeout is journaled, not swallowed). */
+export const DATA_RETENTION_SWEEP_THROTTLED_ACTION = "data.retention_sweep_throttled";
+
