@@ -75,12 +75,14 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
           FULL_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'full-ci') }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
           set -euo pipefail
           args=(plan --out "$RUNNER_TEMP/plan.json")
           if [ "$EVENT" = "pull_request" ]; then
             args+=(--base "$BASE" --head "$HEAD")
             if [ "$FULL_LABEL" = "true" ]; then args+=(--force-full); fi
+            case "$BASE_REF" in rel/*) args+=(--release-fast) ;; esac
           fi
           node scripts/myrmidon/ci/affected-tests.mjs "${args[@]}"
 
