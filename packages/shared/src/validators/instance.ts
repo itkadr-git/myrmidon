@@ -169,7 +169,7 @@ export const instanceGeneralSettingsSchema = z.object({
   ownerDelivery: ownerDeliverySettingsSchema.optional(),
   // myrmidon(1.6.5-DB-RETENTION): retention of runs and logs in whole days per
   // table group (0 = keep forever), changed from /api/myrmidon/data-retention;
-  // absent means the built-in defaults (90/90/90). `lastRun` is the sweep's own
+  // absent means the built-in defaults (90/0/180). `lastRun` is the sweep's own
   // state: carried through, never required (re-validated on read by the
   // feature module).
   dataRetention: dataRetentionSettingsSchema

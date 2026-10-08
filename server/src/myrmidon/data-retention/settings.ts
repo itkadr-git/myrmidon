@@ -5,7 +5,7 @@
 //
 // The stored value is the single truth (no env fallback — retention is a
 // policy choice, not a deployment knob); an absent or malformed row means the
-// defaults (90/90/90). The sweep state rides the same object under `lastRun`,
+// defaults (90/0/180). The sweep state rides the same object under `lastRun`,
 // so the status endpoint stays one cheap settings read. This module is the
 // database half: read the raw row, normalize it, write the canonical object
 // back. The same shape the wip-limit and autonomy settings use.

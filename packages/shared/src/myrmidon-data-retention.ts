@@ -6,15 +6,16 @@
 // One object is stored in `instance_settings.general.dataRetention`:
 //
 //   - `heartbeatRunsDays` — how long finished heartbeat runs (and their run
-//     events) are kept;
-//   - `activityLogDays` — how long activity-log rows are kept;
+//     events) are kept (default 90);
+//   - `activityLogDays` — how long activity-log rows are kept (default 0 —
+//     the activity log is the audit trail and is kept forever by default);
 //   - `accessAuditDays` — how long tool-access audit events and secret access
-//     events are kept.
+//     events are kept (default 180).
 //
 // Each value is a whole number of days >= 0; `0` means "keep forever". The
 // stored value is the single truth — there is no env fallback (retention is a
 // policy choice, not a deployment knob); an absent row reads as the defaults
-// (90/90/90). The sweep re-reads the settings at the top of every pass, so a
+// (90/0/180). The sweep re-reads the settings at the top of every pass, so a
 // PATCH applies on the next pass without a restart.
 //
 // The sweep state persists under the same key in a `lastRun` sub-object, so
@@ -28,8 +29,11 @@ import { z } from "zod";
 /** The `instance_settings.general` key this feature stores its settings under. */
 export const DATA_RETENTION_SETTINGS_KEY = "dataRetention";
 
-/** Built-in defaults: three months of history per table group. */
+/** Built-in default for heartbeat runs and their run events: three months. */
 export const DATA_RETENTION_DEFAULT_DAYS = 90;
+
+/** Built-in default for the tool/secret access audit: six months. */
+export const DATA_RETENTION_ACCESS_AUDIT_DEFAULT_DAYS = 180;
 
 /** A retention value: whole days >= 0; 0 means "keep forever". */
 const retentionDaysSchema = z.number().int().min(0);
@@ -75,8 +79,8 @@ export type DataRetentionSettingsPatch = z.infer<typeof patchDataRetentionSettin
 /** The defaults every absent value falls back to. */
 export const DATA_RETENTION_DEFAULT_SETTINGS: DataRetentionSettings = {
   heartbeatRunsDays: DATA_RETENTION_DEFAULT_DAYS,
-  activityLogDays: DATA_RETENTION_DEFAULT_DAYS,
-  accessAuditDays: DATA_RETENTION_DEFAULT_DAYS,
+  activityLogDays: 0,
+  accessAuditDays: DATA_RETENTION_ACCESS_AUDIT_DEFAULT_DAYS,
 };
 
 /** The settings as stored, or the defaults when absent/invalid. */
@@ -95,8 +99,10 @@ export function normalizeDataRetentionSettings(raw: unknown): DataRetentionSetti
     heartbeatRunsDays: parsed.success
       ? parsed.data.heartbeatRunsDays
       : DATA_RETENTION_DEFAULT_DAYS,
-    activityLogDays: parsed.success ? parsed.data.activityLogDays : DATA_RETENTION_DEFAULT_DAYS,
-    accessAuditDays: parsed.success ? parsed.data.accessAuditDays : DATA_RETENTION_DEFAULT_DAYS,
+    activityLogDays: parsed.success ? parsed.data.activityLogDays : 0,
+    accessAuditDays: parsed.success
+      ? parsed.data.accessAuditDays
+      : DATA_RETENTION_ACCESS_AUDIT_DEFAULT_DAYS,
   };
 }
 
