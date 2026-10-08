@@ -139,9 +139,16 @@ d("audit indexes migration (embedded postgres)", () => {
     const milestonePlan = await sql.unsafe(
       "EXPLAIN SELECT id FROM heartbeat_runs WHERE company_id = '00000000-0000-0000-0000-000000000001' AND context_snapshot ->> 'issueId' = 'x' AND status IN ('failed','timed_out') LIMIT 10",
     );
-    expect(milestonePlan.map((r) => Object.values(r)[0]).join("\n")).toContain(
-      "heartbeat_runs_ctx_issue_status_idx",
+    // Two indexes carry the company id and the context issueId expression: the
+    // milestone index of the audit and the attention-feed index of the same
+    // audit, which extends the key with the agent, the created_at stamp and the
+    // task id. The planner chooses between them by cost, so the pin here is that
+    // it uses one of the two and reads no sequential scan.
+    const milestonePlanText = milestonePlan.map((r) => Object.values(r)[0]).join("\n");
+    expect(milestonePlanText).toMatch(
+      /heartbeat_runs_(ctx_issue_status|attention_feed)_idx/,
     );
+    expect(milestonePlanText).not.toContain("Seq Scan");
     // P6 claim lockup shape: company + (execution_run_id or checkout_run_id).
     // On the tiny embedded table the planner may legitimately pick any
     // company-prefixed index, so the pin here is "no Seq Scan" (the production
