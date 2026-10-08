@@ -224,6 +224,9 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   // myrmidon(1.6.5-F-18): an empty catalog blocks the gateway spend limits and
   // the model picker — a stop, ranked with the other gateway-ops alerts.
   empty_model_catalog: 0,
+  // myrmidon(1.6.5-F11-A): «media not connected» is configuration advice, not
+  // an error — ranked with the other advisory sources.
+  bot_media_mcp: 13,
   // myrmidon(1.6.1-WIP-LIMIT-A): a workload-oversignal sits below every
   // blocking kind but above nothing else — it is advice, not a stop.
   wip_limit: 14,
@@ -3292,7 +3295,6 @@ async function buildAttentionFeedSnapshot(
         }));
       }
 
-<<<<<<< HEAD
       // myrmidon(1.6.5-F-18): the spend sweep completed but the gateway's
       // model catalog answered 0 models — the accounting key is almost
       // certainly restricted (no default models), and every feature reading
