@@ -55,6 +55,11 @@ if (!embeddedPostgresSupport.supported) {
   );
 }
 
+// attention-cache tests read the feed right after writing rows and seed failures
+// with fixed historical dates — disable the feed cache and widen the horizon so
+// per-test assertions keep exercising feed logic, not the production defaults.
+const TEST_SERVICE_OPTS = { feedCacheTtlMs: 0, failedRunHorizonDays: 3650 };
+
 describeEmbeddedPostgres("attention service", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
@@ -255,7 +260,7 @@ describeEmbeddedPostgres("attention service", () => {
       addedByUserId: "board-user",
     });
 
-    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const feed = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, { userId: "board-user" });
 
     expect(feed.items.some((item) => item.subject.id === harnessIssueId)).toBe(false);
     expect(feed.countsBySourceKind.review ?? 0).toBe(0);
@@ -618,7 +623,7 @@ describeEmbeddedPostgres("attention service", () => {
       },
     ]);
 
-    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const feed = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, { userId: "board-user" });
 
     expect(feed.totalCount).toBe(11);
     expect(feed.countsBySourceKind).toMatchObject({
@@ -816,7 +821,7 @@ describeEmbeddedPostgres("attention service", () => {
     await agentService(db).pause(pausedReviewerId);
     await agentService(db).terminate(terminatedReviewerId);
 
-    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const feed = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, { userId: "board-user" });
     const interactionTitles = feed.items
       .filter((item) => item.sourceKind === "issue_thread_interaction")
       .map((item) => item.subject.title);
@@ -906,8 +911,8 @@ describeEmbeddedPostgres("attention service", () => {
     });
     await agentService(db).pause(reviewerId);
 
-    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
-    const otherUserFeed = await attentionService(db).list(companyId, { userId: "other-user" });
+    const feed = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, { userId: "board-user" });
+    const otherUserFeed = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, { userId: "other-user" });
     const audienceByTitle = new Map(feed.items
       .filter((item) => item.sourceKind === "issue_thread_interaction")
       .map((item) => [item.subject.title, item.resolverAudience]));
@@ -998,7 +1003,7 @@ describeEmbeddedPostgres("attention service", () => {
     });
     expect(Buffer.byteLength(JSON.stringify(rows))).toBeLessThan(4096);
 
-    const feed = await attentionService(db).list(companyId, {
+    const feed = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, {
       includeDismissed: true, all: true, allowUnscopedAll: true,
     });
     const failures = feed.items.filter((item) => item.sourceKind === "failed_run");
@@ -1052,7 +1057,7 @@ describeEmbeddedPostgres("attention service", () => {
       createdAt: new Date("2026-07-09T12:00:01.000Z"),
     });
 
-    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const feed = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, { userId: "board-user" });
 
     expect(feed.items.filter((item) => item.sourceKind === "failed_run")).toEqual([]);
   });
@@ -1202,7 +1207,7 @@ describeEmbeddedPostgres("attention service", () => {
       },
     ]);
 
-    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const feed = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, { userId: "board-user" });
     const interactionItems = feed.items.filter((item) => item.sourceKind === "issue_thread_interaction");
     const detailsByKind = new Map(interactionItems.map((item) => [item.detail?.kind, item]));
 
@@ -1304,7 +1309,7 @@ describeEmbeddedPostgres("attention service", () => {
       },
     ]);
 
-    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const feed = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, { userId: "board-user" });
     const interactionIds = feed.items
       .filter((item) => item.sourceKind === "issue_thread_interaction")
       .map((item) => item.subject.id);
@@ -1333,9 +1338,9 @@ describeEmbeddedPostgres("attention service", () => {
       dismissedAt: new Date("2026-07-09T13:00:00.000Z"),
     });
 
-    await expect(attentionService(db).list(companyId, { userId: "board-user" }))
+    await expect(attentionService(db, TEST_SERVICE_OPTS).list(companyId, { userId: "board-user" }))
       .resolves.toMatchObject({ totalCount: 1 }); // agent_error_alert from seed
-    const includeDismissedFeed = await attentionService(db).list(companyId, { userId: "board-user", includeDismissed: true });
+    const includeDismissedFeed = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, { userId: "board-user", includeDismissed: true });
     expect(includeDismissedFeed.totalCount).toBe(2);
     expect(includeDismissedFeed.items.find((item) => item.dedupKey === `approval:${approvalId}`)?.dismissal)
       .toMatchObject({ kind: "dismiss", isActive: true, snoozedUntil: null });
@@ -1345,7 +1350,7 @@ describeEmbeddedPostgres("attention service", () => {
       .set({ updatedAt: new Date("2026-07-09T14:00:00.000Z") })
       .where(eq(approvals.id, approvalId));
 
-    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const feed = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, { userId: "board-user" });
     expect(feed.items.some((item) => item.dedupKey === `approval:${approvalId}`)).toBe(true);
   });
 
@@ -1361,7 +1366,7 @@ describeEmbeddedPostgres("attention service", () => {
       blockedTransitionAt: transitionAt,
     });
 
-    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const feed = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, { userId: "board-user" });
     const items = feed.items.filter((item) => item.dedupKey === `blocked-owner:${issueId}:${transitionAt.toISOString()}`);
 
     expect(items).toHaveLength(1);
@@ -1378,7 +1383,7 @@ describeEmbeddedPostgres("attention service", () => {
       blockedTransitionAt: new Date(ROUTABLE_BLOCKED_ROLLOUT_AT.getTime() - 1),
     });
 
-    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const feed = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, { userId: "board-user" });
 
     expect(feed.items.some((item) => item.dedupKey === `blocker:${issueId}`)).toBe(true);
   });
@@ -1396,7 +1401,7 @@ describeEmbeddedPostgres("attention service", () => {
       blockedTransitionAt: new Date(ROUTABLE_BLOCKED_ROLLOUT_AT.getTime() - 1),
     });
 
-    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const feed = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, { userId: "board-user" });
     const row = feed.items.find((item) => item.dedupKey === `blocker:${issueId}`);
 
     expect(row).toBeTruthy();
@@ -1426,7 +1431,7 @@ describeEmbeddedPostgres("attention service", () => {
       type: "blocks",
     });
 
-    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const feed = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, { userId: "board-user" });
     expect(feed.items.some((item) => item.sourceKind === "blocker_attention")).toBe(false);
   });
 
@@ -1451,7 +1456,7 @@ describeEmbeddedPostgres("attention service", () => {
       type: "blocks" as const,
     })));
 
-    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const feed = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, { userId: "board-user" });
 
     expect(feed.items.filter((item) => item.sourceKind === "blocker_attention")).toEqual([]);
   });
@@ -1497,7 +1502,7 @@ describeEmbeddedPostgres("attention service", () => {
       { companyId, issueId: transitiveId, relatedIssueId: blockedId, type: "blocks" },
     ]);
 
-    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const feed = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, { userId: "board-user" });
     const rows = feed.items.filter((item) => item.sourceKind === "blocker_attention");
 
     expect(rows).toHaveLength(1);
@@ -1545,7 +1550,7 @@ describeEmbeddedPostgres("attention service", () => {
       { companyId, issueId: lightTerminalId, relatedIssueId: lightBlockedId, type: "blocks" },
     ]);
 
-    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const feed = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, { userId: "board-user" });
     const rows = feed.items.filter((item) => item.sourceKind === "blocker_attention");
 
     expect(rows.map((item) => item.subject.id)).toEqual([heavyTerminalId, lightTerminalId]);
@@ -1564,7 +1569,7 @@ describeEmbeddedPostgres("attention service", () => {
       blockedTransitionAt: transitionAt,
     });
 
-    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const feed = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, { userId: "board-user" });
     const row = feed.items.find(
       (item) => item.dedupKey === `blocked-owner:${issueId}:${transitionAt.toISOString()}`,
     );
@@ -1584,7 +1589,7 @@ describeEmbeddedPostgres("attention service", () => {
       blockedTransitionAt: transitionAt,
     });
 
-    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const feed = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, { userId: "board-user" });
 
     expect(feed.items.some((item) => item.dedupKey === `blocked-owner:${issueId}:${transitionAt.toISOString()}`)).toBe(false);
   });
@@ -1608,7 +1613,7 @@ describeEmbeddedPostgres("attention service", () => {
       { companyId, issueId: firstIssueId, approvalId },
     ]);
 
-    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const feed = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, { userId: "board-user" });
     const approvalItems = feed.items.filter((item) => item.dedupKey === `approval:${approvalId}`);
 
     expect(approvalItems).toHaveLength(1);
@@ -1636,9 +1641,9 @@ describeEmbeddedPostgres("attention service", () => {
       snoozedUntil: new Date("2099-01-02T00:00:00.000Z"),
     });
 
-    await expect(attentionService(db).list(companyId, { userId: "board-user" }))
+    await expect(attentionService(db, TEST_SERVICE_OPTS).list(companyId, { userId: "board-user" }))
       .resolves.toMatchObject({ totalCount: 1 }); // agent_error_alert from seed
-    const hiddenFeed = await attentionService(db).list(companyId, { userId: "board-user", includeDismissed: true });
+    const hiddenFeed = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, { userId: "board-user", includeDismissed: true });
     expect(hiddenFeed.items.find((item) => item.dedupKey === `approval:${approvalId}`)?.dismissal)
       .toMatchObject({ kind: "snooze", isActive: true, snoozedUntil: "2099-01-02T00:00:00.000Z" });
 
@@ -1647,7 +1652,7 @@ describeEmbeddedPostgres("attention service", () => {
       .set({ snoozedUntil: new Date("2020-01-01T00:00:00.000Z") })
       .where(eq(inboxDismissals.itemKey, `attention:approval:${approvalId}`));
 
-    const visibleFeed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const visibleFeed = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, { userId: "board-user" });
     const visibleApproval = visibleFeed.items.find((item) => item.dedupKey === `approval:${approvalId}`);
     expect(visibleApproval?.dismissal).toMatchObject({ kind: "snooze", isActive: false });
     expect(visibleApproval).toBeTruthy();
@@ -1748,7 +1753,7 @@ describeEmbeddedPostgres("attention service", () => {
     });
     await db.update(agents).set({ updatedAt: new Date(now - 5 * 60_000) }).where(eq(agents.id, errorAgentId));
 
-    const feed = await attentionService(db).list(companyId, {
+    const feed = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, {
       userId: "board-user",
       sort: "decide",
       limit: 20,
@@ -1792,7 +1797,7 @@ describeEmbeddedPostgres("attention service", () => {
       snoozedUntil: null,
     });
 
-    const firstPage = await attentionService(db).list(companyId, {
+    const firstPage = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, {
       userId: "board-user",
       queue: "urgent-releases",
       sort: "decide",
@@ -1801,7 +1806,7 @@ describeEmbeddedPostgres("attention service", () => {
     expect(firstPage).toMatchObject({ totalCount: 2, deskBadgeCount: 2 });
     expect(firstPage.items.map((item) => item.subject.id)).toEqual([expiringSoonId]);
     expect(firstPage.nextCursor).toBeTruthy();
-    const secondPage = await attentionService(db).list(companyId, {
+    const secondPage = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, {
       userId: "board-user",
       queue: "urgent-releases",
       sort: "decide",
@@ -1811,7 +1816,7 @@ describeEmbeddedPostgres("attention service", () => {
     expect(secondPage.items.map((item) => item.subject.id)).toEqual([expiringLaterId]);
     expect(secondPage.nextCursor).toBeNull();
 
-    const completeSnapshot = await attentionService(db).list(companyId, {
+    const completeSnapshot = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, {
       userId: "board-user",
       queue: "urgent-releases",
       sort: "decide",
@@ -1820,7 +1825,7 @@ describeEmbeddedPostgres("attention service", () => {
     expect(completeSnapshot.items.map((item) => item.subject.id)).toEqual([expiringSoonId, expiringLaterId]);
     expect(completeSnapshot.nextCursor).toBeNull();
 
-    const dateFiltered = await attentionService(db).list(companyId, {
+    const dateFiltered = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, {
       userId: "board-user",
       queue: "urgent-releases",
       activitySince: new Date(now - 90_000).toISOString(),
@@ -1828,7 +1833,7 @@ describeEmbeddedPostgres("attention service", () => {
     });
     expect(dateFiltered.items.map((item) => item.subject.id)).toEqual([expiringSoonId]);
 
-    const withSnoozed = await attentionService(db).list(companyId, {
+    const withSnoozed = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, {
       userId: "board-user",
       includeDismissed: true,
       limit: 20,
@@ -1868,14 +1873,14 @@ describeEmbeddedPostgres("attention service", () => {
       addedByUserId: "board-user",
     })));
 
-    const firstPage = await attentionService(db).list(companyId, {
+    const firstPage = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, {
       userId: "board-user",
       queue: "bulk-review",
     });
     expect(firstPage.items).toHaveLength(50);
     expect(firstPage.nextCursor).toBeTruthy();
 
-    const completeSnapshot = await attentionService(db).list(companyId, {
+    const completeSnapshot = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, {
       userId: "board-user",
       queue: "bulk-review",
       all: true,
@@ -1884,7 +1889,7 @@ describeEmbeddedPostgres("attention service", () => {
     expect(new Set(completeSnapshot.items.map((item) => item.id)).size).toBe(101);
     expect(completeSnapshot.nextCursor).toBeNull();
 
-    const internalSnapshot = await attentionService(db).list(companyId, {
+    const internalSnapshot = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, {
       userId: "board-user",
       all: true,
       allowUnscopedAll: true,
@@ -1894,9 +1899,9 @@ describeEmbeddedPostgres("attention service", () => {
     expect(internalSnapshot.items.length).toBeGreaterThan(100);
     expect(internalSnapshot.nextCursor).toBeNull();
 
-    await expect(attentionService(db).list(companyId, { userId: "board-user", all: true }))
+    await expect(attentionService(db, TEST_SERVICE_OPTS).list(companyId, { userId: "board-user", all: true }))
       .rejects.toThrow("all requires a queue filter");
-    await expect(attentionService(db).list(companyId, {
+    await expect(attentionService(db, TEST_SERVICE_OPTS).list(companyId, {
       userId: "board-user",
       queue: "bulk-review",
       all: true,
@@ -1936,7 +1941,7 @@ describeEmbeddedPostgres("attention service", () => {
       targetSnapshots: {},
     })));
 
-    const svc = attentionService(db, { openDecisionLimit: 1 });
+    const svc = attentionService(db, { ...TEST_SERVICE_OPTS, openDecisionLimit: 1 });
     const limited = await svc.list(companyId, { userId: "board-user" });
     expect(limited.items.filter((item) => item.sourceKind === "decision")).toHaveLength(1);
 
