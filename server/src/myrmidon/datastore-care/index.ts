@@ -25,6 +25,11 @@ import {
 } from "./service.js";
 import { datastoreCareRoutes } from "./routes.js";
 import { createDatastoreCareJob, type DatastoreCareJob } from "./startup.js";
+// myrmidon(1.6.5-DBC1): retention runtime (same module index, distinct names).
+import {
+  createDatastoreCareRetentionRuntime,
+  type DatastoreCareRetentionRuntime,
+} from "./retention/service.js";
 
 /** The runtime of the module: what the routes, the job and the tests share. */
 export interface DatastoreCareRuntime {
@@ -160,10 +165,6 @@ export function datastoreCareJob(): DatastoreCareJob | null {
 // `instance_settings.general.datastoreCare.retention.lastRun`, so a restart
 // keeps the counters and the backup-gate flag.
 
-import type { Db } from "@paperclipai/db";
-import { createDatastoreCareRetentionRuntime } from "./retention/service.js";
-import type { DatastoreCareRetentionRuntime } from "./retention/service.js";
-
 export {
   readRetentionSettings,
   readRetentionLastRun,
@@ -184,7 +185,7 @@ export {
   CONTEXT_COMPACT_KEYS,
   CONTEXT_COMPACT_BATCH_SIZE,
 } from "./retention/compact.js";
-export { datastoreCareRoutes } from "./retention/routes.js";
+export { datastoreCareRetentionRoutes } from "./retention/routes.js";
 export type { DatastoreCareRetentionRuntime } from "./retention/service.js";
 
 let runtime: DatastoreCareRetentionRuntime | null = null;

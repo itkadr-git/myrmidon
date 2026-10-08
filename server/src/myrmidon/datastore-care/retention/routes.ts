@@ -25,7 +25,7 @@ import {
   writeRetentionSettings,
 } from "./settings.js";
 
-export function datastoreCareRoutes(db: Db) {
+export function datastoreCareRetentionRoutes(db: Db) {
   const router = Router();
   const settings = instanceSettingsService(db);
 
