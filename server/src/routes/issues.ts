@@ -5620,6 +5620,10 @@ export function issueRoutes(
       id: string;
       companyId: string;
     },
+    // myrmidon(OPE-6241): withdraw of the actor's own interaction tolerates a
+    // responsible-user mismatch (automation runs carry a service account, not
+    // the key owner's user id). Resolution routes keep the strict default.
+    opts?: { allowResponsibleUserMismatch?: boolean },
   ) {
     if (req.actor.type !== "agent") return null;
     const runId = req.actor.runId?.trim();
@@ -5652,7 +5656,8 @@ export function issueRoutes(
       !run ||
       run.companyId !== issue.companyId ||
       run.agentId !== req.actor.agentId ||
-      (actorResponsibleUserId !== null &&
+      (!opts?.allowResponsibleUserMismatch &&
+        actorResponsibleUserId !== null &&
         run.responsibleUserId !== undefined &&
         run.responsibleUserId !== actorResponsibleUserId)
     ) {
@@ -6049,9 +6054,18 @@ export function issueRoutes(
       return true;
     }
     const actorAgentId = req.actor.agentId;
+    // myrmidon(OPE-6241): the creator/assignee check is computed before the
+    // run-attribution gate so withdrawing one's OWN card can tolerate a
+    // responsible-user mismatch. That check is redundant here: the run is
+    // already bound to the same agent, company and issue scope, and the
+    // creator/assignee authorization below still decides who may withdraw.
+    const isCreator = interaction.createdByAgentId === actorAgentId;
+    const isAssignee = issue.assigneeAgentId === actorAgentId;
     if (
       !actorAgentId ||
-      (await assertAgentInteractionRunAttribution(req, res, issue)) === false
+      (await assertAgentInteractionRunAttribution(req, res, issue, {
+        allowResponsibleUserMismatch: isCreator || isAssignee,
+      })) === false
     )
       return false;
     if (
@@ -6059,8 +6073,6 @@ export function issueRoutes(
     )
       return false;
 
-    const isCreator = interaction.createdByAgentId === actorAgentId;
-    const isAssignee = issue.assigneeAgentId === actorAgentId;
     if (!isCreator && !isAssignee) {
       res.status(403).json({
         error:
