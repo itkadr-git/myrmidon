@@ -355,7 +355,7 @@ describeEmbeddedPostgres("myrmidon(1.6.3-CTO-CHAT-B) /accept and /reject in the 
     const { companyId, agentId, boardUserId, conversation, cardId } = await seedWithCard();
     const result = await runBridgedDirectMessageCommand({
       ...commandInput({ companyId, agentId, boardUserId, conversationIssueId: conversation!.id, text: `/accept ${cardId}` }),
-      publicBaseUrl: undefined,
+      publicBaseUrl: null,
     });
     const text = (result as { text: string }).text;
     expect(text).not.toContain("/issues/");
