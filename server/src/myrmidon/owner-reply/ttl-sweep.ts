@@ -427,7 +427,7 @@ async function postSweepComment(
   body: string,
   payload: Record<string, unknown>,
 ): Promise<void> {
-  await db.insert(issueComments).values({
+  await db.insert(issueComments).values([{
     issueId: row.issueId,
     authorType: "system",
     body,
@@ -445,7 +445,7 @@ async function postSweepComment(
         ],
       }],
     } as IssueCommentMetadata,
-  });
+  }]);
   await db
     .update(issues)
     .set({ updatedAt: new Date() })
