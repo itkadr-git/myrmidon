@@ -30,14 +30,18 @@ DECLARE
   batch_end uuid;
 BEGIN
   LOOP
-    SELECT max(batch.id) INTO batch_end
+    -- uuid has no max() aggregate in Postgres: take the last id of the 200-row page by ordering.
+    batch_end := NULL;
+    SELECT batch."id" INTO batch_end
     FROM (
       SELECT "id"
       FROM "heartbeat_runs"
       WHERE cursor_id IS NULL OR "id" > cursor_id
       ORDER BY "id"
       LIMIT 200
-    ) AS batch;
+    ) AS batch
+    ORDER BY batch."id" DESC
+    LIMIT 1;
     EXIT WHEN batch_end IS NULL;
 
     -- Class 3 first: lift the nested envelope, then drop the nested copy.
