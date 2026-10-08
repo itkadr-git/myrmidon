@@ -148,8 +148,8 @@ describe("resolveSessionKey", () => {
 
   it("starts a fresh gateway session for a server-assigned generation (OPE-6168)", () => {
     const base = { strategy: "issue" as const, companyId: "company-1", agentId: "agent-1", runId: "run-1", issueId: "issue-1" };
-    expect(resolveSessionKey({ ...base, sessionGeneration: 0 })).toBe("paperclip:company:company-1:agent:agent-1:issue:issue-1");
-    expect(resolveSessionKey({ ...base, sessionGeneration: 2 })).toBe("paperclip:company:company-1:agent:agent-1:issue:issue-1:g2");
+    expect(resolveSessionKey({ ...base, generation: 1 })).toBe("paperclip:company:company-1:agent:agent-1:issue:issue-1");
+    expect(resolveSessionKey({ ...base, generation: 3 })).toBe("paperclip:company:company-1:agent:agent-1:issue:issue-1:g3");
   });
 
   it("omits the session key for none strategy", () => {

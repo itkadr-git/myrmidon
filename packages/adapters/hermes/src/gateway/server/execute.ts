@@ -111,7 +111,10 @@ const SENSITIVE_KEY_PATTERN =
 const BEARER_TOKEN_PATTERN = /Bearer\s+\S+/gi;
 const HERMES_SESSION_KEY_HEADER_PATTERN = /(X-Hermes-Session-Key\s*[:=]\s*)([^\s,;]+)/gi;
 const PAPERCLIP_SESSION_KEY_PATTERN =
-  /\bpaperclip:(?:company:[A-Za-z0-9-]+:agent:[A-Za-z0-9-]+(?::(?:issue|run):[A-Za-z0-9-]+)?(?::g\d+)?|run:[A-Za-z0-9-]+)\b/gi;
+  // myrmidon(PERF-DIET-K): the optional trailing `:g<N>` is the session
+  // generation suffix of an issue-scoped key (server/src/myrmidon/session-generations
+  // in the board), so a redacted key hides its generation too.
+  /\bpaperclip:(?:company:[A-Za-z0-9-]+:agent:[A-Za-z0-9-]+(?::(?:issue|run):[A-Za-z0-9-]+)?|run:[A-Za-z0-9-]+)(?::g\d+)?\b/gi;
 
 // myrmidon(CONTAINER-GITHUB-WRITE): env names heartbeat.ts writes into
 // runtimeConfig.env (services/heartbeat.ts ~21995-22015) when the run's
@@ -183,6 +186,23 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
+// myrmidon(PERF-DIET-K): the session-key generation the board decided for this
+// run (see server/src/myrmidon/session-generations/ there). The board writes
+// `sessionGeneration` into the run's adapter config only once an issue-scoped
+// session has passed its threshold; a missing value, an unreadable one and the
+// first generation all read as 1, which leaves the session key byte-for-byte
+// the vendor's — the default behaviour is unchanged.
+export function readSessionGeneration(value: unknown): number {
+  const parsed =
+    typeof value === "number"
+      ? value
+      : typeof value === "string"
+        ? Number.parseInt(value.trim(), 10)
+        : Number.NaN;
+  if (!Number.isFinite(parsed) || parsed <= 1) return 1;
+  return Math.floor(parsed);
+}
+
 function normalizeSessionKeyStrategy(value: unknown): SessionKeyStrategy {
   const raw = asString(value, "issue").trim().toLowerCase();
   if (raw === "agent" || raw === "run" || raw === "none") return raw;
@@ -225,22 +245,26 @@ export function resolveSessionKey(input: {
   agentId: string;
   runId: string;
   issueId: string | null;
-  /** myrmidon(OPE-6168): server-assigned generation; > 0 starts a fresh gateway session. */
-  sessionGeneration?: number;
+  /**
+   * myrmidon(PERF-DIET-K): the issue-scoped session generation. The board
+   * raises it once the session passes its age/activity threshold (and, since
+   * OPE-6168, after a provider input-overflow failure), so a task's
+   * conversation stays bounded. Only the issue strategy carries it; generation
+   * 1 keeps the key without a suffix, so nothing changes until it is crossed.
+   */
+  generation?: number | null;
 }): string | null {
   if (input.strategy === "none") return null;
-  const generation =
-    input.sessionGeneration && input.sessionGeneration > 0
-      ? `:g${Math.floor(input.sessionGeneration)}`
-      : "";
   if (input.strategy === "agent") {
-    return `paperclip:company:${input.companyId}:agent:${input.agentId}${generation}`;
+    return `paperclip:company:${input.companyId}:agent:${input.agentId}`;
   }
   if (input.strategy === "run") {
     return `paperclip:run:${input.runId}`;
   }
   const issuePart = input.issueId ? `issue:${input.issueId}` : `run:${input.runId}`;
-  return `paperclip:company:${input.companyId}:agent:${input.agentId}:${issuePart}${input.issueId ? generation : ""}`;
+  const generation = readSessionGeneration(input.generation);
+  const generationPart = input.issueId && generation > 1 ? `:g${generation}` : "";
+  return `paperclip:company:${input.companyId}:agent:${input.agentId}:${issuePart}${generationPart}`;
 }
 
 function stringifyForLog(value: unknown, maxChars = 4_000): string {
@@ -1735,8 +1759,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     agentId: ctx.agent.id,
     runId: idempotencyKey,
     issueId: issueIdFromContext(ctx),
-    sessionGeneration:
-      typeof ctx.context?.sessionGeneration === "number" ? ctx.context.sessionGeneration : 0,
+    generation: readSessionGeneration(ctx.config.sessionGeneration),
   });
   const extraHeaders = parseHeaders(ctx.config.headers);
   // myrmidon(MEMORY-CENTRAL-B): create the client here (no network yet); the

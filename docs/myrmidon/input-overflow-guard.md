@@ -21,8 +21,8 @@ re-ran the issue every 3–5 minutes with the same outcome and no attention item
    maximum", generic context-window phrases). The `hermes_gateway` adapter sets
    the family; the server also detects it by text on runs of any adapter.
 3. **Fresh session on the next attempt.** After such a failure the server drops
-   the saved task session and passes `context.sessionGeneration` (the number of
-   overflow failures on the issue). `hermes_gateway` appends `:g<N>` to its
+   the saved task session and passes `sessionGeneration` in the adapter config (1 + the number of
+   overflow failures on the issue). `hermes_gateway` appends `:g<N>` (N ≥ 2) to its
    gateway session key, so the next run does not reuse the bloated history.
 4. **Stop and raise an attention item.** After N consecutive overflow failures
    of one agent on one issue (default 3, env `MYRMIDON_INPUT_OVERFLOW_MAX_FAILURES`)

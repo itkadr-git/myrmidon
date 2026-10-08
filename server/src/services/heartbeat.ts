@@ -23038,18 +23038,23 @@ export function heartbeatService(
       }
 
       // myrmidon(OPE-6168): adapters that keep a provider-side session keyed by
-      // issue (hermes_gateway) start a new one after an input-overflow failure.
-      const inputOverflowGeneration = issueId
+      // issue (hermes_gateway) start a new generation after an input-overflow
+      // failure: generation 1 is the unsuffixed key, each overflow adds one.
+      const inputOverflowFailures = issueId
         ? await countInputOverflowFailures(db, {
             companyId: agent.companyId,
             agentId: agent.id,
             issueId,
           }).catch(() => 0)
         : 0;
-      if (inputOverflowGeneration > 0) {
-        context.sessionGeneration = inputOverflowGeneration;
-      } else {
-        delete context.sessionGeneration;
+      if (inputOverflowFailures > 0) {
+        runtimeConfig = {
+          ...runtimeConfig,
+          sessionGeneration: Math.max(
+            Number(runtimeConfig.sessionGeneration) || 1,
+            1 + inputOverflowFailures,
+          ),
+        };
       }
 
       if (managedAiRuntime) {
