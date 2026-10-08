@@ -5544,6 +5544,15 @@ export function describeSessionResetReason(
 
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   if (wakeReason === "issue_assigned") return "wake reason is issue_assigned";
+  // myrmidon(OPE-6168): paired with the transient_failure_retry branch of
+  // shouldResetTaskSessionForWake (upstream #15487).
+  if (
+    wakeReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON &&
+    readNonEmptyString(contextSnapshot?.codexTransientFallbackMode) !==
+      "same_session"
+  ) {
+    return "wake reason is transient_failure_retry (retry starts a fresh session)";
+  }
   if (wakeReason === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON) {
     return `wake reason is ${EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON}`;
   }
