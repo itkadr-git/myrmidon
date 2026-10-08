@@ -43,6 +43,9 @@ import type { StoredFallbackSignalSettings } from "../myrmidon-fallback-signal.j
 // general settings row.
 import type { StoredPauseGuardSettings } from "../myrmidon-pause-guard.js";
 import type { BudgetLimitsSettings } from "../myrmidon-budget-limits.js";
+// myrmidon(DB-PERF-C-P4): the TTL of the tool gateway policy cache lives in the
+// same general settings row.
+import type { ToolPolicyCacheSettings } from "../myrmidon-tool-policy-cache.js";
 
 // myrmidon(1.6.1-FORAGING-LIMITS-UI)
 import type { ForagingSettings } from "../myrmidon-foraging.js";
@@ -315,6 +318,14 @@ export interface InstanceGeneralSettings {
    * is off)". Kept in sync with the validator of the same field.
    */
   foraging?: ForagingSettings;
+  /**
+   * myrmidon(DB-PERF-C-P4): TTL of the in-process cache behind the tool
+   * gateway's policy, profile, binding and profile-entry reads; changed from
+   * `GET`/`PATCH /api/myrmidon/tool-policy-cache`. Absent means the default
+   * (30 s), `0` switches the cache off. Kept in sync with the validator of the
+   * same field (packages/shared/src/validators/instance.ts).
+   */
+  toolPolicyCache?: ToolPolicyCacheSettings;
 }
 
 

@@ -18,6 +18,9 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { createToolGatewayService, ToolGatewayHttpError } from "../services/tool-gateway.js";
+// myrmidon(DB-PERF-C-P4): the fixtures below write profiles, bindings and entries around the
+// tool-access CRUD, so they drop the company snapshot the way those CRUD paths do.
+import { invalidateToolPolicyCache } from "../myrmidon/tool-policy-cache/runtime.js";
 import {
   agentToolPermissionAllows,
   normalizeAgentToolPermissions,
@@ -156,6 +159,8 @@ describeEmbeddedPostgres("myrmidon(S6) agent tool permission enforcement", () =>
       effect: "include" as const,
       toolName: FIXTURE_TOOL,
     });
+    // myrmidon(DB-PERF-C-P4): the fixture writes around the tool-access CRUD.
+    invalidateToolPolicyCache(db, companyId);
     return profile;
   }
 

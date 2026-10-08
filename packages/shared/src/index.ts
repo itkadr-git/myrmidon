@@ -2897,3 +2897,7 @@ export * from "./myrmidon-castes.js";
 // limits of the foraging sweep — shared by the server, the settings page and
 // the settings validator.
 export * from "./myrmidon-foraging.js";
+// myrmidon(DB-PERF-C-P4): the TTL of the tool gateway policy cache — the
+// instance setting, its bounds and the lenient reader shared by the settings
+// route and the cache itself.
+export * from "./myrmidon-tool-policy-cache.js";
