@@ -333,15 +333,14 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
     const run = await wakeAndQueue(agentId, issueId);
     await backdateRun(run.id, 120); // 2 hours > 60s threshold
 
-    // Open the admission gate so the sweep claims the run, but the per-agent
-    // ceiling blocks it (maxConcurrentRuns=1 in the agent config).
-    pinAdmission({ maxConcurrentRuns: 1 });
+    // Run the sweep with admission still closed. The run stays queued
+    // and the sweep names its wait (global_cap from the admission denial).
     await heartbeat.resumeQueuedRuns();
     await heartbeat.drainActiveRunExecutions();
 
     const stored = await runRow(run.id);
     expect(stored?.status).toBe("queued");
-    expect(stored?.contextSnapshot).toMatchObject({ waitReason: "agent_concurrency" });
+    expect(stored?.contextSnapshot).toMatchObject({ waitReason: "global_cap" });
   }, 30_000);
 
   it("starts a queued run whose task is in todo when the admission gate opens", async () => {
