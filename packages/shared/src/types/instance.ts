@@ -47,6 +47,7 @@ import type { BudgetLimitsSettings } from "../myrmidon-budget-limits.js";
 // myrmidon(DB-PERF-C-P4): the TTL of the tool gateway policy cache lives in the
 // same general settings row.
 import type { ToolPolicyCacheSettings } from "../myrmidon-tool-policy-cache.js";
+import type { ForagingIdleGateSettings } from "../myrmidon-foraging-idle-gate.js";
 
 // myrmidon(1.6.1-FORAGING-LIMITS-UI)
 import type { ForagingSettings } from "../myrmidon-foraging.js";
@@ -335,6 +336,8 @@ export interface InstanceGeneralSettings {
    * same field (packages/shared/src/validators/instance.ts).
    */
   toolPolicyCache?: ToolPolicyCacheSettings;
+  // myrmidon(1.6.3-FORAGING-IDLE-GATE): the stored idle-gate toggle.
+  foragingIdleGate?: ForagingIdleGateSettings;
 }
 
 

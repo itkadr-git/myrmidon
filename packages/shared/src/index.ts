@@ -2904,3 +2904,6 @@ export * from "./myrmidon-foraging.js";
 // instance setting, its bounds and the lenient reader shared by the settings
 // route and the cache itself.
 export * from "./myrmidon-tool-policy-cache.js";
+// myrmidon(1.6.3-FORAGING-IDLE-GATE): the shared contract of the foraging
+// idle gate — the toggle, its storage key and the resolver with sources.
+export * from "./myrmidon-foraging-idle-gate.js";

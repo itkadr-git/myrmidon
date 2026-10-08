@@ -27,6 +27,13 @@ import { readForagingSettings, resolveForagingEffectiveSettings, foragingSetting
 import { createForagingService, type ForagingService } from "./service.js";
 import { createDbForagingStore, type ForagingStore } from "./store.js";
 import { foragingRoutes } from "./routes.js";
+import {
+  foragingIdleGateService,
+  readForagingIdleGate,
+  FORAGING_IDLE_GATE_ENABLED_ENV,
+  FORAGING_IDLE_GATE_SETTINGS_KEY,
+} from "./idle-gate-settings.js";
+import { foragingIdleGateRoutes } from "./idle-gate-routes.js";
 
 export {
   FORAGING_BUDGET_CENTS_ENV,
@@ -41,6 +48,13 @@ export {
 } from "./domain.js";
 export type { ForagingCandidatePort, ForagingSweepResult, ForagingSourceRef } from "./domain.js";
 export { readForagingSettings, FORAGING_ENABLED_ENV, foragingSettingsService, resolveForagingEffectiveSettings } from "./settings.js";
+export {
+  FORAGING_IDLE_GATE_ENABLED_ENV,
+  FORAGING_IDLE_GATE_SETTINGS_KEY,
+  foragingIdleGateService,
+  readForagingIdleGate,
+} from "./idle-gate-settings.js";
+export { foragingIdleGateRoutes } from "./idle-gate-routes.js";
 export { createForagingService } from "./service.js";
 export { createDbForagingStore } from "./store.js";
 export { createForagingReader } from "./reader.js";
@@ -111,6 +125,15 @@ export function foragingWiring(db: Db, env: NodeJS.ProcessEnv = process.env): Fo
         });
       },
     },
+    // myrmidon(1.6.3-FORAGING-IDLE-GATE): the per-role idle check reads the
+    // swarm-claim queue and the agents of the role from this database.
+    db,
+    // myrmidon(1.6.3-FORAGING-IDLE-GATE): the toggle is re-read on every pass
+    // from instance_settings.general (the env stays the forced override).
+    idleGate: {
+      getGeneral: () => settings.getGeneral(),
+      env,
+    },
     log: logger,
   });
   return { store, service, env };
@@ -128,4 +151,12 @@ export function myrmidonForagingRoutes(db: Db, env: NodeJS.ProcessEnv = process.
     settingsService: foragingSettingsService(db, { settings, env }),
     env: wiring.env,
   });
+}
+
+/**
+ * Router for app.ts: GET/PATCH /api/myrmidon/foraging/idle-gate — the
+ * toggle that keeps learning to idle roles (myrmidon 1.6.3-FORAGING-IDLE-GATE).
+ */
+export function myrmidonForagingIdleGateRoutes(db: Db) {
+  return foragingIdleGateRoutes(db, foragingIdleGateService(db));
 }
