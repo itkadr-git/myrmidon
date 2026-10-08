@@ -33,18 +33,32 @@ function stubRows<T>(values: T[]) {
 
 function stubDb(row: Record<string, unknown>) {
   const persistedSets: Array<Record<string, unknown>> = [];
-  let state = { ...row };
+  // The row state starts `null`: an empty table, so `getOrCreateRow` takes its
+  // insert branch (which on conflict — the row actually existing — must behave
+  // like the real upsert and adopt the existing row, not blind-write over it).
+  let state: Record<string, unknown> | null = null;
   const db = {
     // No isolation in this stub: the transaction callback gets the same object back.
     transaction: (fn: (tx: unknown) => Promise<unknown>) => fn(db),
-    select: () => ({ from: () => ({ where: () => stubRows([state]) }) }),
-    insert: () => {
-      throw new Error("unexpected insert in test");
-    },
+    select: () => ({ from: () => ({ where: () => stubRows(state === null ? [] : [state]) }) }),
+    insert: () => ({
+      values: (values: Record<string, unknown>) => ({
+        onConflictDoUpdate: () => ({
+          // The on-conflict upsert of getOrCreateRow: the row already exists,
+          // so the write touches only `updatedAt` and returns the stored row —
+          // never the `general: {}` of the would-be insert.
+          returning: () => {
+            if (state !== null) return Promise.resolve([state]);
+            state = { ...values };
+            return Promise.resolve([state]);
+          },
+        }),
+      }),
+    }),
     update: () => ({
       set: (values: Record<string, unknown>) => {
         persistedSets.push(values);
-        state = { ...state, ...values };
+        state = { ...(state ?? {}), ...values };
         return { where: () => ({ returning: () => Promise.resolve([state]) }) };
       },
     }),
@@ -66,9 +80,25 @@ function settingsRow(general: Record<string, unknown>) {
 
 const JOURNAL_ENTRY = { at: "2026-10-08T01:00:00.000Z", companyId: "company-a" };
 
+/**
+ * Seed the stub table with the pre-existing row, then return the test handle.
+ * The seed goes through the stub `insert` (the `getOrCreateRow` create path),
+ * which is not a service write — it does not land in `persistedSets`, those
+ * capture only the `update().set()` payloads of `updateGeneral`.
+ */
+async function stubSeededDb(row: Record<string, unknown>) {
+  const stub = stubDb(row);
+  await stub.db
+    .insert()
+    .values(row)
+    .onConflictDoUpdate()
+    .returning();
+  return stub;
+}
+
 describe("myrmidon(1.6.3-FORAGING-IDLE-GATE) the idle-gate toggle through updateGeneral", () => {
   it("persists every flip of the switch, not only the first one", async () => {
-    const { db, persistedSets } = stubDb(settingsRow({}));
+    const { db, persistedSets } = await stubSeededDb(settingsRow({}));
     const service = instanceSettingsService(db, { runtimeEnv: {} });
 
     await service.updateGeneral({ foragingIdleGate: { enabled: false } });
@@ -85,7 +115,7 @@ describe("myrmidon(1.6.3-FORAGING-IDLE-GATE) the idle-gate toggle through update
   });
 
   it("keeps the stored toggle and the pass journal across an unrelated general write", async () => {
-    const { db, persistedSets } = stubDb(
+    const { db, persistedSets } = await stubSeededDb(
       settingsRow({ foragingIdleGate: { enabled: false }, foragingPassJournal: [JOURNAL_ENTRY] }),
     );
 
@@ -97,7 +127,7 @@ describe("myrmidon(1.6.3-FORAGING-IDLE-GATE) the idle-gate toggle through update
   });
 
   it("a toggle write does not drop the pass journal", async () => {
-    const { db, persistedSets } = stubDb(
+    const { db, persistedSets } = await stubSeededDb(
       settingsRow({ foragingIdleGate: { enabled: true }, foragingPassJournal: [JOURNAL_ENTRY] }),
     );
 
@@ -111,7 +141,7 @@ describe("myrmidon(1.6.3-FORAGING-IDLE-GATE) the idle-gate toggle through update
   });
 
   it("writes the toggle exactly once per save", async () => {
-    const { db, persistedSets } = stubDb(settingsRow({}));
+    const { db, persistedSets } = await stubSeededDb(settingsRow({}));
     await instanceSettingsService(db, { runtimeEnv: {} }).updateGeneral({
       foragingIdleGate: { enabled: true },
     });
@@ -133,7 +163,7 @@ describe("myrmidon(1.6.3-FORAGING-IDLE-GATE) the idle-gate toggle through update
       pauseGuard: { enabled: true },
       datastoreCare: { contextRetentionDays: 14 },
     };
-    const { db, persistedSets } = stubDb(settingsRow({ ...neighbour }));
+    const { db, persistedSets } = await stubSeededDb(settingsRow({ ...neighbour }));
 
     // An unrelated PATCH — the shape the general settings page sends.
     await instanceSettingsService(db, { runtimeEnv: {} }).updateGeneral({
@@ -154,7 +184,7 @@ describe("myrmidon(1.6.3-FORAGING-IDLE-GATE) the idle-gate toggle through update
       foraging: { enabled: false, dailySpendLimitUsd: 5 },
       datastoreCare: { contextRetentionDays: 14 },
     };
-    const { db, persistedSets } = stubDb(
+    const { db, persistedSets } = await stubSeededDb(
       settingsRow({ ...neighbour, foragingIdleGate: { enabled: true }, foragingPassJournal: [JOURNAL_ENTRY] }),
     );
 
