@@ -57,12 +57,16 @@ async function writeRetention(
 ): Promise<void> {
   const general = (await settings.getGeneral()) as unknown as Record<string, unknown>;
   const care = storedDatastoreCare(general) ?? {};
+  // the merge object is wider than the typed `datastoreCare` field (sibling
+  // sub-keys ride along), so build it as a plain record and pass it as-is —
+  // the settings service validates the shape on its side
+  const nextCare: Record<string, unknown> = {
+    ...care,
+    [DATA_RETENTION_SETTINGS_SUBKEY]: retention,
+  };
   await settings.updateGeneral({
-    [DATA_RETENTION_SETTINGS_KEY]: {
-      ...care,
-      [DATA_RETENTION_SETTINGS_SUBKEY]: retention,
-    },
-  });
+    [DATA_RETENTION_SETTINGS_KEY]: nextCare,
+  } as Parameters<DataRetentionSettingsService["updateGeneral"]>[0]);
 }
 
 /** Read the retention settings (or the defaults when absent). */
