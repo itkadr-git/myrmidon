@@ -3,6 +3,8 @@ import type { FeedbackDataSharingPreference } from "./feedback.js";
 import type { WorkspaceHygieneLimits } from "../myrmidon-workspace-hygiene.js";
 // myrmidon(C0): the run admission limits stored in instance settings
 import type { StoredRunLimits } from "../myrmidon-runtime-limits.js";
+// myrmidon(1.6.5 RUN-PRIORITY A): the stored run queue priority shape.
+import type { StoredRunPriority } from "../myrmidon-run-priority.js";
 import type { HostDiskSettings } from "../myrmidon-host-disk.js";
 // myrmidon(1.6.5-DBC1): the datastore-care block type (see validators/instance.ts)
 import type { DatastoreCareRetentionSettings } from "../myrmidon-datastore-care.js";
@@ -148,6 +150,13 @@ export interface InstanceGeneralSettings {
    * 1.6.5 RUN-ADMISSION).
    */
   runLimits?: StoredRunLimits;
+  /**
+   * myrmidon(1.6.5 RUN-PRIORITY A): run queue priority settings — role/issue
+   * weights, the current release tag and bonus, aging and the starvation
+   * limit — changed from `GET`/`PATCH /api/myrmidon/run-priority`. Absent
+   * means "use the environment variable, then the default".
+   */
+  runPriority?: StoredRunPriority;
   /**
    * myrmidon(PARALLEL-HELPERS): company ceiling/default for parallel helper
    * subagents, changed from the instance settings page and

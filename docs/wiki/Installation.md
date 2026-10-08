@@ -52,6 +52,34 @@ account on the server becomes its administrator. From there the board is
 ready: add a model and create the first agent in the interface (see
 [Settings in the interface](Settings-in-the-interface)).
 
+## Which database the installer gives you
+
+By default the installer raises a small PostgreSQL server in a container
+next to the board and creates the board's database there — enough for a
+first look and for small installations.
+
+Since release 1.6.5 the board can also keep its database on a **shared
+PostgreSQL 18 server** — one server, prepared by your administrator, that
+hosts a separate database and role for each program that needs one (the
+board, the LLM gateway, tracing, agent memory). The server needs
+PostgreSQL 18 with the `pgvector` extension installed; the board uses
+only its own database and role and cannot see the neighbors' data.
+
+To place the board's database on such a server instead of the bundled
+container, give the installer the connection string your administrator
+prepared (`postgres://user@host:5432/database`) as the installer's
+database-address parameter — the installer names the parameter itself in
+its help and interactive prompts. The password is not part of the
+connection string on the command line: the installer asks for it at run
+time, or reads it from the standard PostgreSQL environment variable.
+
+The connection string names the board's own database and role on the
+shared server; your administrator creates both beforehand. How the board
+treats the shared server on updates and backups (and what changes for the
+host's PostgreSQL client tools) is described in
+[Upgrading and rollback](Upgrading-and-rollback). The one-line install
+command without options keeps using the bundled database container.
+
 ## If a step fails
 
 The installer stops at the failed step and says why in plain language —

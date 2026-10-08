@@ -19,6 +19,8 @@ import { storedBotDiskQuotaSettingsSchema } from "../myrmidon-bot-disk-quota.js"
 import { storedBotImageRolloutSettingsSchema } from "../myrmidon-bot-image-rollout.js";
 // myrmidon(C0): run admission limits that can be changed while the server runs
 import { storedRunLimitsSchema } from "../myrmidon-runtime-limits.js";
+// myrmidon(1.6.5 RUN-PRIORITY A): the stored run queue priority shape (role/issue/release/aging).
+import { storedRunPrioritySchema } from "../myrmidon-run-priority.js";
 // myrmidon(PARALLEL-HELPERS): company ceiling/default for parallel helper
 // subagents, changed from the instance settings page and /api/myrmidon/parallel-helpers.
 import { parallelHelpersSettingsSchema, patchParallelHelpersSettingsSchema } from "../myrmidon-parallel-helpers.js";
@@ -115,6 +117,11 @@ export const instanceGeneralSettingsSchema = z.object({
   // myrmidon(1.6.5 RUN-ADMISSION): the shape also tolerates a row saved
   // before `maxHostLoadPercentPerCore` existed.
   runLimits: storedRunLimitsSchema.optional(),
+  // myrmidon(1.6.5 RUN-PRIORITY A): the stored run queue priority settings,
+  // changed from /api/myrmidon/run-priority; absent means "use the environment
+  // variable, then the default". Lenient: like the runtime-limits row, a row
+  // saved before a key existed still parses.
+  runPriority: storedRunPrioritySchema.optional(),
   // myrmidon(BOT-DISK E): the host disk usage threshold, changed from
   // /api/myrmidon/host-disk; absent means "use the environment variable, then
   // the default (85)".
