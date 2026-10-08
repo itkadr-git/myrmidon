@@ -257,8 +257,10 @@ describe("myrmidon(DBC-4) datastore-care routes", () => {
   });
 
   it("answers 404 for an unknown target and an unknown report", async () => {
+    // `assertInstanceAdmin` guards the routes, so the 404 path is only reachable
+    // past the guard — the actor must be the instance admin here.
     const { server } = app(
-      boardMember,
+      instanceAdmin,
       {
         service: fakeService({
           listSnapshots: async () => {
