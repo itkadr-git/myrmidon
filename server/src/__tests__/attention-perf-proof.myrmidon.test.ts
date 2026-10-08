@@ -89,18 +89,17 @@ describe("attention perf proof (static wiring)", () => {
   const HERE = path.dirname(fileURLToPath(import.meta.url));
 
   it("service sources still expose the hot paths this harness measures", () => {
-    // Guard against silent harness drift: if attention.ts stops computing the
-    // oldestFailedRunCreatedAt window, or the exhaustion event message changes,
-    // the seeded load no longer measures what ships — fail loudly here instead.
+    // Guard against silent harness drift: if the exhaustion query stops reading the
+    // thin run-context columns, the newer-run EXISTS check changes, or the exhaustion
+    // event message changes, the seeded load no longer measures what ships — fail here.
     const exhaustedRuns = fs.readFileSync(
       path.join(HERE, "../services/attention-exhausted-runs.ts"),
       "utf8",
     );
     const attentionSource = fs.readFileSync(path.join(HERE, "../services/attention.ts"), "utf8");
     expect(exhaustedRuns).toMatch(/like 'Bounded retry exhausted%'/);
-    expect(exhaustedRuns).toMatch(/jsonb_build_object\(/);
-    expect(attentionSource).toMatch(/oldestFailedRunCreatedAt/);
-    expect(attentionSource).toMatch(/gt\(heartbeatRuns\.createdAt, oldestFailedRunCreatedAt\)/);
+    expect(exhaustedRuns).toMatch(/heartbeatRuns\.contextIssueId/);
+    expect(attentionSource).toMatch(/nr\.created_at > k\.created_at/);
     expect(attentionSource).toMatch(/->> 'issueId'/);
   });
 
