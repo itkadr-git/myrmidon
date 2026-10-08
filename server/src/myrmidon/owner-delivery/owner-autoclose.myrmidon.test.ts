@@ -387,7 +387,12 @@ describeEmbeddedPostgres("owner decision autoclose (F-21)", () => {
     const card = await raiseCard(fixture);
 
     expect(
-      await ownerReply(fixture, { commentSourceTrust: "low_trust_review" }),
+      await ownerReply(fixture, {
+        commentSourceTrust: {
+          preset: "low_trust_review",
+          disposition: "quarantined",
+        },
+      }),
     ).toEqual({ outcome: "skipped", reason: "reply_not_attributable" });
     expect((await readInteraction(card.id)).status).toBe("pending");
   });

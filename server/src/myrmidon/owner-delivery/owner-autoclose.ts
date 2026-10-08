@@ -41,6 +41,7 @@ import {
 import {
   isOwnerDecisionAudience,
   type IssueThreadInteractionCanonicalResolverPolicy,
+  type SourceTrustMetadata,
 } from "@paperclipai/shared";
 import { logger } from "../../middleware/logger.js";
 import { logActivity } from "../../services/activity-log.js";
@@ -198,7 +199,13 @@ export async function autoCloseOwnerDecisionOnOwnerComment(input: {
   commentId: string;
   replyText: string;
   commentCreatedAt: Date;
-  commentSourceTrust?: string | null;
+  /**
+   * The comment's trust stamp. `null` is an ordinary, attributable owner
+   * message; a stamp means the origin is not trusted (quarantined, or promoted
+   * out of a low-trust source), so the words may not close anything — the same
+   * rule the owner-DM guard applies in owner-message.ts.
+   */
+  commentSourceTrust?: SourceTrustMetadata | null;
   deps?: OwnerAutocloseDeps;
 }): Promise<OwnerAutocloseOutcome> {
   try {
