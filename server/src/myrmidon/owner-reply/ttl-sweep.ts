@@ -444,7 +444,7 @@ async function postSweepComment(
           ] : []),
         ],
       }],
-    } satisfies IssueCommentMetadata,
+    } as IssueCommentMetadata,
   });
   await db
     .update(issues)
