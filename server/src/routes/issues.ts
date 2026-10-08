@@ -350,6 +350,8 @@ import {
 import { assertRunHasTaskSourceContext } from "../myrmidon/issue-checkout-guard.js";
 // myrmidon(L5): issue write lock only blocks while the assignee's run is live
 import { resolveIssueWriteAssigneeRunLock } from "../myrmidon/issue-write-run-lock.js";
+// myrmidon(1.6.5-OWNER-VIA-BOT): wake the author of an owner decision to explain it in a DM
+import { scheduleOwnerExplainWake } from "../myrmidon/owner-delivery/owner-message.js";
 import {
   crossIssueInfluenceLimitError,
   crossIssueInfluenceRunContextError,
@@ -16116,6 +16118,22 @@ export function issueRoutes(
             ),
           );
       }
+
+      // myrmidon(1.6.5-OWNER-VIA-BOT): an owner decision raised by an agent is
+      // not shown to the owner as a card; its author is woken on this task to
+      // explain it to the owner in a direct message (no-op outside via_bot).
+      void scheduleOwnerExplainWake(db, {
+        companyId: issue.companyId,
+        issueId: issue.id,
+        interaction,
+        wakeup: (agentId, options) => heartbeat.wakeup(agentId, options),
+        requestedBy: { actorType: actor.actorType, actorId: actor.actorId },
+      }).catch((err) =>
+        logger.warn(
+          { err, issueId: issue.id, interactionId: interaction.id },
+          "failed to wake the author to explain an owner decision",
+        ),
+      );
 
       res.status(201).json(interaction);
     },

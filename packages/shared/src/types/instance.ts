@@ -181,7 +181,7 @@ export interface InstanceGeneralSettings {
   /**
    * myrmidon(1.6.5-OWNER-DM-FILTER): owner-DM Telegram delivery mode, changed
    * from `GET`/`PATCH /api/myrmidon/owner-delivery`. Absent means
-   * `owner_decisions_only`.
+   * `via_bot` (1.6.5-OWNER-VIA-BOT).
    */
   ownerDelivery?: OwnerDeliverySettings;
   /**

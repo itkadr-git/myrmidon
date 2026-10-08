@@ -63,6 +63,12 @@ describeEmbeddedPostgres(
         "paperclip-u2-owner-delivery-",
       );
       db = createDb(tempDb.connectionString);
+      // myrmidon(1.6.5-OWNER-VIA-BOT): the default mode is now "via_bot" (no card
+      // at all, see owner-via-bot.myrmidon.test.ts). This file covers the card
+      // delivery and its audience filter, which "owner_decisions_only" keeps.
+      await instanceSettingsService(db).updateGeneral({
+        [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "owner_decisions_only" },
+      });
     }, 30_000);
 
     afterAll(async () => {
@@ -586,6 +592,28 @@ describeEmbeddedPostgres(
         await instanceSettingsService(db).updateGeneral({
           [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "owner_decisions_only" },
         });
+      });
+
+      // myrmidon(1.6.5-OWNER-VIA-BOT): under "via_bot" even a human_only card or
+      // a card addressed straight to the owner is NOT published to the owner's DM.
+      it('mode "via_bot" publishes no interactive card to the owner DM', async () => {
+        const fixture = await seedFixture();
+        await instanceSettingsService(db).updateGeneral({
+          [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "via_bot" },
+        });
+        try {
+          const humanOnly = await createCard(fixture, { resolverPolicy: "human_only" });
+          const addressed = await createCard(fixture, {
+            resolverPolicy: "not_creator",
+            addresseeUserId: fixture.boardUserId,
+          });
+          expect(await publicationsForInteraction(fixture.companyId, humanOnly.id)).toEqual([]);
+          expect(await publicationsForInteraction(fixture.companyId, addressed.id)).toEqual([]);
+        } finally {
+          await instanceSettingsService(db).updateGeneral({
+            [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "owner_decisions_only" },
+          });
+        }
       });
 
       it("keeps vendor bindings (chat-bound task) byte-for-byte on the vendor path", async () => {

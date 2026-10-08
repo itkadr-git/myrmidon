@@ -3,6 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { PaperclipApiClient } from "./client.js";
 import { readConfigFromEnv, type PaperclipMcpConfig } from "./config.js";
 import { createToolDefinitions } from "./tools.js";
+import { createOwnerToolDefinitions } from "./owner-tools.js";
 import { withMyrmidonToolNames } from "./tool-aliases.js";
 
 export function createPaperclipMcpServer(config: PaperclipMcpConfig = readConfigFromEnv()) {
@@ -18,7 +19,12 @@ export function createPaperclipMcpServer(config: PaperclipMcpConfig = readConfig
   // vendor names untouched because packages/paperclip-runner parses its
   // `makeTool` literals (names, descriptions, line anchors) for the
   // capability-inventory contract checks.
-  const tools = withMyrmidonToolNames(createToolDefinitions(client));
+  // 1.6.5 OWNER-VIA-BOT: the owner-dialogue tools are `myrmidon*` from the start
+  // (no vendor name, so nothing to alias) and live beside tools.ts.
+  const tools = withMyrmidonToolNames([
+    ...createToolDefinitions(client),
+    ...createOwnerToolDefinitions(client),
+  ]);
   for (const tool of tools) {
     server.tool(tool.name, tool.description, tool.schema.shape, tool.execute);
   }
