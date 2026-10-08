@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // myrmidon(1.6.5-OWNER-DM-FILTER): wire-tier tests of the owner Telegram
-// delivery screen — against a mocked API module, since part A of the feature is
-// not merged yet and the mocks stand in for the frozen contract
+// delivery screen — against a mocked API module, so the container's wiring is
+// asserted without a server. That module stands on the frozen contract
 // (GET/PATCH /api/myrmidon/owner-delivery, default `via_bot`).
 //
 // Checked: the settings GET drives the rendered mode, the default mode is
