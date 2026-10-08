@@ -53,6 +53,19 @@
 Очереди по ролям (SWARM-CLAIM)**
 ([swarm-claim-settings](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/swarm-claim-settings.ru.md)).
 
+## Параллельные помощники
+
+Агенты могут раздавать задачу параллельным субагентам-помощникам
+(`delegate_task`). В карточке агента с адаптером `hermes_gateway` секция
+**Parallel helpers** включает помощников и задаёт лимит на агента, модель
+помощника и необязательный бюджет ходов на помощника; **Instance → General
+→ секция «Parallel helpers»** задаёт потолок компании (по умолчанию `10`,
+жёсткий предел `50`) и умолчание на агента (`2`), а также показывает
+подсказку о ёмкости, сравнивающую разрешённые лимиты со слотами сборки
+сервера. Изменение применяется на следующем тике сверки каждого бота, без
+перезапуска. Подробности:
+[parallel-helpers](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/parallel-helpers.ru.md).
+
 ## Бэкапы
 
 Политика хранения бэкапов БД живёт в общих настройках инстанса
@@ -64,6 +77,16 @@
 завершается ошибкой с причиной
 ([журнал изменений](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/CHANGELOG.ru.md),
 1.6.5 BACKUP-KEEP-LAST).
+
+Прогоны бэкапа и восстановления не ограничены базовым `statement_timeout`:
+с 1.6.5 каждое соединение, которое открывает бэкап или восстановление,
+ставит сессионный `statement_timeout` в `0` — то есть без лимита —
+(параметр подключения JavaScript-клиента и
+`PGOPTIONS="-c statement_timeout=0"` для процессов pg_dump/psql), поэтому
+длинный `COPY` по большой таблице не обрывается базовым лимитом, заданным
+через `ALTER DATABASE ... SET statement_timeout`. Остальные соединения
+доски сохраняют базовый лимит без изменений
+(1.6.5 BACKUP-STATEMENT-TIMEOUT).
 
 ## Ещё в интерфейсе
 

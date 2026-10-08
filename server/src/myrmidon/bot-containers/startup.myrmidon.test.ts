@@ -164,7 +164,10 @@ describe("startBotContainers with the flag on", () => {
         syncCard: h.syncCard,
         maintenance: h.maintenance,
         activity: h.sink,
+        db: DB,
         readAgent: expect.any(Function),
+        rolloutAudit: expect.any(Function),
+        rolloutCompanyIdOf: expect.any(Function),
         network: DRIVER_CONFIG.network,
       });
       expect(opts).toEqual({ intervalMs: 60_000, env: ENABLED });

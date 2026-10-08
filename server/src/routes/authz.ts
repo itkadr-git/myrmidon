@@ -5,6 +5,30 @@ import { forbidden, HttpError, unauthorized } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { responsibleUserAuthzShadowMode } from "../services/authorization.js";
 
+/**
+ * myrmidon(1.6.6 MONITORING E): a linking component's key is issued for one
+ * company and must stay inside it. Its authority cannot follow its owner user's
+ * membership list across tenants — otherwise a leaked aggregator key would read
+ * and write another company's board, which is exactly the "minimal rights" the
+ * link key exists to guarantee.
+ *
+ * Returns `null` for every actor that is not a monitoring link, so the callers
+ * keep their existing semantics untouched.
+ */
+function monitoringLinkCompanyConfines(req: Request, companyId: string): boolean | null {
+  const scope =
+    req.actor.type === "board" && req.actor.source === "board_key"
+      ? req.actor.boardKeyScope
+      : null;
+  // Deliberately the discriminant, not the strict guard the middleware uses:
+  // a link scope that lost its companyId must reach nothing at all, rather
+  // than falling back to the owner user's membership list — the exact escape
+  // this confinement exists to close.
+  if (scope?.kind !== "monitoring_link") return null;
+  const own = (scope as { companyId?: unknown }).companyId;
+  return typeof own === "string" && own.length > 0 && own === companyId;
+}
+
 function throwOrShadowResponsibleUserCompanyAccessDeny(
   req: Request,
   companyId: string,
@@ -75,6 +99,10 @@ export function assertInstanceAdmin(req: Request) {
 
 export function assertCompanyAccess(req: Request, companyId: string) {
   assertAuthenticated(req);
+  // myrmidon(1.6.6 MONITORING E): a link key stays inside its own company.
+  if (monitoringLinkCompanyConfines(req, companyId) === false) {
+    throw forbidden("Monitoring link key cannot access another company");
+  }
   if (req.actor.type === "agent" && req.actor.companyId !== companyId) {
     throw forbidden("Agent key cannot access another company");
   }
@@ -202,6 +230,10 @@ export async function assertActorCompanyPermission(
  */
 export function hasCompanyAccess(req: Request, companyId: string): boolean {
   if (req.actor.type === "none") return false;
+  // myrmidon(1.6.6 MONITORING E): a link key sees only the company it was
+  // issued for, whatever its owner user's membership list says.
+  const linkConfines = monitoringLinkCompanyConfines(req, companyId);
+  if (linkConfines !== null) return linkConfines;
   if (req.actor.type === "agent") return req.actor.companyId === companyId;
   if (req.actor.source === "local_implicit") return true;
   return (req.actor.companyIds ?? []).includes(companyId);

@@ -150,6 +150,17 @@ export interface BotContainerDriver {
    * drift check of one pass.
    */
   templateDrift(spec: BotContainerSpec, knownStatus?: BotContainerStatus): Promise<TemplateDriftReport>;
+  templateDrift(spec: BotContainerSpec): Promise<TemplateDriftReport>;
+  /**
+   * myrmidon(1.6.5-DOCKERGATE-A2A3-STORM): the one-inspect probe — `status` and
+   * `templateDrift` from a SINGLE container inspect plus the marker read. The
+   * reconcile sweep did both separately: two A2 inspects and one A3 per bot per
+   * pass (3 requests), 74 bots at a 60 s tick ≈ 3,7 requests/s — already over
+   * the planned ~2,5/s before any rollout started. The probe answers the same
+   * facts for 2 requests/bot. Optional: a driver without it is used through
+   * `status` + `templateDrift` as before (fleetd).
+   */
+  statusWithDrift?(spec: BotContainerSpec): Promise<{ status: BotContainerStatus; drift: TemplateDriftReport }>;
   /** Creates the bot's container from `spec` without starting it, after
    *  preparing its volumes (created if absent, owned by the container's uid,
    *  mode 0700). Throws, before creating anything, if the image is not present

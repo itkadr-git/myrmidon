@@ -6,6 +6,7 @@
 import { describe, expect, it } from "vitest";
 import {
   composeVoiceCommentBody,
+  diarizationMarker,
   MAX_TRANSCRIPT_BLOCK_CHARS,
   renderVoiceTranscript,
   type VoiceTranscript,
@@ -95,5 +96,40 @@ describe("composeVoiceCommentBody", () => {
     expect(
       composeVoiceCommentBody({ senderText: "   ", transcriptBlock: "текст" }),
     ).toBe("текст");
+  });
+});
+
+describe("the explicit diarization marker", () => {
+  it("announces an asked-for-but-unlabeled recording", () => {
+    expect(
+      diarizationMarker({ requested: true, applied: false, speakers: 0, reason: "diarization_no_speakers" }),
+    ).toBe("Говорящие не размечены: diarization_no_speakers");
+  });
+
+  it("adds the marker as a line of the comment block", () => {
+    const rendered = renderVoiceTranscript({
+      ...base,
+      text: "привет коллеги обсудим релиз",
+      diarization: { requested: true, applied: false, speakers: 0, reason: "diarization_no_speakers" },
+    });
+    expect(rendered).toBe(
+      "привет коллеги обсудим релиз\n\nГоворящие не размечены: diarization_no_speakers",
+    );
+  });
+
+  it("stays silent when nothing was asked and when labels did come", () => {
+    expect(diarizationMarker(undefined)).toBe("");
+    expect(diarizationMarker({ requested: false, applied: false, speakers: 0, reason: "diarization_disabled" })).toBe("");
+    expect(diarizationMarker({ requested: true, applied: true, speakers: 2, reason: null })).toBe("");
+    const rendered = renderVoiceTranscript({
+      ...base,
+      text: "",
+      segments: [
+        { speaker: "1", startMs: 0, endMs: 100, text: "первая" },
+        { speaker: "2", startMs: 100, endMs: 200, text: "вторая" },
+      ],
+      diarization: { requested: true, applied: true, speakers: 2, reason: null },
+    });
+    expect(rendered).toBe("Говорящий 1 [0:00]: первая\nГоворящий 2 [0:00]: вторая");
   });
 });

@@ -120,7 +120,18 @@ describe("install.sh", () => {
     assert.match(env, /POSTGRES_PASSWORD=[0-9a-f]{48}/);
     assert.match(env, /BETTER_AUTH_SECRET=[0-9a-f]{64}/);
     assert.equal(fs.statSync(path.join(sb.opt, "deploy.env")).mode & 0o777, 0o600);
+    // The daemon socket is root:docker 0660 and dockergate runs as the nonroot
+    // user 65532: without the socket's group the container dies on
+    // "the daemon does not answer: upstream_error".
+    assert.match(env, /MYRMIDON_DOCKER_GID=[0-9]+/);
     const compose = fs.readFileSync(path.join(sb.opt, "compose.yml"), "utf8");
+    assert.ok(compose.includes("group_add:"), "dockergate must be granted the docker socket group");
+    // dockergate pins the board's main process by a walk over /proc, so it has to
+    // share the host pid namespace: without `pid: host` it sees only its own
+    // processes, the board pid is missing, and every resolve fails with
+    // "caller_resolve_failed: board_not_running" while the container looks up.
+    assert.match(compose, /pid:\s*host/, "dockergate must share the host pid namespace");
+    assert.match(compose, /network_mode:\s*none/, "dockergate serves a unix socket only");
     assert.ok(
       compose.includes("${MYRMIDON_BOARD_REPOSITORY:?the board repository must be set}@${MYRMIDON_BOARD_DIGEST:?the board digest must be set}"),
       "the board image reference is built from the manifest repository and digest",
@@ -230,5 +241,44 @@ describe("install.sh", () => {
     const bad = run(sb, ["--version", "1.6.7"]);
     assert.equal(bad.status, 1);
     assert.match(bad.stderr, /--version must look like/);
+  });
+
+  it("refuses a CPU below the x86-64-v2 baseline before changing the machine", () => {
+    const sb = sandbox();
+    const old = path.join(sb.dir, "cpuinfo-old");
+    fs.writeFileSync(old, "processor\t: 0\nflags\t\t: fpu vme de pse sse sse2\nvendor_id\t: GenuineIntel\n");
+    const r = run(sb, [], { MYRMIDON_INSTALL_CPUINFO: old });
+    assert.equal(r.status, 1, "a CPU the board image cannot start on is a refusal, not a late failure");
+    assert.match(r.stderr, /x86-64-v2/);
+    assert.ok(!fs.existsSync(sb.opt), "the refusal comes before anything is created");
+
+    const good = path.join(sb.dir, "cpuinfo-ok");
+    fs.writeFileSync(good, "processor\t: 0\nflags\t\t: fpu vme sse4_1 sse4_2 popcnt cx16 ssse3\n");
+    const ok = run(sb, [], { MYRMIDON_INSTALL_CPUINFO: good });
+    assert.equal(ok.status, 0, ok.stderr);
+  });
+
+  it("answers --help and names a missing option value in plain language when piped", () => {
+    // The documented form pipes the script into bash, so $0 is "bash". Reading
+    // the header back out of $0 (sed -n '2,40p' "$0") answered
+    // "sed: can't read bash" — a novice asking for help got an error instead.
+    const piped = (args) =>
+      spawnSync("bash", ["-s", "--", ...args], {
+        cwd: os.tmpdir(),
+        encoding: "utf8",
+        input: fs.readFileSync(INSTALL, "utf8"),
+        env: { ...process.env, MYRMIDON_INSTALL_LANG: "en" },
+      });
+
+    const help = piped(["--help"]);
+    assert.equal(help.status, 0, help.stderr);
+    assert.match(help.stdout, /ONE-COMMAND-INSTALL/);
+    assert.match(help.stdout, /--uninstall/);
+    assert.doesNotMatch(help.stdout + help.stderr, /can't read bash/);
+
+    // --version without its value used to die on `$2: unbound variable`.
+    const missing = piped(["--version"]);
+    assert.equal(missing.status, 1);
+    assert.match(missing.stderr, /--version needs a value/);
   });
 });

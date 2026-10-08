@@ -265,6 +265,62 @@ export const BOT_VOLUME_MOUNTS: readonly BotVolumeMount[] = [
   { hostSuffix: "scratch", containerPath: "/scratch" },
 ];
 
+/** myrmidon(1.6.5-BOT-DISK-H11): the bot's hermes volume, i.e. HERMES_HOME in
+ *  the container. The shared read-only mounts of this part are the only mounts
+ *  that reach INSIDE a volume, and every one of them is expressed as a path
+ *  under this root. */
+export const BOT_HERMES_VOLUME_PATH = BOT_VOLUME_MOUNTS[0].containerPath;
+
+/**
+ * myrmidon(1.6.5-BOT-DISK-H11): the bot runtime directories the whole instance
+ * can share, one host copy instead of one copy per bot. On the production fleet
+ * `bin` + `lazy-packages` + `lsp` are 5–7 GiB per bot (epic BOT-DISK-H, part
+ * H11), and every bot of the instance runs the same ones.
+ *
+ * The host source is `settings.botDisk.sharedBotRuntimePath` (the driver adds
+ * the binds from it, `readSharedBotRuntimePath`), READ-ONLY, and the mount
+ * points are the paths the bot already reads its runtime from. A card never
+ * mounts these itself, and it may not take one of the mount points over
+ * ({@link validateExtraMounts}): a bot that needs a different runtime is a
+ * different image, not a different mount.
+ */
+export interface BotRuntimeMount {
+  /** Subdirectory of the configured shared runtime path on the host. */
+  hostSubdir: string;
+  /** The path the bot sees, i.e. the mount point inside the bot's own tree. */
+  containerPath: string;
+}
+
+export const BOT_RUNTIME_MOUNTS: readonly BotRuntimeMount[] = [
+  { hostSubdir: "bin", containerPath: `${BOT_HERMES_VOLUME_PATH}/bin` },
+  { hostSubdir: "lazy-packages", containerPath: `${BOT_HERMES_VOLUME_PATH}/lazy-packages` },
+  { hostSubdir: "lsp", containerPath: `${BOT_HERMES_VOLUME_PATH}/lsp` },
+];
+
+/**
+ * myrmidon(1.6.5-BOT-DISK-H11): the subtrees of a bot's hermes volume whose
+ * CONTENT is operator data that must live once on the host rather than once per
+ * bot (epic BOT-DISK-H, class J — e.g. the 24 copies of the owner's
+ * `bbq-workspace`, 9.7 GiB per bot's quota).
+ *
+ * A card may mount a host directory READ-ONLY at a path inside one of these
+ * roots; everywhere else inside a volume stays reserved, because the bot (and
+ * the profile compiler) owns those paths. The mount point the driver hands to
+ * Docker is the REAL path inside the bot's single mount — see
+ * {@link botTreeRealPath} for why the container-visible path is not usable
+ * there.
+ */
+export const BOT_OWNER_DATA_CONTAINER_ROOTS: readonly string[] = [
+  `${BOT_HERMES_VOLUME_PATH}/.hermes/shared`,
+  `${BOT_HERMES_VOLUME_PATH}/media`,
+  `${BOT_HERMES_VOLUME_PATH}/work`,
+];
+
+/** Whether `path` is one of {@link BOT_OWNER_DATA_CONTAINER_ROOTS} or under one. */
+export function isOwnerDataContainerPath(path: string): boolean {
+  return BOT_OWNER_DATA_CONTAINER_ROOTS.some((root) => path === root || path.startsWith(`${root}/`));
+}
+
 /**
  * The three narrow binds of a HELPER container (prepare-volumes, apply-profile).
  * A helper only chowns and renames files and never needs a hard link, so it keeps
@@ -360,6 +416,10 @@ export function buildBinds(
     mounts?: readonly BotExtraMount[];
     allowedSources?: readonly string[];
     sharedPackageCachePath?: string;
+    /** myrmidon(1.6.5-BOT-DISK-H11): the host directory whose
+     *  {@link BOT_RUNTIME_MOUNTS} subdirectories are mounted read-only over the
+     *  bot's own runtime paths. Absent: every bot keeps its own copy. */
+    sharedBotRuntimePath?: string;
     /** myrmidon(1.6.2-BOT-DISK-C): also bind `<cache>/git` read-only at
      *  `/cache/git` (the board's git mirrors). Ignored without a cache path. */
     gitMirror?: boolean;
@@ -386,7 +446,16 @@ export function buildBinds(
     legacy
       ? BOT_VOLUME_MOUNTS.map((mount) => `${volumeRoot}/${botKey}/${mount.hostSuffix}:${mount.containerPath}`)
       : [extra.scope ? `${extra.scope.scopeRoot}/${extra.scope.dirName}:${BOT_SCOPE_MOUNT}` : `${volumeRoot}/${botKey}:${BOT_ROOT_MOUNT}`],
-    ...mounts.map((mount) => `${mount.source}:${mount.containerPath}:ro`),
+    ...mounts.map((mount) =>
+      // myrmidon(1.6.5-BOT-DISK-H11): a mount inside the bot's own tree is bound
+      // at its real path (botTreeRealPath) — the only extra mounts that do not
+      // land outside the volumes.
+      `${mount.source}:${
+        isOwnerDataContainerPath(mount.containerPath)
+          ? botTreeRealPath(mount.containerPath, botKey, extra)
+          : mount.containerPath
+      }:ro`,
+    ),
     ...driverBind,
   ].flat();
   const cache = extra.sharedPackageCachePath;
@@ -409,7 +478,66 @@ export function buildBinds(
       binds.push(`${cache}/${GIT_MIRROR_MOUNT.hostSubdir}:${GIT_MIRROR_MOUNT.containerPath}:ro`);
     }
   }
+  // myrmidon(1.6.5-BOT-DISK-H11): the shared bot runtime, last, so the order of
+  // a body is fixed: the fixed bind, the card's own read-only mounts, the
+  // driver's own mount, the shared package cache, then the runtime. Nothing
+  // else may take these mount points over (validateExtraMounts).
+  const runtime = extra.sharedBotRuntimePath;
+  if (runtime) {
+    const reason = unsafeAbsolutePathReason(runtime);
+    if (reason) {
+      throw new BotContainerTemplateError(`shared bot runtime path ${JSON.stringify(runtime)} ${reason}`);
+    }
+    for (const mount of BOT_RUNTIME_MOUNTS) {
+      binds.push(`${runtime}/${mount.hostSubdir}:${botTreeRealPath(mount.containerPath, botKey, extra)}:ro`);
+    }
+  }
   return binds;
+}
+
+/**
+ * myrmidon(1.6.5-BOT-DISK-H11): the real container path of `containerPath` — a
+ * path the bot sees under its hermes volume — to use as a BIND TARGET.
+ *
+ * Every shared read-only mount of this part lands INSIDE the bot's hermes
+ * volume, and that volume is not a mount of its own any more: BOT-DISK-D made
+ * the bot's whole tree ONE mount ({@link BOT_ROOT_MOUNT}, or the instance
+ * directory of a shared scope instance for a member of BOT-DISK-F), and the
+ * image exposes `/data/hermes` as a LINK — shipped by the image, remade at
+ * container start (entrypoint.sh) when it is missing. A bind destination is
+ * resolved by the runtime BEFORE the entrypoint runs, so naming the link path
+ * would make the runtime create a real directory where the link belongs (the
+ * entrypoint then could not replace it, and a shared-scope member, whose /data
+ * is an empty tmpfs, would never see its tree at /data at all). Naming the real
+ * path under the bot's own mount lands the mount where the bot reads it, in all
+ * three layouts:
+ *
+ * - a legacy-layout image (three binds, contract "1") mounts the volume itself,
+ *   so its container path is already real;
+ * - a single-layout bot (the default) sees its own directory at
+ *   {@link BOT_ROOT_MOUNT}: `/data/hermes/bin` -> `/bot/hermes/bin`;
+ * - a member of a shared scope instance sees the instance directory at
+ *   {@link BOT_SCOPE_MOUNT} and its own subdirectory in it named by its bot key
+ *   (the same name the driver passes as MYRMIDON_BOT_SCOPE_SUBDIR).
+ */
+export function botTreeRealPath(
+  containerPath: string,
+  botKey: string,
+  extra: { scope?: BotScopeMount; volumeLayout?: BotVolumeLayout } = {},
+): string {
+  if (containerPath !== BOT_HERMES_VOLUME_PATH && !containerPath.startsWith(`${BOT_HERMES_VOLUME_PATH}/`)) {
+    throw new BotContainerTemplateError(
+      `shared read-only mount path ${JSON.stringify(containerPath)} is not inside ${BOT_HERMES_VOLUME_PATH}`,
+    );
+  }
+  const rest = containerPath.slice(BOT_HERMES_VOLUME_PATH.length);
+  // The bot's hermes volume is one subdirectory of its own tree (BOT-DISK-D
+  // made the whole tree one mount), so the in-tree path is the tree root plus
+  // that subdirectory plus the remainder of the volume path.
+  const inTree = BOT_HERMES_REAL_PATH.slice(BOT_ROOT_MOUNT.length);
+  if (extra.scope) return `${BOT_SCOPE_MOUNT}/${botKey}${inTree}${rest}`;
+  if (extra.volumeLayout === "legacy") return containerPath;
+  return `${BOT_HERMES_REAL_PATH}${rest}`;
 }
 
 /**
@@ -602,9 +730,14 @@ export function validateExtraMounts(mounts: readonly BotExtraMount[], allowedSou
     const clashes = RESERVED_CONTAINER_PATHS.some(
       (reserved) => mount.containerPath === reserved || mount.containerPath.startsWith(`${reserved}/`),
     );
-    if (clashes || taken.has(mount.containerPath)) {
+    // myrmidon(1.6.5-BOT-DISK-H11): inside a volume exactly the owner-data
+    // roots may be taken over (class J of the epic design): the operator mounts
+    // one host directory that used to be copied into every bot. Everything else
+    // inside a volume stays reserved.
+    if ((clashes && !isOwnerDataContainerPath(mount.containerPath)) || taken.has(mount.containerPath)) {
       throw new BotContainerTemplateError(
-        `${where} path ${JSON.stringify(mount.containerPath)} is reserved by the driver or used twice`,
+        `${where} path ${JSON.stringify(mount.containerPath)} is reserved by the driver or used twice (inside a volume only ` +
+          `${BOT_OWNER_DATA_CONTAINER_ROOTS.join(", ")} may be taken over)`,
       );
     }
     taken.add(mount.containerPath);

@@ -90,6 +90,7 @@ A track writes only into its own section. A row is added in the same PR as the s
 | `MYRMIDON_CHAT_CROSS_CHANNEL_TOTAL_CHARS` | X8d | `4000` | Total character limit on the quote block; the oldest lines are dropped first, the skipped counter is a `(k earlier messages not shown)` line | Non-numeric or negative — the default |
 | `MYRMIDON_CHAT_CROSS_CHANNEL_LOOKBACK_HOURS` | X8d | `168` (a week) | How old adjacent-conversation messages are still quoted | Non-numeric or negative — the default |
 | `MYRMIDON_CHAT_RECONCILE_INTERVAL_MS` | D1 | unset | Minimum interval between run-milestone sweep runs (`enqueueChatRunMilestones`); replaces the standard coalescing-trigger interval (100 ms) rather than adding to it. The publication sweep (delivering messages to the provider) is untouched — it keeps its usual pace | Unset, `0`, negative or non-numeric — today's pace (the fix of the D1 queries themselves is always on, this is not a defect switch). Set (e.g. `15000`) if after D1 the milestone sweep is still noticeable in load when chats are idle |
+| `MYRMIDON_CHAT_RECONCILE_FALLBACK_INTERVAL_MS` | 1.6.3 | `30000` | How often the full chat reconciliation pass (provider runtimes, deliveries, webhook recovery, Slack syncs) runs when no publication or milestone event wakes it; publication and milestone lanes are woken by commit events directly, and one full pass still runs at startup. Replaces the former once-per-second timer | Unset, `0`, negative or non-numeric — 30 seconds. Lower it if deliveries or provider recovery feel slow after the change |
 | `MYRMIDON_TELEGRAM_VOICE_STT` | 1.6.1 VOICE-STT B | off | Transcribe an inbound Telegram voice/audio message at intake: the bytes are prefetched (bounded, 20 MB, 45 s), recognized through the shared STT core (part A1) and the transcript is written into the task comment next to the kept attachment — the bot reads it as user input on the same wakeup. Speaker segments render as «Говорящий N [mm:ss]: …». An STT failure is a skip: the comment keeps the vendor body, the redacted `stt_skipped` code lands in the comment metadata, and the delivery is unaffected | Any value other than `1`/`true`/`yes`/`on` — the vendor path byte for byte: no byte prefetch, zero calls to the transcription core. Read per delivery, no restart. Until the STT core is wired (part A1 merged and connected), an enabled setting records `stt_unconfigured` skips |
 
 ## Track 5 — operations
@@ -132,6 +133,7 @@ A track writes only into its own section. A row is added in the same PR as the s
 | `MYRMIDON_BOT_IMAGE_ROLLOUT` | BOT-IMAGE-ROLLOUT | `1` (on) | The bot runtime images (hermes, hermes-dev, hermes-node) of the same release roll out with the board (deploy.sh step 9.5, `bot-image-rollout.sh`): digests resolved from the same release, pulled, added to dockergate's `images` (config re-read by SIGHUP), the fleet enrolled in `bots[]`, the bot cards switched one at a time (canary first, a running run is never interrupted — a deferred bot retries), the superseded images removed after the fleet moved, every switch journalled | `0` — the manual path (the deploy warns: that is the 03.10 split by choice) |
 | `MYRMIDON_BOT_IMAGE_ROLLOUT_CANARY` | BOT-IMAGE-ROLLOUT | unset | Agent id switched first, before the rest of the fleet (canary) | Unset — plain order |
 | `MYRMIDON_BOT_IMAGE_ROLLOUT_BOT_TIMEOUT_SEC` | BOT-IMAGE-ROLLOUT | `900` | How long one deferred bot is retried (it keeps its old image; the periodic sweep applies the release image later) | From 10 to 86400 |
+| `MYRMIDON_BOT_IMAGE_ROLLOUT_FORCE_DEFERRED_SEC` | BOT-IMAGE-ROLLOUT | same as `MYRMIDON_BOT_IMAGE_ROLLOUT_BOT_TIMEOUT_SEC` | How long after the tail-pass deadline the still-deferred bots are applied WITHOUT the status gate (the reconciler opens the maintenance window and drains the in-flight run to its end — a run is never interrupted). `0` disables the force stage | From 0 to 86400 |
 | `MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_CONFIG` | BOT-IMAGE-ROLLOUT | unset | Path of the dockergate `config.json` this rollout edits (`images[]`, `bots[]`): structural jq edits, verified by `dockergate check-config` when the command below is set | Unset — the rollout refuses (fail-closed): the images and enrollment are its job |
 | `MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_CHECK_CONFIG_COMMAND` | BOT-IMAGE-ROLLOUT | unset | Command run after each config edit with `MYR_BOT_CFG_FILE` naming the edited file, e.g. `docker exec dockergate /dockergate check-config --config "$MYR_BOT_CFG_FILE"` | Unset — a warning: the edits are not verified by the real binary |
 | `MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_SIGNAL_COMMAND` | BOT-IMAGE-ROLLOUT | unset | How dockergate is told to re-read its config (SIGHUP), e.g. `docker exec dockergate kill -HUP 1` | Unset — a warning: the file changed but dockergate keeps the old config until reloaded |
@@ -762,11 +764,50 @@ sources need a token. Findings are recorded `unverified` until the skill lifecyc
 them as candidates; `POST …/foraging/sweep` (board only) runs one pass by hand.
 
 
+## 1.6 — TG-NOTIFY-SETTINGS: what the board sends the owner in Telegram (part A, the settings core)
+
+The company-level telegramNotify settings of `server/src/myrmidon/telegram-notify/` (the
+TG-NOTIFY-SETTINGS epic, part A). This core only stores and serves the contract;
+the parts that actually send (digest, errors, inbound, escalations, proactivity)
+consume it. No environment variables: the settings are runtime-changeable per
+company through the API.
+
+- Storage: the `myrmidonTelegramNotifySettings` key of `instance_settings.general`, keyed by
+  companyId (no migration, the vendor settings service keeps the key across its writes).
+- API: `GET /api/myrmidon/telegram-notify` (company access) answers the full document —
+  every field of every section always present; `PATCH /api/myrmidon/telegram-notify`
+  (board only) applies a partial update, and every changed field is recorded in the
+  changelog (actor, field path, from/to values, 200 entries kept).
+- Defaults: every section OFF. With the defaults the owner receives only the replies to
+  their own messages and the U2 decision cards; nothing else is sent to Telegram until
+  a section is turned on.
+- Sections: `digest` (time "HH:MM", chatId, topicId, sections list), `errors`
+  (minSeverity warn|error|fatal, maxPerHour, chatId, topicId), `inbound`
+  (requireMention), `escalations` (hours, channel dm|topic|none, chatId, topicId),
+  `proactivity` (mode only_on_owner_request|rarely|normal, rarelyMaxPerDay). The
+  proactivity per-agent override lives in `agents.metadata` under the same `"mode"`
+  key (company level is the default for all agents).
+- Contract: `packages/shared/src/myrmidon-telegram-notify.ts` (types and zod
+  validators); the contract is fixed — later changes only add fields, names do not
+  change.
+
 ## 1.6 — PARALLEL-HELPERS (delegated helper agents)
 
 | Variable | Function | Default | What it does | How to disable / special |
 |---|---|---|---|---|
 | `MYRMIDON_BOT_HELPER_MODEL` | PARALLEL-HELPERS | unset (helpers inherit the parent agent's model) | Model that delegated helper children run on when neither the agent card nor the stored `parallelHelpers` instance settings name one. Read from the agent card's environment when the bot profile is built. A deployment value: no model name is baked into the product | Empty/unset — the child uses the parent agent's model (Hermes' own behavior for an unset `delegation.model`) |
+
+Instance settings (`instance_settings.general.parallelHelpers`, the "Parallel
+helpers" card in Instance → General, instance-admin only): `maxPerAgent` is the
+company ceiling agent cards are clamped to, `defaultMaxPerAgent` (default 2)
+is what a card inherits when it says nothing, `buildSlots`/`hostMemoryMb`
+feed the capacity hint. **There is no built-in upper limit on the ceiling
+(HELPERS-NO-CAP, 1.6.1): the number the owner saves is the limit.** A saved
+ceiling above 50 shows a host-load warning on the settings page ("values this
+high put a real load on the host — make sure this is intended, not a typo");
+it is never clamped or rejected. The module applies its own defaults
+(`maxPerAgent` unset → 10, `defaultMaxPerAgent` unset → 2) only while the row
+says nothing.
 
 ## 1.6.1 — TG-NOTIFY-SETTINGS part F: the board UI for the Telegram notification settings
 
@@ -1207,6 +1248,7 @@ What the last run's prompt was made of — which part dominates it and what to d
 on the agent card (Overview). The advice is computed on request from the recorded breakdown; a
 "Deep analysis" button files a task for a cheap-model optimizer agent, which drafts instruction
 edits as a comment on that task. Nothing is scheduled and nothing is changed automatically.
+Operator guide: [guides/prompt-budget-advice.md](guides/prompt-budget-advice.md).
 
 The static thresholds are code constants of
 `server/src/myrmidon/prompt-budget-advice/advice.ts`, not settings: a part is worth a recommendation
@@ -1222,3 +1264,11 @@ is configured or usable.
 | Field | Default | What it does | Bounds / special |
 |---|---|---|---|
 | `promptBudget.optimizerAgentId` | absent | Agent that receives the deep-analysis task filed by the "Deep analysis" button | A uuid of another agent of the same company; absent, blank or not a uuid answers the deep POST with 422. An additive field of the `promptBudget` area owned by the thresholds part (`instance_settings.general.promptBudget`); no environment variable |
+
+## 1.6.4 — AUTONOMY-DELETE: matrix enforcement tests and route mapping
+
+Unit tests for the `delete` action-class enforcement on agent-accessible DELETE routes
+(`server/src/routes/issues.autonomy.myrmidon.test.ts` — gate level, no DB: forbidden role gets
+403 `autonomy_forbidden` and the handler never runs; allowed and board calls pass), plus the
+route-to-guard mapping in `docs/myrmidon/guides/delete-route-mapping.md`. See the guide
+`docs/myrmidon/guides/autonomy-delete-enforcement.md` (+ `.ru.md`) for operator docs.

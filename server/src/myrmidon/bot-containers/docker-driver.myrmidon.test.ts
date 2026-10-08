@@ -29,6 +29,7 @@ import type { BotContainerDriver, BotContainerSpec } from "./driver.js";
 import { reconcileBot, type BotMaintenancePort } from "./reconciler.js";
 import { BOT_LABEL_KEYS, BOT_RUNTIME_CONTRACT_LABEL, BOT_RUNTIME_SCOPE_LABEL, BotContainerTemplateError } from "./template.js";
 import { CLONE_HYGIENE_REPORT_PATH } from "./clone-hygiene.js";
+import { RATE_LIMIT_MAX_RETRIES } from "./dockergate-pacing.js";
 import type { CompiledProfile, CompiledProfileFile } from "./types.js";
 import { buildUstarArchive, parseUstarArchive, type UstarReadEntry } from "./ustar.js";
 
@@ -1686,7 +1687,7 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
     it("a gate that never lets through fails after the attempt budget, with no further requests", async () => {
       daemon.options.rateLimitFirstRequests = 100;
       await expect(driver.status("agent-a")).rejects.toThrow(/429/);
-      expect(daemon.requests.length).toBe(4); // RATE_LIMIT_MAX_ATTEMPTS
+      expect(daemon.requests.length).toBe(1 + RATE_LIMIT_MAX_RETRIES);
     });
 
     it("start polls the health verdict at the configured interval, not once a second", async () => {
