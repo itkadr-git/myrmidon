@@ -719,7 +719,9 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
     // 0 (keep forever); the doomed run's own row survives with a cleared
     // run_id (null_run_activity in sweep.ts) instead of going with the run
     expect(result.perTable.activity.deleted).toBe(0);
-    expect(result.perTable.access.deleted).toBe(2); // one per access table
+    // the seeded access rows are 100 days old — inside the 180d default
+    // access-audit retention, so nothing is deleted
+    expect(result.perTable.access.deleted).toBe(0);
     const remainingActivity = await db
       .select({ action: activityLog.action, runId: activityLog.runId })
       .from(activityLog);
@@ -732,8 +734,8 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
     // the doomed run's row kept its action but lost the run reference
     const goneRow = remainingActivity.find((row) => row.action === "test.old_gone_run");
     expect(goneRow?.runId).toBeNull();
-    expect(await db.select({ id: toolAccessAuditEvents.id }).from(toolAccessAuditEvents)).toHaveLength(1);
-    expect(await db.select({ id: secretAccessEvents.id }).from(secretAccessEvents)).toHaveLength(1);
+    expect(await db.select({ id: toolAccessAuditEvents.id }).from(toolAccessAuditEvents)).toHaveLength(2);
+    expect(await db.select({ id: secretAccessEvents.id }).from(secretAccessEvents)).toHaveLength(2);
   });
 
   it("retention 0 keeps everything, and a settings change applies on the next pass without a restart", async () => {
@@ -806,7 +808,7 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
     expect(await readDataRetentionSettings(settings)).toEqual({
       heartbeatRunsDays: 90,
       activityLogDays: 30,
-      accessAuditDays: 90,
+      accessAuditDays: 180,
     });
     const lastRun = await readDataRetentionLastRun(settings);
     expect(lastRun.freedBytesTotal).toBe(1234);
