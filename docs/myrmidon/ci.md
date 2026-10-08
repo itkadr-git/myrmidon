@@ -96,12 +96,11 @@ run 37277281522), а релиз публиковать руками.
 | Проверка (имя в GitHub) | Уровень | Что делает |
 |---|---|---|
 | `plan` | все | Выбирает уровень и тесты, план — артефакт `test-plan` |
-| `typecheck` | fast, full | `pnpm -r typecheck`; на fast без `typecheck:rust` раннера |
-| `build` | fast, full | `pnpm build` (`NODE_OPTIONS=--max-old-space-size=4096`); на fast раннер собирается только как TypeScript, без релизной сборки Rust |
+| `typecheck + build` | fast, full | Один job (общие checkout и install). Сначала `pnpm -r typecheck`; на fast без `typecheck:rust` раннера. Затем (даже если typecheck упал) `pnpm build` (`NODE_OPTIONS=--max-old-space-size=4096`); на fast раннер собирается только как TypeScript, без релизной сборки Rust |
 | `tests (affected)` | fast | Отобранные тесты |
-| `tests (server 1/5)` … `(server 5/5)`, `tests (serialized 1/5)` … `(5/5)`, `tests (workspaces-a 1/2)`, `(2/2)`, `tests (workspaces-b)` | full | Весь `pnpm test:run`, разбиение как у вендора |
-| `tests (other packages)` | full | Пакеты, которые `pnpm test:run` не запускает (ниже) |
-| `tests (runner)` | full | `pnpm --filter @paperclipai/paperclip-runner check:all`, как отдельная проверка раннера у вендора |
+| `tests (server 1/3)` … `(3/3)`, `tests (serialized 1/2)`, `(2/2)`, `tests (workspaces-a)`, `tests (workspaces-b)` | full | Весь `pnpm test:run`; шардов меньше, чем у вендора: лимит GitHub — 40 одновременных jobs на аккаунт, а каждый job заново делает checkout и install |
+| `tests (other + runner)` | full | Один job: пакеты, которые `pnpm test:run` не запускает (ниже), затем `pnpm --filter @paperclipai/paperclip-runner check:all` (проверка раннера у вендора) |
+| `go tools (dockergate + fleetd)` | все | gofmt, go vet, go test для `tools/dockergate` (+ контракт с драйвером) и `tools/fleetd` |
 | `checks` | все | Шаги: `shellcheck` скриптов выката; `node --test` по `scripts/myrmidon/**/*.test.mjs` (сюда входят сторож CHANGE-FRAGMENTS — ниже — и сторож полос тестов `test-lane-coverage.test.mjs`: каждый серверный тест ровно в одной полосе, OPE-4472); секреты (gitleaks); внутренние адреса (частные сети и запрещённые шаблоны); лицензии зависимостей; совместимость плагинов. Каждый шаг выполняется, даже если предыдущий упал: в журнале видно все сбои сразу |
 | **`CI result`** | все | Сводная: зелёная, если `plan` прошёл и каждая проверка прошла или не требовалась уровнем |
 
