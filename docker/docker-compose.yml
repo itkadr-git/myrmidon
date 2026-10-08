@@ -10,7 +10,7 @@ services:
     image: docker.io/pgvector/pgvector:pg18
     environment:
       POSTGRES_USER: paperclip
-      POSTGRES_PASSWORD: ${POSTG…POSTGRES_PASSWORD must be set for anything but this dev stack}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-paperclip}
       POSTGRES_DB: paperclip
       MYRMIDON_SHARED_SERVICES: ${MYRMIDON_SHARED_SERVICES:-litellm langfuse hindsight}
     healthcheck:
@@ -21,7 +21,10 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      # PostgreSQL 18 keeps the cluster one level deeper
+      # (/var/lib/postgresql/18/docker), so the volume is mounted at the
+      # image's declared VOLUME path, not .../data.
+      - pgdata:/var/lib/postgresql
       - ./db-init:/docker-entrypoint-initdb.d:ro
 
   server:
@@ -40,7 +43,7 @@ services:
     ports:
       - "3100:3100"
     environment:
-      DATABASE_URL: postgres://paperclip:paperclip@db:5432/paperclip
+      DATABASE_URL: "postgres://paperclip:${POSTGRES_PASSWORD:-paperclip}@db:5432/paperclip"
       PORT: "3100"
       SERVE_UI: "true"
       PAPERCLIP_DEPLOYMENT_MODE: "authenticated"

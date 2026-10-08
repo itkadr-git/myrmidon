@@ -584,7 +584,7 @@ MYRMIDON_DB_SHM_SIZE=$MYRMIDON_DB_SHM_SIZE"
       ;;
     external)
       db_profile_env="MYRMIDON_DB_PROFILE=external
-MYRMIDON_DATABASE_URL=$DATABASE_URL"
+MYRMIDON_DATABASE_URL=$(printf %q "$DATABASE_URL")"
       ;;
     keep)
       # The marker must survive the re-write of deploy.env: without it the
@@ -674,13 +674,15 @@ write_compose() {
       timeout: 5s
       retries: 30
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      # PG18 keeps the cluster at /var/lib/postgresql/18/docker: mount the
+      # volume at the declared VOLUME path of the image, not the PG17 data path.
+      - pgdata:/var/lib/postgresql
       - ./db-init:/docker-entrypoint-initdb.d:ro'
     db_depends='    depends_on:
       db:
         condition: service_healthy'
     pgdata_volume='  pgdata:'
-    board_database_url='      DATABASE_URL: "postgres://${POSTGRES_USER:-paperclip}:${POSTGRES_PASSWORD:***@db:5432/${POSTGRES_DB:-paperclip}"'
+    board_database_url='      DATABASE_URL: "postgres://${POSTGRES_USER:-paperclip}:${POSTGRES_PASSWORD:?the board database password must be set in deploy.env}@db:5432/${POSTGRES_DB:-paperclip}"'
   fi
 
   # The sentinels below are literal lines of the quoted heredoc; the shell

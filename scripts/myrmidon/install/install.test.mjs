@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
+import { composeEnvVars, composeInterpolation } from "./compose-check.mjs";
 
 // Runs the real install.sh against fake `docker`, `curl`, `ss`, `systemctl` and
 // `apt-get` placed first in PATH. The fakes log every call and answer from files
@@ -108,6 +109,8 @@ function run(sb, args = [], env = {}) {
 
 const calls = (sb) => (fs.existsSync(path.join(sb.dir, "calls.log")) ? fs.readFileSync(path.join(sb.dir, "calls.log"), "utf8") : "");
 const envFile = (sb) => fs.readFileSync(path.join(sb.opt, "deploy.env"), "utf8");
+
+const REPO = path.join(HERE, "..", "..", "..");
 
 describe("install.sh", () => {
   it("installs a fresh stack: pins the release digests, writes the secrets and starts the services", () => {
@@ -344,7 +347,7 @@ describe("install.sh", () => {
   });
 
   it("the external profile uses the operator's shared server and creates no db container", () => {
-    const url = "postgresql://boardrole:***@shared-db.internal:5432/paperclip";
+    const url = "postgresql://boardrole:dummy-external-pw@shared-db.internal:5432/paperclip";
     const sb = sandbox();
     const r = run(sb, ["--database-url", url]);
     assert.equal(r.status, 0, r.stderr);
@@ -373,6 +376,77 @@ describe("install.sh", () => {
     assert.match(r.stderr, /postgres:/);
   });
 
+  it("the generated compose interpolates like docker compose config would", () => {
+    // Review rationale: substring greps cannot see a broken ${VAR...}
+    // template; only compose-style interpolation does. A leaked mask or a
+    // U+2026 inside a reference is a hard error here, not a silent miss.
+    const sb = sandbox();
+    assert.equal(run(sb).status, 0);
+    const vars = composeEnvVars(envFile(sb));
+    const compose = fs.readFileSync(path.join(sb.opt, "compose.yml"), "utf8");
+    const { errors, interpolated } = composeInterpolation(compose, vars);
+    assert.deepEqual(errors, [], "the generated compose must interpolate with no errors");
+    const pw = vars["POSTGRES_PASSWORD"];
+    assert.ok(pw && pw.length >= 8, "deploy.env carries the generated board password");
+    assert.ok(
+      interpolated.includes("postgres://paperclip:" + pw + "@db:5432/paperclip"),
+      "the interpolated board DATABASE_URL uses the deploy password and the db host",
+    );
+  });
+
+  it("the static compose in the repository interpolates with the documented defaults", () => {
+    const src = fs.readFileSync(path.join(REPO, "docker", "docker-compose.yml"), "utf8");
+    const full = composeInterpolation(src, { POSTGRES_PASSWORD: "operator-pw", BETTER_AUTH_SECRET: "secret" });
+    assert.deepEqual(full.errors, [], "no broken reference in the shipped compose");
+    assert.ok(
+      full.interpolated.includes("postgres://paperclip:operator-pw@db:5432/paperclip"),
+      "the board URL tracks the password given to compose",
+    );
+    // Without an operator password the documented dev default keeps the
+    // local stack working; only the deliberately-required auth secret fails.
+    const dev = composeInterpolation(src, {});
+    assert.ok(
+      dev.interpolated.includes("postgres://paperclip:paperclip@db:5432/paperclip"),
+      "the dev stack keeps working with the paperclip default",
+    );
+    assert.deepEqual(
+      dev.errors.map((e) => e.split(" ")[0]),
+      ["BETTER_AUTH_SECRET"],
+      "only the one required secret fails when nothing is set",
+    );
+  });
+
+  it("mounts the database volume at the path the PostgreSQL 18 image declares", () => {
+    // PG18 keeps the cluster at /var/lib/postgresql/18/docker and the image
+    // declares VOLUME /var/lib/postgresql. Mounting .../data would leave the
+    // real data directory in an anonymous volume.
+    const sb = sandbox();
+    assert.equal(run(sb).status, 0);
+    const files = [
+      ["compose.yml", fs.readFileSync(path.join(sb.opt, "compose.yml"), "utf8")],
+      ["docker-compose.yml", fs.readFileSync(path.join(REPO, "docker", "docker-compose.yml"), "utf8")],
+      ["paperclip-db.container", fs.readFileSync(path.join(REPO, "docker", "quadlet", "paperclip-db.container"), "utf8")],
+    ];
+    for (const [name, txt] of files) {
+      assert.ok(/pgdata(:|=)\/var\/lib\/postgresql(?!\/)/.test(txt), name + " mounts at the declared VOLUME path");
+      assert.ok(!txt.includes("/var/lib/postgresql/data"), name + " must not keep the PG17 data path");
+    }
+  });
+
+  it("an external connection string with shell metacharacters survives sourcing deploy.env", () => {
+    // deploy.env is read with `. deploy.env`: the URL must be written with
+    // printf %q, or $, `, \ and parens break the source (and the re-run).
+    const sb = sandbox();
+    const url = "postgresql://boardrole:p%4ss-w0$rd`x(bare)@shared-db.internal:5432/paperclip";
+    const r = run(sb, ["--database-url", url]);
+    assert.equal(r.status, 0, r.stderr);
+    const round = spawnSync("bash", ["-c", '. "$PWD/deploy.env"; printf %s "$MYRMIDON_DATABASE_URL"'], {
+      cwd: sb.opt,
+      encoding: "utf8",
+    });
+    assert.equal(round.status, 0, round.stderr);
+    assert.equal(round.stdout, url, "sourcing deploy.env yields the exact URL back");
+  });
   it("--help names the database profile options", () => {
     const piped = spawnSync("bash", ["-s", "--", "--help"], {
       cwd: os.tmpdir(),
