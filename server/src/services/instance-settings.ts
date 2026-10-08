@@ -355,6 +355,16 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // journal survives every general write (the pass appends to it on each
       // pass, and the "Foraging" page reads it back).
       ...(parsed.data.foragingPassJournal ? { foragingPassJournal: parsed.data.foragingPassJournal } : {}),
+      // myrmidon(ATTENTION-WINDOW-CACHE): the attention feed's failed-run
+      // horizon (days) and cache TTL (seconds) survive every general write —
+      // without these lines the whitelist drops the keys, a PATCH answers 200
+      // yet stores nothing, and any later write wipes a hand-set value.
+      ...(parsed.data.attentionFailedRunHorizonDays !== undefined
+        ? { attentionFailedRunHorizonDays: parsed.data.attentionFailedRunHorizonDays }
+        : {}),
+      ...(parsed.data.attentionFeedCacheTtlSeconds !== undefined
+        ? { attentionFeedCacheTtlSeconds: parsed.data.attentionFeedCacheTtlSeconds }
+        : {}),
     };
   }
   return {
