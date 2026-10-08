@@ -157,9 +157,21 @@ export interface DatastoreSnapshotPayload {
   /** Sum of the tables' indexes (`pg_indexes_size`). */
   indexBytes: number;
   tables: DatastoreTableMetric[];
-  indexes: DatastoreIndexMetric[];
+  /**
+   * The indexes of the target as aggregates only. The full list (~1040 rows on
+   * the board) is collected in memory for the report and the export — see
+   * `DatastoreCollectedSnapshot` — and is deliberately not stored: repeated in
+   * every hourly snapshot it would add ~200 MB per target over the 90-day
+   * retention, for data nobody reads hourly (operator review 08.10, item 3).
+   */
   indexCount: number;
   invalidIndexCount: number;
+  /** Indexes with `idx_scan = 0`. */
+  unusedIndexCount: number;
+  /** Total size of the indexes with `idx_scan = 0`. */
+  unusedIndexBytes: number;
+  /** Largest unused index by size, or null when every index is used. */
+  largestUnusedIndex: string | null;
   topQueries: DatastoreTopQueryMetric[];
   /** Total execution time of every statement in pg_stat_statements (ms). */
   topQueriesTotalMs: number;
@@ -171,4 +183,21 @@ export interface DatastoreSnapshotPayload {
   optional: DatastoreOptionalMetrics;
   /** Non-fatal problems of the collection, kept for the report footer. */
   warnings: string[];
+}
+
+/**
+ * One collection: the stored payload plus the complete index list.
+ *
+ * The list is what the criteria and the markdown export need at the moment of
+ * the collection, and `toStoredSnapshotPayload` drops it before the snapshot is
+ * written — the hourly series keeps the aggregates above instead.
+ */
+export interface DatastoreCollectedSnapshot extends DatastoreSnapshotPayload {
+  indexes: DatastoreIndexMetric[];
+}
+
+/** Drops the per-index list so only aggregates reach `datastore_snapshots`. */
+export function toStoredSnapshotPayload(collected: DatastoreCollectedSnapshot): DatastoreSnapshotPayload {
+  const { indexes: _indexes, ...stored } = collected;
+  return stored;
 }
