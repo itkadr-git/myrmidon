@@ -15,12 +15,13 @@ const otherKey = "9f8e7d6c-aaaa-bbbb-cccc-ddddeeeeffff"
 // env is the environment of the recorded bodies with roomy ceilings.
 func env(m *fixture.Manifest) *policy.Env {
 	return &policy.Env{
-		VolumeRoot:  m.VolumeRoot,
-		Network:     m.Network,
-		Images:      map[string]struct{}{m.Image: {}},
-		MaxMemoryMB: 2048,
-		MaxCPUs:     4,
-		MaxPids:     2048,
+		VolumeRoot:       m.VolumeRoot,
+		Network:          m.Network,
+		Images:           map[string]struct{}{m.Image: {}},
+		MaxMemoryMB:      2048,
+		MaxCPUs:          4,
+		MaxPids:          2048,
+		PackageCacheRoot: m.PackageCacheRoot,
 	}
 }
 
@@ -108,6 +109,32 @@ func TestPrepareByImageIDIsDenied(t *testing.T) {
 	b, body := m.FindBody(t, "helper-prepare-by-id", ".helper")
 	c, err := policy.ParseCreate(body, createRoute(t, b.Name), env(m))
 	wantDeny(t, c, err, deny.ImageNotAllowed)
+}
+
+// myrmidon(1.6.5-BOT-DISK-UV-B board side): the prepare helper may carry the
+// host directory of the shared package cache (its script creates and chowns
+// the cache subdirectories there); a bot container must not.
+func TestHelperPreparePackageCacheBind(t *testing.T) {
+	m := fixture.Load(t)
+	if m.PackageCacheRoot == "" {
+		t.Skip("fixture set has no package cache")
+	}
+
+	// The recorded prepare body with the cache root bind is accepted.
+	b, body := m.FindBody(t, "helper-prepare-package-cache", ".helper")
+	c, err := policy.ParseCreate(body, createRoute(t, b.Name), env(m))
+	if err != nil {
+		t.Fatalf("prepare helper with the package cache bind denied: %s (field %q, detail %q)", err.Code, err.Field, err.Detail)
+	}
+	if c.Form != policy.FormHelperPrepare {
+		t.Fatalf("form %v, want helper-prepare", c.Form)
+	}
+
+	// The same bind is refused on the bot container.
+	bb, botBody := m.FindBody(t, "bot-plain", "")
+	mut := replace(t, botBody, `"Binds":[`, `"Binds":["`+m.PackageCacheRoot+`:`+policy.PackageCacheHelperTarget+`",`)
+	c, err = policy.ParseCreate(mut, createRoute(t, bb.Name), env(m))
+	wantDeny(t, c, err, deny.BindsMismatch)
 }
 
 func TestFormString(t *testing.T) {
@@ -653,8 +680,8 @@ func TestHelperBodyMutations(t *testing.T) {
 		{"script: root chmod recursive", `chmod 0711 bot`, `chmod -R 0711 bot`, false, deny.ScriptMismatch},
 		{"script: another target", `data/hermes workspace scratch`, `data/hermes workspace scratch /`, false, deny.ScriptMismatch},
 		{"script: no -u", `set -eu`, `set -e`, false, deny.ScriptMismatch},
-		{"script: appended command", `chmod 0711 bot"`, `chmod 0711 bot; id"`, false, deny.ScriptMismatch},
-		{"script: empty", `"set -eu\ncd \"$1\"\nfor d in data/hermes workspace scratch; do\n  chmod 0700 \"$d\"\n  chown 10001:10001 \"$d\"\ndone\nchmod 0711 bot"`, `""`, false, deny.ScriptMismatch},
+		{"script: appended command", `chmod 0711 bot\n`, `chmod 0711 bot; id\n`, false, deny.ScriptMismatch},
+		{"script: empty", `"set -eu\ncd \"$1\"\nfor d in data/hermes workspace scratch; do\n  chmod 0700 \"$d\"\n  chown 10001:10001 \"$d\"\ndone\nchmod 0711 bot\nif test -d package-cache; then\n  install -d -o 10001 -g 10001 \"package-cache/pnpm\"\n  install -d -o 10001 -g 10001 \"package-cache/pnpm-store\"\n  install -d -o 10001 -g 10001 \"package-cache/uv\"\n  install -d -o 10001 -g 10001 \"package-cache/go-mod\"\n  install -d -o 10001 -g 10001 \"package-cache/go-build\"\n  install -d -o 10001 -g 10001 \"package-cache/gradle\"\nfi"`, `""`, false, deny.ScriptMismatch},
 		{"entrypoint changed", `"Entrypoint":["/bin/sh","-c"]`, `"Entrypoint":["/bin/sh"]`, false, deny.JSONValue},
 		{"entrypoint bash", `"Entrypoint":["/bin/sh","-c"]`, `"Entrypoint":["/bin/bash","-c"]`, false, deny.JSONValue},
 		{"cmd argument 1", `"myrmidon-helper"`, `"other"`, false, deny.JSONValue},

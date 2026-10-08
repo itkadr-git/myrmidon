@@ -82,6 +82,8 @@ import {
   BOT_SCOPE_DATA_TMPFS,
   BOT_SCOPE_SUBDIR_ENV,
   BOT_VOLUME_MOUNTS,
+  HELPER_PACKAGE_CACHE_MOUNT,
+  PACKAGE_CACHE_MOUNTS,
   botRealRootFromBinds,
   buildHelperBinds,
   scopeDirNameFromBinds,
@@ -427,6 +429,13 @@ export function buildHelperContainerRequestBody(params: {
   role: HelperRole;
   script: string;
   volumeRoot: string;
+  /** myrmidon(1.6.5-BOT-DISK-UV-B board side): the host directory of the
+   *  shared package cache, bound read-write at this fixed point of the
+   *  root-owned prepare helper's root, so the prepare script can create and
+   *  hand every cache subdirectory to the bot's uid. Never on the
+   *  apply-profile helper (it runs as the bot's uid and must not touch the
+   *  shared cache). */
+  packageCachePath?: string;
   /** myrmidon(BOT-DISK-F): the helper of a shared member works inside its subdirectory of the instance. */
   scope?: BotScopeMount;
 }): DockerHelperContainerBody {
@@ -448,7 +457,7 @@ export function buildHelperContainerRequestBody(params: {
       ReadonlyRootfs: true,
       RestartPolicy: { Name: "no" },
       NetworkMode: "none",
-      Binds: buildHelperBinds(params.volumeRoot, params.botKey, params.scope, asRoot),
+      Binds: buildHelperBinds(params.volumeRoot, params.botKey, params.scope, asRoot, params.packageCachePath),
       Privileged: false,
     },
   };
@@ -498,6 +507,18 @@ export function buildPrepareVolumesScript(options: { scope?: boolean } = {}): st
     "done",
   ];
   if (!options.scope) lines.push(`chmod 0711 ${BOT_ROOT_MOUNT.slice(1)}`);
+  // myrmidon(1.6.5-BOT-DISK-UV-B board side): the shared package cache root is
+  // bound only on this root-owned helper (buildHelperBinds), at the fixed
+  // HELPER_PACKAGE_CACHE_MOUNT. Create every package-cache subdirectory and hand
+  // it to the bot's uid, so on a fresh host the bot container (uid 10001) can
+  // write its cache — without this Docker creates the first-bind directory
+  // owned by root and the bot's uv/pnpm writes fail. A bot without the cache
+  // configured has no such bind and the directory test skips the loop.
+  lines.push(`if test -d ${HELPER_PACKAGE_CACHE_MOUNT.slice(1)}; then`);
+  for (const mount of PACKAGE_CACHE_MOUNTS) {
+    lines.push(`  install -d -o ${BOT_CONTAINER_UID} -g ${BOT_CONTAINER_UID} "${HELPER_PACKAGE_CACHE_MOUNT.slice(1)}/${mount.hostSubdir}"`);
+  }
+  lines.push("fi");
   return lines.join("\n");
 }
 
@@ -1229,7 +1250,16 @@ export function dockerBotContainerDriver(
   /** Runs one helper container to completion and removes it. */
   async function runHelper(
     botKey: string,
-    params: { image: string; role: HelperRole; script: string; archives?: readonly ProfileArchive[]; layout?: ScopeLayout },
+    params: {
+      image: string;
+      role: HelperRole;
+      script: string;
+      archives?: readonly ProfileArchive[];
+      layout?: ScopeLayout;
+      /** myrmidon(1.6.5-BOT-DISK-UV-B board side): the host directory of the
+       *  shared package cache to bind on the root-owned prepare helper. */
+      packageCachePath?: string;
+    },
   ): Promise<void> {
     const name = helperContainerNameFor(botKey);
     await removeByName(name); // a helper left over from an interrupted earlier run
@@ -1240,6 +1270,7 @@ export function dockerBotContainerDriver(
       script: params.script,
       volumeRoot: config.volumeRoot,
       scope: scopeMountOf(params.layout ?? ISOLATED_LAYOUT),
+      packageCachePath: params.packageCachePath,
     });
     await createNamed(name, body);
     try {
@@ -1282,6 +1313,10 @@ export function dockerBotContainerDriver(
       role: "prepare-volumes",
       script: buildPrepareVolumesScript({ scope: layout.kind === "shared" }),
       layout,
+      // myrmidon(1.6.5-BOT-DISK-UV-B board side): the root-owned helper also
+      // creates and chowns the shared package-cache subdirectories. Read the
+      // path per prepare so a settings change applies without a recreate.
+      packageCachePath: await readSharedPackageCachePath(botKey),
     });
   }
 

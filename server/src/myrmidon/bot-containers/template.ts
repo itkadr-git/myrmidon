@@ -234,6 +234,14 @@ export const BOT_SCOPE_SUBDIR_ENV = "MYRMIDON_BOT_SCOPE_SUBDIR";
 export const BOT_SCOPE_DATA_TMPFS = "uid=10001,gid=10001,mode=0755,size=1m";
 /** Where the prepare helper of a member sees the instance directory (to hand it to the bot's uid). */
 export const BOT_SCOPE_HELPER_MOUNT = "/scope";
+/** myrmidon(1.6.5-BOT-DISK-UV-B board side): where the root-owned prepare
+ *  helper sees the host directory of the shared package cache, so the prepare
+ *  script can create and chown every cache subdirectory for the bot's uid.
+ *  The helper's root filesystem is read-only, so this must be its own bind,
+ *  not a subpath of the three volume binds. Only the prepare helper carries
+ *  it; the bot container mounts each cache subdirectory on its own
+ *  (PACKAGE_CACHE_MOUNTS), and the apply-profile helper never touches it. */
+export const HELPER_PACKAGE_CACHE_MOUNT = "/package-cache";
 /** Image label declaring the runtime can run as a member (entrypoint links, WORKDIR-independent start). */
 export const BOT_RUNTIME_SCOPE_LABEL = "myrmidon.bot-runtime.scope";
 
@@ -333,29 +341,37 @@ export function buildHelperBinds(
   scope?: BotScopeMount,
   /** The prepare helper of a member also binds the instance directory itself. */
   withInstanceDir = false,
+  /** myrmidon(1.6.5-BOT-DISK-UV-B board side): the host directory of the
+   *  shared package cache, bound read-write at {@link HELPER_PACKAGE_CACHE_MOUNT}
+   *  for the root-owned prepare helper only — the prepare script creates and
+   *  chowns every cache subdirectory there, so Docker's first-bind creation
+   *  (root-owned) never leaves a directory the bot's uid cannot write. */
+  packageCachePath?: string,
 ): string[] {
   validateBotKey(botKey);
+  let binds: string[];
   if (scope) {
     // myrmidon(BOT-ROOT-TRAVERSE): a shared member has no separate bot root to
     // normalize — its tree root IS the instance directory, already bound read-write
     // at the helper's /scope and handed to uid 10001 by the prepare script itself.
     assertScopeMount(scope);
     const base = `${scope.scopeRoot}/${scope.dirName}/${botKey}`;
-    const binds = BOT_VOLUME_MOUNTS.map((mount) => `${base}/${mount.hostSuffix}:${mount.containerPath}`);
+    binds = BOT_VOLUME_MOUNTS.map((mount) => `${base}/${mount.hostSuffix}:${mount.containerPath}`);
     if (withInstanceDir) binds.push(`${scope.scopeRoot}/${scope.dirName}:${BOT_SCOPE_HELPER_MOUNT}`);
-    return binds;
+  } else {
+    binds = BOT_VOLUME_MOUNTS.map((mount) => `${volumeRoot}/${botKey}/${mount.hostSuffix}:${mount.containerPath}`);
+    if (withInstanceDir) {
+      // myrmidon(BOT-ROOT-TRAVERSE): the isolated bot's whole directory (the one bind
+      // the bot container gets at BOT_ROOT_MOUNT) must be enterable by uid 10001, but
+      // the three narrow binds stop below it, so the helper never sees the root. The
+      // prepare helper gets the root itself, as the SAME bind string the bot container
+      // carries (`<volumeRoot>/<botKey>:/bot`, rw — chmod over a read-only bind is
+      // EROFS): the script runs one non-recursive chmod on the mount point, without
+      // ever listing or writing into the tree.
+      binds.push(`${volumeRoot}/${botKey}:${BOT_ROOT_MOUNT}`);
+    }
   }
-  const binds = BOT_VOLUME_MOUNTS.map((mount) => `${volumeRoot}/${botKey}/${mount.hostSuffix}:${mount.containerPath}`);
-  if (withInstanceDir) {
-    // myrmidon(BOT-ROOT-TRAVERSE): the isolated bot's whole directory (the one bind
-    // the bot container gets at BOT_ROOT_MOUNT) must be enterable by uid 10001, but
-    // the three narrow binds stop below it, so the helper never sees the root. The
-    // prepare helper gets the root itself, as the SAME bind string the bot container
-    // carries (`<volumeRoot>/<botKey>:/bot`, rw — chmod over a read-only bind is
-    // EROFS): the script runs one non-recursive chmod on the mount point, without
-    // ever listing or writing into the tree.
-    binds.push(`${volumeRoot}/${botKey}:${BOT_ROOT_MOUNT}`);
-  }
+  if (packageCachePath) binds.push(`${packageCachePath}:${HELPER_PACKAGE_CACHE_MOUNT}`);
   return binds;
 }
 

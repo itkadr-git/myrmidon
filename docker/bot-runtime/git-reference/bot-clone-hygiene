@@ -468,6 +468,10 @@ def build_report(roots):
         "removed": removed[:200],
         "reflinkCheck": read_reflink_check(),
         "gitRefCheck": read_git_objects_check(),  # myrmidon(1.6.5 BOT-DISK-G)
+        # myrmidon(1.6.5-BOT-DISK-UV-B board side): the container-start uv
+        # cache self-check (entrypoint.sh), passed on so the board can raise
+        # one fleet card instead of every bot logging into its own journal.
+        "uvCacheCheck": read_uv_cache_check(),
         # myrmidon(1.6.5 BOT-DISK-G live check): the store's state read live on
         # this pass — the board's acceptance reads it instead of exec-ing in.
         "gitStore": git_store_state(),
@@ -498,6 +502,21 @@ def read_git_objects_check():
     clones; null when the entrypoint wrote none."""
     path = os.environ.get("MYRMIDON_GIT_OBJECTS_CHECK_FILE") or os.path.join(
         os.environ.get("HERMES_HOME", "/data/hermes"), ".myrmidon", "git-objects-check.json"
+    )
+    try:
+        with open(path, encoding="utf-8") as handle:
+            data = json.load(handle)
+        return data if isinstance(data, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def read_uv_cache_check():
+    """The container-start uv cache self-check (entrypoint.sh, myrmidon 1.6.5
+    BOT-DISK-UV-A), passed on so the board shows it next to the clones; null
+    when the entrypoint wrote none."""
+    path = os.environ.get("MYRMIDON_UV_CACHE_CHECK_FILE") or os.path.join(
+        os.environ.get("HERMES_HOME", "/data/hermes"), ".myrmidon", "uv-cache-check.json"
     )
     try:
         with open(path, encoding="utf-8") as handle:

@@ -129,6 +129,14 @@ const ScopeDataTmpfs = "uid=10001,gid=10001,mode=0755,size=1m"
 // instance directory, to hand it to the bot's uid.
 const ScopeHelperTarget = "/scope"
 
+// PackageCacheHelperTarget is where the root-owned prepare helper sees the
+// host directory of the shared package cache (myrmidon 1.6.5-BOT-DISK-UV-B
+// board side), so its script can create and chown every cache subdirectory for
+// the bot's uid. It mirrors HELPER_PACKAGE_CACHE_MOUNT in
+// server/src/myrmidon/bot-containers/template.ts. Only the prepare helper may
+// carry this bind — it runs as root with CAP_CHOWN for exactly this.
+const PackageCacheHelperTarget = "/package-cache"
+
 // ScopeBind is the one bind of a shared member's bot container.
 func ScopeBind(scopeRoot, instance string) string {
 	return scopeRoot + "/" + instance + ":" + ScopeMountTarget
@@ -973,6 +981,17 @@ func matchHelperBinds(got []string, env *Env, botKey string, prepare, sharedPrep
 		if equal(want) {
 			return want, "", nil
 		}
+		// myrmidon(1.6.5-BOT-DISK-UV-B board side): with a configured package
+		// cache the root-owned prepare helper also binds the cache root itself at
+		// PackageCacheHelperTarget, so its script can create and chown the cache
+		// subdirectories for the bot's uid. The apply-profile helper never gets
+		// it (it runs as the bot).
+		if prepare && env.PackageCacheRoot != "" {
+			want = append(want, env.PackageCacheRoot+":"+PackageCacheHelperTarget)
+			if equal(want) {
+				return want, "", nil
+			}
+		}
 	}
 	// A shared layout: the instance is read from the first bind.
 	if env.ScopeRoot != "" && len(got) > 0 {
@@ -987,6 +1006,18 @@ func matchHelperBinds(got []string, env *Env, botKey string, prepare, sharedPrep
 						return nil, "", deny.Field(deny.ScriptMismatch, "Cmd[0]", []byte("prepare")).WithDetail("prepare_scope")
 					}
 					return want, instance, nil
+				}
+				// myrmidon(1.6.5-BOT-DISK-UV-B board side): with a configured
+				// package cache the root-owned prepare helper of a member also
+				// binds the cache root (see the isolated branch above).
+				if prepare && env.PackageCacheRoot != "" {
+					want = append(want, env.PackageCacheRoot+":"+PackageCacheHelperTarget)
+					if equal(want) {
+						if !sharedPrepare {
+							return nil, "", deny.Field(deny.ScriptMismatch, "Cmd[0]", []byte("prepare")).WithDetail("prepare_scope")
+						}
+						return want, instance, nil
+					}
 				}
 			}
 			return nil, "", deny.Field(deny.MountSourceNotAllowed, "HostConfig.Binds", []byte(got[0]))

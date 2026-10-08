@@ -2368,12 +2368,100 @@ async function buildAttentionFeedSnapshot(
           .from(agents)
           .where(and(eq(agents.companyId, companyId), inArray(agents.id, botIds)));
         const byId = new Map(botAgents.map((agent) => [agent.id, agent]));
+
+        // myrmidon(1.6.5-BOT-DISK-UV-B board side): the start-time self-check
+        // failures (reflink / shared git objects / uv cache) are host-level —
+        // one card on the fleet per kind of failure instead of one per bot per
+        // check. Unpushed-work clone cards stay per-bot.
+        const SELF_CHECK_KINDS = ["reflink", "gitref", "uvcache"] as const;
+        type SelfCheckKind = (typeof SELF_CHECK_KINDS)[number];
+        const isSelfCheck = (signal: (typeof cloneSignals)[number]): signal is typeof signal & { kind: SelfCheckKind } =>
+          signal.kind === "reflink" || signal.kind === "gitref" || signal.kind === "uvcache";
+        const selfCheckTitle: Record<SelfCheckKind, string> = {
+          reflink: "Reflinks do not work",
+          gitref: "Shared git objects check failed",
+          uvcache: "uv cache self-check failed",
+        };
+        const selfCheckAdvice: Record<SelfCheckKind, string> = {
+          reflink:
+            "pnpm installs on these bots copy every package instead of cloning, so bot disks fill quickly. The store and the clone roots must sit on one copy-on-write filesystem.",
+          gitref:
+            "New task clones on these bots copy the whole git history again (~0.4 GB each). Check that the git wrapper shadows git and the shared store is writable for the bot user.",
+          uvcache:
+            "uv installs on these bots fetch into a per-run cache instead of the shared one. Check that the shared package cache is mounted read-write and its directories belong to the bot user.",
+        };
+        const selfCheckExit: Record<SelfCheckKind, string> = {
+          reflink: "every affected bot restarts and its self-check passes",
+          gitref: "every affected bot restarts and its self-check passes",
+          uvcache: "every affected bot restarts and its self-check passes (the shared cache is writable for the bot user and files in it link into the clone roots)",
+        };
+        // Group by kind, then by the failing check/root so a fleet split into
+        // two failure modes still gets one card per mode.
+        const groups = new Map<string, { kind: SelfCheckKind; check: string; bots: Map<string, string> }>();
         for (const signal of cloneSignals) {
+          if (!isSelfCheck(signal)) continue;
+          const agent = byId.get(signal.botKey);
+          if (!agent) continue;
+          const check = signal.kind === "gitref"
+            ? (signal.reason.match(/check (\S+) failed/)?.[1] ?? "unknown")
+            : signal.kind === "uvcache"
+              ? "uvcache"
+              : signal.path;
+          const groupKey = `${signal.kind}:${check}`;
+          let group = groups.get(groupKey);
+          if (!group) {
+            group = { kind: signal.kind, check, bots: new Map() };
+            groups.set(groupKey, group);
+          }
+          if (!group.bots.has(agent.id)) group.bots.set(agent.id, `${agent.name}: ${signal.reason}`);
+        }
+        for (const group of [...groups.values()].sort((a, b) => (a.kind + ":" + a.check < b.kind + ":" + b.check ? -1 : 1))) {
+          const at = new Date().toISOString();
+          const botList = [...group.bots.values()];
+          const total = botList.length;
+          const names = botList.slice(0, 5).map((entry) => entry.split(": ")[0]).join(", ");
+          const more = total > 5 ? ` and ${total - 5} more` : "";
+          add(createItem({
+            companyId,
+            sourceKind: "bot_disk_lifecycle",
+            subject: {
+              kind: "agent",
+              id: "bot-disk-lifecycle",
+              companyId,
+              title: "Bot disk lifecycle",
+              identifier: null,
+              status: "alert",
+              href: `/${prefix}/instance`,
+              metadata: { failureKind: group.kind, check: group.check, affectedBots: total },
+            },
+            whyNow:
+              `${selfCheckTitle[group.kind]} on ${total} bot${total === 1 ? "" : "s"} (${names}${more}): ${botList[0].split(": ").slice(1).join(": ")}. ${selfCheckAdvice[group.kind]}`,
+            decisionVerbs: decisionVerbs(
+              { id: "inspect", label: "Inspect", description: "Recreate the affected bots so the prepare step and the self-check run again." },
+              { id: "dismiss", label: "Dismiss", description: "Dismiss this signal." },
+            ),
+            inlineResolvable: false,
+            entryRule: `the start-time ${group.kind} self-check failed on at least one bot`,
+            exitRule: selfCheckExit[group.kind],
+            dedupKey: `bot_disk_${group.kind}:fleet:${group.check}`,
+            severity: "high",
+            activityAt: at,
+            createdAt: at,
+            updatedAt: at,
+            relatedIssue: null,
+            detail: {
+              kind: "generic",
+              summaryExcerpt: `${total} bot${total === 1 ? "" : "s"}: ${names}${more}`,
+              images: [],
+            },
+          }));
+        }
+
+        for (const signal of cloneSignals) {
+          if (isSelfCheck(signal)) continue;
           const agent = byId.get(signal.botKey);
           if (!agent) continue;
           const at = new Date(signal.observedAtMs).toISOString();
-          // myrmidon(1.6.5 BOT-DISK-G): the signal kind names its own dedup family.
-          const signalKind = signal.kind === "reflink" || signal.kind === "gitref" ? signal.kind : "clone";
           add(createItem({
             companyId,
             sourceKind: "bot_disk_lifecycle",
@@ -2388,29 +2476,17 @@ async function buildAttentionFeedSnapshot(
               metadata: { clonePath: signal.path, branch: signal.branch },
             },
             whyNow:
-              signal.kind === "reflink"
-                ? `Reflinks do not work in ${signal.path}: ${signal.reason}. pnpm installs there copy every package instead of cloning, so the bot's disk fills quickly.`
-                : signal.kind === "gitref"
-                  ? `Shared git objects do not work on this bot: ${signal.reason}. New task clones there copy the whole git history again (~0.4 GB each).`
-                  : `Clone ${signal.path} has been idle past the lifecycle TTL with ${signal.reason}; it is kept, not removed.`,
+              `Clone ${signal.path} has been idle past the lifecycle TTL with ${signal.reason}; it is kept, not removed.`,
             decisionVerbs: decisionVerbs(
               { id: "inspect", label: "Inspect", description: "Push or discard the work in the bot's clone." },
               { id: "dismiss", label: "Dismiss", description: "Dismiss this signal." },
             ),
             inlineResolvable: false,
             entryRule:
-              signal.kind === "reflink"
-                ? "the bot's start-time reflink self-check failed for a clone root"
-                : signal.kind === "gitref"
-                  ? "the bot's start-time shared-git-objects self-check failed"
-                  : "a bot clone holds unpushed work and is idle longer than general.botDisk.idleTtlMs",
+              "a bot clone holds unpushed work and is idle longer than general.botDisk.idleTtlMs",
             exitRule:
-              signal.kind === "reflink"
-                ? "the bot restarts and the self-check passes (the store and the roots are on one copy-on-write filesystem)"
-                : signal.kind === "gitref"
-                  ? "the bot restarts and the self-check passes (the wrapper shadows git and a test reference-clone borrows objects)"
-                  : "the work is pushed or discarded, the clone changes again, or it is removed",
-            dedupKey: `bot_disk_${signalKind}:${agent.id}:${signal.path}`,
+              "the work is pushed or discarded, the clone changes again, or it is removed",
+            dedupKey: `bot_disk_clone:${agent.id}:${signal.path}`,
             severity: "medium",
             activityAt: at,
             createdAt: at,

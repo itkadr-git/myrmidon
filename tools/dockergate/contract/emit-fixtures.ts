@@ -183,6 +183,34 @@ write(
   nonce: NONCES[0],
 };
 
+// ---- package cache (BOT-DISK-UV-B) ----
+// A prepare helper that also carries the host directory of the shared package
+// cache, so its script can create and chown the cache subdirectories to the
+// bot's uid. The gate must accept exactly this extra bind on the prepare
+// helper and reject it everywhere else.
+const PACKAGE_CACHE_ROOT = "/srv/myrmidon-cache";
+write(
+  "bodies/helper-prepare-package-cache.json",
+  JSON.stringify(
+    buildHelperContainerRequestBody({
+      botKey: BOT_KEY,
+      image: IMAGE,
+      role: "prepare-volumes",
+      script: buildPrepareVolumesScript(),
+      volumeRoot: VOLUME_ROOT,
+      packageCachePath: PACKAGE_CACHE_ROOT,
+    }),
+  ),
+);
+manifest.bodies.push({
+  id: "helper-prepare-package-cache",
+  form: "helper-prepare",
+  name: `myrmidon-bot-${BOT_KEY}.helper`,
+  file: "bodies/helper-prepare-package-cache.json",
+  image: IMAGE,
+});
+(manifest as Record<string, unknown>).packageCacheRoot = PACKAGE_CACHE_ROOT;
+
 // ---- inspect contract (A2) ----
 // A container inspect as a Docker daemon writes it for a bot container, plus
 // every field the driver's template-drift check reads off it, with the value
