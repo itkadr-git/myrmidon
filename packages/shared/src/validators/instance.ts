@@ -167,13 +167,20 @@ export const instanceGeneralSettingsSchema = z.object({
   // changed from /api/myrmidon/owner-delivery; absent means the default
   // "via_bot" (1.6.5-OWNER-VIA-BOT: no card, the author's message instead).
   ownerDelivery: ownerDeliverySettingsSchema.optional(),
-  // myrmidon(1.6.5-DB-RETENTION): retention of runs and logs in whole days per
-  // table group (0 = keep forever), changed from /api/myrmidon/data-retention;
-  // absent means the built-in defaults (90/0/180). `lastRun` is the sweep's own
-  // state: carried through, never required (re-validated on read by the
-  // feature module).
-  dataRetention: dataRetentionSettingsSchema
-    .extend({ lastRun: z.record(z.string(), z.unknown()).optional() })
+  // myrmidon(1.6.5-DB-RETENTION): the datastore-care settings object of the
+  // project §3.6 "Хранение" panel; the retention of runs and logs lives under
+  // `retention` (whole days per table group, 0 = keep forever), changed from
+  // /api/myrmidon/data-retention; absent means the built-in defaults
+  // (90/0/180). `lastRun` is the sweep's own state: carried through, never
+  // required (re-validated on read by the feature module). Passthrough on
+  // purpose: sibling datastore-care features add their own sub-keys here.
+  datastoreCare: z
+    .object({
+      retention: dataRetentionSettingsSchema
+        .extend({ lastRun: z.record(z.string(), z.unknown()).optional() })
+        .optional(),
+    })
+    .catchall(z.unknown())
     .optional(),
   // myrmidon(REVIEW-ROUTING): automatic reviewer routing, changed from
   // /api/myrmidon/companies/:id/review-routing/settings; absent means the defaults.

@@ -6,8 +6,8 @@
 // index.ts calls `createDataRetentionScheduler`. One runtime per server
 // process, created on demand and shared by the routes and the scheduler so
 // both see the same sweep state. The state persists in
-// `instance_settings.general.dataRetention.lastRun`, so a restart keeps the
-// counters and the backup-gate flag.
+// `instance_settings.general.datastoreCare.retention.lastRun`, so a restart
+// keeps the counters and the backup-gate flag.
 //
 // The "waiting for backup" activity line is throttled to at most once per
 // hour per instance; the newest `data.retention_waiting_for_backup` line in
@@ -18,6 +18,7 @@ import { desc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   DATA_RETENTION_WAITING_FOR_BACKUP_ACTION,
+  DATA_RETENTION_SWEEP_THROTTLED_ACTION,
   type DataRetentionSettings,
 } from "@paperclipai/shared";
 import { logger } from "../../middleware/logger.js";
@@ -110,12 +111,33 @@ function createRuntime(db: Db, options: DataRetentionRuntimeOptions = {}): DataR
             actorId: "data-retention-sweep",
             action: DATA_RETENTION_WAITING_FOR_BACKUP_ACTION,
             entityType: "instance_settings",
-            entityId: "dataRetention",
+            entityId: "datastoreCare.retention",
             details,
           });
         }
       } catch (err) {
         logger.warn({ err }, "data retention waiting-for-backup log failed");
+      }
+    },
+    logThrottled: async (details) => {
+      // One journal line per group whose batch hit the statement timeout —
+      // the sweep itself never fails on a timeout, so this line is the only
+      // trace. Errors here must never fail the pass.
+      try {
+        const companyIds = await settings.listCompanyIds();
+        for (const companyId of companyIds) {
+          await logActivity(db, {
+            companyId,
+            actorType: "system",
+            actorId: "data-retention-sweep",
+            action: DATA_RETENTION_SWEEP_THROTTLED_ACTION,
+            entityType: "instance_settings",
+            entityId: "datastoreCare.retention",
+            details,
+          });
+        }
+      } catch (err) {
+        logger.warn({ err }, "data retention sweep-throttled log failed");
       }
     },
   });

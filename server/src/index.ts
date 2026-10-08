@@ -1580,8 +1580,11 @@ async function startServerWithDatabaseTeardown(
       track: trackHeartbeatSchedulerWork,
     });
 
-    // myrmidon(1.6.5-DB-RETENTION): one retention pass per tick; the pass
-    // deletes old runs and logs in bounded batches and re-reads its settings
+    // myrmidon(1.6.5-DB-RETENTION): one retention pass per tick; the sweep
+    // itself throttles to at most one pass per 10 minutes
+    // (DATA_RETENTION_SWEEP_MIN_INTERVAL_MS, operator review
+    // dbcare-review-20261008). The pass deletes old runs and logs in bounded
+    // batches (each in its own transaction) and re-reads its settings
     // (GET/PATCH /api/myrmidon/data-retention) at the top of every pass
     const scheduleDataRetentionSweep = createDataRetentionScheduler({
       db: db as any,

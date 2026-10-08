@@ -13,6 +13,7 @@
 
 import {
   DATA_RETENTION_SETTINGS_KEY,
+  DATA_RETENTION_SETTINGS_SUBKEY,
   DATA_RETENTION_UPDATED_ACTION,
   dataRetentionSources,
   emptyDataRetentionLastRun,
@@ -53,7 +54,11 @@ export interface DataRetentionService {
 export function dataRetentionService(deps: DataRetentionServiceDeps): DataRetentionService {
   async function read(): Promise<DataRetentionView> {
     const general = (await deps.settings.getGeneral()) as unknown as Record<string, unknown>;
-    const stored = general[DATA_RETENTION_SETTINGS_KEY];
+    const care = general[DATA_RETENTION_SETTINGS_KEY];
+    const stored =
+      typeof care === "object" && care !== null
+        ? (care as Record<string, unknown>)[DATA_RETENTION_SETTINGS_SUBKEY]
+        : undefined;
     const lastRunRaw =
       typeof stored === "object" && stored !== null
         ? (stored as Record<string, unknown>).lastRun
@@ -85,7 +90,7 @@ export function dataRetentionService(deps: DataRetentionServiceDeps): DataRetent
         agentApiKeyId: actor.agentApiKeyId,
         action: DATA_RETENTION_UPDATED_ACTION,
         entityType: "instance_settings",
-        entityId: DATA_RETENTION_SETTINGS_KEY,
+        entityId: `${DATA_RETENTION_SETTINGS_KEY}.${DATA_RETENTION_SETTINGS_SUBKEY}`,
         details: { before, after: next },
       });
     }

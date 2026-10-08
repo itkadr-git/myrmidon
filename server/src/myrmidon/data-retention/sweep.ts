@@ -27,22 +27,17 @@
 //
 //   DELETE with the run (the row has no meaning without it):
 //     - heartbeat_run_events (NOT NULL run_id, no action)
-//     - native_run_finalizations (run_id is the PK; composite
-//       run_owner_fk, no action) — first, it points back into
-//       status_decisions / work_assessments / native_run_results
-//     - status_decision_effects (composite decision_owner_fk into
-//       status_decisions, no action)
-//     - status_decisions (composite assessment_owner_fk into
-//       work_assessments, no action)
-//     - work_assessments (NOT NULL run_id, composite run_owner_fk, no
-//       action)
-//     - native_run_results (NOT NULL run_id, composite
-//       run_contract_owner_fk into heartbeat_runs, no action)
-//     - decisions (origin_run_id is NOT NULL, no action — a null UPDATE
-//       would raise 23502; decision_target_issues and
-//       decision_effect_executions cascade with the decision, and
-//       bundle_id on the surviving decisions is ON DELETE SET NULL)
-//     - decision_bundles (same NOT NULL origin_run_id)
+//
+//   KEEP — a run referenced by any of these tables is never deleted
+//   (operator review dbcare-review-20261008: decision-making and native
+//   completion records outlive the run), enforced as NOT EXISTS clauses
+//   on the doomed set:
+//     - decisions / decision_bundles (NOT NULL origin_run_id, no action —
+//       a null UPDATE would raise 23502)
+//     - status_decisions / work_assessments / native_run_results (NOT NULL
+//       run_id) — and status_decision_effects / native_run_finalizations
+//       ride along: an effect's decision or a finalization's run is kept,
+//       so the chain keeps the run too.
 //
 //   activity_log rows of the doomed runs are never deleted: the activity
 //   log is the audit trail and is kept regardless of the run's fate. The
@@ -92,10 +87,10 @@
 // activity line and reports waitingForBackup in the persisted state.
 //
 // Stats persist across restarts in
-// `instance_settings.general.dataRetention.lastRun`; the freed-bytes figure
-// is the sum of `pg_column_size(id)` over the deleted rows — a documented
-// lower bound (indexes, TOAST and payload columns are not counted; the real
-// table size settles after autovacuum).
+// `instance_settings.general.datastoreCare.retention.lastRun`; the
+// freed-bytes figure is the sum of `pg_column_size(id)` over the deleted
+// rows — a documented lower bound (indexes, TOAST and payload columns are
+// not counted; the real table size settles after autovacuum).
 
 import { sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -115,6 +110,14 @@ export const DATA_RETENTION_MAX_BATCHES = 100;
 
 /** The statement timeout the sweep transactions run under. */
 export const DATA_RETENTION_STATEMENT_TIMEOUT_MS = 60_000;
+
+/**
+ * The sweep runs at most one pass per this window (operator review
+ * dbcare-review-20261008): the 30 s scheduler tick calls sweep() every
+ * time, but a tick inside the window of the previous pass is a no-op and
+ * touches neither the database nor the persisted state.
+ */
+export const DATA_RETENTION_SWEEP_MIN_INTERVAL_MS = 10 * 60 * 1000;
 
 /** The live (non-terminal) heartbeat run statuses, from the codebase list. */
 export const DATA_RETENTION_LIVE_RUN_STATUSES = HEARTBEAT_RUN_STATUSES.filter(
@@ -137,6 +140,17 @@ export interface DataRetentionSweepDeps {
   checkBackup: () => Promise<{ fresh: boolean; checkedAt: Date }>;
   /** The throttled "waiting for backup" activity line. */
   logWaitingForBackup: (details: Record<string, unknown>) => Promise<void>;
+  /**
+   * One journal line per group whose batch hit the statement timeout or
+   * failed to take its locks — a swallowed timeout is invisible in the
+   * audit trail otherwise.
+   */
+  logThrottled: (details: Record<string, unknown>) => Promise<void>;
+  /**
+   * Test hook: overrides the pass throttle
+   * (DATA_RETENTION_SWEEP_MIN_INTERVAL_MS by default; 0 runs every call).
+   */
+  minPassIntervalMs?: number;
   now?: () => Date;
 }
 
@@ -163,7 +177,13 @@ function isDeleteBlockedError(err: unknown): boolean {
 
 export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
   const now = deps.now ?? (() => new Date());
+  const minPassIntervalMs =
+    deps.minPassIntervalMs ?? DATA_RETENTION_SWEEP_MIN_INTERVAL_MS;
   let inFlight: Promise<DataRetentionSweepResult> | null = null;
+  // Throttle anchor of the sweep pass (DATA_RETENTION_SWEEP_MIN_INTERVAL_MS).
+  // The pass itself resets the anchor, so a pass that outlives the window
+  // never throttles the next tick.
+  let lastPassStartedAtMs: number | null = null;
 
   async function deleteRunsGroup(
     tx: Db,
@@ -181,9 +201,10 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
       TERMINAL_ISSUE_STATUSES.map((status) => sql`${status}`),
       sql`, `,
     );
+    // one batch per call — the caller wraps each batch in its own transaction
     let deleted = 0;
     let freedBytes = 0;
-    for (let batch = 0; batch < DATA_RETENTION_MAX_BATCHES; batch++) {
+    {
       const rows = await tx.execute(sql`
         WITH doomed AS (
           SELECT r.id
@@ -235,31 +256,26 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
                   AND d.dismissed_at >= COALESCE(r.finished_at, r.updated_at, r.created_at)
               )
             )
+            -- operator review dbcare-review-20261008: a run referenced by
+            -- any decision-making or native completion record is never
+            -- deleted — those records outlive the run
+            AND NOT EXISTS (
+              SELECT 1 FROM decisions d WHERE d.origin_run_id = r.id
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM decision_bundles db WHERE db.origin_run_id = r.id
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM status_decisions sd WHERE sd.run_id = r.id
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM work_assessments wa WHERE wa.run_id = r.id
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM native_run_results nr WHERE nr.run_id = r.id
+            )
           ORDER BY r.created_at
           LIMIT ${DATA_RETENTION_DELETE_BATCH_SIZE}
-        ),
-        -- the native-run chain: every row is keyed/linked to the run by
-        -- NOT NULL composite FKs with no action, so it goes with the run,
-        -- children before parents
-        del_native_run_finalizations AS (
-          DELETE FROM native_run_finalizations f WHERE f.run_id IN (SELECT id FROM doomed)
-        ),
-        del_status_decision_effects AS (
-          DELETE FROM status_decision_effects e
-          WHERE (e.company_id, e.issue_id, e.decision_id) IN (
-            SELECT sd.company_id, sd.issue_id, sd.id
-            FROM status_decisions sd
-            WHERE sd.run_id IN (SELECT id FROM doomed)
-          )
-        ),
-        del_status_decisions AS (
-          DELETE FROM status_decisions sd WHERE sd.run_id IN (SELECT id FROM doomed)
-        ),
-        del_work_assessments AS (
-          DELETE FROM work_assessments wa WHERE wa.run_id IN (SELECT id FROM doomed)
-        ),
-        del_native_run_results AS (
-          DELETE FROM native_run_results nr WHERE nr.run_id IN (SELECT id FROM doomed)
         ),
         -- plain (non-cascading, non-set-null) references into heartbeat_runs
         -- must let go first; the FKs otherwise refuse the delete
@@ -270,16 +286,6 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
         null_finance_events AS (
           UPDATE finance_events fe SET heartbeat_run_id = NULL
           WHERE fe.heartbeat_run_id IN (SELECT id FROM doomed)
-        ),
-        -- decisions/decision_bundles.origin_run_id are NOT NULL with no
-        -- action: the rows cannot be nulled (23502), so they go with the
-        -- run (decisions first — the bundle_id of a surviving decision is
-        -- ON DELETE SET NULL and does not protect the bundle)
-        del_decisions AS (
-          DELETE FROM decisions d WHERE d.origin_run_id IN (SELECT id FROM doomed)
-        ),
-        del_decision_bundles AS (
-          DELETE FROM decision_bundles db WHERE db.origin_run_id IN (SELECT id FROM doomed)
         ),
         -- every run column the decision-queue family declares (one per
         -- table): decision_queues.created_by_run_id,
@@ -335,7 +341,6 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
       const batchRows = rows as unknown as DeletedRow[];
       deleted += batchRows.length;
       for (const row of batchRows) freedBytes += Number(row.size) || 0;
-      if (batchRows.length < DATA_RETENTION_DELETE_BATCH_SIZE) break;
     }
     return { deleted, freedBytes };
   }
@@ -344,9 +349,10 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
     tx: Db,
     cutoff: string,
   ): Promise<{ deleted: number; freedBytes: number }> {
+    // one batch per call — the caller wraps each batch in its own transaction
     let deleted = 0;
     let freedBytes = 0;
-    for (let batch = 0; batch < DATA_RETENTION_MAX_BATCHES; batch++) {
+    {
       const rows = await tx.execute(sql`
         DELETE FROM activity_log a
         WHERE a.id IN (
@@ -364,7 +370,6 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
       const batchRows = rows as unknown as DeletedRow[];
       deleted += batchRows.length;
       for (const row of batchRows) freedBytes += Number(row.size) || 0;
-      if (batchRows.length < DATA_RETENTION_DELETE_BATCH_SIZE) break;
     }
     return { deleted, freedBytes };
   }
@@ -373,11 +378,13 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
     tx: Db,
     cutoff: string,
   ): Promise<{ deleted: number; freedBytes: number }> {
+    // one batch per table per call — the caller wraps each batch in its own
+    // transaction
     let deleted = 0;
     let freedBytes = 0;
     for (const table of ["tool_access_audit_events", "secret_access_events"] as const) {
       const tableSql = sql.raw(table);
-      for (let batch = 0; batch < DATA_RETENTION_MAX_BATCHES; batch++) {
+      {
         const rows = await tx.execute(sql`
           DELETE FROM ${tableSql} t
           WHERE t.id IN (
@@ -391,7 +398,6 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
         const batchRows = rows as unknown as DeletedRow[];
         deleted += batchRows.length;
         for (const row of batchRows) freedBytes += Number(row.size) || 0;
-        if (batchRows.length < DATA_RETENTION_DELETE_BATCH_SIZE) break;
       }
     }
     return { deleted, freedBytes };
@@ -408,6 +414,60 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
     };
   }
 
+  type GroupKey = "runs" | "activity" | "access";
+
+  async function runGroup(
+    group: { key: GroupKey; days: number },
+    cutoff: string,
+  ): Promise<{ deleted: number; freedBytes: number }> {
+    const run =
+      group.key === "runs"
+        ? deleteRunsGroup
+        : group.key === "activity"
+          ? deleteActivityGroup
+          : deleteAccessGroup;
+    let deleted = 0;
+    let freedBytes = 0;
+    for (let batch = 0; batch < DATA_RETENTION_MAX_BATCHES; batch++) {
+      let batchResult: { deleted: number; freedBytes: number };
+      try {
+        // Every batch is its own transaction (operator review
+        // dbcare-review-20261008): a failed batch rolls back only itself,
+        // the work of the previous batches of the pass stands.
+        batchResult = await deps.db.transaction(async (tx) => {
+          await tx.execute(
+            // SET does not accept bind parameters; the timeout is a module constant.
+            sql.raw(
+              `SET LOCAL statement_timeout = ${DATA_RETENTION_STATEMENT_TIMEOUT_MS}`,
+            ),
+          );
+          return run(tx as unknown as Db, cutoff);
+        });
+      } catch (err) {
+        if (isDeleteBlockedError(err)) {
+          // A batch hit the statement timeout (57014) or gave up its locks:
+          // the rest of the group waits for the next pass, and the stop
+          // goes into the journal — a swallowed timeout is invisible in
+          // the audit trail otherwise.
+          await deps
+            .logThrottled({
+              group: group.key,
+              batch,
+              errorCode: (err as { code?: unknown } | null | undefined)?.code ?? null,
+              cutoff,
+            })
+            .catch(() => undefined);
+          break;
+        }
+        throw err;
+      }
+      deleted += batchResult.deleted;
+      freedBytes += batchResult.freedBytes;
+      if (batchResult.deleted < DATA_RETENTION_DELETE_BATCH_SIZE) break;
+    }
+    return { deleted, freedBytes };
+  }
+
   async function pass(): Promise<DataRetentionSweepResult> {
     const startedAt = now();
     const settings = await deps.resolveSettings();
@@ -421,13 +481,17 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
         checkedAt: gate.checkedAt.toISOString(),
         settings,
       });
-      const lastRun: DataRetentionLastRun = {
-        ...previous,
-        lastRunAt: startedAt.toISOString(),
-        waitingForBackup: true,
-        backupCheckedAt: gate.checkedAt.toISOString(),
-      };
-      await deps.writeLastRun(lastRun);
+      // lastRunAt stays: the pass ran but did no work. The state is
+      // re-written only when the gate flag changes — writing it on every
+      // idle tick flooded the general jsonb (operator review
+      // dbcare-review-20261008, ~2880 writes/day).
+      if (!previous.waitingForBackup) {
+        await deps.writeLastRun({
+          ...previous,
+          waitingForBackup: true,
+          backupCheckedAt: gate.checkedAt.toISOString(),
+        });
+      }
       return {
         startedAt,
         finishedAt: now(),
@@ -446,54 +510,44 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
       access: { deleted: 0, freedBytes: 0 },
     };
 
-    const groups: Array<{
-      key: "runs" | "activity" | "access";
-      days: number;
-      run: (tx: Db, cutoff: string) => Promise<{ deleted: number; freedBytes: number }>;
-    }> = [
-      { key: "runs", days: settings.heartbeatRunsDays, run: deleteRunsGroup },
-      { key: "activity", days: settings.activityLogDays, run: deleteActivityGroup },
-      { key: "access", days: settings.accessAuditDays, run: deleteAccessGroup },
+    const groups: Array<{ key: GroupKey; days: number }> = [
+      { key: "runs", days: settings.heartbeatRunsDays },
+      { key: "activity", days: settings.activityLogDays },
+      { key: "access", days: settings.accessAuditDays },
     ];
 
     for (const group of groups) {
       if (group.days === 0) continue; // 0 = keep forever
       const cutoff = cutoffFor(startedAt, group.days);
-      try {
-        results[group.key] = await deps.db.transaction(async (tx) => {
-          await tx.execute(
-            // SET does not accept bind parameters; the timeout is a module constant.
-            sql.raw(
-              `SET LOCAL statement_timeout = ${DATA_RETENTION_STATEMENT_TIMEOUT_MS}`,
-            ),
-          );
-          return group.run(tx as unknown as Db, cutoff);
-        });
-      } catch (err) {
-        if (isDeleteBlockedError(err)) {
-          // A pathological batch gave up its locks; the next pass retries.
-          continue;
-        }
-        throw err;
-      }
+      results[group.key] = await runGroup(group, cutoff);
     }
 
-    const lastRun: DataRetentionLastRun = {
-      lastRunAt: startedAt.toISOString(),
-      waitingForBackup: false,
-      backupCheckedAt: gate.checkedAt.toISOString(),
-      freedBytesTotal:
-        previous.freedBytesTotal +
-        results.runs.freedBytes +
-        results.activity.freedBytes +
-        results.access.freedBytes,
-      perTable: {
-        runs: mergeTableStatus(previous.perTable.runs, results.runs),
-        activity: mergeTableStatus(previous.perTable.activity, results.activity),
-        access: mergeTableStatus(previous.perTable.access, results.access),
-      },
-    };
-    await deps.writeLastRun(lastRun);
+    const didWork =
+      results.runs.deleted > 0 ||
+      results.activity.deleted > 0 ||
+      results.access.deleted > 0;
+    // The state is written only when the pass actually deleted something or
+    // the backup-gate flag changes — not on every idle tick (operator review
+    // dbcare-review-20261008).
+    if (didWork || previous.waitingForBackup) {
+      const lastRun: DataRetentionLastRun = {
+        ...previous,
+        lastRunAt: startedAt.toISOString(),
+        waitingForBackup: false,
+        backupCheckedAt: gate.checkedAt.toISOString(),
+        freedBytesTotal:
+          previous.freedBytesTotal +
+          results.runs.freedBytes +
+          results.activity.freedBytes +
+          results.access.freedBytes,
+        perTable: {
+          runs: mergeTableStatus(previous.perTable.runs, results.runs),
+          activity: mergeTableStatus(previous.perTable.activity, results.activity),
+          access: mergeTableStatus(previous.perTable.access, results.access),
+        },
+      };
+      await deps.writeLastRun(lastRun);
+    }
     return {
       startedAt,
       finishedAt: now(),
@@ -503,9 +557,31 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
   }
 
   return {
-    /** One sweep pass; a concurrent call joins the pass already running. */
+    /**
+     * One sweep pass; a concurrent call joins the pass already running, and
+     * a call inside DATA_RETENTION_SWEEP_MIN_INTERVAL_MS of the previous
+     * pass is a no-op (operator review dbcare-review-20261008: at most one
+     * pass per 10 minutes, the 30 s scheduler tick no-ops in between).
+     */
     sweep: (): Promise<DataRetentionSweepResult> => {
       if (!inFlight) {
+        const nowMs = now().getTime();
+        if (
+          lastPassStartedAtMs !== null &&
+          nowMs - lastPassStartedAtMs < minPassIntervalMs
+        ) {
+          return Promise.resolve({
+            startedAt: new Date(nowMs),
+            finishedAt: new Date(nowMs),
+            waitingForBackup: false,
+            perTable: {
+              runs: { deleted: 0, freedBytes: 0 },
+              activity: { deleted: 0, freedBytes: 0 },
+              access: { deleted: 0, freedBytes: 0 },
+            },
+          });
+        }
+        lastPassStartedAtMs = nowMs;
         inFlight = pass().finally(() => {
           inFlight = null;
         });

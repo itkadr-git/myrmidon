@@ -1,17 +1,21 @@
 // server/src/myrmidon/data-retention/settings.ts
 //
 // myrmidon(1.6.5-DB-RETENTION): read and write
-// `instance_settings.general.dataRetention`.
+// `instance_settings.general.datastoreCare.retention` (the project §3.6
+// "Хранение" panel — one datastore-care object, OPE-5939/DBC-1).
 //
 // The stored value is the single truth (no env fallback — retention is a
 // policy choice, not a deployment knob); an absent or malformed row means the
 // defaults (90/0/180). The sweep state rides the same object under `lastRun`,
 // so the status endpoint stays one cheap settings read. This module is the
 // database half: read the raw row, normalize it, write the canonical object
-// back. The same shape the wip-limit and autonomy settings use.
+// back. Sibling sub-keys of `datastoreCare` (other DB-care features) survive
+// every write untouched. The same shape the wip-limit and autonomy settings
+// use.
 
 import {
   DATA_RETENTION_SETTINGS_KEY,
+  DATA_RETENTION_SETTINGS_SUBKEY,
   emptyDataRetentionLastRun,
   normalizeDataRetentionLastRun,
   normalizeDataRetentionSettings,
@@ -26,12 +30,39 @@ export type DataRetentionSettingsService = Pick<
   "getGeneral" | "updateGeneral"
 >;
 
-/** The raw stored object (settings + sweep state), or undefined when absent. */
-function storedDataRetention(general: Record<string, unknown>): Record<string, unknown> | undefined {
+/** The stored `datastoreCare` object, or undefined when absent. */
+function storedDatastoreCare(
+  general: Record<string, unknown>,
+): Record<string, unknown> | undefined {
   const value = general[DATA_RETENTION_SETTINGS_KEY];
   return typeof value === "object" && value !== null
     ? (value as Record<string, unknown>)
     : undefined;
+}
+
+/** The raw stored retention object (settings + sweep state), or undefined. */
+function storedDataRetention(
+  general: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  const value = storedDatastoreCare(general)?.[DATA_RETENTION_SETTINGS_SUBKEY];
+  return typeof value === "object" && value !== null
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+/** Write the retention object, keeping the sibling datastore-care sub-keys. */
+async function writeRetention(
+  settings: DataRetentionSettingsService,
+  retention: Record<string, unknown>,
+): Promise<void> {
+  const general = (await settings.getGeneral()) as unknown as Record<string, unknown>;
+  const care = storedDatastoreCare(general) ?? {};
+  await settings.updateGeneral({
+    [DATA_RETENTION_SETTINGS_KEY]: {
+      ...care,
+      [DATA_RETENTION_SETTINGS_SUBKEY]: retention,
+    },
+  });
 }
 
 /** Read the retention settings (or the defaults when absent). */
@@ -39,7 +70,9 @@ export async function readDataRetentionSettings(
   settings: DataRetentionSettingsService,
 ): Promise<DataRetentionSettings> {
   const general = (await settings.getGeneral()) as unknown as Record<string, unknown>;
-  return normalizeDataRetentionSettings(general[DATA_RETENTION_SETTINGS_KEY]);
+  return normalizeDataRetentionSettings(
+    storedDatastoreCare(general)?.[DATA_RETENTION_SETTINGS_SUBKEY],
+  );
 }
 
 /** Read the persisted sweep state (or the empty state when absent). */
@@ -76,7 +109,7 @@ export async function writeDataRetentionSettings(
   const value = storedLastRun
     ? { ...next, lastRun: storedLastRun }
     : { ...next };
-  await settings.updateGeneral({ [DATA_RETENTION_SETTINGS_KEY]: value });
+  await writeRetention(settings, value);
   return next;
 }
 
@@ -91,8 +124,10 @@ export async function writeDataRetentionLastRun(
   const general = (await settings.getGeneral()) as unknown as Record<string, unknown>;
   const stored = storedDataRetention(general);
   const current = normalizeDataRetentionSettings(stored);
-  const value = { ...current, lastRun: { ...lastRun } as Record<string, unknown> };
-  await settings.updateGeneral({ [DATA_RETENTION_SETTINGS_KEY]: value });
+  await writeRetention(settings, {
+    ...current,
+    lastRun: { ...lastRun } as Record<string, unknown>,
+  });
 }
 
 /**
