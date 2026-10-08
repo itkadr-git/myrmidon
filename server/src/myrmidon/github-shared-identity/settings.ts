@@ -87,6 +87,10 @@ export const githubAppEntrySchema = z
     privateKeySecretId: z.string().uuid(),
     /** Installation id; null — discovered per repository (GET /repos/{owner}/{repo}/installation). */
     installationId: z.string().trim().regex(/^[0-9]{1,20}$/).nullable().default(null),
+    // myrmidon(GITHUB-APP-MANIFEST): the App's GitHub slug (from the manifest
+    // flow; manually registered Apps may leave it null) — backs the
+    // one-click "Install" URL. Additive; no migration (instance_settings JSON).
+    slug: z.string().trim().min(1).max(100).nullable().default(null),
     ...agentScopeFields,
     allowedRepos: z.array(repoPatternSchema).max(MAX_ALLOWED_REPOS).default([]),
   })
