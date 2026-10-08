@@ -6,7 +6,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 const support = await getEmbeddedPostgresTestSupport();
 const describePostgres = support.supported ? describe : describe.skip;
 
-// myrmidon(OPE-4549): 0312_budget_limits (numbered 0309 on main, 0307 in an earlier port draft, renumbered for
+// myrmidon(OPE-4549): 0312_budget_limits (numbered 0309 on main, renumbered for
 // the 1.6.5 release branch whose last migration is 0309) must apply cleanly on
 // top of 0309_db_care_lz4_compression, with no migration skipped.
 describePostgres("budget limits migration order (OPE-4549)", () => {
