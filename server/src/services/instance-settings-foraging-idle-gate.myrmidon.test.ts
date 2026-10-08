@@ -88,11 +88,12 @@ const JOURNAL_ENTRY = { at: "2026-10-08T01:00:00.000Z", companyId: "company-a" }
  */
 async function stubSeededDb(row: Record<string, unknown>) {
   const stub = stubDb(row);
-  await stub.db
-    .insert()
-    .values(row)
-    .onConflictDoUpdate()
-    .returning();
+  const insert = stub.db.insert as unknown as () => {
+    values: (values: Record<string, unknown>) => {
+      onConflictDoUpdate: () => { returning: () => Promise<Record<string, unknown>[]> };
+    };
+  };
+  await insert().values(row).onConflictDoUpdate().returning();
   return stub;
 }
 
