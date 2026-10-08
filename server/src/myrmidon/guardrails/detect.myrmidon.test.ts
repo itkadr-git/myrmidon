@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import {
   detectGuardrailHits,
   guardrailSnippet,
+  redactGuardrailText,
   scanGuardrailText,
   summarizeGuardrailHits,
 } from "./detect.js";
@@ -198,5 +199,26 @@ describe("myrmidon(1.6-GRD): determinism", () => {
 
   it("is independent of a fixed clock value", () => {
     expect(FIXED.getUTCFullYear()).toBe(2026);
+  });
+});
+
+describe("myrmidon(1.6-GRD): redaction and scan cost", () => {
+  it("replaces secret and pii fragments with typed placeholders", () => {
+    const out = redactGuardrailText("a agent-a@example.com b ghp_012345678901234567890123 c");
+    expect(out).toBe("a [REDACTED:email] b [REDACTED:github_token] c");
+  });
+
+  it("scans a long text without an at-sign in linear time", () => {
+    const text = "a".repeat(300_000);
+    const started = Date.now();
+    expect(detectGuardrailHits(text)).toEqual([]);
+    expect(Date.now() - started).toBeLessThan(1500);
+  });
+
+  it("scans a long run of email-local characters and dots in linear time", () => {
+    const text = "a.b-".repeat(100_000);
+    const started = Date.now();
+    detectGuardrailHits(text);
+    expect(Date.now() - started).toBeLessThan(1500);
   });
 });

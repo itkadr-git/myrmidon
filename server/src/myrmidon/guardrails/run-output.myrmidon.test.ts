@@ -14,7 +14,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "../../__tests__/helpers/embedded-postgres.js";
 import { guardrailsOnRunOutput } from "./run-output.js";
-import { GUARDRAIL_SURFACE_RUN_OUTPUT } from "./events.js";
+import { GUARDRAIL_MAX_EVENTS_PER_RUN, GUARDRAIL_SNIPPET_MAX_CHARS, GUARDRAIL_SURFACE_RUN_OUTPUT } from "./events.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -121,13 +121,98 @@ describeEmbeddedPostgres("myrmidon(1.6-GRD): run-output embedding integration", 
     const secret = events.find((row) => row.kind === "secret")!;
     expect(secret.severity).toBe("warn");
     expect(secret.snippet).not.toBeNull();
+    expect(secret.snippet).toContain("[REDACTED:github_token]");
+    expect(secret.snippet).not.toContain("ghp_0123456789012345678901");
     const pii = events.find((row) => row.kind === "pii")!;
     expect(pii.severity).toBe("info");
-    // the snippet must carry the masked e-mail context, not raw secret prose
-    expect(pii.snippet).toContain("agent-a@example.com");
+    // the snippet keeps the context but never the address itself, and never
+    // the neighbouring token either
+    expect(pii.snippet).toContain("[REDACTED:email]");
+    expect(pii.snippet).not.toContain("agent-a@example.com");
+    expect(pii.snippet).not.toContain("ghp_0123456789012345678901");
+    const log0 = await db.select().from(activityLog);
+    expect(JSON.stringify(log0.map((row) => row.details))).not.toContain("agent-a@example.com");
+    expect(JSON.stringify(log0.map((row) => row.details))).not.toContain("ghp_0123456789012345678901");
     const log = await db.select().from(activityLog);
     expect(log).toHaveLength(2);
     expect(log.every((row) => row.action === "guardrails.event_recorded")).toBe(true);
+  });
+
+  it("caps the number of events per run and the snippet length", async () => {
+    const ids = await seedIssueAndRun();
+    const text = Array.from({ length: 60 }, (_, i) => `user${i}@example.com`).join(" and ");
+    const result = await guardrailsOnRunOutput({
+      db,
+      companyId,
+      runId: ids.runId,
+      issueId: ids.issueId,
+      text,
+      env: ENV_ON,
+      now: FIXED_NOW,
+    });
+    expect(result?.total).toBe(60);
+    expect(result?.recorded).toBe(GUARDRAIL_MAX_EVENTS_PER_RUN);
+    const events = await db.select().from(guardrailEvents);
+    expect(events).toHaveLength(GUARDRAIL_MAX_EVENTS_PER_RUN);
+    expect(events.every((row) => (row.snippet ?? "").length <= GUARDRAIL_SNIPPET_MAX_CHARS)).toBe(true);
+  });
+
+  it("redacts fragments of disabled categories that sit next to a hit", async () => {
+    const ids = await seedIssueAndRun();
+    await guardrailsOnRunOutput({
+      db,
+      companyId,
+      runId: ids.runId,
+      issueId: ids.issueId,
+      text: "key ghp_0123456789012345678901 owner agent-a@example.com",
+      env: { ...ENV_ON, MYRMIDON_GUARDRAILS_OUTPUT_CATEGORIES: "secret" },
+      now: FIXED_NOW,
+    });
+    const events = await db.select().from(guardrailEvents);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.snippet).not.toContain("agent-a@example.com");
+    expect(events[0]!.snippet).not.toContain("ghp_0123456789012345678901");
+  });
+
+  it("deleting the run and the company works after events were journaled", async () => {
+    const [ownCompany] = await db
+      .insert(companies)
+      .values({ name: `agent-a guard del ${randomUUID()}`, issuePrefix: `GD${randomUUID().slice(0, 6).toUpperCase()}` })
+      .returning();
+    const [ownAgent] = await db
+      .insert(agents)
+      .values({ companyId: ownCompany!.id, name: `agent-a-${randomUUID().slice(0, 6)}`, adapterType: "claude_code" })
+      .returning();
+    const [ownRun] = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId: ownCompany!.id,
+        agentId: ownAgent!.id,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: "succeeded",
+        contextSnapshot: {},
+      })
+      .returning();
+    await guardrailsOnRunOutput({
+      db,
+      companyId: ownCompany!.id,
+      runId: ownRun!.id,
+      issueId: null,
+      text: "mail agent-a@example.com",
+      env: ENV_ON,
+      now: FIXED_NOW,
+    });
+    expect(await db.select().from(guardrailEvents).where(eq(guardrailEvents.companyId, ownCompany!.id))).toHaveLength(1);
+    // run deletion (agent removal path) must not fail on the FK; the event survives with a null run
+    await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, ownRun!.id));
+    const afterRun = await db.select().from(guardrailEvents).where(eq(guardrailEvents.companyId, ownCompany!.id));
+    expect(afterRun).toHaveLength(1);
+    expect(afterRun[0]!.runId).toBeNull();
+    // company deletion must not fail on the FK either; its events go with it
+    await db.delete(agents).where(eq(agents.id, ownAgent!.id));
+    await db.delete(companies).where(eq(companies.id, ownCompany!.id));
+    expect(await db.select().from(guardrailEvents).where(eq(guardrailEvents.companyId, ownCompany!.id))).toHaveLength(0);
   });
 
   it("is silent while the rollout switch stays off", async () => {

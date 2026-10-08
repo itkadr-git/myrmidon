@@ -114,7 +114,7 @@ const DETECTORS: Detector[] = [
     kind: "secret",
     subtype: "bearer_jwt",
     score: 0.8,
-    re: new RegExp(`\\beyJ${BASE64URL}+\\.${BASE64URL}{8,}\\.${BASE64URL}+\\b`, "g"),
+    re: new RegExp(`\\beyJ${BASE64URL}{1,4096}\\.${BASE64URL}{8,4096}\\.${BASE64URL}{1,4096}\\b`, "g"),
   },
   {
     kind: "secret",
@@ -126,7 +126,10 @@ const DETECTORS: Detector[] = [
     kind: "pii",
     subtype: "email",
     score: 0.7,
-    re: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g,
+    // Bounded and anchored on a lookbehind: an attempt starts only at the
+    // beginning of a local-part run and reads at most 64 characters, so a long
+    // text without "@" scans in linear time (no O(n^2) restart per character).
+    re: /(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63})*\.[A-Za-z]{2,24}\b/g,
   },
   {
     kind: "pii",
@@ -303,4 +306,41 @@ export function guardrailSnippet(maskedText: string, span: [number, number], max
   const snippet = maskedText.slice(from, to);
   if (snippet.trim().length === 0) return null;
   return snippet.length > maxChars ? `${snippet.slice(0, maxChars - 1)}…` : snippet;
+}
+
+/**
+ * Replace every hit span with a `[REDACTED:<subtype>]` placeholder. `hits`
+ * must be non-overlapping (detectGuardrailHits output). Returns the redacted
+ * text and, for every input hit, the span of its placeholder in that text, so
+ * a caller can cut a snippet around a hit without ever touching raw bytes.
+ */
+export function redactGuardrailHits(
+  text: string,
+  hits: readonly GuardrailHit[],
+): { text: string; spans: Array<[number, number]> } {
+  const order = hits.map((hit, index) => ({ hit, index })).sort((a, b) => a.hit.span[0] - b.hit.span[0]);
+  const spans: Array<[number, number]> = new Array(hits.length);
+  let out = "";
+  let cursor = 0;
+  for (const { hit, index } of order) {
+    const [start, end] = hit.span;
+    if (start < cursor) {
+      // Defensive: overlapping input; reuse the previous placeholder span.
+      spans[index] = [Math.max(0, out.length - 1), out.length];
+      continue;
+    }
+    out += text.slice(cursor, start);
+    const placeholder = `[REDACTED:${hit.subtype}]`;
+    spans[index] = [out.length, out.length + placeholder.length];
+    out += placeholder;
+    cursor = end;
+  }
+  out += text.slice(cursor);
+  return { text: out, spans };
+}
+
+/** Shape-redact a free text with every detector (secret and pii). */
+export function redactGuardrailText(text: string): string {
+  if (typeof text !== "string" || text.length === 0) return "";
+  return redactGuardrailHits(text, detectGuardrailHits(text, GUARDRAIL_CATEGORIES)).text;
 }

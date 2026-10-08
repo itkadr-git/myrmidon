@@ -2,9 +2,11 @@
 //
 // myrmidon(1.6-GRD): the guardrail event journal — the flag-only record of
 // detector firings on run output. One row per event in `guardrail_events`
-// plus an `activity_log` line; the snippet column only ever stores text that
-// ALREADY went through the existing secret masking (S5 / redaction), so the
-// journal itself cannot leak a credential value.
+// plus an `activity_log` line; the snippet column only ever stores text in
+// which every detected secret/PII fragment is replaced by a
+// `[REDACTED:<subtype>]` placeholder (by shape, not by registered value) and
+// that went through the existing secret masking (S5), so neither the journal
+// nor the activity log can leak a credential value or personal data.
 //
 // The recordGuardrailEvent contract below is FROZEN for the sibling part B
 // (prompt-injection detectors): same name, same shape, part B writes against
@@ -18,7 +20,19 @@ import type { Db } from "@paperclipai/db";
 import { guardrailEvents } from "@paperclipai/db";
 import { logActivity } from "../../services/activity-log.js";
 import { maskSecretsInText } from "../secret-masking.js";
-import { detectGuardrailHits, guardrailSnippet, summarizeGuardrailHits } from "./detect.js";
+import {
+  GUARDRAIL_CATEGORIES,
+  detectGuardrailHits,
+  guardrailSnippet,
+  redactGuardrailHits,
+  redactGuardrailText,
+  summarizeGuardrailHits,
+} from "./detect.js";
+
+/** Hard limits: a snippet is short, a scan is bounded, a run journals few events. */
+export const GUARDRAIL_SNIPPET_MAX_CHARS = 200;
+export const GUARDRAIL_SCAN_MAX_CHARS = 262_144;
+export const GUARDRAIL_MAX_EVENTS_PER_RUN = 20;
 
 /** Where the detector ran. Part A reports run-output surfaces. */
 export const GUARDRAIL_SURFACE_RUN_OUTPUT = "run_output";
@@ -72,9 +86,23 @@ export interface RecordGuardrailEventInput {
   occurredAt: Date;
 }
 
+/**
+ * Shape-redact (all detectors), value-mask (S5) and clamp a snippet. Applied to
+ * every snippet before it reaches guardrail_events or activity_log, whatever
+ * the caller already did.
+ */
+export function sanitizeGuardrailSnippet(snippet: string | null | undefined): string | null {
+  if (typeof snippet !== "string" || snippet.length === 0) return null;
+  // Value masking first (URL credentials, registered secrets), then the shape
+  // redaction of whatever is left.
+  const masked = redactGuardrailText(maskSecretsInText(snippet.slice(0, GUARDRAIL_SCAN_MAX_CHARS))).trim();
+  if (!masked) return null;
+  return masked.length > GUARDRAIL_SNIPPET_MAX_CHARS ? `${masked.slice(0, GUARDRAIL_SNIPPET_MAX_CHARS - 1)}…` : masked;
+}
+
 /** FROZEN for part B. Inserts one event row and one activity-log line. */
 export async function recordGuardrailEvent(db: Db, input: RecordGuardrailEventInput): Promise<{ id: string }> {
-  const maskedSnippet = maskSecretsInText(input.snippet ?? "").trim() || null;
+  const maskedSnippet = sanitizeGuardrailSnippet(input.snippet);
   const [row] = await db
     .insert(guardrailEvents)
     .values({
@@ -138,14 +166,21 @@ export async function recordRunOutputGuardrailEvents(
   if (!settings.enabled) return null;
   if (typeof input.text !== "string" || input.text.trim().length === 0) return null;
   try {
-    const report = summarizeGuardrailHits(detectGuardrailHits(input.text, settings.categories));
+    // Bounded scan: only the head of a huge output is examined.
+    const text = input.text.slice(0, GUARDRAIL_SCAN_MAX_CHARS);
+    const report = summarizeGuardrailHits(detectGuardrailHits(text, settings.categories));
     if (report.hits.length === 0) return { recorded: 0, total: 0, totalSecrets: 0, totalPii: 0 };
-    // The snippet comes from the masked copy of the same text, cut around
-    // each hit's span; recordGuardrailEvent masks again defensively.
-    const masked = maskSecretsInText(input.text);
+    // Redact EVERY detected fragment (all categories, independent of the
+    // enabled ones) in the whole text first, then cut each snippet from the
+    // redacted copy around its placeholder. A raw value is never in a snippet.
+    const allHits = detectGuardrailHits(text, GUARDRAIL_CATEGORIES);
+    const redacted = redactGuardrailHits(text, allHits);
     let recorded = 0;
     for (const hit of report.hits) {
-      const snippet = guardrailSnippet(masked, hit.span);
+      if (recorded >= GUARDRAIL_MAX_EVENTS_PER_RUN) break;
+      const allIndex = allHits.findIndex((other) => other.span[0] < hit.span[1] && hit.span[0] < other.span[1]);
+      if (allIndex < 0) continue;
+      const snippet = guardrailSnippet(redacted.text, redacted.spans[allIndex]!, GUARDRAIL_SNIPPET_MAX_CHARS);
       await recordGuardrailEvent(db, {
         companyId: input.companyId,
         issueId: input.issueId,

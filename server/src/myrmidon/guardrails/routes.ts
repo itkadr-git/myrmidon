@@ -4,13 +4,13 @@
 //
 //   GET /api/myrmidon/companies/:companyId/guardrails/events?limit
 //
-// Read-only, company access (board members and the company's own agents),
+// Read-only, board members with access to the company,
 // shaped after the evals routes. The layer is flag-only in 1.6.1: events
 // are recorded by the run-output hook, never mutated through the API.
 
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
-import { assertCompanyAccess } from "../../routes/authz.js";
+import { assertBoard, assertCompanyAccess } from "../../routes/authz.js";
 import { listGuardrailEvents } from "./events.js";
 
 export interface GuardrailRoutesDeps {
@@ -25,7 +25,9 @@ export function myrmidonGuardrailsRoutes(db: Db, _deps: Partial<GuardrailRoutesD
 
   router.get("/myrmidon/companies/:companyId/guardrails/events", async (req, res) => {
     const companyId = req.params.companyId as string;
+    // Board only: the journal is operator data, agents of the company do not read it.
     assertCompanyAccess(req, companyId);
+    assertBoard(req);
     const rawLimit = typeof req.query.limit === "string" ? Number(req.query.limit) : undefined;
     const limit =
       rawLimit !== undefined && Number.isFinite(rawLimit) && rawLimit > 0

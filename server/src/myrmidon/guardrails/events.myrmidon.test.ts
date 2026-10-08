@@ -19,6 +19,7 @@ import {
   readGuardrailOutputSettings,
   recordGuardrailEvent,
   recordRunOutputGuardrailEvents,
+  GUARDRAIL_SNIPPET_MAX_CHARS,
 } from "./events.js";
 import { myrmidonGuardrailsRoutes } from "./routes.js";
 import { scanGuardrailText } from "./detect.js";
@@ -111,13 +112,41 @@ describeEmbeddedPostgres("myrmidon(1.6-GRD): event journal", () => {
     expect(rows[0]!.severity).toBe("info");
     expect(rows[0]!.runId).toBeNull();
     expect(rows[0]!.issueId).toBeNull();
-    expect(rows[0]!.snippet).toBe("contact agent-a@example.com");
+    expect(rows[0]!.snippet).toBe("contact [REDACTED:email]");
     expect(rows[0]!.occurredAt.toISOString()).toBe(occurredAt.toISOString());
     const log = await db.select().from(activityLog);
     expect(log).toHaveLength(1);
     expect(log[0]!.action).toBe("guardrails.event_recorded");
     expect(log[0]!.entityType).toBe("guardrail_event");
     expect(log[0]!.entityId).toBe(id);
+    // neither the journal row nor the activity log keeps the raw address
+    expect(JSON.stringify(log[0]!.details)).not.toContain("agent-a@example.com");
+    expect(JSON.stringify(log[0]!.details)).toContain("[REDACTED:email]");
+  });
+
+  it("redacts shaped secrets and PII passed as snippet, and clamps the length", async () => {
+    const raw = `token ghp_0123456789012345678901 key AKIA0123456789ABCDEF mail agent-a@example.com ${"x".repeat(500)}`;
+    await recordGuardrailEvent(db, {
+      companyId,
+      issueId: null,
+      runId: null,
+      kind: "secret",
+      surface: GUARDRAIL_SURFACE_RUN_OUTPUT,
+      severity: "warn",
+      snippet: raw,
+      occurredAt: new Date(),
+    });
+    const rows = await db.select().from(guardrailEvents);
+    const stored = rows[0]!.snippet!;
+    expect(stored).toContain("[REDACTED:github_token]");
+    expect(stored).toContain("[REDACTED:aws_access_key_id]");
+    expect(stored).toContain("[REDACTED:email]");
+    expect(stored).not.toContain("ghp_0123456789012345678901");
+    expect(stored).not.toContain("AKIA0123456789ABCDEF");
+    expect(stored).not.toContain("agent-a@example.com");
+    expect(stored.length).toBeLessThanOrEqual(GUARDRAIL_SNIPPET_MAX_CHARS);
+    const log = await db.select().from(activityLog);
+    expect(JSON.stringify(log[0]!.details)).not.toContain("ghp_0123456789012345678901");
   });
 
   it("masks a raw secret passed as snippet through the existing masking", async () => {
@@ -369,6 +398,10 @@ describeEmbeddedPostgres("myrmidon(1.6-GRD): routes", () => {
 
   it("refuses an unauthenticated read", async () => {
     await request(app({ type: "none" })).get(`${base(companyId)}`).expect(401);
+  });
+
+  it("refuses a read from an agent of the same company (board only)", async () => {
+    await request(app({ ...agent, companyId })).get(`${base(companyId)}`).expect(403);
   });
 
   it("refuses a read from an agent of another company", async () => {
