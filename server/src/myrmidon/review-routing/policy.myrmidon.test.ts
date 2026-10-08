@@ -1,9 +1,11 @@
 // myrmidon(REVIEW-ROUTING): the pure decisions — who needs a reviewer, who may
 // be picked, and what the stage patches look like (built through the vendor's
-// own execution-policy transition, so the review flow accepts them).
+// own execution-policy transition, so the review flow accepts them). The PR
+// lane's decisions (pr-policy.ts, pickPrReviewer) ride here too.
 
 import { describe, expect, it } from "vitest";
 import {
+  buildPrRoutingTaskPatch,
   buildReviewRoutingAssignPatch,
   buildReviewRoutingReassignPatch,
   buildReviewRoutingWakeContext,
@@ -11,15 +13,41 @@ import {
   hoursSince,
   isReviewOverdue,
   issueNeedsReviewer,
+  pickPrReviewer,
   pickReviewer,
   readPendingAgentReview,
   type RoutingIssue,
 } from "./policy.js";
+import {
+  prReviewTaskTitle,
+  prRoutingCoverageKey,
+  prRoutingTaskDescription,
+  prStewardTaskTitle,
+  prTaskIsSuperseded,
+  reviewTaskDueForHead,
+  readPrRoutingWorkProduct,
+  stewardTaskDueForHead,
+  type PullRequestHeadState,
+} from "./pr-policy.js";
 
 const AUTHOR = "aaaaaaaa-0000-4000-8000-000000000001";
 const ASSIGNEE = "aaaaaaaa-0000-4000-8000-000000000002";
 const REV_A = "bbbbbbbb-0000-4000-8000-000000000001";
 const REV_B = "bbbbbbbb-0000-4000-8000-000000000002";
+
+function head(overrides: Partial<PullRequestHeadState> = {}): PullRequestHeadState {
+  return {
+    repository: "acme/widgets",
+    number: 7,
+    open: true,
+    draft: false,
+    headSha: "aaaaaaaa",
+    ci: "green",
+    reviewDecision: null,
+    fetchFailed: false,
+    ...overrides,
+  };
+}
 
 function issue(overrides: Partial<RoutingIssue> = {}): RoutingIssue {
   return {
@@ -193,5 +221,158 @@ describe("pending review and reassignment", () => {
       stageType: "review",
       allowedActions: ["approve", "request_changes"],
     });
+  });
+});
+
+describe("pickPrReviewer", () => {
+  const reviewers = [
+    { id: REV_A, role: "reviewer", load: 0 },
+    { id: REV_B, role: "reviewer", load: 0 },
+    { id: "cccccccc-0000-4000-8000-000000000001", role: "reviewer", load: 0 },
+  ];
+
+  it("skips the PR author's linked agent even at zero load", () => {
+    const picked = pickPrReviewer({
+      reviewers,
+      boardLoadByAgent: new Map(),
+      openPrLoadByAgent: new Map(),
+      excluded: new Set([REV_A]),
+      maxLoadPerReviewer: 5,
+      maxOpenReviewsPerReviewer: 3,
+    });
+    expect(picked?.id).toBe(REV_B);
+  });
+
+  it("applies the open pr-review ceiling separately from the board ceiling", () => {
+    // REV_B is at the lane ceiling though its board load is zero.
+    const picked = pickPrReviewer({
+      reviewers,
+      boardLoadByAgent: new Map([[REV_B, 0]]),
+      openPrLoadByAgent: new Map([[REV_B, 3]]),
+      excluded: new Set(),
+      maxLoadPerReviewer: 5,
+      maxOpenReviewsPerReviewer: 3,
+    });
+    expect(picked?.id).toBe(REV_A);
+    // REV_A is under the lane ceiling but at the board ceiling.
+    const none = pickPrReviewer({
+      reviewers,
+      boardLoadByAgent: new Map([[REV_A, 5]]),
+      openPrLoadByAgent: new Map([[REV_B, 3]]),
+      excluded: new Set(),
+      maxLoadPerReviewer: 5,
+      maxOpenReviewsPerReviewer: 3,
+    });
+    expect(none?.id).toBe("cccccccc-0000-4000-8000-000000000001");
+  });
+
+  it("ranks by the combined load and returns null when every gate blocks", () => {
+    // REV_A: 1 board + 1 open = 2; REV_B: 0 + 1 = 1 → least combined load wins.
+    const picked = pickPrReviewer({
+      reviewers,
+      boardLoadByAgent: new Map([[REV_A, 1]]),
+      openPrLoadByAgent: new Map([[REV_A, 1], [REV_B, 1]]),
+      excluded: new Set(["cccccccc-0000-4000-8000-000000000001"]),
+      maxLoadPerReviewer: 4,
+      maxOpenReviewsPerReviewer: 4,
+    });
+    expect(picked?.id).toBe(REV_B);
+    // REV_A is at the board ceiling, REV_B at the lane ceiling: nobody left.
+    const none = pickPrReviewer({
+      reviewers,
+      boardLoadByAgent: new Map([[REV_A, 2]]),
+      openPrLoadByAgent: new Map([[REV_B, 2]]),
+      excluded: new Set(["cccccccc-0000-4000-8000-000000000001"]),
+      maxLoadPerReviewer: 2,
+      maxOpenReviewsPerReviewer: 2,
+    });
+    expect(none).toBeNull();
+  });
+});
+
+describe("PR lane triggers (pr-policy)", () => {
+  it("fires on a green head with no verdict", () => {
+    expect(reviewTaskDueForHead(head())).toBe(true);
+  });
+
+  it("does not fire on drafts, closed PRs, non-green or unknown heads", () => {
+    expect(reviewTaskDueForHead(head({ draft: true }))).toBe(false);
+    expect(reviewTaskDueForHead(head({ open: false }))).toBe(false);
+    expect(reviewTaskDueForHead(head({ ci: "not_green" }))).toBe(false);
+    expect(reviewTaskDueForHead(head({ ci: "unknown", fetchFailed: true }))).toBe(false);
+  });
+
+  it("a verdict on the current head suppresses the review task", () => {
+    expect(reviewTaskDueForHead(head({ reviewDecision: "CHANGES_REQUESTED" }))).toBe(false);
+    expect(reviewTaskDueForHead(head({ reviewDecision: "APPROVED" }))).toBe(false);
+  });
+
+  it("a decision read for another head never reaches this check (per-head state only)", () => {
+    // The resolver reports the decision for the CURRENT head; a decision that
+    // predates the latest push comes back as null for the new head, so the
+    // trigger fires again on the new green head.
+    expect(reviewTaskDueForHead(head({ headSha: "bbbbbbbb", reviewDecision: null }))).toBe(true);
+  });
+
+  it("steward task is due only on an approved green open head", () => {
+    expect(stewardTaskDueForHead(head({ reviewDecision: "APPROVED" }))).toBe(true);
+    expect(stewardTaskDueForHead(head())).toBe(false);
+    expect(stewardTaskDueForHead(head({ reviewDecision: "APPROVED", ci: "not_green" }))).toBe(false);
+    expect(stewardTaskDueForHead(head({ reviewDecision: "APPROVED", open: false }))).toBe(false);
+  });
+
+  it("supersedes exactly when the recorded head differs from the current head", () => {
+    const task = { issueId: "t", repository: "acme/widgets", number: 7, kind: "review" as const, headSha: "aaaaaaaa" };
+    expect(prTaskIsSuperseded(task, "bbbbbbbb")).toBe(true);
+    expect(prTaskIsSuperseded(task, "aaaaaaaa")).toBe(false);
+    expect(prTaskIsSuperseded({ ...task, headSha: null }, "bbbbbbbb")).toBe(false);
+  });
+
+  it("coverage keys separate review from merge slots", () => {
+    expect(prRoutingCoverageKey({ repository: "acme/widgets", number: 7, kind: "review" })).toBe("acme/widgets#7:review");
+    expect(prRoutingCoverageKey({ repository: "acme/widgets", number: 7, kind: "merge" })).toBe("acme/widgets#7:merge");
+  });
+
+  it("reads the routing contract off pull_request work products only", () => {
+    const wp = {
+      type: "pull_request",
+      metadata: { repo: "acme/widgets", number: 7, prRoutingHeadSha: "aaaaaaaa", prRoutingKind: "review" },
+    };
+    expect(readPrRoutingWorkProduct(wp)).toMatchObject({ repository: "acme/widgets", number: 7, kind: "review", headSha: "aaaaaaaa" });
+    expect(readPrRoutingWorkProduct({ ...wp, type: "document" })).toBeNull();
+    expect(readPrRoutingWorkProduct({ type: "pull_request", metadata: { repo: "acme/widgets", number: 7 } })).toBeNull();
+    expect(
+      readPrRoutingWorkProduct({ type: "pull_request", metadata: { ...wp.metadata, prRoutingKind: "other" } }),
+    ).toBeNull();
+  });
+
+  it("names and describes the created tasks", () => {
+    const long = "x".repeat(120);
+    expect(prReviewTaskTitle(head({ title: long }))).toBe(`Review PR acme/widgets#7: ${"x".repeat(80)}`);
+    expect(prStewardTaskTitle(head())).toBe("Merge PR acme/widgets#7");
+    const desc = prRoutingTaskDescription(
+      head({ url: "https://github.com/acme/widgets/pull/7", authorLogin: "agent-a", baseRef: "main" }),
+      "review",
+    );
+    expect(desc).toContain("https://github.com/acme/widgets/pull/7");
+    expect(desc).toContain("Head: aaaaaaaa");
+    expect(desc).toContain("Author: agent-a");
+    expect(desc).toContain("Base: main");
+    expect(desc).toContain("automatic PR review routing — green head without a review verdict");
+  });
+});
+
+describe("buildPrRoutingTaskPatch", () => {
+  it("gives a fresh PR task the routed review-stage shape and a pending state", () => {
+    const patch = buildPrRoutingTaskPatch({ reviewerAgentId: REV_A });
+    expect(patch.assigneeAgentId).toBe(REV_A);
+    const policy = patch.executionPolicy as { stages: Array<{ type: string; participants: Array<{ agentId: string }> }> };
+    expect(policy.stages).toHaveLength(1);
+    expect(policy.stages[0]?.type).toBe("review");
+    expect(policy.stages[0]?.participants.map((p) => p.agentId)).toEqual([REV_A]);
+    const state = patch.executionState as Record<string, any>;
+    expect(state.status).toBe("pending");
+    expect(state.currentParticipant).toMatchObject({ type: "agent", agentId: REV_A });
+    expect(state.currentStageId).toBe((policy.stages[0] as any).id);
   });
 });

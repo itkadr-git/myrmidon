@@ -2,8 +2,8 @@
 //
 // myrmidon(GITHUB-SHARED-IDENTITY): the self-hosted GitHub App identities
 // panel of the company settings — entries per App (id, key secret,
-// installation, repositories, roles, agents), the dirty gate on Save, the
-// PUT body it sends and the vendor connector state line.
+// installation, repositories, roles, agents, token permissions), the dirty
+// gate on Save, the PUT body it sends and the vendor connector state line.
 
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
@@ -19,6 +19,7 @@ import {
   readManifestCallbackNotice,
   submitManifestForm,
 } from "./GitHubSharedIdentityPanel";
+import { DEFAULT_GITHUB_APP_PERMISSIONS } from "./githubSharedIdentityApi";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -66,6 +67,7 @@ const view: GitHubSharedIdentityView = {
         roles: ["engineer"],
         agentIds: [],
         allowedRepos: ["owner-a/*"],
+        permissions: { ...DEFAULT_GITHUB_APP_PERMISSIONS },
       },
     ],
     commitEmailDomain: null,
@@ -103,7 +105,10 @@ async function waitForButton(text: string, attempts = 50): Promise<HTMLButtonEle
   for (let i = 0; i < attempts; i++) {
     const found = [...container.querySelectorAll("button")].find((el) => el.textContent?.includes(text));
     if (found) return found as HTMLButtonElement;
-    await act(async () => Promise.resolve());
+    // A macrotask, not a microtask: react-query delivers a resolved query to
+    // the component through a setTimeout(0) batch, so microtask ticks alone
+    // never let the data (and the buttons that depend on it) arrive.
+    await act(async () => new Promise<void>((resolve) => setTimeout(resolve, 0)));
   }
   throw new Error(`button not found: ${text}`);
 }
@@ -191,12 +196,43 @@ describe("GitHubSharedIdentityPanelView", () => {
           roles: [],
           agentIds: [AGENT_A],
           allowedRepos: ["owner-b/*", "owner-b/app-b"],
+          permissions: { ...DEFAULT_GITHUB_APP_PERMISSIONS },
         },
       ],
     });
   });
 
-  it("builds the body from a draft: trims, empties to null, splits lists", () => {
+  it("widens the permission list of an entry: workflows write, pulls the token defaults down", () => {
+    const onSave = render();
+    const workflowSelect = byLabel<HTMLSelectElement>("Permissions of App A: workflows");
+    expect(workflowSelect.value).toBe("none");
+    // GitHub's token API has no `workflows: read` — only none/write are offered.
+    expect([...workflowSelect.querySelectorAll("option")].map((option) => option.value)).toEqual(["none", "write"]);
+    flushSync(() => {
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(workflowSelect, "write");
+      workflowSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    flushSync(() => {
+      const issuesSelect = byLabel<HTMLSelectElement>("Permissions of App A: issues");
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(issuesSelect, "read");
+      issuesSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    flushSync(() => {
+      const prSelect = byLabel<HTMLSelectElement>("Permissions of App A: pull_requests");
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(prSelect, "none");
+      prSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    flushSync(() => button("Save GitHub access").click());
+    expect(onSave).toHaveBeenCalledTimes(1);
+    expect(onSave.mock.calls[0]![0].apps[0]!.permissions).toEqual({
+      ...DEFAULT_GITHUB_APP_PERMISSIONS,
+      workflows: "write",
+      issues: "read",
+      pull_requests: "none",
+    });
+  });
+
+  it("builds the body from a draft: trims, empties to null, splits lists, copies permissions", () => {
     expect(
       bodyFromDraft({
         enabled: false,
@@ -211,6 +247,7 @@ describe("GitHubSharedIdentityPanelView", () => {
             roles: "engineer, reviewer",
             agentIds: [],
             allowedRepos: "owner-a/repo-a, owner-a/repo-b",
+            permissions: { ...DEFAULT_GITHUB_APP_PERMISSIONS, workflows: "write" },
           },
         ],
       }),
@@ -227,6 +264,7 @@ describe("GitHubSharedIdentityPanelView", () => {
           roles: ["engineer", "reviewer"],
           agentIds: [],
           allowedRepos: ["owner-a/repo-a", "owner-a/repo-b"],
+          permissions: { ...DEFAULT_GITHUB_APP_PERMISSIONS, workflows: "write" },
         },
       ],
     });
@@ -354,6 +392,7 @@ describe("GitHubSharedIdentityPanelView — manifest flow", () => {
           roles: [],
           agentIds: [],
           allowedRepos: [],
+          permissions: { ...DEFAULT_GITHUB_APP_PERMISSIONS },
         },
       ],
     });
@@ -368,7 +407,7 @@ describe("manifest flow helpers", () => {
     expect(readManifestCallbackNotice("")).toBeNull();
   });
 
-  it("submitManifestForm posts the manifest to the manifest url", () => {
+  it("submitManifestForm posts the manifest and the state to the manifest url", () => {
     let submitted: HTMLFormElement | null = null;
     const submitSpy = vi
       .spyOn(HTMLFormElement.prototype, "submit")
@@ -377,7 +416,7 @@ describe("manifest flow helpers", () => {
       });
     try {
       const manifest = { name: "my-app", public: false };
-      submitManifestForm("https://github.com/settings/apps/new", manifest);
+      submitManifestForm("https://github.com/settings/apps/new", manifest, "state-abc");
       expect(submitSpy).toHaveBeenCalledTimes(1);
       const form = submitted as unknown as HTMLFormElement | null;
       expect(form).not.toBeNull();
@@ -386,6 +425,9 @@ describe("manifest flow helpers", () => {
       const input = form!.querySelector("input[name='manifest']") as HTMLInputElement;
       expect(input.type).toBe("hidden");
       expect(JSON.parse(input.value)).toEqual(manifest);
+      const stateInput = form!.querySelector("input[name='state']") as HTMLInputElement;
+      expect(stateInput.type).toBe("hidden");
+      expect(stateInput.value).toBe("state-abc");
       form!.remove();
     } finally {
       submitSpy.mockRestore();
@@ -432,6 +474,7 @@ describe("GitHubSharedIdentityPanel — server callback", () => {
     apiMocks.beginAppManifest.mockResolvedValue({
       manifestUrl: "https://github.com/settings/apps/new",
       manifest: { name: "my-app" },
+      state: "state-from-begin",
     });
     apiMocks.getAppInstallUrl.mockResolvedValue({ installUrl: "https://github.com/apps/my-app/installations/new" });
   });
@@ -474,6 +517,7 @@ describe("GitHubSharedIdentityPanel — server callback", () => {
       const form = [...document.querySelectorAll("form")].find((f) => f.action === "https://github.com/settings/apps/new");
       expect(form).toBeTruthy();
       expect(JSON.parse((form!.querySelector("input[name='manifest']") as HTMLInputElement).value)).toEqual({ name: "my-app" });
+      expect((form!.querySelector("input[name='state']") as HTMLInputElement).value).toBe("state-from-begin");
       form!.remove();
     } finally {
       submitSpy.mockRestore();
@@ -495,6 +539,7 @@ describe("GitHubSharedIdentityPanel — server callback", () => {
             roles: [],
             agentIds: [],
             allowedRepos: [],
+            permissions: { ...DEFAULT_GITHUB_APP_PERMISSIONS },
             slug: "my-app",
           },
         ],
