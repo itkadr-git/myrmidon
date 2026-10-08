@@ -1,4 +1,5 @@
 import { connectionPurposeTransportSchema } from "@paperclipai/shared";
+import { emitToolPolicyChanged } from "./tool-policy-cache-events.js";
 import { syncConnectionCredentialBindings } from "./connection-credential-bindings.js";
 import { canBrowseProjectRepositoryGrant, mergeProjectRepository } from "./project-repositories.js";
 import { captureRunIdentity } from "./run-identity.js";
@@ -13737,6 +13738,7 @@ export function toolAccessService(
           .where(eq(toolPolicies.id, policy.id));
       }
     }
+    emitToolPolicyChanged();
     return results;
   }
 
@@ -14091,6 +14093,11 @@ export function toolAccessService(
       profileBindings: transactionResult.profileBindings,
       policies: transactionResult.policies,
     };
+    // OPE-4129: finishGalleryAppConnection rewrites profile entries, bindings
+    // and ask-first policies in one transaction — invalidate the policy
+    // snapshot cache after it completes (not only from upsertAskFirstPolicies,
+    // which emits before the gallery bindings are written).
+    emitToolPolicyChanged();
   }
 
   /**
@@ -18506,6 +18513,9 @@ export function toolAccessService(
           details: extension,
         });
       }
+      // OPE-4129: install/uninstall rewrites toolProfileBindings for the
+      // connection profile — invalidate the policy snapshot cache.
+      emitToolPolicyChanged();
       return {
         connectionId: connection.id,
         installs: await listConnectionInstalls(
@@ -19068,6 +19078,7 @@ export function toolAccessService(
         })
         .returning();
       await createProfileEntries(companyId, row.id, input.entries ?? []);
+      emitToolPolicyChanged();
       return profileDetails(row.id, companyId);
     },
 
@@ -19106,6 +19117,7 @@ export function toolAccessService(
           input.entries,
         );
       }
+      emitToolPolicyChanged();
       return profileDetails(profileId, existing.companyId);
     },
 
@@ -19182,6 +19194,7 @@ export function toolAccessService(
           })),
         );
       }
+      emitToolPolicyChanged();
       return profileDetails(created.id, existing.companyId);
     },
 
@@ -19272,6 +19285,7 @@ export function toolAccessService(
         .where(eq(toolProfiles.id, existing.id))
         .returning();
       if (!deleted) throw notFound("Tool profile not found");
+      emitToolPolicyChanged();
       return {
         profile: toProfile(deleted),
         summary: details.summary,
@@ -19305,6 +19319,7 @@ export function toolAccessService(
         .update(toolProfiles)
         .set({ updatedAt: new Date() })
         .where(eq(toolProfiles.id, profile.id));
+      emitToolPolicyChanged();
       return toProfileEntry(row);
     },
 
@@ -19356,6 +19371,7 @@ export function toolAccessService(
         .update(toolProfiles)
         .set({ updatedAt: new Date() })
         .where(eq(toolProfiles.id, existing.profileId));
+      emitToolPolicyChanged();
       return toProfileEntry(row);
     },
 
@@ -19369,6 +19385,7 @@ export function toolAccessService(
         .update(toolProfiles)
         .set({ updatedAt: new Date() })
         .where(eq(toolProfiles.id, row.profileId));
+      emitToolPolicyChanged();
       return toProfileEntry(row);
     },
 
@@ -19402,6 +19419,7 @@ export function toolAccessService(
         .update(toolProfiles)
         .set({ updatedAt: new Date() })
         .where(eq(toolProfiles.id, profile.id));
+      emitToolPolicyChanged();
       return toProfileBinding(row);
     },
 
@@ -19432,6 +19450,7 @@ export function toolAccessService(
           .set({ updatedAt: new Date() })
           .where(eq(toolProfiles.id, profile.id));
       }
+      emitToolPolicyChanged();
       return { unbound: rows.length };
     },
 
