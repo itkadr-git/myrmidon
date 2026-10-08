@@ -549,7 +549,17 @@ How a bot gets its task copy now, per the interface contract
   (`general.botDisk.graceClosingMinutes`, default 30 min), and is removed;
   unpushed work is archived first (`$HERMES_HOME/.myrmidon/archive/`, cap 2
   GiB / 30 days) and is restorable with `myr-ws restore <KEY>`. Scratch
-  copies expire by idle TTL (`general.botDisk.scratchTtlHours`, default 24 h).
+  copies expire by idle TTL (`general.botDisk.scratchTtlHours`, default 24 h;
+  under disk pressure the TTL of clean or non-git copies drops to 1 h).
+  A git directory with unsaved work (dirty or not pushed) in `/scratch` or
+  `/workspace` is different: pressure never shortens its term, and botd keeps
+  it while the bot has a live run or the run state is unknown (reported as
+  held, `unsafe-git-live-run` / `unsafe-git-run-unknown`). It is archived and
+  removed only with no run and after the full `scratchTtlHours` of idle time.
+  A run is live when the board lists an active task for the bot, a process of
+  the container works under `/workspace` or `/scratch`, or a run woke botd
+  (SIGUSR1) in the last 30 minutes; for 30 minutes after botd starts the state
+  is unknown.
   When the board is unreachable botd deletes nothing. Botd reports disk state
   back with `POST /api/myrmidon/bots/me/disk-report`.
 
