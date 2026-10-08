@@ -225,7 +225,7 @@ describe("myrmidon(1.6.5 C0-ui) the memory snapshot of the load screen", () => {
   it("the admission's snapshot carries the host and the container memory, each null when unreadable", () => {
     const GB = 1024 * MB;
     const admission = createRunAdmission({
-      limits: { ...NO_MEMORY, maxConcurrentRuns: null },
+      limits: { ...NO_MEMORY, maxConcurrentRuns: null, maxStartsPerMinute: null },
       hostMemory: () => ({ known: true as const, availableBytes: 44 * GB, totalBytes: 128 * GB }),
     });
     const snapshot = admission.memorySnapshot();
@@ -235,7 +235,7 @@ describe("myrmidon(1.6.5 C0-ui) the memory snapshot of the load screen", () => {
     expect(snapshot.container === null || typeof snapshot.container.usedMb === "number").toBe(true);
 
     const blind = createRunAdmission({
-      limits: { ...NO_MEMORY, maxConcurrentRuns: null },
+      limits: { ...NO_MEMORY, maxConcurrentRuns: null, maxStartsPerMinute: null },
       hostMemory: () => ({ known: false as const, reason: "no meminfo" }),
     });
     expect(blind.memorySnapshot().host).toBeNull();

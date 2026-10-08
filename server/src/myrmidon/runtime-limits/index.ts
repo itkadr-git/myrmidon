@@ -67,7 +67,7 @@ function defaultDeps(db: Db): RuntimeLimitsServiceDeps {
       ),
     // myrmidon(1.6.5 C0-ui): the host and container memory the load screen is
     // about, read by the same admission that gates on it.
-    memorySnapshot: () => sharedRunAdmission?.memorySnapshot() ?? null,
+    memorySnapshot: () => sharedRunAdmission().memorySnapshot(),
   };
 }
 
