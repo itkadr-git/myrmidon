@@ -20,3 +20,15 @@ settings-section: Track 2 — wake and run core
 - Если в сессии задачи уже столько промптов, что следующий не поместится, прогон стартует со свежей сессии (новое поколение ключа сессии `hermes_gateway`) и записывает событие `fresh_session` вместо отправки в переполненную сессию.
 - Адаптер `hermes_gateway` обрезает запрос, который сам по себе выше бюджета (голова и хвост входа остаются, середина помечена), вместо отправки провайдеру, который его отклонит.
 - Настройки: `MYRMIDON_INPUT_LIMIT_PRECHECK=0` (выкл.), `MYRMIDON_INPUT_LIMIT_CHARS_PER_TOKEN` (3), `MYRMIDON_INPUT_LIMIT_SAFETY` (0,9). См. `docs/myrmidon/input-limit-precheck.ru.md`.
+
+## settings-en
+
+| `MYRMIDON_INPUT_LIMIT_PRECHECK` | 1.6.5-INPUT-LIMIT | on | Checks the model input limit before a run is sent: a task session that would overflow starts a fresh session generation, and an oversized single request is trimmed by the `hermes_gateway` adapter | `0` turns the whole check off; any other value keeps it on |
+| `MYRMIDON_INPUT_LIMIT_CHARS_PER_TOKEN` | 1.6.5-INPUT-LIMIT | `3` | Characters-per-token ratio used to estimate prompt size against the input limit (accepted range 1 to 10) | An out-of-range or non-numeric value falls back to the default |
+| `MYRMIDON_INPUT_LIMIT_SAFETY` | 1.6.5-INPUT-LIMIT | `0.9` | Share of the model input limit the estimate may fill before a fresh session is started (accepted range above 0 up to 1) | An out-of-range or non-numeric value falls back to the default |
+
+## settings-ru
+
+| `MYRMIDON_INPUT_LIMIT_PRECHECK` | 1.6.5-INPUT-LIMIT | вкл. | Проверяет лимит входа модели до отправки прогона: сессия задачи, которая переполнится, стартует со свежего поколения, а слишком большой одиночный запрос обрезает адаптер `hermes_gateway` | `0` выключает проверку целиком; любое другое значение оставляет её включённой |
+| `MYRMIDON_INPUT_LIMIT_CHARS_PER_TOKEN` | 1.6.5-INPUT-LIMIT | `3` | Отношение символов к токенам для оценки размера промпта относительно лимита входа (допустимо от 1 до 10) | Значение вне диапазона или не число заменяется умолчанием |
+| `MYRMIDON_INPUT_LIMIT_SAFETY` | 1.6.5-INPUT-LIMIT | `0,9` | Доля лимита входа модели, которую может занять оценка, прежде чем начнётся свежая сессия (больше 0 до 1) | Значение вне диапазона или не число заменяется умолчанием |

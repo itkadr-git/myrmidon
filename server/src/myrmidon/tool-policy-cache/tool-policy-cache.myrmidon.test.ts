@@ -112,11 +112,15 @@ function createFakeDb(seed: Record<string, Row[]>): FakeDb {
     orderBy: () => chain(name, current),
     limit: (count: number) => chain(name, current.slice(0, count)),
     offset: () => chain(name, current),
+    // updateGeneral locks the row with .for("update") inside db.transaction (PROCS-Q5).
+    for: () => chain(name, current),
     then: (onFulfilled: (value: Row[]) => unknown, onRejected?: (error: unknown) => unknown) =>
       Promise.resolve(current.map((row) => ({ ...row }))).then(onFulfilled, onRejected),
   });
 
   const db = {
+    // No isolation in the fake: the transaction callback gets the same db back.
+    transaction: (fn: (tx: unknown) => Promise<unknown>) => fn(db),
     select: () => ({
       from: (table: unknown) => {
         const name = nameOf(table);
