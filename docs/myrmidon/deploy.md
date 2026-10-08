@@ -678,6 +678,45 @@ scripts/myrmidon/deploy/rollback.sh --config /path/to/deploy.env --to sha256:<ol
 The script asks to type `RESTORE` (or takes `--yes-restore-database`), stops the server
 service, runs `RESTORE_COMMAND`, then brings the old image up.
 
+## Multi-process mode (BOARD-PROCESSES)
+
+> Russian version of this section: [deploy.ru.md](deploy.ru.md#многопроцессный-режим-board-processes)
+
+The board can run as more than one Node process inside the same container. This is
+delivered in stages; the default `single` mode — one process that does everything — is
+unchanged and stays the current behavior until an operator deliberately turns the split
+on.
+
+**Two roles, one container.** In `split` mode there is one **worker** process (the
+scheduler, the run executor, the bots, the plugins, the chat reconciliation — all the
+background timers) and N **api** processes (HTTP / WebSocket / MCP on `:3100`). The
+worker is also the parent and supervisor of the api children. Communication between
+processes goes only through Postgres: table rows plus `LISTEN/NOTIFY`. There is no Redis,
+no IPC protocol, no second container.
+
+**Turning the split on.** The switch lives in the interface, not in the environment:
+Instance settings → **«Процессы»** (writes `instance_settings.general.processes`). Set
+`mode` to `split` and choose `apiCount`. The change applies **without a restart**: the
+worker forks the api children, and once they report ready it closes its own `:3100`
+listener (`server.close()` + `closeIdleConnections()`, WebSocket clients get a `1012`
+close and reconnect to the children within 1–16 s). There is no downtime — the port is
+listened on by someone the whole time.
+
+**Rollback to one process.** Set `mode` back to `single` in the same settings screen.
+The worker opens `:3100` itself (`reusePort` lets it do so while children are still
+alive) and then drains the children one by one. The switch back takes seconds and does
+**not** restart the container. If a settings change itself caused trouble and you need a
+"start as before" path, the environment override `PAPERCLIP_PROCESS_MODE=single` is read
+before the database and forces the single-process mode on boot.
+
+**How many api processes.** Recommended starting point on a 4-core container: **worker
+1 + api 2** (three processes ≈ three cores at peak, one core left for GC, plugin workers
+and `pg_dump`). The practical ceiling for `apiCount` is **3**: more api processes only add
+parallel load to Postgres, which is the next bottleneck. Raise `apiCount` by one only
+when the process metrics show `event_loop_utilization` of the api processes staying above
+0.6 **and** Postgres CPU staying below 300 %. If it is the worker's ELU that is high,
+that is the run-supervision / background work — more api processes will not help.
+
 ### Откат на локальный образ (ROLLBACK-LOCAL)
 
 Образы до 1.1.0 не лежат в реестре, а реестр может быть недоступен именно в момент инцидента.
