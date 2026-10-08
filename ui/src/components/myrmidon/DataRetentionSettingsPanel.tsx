@@ -113,10 +113,6 @@ export function DataRetentionSettingsPanel() {
   // data retention route. Until the view arrives — and on an instance that does
   // not serve that route yet — the section renders nothing, so the settings page
   // never shows an empty block of dead inputs.
-  // myrmidon(1.6.5-DB-RETENTION): the panel belongs to instances that serve the
-  // data retention route. Until the view arrives — and on an instance that does
-  // not serve that route yet — the section renders nothing, so the settings page
-  // never shows an empty block of dead inputs.
   if (isError || !view) return null;
 
   const status = view.status;
