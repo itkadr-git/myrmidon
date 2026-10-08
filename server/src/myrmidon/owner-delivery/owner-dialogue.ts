@@ -28,6 +28,7 @@ import {
   isOwnerDecisionAudience,
 } from "@paperclipai/shared";
 import { parseTelegramConversationUserId } from "../agent-chat-bridge/identity.js";
+import { resolveOwnerDecisionRecipient } from "./telegram-owner-bindings.js";
 
 /** The interaction kinds the owner dialogue handles (the kinds that used to become cards). */
 export const OWNER_DIALOGUE_KINDS = ["ask_user_questions", "request_confirmation"] as const;
@@ -132,9 +133,30 @@ export async function loadOpenOwnerDecisions(
     .limit(100);
 
   const decisions: OwnerDecision[] = [];
+  const ownersCache = new Map<string, Promise<string[]>>();
   for (const row of rows) {
     if (row.conversationAgentId) continue;
-    const ownerUserId = row.responsibleUserId ?? row.issueCreatedByUserId ?? null;
+    // Cheap audience pre-check: an agent-addressed interaction is never an
+    // owner decision; otherwise it must be human_only or name a human.
+    if (row.addresseeAgentId !== null) continue;
+    if (row.effectiveResolverPolicy !== "human_only" && row.addresseeUserId === null) continue;
+    // myrmidon(1.6.5-OWNER-FALLBACK): the shared recipient rule (addressee,
+    // responsible, creator, company owners; first with a live DM).
+    const recipient = await resolveOwnerDecisionRecipient(
+      db,
+      {
+        companyId: input.companyId,
+        agentId: input.agentId,
+        addresseeUserId: row.addresseeUserId,
+        responsibleUserId: row.responsibleUserId,
+        createdByUserId: row.issueCreatedByUserId,
+      },
+      ownersCache,
+    );
+    // Nobody has a DM with the author: keep the task's own owner so the
+    // decision stays visible and the caller reports "no owner DM" (board only).
+    const ownerUserId =
+      recipient?.ownerUserId ?? row.addresseeUserId ?? row.responsibleUserId ?? row.issueCreatedByUserId ?? null;
     if (!ownerUserId) continue;
     if (
       !isOwnerDecisionAudience({

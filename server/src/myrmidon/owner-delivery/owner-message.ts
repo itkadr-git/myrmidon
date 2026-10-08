@@ -16,8 +16,9 @@
 // metadata of the agent comment written into the DM conversation issue (see
 // owner-dialogue.ts).
 
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import {
+  agentWakeupRequests,
   chatMessageLinks,
   chatPublications,
   heartbeatRuns,
@@ -304,6 +305,28 @@ export async function sendOwnerMessage(
   } catch (err) {
     // The audit row is secondary: the message is already durable.
     logger.warn({ err, commentId: result.commentId }, "owner message activity log failed");
+  }
+  // myrmidon(1.6.5-OWNER-FALLBACK): the author explained the decision in the run
+  // that raised it, so the "explain" wake deferred behind that run has nothing
+  // left to do. Best effort: if it already ran or was merged into another
+  // deferred wake, its prompt block is empty (the decision is explained).
+  try {
+    await db
+      .update(agentWakeupRequests)
+      .set({ status: "cancelled", finishedAt: new Date(), updatedAt: new Date() })
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, input.companyId),
+          eq(agentWakeupRequests.agentId, input.agentId),
+          eq(agentWakeupRequests.status, "deferred_issue_execution"),
+          inArray(
+            agentWakeupRequests.idempotencyKey,
+            requested.map((id) => `owner-explain:${id}`),
+          ),
+        ),
+      );
+  } catch (err) {
+    logger.warn({ err, commentId: result.commentId }, "could not cancel the deferred owner-explain wake");
   }
   return { ...result, conversationIssueId, interactionIds: requested };
 }
