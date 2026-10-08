@@ -2883,3 +2883,7 @@ export * from "./myrmidon-review-rework.js";
 export * from "./myrmidon-budget-projection.js"; // myrmidon(1.7-BUDGET-CONFIG-C)
 // myrmidon(CUSTOM-CASTES): the company caste directory contract (view, POST/PATCH/DELETE bodies, seed).
 export * from "./myrmidon-castes.js";
+// myrmidon(1.6.1-FORAGING-LIMITS-UI): the enable switch, pass tuning and spend
+// limits of the foraging sweep — shared by the server, the settings page and
+// the settings validator.
+export * from "./myrmidon-foraging.js";
