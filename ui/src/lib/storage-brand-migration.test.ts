@@ -68,6 +68,15 @@ describe("storage brand migration (paperclip.* -> myrmidon.*)", () => {
     expect(window.localStorage.getItem("paperclip.theme")).toBeNull();
   });
 
+  it("startup sweep leaves paperclip.recentTasks:* alone (v2 reader migrates it)", () => {
+    // lib/recent-tasks.ts migrates the legacy prefix to myrmidon.recentTasks.v2:*;
+    // a naive sweep to myrmidon.recentTasks:* would strand the value.
+    window.localStorage.setItem("paperclip.recentTasks:c-1:u-1", "[]");
+    migrateLegacyPaperclipStorage();
+    expect(window.localStorage.getItem("paperclip.recentTasks:c-1:u-1")).toBe("[]");
+    expect(window.localStorage.getItem("myrmidon.recentTasks:c-1:u-1")).toBeNull();
+  });
+
   it("startup sweep is idempotent and touches unrelated keys", () => {
     window.localStorage.setItem("paperclip.theme", "dark");
     window.localStorage.setItem("unrelated-key", "x");

@@ -209,12 +209,16 @@ function migrateStorage(store: Storage): void {
 }
 
 function isLegacyStorageKey(key: string): boolean {
-  return (
-    key.startsWith("paperclip.") ||
-    key.startsWith("paperclip:") ||
-    key.startsWith("paperclip-") ||
-    key.includes(":paperclip:")
-  );
+  if (!key.startsWith("paperclip.") && !key.startsWith("paperclip:")
+      && !key.startsWith("paperclip-") && !key.includes(":paperclip:")) {
+    return false;
+  }
+  // `paperclip.recentTasks:<c>:<u>` must NOT be swept to `myrmidon.recentTasks:…`:
+  // the reader in lib/recent-tasks.ts migrates it to the versioned
+  // `myrmidon.recentTasks.v2:…` key. A naive prefix rename would drop the value
+  // (myrmidon(DB3), OPE-5806).
+  if (key.startsWith("paperclip.recentTasks:")) return false;
+  return true;
 }
 
 /** Exposed for tests — the locked legacy key list. */
