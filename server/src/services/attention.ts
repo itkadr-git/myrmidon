@@ -71,6 +71,16 @@ import { buildStackAttentionCards } from "../myrmidon/stack-registry/attention.j
 import { readStackDocument } from "../myrmidon/stack-registry/store.js";
 // myrmidon(TRACING-HEALTH): the "LLM tracing" red state raises one operator card (part D)
 import { readTracingHealthAttentionSignal } from "../myrmidon/tracing-health/attention.js";
+// myrmidon(PAUSE-GUARD): the pass that stopped at its ceiling leaves one card
+// per company while forgotten operator pauses are still waiting.
+import {
+  pauseGuardSignalDedupKey,
+  pauseGuardSignalSeverity,
+  pauseGuardSignalTitle,
+  pauseGuardSignalWhyNow,
+  pauseGuardSubjectId,
+  readPauseGuardSignal,
+} from "../myrmidon/pause-guard/attention.js";
 import { hostCpuHoldSignal, hostMemoryHoldSignal } from "../myrmidon/run-admission.js"; // myrmidon(1.6.2/1.6.5 RUN-ADMISSION)
 // myrmidon(BOT-RUNTIME-TUNING D): the model fallback share raises one card per agent
 import { readModelFallbackSignals } from "../myrmidon/litellm-fallback-signal/attention.js";
@@ -153,6 +163,9 @@ const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   // myrmidon(1.6.5 BOT-DISK-H4c): bot disk archive and stale image cards.
   "bot_disk_archive",
   "bot_image_stale",
+  // myrmidon(PAUSE-GUARD): the guard hit its per-pass ceiling and operator
+  // pauses are still waiting for the following passes.
+  "pause_guard",
 ];
 
 const SEVERITY_RANK: Record<AttentionSeverity, number> = {
@@ -196,6 +209,9 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   // myrmidon(1.6.5 BOT-DISK-H4c): both are advice, ranked last.
   bot_disk_archive: 19,
   bot_image_stale: 20,
+  // myrmidon(PAUSE-GUARD): a queue of forgotten pauses the guard is working
+  // through — advice, like the WIP limit, never a stop.
+  pause_guard: 18,
 };
 
 const PENDING_INTERACTION_STATUSES = ["pending"] as const;
@@ -2553,6 +2569,54 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           detail: {
             kind: "generic",
             summaryExcerpt: excerpt(tracingSignal.whyNow),
+            images: [],
+          },
+        }));
+      }
+
+      // myrmidon(PAUSE-GUARD): the forgotten-pause guard resumed its ceiling's
+      // worth of operator pauses and left the rest for the following passes.
+      // ONE card per company, from the process-level registry the sweep
+      // records into (myrmidon/pause-guard/attention.ts); it disappears in the
+      // pass that finds nothing left over, so no dismissal bookkeeping is
+      // needed. The per-resume audit trail is the activity log either way.
+      const pauseGuardSignal = readPauseGuardSignal(companyId);
+      if (pauseGuardSignal) {
+        add(createItem({
+          companyId,
+          sourceKind: "pause_guard",
+          subject: {
+            kind: "agent",
+            id: pauseGuardSubjectId(companyId),
+            companyId,
+            title: pauseGuardSignalTitle(pauseGuardSignal),
+            identifier: null,
+            status: "notice",
+            href: `/${prefix}/settings`,
+            metadata: {
+              pauseGuard: true,
+              deferredCount: pauseGuardSignal.deferredCount,
+              resumedCount: pauseGuardSignal.resumedCount,
+              thresholdMinutes: pauseGuardSignal.thresholdMinutes,
+            },
+          },
+          whyNow: pauseGuardSignalWhyNow(pauseGuardSignal),
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the settings and raise the per-pass ceiling." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this notice." },
+          ),
+          inlineResolvable: true,
+          entryRule: "the pause guard hit its per-pass ceiling with operator pauses still older than the threshold",
+          exitRule: "a pass finds no forgotten operator pause left over (the signal registry clears) or the row is dismissed.",
+          dedupKey: pauseGuardSignalDedupKey(companyId),
+          severity: pauseGuardSignalSeverity(),
+          activityAt: pauseGuardSignal.activityAt,
+          createdAt: pauseGuardSignal.activityAt,
+          updatedAt: pauseGuardSignal.activityAt,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: excerpt(pauseGuardSignalWhyNow(pauseGuardSignal)),
             images: [],
           },
         }));
