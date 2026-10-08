@@ -54,6 +54,10 @@ export const ATTENTION_SOURCE_KINDS = [
   // myrmidon(1.6.1-FORAGING-LIMITS-UI): the learning sweep hit a spend limit
   // (or the cost-per-task threshold switched it off); the owner decides.
   "foraging_limit",
+  // myrmidon(OPE-6011): a task's wakes are held by a settled
+  // execution-reconciliation hold ("execution_reconciliation_required") until
+  // a person confirms the failed run left no external action.
+  "execution_hold",
 ] as const;
 
 export type AttentionSourceKind = (typeof ATTENTION_SOURCE_KINDS)[number];

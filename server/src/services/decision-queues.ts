@@ -315,6 +315,8 @@ async function sourceIssueId(
     case "review_routing":
     // myrmidon(1.6.5 BOT-DISK-H4c): the archive card sits on the task.
     case "bot_disk_archive":
+    // myrmidon(OPE-6011): the held-task card's subject is the held task.
+    case "execution_hold":
     case "stale_block": {
       const row = await db
         .select({ id: issues.id })

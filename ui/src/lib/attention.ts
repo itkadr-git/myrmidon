@@ -84,6 +84,8 @@ const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
   pause_guard: { label: "Forgotten pauses" },
   // myrmidon(1.6.1-FORAGING-LIMITS-UI): label for the learning-spend source.
   foraging_limit: { label: "Learning limit" },
+  // myrmidon(OPE-6011): label for the execution hold source.
+  execution_hold: { label: "Execution hold" },
 };
 
 export function sourceMeta(kind: AttentionSourceKind): SourceMeta {
