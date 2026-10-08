@@ -25,12 +25,13 @@ export interface SupersedeExplicitWakeSettledHoldInput {
   companyId: string;
   issueId: string;
   /** The run id the caller has already reserved for the successor it is
-   * about to insert, in this same transaction, as this wake's admission. */
-  successorRunId: string;
-  /** Always "user": the caller only reaches this once `isExplicitWake` has
-   * already required it (wake-classification.ts). Typed here, not widened,
-   * so a future caller cannot pass an unauthorized actor by accident. */
-  requestedByActorType: "user";
+   * about to insert, in this same transaction, as this wake's admission.
+   * Null for the operator's confirm-continue verb, which supersedes the hold
+   * first and wakes the assignee afterwards (no successor exists yet). */
+  successorRunId: string | null;
+  /** "user" for an explicit wake (wake-classification.ts requires it); the
+   * confirm-continue verb may also pass "agent" for an agent's own task. */
+  requestedByActorType: "user" | "agent";
   requestedByActorId: string;
 }
 
@@ -52,7 +53,7 @@ export interface SupersedeExplicitWakeSettledHoldInput {
  */
 export async function supersedeExplicitWakeSettledHold(
   input: SupersedeExplicitWakeSettledHoldInput,
-): Promise<{ recoveryActionIds: string[] } | null> {
+): Promise<{ recoveryActionIds: string[]; supersededCount: number } | null> {
   const { db, companyId, issueId, successorRunId, requestedByActorType, requestedByActorId } = input;
   const actions = await db.select().from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.companyId, companyId),
@@ -99,5 +100,5 @@ export async function supersedeExplicitWakeSettledHold(
     entityId: issueId,
     details: { continuation: "explicit_wake_superseded", successorRunId, recoveryActionIds: supersededIds },
   });
-  return { recoveryActionIds: supersededIds };
+  return { recoveryActionIds: supersededIds, supersededCount: supersededIds.length };
 }
