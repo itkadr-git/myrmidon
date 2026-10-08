@@ -20,6 +20,7 @@ import {
   companies,
   companyMemberships,
   createDb,
+  agentWakeupRequests,
   heartbeatRuns,
   issueComments,
   issues,
@@ -32,6 +33,8 @@ import {
   OWNER_MESSAGE_COMMENT_REASON,
   OWNER_MESSAGE_INTERACTION_LABEL,
 } from "@paperclipai/shared";
+import { shouldQueueFollowupForRunningIssueWake } from "../services/heartbeat.js";
+import { decideWakeAdmission } from "../modules/wake-queue/domain/policy.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { evaluateIssueThreadInteractionResolverAudience } from "../services/issue-thread-interaction-resolution.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -1039,6 +1042,84 @@ describeEmbeddedPostgres("owner decisions via the bot (1.6.5)", () => {
         );
       expect(toAddressee).toHaveLength(1);
       expect(await ownerMessagePublications(fixture)).toEqual([]);
+    });
+
+    it("the explain wake waits behind the author's running run instead of merging into it", async () => {
+      const fixture = await seed();
+      const card = await cardOn(fixture, fixture.workIssue);
+      const { wakeup } = await wakeFor(fixture, fixture.workIssue, card);
+      const [, options] = wakeup.mock.calls[0] as unknown as [string, { contextSnapshot: Record<string, unknown> }];
+      // The author's own run is running on the task: the wake must defer, not coalesce.
+      expect(
+        shouldQueueFollowupForRunningIssueWake({ contextSnapshot: options.contextSnapshot, wakeCommentId: null }),
+      ).toBe(true);
+      expect(
+        decideWakeAdmission({
+          allowRunCoalescing: true,
+          sameDurableActor: true,
+          isSameExecutionAgent: true,
+          shouldDeferFollowupWake: false,
+          shouldQueueFollowupForRunningWake: true,
+          availableActiveExecutionRunPresent: true,
+        }),
+      ).toEqual({ kind: "defer" });
+      // Other pending-interaction wakes keep merging into a running run.
+      expect(
+        shouldQueueFollowupForRunningIssueWake({
+          contextSnapshot: { wakeReason: "interaction_pending" },
+          wakeCommentId: null,
+        }),
+      ).toBe(false);
+
+      // The deferred run carries the explanation block.
+      const block = await buildOwnerViaBotPromptBlock(db, {
+        companyId: fixture.companyId,
+        agentId: fixture.agentId,
+        issue: fixture.workIssue,
+        ownerExplainInteractionId: card.id,
+        wakeCommentId: null,
+      });
+      expect(block).toContain(card.id);
+    });
+
+    it("explaining in the same run cancels the deferred wake and empties its block", async () => {
+      const fixture = await seed();
+      const card = await cardOn(fixture, fixture.workIssue);
+      const [deferred] = await db
+        .insert(agentWakeupRequests)
+        .values({
+          companyId: fixture.companyId,
+          agentId: fixture.agentId,
+          source: "automation",
+          reason: "issue_execution_deferred",
+          status: "deferred_issue_execution",
+          idempotencyKey: `owner-explain:${card.id}`,
+        })
+        .returning();
+
+      await sendOwnerMessage(db, {
+        companyId: fixture.companyId,
+        agentId: fixture.agentId,
+        runId: fixture.runId,
+        interactionIds: [card.id],
+        text: "Please confirm: proceed with the change? I recommend yes.",
+      });
+
+      const [after] = await db
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, deferred!.id));
+      expect(after!.status).toBe("cancelled");
+      // Even if such a wake ran, nothing is left to explain.
+      expect(
+        await buildOwnerViaBotPromptBlock(db, {
+          companyId: fixture.companyId,
+          agentId: fixture.agentId,
+          issue: fixture.workIssue,
+          ownerExplainInteractionId: card.id,
+          wakeCommentId: null,
+        }),
+      ).toBe("");
     });
 
     it("stays on the board when nobody has a DM with the author", async () => {

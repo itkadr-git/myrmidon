@@ -708,6 +708,7 @@ import {
   appendOwnerViaBotBlock,
   buildOwnerViaBotPromptBlock,
 } from "../myrmidon/owner-delivery/owner-message.js";
+import { looksLikeOwnerExplainWake } from "../modules/run-dispatch/myrmidon-pending-interaction-wake.js";
 
 // myrmidon(M3): owner signal on a budget hard-stop (see budget-signal.ts)
 import {
@@ -6779,6 +6780,11 @@ export function shouldQueueFollowupForRunningIssueWake(input: {
   ) {
     return true;
   }
+  // myrmidon(1.6.5-OWNER-FALLBACK): the "explain it to the owner" wake carries a
+  // prompt block that is built when its run starts. Merged into the author's
+  // running run (which raised the decision in the same turn) the block would
+  // never reach the prompt, so it waits for its own run after the current one.
+  if (input.contextSnapshot && looksLikeOwnerExplainWake(input.contextSnapshot)) return true;
   const wakeReason = readNonEmptyString(input.contextSnapshot?.wakeReason);
   return Boolean(
     wakeReason && RUNNING_ISSUE_WAKE_REASONS_REQUIRING_FOLLOWUP.has(wakeReason),
