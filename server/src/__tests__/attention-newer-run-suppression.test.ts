@@ -21,11 +21,11 @@ import { attentionService } from "../services/attention.js";
 // key (context_snapshot issueId, else taskId, else the empty key). The check
 // must answer one EXISTS per failed run against the ctx expression indexes
 // instead of reading every newer run's context_snapshot.
-// The attention feed only lists failed runs inside the failed-run horizon (default 7 days,
-// ATTENTION-WINDOW-CACHE), so the seeded runs are anchored to the present: a fixed calendar
-// date silently ages out of the window and the feed comes back empty.
-const BASE_MS = Date.now() - 2 * 60 * 60 * 1000;
-const minuteAt = (minute: number) => new Date(BASE_MS + minute * 60_000);
+// The seeded runs sit on a fixed calendar date and the feed is built twice per test:
+// the failed-run horizon (default 7 days) and the feed cache (default 45 s) from
+// ATTENTION-WINDOW-CACHE would hide the old failure / replay the first answer. The
+// same options attention-service.test.ts uses.
+const TEST_SERVICE_OPTS = { feedCacheTtlMs: 0, failedRunHorizonDays: 3650 };
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -149,17 +149,17 @@ describeEmbeddedPostgres("attention failed-run newer-run suppression", () => {
       companyId,
       agentId: workerId,
       contextSnapshot: { issueId },
-      createdAt: minuteAt(0),
+      createdAt: new Date("2026-07-09T12:00:00.000Z"),
     });
     await insertRun({
       companyId,
       agentId: workerId,
       status: "succeeded",
       contextSnapshot: { issueId },
-      createdAt: minuteAt(5),
+      createdAt: new Date("2026-07-09T12:05:00.000Z"),
     });
 
-    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const feed = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, { userId: "board-user" });
 
     expect(failedRunIds(feed)).not.toContain(failedId);
   });
@@ -170,17 +170,17 @@ describeEmbeddedPostgres("attention failed-run newer-run suppression", () => {
       companyId,
       agentId: workerId,
       contextSnapshot: { issueId: randomUUID() },
-      createdAt: minuteAt(0),
+      createdAt: new Date("2026-07-09T12:00:00.000Z"),
     });
     await insertRun({
       companyId,
       agentId: workerId,
       status: "succeeded",
       contextSnapshot: { issueId: randomUUID() },
-      createdAt: minuteAt(5),
+      createdAt: new Date("2026-07-09T12:05:00.000Z"),
     });
 
-    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const feed = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, { userId: "board-user" });
 
     expect(failedRunIds(feed)).toContain(failedId);
   });
@@ -192,23 +192,23 @@ describeEmbeddedPostgres("attention failed-run newer-run suppression", () => {
       companyId,
       agentId: workerId,
       contextSnapshot: { taskId },
-      createdAt: minuteAt(0),
+      createdAt: new Date("2026-07-09T12:00:00.000Z"),
     });
     const otherTaskFailedId = await insertExhaustedFailure({
       companyId,
       agentId: workerId,
       contextSnapshot: { taskId: randomUUID() },
-      createdAt: minuteAt(0),
+      createdAt: new Date("2026-07-09T12:00:00.000Z"),
     });
     await insertRun({
       companyId,
       agentId: workerId,
       status: "succeeded",
       contextSnapshot: { taskId },
-      createdAt: minuteAt(5),
+      createdAt: new Date("2026-07-09T12:05:00.000Z"),
     });
 
-    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const feed = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, { userId: "board-user" });
 
     expect(failedRunIds(feed)).not.toContain(failedId);
     expect(failedRunIds(feed)).toContain(otherTaskFailedId);
@@ -220,7 +220,7 @@ describeEmbeddedPostgres("attention failed-run newer-run suppression", () => {
       companyId,
       agentId: workerId,
       contextSnapshot: null,
-      createdAt: minuteAt(0),
+      createdAt: new Date("2026-07-09T12:00:00.000Z"),
     });
     // A newer keyed run must NOT suppress the empty-key failure.
     await insertRun({
@@ -228,10 +228,10 @@ describeEmbeddedPostgres("attention failed-run newer-run suppression", () => {
       agentId: workerId,
       status: "succeeded",
       contextSnapshot: { issueId: randomUUID() },
-      createdAt: minuteAt(3),
+      createdAt: new Date("2026-07-09T12:03:00.000Z"),
     });
 
-    const keyedFeed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const keyedFeed = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, { userId: "board-user" });
     expect(failedRunIds(keyedFeed)).toContain(failedId);
 
     // A newer empty-key run of the same agent suppresses it.
@@ -240,17 +240,17 @@ describeEmbeddedPostgres("attention failed-run newer-run suppression", () => {
       agentId: workerId,
       status: "running",
       contextSnapshot: null,
-      createdAt: minuteAt(6),
+      createdAt: new Date("2026-07-09T12:06:00.000Z"),
     });
 
-    const emptyKeyFeed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const emptyKeyFeed = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, { userId: "board-user" });
     expect(failedRunIds(emptyKeyFeed)).not.toContain(failedId);
   });
 
   it("does not let a failed run match itself, even at equal created_at", async () => {
     const { companyId, workerId } = await seedAgent("SUP");
     const issueId = randomUUID();
-    const at = minuteAt(0);
+    const at = new Date("2026-07-09T12:00:00.000Z");
     const failedId = await insertExhaustedFailure({
       companyId,
       agentId: workerId,
@@ -258,7 +258,7 @@ describeEmbeddedPostgres("attention failed-run newer-run suppression", () => {
       createdAt: at,
     });
 
-    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const feed = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, { userId: "board-user" });
 
     expect(failedRunIds(feed)).toContain(failedId);
   });
@@ -282,17 +282,17 @@ describeEmbeddedPostgres("attention failed-run newer-run suppression", () => {
       companyId,
       agentId: workerId,
       contextSnapshot: { issueId },
-      createdAt: minuteAt(0),
+      createdAt: new Date("2026-07-09T12:00:00.000Z"),
     });
     await insertRun({
       companyId,
       agentId: otherAgentId,
       status: "succeeded",
       contextSnapshot: { issueId },
-      createdAt: minuteAt(5),
+      createdAt: new Date("2026-07-09T12:05:00.000Z"),
     });
 
-    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const feed = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, { userId: "board-user" });
 
     expect(failedRunIds(feed)).toContain(failedId);
     // The worker itself stayed referenced by the failure row.
@@ -308,7 +308,7 @@ describeEmbeddedPostgres("attention failed-run newer-run suppression", () => {
       companyId,
       agentId: workerId,
       contextSnapshot: { issueId },
-      createdAt: minuteAt(0),
+      createdAt: new Date("2026-07-09T12:00:00.000Z"),
     });
     // Same key, same created window, but another company: must not suppress.
     await insertRun({
@@ -316,10 +316,10 @@ describeEmbeddedPostgres("attention failed-run newer-run suppression", () => {
       agentId: other.workerId,
       status: "succeeded",
       contextSnapshot: { issueId },
-      createdAt: minuteAt(5),
+      createdAt: new Date("2026-07-09T12:05:00.000Z"),
     });
 
-    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const feed = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, { userId: "board-user" });
 
     expect(failedRunIds(feed)).toContain(failedId);
     await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.companyId, other.companyId));
