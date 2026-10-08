@@ -80,6 +80,8 @@ const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
   review_routing: { label: "Review routing" },
   // myrmidon(1.6.3 PROMPT-BUDGET B): label for the prompt-budget threshold source.
   prompt_budget_alert: { label: "Prompt budget" },
+  // myrmidon(1.6.5-PAUSE-GUARD): label for the leftover-operator-pauses source.
+  pause_guard: { label: "Forgotten pauses" },
 };
 
 export function sourceMeta(kind: AttentionSourceKind): SourceMeta {
