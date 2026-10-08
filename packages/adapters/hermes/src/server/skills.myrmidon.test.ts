@@ -254,8 +254,12 @@ async function executeRun(config: Record<string, unknown>, onLog = vi.fn(async (
   } as never);
 }
 
+// The run-log sink used by reconcile takes one line; the execute adapter sink
+// takes (level, line). Collect every string argument so both shapes are read.
 function loggedLines(onLog: ReturnType<typeof vi.fn>): string[] {
-  return onLog.mock.calls.map((call: unknown) => String((call as unknown[])[1]));
+  return onLog.mock.calls.flatMap((call: unknown) =>
+    (call as unknown[]).map((argument) => String(argument)),
+  );
 }
 
 function stderrLines(onLog: ReturnType<typeof vi.fn>): string {
@@ -388,7 +392,7 @@ describe("links an earlier rollout left in a profile", () => {
 
     const target = path.join(profileA, "skills", "skill-a");
     expect(await fs.realpath(target)).toBe(await fs.realpath(runtimeSkills[1]!.source));
-    expect(await fs.readdir(path.join(profileA, "skills"))).toEqual(["skill-a"]);
+    expect(await fs.readdir(path.join(profileA, "skills"))).toEqual(["paperclip", "skill-a"]);
 
     const backups = await fs.readdir(path.join(profileA, "skills.pre-myrmidon"));
     expect(backups).toHaveLength(1);
