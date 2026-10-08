@@ -87,8 +87,8 @@ export async function loadLastPromptRuns(
   // Same `ARRAY[...]::uuid[]` construction the attention hot paths use — no
   // driver-side array binding to guess at.
   const agentIdArray = sql`ARRAY[${sql.join(agentIds.map((agentId) => sql`${agentId}::uuid`), sql`, `)}]::uuid[]`;
-  const rows = await db.execute(
-    sql<{ agent_id: string; id: string; usage_json: unknown }>`
+  const rows = (await db.execute(
+    sql`
       select r.agent_id, r.id, r.usage_json
       from unnest(${agentIdArray}) as a(agent_id)
       cross join lateral (
@@ -109,7 +109,7 @@ export async function loadLastPromptRuns(
       -- per-agent loop returned.
       order by r.agent_id asc, r.activity_at desc nulls first, r.id desc
     `,
-  );
+  ) as unknown as Array<{ agent_id: string; id: string; usage_json: unknown }>);
   // Per agent, the first row whose usageJson carries a usable prompt size —
   // the same defensive scan the old per-agent read did (parsePromptBreakdown
   // is pure, so it stays in JS and keeps the SQL portable across the rows).
