@@ -9,10 +9,9 @@
  * snapshot as the fallback for historical rows:
  *
  * - `runContextPersistenceFields(contextSnapshot)` builds the full `.values()`
- *   / `.set()` fragment: the nine thin columns derived from the same object
- *   that goes into `context_snapshot`, plus a persisted snapshot with the
- *   `executionContinuation` duplicate stripped (the operator still receives
- *   it in the wake payload, which is built from memory, not from this row).
+ *   / `.set()` fragment: the snapshot itself, unchanged (other readers on main
+ *   still take `executionContinuation` etc. from `context_snapshot`), plus the
+ *   nine thin columns derived from that same object.
  * - `heartbeatRunListContextColumnProjections` is the SELECT fragment the
  *   run list and attention feed read: `coalesce(<thin column>,
  *   context_snapshot ->> '<key>')`. Coalesce short-circuits when the thin
@@ -24,8 +23,8 @@ import { heartbeatRuns } from "./schema/heartbeat_runs.js";
 
 export const HEARTBEAT_RUN_CONTEXT_SUMMARY_MAX_CHARS = 512;
 
-/** Keys of the context snapshot that duplicate wake payloads into the row. */
-export const RUN_CONTEXT_NON_PERSISTED_KEY = "executionContinuation";
+/** Snapshot key whose `objective` is the fallback for the summary column. */
+export const RUN_CONTEXT_CONTINUATION_KEY = "executionContinuation";
 
 function nonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
@@ -51,8 +50,8 @@ export type HeartbeatRunContextColumnValues = {
 /**
  * Derives the nine thin column values from a context snapshot object. The
  * summary column carries the short task label (`taskTitle`, falling back to
- * the continuation `objective`) so list views keep a readable summary even
- * after `executionContinuation` stopped being persisted.
+ * the continuation `objective`) so list views keep a readable summary
+ * without reading the wide snapshot.
  */
 export function readRunContextColumnValues(
   contextSnapshot: Record<string, unknown> | null | undefined,
@@ -60,7 +59,7 @@ export function readRunContextColumnValues(
   const source = contextSnapshot ?? {};
   const summary =
     nonEmptyString(source.taskTitle) ??
-    readObjective(source[RUN_CONTEXT_NON_PERSISTED_KEY]);
+    readObjective(source[RUN_CONTEXT_CONTINUATION_KEY]);
   return {
     contextIssueId: nonEmptyString(source.issueId),
     contextTaskId: nonEmptyString(source.taskId),
@@ -77,39 +76,16 @@ export function readRunContextColumnValues(
 }
 
 /**
- * Copy of the snapshot without the `executionContinuation` duplicate. The
- * in-memory context keeps the envelope (wake payload, resumeDelta logic);
- * only the persisted row drops it.
- */
-export function stripRunContextForPersistence<T extends Record<string, unknown>>(
-  contextSnapshot: T | null | undefined,
-): Record<string, unknown> | null {
-  if (contextSnapshot == null) return null;
-  if (
-    typeof contextSnapshot !== "object" ||
-    Array.isArray(contextSnapshot) ||
-    !(RUN_CONTEXT_NON_PERSISTED_KEY in contextSnapshot)
-  ) {
-    return contextSnapshot;
-  }
-  const { [RUN_CONTEXT_NON_PERSISTED_KEY]: _dropped, ...rest } = contextSnapshot;
-  return rest;
-}
-
-/**
  * Full write fragment for insert/update of a run row that carries a context
- * snapshot: the stripped snapshot plus its nine thin columns, computed from
- * the same object so the columns can never drift from the snapshot.
+ * snapshot: the snapshot as is plus its nine thin columns, computed from the
+ * same object so the columns can never drift from the snapshot.
  */
 export function runContextPersistenceFields(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ): { contextSnapshot: Record<string, unknown> | null } & HeartbeatRunContextColumnValues {
-  // Column values are computed from the full snapshot (the summary falls back
-  // to the continuation objective), then the duplicate is stripped for storage.
-  const columns = readRunContextColumnValues(contextSnapshot);
   return {
-    contextSnapshot: stripRunContextForPersistence(contextSnapshot),
-    ...columns,
+    contextSnapshot: contextSnapshot ?? null,
+    ...readRunContextColumnValues(contextSnapshot),
   };
 }
 

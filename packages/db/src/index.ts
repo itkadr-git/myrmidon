@@ -46,10 +46,9 @@ export {
   runContextPersistenceFields,
   runContextWritePatch,
   readRunContextColumnValues,
-  stripRunContextForPersistence,
   heartbeatRunListContextColumnProjections,
   attentionRunIssueTaskColumns,
   HEARTBEAT_RUN_CONTEXT_SUMMARY_MAX_CHARS,
-  RUN_CONTEXT_NON_PERSISTED_KEY,
+  RUN_CONTEXT_CONTINUATION_KEY,
   type HeartbeatRunContextColumnValues,
 } from "./run-context-columns.js";

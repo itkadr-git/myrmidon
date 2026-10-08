@@ -7,7 +7,6 @@ import {
   readRunContextColumnValues,
   runContextPersistenceFields,
   runContextWritePatch,
-  stripRunContextForPersistence,
 } from "./run-context-columns.js";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { heartbeatRuns } from "./schema/heartbeat_runs.js";
@@ -76,26 +75,20 @@ describe("readRunContextColumnValues", () => {
   });
 });
 
-describe("stripRunContextForPersistence", () => {
-  it("drops the executionContinuation duplicate and keeps everything else", () => {
+describe("runContextPersistenceFields", () => {
+  it("persists the snapshot unchanged, executionContinuation included", () => {
     const context = {
       issueId: "issue-1",
       wakeReason: "heartbeat_timer",
-      executionContinuation: { objective: "big", messages: new Array(500) },
+      executionContinuation: { objective: "big objective", messages: [] },
     };
-    const stripped = stripRunContextForPersistence(context);
-    expect(stripped).not.toHaveProperty("executionContinuation");
-    expect(stripped).toMatchObject({ issueId: "issue-1", wakeReason: "heartbeat_timer" });
-    // The in-memory context keeps the envelope: the wake payload is built
-    // from it before persistence, and resumeDelta still works.
-    expect(context.executionContinuation).toBeDefined();
-    expect(stripped).not.toBe(context);
-  });
-
-  it("passes through snapshots without the envelope without copying", () => {
-    const context = { issueId: "issue-1" };
-    expect(stripRunContextForPersistence(context)).toBe(context);
-    expect(stripRunContextForPersistence(null)).toBeNull();
+    const fields = runContextPersistenceFields(context);
+    // Readers on main take the continuation envelope from context_snapshot
+    // (execution-continuation.ts priorEnvelope, native-completion-feedback.ts).
+    expect(fields.contextSnapshot).toBe(context);
+    expect(fields.contextSnapshot).toHaveProperty("executionContinuation");
+    expect(fields.contextIssueId).toBe("issue-1");
+    expect(fields.contextRunSummary).toBe("big objective");
   });
 });
 
@@ -114,7 +107,7 @@ describe("runContextPersistenceFields", () => {
       executionContinuation: { objective: "big envelope" },
     });
     expect(Object.keys(fields)).toHaveLength(10); // 9 columns + contextSnapshot
-    expect(fields.contextSnapshot).not.toHaveProperty("executionContinuation");
+    expect(fields.contextSnapshot).toHaveProperty("executionContinuation");
     expect(fields).toMatchObject({
       contextIssueId: "issue-1",
       contextTaskId: "task-1",
@@ -128,18 +121,17 @@ describe("runContextPersistenceFields", () => {
     });
   });
 
-  it("keeps the objective summary even though the envelope is not persisted", () => {
+  it("takes the summary from the continuation objective when there is no task title", () => {
     const fields = runContextPersistenceFields({
       issueId: "issue-1",
       executionContinuation: { objective: "finish the migration" },
     });
     expect(fields.contextRunSummary).toBe("finish the migration");
-    expect(fields.contextSnapshot).not.toHaveProperty("executionContinuation");
   });
 });
 
 describe("runContextWritePatch", () => {
-  it("replaces a plain-object snapshot with the stripped snapshot plus columns", () => {
+  it("replaces a plain-object snapshot with the snapshot plus columns", () => {
     const patch = runContextWritePatch({
       status: "queued",
       contextSnapshot: { issueId: "issue-1", executionContinuation: { objective: "o" } },
@@ -149,7 +141,7 @@ describe("runContextWritePatch", () => {
       contextIssueId: "issue-1",
       contextRunSummary: "o",
     });
-    expect(patch.contextSnapshot).not.toHaveProperty("executionContinuation");
+    expect(patch.contextSnapshot).toHaveProperty("executionContinuation");
   });
 
   it("leaves SQL-managed snapshot patches and patches without snapshots untouched", () => {

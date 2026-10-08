@@ -1,5 +1,5 @@
-// OPE-5007 П2: the 0309 run-context-columns migration — backfill over
-// historical rows, idempotency, and the thin-column read shape.
+// OPE-5007 П2: the 0309 run-context-columns migration — catalog-only shape,
+// idempotency, and the thin-column read shape.
 import { readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -31,7 +31,7 @@ afterEach(async () => {
 });
 
 d("run context columns migration", () => {
-  it("creates the nine columns, backfills old snapshot rows, and re-applies cleanly", async () => {
+  it("creates the nine columns with ADD COLUMN only and re-applies cleanly", async () => {
     const dbh = await startEmbeddedPostgresTestDatabase("pap165-cols-");
     cleanups.push(() => dbh.cleanup());
     const sql = postgres(dbh.connectionString, { max: 1 });
@@ -60,6 +60,28 @@ d("run context columns migration", () => {
       ].sort(),
     );
 
+    // The migration is catalog-only: no DML, no PL/pgSQL loop. Backfill is a
+    // separate batched job (server run-context-columns-backfill), so the
+    // migration transaction never rewrites rows of the hot table.
+    const statements = await migrationStatements();
+    expect(statements).toHaveLength(9);
+    for (const statement of statements) {
+      const code = statement
+        .split("\n")
+        .filter((line) => !line.trim().startsWith("--"))
+        .join("\n");
+      expect(code).toMatch(/^ALTER TABLE "heartbeat_runs" ADD COLUMN IF NOT EXISTS "context_\w+" text;?$/);
+    }
+    const rawSql = statements.join("\n");
+    expect(rawSql).not.toMatch(/\bUPDATE\b\s+"?heartbeat_runs/i);
+    expect(rawSql).not.toMatch(/\bDO\b\s+\$/i);
+
+    // Idempotent re-apply on top of the finished chain.
+    for (const statement of statements) {
+      await sql.unsafe(statement);
+    }
+
+    // Rows written before the backfill ran keep resolving through coalesce.
     const companyId = randomUUID();
     const agentId = randomUUID();
     await sql`
@@ -70,87 +92,17 @@ d("run context columns migration", () => {
       INSERT INTO "agents" ("id", "company_id", "name", "role", "status", "adapter_type", "adapter_config", "runtime_config", "permissions")
       VALUES (${agentId}, ${companyId}, 'Coder', 'engineer', 'idle', 'codex_local', '{}'::jsonb, '{}'::jsonb, '{}'::jsonb)
     `;
-
-    // Historical row: written before the columns existed — snapshot carries
-    // everything, thin columns are NULL. This re-runs the migration's DO
-    // block to exercise exactly the backfill path.
     const oldRunId = randomUUID();
     const issueId = randomUUID();
-    const taskId = randomUUID();
     await sql`
       INSERT INTO "heartbeat_runs" ("id", "company_id", "agent_id", "status", "context_snapshot", "created_at", "updated_at")
-      VALUES (
-        ${oldRunId}, ${companyId}, ${agentId}, 'succeeded',
-        ${sql.json({
-          issueId,
-          taskId,
-          taskKey: "COLS-1",
-          commentId: "comment-1",
-          wakeCommentId: "wake-comment-1",
-          wakeReason: "issue_commented",
-          wakeSource: "user",
-          wakeTriggerDetail: "manual",
-          taskTitle: "OPE-5007: thin columns",
-          prompt: "x".repeat(2048),
-        } as never)},
-        now(), now()
-      )
+      VALUES (${oldRunId}, ${companyId}, ${agentId}, 'succeeded', ${sql.json({ issueId } as never)}, now(), now())
     `;
-    // A row with no snapshot object at all must survive the backfill untouched.
-    const emptyRunId = randomUUID();
-    await sql`
-      INSERT INTO "heartbeat_runs" ("id", "company_id", "agent_id", "status", "context_snapshot", "created_at", "updated_at")
-      VALUES (${emptyRunId}, ${companyId}, ${agentId}, 'queued', NULL, now(), now())
-    `;
-
-    const statements = await migrationStatements();
-    expect(statements.length).toBeGreaterThanOrEqual(10);
-    for (const statement of statements) {
-      await sql.unsafe(statement);
-    }
-
-    const backfilled = await sql`
-      SELECT context_issue_id, context_task_id, context_task_key, context_comment_id,
-             context_wake_comment_id, context_wake_reason, context_wake_source,
-             context_wake_trigger_detail, context_run_summary
-      FROM "heartbeat_runs" WHERE "id" = ${oldRunId}
-    `;
-    expect(backfilled[0]).toEqual({
-      context_issue_id: issueId,
-      context_task_id: taskId,
-      context_task_key: "COLS-1",
-      context_comment_id: "comment-1",
-      context_wake_comment_id: "wake-comment-1",
-      context_wake_reason: "issue_commented",
-      context_wake_source: "user",
-      context_wake_trigger_detail: "manual",
-      context_run_summary: "OPE-5007: thin columns",
-    });
-    const empty = await sql`
-      SELECT context_issue_id, context_run_summary FROM "heartbeat_runs" WHERE "id" = ${emptyRunId}
-    `;
-    expect(empty[0]).toEqual({ context_issue_id: null, context_run_summary: null });
-
-    // Idempotency: re-running ADD COLUMN + the guarded backfill is a no-op.
-    for (const statement of statements) {
-      await sql.unsafe(statement);
-    }
-    const again = await sql`
-      SELECT context_issue_id, context_run_summary FROM "heartbeat_runs" WHERE "id" = ${oldRunId}
-    `;
-    expect(again[0]).toEqual({
-      context_issue_id: issueId,
-      context_run_summary: "OPE-5007: thin columns",
-    });
-
-    // The coalesce read shape works for both row families.
     const readBack = await sql`
       SELECT coalesce(context_issue_id, context_snapshot ->> 'issueId') AS issue_id
-      FROM "heartbeat_runs"
-      WHERE "id" IN (${oldRunId}, ${emptyRunId})
-      ORDER BY "id"
+      FROM "heartbeat_runs" WHERE "id" = ${oldRunId}
     `;
-    expect(readBack.map((r) => r.issue_id)).toContain(issueId);
+    expect(readBack[0]?.issue_id).toBe(issueId);
   }, 240_000);
 
   it("the new SELECT list reads thin columns without detoasting toast-heavy snapshots", async () => {

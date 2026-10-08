@@ -10,10 +10,10 @@
   the attention feed and the exhausted-runs query read the columns with a
   `coalesce(column, context_snapshot ->> key)` fallback, so historical rows
   keep resolving while the board's hottest queries stop detoasting dozens of
-  kilobytes of snapshot per row. Migration `0307` backfills existing rows in
-  primary-key batches. The `executionContinuation` envelope is no longer
-  persisted into `context_snapshot` (the wake payload keeps carrying it from
-  memory), which removes the largest per-run snapshot duplicate.
+  kilobytes of snapshot per row. Migration `0309` only adds the columns (no
+  table rewrite); a background job fills historical rows in small primary-key
+  batches, committing each batch and pausing between them, so the hot table is
+  never held by one long transaction. `context_snapshot` is stored unchanged.
 
 ## changelog-ru
 
@@ -27,7 +27,8 @@
   Список прогонов, attention-фид и запрос исчерпанных прогонов читают колонки
   с фолбэком `coalesce(колонка, context_snapshot ->> ключ)`: старые строки
   продолжают резолвиться, а самые частые запросы доски перестают детостить
-  десятки килобайт снапшота на строку. Миграция `0307` заполняет существующие
-  строки батчами по первичному ключу. Конверт `executionContinuation` больше
-  не персистится в `context_snapshot` (в payload побудки он по-прежнему
-  попадает из памяти) — исчезает крупнейший дубль в снапшоте прогона.
+  десятки килобайт снапшота на строку. Миграция `0309` только добавляет колонки
+  (без перезаписи таблицы); существующие строки заполняет фоновая джоба малыми
+  пачками по первичному ключу с коммитом на каждую пачку и паузой между ними,
+  поэтому горячую таблицу не держит одна долгая транзакция. `context_snapshot`
+  хранится без изменений.

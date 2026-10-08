@@ -122,14 +122,14 @@ describeEmbeddedPostgres("heartbeat run context columns", () => {
       .insert(heartbeatRuns)
       .values({ id: runId, companyId, agentId, status: "succeeded", ...runContextPersistenceFields(contextSnapshot) });
 
-    // The persisted snapshot no longer carries the continuation duplicate,
-    // while the wake payload path (built from the in-memory context) does.
+    // The persisted snapshot stays whole: readers on main take the
+    // continuation envelope from it.
     const persisted = await db
       .select()
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0]!);
-    expect(persisted.contextSnapshot).not.toHaveProperty("executionContinuation");
+    expect(persisted.contextSnapshot).toHaveProperty("executionContinuation");
     expect(persisted.contextIssueId).toBe(issueId);
     expect(persisted.contextTaskId).toBe(issueId);
     expect(persisted.contextTaskKey).toBe("COL-2");
@@ -175,7 +175,7 @@ describeEmbeddedPostgres("heartbeat run context columns", () => {
       message: "Bounded retry exhausted receipt old",
     });
 
-    // New row: thin columns filled, snapshot stripped by the helper.
+    // New row: thin columns filled, snapshot kept whole.
     await db
       .insert(heartbeatRuns)
       .values({
