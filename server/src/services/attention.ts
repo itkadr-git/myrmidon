@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -1768,51 +1768,63 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
 
       const failedRows = await listAttentionExhaustedRuns(db, companyId);
       const failedIssueIds = failedRows.map((row) => readRunIssueId(row.contextSnapshot));
-      const failedAgentIds = [...new Set(failedRows.map((row) => row.agentId))];
-      const oldestFailedRunCreatedAt = failedRows.reduce<Date | null>((oldest, row) => {
-        if (!oldest || row.createdAt < oldest) return row.createdAt;
-        return oldest;
-      }, null);
-      const [failedIssueMap, failedImageMap, newerRuns] = await Promise.all([
+      const [failedIssueMap, failedImageMap, newerRunKeys] = await Promise.all([
         issueSummaryMap(
           db,
           companyId,
           failedIssueIds,
         ),
         issueImageMap(db, companyId, failedIssueIds),
-        oldestFailedRunCreatedAt && failedAgentIds.length > 0
-          ? db
-            .select({
-              agentId: heartbeatRuns.agentId,
-              createdAt: heartbeatRuns.createdAt,
-              // Project just the ids readRunIssueId needs; pulling the whole
-              // context_snapshot detoasts megabytes per feed build.
-              runIssueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
-              runTaskId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'taskId'`,
-            })
-            .from(heartbeatRuns)
-            .where(and(
-              eq(heartbeatRuns.companyId, companyId),
-              inArray(heartbeatRuns.agentId, failedAgentIds),
-              gt(heartbeatRuns.createdAt, oldestFailedRunCreatedAt),
-            ))
-          : Promise.resolve([]),
+        // Suppression check: for each exhausted run ask "is there ANY newer run
+        // of the same agent on the same task key" via the
+        // heartbeat_runs_company_ctx_{issue,task}_created_idx expression
+        // indexes, instead of detoasting every newer run's context_snapshot
+        // (thousands of rows per feed build). One lateral EXISTS per key, one
+        // round trip for the whole set.
+        failedRows.length > 0
+          ? db.execute(sql<{ run_id: string }>`
+              select k.run_id from (values ${sql.join(
+                failedRows.map((row) => {
+                  const issueId = row.contextSnapshot?.issueId;
+                  const taskId = row.contextSnapshot?.taskId;
+                  return sql`(${row.id}::uuid, ${row.agentId}::uuid, ${typeof issueId === "string" && issueId.length > 0 ? issueId : null}::text, ${typeof taskId === "string" && taskId.length > 0 ? taskId : null}::text, ${row.createdAt.toISOString()}::timestamptz)`;
+                }),
+                sql`, `,
+              )}) as k(run_id, agent_id, issue_id, task_id, created_at)
+              where (
+                k.issue_id is not null and exists (
+                  select 1 from ${heartbeatRuns} nr
+                  where nr.company_id = ${companyId}
+                    and nr.agent_id = k.agent_id
+                    and nr.context_snapshot ->> 'issueId' = k.issue_id
+                    and nr.created_at > k.created_at
+                )
+              ) or (
+                k.issue_id is null and k.task_id is not null and exists (
+                  select 1 from ${heartbeatRuns} nr
+                  where nr.company_id = ${companyId}
+                    and nr.agent_id = k.agent_id
+                    and nr.context_snapshot ->> 'issueId' is null
+                    and nr.context_snapshot ->> 'taskId' = k.task_id
+                    and nr.created_at > k.created_at
+                )
+              ) or (
+                k.issue_id is null and k.task_id is null and exists (
+                  select 1 from ${heartbeatRuns} nr
+                  where nr.company_id = ${companyId}
+                    and nr.agent_id = k.agent_id
+                    and nr.context_snapshot ->> 'issueId' is null
+                    and nr.context_snapshot ->> 'taskId' is null
+                    and nr.created_at > k.created_at
+                )
+              )`)
+          : Promise.resolve([] as Array<{ run_id: string }>),
       ]);
-      const latestRunCreatedAtByKey = new Map<string, Date>();
-      for (const newerRun of newerRuns) {
-        const newerRunIssueId = readRunIssueId({ issueId: newerRun.runIssueId, taskId: newerRun.runTaskId });
-        const newerRunKey = `${newerRun.agentId}:${newerRunIssueId ?? ""}`;
-        const latestCreatedAt = latestRunCreatedAtByKey.get(newerRunKey);
-        if (!latestCreatedAt || newerRun.createdAt > latestCreatedAt) {
-          latestRunCreatedAtByKey.set(newerRunKey, newerRun.createdAt);
-        }
-      }
+      const suppressedRunIds = new Set(newerRunKeys.map((row) => row.run_id));
       for (const run of failedRows) {
-        const issueId = readRunIssueId(run.contextSnapshot);
-        const runKey = `${run.agentId}:${issueId ?? ""}`;
-        const hasNewerRun = (latestRunCreatedAtByKey.get(runKey)?.getTime() ?? 0) > run.createdAt.getTime();
-        if (hasNewerRun) continue;
+        if (suppressedRunIds.has(run.id)) continue;
 
+        const issueId = readRunIssueId(run.contextSnapshot);
         const issue = issueId ? failedIssueMap.get(issueId) ?? null : null;
         const dedupKey = `run:${run.id}`;
         add(createItem({
