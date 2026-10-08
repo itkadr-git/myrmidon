@@ -21,7 +21,10 @@
 #      same CI-only rule deploy.sh enforces);
 #   4. generates every secret (database password, session secret, tool-action
 #      signing secret), writes `deploy.env` (mode 0600) and `compose.yml`;
-#   5. pulls the images and brings up the database, the board and dockergate;
+#   5. pulls the images and brings up the database first, enables the `vector`
+#      extension in it (the knowledge corpus of 1.6.6 stores embeddings in a
+#      `vector` column, so the extension must exist before the board starts) and
+#      only then brings up the board and dockergate;
 #   6. waits for `/api/health` to answer `status: ok` and prints the address, the
 #      first-administrator link and the paths of the files that were written.
 #
@@ -44,6 +47,11 @@ MYR_REPO="${MYRMIDON_INSTALL_REPO:-itkadr-git/myrmidon}"
 # shared NAT address exhausts quickly.
 MYR_WEB="${MYRMIDON_INSTALL_WEB_URL:-https://github.com}"
 MYR_PROJECT=myrmidon
+# The extension version the database image of a fresh installation carries
+# (pgvector/pgvector:0.8.7-pg17 in write_compose below). A fresh installation has
+# to end up with this version, not merely with the extension present: the
+# knowledge corpus pins its embeddings to it.
+MYR_PGVECTOR_VERSION="0.8.7"
 
 DIR=""
 PORT=""
@@ -417,7 +425,12 @@ write_compose() {
 # database, board and dockergate. Update it by re-running the installer.
 services:
   db:
-    image: postgres:17-alpine
+    # CORPUS (1.6.6): the knowledge corpus keeps embeddings in a `vector` column,
+    # so the database image carries the pgvector extension and the installer
+    # enables it right after the database is up (enable_vector_extension). The
+    # plain postgres:17-alpine image has no vector binary — CREATE EXTENSION dies
+    # on it with "could not open extension control file".
+    image: pgvector/pgvector:0.8.7-pg17
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-paperclip}
@@ -575,6 +588,51 @@ wait_health() {
   return 1
 }
 
+# The database container exists before the server inside it accepts connections:
+# a `compose exec ... psql` right after `up -d db` answers "the database system is
+# starting up". The probe is the one the generated healthcheck uses.
+wait_db_ready() {
+  local deadline="${1:-${MYRMIDON_INSTALL_DB_TIMEOUT:-180}}" waited=0
+  while (( waited < deadline )); do
+    if compose exec -T db pg_isready -U "${POSTGRES_USER:-paperclip}" -d "${POSTGRES_DB:-paperclip}" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 2
+    waited=$((waited + 2))
+    if (( waited % 30 == 0 )); then
+      say "Waiting for the database to accept connections (${waited}s)..." \
+          "Жду, пока база начнёт принимать подключения (${waited} с)..."
+    fi
+  done
+  return 1
+}
+
+# CORPUS (1.6.6): the knowledge corpus keeps embeddings in a `vector` column, so
+# the extension has to be ENABLED in the board's database — an image that merely
+# ships the pgvector binary is not enough (the criterion of the parent ticket:
+# `SELECT extversion FROM pg_extension WHERE extname='vector'` answers 0.8.7
+# straight after a fresh installation). The statement is idempotent, a re-run
+# changes nothing. It belongs together with the image line of the generated
+# compose (write_compose): on the plain postgres:17-alpine image it fails with
+# "could not open extension control file". An installation that already runs on
+# that image needs a moved database, not this step — see
+# docs/myrmidon/runbooks/pgvector-extension.md.
+enable_vector_extension() {
+  local version
+  wait_db_ready || die "the database did not start accepting connections; see 'docker compose logs db' in $DIR"
+  log "enabling the vector extension in the database"
+  compose exec -T db psql -U "${POSTGRES_USER:-paperclip}" -d "${POSTGRES_DB:-paperclip}" \
+    -v ON_ERROR_STOP=1 -c 'CREATE EXTENSION IF NOT EXISTS vector;' >/dev/null \
+    || die "cannot enable the vector extension in the database: the db image must ship pgvector (pgvector/pgvector:0.8.7-pg17). See docs/myrmidon/runbooks/pgvector-extension.md"
+  version="$(compose exec -T db psql -U "${POSTGRES_USER:-paperclip}" -d "${POSTGRES_DB:-paperclip}" \
+    -tAc "SELECT extversion FROM pg_extension WHERE extname='vector';" 2>/dev/null | tr -d '[:space:]')" || true
+  [[ -n "$version" ]] \
+    || die "the vector extension is missing after CREATE EXTENSION; see docs/myrmidon/runbooks/pgvector-extension.md"
+  [[ "$version" == "$MYR_PGVECTOR_VERSION" ]] \
+    || die "the database reports vector $version, but the image pgvector/pgvector:${MYR_PGVECTOR_VERSION}-pg17 installs vector $MYR_PGVECTOR_VERSION; see docs/myrmidon/runbooks/pgvector-extension.md"
+  log "vector extension: $version"
+}
+
 diagnose() {
   say "The board did not become healthy. The last log lines:" \
       "Доска не стала здоровой. Последние строки журнала:"
@@ -620,7 +678,13 @@ do_install() {
 
   log "pulling the images (this may take a few minutes)"
   ( cd "$DIR" && compose pull --quiet ) || die "cannot pull the images of $RELEASE_TAG"
-  log "starting the database, the board and dockergate"
+  # The database comes up on its own first: the board must not start before the
+  # extension exists (the corpus module of 1.6.6 reads and writes the `vector`
+  # type from its first request), so the extension step must not race the board.
+  log "starting the database"
+  ( cd "$DIR" && compose up -d db ) || die "docker compose up failed"
+  enable_vector_extension
+  log "starting the board and dockergate"
   ( cd "$DIR" && compose up -d ) || die "docker compose up failed"
 
   log "waiting for /api/health"

@@ -25,8 +25,9 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "../../__tests__/helpers/embedded-postgres.js";
-import { computeBaselineMetrics } from "./service.js";
+import { computeBaselineMetrics, getLatestBaselineSnapshot } from "./service.js";
 import { runBaselineSnapshot } from "./startup.js";
+import type { BaselineMetricsResponse } from "./service.js";
 import type { BaselineWindow } from "./metrics.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -370,9 +371,62 @@ describeEmbeddedPostgres("myrmidon(1.6-BASELINE) live metrics and the snapshot j
     expect(row.windowFrom).toEqual(new Date(JOB_NOW.getTime() - 14 * 86_400_000));
     expect(row.windowTo).toEqual(JOB_NOW);
     expect(row.generatedAt).toEqual(JOB_NOW);
-
     const payload = row.payload as unknown as { byProject: Array<{ key: string | null; costPerTask: { totalCents: number } }> };
     expect(payload.byProject).toHaveLength(2);
     expect(payload.byProject.find((group) => group.key === projectA)!.costPerTask.totalCents).toBe(300);
   }, 60_000);
+
+  it("reads the latest snapshot per company and round-trips the payload (1.6.2-BASELINE-C)", async () => {
+    const otherCompany = await db
+      .insert(companies)
+      .values({ name: `company-b ${randomUUID()}`, issuePrefix: `BL${randomUUID().slice(0, 6).toUpperCase()}` })
+      .returning()
+      .then((rows) => rows[0]!);
+
+    const marker = (label: string): BaselineMetricsResponse => ({
+      window: { from: "2026-09-01T00:00:00.000Z", to: "2026-09-15T00:00:00.000Z" },
+      generatedAt: "2026-09-15T00:00:00.000Z",
+      source: { statusLog: "activity_log", costs: "litellm_cost_events" },
+      byProject: [],
+      byRole: [
+        {
+          key: label,
+          tasksCompleted: 1,
+          cycleTimeHours: { mean: 1, median: 1, p90: 1 },
+          timeInReviewHours: { mean: 1, median: 1 },
+          returnRate: { enteredReview: 1, returned: 0, rate: 0 },
+          blockedHours: { total: 0, mean: 0, topCauses: [] },
+          runsPerTask: { total: 1, mean: 1 },
+          costPerTask: { totalCents: 1, meanCents: 1 },
+        },
+      ],
+    });
+
+    const snapshot = (cid: string, generatedAt: string, label: string) => ({
+      id: randomUUID(),
+      companyId: cid,
+      windowFrom: new Date("2026-09-01T00:00:00Z"),
+      windowTo: new Date("2026-09-15T00:00:00Z"),
+      generatedAt: new Date(generatedAt),
+      payload: JSON.parse(JSON.stringify(marker(label))) as Record<string, unknown>,
+    });
+
+    await db.insert(baselineMetricSnapshots).values([
+      snapshot(companyId, "2026-09-10T00:00:00Z", "older"),
+      snapshot(companyId, "2026-09-14T00:00:00Z", "newer"),
+      snapshot(otherCompany.id, "2026-09-16T00:00:00Z", "other-company"),
+    ]);
+
+    const latest = await getLatestBaselineSnapshot(db, companyId);
+    expect(latest).not.toBeNull();
+    // Latest by generatedAt for this company, payload round-trips intact.
+    expect(latest!.byRole[0]!.key).toBe("newer");
+    expect(latest!.byRole[0]!.costPerTask.meanCents).toBe(1);
+
+    const other = await getLatestBaselineSnapshot(db, otherCompany.id);
+    expect(other!.byRole[0]!.key).toBe("other-company");
+
+    const none = await getLatestBaselineSnapshot(db, randomUUID());
+    expect(none).toBeNull();
+  });
 });

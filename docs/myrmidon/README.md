@@ -46,6 +46,7 @@ Myrmidon — плоскость управления компаниями из �
 | [DIVERGENCE.md](DIVERGENCE.md) | Реестр наших отличий от вендора |
 | [SETTINGS.md](SETTINGS.md) | Наши настройки (переменные `MYRMIDON_*`) и их значения по умолчанию (русская версия: [SETTINGS.ru.md](SETTINGS.ru.md)) |
 | [ci.md](ci.md) | CI: проверки, сканеры, сборка образа |
+| [merge-queue.md](merge-queue.md) | Очередь слияний GitHub: кандидат проверяется поверх свежего main, роли ревьюера и стюарда (русская версия: [merge-queue.ru.md](merge-queue.ru.md)) |
 | [deploy.md](deploy.md) | Выкат, обновление и откат по отпечатку образа (русская версия: [deploy.ru.md](deploy.ru.md)) |
 | [dockergate.md](dockergate.md) | Allowlist-прокси к Docker-демону для контейнеров агентов (русская версия: [dockergate.ru.md](dockergate.ru.md)) |
 | [egress.md](egress.md) | Правила исходящих обращений во внешние сервисы |
@@ -101,9 +102,14 @@ Myrmidon — плоскость управления компаниями из �
 | [guides/telegram-multi-agent.md](guides/telegram-multi-agent.md) | Адресация любого агента компании из одной Telegram-лички (TG-MULTI-AGENT): `@`-упоминания и команды `/agents`, `/to`, `/who`, алиасы `telegramAliases`, защита |
 | [guides/telegram-topic-inbound.md](guides/telegram-topic-inbound.md) | Топики Telegram-группы как входящие задач (TG-NOTIFY, часть D): гейт `telegramNotify.inbound.{enabled,requireMention}` (умолчания выключены), топик → связанная беседа или новая задача со ссылкой на ветку |
 | [guides/budget-enforcement.md](guides/budget-enforcement.md) | Режимы исполнения лимитов расхода (1.7 BUDGET-CONFIG B): `signal_only` по умолчанию (инцидент и сигнал без паузы), `soft` (пауза и карточка владельцу), `hard` (отказ новым прогонам); экран Instance → General, API и прецедентность настройка → env → дефолт |
+| [guides/prompt-budget-advice.md](guides/prompt-budget-advice.md) | Рекомендации по бюджету промпта (1.6.3 PROMPT-BUDGET C): панель на карточке агента с разбивкой последнего прогона по частям, правила и пороги советника, кнопка «Deep analysis» с задачей агенту-оптимизатору, поле `promptBudget.optimizerAgentId`, API |
 | [guides/vendor-share-analysis.md](guides/vendor-share-analysis.md) | Доля файлов, унаследованных от вендора: скрипт `vendor-share.mjs`, что считается унаследованным (путь в базовом коммите + сходство строк не ниже порога), исключения, фиксация числа в релизном ритуале |
 | [guides/baseline-snapshots-api.md](guides/baseline-snapshots-api.md) | Снимки метрик базовой линии (1.6.2 BASELINE): создание снимка произвольного окна, список и выборка по id, метка и закрепление как точка отсчёта, проверки доступа |
+| [guides/baseline-comparison.md](guides/baseline-comparison.md) | Сравнение с закреплённым снимком на экране Quality (1.6.5 BASELINE): блок «текущее окно / базовая линия / дельта» по проектам и ролям, состояния «нет базовой линии» и ошибки сравнения |
 | [guides/github-shared-identity.md](guides/github-shared-identity.md) | Авторизоваться в GitHub один раз на весь сервер (GITHUB-SHARED-IDENTITY): свои GitHub App вместо облачного коннектора вендора, токены установки на один репозиторий выпускает доска, выбор приложения по целевому репозиторию, авторство агента, аудит, выключатель коннектора вендора |
+| [guides/debate-asym.md](guides/debate-asym.md) | Движок асимметричных дебатов (1.7 DEBATE-ASYM A): генератор/критик/судья из разных семейств моделей, независимые первые ответы, ≤3 круга, потолок токенов, остановка по `[AGREE]`; документ `debate-result` на задаче со стоимостью, cost-события на уровне задачи, живые настройки и запуск по API через матрицу автономии |
+| [media-tools.md](media-tools.md) | Общие медиа- и офисные инструменты для контейнерных ботов: сервис media-mcp, хранилище и квоты, инструменты (ffmpeg, офис, OCR, `dwg_convert`), развёртывание и границы изоляции |
+| [guides/parallel-helpers.md](guides/parallel-helpers.md) | Параллельные помощники (1.6 PARALLEL-HELPERS): секция «Parallel helpers» в карточке агента (вкл/выкл, лимит, модель, бюджет ходов), потолок и умолчание компании с подсказкой о ёмкости в настройках инстанса, секция `delegation` в профиле бота, встроенный навык |
 
 ## Сборка и запуск
 

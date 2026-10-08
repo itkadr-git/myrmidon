@@ -230,6 +230,21 @@ vi.mock("../services/instance-settings.js", () => ({
   }),
 }));
 
+// The autonomy matrix gate is covered by its own route tests
+// (src/myrmidon/autonomy/routes-1.6.2.myrmidon.test.ts). This suite exercises
+// cross-tenant authorization with a bare `{}` db, so the db-backed gate is
+// stubbed to allow.
+vi.mock("../myrmidon/autonomy/gate.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../myrmidon/autonomy/gate.js")>();
+  return {
+    ...actual,
+    dbAutonomyGate: () => ({
+      decide: async (_req: unknown, actionClass: string) => ({ verdict: "allowed", role: null, actionClass }),
+      assertAllowed: async (_req: unknown, actionClass: string) => ({ verdict: "allowed", role: null, actionClass }),
+    }),
+  };
+});
+
 let routeModules:
   | Promise<[
     typeof import("../middleware/index.js"),

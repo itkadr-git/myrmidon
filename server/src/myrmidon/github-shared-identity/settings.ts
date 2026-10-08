@@ -13,17 +13,24 @@
 //   - `apps[]` — one entry per App installation: the App id, the company
 //     secret holding its private key (PEM), the installation id (optional:
 //     discovered per repository when empty), the agents that may use it
-//     (`roles` / `agentIds`; both empty means nobody) and the repositories it
-//     serves (`allowedRepos`, `owner/repo` patterns; empty means none);
+//     (`roles` / `agentIds`; both empty means nobody), the repositories it
+//     serves (`allowedRepos`, `owner/repo` patterns; empty means none) and
+//     the permission list (`permissions`, per key `none`/`read`/`write`;
+//     defaults: contents/pull_requests write, everything else none) — the
+//     broker requests exactly those on every token;
 //   - `commitEmailDomain` — the domain of the agent's commit email
 //     (`<agent>@<domain>`): the commit identity stays the agent's, only the
 //     authentication is shared.
 //
 // The board mints short-lived installation tokens itself (server-side JWT
 // signed with the App key, `POST /app/installations/{id}/access_tokens`),
-// narrowed to the ONE target repository and to contents + pull requests
-// read/write and metadata read — never secrets, administration or
-// workflows. The broker picks the App by the target repository of each
+// narrowed to the ONE target repository and to exactly the permission list
+// stored on the entry (metadata read is always added; a token never carries
+// more than the entry allows). By default the list is contents + pull
+// requests write — the historical fixed set — so an upgraded installation
+// behaves identically until the operator widens it, e.g. adds Workflows so
+// agents can edit `.github/workflows/*` where the App registration allows.
+// The broker picks the App by the target repository of each
 // operation; a repository matched by two Apps is an error, never a silent
 // pick, so identities of different products never mix. The document is
 // re-read on every request: a change applies to the next git/gh operation
@@ -31,6 +38,13 @@
 // personal grant, wins over an App.
 
 import { z } from "zod";
+import {
+  DEFAULT_GITHUB_APP_PERMISSIONS,
+  GITHUB_APP_TOKEN_PERMISSION_KEYS,
+  githubAppPermissionLevelsFor,
+  type GitHubAppPermissionKey,
+  type GitHubAppPermissions,
+} from "./app-token.js";
 
 /** Key of the per-company map under `instance_settings.general`. */
 export const GITHUB_SHARED_IDENTITY_GENERAL_KEY = "myrmidonGithubSharedIdentity";
@@ -75,6 +89,40 @@ const agentScopeFields = {
   agentIds: z.array(z.string().uuid()).max(MAX_SCOPE_ENTRIES).default([]),
 };
 
+/**
+ * The permission list an operator edits per App entry: every allow-listed
+ * key optional (absent = the historical default), each at `none` (never
+ * requested), `read` or `write`. `workflows` is `write`-only — GitHub's
+ * installation-token API does not accept `workflows: read`. Keys outside the
+ * allow-list (secrets, administration, organization permissions) are
+ * rejected by the strict object: a stored document can never widen the
+ * broker beyond it.
+ */
+const permissionKeyEnum = (key: GitHubAppPermissionKey) =>
+  z.enum(["none", ...githubAppPermissionLevelsFor(key)] as [string, ...string[]]);
+
+const githubAppPermissionsInputSchema = z
+  .object({
+    actions: permissionKeyEnum("actions").optional(),
+    checks: permissionKeyEnum("checks").optional(),
+    contents: permissionKeyEnum("contents").optional(),
+    deployments: permissionKeyEnum("deployments").optional(),
+    environments: permissionKeyEnum("environments").optional(),
+    issues: permissionKeyEnum("issues").optional(),
+    pull_requests: permissionKeyEnum("pull_requests").optional(),
+    workflows: permissionKeyEnum("workflows").optional(),
+  })
+  .strict();
+
+/** Partial input -> the complete stored list (defaults fill the gaps). */
+export function normalizeGitHubAppPermissions(
+  input: z.input<typeof githubAppPermissionsInputSchema> | undefined,
+): GitHubAppPermissions {
+  return Object.fromEntries(
+    GITHUB_APP_TOKEN_PERMISSION_KEYS.map((key) => [key, input?.[key] ?? DEFAULT_GITHUB_APP_PERMISSIONS[key]]),
+  ) as GitHubAppPermissions;
+}
+
 /** One self-hosted GitHub App installation and who may use it for what. */
 export const githubAppEntrySchema = z
   .object({
@@ -87,8 +135,14 @@ export const githubAppEntrySchema = z
     privateKeySecretId: z.string().uuid(),
     /** Installation id; null — discovered per repository (GET /repos/{owner}/{repo}/installation). */
     installationId: z.string().trim().regex(/^[0-9]{1,20}$/).nullable().default(null),
+    // myrmidon(GITHUB-APP-MANIFEST): the App's GitHub slug (from the manifest
+    // flow; manually registered Apps may leave it null) — backs the
+    // one-click "Install" URL. Additive; no migration (instance_settings JSON).
+    slug: z.string().trim().min(1).max(100).nullable().default(null),
     ...agentScopeFields,
     allowedRepos: z.array(repoPatternSchema).max(MAX_ALLOWED_REPOS).default([]),
+    /** The permission list the broker requests verbatim on every token for this App. */
+    permissions: githubAppPermissionsInputSchema.optional(),
   })
   .strict();
 
@@ -113,7 +167,14 @@ export const githubSharedIdentitySettingsInputSchema = z
   });
 
 export type GitHubSharedIdentitySettingsInput = z.input<typeof githubSharedIdentitySettingsInputSchema>;
-export type GitHubAppEntry = z.output<typeof githubAppEntrySchema>;
+/**
+ * A stored App entry: the input shape with the permission list normalized to
+ * complete (every allow-listed key explicit). The settings document always
+ * holds this; PUT may send a partial `permissions` or none at all.
+ */
+export type GitHubAppEntry = Omit<z.output<typeof githubAppEntrySchema>, "permissions"> & {
+  permissions: GitHubAppPermissions;
+};
 
 export interface GitHubSharedIdentitySettings {
   version: 1;
@@ -138,7 +199,7 @@ function dedupe(values: string[], caseInsensitive = false): string[] {
   return out;
 }
 
-/** Validated input -> the stored document (deduplicated lists, version stamp). */
+/** Validated input -> the stored document (deduplicated lists, full permission lists, version stamp). */
 export function toStoredGitHubSharedIdentitySettings(
   input: z.output<typeof githubSharedIdentitySettingsInputSchema>,
 ): GitHubSharedIdentitySettings {
@@ -150,6 +211,7 @@ export function toStoredGitHubSharedIdentitySettings(
       roles: dedupe(app.roles),
       agentIds: dedupe(app.agentIds),
       allowedRepos: dedupe(app.allowedRepos, true),
+      permissions: normalizeGitHubAppPermissions(app.permissions),
     })),
     commitEmailDomain: input.commitEmailDomain,
   };

@@ -4,10 +4,54 @@
 // "Authorize once for the whole server": the operator registers our own
 // GitHub App per account or organization, stores its private key as a
 // company secret, and lists here which agents may use it for which
-// repositories. The board mints short-lived single-repository installation
-// tokens itself. Saving applies to the next git/gh operation — no restart.
-// No key or token ever travels through this API.
+// repositories, with which permissions (the broker requests exactly that
+// list; default: contents and pull requests write). The board mints
+// short-lived single-repository installation tokens itself. Saving applies
+// to the next git/gh operation — no restart. No key or token ever travels
+// through this API.
 import { api } from "@/api/client";
+
+/** The permission keys the board lets an entry request (allow-list; secrets/administration are not offered). */
+export const GITHUB_APP_PERMISSION_KEYS = [
+  "actions",
+  "checks",
+  "contents",
+  "deployments",
+  "environments",
+  "issues",
+  "pull_requests",
+  "workflows",
+] as const;
+
+export type GitHubAppPermissionKey = (typeof GITHUB_APP_PERMISSION_KEYS)[number];
+export type GitHubAppPermissionLevel = "none" | "read" | "write";
+/** Complete stored permission list of one App entry. */
+export type GitHubAppPermissions = Record<GitHubAppPermissionKey, GitHubAppPermissionLevel>;
+
+/** The historical fixed set (contents + pull requests write) — the default per entry. */
+export const DEFAULT_GITHUB_APP_PERMISSIONS: GitHubAppPermissions = {
+  actions: "none",
+  checks: "none",
+  contents: "write",
+  deployments: "none",
+  environments: "none",
+  issues: "none",
+  pull_requests: "write",
+  workflows: "none",
+};
+
+/** GitHub's token API accepts only `write` for workflows (and only `read`/`write` per key in general). */
+export function githubAppPermissionLevelsFor(key: GitHubAppPermissionKey): GitHubAppPermissionLevel[] {
+  return key === "workflows" ? ["none", "write"] : ["none", "read", "write"];
+}
+
+/** Human-readable label for a permission key. */
+export function githubAppPermissionLabel(key: GitHubAppPermissionKey): string {
+  return key
+    .split("_")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
 
 export interface GitHubAppEntry {
   id: string;
@@ -18,6 +62,7 @@ export interface GitHubAppEntry {
   roles: string[];
   agentIds: string[];
   allowedRepos: string[];
+  permissions: GitHubAppPermissions;
   /** GitHub App slug for Apps created through the manifest flow (myrmidon GITHUB-APP-MANIFEST). */
   slug?: string | null;
 }
@@ -36,6 +81,8 @@ export interface BeginAppManifestBody {
 export interface BeginAppManifestResponse {
   manifestUrl: string;
   manifest: Record<string, unknown>;
+  /** Anti-CSRF state: POST to GitHub as a separate form field; echoed back on the callback. */
+  state: string;
 }
 
 export interface AppInstallUrlResponse {

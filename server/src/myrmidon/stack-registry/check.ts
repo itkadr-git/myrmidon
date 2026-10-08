@@ -37,7 +37,7 @@ import {
   readReleaseList,
   type StackFetchJson,
 } from "./releases.js";
-import { readStackCheckIntervalSec } from "./settings.js";
+import { readStackCheckIntervalSec, readStackGithubToken } from "./settings.js";
 import { readStackDocument, writeStackDocument } from "./store.js";
 
 export const STACK_CHECK_PER_PAGE = 30;
@@ -175,7 +175,7 @@ async function checkComponent(
  */
 export async function checkStackReleases(db: Db, options: StackCheckOptions = {}): Promise<StackDocument> {
   const checkedAt = (options.now ?? (() => new Date()))().toISOString();
-  const port = options.fetchJson ?? githubJsonPort();
+  const port = options.fetchJson ?? githubJsonPort({ token: readStackGithubToken() ?? undefined });
   const stored = await readStackDocument(db);
   const base = stored.components.length > 0 ? stored : seedStackDocument();
   const opts = { perPage: options.perPage ?? STACK_CHECK_PER_PAGE, noteLimit: options.noteLimit };

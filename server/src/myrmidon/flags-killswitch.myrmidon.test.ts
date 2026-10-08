@@ -259,31 +259,27 @@ describe("myrmidon env coverage guard (code vs docs)", () => {
       }
     }
 
+    const settingsNames = new Set<string>();
+    const collectSettingsNames = (text: string) => {
+      for (const match of text.matchAll(/`MYRMIDON_[A-Z0-9_]+`/g)) {
+        settingsNames.add(match[0].slice(1, -1));
+      }
+    };
     const settingsMd = readFileSync(
       fileURLToPath(new URL("../../../docs/myrmidon/SETTINGS.md", import.meta.url)),
       "utf8",
     );
-    const settingsNames = new Set<string>();
-    for (const match of settingsMd.matchAll(/`MYRMIDON_[A-Z0-9_]+`/g)) {
-      settingsNames.add(match[0].slice(1, -1));
-    }
-
-    // Since CHANGE-FRAGMENTS, a PR's SETTINGS.md row lives in its fragment
-    // docs/myrmidon/changes/<slug>.md and reaches SETTINGS.md only at release
-    // cut (collect-fragments.mjs). A brand-new env documented in a pending
-    // fragment is documented — read the fragments too, or every PR adding an
-    // env var would fail this guard between merge and the next release cut.
-    const changesDir = fileURLToPath(
-      new URL("../../../docs/myrmidon/changes", import.meta.url),
-    );
+    collectSettingsNames(settingsMd);
+    // CHANGE-FRAGMENTS: registry rows live in per-PR change fragments
+    // (docs/myrmidon/changes/*.md) until the release cut folds them into
+    // SETTINGS.md. A setting documented only in an open fragment is still
+    // documented — scan the fragments too, otherwise every PR that follows
+    // the fragment workflow turns this guard red.
+    const changesDir = fileURLToPath(new URL("../../../docs/myrmidon/changes/", import.meta.url));
     for (const entry of readdirSync(changesDir, { withFileTypes: true })) {
-      if (!entry.isFile() || !entry.name.endsWith(".md") || entry.name === "README.md") {
-        continue;
-      }
-      const fragmentMd = readFileSync(join(changesDir, entry.name), "utf8");
-      for (const match of fragmentMd.matchAll(/`MYRMIDON_[A-Z0-9_]+`/g)) {
-        settingsNames.add(match[0].slice(1, -1));
-      }
+      if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
+      if (entry.name.toLowerCase() === "readme.md") continue;
+      collectSettingsNames(readFileSync(join(changesDir, entry.name), "utf8"));
     }
 
     const flagsMd = readFileSync(FLAGS_MD_PATH, "utf8");
