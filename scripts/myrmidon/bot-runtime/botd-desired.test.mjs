@@ -131,10 +131,10 @@ describe("botd desired state client (C3)", () => {
     assert.match(r.reason, /timeout after 100 ms/);
   });
 
-  it("the default timeout is 10 s and the interval 60 s", async () => {
+  it("the default timeout is 10 s and the interval 300 s (BOT-DISK-H LOAD)", async () => {
     const { DESIRED_DEFAULTS } = await import("../../../docker/bot-runtime/botd/lib/desired.js");
     assert.equal(DESIRED_DEFAULTS.timeoutMs, 10_000);
-    assert.equal(DESIRED_DEFAULTS.intervalMs, 60_000);
+    assert.equal(DESIRED_DEFAULTS.intervalMs, 300_000);
   });
 
   it("the API key never reaches logs or reasons", async () => {
