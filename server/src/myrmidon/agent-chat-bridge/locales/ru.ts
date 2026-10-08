@@ -115,11 +115,30 @@ export const bridgeTextRu: Record<BridgeTextKey, string> = {
 
   // myrmidon(X9c): /agents, /to and /who — which agent of the company this
   // chat addresses. Agent names and aliases are data, not prose.
+  // myrmidon(1.6.5 OPE-6318 part A) adds the group titles of /agents, the
+  // live-status words and the grouped line template.
   "agents.header": "Агенты компании:",
   "agents.noAliases": "—",
   "agents.currentSuffix": "текущий адресат",
   "agents.none": "В этой компании нет агентов, доступных для адресации.",
   "agents.hint": "Выбрать адресата по умолчанию: /to <алиас>. /to без аргумента сбрасывает выбор.",
+  // Названия групп для карточек без своего `telegramGroup`: группа берётся из
+  // префикса имени (см. ../grouping.ts).
+  "agents.group.infra": "Инфраструктура / Myrmidon",
+  "agents.group.bbq": "bbq",
+  "agents.group.work": "work",
+  "agents.group.other": "Прочие",
+  // «{group}» — уже готовое название группы: из каталога или из карточки.
+  "agents.groupHeader": "{group}:",
+  "agents.groupHeaderPaused": "{group} (на паузе: {count}):",
+  // Живые статусы строки карточки (agents.status).
+  "agents.status.idle": "свободен",
+  "agents.status.running": "работает",
+  "agents.status.paused": "на паузе",
+  "agents.status.unknown": "статус неизвестен",
+  // Строка агента: имя, роль одной строкой (agents.title), статус, алиасы.
+  "agents.line": "• {name} — {role} · {status} ({aliases})",
+  "agents.lineNoRole": "• {name} · {status} ({aliases})",
   "to.unsetLine": "Адресат по умолчанию не задан: отвечает {agent}.",
   "to.cleared": "Выбор адресата сброшен. Дальше отвечает агент этого чата по умолчанию.",
   "to.alreadySet": "Адресат уже {agent} ({aliases}).",
