@@ -28,8 +28,25 @@ function managedEnv(raw: string | undefined = MANAGED_RAW) {
  */
 function stubDb(row: Record<string, unknown>) {
   const persistedSets: Array<Record<string, unknown>> = [];
+  /**
+   * Awaitable result for a stubbed select: the myrmidon(PROCS-Q5) write path
+   * first takes the row lock with `.limit(1).for("update")`, then reads rows
+   * via `.then(...)`. One Promise with the chainable no-ops covers both.
+   */
+  const stubRows = <T>(values: T[]) => {
+    const p = Promise.resolve(values) as Promise<T[]> & {
+      limit(_n?: number): Promise<T[]>;
+      for(_mode?: string): Promise<T[]>;
+    };
+    p.limit = () => p;
+    p.for = () => p;
+    return p;
+  };
   const db = {
-    select: () => ({ from: () => ({ where: () => Promise.resolve([row]) }) }),
+    // The write path runs inside db.transaction; this stub has no isolation,
+    // so the callback gets the same object back (single-threaded test).
+    transaction: (fn: (tx: unknown) => Promise<unknown>) => fn(db),
+    select: () => ({ from: () => ({ where: () => stubRows([row]) }) }),
     insert: () => {
       throw new Error("unexpected insert in test");
     },

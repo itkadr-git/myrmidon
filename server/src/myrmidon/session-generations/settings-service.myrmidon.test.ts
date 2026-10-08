@@ -20,8 +20,22 @@ function stubDb(general: Record<string, unknown>) {
     createdAt: new Date("2026-10-06T00:00:00.000Z"),
     updatedAt: new Date("2026-10-06T00:00:00.000Z"),
   };
+  // Awaitable result that also survives the myrmidon(PROCS-Q5) lock chain
+  // `.limit(1).for("update")` before the row read in `getOrCreateRow`.
+  const stubRows = <T,>(values: T[]) => {
+    const p = Promise.resolve(values) as Promise<T[]> & {
+      limit(_n?: number): Promise<T[]>;
+      for(_mode?: string): Promise<T[]>;
+    };
+    p.limit = () => p;
+    p.for = () => p;
+    return p;
+  };
   const db = {
-    select: () => ({ from: () => ({ where: () => Promise.resolve([row]) }) }),
+    // myrmidon(PROCS-Q5): updateGeneral reads and writes inside a transaction.
+    // The stub has no isolation; the callback gets the same object back.
+    transaction: (fn: (tx: unknown) => Promise<unknown>) => fn(db),
+    select: () => ({ from: () => ({ where: () => stubRows([row]) }) }),
     insert: () => {
       throw new Error("unexpected insert in test");
     },
