@@ -81,6 +81,8 @@ export interface BeginAppManifestBody {
 export interface BeginAppManifestResponse {
   manifestUrl: string;
   manifest: Record<string, unknown>;
+  /** Anti-CSRF state: POST to GitHub as a separate form field; echoed back on the callback. */
+  state: string;
 }
 
 export interface AppInstallUrlResponse {
