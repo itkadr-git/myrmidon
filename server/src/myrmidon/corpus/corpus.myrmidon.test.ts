@@ -410,7 +410,7 @@ function corpusHarness(options: { env?: Record<string, string | undefined>; stor
     const server = express();
     server.use(express.json());
     server.use((req: Request, _res: Response, next: NextFunction) => {
-          (req as Request & { actor?: unknown }).actor = actorValue;
+          (req as unknown as { actor?: unknown }).actor = actorValue;
           next();
         });
     server.use(

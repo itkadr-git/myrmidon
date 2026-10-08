@@ -40,6 +40,7 @@ import {
   corpusService,
   type CorpusActor,
   type CorpusService,
+  type CorpusServiceDeps,
   type CorpusSettingsView,
 } from "./service.js";
 import type { CorpusPortsResolver } from "./ports.js";

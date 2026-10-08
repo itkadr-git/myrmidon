@@ -432,7 +432,6 @@ export function corpusService(db: Db, overrides: Partial<CorpusServiceDeps> = {}
         document =
           (await ports.store.updateDocument(companyId, document.id, {
             blobRef: blob.ref,
-            byteSize: blob.byteSize,
           })) ?? document;
       } catch (err) {
         logger.error(

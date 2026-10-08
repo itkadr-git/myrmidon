@@ -213,6 +213,14 @@ export const storedCorpusSettingsSchema = z
   })
   .catchall(z.unknown());
 
+/**
+ * The stored shape of the `general.corpus` block — the same lenient shape the
+ * validator of that field parses (`packages/shared/src/validators/instance.ts`).
+ * It mirrors `StoredRunLimits` of the run-admission module: the readers above
+ * decide what is usable, so an unknown field never fails the whole block.
+ */
+export type StoredCorpusSettings = z.infer<typeof storedCorpusSettingsSchema>;
+
 /** The PATCH body of `PATCH /api/myrmidon/corpus/settings` — strict, so a typo is a 400. */
 export const patchCorpusSettingsSchema = z
   .object({
