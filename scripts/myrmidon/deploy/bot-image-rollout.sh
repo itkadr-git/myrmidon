@@ -125,6 +125,12 @@ require_cmd docker curl jq
 # --- settings (see deploy.env.example) ---------------------------------------
 MYR_BOT_COMPONENTS="${MYRMIDON_BOT_IMAGE_ROLLOUT_COMPONENTS:-hermes,hermes-dev,hermes-node}"
 MYR_BOT_TIMEOUT_SEC="${MYRMIDON_BOT_IMAGE_ROLLOUT_BOT_TIMEOUT_SEC:-900}"
+# 1.6.5 async "Apply now": how long to wait for ONE apply job (202 + applyId)
+# to reach succeeded|failed, and how often the job is read.
+MYR_BOT_APPLY_WAIT_SEC="${MYRMIDON_BOT_IMAGE_ROLLOUT_APPLY_WAIT_SEC:-300}"
+MYR_BOT_APPLY_POLL_SEC="${MYRMIDON_BOT_IMAGE_ROLLOUT_APPLY_POLL_SEC:-4}"
+[[ "$MYR_BOT_APPLY_WAIT_SEC" =~ ^[0-9]+$ ]] || die "MYRMIDON_BOT_IMAGE_ROLLOUT_APPLY_WAIT_SEC must be a non-negative integer (got '$MYR_BOT_APPLY_WAIT_SEC')"
+[[ "$MYR_BOT_APPLY_POLL_SEC" =~ ^[1-9][0-9]*$ ]] || die "MYRMIDON_BOT_IMAGE_ROLLOUT_APPLY_POLL_SEC must be a positive integer (got '$MYR_BOT_APPLY_POLL_SEC')"
 MYR_BOT_DOCKERGATE_CONFIG="${MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_CONFIG:-}"
 MYR_BOT_DOCKERGATE_SIGNAL="${MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_SIGNAL_COMMAND:-}"
 MYR_BOT_FLEET_HOSTS="${MYRMIDON_BOT_IMAGE_ROLLOUT_FLEET_HOSTS:-}"
@@ -567,9 +573,39 @@ card_status() {
   jq -r --arg id "$id" 'first(.[]? | select(.id == $id) | .status // "")' <<<"$body" 2>/dev/null
 }
 
+# Waits for one async apply job. Prints the final status line on stdout:
+# "succeeded", "failed|<error>" or "timeout"; always returns 0.
+wait_apply_job() {
+  local id="$1" apply_id="$2" end job st err
+  end=$((SECONDS + MYR_BOT_APPLY_WAIT_SEC))
+  while :; do
+    if job="$(board_get "/myrmidon/agents/$id/bot-container/apply/$apply_id")"; then
+      st="$(jq -r '.status // ""' <<<"$job" 2>/dev/null || true)"
+      case "$st" in
+        succeeded) printf 'succeeded\n'; return 0 ;;
+        failed)
+          err="$(jq -r '.error // "error unknown"' <<<"$job" 2>/dev/null || true)"
+          printf 'failed|%s\n' "$err"
+          return 0
+          ;;
+      esac
+    fi
+    if ((SECONDS >= end)); then printf 'timeout\n'; return 0; fi
+    sleep "$MYR_BOT_APPLY_POLL_SEC"
+  done
+}
+
+# "succeeded" of an apply job does not prove the switch (a busy bot's deferred
+# pass is recorded as succeeded): the running container must be on the target.
+container_on_image() {
+  local id="$1" want="$2" body
+  body="$(board_get "/myrmidon/agents/$id/bot-container/status")" || return 1
+  jq -e --arg want "$want" '.container.state == "running" and .container.image == $want' <<<"$body" >/dev/null 2>&1
+}
+
 # Returns 0 switched, 2 deferred (retry), 1 failed.
 switch_one_bot() {
-  local id="$1" current target body out kind status
+  local id="$1" current target body out kind status apply_id waited
   current="$(card_image "$id" || true)"
   [[ -n "$current" ]] || current="(none)"
   target="$(release_image_for "$current")"
@@ -610,6 +646,32 @@ switch_one_bot() {
       journal "agent $id card switched to $target (apply failed; the sweep retries)"
       return 1
     }
+  fi
+  apply_id="$(jq -r '.applyId // ""' <<<"$out" 2>/dev/null || true)"
+  if [[ -n "$apply_id" ]]; then
+    # 1.6.5 async apply: 202 + applyId; the outcome is read from the job.
+    waited="$(wait_apply_job "$id" "$apply_id")"
+    case "$waited" in
+      succeeded)
+        if container_on_image "$id" "$target"; then
+          bot_log "bot $id: $current -> $target (apply $apply_id succeeded, container on the release image)"
+          journal "agent $id $current -> $target (async apply $apply_id)"
+          record_history "bot-image" "$id $target"
+          return 0
+        fi
+        bot_log "bot $id deferred (apply $apply_id succeeded but the container is not running the release image yet)"
+        return 2
+        ;;
+      failed\|*)
+        bot_log "bot $id: apply $apply_id failed: ${waited#failed|}"
+        journal "agent $id apply $apply_id failed: ${waited#failed|}"
+        return 1
+        ;;
+      *)
+        bot_log "bot $id deferred (apply $apply_id still not finished after ${MYR_BOT_APPLY_WAIT_SEC}s)"
+        return 2
+        ;;
+    esac
   fi
   kind="$(jq -r '.outcome.kind // ""' <<<"$out" 2>/dev/null || true)"
   case "$kind" in
