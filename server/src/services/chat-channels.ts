@@ -260,6 +260,9 @@ import type { TelegramAddressee } from "../myrmidon/agent-chat-bridge/addressing
 // myrmidon(U2): company-wide interaction lookup for callbacks on cards
 // delivered to the owner's Telegram conversation from other tasks.
 import { listInteractionForCallback } from "../myrmidon/owner-delivery/callback-interaction-lookup.js";
+// myrmidon(1.6.5-F21-AUTOCLOSE): the owner's own message in a task's chat
+// closes that task's single open owner decision, without an agent run.
+import { autoCloseOwnerDecisionOnOwnerComment } from "../myrmidon/owner-delivery/owner-autoclose.js";
 import {
   authorizeNativeChatReviewPresentation,
   NativeChatReviewPresentationContentionError,
@@ -17065,6 +17068,24 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         publishActivity(publication);
       }
       const { actorUserId, comment, conversation, issue } = taskMutation;
+      // myrmidon(1.6.5-F21-AUTOCLOSE): the owner's own message in the task's
+      // chat closes the single open owner decision of that task (F-21, the
+      // pre-via_bot path). Placed before processInboundWakeup below so the
+      // agent's run already sees the card resolved, and it never throws — a
+      // refusal is reported, not raised into the ingest.
+      if (actorUserId) {
+        await autoCloseOwnerDecisionOnOwnerComment({
+          db,
+          companyId: endpoint.companyId,
+          issueId: issue.id,
+          ownerUserId: actorUserId,
+          commentId: comment.id,
+          replyText: comment.body ?? "",
+          commentCreatedAt: comment.createdAt,
+          commentSourceTrust: comment.sourceTrust ?? null,
+          deps: { heartbeat: options.heartbeat },
+        });
+      }
       // myrmidon(X8b): resume a paused bridged conversation on a literal
       // "/new" comment (the web /new route does the same), and deliver any
       // queued bridged-command notice or one-time migration notice. Runs
