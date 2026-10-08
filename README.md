@@ -138,7 +138,7 @@ by default — the full reference is
 
 Release notes live in [docs/myrmidon/CHANGELOG.md](docs/myrmidon/CHANGELOG.md)
 (Russian: [CHANGELOG.ru.md](docs/myrmidon/CHANGELOG.ru.md)). Highlights of
-what exists as of 1.6.4 (latest release; 1.6.5-rc.2 is the current release candidate):
+what exists as of 1.6.4 (latest release; 1.6.5-rc.11 is the current release candidate):
 
 ### Work and agents
 
@@ -273,7 +273,7 @@ what exists as of 1.6.4 (latest release; 1.6.5-rc.2 is the current release candi
 Full notes per release: [CHANGELOG.md](docs/myrmidon/CHANGELOG.md) and the
 [releases page](https://github.com/itkadr-git/myrmidon/releases) — latest is
 [1.6.4](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.4);
-[1.6.5-rc.2](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.5-rc.2)
+[1.6.5-rc.11](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.5-rc.11)
 is the current release candidate.
 
 - **1.6.3 — one deploy for every component.** `deploy.sh --release` updates
