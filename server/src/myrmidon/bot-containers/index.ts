@@ -33,6 +33,7 @@ import {
   readBotContainerAgentConfig,
 } from "./agent-config.js";
 import type { BotContainerAgentConfig } from "./agent-config.js";
+import type { SharedMountSettings } from "@paperclipai/shared";
 import { botKeyLock, type BotKeyLock } from "./bot-key-lock.js";
 import type { BotContainerDriver } from "./driver.js";
 import {
@@ -152,6 +153,11 @@ export interface BotContainerRuntimeDeps {
   maintenance: BotMaintenancePort;
   activity?: BotContainerActivitySink;
   network: string;
+  /** myrmidon(1.6.1-BOT-DISK-D): the instance's `general.sharedMount`, read on
+   *  EVERY pass so a settings change reaches the next pass without a restart.
+   *  Absent = the shared mount is off. A read that throws fails the pass: a
+   *  guess of "off" would recreate the container without its `/shared` bind. */
+  readSharedMountSettings?: () => Promise<SharedMountSettings | undefined>;
   /** Defaults to the process-wide lock; tests pass their own. */
   lock?: BotKeyLock;
   /** myrmidon(BOT-ROLLOUT): the database the deferred-rollout records live in
@@ -311,7 +317,14 @@ async function readAgentForPass(
     if (!fresh) return { ok: false, outcome: { kind: "not_applicable", reason: `agent ${agent.agentId} no longer exists` } };
     current = fresh;
   }
-  const parsed = readBotContainerAgentConfig(current.adapterType, current.adapterConfig);
+  let sharedMountSettings: SharedMountSettings | undefined;
+  try {
+    sharedMountSettings = await deps.readSharedMountSettings?.();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { ok: false, outcome: { kind: "error", message: `the shared mount settings could not be read: ${message}` } };
+  }
+  const parsed = readBotContainerAgentConfig(current.adapterType, current.adapterConfig, sharedMountSettings, current.agentId);
   if (!parsed.ok) return { ok: false, outcome: { kind: "not_applicable", reason: parsed.reason } };
   return { ok: true, config: parsed.config };
 }

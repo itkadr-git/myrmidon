@@ -27,6 +27,7 @@ import { agents } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
 import { logger } from "../../middleware/logger.js";
 import { logActivity } from "../../services/activity-log.js";
+import { instanceSettingsService } from "../../services/instance-settings.js"; // myrmidon(1.6.1-BOT-DISK-D)
 import { listBotContainerAgents } from "./agents-query.js";
 import { isBotContainersEnabled } from "./agent-config.js";
 import type { BotContainerDriver } from "./driver.js";
@@ -205,6 +206,8 @@ function build(
       activity,
       readAgent: ports.readAgent(db),
       network: driverConfig.network,
+      // myrmidon(1.6.1-BOT-DISK-D): live `general.sharedMount`, read on every pass.
+      readSharedMountSettings: async () => (await instanceSettingsService(db).getGeneral()).sharedMount,
       // myrmidon(BOT-ROLLOUT): deferred-rollout records (deferred-store.ts)
       // and the watcher's backstop audit.
       db,
