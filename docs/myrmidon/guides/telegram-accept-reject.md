@@ -36,7 +36,7 @@ Example:
 
 ## Security
 
-- Only the owner of the Telegram conversation can accept/reject cards (the command context check from X8c: a command acts only on the caller's own bridged chat)
+- Only the company owner (active owner membership, as for `/plan`) can accept/reject cards, and only from their own bridged chat (the command context check from X8c: a command acts only on the caller's own bridged chat)
 - Cards are validated to ensure they belong to the correct company and issue
 - Only pending `suggest_tasks` cards can be accepted/rejected
 

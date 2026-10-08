@@ -20,6 +20,8 @@ export const bridgeTextRu: Record<BridgeTextKey, string> = {
   "accept.notPlanOrProcessed": "Эта карточка не является предложением задач или уже обработана.",
   "accept.ok": "✅ План принят.\n\nЭпик: {epicLink}\nСоздано задач: {count}",
   "accept.error": "Не удалось принять карточку: {message}",
+  "accept.notOwner": "Команда /accept доступна только владельцу компании.",
+  "reject.notOwner": "Команда /reject доступна только владельцу компании.",
   "reject.noId": "Укажите ID карточки: /reject <id> — ID карточки с планом из ответа бота.",
   "reject.alreadyProcessed": "Эта карточка уже обработана.",
   "reject.notPlan": "Эта карточка не является предложением задач; /reject применим только к планам.",

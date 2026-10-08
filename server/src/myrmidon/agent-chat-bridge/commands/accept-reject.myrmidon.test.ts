@@ -19,6 +19,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
   companies,
+  companyMemberships,
   createDb,
   issues,
   issueThreadInteractions,
@@ -31,6 +32,7 @@ import {
 import { ctoChatPlanSchema, type CtoChatPlan } from "@paperclipai/shared";
 import { createCtoChatPlanApproval } from "../../cto-chat/plan-approval.js";
 import { telegramConversationUserId } from "../identity.js";
+import { issueThreadInteractionService } from "../../../services/issue-thread-interactions.js";
 import { runBridgedDirectMessageCommand, type BridgedCommandInput } from "./index.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -64,6 +66,7 @@ describeEmbeddedPostgres("myrmidon(1.6.3-CTO-CHAT-B) /accept and /reject in the 
     await db.delete(issueThreadInteractions);
     await db.delete(issues);
     await db.delete(agents);
+    await db.delete(companyMemberships);
     await db.delete(companies);
     await db.delete(userUiLanguage);
   });
@@ -73,8 +76,9 @@ describeEmbeddedPostgres("myrmidon(1.6.3-CTO-CHAT-B) /accept and /reject in the 
   });
 
   /** Seeds a company, a chat agent, a standing Telegram conversation issue
-   * owned by boardUserId, and a pending plan card on it. */
-  async function seedWithCard() {
+   * owned by boardUserId, and a pending plan card on it. The board user is an
+   * active owner of the company (the owner check of /plan, /accept, /reject). */
+  async function seedWithCard(options: { owner?: boolean; projectId?: string | null } = {}) {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const boardUserId = randomUUID();
@@ -91,6 +95,15 @@ describeEmbeddedPostgres("myrmidon(1.6.3-CTO-CHAT-B) /accept and /reject in the 
     // expect the RU catalog): the bridge resolves locale per board user from
     // user_ui_language, defaulting to English.
     await db.insert(userUiLanguage).values({ userId: boardUserId, language: "ru" });
+    if (options.owner !== false) {
+      await db.insert(companyMemberships).values({
+        companyId,
+        principalType: "user",
+        principalId: boardUserId,
+        status: "active",
+        membershipRole: "owner",
+      });
+    }
     const [conversation] = await db
       .insert(issues)
       .values({
@@ -171,7 +184,7 @@ describeEmbeddedPostgres("myrmidon(1.6.3-CTO-CHAT-B) /accept and /reject in the 
     expect(reply.command).toBe("accept");
     // 1 conversation + 1 epic + 2 tasks.
     expect(await issueCount(companyId)).toBe(before + 3);
-    // The reply carries the epic link (the first created issue is the epic).
+    // The reply carries the link of the plan's root (the epic).
     const created = await db
       .select({ id: issues.id, title: issues.title })
       .from(issues)
@@ -297,5 +310,111 @@ describeEmbeddedPostgres("myrmidon(1.6.3-CTO-CHAT-B) /accept and /reject in the 
       command: "accept",
       text: "Укажите ID карточки: /accept <id> — ID карточки с планом из ответа бота.",
     });
+  });
+
+  it("a bound non-owner member cannot /accept or /reject a pending card", async () => {
+    const { companyId, agentId, boardUserId, conversation, cardId } = await seedWithCard({ owner: false });
+    const before = await issueCount(companyId);
+
+    const accept = await runBridgedDirectMessageCommand(
+      commandInput({ companyId, agentId, boardUserId, conversationIssueId: conversation!.id, text: `/accept ${cardId}` }),
+    );
+    expect(accept).toEqual({
+      kind: "reply",
+      command: "accept",
+      text: "Команда /accept доступна только владельцу компании.",
+    });
+    const reject = await runBridgedDirectMessageCommand(
+      commandInput({ companyId, agentId, boardUserId, conversationIssueId: conversation!.id, text: `/reject ${cardId}` }),
+    );
+    expect(reject).toEqual({
+      kind: "reply",
+      command: "reject",
+      text: "Команда /reject доступна только владельцу компании.",
+    });
+    expect(await issueCount(companyId)).toBe(before);
+    expect((await cardRow(companyId, cardId))?.status).toBe("pending");
+  });
+
+  it("the epic link points at the plan root, children hang under it, root has no conversation parent", async () => {
+    const { companyId, agentId, boardUserId, conversation, cardId } = await seedWithCard();
+    const result = await runBridgedDirectMessageCommand(
+      commandInput({ companyId, agentId, boardUserId, conversationIssueId: conversation!.id, text: `/accept ${cardId}` }),
+    );
+    const created = await db.select().from(issues).where(eq(issues.companyId, companyId));
+    const epic = created.find((row) => row.title === "Ship the weekly report")!;
+    const api = created.find((row) => row.title === "Report API")!;
+    expect(epic.parentId).toBeNull();
+    expect(api.parentId).toBe(epic.id);
+    expect((result as { text: string }).text).toContain(`${PUBLIC_BASE_URL}/issues/${epic.id}`);
+    // nothing was parented on the conversation issue
+    expect(created.filter((row) => row.parentId === conversation!.id)).toHaveLength(0);
+  });
+
+  it("without a public base URL the reply names the epic by identifier, not a relative path", async () => {
+    const { companyId, agentId, boardUserId, conversation, cardId } = await seedWithCard();
+    const result = await runBridgedDirectMessageCommand({
+      ...commandInput({ companyId, agentId, boardUserId, conversationIssueId: conversation!.id, text: `/accept ${cardId}` }),
+      publicBaseUrl: undefined,
+    });
+    const text = (result as { text: string }).text;
+    expect(text).not.toContain("/issues/");
+    expect(text).toContain("EX-");
+  });
+});
+
+describeEmbeddedPostgres("myrmidon(1.6.3-CTO-CHAT-B) portal accept keeps the conversation-parent ban", () => {
+  let db!: ReturnType<typeof createDb>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("myrmidon-cto-accept-portal-");
+    db = createDb(tempDb.connectionString);
+  }, 60_000);
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it("acceptInteraction without the opt-in still refuses to parent work on a conversation issue", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const userId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Example Portal Co", issuePrefix: "EP" });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "agent-a",
+      role: "engineer",
+      adapterType: "hermes_local",
+      status: "active",
+    });
+    const [conversation] = await db
+      .insert(issues)
+      .values({
+        companyId,
+        title: "Chat",
+        conversationAgentId: agentId,
+        conversationUserId: telegramConversationUserId(userId),
+        assigneeAgentId: agentId,
+        status: "in_review",
+        conversationState: "waiting",
+      })
+      .returning();
+    const card = await createCtoChatPlanApproval(
+      { plan: plan(), hostIssueId: conversation!.id, companyId, createdByAgentId: agentId },
+      { db },
+    );
+    const service = issueThreadInteractionService(db as never);
+    await expect(
+      service.acceptInteraction(
+        { id: conversation!.id, companyId, projectId: null, goalId: null },
+        card.interactionId,
+        { selectedClientKeys: ["epic", "api", "page"] },
+        { userId, agentId: null, suggestedTaskEffectsAuthorized: true },
+      ),
+    ).rejects.toThrow(/Conversations cannot have new subtasks/);
+    const rows = await db.select({ id: issues.id }).from(issues).where(eq(issues.companyId, companyId));
+    expect(rows).toHaveLength(1);
   });
 });

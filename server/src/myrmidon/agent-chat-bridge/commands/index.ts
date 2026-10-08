@@ -48,10 +48,12 @@ import {
   type ChatModelChooser,
 } from "./models.js";
 import { applyChatAdapterOverride } from "./overrides.js";
-import { handlePlanCommand } from "./plan.js";
+import { handlePlanCommand, isCompanyOwner } from "./plan.js";
 import { buildChatStatusReply } from "./status.js";
 import { stopBridgedChatRuns } from "./stop.js";
 import { issueThreadInteractionService } from "../../../services/issue-thread-interactions.js";
+import { issues } from "@paperclipai/db";
+import { and, eq } from "drizzle-orm";
 
 export interface BridgedCommandInput {
   db: Db;
@@ -111,19 +113,19 @@ export function telegramDmCommandsForLocale(locale: BridgeLocale): readonly Brid
 }
 
 /**
- * The bridged DM's command menu for the instance (the X8a canonical export).
- * Registration of this list is the X8e surface; the menu follows the
- * instance-level locale (the env force, else the English default).
+ * The X8 contract's canonical command list, in the catalog's base language.
+ * Tests and the copy-version hash compare against this list; the actual
+ * registration applies the menu for the locale that holds when it runs
+ * (same once-per-version rule as the bridge-enabled state — see DIVERGENCE
+ * B1: a state that can flip back and forth is not baked into the version).
  */
 export const TELEGRAM_DM_COMMANDS: readonly BridgedCommandSpec[] =
   telegramDmCommandsForLocale("en");
 
 /**
- * Command registration uses the catalog's `TELEGRAM_DM_COMMANDS` (X8a canon), but OpenClaw's own DM
- * surface may register command menus per locale. The myrmidon patch
- * (X8a/X8e) keeps this file's export stable while letting the chat-channels
- * service register a localized menu when the instance locale differs from
- * English.
+ * myrmidon(X8c): `/start`, `/commands` and `/reset` are not part of the X8
+ * contract's `TELEGRAM_DM_COMMANDS` (X8a canon), but OpenClaw's own DM
+ * commands support them as compatibility aliases, so this bridge does too.
  */
 const COMMAND_ALIASES: Readonly<Record<string, string>> = {
   start: "help",
@@ -206,9 +208,9 @@ export async function runBridgedDirectMessageCommand(
       // parallel secret-resolution path here.
       return handlePlanCommand(input, parsed.args);
     case "accept":
-      return handleAcceptCommand(input, context, parsed.args, locale);
+      return handleAcceptCommand(input, parsed.args, locale);
     case "reject":
-      return handleRejectCommand(input, context, parsed.args, locale);
+      return handleRejectCommand(input, parsed.args, locale);
     // myrmidon(X9c): addressing commands. They run on the context X8b
     // already authorized (the sender's own bridged Telegram conversation,
     // identity links included), and every DB read in agents.ts is scoped to
@@ -467,141 +469,120 @@ async function handleStatusCommand(
 /**
  * myrmidon(1.6.3-CTO-CHAT-B): `/accept <id>` approves a pending
  * `suggest_tasks` plan card from the owner's own bridged Telegram DM,
- * through the same board service the portal accept route uses — no second
- * implementation. The reply carries the link to the created epic and the
- * number of created tasks.
+ * through the same board service the portal accept route uses. Owner only,
+ * like `/plan`: the bridged chat identity alone is not enough to create work.
+ * The reply carries the link to the plan's root epic and the created count.
  */
 async function handleAcceptCommand(
   input: BridgedCommandInput,
-  context: BridgedCommandContext,
   args: string,
   locale: BridgeLocale,
 ): Promise<BridgedCommandResult> {
   const interactionId = args.trim();
   if (!interactionId) {
-    return {
-      kind: "reply",
-      command: "accept",
-      text: t(locale, "accept.noId"),
-    };
+    return { kind: "reply", command: "accept", text: t(locale, "accept.noId") };
+  }
+  if (!(await isCompanyOwner(input.db, input.companyId, input.boardUserId))) {
+    return { kind: "reply", command: "accept", text: t(locale, "accept.notOwner") };
   }
 
   const service = issueThreadInteractionService(input.db);
-  const issue = {
-    id: input.conversationIssueId,
-    companyId: input.companyId,
-    projectId: null,
-    goalId: null,
-  };
   try {
+    const issue = await loadConversationHost(input);
     const current = await service.getForIssue(
       { id: issue.id, companyId: issue.companyId },
       interactionId,
     );
     if (current.kind !== "suggest_tasks" || current.status !== "pending") {
-      return {
-        kind: "reply",
-        command: "accept",
-        text: t(locale, "accept.notPlanOrProcessed"),
-      };
+      return { kind: "reply", command: "accept", text: t(locale, "accept.notPlanOrProcessed") };
     }
 
-    const allClientKeys = current.payload.tasks.map(
-      (task: { clientKey: string }) => task.clientKey,
-    );
-    const { createdIssues } = await service.acceptInteraction(
+    const allClientKeys = current.payload.tasks.map((task: { clientKey: string }) => task.clientKey);
+    const accepted = await service.acceptInteraction(
       issue,
       interactionId,
       { selectedClientKeys: allClientKeys },
-      { userId: input.boardUserId, agentId: null, suggestedTaskEffectsAuthorized: true },
+      {
+        userId: input.boardUserId,
+        agentId: null,
+        suggestedTaskEffectsAuthorized: true,
+        conversationRootTasksAllowed: true,
+      },
     );
 
-    // myrmidon(X8-texts): the reply is read by the owner in the bridged DM —
-    // prose via t(), the link and the count are data, not prose.
-    const epicLink = `${input.publicBaseUrl ?? ""}/issues/${
-      createdIssues[0]?.id ?? input.conversationIssueId
-    }`;
+    // The link points at the plan's root (the draft without a parent), not at
+    // whichever issue happened to be created first.
+    const rootKey =
+      current.payload.tasks.find((task: { parentClientKey?: string | null }) => !task.parentClientKey)?.clientKey ??
+      null;
+    const createdTasks =
+      ((accepted.interaction.result as unknown as { createdTasks?: Array<{ clientKey: string; issueId: string; identifier: string | null }> } | null)
+        ?.createdTasks) ?? [];
+    const root = createdTasks.find((task) => task.clientKey === rootKey) ?? createdTasks[0] ?? null;
+    const base = (input.publicBaseUrl ?? "").replace(/\/+$/, "");
+    const epicLink = root ? (base ? `${base}/issues/${root.issueId}` : (root.identifier ?? root.issueId)) : "-";
     return {
       kind: "reply",
       command: "accept",
-      text: t(locale, "accept.ok", { epicLink, count: createdIssues.length }),
+      text: t(locale, "accept.ok", { epicLink, count: accepted.createdIssues.length }),
     };
   } catch (error) {
     const message = (error as { message?: string }).message ?? "unknown error";
-    return {
-      kind: "reply",
-      command: "accept",
-      text: t(locale, "accept.error", { message }),
-    };
+    return { kind: "reply", command: "accept", text: t(locale, "accept.error", { message }) };
   }
 }
 
 /**
  * myrmidon(1.6.3-CTO-CHAT-B): `/reject <id>` rejects a pending
  * `suggest_tasks` plan card from the owner's own bridged Telegram DM,
- * through the same board service as the portal reject route. No tasks are
- * created; the card closes as rejected.
+ * through the same board service as the portal reject route (owner only).
+ * No tasks are created; the card closes as rejected.
  */
 async function handleRejectCommand(
   input: BridgedCommandInput,
-  context: BridgedCommandContext,
   args: string,
   locale: BridgeLocale,
 ): Promise<BridgedCommandResult> {
   const interactionId = args.trim();
   if (!interactionId) {
-    return {
-      kind: "reply",
-      command: "reject",
-      text: t(locale, "reject.noId"),
-    };
+    return { kind: "reply", command: "reject", text: t(locale, "reject.noId") };
+  }
+  if (!(await isCompanyOwner(input.db, input.companyId, input.boardUserId))) {
+    return { kind: "reply", command: "reject", text: t(locale, "reject.notOwner") };
   }
 
   const service = issueThreadInteractionService(input.db);
-  const issue = {
-    id: input.conversationIssueId,
-    companyId: input.companyId,
-    projectId: null,
-    goalId: null,
-  };
   try {
+    const issue = await loadConversationHost(input);
     const current = await service.getForIssue(
       { id: issue.id, companyId: issue.companyId },
       interactionId,
     );
     if (current.status !== "pending") {
-      return {
-        kind: "reply",
-        command: "reject",
-        text: t(locale, "reject.alreadyProcessed"),
-      };
+      return { kind: "reply", command: "reject", text: t(locale, "reject.alreadyProcessed") };
     }
     if (current.kind !== "suggest_tasks") {
-      return {
-        kind: "reply",
-        command: "reject",
-        text: t(locale, "reject.notPlan"),
-      };
+      return { kind: "reply", command: "reject", text: t(locale, "reject.notPlan") };
     }
-
     await service.rejectInteraction(
       issue,
       interactionId,
       { reason: "rejected_by_owner_via_telegram" },
       { userId: input.boardUserId, agentId: null },
     );
-
-    return {
-      kind: "reply",
-      command: "reject",
-      text: t(locale, "reject.ok"),
-    };
+    return { kind: "reply", command: "reject", text: t(locale, "reject.ok") };
   } catch (error) {
     const message = (error as { message?: string }).message ?? "unknown error";
-    return {
-      kind: "reply",
-      command: "reject",
-      text: t(locale, "reject.error", { message }),
-    };
+    return { kind: "reply", command: "reject", text: t(locale, "reject.error", { message }) };
   }
+}
+
+/** The standing conversation issue with its real project/goal (children inherit them). */
+async function loadConversationHost(input: BridgedCommandInput) {
+  const [row] = await input.db
+    .select({ id: issues.id, companyId: issues.companyId, projectId: issues.projectId, goalId: issues.goalId })
+    .from(issues)
+    .where(and(eq(issues.id, input.conversationIssueId), eq(issues.companyId, input.companyId)));
+  if (!row) throw new Error("conversation issue not found");
+  return row;
 }
