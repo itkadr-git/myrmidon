@@ -250,6 +250,9 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       ...(parsed.data.workspaceHygiene ? { workspaceHygiene: parsed.data.workspaceHygiene } : {}),
       // myrmidon(C0): the stored run admission limits survive every general write
       ...(parsed.data.runLimits ? { runLimits: parsed.data.runLimits } : {}),
+      // myrmidon(1.6.5 RUN-PRIORITY A): the stored run queue priority settings
+      // survive every general write (they are edited on their own route).
+      ...(parsed.data.runPriority ? { runPriority: parsed.data.runPriority } : {}),
       // myrmidon(BOT-DISK E): the stored host disk threshold survives every general write
       ...(parsed.data.hostDisk ? { hostDisk: parsed.data.hostDisk } : {}),
       // myrmidon(BOT-DISK-A): the stored bot draft-directory lifecycle survives every general write
