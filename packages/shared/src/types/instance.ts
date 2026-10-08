@@ -36,6 +36,9 @@ import type { StoredFallbackSignalSettings } from "../myrmidon-fallback-signal.j
 // myrmidon(1.6.5-PAUSE-GUARD): the forgotten-operator-pause guard of the same
 // general settings row.
 import type { StoredPauseGuardSettings } from "../myrmidon-pause-guard.js";
+// myrmidon(DB-PERF-C-P4): the TTL of the tool gateway policy cache lives in the
+// same general settings row.
+import type { ToolPolicyCacheSettings } from "../myrmidon-tool-policy-cache.js";
 
 export const DAILY_RETENTION_PRESETS = [3, 7, 14] as const;
 export const WEEKLY_RETENTION_PRESETS = [1, 2, 4] as const;
@@ -267,6 +270,14 @@ export interface InstanceGeneralSettings {
    * field (packages/shared/src/validators/instance.ts).
    */
   modelFallbackSignal?: StoredFallbackSignalSettings;
+  /**
+   * myrmidon(DB-PERF-C-P4): TTL of the in-process cache behind the tool
+   * gateway's policy, profile, binding and profile-entry reads; changed from
+   * `GET`/`PATCH /api/myrmidon/tool-policy-cache`. Absent means the default
+   * (30 s), `0` switches the cache off. Kept in sync with the validator of the
+   * same field (packages/shared/src/validators/instance.ts).
+   */
+  toolPolicyCache?: ToolPolicyCacheSettings;
 }
 
 export interface InstanceExperimentalSettings {

@@ -141,6 +141,8 @@ import { toolAccessPolicyService } from "./tool-access-policy.js";
 // myrmidon(S6): the per-agent tool/connection permission and its gate.
 import { agentToolPermissionAllows } from "@paperclipai/shared";
 import { loadAgentToolPermissions } from "../myrmidon/agent-tool-permissions.js";
+// myrmidon(DB-PERF-C-P4): gateway setup binds a profile outside the tool-access CRUD.
+import { invalidateToolPolicyCache } from "../myrmidon/tool-policy-cache/runtime.js";
 import { commitToolActionReview } from "./tool-action-review.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import {
@@ -8678,6 +8680,8 @@ export function createToolGatewayService(
         })
         .onConflictDoNothing();
       emitToolPolicyChanged();
+      // myrmidon(DB-PERF-C-P4): a new gateway binding changes the company snapshot.
+      invalidateToolPolicyCache(db, input.companyId);
       await writeAudit({
         session: {
           id: `gateway:${gateway.id}`,
@@ -8835,6 +8839,8 @@ export function createToolGatewayService(
             metadata: { source: "named_mcp_gateway" },
           })
           .onConflictDoNothing();
+        // myrmidon(DB-PERF-C-P4): a re-pointed gateway binding changes the company snapshot.
+        invalidateToolPolicyCache(db, input.companyId);
       }
       emitToolPolicyChanged();
       return getGatewayWithTokens(input.companyId, updated.id);

@@ -68,6 +68,9 @@ import { promptBudgetSettingsSchema } from "../myrmidon-prompt-budget.js";
 // threshold percent, minimum calls, window and sweep interval) stored in the
 // same general settings row.
 import { storedFallbackSignalSettingsSchema } from "../myrmidon-fallback-signal.js";
+// myrmidon(DB-PERF-C-P4): the TTL of the tool gateway policy cache, stored in
+// the same general settings row.
+import { toolPolicyCacheSettingsSchema } from "../myrmidon-tool-policy-cache.js";
 
 // myrmidon(PARALLEL-HELPERS): re-exported for the barrel so the settings page and the
 // /api/myrmidon/parallel-helpers route validate with the exact schema stored here.
@@ -222,6 +225,11 @@ export const instanceGeneralSettingsSchema = z.object({
   // environment variable, then the default" (see
   // packages/shared/src/myrmidon-fallback-signal.ts).
   modelFallbackSignal: storedFallbackSignalSettingsSchema.optional(),
+  // myrmidon(DB-PERF-C-P4): TTL of the in-process cache behind the tool
+  // gateway's policy, profile, binding and profile-entry reads, changed from
+  // GET/PATCH /api/myrmidon/tool-policy-cache; absent means the default (30 s)
+  // and `0` switches the cache off (every read is a fresh query).
+  toolPolicyCache: toolPolicyCacheSettingsSchema.optional(),
 }).strict();
 
 export const patchInstanceGeneralSettingsSchema = z
