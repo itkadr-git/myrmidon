@@ -265,6 +265,8 @@ import { chatWebhookBodyParser } from "./middleware/chat-webhook-body.js";
 import { createChatWebhookDiagnostics } from "./services/chat-webhook-diagnostics.js";
 // myrmidon(CUSTOM-CASTES): company caste directory — table, seed, CRUD API
 import { myrmidonCasteRoutes } from "./myrmidon/castes/wiring.js";
+// myrmidon(1.6-GRD): guardrail event journal for the flag-only output detectors
+import { myrmidonGuardrailsRoutes } from "./myrmidon/guardrails/index.js"; // myrmidon(1.6-GRD)
 
 type UiMode = "none" | "static" | "vite-dev";
 const FEEDBACK_EXPORT_FLUSH_INTERVAL_MS = 5_000;
@@ -1114,6 +1116,7 @@ export async function createApp(
     }),
   );
   api.use(myrmidonCasteRoutes(db)); // myrmidon(CUSTOM-CASTES): caste directory CRUD
+  api.use(myrmidonGuardrailsRoutes(db)); // myrmidon(1.6-GRD): flag-only guardrail event journal (board-only read route)
   api.use(
     accessRoutes(db, {
       deploymentMode: opts.deploymentMode,

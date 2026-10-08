@@ -734,6 +734,7 @@ import {
 // budget service asks for, and the signal-only notice delivery (see
 // budget-enforcement/).
 import { readBudgetEnforcement } from "../myrmidon/budget-enforcement/settings.js";
+import { guardrailsOnRunOutput } from "../myrmidon/guardrails/run-output.js"; // myrmidon(1.6-GRD)
 import {
   deliverBudgetSignalOnly,
   type BudgetSignalOnlyInput,
@@ -25419,6 +25420,16 @@ export function heartbeatService(
               presentationDecision.commentAction === "create" &&
               resolved.text
             ) {
+              // myrmidon(1.6-GRD): flag-only output scan of the final run text
+              // before it becomes the visible issue comment; never blocks,
+              // never masks here — the event journal records the hits.
+              await guardrailsOnRunOutput({
+                db,
+                companyId: livenessRun.companyId,
+                runId: livenessRun.id,
+                issueId,
+                text: resolved.text,
+              }).catch(() => null);
               // The presentation resolver exposes only the final assistant
               // surface selected from completed final messages or accepted
               // semantic results. For an exactly bound external-chat run,
