@@ -8,14 +8,21 @@ import type { DocumentParserError } from "./errors.js";
 export type DocumentParseStatus = "pending" | "running" | "succeeded" | "failed";
 
 export interface DocumentParseSubmission {
-  readonly companyId: string;
-  readonly datasetId: string;
+  /** Tenant context, when the caller has it; the parse service does not need it to do its job. */
+  readonly companyId?: string;
+  readonly datasetId?: string;
   /** Corpus document row this parse belongs to, when the caller already has one. */
   readonly documentId?: string;
   readonly fileName: string;
   readonly mimeType: string;
   /** Raw bytes of the document; the client base64-encodes them. */
-  readonly content: Uint8Array;
+  readonly content?: Uint8Array;
+  /** Absolute URL the service fetches itself, used when the caller does not send bytes. */
+  readonly sourceUri?: string;
+  /** Title of the document, for the service's own reporting. */
+  readonly title?: string;
+  /** Parser version requested for this run, recorded by the service. */
+  readonly parserVersion?: string;
   /** Idempotency key sent with the submission; generated when the caller does not set one. */
   readonly idempotencyKey?: string;
 }

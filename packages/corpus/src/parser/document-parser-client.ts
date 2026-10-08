@@ -153,7 +153,10 @@ export function createDocumentParserClient(options: DocumentParserClientOptions)
       documentId: submission.documentId,
       fileName: submission.fileName,
       mimeType: submission.mimeType,
-      contentBase64: Buffer.from(submission.content).toString("base64"),
+      title: submission.title,
+      parserVersion: submission.parserVersion,
+      sourceUri: submission.sourceUri,
+      contentBase64: submission.content ? Buffer.from(submission.content).toString("base64") : undefined,
     });
     return runWithRetries(
       retry,

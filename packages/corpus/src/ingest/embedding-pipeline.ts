@@ -19,6 +19,7 @@ import {
   type RetryContext,
   type RetryPolicy,
 } from "../retry.js";
+import type { Embedder, ReplaceCorpusChunksInput } from "../ports.js";
 import {
   CORPUS_EMBEDDING_DIMENSIONS,
   assertEmbeddingVector,
@@ -29,27 +30,12 @@ import {
 /** Batches of windows handed to the gateway; smaller batches keep a retry cheap. */
 export const DEFAULT_EMBEDDING_BATCH_SIZE = 16;
 
-export interface CorpusEmbedder {
-  /** Returns one embedding per input text, in the same order. */
-  embedDocuments(texts: readonly string[]): Promise<readonly (readonly number[])[]>;
-}
-
-export interface CorpusChunkRecord {
-  readonly id: string;
-  readonly companyId: string;
-  readonly datasetId: string;
-  readonly documentId: string;
-  readonly ordinal: number;
-  readonly content: string;
-  readonly startOffset: number;
-  readonly endOffset: number;
-  /** L2-normalized embedding with `dimensions` components. */
-  readonly embedding: readonly number[];
-}
+/** The chunks of one document, in the shape the CorpusStore writes them. */
+export type CorpusChunkDraft = ReplaceCorpusChunksInput["chunks"][number];
 
 export interface CorpusChunkWriter {
-  /** Idempotent upsert keyed by chunk id. */
-  upsertChunks(chunks: readonly CorpusChunkRecord[]): Promise<void>;
+  /** Atomically replaces all chunks of one document (`CorpusStore.replaceDocumentChunks`). */
+  replaceDocumentChunks(input: ReplaceCorpusChunksInput): Promise<unknown>;
 }
 
 export type EmbeddingBatchErrorCode = "count-mismatch";
@@ -83,7 +69,8 @@ export interface IngestDocumentRequest {
 }
 
 export interface IngestionDependencies {
-  readonly embedder: CorpusEmbedder;
+  /** The module's Embedder port (dashscope text-embedding-v4 through the company gateway). */
+  readonly embedder: Embedder;
   readonly writer: CorpusChunkWriter;
 }
 
@@ -124,6 +111,7 @@ export function createDocumentIngestionPipeline(
 
       let embeddingCalls = 0;
       let batchCount = 0;
+      const drafts: CorpusChunkDraft[] = [];
       for (let start = 0; start < chunks.length; start += batchSize) {
         const batch = chunks.slice(start, start + batchSize);
         const texts = batch.map((chunk) => chunk.content);
@@ -132,7 +120,8 @@ export function createDocumentIngestionPipeline(
           retryContext,
           async () => {
             embeddingCalls += 1;
-            return dependencies.embedder.embedDocuments(texts);
+            const embedded = await dependencies.embedder.embed({ texts: [...texts], dimensions });
+            return embedded.embeddings;
           },
           isRetryableEmbeddingFailure,
         );
@@ -142,20 +131,26 @@ export function createDocumentIngestionPipeline(
             `embedder returned ${embeddings.length} vectors for ${texts.length} texts`,
           );
         }
-        const records: CorpusChunkRecord[] = batch.map((chunk, index) => ({
-          id: chunk.id,
-          companyId: request.companyId,
-          datasetId: request.datasetId,
-          documentId: request.documentId,
-          ordinal: chunk.ordinal,
-          content: chunk.content,
-          startOffset: chunk.startOffset,
-          endOffset: chunk.endOffset,
-          embedding: prepareEmbedding(embeddings[index], dimensions, normalize),
-        }));
-        await dependencies.writer.upsertChunks(records);
+        drafts.push(
+          ...batch.map((chunk, index) => ({
+            chunkIndex: chunk.ordinal,
+            content: chunk.content,
+            embedding: [...prepareEmbedding(embeddings[index], dimensions, normalize)],
+            tokenCount: null,
+            metadata: { startOffset: chunk.startOffset, endOffset: chunk.endOffset },
+          })),
+        );
         batchCount += 1;
       }
+
+      // One atomic replace at the end: `replaceDocumentChunks` swaps every chunk of the document in
+      // a single call, so calling it per batch would wipe the batch before it. A failure while
+      // embedding therefore leaves the chunks the document had.
+      await dependencies.writer.replaceDocumentChunks({
+        companyId: request.companyId,
+        documentId: request.documentId,
+        chunks: drafts,
+      });
 
       return {
         documentId: request.documentId,

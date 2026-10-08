@@ -89,6 +89,22 @@ Retries inside the client use the shared retry policy of the module (`attempts`,
 exponential backoff with jitter) and apply to `unavailable` / `timeout` only. A call that
 exhausts them returns the last error; the queue then schedules the next attempt of the job.
 
+## Two surfaces, one client
+
+`createHttpDocumentParser` is the `DocumentParser` port of the module: `parse(request)` takes
+the port's `DocumentParseRequest` (document bytes or a source URI, content type, title,
+parser version) and answers with the port's `DocumentParseResult` — the service's pages as
+parsed blocks in reading order (`chunkIndex`, `content`, `pageNumber` in the block metadata),
+or a single block when the service answers with plain text, plus `jobId`, `parserVersion` and
+`pageCount` as metadata. Failure is **thrown** as a `DocumentParserError` carrying `retryable`,
+because that is what the worker needs: a retryable failure becomes a failed job the queue
+picks up again, a permanent one a failed job the queue does not retry.
+
+`createDocumentParserClient` is the layer underneath and stays exported: it reports the same
+failures as a typed outcome (`{ ok: false, error }`) instead of throwing, and exposes
+`submitDocument` / `fetchJob` for callers that want to drive the job themselves. Nothing in
+this package decides retry policy — it only reports whether a failure is worth retrying.
+
 ## Settings used by this client
 
 | Option           | Default | Meaning                                                  |
@@ -107,4 +123,7 @@ Wiring these to interface settings and environment variables is outside this pac
 [document-parser-client.myrmidon.test.ts](document-parser-client.myrmidon.test.ts) runs the
 client against an in-process `node:http` server and covers the accepted path, polling, the
 retry of `5xx`, permanent `4xx`, both timeouts, a malformed body and an unreachable service.
-No live network, no keys.
+[http-document-parser.myrmidon.test.ts](http-document-parser.myrmidon.test.ts) runs the same
+way for the port adapter: byte and source-URI submissions, the wire body, one block per page
+in reading order, a retried `5xx`, a refused request, a failed job and an unreachable
+service. No live network, no keys.

@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import { chunkDocumentText } from "../chunking/chunker.js";
+import type { Embedder, ReplaceCorpusChunksInput } from "../ports.js";
 import {
   EmbeddingBatchError,
   createDocumentIngestionPipeline,
-  type CorpusChunkRecord,
-  type CorpusEmbedder,
+  type CorpusChunkDraft,
+  type CorpusChunkWriter,
 } from "./embedding-pipeline.js";
 
 const companyId = "aaaaaaaa-0000-0000-0000-000000000001";
@@ -20,38 +21,49 @@ function documentText(): string {
   return Array.from({ length: 5 }, (_, index) => `${index}`.repeat(1) + "x".repeat(599)).join("\n");
 }
 
-function recordingWriter(): { writer: { upsertChunks(chunks: readonly CorpusChunkRecord[]): Promise<void> }; batches: CorpusChunkRecord[][] } {
-  const batches: CorpusChunkRecord[][] = [];
+function recordingWriter(): {
+  writer: CorpusChunkWriter;
+  batches: CorpusChunkDraft[][];
+  writes: { companyId: string; documentId: string }[];
+} {
+  const batches: CorpusChunkDraft[][] = [];
+  const writes: { companyId: string; documentId: string }[] = [];
   return {
     batches,
+    writes,
     writer: {
-      async upsertChunks(chunks) {
-        batches.push([...chunks]);
+      async replaceDocumentChunks(input: ReplaceCorpusChunksInput) {
+        batches.push([...input.chunks]);
+        writes.push({ companyId: input.companyId, documentId: input.documentId });
       },
     },
   };
 }
 
-function fakeEmbedder(dimensions = 4): { embedder: CorpusEmbedder; calls: string[][] } {
+function fakeEmbedder(dimensions = 4): { embedder: Embedder; calls: string[][] } {
   const calls: string[][] = [];
   return {
     calls,
     embedder: {
-      async embedDocuments(texts) {
+      async embed({ texts }) {
         calls.push([...texts]);
-        return texts.map((text, index) =>
-          Array.from({ length: dimensions }, (_, position) => (position === 0 ? text.length + index + 1 : 0)),
-        );
+        return {
+          model: "test-embedder",
+          dimensions,
+          embeddings: texts.map((text, index) =>
+            Array.from({ length: dimensions }, (_, position) => (position === 0 ? text.length + index + 1 : 0)),
+          ),
+        };
       },
     },
   };
 }
 
 describe("document ingestion pipeline", () => {
-  it("chunks, embeds in batches and writes normalized chunks to the store", async () => {
+  it("chunks, embeds in batches and replaces the document chunks with normalized vectors", async () => {
     const text = documentText();
     const { embedder, calls } = fakeEmbedder();
-    const { writer, batches } = recordingWriter();
+    const { writer, batches, writes } = recordingWriter();
     const pipeline = createDocumentIngestionPipeline({
       batchSize: 2,
       dimensions: 4,
@@ -64,19 +76,20 @@ describe("document ingestion pipeline", () => {
 
     expect(summary).toEqual({ documentId, chunkCount: 5, batchCount: 3, embeddingCalls: 3 });
     expect(calls.map((batch) => batch.length)).toEqual([2, 2, 1]);
-    expect(batches.map((batch) => batch.length)).toEqual([2, 2, 1]);
+    // The store replaces all chunks of a document in one call, so the writer is called once.
+    expect(batches.map((batch) => batch.length)).toEqual([5]);
+    expect(writes).toEqual([{ companyId, documentId }]);
 
     const expected = chunkDocumentText({ documentId, text, chunking: { maxChars: 1_000, minChars: 300, overlapChars: 150 } });
     const records = batches.flat();
     expect(records).toHaveLength(expected.length);
     records.forEach((record, index) => {
-      expect(record.id).toBe(expected[index].id);
+      expect(record.chunkIndex).toBe(expected[index].ordinal);
       expect(record.content).toBe(expected[index].content);
-      expect(record.ordinal).toBe(expected[index].ordinal);
-      expect(record.startOffset).toBe(expected[index].startOffset);
-      expect(record.companyId).toBe(companyId);
-      expect(record.datasetId).toBe(datasetId);
-      expect(record.documentId).toBe(documentId);
+      expect(record.metadata).toEqual({
+        startOffset: expected[index].startOffset,
+        endOffset: expected[index].endOffset,
+      });
       const norm = Math.sqrt(record.embedding.reduce((sum, value) => sum + value * value, 0));
       expect(norm).toBeCloseTo(1, 10);
     });
@@ -108,11 +121,11 @@ describe("document ingestion pipeline", () => {
   it("retries a retryable gateway failure inside the batch", async () => {
     const { writer, batches } = recordingWriter();
     let attempts = 0;
-    const embedder: CorpusEmbedder = {
-      async embedDocuments(texts) {
+    const embedder: Embedder = {
+      async embed({ texts }) {
         attempts += 1;
         if (attempts < 3) throw Object.assign(new Error("gateway 503"), { retryable: true });
-        return texts.map(() => [1, 0, 0, 0]);
+        return { model: "test-embedder", dimensions: 4, embeddings: texts.map(() => [1, 0, 0, 0]) };
       },
     };
     const pipeline = createDocumentIngestionPipeline({
@@ -130,11 +143,11 @@ describe("document ingestion pipeline", () => {
     expect(batches[0]).toHaveLength(5);
   });
 
-  it("does not retry a failure the gateway adapter marked permanent", async () => {
+  it("does not retry a failure the gateway adapter marked permanent and writes nothing", async () => {
     const { writer, batches } = recordingWriter();
     let attempts = 0;
-    const embedder: CorpusEmbedder = {
-      async embedDocuments() {
+    const embedder: Embedder = {
+      async embed() {
         attempts += 1;
         throw Object.assign(new Error("embedding model rejected the text"), { retryable: false });
       },
@@ -156,9 +169,9 @@ describe("document ingestion pipeline", () => {
 
   it("fails the batch when the gateway returns a different number of vectors", async () => {
     const { writer } = recordingWriter();
-    const embedder: CorpusEmbedder = {
-      async embedDocuments() {
-        return [[1, 0, 0, 0]];
+    const embedder: Embedder = {
+      async embed() {
+        return { model: "test-embedder", dimensions: 4, embeddings: [[1, 0, 0, 0]] };
       },
     };
     const pipeline = createDocumentIngestionPipeline({
@@ -178,9 +191,9 @@ describe("document ingestion pipeline", () => {
 
   it("rejects an embedding with the wrong number of dimensions", async () => {
     const { writer } = recordingWriter();
-    const embedder: CorpusEmbedder = {
-      async embedDocuments(texts) {
-        return texts.map(() => [1, 2, 3]);
+    const embedder: Embedder = {
+      async embed({ texts }) {
+        return { model: "test-embedder", dimensions: 3, embeddings: texts.map(() => [1, 2, 3]) };
       },
     };
     const pipeline = createDocumentIngestionPipeline({ dimensions: 1024, chunking: { maxChars: 100, minChars: 20, overlapChars: 10 } });
