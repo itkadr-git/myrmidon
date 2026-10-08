@@ -126,6 +126,31 @@ behaviorSettingRegistry.register({
   },
 });
 
+// myrmidon(1.6.6-CORPUS-SHADOW A): the shadow-mode switch for the corpus
+// module (OPE-6165). Off by default: with the flag off the bot runtime makes
+// no corpus call and writes no shadow rows — byte-for-byte the old behavior.
+// With it on, every search call that goes to an MCP knowledge tool is also
+// fired (fire-and-forget) at the corpus port, and both answers land in
+// `corpus_shadow_log` for the part-B comparison. The value in force is read
+// without a restart, like every registered key.
+behaviorSettingRegistry.register({
+  key: "corpus.shadow",
+  envName: "MYRMIDON_CORPUS_SHADOW",
+  default: false,
+  scope: "instance",
+  section: "corpus",
+  valueType: "boolean",
+  validate: (value: unknown): boolean | null => {
+    if (typeof value === "boolean") return value;
+    if (typeof value === "string") {
+      const lower = value.toLowerCase();
+      if (["true", "1", "yes", "on"].includes(lower)) return true;
+      if (["false", "0", "no", "off"].includes(lower)) return false;
+    }
+    return null;
+  },
+});
+
 /**
  * Parse an environment value based on the setting definition.
  * Returns null when the environment does not declare the setting: either the

@@ -125,6 +125,37 @@ describe("prometheus exposition format", () => {
     expect(text).not.toContain('myrmidon_run_duration_seconds{quantile=');
   });
 
+  // myrmidon(1.6.6-CORPUS-SHADOW A): the two shadow-leg summaries. With the
+  // flag off (the default) the collector reads no rows and the families stay
+  // sample-less; with rows in the window both quantiles render per leg.
+  it("renders corpus shadow leg quantiles with the quantile label", () => {
+    const text = renderMetricsText(
+      snapshot({
+        corpusShadowRagflowSecondsP50: 0.41,
+        corpusShadowRagflowSecondsP95: 1.93,
+        corpusShadowModuleSecondsP50: 0.07,
+        corpusShadowModuleSecondsP95: 0.25,
+      }),
+    );
+    expect(text).toContain('myrmidon_corpus_shadow_ragflow_latency_seconds{quantile="0.5"} 0.41');
+    expect(text).toContain('myrmidon_corpus_shadow_ragflow_latency_seconds{quantile="0.95"} 1.93');
+    expect(text).toContain('myrmidon_corpus_shadow_module_latency_seconds{quantile="0.5"} 0.07');
+    expect(text).toContain('myrmidon_corpus_shadow_module_latency_seconds{quantile="0.95"} 0.25');
+    expect(text).toContain("# TYPE myrmidon_corpus_shadow_ragflow_latency_seconds summary");
+    expect(text).toContain("# TYPE myrmidon_corpus_shadow_module_latency_seconds summary");
+  });
+
+  it("keeps corpus shadow families sample-less when no rows were written", () => {
+    // The snapshot fields are optional: the collector zeroes them when the
+    // table is empty, which is exactly the flag-off (byte-for-byte default)
+    // shape the exposition test feeds here by leaving them unset.
+    const text = renderMetricsText(snapshot());
+    expect(text).toContain("# TYPE myrmidon_corpus_shadow_ragflow_latency_seconds summary");
+    expect(text).not.toContain("myrmidon_corpus_shadow_ragflow_latency_seconds{");
+    expect(text).toContain("# TYPE myrmidon_corpus_shadow_module_latency_seconds summary");
+    expect(text).not.toContain("myrmidon_corpus_shadow_module_latency_seconds{");
+  });
+
   it("ends with a newline and separates families with blank lines", () => {
     const text = renderMetricsText(snapshot());
     expect(text.endsWith("\n")).toBe(true);

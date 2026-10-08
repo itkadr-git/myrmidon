@@ -21,6 +21,7 @@ import { and, count, eq, gt, gte, isNotNull, isNull, sql } from "drizzle-orm";
 import {
   agents,
   companies,
+  corpusShadowLog,
   heartbeatRuns,
   issueClaims,
   issues,
@@ -80,6 +81,11 @@ export const METRIC_FAMILIES = [
   "myrmidon_board_heap_bytes",
   "myrmidon_board_live_events_total",
   "myrmidon_board_live_event_bytes_total",
+  // myrmidon(1.6.6-CORPUS-SHADOW A): p50/p95 of both shadow legs (OPE-6166
+  // part A) read from corpus_shadow_log inside the latency window. With the
+  // flag off the table stays empty and the families render HELP/TYPE only.
+  "myrmidon_corpus_shadow_ragflow_latency_seconds",
+  "myrmidon_corpus_shadow_module_latency_seconds",
 ] as const;
 
 export type MetricFamily = (typeof METRIC_FAMILIES)[number];
@@ -117,6 +123,16 @@ export interface MetricsSnapshotFields {
    * exist even before the first event of a kind was published.
    */
   process?: ProcessMetricsSample | null;
+  /**
+   * myrmidon(1.6.6-CORPUS-SHADOW A): p50/p95 of the two shadow legs in
+   * seconds, read from corpus_shadow_log inside the latency window. Absent
+   * or null (flag off — the table stays empty) renders HELP/TYPE with no
+   * samples, the same shape the run-duration summary uses with no rows.
+   */
+  corpusShadowRagflowSecondsP50?: number | null;
+  corpusShadowRagflowSecondsP95?: number | null;
+  corpusShadowModuleSecondsP50?: number | null;
+  corpusShadowModuleSecondsP95?: number | null;
 }
 
 /** The fields plus the scrape bookkeeping rendered into the exposition text. */
@@ -196,6 +212,42 @@ async function readRunDurations(
     .filter((value) => Number.isFinite(value) && value >= 0);
   if (durations.length === 0) return { p50: null, p95: null, samples: 0 };
   return { p50: percentile(durations, 0.5), p95: percentile(durations, 0.95), samples: durations.length };
+}
+
+/**
+ * myrmidon(1.6.6-CORPUS-SHADOW A): p50/p95 of one shadow leg, in seconds,
+ * over corpus_shadow_log rows written inside the latency window. The empty
+ * table (flag off, the default) yields nulls — the families then render
+ * HELP/TYPE without samples.
+ */
+async function readCorpusShadowLatencies(
+  db: Db,
+  windowStart: Date,
+): Promise<{
+  ragflow: { p50: number | null; p95: number | null };
+  module: { p50: number | null; p95: number | null };
+}> {
+  const rows = await db
+    .select({
+      ragflowMs: corpusShadowLog.ragflowLatencyMs,
+      moduleMs: corpusShadowLog.moduleLatencyMs,
+    })
+    .from(corpusShadowLog)
+    .where(gte(corpusShadowLog.ts, windowStart))
+    .orderBy(corpusShadowLog.ts)
+    .limit(LATENCY_SAMPLE_CAP);
+  type ShadowRow = { ragflowMs: number | null; moduleMs: number | null };
+  const toSeconds = (values: ShadowRow[], field: keyof ShadowRow) =>
+    values
+      .map((row) => row[field])
+      .filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0)
+      .map((value) => value / 1000);
+  const ragflow = toSeconds(rows, "ragflowMs").sort((a, b) => a - b);
+  const module = toSeconds(rows, "moduleMs").sort((a, b) => a - b);
+  return {
+    ragflow: ragflow.length === 0 ? { p50: null, p95: null } : { p50: percentile(ragflow, 0.5), p95: percentile(ragflow, 0.95) },
+    module: module.length === 0 ? { p50: null, p95: null } : { p50: percentile(module, 0.5), p95: percentile(module, 0.95) },
+  };
 }
 
 /** Linear-interpolated percentile of an ascending-sorted sample. */
@@ -326,6 +378,14 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
     () => readRunDurations(deps.db, latencyWindowStart),
     { p50: null, p95: null, samples: 0 },
   );
+  // myrmidon(1.6.6-CORPUS-SHADOW A): both shadow legs ride the same guarded
+  // scrape; the per-family "a|b" entry marks both families on a failed read,
+  // which the self-check's split("|") already understands.
+  const shadowLatencies = await guarded(
+    "myrmidon_corpus_shadow_ragflow_latency_seconds|myrmidon_corpus_shadow_module_latency_seconds",
+    () => readCorpusShadowLatencies(deps.db, latencyWindowStart),
+    { ragflow: { p50: null, p95: null }, module: { p50: null, p95: null } },
+  );
   const roleQueues = await guarded(
     "myrmidon_role_queue_tasks",
     () => readRoleQueues(deps.db),
@@ -373,6 +433,10 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
       runsFailedWindow: failedWindow,
       runDurationSecondsP50: durations.p50,
       runDurationSecondsP95: durations.p95,
+      corpusShadowRagflowSecondsP50: shadowLatencies.ragflow.p50,
+      corpusShadowRagflowSecondsP95: shadowLatencies.ragflow.p95,
+      corpusShadowModuleSecondsP50: shadowLatencies.module.p50,
+      corpusShadowModuleSecondsP95: shadowLatencies.module.p95,
       roleQueueTasks: roleQueues,
       swarmClaimsActive: claimCounters.active,
       swarmClaimsTotal: claimCounters.total,
@@ -523,6 +587,38 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
           : []),
         ...(snapshot.runDurationSecondsP95 !== null
           ? [`myrmidon_run_duration_seconds{quantile=\"0.95\"} ${formatSampleValue(snapshot.runDurationSecondsP95)}`]
+          : []),
+      ],
+    ),
+  );
+  // myrmidon(1.6.6-CORPUS-SHADOW A): the two shadow legs, one summary each,
+  // same quantile shape as the run-duration family above.
+  blocks.push(
+    familyBlock(
+      "myrmidon_corpus_shadow_ragflow_latency_seconds",
+      "Corpus shadow log: RAGFlow leg latency quantiles over the latency window (OPE-6166 part A).",
+      "summary",
+      [
+        ...(snapshot.corpusShadowRagflowSecondsP50 != null
+          ? [`myrmidon_corpus_shadow_ragflow_latency_seconds{quantile=\"0.5\"} ${formatSampleValue(snapshot.corpusShadowRagflowSecondsP50)}`]
+          : []),
+        ...(snapshot.corpusShadowRagflowSecondsP95 != null
+          ? [`myrmidon_corpus_shadow_ragflow_latency_seconds{quantile=\"0.95\"} ${formatSampleValue(snapshot.corpusShadowRagflowSecondsP95)}`]
+          : []),
+      ],
+    ),
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_corpus_shadow_module_latency_seconds",
+      "Corpus shadow log: corpus-module leg latency quantiles over the latency window (OPE-6166 part A).",
+      "summary",
+      [
+        ...(snapshot.corpusShadowModuleSecondsP50 != null
+          ? [`myrmidon_corpus_shadow_module_latency_seconds{quantile=\"0.5\"} ${formatSampleValue(snapshot.corpusShadowModuleSecondsP50)}`]
+          : []),
+        ...(snapshot.corpusShadowModuleSecondsP95 != null
+          ? [`myrmidon_corpus_shadow_module_latency_seconds{quantile=\"0.95\"} ${formatSampleValue(snapshot.corpusShadowModuleSecondsP95)}`]
           : []),
       ],
     ),
