@@ -1,14 +1,21 @@
 // myrmidon(1.6.5 RUN-PRIORITY A): run queue priority — role, issue priority,
 // current release and aging, with live instance settings.
 //
-// A queued run's effective weight is
+// A queued run's effective weight is *banded by its role*, and a run carrying
+// the current release sits one whole band above the heaviest role:
 //
-//     weight = max(role weight, issue-priority weight)
-//            + release bonus           (issue tagged with the current release)
-//            + aging bonus             (steps with the wait, capped)
+//     weight = role band                (role weight x the band width)
+//            + current-release lane     (issue labelled with the current release)
+//            + issue-priority weight    \
+//            + release bonus             >  the refinements *inside* the band
+//            + aging bonus              /   (steps with the wait, capped)
 //
-// and once the run has waited longer than the starvation limit it gets the
-// top weight outright, so a FIFO queue can never starve anybody forever.
+// The band is wider than every refinement added together, so the role — and the
+// current-release lane — decides the order: review/release and current-release
+// runs overtake the rest whatever the issue priority is, and aging reorders runs
+// of the same role without ever lifting one past a heavier role. Once a run has
+// waited longer than the starvation limit it takes a lane of its own above all
+// of them, so a FIFO queue can never starve anybody forever.
 //
 // Settings follow the same precedence as the run admission limits
 // (`myrmidon-runtime-limits.ts`): the stored `instance_settings.general.runPriority`
@@ -297,7 +304,43 @@ export interface RunPriorityRunInput {
 const MINUTE_MS = 60_000;
 
 /**
+ * The width of one role band: wider than every refinement a run can earn inside
+ * it — the heaviest issue weight, the release bonus and the whole aging budget,
+ * the starvation escape included. Every component comes from the settings, so
+ * an operator raising the aging cap cannot let a waiting run outrank a heavier
+ * role. (Export is for the tests: the property is what the ordering rests on.)
+ */
+export function runPriorityBandWidth(settings: RunPrioritySettings): number {
+  const issueMax = Math.max(0, ...Object.values(settings.issuePriorityWeights));
+  const agingMax = Math.max(settings.agingMaxBonus, settings.starvationTopWeight);
+  return issueMax + Math.max(0, settings.releaseBonus) + agingMax + 1;
+}
+
+/** The heaviest role weight the settings declare (review/release by default). */
+function heaviestRoleWeight(settings: RunPrioritySettings): number {
+  return Math.max(0, ...Object.values(settings.roleWeights), settings.defaultRoleWeight);
+}
+
+/**
+ * What a current-release run is lifted by: one whole band above the heaviest
+ * role, so review/release/current-release work starts before every other run
+ * whatever its issue priority or waiting time. Only the starvation lane goes
+ * above it.
+ */
+function currentReleaseLane(settings: RunPrioritySettings): number {
+  return (heaviestRoleWeight(settings) + 1) * runPriorityBandWidth(settings);
+}
+
+/**
  * The effective weight of a queued run at `nowMs` (larger starts first).
+ *
+ * The role sets the band; the issue priority, the release bonus and the wait
+ * only refine the order *inside* it, so a review/release run overtakes an
+ * engineer's critical issue and a current-release run overtakes every role,
+ * while aging (capped by `agingMaxBonus`) reorders runs of one role without
+ * ever crossing into another. Past the starvation limit the run takes a lane of
+ * its own above all of them, keeping the escape the feature promises.
+ *
  * Switched off, every run scores 0 and the caller falls back to its
  * pre-feature ordering.
  */
@@ -307,10 +350,8 @@ export function runPriorityWeight(
   nowMs: number = Date.now(),
 ): number {
   if (!settings.enabled) return 0;
-  const waitedMs = Math.max(0, nowMs - input.createdAtMs);
-  if (settings.starvationLimitMinutes > 0 && waitedMs >= settings.starvationLimitMinutes * MINUTE_MS) {
-    return settings.starvationTopWeight;
-  }
+  const band = runPriorityBandWidth(settings);
+  const lane = currentReleaseLane(settings);
   const roleKey = input.role?.trim().toLowerCase();
   const roleWeight =
     (roleKey ? settings.roleWeights[roleKey] : undefined) ?? settings.defaultRoleWeight;
@@ -323,8 +364,24 @@ export function runPriorityWeight(
       DEFAULT_RUN_PRIORITY_ISSUE_WEIGHTS.none ??
       0;
   }
-  let weight = Math.max(roleWeight, issueWeight);
-  if (input.releaseMatched) weight += settings.releaseBonus;
+  const waitedMs = Math.max(0, nowMs - input.createdAtMs);
+  // The role band plus its refinements: the sum never reaches the next band.
+  let weight = roleWeight * band + issueWeight;
+  if (input.releaseMatched) weight += settings.releaseBonus + lane;
+  if (settings.starvationLimitMinutes > 0 && waitedMs >= settings.starvationLimitMinutes * MINUTE_MS) {
+    // The escape keeps its name: past the limit the run leaves the role bands
+    // altogether and takes the starvation lane — one whole band above the
+    // heaviest weight any other run can reach (the current-release lane of the
+    // heaviest role, with the heaviest issue and the release bonus on top), so
+    // neither its own role nor a heavier tagged run can hold it back. Inside the
+    // lane the issue priority and the release tag still order the escaped runs.
+    return (
+      (2 * heaviestRoleWeight(settings) + 2) * band +
+      settings.starvationTopWeight +
+      issueWeight +
+      (input.releaseMatched ? settings.releaseBonus : 0)
+    );
+  }
   if (settings.agingStepMinutes > 0 && settings.agingStepWeight > 0) {
     const steps = Math.floor(waitedMs / (settings.agingStepMinutes * MINUTE_MS));
     weight += Math.min(settings.agingMaxBonus, steps * settings.agingStepWeight);
