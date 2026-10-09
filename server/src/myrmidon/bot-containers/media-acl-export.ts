@@ -40,10 +40,14 @@ import { containerNameFor } from "./template.js";
  *  provisioning half of the track; the frozen inter-part contract). */
 export const MEDIA_TOOLS_TOKEN_ENV = "MEDIA_TOOLS_TOKEN";
 
-/** Board-side env var naming the registry file. Its default is the facade's
- *  own MEDIA_BOTS_FILE default ("/config/bots.json"), so one bind mount of the
- *  same path shared into the facade container needs no second setting. */
-export const MYRMIDON_MEDIA_BOTS_FILE_ENV = "MYRMIDON_MEDIA_BOTS_FILE";
+/** The board-side env var (`MYRMIDON_MEDIA_BOTS_FILE`) naming the registry
+ *  file. Its default is the facade's own MEDIA_BOTS_FILE default
+ *  ("/config/bots.json"), so one bind mount of the same path shared into the
+ *  facade container needs no second setting. The constant follows the
+ *  `<FEATURE>_ENV` house naming: it is a code identifier, not an env name, so
+ *  the FLAGS/SETTINGS guard test (which greps the myrmidon sources for
+ *  `MYRMIDON_*` names) sees only the documented value. */
+export const MEDIA_BOTS_FILE_ENV = "MYRMIDON_MEDIA_BOTS_FILE";
 export const DEFAULT_MEDIA_BOTS_FILE = "/config/bots.json";
 
 /** The default tools allowlist an exported entry carries, mirroring
@@ -236,8 +240,9 @@ export interface MediaAclExportResult {
 export interface MediaAclExportDeps {
   listAgents: () => Promise<MediaAclAgent[]>;
   resolveCardEnv: MediaAclCardEnvResolver;
-  /** Registry path: explicit first, else MYRMIDON_MEDIA_BOTS_FILE_ENV, then
-   *  DEFAULT_MEDIA_BOTS_FILE (the facade's own default). */
+  /** Registry path: explicit first, else MEDIA_BOTS_FILE_ENV
+   *  (MYRMIDON_MEDIA_BOTS_FILE), then DEFAULT_MEDIA_BOTS_FILE (the facade's
+   *  own default). */
   env?: NodeJS.ProcessEnv;
   path?: string;
   tools?: readonly string[];
@@ -245,12 +250,13 @@ export interface MediaAclExportDeps {
   containersEnabled?: (env: NodeJS.ProcessEnv) => boolean;
 }
 
-/** Registry path resolution: explicit first, then MYRMIDON_MEDIA_BOTS_FILE_ENV,
- *  then DEFAULT_MEDIA_BOTS_FILE (the facade's own default). Pure — the contract
- *  is asserted without ever touching the write path. */
+/** Registry path resolution: explicit first, then MEDIA_BOTS_FILE_ENV
+ *  (MYRMIDON_MEDIA_BOTS_FILE), then DEFAULT_MEDIA_BOTS_FILE (the facade's own
+ *  default). Pure — the contract is asserted without ever touching the write
+ *  path. */
 export function resolveMediaBotsFilePath(env: NodeJS.ProcessEnv, explicit?: string): string {
   if (explicit !== undefined) return explicit;
-  const fromEnv = env[MYRMIDON_MEDIA_BOTS_FILE_ENV]?.trim();
+  const fromEnv = env[MEDIA_BOTS_FILE_ENV]?.trim();
   return fromEnv && fromEnv.length > 0 ? fromEnv : DEFAULT_MEDIA_BOTS_FILE;
 }
 
