@@ -164,7 +164,7 @@ describeEmbeddedPostgres("myrmidon(1.6.5 F-26 T10 SCENT) on a real database", ()
       description: "Описание.",
       status: "todo",
       priority: "medium",
-      casteKey: "marketer",
+      casteKey: "qa",
       casteSource: "auto",
     } as never);
     expect((await readIssue(created.id)).casteSource).toBe("manual");
@@ -258,7 +258,7 @@ describeEmbeddedPostgres("myrmidon(1.6.5 F-26 T10 SCENT) on a real database", ()
 
   it("a refresh may change the earlier 'auto' pick but not a manual one", async () => {
     await makeCompany();
-    const id = await makeIssue({ casteKey: "marketer", casteSource: "auto" });
+    const id = await makeIssue({ casteKey: "qa", casteSource: "auto" });
     await serviceWith(gatewayReturning(CSS_SCENT)).classifyIssue(id);
     expect((await readIssue(id)).casteKey).toBe("engineer");
   });

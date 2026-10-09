@@ -16,7 +16,7 @@
 // history is out of the token budget by design) plus agents with empty
 // `scent_tags`.
 
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, gt, isNull, sql } from "drizzle-orm";
 import { agents, issues, type Db } from "@paperclipai/db";
 import {
   readScentSettings,
@@ -295,7 +295,7 @@ export function createScentService(deps: ScentServiceDeps) {
           // §7.1 п.4a: OPEN todo only — done/cancelled history is out of the
           // token budget (a task needs its caste BEFORE the swarm picks it).
           eq(issues.status, "todo"),
-          sql`${issues.createdAt} > ${lookback}`,
+          gt(issues.createdAt, lookback),
         ),
       )
       .orderBy(issues.createdAt)
