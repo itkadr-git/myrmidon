@@ -3834,6 +3834,7 @@ async function applyMergePlan(input: {
         description: issue.source.description,
         status: issue.targetStatus,
         priority: issue.source.priority,
+        pheromoneStrength: issue.source.pheromoneStrength ?? 0,
         assigneeAgentId: issue.targetAssigneeAgentId,
         assigneeUserId: issue.source.assigneeUserId,
         checkoutRunId: null,

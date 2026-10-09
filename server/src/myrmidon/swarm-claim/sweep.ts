@@ -47,6 +47,7 @@ import {
   SWARM_CLAIM_WAKE_REASON,
   isSwarmLeaseExpired,
   isSwarmClaimEnabledFor,
+  pheromoneDynamicsOf,
   resolveSwarmClaimSettings,
   type CompanyCaste,
   type SwarmClaimSettings,
@@ -405,7 +406,7 @@ export async function listActiveCompanies(db: Db, limit = 50): Promise<string[]>
 async function sweepIdleWakes(
   deps: SwarmClaimServicePorts & { db: Db },
   input: {
-    settings: Pick<SwarmClaimSettings, "enabled" | "maxActiveTasks" | "p0Preemption">;
+    settings: Pick<SwarmClaimSettings, "enabled" | "maxActiveTasks" | "p0Preemption" | "pheromone">;
     now: Date;
     result: SwarmClaimSweepResult;
   },
@@ -423,7 +424,13 @@ async function sweepIdleWakes(
   }
 
   for (const companyId of companyIds) {
-    const pairs = await listIdleRolePairs(deps.db, companyId);
+    // 1.6.5 (F-27, review #1047 п.2): the candidate cut is ordered by the same
+    // keys the pass ranks by — a strong task behind the oldest 500 must reach it.
+    const pairs = await listIdleRolePairs(deps.db, companyId, {
+      dynamics: pheromoneDynamicsOf(input.settings.pheromone),
+      p0Preemption: input.settings.p0Preemption,
+      now: input.now,
+    });
     // myrmidon(1.6.1 SWARM-IDLE-WAKE → 1.6.5 SWARM-T4): the swarm gate. With
     // the switch off no role is woken: its claim answers `disabled`, the run
     // ends with nothing, and the next tick would wake it again — an endless
@@ -471,6 +478,7 @@ async function sweepIdleWakes(
         batchLimit: batch,
         now: input.now,
         p0Preemption: input.settings.p0Preemption,
+        pheromoneDynamics: pheromoneDynamicsOf(input.settings.pheromone),
       });
       result.idleRoles += 1;
       result.idleFreeAgents += targets.length;

@@ -3043,6 +3043,11 @@ function toCompactIssue(issue: any): CompactIssue {
     status: issue.status,
     workMode: issue.workMode,
     priority: issue.priority,
+    // 1.6.5 (F-27 PHEROMONE): the list API carries the strength so the list UI
+    // can show and edit it without loading each card.
+    pheromoneStrength: issue.pheromoneStrength,
+    // 1.6.5 (F-27 rework 09.10): the caste key (design §2.1).
+    casteKey: issue.casteKey ?? null,
     reviewPolicy: issue.reviewPolicy,
     assigneeAgentId: issue.assigneeAgentId,
     assigneeUserId: issue.assigneeUserId,

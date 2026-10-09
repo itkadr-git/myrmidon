@@ -28,6 +28,7 @@ import {
   SWARM_CLAIM_WAKE_IDEMPOTENCY_PREFIX,
   SWARM_CLAIM_WAKE_REASON,
   isSwarmClaimEnabledFor,
+  pheromoneDynamicsOf,
   resolveSwarmClaimSettings,
   type CompanyCastesReader,
   type SwarmClaimLease,
@@ -166,7 +167,11 @@ export async function claimNextTaskForAgent(
     : settings;
 
   const [candidates, agentClaims, companyClaims] = await Promise.all([
-    listRoleQueue(ports.db, input.companyId, agent.role, input.agentId),
+    listRoleQueue(ports.db, input.companyId, agent.role, input.agentId, {
+      dynamics: pheromoneDynamicsOf(effectiveSettings.pheromone),
+      p0Preemption: effectiveSettings.p0Preemption,
+      now,
+    }),
     listAgentLiveClaims(ports.db, input.companyId, input.agentId),
     // The live claims of the whole company restrict the queue: a task another
     // agent holds is not in anyone's queue until its lease runs out.
@@ -227,6 +232,7 @@ export async function claimNextTaskForAgent(
     details: {
       identifier: next.identifier,
       priority: next.priority,
+      pheromoneStrength: next.pheromoneStrength ?? null,
       role: agent.role,
       leaseTtlSec: settings.leaseTtlSec,
     },
