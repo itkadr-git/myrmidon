@@ -171,7 +171,10 @@ run_status() {
 }
 
 # Poll cadence of the gate wait. Overridable for the tests (the default is
-# sized for CI: image workflows on a tag push run up to ~40 minutes).
+# sized for CI: image workflows on a tag push run up to ~40 minutes, and the
+# hosted-runner queue of a tag push — 9 workflows started at once — has
+# delayed the tag CI beyond that; myrmidon-release.yml raises POLL_MAX to
+# 240 (80 min) for the publish job).
 POLL_SECONDS="${MYRMIDON_RELEASE_POLL_SECONDS:-20}"
 POLL_MAX="${MYRMIDON_RELEASE_POLL_MAX:-120}"
 
