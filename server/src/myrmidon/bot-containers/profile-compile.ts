@@ -401,7 +401,6 @@ export function createBotProfileCompile(
     // there is no second token source to drift against the registry.
     let mediaMcpServer: BotMcpSource | null = null;
     let mediaEnv: Record<string, HermesProfileEnvEntry> = {};
-    let mediaWarning: string | null = null;
     const mediaUrl = ((opts.env as Record<string, string | undefined>).MYRMIDON_MEDIA_MCP_URL ?? "http://media-mcp:8080/mcp").trim();
     const mediaToken = mediaTokenFromEnv(cardEnv.env);
     if (mediaUrl && mediaToken) {
@@ -418,7 +417,9 @@ export function createBotProfileCompile(
         [MEDIA_MCP_URL_ENV]: { value: mediaUrl.replace(/\/mcp$/, ""), secret: false },
       };
     } else if (mediaUrl) {
-      mediaWarning = `media: the card has no MEDIA_TOOLS_TOKEN for ${botKey}; the media block was left out — «media not connected»`;
+      // The «media not connected» channel is the attention card, not a compile
+      // warning: a token-less card is a normal state (most of the fleet), so
+      // the compile log stays quiet and the board shows the advisory card.
       recordMediaMcpOffline(agent.companyId, mediaMcpSignalForBot(agentId, botKey, new Date().toISOString()));
     }
 
@@ -560,7 +561,6 @@ export function createBotProfileCompile(
       ...cardEnv.warnings,
       ...egressWarnings,
       ...cacheWarnings,
-      ...(mediaWarning ? [mediaWarning] : []),
       ...(paperclipApiKey.warnings ?? []),
       ...skills.warnings,
       ...instructions.warnings,

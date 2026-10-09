@@ -649,7 +649,7 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
       expect(fileContent(profile, "hermes/config.yaml")).toContain("http://media-mcp.example:8080/mcp");
     });
 
-    it("without a card token there is no media block and no media env, with a «media not connected» warning", async () => {
+    it("without a card token there is no media block and no media env — the «media not connected» state lives on the board, not in the compile log", async () => {
       const board = fakeBoard();
       const reported: string[][] = [];
       const profile = await createBotProfileCompile(board.ports, {
@@ -664,7 +664,9 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
       const env = fileContent(profile, "hermes/.env");
       expect(env).not.toContain("MEDIA_TOOLS_TOKEN");
       expect(env).not.toContain("MYRMIDON_MCP_TOKEN_MEDIA");
-      expect(reported.flat().some((warning) => warning.includes("media") && warning.includes("not connected"))).toBe(true);
+      // A token-less card is a normal state: no compile warning, the advisory
+      // attention card is the channel (see the signal test below).
+      expect(reported.flat()).toEqual([]);
     });
 
     it("records one «media not connected» signal per pass when the card token is missing", async () => {
@@ -695,7 +697,7 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
       resetMediaMcpSignals();
     });
 
-    it("a blank card token (whitespace) is no token: no media block, no signal", async () => {
+    it("a blank card token (whitespace) is no token: no media block, signal recorded", async () => {
       const board = fakeBoard({
         async resolveCardEnv() {
           return { env: { MEDIA_TOOLS_TOKEN: { value: "   ", secret: false } }, warnings: [] };
@@ -706,7 +708,9 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
       const profile = await compile("agent-a", "agent-a");
       compile.endPass(pass);
       expect(fileContent(profile, "hermes/config.yaml")).not.toContain("media:");
-      expect(readMediaMcpSignals("company-1")).toEqual([]);
+      const signals = readMediaMcpSignals("company-1");
+      expect(signals).toHaveLength(1);
+      expect(signals[0].agentId).toBe("agent-a");
       resetMediaMcpSignals();
     });
   });
