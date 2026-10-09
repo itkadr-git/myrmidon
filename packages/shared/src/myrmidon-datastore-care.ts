@@ -86,9 +86,11 @@ export function normalizeDatastoreCareRetention(
 
 export const patchDatastoreCareRetentionSchema = z
   .object({
-    heartbeatRunContextDays: z.number().int().min(0).max(3650).optional(),
-    // myrmidon(1.6.5-F14B): batches per company per compaction pass.
-    contextCompactMaxBatches: z.number().int().min(1).max(1000).optional(),
+    // myrmidon(1.6.5-F14B): PATCH is partial per field — absent keeps the
+    // stored value, null clears it (resolution falls back to env/default).
+    heartbeatRunContextDays: z.number().int().min(0).max(3650).nullable().optional(),
+    // Batches per company per compaction pass.
+    contextCompactMaxBatches: z.number().int().min(1).max(1000).nullable().optional(),
   })
   .strict();
 export type DatastoreCareRetentionPatch = z.infer<typeof patchDatastoreCareRetentionSchema>;
