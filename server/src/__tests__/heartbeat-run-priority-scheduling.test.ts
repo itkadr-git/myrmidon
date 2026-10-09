@@ -300,7 +300,85 @@ describeEmbeddedPostgres("heartbeat run-priority queued run selection", () => {
     const stillQueued = await runRow(engineerRun.id);
     expect(startedReview?.status).not.toBe("queued");
     expect(stillQueued?.status).toBe("queued");
-    expect(stillQueued.contextSnapshot).toMatchObject({ waitReason: "global_cap" });
+    expect(stillQueued.contextSnapshot).toMatchObject({
+      waitReason: "global_cap",
+      queuePosition: 2,
+      queueLength: 2,
+    });
+    // the same pass told every waiting run where it stood (the review run was
+    // rank 1 of 2) and the claim that started it dropped the note again
+    expect(startedReview?.contextSnapshot).not.toHaveProperty("queuePosition");
+    expect(startedReview?.contextSnapshot).not.toHaveProperty("waitReason");
+  }, 30_000);
+
+  it("keeps the role in front of the issue priority: the review run starts before an older critical engineer run", async () => {
+    applyRunPrioritySettings(defaultSettings());
+    pinAdmission({ maxConcurrentRuns: 0 });
+
+    const review = await seedCompanyAndAgent({ name: "RoleReviewer", role: "review" });
+    const engineer = await seedCompanyAndAgent({ name: "CriticalEngineer", role: "engineer" });
+    const reviewIssueId = await seedIssue(review.companyId, {
+      title: "Review a low-priority patch",
+      priority: "low",
+      assigneeAgentId: review.agentId,
+    });
+    const engineerIssueId = await seedIssue(engineer.companyId, {
+      title: "Critical engineer work",
+      priority: "critical",
+      assigneeAgentId: engineer.agentId,
+    });
+
+    const engineerRun = await wakeAndQueue(engineer.agentId, engineerIssueId);
+    const reviewRun = await wakeAndQueue(review.agentId, reviewIssueId);
+    // The engineer run is OLDER, carries the heavier issue and has spent the
+    // whole pre-escape aging budget (89 minutes = 8 steps of 5). Under the old
+    // max(role, issue) weight it scored 100 + 40 against the review run's 90 and
+    // took the slot; the banded weight keeps it inside its own band.
+    await backdateRun(engineerRun.id, 89);
+
+    pinAdmission({ maxConcurrentRuns: 1 });
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+
+    const startedReview = await runRow(reviewRun.id);
+    const stillQueued = await runRow(engineerRun.id);
+    expect(startedReview?.status).not.toBe("queued");
+    expect(stillQueued?.status).toBe("queued");
+    // the run that lost the slot says why, and where it waited
+    expect(stillQueued.contextSnapshot).toMatchObject({ queuePosition: 2, queueLength: 2 });
+  }, 30_000);
+
+  it("still hands the slot to a starved run past the starvation limit, over a fresh review run", async () => {
+    applyRunPrioritySettings(defaultSettings());
+    pinAdmission({ maxConcurrentRuns: 0 });
+
+    const review = await seedCompanyAndAgent({ name: "StarvedReviewer", role: "review" });
+    const engineer = await seedCompanyAndAgent({ name: "StarvedEngineer", role: "engineer" });
+    const reviewIssueId = await seedIssue(review.companyId, {
+      title: "Fresh review work",
+      priority: "low",
+      assigneeAgentId: review.agentId,
+    });
+    const engineerIssueId = await seedIssue(engineer.companyId, {
+      title: "Starved engineer work",
+      priority: "none",
+      assigneeAgentId: engineer.agentId,
+    });
+
+    const engineerRun = await wakeAndQueue(engineer.agentId, engineerIssueId);
+    const reviewRun = await wakeAndQueue(review.agentId, reviewIssueId);
+    // Past the 90-minute limit the escape lane takes over: starvation protection
+    // outranks the role bands, by design.
+    await backdateRun(engineerRun.id, 91);
+
+    pinAdmission({ maxConcurrentRuns: 1 });
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+
+    const startedEngineer = await runRow(engineerRun.id);
+    const stillQueued = await runRow(reviewRun.id);
+    expect(startedEngineer?.status).not.toBe("queued");
+    expect(stillQueued?.status).toBe("queued");
   }, 30_000);
 
   it("global sweep starts the current-release labeled run first, ahead of an older FIFO run", async () => {
@@ -339,9 +417,9 @@ describeEmbeddedPostgres("heartbeat run-priority queued run selection", () => {
       companyId: release.companyId,
     });
 
-    // Plain is OLDER (pure FIFO would start it first); both score 60 for the
-    // medium issue and the engineer role, but the release label adds the +20
-    // current-release bonus, so the release run takes the single slot.
+    // Plain is OLDER (pure FIFO would start it first); both carry a medium
+    // issue on the engineer role, but the release label lifts the release run a
+    // whole lane above every role, so it takes the single slot.
     const plainRun = await wakeAndQueue(plain.agentId, plainIssueId);
     const releaseRun = await wakeAndQueue(release.agentId, releaseIssueId);
     await backdateRun(plainRun.id, 25);
@@ -354,6 +432,8 @@ describeEmbeddedPostgres("heartbeat run-priority queued run selection", () => {
     const stillQueued = await runRow(plainRun.id);
     expect(startedRelease?.status).not.toBe("queued");
     expect(stillQueued?.status).toBe("queued");
+    // the run left waiting knows its place in the same pass's order
+    expect(stillQueued.contextSnapshot).toMatchObject({ queuePosition: 2, queueLength: 2 });
   }, 30_000);
 
   it("per-agent sweep lets an aged medium run overtake a fresh high run", async () => {
@@ -379,8 +459,9 @@ describeEmbeddedPostgres("heartbeat run-priority queued run selection", () => {
 
     const mediumRun = await wakeAndQueue(agentId, mediumIssueId);
     const highRun = await wakeAndQueue(agentId, highIssueId);
-    // The medium run waited past seven aging steps (max(50,60)+7*5 = 95)
-    // while the fresh high one scores 80. The old per-agent comparator (rank
+    // The medium run spent 35 of the 50 aging points (7 steps of 5) on top of
+    // the medium issue, so it lands at 60 + 35 = 95 inside the engineer band
+    // while the fresh high one is 80. The old per-agent comparator (rank
     // -> issue priority -> createdAt) would start the high run first despite
     // the medium run waiting fourteen times longer.
     await backdateRun(mediumRun.id, 70);
@@ -397,8 +478,8 @@ describeEmbeddedPostgres("heartbeat run-priority queued run selection", () => {
   }, 30_000);
 
   it("per-agent sweep keeps issue priority order inside a lead agent: the high run starts before the older low run", async () => {
-    // lead role = 80, high issue = 80, low issue = 40: the weights tie, so the
-    // issue-priority rank (then createdAt) must decide.
+    // The lead role opens one band; the high(80) and low(40) issues order
+    // inside it, so the high run starts despite the low run being older.
     applyRunPrioritySettings(defaultSettings());
     pinAdmission({ maxConcurrentRuns: 0 });
 

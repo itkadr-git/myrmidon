@@ -5,7 +5,9 @@
 //   1. metadata the server already carries on the comment/run
 //      (`queuePosition`, `queueLength`, `waitReason` — the same contextSnapshot
 //      token the admission sweep writes); the core may publish them.
-//   2. GET /api/heartbeat-runs/:runId — the queued run's own waitReason (the core publishes no rank).
+//   2. GET /api/heartbeat-runs/:runId — the queued run's own waiting state: its
+//      wait reason and its queue rank (`queuePosition` of `queueLength`), both
+//      written by the priority sweep.
 //
 // When neither answers — the run is not readable, or it left the queue — the
 // component renders nothing. It never shows a position the UI made up.

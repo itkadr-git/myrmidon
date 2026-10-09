@@ -62,7 +62,24 @@ describe("runQueueApi.position — the queued run's wait reason", () => {
     await expect(runQueueApi.position("run-1")).rejects.toBeInstanceOf(ApiError);
   });
 
-  it("reads the wait reason of a queued run and never invents a rank", async () => {
+  it("reads the wait reason and the rank the server publishes on the queued run", async () => {
+    mockGet.mockResolvedValueOnce({
+      id: "run-1",
+      status: "queued",
+      createdAt: "2026-10-08T00:00:00Z",
+      contextSnapshot: { waitReason: "host_cpu", queuePosition: 3, queueLength: 12 },
+    });
+    await expect(runQueueApi.position("run-1")).resolves.toEqual({
+      runId: "run-1",
+      position: 3,
+      queueLength: 12,
+      waitReason: "host_cpu",
+      queuedAt: "2026-10-08T00:00:00Z",
+    });
+    expect(mockGet).toHaveBeenLastCalledWith("/heartbeat-runs/run-1");
+  });
+
+  it("keeps the rank null for a server that publishes no rank, and ignores a foreign shape", async () => {
     mockGet.mockResolvedValueOnce({
       id: "run-1",
       status: "queued",
@@ -76,7 +93,16 @@ describe("runQueueApi.position — the queued run's wait reason", () => {
       waitReason: "host_cpu",
       queuedAt: "2026-10-08T00:00:00Z",
     });
-    expect(mockGet).toHaveBeenLastCalledWith("/heartbeat-runs/run-1");
+    mockGet.mockResolvedValueOnce({
+      id: "run-1",
+      status: "queued",
+      contextSnapshot: { waitReason: "priority", queuePosition: "2", queueLength: null },
+    });
+    await expect(runQueueApi.position("run-1")).resolves.toMatchObject({
+      position: null,
+      queueLength: null,
+      waitReason: "priority",
+    });
   });
 
   it("answers null for a run that is no longer queued", async () => {
