@@ -657,6 +657,11 @@ import {
 import { extractSkillMentionIds, isUuidLike } from "@paperclipai/shared";
 // myrmidon(1.6.5-BOT-DISK-H4b): general.botDisk.defaultRepo rides the run context.
 import { normalizeStoredBotDiskSettings } from "@paperclipai/shared";
+// myrmidon(1.6.6 NOTIF-PREFS): notification-class filter applied at wake generation.
+import {
+  classifyNotificationWakeReason,
+  notificationWakeAllowed,
+} from "@paperclipai/shared";
 import { evaluateCodexCredentialReadiness } from "@paperclipai/adapter-codex-local/server";
 import { environmentService } from "./environments.js";
 import { parseExecutionPolicyBootstrapEnv } from "./execution-policy-bootstrap.js";
@@ -28173,6 +28178,25 @@ export function heartbeatService(
       }
     }
 
+
+    // myrmidon(1.6.6 NOTIF-PREFS): apply the agent's notification preferences
+    // at wake generation. An event-shaped wake (assignment, mention, review)
+    // the agent muted never becomes a run. Manual board wakes bypass the
+    // filter — an operator override is not a notification. Other wake reasons
+    // belong to no configurable class and always pass.
+    if (!opts.manualUserWake) {
+      const notificationClass = classifyNotificationWakeReason(reason);
+      if (
+        notificationClass &&
+        !notificationWakeAllowed(agent.runtimeConfig, reason)
+      ) {
+        logger.info(
+          { agentId, issueId, reason, notificationClass },
+          "wake suppressed by agent notification preferences",
+        );
+        return null;
+      }
+    }
     if (issueId) {
       const conversation = await getIssueExecutionContext(agent.companyId, issueId);
       if (isConversation(conversation)) {
