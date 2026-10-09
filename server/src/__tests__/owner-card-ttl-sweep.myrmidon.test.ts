@@ -6,7 +6,7 @@
 // derives is folded into the card payload.
 
 import { randomUUID } from "node:crypto";
-import { eq, and, desc } from "drizzle-orm";
+import { eq, and, desc, isNotNull, lt } from "drizzle-orm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -101,7 +101,7 @@ describeEmbeddedPostgres("owner card TTL sweep (embedded PG)", () => {
       effectiveResolverPolicy: "any",
       addresseeUserId: OWNER_USER,
       createdByAgentId: AUTHOR_AGENT,
-      payload: { version: 1, target: { type: "none" } },
+      payload: { version: 1, prompt: "Approve?", target: { type: "none" } },
       createdAt: OLD,
       updatedAt: OLD,
       ...overrides,
@@ -126,6 +126,10 @@ describeEmbeddedPostgres("owner card TTL sweep (embedded PG)", () => {
         and(
           eq(issueThreadInteractions.kind, "request_confirmation"),
           eq(issueThreadInteractions.status, "pending"),
+          // owner cards only (the agent-addressed card is not swept) and only
+          // those already past the TTL
+          isNotNull(issueThreadInteractions.addresseeUserId),
+          lt(issueThreadInteractions.createdAt, new Date(NOW.getTime() - TTL_MS)),
         ),
       );
     return rows.length;
@@ -160,7 +164,7 @@ describeEmbeddedPostgres("owner card TTL sweep (embedded PG)", () => {
     expect(first.woken).toBe(2);
 
     // The acceptance criterion: no pending overdue owner card survives the pass.
-    expect(await pendingOverdueCount()).toBe(1); // only the fresh one remains
+    expect(await pendingOverdueCount()).toBe(0);
 
     for (const id of [cardA, cardB]) {
       const card = await readCard(id);
@@ -198,6 +202,7 @@ describeEmbeddedPostgres("owner card TTL sweep (embedded PG)", () => {
     const card = await insertCard({
       payload: {
         version: 1,
+        prompt: "Approve?",
         target: { type: "none" },
         silenceMeansRecommended: true,
         recommendedOption: "accept",
@@ -223,6 +228,7 @@ describeEmbeddedPostgres("owner card TTL sweep (embedded PG)", () => {
     const card = await insertCard({
       payload: {
         version: 1,
+        prompt: "Approve?",
         target: { type: "none" },
         silenceMeansRecommended: true,
         decisionClass: "money",
