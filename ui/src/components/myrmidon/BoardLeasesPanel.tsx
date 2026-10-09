@@ -1,11 +1,11 @@
-// Leader-lease block of the "Processes" panel (myrmidon 1.6.6 PROCS-1.7 B,
+// Leader-lease block of the "Processes" panel (myrmidon 1.6.5 BOARD-PROCESSES,
 // design the board-processes design §5.1/§7.2): one row per board_leases entry — the lease name,
 // its holder (boot id plus the board_processes hostname/pid when that row
 // exists), epoch, acquired_at, expires_at and whether this process is the
-// leader. Read-only and self-contained: it can be dropped into the "Процессы"
-// panel (PROCS-0.1, the PROCS-0.1 panel) with a single line, and it renders its own "no
+// leader. Read-only and self-contained: mounted next to the «Процессы» panel
+// in Instance settings, and it renders its own "no
 // data" state instead of taking the panel down when the endpoint is missing
-// (part A of part A of the lease-route task is not in this build yet).
+// (the lease route may not be in this build yet).
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Crown } from "lucide-react";
 import { ApiError } from "@/api/client";
@@ -28,7 +28,7 @@ import {
 // (BotDiskSettingsPanel): the catalog lives in ui/src/i18n/myrmidon-locales.
 type Translate = (key: string, options?: Record<string, unknown>) => string;
 
-// myrmidon(PROCS-1.7 B): visible strings live in the fork i18n catalog
+// myrmidon(BOARD-PROCESSES): visible strings live in the fork i18n catalog
 // (ui/src/i18n/myrmidon-locales, `boardLeases.*`; en + ru).
 const LEASE_NAME_KEYS: Record<string, string> = {
   scheduler: "boardLeases.leaseScheduler",
@@ -180,6 +180,20 @@ export function BoardLeasesView({ data, loading, error, now }: BoardLeasesViewPr
             )}
           </p>
           <p className="text-xs text-muted-foreground">{t("boardLeases.noDataHint")}</p>
+        </div>
+      ) : leases.length === 1 ? (
+        <div className="space-y-1" data-testid="myrmidon-board-leases-single">
+          <p className="text-sm">{t("boardLeases.singleProcess")}</p>
+          <div className="space-y-3" data-testid="myrmidon-board-leases-rows">
+            {leases.map((lease) => (
+              <LeaseRow
+                key={lease.name}
+                lease={lease}
+                selfBootId={data.selfBootId}
+                nowMs={clock}
+              />
+            ))}
+          </div>
         </div>
       ) : leases.length === 0 ? (
         <div className="space-y-1" data-testid="myrmidon-board-leases-empty">

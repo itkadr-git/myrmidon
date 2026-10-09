@@ -1,8 +1,8 @@
-// Leader-lease block of the "Processes" panel (myrmidon 1.6.6 PROCS-1.7 B,
+// Leader-lease block of the "Processes" panel (myrmidon 1.6.5 BOARD-PROCESSES,
 // design the board-processes design §5.1/§7.2): what the board holds a lease on right now, read
 // from the API without restarting anything.
 //
-// DATA CONTRACT — part A of part A of the lease-route task owns the route; this module is its only
+// DATA CONTRACT — part A of the lease-route task owns the route; this module is its only
 // UI-side reader. Mocked with docs/myrmidon/board-leases-contract/*.json until
 // part A merges (the two part branches do not touch the same files: A is
 // server/, B is ui/).
