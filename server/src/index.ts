@@ -150,7 +150,7 @@ import { createBotDiskQuotaScheduler } from "./myrmidon/bot-containers/bot-disk-
 // myrmidon(BOT-DISK E): measures the host disk and signals when it crosses the threshold
 import { createHostDiskScheduler } from "./myrmidon/host-disk/index.js"; // myrmidon(BOT-DISK E)
 import { createAlertRecoveryScheduler } from "./myrmidon/monitoring/alert-recovery/index.js"; // myrmidon(1.6.6-MONITORING-D)
-import { createRunStallSweepFromHeartbeat } from "./myrmidon/run-stall/index.js"; // myrmidon(RUN-STALL)
+import { createRunStallSweepFromHeartbeat, registerRunStallSweep, startRunStall } from "./myrmidon/run-stall/index.js"; // myrmidon(RUN-STALL)
 // myrmidon(HERMES-RUN-REATTACH): reattach live gateway runs after a board restart
 import { sweepGatewayRunReattach, GATEWAY_REATTACH_SWEEP_INTERVAL_MS } from "./myrmidon/gateway-run-reattach.js";
 import { readHotRestartIntent } from "./services/hot-restart.js"; // myrmidon(T1.6): predecessor boot id for the startup reattach pass
@@ -1230,6 +1230,15 @@ async function startServerWithDatabaseTeardown(
         issues: issueService(db as any),
       })
     : null;
+  // myrmidon(RUN-STALL-SETTINGS, 1.6.5): settings saved from the UI apply to
+  // this sweep instance without a restart; the stored row is applied right
+  // after registration, before the first scheduler tick.
+  registerRunStallSweep(runStallSweep);
+  if (runStallSweep) {
+    void startRunStall(db as any).catch((err) =>
+      logger.error({ err }, "failed to apply the stored run stall settings at startup"),
+    );
+  }
   const executionControlSweeps = [
     ["finalization", () => reconcileAbandonedExecutionControl(db)],
     ["replacement", () => heartbeat ? reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession: run => verifyStoppedNativeSessionForReplacement(db, run) }) : undefined],
