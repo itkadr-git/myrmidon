@@ -80,7 +80,9 @@ export function buildLinkResolver(pages: PlannedPage[]): (target: string) => str
   }
   for (const page of pages) {
     if (page.target === null) continue;
-    if (!byTitle.has(page.path)) byTitle.set(page.path, page.target);
+    const title = page.title?.trim();
+    if (title === undefined || title === "") continue;
+    if (!byTitle.has(title)) byTitle.set(title, page.target);
   }
 
   return (raw: string): string | null => {
@@ -90,7 +92,7 @@ export function buildLinkResolver(pages: PlannedPage[]): (target: string) => str
     if (direct !== undefined) return direct;
     const sourceSlug = bySourceSlug.get(target);
     if (sourceSlug !== undefined) return sourceSlug;
-    const byTitled = byTitle.get(target);
+    const byTitled = byTitle.get(raw.trim()) ?? byTitle.get(target);
     if (byTitled !== undefined) return byTitled;
     const last = target.split("/").pop() ?? "";
     const segment = byLastSegment.get(last);
@@ -107,7 +109,7 @@ export function planMigration(options: PlanOptions): MigrationPlan {
   const pages: PlannedPage[] = [];
   const contents = new Map<string, string>();
 
-  const drafts: Array<{ path: string; plan: MigratePagePlan; seeded: boolean; bytes: number; content: string; keys: string[]; hasFrontmatter: boolean; malformed: number }> = [];
+  const drafts: Array<{ path: string; title: string; plan: MigratePagePlan; seeded: boolean; bytes: number; content: string; keys: string[]; hasFrontmatter: boolean; malformed: number }> = [];
   for (const page of tree.pages) {
     const override = options.map.pages[page.path];
     let plan: MigratePagePlan;
@@ -124,6 +126,7 @@ export function planMigration(options: PlanOptions): MigrationPlan {
     }
     drafts.push({
       path: page.path,
+      title: page.title,
       plan,
       seeded,
       bytes: page.bytes,
@@ -144,6 +147,7 @@ export function planMigration(options: PlanOptions): MigrationPlan {
     const target = targetOf(draft);
     return {
       path: draft.path,
+      title: draft.title,
       bytes: draft.bytes,
       plan: draft.plan,
       seeded: draft.seeded,
@@ -285,7 +289,7 @@ export async function runImport(options: ImportOptions): Promise<ImportReport> {
         slug: target,
         title: page.plan.title ?? source?.title ?? target,
         content,
-        kind: (page.plan.kind as CreateKnowledgeInput["kind"] | undefined) ?? "wiki",
+        kind: page.plan.kind ?? "wiki",
         summary: source?.fields.summary ?? null,
         folderPath: target.includes("/") ? target.slice(0, target.lastIndexOf("/")) : "",
         tags: page.plan.tags ?? source?.fields.tags ?? [],

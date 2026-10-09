@@ -14,6 +14,7 @@
 // imported even when a page is short — a content wave page is knowledge by
 // definition, and the operator's map can still drop it.
 
+import type { KnowledgeKind } from "../domain.js";
 import type { MigrateAction } from "./map.js";
 
 export const MIGRATE_CLASSES = ["A", "B", "C", "D", "E", "F", "G"] as const;
@@ -29,7 +30,7 @@ export interface SeedPlan {
   class: MigrateClass;
   action: MigrateAction;
   target?: string;
-  kind?: string;
+  kind?: KnowledgeKind;
   mergeInto?: string;
   approverKind?: string | null;
   publish?: boolean;

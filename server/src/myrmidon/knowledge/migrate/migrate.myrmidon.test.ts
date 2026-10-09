@@ -173,7 +173,14 @@ describe("slug map", () => {
     expect(() => parseSlugMap(JSON.stringify({ version: 2, expectedTotal: 1, pages: {} }))).toThrow(MigrateInputError);
     expect(() => parseSlugMap(JSON.stringify({ version: 1, expectedTotal: 1, pages: { a: { class: "Z", action: "drop" } } }))).toThrow(/unknown class/);
     expect(() => parseSlugMap(JSON.stringify({ version: 1, expectedTotal: 1, pages: { a: { class: "A", action: "import" } } }))).toThrow(/needs a target/);
+    expect(() => parseSlugMap(JSON.stringify({ version: 1, expectedTotal: 1, pages: { a: { class: "B", action: "import", target: "regulations/a", kind: "rulle" } } }))).toThrow(/unknown kind/);
     expect(() => parseSlugMap("not json")).toThrow(/not valid JSON/);
+
+    // A kind the domain knows is kept, so `rule` drafts can name an approver.
+    const kinds = parseSlugMap(
+      JSON.stringify({ version: 1, expectedTotal: 1, pages: { "regulations/a.md": { class: "B", action: "import", target: "regulations/a", kind: "rule", approverKind: "owner" } } }),
+    );
+    expect(kinds.pages["regulations/a.md"]?.kind).toBe("rule");
   });
 });
 
@@ -184,6 +191,28 @@ describe("links", () => {
     expect(result.total).toBe(3);
     expect(result.resolved).toBe(2);
     expect(result.unresolved).toEqual(["ghost"]);
+  });
+
+  it("resolves a link written as the title of another page", () => {
+    const root = makeExport({
+      "myrmidon/foo.md": `---\ntitle: Foo Page\n---\n${long("Foo body")}\n`,
+      "myrmidon/bar.md": `---\ntitle: Bar Page\n---\n${long("Bar body")}\nsee [[Foo Page]] and [[myrmidon/foo]]\n`,
+    });
+    const plan = planMigration({ root, map: emptyMap({ expectedTotal: 2 }), expectedTotal: 2 });
+
+    const bar = plan.pages.find((page) => page.path === "myrmidon/bar.md");
+    expect(bar?.title).toBe("Bar Page");
+    expect(bar?.links).toMatchObject({ total: 2, resolved: 2, unresolved: [] });
+    expect(plan.report.links).toMatchObject({ total: 2, resolved: 2, percent: 100 });
+  });
+
+  it("leaves a link unresolved when the title belongs to no imported page", () => {
+    const root = makeExport({
+      "myrmidon/foo.md": `---\ntitle: Foo Page\n---\n${long("Foo body")}\nsee [[Ghost Page]]\n`,
+    });
+    const plan = planMigration({ root, map: emptyMap({ expectedTotal: 1 }), expectedTotal: 1 });
+
+    expect(plan.pages[0]?.links).toMatchObject({ total: 1, resolved: 0, unresolved: ["Ghost Page"] });
   });
 });
 

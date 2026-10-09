@@ -32,6 +32,13 @@ divergence-section: KNOWLEDGE-2.0 — единый модуль знаний
 - The report holds numbers, class names, slugs and frontmatter *key names*;
   page bodies and field values are never printed (§5.3: pages can carry
   personal data).
+- The map's `kind` is validated against the domain's own knowledge kinds, so a
+  typo (`rulle`) fails while the map is parsed, not halfway through writing.
+  Links also resolve when they are written as the *title* of an imported page —
+  the form the plugin wiki used most — so a title-only link no longer counts as
+  unresolved. A regulation whose name §5.3 does not know has no approver and
+  fails on write with `rule_requires_approver_kind`; the operator runbook says
+  so and tells the operator to set `approverKind` in the map.
 - Tests: `server/src/myrmidon/knowledge/migrate/migrate.myrmidon.test.ts`
   (frontmatter parsing, every class rule, map validation, link rewriting,
   classify report invariants, and `runImport` over a stub writer: create,
@@ -67,6 +74,13 @@ divergence-section: KNOWLEDGE-2.0 — единый модуль знаний
 - В отчёте только числа, имена классов, slug'и и *имена ключей* frontmatter;
   тела страниц и значения полей не печатаются (§5.3: страницы могут нести
   персональные данные).
+- `kind` в карте проверяется по списку родов знания из домена: опечатка
+  (`rulle`) падает на разборе карты, а не посреди записи. Ссылки резолвятся и
+  тогда, когда записаны *заголовком* страницы, — именно так писала вики
+  плагина, — поэтому ссылка по заголовку больше не считается нерезолвленной.
+  Регламент с незнакомым §5.3 именем остаётся без утверждающего и падает на
+  записи с `rule_requires_approver_kind`; runbook оператора говорит об этом и
+  требует выставить `approverKind` в карте.
 - Тесты: `server/src/myrmidon/knowledge/migrate/migrate.myrmidon.test.ts`
   (разбор frontmatter, все правила классов, валидация карты, переписывание
   ссылок, инварианты отчёта classify и `runImport` на заглушке-писателе:

@@ -11,6 +11,8 @@ import type { MigratePagePlan } from "./map.js";
 export interface PlannedPage {
   path: string;
   bytes: number;
+  /** The page title (frontmatter title, else first H1, else the file name). */
+  title?: string;
   /** Effective plan: the map entry when the operator wrote one, else the seed. */
   plan: MigratePagePlan;
   /** True when the classifier supplied the plan because the map had no entry. */

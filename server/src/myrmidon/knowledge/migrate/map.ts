@@ -7,6 +7,7 @@
 // decisions on its own.
 
 import { MIGRATE_CLASSES, type MigrateClass } from "./classify.js";
+import { KNOWLEDGE_KINDS, isKnowledgeKind, type KnowledgeKind } from "../domain.js";
 
 export const MIGRATE_ACTIONS = ["import", "merge", "drop", "replace_index"] as const;
 export type MigrateAction = (typeof MIGRATE_ACTIONS)[number];
@@ -17,7 +18,7 @@ export interface MigratePagePlan {
   /** Target knowledge slug (absent for `drop`). */
   target?: string;
   /** Knowledge kind override (`wiki` by default, `rule` for regulations). */
-  kind?: string;
+  kind?: KnowledgeKind;
   /** For `merge`: the slug the page is merged into (and superseded by). */
   mergeInto?: string;
   /** Rule pages only: who must approve (§4.3). */
@@ -97,7 +98,15 @@ export function parseSlugMap(text: string): MigrateMap {
     }
     const plan: MigratePagePlan = { class: classId, action: action as MigrateAction };
     if (rawPlan["target"] !== undefined) plan.target = asString(rawPlan["target"], `pages["${sourcePath}"].target`);
-    if (rawPlan["kind"] !== undefined) plan.kind = asString(rawPlan["kind"], `pages["${sourcePath}"].kind`);
+    if (rawPlan["kind"] !== undefined) {
+      const kind = asString(rawPlan["kind"], `pages["${sourcePath}"].kind`);
+      if (!isKnowledgeKind(kind)) {
+        throw new MigrateInputError(
+          `Slug map page "${sourcePath}" has an unknown kind "${kind}" (expected one of ${KNOWLEDGE_KINDS.join(", ")}).`,
+        );
+      }
+      plan.kind = kind;
+    }
     if (rawPlan["mergeInto"] !== undefined) plan.mergeInto = asString(rawPlan["mergeInto"], `pages["${sourcePath}"].mergeInto`);
     if (rawPlan["approverKind"] !== undefined) {
       plan.approverKind = rawPlan["approverKind"] === null ? null : asString(rawPlan["approverKind"], `pages["${sourcePath}"].approverKind`);

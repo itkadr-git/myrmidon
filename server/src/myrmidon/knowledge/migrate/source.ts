@@ -70,9 +70,7 @@ export function readSourceTree(root: string, options: ReadSourceTreeOptions = {}
   const skipped = { controlFiles: 0, rawSources: 0, other: 0 };
   for (const entry of readdirSync(root, { withFileTypes: true })) {
     if (entry.isFile() && entry.name.endsWith(".md") && isControlFile(entry.name)) skipped.controlFiles += 1;
-  }
-  for (const entry of readdirSync(root, { withFileTypes: true })) {
-    if (entry.isDirectory() && isRawSource(entry.name)) skipped.rawSources += 1;
+    else if (entry.isDirectory() && isRawSource(entry.name)) skipped.rawSources += 1;
   }
 
   for (const relative of paths.sort()) {
