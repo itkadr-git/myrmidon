@@ -1,6 +1,6 @@
 // packages/shared/src/myrmidon-litellm-workers.myrmidon.test.ts
 //
-// myrmidon(1.6.6 LITELLM-WORKERS A): the contract the board and the interface
+// myrmidon(1.6.5 LITELLM-WORKERS A): the contract the board and the interface
 // share — the ceilings a container shape imposes, the target in force, the
 // TTIN/TTOU arithmetic and the runtime the instance declares.
 

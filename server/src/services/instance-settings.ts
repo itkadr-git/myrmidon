@@ -74,7 +74,7 @@ import { preserveGitHubSharedIdentityGeneralKey } from "../myrmidon/github-share
 import { preserveBudgetProjectionGeneralKey } from "../myrmidon/litellm-budget-sync/settings.js"; // myrmidon(1.7-BUDGET-CONFIG-C)
 // myrmidon(BOT-RUNTIME-TUNING D2): keep the fallback-signal settings across vendor writes of `general`
 import { preserveFallbackSignalGeneralKey } from "../myrmidon/litellm-fallback-signal/settings.js";
-import { preserveLitellmWorkersGeneralKey } from "../myrmidon/litellm-workers/settings.js"; // myrmidon(1.6.6 LITELLM-WORKERS A)
+import { preserveLitellmWorkersGeneralKey } from "../myrmidon/litellm-workers/settings.js"; // myrmidon(1.6.5 LITELLM-WORKERS A)
 import { preserveBudgetLimitsGeneralKey } from "../myrmidon/budget-limits/settings.js";
 // myrmidon(1.6.5-DBC1): keep the datastore-care block across vendor writes of `general`
 import { preserveDatastoreCareGeneralKey } from "../myrmidon/datastore-care/retention/settings.js";
@@ -765,7 +765,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
               ...(patch.telegramDmProgress !== undefined ? { telegramDmProgress: nextGeneral.telegramDmProgress } : {}),
               ...preserveGitHubSharedIdentityGeneralKey(current.general), // myrmidon(GITHUB-SHARED-IDENTITY)
               ...preserveBudgetProjectionGeneralKey(current.general), // myrmidon(1.7-BUDGET-CONFIG-C)
-              ...preserveLitellmWorkersGeneralKey(current.general), // myrmidon(1.6.6 LITELLM-WORKERS A)
+              ...preserveLitellmWorkersGeneralKey(current.general), // myrmidon(1.6.5 LITELLM-WORKERS A)
               ...preserveBotImageRolloutGeneralKey(current.general), // myrmidon(BOT-ROLLOUT)
               ...preserveToolPolicyCacheGeneralKey(current.general), // myrmidon(DB-PERF-C-P4)
               // myrmidon(DB-PERF-C-P4): a patch that carries the key wins over the restored value.

@@ -1,6 +1,6 @@
 // server/src/myrmidon/litellm-workers/gateway.ts
 //
-// myrmidon(1.6.6 LITELLM-WORKERS A): the two things the board does to the live
+// myrmidon(1.6.5 LITELLM-WORKERS A): the two things the board does to the live
 // gateway — read its numbers, and ask its gunicorn master for a different
 // number of workers.
 //

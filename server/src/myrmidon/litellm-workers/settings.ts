@@ -1,6 +1,6 @@
 // server/src/myrmidon/litellm-workers/settings.ts
 //
-// myrmidon(1.6.6 LITELLM-WORKERS A): where the target number of LiteLLM worker
+// myrmidon(1.6.5 LITELLM-WORKERS A): where the target number of LiteLLM worker
 // processes lives.
 //
 // Storage choice: per company, in `instance_settings.general` under one key

@@ -1,6 +1,6 @@
 // packages/shared/src/myrmidon-litellm-workers.ts
 //
-// myrmidon(1.6.6 LITELLM-WORKERS A): the shared contract of the LiteLLM
+// myrmidon(1.6.5 LITELLM-WORKERS A): the shared contract of the LiteLLM
 // worker-process count — the stored per-company target, the arithmetic that
 // turns the gateway container's shape into its two ceilings, and the
 // validation the route and the card share.

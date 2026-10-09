@@ -1,6 +1,6 @@
 // server/src/myrmidon/litellm-workers/service.ts
 //
-// myrmidon(1.6.6 LITELLM-WORKERS A): what a GET reports and what a PUT does.
+// myrmidon(1.6.5 LITELLM-WORKERS A): what a GET reports and what a PUT does.
 //
 // The whole decision lives here, over three ports (the settings store, the
 // gateway read, the signal delivery), so both routes are thin and the tests
