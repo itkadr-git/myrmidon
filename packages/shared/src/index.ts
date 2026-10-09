@@ -2811,6 +2811,9 @@ export * from "./myrmidon-bot-workspace.js";
 export * from "./myrmidon-session-generations.js";
 // myrmidon(C0): live run-admission limits shared by the server, the UI and the settings validator.
 export * from "./myrmidon-runtime-limits.js";
+// myrmidon(RUN-STALL-SETTINGS): live run-stall detection settings shared by the server, the UI
+// and the settings validator.
+export * from "./myrmidon-run-stall.js";
 // myrmidon(1.6.6 CORPUS-2.0 ч.C): the knowledge-corpus module contract — settings
 // (switch, parse service, embedder, limits), wire shapes and route paths — shared by
 // the server (ч.C), the MCP tools (ч.D) and the board UI screen (ч.E).
