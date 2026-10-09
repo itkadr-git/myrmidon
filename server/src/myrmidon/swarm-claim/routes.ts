@@ -16,6 +16,7 @@
 
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
+import { readSwarmQueueCounters } from "./matcher.js";
 import { patchSwarmClaimSettingsSchema, type SwarmClaimSettingsPatch } from "@paperclipai/shared";
 import { validate } from "../../middleware/validate.js";
 import { assertBoardOrgAccess, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "../../routes/authz.js";
@@ -106,7 +107,13 @@ export function swarmClaimRoutes(
   router.get("/myrmidon/swarm-claim", async (req, res) => {
     assertBoardOrgAccess(req);
     const [resolved, journal] = await Promise.all([settingsService.read(), settingsService.journal()]);
-    res.json({ ...resolved, journal });
+    // 1.6.5 (OPE-6608 D): the live counters, scoped like the queues themselves
+    // (every company).
+    const counters = await readSwarmQueueCounters(db, {
+      companyIds: null,
+      now: new Date(),
+    });
+    res.json({ ...resolved, journal, counters });
   });
 
   router.patch(

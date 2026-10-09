@@ -7,7 +7,7 @@
 // so the heartbeat, the idle-pickup sweep, and the cooling list endpoint
 // share one implementation.
 
-import { and, desc, eq, gte, inArray, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -75,6 +75,32 @@ export async function tasklessGateReason(
     .limit(1)
     .then((rows) => rows[0] ?? null);
   return exists ? null : "task_missing";
+}
+
+/**
+ * The wake reasons of the swarm and idle-pickup paths. A run woken for one of
+ * them is an automatic run of the task even when its invocation source is not
+ * `automation`: the board matcher wakes the assignee through the assignment
+ * path (`source: "assignment"`, which the checkout relies on), and a task the
+ * matcher keeps handing out must cool down like one idle pickup keeps waking.
+ */
+export const COOLING_SWARM_WAKE_REASONS = ["swarm_matched", "swarm_claim_queue", "idle_pickup"] as const;
+
+/**
+ * The runs the cooling reads (§4.3): automatic runs — `invocation_source =
+ * 'automation'`, or a run whose wake reason (the context snapshot's
+ * `wakeReason`, else `reason`) is a swarm / idle-pickup reason, whatever its
+ * source. A manual run of a person is neither and never starts a cooling.
+ */
+function coolingRunFilter() {
+  const reasons = sql.join(
+    COOLING_SWARM_WAKE_REASONS.map((reason) => sql`${reason}`),
+    sql`, `,
+  );
+  return or(
+    eq(heartbeatRuns.invocationSource, "automation"),
+    sql`coalesce(${heartbeatRuns.contextSnapshot} ->> 'wakeReason', ${heartbeatRuns.contextSnapshot} ->> 'reason') in (${reasons})`,
+  );
 }
 
 /** Last-run statuses that (with no task movement) start a cooling period. */
@@ -257,7 +283,7 @@ export async function isIssueCoolingDown(
         and(
           eq(heartbeatRuns.companyId, companyId),
           sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
-          eq(heartbeatRuns.invocationSource, "automation"),
+          coolingRunFilter(),
           inArray(heartbeatRuns.status, COOLING_TERMINAL_STATUSES),
         ),
       )
@@ -390,7 +416,7 @@ export async function listCoolingIssues(
     .where(
       and(
         eq(heartbeatRuns.companyId, companyId),
-        eq(heartbeatRuns.invocationSource, "automation"),
+        coolingRunFilter(),
         inArray(heartbeatRuns.status, COOLING_TERMINAL_STATUSES),
         gte(heartbeatRuns.finishedAt, new Date(now.getTime() - horizonMs)),
         sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' is not null`,

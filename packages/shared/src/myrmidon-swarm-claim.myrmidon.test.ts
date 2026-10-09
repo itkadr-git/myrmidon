@@ -21,6 +21,12 @@ import {
   parseSwarmClaimEnabled,
   readSwarmClaimSettingsFromEnv,
   resolveSwarmClaimSettings,
+  resolveSwarmQueueEligibility,
+  SWARM_CLAIM_SETTINGS_KEY,
+  SWARM_CLAIM_SETTING_KEYS,
+  readStoredSwarmSettings,
+  swarmClaimSettingsSchema,
+  patchSwarmClaimSettingsSchema,
   swarmActiveTaskLimitReached,
   swarmLeaseExpiresAt,
   swarmPriorityRank,
@@ -357,10 +363,10 @@ describe("effectivePheromone", () => {
   });
 });
 
-
-// myrmidon(1.6.5 SWARM-T4, design §5.1): one switch, no role/company lists.
-describe("swarm claim gate", () => {
-  const on = {
+// 1.6.5 (OPE-6608 review item 4, SWARM-T4 design §5.1): one switch — no pilot
+// set, no idle-wake batch.
+describe("swarm settings without the pilot fields", () => {
+  const full = {
     enabled: true,
     leaseTtlSec: 900,
     maxActiveTasks: 3 as number | null,
@@ -369,12 +375,68 @@ describe("swarm claim gate", () => {
     pheromone: {},
   };
 
+  it("validates settings that carry no pilot fields", () => {
+    expect(swarmClaimSettingsSchema.safeParse(full).success).toBe(true);
+    expect(normalizeSwarmClaimSettings(full)).toEqual(full);
+    expect(SWARM_CLAIM_SETTING_KEYS).toEqual([
+      "enabled",
+      "leaseTtlSec",
+      "maxActiveTasks",
+      "sweepIntervalSec",
+      "p0Preemption",
+      "pheromone",
+    ]);
+  });
+
+  it("reads an old stored value with the pilot fields without losing the switch", () => {
+    // Saved by a 1.6.1 or a 1.6.5-candidate build.
+    const old = {
+      ...full,
+      enabled: true,
+      enabledRoles: ["engineer"],
+      enabledCompanyIds: ["comp-1"],
+      idleWakeBatch: 7,
+    };
+    expect(normalizeSwarmClaimSettings(old)).toEqual(full);
+    const resolved = resolveSwarmClaimSettings({ stored: old, env: {} });
+    expect(resolved.settings).toEqual(full);
+    expect(resolved.sources.enabled).toBe("settings");
+    expect(Object.keys(resolved.settings)).not.toContain("enabledRoles");
+    expect(Object.keys(resolved.settings)).not.toContain("idleWakeBatch");
+  });
+
+  it("still refuses unknown keys and refuses the pilot fields in a PATCH", () => {
+    expect(swarmClaimSettingsSchema.safeParse({ ...full, bogus: 1 }).success).toBe(false);
+    expect(patchSwarmClaimSettingsSchema.safeParse({ enabled: false }).success).toBe(true);
+    expect(patchSwarmClaimSettingsSchema.safeParse({ enabledRoles: ["x"] }).success).toBe(false);
+    expect(patchSwarmClaimSettingsSchema.safeParse({ idleWakeBatch: 5 }).success).toBe(false);
+  });
+
+  it("ignores the retired environment variables", () => {
+    const settings = readSwarmClaimSettingsFromEnv({
+      MYRMIDON_SWARM_CLAIM_ENABLED_ROLES: "engineer",
+      MYRMIDON_SWARM_CLAIM_ENABLED_COMPANY_IDS: "comp-1",
+      MYRMIDON_SWARM_IDLE_WAKE_BATCH: "9",
+    });
+    expect(Object.keys(settings).sort()).toEqual(
+      ["enabled", "leaseTtlSec", "maxActiveTasks", "p0Preemption", "pheromone", "sweepIntervalSec"].sort(),
+    );
+  });
+
+  it("keeps the settings under general.swarmClaim; general.swarm is the wake guard's block", () => {
+    expect(SWARM_CLAIM_SETTINGS_KEY).toBe("swarmClaim");
+    expect(readStoredSwarmSettings({ swarmClaim: full })).toEqual(full);
+    // `general.swarm` belongs to the F-26 wake guard and is never read as claim settings.
+    expect(readStoredSwarmSettings({ swarm: { cooldownBaseMin: 30 } })).toBeUndefined();
+    expect(readStoredSwarmSettings(undefined)).toBeUndefined();
+  });
+
   it("with the switch on every company and role is inside", () => {
-    expect(isSwarmClaimEnabledFor(on, { companyId: "any", role: "any" })).toBe(true);
+    expect(isSwarmClaimEnabledFor(full, { companyId: "any", role: "any" })).toBe(true);
   });
 
   it("the master switch off overrides everything", () => {
-    expect(isSwarmClaimEnabledFor({ ...on, enabled: false }, { companyId: "comp-1", role: "engineer" })).toBe(false);
+    expect(isSwarmClaimEnabledFor({ ...full, enabled: false }, { companyId: "comp-1", role: "engineer" })).toBe(false);
   });
 });
 
@@ -399,5 +461,43 @@ describe("swarm pheromone settings", () => {
     const merged = mergeSwarmClaimSettings(base, { pheromone: { critical: 250 } });
     expect(merged.pheromone).toEqual({ critical: 250 });
     expect(mergeSwarmClaimSettings(base, { enabled: true }).enabled).toBe(true);
+  });
+});
+
+describe("swarm names shared with the supervisor part", () => {
+  it("pins the wake reason and the supervisor action the two parts agree on", () => {
+    expect(SWARM_CLAIM_WAKE_REASON).toBe("swarm_claim_queue");
+    expect(SWARM_CLAIM_RELEASE_REASON_SUPERVISOR_REBALANCE).toBe("supervisor_rebalance");
+    expect(SWARM_CLAIM_SUPERVISOR_RELEASED_ACTION).toBe("issue.swarm_claim.supervisor_released");
+  });
+
+  // 1.6.5 (OPE-6608 review item 9): who may take from the queue at all.
+  it("decides by the configurable caste and the agent's own switch, never by who reports to whom", () => {
+    expect(resolveSwarmQueueEligibility({ casteEligible: true })).toEqual({
+      eligible: true,
+      source: "caste",
+    });
+    expect(resolveSwarmQueueEligibility({ casteEligible: false })).toEqual({
+      eligible: false,
+      source: "caste",
+    });
+    // The switch in the agent card wins in both directions.
+    expect(
+      resolveSwarmQueueEligibility({ metadata: { swarmQueueEligible: false }, casteEligible: true }),
+    ).toEqual({ eligible: false, source: "agent" });
+    expect(
+      resolveSwarmQueueEligibility({ metadata: { swarmQueueEligible: true }, casteEligible: false }),
+    ).toEqual({ eligible: true, source: "agent" });
+    // Garbage in the switch is ignored rather than read as "off".
+    expect(
+      resolveSwarmQueueEligibility({ metadata: { swarmQueueEligible: "maybe" }, casteEligible: true }),
+    ).toEqual({ eligible: true, source: "caste" });
+    // A stray `hasDirectReports` fact (an old caller) does not exclude anyone.
+    expect(
+      resolveSwarmQueueEligibility({
+        casteEligible: true,
+        hasDirectReports: true,
+      } as unknown as Parameters<typeof resolveSwarmQueueEligibility>[0]),
+    ).toEqual({ eligible: true, source: "caste" });
   });
 });

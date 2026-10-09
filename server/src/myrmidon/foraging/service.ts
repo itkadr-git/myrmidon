@@ -46,7 +46,7 @@
 
 import { and, eq, inArray } from "drizzle-orm";
 import { heartbeatRuns, type Db } from "@paperclipai/db";
-import { liveClaimCountsByAgent } from "../swarm-claim/idle-queue.js";
+import { liveClaimCountsByAgent } from "../swarm-claim/matcher.js";
 import { listAgentsOfRole, listRoleQueue } from "../swarm-claim/queue.js";
 import { logger } from "../../middleware/logger.js";
 import {

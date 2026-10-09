@@ -1,6 +1,7 @@
 // server/src/myrmidon/swarm-claim/settings.ts
 //
-// myrmidon(1.6-SWARM): read and write `instance_settings.general.swarmClaim`.
+// myrmidon(1.6-SWARM): read and write `instance_settings.general.swarmClaim`
+// (`general.swarm` is the F-26 wake guard's block and is never touched here).
 //
 // The precedence (stored settings, then environment, then the built-in default)
 // is decided in `@paperclipai/shared`; this module is only the database half:
@@ -19,6 +20,7 @@
 import type { Db } from "@paperclipai/db";
 import {
   SWARM_CLAIM_SETTINGS_KEY,
+  readStoredSwarmSettings,
   mergeSwarmClaimSettings,
   resolveSwarmClaimSettings,
   type ResolvedSwarmClaimSettings,
@@ -119,7 +121,7 @@ export function swarmClaimSettingsService(
 
   async function read(): Promise<ResolvedSwarmClaimSettings> {
     const general = await readGeneral();
-    return resolveSwarmClaimSettings({ stored: general[SWARM_CLAIM_SETTINGS_KEY], env });
+    return resolveSwarmClaimSettings({ stored: readStoredSwarmSettings(general), env });
   }
 
   return {
@@ -131,7 +133,7 @@ export function swarmClaimSettingsService(
     async update(patch, actor) {
       const general = await readGeneral();
       const current = resolveSwarmClaimSettings({
-        stored: general[SWARM_CLAIM_SETTINGS_KEY],
+        stored: readStoredSwarmSettings(general),
         env,
       });
       const next = mergeSwarmClaimSettings(current.settings, patch);

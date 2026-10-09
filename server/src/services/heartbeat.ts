@@ -708,7 +708,16 @@ import {
 // myrmidon(AUTO-RESUME): the board resumes an agent left in `error` with backoff
 import { createAutoResumeSweeper } from "../myrmidon/auto-resume.js";
 // myrmidon(1.6-SWARM): the expired-claim sweep of the per-role task queues
-import { buildSwarmClaimSweeper } from "../myrmidon/swarm-claim/index.js";
+// myrmidon(1.6.5 OPE-6608): and the board-side matcher of the event paths — the
+// release path below hands the freed agent to it (design §3.5).
+import {
+  buildSwarmClaimSweeper,
+  buildSwarmMatcher,
+  matchFreedAgent,
+  notifySwarmAgentEvent,
+  setSwarmEventSink,
+} from "../myrmidon/swarm-claim/index.js";
+import { createCasteDirectoryReader } from "../myrmidon/castes/directory.js";
 // myrmidon(1.6-SWARM): the checkout/release claim hooks of the run lifecycle
 import {
   recordSwarmClaimOnCheckoutImpl,
@@ -18461,7 +18470,7 @@ export function heartbeatService(
   // The release path wakes the next agent of the role directly; this pass is
   // the safety net that makes "an idle agent with a non-empty queue of its
   // role" impossible past one lease period (TTL + one sweep interval). All
-  // admission gates still apply inside enqueueWakeup; with the pilot flag off
+  // admission gates still apply inside enqueueWakeup; with the swarm switched off
   // the pass reads once and releases nothing.
   const swarmClaimSweeper = buildSwarmClaimSweeper({
     db,
@@ -18472,7 +18481,31 @@ export function heartbeatService(
       },
     },
     enqueueWakeup: (agentId, opts) => enqueueWakeup(agentId, opts),
+    // The caste directory (review item 6): without this port `swarmEligible:
+    // false` and the per-caste ceiling were never read on the live pass.
+    castes: createCasteDirectoryReader(db),
     env: process.env,
+  });
+  // myrmidon(1.6.5 OPE-6608, review item 2 / design §3.5): the event sink of the
+  // board matcher. The issue service (a task appeared or became available) and
+  // the agent resume path call it; the matcher is built per event so the swarm
+  // switch is read at that moment — turning the swarm off stops matching at
+  // once, with no restart (`buildSwarmMatcher` returns null when it is off).
+  const swarmMatcherPorts = () => ({
+    db,
+    settings: {
+      getGeneral: () => instanceSettings.getGeneral(),
+      updateGeneral: () => {
+        throw new Error("not used by the matcher");
+      },
+    },
+    enqueueWakeup: (agentId: string, opts: Parameters<typeof enqueueWakeup>[1]) => enqueueWakeup(agentId, opts),
+    castes: createCasteDirectoryReader(db),
+    env: process.env,
+  });
+  setSwarmEventSink({
+    forIssue: async (issueId) => (await buildSwarmMatcher(swarmMatcherPorts()))?.forIssue(issueId) ?? null,
+    forAgent: async (agentId) => (await buildSwarmMatcher(swarmMatcherPorts()))?.forAgent(agentId) ?? null,
   });
 
   async function sweepPendingCleanupLeases(opts?: {
@@ -19301,7 +19334,7 @@ export function heartbeatService(
     }
 
     // myrmidon(1.6-SWARM): the expired-claim sweep on the same tick. Cheap
-    // when the pilot flag is off; with the pilot on it returns expired tasks
+    // when the swarm is off; with it on it returns expired tasks
     // to their role's queue and wakes the next agent, keeping an idle agent
     // with a non-empty queue impossible past one lease period.
     try {
@@ -27188,7 +27221,7 @@ export function heartbeatService(
   async function releaseSwarmClaimsForRun(
     run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId">,
   ) {
-    await releaseSwarmClaimsForRunImpl({ db, settings: instanceSettings }, run, enqueueWakeup);
+    await releaseSwarmClaimsForRunImpl({ db, settings: instanceSettings }, run);
   }
 
   async function releaseIssueExecutionAndPromote(
@@ -27254,33 +27287,63 @@ export function heartbeatService(
           const releasedIssueId = readNonEmptyString(
             parseObject(releasedRun.contextSnapshot).issueId,
           );
-          await idlePickupForAgent(
+          // myrmidon(1.6.5 OPE-6608, review item 1 / design §3.5): with the
+          // swarm on, the agent that just became free is paired by the board
+          // itself — its own assigned ready task first, otherwise the top ready
+          // task of its caste and nest. The idle-pickup wake below (the "go and
+          // look for work" path OPE-6640 retires) is then not used at all.
+          const swarmFreed = await matchFreedAgent(
             {
               db,
-              // myrmidon(IDLE-WAKE-BUDGET): the release path spends the same
-              // company-wide allowance as the periodic sweeper, so a fleet of
-              // finishing runs cannot burst past the per-minute ceiling.
-              budget: idleWakeBudget,
+              settings: instanceSettings,
               enqueueWakeup: (agentId, opts) => enqueueWakeup(agentId, opts),
-              logActivity: async (input) => {
-                await logActivity(db, {
-                  companyId: input.companyId,
-                  actorType: input.actorType,
-                  actorId: input.actorId,
-                  agentId: input.agentId,
-                  runId: input.runId,
-                  action: input.action,
-                  entityType: input.entityType,
-                  entityId: input.entityId,
-                  details: input.details,
-                });
-              },
+              castes: createCasteDirectoryReader(db),
             },
-            { id: releasedRun.agentId, companyId: releasedRun.companyId },
-            // The just-released issue is the past work: waking it again right
-            // after its run finished is the runaway loop the review caught.
-            { excludeIssueId: releasedIssueId, behaviorEnabled: pickupAllowed },
-          );
+            releasedRun.agentId,
+            {
+              // The loop guards idle pickup had on this very path (review item
+              // 1): the task whose run just ended is not offered back, the
+              // idle-pickup switches (instance and agent card) hold, and the
+              // wake spends the same company allowance.
+              excludeIssueId: releasedIssueId,
+              pickupAllowed,
+              wakeBudget: idleWakeBudget,
+            },
+          ).catch((err) => {
+            logger.warn({ err, runId: run.id }, "swarm match of the freed agent failed");
+            // A failed match must never strand the agent: the idle-pickup path
+            // keeps its own admission gates and is the safer fallback.
+            return { enabled: false, pair: null };
+          });
+          if (!swarmFreed.enabled) {
+            await idlePickupForAgent(
+              {
+                db,
+                // myrmidon(IDLE-WAKE-BUDGET): the release path spends the same
+                // company-wide allowance as the periodic sweeper, so a fleet of
+                // finishing runs cannot burst past the per-minute ceiling.
+                budget: idleWakeBudget,
+                enqueueWakeup: (agentId, opts) => enqueueWakeup(agentId, opts),
+                logActivity: async (input) => {
+                  await logActivity(db, {
+                    companyId: input.companyId,
+                    actorType: input.actorType,
+                    actorId: input.actorId,
+                    agentId: input.agentId,
+                    runId: input.runId,
+                    action: input.action,
+                    entityType: input.entityType,
+                    entityId: input.entityId,
+                    details: input.details,
+                  });
+                },
+              },
+              { id: releasedRun.agentId, companyId: releasedRun.companyId },
+              // The just-released issue is the past work: waking it again right
+              // after its run finished is the runaway loop the review caught.
+              { excludeIssueId: releasedIssueId, behaviorEnabled: pickupAllowed },
+            );
+          }
         }
       } catch (idlePickupErr) {
         logger.warn(
@@ -31037,8 +31100,14 @@ export function heartbeatService(
     // myrmidon(L3): wakes queued runs and stranded assigned todo/in_progress
     // issues a drained pause left idle; logic in myrmidon/pause-drain.ts.
     // Its sole caller is the agent resume route.
-    resumeAgentAfterPause: (agentId: string) =>
-      pauseResumeWakeAgent({ db, startNextQueuedRunForAgent, enqueueWakeup }, agentId),
+    resumeAgentAfterPause: async (agentId: string) => {
+      const resumed = await pauseResumeWakeAgent({ db, startNextQueuedRunForAgent, enqueueWakeup }, agentId);
+      // myrmidon(1.6.5 OPE-6608, review item 2): a lifted pause frees the agent
+      // — the board matcher gives it its own ready task, else a ready task of
+      // its caste (design §3.5). Fire-and-forget: it never fails the resume.
+      notifySwarmAgentEvent(agentId);
+      return resumed;
+    },
 
     scheduleBoundedRetry: async (
       runId: string,

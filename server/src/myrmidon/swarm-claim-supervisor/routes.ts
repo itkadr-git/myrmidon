@@ -12,6 +12,10 @@
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { assertBoard, assertCompanyAccess } from "../../routes/authz.js";
+import { instanceSettingsService } from "../../services/instance-settings.js";
+import { createCasteDirectoryReader } from "../castes/directory.js";
+import { buildSwarmMatcher } from "../swarm-claim/matcher-factory.js";
+import type { SwarmClaimEnqueueWakeup } from "../swarm-claim/service.js";
 import { swarmSupervisorView, createSwarmSupervisorDbPort, type SwarmSupervisorOverview } from "./view.js";
 import {
   createSwarmSupervisorReleasePort,
@@ -24,7 +28,7 @@ import {
 export interface SwarmSupervisorRoutesDeps {
   db: Db;
   /** Board wake admission path; every limit and gate is enforced inside it. */
-  enqueueWakeup: SwarmRebalanceDeps["enqueueWakeup"];
+  enqueueWakeup: SwarmClaimEnqueueWakeup;
   /** Activity log for the rebalance action; absent in unit tests. */
   logActivity?: SwarmRebalanceDeps["logActivity"];
   env?: NodeJS.ProcessEnv;
@@ -37,6 +41,19 @@ export function swarmSupervisorRoutes(db: Db, deps: SwarmSupervisorRoutesDeps) {
   const now = deps.now ?? (() => new Date());
   const port = createSwarmSupervisorReleasePort(db, env);
   const view = swarmSupervisorView(port, env, now);
+  // The matcher is built per release: the switch is read each time, so a swarm
+  // turned off since the last call matches nothing (design §5.1).
+  const matchIssue: NonNullable<SwarmRebalanceDeps["matchIssue"]> = async (issueId) => {
+    const matcher = await buildSwarmMatcher({
+      db,
+      settings: instanceSettingsService(db),
+      enqueueWakeup: deps.enqueueWakeup,
+      // myrmidon(1.6.5 OPE-6608): the rebalance pass honours swarmEligible=false and the per-caste ceiling, like the sweep and the claim API.
+      castes: createCasteDirectoryReader(db),
+      env,
+    });
+    return matcher ? matcher.forIssue(issueId) : null;
+  };
 
   router.get(
     "/myrmidon/companies/:companyId/swarm-claim/supervisor/overview",
@@ -67,7 +84,7 @@ export function swarmSupervisorRoutes(db: Db, deps: SwarmSupervisorRoutesDeps) {
         const result = await releaseLeaseForRebalance(
           {
             port,
-            enqueueWakeup: deps.enqueueWakeup,
+            matchIssue,
             logActivity: deps.logActivity,
             env,
             now,

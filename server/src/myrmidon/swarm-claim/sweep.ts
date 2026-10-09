@@ -36,49 +36,45 @@
 // per row with the reason recorded, a best-effort wake, a failure leaves the
 // row for the next pass.
 
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
-import { companies, agentWakeupRequests, issues, issueClaims, type Db } from "@paperclipai/db";
+import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { companies, agentWakeupRequests, heartbeatRuns, issues, issueClaims, type Db } from "@paperclipai/db";
 import { wakeNotParkedOnExecutionHold } from "../settled-holds/ready-predicate.js";
 import {
   SWARM_CLAIM_QUEUE_ISSUE_STATUSES,
   SWARM_CLAIM_RELEASE_REASON_ISSUE_CLOSED,
   SWARM_CLAIM_RELEASE_REASON_LEASE_EXPIRED,
   SWARM_CLAIM_RELEASED_ACTION,
-  SWARM_CLAIM_WAKE_REASON,
   isSwarmLeaseExpired,
-  isSwarmClaimEnabledFor,
-  pheromoneDynamicsOf,
+  readStoredSwarmSettings,
   resolveSwarmClaimSettings,
-  type CompanyCaste,
   type SwarmClaimSettings,
 } from "@paperclipai/shared";
 import { logger } from "../../middleware/logger.js";
 import { currentHostCpuGate, currentHostMemoryGate, type HostCpuGate, type HostMemoryGate } from "../run-admission.js";
-import { wakeNextAgentForIssueRole, type SwarmClaimServicePorts } from "./service.js";
-import { listClaimsOnNonQueueIssues, listExpiredClaims, releaseClaim } from "./store.js";
-import { listIdleRolePairs, liveClaimCountsByAgent } from "./idle-queue.js";
-import { idleWakeTargetsForRole, idleWakeIdempotencyKey, type SwarmRoleIdleInput } from "./idle-wake.js";
+import { matchCompany, matchIssue, type SwarmMatcherDeps } from "./matcher.js";
+import type { SwarmClaimServicePorts } from "./service.js";
+import {
+  clearExpiredAssignee,
+  listClaimsOnNonQueueIssues,
+  listExpiredClaims,
+  releaseClaim,
+} from "./store.js";
 
 /** The sweep inspects at most this many claims per pass. */
 export const SWARM_CLAIM_SWEEP_PAGE_SIZE = 50;
 
-/** myrmidon(1.6.1 SWARM-IDLE-WAKE): how many agents one idle pass may wake. */
-export const SWARM_IDLE_WAKE_BATCH_ENV = "MYRMIDON_SWARM_IDLE_WAKE_BATCH";
-export const DEFAULT_SWARM_IDLE_WAKE_BATCH = 5;
-export const MIN_SWARM_IDLE_WAKE_BATCH = 1;
-export const MAX_SWARM_IDLE_WAKE_BATCH = 25;
-
-/**
- * The idle-wake batch cap. A numeric env value in range wins; anything else
- * (unset, non-numeric, out of range) falls back to the default of 5.
- */
-export function readSwarmIdleWakeBatch(env: Record<string, string | undefined>): number {
-  const raw = env[SWARM_IDLE_WAKE_BATCH_ENV]?.trim();
-  if (!raw || !/^\d+$/.test(raw)) return DEFAULT_SWARM_IDLE_WAKE_BATCH;
-  const value = Number(raw);
-  if (!Number.isSafeInteger(value)) return DEFAULT_SWARM_IDLE_WAKE_BATCH;
-  return Math.min(Math.max(value, MIN_SWARM_IDLE_WAKE_BATCH), MAX_SWARM_IDLE_WAKE_BATCH);
-}
+// myrmidon(1.6.5 OPE-6608, review item 5): the idle-wake batch is gone with the
+// pass it capped. Nothing here reads MYRMIDON_SWARM_IDLE_WAKE_BATCH any more:
+// the matcher hands every ready task to a free agent of its caste in one
+// transaction, so "how many agents may one pass wake" has no meaning left. The
+// shared schema entry and its env reader still live in
+// `packages/shared/src/myrmidon-swarm-claim.ts`, the file T2 (OPE-6614) edits
+// and merges before this branch: it leaves with that merge (design «Удалить»,
+// item 3), not from under T2's feet.
+//
+// The activity of a task whose lease lapsed with no run behind it (design §4.1,
+// item 6 of the same list): the board took the task back off its owner.
+const SWARM_CLAIM_UNASSIGNED_ON_EXPIRY_ACTION = "issue.swarm_claim.unassigned_on_expiry";
 
 export interface SwarmClaimSweepResult {
   inspected: number;
@@ -92,6 +88,18 @@ export interface SwarmClaimSweepResult {
   woken: number;
   /** myrmidon(1.6.1 SWARM-IDLE-WAKE): free agents woken on a non-empty queue. */
   idleWoken: number;
+  /**
+   * 1.6.5 (OPE-6608 SWARM-WAKE-FIX A): tasks the idle pass assigned and leased
+   * on the server before waking their agent — the number the acceptance
+   * criterion of the ticket ("≥1 задача захвачена очередью за час") reads.
+   */
+  idleClaimed: number;
+  /**
+   * 1.6.5 (OPE-6608): assignments that lost the race (the task left the queue
+   * or another claim won between the read and the write). Not an error; the
+   * next pass re-reads.
+   */
+  idleClaimLost: number;
   /** Roles with a non-empty ready queue the idle pass examined. */
   idleRoles: number;
   /** Free agents seen at a non-empty queue (the supervisor's zero metric). */
@@ -156,6 +164,8 @@ export function createSwarmClaimSweeper(deps: SwarmClaimSweeperDeps): SwarmClaim
         failed: 0,
         woken: 0,
         idleWoken: 0,
+        idleClaimed: 0,
+        idleClaimLost: 0,
         idleRoles: 0,
         idleFreeAgents: 0,
         idleUnstaffedRoles: 0,
@@ -163,7 +173,7 @@ export function createSwarmClaimSweeper(deps: SwarmClaimSweeperDeps): SwarmClaim
       };
       const general = (await deps.settings.getGeneral()) as unknown as Record<string, unknown>;
       const { settings } = resolveSwarmClaimSettings({
-        stored: general.swarmClaim,
+        stored: readStoredSwarmSettings(general),
         env: deps.env ?? process.env,
       });
 
@@ -195,7 +205,63 @@ export function createSwarmClaimSweeper(deps: SwarmClaimSweeperDeps): SwarmClaim
         return result;
       }
 
-      const expiredRows = await listExpiredClaims(deps.db, null, now, SWARM_CLAIM_SWEEP_PAGE_SIZE);
+      // myrmidon(1.6.5 OPE-6608 A, review item 6): the host's run admission is
+      // read ONCE, before anything is matched, and everything that can start a
+      // run follows it: the re-match of an expired lease and the matcher pass.
+      // Both used to run on a gate reported open, and the expired lease was
+      // taken off its owner before the memory/CPU gates were even looked at.
+      // myrmidon(1.6.2 RUN-ADMISSION): no pairing while the host floor is
+      // closed. An unreadable host ("unknown") does not block: the floor is
+      // inactive then, exactly as it is for the run starts themselves.
+      let hostGateOpen = true;
+      const gate = hostMemoryGate();
+      if (gate.state === "closed") {
+        result.idleSkippedReason = gate.reason ?? "host free memory is below the run admission floor";
+        if (now.getTime() - lastIdleSkipLogAtMs >= IDLE_SKIP_LOG_INTERVAL_MS) {
+          lastIdleSkipLogAtMs = now.getTime();
+          logger.warn(
+            {
+              availableMb: gate.availableMb,
+              thresholdMb: gate.thresholdMb,
+              settlingRuns: gate.settlingRuns,
+              reason: result.idleSkippedReason,
+            },
+            "swarm idle wake pass skipped: the run admission host memory floor is closed",
+          );
+        }
+        hostGateOpen = false;
+      }
+      // myrmidon(1.6.5 RUN-ADMISSION): the host CPU ceiling. The 05.10
+      // incident was exactly this pass waking agents onto a host whose memory
+      // looked fine while its load average ran at 594 % of a core per core.
+      const cpuGate = hostGateOpen ? hostCpuGate() : null;
+      if (cpuGate && cpuGate.state === "closed") {
+        result.idleSkippedReason = cpuGate.reason ?? "host CPU load is at or above the run admission ceiling";
+        if (now.getTime() - lastIdleSkipLogAtMs >= IDLE_SKIP_LOG_INTERVAL_MS) {
+          lastIdleSkipLogAtMs = now.getTime();
+          logger.warn(
+            {
+              load1: cpuGate.load1,
+              cores: cpuGate.cores,
+              loadPercentPerCore: cpuGate.loadPercentPerCore,
+              // myrmidon(1.6.5 rc.2): the ceiling is measured above the host's
+              // own background load, so both numbers go to the log.
+              backgroundPercentPerCore: cpuGate.backgroundPercentPerCore,
+              loadAboveBackgroundPercent: cpuGate.loadAboveBackgroundPercent,
+              thresholdPercent: cpuGate.thresholdPercent,
+              reason: result.idleSkippedReason,
+            },
+            "swarm idle wake pass skipped: the run admission host CPU ceiling is closed",
+          );
+        }
+        hostGateOpen = false;
+      }
+      // A closed gate leaves the expired leases where they are: releasing one
+      // and taking its owner off would strand the task until the gate opens,
+      // and the release is what the next open pass reads them by.
+      const expiredRows = hostGateOpen
+        ? await listExpiredClaims(deps.db, null, now, SWARM_CLAIM_SWEEP_PAGE_SIZE)
+        : [];
       const closedRows = await listClaimsOnNonQueueIssues(
         deps.db,
         null,
@@ -233,16 +299,21 @@ export function createSwarmClaimSweeper(deps: SwarmClaimSweeperDeps): SwarmClaim
             entityId: row.issueId,
             details: { reason: SWARM_CLAIM_RELEASE_REASON_LEASE_EXPIRED, claimId: row.id },
           });
-          // Best-effort wake: the queue itself still holds the task even when
-          // the wake is deferred, and the next pass tries again.
-          const woke = await wakeNextAgentForIssueRole(deps, {
-            companyId: row.companyId,
-            issueId: row.issueId,
-            excludeAgentId: row.agentId,
-            idempotencySuffix: "sweep",
+          // design §4.1 (review item 2): the lease ran out and no run holds the
+          // task any more, so the task goes back to the queue WITHOUT its
+          // owner. The old pass left the assignee in place and woke the next
+          // agent of the caste on a task that still belonged to somebody else —
+          // that wake was cancelled as `reassigned` before its checkout, the
+          // very failure this ticket exists for. Clearing the owner first and
+          // then matching wakes exactly the agent that now owns the task.
+          const rematched = await reclaimExpiredTask(
+            deps,
+            settings,
+            { companyId: row.companyId, issueId: row.issueId, agentId: row.agentId },
             now,
-          }).catch(() => false);
-          if (woke) result.woken += 1;
+            hostGateOpen,
+          ).catch(() => false);
+          if (rematched) result.woken += 1;
         } catch {
           result.failed += 1;
           logger.warn(
@@ -266,71 +337,30 @@ export function createSwarmClaimSweeper(deps: SwarmClaimSweeperDeps): SwarmClaim
         }
       }
 
-      // myrmidon(1.6.1 SWARM-IDLE-WAKE): the idle pass. Runs after the
-      // release passes so this tick's releases are already back in the queue
-      // the pair read sees. One company at a time, bounded by the batch cap.
-      // myrmidon(1.6.2 RUN-ADMISSION): no idle wakes while the host floor is
-      // closed. An unreadable host ("unknown") does not block: the floor is
-      // inactive then, exactly as it is for the run starts themselves.
-      const gate = hostMemoryGate();
-      if (gate.state === "closed") {
-        result.idleSkippedReason = gate.reason ?? "host free memory is below the run admission floor";
-        if (now.getTime() - lastIdleSkipLogAtMs >= IDLE_SKIP_LOG_INTERVAL_MS) {
-          lastIdleSkipLogAtMs = now.getTime();
-          logger.warn(
-            {
-              availableMb: gate.availableMb,
-              thresholdMb: gate.thresholdMb,
-              settlingRuns: gate.settlingRuns,
-              reason: result.idleSkippedReason,
-            },
-            "swarm idle wake pass skipped: the run admission host memory floor is closed",
-          );
-        }
-        return result;
-      }
-      // myrmidon(1.6.5 RUN-ADMISSION): the host CPU ceiling. The 05.10
-      // incident was exactly this pass waking agents onto a host whose memory
-      // looked fine while its load average ran at 594 % of a core per core.
-      const cpuGate = hostCpuGate();
-      if (cpuGate.state === "closed") {
-        result.idleSkippedReason = cpuGate.reason ?? "host CPU load is at or above the run admission ceiling";
-        if (now.getTime() - lastIdleSkipLogAtMs >= IDLE_SKIP_LOG_INTERVAL_MS) {
-          lastIdleSkipLogAtMs = now.getTime();
-          logger.warn(
-            {
-              load1: cpuGate.load1,
-              cores: cpuGate.cores,
-              loadPercentPerCore: cpuGate.loadPercentPerCore,
-              // myrmidon(1.6.5 rc.2): the ceiling is measured above the host's
-              // own background load, so both numbers go to the log.
-              backgroundPercentPerCore: cpuGate.backgroundPercentPerCore,
-              loadAboveBackgroundPercent: cpuGate.loadAboveBackgroundPercent,
-              thresholdPercent: cpuGate.thresholdPercent,
-              reason: result.idleSkippedReason,
-            },
-            "swarm idle wake pass skipped: the run admission host CPU ceiling is closed",
-          );
-        }
-        return result;
-      }
+      if (!hostGateOpen) return result;
       try {
-        const idle = await sweepIdleWakes(deps, { settings, now, result });
-        if (idle.idleWoken > 0) {
+        const matched = await runMatcherPass(deps, settings, now, hostGateOpen);
+        result.idleClaimed += matched.claimed;
+        result.idleWoken += matched.claimed;
+        result.idleRoles += matched.companies;
+        // Ready tasks no free agent of their caste was found for — the number
+        // an operator watches while the fleet is saturated.
+        result.idleFreeAgents += matched.unmatched;
+        if (matched.claimed > 0) {
           logger.warn(
             {
-              idleWoken: idle.idleWoken,
-              idleRoles: idle.idleRoles,
-              idleFreeAgents: idle.idleFreeAgents,
+              claimed: matched.claimed,
+              unmatched: matched.unmatched,
+              companies: matched.companies,
             },
-            "swarm idle wake pass woke free agents on a non-empty role queue",
+            "swarm matcher paired ready tasks with free agents of their caste",
           );
         }
       } catch {
         // CONSTANT errorKind only (the exception can carry a credential).
         logger.warn(
-          { errorKind: "swarm_idle_wake_failed" },
-          "swarm idle wake pass failed; the next tick retries",
+          { errorKind: "swarm_match_failed" },
+          "swarm matcher pass failed; the next tick retries",
         );
       }
       return result;
@@ -403,110 +433,6 @@ export async function listActiveCompanies(db: Db, limit = 50): Promise<string[]>
   return rows.map((row) => row.id);
 }
 
-async function sweepIdleWakes(
-  deps: SwarmClaimServicePorts & { db: Db },
-  input: {
-    settings: Pick<SwarmClaimSettings, "enabled" | "maxActiveTasks" | "p0Preemption" | "pheromone">;
-    now: Date;
-    result: SwarmClaimSweepResult;
-  },
-): Promise<SwarmClaimSweepResult> {
-  const { result } = input;
-  const env = (deps as { env?: Record<string, string | undefined> }).env ?? process.env;
-  const batch = readSwarmIdleWakeBatch(env);
-  const companyIds = await listActiveCompanies(deps.db);
-  const liveCompanyClaims = await Promise.all(
-    companyIds.map((companyId) => liveClaimCountsByAgent(deps.db, companyId)),
-  );
-  const claimCounts = new Map<string, number>();
-  for (const counts of liveCompanyClaims) {
-    for (const [agentId, count] of counts) claimCounts.set(agentId, count);
-  }
-
-  for (const companyId of companyIds) {
-    // 1.6.5 (F-27, review #1047 п.2): the candidate cut is ordered by the same
-    // keys the pass ranks by — a strong task behind the oldest 500 must reach it.
-    const pairs = await listIdleRolePairs(deps.db, companyId, {
-      dynamics: pheromoneDynamicsOf(input.settings.pheromone),
-      p0Preemption: input.settings.p0Preemption,
-      now: input.now,
-    });
-    // myrmidon(1.6.1 SWARM-IDLE-WAKE → 1.6.5 SWARM-T4): the swarm gate. With
-    // the switch off no role is woken: its claim answers `disabled`, the run
-    // ends with nothing, and the next tick would wake it again — an endless
-    // wake loop the ticket forbids.
-    const gatedPairs = pairs.filter((pair) =>
-      isSwarmClaimEnabledFor(input.settings, { companyId, role: pair.role }),
-    );
-    // myrmidon(1.6.1 CUSTOM-CASTES B): the same caste directory the claim gate
-    // reads. `swarmEligible=false` castes never enter the idle pool; a
-    // caste-set ceiling overrides the global one for that agent only.
-    const casteByRole = deps.castes
-      ? new Map((await deps.castes(companyId)).map((entry) => [entry.key, entry]))
-      : new Map<string, CompanyCaste>();
-    for (const pair of gatedPairs) {
-      if (pair.agents.length === 0) {
-        // The attention signal: ready work routed to a role no agent holds.
-        result.idleUnstaffedRoles += 1;
-        logger.warn(
-          {
-            role: pair.role,
-            readyTasks: pair.queue.length,
-            sample: pair.queue.slice(0, 5).map((task) => task.identifier ?? task.issueId),
-          },
-          "swarm idle pass: ready tasks are routed to a role with no agents; add an agent of the role or relabel the tasks",
-        );
-        continue;
-      }
-      const caste = casteByRole.get(pair.role);
-      if (caste && !caste.swarmEligible) continue;
-      const effectiveMaxActiveTasks =
-        caste?.maxActiveTasks != null ? caste.maxActiveTasks : input.settings.maxActiveTasks;
-      const roleInput: SwarmRoleIdleInput = {
-        role: pair.role,
-        queue: pair.queue,
-        liveClaims: [], // claim coverage of the queue is checked per target below
-        agents: pair.agents.map((agent) => ({
-          id: agent.id,
-          activeClaims: claimCounts.get(agent.id) ?? 0,
-          maxActiveTasks: effectiveMaxActiveTasks,
-          status: agent.status,
-          hasLiveRun: agent.hasLiveRun,
-        })),
-      };
-      const targets = idleWakeTargetsForRole(roleInput, {
-        batchLimit: batch,
-        now: input.now,
-        p0Preemption: input.settings.p0Preemption,
-        pheromoneDynamics: pheromoneDynamicsOf(input.settings.pheromone),
-      });
-      result.idleRoles += 1;
-      result.idleFreeAgents += targets.length;
-      for (const target of targets) {
-        // A live claim or a queued/claimed wake already covers the task: the
-        // admission path owns it; the next pass re-evaluates. This is the
-        // fact-based idempotency (the key is tracing only, like idle-pickup).
-        const covered = await issueHasLiveClaimOrWake(deps.db, companyId, target);
-        if (covered) {
-          result.idleFreeAgents -= 1;
-          continue;
-        }
-        try {
-          const woke = await enqueueIdleWake(deps, companyId, target);
-          if (woke) result.idleWoken += 1;
-        } catch {
-          // Best-effort per target: one failure does not fail the pass.
-          logger.warn(
-            { agentId: target.agentId, issueId: target.issueId },
-            "swarm idle wake target failed; the next pass retries",
-          );
-        }
-      }
-    }
-  }
-  return result;
-}
-
 /** True when a live claim or a pending wake already covers the task. */
 export async function issueHasLiveClaimOrWake(
   db: Db,
@@ -548,27 +474,142 @@ export async function issueHasLiveClaimOrWake(
   return false;
 }
 
-async function enqueueIdleWake(
-  deps: SwarmClaimServicePorts,
-  companyId: string,
-  target: { agentId: string; issueId: string; identifier: string | null; priority: string | null; role: string },
+/**
+ * 1.6.5 (OPE-6608 §4.1, review item 2): one expired lease, re-matched. A task
+ * whose lease lapsed with no live run behind it is nobody's again — the owner
+ * is cleared (only while the task is still in a queue status and still carries
+ * that owner, so a task that moved on is left alone), the activity records it,
+ * and the matcher pairs the task again on this same pass. A live run keeps its
+ * task: an idle lease expiring must never take work away from a running agent.
+ */
+async function reclaimExpiredTask(
+  deps: SwarmClaimSweeperDeps,
+  settings: SwarmClaimSettings,
+  target: { companyId: string; issueId: string; agentId: string },
+  now: Date,
+  hostGateOpen: boolean,
 ): Promise<boolean> {
-  if (!deps.enqueueWakeup) return false;
-  const wake = await deps.enqueueWakeup(target.agentId, {
-    source: "automation",
-    triggerDetail: "system",
-    reason: SWARM_CLAIM_WAKE_REASON,
-    idempotencyKey: idleWakeIdempotencyKey(target),
-    requestedByActorType: "system",
-    requestedByActorId: "swarm_idle_wake",
-    contextSnapshot: {
-      issueId: target.issueId,
-      taskId: target.issueId,
-      taskKey: target.issueId,
-      source: "swarm_idle_wake",
-      wakeReason: SWARM_CLAIM_WAKE_REASON,
-      queueRole: target.role,
-    },
+  // The gate first (review item 6): with the host's run admission closed the
+  // owner is not taken off the task, because nothing could be started for it
+  // afterwards. The sweep does not even release an expired lease then (it reads
+  // none while the gate is closed); this guard keeps the function safe on its own.
+  if (!hostGateOpen) return false;
+  if (await hasLiveRunForTask(deps.db, target.companyId, target.agentId, target.issueId)) return false;
+
+  const cleared = await clearExpiredAssignee(deps.db, {
+    companyId: target.companyId,
+    issueId: target.issueId,
+    agentId: target.agentId,
+    now,
   });
-  return Boolean(wake);
+  if (cleared) {
+    await deps.logActivity?.({
+      companyId: target.companyId,
+      actorType: "system",
+      actorId: "swarm_claim_sweep",
+      agentId: target.agentId,
+      runId: null,
+      action: SWARM_CLAIM_UNASSIGNED_ON_EXPIRY_ACTION,
+      entityType: "issue",
+      entityId: target.issueId,
+      details: { reason: SWARM_CLAIM_RELEASE_REASON_LEASE_EXPIRED },
+    });
+  }
+  if (!deps.enqueueWakeup) return false;
+  const matched = await matchIssue(matcherDeps(deps, settings, now, hostGateOpen), target.issueId);
+  return Boolean(matched);
+}
+
+/**
+ * True while a queued/running/scheduled_retry run of the agent covers THIS task
+ * (review item 8). The old read asked "has the agent any live run", so an agent
+ * busy with another task kept an expired lease on a task nobody was working.
+ * The run belongs to the task by the thin projection `context_issue_id`, the
+ * snapshot for rows written before it, or the native issue id.
+ */
+async function hasLiveRunForTask(
+  db: Db,
+  companyId: string,
+  agentId: string,
+  issueId: string,
+): Promise<boolean> {
+  const rows = await db
+    .select({ id: heartbeatRuns.id })
+    .from(heartbeatRuns)
+    .where(
+      and(
+        eq(heartbeatRuns.companyId, companyId),
+        eq(heartbeatRuns.agentId, agentId),
+        inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
+        or(
+          eq(heartbeatRuns.contextIssueId, issueId),
+          and(
+            isNull(heartbeatRuns.contextIssueId),
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+          ),
+          eq(heartbeatRuns.nativeIssueId, issueId),
+        ),
+      ),
+    )
+    .limit(1);
+  return rows.length > 0;
+}
+
+/**
+ * One matcher pass over every active company (design §3.5 — the safety net of
+ * the event path): the periodic tick only re-reads what an event may have
+ * missed. The pairing is the same code a single task or a single agent event
+ * runs, so "top of the queue" and "free agent" mean one thing everywhere.
+ */
+async function runMatcherPass(
+  deps: SwarmClaimSweeperDeps,
+  settings: SwarmClaimSettings,
+  now: Date,
+  hostGateOpen: boolean,
+): Promise<{ claimed: number; unmatched: number; companies: number }> {
+  const companyIds = await listActiveCompanies(deps.db);
+  if (!deps.enqueueWakeup) return { claimed: 0, unmatched: 0, companies: companyIds.length };
+  const matcher = matcherDeps(deps, settings, now, hostGateOpen);
+  let claimed = 0;
+  let unmatched = 0;
+  for (const companyId of companyIds) {
+    const matched = await matchCompany(matcher, companyId);
+    claimed += matched.pairs.length;
+    unmatched += matched.unmatched;
+  }
+  return { claimed, unmatched, companies: companyIds.length };
+}
+
+/**
+ * The matcher ports of the sweeper. The host gate is the one the sweep read
+ * itself at the top of the pass (memory floor and CPU ceiling of the run
+ * admission), not a constant: a closed gate matches nothing. The caste
+ * directory is passed straight through (T3's port).
+ */
+function matcherDeps(
+  deps: SwarmClaimSweeperDeps,
+  settings: SwarmClaimSettings,
+  now: Date,
+  hostGateOpen: boolean,
+): SwarmMatcherDeps {
+  return {
+    db: deps.db,
+    heartbeat: {
+      wakeup: async (agentId, opts) => {
+        const wakeup = deps.enqueueWakeup;
+        if (!wakeup) return null;
+        // The claim service's wake port is declared with the narrower field
+        // set the queue wakes used (source "automation", no payload); the
+        // heartbeat path behind it takes the wider shape the matcher sends
+        // (source "assignment", the issue in the payload). The call is
+        // forwarded unchanged — this module only relays it.
+        return wakeup(agentId, opts as unknown as Parameters<typeof wakeup>[1]);
+      },
+    },
+    settings,
+    hostGateOpen,
+    now,
+    casteDirectory: deps.castes,
+    logActivity: deps.logActivity,
+  };
 }

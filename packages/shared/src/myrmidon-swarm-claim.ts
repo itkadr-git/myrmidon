@@ -27,10 +27,9 @@ import { z } from "zod";
  * - otherwise the environment variable (the deployment default);
  * - otherwise the built-in default.
  *
- * The swarm flag is deliberately the only value whose default is "off": the
- * whole feature ships dark and an operator turns it on for one team, which is
- * what makes it possible to compare a swarm window against the BASELINE
- * snapshot.
+ * The swarm is switched on or off per instance by one flag (`enabled`); who
+ * takes part is decided by the caste directory (`swarmEligible` of the caste)
+ * and nothing else.
  */
 
 /**
@@ -73,7 +72,21 @@ export type SwarmClaimSettingSource = "settings" | "env" | "default";
  */
 export const SWARM_CLAIM_SETTINGS_KEY = "swarmClaim";
 
-/** Master switch of the swarm. Off unless a value on the list below turns it on. */
+/**
+ * The stored swarm-claim settings of an instance `general` block. One reader
+ * for every consumer (the claim service, the sweep, the matcher, the hooks),
+ * so the key is spelled in one place. `general.swarm` is a different block —
+ * the wake guard of F-26 (`myrmidon-swarm-wake.ts`: the taskless gate and the
+ * cooling window) — and is never read here.
+ */
+export function readStoredSwarmSettings(
+  general: Record<string, unknown> | null | undefined,
+): unknown {
+  if (!general) return undefined;
+  return general[SWARM_CLAIM_SETTINGS_KEY];
+}
+
+/** Master switch of the swarm. Off unless the stored value or the override turns it on. */
 export const DEFAULT_SWARM_CLAIM_ENABLED = false;
 
 /**
@@ -100,6 +113,14 @@ export const MAX_SWARM_MAX_ACTIVE_TASKS = 100;
 /** How often the expired-lease sweep runs, in seconds. */
 export const DEFAULT_SWARM_CLAIM_SWEEP_INTERVAL_SEC = 30;
 export const MIN_SWARM_CLAIM_SWEEP_INTERVAL_SEC = 5;
+
+/**
+ * 1.6.5 (OPE-6608 SWARM-WAKE-FIX C): the per-agent switch telling whether the
+ * agent may take a task from the queue. It lives in `agents.metadata` under
+ * this key so an agent carries it without a migration; absent means "ask the
+ * caste" (see `resolveSwarmQueueEligibility`).
+ */
+export const SWARM_QUEUE_ELIGIBILITY_METADATA_KEY = "swarmQueueEligible";
 
 /**
  * The wake reason the queue uses when it wakes the next agent of a role. Part A
@@ -290,6 +311,18 @@ const maxActiveTasksSchema = z
   .max(MAX_SWARM_MAX_ACTIVE_TASKS)
   .nullable();
 const sweepIntervalSchema = z.number().int().min(MIN_SWARM_CLAIM_SWEEP_INTERVAL_SEC);
+/**
+ * Keys that earlier builds stored next to the live ones (the pilot role and
+ * company lists of 1.6.1 and the idle-wake batch of the 1.6.5 candidates). They
+ * no longer mean anything; a stored value that still carries them is read with
+ * them dropped instead of being refused as a whole (which would silently turn
+ * the switch back to the default).
+ */
+export const SWARM_CLAIM_RETIRED_SETTING_KEYS = [
+  "enabledRoles",
+  "enabledCompanyIds",
+  "idleWakeBatch",
+] as const;
 
 // myrmidon(1.6.5 SWARM-T4): pheromone tuning fields (design §5.1). Numbers
 // integer-tuned, whole numbers ≥ 0; an absent field is the design default
@@ -457,17 +490,27 @@ export function effectivePheromone(
   return Math.max(0, strength + agingBonus - penalty);
 }
 
+function dropRetiredSwarmKeys(raw: unknown): unknown {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return raw;
+  const copy = { ...(raw as Record<string, unknown>) };
+  for (const key of SWARM_CLAIM_RETIRED_SETTING_KEYS) delete copy[key];
+  return copy;
+}
+
 /** The canonical stored shape of `instance_settings.general.swarmClaim`. */
-export const swarmClaimSettingsSchema = z
-  .object({
-    enabled: z.boolean(),
-    leaseTtlSec: leaseTtlSchema,
-    maxActiveTasks: maxActiveTasksSchema,
-    sweepIntervalSec: sweepIntervalSchema,
-    p0Preemption: z.boolean().default(DEFAULT_SWARM_CLAIM_P0_PREEMPTION),
-    pheromone: pheromoneSchema.default({}),
-  })
-  .strict();
+export const swarmClaimSettingsSchema = z.preprocess(
+  dropRetiredSwarmKeys,
+  z
+    .object({
+      enabled: z.boolean(),
+      leaseTtlSec: leaseTtlSchema,
+      maxActiveTasks: maxActiveTasksSchema,
+      sweepIntervalSec: sweepIntervalSchema,
+      p0Preemption: z.boolean().default(DEFAULT_SWARM_CLAIM_P0_PREEMPTION),
+      pheromone: pheromoneSchema.default({}),
+    })
+    .strict(),
+);
 
 /** Body of `PATCH /api/myrmidon/swarm-claim`: any subset; absent keys keep their value. */
 export const patchSwarmClaimSettingsSchema = z
@@ -542,9 +585,9 @@ export function normalizeSwarmClaimSettings(raw: unknown): SwarmClaimSettings | 
 
 /**
  * Effective settings and where each value came from. `stored` is the raw
- * `general.swarmClaim` value; an unreadable one counts as absent, so the
- * environment (or the default) applies instead — a hand-edited row cannot
- * enable the swarm on its own.
+ * `general.swarmClaim` value (see `readStoredSwarmSettings`); an unreadable one
+ * counts as absent, so the environment (or the default) applies instead — a
+ * hand-edited row cannot enable the swarm on its own.
  *
  * 1.6.1 (SWARM-SETTINGS-UI): precedence is per key — the environment variable
  * wins over the stored value only for the keys whose variable is actually set
@@ -683,6 +726,45 @@ export function mergeSwarmClaimSettings(
   };
 }
 
+/** Where the effective per-agent queue switch came from. */
+export type SwarmQueueEligibilitySource = "agent" | "caste";
+
+export interface SwarmQueueEligibility {
+  eligible: boolean;
+  /** `agent` — the agent's own switch decided; `caste` — the caste default did. */
+  source: SwarmQueueEligibilitySource;
+}
+
+/**
+ * The explicit per-agent switch stored in `agents.metadata`, or null when the
+ * agent carries none (a value that is not a boolean is not an answer: a
+ * hand-edited row cannot silently take an agent out of the queue, nor put it
+ * in).
+ */
+export function readSwarmQueueEligibilityOverride(
+  metadata: Record<string, unknown> | null | undefined,
+): boolean | null {
+  const raw = metadata?.[SWARM_QUEUE_ELIGIBILITY_METADATA_KEY];
+  return typeof raw === "boolean" ? raw : null;
+}
+
+/**
+ * 1.6.5 (OPE-6608 SWARM-WAKE-FIX C): may this agent take a task from the
+ * queue? The agent's own switch wins when it is set; otherwise the caste
+ * decides (`swarmEligible` in the caste directory) and nothing else: whether
+ * other agents report to the agent does not matter — the operator who wants a
+ * manager out of the queue puts it in a caste with `swarmEligible` off, or
+ * flips the agent's own switch.
+ */
+export function resolveSwarmQueueEligibility(facts: {
+  metadata?: Record<string, unknown> | null;
+  casteEligible: boolean;
+}): SwarmQueueEligibility {
+  const override = readSwarmQueueEligibilityOverride(facts.metadata);
+  if (override !== null) return { eligible: override, source: "agent" };
+  return { eligible: facts.casteEligible, source: "caste" };
+}
+
 /** The lease TTL in milliseconds — the unit the store and the sweep work in. */
 export function swarmLeaseTtlMs(settings: Pick<SwarmClaimSettings, "leaseTtlSec">): number {
   return settings.leaseTtlSec * 1000;
@@ -719,6 +801,15 @@ export function swarmActiveTaskLimitReached(
  * can tell "this caste never takes tasks" from "nothing to take".
  */
 export const SWARM_CLAIM_REASON_CASTE_EXCLUDED = "caste_excluded";
+
+/**
+ * 1.6.5 (OPE-6608 SWARM-WAKE-FIX C): the claim outcome reason for an agent
+ * switched out of the queue in its own card (`agents.metadata`
+ * `swarmQueueEligible=false`), or for one that the default rule keeps out
+ * because it is a manager. Kept apart from `caste_excluded` so the supervisor
+ * says which switch refused the task.
+ */
+export const SWARM_CLAIM_REASON_AGENT_EXCLUDED = "agent_excluded";
 
 /**
  * One entry of a company caste directory (`agents.role` keys). Part A owns

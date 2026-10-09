@@ -194,17 +194,17 @@ export const instanceGeneralSettingsSchema = z.object({
   // myrmidon(EXTCASE-B): browser-bridge allowlist changed from the bridge panel;
   // absent means "no domain is allowed" (deny by default).
   browserBridge: browserBridgeSettingsSchema.optional(),
-  // myrmidon(1.6-SWARM): per-role task queues with leased claims — the pilot flag,
-  // the lease TTL, the per-agent ceiling and the sweep interval, changed from
+  // myrmidon(1.6-SWARM): the swarm (self-organisation) — the on/off switch, the
+  // lease TTL, the per-agent ceiling and the sweep interval, changed from
   // /api/myrmidon/swarm-claim; absent means "use the environment variable, then
-  // the default (the pilot is off)".
+  // the built-in default".
   swarmClaim: swarmClaimSettingsSchema.optional(),
   // myrmidon(1.6.5 F-26 T5): the wake guard — the run-without-task gate and the
   // exponential cooling of stale wake candidates (design 1.6.5 §3.7, §4.3).
   // Absent means the defaults (gate on, base 30 min, ceiling 24 h).
   swarm: swarmSettingsSchema.optional(),
-  // myrmidon(1.6.1 SWARM-SETTINGS-UI): the change journal of the swarm-claim
-  // pilot settings (who changed what, and when), kept by the settings service
+  // myrmidon(1.6.1 SWARM-SETTINGS-UI): the change journal of the swarm
+  // settings (who changed what, and when), kept by the settings service
   // under `general.swarmClaimJournal` and read by GET /api/myrmidon/swarm-claim.
   // Stored passthrough, never validated here beyond being a list-shaped value
   // the service re-reads defensively.

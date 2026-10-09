@@ -1,8 +1,9 @@
 // myrmidon(1.6-SWARM-CLAIM-B): entry point of the supervisor surface.
 //
-// The lead's side of swarm claim: a read-only aggregation of the per-caste
-// queues and the leased claims (part A owns the claim machinery) and one
-// rebalance action (release a live lease, wake the next agent of the caste).
+// The lead's side of swarm claim: a read-only aggregation of the per-role
+// queues and the leased claims (part A owns the claim machinery), one
+// rebalance action (release a live lease, take the owner off the task and hand
+// it to the board matcher).
 
 import type { Db } from "@paperclipai/db";
 import { logActivity } from "../../services/index.js";
