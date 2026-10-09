@@ -38,6 +38,8 @@ export const HUMAN_UNBLOCK_NOTE =
 // transition, a checkout) clears it; see docs/myrmidon/DIVERGENCE.md.
 export const REASSIGN_UNBLOCK_NOTE =
   "Cleared on reassignment: the replay hold belongs to the previous executor's run.";
+/** Statuses a reassigned task can be handed in: the ones an executor works. */
+const ASSIGNED_WORKABLE_STATUSES = ["todo", "in_progress", "in_review"] as const;
 
 interface IssueSide {
   status: string;
