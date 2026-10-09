@@ -105,6 +105,7 @@ describeEmbeddedPostgres("blocked loop limiter (route level)", () => {
       status: "running",
       invocationSource: "manual",
       startedAt: new Date(),
+      responsibleUserId: "responsible-user",
       contextSnapshot: { issueId },
     });
     await db.insert(issues).values([
@@ -131,6 +132,7 @@ describeEmbeddedPostgres("blocked loop limiter (route level)", () => {
         status: "in_progress",
         priority: "high",
         assigneeAgentId: agentId,
+        responsibleUserId: "responsible-user",
         checkoutRunId: runId,
         executionRunId: runId,
         executionAgentNameKey: "codexcoder",

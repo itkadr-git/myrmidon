@@ -90,6 +90,7 @@ describe("judgeBlockedLoop", () => {
   });
 
   it("settling the task (done, cancelled, in_review) ends the streak", () => {
+    const older = cycles(3);
     const settled: BlockedLoopEvent = {
       createdAt: at(),
       actorType: "agent",
@@ -97,7 +98,7 @@ describe("judgeBlockedLoop", () => {
       blockerSetKey: null,
       descriptorKey: null,
     };
-    const events = [...cycles(3), settled, ...cycles(1)];
+    const events = [...older, settled, ...cycles(1)];
     expect(judgeBlockedLoop(events, attempt, 3).streak).toBe(1);
   });
 
