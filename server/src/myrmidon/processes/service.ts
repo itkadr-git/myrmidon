@@ -2,15 +2,14 @@
 // write `instance_settings.general.processes`.
 //
 // The read reports each value with its source (the saved row, the environment
-// or the default) and says which mode the build actually honours — PROCS-1.1
-// stores `split` but has no supervisor yet, and a board that quietly served a
-// mode it is not running would be worse than the missing feature.
+// or the default) and says which mode the build actually honours.
 //
 // The write goes the same way the other instance settings do: store the row,
 // write one activity record per company, and only then apply the value to the
 // running process, so the settings in force never run ahead of the journal.
-// Values are applied without a restart; the mode takes effect in the process
-// that reads it next, which is what the emergency escape is for.
+// Values are applied without a restart: PROCS-1.2 routes them into the
+// process supervisor, which forks or drains the api children and moves the
+// worker's own listener between single and split.
 import type { Db } from "@paperclipai/db";
 import {
   describeProcessesEffect,
@@ -28,6 +27,7 @@ import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService, logActivity } from "../../services/index.js";
 import type { LogActivityInput } from "../../services/activity-log.js";
 import type { getActorInfo } from "../../routes/authz.js";
+import type { ProcessSupervisor } from "./supervisor.js";
 
 /** The action written to the activity journal on every change. */
 export const PROCESSES_SETTINGS_ACTION = "instance.processes.updated";
@@ -45,6 +45,10 @@ export interface ProcessesSettingsView {
 export type ProcessesActor = ReturnType<typeof getActorInfo>;
 
 export interface ProcessesSettingsDeps {
+  // Structural on purpose: instanceSettingsService() returns the full service
+  // shape and the general settings row carries every settings key, not just
+  // `processes`. A narrower structural contract keeps the service testable
+  // without fighting the widening upstream types.
   settings: {
     getGeneral(): Promise<{ processes?: unknown }>;
     updateGeneral(patch: { processes: ProcessesSettings }): Promise<unknown>;
@@ -136,11 +140,14 @@ export function createProcessesSettingsService(deps: ProcessesSettingsDeps): Pro
 /**
  * The apply step of a live board: record what is in force and say out loud
  * when the saved mode is one this build cannot run, so the reason reaches the
- * server journal instead of only the settings page.
+ * server journal instead of only the settings page. When a supervisor is
+ * wired (PROCS-1.2) the mode/apiCount change also drives it: children fork or
+ * drain, and the worker's own listener moves between single and split.
  */
 export function applyProcessesSettingsToProcess(
   settings: ProcessesSettings,
   changedKeys: ProcessesSettingKey[] = [],
+  supervisor: ProcessSupervisor | null = null,
 ): void {
   const { effectiveMode, notInEffectReason } = describeProcessesEffect(settings);
   if (notInEffectReason) {
@@ -166,15 +173,27 @@ export function applyProcessesSettingsToProcess(
     },
     "process settings in force",
   );
+  if (supervisor && (changedKeys.includes("mode") || changedKeys.includes("apiCount") || changedKeys.length === 0)) {
+    void supervisor.apply(settings).catch((err) => {
+      logger.error({ err, mode: settings.mode, apiCount: settings.apiCount }, "myrmidon(PROCS-1.2): supervisor apply failed");
+    });
+  }
 }
 
 /** Production dependencies: the instance settings, the journal, and this process. */
-export function defaultProcessesSettingsDeps(db: Db): ProcessesSettingsDeps {
+export function defaultProcessesSettingsDeps(db: Db, supervisor: ProcessSupervisor | null = null): ProcessesSettingsDeps {
+  const settings = instanceSettingsService(db);
   return {
-    settings: instanceSettingsService(db),
-    listCompanyIds: () => instanceSettingsService(db).listCompanyIds(),
+    // The service narrows the full instance-settings shape to just the
+    // `processes` key; both directions are type-compatible, the casts keep the
+    // ProcessesSettingsDeps contract structural (see above).
+    settings: {
+      getGeneral: () => settings.getGeneral(),
+      updateGeneral: (patch) => settings.updateGeneral(patch),
+    },
+    listCompanyIds: () => settings.listCompanyIds(),
     logActivity: (entry) => logActivity(db, entry),
-    apply: (settings, changedKeys) => applyProcessesSettingsToProcess(settings, changedKeys),
+    apply: (settings, changedKeys) => applyProcessesSettingsToProcess(settings, changedKeys, supervisor),
     env: process.env,
   };
 }

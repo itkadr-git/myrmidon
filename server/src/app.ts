@@ -613,6 +613,13 @@ export async function createApp(
     managedPluginAutoInstall?: readonly string[] | null;
     /** Test override for the bundled plugin catalog root. */
     bundledPluginCatalogRoot?: string;
+    /**
+     * myrmidon(PROCS-1.2): the worker's process supervisor, so PATCH
+     * /api/myrmidon/processes on this process drives it. An api child is
+     * constructed without one — it stores the row, the worker applies its own
+     * read of the same row.
+     */
+    processSupervisor?: import("./myrmidon/processes/index.js").ProcessSupervisor | null;
   },
 ) {
   const app = express();
