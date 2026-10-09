@@ -10536,7 +10536,7 @@ registerCurrentRoute({
   method: "get",
   path: "/api/tools/oauth/paperclip-id/callback",
   tags: ["tool-access"],
-  summary: "Handle a legacy brokered Paperclip ID OAuth callback",
+  summary: `Handle a legacy brokered ${PRODUCT_NAME} ID OAuth callback`,
 });
 
 registerCurrentRoute({
