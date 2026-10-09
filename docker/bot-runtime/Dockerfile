@@ -834,12 +834,14 @@ RUN chmod 0755 /opt/paperclip/bin/git-credential-paperclip /opt/paperclip/bin/gh
 # github-broker wrappers above: Node scripts, node --check at build
 # time, /opt only.
 COPY --chown=root:root build-wrappers/devbuild-gate.js build-wrappers/blocked-tool.js \
+     build-wrappers/heavy-fallback.js \
      build-wrappers/pnpm build-wrappers/tsc build-wrappers/vitest \
      build-wrappers/gradle build-wrappers/go /opt/paperclip/bin/
 RUN chmod 0755 /opt/paperclip/bin/pnpm /opt/paperclip/bin/tsc /opt/paperclip/bin/vitest \
      /opt/paperclip/bin/gradle /opt/paperclip/bin/go \
   && chmod 0644 /opt/paperclip/bin/devbuild-gate.js /opt/paperclip/bin/blocked-tool.js \
-  && for f in devbuild-gate.js blocked-tool.js pnpm tsc vitest gradle go; do \
+     /opt/paperclip/bin/heavy-fallback.js \
+  && for f in devbuild-gate.js blocked-tool.js heavy-fallback.js pnpm tsc vitest gradle go; do \
        /opt/node24/bin/node --check /opt/paperclip/bin/$f; \
      done
 
