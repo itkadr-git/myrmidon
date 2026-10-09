@@ -87,6 +87,21 @@ pnpm knowledge:migrate import --root /path/to/plugin-wiki-export \
 - Тела страниц и значения полей не печатаются ни в stdout, ни в JSON-отчёт:
   страницы вики могут нести персональные данные.
 
+## Критерии K-6 (§6) и где они проверяются
+
+- сумма классов = 170 → `classSum.expected` / `classSum.actual` / `classSum.ok`,
+  плюс ненулевой код выхода при расхождении;
+- у каждой перенесённой страницы есть ревизия, источники и разобранный
+  frontmatter → `created` / `appended` / `revisionsWritten`, `sources`,
+  `frontmatterParsed` и `frontmatter.keys` (в отчёт идут только имена ключей);
+- ссылки резолвлены ≥ 90 % → `links.total` / `links.resolved` /
+  `links.percent` и `links.unresolvedTargets`;
+- три контрольных запроса находят ожидаемое → `checks` в карте и результаты
+  в `report.checks`;
+- содержимое не печатается → в отчёте только числа, слаги и имена ключей;
+  юнит-тесты `server/src/myrmidon/knowledge/migrate/migrate.myrmidon.test.ts`
+  проверяют это на живом прогоне `classify`/`import`.
+
 ## Роли
 
 - Инженер: прогон `classify`/`import`, разбор отчёта, разбор нерезолвленных
