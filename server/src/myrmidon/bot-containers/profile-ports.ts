@@ -34,8 +34,6 @@ import { and, asc, eq, isNull, sql } from "drizzle-orm";
 // myrmidon(PARALLEL-HELPERS): the settings type the parallel-helpers port returns.
 import type { BotLspSettings, BotDiskMechanics, ParallelHelpersSettings } from "@paperclipai/shared";
 import { getConfiguredSecretProvider } from "../../secrets/configured-provider.js";
-// myrmidon(1.6.5-F11-A): the deterministic secret name of the bot's media token.
-import { readMediaMcpSignals } from "./media-mcp.js";
 import {
   agentInstructionsService,
   agentService,

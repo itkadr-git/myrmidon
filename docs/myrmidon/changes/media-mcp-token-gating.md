@@ -36,10 +36,14 @@ settings-section: Track 5 — operations
   is empty and the bot is not in peer-auth mode, and maps an unexpected 401
   to the same «media is not connected» state — a configuration state, not a
   runtime error.
-- Peer-auth bots are untouched: a bot that authenticates to the facade by
-  `peer_host` (auth.py, `config.example.json`) sets `MEDIA_TOOLS_PEER_AUTH=1`
-  in its card env and keeps calling media without a bearer token; the client
-  then sends no Authorization header and does not raise.
+- Peer-auth bots keep working, but they lose the `media` MCP block too: the
+  block is emitted only when the card carries a bearer token
+  (`MEDIA_TOOLS_TOKEN`). A bot that authenticates to the facade by `peer_host`
+  (auth.py, `config.example.json`) sets `MEDIA_TOOLS_PEER_AUTH=1` in its card
+  env — it calls the facade directly (its scripts already know the endpoint),
+  without a bearer token; the client then sends no Authorization header and
+  does not raise. `MEDIA_TOOLS_PEER_AUTH` only affects the bot-side client;
+  the compiler does not read it and no `media` block is emitted either way.
 - The media service registry (`bots.json`) has exactly one owner: the
   board-side exporter of MEDIA-PROVISION (`media-acl-export.ts`), which
   rewrites it from the cards and stores sha256 digests. The compiler and the
@@ -77,10 +81,14 @@ settings-section: Track 5 — operations
   `MediaNotConnectedError` до любого HTTP-запроса, а неожиданный 401 сводит к
   тому же состоянию «медиа не подключено» — это состояние конфигурации, а не
   ошибка времени выполнения.
-- Боты с peer-аутентификацией не затронуты: бот, который ходит в фасад по
-  `peer_host` (auth.py, `config.example.json`), ставит в env карточки
-  `MEDIA_TOOLS_PEER_AUTH=1` и продолжает работать без bearer-токена; клиент не
-  посылает Authorization и не бросает исключение.
+- Боты с peer-аутентификацией продолжают работать, но MCP-блок `media` у них
+  тоже исчезает: блок выдаётся только при bearer-токене в карточке
+  (`MEDIA_TOOLS_TOKEN`). Бот, который ходит в фасад по `peer_host` (auth.py,
+  `config.example.json`), ставит в env карточки `MEDIA_TOOLS_PEER_AUTH=1` — он
+  зовёт фасад напрямую (скрипты бота и так знают endpoint), без bearer-токена;
+  клиент не посылает Authorization и не бросает исключение.
+  `MEDIA_TOOLS_PEER_AUTH` читает только клиент бота; компилятор эту переменную
+  не читает, и блока `media` в любом случае не выдаёт.
 - У реестра медиа-сервиса (`bots.json`) ровно один владелец: бордовый
   экспортёр MEDIA-PROVISION (`media-acl-export.ts`), который переписывает его
   из карточек и хранит sha256-дайджесты. Компилятор и бот-скрипты потребляют
