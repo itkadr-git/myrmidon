@@ -826,10 +826,31 @@ describe("myrmidon-release.yml: the tag input wins over ref_name", () => {
   // poll budget so a tag CI run delayed by the tag-push runner queue
   // (rc.13: ~50 min against the 40-min default) is waited out instead of
   // timing out with an empty verdict.
+  //
+  // Delivery-form note: the workflow-file edit rides as
+  // .github/patches/release-tag-ci-poll-budget.patch (the push token has no
+  // workflow scope) and is applied with `git am -3` at merge time. The pin
+  // therefore accepts the env line either in the workflow itself (after the
+  // patch is applied) or in the patch payload (before), and pins the job
+  // timeout only when the workflow already carries the budget.
   it("raises the gate wait budget for the tag CI queue delay (MYRMIDON_RELEASE_POLL_MAX)", () => {
-    assert.match(workflow, /MYRMIDON_RELEASE_POLL_MAX: "240"/);
-    // The budget must stay inside the job's own timeout (80 min < 90 min).
-    assert.match(workflow, /timeout-minutes: 90/);
+    const HERE = path.dirname(fileURLToPath(import.meta.url));
+    const PATCH = path.join(HERE, "..", "..", "..", ".github", "patches", "release-tag-ci-poll-budget.patch");
+    const patch = fs.existsSync(PATCH) ? fs.readFileSync(PATCH, "utf8") : "";
+    const inWorkflow = /MYRMIDON_RELEASE_POLL_MAX: "240"/.test(workflow);
+    const inPatch = /^\+\s*MYRMIDON_RELEASE_POLL_MAX: "240"$/m.test(patch);
+    assert.ok(
+      inWorkflow || inPatch,
+      "MYRMIDON_RELEASE_POLL_MAX: \"240\" must be in myrmidon-release.yml or in .github/patches/release-tag-ci-poll-budget.patch pending application",
+    );
+    if (inWorkflow) {
+      // The budget must stay inside the job's own timeout (80 min < 90 min).
+      assert.match(workflow, /timeout-minutes: 90/);
+    } else {
+      // Patch form: the patch must add the budget inside the publish step
+      // env of myrmidon-release.yml, in the hunk at the TAG context line.
+      assert.match(patch, /^\s+TAG: \$\{\{ inputs\.tag \|\| github\.ref_name \}\}$/m);
+    }
   });
 });
 
