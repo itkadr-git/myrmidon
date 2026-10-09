@@ -82,6 +82,25 @@ fails with the reason
   hard refusal of new runs; set live for the instance
   ([budget-enforcement](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/budget-enforcement.md)).
 
+## Attention screen: cache and failed-run window
+
+The **Attention** screen is served from a per-company in-process cache, so a
+poll from every open tab shares one feed build instead of rebuilding the list
+on each request. Two keys of `instance_settings.general` tune it; both are
+edited from the instance settings page and apply without a restart:
+
+- `attentionFeedCacheTtlSeconds` — how long a built snapshot is served
+  (default 60 seconds, accepted 0–300, `0` disables the cache). A snapshot
+  older than the TTL (and up to `2 × TTL`) is still served at once while one
+  background rebuild refreshes it, so a read never waits for the rebuild and
+  never receives a snapshot older than `2 × TTL`. Dismiss and snooze actions
+  become visible on the next read — a write inside the TTL drops the stored
+  snapshot and any rebuild that started before it.
+- `attentionFailedRunHorizonDays` — how far back the failed-run window of the
+  feed reaches (default 7 days, accepted 1–365). Runs that exhausted their
+  retries older than the horizon never enter the feed, which keeps the screen
+  fast on a board with a long failure history; fresh failures are unaffected.
+
 ## Model shown for a gateway run
 
 The run detail on the agent page names the model that actually answered.
