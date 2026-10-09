@@ -263,9 +263,10 @@ export async function applyBotContainerNow(
       agentId: agent.agentId,
       botKey,
       spec,
-      compile: async () => {
-        appliedProfile = await deps.compile(agent.agentId, botKey, opts.pass);
-        return appliedProfile;
+      compile: async (): Promise<CompiledProfile> => {
+        const compiled: CompiledProfile = await deps.compile(agent.agentId, botKey, opts.pass);
+        appliedProfile = compiled;
+        return compiled;
       },
       driver: deps.driver,
       maintenance: deps.maintenance,
