@@ -4,6 +4,7 @@ import { migrate as migratePg } from "drizzle-orm/postgres-js/migrator";
 import { readFile, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import postgres from "postgres";
+import { withQueryAccounting } from "./myrmidon-query-accounting.js";
 import * as schema from "./schema/index.js";
 import { withTransientWriteRetry } from "./transient-write-retry.js";
 
@@ -263,7 +264,10 @@ export function createDb(url: string, options?: DatabaseClientOptions) {
   // The registry keeps the real client (teardown must end the actual pool);
   // drizzle gets the retrying face so a pooler-recycled socket replays the
   // query instead of failing the request that happened to draw it.
-  return drizzlePg(withTransientWriteRetry(sql), { schema });
+  // myrmidon(1.6.5-PROCS-T02): the outermost face counts the queries each lane
+  // of the board issues — one report per query drizzle sends, retries included
+  // in that single report. See packages/db/src/myrmidon-query-accounting.ts.
+  return drizzlePg(withQueryAccounting(withTransientWriteRetry(sql)), { schema });
 }
 
 export async function getPostgresDataDirectory(url: string): Promise<string | null> {
