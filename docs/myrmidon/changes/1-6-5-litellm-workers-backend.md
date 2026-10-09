@@ -13,12 +13,16 @@ settings-section: Track 5 — operations
 - `GET /api/myrmidon/companies/:companyId/litellm/workers` answers the current
   pool size, the target, the ceilings and the live metrics (per-worker CPU,
   median latency, queue depth); an absent number is reported as absent, not as
-  zero.
+  zero. `perWorkerCpu` is a percentage (0..100), as the Costs page draws it.
+  When no source knows the pool size, `current` is the declared baseline (else
+  the default target) and `currentSource` is `unknown`.
 - `PUT …/workers` with `{ "target": <integer> }` stores the target and moves the
   gunicorn pool to it with TTIN/TTOU signals, without a gateway restart. A
   target above the memory or CPU ceiling is a 400 with `details.reason`
   `above_memory` or `above_cpu`. When no source knows the pool size, the target
-  is stored and the pool is left alone.
+  is stored and the pool is left alone. Only an instance admin may PUT (the pool
+  is one per instance), and whole resizes are serialised by a database advisory
+  lock, so two concurrent PUTs signal only for the difference.
 
 ## changelog-ru
 
@@ -31,12 +35,16 @@ settings-section: Track 5 — operations
 - `GET /api/myrmidon/companies/:companyId/litellm/workers` отвечает текущим
   размером пула, целью, потолками и живыми метриками (CPU по процессам, медиана
   ответа, глубина очереди); отсутствующее число так и помечается, а не
-  выдаётся нулём.
+  выдаётся нулём. `perWorkerCpu` — проценты (0..100), как рисует страница
+  «Затраты». Если размер пула не известен ни из одного источника, `current` —
+  заявленный baseline (иначе цель по умолчанию), а `currentSource` — `unknown`.
 - `PUT …/workers` с `{ "target": <целое> }` сохраняет цель и переводит пул
   gunicorn на неё сигналами TTIN/TTOU без рестарта шлюза. Цель выше потолка по
   памяти или CPU — 400 с `details.reason` `above_memory` / `above_cpu`. Если
   размер пула не известен ни из одного источника, цель сохраняется, а пул не
-  трогается.
+  трогается. PUT доступен только администратору инстанса (пул один на инстанс),
+  а изменения целиком сериализуются advisory-блокировкой в БД: два параллельных
+  PUT шлют сигналы только на разницу.
 
 ## settings-en
 

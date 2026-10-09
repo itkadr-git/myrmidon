@@ -46,7 +46,7 @@ import {
   type LitellmWorkersGatewayPort,
 } from "./gateway.js";
 import { unavailableLitellmWorkersMetrics } from "./metrics.js";
-import type { LitellmWorkersStore } from "./settings.js";
+import { inProcessLitellmWorkersLock, type LitellmWorkersLock, type LitellmWorkersStore } from "./settings.js";
 
 /** Where the `current` in an answer came from. */
 export type LitellmWorkersCurrentSource = "gateway" | "last_applied" | "baseline" | "gateway_pids" | "unknown";
@@ -58,12 +58,17 @@ export interface LitellmWorkersDeps {
   gateway: LitellmWorkersGatewayPort | null;
   /** The delivery port; the shell runner unless a test passes a recording one. */
   signalRunner?: LitellmSignalRunner;
+  /**
+   * Serialises whole resizes. The routes pass the database advisory lock; the
+   * default is an in-process queue, enough for one process and for the tests.
+   */
+  lock?: LitellmWorkersLock;
 }
 
 /** Everything the card and the API need to say about one company's gateway. */
 export interface LitellmWorkersView {
   companyId: string;
-  current: number | null;
+  current: number;
   currentSource: LitellmWorkersCurrentSource;
   target: number;
   targetSource: "settings" | "default";
@@ -135,7 +140,10 @@ function buildView(input: {
   const resolved = resolveLitellmWorkersTarget(stored, ceilings);
   return {
     companyId,
-    current: current.workers,
+    // A pool size no source knows is still shown as a number: the declared
+    // baseline, else the default target. `currentSource: "unknown"` keeps the
+    // honesty — the resize itself never counts signals from this guess.
+    current: current.workers ?? runtime.baseline ?? ceilings.defaultTarget,
     currentSource: current.source,
     target: resolved.target,
     targetSource: resolved.source,
@@ -203,6 +211,20 @@ export async function applyLitellmWorkersTarget(
       maxTarget: ceilings.maxTarget,
     });
   }
+  // One resize at a time per instance: the pool is read, signalled and
+  // recorded inside the lock, so a second PUT counts from the first one's result.
+  const lock = deps.lock ?? defaultLock;
+  return lock.run(() => applyValidatedTarget(deps, input));
+}
+
+const defaultLock: LitellmWorkersLock = inProcessLitellmWorkersLock();
+
+async function applyValidatedTarget(
+  deps: LitellmWorkersDeps,
+  input: { companyId: string; target: number },
+): Promise<LitellmWorkersApplyResult> {
+  const runtime = readLitellmWorkersRuntime(deps.env);
+  const ceilings = litellmWorkersCeilings(runtime.host);
 
   const gatewayRead = await readGateway(deps);
   const current = resolveCurrent(gatewayRead, await deps.store.read(input.companyId), runtime.baseline);

@@ -18,7 +18,7 @@
 // every value is normalised on the way in, so unreadable content reads as
 // "not set" instead of as a number the gateway would be told to obey.
 
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { instanceSettings, type Db } from "@paperclipai/db";
 import {
   LITELLM_WORKERS_COMPANIES_KEY,
@@ -156,3 +156,48 @@ export function preserveLitellmWorkersGeneralKey(
 
 /** Exported for the tests and for a future sweep that wants the raw map. */
 export const litellmWorkersSettingsInternals = { readCompanies, mergeGeneral };
+
+/**
+ * The advisory-lock key of a resize. The pool belongs to the whole instance
+ * (one gateway, one gunicorn master), so the key is one module constant and
+ * not a company id: two companies resizing at once are the same race.
+ */
+export const LITELLM_WORKERS_ADVISORY_LOCK_KEY = "paperclip:myrmidon:litellm-workers:resize";
+
+/**
+ * Serialises whole resizes: read the pool, deliver the signals, record the
+ * result. Without it two PUTs both read the same `current`, both count their
+ * signals from it, and the pool ends above the memory ceiling.
+ */
+export interface LitellmWorkersLock {
+  run<T>(operation: () => Promise<T>): Promise<T>;
+}
+
+/** The database lock: a transaction-scoped advisory lock held for the operation. */
+export function advisoryLitellmWorkersLock(db: Db): LitellmWorkersLock {
+  return {
+    run<T>(operation: () => Promise<T>): Promise<T> {
+      return db.transaction(async (tx: LitellmWorkersTransaction) => {
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${LITELLM_WORKERS_ADVISORY_LOCK_KEY}, 0))`);
+        return operation();
+      });
+    },
+  };
+}
+
+/** An in-process lock — what a test uses instead of a database. */
+export function inProcessLitellmWorkersLock(): LitellmWorkersLock {
+  let tail: Promise<unknown> = Promise.resolve();
+  return {
+    run<T>(operation: () => Promise<T>): Promise<T> {
+      const result = tail.then(operation, operation);
+      tail = result.catch(() => undefined);
+      return result;
+    },
+  };
+}
+
+/** A lock that does not lock — only for the test that shows the race it prevents. */
+export function noLitellmWorkersLock(): LitellmWorkersLock {
+  return { run: (operation) => operation() };
+}

@@ -175,7 +175,7 @@ export function readPrometheusCpuSamples(samples: readonly PrometheusSample[]): 
 }
 
 /**
- * The mean CPU fraction of one worker between two scrapes: the CPU seconds
+ * The mean CPU load of one worker, in percent (0..100), between two scrapes: the CPU seconds
  * each worker burned divided by the wall time that passed, averaged over the
  * workers both scrapes saw. The first scrape answers null — a counter without
  * a previous reading is a total, not a rate — and so does an elapsed time that
@@ -199,7 +199,8 @@ export function derivePerWorkerCpu(
   }
   if (fractions.length === 0) return null;
   const mean = fractions.reduce((total, value) => total + value, 0) / fractions.length;
-  return Math.round(mean * 10000) / 10000;
+  // Percent of one core (0..100 per single-threaded worker), two decimals.
+  return Math.round(mean * 10000) / 100;
 }
 
 /** The three reported numbers, null for every family the gateway does not carry. */

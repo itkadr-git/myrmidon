@@ -8,7 +8,8 @@
 //     Company members read — this is what the gateway card shows.
 // - PUT /api/myrmidon/companies/:companyId/litellm/workers { target }
 //     Stores the target and moves the running pool to it with TTIN/TTOU to the
-//     gunicorn master, no restart and no dropped request. Board members write.
+//     gunicorn master, no restart and no dropped request. Instance admins write
+//     (the pool is one per instance). Resizes are serialised by an advisory lock.
 //     A target above the memory ceiling is a 400 and nothing is delivered.
 //
 // The route is company-scoped like the rest of the LiteLLM API of this board,
@@ -25,10 +26,10 @@ import {
 } from "@paperclipai/shared";
 import { validate } from "../../middleware/validate.js";
 import { logger } from "../../middleware/logger.js";
-import { assertBoard, assertCompanyAccess, getActorInfo } from "../../routes/authz.js";
+import { assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "../../routes/authz.js";
 import { logActivity } from "../../services/activity-log.js";
 import { createLitellmWorkersGateway } from "./gateway.js";
-import { drizzleLitellmWorkersStore } from "./settings.js";
+import { advisoryLitellmWorkersLock, drizzleLitellmWorkersStore } from "./settings.js";
 import { applyLitellmWorkersTarget, readLitellmWorkersView, type LitellmWorkersDeps } from "./service.js";
 
 /** Activity action written for every applied resize. */
@@ -51,7 +52,7 @@ export function myrmidonLitellmWorkersRoutes(db: Db, env: NodeJS.ProcessEnv = pr
     // — never a key from a request.
     return createLitellmWorkersGateway({ baseUrl, adminKey: adminKeySecret ?? undefined });
   })();
-  const deps: LitellmWorkersDeps = { store, env, gateway };
+  const deps: LitellmWorkersDeps = { store, env, gateway, lock: advisoryLitellmWorkersLock(db) };
 
   router.get("/myrmidon/companies/:companyId/litellm/workers", async (req, res) => {
     const companyId = req.params.companyId as string;
@@ -65,7 +66,9 @@ export function myrmidonLitellmWorkersRoutes(db: Db, env: NodeJS.ProcessEnv = pr
     async (req, res) => {
       const companyId = req.params.companyId as string;
       assertCompanyAccess(req, companyId);
-      assertBoard(req);
+      // The pool is one per instance, shared by every company: resizing it is
+      // an instance-admin act, not a company-board one.
+      assertInstanceAdmin(req);
       const { target } = req.body as LitellmWorkersTargetBody;
       const result = await applyLitellmWorkersTarget(deps, { companyId, target });
       try {

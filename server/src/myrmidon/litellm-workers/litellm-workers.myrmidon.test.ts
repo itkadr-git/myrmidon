@@ -8,7 +8,7 @@
 // ceilings of a 6 core / 12 GB box, the memory rejection, the TTIN/TTOU
 // arithmetic of a resize, and that a GET reflects the pool after a PUT.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_LITELLM_WORKERS_SIGNAL_COMMAND,
   LITELLM_WORKERS_BASELINE_ENV,
@@ -30,8 +30,13 @@ import {
   readPrometheusWorkerGauge,
   readPrometheusWorkerPidCount,
 } from "./metrics.js";
-import type { LitellmMetricsRead, LitellmSignalRunner, LitellmWorkersGatewayPort } from "./gateway.js";
-import { memoryLitellmWorkersStore, preserveLitellmWorkersGeneralKey } from "./settings.js";
+import { createLitellmWorkersGateway, type LitellmMetricsRead, type LitellmSignalRunner, type LitellmWorkersGatewayPort } from "./gateway.js";
+import {
+  inProcessLitellmWorkersLock,
+  memoryLitellmWorkersStore,
+  noLitellmWorkersLock,
+  preserveLitellmWorkersGeneralKey,
+} from "./settings.js";
 import { applyLitellmWorkersTarget, readLitellmWorkersView, type LitellmWorkersDeps } from "./service.js";
 
 const COMPANY = "2870b911-483a-4091-9f15-183841811143";
@@ -44,7 +49,7 @@ class FakeGateway implements LitellmWorkersGatewayPort {
   workersSource: "gauge" | "pids" | null;
   error: string | null = null;
   reads = 0;
-  metrics = { perWorkerCpu: 0.42, medianLatencyMs: 210, queueDepth: 3 };
+  metrics = { perWorkerCpu: 42, medianLatencyMs: 210, queueDepth: 3 };
 
   constructor(workers: number | null, workersSource: "gauge" | "pids" | null = "gauge") {
     this.workers = workers;
@@ -195,7 +200,7 @@ describe("reading the gateway's numbers", () => {
     const first = readPrometheusCpuSamples(parsePrometheusText(exposition.join("\n")));
     const second = readPrometheusCpuSamples(parsePrometheusText(exposition.join("\n").replace('process_cpu_seconds_total{pid="11"} 10', 'process_cpu_seconds_total{pid="11"} 11')));
     expect(derivePerWorkerCpu(null, first, 10)).toBeNull();
-    expect(derivePerWorkerCpu(first, second, 10)).toBe(0.05);
+    expect(derivePerWorkerCpu(first, second, 10)).toBe(5);
   });
 
   it("remembers the previous scrape in the sampler", () => {
@@ -203,7 +208,7 @@ describe("reading the gateway's numbers", () => {
     const first = readPrometheusCpuSamples(parsePrometheusText(exposition.join("\n")));
     const second = readPrometheusCpuSamples(parsePrometheusText(exposition.join("\n").replace('process_cpu_seconds_total{pid="11"} 10', 'process_cpu_seconds_total{pid="11"} 11')));
     expect(sampler.observe(first, 1_000)).toBeNull();
-    expect(sampler.observe(second, 11_000)).toBe(0.05);
+    expect(sampler.observe(second, 11_000)).toBe(5);
   });
 
   it("reports the three numbers together", () => {
@@ -221,7 +226,7 @@ describe("GET the worker count", () => {
     expect(view.targetSource).toBe("default");
     expect(view.maxByCpu).toBe(6);
     expect(view.maxByMemory).toBe(8);
-    expect(view.metrics).toEqual({ perWorkerCpu: 0.42, medianLatencyMs: 210, queueDepth: 3 });
+    expect(view.metrics).toEqual({ perWorkerCpu: 42, medianLatencyMs: 210, queueDepth: 3 });
     expect(view.metricsSource).toBe("gateway");
     expect(view.apply).toEqual({ path: "gunicorn-ttin-ttou", configured: true, command: DEFAULT_LITELLM_WORKERS_SIGNAL_COMMAND, container: "litellm-gateway" });
   });
@@ -248,7 +253,9 @@ describe("GET the worker count", () => {
 
   it("says why the live numbers are missing when no gateway is configured", async () => {
     const view = await readLitellmWorkersView(depsWith({}), COMPANY);
-    expect(view.current).toBeNull();
+    // Nothing knows the pool, so the card still gets a number (the default
+    // target) and the source says it is not a reading.
+    expect(view.current).toBe(5);
     expect(view.currentSource).toBe("unknown");
     expect(view.target).toBe(5);
     expect(view.metricsSource).toBe("unavailable");
@@ -262,7 +269,8 @@ describe("GET the worker count", () => {
     const view = await readLitellmWorkersView(depsWith({ gateway }), COMPANY);
     expect(view.gateway.reachable).toBe(false);
     expect(view.gateway.error).toContain("ECONNREFUSED");
-    expect(view.current).toBeNull();
+    expect(view.current).toBe(5);
+    expect(view.currentSource).toBe("unknown");
   });
 });
 
@@ -335,7 +343,8 @@ describe("PUT the worker count", () => {
     expect(result.applied).toBe(false);
     expect(result.applyError).toContain("TTIN/TTOU");
     expect(result.view.target).toBe(5);
-    expect(result.view.current).toBeNull();
+    expect(result.view.current).toBe(5);
+    expect(result.view.currentSource).toBe("unknown");
     expect((await deps.store.read(COMPANY)).target).toBe(5);
   });
 
@@ -377,5 +386,90 @@ describe("keeping the stored map across instance settings writes", () => {
     expect(preserveLitellmWorkersGeneralKey(undefined)).toEqual({});
     expect(preserveLitellmWorkersGeneralKey({ other: 1 })).toEqual({});
     expect(preserveLitellmWorkersGeneralKey({ myrmidonLitellmWorkersCompanies: "not-an-object" })).toEqual({});
+  });
+});
+describe("the unit of perWorkerCpu on the wire", () => {
+  // The interface (litellmWorkersApi.perWorkerCpuSeries) clamps to 0..100 and
+  // draws the number as a percentage, so the API must send percent, not a 0..1
+  // fraction: 0.05 would be drawn as a 0.05% bar.
+  it("sends percent: one worker burning 1 CPU-second in 10 s with another idle is 5, not 0.05", async () => {
+    const scrapes = [
+      ['process_cpu_seconds_total{pid="11"} 10', 'process_cpu_seconds_total{pid="12"} 20'].join("\n"),
+      ['process_cpu_seconds_total{pid="11"} 11', 'process_cpu_seconds_total{pid="12"} 20'].join("\n"),
+    ];
+    let call = 0;
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const gateway = createLitellmWorkersGateway({
+      baseUrl: "http://gateway.test",
+      fetchImpl: (async () => new Response(scrapes[call++] ?? "", { status: 200 })) as typeof fetch,
+    });
+    try {
+      vi.setSystemTime(1_000);
+      await gateway.readMetrics();
+      vi.setSystemTime(11_000);
+      const second = await gateway.readMetrics();
+      expect(second.ok && second.metrics.perWorkerCpu).toBe(5);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a fully busy worker at 100", () => {
+    const first = new Map([["11", 0]]);
+    const second = new Map([["11", 10]]);
+    expect(derivePerWorkerCpu(first, second, 10)).toBe(100);
+  });
+});
+
+describe("two PUTs at once", () => {
+  /** A runner that yields between signals the way a real `docker kill` does. */
+  function slowPool(start: number) {
+    const gateway = new FakeGateway(start);
+    const runner = new FakeRunner();
+    const originalRun = runner.run.bind(runner);
+    runner.run = async (command: string) => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return originalRun(command);
+    };
+    runner.onDelivered = (signal) => {
+      gateway.workers = (gateway.workers ?? 0) + (signal === "TTIN" ? 1 : -1);
+    };
+    return { gateway, runner };
+  }
+
+  it("without a lock both read the same pool and over-grow it (the race the lock closes)", async () => {
+    const { gateway, runner } = slowPool(4);
+    const deps = { ...depsWith({ gateway, runner }), lock: noLitellmWorkersLock() };
+    await Promise.all([
+      applyLitellmWorkersTarget(deps, { companyId: COMPANY, target: 6 }),
+      applyLitellmWorkersTarget(deps, { companyId: COMPANY, target: 6 }),
+    ]);
+    expect(runner.commands.length).toBe(4);
+    expect(gateway.workers).toBe(8);
+  });
+
+  it("under the lock the second PUT counts from the first one's result: signals only for the delta", async () => {
+    const { gateway, runner } = slowPool(4);
+    const deps = { ...depsWith({ gateway, runner }), lock: inProcessLitellmWorkersLock() };
+    const [first, second] = await Promise.all([
+      applyLitellmWorkersTarget(deps, { companyId: COMPANY, target: 6 }),
+      applyLitellmWorkersTarget(deps, { companyId: COMPANY, target: 6 }),
+    ]);
+    expect(runner.commands).toEqual(["docker kill -s TTIN litellm-gateway", "docker kill -s TTIN litellm-gateway"]);
+    expect(gateway.workers).toBe(6);
+    expect(first.applied && second.applied).toBe(true);
+    expect(second.signals).toEqual([]);
+  });
+
+  it("serialises a grow and a shrink of different companies as well: the pool is one per instance", async () => {
+    const { gateway, runner } = slowPool(4);
+    const deps = { ...depsWith({ gateway, runner }), lock: inProcessLitellmWorkersLock() };
+    await Promise.all([
+      applyLitellmWorkersTarget(deps, { companyId: COMPANY, target: 6 }),
+      applyLitellmWorkersTarget(deps, { companyId: "other-company", target: 3 }),
+    ]);
+    // 4 -> 6 (2 TTIN), then 6 -> 3 (3 TTOU): the pool ends where the last PUT asked.
+    expect(runner.commands.length).toBe(5);
+    expect(gateway.workers).toBe(3);
   });
 });

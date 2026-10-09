@@ -115,7 +115,7 @@ export interface LitellmWorkersStoredSettings {
 
 /** The three live numbers the GET reports; null where the gateway cannot answer. */
 export interface LitellmWorkersMetrics {
-  /** Mean CPU fraction (0..1) of one worker over the last two scrapes. */
+  /** Mean CPU load of one worker over the last two scrapes, in percent (0..100). */
   perWorkerCpu: number | null;
   /** The median answer time over the gateway's latency histogram. */
   medianLatencyMs: number | null;
