@@ -1,6 +1,6 @@
 ## changelog-en
 
-### LITELLM-WORKERS-UI: the "Gateway workers" tab on the Costs page (1.6.6)
+### LITELLM-WORKERS-UI: the "Gateway workers" tab on the Costs page (1.6.5)
 
 - The Costs page gains a third gateway tab, "Gateway workers", beside
   "Gateway" and "Gateway keys": an input for the desired LiteLLM process
@@ -18,7 +18,7 @@
 
 ## changelog-ru
 
-### LITELLM-WORKERS-UI: вкладка «Gateway workers» на странице «Затраты» (1.6.6)
+### LITELLM-WORKERS-UI: вкладка «Gateway workers» на странице «Затраты» (1.6.5)
 
 - На странице «Затраты» появляется третья вкладка шлюза — «Gateway workers»
   рядом с «Gateway» и «Gateway keys»: поле желаемого числа процессов LiteLLM

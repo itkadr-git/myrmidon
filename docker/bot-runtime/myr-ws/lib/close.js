@@ -14,6 +14,7 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
 const { MyrWsError } = require("./errors.js");
+const { archiveRootOf } = require("./layout.js");
 
 // Mirrors of the contract (C1/C2); the test compares them with the shared file.
 const EXIT = { ok: 0, usage: 2, quotaExceeded: 3, baseLimit: 4, network: 5, notFound: 6, unpushed: 7 };
@@ -30,9 +31,11 @@ function usage(message) {
 
 function makeCtx(deps = {}) {
   const env = deps.env || process.env;
+  const home = deps.home || env[ENV.home] || DEFAULT_HOME;
   return {
     env,
-    home: deps.home || env[ENV.home] || DEFAULT_HOME,
+    home,
+    archiveRoot: deps.archiveRoot || archiveRootOf(home),
     workspaceRoot: deps.workspaceRoot || WORKSPACE_ROOT,
     scratchRoot: deps.scratchRoot || SCRATCH_ROOT,
     archive: deps.archive || null,
@@ -247,7 +250,10 @@ async function closeCopy(request, deps = {}) {
     if (!force) {
       throw new MyrWsError(EXIT.unpushed, `${key} holds ${describeLoss(state)}; nothing was removed. Push it, or close with --force to archive it first`);
     }
-    const res = await archiveFn(ctx)(dir, key);
+    // the repository goes into the archive entry: after this close the registry no longer
+    // names it, and `myr-ws restore` reads it from the archive manifest. The archive root is
+    // the one `restore` reads (layout.archiveRootOf), never the archive module's own default.
+    const res = await archiveFn(ctx)(dir, key, { archiveRoot: ctx.archiveRoot, ...(entry.repo ? { repo: entry.repo } : {}) });
     if (!res || res.ok !== true) {
       const why = res && res.error ? `: ${res.error}` : "";
       throw new MyrWsError(1, `archive of ${key} failed${why}; the copy was not removed`);
