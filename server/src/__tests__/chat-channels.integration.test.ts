@@ -13369,6 +13369,17 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         })
         .where(eq(chatEndpoints.id, endpoint.id));
     };
+    const connectionColumns = {
+      status: toolConnections.status,
+      enabled: toolConnections.enabled,
+      healthStatus: toolConnections.healthStatus,
+      healthMessage: toolConnections.healthMessage,
+      lastError: toolConnections.lastError,
+    };
+    const [connectionBefore] = await db
+      .select(connectionColumns)
+      .from(toolConnections)
+      .where(eq(toolConnections.id, endpoint.connectionId));
     await service.processPendingPublications();
 
     const [stored] = await db
@@ -13383,17 +13394,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(stored!.setup).toMatchObject({ step: "test" });
     expect(stored!.activatedAt).toBeNull();
     const [connection] = await db
-      .select({
-        status: toolConnections.status,
-        enabled: toolConnections.enabled,
-        healthStatus: toolConnections.healthStatus,
-        lastError: toolConnections.lastError,
-      })
+      .select(connectionColumns)
       .from(toolConnections)
       .where(eq(toolConnections.id, endpoint.connectionId));
-    expect(connection!.status).not.toBe("active");
-    expect(connection!.enabled).toBe(false);
-    expect(connection!.lastError).toBe("stale health probe");
+    // The connection row is exactly as it was before the send: a wrongly
+    // unconditional activation would null `lastError` (and rewrite health).
+    expect(connectionBefore!.lastError).toBe("stale health probe");
+    expect(connection).toEqual(connectionBefore);
     await service.shutdown();
   });
 
@@ -71073,6 +71080,24 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       return startedAt;
     }
 
+    // F-10 B settles a Telegram wizard on the first delivered reply, so the
+    // round trip above already completes it. These tests exercise the F-10 A
+    // fallback, which covers a wizard that no delivery settled; put the endpoint
+    // back into the test stage that fallback starts from.
+    async function reopenTestStage(endpointId: string) {
+      await db.execute(
+        sql`update chat_endpoints
+              set status = 'verifying',
+                  activated_at = null,
+                  setup = jsonb_set(
+                    jsonb_set(coalesce(setup, '{}'::jsonb), '{step}', '"test"'::jsonb),
+                    '{testStartedAt}',
+                    to_jsonb(${new Date().toISOString()}::text)
+                  )
+            where id = ${endpointId}`,
+      );
+    }
+
     function telegramThread(chatId: string, name: string) {
       return makeThread({
         channelId: chatId,
@@ -71112,6 +71137,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         // The owner's message and the agent's reply: the wizard's own round trip,
         // except nobody pressed "Finish setup".
         await qualifySetupRoundTrip(service, endpoint.id);
+        await reopenTestStage(endpoint.id);
         expect(await service.get(endpoint.id)).toMatchObject({
           status: "verifying",
           setup: { step: "test" },
@@ -71268,6 +71294,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           trigger: "direct_message",
         });
         await qualifySetupRoundTrip(service, endpoint.id);
+        await reopenTestStage(endpoint.id);
         await ageTestStage(endpoint.id, 25 * 60 * 60 * 1000);
 
         // Part A's attention signal: over a day in the test stage with a delivery
