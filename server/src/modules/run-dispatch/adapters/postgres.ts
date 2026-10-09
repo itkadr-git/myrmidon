@@ -332,6 +332,7 @@ export function createPostgresRunDispatchAdapter(
         monitorNextCheckAt: issues.monitorNextCheckAt,
         // myrmidon(HUMAN-REVIEW-WAIT): read for collectDispositionRepairSourceState below.
         reviewPolicy: issues.reviewPolicy,
+        hiddenAt: issues.hiddenAt,
       })
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, input.companyId)));
@@ -350,6 +351,8 @@ export function createPostgresRunDispatchAdapter(
     facts.issueAssigneeAgentId = issue.assigneeAgentId;
     facts.issueExecutionRunId = issue.executionRunId;
     facts.issueCheckoutRunId = issue.checkoutRunId;
+    // myrmidon(1.6.5 F-09): a hidden issue is not startable.
+    facts.issueHiddenAt = issue.hiddenAt;
     if (input.conversationContinuation) {
       const [interactions, linkedApprovals] = await Promise.all([
         dbOrTx.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions).where(and(
@@ -490,6 +493,7 @@ export function createPostgresRunDispatchAdapter(
         executionRunId: issues.executionRunId,
         checkoutRunId: issues.checkoutRunId,
         executionState: issues.executionState,
+        hiddenAt: issues.hiddenAt,
       })
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, input.companyId)));
@@ -583,6 +587,7 @@ export function createPostgresRunDispatchAdapter(
       issueAssigneeAgentId: issue?.assigneeAgentId ?? null,
       issueExecutionRunId: issue?.executionRunId ?? null,
       issueCheckoutRunId: issue?.checkoutRunId ?? null,
+      issueHiddenAt: issue?.hiddenAt ?? null,
       isResolvedInteractionContinuation,
       isConnectionContinuation: (isResolvedInteractionContinuation && context.interactionKind === "connection_intent")
         || context.source === "connection_tools.refreshed",
