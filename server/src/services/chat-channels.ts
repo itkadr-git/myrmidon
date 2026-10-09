@@ -286,6 +286,7 @@ import {
   NativeChatReviewPresentationContentionError,
 } from "./native-runtime/native-chat-review-presentation.js";
 import { isExternalChatWaitAuthorizationContention } from "./native-runtime/chat-attachment-reuse.js";
+import { retryChatControlAdmission } from "./chat-control-admission-retry.js";
 import { projectSafeChatPublication } from "./chat-publication-projection.js";
 import { safeChatTaskUrl } from "./chat-task-url.js";
 import {
@@ -14829,8 +14830,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         });
         return true;
       }
-      const context = await db.transaction((tx) =>
-        authorizeInboundWakeup(tx, claimed),
+      const context = await retryChatControlAdmission(() =>
+        db.transaction((tx) => authorizeInboundWakeup(tx, claimed)),
       );
       if (context.delivery.state !== "processed")
         throw new Error("chat_inbound_wakeup_acceptance_not_committed");
@@ -15889,7 +15890,14 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         // fails, keep the delivery retryable; the committed message link makes
         // the retry resume here without duplicating the task or comment.
         if (addressed && !thread.isDM) await thread.subscribe();
-        await acceptInboundWakeup(activeDelivery.id, attachmentResult);
+        // authorizeInboundWakeup takes the endpoint row NOWAIT (the issue lock is
+        // already held, so waiting would invert the ingress lock order). A
+        // concurrent ingress transaction is a rolled-back, transient refusal:
+        // retry it here instead of failing the delivery into a >=2s durable
+        // backoff that also burns one of its five attempts.
+        await retryChatControlAdmission(() =>
+          acceptInboundWakeup(activeDelivery.id, attachmentResult),
+        );
         // myrmidon(P7): send the notice once the wakeup no longer needs the endpoint lock
         const wakeProcessed = await processInboundWakeup(activeDelivery.id);
         sendOmissionNotice?.();
@@ -17284,7 +17292,14 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       // processed. A retry reuses the committed message link above and tries
       // this idempotent subscription again before completing the delivery.
       if (addressed && !thread.isDM) await thread.subscribe();
-      await acceptInboundWakeup(activeDelivery.id, attachmentResult);
+      // authorizeInboundWakeup takes the endpoint row NOWAIT (the issue lock is
+      // already held, so waiting would invert the ingress lock order). A
+      // concurrent ingress transaction is a rolled-back, transient refusal:
+      // retry it here instead of failing the delivery into a >=2s durable
+      // backoff that also burns one of its five attempts.
+      await retryChatControlAdmission(() =>
+        acceptInboundWakeup(activeDelivery.id, attachmentResult),
+      );
       // myrmidon(P7): send the notice once the wakeup no longer needs the endpoint lock
       const wakeProcessed = await processInboundWakeup(activeDelivery.id);
       sendOmissionNotice?.();
