@@ -6403,14 +6403,21 @@ async function countBlockedInboxIssues(
 export function issueService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
   const treeControlSvc = issueTreeControlService(db);
-  const casteStore = createCasteStore({ db });
+  // The caste store reads (and lazily seeds) on the connection it is given. Inside a
+  // transaction that is the transaction itself: a second pooled connection awaited
+  // while this one holds row locks can self-deadlock under pool pressure.
+  const casteStoreFor = (runner: unknown) => createCasteStore({ db: runner as Db });
 
   // 1.6.5 (F-27 rework 09.10): a caste key the caller names must exist in the
   // company's caste directory (design §2.1). NULL clears to the project/company
   // default — only a non-null key is validated.
-  async function assertCasteKeyExists(companyId: string, casteKey: string | null | undefined) {
+  async function assertCasteKeyExists(
+    runner: unknown,
+    companyId: string,
+    casteKey: string | null | undefined,
+  ) {
     if (casteKey == null) return;
-    const row = await casteStore.findCaste(companyId, casteKey);
+    const row = await casteStoreFor(runner).findCaste(companyId, casteKey);
     if (!row) {
       throw unprocessable(`caste "${casteKey}" does not exist in this company`, {
         code: "issue_caste_unknown",
@@ -9613,6 +9620,17 @@ export function issueService(db: Db) {
       ) {
         throw unprocessable("in_progress issues require an assignee");
       }
+      // 1.6.5 (F-26 T10 SCENT): the caste directory (this also seeds the built-ins
+      // of a fresh company) and the scent settings are read BEFORE the insert
+      // transaction opens — the hook is a pure derivation over them, and nothing in
+      // the transaction waits on a second connection while it holds row locks.
+      const scentCasteKeys = (await casteStoreFor(dbOrTx).listCastes(companyId)).map(
+        (row) => row.key,
+      );
+      const scentSettings = readScentSettings(
+        ((await instanceSettings.getGeneral()) as unknown as { swarm?: unknown } | null)?.swarm,
+        process.env,
+      );
       const persist = async (tx: DbTransaction) => {
         await assertExecutionTaskParent(tx as unknown as Db, companyId, issueData.parentId);
         if (issueData.conversationAgentId && issueData.conversationUserId) {
@@ -9984,16 +10002,6 @@ export function issueService(db: Db) {
           // (project default ?? company default) resolves at read time. The
           // hook NEVER materializes the company default with source 'auto'.
           ...(await (async () => {
-            const casteKeys = await casteStore
-              .listCastes(companyId)
-              .then((rows) => rows.map((r) => r.key));
-            const raw = (await instanceSettings.getGeneral()) as unknown as Record<
-              string,
-              unknown
-            > | null;
-            const storedScent =
-              raw && typeof raw === "object" ? (raw as { swarm?: unknown }).swarm : undefined;
-            const scentSettings = readScentSettings(storedScent, process.env);
             return deriveScentAuto(
               {
                 title: issueData.title ?? "",
@@ -10004,7 +10012,7 @@ export function issueService(db: Db) {
                 pheromoneStrength: issueData.pheromoneStrength ?? null,
                 scent: (issueData as { scent?: IssueScent | null }).scent ?? null,
               },
-              casteKeys,
+              scentCasteKeys,
               scentSettings,
             );
           })().then((auto) => ({
@@ -10064,7 +10072,7 @@ export function issueService(db: Db) {
 
         // 1.6.5 (F-27 rework 09.10): validate the caste against the company's
         // directory before the row lands (design §2.1).
-        await assertCasteKeyExists(companyId, values.casteKey as string | null | undefined);
+        await assertCasteKeyExists(tx, companyId, values.casteKey as string | null | undefined);
 
         const [issue] = await tx.insert(issues).values(values).returning();
         if (idempotencyKey) {
@@ -10503,7 +10511,7 @@ export function issueService(db: Db) {
       // 1.6.5 (F-27 rework 09.10): validate a changed caste against the
       // company's directory (design §2.1); null clears to the defaults.
       if (data.casteKey !== undefined && data.casteKey !== existing.casteKey) {
-        await assertCasteKeyExists(existing.companyId, data.casteKey);
+        await assertCasteKeyExists(dbOrTx, existing.companyId, data.casteKey);
       }
       if (existing.conversationAgentId) {
         if ((data.assigneeAgentId !== undefined && data.assigneeAgentId !== existing.conversationAgentId)
