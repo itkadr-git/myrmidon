@@ -24,7 +24,8 @@ settings-section: Track 5 — operations
   bumps it itself), the task
   cools down for `cooldownBaseMin · 2^(n-1)` minutes (base 30, capped at
   24 h), where n is the number of consecutive stale runs since the last movement.
-  Any comment on the task or any real task update lifts the window immediately; when it expires the
+  A comment or real task update by a user or by an agent other than the stale run's own lifts the window immediately; when it expires the
+  System actors (the run itself, execution-recovery, automation) never count as movement.
   task becomes a wake candidate again. Idle pickup obeys the window, and the
   new read-only `GET /api/myrmidon/companies/:id/swarm/cooling` lists every
   cooling task with its trigger, window length and next allowed wake time.

@@ -1080,7 +1080,7 @@ export async function createApp(
   api.use(myrmidonEvalsRoutes(db)); // myrmidon(1.6-EVALS): reference-task evals (judge runs, scores, verdict)
   api.use(myrmidonTracingHealthRoutes(db)); // myrmidon(TRACING-HEALTH): LLM tracing health check
   api.use(myrmidonCtoChatRoutes(db)); // myrmidon(1.6-CTO-CHAT-B): board chat planner (owner text -> proposed epic)
-  api.use(myrmidonSwarmSupervisorRoutes(db)); // myrmidon(1.6-SWARM-CLAIM-B): supervisor view, rebalance, pilot report
+  api.use(myrmidonSwarmSupervisorRoutes(db)); // myrmidon(1.6-SWARM-CLAIM-B): supervisor view, rebalance
   api.use(myrmidonTelegramNotifyRoutes(db)); // myrmidon(TG-NOTIFY-A): telegramNotify settings core (GET/PATCH + changelog)
   api.use(ui2LanguageRoutes(db)); // myrmidon(UI2-I18N): per-user UI language preference
   api.use(myrmidonForagingRoutes(db)); // myrmidon(1.6-FORAGE): source registry, findings and the manual sweep

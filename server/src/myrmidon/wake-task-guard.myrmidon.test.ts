@@ -30,6 +30,8 @@ import {
 import {
   isTasklessAutomaticWake,
   isIssueCoolingDown,
+  decideIssueCooling,
+  isRealTaskMovement,
   tasklessGateReason,
 } from "./wake-task-guard.js";
 import {
@@ -92,6 +94,45 @@ describe("myrmidon(1.6.5 F-26 T5) taskless gate verdict (pure)", () => {
   });
 });
 
+describe("myrmidon(1.6.5 F-26 T5) cooling decision (pure, system actors excluded)", () => {
+  const settings = { cooldownBaseMin: 30, cooldownCeilingHours: 24 };
+  const now = new Date("2026-10-09T12:00:00Z");
+  const finishedAt = new Date(now.getTime() - 10 * 60_000);
+  const run = {
+    agentId: "agent-1",
+    status: "failed",
+    livenessState: null,
+    finishedAt,
+    startedAt: new Date(finishedAt.getTime() - 60_000),
+    createdAt: new Date(finishedAt.getTime() - 60_000),
+  };
+  const after = finishedAt.getTime() + 60_000;
+  const decide = (moves: Parameters<typeof decideIssueCooling>[0]["moves"]) =>
+    decideIssueCooling({ issueStatus: "todo", runs: [run], moves, settings, now });
+
+  it("no movement -> cooling", () => {
+    expect(decide([]).cooling).toBe(true);
+  });
+
+  it("system issue.updated / system comment / the stale run's own agent after finishedAt do NOT lift cooling", () => {
+    expect(decide([{ at: after, actorType: "system", actorId: "execution-recovery" }]).cooling).toBe(true);
+    expect(decide([{ at: after, actorType: "system", actorId: null }]).cooling).toBe(true);
+    expect(decide([{ at: after, actorType: "agent", actorId: "agent-1" }]).cooling).toBe(true);
+  });
+
+  it("a user or another agent lifts cooling", () => {
+    expect(decide([{ at: after, actorType: "user", actorId: "u1" }]).cooling).toBe(false);
+    expect(decide([{ at: after, actorType: "agent", actorId: "agent-2" }]).cooling).toBe(false);
+  });
+
+  it("isRealTaskMovement classifies actors", () => {
+    expect(isRealTaskMovement({ at: 1, actorType: "system", actorId: "x" }, "a")).toBe(false);
+    expect(isRealTaskMovement({ at: 1, actorType: "user", actorId: "u" }, "a")).toBe(true);
+    expect(isRealTaskMovement({ at: 1, actorType: "agent", actorId: "a" }, "a")).toBe(false);
+    expect(isRealTaskMovement({ at: 1, actorType: "agent", actorId: "b" }, "a")).toBe(true);
+  });
+});
+
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
@@ -100,12 +141,14 @@ describeEmbeddedPostgres("myrmidon(1.6.5 F-26 T5) wake guard against Postgres", 
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   let companyId = "";
   let agentId = "";
+  let otherAgentId = "";
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-myrmidon-wake-guard-");
     db = createDb(tempDb.connectionString);
     companyId = randomUUID();
     agentId = randomUUID();
+    otherAgentId = randomUUID();
     await db.insert(companies).values({
       id: companyId,
       name: "company-a",
@@ -117,6 +160,17 @@ describeEmbeddedPostgres("myrmidon(1.6.5 F-26 T5) wake guard against Postgres", 
       id: agentId,
       companyId,
       name: "agent-a",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { enabled: true } },
+      permissions: {},
+    });
+    await db.insert(agents).values({
+      id: otherAgentId,
+      companyId,
+      name: "agent-b",
       role: "engineer",
       status: "active",
       adapterType: "codex_local",
@@ -216,7 +270,7 @@ describeEmbeddedPostgres("myrmidon(1.6.5 F-26 T5) wake guard against Postgres", 
       companyId,
       issueId,
       body: "still relevant, here is more context",
-      authorAgentId: agentId,
+      authorAgentId: otherAgentId,
       createdAt: new Date(now.getTime() - 60_000),
     });
     const afterComment = await isIssueCoolingDown(db, companyId, issueId, settings, now);
@@ -255,7 +309,7 @@ describeEmbeddedPostgres("myrmidon(1.6.5 F-26 T5) wake guard against Postgres", 
       companyId,
       issueId: reset,
       body: "new context between runs",
-      authorAgentId: agentId,
+      authorAgentId: otherAgentId,
       createdAt: new Date(now.getTime() - 15 * 60_000),
     });
     await seedAutoRun(reset, { status: "failed", finishedAt: new Date(now.getTime() - 5 * 60_000) });
@@ -284,6 +338,48 @@ describeEmbeddedPostgres("myrmidon(1.6.5 F-26 T5) wake guard against Postgres", 
       createdAt: new Date(now.getTime() - 2 * 60_000),
     });
     expect((await isIssueCoolingDown(db, companyId, changed, settings, now)).cooling).toBe(false);
+  });
+
+  it("cooling: system activity and system comments after finishedAt keep cooling (idle_pickup -> blocked loop)", async () => {
+    const now = new Date();
+    const settings = resolveSwarmSettings(undefined);
+    const issueId = await seedIssue("todo");
+    await seedAutoRun(issueId, { status: "failed", finishedAt: new Date(now.getTime() - 10 * 60_000) });
+    // execution-recovery moves the task to blocked after the stale run.
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "system",
+      actorId: "execution-recovery",
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: issueId,
+      createdAt: new Date(now.getTime() - 5 * 60_000),
+    });
+    // A system comment (no user, no agent author).
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      body: "workspace runtime notice",
+      createdAt: new Date(now.getTime() - 4 * 60_000),
+    });
+    // The stale run's own agent commenting afterwards is not movement either.
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      body: "own agent follow-up",
+      authorAgentId: agentId,
+      createdAt: new Date(now.getTime() - 3 * 60_000),
+    });
+    expect((await isIssueCoolingDown(db, companyId, issueId, settings, now)).cooling).toBe(true);
+    // Green side: a user comment on the same task lifts it.
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      body: "owner context",
+      authorUserId: "user-a",
+      createdAt: new Date(now.getTime() - 2 * 60_000),
+    });
+    expect((await isIssueCoolingDown(db, companyId, issueId, settings, now)).cooling).toBe(false);
   });
 
   it("window expired → not cooling", async () => {

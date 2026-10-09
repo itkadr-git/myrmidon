@@ -49,6 +49,9 @@ describe("readReasonRef (part A contract, structural read)", () => {
   it("reads a valid reasonRef of each kind", () => {
     expect(readReasonRef({ reasonRef: { kind: "issue", issueId: "b-1" } })).toEqual({ kind: "issue", issueId: "b-1" });
     expect(readReasonRef({ reasonRef: { kind: "event", eventKey: "gate-a" } })).toEqual({ kind: "event", eventKey: "gate-a" });
+    // myrmidon(BLOCKER-WAKE-LOOP-B): event reasons may carry an optional deadline.
+    expect(readReasonRef({ reasonRef: { kind: "event", eventKey: "gate-a", dueAt: "2026-10-05T00:00:00.000Z" } }))
+      .toEqual({ kind: "event", eventKey: "gate-a", dueAt: "2026-10-05T00:00:00.000Z" });
     expect(readReasonRef({ reasonRef: { kind: "date", dueAt: "2026-10-01T00:00:00.000Z" } })).toEqual({
       kind: "date",
       dueAt: "2026-10-01T00:00:00.000Z",
@@ -100,6 +103,21 @@ describe("judgeStaleBlockReason", () => {
       .toEqual({ kind: "live" });
   });
 
+  it("an event reason's optional dueAt deadline kills it even when the gate is still set", () => {
+    // myrmidon(BLOCKER-WAKE-LOOP-B): unwired gate keys live forever (the
+    // isEventStillSet seam defaults to still-set), so an event reason carries
+    // an optional deadline. Backward compatibility: no dueAt → judged exactly
+    // as before (covered by the "cleared event" test above).
+    const past = reason({ kind: "event", issueId: null, eventKey: "gate-a", dueAt: "2026-10-01T00:00:00.000Z" });
+    const future = reason({ kind: "event", issueId: null, eventKey: "gate-a", dueAt: "2026-10-05T00:00:00.000Z" });
+    expect(judgeStaleBlockReason(past, { blockerStatus: null, eventStillSet: true, now: NOW }))
+      .toEqual({ kind: "dead", why: "event_deadline_passed" });
+    expect(judgeStaleBlockReason(past, { blockerStatus: null, eventStillSet: false, now: NOW }))
+      .toEqual({ kind: "dead", why: "event_deadline_passed" });
+    expect(judgeStaleBlockReason(future, { blockerStatus: null, eventStillSet: true, now: NOW }))
+      .toEqual({ kind: "live" });
+  });
+
   it("myrmidon(HUMAN-REVIEW-WAIT): a key-less event reason is an unknown fact — live", () => {
     // The sweep must not roll back a deliberate wait it cannot read. A
     // `reasonRef kind=event` written without a key names no gate the pass can
@@ -130,6 +148,7 @@ describe("describeStaleBlockReason", () => {
     expect(describeStaleBlockReason("blocker_done")).toBe("the blocking task is done");
     expect(describeStaleBlockReason("blocker_cancelled")).toBe("the blocking task is cancelled");
     expect(describeStaleBlockReason("due_at_passed")).toBe("the due date passed");
+    expect(describeStaleBlockReason("event_deadline_passed")).toBe("the event deadline passed");
     expect(describeStaleBlockReason("event_cleared")).toBe("the gate or event no longer applies");
   });
 });

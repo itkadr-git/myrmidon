@@ -131,18 +131,106 @@ function runIsStale(
   );
 }
 
+/** One automatic terminal run, as the pure cooling decision sees it. */
+export interface CoolingRun {
+  agentId: string | null;
+  status: string;
+  livenessState: string | null;
+  finishedAt: Date | null;
+  startedAt: Date | null;
+  createdAt: Date;
+}
+
+/** One candidate task-movement record (comment or activity) with its actor. */
+export interface TaskMovement {
+  at: number;
+  actorType: "user" | "agent" | "system";
+  /** Agent id for `agent` actors; user id for `user`; free text for `system`. */
+  actorId: string | null;
+}
+
 /**
- * Cooling evaluation for one issue (§4.3). The issue cools down when its last
- * terminal automatic run ended stale (failed / timed_out / blocked /
- * needs_followup / succeeded-without-advance while the task is still `todo`)
- * AND the task did not move after that run (a comment, or `issue.updated`-style
- * activity: status / assignee / description; never `updatedAt`). The
- * exponent is the number of consecutive stale automatic runs; the period is
- * `cooldownBaseMin * 2^(n-1)` clamped to `cooldownCeilingHours`
- * (`swarmCoolingPeriodMs`). Movement resets the window, and movement between
- * two stale runs also resets the exponent: only runs after the last movement count.
- *
- * `now` is injectable so tests pin the clock. Every read failure returns
+ * Does this movement count as real task movement relative to a stale run of
+ * `runAgentId`? Only a user, or an agent other than the one whose run went
+ * stale. System actors (the run itself, execution-recovery, automation,
+ * workspace runtime) never count: they write `issue.updated` and comments
+ * after `finishedAt` in exactly the idle_pickup -> blocked loop the cooling
+ * exists to catch.
+ */
+export function isRealTaskMovement(m: TaskMovement, runAgentId: string | null): boolean {
+  if (m.actorType === "user") return true;
+  if (m.actorType === "agent") return !!m.actorId && m.actorId !== runAgentId;
+  return false;
+}
+
+/**
+ * Pure cooling decision (§4.3). `runs` are terminal automatic runs, newest
+ * first (by finishedAt); `moves` are candidate movement records after the
+ * oldest run. No I/O, no clock: other swarm branches call this through an
+ * adapter, so keep the signature stable.
+ */
+export function decideIssueCooling(input: {
+  issueStatus: string;
+  runs: CoolingRun[];
+  moves: TaskMovement[];
+  settings: Pick<SwarmSettings, "cooldownBaseMin" | "cooldownCeilingHours">;
+  now: Date;
+}): IssueCoolingStatus {
+  const { runs, issueStatus, settings, now } = input;
+  if (runs.length === 0) return NOT_COOLING;
+  const last = runs[0]!;
+  const finishedAt = last.finishedAt;
+  if (!finishedAt) return NOT_COOLING;
+  if (!runIsStale(last, issueStatus)) return NOT_COOLING;
+
+  // Movement since the stale run cancels the cooling.
+  const movesAfterLast = input.moves.filter(
+    (m) => m.at > finishedAt.getTime() && isRealTaskMovement(m, last.agentId),
+  );
+  if (movesAfterLast.length > 0) return NOT_COOLING;
+
+  // Consecutive stale runs counted back from the newest, stopping at a
+  // healthy run or at real movement between two runs.
+  let staleCount = 0;
+  for (let i = 0; i < runs.length; i += 1) {
+    const row = runs[i]!;
+    const healthy =
+      row.status === "succeeded" && HEALTHY_LIVENESS.has(row.livenessState ?? "");
+    if (healthy) break;
+    if (i > 0 && row.finishedAt) {
+      const newer = runs[i - 1]!;
+      const newerStart = (newer.startedAt ?? newer.createdAt).getTime();
+      const from = row.finishedAt.getTime();
+      if (input.moves.some((m) => m.at > from && m.at < newerStart && isRealTaskMovement(m, row.agentId))) break;
+    }
+    staleCount += 1;
+  }
+  staleCount = Math.max(1, staleCount);
+
+  const periodMs = swarmCoolingPeriodMs(staleCount, settings);
+  const deadline = finishedAt.getTime() + periodMs;
+  if (deadline <= now.getTime()) return NOT_COOLING;
+
+  return {
+    cooling: true,
+    staleCount,
+    cooldownMin: Math.round(periodMs / 60_000),
+    reason:
+      last.livenessState === "blocked"
+        ? "blocked"
+        : last.livenessState === "needs_followup"
+          ? "needs_followup"
+          : last.status,
+    nextWakeAt: new Date(deadline),
+  };
+}
+
+/**
+ * Cooling evaluation for one issue (§4.3). Stable port: other swarm branches
+ * call it through an adapter. Reads the last automatic terminal runs and the
+ * task movement (comments and movement activity by a user or another agent;
+ * never `updatedAt`, never system actors), then defers to the pure
+ * `decideIssueCooling`. `now` is injectable. Every read failure returns
  * "not cooling": the wake path must never die on the guard.
  */
 export async function isIssueCoolingDown(
@@ -157,6 +245,7 @@ export async function isIssueCoolingDown(
 
     const rows = await db
       .select({
+        agentId: heartbeatRuns.agentId,
         status: heartbeatRuns.status,
         livenessState: heartbeatRuns.livenessState,
         finishedAt: heartbeatRuns.finishedAt,
@@ -175,9 +264,7 @@ export async function isIssueCoolingDown(
       .orderBy(desc(heartbeatRuns.finishedAt))
       .limit(16);
     if (rows.length === 0) return NOT_COOLING;
-
-    const last = rows[0]!;
-    const finishedAt = last.finishedAt;
+    const finishedAt = rows[0]!.finishedAt;
     if (!finishedAt) return NOT_COOLING;
 
     const issueRow = await db
@@ -188,67 +275,31 @@ export async function isIssueCoolingDown(
       .then((r) => r[0] ?? null);
     if (!issueRow) return NOT_COOLING;
 
-    if (!runIsStale(last, issueRow.status)) return NOT_COOLING;
-
-    // Movement since the stale run cancels the cooling (acceptance "комментарий
-    // по задаче снимает остывание"). Deleted comments do not count.
     const oldestFinished = rows.reduce<Date>(
       (min, r) => (r.finishedAt && r.finishedAt < min ? r.finishedAt : min),
       finishedAt,
     );
-    const moves = await taskMovementTimes(db, companyId, issueId, oldestFinished);
-    if (moves.some((t) => t > finishedAt.getTime())) return NOT_COOLING;
-
-    // Consecutive stale runs counted back from the newest, stopping at a
-    // healthy run or at movement between two runs (after the older one
-    // finished, before the newer one started).
-    let staleCount = 0;
-    for (let i = 0; i < rows.length; i += 1) {
-      const row = rows[i]!;
-      const healthy =
-        row.status === "succeeded" && HEALTHY_LIVENESS.has(row.livenessState ?? "");
-      if (healthy) break;
-      if (i > 0 && row.finishedAt) {
-        const newer = rows[i - 1]!;
-        const newerStart = (newer.startedAt ?? newer.createdAt).getTime();
-        const from = row.finishedAt.getTime();
-        if (moves.some((t) => t > from && t < newerStart)) break;
-      }
-      staleCount += 1;
-    }
-    staleCount = Math.max(1, staleCount);
-
-    const periodMs = swarmCoolingPeriodMs(staleCount, settings);
-    const deadline = finishedAt.getTime() + periodMs;
-    if (deadline <= now.getTime()) return NOT_COOLING;
-
-    return {
-      cooling: true,
-      staleCount,
-      cooldownMin: Math.round(periodMs / 60_000),
-      reason:
-        last.livenessState === "blocked"
-          ? "blocked"
-          : last.livenessState === "needs_followup"
-            ? "needs_followup"
-            : last.status,
-      nextWakeAt: new Date(deadline),
-    };
+    const moves = await taskMovements(db, companyId, issueId, oldestFinished);
+    return decideIssueCooling({ issueStatus: issueRow.status, runs: rows, moves, settings, now });
   } catch {
     return NOT_COOLING;
   }
 }
 
-/** Timestamps (ms) of real task movement after `since`: comments and movement activity. */
-async function taskMovementTimes(
+/** Movement candidates after `since` with their actors: comments and movement activity. */
+async function taskMovements(
   db: Db,
   companyId: string,
   issueId: string,
   since: Date,
-): Promise<number[]> {
+): Promise<TaskMovement[]> {
   const after = new Date(since.getTime() + 1);
   const comments = await db
-    .select({ at: issueComments.createdAt })
+    .select({
+      at: issueComments.createdAt,
+      authorUserId: issueComments.authorUserId,
+      authorAgentId: issueComments.authorAgentId,
+    })
     .from(issueComments)
     .where(
       and(
@@ -259,7 +310,11 @@ async function taskMovementTimes(
     )
     .limit(200);
   const acts = await db
-    .select({ at: activityLog.createdAt })
+    .select({
+      at: activityLog.createdAt,
+      actorType: activityLog.actorType,
+      actorId: activityLog.actorId,
+    })
     .from(activityLog)
     .where(
       and(
@@ -271,7 +326,17 @@ async function taskMovementTimes(
       ),
     )
     .limit(200);
-  return [...comments, ...acts].map((r) => r.at.getTime());
+  const out: TaskMovement[] = [];
+  for (const c of comments) {
+    if (c.authorUserId) out.push({ at: c.at.getTime(), actorType: "user", actorId: c.authorUserId });
+    else if (c.authorAgentId) out.push({ at: c.at.getTime(), actorType: "agent", actorId: c.authorAgentId });
+    else out.push({ at: c.at.getTime(), actorType: "system", actorId: null });
+  }
+  for (const a of acts) {
+    const t = a.actorType === "user" || a.actorType === "agent" ? a.actorType : "system";
+    out.push({ at: a.at.getTime(), actorType: t, actorId: a.actorId });
+  }
+  return out;
 }
 
 /** Read the `general.swarm` block; never throws — defaults on any failure. */
