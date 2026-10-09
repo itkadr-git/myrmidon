@@ -49,7 +49,11 @@ import {
   useMonitorCountdown,
 } from "../../lib/issue-monitor";
 import { extractProviderIdWithFallback } from "../../lib/model-utils";
-import { formatRetryReason } from "../../lib/runRetryState";
+import {
+  formatRetryAttemptCounter,
+  formatRetryClassification,
+  formatRetryReason,
+} from "../../lib/runRetryState";
 import { useRetryNowMutation } from "../../hooks/useRetryNowMutation";
 import { RetryErrorBand } from "../IssueScheduledRetryCard";
 import { StatusIcon } from "../StatusIcon";
@@ -1403,12 +1407,15 @@ export function IssueProperties({
     ? formatDate(new Date(scheduledRetry.scheduledRetryAt))
     : null;
   const scheduledRetryReasonLabel = formatRetryReason(scheduledRetry?.scheduledRetryReason);
-  const scheduledRetryAttempt =
-    typeof scheduledRetry?.scheduledRetryAttempt === "number"
-    && Number.isFinite(scheduledRetry.scheduledRetryAttempt)
-    && scheduledRetry.scheduledRetryAttempt > 0
-      ? scheduledRetry.scheduledRetryAttempt
-      : null;
+  const scheduledRetryAttemptLabel = formatRetryAttemptCounter(
+    scheduledRetry?.scheduledRetryAttempt,
+    scheduledRetry?.scheduledRetryMaxAttempts,
+  );
+  // myrmidon(1.6.6 RUN-RETRY-POLICY): the failure class the scheduler recorded
+  // together with the retry, shown next to the attempt counter.
+  const scheduledRetryClassificationLabel = formatRetryClassification(
+    scheduledRetry?.scheduledRetryClassification,
+  );
   const scheduledRetryIsContinuation =
     scheduledRetry?.scheduledRetryReason === "max_turns_continuation";
   const scheduledRetryRelativeLabel = (() => {
@@ -1419,8 +1426,8 @@ export function IssueProperties({
   })();
   const scheduledRetryRetryNowSuccess = retryNow.isSuccess
     && (retryNow.data?.outcome === "promoted" || retryNow.data?.outcome === "already_promoted");
-  const scheduledRetryAttemptBadge = scheduledRetryAttempt !== null ? (
-    <span className="whitespace-nowrap shrink-0 text-xs text-muted-foreground">Attempt {scheduledRetryAttempt}</span>
+  const scheduledRetryAttemptBadge = scheduledRetryAttemptLabel !== null ? (
+    <span className="whitespace-nowrap shrink-0 text-xs text-muted-foreground">{scheduledRetryAttemptLabel}</span>
   ) : null;
   const scheduledRetryTrigger = (
     <span className="inline-flex min-w-0 items-center gap-1.5">
@@ -1444,9 +1451,9 @@ export function IssueProperties({
         <span className="text-sm font-medium text-foreground">
           {scheduledRetryIsContinuation ? "Scheduled continuation" : "Scheduled retry"}
         </span>
-        {scheduledRetryAttempt !== null ? (
+        {scheduledRetryAttemptLabel !== null ? (
           <span className="text-xs text-muted-foreground">
-            Attempt {scheduledRetryAttempt}
+            {scheduledRetryAttemptLabel}
           </span>
         ) : null}
       </div>
@@ -1455,6 +1462,12 @@ export function IssueProperties({
           <>
             <dt className="text-muted-foreground">Reason</dt>
             <dd className="text-foreground">{scheduledRetryReasonLabel}</dd>
+          </>
+        ) : null}
+        {scheduledRetryClassificationLabel ? (
+          <>
+            <dt className="text-muted-foreground">Failure class</dt>
+            <dd className="text-foreground">{scheduledRetryClassificationLabel}</dd>
           </>
         ) : null}
         {scheduledRetryAbsolute ? (
