@@ -34,7 +34,13 @@ export interface ChatModelCandidate {
   provider?: string;
 }
 
-export const MAX_LISTED_CHAT_MODEL_CANDIDATES = 30;
+/**
+ * myrmidon(F06-D): the list must fit a phone screen (owner 09.10: «Список не
+ * длиннее экрана»). Buttons make selection the main path, but the numbered
+ * text list is what a plain `/model` still answers today, so the cap is the
+ * screen, not the catalog.
+ */
+export const MAX_LISTED_CHAT_MODEL_CANDIDATES = 20;
 
 /**
  * Adapter types whose `config.model` is read on a run (design doc fact F13).
@@ -81,6 +87,55 @@ export const EFFORT_POLICY_ADAPTER_TYPES: readonly string[] = ["hermes_local", "
 /** myrmidon(F06-A): the provider families grouped in a `/model` list; any other
  *  model id is listed without a family header. */
 const GATEWAY_MODEL_PROVIDER_PREFIXES: readonly string[] = ["dashscope", "zai", "nous"];
+
+/**
+ * myrmidon(F06-D): the owner's channel policy for a `/model` candidate order —
+ * the families an owner chat should reach first. Anything else keeps its
+ * alphabetical order at the tail.
+ */
+const GATEWAY_PROVIDER_RANK: readonly string[] = ["dashscope", "zai"];
+
+/** myrmidon(F06-D): family rank of a provider name (0 first). Tolerates the
+ *  collected catalog's spellings of the same family (`z.ai`, `z-ai`, `zai`). */
+function gatewayProviderRank(provider: string | null): number {
+  if (!provider) return GATEWAY_PROVIDER_RANK.length + 1;
+  const normalized = provider.trim().toLowerCase().replace(/[.\s_-]+/g, "");
+  const index = GATEWAY_PROVIDER_RANK.findIndex(
+    (family) => family.replace(/[.\s_-]+/g, "") === normalized,
+  );
+  return index >= 0 ? index : GATEWAY_PROVIDER_RANK.length;
+}
+
+/**
+ * myrmidon(F06-D): id fragments that mark a gateway model as not a chat model —
+ * embeddings, OCR/vision service, rerank/moderation/TTS and the board's own
+ * maintenance models (`hindsight-mem`, `deepseek-v4-flash-mem`, …). A gateway
+ * catalog is the union of everything every agent key may run, so `/model` has
+ * to filter it before showing it (owner 09.10: «без эмбеддингов/OCR/служебных»).
+ */
+const NON_CHAT_MODEL_ID_PATTERNS: readonly RegExp[] = [
+  /embed/,
+  /\bocr\b/,
+  /-ocr\b/,
+  /\bocr-/,
+  /rerank/,
+  /moderation/,
+  /tts/,
+  /transcribe/,
+  /asr/,
+  /-mem\b/,
+  /-consolidation\b/,
+  /-summary\b/,
+  /-summarizer\b/,
+  /classifier/,
+];
+
+/** myrmidon(F06-D): whether a gateway catalog id is a chat model `/model` may offer. */
+export function isChatGatewayModelId(modelId: string): boolean {
+  const lowered = modelId.trim().toLowerCase();
+  if (!lowered) return false;
+  return !NON_CHAT_MODEL_ID_PATTERNS.some((pattern) => pattern.test(lowered));
+}
 
 /** myrmidon(F06-A): the family of a gateway model id, by its prefix. */
 export function providerPrefixOfModelId(modelId: string): string | null {
@@ -247,11 +302,20 @@ export async function listModelCandidates(
     if (read) {
       wholeCatalog = read.scope === "catalog";
       const providerOf = (id: string) => read?.providers?.[id] ?? providerPrefixOfModelId(id) ?? null;
-      const ordered = [...read.models].sort((left, right) => {
-        const leftKey = `${providerOf(left) ?? ""}\u0000${left}`;
-        const rightKey = `${providerOf(right) ?? ""}\u0000${right}`;
-        return leftKey.localeCompare(rightKey);
-      });
+      // myrmidon(F06-D): a gateway catalog is every model any key may run —
+      // embeddings, OCR and service models included. `/model` may only offer
+      // chat models (owner 09.10), so non-chat ids are dropped here, never
+      // shown. The order is the owner's channel policy: DashScope first, then
+      // z.ai, then the remaining families alphabetically; inside a family,
+      // alphabetically by id.
+      const ordered = [...read.models]
+        .filter((id) => isChatGatewayModelId(id))
+        .sort((left, right) => {
+          const leftRank = gatewayProviderRank(providerOf(left));
+          const rightRank = gatewayProviderRank(providerOf(right));
+          if (leftRank !== rightRank) return leftRank - rightRank;
+          return left.localeCompare(right);
+        });
       for (const id of ordered) push(id, id, providerOf(id));
     }
   }

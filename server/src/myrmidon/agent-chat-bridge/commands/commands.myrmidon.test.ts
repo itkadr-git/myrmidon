@@ -419,18 +419,54 @@ const support = await getEmbeddedPostgresTestSupport();
       }),
     );
     const text = (result as { kind: "reply"; text: string }).text;
-    // Grouped by provider family, numbered continuously, ordered by family.
+    // Grouped by provider family, numbered continuously. myrmidon(F06-D): the
+    // family order is the owner's channel policy — DashScope first, then z.ai,
+    // then the rest alphabetically.
     expect(text).toContain("dashscope-*");
     expect(text).toContain("nous-*");
     expect(text).toContain("zai-*");
     expect(text).toMatch(/1\)\s*dashscope-qwen3-max/);
-    expect(text).toMatch(/2\)\s*nous-hermes-4/);
-    expect(text).toMatch(/3\)\s*zai-glm-4\.6/);
+    expect(text).toMatch(/2\)\s*zai-glm-4\.6/);
+    expect(text).toMatch(/3\)\s*nous-hermes-4/);
     // An agent's own key list was read, so nothing says it is the whole catalog.
     expect(text).not.toContain("whole gateway catalog");
     // Listing writes nothing, so nothing was applied either.
     expect(applied).toEqual([]);
     expect(await readOverrides(issue.id)).toBeNull();
+  });
+
+  it("7e. /model drops embeddings, OCR and service models from the gateway catalog (F06-D)", async () => {
+    const { issue, boardUserId } = await createTelegramConversation({ agentId: gatewayAgentId });
+    const result = await runBridgedDirectMessageCommand(
+      baseInput({
+        conversationIssueId: issue.id,
+        boardUserId,
+        agentId: gatewayAgentId,
+        text: "/model",
+        readGatewayModelCatalog: async () => ({
+          models: [
+            "dashscope-qwen3-max",
+            "dashscope-embed-v3",
+            "dashscope-text-embedding-v4",
+            "dashscope-ocr-vl",
+            "zai-glm-4.6",
+            "hindsight-mem",
+            "hindsight-consolidation",
+            "deepseek-v4-flash-mem",
+          ],
+          scope: "catalog",
+        }),
+      }),
+    );
+    const text = (result as { kind: "reply"; text: string }).text;
+    expect(text).toContain("dashscope-qwen3-max");
+    expect(text).toContain("zai-glm-4.6");
+    expect(text).not.toContain("embed");
+    expect(text).not.toContain("ocr");
+    expect(text).not.toContain("hindsight");
+    expect(text).not.toContain("deepseek-v4-flash-mem");
+    // DashScope before z.ai (owner channel policy).
+    expect(text.indexOf("dashscope-qwen3-max")).toBeLessThan(text.indexOf("zai-glm-4.6"));
   });
 
   it("7b. /model <catalog model> writes the override and applies the agent profile without a restart", async () => {
