@@ -444,6 +444,7 @@ psql -v ON_ERROR_STOP=1 -U "$admin_user" -d postgres <<-SQL
 	SQL
 INIT
   chmod 755 "$DIR/db-init/01-shared-roles.sh"
+  chmod 0755 "$DIR/db-init"   # the postgres entrypoint reads this dir as uid 999
 }
 
 # --------------------------------------------------------- database profile ---
