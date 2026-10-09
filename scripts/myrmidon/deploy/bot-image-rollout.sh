@@ -501,7 +501,7 @@ dockergate_preflight_edited_config() {
 retry_command() {
   printf 'bash %s --config %s --resolution %s --ref %s --phase cards --retry-deferred --wait-sec %s\n' \
     "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bot-image-rollout.sh" \
-    "$config" "$resolution" "$res_ref" "$MYR_BOT_RETRY_WAIT_SEC"
+    "$(printf '%q' "$config")" "$resolution" "$res_ref" "$MYR_BOT_RETRY_WAIT_SEC"
 }
 
 # --retry-deferred input: the deferred bots of the previous run as recorded
@@ -509,7 +509,20 @@ retry_command() {
 read_deferred_bots() {
   [[ -f "$MYR_BOT_SUMMARY" ]] \
     || die "--retry-deferred needs the summary of the previous rollout ($MYR_BOT_SUMMARY): run the rollout first"
-  jq -r '.deferredBots[]? | [.id, (.image // ""), (.target // "")] | @tsv' "$MYR_BOT_SUMMARY" 2>/dev/null
+  # Fail closed on anything that is not a summary this script wrote: a broken
+  # file, an old format without deferredBots/verification, another release, or
+  # an empty list (nothing to retry is not a success of the retry).
+  local rel_in_summary deferred_tsv
+  jq -e '(.deferredBots | type == "array") and (.verification | type == "object")' "$MYR_BOT_SUMMARY" >/dev/null 2>&1 \
+    || die "--retry-deferred: $MYR_BOT_SUMMARY is not a readable summary with deferredBots and verification (broken or old format): run the rollout again"
+  rel_in_summary="$(jq -r '.release // ""' "$MYR_BOT_SUMMARY")"
+  [[ "$rel_in_summary" == "$resolution $res_ref" ]] \
+    || die "--retry-deferred: the summary belongs to release '$rel_in_summary', not '$resolution $res_ref'"
+  deferred_tsv="$(jq -r '.deferredBots[] | [.id, (.image // ""), (.target // "")] | @tsv' "$MYR_BOT_SUMMARY")" \
+    || die "--retry-deferred: cannot read deferredBots from $MYR_BOT_SUMMARY"
+  [[ -n "$deferred_tsv" ]] \
+    || die "--retry-deferred: the summary $MYR_BOT_SUMMARY lists no deferred bots: nothing to retry (never a silent empty retry)"
+  printf '%s\n' "$deferred_tsv"
 }
 
 # --- the plan (dry run) --------------------------------------------------------
@@ -872,7 +885,10 @@ verify_fleet() {
       # Nothing disagrees yet as long as the card carries one of the two
       # images this rollout knows (pre-rollout or release): the container
       # simply has not moved and the periodic sweep finishes it.
-      if [[ "$card" == "$target" || "$card" == "$orig" ]]; then
+      # The container must be on one of those two images too (or report none):
+      # an image that is neither is a real disagreement, not "not moved yet".
+      if [[ "$card" == "$target" || "$card" == "$orig" ]] \
+        && [[ -z "$cimage" || "$cimage" == "$target" || "$cimage" == "$orig" ]]; then
         verdict="deferred"
       else
         verdict="mismatch"
@@ -1062,7 +1078,12 @@ finalize_rollout() {
   fi
 
   # --- 6. remove the superseded bot image refs (only when everyone moved) -----
-  if ((v_deferred == 0)); then
+  if ((RETRY_DEFERRED)); then
+    # The retry pass sees only the deferred bots of the previous run, not the
+    # fleet: it cannot know that nobody still runs the old images. images[] is
+    # left alone; the next full rollout removes the superseded refs.
+    bot_log "retry-deferred pass: images in $MYR_BOT_DOCKERGATE_CONFIG left untouched (the old bot images are removed by the next full rollout)"
+  elif ((v_deferred == 0)); then
     mapfile -t GONE_REFS < <(
       jq -r '.images[]?' "$MYR_BOT_DOCKERGATE_CONFIG" 2>/dev/null \
         | while IFS= read -r ref; do

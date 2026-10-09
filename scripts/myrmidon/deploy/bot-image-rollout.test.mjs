@@ -992,6 +992,57 @@ describe("bot-image-rollout.sh: verification against the fact, --retry-deferred 
     assert.match(out, /needs the summary of the previous rollout/i);
   });
 
+  it("--retry-deferred fails closed on a summary without deferredBots/verification (old format)", () => {
+    const sb = sandbox();
+    const summaryPath = path.join(sb.stateDir, "bot-image-rollout-summary.json");
+    fs.mkdirSync(sb.stateDir, { recursive: true });
+    for (const body of ['{"release":"tag ' + VERSION + '","switched":1}', "not json{"]) {
+      fs.writeFileSync(summaryPath, body);
+      const { code, out } = run(sb, "bot-image-rollout.sh", [...ARGS, "--retry-deferred", "--wait-sec", "0"]);
+      assert.equal(code, 1, out);
+      assert.match(out, /not a readable summary/i);
+    }
+    assert.doesNotMatch(calls(sb), /-X PATCH/);
+  });
+
+  it("--retry-deferred with an empty deferred list exits 1 and keeps images[] intact", () => {
+    const sb = sandbox();
+    const first = run(sb, "bot-image-rollout.sh", ARGS);
+    assert.equal(first.code, 0, first.out);
+    // the main pass moved everyone and cleaned up; re-add an old ref to see it survive
+    const cfg = dockergateConfig(sb);
+    cfg.images.push(DEV_OLD);
+    fs.writeFileSync(sb.dgConfig, JSON.stringify(cfg));
+    const { code, out } = run(sb, "bot-image-rollout.sh", [...ARGS, "--retry-deferred", "--wait-sec", "0"]);
+    assert.equal(code, 1, out);
+    assert.match(out, /lists no deferred bots/i);
+    assert.ok(dockergateConfig(sb).images.includes(DEV_OLD), "images[] untouched by a failed retry");
+  });
+
+  it("--retry-deferred never removes old images from images[] even when its bots all switched", () => {
+    const sb = sandbox({
+      agents: [{ id: DEV, image: DEV_OLD, status: "running", memoryMb: 4096, cpus: 2, pidsLimit: 1024 }],
+    });
+    run(sb, "bot-image-rollout.sh", ARGS);
+    const agentsPath = path.join(sb.dir, "agents.json");
+    fs.writeFileSync(agentsPath, JSON.stringify(
+      JSON.parse(fs.readFileSync(agentsPath, "utf8")).map((a) => ({ ...a, status: "idle" }))));
+    const { code, out } = run(sb, "bot-image-rollout.sh", [...ARGS, "--retry-deferred", "--wait-sec", "0"]);
+    assert.equal(code, 0, out);
+    assert.ok(dockergateConfig(sb).images.includes(DEV_OLD), "old image stays: the retry does not see the whole fleet");
+    assert.match(out, /left untouched/);
+  });
+
+  it("a deferred bot whose container runs a foreign image is mismatch, not deferred", () => {
+    const sb = sandbox({
+      agents: [{ id: DEV, image: DEV_OLD, status: "running" }],
+      containerFacts: { [DEV]: { state: "running", image: "evil/img@sha256:deadbeef" } },
+    });
+    const { code, out } = run(sb, "bot-image-rollout.sh", ARGS);
+    assert.equal(code, 1, out);
+    assert.deepEqual(rolloutSummary(sb).verification, { switched: 0, deferred: 0, mismatch: 1, failed: 0 });
+  });
+
   it("failed bots: DEGRADED with the failed count in the summary", () => {
     const sb = sandbox({ applyFails: true });
     const { code, out } = run(sb, "bot-image-rollout.sh", ARGS);
