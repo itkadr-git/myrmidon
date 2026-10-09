@@ -8,16 +8,16 @@
   и переключатель в карточке агента (`swarmQueueEligible`), больше ничего.
 - Удалено: поля «Roles in scope» и «Companies in scope», поле «Idle wake batch»,
   переменные `MYRMIDON_SWARM_CLAIM_ENABLED_ROLES`, `MYRMIDON_SWARM_CLAIM_ENABLED_COMPANY_IDS`,
-  `MYRMIDON_SWARM_IDLE_WAKE_BATCH`, функции `isSwarmClaimEnabledFor` и
-  `orderIdleWakeAgents`, зашитое правило «у кого есть подчинённые — тот не берёт задачи»
+  `MYRMIDON_SWARM_IDLE_WAKE_BATCH`, функция `orderIdleWakeAgents`, зашитое правило «у кого есть подчинённые — тот не берёт задачи»
   (`hasDirectReports`). Руководитель получает задачи, если его каста `swarmEligible`; не
   хотите — заведите ему касту с выключенным флагом или выключите переключатель в его карточке.
-- Настройки роя лежат под ключом `general.swarm`. Значение, сохранённое прежней сборкой под
-  `general.swarmClaim` (с пилотными полями или без них), читается как есть: лишние поля
-  отбрасываются, переключатель не теряется; первое сохранение пишет `general.swarm`.
+- Настройки роя по-прежнему лежат под ключом `general.swarmClaim` (`general.swarm` — блок
+  стража побудок F-26: шлагбаум «прогон только с задачей» и окно остывания). Значение,
+  сохранённое прежней сборкой с пилотными полями, читается как есть: лишние поля
+  отбрасываются, переключатель не теряется.
 - Причина освобождения аренд при выключении роя теперь `swarm_disabled` (было
   `pilot_disabled`); старые записи журнала остаются как были.
-- Как проверить: включить переключатель, под полями смотреть строку «Queues right now» —
+- Как проверить: включить переключатель, под ним смотреть строку состояния —
   «захвачено за час» растёт, «отменено за час» нет. Подробно — в руководстве
   [guides/swarm-claim-settings.ru.md](../guides/swarm-claim-settings.ru.md).
 
@@ -31,24 +31,24 @@
   switch in the agent's card (`swarmQueueEligible`), nothing else.
 - Removed: the "Roles in scope" and "Companies in scope" fields, the "Idle wake batch" field,
   the variables `MYRMIDON_SWARM_CLAIM_ENABLED_ROLES`, `MYRMIDON_SWARM_CLAIM_ENABLED_COMPANY_IDS`,
-  `MYRMIDON_SWARM_IDLE_WAKE_BATCH`, the functions `isSwarmClaimEnabledFor` and
-  `orderIdleWakeAgents`, and the hardcoded rule "an agent others report to takes no tasks"
+  `MYRMIDON_SWARM_IDLE_WAKE_BATCH`, the function `orderIdleWakeAgents`, and the hardcoded rule "an agent others report to takes no tasks"
   (`hasDirectReports`). A lead gets tasks when its caste is `swarmEligible`; to keep it out,
   give it a caste with the flag off or turn the switch off in its card.
-- The swarm settings live under `general.swarm`. A value saved by an earlier build under
-  `general.swarmClaim` (with or without the pilot fields) is read as is: the extra fields are
-  dropped and the switch is not lost; the first save writes `general.swarm`.
+- The swarm settings stay under `general.swarmClaim` (`general.swarm` is the F-26 wake-guard
+  block: the run-only-with-a-task gate and the cooling window). A value saved by an earlier
+  build with the pilot fields is read as is: the extra fields are dropped and the switch is not
+  lost.
 - The release reason for leases freed when the swarm is switched off is now `swarm_disabled`
   (was `pilot_disabled`); old activity rows stay as they were.
-- How to check: turn the switch on and watch the "Queues right now" line under the fields —
+- How to check: turn the switch on and watch the status line under it —
   "claimed in the last hour" grows, "cancelled in the last hour" does not. Details in
   [guides/swarm-claim-settings.md](../guides/swarm-claim-settings.md).
 
 ## settings-en-append
 
 <!-- section: 1.6.1 — SWARM-SETTINGS-UI: queues of roles as instance settings -->
-Since 1.6.5 (OPE-6608) the panel is called "Self-organisation (swarm)" and the settings are
-stored under `general.swarm` (a value under the old key `general.swarmClaim` is still read).
+Since 1.6.5 (OPE-6608) the panel is called "Self-organisation (swarm)"; the settings stay under
+`general.swarmClaim`.
 The pilot is gone: there are no role or company lists and no idle-wake batch — the variables
 `MYRMIDON_SWARM_CLAIM_ENABLED_ROLES`, `MYRMIDON_SWARM_CLAIM_ENABLED_COMPANY_IDS` and
 `MYRMIDON_SWARM_IDLE_WAKE_BATCH` are removed, and a stored value that still carries those
@@ -58,8 +58,8 @@ fields is read with them dropped. Who takes part in the swarm is decided by the 
 ## settings-ru-append
 
 <!-- section: 1.6.1 — SWARM-SETTINGS-UI: очереди ролей как настройки инстанса -->
-С 1.6.5 (OPE-6608) панель называется «Self-organisation (swarm)», а настройки хранятся под
-ключом `general.swarm` (значение под старым ключом `general.swarmClaim` по-прежнему читается).
+С 1.6.5 (OPE-6608) панель называется «Self-organisation (swarm)»; настройки по-прежнему
+хранятся под ключом `general.swarmClaim`.
 Пилота нет: нет списков ролей и компаний и пачки idle-побудок — переменные
 `MYRMIDON_SWARM_CLAIM_ENABLED_ROLES`, `MYRMIDON_SWARM_CLAIM_ENABLED_COMPANY_IDS` и
 `MYRMIDON_SWARM_IDLE_WAKE_BATCH` удалены, а сохранённое значение с этими полями читается с

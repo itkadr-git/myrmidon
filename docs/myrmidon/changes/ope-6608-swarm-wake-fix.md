@@ -22,13 +22,18 @@
 - Удалено вместе с проходом: `sweepIdleWakes`, `idle-wake.ts`, `idle-queue.ts`,
   `MYRMIDON_SWARM_IDLE_WAKE_BATCH` и его чтение в `sweep.ts`, `wakeNextAgentForIssueRole`
   (снятие аренды и перематч — вместо «разбуди следующего агента касты»).
-- Пилот удалён полностью (см. отдельную запись про настройки роя): `isSwarmClaimEnabledFor`,
-  поля «Roles/Companies in scope», переменные `MYRMIDON_SWARM_CLAIM_ENABLED_ROLES` /
-  `_COMPANY_IDS` и `idleWakeBatch` убраны из схемы, интерфейса и env. Участие агента в рое
-  определяет только справочник каст (`swarmEligible`) и переключатель в карточке агента.
-- Касты и гнёзда — по контрактам T3 (порты `resolveTaskCaste`/`agentNests`): до их слияния
-  каста задачи — метка `role:` либо каста по умолчанию, гнёзд нет; порты уже проведены
-  через сопоставитель и каста-директорию.
+- Пилот удалён полностью (см. отдельную запись про настройки роя): поля «Roles/Companies in
+  scope», переменные `MYRMIDON_SWARM_CLAIM_ENABLED_ROLES` / `_COMPANY_IDS` и `idleWakeBatch`
+  убраны из схемы, интерфейса и env. Рой включается одним переключателем; участие агента
+  определяет справочник каст (`swarmEligible`) и переключатель в карточке агента.
+- Своих правил порядка, маршрута и остывания у сопоставителя нет — он спрашивает те, что
+  есть в продукте. Пул касты читается SQL-чтением очереди F-27: каста неназначенной задачи —
+  `unassignedTaskRoutedToRole` (каста задачи → каста проекта по умолчанию → метка `role:` →
+  роль по умолчанию), порядок — `swarmQueueOrderBy` (P0 → эффективная сила феромона: сила +
+  старение − штраф за неудачные прогоны из `failedRunsDerivedSql` → возраст → id).
+  Сопоставитель идёт по строкам в этом порядке и не пересортировывает их. Остывание —
+  `isIssueCoolingDown` из `wake-task-guard.ts` (F-26 T5) через адаптер
+  `swarm-claim/cooling.ts`; задача в окне остывания не назначается и не будится.
 
 ## changelog-en
 
@@ -54,14 +59,19 @@
 - Removed with the pass: `sweepIdleWakes`, `idle-wake.ts`, `idle-queue.ts`,
   `MYRMIDON_SWARM_IDLE_WAKE_BATCH` and its read in `sweep.ts`, `wakeNextAgentForIssueRole`
   (releasing the lease and re-matching replaces "wake the next agent of the caste").
-- The pilot is removed entirely (see the separate swarm-settings entry): `isSwarmClaimEnabledFor`,
-  the "Roles/Companies in scope" fields, the variables `MYRMIDON_SWARM_CLAIM_ENABLED_ROLES` /
-  `_COMPANY_IDS` and `idleWakeBatch` are gone from the schema, the UI and the env. Whether an
-  agent takes part in the swarm is decided only by the caste directory (`swarmEligible`) and
+- The pilot is removed entirely (see the separate swarm-settings entry): the "Roles/Companies
+  in scope" fields, the variables `MYRMIDON_SWARM_CLAIM_ENABLED_ROLES` / `_COMPANY_IDS` and
+  `idleWakeBatch` are gone from the schema, the UI and the env. The swarm is turned on by one
+  switch; whether an agent takes part is decided by the caste directory (`swarmEligible`) and
   the switch in the agent's card.
-- Castes and nests follow the T3 contracts (ports `resolveTaskCaste`/`agentNests`): until they
-  merge, a task's caste is its `role:` label or the default caste and there are no nests; the
-  ports are already threaded through the matcher and the caste directory.
+- The matcher has no order, routing or cooling rule of its own — it asks the ones the product
+  has. A caste's pool is read with the F-27 queue SQL: the caste of an unassigned task is
+  `unassignedTaskRoutedToRole` (the task's caste → the project's default caste → the `role:`
+  label → the default role), the order is `swarmQueueOrderBy` (P0 → effective pheromone
+  strength: strength + aging − the penalty for failed runs from `failedRunsDerivedSql` → age →
+  id). The matcher walks the rows in that order and never re-sorts them. The cooling is
+  `isIssueCoolingDown` of `wake-task-guard.ts` (F-26 T5) through the adapter
+  `swarm-claim/cooling.ts`; a task inside its cooling window is neither assigned nor woken.
 
 ## settings-ru-replace
 
@@ -98,8 +108,8 @@
 1. Instance → General → **«Self-organisation (swarm)»**: включить выключатель
    `Swarm enabled`. Изменения применяются без перезапуска (переключатель читается на каждом
    событии).
-2. Проверка: в панели под настройками строка **«Queues right now»** — «в очереди»,
-   «захвачено за час», «отменено за час». Через минуту после включения на непустой очереди
+2. Проверка: в панели под переключателем строка состояния — «в очереди», «захвачено за
+   час», «отменено за час». Через минуту после включения на непустой очереди
    «захвачено за час» должно стать ≥ 1, а «отменено за час» — не расти. Второй способ: у
    задачи появляется исполнитель без человека (`assigneeAgentId` проставлен, живая аренда в
    `issue_claims`), затем у агента стартует прогон с причиной `swarm_matched`, а не
@@ -137,8 +147,8 @@ How to turn it on and check it:
 
 1. Instance → General → **"Self-organisation (swarm)"**: turn the `Swarm enabled` switch on.
    Changes apply without a restart (the switch is read on every event).
-2. To check: under the settings the panel shows **"Queues right now"** — queued, claimed in the
-   last hour, cancelled in the last hour. A minute after switching on with a non-empty queue
+2. To check: under the switch the panel shows a status line — queued, claimed in the last
+   hour, cancelled in the last hour. A minute after switching on with a non-empty queue
    "claimed in the last hour" must be ≥ 1 and "cancelled in the last hour" must not grow.
    Second way: a task gains an assignee without a human (`assigneeAgentId` set, a live lease in
    `issue_claims`) and the agent then starts a run with reason `swarm_matched` instead of

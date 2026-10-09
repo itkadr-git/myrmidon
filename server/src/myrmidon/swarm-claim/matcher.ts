@@ -25,18 +25,21 @@
 //     caste the company's directory marks `swarmEligible: false` — checks made
 //     here, before a lease is written, not on the run that follows.
 //
-// Ports keep the parts that are still landing elsewhere out of this file:
-//   * T3 — the caste directory and the nests. Until T3 lands the pools are the
-//     role reads of the queue (`listIdleRolePairs`): the caste of a task is its
-//     `role:` label, else the company default, and every agent sits in the one nest
-//     the company has today. `resolveTaskCaste`/`agentNests` are the seam T3 fills;
-//     nothing else here changes then.
-//   * T5 — `isIssueCoolingDown`: a task that just lost its owner waits out its
-//     cooldown; absent, nothing cools down.
+// What the matcher does NOT implement itself — one rule each, owned elsewhere:
+//   * the queue order and the routing (F-27, #1047): a caste's pool is read by
+//     `listIdleRolePairs` with the queue reads' own SQL — the caste of an
+//     unassigned task is `unassignedTaskRoutedToRole` (the task's caste, else the
+//     project default, else the legacy `role:` label, else the default role), the
+//     order is `swarmQueueOrderBy` (P0 → effective pheromone → age → id) over the
+//     `failedRunsDerivedSql` join. The matcher walks the rows in that order and
+//     never re-sorts them;
+//   * the cooling (F-26 T5, #1070): `isIssueCoolingDown` of wake-task-guard.ts,
+//     through the adapter in ./cooling.ts; the `isIssueCoolingDown` port of the
+//     deps replaces it in a test;
 //   * T10 — `pickAgentForTask`: the scent pick; absent, every score is equal and
 //     the tie goes to the smallest `agents.id`.
 
-import { and, asc, eq, gte, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, count, eq, gte, inArray, isNotNull, isNull, or, sql, type SQL } from "drizzle-orm";
 import {
   agentWakeupRequests,
   agents,
@@ -53,19 +56,27 @@ import {
   SWARM_MATCHED_CONTEXT_SOURCE,
   SWARM_MATCHED_MUTATION,
   SWARM_MATCHED_WAKE_REASON,
-  orderSwarmQueueCandidates,
+  pheromoneDynamicsOf,
   resolveSwarmQueueEligibility,
   swarmActiveTaskLimitReached,
   swarmMatchedIdempotencyKey,
-  swarmRoleForUnassignedTask,
   type SwarmClaimSettings,
+  type SwarmSettings,
 } from "@paperclipai/shared";
 import type { IssuePostCommitAction } from "../../services/issues.js";
 import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "../../services/issue-assignment-wakeup.js";
 import { logActivity as logActivityInTx, publishActivity, type ActivityPublication } from "../../services/activity-log.js";
 import { issueHasNoExecutionHold } from "../settled-holds/ready-predicate.js";
-import { isIssueCoolingDown } from "./cooling.js";
+import { readSwarmCoolingSettings, swarmTaskCoolingDown, type SwarmCoolingSettings } from "./cooling.js";
 import { planClaim } from "./domain.js";
+import {
+  failedRunsDerivedSql,
+  failedRunsJoinOnSql,
+  failedRunsSinceLastChangeSql,
+  swarmQueueOrderBy,
+  type SwarmQueueOrderOptions,
+} from "./effective-pheromone.js";
+import { unassignedTaskRoutedToRole } from "./queue.js";
 import { insertClaim, releaseClaimsForIssue, revertIdleClaimAssignment } from "./store.js";
 
 /** One ready task, as the queue read offers it to the matcher. */
@@ -170,8 +181,17 @@ export interface SwarmMatcherDeps {
   casteDirectory?: (companyId: string) => Promise<readonly SwarmMatcherCaste[]>;
   /** T3: the nests of an agent. Absent, every agent is in one nest. */
   agentNests?: (agentId: string) => Promise<readonly string[]>;
-  /** T5: the cooldown of a task that just lost its owner. Absent, none. */
+  /**
+   * The cooling of a task, as a test drives it. Absent, the product's one rule
+   * decides: `isIssueCoolingDown` of wake-task-guard.ts (F-26 T5), through the
+   * adapter in ./cooling.ts.
+   */
   isIssueCoolingDown?: (issueId: string) => Promise<boolean>;
+  /**
+   * The cooling settings of the pass (`general.swarm`: base and ceiling of the
+   * window). Absent, the adapter reads them once per call (`readSwarmSettings`).
+   */
+  coolingSettings?: Pick<SwarmSettings, "cooldownBaseMin" | "cooldownCeilingHours">;
   /** T10: the scent pick. Absent, equal scores and the tie by `agents.id`. */
   pickAgentForTask?: (
     task: SwarmMatcherTask,
@@ -197,15 +217,44 @@ function pickBySmallestId(
 }
 
 /**
- * The cooling of a task (design §4.3): the injected port (T5) when there is one,
- * else the board's own reading of the finished runs of the task. Never a stub:
- * a pass that cannot tell a cooling task from a ready one is the loop of the
- * review (a task that just failed is woken again the moment its run ends).
+ * The cooling of a task (design §4.3): the injected port when a test gives one,
+ * else the product's single rule (`isIssueCoolingDown`, wake-task-guard.ts)
+ * through the swarm-claim adapter. The matcher keeps no cooling rule of its own.
  */
-function isCooling(deps: SwarmMatcherDeps, issueId: string): Promise<boolean> {
-  return deps.isIssueCoolingDown
-    ? deps.isIssueCoolingDown(issueId)
-    : isIssueCoolingDown(deps.db, issueId, deps.now);
+async function isCooling(deps: SwarmMatcherDeps, companyId: string, issueId: string): Promise<boolean> {
+  if (deps.isIssueCoolingDown) return deps.isIssueCoolingDown(issueId);
+  return swarmTaskCoolingDown(deps.db, {
+    companyId,
+    issueId,
+    now: deps.now,
+    settings: await coolingSettingsOf(deps),
+  });
+}
+
+/** One settings read per pass (the deps object is the pass), not one per task. */
+const coolingSettingsByPass = new WeakMap<SwarmMatcherDeps, Promise<SwarmCoolingSettings>>();
+
+function coolingSettingsOf(deps: SwarmMatcherDeps): Promise<SwarmCoolingSettings> {
+  if (deps.coolingSettings) return Promise.resolve(deps.coolingSettings);
+  let read = coolingSettingsByPass.get(deps);
+  if (!read) {
+    read = readSwarmCoolingSettings(deps.db);
+    coolingSettingsByPass.set(deps, read);
+  }
+  return read;
+}
+
+/**
+ * The order options of the queue reads of one pass: the P0 switch and the
+ * effective-strength knobs of the `pheromone` settings, at the pass clock — the
+ * same three the claim API and the supervisor view hand to `swarmQueueOrderBy`.
+ */
+function queueOrderOf(deps: SwarmMatcherDeps): SwarmQueueOrderOptions {
+  return {
+    p0Preemption: deps.settings.p0Preemption,
+    dynamics: pheromoneDynamicsOf(deps.settings.pheromone),
+    now: deps.now,
+  };
 }
 
 /**
@@ -457,8 +506,8 @@ async function casteDirectoryOf(
 
 /**
  * One pass over a company (design §3.5, the safety net and the port `forCompany`
- * of the rework): the ready queue of every caste, in the order
- * `orderSwarmQueueCandidates` puts it (P0 → pheromone strength → age), each task
+ * of the rework): the ready queue of every caste, in the queue order of the reads
+ * (`swarmQueueOrderBy`: P0 → effective pheromone → age → id), each task
  * to a free agent of its caste in its nest, one task per agent. Nothing is woken
  * that no task was found for, and a closed host field matches nothing at all.
  */
@@ -477,18 +526,16 @@ export async function matchCompany(
   if (!deps.settings.enabled) return result;
 
   const castes = await casteDirectoryOf(deps, companyId);
-  const pairs = await listIdleRolePairs(deps.db, companyId);
+  const pairs = await listIdleRolePairs(deps.db, companyId, { order: queueOrderOf(deps) });
   for (const pair of pairs) {
     const caste = castes.get(pair.role) ?? null;
     if (caste && !caste.swarmEligible) continue;
-    const queue = orderSwarmQueueCandidates(pair.queue, {
-      p0Preemption: deps.settings.p0Preemption,
-    });
     let free = freeAgentsOfPair(pair, deps.settings, caste);
 
-    for (const candidate of queue) {
+    // The pool read is already in the queue order (`swarmQueueOrderBy`).
+    for (const candidate of pair.queue) {
       if (candidate.assigneeAgentId) continue;
-      if (await isCooling(deps, candidate.issueId)) {
+      if (await isCooling(deps, companyId, candidate.issueId)) {
         result.unmatched += 1;
         continue;
       }
@@ -563,10 +610,11 @@ export async function matchIssue(
   if (!row?.companyId) return null;
   if (row.assigneeAgentId) return null;
   if (!(SWARM_CLAIM_QUEUE_ISSUE_STATUSES as readonly string[]).includes(row.status)) return null;
-  if (await isCooling(deps, issueId)) return null;
+  if (await isCooling(deps, row.companyId, issueId)) return null;
 
   const castes = await casteDirectoryOf(deps, row.companyId);
-  const pairs = await listIdleRolePairs(deps.db, row.companyId);
+  // Only this task is read, in every pool: the routing decides which one holds it.
+  const pairs = await listIdleRolePairs(deps.db, row.companyId, { order: queueOrderOf(deps), issueId });
   for (const pair of pairs) {
     const caste = castes.get(pair.role) ?? null;
     if (caste && !caste.swarmEligible) continue;
@@ -640,7 +688,10 @@ export async function matchAgent(
   }
 
   const castes = await casteDirectoryOf(deps, agentRow.companyId);
-  const pairs = await listIdleRolePairs(deps.db, agentRow.companyId);
+  const pairs = await listIdleRolePairs(deps.db, agentRow.companyId, {
+    order: queueOrderOf(deps),
+    roles: [agentRow.role],
+  });
   const pair = pairs.find((entry) => entry.role === agentRow.role);
   if (!pair) return null;
   const caste = castes.get(pair.role) ?? null;
@@ -656,12 +707,10 @@ export async function matchAgent(
     return null;
   }
 
-  const queue = orderSwarmQueueCandidates(pair.queue, {
-    p0Preemption: deps.settings.p0Preemption,
-  });
-  for (const candidate of queue) {
+  // The pool read is already in the queue order (`swarmQueueOrderBy`).
+  for (const candidate of pair.queue) {
     if (candidate.assigneeAgentId) continue;
-    if (await isCooling(deps, candidate.issueId)) continue;
+    if (await isCooling(deps, agentRow.companyId, candidate.issueId)) continue;
     const task: SwarmMatcherTask = {
       issueId: candidate.issueId,
       identifier: candidate.identifier ?? null,
@@ -712,14 +761,13 @@ async function matchOwnAssignedTask(
   options: SwarmFreedAgentOptions,
 ): Promise<SwarmMatcherPair | "budget_spent" | null> {
   if (options.pickupAllowed === false) return null;
-  const pairs = await listIdleRolePairs(deps.db, companyId);
+  const pairs = await listIdleRolePairs(deps.db, companyId, { order: queueOrderOf(deps) });
   for (const pair of pairs) {
-    const own = orderSwarmQueueCandidates(pair.queue, {
-      p0Preemption: deps.settings.p0Preemption,
-    }).filter((entry) => entry.assigneeAgentId === agentId);
+    // The pool read is already in the queue order (`swarmQueueOrderBy`).
+    const own = pair.queue.filter((entry) => entry.assigneeAgentId === agentId);
     for (const candidate of own) {
       if (options.excludeIssueId && candidate.issueId === options.excludeIssueId) continue;
-      if (await isCooling(deps, candidate.issueId)) continue;
+      if (await isCooling(deps, companyId, candidate.issueId)) continue;
       if (options.wakeBudget && !options.wakeBudget.tryConsume(companyId)) return "budget_spent";
       const woken = await queueIssueAssignmentWakeup({
         heartbeat: deps.heartbeat,
@@ -759,6 +807,11 @@ async function matchOwnAssignedTask(
 // of the retired idle-wake batch; the matcher is the only consumer left and the
 // two pool reads of design §3.2/§3.3 belong to the file that owns the pass, so
 // the read moved here and that module is gone.
+//
+// 1.6.5 (F-27, #1047): the pool of a caste is read with the queue reads' own
+// SQL — the routing of an unassigned task is `unassignedTaskRoutedToRole`, the
+// order `swarmQueueOrderBy` over the `failedRunsDerivedSql` join. There is no
+// JS twin of either here: the rows come back in the order the matcher walks.
 // ---------------------------------------------------------------------------
 
 /** One queue entry: an unassigned task, or one that already has an owner. */
@@ -766,12 +819,19 @@ export interface SwarmMatcherQueueCandidate {
   issueId: string;
   identifier?: string | null;
   priority: string | null;
-  /** Tie-break: the older the task entered the queue, the earlier it ranks. */
+  /** 1.6.5 (F-27): the stored pheromone strength of the task. */
+  pheromoneStrength?: number | null;
+  /** 1.6.5 (F-27): runs that evaporated pheromone with no task change after them. */
+  failedRunsSinceLastChange?: number | null;
+  /** When the task entered the queue (the age key of the order). */
   queuedAt: Date | number | string | null;
   assigneeAgentId?: string | null;
 }
 
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
+
+/** The most rows one caste's pool read hands to a pass. */
+const SWARM_POOL_READ_LIMIT = 200;
 
 /** The read-ready pairs of one company: the queue of each caste + its agents' idle state. */
 export interface SwarmIdleRolePair {
@@ -785,59 +845,71 @@ export interface SwarmIdleRolePair {
     hasLiveRun: boolean;
     /** 1.6.5 (OPE-6608 C): `agents.metadata`, the carrier of the agent's own queue switch. */
     metadata?: Record<string, unknown> | null;
-    /** 1.6.5 (OPE-6608 B): the agent's newest run, for the fair order. */
+    /** 1.6.5 (OPE-6608 B): the agent's newest run (observability; the pick is T10's). */
     lastActiveAt: Date | null;
   }[];
 }
 
+/** What a pool read is narrowed to. */
+export interface SwarmPoolReadOptions {
+  /** The queue order of the pass (P0 switch, pheromone dynamics, clock). */
+  order?: SwarmQueueOrderOptions;
+  /** Only these castes (the freed agent's own); default every caste an agent holds. */
+  roles?: readonly string[];
+  /** Only this task (the event "this task became ready"). */
+  issueId?: string;
+}
+
 /**
- * Every caste of a company that has at least one ready queue candidate and
- * every agent of that caste, with its live-claim count. The per-agent ceiling
- * is NOT applied here (it can be caste-overridden per agent); the pool policy
- * above decides freeness.
+ * Every caste of the company that an agent holds, with its ready queue (only
+ * castes with at least one ready row are returned) and every agent of that
+ * caste with its live-claim count. The queue of a caste is the tasks assigned to
+ * an agent of the caste plus the unassigned tasks routed to it, already in the
+ * queue order. The per-agent ceiling is NOT applied here (it can be
+ * caste-overridden per agent); the pool policy above decides freeness. A task
+ * routed to a caste no agent holds is in no pool: nobody could be woken for it.
  */
 export async function listIdleRolePairs(
   db: Db,
   companyId: string,
+  options: SwarmPoolReadOptions = {},
 ): Promise<SwarmIdleRolePair[]> {
-  const [queueRows, agentRows, liveRunAgentIds, lastRunRows, activeClaimCounts] =
-    await Promise.all([
-      listReadyQueueCandidates(db, companyId),
-      db
-        .select({
-          id: agents.id,
-          role: agents.role,
-          status: agents.status,
-          metadata: agents.metadata,
-        })
-        .from(agents)
-        .innerJoin(companies, eq(companies.id, agents.companyId))
-        .where(and(eq(agents.companyId, companyId), eq(companies.status, "active")))
-        // A stable order of the pool. Two passes over equal facts see the same
-        // rows in the same order; the pick itself is the scent (T10).
-        .orderBy(asc(agents.id)),
-      db
-        .select({ agentId: heartbeatRuns.agentId })
-        .from(heartbeatRuns)
-        .where(
-          and(
-            eq(heartbeatRuns.companyId, companyId),
-            inArray(heartbeatRuns.status, [...LIVE_HEARTBEAT_RUN_STATUSES]),
-          ),
+  const [agentRows, liveRunAgentIds, lastRunRows, activeClaimCounts] = await Promise.all([
+    db
+      .select({
+        id: agents.id,
+        role: agents.role,
+        status: agents.status,
+        metadata: agents.metadata,
+      })
+      .from(agents)
+      .innerJoin(companies, eq(companies.id, agents.companyId))
+      .where(and(eq(agents.companyId, companyId), eq(companies.status, "active")))
+      // A stable order of the pool. Two passes over equal facts see the same
+      // rows in the same order; the pick itself is the scent (T10).
+      .orderBy(asc(agents.id)),
+    db
+      .select({ agentId: heartbeatRuns.agentId })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          inArray(heartbeatRuns.status, [...LIVE_HEARTBEAT_RUN_STATUSES]),
         ),
-      db
-        .select({
-          agentId: heartbeatRuns.agentId,
-          lastActiveAt: sql<Date | string | null>`max(${heartbeatRuns.createdAt})`,
-        })
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.companyId, companyId))
-        .groupBy(heartbeatRuns.agentId),
-      // The live leases of the company, per agent. The per-agent ceiling needs
-      // them: an agent that already holds a lease is not a free agent, and a
-      // hardcoded zero here would hand it a second task it cannot start.
-      liveClaimCountsByAgent(db, companyId),
-    ] as const);
+      ),
+    db
+      .select({
+        agentId: heartbeatRuns.agentId,
+        lastActiveAt: sql<Date | string | null>`max(${heartbeatRuns.createdAt})`,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.companyId, companyId))
+      .groupBy(heartbeatRuns.agentId),
+    // The live leases of the company, per agent. The per-agent ceiling needs
+    // them: an agent that already holds a lease is not a free agent, and a
+    // hardcoded zero here would hand it a second task it cannot start.
+    liveClaimCountsByAgent(db, companyId),
+  ] as const);
 
   const liveRuns = new Set(
     liveRunAgentIds.map((row: { agentId: string }) => row.agentId),
@@ -846,19 +918,31 @@ export async function listIdleRolePairs(
   for (const row of lastRunRows as Array<{ agentId: string; lastActiveAt: Date | string | null }>) {
     lastActive.set(row.agentId, row.lastActiveAt ? new Date(row.lastActiveAt) : null);
   }
-  const byRole = new Map<string, SwarmMatcherQueueCandidate[]>();
-  for (const row of queueRows) {
-    const roles = rolesOfQueueRow(row);
-    for (const role of roles) {
-      const list = byRole.get(role) ?? [];
-      if (list.length < 200) list.push(row.candidate);
-      byRole.set(role, list);
-    }
-  }
+
+  const wanted = options.roles ? new Set(options.roles) : null;
+  const roles = [
+    ...new Set(
+      agentRows
+        .map((agent) => agent.role)
+        .filter((role): role is string => typeof role === "string" && role.trim().length > 0),
+    ),
+  ]
+    .filter((role) => !wanted || wanted.has(role))
+    .sort();
+
+  const queues = await Promise.all(
+    roles.map((role) =>
+      listReadyQueueCandidates(db, companyId, role, {
+        order: options.order,
+        issueId: options.issueId,
+      }),
+    ),
+  );
 
   const pairs: SwarmIdleRolePair[] = [];
-  for (const [role, queue] of byRole) {
-    if (queue.length === 0) continue;
+  roles.forEach((role, index) => {
+    const queue = queues[index] ?? [];
+    if (queue.length === 0) return;
     const roleAgents = agentRows
       .filter((agent) => agent.role === role)
       .map((agent) => ({
@@ -869,10 +953,8 @@ export async function listIdleRolePairs(
         metadata: (agent.metadata as Record<string, unknown> | null) ?? null,
         lastActiveAt: lastActive.get(agent.id) ?? null,
       }));
-    // A caste with no agents at all still reports the pair (the supervisor
-    // metric counts it), but the pool wakes no one.
     pairs.push({ role, companyId, queue, agents: roleAgents });
-  }
+  });
   return pairs;
 }
 
@@ -892,116 +974,111 @@ export async function liveClaimCountsByAgent(
   return counts;
 }
 
-/** One raw ready queue row with the castes it belongs to. */
-interface ReadyQueueRow {
-  candidate: SwarmMatcherQueueCandidate;
-  assigneeAgentId: string | null;
-  assigneeRole: string | null;
-  /** Lower-cased names of the issue's labels (the `role:<key>` tag lives here). */
-  labels: string[];
+/**
+ * "Ready and waiting" over the outer `issues` row: the readiness filters of
+ * idle-pickup (no open blocker, not a plan container, not mid-decomposition, not
+ * held) and nothing that already covers the task (a live lease, a wake in
+ * flight that is not parked on a hold). One list, used by the pool read and by
+ * the panel counters, so "ready" means one thing in both.
+ */
+function readyQueueConditions(db: Db, companyId: string): SQL[] {
+  return [
+    eq(issues.companyId, companyId),
+    isNull(issues.assigneeUserId),
+    isNull(issues.hiddenAt),
+    isNull(issues.conversationAgentId),
+    inArray(issues.status, [...SWARM_CLAIM_QUEUE_ISSUE_STATUSES]),
+    sql`not exists (
+      select 1
+      from issue_relations ir
+        join issues blocker on blocker.id = ir.issue_id and blocker.company_id = ${issues.companyId}
+      where ir.company_id = ${issues.companyId}
+        and ir.related_issue_id = ${issues.id}
+        and ir.type = 'blocks'
+        and blocker.status <> 'done'
+    )`,
+    sql`not exists (
+      select 1
+      from issues child
+      where child.company_id = ${issues.companyId}
+        and child.parent_id = ${issues.id}
+        and child.status not in ('done', 'cancelled')
+    )`,
+    sql`not exists (
+      select 1
+      from issue_plan_decompositions decomp
+      where decomp.company_id = ${issues.companyId}
+        and decomp.source_issue_id = ${issues.id}
+        and decomp.status = 'in_flight'
+    )`,
+    // myrmidon(HOLD-READY): not held by an execution hold (see idle-pickup.ts).
+    issueHasNoExecutionHold(db),
+    // A task that is already covered — a live lease, or a wake in flight
+    // (not parked on a hold) — is being worked on and is not a queue
+    // candidate; the pool is what is genuinely waiting.
+    sql`not exists (
+      select 1 from issue_claims ic
+      where ic.issue_id = ${issues.id} and ic.released_at is null
+    )`,
+    sql`not exists (
+      select 1 from agent_wakeup_requests w
+      where w.company_id = ${issues.companyId}
+        and w.status in ('queued', 'deferred_issue_execution', 'claimed')
+        and w.payload ->> 'issueId' = ${issues.id}::text
+        and not (
+          w.status = 'deferred_issue_execution'
+          and coalesce(jsonb_typeof(w.payload -> 'executionWait'), 'null') = 'object'
+        )
+    )`,
+  ];
 }
 
-/** The ready queue of a company (both assigned-to-caste and unassigned rows). */
-async function listReadyQueueCandidates(db: Db, companyId: string) {
+/**
+ * The ready queue of one caste: the tasks assigned to an agent of the caste,
+ * and the unassigned tasks the routing sends to it (`unassignedTaskRoutedToRole`
+ * — the same predicate the claim API's role queue uses), in the queue order
+ * (`swarmQueueOrderBy` over the `failedRunsDerivedSql` join).
+ */
+async function listReadyQueueCandidates(
+  db: Db,
+  companyId: string,
+  role: string,
+  options: { order?: SwarmQueueOrderOptions; issueId?: string } = {},
+): Promise<SwarmMatcherQueueCandidate[]> {
+  const conditions = [
+    ...readyQueueConditions(db, companyId),
+    or(
+      and(isNotNull(issues.assigneeAgentId), eq(agents.role, role)),
+      and(isNull(issues.assigneeAgentId), unassignedTaskRoutedToRole(role)),
+    ),
+  ];
+  if (options.issueId) conditions.push(eq(issues.id, options.issueId));
   const rows = await db
     .select({
       issueId: issues.id,
       identifier: issues.identifier,
       priority: issues.priority,
+      pheromoneStrength: issues.pheromoneStrength,
+      failedRunsSinceLastChange: failedRunsSinceLastChangeSql(),
       queuedAt: issues.createdAt,
       assigneeAgentId: issues.assigneeAgentId,
-      assigneeRole: agents.role,
-      labels: sql<string[]>`coalesce((
-        select array_agg(lower(btrim(l.name)))
-        from issue_labels il
-          join labels l on l.id = il.label_id
-        where il.issue_id = ${issues.id}
-      ), array[]::text[])`,
     })
     .from(issues)
     .leftJoin(agents, eq(agents.id, issues.assigneeAgentId))
-    .where(
-      and(
-        eq(issues.companyId, companyId),
-        isNull(issues.assigneeUserId),
-        isNull(issues.hiddenAt),
-        isNull(issues.conversationAgentId),
-        inArray(issues.status, [...SWARM_CLAIM_QUEUE_ISSUE_STATUSES]),
-        // The readiness filters of idle-pickup: no open blocker, not a plan
-        // container, not mid-decomposition. Ready means one thing everywhere.
-        sql`not exists (
-          select 1
-          from issue_relations ir
-            join issues blocker on blocker.id = ir.issue_id and blocker.company_id = ${issues.companyId}
-          where ir.company_id = ${issues.companyId}
-            and ir.related_issue_id = ${issues.id}
-            and ir.type = 'blocks'
-            and blocker.status <> 'done'
-        )`,
-        sql`not exists (
-          select 1
-          from issues child
-          where child.company_id = ${issues.companyId}
-            and child.parent_id = ${issues.id}
-            and child.status not in ('done', 'cancelled')
-        )`,
-        sql`not exists (
-          select 1
-          from issue_plan_decompositions decomp
-          where decomp.company_id = ${issues.companyId}
-            and decomp.source_issue_id = ${issues.id}
-            and decomp.status = 'in_flight'
-        )`,
-        // myrmidon(HOLD-READY): not held by an execution hold (see idle-pickup.ts).
-        issueHasNoExecutionHold(db),
-        // A task that is already covered — a live lease, or a wake in flight
-        // (not parked on a hold) — is being worked on and is not a queue
-        // candidate; the pool is what is genuinely waiting.
-        sql`not exists (
-          select 1 from issue_claims ic
-          where ic.issue_id = ${issues.id} and ic.released_at is null
-        )`,
-        sql`not exists (
-          select 1 from agent_wakeup_requests w
-          where w.company_id = ${issues.companyId}
-            and w.status in ('queued', 'deferred_issue_execution', 'claimed')
-            and w.payload ->> 'issueId' = ${issues.id}::text
-            and not (
-              w.status = 'deferred_issue_execution'
-              and coalesce(jsonb_typeof(w.payload -> 'executionWait'), 'null') = 'object'
-            )
-        )`,
-      ),
-    )
-    .orderBy(asc(issues.createdAt))
-    .limit(500);
-  return rows.map((row): ReadyQueueRow => ({
-    candidate: {
-      issueId: row.issueId,
-      identifier: row.identifier,
-      priority: row.priority,
-      queuedAt: row.queuedAt,
-      assigneeAgentId: row.assigneeAgentId,
-    },
+    // One bounded pass over the recent evaporating runs, joined once (#1047).
+    .leftJoin(failedRunsDerivedSql(companyId, options.order?.now), failedRunsJoinOnSql())
+    .where(and(...conditions))
+    .orderBy(...swarmQueueOrderBy(options.order))
+    .limit(SWARM_POOL_READ_LIMIT);
+  return rows.map((row) => ({
+    issueId: row.issueId,
+    identifier: row.identifier,
+    priority: row.priority,
+    pheromoneStrength: row.pheromoneStrength,
+    failedRunsSinceLastChange: row.failedRunsSinceLastChange,
+    queuedAt: row.queuedAt,
     assigneeAgentId: row.assigneeAgentId,
-    assigneeRole: row.assigneeRole ?? null,
-    labels: row.labels ?? [],
   }));
-}
-
-/**
- * Which caste queue a ready row belongs to. An assigned task queues for its
- * assignee's caste (and, in the pass, for that agent alone); an unassigned task
- * queues for the one caste its `role:<key>` label names, the project default
- * when it has none. A caste with no agents still gets its pair, so the sweep
- * can report "ready work, nobody of the caste exists" instead of idling
- * silently.
- */
-export function rolesOfQueueRow(row: ReadyQueueRow): string[] {
-  if (row.assigneeAgentId) {
-    return row.assigneeRole ? [row.assigneeRole] : [];
-  }
-  return [swarmRoleForUnassignedTask(row.labels)];
 }
 
 /**
@@ -1034,8 +1111,11 @@ export async function readSwarmQueueCounters(
 
   const perCompany = await Promise.all(
     companyIds.map(async (companyId) => {
-      const [queueRows, claimedRows, cancelledRows] = await Promise.all([
-        listReadyQueueCandidates(db, companyId),
+      const [queuedRows, claimedRows, cancelledRows] = await Promise.all([
+        db
+          .select({ queued: count() })
+          .from(issues)
+          .where(and(...readyQueueConditions(db, companyId), isNull(issues.assigneeAgentId))),
         db
           .select({ id: issueClaims.id })
           .from(issueClaims)
@@ -1053,7 +1133,7 @@ export async function readSwarmQueueCounters(
           ),
       ]);
       return {
-        queuedUnassigned: queueRows.filter((row) => row.assigneeAgentId === null).length,
+        queuedUnassigned: Number(queuedRows[0]?.queued ?? 0),
         claimedLastHour: claimedRows.length,
         cancelledLastHour: cancelledRows.length,
       } satisfies SwarmQueueCounters;

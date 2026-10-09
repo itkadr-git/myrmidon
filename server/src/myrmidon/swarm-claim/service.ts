@@ -25,6 +25,7 @@ import {
   SWARM_CLAIM_RELEASE_REASON_RUN_FINISHED,
   SWARM_CLAIM_REASON_CASTE_EXCLUDED,
   SWARM_CLAIM_REASON_AGENT_EXCLUDED,
+  pheromoneDynamicsOf,
   readStoredSwarmSettings,
   resolveSwarmClaimSettings,
   resolveSwarmQueueEligibility,

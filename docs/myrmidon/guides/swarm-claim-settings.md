@@ -11,10 +11,11 @@ agent's own card, not by lists in this screen.
 ## Where the settings live
 
 Instance → General → **Self-organisation (swarm)**. The screen writes
-`instance_settings.general.swarm` through `GET`/`PATCH /api/myrmidon/swarm-claim`
+`instance_settings.general.swarmClaim` through `GET`/`PATCH /api/myrmidon/swarm-claim`
 (any board member reads; an instance admin writes). A value saved by an older
-build under `general.swarmClaim` is still read (its leftover pilot fields are
-dropped); the first save from this screen writes `general.swarm`. The server
+build with the pilot fields is still read (the leftover fields are dropped).
+`general.swarm` is a different block — the F-26 wake guard (the
+run-only-with-a-task gate and the cooling window). The server
 re-resolves the row on every event — nothing is cached at startup, no restart is
 ever needed.
 
@@ -77,7 +78,7 @@ task itself through
 
 1. Switch *Swarm enabled* on and save. With several castes, check in the caste
    directory that the castes you want working have `swarmEligible` on.
-2. Watch the **"Queues right now"** line at the bottom of the panel: waiting
+2. Watch the status line under the switch: waiting
    unassigned tasks, claimed in the last hour and cancelled in the last hour. A
    minute after switching on, with a non-empty queue, "claimed in the last hour"
    should reach 1 or more while "cancelled in the last hour" does not grow.

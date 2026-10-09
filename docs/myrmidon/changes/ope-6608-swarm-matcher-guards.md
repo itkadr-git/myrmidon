@@ -5,10 +5,10 @@
 - Петля на пути освобождения закрыта: освободившийся агент не получает обратно задачу,
   прогон которой только что кончился (`excludeIssueId`), его собственная назначенная
   `todo`-задача будится только при включённом idle-pickup (рубильник инстанса и карточки
-  агента) и из общего минутного бюджета побудок компании. Остывание задачи
-  (`swarm-claim/cooling.ts`, проект §4.3) реальное: последние прогоны по задаче не сдвинули её
-  (failed / timed_out / blocked / needs_followup / успех без `advanced`/`completed`) — ждёт
-  `30 мин × 2^(n−1)`, потолок 24 ч; любое изменение задачи не системой снимает остывание.
+  агента) и из общего минутного бюджета побудок компании. Задача в окне остывания не
+  назначается и не будится: сопоставитель спрашивает единственное правило остывания продукта —
+  `isIssueCoolingDown` из `wake-task-guard.ts` (F-26 T5, проект §4.3; база и потолок окна —
+  `general.swarm`), через адаптер `swarm-claim/cooling.ts`. Своего правила у сопоставителя нет.
 - Назначение сопоставителем — одна транзакция: блокировка строки задачи, аренда, назначение
   через сервис задач (проверки, событие и запись `issue.updated`). Побудка ставится после
   коммита с `rethrowOnError`; не поставилась (ошибка или отказ допуска) — назначение и аренда
@@ -29,10 +29,10 @@
 - The loop on the release path is closed: a freed agent is not offered the task whose run has
   just ended (`excludeIssueId`); its own assigned `todo` task is woken only while idle pickup is
   on (instance switch and the agent card) and out of the company's shared per-minute wake
-  budget. The cooling of a task (`swarm-claim/cooling.ts`, design §4.3) is real: when the last
-  runs on a task did not move it (failed / timed_out / blocked / needs_followup / a success
-  that was not `advanced`/`completed`) it waits `30 min × 2^(n−1)`, capped at 24 h; any change
-  of the task by someone other than the system lifts the cooling.
+  budget. A task inside its cooling window is neither assigned nor woken: the matcher asks the
+  product's one cooling rule — `isIssueCoolingDown` of `wake-task-guard.ts` (F-26 T5, design
+  §4.3; the base and ceiling of the window are `general.swarm`) — through the adapter
+  `swarm-claim/cooling.ts`. The matcher keeps no rule of its own.
 - The matcher's assignment is one transaction: a lock on the task row, the lease, the
   assignment through the issues service (its checks, its event and the `issue.updated`
   activity). The wake is queued after the commit with `rethrowOnError`; when it cannot be

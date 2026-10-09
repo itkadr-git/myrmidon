@@ -35,7 +35,6 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { createCasteDirectoryReader } from "../myrmidon/castes/directory.js";
-import { cooldownMs, unmovedStreak } from "../myrmidon/swarm-claim/cooling.js";
 import { matchFreedAgent } from "../myrmidon/swarm-claim/index.js";
 import { matchAgent, matchCompany, type SwarmMatcherDeps } from "../myrmidon/swarm-claim/matcher.js";
 import { createSwarmClaimSweeper, type SwarmClaimSweeperDeps } from "../myrmidon/swarm-claim/sweep.js";
@@ -75,34 +74,9 @@ const openCpuGate: HostCpuGate = {
   heldSince: null,
 };
 
-// The pure rule of the cooling needs no database; its red side is the number
-// the design fixes (§4.3: 30 min, doubling, capped at 24 h).
-describe("cooling rule of a task (design §4.3)", () => {
-  it("doubles the wait with every unmoved run in a row and caps it at 24 h", () => {
-    expect(cooldownMs(0)).toBe(0);
-    expect(cooldownMs(1)).toBe(30 * MIN);
-    expect(cooldownMs(2)).toBe(60 * MIN);
-    expect(cooldownMs(3)).toBe(120 * MIN);
-    expect(cooldownMs(20)).toBe(24 * 60 * MIN);
-  });
-
-  it("counts only the unbroken run of unmoved finishes, newest first", () => {
-    const at = NOW;
-    expect(
-      unmovedStreak([
-        { status: "failed", livenessState: null, endedAt: at },
-        { status: "succeeded", livenessState: "blocked", endedAt: at },
-        { status: "succeeded", livenessState: "advanced", endedAt: at },
-        { status: "failed", livenessState: null, endedAt: at },
-      ]),
-    ).toBe(2);
-    // A success that advanced the task, or one with no verdict, is no streak.
-    expect(unmovedStreak([{ status: "succeeded", livenessState: "completed", endedAt: at }])).toBe(0);
-    expect(unmovedStreak([{ status: "succeeded", livenessState: null, endedAt: at }])).toBe(0);
-    expect(unmovedStreak([{ status: "succeeded", livenessState: "plan_only", endedAt: at }])).toBe(1);
-  });
-});
-
+// The cooling rule itself (base·2^(n−1), capped; lifted by a change) is the
+// product's one rule, `isIssueCoolingDown` of wake-task-guard.ts (F-26 T5), and
+// is pinned by its own suite. These cases pin that the matcher ASKS it.
 describeEmbeddedPostgres("matcher guards of the second review", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
@@ -181,6 +155,8 @@ describeEmbeddedPostgres("matcher guards of the second review", () => {
       status: overrides.status,
       contextIssueId: issueId,
       contextSnapshot: { issueId },
+      // The cooling rule (wake-task-guard.ts) reads the automatic runs of a task.
+      invocationSource: "automation",
       livenessState: overrides.livenessState ?? null,
       startedAt: overrides.finishedAt ? new Date(overrides.finishedAt.getTime() - MIN) : NOW,
       finishedAt: overrides.finishedAt ?? null,
