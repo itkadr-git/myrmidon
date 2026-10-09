@@ -48,7 +48,7 @@ export function mediaMcpSignalForBot(agentId: string, botKey: string, activityAt
     dedupKey: mediaMcpDedupKey(agentId),
     agentId,
     botKey,
-    severity: "warning",
+    severity: "low",
     title: "Media tools not connected",
     whyNow:
       "This bot's card has no MEDIA_TOOLS_TOKEN, so the media MCP block was left out of its profile and the " +

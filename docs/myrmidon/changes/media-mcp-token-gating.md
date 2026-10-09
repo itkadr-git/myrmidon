@@ -28,8 +28,8 @@ settings-section: Track 5 — operations
 - Without a token there is no media block and no media env, so the bot never
   calls the sidecar and the 401 stream stops. Instead the compiler records a
   per-pass «media not connected» signal; the attention feed turns it into one
-  card per bot of the new source kind `bot_media_mcp` (severity `warning`,
-  advisory rank 13, beside `model_fallback_alert`), cleared automatically as
+  card per bot of the new source kind `bot_media_mcp` (severity `low`,
+  advisory rank 13 — one step below `model_fallback_alert` (medium)), cleared automatically as
   soon as a pass sees the token. The bot-side client
   (`tools/media-mcp/bot-scripts/media_client.py`) raises
   `MediaNotConnectedError` before any HTTP request when `MEDIA_TOOLS_TOKEN`
@@ -69,8 +69,8 @@ settings-section: Track 5 — operations
 - Без токена ни блока, ни переменных нет — бот не ходит в сайдкар, и поток 401
   прекращается. Вместо ошибок компилятор записывает на проход сигнал «медиа не
   подключено»; лента внимания превращает его в карточку нового вида
-  `bot_media_mcp` (severity `warning`, advisory-ранг 13, рядом с
-  `model_fallback_alert`), которая снимается сама, как только на проходе
+  `bot_media_mcp` (severity `low`, advisory-ранг 13 — на ступень ниже
+  `model_fallback_alert` (medium)), которая снимается сама, как только на проходе
   появился токен. Клиент на стороне бота
   (`tools/media-mcp/bot-scripts/media_client.py`) при пустом
   `MEDIA_TOOLS_TOKEN` (и не в режиме peer-аутентификации) поднимает

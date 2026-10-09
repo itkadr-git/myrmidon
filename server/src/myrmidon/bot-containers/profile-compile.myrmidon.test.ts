@@ -622,7 +622,6 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
     it("adds the media server when the card carries MEDIA_TOOLS_TOKEN, never printing the token", async () => {
       const board = fakeBoard({
         async resolveCardEnv() {
-          calls.push("resolveCardEnv");
           return { env: { MEDIA_TOOLS_TOKEN: { value: "fake-media-token-agent-a", secret: false } }, warnings: [] };
         },
       });
@@ -641,7 +640,6 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
     it("honors MYRMIDON_MEDIA_MCP_URL when set", async () => {
       const board = fakeBoard({
         async resolveCardEnv() {
-          calls.push("resolveCardEnv");
           return { env: { MEDIA_TOOLS_TOKEN: { value: "fake-media-token-1", secret: false } }, warnings: [] };
         },
       });
@@ -686,7 +684,6 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
     it("a bot whose card carries the token inside the pass leaves no signal", async () => {
       const board = fakeBoard({
         async resolveCardEnv() {
-          calls.push("resolveCardEnv");
           return { env: { MEDIA_TOOLS_TOKEN: { value: "fake-media-token-1", secret: false } }, warnings: [] };
         },
       });
@@ -701,7 +698,6 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
     it("a blank card token (whitespace) is no token: no media block, no signal", async () => {
       const board = fakeBoard({
         async resolveCardEnv() {
-          calls.push("resolveCardEnv");
           return { env: { MEDIA_TOOLS_TOKEN: { value: "   ", secret: false } }, warnings: [] };
         },
       });
