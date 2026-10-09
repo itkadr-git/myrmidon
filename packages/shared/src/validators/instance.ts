@@ -34,6 +34,8 @@ import { botLspSettingsSchema } from "../myrmidon-bot-lsp.js";
 // myrmidon(EXTCASE-B): the browser-bridge allowlist stored in the same general settings row
 import { browserBridgeSettingsSchema } from "../myrmidon-browser-bridge.js";
 import { swarmClaimSettingsSchema } from "../myrmidon-swarm-claim.js";
+// myrmidon(1.6.5 F-26 T10 SCENT): the general.swarm.scent settings block
+import { scentSettingsSchema } from "../myrmidon-scent.js";
 import { datastoreCareSettingsSchema } from "../myrmidon-datastore-care.js"; // myrmidon(1.6.5-DBC1)
 // myrmidon(1.6.1-WIP-LIMIT-A): the per-agent WIP limit settings stored in the
 // same general settings row.
@@ -188,6 +190,15 @@ export const instanceGeneralSettingsSchema = z.object({
   // /api/myrmidon/swarm-claim; absent means "use the environment variable, then
   // the default (the pilot is off)".
   swarmClaim: swarmClaimSettingsSchema.optional(),
+  // myrmidon(1.6.5 F-26 T10 SCENT): the swarm block — one namespace for the
+  // swarm family; T10 owns `general.swarm.scent` (classifier model, weights,
+  // switch). Absent means the module defaults (classifier on, weights from
+  // packages/shared/src/myrmidon-scent.ts).
+  swarm: z
+    .object({
+      scent: scentSettingsSchema.optional(),
+    })
+    .optional(),
   // myrmidon(1.6.1 SWARM-SETTINGS-UI): the change journal of the swarm-claim
   // pilot settings (who changed what, and when), kept by the settings service
   // under `general.swarmClaimJournal` and read by GET /api/myrmidon/swarm-claim.

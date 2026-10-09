@@ -2845,6 +2845,9 @@ export * from "./myrmidon-litellm-sync.js";
 // myrmidon(1.6-SWARM): per-role task queues with leased claims — the shared
 // contract of the core queue, the supervisor view and the pilot settings.
 export * from "./myrmidon-swarm-claim.js";
+// myrmidon(1.6.5 F-26 T10 SCENT): task/agent scent contract (scentScore,
+// pickAgentForTask, general.swarm.scent settings)
+export * from "./myrmidon-scent.js";
 // myrmidon(1.6.5-DBC1): the datastore-care retention settings contract
 // (general.datastoreCare.retention) and the activity action names.
 export * from "./myrmidon-datastore-care.js";

@@ -98,7 +98,10 @@ import {
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
   resolveSwarmClaimSettings,
+  readScentSettings,
 } from "@paperclipai/shared";
+import type { IssueScent } from "@paperclipai/shared";
+import { deriveScentAuto } from "../myrmidon/scent/create-hook.js";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { isForeignKeyViolation } from "../db-errors.js";
 import { logger } from "../middleware/logger.js";
@@ -9974,9 +9977,46 @@ export function issueService(db: Db) {
                 ),
               }
             : {}),
-          // 1.6.5 (F-27 rework 09.10): the caste key — validated against the
-          // company's directory just below; a null clears to the defaults.
-          ...(issueData.casteKey !== undefined ? { casteKey: issueData.casteKey } : {}),
+          // 1.6.5 (F-26 T10 SCENT): the caste. The pure derivation lives in
+          // myrmidon/scent/create-hook.ts — an explicit key is kept and
+          // stamped 'manual', a high-confidence scent (top ≥ 0.5) lands as
+          // 'auto', anything else stays NULL and the §2.1 chain
+          // (project default ?? company default) resolves at read time. The
+          // hook NEVER materializes the company default with source 'auto'.
+          ...(await (async () => {
+            const casteKeys = await casteStore
+              .listCastes(companyId)
+              .then((rows) => rows.map((r) => r.key));
+            const raw = (await instanceSettings.getGeneral()) as unknown as Record<
+              string,
+              unknown
+            > | null;
+            const storedScent =
+              raw && typeof raw === "object" ? (raw as { swarm?: unknown }).swarm : undefined;
+            const scentSettings = readScentSettings(storedScent, process.env);
+            return deriveScentAuto(
+              {
+                title: issueData.title ?? "",
+                description: issueData.description ?? null,
+                priority: issueData.priority ?? "medium",
+                casteKey: issueData.casteKey ?? null,
+                casteSource: issueData.casteSource ?? null,
+                pheromoneStrength: issueData.pheromoneStrength ?? null,
+                scent: (issueData as { scent?: IssueScent | null }).scent ?? null,
+              },
+              casteKeys,
+              scentSettings,
+            );
+          })().then((auto) => ({
+            casteKey: auto.casteKey,
+            casteSource: auto.casteSource,
+            // Only auto-set the strength when the caller did not pin it AND
+            // the scent-based value differs from the plain priority default —
+            // otherwise the F-27 branch above already wrote it.
+            ...(issueData.pheromoneStrength == null
+              ? { pheromoneStrength: auto.pheromoneStrength }
+              : {}),
+          }))),
           originRunId: issueData.originRunId ?? actorRunId ?? null,
           responsibleUserId,
           requestDepth: clampIssueRequestDepth(issueData.requestDepth),
