@@ -52,6 +52,7 @@ async function createApp(
     jobDeps?: unknown;
     toolDeps?: unknown;
     bridgeDeps?: unknown;
+    toolGatewayDeps?: unknown;
     captureJsonContext?: (context: unknown, body: unknown) => void;
   } = {},
 ) {
@@ -88,6 +89,7 @@ async function createApp(
     undefined,
     routeOverrides.toolDeps as never,
     routeOverrides.bridgeDeps as never,
+    routeOverrides.toolGatewayDeps as never,
   ));
   app.use(errorHandler);
 
@@ -977,6 +979,71 @@ describe.sequential("plugin tool and bridge authz", () => {
       code: "WORKER_ERROR",
       message: "handler exploded",
     });
+  }, 60_000);
+
+  it("maps an unknown tool key to 400 UNKNOWN_ACTION on the agent toolGateway path", async () => {
+    const known = ["wiki_search", "wiki_read_page"];
+    const executePluginTool = vi.fn().mockRejectedValue(new JsonRpcCallError({
+      code: -32007,
+      message: 'No tool handler registered for "paperclip.example:not-a-tool"',
+      data: { error: "unknown_tool", known },
+    }));
+    const { app } = await createApp(agentActor(), {}, {
+      db: createSelectQueueDb([
+        [{ companyId: companyA }],
+        [{ companyId: companyA, agentId: agentA }],
+        [{ companyId: companyA }],
+      ]),
+      toolGatewayDeps: {
+        toolGateway: { executePluginTool },
+      },
+    });
+
+    const res = await request(app)
+      .post("/api/plugins/tools/execute")
+      .send({
+        tool: "paperclip.example:not-a-tool",
+        parameters: {},
+        runContext: { agentId: agentA, runId: runA, companyId: companyA, projectId: projectA },
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({
+      code: "UNKNOWN_ACTION",
+      error: 'No tool handler registered for "paperclip.example:not-a-tool"',
+      details: { error: "unknown_tool", known },
+    });
+    expect(executePluginTool).toHaveBeenCalledWith(expect.objectContaining({
+      tool: "paperclip.example:not-a-tool",
+    }));
+  }, 60_000);
+
+  it("keeps worker failures as 502 on the agent toolGateway path", async () => {
+    const executePluginTool = vi.fn().mockRejectedValue(new JsonRpcCallError({
+      code: -32002,
+      message: "handler exploded",
+    }));
+    const { app } = await createApp(agentActor(), {}, {
+      db: createSelectQueueDb([
+        [{ companyId: companyA }],
+        [{ companyId: companyA, agentId: agentA }],
+        [{ companyId: companyA }],
+      ]),
+      toolGatewayDeps: {
+        toolGateway: { executePluginTool },
+      },
+    });
+
+    const res = await request(app)
+      .post("/api/plugins/tools/execute")
+      .send({
+        tool: "paperclip.example:search",
+        parameters: {},
+        runContext: { agentId: agentA, runId: runA, companyId: companyA, projectId: projectA },
+      });
+
+    expect(res.status).toBe(500);
+    expect(res.body).toMatchObject({ error: "handler exploded" });
   }, 60_000);
 
   it("rejects manual job triggers for non-admin board users", async () => {

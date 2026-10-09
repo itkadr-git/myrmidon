@@ -732,7 +732,10 @@ describe("LLM Wiki plugin scaffold", () => {
       routePath: "wiki",
     });
     expect(packageJson.dependencies).toBeUndefined();
-    expect(packageJson.devDependencies?.react).toBeUndefined();
+    // `react` is a devDependency so the package's own tests (which import it)
+    // can load it inside this workspace — at runtime the host supplies react
+    // per the `peerDependencies` contract below.
+    expect(packageJson.devDependencies?.react).toBeDefined();
     expect(packageJson.devDependencies?.["react-dom"]).toBeDefined();
     expect(packageJson.devDependencies?.["@types/react-dom"]).toBeDefined();
     expect(packageJson.peerDependencies?.react).toBe(">=18");
@@ -3840,21 +3843,24 @@ Duplicate headings receive stable suffixes.
   });
 
   describe("jobs ↔ handlers guard", () => {
-    it("registers a worker handler for every manifest job, and declares every registered job", async () => {
+    it("declares every registered job in the manifest, and registers a handler for every declared job", async () => {
       const harness = createTestHarness({ manifest });
-      const runJobSpy = vi.spyOn(harness, "runJob");
       await plugin.definition.setup(harness.ctx);
 
       const declaredJobKeys = (manifest.jobs ?? []).map((job: PluginJobDeclaration) => job.jobKey);
+      expect(new Set(declaredJobKeys).size).toBe(declaredJobKeys.length);
+
+      // Red side 1: a declared job with no worker handler must reject — no
+      // `.catch` swallowing, no spy on runJob itself.
       for (const jobKey of declaredJobKeys) {
-        runJobSpy.mockClear();
-        await harness.runJob(jobKey).catch(() => undefined);
-        expect(
-          runJobSpy,
+        await expect(
+          harness.runJob(jobKey),
           `manifest declares job "${jobKey}" but the worker never registered a handler for it`,
-        ).toHaveBeenCalledTimes(1);
+        ).resolves.toBeUndefined();
       }
 
+      // Red side 2: a job handler present in the worker but missing from the
+      // manifest must fail the contains-check below (no exception involved).
       const workerSource = readFileSync(new URL("../src/worker.ts", import.meta.url), "utf8");
       const registeredJobKeys = [
         ...workerSource.matchAll(/ctx\.jobs\.register\(\s*["'`]([^"'`]+)["'`]/g),
@@ -3866,6 +3872,15 @@ Duplicate headings receive stable suffixes.
         ).toContain(jobKey);
       }
       expect(new Set(registeredJobKeys).size).toBe(registeredJobKeys.length);
+    });
+
+    it("runJob rejects for a key with no registered handler (red side of the guard)", async () => {
+      const harness = createTestHarness({ manifest });
+      await plugin.definition.setup(harness.ctx);
+
+      await expect(harness.runJob("definitely-not-a-wiki-job")).rejects.toThrow(
+        "No job handler registered",
+      );
     });
   });
 
