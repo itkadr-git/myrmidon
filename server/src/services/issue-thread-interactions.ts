@@ -615,7 +615,7 @@ function parseStoredInteractionResult<S extends z.ZodTypeAny>(
   const parsed = schema.safeParse(raw);
   if (parsed.success) return parsed.data;
   console.warn(
-    `[paperclip] Dropping unparseable ${row.kind} interaction result for interaction ${row.id}`,
+    `[myrmidon] Dropping unparseable ${row.kind} interaction result for interaction ${row.id}`,
     parsed.error.issues,
   );
   return null;
@@ -1382,7 +1382,7 @@ async function emitInteractionResolvedTelemetry(
         roleByAgentId = await fetchCreatorAgentRoleById(db, [interaction]);
       } catch (error) {
         console.error(
-          "[paperclip] Failed to load interaction.resolved creator role",
+          "[myrmidon] Failed to load interaction.resolved creator role",
           error,
         );
       }
@@ -1409,7 +1409,7 @@ async function emitInteractionResolvedTelemetry(
     });
   } catch (error) {
     console.error(
-      "[paperclip] Failed to emit interaction.resolved telemetry",
+      "[myrmidon] Failed to emit interaction.resolved telemetry",
       error,
     );
   }
@@ -1432,7 +1432,7 @@ function emitInteractionCreatedTelemetry(args: {
     });
   } catch (error) {
     console.error(
-      "[paperclip] Failed to emit interaction.created telemetry",
+      "[myrmidon] Failed to emit interaction.created telemetry",
       error,
     );
   }
@@ -1448,7 +1448,7 @@ async function emitResolvedInteractionsTelemetry(
     roleByAgentId = await fetchCreatorAgentRoleById(db, interactions);
   } catch (error) {
     console.error(
-      "[paperclip] Failed to load interaction.resolved creator roles",
+      "[myrmidon] Failed to load interaction.resolved creator roles",
       error,
     );
   }
