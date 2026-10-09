@@ -368,6 +368,11 @@ async function sourceIssueId(
     case "foraging_limit": {
       return { exists: sourceId === `foraging:${companyId}`, issueId: null };
     }
+    // myrmidon(1.6.5-F-23): advisory signals only — no backing issue.
+    case "secret_off_run_reads":
+    case "secret_off_run_grant_expiring": {
+      return { exists: true, issueId: null };
+    }
     // myrmidon(1.6.5-F-18): the empty-catalog card is computed from the
     // process-level signal registry and its subject id is the stable
     // company-scoped key the feed emits (`litellm:${companyId}`), not a

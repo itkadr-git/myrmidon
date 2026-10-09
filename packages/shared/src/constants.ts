@@ -1022,6 +1022,11 @@ export const PERMISSION_KEYS = [
   "tasks:manage_active_checkouts",
   "pipelines:write",
   "joins:approve",
+  // myrmidon(1.6.5-F-23): lets the grant holder (an agent without an active
+  // run, e.g. the administrative role acting from an operator session) read
+  // its own secret metadata via GET /agents/me/secrets. Always issued with an
+  // expiresAt (default +30 days); every such read is audited with offRun=true.
+  "secrets:read_off_run",
 ] as const;
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
 

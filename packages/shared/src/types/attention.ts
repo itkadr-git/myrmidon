@@ -58,6 +58,11 @@ export const ATTENTION_SOURCE_KINDS = [
   // execution-reconciliation hold ("execution_reconciliation_required") until
   // a person confirms the failed run left no external action.
   "execution_hold",
+  // myrmidon(1.6.5-F-23): agents read their own secret metadata outside an
+  // active run (grant secrets:read_off_run); the item counts the reads of the
+  // last 24h, and a per-agent variant warns three days before a grant expires.
+  "secret_off_run_reads",
+  "secret_off_run_grant_expiring",
   // myrmidon(1.6.5-F-18): the gateway spend sweep completed but the model
   // catalog (/v1/model/info) is empty — the accounting key is misconfigured.
   "empty_model_catalog",
@@ -78,7 +83,10 @@ export type AttentionSubjectKind =
   // myrmidon(SUB): a component of the tracked stack registry.
   | "stack_component"
   // myrmidon(1.6.1-FORAGING-LIMITS-UI): the learning sweep of the company.
-  | "foraging_sweep";
+  | "foraging_sweep"
+  // myrmidon(1.6.5-F-23): a company-scope signal with no narrower subject
+  // (e.g. the 24h counter of off-run secret reads).
+  | "company";
 
 export type AttentionSeverity = "critical" | "high" | "medium" | "low";
 
