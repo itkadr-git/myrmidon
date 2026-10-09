@@ -483,5 +483,17 @@
       "label": "Same-family judge",
       "tooltip": "The judge model belongs to the same family as the evaluated agent model"
     }
+  },
+  "agentsTree": {
+    "expandNode": "Expand {{name}}",
+    "collapseNode": "Collapse {{name}}",
+    "noManager": "No manager",
+    "searchPlaceholder": "Search agents...",
+    "searchAria": "Search agents by name",
+    "errorIndicator": "Some agents in this branch are in an error state",
+    "agentsCount": "{{count}} agents",
+    "runningCount": "{{count}} running",
+    "sortModeTree": "Tree",
+    "viewTree": "Tree view"
   }
 }

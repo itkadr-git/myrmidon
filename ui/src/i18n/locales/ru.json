@@ -483,5 +483,17 @@
       "label": "Судья того же семейства",
       "tooltip": "Модель судьи принадлежит к тому же семейству, что и модель оцениваемого агента"
     }
+  },
+  "agentsTree": {
+    "expandNode": "Развернуть {{name}}",
+    "collapseNode": "Свернуть {{name}}",
+    "noManager": "Без руководителя",
+    "searchPlaceholder": "Поиск агентов...",
+    "searchAria": "Поиск агентов по имени",
+    "errorIndicator": "В этой ветке есть агенты в состоянии ошибки",
+    "agentsCount": "агентов: {{count}}",
+    "runningCount": "работает: {{count}}",
+    "sortModeTree": "Дерево",
+    "viewTree": "Вид деревом"
   }
 }
