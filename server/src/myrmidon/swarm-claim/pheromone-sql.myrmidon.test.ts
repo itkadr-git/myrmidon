@@ -232,8 +232,27 @@ describeEmbeddedPostgres("F-27 pheromone: the SQL twins agree with the shared he
   it("the queue query reads heartbeat_runs once and orders by the joined column", async () => {
     const { companyId } = await seedCompany();
     const built = roleQueueRows(db, companyId, "engineer").toSQL().sql;
-    expect(built.match(/heartbeat_runs/g)).toHaveLength(1);
-    expect(built).toMatch(/left join \(\s*select hr\.issue_uuid, count\(\*\)/i);
+    // Cut the derived table of the penalty out of the query: it runs from
+    // `left join (select hr.issue_uuid` to its alias `fr`.
+    const start = built.search(/left join \(\s*select hr\.issue_uuid, count\(\*\)/i);
+    expect(start, "the penalty is a joined derived table").toBeGreaterThanOrEqual(0);
+    const endMarker = /\)\s+fr\b/g;
+    endMarker.lastIndex = start;
+    const end = endMarker.exec(built);
+    expect(end, "the derived table is aliased fr").not.toBeNull();
+    const block = built.slice(start, end!.index + end![0].length);
+    const outside = built.slice(0, start) + built.slice(end!.index + end![0].length);
+    // (1) Inside the block the runs table is read exactly once (one pass).
+    expect(block.match(/heartbeat_runs/g)).toHaveLength(1);
+    expect(built.match(/count\(\*\)::int as failed_runs/g)).toHaveLength(1);
+    // (2) Outside it nothing of the penalty remains — a correlated subquery per
+    // candidate (the old shape) would put its run statuses, finish time and
+    // change-trail probes into the SELECT / ORDER BY. The other heartbeat_runs
+    // mentions are the base queue's own readiness filters.
+    // (tokens only the penalty uses: its change-trail probe by run, its issue key)
+    expect(outside).not.toMatch(/created_by_run_id/i);
+    expect(outside.replace(/fr\.issue_uuid/g, "")).not.toMatch(/issue_uuid/i);
+    expect(outside.match(/fr\.failed_runs/g)!.length).toBeGreaterThanOrEqual(2);
     const orderBy = built.slice(built.toLowerCase().lastIndexOf("order by"));
     expect(orderBy).not.toMatch(/select|heartbeat_runs/i);
     expect(orderBy).toContain("fr.failed_runs");
