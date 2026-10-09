@@ -50,9 +50,12 @@
 ([wip-limit](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/wip-limit.ru.md)).
 Параметры самоорганизации роя (стартовая сила феромона по приоритетам,
 надбавка за ожидание, штраф за неудачный прогон без изменений задачи,
-остывание, срок аренды, потолок активных задач на агента, вытеснение P0)
-правятся вживую в **Instance → General → Самоорганизация (рой)** — рой по
-умолчанию выключен, включается переключателем «Включено»; как включить рой и
+срок аренды, потолок активных задач на агента, вытеснение P0)
+правятся вживую в **Instance → General → Self-organization (swarm)** — рой по
+умолчанию выключен, включается переключателем «Enable the swarm»; остывание
+задачи после пустого прогона (база 30 минут, потолок 24 часа) задаёт
+охранник побудок (`general.swarm.cooldownBaseMin` / `cooldownCeilingHours`);
+как включить рой и
 проверить его работу за три действия —
 [swarm-self-organization](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/swarm-self-organization.ru.md).
 Низкоуровневые детали очередей —
