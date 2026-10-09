@@ -52823,7 +52823,7 @@
           "type": "bigint",
           "primaryKey": false,
           "notNull": true,
-          "default": "0"
+          "default": 0
         },
         "acquired_at": {
           "name": "acquired_at",
