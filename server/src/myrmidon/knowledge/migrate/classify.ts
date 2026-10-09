@@ -8,7 +8,11 @@
 // Precedence is fixed and documented, because every page must land in exactly
 // one class (§5.3: "каждая страница ровно в одном классе"):
 //   G (root index) → F (logs) → D (template project pages) → B (regulations)
-//   → C (answer pages / file-as-page) → E (stubs and probes) → A (content waves)
+//   → E (stubs and probes) → C (answer pages / file-as-page) → A (content waves)
+//
+// The one deliberate exception: the OPE-3933 content waves (class A) are
+// imported even when a page is short — a content wave page is knowledge by
+// definition, and the operator's map can still drop it.
 
 import type { MigrateAction } from "./map.js";
 
@@ -141,6 +145,16 @@ export function classifyPath(sourcePath: string, bytes: number): SeedPlan {
     };
   }
 
+  // E — stubs and probes are dropped; the wiki schema page is rewritten.
+  //    Exception: the OPE-3933 content waves below are knowledge regardless of
+  //    size, so they skip the stub rule.
+  if (bytes < STUB_BYTES && !A_CONTENT_PREFIXES.some((prefix) => sourcePath === prefix || sourcePath.startsWith(prefix))) {
+    if (sourcePath === "meta/about-this-wiki.md") {
+      return { class: "E", action: "import", target: "meta/schema", reason: "about-this-wiki → meta/schema (§5.3 E)" };
+    }
+    return { class: "E", action: "drop", reason: `stub/probe under ${STUB_BYTES} bytes (§5.3 E)` };
+  }
+
   // C — answer pages are merged into the sections above, originals superseded.
   if (C_PREFIXES.some((prefix) => sourcePath.startsWith(prefix))) {
     const slug = slugFor(sourcePath);
@@ -150,14 +164,6 @@ export function classifyPath(sourcePath: string, bytes: number): SeedPlan {
       target: `${slugSegment(dir.split("/")[0] ?? "page")}/${slug.split("/").pop() ?? "page"}`,
       reason: "answer page (file-as-page) merged into its section (§5.3 C)",
     };
-  }
-
-  // E — stubs and probes are dropped; the wiki schema page is rewritten.
-  if (bytes < STUB_BYTES) {
-    if (sourcePath === "meta/about-this-wiki.md") {
-      return { class: "E", action: "import", target: "meta/schema", reason: "about-this-wiki → meta/schema (§5.3 E)" };
-    }
-    return { class: "E", action: "drop", reason: `stub/probe under ${STUB_BYTES} bytes (§5.3 E)` };
   }
 
   // A — the OPE-3933 content waves are imported as drafts.

@@ -60,7 +60,11 @@ function readMap(path: string | null): MigrateMap {
 function databaseUrl(): string {
   const fromEnv = process.env["DATABASE_URL"]?.trim();
   if (fromEnv !== undefined && fromEnv !== "") return fromEnv;
-  return loadConfig().databaseUrl;
+  const fromConfig = loadConfig().databaseUrl;
+  if (fromConfig === undefined || fromConfig === "") {
+    throw new MigrateInputError("No database URL: set DATABASE_URL (or the server config file) before importing.");
+  }
+  return fromConfig;
 }
 
 function emit(report: unknown, out: string | null): void {

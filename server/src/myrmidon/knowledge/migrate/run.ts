@@ -10,20 +10,19 @@
 //              (create → revision + sources + frontmatter fields). `--dry-run`
 //              does the whole computation and reports what it would write.
 
-import { classifyPath } from "./classify.js";
+import { classifyPath, slugFor } from "./classify.js";
 import { rewriteLinks } from "./links.js";
 import { parseSlugMap, serializeSlugMap, type MigrateMap, type MigratePagePlan } from "./map.js";
 import { buildClassifyReport, classesOf, type ClassifyReport, type ImportReport, type PlannedPage } from "./report.js";
 import { readSourceTree, type ReadSourceTreeOptions, type SourceTree } from "./source.js";
-import { slugFor } from "./classify.js";
-import { type CreateKnowledgeInput, type DraftKnowledgeInput, type KnowledgeActor } from "../store.js";
 import { type KnowledgeSourceKind } from "../domain.js";
+import { type CreateKnowledgeInput, type DraftKnowledgeInput, type KnowledgeActor } from "../store.js";
 
 /** The slice of the K-1 service the migration uses (structural type). */
 export interface KnowledgeWriter {
   create(input: CreateKnowledgeInput, actor: KnowledgeActor): Promise<{ id: string; slug: string }>;
   draft(nestId: string, idOrSlug: string, input: DraftKnowledgeInput, actor: KnowledgeActor): Promise<{ id: string; slug: string }>;
-  supersede(nestId: string, idOrSlug: string, input: { bySlug: string }, actor: KnowledgeActor): Promise<unknown>;
+  supersede(nestId: string, idOrSlug: string, actor: KnowledgeActor, input: { bySlug: string }): Promise<unknown>;
   searchNest(nestId: string, query: string, limit?: number): Promise<Array<{ itemId: string; slug: string; title: string }>>;
 }
 
@@ -42,11 +41,6 @@ export interface PlanOptions {
   expectedTotal?: number;
   dryRun?: boolean;
   catalog?: ReadSourceTreeOptions["catalog"];
-}
-
-/** Data for one migration. */
-export interface MigrationDataSet {
-  tree: SourceTree;
 }
 
 function normalizeLinkTarget(raw: string): string {
@@ -347,7 +341,7 @@ export async function runImport(options: ImportOptions): Promise<ImportReport> {
       continue;
     }
     try {
-      await service.supersede(nestId, target, { bySlug: mergeInto }, actor);
+      await service.supersede(nestId, target, actor, { bySlug: mergeInto });
       superseded.push(target);
     } catch (error) {
       failed.push({ path: page.path, code: (error as { code?: string }).code ?? "error" });

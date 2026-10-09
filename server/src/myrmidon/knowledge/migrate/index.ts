@@ -42,3 +42,4 @@ export {
   type PlanOptions,
   type ImportOptions,
 } from "./run.js";
+export type { CreateKnowledgeInput, DraftKnowledgeInput, KnowledgeActor } from "../store.js";
