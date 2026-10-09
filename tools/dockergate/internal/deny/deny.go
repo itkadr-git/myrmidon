@@ -62,6 +62,10 @@ const (
 	UpstreamUpgrade       = "upstream_upgrade"
 	ResponseTooLarge      = "response_too_large"
 	MarkerTooLarge        = "marker_too_large"
+
+	// Disk routes (contract C5, WS_DOCKERGATE_DENY).
+	BadQuota         = "bad_quota"
+	QuotaUnavailable = "quota_unavailable"
 )
 
 // Error is a denial: an HTTP status, a reason code and, when the reason is a
@@ -85,8 +89,10 @@ func (e *Error) Error() string { return e.Code }
 // StatusFor is the HTTP status dockergate answers with for a reason code.
 func StatusFor(code string) int {
 	switch code {
-	case TargetForm, JSONSyntax, TarSyntax, ContentType, BodyNotAllowed:
+	case TargetForm, JSONSyntax, TarSyntax, ContentType, BodyNotAllowed, BadQuota:
 		return http.StatusBadRequest
+	case QuotaUnavailable:
+		return http.StatusServiceUnavailable
 	case BodyTooLarge, TarTooLarge:
 		return http.StatusRequestEntityTooLarge
 	case RateLimited, ConcurrencyLimited:
