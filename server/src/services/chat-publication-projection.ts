@@ -14,6 +14,10 @@ const MAX_TEXT_INPUT_LENGTH = 1_000_000;
 const MAX_TEXT_OUTPUT_LENGTH = 4_000_000;
 const MAX_ATTACHMENTS = 20;
 const MAX_CARD_ACTIONS = 12;
+// myrmidon(F06-D): a `/model` list card carries one button per listed model
+// (every model; the list is not capped) plus "default"; Telegram allows 100
+// buttons per message, MAX_CHOICE_BUTTONS (agent-chat-bridge/commands/models.ts) is 98.
+const MAX_CHOOSER_CARD_ACTIONS = 100;
 const MAX_TITLE_LENGTH = 160;
 const MAX_ACTION_LABEL_LENGTH = 80;
 
@@ -109,6 +113,17 @@ export interface ChatPublicationProjectionInput {
       body?: string | null;
       actions?: readonly SafeExternalChatCardAction[] | null;
     };
+  } | null;
+  /**
+   * myrmidon(F06-D): a card that belongs to no issue interaction — the
+   * `/model` and `/think` choice lists. The published payload carries `card`
+   * and no `interactionId`, so nothing that resolves interactions ever sees it.
+   */
+  card?: {
+    kind: SafeExternalChatCardKind;
+    title: string;
+    body?: string | null;
+    actions?: readonly SafeExternalChatCardAction[] | null;
   } | null;
 }
 
@@ -307,6 +322,17 @@ function projectCard(
       "External chat interaction id is invalid",
     );
   }
+  return {
+    interactionId: input.id,
+    card: projectCardContent(input.card, MAX_CARD_ACTIONS),
+  };
+}
+
+function projectCardContent(
+  card: NonNullable<ChatPublicationProjectionInput["card"]>,
+  maxActions: number,
+): SafeExternalChatCard {
+  const input = { card };
   if (!CARD_KINDS.has(input.card.kind)) {
     throw new UnsafeChatPublicationError("External chat card kind is invalid");
   }
@@ -319,9 +345,9 @@ function projectCard(
     ? projectSafeChatPublicationText(input.card.body)
     : undefined;
   const rawActions = input.card.actions ?? [];
-  if (rawActions.length > MAX_CARD_ACTIONS) {
+  if (rawActions.length > maxActions) {
     throw new UnsafeChatPublicationError(
-      `External chat cards support at most ${MAX_CARD_ACTIONS} actions`,
+      `External chat cards support at most ${maxActions} actions`,
     );
   }
 
@@ -363,14 +389,11 @@ function projectCard(
   }
 
   return {
-    interactionId: input.id,
-    card: {
-      schema: "paperclip.chat.card.v1",
-      kind: input.card.kind,
-      title,
-      ...(body ? { body } : {}),
-      ...(actions.length ? { actions } : {}),
-    },
+    schema: "paperclip.chat.card.v1",
+    kind: input.card.kind,
+    title,
+    ...(body ? { body } : {}),
+    ...(actions.length ? { actions } : {}),
   };
 }
 
@@ -396,11 +419,20 @@ export function projectSafeChatPublication(
   }
   const attachmentIds = projectAttachmentIds(input.attachmentIds);
   const interaction = input.interaction ? projectCard(input.interaction) : null;
+  if (input.interaction && input.card) {
+    throw new UnsafeChatPublicationError(
+      "An external chat publication carries an interaction card or a plain card, not both",
+    );
+  }
+  const plainCard = input.card
+    ? projectCardContent(input.card, MAX_CHOOSER_CARD_ACTIONS)
+    : null;
 
   return {
     text: projectSafeChatPublicationText(input.text),
     ...(attachmentIds ? { attachmentIds } : {}),
     ...(input.progressState ? { progressState: input.progressState } : {}),
     ...(interaction ?? {}),
+    ...(plainCard ? { card: plainCard } : {}),
   };
 }
