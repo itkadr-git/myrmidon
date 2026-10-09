@@ -46,10 +46,13 @@
 #      made every batch wait MYRMIDON_BOT_IMAGE_ROLLOUT_BOT_TIMEOUT_SEC).
 #      After the last batch the tail pass retries the deferred bots until the
 #      same deadline, and past it the optional force stage
-#      (MYRMIDON_BOT_IMAGE_ROLLOUT_FORCE_DEFERRED_SEC, default = the timeout,
-#      0 disables) applies them without the status gate: the reconciler opens
-#      a maintenance window, drains the in-flight run to its end and switches
-#      right after it - a run is never interrupted.
+#      (MYRMIDON_BOT_IMAGE_ROLLOUT_FORCE_DEFERRED_SEC, default 0 = OFF; set
+#      it to a number of seconds to opt in) applies them without the status
+#      gate. The reconciler then opens a maintenance window and drains for
+#      300 s; a longer run is interrupted by the maintenance, so the stage is
+#      an explicit operator choice, never the default.
+#      A failed apply never leaves a card switched while the container stays
+#      on the old image: the card goes back to its previous container block.
 #   6. After every bot runs a release image, remove the superseded bot image
 #      refs from `images` (only refs of our three bot repositories, never a
 #      pinned one) and SIGHUP again. Deferred bots keep the old refs listed.
@@ -132,12 +135,12 @@ require_cmd docker curl jq
 # --- settings (see deploy.env.example) ---------------------------------------
 MYR_BOT_COMPONENTS="${MYRMIDON_BOT_IMAGE_ROLLOUT_COMPONENTS:-hermes,hermes-dev,hermes-node}"
 MYR_BOT_TIMEOUT_SEC="${MYRMIDON_BOT_IMAGE_ROLLOUT_BOT_TIMEOUT_SEC:-900}"
-# BOT-ROLLOUT-SKIP-BUSY (OPE-5098): how long after the tail-pass deadline the
-# still-deferred bots are applied WITHOUT the status gate (the reconciler
-# drains the in-flight run to its end; a run is never interrupted). Default =
-# the tail-pass timeout; 0 disables the force stage (the apply behaviour of
-# the pre-1.6.5 script).
-MYR_BOT_FORCE_DEFERRED_SEC="${MYRMIDON_BOT_IMAGE_ROLLOUT_FORCE_DEFERRED_SEC:-$MYR_BOT_TIMEOUT_SEC}"
+# BOT-ROLLOUT-SKIP-BUSY: how long after the tail-pass deadline the
+# still-deferred bots are applied WITHOUT the status gate. The reconciler
+# drains only 300 s, then the maintenance interrupts a longer run, so the
+# stage is OFF by default (0) and runs only when an operator sets a number of
+# seconds explicitly.
+MYR_BOT_FORCE_DEFERRED_SEC="${MYRMIDON_BOT_IMAGE_ROLLOUT_FORCE_DEFERRED_SEC:-0}"
 [[ "$MYR_BOT_FORCE_DEFERRED_SEC" =~ ^[0-9]+$ ]] \
   || die "MYRMIDON_BOT_IMAGE_ROLLOUT_FORCE_DEFERRED_SEC must be a non-negative integer (got '$MYR_BOT_FORCE_DEFERRED_SEC')"
 # 1.6.5 async "Apply now": how long to wait for ONE apply job (202 + applyId)
@@ -633,6 +636,27 @@ container_on_image() {
   jq -e --arg want "$want" '.container.state == "running" and .container.image == $want' <<<"$body" >/dev/null 2>&1
 }
 
+# Puts the card's container block back after a failed apply: a card on the new
+# image over a container on the old one is the "new key, old container" (401)
+# state. Skipped when the container is already on the target (the apply did
+# work). A failed revert is logged loudly; the bot stays failed either way.
+revert_card() {
+  local id="$1" block="$2" target="$3" body
+  [[ -n "$block" ]] || return 0
+  if container_on_image "$id" "$target"; then
+    bot_log "bot $id: apply reported a failure but the container runs the release image; the card stays"
+    return 0
+  fi
+  body="$(jq -cn --argjson c "$block" '{adapterConfig: {container: $c}}')"
+  if board_patch_json "/agents/$id" "$body" >/dev/null; then
+    bot_log "bot $id: apply failed; the card is back on its previous image (reverted)"
+    journal "agent $id apply failed: card reverted to its previous container block"
+  else
+    bot_log "bot $id: apply failed AND the card revert failed; the card points at the release image, the container is on the old one: fix by hand"
+    journal "agent $id apply failed and card revert failed (card on $target, container on the old image)"
+  fi
+}
+
 # Returns 0 switched, 2 deferred (retry), 1 failed.
 # $2 == "force" drops the paused/idle status gate: the apply below goes to the
 # reconciler as-is, and its pause-and-apply path opens the maintenance window
@@ -640,6 +664,7 @@ container_on_image() {
 # gate is dropped only by the force stage of the tail pass.
 switch_one_bot() {
   local id="$1" force="${2:-}" current target body out kind status apply_id waited
+  local prev_block=""
   current="$(card_image "$id" || true)"
   [[ -n "$current" ]] || current="(none)"
   target="$(release_image_for "$current")"
@@ -670,6 +695,7 @@ switch_one_bot() {
     # would replace it and drop enabled and the limits).
     local block
     block="$(card_container "$id" || true)"
+    prev_block="$block"
     [[ -n "$block" && "$block" != "{}" ]] || { bot_log "bot $id: cannot read the card's container block; the card is untouched"; return 1; }
     body="$(jq -cn --argjson c "$block" --arg img "$target" '{adapterConfig: {container: ($c + {image: $img})}}')"
     if ! board_patch_json "/agents/$id" "$body" >/dev/null; then
@@ -679,8 +705,9 @@ switch_one_bot() {
     # Apply now: the board's own reconciler drains this agent alone and
     # recreates the container with the new image.
     out="$(board_post_json_status "/myrmidon/agents/$id/bot-container/apply" '{}')" || {
-      bot_log "apply of bot $id failed after the card switch; the card points at the release image, the periodic sweep applies it"
-      journal "agent $id card switched to $target (apply failed; the sweep retries)"
+      bot_log "apply of bot $id failed after the card switch"
+      journal "agent $id card switched to $target, apply failed"
+      revert_card "$id" "$prev_block" "$target"
       return 1
     }
   fi
@@ -701,7 +728,8 @@ switch_one_bot() {
       ;;
     *)
       bot_log "apply of bot $id answered HTTP $http_status; the periodic sweep retries"
-      journal "agent $id apply answered HTTP $http_status (card unchanged)"
+      journal "agent $id apply answered HTTP $http_status"
+      revert_card "$id" "$prev_block" "$target"
       return 1
       ;;
   esac
@@ -729,6 +757,7 @@ switch_one_bot() {
       failed\|*)
         bot_log "bot $id: apply $apply_id failed: ${waited#failed|}"
         journal "agent $id apply $apply_id failed: ${waited#failed|}"
+        revert_card "$id" "$prev_block" "$target"
         return 1
         ;;
       *)
@@ -757,6 +786,7 @@ switch_one_bot() {
     *)
       bot_log "bot $id: unexpected apply outcome '$kind'"
       journal "agent $id apply outcome '$kind'"
+      revert_card "$id" "$prev_block" "$target"
       return 1
       ;;
   esac
