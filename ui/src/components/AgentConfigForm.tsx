@@ -98,6 +98,7 @@ import { AgentCardLspFields } from "./myrmidon/AgentCardLspFields"; // myrmidon(
 import { botLspApi, botLspQueryKey } from "./myrmidon/botLspApi"; // myrmidon(BOT-LSP-DEFAULTS)
 import { AgentCardEgressFields } from "./myrmidon/AgentCardEgressFields"; // myrmidon(EGRESS-B)
 import { AgentCardNestsFields } from "./myrmidon/AgentCardNestsFields"; // myrmidon(1.6.5 F-26 T3)
+import { AgentCardTelegramFields } from "./myrmidon/AgentCardTelegramFields"; // myrmidon(1.6.5 OPE-6318 part D)
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
 import { ReportsToPicker } from "./ReportsToPicker";
 import {
@@ -1818,6 +1819,14 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           )}
           {/* myrmidon(1.6.5 F-26 T3 CASTES-AND-NESTS): the projects this agent works in */}
           {!isCreate && <AgentCardNestsFields agentId={props.agent.id} />}
+          {/* myrmidon(1.6.5 OPE-6318 part D): Telegram aliases and group on the card */}
+          {!isCreate && (
+            <AgentCardTelegramFields
+              agentId={props.agent.id}
+              agentName={props.agent.name}
+              metadata={props.agent.metadata}
+            />
+          )}
           {/* myrmidon(PARALLEL-HELPERS): parallel helper subagents on the agent card.
               The ceiling/default come from the instance settings; read-only here,
               changed on the settings page. */}
