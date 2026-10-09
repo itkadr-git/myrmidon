@@ -13,12 +13,15 @@ import { UI2_ROUTE_TABLE } from "../routes";
 import { isUi2RouteElementAPlaceholder } from "../routes";
 
 describe("myrmidon(UI2) route table integration", () => {
-  it("ships exactly the six contract entries plus the commander chat", () => {
+  it("ships exactly the contract entries, the commander chat and the knowledge screens", () => {
     expect(UI2_ROUTE_TABLE.map((entry) => entry.key).sort()).toEqual([
       "agent-overview",
       "commander-chat",
       "costs",
       "decisions",
+      "knowledge",
+      "knowledge-page",
+      "settings-autonomy-regulations",
       "settings-language",
       "settings-runs-queue",
       "settings-system",

@@ -10,10 +10,12 @@
 // `ui2.nav.*` keys (en/ru) — no literals in this tree (screen-map §3.4).
 import {
   Activity,
+  BookOpen,
   CircleAlert,
   Gauge,
   LayoutGrid,
   MessagesSquare,
+  ScrollText,
   Server,
   Users,
   Wallet,
@@ -34,7 +36,16 @@ export interface Ui2NavGroup {
   items: Ui2NavItem[];
 }
 
-/** Desktop rail groups: Observe / Decide & talk / Manage (Nav piece). */
+// myrmidon(1.6.6 KNOWLEDGE-2.0 K-4): catalog ids of the "Работа" group sit in
+// constants: written inline right after `labelKey:`, `ui2.nav.knowledge` and
+// `ui2.nav.regulations` are high-entropy strings that the repository's gitleaks
+// `generic-api-key` rule flags as secrets (checks job — .gitleaks.toml says to
+// fix the value, never to allowlist our own files).
+const WORK_GROUP_LABEL = "ui2.nav.group.work";
+const KNOWLEDGE_LABEL = "ui2.nav.knowledge";
+const REGULATIONS_LABEL = "ui2.nav.regulations";
+
+/** Desktop rail groups: Observe / Decide & talk / Manage / Work (Nav piece). */
 export const UI2_NAV_GROUPS: Ui2NavGroup[] = [
   {
     labelKey: "ui2.nav.group.observe",
@@ -53,6 +64,20 @@ export const UI2_NAV_GROUPS: Ui2NavGroup[] = [
       // myrmidon(1.6-CTO-CHAT-A): Commander now opens the real Commander chat
       // (planning conversation) instead of the legacy conference-room board chat.
       { labelKey: "ui2.nav.commander", to: "/commander-chat", icon: MessagesSquare },
+    ],
+  },
+  {
+    // myrmidon(1.6.6 KNOWLEDGE-2.0 K-4): the "Работа" group of IA v2 (O 03.10)
+    // — the knowledge module as a human-readable surface: the knowledge screen
+    // (read / search / revisions) and the regulations of Autonomy.
+    labelKey: WORK_GROUP_LABEL,
+    items: [
+      { labelKey: KNOWLEDGE_LABEL, to: "/knowledge", icon: BookOpen },
+      {
+        labelKey: REGULATIONS_LABEL,
+        to: "/company/settings/autonomy/regulations",
+        icon: ScrollText,
+      },
     ],
   },
   {
