@@ -54,6 +54,8 @@ export function createCancelStaleQueuedRun(deps: { writer: RunDispatchWriter }) 
     companyId: string;
     expectedStatus: "queued" | "running";
     now?: Date;
+    /** myrmidon(1.6.5 F-09): when true, the cancellation does not re-enqueue a wake. */
+    suppressImmediateRecovery?: boolean;
   }) => deps.writer.cancelStaleQueuedRun({ ...input, now: input.now ?? new Date() });
 }
 

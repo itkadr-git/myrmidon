@@ -19473,7 +19473,97 @@ export function heartbeatService(
     | RunAdmissionDenialReason
     | "agent_fair_share"
     | "agent_concurrency"
-    | "priority";
+    | "priority"
+    | "maintenance"
+    | "agent_not_invokable"
+    | "scheduling_suppressed";
+
+  // myrmidon(1.6.5 F-09): thresholds for queued-run explanation. The explain
+  // threshold decides when a still-queued run must carry a `waitReason`; the
+  // stall threshold decides when the attention feed surfaces a `queue_stall`
+  // card. Both come from instance_settings.general with env-var defaults and
+  // are clamped to safe bounds.
+  const QUEUED_RUN_EXPLAIN_AFTER_SEC_DEFAULT = 60;
+  const QUEUED_RUN_STALE_AFTER_SEC_DEFAULT = 3600;
+
+  function clampNumber(value: unknown, min: number, max: number): number | null {
+    const n = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+    if (!Number.isFinite(n)) return null;
+    return Math.max(min, Math.min(max, Math.round(n)));
+  }
+
+  type QueuedRunThresholds = { explainAfterMs: number; staleAfterMs: number };
+
+  async function readQueuedRunThresholds(): Promise<QueuedRunThresholds> {
+    let explainAfterSec = QUEUED_RUN_EXPLAIN_AFTER_SEC_DEFAULT;
+    let staleAfterSec = QUEUED_RUN_STALE_AFTER_SEC_DEFAULT;
+    const envExplain = readProductEnvFrom(runtimeEnv, "QUEUED_RUN_EXPLAIN_AFTER_SEC");
+    if (envExplain !== undefined && envExplain !== null && envExplain !== "") {
+      const n = Number(envExplain);
+      if (Number.isFinite(n) && n > 0) explainAfterSec = n;
+    }
+    const envStale = readProductEnvFrom(runtimeEnv, "QUEUED_RUN_STALE_AFTER_SEC");
+    if (envStale !== undefined && envStale !== null && envStale !== "") {
+      const n = Number(envStale);
+      if (Number.isFinite(n) && n > 0) staleAfterSec = n;
+    }
+    const general = await instanceSettings.getGeneral().catch(() => ({}) as Record<string, unknown>);
+    const g = (general ?? {}) as Record<string, unknown>;
+    explainAfterSec = clampNumber(g.queuedRunExplainAfterSec, 10, 86400) ?? explainAfterSec;
+    staleAfterSec = clampNumber(g.queuedRunStaleAfterSec, 60, 604800) ?? staleAfterSec;
+    return { explainAfterMs: explainAfterSec * 1000, staleAfterMs: staleAfterSec * 1000 };
+  }
+
+  /**
+   * Fill waitReason for queued runs older than the explain threshold.
+   * A null `reason` means "no observed cause" — nothing is written, so the
+   * run keeps waitReason = null and stays visible to the queue_stall
+   * attention card (its generator matches waitReason IS NULL). Never write
+   * a guessed reason here: a fabricated value would mask OPE-4099-style
+   * stuck-queue diagnostics.
+   */
+  async function explainStaleQueuedRuns(now: Date, reason: QueuedRunWaitReason | null): Promise<void> {
+    if (reason == null) return;
+    const { explainAfterMs } = await readQueuedRunThresholds();
+    const cutoff = new Date(now.getTime() - explainAfterMs);
+    const rows = await db
+      .select({ id: heartbeatRuns.id, contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.status, "queued"), lte(heartbeatRuns.createdAt, cutoff)));
+    const needsReason = rows
+      .filter((row) => parseObject(row.contextSnapshot).waitReason == null)
+      .map((row) => row.id);
+    if (needsReason.length === 0) return;
+    await writeQueuedRunWaitReason(needsReason, reason);
+  }
+
+  /**
+   * Re-read queued runs for an agent and fill waitReason with the last
+   * admission denial actually observed for it. Runs without an observed
+   * denial keep waitReason = null — the queue_stall card names them instead
+   * of a fabricated `global_cap`.
+   */
+  async function explainAgentQueuedRuns(agentId: string, now: Date): Promise<void> {
+    const { explainAfterMs } = await readQueuedRunThresholds();
+    const cutoff = new Date(now.getTime() - explainAfterMs);
+    const rows = await db
+      .select({ id: heartbeatRuns.id, contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.agentId, agentId),
+          eq(heartbeatRuns.status, "queued"),
+          lte(heartbeatRuns.createdAt, cutoff),
+        ),
+      );
+    const needsReason = rows
+      .filter((row) => parseObject(row.contextSnapshot).waitReason == null)
+      .map((row) => row.id);
+    if (needsReason.length === 0) return;
+    const observed = sharedRunAdmission().lastDenialReason();
+    if (observed == null) return;
+    await writeQueuedRunWaitReason(needsReason, observed);
+  }
 
   async function writeQueuedRunWaitReason(
     runIds: ReadonlyArray<string>,
@@ -19555,6 +19645,25 @@ export function heartbeatService(
     }
   }
 
+  // myrmidon(1.6.5 F-09): cancel queued runs whose issue is not startable
+  // (backlog). The cancellation carries the
+  // `queued_run_issue_not_startable` error code.
+  async function cancelQueuedRunsAsNotStartable(runIds: ReadonlyArray<string>): Promise<void> {
+    for (const runId of runIds) {
+      const run = await db.query.heartbeatRuns.findFirst({
+        where: eq(heartbeatRuns.id, runId),
+        columns: { id: true, companyId: true },
+      });
+      if (!run) continue;
+      await runDispatch.cancelStaleQueuedRun({
+        runId,
+        companyId: run.companyId,
+        expectedStatus: "queued",
+        now: new Date(),
+      });
+    }
+  }
+
   // myrmidon(1.6.5 RUN-FAIRNESS): the per-agent share ceiling of the sliding
   // start window, in percent. The key arrives with the runtime-limits part of
   // the feature; until then the name is read from the live limits as a
@@ -19569,7 +19678,11 @@ export function heartbeatService(
   }
 
   async function resumeQueuedRuns() {
-    if ((await getSchedulingSuppression()).suppressed) return;
+    const schedulingSuppression = await getSchedulingSuppression();
+    if (schedulingSuppression.suppressed) {
+      await explainStaleQueuedRuns(new Date(), "scheduling_suppressed");
+      return;
+    }
     await resumeExecutionWaitComments();
     const cutoff = await getWorktreeExecutionCutoff();
     const pendingInterrupts = await db.select({ id: agentWakeupRequests.id, companyId: agentWakeupRequests.companyId })
@@ -20090,7 +20203,10 @@ export function heartbeatService(
     // holds its own queue.
     options: { otherAgentsWaiting?: boolean } = {},
   ) {
-    if ((await getSchedulingSuppression()).suppressed) return [];
+    if ((await getSchedulingSuppression()).suppressed) {
+      await explainStaleQueuedRuns(new Date(), "scheduling_suppressed");
+      return [];
+    }
     // myrmidon(R3): queued runs wait for maintenance exit — except the
     // CHAT-FIRST exemption below.
     const maintenanceWindows = await maintenanceWindowsForAgent(db, agentId);
@@ -20103,7 +20219,7 @@ export function heartbeatService(
       // reconciler's drain wait then never reaches zero, its finally exits
       // the window, and the profile update retries on the next sweep.
       const queuedPeek = await db
-        .select({ contextSnapshot: heartbeatRuns.contextSnapshot, requestedByActorType: agentWakeupRequests.requestedByActorType })
+        .select({ id: heartbeatRuns.id, contextSnapshot: heartbeatRuns.contextSnapshot, requestedByActorType: agentWakeupRequests.requestedByActorType })
         .from(heartbeatRuns)
         .leftJoin(agentWakeupRequests, eq(agentWakeupRequests.id, heartbeatRuns.wakeupRequestId))
         .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "queued")));
@@ -20113,7 +20229,13 @@ export function heartbeatService(
           requestedByActorType: row.requestedByActorType ?? null,
         }),
       );
-      if (!chatExempt) return [];
+      if (!chatExempt) {
+        const staleIds = queuedPeek
+          .filter((row) => parseObject(row.contextSnapshot).waitReason == null)
+          .map((row) => row.id);
+        if (staleIds.length > 0) await writeQueuedRunWaitReason(staleIds, "maintenance");
+        return [];
+      }
     }
     const cutoff = await getWorktreeExecutionCutoff();
 
@@ -20127,6 +20249,17 @@ export function heartbeatService(
             agentId,
             `Cancelled because the agent is not invokable: ${invokability.reason}`,
           );
+        } else {
+          // myrmidon(1.6.5 F-09): the sweep leaves the queued runs in place
+          // but names why they wait.
+          const staleQueued = await db
+            .select({ id: heartbeatRuns.id, contextSnapshot: heartbeatRuns.contextSnapshot })
+            .from(heartbeatRuns)
+            .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "queued")));
+          const needsReason = staleQueued
+            .filter((row) => parseObject(row.contextSnapshot).waitReason == null)
+            .map((row) => row.id);
+          if (needsReason.length > 0) await writeQueuedRunWaitReason(needsReason, "agent_not_invokable");
         }
         return [];
       }
@@ -20211,6 +20344,7 @@ export function heartbeatService(
           id: issues.id,
           status: issues.status,
           priority: issues.priority,
+          hiddenAt: issues.hiddenAt,
         })
         .from(issues)
         .where(
@@ -20222,6 +20356,22 @@ export function heartbeatService(
             : sql`false`,
         );
       const issueById = new Map(issueRows.map((row) => [row.id, row]));
+      // myrmidon(1.6.5 F-09): cancel queued runs whose issue is not startable
+      // (backlog) right away, so they do not occupy the sweep. Hidden tasks
+      // stay: hidden todos are the supported Summarizer pattern
+      // (summary slots / status cards), the claim path decides their fate.
+      const notStartableRunIds = queuedRuns
+        .filter((run) => {
+          const issueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+          if (!issueId) return false;
+          const issue = issueById.get(issueId);
+          if (!issue) return false;
+          return issue.status === "backlog";
+        })
+        .map((run) => run.id);
+      if (notStartableRunIds.length > 0) {
+        await cancelQueuedRunsAsNotStartable(notStartableRunIds);
+      }
       // myrmidon(1.6.5 RUN-PRIORITY A): inside each readiness rank the runs
       // now sort by the effective weight (role + issue priority + release
       // bonus + aging) with a createdAt tie-break. The readiness rank stays
@@ -20361,6 +20511,13 @@ export function heartbeatService(
           activeRunExecutionPromises.delete(execution);
         });
       }
+      // myrmidon(1.6.5 F-09): any queued run that survived the claim without
+      // a waitReason gets one now — but only when the admission gate actually
+      // observed a denial. Without an observed denial the reason stays null:
+      // a fabricated `global_cap` would hide genuinely stuck runs from the
+      // queue_stall attention card (its generator matches waitReason IS NULL)
+      // and mask the OPE-4099 diagnostics.
+      await explainAgentQueuedRuns(agentId, new Date());
       return claimedRuns;
     });
   }
