@@ -15,13 +15,16 @@ die() { printf '[myrmidon-deploy] ERROR: %s\n' "$*" >&2; exit 1; }
 # version stamp never aborts a deploy). deploy.sh and deploy-from-job.sh call
 # this right after sourcing lib.sh, before any other output.
 log_script_version() {
-  local clone describe
-  # A sandboxed git (tests, fake binaries) must not see the ambient config.
-  GIT_CONFIG_NOSYSTEM=1
-  export GIT_CONFIG_NOSYSTEM
+  local describe
+  # myrmidon(F-05-review): the stamp must be the journal's first line, and the
+  # deploy journal is stderr (log/die/plan, deploy-from-job.sh's
+  # `deploy.sh ... 2>job-<id>.log`) — so the stamp goes to stderr too.
+  # GIT_CONFIG_NOSYSTEM is a stamp-only, one-off env: later git calls in the
+  # same process must keep reading /etc/gitconfig (safe.directory, proxies).
   clone="$(git -C "$MYR_SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null)" || clone=""
-  describe="$(git -C "${clone:-$MYR_SCRIPT_DIR}" describe --tags --always 2>/dev/null)" || describe=""
-  printf 'deploy scripts at %s\n' "${describe:-unknown}"
+  describe="$(GIT_CONFIG_NOSYSTEM=1 git -C "${clone:-$MYR_SCRIPT_DIR}" describe --tags --always 2>/dev/null)" \
+    || describe=""
+  printf 'deploy scripts at %s\n' "${describe:-unknown}" >&2
 }
 
 # Runs a command, or prints it in dry-run mode.

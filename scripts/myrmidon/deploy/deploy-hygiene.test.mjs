@@ -183,42 +183,52 @@ exit 0
   }
   // Runs deploy.sh up to its first argument check with the fake git first in
   // PATH; the run dies on "give --digest or --release", after the journal's
-  // first line.
-  function journalHead(sb) {
-    const result = spawnSync("bash", [path.join(HERE, "deploy.sh")], {
-      env: { ...process.env, PATH: `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir },
+  // first line. The deploy journal is STDERR (deploy-from-job.sh captures it
+  // as job-<id>.log), so the head assertions read stderr only — and each case
+  // also proves the stamp never leaks into stdout.
+  function runJournal(sb, exactPath = false) {
+    return spawnSync("bash", [path.join(HERE, "deploy.sh")], {
+      env: { ...process.env, PATH: exactPath ? sb.bin : `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir },
       encoding: "utf8",
     });
-    return `${result.stdout}${result.stderr}`.split("\n")[0];
   }
-  // Same as journalHead, but PATH is exactly the sandbox bin (no fallback to
-  // the ambient PATH), so a tool absent from the sandbox is truly absent.
-  function journalHeadExactPath(sb) {
-    const result = spawnSync("bash", [path.join(HERE, "deploy.sh")], {
-      env: { ...process.env, PATH: sb.bin, SANDBOX: sb.dir },
-      encoding: "utf8",
-    });
-    return `${result.stdout}${result.stderr}`.split("\n")[0];
+  function journalHead(sb, exactPath = false) {
+    const r = runJournal(sb, exactPath);
+    return r.stderr.split("\n")[0];
+  }
+  function assertNoStdoutStamp(r) {
+    assert.ok(
+      !(r.stdout || "").includes("deploy scripts at"),
+      `the version stamp must go to stderr (the deploy journal), not stdout: ${JSON.stringify(r.stdout)}`,
+    );
   }
 
   it("the journal's first line names the script version (git describe)", () => {
     const sb = versionSandbox(FAKE_GIT);
+    const r = runJournal(sb);
     assert.equal(journalHead(sb), "deploy scripts at myr-v1.6.5-rc.7-3-gdeadbee");
+    assertNoStdoutStamp(r);
   });
 
   it("falls back to unknown when git cannot answer", () => {
     const sb = versionSandbox(BROKEN_GIT);
+    const r = runJournal(sb);
     assert.equal(journalHead(sb), "deploy scripts at unknown");
+    assertNoStdoutStamp(r);
   });
 
   it("falls back to unknown when git itself is not installed", () => {
     const sb = versionSandbox(null);
-    assert.equal(journalHeadExactPath(sb), "deploy scripts at unknown");
+    const r = runJournal(sb, true);
+    assert.equal(journalHead(sb, true), "deploy scripts at unknown");
+    assertNoStdoutStamp(r);
   });
 
   it("describes the scripts' directory when it is not inside a git clone", () => {
     const sb = versionSandbox(NO_CLONE_GIT);
+    const r = runJournal(sb);
     assert.equal(journalHead(sb), "deploy scripts at fallback-sha1");
+    assertNoStdoutStamp(r);
   });
 });
 
