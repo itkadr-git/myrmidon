@@ -131,3 +131,117 @@ describe("BotDiskSettingsPanel lifecycle section", () => {
     await i18n.changeLanguage("en");
   });
 });
+
+// myrmidon(1.6.6-SETTINGS-UI-B): the editable lifecycle section.
+describe("BotDiskSettingsPanel lifecycle edit section", () => {
+  const fullView = {
+    settings: {
+      enabled: true,
+      idleTtlMs: 3_600_000,
+      graceClosingMinutes: 45,
+      scratchTtlHours: 12,
+      partitionThresholdPercent: 80,
+      sharedCacheRoles: ["engineer", "qa"],
+    },
+    sources: { enabled: "settings", idleTtlMs: "settings" },
+  } as never;
+
+  beforeEach(async () => {
+    vi.restoreAllMocks();
+    document.body.innerHTML = "";
+    await i18n.changeLanguage("en");
+  });
+
+  async function renderWith(view: never) {
+    vi.spyOn(botDiskApi, "get").mockResolvedValue(view);
+    vi.spyOn(botDiskLifecycleApi, "getPhysical").mockResolvedValue({ projects: [], gateReached: false } as never);
+    vi.spyOn(botDiskLifecycleApi, "getReports").mockResolvedValue({ reports: [] } as never);
+    const container = renderPanel(reportAt);
+    await settle();
+    return container;
+  }
+
+  function findSave(section: HTMLElement) {
+    return Array.from(section.querySelectorAll("button")).find((b) => b.textContent?.includes("Save lifecycle")) as HTMLButtonElement;
+  }
+
+  /** React ignores direct `.value =` writes: go through the native setter. */
+  async function typeInto(input: HTMLInputElement, value: string) {
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+      setter?.call(input, value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  }
+
+  /** The variables the mutation passed to setFields (React Query adds a context arg). */
+  function patched(setFields: { mock: { calls: unknown[][] } }) {
+    return setFields.mock.calls[0]?.[0];
+  }
+
+  it("renders the lifecycle fields seeded from the stored values", async () => {
+    const container = await renderWith(fullView as never);
+    const section = container.querySelector('[data-testid="bot-disk-lifecycle-edit"]') as HTMLElement;
+    expect(section).not.toBeNull();
+    expect((section.querySelector("#bot-disk-idle-ttl") as HTMLInputElement).value).toBe("60");
+    expect((section.querySelector("#graceClosingMinutes") as HTMLInputElement).value).toBe("45");
+    expect((section.querySelector("#scratchTtlHours") as HTMLInputElement).value).toBe("12");
+    expect((section.querySelector("#partitionThresholdPercent") as HTMLInputElement).value).toBe("80");
+    // Absent keys show the placeholder (the default), not a value.
+    expect((section.querySelector("#partitionRefuseOpenPercent") as HTMLInputElement).value).toBe("");
+    expect((section.querySelector("#bot-disk-shared-cache-roles") as HTMLInputElement).value).toBe("engineer, qa");
+    expect((section.querySelector('[data-testid="bot-disk-lifecycle-enabled"]') as HTMLInputElement).checked).toBe(true);
+  });
+
+  it("sends only the changed keys in one PATCH", async () => {
+    const container = await renderWith(fullView);
+    const setFields = vi.spyOn(botDiskApi, "setFields").mockResolvedValue(fullView as never);
+    const section = container.querySelector('[data-testid="bot-disk-lifecycle-edit"]') as HTMLElement;
+    await typeInto(section.querySelector("#graceClosingMinutes") as HTMLInputElement, "90");
+    await typeInto(section.querySelector("#partitionCriticalPercent") as HTMLInputElement, "99");
+    const save = findSave(section);
+    expect(save.disabled).toBe(false);
+    await act(async () => {
+      save.click();
+    });
+    expect(patched({ mock: setFields.mock as never })).toEqual({ graceClosingMinutes: 90, partitionCriticalPercent: 99 });
+  });
+
+  it("clearing a stored number patches null (back to default)", async () => {
+    const container = await renderWith(fullView);
+    const setFields = vi.spyOn(botDiskApi, "setFields").mockResolvedValue(fullView as never);
+    const section = container.querySelector('[data-testid="bot-disk-lifecycle-edit"]') as HTMLElement;
+    await typeInto(section.querySelector("#scratchTtlHours") as HTMLInputElement, "");
+    await act(async () => {
+      findSave(section).click();
+    });
+    expect(patched({ mock: setFields.mock as never })).toEqual({ scratchTtlHours: null });
+  });
+
+  it("rejects an out-of-range value before sending anything", async () => {
+    const container = await renderWith(fullView);
+    const setFields = vi.spyOn(botDiskApi, "setFields");
+    const section = container.querySelector('[data-testid="bot-disk-lifecycle-edit"]') as HTMLElement;
+    await typeInto(section.querySelector("#partitionThresholdPercent") as HTMLInputElement, "40");
+    await act(async () => {
+      findSave(section).click();
+    });
+    expect(setFields).not.toHaveBeenCalled();
+    expect(section.querySelector('[data-testid="bot-disk-lifecycle-error"]')?.textContent).toContain("between 50 and 100");
+  });
+
+  it("saves the sweep switch and the TTL minutes as ms", async () => {
+    const container = await renderWith(fullView);
+    const setFields = vi.spyOn(botDiskApi, "setFields").mockResolvedValue(fullView as never);
+    const section = container.querySelector('[data-testid="bot-disk-lifecycle-edit"]') as HTMLElement;
+    await typeInto(section.querySelector("#bot-disk-idle-ttl") as HTMLInputElement, "120");
+    const enabledBox = section.querySelector('[data-testid="bot-disk-lifecycle-enabled"]') as HTMLInputElement;
+    await act(async () => {
+      enabledBox.click();
+    });
+    await act(async () => {
+      findSave(section).click();
+    });
+    expect(patched({ mock: setFields.mock as never })).toEqual({ enabled: false, idleTtlMs: 120 * 60_000 });
+  });
+});
