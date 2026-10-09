@@ -163,6 +163,8 @@ import { sweepTelegramNotifyProactivity } from "./myrmidon/telegram-notify/sweep
 import { accessHubRoutes } from "./myrmidon/access-hub/routes.js"; // myrmidon(SEC1)
 import { ui2LanguageRoutes } from "./myrmidon/ui2-language/routes.js"; // myrmidon(UI2-I18N)
 import { myrmidonForagingRoutes } from "./myrmidon/foraging/index.js"; // myrmidon(1.6-FORAGE)
+// myrmidon(1.6-GRD): guardrail event journal for the flag-only output detectors
+import { myrmidonGuardrailsRoutes } from "./myrmidon/guardrails/index.js"; // myrmidon(1.6-GRD)
 import { myrmidonAgentMemoryRoutes, myrmidonAgentMemorySettingsRoutes } from "./myrmidon/agent-memory/index.js"; // myrmidon(MEMORY-UI)
 // myrmidon(1.6-SKILL-LIFE): company skill lifecycle (candidate/verified/deprecated, rollback)
 import { myrmidonSkillLifecycleRoutes } from "./myrmidon/skill-lifecycle/index.js";
@@ -988,6 +990,7 @@ export async function createApp(
   api.use(myrmidonTelegramNotifyRoutes(db)); // myrmidon(TG-NOTIFY-A): telegramNotify settings core (GET/PATCH + changelog)
   api.use(ui2LanguageRoutes(db)); // myrmidon(UI2-I18N): per-user UI language preference
   api.use(myrmidonForagingRoutes(db)); // myrmidon(1.6-FORAGE): source registry, findings and the manual sweep
+  api.use(myrmidonGuardrailsRoutes(db)); // myrmidon(1.6-GRD)
   api.use(myrmidonMonitoringAlertsRoutes(db)); // myrmidon(1.6.6-ALERTS): monitoring alerts webhook (Zabbix/Alertmanager) and its settings
   api.use(myrmidonWikiCortexRoutes(db)); // myrmidon(1.6-WIKI): company regulations (wiki pages, revisions, resolver)
   api.use(myrmidonBoardProcessRegistryRoutes(db)); // myrmidon(1.6.6 PROCS-0.1): process registry read by the «Процессы» panel
