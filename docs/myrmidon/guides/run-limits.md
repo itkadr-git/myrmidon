@@ -109,3 +109,25 @@ check is inactive and one warning `run admission cannot read the cgroup memory
 limit…` is written to the log. The concurrency and start-rate limits still
 hold. If the warning is present but the container has a memory limit, check
 how the server was started.
+
+## Seeing the admission's refusals (1.6.5)
+
+The Run limits section draws one more line:
+
+```
+Admission refusals: 12 since the server started. By reason: concurrency ceiling
+x7, start ramp x3, host memory floor x1, memory floor x1. The last refusal: the
+start ramp.
+```
+
+The total counts the sweeps that left a queued run waiting because of a global
+or host ceiling — a run that is merely behind others in the queue is not part
+of it. Alongside the total the line shows the breakdown by reason, largest
+first, and the reason of the most recent refusal (a reason the screen does not
+know is shown under its own name).
+
+The line is fed by `admissionDenials` in the reply of
+`GET /api/myrmidon/runtime-limits`. A server that does not send the field (one
+older than the change that adds it) draws no line at all — the screen shows
+nothing rather than a zero it invented, and the rest of the section is
+unaffected.
