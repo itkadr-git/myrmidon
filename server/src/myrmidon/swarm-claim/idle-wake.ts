@@ -10,6 +10,7 @@
 // tests and the sweep only executes what the policy decided.
 
 import {
+  orderIdleWakeAgents,
   orderSwarmQueueCandidates,
   swarmActiveTaskLimitReached,
   type SwarmClaimLease,
@@ -51,6 +52,17 @@ export interface SwarmRoleIdleInput {
     status: string | null;
     /** True when a live heartbeat run (queued/running/scheduled_retry) covers the agent. */
     hasLiveRun: boolean;
+    /**
+     * 1.6.5 (OPE-6608 C): the agent's own queue switch (caste default applied).
+     * Absent means "yes" so a caller that does not know the agent is not
+     * silently excluded.
+     */
+    queueEligible?: boolean;
+    /**
+     * 1.6.5 (OPE-6608 B): when the agent last worked, for the fair order.
+     * Absent/null means it never ran — the idlest agent of the role.
+     */
+    lastActiveAt?: Date | null;
   }[];
 }
 
@@ -72,14 +84,21 @@ export function neededIdleWakes(input: SwarmRoleIdleInput): number {
   return freeAgentsOfRole(input).length;
 }
 
-/** The role's agents that may take one more task right now. */
+/**
+ * The role's agents that may take one more task right now, in the fair order
+ * of 1.6.5 (OPE-6608 B): least loaded first, longest idle first among equals,
+ * so no agent stays the head of the list pass after pass.
+ */
 export function freeAgentsOfRole(input: SwarmRoleIdleInput): SwarmRoleIdleInput["agents"][number][] {
-  return input.agents.filter(
-    (agent) =>
-      agent.status !== "paused" &&
-      agent.status !== "error" &&
-      !agent.hasLiveRun &&
-      !swarmActiveTaskLimitReached(agent.activeClaims, { maxActiveTasks: agent.maxActiveTasks }),
+  return orderIdleWakeAgents(
+    input.agents.filter(
+      (agent) =>
+        agent.queueEligible !== false &&
+        agent.status !== "paused" &&
+        agent.status !== "error" &&
+        !agent.hasLiveRun &&
+        !swarmActiveTaskLimitReached(agent.activeClaims, { maxActiveTasks: agent.maxActiveTasks }),
+    ),
   );
 }
 

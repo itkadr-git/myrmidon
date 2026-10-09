@@ -11,7 +11,10 @@
 import { and, asc, eq, inArray, isNull, lt, notInArray, or, sql } from "drizzle-orm";
 import { isUniqueViolation } from "../../db-errors.js";
 import { issueClaims, issues, type Db } from "@paperclipai/db";
-import type { SwarmClaimLease } from "@paperclipai/shared";
+import {
+  SWARM_CLAIM_QUEUE_ISSUE_STATUSES,
+  type SwarmClaimLease,
+} from "@paperclipai/shared";
 
 /** A lease row reshaped into the shared contract both parts order and render. */
 function toLease(row: typeof issueClaims.$inferSelect): SwarmClaimLease {
@@ -198,6 +201,61 @@ export async function insertClaim(
     });
   const row = inserted[0];
   return row ? toLease(row) : null;
+}
+
+/**
+ * 1.6.5 (OPE-6608 SWARM-WAKE-FIX A): the queue's own assignment. Before this,
+ * the idle pass woke an agent and trusted the run to claim the task on
+ * checkout — and the dispatcher cancelled every such run first, because an
+ * unassigned issue does not belong to the agent the wake named
+ * (`decideIssueOwnership` saw NULL ≠ runAgentId and read it as "reassigned").
+ * The queue now does what a claim does, on the server, before the wake: the
+ * issue is assigned to the agent under a conditional update (assignee still
+ * empty, status still a queue status) and the claim row is written behind the
+ * same partial unique index the checkout path uses. Returns false when the
+ * task was taken meanwhile — then nobody is woken for it.
+ */
+export async function assignIssueToAgentForIdleClaim(
+  db: Db,
+  input: { companyId: string; issueId: string; agentId: string; now: Date },
+): Promise<boolean> {
+  const updated = await db
+    .update(issues)
+    .set({ assigneeAgentId: input.agentId, updatedAt: input.now })
+    .where(
+      and(
+        eq(issues.id, input.issueId),
+        eq(issues.companyId, input.companyId),
+        isNull(issues.assigneeAgentId),
+        inArray(issues.status, [...SWARM_CLAIM_QUEUE_ISSUE_STATUSES]),
+      ),
+    )
+    .returning({ id: issues.id });
+  return updated.length > 0;
+}
+
+/**
+ * Undo of `assignIssueToAgentForIdleClaim`: used when the assignment landed but
+ * the claim row lost the race (someone claimed the task in between). The
+ * assignment is reverted so the task stays in the queue for the next pass
+ * instead of dangling on an agent that holds no lease.
+ */
+export async function revertIdleClaimAssignment(
+  db: Db,
+  input: { companyId: string; issueId: string; agentId: string; now: Date },
+): Promise<boolean> {
+  const reverted = await db
+    .update(issues)
+    .set({ assigneeAgentId: null, updatedAt: input.now })
+    .where(
+      and(
+        eq(issues.id, input.issueId),
+        eq(issues.companyId, input.companyId),
+        eq(issues.assigneeAgentId, input.agentId),
+      ),
+    )
+    .returning({ id: issues.id });
+  return reverted.length > 0;
 }
 
 /**

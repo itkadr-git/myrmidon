@@ -25,10 +25,12 @@ import {
   SWARM_CLAIM_RELEASE_REASON_LEASE_EXPIRED,
   SWARM_CLAIM_RELEASE_REASON_RUN_FINISHED,
   SWARM_CLAIM_REASON_CASTE_EXCLUDED,
+  SWARM_CLAIM_REASON_AGENT_EXCLUDED,
   SWARM_CLAIM_WAKE_IDEMPOTENCY_PREFIX,
   SWARM_CLAIM_WAKE_REASON,
   isSwarmClaimEnabledFor,
   resolveSwarmClaimSettings,
+  resolveSwarmQueueEligibility,
   type CompanyCastesReader,
   type SwarmClaimLease,
   type SwarmClaimSettings,
@@ -107,7 +109,13 @@ export interface SwarmClaimOutcome {
    * the agent's caste is excluded from the swarm
    * (`caste_excluded`, myrmidon 1.6.1 CUSTOM-CASTES B).
    */
-  reason: "claimed" | "queue_empty" | "limit_reached" | "disabled" | "caste_excluded";
+  reason:
+    | "claimed"
+    | "queue_empty"
+    | "limit_reached"
+    | "disabled"
+    | "caste_excluded"
+    | "agent_excluded";
 }
 
 /**
@@ -130,7 +138,12 @@ export async function claimNextTaskForAgent(
   if (!settings.enabled) return { claim: null, reason: "disabled" };
 
   const agentRow = await ports.db
-    .select({ id: agents.id, role: agents.role, companyId: agents.companyId })
+    .select({
+      id: agents.id,
+      role: agents.role,
+      companyId: agents.companyId,
+      metadata: agents.metadata,
+    })
     .from(agents)
     .where(and(eq(agents.id, input.agentId), eq(agents.companyId, input.companyId)))
     .limit(1);
@@ -160,6 +173,19 @@ export async function claimNextTaskForAgent(
     : undefined;
   if (caste && !caste.swarmEligible) {
     return { claim: null, reason: SWARM_CLAIM_REASON_CASTE_EXCLUDED };
+  }
+  // 1.6.5 (OPE-6608 SWARM-WAKE-FIX C): the agent's own switch. The directory
+  // is coarse (every engineering agent in a company may share one role), so an
+  // operator can take a single agent out of the queue in its card; the switch
+  // is `agents.metadata.swarmQueueEligible` and it is enforced here, on the
+  // path that hands tasks out, not only where the wake is composed.
+  const ownEligibility = resolveSwarmQueueEligibility({
+    metadata: (agent.metadata as Record<string, unknown> | null) ?? null,
+    casteEligible: true,
+    hasDirectReports: false,
+  });
+  if (!ownEligibility.eligible) {
+    return { claim: null, reason: SWARM_CLAIM_REASON_AGENT_EXCLUDED };
   }
   // A caste-set ceiling overrides the global swarm ceiling for this agent
   // only; `null` keeps the global setting exactly as it was.

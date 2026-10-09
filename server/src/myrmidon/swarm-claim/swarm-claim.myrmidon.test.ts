@@ -21,6 +21,7 @@ import {
   DEFAULT_SWARM_LEASE_TTL_SEC,
   DEFAULT_SWARM_MAX_ACTIVE_TASKS,
   DEFAULT_SWARM_CLAIM_SWEEP_INTERVAL_SEC,
+  DEFAULT_SWARM_IDLE_WAKE_BATCH,
   SWARM_CLAIM_QUEUE_ISSUE_STATUSES,
   SWARM_CLAIM_WAKE_REASON,
   type SwarmClaimLease,
@@ -45,6 +46,8 @@ const settings: SwarmClaimSettings = {
   maxActiveTasks: DEFAULT_SWARM_MAX_ACTIVE_TASKS,
   sweepIntervalSec: DEFAULT_SWARM_CLAIM_SWEEP_INTERVAL_SEC,
   p0Preemption: true,
+  // 1.6.5 (OPE-6608 D): the idle-wake batch is part of the settings now.
+  idleWakeBatch: DEFAULT_SWARM_IDLE_WAKE_BATCH,
 };
 
 function candidate(overrides: Partial<SwarmQueueCandidate> = {}): SwarmQueueCandidate {

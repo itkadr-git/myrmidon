@@ -6,9 +6,13 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_SWARM_CLAIM_ENABLED,
   DEFAULT_SWARM_CLAIM_SWEEP_INTERVAL_SEC,
+  DEFAULT_SWARM_IDLE_WAKE_BATCH,
   DEFAULT_SWARM_LEASE_TTL_SEC,
   DEFAULT_SWARM_MAX_ACTIVE_TASKS,
+  MAX_SWARM_IDLE_WAKE_BATCH,
+  MIN_SWARM_IDLE_WAKE_BATCH,
   SWARM_CLAIM_ENV_KEYS,
+  SWARM_CLAIM_IDLE_WAKE_BATCH_ENV,
   SWARM_CLAIM_RELEASE_REASON_SUPERVISOR_REBALANCE,
   SWARM_CLAIM_SUPERVISOR_RELEASED_ACTION,
   SWARM_CLAIM_WAKE_REASON,
@@ -18,10 +22,13 @@ import {
   mergeSwarmClaimSettings,
   normalizeSwarmClaimSettings,
   orderSwarmQueueCandidates,
+  orderIdleWakeAgents,
   parseSwarmClaimEnabled,
   readSwarmClaimListEnv,
   readSwarmClaimSettingsFromEnv,
   resolveSwarmClaimSettings,
+  resolveSwarmQueueEligibility,
+  SWARM_CLAIM_SETTING_KEYS,
   swarmActiveTaskLimitReached,
   swarmLeaseExpiresAt,
   swarmPriorityRank,
@@ -76,6 +83,8 @@ describe("swarm claim settings", () => {
       maxActiveTasks: 5,
       sweepIntervalSec: 45,
       p0Preemption: false,
+      // 1.6.5 (OPE-6608 D): the idle-wake batch is a stored setting now.
+      idleWakeBatch: 5,
     };
     const forcedOff = resolveSwarmClaimSettings({
       stored,
@@ -248,5 +257,82 @@ describe("swarm names shared with the supervisor part", () => {
     expect(SWARM_CLAIM_WAKE_REASON).toBe("swarm_claim_queue");
     expect(SWARM_CLAIM_RELEASE_REASON_SUPERVISOR_REBALANCE).toBe("supervisor_rebalance");
     expect(SWARM_CLAIM_SUPERVISOR_RELEASED_ACTION).toBe("issue.swarm_claim.supervisor_released");
+  });
+
+  // 1.6.5 (OPE-6608 SWARM-WAKE-FIX B): who the idle pass wakes, in what order.
+  it("wakes the least loaded agent first and never keeps one agent at the head", () => {
+    const now = new Date("2026-10-09T12:00:00.000Z");
+    const busy = { id: "a-busy", activeClaims: 3, lastActiveAt: new Date(now.getTime() - 60_000) };
+    const fresh = { id: "b-fresh", activeClaims: 0, lastActiveAt: new Date(now.getTime() - 30_000) };
+    const stale = { id: "c-stale", activeClaims: 0, lastActiveAt: new Date(now.getTime() - 4 * 3600_000) };
+    const never = { id: "d-never", activeClaims: 0, lastActiveAt: null };
+    const input = [busy, fresh, stale, never];
+
+    const ordered = orderIdleWakeAgents(input).map((agent) => agent.id);
+    // Idle before loaded, and among the idle the one that has waited longest —
+    // an agent that never ran is the idlest of all, so the head of the list
+    // rotates instead of staying the same five `agents` rows on every pass.
+    expect(ordered).toEqual(["d-never", "c-stale", "b-fresh", "a-busy"]);
+    // The read order is not mutated for the caller.
+    expect(input.map((agent) => agent.id)).toEqual(["a-busy", "b-fresh", "c-stale", "d-never"]);
+  });
+
+  it("keeps the read order for agents that are equally idle", () => {
+    const same = new Date("2026-10-09T11:00:00.000Z");
+    const ordered = orderIdleWakeAgents([
+      { id: "a", activeClaims: 1, lastActiveAt: same },
+      { id: "b", activeClaims: 1, lastActiveAt: same },
+    ]);
+    expect(ordered.map((agent) => agent.id)).toEqual(["a", "b"]);
+  });
+
+  // 1.6.5 (OPE-6608 SWARM-WAKE-FIX C): who may take from the queue at all.
+  it("keeps leads out of the queue by default and lets the agent card decide", () => {
+    expect(resolveSwarmQueueEligibility({ casteEligible: true, hasDirectReports: false })).toEqual({
+      eligible: true,
+      source: "caste",
+    });
+    // A lead, a reviewer, an architect: the directory calls them all `engineer`,
+    // so the manager fact is what keeps them out.
+    expect(resolveSwarmQueueEligibility({ casteEligible: true, hasDirectReports: true })).toEqual({
+      eligible: false,
+      source: "caste",
+    });
+    expect(resolveSwarmQueueEligibility({ casteEligible: false, hasDirectReports: false })).toEqual({
+      eligible: false,
+      source: "caste",
+    });
+    // The switch in the agent card wins in both directions.
+    expect(
+      resolveSwarmQueueEligibility({
+        metadata: { swarmQueueEligible: false },
+        casteEligible: true,
+        hasDirectReports: false,
+      }),
+    ).toEqual({ eligible: false, source: "agent" });
+    expect(
+      resolveSwarmQueueEligibility({
+        metadata: { swarmQueueEligible: true },
+        casteEligible: true,
+        hasDirectReports: true,
+      }),
+    ).toEqual({ eligible: true, source: "agent" });
+    // Garbage in the switch is ignored rather than read as "off".
+    expect(
+      resolveSwarmQueueEligibility({
+        metadata: { swarmQueueEligible: "maybe" },
+        casteEligible: true,
+        hasDirectReports: false,
+      }),
+    ).toEqual({ eligible: true, source: "caste" });
+  });
+
+  // 1.6.5 (OPE-6608 SWARM-WAKE-FIX D): the batch is a stored setting now.
+  it("lists the idle wake batch among the settings the panel edits", () => {
+    expect(SWARM_CLAIM_SETTING_KEYS).toContain("idleWakeBatch");
+    expect(DEFAULT_SWARM_IDLE_WAKE_BATCH).toBe(5);
+    expect(MIN_SWARM_IDLE_WAKE_BATCH).toBe(1);
+    expect(MAX_SWARM_IDLE_WAKE_BATCH).toBe(25);
+    expect(SWARM_CLAIM_IDLE_WAKE_BATCH_ENV).toBe("MYRMIDON_SWARM_IDLE_WAKE_BATCH");
   });
 });

@@ -40,43 +40,65 @@ import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { companies, agentWakeupRequests, issues, issueClaims, type Db } from "@paperclipai/db";
 import { wakeNotParkedOnExecutionHold } from "../settled-holds/ready-predicate.js";
 import {
+  SWARM_CLAIM_IDLE_WAKE_BATCH_ENV,
+  SWARM_CLAIM_CLAIMED_ACTION,
   SWARM_CLAIM_QUEUE_ISSUE_STATUSES,
   SWARM_CLAIM_RELEASE_REASON_ISSUE_CLOSED,
   SWARM_CLAIM_RELEASE_REASON_LEASE_EXPIRED,
   SWARM_CLAIM_RELEASED_ACTION,
   SWARM_CLAIM_WAKE_REASON,
+  DEFAULT_SWARM_IDLE_WAKE_BATCH as DEFAULT_SWARM_IDLE_WAKE_BATCH_KEY,
+  MAX_SWARM_IDLE_WAKE_BATCH as MAX_SWARM_IDLE_WAKE_BATCH_KEY,
+  MIN_SWARM_IDLE_WAKE_BATCH as MIN_SWARM_IDLE_WAKE_BATCH_KEY,
   isSwarmLeaseExpired,
   isSwarmClaimEnabledFor,
+  readSwarmIdleWakeBatchEnv,
   resolveSwarmClaimSettings,
+  resolveSwarmQueueEligibility,
   type CompanyCaste,
   type SwarmClaimSettings,
 } from "@paperclipai/shared";
 import { logger } from "../../middleware/logger.js";
 import { currentHostCpuGate, currentHostMemoryGate, type HostCpuGate, type HostMemoryGate } from "../run-admission.js";
 import { wakeNextAgentForIssueRole, type SwarmClaimServicePorts } from "./service.js";
-import { listClaimsOnNonQueueIssues, listExpiredClaims, releaseClaim } from "./store.js";
+import {
+  assignIssueToAgentForIdleClaim,
+  insertClaim,
+  listClaimsOnNonQueueIssues,
+  listExpiredClaims,
+  releaseClaim,
+  revertIdleClaimAssignment,
+} from "./store.js";
 import { listIdleRolePairs, liveClaimCountsByAgent } from "./idle-queue.js";
 import { idleWakeTargetsForRole, idleWakeIdempotencyKey, type SwarmRoleIdleInput } from "./idle-wake.js";
+import { planClaim } from "./domain.js";
 
 /** The sweep inspects at most this many claims per pass. */
 export const SWARM_CLAIM_SWEEP_PAGE_SIZE = 50;
 
-/** myrmidon(1.6.1 SWARM-IDLE-WAKE): how many agents one idle pass may wake. */
-export const SWARM_IDLE_WAKE_BATCH_ENV = "MYRMIDON_SWARM_IDLE_WAKE_BATCH";
-export const DEFAULT_SWARM_IDLE_WAKE_BATCH = 5;
-export const MIN_SWARM_IDLE_WAKE_BATCH = 1;
-export const MAX_SWARM_IDLE_WAKE_BATCH = 25;
+/**
+ * myrmidon(1.6.1 SWARM-IDLE-WAKE): how many agents one idle pass may wake.
+ * 1.6.5 (OPE-6608 D): the value is a swarm setting now, so it is edited in the
+ * interface; the variable stays as the forced override.
+ */
+export const SWARM_IDLE_WAKE_BATCH_ENV = SWARM_CLAIM_IDLE_WAKE_BATCH_ENV;
+export const DEFAULT_SWARM_IDLE_WAKE_BATCH = DEFAULT_SWARM_IDLE_WAKE_BATCH_KEY;
+export const MIN_SWARM_IDLE_WAKE_BATCH = MIN_SWARM_IDLE_WAKE_BATCH_KEY;
+export const MAX_SWARM_IDLE_WAKE_BATCH = MAX_SWARM_IDLE_WAKE_BATCH_KEY;
 
 /**
  * The idle-wake batch cap. A numeric env value in range wins; anything else
  * (unset, non-numeric, out of range) falls back to the default of 5.
  */
 export function readSwarmIdleWakeBatch(env: Record<string, string | undefined>): number {
-  const raw = env[SWARM_IDLE_WAKE_BATCH_ENV]?.trim();
-  if (!raw || !/^\d+$/.test(raw)) return DEFAULT_SWARM_IDLE_WAKE_BATCH;
-  const value = Number(raw);
-  if (!Number.isSafeInteger(value)) return DEFAULT_SWARM_IDLE_WAKE_BATCH;
-  return Math.min(Math.max(value, MIN_SWARM_IDLE_WAKE_BATCH), MAX_SWARM_IDLE_WAKE_BATCH);
+  return readSwarmIdleWakeBatchEnv(env[SWARM_IDLE_WAKE_BATCH_ENV]);
+}
+
+/** True when the environment forces the batch, i.e. the setting must not win. */
+export function hasSwarmIdleWakeBatchEnvOverride(
+  env: Record<string, string | undefined>,
+): boolean {
+  return Boolean(env[SWARM_IDLE_WAKE_BATCH_ENV]?.trim());
 }
 
 export interface SwarmClaimSweepResult {
@@ -91,6 +113,18 @@ export interface SwarmClaimSweepResult {
   woken: number;
   /** myrmidon(1.6.1 SWARM-IDLE-WAKE): free agents woken on a non-empty queue. */
   idleWoken: number;
+  /**
+   * 1.6.5 (OPE-6608 SWARM-WAKE-FIX A): tasks the idle pass assigned and leased
+   * on the server before waking their agent — the number the acceptance
+   * criterion of the ticket ("≥1 задача захвачена очередью за час") reads.
+   */
+  idleClaimed: number;
+  /**
+   * 1.6.5 (OPE-6608): assignments that lost the race (the task left the queue
+   * or another claim won between the read and the write). Not an error; the
+   * next pass re-reads.
+   */
+  idleClaimLost: number;
   /** Roles with a non-empty ready queue the idle pass examined. */
   idleRoles: number;
   /** Free agents seen at a non-empty queue (the supervisor's zero metric). */
@@ -155,6 +189,8 @@ export function createSwarmClaimSweeper(deps: SwarmClaimSweeperDeps): SwarmClaim
         failed: 0,
         woken: 0,
         idleWoken: 0,
+        idleClaimed: 0,
+        idleClaimLost: 0,
         idleRoles: 0,
         idleFreeAgents: 0,
         idleUnstaffedRoles: 0,
@@ -412,6 +448,8 @@ async function sweepIdleWakes(
       | "enabledRoles"
       | "maxActiveTasks"
       | "p0Preemption"
+      | "leaseTtlSec"
+      | "idleWakeBatch"
     >;
     now: Date;
     result: SwarmClaimSweepResult;
@@ -419,7 +457,12 @@ async function sweepIdleWakes(
 ): Promise<SwarmClaimSweepResult> {
   const { result } = input;
   const env = (deps as { env?: Record<string, string | undefined> }).env ?? process.env;
-  const batch = readSwarmIdleWakeBatch(env);
+  // 1.6.5 (OPE-6608 D): the batch is a setting now. The variable still wins
+  // when it is present and readable — an operator who set it on the host must
+  // not be silently overridden by a stored value.
+  const batch = hasSwarmIdleWakeBatchEnvOverride(env)
+    ? readSwarmIdleWakeBatch(env)
+    : input.settings.idleWakeBatch;
   const companyIds = await listActiveCompanies(deps.db);
   const liveCompanyClaims = await Promise.all(
     companyIds.map((companyId) => liveClaimCountsByAgent(deps.db, companyId)),
@@ -473,6 +516,18 @@ async function sweepIdleWakes(
           maxActiveTasks: effectiveMaxActiveTasks,
           status: agent.status,
           hasLiveRun: agent.hasLiveRun,
+          // 1.6.5 (OPE-6608 C): the agent's own switch, or — when it carries
+          // none — the default rule: an eligible caste, and no reports under
+          // the agent (a manager is not an executor). Agents that fail it are
+          // not woken at all, so a lead never sees a queue task.
+          queueEligible: resolveSwarmQueueEligibility({
+            metadata: agent.metadata,
+            casteEligible: caste?.swarmEligible ?? true,
+            hasDirectReports: agent.hasDirectReports,
+          }).eligible,
+          // 1.6.5 (OPE-6608 B): the fair order needs to know who has been
+          // idle longest, not just who is free.
+          lastActiveAt: agent.lastActiveAt,
         })),
       };
       const targets = idleWakeTargetsForRole(roleInput, {
@@ -491,11 +546,30 @@ async function sweepIdleWakes(
           result.idleFreeAgents -= 1;
           continue;
         }
+        // 1.6.5 (OPE-6608 SWARM-WAKE-FIX A): the task is assigned and leased
+        // HERE, on the server, before anyone is woken. The wake that follows
+        // names an issue that already belongs to this agent, so the dispatcher
+        // does not read the (NULL assignee ≠ run agent) pair as "reassigned"
+        // and cancel the run — the failure that made all 3259 queue runs of
+        // the 09.10 audit end as `skipped`. No other wake shape is produced:
+        // the queue never sends an agent out to "go look for work".
+        const claimed = await claimIdleTaskForAgent(deps, companyId, target, {
+          now: input.now,
+          leaseTtlSec: input.settings.leaseTtlSec,
+        });
+        if (!claimed) {
+          result.idleFreeAgents -= 1;
+          result.idleClaimLost += 1;
+          continue;
+        }
+        result.idleClaimed += 1;
         try {
           const woke = await enqueueIdleWake(deps, companyId, target);
           if (woke) result.idleWoken += 1;
         } catch {
-          // Best-effort per target: one failure does not fail the pass.
+          // Best-effort per target: one failure does not fail the pass. The
+          // assignment and the lease stay; the next pass finds the task owned
+          // by this agent and retries the same wake.
           logger.warn(
             { agentId: target.agentId, issueId: target.issueId },
             "swarm idle wake target failed; the next pass retries",
@@ -546,6 +620,77 @@ export async function issueHasLiveClaimOrWake(
     return true;
   }
   return false;
+}
+
+/**
+ * 1.6.5 (OPE-6608 SWARM-WAKE-FIX A): take the task for the agent on the
+ * server, before the wake. Two writes, in this order, and both must land:
+ *
+ *  1. the issue is assigned to the agent — a conditional update, so a task
+ *     that left the queue (claimed by somebody else, moved out of `todo`,
+ *     already assigned) is left alone;
+ *  2. the lease row is written through `insertClaim`, the same write the
+ *     checkout path uses, behind the same partial unique index.
+ *
+ * If the lease loses the race the assignment is reverted: the task must not
+ * stay pinned to an agent that holds no claim. Only when both landed is the
+ * agent woken — with the issue id in the payload, so the dispatcher sees a task
+ * that already belongs to the agent it is waking (`decideIssueOwnership` no
+ * longer reads it as "reassigned" and cancels the run before checkout).
+ */
+async function claimIdleTaskForAgent(
+  deps: SwarmClaimServicePorts & { db: Db },
+  companyId: string,
+  target: { agentId: string; issueId: string; role: string; identifier: string | null; priority: string | null },
+  input: { now: Date; leaseTtlSec: number },
+): Promise<boolean> {
+  const assigned = await assignIssueToAgentForIdleClaim(deps.db, {
+    companyId,
+    issueId: target.issueId,
+    agentId: target.agentId,
+    now: input.now,
+  });
+  if (!assigned) return false;
+
+  const plan = planClaim({
+    issueId: target.issueId,
+    agentId: target.agentId,
+    role: target.role,
+    runId: null,
+    now: input.now,
+    settings: { leaseTtlSec: input.leaseTtlSec },
+  });
+  const claim = await insertClaim(deps.db, { companyId, ...plan });
+  if (!claim) {
+    await revertIdleClaimAssignment(deps.db, {
+      companyId,
+      issueId: target.issueId,
+      agentId: target.agentId,
+      now: input.now,
+    });
+    return false;
+  }
+
+  await deps.logActivity?.({
+    companyId,
+    actorType: "system",
+    actorId: "swarm_idle_queue",
+    agentId: target.agentId,
+    runId: null,
+    action: SWARM_CLAIM_CLAIMED_ACTION,
+    entityType: "issue",
+    entityId: target.issueId,
+    details: {
+      identifier: target.identifier,
+      priority: target.priority,
+      role: target.role,
+      leaseTtlSec: input.leaseTtlSec,
+      // The timeline says which path took the task: the queue, not a run's
+      // own checkout.
+      source: "swarm_idle_queue",
+    },
+  });
+  return true;
 }
 
 async function enqueueIdleWake(

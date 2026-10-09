@@ -60,6 +60,7 @@ export const SWARM_CLAIM_SETTING_KEYS = [
   "maxActiveTasks",
   "sweepIntervalSec",
   "p0Preemption",
+  "idleWakeBatch",
 ] as const;
 
 export type SwarmClaimSettingKey = (typeof SWARM_CLAIM_SETTING_KEYS)[number];
@@ -114,6 +115,26 @@ export const MAX_SWARM_MAX_ACTIVE_TASKS = 100;
 /** How often the expired-lease sweep runs, in seconds. */
 export const DEFAULT_SWARM_CLAIM_SWEEP_INTERVAL_SEC = 30;
 export const MIN_SWARM_CLAIM_SWEEP_INTERVAL_SEC = 5;
+
+/**
+ * 1.6.5 (OPE-6608 SWARM-WAKE-FIX): how many queue wakes one idle pass makes.
+ * The value used to live only in the environment
+ * (`MYRMIDON_SWARM_IDLE_WAKE_BATCH`); it is now a swarm setting so the size is
+ * edited from the interface, with the variable as the forced override (the
+ * same precedence as every other key here).
+ */
+export const SWARM_CLAIM_IDLE_WAKE_BATCH_ENV = "MYRMIDON_SWARM_IDLE_WAKE_BATCH";
+export const DEFAULT_SWARM_IDLE_WAKE_BATCH = 5;
+export const MIN_SWARM_IDLE_WAKE_BATCH = 1;
+export const MAX_SWARM_IDLE_WAKE_BATCH = 25;
+
+/**
+ * 1.6.5 (OPE-6608 SWARM-WAKE-FIX C): the per-agent switch telling whether the
+ * agent may take a task from the queue. It lives in `agents.metadata` under
+ * this key so an agent carries it without a migration; absent means "ask the
+ * caste" (see `resolveSwarmQueueEligibility`).
+ */
+export const SWARM_QUEUE_ELIGIBILITY_METADATA_KEY = "swarmQueueEligible";
 
 /**
  * The wake reason the queue uses when it wakes the next agent of a role. Part A
@@ -278,6 +299,11 @@ const maxActiveTasksSchema = z
   .max(MAX_SWARM_MAX_ACTIVE_TASKS)
   .nullable();
 const sweepIntervalSchema = z.number().int().min(MIN_SWARM_CLAIM_SWEEP_INTERVAL_SEC);
+const idleWakeBatchSchema = z
+  .number()
+  .int()
+  .min(MIN_SWARM_IDLE_WAKE_BATCH)
+  .max(MAX_SWARM_IDLE_WAKE_BATCH);
 
 // 1.6.1 (SWARM-SETTINGS-UI): the pilot-set lists. Non-empty arrays of trimmed
 // non-empty strings; an empty array is the honest "no restriction" and is
@@ -296,6 +322,7 @@ export const swarmClaimSettingsSchema = z
     maxActiveTasks: maxActiveTasksSchema,
     sweepIntervalSec: sweepIntervalSchema,
     p0Preemption: z.boolean().default(DEFAULT_SWARM_CLAIM_P0_PREEMPTION),
+    idleWakeBatch: idleWakeBatchSchema.default(DEFAULT_SWARM_IDLE_WAKE_BATCH),
   })
   .strict();
 
@@ -309,6 +336,7 @@ export const patchSwarmClaimSettingsSchema = z
     maxActiveTasks: maxActiveTasksSchema.optional(),
     sweepIntervalSec: sweepIntervalSchema.optional(),
     p0Preemption: z.boolean().optional(),
+    idleWakeBatch: idleWakeBatchSchema.optional(),
   })
   .strict();
 
@@ -361,9 +389,23 @@ export function readSwarmClaimSettingsFromEnv(
         : DEFAULT_SWARM_CLAIM_SWEEP_INTERVAL_SEC,
     p0Preemption:
       parseSwarmClaimEnabled(env[SWARM_CLAIM_P0_PREEMPTION_ENV]) ?? DEFAULT_SWARM_CLAIM_P0_PREEMPTION,
+    idleWakeBatch: readSwarmIdleWakeBatchEnv(env[SWARM_CLAIM_IDLE_WAKE_BATCH_ENV]),
     enabledRoles: readSwarmClaimListEnv(env[SWARM_CLAIM_ENABLED_ROLES_ENV]),
     enabledCompanyIds: readSwarmClaimListEnv(env[SWARM_CLAIM_ENABLED_COMPANY_IDS_ENV]),
   };
+}
+
+/**
+ * 1.6.5 (OPE-6608): the batch override. A readable integer is clamped into the
+ * allowed range; anything unreadable falls back to the default (a typo must not
+ * turn one pass into a stampede or into zero wakes).
+ */
+export function readSwarmIdleWakeBatchEnv(raw: string | undefined | null): number {
+  const value = Number(raw?.trim());
+  if (!raw || raw.trim() === "" || !Number.isInteger(value)) {
+    return DEFAULT_SWARM_IDLE_WAKE_BATCH;
+  }
+  return Math.min(MAX_SWARM_IDLE_WAKE_BATCH, Math.max(MIN_SWARM_IDLE_WAKE_BATCH, value));
 }
 
 /** A comma-separated list variable: trimmed entries, empty entries dropped. */
@@ -416,6 +458,11 @@ export function resolveSwarmClaimSettings(options: {
         }),
         p0Preemption:
           parseSwarmClaimEnabled(env[SWARM_CLAIM_P0_PREEMPTION_ENV]) ?? stored.p0Preemption,
+        idleWakeBatch: envNumberOr(
+          env[SWARM_CLAIM_IDLE_WAKE_BATCH_ENV],
+          stored.idleWakeBatch,
+          { min: MIN_SWARM_IDLE_WAKE_BATCH, max: MAX_SWARM_IDLE_WAKE_BATCH },
+        ),
         enabledRoles:
           env[SWARM_CLAIM_ENABLED_ROLES_ENV] !== undefined
             ? envSettings.enabledRoles
@@ -463,6 +510,11 @@ export function resolveSwarmClaimSettings(options: {
       ? "settings"
       : "default";
   sources.p0Preemption = hasOverride(SWARM_CLAIM_P0_PREEMPTION_ENV)
+    ? "env"
+    : stored
+      ? "settings"
+      : "default";
+  sources.idleWakeBatch = hasOverride(SWARM_CLAIM_IDLE_WAKE_BATCH_ENV)
     ? "env"
     : stored
       ? "settings"
@@ -546,6 +598,79 @@ export function mergeSwarmClaimSettings(
     sweepIntervalSec:
       patch.sweepIntervalSec === undefined ? base.sweepIntervalSec : patch.sweepIntervalSec,
     p0Preemption: patch.p0Preemption === undefined ? base.p0Preemption : patch.p0Preemption,
+    idleWakeBatch:
+      patch.idleWakeBatch === undefined ? base.idleWakeBatch : patch.idleWakeBatch,
+  };
+}
+
+/**
+ * 1.6.5 (OPE-6608 SWARM-WAKE-FIX B): the fair order of the idle pool. The
+ * previous pass walked the agents in whatever order the read happened to
+ * return, so the same five agents were woken on every tick and the rest of the
+ * role never got a turn (the "вечная голова списка"). The pool is now ordered
+ * by the least loaded first, and among equals by the longest idle: an agent
+ * that never ran (`lastActiveAt` empty) is the idlest of all, then the oldest
+ * last activity, and equal facts keep the order the read returned (the read
+ * orders by agent id, so two passes over equal facts make the same decision).
+ */
+export interface SwarmIdleAgentFacts {
+  id: string;
+  /** Live claims the agent holds right now. */
+  activeClaims: number;
+  /** When the agent last worked (its newest run), or null when it never ran. */
+  lastActiveAt?: Date | null;
+}
+
+export function orderIdleWakeAgents<T extends SwarmIdleAgentFacts>(
+  agents: readonly T[],
+): T[] {
+  const at = (agent: SwarmIdleAgentFacts) => agent.lastActiveAt?.getTime() ?? 0;
+  return [...agents].sort((a, b) => {
+    if (a.activeClaims !== b.activeClaims) return a.activeClaims - b.activeClaims;
+    return at(a) - at(b);
+  });
+}
+
+/** Where the effective per-agent queue switch came from. */
+export type SwarmQueueEligibilitySource = "agent" | "caste";
+
+export interface SwarmQueueEligibility {
+  eligible: boolean;
+  /** `agent` — the agent's own switch decided; `caste` — the caste default did. */
+  source: SwarmQueueEligibilitySource;
+}
+
+/**
+ * The explicit per-agent switch stored in `agents.metadata`, or null when the
+ * agent carries none (a value that is not a boolean is not an answer: a
+ * hand-edited row cannot silently take an agent out of the queue, nor put it
+ * in).
+ */
+export function readSwarmQueueEligibilityOverride(
+  metadata: Record<string, unknown> | null | undefined,
+): boolean | null {
+  const raw = metadata?.[SWARM_QUEUE_ELIGIBILITY_METADATA_KEY];
+  return typeof raw === "boolean" ? raw : null;
+}
+
+/**
+ * 1.6.5 (OPE-6608 SWARM-WAKE-FIX C): may this agent take a task from the
+ * queue? The agent's own switch wins when it is set; otherwise the caste
+ * decides — and a caste-eligible agent that other agents report to is a
+ * manager, not an executor, so it is out of the queue by default (the lead
+ * pool of the 09.10 audit was made of exactly such agents). Everything the
+ * operator wants different is one switch away in the agent card.
+ */
+export function resolveSwarmQueueEligibility(facts: {
+  metadata?: Record<string, unknown> | null;
+  casteEligible: boolean;
+  hasDirectReports: boolean;
+}): SwarmQueueEligibility {
+  const override = readSwarmQueueEligibilityOverride(facts.metadata);
+  if (override !== null) return { eligible: override, source: "agent" };
+  return {
+    eligible: facts.casteEligible && !facts.hasDirectReports,
+    source: "caste",
   };
 }
 
@@ -585,6 +710,15 @@ export function swarmActiveTaskLimitReached(
  * can tell "this caste never takes tasks" from "nothing to take".
  */
 export const SWARM_CLAIM_REASON_CASTE_EXCLUDED = "caste_excluded";
+
+/**
+ * 1.6.5 (OPE-6608 SWARM-WAKE-FIX C): the claim outcome reason for an agent
+ * switched out of the queue in its own card (`agents.metadata`
+ * `swarmQueueEligible=false`), or for one that the default rule keeps out
+ * because it is a manager. Kept apart from `caste_excluded` so the supervisor
+ * says which switch refused the task.
+ */
+export const SWARM_CLAIM_REASON_AGENT_EXCLUDED = "agent_excluded";
 
 /**
  * One entry of a company caste directory (`agents.role` keys). Part A owns

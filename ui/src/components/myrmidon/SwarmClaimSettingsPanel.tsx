@@ -1,17 +1,24 @@
 // Swarm claim pilot settings (myrmidon 1.6.1, SWARM-SETTINGS-UI): the
 // "Role queues (SWARM-CLAIM)" section of Instance → General. The master
-// switch, the role/company pilot set, the lease TTL, the per-agent ceiling,
-// the sweep interval and the P0 preemption, each with its origin (saved here,
-// environment override, default). Saving writes the instance settings row;
-// the server re-reads it on every claim, checkout and sweep tick, so a change
-// applies within a minute without a restart. Switching the pilot off frees
-// the live leases at once (the PATCH response reports how many).
+// switch, the role/company scope, the idle-wake batch, the lease TTL, the
+// per-agent ceiling, the sweep interval and the P0 preemption, each with its
+// origin (saved here, environment override, default). Saving writes the
+// instance settings row; the server re-reads it on every claim, checkout and
+// sweep tick, so a change applies within a minute without a restart. Switching
+// the queues off frees the live leases at once (the PATCH response reports how
+// many). Below the fields the panel shows the live queue counters — queued,
+// claimed in the last hour, cancelled in the last hour (OPE-6608 D).
 //
 // Tokens only (DESIGN.md): Tailwind palette names, no raw values.
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ShieldCheck } from "lucide-react";
-import type { SwarmClaimSettingsPatch, SwarmClaimSettingSource } from "@paperclipai/shared";
+import {
+  MAX_SWARM_IDLE_WAKE_BATCH,
+  MIN_SWARM_IDLE_WAKE_BATCH,
+  type SwarmClaimSettingsPatch,
+  type SwarmClaimSettingSource,
+} from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -32,6 +39,9 @@ const NUMBER_FIELDHints = {
   leaseTtlSec: "How long one lease lives without a heartbeat, in seconds (60–86400).",
   maxActiveTasks: "Ceiling of live claims per agent; empty = no ceiling.",
   sweepIntervalSec: "How often the expired-lease sweep runs, in seconds (minimum 5).",
+  // 1.6.5 (OPE-6608 D): the idle pass used to cap its wakes at the compiled
+  // default of 5 with an environment variable as the only way out.
+  idleWakeBatch: "How many queue tasks one idle pass may hand out, 1–25.",
 } as const;
 
 /**
@@ -42,6 +52,7 @@ export function parseSwarmClaimDraft(draft: {
   leaseTtlSec: string;
   maxActiveTasks: string;
   sweepIntervalSec: string;
+  idleWakeBatch: string;
 }): Pick<DraftParse, "patch" | "errors"> {
   const errors: Partial<Record<string, string>> = {};
 
@@ -68,6 +79,12 @@ export function parseSwarmClaimDraft(draft: {
     errors.sweepIntervalSec = "Enter a whole number of at least 5";
   }
 
+  const batchRaw = draft.idleWakeBatch.trim();
+  const batch = batchRaw ? Number(batchRaw) : Number.NaN;
+  if (!batchRaw || !Number.isInteger(batch) || batch < MIN_SWARM_IDLE_WAKE_BATCH || batch > MAX_SWARM_IDLE_WAKE_BATCH) {
+    errors.idleWakeBatch = `Enter a whole number from ${MIN_SWARM_IDLE_WAKE_BATCH} to ${MAX_SWARM_IDLE_WAKE_BATCH}`;
+  }
+
   if (Object.keys(errors).length > 0) return { patch: null, errors };
 
   return {
@@ -75,6 +92,7 @@ export function parseSwarmClaimDraft(draft: {
       leaseTtlSec: ttl,
       maxActiveTasks,
       sweepIntervalSec: sweep,
+      idleWakeBatch: batch,
     },
     errors,
   };
@@ -84,11 +102,13 @@ function toDraftNumbers(settings: {
   leaseTtlSec: number;
   maxActiveTasks: number | null;
   sweepIntervalSec: number;
+  idleWakeBatch: number;
 }) {
   return {
     leaseTtlSec: String(settings.leaseTtlSec),
     maxActiveTasks: settings.maxActiveTasks === null ? "" : String(settings.maxActiveTasks),
     sweepIntervalSec: String(settings.sweepIntervalSec),
+    idleWakeBatch: String(settings.idleWakeBatch),
   };
 }
 
@@ -161,11 +181,12 @@ export function SwarmClaimSettingsPanelView({
           <h2 className="text-sm font-semibold">Role queues (SWARM-CLAIM)</h2>
         </div>
         <p className="max-w-2xl text-sm text-muted-foreground">
-          The pilot of the per-role task queues: an agent claims the top task of its own
-          role&apos;s queue behind a lease. Every value applies without a restart — the server
-          re-reads these settings on each claim and sweep tick. Turning the pilot off releases
-          the live leases immediately. Environment variables stay forced overrides; each field
-          shows whether the saved value or the override is in force.
+          The swarm's per-role task queues: the idle pass hands the top task of a role&apos;s queue to
+          a free agent of that role behind a lease, and only then wakes it. Every value applies
+          without a restart — the server re-reads these settings on each claim and sweep tick.
+          Turning this off releases the live leases immediately. Environment variables stay forced
+          overrides; each field shows whether the saved value or the override is in force. Source
+          comparison (foraging) has its own screen, «Learning (foraging)», next to this one.
         </p>
       </div>
 
@@ -195,7 +216,7 @@ export function SwarmClaimSettingsPanelView({
           </div>
 
           <div className="space-y-1">
-            <Label htmlFor="swarm-claim-roles">Pilot roles</Label>
+            <Label htmlFor="swarm-claim-roles">Roles in scope</Label>
             <Input
               id="swarm-claim-roles"
               placeholder="Empty = every role"
@@ -217,7 +238,7 @@ export function SwarmClaimSettingsPanelView({
           </div>
 
           <div className="space-y-1">
-            <Label htmlFor="swarm-claim-companies">Pilot companies</Label>
+            <Label htmlFor="swarm-claim-companies">Companies in scope</Label>
             <Input
               id="swarm-claim-companies"
               placeholder="Empty = every company"
@@ -242,14 +263,16 @@ export function SwarmClaimSettingsPanelView({
             </p>
           </div>
 
-          {(["leaseTtlSec", "maxActiveTasks", "sweepIntervalSec"] as const).map((key) => (
+          {(["leaseTtlSec", "maxActiveTasks", "sweepIntervalSec", "idleWakeBatch"] as const).map((key) => (
             <div key={key} className="space-y-1">
               <Label htmlFor={`swarm-claim-${key}`}>
                 {key === "leaseTtlSec"
                   ? "Lease TTL, seconds"
                   : key === "maxActiveTasks"
                     ? "Max active tasks per agent"
-                    : "Sweep interval, seconds"}
+                    : key === "sweepIntervalSec"
+                      ? "Sweep interval, seconds"
+                      : "Idle wake batch, tasks per pass"}
               </Label>
               <Input
                 id={`swarm-claim-${key}`}
@@ -308,10 +331,33 @@ export function SwarmClaimSettingsPanelView({
             </Button>
           </div>
 
+          {view.counters ? (
+            <div className="space-y-1 md:col-span-2" data-testid="swarm-claim-counters">
+              <h3 className="text-sm font-medium">Queues right now</h3>
+              <p className="text-xs text-muted-foreground">
+                <span data-testid="swarm-claim-counter-queued">
+                  {view.counters.queuedUnassigned} unassigned task(s) waiting
+                </span>
+                {" — "}
+                <span data-testid="swarm-claim-counter-claimed">
+                  {view.counters.claimedLastHour} claimed in the last hour
+                </span>
+                {" — "}
+                <span data-testid="swarm-claim-counter-cancelled">
+                  {view.counters.cancelledLastHour} cancelled in the last hour
+                </span>
+              </p>
+              <p className="text-xs text-muted-foreground">
+                A cancelled count that climbs while the claimed count stays at zero is the
+                symptom of the queue handing out work after the run was already admitted.
+              </p>
+            </div>
+          ) : null}
+
           <div className="space-y-1 md:col-span-2" data-testid="swarm-claim-journal">
             <h3 className="text-sm font-medium">Change journal</h3>
             <p className="text-xs text-muted-foreground">
-              Who changed the pilot settings, and when (newest first).
+              Who changed these settings, and when (newest first).
             </p>
             {view.journal.length === 0 ? (
               <p className="text-xs text-muted-foreground">No changes recorded yet.</p>

@@ -9,10 +9,11 @@
 // both paths, with the extra columns the idle pass needs (agents.id,
 // agents.status, the live-run set of heartbeat_runs).
 
-import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
-import { agents, companies, heartbeatRuns, issues, type Db } from "@paperclipai/db";
+import { and, asc, eq, gte, inArray, isNull, sql } from "drizzle-orm";
+import { agents, agentWakeupRequests, companies, heartbeatRuns, issueClaims, issues, type Db } from "@paperclipai/db";
 import {
   SWARM_CLAIM_QUEUE_ISSUE_STATUSES,
+  SWARM_CLAIM_WAKE_REASON,
   swarmRoleForUnassignedTask,
 } from "@paperclipai/shared";
 import type { SwarmIdleQueueCandidate } from "./idle-wake.js";
@@ -28,6 +29,15 @@ export interface SwarmIdleRolePair {
     status: string | null;
     activeClaims: number;
     hasLiveRun: boolean;
+    /**
+     * 1.6.5 (OPE-6608 C): `agents.metadata`, the carrier of the agent's own
+     * queue switch, and whether anybody reports to the agent (a manager is not
+     * an executor and is out of the queue by default).
+     */
+    metadata?: Record<string, unknown> | null;
+    hasDirectReports: boolean;
+    /** 1.6.5 (OPE-6608 B): the agent's newest run, for the fair order. */
+    lastActiveAt: Date | null;
   }[];
 }
 
@@ -43,17 +53,23 @@ export async function listIdleRolePairs(
   db: Db,
   companyId: string,
 ): Promise<SwarmIdleRolePair[]> {
-  const [queueRows, agentRows, liveRunAgentIds] = await Promise.all([
+  const [queueRows, agentRows, liveRunAgentIds, lastRunRows] = await Promise.all([
     listReadyQueueCandidates(db, companyId),
     db
       .select({
         id: agents.id,
         role: agents.role,
         status: agents.status,
+        reportsTo: agents.reportsTo,
+        metadata: agents.metadata,
       })
       .from(agents)
       .innerJoin(companies, eq(companies.id, agents.companyId))
-      .where(and(eq(agents.companyId, companyId), eq(companies.status, "active"))),
+      .where(and(eq(agents.companyId, companyId), eq(companies.status, "active")))
+      // 1.6.5 (OPE-6608 B): a stable order of the pool. The fair order is
+      // applied on the facts (load, idle time); the read only makes sure two
+      // passes over equal facts see the same rows in the same order.
+      .orderBy(asc(agents.id)),
     db
       .select({ agentId: heartbeatRuns.agentId })
       .from(heartbeatRuns)
@@ -63,11 +79,32 @@ export async function listIdleRolePairs(
           inArray(heartbeatRuns.status, [...LIVE_HEARTBEAT_RUN_STATUSES]),
         ),
       ),
+    // 1.6.5 (OPE-6608 B): when each agent last worked. One grouped aggregate
+    // instead of reading the run history of the company into memory.
+    db
+      .select({
+        agentId: heartbeatRuns.agentId,
+        lastActiveAt: sql<Date | string | null>`max(${heartbeatRuns.createdAt})`,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.companyId, companyId))
+      .groupBy(heartbeatRuns.agentId),
   ] as const);
 
   const liveRuns = new Set(
     liveRunAgentIds.map((row: { agentId: string }) => row.agentId),
   );
+  const lastActive = new Map<string, Date | null>();
+  for (const row of lastRunRows as Array<{ agentId: string; lastActiveAt: Date | string | null }>) {
+    lastActive.set(row.agentId, row.lastActiveAt ? new Date(row.lastActiveAt) : null);
+  }
+  // 1.6.5 (OPE-6608 C): the manager default. Counted from the same agent read,
+  // so no extra query and no dependency on a title convention.
+  const reportCounts = new Map<string, number>();
+  for (const agent of agentRows) {
+    if (!agent.reportsTo) continue;
+    reportCounts.set(agent.reportsTo, (reportCounts.get(agent.reportsTo) ?? 0) + 1);
+  }
   const byRole = new Map<string, SwarmIdleQueueCandidate[]>();
   for (const row of queueRows) {
     const roles = rolesOfQueueRow(row);
@@ -88,6 +125,9 @@ export async function listIdleRolePairs(
         status: agent.status,
         activeClaims: 0,
         hasLiveRun: liveRuns.has(agent.id),
+        metadata: (agent.metadata as Record<string, unknown> | null) ?? null,
+        hasDirectReports: (reportCounts.get(agent.id) ?? 0) > 0,
+        lastActiveAt: lastActive.get(agent.id) ?? null,
       }));
     // A role with no agents at all still reports the pair (the supervisor
     // metric counts it), but the policy wakes no one.
@@ -224,6 +264,72 @@ function rolesOfQueueRow(row: ReadyQueueRow): string[] {
     return row.assigneeRole ? [row.assigneeRole] : [];
   }
   return [swarmRoleForUnassignedTask(row.labels)];
+}
+
+/**
+ * 1.6.5 (OPE-6608 D): the live counters the swarm panel shows — how much ready
+ * work is waiting, how much the queues took in the last hour, and how many of
+ * their wakes died in that hour. The third number is the one that exposed the
+ * bug this ticket fixes (3259 cancelled wakes, 0 claims), so it belongs on the
+ * panel an operator can watch after a roll-out.
+ */
+export interface SwarmQueueCounters {
+  queuedUnassigned: number;
+  claimedLastHour: number;
+  cancelledLastHour: number;
+}
+
+export async function readSwarmQueueCounters(
+  db: Db,
+  input: { companyIds: readonly string[] | null; now: Date },
+): Promise<SwarmQueueCounters> {
+  const since = new Date(input.now.getTime() - 60 * 60 * 1000);
+  const companyIds =
+    input.companyIds && input.companyIds.length > 0
+      ? [...input.companyIds]
+      : (
+          await db
+            .select({ id: companies.id })
+            .from(companies)
+            .where(inArray(companies.status, ["active"]))
+        ).map((row) => row.id);
+
+  const perCompany = await Promise.all(
+    companyIds.map(async (companyId) => {
+      const [queueRows, claimedRows, cancelledRows] = await Promise.all([
+        listReadyQueueCandidates(db, companyId),
+        db
+          .select({ id: issueClaims.id })
+          .from(issueClaims)
+          .where(and(eq(issueClaims.companyId, companyId), gte(issueClaims.claimedAt, since))),
+        db
+          .select({ id: agentWakeupRequests.id })
+          .from(agentWakeupRequests)
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, companyId),
+              eq(agentWakeupRequests.reason, SWARM_CLAIM_WAKE_REASON),
+              inArray(agentWakeupRequests.status, ["skipped", "cancelled", "failed"]),
+              gte(agentWakeupRequests.requestedAt, since),
+            ),
+          ),
+      ]);
+      return {
+        queuedUnassigned: queueRows.filter((row) => row.assigneeAgentId === null).length,
+        claimedLastHour: claimedRows.length,
+        cancelledLastHour: cancelledRows.length,
+      } satisfies SwarmQueueCounters;
+    }),
+  );
+
+  return perCompany.reduce<SwarmQueueCounters>(
+    (total, counts) => ({
+      queuedUnassigned: total.queuedUnassigned + counts.queuedUnassigned,
+      claimedLastHour: total.claimedLastHour + counts.claimedLastHour,
+      cancelledLastHour: total.cancelledLastHour + counts.cancelledLastHour,
+    }),
+    { queuedUnassigned: 0, claimedLastHour: 0, cancelledLastHour: 0 },
+  );
 }
 
 export { rolesOfQueueRow };

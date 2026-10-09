@@ -37,6 +37,8 @@ const view: SwarmClaimSettingsView = {
     maxActiveTasks: 3,
     sweepIntervalSec: 30,
     p0Preemption: true,
+    // 1.6.5 (OPE-6608 D): the idle-wake batch, editable since 1.6.5.
+    idleWakeBatch: 5,
   },
   sources: {
     enabled: "settings",
@@ -46,6 +48,7 @@ const view: SwarmClaimSettingsView = {
     maxActiveTasks: "env",
     sweepIntervalSec: "default",
     p0Preemption: "settings",
+    idleWakeBatch: "settings",
   },
   journal: [
     {
@@ -103,6 +106,8 @@ describe("myrmidon(1.6.1) swarm claim settings panel", () => {
     expect(field("swarm-claim-leaseTtlSec").value).toBe("900");
     expect(field("swarm-claim-maxActiveTasks").value).toBe("3");
     expect(field("swarm-claim-sweepIntervalSec").value).toBe("30");
+    // 1.6.5 (OPE-6608 D): the batch used to be environment-only.
+    expect(field("swarm-claim-idleWakeBatch").value).toBe("5");
     expect(field("swarm-claim-roles").value).toBe("engineer");
     expect(
       container.querySelector("[data-testid=swarm-claim-source-leaseTtlSec]")?.textContent,
@@ -115,10 +120,21 @@ describe("myrmidon(1.6.1) swarm claim settings panel", () => {
     ).toBe("Default");
   });
 
+  it("shows the live queue counters the sweep reports", () => {
+    render({
+      ...view,
+      counters: { queuedUnassigned: 4, claimedLastHour: 1, cancelledLastHour: 2 },
+    });
+    expect(container.textContent).toContain("4 unassigned task(s) waiting");
+    expect(container.textContent).toContain("1 claimed in the last hour");
+    expect(container.textContent).toContain("2 cancelled in the last hour");
+  });
+
   it("saves every field, an empty ceiling as 'no ceiling'", () => {
     const onSave = render(view);
     type("swarm-claim-leaseTtlSec", "600");
     type("swarm-claim-maxActiveTasks", "");
+    type("swarm-claim-idleWakeBatch", "8");
     type("swarm-claim-roles", "engineer, reviewer");
     flushSync(() => saveButton().dispatchEvent(new MouseEvent("click", { bubbles: true })));
     expect(onSave).toHaveBeenCalledWith({
@@ -129,6 +145,7 @@ describe("myrmidon(1.6.1) swarm claim settings panel", () => {
       leaseTtlSec: 600,
       maxActiveTasks: null,
       sweepIntervalSec: 30,
+      idleWakeBatch: 8,
     });
   });
 
@@ -161,19 +178,62 @@ describe("myrmidon(1.6.1) swarm claim settings panel", () => {
     expect(container.textContent).toContain("Instance admin access required");
   });
 
+  it("shows the live queue counters when the server reports them", () => {
+    render({
+      ...view,
+      counters: { queuedUnassigned: 3, claimedLastHour: 1, cancelledLastHour: 0 },
+    });
+    expect(
+      container.querySelector("[data-testid=swarm-claim-counter-queued]")?.textContent,
+    ).toContain("3");
+    expect(
+      container.querySelector("[data-testid=swarm-claim-counter-claimed]")?.textContent,
+    ).toContain("1 claimed");
+    expect(
+      container.querySelector("[data-testid=swarm-claim-counter-cancelled]")?.textContent,
+    ).toContain("0 cancelled");
+    // A view without counters (a PATCH response) renders no counter block.
+    render(view);
+    expect(container.querySelector("[data-testid=swarm-claim-counters]")).toBeNull();
+  });
+
   it("parses a draft without touching the view", () => {
     expect(
       parseSwarmClaimDraft({
         leaseTtlSec: " 600 ",
         maxActiveTasks: "",
         sweepIntervalSec: "45",
+        idleWakeBatch: "5",
       }),
     ).toEqual({
-      patch: { leaseTtlSec: 600, maxActiveTasks: null, sweepIntervalSec: 45 },
+      patch: { leaseTtlSec: 600, maxActiveTasks: null, sweepIntervalSec: 45, idleWakeBatch: 5 },
       errors: {},
     });
     expect(
-      parseSwarmClaimDraft({ leaseTtlSec: "x", maxActiveTasks: "0", sweepIntervalSec: "1" }).patch,
+      parseSwarmClaimDraft({
+        leaseTtlSec: "x",
+        maxActiveTasks: "0",
+        sweepIntervalSec: "1",
+        idleWakeBatch: "5",
+      }).patch,
+    ).toBeNull();
+    // 1.6.5 (OPE-6608 D): the batch is bounded, and the bound is enforced in
+    // the form rather than only in the schema.
+    expect(
+      parseSwarmClaimDraft({
+        leaseTtlSec: "600",
+        maxActiveTasks: "",
+        sweepIntervalSec: "45",
+        idleWakeBatch: "0",
+      }).errors.idleWakeBatch,
+    ).toContain("1 to 25");
+    expect(
+      parseSwarmClaimDraft({
+        leaseTtlSec: "600",
+        maxActiveTasks: "",
+        sweepIntervalSec: "45",
+        idleWakeBatch: "900",
+      }).patch,
     ).toBeNull();
   });
 });

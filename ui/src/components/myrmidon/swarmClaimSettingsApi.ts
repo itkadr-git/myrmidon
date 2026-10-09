@@ -25,6 +25,17 @@ export interface SwarmClaimJournalEntry {
   patch: SwarmClaimSettingsPatch;
 }
 
+/**
+ * 1.6.5 (OPE-6608 D): the live counters of the queues the panel configures.
+ * They are what an operator watches in the hour after a roll-out — the ticket
+ * was raised because 3259 wakes were cancelled and not one task was claimed.
+ */
+export interface SwarmClaimQueueCounters {
+  queuedUnassigned: number;
+  claimedLastHour: number;
+  cancelledLastHour: number;
+}
+
 export interface SwarmClaimSettingsView {
   settings: SwarmClaimSettings;
   sources: Record<SwarmClaimSettingKey, SwarmClaimSettingSource>;
@@ -32,6 +43,8 @@ export interface SwarmClaimSettingsView {
   journal: SwarmClaimJournalEntry[];
   /** How many live leases a disable freed (PATCH response only). */
   releasedClaims?: number;
+  /** Absent on a PATCH response and for a caller that does not read them. */
+  counters?: SwarmClaimQueueCounters | null;
 }
 
 export const swarmClaimSettingsQueryKey = ["myrmidon", "swarm-claim", "settings"] as const;
