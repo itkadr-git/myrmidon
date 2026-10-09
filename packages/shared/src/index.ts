@@ -2870,6 +2870,10 @@ export * from "./myrmidon-budget-enforcement.js";
 // precedence resolver shared by the server core, the settings validator and the
 // UI panels of parts B–E.
 export * from "./myrmidon-behavior-settings.js";
+// myrmidon(1.7, OPE-4101, SETTINGS-TO-UI E): the system/monitoring section of
+// the behavior registry — deploy smoke parameters, tracing windows, Zabbix
+// maintenance and the hindsight key selection. Side effect: registers the keys.
+export * from "./myrmidon-system-settings.js";
 // myrmidon(MEMORY-UI): the agent memory instance setting (address, optional key secret, switch).
 export * from "./myrmidon-agent-memory.js";
 // myrmidon(1.7-DEBATE-ASYM-A): the shared contract of asymmetric debates —

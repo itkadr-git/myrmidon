@@ -9,6 +9,14 @@
 // default — rolling a failed deploy back IS the feature) and
 // MYRMIDON_DEPLOY_AUTO_UPDATE (off by default — unattended deploys wait for
 // the staging stand, STAND).
+//
+// myrmidon(1.7, OPE-4101, SETTINGS-TO-UI E): the behavior keys (enabled,
+// rollback/update switches, timeouts) resolve live through the part A
+// behavior-settings registry — a UI change applies without a restart, and a
+// set env var stays a forced override. Infra fields (paths, URLs, headers)
+// stay env-only.
+
+import { liveDeploySettings } from "../system-settings/live.js"; // myrmidon(1.7, OPE-4101)
 
 function readInt(env: NodeJS.ProcessEnv, name: string, fallback: number, min: number, max: number): number {
   const raw = env[name]?.trim();
@@ -88,5 +96,28 @@ export function readDeployJobsSettings(env: NodeJS.ProcessEnv = process.env): De
     registryInspectUrl: env.MYRMIDON_DEPLOY_REGISTRY_INSPECT_URL?.trim() || null,
     autoRollback: readBool(env, "MYRMIDON_DEPLOY_AUTO_ROLLBACK", true),
     autoUpdate: readBool(env, "MYRMIDON_DEPLOY_AUTO_UPDATE", false),
+  };
+}
+
+/**
+ * Live view of the deploy settings: behavior keys come from the UI via the
+ * behavior-settings registry, with a set env var acting as a forced override;
+ * infra fields stay env-only. myrmidon(1.7, OPE-4101).
+ */
+export function resolveDeployJobsSettings(
+  env: NodeJS.ProcessEnv = process.env,
+): DeployJobsSettings {
+  const base = readDeployJobsSettings(env);
+  const live = liveDeploySettings(env);
+  return {
+    ...base,
+    enabled: live.enabled,
+    autoRollback: live.autoRollback,
+    autoUpdate: live.autoUpdate,
+    verifyTimeoutMs: live.verifyTimeoutSec * 1000,
+    tickMs: live.tickSec * 1000,
+    stepTimeoutMs: live.stepTimeoutSec * 1000,
+    healthPollMs: live.healthPollSec * 1000,
+    healthTimeoutMs: live.healthTimeoutSec * 1000,
   };
 }

@@ -13,7 +13,7 @@ import {
 import { getCachedMaintenanceDocument } from "./gate.js";
 import { maintenanceRoutes } from "./routes.js";
 import { maintenanceService, type MaintenanceHeartbeatPort } from "./service.js";
-import { readZabbixSettings, zabbixMaintenanceHooks } from "./zabbix.js";
+import { resolveZabbixSettings, zabbixMaintenanceHooks } from "./zabbix.js"; // myrmidon(1.7, OPE-4101)
 import { readMaintenanceSettings } from "./settings.js";
 import { runBotDiskSweep } from "../bot-containers/bot-disk-service.js"; // myrmidon(BOT-DISK-A)
 
@@ -63,7 +63,9 @@ export function maintenanceHeartbeatPort(heartbeat: ReturnType<typeof heartbeatS
 }
 
 function defaultService(db: Db) {
-  return maintenanceService(db, { heartbeat: maintenanceHeartbeatPort(heartbeatService(db)), hooks: zabbixMaintenanceHooks(readZabbixSettings()) });
+  // myrmidon(1.7, OPE-4101): resolve live so a UI change without a restart is
+  // honored on the next maintenance open/close.
+  return maintenanceService(db, { heartbeat: maintenanceHeartbeatPort(heartbeatService(db)), hooks: zabbixMaintenanceHooks(resolveZabbixSettings()) });
 }
 
 /** Router for app.ts: GET/POST /api/myrmidon/maintenance. */
