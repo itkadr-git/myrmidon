@@ -17,7 +17,7 @@ import {
   DEFAULT_MEDIA_BOTS_FILE,
   DEFAULT_MEDIA_TOOLS_ALLOWLIST,
   MEDIA_TOOLS_TOKEN_ENV,
-  MYRMIDON_MEDIA_BOTS_FILE_ENV,
+  MEDIA_BOTS_FILE_ENV,
   buildBotsRegistryJson,
   collectMediaAclEntries,
   mediaTokenFromEnv,
@@ -232,12 +232,12 @@ describe("runMediaAclExport", () => {
     expect((await fs.stat(file)).mode & 0o777).toBe(0o600);
   });
 
-  it("path comes from MYRMIDON_MEDIA_BOTS_FILE_ENV when deps.path is absent", async () => {
+  it("path comes from the MYRMIDON_MEDIA_BOTS_FILE env var when deps.path is absent", async () => {
     const file = await tmpFile();
     const result = await runMediaAclExport({
       listAgents: async () => [],
       resolveCardEnv: resolverFor({}),
-      env: { ...envOn, [MYRMIDON_MEDIA_BOTS_FILE_ENV]: file },
+      env: { ...envOn, [MEDIA_BOTS_FILE_ENV]: file },
     });
     expect(result?.path).toBe(file);
     expect(JSON.parse(await fs.readFile(file, "utf8"))).toEqual({ bots: {} });
@@ -247,8 +247,8 @@ describe("runMediaAclExport", () => {
     // Pure resolution assertion — a write attempt at the contract default
     // would touch / on the runner and fail on permissions, not on the contract.
     expect(resolveMediaBotsFilePath(envOn)).toBe(DEFAULT_MEDIA_BOTS_FILE);
-    expect(resolveMediaBotsFilePath({ ...envOn, [MYRMIDON_MEDIA_BOTS_FILE_ENV]: "/srv/bots.json" })).toBe("/srv/bots.json");
-    expect(resolveMediaBotsFilePath({ ...envOn, [MYRMIDON_MEDIA_BOTS_FILE_ENV]: "  " })).toBe(DEFAULT_MEDIA_BOTS_FILE);
+    expect(resolveMediaBotsFilePath({ ...envOn, [MEDIA_BOTS_FILE_ENV]: "/srv/bots.json" })).toBe("/srv/bots.json");
+    expect(resolveMediaBotsFilePath({ ...envOn, [MEDIA_BOTS_FILE_ENV]: "  " })).toBe(DEFAULT_MEDIA_BOTS_FILE);
     expect(resolveMediaBotsFilePath(envOn, "/explicit/path.json")).toBe("/explicit/path.json");
   });
 
