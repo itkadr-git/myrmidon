@@ -394,15 +394,21 @@ describe("reconcileBot", () => {
     };
     function backimportPorts() {
       const created: string[] = [];
+      const delivered: string[] = [];
       return {
         created,
+        delivered,
         ports: {
           readSkillByKey: async () => null,
-          createSkill: async (_companyId: string, input: { slug: string }) => {
+          createSkill: async (_companyId: string, _agentId: string, input: { slug: string }) => {
             created.push(input.slug);
             return { id: `skill-${input.slug}`, versionId: "v-1" };
           },
           updateSkill: async () => ({ versionId: "v-2", changed: true }),
+          deliverSkillToAgent: async (_companyId: string, _agentId: string, key: string) => {
+            delivered.push(key);
+            return { added: true };
+          },
         },
       };
     }
@@ -412,7 +418,7 @@ describe("reconcileBot", () => {
       const driver = fakeDriver({ botKey: "agent-a", state: "running", ...hashesOf(applied) });
       const backimport = backimportPorts();
       const outcome = await run(driver, fakeMaintenance([0]), {
-        backimport: { companyId: "co-1", ports: backimport.ports },
+        backimport: { companyId: "co-1", agentId: "agent-a", ports: backimport.ports },
         env: {},
       });
       expect(outcome).toEqual({ kind: "unchanged" });
@@ -428,7 +434,7 @@ describe("reconcileBot", () => {
       const activity = fakeActivity();
       const outcome = await run(driver, fakeMaintenance([0]), {
         activity,
-        backimport: { companyId: "co-1", ports: backimport.ports },
+        backimport: { companyId: "co-1", agentId: "agent-a", ports: backimport.ports },
         env: { MYRMIDON_BOT_SKILL_BACKIMPORT: "1" },
       });
       expect(outcome).toEqual({ kind: "unchanged" });
@@ -456,12 +462,14 @@ describe("reconcileBot", () => {
         activity,
         backimport: {
           companyId: "co-1",
+          agentId: "agent-a",
           ports: {
             readSkillByKey: async () => null,
             createSkill: async () => {
               throw new Error("catalog write exploded");
             },
             updateSkill: async () => ({ versionId: null, changed: false }),
+            deliverSkillToAgent: async () => ({ added: false }),
           },
         },
         env: { MYRMIDON_BOT_SKILL_BACKIMPORT: "1" },
@@ -482,7 +490,7 @@ describe("reconcileBot", () => {
       const backimport = backimportPorts();
       const outcome = await run(driver, fakeMaintenance([0]), {
         compile: async () => profile({ restartHash: "restart-new" }),
-        backimport: { companyId: "co-1", ports: backimport.ports },
+        backimport: { companyId: "co-1", agentId: "agent-a", ports: backimport.ports },
         env: { MYRMIDON_BOT_SKILL_BACKIMPORT: "1" },
       });
       expect(outcome).toEqual({ kind: "applied_restart" });

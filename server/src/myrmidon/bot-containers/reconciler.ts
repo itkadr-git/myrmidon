@@ -107,7 +107,7 @@ export interface ReconcileBotInput {
    * them back to the bots the lifecycle selects. A driver without
    * readBotSkills (fleetd) silently keeps no back-import.
    */
-  backimport?: { companyId: string; ports: BotSkillBackimportPorts };
+  backimport?: { companyId: string; agentId: string; ports: BotSkillBackimportPorts };
   /** Read per pass; defaults to process.env. Carries MYRMIDON_BOT_SKILL_BACKIMPORT. */
   env?: NodeJS.ProcessEnv;
 }
@@ -252,16 +252,23 @@ export async function reconcileBot(input: ReconcileBotInput): Promise<ReconcileO
     try {
       const directories = await driver.readBotSkills(botKey);
       if (directories === null || directories.length === 0) return;
-      const summary: BackimportSummary = await backimportBotSkills(target.companyId, directories, target.ports);
+      const summary: BackimportSummary = await backimportBotSkills(
+        target.companyId,
+        target.agentId,
+        directories,
+        target.ports,
+      );
       const created = summary.imported.filter((r) => r.outcome === "created").length;
       const updated = summary.imported.filter((r) => r.outcome === "updated").length;
       const unchanged = summary.imported.filter((r) => r.outcome === "unchanged").length;
+      const redelivered = summary.imported.filter((r) => r.outcome === "re-delivered").length;
       const failed = summary.failed.length;
-      if (created > 0 || updated > 0 || failed > 0) {
+      if (created > 0 || updated > 0 || redelivered > 0 || failed > 0) {
         await info("bot skills back-imported into the company catalog", {
           created,
           updated,
           unchanged,
+          redelivered,
           failed,
           failedDetails: summary.failed,
         });

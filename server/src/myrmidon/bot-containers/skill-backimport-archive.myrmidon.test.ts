@@ -63,4 +63,64 @@ describe("skillDirectoriesFromArchive", () => {
     const skills = skillDirectoriesFromArchive(parseUstarArchive(buildUstarArchive(entries)));
     expect(skills).toEqual([]);
   });
+
+  it("accepts the Hermes category layout skills/<category>/<name>/SKILL.md", () => {
+    // Review, point 1: on a live bot volume 63 of 65 skills sit in category
+    // directories, including the ones the bot authored itself.
+    const archive = buildUstarArchive([
+      dirEntry("skills"),
+      dirEntry("skills/devops"),
+      dirEntry("skills/devops/deploy"),
+      file("skills/devops/deploy/SKILL.md", "---\nname: deploy\n---\n"),
+      file("skills/devops/deploy/references/steps.md", "steps"),
+      dirEntry("skills/creative"),
+      file("skills/creative/ascii-video/SKILL.md", "---\nname: ascii-video\n---\n"),
+    ]);
+    const skills = skillDirectoriesFromArchive(parseUstarArchive(archive));
+    expect(skills.map((s) => s.name)).toEqual(["ascii-video", "deploy"]);
+    const deploy = skills.find((s) => s.name === "deploy")!;
+    expect(deploy.files.map((f) => f.path)).toEqual(["references/steps.md", "SKILL.md"]);
+  });
+
+  it("mixes flat and category layouts in one archive", () => {
+    const archive = buildUstarArchive([
+      file("skills/flat-skill/SKILL.md", "---\nname: flat-skill\n---\n"),
+      file("skills/media/youtube-content/SKILL.md", "---\nname: youtube-content\n---\n"),
+    ]);
+    const skills = skillDirectoriesFromArchive(parseUstarArchive(archive));
+    expect(skills.map((s) => s.name)).toEqual(["flat-skill", "youtube-content"]);
+  });
+
+  it("skips the ~60 bundled Hermes skills listed in skills/.bundled_manifest", () => {
+    // Review, point 1: dropping the depth limit alone would import every
+    // factory-bundled skill on the volume; the manifest names are the filter.
+    const manifest = [
+      "airtable:3b1f4e4c0e6aac15f2fd7f55e151bda9",
+      "arxiv:1f2aed59cd49092c6dd1dc54272d7ccd",
+      "youtube-content:deadbeef",
+      "",
+    ].join("\n");
+    const archive = buildUstarArchive([
+      file("skills/.bundled_manifest", manifest),
+      // Bundled skills in both layouts must all be skipped.
+      file("skills/airtable/SKILL.md", "bundled flat"),
+      file("skills/arxiv/SKILL.md", "bundled flat"),
+      file("skills/media/youtube-content/SKILL.md", "bundled in category"),
+      file("skills/devops/deploy/SKILL.md", "authored, category layout"),
+      file("skills/notes-taker/SKILL.md", "authored, flat"),
+    ]);
+    const skills = skillDirectoriesFromArchive(parseUstarArchive(archive));
+    expect(skills.map((s) => s.name)).toEqual(["deploy", "notes-taker"]);
+  });
+
+  it("imports the bot's own skill even when a bundled skill shares its category", () => {
+    const manifest = ["youtube-content:deadbeef"].join("\n");
+    const archive = buildUstarArchive([
+      file("skills/.bundled_manifest", manifest),
+      file("skills/media/youtube-content/SKILL.md", "bundled"),
+      file("skills/media/notes-taker/SKILL.md", "authored"),
+    ]);
+    const skills = skillDirectoriesFromArchive(parseUstarArchive(archive));
+    expect(skills.map((s) => s.name)).toEqual(["notes-taker"]);
+  });
 });

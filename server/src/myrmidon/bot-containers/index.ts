@@ -287,7 +287,13 @@ export async function applyBotContainerNow(
         ? await (async () => {
             const companyId = await deps.backimportCompanyIdOf!(agent.agentId);
             return companyId
-              ? { backimport: { companyId, ports: createDbBotSkillBackimportPorts(deps.db!) } }
+              ? {
+                  backimport: {
+                    companyId,
+                    agentId: agent.agentId,
+                    ports: createDbBotSkillBackimportPorts(deps.db!),
+                  },
+                }
               : {};
           })()
         : {}),

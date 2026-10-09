@@ -951,15 +951,56 @@ function isSafeSkillSegment(segment: string): boolean {
 export function skillDirectoriesFromArchive(entries: readonly UstarReadEntry[]): BotSkillDirectory[] {
   const bySkill = new Map<string, Array<{ path: string; content: string }>>();
   const dropped = new Set<string>();
+  // myrmidon(1.6.5-BOT-SKILL-BACKIMPORT review, point 1): Hermes lays a bot's
+  // own skills out in category directories — `skills/<category>/<name>/…` —
+  // with only a few directly under `skills/`. A skill directory is recognized
+  // by its own SKILL.md (depth 2 flat or depth 3 category), not by a depth
+  // guess on each file: `skills/deploy/references/steps.md` is a file of the
+  // flat skill `deploy`, not a skill named `references`. The archive's
+  // manifest of factory-bundled skills (`skills/.bundled_manifest`, one
+  // `<name>:<hash>` per line, flat names) marks what the runtime shipped,
+  // not what the bot authored: those are never back-imported (there are ~60
+  // of them on a live volume and they are not the bot's own work).
+  const bundled = new Set<string>();
+  const skillDirs = new Set<string>();
   for (const entry of entries) {
     if (entry.type !== "file") continue;
+    if (entry.path === "skills/.bundled_manifest") {
+      for (const line of entry.content.toString("utf8").split("\n")) {
+        const name = line.split(":")[0]?.trim();
+        if (name) bundled.add(name);
+      }
+      continue;
+    }
+    const match = /^skills\/(?:[^/]+\/)?([^/]+)\/SKILL\.md$/.exec(entry.path);
+    if (match) {
+      skillDirs.add(entry.path.slice(0, -"/SKILL.md".length));
+    }
+  }
+  for (const entry of entries) {
+    if (entry.type !== "file") continue;
+    if (entry.path === "skills/.bundled_manifest") continue;
     const segments = entry.path.split("/").filter((segment) => segment.length > 0);
-    // `skills/<name>/<file…>` — anything shallower is not a skill file.
     if (segments.length < 3 || segments[0] !== "skills") continue;
-    const name = segments[1]!;
+    // The longest prefix of the path that is itself a skill directory owns
+    // the file; a file under no skill directory (directly at the skills root,
+    // in a hidden runtime dir like .locks) is not a skill file.
+    let owner: string | null = null;
+    for (let depth = segments.length - 1; depth >= 2; depth--) {
+      const prefix = segments.slice(0, depth).join("/");
+      if (skillDirs.has(prefix)) {
+        owner = prefix;
+        break;
+      }
+    }
+    if (!owner) continue;
+    const ownerSegments = owner.split("/");
+    const name = ownerSegments[ownerSegments.length - 1]!;
     if (dropped.has(name)) continue;
-    const relative = segments.slice(2);
-    if (![name, ...relative].every(isSafeSkillSegment)) {
+    if (bundled.has(name)) continue;
+    const relative = segments.slice(ownerSegments.length);
+    const allSegments = [...ownerSegments.slice(1), ...relative];
+    if (!allSegments.every(isSafeSkillSegment)) {
       dropped.add(name);
       bySkill.delete(name);
       continue;

@@ -12,13 +12,16 @@
 // With MYRMIDON_BOT_SKILL_BACKIMPORT on (off by default), every reconcile
 // pass of a live bot also reads hermes/skills/ back out of the container and
 // hands the skills found there to this module, which upserts them into the
-// company skill catalog (sourceKind "bot_backimport", key
-// `company/<companyId>/<slug>` — the same shape a UI-created local skill
+// company skill catalog as company-local skills (sourceKind "managed_local",
+// key `company/<companyId>/<slug>` — the same shape a UI-created local skill
 // gets, so the runtime name, the lifecycle and the compiler treat them like
-// any other company skill). A skill whose content is already in the catalog
-// unchanged is skipped (no new version, no write). An imported skill is a
-// lifecycle *candidate*: it reaches the pilot agents of the company through
-// the normal delivery path, and an operator verifies it to fleet-wide.
+// any other company skill; the origin marker in the skill's metadata is what
+// distinguishes them). A skill whose content is already in the catalog
+// unchanged is skipped (no new version, no write). An imported skill is set
+// to a lifecycle *candidate* through the skill lifecycle service: it is a
+// bot-written (untrusted) skill, so it reaches the company's pilot agents
+// through the normal delivery path, and an operator verifies it to
+// fleet-wide. The back-import never promotes.
 //
 // The read-back is deliberately not part of the compiled profile: the
 // profile is the board -> bot direction, and this module never feeds the
@@ -67,7 +70,7 @@ export interface BackimportSkillResult {
   name: string;
   /** Catalog key the skill was written under (company/<companyId>/<slug>). */
   key: string;
-  outcome: "created" | "updated" | "unchanged";
+  outcome: "created" | "updated" | "unchanged" | "re-delivered";
   /** New version id for created/updated, the unchanged current one for unchanged. */
   versionId: string | null;
 }
@@ -86,24 +89,48 @@ export interface BackimportSummary {
  *  skill-backimport-ports.ts to companySkillService; tests pass fakes. */
 export interface BotSkillBackimportPorts {
   /** The company's existing skill for this catalog key, with its current
-   *  version's file inventory (path + content), or null. */
+   *  file set (path + content) and its origin, or null. */
   readSkillByKey(
     companyId: string,
     key: string,
-  ): Promise<{ id: string; files: BackimportSkillFile[] } | null>;
+  ): Promise<
+    | {
+        id: string;
+        files: BackimportSkillFile[];
+        /** Which agent's back-import owns the catalog entry, per the origin
+         *  marker in the skill's metadata; null when the marker is absent
+         *  (a UI-created or imported skill nobody back-imported). */
+        originAgentId: string | null;
+      }
+    | null
+  >;
   /** Creates the skill (slug, name, files) as a company-local skill with an
-   *  initial version; returns the new skill id and version id. */
+   *  initial version, marked with the importing agent's origin and set as a
+   *  lifecycle candidate; returns the new skill id and version id. */
   createSkill(
     companyId: string,
+    agentId: string,
     input: { slug: string; name: string; files: BackimportSkillFile[] },
   ): Promise<{ id: string; versionId: string | null }>;
   /** Replaces the skill's files with `files` and cuts a new version when the
-   *  content changed; returns the new (or unchanged) version id. */
+   *  content changed; returns the new (or unchanged) version id. Refuses
+   *  (throws) when the skill is not this agent's back-import. */
   updateSkill(
     companyId: string,
+    agentId: string,
     skillId: string,
     input: { name: string; files: BackimportSkillFile[] },
   ): Promise<{ versionId: string | null; changed: boolean }>;
+  /** Delivers a back-imported skill back to its own author so it survives a
+   *  volume recreation: adds `company/<companyId>/<slug>` to the agent's
+   *  desired skills (its paperclipSkillSync preference) unless already
+   *  there. The profile compiler only delivers explicit desired skills, so
+   *  without this step the imported copy never comes back to the bot. */
+  deliverSkillToAgent(
+    companyId: string,
+    agentId: string,
+    key: string,
+  ): Promise<{ added: boolean }>;
 }
 
 /**
@@ -145,6 +172,7 @@ export function skillFilesHash(files: readonly BackimportSkillFile[]): string {
  */
 export async function backimportBotSkills(
   companyId: string,
+  agentId: string,
   skills: readonly BackimportSkill[],
   ports: BotSkillBackimportPorts,
 ): Promise<BackimportSummary> {
@@ -154,7 +182,7 @@ export async function backimportBotSkills(
     const slug = skillSlugFromDirName(skill.name);
     const key = `company/${companyId}/${slug}`;
     try {
-      const result = await backimportOneSkill(companyId, key, slug, skill, ports);
+      const result = await backimportOneSkill(companyId, agentId, key, slug, skill, ports);
       imported.push(result);
     } catch (err) {
       failed.push({ name: skill.name, error: err instanceof Error ? err.message : String(err) });
@@ -165,6 +193,7 @@ export async function backimportBotSkills(
 
 async function backimportOneSkill(
   companyId: string,
+  agentId: string,
   key: string,
   slug: string,
   skill: BackimportSkill,
@@ -176,24 +205,53 @@ async function backimportOneSkill(
   }
   const files = [...skill.files].sort((a, b) => a.path.localeCompare(b.path));
   const existing = await ports.readSkillByKey(companyId, key);
+  if (existing) {
+    // myrmidon(1.6.5-BOT-SKILL-BACKIMPORT review, point 4): the catalog key
+    // is shared by everything that creates a local skill with this slug, so
+    // the import must prove it owns the entry before touching it. A
+    // UI-created skill (no origin marker) or another agent's back-import is
+    // never overwritten — a bot re-writing a human's skill, or two bots
+    // flip-flopping the same entry every pass, is exactly what the origin
+    // marker exists to prevent.
+    if (existing.originAgentId !== agentId) {
+      throw new Error(
+        `skill ${skill.name}: catalog entry ${key} belongs to ${
+          existing.originAgentId ? `another back-import (agent ${existing.originAgentId})` : "a non-imported source"
+        }, not overwritten`,
+      );
+    }
+    if (skillFilesHash(existing.files) === skillFilesHash(files)) {
+      // No re-read for the version id: nothing was written, so there is no new
+      // version to name, and the result does not carry the current one.
+      // The delivery step still runs: the skill can be unchanged in the
+      // catalog while the agent's desired-skills list lost the key (a
+      // recreate happened in between), and losing it would drop the skill
+      // from the bot's profile forever.
+      const delivery = await ports.deliverSkillToAgent(companyId, agentId, key);
+      if (!delivery.added) {
+        return { name: skill.name, key, outcome: "unchanged", versionId: null };
+      }
+      return { name: skill.name, key, outcome: "re-delivered", versionId: null };
+    }
+  }
+  const skillName = skillNameFromMarkdown(skillMd.content) ?? slug;
+  let outcome: "created" | "updated" | "unchanged";
+  let versionId: string | null;
   if (!existing) {
-    const created = await ports.createSkill(companyId, {
-      slug,
-      name: skillNameFromMarkdown(skillMd.content) ?? slug,
-      files,
-    });
-    return { name: skill.name, key, outcome: "created", versionId: created.versionId };
+    const created = await ports.createSkill(companyId, agentId, { slug, name: skillName, files });
+    outcome = "created";
+    versionId = created.versionId;
+  } else {
+    const updated = await ports.updateSkill(companyId, agentId, existing.id, { name: skillName, files });
+    outcome = updated.changed ? "updated" : "unchanged";
+    versionId = updated.versionId;
   }
-  if (skillFilesHash(existing.files) === skillFilesHash(files)) {
-    // No re-read for the version id: nothing was written, so there is no new
-    // version to name, and the result does not carry the current one.
-    return { name: skill.name, key, outcome: "unchanged", versionId: null };
-  }
-  const updated = await ports.updateSkill(companyId, existing.id, {
-    name: skillNameFromMarkdown(skillMd.content) ?? slug,
-    files,
-  });
-  return { name: skill.name, key, outcome: updated.changed ? "updated" : "unchanged", versionId: updated.versionId };
+  // The volume-recreation criterion (review, point 2): the compiler only
+  // delivers explicit desired skills, so the import must also add the skill
+  // to this agent's selection, or the catalog copy never reaches the bot
+  // back. Idempotent: an already-present key is a no-op.
+  await ports.deliverSkillToAgent(companyId, agentId, key);
+  return { name: skill.name, key, outcome, versionId };
 }
 
 /** The `name:` frontmatter field of a SKILL.md, when present — the display
