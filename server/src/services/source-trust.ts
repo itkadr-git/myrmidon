@@ -19,6 +19,49 @@ export type SourceTrustActor = {
   runId: string | null;
 };
 
+// A run-identity mismatch must stay fail-closed for unknown/foreign-company
+// runs and for runs that demonstrably ingested *external* input, which is what
+// low-trust quarantine protects against (untrusted outside content flowing
+// into board data). Agent-to-agent delegation is normal board behaviour: a
+// lead creates subtasks from its own automation run, continuations reuse
+// another agent's run row, and new wake reasons appear over time — enumerating
+// "known internal" reasons would re-quarantine legitimate tasks every time one
+// is added. So the rule is inverted: same-company provenance counts as
+// internal unless it carries an external-input marker. The markers are exactly
+// the ones the external-chat bridge writes (heartbeat.ts
+// resolveExternalChatWakeProvider: `source === "chat:<provider>"`, the
+// execution-bound key) plus webhook-style invocation sources. Everything else
+// is governed by the normal trust-preset policy below, same as for an agent's
+// own runs.
+const EXTERNAL_WAKE_SOURCES = new Set([
+  "webhook",
+  "external_api",
+  "api",
+  "discord",
+  "telegram",
+  "whatsapp",
+]);
+
+function isExternalInputRunProvenance(input: {
+  invocationSource: string | null | undefined;
+  contextSnapshot: unknown;
+}): boolean {
+  const context = readObject(input.contextSnapshot);
+  if (context?.externalChatExecutionBound === true) return true;
+  if (context?.paperclipExternalChatExecutionBound === true) return true;
+  const sourceStrings = [
+    typeof input.invocationSource === "string" ? input.invocationSource : null,
+    typeof context?.source === "string" ? context.source : null,
+    typeof context?.wakeSource === "string" ? context.wakeSource : null,
+  ];
+  for (const value of sourceStrings) {
+    if (!value) continue;
+    if (value.startsWith("chat:")) return true;
+    if (EXTERNAL_WAKE_SOURCES.has(value)) return true;
+  }
+  return false;
+}
+
 export type SourceTrustIssueContext = {
   id: string;
   companyId: string;
@@ -125,6 +168,7 @@ export async function resolveActorSourceTrustForIssue(input: {
           .select({
             companyId: heartbeatRuns.companyId,
             agentId: heartbeatRuns.agentId,
+            invocationSource: heartbeatRuns.invocationSource,
             contextSnapshot: heartbeatRuns.contextSnapshot,
           })
           .from(heartbeatRuns)
@@ -134,12 +178,19 @@ export async function resolveActorSourceTrustForIssue(input: {
   ]);
 
   if (input.actor.runId && (!run || run.agentId !== input.actor.agentId)) {
-    // Fail closed: an unknown or mismatched run cannot prove higher trust, so tag the write as quarantined.
-    return buildLowTrustSourceTrust({
-      issueId: input.issue.id,
-      runId: input.actor.runId,
-      agentId: input.actor.agentId,
-    });
+    // Fail closed: an unknown (or foreign-company) run cannot prove higher
+    // trust, so tag the write as quarantined. A run of this company owned by a
+    // *different* agent is normal internal delegation (the board wakes agents
+    // onto each other's issues; a lead creates subtasks from its own run), so
+    // it only quarantines when that run demonstrably ingested external input.
+    const foreignSameCompanyRun = Boolean(run);
+    if (!foreignSameCompanyRun || isExternalInputRunProvenance(run!)) {
+      return buildLowTrustSourceTrust({
+        issueId: input.issue.id,
+        runId: input.actor.runId,
+        agentId: input.actor.agentId,
+      });
+    }
   }
 
   const runContext = readObject(run?.contextSnapshot);

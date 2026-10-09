@@ -204,7 +204,10 @@ describeEmbeddedPostgres("resolveActorSourceTrustForIssue", () => {
     });
   });
 
-  it("fails closed when the supplied run id does not belong to the acting agent", async () => {
+  it("does not quarantine a same-company internal run owned by another agent", async () => {
+    // OPE-6671: agent-to-agent delegation is normal board behaviour (a lead's
+    // automation run creates subtasks attributed to a different agent key).
+    // Such a run proves no external input, so it must not trigger quarantine.
     const company = await createCompany();
     const actorAgent = await createAgent(company.id);
     const runOwnerAgent = await createAgent(company.id);
@@ -224,7 +227,12 @@ describeEmbeddedPostgres("resolveActorSourceTrustForIssue", () => {
         companyId: company.id,
         agentId: runOwnerAgent.id,
         status: "running",
-        contextSnapshot: { issueId: issue!.id },
+        invocationSource: "automation",
+        triggerDetail: "system",
+        contextSnapshot: {
+          issueId: issue!.id,
+          wakeReason: "execution_hold_cleared",
+        },
       })
       .returning();
 
@@ -244,14 +252,108 @@ describeEmbeddedPostgres("resolveActorSourceTrustForIssue", () => {
       },
     });
 
+    expect(sourceTrust).toBeNull();
+  });
+
+  it("still fails closed when the supplied run id is unknown", async () => {
+    const company = await createCompany();
+    const actorAgent = await createAgent(company.id);
+    const [issue] = await db
+      .insert(issues)
+      .values({
+        companyId: company.id,
+        title: "Standard issue",
+        status: "in_progress",
+        priority: "high",
+        assigneeAgentId: actorAgent.id,
+      })
+      .returning();
+
+    const sourceTrust = await resolveActorSourceTrustForIssue({
+      db,
+      issue: {
+        id: issue!.id,
+        companyId: company.id,
+        projectId: null,
+        executionPolicy: null,
+      },
+      actor: {
+        actorType: "agent",
+        actorId: actorAgent.id,
+        agentId: actorAgent.id,
+        runId: randomUUID(),
+      },
+    });
+
     expect(sourceTrust).toMatchObject({
       preset: LOW_TRUST_REVIEW_PRESET,
       disposition: "quarantined",
       sourceIssueId: issue!.id,
-      sourceRunId: run!.id,
       sourceAgentId: actorAgent.id,
     });
   });
+
+  it.each([
+    "external-chat-bound",
+    "chat-source",
+    "webhook-wake-source",
+  ] as const)(
+    "keeps quarantining same-company runs that ingested external input (%s)",
+    async (marker) => {
+      const company = await createCompany();
+      const actorAgent = await createAgent(company.id);
+      const runOwnerAgent = await createAgent(company.id);
+      const [issue] = await db
+        .insert(issues)
+        .values({
+          companyId: company.id,
+          title: "Standard issue",
+          status: "in_progress",
+          priority: "high",
+          assigneeAgentId: actorAgent.id,
+        })
+        .returning();
+      const contextSnapshot: Record<string, unknown> = { issueId: issue!.id };
+      if (marker === "external-chat-bound")
+        contextSnapshot.paperclipExternalChatExecutionBound = true;
+      if (marker === "chat-source") contextSnapshot.source = "chat:telegram";
+      if (marker === "webhook-wake-source") contextSnapshot.wakeSource = "webhook";
+      const [run] = await db
+        .insert(heartbeatRuns)
+        .values({
+          companyId: company.id,
+          agentId: runOwnerAgent.id,
+          status: "running",
+          invocationSource: "automation",
+          contextSnapshot,
+        })
+        .returning();
+
+      const sourceTrust = await resolveActorSourceTrustForIssue({
+        db,
+        issue: {
+          id: issue!.id,
+          companyId: company.id,
+          projectId: null,
+          executionPolicy: null,
+        },
+        actor: {
+          actorType: "agent",
+          actorId: actorAgent.id,
+          agentId: actorAgent.id,
+          runId: run!.id,
+        },
+      });
+
+      expect(sourceTrust).toMatchObject({
+        preset: LOW_TRUST_REVIEW_PRESET,
+        disposition: "quarantined",
+        sourceIssueId: issue!.id,
+        sourceRunId: run!.id,
+        sourceAgentId: actorAgent.id,
+      });
+    },
+  );
 
   it("surfaces denied trust policy resolution instead of treating it as higher trust", async () => {
     const company = await createCompany();

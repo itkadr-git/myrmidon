@@ -2234,6 +2234,13 @@
       "when": 1791500381000,
       "tag": "0381_attention_exhausted_lifecycle_idx",
       "breakpoints": true
+    },
+    {
+      "idx": 382,
+      "version": "7",
+      "when": 1791500382000,
+      "tag": "0382_release_internal_low_trust_quarantine",
+      "breakpoints": true
     }
   ]
 }
