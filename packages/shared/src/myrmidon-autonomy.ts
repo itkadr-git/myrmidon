@@ -216,14 +216,15 @@ export const autonomyMatrixPatchSchema = z.object({
 export type AutonomyMatrixPatch = z.infer<typeof autonomyMatrixPatchSchema>;
 
 /**
- * The factory default: every cell allowed. Nothing changes for any role until
- * the board makes the first edit, which is what a safe release requires — an
- * install that ignores the screen keeps exactly today's behaviour. A
- * conservative factory preset is a deliberate follow-up, not a 1.6 default.
+ * The factory default: every cell allowed except deploy. A new instance
+ * keeps today's behaviour for all action classes, but deploy now requires
+ * approval by default — the board must explicitly allow an agent to deploy.
+ * This closes the 1.6.2 AUTONOMY-DEPLOY gate: an agent without an explicit
+ * allowed rule cannot trigger a deploy.
  */
 export const AUTONOMY_SAFE_DEFAULTS: Record<AutonomyActionClass, AutonomyVerdict> = {
   merge: "allowed",
-  deploy: "allowed",
+  deploy: "approval_required",
   spend_above_threshold: "allowed",
   external_message: "allowed",
   delete: "allowed",

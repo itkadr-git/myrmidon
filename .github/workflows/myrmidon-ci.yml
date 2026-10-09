@@ -558,6 +558,10 @@ jobs:
           printf 'Running %s\n' "${files[@]}"
           node --test "${files[@]}"
 
+      - name: SQL template lint (myrmidon)
+        if: ${{ !cancelled() }}
+        run: node scripts/myrmidon/ci/sql-template-lint.mjs --root server/src
+
       - name: Secrets (gitleaks, new commits)
         if: ${{ !cancelled() }}
         env:

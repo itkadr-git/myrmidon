@@ -86,6 +86,9 @@ import {
 import { hostCpuHoldSignal, hostMemoryHoldSignal } from "../myrmidon/run-admission.js"; // myrmidon(1.6.2/1.6.5 RUN-ADMISSION)
 // myrmidon(BOT-RUNTIME-TUNING D): the model fallback share raises one card per agent
 import { readModelFallbackSignals } from "../myrmidon/litellm-fallback-signal/attention.js";
+// myrmidon(1.6.5-F-18): an empty gateway model catalog raises one card per
+// company — the accounting key is misconfigured, not a quiet window.
+import { readEmptyCatalogSignal } from "../myrmidon/litellm-costs/attention.js";
 // myrmidon(1.6.1-BOT-DISK-C): the disk quota sweep records one signal per bot
 // volume at/over its quota; the feed turns the registry into cards.
 import { buildBotDiskCards, readBotDiskReports } from "../myrmidon/bot-containers/bot-disk-cards.js"; // myrmidon(1.6.5 BOT-DISK-H4c)
@@ -172,6 +175,9 @@ const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   // myrmidon(STALE-BLOCK): one card per block the watchdog lifted.
   "stale_block",
   "host_disk_alert",
+  // myrmidon(1.6.5-F-18): the gateway model catalog is empty — the accounting
+  // key is misconfigured; one card per company.
+  "empty_model_catalog",
   // myrmidon(1.6.1-WIP-LIMIT-A): the per-agent work-in-progress over-limit signal.
   "wip_limit",
   // myrmidon(REVIEW-ROUTING): no reviewer available, or a review overdue.
@@ -209,6 +215,9 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   stale_block: 12,
   host_disk_alert: 0,
   model_fallback_alert: 13,
+  // myrmidon(1.6.5-F-18): an empty catalog blocks the gateway spend limits and
+  // the model picker — a stop, ranked with the other gateway-ops alerts.
+  empty_model_catalog: 0,
   // myrmidon(1.6.1-WIP-LIMIT-A): a workload-oversignal sits below every
   // blocking kind but above nothing else — it is advice, not a stop.
   wip_limit: 14,
@@ -312,7 +321,8 @@ type AttentionServiceOptions = {
   /**
    * override for the feed cache TTL in milliseconds; when unset
    * the value comes from instance_settings.general.attentionFeedCacheTtlSeconds
-   * (default 45 s). 0 disables the cache for this service instance.
+   * (default 60 s, the UI poll interval). 0 disables the cache for this
+   * service instance.
    */
   feedCacheTtlMs?: number;
   /**
@@ -1242,7 +1252,16 @@ function readRunIssueId(contextSnapshot: Record<string, unknown> | null) {
 // ---------------------------------------------------------------------------
 
 const ATTENTION_FAILED_RUN_HORIZON_DEFAULT_DAYS = 7;
-const ATTENTION_FEED_CACHE_TTL_DEFAULT_MS = 45_000;
+const ATTENTION_FEED_CACHE_TTL_DEFAULT_MS = 60_000;
+/**
+ * Stale-while-revalidate bound. A snapshot older than the TTL is still served
+ * (while one background rebuild refreshes it); past this multiple of the TTL a
+ * request waits for the rebuild instead, so a reader never sees data older
+ * than TTL * multiplier.
+ */
+const ATTENTION_FEED_CACHE_STALE_TTL_MULTIPLIER = 2;
+/** Per-Db ceiling on cached feed snapshots, pruned past the stale window. */
+const ATTENTION_FEED_CACHE_MAX_ENTRIES = 32;
 const ATTENTION_SETTINGS_READ_TTL_MS = 5_000;
 
 type AttentionRuntimeSettings = {
@@ -1303,17 +1322,43 @@ async function readAttentionRuntimeSettings(
   return settings;
 }
 
-type AttentionFeedCacheEntry = { expiresAtMs: number; snapshot: AttentionFeedSnapshot };
+type AttentionFeedCacheEntry = { builtAtMs: number; snapshot: AttentionFeedSnapshot };
 
-const attentionFeedCaches = new WeakMap<Db, Map<string, AttentionFeedCacheEntry>>();
+/** The single rebuild currently in flight for one cache key. */
+type AttentionFeedCacheRebuild = { token: string; task: Promise<AttentionFeedCacheEntry> };
 
-function attentionFeedCacheFor(db: Db): Map<string, AttentionFeedCacheEntry> {
-  let cache = attentionFeedCaches.get(db);
-  if (!cache) {
-    cache = new Map<string, AttentionFeedCacheEntry>();
-    attentionFeedCaches.set(db, cache);
+type AttentionFeedCacheState = {
+  entries: Map<string, AttentionFeedCacheEntry>;
+  /**
+   * In-flight rebuilds by cache key: a snapshot older than the TTL is served
+   * while exactly one rebuild refreshes it, and parallel requests share that
+   * rebuild instead of stacking builds on the same company.
+   */
+  rebuilds: Map<string, AttentionFeedCacheRebuild>;
+  /** Invalidation counters ("*" covers every company) — see cacheToken below. */
+  invalidations: Map<string, number>;
+};
+
+const attentionFeedCaches = new WeakMap<Db, AttentionFeedCacheState>();
+
+function attentionFeedCacheFor(db: Db): AttentionFeedCacheState {
+  let state = attentionFeedCaches.get(db);
+  if (!state) {
+    state = { entries: new Map(), rebuilds: new Map(), invalidations: new Map() };
+    attentionFeedCaches.set(db, state);
   }
-  return cache;
+  return state;
+}
+
+/**
+ * An invalidation must be visible on the very next read, but a rebuild that
+ * already started (or a background rebuild launched from the stale window)
+ * reads the pre-invalidation state. Such a snapshot must not repopulate the
+ * cache, so every rebuild carries the token it started under and only stores
+ * its result while the token still matches.
+ */
+function attentionFeedCacheToken(state: AttentionFeedCacheState, companyId: string) {
+  return `${state.invalidations.get("*") ?? 0}:${state.invalidations.get(companyId) ?? 0}`;
 }
 
 /**
@@ -1323,15 +1368,70 @@ function attentionFeedCacheFor(db: Db): Map<string, AttentionFeedCacheEntry> {
  * which reads before/after states inside one TTL window) can force a rebuild.
  */
 export function invalidateAttentionFeedCache(db: Db, companyId?: string) {
-  const cache = attentionFeedCaches.get(db);
-  if (!cache) return;
+  const state = attentionFeedCaches.get(db);
+  if (!state) return;
+  const counterKey = companyId ?? "*";
+  state.invalidations.set(counterKey, (state.invalidations.get(counterKey) ?? 0) + 1);
   if (!companyId) {
-    cache.clear();
+    state.entries.clear();
     return;
   }
-  for (const key of cache.keys()) {
-    if (key.startsWith(`${companyId}|`)) cache.delete(key);
+  for (const key of state.entries.keys()) {
+    if (key.startsWith(`${companyId}|`)) state.entries.delete(key);
   }
+}
+
+/**
+ * Rebuild one cache key, at most once at a time.
+ *
+ * Every caller that needs a fresh snapshot goes through here, so a burst of
+ * parallel requests (the UI polls the feed for every open tab) produces one
+ * build and one set of queries: the first caller starts it, the rest await the
+ * same promise. Storing the result is skipped when an invalidation landed
+ * while the build was running (see attentionFeedCacheToken).
+ */
+function rebuildAttentionFeedSnapshot(
+  db: Db,
+  companyId: string,
+  cacheKey: string,
+  buildOptions: AttentionBuildOptions,
+  serviceOptions: AttentionServiceOptions,
+  feedCacheTtlMs: number,
+): Promise<AttentionFeedCacheEntry> {
+  const state = attentionFeedCacheFor(db);
+  const token = attentionFeedCacheToken(state, companyId);
+  const inFlight = state.rebuilds.get(cacheKey);
+  if (inFlight && inFlight.token === token) return inFlight.task;
+
+  const rebuild: AttentionFeedCacheRebuild = {
+    token,
+    task: (async () => {
+      const snapshot = await buildAttentionFeedSnapshot(db, companyId, buildOptions, serviceOptions);
+      const entry: AttentionFeedCacheEntry = { builtAtMs: snapshot.builtAtMs, snapshot };
+      if (attentionFeedCacheToken(state, companyId) === token) {
+        // Bound the per-Db map: entries past the stale window would force a
+        // synchronous rebuild on the next read anyway, so keeping them buys
+        // nothing and costs memory on a multi-company instance.
+        if (state.entries.size > ATTENTION_FEED_CACHE_MAX_ENTRIES) {
+          const staleBefore = Date.now() - feedCacheTtlMs * ATTENTION_FEED_CACHE_STALE_TTL_MULTIPLIER;
+          for (const [key, cached] of state.entries) {
+            if (cached.builtAtMs <= staleBefore) state.entries.delete(key);
+          }
+        }
+        state.entries.set(cacheKey, entry);
+      }
+      return entry;
+    })(),
+  };
+  const forget = () => {
+    if (state.rebuilds.get(cacheKey) === rebuild) state.rebuilds.delete(cacheKey);
+  };
+  // Attaching both outcomes also keeps a failed background rebuild from
+  // surfacing as an unhandled rejection: the stale snapshot stays in place and
+  // the next request retries.
+  rebuild.task.then(forget, forget);
+  state.rebuilds.set(cacheKey, rebuild);
+  return rebuild.task;
 }
 
 async function buildAttentionFeedSnapshot(
@@ -2284,12 +2384,100 @@ async function buildAttentionFeedSnapshot(
           .from(agents)
           .where(and(eq(agents.companyId, companyId), inArray(agents.id, botIds)));
         const byId = new Map(botAgents.map((agent) => [agent.id, agent]));
+
+        // myrmidon(1.6.5-BOT-DISK-UV-B board side): the start-time self-check
+        // failures (reflink / shared git objects / uv cache) are host-level —
+        // one card on the fleet per kind of failure instead of one per bot per
+        // check. Unpushed-work clone cards stay per-bot.
+        const SELF_CHECK_KINDS = ["reflink", "gitref", "uvcache"] as const;
+        type SelfCheckKind = (typeof SELF_CHECK_KINDS)[number];
+        const isSelfCheck = (signal: (typeof cloneSignals)[number]): signal is typeof signal & { kind: SelfCheckKind } =>
+          signal.kind === "reflink" || signal.kind === "gitref" || signal.kind === "uvcache";
+        const selfCheckTitle: Record<SelfCheckKind, string> = {
+          reflink: "Reflinks do not work",
+          gitref: "Shared git objects check failed",
+          uvcache: "uv cache self-check failed",
+        };
+        const selfCheckAdvice: Record<SelfCheckKind, string> = {
+          reflink:
+            "pnpm installs on these bots copy every package instead of cloning, so bot disks fill quickly. The store and the clone roots must sit on one copy-on-write filesystem.",
+          gitref:
+            "New task clones on these bots copy the whole git history again (~0.4 GB each). Check that the git wrapper shadows git and the shared store is writable for the bot user.",
+          uvcache:
+            "uv installs on these bots fetch into a per-run cache instead of the shared one. Check that the shared package cache is mounted read-write and its directories belong to the bot user.",
+        };
+        const selfCheckExit: Record<SelfCheckKind, string> = {
+          reflink: "every affected bot restarts and its self-check passes",
+          gitref: "every affected bot restarts and its self-check passes",
+          uvcache: "every affected bot restarts and its self-check passes (the shared cache is writable for the bot user and files in it link into the clone roots)",
+        };
+        // Group by kind, then by the failing check/root so a fleet split into
+        // two failure modes still gets one card per mode.
+        const groups = new Map<string, { kind: SelfCheckKind; check: string; bots: Map<string, string> }>();
         for (const signal of cloneSignals) {
+          if (!isSelfCheck(signal)) continue;
+          const agent = byId.get(signal.botKey);
+          if (!agent) continue;
+          const check = signal.kind === "gitref"
+            ? (signal.reason.match(/check (\S+) failed/)?.[1] ?? "unknown")
+            : signal.kind === "uvcache"
+              ? "uvcache"
+              : signal.path;
+          const groupKey = `${signal.kind}:${check}`;
+          let group = groups.get(groupKey);
+          if (!group) {
+            group = { kind: signal.kind, check, bots: new Map() };
+            groups.set(groupKey, group);
+          }
+          if (!group.bots.has(agent.id)) group.bots.set(agent.id, `${agent.name}: ${signal.reason}`);
+        }
+        for (const group of [...groups.values()].sort((a, b) => (a.kind + ":" + a.check < b.kind + ":" + b.check ? -1 : 1))) {
+          const at = new Date().toISOString();
+          const botList = [...group.bots.values()];
+          const total = botList.length;
+          const names = botList.slice(0, 5).map((entry) => entry.split(": ")[0]).join(", ");
+          const more = total > 5 ? ` and ${total - 5} more` : "";
+          add(createItem({
+            companyId,
+            sourceKind: "bot_disk_lifecycle",
+            subject: {
+              kind: "agent",
+              id: "bot-disk-lifecycle",
+              companyId,
+              title: "Bot disk lifecycle",
+              identifier: null,
+              status: "alert",
+              href: `/${prefix}/instance`,
+              metadata: { failureKind: group.kind, check: group.check, affectedBots: total },
+            },
+            whyNow:
+              `${selfCheckTitle[group.kind]} on ${total} bot${total === 1 ? "" : "s"} (${names}${more}): ${botList[0].split(": ").slice(1).join(": ")}. ${selfCheckAdvice[group.kind]}`,
+            decisionVerbs: decisionVerbs(
+              { id: "inspect", label: "Inspect", description: "Recreate the affected bots so the prepare step and the self-check run again." },
+              { id: "dismiss", label: "Dismiss", description: "Dismiss this signal." },
+            ),
+            inlineResolvable: false,
+            entryRule: `the start-time ${group.kind} self-check failed on at least one bot`,
+            exitRule: selfCheckExit[group.kind],
+            dedupKey: `bot_disk_${group.kind}:fleet:${group.check}`,
+            severity: "high",
+            activityAt: at,
+            createdAt: at,
+            updatedAt: at,
+            relatedIssue: null,
+            detail: {
+              kind: "generic",
+              summaryExcerpt: `${total} bot${total === 1 ? "" : "s"}: ${names}${more}`,
+              images: [],
+            },
+          }));
+        }
+
+        for (const signal of cloneSignals) {
+          if (isSelfCheck(signal)) continue;
           const agent = byId.get(signal.botKey);
           if (!agent) continue;
           const at = new Date(signal.observedAtMs).toISOString();
-          // myrmidon(1.6.5 BOT-DISK-G): the signal kind names its own dedup family.
-          const signalKind = signal.kind === "reflink" || signal.kind === "gitref" ? signal.kind : "clone";
           add(createItem({
             companyId,
             sourceKind: "bot_disk_lifecycle",
@@ -2304,29 +2492,17 @@ async function buildAttentionFeedSnapshot(
               metadata: { clonePath: signal.path, branch: signal.branch },
             },
             whyNow:
-              signal.kind === "reflink"
-                ? `Reflinks do not work in ${signal.path}: ${signal.reason}. pnpm installs there copy every package instead of cloning, so the bot's disk fills quickly.`
-                : signal.kind === "gitref"
-                  ? `Shared git objects do not work on this bot: ${signal.reason}. New task clones there copy the whole git history again (~0.4 GB each).`
-                  : `Clone ${signal.path} has been idle past the lifecycle TTL with ${signal.reason}; it is kept, not removed.`,
+              `Clone ${signal.path} has been idle past the lifecycle TTL with ${signal.reason}; it is kept, not removed.`,
             decisionVerbs: decisionVerbs(
               { id: "inspect", label: "Inspect", description: "Push or discard the work in the bot's clone." },
               { id: "dismiss", label: "Dismiss", description: "Dismiss this signal." },
             ),
             inlineResolvable: false,
             entryRule:
-              signal.kind === "reflink"
-                ? "the bot's start-time reflink self-check failed for a clone root"
-                : signal.kind === "gitref"
-                  ? "the bot's start-time shared-git-objects self-check failed"
-                  : "a bot clone holds unpushed work and is idle longer than general.botDisk.idleTtlMs",
+              "a bot clone holds unpushed work and is idle longer than general.botDisk.idleTtlMs",
             exitRule:
-              signal.kind === "reflink"
-                ? "the bot restarts and the self-check passes (the store and the roots are on one copy-on-write filesystem)"
-                : signal.kind === "gitref"
-                  ? "the bot restarts and the self-check passes (the wrapper shadows git and a test reference-clone borrows objects)"
-                  : "the work is pushed or discarded, the clone changes again, or it is removed",
-            dedupKey: `bot_disk_${signalKind}:${agent.id}:${signal.path}`,
+              "the work is pushed or discarded, the clone changes again, or it is removed",
+            dedupKey: `bot_disk_clone:${agent.id}:${signal.path}`,
             severity: "medium",
             activityAt: at,
             createdAt: at,
@@ -3096,6 +3272,50 @@ async function buildAttentionFeedSnapshot(
         }));
       }
 
+      // myrmidon(1.6.5-F-18): the spend sweep completed but the gateway's
+      // model catalog answered 0 models — the accounting key is almost
+      // certainly restricted (no default models), and every feature reading
+      // the catalog silently does nothing. ONE card per company from the
+      // process-level registry the sweep records on every pass; the card
+      // disappears on the first sweep that sees a non-empty catalog — no
+      // dismissal bookkeeping, the same registry pattern tracing-health uses.
+      const emptyCatalogSignal = readEmptyCatalogSignal(companyId);
+      if (emptyCatalogSignal) {
+        add(createItem({
+          companyId,
+          sourceKind: "empty_model_catalog",
+          subject: {
+            kind: "agent",
+            id: `litellm:${companyId}`,
+            companyId,
+            title: emptyCatalogSignal.title,
+            identifier: null,
+            status: null,
+            href: `/${prefix}/settings`,
+            metadata: { litellmEmptyCatalog: true },
+          },
+          whyNow: emptyCatalogSignal.whyNow,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the instance settings and the gateway key." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this alert." },
+          ),
+          inlineResolvable: true,
+          entryRule: "the cost sweep completed a pass whose /v1/model/info refresh returned 0 models.",
+          exitRule: "the next sweep sees a non-empty catalog, collection is switched off, or the row is dismissed.",
+          dedupKey: emptyCatalogSignal.dedupKey,
+          severity: emptyCatalogSignal.severity,
+          activityAt: emptyCatalogSignal.activityAt,
+          createdAt: emptyCatalogSignal.activityAt,
+          updatedAt: emptyCatalogSignal.activityAt,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: excerpt(emptyCatalogSignal.summary),
+            images: [],
+          },
+        }));
+      }
+
       // myrmidon(1.6.1-FORAGING-LIMITS-UI): the learning sweep hit a spend
       // limit, or the cost-per-task threshold switched it off. The signal is
       // recorded by the pass itself (foraging/limits.ts) into the process-level
@@ -3298,16 +3518,28 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       const includeDismissed = options.includeDismissed === true;
 
       let enrichedItems: AttentionItem[];
+      // generatedAt describes the snapshot, not the request: a served snapshot
+      // can be up to the stale window old, so a request-time stamp would
+      // misreport the feed's age (the UI measures item ages against it). A
+      // rebuild stamps a fresh value; a cache hit keeps the build time.
+      let snapshotBuiltAtMs = now;
       if (cacheEnabled) {
         // cache key = company + everything that changes the
-        // unpaginated snapshot (userId and includeDismissed feed the add()
-        // dismissal filter, all changes the open-decision slice). queue,
+        // unpaginated snapshot. userId stays in the key: besides feeding the
+        // add() dismissal filter it also scopes addressee-addressed
+        // interaction cards and human-owned unblockDescriptor cards, so one
+        // user's snapshot would leak into another's; includeDismissed feeds
+        // the same add() filter, all changes the open-decision slice. queue,
         // archived, sort, activity window and cursor/limit are applied to the
         // snapshot per request and need no separate entry.
         // Staleness contract: dismiss, snooze, archive and other writes made
-        // during the TTL window surface on the feed with up to feedCacheTtlMs
-        // delay; the snapshot itself is read-only downstream (every step maps
-        // to fresh item objects), so shared references are safe here.
+        // during the caching windows surface on the feed with up to
+        // feedCacheTtlMs delay while the snapshot is fresh, and up to
+        // STALE_TTL_MULTIPLIER * feedCacheTtlMs when it is served stale;
+        // dismissal writes invalidate the company's entries on top of that, so
+        // they still show up on the very next read. The snapshot itself is
+        // read-only downstream (every step maps to fresh item objects), so
+        // shared references are safe here.
         const cacheKey = [
           companyId,
           buildOptions.userId ?? "",
@@ -3318,23 +3550,43 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           // never share a snapshot
           buildOptions.failedRunHorizonDays,
         ].join("|");
-        const cache = attentionFeedCacheFor(db);
-        const cachedEntry = cache.get(cacheKey);
-        if (cachedEntry && cachedEntry.expiresAtMs > now) {
+        const state = attentionFeedCacheFor(db);
+        const cachedEntry = state.entries.get(cacheKey);
+        const ageMs = cachedEntry ? now - cachedEntry.builtAtMs : Number.POSITIVE_INFINITY;
+        if (cachedEntry && ageMs <= feedCacheTtlMs) {
+          // fresh snapshot: the read path issues no build query at all
           enrichedItems = cachedEntry.snapshot.items;
+          snapshotBuiltAtMs = cachedEntry.builtAtMs;
+        } else if (cachedEntry && ageMs <= feedCacheTtlMs * ATTENTION_FEED_CACHE_STALE_TTL_MULTIPLIER) {
+          // stale-while-revalidate: hand the snapshot to this reader straight
+          // away and let exactly one background rebuild refresh it for the next
+          // poll — the reader never waits for the rebuild.
+          enrichedItems = cachedEntry.snapshot.items;
+          snapshotBuiltAtMs = cachedEntry.builtAtMs;
+          void rebuildAttentionFeedSnapshot(db, companyId, cacheKey, buildOptions, serviceOptions, feedCacheTtlMs)
+            .catch(() => {
+              // a failed background rebuild leaves the stale snapshot in place
+              // and the next read retries; it never reaches this caller.
+            });
         } else {
-          const snapshot = await buildAttentionFeedSnapshot(db, companyId, buildOptions, serviceOptions);
-          if (cache.size > 32) {
-            for (const [key, entry] of cache) {
-              if (entry.expiresAtMs <= now) cache.delete(key);
-            }
-          }
-          cache.set(cacheKey, { expiresAtMs: snapshot.builtAtMs + feedCacheTtlMs, snapshot });
-          enrichedItems = snapshot.items;
+          // no snapshot, or one past the stale window: wait for the rebuild,
+          // shared with parallel readers and with a background rebuild that is
+          // already running for this key.
+          const rebuilt = await rebuildAttentionFeedSnapshot(
+            db,
+            companyId,
+            cacheKey,
+            buildOptions,
+            serviceOptions,
+            feedCacheTtlMs,
+          );
+          enrichedItems = rebuilt.snapshot.items;
+          snapshotBuiltAtMs = rebuilt.builtAtMs;
         }
       } else {
         const snapshot = await buildAttentionFeedSnapshot(db, companyId, buildOptions, serviceOptions);
         enrichedItems = snapshot.items;
+        snapshotBuiltAtMs = snapshot.builtAtMs;
       }
 
       const activitySince = parseActivityBoundary(options.activitySince, "activitySince");
@@ -3429,7 +3681,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
 
       return {
         companyId,
-        generatedAt: new Date().toISOString(),
+        generatedAt: new Date(snapshotBuiltAtMs).toISOString(),
         totalCount: rankedItems.length,
         // Desk badge: distinct items that surfaced
         // today OR carry an explicit decide-by deadline due today/past. Counted

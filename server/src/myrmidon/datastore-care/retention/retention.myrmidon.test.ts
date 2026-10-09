@@ -102,11 +102,21 @@ describe("myrmidon(1.6.5-DBC1) resolveRetentionSettings", () => {
 });
 
 describe("myrmidon(1.6.5-DBC1) backup gate", () => {
-  it("fails closed on a missing or empty dir", () => {
+  it("fails closed on a missing or empty dir, with diagnostics filled", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dbc1-backups-empty-"));
     try {
-      expect(checkBackupGate({ backupDir: dir }).fresh).toBe(false);
-      expect(checkBackupGate({ backupDir: path.join(dir, "nope") }).fresh).toBe(false);
+      const empty = checkBackupGate({ backupDir: dir });
+      expect(empty.fresh).toBe(false);
+      expect(empty.dirReadable).toBe(true);
+      expect(empty.prefix).toBe("paperclip");
+      expect(empty.newestBackupAt).toBeNull();
+      expect(empty.newestBackupFile).toBeNull();
+      expect(empty.newestBackupSizeBytes).toBeNull();
+      expect(empty.candidates).toEqual([]);
+
+      const missing = checkBackupGate({ backupDir: path.join(dir, "nope") });
+      expect(missing.fresh).toBe(false);
+      expect(missing.dirReadable).toBe(false);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -117,13 +127,62 @@ describe("myrmidon(1.6.5-DBC1) backup gate", () => {
     try {
       const file = path.join(dir, "paperclip-2026-10-08T00-00-00.sql.gz");
       fs.writeFileSync(file, "backup");
-      expect(checkBackupGate({ backupDir: dir }).fresh).toBe(true);
+      const passed = checkBackupGate({ backupDir: dir });
+      expect(passed.fresh).toBe(true);
+      expect(passed.newestBackupFile).toBe("paperclip-2026-10-08T00-00-00.sql.gz");
+      expect(passed.newestBackupSizeBytes).toBe(6);
+      expect(passed.newestBackupAt).not.toBeNull();
       expect(checkBackupGate({
         backupDir: dir,
         now: new Date(Date.now() + 25 * 60 * 60 * 1000),
       }).fresh).toBe(false);
-      // other prefixes do not count
-      expect(checkBackupGate({ backupDir: dir, prefix: "other" }).fresh).toBe(false);
+      // other prefixes do not count — and the mismatch is diagnosable
+      const other = checkBackupGate({ backupDir: dir, prefix: "other" });
+      expect(other.fresh).toBe(false);
+      expect(other.candidates).toContain("paperclip-2026-10-08T00-00-00.sql.gz");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("a fresh *.dump lifts the gate (host pg_dump -Fc naming)", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dbc1-backups-dump-"));
+    try {
+      fs.writeFileSync(path.join(dir, "paperclip-20261008-114857.dump"), "dump");
+      const result = checkBackupGate({ backupDir: dir });
+      expect(result.fresh).toBe(true);
+      expect(result.newestBackupFile).toBe("paperclip-20261008-114857.dump");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("an empty prefix accepts any *.sql.gz|*.dump, newest first", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dbc1-backups-anyprefix-"));
+    try {
+      const older = path.join(dir, "other-20261001-000000.sql.gz");
+      const newer = path.join(dir, "mydump-20261008-000000.dump");
+      fs.writeFileSync(older, "x");
+      fs.writeFileSync(newer, "yy");
+      const olderTime = new Date(Date.now() - 2 * 60 * 60 * 1000);
+      fs.utimesSync(older, olderTime, olderTime);
+      const result = checkBackupGate({ backupDir: dir, prefix: "" });
+      expect(result.fresh).toBe(true);
+      expect(result.newestBackupFile).toBe("mydump-20261008-000000.dump");
+      expect(result.newestBackupSizeBytes).toBe(2);
+      expect(result.candidates).toEqual([]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("a stale backup with a foreign name under a set prefix blocks, name in candidates", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dbc1-backups-foreign-"));
+    try {
+      fs.writeFileSync(path.join(dir, "other-20261008-114857.sql.gz"), "backup");
+      const result = checkBackupGate({ backupDir: dir, prefix: "paperclip" });
+      expect(result.fresh).toBe(false);
+      expect(result.candidates).toEqual(["other-20261008-114857.sql.gz"]);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

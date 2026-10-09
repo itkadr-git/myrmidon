@@ -162,7 +162,15 @@ scripts/myrmidon/deploy/deploy.sh --config deploy.env --release myr-v1.6.2
   `MYRMIDON_BOT_IMAGE_ROLLOUT_BOT_TIMEOUT_SEC`, иначе остаётся на старом образе (позже его
   применит периодический обход), поэтому ни один запуск не прерывается. Каждая пачка и
   сбой попадают в лог и журнал (`$STATE_DIR/bot-image-rollout.log`), итог — в
-  `$STATE_DIR/bot-image-rollout-summary.json`. Вытесненные образы уходят из `images[]` только
+  `$STATE_DIR/bot-image-rollout-summary.json`. Применение образа — асинхронное: бот,
+  принявший применение, отвечает 202 и возвращает `applyId`, и скрипт опрашивает
+  `GET /api/myrmidon/bot-container/apply/:applyId` каждые
+  `MYRMIDON_BOT_IMAGE_ROLLOUT_APPLY_POLL_SEC` (по умолчанию 4 с), пока задача не вернёт
+  `succeeded` или `failed`, но не дольше `MYRMIDON_BOT_IMAGE_ROLLOUT_APPLY_WAIT_SEC` (по
+  умолчанию 300 с). Успех затем подтверждается запросом
+  `GET /api/myrmidon/bot-container/status`; по таймауту бот считается отложенным (код выхода
+  2), а не применённым, а обычный синхронный ответ на применение по-прежнему принимается.
+  Вытесненные образы уходят из `images[]` только
   после того, как перешли все боты. Сбой по карточкам — DEGRADED. Настройки доски «образ
   бота по умолчанию» нет, обновлять нечего.
 

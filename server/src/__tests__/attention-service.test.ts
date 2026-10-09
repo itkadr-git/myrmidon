@@ -44,6 +44,7 @@ import { attentionRoutes } from "../routes/attention.js";
 import { attentionService } from "../services/attention.js";
 import { listAttentionExhaustedRuns } from "../services/attention-exhausted-runs.js";
 import { agentService } from "../services/agents.js";
+import { ingestCloneReport, resetCloneHygieneStateForTests } from "../myrmidon/bot-containers/clone-hygiene.js";
 import { ROUTABLE_BLOCKED_ROLLOUT_AT } from "../services/routable-blocked.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -99,6 +100,7 @@ describeEmbeddedPostgres("attention service", () => {
     await db.delete(projects);
     await db.delete(agents);
     await db.delete(companies);
+    resetCloneHygieneStateForTests();
   });
 
   afterAll(async () => {
@@ -265,6 +267,109 @@ describeEmbeddedPostgres("attention service", () => {
     expect(feed.items.some((item) => item.subject.id === harnessIssueId)).toBe(false);
     expect(feed.countsBySourceKind.review ?? 0).toBe(0);
     expect(feed.items.flatMap((item) => item.queues).some((queue) => queue.key === "internal-review")).toBe(false);
+  });
+
+
+  // myrmidon(1.6.5-BOT-DISK-UV-B board side): the start-time self-check
+  // failures (git objects / reflink / uv cache) raise one fleet card per kind
+  // of failure instead of one card per bot per check; unpushed-work clone
+  // cards stay per-bot.
+  it("aggregates the fleet's self-check failures into one card per kind and keeps clone cards per bot", async () => {
+    const { companyId } = await seedCompany();
+    const botIds = [randomUUID(), randomUUID(), randomUUID()];
+    await db.insert(agents).values(
+      botIds.map((id, i) => ({
+        id,
+        companyId,
+        name: `Bot ${i + 1}`,
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      })),
+    );
+    const report = JSON.stringify({
+      version: 1,
+      inspectedAt: new Date().toISOString(),
+      repos: [],
+      gitRefCheck: {
+        store: "/data/hermes/.myrmidon/git-objects",
+        ok: false,
+        checks: [{ check: "reference-clone", ok: false, error: "did not borrow the mirror's objects" }],
+      },
+      uvCacheCheck: {
+        version: 1,
+        method: "clone",
+        checkedAt: new Date().toISOString(),
+        cache: "/cache/uv",
+        ok: false,
+        roots: [{ root: "/workspace", ok: false, error: "cannot create file in /cache/uv: Permission denied" }],
+      },
+    });
+    for (const botId of botIds) {
+      expect(ingestCloneReport(botId, report, 3_600_000)).toBe(true);
+    }
+
+    const feed = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, { userId: "board-user" });
+    const gitref = feed.items.filter((item) => item.dedupKey.startsWith("bot_disk_gitref:"));
+    const uvcache = feed.items.filter((item) => item.dedupKey.startsWith("bot_disk_uvcache:"));
+    expect(gitref.map((item) => item.dedupKey)).toEqual(["bot_disk_gitref:fleet:reference-clone"]);
+    expect(uvcache.map((item) => item.dedupKey)).toEqual(["bot_disk_uvcache:fleet:uvcache"]);
+    const card = gitref[0]!;
+    expect(card.severity).toBe("high");
+    expect(card.subject.kind).toBe("agent");
+    expect(card.subject.id).toBe("bot-disk-lifecycle");
+    expect(card.whyNow).toContain("on 3 bots");
+    expect(card.whyNow).toContain("Bot 1");
+    expect(card.whyNow).toContain("Bot 3");
+    expect(card.whyNow).toContain("did not borrow the mirror's objects");
+    // The clone (unpushed-work) family stays per-bot.
+    const perBot = feed.items.filter((item) => /bot_disk_(clone|reflink|gitref|uvcache):[0-9a-f-]{36}/.test(item.dedupKey));
+    expect(perBot).toEqual([]);
+  });
+
+  it("keeps unpushed-work clone cards per bot while the self-checks aggregate", async () => {
+    const { companyId } = await seedCompany();
+    const botId = randomUUID();
+    await db.insert(agents).values({
+      id: botId,
+      companyId,
+      name: "Cloner",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const idleSeconds = 7200; // past a 1h TTL
+    const report = JSON.stringify({
+      version: 1,
+      inspectedAt: new Date().toISOString(),
+      repos: [
+        { path: "/workspace/a", dirty: true, inProgress: false, stashCount: 0, unpushedCommits: 2, hasRemote: true, linkedWorktrees: 0, referencedBy: 0, branch: "feature", idleSeconds },
+        { path: "/workspace/b", dirty: false, inProgress: false, stashCount: 1, unpushedCommits: 0, hasRemote: true, linkedWorktrees: 0, referencedBy: 0, branch: "fix", idleSeconds },
+      ],
+      gitRefCheck: {
+        store: "/data/hermes/.myrmidon/git-objects",
+        ok: false,
+        checks: [{ check: "wrapper-runs", ok: false, error: "env: node: not found" }],
+      },
+    });
+    expect(ingestCloneReport(botId, report, 3_600_000)).toBe(true);
+
+    const feed = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, { userId: "board-user" });
+    const clones = feed.items.filter((item) => item.dedupKey.startsWith(`bot_disk_clone:${botId}:`));
+    expect(clones.map((item) => item.dedupKey).sort()).toEqual([
+      `bot_disk_clone:${botId}:/workspace/a`,
+      `bot_disk_clone:${botId}:/workspace/b`,
+    ]);
+    expect(clones[0]!.subject.id).toBe(botId);
+    const gitref = feed.items.filter((item) => item.dedupKey.startsWith("bot_disk_gitref:"));
+    expect(gitref.map((item) => item.dedupKey)).toEqual(["bot_disk_gitref:fleet:wrapper-runs"]);
+    expect(gitref[0]!.whyNow).toContain("on 1 bot ");
   });
 
   it("returns ranked decision-only items for every active source and excludes non-human or transient rows", async () => {

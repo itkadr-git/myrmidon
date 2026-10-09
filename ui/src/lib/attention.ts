@@ -89,6 +89,8 @@ const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
   // myrmidon(1.6.5-F-23): labels for the off-run secret read sources.
   secret_off_run_reads: { label: "Off-run secret reads" },
   secret_off_run_grant_expiring: { label: "Off-run secret grant expiring" },
+  // myrmidon(1.6.5-F-18): label for the empty gateway model catalog signal.
+  empty_model_catalog: { label: "Model catalog" },
 };
 
 export function sourceMeta(kind: AttentionSourceKind): SourceMeta {
