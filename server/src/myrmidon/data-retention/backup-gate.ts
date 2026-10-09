@@ -4,12 +4,18 @@
 //
 // Before the first destructive pass of a sweep (and re-checked on every
 // pass), the sweep verifies a fresh database backup exists: the newest
-// `<prefix>-*.sql.gz` in the resolved backup dir is younger than 24 hours.
+// `*.sql.gz`/`*.dump` in the resolved backup dir is younger than 24 hours.
 // The dir resolution mirrors `packages/db/src/backup.ts` (config
-// `database.backup.dir`, then `resolveDefaultBackupDir()`); the filename
-// prefix mirrors `runDatabaseBackup` in `packages/db/src/backup-lib.ts`
-// (default `paperclip`, overridable via the `MYRMIDON_DB_BACKUP_FILE_PREFIX`
-// deployment knob the deploy repo sets).
+// `database.backup.dir`, then `resolveDefaultBackupDir()`). Same contract as
+// the context compaction gate (`datastore-care/retention/backup-gate.ts`,
+// OPE-6373 item 3): when the `MYRMIDON_DB_BACKUP_FILE_PREFIX` deployment knob
+// is unset or empty any accepted extension counts; a non-empty value narrows
+// the match to `<prefix>-*`.
+//
+// myrmidon(1.6.5-F14B): "external machine backup" mode. With the instance
+// setting `general.datastoreCare.retention.externalMachineBackup` the machine
+// is backed up as a whole on another host and no local dump is produced, so
+// the gate passes without looking for a local file.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -56,11 +62,17 @@ export function resolveDataRetentionBackupDir(input: { homeDir?: string } = {}):
   return resolveDefaultBackupDir(input);
 }
 
-/** The filename prefix the backup run writes (`<prefix>-<timestamp>.sql.gz`). */
+/** Backup filename extensions the gate accepts. */
+export const DATA_RETENTION_BACKUP_ACCEPTED_EXTENSIONS = [".sql.gz", ".dump"] as const;
+
+/**
+ * The filename prefix narrowing the match (`<prefix>-*`); unset or empty
+ * means "no naming contract" — any accepted extension counts.
+ */
 export function resolveDataRetentionBackupPrefix(
   env: Record<string, string | undefined> = process.env,
 ): string {
-  return env.MYRMIDON_DB_BACKUP_FILE_PREFIX?.trim() || "paperclip";
+  return env.MYRMIDON_DB_BACKUP_FILE_PREFIX?.trim() ?? "";
 }
 
 export interface DataRetentionBackupGateResult {
@@ -73,23 +85,31 @@ export interface DataRetentionBackupGateResult {
 }
 
 /**
- * Check the gate against a backup dir: the newest `<prefix>-*.sql.gz` must be
- * younger than `maxAgeMs`. A missing/unreadable dir or an empty one is "not
- * fresh" — the gate fails closed.
+ * Check the gate against a backup dir: the newest matching `*.sql.gz`/`*.dump`
+ * (`<prefix>-*` when a prefix is given) must be younger than `maxAgeMs`. A
+ * missing/unreadable dir or an empty one is "not fresh" — the gate fails
+ * closed. With `externalMachineBackup` the gate is fresh without a local file.
  */
 export function checkDataRetentionBackupGate(options: {
   backupDir: string;
+  /** Empty (the default) means "any accepted extension". */
   prefix?: string;
+  /** The instance setting "the machine is backed up outside". */
+  externalMachineBackup?: boolean;
   now?: Date;
   maxAgeMs?: number;
 }): DataRetentionBackupGateResult {
-  const prefix = options.prefix ?? "paperclip";
+  const prefix = options.prefix ?? "";
   const now = options.now ?? new Date();
   const maxAgeMs = options.maxAgeMs ?? DATA_RETENTION_BACKUP_MAX_AGE_MS;
+  if (options.externalMachineBackup === true) {
+    return { fresh: true, newestBackupAt: null, backupDir: options.backupDir };
+  }
   let newest: number | null = null;
   try {
     for (const name of fs.readdirSync(options.backupDir)) {
-      if (!name.startsWith(`${prefix}-`) || !name.endsWith(".sql.gz")) continue;
+      if (!DATA_RETENTION_BACKUP_ACCEPTED_EXTENSIONS.some((ext) => name.endsWith(ext))) continue;
+      if (prefix.length > 0 && !name.startsWith(`${prefix}-`)) continue;
       try {
         const mtime = fs.statSync(path.join(options.backupDir, name)).mtimeMs;
         if (newest === null || mtime > newest) newest = mtime;

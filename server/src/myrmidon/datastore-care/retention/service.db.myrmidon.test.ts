@@ -107,7 +107,8 @@ describeEmbeddedPostgres("myrmidon(1.6.5-F14B) retention pass gate report in set
       const gate = lastRun.backupGate;
       expect(gate, "backupGate filled on every failed check").toBeTruthy();
       expect(gate.backupDir).toBe(backupDir);
-      expect(gate.prefix).toBe("paperclip");
+      // unset prefix knob: no naming contract (OPE-6373 item 3)
+      expect(gate.prefix).toBe("");
       expect(gate.newestBackupAt).toBe(staleTime.toISOString());
       expect(gate.newestBackupFile).toBe("paperclip-2026-10-01T00-00-00.sql.gz");
       expect(gate.newestBackupSizeBytes).toBe(fs.statSync(stale).size);
@@ -150,6 +151,47 @@ describeEmbeddedPostgres("myrmidon(1.6.5-F14B) retention pass gate report in set
       expect(input.companyIds).toContain(companyId);
     } finally {
       fs.rmSync(backupDir, { recursive: true, force: true });
+    }
+  });
+  it("external machine backup: an empty backup dir does not park the pass, the report says why", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "company-external",
+      issuePrefix: "EXT",
+    });
+    await instanceSettingsService(db).updateGeneral({
+      datastoreCare: { retention: { externalMachineBackup: true } },
+    } as never);
+
+    // No local dump at all: without the setting this pass would wait forever.
+    const backupDir = fs.mkdtempSync(path.join(os.tmpdir(), "f14b-external-"));
+    try {
+      const runtime = createDatastoreCareRetentionRuntime(db, {
+        env: {},
+        backupDir,
+        now: () => new Date(),
+      });
+      const passSpy = vi.mocked(compactContextPass);
+      passSpy.mockClear();
+      const result = await runtime.runOnce();
+      expect(result.reason).toBe("nothing-to-compact");
+      expect(passSpy).toHaveBeenCalledTimes(1);
+
+      const general = (await instanceSettingsService(db).getGeneral()) as unknown as Record<
+        string,
+        any
+      >;
+      const lastRun = general.datastoreCare?.retention?.contextLastRun;
+      expect(lastRun.waitingForBackup).toBe(false);
+      expect(lastRun.backupGate.externalMachineBackup).toBe(true);
+      // the mode itself survives the pass-state write
+      expect(general.datastoreCare?.retention?.externalMachineBackup).toBe(true);
+    } finally {
+      fs.rmSync(backupDir, { recursive: true, force: true });
+      await instanceSettingsService(db).updateGeneral({
+        datastoreCare: { retention: {} },
+      } as never);
     }
   });
 });

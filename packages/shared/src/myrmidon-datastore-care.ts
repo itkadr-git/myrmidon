@@ -42,6 +42,10 @@ export const datastoreCareRetentionSettingsSchema = z
     // myrmidon(1.6.5-F14B): batches per company per compaction pass; absent
     // means "use the environment variable, then the default (10)".
     contextCompactMaxBatches: z.number().int().min(1).max(1000).optional(),
+    // myrmidon(1.6.5-F14B): "the machine is backed up outside" mode of the
+    // backup gate — both gates (context compaction, row deletion) stop
+    // waiting for a local dump. Absent means false.
+    externalMachineBackup: z.boolean().optional(),
   })
   .passthrough();
 
@@ -72,6 +76,7 @@ export function normalizeDatastoreCareRetention(
   const days = block?.heartbeatRunContextDays;
   // myrmidon(1.6.5-F14B): the batches-per-pass knob, same lenient rule.
   const batches = block?.contextCompactMaxBatches;
+  const external = block?.externalMachineBackup;
   return {
     heartbeatRunContextDays:
       typeof days === "number" && Number.isInteger(days) && days >= 0 && days <= 3650
@@ -81,6 +86,7 @@ export function normalizeDatastoreCareRetention(
       typeof batches === "number" && Number.isInteger(batches) && batches >= 1 && batches <= 1000
         ? batches
         : undefined,
+    externalMachineBackup: typeof external === "boolean" ? external : undefined,
   };
 }
 
@@ -91,6 +97,8 @@ export const patchDatastoreCareRetentionSchema = z
     heartbeatRunContextDays: z.number().int().min(0).max(3650).nullable().optional(),
     // Batches per company per compaction pass.
     contextCompactMaxBatches: z.number().int().min(1).max(1000).nullable().optional(),
+    // "External machine backup" mode of the backup gate; null clears (false).
+    externalMachineBackup: z.boolean().nullable().optional(),
   })
   .strict();
 export type DatastoreCareRetentionPatch = z.infer<typeof patchDatastoreCareRetentionSchema>;
@@ -111,6 +119,12 @@ export interface DatastoreCareRetentionBackupGateState {
   dirReadable: boolean;
   /** Up to 5 backup-looking files that did not match the prefix. */
   candidates: string[];
+  /**
+   * myrmidon(1.6.5-F14B): true when the gate was bypassed because the
+   * instance setting says the machine is backed up outside; no local dump was
+   * looked for.
+   */
+  externalMachineBackup?: boolean;
 }
 
 export interface DatastoreCareRetentionLastRun {
@@ -172,6 +186,7 @@ export function normalizeDatastoreCareRetentionLastRun(
         candidates: Array.isArray(gateRaw.candidates)
           ? gateRaw.candidates.filter((v): v is string => typeof v === "string").slice(0, 5)
           : [],
+        ...(gateRaw.externalMachineBackup === true ? { externalMachineBackup: true } : {}),
       }
     : undefined;
   return {

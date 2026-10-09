@@ -71,7 +71,21 @@ describe("myrmidon(1.6.5-DBC1) resolveRetentionSettings", () => {
       source: "default",
       contextCompactMaxBatches: DEFAULT_CONTEXT_COMPACT_MAX_BATCHES,
       contextCompactMaxBatchesSource: "default",
+      externalMachineBackup: false,
     });
+  });
+
+  it("externalMachineBackup is read from the stored block, true only for a boolean true", () => {
+    const on = resolveRetentionSettings(
+      { datastoreCare: { retention: { externalMachineBackup: true } } },
+      {},
+    );
+    expect(on.externalMachineBackup).toBe(true);
+    const junk = resolveRetentionSettings(
+      { datastoreCare: { retention: { externalMachineBackup: "yes" } } },
+      {},
+    );
+    expect(junk.externalMachineBackup).toBe(false);
   });
 
   it("environment overrides the default", () => {
@@ -137,7 +151,8 @@ describe("myrmidon(1.6.5-DBC1) backup gate", () => {
       const empty = checkBackupGate({ backupDir: dir });
       expect(empty.fresh).toBe(false);
       expect(empty.dirReadable).toBe(true);
-      expect(empty.prefix).toBe("paperclip");
+      expect(empty.prefix).toBe("");
+      expect(empty.externalMachineBackup).toBe(false);
       expect(empty.newestBackupAt).toBeNull();
       expect(empty.newestBackupFile).toBeNull();
       expect(empty.newestBackupSizeBytes).toBeNull();
@@ -217,13 +232,47 @@ describe("myrmidon(1.6.5-DBC1) backup gate", () => {
     }
   });
 
-  it("the prefix is the MYRMIDON_DB_BACKUP_FILE_PREFIX knob: unset defaults, explicit empty means no naming contract", () => {
-    expect(resolveBackupFilePrefix({})).toBe("paperclip");
-    expect(resolveBackupFilePrefix({ MYRMIDON_DB_BACKUP_FILE_PREFIX: "myrmidon" })).toBe("myrmidon");
-    // Review (F14B): the docs promise "empty prefix -> any accepted file";
-    // the knob must therefore distinguish "not set" from "set empty".
+  it("the prefix is the MYRMIDON_DB_BACKUP_FILE_PREFIX knob: unset or empty means no naming contract", () => {
+    // Review (F14B, OPE-6373 item 3): unset -> any *.sql.gz/*.dump by
+    // extension, so a host `board.dump` lifts the gate.
+    expect(resolveBackupFilePrefix({})).toBe("");
     expect(resolveBackupFilePrefix({ MYRMIDON_DB_BACKUP_FILE_PREFIX: "" })).toBe("");
     expect(resolveBackupFilePrefix({ MYRMIDON_DB_BACKUP_FILE_PREFIX: "   " })).toBe("");
+    expect(resolveBackupFilePrefix({ MYRMIDON_DB_BACKUP_FILE_PREFIX: "myrmidon" })).toBe("myrmidon");
+  });
+
+  it("unset prefix (the default): a fresh board.dump lifts the gate", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "f14b-backups-unset-"));
+    try {
+      fs.writeFileSync(path.join(dir, "board.dump"), "pg_dump -Fc bytes");
+      const gate = checkBackupGate({ backupDir: dir, prefix: resolveBackupFilePrefix({}) });
+      expect(gate.fresh).toBe(true);
+      expect(gate.newestBackupFile).toBe("board.dump");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("external machine backup: the gate passes without any local file and without reading the dir", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "f14b-backups-external-"));
+    try {
+      // empty dir: fails closed without the setting, passes with it
+      expect(checkBackupGate({ backupDir: dir }).fresh).toBe(false);
+      const external = checkBackupGate({ backupDir: dir, externalMachineBackup: true });
+      expect(external.fresh).toBe(true);
+      expect(external.externalMachineBackup).toBe(true);
+      expect(external.newestBackupFile).toBeNull();
+      // a missing dir does not matter either
+      const missing = checkBackupGate({
+        backupDir: path.join(dir, "nope"),
+        externalMachineBackup: true,
+      });
+      expect(missing.fresh).toBe(true);
+      // explicit false is the normal local gate
+      expect(checkBackupGate({ backupDir: dir, externalMachineBackup: false }).fresh).toBe(false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("empty prefix: a fresh host dump of any name lifts the gate", () => {
@@ -325,7 +374,29 @@ describe("myrmidon(1.6.5-F14B) writeRetentionSettings", () => {
     expect(retention.contextCompactMaxBatches).toBe(1);
   });
 
+  it("externalMachineBackup: true stores, absent keeps, null clears", async () => {
+    const { state, service } = fakeSettings({
+      datastoreCare: { retention: { heartbeatRunContextDays: 0 } },
+    });
+    const retention = () =>
+      (state.general.datastoreCare as Record<string, unknown>).retention as Record<string, unknown>;
+    await writeRetentionSettings(service, { externalMachineBackup: true });
+    expect(retention().externalMachineBackup).toBe(true);
+    expect(retention().heartbeatRunContextDays).toBe(0);
+    expect(resolveRetentionSettings(state.general, {}).externalMachineBackup).toBe(true);
+    // a patch of another knob must not drop the mode
+    await writeRetentionSettings(service, { contextCompactMaxBatches: 3 });
+    expect(retention().externalMachineBackup).toBe(true);
+    await writeRetentionSettings(service, { externalMachineBackup: null });
+    expect("externalMachineBackup" in retention()).toBe(false);
+    expect(resolveRetentionSettings(state.general, {}).externalMachineBackup).toBe(false);
+  });
+
   it("the patch schema distinguishes absent from null", () => {
+    expect(patchDatastoreCareRetentionSchema.parse({ externalMachineBackup: true })).toEqual({
+      externalMachineBackup: true,
+    });
+    expect(() => patchDatastoreCareRetentionSchema.parse({ externalMachineBackup: "yes" })).toThrow();
     expect(patchDatastoreCareRetentionSchema.parse({})).toEqual({});
     expect(patchDatastoreCareRetentionSchema.parse({ contextCompactMaxBatches: null })).toEqual({
       contextCompactMaxBatches: null,

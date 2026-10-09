@@ -45,6 +45,11 @@ export interface ResolvedRetentionSettings {
   contextCompactMaxBatches: number;
   /** Where the batches value came from. */
   contextCompactMaxBatchesSource: "settings" | "env" | "default";
+  /**
+   * myrmidon(1.6.5-F14B): the machine is backed up outside; the backup gates
+   * (compaction and row deletion) do not wait for a local dump. Default false.
+   */
+  externalMachineBackup: boolean;
 }
 
 function envRetentionDays(env: Record<string, string | undefined>): number | undefined {
@@ -101,6 +106,7 @@ export function resolveRetentionSettings(
     source: days.source,
     contextCompactMaxBatches: batches.value,
     contextCompactMaxBatchesSource: batches.source,
+    externalMachineBackup: stored.externalMachineBackup === true,
   };
 }
 
@@ -152,6 +158,11 @@ export async function writeRetentionSettings(
     delete next.contextCompactMaxBatches;
   } else if (patch.contextCompactMaxBatches !== undefined) {
     next.contextCompactMaxBatches = patch.contextCompactMaxBatches;
+  }
+  if (patch.externalMachineBackup === null) {
+    delete next.externalMachineBackup;
+  } else if (patch.externalMachineBackup !== undefined) {
+    next.externalMachineBackup = patch.externalMachineBackup;
   }
   const care = general[DATASTORE_CARE_SETTINGS_KEY];
   const careBlock = typeof care === "object" && care !== null ? { ...(care as Record<string, unknown>) } : {};
