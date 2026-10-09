@@ -376,6 +376,48 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     stdoutStream.write(serialized);
   }
 
+  // -----------------------------------------------------------------------
+  // Error-data hygiene (myrmidon 1.6.5 F-17)
+  //
+  // `(err as any)?.data` from an arbitrary plugin handler error must never be
+  // forwarded verbatim:
+  //  1. `serializeMessage` is a bare `JSON.stringify` — a cyclic reference or
+  //     a BigInt inside `data` throws inside `sendMessage`, the outer `.catch`
+  //     retries with the same payload and swallows, and the host waits for the
+  //     RPC timeout (the worker hangs the call).
+  //  2. Bridges forward `details: err.data` to clients — e.g. an ofetch
+  //     `FetchError` puts the external service's response body in `.data`,
+  //     which would leak to the browser or agent.
+  //
+  // Only error codes the host treats as caller errors carry structured data
+  // (UNKNOWN_ACTION's `{ error, known }` listing), and the payload must round-
+  // trip through JSON before it goes on the wire.
+  // -----------------------------------------------------------------------
+
+  /**
+   * Decide whether `err.data` may travel with the error response, and return a
+   * JSON-safe copy of it. Returns `undefined` when the error code is not
+   * data-carrying or the payload is not JSON-serializable.
+   */
+  function sanitizeErrorData(errorCode: number, data: unknown): unknown {
+    if (errorCode !== PLUGIN_RPC_ERROR_CODES.UNKNOWN_ACTION) return undefined;
+    if (data === undefined) return undefined;
+    try {
+      return JSON.parse(JSON.stringify(data)) as unknown;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Extract `err.data` for an error response, applying `sanitizeErrorData` so a
+   * hostile or malformed payload can neither hang the worker nor leak to the
+   * client.
+   */
+  function errorDataForResponse(err: unknown, errorCode: number): unknown {
+    return sanitizeErrorData(errorCode, (err as { data?: unknown })?.data);
+  }
+
   /**
    * Send a typed JSON-RPC request to the host and await the response.
    */
@@ -1571,7 +1613,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           ? (err as any).code
           : PLUGIN_RPC_ERROR_CODES.WORKER_ERROR;
 
-      sendMessage(createErrorResponse(id, errorCode, errorMessage, (err as any)?.data));
+      sendMessage(createErrorResponse(id, errorCode, errorMessage, errorDataForResponse(err, errorCode)));
     }
   }
 
@@ -2267,13 +2309,15 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         // Unhandled error in the async handler — send error response
         const errorMessage = err instanceof Error ? err.message : String(err);
         const errorCode = (err as any)?.code ?? PLUGIN_RPC_ERROR_CODES.WORKER_ERROR;
+        const resolvedCode =
+          typeof errorCode === "number" ? errorCode : PLUGIN_RPC_ERROR_CODES.WORKER_ERROR;
         try {
           sendMessage(
             createErrorResponse(
               (message as JsonRpcRequest).id,
-              typeof errorCode === "number" ? errorCode : PLUGIN_RPC_ERROR_CODES.WORKER_ERROR,
+              resolvedCode,
               errorMessage,
-              (err as any)?.data,
+              errorDataForResponse(err, resolvedCode),
             ),
           );
         } catch {
