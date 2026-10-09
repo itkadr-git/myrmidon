@@ -25,7 +25,11 @@ import {
   pheromoneDynamicsOf,
   type PheromoneDynamicsSettings,
 } from "@paperclipai/shared";
-import { failedRunsSinceLastChangeFor } from "../swarm-claim/effective-pheromone.js";
+import {
+  failedRunsDerivedSql,
+  failedRunsJoinOnRawSql,
+  failedRunsSinceLastChangeSql,
+} from "../swarm-claim/effective-pheromone.js";
 
 /** Wake reason part A assigns to queue-driven wakes; informational in the view. */
 export const SWARM_CLAIM_QUEUE_WAKE_REASON = "swarm_claim_queue";
@@ -713,8 +717,9 @@ export function createSwarmSupervisorDbPort(db: Db, env: NodeJS.ProcessEnv = pro
     async listQueueRows(companyId) {
       const rows = await db.execute(sql`
         SELECT i.id AS issue_id, i.identifier, i.title, i.priority, i.pheromone_strength, i.project_id, i.created_at, i.blocked_transition_at, i.assignee_agent_id,
-          ${failedRunsSinceLastChangeFor({ companyId: sql.raw("i.company_id"), id: sql.raw("i.id") })} AS failed_runs_since_last_change
+          ${failedRunsSinceLastChangeSql()} AS failed_runs_since_last_change
         FROM issues i
+        LEFT JOIN ${failedRunsDerivedSql(companyId)} ON ${failedRunsJoinOnRawSql("i")}
         WHERE i.company_id = ${companyId}
           AND i.status = 'todo'
         ORDER BY i.created_at ASC

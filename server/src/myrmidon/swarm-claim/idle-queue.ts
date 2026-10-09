@@ -17,6 +17,8 @@ import {
 } from "@paperclipai/shared";
 import type { SwarmIdleQueueCandidate } from "./idle-wake.js";
 import {
+  failedRunsDerivedSql,
+  failedRunsJoinOnSql,
   failedRunsSinceLastChangeSql,
   swarmQueueOrderBy,
   type SwarmQueueOrderOptions,
@@ -162,6 +164,9 @@ async function listReadyQueueCandidates(
     })
     .from(issues)
     .leftJoin(agents, eq(agents.id, issues.assigneeAgentId))
+    // One bounded pass over the recent evaporating runs, joined once — not a
+    // correlated subquery per candidate (review #1047).
+    .leftJoin(failedRunsDerivedSql(companyId, order?.now), failedRunsJoinOnSql())
     .where(
       and(
         eq(issues.companyId, companyId),

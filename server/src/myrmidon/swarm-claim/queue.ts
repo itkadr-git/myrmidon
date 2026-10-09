@@ -24,6 +24,8 @@ import {
 } from "@paperclipai/shared";
 import { issueHasNoExecutionHold } from "../settled-holds/ready-predicate.js";
 import {
+  failedRunsDerivedSql,
+  failedRunsJoinOnSql,
   failedRunsSinceLastChangeSql,
   swarmQueueOrderBy,
   type SwarmQueueOrderOptions,
@@ -116,6 +118,9 @@ export function roleQueueRows(
     })
     .from(issues)
     .leftJoin(agents, eq(agents.id, issues.assigneeAgentId))
+    // One bounded pass over the recent evaporating runs, joined once — not a
+    // correlated subquery per candidate (review #1047).
+    .leftJoin(failedRunsDerivedSql(companyId, order?.now), failedRunsJoinOnSql())
     .where(
       and(
         eq(issues.companyId, companyId),
@@ -241,6 +246,9 @@ export async function listUnassignedQueue(
       queuedAt: issues.createdAt,
     })
     .from(issues)
+    // One bounded pass over the recent evaporating runs, joined once — not a
+    // correlated subquery per candidate (review #1047).
+    .leftJoin(failedRunsDerivedSql(companyId, order?.now), failedRunsJoinOnSql())
     .where(
       and(
         eq(issues.companyId, companyId),

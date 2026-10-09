@@ -10,7 +10,7 @@
 -- 2) `projects.default_caste_key` — the caste a task of this project falls
 --    back to (the nest, design §2.2).
 -- 3) Backfill `pheromone_strength` for rows still at the column default 0
---    from `priority` by the documented `swarm.pheromoneDefaults` mapping
+--    from `priority` by the default mapping of the `swarmClaim.pheromone` settings
 --    (critical 100 / high 30 / medium 10 / low 1). Rows whose strength an
 --    operator already set (non-zero) keep it — the backfill must not trample
 --    a deliberate 0, and between the column landing and this migration only
