@@ -2269,6 +2269,14 @@
       "when": 1791528260161,
       "tag": "0386_swarm_scent",
       "breakpoints": true
+    },
+    {
+      "idx": 387,
+      "version": "7",
+      "when": 1791528261161,
+      "name": "0387_low_trust_internal_release_candidates",
+      "tag": "0387_low_trust_internal_release_candidates",
+      "breakpoints": true
     }
   ]
 }
