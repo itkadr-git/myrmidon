@@ -32,6 +32,8 @@ import type { DataRetentionSettings, DataRetentionLastRun } from "../myrmidon-da
 import type { ReviewRoutingSettings } from "../myrmidon-review-routing.js";
 import type { OwnerDeliverySettings } from "../myrmidon-owner-delivery.js";
 import type { ReviewReworkSettings } from "../myrmidon-review-rework.js";
+// myrmidon(F16): the issue-list agent defaults shape stored in the general row.
+import type { IssueListAgentDefaultsSettings } from "../myrmidon-issue-list-agent-defaults.js";
 import type { BudgetEnforcementSettings } from "../myrmidon-budget-enforcement.js";
 // myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys live in
 // the same general settings row.
@@ -186,6 +188,16 @@ export interface InstanceGeneralSettings {
    * (packages/shared/src/validators/instance.ts).
    */
   runStall?: RunStallValues;
+  /**
+   * myrmidon(F16): the issue-list agent defaults (`{enabled: boolean}`),
+   * changed by hand or an operator tooling write (no dedicated route); read at
+   * `GET /api/companies/:companyId/issues`. Absent means the fix is ON
+   * (compact view by default for agents, limit 200/500, `description` omitted
+   * in compact) — `{enabled: false}` restores the pre-feature agent behaviour
+   * byte-for-byte. Kept in sync with the validator of the same field
+   * (packages/shared/src/validators/instance.ts).
+   */
+  issuesListAgentDefaults?: IssueListAgentDefaultsSettings;
   /**
    * myrmidon(PARALLEL-HELPERS): company ceiling/default for parallel helper
    * subagents, changed from the instance settings page and

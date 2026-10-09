@@ -3653,10 +3653,15 @@ registry.registerPath({
   tags: ["issues"],
   summary: "List issues in a company",
   description:
-    "Use `view=compact` for the board issue-list row contract. The default response remains the broad compatibility contract.",
+    "Use `view=compact` for the board issue-list row contract. The default response remains the broad compatibility contract. " +
+    "myrmidon(F16): for an agent actor the instance setting `issuesListAgentDefaults` (default on) changes the defaults — " +
+    "a request without `view` is answered as `view=compact`, `limit` defaults to 200 with a maximum of 500 (a larger value is a 400 " +
+    "advising pagination via `offset`/`afterId`), and the compact body omits `description`. An agent may pass an explicit " +
+    "`view=full` only together with an explicit `limit <= 100`. With `issuesListAgentDefaults.enabled: false` the agent behaviour is the same as the board's.",
   request: {
     params: z.object({ companyId: z.string() }),
-    query: z.object({ view: z.enum(["compact"]).optional() }).passthrough(),
+    // myrmidon(F16): `view=full` is accepted for agent actors only (capped by limit).
+    query: z.object({ view: z.enum(["compact", "full"]).optional() }).passthrough(),
   },
   responses: {
     200: r.ok(),
