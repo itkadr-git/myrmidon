@@ -13382,6 +13382,15 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .where(eq(toolConnections.id, endpoint.connectionId));
     await service.processPendingPublications();
 
+    // Prove the publication reached its commit (the F-10 block ran): without
+    // this the test would also pass if the commit aborted earlier.
+    const [publication] = await db
+      .select({ state: chatPublications.state })
+      .from(chatPublications)
+      .where(eq(chatPublications.idempotencyKey, `f10-race-delivery:${endpoint.id}`));
+    expect(publication!.state).toBe("published");
+    expect(providerRuntime.posts).toHaveLength(1);
+
     const [stored] = await db
       .select({
         status: chatEndpoints.status,
@@ -13392,6 +13401,114 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .where(eq(chatEndpoints.id, endpoint.id));
     expect(stored!.status).toBe("verifying");
     expect(stored!.setup).toMatchObject({ step: "test" });
+    expect(stored!.activatedAt).toBeNull();
+    const [connection] = await db
+      .select(connectionColumns)
+      .from(toolConnections)
+      .where(eq(toolConnections.id, endpoint.connectionId));
+    // The connection row is exactly as it was before the send: a wrongly
+    // unconditional activation would null `lastError` (and rewrite health).
+    expect(connectionBefore!.lastError).toBe("stale health probe");
+    expect(connection).toEqual(connectionBefore);
+    await service.shutdown();
+  });
+
+  it("leaves the tool connection untouched when the wizard step moves off test during the send", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, runtime, service } =
+      await configuredTelegramEndpoint(fixture);
+    const thread = makeThread({
+      channelId: "77330015",
+      id: "telegram:77330015",
+      isDM: true,
+      name: "Telegram step-race user",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "telegram",
+      thread: thread.thread,
+      message: makeMessage({
+        id: "94",
+        text: "Seed the step-race conversation",
+        userId: "77330015",
+        raw: { message_id: 94, chat: { id: 77330015, type: "private" } },
+      }),
+      trigger: "direct_message",
+    });
+    const [conversation] = await db
+      .select()
+      .from(chatConversations)
+      .where(eq(chatConversations.endpointId, endpoint.id));
+    if (!conversation) throw new Error("Expected Telegram conversation");
+
+    await db.insert(chatPublications).values({
+      companyId: fixture.companyId,
+      endpointId: endpoint.id,
+      conversationId: conversation.id,
+      issueId: conversation.issueId,
+      idempotencyKey: `f10-step-delivery:${endpoint.id}`,
+      payload: { text: "Notification that races a wizard step change" },
+      state: "pending",
+    });
+    // Pre-mark the connection with the state that a wrongly unconditional
+    // activation would erase: lastError plus the inactive defaults.
+    await db
+      .update(toolConnections)
+      .set({ lastError: "stale health probe" })
+      .where(eq(toolConnections.id, endpoint.connectionId));
+
+    const providerRuntime = runtime.endpoints.get(endpoint.id);
+    if (!providerRuntime) throw new Error("Expected Telegram runtime");
+    providerRuntime.postHook = async () => {
+      // The wizard step moves off `test` while the provider send is in
+      // flight, without a generation bump; the guarded completion update
+      // must check the live step and stay a total no-op.
+      providerRuntime.postHook = undefined;
+      const [live] = await db
+        .select({ setup: chatEndpoints.setup })
+        .from(chatEndpoints)
+        .where(eq(chatEndpoints.id, endpoint.id));
+      await db
+        .update(chatEndpoints)
+        .set({
+          setup: { ...live!.setup, step: "provider_setup" },
+          updatedAt: new Date(),
+        })
+        .where(eq(chatEndpoints.id, endpoint.id));
+    };
+    const connectionColumns = {
+      status: toolConnections.status,
+      enabled: toolConnections.enabled,
+      healthStatus: toolConnections.healthStatus,
+      healthMessage: toolConnections.healthMessage,
+      lastError: toolConnections.lastError,
+    };
+    const [connectionBefore] = await db
+      .select(connectionColumns)
+      .from(toolConnections)
+      .where(eq(toolConnections.id, endpoint.connectionId));
+    await service.processPendingPublications();
+
+    // Prove the publication reached its commit (the F-10 block ran): without
+    // this the test would also pass if the commit aborted earlier.
+    const [publication] = await db
+      .select({ state: chatPublications.state })
+      .from(chatPublications)
+      .where(eq(chatPublications.idempotencyKey, `f10-step-delivery:${endpoint.id}`));
+    expect(publication!.state).toBe("published");
+    expect(providerRuntime.posts).toHaveLength(1);
+
+    const [stored] = await db
+      .select({
+        status: chatEndpoints.status,
+        setup: chatEndpoints.setup,
+        activatedAt: chatEndpoints.activatedAt,
+      })
+      .from(chatEndpoints)
+      .where(eq(chatEndpoints.id, endpoint.id));
+    expect(stored!.status).toBe("verifying");
+    expect(stored!.setup).toMatchObject({ step: "provider_setup" });
     expect(stored!.activatedAt).toBeNull();
     const [connection] = await db
       .select(connectionColumns)
@@ -71082,8 +71199,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
     // F-10 B settles a Telegram wizard on the first delivered reply, so the
     // round trip above already completes it. These tests exercise the F-10 A
-    // fallback, which covers a wizard that no delivery settled; put the endpoint
-    // back into the test stage that fallback starts from.
+    // fallback, which covers a legacy endpoint stuck in `test` that no delivery
+    // ever settled (created before F-10 B). This helper models that stuck
+    // endpoint by putting the row back into the test stage the fallback starts
+    // from.
     async function reopenTestStage(endpointId: string) {
       await db.execute(
         sql`update chat_endpoints

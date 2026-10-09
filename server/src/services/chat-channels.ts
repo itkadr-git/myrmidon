@@ -38295,11 +38295,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                       .update(chatEndpoints)
                       .set({
                         status: "active",
-                        setup: {
-                          ...authorizationClaim.endpoint.setup,
-                          step: "complete",
-                          testStartedAt: null,
-                        },
+                        // jsonb merge on the live row: setup keys written
+                        // during the network send are kept, not overwritten
+                        // by the snapshot read before it.
+                        setup: sql`coalesce(${chatEndpoints.setup}, '{}'::jsonb) || ${JSON.stringify({ step: "complete", testStartedAt: null })}::jsonb`,
                         healthMessage: "Connected",
                         activatedAt:
                           authorizationClaim.endpoint.activatedAt ??
@@ -38310,7 +38309,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                         and(
                           eq(chatEndpoints.id, authorizationClaim.endpoint.id),
                           eq(chatEndpoints.status, "verifying"),
+                          sql`${chatEndpoints.setup}->>'step' = 'test'`,
                           sql`coalesce((${chatEndpoints.setup}->>'runtimeGeneration')::integer, 0) = ${runtimeGeneration(authorizationClaim.endpoint.setup)}`,
+                          typeof authorizationClaim.endpoint.setup.testStartedAt ===
+                            "string"
+                            ? sql`${chatEndpoints.setup}->>'testStartedAt' = ${authorizationClaim.endpoint.setup.testStartedAt}`
+                            : undefined,
                         ),
                       )
                       .returning({ id: chatEndpoints.id });
