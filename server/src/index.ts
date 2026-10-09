@@ -135,6 +135,7 @@ import { startLitellmModelReconciliation } from "./myrmidon/litellm-sync/startup
 import { startModelFallbackSignalSweep } from "./myrmidon/litellm-fallback-signal/sweep.js"; // myrmidon(BOT-RUNTIME-TUNING D)
 import { startBaselineSnapshots, stopBaselineSnapshots } from "./myrmidon/baseline/startup.js"; // myrmidon(1.6-BASELINE)
 import { startForagingSweep, stopForagingSweep } from "./myrmidon/foraging/startup.js"; // myrmidon(1.6-FORAGE)
+import { startAlertsSweep } from "./myrmidon/monitoring/alerts/index.js"; // myrmidon(1.6.6-ALERTS)
 import { startTracingAttentionSweep, stopTracingAttentionSweep } from "./myrmidon/tracing-health/attention-sweep.js"; // myrmidon(TRACING-HEALTH)
 import { startBotCanary, stopBotCanary } from "./myrmidon/bot-containers/canary-index.js"; // myrmidon(R5-B)
 import { startStackCheckSweep } from "./myrmidon/stack-registry/index.js"; // myrmidon(SUB)
@@ -158,6 +159,14 @@ import { createReviewReworkScheduler } from "./myrmidon/review-rework/index.js";
 import { buildWipLimitSweeper } from "./myrmidon/wip-limit/index.js"; // myrmidon(1.6.1-WIP-LIMIT-A)
 import { buildPromptBudgetSweeper } from "./myrmidon/prompt-budget/index.js"; // myrmidon(1.6.3 PROMPT-BUDGET B)
 import { buildMonitoringLinkWatchdog } from "./myrmidon/monitoring/links/index.js"; // myrmidon(1.6.6 MONITORING E)
+// myrmidon(1.6.6 CORPUS-2.0 ч.C): the corpus parse worker — one pass per gate,
+// a no-op while the module is off or its ports (parts A/B) are not wired.
+import {
+  CORPUS_PARSE_SWEEP_INTERVAL_MS,
+  corpusService,
+  createCorpusParseWorker,
+  resolveCorpusPorts,
+} from "./myrmidon/corpus/index.js";
 import {
   createPendingInteractionWakeSweep,
   readPendingInteractionWakeContextSnapshot,
@@ -1414,6 +1423,38 @@ async function startServerWithDatabaseTeardown(
       }));
     };
   })();
+  // myrmidon(1.6.6 CORPUS-2.0 ч.C): the corpus parse worker — it turns an
+  // uploaded document (bytes in the BlobStore, a row in the queue) into indexed
+  // chunks, and it is the only part of the module that costs anything while
+  // idle. One pass per CORPUS_PARSE_SWEEP_INTERVAL_MS on the heartbeat tick; the
+  // module switch is re-read on every pass, so the settings page applies without
+  // a restart. While the module is off — or while its ports (parts A/B of
+  // OPE-6165) are not wired into this build — the pass returns immediately and
+  // no port, connection or table is touched.
+  const scheduleCorpusParseSweep = (() => {
+    const service = corpusService(db as any, { ports: resolveCorpusPorts });
+    const worker = createCorpusParseWorker({
+      ports: resolveCorpusPorts,
+      resolveSettings: async () => {
+        const view = await service.readSettings();
+        return { settings: view.settings, enabled: view.enabled };
+      },
+    });
+    let lastPassAt = 0;
+    return () => {
+      if (heartbeatSchedulerStopped) return;
+      const now = Date.now();
+      if (lastPassAt !== 0 && now - lastPassAt < CORPUS_PARSE_SWEEP_INTERVAL_MS) return;
+      lastPassAt = now;
+      trackHeartbeatSchedulerWork(worker.sweep().then((result) => {
+        if (result.parsed > 0 || result.failed > 0 || result.requeued > 0) {
+          logger.info(result, "Corpus parse sweep completed");
+        }
+      }).catch((err) => {
+        logger.error({ err }, "Corpus parse sweep failed");
+      }));
+    };
+  })();
   // myrmidon(1.6.6 MONITORING E): the periodic "is every linking component
   // still alive" pass. A link (Zabbix aggregator, Alertmanager webhook,
   // collector) is its own minimal-rights board key, so this pass reads those
@@ -1693,6 +1734,7 @@ async function startServerWithDatabaseTeardown(
     startModelFallbackSignalSweep(db as any); // myrmidon(BOT-RUNTIME-TUNING D): model fallback attention signals; a no-op unless MYRMIDON_MODEL_FALLBACK_ENABLED=1
     startBaselineSnapshots(db as any); // myrmidon(1.6-BASELINE): freeze the 14-day metric window; a no-op unless MYRMIDON_BASELINE_INTERVAL_SEC is set
     startForagingSweep(db as any); // myrmidon(1.6-FORAGE): source comparison sweep; a no-op unless MYRMIDON_FORAGING_ENABLED=1
+    startAlertsSweep(db as any); // myrmidon(1.6.6-ALERTS): dedup registry cleanup of closed alerts; a no-op unless MYRMIDON_ALERTS_SWEEP_INTERVAL_SEC is set
     startTracingAttentionSweep(db as any); // myrmidon(TRACING-HEALTH): keep the "LLM tracing" operator signal fresh; a no-op unless the tracing settings are on
     startBotCanary(db as any); // myrmidon(R5-B): resume an open bot image rollout; a no-op unless MYRMIDON_BOT_CANARY is on
     startStackCheckSweep(db as any); // myrmidon(SUB): scheduled stack release check; a no-op unless MYRMIDON_STACK_CHECK_INTERVAL_SEC is set
@@ -1988,6 +2030,7 @@ async function startServerWithDatabaseTeardown(
         scheduleWipLimitSweep(); // myrmidon(1.6.1-WIP-LIMIT-A)
         schedulePromptBudgetSweep(); // myrmidon(1.6.3 PROMPT-BUDGET B)
         scheduleMonitoringLinkSweep(); // myrmidon(1.6.6 MONITORING E)
+        scheduleCorpusParseSweep(); // myrmidon(1.6.6 CORPUS-2.0 ч.C)
         scheduleAutoResumeSweep(); // myrmidon(AUTO-RESUME)
 
         if (heartbeatSchedulerStopped) return;
@@ -2193,6 +2236,7 @@ async function startServerWithDatabaseTeardown(
       scheduleReviewRoutingSweep(); // myrmidon(REVIEW-ROUTING)
       scheduleReviewReworkSweep(); // myrmidon(REVIEW-REWORK)
       scheduleMonitoringLinkSweep(); // myrmidon(1.6.6 MONITORING E)
+      scheduleCorpusParseSweep(); // myrmidon(1.6.6 CORPUS-2.0 ч.C)
       scheduleGitHubConnectionEventPoll();
       scheduleGitHubConnectionContinuitySweep();
     });
