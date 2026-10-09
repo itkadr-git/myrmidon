@@ -6,7 +6,7 @@
 // replay idempotency.
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import postgres from "postgres";
 import {
   getEmbeddedPostgresTestSupport,
@@ -20,7 +20,7 @@ const cleanups: Array<() => Promise<void>> = [];
 const support = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = support.supported ? describe : describe.skip;
 
-afterEach(async () => {
+afterAll(async () => {
   while (cleanups.length > 0) await cleanups.pop()?.();
 });
 
@@ -82,18 +82,16 @@ describeEmbeddedPostgres("internal low-trust quarantine release migration (behav
       VALUES (${`OPE-6671 ${suffix}`}, ${`REL${suffix}`})
       RETURNING id
     `;
-    const run = async (query: string, ...args: unknown[]) =>
-      (await sql.unsafe(query, args as never[]))[0];
-    const [lead] = await run(
-      `INSERT INTO agents (company_id, name, role, adapter_type, adapter_config, runtime_config)
-       VALUES ($1, 'lead', 'lead', 'process', '{}', '{}') RETURNING id`,
-      company.id,
-    );
-    const [worker] = await run(
-      `INSERT INTO agents (company_id, name, role, adapter_type, adapter_config, runtime_config)
-       VALUES ($1, 'worker', 'engineer', 'process', '{}', '{}') RETURNING id`,
-      company.id,
-    );
+    const [lead] = await sql`
+      INSERT INTO agents (company_id, name, role)
+      VALUES (${company.id}, 'lead', 'lead')
+      RETURNING id
+    `;
+    const [worker] = await sql`
+      INSERT INTO agents (company_id, name, role)
+      VALUES (${company.id}, 'worker', 'engineer')
+      RETURNING id
+    `;
     return { company, lead, worker };
   }
 
@@ -110,13 +108,13 @@ describeEmbeddedPostgres("internal low-trust quarantine release migration (behav
         ${title},
         'todo',
         'high',
-        ${JSON.stringify({
+        ${sql.json({
           preset: "low_trust_review",
           disposition: "quarantined",
           sourceIssueId: companyId,
           sourceRunId,
           sourceAgentId,
-        })}::jsonb
+        } as never)}
       )
       RETURNING id
     `;
@@ -130,7 +128,7 @@ describeEmbeddedPostgres("internal low-trust quarantine release migration (behav
   ) {
     const [run] = await sql`
       INSERT INTO heartbeat_runs (company_id, agent_id, status, invocation_source, context_snapshot)
-      VALUES (${companyId}, ${agentId}, 'succeeded', 'automation', ${JSON.stringify(contextSnapshot)}::jsonb)
+      VALUES (${companyId}, ${agentId}, 'succeeded', 'automation', ${sql.json(contextSnapshot as never)})
       RETURNING id
     `;
     return run;
@@ -226,7 +224,7 @@ describeEmbeddedPostgres("internal low-trust quarantine release migration (behav
       INSERT INTO issues (company_id, title, status, priority, source_trust)
       VALUES (
         ${company.id}, 'already promoted', 'todo', 'high',
-        ${JSON.stringify({
+        ${sql.json({
           preset: "low_trust_review",
           disposition: "promoted",
           sourceIssueId: company.id,
@@ -236,7 +234,7 @@ describeEmbeddedPostgres("internal low-trust quarantine release migration (behav
           promotedByActorType: "user",
           promotedByActorId: "board-user",
           promotedAt: "2026-10-09T00:00:00.000Z",
-        })}::jsonb
+        } as never)}
       )
       RETURNING id, source_trust ->> 'promotedByActorId' AS promoted_by
     `;

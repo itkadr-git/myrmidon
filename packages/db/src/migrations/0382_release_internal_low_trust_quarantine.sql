@@ -50,14 +50,16 @@ released AS (
   WHERE i.id = c.id
     -- Mirror of server/src/services/source-trust.ts isExternalInputRunProvenance:
     -- a same-company run counts as internal unless it carries an external marker.
+    -- COALESCE the jsonb equality tests: absent keys yield NULL, and `NOT (NULL)`
+    -- would silently drop every clean internal row.
     AND NOT (
-      r.context_snapshot -> 'paperclipExternalChatExecutionBound' = 'true'::jsonb
-      OR r.context_snapshot -> 'externalChatExecutionBound' = 'true'::jsonb
+      COALESCE(r.context_snapshot -> 'paperclipExternalChatExecutionBound' = 'true'::jsonb, false)
+      OR COALESCE(r.context_snapshot -> 'externalChatExecutionBound' = 'true'::jsonb, false)
       OR COALESCE(r.context_snapshot ->> 'source', '') LIKE 'chat:%'
       OR COALESCE(r.context_snapshot ->> 'wakeSource', '') LIKE 'chat:%'
       OR COALESCE(r.context_snapshot ->> 'source', '') IN ('webhook', 'external_api', 'api', 'discord', 'telegram', 'whatsapp')
       OR COALESCE(r.context_snapshot ->> 'wakeSource', '') IN ('webhook', 'external_api', 'api', 'discord', 'telegram', 'whatsapp')
-      OR (r.context_snapshot ? 'webhookSource' AND r.context_snapshot ->> 'webhookSource' <> '')
+      OR (r.context_snapshot ? 'webhookSource' AND COALESCE(r.context_snapshot ->> 'webhookSource', '') <> '')
     )
   RETURNING i.*
 )
