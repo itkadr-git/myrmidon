@@ -2581,7 +2581,7 @@
           "type": "text[]",
           "primaryKey": false,
           "notNull": true,
-          "default": "'{}'"
+          "default": "ARRAY[]::text[]"
         },
         "scent_classified_at": {
           "name": "scent_classified_at",
@@ -33030,6 +33030,19 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
+        },
+        "caste_key": {
+          "name": "caste_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "pheromone_strength": {
+          "name": "pheromone_strength",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
         }
       },
       "indexes": {
@@ -33761,6 +33774,27 @@
           ],
           "isUnique": true,
           "where": "\"issues\".\"origin_kind\" = 'onboarding_first_task'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "issues_company_caste_idx": {
+          "name": "issues_company_caste_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "caste_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -41119,6 +41153,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "default_caste_key": {
+          "name": "default_caste_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
