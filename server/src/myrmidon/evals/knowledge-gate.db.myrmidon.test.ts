@@ -107,6 +107,7 @@ describe("myrmidon(1.6.6 K-9) the evals gate decision table", () => {
   });
 });
 describeEmbeddedPostgres("myrmidon(1.6.6 K-9) the evals gate over the database", () => {
+
   let db!: Db;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   let AGENT!: KnowledgeActor;
