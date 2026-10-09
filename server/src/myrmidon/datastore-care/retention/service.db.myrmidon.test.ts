@@ -37,6 +37,9 @@ describeEmbeddedPostgres("myrmidon(1.6.5-F14B) retention pass gate report in set
   }, 120_000);
 
   afterEach(async () => {
+    // The waiting pass writes a throttled activity row per company; clear the
+    // dependent rows before the company (same teardown order as the
+    // data-retention service test).
     await db.delete(activityLog);
     await db.delete(companies);
   });
