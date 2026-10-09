@@ -99,7 +99,7 @@ describeEmbeddedPostgres("skill lifecycle backfill migration", () => {
 
     await applyPendingMigrations(database.connectionString);
     // The fixture rows were inserted after the boot-time migration run, so run
-    // 0310 again to see the backfill act on them.
+    // 0314 again to see the backfill act on them.
     await unapplyMigration(sql);
     await applyPendingMigrations(database.connectionString);
 
