@@ -8,9 +8,10 @@ the work resumes through the normal wake path. This is the self-healing half
 of run liveness: the board no longer waits for the hard run timeout to notice
 a run that will never move again.
 
-The feature ships enabled. Its settings are the `MYRMIDON_RUN_STALL_*`
-variables, listed with defaults and ranges in
-[../SETTINGS.md](../SETTINGS.md).
+Since 1.6.5 the sweep is also adjustable while the server runs — see
+[Changing the settings without a restart](#changing-the-settings-without-a-restart)
+below. The deployment-default `MYRMIDON_RUN_STALL_*` variables are listed with
+ranges in [../SETTINGS.md](../SETTINGS.md).
 
 ## What counts as progress
 
@@ -78,3 +79,36 @@ is not wired to an HTTP endpoint yet.
 | `MYRMIDON_RUN_STALL_PAGE_SIZE` | `50` | How many running runs one pass inspects at most. Range 1–200; out of range or non-numeric — the default |
 
 Details and the full settings table: [../SETTINGS.md](../SETTINGS.md).
+
+## Changing the settings without a restart
+
+Since 1.6.5 the sweep reads its settings from the instance settings, not only
+from the environment, so they change while the server runs — a restart drops
+every run in flight. Instance → General carries a "Run stall detection"
+section, and the same values are on the API:
+
+- `GET /api/myrmidon/run-stall` (any authenticated board member) returns the
+  effective values and, for each one, where it came from: `settings` (the
+  stored settings row), `env` (the deployment variable) or `default` (the
+  built-in fallback).
+- `PATCH /api/myrmidon/run-stall` (instance admin only) writes
+  `instance_settings.general.runStall`, records the change in the activity
+  log of every company (`instance.run_stall.updated`, old and new values) and
+  applies the values to the live sweep: the very next pass works with the new
+  interval and page size.
+
+The split of ownership, unchanged from the sweep's own behavior:
+
+- **The master switch and the silence threshold belong to team-liveness.**
+  `runStallEnabled` and `runStallThresholdSec` on
+  `/api/myrmidon/team-liveness` (Instance → General → Team liveness) are the
+  single source the sweep obeys on every pass. The run-stall section shows
+  both read-only with a link to that section, and a `PATCH` naming `enabled`
+  or `thresholdSec` is refused with 409
+  `run_stall_managed_by_team_liveness`.
+- **The sweep interval and the page size are edited here** (range 15 s–24 h
+  and 1–200; out-of-range writes are refused with 400).
+
+On an instance that never saved the settings, each environment variable above
+stays the default source with the semantics the table states; a stored
+settings value wins over the environment.

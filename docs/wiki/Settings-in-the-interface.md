@@ -33,6 +33,16 @@ restarting the server and without interrupting runs in flight
 Each field shows where its effective value comes from — saved setting,
 environment variable, or built-in default.
 
+## Run-stall detection
+
+**Instance → General → "Run stall detection"** (since 1.6.5) — the settings
+of the sweep that interrupts runs whose recorded progress stopped advancing
+([run-stall](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/run-stall.md#changing-the-settings-without-a-restart)).
+The section edits the scan interval and the page size live — the next sweep
+pass works with the new values, no restart — and shows the master switch and
+the silence threshold read-only: those two belong to the team-liveness
+settings on the same page, and the section links there.
+
 ## Per-agent parallelism
 
 On the agent card, the **Container** section: the scheduling policy
