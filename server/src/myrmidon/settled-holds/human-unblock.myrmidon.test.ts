@@ -52,7 +52,12 @@ import { errorHandler } from "../../middleware/index.js";
 import { agentRoutes } from "../../routes/agents.js";
 import { issueRoutes } from "../../routes/issues.js";
 import { heartbeatService } from "../../services/heartbeat.js";
-import { isHumanUnblock, mayBeHumanUnblock } from "./human-unblock.js";
+import {
+  isAssigneeChangePatch,
+  isHumanUnblock,
+  mayBeHumanUnblock,
+  REASSIGN_UNBLOCK_NOTE,
+} from "./human-unblock.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -96,6 +101,27 @@ describe("isHumanUnblock / mayBeHumanUnblock", () => {
   });
 });
 
+// myrmidon(REPLAY-BLOCK-TRIAGE): any executor change clears the hold — the
+// gate the PATCH route uses before its DB probe.
+describe("isAssigneeChangePatch", () => {
+  const existing = { status: "todo", assigneeAgentId: "agent-a", assigneeUserId: null };
+
+  it("a hand-off to another agent counts, whatever the actor", () => {
+    expect(isAssigneeChangePatch({ existing, assigneeAgentIdPatch: "agent-b", assigneeUserIdPatch: undefined })).toBe(true);
+  });
+
+  it("clearing the assignee or moving to a user does not (no new executor to hand to)", () => {
+    expect(isAssigneeChangePatch({ existing, assigneeAgentIdPatch: null, assigneeUserIdPatch: undefined })).toBe(false);
+    expect(isAssigneeChangePatch({ existing, assigneeAgentIdPatch: null, assigneeUserIdPatch: "user-a" })).toBe(false);
+  });
+
+  it("no actual change is no reassignment", () => {
+    expect(isAssigneeChangePatch({ existing, assigneeAgentIdPatch: "agent-a", assigneeUserIdPatch: null })).toBe(false);
+    expect(isAssigneeChangePatch({ existing, assigneeAgentIdPatch: undefined, assigneeUserIdPatch: undefined })).toBe(false);
+    expect(isAssigneeChangePatch({ existing, assigneeAgentIdPatch: undefined, assigneeUserIdPatch: null })).toBe(false);
+  });
+});
+
 describeEmbeddedPostgres("a board unblock lifts a settled replay hold (HOLD-READY)", () => {
   let db!: ReturnType<typeof createDb>;
   let heartbeat!: ReturnType<typeof heartbeatService>;
@@ -131,6 +157,28 @@ describeEmbeddedPostgres("a board unblock lifts a settled replay hold (HOLD-READ
         memberships: [{ companyId, membershipRole: "owner", status: "active" }],
         isInstanceAdmin: true,
         source: "local_implicit",
+      };
+      next();
+    });
+    server.use("/api", issueRoutes(db, {} as never));
+    server.use("/api", agentRoutes(db));
+    server.use(errorHandler);
+    return server;
+  }
+
+  // myrmidon(REPLAY-BLOCK-TRIAGE): an agent acting through the board API with
+  // its own JWT (no run: a wake's own PATCH keeps the issue's run lock; here
+  // the agent edits the task it is assigned to, the lead-hand-off case).
+  function agentApp(companyId: string, agentId: string) {
+    const server = express();
+    server.use(express.json());
+    server.use((req, _res, next) => {
+      req.actor = {
+        type: "agent",
+        agentId,
+        companyId,
+        runId: null,
+        source: "agent_jwt",
       };
       next();
     });
@@ -297,6 +345,42 @@ describeEmbeddedPostgres("a board unblock lifts a settled replay hold (HOLD-READ
     const runs = await waitForRun(companyId, otherAgentId, issueId);
     expect(runs.length, JSON.stringify(runs)).toBeGreaterThan(0);
     expect(runs.filter((run) => run.errorCode === "execution_reconciliation_required")).toEqual([]);
+  }, TEST_TIMEOUT_MS);
+
+  // myrmidon(REPLAY-BLOCK-TRIAGE): the OPE-6329 lock-in. The hold belongs to
+  // the previous executor's stopped run, so an AGENT reassignment (the executor
+  // handing its own task over) clears it too — before this only a board person
+  // could, and the reassigned task stayed silently locked for days.
+  it("an agent reassignment of the held task clears the hold and wakes the new assignee", async () => {
+    const { companyId, agentId, issueId, actionId } = await seedStuck();
+    const otherAgentId = await seedAgent(companyId, "agent-b");
+    const server = agentApp(companyId, agentId);
+
+    const patched = await request(server)
+      .patch(`/api/issues/${issueId}`)
+      .send({ assigneeAgentId: otherAgentId });
+    expect(patched.status, JSON.stringify(patched.body)).toBe(200);
+
+    expect(await replayOf(actionId)).toMatchObject({
+      replay: "cleared",
+      replayClearedByType: "agent",
+      replayClearedBy: agentId,
+      replayClearedNote: REASSIGN_UNBLOCK_NOTE,
+    });
+    const runs = await waitForRun(companyId, otherAgentId, issueId);
+    expect(runs.length, JSON.stringify(runs)).toBeGreaterThan(0);
+    expect(runs.filter((run) => run.errorCode === "execution_reconciliation_required")).toEqual([]);
+  }, TEST_TIMEOUT_MS);
+
+  // A reassignment that keeps the same assignee (e.g. a status-only edit under
+  // an agent's hand) must not clear the hold — the executor did not change.
+  it("an agent PATCH without an assignee change leaves the hold in place", async () => {
+    const { companyId, agentId, issueId, actionId } = await seedStuck();
+    const server = agentApp(companyId, agentId);
+
+    const patched = await request(server).patch(`/api/issues/${issueId}`).send({ title: "renamed by the assignee" });
+    expect(patched.status, JSON.stringify(patched.body)).toBe(200);
+    expect(await replayOf(actionId)).toMatchObject({ replay: "blocked" });
   }, TEST_TIMEOUT_MS);
 
   it("without a human unblock the held task stays held and is not reported as ready", async () => {
