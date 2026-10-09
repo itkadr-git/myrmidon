@@ -143,7 +143,7 @@ const QUEUED_TEXTS: Record<ChatNoticeLanguage, Record<ChatWaitReason, string>> =
     budget:
       "У бота закончился бюджет на работу. Сообщение сохранено и уйдёт в работу, когда бюджет пополнят или поднимут лимит.",
     host_memory:
-      "Сервер сейчас придерживает память под собственные процессы, поэтому новые ответы ждут очереди. Ваше сообщение стоит первым в очереди и стартует само: очередь проверяется каждые 15 секунд, так что старт — через ~15 секунд.",
+      "Серверу сейчас не хватает свободной памяти на собственные процессы, поэтому новые ответы ждут очереди. Ваше сообщение стоит первым в очереди и стартует само: очередь проверяется каждые 15 секунд, так что старт — через ~15 секунд.",
   },
   en: {
     previous_turn:
@@ -163,7 +163,7 @@ const QUEUED_TEXTS: Record<ChatNoticeLanguage, Record<ChatWaitReason, string>> =
     budget:
       "The bot has run out of budget. Your message is saved and will start once the budget is topped up or the limit raised.",
     host_memory:
-      "The server is holding memory back for its own processes, so new answers are waiting. Your message is first in the queue and starts by itself: the queue is checked every 15 seconds, so it starts in ~15 seconds.",
+      "The server is short of free memory for its own processes, so new answers are waiting. Your message is first in the queue and starts by itself: the queue is checked every 15 seconds, so it starts in ~15 seconds.",
   },
 };
 
@@ -178,7 +178,7 @@ const NOT_STARTED_CAUSES: Record<ChatNoticeLanguage, Record<ChatWaitReason, stri
     agent_paused: "Бот на паузе.",
     agent_unavailable: "Бот отключён или ждёт настройки на доске.",
     budget: "У бота закончился бюджет на работу.",
-    host_memory: "Сервер придерживал память под собственные процессы.",
+    host_memory: "Серверу не хватало свободной памяти на собственные процессы.",
   },
   en: {
     previous_turn: "I was busy with the previous answer.",
@@ -189,7 +189,7 @@ const NOT_STARTED_CAUSES: Record<ChatNoticeLanguage, Record<ChatWaitReason, stri
     agent_paused: "The bot is paused.",
     agent_unavailable: "The bot is turned off or waiting for setup on the board.",
     budget: "The bot has run out of budget.",
-    host_memory: "The server was holding memory back for its own processes.",
+    host_memory: "The server was short of free memory for its own processes.",
   },
 };
 
