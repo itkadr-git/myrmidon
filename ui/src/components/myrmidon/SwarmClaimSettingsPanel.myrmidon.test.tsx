@@ -38,7 +38,9 @@ const view: SwarmClaimSettingsView = {
     sweepIntervalSec: 30,
     p0Preemption: true,
     // 1.6.5 (F-27 PHEROMONE): the priority→strength mapping.
-    pheromoneDefaults: { critical: 1000, high: 100, medium: 10, low: 1 },
+    pheromoneDefaults: { critical: 100, high: 30, medium: 10, low: 1 },
+    // 1.6.5 (F-27 rework 09.10): the aging/evaporation knobs (design §2.3).
+    pheromoneDynamics: { agingStepHours: 24, agingStep: 1, agingCap: 5, failPenalty: 10 },
   },
   sources: {
     enabled: "settings",

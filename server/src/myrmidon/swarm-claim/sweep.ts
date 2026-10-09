@@ -412,6 +412,7 @@ async function sweepIdleWakes(
       | "enabledRoles"
       | "maxActiveTasks"
       | "p0Preemption"
+      | "pheromoneDynamics"
     >;
     now: Date;
     result: SwarmClaimSweepResult;
@@ -479,6 +480,7 @@ async function sweepIdleWakes(
         batchLimit: batch,
         now: input.now,
         p0Preemption: input.settings.p0Preemption,
+        pheromoneDynamics: input.settings.pheromoneDynamics,
       });
       result.idleRoles += 1;
       result.idleFreeAgents += targets.length;

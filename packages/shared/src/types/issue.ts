@@ -156,6 +156,12 @@ export interface AcceptedPlanDecompositionChild {
   harnessKind?: IssueHarnessKind | null;
   priority: IssuePriority;
   pheromoneStrength?: number | null;
+  /**
+   * 1.6.5 (F-27 rework 09.10): the task's caste key (a key of the company's
+   * caste directory, design §2.1). NULL means the project default, then the
+   * company default. The server validates it against the directory.
+   */
+  casteKey?: string | null;
   reviewPolicy?: IssueReviewPolicy | null;
   assigneeAgentId?: string | null;
   assigneeUserId?: string | null;
@@ -805,6 +811,11 @@ export interface Issue {
    * have to name it; the DB column is NOT NULL DEFAULT 0, so API payloads
    * always carry it. */
   pheromoneStrength?: number;
+  /**
+   * 1.6.5 (F-27 rework 09.10): the task's caste key, or null (project/company
+   * default, design §2.1).
+   */
+  casteKey?: string | null;
   reviewPolicy: IssueReviewPolicy | null;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
@@ -895,6 +906,7 @@ export type CompactIssue = Pick<
   | "workMode"
   | "priority"
   | "pheromoneStrength"
+  | "casteKey"
   | "reviewPolicy"
   | "assigneeAgentId"
   | "assigneeUserId"
@@ -1106,6 +1118,8 @@ export interface SuggestedTaskDraft {
   description?: string | null;
   priority?: IssuePriority | null;
   pheromoneStrength?: number | null;
+  /** 1.6.5 (F-27 rework 09.10): the caste key the suggested task takes. */
+  casteKey?: string | null;
   workMode?: IssueWorkMode | null;
   assigneeAgentId?: string | null;
   assigneeUserId?: string | null;

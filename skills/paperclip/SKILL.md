@@ -202,15 +202,15 @@ Done
 MD
 ```
 
-Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`, `cancelled`. Priority values: `critical`, `high`, `medium`, `low`. Other updatable fields: `title`, `description`, `priority`, `pheromoneStrength`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`, `blockedByIssueIds`, `labelIds`.
+Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`, `cancelled`. Priority values: `critical`, `high`, `medium`, `low`. Other updatable fields: `title`, `description`, `priority`, `pheromoneStrength`, `casteKey`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`, `blockedByIssueIds`, `labelIds`.
 
 ### Pheromone Strength and Task Caste (1.6.5 F-27)
 
-The swarm queue ranks tasks by a numeric **pheromone strength** (`pheromoneStrength`, integer ≥ 0, default 0) — not only by the `priority` enum. A free agent of a caste takes the task with the **highest** strength; a critical (P0) task still preempts the whole queue regardless of strength. A strength change reorders the queue without a restart.
+The swarm queue ranks tasks by a numeric **pheromone strength** (`pheromoneStrength`, integer ≥ 0, default 0) — not only by the `priority` enum. A free agent of a caste takes the task with the **highest effective strength**: the stored strength plus aging (+1 per 24 h waiting, capped at +5) minus 10 per failed run since the last task change (never below 0; design §2.3). A critical (P0) task still preempts the whole queue regardless of strength. A strength change reorders the queue without a restart; updating the task resets the failure penalty.
 
 - **Create with explicit strength**: include `"pheromoneStrength": <int>` in the `POST /api/companies/{companyId}/issues` body (the field is optional; a new task with no strength gets the value the swarm settings map from its `priority` — see the swarm-claim settings page).
 - **Change strength**: `PATCH /api/issues/{issueId}` with `{ "pheromoneStrength": <int> }`. The field accepts `null` on patch — that resets the strength to the default of the task's `priority`.
-- **Task caste**: the caste is an issue label `role:<caste-key>` — the swarm queue routes by it. Create the label if needed (`POST /api/companies/{companyId}/issues/labels` with `{ "name": "role:<caste-key>" }`), then set it as the task's only `role:` label via `PATCH /api/issues/{issueId}` with `{ "labelIds": [...non-caste label ids, <caste label id>] }`. A task with no `role:` label belongs to the default engineer queue.
+- **Task caste (1.6.5 rework)**: the caste is the `casteKey` field — a key of the company's caste directory (`GET /api/companies/{companyId}/myrmidon/castes`). Set it via `PATCH /api/issues/{issueId}` with `{ "casteKey": "<key>" }` or `null` to clear (the task then takes its project's `defaultCasteKey`, then the company default). An unknown key fails with 422 `issue_caste_unknown`. The legacy carrier — the `role:<key>` label — is migrated to `casteKey` by migration 0383 for castes that exist in the directory.
 
 ### Status Quick Guide
 

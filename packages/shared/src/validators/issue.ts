@@ -755,6 +755,10 @@ const createIssueBaseSchema = z.object({
   // create path derives it from `priority` via the swarm settings mapping
   // (swarmClaim.pheromoneDefaults); the patch keeps the stored value.
   pheromoneStrength: issuePheromoneStrengthSchema.optional().nullable(),
+  // 1.6.5 (F-27 rework 09.10): the caste key; the server checks it against
+  // the company's caste directory (design §2.1). NULL = project/company
+  // default.
+  casteKey: z.string().trim().min(1).max(120).optional().nullable(),
   reviewPolicy: z.enum(ISSUE_REVIEW_POLICIES).optional().nullable(),
   assigneeAgentId: z.string().guid().optional().nullable(),
   assigneeUserId: z.string().optional().nullable(),
@@ -1249,6 +1253,9 @@ export const suggestedTaskDraftSchema = z
       .optional(),
     priority: z.enum(ISSUE_PRIORITIES).nullable().optional(),
     pheromoneStrength: issuePheromoneStrengthSchema.nullable().optional(),
+    // 1.6.5 (F-27 rework 09.10): the caste key (directory membership is
+    // checked server-side, where the company's directory lives).
+    casteKey: z.string().trim().min(1).max(120).nullable().optional(),
     workMode: z.enum(ISSUE_WORK_MODES).nullable().optional(),
     assigneeAgentId: z.string().guid().nullable().optional(),
     assigneeUserId: z.string().trim().min(1).nullable().optional(),

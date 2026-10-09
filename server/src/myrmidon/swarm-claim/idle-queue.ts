@@ -16,6 +16,7 @@ import {
   swarmRoleForUnassignedTask,
 } from "@paperclipai/shared";
 import type { SwarmIdleQueueCandidate } from "./idle-wake.js";
+import { failedRunsSinceLastChangeSql } from "./effective-pheromone.js";
 import { issueHasNoExecutionHold } from "../settled-holds/ready-predicate.js";
 
 /** The read-ready role pairs of one company: queue + its agents' idle state. */
@@ -118,8 +119,11 @@ interface ReadyQueueRow {
   candidate: SwarmIdleQueueCandidate;
   assigneeAgentId: string | null;
   assigneeRole: string | null;
-  /** Lower-cased names of the issue's labels (the `role:<key>` tag lives here). */
+  /** Lower-cased names of the issue's labels (the legacy `role:<key>` tag lives here). */
   labels: string[];
+  /** 1.6.5 (F-27 rework 09.10): the task's own caste key, and its nest's. */
+  casteKey?: string | null;
+  projectDefaultCasteKey?: string | null;
 }
 
 /** The ready queue of a company (both assigned-to-role and unassigned rows). */
@@ -130,6 +134,7 @@ async function listReadyQueueCandidates(db: Db, companyId: string) {
       identifier: issues.identifier,
       priority: issues.priority,
       pheromoneStrength: issues.pheromoneStrength,
+      failedRunsSinceLastChange: failedRunsSinceLastChangeSql(),
       queuedAt: issues.createdAt,
       assigneeAgentId: issues.assigneeAgentId,
       assigneeRole: agents.role,
@@ -139,6 +144,12 @@ async function listReadyQueueCandidates(db: Db, companyId: string) {
           join labels l on l.id = il.label_id
         where il.issue_id = ${issues.id}
       ), array[]::text[])`,
+      // 1.6.5 (F-27 rework 09.10, design §2.1): the caste columns — the task's
+      // own key, and the nest's default (null when no project).
+      casteKey: issues.casteKey,
+      projectDefaultCasteKey: sql<string | null>`(
+        select p.default_caste_key from projects p where p.id = ${issues.projectId}
+      )`,
     })
     .from(issues)
     .leftJoin(agents, eq(agents.id, issues.assigneeAgentId))
@@ -205,12 +216,15 @@ async function listReadyQueueCandidates(db: Db, companyId: string) {
       identifier: row.identifier,
       priority: row.priority,
       pheromoneStrength: row.pheromoneStrength,
+      failedRunsSinceLastChange: row.failedRunsSinceLastChange,
       queuedAt: row.queuedAt,
       assigneeAgentId: row.assigneeAgentId,
     },
     assigneeAgentId: row.assigneeAgentId,
     assigneeRole: row.assigneeRole ?? null,
     labels: row.labels ?? [],
+    casteKey: row.casteKey ?? null,
+    projectDefaultCasteKey: row.projectDefaultCasteKey ?? null,
   }));
 }
 
@@ -225,6 +239,10 @@ function rolesOfQueueRow(row: ReadyQueueRow): string[] {
   if (row.assigneeAgentId) {
     return row.assigneeRole ? [row.assigneeRole] : [];
   }
+  // 1.6.5 (F-27 rework 09.10, design §2.1): the caste the task routes to —
+  // its own key, then the nest's default, then the legacy role: label.
+  const caste = row.casteKey ?? row.projectDefaultCasteKey ?? null;
+  if (caste) return [caste.trim().toLowerCase()];
   return [swarmRoleForUnassignedTask(row.labels)];
 }
 

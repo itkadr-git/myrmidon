@@ -49,6 +49,11 @@ export const issues = pgTable(
     // orders by it inside the P0 band. Zero means "no scent" — the task ranks
     // behind every task with an explicit strength of the same band.
     pheromoneStrength: integer("pheromone_strength").notNull().default(0),
+    // 1.6.5 (F-27 rework 09.10, design §2.1): the task's caste — a key of the
+    // company's caste directory (`agent_castes.key`). Replaces the `role:<key>`
+    // label as the swarm routing source; NULL falls back to the project's
+    // `default_caste_key`, then the company's default caste.
+    casteKey: text("caste_key"),
     reviewPolicy: text("review_policy").$type<IssueReviewPolicy>(),
     assigneeAgentId: uuid("assignee_agent_id").references(() => agents.id),
     assigneeUserId: text("assignee_user_id"),

@@ -141,6 +141,7 @@ import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText } from "../redaction.js";
 // myrmidon(S5): mask secret values in agent comments
 import { maskSecretsInText } from "../myrmidon/secret-masking.js";
+import { createCasteStore } from "../myrmidon/castes/store.js";
 import {
   resolveIssueGoalId,
   resolveNextIssueGoalId,
@@ -6399,6 +6400,20 @@ async function countBlockedInboxIssues(
 export function issueService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
   const treeControlSvc = issueTreeControlService(db);
+  const casteStore = createCasteStore({ db });
+
+  // 1.6.5 (F-27 rework 09.10): a caste key the caller names must exist in the
+  // company's caste directory (design §2.1). NULL clears to the project/company
+  // default — only a non-null key is validated.
+  async function assertCasteKeyExists(companyId: string, casteKey: string | null | undefined) {
+    if (casteKey == null) return;
+    const row = await casteStore.findCaste(companyId, casteKey);
+    if (!row) {
+      throw unprocessable(`caste "${casteKey}" does not exist in this company`, {
+        code: "issue_caste_unknown",
+      });
+    }
+  }
 
   // 1.6.5 (F-27 PHEROMONE): the strength a new task starts with when the
   // caller did not set one — the swarm settings map `priority` to a number
@@ -9959,6 +9974,9 @@ export function issueService(db: Db) {
                 ),
               }
             : {}),
+          // 1.6.5 (F-27 rework 09.10): the caste key — validated against the
+          // company's directory just below; a null clears to the defaults.
+          ...(issueData.casteKey !== undefined ? { casteKey: issueData.casteKey } : {}),
           originRunId: issueData.originRunId ?? actorRunId ?? null,
           responsibleUserId,
           requestDepth: clampIssueRequestDepth(issueData.requestDepth),
@@ -9999,6 +10017,10 @@ export function issueService(db: Db) {
             assigneeUserId: values.assigneeUserId ?? null,
           }),
         );
+
+        // 1.6.5 (F-27 rework 09.10): validate the caste against the company's
+        // directory before the row lands (design §2.1).
+        await assertCasteKeyExists(companyId, values.casteKey as string | null | undefined);
 
         const [issue] = await tx.insert(issues).values(values).returning();
         if (idempotencyKey) {
@@ -10434,6 +10456,11 @@ export function issueService(db: Db) {
       if (data.parentId !== undefined && data.parentId !== existing.parentId) {
         await assertExecutionTaskParent(dbOrTx, existing.companyId, data.parentId);
       }
+      // 1.6.5 (F-27 rework 09.10): validate a changed caste against the
+      // company's directory (design §2.1); null clears to the defaults.
+      if (data.casteKey !== undefined && data.casteKey !== existing.casteKey) {
+        await assertCasteKeyExists(existing.companyId, data.casteKey);
+      }
       if (existing.conversationAgentId) {
         if ((data.assigneeAgentId !== undefined && data.assigneeAgentId !== existing.conversationAgentId)
           || data.assigneeUserId || data.conversationAgentId !== undefined || data.conversationUserId !== undefined
@@ -10536,6 +10563,14 @@ export function issueService(db: Db) {
       }
       if (issueData.requestDepth !== undefined) {
         patch.requestDepth = clampIssueRequestDepth(issueData.requestDepth);
+      }
+      // 1.6.5 (F-27 PHEROMONE): an explicit null resets the strength to the
+      // priority default (the same mapping the create path uses), so a client
+      // can "clear" the manual strength without knowing the mapping.
+      if (issueData.pheromoneStrength === null) {
+        patch.pheromoneStrength = await defaultPheromoneStrengthForPriority(
+          (issueData.priority as string | undefined) ?? existing.priority,
+        );
       }
 
       const nextAssigneeAgentId =

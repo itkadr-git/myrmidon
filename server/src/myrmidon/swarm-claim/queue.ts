@@ -23,6 +23,7 @@ import {
   type SwarmQueueCandidate,
 } from "@paperclipai/shared";
 import { issueHasNoExecutionHold } from "../settled-holds/ready-predicate.js";
+import { failedRunsSinceLastChangeSql } from "./effective-pheromone.js";
 
 /** One row of a role queue as the SQL reads it, before the claim join. */
 export interface RoleQueueRow {
@@ -31,6 +32,12 @@ export interface RoleQueueRow {
   priority: string | null;
   /** 1.6.5 (F-27): the pheromone strength the queue orders by. */
   pheromoneStrength: number | null;
+  /**
+   * 1.6.5 (F-27 rework 09.10): runs that evaporated pheromone with no task
+   * change after them — the effective strength subtracts `failPenalty` per
+   * run (design §2.3, SQL twin in `effective-pheromone.ts`).
+   */
+  failedRunsSinceLastChange: number | null;
   status: string;
   assigneeAgentId: string | null;
   role: string | null;
@@ -40,11 +47,17 @@ export interface RoleQueueRow {
 /**
  * myrmidon(1.6.2 SWARM-UNASSIGNED-ROUTE): SQL twin of `swarmRoleForUnassignedTask`
  * over the outer `issues` row — true when an unassigned task is queued for
- * `role`: it carries the label `role:<role>`, or it carries no `role:` label
- * and `role` is the default work role.
+ * `role`.
+ *
+ * 1.6.5 (F-27 rework 09.10, design §2.1): the caste resolution order is
+ * `issues.caste_key` (the task's own caste), then the project's
+ * `projects.default_caste_key` (the nest's), then the company default role —
+ * with the legacy `role:<key>` label as the carrier rows written before the
+ * migration still read through (the label match stays in the OR).
  */
 export function unassignedTaskRoutedToRole(role: string) {
-  const wanted = `role:${role.trim().toLowerCase()}`;
+  const wantedKey = role.trim().toLowerCase();
+  const wanted = `role:${wantedKey}`;
   const hasLabel = sql`exists (
     select 1
     from issue_labels il
@@ -52,7 +65,17 @@ export function unassignedTaskRoutedToRole(role: string) {
     where il.issue_id = ${issues.id}
       and regexp_replace(lower(btrim(l.name)), '^role:[[:space:]]*', 'role:') = ${wanted}
   )`;
-  if (role.trim().toLowerCase() !== SWARM_DEFAULT_UNASSIGNED_ROLE) return hasLabel;
+  const hasCasteKey = sql`lower(${issues.casteKey}) = ${wantedKey}`;
+  if (wantedKey !== SWARM_DEFAULT_UNASSIGNED_ROLE) {
+    // A non-default caste: the task's own key, its project's default, or the
+    // legacy label.
+    return sql`(${hasCasteKey} or exists (
+      select 1 from projects p
+      where p.id = ${issues.projectId}
+        and lower(p.default_caste_key) = ${wantedKey}
+        and ${issues.casteKey} is null
+    ) or ${hasLabel})`;
+  }
   const hasAnyRoleLabel = sql`exists (
     select 1
     from issue_labels il
@@ -60,7 +83,16 @@ export function unassignedTaskRoutedToRole(role: string) {
     where il.issue_id = ${issues.id}
       and lower(btrim(l.name)) ~ '^role:[[:space:]]*[^[:space:]]'
   )`;
-  return sql`(${hasLabel} or not ${hasAnyRoleLabel})`;
+  // The default role: the task names no caste anywhere — no caste_key, no
+  // project default, no role: label.
+  return sql`(${hasCasteKey} or (
+    ${issues.casteKey} is null
+    and not exists (
+      select 1 from projects p
+      where p.id = ${issues.projectId} and p.default_caste_key is not null
+    )
+    and not ${hasAnyRoleLabel}
+  ) or ${hasLabel})`;
 }
 
 /**
@@ -76,6 +108,7 @@ export function roleQueueRows(db: Db, companyId: string, role: string, agentId?:
       identifier: issues.identifier,
       priority: issues.priority,
       pheromoneStrength: issues.pheromoneStrength,
+      failedRunsSinceLastChange: failedRunsSinceLastChangeSql(),
       status: issues.status,
       assigneeAgentId: issues.assigneeAgentId,
       role: agents.role,
@@ -144,6 +177,7 @@ export async function listRoleQueue(
     identifier: row.identifier,
     priority: row.priority,
     pheromoneStrength: row.pheromoneStrength,
+    failedRunsSinceLastChange: row.failedRunsSinceLastChange,
     queuedAt: row.queuedAt,
   }));
 }
@@ -201,6 +235,7 @@ export async function listUnassignedQueue(
       identifier: issues.identifier,
       priority: issues.priority,
       pheromoneStrength: issues.pheromoneStrength,
+      failedRunsSinceLastChange: failedRunsSinceLastChangeSql(),
       queuedAt: issues.createdAt,
     })
     .from(issues)
@@ -239,6 +274,7 @@ export async function listUnassignedQueue(
     identifier: row.identifier,
     priority: row.priority,
     pheromoneStrength: row.pheromoneStrength,
+    failedRunsSinceLastChange: row.failedRunsSinceLastChange,
     queuedAt: row.queuedAt,
   }));
 }
