@@ -12,6 +12,17 @@
 // headSha — is TTL-cached per (company, repo, number, headSha) with the
 // provider's 300 s cache (GITHUB_OBJECT_TTL_SECONDS of
 // github-external-object-provider.ts).
+//
+// myrmidon(UPDATE-BRANCH-STEWARD): the merge path the lane routes to is
+// update-branch, not a hosted ordering feature: an approved green head gets
+// a steward task whose first command is `gh pr update-branch` (GitHub's
+// PUT /pulls/{n}/update-branch — a no-op on an already-current branch), and
+// only the CURRENT head may be merged. The per-head review fold above is
+// what makes the wait safe: update-branch pushes a refresh commit, the head
+// moves, the approval and the green run of the old head no longer cover the
+// merge, the stale merge task is cancelled as superseded, and the lane
+// routes the refreshed head through review and merge on its own fresh
+// verdicts.
 
 import type { Db } from "@paperclipai/db";
 import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "../../services/git-credentials.js";
