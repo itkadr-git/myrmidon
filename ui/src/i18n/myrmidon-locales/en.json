@@ -850,7 +850,7 @@
     "months_one": "{{count}} month",
     "months_other": "{{count}} months",
     "feedbackSharingTitle": "AI feedback sharing",
-    "feedbackSharingHint": "Control whether thumbs up and thumbs down votes can send the voted AI output to Paperclip Labs. Votes are always saved locally.",
+    "feedbackSharingHint": "Control whether thumbs up and thumbs down votes can send the voted AI output to Myrmidon Labs. Votes are always saved locally.",
     "termsOfService": "Read our terms of service",
     "feedbackPrompt": "No default is saved yet. The next thumbs up or thumbs down choice will ask once and then save the answer here.",
     "alwaysAllow": "Always allow",
