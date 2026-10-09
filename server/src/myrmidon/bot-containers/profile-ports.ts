@@ -35,7 +35,7 @@ import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import type { BotLspSettings, BotDiskMechanics, ParallelHelpersSettings } from "@paperclipai/shared";
 import { getConfiguredSecretProvider } from "../../secrets/configured-provider.js";
 // myrmidon(1.6.5-F11-A): the deterministic secret name of the bot's media token.
-import { mediaTokenSecretName } from "./media-mcp.js";
+import { readMediaMcpSignals } from "./media-mcp.js";
 import {
   agentInstructionsService,
   agentService,
@@ -253,17 +253,9 @@ export function createDbBotProfilePorts(db: Db): BotProfilePorts {
       return { secretId, value };
     },
 
-    // myrmidon(1.6.5-F11-A): the bot's media token, READ-ONLY by the
-    // deterministic name (mediaTokenSecretName). The profile gate is «only when
-    // a token was issued»: an absent secret means media is not connected, so the
-    // port returns null and the compiler leaves the media block out instead of
-    // minting access the operator never granted. Issuing or revoking the token
-    // is an operator action on the company secret store.
-    async ensureMediaToken(agent, botKey) {
-      const secret = await secrets.getByName(agent.companyId, mediaTokenSecretName(botKey));
-      if (!secret) return null;
-      return secrets.resolveSecretValue(agent.companyId, secret.id, "latest");
-    },
+    // (myrmidon(1.6.5-F11-A): no media-token port here — the single token source
+    // is the card env entry MEDIA_TOOLS_TOKEN, which resolveCardEnv above already
+    // resolves; the compiler reads it via mediaTokenFromEnv. See media-mcp.ts.)
 
     async ensureAgentApiKey(agent) {
       const secretName = agentApiKeySecretName(agent.id);

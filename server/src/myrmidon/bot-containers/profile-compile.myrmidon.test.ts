@@ -619,10 +619,11 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
   });
 
   describe("media MCP block (OPE-6377, 1.6.5-F11-A)", () => {
-    it("adds the media server when a token is issued, never printing the token", async () => {
+    it("adds the media server when the card carries MEDIA_TOOLS_TOKEN, never printing the token", async () => {
       const board = fakeBoard({
-        async ensureMediaToken(_agent, botKey) {
-          return `fake-media-token-${botKey}`;
+        async resolveCardEnv() {
+          calls.push("resolveCardEnv");
+          return { env: { MEDIA_TOOLS_TOKEN: { value: "fake-media-token-agent-a", secret: false } }, warnings: [] };
         },
       });
       const profile = await createBotProfileCompile(board.ports, { env: INSTANCE_ENV })("agent-a", "agent-a");
@@ -639,8 +640,9 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
 
     it("honors MYRMIDON_MEDIA_MCP_URL when set", async () => {
       const board = fakeBoard({
-        async ensureMediaToken() {
-          return "fake-media-token-1";
+        async resolveCardEnv() {
+          calls.push("resolveCardEnv");
+          return { env: { MEDIA_TOOLS_TOKEN: { value: "fake-media-token-1", secret: false } }, warnings: [] };
         },
       });
       const profile = await createBotProfileCompile(board.ports, {
@@ -649,12 +651,8 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
       expect(fileContent(profile, "hermes/config.yaml")).toContain("http://media-mcp.example:8080/mcp");
     });
 
-    it("without a token there is no media block and no media env, with a «media not connected» warning", async () => {
-      const board = fakeBoard({
-        async ensureMediaToken() {
-          return null;
-        },
-      });
+    it("without a card token there is no media block and no media env, with a «media not connected» warning", async () => {
+      const board = fakeBoard();
       const reported: string[][] = [];
       const profile = await createBotProfileCompile(board.ports, {
         env: INSTANCE_ENV,
@@ -671,12 +669,8 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
       expect(reported.flat().some((warning) => warning.includes("media") && warning.includes("not connected"))).toBe(true);
     });
 
-    it("records one «media not connected» signal per pass when the token is missing", async () => {
-      const board = fakeBoard({
-        async ensureMediaToken() {
-          return null;
-        },
-      });
+    it("records one «media not connected» signal per pass when the card token is missing", async () => {
+      const board = fakeBoard();
       const compile = createBotProfileCompile(board.ports, { env: INSTANCE_ENV });
       const pass = compile.beginPass();
       await compile("agent-a", "agent-a");
@@ -689,10 +683,11 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
       resetMediaMcpSignals();
     });
 
-    it("a bot whose token is issued inside the pass leaves no signal", async () => {
+    it("a bot whose card carries the token inside the pass leaves no signal", async () => {
       const board = fakeBoard({
-        async ensureMediaToken() {
-          return "fake-media-token-1";
+        async resolveCardEnv() {
+          calls.push("resolveCardEnv");
+          return { env: { MEDIA_TOOLS_TOKEN: { value: "fake-media-token-1", secret: false } }, warnings: [] };
         },
       });
       const compile = createBotProfileCompile(board.ports, { env: INSTANCE_ENV });
@@ -703,8 +698,13 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
       resetMediaMcpSignals();
     });
 
-    it("no ensureMediaToken port at all: no media block, no signal (the instance does not issue media tokens)", async () => {
-      const board = fakeBoard();
+    it("a blank card token (whitespace) is no token: no media block, no signal", async () => {
+      const board = fakeBoard({
+        async resolveCardEnv() {
+          calls.push("resolveCardEnv");
+          return { env: { MEDIA_TOOLS_TOKEN: { value: "   ", secret: false } }, warnings: [] };
+        },
+      });
       const compile = createBotProfileCompile(board.ports, { env: INSTANCE_ENV });
       const pass = compile.beginPass();
       const profile = await compile("agent-a", "agent-a");

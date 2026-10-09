@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
@@ -37,25 +36,6 @@ class BotPolicy:
     tools: frozenset[str] | None = None  # None = every tool
     quota_bytes: int | None = None
     rate_per_min: int | None = None
-    env_token: str | None = None  # name of the environment variable that holds this bot's live token
-
-
-def _resolve_token_sha256(key: str, cfg: dict) -> str | None:
-    """Hex sha256 of the bot's token: a literal `token_sha256`, or `token_env`
-    naming the environment variable that carries the live token (the deploy
-    side generates the registry from the bots' cards and passes each token in
-    its own variable, so the file itself never holds a usable credential)."""
-    direct = (cfg.get("token_sha256") or "").lower() or None
-    env_name = (cfg.get("token_env") or "").strip()
-    if direct and env_name:
-        raise ValueError(f"bot {key}: token_sha256 and token_env are mutually exclusive")
-    if not env_name:
-        return direct
-    token = os.environ.get(env_name, "").strip()
-    if not token:
-        return None  # no token was issued for this bot: the entry keeps the
-        # registry seat (peer_host may still authenticate) but no bearer matches
-    return hashlib.sha256(token.encode()).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -97,13 +77,12 @@ def load_bots(path: Path) -> dict[str, BotPolicy]:
     for key, cfg in (raw.get("bots") or {}).items():
         if not BOT_KEY_RE.match(key):
             raise ValueError(f"bad bot key {key!r}")
-        if not cfg.get("token_sha256") and not cfg.get("token_env") and not cfg.get("peer_host"):
-            raise ValueError(f"bot {key}: needs token_sha256, token_env and/or peer_host")
+        if not cfg.get("token_sha256") and not cfg.get("peer_host"):
+            raise ValueError(f"bot {key}: needs token_sha256 and/or peer_host")
         tools = cfg.get("tools")
         out[key] = BotPolicy(
             key=key,
-            token_sha256=_resolve_token_sha256(key, cfg),
-            env_token=(cfg.get("token_env") or "").strip() or None,
+            token_sha256=(cfg.get("token_sha256") or "").lower() or None,
             peer_host=cfg.get("peer_host") or None,
             tools=frozenset(tools) if tools else None,
             quota_bytes=cfg.get("quota_bytes"),

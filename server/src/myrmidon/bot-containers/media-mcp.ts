@@ -1,55 +1,27 @@
 /**
  * myrmidon(1.6.5-F11-A): the media MCP server (tools/media-mcp) joins a bot's
- * profile only when the bot has an issued media token. The token is per bot
- * and lives in the instance's secret store under a deterministic name derived
- * from the bot key (`mediaTokenSecretName`); the compiler asks for it like it
- * asks for the LiteLLM key, so it is minted lazily and cached process-wide.
+ * profile only when the bot has a media token. The single token source is the
+ * card env entry MEDIA_TOOLS_TOKEN (the frozen inter-part contract of
+ * MEDIA-PROVISION, media-acl-export.ts: the board-side exporter hashes exactly
+ * this entry into the facade's bots.json), so the compiler reads the resolved
+ * card env and never mints, stores, or resolves a second company secret —
+ * token issuing is the card-side operator flow, not the compiler's.
  *
- * A bot whose token is missing or rejected by the facade gets NO media MCP
+ * A bot whose card carries no (or blank) MEDIA_TOOLS_TOKEN gets NO media MCP
  * block in its profile — so the runtime never registers a server that would
  * answer every call with HTTP 401 (the incident: ~1k `media … HTTP 401` lines
  * per hour across the fleet). Instead the compile records a signal in the
  * process-level registry below; the attention feed turns it into a card
  * («медиа не подключено»), the same pattern as
  * myrmidon(BOT-RUNTIME-TUNING D)'s model_fallback_alert. The bot-side client
- * (tools/media-mcp/bot-scripts/media_client.py) raises the matching
- * MediaNotConnectedError instead of hammering the facade.
- *
- * The deploy side builds the service's bots.json from the bots' cards with
- * `python -m media_mcp.registry` (tools/media-mcp/src/media_mcp/registry.py);
- * each registry entry names the environment variable that carries the live
- * token (`MEDIA_BOT_TOKEN_<KEY>`), which is the same token value this module
- * mints per bot. The registry file itself never holds a usable credential.
+ * (tools/media-mcp/bot-scripts/media_client.py) answers MediaNotConnectedError
+ * instead of hammering the facade.
  */
-import { createHash, randomBytes } from "node:crypto";
-
 import type { AttentionSeverity } from "@paperclipai/shared";
 
 export const MEDIA_MCP_SERVER_NAME = "media";
 export const MEDIA_MCP_TOKEN_ENV = "MEDIA_TOOLS_TOKEN";
 export const MEDIA_MCP_URL_ENV = "MEDIA_TOOLS_URL";
-
-/** Deterministic company-secret name for a bot's media token. */
-export function mediaTokenSecretName(botKey: string): string {
-  return `MYRMIDON_MEDIA_TOKEN_${botKey.toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_+|_+$/g, "")}`;
-}
-
-/** The deploy-side environment variable name for the same token (registry). */
-export function mediaTokenEnvName(botKey: string): string {
-  return `MEDIA_BOT_TOKEN_${botKey.toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_+|_+$/g, "")}`;
-}
-
-/** Mints a new opaque bot token; only its sha256 reaches the registry. Used by
- *  the operator flow that issues a token (the company secret store write), not
- *  by the profile compiler, which only reads. */
-export function mintMediaToken(): string {
-  return `med_${randomBytes(24).toString("base64url")}`;
-}
-
-/** Fingerprint for logs/warnings; never log the token itself. */
-export function mediaTokenFingerprint(token: string): string {
-  return createHash("sha256").update(token).digest("hex").slice(0, 12);
-}
 
 // ---------------------------------------------------------------------------
 // The signal object the attention feed turns into a card
@@ -76,13 +48,14 @@ export function mediaMcpSignalForBot(agentId: string, botKey: string, activityAt
     dedupKey: mediaMcpDedupKey(agentId),
     agentId,
     botKey,
-    severity: "medium",
+    severity: "warning",
     title: "Media tools not connected",
     whyNow:
-      `This bot has no issued media token (${mediaTokenSecretName(botKey)}), so the media MCP block was left out of ` +
-      "its profile and the media scripts will answer «медиа не подключено» instead of failing with HTTP 401. " +
-      "Issue the token (rotate the company secret) and rebuild the media registry to connect media tools.",
-    summaryExcerpt: `${MEDIA_MCP_TOKEN_ENV} is not set; media block omitted from the profile`,
+      "This bot's card has no MEDIA_TOOLS_TOKEN, so the media MCP block was left out of its profile and the " +
+      "media scripts answer «медиа не подключено» instead of failing with HTTP 401. Add the token to the card's " +
+      "env (MEDIA-PROVISION provisioning); the media ACL exporter then picks it up into bots.json and the next " +
+      "compile pass includes the media block.",
+    summaryExcerpt: `${MEDIA_MCP_TOKEN_ENV} is not set on the card; media block omitted from the profile`,
     activityAt,
   };
 }
