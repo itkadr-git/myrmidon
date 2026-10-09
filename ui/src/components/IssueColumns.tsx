@@ -572,6 +572,7 @@ function IssuePheromoneCell({
   issue: Issue;
   onUpdateIssue?: (id: string, data: Record<string, unknown>) => void;
 }) {
+  const { t } = useTranslation();
   const stored = issue.pheromoneStrength ?? 0;
   const [draft, setDraft] = useState<string | null>(null);
   if (!onUpdateIssue) {
@@ -594,7 +595,7 @@ function IssuePheromoneCell({
   return (
     <input
       inputMode="numeric"
-      aria-label="Pheromone strength"
+      aria-label={t("columns.pheromoneAria")}
       className="h-6 w-14 rounded-sm border border-transparent bg-transparent text-right text-(length:--text-micro) font-medium text-muted-foreground hover:border-border focus:border-border focus:outline-none"
       value={shown}
       onChange={(event) => setDraft(event.target.value)}

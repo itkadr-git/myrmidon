@@ -135,7 +135,7 @@ describe("myrmidon(1.6.1) swarm claim settings panel", () => {
       maxActiveTasks: null,
       sweepIntervalSec: 30,
       // 1.6.5 (F-27 PHEROMONE): the mapping is always part of the patch.
-      pheromoneDefaults: { critical: 1000, high: 100, medium: 10, low: 1 },
+      pheromoneDefaults: { critical: 100, high: 30, medium: 10, low: 1 },
     });
   });
 
