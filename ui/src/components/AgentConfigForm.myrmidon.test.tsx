@@ -422,3 +422,73 @@ describe("myrmidon(W2b) agent form container section", () => {
     );
   });
 });
+
+// myrmidon(1.6.6-SETTINGS-UI-B): the agent daily caps and idle-skip in the
+// Advanced Run Policy section of the heartbeat form.
+describe("myrmidon(1.6.6-SETTINGS-UI-B) agent form heartbeat limits", () => {
+  let roots: Root[] = [];
+
+  beforeEach(() => {
+    mockAgentsApi.adapterModels.mockResolvedValue([]);
+    mockAgentsApi.detectModel.mockResolvedValue(null);
+    mockAgentsApi.list.mockResolvedValue([]);
+    mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableEnvironments: true });
+    mockInstanceSettingsApi.getGeneral.mockResolvedValue({ executionMode: "any" });
+    mockEnvironmentsApi.capabilities.mockResolvedValue(CAPABILITIES);
+    mockSecretsApi.list.mockResolvedValue([]);
+    mockSecretsApi.listProposals.mockResolvedValue([]);
+    const noSession = () =>
+      Promise.reject(new ApiError("Adapter login session not found", 404, { error: "Adapter login session not found" }));
+    mockAgentsApi.getActiveAdapterAuthLoginSession.mockImplementation(noSession);
+    mockAgentsApi.getActiveClaudeSetupTokenLoginSession.mockImplementation(noSession);
+    mockAgentsApi.getClaudeOAuthTokenStatus.mockResolvedValue(null);
+    vi.spyOn(botContainerApi, "status").mockResolvedValue(STATUS);
+  });
+
+  afterEach(async () => {
+    for (const root of roots) {
+      await act(async () => {
+        root.unmount();
+      });
+    }
+    roots = [];
+    document.body.innerHTML = "";
+    vi.clearAllMocks();
+  });
+
+  it("seeds the fields from runtimeConfig.heartbeat and patches all three", async () => {
+    const result = await renderForm({
+      runtimeConfig: { heartbeat: { enabled: true, intervalSec: 300, maxDailyRuns: 24, maxDailyCostCents: 500, skipTimerWhenNoActionableWork: true } },
+    });
+    roots.push(result.root);
+
+    await act(async () => buttonByText(result.container, "Advanced Run Policy")!.click());
+    await flushReact();
+    const runs = result.container.querySelector('[data-testid="agent-max-daily-runs"]') as HTMLInputElement;
+    const cost = result.container.querySelector('[data-testid="agent-max-daily-cost-cents"]') as HTMLInputElement;
+    expect(runs.value).toBe("24");
+    expect(cost.value).toBe("500");
+
+    await act(async () => setInputValue(runs, "40"));
+    await flushReact();
+    await act(async () => setInputValue(cost, "0"));
+    await flushReact();
+    await act(async () => (result.container.querySelector('[data-testid="agent-skip-timer-no-actionable-work"]') as HTMLElement).click());
+    await flushReact();
+    await act(async () => buttonByText(result.container, "Save")!.click());
+    // 0 in the cost field means "no limit": the patch carries null, not 0
+    // (a stored 0 would block every run, which the server reads as a cap).
+    expect(result.onSave).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runtimeConfig: expect.objectContaining({
+          heartbeat: expect.objectContaining({
+            maxDailyRuns: 40,
+            maxDailyCostCents: null,
+            skipTimerWhenNoActionableWork: false,
+          }),
+        }),
+      }),
+    );
+  });
+});

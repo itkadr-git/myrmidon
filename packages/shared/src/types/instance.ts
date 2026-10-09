@@ -3,6 +3,8 @@ import type { FeedbackDataSharingPreference } from "./feedback.js";
 import type { WorkspaceHygieneLimits } from "../myrmidon-workspace-hygiene.js";
 // myrmidon(C0): the run admission limits stored in instance settings
 import type { StoredRunLimits } from "../myrmidon-runtime-limits.js";
+// myrmidon(1.6.6 CORPUS-2.0 ч.C): the knowledge-corpus module settings of the same row
+import type { StoredCorpusSettings } from "../myrmidon-corpus.js";
 import type { HostDiskSettings } from "../myrmidon-host-disk.js";
 import type { AlertRecoverySettings } from "../myrmidon-alert-recovery.js";
 // myrmidon(BOT-DISK-A): the bot draft-directory lifecycle stored in instance settings
@@ -97,6 +99,16 @@ export interface InstanceGeneralSettings {
    */
   hostDisk?: HostDiskSettings;
   /**
+   * myrmidon(1.6.6 SETTINGS-UI C-4): the attention-feed windows — how far back
+   * (days, 1–365) an unresolved failed/timed-out run may enter the feed, and
+   * the TTL (seconds, 0–300; 0 disables) of the per-company feed snapshot.
+   * Changed from `GET`/`PATCH /api/myrmidon/attention-feed`; absent means the
+   * default (7 days, 45 s). Kept in sync with the validator of the same fields
+   * (packages/shared/src/validators/instance.ts).
+   */
+  attentionFailedRunHorizonDays?: number;
+  attentionFeedCacheTtlSeconds?: number;
+  /**
    * myrmidon(BOT-DISK-A): the bot draft-directory lifecycle, changed from
    * `GET`/`PATCH /api/myrmidon/bot-disk`. Absent means "use the environment
    * variable, then the default"; kept in sync with the validator of the same
@@ -138,6 +150,15 @@ export interface InstanceGeneralSettings {
    * 1.6.5 RUN-ADMISSION).
    */
   runLimits?: StoredRunLimits;
+  /**
+   * myrmidon(1.6.6 CORPUS-2.0 ч.C): the knowledge-corpus module settings (module
+   * switch, parse-service base URL, embedder, limits), changed from
+   * `GET`/`PATCH /api/myrmidon/corpus/settings`. Absent means "the module is off
+   * and every other value comes from the environment, then the defaults"; kept in
+   * sync with the validator of the same field
+   * (packages/shared/src/validators/instance.ts).
+   */
+  corpus?: StoredCorpusSettings;
   /**
    * myrmidon(PARALLEL-HELPERS): company ceiling/default for parallel helper
    * subagents, changed from the instance settings page and

@@ -258,6 +258,12 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       ...(parsed.data.workspaceHygiene ? { workspaceHygiene: parsed.data.workspaceHygiene } : {}),
       // myrmidon(C0): the stored run admission limits survive every general write
       ...(parsed.data.runLimits ? { runLimits: parsed.data.runLimits } : {}),
+      // myrmidon(1.6.6 CORPUS-2.0 ч.C): the stored corpus module settings survive
+      // every general write (the switch, the parse service URL, the embedder and
+      // the limits are edited on their own settings page). Without this line the
+      // vendor write path silently drops the key, so the module could only ever
+      // be switched on from the environment.
+      ...(parsed.data.corpus ? { corpus: parsed.data.corpus } : {}),
       // myrmidon(BOT-DISK E): the stored host disk threshold survives every general write
       ...(parsed.data.hostDisk ? { hostDisk: parsed.data.hostDisk } : {}),
       // myrmidon(BOT-DISK-A): the stored bot draft-directory lifecycle survives every general write
