@@ -187,7 +187,9 @@ describe("board process pulse", () => {
     });
 
     pulse.start();
-    await expect(vi.advanceTimersByTimeAsync(50)).resolves.toBeUndefined();
+    // advanceTimersByTimeAsync resolves with the fake clock, so the proof of
+    // "does not throw" is the await itself — the assertions are the failures.
+    await vi.advanceTimersByTimeAsync(50);
     expect(failures).toEqual(["pulse", "pulse"]);
     expect(pulse.running).toBe(true);
     pulse.stop();

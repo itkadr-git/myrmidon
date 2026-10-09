@@ -20,6 +20,9 @@
 - `GET /metrics` answers one more family: `myrmidon_board_event_loop_utilization`, the share of the
   event-loop window the process was busy (0..1), from `performance.eventLoopUtilization`,
   read-and-reset so the number describes the interval between scrapes.
+- The container name of a process is the container id Docker writes into `HOSTNAME`; the deployment
+  setting `MYRMIDON_PROCESS_CONTAINER` overrides it when the operator's own container name is the
+  one to show (the split layout of T1.1). Unset — the runtime name is used.
 - The default mode does not change: with `mode=single` the one process writes one row with role
   `all` and does the reaping itself, so the behaviour of the board today is exactly what it was.
   Roles `worker`/`api` of T1.1 arrive with the same table and the same pulse; an `api` child writes
@@ -47,6 +50,9 @@
 - `GET /metrics` отвечает ещё одним семейством: `myrmidon_board_event_loop_utilization` — доля
   интервала, которую процесс занимал цикл событий (0..1), из `performance.eventLoopUtilization`,
   чтение-со-сбросом, поэтому число описывает интервал между скрейпами.
+- Имя контейнера процесса — идентификатор контейнера, который Docker пишет в `HOSTNAME`; настройка
+  развёртывания `MYRMIDON_PROCESS_CONTAINER` переопределяет его, когда показывать нужно
+  операторское имя контейнера (раздельная схема из T1.1). Не задана — берётся имя среды.
 - Поведение по умолчанию не меняется: при `mode=single` единственный процесс пишет одну строку с
   ролью `all` и сам чистит устаревшие, так что сегодняшнее поведение доски — прежнее. Роли
   `worker`/`api` из T1.1 придут на ту же таблицу и тот же пульс; дочерний процесс роли `api`

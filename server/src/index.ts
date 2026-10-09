@@ -1742,7 +1742,8 @@ async function startServerWithDatabaseTeardown(
     // row every 10 s, stale rows reaped by the process that owns timers. The
     // behavior with mode=single is exactly today's: one process, one row.
     {
-      const boundBoardAddress = server.address();
+      const boundBoardAddress =
+        typeof server.address === "function" ? server.address() : null;
       startBoardProcessRegistry(db as any, {
         apiPort:
           typeof boundBoardAddress === "object" && boundBoardAddress
