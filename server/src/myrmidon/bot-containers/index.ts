@@ -23,6 +23,7 @@
 //  - the container image builder and docker-compose network (G1).
 
 import type { Db } from "@paperclipai/db";
+import { BOT_RECONCILE_LANE, runInLane } from "../monitoring/metrics/lane-metrics.js"; // myrmidon(1.6.5-PROCS-T02)
 import { maintenanceHeartbeatPort, maintenanceService } from "../maintenance/index.js";
 import { heartbeatService } from "../../services/index.js";
 import {
@@ -503,7 +504,7 @@ export function startBotContainerReconciliation(
 
   function tick(): Promise<void> {
     if (tickInFlight) return tickInFlight;
-    tickInFlight = (async () => {
+    tickInFlight = runInLane(BOT_RECONCILE_LANE, async () => {
       let agents: BotContainerAgent[];
       try {
         agents = await listAgents();
@@ -554,7 +555,7 @@ export function startBotContainerReconciliation(
           env: opts.env,
         }).catch(() => undefined);
       }
-    })().finally(() => {
+    }).finally(() => {
       tickInFlight = null;
     });
     return tickInFlight;

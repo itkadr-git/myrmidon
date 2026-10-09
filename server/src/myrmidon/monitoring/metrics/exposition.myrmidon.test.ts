@@ -36,6 +36,11 @@ function snapshot(overrides: Partial<MetricsSnapshot> = {}): MetricsSnapshot {
         { type: "agent_status", count: 7, bytes: 1024 },
         { type: "run_finished", count: 3, bytes: 512 },
       ],
+      // myrmidon(1.6.5-PROCS-T02): the lane counters of the process half.
+      lanes: [
+        { lane: "api", queries: 120, busySeconds: 0 },
+        { lane: "tick", queries: 11, busySeconds: 0.5 },
+      ],
     },
     scrapeErrors: 0,
     collectedAt: "2026-10-03T12:00:00.000Z",
@@ -82,13 +87,44 @@ describe("prometheus exposition format", () => {
     const sampleLines = text.split("\n").filter((line) => line.startsWith("myrmidon_"));
     // 9 single-sample families + 2 quantile samples + 3 role pairs = 14,
     // plus the process half (1.6.5-PROCS-Q3): 3 loop quantiles + 1 RSS +
-    // 2 heap kinds + 2 live-event counters + 2 live-event byte counters = 10.
-    expect(sampleLines).toHaveLength(24);
+    // 2 heap kinds + 2 live-event counters + 2 live-event byte counters = 10,
+    // plus the lane half (1.6.5-PROCS-T02): 2 lanes x (queries + busy) = 4.
+    expect(sampleLines).toHaveLength(28);
     expect(text).toContain('myrmidon_role_queue_tasks{role="engineer",status="todo"} 3');
     expect(text).toContain('myrmidon_role_queue_tasks{role="reviewer",status="in_review"} 2');
     expect(text).toContain('myrmidon_board_event_loop_lag_seconds{quantile="0.99"} 0.13');
     expect(text).toContain('myrmidon_board_heap_bytes{kind="used"} 120000000');
     expect(text).toContain('myrmidon_board_live_events_total{kind="run_finished"} 3');
+    expect(text).toContain('myrmidon_board_db_queries_total{lane="tick"} 11');
+    expect(text).toContain('myrmidon_board_lane_busy_seconds_total{lane="tick"} 0.5');
+  });
+
+  it("renders the lane families with the lane label and their own TYPE", () => {
+    const text = renderMetricsText(snapshot());
+    expect(text).toContain("# TYPE myrmidon_board_db_queries_total counter");
+    expect(text).toContain("# TYPE myrmidon_board_lane_busy_seconds_total counter");
+    expect(text).toContain('myrmidon_board_db_queries_total{lane="api"} 120');
+    // a lane without busy time is an explicit zero, not a missing sample
+    expect(text).toContain('myrmidon_board_lane_busy_seconds_total{lane="api"} 0');
+  });
+
+  it("renders the lane families without samples while no lane has counted", () => {
+    const text = renderMetricsText(
+      snapshot({
+        process: {
+          eventLoop: null,
+          memory: { rssBytes: 1, heapUsedBytes: 1, heapTotalBytes: 2 },
+          liveEvents: [],
+          lanes: [],
+        },
+      }),
+    );
+    // HELP/TYPE stay (the families are declared), samples with an empty label
+    // set never appear.
+    expect(text).toContain("# TYPE myrmidon_board_db_queries_total counter");
+    expect(text).toContain("# HELP myrmidon_board_lane_busy_seconds_total ");
+    expect(text).not.toContain("myrmidon_board_db_queries_total{");
+    expect(text).not.toContain("myrmidon_board_lane_busy_seconds_total{");
   });
 
   it("renders the process families without samples when there is no process read", () => {
@@ -97,13 +133,16 @@ describe("prometheus exposition format", () => {
     expect(text).toContain("# HELP myrmidon_board_live_events_total ");
     expect(text).not.toContain("myrmidon_board_event_loop_lag_seconds{");
     expect(text).not.toContain("myrmidon_board_live_events_total{");
+    // The lane families are part of the process read too.
+    expect(text).not.toContain("myrmidon_board_db_queries_total{");
+    expect(text).not.toContain("myrmidon_board_lane_busy_seconds_total{");
     // The DB half is untouched by the missing process read.
     expect(text).toContain("myrmidon_runs_active 2");
   });
 
   it("omits the loop quantile samples while the histogram is not enabled", () => {
     const text = renderMetricsText(
-      snapshot({ process: { eventLoop: null, memory: { rssBytes: 1, heapUsedBytes: 1, heapTotalBytes: 2 }, liveEvents: [] } }),
+      snapshot({ process: { eventLoop: null, memory: { rssBytes: 1, heapUsedBytes: 1, heapTotalBytes: 2 }, liveEvents: [], lanes: [] } }),
     );
     expect(text).not.toContain("myrmidon_board_event_loop_lag_seconds{");
     expect(text).toContain("myrmidon_board_process_rss_bytes 1");

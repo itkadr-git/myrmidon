@@ -80,6 +80,10 @@ export const METRIC_FAMILIES = [
   "myrmidon_board_heap_bytes",
   "myrmidon_board_live_events_total",
   "myrmidon_board_live_event_bytes_total",
+  // myrmidon(1.6.5-PROCS-T02): the lane families — the DB queries and the busy
+  // seconds of each labelled part of the board's work (design П2, этап 0).
+  "myrmidon_board_db_queries_total",
+  "myrmidon_board_lane_busy_seconds_total",
 ] as const;
 
 export type MetricFamily = (typeof METRIC_FAMILIES)[number];
@@ -358,9 +362,9 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
   );
   // myrmidon(1.6.5-PROCS-Q3): the process half rides the same guarded
   // scrape: a throwing source zeroes it (HELP/TYPE render without samples)
-  // and names the five families, never kills the scrape.
+  // and names the seven families, never kills the scrape.
   const processSample = await guarded(
-    "myrmidon_board_event_loop_lag_seconds|myrmidon_board_process_rss_bytes|myrmidon_board_heap_bytes|myrmidon_board_live_events_total|myrmidon_board_live_event_bytes_total",
+    "myrmidon_board_event_loop_lag_seconds|myrmidon_board_process_rss_bytes|myrmidon_board_heap_bytes|myrmidon_board_live_events_total|myrmidon_board_live_event_bytes_total|myrmidon_board_db_queries_total|myrmidon_board_lane_busy_seconds_total",
     () => Promise.resolve().then(resolveProcessMetricsSource(deps.processMetrics)),
     null as ProcessMetricsSample | null,
   );
@@ -639,6 +643,36 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
         ? proc.liveEvents.map(
             (row) =>
               `myrmidon_board_live_event_bytes_total{kind="${escapeLabelValue(row.type)}"} ${formatSampleValue(row.bytes)}`,
+          )
+        : [],
+    ),
+  );
+
+  // myrmidon(1.6.5-PROCS-T02): the lane families. No lane has counted anything
+  // yet (no labelled work ran) means HELP/TYPE and no samples — never a sample
+  // with an empty label set.
+  blocks.push(
+    familyBlock(
+      "myrmidon_board_db_queries_total",
+      "DB queries issued by the board, by lane, cumulative since boot.",
+      "counter",
+      proc
+        ? proc.lanes.map(
+            (row) =>
+              `myrmidon_board_db_queries_total{lane="${escapeLabelValue(row.lane)}"} ${formatSampleValue(row.queries)}`,
+          )
+        : [],
+    ),
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_board_lane_busy_seconds_total",
+      "Wall time occupied by the labelled work of each lane, cumulative since boot.",
+      "counter",
+      proc
+        ? proc.lanes.map(
+            (row) =>
+              `myrmidon_board_lane_busy_seconds_total{lane="${escapeLabelValue(row.lane)}"} ${formatSampleValue(row.busySeconds)}`,
           )
         : [],
     ),

@@ -17,8 +17,16 @@
 //
 // The whole thing is a seam: the collector takes a `ProcessMetricsSource`,
 // tests inject fakes, production wires `defaultProcessMetricsSource`.
+//
+// myrmidon(1.6.5-PROCS-T02): the same seam carries the lane counters of T0.2 —
+// per lane, the DB queries issued and the busy seconds its work occupied. They
+// are plain in-process counters too (no DB, no timers, no new settings), fed by
+// lane-metrics.ts; the DB side reaches this module through the observer seam of
+// packages/db/src/myrmidon-query-accounting.ts. Every lane listener is
+// total: a counter that throws would break the work it measures.
 
 import { monitorEventLoopDelay } from "node:perf_hooks";
+import { UNLABELED_LANE } from "./lane-context.js";
 import {
   subscribeAllCompanyLiveEvents,
   subscribeGlobalLiveEvents,
@@ -43,12 +51,22 @@ export type ProcessLiveEventSample = {
   bytes: number;
 };
 
+export type ProcessLaneSample = {
+  lane: string;
+  /** DB queries this lane issued since boot. */
+  queries: number;
+  /** Wall time the labelled sections of this lane occupied, in seconds. */
+  busySeconds: number;
+};
+
 export type ProcessMetricsSample = {
   /** null while the histogram is not enabled. */
   eventLoop: ProcessEventLoopSample | null;
   memory: ProcessMemorySample;
   /** Per-type counters since boot, sorted by type for a stable exposition. */
   liveEvents: ProcessLiveEventSample[];
+  /** Per-lane counters since boot, sorted by lane for a stable exposition. */
+  lanes: ProcessLaneSample[];
 };
 
 /** Function form (the collector injects it) or object form (symmetry with
@@ -63,6 +81,7 @@ const DEFAULT_HISTOGRAM_RESOLUTION_MS = 20;
 let loopHistogram: ReturnType<typeof monitorEventLoopDelay> | null = null;
 let observationStarted = false;
 const liveEventCounters = new Map<string, { count: number; bytes: number }>();
+const laneCounters = new Map<string, { queries: number; busySeconds: number }>();
 
 /** One listener per published event: one counter per type plus serialized
  * payload bytes. O(1) and never throws — a metrics listener must not be able
@@ -98,6 +117,47 @@ export function liveEventCountersSnapshot(): ProcessLiveEventSample[] {
   return [...liveEventCounters.entries()]
     .map(([type, entry]) => ({ type, count: entry.count, bytes: entry.bytes }))
     .sort((a, b) => (a.type < b.type ? -1 : a.type > b.type ? 1 : 0));
+}
+
+function laneEntry(lane: string): { queries: number; busySeconds: number } {
+  const label = lane.trim() === "" ? UNLABELED_LANE : lane.trim();
+  let entry = laneCounters.get(label);
+  if (!entry) {
+    entry = { queries: 0, busySeconds: 0 };
+    laneCounters.set(label, entry);
+  }
+  return entry;
+}
+
+/** One query issued by the lane running now (or by "unlabeled" work). Never
+ * throws: a metrics listener must not be able to break a query. */
+export function recordLaneQuery(lane: string): void {
+  try {
+    laneEntry(lane).queries += 1;
+  } catch {
+    // Metrics never break a query.
+  }
+}
+
+/** Adds the wall time a labelled section of `lane` occupied. Non-finite and
+ * negative readings are ignored, not clamped into the series. Never throws. */
+export function recordLaneBusySeconds(lane: string, seconds: number): void {
+  try {
+    if (!Number.isFinite(seconds) || seconds <= 0) return;
+    laneEntry(lane).busySeconds += seconds;
+  } catch {
+    // Metrics never break the work they measure.
+  }
+}
+
+export function laneCountersSnapshot(): ProcessLaneSample[] {
+  return [...laneCounters.entries()]
+    .map(([lane, entry]) => ({
+      lane,
+      queries: entry.queries,
+      busySeconds: entry.busySeconds,
+    }))
+    .sort((a, b) => (a.lane < b.lane ? -1 : a.lane > b.lane ? 1 : 0));
 }
 
 /** Enables the delay histogram once (idempotent). */
@@ -163,6 +223,7 @@ export function readProcessMetrics(): ProcessMetricsSample {
     eventLoop: readEventLoopSample(),
     memory: readMemorySample(),
     liveEvents: liveEventCountersSnapshot(),
+    lanes: laneCountersSnapshot(),
   };
 }
 
@@ -178,4 +239,5 @@ export function resolveProcessMetricsSource(
 /** Test seam: drops every counter (production never calls it). */
 export function resetProcessMetricsState(): void {
   liveEventCounters.clear();
+  laneCounters.clear();
 }

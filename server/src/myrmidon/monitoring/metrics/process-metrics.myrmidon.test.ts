@@ -193,6 +193,7 @@ describe("process metrics: the source seam", () => {
       eventLoop: null,
       memory: { rssBytes: 1, heapUsedBytes: 1, heapTotalBytes: 2 },
       liveEvents: [],
+      lanes: [],
     };
     expect(resolveProcessMetricsSource(() => sample)()).toBe(sample);
     expect(resolveProcessMetricsSource({ read: () => sample })()).toBe(sample);
@@ -204,7 +205,7 @@ describe("process metrics: the source seam", () => {
     expect(readProcessMetrics().memory.heapTotalBytes).toBeGreaterThan(0);
   });
 
-  it("a throwing process source names the five families and keeps the scrape alive", async () => {
+  it("a throwing process source names the seven families and keeps the scrape alive", async () => {
     const collected = await collectMetricsParts(
       baseDeps({
         processMetrics: () => {
@@ -215,7 +216,7 @@ describe("process metrics: the source seam", () => {
     const boardFamilies = collected.errors
       .flatMap((entry) => entry.split("|"))
       .filter((family) => family.startsWith("myrmidon_board_"));
-    expect(boardFamilies).toHaveLength(5);
+    expect(boardFamilies).toHaveLength(7);
     expect(collected.fields.process).toBe(null);
     // The DB half still failed independently — and nothing crashed.
     expect(collected.errors.length).toBeGreaterThan(5);
@@ -226,6 +227,7 @@ describe("process metrics: the source seam", () => {
       eventLoop: { p50Seconds: 0.01, p99Seconds: 0.02, maxSeconds: 0.5 },
       memory: { rssBytes: 1000, heapUsedBytes: 500, heapTotalBytes: 800 },
       liveEvents: [{ type: "agent_status", count: 3, bytes: 90 }],
+      lanes: [{ lane: "tick", queries: 2, busySeconds: 0.25 }],
     };
     const collected = await collectMetricsParts(baseDeps({ processMetrics: () => sample }));
     expect(collected.fields.process).toEqual(sample);
