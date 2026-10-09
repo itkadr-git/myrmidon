@@ -157,9 +157,11 @@ export async function buildDashboardView(deps: DashboardServiceDeps): Promise<Da
     } catch (err) {
       sources.push({ name: "zabbix", ok: false, latency_ms: Date.now() - started, error: classifySourceError(err) });
     }
-  } else {
+  } else if (deps.settings.zabbixUrl) {
     sources.push({ name: "zabbix", ok: false, latency_ms: null, error: "not_configured" });
   }
+  // No client wired (tests, selective deployments): the source is simply
+  // absent from the probe list rather than reported as failed.
 
   // Merge: VM wins when it has the host, Zabbix-only hosts are appended.
   const hosts = [...vmHosts.values()];
