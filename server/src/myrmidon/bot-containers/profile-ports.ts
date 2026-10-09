@@ -53,6 +53,7 @@ import {
 } from "./board-gateway.js";
 import { createBotCardSync, type BotCardSyncPorts, type BotCardSyncResult } from "./card-sync.js";
 import { createCardEnvResolver } from "./card-env.js";
+import { listMediaAclAgents, runMediaAclExport } from "./media-acl-export.js";
 import { loadBotInstructionsBundle } from "./instructions-source.js";
 import { readBotProfileSettings } from "./profile-input.js";
 import {
@@ -545,6 +546,11 @@ export function botProfileWiring(
   endProfilePass: (pass: BotProfilePass) => void;
   syncCard: (agentId: string, botKey: string) => Promise<BotCardSyncResult>;
   releaseStrayGateways: (keepAgentIds: ReadonlySet<string>) => Promise<{ released: number; warnings: string[] }>;
+  /** myrmidon(MEDIA-PROVISION): one pass of the media ACL registry exporter
+   *  (media-acl-export.ts) over the fleet, sharing this wiring's card-env
+   *  resolver — so its per-agent cache and secret-stamp validation are the
+   *  profile compiler's, not a second set. */
+  exportMediaAcl: () => Promise<{ bots: number; failedResolves: number; changed: boolean } | null>;
 } {
   const ports = createDbBotProfilePorts(db);
   const { activity, ...compileOptions } = opts;
@@ -556,5 +562,11 @@ export function botProfileWiring(
     endProfilePass: compile.endPass,
     syncCard: createBotCardSync(createDbBotCardSyncPorts(db, ports)),
     releaseStrayGateways: (keepAgentIds) => releaseStrayBotGateways(db, keepAgentIds),
+    exportMediaAcl: () =>
+      runMediaAclExport({
+        listAgents: listMediaAclAgents(db),
+        resolveCardEnv: ports.resolveCardEnv,
+        env: compileOptions.env ?? process.env,
+      }),
   };
 }
