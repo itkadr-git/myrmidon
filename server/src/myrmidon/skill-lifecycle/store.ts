@@ -21,7 +21,7 @@ import type {
   SkillLifecycleRecord,
   SkillLifecycleState,
 } from "./domain.js";
-import { isSkillLifecycleState } from "./domain.js";
+import { BOT_BACKIMPORT_ORIGIN_METADATA_KEY, isSkillLifecycleState } from "./domain.js";
 
 export interface SkillLifecycleSkillRef {
   id: string;
@@ -29,6 +29,8 @@ export interface SkillLifecycleSkillRef {
   name: string;
   slug: string;
   currentVersionId: string | null;
+  /** Back-import origin marker (the authoring bot's id), when the skill has one. */
+  originAgentId?: string | null;
 }
 
 export interface SkillLifecycleVersionRef {
@@ -82,6 +84,12 @@ function toEvent(row: typeof companySkillLifecycleEvents.$inferSelect): SkillLif
   };
 }
 
+function originAgentFromMetadata(metadata: unknown): string | null {
+  if (typeof metadata !== "object" || metadata === null || Array.isArray(metadata)) return null;
+  const value = (metadata as Record<string, unknown>)[BOT_BACKIMPORT_ORIGIN_METADATA_KEY];
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
 export function createDbSkillLifecycleStore(db: Db): SkillLifecycleStore {
   return {
     async getSkill(companyId, skillId) {
@@ -107,11 +115,16 @@ export function createDbSkillLifecycleStore(db: Db): SkillLifecycleStore {
           name: companySkills.name,
           slug: companySkills.slug,
           currentVersionId: companySkills.currentVersionId,
+          metadata: companySkills.metadata,
         })
         .from(companySkills)
         .where(eq(companySkills.companyId, companyId))
         .orderBy(asc(companySkills.name));
-      return rows.map((row) => ({ ...row, currentVersionId: row.currentVersionId ?? null }));
+      return rows.map(({ metadata, ...row }) => ({
+        ...row,
+        currentVersionId: row.currentVersionId ?? null,
+        originAgentId: originAgentFromMetadata(metadata),
+      }));
     },
 
     async getRecord(companyId, skillId) {
