@@ -45,7 +45,7 @@ function queuedRun(input: {
 }
 
 describe("wake batch window configuration", () => {
-  it("defaults to a short window when nothing is configured", () => {
+  it("ships the window off when nothing is configured", () => {
     expect(readWakeBatchWindowMs({})).toBe(DEFAULT_WAKE_BATCH_WINDOW_MS);
     expect(readWakeBatchWindowMs({ [WAKE_BATCH_WINDOW_ENV]: "" })).toBe(
       DEFAULT_WAKE_BATCH_WINDOW_MS,
