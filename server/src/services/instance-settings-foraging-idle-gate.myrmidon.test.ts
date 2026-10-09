@@ -33,18 +33,32 @@ function stubRows<T>(values: T[]) {
 
 function stubDb(row: Record<string, unknown>) {
   const persistedSets: Array<Record<string, unknown>> = [];
-  let state = { ...row };
+  // The row state starts `null`: an empty table, so `getOrCreateRow` takes its
+  // insert branch (which on conflict — the row actually existing — must behave
+  // like the real upsert and adopt the existing row, not blind-write over it).
+  let state: Record<string, unknown> | null = null;
   const db = {
     // No isolation in this stub: the transaction callback gets the same object back.
     transaction: (fn: (tx: unknown) => Promise<unknown>) => fn(db),
-    select: () => ({ from: () => ({ where: () => stubRows([state]) }) }),
-    insert: () => {
-      throw new Error("unexpected insert in test");
-    },
+    select: () => ({ from: () => ({ where: () => stubRows(state === null ? [] : [state]) }) }),
+    insert: () => ({
+      values: (values: Record<string, unknown>) => ({
+        onConflictDoUpdate: () => ({
+          // The on-conflict upsert of getOrCreateRow: the row already exists,
+          // so the write touches only `updatedAt` and returns the stored row —
+          // never the `general: {}` of the would-be insert.
+          returning: () => {
+            if (state !== null) return Promise.resolve([state]);
+            state = { ...values };
+            return Promise.resolve([state]);
+          },
+        }),
+      }),
+    }),
     update: () => ({
       set: (values: Record<string, unknown>) => {
         persistedSets.push(values);
-        state = { ...state, ...values };
+        state = { ...(state ?? {}), ...values };
         return { where: () => ({ returning: () => Promise.resolve([state]) }) };
       },
     }),
@@ -66,9 +80,26 @@ function settingsRow(general: Record<string, unknown>) {
 
 const JOURNAL_ENTRY = { at: "2026-10-08T01:00:00.000Z", companyId: "company-a" };
 
+/**
+ * Seed the stub table with the pre-existing row, then return the test handle.
+ * The seed goes through the stub `insert` (the `getOrCreateRow` create path),
+ * which is not a service write — it does not land in `persistedSets`, those
+ * capture only the `update().set()` payloads of `updateGeneral`.
+ */
+async function stubSeededDb(row: Record<string, unknown>) {
+  const stub = stubDb(row);
+  const insert = stub.db.insert as unknown as () => {
+    values: (values: Record<string, unknown>) => {
+      onConflictDoUpdate: () => { returning: () => Promise<Record<string, unknown>[]> };
+    };
+  };
+  await insert().values(row).onConflictDoUpdate().returning();
+  return stub;
+}
+
 describe("myrmidon(1.6.3-FORAGING-IDLE-GATE) the idle-gate toggle through updateGeneral", () => {
   it("persists every flip of the switch, not only the first one", async () => {
-    const { db, persistedSets } = stubDb(settingsRow({}));
+    const { db, persistedSets } = await stubSeededDb(settingsRow({}));
     const service = instanceSettingsService(db, { runtimeEnv: {} });
 
     await service.updateGeneral({ foragingIdleGate: { enabled: false } });
@@ -85,7 +116,7 @@ describe("myrmidon(1.6.3-FORAGING-IDLE-GATE) the idle-gate toggle through update
   });
 
   it("keeps the stored toggle and the pass journal across an unrelated general write", async () => {
-    const { db, persistedSets } = stubDb(
+    const { db, persistedSets } = await stubSeededDb(
       settingsRow({ foragingIdleGate: { enabled: false }, foragingPassJournal: [JOURNAL_ENTRY] }),
     );
 
@@ -97,7 +128,7 @@ describe("myrmidon(1.6.3-FORAGING-IDLE-GATE) the idle-gate toggle through update
   });
 
   it("a toggle write does not drop the pass journal", async () => {
-    const { db, persistedSets } = stubDb(
+    const { db, persistedSets } = await stubSeededDb(
       settingsRow({ foragingIdleGate: { enabled: true }, foragingPassJournal: [JOURNAL_ENTRY] }),
     );
 
@@ -111,7 +142,7 @@ describe("myrmidon(1.6.3-FORAGING-IDLE-GATE) the idle-gate toggle through update
   });
 
   it("writes the toggle exactly once per save", async () => {
-    const { db, persistedSets } = stubDb(settingsRow({}));
+    const { db, persistedSets } = await stubSeededDb(settingsRow({}));
     await instanceSettingsService(db, { runtimeEnv: {} }).updateGeneral({
       foragingIdleGate: { enabled: true },
     });
@@ -119,5 +150,84 @@ describe("myrmidon(1.6.3-FORAGING-IDLE-GATE) the idle-gate toggle through update
     // The normalizer of `general` carried the key twice before the review fix;
     // one save is one write of the row.
     expect(persistedSets).toHaveLength(1);
+  });
+
+  // OPE-6406: the review defect — PATCHing one setting must not change the
+  // stored values of its neighbours. The switch edit of the Foraging page and
+  // the general settings PATCH go through the same `updateGeneral`, so this is
+  // the one contract that keeps every other settings key safe.
+  it("PATCH of one setting keeps every neighbouring key stored in the row", async () => {
+    // The neighbour values must be schema-valid: a stored row whose keys fail
+    // the storage schema (`runStall` is `.strict()` with required fields, for
+    // example) makes `normalizeGeneralSettings` fall back to defaults, which is
+    // the failure class this test guards against being hidden by a fake shape.
+    const neighbour = {
+      censorUsernameInLogs: true,
+      runStall: { enabled: false, thresholdSec: 900, checkIntervalSec: 60, pageSize: 50 },
+      foraging: {
+        enabled: false,
+        intervalSec: 300,
+        minHostIntervalSec: 60,
+        passBudgetCents: 100,
+        dailyBudgetCents: 1000,
+        monthlyBudgetCents: 5000,
+        roleBudgetCents: 500,
+        agentBudgetCents: 200,
+        enforcement: "hard" as const,
+        autoOffCostPerTaskCents: null,
+      },
+      pauseGuard: { enabled: true },
+      datastoreCare: { contextRetentionDays: 14 },
+    };
+    const { db, persistedSets } = await stubSeededDb(settingsRow({ ...neighbour }));
+
+    // An unrelated PATCH — the shape the general settings page sends.
+    await instanceSettingsService(db, { runtimeEnv: {} }).updateGeneral({
+      keyboardShortcuts: true,
+    });
+
+    const general = persistedSets.at(-1)?.general as Record<string, unknown>;
+    expect(general.keyboardShortcuts).toBe(true);
+    for (const [key, value] of Object.entries(neighbour)) {
+      expect(general[key], `neighbouring key "${key}" must survive`).toEqual(value);
+    }
+  });
+
+  it("an idle-gate toggle write keeps every neighbouring key stored in the row", async () => {
+    // Schema-valid neighbour shapes, as in the PATCH test above: the storage
+    // schema is strict per key, and an invalid stored shape would make
+    // `normalizeGeneralSettings` fall back to defaults before the row is read.
+    const neighbour = {
+      censorUsernameInLogs: true,
+      runStall: { enabled: false, thresholdSec: 900, checkIntervalSec: 60, pageSize: 50 },
+      foraging: {
+        enabled: false,
+        intervalSec: 300,
+        minHostIntervalSec: 60,
+        passBudgetCents: 100,
+        dailyBudgetCents: 1000,
+        monthlyBudgetCents: 5000,
+        roleBudgetCents: 500,
+        agentBudgetCents: 200,
+        enforcement: "hard" as const,
+        autoOffCostPerTaskCents: null,
+      },
+      datastoreCare: { contextRetentionDays: 14 },
+    };
+    const { db, persistedSets } = await stubSeededDb(
+      settingsRow({ ...neighbour, foragingIdleGate: { enabled: true }, foragingPassJournal: [JOURNAL_ENTRY] }),
+    );
+
+    // The Foraging page switch — one key in the patch.
+    await instanceSettingsService(db, { runtimeEnv: {} }).updateGeneral({
+      foragingIdleGate: { enabled: false },
+    });
+
+    const general = persistedSets.at(-1)?.general as Record<string, unknown>;
+    expect(general.foragingIdleGate).toEqual({ enabled: false });
+    expect(general.foragingPassJournal).toEqual([JOURNAL_ENTRY]);
+    for (const [key, value] of Object.entries(neighbour)) {
+      expect(general[key], `neighbouring key "${key}" must survive the toggle write`).toEqual(value);
+    }
   });
 });
