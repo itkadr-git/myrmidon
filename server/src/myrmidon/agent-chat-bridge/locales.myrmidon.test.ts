@@ -5,7 +5,7 @@
 // catalogs (parity + placeholders), the command menu, and one real command
 // reply end to end.
 //
-// myrmidon(1.6.5-TG-LOCALE-C) (OPE-6325): a board user who never chose a
+// myrmidon(1.6.5-TG-LOCALE-C): a board user who never chose a
 // language now follows the instance-wide setting, so the order under test is
 // env force → the person's preference → the instance setting → English.
 import { randomUUID } from "node:crypto";
@@ -106,7 +106,7 @@ describe("bridge locale decision (1.7-TG-LOCALE)", () => {
       expect(await userBridgeLocale(db, userId)).toBeNull();
       expect(await resolveBridgeLocale(db, userId, {})).toBe("en");
 
-      // OPE-6325 acceptance: the instance setting is the fallback for a board
+      // Acceptance: the instance setting is the fallback for a board
       // user who never chose a language — no env force in play.
       await setInstanceLanguage("ru");
       expect(await instanceBridgeLocale(db)).toBe("ru");

@@ -1,4 +1,4 @@
-// myrmidon(1.6.5-TG-LOCALE-C) (OPE-6325 part C): the instance-wide default
+// myrmidon(1.6.5-TG-LOCALE-C): the instance-wide default
 // language of the bridged Telegram DM.
 //
 // The precedence, the stored-shape reader, the short cache, the preserve helper

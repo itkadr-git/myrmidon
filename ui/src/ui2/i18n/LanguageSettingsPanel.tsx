@@ -7,7 +7,7 @@
 // pickers arrive with the design tokens session — placeholder copy only, the
 // card renders behind the flag until then.
 //
-// myrmidon(1.6.5-TG-LOCALE-C) (OPE-6325 part C): the panel also owns the
+// myrmidon(1.6.5-TG-LOCALE-C): the panel also owns the
 // instance-wide default language of the bridged Telegram DM — the fallback for
 // every board member who never chose one. It names the source of the effective
 // value (environment force / the person / the instance / the default) and lets

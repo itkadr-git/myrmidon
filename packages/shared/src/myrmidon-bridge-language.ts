@@ -1,5 +1,5 @@
 // myrmidon(1.6.5-TG-LOCALE-C): the instance-wide default language of the
-// bridged Telegram DM (OPE-6318 part C).
+// bridged Telegram DM.
 //
 // Until now a board user with no stored `user_ui_language` row got English
 // bridge texts (commands, statuses, refusals), even on an instance whose whole
