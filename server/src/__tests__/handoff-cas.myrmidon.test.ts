@@ -57,12 +57,13 @@ describeEmbeddedPostgres("guarded CAS handoff on PATCH /api/issues/{id}", () => 
   }, 20_000);
 
   afterEach(async () => {
+    // myrmidon(HANDOFF-CAS): FK order — heartbeat_runs reference
+    // agent_wakeup_requests (wakeupRequestId), so runs and their events must
+    // be cleared BEFORE the wakeup requests they point at.
     await db.delete(activityLog);
-    await db.delete(agentWakeupRequests);
-    // myrmidon(HANDOFF-CAS): the rollback path's wake leaves heartbeat run
-    // events behind; they reference heartbeat_runs, so clear them first.
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
     await db.delete(issues);
     await db.delete(principalPermissionGrants);
     await db.delete(companyMemberships);
