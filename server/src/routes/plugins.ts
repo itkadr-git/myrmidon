@@ -1012,7 +1012,7 @@ export function pluginRoutes(
   router.post("/plugins/tools/execute", async (req, res) => {
     assertBoardOrAgent(req);
 
-    if (!toolDeps) {
+    if (!toolDeps && !(req.actor.type === "agent" && toolGatewayDeps)) {
       res.status(501).json({ error: "Plugin tool dispatch is not enabled" });
       return;
     }
@@ -1070,6 +1070,18 @@ export function pluginRoutes(
           return;
         }
         const message = err instanceof Error ? err.message : String(err);
+        // Unknown tool key inside the plugin worker is a caller error (400),
+        // not a worker failure — mirror the board path below so agents get
+        // the same UNKNOWN_ACTION contract.
+        const rpcCode = (err as { code?: unknown }).code;
+        if (rpcCode === PLUGIN_RPC_ERROR_CODES.UNKNOWN_ACTION) {
+          res.status(400).json({
+            error: message,
+            code: "UNKNOWN_ACTION",
+            details: (err as { data?: unknown }).data,
+          });
+          return;
+        }
         if (message.includes("not running") || message.includes("worker")) {
           res.status(502).json({ error: message });
         } else {
