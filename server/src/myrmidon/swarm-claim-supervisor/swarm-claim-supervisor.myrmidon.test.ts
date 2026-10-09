@@ -1,7 +1,7 @@
 // myrmidon(1.6-SWARM-CLAIM-B): unit tests of the supervisor surface.
 //
 // Part A's claim table may not be merged yet, so these tests run the real
-// view/rebalance/pilot logic over an in-memory fake of the read port — no
+// view/rebalance logic over an in-memory fake of the read port — no
 // database, no part A import. Neutral ids only.
 
 import { describe, expect, it, vi } from "vitest";
@@ -16,17 +16,6 @@ import {
   releaseLeaseForRebalance,
   type SwarmRebalanceDeps,
 } from "./rebalance.js";
-import {
-  compareMetric,
-  defaultPilotWindow,
-  parsePilotWindow,
-  parseSnapshot,
-  swarmPilotReport,
-  SwarmPilotNotEnabledError,
-  SwarmPilotWindowError,
-  type BaselineMetricsReportJson,
-  type SwarmPilotDeps,
-} from "./pilot-report.js";
 
 const COMPANY_ID = "22222222-2222-4222-8222-222222222222";
 
@@ -393,115 +382,5 @@ describe("releaseLeaseForRebalance", () => {
     const result = await releaseLeaseForRebalance({ port, now: () => NOW }, COMPANY_ID, CLAIM);
     expect(result.released).toBe(true);
     expect(result.wokenAgentId).toBeNull();
-  });
-});
-
-function metricsReport(meanCycle: number): BaselineMetricsReportJson {
-  return {
-    window: { from: "2026-09-18T00:00:00.000Z", to: "2026-10-02T00:00:00.000Z" },
-    generatedAt: "2026-10-02T12:00:00.000Z",
-    source: { statusLog: "activity_log", costs: "none" },
-    byProject: [
-      {
-        key: null,
-        tasksCompleted: 10,
-        cycleTimeHours: { mean: meanCycle, median: meanCycle, p90: meanCycle },
-        timeInReviewHours: { mean: 2, median: 2 },
-        returnRate: { enteredReview: 10, returned: 3, rate: 0.3 },
-        blockedHours: { total: 5, mean: 0.5, topCauses: [] },
-        runsPerTask: { total: 20, mean: 2 },
-        costPerTask: { totalCents: 1000, meanCents: 100 },
-      },
-    ],
-    byRole: [],
-  };
-}
-
-function pilotDeps(input: {
-  enabled?: boolean;
-  pilot?: BaselineMetricsReportJson | null;
-  snapshotBody?: string | null;
-}): SwarmPilotDeps {
-  return {
-    async fetchBaselineMetrics() {
-      if (input.pilot === null) throw new Error("metrics unavailable");
-      return input.pilot ?? metricsReport(20);
-    },
-    async readBaselineSnapshot() {
-      return input.snapshotBody === null || input.snapshotBody === undefined
-        ? null
-        : { body: input.snapshotBody };
-    },
-    async pilotEnabled() {
-      return input.enabled ?? true;
-    },
-    now: () => NOW,
-  };
-}
-
-describe("swarmPilotReport", () => {
-  it("503s through SwarmPilotNotEnabledError when the pilot flag is off", async () => {
-    await expect(
-      swarmPilotReport(pilotDeps({ enabled: false }), COMPANY_ID),
-    ).rejects.toBeInstanceOf(SwarmPilotNotEnabledError);
-  });
-
-  it("answers baseline:null with a note until the snapshot exists", async () => {
-    const report = await swarmPilotReport(pilotDeps({ snapshotBody: null }), COMPANY_ID);
-    expect(report.enabled).toBe(true);
-    expect(report.baseline).toBeNull();
-    expect(report.pilot).not.toBeNull();
-    expect(report.notes.some((note) => note.includes("baseline-snapshot-14d"))).toBe(true);
-    expect(report.comparison.cycleTimeHoursMean.baseline).toBeNull();
-    expect(report.comparison.cycleTimeHoursMean.pilot).toBe(20);
-  });
-
-  it("computes the signed delta against the frozen snapshot", async () => {
-    const snapshot = JSON.stringify(metricsReport(40));
-    const report = await swarmPilotReport(
-      pilotDeps({ snapshotBody: `# snapshot\n\n\`\`\`json\n${snapshot}\n\`\`\`\n` }),
-      COMPANY_ID,
-    );
-    expect(report.baseline).not.toBeNull();
-    expect(report.comparison.cycleTimeHoursMean).toEqual({
-      pilot: 20,
-      baseline: 40,
-      deltaPercent: -50,
-    });
-  });
-
-  it("rejects an invalid window with SwarmPilotWindowError", async () => {
-    await expect(
-      swarmPilotReport(pilotDeps({}), COMPANY_ID, "not-a-date", "2026-10-02T00:00:00.000Z"),
-    ).rejects.toBeInstanceOf(SwarmPilotWindowError);
-    await expect(
-      swarmPilotReport(pilotDeps({}), COMPANY_ID, "2026-10-02T15:00:00.000Z", "2026-10-02T14:00:00.000Z"),
-    ).rejects.toBeInstanceOf(SwarmPilotWindowError);
-  });
-});
-
-describe("pilot report helpers", () => {
-  it("defaultPilotWindow spans the last 14 days floored to the minute", () => {
-    const window = defaultPilotWindow(() => new Date("2026-10-02T15:30:45.200Z"));
-    expect(window.to).toBe("2026-10-02T15:30:00.000Z");
-    expect(Date.parse(window.to) - Date.parse(window.from)).toBe(14 * 24 * 3600 * 1000);
-  });
-
-  it("parsePilotWindow accepts a valid explicit window", () => {
-    const parsed = parsePilotWindow("2026-09-25T00:00:00.000Z", "2026-10-02T00:00:00.000Z", () => NOW);
-    expect(parsed.from.toISOString()).toBe("2026-09-25T00:00:00.000Z");
-  });
-
-  it("parseSnapshot extracts the JSON from a fenced markdown body", () => {
-    const body = `# frozen snapshot\n\nSome prose.\n\n\`\`\`json\n${JSON.stringify(metricsReport(42))}\n\`\`\`\n`;
-    const parsed = parseSnapshot(body);
-    expect(parsed?.byProject[0]?.cycleTimeHours.mean).toBe(42);
-    expect(parseSnapshot("no json here")).toBeNull();
-  });
-
-  it("compareMetric returns null deltas without a baseline or with zero baseline", () => {
-    expect(compareMetric(10, null).deltaPercent).toBeNull();
-    expect(compareMetric(10, 0).deltaPercent).toBeNull();
-    expect(compareMetric(15, 10)).toEqual({ pilot: 15, baseline: 10, deltaPercent: 50 });
   });
 });

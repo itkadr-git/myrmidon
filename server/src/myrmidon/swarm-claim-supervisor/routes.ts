@@ -2,15 +2,14 @@
 //
 //   GET  /api/myrmidon/companies/:companyId/swarm-claim/supervisor/overview
 //   POST /api/myrmidon/companies/:companyId/swarm-claim/supervisor/release-lease
-//   GET  /api/myrmidon/companies/:companyId/swarm-claim/supervisor/pilot-report?from&to
 //
 // Reads need company access (the same check the vendor costs routes use);
 // the rebalance action additionally needs a board actor — it moves live work.
-// While part A's claim machinery is absent or off, the overview and the pilot
-// report answer 503 with { enabled: false } so the UI can say why instead of
+// While part A's claim machinery is absent or off, the overview
+// answers 503 with { enabled: false } so the UI can say why instead of
 // showing a bare error.
 
-import { Router, type Request, type Response, type NextFunction } from "express";
+import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { assertBoard, assertCompanyAccess } from "../../routes/authz.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
@@ -24,12 +23,6 @@ import {
   ClaimNotFoundError,
   type SwarmRebalanceDeps,
 } from "./rebalance.js";
-import {
-  createSwarmPilotDeps,
-  swarmPilotReport,
-  SwarmPilotNotEnabledError,
-  SwarmPilotWindowError,
-} from "./pilot-report.js";
 
 export interface SwarmSupervisorRoutesDeps {
   db: Db;
@@ -47,7 +40,6 @@ export function swarmSupervisorRoutes(db: Db, deps: SwarmSupervisorRoutesDeps) {
   const now = deps.now ?? (() => new Date());
   const port = createSwarmSupervisorReleasePort(db, env);
   const view = swarmSupervisorView(port, env, now);
-  const pilotDeps = createSwarmPilotDeps(db, env, now);
   // The matcher is built per release: the switch is read each time, so a swarm
   // turned off since the last call matches nothing (design §5.1).
   const matchIssue: NonNullable<SwarmRebalanceDeps["matchIssue"]> = async (issueId) => {
@@ -113,30 +105,6 @@ export function swarmSupervisorRoutes(db: Db, deps: SwarmSupervisorRoutesDeps) {
           return;
         }
         throw err;
-      }
-    },
-  );
-
-  router.get(
-    "/myrmidon/companies/:companyId/swarm-claim/supervisor/pilot-report",
-    async (req: Request, res: Response, next: NextFunction) => {
-      const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
-      try {
-        const from = typeof req.query.from === "string" ? req.query.from : undefined;
-        const to = typeof req.query.to === "string" ? req.query.to : undefined;
-        const report = await swarmPilotReport(pilotDeps, companyId, from, to);
-        res.json(report);
-      } catch (err) {
-        if (err instanceof SwarmPilotNotEnabledError) {
-          res.status(503).json({ error: err.message, enabled: false });
-          return;
-        }
-        if (err instanceof SwarmPilotWindowError) {
-          res.status(400).json({ error: err.message });
-          return;
-        }
-        next(err);
       }
     },
   );

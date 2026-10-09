@@ -141,6 +141,7 @@ import { myrmidonBotDiskQuotaRoutes } from "./myrmidon/bot-containers/bot-disk-q
 import { myrmidonBotImageRolloutRoutes } from "./myrmidon/bot-containers/bot-image-rollout-routes.js"; // myrmidon(BOT-ROLLOUT)
 import { myrmidonMetricsApp } from "./myrmidon/monitoring/metrics/index.js"; // myrmidon(1.7-METRICS)
 import { swarmClaimApp } from "./myrmidon/swarm-claim/index.js"; // myrmidon(1.6-SWARM)
+import { createCasteDirectoryReader } from "./myrmidon/castes/directory.js"; // myrmidon(1.6.5 OPE-6608)
 // myrmidon(EMERGENCY-STOP): immediate stop of the runs a draining pause left running
 import { myrmidonEmergencyStopRoutes } from "./myrmidon/emergency-stop.js";
 import { myrmidonStackRegistryRoutes } from "./myrmidon/stack-registry/index.js"; // myrmidon(SUA)
@@ -1047,7 +1048,8 @@ export async function createApp(
   api.use(swarmClaimApp({
     db,
     settings: instanceSettingsService(db),
-    enqueueWakeup: undefined, // agent claim wake goes through the board queue admission; heartbeat injects it at runtime
+    enqueueWakeup: undefined, // the explicit pull wakes nobody (the asking agent is awake); the matcher events carry their own wake port
+    castes: createCasteDirectoryReader(db), // myrmidon(1.6.5 OPE-6608): the claim API honours swarmEligible=false and the per-caste ceiling
     env: process.env,
   })); // myrmidon(1.6-SWARM): per-role queues with leased claims
   api.use(myrmidonEmergencyStopRoutes(db)); // myrmidon(EMERGENCY-STOP)

@@ -221,8 +221,10 @@ export async function claimNextTaskForAgent(
     db: ports.db,
     settings: ports.settings,
     castes: ports.castes,
-    // No wake: the agent asking is awake. The matcher's wake port stays empty.
-    enqueueWakeup: undefined,
+    // No wake is sent: the agent asking is awake. The matcher treats a wake that
+    // was not queued as a failed pairing and rolls it back, so the port answers
+    // "accepted" without queueing anything.
+    enqueueWakeup: async () => ({ explicitPull: true }),
     env: ports.env,
     now: () => now,
   });

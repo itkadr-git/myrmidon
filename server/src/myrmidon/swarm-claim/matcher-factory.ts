@@ -47,7 +47,8 @@ export interface SwarmMatcher {
   /**
    * `explicit` is the agent's own pull ("take the next task", the claim API):
    * the agent is running by definition, so its live run does not make it busy,
-   * and nobody is woken — it asked, it is already awake.
+   * and nobody is woken — the caller supplies a wake port that accepts and queues
+   * nothing (it asked, it is already awake).
    */
   forAgent(
     agentId: string,

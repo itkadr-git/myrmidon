@@ -227,7 +227,10 @@ describe("myrmidon(1.6.1 CUSTOM-CASTES B) swarm caste gate", () => {
     );
     expect(mockForAgent).toHaveBeenCalledWith(AGENT_ID, { explicit: true });
     // The asking agent is awake: the matcher gets no wake port.
-    expect(mockBuildMatcher).toHaveBeenCalledWith(expect.objectContaining({ enqueueWakeup: undefined }));
+    // The wake port accepts and queues nothing: the matcher rolls a pairing back
+    // when its wake was "not queued", so a missing port would undo every pull.
+    const builtWith = mockBuildMatcher.mock.calls[0]?.[0] as { enqueueWakeup: () => Promise<unknown> };
+    await expect(builtWith.enqueueWakeup()).resolves.toBeTruthy();
     expect(mockInsertClaim).not.toHaveBeenCalled();
     expect(outcome).toEqual({ claim: insertedClaim, reason: "claimed" });
   });

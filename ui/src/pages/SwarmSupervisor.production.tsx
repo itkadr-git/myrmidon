@@ -6,7 +6,7 @@
 //
 // Tokens only (DESIGN.md): Tailwind palette names, no raw values.
 
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Activity,
@@ -26,18 +26,11 @@ import { useTranslation } from "@/i18n";
 import { useCompany } from "@/context/CompanyContext";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { formatCents, formatDateTime, formatNumber } from "@/lib/utils";
-import type {
-  BaselineMetricRow,
-  BaselineMetricsReport,
-  BaselineSource,
-} from "@/api/baseline";
+import { formatDateTime, formatNumber } from "@/lib/utils";
 import {
-  isSwarmPilotNotEnabled,
+  isSwarmNotEnabled,
   swarmSupervisorApi,
   swarmSupervisorOverviewKey,
-  swarmSupervisorPilotReportKey,
-  type SwarmPilotComparison,
   type SwarmSupervisorClaim,
   type SwarmSupervisorIdleAgent,
   type SwarmSupervisorOverview,
@@ -46,38 +39,6 @@ import {
 } from "@/api/swarmSupervisor";
 
 const NO_COMPANY = "__none__";
-
-/** Roles tab vs the pilot-vs-baseline section. */
-type SwarmSection = "roles" | "pilot";
-
-type PilotPreset = "7d" | "14d" | "30d";
-
-const PILOT_PRESET_ORDER: PilotPreset[] = ["7d", "14d", "30d"];
-
-const PILOT_PRESET_LABEL_KEYS: Record<PilotPreset, string> = {
-  "7d": "swarm.presets.7d",
-  "14d": "swarm.presets.14d",
-  "30d": "swarm.presets.30d",
-};
-
-/** Sliding day presets like the Quality page's; the upper bound is floored to
- *  the current minute so the query key stays stable across re-renders. */
-function computePresetRange(preset: PilotPreset): { from: string; to: string } {
-  const now = new Date();
-  const floored = new Date(now);
-  floored.setSeconds(0, 0);
-  const to = floored.toISOString();
-  const from = new Date(
-    now.getFullYear(),
-    now.getMonth(),
-    now.getDate() - (preset === "7d" ? 7 : preset === "30d" ? 30 : 14),
-    0,
-    0,
-    0,
-    0,
-  ).toISOString();
-  return { from, to };
-}
 
 /** Remaining lease time as a compact countdown; a non-positive value is expired. */
 export function formatCountdown(seconds: number): string {
@@ -99,30 +60,6 @@ export function claimHolderLabel(claim: SwarmSupervisorClaim): string {
 /** A queue row's task handle: identifier when present, else the raw id. */
 export function queueItemLabel(item: SwarmSupervisorQueueItem): string {
   return item.identifier ?? item.issueId;
-}
-
-/** Signed delta for the comparison table; null renders as a dash. */
-export function formatDeltaPercent(delta: number | null): string {
-  if (delta === null || !Number.isFinite(delta)) return "—";
-  const sign = delta > 0 ? "+" : "";
-  return `${sign}${delta.toFixed(1)}%`;
-}
-
-const COSTS_SOURCE_LABEL_KEYS: Record<BaselineSource["costs"], string> = {
-  litellm_cost_events: "swarm.costsSource.litellm",
-  cost_events: "swarm.costsSource.costEvents",
-  none: "swarm.costsSource.none",
-};
-
-const COMPARISON_ROWS: Array<{ key: keyof SwarmPilotComparison; labelKey: string; format: (value: number) => string }> = [
-  { key: "cycleTimeHoursMean", labelKey: "swarm.columns.cycleTimeMean", format: (value) => `${value.toFixed(2)} h` },
-  { key: "returnRate", labelKey: "swarm.columns.returnRate", format: (value) => `${(value * 100).toFixed(0)}%` },
-  { key: "timeInReviewHoursMean", labelKey: "swarm.columns.reviewTimeMean", format: (value) => `${value.toFixed(2)} h` },
-  { key: "costPerTaskMeanCents", labelKey: "swarm.columns.costPerTaskMean", format: (value) => formatCents(value) },
-];
-
-function formatMetric(value: number | null, format: (value: number) => string): string {
-  return value === null || value === undefined ? "—" : format(value);
 }
 
 /** Totals strip: one compact cell per overview total. */
@@ -373,203 +310,6 @@ function RoleSection({
   );
 }
 
-interface SnapshotTableProps {
-  title: string;
-  description: string;
-  report: BaselineMetricsReport | null;
-  emptyMessage: string;
-  testId: string;
-}
-
-function SnapshotTable({ title, description, report, emptyMessage, testId }: SnapshotTableProps) {
-  const { t } = useTranslation();
-  const rows: BaselineMetricRow[] = report?.byProject ?? [];
-  return (
-    <Card data-testid={testId}>
-      <CardHeader className="px-5 pt-5 pb-2">
-        <CardTitle className="text-base">{title}</CardTitle>
-        <CardDescription>{description}</CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-3 px-5 pb-5 pt-2">
-        {report ? (
-          <p className="text-xs text-muted-foreground">
-            {t("swarm.generated", { time: formatDateTime(report.generatedAt) })} ·{" "}
-            {t("swarm.costSourceLine", { source: t(COSTS_SOURCE_LABEL_KEYS[report.source.costs]) })}
-          </p>
-        ) : null}
-        {rows.length === 0 ? (
-          <p className="text-sm text-muted-foreground">{emptyMessage}</p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="border-b border-border bg-accent/20">
-                  <th scope="col" className={HEAD_CELL}>{t("swarm.columns.project")}</th>
-                  <th scope="col" className={HEAD_CELL}>{t("swarm.columns.tasksDone")}</th>
-                  <th scope="col" className={HEAD_CELL}>{t("swarm.columns.cycleTimeMean")}</th>
-                  <th scope="col" className={HEAD_CELL}>{t("swarm.columns.reviewTimeMean")}</th>
-                  <th scope="col" className={HEAD_CELL}>{t("swarm.columns.returnRate")}</th>
-                  <th scope="col" className={HEAD_CELL}>{t("swarm.columns.costPerTaskMean")}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((row) => (
-                  <tr key={row.key ?? "__none__"} className="border-b border-border last:border-b-0">
-                    <td className="px-3 py-2 font-mono">{row.key ?? t("quality.noProject")}</td>
-                    <td className="px-3 py-2 tabular-nums">{formatNumber(row.tasksCompleted)}</td>
-                    <td className="px-3 py-2 tabular-nums">{row.cycleTimeHours.mean.toFixed(2)} h</td>
-                    <td className="px-3 py-2 tabular-nums">{row.timeInReviewHours.mean.toFixed(2)} h</td>
-                    <td className="px-3 py-2 tabular-nums">
-                      {row.returnRate.enteredReview > 0 ? `${(row.returnRate.rate * 100).toFixed(0)}%` : "—"}
-                    </td>
-                    <td className="px-3 py-2 tabular-nums">{formatCents(row.costPerTask.meanCents)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
-interface PilotSectionProps {
-  companyId: string;
-  section: SwarmSection;
-}
-
-function PilotSection({ companyId, section }: PilotSectionProps) {
-  const { t } = useTranslation();
-  const [preset, setPreset] = useState<PilotPreset>("14d");
-  const { from, to } = computePresetRange(preset);
-
-  const { data, isLoading, error } = useQuery({
-    queryKey: swarmSupervisorPilotReportKey(companyId, from, to),
-    queryFn: () => swarmSupervisorApi.pilotReport(companyId, { from, to }),
-    enabled: section === "pilot",
-    staleTime: 30_000,
-  });
-
-  return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-2" data-testid="swarm-pilot-presets">
-        {PILOT_PRESET_ORDER.map((key) => (
-          <Button
-            key={key}
-            variant={preset === key ? "secondary" : "ghost"}
-            size="sm"
-            onClick={() => setPreset(key)}
-            aria-pressed={preset === key}
-          >
-            {t(PILOT_PRESET_LABEL_KEYS[key])}
-          </Button>
-        ))}
-      </div>
-
-      {isLoading ? (
-        <PageSkeleton variant="costs" />
-      ) : error ? (
-        isSwarmPilotNotEnabled(error) ? (
-          <EmptyState
-            icon={Activity}
-            title={t("swarm.pilotDisabled")}
-            message={t("swarm.pilotDisabledMessage")}
-            description={t("swarm.pilotDisabledDescription")}
-          />
-        ) : (
-          <p className="text-sm text-destructive" data-testid="swarm-pilot-error">
-            {(error as Error).message}
-          </p>
-        )
-      ) : !data ? (
-        <EmptyState
-          icon={Activity}
-          title={t("swarm.noPilotReport")}
-          message={t("swarm.noPilotReportMessage")}
-        />
-      ) : (
-        <>
-          <div
-            className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground"
-            data-testid="swarm-pilot-meta"
-          >
-            <span>
-              {data.window
-                ? `${formatDateTime(data.window.from)} – ${formatDateTime(data.window.to)}`
-                : t("swarm.noWindow")}
-            </span>
-            <span>{t("swarm.generated", { time: formatDateTime(data.generatedAt) })}</span>
-          </div>
-
-          <Card data-testid="swarm-pilot-comparison">
-            <CardHeader className="px-5 pt-5 pb-2">
-              <CardTitle className="text-base">{t("swarm.pilotComparisonTitle")}</CardTitle>
-              <CardDescription>
-                {t("swarm.pilotComparisonDescription")}
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="px-5 pb-5 pt-2">
-              <div className="overflow-x-auto">
-                <table className="w-full text-xs">
-                  <thead>
-                    <tr className="border-b border-border bg-accent/20">
-                      <th scope="col" className={HEAD_CELL}>{t("swarm.columns.metric")}</th>
-                      <th scope="col" className={HEAD_CELL}>{t("swarm.columns.pilot")}</th>
-                      <th scope="col" className={HEAD_CELL}>{t("swarm.columns.baseline")}</th>
-                      <th scope="col" className={HEAD_CELL}>{t("swarm.columns.delta")}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {COMPARISON_ROWS.map((row) => {
-                      const metric = data.comparison[row.key];
-                      return (
-                        <tr key={row.key} className="border-b border-border last:border-b-0">
-                          <td className="px-3 py-2">{t(row.labelKey)}</td>
-                          <td className="px-3 py-2 tabular-nums">{formatMetric(metric.pilot, row.format)}</td>
-                          <td className="px-3 py-2 tabular-nums">{formatMetric(metric.baseline, row.format)}</td>
-                          <td className="px-3 py-2 tabular-nums" data-testid={`swarm-delta-${row.key}`}>
-                            {formatDeltaPercent(metric.deltaPercent)}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </CardContent>
-          </Card>
-
-          {data.notes.length > 0 ? (
-            <ul className="list-disc space-y-1 pl-5 text-xs text-muted-foreground" data-testid="swarm-pilot-notes">
-              {data.notes.map((note) => (
-                <li key={note}>{note}</li>
-              ))}
-            </ul>
-          ) : null}
-
-          <div className="grid gap-4 xl:grid-cols-2">
-            <SnapshotTable
-              title={t("swarm.pilotWindow")}
-              description={t("swarm.pilotWindowDescription")}
-              report={data.pilot}
-              emptyMessage={t("swarm.pilotWindowEmpty")}
-              testId="swarm-pilot-snapshot"
-            />
-            <SnapshotTable
-              title={t("swarm.baselineSnapshot")}
-              description={t("swarm.baselineSnapshotDescription")}
-              report={data.baseline}
-              emptyMessage={t("swarm.baselineSnapshotEmpty")}
-              testId="swarm-baseline-snapshot"
-            />
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
 export function SwarmSupervisor() {
   const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
@@ -577,7 +317,6 @@ export function SwarmSupervisor() {
   const queryClient = useQueryClient();
   const companyId = selectedCompanyId ?? NO_COMPANY;
 
-  const [section, setSection] = useState<SwarmSection>("roles");
 
   useEffect(() => {
     setBreadcrumbs([{ label: t("swarm.title") }]);
@@ -615,25 +354,6 @@ export function SwarmSupervisor() {
               {t("swarm.intro")}
             </p>
           </div>
-
-          <div className="flex flex-wrap items-center gap-2" data-testid="swarm-section-switch">
-            <Button
-              variant={section === "roles" ? "secondary" : "ghost"}
-              size="sm"
-              onClick={() => setSection("roles")}
-              aria-pressed={section === "roles"}
-            >
-              {t("swarm.sections.roles")}
-            </Button>
-            <Button
-              variant={section === "pilot" ? "secondary" : "ghost"}
-              size="sm"
-              onClick={() => setSection("pilot")}
-              aria-pressed={section === "pilot"}
-            >
-              {t("swarm.sections.pilot")}
-            </Button>
-          </div>
         </div>
 
         {data ? (
@@ -661,7 +381,7 @@ export function SwarmSupervisor() {
       {isLoading ? (
         <PageSkeleton variant="costs" />
       ) : error ? (
-        isSwarmPilotNotEnabled(error) ? (
+        isSwarmNotEnabled(error) ? (
           <EmptyState
             icon={ShieldCheck}
             title={t("swarm.notAvailable")}
@@ -692,13 +412,13 @@ export function SwarmSupervisor() {
 
           {releaseMutation.isError ? (
             <p className="text-sm text-destructive" data-testid="swarm-release-error">
-              {isSwarmPilotNotEnabled(releaseMutation.error)
+              {isSwarmNotEnabled(releaseMutation.error)
                 ? t("swarm.releaseNotEnabled")
                 : t("swarm.releaseFailed", { message: (releaseMutation.error as Error).message })}
             </p>
           ) : null}
 
-          {section === "roles" ? (
+          {(
             <div className="space-y-4">
               {data.roles.length === 0 ? (
                 <EmptyState
@@ -763,8 +483,6 @@ export function SwarmSupervisor() {
                 </Card>
               ) : null}
             </div>
-          ) : (
-            <PilotSection companyId={companyId} section={section} />
           )}
         </>
       )}

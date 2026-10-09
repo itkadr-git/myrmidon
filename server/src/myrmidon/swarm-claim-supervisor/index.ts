@@ -2,8 +2,8 @@
 //
 // The lead's side of swarm claim: a read-only aggregation of the per-role
 // queues and the leased claims (part A owns the claim machinery), one
-// rebalance action (release a live lease, wake the next agent of the role)
-// and the pilot report measured against the frozen BASELINE snapshot.
+// rebalance action (release a live lease, take the owner off the task and hand
+// it to the board matcher).
 
 import type { Db } from "@paperclipai/db";
 import { logActivity } from "../../services/index.js";
@@ -21,18 +21,7 @@ export {
   SWARM_CLAIM_SUPERVISOR_RELEASE_ACTION,
 } from "./rebalance.js";
 export type { SwarmReleaseLeaseResult, SwarmRebalanceDeps } from "./rebalance.js";
-export {
-  swarmPilotReport,
-  createSwarmPilotDeps,
-  parsePilotWindow,
-  defaultPilotWindow,
-  parseSnapshot,
-  compareMetric,
-  SwarmPilotNotEnabledError,
-  SwarmPilotWindowError,
-} from "./pilot-report.js";
-export type { SwarmPilotReport, SwarmPilotDeps, BaselineMetricsReportJson } from "./pilot-report.js";
-export { readSwarmSupervisorSettings, DEFAULT_SWARM_PILOT_BASELINE_DOC } from "./settings.js";
+export { readSwarmSupervisorSettings } from "./settings.js";
 
 /**
  * Router for app.ts: the supervisor surface under

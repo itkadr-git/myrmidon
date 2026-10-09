@@ -10,10 +10,8 @@ import {
   SwarmSupervisor,
   claimHolderLabel,
   formatCountdown,
-  formatDeltaPercent,
 } from "./SwarmSupervisor";
 import type {
-  SwarmPilotReport,
   SwarmSupervisorClaim,
   SwarmSupervisorOverview,
   SwarmSupervisorRole,
@@ -21,7 +19,6 @@ import type {
 
 const overviewMock = vi.hoisted(() => vi.fn());
 const releaseLeaseMock = vi.hoisted(() => vi.fn());
-const pilotReportMock = vi.hoisted(() => vi.fn());
 const setBreadcrumbsMock = vi.hoisted(() => vi.fn());
 const companyContextMock = vi.hoisted(() => ({ companyId: "company-1" as string | null }));
 
@@ -32,7 +29,6 @@ vi.mock("@/api/swarmSupervisor", async () => {
     swarmSupervisorApi: {
       overview: (...args: unknown[]) => overviewMock(...args),
       releaseLease: (...args: unknown[]) => releaseLeaseMock(...args),
-      pilotReport: (...args: unknown[]) => pilotReportMock(...args),
     },
   };
 });
@@ -142,24 +138,6 @@ function overview(overrides: Partial<SwarmSupervisorOverview> = {}): SwarmSuperv
   };
 }
 
-function pilotReport(overrides: Partial<SwarmPilotReport> = {}): SwarmPilotReport {
-  return {
-    window: { from: "2026-09-18T00:00:00.000Z", to: "2026-10-02T12:00:00.000Z" },
-    enabled: true,
-    generatedAt: "2026-10-02T12:05:00.000Z",
-    pilot: null,
-    baseline: null,
-    comparison: {
-      cycleTimeHoursMean: { pilot: 18, baseline: 20, deltaPercent: -10 },
-      returnRate: { pilot: 0.2, baseline: 0.25, deltaPercent: -20 },
-      timeInReviewHoursMean: { pilot: 4, baseline: 5, deltaPercent: -20 },
-      costPerTaskMeanCents: { pilot: 100, baseline: 120, deltaPercent: -16.7 },
-    },
-    notes: ["Pilot window is shorter than the baseline window."],
-    ...overrides,
-  };
-}
-
 let container: HTMLDivElement;
 let root: Root | null;
 
@@ -197,15 +175,6 @@ async function renderPage() {
   return queryClient;
 }
 
-async function clickButton(label: string) {
-  await act(async () => {
-    const buttons = Array.from(container.querySelectorAll("button")).filter(
-      (button) => button.textContent === label,
-    );
-    (buttons[0] as HTMLButtonElement).click();
-  });
-}
-
 describe("formatters", () => {
   it("formats a remaining lease as a countdown and marks non-positive values expired", () => {
     expect(formatCountdown(3725)).toBe("1 h 2 m");
@@ -215,12 +184,9 @@ describe("formatters", () => {
     expect(formatCountdown(-3)).toBe("expired");
   });
 
-  it("falls back to the agent id when no name is present and signs deltas", () => {
+  it("falls back to the agent id when no name is present", () => {
     expect(claimHolderLabel(claim({ agentName: "" }))).toBe("agent-a");
     expect(claimHolderLabel(claim())).toBe("Agent A");
-    expect(formatDeltaPercent(-10)).toBe("-10.0%");
-    expect(formatDeltaPercent(4.5)).toBe("+4.5%");
-    expect(formatDeltaPercent(null)).toBe("—");
   });
 });
 
@@ -298,21 +264,15 @@ describe("SwarmSupervisor page", () => {
     expect(releaseLeaseMock.mock.calls[0]).toEqual(["company-1", { claimId: "claim-1" }]);
   });
 
-  it("shows the pilot-disabled empty state on a 503-style not-enabled error", async () => {
-    overviewMock.mockResolvedValue(overview());
-    pilotReportMock.mockRejectedValue(new Error("swarm pilot is not enabled"));
+  it("shows the not-available state when the overview answers that the swarm is not enabled", async () => {
+    overviewMock.mockRejectedValue(new Error("swarm claim is not enabled"));
     await renderPage();
     await vi.waitFor(() => {
-      expect(container.querySelector('[data-testid="swarm-role-engineer"]')).not.toBeNull();
+      expect(container.textContent).toContain("not enabled on this instance");
     });
-
-    await clickButton("Pilot vs BASELINE");
-
-    await vi.waitFor(() => {
-      expect(container.textContent).toContain("Swarm pilot is disabled");
-    });
-    expect(container.textContent).toContain("not enabled on this instance");
-    expect(pilotReportMock.mock.calls[0]?.[0]).toBe("company-1");
+    // The retired pilot report has no tab and no request any more.
+    expect(container.querySelector('[data-testid="swarm-section-switch"]')).toBeNull();
+    expect(container.textContent).not.toContain("Pilot vs BASELINE");
   });
 
   it("shows the empty state when the overview has no roles, leases or queue", async () => {
