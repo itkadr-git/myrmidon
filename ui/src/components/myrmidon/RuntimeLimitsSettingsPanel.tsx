@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   describeHostLoad,
+  describeMemorySnapshot,
   describeQueueSnapshot,
   describeRunLimitSource,
   runtimeLimitsApi,
@@ -171,6 +172,9 @@ export function RuntimeLimitsSettingsPanelView({
   // myrmidon(1.6.5 RUN-FAIRNESS): the queue snapshot — admitted runs against
   // the ceiling, the queue length, and the head of the queue.
   const queueLine = describeQueueSnapshot(view?.queue);
+  // myrmidon(1.6.5 C0-ui): the memory snapshot — the host's available memory
+  // and the server container's cgroup usage, next to the queue line.
+  const memoryLine = describeMemorySnapshot(view?.memory);
 
   return (
     <section className="space-y-4" data-testid="myrmidon-runtime-limits">
@@ -234,6 +238,16 @@ export function RuntimeLimitsSettingsPanelView({
               className="text-xs text-muted-foreground md:col-span-2"
             >
               {queueLine}
+            </p>
+          ) : null}
+          {/* myrmidon(1.6.5 C0-ui): the memory snapshot — the host's memory and
+              the server container's cgroup usage, next to the queue line. */}
+          {memoryLine ? (
+            <p
+              data-testid="runtime-limit-memory"
+              className="text-xs text-muted-foreground md:col-span-2"
+            >
+              {memoryLine}
             </p>
           ) : null}
           <div className="md:col-span-2">

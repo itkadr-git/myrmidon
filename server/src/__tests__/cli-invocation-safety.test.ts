@@ -771,7 +771,7 @@ describe("paperclipai CLI invocation safety", () => {
     // can paste the guidance into a shell, and that outer shell evaluates a
     // metacharacter span in the host before any CLI receives argv. A direct-exec
     // form does not stop the outer shell. Emit a static `<host>` placeholder only.
-    expect(source).toContain("run npx paperclipai allowed-hostname <host>");
+    expect(source).toContain("run npx myrmidon allowed-hostname <host>");
     expect(source).not.toContain("allowed-hostname ${hostname}");
     expect(source).not.toContain("pnpm paperclipai allowed-hostname");
     expect(source).not.toContain("pnpm exec paperclipai allowed-hostname");
@@ -781,7 +781,7 @@ describe("paperclipai CLI invocation safety", () => {
     const source = read("server/src/routes/access.ts");
     expect(source).not.toMatch(/pnpm paperclipai allowed-hostname/);
     expect(source).not.toContain("pnpm exec paperclipai allowed-hostname");
-    expect(source).toContain("npx paperclipai allowed-hostname <host>");
+    expect(source).toContain("npx myrmidon allowed-hostname <host>");
     // The onboarding host comes from the request base URL, so a requester
     // controls it. The emitted command must carry a static `<host>` placeholder
     // and never interpolate that value.
@@ -825,7 +825,7 @@ describe("paperclipai CLI invocation safety", () => {
 
   it("emits the onboard hint from the server startup banner", () => {
     const source = read("server/src/startup-banner.ts");
-    expect(source).toContain("npx paperclipai onboard");
+    expect(source).toContain("npx myrmidon onboard");
     expect(source).not.toContain("pnpm paperclipai onboard");
     expect(source).not.toContain("pnpm exec paperclipai onboard");
   });

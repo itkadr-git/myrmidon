@@ -398,6 +398,104 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     ]);
   });
 
+  it("checks the guarded issue status version under the enqueue lock", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({
+      heartbeatConfig: {
+        enabled: true,
+        skipTimerWhenNoActionableWork: true,
+      },
+    });
+    const cases = [
+      { key: "matching", statusVersion: 7, guardVersion: 7 },
+      { key: "stale", statusVersion: 8, guardVersion: 5 },
+      { key: "ahead", statusVersion: 3, guardVersion: 9 },
+      { key: "unversioned", statusVersion: 4, guardVersion: null },
+    ] as const;
+    const issueIds = new Map<string, string>();
+    await db.insert(issues).values(cases.map(({ key, statusVersion }) => {
+      const id = randomUUID();
+      issueIds.set(key, id);
+      return {
+        id,
+        companyId,
+        title: `Guarded delivery ${key}`,
+        status: "todo" as const,
+        priority: "medium" as const,
+        assigneeAgentId: agentId,
+        statusVersion,
+      };
+    }));
+
+    const wake = async (key: (typeof cases)[number]["key"]) => {
+      const testCase = cases.find((entry) => entry.key === key)!;
+      return heartbeat.wakeup(agentId, {
+        source: "timer",
+        triggerDetail: "schedule",
+        payload: { issueId: issueIds.get(key)! },
+        contextSnapshot: { issueId: issueIds.get(key)!, wakeReason: "timer" },
+        issueStateGuard: {
+          statuses: ["todo"],
+          assigneeAgentId: agentId,
+          ...(testCase.guardVersion !== null ? { statusVersion: testCase.guardVersion } : {}),
+        },
+      });
+    };
+
+    const admittedVersionMatch = await wake("matching");
+    const admittedWithoutVersion = await wake("unversioned");
+    const skippedStaleVersion = await wake("stale");
+    const skippedAheadVersion = await wake("ahead");
+
+    expect(admittedVersionMatch).not.toBeNull();
+    expect(admittedWithoutVersion).not.toBeNull();
+    expect(skippedStaleVersion).toBeNull();
+    expect(skippedAheadVersion).toBeNull();
+
+    // The two admitted wakes start real runs that the service loop executes.
+    // Let every run finish here: one still in flight when this test returns
+    // calls the adapter mock while the next test asserts it was never called.
+    let settledPolls = 0;
+    for (let attempt = 0; attempt < 40 && settledPolls < 2; attempt += 1) {
+      const rows = await db
+        .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.companyId, companyId));
+      if (
+        rows.length < 2 ||
+        rows.some((row) => row.status === "queued" || row.status === "running")
+      ) {
+        settledPolls = 0;
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        continue;
+      }
+      for (const row of rows) {
+        await heartbeat.waitForRunExecutionDrain(row.id, { timeoutMs: 10_000 });
+      }
+      settledPolls += 1;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    expect(settledPolls).toBeGreaterThanOrEqual(2);
+
+    const receipts = await db
+      .select({ payload: agentWakeupRequests.payload, reason: agentWakeupRequests.reason })
+      .from(agentWakeupRequests);
+    const skips = receipts
+      .filter((row) => row.reason === "issue_state_guard_mismatch")
+      .map((row) => (row.payload as { heartbeatSkip?: Record<string, unknown> } | null)?.heartbeatSkip);
+
+    expect(skips).toHaveLength(2);
+    expect(skips[0]).toMatchObject({
+      issueId: issueIds.get("stale"),
+      expectedStatusVersion: 5,
+      actualStatusVersion: 8,
+    });
+    expect(skips[1]).toMatchObject({
+      issueId: issueIds.get("ahead"),
+      expectedStatusVersion: 9,
+      actualStatusVersion: 3,
+    });
+  }, 30_000);
+
   it.each([
     { runtimeMode: "native", status: "done", reassigned: false },
     { runtimeMode: "legacy", status: "done", reassigned: false },

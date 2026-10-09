@@ -5760,7 +5760,7 @@ describe("IssueDetail", () => {
     });
   });
 
-  it("keeps the authoritative Paperclip queue mounted after handoff promotion", async () => {
+  it("keeps the authoritative Myrmidon queue mounted after handoff promotion", async () => {
     mockIssuesApi.get.mockResolvedValue(
       createIssue({
         status: "in_progress",

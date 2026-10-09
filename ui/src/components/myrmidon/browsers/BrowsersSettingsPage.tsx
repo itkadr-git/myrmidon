@@ -17,6 +17,7 @@ import {
   egressSummary,
   formatDuration,
 } from "./browsersApi";
+import { bridgeApi, bridgeSettingsQueryKey, type BridgeSettings, type BridgeSigningSettings } from "../connectorPanelApi";
 import type { BrowserConsoleStatus } from "@paperclipai/shared/myrmidon-browser-console";
 import { BrowserScreenPanel } from "./BrowserScreenPanel";
 
@@ -69,6 +70,104 @@ function ClearSiteDataForm({ browser, companyId }: { browser: BrowserConsoleStat
       {cleared && <p className="text-xs text-muted-foreground">Cleared cookies and storage of {cleared}.</p>}
       {error && <p className="text-xs text-destructive" data-testid={`myrmidon-browser-clear-error-${browser.id}`}>{error}</p>}
     </div>
+  );
+}
+
+// myrmidon(SETTINGS-UI C-3): the emergency stop of document signing lives in the
+// connector panel; this block is its counterpart on the browsers page — it shows
+// whether signing is on and turns it back on after a stop, with a confirmation
+// step and the policy that is stored right now.
+function SigningStatusSection({
+  settings,
+  loading,
+  error,
+}: {
+  settings: BridgeSettings | null;
+  loading: boolean;
+  error: string | null;
+}) {
+  const queryClient = useQueryClient();
+  const [confirming, setConfirming] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  const signing: BridgeSigningSettings | null = settings?.signing ?? null;
+
+  const reenableMutation = useMutation({
+    mutationFn: (current: BridgeSigningSettings) => bridgeApi.updateSettings({ signing: { ...current, enabled: true } }),
+    onMutate: () => {
+      setActionError(null);
+    },
+    onSuccess: () => {
+      setConfirming(false);
+      void queryClient.invalidateQueries({ queryKey: bridgeSettingsQueryKey });
+    },
+    onError: (err) => {
+      setConfirming(false);
+      setActionError(readable(err));
+    },
+  });
+
+  return (
+    <section className="space-y-2 rounded-md border border-border px-3 py-3" data-testid="myrmidon-signing">
+      <h2 className="text-sm font-semibold">Document signing</h2>
+      {loading ? (
+        <p className="text-xs text-muted-foreground" data-testid="myrmidon-signing-loading">
+          Loading signing settings...
+        </p>
+      ) : null}
+      {error ? (
+        <p className="text-xs text-destructive" data-testid="myrmidon-signing-read-error">
+          {error}
+        </p>
+      ) : null}
+      {signing ? (
+        <p className="text-xs text-muted-foreground" data-testid="myrmidon-signing-state">
+          {signing.enabled
+            ? "Signing is on. The bridge signs documents under the policy of the connector panel."
+            : "Signing is off after an emergency stop: every sign action is refused until it is turned back on here."}
+        </p>
+      ) : null}
+      {signing && !signing.enabled ? (
+        confirming ? (
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-muted-foreground">Turn signing back on with the stored policy?</span>
+            <Button
+              size="sm"
+              disabled={reenableMutation.isPending}
+              onClick={() => reenableMutation.mutate(signing)}
+              data-testid="myrmidon-signing-reenable-confirm"
+            >
+              {reenableMutation.isPending ? "Re-enabling..." : "Re-enable signing"}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={reenableMutation.isPending}
+              onClick={() => setConfirming(false)}
+              data-testid="myrmidon-signing-reenable-cancel"
+            >
+              Cancel
+            </Button>
+          </div>
+        ) : (
+          <Button
+            size="sm"
+            onClick={() => {
+              setActionError(null);
+              setConfirming(true);
+            }}
+            data-testid="myrmidon-signing-reenable"
+          >
+            Re-enable signing
+          </Button>
+        )
+      ) : null}
+      {actionError ? (
+        <p className="text-xs text-destructive" data-testid="myrmidon-signing-reenable-error">
+          {actionError}
+        </p>
+      ) : null}
+    </section>
   );
 }
 
@@ -126,24 +225,49 @@ export function BrowsersSettingsPageView({
   companyId,
   loading,
   error,
+  signing = null,
+  signingLoading = false,
+  signingError = null,
 }: {
   browsers: BrowserConsoleStatus[];
   journal: Array<{ browserId: string; userId: string; startedAt: string; durationMs: number | null; closedBy: string | null }>;
   companyId: string;
   loading: boolean;
   error: string | null;
+  signing?: BridgeSettings | null;
+  signingLoading?: boolean;
+  signingError?: string | null;
 }) {
-  if (loading) return <p className="text-sm text-muted-foreground">Loading browsers...</p>;
-  if (error) return <p className="text-sm text-destructive">{error}</p>;
+  const signingSection = <SigningStatusSection settings={signing} loading={signingLoading} error={signingError} />;
+  if (loading) {
+    return (
+      <div className="space-y-6">
+        {signingSection}
+        <p className="text-sm text-muted-foreground">Loading browsers...</p>
+      </div>
+    );
+  }
+  if (error) {
+    return (
+      <div className="space-y-6">
+        {signingSection}
+        <p className="text-sm text-destructive">{error}</p>
+      </div>
+    );
+  }
   if (browsers.length === 0) {
     return (
-      <p className="text-sm text-muted-foreground" data-testid="myrmidon-browsers-empty">
-        No browsers are configured on this instance.
-      </p>
+      <div className="space-y-6">
+        {signingSection}
+        <p className="text-sm text-muted-foreground" data-testid="myrmidon-browsers-empty">
+          No browsers are configured on this instance.
+        </p>
+      </div>
     );
   }
   return (
     <div className="space-y-6">
+      {signingSection}
       <ul className="space-y-3">
         {browsers.map((browser) => (
           <BrowserCard key={browser.id} browser={browser} companyId={companyId} />
@@ -188,6 +312,12 @@ export function BrowsersSettingsPage() {
     queryKey: browsersJournalQueryKey,
     queryFn: () => browsersApi.journal(),
   });
+  // myrmidon(SETTINGS-UI C-3): the signing policy the bridge applies now; a
+  // re-enable writes it back through the same PATCH the connector panel uses.
+  const signingQuery = useQuery({
+    queryKey: bridgeSettingsQueryKey,
+    queryFn: () => bridgeApi.getSettings(),
+  });
 
   const browsers = useMemo(() => browsersQuery.data?.browsers ?? [], [browsersQuery.data]);
   const companyId = selectedCompanyId ?? "";
@@ -221,6 +351,9 @@ export function BrowsersSettingsPage() {
         companyId={companyId}
         loading={browsersQuery.isLoading}
         error={browsersQuery.error ? readable(browsersQuery.error) : null}
+        signing={signingQuery.data ?? null}
+        signingLoading={signingQuery.isLoading}
+        signingError={signingQuery.error ? readable(signingQuery.error) : null}
       />
     </div>
   );

@@ -188,6 +188,35 @@ export function Ui2RunsSettings() {
     return `${now}${above} ${verdict}.`;
   })();
 
+  // myrmidon(1.6.5 C0-ui): the memory snapshot — the host's memory and the
+  // server container's cgroup usage, read by the same admission that gates on
+  // them. `null` when the server sent no snapshot (an older server, an early
+  // request, or no cgroup limit to read), so the screen shows nothing rather
+  // than a number it made up.
+  const memoryLine = ((): string | null => {
+    const memory = view.memory;
+    if (!memory || (!memory.host && !memory.container)) return null;
+    const parts: string[] = [];
+    if (memory.host) {
+      parts.push(
+        t("ui2.settings.runs.memory.host", {
+          available: memory.host.availableMb,
+          total: memory.host.totalMb,
+        }),
+      );
+    }
+    if (memory.container) {
+      parts.push(
+        t("ui2.settings.runs.memory.container", {
+          used: memory.container.usedMb,
+          limit: memory.container.limitMb,
+          free: memory.container.freeMb,
+        }),
+      );
+    }
+    return parts.join(" ");
+  })();
+
   // myrmidon(1.6.5 RUN-FAIRNESS): the queue snapshot — admitted runs against
   // the ceiling, the queue length, and the head of the queue. `null` when the
   // server sent no snapshot (an older server, an early request), so the
@@ -355,6 +384,14 @@ export function Ui2RunsSettings() {
             </p>
           ) : null}
         </div>
+      ) : null}
+
+      {/* myrmidon(1.6.5 C0-ui): the memory snapshot — the host's memory and the
+          server container's cgroup usage, next to the queue line. */}
+      {memoryLine ? (
+        <p data-testid="ui2-run-memory" className="text-xs text-muted-foreground">
+          {memoryLine}
+        </p>
       ) : null}
 
       {saveError ? <Ui2ErrorState message={t("ui2.settings.runs.saveError", { reason: saveError })} withCache /> : null}
