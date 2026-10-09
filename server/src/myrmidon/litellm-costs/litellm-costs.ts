@@ -45,6 +45,9 @@ import { heartbeatRuns, litellmCostEvents, litellmModels, type Db } from "@paper
 import { logger } from "../../middleware/logger.js";
 // myrmidon(HERMES-USAGE-COST): the post-sweep pass that fills the vendor ledger.
 import { reconcileUnpricedCostEvents } from "./reconcile.js";
+// myrmidon(1.6.5-F-18): the empty-catalog attention signal the sweep records
+// after every model refresh; the attention feed turns the registry into a card.
+import { recordEmptyCatalogSweep } from "./attention.js";
 
 export const LITELLM_BASE_URL_ENV = "MYRMIDON_LITELLM_BASE_URL";
 export const LITELLM_KEY_SECRET_ENV = "MYRMIDON_LITELLM_KEY_SECRET";
@@ -472,6 +475,10 @@ export async function sweepLitellmCosts(
   } catch (err) {
     log.warn({ err }, "litellm cost sweep: model catalog refresh failed");
   }
+  // myrmidon(1.6.5-F-18): a successful refresh with 0 models means the
+  // accounting key is misconfigured (restricted model list) — record the
+  // operator signal; a failed read (null) proves nothing and changes nothing.
+  recordEmptyCatalogSweep(companyId, modelsRefreshed, to.toISOString());
 
   // myrmidon(HERMES-USAGE-COST): move the gateway's prices into the vendor
   // ledger so the dashboard/Costs screens stop showing unpriced $0 runs.
