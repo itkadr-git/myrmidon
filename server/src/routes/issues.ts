@@ -370,6 +370,9 @@ import {
   queuedCommentIdsFromWakePayload,
   withQueuedCommentIdsInWakePayload,
 } from "../services/issue-queued-comment-queue.js";
+// myrmidon(HANDOFF-CAS): guarded agent-to-agent task handoff mechanics for the
+// PATCH /api/issues/{id} path, ported from vendor paperclipai/paperclip#13686.
+import * as handoffCas from "../myrmidon/handoff-cas.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 // myrmidon(STALE-BLOCK): updateIssueSchema now carries a superRefine; zod
@@ -377,6 +380,19 @@ const MAX_ISSUE_COMMENT_LIMIT = 500;
 // in the shared schema, so the refine is preserved via superRefine here.
 const updateIssueRouteSchema = updateIssueSchema.safeExtend({
   interrupt: z.boolean().optional(),
+  // myrmidon(HANDOFF-CAS): guarded agent-to-agent handoff through the general
+  // PATCH path. When `expectedAssigneeAgentId`/`expectedStatusVersion` are
+  // present and the update changes the assignee, the handoff runs as
+  // compare-and-set: the compare and the commit happen under the row lock, the
+  // old owner's live run must be confirmed stopped before the commit, the
+  // commit writes a `issue.reassigned` receipt, and a failed commit after a
+  // confirmed stop wakes the previous owner back. Requests without these
+  // fields keep the previous behavior. `reason`/`handoffIdempotencyKey` are
+  // only consumed on a guarded handoff and never reach the column patch.
+  expectedAssigneeAgentId: z.string().trim().min(1).nullable().optional(),
+  expectedStatusVersion: z.number().int().nonnegative().optional(),
+  reason: z.string().trim().min(1).max(2000).optional(),
+  handoffIdempotencyKey: z.string().trim().min(1).max(200).optional(),
 });
 const queuedCommentMutationTargetSchema = z.object({
   queueId: z.string().min(1),
@@ -13136,6 +13152,13 @@ export function issueRoutes(
         deferWakeForGoal,
         hiddenAt: hiddenAtRaw,
         onBehalfOfUserId: _requestedOnBehalfOfUserId,
+        // myrmidon(HANDOFF-CAS): the guarded-handoff inputs are consumed by
+        // the route only — destructuring them out here keeps them from
+        // riding `...updateFields` into the service column patch.
+        expectedAssigneeAgentId: handoffExpectedAssigneeAgentId,
+        expectedStatusVersion: handoffExpectedStatusVersion,
+        reason: handoffReason,
+        handoffIdempotencyKey: handoffIdempotencyKeyRaw,
         ...updateFields
       } = req.body;
       if (existing.conversationAgentId && req.actor.type === "board" && commentBody) {
@@ -13701,6 +13724,260 @@ export function issueRoutes(
       const assigneeWillChange =
         nextAssigneeAgentId !== existing.assigneeAgentId ||
         nextAssigneeUserId !== existing.assigneeUserId;
+
+      // myrmidon(HANDOFF-CAS): guarded agent-to-agent handoff, ported from
+      // vendor paperclipai/paperclip#13686. Activates only when the request
+      // carries CAS expectations AND changes the assignee; requests without
+      // the fields keep the previous behavior.
+      const handoffCasRequested =
+        handoffExpectedAssigneeAgentId !== undefined ||
+        handoffExpectedStatusVersion !== undefined;
+      if (
+        handoffCasRequested &&
+        (handoffExpectedAssigneeAgentId === undefined ||
+          handoffExpectedStatusVersion === undefined)
+      ) {
+        throw unprocessable(
+          "A guarded handoff requires both expectedAssigneeAgentId and expectedStatusVersion",
+        );
+      }
+      const handoffGuarded = handoffCasRequested && assigneeWillChange;
+      if (handoffGuarded && deferWakeForGoal === true) {
+        throw unprocessable(
+          "A guarded handoff cannot defer the new owner's wake",
+        );
+      }
+      const handoffCommandId = handoffIdempotencyKeyRaw ?? randomUUID();
+      const handoffExpected = {
+        expectedAssigneeAgentId: handoffExpectedAssigneeAgentId!,
+        expectedStatusVersion: handoffExpectedStatusVersion!,
+      };
+      const handoffFingerprint = handoffCasRequested
+        ? handoffCas.buildHandoffFingerprint({
+            issueId: id,
+            expectedAssigneeAgentId: handoffExpected.expectedAssigneeAgentId,
+            expectedStatusVersion: handoffExpected.expectedStatusVersion,
+            nextAssigneeAgentId,
+            nextAssigneeUserId,
+            reason: handoffReason ?? null,
+          })
+        : "";
+      // Idempotency pre-check outside the lock (no new index or migration —
+      // the query rides the existing company/activity columns, template L4).
+      // It runs before the assignee-change requirement so that a resend of a
+      // completed handoff — whose assignee change no longer applies — still
+      // answers with the stored duplicate receipt instead of mutating or
+      // erroring. A different fingerprint under the same command id is a
+      // conflict.
+      if (handoffCasRequested) {
+        const priorReceipt = await handoffCas.findHandoffReceiptByCommand(db, {
+          companyId: existing.companyId,
+          issueId: id,
+          commandId: handoffCommandId,
+        });
+        if (priorReceipt) {
+          if (priorReceipt.fingerprint !== handoffFingerprint) {
+            throw conflict(
+              "The handoff command id was already used with a different payload",
+              { code: "idempotency_conflict", commandId: handoffCommandId },
+            );
+          }
+          res.status(200).json({
+            id: existing.id,
+            identifier: existing.identifier,
+            changes: {},
+            comment: null,
+            handoffReceipt: { ...priorReceipt, disposition: "duplicate" },
+          });
+          return;
+        }
+        if (!assigneeWillChange) {
+          throw unprocessable(
+            "A guarded handoff requires an assignee change",
+          );
+        }
+      }
+      const handoffNewOwnerWakeKey = handoffGuarded
+        ? handoffCas.handoffNewOwnerWakeKey(handoffCommandId, id)
+        : "";
+      const handoffRollbackWakeKey = handoffGuarded
+        ? handoffCas.handoffRollbackWakeKey(handoffCommandId, id)
+        : "";
+      let handoffStopConfirmed =
+        handoffGuarded && existing.assigneeAgentId === null;
+      let handoffRunStopped = false;
+      let handoffRollbackAttempted = false;
+      let handoffCommitted = false;
+      let handoffStateRevision: number | null = null;
+      let handoffRevisionInTx: number | null = null;
+      let handoffLockedRow: handoffCas.HandoffLockedRow | null = null;
+      const handoffActorType =
+        req.actor.type === "board"
+          ? ("board" as const)
+          : (actor.actorType as "user" | "agent" | "system");
+      const recordHandoffDisposition = (
+        disposition: handoffCas.HandoffReceiptDetails["disposition"],
+        stateRevision: number,
+        extra?: Partial<handoffCas.HandoffReceiptDetails>,
+      ) =>
+        handoffCas.insertHandoffReceipt(db, {
+          companyId: existing.companyId,
+          issueId: id,
+          actorType: handoffActorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId ?? null,
+          runId: actor.runId ?? null,
+          agentApiKeyId: actor.agentApiKeyId ?? null,
+          details: {
+            commandId: handoffCommandId,
+            fingerprint: handoffFingerprint,
+            disposition,
+            stateRevision,
+            scheduledWakeKeys: [],
+            expectedAssigneeAgentId: handoffExpected.expectedAssigneeAgentId,
+            expectedStatusVersion: handoffExpected.expectedStatusVersion,
+            fromAssigneeAgentId: existing.assigneeAgentId,
+            toAssigneeAgentId: nextAssigneeAgentId,
+            reason: handoffReason ?? null,
+            interruptedRunId: null,
+            ...extra,
+          },
+        });
+      // myrmidon(HANDOFF-CAS): guarded rollback — when the previous owner's
+      // run was already stopped under confirmation but the commit phase
+      // failed (thrown error or a rolled-back null result), the previous
+      // owner gets a guarded wake back so their work resumes, and the
+      // rollback lands as an `issue.reassigned` receipt with disposition
+      // `rollback`. Restore errors are aggregated into the receipt and
+      // logged loudly — never swallowed into the original rejection.
+      const runHandoffRollbackIfNeeded = async () => {
+        // Roll back only when the previous owner's live run was actually
+        // stopped under confirmation and the commit did not land. A failure
+        // before the stop (CAS mismatch, validation) leaves the old owner
+        // running — nothing to restore.
+        if (!handoffGuarded || !handoffRunStopped || handoffCommitted) return;
+        if (handoffRollbackAttempted) return;
+        handoffRollbackAttempted = true;
+        const rollbackErrors: string[] = [];
+        const previousOwnerAgentId = existing.assigneeAgentId;
+        if (previousOwnerAgentId) {
+          try {
+            await heartbeat.wakeup(previousOwnerAgentId, {
+              source: "assignment",
+              triggerDetail: "system",
+              reason: "issue_reassignment_rollback",
+              idempotencyKey: handoffRollbackWakeKey,
+              payload: {
+                issueId: id,
+                mutation: "update",
+                handoffRollback: true,
+                handoffCommandId,
+              },
+              requestedByActorType:
+                handoffActorType === "board" ? "system" : handoffActorType,
+              requestedByActorId: actor.actorId,
+              contextSnapshot: {
+                issueId: id,
+                taskId: id,
+                source: "issue.handoff.rollback",
+                handoffRollback: true,
+                // Vendor restoreInterruptedWork guards: previous owner still
+                // holds the issue, status is todo/in_progress, previous
+                // executionRunId unchanged, no pending execution stage. The
+                // rolled-back commit left the version where it was.
+                expectedExecutionRunId: existing.executionRunId ?? null,
+              },
+              issueStateGuard: {
+                statuses: ["todo", "in_progress"],
+                assigneeAgentId: previousOwnerAgentId,
+                statusVersion: existing.statusVersion,
+              },
+            });
+          } catch (rollbackErr) {
+            rollbackErrors.push(
+              rollbackErr instanceof Error
+                ? rollbackErr.message
+                : String(rollbackErr),
+            );
+          }
+        }
+        try {
+          await recordHandoffDisposition(
+            "rollback",
+            existing.statusVersion,
+            {
+              interruptedRunId: interruptedRunId ?? null,
+              ...(rollbackErrors.length > 0
+                ? { rollbackError: rollbackErrors.join("; ") }
+                : {}),
+            },
+          );
+        } catch (receiptErr) {
+          logger.error(
+            { err: receiptErr, issueId: id, commandId: handoffCommandId },
+            "handoff rollback receipt failed to persist",
+          );
+        }
+        if (rollbackErrors.length > 0) {
+          logger.error(
+            { issueId: id, commandId: handoffCommandId, rollbackErrors },
+            "handoff rollback wake could not be delivered; the previous owner needs recovery",
+          );
+        }
+      };
+
+      if (handoffGuarded) {
+        // Forbidden handoff states (vendor parity): a handoff may not strand
+        // a review, a closed issue, a conversation issue, or an issue with a
+        // pending execution stage.
+        const forbiddenReason = handoffCas.handoffForbiddenStateReason({
+          status: existing.status,
+          conversationAgentId: existing.conversationAgentId,
+          pendingExecutionStage:
+            parseIssueExecutionState(existing.executionState)?.status ===
+            "pending",
+        });
+        if (forbiddenReason) {
+          await recordHandoffDisposition(
+            "conflict",
+            existing.statusVersion,
+            { reason: forbiddenReason },
+          ).catch((err) =>
+            logger.warn({ err, issueId: id }, "handoff conflict receipt failed"),
+          );
+          throw conflict(
+            "The issue is in a state that forbids guarded reassignment",
+            { code: "issue_reassignment_conflict", mismatch: forbiddenReason, issueId: id },
+          );
+        }
+        // Cheap pre-lock CAS check; the authoritative compare runs again
+        // under SELECT ... FOR UPDATE inside the commit transaction.
+        const preMismatch = handoffCas.handoffCasMismatch(
+          {
+            assigneeAgentId: existing.assigneeAgentId,
+            assigneeUserId: existing.assigneeUserId,
+            statusVersion: existing.statusVersion,
+          },
+          handoffExpected,
+          { nextAssigneeAgentId, nextAssigneeUserId },
+        );
+        if (preMismatch) {
+          await recordHandoffDisposition(
+            "conflict",
+            existing.statusVersion,
+            { reason: preMismatch },
+          ).catch((err) =>
+            logger.warn({ err, issueId: id }, "handoff conflict receipt failed"),
+          );
+          throw handoffCas.handoffCasConflict(preMismatch, id);
+        }
+        // Vendor demote: a handed-off in_progress task goes back to todo for
+        // the new owner. An explicit caller status always wins.
+        if (existing.status === "in_progress" && updateFields.status === undefined) {
+          updateFields.status = "todo";
+        }
+      }
+
       const isAgentReturningIssueToCreator =
         req.actor.type === "agent" &&
         !!req.actor.agentId &&
@@ -13769,6 +14046,12 @@ export function issueRoutes(
             );
           }
           interruptedRunId = cancelled.id;
+          // myrmidon(HANDOFF-CAS): the confirmed stop releases the commit
+          // fence for the guarded handoff transaction.
+          if (handoffGuarded) {
+            handoffStopConfirmed = true;
+            handoffRunStopped = true;
+          }
 
           // Cancel any deferred executions for the old assignee related to this issue
           if (svc.cancelDeferredExecutionsForAgentOnReassignment) {
@@ -13779,6 +14062,10 @@ export function issueRoutes(
               db
             );
           }
+        } else if (handoffGuarded) {
+          // Nothing was live to stop; the transaction fence still re-checks
+          // for runs that start between this point and the commit.
+          handoffStopConfirmed = true;
         }
       }
 
@@ -14023,17 +14310,74 @@ export function issueRoutes(
         shouldRelayStop ||
         persistReviewActivityTransactionally ||
         reviewPolicySensitiveMutationRequested ||
-        humanUnblockPossible;
+        humanUnblockPossible ||
+        // myrmidon(HANDOFF-CAS): the guarded commit needs the row lock.
+        handoffGuarded;
       try {
         if (shouldUseTransactionalIssueUpdate) {
           issue = await db.transaction(async (tx) => {
+            // myrmidon(HANDOFF-CAS): the authoritative compare — re-read the
+            // row under SELECT ... FOR UPDATE, re-check CAS expectations and
+            // the stopped-run fence (executionRunId unchanged, no live run)
+            // before anything is written.
+            if (handoffGuarded) {
+              const gate = await handoffCas.assertHandoffCommitAllowed(tx, {
+                issueId: id,
+                companyId: existing.companyId,
+                expected: handoffExpected,
+                nextAssigneeAgentId,
+                nextAssigneeUserId,
+                stopConfirmed: handoffStopConfirmed,
+                executionRunIdAtPreparation: existing.executionRunId,
+              });
+              handoffLockedRow = gate.locked;
+            }
             if (
               reviewPolicySensitiveMutationRequested &&
               !(await assertLockedReviewPolicyAllowsMutation(tx))
             )
               return null;
+            if (handoffGuarded && handoffLockedRow) {
+              // statusVersion+1 rides the handoff commit so the new owner and
+              // any guard observe a fresh revision; the bump happens before
+              // the ownership write so the response row and the receipt carry
+              // the same revision (svc.update leaves the column untouched on
+              // non-blocked paths).
+              handoffStateRevision =
+                await handoffCas.bumpHandoffStatusVersion(tx, id);
+              handoffRevisionInTx = handoffStateRevision;
+            }
             const updated = await updateIssue(tx);
             if (!updated) return null;
+            if (handoffGuarded && handoffLockedRow && handoffRevisionInTx !== null) {
+              // The receipt commits in the same transaction as the ownership
+              // write, so a committed handoff always has its receipt.
+              await handoffCas.insertHandoffReceipt(tx, {
+                companyId: existing.companyId,
+                issueId: id,
+                actorType: handoffActorType,
+                actorId: actor.actorId,
+                agentId: actor.agentId ?? null,
+                runId: actor.runId ?? null,
+                agentApiKeyId: actor.agentApiKeyId ?? null,
+                details: {
+                  commandId: handoffCommandId,
+                  fingerprint: handoffFingerprint,
+                  disposition: "applied",
+                  stateRevision: handoffRevisionInTx,
+                  scheduledWakeKeys: [handoffNewOwnerWakeKey],
+                  expectedAssigneeAgentId:
+                    handoffExpected.expectedAssigneeAgentId,
+                  expectedStatusVersion:
+                    handoffExpected.expectedStatusVersion,
+                  fromAssigneeAgentId: handoffLockedRow.assigneeAgentId,
+                  toAssigneeAgentId: nextAssigneeAgentId,
+                  reason: handoffReason ?? null,
+                  interruptedRunId: interruptedRunId ?? null,
+                },
+              });
+              handoffCommitted = true;
+            }
             // myrmidon(HOLD-READY): an explicit human unblock is an operator
             // resolve of the settled "do not replay" hold.
             if (
@@ -14133,9 +14477,16 @@ export function issueRoutes(
             "issue update rejected with 422",
           );
         }
+        // myrmidon(HANDOFF-CAS): a commit-phase failure after the previous
+        // owner's run was stopped under confirmation wakes them back before
+        // the rejection leaves the route. No-op unless a rollback is due.
+        await runHandoffRollbackIfNeeded();
         throw err;
       }
       if (!issue) {
+        // myrmidon(HANDOFF-CAS): a transaction that returned null rolled
+        // everything back — the same rollback duty applies.
+        await runHandoffRollbackIfNeeded();
         res.status(404).json({ error: "Issue not found" });
         return;
       }
@@ -14671,13 +15022,20 @@ export function issueRoutes(
         attachmentComment;
       let goalCommentSteered = false;
       let lostReviewPathRef: string | null = null;
-      if (commentBody) {
+      // myrmidon(HANDOFF-CAS): the handoff reason is recorded in the thread
+      // like an ordinary update comment; without one the caller's own
+      // commentBody still applies.
+      const handoffCommentBody =
+        handoffGuarded && handoffReason && !commentBody
+          ? handoffReason
+          : commentBody;
+      if (handoffCommentBody) {
         const commentReferenceSummaryBefore =
           updateReferenceSummaryAfter ??
           (await issueReferencesSvc.listIssueReferenceSummary(issue.id));
         comment ??= await svc.addComment(
           id,
-          commentBody,
+          handoffCommentBody,
           {
             agentId: actor.agentId ?? undefined,
             userId: actor.actorType === "user" ? actor.actorId : undefined,
@@ -14961,6 +15319,24 @@ export function issueRoutes(
             source: "assignment",
             triggerDetail: "system",
             reason: "issue_assigned",
+            // myrmidon(HANDOFF-CAS): the guarded handoff wake carries a
+            // deterministic idempotency key (safe replays after a failed
+            // delivery enqueue the wake exactly once) and an issue-state
+            // guard so the new owner only wakes while the issue still sits
+            // todo with them at the handoff's own revision (part B landed
+            // the statusVersion clause in the wake guard).
+            ...(handoffGuarded
+              ? {
+                  idempotencyKey: handoffNewOwnerWakeKey,
+                  issueStateGuard: {
+                    statuses: ["todo"],
+                    assigneeAgentId: nextAssigneeAgentId as string,
+                    ...(handoffStateRevision !== null
+                      ? { statusVersion: handoffStateRevision }
+                      : {}),
+                  },
+                }
+              : {}),
             payload: {
               issueId: issue.id,
               ...(comment ? { commentId: comment.id } : {}),
@@ -15339,6 +15715,21 @@ export function issueRoutes(
 
       await queueTaskWatchdogEvaluation(issue, actor.runId);
       const changes = issueResponse.changes ?? {};
+      // myrmidon(HANDOFF-CAS): expose the applied handoff receipt so the
+      // caller can confirm commandId/stateRevision without a second query.
+      const handoffResponse =
+        handoffGuarded && handoffCommitted
+          ? {
+              handoffReceipt: {
+                commandId: handoffCommandId,
+                fingerprint: handoffFingerprint,
+                disposition: "applied",
+                stateRevision: handoffStateRevision,
+                toAssigneeAgentId: nextAssigneeAgentId,
+                scheduledWakeKeys: [handoffNewOwnerWakeKey],
+              },
+            }
+          : {};
       if (prefersMinimalIssueUpdateResponse(req)) {
         res.setHeader("Preference-Applied", "return=minimal");
         res.json({
@@ -15347,10 +15738,11 @@ export function issueRoutes(
           updatedAt: issueResponse.updatedAt,
           changes,
           comment,
+          ...handoffResponse,
         });
         return;
       }
-      res.json({ ...issueResponse, changes, comment });
+      res.json({ ...issueResponse, changes, comment, ...handoffResponse });
     },
   );
 
