@@ -344,6 +344,16 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // myrmidon(1.6.3 PLUGIN-ENTITLEMENT A): the stored verification public key
       // survives every general write (edited on its own settings block).
       ...(parsed.data.pluginEntitlementPublicKey ? { pluginEntitlementPublicKey: parsed.data.pluginEntitlementPublicKey } : {}),
+      // myrmidon(ATTENTION-WINDOW-CACHE): the attention feed's failed-run
+      // horizon (days) and cache TTL (seconds) survive every general write —
+      // without these lines the whitelist drops the keys, a PATCH answers 200
+      // yet stores nothing, and any later write wipes a hand-set value.
+      ...(parsed.data.attentionFailedRunHorizonDays !== undefined
+        ? { attentionFailedRunHorizonDays: parsed.data.attentionFailedRunHorizonDays }
+        : {}),
+      ...(parsed.data.attentionFeedCacheTtlSeconds !== undefined
+        ? { attentionFeedCacheTtlSeconds: parsed.data.attentionFeedCacheTtlSeconds }
+        : {}),
     };
   }
   return {
