@@ -307,6 +307,8 @@ async function sourceIssueId(
     // registry; the source id is the task the sweep unblocked.
     // myrmidon(REVIEW-ROUTING): the review routing signal is also about one task.
     case "review_routing":
+    // myrmidon(OPE-6011): the held-task card's subject is the held task.
+    case "execution_hold":
     case "stale_block": {
       const row = await db
         .select({ id: issues.id })

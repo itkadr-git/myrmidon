@@ -5009,9 +5009,16 @@ describe("daytona native file-sync hooks", () => {
     const outboundCall = plugin.definition.onEnvironmentSyncOut?.(
       syncOutParams({ operationId: "out-active", sourcePath: `${REMOTE_DIR}/out.txt`, targetPath: outboundTarget }),
     );
-    // Let both sync calls register on the activity gate and reach their hung
-    // transfer, so teardown sees a refCount of two.
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    // Both sync calls must register on the activity gate and reach their hung
+    // transfer, so teardown sees a refCount of two. Waiting one timer tick is not
+    // enough: before the outbound call reaches `downloadFiles` it does real host
+    // filesystem work (its temp dir) plus the mocked sandbox round trips, so the
+    // tick can fire while `releaseDownload` is still unassigned. Wait for both
+    // transfer fakes to actually be entered instead.
+    await vi.waitFor(() => {
+      expect(releaseUpload).toBeTypeOf("function");
+      expect(releaseDownload).toBeTypeOf("function");
+    });
 
     const destroyCall = plugin.definition.onEnvironmentDestroyLease?.({
       driverKey: "daytona",
