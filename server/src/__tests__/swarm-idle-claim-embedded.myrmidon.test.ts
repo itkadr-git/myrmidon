@@ -19,7 +19,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { agentWakeupRequests, agents, companies, createDb, issueClaims, issues } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
-import { SWARM_CLAIM_WAKE_REASON } from "@paperclipai/shared";
+import { SWARM_CLAIM_WAKE_REASON, resolveSwarmClaimSettings } from "@paperclipai/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -75,6 +75,14 @@ interface WakeCall {
 }
 
 const NOW = new Date("2026-10-09T12:00:00.000Z");
+
+/**
+ * A complete stored `general.swarmClaim` value, built from the module's own
+ * defaults so it always passes the schema. Normalization is strict: an
+ * incomplete object counts as absent, the default switch is off and the pass
+ * never runs — the trap this fixture exists to avoid.
+ */
+const baseSwarmClaimSettings = resolveSwarmClaimSettings({ env: {} }).settings;
 
 describeEmbeddedPostgres("swarm idle queue claims on the server, then wakes", () => {
   let db!: ReturnType<typeof createDb>;
@@ -174,6 +182,7 @@ describeEmbeddedPostgres("swarm idle queue claims on the server, then wakes", ()
       settings: {
         getGeneral: async () => ({
           swarmClaim: {
+            ...baseSwarmClaimSettings,
             enabled: true,
             idleWakeBatch: settings.idleWakeBatch ?? 5,
           },

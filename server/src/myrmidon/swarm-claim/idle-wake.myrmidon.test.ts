@@ -214,7 +214,33 @@ function fakeDb(companies: string[] = ["company-a"]) {
   const companyChain = {
     where: () => ({ limit: async () => companyRows }),
   };
+  // 1.6.5 (OPE-6608 A): the idle pass writes now — it assigns the task and
+  // writes the lease on the server, then wakes the owner. A fake without the
+  // two write chains throws inside `claimIdleTaskForAgent`, the sweep swallows
+  // it, and every test of this file reads "nobody woke" while the queue is in
+  // fact staffed and the claim did land.
+  const writeRow = {
+    id: "issue-a",
+    companyId: "company-a",
+    issueId: "issue-a",
+    agentId: "agent-a",
+    role: "engineer",
+    runId: null,
+    claimedAt: new Date(0),
+    heartbeatAt: new Date(0),
+    expiresAt: new Date(900_000),
+    releasedAt: null,
+  };
+  const writeChain = {
+    set: () => writeChain,
+    values: () => writeChain,
+    where: () => writeChain,
+    returning: async () => [writeRow],
+    then: (resolve: (rows: unknown[]) => unknown) => resolve([writeRow]),
+  };
   return {
+    update: () => writeChain,
+    insert: () => writeChain,
     select: (_shape: unknown) => ({
       from: (table: unknown) => {
         const isCompanies = Boolean(
