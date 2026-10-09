@@ -7,11 +7,29 @@ import { asc, lt } from "drizzle-orm";
 import { boardProcesses, type Db } from "@paperclipai/db";
 import type { BoardProcessIdentity } from "./domain.js";
 
-/** The pulse's per-tick measurements; null while an observer is unavailable. */
+/** The pulse's per-tick measurements; null while an observer is unavailable.
+ *
+ * `eventLoopLagMs` reaches the column as a WHOLE number of milliseconds: the
+ * observer (`monitorEventLoopDelay` nanosecond percentiles converted to ms)
+ * produces a fraction, `board_processes.event_loop_lag_ms` is `integer` — the
+ * convention of every `*_ms` gauge in this schema — and Postgres answers 22P02
+ * for a fractional value into int4. The pulse reports a failed tick through
+ * `onError` and keeps ticking, so a fraction here would leave the row (and the
+ * whole «Процессы» panel) permanently empty instead of failing loudly. The
+ * store therefore rounds at the boundary, where the value meets the column.
+ */
 export type BoardProcessPulseUpdate = {
   eventLoopLagMs: number | null;
   rssBytes: number | null;
 };
+
+/** Whole milliseconds for `board_processes.event_loop_lag_ms`. A reading that
+ * is not a finite number (NaN/Infinity) is recorded as "no measurement" — it
+ * must not reach an int4 column either. */
+function wholeMilliseconds(value: number | null): number | null {
+  if (value === null || !Number.isFinite(value)) return null;
+  return Math.round(value);
+}
 
 export type BoardProcessRow = {
   bootId: string;
@@ -58,7 +76,7 @@ export function createBoardProcessStore(db: Db): BoardProcessStore {
           startedAt: identity.startedAt,
           lastSeenAt: now,
           apiPort: identity.apiPort,
-          eventLoopLagMs: update.eventLoopLagMs,
+          eventLoopLagMs: wholeMilliseconds(update.eventLoopLagMs),
           rssBytes: update.rssBytes,
         })
         .onConflictDoUpdate({
@@ -71,7 +89,7 @@ export function createBoardProcessStore(db: Db): BoardProcessStore {
             version: identity.version,
             lastSeenAt: now,
             apiPort: identity.apiPort,
-            eventLoopLagMs: update.eventLoopLagMs,
+            eventLoopLagMs: wholeMilliseconds(update.eventLoopLagMs),
             rssBytes: update.rssBytes,
           },
         });

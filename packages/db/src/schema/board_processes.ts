@@ -44,7 +44,12 @@ export const boardProcesses = pgTable(
     lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull(),
     /** HTTP port this process serves, when it serves one. */
     apiPort: integer("api_port"),
-    /** Event loop lag of the pulse window, milliseconds. */
+    /** Event loop lag of the pulse window in WHOLE milliseconds. The pulse
+     * measures a fraction (nanosecond percentiles of `monitorEventLoopDelay`)
+     * and rounds it before writing: this column is int4, like every `*_ms`
+     * gauge here, and Postgres rejects a fraction with 22P02 — a failure the
+     * pulse would swallow, leaving the panel empty (see the store's rounding
+     * boundary). */
     eventLoopLagMs: integer("event_loop_lag_ms"),
     /** Resident set size at the last pulse, bytes. */
     rssBytes: bigint("rss_bytes", { mode: "number" }),
