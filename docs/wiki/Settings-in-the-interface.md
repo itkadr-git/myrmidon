@@ -81,3 +81,12 @@ fails with the reason
 - **Budget enforcement** — signal only, pause with a card to the owner, or
   hard refusal of new runs; set live for the instance
   ([budget-enforcement](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/budget-enforcement.md)).
+
+## Model shown for a gateway run
+
+The run detail on the agent page names the model that actually answered.
+For `hermes_gateway` runs the value comes from a three-step fallback: the
+model the gateway returns in its response, then the LiteLLM `model_group`
+the request was routed to, then the model configured on the launch. Empty
+strings and the sentinel `unknown` are dropped at each step, so the field is
+either a real model name or absent.
