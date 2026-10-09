@@ -18,7 +18,7 @@
 // which is what makes "a deliberately bad rule rolls back within ≤ 2 judge
 // runs" true by construction.
 
-import { type EvalSubjectKind, type EvalTaskScore, isEvalSubjectKind } from "./domain.js";
+import { type EvalSubjectKind, type EvalTaskScore } from "./domain.js";
 import type { EvalRunRecord, EvalsService, EvalTaskRow, RunOutcome } from "./service.js";
 
 /** The lifecycle events that open the gate (architecture §3.5 / §4.2 step 7). */
