@@ -13368,7 +13368,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(stored!.status).toBe("verifying");
     expect(stored!.setup).toMatchObject({ step: "test" });
     expect(stored!.activatedAt).toBeNull();
-    expect(stored!.healthMessage).toBe("Callback verified");
+    expect(stored!.healthMessage).toBe("Test conversation received");
     await expect(service.get(endpoint.id)).resolves.toMatchObject({
       status: "verifying",
       setup: { step: "test" },

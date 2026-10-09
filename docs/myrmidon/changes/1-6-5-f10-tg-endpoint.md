@@ -6,6 +6,7 @@
 
 - A Telegram endpoint that was still in the setup wizard (`status=verifying`, `setup.step` not `complete`) now completes the wizard on its own, without the manual "test" click: the first publication the Telegram API accepts moves `setup.step` to `complete` and the endpoint status to `active` in the same transaction that saves the delivery receipt.
 - The update re-checks the live row (status and runtime generation), so a concurrent reconnect or an already-completed setup makes it a no-op; the endpoint keeps the wizard state when the send fails and completes on the first successful retry.
+- The completion mirrors the manual "test" step exactly (tool connection activated, health `Connected`), and a manual completion request against an already-active Telegram endpoint now returns the endpoint instead of a 409 conflict.
 
 ## changelog-ru
 

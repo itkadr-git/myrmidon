@@ -10192,6 +10192,17 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         if (!record) throw notFound("Chat endpoint not found");
         const endpoint = record.endpoint;
         if (endpoint.status !== "verifying" || endpoint.setup.step !== "test") {
+          // myrmidon(F-10): a Telegram endpoint leaves the wizard on its
+          // first successful delivery, so the manual test step is already
+          // settled. Treat a completion request as a no-op instead of a
+          // conflict; the activation proof was the delivery itself.
+          if (
+            endpoint.provider === "telegram" &&
+            endpoint.status === "active" &&
+            endpoint.setup.step === "complete"
+          ) {
+            return get(endpointId);
+          }
           throw conflict("This connection is not waiting for a setup test", {
             code: "chat_endpoint_not_testing",
           });
@@ -38299,6 +38310,25 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                           eq(chatEndpoints.id, authorizationClaim.endpoint.id),
                           eq(chatEndpoints.status, "verifying"),
                           sql`coalesce((${chatEndpoints.setup}->>'runtimeGeneration')::integer, 0) = ${runtimeGeneration(authorizationClaim.endpoint.setup)}`,
+                        ),
+                      );
+                    // The manual test step also settles the tool connection;
+                    // the delivery-completion path must leave the same shape.
+                    await tx
+                      .update(toolConnections)
+                      .set({
+                        status: "active",
+                        enabled: true,
+                        healthStatus: "healthy",
+                        healthMessage: "Connected",
+                        lastError: null,
+                        healthCheckedAt: committedAt,
+                        updatedAt: committedAt,
+                      })
+                      .where(
+                        eq(
+                          toolConnections.id,
+                          authorizationClaim.endpoint.connectionId,
                         ),
                       );
                   }
