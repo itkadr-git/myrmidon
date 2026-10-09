@@ -1,6 +1,6 @@
 // server/src/myrmidon/litellm-workers/metrics.ts
 //
-// myrmidon(1.6.6 LITELLM-WORKERS A): the arithmetic behind the three live
+// myrmidon(1.6.5 LITELLM-WORKERS A): the arithmetic behind the three live
 // numbers the workers endpoint reports, read from the gateway's own Prometheus
 // exposition (`GET /metrics`).
 //

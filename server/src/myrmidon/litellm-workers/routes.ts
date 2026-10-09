@@ -1,6 +1,6 @@
 // server/src/myrmidon/litellm-workers/routes.ts
 //
-// myrmidon(1.6.6 LITELLM-WORKERS A): the API of the LiteLLM worker count.
+// myrmidon(1.6.5 LITELLM-WORKERS A): the API of the LiteLLM worker count.
 //
 // - GET /api/myrmidon/companies/:companyId/litellm/workers
 //     The target, the pool as it is now, the two ceilings the target must stay

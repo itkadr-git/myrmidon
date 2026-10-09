@@ -1,6 +1,6 @@
 // server/src/myrmidon/litellm-workers/litellm-workers.myrmidon.test.ts
 //
-// myrmidon(1.6.6 LITELLM-WORKERS A): the acceptance criteria of the ticket,
+// myrmidon(1.6.5 LITELLM-WORKERS A): the acceptance criteria of the ticket,
 // without a database, a container or a live gateway.
 //
 // The three ports of the service are faked (settings store, gateway read,
