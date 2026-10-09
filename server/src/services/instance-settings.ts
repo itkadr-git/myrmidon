@@ -712,6 +712,18 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
           normalizeGeneralSettings({ ...storedGeneral, ...patch }),
           operatorDefaults,
         );
+        // OPE-6406: a PATCH rewrites the whole `general` document, so it must
+        // start from the STORED row, not from the normalized whitelist alone.
+        // `normalizeGeneralSettings` shrinks the row to the keys it knows and
+        // materializes schema defaults (`censorUsernameInLogs: false` among
+        // them); without the stored keys underneath, a PATCH of one setting
+        // silently resets `censorUsernameInLogs: true` back to false and drops
+        // any stored key the whitelist does not carry yet. The whitelist keeps
+        // its role as the canonical form of the listed keys on top.
+        const storedRawGeneral =
+          current.general && typeof current.general === "object" && !Array.isArray(current.general)
+            ? (current.general as Record<string, unknown>)
+            : {};
         const now = new Date();
         const rows = await tx
           .update(instanceSettings)
@@ -719,6 +731,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
             // myrmidon(R3): keep maintenance mode state; myrmidon(R5-A): keep deploy job state; myrmidon(R5-B): keep bot canary state; myrmidon(SUA): keep stack registry cache; myrmidon(SEC1): keep the access-hub host registry
             // myrmidon(BROWSER-CONSOLE): same for the browser console sessions/journal key
             general: {
+              ...storedRawGeneral,
               ...nextGeneral,
               ...preserveMaintenanceGeneralKey(current.general), // myrmidon(R3)
               ...preserveDeployJobsGeneralKey(current.general), // myrmidon(R5-A)
