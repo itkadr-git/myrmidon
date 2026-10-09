@@ -81,6 +81,8 @@ export const METRIC_FAMILIES = [
   // myrmidon(1.6.5-PROCS-Q3): the process families — the loop delay, the
   // memory of this process, and the live-event flow (design §1, этап 0).
   "myrmidon_board_event_loop_lag_seconds",
+  // myrmidon(1.6.6 PROCS-0.1): event-loop utilization (design §5.1, этап 0).
+  "myrmidon_board_event_loop_utilization",
   "myrmidon_board_process_rss_bytes",
   "myrmidon_board_heap_bytes",
   "myrmidon_board_live_events_total",
@@ -380,9 +382,9 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
   );
   // myrmidon(1.6.5-PROCS-Q3): the process half rides the same guarded
   // scrape: a throwing source zeroes it (HELP/TYPE render without samples)
-  // and names the five families, never kills the scrape.
+  // and names the six families, never kills the scrape.
   const processSample = await guarded(
-    "myrmidon_board_event_loop_lag_seconds|myrmidon_board_process_rss_bytes|myrmidon_board_heap_bytes|myrmidon_board_live_events_total|myrmidon_board_live_event_bytes_total",
+    "myrmidon_board_event_loop_lag_seconds|myrmidon_board_event_loop_utilization|myrmidon_board_process_rss_bytes|myrmidon_board_heap_bytes|myrmidon_board_live_events_total|myrmidon_board_live_event_bytes_total",
     () => Promise.resolve().then(resolveProcessMetricsSource(deps.processMetrics)),
     null as ProcessMetricsSample | null,
   );
@@ -623,6 +625,18 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
             `myrmidon_board_event_loop_lag_seconds{quantile="0.5"} ${formatSampleValue(proc.eventLoop.p50Seconds)}`,
             `myrmidon_board_event_loop_lag_seconds{quantile="0.99"} ${formatSampleValue(proc.eventLoop.p99Seconds)}`,
             `myrmidon_board_event_loop_lag_seconds{quantile="1"} ${formatSampleValue(proc.eventLoop.maxSeconds)}`,
+          ]
+        : [],
+    ),
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_board_event_loop_utilization",
+      "Share of the event loop window the board process was busy (0..1) since the previous scrape.",
+      "gauge",
+      proc && proc.eventLoopUtilization
+        ? [
+            `myrmidon_board_event_loop_utilization ${formatSampleValue(proc.eventLoopUtilization.utilization)}`,
           ]
         : [],
     ),
