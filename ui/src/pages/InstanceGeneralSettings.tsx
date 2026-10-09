@@ -44,7 +44,7 @@ import { ForagingSettingsPanel } from "@/components/myrmidon/ForagingSettingsPan
 import { AboutSettingsPanel } from "@/components/myrmidon/AboutSettingsPanel"; // myrmidon(ABOUT)
 import { DeployJobsPanel } from "@/components/myrmidon/DeployJobsPanel"; // myrmidon(R5-A)
 // myrmidon(1.6.6 PROCS-1.7 B): the leader-lease block of the "Процессы" panel.
-// PROCS-0.1 (OPE-6416) owns that panel; until it lands this block is mounted
+// The PROCS-0.1 panel owns that slot; until it lands this block is mounted
 // here, and moving it inside the panel is one import plus one line.
 import { BoardLeasesPanel } from "@/components/myrmidon/BoardLeasesPanel";
 import { PluginEntitlementSettings } from "@/components/myrmidon/PluginEntitlementSettingsPanel"; // myrmidon(PLUGIN-ENTITLEMENT C)
