@@ -2308,6 +2308,7 @@ function StreamlinedIssuesList({
                                 defaultProjectWorkspaceIdByProjectId,
                               })}
                               onFilterWorkspace={filterToWorkspace}
+                              onUpdateIssue={onUpdateIssue}
                               assigneeName={agentName(issue.assigneeAgentId)}
                               assigneeUserName={assigneeUserLabel}
                               assigneeUserAvatarUrl={assigneeUserProfile?.image ?? null}

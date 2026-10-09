@@ -99,6 +99,8 @@ import {
   issueCommentPresentationSchema,
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
+  resolveSwarmClaimSettings,
+  pheromoneStrengthForPriority,
 } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { isForeignKeyViolation } from "../db-errors.js";
@@ -142,6 +144,7 @@ import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText } from "../redaction.js";
 // myrmidon(S5): mask secret values in agent comments
 import { maskSecretsInText } from "../myrmidon/secret-masking.js";
+import { createCasteStore } from "../myrmidon/castes/store.js";
 import {
   resolveIssueGoalId,
   resolveNextIssueGoalId,
@@ -6400,6 +6403,45 @@ async function countBlockedInboxIssues(
 export function issueService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
   const treeControlSvc = issueTreeControlService(db);
+  const casteStore = createCasteStore({ db });
+
+  // 1.6.5 (F-27 rework 09.10): a caste key the caller names must exist in the
+  // company's caste directory (design §2.1). NULL clears to the project/company
+  // default — only a non-null key is validated.
+  async function assertCasteKeyExists(
+    companyId: string,
+    casteKey: string | null | undefined,
+    runner?: Db,
+  ) {
+    if (casteKey == null) return;
+    // `runner` is the caller's transaction when it has one: a lookup on the
+    // pool from inside a transaction needs a second connection and can
+    // deadlock a drained pool.
+    const row = await (runner ? createCasteStore({ db: runner }) : casteStore).findCaste(companyId, casteKey);
+    if (!row) {
+      throw unprocessable(`caste "${casteKey}" does not exist in this company`, {
+        code: "issue_caste_unknown",
+      });
+    }
+  }
+
+  // 1.6.5 (F-27 PHEROMONE): the strength a new task starts with when the
+  // caller did not set one — the swarm settings map `priority` to a number
+  // (the critical/high/medium/low fields of the `pheromone` key of swarmClaim,
+  // edited in the swarm settings UI). Unknown
+  // priorities read as `medium`, matching the schema default.
+  async function defaultPheromoneStrengthForPriority(
+    priority: string,
+    runner?: Db,
+  ): Promise<number> {
+    const raw = (await (runner ? instanceSettingsService(runner) : instanceSettings).getGeneral()) as unknown as Record<string, unknown> | null;
+    const stored = raw && typeof raw === "object" ? (raw as { swarmClaim?: unknown }).swarmClaim : undefined;
+    const resolved = resolveSwarmClaimSettings({
+      env: process.env,
+      stored: stored && typeof stored === "object" ? stored : null,
+    });
+    return pheromoneStrengthForPriority(resolved.settings.pheromone, priority);
+  }
 
   function normalizeCreateIssueTitle(title: string) {
     return title.trim().replace(/\s+/g, " ").toLowerCase();
@@ -7876,7 +7918,10 @@ export function issueService(db: Db) {
             ? baseQuery
             : baseQuery.limit(limit);
       const rows = (await pageQuery).map((row) => ({
-        ...row,
+        // 1.6.5 (F-27 PHEROMONE): a Partial-bounded pageQuery map loses the
+        // drizzle row type; the shape stays the full issues row + a decoded
+        // description, so narrow it back for withIssueLabels.
+        ...(row as typeof row & IssueRow),
         description: decodeDatabaseTextPreview(
           row.description,
           ISSUE_LIST_DESCRIPTION_MAX_CHARS,
@@ -9577,6 +9622,15 @@ export function issueService(db: Db) {
       ) {
         throw unprocessable("in_progress issues require an assignee");
       }
+      // 1.6.5 (F-27): the settings read and the caste lookup run on the pool
+      // BEFORE the transaction opens. Inside it they would need a second
+      // connection while the transaction holds one — concurrent creates then
+      // exhaust the pool and deadlock (issue-watchdogs-routes timed out on it).
+      const defaultPheromoneStrength =
+        issueData.pheromoneStrength == null
+          ? await defaultPheromoneStrengthForPriority(issueData.priority ?? "medium")
+          : undefined;
+      await assertCasteKeyExists(companyId, issueData.casteKey);
       const persist = async (tx: DbTransaction) => {
         await assertExecutionTaskParent(tx as unknown as Db, companyId, issueData.parentId);
         if (issueData.conversationAgentId && issueData.conversationUserId) {
@@ -9929,6 +9983,17 @@ export function issueService(db: Db) {
           ...(issueData.description
             ? { description: maskSecretsInText(issueData.description) }
             : {}),
+          // 1.6.5 (F-27 PHEROMONE): an explicit strength wins; otherwise the
+          // task starts with the strength the swarm settings map its priority
+          // to (swarmClaim.pheromone). Setting the number here — the
+          // single write point — keeps board, agent and import creates
+          // consistent without each path re-reading the settings.
+          ...(defaultPheromoneStrength !== undefined
+            ? { pheromoneStrength: defaultPheromoneStrength }
+            : {}),
+          // 1.6.5 (F-27 rework 09.10): the caste key — validated against the
+          // company's directory just below; a null clears to the defaults.
+          ...(issueData.casteKey !== undefined ? { casteKey: issueData.casteKey } : {}),
           originRunId: issueData.originRunId ?? actorRunId ?? null,
           responsibleUserId,
           requestDepth: clampIssueRequestDepth(issueData.requestDepth),
@@ -10418,6 +10483,11 @@ export function issueService(db: Db) {
       if (data.parentId !== undefined && data.parentId !== existing.parentId) {
         await assertExecutionTaskParent(dbOrTx, existing.companyId, data.parentId);
       }
+      // 1.6.5 (F-27 rework 09.10): validate a changed caste against the
+      // company's directory (design §2.1); null clears to the defaults.
+      if (data.casteKey !== undefined && data.casteKey !== existing.casteKey) {
+        await assertCasteKeyExists(existing.companyId, data.casteKey, dbOrTx as Db);
+      }
       if (existing.conversationAgentId) {
         if ((data.assigneeAgentId !== undefined && data.assigneeAgentId !== existing.conversationAgentId)
           || data.assigneeUserId || data.conversationAgentId !== undefined || data.conversationUserId !== undefined
@@ -10520,6 +10590,15 @@ export function issueService(db: Db) {
       }
       if (issueData.requestDepth !== undefined) {
         patch.requestDepth = clampIssueRequestDepth(issueData.requestDepth);
+      }
+      // 1.6.5 (F-27 PHEROMONE): an explicit null resets the strength to the
+      // priority default (the same mapping the create path uses), so a client
+      // can "clear" the manual strength without knowing the mapping.
+      if (issueData.pheromoneStrength === null) {
+        patch.pheromoneStrength = await defaultPheromoneStrengthForPriority(
+          (issueData.priority as string | undefined) ?? existing.priority,
+          dbOrTx as Db,
+        );
       }
 
       const nextAssigneeAgentId =

@@ -30,6 +30,10 @@ import {
   swarmActiveTaskLimitReached,
   swarmLeaseExpiresAt,
   swarmPriorityRank,
+  DEFAULT_PHEROMONE_DYNAMICS,
+  effectivePheromone,
+  pheromoneDynamicsOf,
+  pheromoneStrengthForPriority,
 } from "./myrmidon-swarm-claim.js";
 
 describe("swarm claim settings", () => {
@@ -158,22 +162,204 @@ describe("swarm queue order", () => {
   });
 
   // 1.6.1 (SWARM-SETTINGS-UI): the P0 preemption is a setting, not a constant.
-  it("with p0Preemption off the queue is strictly oldest-first", () => {
+  it("with p0Preemption off the queue orders by strength, then age", () => {
     const ordered = orderSwarmQueueCandidates(
       [
-        { issueId: "old-low", priority: "low", queuedAt: "2026-10-02T07:00:00Z" },
-        { issueId: "new-critical", priority: "critical", queuedAt: "2026-10-02T11:00:00Z" },
-        { issueId: "mid-high", priority: "high", queuedAt: "2026-10-02T09:00:00Z" },
+        { issueId: "old-low", priority: "low", queuedAt: "2026-10-02T07:00:00Z", pheromoneStrength: 10 },
+        { issueId: "new-critical", priority: "critical", queuedAt: "2026-10-02T11:00:00Z", pheromoneStrength: 90 },
+        { issueId: "mid-high", priority: "high", queuedAt: "2026-10-02T09:00:00Z", pheromoneStrength: 50 },
       ],
       { p0Preemption: false },
     );
-    expect(ordered.map((c) => c.issueId)).toEqual(["old-low", "mid-high", "new-critical"]);
+    expect(ordered.map((c) => c.issueId)).toEqual(["new-critical", "mid-high", "old-low"]);
     // Default keeps the 1.6 order: the critical task is the top.
     const defaulted = orderSwarmQueueCandidates([
       { issueId: "a", priority: "low", queuedAt: "2026-10-02T07:00:00Z" },
       { issueId: "b", priority: "critical", queuedAt: "2026-10-02T11:00:00Z" },
     ]);
     expect(defaulted.map((c) => c.issueId)).toEqual(["b", "a"]);
+  });
+
+  // 1.6.5 (F-27 PHEROMONE): the strength ranks inside the P0 band.
+  it("orders by pheromone strength inside the same priority band", () => {
+    const ordered = orderSwarmQueueCandidates([
+      { issueId: "weak", priority: "medium", queuedAt: "2026-10-02T07:00:00Z", pheromoneStrength: 10 },
+      { issueId: "strong", priority: "medium", queuedAt: "2026-10-02T11:00:00Z", pheromoneStrength: 90 },
+      { issueId: "unscented", priority: "medium", queuedAt: "2026-10-02T06:00:00Z" },
+    ]);
+    expect(ordered.map((c) => c.issueId)).toEqual(["strong", "weak", "unscented"]);
+  });
+
+  it("a critical task with no strength still preempts a strong medium task", () => {
+    const ordered = orderSwarmQueueCandidates([
+      { issueId: "strong-medium", priority: "medium", queuedAt: "2026-10-02T07:00:00Z", pheromoneStrength: 500 },
+      { issueId: "plain-p0", priority: "critical", queuedAt: "2026-10-02T11:00:00Z" },
+    ]);
+    expect(ordered.map((c) => c.issueId)).toEqual(["plain-p0", "strong-medium"]);
+  });
+
+  it("a strength tie falls to the older queue entry", () => {
+    const ordered = orderSwarmQueueCandidates([
+      { issueId: "newer", priority: "high", queuedAt: "2026-10-02T11:00:00Z", pheromoneStrength: 40 },
+      { issueId: "older", priority: "high", queuedAt: "2026-10-02T07:00:00Z", pheromoneStrength: 40 },
+    ]);
+    expect(ordered.map((c) => c.issueId)).toEqual(["older", "newer"]);
+  });
+});
+
+// 1.6.5 (F-27 rework 09.10, design §2.3): the effective strength — the stored
+// pheromone plus the aging (capped), minus the penalty per failed run without
+// a task change. The queue, the idle wake and the supervisor all rank by it.
+describe("effectivePheromone", () => {
+  const NOW = new Date("2026-10-09T12:00:00.000Z");
+  const HOURS = 3_600_000;
+
+  it("no wait and no failures: the effective strength is the stored strength", () => {
+    expect(
+      effectivePheromone({ pheromoneStrength: 10, queuedAt: NOW }, DEFAULT_PHEROMONE_DYNAMICS, NOW),
+    ).toBe(10);
+  });
+
+  it("ages one step per agingStepHours of waiting, capped by agingCap", () => {
+    // 3 days = 3 steps of the 24-hour default.
+    expect(
+      effectivePheromone(
+        { pheromoneStrength: 10, queuedAt: new Date(NOW.getTime() - 72 * HOURS) },
+        DEFAULT_PHEROMONE_DYNAMICS,
+        NOW,
+      ),
+    ).toBe(13);
+    // Past the cap the wait stops paying: 10 days = 10 steps, capped at 5.
+    expect(
+      effectivePheromone(
+        { pheromoneStrength: 10, queuedAt: new Date(NOW.getTime() - 240 * HOURS) },
+        DEFAULT_PHEROMONE_DYNAMICS,
+        NOW,
+      ),
+    ).toBe(15);
+    // The knobs are settings, not constants.
+    expect(
+      effectivePheromone(
+        { pheromoneStrength: 10, queuedAt: new Date(NOW.getTime() - 48 * HOURS) },
+        { agingStepHours: 12, agingStep: 2, agingCap: 100, failPenalty: 10 },
+        NOW,
+      ),
+    ).toBe(18);
+  });
+
+  it("a failed run without a task change costs failPenalty; two cost twice", () => {
+    expect(
+      effectivePheromone(
+        { pheromoneStrength: 30, queuedAt: NOW, failedRunsSinceLastChange: 1 },
+        DEFAULT_PHEROMONE_DYNAMICS,
+        NOW,
+      ),
+    ).toBe(20);
+    expect(
+      effectivePheromone(
+        { pheromoneStrength: 30, queuedAt: NOW, failedRunsSinceLastChange: 2 },
+        DEFAULT_PHEROMONE_DYNAMICS,
+        NOW,
+      ),
+    ).toBe(10);
+    // The penalty may not drag the effective strength below zero.
+    expect(
+      effectivePheromone(
+        { pheromoneStrength: 5, queuedAt: NOW, failedRunsSinceLastChange: 3 },
+        DEFAULT_PHEROMONE_DYNAMICS,
+        NOW,
+      ),
+    ).toBe(0);
+  });
+
+  it("aging and the penalty compose: an old task with failures nets both", () => {
+    // 2 days waiting (+2), one failure (−10): 10 + 2 − 10 = 2.
+    expect(
+      effectivePheromone(
+        {
+          pheromoneStrength: 10,
+          queuedAt: new Date(NOW.getTime() - 48 * HOURS),
+          failedRunsSinceLastChange: 1,
+        },
+        DEFAULT_PHEROMONE_DYNAMICS,
+        NOW,
+      ),
+    ).toBe(2);
+  });
+
+  // Acceptance: a task waiting 3 days overtakes a fresh one with strength +2.
+  it("acceptance: 3 days of aging overtakes a fresh task with strength +2", () => {
+    const oldTask = {
+      pheromoneStrength: 10,
+      queuedAt: new Date(NOW.getTime() - 72 * HOURS),
+    };
+    const freshTask = { pheromoneStrength: 12, queuedAt: NOW };
+    expect(
+      effectivePheromone(oldTask, DEFAULT_PHEROMONE_DYNAMICS, NOW),
+    ).toBeGreaterThan(effectivePheromone(freshTask, DEFAULT_PHEROMONE_DYNAMICS, NOW));
+    // …and the queue ordering takes the overtaking: the old task is the top.
+    const ordered = orderSwarmQueueCandidates(
+      [
+        { issueId: "fresh", priority: "medium", queuedAt: NOW, pheromoneStrength: 12 },
+        { issueId: "old", priority: "medium", queuedAt: oldTask.queuedAt, pheromoneStrength: 10 },
+      ],
+      { p0Preemption: false, dynamics: DEFAULT_PHEROMONE_DYNAMICS, now: NOW },
+    );
+    expect(ordered.map((c) => c.issueId)).toEqual(["old", "fresh"]);
+  });
+
+  // Acceptance: after 2 failed runs without changes a task drops below an
+  // otherwise equal one.
+  it("acceptance: two failures without a change drop a task below an equal one", () => {
+    const ordered = orderSwarmQueueCandidates(
+      [
+        { issueId: "failed", priority: "medium", queuedAt: NOW, pheromoneStrength: 10, failedRunsSinceLastChange: 2 },
+        { issueId: "clean", priority: "medium", queuedAt: NOW, pheromoneStrength: 10 },
+      ],
+      { p0Preemption: false, dynamics: DEFAULT_PHEROMONE_DYNAMICS, now: NOW },
+    );
+    expect(ordered.map((c) => c.issueId)).toEqual(["clean", "failed"]);
+  });
+
+  // The knobs come from the one `pheromone` settings key; absent = the design default.
+  it("reads the dynamics and the priority seeds from the pheromone settings key", () => {
+    expect(pheromoneDynamicsOf({})).toEqual(DEFAULT_PHEROMONE_DYNAMICS);
+    expect(pheromoneDynamicsOf(undefined)).toEqual(DEFAULT_PHEROMONE_DYNAMICS);
+    expect(pheromoneDynamicsOf({ agingCap: 9, failPenalty: 3 })).toEqual({
+      ...DEFAULT_PHEROMONE_DYNAMICS,
+      agingCap: 9,
+      failPenalty: 3,
+    });
+    expect(pheromoneStrengthForPriority({}, "high")).toBe(30);
+    expect(pheromoneStrengthForPriority({ high: 77 }, "HIGH")).toBe(77);
+    // An unknown priority reads as medium.
+    expect(pheromoneStrengthForPriority({ medium: 12 }, "none")).toBe(12);
+    expect(pheromoneStrengthForPriority(null, null)).toBe(10);
+  });
+
+  // Acceptance: a strong fresh task stands ahead of old weak ones.
+  it("acceptance: a strong fresh task is ahead of old weak ones", () => {
+    const ordered = orderSwarmQueueCandidates(
+      [
+        { issueId: "old-weak-1", priority: "medium", queuedAt: new Date(NOW.getTime() - 96 * HOURS), pheromoneStrength: 10 },
+        { issueId: "old-weak-2", priority: "medium", queuedAt: new Date(NOW.getTime() - 200 * HOURS), pheromoneStrength: 10 },
+        { issueId: "fresh-strong", priority: "medium", queuedAt: NOW, pheromoneStrength: 100 },
+      ],
+      { dynamics: DEFAULT_PHEROMONE_DYNAMICS, now: NOW },
+    );
+    expect(ordered.map((c) => c.issueId)).toEqual(["fresh-strong", "old-weak-2", "old-weak-1"]);
+  });
+
+  // Equal effective strength and age: the id makes the order total.
+  it("ties on strength and age fall to the issue id", () => {
+    const ordered = orderSwarmQueueCandidates(
+      [
+        { issueId: "b", priority: "medium", queuedAt: NOW, pheromoneStrength: 10 },
+        { issueId: "a", priority: "medium", queuedAt: NOW, pheromoneStrength: 10 },
+      ],
+      { now: NOW },
+    );
+    expect(ordered.map((c) => c.issueId)).toEqual(["a", "b"]);
   });
 });
 

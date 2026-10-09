@@ -199,11 +199,23 @@ export interface SwarmQueueCandidate {
   issueId: string;
   identifier?: string | null;
   priority: string | null;
+  /**
+   * 1.6.5 (F-27 PHEROMONE): numeric pheromone strength of the task; the higher
+   * the value, the earlier the task ranks inside its P0 band. Rows fetched
+   * before the column landed (or callers that do not carry it yet) read as 0.
+   */
+  pheromoneStrength?: number | null;
+  /**
+   * 1.6.5 (F-27 rework 09.10): runs that ended failed/blocked/needs_followup/
+   * timed_out with no task change after them — the evaporation count of the
+   * effective strength (design §2.3). Fed by the SQL twin; absent reads as 0.
+   */
+  failedRunsSinceLastChange?: number | null;
   /** Tie-break: the older the task entered the queue, the earlier it ranks. */
   queuedAt: Date | number | string | null;
 }
 
-function queuedAtMs(value: SwarmQueueCandidate["queuedAt"]): number {
+function queuedAtMsValue(value: Date | number | string | null | undefined): number {
   if (value === null || value === undefined) return 0;
   if (value instanceof Date) return value.getTime();
   if (typeof value === "number") return value;
@@ -211,29 +223,43 @@ function queuedAtMs(value: SwarmQueueCandidate["queuedAt"]): number {
   return Number.isNaN(parsed) ? 0 : parsed;
 }
 
+function queuedAtMs(value: SwarmQueueCandidate["queuedAt"]): number {
+  return queuedAtMsValue(value);
+}
+
 /**
- * The queue order: highest priority first (a `critical` task is the top of the
- * queue), oldest entry into the queue breaks ties. This is the single order the
- * core picks in and the supervisor view renders, so "the top of the queue" means
- * the same thing in both.
+ * The queue order (owner 09.10: "the more pheromone, the higher the priority
+ * of the task"): a `critical` (P0) task preempts the whole queue; inside its
+ * band the higher EFFECTIVE pheromone strength wins (`effectivePheromone`:
+ * strength + aging − failure penalty); the oldest entry into the queue breaks
+ * ties, and the issue id makes the order total. This is the single order the
+ * core picks in, the F-26 board-side matching reads and the supervisor view
+ * renders, so "the top of the queue" means the same thing everywhere.
  *
  * 1.6.1 (SWARM-SETTINGS-UI): `p0Preemption` off demotes the priority rank to a
- * tie-break-only signal — the queue becomes strictly oldest-first, so a critical
- * task no longer jumps it. Passing the setting is optional so every existing
- * call site (the supervisor view included) keeps the 1.6 order by default.
+ * tie-break-only signal — the queue orders by effective strength, then age, so
+ * a critical task no longer jumps it. `dynamics` are the aging/penalty knobs of
+ * the `pheromone` settings (`pheromoneDynamicsOf`); absent = the design defaults.
  */
 export function orderSwarmQueueCandidates<T extends SwarmQueueCandidate>(
   candidates: readonly T[],
-  options?: { p0Preemption?: boolean },
+  options?: { p0Preemption?: boolean; dynamics?: PheromoneDynamicsSettings; now?: Date | number },
 ): T[] {
   const p0Preemption = options?.p0Preemption ?? true;
+  const dynamics = options?.dynamics ?? DEFAULT_PHEROMONE_DYNAMICS;
+  const now = options?.now ?? new Date();
   return [...candidates].sort((left, right) => {
     if (p0Preemption) {
       const leftRank = swarmPriorityRank(left.priority);
       const rightRank = swarmPriorityRank(right.priority);
       if (leftRank !== rightRank) return leftRank - rightRank;
     }
-    return queuedAtMs(left.queuedAt) - queuedAtMs(right.queuedAt);
+    const strengthDelta =
+      effectivePheromone(right, dynamics, now) - effectivePheromone(left, dynamics, now);
+    if (strengthDelta !== 0) return strengthDelta;
+    const ageDelta = queuedAtMs(left.queuedAt) - queuedAtMs(right.queuedAt);
+    if (ageDelta !== 0) return ageDelta;
+    return left.issueId < right.issueId ? -1 : left.issueId > right.issueId ? 1 : 0;
   });
 }
 
@@ -356,6 +382,113 @@ export const pheromoneSchema = z
   })
   .partial()
   .strict();
+
+/**
+ * 1.6.5 (F-27 PHEROMONE): bounds of the numeric strength a task carries
+ * (`issues.pheromone_strength`).
+ */
+export const MIN_PHEROMONE_STRENGTH = 0;
+export const MAX_PHEROMONE_STRENGTH = 1_000_000;
+
+/**
+ * 1.6.5 (F-27 rework 09.10, design §2.3): the knobs of the *effective*
+ * pheromone strength — read from the single `pheromone` settings key (T4), an
+ * absent field is the design default (`PHEROMONE_FIELD_DEFAULTS`). A task
+ * waiting unclaimed gathers strength (`agingStep` per `agingStepHours`, capped
+ * at `agingCap`); each failed run without a change to the task evaporates
+ * `failPenalty`; the effective value never drops below 0.
+ */
+export interface PheromoneDynamicsSettings {
+  agingStepHours: number;
+  agingStep: number;
+  agingCap: number;
+  failPenalty: number;
+}
+
+export const DEFAULT_PHEROMONE_DYNAMICS: PheromoneDynamicsSettings = {
+  agingStepHours: PHEROMONE_FIELD_DEFAULTS.agingStepHours,
+  agingStep: PHEROMONE_FIELD_DEFAULTS.agingStep,
+  agingCap: PHEROMONE_FIELD_DEFAULTS.agingCap,
+  failPenalty: PHEROMONE_FIELD_DEFAULTS.failPenalty,
+};
+
+/** Dynamics from the (partial) stored `pheromone` subset; absent = default. */
+export function pheromoneDynamicsOf(
+  pheromone: Partial<Record<PheromoneNumberKey, number>> | null | undefined,
+): PheromoneDynamicsSettings {
+  const pick = (key: keyof PheromoneDynamicsSettings) => {
+    const value = pheromone?.[key];
+    return typeof value === "number" && Number.isFinite(value) ? value : PHEROMONE_FIELD_DEFAULTS[key];
+  };
+  return {
+    agingStepHours: pick("agingStepHours"),
+    agingStep: pick("agingStep"),
+    agingCap: pick("agingCap"),
+    failPenalty: pick("failPenalty"),
+  };
+}
+
+/**
+ * The strength a new task of `priority` starts with — the `critical`/`high`/
+ * `medium`/`low` fields of the `pheromone` subset. An unknown priority reads as
+ * `medium`, matching the schema default.
+ */
+export function pheromoneStrengthForPriority(
+  pheromone: Partial<Record<PheromoneNumberKey, number>> | null | undefined,
+  priority: string | null | undefined,
+): number {
+  const key = (priority ?? "medium").toLowerCase();
+  const field: PheromoneNumberKey =
+    key === "critical" || key === "high" || key === "medium" || key === "low" ? key : "medium";
+  const value = pheromone?.[field];
+  return typeof value === "number" && Number.isFinite(value) ? value : PHEROMONE_FIELD_DEFAULTS[field];
+}
+
+/**
+ * The effective pheromone strength of a task at `now` (design §2.3):
+ *   eff = strength
+ *       + min(agingCap, floor(hoursWaiting / agingStepHours) × agingStep)
+ *       − failPenalty × failedRunsSinceLastChange
+ * never below 0. `queuedAt` is when the wait started;
+ * `failedRunsSinceLastChange` is the count of runs that ended failed/blocked/
+ * needs_followup/timed_out with no task change after them (the SQL twin
+ * computes it from heartbeat_runs and the task's change trail). Pure and
+ * deterministic — the queue, the run-priority scorer and the card hint must
+ * agree on it.
+ */
+export interface EffectivePheromoneInput {
+  pheromoneStrength?: number | null;
+  queuedAt?: Date | number | string | null;
+  failedRunsSinceLastChange?: number | null;
+}
+
+export function effectivePheromone(
+  input: EffectivePheromoneInput,
+  dynamics: PheromoneDynamicsSettings = DEFAULT_PHEROMONE_DYNAMICS,
+  now: Date | number = new Date(),
+): number {
+  const strength =
+    typeof input.pheromoneStrength === "number" && Number.isFinite(input.pheromoneStrength)
+      ? input.pheromoneStrength
+      : 0;
+  const queuedAt = queuedAtMsValue(input.queuedAt);
+  const nowMs = now instanceof Date ? now.getTime() : now;
+  let agingBonus = 0;
+  if (dynamics.agingStepHours > 0 && dynamics.agingStep > 0 && queuedAt > 0) {
+    const hoursWaiting = Math.max(0, nowMs - queuedAt) / 3_600_000;
+    agingBonus = Math.min(
+      dynamics.agingCap,
+      Math.floor(hoursWaiting / dynamics.agingStepHours) * dynamics.agingStep,
+    );
+  }
+  const failedRuns =
+    typeof input.failedRunsSinceLastChange === "number" &&
+    Number.isFinite(input.failedRunsSinceLastChange)
+      ? Math.max(0, Math.floor(input.failedRunsSinceLastChange))
+      : 0;
+  const penalty = dynamics.failPenalty * failedRuns;
+  return Math.max(0, strength + agingBonus - penalty);
+}
 
 function dropRetiredSwarmKeys(raw: unknown): unknown {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return raw;
