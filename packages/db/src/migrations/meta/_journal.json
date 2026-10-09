@@ -2236,17 +2236,10 @@
       "breakpoints": true
     },
     {
-      "idx": 382,
+      "idx": 384,
       "version": "7",
-      "when": 1791500382000,
-      "tag": "0382_issues_pheromone_strength",
-      "breakpoints": true
-    },
-    {
-      "idx": 383,
-      "version": "7",
-      "when": 1791528256161,
-      "tag": "0383_issues_caste_key_and_pheromone_backfill",
+      "when": 1791500384000,
+      "tag": "0384_agent_castes_default_and_nests",
       "breakpoints": true
     }
   ]
