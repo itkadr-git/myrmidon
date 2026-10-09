@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { and, eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agents,
@@ -34,6 +34,19 @@ if (!embeddedPostgresSupport.supported) {
     }`,
   );
 }
+
+// Only dispatch is replaced: entering blocked with an agent owner wakes that
+// agent, and this fixture must not launch a real run.
+vi.mock("../services/heartbeat.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/heartbeat.js")>();
+  return {
+    ...actual,
+    heartbeatService: (...args: Parameters<typeof actual.heartbeatService>) => ({
+      ...actual.heartbeatService(...args),
+      wakeup: async () => null,
+    }),
+  };
+});
 
 const MAX_RETURNS_ENV = "MYRMIDON_BLOCKED_LOOP_MAX_RETURNS";
 
