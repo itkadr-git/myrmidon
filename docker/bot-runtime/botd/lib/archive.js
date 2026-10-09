@@ -13,7 +13,16 @@
 // `archive()` returns `{ ok: true, entry }` only after the bundle passed
 // `git bundle verify` and the tar was listed back; otherwise `{ ok: false,
 // reason }`, every file it wrote is removed and the manifest is untouched. The
-// caller (botd) must NOT delete the copy unless it got ok:true.
+// caller (botd) must NOT delete the copy unless it got ok:true. When `git bundle
+// create` fails for a reason other than "empty bundle" (a damaged repository, a
+// hung git), the whole directory — `.git` and untracked files included — goes
+// into one fallback `<base>.full.tar.zst`; a verified fallback tar allows the
+// removal and the manifest entry is marked `incompleteBundle: true`.
+//
+// Idempotent by policy (a directory cleaned up by an earlier pass or by hand is
+// already what the caller wanted): verifyEntry on an archive whose files are all
+// gone returns ok with detail "already gone", and retain drops manifest entries
+// whose files already vanished instead of failing the pass.
 //
 // Plain Node (no dependencies), synchronous: one botd process, one copy at a time.
 
@@ -100,7 +109,8 @@ function writeManifest(archiveRoot, manifest) {
 }
 
 function entryFiles(entry) {
-  return [entry.bundle, entry.patch, entry.untrackedTar, entry.dirTar].filter((f) => typeof f === "string" && f);
+  // fullTar: the fallback archive of the whole directory (bundle could not be made)
+  return [entry.bundle, entry.patch, entry.untrackedTar, entry.dirTar, entry.fullTar].filter((f) => typeof f === "string" && f);
 }
 
 function sizeOf(file) {
@@ -198,8 +208,41 @@ export function archive(copyPath, key, opts = {}) {
     let hasBundle = created.status === 0;
     if (!hasBundle) {
       // "empty bundle": nothing beyond origin. Anything else is a real failure.
-      if (!/empty bundle/i.test(created.stderr)) throw new Error(`bundle create failed: ${created.stderr.trim().slice(0, 300)}`);
-      fs.rmSync(bundle, { force: true });
+      if (/empty bundle/i.test(created.stderr)) {
+        fs.rmSync(bundle, { force: true });
+      } else {
+        // Fallback when git itself failed (not "no commits ahead"): the whole directory —
+        // .git, patch inputs and untracked files included — into one zstd tar. A tar that
+        // lists back is a complete copy of the directory, so it clears the removal; the
+        // manifest entry is marked `incompleteBundle: true` (restoring it needs the tar,
+        // not `git bundle unbundle`). If even the tar cannot be written or verified,
+        // nothing is deleted: the original failure returns as ok:false.
+        const bundleErr = `bundle create failed: ${created.stderr.trim().slice(0, 300)}`;
+        fs.rmSync(bundle, { force: true });
+        const fullTar = `${base}.full.tar.zst`;
+        try {
+          run("tar", ["-cf", fullTar, "--zstd", "-C", copyPath, "."]);
+          run("tar", ["-tf", fullTar]);
+        } catch (e) {
+          fs.rmSync(fullTar, { force: true });
+          throw new Error(`${bundleErr}; fallback tar failed: ${e instanceof Error ? e.message : String(e)}`.slice(0, 500));
+        }
+        written.push(fullTar);
+        const fbRepo = opts.repo || repoFromUrl(run(git, ["-C", copyPath, "remote", "get-url", "origin"], { allowFail: true }).stdout);
+        const fbEntry = {
+          key,
+          ...(fbRepo ? { repo: fbRepo } : {}),
+          fullTar,
+          createdAt: now.toISOString(),
+          sizeBytes: sizeOf(fullTar),
+          truncatedUntracked: false,
+          incompleteBundle: true,
+        };
+        const fbManifest = readManifest(archiveRoot, now);
+        fbManifest.archives.push(fbEntry);
+        writeManifest(archiveRoot, fbManifest);
+        return { ok: true, entry: fbEntry };
+      }
     }
 
     // 2. patch: tracked changes, staged and unstaged, against HEAD.
@@ -293,7 +336,11 @@ export function archiveTree(dirPath, key, opts = {}) {
  */
 export function verifyEntry(entry, opts = {}) {
   try {
-    for (const f of entryFiles(entry)) if (!fs.existsSync(f)) return { ok: false, reason: `${f} is missing` };
+    const files = entryFiles(entry);
+    // Idempotent: an archive whose files are ALL gone was already cleaned up —
+    // that is the end state the caller wanted, not an error.
+    if (files.length > 0 && files.every((f) => !fs.existsSync(f))) return { ok: true, detail: "already gone" };
+    for (const f of files) if (!fs.existsSync(f)) return { ok: false, reason: `${f} is missing` };
     if (entry.bundle) {
       if (!opts.repoPath) return { ok: false, reason: "repoPath is required to verify a bundle" };
       verifyBundle(gitBin(opts), opts.repoPath, entry.bundle, path.dirname(entry.bundle));
@@ -334,6 +381,9 @@ export function retain(archiveRoot, opts = {}) {
 
     let alive = [];
     for (const entry of manifest.archives) {
+      // ENOENT = done: an entry whose files are all gone is what cleanup already
+      // achieved — drop it from the manifest silently (no error, no removed row).
+      // Quota maths covers every entry file, including the fallback `fullTar`.
       if (!entry || !entry.createdAt || entryFiles(entry).every((f) => !fs.existsSync(f))) continue; // nothing left on disk
       const age = now.getTime() - Date.parse(entry.createdAt);
       if (age > maxAge && !keep.has(entry.createdAt)) drop(entry, "age");

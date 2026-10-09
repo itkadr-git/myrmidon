@@ -8,6 +8,8 @@
 //   lib/rules.js    (H3b)  plan(inventory, desired, now, settings)
 //   lib/classify.js (H3d)  classifyAll(), toReportParts()
 //   lib/archive.js  (H3c)  optional: archive(path, key) before a scratch removal
+//   lib/remove.js   (F13)  guardedRemove: ENOENT = done, EACCES/EPERM = deferred
+//   lib/cache.js    (F13)  attention (one signal per path) + cooldown (the rule rhythm)
 // Without desired.js nothing is ever removed (fail-safe), only reported.
 //
 // Usage: botd                  loop; the delay is the board's nextReportSec (300 s), +SIGUSR1
@@ -48,6 +50,8 @@ const DISK_STATE_PATH = path.join(HOME, "disk-state.json");
 const REGISTRY_PATH = path.join(HOME, "ws-registry.json");
 const BASE_DIR = path.join(HOME, "git-base");
 const ARCHIVE_DIR = path.join(HOME, "archive");
+const ATTENTION_PATH = path.join(HOME, "botd-attention.json");
+const COOLDOWN_PATH = path.join(HOME, "botd-cooldown.json");
 const SCRATCH_ROOTS = ["/scratch", "/data/hermes/cache/scratch"];
 const WS_BIN = process.env.MYRMIDON_WS_BIN || "myr-ws";
 const GIT_BIN = process.env.MYRMIDON_BOTD_GIT || "git";
@@ -90,9 +94,12 @@ function inside(root, p) {
   const rel = path.relative(root, p);
   return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
 }
-
-/** Removes `p` only when it is a real (non-link) entry strictly inside one of the roots. */
-function guardedRemove(p, roots) {
+// guardedRemove lives in lib/remove.js (imported as ESM in main): ENOENT returns
+// "already gone", EACCES/EPERM throws with `deferred: "foreign-uid"` and removes
+// nothing. The old inline removal is only the never-reachable stand-in while the
+// import is pending; every removal runs after main() has bound the real one.
+let guardedRemove = fallbackGuardedRemove;
+function fallbackGuardedRemove(p, roots) {
   const abs = path.resolve(p);
   if (!roots.some((r) => inside(path.resolve(r), abs))) throw new Error("path is outside the allowed roots");
   if (fs.lstatSync(abs).isSymbolicLink()) throw new Error("refusing to remove a symlink");
@@ -173,7 +180,7 @@ function listArchives() {
 }
 
 async function main() {
-  const [desiredMod, rulesMod, classifyMod, archiveMod, loopMod, reportMod, legacyMod, runsMod] = await Promise.all([
+  const [desiredMod, rulesMod, classifyMod, archiveMod, loopMod, reportMod, legacyMod, runsMod, removeMod, cacheMod] = await Promise.all([
     tryImport("desired.js"),
     tryImport("rules.js"),
     tryImport("classify.js"),
@@ -182,7 +189,16 @@ async function main() {
     import(path.join(__dirname, "lib", "report.js")),
     import(path.join(__dirname, "lib", "legacy.js")),
     import(path.join(__dirname, "lib", "runs.js")),
+    import(path.join(__dirname, "lib", "remove.js")),
+    import(path.join(__dirname, "lib", "cache.js")),
   ]);
+  guardedRemove = (p, roots) => removeMod.guardedRemove(p, roots);
+  // One attention signal per path per TTL (botd-attention.json); the uid of the
+  // owner that blocks us goes into the text. chown is never attempted here.
+  const attention = cacheMod.createAttention(ATTENTION_PATH, { log });
+  // The rhythm of the rules: one op on one path no more than once per TTL
+  // (botd-cooldown.json); a repeat within the window is skipped without a log line.
+  const cooldown = cacheMod.createCooldown(COOLDOWN_PATH);
   const runProbe = runsMod.createRunProbe({ proc: process });
 
   const desiredClient = desiredMod ? desiredMod.createDesiredClient({ log }) : null;
@@ -246,6 +262,21 @@ async function main() {
 
   const isWorkspace = (p) => inside("/workspace", path.resolve(p));
   const roots = ["/workspace", ...SCRATCH_ROOTS];
+  // One wrapper for every removal: guardedRemove itself, plus the policy around it —
+  // a deferred path (EACCES/EPERM, a foreign owner) stays exactly where it is, gets ONE
+  // attention line per path per TTL (uid of the owner in the text; chown is never tried)
+  // and is handed to the loop as `{ deferred }` — a skip, not an error, not a log spam.
+  const removePath = (p, roots) => {
+    try {
+      return guardedRemove(p, roots);
+    } catch (err) {
+      if (err && err.deferred === "foreign-uid") {
+        attention.signal(p, { reason: `${err.code} foreign-uid`, uid: err.uid });
+        return { deferred: err.deferred, detail: err.message };
+      }
+      throw err;
+    }
+  };
   const owned = (p) => legacyMod.inRegistry((readJson(REGISTRY_PATH, { entries: [] }).entries) || [], p);
   // A path under /workspace that the registry does not list (an old clone, a task directory
   // from before myr-ws): `myr-ws close` would fail with "no open copy", so archive it here.
@@ -253,7 +284,7 @@ async function main() {
     legacyMod.archiveThenRemove(a, {
       archiveMod,
       isGit: (p) => fs.existsSync(path.join(p, ".git")),
-      remove: (p) => guardedRemove(p, roots),
+      remove: (p) => removePath(p, roots),
       archiveRoot: ARCHIVE_DIR,
       nestedGit: legacyMod.findNestedGit,
     });
@@ -271,13 +302,12 @@ async function main() {
         return legacyMod.archiveThenRemove(a, {
           archiveMod,
           isGit: (p) => fs.existsSync(path.join(p, ".git")),
-          remove: (p) => guardedRemove(p, SCRATCH_ROOTS),
+          remove: (p) => removePath(p, SCRATCH_ROOTS),
           archiveRoot: ARCHIVE_DIR,
           nestedGit: legacyMod.findNestedGit,
         });
       }
-      guardedRemove(a.path, SCRATCH_ROOTS);
-      return "removed";
+      return removePath(a.path, SCRATCH_ROOTS);
     },
     "archive-remove": async (a) => {
       if (isWorkspace(a.path)) {
@@ -288,7 +318,7 @@ async function main() {
       return legacyMod.archiveThenRemove(a, {
         archiveMod,
         isGit: (p) => fs.existsSync(path.join(p, ".git")),
-        remove: (p) => guardedRemove(p, SCRATCH_ROOTS),
+        remove: (p) => removePath(p, SCRATCH_ROOTS),
         archiveRoot: ARCHIVE_DIR,
         nestedGit: legacyMod.findNestedGit,
       });
@@ -297,14 +327,8 @@ async function main() {
       for (const b of listBases()) await run(GIT_BIN, ["--git-dir", b.path, "worktree", "prune"]);
       return "worktree prune";
     },
-    "delete-base": async (a) => {
-      guardedRemove(a.path, [BASE_DIR]);
-      return "removed";
-    },
-    "delete-archive": async (a) => {
-      guardedRemove(a.path, [ARCHIVE_DIR]);
-      return "removed";
-    },
+    "delete-base": async (a) => removePath(a.path, [BASE_DIR]),
+    "delete-archive": async (a) => removePath(a.path, [ARCHIVE_DIR]),
   };
 
   const loop = loopMod.createLoop({
@@ -312,6 +336,7 @@ async function main() {
     rules,
     gather,
     executor,
+    cooldown,
     report: { build: reportMod.buildReport, send: reporter.send },
     writeDiskState,
     log,

@@ -124,6 +124,7 @@ export function archiveThenRemove(a, deps) {
     if (typeof archiveMod.archiveTree !== "function") throw new Error("archive-incomplete: archive module cannot archive a directory tree: not removed");
     check("directory tree", archiveMod.archiveTree(a.path, key, opts));
   }
-  remove(a.path);
+  const res = remove(a.path);
+  if (res && res.deferred) return { deferred: res.deferred, detail: res.detail };
   return nested.length > 0 ? `archived (${nested.length} nested repositories), removed` : "archived, removed";
 }
