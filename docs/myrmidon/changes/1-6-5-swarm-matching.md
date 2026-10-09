@@ -1,5 +1,5 @@
 ---
-divergence-section: 1.6.5 — SWARM-SELFORG: доска сама сопоставляет задачу со свободным агентом по запаху
+divergence-section: 1.6 — очереди задач по ролям с leased claims (SWARM-CLAIM, часть A — ядро)
 ---
 
 ## divergence
@@ -47,7 +47,7 @@ removed — set values are ignored. User page:
 
 ## settings-ru-new
 
-<!-- after: 1.6 — CTO-CHAT B (планировщик чата доски: текст владельца -> предлагаемый эпик) -->
+<!-- after: Настройки в записи агента (не переменные окружения) -->
 
 ### 1.6.5 — Самоорганизация (рой)
 
