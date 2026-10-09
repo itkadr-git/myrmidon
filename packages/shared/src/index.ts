@@ -2845,6 +2845,9 @@ export * from "./myrmidon-litellm-sync.js";
 // myrmidon(1.6-SWARM): per-role task queues with leased claims — the shared
 // contract of the core queue, the supervisor view and the pilot settings.
 export * from "./myrmidon-swarm-claim.js";
+// myrmidon(1.6.5 F-26 T10 SCENT): task/agent scent contract (scentScore,
+// pickAgentForTask, general.swarm.scent settings)
+export * from "./myrmidon-scent.js";
 export * from "./myrmidon-swarm.js";
 export * from "./myrmidon-swarm-wake.js"; // myrmidon(1.6.5 F-26 T5): wake guard settings + cooling
 // myrmidon(1.6.5-DBC1): the datastore-care retention settings contract
@@ -2911,6 +2914,7 @@ export * from "./myrmidon-review-rework.js";
 export * from "./myrmidon-budget-projection.js"; // myrmidon(1.7-BUDGET-CONFIG-C)
 // myrmidon(CUSTOM-CASTES): the company caste directory contract (view, POST/PATCH/DELETE bodies, seed).
 export * from "./myrmidon-castes.js";
+export * from "./myrmidon-agent-nests.js";
 // myrmidon(1.6.1-FORAGING-LIMITS-UI): the enable switch, pass tuning and spend
 // limits of the foraging sweep — shared by the server, the settings page and
 // the settings validator.
