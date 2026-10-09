@@ -114,7 +114,7 @@ export const DISTILL_SYSTEM_PROMPT = [
   "common sections; drop them as noise instead of proposing.",
   'Answer ONLY a JSON array: [{"class":"...","body":"...","rationale":"...",',
   '"section":"glossary|releases|how-made|general","slug":"existing-slug-or-null",',
-  '"evidence":["OPE-123", ...]}]. Max 15 entries.',
+  '"evidence":["<issue identifier>", ...]}]. Max 15 entries.',
 ].join("\n");
 
 export function buildDistillUserPrompt(tasks: Array<{ identifier: string; title: string; description: string | null; finalComments: string[]; documents: Array<{ key: string; title: string | null }> ; projectName: string | null }>): string {
