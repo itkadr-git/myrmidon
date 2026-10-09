@@ -279,14 +279,14 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // myrmidon(BOT-LSP-DEFAULTS): the stored language-server policy survives
       // every general write (it is edited on its own settings panel).
       ...(parsed.data.botLsp ? { botLsp: parsed.data.botLsp } : {}),
-      // myrmidon(1.6-SWARM): the stored swarm-claim pilot settings survive
-      // every general write (they are edited on their own settings page).
-      // 1.6.1: without this line the vendor write path silently dropped the
-      // key, so the stored value never roundtripped and the pilot could only
-      // ever come from the environment.
+      // myrmidon(1.6-SWARM): the stored swarm settings survive every general
+      // write (they are edited on their own settings page). Without these
+      // lines the vendor write path silently dropped the key, so the stored
+      // value never roundtripped. `swarmClaim` is the pre-1.6.5 key.
+      ...(parsed.data.swarm ? { swarm: parsed.data.swarm } : {}),
       ...(parsed.data.swarmClaim ? { swarmClaim: parsed.data.swarmClaim } : {}),
-      // myrmidon(1.6.1 SWARM-SETTINGS-UI): the change journal of the swarm-claim
-      // pilot settings survives every general write (one atomic write carries the
+      // myrmidon(1.6.1 SWARM-SETTINGS-UI): the change journal of the swarm
+      // settings survives every general write (one atomic write carries the
       // settings and the journal entry together).
       ...(parsed.data.swarmClaimJournal ? { swarmClaimJournal: parsed.data.swarmClaimJournal } : {}),
       // myrmidon(REVIEW-REWORK): the stored review-return loop settings survive

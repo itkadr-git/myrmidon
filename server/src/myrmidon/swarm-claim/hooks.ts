@@ -15,6 +15,7 @@ import { heartbeatRuns, type Db } from "@paperclipai/db";
 import {
   SWARM_CLAIM_RELEASED_ACTION,
   SWARM_CLAIM_RELEASE_REASON_RUN_FINISHED,
+  readStoredSwarmSettings,
   resolveSwarmClaimSettings,
 } from "@paperclipai/shared";
 import { planClaim } from "./domain.js";
@@ -30,7 +31,9 @@ interface HookDeps {
 function resolved(deps: HookDeps) {
   return async () =>
     resolveSwarmClaimSettings({
-      stored: ((await deps.settings.getGeneral()) as unknown as Record<string, unknown> | undefined)?.swarmClaim,
+      stored: readStoredSwarmSettings(
+        (await deps.settings.getGeneral()) as unknown as Record<string, unknown> | undefined,
+      ),
       env: process.env,
     });
 }
@@ -52,7 +55,7 @@ export async function recordSwarmClaimOnCheckoutImpl(
 ): Promise<boolean> {
   const { settings } = await resolved(deps)();
   if (!settings.enabled) return false;
-  // 1.6.5 (OPE-6608, review item 5): the pilot set is gone. One switch for the
+  // 1.6.5 (OPE-6608, review item 5): there is no pilot set. One switch for the
   // whole instance; a caste keeps its agents out of the queue through the
   // directory, not through a company list nobody maintains.
 

@@ -1,6 +1,6 @@
 // Swarm settings (myrmidon 1.6.1, SWARM-SETTINGS-UI; 1.6.5 OPE-6608): the
-// "Role queues (SWARM-CLAIM)" section of Instance → General. The master
-// switch, the scope, the lease TTL, the
+// "Self-organisation (swarm)" section of Instance → General. The one switch
+// (who takes part is decided by the caste directory, not here), the lease TTL, the
 // per-agent ceiling, the sweep interval and the P0 preemption, each with its
 // origin (saved here, environment override, default). Saving writes the
 // instance settings row; the server re-reads it on every claim, checkout and
@@ -14,8 +14,6 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ShieldCheck } from "lucide-react";
 import {
-  MAX_SWARM_IDLE_WAKE_BATCH,
-  MIN_SWARM_IDLE_WAKE_BATCH,
   type SwarmClaimSettingsPatch,
   type SwarmClaimSettingSource,
 } from "@paperclipai/shared";
@@ -35,13 +33,10 @@ interface DraftParse {
   errors: Partial<Record<string, string>>;
 }
 
-const NUMBER_FIELDHints = {
+const NUMBER_FIELD_HINTS = {
   leaseTtlSec: "How long one lease lives without a heartbeat, in seconds (60–86400).",
   maxActiveTasks: "Ceiling of live claims per agent; empty = no ceiling.",
   sweepIntervalSec: "How often the expired-lease sweep runs, in seconds (minimum 5).",
-  // 1.6.5 (OPE-6608 D): the idle pass used to cap its wakes at the compiled
-  // default of 5 with an environment variable as the only way out.
-  idleWakeBatch: "Stored for compatibility: the idle-wake batch pass was retired in 1.6.5 (the board pairs every ready task itself).",
 } as const;
 
 /**
@@ -52,7 +47,6 @@ export function parseSwarmClaimDraft(draft: {
   leaseTtlSec: string;
   maxActiveTasks: string;
   sweepIntervalSec: string;
-  idleWakeBatch: string;
 }): Pick<DraftParse, "patch" | "errors"> {
   const errors: Partial<Record<string, string>> = {};
 
@@ -79,12 +73,6 @@ export function parseSwarmClaimDraft(draft: {
     errors.sweepIntervalSec = "Enter a whole number of at least 5";
   }
 
-  const batchRaw = draft.idleWakeBatch.trim();
-  const batch = batchRaw ? Number(batchRaw) : Number.NaN;
-  if (!batchRaw || !Number.isInteger(batch) || batch < MIN_SWARM_IDLE_WAKE_BATCH || batch > MAX_SWARM_IDLE_WAKE_BATCH) {
-    errors.idleWakeBatch = `Enter a whole number from ${MIN_SWARM_IDLE_WAKE_BATCH} to ${MAX_SWARM_IDLE_WAKE_BATCH}`;
-  }
-
   if (Object.keys(errors).length > 0) return { patch: null, errors };
 
   return {
@@ -92,7 +80,6 @@ export function parseSwarmClaimDraft(draft: {
       leaseTtlSec: ttl,
       maxActiveTasks,
       sweepIntervalSec: sweep,
-      idleWakeBatch: batch,
     },
     errors,
   };
@@ -102,13 +89,11 @@ function toDraftNumbers(settings: {
   leaseTtlSec: number;
   maxActiveTasks: number | null;
   sweepIntervalSec: number;
-  idleWakeBatch: number;
 }) {
   return {
     leaseTtlSec: String(settings.leaseTtlSec),
     maxActiveTasks: settings.maxActiveTasks === null ? "" : String(settings.maxActiveTasks),
     sweepIntervalSec: String(settings.sweepIntervalSec),
-    idleWakeBatch: String(settings.idleWakeBatch),
   };
 }
 
@@ -126,41 +111,21 @@ export function SwarmClaimSettingsPanelView({
   const [draftNumbers, setDraftNumbers] = useState<ReturnType<typeof toDraftNumbers> | null>(null);
   const [draftEnabled, setDraftEnabled] = useState<boolean | null>(null);
   const [draftP0, setDraftP0] = useState<boolean | null>(null);
-  const [draftRoles, setDraftRoles] = useState<string | null>(null);
-  const [draftCompanyIds, setDraftCompanyIds] = useState<string | null>(null);
 
   const numbers = draftNumbers ?? (view ? toDraftNumbers(view.settings) : null);
   const enabled = draftEnabled ?? (view ? view.settings.enabled : false);
   const p0Preemption = draftP0 ?? (view ? view.settings.p0Preemption : true);
-  const roles = draftRoles ?? (view ? view.settings.enabledRoles.join(", ") : "");
-  const companyIds = draftCompanyIds ?? (view ? view.settings.enabledCompanyIds.join(", ") : "");
 
   const { patch: numberPatch, errors } = numbers
     ? parseSwarmClaimDraft(numbers)
     : { patch: null, errors: {} as Partial<Record<string, string>> };
 
-  const rolesList = roles
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter((entry) => entry.length > 0);
-  const companyIdsList = companyIds
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter((entry) => entry.length > 0);
-  const rolesError =
-    rolesList.length > 200 ? "At most 200 roles" : null;
-  const companyIdsError =
-    companyIdsList.length > 200 ? "At most 200 company ids" : null;
-
-  const canSave =
-    Boolean(numberPatch) && !rolesError && !companyIdsError && view !== null && view !== undefined;
+  const canSave = Boolean(numberPatch) && view !== null && view !== undefined;
   const patch: SwarmClaimSettingsPatch | null = numberPatch
     ? {
         ...numberPatch,
         enabled,
         p0Preemption,
-        enabledRoles: rolesList,
-        enabledCompanyIds: companyIdsList,
       }
     : null;
 
@@ -178,15 +143,17 @@ export function SwarmClaimSettingsPanelView({
       <div className="space-y-1">
         <div className="flex items-center gap-2">
           <ShieldCheck className="h-4 w-4 text-muted-foreground" />
-          <h2 className="text-sm font-semibold">Role queues (SWARM-CLAIM)</h2>
+          <h2 className="text-sm font-semibold">Self-organisation (swarm)</h2>
         </div>
         <p className="max-w-2xl text-sm text-muted-foreground">
-          The swarm's per-role task queues: the idle pass hands the top task of a role&apos;s queue to
-          a free agent of that role behind a lease, and only then wakes it. Every value applies
-          without a restart — the server re-reads these settings on each claim and sweep tick.
-          Turning this off releases the live leases immediately. Environment variables stay forced
-          overrides; each field shows whether the saved value or the override is in force. Source
-          comparison (foraging) has its own screen, «Learning (foraging)», next to this one.
+          When on, a ready task goes straight to a free agent of its caste: the board
+          assigns it, starts the agent&apos;s run and holds a lease on it. Nobody queues behind a
+          wake and nobody is woken in turns. Which agents take part is set in the caste
+          directory (Company settings, castes: «swarmEligible») and in an agent&apos;s own card,
+          not here. Every value applies without a restart. Turning this off releases the live
+          leases immediately. Environment variables stay forced overrides; each field shows
+          whether the saved value or the override is in force. Source comparison (foraging)
+          has its own screen, «Learning (foraging)», next to this one.
         </p>
       </div>
 
@@ -201,7 +168,7 @@ export function SwarmClaimSettingsPanelView({
           <div className="space-y-2 md:col-span-2">
             <div className="flex items-center justify-between gap-4">
               <div className="space-y-1">
-                <Label htmlFor="swarm-claim-enabled">Enable role queues</Label>
+                <Label htmlFor="swarm-claim-enabled">Swarm enabled</Label>
                 <p className="text-xs text-muted-foreground">
                   <span data-testid="swarm-claim-source-enabled">{source("enabled")}</span>
                 </p>
@@ -215,64 +182,14 @@ export function SwarmClaimSettingsPanelView({
             </div>
           </div>
 
-          <div className="space-y-1">
-            <Label htmlFor="swarm-claim-roles">Roles in scope</Label>
-            <Input
-              id="swarm-claim-roles"
-              placeholder="Empty = every role"
-              value={roles}
-              onChange={(event) => setDraftRoles(event.target.value)}
-            />
-            <div className="text-xs text-muted-foreground">
-              <span data-testid="swarm-claim-source-enabledRoles">{source("enabledRoles")}</span>
-              {rolesError ? (
-                <span data-testid="swarm-claim-error-enabledRoles" className="ml-2 text-destructive">
-                  {rolesError}
-                </span>
-              ) : null}
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Comma-separated role names (e.g. engineer). Only these roles claim from the queue;
-              empty means every role. The company field below narrows it further.
-            </p>
-          </div>
-
-          <div className="space-y-1">
-            <Label htmlFor="swarm-claim-companies">Companies in scope</Label>
-            <Input
-              id="swarm-claim-companies"
-              placeholder="Empty = every company"
-              value={companyIds}
-              onChange={(event) => setDraftCompanyIds(event.target.value)}
-            />
-            <div className="text-xs text-muted-foreground">
-              <span data-testid="swarm-claim-source-enabledCompanyIds">
-                {source("enabledCompanyIds")}
-              </span>
-              {companyIdsError ? (
-                <span
-                  data-testid="swarm-claim-error-enabledCompanyIds"
-                  className="ml-2 text-destructive"
-                >
-                  {companyIdsError}
-                </span>
-              ) : null}
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Comma-separated company ids. Empty means every company.
-            </p>
-          </div>
-
-          {(["leaseTtlSec", "maxActiveTasks", "sweepIntervalSec", "idleWakeBatch"] as const).map((key) => (
+          {(["leaseTtlSec", "maxActiveTasks", "sweepIntervalSec"] as const).map((key) => (
             <div key={key} className="space-y-1">
               <Label htmlFor={`swarm-claim-${key}`}>
                 {key === "leaseTtlSec"
                   ? "Lease TTL, seconds"
                   : key === "maxActiveTasks"
                     ? "Max active tasks per agent"
-                    : key === "sweepIntervalSec"
-                      ? "Sweep interval, seconds"
-                      : "Idle wake batch, tasks per pass"}
+                    : "Sweep interval, seconds"}
               </Label>
               <Input
                 id={`swarm-claim-${key}`}
@@ -292,7 +209,7 @@ export function SwarmClaimSettingsPanelView({
                 ) : null}
               </div>
               <p className="text-xs text-muted-foreground">
-                {NUMBER_FIELDHints[key]}
+                {NUMBER_FIELD_HINTS[key]}
               </p>
             </div>
           ))}
@@ -327,7 +244,7 @@ export function SwarmClaimSettingsPanelView({
                 if (patch) onSave(patch);
               }}
             >
-              {pending ? "Saving..." : "Save role queue settings"}
+              {pending ? "Saving..." : "Save swarm settings"}
             </Button>
           </div>
 
@@ -377,7 +294,7 @@ export function SwarmClaimSettingsPanelView({
           </div>
         </div>
       ) : (
-        <p className="text-sm text-muted-foreground">Loading role queue settings...</p>
+        <p className="text-sm text-muted-foreground">Loading swarm settings...</p>
       )}
     </section>
   );
@@ -399,7 +316,7 @@ export function SwarmClaimSettingsPanel() {
       setReleasedNote(null);
     },
     onError: (err) =>
-      setError(err instanceof Error ? err.message : "Saving the role queue settings failed."),
+      setError(err instanceof Error ? err.message : "Saving the swarm settings failed."),
     onSuccess: async (data) => {
       setError(null);
       setReleasedNote(
@@ -414,7 +331,7 @@ export function SwarmClaimSettingsPanel() {
   if (query.error) {
     return (
       <div className="text-sm text-destructive">
-        {query.error instanceof Error ? query.error.message : "Failed to load role queue settings."}
+        {query.error instanceof Error ? query.error.message : "Failed to load swarm settings."}
       </div>
     );
   }

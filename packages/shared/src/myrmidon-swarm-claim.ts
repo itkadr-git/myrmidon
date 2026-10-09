@@ -27,10 +27,9 @@ import { z } from "zod";
  * - otherwise the environment variable (the deployment default);
  * - otherwise the built-in default.
  *
- * The pilot flag is deliberately the only value whose default is "off": the
- * whole feature ships dark and an operator turns it on for one team, which is
- * what makes it possible to compare a pilot window against the BASELINE
- * snapshot.
+ * The swarm is switched on or off per instance by one flag (`enabled`); who
+ * takes part is decided by the caste directory (`swarmEligible` of the caste)
+ * and nothing else.
  */
 
 /**
@@ -54,13 +53,10 @@ export const SWARM_CLAIM_ENV_KEYS = {
 
 export const SWARM_CLAIM_SETTING_KEYS = [
   "enabled",
-  "enabledRoles",
-  "enabledCompanyIds",
   "leaseTtlSec",
   "maxActiveTasks",
   "sweepIntervalSec",
   "p0Preemption",
-  "idleWakeBatch",
 ] as const;
 
 export type SwarmClaimSettingKey = (typeof SWARM_CLAIM_SETTING_KEYS)[number];
@@ -71,25 +67,27 @@ export type SwarmClaimSettingSource = "settings" | "env" | "default";
 /**
  * Stored-settings key inside `instance_settings.general` that holds the whole
  * object — one key, like `runLimits` and `workspaceHygiene`, so a partial
- * hand-edit cannot silently enable the pilot.
+ * hand-edit cannot silently enable the swarm.
  */
-export const SWARM_CLAIM_SETTINGS_KEY = "swarmClaim";
-
-/** Master switch of the pilot. Off unless a value on the list below turns it on. */
-export const DEFAULT_SWARM_CLAIM_ENABLED = false;
+export const SWARM_CLAIM_SETTINGS_KEY = "swarm";
 
 /**
- * 1.6.1 (SWARM-SETTINGS-UI): the pilot set. Empty means "no restriction": with
- * `enabled` on, every role of every company claims. A non-empty list narrows
- * the pilot to the listed roles (the pilot on the dev team) — a role not on
- * the list keeps vendor behavior even while the pilot is on elsewhere.
- * An empty string in the env override means "no restriction", the same reading
- * the other list-valued myrmidon settings use.
+ * The key the same object lived under before 1.6.5. Readers fall back to it
+ * (see `readStoredSwarmSettings`), so a value saved by an older build is not
+ * lost; the next save writes `swarm`.
  */
-export const SWARM_CLAIM_ENABLED_ROLES_ENV = "MYRMIDON_SWARM_CLAIM_ENABLED_ROLES";
-export const SWARM_CLAIM_ENABLED_COMPANY_IDS_ENV = "MYRMIDON_SWARM_CLAIM_ENABLED_COMPANY_IDS";
-export const DEFAULT_SWARM_CLAIM_ENABLED_ROLES: string[] = [];
-export const DEFAULT_SWARM_CLAIM_ENABLED_COMPANY_IDS: string[] = [];
+export const SWARM_CLAIM_LEGACY_SETTINGS_KEY = "swarmClaim";
+
+/** The stored swarm settings of an instance `general` block: the current key, else the legacy one. */
+export function readStoredSwarmSettings(
+  general: Record<string, unknown> | null | undefined,
+): unknown {
+  if (!general) return undefined;
+  return general[SWARM_CLAIM_SETTINGS_KEY] ?? general[SWARM_CLAIM_LEGACY_SETTINGS_KEY];
+}
+
+/** Master switch of the swarm. Off unless the stored value or the override turns it on. */
+export const DEFAULT_SWARM_CLAIM_ENABLED = false;
 
 /**
  * 1.6.1 (SWARM-SETTINGS-UI): whether a P0 (critical) task preempts the queue
@@ -115,18 +113,6 @@ export const MAX_SWARM_MAX_ACTIVE_TASKS = 100;
 /** How often the expired-lease sweep runs, in seconds. */
 export const DEFAULT_SWARM_CLAIM_SWEEP_INTERVAL_SEC = 30;
 export const MIN_SWARM_CLAIM_SWEEP_INTERVAL_SEC = 5;
-
-/**
- * 1.6.5 (OPE-6608 SWARM-WAKE-FIX): how many queue wakes one idle pass makes.
- * The value used to live only in the environment
- * (`MYRMIDON_SWARM_IDLE_WAKE_BATCH`); it is now a swarm setting so the size is
- * edited from the interface, with the variable as the forced override (the
- * same precedence as every other key here).
- */
-export const SWARM_CLAIM_IDLE_WAKE_BATCH_ENV = "MYRMIDON_SWARM_IDLE_WAKE_BATCH";
-export const DEFAULT_SWARM_IDLE_WAKE_BATCH = 5;
-export const MIN_SWARM_IDLE_WAKE_BATCH = 1;
-export const MAX_SWARM_IDLE_WAKE_BATCH = 25;
 
 /**
  * 1.6.5 (OPE-6608 SWARM-WAKE-FIX C): the per-agent switch telling whether the
@@ -299,44 +285,48 @@ const maxActiveTasksSchema = z
   .max(MAX_SWARM_MAX_ACTIVE_TASKS)
   .nullable();
 const sweepIntervalSchema = z.number().int().min(MIN_SWARM_CLAIM_SWEEP_INTERVAL_SEC);
-const idleWakeBatchSchema = z
-  .number()
-  .int()
-  .min(MIN_SWARM_IDLE_WAKE_BATCH)
-  .max(MAX_SWARM_IDLE_WAKE_BATCH);
+/**
+ * Keys that earlier builds stored next to the live ones (the pilot role and
+ * company lists of 1.6.1 and the idle-wake batch of the 1.6.5 candidates). They
+ * no longer mean anything; a stored value that still carries them is read with
+ * them dropped instead of being refused as a whole (which would silently turn
+ * the switch back to the default).
+ */
+export const SWARM_CLAIM_RETIRED_SETTING_KEYS = [
+  "enabledRoles",
+  "enabledCompanyIds",
+  "idleWakeBatch",
+] as const;
 
-// 1.6.1 (SWARM-SETTINGS-UI): the pilot-set lists. Non-empty arrays of trimmed
-// non-empty strings; an empty array is the honest "no restriction" and is
-// stored as such (not omitted), so the settings screen can tell "the operator
-// chose everyone" from "nothing was ever saved".
-const enabledRolesSchema = z.array(z.string().trim().min(1).max(200)).max(200);
-const enabledCompanyIdsSchema = z.array(z.string().trim().min(1).max(64)).max(200);
+function dropRetiredSwarmKeys(raw: unknown): unknown {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return raw;
+  const copy = { ...(raw as Record<string, unknown>) };
+  for (const key of SWARM_CLAIM_RETIRED_SETTING_KEYS) delete copy[key];
+  return copy;
+}
 
-/** The canonical stored shape of `instance_settings.general.swarmClaim`. */
-export const swarmClaimSettingsSchema = z
-  .object({
-    enabled: z.boolean(),
-    enabledRoles: enabledRolesSchema.default(DEFAULT_SWARM_CLAIM_ENABLED_ROLES),
-    enabledCompanyIds: enabledCompanyIdsSchema.default(DEFAULT_SWARM_CLAIM_ENABLED_COMPANY_IDS),
-    leaseTtlSec: leaseTtlSchema,
-    maxActiveTasks: maxActiveTasksSchema,
-    sweepIntervalSec: sweepIntervalSchema,
-    p0Preemption: z.boolean().default(DEFAULT_SWARM_CLAIM_P0_PREEMPTION),
-    idleWakeBatch: idleWakeBatchSchema.default(DEFAULT_SWARM_IDLE_WAKE_BATCH),
-  })
-  .strict();
+/** The canonical stored shape of `instance_settings.general.swarm`. */
+export const swarmClaimSettingsSchema = z.preprocess(
+  dropRetiredSwarmKeys,
+  z
+    .object({
+      enabled: z.boolean(),
+      leaseTtlSec: leaseTtlSchema,
+      maxActiveTasks: maxActiveTasksSchema,
+      sweepIntervalSec: sweepIntervalSchema,
+      p0Preemption: z.boolean().default(DEFAULT_SWARM_CLAIM_P0_PREEMPTION),
+    })
+    .strict(),
+);
 
 /** Body of `PATCH /api/myrmidon/swarm-claim`: any subset; absent keys keep their value. */
 export const patchSwarmClaimSettingsSchema = z
   .object({
     enabled: z.boolean().optional(),
-    enabledRoles: enabledRolesSchema.optional(),
-    enabledCompanyIds: enabledCompanyIdsSchema.optional(),
     leaseTtlSec: leaseTtlSchema.optional(),
     maxActiveTasks: maxActiveTasksSchema.optional(),
     sweepIntervalSec: sweepIntervalSchema.optional(),
     p0Preemption: z.boolean().optional(),
-    idleWakeBatch: idleWakeBatchSchema.optional(),
   })
   .strict();
 
@@ -348,7 +338,7 @@ export interface ResolvedSwarmClaimSettings {
   sources: Record<SwarmClaimSettingKey, SwarmClaimSettingSource>;
 }
 
-/** The single truth for "is this string an explicit on?". A typo must not enable the pilot. */
+/** The single truth for "is this string an explicit on?". A typo must not enable the swarm. */
 export function parseSwarmClaimEnabled(raw: string | undefined | null): boolean | null {
   const value = raw?.trim().toLowerCase();
   if (!value) return null;
@@ -389,32 +379,7 @@ export function readSwarmClaimSettingsFromEnv(
         : DEFAULT_SWARM_CLAIM_SWEEP_INTERVAL_SEC,
     p0Preemption:
       parseSwarmClaimEnabled(env[SWARM_CLAIM_P0_PREEMPTION_ENV]) ?? DEFAULT_SWARM_CLAIM_P0_PREEMPTION,
-    idleWakeBatch: readSwarmIdleWakeBatchEnv(env[SWARM_CLAIM_IDLE_WAKE_BATCH_ENV]),
-    enabledRoles: readSwarmClaimListEnv(env[SWARM_CLAIM_ENABLED_ROLES_ENV]),
-    enabledCompanyIds: readSwarmClaimListEnv(env[SWARM_CLAIM_ENABLED_COMPANY_IDS_ENV]),
   };
-}
-
-/**
- * 1.6.5 (OPE-6608): the batch override. A readable integer is clamped into the
- * allowed range; anything unreadable falls back to the default (a typo must not
- * turn one pass into a stampede or into zero wakes).
- */
-export function readSwarmIdleWakeBatchEnv(raw: string | undefined | null): number {
-  const value = Number(raw?.trim());
-  if (!raw || raw.trim() === "" || !Number.isInteger(value)) {
-    return DEFAULT_SWARM_IDLE_WAKE_BATCH;
-  }
-  return Math.min(MAX_SWARM_IDLE_WAKE_BATCH, Math.max(MIN_SWARM_IDLE_WAKE_BATCH, value));
-}
-
-/** A comma-separated list variable: trimmed entries, empty entries dropped. */
-export function readSwarmClaimListEnv(raw: string | undefined): string[] {
-  if (!raw) return [];
-  return raw
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter((entry) => entry.length > 0);
 }
 
 /** The stored settings value, or null when the row holds nothing usable. */
@@ -425,9 +390,9 @@ export function normalizeSwarmClaimSettings(raw: unknown): SwarmClaimSettings | 
 
 /**
  * Effective settings and where each value came from. `stored` is the raw
- * `general.swarmClaim` value; an unreadable one counts as absent, so the
- * environment (or the default) applies instead — a hand-edited row cannot
- * enable the pilot on its own.
+ * `general.swarm` value (see `readStoredSwarmSettings`); an unreadable one
+ * counts as absent, so the environment (or the default) applies instead — a
+ * hand-edited row cannot enable the swarm on its own.
  *
  * 1.6.1 (SWARM-SETTINGS-UI): precedence is per key — the environment variable
  * wins over the stored value only for the keys whose variable is actually set
@@ -458,19 +423,6 @@ export function resolveSwarmClaimSettings(options: {
         }),
         p0Preemption:
           parseSwarmClaimEnabled(env[SWARM_CLAIM_P0_PREEMPTION_ENV]) ?? stored.p0Preemption,
-        idleWakeBatch: envNumberOr(
-          env[SWARM_CLAIM_IDLE_WAKE_BATCH_ENV],
-          stored.idleWakeBatch,
-          { min: MIN_SWARM_IDLE_WAKE_BATCH, max: MAX_SWARM_IDLE_WAKE_BATCH },
-        ),
-        enabledRoles:
-          env[SWARM_CLAIM_ENABLED_ROLES_ENV] !== undefined
-            ? envSettings.enabledRoles
-            : stored.enabledRoles,
-        enabledCompanyIds:
-          env[SWARM_CLAIM_ENABLED_COMPANY_IDS_ENV] !== undefined
-            ? envSettings.enabledCompanyIds
-            : stored.enabledCompanyIds,
       }
     : envSettings;
 
@@ -480,16 +432,6 @@ export function resolveSwarmClaimSettings(options: {
   const sources = {} as Record<SwarmClaimSettingKey, SwarmClaimSettingSource>;
   const hasOverride = (name: string) => env[name] !== undefined && env[name]!.trim() !== "";
   sources.enabled = hasOverride(SWARM_CLAIM_ENV_KEYS.enabled)
-    ? "env"
-    : stored
-      ? "settings"
-      : "default";
-  sources.enabledRoles = hasOverride(SWARM_CLAIM_ENABLED_ROLES_ENV)
-    ? "env"
-    : stored
-      ? "settings"
-      : "default";
-  sources.enabledCompanyIds = hasOverride(SWARM_CLAIM_ENABLED_COMPANY_IDS_ENV)
     ? "env"
     : stored
       ? "settings"
@@ -510,11 +452,6 @@ export function resolveSwarmClaimSettings(options: {
       ? "settings"
       : "default";
   sources.p0Preemption = hasOverride(SWARM_CLAIM_P0_PREEMPTION_ENV)
-    ? "env"
-    : stored
-      ? "settings"
-      : "default";
-  sources.idleWakeBatch = hasOverride(SWARM_CLAIM_IDLE_WAKE_BATCH_ENV)
     ? "env"
     : stored
       ? "settings"
@@ -555,33 +492,6 @@ function envMaxActiveOr(raw: string | undefined, stored: number | null): number 
   return stored;
 }
 
-/**
- * 1.6.1 (SWARM-SETTINGS-UI): is the claim path enabled for one company + role?
- * The pilot gate the server actually enforces: the master switch, the company
- * list (empty = every company) and the role list (empty = every role) must all
- * pass. Exported so the settings screen, the claim service and the supervisor
- * view agree on who is in the pilot.
- */
-export function isSwarmClaimEnabledFor(
-  settings: Pick<
-    SwarmClaimSettings,
-    "enabled" | "enabledCompanyIds" | "enabledRoles"
-  >,
-  input: { companyId: string; role: string },
-): boolean {
-  if (!settings.enabled) return false;
-  if (
-    settings.enabledCompanyIds.length > 0 &&
-    !settings.enabledCompanyIds.includes(input.companyId)
-  ) {
-    return false;
-  }
-  if (settings.enabledRoles.length > 0 && !settings.enabledRoles.includes(input.role)) {
-    return false;
-  }
-  return true;
-}
-
 /** A patch over the effective values, the shape that gets stored. */
 export function mergeSwarmClaimSettings(
   base: SwarmClaimSettings,
@@ -589,46 +499,13 @@ export function mergeSwarmClaimSettings(
 ): SwarmClaimSettings {
   return {
     enabled: patch.enabled === undefined ? base.enabled : patch.enabled,
-    enabledRoles: patch.enabledRoles === undefined ? base.enabledRoles : patch.enabledRoles,
-    enabledCompanyIds:
-      patch.enabledCompanyIds === undefined ? base.enabledCompanyIds : patch.enabledCompanyIds,
     leaseTtlSec: patch.leaseTtlSec === undefined ? base.leaseTtlSec : patch.leaseTtlSec,
     maxActiveTasks:
       patch.maxActiveTasks === undefined ? base.maxActiveTasks : patch.maxActiveTasks,
     sweepIntervalSec:
       patch.sweepIntervalSec === undefined ? base.sweepIntervalSec : patch.sweepIntervalSec,
     p0Preemption: patch.p0Preemption === undefined ? base.p0Preemption : patch.p0Preemption,
-    idleWakeBatch:
-      patch.idleWakeBatch === undefined ? base.idleWakeBatch : patch.idleWakeBatch,
   };
-}
-
-/**
- * 1.6.5 (OPE-6608 SWARM-WAKE-FIX B): the fair order of the idle pool. The
- * previous pass walked the agents in whatever order the read happened to
- * return, so the same five agents were woken on every tick and the rest of the
- * role never got a turn (the "вечная голова списка"). The pool is now ordered
- * by the least loaded first, and among equals by the longest idle: an agent
- * that never ran (`lastActiveAt` empty) is the idlest of all, then the oldest
- * last activity, and equal facts keep the order the read returned (the read
- * orders by agent id, so two passes over equal facts make the same decision).
- */
-export interface SwarmIdleAgentFacts {
-  id: string;
-  /** Live claims the agent holds right now. */
-  activeClaims: number;
-  /** When the agent last worked (its newest run), or null when it never ran. */
-  lastActiveAt?: Date | null;
-}
-
-export function orderIdleWakeAgents<T extends SwarmIdleAgentFacts>(
-  agents: readonly T[],
-): T[] {
-  const at = (agent: SwarmIdleAgentFacts) => agent.lastActiveAt?.getTime() ?? 0;
-  return [...agents].sort((a, b) => {
-    if (a.activeClaims !== b.activeClaims) return a.activeClaims - b.activeClaims;
-    return at(a) - at(b);
-  });
 }
 
 /** Where the effective per-agent queue switch came from. */
@@ -656,22 +533,18 @@ export function readSwarmQueueEligibilityOverride(
 /**
  * 1.6.5 (OPE-6608 SWARM-WAKE-FIX C): may this agent take a task from the
  * queue? The agent's own switch wins when it is set; otherwise the caste
- * decides — and a caste-eligible agent that other agents report to is a
- * manager, not an executor, so it is out of the queue by default (the lead
- * pool of the 09.10 audit was made of exactly such agents). Everything the
- * operator wants different is one switch away in the agent card.
+ * decides (`swarmEligible` in the caste directory) and nothing else: whether
+ * other agents report to the agent does not matter — the operator who wants a
+ * manager out of the queue puts it in a caste with `swarmEligible` off, or
+ * flips the agent's own switch.
  */
 export function resolveSwarmQueueEligibility(facts: {
   metadata?: Record<string, unknown> | null;
   casteEligible: boolean;
-  hasDirectReports: boolean;
 }): SwarmQueueEligibility {
   const override = readSwarmQueueEligibilityOverride(facts.metadata);
   if (override !== null) return { eligible: override, source: "agent" };
-  return {
-    eligible: facts.casteEligible && !facts.hasDirectReports,
-    source: "caste",
-  };
+  return { eligible: facts.casteEligible, source: "caste" };
 }
 
 /** The lease TTL in milliseconds — the unit the store and the sweep work in. */

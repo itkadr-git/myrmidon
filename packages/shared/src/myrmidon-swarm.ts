@@ -5,9 +5,9 @@
 // model in between (design.md §3).
 //
 // This file is the home of the rework's shared half. The settings schema of
-// design §5.1 (the single `general.swarm` key, no pilot) lands here next to
-// these names; the pilot fields of `myrmidon-swarm-claim.ts` are removed there
-// once T2 has moved them, so nothing here duplicates that file's work.
+// design §5.1 (the single `general.swarm` key, no pilot) is
+// `myrmidon-swarm-claim.ts`; the names here are the wake and activity names
+// the matcher uses.
 
 /** The wake the matcher posts: the task is already the woken agent's own. */
 export const SWARM_MATCHED_WAKE_REASON = "swarm_matched";
@@ -28,8 +28,11 @@ export const SWARM_MATCHED_ASSIGNMENT_LOST_REASON = "swarm_matched_assignment_lo
 export const SWARM_UNASSIGNED_ON_EXPIRY_ACTION = "issue.swarm_claim.unassigned_on_expiry";
 
 /**
- * One wake per task: a retried pass of the same task carries the same key and
- * the wake layer drops the duplicate, so a task can never start two runs.
+ * The key a swarm wake carries on its wake request row, so a wake can be
+ * traced back to the pass that made it. It does NOT drop a duplicate by
+ * itself: the wake layer only dedupes on a key for its own recovery wakes.
+ * "One task, one run" is held by the lease (the partial unique index
+ * `issue_claims_issue_active_uq`) and by the assignee check in the matcher.
  */
 export function swarmMatchedIdempotencyKey(issueId: string): string {
   return `swarm_matched:${issueId}`;

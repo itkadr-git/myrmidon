@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// myrmidon(1.6.1 SWARM-SETTINGS-UI): the "Role queues (SWARM-CLAIM)" section
+// myrmidon(1.6.1 SWARM-SETTINGS-UI): the "Self-organisation (swarm)" section
 // of Instance → General. The panel is the settings half of the 1.6.1 task:
 // values apply without a restart, each field shows where the effective value
 // came from, and the journal shows who changed what and when.
@@ -31,31 +31,24 @@ afterEach(() => {
 const view: SwarmClaimSettingsView = {
   settings: {
     enabled: true,
-    enabledRoles: ["engineer"],
-    enabledCompanyIds: [],
     leaseTtlSec: 900,
     maxActiveTasks: 3,
     sweepIntervalSec: 30,
     p0Preemption: true,
-    // 1.6.5 (OPE-6608 D): the idle-wake batch, editable since 1.6.5.
-    idleWakeBatch: 5,
   },
   sources: {
     enabled: "settings",
-    enabledRoles: "settings",
-    enabledCompanyIds: "default",
     leaseTtlSec: "settings",
     maxActiveTasks: "env",
     sweepIntervalSec: "default",
     p0Preemption: "settings",
-    idleWakeBatch: "settings",
   },
   journal: [
     {
       at: "2026-10-03T09:00:00.000Z",
       actorType: "user",
       actorId: "user-1",
-      patch: { enabled: true, enabledRoles: ["engineer"] },
+      patch: { enabled: true, leaseTtlSec: 900 },
     },
   ],
 };
@@ -96,7 +89,7 @@ function clickToggle(id: string) {
 
 function saveButton(): HTMLButtonElement {
   return [...container.querySelectorAll("button")].find((el) =>
-    el.textContent?.includes("Save role queue settings"),
+    el.textContent?.includes("Save swarm settings"),
   )!;
 }
 
@@ -106,9 +99,6 @@ describe("myrmidon(1.6.1) swarm claim settings panel", () => {
     expect(field("swarm-claim-leaseTtlSec").value).toBe("900");
     expect(field("swarm-claim-maxActiveTasks").value).toBe("3");
     expect(field("swarm-claim-sweepIntervalSec").value).toBe("30");
-    // 1.6.5 (OPE-6608 D): the batch used to be environment-only.
-    expect(field("swarm-claim-idleWakeBatch").value).toBe("5");
-    expect(field("swarm-claim-roles").value).toBe("engineer");
     expect(
       container.querySelector("[data-testid=swarm-claim-source-leaseTtlSec]")?.textContent,
     ).toBe("Saved here");
@@ -134,22 +124,26 @@ describe("myrmidon(1.6.1) swarm claim settings panel", () => {
     const onSave = render(view);
     type("swarm-claim-leaseTtlSec", "600");
     type("swarm-claim-maxActiveTasks", "");
-    type("swarm-claim-idleWakeBatch", "8");
-    type("swarm-claim-roles", "engineer, reviewer");
     flushSync(() => saveButton().dispatchEvent(new MouseEvent("click", { bubbles: true })));
     expect(onSave).toHaveBeenCalledWith({
       enabled: true,
       p0Preemption: true,
-      enabledRoles: ["engineer", "reviewer"],
-      enabledCompanyIds: [],
       leaseTtlSec: 600,
       maxActiveTasks: null,
       sweepIntervalSec: 30,
-      idleWakeBatch: 8,
     });
   });
 
-  it("switching the pilot off is part of the patch", () => {
+  it("has no pilot scope and no idle-wake batch: one switch, the caste directory decides who takes part", () => {
+    render(view);
+    expect(field("swarm-claim-roles")).toBeNull();
+    expect(field("swarm-claim-companies")).toBeNull();
+    expect(field("swarm-claim-idleWakeBatch")).toBeNull();
+    expect(container.textContent).not.toMatch(/pilot|in scope|idle wake/i);
+    expect(container.textContent).toContain("caste");
+  });
+
+  it("switching the swarm off is part of the patch", () => {
     const onSave = render(view);
     clickToggle("swarm-claim-enabled");
     flushSync(() => saveButton().dispatchEvent(new MouseEvent("click", { bubbles: true })));
@@ -170,7 +164,7 @@ describe("myrmidon(1.6.1) swarm claim settings panel", () => {
     render(view);
     const journal = container.querySelector("[data-testid=swarm-claim-journal]");
     expect(journal?.textContent).toContain("user:user-1");
-    expect(journal?.textContent).toContain("enabled, enabledRoles");
+    expect(journal?.textContent).toContain("enabled, leaseTtlSec");
   });
 
   it("shows a save error from the server", () => {
@@ -199,41 +193,13 @@ describe("myrmidon(1.6.1) swarm claim settings panel", () => {
 
   it("parses a draft without touching the view", () => {
     expect(
-      parseSwarmClaimDraft({
-        leaseTtlSec: " 600 ",
-        maxActiveTasks: "",
-        sweepIntervalSec: "45",
-        idleWakeBatch: "5",
-      }),
+      parseSwarmClaimDraft({ leaseTtlSec: " 600 ", maxActiveTasks: "", sweepIntervalSec: "45" }),
     ).toEqual({
-      patch: { leaseTtlSec: 600, maxActiveTasks: null, sweepIntervalSec: 45, idleWakeBatch: 5 },
+      patch: { leaseTtlSec: 600, maxActiveTasks: null, sweepIntervalSec: 45 },
       errors: {},
     });
     expect(
-      parseSwarmClaimDraft({
-        leaseTtlSec: "x",
-        maxActiveTasks: "0",
-        sweepIntervalSec: "1",
-        idleWakeBatch: "5",
-      }).patch,
-    ).toBeNull();
-    // 1.6.5 (OPE-6608 D): the batch is bounded, and the bound is enforced in
-    // the form rather than only in the schema.
-    expect(
-      parseSwarmClaimDraft({
-        leaseTtlSec: "600",
-        maxActiveTasks: "",
-        sweepIntervalSec: "45",
-        idleWakeBatch: "0",
-      }).errors.idleWakeBatch,
-    ).toContain("1 to 25");
-    expect(
-      parseSwarmClaimDraft({
-        leaseTtlSec: "600",
-        maxActiveTasks: "",
-        sweepIntervalSec: "45",
-        idleWakeBatch: "900",
-      }).patch,
+      parseSwarmClaimDraft({ leaseTtlSec: "x", maxActiveTasks: "0", sweepIntervalSec: "1" }).patch,
     ).toBeNull();
   });
 });

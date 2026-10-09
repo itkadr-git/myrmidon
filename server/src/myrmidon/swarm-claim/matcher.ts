@@ -212,7 +212,6 @@ function freeAgentsOfPair(
       const queueEligible = resolveSwarmQueueEligibility({
         metadata: agent.metadata,
         casteEligible: caste?.swarmEligible ?? true,
-        hasDirectReports: agent.hasDirectReports,
       }).eligible;
       if (!queueEligible) return false;
       return !swarmActiveTaskLimitReached(agent.activeClaims, {
@@ -621,13 +620,8 @@ export interface SwarmIdleRolePair {
     status: string | null;
     activeClaims: number;
     hasLiveRun: boolean;
-    /**
-     * 1.6.5 (OPE-6608 C): `agents.metadata`, the carrier of the agent's own
-     * queue switch, and whether anybody reports to the agent (a manager is not
-     * an executor and is out of the queue by default).
-     */
+    /** 1.6.5 (OPE-6608 C): `agents.metadata`, the carrier of the agent's own queue switch. */
     metadata?: Record<string, unknown> | null;
-    hasDirectReports: boolean;
     /** 1.6.5 (OPE-6608 B): the agent's newest run, for the fair order. */
     lastActiveAt: Date | null;
   }[];
@@ -651,7 +645,6 @@ export async function listIdleRolePairs(
           id: agents.id,
           role: agents.role,
           status: agents.status,
-          reportsTo: agents.reportsTo,
           metadata: agents.metadata,
         })
         .from(agents)
@@ -690,13 +683,6 @@ export async function listIdleRolePairs(
   for (const row of lastRunRows as Array<{ agentId: string; lastActiveAt: Date | string | null }>) {
     lastActive.set(row.agentId, row.lastActiveAt ? new Date(row.lastActiveAt) : null);
   }
-  // The manager default. Counted from the same agent read, so no extra query
-  // and no dependency on a title convention.
-  const reportCounts = new Map<string, number>();
-  for (const agent of agentRows) {
-    if (!agent.reportsTo) continue;
-    reportCounts.set(agent.reportsTo, (reportCounts.get(agent.reportsTo) ?? 0) + 1);
-  }
   const byRole = new Map<string, SwarmMatcherQueueCandidate[]>();
   for (const row of queueRows) {
     const roles = rolesOfQueueRow(row);
@@ -718,7 +704,6 @@ export async function listIdleRolePairs(
         activeClaims: activeClaimCounts.get(agent.id) ?? 0,
         hasLiveRun: liveRuns.has(agent.id),
         metadata: (agent.metadata as Record<string, unknown> | null) ?? null,
-        hasDirectReports: (reportCounts.get(agent.id) ?? 0) > 0,
         lastActiveAt: lastActive.get(agent.id) ?? null,
       }));
     // A caste with no agents at all still reports the pair (the supervisor

@@ -92,12 +92,10 @@ const GENERAL_PATCHES: Array<{ field: string; patch: Record<string, unknown> }> 
   },
   { field: "browserBridge", patch: { browserBridge: { domains: ["example.com"] } } },
   {
-    field: "swarmClaim",
+    field: "swarm",
     patch: {
-      swarmClaim: {
+      swarm: {
         enabled: true,
-        enabledRoles: [],
-        enabledCompanyIds: [],
         leaseTtlSec: 600,
         maxActiveTasks: 5,
         sweepIntervalSec: 15,
@@ -175,7 +173,7 @@ const GENERAL_EXPECTATIONS: Record<string, unknown> = {
   parallelHelpers: { maxPerAgent: 4, defaultMaxPerAgent: 3, buildSlots: 2, hostMemoryMb: 4096 },
   botLsp: { codingRoles: ["engineer"], codingMode: "full", nonCodingMode: "limited", idleTimeoutSeconds: 300, tsserverMemoryMb: 2048 },
   browserBridge: { domains: ["example.com"] },
-  swarmClaim: { enabled: true, leaseTtlSec: 600, maxActiveTasks: 5, sweepIntervalSec: 15, p0Preemption: false },
+  swarm: { enabled: true, leaseTtlSec: 600, maxActiveTasks: 5, sweepIntervalSec: 15, p0Preemption: false },
   swarmClaimJournal: [],
   wipLimit: { defaultLimit: 4 },
   reviewRouting: { enabled: true, maxLoadPerReviewer: 7, reassignAfterHours: 48 },

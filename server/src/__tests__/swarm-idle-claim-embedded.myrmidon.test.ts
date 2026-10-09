@@ -129,7 +129,12 @@ describeEmbeddedPostgres("swarm idle queue claims on the server, then wakes", ()
 
   async function seedAgent(
     companyId: string,
-    overrides: { name?: string; status?: string; metadata?: Record<string, unknown> } = {},
+    overrides: {
+      name?: string;
+      status?: string;
+      metadata?: Record<string, unknown>;
+      reportsTo?: string | null;
+    } = {},
   ) {
     const agentId = randomUUID();
     await db.insert(agents).values({
@@ -139,6 +144,7 @@ describeEmbeddedPostgres("swarm idle queue claims on the server, then wakes", ()
       role: "engineer",
       status: overrides.status ?? "idle",
       metadata: overrides.metadata ?? {},
+      reportsTo: overrides.reportsTo ?? null,
       adapterType: "process",
       adapterConfig: {},
       runtimeConfig: {},
@@ -194,7 +200,7 @@ describeEmbeddedPostgres("swarm idle queue claims on the server, then wakes", ()
    */
   function sweeper(
     wakeCalls: WakeCall[],
-    settings: { idleWakeBatch?: number; maxActiveTasks?: number } = {},
+    settings: { maxActiveTasks?: number } = {},
   ) {
     const deps = {
       db,
@@ -202,10 +208,9 @@ describeEmbeddedPostgres("swarm idle queue claims on the server, then wakes", ()
       env: {},
       settings: {
         getGeneral: async () => ({
-          swarmClaim: {
+          swarm: {
             ...baseSwarmClaimSettings,
             enabled: true,
-            idleWakeBatch: settings.idleWakeBatch ?? 5,
             // The default ceiling is three tasks per agent; a test that needs
             // "this agent is already full" asks for a ceiling of one.
             ...(settings.maxActiveTasks !== undefined
@@ -413,7 +418,10 @@ describe("the board-side matcher (OPE-6608 A: a task meets a free agent)", () =>
 
     function matcher(
       wakes: MatcherWake[],
-      overrides: { hostGateOpen?: boolean } = {},
+      overrides: {
+        hostGateOpen?: boolean;
+        casteDirectory?: SwarmMatcherDeps["casteDirectory"];
+      } = {},
     ): SwarmMatcherDeps {
       return {
         db,
@@ -439,6 +447,7 @@ describe("the board-side matcher (OPE-6608 A: a task meets a free agent)", () =>
         },
         settings: { ...baseSwarmClaimSettings, enabled: true },
         hostGateOpen: overrides.hostGateOpen ?? true,
+        casteDirectory: overrides.casteDirectory,
         now: NOW,
       } as unknown as SwarmMatcherDeps;
     }
@@ -470,6 +479,43 @@ describe("the board-side matcher (OPE-6608 A: a task meets a free agent)", () =>
           idempotencyKey: `swarm_matched:${issueId}`,
         },
       ]);
+    });
+
+    // OPE-6608 review item 9: membership is the caste directory, not the org chart.
+    it("an agent that other agents report to still takes tasks when its caste is swarmEligible", async () => {
+      const companyId = await seedCompany();
+      const lead = await seedAgent(companyId, { name: "lead" });
+      await seedAgent(companyId, { name: "report-1", status: "paused", reportsTo: lead });
+      await seedAgent(companyId, { name: "report-2", status: "paused", reportsTo: lead });
+      const issueId = await seedTask(companyId, { identifier: "TASK-1" });
+
+      const result = await matchCompany(
+        matcher([], {
+          casteDirectory: async () => [{ key: "engineer", swarmEligible: true, maxActiveTasks: null }],
+        }),
+        companyId,
+      );
+
+      expect(result.pairs).toEqual([{ issueId, agentId: lead, role: "engineer", identifier: "TASK-1" }]);
+    });
+
+    it("an agent without subordinates is not matched when its caste is not swarmEligible", async () => {
+      const companyId = await seedCompany();
+      await seedAgent(companyId, { name: "solo" });
+      const issueId = await seedTask(companyId, { identifier: "TASK-1" });
+      const wakes: MatcherWake[] = [];
+
+      const result = await matchCompany(
+        matcher(wakes, {
+          casteDirectory: async () => [{ key: "engineer", swarmEligible: false, maxActiveTasks: null }],
+        }),
+        companyId,
+      );
+
+      expect(result.pairs).toHaveLength(0);
+      expect(wakes).toHaveLength(0);
+      const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(issue.assigneeAgentId).toBeNull();
     });
 
     it("wakes nobody while the caste has no free agent", async () => {

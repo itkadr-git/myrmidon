@@ -149,7 +149,7 @@ function portsFor(input: { role: string; directory?: readonly CompanyCaste[] }) 
     settings: {
       getGeneral: async () =>
         ({
-          swarmClaim: {
+          swarm: {
             enabled: true,
             leaseTtlSec: DEFAULT_SWARM_LEASE_TTL_SEC,
             maxActiveTasks: DEFAULT_SWARM_MAX_ACTIVE_TASKS,

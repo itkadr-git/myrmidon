@@ -143,16 +143,10 @@ export interface SwarmSupervisorReadPort {
   /** Part A's effective per-agent limit of active tasks, when known. */
   maxActiveTasksPerAgent(): Promise<number | null>;
   /**
-   * 1.6.1 (SWARM-SETTINGS-UI): where each effective pilot setting came from
+   * 1.6.1 (SWARM-SETTINGS-UI): where each effective swarm setting came from
    * ("settings" | "env" | "default"), keyed by setting key.
    */
   settingSources(): Promise<Record<string, string>>;
-  /**
-   * myrmidon(1.6.1 SWARM-IDLE-WAKE): the resolved pilot role set (empty =
-   * every role). The idle pass wakes only pilot roles; the supervisor metric
-   * must use the same set, or `freeAgentsWithQueue` never converges to 0.
-   */
-  pilotRoles(): Promise<string[]>;
   /** Claim rows of the company (live + released history rows included). */
   listClaimRows(companyId: string): Promise<ClaimRow[]>;
   /** Queued candidates per issue id (todo, ready, not claimed right now). */
@@ -210,7 +204,7 @@ export function swarmSupervisorView(
     const generatedAt = new Date(now()).toISOString();
     const enabled = await port.claimEnabled();
     // 1.6.1 (SWARM-SETTINGS-UI): the source map is reported even when the
-    // pilot is off — that is exactly when the operator wants to know whether
+    // swarm is off — that is exactly when the operator wants to know whether
     // the UI or the environment is holding it off.
     const settingSources = await port.settingSources();
     if (!enabled) {
@@ -225,7 +219,7 @@ export function swarmSupervisorView(
         topQueue: [],
       };
     }
-    const [ttl, maxActive, claimRows, queueRows, agents, liveRunAgents, pilotRoles] =
+    const [ttl, maxActive, claimRows, queueRows, agents, liveRunAgents] =
       await Promise.all([
         port.leaseTtlSec(),
         port.maxActiveTasksPerAgent(),
@@ -233,14 +227,7 @@ export function swarmSupervisorView(
         port.listQueueRows(companyId),
         port.listAgents(companyId),
         port.liveRunAgentIds(companyId),
-        port.pilotRoles(),
       ]);
-    // myrmidon(1.6.1 SWARM-IDLE-WAKE): the supervisor shows the same role set
-    // the idle pass wakes. A non-pilot role never claims (the claim gate
-    // answers `disabled`), so counting its free agents would keep the
-    // ticket's zero-metric (freeAgentsWithQueue) permanently above 0.
-    const pilotRoleSet = new Set(pilotRoles);
-
     const nowMs = now().getTime();
     const agentById = new Map(agents.map((agent) => [agent.agent_id, agent]));
     const issueTitleById = new Map(queueRows.map((row) => [row.issue_id, row]));
@@ -346,7 +333,6 @@ export function swarmSupervisorView(
     const cap = typeof maxActive === "number" && maxActive > 0 ? maxActive : null;
     const roles: SwarmRoleOverview[] = [];
     for (const [role, queue] of queueByRole) {
-      if (pilotRoleSet.size > 0 && !pilotRoleSet.has(role)) continue;
       const ordered = orderQueueCandidates(queue).slice(0, settings.taskMax);
       const claims = leaseRowsByRole.get(role) ?? [];
       const idleAgents: SwarmIdleAgentRow[] = agents
@@ -455,10 +441,6 @@ export function createSwarmSupervisorDbPort(db: Db, env: NodeJS.ProcessEnv = pro
     async settingSources() {
       return readSwarmSettingSources(db, env);
     },
-    async pilotRoles() {
-      const resolved = await readResolvedSwarmSettings(db, env);
-      return resolved.settings.enabledRoles;
-    },
     async listClaimRows(companyId) {
       const rows = await db.execute(sql`
         SELECT id AS claim_id, issue_id, agent_id, claimed_at, expires_at, heartbeat_at, released_at
@@ -533,7 +515,7 @@ async function readClaimEnabled(db: Db, env: NodeJS.ProcessEnv): Promise<boolean
 }
 
 /**
- * 1.6.1 (SWARM-SETTINGS-UI): the resolved pilot settings off the instance row,
+ * 1.6.1 (SWARM-SETTINGS-UI): the resolved swarm settings off the instance row,
  * through the same shared resolver the core uses, with the per-key source map.
  * Kept as one read so claimEnabled/leaseTtlSec/maxActiveTasksPerAgent (and the
  * source rendering below) cannot disagree about what is in force.
@@ -541,7 +523,6 @@ async function readClaimEnabled(db: Db, env: NodeJS.ProcessEnv): Promise<boolean
 interface ResolvedSwarmRow {
   settings: {
     enabled: boolean;
-    enabledRoles: string[];
     leaseTtlSec: number;
     maxActiveTasks: number | null;
   };
@@ -554,7 +535,7 @@ async function readResolvedSwarmSettings(
 ): Promise<ResolvedSwarmRow> {
   try {
     const rows = await db.execute(sql`
-      SELECT (general->'swarmClaim') AS swarm
+      SELECT COALESCE(general->'swarm', general->'swarmClaim') AS swarm
       FROM instance_settings
       LIMIT 1
     `);

@@ -213,11 +213,13 @@ export interface InstanceGeneralSettings {
    */
   browserBridge?: BrowserBridgeSettings;
   /**
-   * myrmidon(1.6-SWARM): per-role queues with leased claims, changed from
+   * myrmidon(1.6-SWARM): the swarm settings, changed from
    * `GET`/`PATCH /api/myrmidon/swarm-claim`. Absent means "use the environment
-   * variable, then the default (the pilot is off)". Kept in sync with the
-   * validator of the same field (packages/shared/src/validators/instance.ts).
+   * variable, then the built-in default". Kept in sync with the validator of
+   * the same field (packages/shared/src/validators/instance.ts).
    */
+  swarm?: SwarmClaimSettings;
+  /** myrmidon(1.6.5): the same object under its pre-1.6.5 key; readers prefer `swarm`. */
   swarmClaim?: SwarmClaimSettings;
   /**
    * myrmidon(1.6.1-BOT-DISK-D): shared mount settings for bots, changed from
@@ -226,8 +228,8 @@ export interface InstanceGeneralSettings {
    */
   sharedMount?: SharedMountSettings;
   /**
-   * myrmidon(1.6.1 SWARM-SETTINGS-UI): the change journal of the swarm-claim
-   * pilot settings — who changed what, and when, newest first. Written by the
+   * myrmidon(1.6.1 SWARM-SETTINGS-UI): the change journal of the swarm
+   * settings — who changed what, and when, newest first. Written by the
    * swarm-claim settings service on every PATCH, read by
    * GET /api/myrmidon/swarm-claim. Kept in sync with the validator of the
    * same field (packages/shared/src/validators/instance.ts).

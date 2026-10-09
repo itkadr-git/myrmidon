@@ -21,7 +21,6 @@ import {
   DEFAULT_SWARM_LEASE_TTL_SEC,
   DEFAULT_SWARM_MAX_ACTIVE_TASKS,
   DEFAULT_SWARM_CLAIM_SWEEP_INTERVAL_SEC,
-  DEFAULT_SWARM_IDLE_WAKE_BATCH,
   SWARM_CLAIM_QUEUE_ISSUE_STATUSES,
   SWARM_CLAIM_WAKE_REASON,
   type SwarmClaimLease,
@@ -40,14 +39,10 @@ import { claimNextTaskForAgent } from "./service.js";
 
 const settings: SwarmClaimSettings = {
   enabled: true,
-  enabledRoles: [],
-  enabledCompanyIds: [],
   leaseTtlSec: DEFAULT_SWARM_LEASE_TTL_SEC,
   maxActiveTasks: DEFAULT_SWARM_MAX_ACTIVE_TASKS,
   sweepIntervalSec: DEFAULT_SWARM_CLAIM_SWEEP_INTERVAL_SEC,
   p0Preemption: true,
-  // 1.6.5 (OPE-6608 D): the idle-wake batch is part of the settings now.
-  idleWakeBatch: DEFAULT_SWARM_IDLE_WAKE_BATCH,
 };
 
 function candidate(overrides: Partial<SwarmQueueCandidate> = {}): SwarmQueueCandidate {
@@ -204,7 +199,7 @@ describe("myrmidon(1.6-SWARM) claim service", () => {
 
   it("with the pilot flag off nothing is claimed", async () => {
     const ports = fakePorts({
-      swarmClaim: { enabled: false, enabledRoles: [], enabledCompanyIds: [], leaseTtlSec: 900, maxActiveTasks: 3, sweepIntervalSec: 30, p0Preemption: true },
+      swarm: { enabled: false, leaseTtlSec: 900, maxActiveTasks: 3, sweepIntervalSec: 30, p0Preemption: true },
     });
     const outcome = await claimNextTaskForAgent(ports, {
       companyId: "comp-1",
@@ -216,7 +211,7 @@ describe("myrmidon(1.6-SWARM) claim service", () => {
 
   it("with an empty agent table the answer is queue_empty, not a crash", async () => {
     const ports = fakePorts({
-      swarmClaim: { enabled: true, enabledRoles: [], enabledCompanyIds: [], leaseTtlSec: 900, maxActiveTasks: 3, sweepIntervalSec: 30, p0Preemption: true },
+      swarm: { enabled: true, leaseTtlSec: 900, maxActiveTasks: 3, sweepIntervalSec: 30, p0Preemption: true },
     });
     const outcome = await claimNextTaskForAgent(ports, {
       companyId: "comp-1",
@@ -241,7 +236,7 @@ describe("myrmidon(1.6-SWARM) sweep acceptance window", () => {
       db: {
         select: () => ({ from: () => ({ where: () => ({ limit: () => Promise.resolve([]) }) }) }),
       } as never,
-      settings: { getGeneral: async () => (({ swarmClaim: { enabled: false } }) as never) },
+      settings: { getGeneral: async () => (({ swarm: { enabled: false } }) as never) },
       env: {},
       intervalMs: 0,
     });

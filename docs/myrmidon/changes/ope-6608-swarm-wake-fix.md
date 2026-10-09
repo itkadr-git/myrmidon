@@ -22,11 +22,10 @@
 - Удалено вместе с проходом: `sweepIdleWakes`, `idle-wake.ts`, `idle-queue.ts`,
   `MYRMIDON_SWARM_IDLE_WAKE_BATCH` и его чтение в `sweep.ts`, `wakeNextAgentForIssueRole`
   (снятие аренды и перематч — вместо «разбуди следующего агента касты»).
-- Пилот в серверном коде убран: `isSwarmClaimEnabledFor` больше не гейтит ни checkout-хук,
-  ни claim. Переменные `MYRMIDON_SWARM_CLAIM_ENABLED_ROLES` / `_COMPANY_IDS` и поле
-  `idleWakeBatch` в схеме настроек остаются до слияния T2 (OPE-6614 правит тот же файл
-  `myrmidon-swarm-claim.ts`) и удаляются вместе с ним. Область очередей сужается только
-  справочником каст (`swarmEligible`) и переключателем в карточке агента.
+- Пилот удалён полностью (см. отдельную запись про настройки роя): `isSwarmClaimEnabledFor`,
+  поля «Roles/Companies in scope», переменные `MYRMIDON_SWARM_CLAIM_ENABLED_ROLES` /
+  `_COMPANY_IDS` и `idleWakeBatch` убраны из схемы, интерфейса и env. Участие агента в рое
+  определяет только справочник каст (`swarmEligible`) и переключатель в карточке агента.
 - Касты и гнёзда — по контрактам T3 (порты `resolveTaskCaste`/`agentNests`): до их слияния
   каста задачи — метка `role:` либо каста по умолчанию, гнёзд нет; порты уже проведены
   через сопоставитель и каста-директорию.
@@ -55,26 +54,26 @@
 - Removed with the pass: `sweepIdleWakes`, `idle-wake.ts`, `idle-queue.ts`,
   `MYRMIDON_SWARM_IDLE_WAKE_BATCH` and its read in `sweep.ts`, `wakeNextAgentForIssueRole`
   (releasing the lease and re-matching replaces "wake the next agent of the caste").
-- The pilot is gone from the server code: `isSwarmClaimEnabledFor` no longer gates the
-  checkout hook or the claim. The variables `MYRMIDON_SWARM_CLAIM_ENABLED_ROLES` /
-  `_COMPANY_IDS` and the `idleWakeBatch` settings field stay until T2 merges (OPE-6614 edits
-  the same `myrmidon-swarm-claim.ts`) and leave with it. The queue scope is narrowed only by
-  the caste directory (`swarmEligible`) and the agent's own card switch.
+- The pilot is removed entirely (see the separate swarm-settings entry): `isSwarmClaimEnabledFor`,
+  the "Roles/Companies in scope" fields, the variables `MYRMIDON_SWARM_CLAIM_ENABLED_ROLES` /
+  `_COMPANY_IDS` and `idleWakeBatch` are gone from the schema, the UI and the env. Whether an
+  agent takes part in the swarm is decided only by the caste directory (`swarmEligible`) and
+  the switch in the agent's card.
 - Castes and nests follow the T3 contracts (ports `resolveTaskCaste`/`agentNests`): until they
   merge, a task's caste is its `role:` label or the default caste and there are no nests; the
   ports are already threaded through the matcher and the caste directory.
 
 ## settings-ru-replace
 
-| `MYRMIDON_SWARM_CLAIM_ENABLED_ROLES` | 1.6.1-SWARM-SETTINGS-UI | не задана (без ограничения) | **С 1.6.5 (OPE-6608) не влияет на работу**: пилот в серверном коде удалён, переменная осталась только в схеме настроек до слияния T2 (OPE-6614) и будет удалена вместе с ней. Область очередей сужается справочником каст (`swarmEligible`) и переключателем в карточке агента. Поле интерфейса «Roles in scope» сохраняет список, но клейм его больше не читает | Не задана — без ограничения. Значение игнорируется |
-| `MYRMIDON_SWARM_CLAIM_ENABLED_COMPANY_IDS` | 1.6.1-SWARM-SETTINGS-UI | не задана (без ограничения) | **С 1.6.5 (OPE-6608) не влияет на работу** по той же причине: гейты пилота (`isSwarmClaimEnabledFor`) убраны из checkout-хука и из claim. Удаляется вместе с T2 | Не задана — без ограничения. Значение игнорируется |
-| `MYRMIDON_SWARM_IDLE_WAKE_BATCH` | 1.6.1 SWARM-IDLE-WAKE | `5` | **Выведена из употребления в 1.6.5 (OPE-6608)**: idle-прохода с пачкой побудок больше нет, его место занял сопоставитель на доске — одна задача ↔ один свободный агент её касты за проход, без верхней границы. Переменная и поле панели `idleWakeBatch` читаются только схемой настроек и удаляются вместе с T2 | Значение не читается ни одним проходом |
+| `MYRMIDON_SWARM_CLAIM_ENABLED_ROLES` | 1.6.1-SWARM-SETTINGS-UI | удалена | **Удалена в 1.6.5 (OPE-6608)**: пилотного набора ролей больше нет, код переменную не читает. Участие агента в рое определяет справочник каст (`swarmEligible`) и переключатель в карточке агента | Значение игнорируется |
+| `MYRMIDON_SWARM_CLAIM_ENABLED_COMPANY_IDS` | 1.6.1-SWARM-SETTINGS-UI | удалена | **Удалена в 1.6.5 (OPE-6608)** по той же причине: пилотного набора компаний больше нет, рой включается одним переключателем | Значение игнорируется |
+| `MYRMIDON_SWARM_IDLE_WAKE_BATCH` | 1.6.1 SWARM-IDLE-WAKE | удалена | **Удалена в 1.6.5 (OPE-6608)**: idle-прохода с пачкой побудок больше нет, его место занял сопоставитель на доске — свободный агент получает задачу сразу, без очередей и ротации. Поле панели `idleWakeBatch` удалено | Значение игнорируется |
 
 ## settings-en-replace
 
-| `MYRMIDON_SWARM_CLAIM_ENABLED_ROLES` | 1.6.1-SWARM-SETTINGS-UI | unset (no restriction) | **Has no effect since 1.6.5 (OPE-6608)**: the pilot is removed from the server code; the variable survives only in the settings schema until T2 (OPE-6614) merges and will be deleted with it. The queue scope is narrowed by the caste directory (`swarmEligible`) and the agent's own card switch. The "Roles in scope" field keeps the list, the claim no longer reads it | Unset — no restriction. The value is ignored |
-| `MYRMIDON_SWARM_CLAIM_ENABLED_COMPANY_IDS` | 1.6.1-SWARM-SETTINGS-UI | unset (no restriction) | **Has no effect since 1.6.5 (OPE-6608)** for the same reason: the pilot gates (`isSwarmClaimEnabledFor`) are gone from the checkout hook and the claim. Removed together with T2 | Unset — no restriction. The value is ignored |
-| `MYRMIDON_SWARM_IDLE_WAKE_BATCH` | 1.6.1 SWARM-IDLE-WAKE | `5` | **Retired in 1.6.5 (OPE-6608)**: the idle pass with its wake batch is gone — the board-side matcher pairs one task with one free agent of its caste per pass, with no upper bound. The variable and the panel field `idleWakeBatch` are read only by the settings schema and are removed together with T2 | No pass reads the value |
+| `MYRMIDON_SWARM_CLAIM_ENABLED_ROLES` | 1.6.1-SWARM-SETTINGS-UI | removed | **Removed in 1.6.5 (OPE-6608)**: there is no pilot role set any more and the code does not read the variable. Whether an agent takes part in the swarm is decided by the caste directory (`swarmEligible`) and the switch in the agent's card | The value is ignored |
+| `MYRMIDON_SWARM_CLAIM_ENABLED_COMPANY_IDS` | 1.6.1-SWARM-SETTINGS-UI | removed | **Removed in 1.6.5 (OPE-6608)** for the same reason: there is no pilot company set, the swarm is turned on by one switch | The value is ignored |
+| `MYRMIDON_SWARM_IDLE_WAKE_BATCH` | 1.6.1 SWARM-IDLE-WAKE | removed | **Removed in 1.6.5 (OPE-6608)**: the idle pass with its wake batch is gone — the board-side matcher gives a free agent its task at once, with no queues and no rotation. The panel field `idleWakeBatch` is removed | The value is ignored |
 
 ## settings-ru-new
 
@@ -96,8 +95,8 @@
 
 Как включить и проверить:
 
-1. Instance → General → **«Role queues (SWARM-CLAIM)»**: включить главный выключатель
-   `enabled`. Изменения применяются без перезапуска (переключатель читается на каждом
+1. Instance → General → **«Self-organisation (swarm)»**: включить выключатель
+   `Swarm enabled`. Изменения применяются без перезапуска (переключатель читается на каждом
    событии).
 2. Проверка: в панели под настройками строка **«Queues right now»** — «в очереди»,
    «захвачено за час», «отменено за час». Через минуту после включения на непустой очереди
@@ -136,7 +135,7 @@ full tie goes to the smallest `agents.id`) — no rotation, no "longest idle fir
 
 How to turn it on and check it:
 
-1. Instance → General → **"Role queues (SWARM-CLAIM)"**: turn the `enabled` master switch on.
+1. Instance → General → **"Self-organisation (swarm)"**: turn the `Swarm enabled` switch on.
    Changes apply without a restart (the switch is read on every event).
 2. To check: under the settings the panel shows **"Queues right now"** — queued, claimed in the
    last hour, cancelled in the last hour. A minute after switching on with a non-empty queue

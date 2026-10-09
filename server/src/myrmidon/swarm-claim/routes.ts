@@ -6,7 +6,7 @@
 //   the top task of its role's queue behind a lease. Agent-authenticated; the
 //   per-agent ceiling and the P0 order apply inside the service.
 // - POST .../swarm-claim/heartbeat — the run refreshes its own lease.
-// - GET/PATCH /api/myrmidon/swarm-claim — the pilot settings (the flag, the
+// - GET/PATCH /api/myrmidon/swarm-claim — the swarm settings (the flag, the
 //   TTL, the ceiling, the sweep interval), the same read/write rule the other
 //   instance settings follow: any board member reads, instance-admin writes.
 //
@@ -108,9 +108,9 @@ export function swarmClaimRoutes(
     assertBoardOrgAccess(req);
     const [resolved, journal] = await Promise.all([settingsService.read(), settingsService.journal()]);
     // 1.6.5 (OPE-6608 D): the live counters, scoped like the queues themselves
-    // (an empty company scope means every company).
+    // (every company).
     const counters = await readSwarmQueueCounters(db, {
-      companyIds: resolved.settings.enabledCompanyIds,
+      companyIds: null,
       now: new Date(),
     });
     res.json({ ...resolved, journal, counters });

@@ -18450,7 +18450,7 @@ export function heartbeatService(
   // The release path wakes the next agent of the role directly; this pass is
   // the safety net that makes "an idle agent with a non-empty queue of its
   // role" impossible past one lease period (TTL + one sweep interval). All
-  // admission gates still apply inside enqueueWakeup; with the pilot flag off
+  // admission gates still apply inside enqueueWakeup; with the swarm switched off
   // the pass reads once and releases nothing.
   const swarmClaimSweeper = buildSwarmClaimSweeper({
     db,
@@ -19310,7 +19310,7 @@ export function heartbeatService(
     }
 
     // myrmidon(1.6-SWARM): the expired-claim sweep on the same tick. Cheap
-    // when the pilot flag is off; with the pilot on it returns expired tasks
+    // when the swarm is off; with it on it returns expired tasks
     // to their role's queue and wakes the next agent, keeping an idle agent
     // with a non-empty queue impossible past one lease period.
     try {

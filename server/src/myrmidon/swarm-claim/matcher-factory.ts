@@ -4,7 +4,11 @@
 // out of index.ts so the event paths (issue hooks, resume, the claim API, the
 // supervisor rebalance) can build it without importing the wiring point.
 
-import { resolveSwarmClaimSettings, type CompanyCastesReader } from "@paperclipai/shared";
+import {
+  readStoredSwarmSettings,
+  resolveSwarmClaimSettings,
+  type CompanyCastesReader,
+} from "@paperclipai/shared";
 import {
   matchAgent,
   matchCompany,
@@ -52,7 +56,7 @@ export interface SwarmMatcher {
 export async function buildSwarmMatcher(ports: SwarmMatcherPorts): Promise<SwarmMatcher | null> {
   const general = (await ports.settings.getGeneral()) as unknown as Record<string, unknown>;
   const { settings } = resolveSwarmClaimSettings({
-    stored: general.swarmClaim,
+    stored: readStoredSwarmSettings(general),
     env: ports.env ?? process.env,
   });
   if (!settings.enabled) return null;
