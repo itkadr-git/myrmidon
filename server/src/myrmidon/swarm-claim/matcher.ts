@@ -43,6 +43,7 @@ import {
   SWARM_MATCHED_MUTATION,
   SWARM_MATCHED_WAKE_REASON,
   orderSwarmQueueCandidates,
+  resolveSwarmQueueEligibility,
   swarmActiveTaskLimitReached,
   swarmMatchedIdempotencyKey,
   type SwarmClaimSettings,
@@ -157,17 +158,27 @@ function freeAgentsOfPair(
   settings: SwarmClaimSettings,
 ): SwarmMatcherAgent[] {
   return pair.agents
-    .filter(
-      (agent) =>
-        agent.status !== "paused" &&
-        agent.status !== "error" &&
-        agent.status !== "terminated" &&
-        !agent.hasLiveRun &&
-        agent.queueEligible !== false &&
-        !swarmActiveTaskLimitReached(agent.activeClaims, {
-          maxActiveTasks: settings.maxActiveTasks,
-        }),
-    )
+    .filter((agent) => {
+      if (
+        agent.status === "paused" ||
+        agent.status === "error" ||
+        agent.status === "terminated"
+      ) {
+        return false;
+      }
+      if (agent.hasLiveRun) return false;
+      // The agent's own switch (design §3.2). The caste half is `true` until T3
+      // brings the directory: the read reports the agent, the policy decides.
+      const queueEligible = resolveSwarmQueueEligibility({
+        metadata: agent.metadata,
+        casteEligible: true,
+        hasDirectReports: agent.hasDirectReports,
+      }).eligible;
+      if (!queueEligible) return false;
+      return !swarmActiveTaskLimitReached(agent.activeClaims, {
+        maxActiveTasks: settings.maxActiveTasks,
+      });
+    })
     .map((agent) => ({
       agentId: agent.id,
       role: pair.role,
@@ -403,7 +414,6 @@ export async function matchAgent(
     .limit(1);
   if (!agentRow?.companyId) return null;
   if (agentRow.status === "paused" || agentRow.status === "terminated") return null;
-  if (await deps.agentNests) await deps.agentNests(agentId);
 
   const pairs = await listIdleRolePairs(deps.db, agentRow.companyId);
   const pair = pairs.find((entry) => entry.role === agentRow.role);
