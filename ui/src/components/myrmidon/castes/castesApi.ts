@@ -29,7 +29,7 @@ export interface CasteView {
    * myrmidon(1.6.5 F-26 T3 CASTES-AND-NESTS): exactly one caste of a company
    * carries this flag — the caste the swarm matcher falls back to when neither
    * the task nor its project names one. Optional: a server that predates the
-   * 0384 migration omits it, and the screen then reads "no default".
+   * 0385 migration omits it, and the screen then reads "no default".
    */
   isDefault?: boolean;
   createdAt: string;

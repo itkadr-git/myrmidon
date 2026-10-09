@@ -254,6 +254,41 @@ describeEmbeddedPostgres("stale block sweep", () => {
     expect(result).toMatchObject({ scanned: 2, unblocked: 0, skippedLive: 2, failed: 0 });
   });
 
+  // myrmidon(BLOCKER-WAKE-LOOP-B): an event reason with a passed deadline is
+  // dead even while the gate seam still answers "set" (an unwired gate would
+  // otherwise hold the task forever).
+  it("unblocks an event reason whose deadline passed while the gate is still set", async () => {
+    const seeded = await seed({
+      blockerStatus: undefined,
+      unblockDescriptor: {
+        owner: "board",
+        action: "wait for the tag",
+        reasonRef: { kind: "event", eventKey: "release-1.6", dueAt: "2026-10-01T00:00:00.000Z" },
+      },
+    });
+    const { sweep } = sweepWith();
+    const result = await sweep.sweep();
+    expect(result).toMatchObject({ scanned: 1, unblocked: 1, skippedLive: 0, failed: 0 });
+    const [issue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+    expect(issue!.status).toBe("in_progress");
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, seeded.issueId));
+    expect(comments[0]!.body).toContain("the event deadline passed");
+  });
+
+  it("leaves an event reason with a future deadline alone", async () => {
+    await seed({
+      blockerStatus: undefined,
+      unblockDescriptor: {
+        owner: "board",
+        action: "wait for the tag",
+        reasonRef: { kind: "event", eventKey: "release-1.6", dueAt: "2026-10-05T00:00:00.000Z" },
+      },
+    });
+    const { sweep } = sweepWith();
+    const result = await sweep.sweep();
+    expect(result).toMatchObject({ scanned: 1, unblocked: 0, skippedLive: 1, failed: 0 });
+  });
+
   it("unblocks an event reason once the gate is cleared, through the injected seam", async () => {
     const seeded = await seed({
       blockerStatus: undefined,

@@ -41,7 +41,6 @@ export const UI2_NAV_GROUPS: Ui2NavGroup[] = [
     items: [
       { labelKey: "ui2.nav.center", to: "/dashboard", icon: Gauge },
       { labelKey: "ui2.nav.fleet", to: "/agents/all", icon: Server },
-      { labelKey: "ui2.nav.swarm", to: "/agents/all", icon: Users },
       { labelKey: "ui2.nav.costs", to: "/activity/costs", icon: Wallet },
       { labelKey: "ui2.nav.quality", to: "/dashboard", icon: Activity },
     ],
@@ -58,6 +57,16 @@ export const UI2_NAV_GROUPS: Ui2NavGroup[] = [
   {
     labelKey: "ui2.nav.group.manage",
     items: [{ labelKey: "ui2.nav.settings", to: "/company/settings", icon: LayoutGrid }],
+  },
+  // myrmidon(1.6.5 SWARM-T4, design §5.4 / IA v2 §2.3 п.10, 12): the swarm
+  // queue and the foraging page live in a dedicated "More" group at the rail
+  // bottom, next to Manage — the owner reaches each in one click.
+  {
+    labelKey: "ui2.nav.group.more",
+    items: [
+      { labelKey: "ui2.nav.swarmQueues", to: "/swarm-claim", icon: Users },
+      { labelKey: "ui2.nav.foraging", to: "/foraging", icon: LayoutGrid },
+    ],
   },
 ];
 
