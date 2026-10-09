@@ -13,7 +13,7 @@ import { createDbSkillLifecycleStore } from "./store.js";
 import { SKILL_PROMOTION_APPROVAL_TYPE } from "./domain.js";
 import { skillLifecycleRoutes } from "./routes.js";
 
-export { SKILL_PILOT_AGENTS_ENV, SKILL_PROMOTION_APPROVAL_TYPE, SKILL_LIFECYCLE_STATES } from "./domain.js";
+export { SKILL_PILOT_AGENTS_ENV, BOT_BACKIMPORT_ORIGIN_METADATA_KEY, SKILL_PROMOTION_APPROVAL_TYPE, SKILL_LIFECYCLE_STATES } from "./domain.js";
 export type { SkillLifecycleState, SkillDeliveryState } from "./domain.js";
 export type { SkillLifecycleService, SkillLifecycleView, SkillLifecycleDelivery, SkillLifecycleReadCache } from "./service.js";
 export { createSkillLifecycleService } from "./service.js";

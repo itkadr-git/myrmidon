@@ -60,13 +60,18 @@ export const bridgeTextRu: Record<BridgeTextKey, string> = {
   // /model and /think
   "model.statusLabel": "Модель",
   "reasoning.statusLabel": "Рассуждения",
-  "model.unavailable": "Смена модели недоступна для адаптера {adapterType}: {reason}",
-  "reasoning.unavailable": "Смена глубины рассуждений недоступна для адаптера {adapterType}: {reason}",
+  // myrmidon(1.6.5-TG-LOCALE-C): недоступную смену объясняем до конца — названы
+  // адаптер и причина, сказано, где значение меняется (карточка агента на доске)
+  // и когда вступит в силу.
+  "model.unavailable":
+    "Смена модели недоступна для адаптера {adapterType}: {reason}. Модель меняется на доске — в разделе моделей карточки агента; применится со следующего ответа.",
+  "reasoning.unavailable":
+    "Смена глубины рассуждений недоступна для адаптера {adapterType}: {reason}. Глубина рассуждений меняется на доске — в разделе моделей карточки агента; применится со следующего ответа.",
   "model.unknownNoun": "Неизвестная модель",
   "reasoning.unknownNoun": "Неизвестная глубина рассуждений",
   "chooser.effective": "{label}: {value} ({source}).",
   "chooser.availableHeader": "Доступно:",
-  "chooser.usage": "Укажите /{command} <имя или номер> либо /{command} default.",
+  "chooser.usage": "Ответьте на это сообщение номером или именем либо укажите /{command} <имя или номер> или /{command} default.",
   "chooser.agentDefaultParen": "по умолчанию у агента ({value})",
   "chooser.defaultApplied": "{label} для этого чата: {agentDefault}.",
   "chooser.set": "{label} для этого чата: {value}. Следующий ответ начнёт новую сессию модели с недавней историей этого чата.",
@@ -85,6 +90,15 @@ export const bridgeTextRu: Record<BridgeTextKey, string> = {
   "chooser.applyRolledBack": "Прежнее значение возвращено.",
   "chooser.reason.unsupportedAdapter": "этот адаптер не поддерживает смену из чата",
   "chooser.reason.noCandidates": "не удалось прочитать варианты для этого чата",
+  "chooser.button.default": "↩ По умолчанию у агента",
+  "chooser.moreHidden": "Кнопки есть у первых {count} моделей; остальные выбирайте номером или именем из списка.",
+  // myrmidon(F06-D): почему собственный список агента не использован.
+  "chooser.keyFailure": "Причина: {reason}.",
+  "chooser.keyFailure.noGatewayUrl": "в доске не настроен адрес шлюза LLM",
+  "chooser.keyFailure.noKey": "у агента нет привязанного ключа шлюза",
+  "chooser.keyFailure.secretError": "ключ шлюза не удалось прочитать из хранилища секретов",
+  "chooser.keyFailure.gatewayError": "шлюз не вернул список моделей для ключа этого агента",
+  "chooser.keyFailure.emptyList": "ключ этого агента не разрешает ни одной модели",
 
   // /stop
   "stop.unavailable": "Сейчас остановка недоступна.",

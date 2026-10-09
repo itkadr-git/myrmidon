@@ -38,6 +38,8 @@ import {
   isChatOwnerMessageWake,
   listOwnerChatTurnRunIds,
 } from "../myrmidon/chat-holds/chat-backed.js";
+// myrmidon(1.6.5 F-26 T5): taskless-wake gate + cooling (design §3.7, §4.3).
+import { tasklessGateReason, readSwarmSettings } from "../myrmidon/wake-task-guard.js";
 import { clearChatHoldsOnOwnerMessage } from "../myrmidon/chat-holds/clear-on-message.js";
 // myrmidon(L2, round 3 fix): retire the woken agent's own waiting run that the
 // bypassed hold would cancel at its claim, so the wake is not lost with it.
@@ -27345,6 +27347,52 @@ export function heartbeatService(
 
     let agent = await getAgent(agentId);
     if (!agent) throw notFound("Agent not found");
+
+    // myrmidon(1.6.5 F-26 T5, design §3.7): the run-without-task gate. An
+    // automatic wake of a swarm reason that names no existing task must never
+    // reach the adapter — it is recorded `skipped` here with 0 tokens. Manual
+    // wakes and chat are untouched; a manual wake of a user always passes.
+    {
+      const swarmSettings = await readSwarmSettings(db);
+      if (swarmSettings.runWithoutTaskGate) {
+        const gateReason = await tasklessGateReason(db, agent.companyId, {
+          source,
+          reason:
+            readNonEmptyString(enrichedContextSnapshot.wakeReason) ?? reason,
+          issueId,
+          manualUserWake: opts.manualUserWake === true,
+        });
+        if (gateReason) {
+          logger.info(
+            {
+              agentId,
+              companyId: agent.companyId,
+              source,
+              reason,
+              issueId: issueId ?? null,
+              gateReason,
+            },
+            "myrmidon.wake_task_guard.skipped: taskless automatic wake closed before the adapter (0 tokens)",
+          );
+          await logActivity(db, {
+            companyId: agent.companyId,
+            actorType: "system",
+            actorId: "heartbeat",
+            agentId,
+            action: "heartbeat.wake_skipped_taskless",
+            entityType: "agent",
+            entityId: agentId,
+            details: {
+              reason: reason ?? null,
+              gateReason,
+              counter: "myrmidon.heartbeat.taskless_wakes_skipped",
+            },
+          });
+          return null;
+        }
+      }
+    }
+
     if (issueId) {
       const conversation = await getIssueExecutionContext(agent.companyId, issueId);
       if (isConversation(conversation)) {

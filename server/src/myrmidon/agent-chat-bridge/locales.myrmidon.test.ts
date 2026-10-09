@@ -4,9 +4,13 @@
 // instance-wide env force wins over both. Covers the resolver (DB), the
 // catalogs (parity + placeholders), the command menu, and one real command
 // reply end to end.
+//
+// myrmidon(1.6.5-TG-LOCALE-C): a board user who never chose a
+// language now follows the instance-wide setting, so the order under test is
+// env force → the person's preference → the instance setting → English.
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { authUsers, userUiLanguage, createDb } from "@paperclipai/db";
+import { authUsers, instanceSettings, userUiLanguage, createDb } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -16,12 +20,15 @@ import {
   BRIDGE_TEXT_CATALOGS,
   DEFAULT_BRIDGE_LOCALE,
   forcedBridgeLocale,
+  instanceBridgeLocale,
   resolveBridgeLocale,
+  resolveBridgeLocaleDecision,
   telegramDmMenuLocale,
   userBridgeLocale,
   type BridgeTextKey,
 } from "./locales/index.js";
 import { telegramDmCommandsForLocale } from "./commands/index.js";
+import { BRIDGE_LANGUAGE_SETTINGS_KEY } from "@paperclipai/shared";
 
 const support = await getEmbeddedPostgresTestSupport();
 
@@ -57,8 +64,6 @@ describe("bridge locale decision (1.7-TG-LOCALE)", () => {
     expect(forcedBridgeLocale({ [BRIDGE_LOCALE_LANGUAGES_ENV]: "de" })).toBeNull();
     expect(forcedBridgeLocale({})).toBeNull();
     expect(DEFAULT_BRIDGE_LOCALE).toBe("en");
-    expect(telegramDmMenuLocale({ [BRIDGE_LOCALE_LANGUAGES_ENV]: "ru" })).toBe("ru");
-    expect(telegramDmMenuLocale({})).toBe("en");
   });
 
   (support.supported ? describe : describe.skip)("with embedded Postgres", () => {
@@ -83,6 +88,61 @@ describe("bridge locale decision (1.7-TG-LOCALE)", () => {
       return id;
     }
 
+    // myrmidon(1.6.5-TG-LOCALE-C): the instance-wide fallback lives in the
+    // single `instance_settings` row, the same place the language screen writes.
+    async function setInstanceLanguage(language: "en" | "ru" | null): Promise<void> {
+      const general =
+        language === null ? {} : { [BRIDGE_LANGUAGE_SETTINGS_KEY]: { language } };
+      const [existing] = await db.select({ id: instanceSettings.id }).from(instanceSettings).limit(1);
+      if (existing) {
+        await db.update(instanceSettings).set({ general, updatedAt: new Date() });
+      } else {
+        await db.insert(instanceSettings).values({ general });
+      }
+    }
+
+    it("a user without a stored preference resolves to the instance language, then English", async () => {
+      const userId = await makeUser();
+      expect(await userBridgeLocale(db, userId)).toBeNull();
+      expect(await resolveBridgeLocale(db, userId, {})).toBe("en");
+
+      // Acceptance: the instance setting is the fallback for a board
+      // user who never chose a language — no env force in play.
+      await setInstanceLanguage("ru");
+      expect(await instanceBridgeLocale(db)).toBe("ru");
+      expect(await resolveBridgeLocale(db, userId, {})).toBe("ru");
+      expect(await resolveBridgeLocaleDecision(db, userId, {})).toEqual({
+        locale: "ru",
+        source: "instance",
+        forcedLanguage: null,
+      });
+
+      await setInstanceLanguage(null);
+      expect(await instanceBridgeLocale(db)).toBeNull();
+      expect(await resolveBridgeLocale(db, userId, {})).toBe("en");
+    });
+
+    it("the person's own preference wins over the instance language", async () => {
+      const user = await makeUser();
+      await db.insert(userUiLanguage).values({ userId: user, language: "en" });
+      await setInstanceLanguage("ru");
+      expect(await resolveBridgeLocaleDecision(db, user, {})).toEqual({
+        locale: "en",
+        source: "user",
+        forcedLanguage: null,
+      });
+      await setInstanceLanguage(null);
+    });
+
+    it("the command menu follows the instance language and the env force", async () => {
+      await setInstanceLanguage("ru");
+      expect(await telegramDmMenuLocale(db, {})).toBe("ru");
+      expect(await telegramDmMenuLocale(db, { [BRIDGE_LOCALE_LANGUAGES_ENV]: "en" })).toBe("en");
+      await setInstanceLanguage(null);
+      expect(await telegramDmMenuLocale(db, {})).toBe("en");
+      expect(await telegramDmMenuLocale(db, { [BRIDGE_LOCALE_LANGUAGES_ENV]: "ru" })).toBe("ru");
+    });
+
     it("a user without a stored preference resolves to English", async () => {
       const userId = await makeUser();
       expect(await userBridgeLocale(db, userId)).toBeNull();
@@ -99,16 +159,24 @@ describe("bridge locale decision (1.7-TG-LOCALE)", () => {
       expect(await resolveBridgeLocale(db, enUser, {})).toBe("en");
 
       // The same decision drives the command menu copy (instance level): with
-      // no force it stays English.
-      expect(telegramDmMenuLocale({})).toBe("en");
+      // no instance setting and no force it stays English
+      // (myrmidon(1.6.5-TG-LOCALE-C)).
+      expect(await telegramDmMenuLocale(db, {})).toBe("en");
     });
 
-    it("the env force overrides both users", async () => {
+    it("the env force overrides the user preference and the instance setting", async () => {
       const ruUser = await makeUser();
       await db.insert(userUiLanguage).values({ userId: ruUser, language: "ru" });
+      await setInstanceLanguage("ru");
       expect(await resolveBridgeLocale(db, ruUser, { [BRIDGE_LOCALE_LANGUAGES_ENV]: "en" })).toBe("en");
       const plain = await makeUser();
       expect(await resolveBridgeLocale(db, plain, { [BRIDGE_LOCALE_LANGUAGES_ENV]: "ru" })).toBe("ru");
+      expect(await resolveBridgeLocaleDecision(db, plain, { [BRIDGE_LOCALE_LANGUAGES_ENV]: "ru" })).toEqual({
+        locale: "ru",
+        source: "environment",
+        forcedLanguage: "ru",
+      });
+      await setInstanceLanguage(null);
     });
   });
 });

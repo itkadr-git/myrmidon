@@ -6,6 +6,8 @@ import { logger } from "../middleware/logger.js";
 // budget without restarting the server — a restart drops every run in flight.
 import { resolveAgentTeamLiveness, type ResolvedTeamLiveness } from "@paperclipai/shared";
 import { issueHasNoExecutionHold, wakeNotParkedOnExecutionHold } from "./settled-holds/ready-predicate.js";
+// myrmidon(1.6.5 F-26 T5): the cooling window of stale wake candidates (design §4.3).
+import { isIssueCoolingDown, readSwarmSettings } from "./wake-task-guard.js";
 
 /**
  * Idle pickup (IDLE-PICKUP, Myrmidon 1.3).
@@ -505,6 +507,13 @@ export async function idlePickupForAgent(
   // order the queued-run start path uses for one agent's runs.
   const ordered = orderIdlePickupCandidates(candidates);
 
+  // myrmidon(1.6.5 F-26 T5, design §4.3): cooling. A task whose last
+  // automatic run ended stale and that has not moved since is not woken again
+  // until the exponential window (base*2^(n-1), ceiling 24 h) elapses — this
+  // is what stops the "blocked 100/246 М" repeat-wake burn. One settings read
+  // per pass; the per-issue check is one indexed query each.
+  const swarmSettings = await readSwarmSettings(deps.db);
+
   for (const candidate of ordered) {
     // The release path passes the issue whose execution was just released:
     // that issue is the agent's PAST work, not the next one. Waking it again
@@ -527,6 +536,31 @@ export async function idlePickupForAgent(
       // successful-run-handoff / stranded-recovery paths own that next step.
       result.alreadyActive += 1;
       continue;
+    }
+    // myrmidon(1.6.5 F-26 T5, design §4.3): skip a task that is cooling down.
+    {
+      const cooling = await isIssueCoolingDown(
+        deps.db,
+        agent.companyId,
+        candidate.id,
+        swarmSettings,
+      );
+      if (cooling.cooling) {
+        result.alreadyActive += 1;
+        logger.info(
+          {
+            agentId: agent.id,
+            companyId: agent.companyId,
+            issueId: candidate.id,
+            staleCount: cooling.staleCount,
+            cooldownMin: cooling.cooldownMin,
+            nextWakeAt: cooling.nextWakeAt?.toISOString() ?? null,
+            reason: cooling.reason,
+          },
+          "myrmidon.wake_task_guard.cooling: idle pickup skipped a cooling issue",
+        );
+        continue;
+      }
     }
     // A wake already covers this issue in any non-terminal status (queued,
     // deferred_issue_execution, claimed — not only "queued"): the admission
