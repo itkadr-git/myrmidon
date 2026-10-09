@@ -94,6 +94,15 @@ describe("notify hooks", () => {
   });
 });
 
+/** A complete stored block: a partial one is not a settings row and falls back to the default (off). */
+const stored = (enabled: boolean) => ({
+  enabled,
+  leaseTtlSec: 900,
+  maxActiveTasks: 3,
+  sweepIntervalSec: 30,
+  p0Preemption: true,
+});
+
 describe("the switch is read per event (no restart)", () => {
   // A db that fails the test on any access: a swarm that is off must not even read.
   const untouchedDb = new Proxy(
@@ -109,7 +118,7 @@ describe("the switch is read per event (no restart)", () => {
     let enabled = true;
     const ports = {
       db: untouchedDb,
-      settings: { getGeneral: async () => ({ swarm: { enabled } }) as never },
+      settings: { getGeneral: async () => ({ swarm: stored(enabled) }) as never },
       env: {},
     };
     expect(await buildSwarmMatcher(ports)).not.toBeNull();
@@ -123,7 +132,7 @@ describe("the switch is read per event (no restart)", () => {
     let enabled = true;
     const ports = {
       db: untouchedDb,
-      settings: { getGeneral: async () => ({ swarm: { enabled } }) as never },
+      settings: { getGeneral: async () => ({ swarm: stored(enabled) }) as never },
       env: {},
     };
     const sink = {
