@@ -6405,9 +6405,16 @@ export function issueService(db: Db) {
   // 1.6.5 (F-27 rework 09.10): a caste key the caller names must exist in the
   // company's caste directory (design §2.1). NULL clears to the project/company
   // default — only a non-null key is validated.
-  async function assertCasteKeyExists(companyId: string, casteKey: string | null | undefined) {
+  async function assertCasteKeyExists(
+    companyId: string,
+    casteKey: string | null | undefined,
+    runner?: Db,
+  ) {
     if (casteKey == null) return;
-    const row = await casteStore.findCaste(companyId, casteKey);
+    // `runner` is the caller's transaction when it has one: a lookup on the
+    // pool from inside a transaction needs a second connection and can
+    // deadlock a drained pool.
+    const row = await (runner ? createCasteStore({ db: runner }) : casteStore).findCaste(companyId, casteKey);
     if (!row) {
       throw unprocessable(`caste "${casteKey}" does not exist in this company`, {
         code: "issue_caste_unknown",
@@ -6419,8 +6426,11 @@ export function issueService(db: Db) {
   // caller did not set one — the swarm settings map `priority` to a number
   // (swarmClaim.pheromoneDefaults, edited in the swarm settings UI). Unknown
   // priorities read as `medium`, matching the schema default.
-  async function defaultPheromoneStrengthForPriority(priority: string): Promise<number> {
-    const raw = (await instanceSettings.getGeneral()) as unknown as Record<string, unknown> | null;
+  async function defaultPheromoneStrengthForPriority(
+    priority: string,
+    runner?: Db,
+  ): Promise<number> {
+    const raw = (await (runner ? instanceSettingsService(runner) : instanceSettings).getGeneral()) as unknown as Record<string, unknown> | null;
     const stored = raw && typeof raw === "object" ? (raw as { swarmClaim?: unknown }).swarmClaim : undefined;
     const resolved = resolveSwarmClaimSettings({
       env: process.env,
@@ -9610,6 +9620,15 @@ export function issueService(db: Db) {
       ) {
         throw unprocessable("in_progress issues require an assignee");
       }
+      // 1.6.5 (F-27): the settings read and the caste lookup run on the pool
+      // BEFORE the transaction opens. Inside it they would need a second
+      // connection while the transaction holds one — concurrent creates then
+      // exhaust the pool and deadlock (issue-watchdogs-routes timed out on it).
+      const defaultPheromoneStrength =
+        issueData.pheromoneStrength == null
+          ? await defaultPheromoneStrengthForPriority(issueData.priority ?? "medium")
+          : undefined;
+      await assertCasteKeyExists(companyId, issueData.casteKey);
       const persist = async (tx: DbTransaction) => {
         await assertExecutionTaskParent(tx as unknown as Db, companyId, issueData.parentId);
         if (issueData.conversationAgentId && issueData.conversationUserId) {
@@ -9967,12 +9986,8 @@ export function issueService(db: Db) {
           // to (swarmClaim.pheromoneDefaults). Setting the number here — the
           // single write point — keeps board, agent and import creates
           // consistent without each path re-reading the settings.
-          ...(issueData.pheromoneStrength == null
-            ? {
-                pheromoneStrength: await defaultPheromoneStrengthForPriority(
-                  issueData.priority ?? "medium",
-                ),
-              }
+          ...(defaultPheromoneStrength !== undefined
+            ? { pheromoneStrength: defaultPheromoneStrength }
             : {}),
           // 1.6.5 (F-27 rework 09.10): the caste key — validated against the
           // company's directory just below; a null clears to the defaults.
@@ -10017,10 +10032,6 @@ export function issueService(db: Db) {
             assigneeUserId: values.assigneeUserId ?? null,
           }),
         );
-
-        // 1.6.5 (F-27 rework 09.10): validate the caste against the company's
-        // directory before the row lands (design §2.1).
-        await assertCasteKeyExists(companyId, values.casteKey as string | null | undefined);
 
         const [issue] = await tx.insert(issues).values(values).returning();
         if (idempotencyKey) {
@@ -10459,7 +10470,7 @@ export function issueService(db: Db) {
       // 1.6.5 (F-27 rework 09.10): validate a changed caste against the
       // company's directory (design §2.1); null clears to the defaults.
       if (data.casteKey !== undefined && data.casteKey !== existing.casteKey) {
-        await assertCasteKeyExists(existing.companyId, data.casteKey);
+        await assertCasteKeyExists(existing.companyId, data.casteKey, dbOrTx as Db);
       }
       if (existing.conversationAgentId) {
         if ((data.assigneeAgentId !== undefined && data.assigneeAgentId !== existing.conversationAgentId)
@@ -10570,6 +10581,7 @@ export function issueService(db: Db) {
       if (issueData.pheromoneStrength === null) {
         patch.pheromoneStrength = await defaultPheromoneStrengthForPriority(
           (issueData.priority as string | undefined) ?? existing.priority,
+          dbOrTx as Db,
         );
       }
 

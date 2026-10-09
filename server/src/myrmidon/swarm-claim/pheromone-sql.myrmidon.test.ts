@@ -53,6 +53,7 @@ vi.mock("../../middleware/logger.js", () => ({
 import { roleQueueRows } from "./queue.js";
 import { rolesOfQueueRow } from "./idle-queue.js";
 import { projectService } from "../../services/projects.js";
+import { issueService } from "../../services/issues.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -371,4 +372,26 @@ describeEmbeddedPostgres("F-27 pheromone: the SQL twins agree with the shared he
     const created = await service.create(companyId, { name: "real nest", defaultCasteKey: "reviewer" });
     expect(created.defaultCasteKey).toBe("reviewer");
   });
+  // Red side: with the settings read / caste lookup inside the create
+  // transaction, N concurrent creates on an N-connection pool each hold one
+  // connection and wait for a second — the pool deadlocks and the creates hang
+  // (issue-watchdogs-routes timed out on exactly this in CI of #1047).
+  it("concurrent creates do not exhaust a small pool (no second connection inside the transaction)", async () => {
+    const { companyId } = await seedCompany();
+    await db.insert(agentCastes).values({ companyId, key: "reviewer", nameEn: "Reviewer" });
+    const smallDb = createDb(tempDb!.connectionString, { maxConnections: 3 });
+    const service = issueService(smallDb);
+    const created = await Promise.all(
+      Array.from({ length: 6 }, (_, index) =>
+        service.create(companyId, {
+          title: `pool task ${index}`,
+          priority: "high",
+          casteKey: "reviewer",
+        } as never),
+      ),
+    );
+    expect(created).toHaveLength(6);
+    expect(new Set(created.map((issue) => issue.pheromoneStrength)).size).toBe(1);
+    expect(created[0]!.casteKey).toBe("reviewer");
+  }, 30_000);
 });
