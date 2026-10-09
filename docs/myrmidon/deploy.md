@@ -569,6 +569,18 @@ ORDER BY total_exec_time DESC LIMIT 20;"
 A reset of the counters between the two samples makes the comparison clean:
 `SELECT pg_stat_statements_reset();` (same `exec -T db psql -c` shape, run by the operator).
 
+## nginx proxy buffers in front of the board (NGINX-PROXY-BUFFERS)
+
+The production reverse proxy lives outside this repository, but its sizing is
+board-relevant: agent wakes embed the issue list, and answers of 64 KB+ overflow
+nginx's default proxy buffers (the upstream response gets buffered to disk).
+[`scripts/myrmidon/deploy/nginx-proxy-buffers.conf.example`](../../scripts/myrmidon/deploy/nginx-proxy-buffers.conf.example)
+carries the server-block fragment (`proxy_buffer_size 64k`, `proxy_buffers 16 64k`,
+`proxy_busy_buffers_size 128k`) for the `location /` block that proxies to the board
+service; the agent list defaults (compact projection, limit 200 by default and 500 at most, no description; switch `issuesListAgentDefaults`) keep
+the typical wake answer <= 500 KB, the buffers absorb the larger explicit requests.
+Apply with `nginx -t && nginx -s reload`.
+
 ## One boot path (systemd unit)
 
 The board container must be started at boot from **the same compose files the
