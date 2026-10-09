@@ -49,9 +49,9 @@ const mockAdapterExecute = vi.hoisted(() =>
   })),
 );
 
-vi.mock("../adapters/index.ts", async () => {
-  const actual = await vi.importActual<typeof import("../adapters/index.ts")>(
-    "../adapters/index.ts",
+vi.mock("../adapters/index.js", async () => {
+  const actual = await vi.importActual<typeof import("../adapters/index.js")>(
+    "../adapters/index.js",
   );
   return {
     ...actual,
@@ -251,7 +251,7 @@ describeEmbeddedPostgres("myrmidon(1.6.5 F-26 T5) wake guard against Postgres", 
   });
 
   it("heartbeat seam: automatic swarm wake without issueId creates no run and never reaches the adapter", async () => {
-    const { heartbeatService } = await import("../services/heartbeat.ts");
+    const { heartbeatService } = await import("../services/heartbeat.js");
     const heartbeat = heartbeatService(db, {
       runtimeEnv: { ...process.env, PAPERCLIP_IN_WORKTREE: "false" },
     });
