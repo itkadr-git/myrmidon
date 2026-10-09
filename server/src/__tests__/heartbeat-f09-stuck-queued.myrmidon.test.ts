@@ -557,7 +557,7 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
     await backdateRun(run.id, 120); // 2 hours > 60 min stall threshold
 
     // The attention feed build scans for stalled runs and raises the card.
-    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const feed = await attentionService(db, { feedCacheTtlMs: 0 }).list(companyId, { userId: "board-user" });
     const card = feed.items.find((item) => item.sourceKind === "queue_stall");
     expect(card).toBeTruthy();
     expect(card?.subject.kind).toBe("run");
@@ -595,7 +595,7 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
     // Do NOT backdate — the run is fresh (< stall threshold).
 
     // The attention feed build scans for stalled runs — none should appear.
-    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const feed = await attentionService(db, { feedCacheTtlMs: 0 }).list(companyId, { userId: "board-user" });
     const card = feed.items.find((item) => item.sourceKind === "queue_stall");
     expect(card).toBeUndefined();
   }, 30_000);
@@ -616,7 +616,7 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
     const run = await queueUnexplainedRun(agentId, issueId);
 
     // The card should be present — the run is stalled with no waitReason.
-    let feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    let feed = await attentionService(db, { feedCacheTtlMs: 0 }).list(companyId, { userId: "board-user" });
     let card = feed.items.find((item) => item.sourceKind === "queue_stall");
     expect(card).toBeTruthy();
 
@@ -629,7 +629,7 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
     expect(stored?.status).not.toBe("queued");
 
     // Card should be gone — the run is no longer queued.
-    feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    feed = await attentionService(db, { feedCacheTtlMs: 0 }).list(companyId, { userId: "board-user" });
     card = feed.items.find((item) => item.sourceKind === "queue_stall");
     expect(card).toBeUndefined();
   }, 30_000);
