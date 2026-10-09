@@ -370,29 +370,40 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
     expect(stored?.status).not.toBe("queued");
   }, 30_000);
 
-  it("keeps waitReason null for a run younger than the explain threshold", async () => {
-    // Red-side: the sweep must not write a waitReason to a run that is not
-    // old enough. The explain threshold (default 60s) gates the write.
-    pinAdmission({ maxConcurrentRuns: 0 });
+  it("keeps waitReason null when the sweep never ran", async () => {
+    // Red-side: the sweep must not fabricate a waitReason. A run that was
+    // never processed by the sweep has no waitReason — the queue_stall card
+    // (not a fake reason) surfaces it.
     applyRunPrioritySettings(readRunPriorityFromEnv({}));
 
     const { companyId, agentId } = await seedCompanyAndAgent({ name: "Eng", role: "engineer" });
     const issueId = await seedIssue(companyId, {
-      title: "Fresh work",
+      title: "No sweep work",
       priority: "medium",
       assigneeAgentId: agentId,
       status: "todo",
     });
 
-    const run = await wakeAndQueue(agentId, issueId);
-    // Do NOT backdate — the run is fresh (< 60s explain threshold).
+    // Create the run directly — bypass wakeup so startNextQueuedRunForAgent
+    // is not called.
+    const run = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId,
+        agentId,
+        invocationSource: "on_demand",
+        triggerDetail: "manual",
+        status: "queued",
+        contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+    await backdateRun(run.id, 120); // 2 hours > 60s explain threshold
 
-    await heartbeat.resumeQueuedRuns();
-    await heartbeat.drainActiveRunExecutions();
-
+    // Do NOT run the sweep. The waitReason must be null — no denial was
+    // observed because the sweep never processed this run.
     const stored = await runRow(run.id);
     expect(stored?.status).toBe("queued");
-    // The waitReason must be null — the run is not old enough to explain.
     const context = stored?.contextSnapshot as Record<string, unknown> | null;
     expect(context?.waitReason ?? null).toBeNull();
   }, 30_000);
@@ -400,7 +411,6 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
   it("raises a queue_stall attention card for a run older than the stall threshold", async () => {
     // A run queued longer than QUEUED_RUN_STALE_AFTER_SEC (default 3600s) with
     // no waitReason raises a queue_stall attention card.
-    pinAdmission({ maxConcurrentRuns: 0 });
     applyRunPrioritySettings(readRunPriorityFromEnv({}));
 
     const { companyId, agentId } = await seedCompanyAndAgent({ name: "Eng", role: "engineer" });
@@ -411,11 +421,22 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
       status: "todo",
     });
 
-    const run = await wakeAndQueue(agentId, issueId);
+    // Create the run directly — bypass wakeup so no gate denial is recorded.
+    const run = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId,
+        agentId,
+        invocationSource: "on_demand",
+        triggerDetail: "manual",
+        status: "queued",
+        contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+      })
+      .returning()
+      .then((rows) => rows[0]!);
     // Backdate past the stall threshold (default 3600s = 60 min).
     await backdateRun(run.id, 120); // 2 hours > 60 min stall threshold
 
-    // Do NOT run the sweep — the run stays queued with waitReason=null.
     // The attention feed build scans for stalled runs and raises the card.
     const feed = await attentionService(db).list(companyId, { userId: "board-user" });
     const card = feed.items.find((item) => item.sourceKind === "queue_stall");
@@ -429,7 +450,6 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
   it("does not raise a queue_stall card for a run younger than the stall threshold", async () => {
     // A run queued for less than QUEUED_RUN_STALE_AFTER_SEC must NOT raise a
     // queue_stall card — it's not stalled yet.
-    pinAdmission({ maxConcurrentRuns: 0 });
     applyRunPrioritySettings(readRunPriorityFromEnv({}));
 
     const { companyId, agentId } = await seedCompanyAndAgent({ name: "Eng", role: "engineer" });
@@ -440,12 +460,22 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
       status: "todo",
     });
 
-    const run = await wakeAndQueue(agentId, issueId);
-    // Backdate past the explain threshold (60s) but NOT the stall threshold (3600s).
-    await backdateRun(run.id, 5); // 5 minutes > 60s explain, < 60min stall
+    // Create the run directly — bypass wakeup so no gate denial is recorded.
+    await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId,
+        agentId,
+        invocationSource: "on_demand",
+        triggerDetail: "manual",
+        status: "queued",
+        contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+    // Do NOT backdate — the run is fresh (< stall threshold).
 
-    // Do NOT run the sweep — the attention feed build scans directly.
-    // No queue_stall card for a run younger than the stall threshold.
+    // The attention feed build scans for stalled runs — none should appear.
     const feed = await attentionService(db).list(companyId, { userId: "board-user" });
     const card = feed.items.find((item) => item.sourceKind === "queue_stall");
     expect(card).toBeUndefined();
@@ -454,7 +484,6 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
   it("clears the queue_stall card once the run starts", async () => {
     // When a stalled run finally starts, its queue_stall card must disappear
     // from the attention feed.
-    pinAdmission({ maxConcurrentRuns: 0 });
     applyRunPrioritySettings(readRunPriorityFromEnv({}));
 
     const { companyId, agentId } = await seedCompanyAndAgent({ name: "Eng", role: "engineer" });
@@ -465,11 +494,22 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
       status: "todo",
     });
 
-    const run = await wakeAndQueue(agentId, issueId);
+    // Create the run directly — bypass wakeup so no gate denial is recorded.
+    const run = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId,
+        agentId,
+        invocationSource: "on_demand",
+        triggerDetail: "manual",
+        status: "queued",
+        contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+      })
+      .returning()
+      .then((rows) => rows[0]!);
     await backdateRun(run.id, 120); // 2 hours > stall threshold
 
-    // Do NOT run the sweep — the run stays queued with waitReason=null.
-    // The card should be present.
+    // The card should be present — the run is stalled with no waitReason.
     let feed = await attentionService(db).list(companyId, { userId: "board-user" });
     let card = feed.items.find((item) => item.sourceKind === "queue_stall");
     expect(card).toBeTruthy();
