@@ -261,6 +261,12 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // myrmidon(RUN-STALL-SETTINGS): the stored run stall detection settings
       // survive every general write
       ...(parsed.data.runStall ? { runStall: parsed.data.runStall } : {}),
+      // myrmidon(1.6.6 CORPUS-2.0 ч.C): the stored corpus module settings survive
+      // every general write (the switch, the parse service URL, the embedder and
+      // the limits are edited on their own settings page). Without this line the
+      // vendor write path silently drops the key, so the module could only ever
+      // be switched on from the environment.
+      ...(parsed.data.corpus ? { corpus: parsed.data.corpus } : {}),
       // myrmidon(BOT-DISK E): the stored host disk threshold survives every general write
       ...(parsed.data.hostDisk ? { hostDisk: parsed.data.hostDisk } : {}),
       // myrmidon(BOT-DISK-A): the stored bot draft-directory lifecycle survives every general write
@@ -341,6 +347,16 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // myrmidon(1.6.3 PLUGIN-ENTITLEMENT A): the stored verification public key
       // survives every general write (edited on its own settings block).
       ...(parsed.data.pluginEntitlementPublicKey ? { pluginEntitlementPublicKey: parsed.data.pluginEntitlementPublicKey } : {}),
+      // myrmidon(ATTENTION-WINDOW-CACHE): the attention feed's failed-run
+      // horizon (days) and cache TTL (seconds) survive every general write —
+      // without these lines the whitelist drops the keys, a PATCH answers 200
+      // yet stores nothing, and any later write wipes a hand-set value.
+      ...(parsed.data.attentionFailedRunHorizonDays !== undefined
+        ? { attentionFailedRunHorizonDays: parsed.data.attentionFailedRunHorizonDays }
+        : {}),
+      ...(parsed.data.attentionFeedCacheTtlSeconds !== undefined
+        ? { attentionFeedCacheTtlSeconds: parsed.data.attentionFeedCacheTtlSeconds }
+        : {}),
     };
   }
   return {
