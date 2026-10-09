@@ -156,7 +156,8 @@ import { startDatastoreCare, stopDatastoreCare } from "./myrmidon/datastore-care
 import { createDataRetentionScheduler } from "./myrmidon/data-retention/index.js"; // myrmidon(1.6.5-DB-RETENTION)
 import { createRunStallSweepFromHeartbeat, registerRunStallSweep, startRunStall } from "./myrmidon/run-stall/index.js"; // myrmidon(RUN-STALL)
 // myrmidon(HERMES-RUN-REATTACH): reattach live gateway runs after a board restart
-import { sweepGatewayRunReattach } from "./myrmidon/gateway-run-reattach.js";
+import { sweepGatewayRunReattach, GATEWAY_REATTACH_SWEEP_INTERVAL_MS } from "./myrmidon/gateway-run-reattach.js";
+import { readHotRestartIntent } from "./services/hot-restart.js"; // myrmidon(T1.6): predecessor boot id for the startup reattach pass
 import { createTaskPrSyncScheduler } from "./myrmidon/task-pr-sync/index.js"; // myrmidon(TASK-PR-SYNC)
 import { createStaleBlockScheduler } from "./myrmidon/stale-block/index.js"; // myrmidon(STALE-BLOCK)
 import { createReviewRoutingScheduler } from "./myrmidon/review-routing/index.js"; // myrmidon(REVIEW-ROUTING)
@@ -1191,6 +1192,10 @@ async function startServerWithDatabaseTeardown(
   let heartbeatSchedulerStopped = false;
   let heartbeatSchedulerInterval: ReturnType<typeof setInterval> | null = null;
   let runContextColumnsBackfill: { stop(): void } | null = null; // OPE-5007 П2
+  // myrmidon(T1.6): clock for the periodic gateway-reattach pass. The startup
+  // pass refreshes it too, so the first periodic tick waits one full interval
+  // instead of doubling up on candidates the startup sweep just scanned.
+  let lastGatewayReattachSweepAtMs = 0;
   const heartbeatSchedulerInFlight = new Set<Promise<void>>();
   const trackHeartbeatSchedulerWork = (work: Promise<unknown>) => {
     let tracked: Promise<void>;
@@ -1747,6 +1752,20 @@ async function startServerWithDatabaseTeardown(
           );
           throw err;
         }
+        // myrmidon(T1.6, design BOARD-PROCESSES §4.3): read the predecessor
+        // boot id BEFORE the reconciliation below consumes (deletes) the
+        // restart intent — the startup reattach pass adopts the graceful
+        // hot-restart predecessor's rows without waiting out the 60s lease,
+        // because its process has already exited and its frozen leases will
+        // never be renewed. A live lease under any other boot id belongs to
+        // another running board process: leave it alone.
+        const predecessorIntent = await readHotRestartIntent().catch(
+          () => null,
+        );
+        const adoptableControllerBootIds =
+          predecessorIntent?.shutdownSnapshot?.previousControllerBootId
+            ? [predecessorIntent.shutdownSnapshot.previousControllerBootId]
+            : [];
         try {
           const hotRestart = await heartbeat.reconcileHotRestartAdoption();
           if (hotRestart.mode === "reported") {
@@ -1769,9 +1788,11 @@ async function startServerWithDatabaseTeardown(
         // supervision (and the result) on the board. Runs without an id or
         // whose dispatch fails fall through to the reaper unchanged.
         try {
+          lastGatewayReattachSweepAtMs = Date.now();
           const reattached = await sweepGatewayRunReattach(
             db as any,
             heartbeat,
+            { adoptableControllerBootIds },
           );
           if (reattached.reattached > 0 || reattached.failed > 0) {
             logger.warn(
@@ -2149,6 +2170,29 @@ async function startServerWithDatabaseTeardown(
                 logger.warn(
                   { ...pickedUp },
                   "periodic idle pickup woke ready assigned issues",
+                );
+              }
+            })
+            // myrmidon(T1.6, design BOARD-PROCESSES §4.3): the periodic
+            // orphan-reattach pass. When an executor process dies, its gateway
+            // runs keep a frozen controller lease until expiry; once expired,
+            // this pass reattaches them on a live process inside the reaper's
+            // stale window instead of letting the reaper finalize them. A live
+            // lease under another boot id is never touched — the periodic pass
+            // adopts no boot ids, so "expired lease" is the only condition.
+            .then(async () => {
+              if (
+                Date.now() - lastGatewayReattachSweepAtMs <
+                GATEWAY_REATTACH_SWEEP_INTERVAL_MS
+              ) {
+                return;
+              }
+              lastGatewayReattachSweepAtMs = Date.now();
+              const swept = await sweepGatewayRunReattach(db as any, heartbeat);
+              if (swept.reattached > 0 || swept.failed > 0) {
+                logger.warn(
+                  { ...swept },
+                  "periodic gateway run reattach pass complete",
                 );
               }
             })
