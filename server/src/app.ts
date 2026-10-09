@@ -143,6 +143,7 @@ import { myrmidonMetricsApp } from "./myrmidon/monitoring/metrics/index.js"; // 
 import { swarmClaimApp } from "./myrmidon/swarm-claim/index.js"; // myrmidon(1.6-SWARM)
 // myrmidon(EMERGENCY-STOP): immediate stop of the runs a draining pause left running
 import { myrmidonEmergencyStopRoutes } from "./myrmidon/emergency-stop.js";
+import { myrmidonWakeTaskGuardRoutes } from "./myrmidon/wake-task-guard-routes.js"; // myrmidon(1.6.5 F-26 T5)
 import { myrmidonStackRegistryRoutes } from "./myrmidon/stack-registry/index.js"; // myrmidon(SUA)
 import { myrmidonWipLimitRoutes } from "./myrmidon/wip-limit/index.js"; // myrmidon(1.6.1-WIP-LIMIT-A)
 import { myrmidonPromptBudgetRoutes } from "./myrmidon/prompt-budget/index.js"; // myrmidon(1.6.3 PROMPT-BUDGET B)
@@ -1051,6 +1052,7 @@ export async function createApp(
     env: process.env,
   })); // myrmidon(1.6-SWARM): per-role queues with leased claims
   api.use(myrmidonEmergencyStopRoutes(db)); // myrmidon(EMERGENCY-STOP)
+  api.use(myrmidonWakeTaskGuardRoutes(db)); // myrmidon(1.6.5 F-26 T5): cooling list for the swarm panel (T4)
   api.use(myrmidonAgentMemoryRoutes(db)); // myrmidon(MEMORY-UI): agent card Memory tab
   api.use(myrmidonAgentMemorySettingsRoutes(db)); // myrmidon(MEMORY-UI): Memory tab settings (instance admin)
   api.use(myrmidonToolPolicyCacheRoutes(db)); // myrmidon(DB-PERF-C-P4): TTL of the tool gateway policy cache (instance admin)
