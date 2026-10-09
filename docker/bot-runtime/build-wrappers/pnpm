@@ -30,6 +30,7 @@
 
 const { spawn } = require("node:child_process");
 const { devbuildPresent, refusalMessage } = require("./devbuild-gate.js");
+const { applyHeavyFallback } = require("./heavy-fallback.js");
 
 // Absolute path to the real binary: /opt/paperclip/bin is first on
 // PATH, so resolving through PATH would find THIS wrapper again.
@@ -68,8 +69,18 @@ function isLight(argv) {
   return false;
 }
 
-function runReal(argv) {
-  const child = spawn(REAL_PNPM, argv, { stdio: "inherit" });
+function runReal(argv, { light = false } = {}) {
+  // myrmidon(1.6.5 DEVBUILD-IN-BOTS): a heavy pnpm lane (install/test/exec
+  // — only reachable with the gateway present, i.e. in a build container)
+  // runs inside this container's cgroup: cap the child heap and say so.
+  // Light subcommands (version/config/store probes) skip both.
+  let env = process.env;
+  if (!light) {
+    const fb = applyHeavyFallback("pnpm");
+    env = fb.env;
+    if (fb.warning) process.stderr.write(fb.warning + "\n");
+  }
+  const child = spawn(REAL_PNPM, argv, { stdio: "inherit", env });
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
     process.on(signal, () => child.kill(signal));
   }
@@ -84,8 +95,12 @@ function runReal(argv) {
 
 function main() {
   const argv = process.argv.slice(2);
-  if (devbuildPresent() || isLight(argv)) {
+  if (devbuildPresent()) {
     runReal(argv);
+    return;
+  }
+  if (isLight(argv)) {
+    runReal(argv, { light: true });
     return;
   }
   process.stderr.write(refusalMessage("pnpm", argv) + "\n");
