@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNotNull, isNull, lte, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lt, lte, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -24,8 +24,10 @@ import {
   issues,
   joinRequests,
   documents,
+  principalPermissionGrants,
   projects,
   projectWorkspaces,
+  secretAccessEvents,
 } from "@paperclipai/db";
 import { deriveProjectUrlKey, botDiskQuotaWhyNow } from "@paperclipai/shared";
 import type {
@@ -87,6 +89,8 @@ import { readModelFallbackSignals } from "../myrmidon/litellm-fallback-signal/at
 // myrmidon(1.6.5-F-18): an empty gateway model catalog raises one card per
 // company — the accounting key is misconfigured, not a quiet window.
 import { readEmptyCatalogSignal } from "../myrmidon/litellm-costs/attention.js";
+// myrmidon(1.6.5-F11-A): the «media not connected» signals the profile compile records.
+import { readMediaMcpSignals } from "../myrmidon/bot-containers/media-mcp.js";
 // myrmidon(1.6.1-BOT-DISK-C): the disk quota sweep records one signal per bot
 // volume at/over its quota; the feed turns the registry into cards.
 import { buildBotDiskCards, readBotDiskReports } from "../myrmidon/bot-containers/bot-disk-cards.js"; // myrmidon(1.6.5 BOT-DISK-H4c)
@@ -183,6 +187,8 @@ const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   "agent_error_alert",
   "stack_update",
   "model_fallback_alert",
+  // myrmidon(1.6.5-F11-A): one card per bot without an issued media token.
+  "bot_media_mcp",
   // myrmidon(STALE-BLOCK): one card per block the watchdog lifted.
   "stale_block",
   "host_disk_alert",
@@ -229,6 +235,9 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   // myrmidon(1.6.5-F-18): an empty catalog blocks the gateway spend limits and
   // the model picker — a stop, ranked with the other gateway-ops alerts.
   empty_model_catalog: 0,
+  // myrmidon(1.6.5-F11-A): «media not connected» is configuration advice, not
+  // an error — ranked with the other advisory sources.
+  bot_media_mcp: 13,
   // myrmidon(1.6.1-WIP-LIMIT-A): a workload-oversignal sits below every
   // blocking kind but above nothing else — it is advice, not a stop.
   wip_limit: 14,
@@ -257,6 +266,11 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   // myrmidon(1.6.5 F-09): a queue stall is a workload notice — advice, ranked
   // with the other capacity signals.
   queue_stall: 14,
+  // myrmidon(1.6.5-F-23): off-run secret reads are a deliberate surface
+  // extension — visible as advice, never a stop; ranked with the other
+  // advisory notices.
+  secret_off_run_reads: 18,
+  secret_off_run_grant_expiring: 18,
 };
 
 const PENDING_INTERACTION_STATUSES = ["pending"] as const;
@@ -3396,6 +3410,48 @@ async function buildAttentionFeedSnapshot(
         }));
       }
 
+      // myrmidon(1.6.5-F11-A): one card per bot whose profile carries no media
+      // MCP block because no media token is issued. The compile pass records the
+      // signals (bot-containers/media-mcp.ts); the card clears when the pass
+      // after a token issue compiles the block in.
+      for (const media of readMediaMcpSignals(companyId)) {
+        add(createItem({
+          companyId,
+          sourceKind: "bot_media_mcp",
+          subject: {
+            kind: "agent",
+            id: media.agentId,
+            companyId,
+            title: media.title,
+            identifier: null,
+            status: null,
+            href: `/${prefix}/agents/${media.agentId}`,
+            metadata: {
+              botKey: media.botKey,
+            },
+          },
+          whyNow: media.whyNow,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the agent card and the media connection." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this media notice." },
+          ),
+          inlineResolvable: true,
+          entryRule: "the bot's profile compile found no issued media token.",
+          exitRule: "a token is issued and the next compile pass includes the media block, or the row is dismissed.",
+          dedupKey: media.dedupKey,
+          severity: media.severity,
+          activityAt: media.activityAt,
+          createdAt: media.activityAt,
+          updatedAt: media.activityAt,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: excerpt(media.summaryExcerpt),
+            images: [],
+          },
+        }));
+      }
+
       // myrmidon(1.6.5-F-18): the spend sweep completed but the gateway's
       // model catalog answered 0 models — the accounting key is almost
       // certainly restricted (no default models), and every feature reading
@@ -3484,6 +3540,119 @@ async function buildAttentionFeedSnapshot(
             images: [],
           },
         }));
+      }
+
+      // myrmidon(1.6.5-F-23): off-run secret reads and soon-expiring
+      // secrets:read_off_run grants surface as advisory items. The reads item
+      // counts the last 24h of secret_access_events with details.offRun=true;
+      // the per-agent expiry item appears three days before a grant expires.
+      // Both are computed at feed read time, so no extra periodic sweep runs.
+      {
+        const offRunReadRows = await db
+          .select({ count: sql<number>`count(*)` })
+          .from(secretAccessEvents)
+          .where(and(
+            eq(secretAccessEvents.companyId, companyId),
+            sql`${secretAccessEvents.createdAt} >= ${new Date(now - 24 * 60 * 60 * 1000).toISOString()}::timestamptz`,
+            sql`${secretAccessEvents.details} ->> 'offRun' = 'true'`,
+          ));
+        const offRunReadCount = Number(offRunReadRows[0]?.count ?? 0);
+        if (offRunReadCount > 0) {
+          add(createItem({
+            companyId,
+            sourceKind: "secret_off_run_reads",
+            subject: {
+              kind: "company",
+              id: companyId,
+              companyId,
+              title: "Off-run secret reads",
+              identifier: null,
+              status: null,
+              href: `/${prefix}/settings/secrets`,
+              metadata: { reads24h: offRunReadCount },
+            },
+            whyNow: `${offRunReadCount} secret read${offRunReadCount === 1 ? "" : "s"} outside an active run in the last 24h.`,
+            decisionVerbs: decisionVerbs(
+              { id: "inspect", label: "Inspect", description: "Open the company secrets page and review the audit trail." },
+              { id: "dismiss", label: "Dismiss", description: "Dismiss this signal for today." },
+            ),
+            inlineResolvable: true,
+            entryRule: "at least one secret read with details.offRun=true in the last 24h.",
+            exitRule: "no off-run reads in the trailing 24h, or the row is dismissed.",
+            dedupKey: `secret-off-run-reads:${companyId}:${new Date(now).toISOString().slice(0, 10)}`,
+            severity: "medium",
+            activityAt: toIso(new Date(now)),
+            createdAt: toIso(new Date(now)),
+            updatedAt: toIso(new Date(now)),
+            relatedIssue: null,
+            detail: {
+              kind: "generic",
+              summaryExcerpt: "Agents with the secrets:read_off_run grant read their own secret metadata outside an active run.",
+              images: [],
+            },
+          }));
+        }
+      }
+
+      {
+        const expiringGrants = await db
+          .select({
+            principalId: principalPermissionGrants.principalId,
+            expiresAt: principalPermissionGrants.expiresAt,
+          })
+          .from(principalPermissionGrants)
+          .where(and(
+            eq(principalPermissionGrants.companyId, companyId),
+            eq(principalPermissionGrants.principalType, "agent"),
+            eq(principalPermissionGrants.permissionKey, "secrets:read_off_run"),
+            gt(principalPermissionGrants.expiresAt, new Date(now)),
+            lt(principalPermissionGrants.expiresAt, new Date(now + 3 * 24 * 60 * 60 * 1000)),
+          ));
+        if (expiringGrants.length > 0) {
+          const expiringAgentIds = expiringGrants.map((grant) => grant.principalId);
+          const expiringAgents = await db
+            .select({ id: agents.id, name: agents.name })
+            .from(agents)
+            .where(inArray(agents.id, expiringAgentIds));
+          const expiringNameById = new Map(expiringAgents.map((agent) => [agent.id, agent.name]));
+          for (const grant of expiringGrants) {
+            if (!grant.expiresAt) continue;
+            const agentName = expiringNameById.get(grant.principalId) ?? grant.principalId;
+            add(createItem({
+              companyId,
+              sourceKind: "secret_off_run_grant_expiring",
+              subject: {
+                kind: "agent",
+                id: grant.principalId,
+                companyId,
+                title: `Off-run secret grant expiring: ${agentName}`,
+                identifier: null,
+                status: null,
+                href: `/${prefix}/agents/${grant.principalId}`,
+                metadata: { expiresAt: grant.expiresAt.toISOString() },
+              },
+              whyNow: `The secrets:read_off_run grant for ${agentName} expires ${grant.expiresAt.toISOString().slice(0, 10)}.`,
+              decisionVerbs: decisionVerbs(
+                { id: "inspect", label: "Inspect", description: "Open the agent card and renew or revoke the grant." },
+                { id: "dismiss", label: "Dismiss", description: "Dismiss this expiry warning." },
+              ),
+              inlineResolvable: true,
+              entryRule: "a secrets:read_off_run grant expires within three days.",
+              exitRule: "the grant is renewed, revoked, or expired; or the row is dismissed.",
+              dedupKey: `secret-off-run-grant-expiring:${grant.principalId}:${grant.expiresAt.toISOString().slice(0, 10)}`,
+              severity: "medium",
+              activityAt: toIso(new Date(now)),
+              createdAt: toIso(new Date(now)),
+              updatedAt: toIso(new Date(now)),
+              relatedIssue: null,
+              detail: {
+                kind: "generic",
+                summaryExcerpt: "The off-run self-secret read grant is about to expire; renew it from the agent card if the role still needs it.",
+                images: [],
+              },
+            }));
+          }
+        }
       }
 
       const deduped = new Map<string, AttentionItem>();

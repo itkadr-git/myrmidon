@@ -407,7 +407,7 @@ import {
   classifyChatWait,
   type ChatWaitReason,
 } from "../myrmidon/chat-holds/wait-notice.js";
-import { currentHostMemoryGate } from "../myrmidon/run-admission.js";
+import { currentOwnerChatTurnGate } from "../myrmidon/run-admission.js";
 import {
   telegramDmConversationsConfigured,
   telegramDmConversationsEnabled,
@@ -10192,6 +10192,17 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         if (!record) throw notFound("Chat endpoint not found");
         const endpoint = record.endpoint;
         if (endpoint.status !== "verifying" || endpoint.setup.step !== "test") {
+          // myrmidon(F-10): a Telegram endpoint leaves the wizard on its
+          // first successful delivery, so the manual test step is already
+          // settled. Treat a completion request as a no-op instead of a
+          // conflict; the activation proof was the delivery itself.
+          if (
+            endpoint.provider === "telegram" &&
+            endpoint.status === "active" &&
+            endpoint.setup.step === "complete"
+          ) {
+            return get(endpointId);
+          }
           throw conflict("This connection is not waiting for a setup test", {
             code: "chat_endpoint_not_testing",
           });
@@ -14611,7 +14622,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     runId: string,
   ): Promise<void> {
     try {
-      if (currentHostMemoryGate().state !== "closed") return;
+      // myrmidon(1.6.5 OWNER-CHAT-ADMISSION): the owner's own turn is admitted
+      // by the server container's own floor (`minFreeMemoryMb`); the host
+      // ceilings pace the automatic runs only. So a closed host floor is no
+      // longer a reason to tell the owner their answer waits — the notice is
+      // staged only while the container floor itself holds the turn back.
+      if (currentOwnerChatTurnGate().state !== "closed") return;
       const [run] = await db
         .select({ status: heartbeatRuns.status })
         .from(heartbeatRuns)
@@ -14627,7 +14643,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     } catch (error) {
       logger.warn(
         { error: redactError(error) },
-        "chat host-memory notice was not staged",
+        "chat queue-notice was not staged",
       );
     }
   }
@@ -38266,6 +38282,71 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                         sql`coalesce((${chatEndpoints.setup}->>'runtimeGeneration')::integer, 0) = ${currentPublicationRuntimeContext.generation}`,
                       ),
                     );
+                  // myrmidon(F-10): a Telegram endpoint that is still inside
+                  // the setup wizard has now survived a real provider send —
+                  // the same proof the manual "test" step demands. Settle the
+                  // wizard in this commit: setup.step → complete and status →
+                  // active, in the same transaction as the delivery receipt.
+                  // The WHERE clause re-checks the live row (verifying status +
+                  // runtime generation, matching the manual path's `step ===
+                  // "test"` precondition), so a concurrent reconnect or an
+                  // already-completed setup makes this a no-op.
+                  if (
+                    authorizationClaim.endpoint.provider === "telegram" &&
+                    authorizationClaim.endpoint.status === "verifying" &&
+                    authorizationClaim.endpoint.setup.step === "test"
+                  ) {
+                    const activated = await tx
+                      .update(chatEndpoints)
+                      .set({
+                        status: "active",
+                        // jsonb merge on the live row: setup keys written
+                        // during the network send are kept, not overwritten
+                        // by the snapshot read before it.
+                        setup: sql`coalesce(${chatEndpoints.setup}, '{}'::jsonb) || ${JSON.stringify({ step: "complete", testStartedAt: null })}::jsonb`,
+                        healthMessage: "Connected",
+                        activatedAt:
+                          authorizationClaim.endpoint.activatedAt ??
+                          committedAt,
+                        updatedAt: committedAt,
+                      })
+                      .where(
+                        and(
+                          eq(chatEndpoints.id, authorizationClaim.endpoint.id),
+                          eq(chatEndpoints.status, "verifying"),
+                          sql`${chatEndpoints.setup}->>'step' = 'test'`,
+                          sql`coalesce((${chatEndpoints.setup}->>'runtimeGeneration')::integer, 0) = ${runtimeGeneration(authorizationClaim.endpoint.setup)}`,
+                          typeof authorizationClaim.endpoint.setup.testStartedAt ===
+                            "string"
+                            ? sql`${chatEndpoints.setup}->>'testStartedAt' = ${authorizationClaim.endpoint.setup.testStartedAt}`
+                            : undefined,
+                        ),
+                      )
+                      .returning({ id: chatEndpoints.id });
+                    // The manual test step settles the tool connection only
+                    // when the endpoint actually flipped to active; a guarded
+                    // update that matched zero rows must leave the connection
+                    // untouched so endpoint and connection never diverge.
+                    if (activated.length > 0) {
+                      await tx
+                        .update(toolConnections)
+                        .set({
+                          status: "active",
+                          enabled: true,
+                          healthStatus: "healthy",
+                          healthMessage: "Connected",
+                          lastError: null,
+                          healthCheckedAt: committedAt,
+                          updatedAt: committedAt,
+                        })
+                        .where(
+                          eq(
+                            toolConnections.id,
+                            authorizationClaim.endpoint.connectionId,
+                          ),
+                        );
+                    }
+                  }
                 }
                 if (authorizationActionId) {
                   const processedAuthorization = await tx
