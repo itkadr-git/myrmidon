@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 //
 // myrmidon(1.6.6-PROCS-1.7-B): the leader-lease block of the "Processes" panel.
-// The read route belongs to part A of OPE-5413; until that part merges the tests
+// The read route belongs to part A of part A of the lease-route task; until that part merges the tests
 // drive the block with the contract fixtures in
 // docs/myrmidon/board-leases-contract/ — the mock the PR description freezes
 // for A.
@@ -92,7 +92,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("board lease contract fixtures (the mock for part A of OPE-5413)", () => {
+describe("board lease contract fixtures (the mock for part A of part A of the lease-route task)", () => {
   it("multi-process: parses into the block's read model", () => {
     const state = parseBoardLeasesState(leasesFixture);
     expect(state.leases.map((lease) => lease.name)).toEqual(["scheduler", "backup", "botops"]);

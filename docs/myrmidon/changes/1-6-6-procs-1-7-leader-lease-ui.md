@@ -11,7 +11,7 @@ panel is the leader of that lease.
 - The block reads `GET /api/myrmidon/processes/leases` and refreshes every 10
   seconds; a `leader_changed` live event cuts the wait short, so a handover is
   visible without restarting the board. The route is part A of the same task
-  (OPE-5413) and is mocked with `docs/myrmidon/board-leases-contract/*.json`
+  (part A of the lease-route task) and is mocked with `docs/myrmidon/board-leases-contract/*.json`
   until that half merges — the two halves do not touch the same files.
 - Every state is spelled out instead of showing an empty cell: a lease whose
   process row is gone, an expired lease with the epoch and lifetime that came
@@ -36,7 +36,7 @@ panel is the leader of that lease.
 - Блок читает `GET /api/myrmidon/processes/leases` и обновляется раз в 10
   секунд; живое событие `leader_changed` сокращает ожидание, поэтому передача
   аренды видна без перезапуска доски. Сам маршрут — часть A той же задачи
-  (OPE-5413) и до её слияния подменён моками
+  (part A of the lease-route task) и до её слияния подменён моками
   `docs/myrmidon/board-leases-contract/*.json`; половины не пересекаются по
   файлам.
 - Каждое состояние названо словами вместо пустой ячейки: аренда, чья строка

@@ -1,11 +1,11 @@
 // Leader-lease block of the "Processes" panel (myrmidon 1.6.6 PROCS-1.7 B,
-// design OPE-5394 §5.1/§7.2): one row per board_leases entry — the lease name,
+// design the board-processes design §5.1/§7.2): one row per board_leases entry — the lease name,
 // its holder (boot id plus the board_processes hostname/pid when that row
 // exists), epoch, acquired_at, expires_at and whether this process is the
 // leader. Read-only and self-contained: it can be dropped into the "Процессы"
-// panel (PROCS-0.1, OPE-6416) with a single line, and it renders its own "no
+// panel (PROCS-0.1, the PROCS-0.1 panel) with a single line, and it renders its own "no
 // data" state instead of taking the panel down when the endpoint is missing
-// (part A of OPE-5413 is not in this build yet).
+// (part A of part A of the lease-route task is not in this build yet).
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Crown } from "lucide-react";
 import { ApiError } from "@/api/client";
