@@ -167,9 +167,9 @@ function agent(overrides: Partial<FakeAgent> = {}): FakeAgent {
 describe("orderQueueCandidates", () => {
   it("ranks critical above medium and older blocked first", () => {
     const rows = [
-      { issueId: "i-1", identifier: null, title: "a", priority: "medium", projectId: null, createdAt: "2026-10-01T10:00:00.000Z", blockedTransitionAt: null },
-      { issueId: "i-2", identifier: null, title: "b", priority: "critical", projectId: null, createdAt: "2026-10-01T12:00:00.000Z", blockedTransitionAt: null },
-      { issueId: "i-3", identifier: null, title: "c", priority: "critical", projectId: null, createdAt: "2026-10-01T11:00:00.000Z", blockedTransitionAt: null },
+      { issueId: "i-1", identifier: null, title: "a", priority: "medium", projectId: null, createdAt: "2026-10-01T10:00:00.000Z", blockedTransitionAt: null, pheromoneStrength: 10 },
+      { issueId: "i-2", identifier: null, title: "b", priority: "critical", projectId: null, createdAt: "2026-10-01T12:00:00.000Z", blockedTransitionAt: null, pheromoneStrength: 1000 },
+      { issueId: "i-3", identifier: null, title: "c", priority: "critical", projectId: null, createdAt: "2026-10-01T11:00:00.000Z", blockedTransitionAt: null, pheromoneStrength: 1000 },
     ];
     const ordered = orderQueueCandidates(rows).map((row) => row.issueId);
     expect(ordered).toEqual(["i-3", "i-2", "i-1"]);

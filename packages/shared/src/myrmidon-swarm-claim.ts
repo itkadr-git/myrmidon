@@ -60,6 +60,7 @@ export const SWARM_CLAIM_SETTING_KEYS = [
   "maxActiveTasks",
   "sweepIntervalSec",
   "p0Preemption",
+  "pheromoneDefaults",
 ] as const;
 
 export type SwarmClaimSettingKey = (typeof SWARM_CLAIM_SETTING_KEYS)[number];
@@ -97,6 +98,27 @@ export const DEFAULT_SWARM_CLAIM_ENABLED_COMPANY_IDS: string[] = [];
  */
 export const SWARM_CLAIM_P0_PREEMPTION_ENV = "MYRMIDON_SWARM_CLAIM_P0_PREEMPTION";
 export const DEFAULT_SWARM_CLAIM_P0_PREEMPTION = true;
+
+/**
+ * 1.6.5 (F-27 PHEROMONE): the pheromone strength a task gets when it is
+ * created without an explicit `pheromoneStrength`, keyed by its `priority`
+ * enum. The owner tunes the mapping in the swarm settings UI ("соответствие
+ * приоритета и силы"); there is no env override — forcing a global mapping
+ * would silently rewrite every team's tuning.
+ */
+export const DEFAULT_PHEROMONE_STRENGTH_BY_PRIORITY: {
+  critical: number;
+  high: number;
+  medium: number;
+  low: number;
+} = {
+  critical: 1000,
+  high: 100,
+  medium: 10,
+  low: 1,
+};
+export const MIN_PHEROMONE_STRENGTH = 0;
+export const MAX_PHEROMONE_STRENGTH = 1_000_000;
 
 /** How long one lease lives without a heartbeat. */
 export const DEFAULT_SWARM_LEASE_TTL_SEC = 900;
@@ -192,6 +214,12 @@ export interface SwarmQueueCandidate {
   issueId: string;
   identifier?: string | null;
   priority: string | null;
+  /**
+   * 1.6.5 (F-27 PHEROMONE): numeric pheromone strength of the task; the higher
+   * the value, the earlier the task ranks inside its P0 band. Rows fetched
+   * before the column landed (or callers that do not carry it yet) read as 0.
+   */
+  pheromoneStrength?: number | null;
   /** Tie-break: the older the task entered the queue, the earlier it ranks. */
   queuedAt: Date | number | string | null;
 }
@@ -205,15 +233,22 @@ function queuedAtMs(value: SwarmQueueCandidate["queuedAt"]): number {
 }
 
 /**
- * The queue order: highest priority first (a `critical` task is the top of the
- * queue), oldest entry into the queue breaks ties. This is the single order the
- * core picks in and the supervisor view renders, so "the top of the queue" means
- * the same thing in both.
+ * The queue order: a `critical` (P0) task preempts the whole queue; inside its
+ * P0 band the stronger pheromone wins (higher `pheromoneStrength` first); the
+ * oldest entry into the queue breaks the remaining ties. This is the single
+ * order the core picks in, the F-26 board-side matching reads and the
+ * supervisor view renders, so "the top of the queue" means the same thing
+ * everywhere.
  *
  * 1.6.1 (SWARM-SETTINGS-UI): `p0Preemption` off demotes the priority rank to a
- * tie-break-only signal — the queue becomes strictly oldest-first, so a critical
- * task no longer jumps it. Passing the setting is optional so every existing
- * call site (the supervisor view included) keeps the 1.6 order by default.
+ * tie-break-only signal — the queue orders by pheromone strength, then age, so
+ * a critical task no longer jumps it. Passing the setting is optional so every
+ * existing call site (the supervisor view included) keeps the 1.6 order by
+ * default.
+ *
+ * 1.6.5 (F-27 PHEROMONE): the strength rank sits between the P0 band and the
+ * age tie-break. A task whose strength was never set ranks as 0 — behind every
+ * task with an explicit strength of the same band, ahead of nothing.
  */
 export function orderSwarmQueueCandidates<T extends SwarmQueueCandidate>(
   candidates: readonly T[],
@@ -226,8 +261,16 @@ export function orderSwarmQueueCandidates<T extends SwarmQueueCandidate>(
       const rightRank = swarmPriorityRank(right.priority);
       if (leftRank !== rightRank) return leftRank - rightRank;
     }
+    const strengthDelta = pheromoneStrengthOf(right) - pheromoneStrengthOf(left);
+    if (strengthDelta !== 0) return strengthDelta;
     return queuedAtMs(left.queuedAt) - queuedAtMs(right.queuedAt);
   });
+}
+
+/** The strength a candidate ranks with: explicit value, or 0 when unset. */
+function pheromoneStrengthOf(candidate: SwarmQueueCandidate): number {
+  const value = candidate.pheromoneStrength;
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
 /** A lease as the queue and the supervisor view read it. */
@@ -286,6 +329,19 @@ const sweepIntervalSchema = z.number().int().min(MIN_SWARM_CLAIM_SWEEP_INTERVAL_
 const enabledRolesSchema = z.array(z.string().trim().min(1).max(200)).max(200);
 const enabledCompanyIdsSchema = z.array(z.string().trim().min(1).max(64)).max(200);
 
+// 1.6.5 (F-27 PHEROMONE): the priority → pheromone-strength mapping the create
+// path applies when a task arrives without an explicit strength. All four
+// priority keys are required in a stored value so a hand-edited row cannot
+// silently zero one band; each value is an integer in the documented range.
+const pheromoneDefaultsSchema = z
+  .object({
+    critical: z.number().int().min(MIN_PHEROMONE_STRENGTH).max(MAX_PHEROMONE_STRENGTH),
+    high: z.number().int().min(MIN_PHEROMONE_STRENGTH).max(MAX_PHEROMONE_STRENGTH),
+    medium: z.number().int().min(MIN_PHEROMONE_STRENGTH).max(MAX_PHEROMONE_STRENGTH),
+    low: z.number().int().min(MIN_PHEROMONE_STRENGTH).max(MAX_PHEROMONE_STRENGTH),
+  })
+  .strict();
+
 /** The canonical stored shape of `instance_settings.general.swarmClaim`. */
 export const swarmClaimSettingsSchema = z
   .object({
@@ -296,6 +352,7 @@ export const swarmClaimSettingsSchema = z
     maxActiveTasks: maxActiveTasksSchema,
     sweepIntervalSec: sweepIntervalSchema,
     p0Preemption: z.boolean().default(DEFAULT_SWARM_CLAIM_P0_PREEMPTION),
+    pheromoneDefaults: pheromoneDefaultsSchema.default(DEFAULT_PHEROMONE_STRENGTH_BY_PRIORITY),
   })
   .strict();
 
@@ -309,6 +366,7 @@ export const patchSwarmClaimSettingsSchema = z
     maxActiveTasks: maxActiveTasksSchema.optional(),
     sweepIntervalSec: sweepIntervalSchema.optional(),
     p0Preemption: z.boolean().optional(),
+    pheromoneDefaults: pheromoneDefaultsSchema.optional(),
   })
   .strict();
 
@@ -363,6 +421,7 @@ export function readSwarmClaimSettingsFromEnv(
       parseSwarmClaimEnabled(env[SWARM_CLAIM_P0_PREEMPTION_ENV]) ?? DEFAULT_SWARM_CLAIM_P0_PREEMPTION,
     enabledRoles: readSwarmClaimListEnv(env[SWARM_CLAIM_ENABLED_ROLES_ENV]),
     enabledCompanyIds: readSwarmClaimListEnv(env[SWARM_CLAIM_ENABLED_COMPANY_IDS_ENV]),
+    pheromoneDefaults: { ...DEFAULT_PHEROMONE_STRENGTH_BY_PRIORITY },
   };
 }
 
@@ -426,7 +485,6 @@ export function resolveSwarmClaimSettings(options: {
             : stored.enabledCompanyIds,
       }
     : envSettings;
-
   // The source of each key: the override won ("env"), the stored row won
   // ("settings"), or nothing was set and the built-in default applied
   // ("default"). The UI and the supervisor view render exactly this.
@@ -467,6 +525,9 @@ export function resolveSwarmClaimSettings(options: {
     : stored
       ? "settings"
       : "default";
+  // F-27: the mapping has no env override — it comes from the stored row or
+  // the built-in default, never from the process environment.
+  sources.pheromoneDefaults = stored ? "settings" : "default";
   return { settings, sources };
 }
 
@@ -546,6 +607,8 @@ export function mergeSwarmClaimSettings(
     sweepIntervalSec:
       patch.sweepIntervalSec === undefined ? base.sweepIntervalSec : patch.sweepIntervalSec,
     p0Preemption: patch.p0Preemption === undefined ? base.p0Preemption : patch.p0Preemption,
+    pheromoneDefaults:
+      patch.pheromoneDefaults === undefined ? base.pheromoneDefaults : patch.pheromoneDefaults,
   };
 }
 

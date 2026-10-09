@@ -155,6 +155,7 @@ export interface AcceptedPlanDecompositionChild {
   workMode: IssueWorkMode;
   harnessKind?: IssueHarnessKind | null;
   priority: IssuePriority;
+  pheromoneStrength?: number | null;
   reviewPolicy?: IssueReviewPolicy | null;
   assigneeAgentId?: string | null;
   assigneeUserId?: string | null;
@@ -799,6 +800,11 @@ export interface Issue {
   status: IssueStatus;
   workMode: IssueWorkMode;
   priority: IssuePriority;
+  /** 1.6.5 (F-27 PHEROMONE): numeric swarm-queue strength; ≥ 0, default 0.
+   * Optional on the wire shape so callers constructing an Issue fixture do not
+   * have to name it; the DB column is NOT NULL DEFAULT 0, so API payloads
+   * always carry it. */
+  pheromoneStrength?: number;
   reviewPolicy: IssueReviewPolicy | null;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
@@ -888,6 +894,7 @@ export type CompactIssue = Pick<
   | "status"
   | "workMode"
   | "priority"
+  | "pheromoneStrength"
   | "reviewPolicy"
   | "assigneeAgentId"
   | "assigneeUserId"
@@ -1098,6 +1105,7 @@ export interface SuggestedTaskDraft {
   title: string;
   description?: string | null;
   priority?: IssuePriority | null;
+  pheromoneStrength?: number | null;
   workMode?: IssueWorkMode | null;
   assigneeAgentId?: string | null;
   assigneeUserId?: string | null;

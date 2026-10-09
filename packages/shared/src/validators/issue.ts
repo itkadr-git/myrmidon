@@ -41,6 +41,19 @@ import {
   trustAuthorizationPolicySchema,
 } from "./trust-policy.js";
 import { objectWithoutDefaults } from "./partial.js";
+import {
+  MAX_PHEROMONE_STRENGTH,
+  MIN_PHEROMONE_STRENGTH,
+} from "../myrmidon-swarm-claim.js";
+
+// 1.6.5 (F-27 PHEROMONE): the issue pheromone strength — a non-negative
+// integer the swarm queue orders by inside the P0 band. Shared between the
+// create/update schemas and the import path.
+export const issuePheromoneStrengthSchema = z
+  .number()
+  .int()
+  .min(MIN_PHEROMONE_STRENGTH)
+  .max(MAX_PHEROMONE_STRENGTH);
 
 export const issueBlockedInboxStateSchema = z.enum([
   "needs_attention",
@@ -738,6 +751,10 @@ const createIssueBaseSchema = z.object({
   workMode: z.enum(ISSUE_WORK_MODES).optional().default("standard"),
   harnessKind: z.enum(ISSUE_HARNESS_KINDS).optional().nullable(),
   priority: z.enum(ISSUE_PRIORITIES).optional().default("medium"),
+  // 1.6.5 (F-27 PHEROMONE): explicit pheromone strength. When omitted the
+  // create path derives it from `priority` via the swarm settings mapping
+  // (swarmClaim.pheromoneDefaults); the patch keeps the stored value.
+  pheromoneStrength: issuePheromoneStrengthSchema.optional().nullable(),
   reviewPolicy: z.enum(ISSUE_REVIEW_POLICIES).optional().nullable(),
   assigneeAgentId: z.string().guid().optional().nullable(),
   assigneeUserId: z.string().optional().nullable(),
@@ -1231,6 +1248,7 @@ export const suggestedTaskDraftSchema = z
       .nullable()
       .optional(),
     priority: z.enum(ISSUE_PRIORITIES).nullable().optional(),
+    pheromoneStrength: issuePheromoneStrengthSchema.nullable().optional(),
     workMode: z.enum(ISSUE_WORK_MODES).nullable().optional(),
     assigneeAgentId: z.string().guid().nullable().optional(),
     assigneeUserId: z.string().trim().min(1).nullable().optional(),

@@ -37,6 +37,8 @@ const view: SwarmClaimSettingsView = {
     maxActiveTasks: 3,
     sweepIntervalSec: 30,
     p0Preemption: true,
+    // 1.6.5 (F-27 PHEROMONE): the priority→strength mapping.
+    pheromoneDefaults: { critical: 1000, high: 100, medium: 10, low: 1 },
   },
   sources: {
     enabled: "settings",
@@ -46,6 +48,7 @@ const view: SwarmClaimSettingsView = {
     maxActiveTasks: "env",
     sweepIntervalSec: "default",
     p0Preemption: "settings",
+    pheromoneDefaults: "settings",
   },
   journal: [
     {
@@ -129,6 +132,8 @@ describe("myrmidon(1.6.1) swarm claim settings panel", () => {
       leaseTtlSec: 600,
       maxActiveTasks: null,
       sweepIntervalSec: 30,
+      // 1.6.5 (F-27 PHEROMONE): the mapping is always part of the patch.
+      pheromoneDefaults: { critical: 1000, high: 100, medium: 10, low: 1 },
     });
   });
 
