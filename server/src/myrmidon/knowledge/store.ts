@@ -1193,6 +1193,49 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     return { created, updated, pages: doc.pages.length };
   }
 
+  /**
+   * myrmidon(1.6.6 KNOWLEDGE-2.0 K-9): the evals gate appends exactly one
+   * journal line per judged publication — the judge run, the measured `delta`
+   * and the verdict — so the knowledge journal can answer "which eval_run
+   * gated this item, and with what delta" (§4.2 step 7). Written for both
+   * outcomes (kept and rolled back); it never changes the item status.
+   */
+  async function recordGateJournal(
+    nestId: string,
+    idOrSlug: string,
+    actor: KnowledgeActor,
+    input: {
+      subjectKind: string;
+      subjectRef: string;
+      evalRunId: string;
+      delta: number | null;
+      verdict: "keep" | "rollback";
+      trigger?: string | null;
+      reason?: string | null;
+      ownerNotice?: boolean;
+    },
+  ): Promise<void> {
+    const item = await loadItem(nestId, idOrSlug);
+    await appendEvent(db, {
+      companyId: item.companyId,
+      nestId,
+      itemId: item.id,
+      revisionId: item.deliveredRevisionId,
+      event: "knowledge.eval_gate",
+      payload: {
+        eval_run_id: input.evalRunId,
+        delta: input.delta,
+        verdict: input.verdict,
+        subject_kind: input.subjectKind,
+        subject_ref: input.subjectRef,
+        trigger: input.trigger ?? null,
+        reason: input.reason ?? null,
+        owner_notice: input.ownerNotice === true,
+      },
+      actor,
+    });
+  }
+
   return {
     create,
     draft,
@@ -1208,6 +1251,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     listItems,
     backlinks,
     listEvents,
+    recordGateJournal,
     search: searchNest,
     suggest,
     decideSuggestion,
