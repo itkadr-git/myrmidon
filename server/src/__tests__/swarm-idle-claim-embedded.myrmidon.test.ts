@@ -162,9 +162,17 @@ describeEmbeddedPostgres("swarm idle queue claims on the server, then wakes", ()
     return issueId;
   }
 
-  /** A live lease of another task: what makes an agent "loaded". */
+  /**
+   * A live lease of another task: what makes an agent "loaded".
+   *
+   * The load must sit in a *queue* status. The sweep releases every lease whose
+   * task is no longer queued (`listClaimsOnNonQueueIssues`) in the pass before
+   * the matcher runs, so an `in_progress` load left its holder free again and
+   * the ceiling assertion was decided by the `agents.id` tie instead of by the
+   * ceiling — the full server lane caught exactly that.
+   */
   async function seedLiveClaim(companyId: string, agentId: string) {
-    const issueId = await seedTask(companyId, { identifier: "TASK-LOAD", status: "in_progress" });
+    const issueId = await seedTask(companyId, { identifier: "TASK-LOAD", status: "todo" });
     await db.update(issues).set({ assigneeAgentId: agentId }).where(eq(issues.id, issueId));
     await db.insert(issueClaims).values({
       companyId,
