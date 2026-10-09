@@ -58,6 +58,12 @@ export const help: Record<string, string> = {
   wakeOnDemand: "Allow this agent to be woken by assignments, API calls, UI actions, or automated systems.",
   cooldownSec: "Minimum seconds between consecutive heartbeat runs.",
   maxConcurrentRuns: "Maximum number of heartbeat runs that can execute simultaneously for this agent.",
+  // myrmidon(1.6.6-SETTINGS-UI-B): the daily caps and idle-skip the server has
+  // always read from runtimeConfig.heartbeat (parseHeartbeatPolicy) but the form
+  // never exposed. 0 in a number field means "no limit" (the field is unset).
+  maxDailyRuns: "Maximum heartbeat runs per UTC day for this agent. 0: no limit.",
+  maxDailyCostCents: "Maximum recorded cost in cents per UTC day for this agent. 0: no limit.",
+  skipTimerWhenNoActionableWork: "Skip a timer wake when the agent has no actionable work on its board.",
   maxTurnContinuationEnabled: "Automatically queue bounded continuation runs when an adapter stops because its per-run turn cap was exhausted.",
   maxTurnContinuationMaxAttempts: "Maximum automatic continuations after one max-turn stop. This is separate from max turns per run.",
   maxTurnContinuationDelaySec: "Seconds to wait before starting each max-turn continuation.",

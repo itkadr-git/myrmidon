@@ -17,7 +17,7 @@ import {
 // item per skill, mirrored into `knowledge_search` with provenance and audit
 // rows; and (4) be a no-op on replay.
 
-const MIGRATION_FILE = "0310_skill_lifecycle_backfill.sql";
+const MIGRATION_FILE = "0313_skill_lifecycle_backfill.sql";
 const cleanups: Array<() => Promise<void>> = [];
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
