@@ -330,7 +330,9 @@ describeEmbeddedPostgres("inbox archive routes", () => {
 
     const archivedList = await request(app)
       .get(`/api/companies/${seeded.companyId}/issues`)
-      .query({ touchedByUserId: seeded.responsibleUserId })
+      // myrmidon(F16): a bare agent-actor list is compact now (no archivedBy*
+      // attribution), so the full row needs an explicit view=full.
+      .query({ touchedByUserId: seeded.responsibleUserId, view: "full" })
       .expect(200);
     expect(archivedList.body[0]).toMatchObject({
       id: seeded.issueId,
