@@ -1210,7 +1210,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
       evalRunId: string;
       delta: number | null;
       verdict: "keep" | "rollback";
-      trigger?: string | null;
+      lifecycleEvent?: string | null;
       reason?: string | null;
       ownerNotice?: boolean;
     },
@@ -1228,7 +1228,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
         verdict: input.verdict,
         subject_kind: input.subjectKind,
         subject_ref: input.subjectRef,
-        trigger: input.trigger ?? null,
+        lifecycle_event: input.lifecycleEvent ?? null,
         reason: input.reason ?? null,
         owner_notice: input.ownerNotice === true,
       },

@@ -182,7 +182,10 @@ describeEmbeddedPostgres("myrmidon(1.6.6 K-9) the evals gate over the database",
     const itemId = published.id;
     if (second !== undefined) {
       await module.draft(slug, { content: second, submit: true }, AGENT);
-      await module.approve(slug, OWNER, { publish: true });
+      // §2.4 has no published→published edge: re-publishing onto a newer
+      // revision is a pointer move. Approve the new revision, then publish it.
+      await module.approve(slug, OWNER);
+      await module.publish(slug, OWNER);
     }
     return { itemId, firstRevisionId };
   }

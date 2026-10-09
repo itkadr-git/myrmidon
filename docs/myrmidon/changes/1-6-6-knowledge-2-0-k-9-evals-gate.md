@@ -10,8 +10,10 @@ divergence-section: KNOWLEDGE-2.0 — единый модуль знаний
   `rule.approved` / `skill.promoted` / `page.published` opens a judge run for
   the item (`eval_run` with `subject_kind` + `subject_ref`), and a drop beyond
   the threshold, **confirmed by the repeat run**, calls `knowledge.rollback`
-  and leaves a card for the owner postfactum. A hallucination (a zeroed
-  hallucination criterion) rolls back at once, without spending the repeat.
+  and leaves a card for the owner postfactum. A hallucination — a criterion
+  named after the failure or the promise (`hallucination`, `no-invented-…`,
+  `fabricat…`, `made-up`) scored zero — rolls back at once, without spending the
+  repeat.
 - New additive migration `0313_evals_knowledge_gate.sql`: nullable
   `subject_kind` / `subject_ref` on `myrmidon_eval_runs`, so a run names the
   knowledge item it gated. Runs that are not gate runs leave both null.
@@ -35,8 +37,9 @@ divergence-section: KNOWLEDGE-2.0 — единый модуль знаний
   `rule.approved` / `skill.promoted` / `page.published` открывает прогон судьи
   для элемента (`eval_run` с `subject_kind` + `subject_ref`), а падение сверх
   порога, **подтверждённое повтором**, вызывает `knowledge.rollback` и
-  оставляет карточку владельцу постфактум. Галлюцинация (обнулённый критерий
-  галлюцинации) откатывает сразу, не тратя повтор.
+  оставляет карточку владельцу постфактум. Галлюцинация — критерий, названный
+  по провалу или по обещанию (`hallucination`, `no-invented-…`, `fabricat…`,
+  `made-up`), с нулём — откатывает сразу, не тратя повтор.
 - Новая аддитивная миграция `0313_evals_knowledge_gate.sql`: nullable-колонки
   `subject_kind` / `subject_ref` в `myrmidon_eval_runs` — прогон называет
   элемент знания, который он проверял. У прогонов, не являющихся воротами,
