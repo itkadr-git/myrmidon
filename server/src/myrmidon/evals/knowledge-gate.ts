@@ -92,8 +92,19 @@ export interface KnowledgeGateInput {
 
 /** The actor shape the knowledge module records on lifecycle events. */
 export interface KnowledgeGateActor {
-  actorType: string;
-  actorId: string;
+  /**
+   * Mirrors the knowledge module's `KnowledgeActorType` as a literal union, kept
+   * structural on purpose: `evals` must not import `knowledge` (the dependency
+   * runs one way, knowledge → evals), and the port has to stay assignable from
+   * the real module in both directions.
+   */
+  actorType: "agent" | "user" | "system";
+  /**
+   * Nullable on purpose: the knowledge module admits a system actor with no id
+   * (`KnowledgeActor.actorId` is `string | null`), and the gate forwards the
+   * caller's actor verbatim to `rollback`/`recordGateJournal`.
+   */
+  actorId: string | null;
 }
 
 export interface KnowledgeGateRollbackRequest {
