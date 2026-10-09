@@ -30,8 +30,8 @@ describe("projectSafeChatPublication plain card (F06-D)", () => {
     });
   });
 
-  it("holds up to 32 buttons, where an interaction card holds 12", () => {
-    const actions = Array.from({ length: 32 }, (_, i) => callback(i));
+  it("holds up to 100 buttons (Telegram's per-message limit), where an interaction card holds 12", () => {
+    const actions = Array.from({ length: 100 }, (_, i) => callback(i));
     expect(
       projectSafeChatPublication({
         classification: "external",
@@ -39,15 +39,15 @@ describe("projectSafeChatPublication plain card (F06-D)", () => {
         text: "list",
         card: { kind: "status", title: "t", actions },
       }).card?.actions,
-    ).toHaveLength(32);
+    ).toHaveLength(100);
     expect(() =>
       projectSafeChatPublication({
         classification: "external",
         source: "task_control",
         text: "list",
-        card: { kind: "status", title: "t", actions: [...actions, callback(32)] },
+        card: { kind: "status", title: "t", actions: [...actions, callback(100)] },
       }),
-    ).toThrow(/at most 32/);
+    ).toThrow(/at most 100/);
     expect(() =>
       projectSafeChatPublication({
         classification: "external",

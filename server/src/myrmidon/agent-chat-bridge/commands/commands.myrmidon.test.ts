@@ -379,6 +379,62 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await hasSessionRow(issue.id)).toBe(false);
   });
 
+  it("5c. a gateway model chosen for a native-provider card is written with a matching provider (F06-D)", async () => {
+    const { issue, boardUserId } = await createTelegramConversation();
+    const card = { provider: "anthropic", model: "claude-own" };
+    const base = {
+      db,
+      companyId,
+      conversationAgentId: agentId,
+      issueId: issue.id,
+      boardUserId,
+      key: "model" as const,
+      refuseIfTurnInProgress: false,
+      adapterType: "hermes_gateway",
+      adapterConfig: card,
+      botApply: { apply: async () => ({ kind: "applied_files" as const }) },
+    };
+    // A model from the gateway catalog: the pair must not be anthropic + zai-glm.
+    await applyChatAdapterOverride({ ...base, value: "zai-glm-5.3" });
+    expect(await readOverrides(issue.id)).toEqual({ adapterConfig: { model: "zai-glm-5.3", provider: "custom" } });
+    // The card's own model keeps the card's provider: no provider override.
+    await applyChatAdapterOverride({ ...base, value: "claude-own" });
+    expect(await readOverrides(issue.id)).toEqual({ adapterConfig: { model: "claude-own" } });
+    // Back to a gateway model, then to the agent default: both keys go.
+    await applyChatAdapterOverride({ ...base, value: "zai-glm-5.3" });
+    await applyChatAdapterOverride({ ...base, value: null });
+    expect(await readOverrides(issue.id)).toBeNull();
+    // A failed apply rolls the pair back together.
+    await applyChatAdapterOverride({ ...base, value: "claude-own" });
+    const failed = await applyChatAdapterOverride({
+      ...base,
+      value: "zai-glm-5.3",
+      botApply: { apply: async () => ({ kind: "error" as const, message: "boom" }) },
+    });
+    expect(failed).toMatchObject({ applied: true, botApply: { kind: "error", rolledBack: true } });
+    expect(await readOverrides(issue.id)).toEqual({ adapterConfig: { model: "claude-own" } });
+  });
+
+  it("5d. a card that already goes through the gateway gets no provider override (F06-D)", async () => {
+    const { issue, boardUserId } = await createTelegramConversation();
+    for (const card of [{}, { provider: "auto" }, { provider: "custom:litellm" }]) {
+      await applyChatAdapterOverride({
+        db,
+        companyId,
+        conversationAgentId: agentId,
+        issueId: issue.id,
+        boardUserId,
+        key: "model",
+        value: "zai-glm-5.3",
+        refuseIfTurnInProgress: false,
+        adapterType: "hermes_gateway",
+        adapterConfig: card,
+        botApply: { apply: async () => ({ kind: "applied_files" }) },
+      });
+      expect(await readOverrides(issue.id)).toEqual({ adapterConfig: { model: "zai-glm-5.3" } });
+    }
+  });
+
   it("6. /model default clears the override, dropping an empty adapterConfig entirely", async () => {
     const { issue, boardUserId } = await createTelegramConversation({
       assigneeAdapterOverrides: { adapterConfig: { model: "model-b" } },
@@ -472,7 +528,7 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(text.indexOf("dashscope-qwen3-max")).toBeLessThan(text.indexOf("zai-glm-4.6"));
   });
 
-  it("7f. a live-sized catalog keeps every z.ai chat model on screen after DashScope's (F06-D)", async () => {
+  it("7f. a live-sized catalog lists every chat model: DashScope's, then z.ai's, then the rest (F06-D)", async () => {
     const { issue, boardUserId } = await createTelegramConversation({ agentId: gatewayAgentId });
     const dashscope = Array.from({ length: 18 }, (_, i) => `dashscope-chat-${String(i + 1).padStart(2, "0")}`);
     const service = [
@@ -508,10 +564,13 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(text.indexOf("zai-glm-4.7")).toBeLessThan(text.indexOf("zai-glm-5.3\n"));
     expect(text).toMatch(/19\) zai-glm-4\.6/);
     expect(text).toMatch(/22\) zai-glm-5\.3-flash/);
-    // The screen cap still applies to the rest, and says what it left out.
-    expect(text).not.toContain("other-model-01");
-    expect(text).toContain("…and 12 more");
-    // The hidden models are still reachable by name.
+    // Owner 09.10: no ceiling — the other families follow, all of them, and
+    // nothing is reported as left out.
+    for (const id of others) expect(text).toContain(id);
+    expect(text).toMatch(/23\) other-model-01/);
+    expect(text).toMatch(/34\) other-model-12/);
+    expect(text).not.toMatch(/Buttons cover|…and \d+ more/);
+    // Any of them can be chosen by name.
     const picked = await runBridgedDirectMessageCommand(
       baseInput({
         conversationIssueId: issue.id,

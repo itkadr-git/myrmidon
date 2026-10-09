@@ -60,7 +60,7 @@ export interface GatewayModelCatalogDeps {
   /** Injected in tests: builds the client for a resolved key. */
   clientFor?: (baseUrl: string, key: string) => Pick<LitellmGatewayClient, "listAvailableModels">;
   /** Injected in tests: the collected catalog rows. */
-  readCollectedModels?: (db: Db) => Promise<Array<{ modelName: string; provider?: string | null }>>;
+  readCollectedModels?: (db: Db) => Promise<Array<{ modelName: string; provider?: string | null; mode?: string | null }>>;
 }
 
 /** myrmidon(F06-A): the reader the chooser commands and `/new` pass down. */
@@ -76,7 +76,16 @@ export function createGatewayModelCatalogReader(deps: GatewayModelCatalogDeps): 
  */
 export async function readGatewayModelCatalog(deps: GatewayModelCatalogDeps): Promise<ChatModelCatalog | null> {
   const fromAgentKey = await readAgentKeyCatalog(deps);
-  if (fromAgentKey.catalog) return fromAgentKey.catalog;
+  if (fromAgentKey.catalog) {
+    // myrmidon(F06-D): `/v1/models` names the models but not what they do. The
+    // board's collected catalog knows each model's family and declared mode, so
+    // the chat-model filter reads them from there when it can (fail-soft: a
+    // model the collection does not know falls back to the id rules).
+    const collected = await readCollectedCatalog(deps);
+    return collected
+      ? { ...fromAgentKey.catalog, providers: collected.providers, modes: collected.modes }
+      : fromAgentKey.catalog;
+  }
   // myrmidon(F06-D): the per-key read used to fail without a trace. The reason
   // code is logged (never a key or a response body) and travels with the
   // fallback catalog so the reply can name it.
@@ -171,7 +180,7 @@ async function readAgentKeyCatalog(deps: GatewayModelCatalogDeps): Promise<Agent
 /** The catalog the board collects (the cost sweep's rows) — every model the
  *  gateway serves, not just this agent's. */
 async function readCollectedCatalog(deps: GatewayModelCatalogDeps): Promise<ChatModelCatalog | null> {
-  let rows: Array<{ modelName: string; provider?: string | null }> = [];
+  let rows: Array<{ modelName: string; provider?: string | null; mode?: string | null }> = [];
   try {
     rows = await (deps.readCollectedModels ?? listLitellmModels)(deps.db);
   } catch {
@@ -180,6 +189,7 @@ async function readCollectedCatalog(deps: GatewayModelCatalogDeps): Promise<Chat
 
   const models: string[] = [];
   const providers: Record<string, string> = {};
+  const modes: Record<string, string> = {};
   const seen = new Set<string>();
   for (const row of rows) {
     const id = row.modelName?.trim();
@@ -188,9 +198,11 @@ async function readCollectedCatalog(deps: GatewayModelCatalogDeps): Promise<Chat
     models.push(id);
     const provider = typeof row.provider === "string" ? row.provider.trim() : "";
     if (provider) providers[id] = provider;
+    const mode = typeof row.mode === "string" ? row.mode.trim().toLowerCase() : "";
+    if (mode) modes[id] = mode;
   }
   if (models.length === 0) return null;
-  return { models, providers, scope: "catalog" };
+  return { models, providers, modes, scope: "catalog" };
 }
 
 /** The real secret read — the same two calls agent-keys.ts makes for an

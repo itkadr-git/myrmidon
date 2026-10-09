@@ -528,6 +528,22 @@ describe("execute", () => {
     expect(body.model_options).toEqual({ reasoning: { effort: "high" } });
   });
 
+  // myrmidon(F06-D): heartbeat merges `{ ...card, ...issueAssigneeOverrides.adapterConfig }`
+  // into ctx.config. A gateway model chosen in a native-provider card's chat is
+  // stored together with the provider that routes it (overrides.ts,
+  // providerOverrideForModel), so the pair on the wire is never the card's old
+  // provider + the new gateway model.
+  it("sends the provider and model of a chat override merged over a native-provider card as one pair", async () => {
+    const card = { ...wsBaseConfig, provider: "anthropic", model: "claude-own" };
+    const override = { model: "zai-glm-5.3", provider: "custom" };
+    const body = await runAndReadBody(makeCtx({ ...card, ...override }));
+    expect(body.model).toBe("zai-glm-5.3");
+    expect(body.provider).toBe("custom");
+    // The same override without the reconciled provider is the broken pair.
+    const broken = await runAndReadBody(makeCtx({ ...card, model: "zai-glm-5.3" }));
+    expect(broken.provider).toBe("anthropic");
+  });
+
   it("sends no model when the merged config names none (the agent's profile decides)", async () => {
     const body = await runAndReadBody(makeCtx({ ...wsBaseConfig }));
     expect("model" in body).toBe(false);

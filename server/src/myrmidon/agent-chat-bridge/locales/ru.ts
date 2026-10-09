@@ -86,7 +86,7 @@ export const bridgeTextRu: Record<BridgeTextKey, string> = {
   "chooser.reason.unsupportedAdapter": "этот адаптер не поддерживает смену из чата",
   "chooser.reason.noCandidates": "не удалось прочитать варианты для этого чата",
   "chooser.button.default": "↩ По умолчанию у агента",
-  "chooser.moreHidden": "…и ещё {count} — выбирайте по имени или номеру.",
+  "chooser.moreHidden": "Кнопки есть у первых {count} моделей; остальные выбирайте номером или именем из списка.",
   // myrmidon(F06-D): почему собственный список агента не использован.
   "chooser.keyFailure": "Причина: {reason}.",
   "chooser.keyFailure.noGatewayUrl": "в доске не настроен адрес шлюза LLM",

@@ -12,8 +12,9 @@ const COMPANY_ID = "11111111-1111-4111-8111-111111111111";
 const AGENT_ID = "22222222-2222-4222-8222-222222222222";
 const GATEWAY_ENV = { MYRMIDON_LITELLM_BASE_URL: "http://gateway.test:4000" } as NodeJS.ProcessEnv;
 const COLLECTED = async () => [
-  { modelName: "dashscope-qwen3-max", provider: "dashscope" },
-  { modelName: "zai-glm-4.6", provider: "z.ai" },
+  { modelName: "dashscope-qwen3-max", provider: "dashscope", mode: "chat" },
+  { modelName: "zai-glm-4.6", provider: "z.ai", mode: null },
+  { modelName: "dashscope-text-embedding-v4", provider: "dashscope", mode: "embedding" },
 ];
 
 function deps(overrides: Partial<GatewayModelCatalogDeps> = {}): GatewayModelCatalogDeps {
@@ -44,7 +45,18 @@ describe("readGatewayModelCatalog (F06-D)", () => {
         },
       }),
     );
-    expect(catalog).toEqual({ models: ["dashscope-qwen3-max", "zai-glm-5.3"], scope: "agentKey" });
+    // The allowlist is the agent's own; the family and the gateway-declared
+    // mode of each model come from the board's collected catalog.
+    expect(catalog).toEqual({
+      models: ["dashscope-qwen3-max", "zai-glm-5.3"],
+      scope: "agentKey",
+      providers: {
+        "dashscope-qwen3-max": "dashscope",
+        "zai-glm-4.6": "z.ai",
+        "dashscope-text-embedding-v4": "dashscope",
+      },
+      modes: { "dashscope-qwen3-max": "chat", "dashscope-text-embedding-v4": "embedding" },
+    });
     expect(keysSeen).toEqual(["card-key"]);
   });
 
@@ -84,7 +96,8 @@ describe("readGatewayModelCatalog (F06-D)", () => {
 
     const noKey = await readGatewayModelCatalog(deps());
     expect(noKey).toMatchObject({ scope: "catalog", keyFailure: "no_key" });
-    expect(noKey?.providers).toEqual({ "dashscope-qwen3-max": "dashscope", "zai-glm-4.6": "z.ai" });
+    expect(noKey?.providers).toMatchObject({ "dashscope-qwen3-max": "dashscope", "zai-glm-4.6": "z.ai" });
+    expect(noKey?.modes).toEqual({ "dashscope-qwen3-max": "chat", "dashscope-text-embedding-v4": "embedding" });
 
     const secretError = await readGatewayModelCatalog(
       deps({
@@ -123,6 +136,19 @@ describe("readGatewayModelCatalog (F06-D)", () => {
       }),
     );
     expect(emptyList).toMatchObject({ scope: "catalog", keyFailure: "empty_list" });
+  });
+
+  it("keeps the agent's own list when the collected catalog cannot be read", async () => {
+    const catalog = await readGatewayModelCatalog(
+      deps({
+        readCardKey: async () => "card-key",
+        clientFor: () => ({ listAvailableModels: async () => ["a"] }),
+        readCollectedModels: async () => {
+          throw new Error("db down");
+        },
+      }),
+    );
+    expect(catalog).toEqual({ models: ["a"], scope: "agentKey" });
   });
 
   it("answers null when neither tier has anything", async () => {

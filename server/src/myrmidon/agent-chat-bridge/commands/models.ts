@@ -35,18 +35,14 @@ export interface ChatModelCandidate {
 }
 
 /**
- * myrmidon(F06-D): the list must fit a phone screen (owner 09.10: «Список не
- * длиннее экрана»). Buttons make selection the main path, but the numbered
- * text list is what a plain `/model` still answers, so the cap is the screen,
- * not the catalog. The ranked families (the owner's channels, see
- * GATEWAY_PROVIDER_RANK) are never cut by the general cap — a list that hides
- * the owner's own second channel is the failure this cap used to cause (a live
- * catalog had 18 DashScope chat models, which left no room for z.ai) — they
- * are bounded only by the hard ceiling. The rest fills what is left of the
- * general cap, and the reply says how many were left out.
+ * myrmidon(F06-D): owner 09.10 — `/model` shows EVERY chat model the agent's key
+ * may run, of every family, with no ceiling on the count: choosing is the
+ * owner's, not ours. The numbered text list is therefore complete. Only the
+ * keyboard has a hard platform limit (Telegram: 100 buttons per message), so
+ * the buttons cover the first MAX_CHOICE_BUTTONS candidates (the owner-ranked
+ * families lead the order) and the rest stay choosable by name or number.
  */
-export const MAX_LISTED_CHAT_MODEL_CANDIDATES = 20;
-export const MAX_LISTED_RANKED_CHAT_MODEL_CANDIDATES = 30;
+export const MAX_CHOICE_BUTTONS = 98;
 
 /**
  * Adapter types whose `config.model` is read on a run (design doc fact F13).
@@ -113,11 +109,20 @@ function gatewayProviderRank(provider: string | null): number {
 }
 
 /**
- * myrmidon(F06-D): id fragments that mark a gateway model as not a chat model —
- * embeddings, OCR/vision service, rerank/moderation/TTS and the board's own
- * maintenance models (`hindsight-mem`, `deepseek-v4-flash-mem`, …). A gateway
- * catalog is the union of everything every agent key may run, so `/model` has
- * to filter it before showing it (owner 09.10: «без эмбеддингов/OCR/служебных»).
+ * myrmidon(F06-D): what the gateway itself declares a chat model to be
+ * (`model_info.mode`). LiteLLM's modes for text generation are `chat`,
+ * `responses` and the legacy `completion`; everything else it names
+ * (`embedding`, `rerank`, `ocr`, `image_generation`, `video_generation`,
+ * `audio_transcription`, `audio_speech`, `moderation`, ...) is not a chat model.
+ */
+const CHAT_MODEL_MODES: ReadonlySet<string> = new Set(["chat", "responses", "completion"]);
+
+/**
+ * myrmidon(F06-D): the fallback rule for an id whose mode the gateway did not
+ * declare (a model the board's collected catalog has not seen yet, or a row
+ * collected before the mode was stored): embeddings, OCR, rerank, moderation,
+ * image / video / speech generation and recognition. The declared mode wins
+ * whenever there is one; this list is only for the gap.
  */
 const NON_CHAT_MODEL_ID_PATTERNS: readonly RegExp[] = [
   /embed/,
@@ -128,9 +133,17 @@ const NON_CHAT_MODEL_ID_PATTERNS: readonly RegExp[] = [
   /(?:^|[-_./])asr(?:[-_./]|$)/,
   /rerank/,
   /moderation/,
-  /transcribe/,
+  /transcri/,
   /classifier/,
-  // The board's own maintenance models, by suffix and by family.
+  // Generation of pictures, video and speech; speech recognition.
+  /(?:^|[-_./])(?:image|images|video|t2i|t2v|i2v|text2image|text2video|img2img)(?:[-_./]|$)/,
+  /(?:^|[-_./])wan\d/,
+  /cogview|cogvideo|dall-?e|stable-?diffusion|(?:^|[-_./])flux(?:[-_./]|$)|(?:^|[-_./])sora(?:[-_./]|$)/,
+  /cosyvoice|paraformer|sensevoice|whisper|(?:^|[-_./])speech(?:[-_./]|$)/,
+];
+
+/** myrmidon(F06-D): the board's own maintenance models, by suffix and by family. */
+const BOARD_SERVICE_MODEL_ID_PATTERNS: readonly RegExp[] = [
   /-mem(?:[-_./]|$)/,
   /-consolidation(?:[-_./]|$)/,
   /-summary(?:[-_./]|$)/,
@@ -138,10 +151,18 @@ const NON_CHAT_MODEL_ID_PATTERNS: readonly RegExp[] = [
   /^hindsight(?:[-_./]|$)/,
 ];
 
-/** myrmidon(F06-D): whether a gateway catalog id is a chat model `/model` may offer. */
-export function isChatGatewayModelId(modelId: string): boolean {
+/**
+ * myrmidon(F06-D): whether a gateway catalog id is a chat model `/model` may
+ * offer. The gateway's declared `mode` decides when there is one; the board's
+ * own service models (`hindsight-*`, `*-mem`, ...) are dropped either way,
+ * since the gateway calls them chat models too.
+ */
+export function isChatGatewayModelId(modelId: string, mode?: string | null): boolean {
   const lowered = modelId.trim().toLowerCase();
   if (!lowered) return false;
+  if (BOARD_SERVICE_MODEL_ID_PATTERNS.some((pattern) => pattern.test(lowered))) return false;
+  const declared = mode?.trim().toLowerCase();
+  if (declared) return CHAT_MODEL_MODES.has(declared);
   return !NON_CHAT_MODEL_ID_PATTERNS.some((pattern) => pattern.test(lowered));
 }
 
@@ -179,6 +200,8 @@ export interface ChatModelCatalog {
   keyFailure?: GatewayCatalogKeyFailure;
   /** Provider family by model id, when the board's collected catalog knows it. */
   providers?: Record<string, string>;
+  /** myrmidon(F06-D): the gateway-declared mode (`chat`, `embedding`, ...) by model id, when known. */
+  modes?: Record<string, string>;
   /**
    * `agentKey` — this agent's own gateway key allowlist (the models it may
    * run); `catalog` — the whole gateway catalog, used when that per-key read
@@ -343,7 +366,7 @@ export async function listModelCandidates(
       const listedIds = new Set<string>();
       for (const raw of [...cardIds, ...read.models]) {
         const id = raw.trim();
-        if (!id || listedIds.has(id) || !isChatGatewayModelId(id)) continue;
+        if (!id || listedIds.has(id) || !isChatGatewayModelId(id, read.modes?.[id])) continue;
         listedIds.add(id);
         ids.push(id);
       }
@@ -426,40 +449,18 @@ export function resolveChatChoiceArgument(
 }
 
 /**
- * myrmidon(F06-D): how many leading candidates the numbered text list shows —
- * the general screen cap, widened to take every candidate of the owner-ranked
- * families (they lead a gateway list) up to the hard ceiling.
- */
-function listedChoiceCount(candidates: ChatModelCandidate[]): number {
-  let ranked = 0;
-  while (ranked < candidates.length) {
-    const candidate = candidates[ranked]!;
-    const rank = gatewayProviderRank(candidate.provider ?? providerPrefixOfModelId(candidate.id));
-    if (rank >= GATEWAY_PROVIDER_RANK.length) break;
-    ranked++;
-  }
-  const limit = Math.max(MAX_LISTED_CHAT_MODEL_CANDIDATES, Math.min(MAX_LISTED_RANKED_CHAT_MODEL_CANDIDATES, ranked));
-  return Math.min(limit, candidates.length);
-}
-
-/**
  * The numbered list shown after a chooser command: one continuous numbering,
- * one id per line — no family headers (owner 09.10: «без заголовков»; the
- * order already groups the families). A list longer than the screen is cut
- * (listedChoiceCount) and says how many were left out; any of them can still
- * be chosen by name or number.
+ * one id per line, every candidate (no ceiling, owner 09.10) and no family
+ * headers (owner 09.10: «без заголовков»; the order already groups the
+ * families).
  */
-export function formatChatChoiceList(candidates: ChatModelCandidate[], locale: BridgeLocale): string {
-  const shown = listedChoiceCount(candidates);
-  const lines = candidates.slice(0, shown).map((candidate, index) => `${index + 1}) ${candidate.id}`);
-  const hidden = candidates.length - shown;
-  if (hidden > 0) lines.push(t(locale, "chooser.moreHidden", { count: hidden }));
-  return lines.join("\n");
+export function formatChatChoiceList(candidates: ChatModelCandidate[], _locale?: BridgeLocale): string {
+  return candidates.map((candidate, index) => `${index + 1}) ${candidate.id}`).join("\n");
 }
 
-/** myrmidon(F06-D): the candidates the text list (and the buttons) show. */
+/** myrmidon(F06-D): the candidates the keyboard has a button for (see MAX_CHOICE_BUTTONS). */
 export function listedChatChoices(candidates: ChatModelCandidate[]): ChatModelCandidate[] {
-  return candidates.slice(0, listedChoiceCount(candidates));
+  return candidates.slice(0, MAX_CHOICE_BUTTONS);
 }
 
 /**

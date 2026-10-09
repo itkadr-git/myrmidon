@@ -9,7 +9,9 @@ import {
   isChatGatewayModelId,
   listModelCandidates,
   listedChatChoices,
+  MAX_CHOICE_BUTTONS,
 } from "./models.js";
+import { providerOverrideForModel } from "./overrides.js";
 
 describe("isChatGatewayModelId (F06-D)", () => {
   it("rejects embedding, OCR, speech, rerank and the board's own service models", () => {
@@ -31,6 +33,16 @@ describe("isChatGatewayModelId (F06-D)", () => {
       "deepseek-v4-flash-mem",
       "hindsight-consolidation",
       "x-summary",
+      "dashscope-wan2.6-t2v",
+      "wan2.2-i2v-plus",
+      "dashscope-qwen-image",
+      "dashscope-qwen-image-edit",
+      "cogview-4",
+      "cogvideox-3",
+      "dashscope-cosyvoice-v2",
+      "paraformer-v2",
+      "sensevoice-v1",
+      "whisper-1",
     ]) {
       expect(isChatGatewayModelId(id), id).toBe(false);
     }
@@ -40,6 +52,50 @@ describe("isChatGatewayModelId (F06-D)", () => {
     for (const id of ["dashscope-qwen3-max", "zai-glm-5.3", "nous-hermes-4", "x-matts-pro", "basra-chat", "memory-chat"]) {
       expect(isChatGatewayModelId(id), id).toBe(true);
     }
+  });
+});
+
+describe("isChatGatewayModelId by the gateway-declared mode (F06-D)", () => {
+  it("lets the declared mode decide, whatever the id looks like", () => {
+    // Red against an id-only rule: an unfamiliar generation model passes it.
+    expect(isChatGatewayModelId("acme-pixel-maker", "image_generation")).toBe(false);
+    expect(isChatGatewayModelId("acme-voice-9", "audio_speech")).toBe(false);
+    expect(isChatGatewayModelId("acme-ocr-lite", "ocr")).toBe(false);
+    // ... and an id that looks like a service model but is declared chat stays.
+    expect(isChatGatewayModelId("embedding-tutor", "chat")).toBe(true);
+    expect(isChatGatewayModelId("acme-think-2", "responses")).toBe(true);
+    expect(isChatGatewayModelId("acme-think-2", " CHAT ")).toBe(true);
+  });
+
+  it("drops the board's own service models even when the gateway calls them chat", () => {
+    expect(isChatGatewayModelId("hindsight-mem", "chat")).toBe(false);
+    expect(isChatGatewayModelId("deepseek-v4-flash-mem", "chat")).toBe(false);
+  });
+});
+
+describe("listModelCandidates with declared modes and no ceiling (F06-D)", () => {
+  it("drops models declared non-chat and keeps all families, DashScope then z.ai first", async () => {
+    const dash = Array.from({ length: 35 }, (_, i) => `dashscope-m${String(i + 1).padStart(2, "0")}`);
+    const zai = ["zai-glm-5.3", "zai-glm-5.3-flash"];
+    const list = await listModelCandidates("hermes_gateway", {}, async () => ({
+      models: ["mistral-large", ...zai, "acme-pixel-maker", ...dash],
+      modes: { "acme-pixel-maker": "image_generation", "mistral-large": "chat" },
+      scope: "agentKey" as const,
+    }));
+    const listed = list.candidates.map((c) => c.id);
+    expect(listed).toHaveLength(35 + 2 + 1);
+    expect(listed.slice(0, 35)).toEqual(dash);
+    expect(listed.slice(35)).toEqual(["zai-glm-5.3", "zai-glm-5.3-flash", "mistral-large"]);
+    expect(listed).not.toContain("acme-pixel-maker");
+  });
+
+  it("puts the card's models through the same filter", async () => {
+    const list = await listModelCandidates(
+      "hermes_gateway",
+      { model: "acme-pixel-maker" },
+      async () => ({ models: ["zai-glm-5.3"], modes: { "acme-pixel-maker": "image_generation" }, scope: "agentKey" as const }),
+    );
+    expect(list.candidates.map((c) => c.id)).toEqual(["zai-glm-5.3"]);
   });
 });
 
@@ -112,19 +168,38 @@ describe("formatChatChoiceList (F06-D)", () => {
     expect(text).toBe("1) dashscope-01\n2) dashscope-02\n3) zai-01");
   });
 
-  it("cuts a long list to the screen and says how many it left out", () => {
-    const candidates = ids("other", 25);
-    expect(listedChatChoices(candidates)).toHaveLength(20);
+  it("shows every candidate, however many: no ceiling on the list (owner 09.10)", () => {
+    const candidates = [...ids("dashscope", 40), ...ids("zai", 25), ...ids("other", 40)];
     const text = formatChatChoiceList(candidates, "en");
-    expect(text.split("\n")).toHaveLength(21);
-    expect(text).toContain("…and 5 more — choose by name or number.");
-    expect(formatChatChoiceList(candidates, "ru")).toContain("…и ещё 5");
+    expect(text.split("\n")).toHaveLength(105);
+    expect(text).toContain("105) other-40");
+    expect(text).not.toContain("more");
   });
 
-  it("never cuts the owner-ranked families by the general cap, only by the hard ceiling", () => {
-    const ranked = [...ids("dashscope", 24), ...ids("zai", 4)];
-    expect(listedChatChoices([...ranked, ...ids("other", 5)])).toHaveLength(28);
-    const huge = [...ids("dashscope", 40), ...ids("other", 5)];
-    expect(listedChatChoices(huge)).toHaveLength(30);
+  it("gives the keyboard only what the platform allows, in list order", () => {
+    const candidates = [...ids("dashscope", 60), ...ids("zai", 60)];
+    const shown = listedChatChoices(candidates);
+    expect(shown).toHaveLength(MAX_CHOICE_BUTTONS);
+    expect(shown[0]!.id).toBe("dashscope-01");
+    expect(listedChatChoices(ids("zai", 3))).toHaveLength(3);
+  });
+});
+
+describe("providerOverrideForModel (F06-D)", () => {
+  it("routes a gateway model of a native-provider card through the gateway", () => {
+    expect(providerOverrideForModel({ provider: "anthropic", model: "claude-own" }, "zai-glm-5.3")).toBe("custom");
+  });
+
+  it("keeps the card's provider for the card's own model and fallbacks", () => {
+    const card = { provider: "anthropic", model: "claude-own", models: { fallbacks: ["claude-small"] } };
+    expect(providerOverrideForModel(card, "claude-own")).toBeNull();
+    expect(providerOverrideForModel(card, " claude-small ")).toBeNull();
+  });
+
+  it("writes nothing for a gateway card or for no model", () => {
+    expect(providerOverrideForModel({}, "zai-glm-5.3")).toBeNull();
+    expect(providerOverrideForModel({ provider: "auto" }, "zai-glm-5.3")).toBeNull();
+    expect(providerOverrideForModel({ provider: "custom:litellm" }, "zai-glm-5.3")).toBeNull();
+    expect(providerOverrideForModel({ provider: "anthropic" }, null)).toBeNull();
   });
 });

@@ -42,6 +42,7 @@ import {
   describeEffectiveChatValue,
   formatChatChoiceList,
   listedChatChoices,
+  MAX_CHOICE_BUTTONS,
   wholeCatalogText,
   readOverrideAdapterConfig,
   resolveChatChoiceArgument,
@@ -492,6 +493,10 @@ async function handleChooserCommand(
       "\n" +
       formatChatChoiceList(availability.candidates, locale) +
       "\n" +
+      // The list is complete; only the keyboard is capped (MAX_CHOICE_BUTTONS).
+      (availability.candidates.length > MAX_CHOICE_BUTTONS
+        ? `${t(locale, "chooser.moreHidden", { count: MAX_CHOICE_BUTTONS })}\n`
+        : "") +
       // myrmidon(F06-A): the per-key read failed and this is the whole
       // gateway catalog — the person has to know the list is a superset.
       // myrmidon(F06-D): and why the agent's own list was not used.

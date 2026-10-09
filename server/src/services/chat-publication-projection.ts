@@ -15,8 +15,9 @@ const MAX_TEXT_OUTPUT_LENGTH = 4_000_000;
 const MAX_ATTACHMENTS = 20;
 const MAX_CARD_ACTIONS = 12;
 // myrmidon(F06-D): a `/model` list card carries one button per listed model
-// (up to the list's hard ceiling) plus "default"; Telegram allows 100 buttons.
-const MAX_CHOOSER_CARD_ACTIONS = 32;
+// (every model; the list is not capped) plus "default"; Telegram allows 100
+// buttons per message, MAX_CHOICE_BUTTONS (agent-chat-bridge/commands/models.ts) is 98.
+const MAX_CHOOSER_CARD_ACTIONS = 100;
 const MAX_TITLE_LENGTH = 160;
 const MAX_ACTION_LABEL_LENGTH = 80;
 

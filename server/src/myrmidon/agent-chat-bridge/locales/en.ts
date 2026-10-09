@@ -91,7 +91,7 @@ export const bridgeTextEn = {
   "chooser.reason.unsupportedAdapter": "this adapter does not support changing it from the chat",
   "chooser.reason.noCandidates": "no choices could be read for this chat",
   "chooser.button.default": "↩ Agent default",
-  "chooser.moreHidden": "…and {count} more — choose by name or number.",
+  "chooser.moreHidden": "Buttons cover the first {count} models; pick the rest by number or name from the list.",
   // myrmidon(F06-D): why a gateway agent's own model list was not used.
   "chooser.keyFailure": "Reason: {reason}.",
   "chooser.keyFailure.noGatewayUrl": "the board has no LLM gateway address configured",
