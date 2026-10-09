@@ -50,39 +50,46 @@ export interface AgentScentClassificationResult {
   outputTokens: number | null;
 }
 
-const ISSUE_SCENT_RESPONSE_FORMAT = {
-  type: "json_schema",
-  json_schema: {
-    name: "issue_scent",
-    strict: true,
-    schema: {
-      type: "object",
-      additionalProperties: false,
-      required: ["tags", "casteProbs", "complexity"],
-      properties: {
-        tags: {
-          type: "array",
-          items: { type: "string" },
-          maxItems: ISSUE_SCENT_MAX_TAGS,
-        },
-        casteProbs: {
-          type: "object",
-          additionalProperties: { type: "number" },
-        },
-        complexity: {
-          type: "object",
-          additionalProperties: false,
-          required: ["coordination", "uncertainty", "consequences"],
-          properties: {
-            coordination: { type: "number" },
-            uncertainty: { type: "number" },
-            consequences: { type: "number" },
+// Strict structured outputs accept a closed subset of JSON schema: every
+// object lists all its properties as `required` with `additionalProperties:
+// false`, and range keywords (min/max, maxItems) are not part of the subset.
+// So the caste map is spelled out per key of THIS company's directory (an
+// open `additionalProperties: {type: number}` map is rejected by strict
+// providers with a 400), and the 0..1 range and the tag cap are enforced
+// after the call — `parseIssueScentContent` clamps and slices.
+export function issueScentResponseFormat(casteKeys: readonly string[]) {
+  return {
+    type: "json_schema",
+    json_schema: {
+      name: "issue_scent",
+      strict: true,
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["tags", "casteProbs", "complexity"],
+        properties: {
+          tags: { type: "array", items: { type: "string" } },
+          casteProbs: {
+            type: "object",
+            additionalProperties: false,
+            required: [...casteKeys],
+            properties: Object.fromEntries(casteKeys.map((key) => [key, { type: "number" }])),
+          },
+          complexity: {
+            type: "object",
+            additionalProperties: false,
+            required: ["coordination", "uncertainty", "consequences"],
+            properties: {
+              coordination: { type: "number" },
+              uncertainty: { type: "number" },
+              consequences: { type: "number" },
+            },
           },
         },
       },
     },
-  },
-} as const;
+  } as const;
+}
 
 const AGENT_SCENT_RESPONSE_FORMAT = {
   type: "json_schema",
@@ -94,11 +101,7 @@ const AGENT_SCENT_RESPONSE_FORMAT = {
       additionalProperties: false,
       required: ["tags"],
       properties: {
-        tags: {
-          type: "array",
-          items: { type: "string" },
-          maxItems: ISSUE_SCENT_MAX_TAGS,
-        },
+        tags: { type: "array", items: { type: "string" } },
       },
     },
   },
@@ -163,19 +166,30 @@ export function parseIssueScentContent(content: string, casteKeys: string[]): Is
   } catch {
     return null;
   }
-  const validated = issueScentSchema.safeParse(parsed);
-  if (!validated.success) return null;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const obj = parsed as Record<string, unknown>;
+  const rawComplexity = obj.complexity as Record<string, unknown> | null | undefined;
+  if (!Array.isArray(obj.tags) || !obj.casteProbs || typeof obj.casteProbs !== "object") return null;
+  if (!rawComplexity || typeof rawComplexity !== "object") return null;
+  // The strict response schema carries no ranges (see issueScentResponseFormat),
+  // so out-of-range numbers are clamped here rather than failing the whole reply.
+  const coordination = clamp01(rawComplexity.coordination);
+  const uncertainty = clamp01(rawComplexity.uncertainty);
+  const consequences = clamp01(rawComplexity.consequences);
+  if (coordination === null || uncertainty === null || consequences === null) return null;
   const allowed = new Set(casteKeys);
   const casteProbs: Record<string, number> = {};
-  for (const [key, raw] of Object.entries(validated.data.casteProbs)) {
+  for (const [key, raw] of Object.entries(obj.casteProbs as Record<string, unknown>)) {
     const p = clamp01(raw);
     if (p !== null && allowed.has(key)) casteProbs[key] = p;
   }
-  const tags = validated.data.tags
+  const tags = obj.tags
+    .filter((t): t is string => typeof t === "string")
     .map((t) => t.trim().toLowerCase())
     .filter((t) => t.length > 0)
     .slice(0, ISSUE_SCENT_MAX_TAGS);
-  return { tags, casteProbs, complexity: validated.data.complexity };
+  const scent = { tags, casteProbs, complexity: { coordination, uncertainty, consequences } };
+  return issueScentSchema.safeParse(scent).success ? scent : null;
 }
 
 export function parseAgentScentContent(content: string): string[] {
@@ -227,7 +241,7 @@ export async function classifyIssueScent(
     system: ISSUE_SYSTEM_PROMPT,
     user,
     timeoutSec: input.timeoutSec,
-    responseFormat: ISSUE_SCENT_RESPONSE_FORMAT,
+    responseFormat: issueScentResponseFormat(input.casteKeys),
   });
   if (!result) {
     return { scent: null, model: input.model, inputTokens: null, outputTokens: null };

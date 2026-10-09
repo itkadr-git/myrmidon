@@ -21,6 +21,7 @@
 //  8. the settings reader: defaults, stored override, env kill switch.
 
 import { describe, expect, it } from "vitest";
+import { PgDialect } from "drizzle-orm/pg-core";
 import {
   DEFAULT_SCENT_SETTINGS,
   defaultStrengthForPriority,
@@ -40,6 +41,7 @@ import type {
 } from "./scent/gateway.js";
 import { deriveScentAuto, isUnclassifiableIssue } from "./scent/create-hook.js";
 import { canSpendCall, createScentService } from "./scent/service.js";
+import { issueScentResponseFormat, parseIssueScentContent } from "./scent/gateway.js";
 
 const CASTES = ["engineer", "designer", "marketer"];
 
@@ -297,12 +299,20 @@ describe("markup queue (acceptance row 7)", () => {
     // The SQL is the gate — drive a stub db that captures the WHERE clauses so
     // the test fails if someone widens the queue to closed issues or agents
     // without capabilities.
+    const dialect = new PgDialect();
     const seenSql: string[] = [];
+    const seenParams: unknown[] = [];
     const db = {
       select: () => ({
         from: (table: unknown) => ({
           where: (...clauses: unknown[]) => {
-            seenSql.push(...clauses.map((c) => JSON.stringify(c, (_k, v) => typeof v === "bigint" ? String(v) : v)));
+            for (const clause of clauses) {
+              // Render the drizzle SQL object to text + bound params (String(clause)
+              // would only print "[object Object]").
+              const query = dialect.sqlToQuery(clause as never);
+              seenSql.push(query.sql);
+              seenParams.push(...query.params);
+            }
             return {
               orderBy: () => ({ limit: () => Promise.resolve([]) }),
               // issues path awaits the where() directly
@@ -329,7 +339,10 @@ describe("markup queue (acceptance row 7)", () => {
     expect(slice.agentIds).toEqual([]);
     // §7.1 п.4a: only OPEN todos are eligible (the queue is not a backfill of
     // the whole history — that would blow the 1M tokens/day budget).
-    expect(seenSql.join(" ")).toContain("todo");
+    expect(seenParams).toContain("todo");
+    expect(seenParams).not.toContain("done");
+    expect(seenParams).not.toContain("cancelled");
+    expect(seenSql.join(" ")).toContain('"status"');
     // Agents without capabilities never occupy a batch slot.
     expect(seenSql.join(" ")).toContain("capabilities");
   });
@@ -376,5 +389,57 @@ describe("scent settings (acceptance row 8)", () => {
   it("the server-side env kill switch disables the classifier", () => {
     const s = readScentSettings({ scent: {} }, { MYRMIDON_SWARM_SCENT_ENABLED: "0" });
     expect(s.enabled).toBe(false);
+  });
+});
+
+// --- 9. Gateway: strict response schema and tolerant parsing ------------------
+
+describe("gateway response contract (acceptance row 9)", () => {
+  /** Every object in a strict JSON schema lists all its keys as required and is closed. */
+  function assertStrictObjects(node: unknown, path = "$"): void {
+    if (!node || typeof node !== "object") return;
+    const n = node as Record<string, unknown>;
+    expect(n.minimum, `${path}.minimum`).toBeUndefined();
+    expect(n.maximum, `${path}.maximum`).toBeUndefined();
+    expect(n.maxItems, `${path}.maxItems`).toBeUndefined();
+    if (n.type === "object") {
+      expect(n.additionalProperties, `${path}.additionalProperties`).toBe(false);
+      const props = Object.keys((n.properties as object | undefined) ?? {});
+      expect([...((n.required as string[] | undefined) ?? [])].sort(), `${path}.required`).toEqual(
+        props.sort(),
+      );
+    }
+    for (const [k, v] of Object.entries((n.properties as object | undefined) ?? {})) {
+      assertStrictObjects(v, `${path}.${k}`);
+    }
+    if (n.items) assertStrictObjects(n.items, `${path}[]`);
+  }
+
+  it("the issue schema is closed and spells out one key per company caste", () => {
+    const format = issueScentResponseFormat(CASTES);
+    expect(format.json_schema.strict).toBe(true);
+    assertStrictObjects(format.json_schema.schema);
+    expect(Object.keys(format.json_schema.schema.properties.casteProbs.properties)).toEqual(CASTES);
+  });
+
+  it("out-of-range numbers are clamped and unknown castes dropped instead of failing the reply", () => {
+    const parsed = parseIssueScentContent(
+      JSON.stringify({
+        tags: ["CSS ", "", "ui", "a", "b", "c", "d", "e", "f", "g"],
+        casteProbs: { engineer: 1.4, ghost: 0.9, designer: -0.2 },
+        complexity: { coordination: 0.1, uncertainty: 2, consequences: 0.3 },
+      }),
+      CASTES,
+    );
+    expect(parsed).not.toBeNull();
+    expect(parsed!.tags).toHaveLength(8);
+    expect(parsed!.tags[0]).toBe("css");
+    expect(parsed!.casteProbs).toEqual({ engineer: 1, designer: 0 });
+    expect(parsed!.complexity.uncertainty).toBe(1);
+  });
+
+  it("a reply that is not the contract is a null scent", () => {
+    expect(parseIssueScentContent("not json", CASTES)).toBeNull();
+    expect(parseIssueScentContent(JSON.stringify({ tags: [] }), CASTES)).toBeNull();
   });
 });

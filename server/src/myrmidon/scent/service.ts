@@ -20,10 +20,12 @@ import { and, eq, isNull, sql } from "drizzle-orm";
 import { agents, issues, type Db } from "@paperclipai/db";
 import {
   readScentSettings,
+  scentTaskStrength,
   type IssueScent,
   type ScentSettings,
 } from "@paperclipai/shared";
 import type { ScentGateway, AgentScentClassificationResult, ScentClassificationResult } from "./gateway.js";
+import { deriveScentAuto } from "./create-hook.js";
 
 /** The markup queue never looks back further than this many days. */
 const MARKUP_QUEUE_LOOKBACK_DAYS = 30;
@@ -54,6 +56,10 @@ interface IssueRow {
   id: string;
   title: string;
   description: string | null;
+  priority: string;
+  casteKey: string | null;
+  casteSource: string | null;
+  pheromoneStrength: number;
 }
 
 interface AgentRow {
@@ -79,7 +85,7 @@ export async function canSpendCall(
     from activity_log
     where action = ${actions[0]}
       and entity_type = ${opts.entityType}
-      and entity_id = ${opts.entityId}::uuid
+      and entity_id = ${opts.entityId}
       and created_at > now() - interval '1 hour'
   `);
   const n = Number((rows as unknown as Array<{ n: number }>)[0]?.n ?? 0);
@@ -122,11 +128,54 @@ export function createScentService(deps: ScentServiceDeps) {
   const db = deps.db;
   async function loadIssue(issueId: string): Promise<IssueRow | null> {
     const rows = await db
-      .select({ id: issues.id, title: issues.title, description: issues.description })
+      .select({
+        id: issues.id,
+        title: issues.title,
+        description: issues.description,
+        priority: issues.priority,
+        casteKey: issues.casteKey,
+        casteSource: issues.casteSource,
+        pheromoneStrength: issues.pheromoneStrength,
+      })
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, deps.companyId)))
       .limit(1);
     return (rows[0] as IssueRow | undefined) ?? null;
+  }
+
+  /**
+   * The scent arrives AFTER the task exists (issue creation never waits on the
+   * classifier), so the auto caste/strength are applied here, on the same
+   * UPDATE that stores the scent. Explicit values are never overwritten:
+   *  - caste: only when the task has no key yet, or the key is the previous
+   *    'auto' pick (a refresh may change its own earlier guess);
+   *  - strength: only the bonus the scent adds on top of the plain priority
+   *    base, and only while the stored strength still equals that base (an
+   *    explicit or edited strength differs from it and is kept).
+   */
+  function autoFieldsFor(
+    issue: IssueRow,
+    scent: IssueScent,
+  ): { casteKey?: string; casteSource?: "auto"; pheromoneStrength?: number } {
+    const out: { casteKey?: string; casteSource?: "auto"; pheromoneStrength?: number } = {};
+    const casteIsOurs = issue.casteKey == null || issue.casteSource === "auto";
+    if (casteIsOurs) {
+      const derived = deriveScentAuto(
+        { title: issue.title, priority: issue.priority, casteKey: null, scent },
+        deps.casteKeys,
+        deps.settings,
+      );
+      if (derived.casteSource === "auto" && derived.casteKey) {
+        out.casteKey = derived.casteKey;
+        out.casteSource = "auto";
+      }
+    }
+    const base = scentTaskStrength(issue.priority, null, deps.settings);
+    const scented = scentTaskStrength(issue.priority, scent, deps.settings);
+    if (scented !== base && issue.pheromoneStrength === base) {
+      out.pheromoneStrength = scented;
+    }
+    return out;
   }
 
   async function classifyIssue(issueId: string): Promise<ClassifyIssueResult> {
@@ -171,7 +220,7 @@ export function createScentService(deps: ScentServiceDeps) {
     if (result.scent) {
       await db
         .update(issues)
-        .set({ scent: result.scent })
+        .set({ scent: result.scent, ...autoFieldsFor(issue, result.scent) })
         .where(and(eq(issues.id, issueId), eq(issues.companyId, deps.companyId)));
     }
     return { scent: result.scent, classified: result.scent !== null, spent: true };

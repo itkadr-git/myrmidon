@@ -10010,10 +10010,14 @@ export function issueService(db: Db) {
           })().then((auto) => ({
             casteKey: auto.casteKey,
             casteSource: auto.casteSource,
-            // Only auto-set the strength when the caller did not pin it AND
-            // the scent-based value differs from the plain priority default —
-            // otherwise the F-27 branch above already wrote it.
-            ...(issueData.pheromoneStrength == null
+            // The strength is touched only when the caller sent a scent with
+            // the task: without one the value the F-27 branch above wrote
+            // (the instance's swarmClaim.pheromoneDefaults mapping) must stand,
+            // not be replaced by the shared hard-coded defaults. The usual
+            // path — scent arriving later from the markup queue — applies the
+            // consequences bonus in scent/service.ts.
+            ...(issueData.pheromoneStrength == null &&
+            (issueData as { scent?: IssueScent | null }).scent
               ? { pheromoneStrength: auto.pheromoneStrength }
               : {}),
           }))),
