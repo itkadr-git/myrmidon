@@ -40,20 +40,22 @@
 #      first when --canary names one): PATCH the card's
 #      adapterConfig.container.image, then POST the card's "apply" so the
 #      board's own reconciler drains that agent alone and recreates the
-#      container. A busy bot (agent status not paused/idle, or an apply that
-#      answers `deferred`) does NOT hold its batch: it moves to a tail list
-#      (deferred_tail) and the batch ends as soon as its other bots are done,
-#      so the next batch starts at once (the rc.3/rc.5 lesson: one busy bot
-#      made every batch wait MYRMIDON_BOT_IMAGE_ROLLOUT_BOT_TIMEOUT_SEC).
-#      After the last batch the tail pass retries the deferred bots until the
-#      same deadline, and past it the optional force stage
+#      container. A bot with running work answers `deferred`: the rollout does
+#      NOT hold the batch for it — it moves to a tail list (deferred_tail) and
+#      the batch ends as soon as its other bots are done, so the next batch
+#      starts at once (the rc.3/rc.5 lesson: one busy bot made every batch wait
+#      MYRMIDON_BOT_IMAGE_ROLLOUT_BOT_TIMEOUT_SEC). After the last batch the
+#      tail pass retries the deferred bots until that same deadline, and past
+#      it the optional force stage
 #      (MYRMIDON_BOT_IMAGE_ROLLOUT_FORCE_DEFERRED_SEC, default 0 = OFF; set
 #      it to a number of seconds to opt in) applies them without the status
 #      gate. The reconciler then opens a maintenance window and drains for
 #      300 s; a longer run is interrupted by the maintenance, so the stage is
-#      an explicit operator choice, never the default.
-#      A failed apply never leaves a card switched while the container stays
-#      on the old image: the card goes back to its previous container block.
+#      an explicit operator choice, never the default. A run is never
+#      interrupted by this rollout, and a deferred bot keeps its old card
+#      image until a later retry or the periodic sweep. A failed apply never
+#      leaves a card switched while the container stays on the old image: the
+#      card goes back to its previous container block.
 #   5b. F-04 verification (1.6.5): after the batches, compare FACT for every
 #      tracking bot — the card's image (adapterConfig.container.image from
 #      the board API) against the running container's image
@@ -144,7 +146,7 @@ while (($#)); do
     --wait-sec)
       [[ "${2:-}" =~ ^[0-9]+$ ]] || die "--wait-sec takes a non-negative whole number of seconds (got '${2:-}')"
       wait_sec="$2"; shift 2 ;;
-    -h|--help) sed -n '2,111p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,123p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -704,11 +706,10 @@ container_on_image() {
   jq -e --arg want "$want" '.container.state == "running" and .container.image == $want' <<<"$body" >/dev/null 2>&1
 }
 
-# Puts the card's container block back after a failed apply, so the card
-# names the image it had before. Only the card's container block is restored:
-# agent keys the apply pass may have re-issued are not rolled back. Skipped
-# when the container is already on the target (the apply did work). A failed
-# revert is logged loudly; the bot stays failed either way.
+# Puts the card's container block back after a failed apply: a card on the new
+# image over a container on the old one is the "new key, old container" (401)
+# state. Skipped when the container is already on the target (the apply did
+# work). A failed revert is logged loudly; the bot stays failed either way.
 revert_card() {
   local id="$1" block="$2" target="$3" body
   [[ -n "$block" ]] || return 0
@@ -869,8 +870,11 @@ switch_one_bot() {
 # return code through (0 switched, 2 deferred, 1 failed) — the verification
 # table and the summary classify the bot by this state plus the container fact.
 switch_bot_recorded() {
-  local id="$1" force="${2:-}" rc=0
-  switch_one_bot "$id" $force || rc=$?
+  # $2 (optional) is the force flag of switch_one_bot: the tail and force
+  # stages forward it, so a bot that cannot move is recorded failed (DEGRADED),
+  # not deferred, when the status gate was explicitly dropped.
+  local id="$1" rc=0
+  switch_one_bot "$id" "${2:-}" || rc=$?
   case "$rc" in
     0) BOT_STATE["$id"]="switched" ;;
     2) BOT_STATE["$id"]="deferred" ;;
@@ -899,7 +903,7 @@ switch_bot_recorded() {
 # Exit rule (F-04 p.2): DEGRADED and exit 1 only when mismatch > 0 or
 # failed > 0. deferred > 0 alone exits 0 with a WARNING naming the standard
 # --retry-deferred re-run pass (F-04 p.3, decision 06.10 item 3).
-declare -A BOT_STATE=() BOT_ORIG=() BOT_TARGET=() deferred_reasons=()
+declare -A BOT_STATE=() BOT_ORIG=() BOT_TARGET=()
 
 # The running container's fact as TSV "state<TAB>image"; non-zero when the
 # board has no status to report (no container, or the read failed).
@@ -916,7 +920,7 @@ v_deferred=0
 v_mismatch=0
 v_failed=0
 verify_fleet() {
-  local id card fact="" cstate="" cimage="" target orig state verdict
+  local id card fact="" cstate="" cimage="" target orig state verdict dreason
   VERIFY_ROWS=("id|card image|container image|state|verdict")
   DEFERRED_ROWS=()
   v_switched=0 v_deferred=0 v_mismatch=0 v_failed=0
@@ -963,9 +967,8 @@ verify_fleet() {
       switched) v_switched=$((v_switched + 1)) ;;
       deferred)
         v_deferred=$((v_deferred + 1))
-        dreason="${deferred_reasons[$id]:-}"
-        dreason="${dreason//[|$'\t\n']/ }"
-        DEFERRED_ROWS+=("$id|${orig//|/}|${target//|/}|$dreason")
+        dreason="${deferred_reasons[$id]:-the container is still on the previous image (a busy agent or a not-yet-finished apply)}"
+        DEFERRED_ROWS+=("$id|${orig//|/}|${target//|/}|${dreason//|/}")
         ;;
       mismatch) v_mismatch=$((v_mismatch + 1)) ;;
       *) v_failed=$((v_failed + 1)) ;;
@@ -1057,6 +1060,7 @@ failed=0
 switched=0
 stayed_deferred=0
 deferred_tail=()
+declare -A deferred_reasons=()
 batch_no=0
 if ((RETRY_DEFERRED)); then
   # One deliberate pass over the deferred bots: wait per bot, re-apply, never
@@ -1096,7 +1100,6 @@ for ((start = 0; start < total; start += MYR_BOT_BATCH)); do
   bot_log "batch $batch_no/$batches done: $b_switched switched, $b_failed failed, $b_deferred deferred (progress $switched/$total)"
   journal "batch $batch_no/$batches: $b_switched switched, $b_failed failed, $b_deferred deferred"
 done
-fi
 
 # --- tail pass: retry the deferred bots until the deadline -------------------
 tail_start=$SECONDS
@@ -1169,14 +1172,16 @@ if ((${#deferred_tail[@]} > 0)) && ((MYR_BOT_FORCE_DEFERRED_SEC > 0)); then
   fi
 fi
 
-stayed_deferred=$((stayed_deferred + ${#deferred_tail[@]}))
+stayed_deferred=${#deferred_tail[@]}
 if ((${#deferred_tail[@]} > 0)); then
   bot_log "final: ${#deferred_tail[@]} bot(s) not on the release image:"
   for id in "${deferred_tail[@]}"; do
     bot_log "  $id: ${deferred_reasons[$id]:-unknown reason}"
   done
 fi
+fi
 
+mkdir -p "$(dirname "$MYR_BOT_SUMMARY")" 2>/dev/null || true
 
 # F-04 (1.6.5): the exit rule is decided by the FACT, not by the ask: verify
 # every bot of this pass (card vs running container), write the summary from
@@ -1262,7 +1267,7 @@ finalize_rollout() {
 # rel/1.6.5-rc.7 (#985) states the deferred bots from the pass counters; the fact-based
 # verdict below (F-04 part B) decides the exit code. Keep both: the statement is not a verdict.
 if ((stayed_deferred > 0)); then
-  bot_log "WARNING: $stayed_deferred bot(s) stayed deferred (a busy agent or a 409 refusal); the cards already name the release image and the periodic sweep completes them"
+  bot_log "WARNING: $stayed_deferred bot(s) stayed deferred (a busy agent or a 409 refusal); their cards keep the previous image and the periodic sweep completes them"
 fi
 
 finalize_rollout "${TRACKING_BOTS[@]}"
