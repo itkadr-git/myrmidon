@@ -60,3 +60,8 @@ settings-section: Bot containers (G-series, the 28.09 "option B" plan)
 
 | `MYRMIDON_DEVBUILD_CHECK` | DEVBUILD-IN-BOTS | `1` | Bot start self-check: with `DEVBUILD_HOST` set, the entrypoint probes `devbuild 'true'` and logs the outcome plus `${HERMES_HOME}/.myrmidon/devbuild-check.json`. Never fatal. `0` disables the probe | Dev-variant bots only; bots without `DEVBUILD_HOST` are silent either way |
 | `MYRMIDON_LOCAL_NODE_HEAP_MB` | DEVBUILD-IN-BOTS | `2048` | Heap cap (MB) the build wrappers set on heavy commands that run inside the bot container (devbuild-gate pass-through or direct binary path). `0` disables the cap; a caller's own `--max-old-space-size` in `NODE_OPTIONS` always wins | Fallback for the rollout period; the fleet target stays 0 local tsc/vitest runs |
+
+## settings-ru
+
+| `MYRMIDON_DEVBUILD_CHECK` | DEVBUILD-IN-BOTS | `1` | Самопроверка старта бота: при заданном `DEVBUILD_HOST` entrypoint выполняет `devbuild 'true'` и пишет итог в лог и в `${HERMES_HOME}/.myrmidon/devbuild-check.json`. Никогда не фатальна. `0` отключает проверку | Только боты dev-варианта; боты без `DEVBUILD_HOST` молчат в любом случае |
+| `MYRMIDON_LOCAL_NODE_HEAP_MB` | DEVBUILD-IN-BOTS | `2048` | Потолок кучи (МБ), который обёртки сборки ставят тяжёлым командам, идущим внутри контейнера бота (проход гейта devbuild или прямой путь к бинарю). `0` отключает потолок; собственный `--max-old-space-size` вызывающего в `NODE_OPTIONS` всегда побеждает | Предохранитель на период раскатки; цель флота — 0 локальных запусков tsc/vitest |
