@@ -1018,5 +1018,20 @@
     "unknown": "unknown",
     "runningNow": "Running now: {{value}}",
     "statusUnknown": "Running now is unknown: the gateway did not report its pool size."
-  }
+  },
+  "attentionFeed": {
+    "title": "Attention feed",
+    "hint": "How far back the feed looks for an unresolved failed or timed-out run, and how long it keeps the feed it built per company. Saving applies at once — the feed re-reads the settings row on its next build, no restart.",
+    "horizonLabel": "Failed-run horizon, days",
+    "cacheTtlLabel": "Feed cache TTL, seconds",
+    "bounds": "{{min}}–{{max}}, default {{default}}",
+    "boundsCacheTtl": "{{min}}–{{max}}, default {{default}}, 0 turns the cache off",
+    "sourceSettings": "Saved",
+    "sourceDefault": "Default",
+    "integerError": "Enter a whole number between {{min}} and {{max}}",
+    "saveError": "Could not save the attention feed windows. Try again.",
+    "saved": "Saved. The feed uses the new windows from its next build.",
+    "save": "Save",
+    "reset": "Use defaults",
+    "note": "Stored in the instance settings; there is no environment variable behind either value."  }
 }
