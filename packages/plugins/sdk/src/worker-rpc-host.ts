@@ -1564,14 +1564,14 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
       // Propagate specific error codes from handler errors (e.g.
-      // METHOD_NOT_FOUND, METHOD_NOT_IMPLEMENTED) — fall back to
-      // WORKER_ERROR for untyped exceptions.
+      // METHOD_NOT_FOUND, METHOD_NOT_IMPLEMENTED, UNKNOWN_ACTION) — fall
+      // back to WORKER_ERROR for untyped exceptions.
       const errorCode =
         typeof (err as any)?.code === "number"
           ? (err as any).code
           : PLUGIN_RPC_ERROR_CODES.WORKER_ERROR;
 
-      sendMessage(createErrorResponse(id, errorCode, errorMessage));
+      sendMessage(createErrorResponse(id, errorCode, errorMessage, (err as any)?.data));
     }
   }
 
@@ -1914,7 +1914,13 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
   async function handleGetData(params: GetDataParams): Promise<unknown> {
     const handler = dataHandlers.get(params.key);
     if (!handler) {
-      throw new Error(`No data handler registered for key "${params.key}"`);
+      throw Object.assign(
+        new Error(`No data handler registered for key "${params.key}"`),
+        {
+          code: PLUGIN_RPC_ERROR_CODES.UNKNOWN_ACTION,
+          data: { error: "unknown_data_key", known: [...dataHandlers.keys()] },
+        },
+      );
     }
     return handler({
       ...params.params,
@@ -1951,7 +1957,13 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
   async function handlePerformAction(params: PerformActionParams): Promise<unknown> {
     const handler = actionHandlers.get(params.key);
     if (!handler) {
-      throw new Error(`No action handler registered for key "${params.key}"`);
+      throw Object.assign(
+        new Error(`No action handler registered for key "${params.key}"`),
+        {
+          code: PLUGIN_RPC_ERROR_CODES.UNKNOWN_ACTION,
+          data: { error: "unknown_action", known: [...actionHandlers.keys()] },
+        },
+      );
     }
     return handler(
       {
@@ -1966,7 +1978,13 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
   async function handleExecuteTool(params: ExecuteToolParams): Promise<ToolResult> {
     const entry = toolHandlers.get(params.toolName);
     if (!entry) {
-      throw new Error(`No tool handler registered for "${params.toolName}"`);
+      throw Object.assign(
+        new Error(`No tool handler registered for "${params.toolName}"`),
+        {
+          code: PLUGIN_RPC_ERROR_CODES.UNKNOWN_ACTION,
+          data: { error: "unknown_tool", known: [...toolHandlers.keys()] },
+        },
+      );
     }
     return entry.fn(params.parameters, params.runContext);
   }
@@ -2255,6 +2273,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
               (message as JsonRpcRequest).id,
               typeof errorCode === "number" ? errorCode : PLUGIN_RPC_ERROR_CODES.WORKER_ERROR,
               errorMessage,
+              (err as any)?.data,
             ),
           );
         } catch {
