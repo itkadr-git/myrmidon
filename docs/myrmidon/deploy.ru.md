@@ -550,6 +550,18 @@ ORDER BY total_exec_time DESC LIMIT 20;"
 Сброс счётчиков между двумя снимками делает сравнение чистым:
 `SELECT pg_stat_statements_reset();` (та же форма `exec -T db psql -c`, выполняет оператор).
 
+## Прокси-буферы nginx перед доской (NGINX-PROXY-BUFFERS)
+
+Боевой reverse-прокси живёт вне этого репозитория, но его настройка касается доски:
+пробуждения агентов встраивают список задач, и ответы от 64 КБ не помещаются в буферы
+nginx по умолчанию (ответ упирается в дисковый буфер). Фрагмент server-блока
+(`proxy_buffer_size 64k`, `proxy_buffers 16 64k`, `proxy_busy_buffers_size 128k`) —
+в [`scripts/myrmidon/deploy/nginx-proxy-buffers.conf.example`](../../scripts/myrmidon/deploy/nginx-proxy-buffers.conf.example);
+его вставляют в `location /`, проксирующий к сервису доски. Умолчания агентского
+списка (compact-проекция, limit 200 по умолчанию и не больше 500, без description; переключатель `issuesListAgentDefaults`) держат типовой ответ побудки
+<= 500 КБ, буферы поглощают явные крупные запросы. Применять через
+`nginx -t && nginx -s reload`.
+
 ## Один путь загрузки (systemd-юнит)
 
 Контейнер борда при загрузке машины должен стартовать **из тех же compose-файлов,
