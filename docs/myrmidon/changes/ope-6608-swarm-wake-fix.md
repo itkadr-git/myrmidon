@@ -109,6 +109,14 @@
    `swarm_claim_queue`, и новые `swarm_matched` — рост «отменено за час» после выката виден
    сразу.
 
+Классификация переменных окружения (полный прогон тестов сервера сверяет каждое имя
+`MYRMIDON_*`, читаемое кодом Myrmidon, с FLAGS.md / SETTINGS.md / фрагментами): восстановлены
+записи для переменных, которые читает код и которые до сих пор нигде не были классифицированы —
+`MYRMIDON_BOT_SCOPE_SUBDIR` (подкаталог рабочей области бота, F-12), а также
+`MYRMIDON_CONTINUATION_MESSAGE_CHARS` и `MYRMIDON_CONTINUATION_MESSAGE_BODY_CHARS`
+(лимиты символов истории продолжения, DBC-3 OPE-5941). Они не входят в роевую настройку и
+приведены здесь только ради зелёного гейта.
+
 ## settings-en-new
 
 ### 1.6.5 — SWARM (OPE-6608): the board pairs tasks with free agents, no "look for work" wakes
@@ -139,3 +147,10 @@ How to turn it on and check it:
 3. Counter note: `readSwarmQueueCounters` counts both the old cancellations under reason
    `swarm_claim_queue` and the new `swarm_matched` ones, so the growth of "cancelled in the
    last hour" is visible right after the roll-out.
+
+Env classification (the full server test run checks every `MYRMIDON_*` name read by Myrmidon
+code against FLAGS.md / SETTINGS.md / the change fragments): entries restored for variables the
+code reads and that were never classified — `MYRMIDON_BOT_SCOPE_SUBDIR` (the bot workspace
+subdirectory, F-12), plus `MYRMIDON_CONTINUATION_MESSAGE_CHARS` and
+`MYRMIDON_CONTINUATION_MESSAGE_BODY_CHARS` (continuation-history character budgets, DBC-3
+OPE-5941). They are not part of the swarm settings and are listed here only for the gate.

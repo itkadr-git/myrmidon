@@ -631,40 +631,45 @@ export async function listIdleRolePairs(
   db: Db,
   companyId: string,
 ): Promise<SwarmIdleRolePair[]> {
-  const [queueRows, agentRows, liveRunAgentIds, lastRunRows] = await Promise.all([
-    listReadyQueueCandidates(db, companyId),
-    db
-      .select({
-        id: agents.id,
-        role: agents.role,
-        status: agents.status,
-        reportsTo: agents.reportsTo,
-        metadata: agents.metadata,
-      })
-      .from(agents)
-      .innerJoin(companies, eq(companies.id, agents.companyId))
-      .where(and(eq(agents.companyId, companyId), eq(companies.status, "active")))
-      // A stable order of the pool. Two passes over equal facts see the same
-      // rows in the same order; the pick itself is the scent (T10).
-      .orderBy(asc(agents.id)),
-    db
-      .select({ agentId: heartbeatRuns.agentId })
-      .from(heartbeatRuns)
-      .where(
-        and(
-          eq(heartbeatRuns.companyId, companyId),
-          inArray(heartbeatRuns.status, [...LIVE_HEARTBEAT_RUN_STATUSES]),
+  const [queueRows, agentRows, liveRunAgentIds, lastRunRows, activeClaimCounts] =
+    await Promise.all([
+      listReadyQueueCandidates(db, companyId),
+      db
+        .select({
+          id: agents.id,
+          role: agents.role,
+          status: agents.status,
+          reportsTo: agents.reportsTo,
+          metadata: agents.metadata,
+        })
+        .from(agents)
+        .innerJoin(companies, eq(companies.id, agents.companyId))
+        .where(and(eq(agents.companyId, companyId), eq(companies.status, "active")))
+        // A stable order of the pool. Two passes over equal facts see the same
+        // rows in the same order; the pick itself is the scent (T10).
+        .orderBy(asc(agents.id)),
+      db
+        .select({ agentId: heartbeatRuns.agentId })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            inArray(heartbeatRuns.status, [...LIVE_HEARTBEAT_RUN_STATUSES]),
+          ),
         ),
-      ),
-    db
-      .select({
-        agentId: heartbeatRuns.agentId,
-        lastActiveAt: sql<Date | string | null>`max(${heartbeatRuns.createdAt})`,
-      })
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.companyId, companyId))
-      .groupBy(heartbeatRuns.agentId),
-  ] as const);
+      db
+        .select({
+          agentId: heartbeatRuns.agentId,
+          lastActiveAt: sql<Date | string | null>`max(${heartbeatRuns.createdAt})`,
+        })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.companyId, companyId))
+        .groupBy(heartbeatRuns.agentId),
+      // The live leases of the company, per agent. The per-agent ceiling needs
+      // them: an agent that already holds a lease is not a free agent, and a
+      // hardcoded zero here would hand it a second task it cannot start.
+      liveClaimCountsByAgent(db, companyId),
+    ] as const);
 
   const liveRuns = new Set(
     liveRunAgentIds.map((row: { agentId: string }) => row.agentId),
@@ -698,7 +703,7 @@ export async function listIdleRolePairs(
       .map((agent) => ({
         id: agent.id,
         status: agent.status,
-        activeClaims: 0,
+        activeClaims: activeClaimCounts.get(agent.id) ?? 0,
         hasLiveRun: liveRuns.has(agent.id),
         metadata: (agent.metadata as Record<string, unknown> | null) ?? null,
         hasDirectReports: (reportCounts.get(agent.id) ?? 0) > 0,
