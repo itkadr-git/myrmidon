@@ -1,4 +1,4 @@
-// myrmidon(1.6.5 OPE-6318 part D): the Telegram section's data layer — the
+// myrmidon(1.6.5-TG-LOCALE-D): the Telegram section's data layer — the
 // default-alias mirror of the bridge rule, the metadata readers, and the patch
 // builder that must keep every OTHER metadata key intact.
 

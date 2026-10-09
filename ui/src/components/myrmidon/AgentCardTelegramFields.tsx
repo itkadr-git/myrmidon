@@ -1,4 +1,4 @@
-// myrmidon(1.6.5 OPE-6318 part D): the "Telegram" section of an agent card —
+// myrmidon(1.6.5-TG-LOCALE-D): the "Telegram" section of an agent card —
 // the aliases the bridge answers to and the group the /agents list puts the
 // card in.
 //

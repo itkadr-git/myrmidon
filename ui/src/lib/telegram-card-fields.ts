@@ -1,4 +1,4 @@
-// myrmidon(1.6.5 OPE-6318 part D): the pure data layer of the "Telegram"
+// myrmidon(1.6.5-TG-LOCALE-D): the pure data layer of the "Telegram"
 // section on the agent card — aliases, the group title and the metadata patch.
 //
 // Storage is `agents.metadata`:
