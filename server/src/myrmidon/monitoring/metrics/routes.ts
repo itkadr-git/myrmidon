@@ -64,6 +64,12 @@ export interface MetricsRoutesDeps {
    * memory, live events). Absent → the production in-process source.
    */
   processMetrics?: ProcessMetricsSource | null;
+  /**
+   * myrmidon(PROCS-0.1): the identity of this process (role + boot), rendered
+   * as labels on the process families. Absent → unlabeled lines (the
+   * 1.6.5-PROCS-Q3 shape).
+   */
+  processIdentity?: { role: string; bootId: string } | null;
 }
 
 /**
@@ -177,6 +183,7 @@ export function myrmidonMetricsRoutes(deps: MetricsRoutesDeps) {
       errorWindowSec: clampErrorWindowSec(query.window ?? defaultErrorWindowSec),
       latencyWindowSec: clampLatencyWindowSec(query.latency_window ?? defaultLatencyWindowSec),
       ...(deps.processMetrics !== undefined ? { processMetrics: deps.processMetrics } : {}),
+      ...(deps.processIdentity !== undefined ? { processIdentity: deps.processIdentity } : {}),
     });
     res.status(200).set("Content-Type", METRICS_CONTENT_TYPE).send(renderMetricsText(snapshot));
   });

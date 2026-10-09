@@ -99,6 +99,7 @@ import { serverVersion } from "./version.js";
 import { resourceMembershipRoutes } from "./routes/resource-memberships.js";
 import { inboxDismissalRoutes } from "./routes/inbox-dismissals.js";
 import { instanceSettingsRoutes } from "./routes/instance-settings.js";
+import { boardProcessesRoutes } from "./routes/board-processes.js"; // myrmidon(PROCS-0.1)
 import { myrmidonMaintenanceRoutes } from "./myrmidon/maintenance/index.js"; // myrmidon(R3)
 import { myrmidonDeployJobsRoutes } from "./myrmidon/deploy-jobs/index.js"; // myrmidon(R5-A)
 import { myrmidonRuntimeLimitsRoutes } from "./myrmidon/runtime-limits/index.js"; // myrmidon(C0)
@@ -604,6 +605,12 @@ export async function createApp(
     managedPluginAutoInstall?: readonly string[] | null;
     /** Test override for the bundled plugin catalog root. */
     bundledPluginCatalogRoot?: string;
+    /**
+     * myrmidon(PROCS-0.1): the identity of the answering process (role +
+     * boot), rendered as labels on the process metric families. Absent →
+     * unlabeled lines (the 1.6.5-PROCS-Q3 shape).
+     */
+    processIdentity?: { role: string; bootId: string } | null;
   },
 ) {
   const app = express();
@@ -716,7 +723,7 @@ export async function createApp(
   // myrmidon(EXTCASE-B): the extension's one board-less endpoint (the pairing code
   // is the credential), mounted outside `/api` with the other provider ingress.
   app.use(myrmidonBrowserBridgePublicRoutes(db));
-  app.use(myrmidonMetricsApp(db)); // myrmidon(1.7-METRICS): Prometheus text exposition at the origin root, bearer-guarded
+  app.use(myrmidonMetricsApp(db, { processIdentity: opts.processIdentity ?? null })); // myrmidon(1.7-METRICS): Prometheus text exposition at the origin root, bearer-guarded
   const managedAutoInstallKeys = opts.managedPluginAutoInstall ?? null;
   const bundledCatalogRoot =
     opts.bundledPluginCatalogRoot ?? resolveBundledCatalogRoot(process.env);
@@ -910,6 +917,7 @@ export async function createApp(
   api.use(resourceMembershipRoutes(db));
   api.use(inboxDismissalRoutes(db));
   api.use(instanceSettingsRoutes(db));
+  api.use(boardProcessesRoutes(db)); // myrmidon(PROCS-0.1): the process registry behind Instance settings → Processes
   api.use(myrmidonMaintenanceRoutes(db)); // myrmidon(R3)
   api.use(myrmidonDeployJobsRoutes(db)); // myrmidon(R5-A)
   api.use(myrmidonRuntimeLimitsRoutes(db)); // myrmidon(C0)

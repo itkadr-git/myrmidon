@@ -34,6 +34,7 @@ export const HIDEABLE_INSTANCE_PAGES = [
   "instance.profile",
   "instance.environments",
   "instance.access",
+  "instance.processes",
   "instance.experimental",
   "instance.plugins",
   "instance.adapters",

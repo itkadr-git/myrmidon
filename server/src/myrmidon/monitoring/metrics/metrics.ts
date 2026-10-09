@@ -80,6 +80,9 @@ export const METRIC_FAMILIES = [
   "myrmidon_board_heap_bytes",
   "myrmidon_board_live_events_total",
   "myrmidon_board_live_event_bytes_total",
+  // myrmidon(PROCS-0.1): the event-loop utilization of the inter-scrape
+  // window (performance.eventLoopUtilization delta).
+  "myrmidon_board_event_loop_utilization",
 ] as const;
 
 export type MetricFamily = (typeof METRIC_FAMILIES)[number];
@@ -117,6 +120,14 @@ export interface MetricsSnapshotFields {
    * exist even before the first event of a kind was published.
    */
   process?: ProcessMetricsSample | null;
+  /**
+   * myrmidon(PROCS-0.1): the identity of the answering process, rendered as
+   * role/boot labels on the process families so a multi-process board can
+   * tell its processes apart. Optional: the routes that know the pulse's
+   * identity pass it; a snapshot without it renders unlabeled lines, exactly
+   * as 1.6.5-PROCS-Q3 did.
+   */
+  processIdentity?: { role: string; bootId: string } | null;
 }
 
 /** The fields plus the scrape bookkeeping rendered into the exposition text. */
@@ -145,6 +156,12 @@ export interface MetricsCollectorDeps {
    * production default (no fake needed for the DB families).
    */
   processMetrics?: ProcessMetricsSource | null;
+  /**
+   * myrmidon(PROCS-0.1): the identity of the answering process, rendered as
+   * role/boot labels on the process families. Absent → unlabeled lines (the
+   * 1.6.5-PROCS-Q3 shape).
+   */
+  processIdentity?: { role: string; bootId: string } | null;
 }
 
 /** Reads the run counters — one grouped query, whole instance. */
@@ -358,9 +375,9 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
   );
   // myrmidon(1.6.5-PROCS-Q3): the process half rides the same guarded
   // scrape: a throwing source zeroes it (HELP/TYPE render without samples)
-  // and names the five families, never kills the scrape.
+  // and names the six families, never kills the scrape.
   const processSample = await guarded(
-    "myrmidon_board_event_loop_lag_seconds|myrmidon_board_process_rss_bytes|myrmidon_board_heap_bytes|myrmidon_board_live_events_total|myrmidon_board_live_event_bytes_total",
+    "myrmidon_board_event_loop_lag_seconds|myrmidon_board_process_rss_bytes|myrmidon_board_heap_bytes|myrmidon_board_live_events_total|myrmidon_board_live_event_bytes_total|myrmidon_board_event_loop_utilization",
     () => Promise.resolve().then(resolveProcessMetricsSource(deps.processMetrics)),
     null as ProcessMetricsSample | null,
   );
@@ -379,6 +396,7 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
       agentErrorSignals: errorSignals,
       llmCostCentsWindow: costWindow,
       process: processSample,
+      processIdentity: deps.processIdentity ?? null,
     },
     errors,
     now,
@@ -581,7 +599,16 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
 
   // myrmidon(1.6.5-PROCS-Q3): the process families. An absent/failed process
   // read renders HELP/TYPE with no samples — the scrape still answers.
+  // myrmidon(PROCS-0.1): the process families carry the process identity
+  // (role + boot) so a multi-process board can tell its rows apart; in
+  // single mode the labels are the constant "single" role and this boot.
   const proc = snapshot.process ?? null;
+  const processIdentityLabels = snapshot.processIdentity
+    ? `role="${escapeLabelValue(snapshot.processIdentity.role)}",boot="${escapeLabelValue(snapshot.processIdentity.bootId)}"`
+    : null;
+  const processLabels = processIdentityLabels ? `{${processIdentityLabels}}` : "";
+  const processLabelsWith = (extra: string) =>
+    processIdentityLabels ? `{${processIdentityLabels},${extra}}` : `{${extra}}`;
   blocks.push(
     familyBlock(
       "myrmidon_board_event_loop_lag_seconds",
@@ -589,9 +616,24 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       "summary",
       proc && proc.eventLoop
         ? [
-            `myrmidon_board_event_loop_lag_seconds{quantile="0.5"} ${formatSampleValue(proc.eventLoop.p50Seconds)}`,
-            `myrmidon_board_event_loop_lag_seconds{quantile="0.99"} ${formatSampleValue(proc.eventLoop.p99Seconds)}`,
-            `myrmidon_board_event_loop_lag_seconds{quantile="1"} ${formatSampleValue(proc.eventLoop.maxSeconds)}`,
+            `myrmidon_board_event_loop_lag_seconds${processLabelsWith('quantile="0.5"')} ${formatSampleValue(proc.eventLoop.p50Seconds)}`,
+            `myrmidon_board_event_loop_lag_seconds${processLabelsWith('quantile="0.99"')} ${formatSampleValue(proc.eventLoop.p99Seconds)}`,
+            `myrmidon_board_event_loop_lag_seconds${processLabelsWith('quantile="1"')} ${formatSampleValue(proc.eventLoop.maxSeconds)}`,
+          ]
+        : [],
+    ),
+  );
+  // myrmidon(PROCS-0.1): the event-loop utilization of the interval since
+  // the previous scrape (delta of performance.eventLoopUtilization). Absent
+  // on the first scrape — there is no previous window to diff against.
+  blocks.push(
+    familyBlock(
+      "myrmidon_board_event_loop_utilization",
+      "Share of the scrape window the board process event loop was active (0..1), measured since the previous scrape.",
+      "gauge",
+      proc && proc.eventLoopUtilization
+        ? [
+            `myrmidon_board_event_loop_utilization${processLabels} ${formatSampleValue(proc.eventLoopUtilization.utilization)}`,
           ]
         : [],
     ),
@@ -601,7 +643,7 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       "myrmidon_board_process_rss_bytes",
       "Resident set size of the board process.",
       "gauge",
-      proc ? [`myrmidon_board_process_rss_bytes ${formatSampleValue(proc.memory.rssBytes)}`] : [],
+      proc ? [`myrmidon_board_process_rss_bytes${processLabels} ${formatSampleValue(proc.memory.rssBytes)}`] : [],
     ),
   );
   blocks.push(
@@ -611,8 +653,8 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       "gauge",
       proc
         ? [
-            `myrmidon_board_heap_bytes{kind="used"} ${formatSampleValue(proc.memory.heapUsedBytes)}`,
-            `myrmidon_board_heap_bytes{kind="total"} ${formatSampleValue(proc.memory.heapTotalBytes)}`,
+            `myrmidon_board_heap_bytes${processLabelsWith('kind="used"')} ${formatSampleValue(proc.memory.heapUsedBytes)}`,
+            `myrmidon_board_heap_bytes${processLabelsWith('kind="total"')} ${formatSampleValue(proc.memory.heapTotalBytes)}`,
           ]
         : [],
     ),
@@ -625,7 +667,7 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       proc
         ? proc.liveEvents.map(
             (row) =>
-              `myrmidon_board_live_events_total{kind="${escapeLabelValue(row.type)}"} ${formatSampleValue(row.count)}`,
+              `myrmidon_board_live_events_total${processLabelsWith(`kind="${escapeLabelValue(row.type)}"`)} ${formatSampleValue(row.count)}`,
           )
         : [],
     ),
@@ -638,7 +680,7 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       proc
         ? proc.liveEvents.map(
             (row) =>
-              `myrmidon_board_live_event_bytes_total{kind="${escapeLabelValue(row.type)}"} ${formatSampleValue(row.bytes)}`,
+              `myrmidon_board_live_event_bytes_total${processLabelsWith(`kind="${escapeLabelValue(row.type)}"`)} ${formatSampleValue(row.bytes)}`,
           )
         : [],
     ),

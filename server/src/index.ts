@@ -3,6 +3,7 @@
 // OTEL_EXPORTER_OTLP_ENDPOINT is set). startServer() awaits
 // instrumentationReady before opening DB connections or constructing the
 // HTTP server, so trace coverage does not depend on incidental timing.
+import { randomUUID } from "node:crypto";
 import { instrumentationReady, shutdownInstrumentation } from "./instrumentation.js";
 import { sentryReady, shutdownSentry, captureException } from "./sentry.js";
 import { waitForPendingRunFailureReports } from "./services/run-failure-report.js";
@@ -134,6 +135,7 @@ import { startLitellmBudgetSync } from "./myrmidon/litellm-budget-sync/index.js"
 import { startLitellmModelReconciliation } from "./myrmidon/litellm-sync/startup-reconciler.js"; // myrmidon(1.6.1 MODEL-PROVIDERS B)
 import { startModelFallbackSignalSweep } from "./myrmidon/litellm-fallback-signal/sweep.js"; // myrmidon(BOT-RUNTIME-TUNING D)
 import { startBaselineSnapshots, stopBaselineSnapshots } from "./myrmidon/baseline/startup.js"; // myrmidon(1.6-BASELINE)
+import { boardProcessPulseService } from "./services/board-processes.js"; // myrmidon(PROCS-0.1)
 import { startForagingSweep, stopForagingSweep } from "./myrmidon/foraging/startup.js"; // myrmidon(1.6-FORAGE)
 import { startAlertsSweep } from "./myrmidon/monitoring/alerts/index.js"; // myrmidon(1.6.6-ALERTS)
 import { startTracingAttentionSweep, stopTracingAttentionSweep } from "./myrmidon/tracing-health/attention-sweep.js"; // myrmidon(TRACING-HEALTH)
@@ -931,6 +933,7 @@ async function startServerWithDatabaseTeardown(
   // document parsed fail-closed above (`plugins.autoInstall`). Absent env means
   // self-hosted: createApp falls back to its built-in kubernetes-only default.
   const managedPluginAutoInstall = managedConfig?.plugins.autoInstall ?? null;
+  const processPulseIdentity = { role: "single", bootId: randomUUID() };
   const app = await createApp(db as any, {
     uiMode,
     serverPort: listenPort,
@@ -970,6 +973,7 @@ async function startServerWithDatabaseTeardown(
     pluginWorkerManager,
     decisionServiceOptions,
     managedPluginAutoInstall,
+    processIdentity: processPulseIdentity,
   });
   const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
 
@@ -1193,6 +1197,8 @@ async function startServerWithDatabaseTeardown(
   }>) | null = null;
   let heartbeatSchedulerStopped = false;
   let heartbeatSchedulerInterval: ReturnType<typeof setInterval> | null = null;
+  // myrmidon(PROCS-0.1): the process pulse, started once the server listens.
+  let boardProcessPulse: { stop(): Promise<void> } | null = null;
   // myrmidon(T1.6): clock for the periodic gateway-reattach pass. The startup
   // pass refreshes it too, so the first periodic tick waits one full interval
   // instead of doubling up on candidates the startup sweep just scanned.
@@ -1737,6 +1743,21 @@ async function startServerWithDatabaseTeardown(
     startStackCheckSweep(db as any); // myrmidon(SUB): scheduled stack release check; a no-op unless MYRMIDON_STACK_CHECK_INTERVAL_SEC is set
     startTelegramNotifyJobs(db as any); // myrmidon(1.6.1-TG-NOTIFY-B): digest/escalation jobs; a no-op unless the owner settings enable them
     startTgNotifySweep({ db: db as any, settings: dbErrorChannelSettingsSource(db as any) }); // myrmidon(1.6-TG-NOTIFY-C): board errors → Telegram chat/topic; a no-op unless the owner settings enable it
+    // myrmidon(PROCS-0.1): register this process in board_processes and start
+    // the 10 s pulse. Runs in every mode (single included — the panel shows
+    // the current process there); failures are logged inside the service and
+    // never abort startup.
+    const pulse = boardProcessPulseService(db as any, {
+      apiPort: listenPort,
+      bootId: processPulseIdentity.bootId,
+      role: processPulseIdentity.role,
+    });
+    try {
+      await pulse.start();
+      boardProcessPulse = pulse;
+    } catch (err) {
+      logger.error({ err }, "board process pulse start failed; continuing without the process row");
+    }
     const heartbeatSchedulingSuppression = await heartbeat.resolveSchedulingSuppression();
 
     // Reap orphaned runs before timer ticks start so wakeups cannot coalesce
@@ -2353,6 +2374,9 @@ async function startServerWithDatabaseTeardown(
     await systemdNotify(["--stopping", `--status=Stopping after ${signal}`]);
     heartbeatSchedulerStopped = true;
     clearInterval(executionControlInterval);
+    // myrmidon(PROCS-0.1): remove this process's row on a clean shutdown so
+    // the panel does not wait two minutes for the stale sweep.
+    await boardProcessPulse?.stop();
     stopBotContainers(); // myrmidon(W2a)
     stopLitellmCostSweep(); // myrmidon(M2-A)
     stopBaselineSnapshots(); // myrmidon(1.6-BASELINE)

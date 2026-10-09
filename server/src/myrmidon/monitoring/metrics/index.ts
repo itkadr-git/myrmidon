@@ -25,6 +25,14 @@ export {
 } from "./routes.js";
 
 /** The router app.ts mounts (origin root, outside /api). */
-export function myrmidonMetricsApp(db: Db): ReturnType<typeof myrmidonMetricsRoutes> {
-  return myrmidonMetricsRoutes({ db, env: process.env, now: () => new Date() });
+export function myrmidonMetricsApp(
+  db: Db,
+  opts?: Pick<MetricsRoutesDeps, "processIdentity">,
+): ReturnType<typeof myrmidonMetricsRoutes> {
+  return myrmidonMetricsRoutes({
+    db,
+    env: process.env,
+    now: () => new Date(),
+    ...(opts?.processIdentity !== undefined ? { processIdentity: opts.processIdentity } : {}),
+  });
 }

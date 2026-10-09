@@ -162,6 +162,34 @@ describe("metrics endpoint routes", () => {
     expect(JSON.stringify(res.body)).not.toContain("exploded");
   });
 
+  it("the process families carry the role/boot labels when the route knows the identity (PROCS-0.1)", async () => {
+    const env = { [METRICS_TOKEN_ENV]: TOKEN };
+    const app = express();
+    app.use(
+      myrmidonMetricsRoutes({
+        db: {} as never,
+        env: env as NodeJS.ProcessEnv,
+        now: () => NOW,
+        listSecretRowsByName: async () => [],
+        readSecretValue: async () => null,
+        processIdentity: { role: "api", bootId: "boot-1" },
+        processMetrics: () => ({
+          eventLoop: { p50Seconds: 0.01, p99Seconds: 0.02, maxSeconds: 0.03 },
+          eventLoopUtilization: { active: 2.5, idle: 7.5, utilization: 0.25 },
+          memory: { rssBytes: 1234, heapUsedBytes: 500, heapTotalBytes: 800 },
+          liveEvents: [],
+        }),
+      }),
+    );
+    const res = await request(app).get("/metrics").set("Authorization", `Bearer ${TOKEN}`);
+    expect(res.status).toBe(200);
+    expect(res.text).toContain(
+      'myrmidon_board_event_loop_lag_seconds{role="api",boot="boot-1",quantile="0.99"} 0.02',
+    );
+    expect(res.text).toContain('myrmidon_board_process_rss_bytes{role="api",boot="boot-1"} 1234');
+    expect(res.text).toContain('myrmidon_board_event_loop_utilization{role="api",boot="boot-1"} 0.25');
+  });
+
   it("tokenMatches is constant-shape and length-strict", () => {
     expect(tokenMatches(TOKEN, TOKEN)).toBe(true);
     expect(tokenMatches(TOKEN, `${TOKEN}x`)).toBe(false);

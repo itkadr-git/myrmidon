@@ -22,3 +22,22 @@ export const instanceSettingsApi = {
   updateExperimental: (patch: PatchInstanceExperimentalSettings) =>
     api.patch<InstanceExperimentalSettingsWithManaged>("/instance/settings/experimental", patch),
 };
+
+/** myrmidon(PROCS-0.1): one row of the board_processes registry. */
+export type BoardProcess = {
+  bootId: string;
+  role: string;
+  pid: number;
+  hostname: string;
+  container: string | null;
+  version: string;
+  startedAt: string;
+  lastSeenAt: string;
+  apiPort: number;
+  eventLoopLagMs: number | null;
+  rssBytes: number | null;
+};
+
+export const boardProcessesApi = {
+  list: () => api.get<BoardProcess[]>("/instance/processes"),
+};

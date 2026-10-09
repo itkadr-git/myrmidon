@@ -173,6 +173,22 @@ describe("process metrics: event loop delay", () => {
   });
 });
 
+describe("process metrics: the event-loop utilization (PROCS-0.1)", () => {
+  afterEach(() => {
+    resetProcessMetricsState();
+  });
+
+  it("the first read is null (no previous window), a later read is 0..1", async () => {
+    expect(readProcessMetrics().eventLoopUtilization).toBe(null);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const second = readProcessMetrics().eventLoopUtilization;
+    expect(second).not.toBe(null);
+    expect(second!.utilization).toBeGreaterThanOrEqual(0);
+    expect(second!.utilization).toBeLessThanOrEqual(1);
+    expect(second!.active + second!.idle).toBeGreaterThan(0);
+  });
+});
+
 describe("process metrics: memory gauges", () => {
   it("reports RSS/heap of this process in positive bytes", () => {
     const memory = readMemorySample();
@@ -191,6 +207,7 @@ describe("process metrics: the source seam", () => {
   it("accepts function and object forms", () => {
     const sample = {
       eventLoop: null,
+      eventLoopUtilization: null,
       memory: { rssBytes: 1, heapUsedBytes: 1, heapTotalBytes: 2 },
       liveEvents: [],
     };
@@ -204,7 +221,7 @@ describe("process metrics: the source seam", () => {
     expect(readProcessMetrics().memory.heapTotalBytes).toBeGreaterThan(0);
   });
 
-  it("a throwing process source names the five families and keeps the scrape alive", async () => {
+  it("a throwing process source names the six families and keeps the scrape alive", async () => {
     const collected = await collectMetricsParts(
       baseDeps({
         processMetrics: () => {
@@ -215,7 +232,7 @@ describe("process metrics: the source seam", () => {
     const boardFamilies = collected.errors
       .flatMap((entry) => entry.split("|"))
       .filter((family) => family.startsWith("myrmidon_board_"));
-    expect(boardFamilies).toHaveLength(5);
+    expect(boardFamilies).toHaveLength(6);
     expect(collected.fields.process).toBe(null);
     // The DB half still failed independently — and nothing crashed.
     expect(collected.errors.length).toBeGreaterThan(5);
@@ -224,6 +241,7 @@ describe("process metrics: the source seam", () => {
   it("the collector wires the injected fake into the snapshot", async () => {
     const sample = {
       eventLoop: { p50Seconds: 0.01, p99Seconds: 0.02, maxSeconds: 0.5 },
+      eventLoopUtilization: { active: 5, idle: 5, utilization: 0.5 },
       memory: { rssBytes: 1000, heapUsedBytes: 500, heapTotalBytes: 800 },
       liveEvents: [{ type: "agent_status", count: 3, bytes: 90 }],
     };

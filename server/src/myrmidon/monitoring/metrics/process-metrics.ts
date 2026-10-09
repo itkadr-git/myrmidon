@@ -18,7 +18,7 @@
 // The whole thing is a seam: the collector takes a `ProcessMetricsSource`,
 // tests inject fakes, production wires `defaultProcessMetricsSource`.
 
-import { monitorEventLoopDelay } from "node:perf_hooks";
+import { monitorEventLoopDelay, performance } from "node:perf_hooks";
 import {
   subscribeAllCompanyLiveEvents,
   subscribeGlobalLiveEvents,
@@ -29,6 +29,19 @@ export type ProcessEventLoopSample = {
   p50Seconds: number;
   p99Seconds: number;
   maxSeconds: number;
+};
+
+/**
+ * myrmidon(PROCS-0.1): the event-loop utilization pair of the delay summary.
+ * `performance.eventLoopUtilization` is cumulative since the process start;
+ * keeping the previous sample lets us answer the utilization of exactly the
+ * interval between scrapes — the window an alert consumes, same contract as
+ * the read-and-reset delay quantiles.
+ */
+export type ProcessEventLoopUtilizationSample = {
+  active: number;
+  idle: number;
+  utilization: number;
 };
 
 export type ProcessMemorySample = {
@@ -46,6 +59,8 @@ export type ProcessLiveEventSample = {
 export type ProcessMetricsSample = {
   /** null while the histogram is not enabled. */
   eventLoop: ProcessEventLoopSample | null;
+  /** myrmidon(PROCS-0.1): null until the second read (no previous delta). */
+  eventLoopUtilization: ProcessEventLoopUtilizationSample | null;
   memory: ProcessMemorySample;
   /** Per-type counters since boot, sorted by type for a stable exposition. */
   liveEvents: ProcessLiveEventSample[];
@@ -63,6 +78,30 @@ const DEFAULT_HISTOGRAM_RESOLUTION_MS = 20;
 let loopHistogram: ReturnType<typeof monitorEventLoopDelay> | null = null;
 let observationStarted = false;
 const liveEventCounters = new Map<string, { count: number; bytes: number }>();
+
+// myrmidon(PROCS-0.1): the previous cumulative utilization sample. The delta
+// against the current read is the utilization of the inter-scrape window.
+let lastEventLoopUtilization: ReturnType<typeof performance.eventLoopUtilization> | null = null;
+
+/**
+ * Reads the event-loop utilization of the interval since the previous call.
+ * Returns null on the first read — a cumulative-since-boot utilization would
+ * mix the startup idle stretch into every alert window.
+ */
+export function readEventLoopUtilization(): ProcessEventLoopUtilizationSample | null {
+  const current = performance.eventLoopUtilization();
+  const previous = lastEventLoopUtilization;
+  lastEventLoopUtilization = current;
+  if (!previous) return null;
+  const active = current.active - previous.active;
+  const idle = current.idle - previous.idle;
+  const total = active + idle;
+  return {
+    active,
+    idle,
+    utilization: total > 0 ? active / total : 0,
+  };
+}
 
 /** One listener per published event: one counter per type plus serialized
  * payload bytes. O(1) and never throws — a metrics listener must not be able
@@ -161,6 +200,7 @@ export function startProcessMetricsObservation(): () => void {
 export function readProcessMetrics(): ProcessMetricsSample {
   return {
     eventLoop: readEventLoopSample(),
+    eventLoopUtilization: readEventLoopUtilization(),
     memory: readMemorySample(),
     liveEvents: liveEventCountersSnapshot(),
   };
@@ -178,4 +218,5 @@ export function resolveProcessMetricsSource(
 /** Test seam: drops every counter (production never calls it). */
 export function resetProcessMetricsState(): void {
   liveEventCounters.clear();
+  lastEventLoopUtilization = null;
 }

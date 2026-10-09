@@ -101,6 +101,7 @@ import { CompanyImport } from "./pages/CompanyImport";
 import { DesignGuide } from "./pages/DesignGuide";
 import { InstanceExperimentalSettings } from "./pages/InstanceExperimentalSettings";
 import { InstanceAccess } from "./pages/InstanceAccess";
+import { InstanceProcesses } from "./pages/InstanceProcesses";
 import { BoardApiKeysPage } from "./pages/BoardApiKeys";
 import { ProfileSettings } from "./pages/ProfileSettings";
 import { PluginManager } from "./pages/PluginManager";
@@ -287,6 +288,10 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
         <Route path="company/settings/instance/access" element={<InstanceAccess />} />
         {/* myrmidon(ROLE-SCOPED-TOKENS): scoped board API key management */}
         <Route path="company/settings/instance/board-api-keys" element={<BoardApiKeysPage />} />
+      </Route>
+      {/* myrmidon(PROCS-0.1): the process registry panel. */}
+      <Route element={<HiddenSettingsPageGate pageKey="instance.processes" />}>
+        <Route path="company/settings/instance/processes" element={<InstanceProcesses />} />
       </Route>
       <Route element={<HiddenSettingsPageGate pageKey="instance.experimental" />}>
         <Route path="company/settings/instance/experimental" element={<InstanceExperimentalSettings />} />

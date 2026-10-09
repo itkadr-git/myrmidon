@@ -31,6 +31,7 @@ function snapshot(overrides: Partial<MetricsSnapshot> = {}): MetricsSnapshot {
     llmCostCentsWindow: 1234,
     process: {
       eventLoop: { p50Seconds: 0.02, p99Seconds: 0.13, maxSeconds: 0.5 },
+      eventLoopUtilization: { active: 4.2, idle: 5.8, utilization: 0.42 },
       memory: { rssBytes: 500000000, heapUsedBytes: 120000000, heapTotalBytes: 200000000 },
       liveEvents: [
         { type: "agent_status", count: 7, bytes: 1024 },
@@ -81,14 +82,42 @@ describe("prometheus exposition format", () => {
     const text = renderMetricsText(snapshot());
     const sampleLines = text.split("\n").filter((line) => line.startsWith("myrmidon_"));
     // 9 single-sample families + 2 quantile samples + 3 role pairs = 14,
-    // plus the process half (1.6.5-PROCS-Q3): 3 loop quantiles + 1 RSS +
-    // 2 heap kinds + 2 live-event counters + 2 live-event byte counters = 10.
-    expect(sampleLines).toHaveLength(24);
+    // plus the process half: 3 loop quantiles + 1 utilization (PROCS-0.1) +
+    // 1 RSS + 2 heap kinds + 2 live-event counters + 2 live-event byte
+    // counters = 11.
+    expect(sampleLines).toHaveLength(25);
     expect(text).toContain('myrmidon_role_queue_tasks{role="engineer",status="todo"} 3');
     expect(text).toContain('myrmidon_role_queue_tasks{role="reviewer",status="in_review"} 2');
     expect(text).toContain('myrmidon_board_event_loop_lag_seconds{quantile="0.99"} 0.13');
+    expect(text).toContain('myrmidon_board_event_loop_utilization 0.42');
     expect(text).toContain('myrmidon_board_heap_bytes{kind="used"} 120000000');
     expect(text).toContain('myrmidon_board_live_events_total{kind="run_finished"} 3');
+  });
+
+  it("renders the role/boot labels when the snapshot carries the process identity (PROCS-0.1)", () => {
+    const text = renderMetricsText(
+      snapshot({ processIdentity: { role: "api", bootId: "boot-1" } }),
+    );
+    expect(text).toContain(
+      'myrmidon_board_event_loop_lag_seconds{role="api",boot="boot-1",quantile="0.99"} 0.13',
+    );
+    expect(text).toContain('myrmidon_board_process_rss_bytes{role="api",boot="boot-1"} 500000000');
+    expect(text).toContain('myrmidon_board_event_loop_utilization{role="api",boot="boot-1"} 0.42');
+  });
+
+  it("omits the utilization sample until the first full window (PROCS-0.1)", () => {
+    const text = renderMetricsText(
+      snapshot({
+        process: {
+          eventLoop: { p50Seconds: 0.02, p99Seconds: 0.13, maxSeconds: 0.5 },
+          eventLoopUtilization: null,
+          memory: { rssBytes: 1, heapUsedBytes: 1, heapTotalBytes: 2 },
+          liveEvents: [],
+        },
+      }),
+    );
+    expect(text).toContain("# TYPE myrmidon_board_event_loop_utilization gauge");
+    expect(text).not.toMatch(/^myrmidon_board_event_loop_utilization/m);
   });
 
   it("renders the process families without samples when there is no process read", () => {
@@ -103,7 +132,7 @@ describe("prometheus exposition format", () => {
 
   it("omits the loop quantile samples while the histogram is not enabled", () => {
     const text = renderMetricsText(
-      snapshot({ process: { eventLoop: null, memory: { rssBytes: 1, heapUsedBytes: 1, heapTotalBytes: 2 }, liveEvents: [] } }),
+      snapshot({ process: { eventLoop: null, eventLoopUtilization: null, memory: { rssBytes: 1, heapUsedBytes: 1, heapTotalBytes: 2 }, liveEvents: [] } }),
     );
     expect(text).not.toContain("myrmidon_board_event_loop_lag_seconds{");
     expect(text).toContain("myrmidon_board_process_rss_bytes 1");

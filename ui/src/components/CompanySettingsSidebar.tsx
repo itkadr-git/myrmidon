@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import {
+  Activity,
   ArrowLeft,
   Cpu,
   Download,
@@ -173,6 +174,15 @@ export function CompanySettingsSidebar() {
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/board-api-keys`}
               label="Board API keys"
               icon={KeyRound}
+              end
+            />
+          )}
+          {/* myrmidon(PROCS-0.1): the live process registry (role, boot, pulse). */}
+          {showPage("instance.processes") && (
+            <SidebarNavItem
+              to={`${INSTANCE_SETTINGS_PATH_PREFIX}/processes`}
+              label="Processes"
+              icon={Activity}
               end
             />
           )}

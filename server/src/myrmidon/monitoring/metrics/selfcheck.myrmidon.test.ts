@@ -35,7 +35,7 @@ describe("metrics self-check probe", () => {
     // the probe can still affirm. The five process families
     // (1.6.5-PROCS-Q3) are likewise not DB reads — they survive a broken
     // database too.
-    expect(result.families_ok).toBe(1 + 5);
+    expect(result.families_ok).toBe(1 + 6);
     const expectedFailed = METRIC_FAMILIES.filter(
       (family) =>
         family !== "myrmidon_scrape_errors" && !family.startsWith("myrmidon_board_"),
