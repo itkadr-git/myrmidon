@@ -41,6 +41,15 @@
   that every column the search SQL reads exists in that schema, because a probe table that has
   drifted from the query surface would otherwise only surface as a red lane on the first host that
   can run the suite.
+- The vector integration suite can now actually run on CI, where it silently skipped before: the
+  embedded-cluster shim unpacked the pgvector package with `tar -J`, while the embedded-postgres
+  helper had prepended its own native lib directory to `LD_LIBRARY_PATH` — that directory carries an
+  older `liblzma.so.5`, so the system `xz` refused to start (`version `XZ_5.4' not found`) and `tar`
+  exited non-zero. The shim now hands `ar` and `tar` an environment with the loader paths removed
+  (the treatment the repo's rootless runner already gives `dpkg-deb`), reads the payload member from
+  `ar t` instead of assuming `data.tar.xz`, and reports a failed command together with its `stderr`,
+  which is where `xz` and `tar` say what went wrong. Database-free tests pin those decisions
+  (`test-pgvector.myrmidon.test.ts`), so the extension installs wherever a system `xz` exists.
 - This is the code half of the corpus step; wiring the module to routes, settings and the UI
   follows in the later parts of CORPUS-2.0.
 
@@ -87,5 +96,15 @@
   не требующий базы страж (`probe-schema.myrmidon.test.ts`) проверяет, что каждая колонка, которую
   читает SQL поиска, есть в этой схеме, — иначе разъехавшаяся таблица-зонд всплыла бы красным
   лейном только на первой машине, где набор вообще может выполниться.
+- Векторный интеграционный набор теперь действительно выполняется в CI, а до этого молча
+  пропускался: шим встроенного кластера распаковывал пакет pgvector через `tar -J`, а хелпер
+  embedded-postgres успел добавить в `LD_LIBRARY_PATH` свой каталог нативных библиотек — в нём
+  лежит более старая `liblzma.so.5`, поэтому системный `xz` отказывался стартовать
+  (`version `XZ_5.4' not found`), а `tar` завершался с ошибкой. Теперь шим запускает `ar` и `tar`
+  с окружением без путей загрузчика (ровно то, что рутлесс-раннер репозитория уже делает для
+  `dpkg-deb`), берёт имя полезного члена из `ar t`, а не предполагает `data.tar.xz`, и сообщает
+  о сбое команды вместе с её `stderr` — там `xz` и `tar` и говорят, что именно пошло не так.
+  Эти решения закреплены тестами без базы (`test-pgvector.myrmidon.test.ts`), поэтому расширение
+  ставится везде, где есть системный `xz`.
 - Это кодовая половина шага корпуса; подключение модуля к маршрутам, настройкам и интерфейсу —
   в следующих частях CORPUS-2.0.
