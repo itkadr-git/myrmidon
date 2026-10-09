@@ -86,6 +86,8 @@ const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
   foraging_limit: { label: "Learning limit" },
   // myrmidon(OPE-6011): label for the execution hold source.
   execution_hold: { label: "Execution hold" },
+  // myrmidon(1.6.5-F-18): label for the empty gateway model catalog signal.
+  empty_model_catalog: { label: "Model catalog" },
 };
 
 export function sourceMeta(kind: AttentionSourceKind): SourceMeta {
