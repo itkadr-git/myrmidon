@@ -51,3 +51,29 @@ row and no leases. The setting is only stored for now — the supervisor that ac
 | ID | Что меняем | Файлы вендора | Причина | Тест-сторож | Как снимать | PR |
 | --- | --- | --- | --- | --- | --- | --- |
 | 1.6.5-PROCS-0.1-SERVER | Реестр процессов доски (`board_processes`) с пульсом раз в 10 с и удалением строк старше 2 мин, таблица аренд `board_leases`, маршруты чтения `/api/myrmidon/board-processes` и `/api/myrmidon/processes/leases`, ключ `general.processes` в общих настройках (по умолчанию — один процесс) | `packages/db/src/schema/index.ts`, `packages/shared/src/validators/instance.ts`, `packages/shared/src/types/instance.ts`, `server/src/services/instance-settings.ts`, `server/src/app.ts`, `server/src/index.ts` | Этап 0 проекта «несколько процессов доски» (design §5.1): без реестра нельзя ни проверить, жив ли владелец прогона, ни показать оператору, сколько процессов работает | `server/src/myrmidon/process-registry/*.myrmidon.test.ts`, `server/src/__tests__/instance-settings-processes.test.ts` | Реестр и аренды — аддитивные таблицы в собственных файлах; снять — убрать подключение в `app.ts` и `index.ts`, ключ в настройках и файлы реестра | см. PR |
+
+## settings-en-append
+
+<!-- section: Track 5 — operations -->
+### Process registry: role and container name
+
+| Variable | Function | Default | What it does | How to disable / special |
+|---|---|---|---|---|
+| `MYRMIDON_PROCESS_CONTAINER` | PROCS-0.1 | unset | Container name written to the process registry row of this process (`board_processes.container`). Unset — the runtime's `HOSTNAME` (the container id under Docker) is used, and a bare host records none | Unset — `HOSTNAME`. Informational only: nothing reads it for decisions |
+
+`PAPERCLIP_PROCESS_ROLE` (`all` / `worker` / `api`, default `all`) is the role this
+process records in the registry; an unknown value means `all`, the single process. A
+process with the `api` role does not reap stale registry rows.
+
+## settings-ru-append
+
+<!-- section: Трек 5 — эксплуатация -->
+### Реестр процессов: роль и имя контейнера
+
+| Переменная | Функция | Умолчание | Что делает | Как отключить / особенности |
+|---|---|---|---|---|
+| `MYRMIDON_PROCESS_CONTAINER` | PROCS-0.1 | не задана | Имя контейнера, которое процесс пишет в свою строку реестра (`board_processes.container`). Не задана — берётся `HOSTNAME` среды (под Docker это id контейнера), на голом хосте контейнер не записывается | Не задана — `HOSTNAME`. Только для показа: решения на ней не строятся |
+
+`PAPERCLIP_PROCESS_ROLE` (`all` / `worker` / `api`, по умолчанию `all`) — роль, которую
+процесс записывает в реестр; неизвестное значение означает `all`, то есть один процесс.
+Процесс с ролью `api` устаревшие строки реестра не удаляет.
