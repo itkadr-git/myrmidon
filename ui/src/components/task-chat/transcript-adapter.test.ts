@@ -1123,7 +1123,7 @@ describe("buildTurnTimelineRows (DOT-217)", () => {
     ]);
   });
 
-  it("keeps runtime requests in the Paperclip Runner timeline input", () => {
+  it("keeps runtime requests in the Myrmidon Runner timeline input", () => {
     const pending = request("pending", "pending");
     expect(
       paperclipRunnerTimelineItems([
