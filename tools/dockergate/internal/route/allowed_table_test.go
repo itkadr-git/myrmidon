@@ -44,6 +44,10 @@ var allowedTable = []allowedEntry{
 	{ID: A12, Method: "POST", Template: "containers/{name}/rename?name={mainName}", Suffixes: []string{".next"}},
 	{ID: A13, Method: "GET", Template: "containers/{name}/archive?" + cloneReportQuery, Suffixes: []string{""}},
 	{ID: A13, Method: "GET", Template: "containers/{name}/archive?" + LegacyCloneReportQuery, Suffixes: []string{""}},
+	// A16: the bot skills read of BOT-SKILL-BACKIMPORT (1.6.5, OPE-6401): the
+	// driver reads hermes/skills of the main container in all three root shapes.
+	{ID: A16, Method: "GET", Template: "containers/{name}/archive?" + skillsReadQuery, Suffixes: []string{""}},
+	{ID: A16, Method: "GET", Template: "containers/{name}/archive?" + LegacySkillsReadQuery, Suffixes: []string{""}},
 	// A14: the partition and the project quotas; not a Docker call, so no API prefix.
 	{ID: A14, Method: "GET", Template: strings.TrimPrefix(DiskTarget, "/"), NoPrefix: true},
 }
@@ -123,7 +127,7 @@ func TestAllowedTableMatchesParse(t *testing.T) {
 			}
 		}
 	}
-	for _, id := range []string{A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13, A14} {
+	for _, id := range []string{A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13, A14, A16} {
 		if !seen[id] {
 			t.Errorf("route %s is not in the allowed table", id)
 		}

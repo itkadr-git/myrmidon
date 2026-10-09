@@ -238,6 +238,18 @@ function build(
           .then((rows) => rows[0] ?? null);
         return row?.companyId ?? null;
       },
+      // myrmidon(1.6.5-BOT-SKILL-BACKIMPORT, OPE-6401): the company lookup the
+      // back-import's catalog ports are built from (skill-backimport-ports.ts).
+      // The flag itself (MYRMIDON_BOT_SKILL_BACKIMPORT, off by default) is
+      // read inside the reconciler.
+      backimportCompanyIdOf: async (agentId) => {
+        const row = await db
+          .select({ companyId: agents.companyId })
+          .from(agents)
+          .where(eq(agents.id, agentId))
+          .then((rows) => rows[0] ?? null);
+        return row?.companyId ?? null;
+      },
     };
     const stopSweep = ports.startReconciliation(ports.listAgents(db), runtime, { intervalMs, env });
     return { runtime, stopSweep };

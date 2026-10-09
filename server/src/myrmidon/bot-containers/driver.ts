@@ -204,4 +204,26 @@ export interface BotContainerDriver {
    * Optional: a driver that cannot read it (fleetd) leaves it out.
    */
   readCloneReport?(botKey: string): Promise<string | null>;
+  /**
+   * myrmidon(1.6.5-BOT-SKILL-BACKIMPORT, OPE-6401): the bot's OWN skills —
+   * the directories under hermes/skills/ (the container's ~/.hermes/skills),
+   * where a bot keeps the skills it created at runtime — as (directory name,
+   * files). The board's own delivery (hermes/skills-board/, the profile's
+   * managed directory) is NOT part of the result. The reconcile pass feeds
+   * this to the back-importer (skill-backimport.ts), so a skill the bot made
+   * lands in the company catalog and survives a volume recreation through
+   * the normal compile-and-apply path. Empty array: the bot has a skills
+   * directory but nothing in it (or none at all). Null: the container is not
+   * running or the read failed — the pass skips the import, it never fails
+   * on it. Optional: a driver that cannot read the filesystem (fleetd)
+   * leaves it out and its bots keep no back-import.
+   */
+  readBotSkills?(botKey: string): Promise<BotSkillDirectory[] | null>;
+}
+
+/** One skill directory of a bot container: its directory name under
+ *  hermes/skills/ and its files (path relative to the skill directory). */
+export interface BotSkillDirectory {
+  name: string;
+  files: Array<{ path: string; content: string }>;
 }
