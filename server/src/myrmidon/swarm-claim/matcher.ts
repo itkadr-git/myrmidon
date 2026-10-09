@@ -20,7 +20,10 @@
 //   * no free agent — the task waits and nobody is woken;
 //   * a closed run admission field matches nothing at all: an assignment below the
 //     floor only parks a run that waits in the queue and lets the lease expire for
-//     nothing (design §3.4 п.5).
+//     nothing (design §3.4 п.5);
+//   * the swarm switched off (design §5.1) matches nothing, and neither does a
+//     caste the company's directory marks `swarmEligible: false` — checks made
+//     here, before a lease is written, not on the run that follows.
 //
 // Ports keep the parts that are still landing elsewhere out of this file:
 //   * T3 — the caste directory and the nests. Until T3 lands the pools are the
@@ -106,6 +109,17 @@ export interface SwarmMatcherActivity {
   details: Record<string, unknown>;
 }
 
+/**
+ * The castes of a company, as much of the directory as the matcher reads (T3
+ * brings the full one). Structurally the same shape the sweeper's `castes` port
+ * hands over, so the port can be passed through without an adapter.
+ */
+export interface SwarmMatcherCaste {
+  key: string;
+  swarmEligible: boolean;
+  maxActiveTasks: number | null;
+}
+
 export interface SwarmMatcherDeps {
   db: Db;
   /** The wake layer — the very one a manual assignment uses. */
@@ -120,6 +134,15 @@ export interface SwarmMatcherDeps {
    * else the company default) — see the note at the top of this file.
    */
   resolveTaskCaste?: (input: { labels: readonly string[] | null }) => string;
+  /**
+   * The caste directory of the company (T3, the sweeper's `castes` port). A
+   * caste the directory marks `swarmEligible: false` never enters the pools —
+   * its ready tasks wait for a caste that is allowed to take them; a caste-set
+   * ceiling overrides the global one for its agents only. A role the directory
+   * does not carry stays in scope with the global ceiling: an empty directory
+   * (or a company that never edited it) must not stop the swarm.
+   */
+  casteDirectory?: (companyId: string) => Promise<readonly SwarmMatcherCaste[]>;
   /** T3: the nests of an agent. Absent, every agent is in one nest. */
   agentNests?: (agentId: string) => Promise<readonly string[]>;
   /** T5: the cooldown of a task that just lost its owner. Absent, none. */
@@ -156,7 +179,11 @@ function pickBySmallestId(
 function freeAgentsOfPair(
   pair: SwarmIdleRolePair,
   settings: SwarmClaimSettings,
+  caste: SwarmMatcherCaste | null,
 ): SwarmMatcherAgent[] {
+  // The ceiling of the caste wins over the global one (the same reading the
+  // sweeper's idle pass used before this file took the pass over).
+  const maxActiveTasks = caste?.maxActiveTasks ?? settings.maxActiveTasks;
   return pair.agents
     .filter((agent) => {
       if (
@@ -167,16 +194,18 @@ function freeAgentsOfPair(
         return false;
       }
       if (agent.hasLiveRun) return false;
-      // The agent's own switch (design §3.2). The caste half is `true` until T3
-      // brings the directory: the read reports the agent, the policy decides.
+      // The agent's own switch, else the caste's `swarmEligible` (the directory
+      // read below), else in scope. A caste the company switched off never
+      // enters the pool: its ready tasks wait for a caste that may take them,
+      // instead of being handed to an agent the claim gate will refuse.
       const queueEligible = resolveSwarmQueueEligibility({
         metadata: agent.metadata,
-        casteEligible: true,
+        casteEligible: caste?.swarmEligible ?? true,
         hasDirectReports: agent.hasDirectReports,
       }).eligible;
       if (!queueEligible) return false;
       return !swarmActiveTaskLimitReached(agent.activeClaims, {
-        maxActiveTasks: settings.maxActiveTasks,
+        maxActiveTasks,
       });
     })
     .map((agent) => ({
@@ -251,7 +280,8 @@ async function claimTaskForAgent(
       role: target.role,
       identifier: target.identifier,
       waitedMs: target.waitedMs,
-      leaseExpiresAt: deps.settings.leaseTtlSec,
+      // The moment, not the TTL: an auditor reads when the lease lapses.
+      leaseExpiresAt: new Date(deps.now.getTime() + deps.settings.leaseTtlSec * 1000).toISOString(),
     },
   });
 
@@ -265,6 +295,20 @@ function waitedMsOf(task: SwarmMatcherTask, now: Date): number | null {
   const ms = queuedAt instanceof Date ? queuedAt.getTime() : typeof queuedAt === "number" ? queuedAt : Date.parse(queuedAt);
   if (Number.isNaN(ms)) return null;
   return Math.max(0, now.getTime() - ms);
+}
+
+/**
+ * The caste directory of a company, keyed by caste — read once per pass, the
+ * same way the sweeper's idle pass reads it. Absent the port, no caste is
+ * filtered and every pool keeps the global ceiling.
+ */
+async function casteDirectoryOf(
+  deps: SwarmMatcherDeps,
+  companyId: string,
+): Promise<Map<string, SwarmMatcherCaste>> {
+  const read = deps.casteDirectory;
+  if (!read) return new Map();
+  return new Map((await read(companyId)).map((entry) => [entry.key, entry]));
 }
 
 /**
@@ -283,13 +327,20 @@ export async function matchCompany(
     result.hostGateClosed = true;
     return result;
   }
+  // The switch of the whole swarm (design §5.1). Off, the board pairs nothing:
+  // the ready queue waits and no lease is written that would then have to be
+  // released — an operator must be able to stop the swarm without a restart.
+  if (!deps.settings.enabled) return result;
 
+  const castes = await casteDirectoryOf(deps, companyId);
   const pairs = await listIdleRolePairs(deps.db, companyId);
   for (const pair of pairs) {
+    const caste = castes.get(pair.role) ?? null;
+    if (caste && !caste.swarmEligible) continue;
     const queue = orderSwarmQueueCandidates(pair.queue, {
       p0Preemption: deps.settings.p0Preemption,
     });
-    let free = freeAgentsOfPair(pair, deps.settings);
+    let free = freeAgentsOfPair(pair, deps.settings, caste);
 
     for (const candidate of queue) {
       if (candidate.assigneeAgentId) continue;
@@ -307,8 +358,11 @@ export async function matchCompany(
       const pick = deps.pickAgentForTask ?? pickBySmallestId;
       const chosen = pick(task, free);
       if (!chosen) {
+        // The pick may refuse one task on its own terms (T10 reads the scent of
+        // this very pair), so the pass goes on to the next candidate rather than
+        // closing the queue: an empty pool refuses every later task anyway.
         result.unmatched += 1;
-        break;
+        continue;
       }
 
       const claimed = await claimTaskForAgent(deps, companyId, {
@@ -347,6 +401,7 @@ export async function matchIssue(
   issueId: string,
 ): Promise<SwarmMatcherPair | null> {
   if (!deps.hostGateOpen) return null;
+  if (!deps.settings.enabled) return null;
   const [row] = await deps.db
     .select({
       id: issues.id,
@@ -362,8 +417,11 @@ export async function matchIssue(
   if (!(SWARM_CLAIM_QUEUE_ISSUE_STATUSES as readonly string[]).includes(row.status)) return null;
   if (await deps.isIssueCoolingDown?.(issueId)) return null;
 
+  const castes = await casteDirectoryOf(deps, row.companyId);
   const pairs = await listIdleRolePairs(deps.db, row.companyId);
   for (const pair of pairs) {
+    const caste = castes.get(pair.role) ?? null;
+    if (caste && !caste.swarmEligible) continue;
     const candidate = pair.queue.find((entry) => entry.issueId === issueId);
     if (!candidate || candidate.assigneeAgentId) continue;
 
@@ -375,7 +433,7 @@ export async function matchIssue(
       queuedAt: candidate.queuedAt,
     };
     const pick = deps.pickAgentForTask ?? pickBySmallestId;
-    const chosen = pick(task, freeAgentsOfPair(pair, deps.settings));
+    const chosen = pick(task, freeAgentsOfPair(pair, deps.settings, caste));
     if (!chosen) return null;
 
     const claimed = await claimTaskForAgent(deps, row.companyId, {
@@ -402,6 +460,7 @@ export async function matchAgent(
   agentId: string,
 ): Promise<SwarmMatcherPair | null> {
   if (!deps.hostGateOpen) return null;
+  if (!deps.settings.enabled) return null;
   const [agentRow] = await deps.db
     .select({
       id: agents.id,
@@ -415,10 +474,16 @@ export async function matchAgent(
   if (!agentRow?.companyId) return null;
   if (agentRow.status === "paused" || agentRow.status === "terminated") return null;
 
+  const castes = await casteDirectoryOf(deps, agentRow.companyId);
   const pairs = await listIdleRolePairs(deps.db, agentRow.companyId);
   const pair = pairs.find((entry) => entry.role === agentRow.role);
   if (!pair) return null;
-  if (!freeAgentsOfPair(pair, deps.settings).some((agent) => agent.agentId === agentId)) return null;
+  const caste = castes.get(pair.role) ?? null;
+  // A caste the company switched off takes nothing, and neither does a task
+  // routed to a caste no agent holds: the agent is simply not free for this
+  // queue, so the event matches nothing (design §3.2).
+  if (caste && !caste.swarmEligible) return null;
+  if (!freeAgentsOfPair(pair, deps.settings, caste).some((agent) => agent.agentId === agentId)) return null;
 
   const queue = orderSwarmQueueCandidates(pair.queue, {
     p0Preemption: deps.settings.p0Preemption,
