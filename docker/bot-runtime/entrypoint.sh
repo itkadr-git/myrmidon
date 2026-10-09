@@ -19,6 +19,14 @@ fail() {
   exit 1
 }
 
+# myrmidon(BOT-UMASK): run files must be owner-only — every bot on a host
+# shares uid 10001, so the mode bits are the only barrier between one run's
+# scratch/cache and another bot's processes. umask is inherited by every
+# child of this process (gateway -> session -> terminal/tool), so setting it
+# here, before the first file write, covers the whole run tree.
+umask 077
+log "umask 077 (run files owner-only)"
+
 # --- required environment ---------------------------------------------
 
 : "${HERMES_HOME:?HERMES_HOME is required (set by the image; do not unset it — it must point at the /data volume)}"
