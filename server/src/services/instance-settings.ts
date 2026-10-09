@@ -56,6 +56,8 @@ import { preserveTelegramNotifyGeneralKey } from "../myrmidon/telegram-notify/pr
 import { preserveTelegramNotifySettingsGeneralKey } from "../myrmidon/telegram-notify/settings-store.js";
 // myrmidon(1.6.1-WIP-LIMIT-A): keep the stored WIP limits across vendor writes of `general`
 import { preserveWipLimitGeneralKey } from "../myrmidon/wip-limit/settings.js";
+// myrmidon(1.6.5-DB-RETENTION): keep the stored retention settings and sweep state across vendor writes of `general`
+import { preserveDataRetentionGeneralKey } from "../myrmidon/data-retention/settings.js";
 // myrmidon(1.6.1 VOICE-STT A1): keep the per-company STT runtime settings across vendor writes of `general`
 import { preserveSttGeneralKey } from "../myrmidon/stt/store.js";
 // myrmidon(1.7-BUDGET-CONFIG-B): keep the stored budget enforcement mode
@@ -266,6 +268,10 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       ...(parsed.data.corpus ? { corpus: parsed.data.corpus } : {}),
       // myrmidon(BOT-DISK E): the stored host disk threshold survives every general write
       ...(parsed.data.hostDisk ? { hostDisk: parsed.data.hostDisk } : {}),
+      // myrmidon(1.6.5-DB-RETENTION): the stored datastore-care object (the
+      // retention settings under `retention` and the sweep state under
+      // `retention.lastRun`) survives every general write
+      ...(parsed.data.datastoreCare ? { datastoreCare: parsed.data.datastoreCare } : {}),
       // myrmidon(BOT-DISK-A): the stored bot draft-directory lifecycle survives every general write
       ...(parsed.data.botDisk ? { botDisk: parsed.data.botDisk } : {}),
       // myrmidon(1.6.1-BOT-DISK-C): the stored per-bot disk quota survives every general write
@@ -703,6 +709,11 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
             ...preserveTelegramNotifyGeneralKey(current.general), // myrmidon(1.6-TG-PROACTIVITY-E)
             ...preserveTelegramNotifySettingsGeneralKey(current.general), // myrmidon(TG-NOTIFY-A)
             ...preserveWipLimitGeneralKey(current.general), // myrmidon(1.6.1-WIP-LIMIT-A)
+            ...preserveDataRetentionGeneralKey(current.general), // myrmidon(1.6.5-DB-RETENTION)
+            // myrmidon(1.6.5-DB-RETENTION): the preserve line above restores
+            // the stored value; a patch that carries the key (settings update
+            // or the sweep's lastRun write) wins.
+            ...(patch.datastoreCare !== undefined ? { datastoreCare: nextGeneral.datastoreCare } : {}),
             ...preserveSttGeneralKey(current.general), // myrmidon(1.6.1 VOICE-STT A1)
             ...preserveBudgetEnforcementGeneralKey(current.general), // myrmidon(1.7-BUDGET-CONFIG-B)
             ...preserveBehaviorSettingsGeneralKeys(current.general), // myrmidon(SETTINGS-CORE)
