@@ -64,6 +64,8 @@ const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
   stack_update: { label: "Stack update" },
   // myrmidon(BOT-RUNTIME-TUNING D): label for the model fallback signal source.
   model_fallback_alert: { label: "Model fallback" },
+  // myrmidon(1.6.5-F11-A): label for the «media not connected» source.
+  bot_media_mcp: { label: "Media not connected" },
   // myrmidon(STALE-BLOCK): label for the lifted-stale-block source.
   stale_block: { label: "Stale block lifted" },
   host_disk_alert: { label: "Host disk" },
@@ -88,6 +90,9 @@ const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
   execution_hold: { label: "Execution hold" },
   // myrmidon(1.6.5-F21-B): label for the owner pending-card source.
   owner_pending_card: { label: "Owner card" },
+  // myrmidon(1.6.5-F-23): labels for the off-run secret read sources.
+  secret_off_run_reads: { label: "Off-run secret reads" },
+  secret_off_run_grant_expiring: { label: "Off-run secret grant expiring" },
   // myrmidon(1.6.5-F-18): label for the empty gateway model catalog signal.
   empty_model_catalog: { label: "Model catalog" },
 };

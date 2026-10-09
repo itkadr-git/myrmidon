@@ -31,6 +31,11 @@ export interface PriorityScoredRun {
    * executionWorkspace branch) contains it.
    */
   releaseMatched: boolean;
+  /**
+   * 1.6.5 (F-27 rework 09.10, design §4): the effective pheromone strength of
+   * the run's issue at the scoring moment; absent reads as 0.
+   */
+  effectivePheromone?: number;
 }
 
 /**
@@ -56,6 +61,7 @@ export function compareRunsByPriority(
       issuePriority: left.issuePriority,
       releaseMatched: left.releaseMatched,
       createdAtMs: left.createdAtMs,
+      effectivePheromone: left.effectivePheromone,
     },
     settings,
     nowMs,
@@ -67,6 +73,7 @@ export function compareRunsByPriority(
       issuePriority: right.issuePriority,
       releaseMatched: right.releaseMatched,
       createdAtMs: right.createdAtMs,
+      effectivePheromone: right.effectivePheromone,
     },
     settings,
     nowMs,

@@ -19,6 +19,7 @@ import {
   emptyDataRetentionLastRun,
   normalizeDataRetentionLastRun,
   normalizeDataRetentionSettings,
+  normalizeDatastoreCareRetention,
   type DataRetentionSettingsPatch,
   type DataRetentionView,
 } from "@paperclipai/shared";
@@ -65,6 +66,7 @@ export function dataRetentionService(deps: DataRetentionServiceDeps): DataRetent
         : undefined;
     return {
       settings: normalizeDataRetentionSettings(stored),
+      externalMachineBackup: normalizeDatastoreCareRetention(stored).externalMachineBackup === true,
       sources: dataRetentionSources(stored),
       status:
         lastRunRaw === undefined

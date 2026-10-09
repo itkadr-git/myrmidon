@@ -773,6 +773,44 @@ if [ "${MYRMIDON_GIT_OBJECTS_CHECK:-1}" != "0" ]; then
   git_objects_self_check || log "WARNING: the shared-objects self-check itself failed to run"
 fi
 
+# --- devbuild self-check (dev variant) --------------------------------------
+# myrmidon(1.6.5 DEVBUILD-IN-BOTS): the bot's heavy commands are meant to run
+# on the build VPS through devbuild, so a start without a working devbuild is
+# a misconfiguration worth one loud line. The check only runs when the wiring
+# is expected (DEVBUILD_HOST set in the container env); a bot without it is
+# the ordinary no-devbuild case and stays silent. The probe is `devbuild
+# 'true'`: it exercises the key (file mount or the DEVBUILD_SSH_KEY_DATA env
+# key), the ssh handshake and the remote shell, and rsyncs the (empty or
+# nearly empty) /workspace of a fresh container. It never stops the gateway —
+# a bot with a broken build offload still edits files and runs git; it logs
+# ERROR and writes ${HERMES_HOME}/.myrmidon/devbuild-check.json for the board.
+# MYRMIDON_DEVBUILD_CHECK=0 disables the probe (tests, manual runs).
+devbuild_self_check() {
+  local out_dir="${HERMES_HOME}/.myrmidon" now ok=false err=""
+  [ -n "${DEVBUILD_HOST:-}" ] || return 0
+  if ! command -v devbuild >/dev/null 2>&1; then
+    err="no devbuild command on PATH (base image?) — DEVBUILD_HOST is set but nothing can use it"
+    log "ERROR: devbuild self-check: ${err}"
+  elif err="$(DEVBUILD_WORKSPACE="${DEVBUILD_CHECK_WORKSPACE:-/workspace}" timeout 120 devbuild 'true' 2>&1)"; then
+    ok=true
+    log "devbuild self-check ok: ${DEVBUILD_USER:-devbuild}@${DEVBUILD_HOST} ${DEVBUILD_BASE:-/srv/devbuild}"
+  else
+    log "ERROR: devbuild self-check failed: devbuild 'true' -> $(printf '%s' "${err}" | tail -n 2 | tr '\n' ' ')"
+  fi
+  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  if mkdir -p "${out_dir}" 2>/dev/null; then
+    printf '{"version":1,"checkedAt":"%s","host":"%s","ok":%s,"error":%s}\n' \
+      "${now}" "$(json_escape "${DEVBUILD_HOST}")" "${ok}" \
+      "$( [ "${ok}" = true ] && printf 'null' || printf '"%s"' "$(json_escape "$(printf '%s' "${err}" | tail -n 2 | tr '\n' ' ')")" )" \
+      > "${out_dir}/devbuild-check.json.tmp" 2>/dev/null \
+      && mv -f "${out_dir}/devbuild-check.json.tmp" "${out_dir}/devbuild-check.json" 2>/dev/null \
+      || log "WARNING: cannot write ${out_dir}/devbuild-check.json"
+  fi
+}
+if [ "${MYRMIDON_DEVBUILD_CHECK:-1}" != "0" ]; then
+  devbuild_self_check || log "WARNING: the devbuild self-check itself failed to run"
+fi
+
 # --- bot disk lifecycle agent (dev variant) --------------------------------
 # myrmidon(1.6.5 BOT-DISK-H1c): botd (BOT-DISK-H3) replaces bot-clone-hygiene: it
 # reports the bot's workspaces to the board and runs the workspace lifecycle. Until

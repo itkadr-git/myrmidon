@@ -44,6 +44,18 @@ import {
 import type { BotContainerActivitySink } from "./reconciler.js";
 // myrmidon(PERF-DIET-G): the cache one sweep shares between the bots it compiles.
 import { beginBotProfilePass, type BotProfilePass } from "./profile-pass.js";
+// myrmidon(1.6.5-F11-A): the media MCP block and its «media not connected» signal.
+import {
+  beginMediaMcpPass,
+  endMediaMcpPass,
+  MEDIA_MCP_SERVER_NAME,
+  MEDIA_MCP_URL_ENV,
+  mediaMcpSignalForBot,
+  recordMediaMcpOffline,
+} from "./media-mcp.js";
+// myrmidon(1.6.5-F11-A): the single media-token source — the card env entry the
+// MEDIA-PROVISION exporter (media-acl-export.ts) hashes into the facade's bots.json.
+import { mediaTokenFromEnv } from "./media-acl-export.js";
 import { cardFleetHost } from "./fleetd-hosts.js"; // myrmidon(1.6.1-BOT-DISK-B)
 import { BOT_SCOPE_GIT_OBJECTS_DIR, BOT_SCOPE_STORE_DIR, botdProfileEnv, packageCacheEnv, pnpmEnv } from "./template.js"; // myrmidon(1.6.1-BOT-DISK-B, BOT-DISK-F, 1.6.5-BOT-DISK-G, 1.6.5-BOT-DISK-H5c)
 import type { CompiledProfile } from "./types.js";
@@ -344,6 +356,13 @@ export function createBotProfileCompile(
     // Read-only lookups first: a missing MCP token secret fails here, before the
     // ports below create the bot's keys, so a broken instance setting leaves nothing behind.
     const staticMcpServers = await resolveStaticMcpServers(ports, agent.companyId, settings);
+    // myrmidon(1.6.5-F11-A): a token-less media block is the F-11 incident itself,
+    // so a statically declared `media` server does NOT survive a missing card
+    // token: the compiler drops it here, before the card-key ports below create
+    // anything, and records the «media not connected» signal instead. Operators
+    // must remove the static entry (MYRMIDON_BOT_MCP_SERVERS) from the instance
+    // settings; until they do, this filter keeps its bots from the 401 flood.
+    const staticMcpServersWithoutMedia = staticMcpServers.filter((server) => server.name !== MEDIA_MCP_SERVER_NAME);
 
     const [cardEnv, skills, instructions, apiServerKey, paperclipApiKey, gatewayResult, instanceDefaults, parallelHelpersSettings, botLspSettings] =
       await Promise.all([
@@ -368,6 +387,41 @@ export function createBotProfileCompile(
         // myrmidon(BOT-LSP-DEFAULTS): same, for the language-server policy.
         ports.botLsp ? once("bot-lsp", () => ports.botLsp!()) : Promise.resolve(undefined),
       ]);
+
+    // myrmidon(1.6.5-F11-A): the media MCP block is in the profile ONLY when the
+    // bot's card resolves a non-empty MEDIA_TOOLS_TOKEN — the single token
+    // source, the same entry the MEDIA-PROVISION exporter hashes into the
+    // facade's bots.json (media-acl-export.ts `mediaTokenFromEnv`). Without a
+    // token there is no media server block at all — the runtime never registers
+    // a server whose every call the facade would answer with HTTP 401 (the F-11
+    // incident). The bot instead sees «media not connected»: no MCP server named
+    // `media`, no MEDIA_TOOLS_*, and the attention card recorded below. The
+    // compiler never writes MEDIA_TOOLS_* itself — the card entry (already in
+    // cardEnv.env when the token exists) reaches the .env file unchanged, so
+    // there is no second token source to drift against the registry.
+    let mediaMcpServer: BotMcpSource | null = null;
+    let mediaEnv: Record<string, HermesProfileEnvEntry> = {};
+    const mediaUrl = ((opts.env as Record<string, string | undefined>).MYRMIDON_MEDIA_MCP_URL ?? "http://media-mcp:8080/mcp").trim();
+    const mediaToken = mediaTokenFromEnv(cardEnv.env);
+    if (mediaUrl && mediaToken) {
+      mediaMcpServer = {
+        name: MEDIA_MCP_SERVER_NAME,
+        url: mediaUrl,
+        token: mediaToken,
+        header: "Authorization",
+        scheme: "Bearer",
+        // The address is the service name inside the bots network, like the gateway's.
+        rewriteUrl: false,
+      };
+      mediaEnv = {
+        [MEDIA_MCP_URL_ENV]: { value: mediaUrl.replace(/\/mcp$/, ""), secret: false },
+      };
+    } else if (mediaUrl) {
+      // The «media not connected» channel is the attention card, not a compile
+      // warning: a token-less card is a normal state (most of the fleet), so
+      // the compile log stays quiet and the board shows the advisory card.
+      recordMediaMcpOffline(agent.companyId, mediaMcpSignalForBot(agentId, botKey, new Date().toISOString()));
+    }
 
     // myrmidon(1.6.1-BOT-DISK-B): with a shared package cache, a bot on the
     // default host (the local driver mounts the cache there) gets the variables
@@ -472,7 +526,7 @@ export function createBotProfileCompile(
         botKey,
         adapterConfig: agent.adapterConfig,
         runtimeConfig: agent.runtimeConfig,
-        env: { ...cardEnv.env, ...egressEnv, ...cacheEnv },
+        env: { ...cardEnv.env, ...egressEnv, ...cacheEnv, ...mediaEnv },
         skills: skills.skills,
         // No workspace/AGENTS.md: the gateway injection-scans it and drops the whole file
         // on a match. The instructions reach the model through the run request instead
@@ -484,8 +538,10 @@ export function createBotProfileCompile(
         apiServerKey: apiServerKey.value,
         paperclipApiKey: paperclipApiKey.value,
         // The gateway server's name cannot be declared (profile-input.ts rejects it), so it is never displaced;
-        // for any other name shared by two sources the declared server comes first and wins.
-        mcpServers: [...staticMcpServers, ...gatewayMcpServers],
+        // for any other name shared by two sources the declared server comes first and wins. The media server
+        // is last, and the static `media` entry is filtered out above, so this block is the only `media`
+        // source in a compiled profile — the card token decides whether it exists at all.
+        mcpServers: [...staticMcpServersWithoutMedia, ...gatewayMcpServers, ...(mediaMcpServer ? [mediaMcpServer] : [])],
         instanceDefaults,
         // myrmidon(PARALLEL-HELPERS): the company ceiling/default; the input
         // builder resolves them against the card.
@@ -519,7 +575,18 @@ export function createBotProfileCompile(
   // in one tick (bot-containers/index.ts). Object.assign keeps the callable shape
   // the reconciler already expects and adds the two methods beside it.
   return Object.assign(compile, {
-    beginPass: (): BotProfilePass => beginBotProfilePass(),
-    endPass: (value: BotProfilePass): void => value.end(),
+    beginPass: (): BotProfilePass => {
+      // myrmidon(1.6.5-F11-A): the media signals of the pass collect beside the
+      // profile cache and become the live set when the pass closes.
+      beginMediaMcpPass();
+      return beginBotProfilePass();
+    },
+    endPass: (value: BotProfilePass): void => {
+      try {
+        value.end();
+      } finally {
+        endMediaMcpPass();
+      }
+    },
   });
 }

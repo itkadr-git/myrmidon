@@ -227,6 +227,81 @@ describeEmbeddedPostgres("authorization service", () => {
     expect(decision.explanation).toContain("Allowed by explicit grant tasks:assign");
   });
 
+  // myrmidon(1.6.5-F-23): an expired grant no longer authorizes.
+  it("rejects a grant whose expiresAt is in the past", async () => {
+    const company = await createCompany(db, "ExpiredGrant");
+    const actorAgent = await createAgent(db, company.id);
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "agent",
+      principalId: actorAgent.id,
+      status: "active",
+      membershipRole: "member",
+    });
+    await db.insert(principalPermissionGrants).values({
+      companyId: company.id,
+      principalType: "agent",
+      principalId: actorAgent.id,
+      permissionKey: "secrets:read_off_run",
+      scope: null,
+      grantedByUserId: null,
+      expiresAt: new Date(Date.now() - 60 * 1000),
+    });
+
+    const decision = await authorizationService(db).decidePrincipalGrant({
+      companyId: company.id,
+      principalType: "agent",
+      principalId: actorAgent.id,
+      action: "secrets:read",
+      permissionKey: "secrets:read_off_run",
+    });
+
+    expect(decision).toMatchObject({
+      allowed: false,
+      reason: "deny_expired_grant",
+    });
+    expect(decision.explanation).toContain("expired");
+  });
+
+  it("accepts a grant whose expiresAt is in the future", async () => {
+    const company = await createCompany(db, "FutureGrant");
+    const actorAgent = await createAgent(db, company.id);
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "agent",
+      principalId: actorAgent.id,
+      status: "active",
+      membershipRole: "member",
+    });
+    await db.insert(principalPermissionGrants).values({
+      companyId: company.id,
+      principalType: "agent",
+      principalId: actorAgent.id,
+      permissionKey: "secrets:read_off_run",
+      scope: null,
+      grantedByUserId: null,
+      expiresAt: new Date(Date.now() + 60 * 1000),
+    });
+
+    const decision = await authorizationService(db).decidePrincipalGrant({
+      companyId: company.id,
+      principalType: "agent",
+      principalId: actorAgent.id,
+      action: "secrets:read",
+      permissionKey: "secrets:read_off_run",
+    });
+
+    expect(decision).toMatchObject({
+      allowed: true,
+      reason: "allow_explicit_grant",
+      grant: {
+        principalType: "agent",
+        principalId: actorAgent.id,
+        permissionKey: "secrets:read_off_run",
+      },
+    });
+  });
+
   it("allows suggest grants to read peer agent configuration", async () => {
     const company = await createCompany(db, "AgentReadGrant");
     const actorAgent = await createAgent(db, company.id);

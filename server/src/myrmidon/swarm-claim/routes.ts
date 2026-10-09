@@ -6,7 +6,7 @@
 //   the top task of its role's queue behind a lease. Agent-authenticated; the
 //   per-agent ceiling and the P0 order apply inside the service.
 // - POST .../swarm-claim/heartbeat — the run refreshes its own lease.
-// - GET/PATCH /api/myrmidon/swarm-claim — the pilot settings (the flag, the
+// - GET/PATCH /api/myrmidon/swarm-claim — the swarm settings (the flag, the
 //   TTL, the ceiling, the sweep interval), the same read/write rule the other
 //   instance settings follow: any board member reads, instance-admin writes.
 //
