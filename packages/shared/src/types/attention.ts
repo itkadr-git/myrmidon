@@ -63,6 +63,7 @@ export const ATTENTION_SOURCE_KINDS = [
   // execution-reconciliation hold ("execution_reconciliation_required") until
   // a person confirms the failed run left no external action.
   "execution_hold",
+
   // myrmidon(OPE-6799): replay-blocked issues handed to an operator/lead until triaged.
   "replay_blocked",
   // myrmidon(1.6.5-F21-B): owner decision cards are waiting on the owner;
@@ -78,8 +79,11 @@ export const ATTENTION_SOURCE_KINDS = [
   "empty_model_catalog",
   // myrmidon(1.6.5 F-09): a queued run older than the instance's stall
   // threshold (default 1 h) still waits without a waitReason.
-  "queue_stall",
-] as const;
+  "queue_stall",  // myrmidon(REPLAY-BLOCK-TRIAGE): a task is locked by a settled "do not
+  // replay" hold with no run to clear it; the card names the responsible
+  // (the assignee's manager, else the board operator) and re-surfaces daily
+  // until the hold is triaged.
+  "replay_locked",] as const;
 
 export type AttentionSourceKind = (typeof ATTENTION_SOURCE_KINDS)[number];
 

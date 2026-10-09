@@ -89,6 +89,7 @@ const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
   foraging_limit: { label: "Learning limit" },
   // myrmidon(OPE-6011): label for the execution hold source.
   execution_hold: { label: "Execution hold" },
+
   // myrmidon(OPE-6799): operator triage for blocked replays.
   replay_blocked: { label: "Replay blocked" },
   // myrmidon(1.6.5-F21-B): label for the owner pending-card source.
@@ -102,8 +103,8 @@ const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
   // older than the stall threshold without a waitReason.
   queue_stall: { label: "Queue stall" },
   // myrmidon(1.6.6 OPE-7198): label for the codex_pool_alert attention card.
-  codex_pool_alert: { label: "Codex pool alert" },
-};
+  codex_pool_alert: { label: "Codex pool alert" },  // myrmidon(REPLAY-BLOCK-TRIAGE): label for the replay-locked task source.
+  replay_locked: { label: "Replay locked" },};
 
 export function sourceMeta(kind: AttentionSourceKind): SourceMeta {
   return SOURCE_META[kind] ?? { label: kind.replaceAll("_", " ") };
