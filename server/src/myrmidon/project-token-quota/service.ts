@@ -116,6 +116,8 @@ export async function readProjectTokenQuotaStatus(
     .limit(1);
   return {
     projectId: quota.projectId,
+    dailyTokenLimit: quota.dailyTokenLimit,
+    weeklyTokenLimit: quota.weeklyTokenLimit,
     projectName: (await getProjectRow(db, companyId, projectId))?.name ?? "",
     dailyTokensUsed: Number(row?.dailyTokensUsed ?? 0),
     weeklyTokensUsed: Number(row?.weeklyTokensUsed ?? 0),
