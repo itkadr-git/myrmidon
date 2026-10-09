@@ -18,6 +18,7 @@ import {
 } from "@paperclipai/shared";
 import {
   compareRunsByPriority,
+  rankQueuedRuns,
   runMatchesCurrentRelease,
   sortByRunPriority,
   type PriorityScoredRun,
@@ -69,10 +70,33 @@ function scored(
   };
 }
 
+/**
+ * The width of one role band under `settings` (the contract: wider than the
+ * heaviest issue weight, the release bonus and the whole aging budget, the
+ * starvation escape included) — the scoring mirrors it.
+ */
+function bandOf(settings: RunPrioritySettings): number {
+  return (
+    Math.max(0, ...Object.values(settings.issuePriorityWeights)) +
+    settings.releaseBonus +
+    Math.max(settings.agingMaxBonus, settings.starvationTopWeight) +
+    1
+  );
+}
+
+/** One whole lane above the heaviest role: what a current-release run is lifted by. */
+function laneOf(settings: RunPrioritySettings): number {
+  return (
+    (Math.max(0, ...Object.values(settings.roleWeights), settings.defaultRoleWeight) + 1) *
+    bandOf(settings)
+  );
+}
+
 describe("runPriorityWeight", () => {
   const base = settings();
+  const band = bandOf(base);
 
-  it("scores a review role above an engineer and a critical issue above both", () => {
+  it("bands the weight by the role and only orders the issues inside the band", () => {
     const engineer = runPriorityWeight(
       { role: "engineer", hasIssue: true, issuePriority: "medium", releaseMatched: false, createdAtMs: NOW },
       base,
@@ -88,25 +112,35 @@ describe("runPriorityWeight", () => {
       base,
       NOW,
     );
-    // weight = max(role, issue): engineer(50) loses to the medium issue (60)
-    expect(engineer).toBe(DEFAULT_RUN_PRIORITY_ISSUE_WEIGHTS.medium);
-    // review(90) beats the same issue weight — the role carries the run
-    expect(reviewer).toBe(DEFAULT_RUN_PRIORITY_ROLE_WEIGHTS.review);
+    // weight = role x band + issue: the issue priority refines the role's band
+    expect(engineer).toBe(
+      DEFAULT_RUN_PRIORITY_ROLE_WEIGHTS.engineer * band +
+        DEFAULT_RUN_PRIORITY_ISSUE_WEIGHTS.medium,
+    );
+    expect(reviewer).toBe(
+      DEFAULT_RUN_PRIORITY_ROLE_WEIGHTS.review * band +
+        DEFAULT_RUN_PRIORITY_ISSUE_WEIGHTS.medium,
+    );
     expect(reviewer).toBeGreaterThan(engineer);
-    // weight = max(role, issue): the critical issue outranks its own role
-    expect(criticalEngineer).toBe(DEFAULT_RUN_PRIORITY_ISSUE_WEIGHTS.critical);
+    // the critical issue stays inside the engineer's band: unlike max(role,
+    // issue) it can neither tie nor beat the review band (review #829's defect)
+    expect(criticalEngineer).toBe(
+      DEFAULT_RUN_PRIORITY_ROLE_WEIGHTS.engineer * band +
+        DEFAULT_RUN_PRIORITY_ISSUE_WEIGHTS.critical,
+    );
+    expect(criticalEngineer).toBeLessThan(reviewer);
   });
 
-  it("gives a run without an issue only its role weight", () => {
+  it("gives a run without an issue the plain band of its role", () => {
     const w = runPriorityWeight(
       { role: "engineer", hasIssue: false, issuePriority: null, releaseMatched: false, createdAtMs: NOW },
       base,
       NOW,
     );
-    expect(w).toBe(DEFAULT_RUN_PRIORITY_ROLE_WEIGHTS.engineer);
+    expect(w).toBe(DEFAULT_RUN_PRIORITY_ROLE_WEIGHTS.engineer * band);
   });
 
-  it("pays the release bonus to a run whose issue carries the current release", () => {
+  it("lifts a current-release run one whole lane above the heaviest role", () => {
     const withRelease = runPriorityWeight(
       { role: "engineer", hasIssue: true, issuePriority: "high", releaseMatched: true, createdAtMs: NOW },
       base,
@@ -117,7 +151,15 @@ describe("runPriorityWeight", () => {
       base,
       NOW,
     );
-    expect(withRelease - without).toBe(base.releaseBonus);
+    expect(withRelease - without).toBe(base.releaseBonus + laneOf(base));
+    // the lane starts current-release work before the heaviest role with its
+    // heaviest issue, however long that one has waited inside its band
+    const heaviestOther = runPriorityWeight(
+      { role: "review", hasIssue: true, issuePriority: "critical", releaseMatched: false, createdAtMs: NOW - 89 * MIN },
+      base,
+      NOW,
+    );
+    expect(withRelease).toBeGreaterThan(heaviestOther);
   });
 
   it("grows the weight with the wait, capped at the aging bonus", () => {
@@ -133,31 +175,61 @@ describe("runPriorityWeight", () => {
     expect(waited - fresh).toBe(3 * base.agingStepWeight);
     expect(runPriorityWeight(input(89), base, NOW) - fresh).toBe(8 * base.agingStepWeight);
     // the cap itself is only reachable with the starvation escape off: a
-    // 100-minute wait would otherwise short-circuit to the top weight
+    // 100-minute wait would otherwise short-circuit to the escape lane
     const noEscape = { ...base, starvationLimitMinutes: 0 };
     expect(runPriorityWeight(input(120), noEscape, NOW) - runPriorityWeight(input(0), noEscape, NOW)).toBe(
       noEscape.agingMaxBonus,
     );
-    // the starvation escape short-circuits aging: past the 90-minute limit the
-    // run gets the top weight outright, cap included
-    expect(runPriorityWeight(input(100), base, NOW)).toBe(base.starvationTopWeight);
-    expect(runPriorityWeight(input(90), base, NOW)).toBe(base.starvationTopWeight);
+    // aging never leaves the band: 89 minutes of waiting push the engineer's
+    // critical issue to the top of its band, not above the review band
+    expect(runPriorityWeight(input(89), base, NOW)).toBeLessThan(
+      runPriorityWeight(
+        { role: "review", hasIssue: false, issuePriority: null, releaseMatched: false, createdAtMs: NOW },
+        base,
+        NOW,
+      ),
+    );
+    // past the 90-minute limit the run takes the escape lane — a step, not a
+    // slope, and above every role, the current-release lane included
+    const escaped = runPriorityWeight(input(100), base, NOW);
+    expect(runPriorityWeight(input(90), base, NOW)).toBe(escaped);
+    expect(runPriorityWeight(input(240), base, NOW)).toBe(escaped);
+    expect(escaped).toBeGreaterThan(
+      runPriorityWeight(
+        { role: "review", hasIssue: true, issuePriority: "critical", releaseMatched: true, createdAtMs: NOW },
+        base,
+        NOW,
+      ),
+    );
   });
 
-  it("grants the top weight past the starvation limit, and nothing when the limit is off", () => {
+  it("grants the escape lane past the starvation limit, and nothing when the limit is off", () => {
     const starved = runPriorityWeight(
       { role: "general", hasIssue: false, issuePriority: null, releaseMatched: false, createdAtMs: NOW - 91 * MIN },
       base,
       NOW,
     );
-    expect(starved).toBe(base.starvationTopWeight);
+    expect(starved).toBeGreaterThan(
+      runPriorityWeight(
+        { role: "review", hasIssue: true, issuePriority: "critical", releaseMatched: true, createdAtMs: NOW },
+        base,
+        NOW,
+      ),
+    );
     const noLimit = settings({ starvationLimitMinutes: 0 });
     const stillAging = runPriorityWeight(
       { role: "general", hasIssue: false, issuePriority: null, releaseMatched: false, createdAtMs: NOW - 91 * MIN },
       noLimit,
       NOW,
     );
-    expect(stillAging).toBeLessThan(noLimit.starvationTopWeight);
+    // without the escape the same wait stays inside the general band
+    expect(stillAging).toBeLessThan(
+      runPriorityWeight(
+        { role: "review", hasIssue: false, issuePriority: null, releaseMatched: false, createdAtMs: NOW },
+        noLimit,
+        NOW,
+      ),
+    );
   });
 
   it("scores every run zero while the feature is switched off", () => {
@@ -177,13 +249,12 @@ describe("compareRunsByPriority", () => {
   it("starts the review run before the older engineer run and keeps createdAt as the tie-break", () => {
     const reviewer = scored("rev", "review", "medium", 2);
     const engineer = scored("eng", "engineer", "medium", 500);
-    // reviewer = max(90 role, 60 issue) = 90; engineer = max(50, 60) + aging cap 50 = 110? No:
-    // the 500-minute wait hits the starvation escape first, so compare at a
-    // pre-escape wait where the role difference must decide the order
+    // the 500-minute wait takes the engineer run into the starvation escape
+    // lane, so compare at a pre-escape wait where the role band decides alone
     const freshEngineer = scored("eng", "engineer", "medium", 5);
     expect(compareRunsByPriority(reviewer, freshEngineer, base, NOW)).toBeLessThan(0);
     expect(compareRunsByPriority(reviewer, engineer, base, NOW)).toBeGreaterThan(0);
-    // equal weights fall back to the FIFO order the queue had before
+    // equal weights (the same band, issue and aging step) fall back to FIFO
     const older = scored("a", "engineer", "medium", 5);
     const newer = scored("b", "engineer", "medium", 2);
     expect(compareRunsByPriority(older, newer, base, NOW)).toBeLessThan(0);
@@ -195,8 +266,8 @@ describe("compareRunsByPriority", () => {
   });
 
   it("keeps the issue priority order inside one strong role (lead): high before low, then FIFO", () => {
-    // lead role weight (80) covers every issue weight up to high (80), within one aging step, so the
-    // weights alone tie; the per-agent tie-break must keep high ahead of low.
+    // lead(80) band: high(80), medium(60), low(40) and none(20) order the band
+    // themselves; the per-agent tie-break only separates runs of the same weight
     const rank = (priority: string | null) =>
       ["critical", "high", "medium", "low"].indexOf(priority ?? "") === -1
         ? 4
@@ -234,6 +305,76 @@ describe("compareRunsByPriority", () => {
     const reviewer = scored("rev", "review", "critical", 2, true);
     const engineer = scored("eng", "engineer", "low", 500);
     expect(compareRunsByPriority(reviewer, engineer, off, NOW)).toBeGreaterThan(0);
+  });
+});
+
+// The defect review #829 blocked on: with max(role weight, issue weight) a
+// critical issue lifted an engineer run over the review/release role, and aging
+// could do the same. The role — and the current release — must decide the
+// order, whatever the issue priority or the waiting time is.
+describe("role protection across the queue", () => {
+  const base = settings({ currentRelease: "1.6.5-rc.7" });
+
+  it("starts review and release work before a critical issue of any other role", () => {
+    const criticalEngineer = scored("eng", "engineer", "critical", 0);
+    const criticalLead = scored("lead", "lead", "critical", 0);
+    const reviewRun = scored("rev", "review", "low", 0);
+    const releaseRoleRun = scored("rel", "release", "none", 0);
+    expect(compareRunsByPriority(reviewRun, criticalEngineer, base, NOW)).toBeLessThan(0);
+    expect(compareRunsByPriority(reviewRun, criticalLead, base, NOW)).toBeLessThan(0);
+    expect(compareRunsByPriority(releaseRoleRun, criticalEngineer, base, NOW)).toBeLessThan(0);
+    // ... and the whole queue comes out that way, not just the pair
+    const order = sortByRunPriority(
+      [criticalEngineer, reviewRun, criticalLead, releaseRoleRun],
+      base,
+      NOW,
+    ).map((run) => run.id);
+    expect(order.slice(0, 2).sort()).toEqual(["rel", "rev"]);
+  });
+
+  it("starts current-release work before a critical issue of any role", () => {
+    const tagged = scored("tag", "engineer", "low", 0, true);
+    expect(compareRunsByPriority(tagged, scored("eng", "engineer", "critical", 0), base, NOW)).toBeLessThan(0);
+    expect(compareRunsByPriority(tagged, scored("rev", "review", "critical", 0), base, NOW)).toBeLessThan(0);
+    expect(compareRunsByPriority(tagged, scored("lead", "lead", "critical", 0), base, NOW)).toBeLessThan(0);
+  });
+
+  it("keeps aging from lifting a run over a heavier role", () => {
+    // the longest wait that stays below the starvation limit, with the aging
+    // budget spent to the last step before the escape
+    const agedEngineer = scored("eng-aged", "engineer", "critical", 89);
+    expect(compareRunsByPriority(scored("rev", "review", "low", 0), agedEngineer, base, NOW)).toBeLessThan(0);
+    expect(compareRunsByPriority(scored("tag", "engineer", "low", 0, true), agedEngineer, base, NOW)).toBeLessThan(0);
+    // a heavier role's own wait keeps it in front of the aged engineer run too
+    expect(compareRunsByPriority(scored("rev-aged", "review", "low", 89), agedEngineer, base, NOW)).toBeLessThan(0);
+  });
+
+  it("still lets the starvation escape take the front, and the longer wait win inside one role", () => {
+    const starved = scored("starved", "engineer", "none", 91);
+    expect(compareRunsByPriority(starved, scored("rev", "review", "critical", 0, true), base, NOW)).toBeLessThan(0);
+    // inside one role the longer wait goes first (the aging bonus ordering)
+    expect(
+      compareRunsByPriority(scored("old", "engineer", "medium", 70), scored("new", "engineer", "high", 5), base, NOW),
+    ).toBeLessThan(0);
+  });
+});
+
+describe("rankQueuedRuns", () => {
+  const base = settings({ currentRelease: "1.6.5-rc.7" });
+
+  it("numbers the waiting queue from the next run to start", () => {
+    const reviewRun = scored("rev", "review", "low", 0);
+    const tagged = scored("tag", "engineer", "medium", 0, true);
+    const critical = scored("eng-critical", "engineer", "critical", 0);
+    const aged = scored("eng-aged", "engineer", "low", 80);
+    const ranked = rankQueuedRuns([critical, aged, reviewRun, tagged], base, NOW);
+    // the rank the run card shows next to the wait reason: current-release
+    // work, then the review band, then the engineer's critical issue, then the
+    // aged engineer run
+    expect([...ranked.keys()]).toEqual(["tag", "rev", "eng-critical", "eng-aged"]);
+    expect(ranked.get("tag")).toBe(1);
+    expect(ranked.get("eng-aged")).toBe(4);
+    expect(ranked.size).toBe(4);
   });
 });
 
