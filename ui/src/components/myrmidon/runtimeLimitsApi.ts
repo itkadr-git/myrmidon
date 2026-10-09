@@ -156,6 +156,9 @@ export const RUN_WAIT_REASONS = [
   "host_cpu",
   "agent_fair_share",
   "agent_concurrency",
+  // myrmidon(1.6.5 RUN-PRIORITY-PICK): the pass started the agent's more
+  // important ready task first and left this run standing.
+  "higher_priority_ready",
 ] as const;
 
 export type RunWaitReason = (typeof RUN_WAIT_REASONS)[number];
@@ -176,6 +179,8 @@ export function describeRunWaitReason(reason: string | null | undefined): string
       return "another agent's turn comes first (fair share)";
     case "agent_concurrency":
       return "the agent's own concurrency limit is full";
+    case "higher_priority_ready":
+      return "the agent's more important ready task goes first";
     default:
       return null;
   }

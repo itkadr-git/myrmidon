@@ -14,8 +14,11 @@
 // current-release lane — decides the order: review/release and current-release
 // runs overtake the rest whatever the issue priority is, and aging reorders runs
 // of the same role without ever lifting one past a heavier role. Once a run has
-// waited longer than the starvation limit it takes a lane of its own above all
-// of them, so a FIFO queue can never starve anybody forever.
+// waited longer than the starvation limit it stops being starvable: its escape
+// lift is bounded by the distance to the next issue-priority step, so a low run
+// waiting past the limit never overtakes a fresh critical one
+// (myrmidon(1.6.5 RUN-PRIORITY-PICK)). Only a run already at the heaviest step
+// keeps a lane of its own above all of them — nothing is more important than it.
 //
 // Settings follow the same precedence as the run admission limits
 // (`myrmidon-runtime-limits.ts`): the stored `instance_settings.general.runPriority`
@@ -322,6 +325,43 @@ function heaviestRoleWeight(settings: RunPrioritySettings): number {
 }
 
 /**
+ * The issue-priority step just above `issueWeight`, i.e. the ceiling a run of
+ * this issue priority may not cross — or null when the run already sits at the
+ * heaviest step the settings declare.
+ *
+ * myrmidon(1.6.5 RUN-PRIORITY-PICK): the starvation escape is measured against
+ * this ceiling. A task's importance is its issue-priority step; a run that has
+ * waited past the limit is lifted to the top of its own step and no further, so
+ * its "someone must start me" claim never outranks a more important task (a low
+ * run waiting 91 minutes must not overtake a fresh critical one). Weights are
+ * settings-driven, so the ceiling is computed from the live map, not from the
+ * defaults.
+ */
+export function runPriorityStepCeiling(
+  settings: RunPrioritySettings,
+  issueWeight: number,
+): number | null {
+  let ceiling: number | null = null;
+  for (const value of Object.values(settings.issuePriorityWeights)) {
+    if (!Number.isFinite(value) || value <= issueWeight) continue;
+    if (ceiling === null || value < ceiling) ceiling = value;
+  }
+  return ceiling;
+}
+
+/**
+ * The aging bonus a wait of `waitedMs` has earned (0 when aging is off). Aging
+ * is its own bounded dimension (`agingMaxBonus`) and is deliberately untouched
+ * by the step ceiling: a run may still climb with the wait, it just may not
+ * take a heavier task's place.
+ */
+function agingBonusOf(settings: RunPrioritySettings, waitedMs: number): number {
+  if (settings.agingStepMinutes <= 0 || settings.agingStepWeight <= 0) return 0;
+  const steps = Math.floor(waitedMs / (settings.agingStepMinutes * MINUTE_MS));
+  return Math.min(settings.agingMaxBonus, steps * settings.agingStepWeight);
+}
+
+/**
  * What a current-release run is lifted by: one whole band above the heaviest
  * role, so review/release/current-release work starts before every other run
  * whatever its issue priority or waiting time. Only the starvation lane goes
@@ -365,26 +405,44 @@ export function runPriorityWeight(
       0;
   }
   const waitedMs = Math.max(0, nowMs - input.createdAtMs);
-  // The role band plus its refinements: the sum never reaches the next band.
-  let weight = roleWeight * band + issueWeight;
-  if (input.releaseMatched) weight += settings.releaseBonus + lane;
+  const agingBonus = agingBonusOf(settings, waitedMs);
   if (settings.starvationLimitMinutes > 0 && waitedMs >= settings.starvationLimitMinutes * MINUTE_MS) {
-    // The escape keeps its name: past the limit the run leaves the role bands
-    // altogether and takes the starvation lane — one whole band above the
-    // heaviest weight any other run can reach (the current-release lane of the
-    // heaviest role, with the heaviest issue and the release bonus on top), so
-    // neither its own role nor a heavier tagged run can hold it back. Inside the
-    // lane the issue priority and the release tag still order the escaped runs.
+    // The escape is measured against the run's own importance step
+    // (myrmidon(1.6.5 RUN-PRIORITY-PICK)): a starved run is lifted to the top of
+    // its step, not above the queue. Past the limit the run is picked before
+    // every run of a lower or equal step — its own role band's younger runs, the
+    // aging of which cannot match an escape-sized step — but a more important
+    // task keeps its place: a low run waiting 91 minutes never starts ahead of a
+    // fresh critical one. The lift is a step, not a slope: it does not grow with
+    // the wait, so the "somebody must start me" claim is stable once earned.
+    const ceiling = runPriorityStepCeiling(settings, issueWeight);
+    if (ceiling === null) {
+      // Only a run already at the heaviest step keeps the lane above
+      // everything: nothing is more important than it, so nothing may hold it
+      // back — neither its own role nor a heavier tagged run. Inside the lane
+      // the issue priority and the release tag still order the escaped runs.
+      return (
+        (2 * heaviestRoleWeight(settings) + 2) * band +
+        settings.starvationTopWeight +
+        issueWeight +
+        (input.releaseMatched ? settings.releaseBonus : 0)
+      );
+    }
+    const stepRoom = Math.max(
+      0,
+      ceiling - issueWeight - 1 - (input.releaseMatched ? settings.releaseBonus : 0),
+    );
+    const lift = Math.max(agingBonus, Math.min(settings.starvationTopWeight, stepRoom));
     return (
-      (2 * heaviestRoleWeight(settings) + 2) * band +
-      settings.starvationTopWeight +
+      roleWeight * band +
       issueWeight +
+      lift +
       (input.releaseMatched ? settings.releaseBonus : 0)
     );
   }
-  if (settings.agingStepMinutes > 0 && settings.agingStepWeight > 0) {
-    const steps = Math.floor(waitedMs / (settings.agingStepMinutes * MINUTE_MS));
-    weight += Math.min(settings.agingMaxBonus, steps * settings.agingStepWeight);
-  }
+  // The role band plus its refinements: the sum never reaches the next band.
+  let weight = roleWeight * band + issueWeight;
+  if (input.releaseMatched) weight += settings.releaseBonus + lane;
+  weight += agingBonus;
   return weight;
 }

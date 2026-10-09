@@ -348,7 +348,7 @@ describeEmbeddedPostgres("heartbeat run-priority queued run selection", () => {
     expect(stillQueued.contextSnapshot).toMatchObject({ queuePosition: 2, queueLength: 2 });
   }, 30_000);
 
-  it("still hands the slot to a starved run past the starvation limit, over a fresh review run", async () => {
+  it("no longer hands the slot to a starved run whose task is less important than a fresh run's", async () => {
     applyRunPrioritySettings(defaultSettings());
     pinAdmission({ maxConcurrentRuns: 0 });
 
@@ -367,17 +367,19 @@ describeEmbeddedPostgres("heartbeat run-priority queued run selection", () => {
 
     const engineerRun = await wakeAndQueue(engineer.agentId, engineerIssueId);
     const reviewRun = await wakeAndQueue(review.agentId, reviewIssueId);
-    // Past the 90-minute limit the escape lane takes over: starvation protection
-    // outranks the role bands, by design.
+    // myrmidon(1.6.5 RUN-PRIORITY-PICK): past the 90-minute limit the escape is
+    // a lift inside the starved run's own importance step — it no longer
+    // outranks the role bands, so the fresh review run, whose task (low) is more
+    // important than the starved one (none), keeps the slot.
     await backdateRun(engineerRun.id, 91);
 
     pinAdmission({ maxConcurrentRuns: 1 });
     await heartbeat.resumeQueuedRuns();
     await heartbeat.drainActiveRunExecutions();
 
-    const startedEngineer = await runRow(engineerRun.id);
-    const stillQueued = await runRow(reviewRun.id);
-    expect(startedEngineer?.status).not.toBe("queued");
+    const startedReview = await runRow(reviewRun.id);
+    const stillQueued = await runRow(engineerRun.id);
+    expect(startedReview?.status).not.toBe("queued");
     expect(stillQueued?.status).toBe("queued");
   }, 30_000);
 

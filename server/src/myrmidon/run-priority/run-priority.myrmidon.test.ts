@@ -189,27 +189,46 @@ describe("runPriorityWeight", () => {
         NOW,
       ),
     );
-    // past the 90-minute limit the run takes the escape lane — a step, not a
-    // slope, and above every role, the current-release lane included
-    const escaped = runPriorityWeight(input(100), base, NOW);
-    expect(runPriorityWeight(input(90), base, NOW)).toBe(escaped);
-    expect(runPriorityWeight(input(240), base, NOW)).toBe(escaped);
-    expect(escaped).toBeGreaterThan(
+    // past the 90-minute limit the run escapes — myrmidon(1.6.5
+    // RUN-PRIORITY-PICK): the escape lift is bounded by the distance to the next
+    // issue step, so with the aging budget out of the way (its own, unchanged
+    // dimension) the escape can never reach the next step of the same role
+    const noAging = { ...base, agingStepMinutes: 0 };
+    const escapedNoAging = runPriorityWeight(input(120), noAging, NOW);
+    expect(escapedNoAging).toBeGreaterThan(runPriorityWeight(input(0), noAging, NOW));
+    expect(escapedNoAging).toBeLessThan(
+      runPriorityWeight({ ...input(0), issuePriority: "high" }, noAging, NOW),
+    );
+    // … and it no longer crosses the role bands: a starved run stays inside its
+    // own band — the review band of the same settings is still in front of it
+    const escaped = runPriorityWeight(input(120), base, NOW);
+    expect(runPriorityWeight(input(600), base, NOW)).toBe(escaped);
+    expect(escaped).toBe(fresh + base.agingMaxBonus);
+    expect(escaped).toBeLessThan(
       runPriorityWeight(
-        { role: "review", hasIssue: true, issuePriority: "critical", releaseMatched: true, createdAtMs: NOW },
+        { role: "review", hasIssue: false, issuePriority: null, releaseMatched: false, createdAtMs: NOW },
         base,
         NOW,
       ),
     );
   });
 
-  it("grants the escape lane past the starvation limit, and nothing when the limit is off", () => {
+  it("bounds the escape by the run's own importance step, and drops it when the limit is off", () => {
+    // "general" without an issue (step 0) escapes up to the lowest step at most:
+    // it stays inside the general band instead of jumping the whole queue
     const starved = runPriorityWeight(
       { role: "general", hasIssue: false, issuePriority: null, releaseMatched: false, createdAtMs: NOW - 91 * MIN },
       base,
       NOW,
     );
     expect(starved).toBeGreaterThan(
+      runPriorityWeight(
+        { role: "general", hasIssue: false, issuePriority: null, releaseMatched: false, createdAtMs: NOW },
+        base,
+        NOW,
+      ),
+    );
+    expect(starved).toBeLessThan(
       runPriorityWeight(
         { role: "review", hasIssue: true, issuePriority: "critical", releaseMatched: true, createdAtMs: NOW },
         base,
@@ -249,11 +268,16 @@ describe("compareRunsByPriority", () => {
   it("starts the review run before the older engineer run and keeps createdAt as the tie-break", () => {
     const reviewer = scored("rev", "review", "medium", 2);
     const engineer = scored("eng", "engineer", "medium", 500);
-    // the 500-minute wait takes the engineer run into the starvation escape
-    // lane, so compare at a pre-escape wait where the role band decides alone
+    // a long wait no longer crosses the role band (the escape lift is bounded by
+    // the next issue step), so the role still decides — kept as the pair it was
     const freshEngineer = scored("eng", "engineer", "medium", 5);
     expect(compareRunsByPriority(reviewer, freshEngineer, base, NOW)).toBeLessThan(0);
-    expect(compareRunsByPriority(reviewer, engineer, base, NOW)).toBeGreaterThan(0);
+    // myrmidon(1.6.5 RUN-PRIORITY-PICK): the 500-minute wait no longer crosses
+    // the role band — the escape stays inside the starved run's own step, so the
+    // review run is in front here too
+    expect(compareRunsByPriority(reviewer, engineer, base, NOW)).toBeLessThan(0);
+    // … while the long wait still decides inside the engineer role
+    expect(compareRunsByPriority(engineer, freshEngineer, base, NOW)).toBeLessThan(0);
     // equal weights (the same band, issue and aging step) fall back to FIFO
     const older = scored("a", "engineer", "medium", 5);
     const newer = scored("b", "engineer", "medium", 2);
@@ -294,10 +318,16 @@ describe("compareRunsByPriority", () => {
     expect(compareRunsByPriority(releaseEngineer, plainEngineer, base, NOW)).toBeLessThan(0);
   });
 
-  it("pulls a starving general run to the front of a fresh review queue", () => {
+  it("no longer pulls a starving run past a more important task", () => {
     const reviewer = scored("rev", "review", "critical", 3);
     const starving = scored("gen", "general", "low", 91);
-    expect(compareRunsByPriority(starving, reviewer, base, NOW)).toBeLessThan(0);
+    // myrmidon(1.6.5 RUN-PRIORITY-PICK): the escape lift is bounded by the
+    // distance to the next step, so the review run — a more important task —
+    // keeps its place in front of the starved one
+    expect(compareRunsByPriority(starving, reviewer, base, NOW)).toBeGreaterThan(0);
+    // the escape still decides between runs of a lower step: a fresh general run
+    // without an issue loses to the starved one
+    expect(compareRunsByPriority(starving, scored("fresh", "general", "none", 0), base, NOW)).toBeLessThan(0);
   });
 
   it("degenerates to createdAt FIFO when the feature is off", () => {
@@ -349,9 +379,14 @@ describe("role protection across the queue", () => {
     expect(compareRunsByPriority(scored("rev-aged", "review", "low", 89), agedEngineer, base, NOW)).toBeLessThan(0);
   });
 
-  it("still lets the starvation escape take the front, and the longer wait win inside one role", () => {
+  it("keeps the starvation escape inside its own importance, and the longer wait winning inside one role", () => {
     const starved = scored("starved", "engineer", "none", 91);
-    expect(compareRunsByPriority(starved, scored("rev", "review", "critical", 0, true), base, NOW)).toBeLessThan(0);
+    // myrmidon(1.6.5 RUN-PRIORITY-PICK): the escape is a lift inside the run's
+    // own importance step, so a review run carrying a more important task stays
+    // in front of the starved engineer run
+    expect(compareRunsByPriority(starved, scored("rev", "review", "critical", 0, true), base, NOW)).toBeGreaterThan(0);
+    // inside the same step the wait still decides: the starved run goes first
+    expect(compareRunsByPriority(starved, scored("fresh-eng", "engineer", "none", 0), base, NOW)).toBeLessThan(0);
     // inside one role the longer wait goes first (the aging bonus ordering)
     expect(
       compareRunsByPriority(scored("old", "engineer", "medium", 70), scored("new", "engineer", "high", 5), base, NOW),
