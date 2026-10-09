@@ -352,6 +352,29 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
       .where(eq(heartbeatRuns.id, runId));
   }
 
+  /** The wait reason lives in the run's contextSnapshot, not in a column. */
+  async function waitReasonOf(runId: string): Promise<string | null> {
+    const row = await runRow(runId);
+    const context = (row?.contextSnapshot ?? {}) as Record<string, unknown>;
+    return typeof context.waitReason === "string" ? context.waitReason : null;
+  }
+
+  /** Queue a run behind a closed admission gate, then drop the gate's own
+   * waitReason: the sweep case under test must be the one to name the wait. */
+  async function queueUnexplainedRun(agentId: string, issueId: string, minutesAgo = 120) {
+    pinAdmission({ maxConcurrentRuns: 0 });
+    applyRunPrioritySettings(readRunPriorityFromEnv({}));
+    const run = await wakeAndQueue(agentId, issueId);
+    await db
+      .update(heartbeatRuns)
+      .set({ contextSnapshot: sql`${heartbeatRuns.contextSnapshot} - 'waitReason'` })
+      .where(eq(heartbeatRuns.id, run.id));
+    await backdateRun(run.id, minutesAgo);
+    pinAdmission({ maxConcurrentRuns: 1 });
+    expect(await waitReasonOf(run.id)).toBeNull();
+    return run;
+  }
+
   async function runRow(runId: string) {
     return db
       .select()
@@ -580,8 +603,6 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
   it("clears the queue_stall card once the run starts", async () => {
     // When a stalled run finally starts, its queue_stall card must disappear
     // from the attention feed.
-    applyRunPrioritySettings(readRunPriorityFromEnv({}));
-
     const { companyId, agentId } = await seedCompanyAndAgent({ name: "Eng", role: "engineer" });
     const issueId = await seedIssue(companyId, {
       title: "Clears card work",
@@ -590,20 +611,9 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
       status: "todo",
     });
 
-    // Create the run directly — bypass wakeup so no gate denial is recorded.
-    const run = await db
-      .insert(heartbeatRuns)
-      .values({
-        companyId,
-        agentId,
-        invocationSource: "on_demand",
-        triggerDetail: "manual",
-        status: "queued",
-        contextSnapshot: { issueId, wakeReason: "issue_assigned" },
-      })
-      .returning()
-      .then((rows) => rows[0]!);
-    await backdateRun(run.id, 120); // 2 hours > stall threshold
+    // A real queued run (woken through the regular path), held by a closed
+    // gate, aged past the stall threshold and left without a waitReason.
+    const run = await queueUnexplainedRun(agentId, issueId);
 
     // The card should be present — the run is stalled with no waitReason.
     let feed = await attentionService(db).list(companyId, { userId: "board-user" });
@@ -636,9 +646,7 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
       assigneeAgentId: agentId,
       status: "todo",
     });
-    const run = await wakeAndQueue(agentId, issueId);
-    applyRunAdmissionLimits({ ...currentRunAdmissionLimits(), maxConcurrentRuns: 10 });
-    const heartbeat = heartbeatService(db);
+    const run = await queueUnexplainedRun(agentId, issueId);
     try {
       // Set an instance-scoped maintenance window in the "on" state.
       const window = newWindow({
@@ -658,25 +666,27 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
       await heartbeat.drainActiveRunExecutions();
       const stored = await runRow(run.id);
       expect(stored?.status).toBe("queued");
-      expect(stored?.waitReason).toBe("maintenance");
+      expect(await waitReasonOf(run.id)).toBe("maintenance");
     } finally {
       resetMaintenanceGateCaches();
       await heartbeat.drainActiveRunExecutions();
     }
   }, 30_000);
 
-  it("marks queued runs with agent_not_invokable when the agent has no adapter", async () => {
+  it("marks queued runs with agent_not_invokable when the agent is paused", async () => {
     const { companyId } = await seedCompanyAndAgent({ name: "Eng", role: "engineer" });
-    // Agent with an adapterType that has no adapter registered.
     const [agent] = await db
       .insert(agents)
       .values({
         id: randomUUID(),
         companyId,
-        name: "No Adapter Agent",
+        name: "Paused Agent",
         role: "engineer",
-        adapterType: "nonexistent_adapter",
-        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+        permissions: {},
+        status: "active",
       })
       .returning();
     const issueId = await seedIssue(companyId, {
@@ -685,15 +695,16 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
       assigneeAgentId: agent.id,
       status: "todo",
     });
-    const run = await wakeAndQueue(agent.id, issueId);
-    applyRunAdmissionLimits({ ...currentRunAdmissionLimits(), maxConcurrentRuns: 10 });
-    const heartbeat = heartbeatService(db);
+    const run = await queueUnexplainedRun(agent.id, issueId);
     try {
+      // A paused agent is not invokable, but its queue is kept (only a
+      // terminated agent or a broken org chain cancels the queued runs).
+      await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agent.id));
       await heartbeat.resumeQueuedRuns();
       await heartbeat.drainActiveRunExecutions();
       const stored = await runRow(run.id);
       expect(stored?.status).toBe("queued");
-      expect(stored?.waitReason).toBe("agent_not_invokable");
+      expect(await waitReasonOf(run.id)).toBe("agent_not_invokable");
     } finally {
       await heartbeat.drainActiveRunExecutions();
     }
@@ -707,9 +718,7 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
       assigneeAgentId: agentId,
       status: "todo",
     });
-    const run = await wakeAndQueue(agentId, issueId);
-    applyRunAdmissionLimits({ ...currentRunAdmissionLimits(), maxConcurrentRuns: 10 });
-    const heartbeat = heartbeatService(db);
+    const run = await queueUnexplainedRun(agentId, issueId);
     const originalEnv = process.env.PAPERCLIP_IN_WORKTREE;
     try {
       process.env.PAPERCLIP_IN_WORKTREE = "1";
@@ -717,7 +726,7 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
       await heartbeat.drainActiveRunExecutions();
       const stored = await runRow(run.id);
       expect(stored?.status).toBe("queued");
-      expect(stored?.waitReason).toBe("scheduling_suppressed");
+      expect(await waitReasonOf(run.id)).toBe("scheduling_suppressed");
     } finally {
       if (originalEnv === undefined) {
         delete process.env.PAPERCLIP_IN_WORKTREE;
@@ -756,10 +765,10 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
       "queue_stall",
       run.id,
     );
-    expect(result.exists).toBe(true);
+    expect(result).toBe(true);
   }, 30_000);
 
-  it("canReadDecisionSource returns exists=false for a queue_stall with a non-run id", async () => {
+  it("canReadDecisionSource returns false for a queue_stall with a non-run id", async () => {
     const { canReadDecisionSource } = await import("../services/decision-queues.js");
     const { companyId, agentId } = await seedCompanyAndAgent({ name: "Eng", role: "engineer" });
     const issueId = await seedIssue(companyId, {
@@ -777,7 +786,7 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
       "queue_stall",
       issueId,
     );
-    expect(result.exists).toBe(false);
+    expect(result).toBe(false);
   }, 30_000);
 
   it("keeps a queue_stall card keyed by the run id when the board keeps it", async () => {
@@ -810,7 +819,7 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
 
     const stored = await runRow(runId);
     expect(stored?.status).toBe("queued");
-    expect(stored?.waitReason).toBeNull();
+    expect(await waitReasonOf(runId)).toBeNull();
   }, 30_000);
 
   it("archives a queue_stall card by run id and audits the removal against the run", async () => {
@@ -860,6 +869,6 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
     // Archiving the card is not a verdict on the run: the run stays queued.
     const stored = await runRow(runId);
     expect(stored?.status).toBe("queued");
-    expect(stored?.waitReason).toBeNull();
+    expect(await waitReasonOf(runId)).toBeNull();
   }, 30_000);
 });
