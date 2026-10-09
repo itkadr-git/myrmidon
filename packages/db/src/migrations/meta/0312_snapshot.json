@@ -33742,6 +33742,7 @@
           "name": "knowledge_events_company_id_companies_id_fk",
           "tableFrom": "knowledge_events",
           "tableTo": "companies",
+          "schemaTo": "public",
           "columnsFrom": [
             "company_id"
           ],
@@ -33755,6 +33756,7 @@
           "name": "knowledge_events_nest_id_companies_id_fk",
           "tableFrom": "knowledge_events",
           "tableTo": "companies",
+          "schemaTo": "public",
           "columnsFrom": [
             "nest_id"
           ],
@@ -33768,6 +33770,7 @@
           "name": "knowledge_events_item_id_knowledge_items_id_fk",
           "tableFrom": "knowledge_events",
           "tableTo": "knowledge_items",
+          "schemaTo": "public",
           "columnsFrom": [
             "item_id"
           ],
@@ -34024,6 +34027,7 @@
           "name": "knowledge_items_company_id_companies_id_fk",
           "tableFrom": "knowledge_items",
           "tableTo": "companies",
+          "schemaTo": "public",
           "columnsFrom": [
             "company_id"
           ],
@@ -34037,6 +34041,7 @@
           "name": "knowledge_items_nest_id_companies_id_fk",
           "tableFrom": "knowledge_items",
           "tableTo": "companies",
+          "schemaTo": "public",
           "columnsFrom": [
             "nest_id"
           ],
@@ -34166,6 +34171,7 @@
           "name": "knowledge_links_company_id_companies_id_fk",
           "tableFrom": "knowledge_links",
           "tableTo": "companies",
+          "schemaTo": "public",
           "columnsFrom": [
             "company_id"
           ],
@@ -34179,6 +34185,7 @@
           "name": "knowledge_links_nest_id_companies_id_fk",
           "tableFrom": "knowledge_links",
           "tableTo": "companies",
+          "schemaTo": "public",
           "columnsFrom": [
             "nest_id"
           ],
@@ -34192,6 +34199,7 @@
           "name": "knowledge_links_source_item_id_knowledge_items_id_fk",
           "tableFrom": "knowledge_links",
           "tableTo": "knowledge_items",
+          "schemaTo": "public",
           "columnsFrom": [
             "source_item_id"
           ],
@@ -34370,6 +34378,7 @@
           "name": "knowledge_revisions_company_id_companies_id_fk",
           "tableFrom": "knowledge_revisions",
           "tableTo": "companies",
+          "schemaTo": "public",
           "columnsFrom": [
             "company_id"
           ],
@@ -34383,6 +34392,7 @@
           "name": "knowledge_revisions_nest_id_companies_id_fk",
           "tableFrom": "knowledge_revisions",
           "tableTo": "companies",
+          "schemaTo": "public",
           "columnsFrom": [
             "nest_id"
           ],
@@ -34396,6 +34406,7 @@
           "name": "knowledge_revisions_item_id_knowledge_items_id_fk",
           "tableFrom": "knowledge_revisions",
           "tableTo": "knowledge_items",
+          "schemaTo": "public",
           "columnsFrom": [
             "item_id"
           ],
@@ -34543,6 +34554,7 @@
           "name": "knowledge_search_item_id_knowledge_items_id_fk",
           "tableFrom": "knowledge_search",
           "tableTo": "knowledge_items",
+          "schemaTo": "public",
           "columnsFrom": [
             "item_id"
           ],
@@ -34556,6 +34568,7 @@
           "name": "knowledge_search_nest_id_companies_id_fk",
           "tableFrom": "knowledge_search",
           "tableTo": "companies",
+          "schemaTo": "public",
           "columnsFrom": [
             "nest_id"
           ],
@@ -34691,6 +34704,7 @@
           "name": "knowledge_sources_company_id_companies_id_fk",
           "tableFrom": "knowledge_sources",
           "tableTo": "companies",
+          "schemaTo": "public",
           "columnsFrom": [
             "company_id"
           ],
@@ -34704,6 +34718,7 @@
           "name": "knowledge_sources_nest_id_companies_id_fk",
           "tableFrom": "knowledge_sources",
           "tableTo": "companies",
+          "schemaTo": "public",
           "columnsFrom": [
             "nest_id"
           ],
@@ -34717,6 +34732,7 @@
           "name": "knowledge_sources_revision_id_knowledge_revisions_id_fk",
           "tableFrom": "knowledge_sources",
           "tableTo": "knowledge_revisions",
+          "schemaTo": "public",
           "columnsFrom": [
             "revision_id"
           ],
@@ -34868,6 +34884,7 @@
           "name": "knowledge_suggestions_company_id_companies_id_fk",
           "tableFrom": "knowledge_suggestions",
           "tableTo": "companies",
+          "schemaTo": "public",
           "columnsFrom": [
             "company_id"
           ],
@@ -34881,6 +34898,7 @@
           "name": "knowledge_suggestions_nest_id_companies_id_fk",
           "tableFrom": "knowledge_suggestions",
           "tableTo": "companies",
+          "schemaTo": "public",
           "columnsFrom": [
             "nest_id"
           ],
