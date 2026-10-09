@@ -13,7 +13,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { companies, createDb } from "@paperclipai/db";
+import { activityLog, companies, createDb } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -37,6 +37,10 @@ describeEmbeddedPostgres("myrmidon(1.6.5-F14B) retention pass gate report in set
   }, 120_000);
 
   afterEach(async () => {
+    // The retention pass writes a `datastore.retention_*` activity line that
+    // references the test company; clear it before deleting companies or the
+    // FK activity_log_company_id_companies_id_fk rejects the delete.
+    await db.delete(activityLog);
     await db.delete(companies);
   });
 
