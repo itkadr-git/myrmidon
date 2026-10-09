@@ -1,6 +1,6 @@
 {
   "id": "ff45d077-9907-4db4-ab3c-46f876e71858",
-  "prevId": "6fea328d-416a-539e-a8e9-fcee39208327",
+  "prevId": "adc78de9-49d9-46b9-976a-4cfdd9023fd4",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -40275,6 +40275,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -43280,6 +43286,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "details": {
+          "name": "details",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {

@@ -53,6 +53,16 @@ export function guardedRemove(p, roots) {
     throw deferredIfPermission(err, abs);
   }
   if (st.isSymbolicLink()) throw new Error("refusing to remove a symlink");
+  // Permission first: rmSync({recursive:true}) removes the accessible entries of a
+  // tree BEFORE it fails on a foreign-owned one, leaving a half-removed directory.
+  // A write+execute probe on the target itself fails up front (nothing removed);
+  // foreign files deeper inside an owned tree still fail mid-removal, and the error
+  // is the same deferred one (the survivors stay for the next pass and the owner).
+  try {
+    fs.accessSync(abs, fs.constants.W_OK | fs.constants.X_OK);
+  } catch (err) {
+    throw deferredIfPermission(err, abs);
+  }
   try {
     fs.rmSync(abs, { recursive: true, force: true });
   } catch (err) {

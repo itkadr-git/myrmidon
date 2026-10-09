@@ -40,6 +40,10 @@ import { datastoreCareSettingsSchema } from "../myrmidon-datastore-care.js"; // 
 import { wipLimitSettingsSchema } from "../myrmidon-wip-limit.js";
 // myrmidon(1.6.5-OWNER-DM-FILTER)
 import { ownerDeliverySettingsSchema } from "../myrmidon-owner-delivery.js";
+// myrmidon(F16): the issue-list agent defaults stored in the same general
+// settings row (absent = the fix on; `{enabled: false}` = the pre-fix agent
+// behaviour).
+import { issueListAgentDefaultsSchema } from "../myrmidon-issue-list-agent-defaults.js";
 // myrmidon(REVIEW-ROUTING): the automatic reviewer routing settings stored in the same row.
 import { reviewRoutingSettingsSchema } from "../myrmidon-review-routing.js";
 // myrmidon(REVIEW-REWORK): the review-return loop settings stored in the same row.
@@ -221,6 +225,11 @@ export const instanceGeneralSettingsSchema = z.object({
   // task; review blocked until the PR head moves), changed from
   // /api/myrmidon/review-rework; absent means the defaults (the fix is on).
   reviewRework: reviewReworkSettingsSchema.optional(),
+  // myrmidon(F16): the issue-list agent defaults (compact view, limit 200/500,
+  // description omitted in compact), read at the list route; absent means the
+  // fix is ON — `{enabled: false}` restores the pre-feature agent behaviour
+  // byte-for-byte (see packages/shared/src/myrmidon-issue-list-agent-defaults.ts).
+  issuesListAgentDefaults: issueListAgentDefaultsSchema.optional(),
   // myrmidon(PAUSE-GUARD): the forgotten-pause guard (enabled, threshold,
   // interval, allowlist, per-pass ceiling), changed from
   // /api/myrmidon/pause-guard; absent means "use the environment variable, then
