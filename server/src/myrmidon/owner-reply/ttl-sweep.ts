@@ -406,7 +406,6 @@ async function resolveByRecommendedOption(
         version: 1,
         outcome,
         reason: "silence_means_recommended",
-        resolvedBy: "owner_card_ttl_sweep",
       },
       resolvedAt: now,
       updatedAt: now,
