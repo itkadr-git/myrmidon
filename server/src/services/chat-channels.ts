@@ -17286,12 +17286,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       // this idempotent subscription again before completing the delivery.
       if (addressed && !thread.isDM) await thread.subscribe();
       // authorizeInboundWakeup takes the endpoint row NOWAIT (the issue lock is
-        // already held, so waiting would invert the ingress lock order). A
-        // concurrent ingress transaction is a rolled-back, transient refusal:
-        // retry it here instead of failing the delivery into a >=2s durable
-        // backoff that also burns one of its five attempts.
-        await retryChatControlAdmission(() =>
-          acceptInboundWakeup(activeDelivery.id, attachmentResult),
+      // already held, so waiting would invert the ingress lock order). A
+      // concurrent ingress transaction is a rolled-back, transient refusal:
+      // retry it here instead of failing the delivery into a >=2s durable
+      // backoff that also burns one of its five attempts.
+      await retryChatControlAdmission(() =>
+        acceptInboundWakeup(activeDelivery.id, attachmentResult),
         );
       // myrmidon(P7): send the notice once the wakeup no longer needs the endpoint lock
       const wakeProcessed = await processInboundWakeup(activeDelivery.id);
