@@ -5,7 +5,8 @@
 // red when the module is missing or the entry point lost its wiring — cutting
 // the module removes the import, and this file then fails to resolve it.
 
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
@@ -43,10 +44,13 @@ describe("monitoring dashboard wiring guard", () => {
   it("the monitoring settings keys are documented in SETTINGS.md (via the change fragment)", () => {
     // The shared SETTINGS.md is only folded at release cut; the fragment of
     // this branch carries the entries and the collect check enforces them.
-    const fragment = readFileSync(
-      fileURLToPath(new URL("../../../../../docs/myrmidon/changes/myr-1.6.6-monitoring-c-dashboard.md", import.meta.url)),
-      "utf8",
-    );
-    expect(fragment).toContain("myrmidonMonitoringDashboard");
+    // Fragment file names use dashes for the version parts (convention:
+    // myr-<ver>-<slug>.md) — scan the changes dir by marker instead of
+    // hardcoding one file name.
+    const changesDir = fileURLToPath(new URL("../../../../../docs/myrmidon/changes/", import.meta.url));
+    const documented = readdirSync(changesDir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".md") && entry.name.toLowerCase() !== "readme.md")
+      .some((entry) => readFileSync(join(changesDir, entry.name), "utf8").includes("myrmidonMonitoringDashboard"));
+    expect(documented).toBe(true);
   });
 });

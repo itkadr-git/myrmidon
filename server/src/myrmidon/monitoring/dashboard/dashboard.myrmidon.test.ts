@@ -90,7 +90,9 @@ describe("monitoring dashboard service (myrmidon 1.6.6 MONITORING C)", () => {
     });
     const view = await buildDashboardView({ settings: SETTINGS, vm, zabbix: null, now: () => NOW });
     expect(view.sources.find((s) => s.name === "victoriametrics")?.ok).toBe(true);
-    expect(view.sources.find((s) => s.name === "zabbix")?.ok).toBe(true);
+    // zabbix is configured but not wired into this run (no client) —
+    // reported as not_configured without any network call
+    expect(view.sources.find((s) => s.name === "zabbix")).toMatchObject({ ok: false, error: "not_configured" });
     const host = view.hosts.find((h) => h.name === "vm-core");
     expect(host).toBeDefined();
     expect(host?.cpuPercent).toBeCloseTo(42.5);
