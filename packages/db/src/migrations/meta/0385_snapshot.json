@@ -1,6 +1,6 @@
 {
-  "id": "e9816a94-238e-4b8c-acc8-d7f0941d67fd",
-  "prevId": "47465edf-42c1-426f-9c84-2cf37eea9310",
+  "id": "d95ef15e-fcc3-4bdd-a9e9-eafc0c8bee27",
+  "prevId": "1031ce00-e006-492a-8364-24450392d1c2",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -33019,18 +33019,6 @@
           "notNull": true,
           "default": "now()"
         },
-        "scent": {
-          "name": "scent",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "caste_source": {
-          "name": "caste_source",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "caste_key": {
           "name": "caste_key",
           "type": "text",
@@ -33043,6 +33031,18 @@
           "primaryKey": false,
           "notNull": true,
           "default": 0
+        },
+        "scent": {
+          "name": "scent",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "caste_source": {
+          "name": "caste_source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {

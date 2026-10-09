@@ -302,7 +302,7 @@ describe("markup queue (acceptance row 7)", () => {
       select: () => ({
         from: (table: unknown) => ({
           where: (...clauses: unknown[]) => {
-            seenSql.push(...clauses.map((c) => String(c)));
+            seenSql.push(...clauses.map((c) => JSON.stringify(c, (_k, v) => typeof v === "bigint" ? String(v) : v)));
             return {
               orderBy: () => ({ limit: () => Promise.resolve([]) }),
               // issues path awaits the where() directly
