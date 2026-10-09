@@ -754,7 +754,7 @@ const createIssueBaseSchema = z.object({
   priority: z.enum(ISSUE_PRIORITIES).optional().default("medium"),
   // 1.6.5 (F-27 PHEROMONE): explicit pheromone strength. When omitted the
   // create path derives it from `priority` via the swarm settings mapping
-  // (swarmClaim.pheromoneDefaults); the patch keeps the stored value.
+  // (swarmClaim.pheromone); the patch keeps the stored value.
   pheromoneStrength: issuePheromoneStrengthSchema.optional().nullable(),
   // 1.6.5 (F-27 rework 09.10): the caste key; the server checks it against
   // the company's caste directory (design §2.1). NULL = project/company

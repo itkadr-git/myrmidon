@@ -71,11 +71,11 @@
       "group": {
         "observe": "Observe",
         "decide": "Decide & talk",
-        "manage": "Manage"
+        "manage": "Manage",
+        "more": "더 보기"
       },
       "center": "Command center",
       "fleet": "Server fleet",
-      "swarm": "Swarm",
       "costs": "Costs",
       "quality": "Quality",
       "waiting": "Wait for me",
@@ -84,7 +84,9 @@
       "more": "More",
       "badge": {
         "attention": "{{count}} waiting"
-      }
+      },
+      "swarmQueues": "스웜: 대기열",
+      "foraging": "포식"
     },
     "nests": {
       "all": "All nests"

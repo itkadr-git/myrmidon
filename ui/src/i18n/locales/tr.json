@@ -71,11 +71,11 @@
       "group": {
         "observe": "Observe",
         "decide": "Decide & talk",
-        "manage": "Manage"
+        "manage": "Manage",
+        "more": "Daha fazla"
       },
       "center": "Command center",
       "fleet": "Server fleet",
-      "swarm": "Swarm",
       "costs": "Costs",
       "quality": "Quality",
       "waiting": "Wait for me",
@@ -84,7 +84,9 @@
       "more": "More",
       "badge": {
         "attention": "{{count}} waiting"
-      }
+      },
+      "swarmQueues": "Sürü: kuyruklar",
+      "foraging": "Yem arama"
     },
     "nests": {
       "all": "All nests"

@@ -19,7 +19,9 @@
 import { and, eq, gt, isNull, sql } from "drizzle-orm";
 import { agents, issues, type Db } from "@paperclipai/db";
 import {
+  pheromoneStrengthForPriority,
   readScentSettings,
+  resolveSwarmClaimSettings,
   scentTaskStrength,
   type IssueScent,
   type ScentSettings,
@@ -37,6 +39,8 @@ export interface ScentServiceDeps {
   gateway: ScentGateway;
   /** caste keys of the company directory (the caller loads them). */
   casteKeys: string[];
+  /** The instance's priority → strength mapping; the design defaults when absent. */
+  baseStrengthFor?: (priority: string) => number;
   logActivity: (entry: {
     actorType: "system";
     action: string;
@@ -170,8 +174,8 @@ export function createScentService(deps: ScentServiceDeps) {
         out.casteSource = "auto";
       }
     }
-    const base = scentTaskStrength(issue.priority, null, deps.settings);
-    const scented = scentTaskStrength(issue.priority, scent, deps.settings);
+    const base = scentTaskStrength(issue.priority, null, deps.settings, deps.baseStrengthFor);
+    const scented = scentTaskStrength(issue.priority, scent, deps.settings, deps.baseStrengthFor);
     if (scented !== base && issue.pheromoneStrength === base) {
       out.pheromoneStrength = scented;
     }
@@ -337,4 +341,24 @@ export function scentSettingsFromGeneral(
       ? (general as Record<string, unknown>).swarm
       : undefined;
   return readScentSettings(swarm, env);
+}
+
+/**
+ * The instance's priority → strength mapping (the `pheromone` subset of the swarm
+ * settings) as a lookup, so the strength bonus is measured against the base a new
+ * task actually received, not against the shipped defaults.
+ */
+export function baseStrengthFromGeneral(
+  general: unknown,
+  env: Record<string, string | undefined> = process.env,
+): (priority: string) => number {
+  const stored =
+    general && typeof general === "object" && !Array.isArray(general)
+      ? (general as { swarmClaim?: unknown }).swarmClaim
+      : undefined;
+  const resolved = resolveSwarmClaimSettings({
+    env,
+    stored: stored && typeof stored === "object" ? (stored as Record<string, unknown>) : null,
+  });
+  return (priority) => pheromoneStrengthForPriority(resolved.settings.pheromone, priority);
 }

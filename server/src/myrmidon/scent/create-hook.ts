@@ -69,6 +69,8 @@ export function deriveScentAuto(
   input: ScentCreateHookInput,
   casteKeys: readonly string[],
   settings?: Pick<ScentSettings, "consequencesBonus" | "consequencesBonusThreshold">,
+  /** The instance's priority → strength mapping; the design defaults when absent. */
+  baseFor?: (priority: string) => number,
 ): ScentAutoResult {
   const explicitCaste = typeof input.casteKey === "string" && input.casteKey.trim() !== "";
   const casteKey = explicitCaste ? input.casteKey!.trim() : null;
@@ -91,7 +93,7 @@ export function deriveScentAuto(
     Number.isFinite(input.pheromoneStrength);
   const pheromoneStrength = explicitStrength
     ? Math.max(0, Math.round(input.pheromoneStrength!))
-    : scentTaskStrength(input.priority ?? "medium", input.scent ?? null, settings);
+    : scentTaskStrength(input.priority ?? "medium", input.scent ?? null, settings, baseFor);
 
   return {
     casteKey: resolvedCasteKey,

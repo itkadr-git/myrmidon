@@ -22,7 +22,7 @@ import {
   type IssueScent,
   type ScentAgent,
 } from "./myrmidon-scent.js";
-import { DEFAULT_PHEROMONE_STRENGTH_BY_PRIORITY } from "./myrmidon-swarm-claim.js";
+import { PHEROMONE_FIELD_DEFAULTS as DEFAULT_PHEROMONE_STRENGTH_BY_PRIORITY } from "./myrmidon-swarm-claim.js";
 
 const SCENT: IssueScent = {
   tags: ["css", "ui", "frontend"],

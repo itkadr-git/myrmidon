@@ -24,7 +24,7 @@ import { secretService } from "../../services/index.js";
 import { createCasteStore } from "../castes/store.js";
 import { DEFAULT_SCENT_SETTINGS, readScentSettings } from "@paperclipai/shared";
 import { classifyAgentScent, classifyIssueScent, type ScentGatewayDeps } from "./gateway.js";
-import { createScentService, scentSettingsFromGeneral } from "./service.js";
+import { baseStrengthFromGeneral, createScentService, scentSettingsFromGeneral } from "./service.js";
 
 type TimerHandle = ReturnType<typeof setInterval>;
 
@@ -93,6 +93,7 @@ async function tickCompany(db: Db, companyId: string, ports: ScentQueuePorts): P
   };
 
   const service = createScentService({
+    baseStrengthFor: baseStrengthFromGeneral(general),
     db,
     companyId,
     settings,

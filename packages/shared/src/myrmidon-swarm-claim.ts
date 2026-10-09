@@ -27,9 +27,9 @@ import { z } from "zod";
  * - otherwise the environment variable (the deployment default);
  * - otherwise the built-in default.
  *
- * The pilot flag is deliberately the only value whose default is "off": the
+ * The swarm flag is deliberately the only value whose default is "off": the
  * whole feature ships dark and an operator turns it on for one team, which is
- * what makes it possible to compare a pilot window against the BASELINE
+ * what makes it possible to compare a swarm window against the BASELINE
  * snapshot.
  */
 
@@ -54,13 +54,11 @@ export const SWARM_CLAIM_ENV_KEYS = {
 
 export const SWARM_CLAIM_SETTING_KEYS = [
   "enabled",
-  "enabledRoles",
-  "enabledCompanyIds",
   "leaseTtlSec",
   "maxActiveTasks",
   "sweepIntervalSec",
   "p0Preemption",
-  "pheromoneDefaults",
+  "pheromone",
 ] as const;
 
 export type SwarmClaimSettingKey = (typeof SWARM_CLAIM_SETTING_KEYS)[number];
@@ -71,25 +69,12 @@ export type SwarmClaimSettingSource = "settings" | "env" | "default";
 /**
  * Stored-settings key inside `instance_settings.general` that holds the whole
  * object — one key, like `runLimits` and `workspaceHygiene`, so a partial
- * hand-edit cannot silently enable the pilot.
+ * hand-edit cannot silently enable the swarm.
  */
 export const SWARM_CLAIM_SETTINGS_KEY = "swarmClaim";
 
-/** Master switch of the pilot. Off unless a value on the list below turns it on. */
+/** Master switch of the swarm. Off unless a value on the list below turns it on. */
 export const DEFAULT_SWARM_CLAIM_ENABLED = false;
-
-/**
- * 1.6.1 (SWARM-SETTINGS-UI): the pilot set. Empty means "no restriction": with
- * `enabled` on, every role of every company claims. A non-empty list narrows
- * the pilot to the listed roles (the pilot on the dev team) — a role not on
- * the list keeps vendor behavior even while the pilot is on elsewhere.
- * An empty string in the env override means "no restriction", the same reading
- * the other list-valued myrmidon settings use.
- */
-export const SWARM_CLAIM_ENABLED_ROLES_ENV = "MYRMIDON_SWARM_CLAIM_ENABLED_ROLES";
-export const SWARM_CLAIM_ENABLED_COMPANY_IDS_ENV = "MYRMIDON_SWARM_CLAIM_ENABLED_COMPANY_IDS";
-export const DEFAULT_SWARM_CLAIM_ENABLED_ROLES: string[] = [];
-export const DEFAULT_SWARM_CLAIM_ENABLED_COMPANY_IDS: string[] = [];
 
 /**
  * 1.6.1 (SWARM-SETTINGS-UI): whether a P0 (critical) task preempts the queue
@@ -98,110 +83,6 @@ export const DEFAULT_SWARM_CLAIM_ENABLED_COMPANY_IDS: string[] = [];
  */
 export const SWARM_CLAIM_P0_PREEMPTION_ENV = "MYRMIDON_SWARM_CLAIM_P0_PREEMPTION";
 export const DEFAULT_SWARM_CLAIM_P0_PREEMPTION = true;
-
-/**
- * 1.6.5 (F-27 PHEROMONE): the pheromone strength a task gets when it is
- * created without an explicit `pheromoneStrength`, keyed by its `priority`
- * enum. The owner tunes the mapping in the swarm settings UI ("соответствие
- * приоритета и силы"); there is no env override — forcing a global mapping
- * would silently rewrite every team's tuning.
- */
-export const DEFAULT_PHEROMONE_STRENGTH_BY_PRIORITY: {
-  critical: number;
-  high: number;
-  medium: number;
-  low: number;
-} = {
-  // Architect project 09.10 (design §2.3): the baseline mapping the migration
-  // backfills with and a new task without an explicit strength starts at.
-  critical: 100,
-  high: 30,
-  medium: 10,
-  low: 1,
-};
-export const MIN_PHEROMONE_STRENGTH = 0;
-export const MAX_PHEROMONE_STRENGTH = 1_000_000;
-
-// 1.6.5 (F-27 PHEROMONE, architect rework 09.10): the dynamics of the
-// *effective* pheromone strength (design §2.3). A task waiting unclaimed
-// gathers strength (`agingStep` per `agingStepHours`, capped at `agingCap`);
-// each failed run without a change to the task evaporates `failPenalty`; the
-// effective value never drops below 0. The owner tunes all four in the swarm
-// settings; the same formula runs in shared code (`effectivePheromone`) and
-// as a SQL twin in the queue ordering.
-export const DEFAULT_PHEROMONE_AGING_STEP_HOURS = 24;
-export const DEFAULT_PHEROMONE_AGING_STEP = 1;
-export const DEFAULT_PHEROMONE_AGING_CAP = 5;
-export const DEFAULT_PHEROMONE_FAIL_PENALTY = 10;
-
-export interface PheromoneDynamicsSettings {
-  agingStepHours: number;
-  agingStep: number;
-  agingCap: number;
-  failPenalty: number;
-}
-
-export const pheromoneDynamicsSchema = z
-  .object({
-    agingStepHours: z.number().int().min(0).max(24 * 365),
-    agingStep: z.number().int().min(0).max(10_000),
-    agingCap: z.number().int().min(0).max(100_000),
-    failPenalty: z.number().int().min(0).max(10_000),
-  })
-  .strict();
-
-export const DEFAULT_PHEROMONE_DYNAMICS: PheromoneDynamicsSettings = {
-  agingStepHours: DEFAULT_PHEROMONE_AGING_STEP_HOURS,
-  agingStep: DEFAULT_PHEROMONE_AGING_STEP,
-  agingCap: DEFAULT_PHEROMONE_AGING_CAP,
-  failPenalty: DEFAULT_PHEROMONE_FAIL_PENALTY,
-};
-
-/**
- * The effective pheromone strength of a task at `now` (design §2.3):
- *   eff = strength
- *       + min(agingCap, floor(hoursWaiting / agingStepHours) × agingStep)
- *       − failPenalty × failedRunsSinceLastChange
- * never below 0. `queuedAt` is when the wait started (the queue feeds the
- * task's entry into the queue there); `failedRunsSinceLastChange` is the
- * count of runs that ended failed/blocked/needs_followup/timed_out with no
- * task change after them (the SQL twin computes it from heartbeat_runs and the
- * task's change trail: comments and non-system audit rows after the run). Pure and deterministic — the queue,
- * the run-priority scorer and the card hint must agree on it.
- */
-export interface EffectivePheromoneInput {
-  pheromoneStrength?: number | null;
-  queuedAt?: Date | number | string | null;
-  failedRunsSinceLastChange?: number | null;
-}
-
-export function effectivePheromone(
-  input: EffectivePheromoneInput,
-  dynamics: PheromoneDynamicsSettings = DEFAULT_PHEROMONE_DYNAMICS,
-  now: Date | number = new Date(),
-): number {
-  const strength =
-    typeof input.pheromoneStrength === "number" && Number.isFinite(input.pheromoneStrength)
-      ? input.pheromoneStrength
-      : 0;
-  const queuedAt = queuedAtMsValue(input.queuedAt);
-  const nowMs = now instanceof Date ? now.getTime() : now;
-  let agingBonus = 0;
-  if (dynamics.agingStepHours > 0 && dynamics.agingStep > 0 && queuedAt > 0) {
-    const hoursWaiting = Math.max(0, nowMs - queuedAt) / 3_600_000;
-    agingBonus = Math.min(
-      dynamics.agingCap,
-      Math.floor(hoursWaiting / dynamics.agingStepHours) * dynamics.agingStep,
-    );
-  }
-  const failedRuns =
-    typeof input.failedRunsSinceLastChange === "number" &&
-    Number.isFinite(input.failedRunsSinceLastChange)
-      ? Math.max(0, Math.floor(input.failedRunsSinceLastChange))
-      : 0;
-  const penalty = dynamics.failPenalty * failedRuns;
-  return Math.max(0, strength + agingBonus - penalty);
-}
 
 /** How long one lease lives without a heartbeat. */
 export const DEFAULT_SWARM_LEASE_TTL_SEC = 900;
@@ -326,22 +207,18 @@ function queuedAtMs(value: SwarmQueueCandidate["queuedAt"]): number {
 }
 
 /**
- * The queue order: a `critical` (P0) task preempts the whole queue; inside its
- * P0 band the stronger pheromone wins (higher `pheromoneStrength` first); the
- * oldest entry into the queue breaks the remaining ties. This is the single
- * order the core picks in, the F-26 board-side matching reads and the
- * supervisor view renders, so "the top of the queue" means the same thing
- * everywhere.
+ * The queue order (owner 09.10: "the more pheromone, the higher the priority
+ * of the task"): a `critical` (P0) task preempts the whole queue; inside its
+ * band the higher EFFECTIVE pheromone strength wins (`effectivePheromone`:
+ * strength + aging − failure penalty); the oldest entry into the queue breaks
+ * ties, and the issue id makes the order total. This is the single order the
+ * core picks in, the F-26 board-side matching reads and the supervisor view
+ * renders, so "the top of the queue" means the same thing everywhere.
  *
  * 1.6.1 (SWARM-SETTINGS-UI): `p0Preemption` off demotes the priority rank to a
- * tie-break-only signal — the queue orders by pheromone strength, then age, so
- * a critical task no longer jumps it. Passing the setting is optional so every
- * existing call site (the supervisor view included) keeps the 1.6 order by
- * default.
- *
- * 1.6.5 (F-27 PHEROMONE): the strength rank sits between the P0 band and the
- * age tie-break. A task whose strength was never set ranks as 0 — behind every
- * task with an explicit strength of the same band, ahead of nothing.
+ * tie-break-only signal — the queue orders by effective strength, then age, so
+ * a critical task no longer jumps it. `dynamics` are the aging/penalty knobs of
+ * the `pheromone` settings (`pheromoneDynamicsOf`); absent = the design defaults.
  */
 export function orderSwarmQueueCandidates<T extends SwarmQueueCandidate>(
   candidates: readonly T[],
@@ -359,14 +236,10 @@ export function orderSwarmQueueCandidates<T extends SwarmQueueCandidate>(
     const strengthDelta =
       effectivePheromone(right, dynamics, now) - effectivePheromone(left, dynamics, now);
     if (strengthDelta !== 0) return strengthDelta;
-    return queuedAtMs(left.queuedAt) - queuedAtMs(right.queuedAt);
+    const ageDelta = queuedAtMs(left.queuedAt) - queuedAtMs(right.queuedAt);
+    if (ageDelta !== 0) return ageDelta;
+    return left.issueId < right.issueId ? -1 : left.issueId > right.issueId ? 1 : 0;
   });
-}
-
-/** The strength a candidate ranks with: explicit value, or 0 when unset. */
-function pheromoneStrengthOf(candidate: SwarmQueueCandidate): number {
-  const value = candidate.pheromoneStrength;
-  return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
 /** A lease as the queue and the supervisor view read it. */
@@ -418,41 +291,181 @@ const maxActiveTasksSchema = z
   .nullable();
 const sweepIntervalSchema = z.number().int().min(MIN_SWARM_CLAIM_SWEEP_INTERVAL_SEC);
 
-// 1.6.1 (SWARM-SETTINGS-UI): the pilot-set lists. Non-empty arrays of trimmed
-// non-empty strings; an empty array is the honest "no restriction" and is
-// stored as such (not omitted), so the settings screen can tell "the operator
-// chose everyone" from "nothing was ever saved".
-const enabledRolesSchema = z.array(z.string().trim().min(1).max(200)).max(200);
-const enabledCompanyIdsSchema = z.array(z.string().trim().min(1).max(64)).max(200);
+// myrmidon(1.6.5 SWARM-T4): pheromone tuning fields (design §5.1). Numbers
+// integer-tuned, whole numbers ≥ 0; an absent field is the design default
+// (§2.3), stored as an empty object — the panel shows the default in the
+// placeholder.
+/**
+ * myrmidon(1.6.5 SWARM-T4, design §5.1): the pheromone tuning subset of the
+ * swarm settings — priority → strength seeds plus aging/evaporation knobs.
+ * All fields optional; absent = the design default (§2.3).
+ */
+export const PHEROMONE_NUMBER_KEYS = [
+  "critical",
+  "high",
+  "medium",
+  "low",
+  "agingStepHours",
+  "agingStep",
+  "agingCap",
+  "failPenalty",
+  "cooldownBaseMin",
+  "cooldownCapMin",
+] as const;
 
-// 1.6.5 (F-27 PHEROMONE): the priority → pheromone-strength mapping the create
-// path applies when a task arrives without an explicit strength. All four
-// priority keys are required in a stored value so a hand-edited row cannot
-// silently zero one band; each value is an integer in the documented range.
-const pheromoneDefaultsSchema = z
+export type PheromoneNumberKey = (typeof PHEROMONE_NUMBER_KEYS)[number];
+
+export const PHEROMONE_FIELD_DEFAULTS: Record<PheromoneNumberKey, number> = {
+  critical: 100,
+  high: 30,
+  medium: 10,
+  low: 1,
+  agingStepHours: 24,
+  agingStep: 1,
+  agingCap: 5,
+  failPenalty: 10,
+  cooldownBaseMin: 30,
+  cooldownCapMin: 720,
+};
+
+const pheromoneNumberSchema = z
+  .number()
+  .int()
+  .min(0)
+  .max(100000);
+
+export const pheromoneSchema = z
   .object({
-    critical: z.number().int().min(MIN_PHEROMONE_STRENGTH).max(MAX_PHEROMONE_STRENGTH),
-    high: z.number().int().min(MIN_PHEROMONE_STRENGTH).max(MAX_PHEROMONE_STRENGTH),
-    medium: z.number().int().min(MIN_PHEROMONE_STRENGTH).max(MAX_PHEROMONE_STRENGTH),
-    low: z.number().int().min(MIN_PHEROMONE_STRENGTH).max(MAX_PHEROMONE_STRENGTH),
+    critical: pheromoneNumberSchema,
+    high: pheromoneNumberSchema,
+    medium: pheromoneNumberSchema,
+    low: pheromoneNumberSchema,
+    agingStepHours: pheromoneNumberSchema,
+    agingStep: pheromoneNumberSchema,
+    agingCap: pheromoneNumberSchema,
+    failPenalty: pheromoneNumberSchema,
+    cooldownBaseMin: pheromoneNumberSchema,
+    cooldownCapMin: pheromoneNumberSchema,
   })
+  .partial()
   .strict();
+
+/**
+ * 1.6.5 (F-27 PHEROMONE): bounds of the numeric strength a task carries
+ * (`issues.pheromone_strength`).
+ */
+export const MIN_PHEROMONE_STRENGTH = 0;
+export const MAX_PHEROMONE_STRENGTH = 1_000_000;
+
+/**
+ * 1.6.5 (F-27 rework 09.10, design §2.3): the knobs of the *effective*
+ * pheromone strength — read from the single `pheromone` settings key (T4), an
+ * absent field is the design default (`PHEROMONE_FIELD_DEFAULTS`). A task
+ * waiting unclaimed gathers strength (`agingStep` per `agingStepHours`, capped
+ * at `agingCap`); each failed run without a change to the task evaporates
+ * `failPenalty`; the effective value never drops below 0.
+ */
+export interface PheromoneDynamicsSettings {
+  agingStepHours: number;
+  agingStep: number;
+  agingCap: number;
+  failPenalty: number;
+}
+
+export const DEFAULT_PHEROMONE_DYNAMICS: PheromoneDynamicsSettings = {
+  agingStepHours: PHEROMONE_FIELD_DEFAULTS.agingStepHours,
+  agingStep: PHEROMONE_FIELD_DEFAULTS.agingStep,
+  agingCap: PHEROMONE_FIELD_DEFAULTS.agingCap,
+  failPenalty: PHEROMONE_FIELD_DEFAULTS.failPenalty,
+};
+
+/** Dynamics from the (partial) stored `pheromone` subset; absent = default. */
+export function pheromoneDynamicsOf(
+  pheromone: Partial<Record<PheromoneNumberKey, number>> | null | undefined,
+): PheromoneDynamicsSettings {
+  const pick = (key: keyof PheromoneDynamicsSettings) => {
+    const value = pheromone?.[key];
+    return typeof value === "number" && Number.isFinite(value) ? value : PHEROMONE_FIELD_DEFAULTS[key];
+  };
+  return {
+    agingStepHours: pick("agingStepHours"),
+    agingStep: pick("agingStep"),
+    agingCap: pick("agingCap"),
+    failPenalty: pick("failPenalty"),
+  };
+}
+
+/**
+ * The strength a new task of `priority` starts with — the `critical`/`high`/
+ * `medium`/`low` fields of the `pheromone` subset. An unknown priority reads as
+ * `medium`, matching the schema default.
+ */
+export function pheromoneStrengthForPriority(
+  pheromone: Partial<Record<PheromoneNumberKey, number>> | null | undefined,
+  priority: string | null | undefined,
+): number {
+  const key = (priority ?? "medium").toLowerCase();
+  const field: PheromoneNumberKey =
+    key === "critical" || key === "high" || key === "medium" || key === "low" ? key : "medium";
+  const value = pheromone?.[field];
+  return typeof value === "number" && Number.isFinite(value) ? value : PHEROMONE_FIELD_DEFAULTS[field];
+}
+
+/**
+ * The effective pheromone strength of a task at `now` (design §2.3):
+ *   eff = strength
+ *       + min(agingCap, floor(hoursWaiting / agingStepHours) × agingStep)
+ *       − failPenalty × failedRunsSinceLastChange
+ * never below 0. `queuedAt` is when the wait started;
+ * `failedRunsSinceLastChange` is the count of runs that ended failed/blocked/
+ * needs_followup/timed_out with no task change after them (the SQL twin
+ * computes it from heartbeat_runs and the task's change trail). Pure and
+ * deterministic — the queue, the run-priority scorer and the card hint must
+ * agree on it.
+ */
+export interface EffectivePheromoneInput {
+  pheromoneStrength?: number | null;
+  queuedAt?: Date | number | string | null;
+  failedRunsSinceLastChange?: number | null;
+}
+
+export function effectivePheromone(
+  input: EffectivePheromoneInput,
+  dynamics: PheromoneDynamicsSettings = DEFAULT_PHEROMONE_DYNAMICS,
+  now: Date | number = new Date(),
+): number {
+  const strength =
+    typeof input.pheromoneStrength === "number" && Number.isFinite(input.pheromoneStrength)
+      ? input.pheromoneStrength
+      : 0;
+  const queuedAt = queuedAtMsValue(input.queuedAt);
+  const nowMs = now instanceof Date ? now.getTime() : now;
+  let agingBonus = 0;
+  if (dynamics.agingStepHours > 0 && dynamics.agingStep > 0 && queuedAt > 0) {
+    const hoursWaiting = Math.max(0, nowMs - queuedAt) / 3_600_000;
+    agingBonus = Math.min(
+      dynamics.agingCap,
+      Math.floor(hoursWaiting / dynamics.agingStepHours) * dynamics.agingStep,
+    );
+  }
+  const failedRuns =
+    typeof input.failedRunsSinceLastChange === "number" &&
+    Number.isFinite(input.failedRunsSinceLastChange)
+      ? Math.max(0, Math.floor(input.failedRunsSinceLastChange))
+      : 0;
+  const penalty = dynamics.failPenalty * failedRuns;
+  return Math.max(0, strength + agingBonus - penalty);
+}
 
 /** The canonical stored shape of `instance_settings.general.swarmClaim`. */
 export const swarmClaimSettingsSchema = z
   .object({
     enabled: z.boolean(),
-    enabledRoles: enabledRolesSchema.default(DEFAULT_SWARM_CLAIM_ENABLED_ROLES),
-    enabledCompanyIds: enabledCompanyIdsSchema.default(DEFAULT_SWARM_CLAIM_ENABLED_COMPANY_IDS),
     leaseTtlSec: leaseTtlSchema,
     maxActiveTasks: maxActiveTasksSchema,
     sweepIntervalSec: sweepIntervalSchema,
     p0Preemption: z.boolean().default(DEFAULT_SWARM_CLAIM_P0_PREEMPTION),
-    pheromoneDefaults: pheromoneDefaultsSchema.default(DEFAULT_PHEROMONE_STRENGTH_BY_PRIORITY),
-    // 1.6.5 (F-27 rework 09.10): the aging/evaporation knobs of
-    // `effectivePheromone` (design §2.3). Stored inside swarmClaim so the
-    // existing settings screen and PATCH path carry them without a new row.
-    pheromoneDynamics: pheromoneDynamicsSchema.default(DEFAULT_PHEROMONE_DYNAMICS),
+    pheromone: pheromoneSchema.default({}),
   })
   .strict();
 
@@ -460,14 +473,11 @@ export const swarmClaimSettingsSchema = z
 export const patchSwarmClaimSettingsSchema = z
   .object({
     enabled: z.boolean().optional(),
-    enabledRoles: enabledRolesSchema.optional(),
-    enabledCompanyIds: enabledCompanyIdsSchema.optional(),
     leaseTtlSec: leaseTtlSchema.optional(),
     maxActiveTasks: maxActiveTasksSchema.optional(),
     sweepIntervalSec: sweepIntervalSchema.optional(),
     p0Preemption: z.boolean().optional(),
-    pheromoneDefaults: pheromoneDefaultsSchema.optional(),
-    pheromoneDynamics: pheromoneDynamicsSchema.optional(),
+    pheromone: pheromoneSchema.optional(),
   })
   .strict();
 
@@ -479,7 +489,7 @@ export interface ResolvedSwarmClaimSettings {
   sources: Record<SwarmClaimSettingKey, SwarmClaimSettingSource>;
 }
 
-/** The single truth for "is this string an explicit on?". A typo must not enable the pilot. */
+/** The single truth for "is this string an explicit on?". A typo must not enable the swarm. */
 export function parseSwarmClaimEnabled(raw: string | undefined | null): boolean | null {
   const value = raw?.trim().toLowerCase();
   if (!value) return null;
@@ -520,20 +530,8 @@ export function readSwarmClaimSettingsFromEnv(
         : DEFAULT_SWARM_CLAIM_SWEEP_INTERVAL_SEC,
     p0Preemption:
       parseSwarmClaimEnabled(env[SWARM_CLAIM_P0_PREEMPTION_ENV]) ?? DEFAULT_SWARM_CLAIM_P0_PREEMPTION,
-    enabledRoles: readSwarmClaimListEnv(env[SWARM_CLAIM_ENABLED_ROLES_ENV]),
-    enabledCompanyIds: readSwarmClaimListEnv(env[SWARM_CLAIM_ENABLED_COMPANY_IDS_ENV]),
-    pheromoneDefaults: { ...DEFAULT_PHEROMONE_STRENGTH_BY_PRIORITY },
-    pheromoneDynamics: { ...DEFAULT_PHEROMONE_DYNAMICS },
+    pheromone: {},
   };
-}
-
-/** A comma-separated list variable: trimmed entries, empty entries dropped. */
-export function readSwarmClaimListEnv(raw: string | undefined): string[] {
-  if (!raw) return [];
-  return raw
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter((entry) => entry.length > 0);
 }
 
 /** The stored settings value, or null when the row holds nothing usable. */
@@ -546,7 +544,7 @@ export function normalizeSwarmClaimSettings(raw: unknown): SwarmClaimSettings | 
  * Effective settings and where each value came from. `stored` is the raw
  * `general.swarmClaim` value; an unreadable one counts as absent, so the
  * environment (or the default) applies instead — a hand-edited row cannot
- * enable the pilot on its own.
+ * enable the swarm on its own.
  *
  * 1.6.1 (SWARM-SETTINGS-UI): precedence is per key — the environment variable
  * wins over the stored value only for the keys whose variable is actually set
@@ -577,32 +575,16 @@ export function resolveSwarmClaimSettings(options: {
         }),
         p0Preemption:
           parseSwarmClaimEnabled(env[SWARM_CLAIM_P0_PREEMPTION_ENV]) ?? stored.p0Preemption,
-        enabledRoles:
-          env[SWARM_CLAIM_ENABLED_ROLES_ENV] !== undefined
-            ? envSettings.enabledRoles
-            : stored.enabledRoles,
-        enabledCompanyIds:
-          env[SWARM_CLAIM_ENABLED_COMPANY_IDS_ENV] !== undefined
-            ? envSettings.enabledCompanyIds
-            : stored.enabledCompanyIds,
+        pheromone: stored.pheromone ?? {},
       }
     : envSettings;
+
   // The source of each key: the override won ("env"), the stored row won
   // ("settings"), or nothing was set and the built-in default applied
   // ("default"). The UI and the supervisor view render exactly this.
   const sources = {} as Record<SwarmClaimSettingKey, SwarmClaimSettingSource>;
   const hasOverride = (name: string) => env[name] !== undefined && env[name]!.trim() !== "";
   sources.enabled = hasOverride(SWARM_CLAIM_ENV_KEYS.enabled)
-    ? "env"
-    : stored
-      ? "settings"
-      : "default";
-  sources.enabledRoles = hasOverride(SWARM_CLAIM_ENABLED_ROLES_ENV)
-    ? "env"
-    : stored
-      ? "settings"
-      : "default";
-  sources.enabledCompanyIds = hasOverride(SWARM_CLAIM_ENABLED_COMPANY_IDS_ENV)
     ? "env"
     : stored
       ? "settings"
@@ -627,9 +609,11 @@ export function resolveSwarmClaimSettings(options: {
     : stored
       ? "settings"
       : "default";
-  // F-27: the mapping has no env override — it comes from the stored row or
-  // the built-in default, never from the process environment.
-  sources.pheromoneDefaults = stored ? "settings" : "default";
+  // myrmidon(1.6.5 SWARM-T4, design §5.1): the pheromone subset is
+  // settings-only (no env override) — the stored row or the design default.
+  sources.pheromone = stored?.pheromone && Object.keys(stored.pheromone).length > 0
+    ? "settings"
+    : "default";
   return { settings, sources };
 }
 
@@ -667,30 +651,16 @@ function envMaxActiveOr(raw: string | undefined, stored: number | null): number 
 }
 
 /**
- * 1.6.1 (SWARM-SETTINGS-UI): is the claim path enabled for one company + role?
- * The pilot gate the server actually enforces: the master switch, the company
- * list (empty = every company) and the role list (empty = every role) must all
- * pass. Exported so the settings screen, the claim service and the supervisor
- * view agree on who is in the pilot.
+ * 1.6.5 (SWARM-T4, design §5.1): the claim gate the server enforces. The
+ * role/company restriction lists are gone — one switch, the whole board or nothing.
+ * Kept as a named function so the settings screen, the claim service and the
+ * supervisor view keep calling one gate.
  */
 export function isSwarmClaimEnabledFor(
-  settings: Pick<
-    SwarmClaimSettings,
-    "enabled" | "enabledCompanyIds" | "enabledRoles"
-  >,
-  input: { companyId: string; role: string },
+  settings: Pick<SwarmClaimSettings, "enabled">,
+  _input: { companyId: string; role: string },
 ): boolean {
-  if (!settings.enabled) return false;
-  if (
-    settings.enabledCompanyIds.length > 0 &&
-    !settings.enabledCompanyIds.includes(input.companyId)
-  ) {
-    return false;
-  }
-  if (settings.enabledRoles.length > 0 && !settings.enabledRoles.includes(input.role)) {
-    return false;
-  }
-  return true;
+  return settings.enabled;
 }
 
 /** A patch over the effective values, the shape that gets stored. */
@@ -700,19 +670,16 @@ export function mergeSwarmClaimSettings(
 ): SwarmClaimSettings {
   return {
     enabled: patch.enabled === undefined ? base.enabled : patch.enabled,
-    enabledRoles: patch.enabledRoles === undefined ? base.enabledRoles : patch.enabledRoles,
-    enabledCompanyIds:
-      patch.enabledCompanyIds === undefined ? base.enabledCompanyIds : patch.enabledCompanyIds,
     leaseTtlSec: patch.leaseTtlSec === undefined ? base.leaseTtlSec : patch.leaseTtlSec,
     maxActiveTasks:
       patch.maxActiveTasks === undefined ? base.maxActiveTasks : patch.maxActiveTasks,
     sweepIntervalSec:
       patch.sweepIntervalSec === undefined ? base.sweepIntervalSec : patch.sweepIntervalSec,
     p0Preemption: patch.p0Preemption === undefined ? base.p0Preemption : patch.p0Preemption,
-    pheromoneDefaults:
-      patch.pheromoneDefaults === undefined ? base.pheromoneDefaults : patch.pheromoneDefaults,
-    pheromoneDynamics:
-      patch.pheromoneDynamics === undefined ? base.pheromoneDynamics : patch.pheromoneDynamics,
+    // myrmidon(1.6.5 SWARM-T4, design §5.1): a pheromone patch replaces the
+    // subset wholesale (absent keys fall back to the design default, not to
+    // the previous stored value — the panel always submits the full subset).
+    pheromone: patch.pheromone === undefined ? base.pheromone : patch.pheromone,
   };
 }
 

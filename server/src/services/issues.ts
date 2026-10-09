@@ -99,6 +99,7 @@ import {
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
   resolveSwarmClaimSettings,
   readScentSettings,
+  pheromoneStrengthForPriority,
 } from "@paperclipai/shared";
 import type { IssueScent } from "@paperclipai/shared";
 import { deriveScentAuto } from "../myrmidon/scent/create-hook.js";
@@ -6403,21 +6404,21 @@ async function countBlockedInboxIssues(
 export function issueService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
   const treeControlSvc = issueTreeControlService(db);
-  // The caste store reads (and lazily seeds) on the connection it is given. Inside a
-  // transaction that is the transaction itself: a second pooled connection awaited
-  // while this one holds row locks can self-deadlock under pool pressure.
-  const casteStoreFor = (runner: unknown) => createCasteStore({ db: runner as Db });
+  const casteStore = createCasteStore({ db });
 
   // 1.6.5 (F-27 rework 09.10): a caste key the caller names must exist in the
   // company's caste directory (design §2.1). NULL clears to the project/company
   // default — only a non-null key is validated.
   async function assertCasteKeyExists(
-    runner: unknown,
     companyId: string,
     casteKey: string | null | undefined,
+    runner?: Db,
   ) {
     if (casteKey == null) return;
-    const row = await casteStoreFor(runner).findCaste(companyId, casteKey);
+    // `runner` is the caller's transaction when it has one: a lookup on the
+    // pool from inside a transaction needs a second connection and can
+    // deadlock a drained pool.
+    const row = await (runner ? createCasteStore({ db: runner }) : casteStore).findCaste(companyId, casteKey);
     if (!row) {
       throw unprocessable(`caste "${casteKey}" does not exist in this company`, {
         code: "issue_caste_unknown",
@@ -6427,18 +6428,20 @@ export function issueService(db: Db) {
 
   // 1.6.5 (F-27 PHEROMONE): the strength a new task starts with when the
   // caller did not set one — the swarm settings map `priority` to a number
-  // (swarmClaim.pheromoneDefaults, edited in the swarm settings UI). Unknown
+  // (the critical/high/medium/low fields of the `pheromone` key of swarmClaim,
+  // edited in the swarm settings UI). Unknown
   // priorities read as `medium`, matching the schema default.
-  async function defaultPheromoneStrengthForPriority(priority: string): Promise<number> {
-    const raw = (await instanceSettings.getGeneral()) as unknown as Record<string, unknown> | null;
+  async function defaultPheromoneStrengthForPriority(
+    priority: string,
+    runner?: Db,
+  ): Promise<number> {
+    const raw = (await (runner ? instanceSettingsService(runner) : instanceSettings).getGeneral()) as unknown as Record<string, unknown> | null;
     const stored = raw && typeof raw === "object" ? (raw as { swarmClaim?: unknown }).swarmClaim : undefined;
     const resolved = resolveSwarmClaimSettings({
       env: process.env,
       stored: stored && typeof stored === "object" ? stored : null,
     });
-    const mapping = resolved.settings.pheromoneDefaults as Record<string, number>;
-    const strength = mapping[priority];
-    return typeof strength === "number" ? strength : mapping.medium ?? 0;
+    return pheromoneStrengthForPriority(resolved.settings.pheromone, priority);
   }
 
   function normalizeCreateIssueTitle(title: string) {
@@ -9620,13 +9623,20 @@ export function issueService(db: Db) {
       ) {
         throw unprocessable("in_progress issues require an assignee");
       }
+      // 1.6.5 (F-27): the settings read and the caste lookup run on the pool
+      // BEFORE the transaction opens. Inside it they would need a second
+      // connection while the transaction holds one — concurrent creates then
+      // exhaust the pool and deadlock (issue-watchdogs-routes timed out on it).
+      const defaultPheromoneStrength =
+        issueData.pheromoneStrength == null
+          ? await defaultPheromoneStrengthForPriority(issueData.priority ?? "medium")
+          : undefined;
+      await assertCasteKeyExists(companyId, issueData.casteKey);
       // 1.6.5 (F-26 T10 SCENT): the caste directory (this also seeds the built-ins
-      // of a fresh company) and the scent settings are read BEFORE the insert
-      // transaction opens — the hook is a pure derivation over them, and nothing in
-      // the transaction waits on a second connection while it holds row locks.
-      const scentCasteKeys = (await casteStoreFor(dbOrTx).listCastes(companyId)).map(
-        (row) => row.key,
-      );
+      // of a fresh company) and the scent settings are read on the pool BEFORE the
+      // insert transaction opens, for the same reason: the hook is a pure derivation
+      // over them and nothing inside the transaction waits on a second connection.
+      const scentCasteKeys = (await casteStore.listCastes(companyId)).map((row) => row.key);
       const scentSettings = readScentSettings(
         ((await instanceSettings.getGeneral()) as unknown as { swarm?: unknown } | null)?.swarm,
         process.env,
@@ -9985,16 +9995,15 @@ export function issueService(db: Db) {
             : {}),
           // 1.6.5 (F-27 PHEROMONE): an explicit strength wins; otherwise the
           // task starts with the strength the swarm settings map its priority
-          // to (swarmClaim.pheromoneDefaults). Setting the number here — the
+          // to (swarmClaim.pheromone). Setting the number here — the
           // single write point — keeps board, agent and import creates
           // consistent without each path re-reading the settings.
-          ...(issueData.pheromoneStrength == null
-            ? {
-                pheromoneStrength: await defaultPheromoneStrengthForPriority(
-                  issueData.priority ?? "medium",
-                ),
-              }
+          ...(defaultPheromoneStrength !== undefined
+            ? { pheromoneStrength: defaultPheromoneStrength }
             : {}),
+          // 1.6.5 (F-27 rework 09.10): the caste key — validated against the
+          // company's directory just below; a null clears to the defaults.
+          ...(issueData.casteKey !== undefined ? { casteKey: issueData.casteKey } : {}),
           // 1.6.5 (F-26 T10 SCENT): the caste. The pure derivation lives in
           // myrmidon/scent/create-hook.ts — an explicit key is kept and
           // stamped 'manual', a high-confidence scent (top ≥ 0.5) lands as
@@ -10014,6 +10023,7 @@ export function issueService(db: Db) {
               },
               scentCasteKeys,
               scentSettings,
+              defaultPheromoneStrength !== undefined ? () => defaultPheromoneStrength : undefined,
             );
           })().then((auto) => ({
             casteKey: auto.casteKey,
@@ -10511,7 +10521,7 @@ export function issueService(db: Db) {
       // 1.6.5 (F-27 rework 09.10): validate a changed caste against the
       // company's directory (design §2.1); null clears to the defaults.
       if (data.casteKey !== undefined && data.casteKey !== existing.casteKey) {
-        await assertCasteKeyExists(dbOrTx, existing.companyId, data.casteKey);
+        await assertCasteKeyExists(existing.companyId, data.casteKey, dbOrTx as Db);
       }
       if (existing.conversationAgentId) {
         if ((data.assigneeAgentId !== undefined && data.assigneeAgentId !== existing.conversationAgentId)
@@ -10622,6 +10632,7 @@ export function issueService(db: Db) {
       if (issueData.pheromoneStrength === null) {
         patch.pheromoneStrength = await defaultPheromoneStrengthForPriority(
           (issueData.priority as string | undefined) ?? existing.priority,
+          dbOrTx as Db,
         );
       }
 

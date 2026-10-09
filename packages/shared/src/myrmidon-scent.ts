@@ -13,7 +13,7 @@
 // overrides itself and passes them in via `readScentSettings(swarm, env)`.
 
 import { z } from "zod";
-import { DEFAULT_PHEROMONE_STRENGTH_BY_PRIORITY } from "./myrmidon-swarm-claim.js";
+import { PHEROMONE_FIELD_DEFAULTS } from "./myrmidon-swarm-claim.js";
 
 // --- stored shapes (design.md §2.4, §7.1 п.4a) --------------------------------
 
@@ -222,11 +222,16 @@ export function pickAgentForTask<T extends ScentAgent>(
 
 // --- task strength from scent (design §2.4 п.3) --------------------------------
 
-// One source of truth: the priority → strength baseline is F-27's
-// DEFAULT_PHEROMONE_STRENGTH_BY_PRIORITY (myrmidon-swarm-claim.ts). Re-exports
-// keep the scent call sites readable without duplicating the mapping.
-export const PRIORITY_BASE_STRENGTH: Record<string, number> =
-  DEFAULT_PHEROMONE_STRENGTH_BY_PRIORITY;
+// One source of truth: the priority → strength baseline is the design default of
+// the `pheromone` settings subset (PHEROMONE_FIELD_DEFAULTS in
+// myrmidon-swarm-claim.ts). An instance that retuned the mapping passes its own
+// `baseFor` to `scentTaskStrength`.
+export const PRIORITY_BASE_STRENGTH: Record<string, number> = {
+  critical: PHEROMONE_FIELD_DEFAULTS.critical,
+  high: PHEROMONE_FIELD_DEFAULTS.high,
+  medium: PHEROMONE_FIELD_DEFAULTS.medium,
+  low: PHEROMONE_FIELD_DEFAULTS.low,
+};
 
 /**
  * The pheromone strength of a task that was created without an explicit one:
@@ -241,8 +246,12 @@ export function scentTaskStrength(
     consequencesBonus: DEFAULT_SCENT_CONSEQUENCES_BONUS,
     consequencesBonusThreshold: DEFAULT_SCENT_CONSEQUENCES_BONUS_THRESHOLD,
   },
+  /** The instance's priority → strength mapping (swarmClaim.pheromone); design defaults when absent. */
+  baseFor?: (priority: string) => number,
 ): number {
-  const base = PRIORITY_BASE_STRENGTH[priority] ?? PRIORITY_BASE_STRENGTH.medium!;
+  const base = baseFor
+    ? baseFor(priority)
+    : (PRIORITY_BASE_STRENGTH[priority] ?? PRIORITY_BASE_STRENGTH.medium!);
   if (scent && scent.complexity.consequences >= settings.consequencesBonusThreshold) {
     return base + settings.consequencesBonus;
   }

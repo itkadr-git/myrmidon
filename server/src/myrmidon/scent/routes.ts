@@ -25,7 +25,7 @@ import { logActivity } from "../../services/activity-log.js";
 import { secretService } from "../../services/index.js";
 import { createCasteStore } from "../castes/store.js";
 import { classifyAgentScent, classifyIssueScent, type ScentGatewayDeps } from "./gateway.js";
-import { createScentService } from "./service.js";
+import { baseStrengthFromGeneral, createScentService } from "./service.js";
 import { deriveScentAuto } from "./create-hook.js";
 import {
   SCENT_BASE_URL_ENV,
@@ -72,6 +72,7 @@ async function buildService(
       classifyAgentScent(gatewayDeps, input),
   };
   const service = createScentService({
+    baseStrengthFor: baseStrengthFromGeneral(general),
     db,
     companyId,
     settings,

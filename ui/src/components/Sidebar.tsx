@@ -250,6 +250,11 @@ export function Sidebar({ children }: { children?: ReactNode }) {
             <SidebarNavItem to="/skills" label={t("nav.skills")} icon={Boxes} />
             <SidebarNavItem to="/apps" label={t("nav.connectors")} icon={Unplug} />
             <SidebarNavItem to="/activity" label={t("nav.audit")} icon={History} />
+            {/* myrmidon(1.6.5 SWARM-T4, design §5.4): the swarm queue and the
+                foraging page stay reachable in the simplified sidebar too —
+                the owner must find both within two clicks. */}
+            <SidebarNavItem to="/swarm-claim" label={t("nav.swarmSupervisor")} icon={ShieldCheck} /> {/* myrmidon(1.6-SWARM-CLAIM-B) */}
+            <SidebarNavItem to="/foraging" label={t("nav.foraging")} icon={Leaf} /> {/* myrmidon(1.6-FORAGE) */}
           </SidebarSection>
         ) : null}
 
