@@ -60,12 +60,18 @@ export const bridgeTextEn = {
 
   // /model and /think
   "model.statusLabel": "Model",
-  // myrmidon(F06-D): not just "Reasoning": a line that starts «Reasoning:» is a
+// myrmidon(F06-D): not just "Reasoning": a line that starts «Reasoning:» is a
   // hidden-reasoning marker to the external-publication filter and is dropped
   // from what the chat shows (so /think lost its current-value line).
   "reasoning.statusLabel": "Reasoning effort",
-  "model.unavailable": "Changing the model is unavailable for adapter {adapterType}: {reason}",
-  "reasoning.unavailable": "Changing the reasoning effort is unavailable for adapter {adapterType}: {reason}",
+  // myrmidon(1.6.5-TG-LOCALE-C): when a chooser cannot be changed from the chat,
+  // the refusal names the adapter and the blockage AND says where the value IS
+  // changed (the agent card on the board) and what happens next — the bare
+  // "unavailable for adapter X" left the operator without a next step.
+  "model.unavailable":
+    "Changing the model is unavailable for adapter {adapterType}: {reason}. The model is changed on the board — the agent card's models section — and applies from the next reply.",
+  "reasoning.unavailable":
+    "Changing the reasoning effort is unavailable for adapter {adapterType}: {reason}. The reasoning effort is changed on the board — the agent card's models section — and applies from the next reply.",
   "model.unknownNoun": "model",
   "reasoning.unknownNoun": "reasoning effort",
   "chooser.effective": "{label}: {value} ({source}).",
@@ -154,6 +160,24 @@ export const bridgeTextEn = {
   // One agent line: name, one-line role (agents.title), status, aliases.
   "agents.line": "• {name} — {role} · {status} ({aliases})",
   "agents.lineNoRole": "• {name} · {status} ({aliases})",
+  // /agents with inline buttons (1.6.5 OPE-6318 part B).
+  "agents.buttons.groupsTitle": "Agents",
+  "agents.buttons.groupsIntro": "Choose a direction, then an agent. Full list with roles: /agents text.",
+  "agents.buttons.groupLine": "• {group}: {count}",
+  "agents.buttons.groupLinePaused": "• {group}: {count} (on pause: {paused})",
+  "agents.buttons.groupButton": "{group} ({count})",
+  "agents.buttons.moreGroups": "More directions than buttons — the rest are in /agents text.",
+  "agents.buttons.page": "Page {page} of {pages}",
+  "agents.buttons.more": "More ▸",
+  "agents.buttons.back": "◂ Directions",
+  "agents.buttons.backToGroup": "◂ {group}",
+  "agents.buttons.write": "Write to this agent",
+  "agents.buttons.model": "Model",
+  "agents.buttons.stop": "Stop",
+  "agents.buttons.agentTitle": "Agent {name}",
+  "agents.buttons.modelNote": "This chat's model is changed with /model.",
+  "agents.buttons.expired": "These buttons are out of date. Send /agents again.",
+  "agents.buttons.unavailable": "This agent or direction is no longer available. Send /agents again.",
   "to.unsetLine": "No default addressee set: {agent} replies.",
   "to.cleared": "Addressee choice reset. The chat's default agent replies from now on.",
   "to.alreadySet": "The addressee is already {agent} ({aliases}).",

@@ -418,7 +418,11 @@
       "maxActiveTasks": "Task limit",
       "globalLimit": "global",
       "builtIn": "built-in",
-      "actions": "Actions"
+      "actions": "Actions",
+      "defaultCaste": "Default",
+      "counters": "Agents / queue / free",
+      "countersHint": "Live agents of this caste / tasks waiting in the queue for this caste / agents of this caste free right now. A task that names no caste counts towards the default one.",
+      "templateNote": "Built-in castes are a template: rename, retune or delete them freely — no swarm logic is hard-wired to them any more."
     },
     "edit": {
       "open": "Edit",
@@ -434,6 +438,9 @@
       "inUse": "This caste is in use: agents still hold this role. Pick the caste to move them to, then confirm the removal.",
       "reassignTo": "Reassign the agents on this caste to...",
       "reassignPlaceholder": "Select a target caste"
+    },
+    "default": {
+      "hint": "Make this caste the company default"
     }
   },
   "cardModels": {
@@ -504,5 +511,18 @@
     "maxDurationHint": "Longer recordings are rejected with audio_too_long.",
     "save": "Save settings",
     "saving": "Saving..."
+  },
+  "nests": {
+    "title": "Nests",
+    "intro": "The projects this agent is willing to work in. Nothing picked means the whole company: the agent may take any task. Tasks that belong to no project stay open to every agent.",
+    "label": "Projects",
+    "hint": "Pick one or more projects to keep the agent inside them. The matcher reads this on its next pass — no restart.",
+    "noProjects": "The company has no projects yet, so the agent works across the whole company.",
+    "save": "Save nests",
+    "saving": "Saving...",
+    "saved": "Saved",
+    "saveFailed": "The save failed.",
+    "allProjects": "The whole company",
+    "selected": "{{count}} project(s)"
   }
 }

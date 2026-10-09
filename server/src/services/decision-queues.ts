@@ -340,6 +340,16 @@ async function sourceIssueId(
         .then((rows) => rows[0] ?? null);
       return { exists: Boolean(row), issueId: row?.id ?? null };
     }
+    // myrmidon(1.6.5 F-09): the signal subject is a queued run; existence is
+    // the live run row (still queued, still without a waitReason).
+    case "queue_stall": {
+      const row = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, sourceId)))
+        .then((rows) => rows[0] ?? null);
+      return { exists: Boolean(row), issueId: null, agentId: null };
+    }
     // myrmidon(1.6.1-WIP-LIMIT-A): the signal subject is an agent of the
     // company; existence is the live agent row (the status feed is computed,
     // not stored, so there is nothing else to check).

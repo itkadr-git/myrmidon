@@ -395,6 +395,19 @@ function idlePickupCandidateRows(db: Db, companyId: string, agentId: string) {
             and decomp.source_issue_id = ${issues.id}
             and decomp.status = 'in_flight'
         )`,
+        // myrmidon(IDLE-PICKUP-MONITOR): not owned by a scheduled monitor. An
+        // issue with monitor_next_check_at in the future already has its wake
+        // owner — tickDueIssueMonitors (heartbeat.ts) wakes it exactly at
+        // nextCheckAt (for status in_progress/in_review). Letting idle-pickup
+        // also select it burned a run every sweep interval until the monitor
+        // fired (observed: 4 no-op runs in 2h on one such issue). An elapsed
+        // monitor (<= now) is NOT excluded: the tick owns the wake, but
+        // suppressing readiness here serves nothing — and if the issue sat in
+        // a monitor-ineligible status, idle-pickup is the only path left.
+        or(
+          isNull(issues.monitorNextCheckAt),
+          sql`${issues.monitorNextCheckAt} <= now()`,
+        ),
         // myrmidon(HOLD-READY): not held by an execution hold. The wake
         // admission parks every automatic wake of such an issue
         // (`deferred_issue_execution` + `executionWait`), so reporting it as

@@ -19,6 +19,7 @@ import {
   describeSwarmClaimSource,
   swarmClaimSettingsApi,
   swarmClaimSettingsQueryKey,
+  swarmClaimStatusLine,
   type SwarmClaimSettingsView,
 } from "./swarmClaimSettingsApi";
 
@@ -524,7 +525,7 @@ export function SwarmClaimSettingsPanel() {
   return (
     <SwarmClaimSettingsPanelView
       view={query.data}
-      status={null}
+      status={swarmClaimStatusLine(query.data?.counters)}
       onSave={(patch) => save.mutate(patch)}
       pending={save.isPending}
       error={banner}

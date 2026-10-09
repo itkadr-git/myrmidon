@@ -95,6 +95,8 @@ export type ScheduledRetryFacts = {
   issueAssigneeAgentId: string | null;
   issueExecutionRunId: string | null;
   issueCheckoutRunId?: string | null;
+  /** myrmidon(1.6.5 F-09): carried for the facts; hiddenAt alone never cancels (Summarizer pattern). */
+  issueHiddenAt?: Date | null;
 
   isNonAssigneeWorkspaceBusyRetry: boolean;
   reviewParticipant: ReviewParticipantFacts;
@@ -117,7 +119,11 @@ export type QueuedRunStalenessErrorCode =
   | "issue_execution_lock_changed"
   | "issue_blocked"
   | "issue_review_participant_changed"
-  | "issue_continuation_waiting_on_review";
+  | "issue_continuation_waiting_on_review"
+  // myrmidon(1.6.5 F-09): a queued run whose task was moved back to backlog
+  // has no executor — it is cancelled with this code instead of waiting
+  // silently in the queue until the global stale sweep picks it up.
+  | "queued_run_issue_not_startable";
 
 export type StalenessDecision =
   | { stale: false }
@@ -141,6 +147,8 @@ export type QueuedRunFacts = {
   issueAssigneeAgentId: string | null;
   issueExecutionRunId: string | null;
   issueCheckoutRunId?: string | null;
+  /** myrmidon(1.6.5 F-09): carried for the facts; hiddenAt alone never cancels (Summarizer pattern). */
+  issueHiddenAt?: Date | null;
 
   isResolvedInteractionContinuation: boolean;
   /** A connection resolution or tool refresh can resume an agent waiting in review. */
@@ -630,6 +638,28 @@ export function decideQueuedRunStaleness(
       stale: true,
       errorCode: "issue_terminal_status",
       reason: `Cancelled because issue reached terminal status (${facts.issueStatus}) before the queued run could start`,
+      details: { issueId: facts.issueId, currentStatus: facts.issueStatus },
+    };
+  }
+  // myrmidon(1.6.5 F-09): a task in backlog is not startable — the queued
+  // run is cancelled with its own code instead of sitting in the queue
+  // without a reason. Hidden tasks are NOT covered: hidden todos are a
+  // supported pattern (summary-slot and status-card generation tasks wake
+  // the Summarizer through the regular queue, see services/summary-slots.ts
+  // and services/status-cards.ts), so hiddenAt alone must never cancel.
+  // Wakes that carry a comment bypass (wakeCommentIdPresent) or a resume
+  // intent still reach the agent, since a person asked for it explicitly;
+  // the bypass list matches the terminal-status bypass above.
+  if (
+    facts.issueStatus === "backlog" &&
+    !facts.resumeIntent &&
+    !facts.wakeCommentIdPresent &&
+    facts.isPendingInteractionAddresseeWake !== true
+  ) {
+    return {
+      stale: true,
+      errorCode: "queued_run_issue_not_startable",
+      reason: `Cancelled because issue is not startable (status: ${facts.issueStatus}) before the queued run could start`,
       details: { issueId: facts.issueId, currentStatus: facts.issueStatus },
     };
   }

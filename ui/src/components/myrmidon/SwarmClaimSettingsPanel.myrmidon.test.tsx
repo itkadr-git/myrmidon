@@ -9,7 +9,7 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SwarmClaimSettingsPanelView, parseSwarmClaimDraft } from "./SwarmClaimSettingsPanel";
-import type { SwarmClaimSettingsView } from "./swarmClaimSettingsApi";
+import { swarmClaimStatusLine, type SwarmClaimSettingsView } from "./swarmClaimSettingsApi";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -153,6 +153,20 @@ describe("myrmidon(1.6.1) swarm claim settings panel", () => {
     flushSync(() => saveButton().dispatchEvent(new MouseEvent("click", { bubbles: true })));
     const patch = onSave.mock.calls[0]![0] as { enabled: boolean };
     expect(patch.enabled).toBe(false);
+  });
+
+  // 1.6.5 (OPE-6608 D): the status line is fed by the live queue counters of GET /swarm-claim.
+  it("builds the status line from the live queue counters", () => {
+    expect(swarmClaimStatusLine(null)).toBeNull();
+    expect(swarmClaimStatusLine(undefined)).toBeNull();
+    const line = swarmClaimStatusLine({ queuedUnassigned: 7, claimedLastHour: 4, cancelledLastHour: 0 });
+    expect(line).toContain("7 unassigned task(s) waiting");
+    expect(line).toContain("4 claimed in the last hour");
+    expect(line).toContain("0 cancelled in the last hour");
+    render(view, vi.fn(), false, null, line);
+    expect(
+      container.querySelector("[data-testid=swarm-claim-status-line]")?.textContent,
+    ).toContain("7 unassigned task(s) waiting");
   });
 
   it("shows a help line for every field, including the pheromone ones", () => {

@@ -326,7 +326,8 @@
     "browsers": "Browsers",
     "clouds": "Clouds",
     "autonomy": "Autonomy",
-    "castes": "Castes & models",
+    "castes": "Agent castes",
+    "models": "Models & providers",
     "wipLimit": "WIP limit",
     "reviewRouting": "Review routing"
   },
@@ -481,14 +482,6 @@
       "activeLeases": "Active leases",
       "loadVsCap": "Load vs cap",
       "limit": "Limit",
-      "metric": "Metric",
-      "baseline": "BASELINE",
-      "delta": "Delta",
-      "tasksDone": "Tasks done",
-      "cycleTimeMean": "Cycle time (mean)",
-      "reviewTimeMean": "Review time (mean)",
-      "returnRate": "Return rate",
-      "costPerTaskMean": "Cost per task (mean)",
       "eff": "Pheromone",
       "nest": "Nest",
       "matchedAt": "Matched",
@@ -1014,5 +1007,10 @@
     "agingStepWeightHint": "Weight gained per full aging step.",
     "starvationLimit": "Starvation limit (minutes)",
     "starvationLimitHint": "A run waiting this long starts with the top weight; 0 turns the limit off."
+  },
+  "litellmWorkers": {
+    "unknown": "unknown",
+    "runningNow": "Running now: {{value}}",
+    "statusUnknown": "Running now is unknown: the gateway did not report its pool size."
   }
 }

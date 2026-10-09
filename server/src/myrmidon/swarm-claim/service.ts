@@ -20,16 +20,15 @@
 import { and, eq } from "drizzle-orm";
 import { agents, issues, type Db } from "@paperclipai/db";
 import {
-  SWARM_CLAIM_CLAIMED_ACTION,
   SWARM_CLAIM_RELEASED_ACTION,
   SWARM_CLAIM_RELEASE_REASON_LEASE_EXPIRED,
   SWARM_CLAIM_RELEASE_REASON_RUN_FINISHED,
   SWARM_CLAIM_REASON_CASTE_EXCLUDED,
-  SWARM_CLAIM_WAKE_IDEMPOTENCY_PREFIX,
-  SWARM_CLAIM_WAKE_REASON,
-  isSwarmClaimEnabledFor,
+  SWARM_CLAIM_REASON_AGENT_EXCLUDED,
   pheromoneDynamicsOf,
+  readStoredSwarmSettings,
   resolveSwarmClaimSettings,
+  resolveSwarmQueueEligibility,
   type CompanyCastesReader,
   type SwarmClaimLease,
   type SwarmClaimSettings,
@@ -40,15 +39,14 @@ import { logActivity as logActivityService } from "../../services/activity-log.j
 import type { instanceSettingsService } from "../../services/instance-settings.js";
 import {
   nextQueueTaskForAgent,
-  planClaim,
   planLeaseHeartbeat,
   claimCovers,
 } from "./domain.js";
-import { listAgentsOfRole, listRoleQueue } from "./queue.js";
+import { buildSwarmMatcher } from "./matcher-factory.js";
+import { listRoleQueue } from "./queue.js";
 import {
   findLiveClaimForIssue,
   heartbeatClaim,
-  insertClaim,
   listAgentLiveClaims,
   liveClaimsForIssues,
   releaseClaim,
@@ -72,7 +70,7 @@ export type SwarmClaimEnqueueWakeup = (
 
 export interface SwarmClaimServicePorts {
   db: Db;
-  /** Instance settings read (the general block holds `swarmClaim`). */
+  /** Instance settings read (the general block holds `swarm`). */
   settings: Pick<ReturnType<typeof instanceSettingsService>, "getGeneral">;
   /**
    * myrmidon(1.6.1 CUSTOM-CASTES B): the company caste directory read. The
@@ -108,7 +106,13 @@ export interface SwarmClaimOutcome {
    * the agent's caste is excluded from the swarm
    * (`caste_excluded`, myrmidon 1.6.1 CUSTOM-CASTES B).
    */
-  reason: "claimed" | "queue_empty" | "limit_reached" | "disabled" | "caste_excluded";
+  reason:
+    | "claimed"
+    | "queue_empty"
+    | "limit_reached"
+    | "disabled"
+    | "caste_excluded"
+    | "agent_excluded";
 }
 
 /**
@@ -125,28 +129,27 @@ export async function claimNextTaskForAgent(
   const now = input.now ?? new Date();
   const general = (await ports.settings.getGeneral()) as unknown as Record<string, unknown>;
   const { settings } = resolveSwarmClaimSettings({
-    stored: general.swarmClaim,
+    stored: readStoredSwarmSettings(general),
     env: ports.env ?? process.env,
   });
   if (!settings.enabled) return { claim: null, reason: "disabled" };
 
   const agentRow = await ports.db
-    .select({ id: agents.id, role: agents.role, companyId: agents.companyId })
+    .select({
+      id: agents.id,
+      role: agents.role,
+      companyId: agents.companyId,
+      metadata: agents.metadata,
+    })
     .from(agents)
     .where(and(eq(agents.id, input.agentId), eq(agents.companyId, input.companyId)))
     .limit(1);
   const agent = agentRow[0];
   if (!agent) return { claim: null, reason: "queue_empty" };
-  // 1.6.1 (SWARM-SETTINGS-UI → 1.6.5 SWARM-T4): the swarm gate — one switch,
-  // no role/company lists anymore.
-  if (
-    !isSwarmClaimEnabledFor(settings, {
-      companyId: input.companyId,
-      role: agent.role,
-    })
-  ) {
-    return { claim: null, reason: "disabled" };
-  }
+  // 1.6.5 (OPE-6608, review item 5): there is no pilot set — the swarm is one
+  // switch for the whole instance. A company or a caste still keeps an agent
+  // out of the queue, but through the finding itself: the caste directory
+  // (`swarmEligible: false`) just below, and the agent's own card switch.
 
   // myrmidon(1.6.1 CUSTOM-CASTES B): the caste gate. An agent whose caste is
   // marked `swarmEligible=false` in the company directory never participates
@@ -159,6 +162,18 @@ export async function claimNextTaskForAgent(
     : undefined;
   if (caste && !caste.swarmEligible) {
     return { claim: null, reason: SWARM_CLAIM_REASON_CASTE_EXCLUDED };
+  }
+  // 1.6.5 (OPE-6608 SWARM-WAKE-FIX C): the agent's own switch. The directory
+  // is coarse (every engineering agent in a company may share one role), so an
+  // operator can take a single agent out of the queue in its card; the switch
+  // is `agents.metadata.swarmQueueEligible` and it is enforced here, on the
+  // path that hands tasks out, not only where the wake is composed.
+  const ownEligibility = resolveSwarmQueueEligibility({
+    metadata: (agent.metadata as Record<string, unknown> | null) ?? null,
+    casteEligible: true,
+  });
+  if (!ownEligibility.eligible) {
+    return { claim: null, reason: SWARM_CLAIM_REASON_AGENT_EXCLUDED };
   }
   // A caste-set ceiling overrides the global swarm ceiling for this agent
   // only; `null` keeps the global setting exactly as it was.
@@ -201,42 +216,31 @@ export async function claimNextTaskForAgent(
     return { claim: null, reason: "queue_empty" };
   }
 
-  const plan = planClaim({
-    issueId: next.issueId,
-    agentId: input.agentId,
-    role: agent.role,
-    runId: input.runId ?? null,
-    now,
-    settings,
+  // 1.6.5 (OPE-6608, review item 2 / design §3.6): the explicit pull is the
+  // matcher's `forAgent`, not a second implementation of the claim. The matcher
+  // writes the lease, makes the task the agent's own through the same
+  // conditional update every pairing uses, and records the activity; the pull
+  // only reads back the lease it created. `explicit`: the caller is a running
+  // agent, so its live run does not make it busy and nobody is woken for it.
+  const matcher = await buildSwarmMatcher({
+    db: ports.db,
+    settings: ports.settings,
+    castes: ports.castes,
+    // No wake is sent: the agent asking is awake. The matcher treats a wake that
+    // was not queued as a failed pairing and rolls it back, so the port answers
+    // "accepted" without queueing anything.
+    enqueueWakeup: async () => ({ explicitPull: true }),
+    env: ports.env,
+    now: () => now,
   });
-  const claim = await insertClaim(ports.db, {
-    companyId: input.companyId,
-    ...plan,
-  });
-  if (!claim) {
-    // Another agent won the same task between the read and the write. The
-    // correct answer is "nothing was taken": the caller retries on its next
-    // wake, exactly as a losing bidder does.
-    return { claim: null, reason: "queue_empty" };
-  }
-
-  await ports.logActivity?.({
-    companyId: input.companyId,
-    actorType: "system",
-    actorId: "swarm_claim",
-    agentId: input.agentId,
-    runId: input.runId ?? null,
-    action: SWARM_CLAIM_CLAIMED_ACTION,
-    entityType: "issue",
-    entityId: next.issueId,
-    details: {
-      identifier: next.identifier,
-      priority: next.priority,
-      pheromoneStrength: next.pheromoneStrength ?? null,
-      role: agent.role,
-      leaseTtlSec: settings.leaseTtlSec,
-    },
-  });
+  if (!matcher) return { claim: null, reason: "disabled" };
+  const pair = await matcher.forAgent(input.agentId, { explicit: true });
+  // Nothing was paired: another agent won the same task between the read and
+  // the write, or the pool read found no seat for this agent. The caller
+  // retries on its next wake, exactly as a losing bidder does.
+  if (!pair) return { claim: null, reason: "queue_empty" };
+  const claim = await findLiveClaimForIssue(ports.db, pair.issueId);
+  if (!claim || claim.agentId !== input.agentId) return { claim: null, reason: "queue_empty" };
   return { claim, reason: "claimed" };
 }
 
@@ -266,7 +270,7 @@ export async function refreshLeaseForRun(
   const now = input.now ?? new Date();
   const general = (await ports.settings.getGeneral()) as unknown as Record<string, unknown>;
   const { settings } = resolveSwarmClaimSettings({
-    stored: general.swarmClaim,
+    stored: readStoredSwarmSettings(general),
     env: ports.env ?? process.env,
   });
   if (!settings.enabled) return false;
@@ -279,9 +283,13 @@ export async function refreshLeaseForRun(
 }
 
 /**
- * Release the task a run was holding and wake the next agent of the role. The
- * release path of the run lifecycle calls this; the sweep calls the same
- * release through its own path. Returns the released claim ids.
+ * Release the task a run was holding. The release path of the run lifecycle
+ * calls this; the sweep releases through its own path. Returns the released
+ * claim ids. The wake of the next agent is not sent from here (review item 2):
+ * the event paths (the release of a run, the income of a ready task, the expiry
+ * of a lease) hand the freed agent to the matcher, which gives it a task that
+ * is genuinely its own — "wake the next agent of the caste" is the shape that
+ * produced runs cancelled as `reassigned` before their checkout.
  */
 export async function releaseTaskAndWakeNext(
   ports: SwarmClaimServicePorts,
@@ -310,90 +318,20 @@ export async function releaseTaskAndWakeNext(
     details: { reason, releasedClaimIds: released },
   });
 
-  await wakeNextAgentForIssueRole(ports, {
-    companyId: input.companyId,
-    issueId: input.issueId,
-    excludeAgentId: null,
-    idempotencySuffix: reason,
-    now,
-  }).catch((err) =>
-    logger.warn({ err, issueId: input.issueId }, "swarm claim wake of the next agent failed"),
-  );
+  // No wake is sent from here (review item 2): releasing the lease is this
+  // function's whole job. The event paths hand the freed agent to the matcher.
   return released;
 }
 
 /**
- * Wake one agent of the role the released task belongs to, so the task does not
- * wait for the periodic sweep to be picked up. The wake is best-effort: the
- * admission path may defer it, and the sweep remains the safety net.
+ * 1.6.5 (OPE-6608, review item 2): `wakeNextAgentForIssueRole` lived here. It
+ * picked "the next agent of the task's role, excluding the one that just let it
+ * go" and woke it with the task — a task that, in the expiry case, still
+ * belonged to somebody else. The dispatcher reads such a wake as `reassigned`
+ * and cancels the run before its checkout (3259 of them in the 09.10 audit), so
+ * the function is gone: a wake now comes from the matcher, which first makes the
+ * task the woken agent's own (`matcher.ts`), and never from a role's headcount.
  */
-export async function wakeNextAgentForIssueRole(
-  ports: SwarmClaimServicePorts,
-  input: {
-    companyId: string;
-    issueId: string;
-    excludeAgentId: string | null;
-    idempotencySuffix?: string;
-    now?: Date;
-  },
-): Promise<boolean> {
-  if (!ports.enqueueWakeup) return false;
-  const issueRow = await ports.db
-    .select({ id: issues.id, assigneeAgentId: issues.assigneeAgentId })
-    .from(issues)
-    .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId)))
-    .limit(1);
-  const issue = issueRow[0];
-  if (!issue) return false;
-
-  let role: string | null = null;
-  if (issue.assigneeAgentId) {
-    const agentRow = await ports.db
-      .select({ role: agents.role })
-      .from(agents)
-      .where(eq(agents.id, issue.assigneeAgentId))
-      .limit(1);
-    role = agentRow[0]?.role ?? null;
-  }
-  if (!role) {
-    // An unassigned task has no role of its own; every role may take it. Wake
-    // the first invokable agent of the company (the admission path checks the
-    // rest) — the sweep re-offers the task to every role on its next pass.
-    const anyAgent = await ports.db
-      .select({ id: agents.id })
-      .from(agents)
-      .where(eq(agents.companyId, input.companyId))
-      .limit(2);
-    const target = anyAgent.find((row) => row.id !== input.excludeAgentId);
-    if (!target) return false;
-    return enqueueSwarmWake(ports, target.id, input);
-  }
-
-  const roleAgents = await listAgentsOfRole(ports.db, input.companyId, role);
-  const target = roleAgents.find((row) => row.id !== input.excludeAgentId);
-  if (!target) return false;
-  return enqueueSwarmWake(ports, target.id, input);
-}
-
-async function enqueueSwarmWake(
-  ports: SwarmClaimServicePorts,
-  agentId: string,
-  input: { issueId: string; idempotencySuffix?: string },
-): Promise<boolean> {
-  const key = `${SWARM_CLAIM_WAKE_IDEMPOTENCY_PREFIX}:${input.issueId}${
-    input.idempotencySuffix ? `:${input.idempotencySuffix}` : ""
-  }`;
-  const wake = await ports.enqueueWakeup!(agentId, {
-    source: "automation",
-    triggerDetail: "system",
-    reason: SWARM_CLAIM_WAKE_REASON,
-    idempotencyKey: key,
-    requestedByActorType: "system",
-    requestedByActorId: "swarm_claim",
-    contextSnapshot: { issueId: input.issueId, source: "swarm_claim" },
-  });
-  return Boolean(wake);
-}
 
 /** Convenience for the routes: the swarm settings service instance. */
 export function swarmClaimService(db: Db, ports: SwarmClaimServicePorts) {

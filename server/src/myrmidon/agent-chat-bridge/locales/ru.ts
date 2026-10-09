@@ -60,8 +60,13 @@ export const bridgeTextRu: Record<BridgeTextKey, string> = {
   // /model and /think
   "model.statusLabel": "Модель",
   "reasoning.statusLabel": "Рассуждения",
-  "model.unavailable": "Смена модели недоступна для адаптера {adapterType}: {reason}",
-  "reasoning.unavailable": "Смена глубины рассуждений недоступна для адаптера {adapterType}: {reason}",
+  // myrmidon(1.6.5-TG-LOCALE-C): недоступную смену объясняем до конца — названы
+  // адаптер и причина, сказано, где значение меняется (карточка агента на доске)
+  // и когда вступит в силу.
+  "model.unavailable":
+    "Смена модели недоступна для адаптера {adapterType}: {reason}. Модель меняется на доске — в разделе моделей карточки агента; применится со следующего ответа.",
+  "reasoning.unavailable":
+    "Смена глубины рассуждений недоступна для адаптера {adapterType}: {reason}. Глубина рассуждений меняется на доске — в разделе моделей карточки агента; применится со следующего ответа.",
   "model.unknownNoun": "Неизвестная модель",
   "reasoning.unknownNoun": "Неизвестная глубина рассуждений",
   "chooser.effective": "{label}: {value} ({source}).",
@@ -148,6 +153,24 @@ export const bridgeTextRu: Record<BridgeTextKey, string> = {
   // Строка агента: имя, роль одной строкой (agents.title), статус, алиасы.
   "agents.line": "• {name} — {role} · {status} ({aliases})",
   "agents.lineNoRole": "• {name} · {status} ({aliases})",
+  // /agents с inline-кнопками (1.6.5 OPE-6318, часть B).
+  "agents.buttons.groupsTitle": "Агенты",
+  "agents.buttons.groupsIntro": "Выберите направление, затем агента. Полный список с ролями: /agents text.",
+  "agents.buttons.groupLine": "• {group}: {count}",
+  "agents.buttons.groupLinePaused": "• {group}: {count} (на паузе: {paused})",
+  "agents.buttons.groupButton": "{group} ({count})",
+  "agents.buttons.moreGroups": "Направлений больше, чем кнопок: остальные — в /agents text.",
+  "agents.buttons.page": "Страница {page} из {pages}",
+  "agents.buttons.more": "Ещё ▸",
+  "agents.buttons.back": "◂ Направления",
+  "agents.buttons.backToGroup": "◂ {group}",
+  "agents.buttons.write": "Написать этому агенту",
+  "agents.buttons.model": "Модель",
+  "agents.buttons.stop": "Стоп",
+  "agents.buttons.agentTitle": "Агент {name}",
+  "agents.buttons.modelNote": "Модель этого чата меняется командой /model.",
+  "agents.buttons.expired": "Эти кнопки устарели. Отправьте /agents заново.",
+  "agents.buttons.unavailable": "Этого агента или направления больше нет. Отправьте /agents заново.",
   "to.unsetLine": "Адресат по умолчанию не задан: отвечает {agent}.",
   "to.cleared": "Выбор адресата сброшен. Дальше отвечает агент этого чата по умолчанию.",
   "to.alreadySet": "Адресат уже {agent} ({aliases}).",

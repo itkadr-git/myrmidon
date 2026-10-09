@@ -34,6 +34,8 @@ import { botLspSettingsSchema } from "../myrmidon-bot-lsp.js";
 // myrmidon(EXTCASE-B): the browser-bridge allowlist stored in the same general settings row
 import { browserBridgeSettingsSchema } from "../myrmidon-browser-bridge.js";
 import { swarmClaimSettingsSchema } from "../myrmidon-swarm-claim.js";
+// myrmidon(1.6.5 F-26 T10 SCENT): the general.swarm.scent settings block
+import { scentSettingsSchema } from "../myrmidon-scent.js";
 // myrmidon(1.6.5 F-26 T5): the SWARM wake guard (taskless gate + cooling) stored
 // in the same general settings row under `general.swarm`.
 import { swarmSettingsSchema } from "../myrmidon-swarm-wake.js";
@@ -65,6 +67,10 @@ import { pluginEntitlementKeysSchema } from "../myrmidon-plugin-entitlement.js";
 // myrmidon(DM-PROGRESS): live progress steps of the bridged Telegram DM status
 // message, stored in the same general settings row.
 import { telegramDmProgressSettingsSchema } from "../myrmidon-telegram-dm-progress.js";
+// myrmidon(1.6.5-TG-LOCALE-C): the instance-wide default language of the
+// bridged Telegram DM, changed from Settings → Language and
+// /api/myrmidon/bridge-language.
+import { bridgeLanguageSettingsSchema } from "../myrmidon-bridge-language.js";
 // myrmidon(1.6.1-FORAGING-LIMITS-UI)
 import { foragingSettingsSchema } from "../myrmidon-foraging.js";
 // myrmidon(TEAM-LIVENESS-SETTINGS): the knobs of the three automatic team-liveness
@@ -190,17 +196,23 @@ export const instanceGeneralSettingsSchema = z.object({
   // myrmidon(EXTCASE-B): browser-bridge allowlist changed from the bridge panel;
   // absent means "no domain is allowed" (deny by default).
   browserBridge: browserBridgeSettingsSchema.optional(),
-  // myrmidon(1.6-SWARM): per-role task queues with leased claims — the pilot flag,
-  // the lease TTL, the per-agent ceiling and the sweep interval, changed from
+  // myrmidon(1.6-SWARM): the swarm (self-organisation) — the on/off switch, the
+  // lease TTL, the per-agent ceiling and the sweep interval, changed from
   // /api/myrmidon/swarm-claim; absent means "use the environment variable, then
-  // the default (the pilot is off)".
+  // the built-in default".
   swarmClaim: swarmClaimSettingsSchema.optional(),
-  // myrmidon(1.6.5 F-26 T5): the wake guard — the run-without-task gate and the
-  // exponential cooling of stale wake candidates (design 1.6.5 §3.7, §4.3).
-  // Absent means the defaults (gate on, base 30 min, ceiling 24 h).
-  swarm: swarmSettingsSchema.optional(),
-  // myrmidon(1.6.1 SWARM-SETTINGS-UI): the change journal of the swarm-claim
-  // pilot settings (who changed what, and when), kept by the settings service
+  // myrmidon(1.6.5 F-26 T5 + T10): the swarm block — one namespace for the
+  // swarm family. T5 owns the wake guard (run-without-task gate and the
+  // exponential cooling of stale wake candidates, design 1.6.5 §3.7, §4.3);
+  // T10 owns `general.swarm.scent` (classifier model, weights, switch).
+  // Absent means the module defaults.
+  swarm: swarmSettingsSchema
+    .extend({
+      scent: scentSettingsSchema.optional(),
+    })
+    .optional(),
+  // myrmidon(1.6.1 SWARM-SETTINGS-UI): the change journal of the swarm
+  // settings (who changed what, and when), kept by the settings service
   // under `general.swarmClaimJournal` and read by GET /api/myrmidon/swarm-claim.
   // Stored passthrough, never validated here beyond being a list-shaped value
   // the service re-reads defensively.
@@ -263,6 +275,12 @@ export const instanceGeneralSettingsSchema = z.object({
   // message (on/off and the minimum spacing between edits), changed from
   // /api/myrmidon/telegram-dm-progress; absent means the defaults.
   telegramDmProgress: telegramDmProgressSettingsSchema.optional(),
+  // myrmidon(1.6.5-TG-LOCALE-C): the instance-wide default language of the
+  // bridged Telegram DM (the fallback for a board user with no stored
+  // `user_ui_language` row), changed from Settings → Language and
+  // /api/myrmidon/bridge-language; absent means "use the environment force,
+  // then English".
+  bridgeLanguage: bridgeLanguageSettingsSchema.optional(),
   // myrmidon(MEMORY-UI): agent card Memory tab — service address, optional key
   // secret name and the switch, changed from the instance settings page and
   // /api/myrmidon/agent-memory; absent means "use the environment".

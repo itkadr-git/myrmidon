@@ -21,6 +21,12 @@ import {
   type Ui2LanguagePreference,
 } from "@paperclipai/shared";
 import { logActivity } from "../../services/index.js";
+// myrmidon(1.6.5-TG-LOCALE-C): the bridge language decision lives with the
+// bridge catalogs; this service only reports it to the screen.
+import {
+  instanceBridgeLocale,
+  resolveBridgeLocaleDecision,
+} from "../agent-chat-bridge/locales/index.js";
 
 export interface Ui2LanguageAuditEntry {
   companyId: string;
@@ -40,6 +46,19 @@ export interface Ui2LanguageServiceDeps {
   upsertLanguage(userId: string, language: Ui2Language): Promise<Ui2LanguagePreference>;
   listCompanyIdsForUser(userId: string): Promise<string[]>;
   logActivity(entry: Ui2LanguageAuditEntry): Promise<unknown>;
+  /** myrmidon(1.6.5-TG-LOCALE-C): the language the bridged Telegram DM answers
+   * this person with, and where it came from (the screen shows the source). */
+  resolveBridgeLanguage(userId: string): Promise<BridgeLanguageDecisionView>;
+}
+
+/** The effective Telegram-bridge language and its source, for the screen. */
+export interface BridgeLanguageDecisionView {
+  language: Ui2Language;
+  source: "environment" | "user" | "instance" | "default";
+  /** The env force in play, present only while it applies. */
+  forcedLanguage: Ui2Language | null;
+  /** The stored instance setting, present only when the instance saved one. */
+  instanceLanguage: Ui2Language | null;
 }
 
 export const UI2_LANGUAGE_ACTION = "myrmidon.ui2.language_updated";
@@ -85,6 +104,20 @@ export function createUi2LanguageService(db: Db): Ui2LanguageServiceDeps {
 
     async logActivity(entry: Ui2LanguageAuditEntry): Promise<unknown> {
       return logActivity(db, entry);
+    },
+
+    // myrmidon(1.6.5-TG-LOCALE-C): env force → the person's preference → the
+    // instance setting → English; the screen shows which one decided.
+    async resolveBridgeLanguage(userId: string): Promise<BridgeLanguageDecisionView> {
+      const decision = await resolveBridgeLocaleDecision(db, userId);
+      const instanceLanguage =
+        decision.source === "instance" ? decision.locale : await instanceBridgeLocale(db);
+      return {
+        language: decision.locale,
+        source: decision.source,
+        forcedLanguage: decision.forcedLanguage,
+        instanceLanguage,
+      };
     },
   };
 }

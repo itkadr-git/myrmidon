@@ -69,11 +69,14 @@ import { preserveBudgetEnforcementGeneralKey } from "../myrmidon/budget-enforcem
 import { preservePluginEntitlementKeysGeneralKey } from "../myrmidon/plugin-entitlement/store.js";
 // myrmidon(DM-PROGRESS): keep the Telegram DM progress settings across vendor writes of `general`
 import { preserveTelegramDmProgressGeneralKey } from "../myrmidon/telegram-dm-progress/settings.js";
+// myrmidon(1.6.5-TG-LOCALE-C): keep the instance-wide bridge language across vendor writes of `general`
+import { preserveBridgeLanguageGeneralKey } from "../myrmidon/bridge-language/settings.js";
 // myrmidon(GITHUB-SHARED-IDENTITY): keep the per-company shared GitHub access rules across vendor writes of `general`
 import { preserveGitHubSharedIdentityGeneralKey } from "../myrmidon/github-shared-identity/store.js";
 import { preserveBudgetProjectionGeneralKey } from "../myrmidon/litellm-budget-sync/settings.js"; // myrmidon(1.7-BUDGET-CONFIG-C)
 // myrmidon(BOT-RUNTIME-TUNING D2): keep the fallback-signal settings across vendor writes of `general`
 import { preserveFallbackSignalGeneralKey } from "../myrmidon/litellm-fallback-signal/settings.js";
+import { preserveLitellmWorkersGeneralKey } from "../myrmidon/litellm-workers/settings.js"; // myrmidon(1.6.5 LITELLM-WORKERS A)
 import { preserveBudgetLimitsGeneralKey } from "../myrmidon/budget-limits/settings.js";
 // myrmidon(1.6.5-DBC1): keep the datastore-care block across vendor writes of `general`
 import { preserveDatastoreCareGeneralKey } from "../myrmidon/datastore-care/retention/settings.js";
@@ -279,14 +282,16 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // myrmidon(BOT-LSP-DEFAULTS): the stored language-server policy survives
       // every general write (it is edited on its own settings panel).
       ...(parsed.data.botLsp ? { botLsp: parsed.data.botLsp } : {}),
-      // myrmidon(1.6-SWARM): the stored swarm-claim pilot settings survive
-      // every general write (they are edited on their own settings page).
-      // 1.6.1: without this line the vendor write path silently dropped the
-      // key, so the stored value never roundtripped and the pilot could only
-      // ever come from the environment.
+      // myrmidon(1.6-SWARM): the stored swarm-claim settings survive every
+      // general write (they are edited on their own settings page). Without
+      // this line the vendor write path silently dropped the key, so the
+      // stored value never roundtripped.
       ...(parsed.data.swarmClaim ? { swarmClaim: parsed.data.swarmClaim } : {}),
-      // myrmidon(1.6.1 SWARM-SETTINGS-UI): the change journal of the swarm-claim
-      // pilot settings survives every general write (one atomic write carries the
+      // myrmidon(1.6.5 F-26 T5): the stored wake guard (taskless gate and
+      // cooling window, `general.swarm`) survives every general write too.
+      ...(parsed.data.swarm ? { swarm: parsed.data.swarm } : {}),
+      // myrmidon(1.6.1 SWARM-SETTINGS-UI): the change journal of the swarm
+      // settings survives every general write (one atomic write carries the
       // settings and the journal entry together).
       ...(parsed.data.swarmClaimJournal ? { swarmClaimJournal: parsed.data.swarmClaimJournal } : {}),
       // myrmidon(REVIEW-REWORK): the stored review-return loop settings survive
@@ -318,6 +323,11 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // myrmidon(PLUGIN-ENTITLEMENT C): the stored plugin entitlement keys
       // survive every general write (edited on their own settings block).
       ...(parsed.data.pluginEntitlementKeys ? { pluginEntitlementKeys: parsed.data.pluginEntitlementKeys } : {}),
+      // myrmidon(1.6.5-TG-LOCALE-C): the stored instance bridge language
+      // survives every general write (it is edited on the language screen).
+      // Without this line the whitelist drops the key, a PATCH answers 200 yet
+      // stores nothing, and a later write would leave the fallback unreachable.
+      ...(parsed.data.bridgeLanguage ? { bridgeLanguage: parsed.data.bridgeLanguage } : {}),
       // myrmidon(DM-PROGRESS): the stored Telegram DM progress settings survive
       // every general write (edited on their own settings block).
       ...(parsed.data.telegramDmProgress ? { telegramDmProgress: parsed.data.telegramDmProgress } : {}),
@@ -756,6 +766,10 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
               ...preserveBudgetEnforcementGeneralKey(current.general), // myrmidon(1.7-BUDGET-CONFIG-B)
               ...preservePluginEntitlementKeysGeneralKey(current.general), // myrmidon(PLUGIN-ENTITLEMENT C)
               ...preserveTelegramDmProgressGeneralKey(current.general), // myrmidon(DM-PROGRESS)
+              ...preserveBridgeLanguageGeneralKey(current.general), // myrmidon(1.6.5-TG-LOCALE-C)
+              // The preserve line above restores the stored value: a patch that
+              // carries the key wins, the same rule as DM-PROGRESS.
+              ...(patch.bridgeLanguage !== undefined ? { bridgeLanguage: nextGeneral.bridgeLanguage } : {}),
               ...preserveFallbackSignalGeneralKey(current.general), // myrmidon(BOT-RUNTIME-TUNING D2)
               // The preserve line above restores the old stored value: a patch
               // that carries the key must win, the same rule as DM-PROGRESS.
@@ -764,6 +778,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
               ...(patch.telegramDmProgress !== undefined ? { telegramDmProgress: nextGeneral.telegramDmProgress } : {}),
               ...preserveGitHubSharedIdentityGeneralKey(current.general), // myrmidon(GITHUB-SHARED-IDENTITY)
               ...preserveBudgetProjectionGeneralKey(current.general), // myrmidon(1.7-BUDGET-CONFIG-C)
+              ...preserveLitellmWorkersGeneralKey(current.general), // myrmidon(1.6.5 LITELLM-WORKERS A)
               ...preserveBotImageRolloutGeneralKey(current.general), // myrmidon(BOT-ROLLOUT)
               ...preserveToolPolicyCacheGeneralKey(current.general), // myrmidon(DB-PERF-C-P4)
               // myrmidon(DB-PERF-C-P4): a patch that carries the key wins over the restored value.

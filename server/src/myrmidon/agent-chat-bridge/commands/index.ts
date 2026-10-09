@@ -28,6 +28,7 @@ import { t, resolveBridgeLocale, type BridgeLocale } from "../locales/index.js";
 import { buildHelpText } from "./help.js";
 // myrmidon(X9c): /agents, /to, /who — the X9a/X9b addressing surface as chat
 // commands; sticky default routing state lives in agents.ts.
+import { agentsScreenPlainText, buildAgentsGroupsReply, type AgentsScreen } from "./agents-buttons.js";
 import {
   buildAgentsReplyText,
   buildWhoReplyText,
@@ -113,6 +114,12 @@ export type BridgedCommandResult =
       kind: "reply";
       command: string;
       text: string;
+      /**
+       * myrmidon(1.6.5 OPE-6318 part B): the reply as a card with inline
+       * buttons. `text` is its plain rendering, for a client without cards;
+       * the bridge publishes the screen when it is present.
+       */
+      screen?: AgentsScreen;
       /** myrmidon(F06-D): set on a plain `/model` or `/think` list. */
       choices?: BridgedChoiceMenu;
       /** myrmidon(F06-D): `/model <x>` or `/think <x>` — whether the choice was
@@ -274,13 +281,25 @@ export async function runBridgedDirectMessageCommand(
     // turns until the next /to (see agents.ts); addressed @<alias> turns
     // (X9b) are unaffected.
     case "agents": {
-      const text = await buildAgentsReplyText(input.db, {
+      const stickyAgentId = readStickyAgentId(context.issue.assigneeAdapterOverrides);
+      // `/agents text` keeps the plain grouped list (part A) for a client
+      // without buttons; plain `/agents` opens the directions as buttons.
+      if (parsed.args.trim().toLowerCase() === "text") {
+        const text = await buildAgentsReplyText(input.db, {
+          companyId: input.companyId,
+          conversationAgentId: input.agentId,
+          stickyAgentId,
+          locale,
+        });
+        return { kind: "reply", command: "agents", text };
+      }
+      const screen = await buildAgentsGroupsReply(input.db, {
         companyId: input.companyId,
         conversationAgentId: input.agentId,
-        stickyAgentId: readStickyAgentId(context.issue.assigneeAdapterOverrides),
+        stickyAgentId,
         locale,
       });
-      return { kind: "reply", command: "agents", text };
+      return { kind: "reply", command: "agents", text: agentsScreenPlainText(screen), screen };
     }
     case "to": {
       const result = await handleToCommand({

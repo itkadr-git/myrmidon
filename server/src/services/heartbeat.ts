@@ -708,7 +708,16 @@ import {
 // myrmidon(AUTO-RESUME): the board resumes an agent left in `error` with backoff
 import { createAutoResumeSweeper } from "../myrmidon/auto-resume.js";
 // myrmidon(1.6-SWARM): the expired-claim sweep of the per-role task queues
-import { buildSwarmClaimSweeper } from "../myrmidon/swarm-claim/index.js";
+// myrmidon(1.6.5 OPE-6608): and the board-side matcher of the event paths — the
+// release path below hands the freed agent to it (design §3.5).
+import {
+  buildSwarmClaimSweeper,
+  buildSwarmMatcher,
+  matchFreedAgent,
+  notifySwarmAgentEvent,
+  setSwarmEventSink,
+} from "../myrmidon/swarm-claim/index.js";
+import { createCasteDirectoryReader } from "../myrmidon/castes/directory.js";
 // myrmidon(1.6-SWARM): the checkout/release claim hooks of the run lifecycle
 import {
   recordSwarmClaimOnCheckoutImpl,
@@ -18461,7 +18470,7 @@ export function heartbeatService(
   // The release path wakes the next agent of the role directly; this pass is
   // the safety net that makes "an idle agent with a non-empty queue of its
   // role" impossible past one lease period (TTL + one sweep interval). All
-  // admission gates still apply inside enqueueWakeup; with the pilot flag off
+  // admission gates still apply inside enqueueWakeup; with the swarm switched off
   // the pass reads once and releases nothing.
   const swarmClaimSweeper = buildSwarmClaimSweeper({
     db,
@@ -18472,7 +18481,31 @@ export function heartbeatService(
       },
     },
     enqueueWakeup: (agentId, opts) => enqueueWakeup(agentId, opts),
+    // The caste directory (review item 6): without this port `swarmEligible:
+    // false` and the per-caste ceiling were never read on the live pass.
+    castes: createCasteDirectoryReader(db),
     env: process.env,
+  });
+  // myrmidon(1.6.5 OPE-6608, review item 2 / design §3.5): the event sink of the
+  // board matcher. The issue service (a task appeared or became available) and
+  // the agent resume path call it; the matcher is built per event so the swarm
+  // switch is read at that moment — turning the swarm off stops matching at
+  // once, with no restart (`buildSwarmMatcher` returns null when it is off).
+  const swarmMatcherPorts = () => ({
+    db,
+    settings: {
+      getGeneral: () => instanceSettings.getGeneral(),
+      updateGeneral: () => {
+        throw new Error("not used by the matcher");
+      },
+    },
+    enqueueWakeup: (agentId: string, opts: Parameters<typeof enqueueWakeup>[1]) => enqueueWakeup(agentId, opts),
+    castes: createCasteDirectoryReader(db),
+    env: process.env,
+  });
+  setSwarmEventSink({
+    forIssue: async (issueId) => (await buildSwarmMatcher(swarmMatcherPorts()))?.forIssue(issueId) ?? null,
+    forAgent: async (agentId) => (await buildSwarmMatcher(swarmMatcherPorts()))?.forAgent(agentId) ?? null,
   });
 
   async function sweepPendingCleanupLeases(opts?: {
@@ -19301,7 +19334,7 @@ export function heartbeatService(
     }
 
     // myrmidon(1.6-SWARM): the expired-claim sweep on the same tick. Cheap
-    // when the pilot flag is off; with the pilot on it returns expired tasks
+    // when the swarm is off; with it on it returns expired tasks
     // to their role's queue and wakes the next agent, keeping an idle agent
     // with a non-empty queue impossible past one lease period.
     try {
@@ -19511,7 +19544,69 @@ export function heartbeatService(
     | "agent_fair_share"
     | "agent_concurrency"
     | "priority"
+    | "maintenance"
+    | "agent_not_invokable"
+    | "scheduling_suppressed"
     | typeof RUN_PRIORITY_PICK_WAIT_REASON;
+
+  // myrmidon(1.6.5 F-09): thresholds for queued-run explanation. The explain
+  // threshold decides when a still-queued run must carry a `waitReason`; the
+  // stall threshold decides when the attention feed surfaces a `queue_stall`
+  // card. Both come from instance_settings.general with env-var defaults and
+  // are clamped to safe bounds.
+  const QUEUED_RUN_EXPLAIN_AFTER_SEC_DEFAULT = 60;
+  const QUEUED_RUN_STALE_AFTER_SEC_DEFAULT = 3600;
+
+  function clampNumber(value: unknown, min: number, max: number): number | null {
+    const n = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+    if (!Number.isFinite(n)) return null;
+    return Math.max(min, Math.min(max, Math.round(n)));
+  }
+
+  type QueuedRunThresholds = { explainAfterMs: number; staleAfterMs: number };
+
+  async function readQueuedRunThresholds(): Promise<QueuedRunThresholds> {
+    let explainAfterSec = QUEUED_RUN_EXPLAIN_AFTER_SEC_DEFAULT;
+    let staleAfterSec = QUEUED_RUN_STALE_AFTER_SEC_DEFAULT;
+    const envExplain = readProductEnvFrom(runtimeEnv, "QUEUED_RUN_EXPLAIN_AFTER_SEC");
+    if (envExplain !== undefined && envExplain !== null && envExplain !== "") {
+      const n = Number(envExplain);
+      if (Number.isFinite(n) && n > 0) explainAfterSec = n;
+    }
+    const envStale = readProductEnvFrom(runtimeEnv, "QUEUED_RUN_STALE_AFTER_SEC");
+    if (envStale !== undefined && envStale !== null && envStale !== "") {
+      const n = Number(envStale);
+      if (Number.isFinite(n) && n > 0) staleAfterSec = n;
+    }
+    const general = await instanceSettings.getGeneral().catch(() => ({}) as Record<string, unknown>);
+    const g = (general ?? {}) as Record<string, unknown>;
+    explainAfterSec = clampNumber(g.queuedRunExplainAfterSec, 10, 86400) ?? explainAfterSec;
+    staleAfterSec = clampNumber(g.queuedRunStaleAfterSec, 60, 604800) ?? staleAfterSec;
+    return { explainAfterMs: explainAfterSec * 1000, staleAfterMs: staleAfterSec * 1000 };
+  }
+
+  /**
+   * Fill waitReason for queued runs older than the explain threshold.
+   * A null `reason` means "no observed cause" — nothing is written, so the
+   * run keeps waitReason = null and stays visible to the queue_stall
+   * attention card (its generator matches waitReason IS NULL). Never write
+   * a guessed reason here: a fabricated value would mask OPE-4099-style
+   * stuck-queue diagnostics.
+   */
+  async function explainStaleQueuedRuns(now: Date, reason: QueuedRunWaitReason | null): Promise<void> {
+    if (reason == null) return;
+    const { explainAfterMs } = await readQueuedRunThresholds();
+    const cutoff = new Date(now.getTime() - explainAfterMs);
+    const rows = await db
+      .select({ id: heartbeatRuns.id, contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.status, "queued"), lte(heartbeatRuns.createdAt, cutoff)));
+    const needsReason = rows
+      .filter((row) => parseObject(row.contextSnapshot).waitReason == null)
+      .map((row) => row.id);
+    if (needsReason.length === 0) return;
+    await writeQueuedRunWaitReason(needsReason, reason);
+  }
 
   async function writeQueuedRunWaitReason(
     runIds: ReadonlyArray<string>,
@@ -19593,6 +19688,39 @@ export function heartbeatService(
     }
   }
 
+  // myrmidon(1.6.5 F-09): cancel queued runs whose issue is not startable
+  // (backlog). The cancellation carries the `queued_run_issue_not_startable`
+  // error code. Returns the ids that really were cancelled; the post-commit
+  // effects (the run status event) are applied like at every other caller of
+  // `cancelStaleQueuedRun`.
+  async function cancelQueuedRunsAsNotStartable(
+    runs: ReadonlyArray<{ id: string; companyId: string }>,
+  ): Promise<Set<string>> {
+    const cancelled = new Set<string>();
+    for (const run of runs) {
+      const staleness = await runDispatch.cancelStaleQueuedRun({
+        runId: run.id,
+        companyId: run.companyId,
+        expectedStatus: "queued",
+        now: new Date(),
+      });
+      if (staleness.outcome === "cancelled") {
+        applyRunDispatchPostCommitEffects(staleness.postCommitEffects);
+        cancelled.add(run.id);
+        logger.info(
+          { runId: run.id, errorCode: staleness.errorCode },
+          "queued run sweep: cancelled queued run whose task is not startable",
+        );
+      } else {
+        logger.info(
+          { runId: run.id, outcome: staleness.outcome },
+          "queued run sweep: queued run kept (not cancelled as not startable)",
+        );
+      }
+    }
+    return cancelled;
+  }
+
   // myrmidon(1.6.5 RUN-FAIRNESS): the per-agent share ceiling of the sliding
   // start window, in percent. The key arrives with the runtime-limits part of
   // the feature; until then the name is read from the live limits as a
@@ -19607,7 +19735,11 @@ export function heartbeatService(
   }
 
   async function resumeQueuedRuns() {
-    if ((await getSchedulingSuppression()).suppressed) return;
+    const schedulingSuppression = await getSchedulingSuppression();
+    if (schedulingSuppression.suppressed) {
+      await explainStaleQueuedRuns(new Date(), "scheduling_suppressed");
+      return;
+    }
     await resumeExecutionWaitComments();
     const cutoff = await getWorktreeExecutionCutoff();
     const pendingInterrupts = await db.select({ id: agentWakeupRequests.id, companyId: agentWakeupRequests.companyId })
@@ -20333,7 +20465,10 @@ export function heartbeatService(
     // holds its own queue.
     options: { otherAgentsWaiting?: boolean } = {},
   ) {
-    if ((await getSchedulingSuppression()).suppressed) return [];
+    if ((await getSchedulingSuppression()).suppressed) {
+      await explainStaleQueuedRuns(new Date(), "scheduling_suppressed");
+      return [];
+    }
     // myrmidon(R3): queued runs wait for maintenance exit — except the
     // CHAT-FIRST exemption below.
     const maintenanceWindows = await maintenanceWindowsForAgent(db, agentId);
@@ -20346,7 +20481,7 @@ export function heartbeatService(
       // reconciler's drain wait then never reaches zero, its finally exits
       // the window, and the profile update retries on the next sweep.
       const queuedPeek = await db
-        .select({ contextSnapshot: heartbeatRuns.contextSnapshot, requestedByActorType: agentWakeupRequests.requestedByActorType })
+        .select({ id: heartbeatRuns.id, contextSnapshot: heartbeatRuns.contextSnapshot, requestedByActorType: agentWakeupRequests.requestedByActorType })
         .from(heartbeatRuns)
         .leftJoin(agentWakeupRequests, eq(agentWakeupRequests.id, heartbeatRuns.wakeupRequestId))
         .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "queued")));
@@ -20356,7 +20491,13 @@ export function heartbeatService(
           requestedByActorType: row.requestedByActorType ?? null,
         }),
       );
-      if (!chatExempt) return [];
+      if (!chatExempt) {
+        const staleIds = queuedPeek
+          .filter((row) => parseObject(row.contextSnapshot).waitReason == null)
+          .map((row) => row.id);
+        if (staleIds.length > 0) await writeQueuedRunWaitReason(staleIds, "maintenance");
+        return [];
+      }
     }
     const cutoff = await getWorktreeExecutionCutoff();
 
@@ -20370,6 +20511,17 @@ export function heartbeatService(
             agentId,
             `Cancelled because the agent is not invokable: ${invokability.reason}`,
           );
+        } else {
+          // myrmidon(1.6.5 F-09): the sweep leaves the queued runs in place
+          // but names why they wait.
+          const staleQueued = await db
+            .select({ id: heartbeatRuns.id, contextSnapshot: heartbeatRuns.contextSnapshot })
+            .from(heartbeatRuns)
+            .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "queued")));
+          const needsReason = staleQueued
+            .filter((row) => parseObject(row.contextSnapshot).waitReason == null)
+            .map((row) => row.id);
+          if (needsReason.length > 0) await writeQueuedRunWaitReason(needsReason, "agent_not_invokable");
         }
         return [];
       }
@@ -20381,7 +20533,7 @@ export function heartbeatService(
       );
       // myrmidon(1.6.5 RUN-FAIRNESS): the per-agent ceiling check moved below
       // the queue read, so the runs it holds get their waitReason.
-      const queuedRuns = await db
+      const queuedRunRows = await db
         .select()
         .from(heartbeatRuns)
         .where(
@@ -20392,6 +20544,46 @@ export function heartbeatService(
           ),
         )
         .orderBy(asc(heartbeatRuns.createdAt));
+      if (queuedRunRows.length === 0) return [];
+
+      // myrmidon(1.6.5 F-09): queued runs whose task is in backlog are
+      // cancelled BEFORE any early exit below (per-agent ceiling, fair share),
+      // so an agent at its concurrency ceiling still loses its backlog runs.
+      // Hidden todos stay: they are the supported Summarizer pattern (summary
+      // slots / status cards), the claim path decides their fate. Cancelled
+      // runs leave the sweep's queue.
+      const earlyIssueIds = [
+        ...new Set(
+          queuedRunRows
+            .map((run) => readNonEmptyString(parseObject(run.contextSnapshot).issueId))
+            .filter((issueId): issueId is string => Boolean(issueId)),
+        ),
+      ];
+      const backlogIssueIds = new Set(
+        earlyIssueIds.length > 0
+          ? (
+              await db
+                .select({ id: issues.id })
+                .from(issues)
+                .where(
+                  and(
+                    eq(issues.companyId, agent.companyId),
+                    inArray(issues.id, earlyIssueIds),
+                    eq(issues.status, "backlog"),
+                  ),
+                )
+            ).map((row) => row.id)
+          : [],
+      );
+      const notStartableRuns = queuedRunRows.filter((run) => {
+        const issueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+        return issueId ? backlogIssueIds.has(issueId) : false;
+      });
+      const cancelledRunIds =
+        notStartableRuns.length > 0
+          ? await cancelQueuedRunsAsNotStartable(notStartableRuns)
+          : new Set<string>();
+      const queuedRuns = queuedRunRows.filter((run) => !cancelledRunIds.has(run.id));
       if (queuedRuns.length === 0) return [];
 
       // myrmidon(1.6.5 RUN-FAIRNESS): the per-agent ceiling holds these runs;
@@ -20472,6 +20664,7 @@ export function heartbeatService(
           id: issues.id,
           status: issues.status,
           priority: issues.priority,
+          hiddenAt: issues.hiddenAt,
         })
         .from(issues)
         .where(
@@ -27188,7 +27381,7 @@ export function heartbeatService(
   async function releaseSwarmClaimsForRun(
     run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId">,
   ) {
-    await releaseSwarmClaimsForRunImpl({ db, settings: instanceSettings }, run, enqueueWakeup);
+    await releaseSwarmClaimsForRunImpl({ db, settings: instanceSettings }, run);
   }
 
   async function releaseIssueExecutionAndPromote(
@@ -27254,33 +27447,63 @@ export function heartbeatService(
           const releasedIssueId = readNonEmptyString(
             parseObject(releasedRun.contextSnapshot).issueId,
           );
-          await idlePickupForAgent(
+          // myrmidon(1.6.5 OPE-6608, review item 1 / design §3.5): with the
+          // swarm on, the agent that just became free is paired by the board
+          // itself — its own assigned ready task first, otherwise the top ready
+          // task of its caste and nest. The idle-pickup wake below (the "go and
+          // look for work" path OPE-6640 retires) is then not used at all.
+          const swarmFreed = await matchFreedAgent(
             {
               db,
-              // myrmidon(IDLE-WAKE-BUDGET): the release path spends the same
-              // company-wide allowance as the periodic sweeper, so a fleet of
-              // finishing runs cannot burst past the per-minute ceiling.
-              budget: idleWakeBudget,
+              settings: instanceSettings,
               enqueueWakeup: (agentId, opts) => enqueueWakeup(agentId, opts),
-              logActivity: async (input) => {
-                await logActivity(db, {
-                  companyId: input.companyId,
-                  actorType: input.actorType,
-                  actorId: input.actorId,
-                  agentId: input.agentId,
-                  runId: input.runId,
-                  action: input.action,
-                  entityType: input.entityType,
-                  entityId: input.entityId,
-                  details: input.details,
-                });
-              },
+              castes: createCasteDirectoryReader(db),
             },
-            { id: releasedRun.agentId, companyId: releasedRun.companyId },
-            // The just-released issue is the past work: waking it again right
-            // after its run finished is the runaway loop the review caught.
-            { excludeIssueId: releasedIssueId, behaviorEnabled: pickupAllowed },
-          );
+            releasedRun.agentId,
+            {
+              // The loop guards idle pickup had on this very path (review item
+              // 1): the task whose run just ended is not offered back, the
+              // idle-pickup switches (instance and agent card) hold, and the
+              // wake spends the same company allowance.
+              excludeIssueId: releasedIssueId,
+              pickupAllowed,
+              wakeBudget: idleWakeBudget,
+            },
+          ).catch((err) => {
+            logger.warn({ err, runId: run.id }, "swarm match of the freed agent failed");
+            // A failed match must never strand the agent: the idle-pickup path
+            // keeps its own admission gates and is the safer fallback.
+            return { enabled: false, pair: null };
+          });
+          if (!swarmFreed.enabled) {
+            await idlePickupForAgent(
+              {
+                db,
+                // myrmidon(IDLE-WAKE-BUDGET): the release path spends the same
+                // company-wide allowance as the periodic sweeper, so a fleet of
+                // finishing runs cannot burst past the per-minute ceiling.
+                budget: idleWakeBudget,
+                enqueueWakeup: (agentId, opts) => enqueueWakeup(agentId, opts),
+                logActivity: async (input) => {
+                  await logActivity(db, {
+                    companyId: input.companyId,
+                    actorType: input.actorType,
+                    actorId: input.actorId,
+                    agentId: input.agentId,
+                    runId: input.runId,
+                    action: input.action,
+                    entityType: input.entityType,
+                    entityId: input.entityId,
+                    details: input.details,
+                  });
+                },
+              },
+              { id: releasedRun.agentId, companyId: releasedRun.companyId },
+              // The just-released issue is the past work: waking it again right
+              // after its run finished is the runaway loop the review caught.
+              { excludeIssueId: releasedIssueId, behaviorEnabled: pickupAllowed },
+            );
+          }
         }
       } catch (idlePickupErr) {
         logger.warn(
@@ -31037,8 +31260,14 @@ export function heartbeatService(
     // myrmidon(L3): wakes queued runs and stranded assigned todo/in_progress
     // issues a drained pause left idle; logic in myrmidon/pause-drain.ts.
     // Its sole caller is the agent resume route.
-    resumeAgentAfterPause: (agentId: string) =>
-      pauseResumeWakeAgent({ db, startNextQueuedRunForAgent, enqueueWakeup }, agentId),
+    resumeAgentAfterPause: async (agentId: string) => {
+      const resumed = await pauseResumeWakeAgent({ db, startNextQueuedRunForAgent, enqueueWakeup }, agentId);
+      // myrmidon(1.6.5 OPE-6608, review item 2): a lifted pause frees the agent
+      // — the board matcher gives it its own ready task, else a ready task of
+      // its caste (design §3.5). Fire-and-forget: it never fails the resume.
+      notifySwarmAgentEvent(agentId);
+      return resumed;
+    },
 
     scheduleBoundedRetry: async (
       runId: string,

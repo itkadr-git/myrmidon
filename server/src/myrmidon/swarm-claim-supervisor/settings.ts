@@ -1,9 +1,9 @@
 // myrmidon(1.6-SWARM-CLAIM-B): settings of the supervisor surface.
 //
-// Part B (the supervisor view and the rebalance action) owns its own knob.
-// The claim machinery itself — the queue, the lease, the TTL, the per-agent
-// limit and the master switch — belongs to part A and is read from there;
-// this module never invents a second copy of those keys.
+// Part B (the supervisor view and the rebalance action) owns its one knob. The
+// claim machinery itself — the queue, the lease, the TTL, the per-agent limit
+// and the swarm switch — belongs to part A and is read
+// from there; this module never invents a second copy of those keys.
 //
 // The style follows the rest of the 1.6 modules: a numeric setting falls back
 // to its default on anything that is not a positive integer.

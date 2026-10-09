@@ -14,7 +14,7 @@
   see, because the single selection by task importance ran only for an agent
   without a live run. The pass reads the agent's top ready task with the idle
   pickup's own rules, compares **task** importance — the issue-priority step
-  plus the pheromone strength of OPE-6614, never the composed run weight, so a
+  plus the pheromone strength, never the composed run weight, so a
   long wait can never outrank it — and when it is strictly more important than
   the best standing run, wakes it and leaves the standing runs queued with the
   wait reason `higher_priority_ready` (`Более важная готовая задача агента` /
@@ -45,7 +45,7 @@
   сравнение которого она никогда не попадала: единственный выбор по важности
   задачи работал только для агента без живого прогона. Проход читает верхнюю
   готовую задачу агента по тем же правилам, что и подхват простоя, и сравнивает
-  важность **задачи** — ступень приоритета плюс силу феромона (OPE-6614), но
+  важность **задачи** — ступень приоритета плюс силу феромона, но
   никогда составной вес прогона, поэтому долгое ожидание её не перевесит. Если
   задача строго важнее лучшего стоящего прогона, агента будят на неё, а стоящие
   прогоны остаются в очереди с причиной ожидания `higher_priority_ready`
