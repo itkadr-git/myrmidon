@@ -7,7 +7,8 @@
 //
 // How a button works end to end:
 //   - the reply carries an `AgentsScreen` (text + buttons). The publication is
-//     a `task_control` card (chat-publication-projection.ts, standalone card);
+//     a `task_control` card (the plain `card` of chat-publication-projection.ts,
+//     laid out two buttons to a row by chat-channels.ts);
 //   - every button is an opaque, random token — a `chat_actions` row of kind
 //     `agents_button` that holds what the button does, the publication it
 //     belongs to and its expiry. Telegram's callback_data (64 bytes) only ever
@@ -62,7 +63,7 @@ export const AGENTS_BUTTON_ACTION_KIND = "agents_button";
 export const AGENTS_BUTTON_TTL_MS = 10 * 60 * 1_000;
 /** Agents per page of a direction. */
 export const AGENTS_PAGE_SIZE = 10;
-/** Telegram cards carry at most this many actions (chat-publication-projection.ts). */
+/** A screen holds at most this many buttons: this module keeps its cards small (the projection itself allows more). */
 export const AGENTS_MAX_CARD_BUTTONS = 12;
 
 const TOKEN_PREFIX = "pca:";

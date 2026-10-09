@@ -69,14 +69,24 @@ function chooserListActionId(publicationId: string): string {
   return `chooser-list:${publicationId}`;
 }
 
-/** Whether a stored card is a choice list (its buttons are laid out in rows). */
+const AGENTS_BUTTON_ACTION_ID_RE = /^pca:[A-Za-z0-9_-]{22}$/;
+
+/**
+ * Whether a stored card is a button menu — a `/model` or `/think` choice list
+ * (`pcm:` tokens) or an `/agents` screen (`pca:` tokens): its buttons are laid
+ * out a few to a row, never as one row.
+ */
 export function isChooserCardActions(
   actions: readonly SafeExternalChatCardAction[] | undefined,
 ): boolean {
   return (
     !!actions &&
     actions.length > 0 &&
-    actions.every((action) => action.type === "callback" && isChooserActionId(action.actionId))
+    actions.every(
+      (action) =>
+        action.type === "callback" &&
+        (isChooserActionId(action.actionId) || AGENTS_BUTTON_ACTION_ID_RE.test(action.actionId)),
+    )
   );
 }
 

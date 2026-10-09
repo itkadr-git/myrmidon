@@ -36,6 +36,7 @@ import {
   TELEGRAM_CALLBACK_DATA_LIMIT_BYTES,
   telegramChatSdkCallbackData,
 } from "../../../services/chat-interaction-publications.js";
+import { CHOOSER_BUTTONS_PER_ROW, isChooserCardActions } from "../chooser-actions.js";
 import { resolveAgentGroup } from "../grouping.js";
 import { telegramConversationUserId } from "../identity.js";
 import { t } from "../locales/index.js";
@@ -193,6 +194,24 @@ describe("/agents buttons: the screens", () => {
     );
     expect(token).toMatch(/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$/);
     expect(createAgentsButtonToken()).not.toBe(token);
+  });
+
+  it("lays a full 12-button screen out as a keyboard of short rows, like the /model menu", () => {
+    const screen = buildGroupScreen(cards, "", "en", infra, 0)!;
+    expect(screen.buttons).toHaveLength(AGENTS_MAX_CARD_BUTTONS);
+    const actions = screen.buttons.map((button) => ({
+      type: "callback" as const,
+      actionId: createAgentsButtonToken(),
+      label: button.label,
+    }));
+    // chat-channels lays a card out in rows of CHOOSER_BUTTONS_PER_ROW exactly
+    // when this holds; false would send all twelve buttons as one row.
+    expect(isChooserCardActions(actions)).toBe(true);
+    expect(Math.ceil(actions.length / CHOOSER_BUTTONS_PER_ROW)).toBeGreaterThan(1);
+    expect(CHOOSER_BUTTONS_PER_ROW).toBeLessThanOrEqual(2);
+    // a card with a link button, or a foreign token, stays one row
+    expect(isChooserCardActions([...actions, { type: "link", label: "x", url: "https://example.com" }])).toBe(false);
+    expect(isChooserCardActions([...actions, { type: "callback", actionId: "pcq:abcdefghijklmnopqrstuv", label: "x" }])).toBe(false);
   });
 
   it("reads back only the payloads it wrote", () => {
