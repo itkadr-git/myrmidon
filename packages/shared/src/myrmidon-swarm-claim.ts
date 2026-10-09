@@ -112,13 +112,96 @@ export const DEFAULT_PHEROMONE_STRENGTH_BY_PRIORITY: {
   medium: number;
   low: number;
 } = {
-  critical: 1000,
-  high: 100,
+  // Architect project 09.10 (design §2.3): the baseline mapping the migration
+  // backfills with and a new task without an explicit strength starts at.
+  critical: 100,
+  high: 30,
   medium: 10,
   low: 1,
 };
 export const MIN_PHEROMONE_STRENGTH = 0;
 export const MAX_PHEROMONE_STRENGTH = 1_000_000;
+
+// 1.6.5 (F-27 PHEROMONE, architect rework 09.10): the dynamics of the
+// *effective* pheromone strength (design §2.3). A task waiting unclaimed
+// gathers strength (`agingStep` per `agingStepHours`, capped at `agingCap`);
+// each failed run without a change to the task evaporates `failPenalty`; the
+// effective value never drops below 0. The owner tunes all four in the swarm
+// settings; the same formula runs in shared code (`effectivePheromone`) and
+// as a SQL twin in the queue ordering.
+export const DEFAULT_PHEROMONE_AGING_STEP_HOURS = 24;
+export const DEFAULT_PHEROMONE_AGING_STEP = 1;
+export const DEFAULT_PHEROMONE_AGING_CAP = 5;
+export const DEFAULT_PHEROMONE_FAIL_PENALTY = 10;
+
+export interface PheromoneDynamicsSettings {
+  agingStepHours: number;
+  agingStep: number;
+  agingCap: number;
+  failPenalty: number;
+}
+
+export const pheromoneDynamicsSchema = z
+  .object({
+    agingStepHours: z.number().int().min(0).max(24 * 365),
+    agingStep: z.number().int().min(0).max(10_000),
+    agingCap: z.number().int().min(0).max(100_000),
+    failPenalty: z.number().int().min(0).max(10_000),
+  })
+  .strict();
+
+export const DEFAULT_PHEROMONE_DYNAMICS: PheromoneDynamicsSettings = {
+  agingStepHours: DEFAULT_PHEROMONE_AGING_STEP_HOURS,
+  agingStep: DEFAULT_PHEROMONE_AGING_STEP,
+  agingCap: DEFAULT_PHEROMONE_AGING_CAP,
+  failPenalty: DEFAULT_PHEROMONE_FAIL_PENALTY,
+};
+
+/**
+ * The effective pheromone strength of a task at `now` (design §2.3):
+ *   eff = strength
+ *       + min(agingCap, floor(hoursWaiting / agingStepHours) × agingStep)
+ *       − failPenalty × failedRunsSinceLastChange
+ * never below 0. `queuedAt` is when the wait started (the queue feeds the
+ * task's entry into the queue there); `failedRunsSinceLastChange` is the
+ * count of runs that ended failed/blocked/needs_followup/timed_out with no
+ * task change after them (the SQL twin computes it from heartbeat_runs ⋈
+ * issues.updated_at/last_activity_at). Pure and deterministic — the queue,
+ * the run-priority scorer and the card hint must agree on it.
+ */
+export interface EffectivePheromoneInput {
+  pheromoneStrength?: number | null;
+  queuedAt?: Date | number | string | null;
+  failedRunsSinceLastChange?: number | null;
+}
+
+export function effectivePheromone(
+  input: EffectivePheromoneInput,
+  dynamics: PheromoneDynamicsSettings = DEFAULT_PHEROMONE_DYNAMICS,
+  now: Date | number = new Date(),
+): number {
+  const strength =
+    typeof input.pheromoneStrength === "number" && Number.isFinite(input.pheromoneStrength)
+      ? input.pheromoneStrength
+      : 0;
+  const queuedAt = queuedAtMsValue(input.queuedAt);
+  const nowMs = now instanceof Date ? now.getTime() : now;
+  let agingBonus = 0;
+  if (dynamics.agingStepHours > 0 && dynamics.agingStep > 0 && queuedAt > 0) {
+    const hoursWaiting = Math.max(0, nowMs - queuedAt) / 3_600_000;
+    agingBonus = Math.min(
+      dynamics.agingCap,
+      Math.floor(hoursWaiting / dynamics.agingStepHours) * dynamics.agingStep,
+    );
+  }
+  const failedRuns =
+    typeof input.failedRunsSinceLastChange === "number" &&
+    Number.isFinite(input.failedRunsSinceLastChange)
+      ? Math.max(0, Math.floor(input.failedRunsSinceLastChange))
+      : 0;
+  const penalty = dynamics.failPenalty * failedRuns;
+  return Math.max(0, strength + agingBonus - penalty);
+}
 
 /** How long one lease lives without a heartbeat. */
 export const DEFAULT_SWARM_LEASE_TTL_SEC = 900;
@@ -220,16 +303,26 @@ export interface SwarmQueueCandidate {
    * before the column landed (or callers that do not carry it yet) read as 0.
    */
   pheromoneStrength?: number | null;
+  /**
+   * 1.6.5 (F-27 rework 09.10): runs that ended failed/blocked/needs_followup/
+   * timed_out with no task change after them — the evaporation count of the
+   * effective strength (design §2.3). Fed by the SQL twin; absent reads as 0.
+   */
+  failedRunsSinceLastChange?: number | null;
   /** Tie-break: the older the task entered the queue, the earlier it ranks. */
   queuedAt: Date | number | string | null;
 }
 
-function queuedAtMs(value: SwarmQueueCandidate["queuedAt"]): number {
+function queuedAtMsValue(value: Date | number | string | null | undefined): number {
   if (value === null || value === undefined) return 0;
   if (value instanceof Date) return value.getTime();
   if (typeof value === "number") return value;
   const parsed = Date.parse(value);
   return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function queuedAtMs(value: SwarmQueueCandidate["queuedAt"]): number {
+  return queuedAtMsValue(value);
 }
 
 /**
@@ -252,16 +345,19 @@ function queuedAtMs(value: SwarmQueueCandidate["queuedAt"]): number {
  */
 export function orderSwarmQueueCandidates<T extends SwarmQueueCandidate>(
   candidates: readonly T[],
-  options?: { p0Preemption?: boolean },
+  options?: { p0Preemption?: boolean; dynamics?: PheromoneDynamicsSettings; now?: Date | number },
 ): T[] {
   const p0Preemption = options?.p0Preemption ?? true;
+  const dynamics = options?.dynamics ?? DEFAULT_PHEROMONE_DYNAMICS;
+  const now = options?.now ?? new Date();
   return [...candidates].sort((left, right) => {
     if (p0Preemption) {
       const leftRank = swarmPriorityRank(left.priority);
       const rightRank = swarmPriorityRank(right.priority);
       if (leftRank !== rightRank) return leftRank - rightRank;
     }
-    const strengthDelta = pheromoneStrengthOf(right) - pheromoneStrengthOf(left);
+    const strengthDelta =
+      effectivePheromone(right, dynamics, now) - effectivePheromone(left, dynamics, now);
     if (strengthDelta !== 0) return strengthDelta;
     return queuedAtMs(left.queuedAt) - queuedAtMs(right.queuedAt);
   });
@@ -353,6 +449,10 @@ export const swarmClaimSettingsSchema = z
     sweepIntervalSec: sweepIntervalSchema,
     p0Preemption: z.boolean().default(DEFAULT_SWARM_CLAIM_P0_PREEMPTION),
     pheromoneDefaults: pheromoneDefaultsSchema.default(DEFAULT_PHEROMONE_STRENGTH_BY_PRIORITY),
+    // 1.6.5 (F-27 rework 09.10): the aging/evaporation knobs of
+    // `effectivePheromone` (design §2.3). Stored inside swarmClaim so the
+    // existing settings screen and PATCH path carry them without a new row.
+    pheromoneDynamics: pheromoneDynamicsSchema.default(DEFAULT_PHEROMONE_DYNAMICS),
   })
   .strict();
 
@@ -367,6 +467,7 @@ export const patchSwarmClaimSettingsSchema = z
     sweepIntervalSec: sweepIntervalSchema.optional(),
     p0Preemption: z.boolean().optional(),
     pheromoneDefaults: pheromoneDefaultsSchema.optional(),
+    pheromoneDynamics: pheromoneDynamicsSchema.optional(),
   })
   .strict();
 
@@ -422,6 +523,7 @@ export function readSwarmClaimSettingsFromEnv(
     enabledRoles: readSwarmClaimListEnv(env[SWARM_CLAIM_ENABLED_ROLES_ENV]),
     enabledCompanyIds: readSwarmClaimListEnv(env[SWARM_CLAIM_ENABLED_COMPANY_IDS_ENV]),
     pheromoneDefaults: { ...DEFAULT_PHEROMONE_STRENGTH_BY_PRIORITY },
+    pheromoneDynamics: { ...DEFAULT_PHEROMONE_DYNAMICS },
   };
 }
 
@@ -609,6 +711,8 @@ export function mergeSwarmClaimSettings(
     p0Preemption: patch.p0Preemption === undefined ? base.p0Preemption : patch.p0Preemption,
     pheromoneDefaults:
       patch.pheromoneDefaults === undefined ? base.pheromoneDefaults : patch.pheromoneDefaults,
+    pheromoneDynamics:
+      patch.pheromoneDynamics === undefined ? base.pheromoneDynamics : patch.pheromoneDynamics,
   };
 }
 

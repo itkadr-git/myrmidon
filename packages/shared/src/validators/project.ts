@@ -114,6 +114,12 @@ const projectFields = {
   env: envConfigSchema.optional().nullable(),
   executionWorkspacePolicy: projectExecutionWorkspacePolicySchema.optional().nullable(),
   archivedAt: z.string().datetime().optional().nullable(),
+  /**
+   * 1.6.5 (F-27 rework 09.10, design §2.1): the caste the project's tasks
+   * fall back to when a task names none — a key of the company's caste
+   * directory; NULL inherits the company default.
+   */
+  defaultCasteKey: z.string().trim().min(1).max(120).optional().nullable(),
 };
 
 export const createProjectSchema = z.object({

@@ -46,7 +46,9 @@ const settings: SwarmClaimSettings = {
   sweepIntervalSec: DEFAULT_SWARM_CLAIM_SWEEP_INTERVAL_SEC,
   p0Preemption: true,
   // 1.6.5 (F-27 PHEROMONE): the default mapping; queue order is P0 → strength ↓ → age.
-  pheromoneDefaults: { critical: 1000, high: 100, medium: 10, low: 1 },
+  pheromoneDefaults: { critical: 100, high: 30, medium: 10, low: 1 },
+  // 1.6.5 (F-27 rework 09.10): the effective-strength dynamics (design §2.3).
+  pheromoneDynamics: { agingStepHours: 24, agingStep: 1, agingCap: 5, failPenalty: 10 },
 };
 
 function candidate(overrides: Partial<SwarmQueueCandidate> = {}): SwarmQueueCandidate {
@@ -158,6 +160,78 @@ describe("myrmidon(1.6-SWARM) queue order", () => {
     });
     const queue = selectQueueForAgent({ candidates: [p0, strong], liveClaims: [], now: NOW });
     expect(queue[0]?.issueId).toBe("a1111111-1111-4111-8111-111111111111");
+  });
+
+  // 1.6.5 (F-27 rework 09.10, design §2.3): the acceptance criteria of the
+  // effective strength — aging overtakes a fresher task, the failure penalty
+  // drops a stale one, and the P0 band still wins.
+  it("three days of aging overtakes a fresh task with strength +2", () => {
+    const fresh = candidate({
+      issueId: "a1111111-1111-4111-8111-111111111111",
+      identifier: "ISSUE-3",
+      pheromoneStrength: 12,
+      queuedAt: NOW, // just queued
+    });
+    const old = candidate({
+      issueId: "b2222222-2222-4222-8222-222222222222",
+      identifier: "ISSUE-2",
+      pheromoneStrength: 10,
+      queuedAt: new Date(NOW.getTime() - 72 * 3_600_000), // 3 days waiting
+    });
+    const queue = selectQueueForAgent({
+      candidates: [fresh, old],
+      liveClaims: [],
+      now: NOW,
+    });
+    expect(queue[0]?.issueId).toBe("b2222222-2222-4222-8222-222222222222");
+  });
+
+  it("two failed runs without a change drop the task below an equal one", () => {
+    const failed = candidate({
+      issueId: "a1111111-1111-4111-8111-111111111111",
+      identifier: "ISSUE-3",
+      pheromoneStrength: 10,
+      failedRunsSinceLastChange: 2,
+      queuedAt: NOW,
+    });
+    const clean = candidate({
+      issueId: "b2222222-2222-4222-8222-222222222222",
+      identifier: "ISSUE-2",
+      pheromoneStrength: 10,
+      failedRunsSinceLastChange: 0,
+      queuedAt: NOW,
+    });
+    const queue = selectQueueForAgent({
+      candidates: [failed, clean],
+      liveClaims: [],
+      now: NOW,
+    });
+    expect(queue[0]?.issueId).toBe("b2222222-2222-4222-8222-222222222222");
+  });
+
+  it("updating the task clears the failure penalty: the failed run counter resets", () => {
+    const failed = candidate({
+      issueId: "a1111111-1111-4111-8111-111111111111",
+      identifier: "ISSUE-3",
+      pheromoneStrength: 10,
+      failedRunsSinceLastChange: 2,
+      queuedAt: NOW,
+    });
+    const clean = candidate({
+      issueId: "b2222222-2222-4222-8222-222222222222",
+      identifier: "ISSUE-2",
+      pheromoneStrength: 10,
+      queuedAt: NOW,
+    });
+    expect(
+      selectQueueForAgent({ candidates: [failed, clean], liveClaims: [], now: NOW })[0]?.issueId,
+    ).toBe("b2222222-2222-4222-8222-222222222222");
+    // The owner edits the task — the SQL twin reads failed runs after the
+    // change, so the penalty no longer counts and the two tie by age.
+    const updated = { ...failed, failedRunsSinceLastChange: 0 };
+    expect(
+      selectQueueForAgent({ candidates: [updated, clean], liveClaims: [], now: NOW })[0]?.issueId,
+    ).toBe("a1111111-1111-4111-8111-111111111111"); // tie → older queuedAt wins
   });
 });
 

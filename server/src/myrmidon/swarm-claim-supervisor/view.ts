@@ -19,7 +19,7 @@ import type { Db } from "@paperclipai/db";
 import { readSwarmSupervisorSettings } from "./settings.js";
 // myrmidon(1.6.1 SWARM-SETTINGS-UI): the same resolver the core uses, so the
 // supervisor's "where the value came from" and the settings page agree.
-import { resolveSwarmClaimSettings } from "@paperclipai/shared";
+import { resolveSwarmClaimSettings, effectivePheromone, type PheromoneDynamicsSettings } from "@paperclipai/shared";
 
 /** Wake reason part A assigns to queue-driven wakes; informational in the view. */
 export const SWARM_CLAIM_QUEUE_WAKE_REASON = "swarm_claim_queue";
@@ -31,6 +31,12 @@ export interface SwarmQueueCandidateRow {
   priority: string;
   /** 1.6.5 (F-27): the pheromone strength the queue orders by. */
   pheromoneStrength: number;
+  /**
+   * 1.6.5 (F-27 rework 09.10): failed runs with no task change after them —
+   * the effective strength the view ranks by subtracts the penalty per run
+   * (design §2.3, SQL twin in swarm-claim/effective-pheromone.ts).
+   */
+  failedRunsSinceLastChange?: number;
   projectId: string | null;
   createdAt: string;
   blockedTransitionAt: string | null;
@@ -125,6 +131,11 @@ interface QueueRow {
   priority: string;
   /** 1.6.5 (F-27): the pheromone strength; missing column reads as 0. */
   pheromone_strength?: number | null;
+  /**
+   * 1.6.5 (F-27 rework 09.10): the SQL twin's failed-runs count (design
+   * §2.3); missing reads as 0 so the pure ordering stays testable.
+   */
+  failed_runs_since_last_change?: number | null;
   project_id: string | null;
   created_at: Date | string;
   blocked_transition_at: Date | string | null;
@@ -158,6 +169,13 @@ export interface SwarmSupervisorReadPort {
    * must use the same set, or `freeAgentsWithQueue` never converges to 0.
    */
   pilotRoles(): Promise<string[]>;
+  /**
+   * 1.6.5 (F-27 rework 09.10): the resolved pheromone dynamics (aging +
+   * evaporation knobs, design §2.3) the queue ranks by. The supervisor's
+   * "top of queue" must be the task the next claim takes, and that ranking
+   * uses the effective strength.
+   */
+  pheromoneDynamics?(): Promise<PheromoneDynamicsSettings>;
   /** Claim rows of the company (live + released history rows included). */
   listClaimRows(companyId: string): Promise<ClaimRow[]>;
   /** Queued candidates per issue id (todo, ready, not claimed right now). */
@@ -194,11 +212,24 @@ function toIso(value: Date | string | null): string | null {
  */
 export function orderQueueCandidates(
   rows: SwarmQueueCandidateRow[],
+  options?: { dynamics?: PheromoneDynamicsSettings; now?: Date },
 ): SwarmQueueCandidateRow[] {
+  const now = options?.now ?? new Date();
+  const dynamics = options?.dynamics;
+  const eff = (row: SwarmQueueCandidateRow): number =>
+    effectivePheromone(
+      {
+        pheromoneStrength: row.pheromoneStrength,
+        queuedAt: row.createdAt,
+        failedRunsSinceLastChange: row.failedRunsSinceLastChange,
+      },
+      dynamics,
+      now,
+    );
   return [...rows].sort((a, b) => {
     const byPriority = priorityRank(a.priority) - priorityRank(b.priority);
     if (byPriority !== 0) return byPriority;
-    const byStrength = (b.pheromoneStrength ?? 0) - (a.pheromoneStrength ?? 0);
+    const byStrength = eff(b) - eff(a);
     if (byStrength !== 0) return byStrength;
     const aBlocked = a.blockedTransitionAt ? Date.parse(a.blockedTransitionAt) : Number.POSITIVE_INFINITY;
     const bBlocked = b.blockedTransitionAt ? Date.parse(b.blockedTransitionAt) : Number.POSITIVE_INFINITY;
@@ -243,6 +274,10 @@ export function swarmSupervisorView(
         port.liveRunAgentIds(companyId),
         port.pilotRoles(),
       ]);
+    // 1.6.5 (F-27 rework 09.10): resolved outside the tuple so an absent port
+    // method (a test double) reads as the shared defaults, not a union the
+    // destructure would smear over the other slots' types.
+    const pheromoneDynamics = port.pheromoneDynamics ? await port.pheromoneDynamics() : undefined;
     // myrmidon(1.6.1 SWARM-IDLE-WAKE): the supervisor shows the same role set
     // the idle pass wakes. A non-pilot role never claims (the claim gate
     // answers `disabled`), so counting its free agents would keep the
@@ -284,6 +319,7 @@ export function swarmSupervisorView(
       title: row.title,
       priority: row.priority,
       pheromoneStrength: row.pheromone_strength ?? 0,
+      failedRunsSinceLastChange: row.failed_runs_since_last_change ?? 0,
       projectId: row.project_id,
       createdAt: toIso(row.created_at) ?? new Date(0).toISOString(),
       blockedTransitionAt: toIso(row.blocked_transition_at),
@@ -356,7 +392,10 @@ export function swarmSupervisorView(
     const roles: SwarmRoleOverview[] = [];
     for (const [role, queue] of queueByRole) {
       if (pilotRoleSet.size > 0 && !pilotRoleSet.has(role)) continue;
-      const ordered = orderQueueCandidates(queue).slice(0, settings.taskMax);
+      const ordered = orderQueueCandidates(queue, {
+        dynamics: pheromoneDynamics,
+        now: now(),
+      }).slice(0, settings.taskMax);
       const claims = leaseRowsByRole.get(role) ?? [];
       const idleAgents: SwarmIdleAgentRow[] = agents
         .filter((agent) => agent.role === role)
@@ -479,11 +518,23 @@ export function createSwarmSupervisorDbPort(db: Db, env: NodeJS.ProcessEnv = pro
     },
     async listQueueRows(companyId) {
       const rows = await db.execute(sql`
-        SELECT id AS issue_id, identifier, title, priority, pheromone_strength, project_id, created_at, blocked_transition_at, assignee_agent_id
-        FROM issues
-        WHERE company_id = ${companyId}
-          AND status = 'todo'
-        ORDER BY created_at ASC
+        SELECT i.id AS issue_id, i.identifier, i.title, i.priority, i.pheromone_strength, i.project_id, i.created_at, i.blocked_transition_at, i.assignee_agent_id,
+          coalesce((
+            SELECT count(*)::int
+            FROM heartbeat_runs hr
+            WHERE hr.company_id = i.company_id
+              AND (
+                hr.native_issue_id = i.id
+                OR (hr.native_issue_id IS NULL AND hr.context_snapshot ->> 'issueId' = i.id::text)
+              )
+              AND hr.status IN ('failed', 'blocked', 'needs_followup', 'timed_out')
+              AND hr.finished_at IS NOT NULL
+              AND hr.finished_at > greatest(i.updated_at, i.last_activity_at)
+          ), 0) AS failed_runs_since_last_change
+        FROM issues i
+        WHERE i.company_id = ${companyId}
+          AND i.status = 'todo'
+        ORDER BY i.created_at ASC
       `);
       return (Array.isArray(rows) ? rows : []) as unknown as QueueRow[];
     },
@@ -504,6 +555,13 @@ export function createSwarmSupervisorDbPort(db: Db, env: NodeJS.ProcessEnv = pro
       `);
       const ids = (Array.isArray(rows) ? rows : []) as unknown as { agent_id: string }[];
       return new Set(ids.map((row) => row.agent_id));
+    },
+    // 1.6.5 (F-27 rework 09.10): the queue ranks by the effective strength;
+    // the knobs come from the same resolved swarm settings the claim path
+    // uses, so the supervisor's top is the task the next claim takes.
+    async pheromoneDynamics() {
+      const resolved = await readResolvedSwarmSettings(db, env);
+      return resolved.settings.pheromoneDynamics;
     },
   };
 }
@@ -554,6 +612,8 @@ interface ResolvedSwarmRow {
     enabledRoles: string[];
     leaseTtlSec: number;
     maxActiveTasks: number | null;
+    /** 1.6.5 (F-27 rework 09.10): the effective-strength dynamics (design §2.3). */
+    pheromoneDynamics: PheromoneDynamicsSettings;
   };
   sources: Record<string, string>;
 }

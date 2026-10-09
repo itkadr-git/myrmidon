@@ -78,6 +78,13 @@ export const DEFAULT_RUN_PRIORITY_ISSUE_WEIGHTS: Record<string, number> = {
 export const DEFAULT_RUN_PRIORITY_RELEASE_BONUS = 20;
 export const DEFAULT_RUN_PRIORITY_AGING_STEP_MINUTES = 10;
 export const DEFAULT_RUN_PRIORITY_AGING_STEP_WEIGHT = 5;
+/**
+ * 1.6.5 (F-27 rework 09.10, design §4): one effective-pheromone point of the
+ * run's issue scores this much (runPriority.pheromoneWeight). The swarm queue
+ * picks the task first; inside the run queue the pheromone then moves the run
+ * within its role band without lifting it past a heavier role.
+ */
+export const DEFAULT_RUN_PRIORITY_PHEROMONE_WEIGHT = 1;
 export const DEFAULT_RUN_PRIORITY_AGING_MAX_BONUS = 50;
 export const DEFAULT_RUN_PRIORITY_STARVATION_LIMIT_MINUTES = 90;
 export const DEFAULT_RUN_PRIORITY_STARVATION_TOP_WEIGHT = 10_000;
@@ -101,6 +108,13 @@ export interface RunPrioritySettings {
   /** Waiting this long (minutes) grants the top weight outright. */
   starvationLimitMinutes: number;
   starvationTopWeight: number;
+  /**
+   * 1.6.5 (F-27 rework 09.10, design §4): the weight of one effective-pheromone
+   * point in the run score (runPriority.pheromoneWeight, default 1). The swarm
+   * queue picks the task; this term lets its pheromone also move the run of
+   * that task inside the run queue's role band.
+   */
+  pheromoneWeight: number;
 }
 
 export const runPrioritySettingsSchema = z
@@ -116,6 +130,8 @@ export const runPrioritySettingsSchema = z
     agingMaxBonus: z.number().int().min(0).max(10_000),
     starvationLimitMinutes: z.number().int().min(0).max(7 * 24 * 60),
     starvationTopWeight: z.number().int().min(0).max(1_000_000),
+    // 1.6.5 (F-27 rework 09.10): the pheromone term (design §4); 0 disables it.
+    pheromoneWeight: z.number().int().min(0).max(1000),
   })
   .strict();
 
@@ -137,6 +153,7 @@ export const storedRunPrioritySchema = z
     agingMaxBonus: z.number().int().min(0).max(10_000).optional(),
     starvationLimitMinutes: z.number().int().min(0).max(7 * 24 * 60).optional(),
     starvationTopWeight: z.number().int().min(0).max(1_000_000).optional(),
+    pheromoneWeight: z.number().int().min(0).max(1000).optional(),
   })
   .strict();
 
@@ -209,6 +226,7 @@ export function readRunPriorityFromEnv(
       parseEnvNumber(env[RUN_PRIORITY_ENV_KEYS.starvationLimitMinutes]) ?? DEFAULT_RUN_PRIORITY_STARVATION_LIMIT_MINUTES,
     starvationTopWeight:
       parseEnvNumber(env[RUN_PRIORITY_ENV_KEYS.starvationTopWeight]) ?? DEFAULT_RUN_PRIORITY_STARVATION_TOP_WEIGHT,
+    pheromoneWeight: DEFAULT_RUN_PRIORITY_PHEROMONE_WEIGHT,
   };
 }
 
@@ -238,6 +256,7 @@ export function normalizeRunPrioritySettings(
     agingMaxBonus: row.agingMaxBonus ?? fallback.agingMaxBonus,
     starvationLimitMinutes: row.starvationLimitMinutes ?? fallback.starvationLimitMinutes,
     starvationTopWeight: row.starvationTopWeight ?? fallback.starvationTopWeight,
+    pheromoneWeight: row.pheromoneWeight ?? fallback.pheromoneWeight,
   };
 }
 
@@ -265,6 +284,7 @@ export function mergeRunPrioritySettings(
   if (patch.agingMaxBonus !== undefined) next.agingMaxBonus = patch.agingMaxBonus;
   if (patch.starvationLimitMinutes !== undefined) next.starvationLimitMinutes = patch.starvationLimitMinutes;
   if (patch.starvationTopWeight !== undefined) next.starvationTopWeight = patch.starvationTopWeight;
+  if (patch.pheromoneWeight !== undefined) next.pheromoneWeight = patch.pheromoneWeight;
   return next;
 }
 
@@ -299,6 +319,11 @@ export interface RunPriorityRunInput {
   releaseMatched: boolean;
   /** `heartbeatRuns.createdAt` (epoch ms) — the wait is measured from here. */
   createdAtMs: number;
+  /**
+   * 1.6.5 (F-27 rework 09.10): the issue's effective pheromone strength at
+   * the scoring moment (design §2.3), fed by the caller; absent reads as 0.
+   */
+  effectivePheromone?: number;
 }
 
 const MINUTE_MS = 60_000;
@@ -364,9 +389,13 @@ export function runPriorityWeight(
       DEFAULT_RUN_PRIORITY_ISSUE_WEIGHTS.none ??
       0;
   }
+  // 1.6.5 (F-27 rework 09.10, design §4): the pheromone term — the effective
+  // strength the swarm queue already ranks the issue by (the caller feeds it;
+  // absent reads as 0) times the configured weight, inside the role band.
+  const pheromoneBonus = Math.max(0, Math.floor(input.effectivePheromone ?? 0)) * settings.pheromoneWeight;
   const waitedMs = Math.max(0, nowMs - input.createdAtMs);
   // The role band plus its refinements: the sum never reaches the next band.
-  let weight = roleWeight * band + issueWeight;
+  let weight = roleWeight * band + issueWeight + pheromoneBonus;
   if (input.releaseMatched) weight += settings.releaseBonus + lane;
   if (settings.starvationLimitMinutes > 0 && waitedMs >= settings.starvationLimitMinutes * MINUTE_MS) {
     // The escape keeps its name: past the limit the run leaves the role bands

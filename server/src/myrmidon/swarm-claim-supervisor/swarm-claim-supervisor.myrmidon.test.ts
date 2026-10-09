@@ -171,8 +171,27 @@ describe("orderQueueCandidates", () => {
       { issueId: "i-2", identifier: null, title: "b", priority: "critical", projectId: null, createdAt: "2026-10-01T12:00:00.000Z", blockedTransitionAt: null, pheromoneStrength: 1000 },
       { issueId: "i-3", identifier: null, title: "c", priority: "critical", projectId: null, createdAt: "2026-10-01T11:00:00.000Z", blockedTransitionAt: null, pheromoneStrength: 1000 },
     ];
-    const ordered = orderQueueCandidates(rows).map((row) => row.issueId);
+    // 1.6.5 (F-27 rework 09.10): pinned `now` keeps the aging bonus out of
+    // the assertion — the raw-strength ordering is what is pinned here.
+    const ordered = orderQueueCandidates(rows, { now: new Date("2026-10-01T12:00:00.000Z") }).map((row) => row.issueId);
     expect(ordered).toEqual(["i-3", "i-2", "i-1"]);
+  });
+
+  // 1.6.5 (F-27 rework 09.10, design §2.3): the supervisor's queue ranks by
+  // the effective strength — aging moves a waiting task up, the failure
+  // penalty moves a stale one down.
+  it("ranks by the effective strength: aging overtakes, the failure penalty drops", () => {
+    const now = new Date("2026-10-05T12:00:00.000Z");
+    const rows = [
+      // Fresh and stronger, but waiting 0 days.
+      { issueId: "fresh", identifier: null, title: "fresh", priority: "medium", projectId: null, createdAt: "2026-10-05T11:00:00.000Z", blockedTransitionAt: null, pheromoneStrength: 12 },
+      // Weaker but waiting 3 days → +3 aging → 13 > 12.
+      { issueId: "old", identifier: null, title: "old", priority: "medium", projectId: null, createdAt: "2026-10-02T11:00:00.000Z", blockedTransitionAt: null, pheromoneStrength: 10 },
+      // Same strength as the fresh task but two failed runs → 12 − 20 → 0.
+      { issueId: "failed", identifier: null, title: "failed", priority: "medium", projectId: null, createdAt: "2026-10-05T11:00:00.000Z", blockedTransitionAt: null, pheromoneStrength: 12, failedRunsSinceLastChange: 2 },
+    ];
+    const ordered = orderQueueCandidates(rows, { now }).map((row) => row.issueId);
+    expect(ordered).toEqual(["old", "fresh", "failed"]);
   });
 });
 

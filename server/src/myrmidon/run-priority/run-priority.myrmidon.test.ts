@@ -429,4 +429,25 @@ describe("live settings without a restart (state)", () => {
     // an empty row means "env"
     expect(resolveRunPriority({}, env).source).toBe("env");
   });
+
+  it("the pheromone term moves a run inside its role band (1.6.5 F-27 rework)", () => {
+    const prio = settings();
+    const base = {
+      role: "engineer",
+      hasIssue: true,
+      issuePriority: "medium",
+      releaseMatched: false,
+      createdAtMs: NOW,
+    };
+    const unscented = runPriorityWeight({ ...base, effectivePheromone: 0 }, prio, NOW);
+    const scented = runPriorityWeight({ ...base, effectivePheromone: 40 }, prio, NOW);
+    // Default pheromoneWeight = 1: every effective-pheromone point is one point.
+    expect(scented - unscented).toBe(40);
+    // Switching the term off collapses the difference.
+    const off = { ...prio, pheromoneWeight: 0 };
+    expect(
+      runPriorityWeight({ ...base, effectivePheromone: 40 }, off, NOW) -
+        runPriorityWeight({ ...base, effectivePheromone: 0 }, off, NOW),
+    ).toBe(0);
+  });
 });

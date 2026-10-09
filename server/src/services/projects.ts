@@ -29,6 +29,7 @@ import {
   type PluginManagedProjectResolution,
 } from "@paperclipai/shared";
 import { unprocessable } from "../errors.js";
+import { createCasteStore } from "../myrmidon/castes/store.js";
 import { listCurrentRuntimeServicesForProjectWorkspaces } from "./workspace-runtime-read-model.js";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { mergeProjectWorkspaceRuntimeConfig, readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
@@ -873,6 +874,16 @@ export function projectService(db: Db) {
       if (!existingProject) return null;
       if (ids && ids.length > 0) {
         await assertGoalsBelongToCompany(db, existingProject.companyId, ids);
+      }
+      // 1.6.5 (F-27 rework 09.10, design §2.1): the nest's default caste must
+      // exist in the company's directory; null clears to the company default.
+      if (projectData.defaultCasteKey != null) {
+        const caste = await createCasteStore({ db }).findCaste(existingProject.companyId, projectData.defaultCasteKey);
+        if (!caste) {
+          throw unprocessable(`caste "${projectData.defaultCasteKey}" does not exist in this company`, {
+            code: "project_caste_unknown",
+          });
+        }
       }
 
       if (projectData.name !== undefined) {
