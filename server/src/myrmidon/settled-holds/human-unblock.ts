@@ -36,13 +36,38 @@ export const HUMAN_UNBLOCK_NOTE =
 export const REASSIGN_UNBLOCK_NOTE =
   "Cleared on reassignment: the replay hold belongs to the previous executor's run.";
 
-/** Statuses a reassigned task can be handed in: the ones an executor works. */
-const ASSIGNED_WORKABLE_STATUSES = ["todo", "in_progress", "in_review"] as const;
-
 interface IssueSide {
   status: string;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
+}
+
+/**
+ * Whether this PATCH changes who works the issue. The settled replay hold was
+ * recorded against the *previous* executor's stopped run, so an assignee change
+ * by ANY actor (board person, an agent PATCH, a workflow transition) lifts it —
+ * unlike the `blocked`-out unblock, which is a human decision only.
+ */
+export function isAssigneeChangePatch(input: {
+  existing: IssueSide;
+  assigneeAgentIdPatch: string | null | undefined;
+  assigneeUserIdPatch: string | null | undefined;
+}): boolean {
+  const nextAgent =
+    input.assigneeAgentIdPatch === undefined
+      ? input.existing.assigneeAgentId
+      : input.assigneeAgentIdPatch;
+  const nextUser =
+    input.assigneeUserIdPatch === undefined
+      ? input.existing.assigneeUserId
+      : input.assigneeUserIdPatch;
+  if (nextAgent === input.existing.assigneeAgentId && nextUser === input.existing.assigneeUserId) {
+    return false;
+  }
+  // Only a hand-off to another agent-executor matters: a hold on a task
+  // reassigned to a human (or unassigned) is the board's to clear by assigning
+  // an executor first, exactly as in the OPE-6011 card population.
+  return Boolean(nextAgent);
 }
 
 interface UnblockActor {
@@ -143,6 +168,8 @@ export async function clearReplayHoldsOnHumanUnblock(input: {
   issueId: string;
   assigneeAgentId: string;
   actor: { actorType: "user" | "agent"; actorId: string };
+  /** Activity note on each cleared hold (defaults to the operator unblock). */
+  note?: string;
   postCommitActivityPublications?: ActivityPublication[];
 }): Promise<HumanUnblockResult> {
   const { tx, companyId, issueId } = input;
@@ -158,7 +185,7 @@ export async function clearReplayHoldsOnHumanUnblock(input: {
       companyId,
       action,
       actor: input.actor,
-      note: HUMAN_UNBLOCK_NOTE,
+      note: input.note ?? HUMAN_UNBLOCK_NOTE,
       postCommitActivityPublications: input.postCommitActivityPublications,
     });
     clearedActionIds.push(action.id);
@@ -191,7 +218,7 @@ type WakeupFn = (
     triggerDetail: "system";
     reason: string;
     payload: Record<string, unknown>;
-    requestedByActorType: "user";
+    requestedByActorType: "user" | "agent";
     requestedByActorId: string;
     contextSnapshot: Record<string, unknown>;
   },
@@ -205,7 +232,13 @@ type WakeupFn = (
  */
 export async function replanParkedWakesAfterUnblock(
   wakeup: WakeupFn,
-  input: { issueId: string; agentId: string; actorId: string; clearedActionIds: string[] },
+  input: {
+    issueId: string;
+    agentId: string;
+    actorId: string;
+    actorType?: "user" | "agent";
+    clearedActionIds: string[];
+  },
 ): Promise<void> {
   try {
     await wakeup(input.agentId, {
@@ -213,7 +246,7 @@ export async function replanParkedWakesAfterUnblock(
       triggerDetail: "system",
       reason: HUMAN_UNBLOCK_REPLAN_REASON,
       payload: { issueId: input.issueId, mutation: "update", clearedRecoveryActionIds: input.clearedActionIds },
-      requestedByActorType: "user",
+      requestedByActorType: input.actorType ?? "user",
       requestedByActorId: input.actorId,
       contextSnapshot: {
         issueId: input.issueId,

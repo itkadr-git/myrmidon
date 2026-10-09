@@ -11,10 +11,13 @@ import { supersedeExplicitWakeSettledHold } from "../myrmidon/settled-holds/supe
 // clears the issue's settled replay hold and re-plans its parked wakes.
 import {
   clearReplayHoldsOnHumanUnblock,
+  isAssigneeChangePatch,
   isHumanUnblock,
   issueHasSettledReplayHold,
   mayBeHumanUnblock,
   replanParkedWakesAfterUnblock,
+  HUMAN_UNBLOCK_NOTE,
+  REASSIGN_UNBLOCK_NOTE,
   type HumanUnblockResult,
 } from "../myrmidon/settled-holds/human-unblock.js";
 import { extractIssueReferenceIdentifiers, requiresExecutionReconciliation, EXECUTION_RECONCILIATION_CAUSES } from "@paperclipai/shared";
@@ -13868,16 +13871,32 @@ export function issueRoutes(
       // myrmidon(HOLD-READY): a possible board unblock of an issue that has
       // a settled replay hold runs the update in a transaction, so the hold
       // is cleared atomically with it.
+      // myrmidon(REPLAY-BLOCK-TRIAGE): the same for an assignee change by ANY
+      // actor — the hold belongs to the previous executor's stopped run, so
+      // the new executor must not inherit it (the OPE-6329 lock-in).
+      const assigneeChangeRequested =
+        normalizedAssigneeAgentId !== undefined ||
+        req.body.assigneeUserId !== undefined;
+      const reassignHoldClearPossible =
+        assigneeChangeRequested &&
+        isAssigneeChangePatch({
+          existing,
+          assigneeAgentIdPatch: normalizedAssigneeAgentId,
+          assigneeUserIdPatch:
+            req.body.assigneeUserId === undefined
+              ? undefined
+              : (req.body.assigneeUserId as string | null),
+        }) &&
+        (await issueHasSettledReplayHold(db, existing.companyId, existing.id));
       const humanUnblockPossible =
-        mayBeHumanUnblock({
+        reassignHoldClearPossible ||
+        (mayBeHumanUnblock({
           requestActorType: req.actor.type,
           runId: actor.runId,
           existingStatus: existing.status,
-          assigneeChangeRequested:
-            normalizedAssigneeAgentId !== undefined ||
-            req.body.assigneeUserId !== undefined,
+          assigneeChangeRequested,
         }) &&
-        (await issueHasSettledReplayHold(db, existing.companyId, existing.id));
+        (await issueHasSettledReplayHold(db, existing.companyId, existing.id)));
       let humanUnblock: HumanUnblockResult | null = null;
       const updateIssue = (tx?: Parameters<typeof svc.update>[2]) => {
         if (tx) {
@@ -14036,24 +14055,29 @@ export function issueRoutes(
             if (!updated) return null;
             // myrmidon(HOLD-READY): an explicit human unblock is an operator
             // resolve of the settled "do not replay" hold.
-            if (
-              humanUnblockPossible &&
-              updated.assigneeAgentId &&
-              isHumanUnblock({
+            // myrmidon(REPLAY-BLOCK-TRIAGE): so is any change of executor —
+            // the hold belongs to the previous executor's run.
+            if (updated.assigneeAgentId && humanUnblockPossible) {
+              const humanUnblockMatch = isHumanUnblock({
                 requestActorType: req.actor.type,
                 runId: actor.runId,
                 before: existing,
                 after: updated,
-              })
-            ) {
-              humanUnblock = await clearReplayHoldsOnHumanUnblock({
-                tx: tx as unknown as Db,
-                companyId: updated.companyId,
-                issueId: updated.id,
-                assigneeAgentId: updated.assigneeAgentId,
-                actor: { actorType: actor.actorType, actorId: actor.actorId },
-                postCommitActivityPublications,
               });
+              const reassignMatch =
+                updated.assigneeAgentId !== existing.assigneeAgentId ||
+                updated.assigneeUserId !== existing.assigneeUserId;
+              if (humanUnblockMatch || reassignMatch) {
+                humanUnblock = await clearReplayHoldsOnHumanUnblock({
+                  tx: tx as unknown as Db,
+                  companyId: updated.companyId,
+                  issueId: updated.id,
+                  assigneeAgentId: updated.assigneeAgentId,
+                  actor: { actorType: actor.actorType, actorId: actor.actorId },
+                  note: humanUnblockMatch ? HUMAN_UNBLOCK_NOTE : REASSIGN_UNBLOCK_NOTE,
+                  postCommitActivityPublications,
+                });
+              }
             }
             if (commentAttachmentIds?.length) {
               // Reassignment, comment creation and upload binding commit together.
@@ -14150,6 +14174,7 @@ export function issueRoutes(
           issueId: issue.id,
           agentId: committedUnblock.replanAgentId,
           actorId: actor.actorId,
+          actorType: actor.actorType === "agent" ? "agent" : "user",
           clearedActionIds: committedUnblock.clearedActionIds,
         });
       }
