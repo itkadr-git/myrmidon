@@ -76,7 +76,9 @@ function dispatch(label: string, id: string, run: (s: SwarmEventSink) => Promise
     // whoever is installed when the event is delivered.
     const live = sink;
     if (!live) return;
-    void run(live).catch((err) => {
+    // `Promise.resolve().then` so a sink that throws before it returns a promise
+    // is caught here too, not raised out of the microtask as an unhandled error.
+    void Promise.resolve().then(() => run(live)).catch((err) => {
       logger.warn({ err, id }, `swarm matcher failed on ${label}`);
     });
   };
