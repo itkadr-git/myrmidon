@@ -25,7 +25,6 @@ import { agents, companies } from "@paperclipai/db";
 import {
   ATTENTION_SOURCE_KINDS,
   PROMPT_BUDGET_SETTINGS_KEY,
-  PROMPT_BUDGET_SIGNAL_NOTICE_TITLE,
   buildPromptBudgetRunStatus,
   defaultPromptBudgetSettings,
   normalizePromptBudgetSettings,
@@ -45,7 +44,7 @@ import {
   refreshPromptBudgetSignals,
   resetPromptBudgetSignals,
 } from "./signal.js";
-import { isPromptBudgetSignalNotice } from "./notice.js";
+import { PROMPT_BUDGET_SIGNAL_NOTICE_TITLE, isPromptBudgetSignalNotice } from "./notice.js";
 import { createPromptBudgetSweeper } from "./sweep.js";
 import { parsePromptBreakdown } from "../prompt-budget-advice/source.js";
 

@@ -163,28 +163,9 @@ export function buildPromptBudgetRunStatus(input: {
   };
 }
 
-/** The dedup key of a prompt-budget signal — one per agent per UTC day. */
+/** The dedup key of a prompt-budget signal comment — one per agent per window. */
 export function promptBudgetSignalKey(agentId: string, windowStart: Date): string {
   return `prompt-budget:${agentId}:${windowStart.toISOString().slice(0, 10)}`;
-}
-
-/**
- * myrmidon(1.6.5 PROMPT-BUDGET-SIGNAL): the title the removed signal comment
- * carried. Kept so the wake path and the queued-comment queue can recognise
- * the copies already written into agent tasks and stop counting them as new
- * messages for the agent.
- */
-export const PROMPT_BUDGET_SIGNAL_NOTICE_TITLE = "Prompt budget threshold crossed";
-
-/** The sentence every removed signal comment opened with (body fallback). */
-const PROMPT_BUDGET_SIGNAL_BODY_RE =
-  /last run used [\d.]+% of (?:its|the) prompt window/;
-
-/** True when a comment body is the removed prompt-budget signal notice. */
-export function isPromptBudgetSignalNoticeBody(
-  body: string | null | undefined,
-): boolean {
-  return typeof body === "string" && PROMPT_BUDGET_SIGNAL_BODY_RE.test(body);
 }
 
 /** The attention-feed dedup key of one agent's prompt-budget card. */

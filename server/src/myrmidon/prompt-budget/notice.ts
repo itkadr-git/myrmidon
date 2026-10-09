@@ -16,10 +16,23 @@
 // so the notice is recognised by its system presentation title with the body
 // sentence as the fallback for a row whose presentation was lost too.
 
-import {
-  PROMPT_BUDGET_SIGNAL_NOTICE_TITLE,
-  isPromptBudgetSignalNoticeBody,
-} from "@paperclipai/shared";
+/**
+ * The title the removed signal comment carried. The constants live here, not in
+ * packages/shared: only the server reads them, and a change in the shared
+ * package selects every server suite that imports it into the CI fast tier.
+ */
+export const PROMPT_BUDGET_SIGNAL_NOTICE_TITLE = "Prompt budget threshold crossed";
+
+/** The sentence every removed signal comment opened with (body fallback). */
+const PROMPT_BUDGET_SIGNAL_BODY_RE =
+  /last run used [\d.]+% of (?:its|the) prompt window/;
+
+/** True when a comment body is the removed prompt-budget signal notice. */
+export function isPromptBudgetSignalNoticeBody(
+  body: string | null | undefined,
+): boolean {
+  return typeof body === "string" && PROMPT_BUDGET_SIGNAL_BODY_RE.test(body);
+}
 
 /** The fields the notice test needs — a comment row, or a structural stand-in. */
 export interface PromptBudgetNoticeCandidate {
