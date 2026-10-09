@@ -57,7 +57,7 @@ describeEmbeddedPostgres("guarded CAS handoff on PATCH /api/issues/{id}", () => 
     db = createDb(tempDb.connectionString);
   }, 20_000);
 
-  afterEach(async () => {
+  async function runCleanupOnce() {
     // myrmidon(HANDOFF-CAS): FK order — heartbeat_runs reference
     // agent_wakeup_requests (wakeupRequestId), so runs and their events must
     // be cleared BEFORE the wakeup requests they point at.
@@ -71,6 +71,28 @@ describeEmbeddedPostgres("guarded CAS handoff on PATCH /api/issues/{id}", () => 
     await db.delete(agentRuntimeState);
     await db.delete(agents);
     await db.delete(companies);
+  }
+
+  afterEach(async () => {
+    // myrmidon(HANDOFF-CAS): route handlers enqueue wakeups fire-and-forget,
+    // so their inserts into agent_wakeup_requests can still be in flight when
+    // teardown starts. A concurrent FK share-lock on the seeded agents row
+    // deadlocks against `delete from agents` (40P01), and a late insert can
+    // also re-add a wakeup row after the table was cleared (23503 on agents).
+    // Give the pending enqueues a beat to settle, then retry the FK-ordered
+    // cleanup until the database is quiet.
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    let lastError: unknown = null;
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      try {
+        await runCleanupOnce();
+        return;
+      } catch (err) {
+        lastError = err;
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+    }
+    throw lastError;
   });
 
   afterAll(async () => {
