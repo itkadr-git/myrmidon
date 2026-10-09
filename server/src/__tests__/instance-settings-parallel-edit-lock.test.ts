@@ -96,8 +96,6 @@ const GENERAL_PATCHES: Array<{ field: string; patch: Record<string, unknown> }> 
     patch: {
       swarmClaim: {
         enabled: true,
-        enabledRoles: [],
-        enabledCompanyIds: [],
         leaseTtlSec: 600,
         maxActiveTasks: 5,
         sweepIntervalSec: 15,

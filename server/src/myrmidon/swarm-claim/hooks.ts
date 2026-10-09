@@ -53,8 +53,8 @@ export async function recordSwarmClaimOnCheckoutImpl(
 ): Promise<boolean> {
   const { settings } = await resolved(deps)();
   if (!settings.enabled) return false;
-  // 1.6.1 (SWARM-SETTINGS-UI): the checkout hook obeys the same pilot set the
-  // claim service does — an agent outside the pilot keeps vendor checkout
+  // 1.6.1 (SWARM-SETTINGS-UI → 1.6.5 SWARM-T4): the checkout hook obeys the same
+  // switch the claim service does — an agent outside the swarm keeps vendor checkout
   // behavior (no claim row, nothing to release).
   if (
     !isSwarmClaimEnabledFor(settings, {

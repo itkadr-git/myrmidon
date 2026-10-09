@@ -55,7 +55,7 @@ export async function findLiveClaimForIssue(
 
 /**
  * 1.6.1 (SWARM-SETTINGS-UI): every live claim of the instance, oldest first —
- * the read the disable path of the sweep uses to free the leases a pilot
+ * the read the disable path of the sweep uses to free the leases a swarm
  * switch-off left behind. Bounded by the caller's page size.
  */
 export async function listAllLiveClaims(

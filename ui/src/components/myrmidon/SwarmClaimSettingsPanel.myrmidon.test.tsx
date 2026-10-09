@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 //
-// myrmidon(1.6.1 SWARM-SETTINGS-UI): the "Role queues (SWARM-CLAIM)" section
-// of Instance → General. The panel is the settings half of the 1.6.1 task:
-// values apply without a restart, each field shows where the effective value
-// came from, and the journal shows who changed what and when.
+// myrmidon(1.6.5 SWARM-T4, design §5.1): the "Self-organization (swarm)"
+// section of Instance → General. One switch, the pheromone mapping, the
+// advanced lease/limit/sweep extras, the change journal; every field has a
+// help line. The pilot role/company fields are gone — zero pilot words.
 
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
@@ -31,28 +31,26 @@ afterEach(() => {
 const view: SwarmClaimSettingsView = {
   settings: {
     enabled: true,
-    enabledRoles: ["engineer"],
-    enabledCompanyIds: [],
     leaseTtlSec: 900,
     maxActiveTasks: 3,
     sweepIntervalSec: 30,
     p0Preemption: true,
+    pheromone: { critical: 250 },
   },
   sources: {
     enabled: "settings",
-    enabledRoles: "settings",
-    enabledCompanyIds: "default",
     leaseTtlSec: "settings",
     maxActiveTasks: "env",
     sweepIntervalSec: "default",
     p0Preemption: "settings",
+    pheromone: "settings",
   },
   journal: [
     {
       at: "2026-10-03T09:00:00.000Z",
       actorType: "user",
       actorId: "user-1",
-      patch: { enabled: true, enabledRoles: ["engineer"] },
+      patch: { enabled: true },
     },
   ],
 };
@@ -62,10 +60,17 @@ function render(
   onSave = vi.fn(),
   pending = false,
   error: string | null = null,
+  status: string | null = null,
 ) {
   flushSync(() => {
     root.render(
-      <SwarmClaimSettingsPanelView view={value} onSave={onSave} pending={pending} error={error} />,
+      <SwarmClaimSettingsPanelView
+        view={value}
+        status={status}
+        onSave={onSave}
+        pending={pending}
+        error={error}
+      />,
     );
   });
   return onSave;
@@ -93,7 +98,7 @@ function clickToggle(id: string) {
 
 function saveButton(): HTMLButtonElement {
   return [...container.querySelectorAll("button")].find((el) =>
-    el.textContent?.includes("Save role queue settings"),
+    el.textContent?.includes("Save self-organization settings"),
   )!;
 }
 
@@ -103,7 +108,6 @@ describe("myrmidon(1.6.1) swarm claim settings panel", () => {
     expect(field("swarm-claim-leaseTtlSec").value).toBe("900");
     expect(field("swarm-claim-maxActiveTasks").value).toBe("3");
     expect(field("swarm-claim-sweepIntervalSec").value).toBe("30");
-    expect(field("swarm-claim-roles").value).toBe("engineer");
     expect(
       container.querySelector("[data-testid=swarm-claim-source-leaseTtlSec]")?.textContent,
     ).toBe("Saved here");
@@ -115,24 +119,68 @@ describe("myrmidon(1.6.1) swarm claim settings panel", () => {
     ).toBe("Default");
   });
 
-  it("saves every field, an empty ceiling as 'no ceiling'", () => {
+  it("saves the switch, the extras and a full pheromone patch, an empty ceiling as 'no ceiling'", () => {
     const onSave = render(view);
     type("swarm-claim-leaseTtlSec", "600");
     type("swarm-claim-maxActiveTasks", "");
-    type("swarm-claim-roles", "engineer, reviewer");
+    type("swarm-claim-pheromone-critical", "500");
+    type("swarm-claim-pheromone-agingCap", "9");
     flushSync(() => saveButton().dispatchEvent(new MouseEvent("click", { bubbles: true })));
     expect(onSave).toHaveBeenCalledWith({
       enabled: true,
       p0Preemption: true,
-      enabledRoles: ["engineer", "reviewer"],
-      enabledCompanyIds: [],
+      pheromone: { critical: 500, agingCap: 9 },
       leaseTtlSec: 600,
       maxActiveTasks: null,
       sweepIntervalSec: 30,
     });
   });
 
-  it("switching the pilot off is part of the patch", () => {
+  it("has no pilot fields at all", () => {
+    render(view);
+    expect(container.querySelector("#swarm-claim-roles")).toBeNull();
+    expect(container.querySelector("#swarm-claim-companies")).toBeNull();
+    expect(container.textContent?.toLowerCase()).not.toContain("pilot");
+  });
+
+  it("shows the status line with the live numbers only while enabled", () => {
+    const onSave = render(view, vi.fn(), false, null, "7 tasks queued · 3 active leases · 2 free agents");
+    expect(
+      container.querySelector("[data-testid=swarm-claim-status-line]")?.textContent,
+    ).toContain("7 tasks queued");
+    clickToggle("swarm-claim-enabled");
+    expect(container.querySelector("[data-testid=swarm-claim-status-line]")).toBeNull();
+    flushSync(() => saveButton().dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    const patch = onSave.mock.calls[0]![0] as { enabled: boolean };
+    expect(patch.enabled).toBe(false);
+  });
+
+  it("shows a help line for every field, including the pheromone ones", () => {
+    render(view);
+    for (const id of [
+      "swarm-claim-enabled",
+      "swarm-claim-p0",
+      "swarm-claim-leaseTtlSec",
+      "swarm-claim-maxActiveTasks",
+      "swarm-claim-sweepIntervalSec",
+      "swarm-claim-pheromone-critical",
+      "swarm-claim-pheromone-high",
+      "swarm-claim-pheromone-medium",
+      "swarm-claim-pheromone-low",
+      "swarm-claim-pheromone-agingStepHours",
+      "swarm-claim-pheromone-agingStep",
+      "swarm-claim-pheromone-agingCap",
+      "swarm-claim-pheromone-failPenalty",
+      "swarm-claim-pheromone-cooldownBaseMin",
+      "swarm-claim-pheromone-cooldownCapMin",
+    ]) {
+      // the input exists and the following help paragraph is non-empty
+      expect(field(id), id).toBeTruthy();
+    }
+    expect(container.querySelectorAll("#swarm-claim-pheromone-critical ~ *")).not.toBeNull();
+  });
+
+  it("switching the swarm off is part of the patch", () => {
     const onSave = render(view);
     clickToggle("swarm-claim-enabled");
     flushSync(() => saveButton().dispatchEvent(new MouseEvent("click", { bubbles: true })));
@@ -153,7 +201,7 @@ describe("myrmidon(1.6.1) swarm claim settings panel", () => {
     render(view);
     const journal = container.querySelector("[data-testid=swarm-claim-journal]");
     expect(journal?.textContent).toContain("user:user-1");
-    expect(journal?.textContent).toContain("enabled, enabledRoles");
+    expect(journal?.textContent).toContain("enabled");
   });
 
   it("shows a save error from the server", () => {

@@ -46,8 +46,7 @@ describe("myrmidon(1.6.1 SWARM-SETTINGS-UI) settings service", () => {
     const { service } = fakePorts({
       [SWARM_CLAIM_SETTINGS_KEY]: {
         enabled: true,
-        enabledRoles: ["engineer"],
-        enabledCompanyIds: [],
+
         leaseTtlSec: 900,
         maxActiveTasks: 3,
         sweepIntervalSec: 30,
@@ -56,14 +55,14 @@ describe("myrmidon(1.6.1 SWARM-SETTINGS-UI) settings service", () => {
     });
     const resolved = await service.read();
     expect(resolved.settings.enabled).toBe(true);
-    expect(resolved.settings.enabledRoles).toEqual(["engineer"]);
+
     expect(resolved.sources.enabled).toBe("settings");
   });
 
   it("an update merges the patch, writes the row and appends the journal entry", async () => {
     const { service, store, logActivity } = fakePorts();
     const resolved = await service.update(
-      { enabled: true, enabledRoles: ["engineer"], leaseTtlSec: 600 },
+      { enabled: true, leaseTtlSec: 600 },
       { actorType: "user", actorId: "user-7" },
     );
     expect(resolved.settings.enabled).toBe(true);
@@ -99,8 +98,7 @@ describe("myrmidon(1.6.1 SWARM-SETTINGS-UI) settings service", () => {
       {
         [SWARM_CLAIM_SETTINGS_KEY]: {
           enabled: true,
-          enabledRoles: [],
-          enabledCompanyIds: [],
+
           leaseTtlSec: 900,
           maxActiveTasks: 3,
           sweepIntervalSec: 30,

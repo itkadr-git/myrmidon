@@ -71,11 +71,11 @@
       "group": {
         "observe": "Observe",
         "decide": "Decide & talk",
-        "manage": "Manage"
+        "manage": "Manage",
+        "more": "Plus"
       },
       "center": "Command center",
       "fleet": "Server fleet",
-      "swarm": "Swarm",
       "costs": "Costs",
       "quality": "Quality",
       "waiting": "Wait for me",
@@ -84,7 +84,9 @@
       "more": "More",
       "badge": {
         "attention": "{{count}} waiting"
-      }
+      },
+      "swarmQueues": "Essaim : files d'attente",
+      "foraging": "Fourragement"
     },
     "nests": {
       "all": "All nests"

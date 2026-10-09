@@ -6,7 +6,7 @@
 // is decided in `@paperclipai/shared`; this module is only the database half:
 // it reads the raw row, hands it to the resolver, writes the canonical object
 // back on a patch and logs the change. The same shape the RUNTIME-LIMITS and
-// WORKSPACE-HYGIENE settings use, so an operator changes the pilot from the
+// WORKSPACE-HYGIENE settings use, so an operator changes the swarm from the
 // settings page or the API without a restart.
 //
 // 1.6.1 (SWARM-SETTINGS-UI): the change journal. Every update appends a
@@ -26,7 +26,7 @@ import {
 } from "@paperclipai/shared";
 import type { instanceSettingsService } from "../../services/instance-settings.js";
 
-/** Activity action written for every pilot settings change. */
+/** Activity action written for every swarm settings change. */
 export const SWARM_CLAIM_SETTINGS_UPDATED_ACTION = "instance.swarm_claim.updated";
 
 /** Stored-settings key of the change journal inside `general`. */

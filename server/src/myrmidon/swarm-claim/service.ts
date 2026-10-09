@@ -103,7 +103,7 @@ export interface SwarmClaimOutcome {
   /** The task taken, with its lease. Null when the agent may not take one. */
   claim: SwarmClaimLease | null;
   /**
-   * Why no claim happened: no queue, at the ceiling, the pilot is off, or
+   * Why no claim happened: no queue, at the ceiling, the swarm is off, or
    * the agent's caste is excluded from the swarm
    * (`caste_excluded`, myrmidon 1.6.1 CUSTOM-CASTES B).
    */
@@ -112,7 +112,7 @@ export interface SwarmClaimOutcome {
 
 /**
  * One agent takes the top task of its role's queue. The decision sequence is
- * the acceptance list of 1.6 in one function: pilot off → no claim; at the
+ * the acceptance list of 1.6 in one function: swarm off → no claim; at the
  * per-agent ceiling → no claim; queue empty → no claim; otherwise the top task
  * in `orderSwarmQueueCandidates` order (a `critical` task is the top) behind a
  * lease of one TTL.
@@ -136,10 +136,8 @@ export async function claimNextTaskForAgent(
     .limit(1);
   const agent = agentRow[0];
   if (!agent) return { claim: null, reason: "queue_empty" };
-  // 1.6.1 (SWARM-SETTINGS-UI): the pilot set. The master switch may be on
-  // while this company or role is deliberately outside the pilot — then the
-  // claim path answers the same "disabled" the off switch does, so an agent
-  // outside the pilot keeps vendor behavior exactly.
+  // 1.6.1 (SWARM-SETTINGS-UI → 1.6.5 SWARM-T4): the swarm gate — one switch,
+  // no role/company lists anymore.
   if (
     !isSwarmClaimEnabledFor(settings, {
       companyId: input.companyId,
@@ -391,7 +389,7 @@ async function enqueueSwarmWake(
   return Boolean(wake);
 }
 
-/** Convenience for the routes: the pilot settings service instance. */
+/** Convenience for the routes: the swarm settings service instance. */
 export function swarmClaimService(db: Db, ports: SwarmClaimServicePorts) {
   return {
     claimNextTaskForAgent: (input: Parameters<typeof claimNextTaskForAgent>[1]) =>

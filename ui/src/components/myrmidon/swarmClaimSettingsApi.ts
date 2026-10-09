@@ -1,14 +1,14 @@
-// Swarm claim pilot settings (myrmidon 1.6.1, SWARM-SETTINGS-UI):
-// GET/PATCH /api/myrmidon/swarm-claim.
+// myrmidon(1.6.5 SWARM-T4, design §5.1): the "Self-organization (swarm)"
+// settings — GET/PATCH /api/myrmidon/swarm-claim.
 //
-// The pilot parameters of the per-role queues — the master switch, the
-// role/company pilot set, the lease TTL, the per-agent ceiling, the sweep
-// interval and the P0 preemption — are instance settings the server reads on
-// every use. Saving here applies them without a restart: a free agent claims
-// the top task of its role's queue within one wake, and switching the pilot
-// off frees the live leases at once. The environment variables remain forced
-// overrides; `sources` says per key whether the UI value or the override is
-// in force, and the panel renders exactly that.
+// The swarm parameters — the master switch, the pheromone mapping, the lease
+// TTL, the per-agent ceiling, the sweep interval and the P0 preemption — are
+// instance settings the server reads on every use. Saving here applies them
+// without a restart: a free agent claims the top task of its caste's queue
+// within one wake, and switching the swarm off frees the live leases at once.
+// The environment variables remain forced overrides; `sources` says per key
+// whether the UI value or the override is in force, and the panel renders
+// exactly that.
 import type {
   SwarmClaimSettings,
   SwarmClaimSettingsPatch,

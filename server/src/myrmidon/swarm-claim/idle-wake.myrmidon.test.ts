@@ -229,7 +229,6 @@ function fakeDb(companies: string[] = ["company-a"]) {
 function fakeSweepPorts(input: {
   enabled?: boolean;
   companies?: string[];
-  pilotRoles?: string[];
   castes?: (companyId: string) => Promise<readonly {
     key: string;
     label: string;
@@ -245,7 +244,6 @@ function fakeSweepPorts(input: {
         ({
           swarmClaim: {
             enabled: input.enabled ?? true,
-            enabledRoles: input.pilotRoles ?? [],
             leaseTtlSec: DEFAULT_SWARM_LEASE_TTL_SEC,
             maxActiveTasks: DEFAULT_SWARM_MAX_ACTIVE_TASKS,
             sweepIntervalSec: DEFAULT_SWARM_CLAIM_SWEEP_INTERVAL_SEC,
@@ -297,7 +295,7 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
     expect(snapshot.taskKey).toBe("11111111-1111-4111-8111-111111111111");
   });
 
-  it("with the pilot flag off the idle pass is a no-op", async () => {
+  it("with the swarm flag off the idle pass is a no-op", async () => {
     const wakes: unknown[] = [];
     mockListIdleRolePairs.mockClear();
     const sweeper = createSwarmClaimSweeper({
@@ -317,11 +315,10 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
     expect(mockListIdleRolePairs).not.toHaveBeenCalled();
   });
 
-  it("myrmidon(1.6.1 SWARM-IDLE-WAKE): a role outside the pilot set never gets a wake", async () => {
-    // Blocker 1 of the review: an unassigned task fans out to every role with
-    // agents, but the pilot gate must keep the wake away from non-pilot roles
-    // (a reviewer would claim `disabled`, end with nothing, and the next tick
-    // would wake it again — the endless loop the ticket forbids).
+  it("myrmidon(1.6.5 SWARM-T4): with the switch on every role is gated the same way", async () => {
+    // The role/company restriction lists are gone: the one switch now gates
+    // every pair, so a reviewer queue with a free agent is woken exactly like
+    // the engineer queue (before T4 the restriction list kept the reviewer out).
     const wakes: Array<{ agentId: string; opts: Record<string, unknown> }> = [];
     mockListIdleRolePairs.mockResolvedValue([
       {
@@ -341,7 +338,6 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
 
     const sweeper = createSwarmClaimSweeper({
       ...fakeSweepPorts({
-        pilotRoles: ["engineer"],
         enqueueWakeup: async (agentId: string, opts: Record<string, unknown>) => {
           wakes.push({ agentId, opts });
           return { id: `wake-${wakes.length}` };
@@ -351,10 +347,8 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
     });
     sweeper.resetForTest();
     const result = await sweeper.sweep(NOW);
-    // The engineer is woken, the reviewer is not.
-    expect(result.idleWoken).toBe(1);
-    expect(wakes).toHaveLength(1);
-    expect(wakes[0]!.agentId).toBe("agent-eng");
+    expect(result.idleWoken).toBe(2);
+    expect(wakes.map((wake) => wake.agentId).sort()).toEqual(["agent-eng", "agent-reviewer"]);
   });
 
   it("myrmidon(1.6.1 CUSTOM-CASTES B): a caste-excluded role is never woken, a caste ceiling applies", async () => {
