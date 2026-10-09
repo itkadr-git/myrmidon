@@ -1,4 +1,7 @@
 import fs from "node:fs/promises";
+// myrmidon(1.6.6-HERMES-SKILLS-A): moduleDir for the skills-source resolver.
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import type {
   AdapterExecutionContext,
@@ -49,6 +52,13 @@ import {
   readCentralHistorySettings,
   type CentralHistoryClient,
 } from "./central-history.js";
+// myrmidon(1.6.6-HERMES-SKILLS-A): gateway-side delivery of Paperclip-managed
+// skills (see ./myrmidon-skills-reconcile.ts for the route decision).
+import {
+  buildPaperclipSkillsField,
+  factCheckGatewayPaperclipSkills,
+  reconcileGatewayPaperclipSkills,
+} from "./myrmidon-skills-reconcile.js";
 
 type SessionKeyStrategy = "issue" | "agent" | "run" | "none";
 
@@ -560,6 +570,11 @@ function buildRunBody(
   sessionKey: string | null,
   agentInstructionsBundle: string,
   idempotencyRunId: string,
+  // myrmidon(1.6.6-HERMES-SKILLS-A): the skills field is computed by the
+  // reconcile step (execute) and handed in, so a card cannot forge it through
+  // payloadTemplate — same rule as github_broker (set after the spread;
+  // `undefined` deletes a forged value and is dropped by JSON serialization).
+  paperclipSkillsField: ReturnType<typeof buildPaperclipSkillsField> = undefined,
 ): { body: Record<string, unknown>; promptBreakdown: PromptBreakdown } {
   const paperclipApiUrl = nonEmpty(ctx.config.paperclipApiUrl);
   const payloadTemplate = parseObject(ctx.config.payloadTemplate);
@@ -613,6 +628,10 @@ function buildRunBody(
     github_broker: githubBroker,
     workspace: workspaceField,
     github_launcher: githubLauncher,
+    // myrmidon(1.6.6-HERMES-SKILLS-A): Paperclip-managed skills for the run's
+    // profile (see the buildRunBody signature note); the gateway image's
+    // run-scoped-skills patch materializes them before the agent starts.
+    paperclip_skills: paperclipSkillsField,
   };
   // myrmidon(1.6.5 PROMPT-BUDGET A): extend buildInput's per-section
   // breakdown with the sections buildRunBody owns. `instructionsBundle` and
@@ -1844,7 +1863,62 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
   }
 
-  const body = buildRunBody(ctx, sessionKey, agentInstructionsBundle, idempotencyKey);
+  // myrmidon(1.6.6-HERMES-SKILLS-A): deliver the Paperclip-managed skills
+  // before POST /v1/runs, at the same boundary hermes_local reconcile skills
+  // (execute.ts:372-389). The preferred route — reading/writing the gateway
+  // profile's skills.external_dirs over the API — does not exist on the
+  // pinned image (no profile/skills write endpoint in api_server.py's route
+  // table), so the skills ride the run body as paperclip_skills and the
+  // image's run-scoped-skills patch materializes them into the run profile's
+  // skills root before the agent starts. Without the key in ctx.config the
+  // whole block is a no-op (a developer outside the board is unaffected) —
+  // buildPaperclipSkillsField returns undefined and JSON drops the field.
+  // Any reconcile/fact-check failure aborts before the run is created, with
+  // the same "Cannot start without the required Paperclip-managed skills"
+  // message as hermes_local; the redactor is applied defensively even though
+  // the module's own messages never carry secrets.
+  let paperclipSkillsField: ReturnType<typeof buildPaperclipSkillsField> = undefined;
+  if (Object.prototype.hasOwnProperty.call(ctx.config, "paperclipRuntimeSkills")) {
+    try {
+      const skillsReconcile = await reconcileGatewayPaperclipSkills(ctx.config, {
+        moduleDir: path.dirname(fileURLToPath(import.meta.url)),
+        onLog: (line) => ctx.onLog("stdout", line),
+      });
+      paperclipSkillsField = buildPaperclipSkillsField(skillsReconcile);
+      if (skillsReconcile && paperclipSkillsField) {
+        // The fact-check verifies the assembled field carries every desired
+        // entry before the POST sends it; the image patch re-verifies by
+        // reading the profile's skills root after materialization and fails
+        // the run loudly when an entry did not land.
+        factCheckGatewayPaperclipSkills({
+          skills: paperclipSkillsField,
+          desiredSkills: skillsReconcile.desiredSkills,
+        });
+        await ctx.onLog(
+          "stdout",
+          `[hermes-gateway] skills fact-check: ${paperclipSkillsField.length} Paperclip-managed skill(s) verified in the run-body field\n`,
+        );
+      }
+    } catch (err) {
+      const reason = redactErrorMessage(err, redactText);
+      await ctx.onLog(
+        "stderr",
+        `[hermes-gateway] Cannot start without the required Paperclip-managed skills: ${reason}\n`,
+      );
+      return {
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        errorCode: "paperclip_skills_unavailable",
+        errorMessage: `Cannot start without the required Paperclip-managed skills: ${reason}`,
+        provider: "hermes_gateway",
+        sessionParams: { strategy },
+        sessionDisplayId: sessionKey ? redactText(sessionKey) : null,
+      };
+    }
+  }
+
+  const body = buildRunBody(ctx, sessionKey, agentInstructionsBundle, idempotencyKey, paperclipSkillsField);
   // myrmidon(1.6.5 PROMPT-BUDGET A): the per-section prompt-token breakdown
   // of the request body. Recorded on every return path's resultJson so the
   // server can persist it into heartbeat_runs.usageJson.promptBreakdown even
