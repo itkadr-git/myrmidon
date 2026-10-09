@@ -16,7 +16,7 @@
 // host-side `pg_dump -Fc` dump (`*.dump`); when the prefix env knob is not
 // set (or empty), any newest `*.sql.gz`/`*.dump` in the dir counts, because a
 // deployment that switched its backup naming must not silently park the
-// compaction (OPE-6373 item 3).
+// compaction.
 //
 // myrmidon(1.6.5-F14B): "external machine backup" mode. When the machine is
 // backed up as a whole on another host (owner decision 09.10) and no local

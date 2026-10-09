@@ -1,7 +1,7 @@
 // server/src/myrmidon/data-retention/backup-gate.myrmidon.test.ts
 //
 // myrmidon(1.6.5-F14B): the backup gate of the row-deletion sweep follows the
-// same contract as the context compaction gate (OPE-6373 item 3): an unset or
+// same contract as the context compaction gate: an unset or
 // empty prefix accepts any fresh `*.sql.gz`/`*.dump`; the "external machine
 // backup" setting passes the gate without a local file. No database.
 

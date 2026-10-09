@@ -233,7 +233,7 @@ describe("myrmidon(1.6.5-DBC1) backup gate", () => {
   });
 
   it("the prefix is the MYRMIDON_DB_BACKUP_FILE_PREFIX knob: unset or empty means no naming contract", () => {
-    // Review (F14B, OPE-6373 item 3): unset -> any *.sql.gz/*.dump by
+    // Review (F14B): unset -> any *.sql.gz/*.dump by
     // extension, so a host `board.dump` lifts the gate.
     expect(resolveBackupFilePrefix({})).toBe("");
     expect(resolveBackupFilePrefix({ MYRMIDON_DB_BACKUP_FILE_PREFIX: "" })).toBe("");

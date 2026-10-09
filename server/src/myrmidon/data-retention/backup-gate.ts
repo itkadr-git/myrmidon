@@ -7,9 +7,8 @@
 // `*.sql.gz`/`*.dump` in the resolved backup dir is younger than 24 hours.
 // The dir resolution mirrors `packages/db/src/backup.ts` (config
 // `database.backup.dir`, then `resolveDefaultBackupDir()`). Same contract as
-// the context compaction gate (`datastore-care/retention/backup-gate.ts`,
-// OPE-6373 item 3): when the `MYRMIDON_DB_BACKUP_FILE_PREFIX` deployment knob
-// is unset or empty any accepted extension counts; a non-empty value narrows
+// the context compaction gate (`datastore-care/retention/backup-gate.ts`):
+// when the `MYRMIDON_DB_BACKUP_FILE_PREFIX` deployment knob is unset or empty any accepted extension counts; a non-empty value narrows
 // the match to `<prefix>-*`.
 //
 // myrmidon(1.6.5-F14B): "external machine backup" mode. With the instance
