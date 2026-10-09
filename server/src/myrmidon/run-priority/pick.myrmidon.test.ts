@@ -45,6 +45,7 @@ function settings(overrides: Partial<RunPrioritySettings> = {}): RunPrioritySett
     agingMaxBonus: 50,
     starvationLimitMinutes: 90,
     starvationTopWeight: 10_000,
+    pheromoneWeight: 1,
     ...overrides,
   };
 }
