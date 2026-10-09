@@ -36,6 +36,9 @@ import { browserBridgeSettingsSchema } from "../myrmidon-browser-bridge.js";
 import { swarmClaimSettingsSchema } from "../myrmidon-swarm-claim.js";
 // myrmidon(1.6.5 F-26 T10 SCENT): the general.swarm.scent settings block
 import { scentSettingsSchema } from "../myrmidon-scent.js";
+// myrmidon(1.6.5 F-26 T5): the SWARM wake guard (taskless gate + cooling) stored
+// in the same general settings row under `general.swarm`.
+import { swarmSettingsSchema } from "../myrmidon-swarm-wake.js";
 import { datastoreCareSettingsSchema } from "../myrmidon-datastore-care.js"; // myrmidon(1.6.5-DBC1)
 // myrmidon(1.6.1-WIP-LIMIT-A): the per-agent WIP limit settings stored in the
 // same general settings row.
@@ -64,6 +67,10 @@ import { pluginEntitlementKeysSchema } from "../myrmidon-plugin-entitlement.js";
 // myrmidon(DM-PROGRESS): live progress steps of the bridged Telegram DM status
 // message, stored in the same general settings row.
 import { telegramDmProgressSettingsSchema } from "../myrmidon-telegram-dm-progress.js";
+// myrmidon(1.6.5-TG-LOCALE-C): the instance-wide default language of the
+// bridged Telegram DM, changed from Settings → Language and
+// /api/myrmidon/bridge-language.
+import { bridgeLanguageSettingsSchema } from "../myrmidon-bridge-language.js";
 // myrmidon(1.6.1-FORAGING-LIMITS-UI)
 import { foragingSettingsSchema } from "../myrmidon-foraging.js";
 // myrmidon(TEAM-LIVENESS-SETTINGS): the knobs of the three automatic team-liveness
@@ -194,12 +201,13 @@ export const instanceGeneralSettingsSchema = z.object({
   // /api/myrmidon/swarm-claim; absent means "use the environment variable, then
   // the default (the pilot is off)".
   swarmClaim: swarmClaimSettingsSchema.optional(),
-  // myrmidon(1.6.5 F-26 T10 SCENT): the swarm block — one namespace for the
-  // swarm family; T10 owns `general.swarm.scent` (classifier model, weights,
-  // switch). Absent means the module defaults (classifier on, weights from
-  // packages/shared/src/myrmidon-scent.ts).
-  swarm: z
-    .object({
+  // myrmidon(1.6.5 F-26 T5 + T10): the swarm block — one namespace for the
+  // swarm family. T5 owns the wake guard (run-without-task gate and the
+  // exponential cooling of stale wake candidates, design 1.6.5 §3.7, §4.3);
+  // T10 owns `general.swarm.scent` (classifier model, weights, switch).
+  // Absent means the module defaults.
+  swarm: swarmSettingsSchema
+    .extend({
       scent: scentSettingsSchema.optional(),
     })
     .optional(),
@@ -267,6 +275,12 @@ export const instanceGeneralSettingsSchema = z.object({
   // message (on/off and the minimum spacing between edits), changed from
   // /api/myrmidon/telegram-dm-progress; absent means the defaults.
   telegramDmProgress: telegramDmProgressSettingsSchema.optional(),
+  // myrmidon(1.6.5-TG-LOCALE-C): the instance-wide default language of the
+  // bridged Telegram DM (the fallback for a board user with no stored
+  // `user_ui_language` row), changed from Settings → Language and
+  // /api/myrmidon/bridge-language; absent means "use the environment force,
+  // then English".
+  bridgeLanguage: bridgeLanguageSettingsSchema.optional(),
   // myrmidon(MEMORY-UI): agent card Memory tab — service address, optional key
   // secret name and the switch, changed from the instance settings page and
   // /api/myrmidon/agent-memory; absent means "use the environment".

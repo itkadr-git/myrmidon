@@ -351,3 +351,40 @@ describe("bot disk: fail-safe and drift (scenarios 5 and 8)", { skip: !hasGit &&
     assert.equal(r.sent[0].actions.find((a) => a.path === wip).result, "error");
   });
 });
+
+describe("bot disk: one archive root for close and restore", { skip: !hasGit && "git missing" }, () => {
+  it("MYRMIDON_WS_HOME overridden: close writes under <home>/archive and restore finds it there (no archive dep, no archiveRoot dep)", async () => {
+    const w = world();
+    const wip = openTask(w, KEY_WIP);
+    fs.writeFileSync(path.join(wip, "feature.txt"), "unpushed\n");
+    git(wip, "add", ".");
+    git(wip, "commit", "--quiet", "-m", "wip");
+    const tip = git(wip, "rev-parse", "HEAD");
+    const env = {
+      PATH: process.env.PATH,
+      HOME: tmp,
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_AUTHOR_NAME: "t",
+      GIT_AUTHOR_EMAIL: "t@example.com",
+      GIT_COMMITTER_NAME: "t",
+      GIT_COMMITTER_EMAIL: "t@example.com",
+      MYRMIDON_WS_HOME: w.home,
+    };
+    // the real botd archive module is used (the default of closeCopy): its own default root
+    // is the production path, so the root has to come from close
+    const closed = await closeMod.closeCopy({ key: KEY_WIP, force: true }, { env, workspaceRoot: w.workspaceRoot, scratchRoot: w.scratchRoot });
+    assert.equal(closed.archived, true);
+    assert.ok(closed.archivePath === undefined || closed.archivePath.startsWith(path.join(w.home, "archive")));
+    assert.ok(fs.readdirSync(path.join(w.home, "archive")).some((f) => f.startsWith(`${KEY_WIP}-`) && f.endsWith(".bundle")));
+    const r = await restoreMod.runRestore([KEY_WIP, "--json"], {
+      env,
+      workspaceRoot: w.workspaceRoot,
+      open: async (request) => {
+        git(w.basePath, "worktree", "add", "--no-track", "-b", `bot/${request.key}`, wip, "refs/remotes/origin/main");
+        return { ok: true, key: request.key, path: wip, class: "E", repo: request.repo, branch: `bot/${request.key}`, reused: false };
+      },
+    });
+    assert.equal(r.exitCode, 0, r.stderr);
+    assert.equal(git(wip, "rev-parse", "HEAD"), tip);
+  });
+});

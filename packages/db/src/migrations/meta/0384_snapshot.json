@@ -32704,19 +32704,6 @@
           "notNull": true,
           "default": "'medium'"
         },
-        "pheromone_strength": {
-          "name": "pheromone_strength",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "caste_key": {
-          "name": "caste_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "review_policy": {
           "name": "review_policy",
           "type": "text",
@@ -32981,6 +32968,19 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "pheromone_strength": {
+          "name": "pheromone_strength",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "caste_key": {
+          "name": "caste_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -33378,27 +33378,6 @@
           "method": "btree",
           "with": {}
         },
-        "issues_company_caste_idx": {
-          "name": "issues_company_caste_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "caste_key",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "issues_company_execution_run_idx": {
           "name": "issues_company_execution_run_idx",
           "columns": [
@@ -33733,6 +33712,27 @@
           ],
           "isUnique": true,
           "where": "\"issues\".\"origin_kind\" = 'onboarding_first_task'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "issues_company_caste_idx": {
+          "name": "issues_company_caste_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "caste_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -41036,12 +41036,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "default_caste_key": {
-          "name": "default_caste_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "target_date": {
           "name": "target_date",
           "type": "date",
@@ -41103,6 +41097,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "default_caste_key": {
+          "name": "default_caste_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {

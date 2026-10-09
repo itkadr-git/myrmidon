@@ -230,7 +230,7 @@ describe("myr-ws close", { skip: !hasGit && "git missing" }, () => {
       return { ok: true };
     };
     await closeMod.closeCopy({ key: "ABC-106", force: true }, deps(w, archive));
-    assert.deepEqual(seen, { repo: "acme/widgets" });
+    assert.deepEqual(seen, { archiveRoot: path.join(w.home, "archive"), repo: "acme/widgets" });
   });
 
   it("--force with a failed archive: the copy stays, nothing is deleted", async () => {

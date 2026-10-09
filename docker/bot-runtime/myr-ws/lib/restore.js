@@ -42,6 +42,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { MyrWsError } = require("./errors.js");
+const { archiveRootOf } = require("./layout.js");
 
 // --- contract constants (C1/C2); drift here is caught by the unit test ---
 const EXIT = { ok: 0, usage: 2, quotaExceeded: 3, baseLimit: 4, network: 5, notFound: 6, unpushed: 7 };
@@ -215,7 +216,7 @@ function makeCtx(deps = {}) {
   return {
     env,
     home,
-    archiveRoot: deps.archiveRoot || path.join(home, "archive"),
+    archiveRoot: deps.archiveRoot || archiveRootOf(home),
     workspaceRoot: deps.workspaceRoot || WORKSPACE_ROOT,
     open: deps.open || null,
     openDeps: deps.openDeps || null,

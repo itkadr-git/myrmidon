@@ -32704,13 +32704,6 @@
           "notNull": true,
           "default": "'medium'"
         },
-        "pheromone_strength": {
-          "name": "pheromone_strength",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
         "review_policy": {
           "name": "review_policy",
           "type": "text",
@@ -32975,6 +32968,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "pheromone_strength": {
+          "name": "pheromone_strength",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
         }
       },
       "indexes": {
