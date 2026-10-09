@@ -31,7 +31,11 @@ import { userCommentMentionsWokenAgent } from "../myrmidon/settled-holds/mention
 // continuation see no hold. See docs/myrmidon/DIVERGENCE.md "L2".
 import { supersedeExplicitWakeSettledHold } from "../myrmidon/settled-holds/supersede-explicit-wake.js";
 // myrmidon(CHAT-HOLD): a chat is never held; an owner message lifts a hold.
-import { isChatBackedIssue, isChatOwnerMessageWake } from "../myrmidon/chat-holds/chat-backed.js";
+import {
+  isChatBackedIssue,
+  isChatOwnerMessageWake,
+  listOwnerChatTurnRunIds,
+} from "../myrmidon/chat-holds/chat-backed.js";
 import { clearChatHoldsOnOwnerMessage } from "../myrmidon/chat-holds/clear-on-message.js";
 // myrmidon(L2, round 3 fix): retire the woken agent's own waiting run that the
 // bypassed hold would cancel at its claim, so the wake is not lost with it.
@@ -20197,6 +20201,24 @@ export function heartbeatService(
         agent.companyId,
         queuedRuns,
       );
+      // myrmidon(1.6.5 OWNER-CHAT-ADMISSION): the owner's own turns in a chat
+      // among the runs about to start — read before the sort, because they rank
+      // first in the queue and are admitted by the server container's floor
+      // alone. A read that fails keeps the vendor order and the host ceilings,
+      // which is the safe side when the turns cannot be told apart.
+      let ownerChatTurnRunIds = new Set<string>();
+      try {
+        ownerChatTurnRunIds = await listOwnerChatTurnRunIds(
+          db,
+          agent.companyId,
+          queuedRuns,
+        );
+      } catch (err) {
+        logger.warn(
+          { err, agentId },
+          "queued run sweep: could not read the owner chat turns — keeping the vendor order and the host ceilings",
+        );
+      }
       const queuedIssueIds = [
         ...new Set(
           queuedRuns
@@ -20270,6 +20292,15 @@ export function heartbeatService(
             : 3
           : 2;
         if (leftRank !== rightRank) return leftRank - rightRank;
+        // myrmidon(1.6.5 OWNER-CHAT-ADMISSION): among the runs that can start,
+        // the owner's own turn in a chat goes first — it waits behind memory,
+        // not behind automatic runs. A run whose dependencies are not settled
+        // keeps its rank: readiness is checked above.
+        if (leftRank !== 3 && rightRank !== 3) {
+          const leftOwner = ownerChatTurnRunIds.has(left.id) ? 1 : 0;
+          const rightOwner = ownerChatTurnRunIds.has(right.id) ? 1 : 0;
+          if (leftOwner !== rightOwner) return rightOwner - leftOwner;
+        }
         // myrmidon(1.6.5 RUN-PRIORITY A): the effective weight subsumes the
         // old `issueRunPriorityRank` step (issue priority is one of its keys)
         // and adds the role, current-release and aging dimensions; with the
@@ -20300,7 +20331,21 @@ export function heartbeatService(
       // myrmidon(1.6.5 RUN-FAIRNESS): the reservation names its agent, so the
       // start counts against this agent's share of the sliding start window.
       const admission = sharedRunAdmission();
-      const admitted = admission.reserve(availableSlots, { agentId });
+      // myrmidon(1.6.5 OWNER-CHAT-ADMISSION): the owner turns sit at the front
+      // of the queue, so the front of the reservation is exactly them — the
+      // count is that prefix, not every owner turn (a run whose dependencies
+      // are not settled stays behind the ready ones).
+      let ownerChatTurns = 0;
+      while (
+        ownerChatTurns < prioritizedRuns.length &&
+        ownerChatTurnRunIds.has(prioritizedRuns[ownerChatTurns].id)
+      ) {
+        ownerChatTurns += 1;
+      }
+      const admitted = admission.reserve(availableSlots, {
+        agentId,
+        ownerChatTurns,
+      });
       // myrmidon(1.6.5 RUN-FAIRNESS): the runs an admission gate leaves
       // queued say why they wait; a claimed run drops the note.
       const runsLeftQueued = admitted < prioritizedRuns.length

@@ -1303,3 +1303,119 @@ describe("myrmidon(1.6.5 RUN-ADMISSION, rc.3) host CPU busy ceiling", () => {
     expect(cpuBusyPercentFromDelta({ idle: 300, total: 1000 }, { idle: 300, total: 1001 })).toBeCloseTo(100, 0);
   });
 });
+
+// myrmidon(1.6.5 OWNER-CHAT-ADMISSION): the owner's own turn in a chat does not
+// wait behind the host ceilings. The production pair the ticket names on
+// 09.10: minFreeHostMemoryMb 7168 and minFreeMemoryMb 1500.
+describe("owner chat turns (OWNER-CHAT-ADMISSION)", () => {
+  const GB = 1024 * MB;
+  /** The host is busy; the server container itself has room. */
+  const BUSY_HOST = {
+    maxConcurrentRuns: null,
+    maxStartsPerMinute: null,
+    minFreeMemoryMb: 1500,
+    runMemoryEstimateMb: 300,
+    minFreeHostMemoryMb: 7168,
+    maxHostLoadPercentPerCore: null,
+    maxPerAgentStartSharePercent: 15,
+  };
+  const hostBelowFloor = () => ({
+    known: true as const,
+    availableBytes: 4 * GB,
+    totalBytes: 64 * GB,
+  });
+  const cpu =
+    (load1: number, cores = 16, load15: number | null = load1) =>
+    () => ({ known: true as const, load1, load15, cores });
+
+  it("starts the owner's turn and queues the automatic run with memory between the floors", () => {
+    const admission = createRunAdmission({
+      limits: { ...BUSY_HOST },
+      freeMemoryBytes: () => 4 * GB, // 4096 MB free, 2596 MB above the 1500 MB floor
+      hostMemory: hostBelowFloor,
+    });
+    // The automatic run waits: the host is below its own 7168 MB floor.
+    expect(admission.reserve(2)).toBe(0);
+    expect(admission.lastDenialReason()).toBe("host_memory");
+    // The owner's own turn starts: the container itself is above its floor.
+    expect(admission.reserve(2, { agentId: "agent-a", ownerChatTurns: 1 })).toBe(1);
+    // The automatic one left queued still says why it waits.
+    expect(admission.lastDenialReason()).toBe("host_memory");
+  });
+
+  it("holds the owner's turn when the container is below its own floor", () => {
+    const admission = createRunAdmission({
+      limits: { ...BUSY_HOST, minFreeHostMemoryMb: null },
+      freeMemoryBytes: () => 1200 * MB, // below the 1500 MB floor
+      hostMemory: () => ({ known: true as const, availableBytes: 60 * GB, totalBytes: 64 * GB }),
+    });
+    expect(admission.reserve(1, { ownerChatTurns: 1 })).toBe(0);
+    expect(admission.lastDenialReason()).toBe("memory");
+  });
+
+  it("does not let the CPU ceiling hold the owner's turn", () => {
+    const admission = createRunAdmission({
+      limits: { ...BUSY_HOST, minFreeHostMemoryMb: null, maxHostLoadPercentPerCore: 90 },
+      freeMemoryBytes: () => 4 * GB,
+      hostCpuLoad: cpu(300, 16), // 1875 % of a core, far above the ceiling
+    });
+    expect(admission.hostCpuGate().state).toBe("closed");
+    expect(admission.reserve(1)).toBe(0);
+    expect(admission.lastDenialReason()).toBe("host_cpu");
+    expect(admission.reserve(1, { ownerChatTurns: 1 })).toBe(1);
+  });
+
+  it("reports the owner-turn gate: open, closed, off, unknown", () => {
+    const open = createRunAdmission({
+      limits: { ...BUSY_HOST },
+      freeMemoryBytes: () => 4 * GB,
+      hostMemory: hostBelowFloor,
+    });
+    expect(open.ownerChatTurnGate()).toMatchObject({
+      state: "open",
+      thresholdMb: 1500,
+      freeMb: 4096,
+      settlingRuns: 0,
+      reason: null,
+    });
+    const closed = createRunAdmission({
+      limits: { ...BUSY_HOST },
+      freeMemoryBytes: () => 1200 * MB,
+      hostMemory: hostBelowFloor,
+    });
+    expect(closed.ownerChatTurnGate()).toMatchObject({
+      state: "closed",
+      thresholdMb: 1500,
+      freeMb: 1200,
+    });
+    const off = createRunAdmission({
+      limits: { ...BUSY_HOST, minFreeMemoryMb: null },
+      freeMemoryBytes: () => 4 * GB,
+    });
+    expect(off.ownerChatTurnGate().state).toBe("off");
+    const unknown = createRunAdmission({
+      limits: { ...BUSY_HOST },
+      freeMemoryBytes: () => null,
+    });
+    expect(unknown.ownerChatTurnGate()).toMatchObject({ state: "unknown", freeMb: null });
+  });
+
+  it("names the runs still settling when the owner-turn gate closes", () => {
+    let clock = 0;
+    const admission = createRunAdmission({
+      limits: { ...BUSY_HOST, minFreeHostMemoryMb: null },
+      freeMemoryBytes: () => 2100 * MB, // exactly two 300 MB runs above the floor
+      now: () => clock,
+    });
+    // The chat notice asks this before it speaks: open, so nothing to announce.
+    expect(admission.ownerChatTurnGate()).toMatchObject({ state: "open", settlingRuns: 0 });
+    expect(admission.reserve(2)).toBe(2);
+    clock += 1000;
+    expect(admission.ownerChatTurnGate()).toMatchObject({
+      state: "closed",
+      freeMb: 2100,
+      settlingRuns: 2,
+    });
+    expect(admission.ownerChatTurnGate().reason).toContain("still starting");
+  });
+});

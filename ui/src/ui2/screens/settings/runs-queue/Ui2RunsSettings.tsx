@@ -314,6 +314,14 @@ export function Ui2RunsSettings() {
                       {t("ui2.settings.runs.maxHostLoadPercentPerCore.hint")}
                     </span>
                   ) : null}
+                  {field.key === "minFreeMemoryMb" || field.key === "minFreeHostMemoryMb" ? (
+                    <span
+                      data-testid={`ui2-run-limit-hint-${field.key}`}
+                      className="ui2-run-limit-hint max-w-md text-xs text-muted-foreground"
+                    >
+                      {t(`ui2.settings.runs.${field.key}.hint` as never)}
+                    </span>
+                  ) : null}
                   {field.key === FAIR_SHARE_KEY ? (
                     <span className="ui2-run-limit-hint max-w-md text-xs text-muted-foreground">
                       {t("ui2.settings.runs.maxPerAgentStartSharePercent.hint")}

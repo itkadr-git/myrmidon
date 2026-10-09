@@ -407,7 +407,7 @@ import {
   classifyChatWait,
   type ChatWaitReason,
 } from "../myrmidon/chat-holds/wait-notice.js";
-import { currentHostMemoryGate } from "../myrmidon/run-admission.js";
+import { currentOwnerChatTurnGate } from "../myrmidon/run-admission.js";
 import {
   telegramDmConversationsConfigured,
   telegramDmConversationsEnabled,
@@ -14611,7 +14611,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     runId: string,
   ): Promise<void> {
     try {
-      if (currentHostMemoryGate().state !== "closed") return;
+      // myrmidon(1.6.5 OWNER-CHAT-ADMISSION): the owner's own turn is admitted
+      // by the server container's own floor (`minFreeMemoryMb`); the host
+      // ceilings pace the automatic runs only. So a closed host floor is no
+      // longer a reason to tell the owner their answer waits — the notice is
+      // staged only while the container floor itself holds the turn back.
+      if (currentOwnerChatTurnGate().state !== "closed") return;
       const [run] = await db
         .select({ status: heartbeatRuns.status })
         .from(heartbeatRuns)
@@ -14627,7 +14632,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     } catch (error) {
       logger.warn(
         { error: redactError(error) },
-        "chat host-memory notice was not staged",
+        "chat queue-notice was not staged",
       );
     }
   }

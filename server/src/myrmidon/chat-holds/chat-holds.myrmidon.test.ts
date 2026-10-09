@@ -50,7 +50,12 @@ import { heartbeatService } from "../../services/heartbeat.js";
 import { queueIssueAssignmentWakeup } from "../../services/issue-assignment-wakeup.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { LEGACY_RECOVERY_CAUSE } from "../../services/legacy-execution-recovery.js";
-import { isChatOwnerMessageWake } from "./chat-backed.js";
+import {
+  isChatOwnerMessageWake,
+  isFailedChatRunRetry,
+  isOwnerChatTurnWake,
+  listOwnerChatTurnRunIds,
+} from "./chat-backed.js";
 import {
   chatNoticeLanguage,
   chatWaitNoticeApplies,
@@ -123,6 +128,31 @@ describe("wait notices", () => {
 
   it("an unnamed wait keeps the vendor wording (no reason)", () => {
     expect(classifyChatWait({ status: "queued", reason: null, payload: null })).toBeNull();
+  });
+
+  // myrmidon(1.6.5 OWNER-CHAT-ADMISSION): the queue ranks and admits the
+  // owner's own turn in a chat differently, so it has to name it the same way
+  // the wake does.
+  it("names the owner's own turn by its durable inbound receipt", () => {
+    const receipt = {
+      idempotencyKey: "chat-inbound:abc",
+      requestedByActorType: "user",
+      requestedByActorId: OWNER,
+    };
+    expect(isOwnerChatTurnWake(receipt)).toBe(true);
+    // A chat wake a system actor opened is not the owner's turn.
+    expect(isOwnerChatTurnWake({ ...receipt, requestedByActorType: "system" })).toBe(false);
+    expect(isOwnerChatTurnWake({ ...receipt, requestedByActorId: null })).toBe(false);
+    // Nor is a comment or monitor wake, which carries another key.
+    expect(isOwnerChatTurnWake({ ...receipt, idempotencyKey: "comment:abc" })).toBe(false);
+    expect(isOwnerChatTurnWake({ ...receipt, idempotencyKey: null })).toBe(false);
+  });
+
+  it("keeps the chat's retry button out of the owner's own turns", () => {
+    expect(isFailedChatRunRetry({ chatFailedRunRetry: { runId: "run-1" } })).toBe(true);
+    expect(isFailedChatRunRetry({ issueId: "issue-1" })).toBe(false);
+    expect(isFailedChatRunRetry(null)).toBe(false);
+    expect(isFailedChatRunRetry("chatFailedRunRetry")).toBe(false);
   });
 });
 
@@ -392,5 +422,73 @@ describeEmbeddedPostgres("a chat is never held and an owner message wakes (CHAT-
     // Only a chat's hold is lifted by a message; an ordinary issue's stays.
     expect(still!.evidence.automaticRecovery).toMatchObject({ replay: "blocked" });
     expect((still!.evidence.automaticRecovery as Record<string, unknown>).replayClearedBy).toBeUndefined();
+  }, TEST_TIMEOUT_MS);
+
+  it("tells the owner's own turn from the automatic runs, the system sender and the retry", async () => {
+    const fixture = await seed({ chat: true, status: "in_progress" });
+    const ownerReceiptId = randomUUID();
+    const systemReceiptId = randomUUID();
+    const agentReceiptId = randomUUID();
+    await db.insert(agentWakeupRequests).values([
+      {
+        id: ownerReceiptId,
+        companyId: fixture.companyId,
+        agentId: fixture.agentId,
+        source: "automation",
+        reason: "chat_message",
+        status: "processed",
+        requestedByActorType: "user",
+        requestedByActorId: OWNER,
+        idempotencyKey: `chat-inbound:${randomUUID()}`,
+        payload: {},
+        contextSnapshot: {},
+      },
+      {
+        id: systemReceiptId,
+        companyId: fixture.companyId,
+        agentId: fixture.agentId,
+        source: "automation",
+        reason: "chat_message",
+        status: "processed",
+        requestedByActorType: "system",
+        requestedByActorId: null,
+        idempotencyKey: `chat-inbound:${randomUUID()}`,
+        payload: {},
+        contextSnapshot: {},
+      },
+      {
+        id: agentReceiptId,
+        companyId: fixture.companyId,
+        agentId: fixture.agentId,
+        source: "automation",
+        reason: "issue_commented",
+        status: "queued",
+        requestedByActorType: "agent",
+        requestedByActorId: fixture.agentId,
+        idempotencyKey: `comment:${randomUUID()}`,
+        payload: {},
+        contextSnapshot: {},
+      },
+    ]);
+
+    const queued = [
+      {
+        id: "owner-turn",
+        wakeupRequestId: ownerReceiptId,
+        contextSnapshot: { issueId: fixture.issueId },
+      },
+      {
+        id: "owner-retry",
+        wakeupRequestId: ownerReceiptId,
+        contextSnapshot: { issueId: fixture.issueId, chatFailedRunRetry: { runId: randomUUID() } },
+      },
+      { id: "system-turn", wakeupRequestId: systemReceiptId, contextSnapshot: {} },
+      { id: "automatic-run", wakeupRequestId: agentReceiptId, contextSnapshot: {} },
+      { id: "receiptless-run", wakeupRequestId: null, contextSnapshot: {} },
+    ];
+    const ownerTurnRunIds = await listOwnerChatTurnRunIds(db, fixture.companyId, queued);
+    expect([...ownerTurnRunIds]).toEqual(["owner-turn"]);
+    // The same receipt under another company is not this company's turn.
+    expect([...(await listOwnerChatTurnRunIds(db, randomUUID(), queued))]).toEqual([]);
   }, TEST_TIMEOUT_MS);
 });

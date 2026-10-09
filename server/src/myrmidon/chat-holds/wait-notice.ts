@@ -118,6 +118,12 @@ export function classifyAgentNotInvokable(error: unknown): ChatWaitReason | null
  * the queue ("queued": it starts by itself). Each sentence is complete; the
  * time estimate is given only where the wait has a known bound.
  */
+// myrmidon(1.6.5 OWNER-CHAT-ADMISSION): `host_memory` is the one gate that can
+// hold an owner's own turn in a chat back — the server container's own floor
+// (`minFreeMemoryMb`), not the host ceilings that pace the automatic runs. The
+// sentence therefore says the answer is first in the queue and names the bound
+// the queue check gives it (~15 s, the resweep interval); the chat notice is
+// staged only while the turn really waits (see isOwnerChatTurnWake).
 const QUEUED_TEXTS: Record<ChatNoticeLanguage, Record<ChatWaitReason, string>> = {
   ru: {
     previous_turn:
@@ -137,7 +143,7 @@ const QUEUED_TEXTS: Record<ChatNoticeLanguage, Record<ChatWaitReason, string>> =
     budget:
       "У бота закончился бюджет на работу. Сообщение сохранено и уйдёт в работу, когда бюджет пополнят или поднимут лимит.",
     host_memory:
-      "Сервер сейчас загружен по памяти, поэтому новые ответы ждут очереди. Ваше сообщение стоит в очереди и стартует автоматически, как только освободится память (проверка каждые 15 секунд).",
+      "Сервер сейчас придерживает память под собственные процессы, поэтому новые ответы ждут очереди. Ваше сообщение стоит первым в очереди и стартует само: очередь проверяется каждые 15 секунд, так что старт — через ~15 секунд.",
   },
   en: {
     previous_turn:
@@ -157,7 +163,7 @@ const QUEUED_TEXTS: Record<ChatNoticeLanguage, Record<ChatWaitReason, string>> =
     budget:
       "The bot has run out of budget. Your message is saved and will start once the budget is topped up or the limit raised.",
     host_memory:
-      "The server is short of memory, so new answers are waiting. Your message is queued and will start automatically once memory frees up (checked every 15 seconds).",
+      "The server is holding memory back for its own processes, so new answers are waiting. Your message is first in the queue and starts by itself: the queue is checked every 15 seconds, so it starts in ~15 seconds.",
   },
 };
 
@@ -172,7 +178,7 @@ const NOT_STARTED_CAUSES: Record<ChatNoticeLanguage, Record<ChatWaitReason, stri
     agent_paused: "Бот на паузе.",
     agent_unavailable: "Бот отключён или ждёт настройки на доске.",
     budget: "У бота закончился бюджет на работу.",
-    host_memory: "Сервер был загружен по памяти.",
+    host_memory: "Сервер придерживал память под собственные процессы.",
   },
   en: {
     previous_turn: "I was busy with the previous answer.",
@@ -183,7 +189,7 @@ const NOT_STARTED_CAUSES: Record<ChatNoticeLanguage, Record<ChatWaitReason, stri
     agent_paused: "The bot is paused.",
     agent_unavailable: "The bot is turned off or waiting for setup on the board.",
     budget: "The bot has run out of budget.",
-    host_memory: "The server was short of memory.",
+    host_memory: "The server was holding memory back for its own processes.",
   },
 };
 
